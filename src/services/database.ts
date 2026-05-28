@@ -1,0 +1,810 @@
+import SQLite from 'react-native-sqlite-storage';
+import type {
+  Chapter,
+  ContextConfig,
+  Fragment,
+  FragmentType,
+  LLMConfig,
+  Note,
+  Plotline,
+  Preset,
+  Project,
+  ProjectMode,
+} from '../types/novel';
+import { getSecureLLMApiKey, setSecureLLMApiKey } from './secureStorage';
+
+SQLite.enablePromise(true);
+
+const DB_NAME = 'tavo_mini.db';
+const SCHEMA_VERSION = '3';
+const GLOBAL_PROJECT_ID = 0;
+const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
+let db: SQLite.SQLiteDatabase | null = null;
+let opening: Promise<SQLite.SQLiteDatabase> | null = null;
+
+type Row = Record<string, any>;
+export type ResourceType = 'character' | 'worldbook' | 'note' | 'preset';
+
+export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
+  if (db) return db;
+  if (opening) return opening;
+  opening = (async () => {
+    const database = await SQLite.openDatabase({ name: DB_NAME, location: 'default' });
+    await createTables(database);
+    await ensureSchemaCompatibility(database);
+    await seedDefaults(database);
+    await migrate(database);
+    db = database;
+    opening = null;
+    return database;
+  })().catch((error) => {
+    db = null;
+    opening = null;
+    throw error;
+  });
+  return opening;
+}
+
+async function execute(database: SQLite.SQLiteDatabase, sql: string, params: any[] = []) {
+  const [result] = await database.executeSql(sql, params);
+  return result;
+}
+
+async function all<T = Row>(sql: string, params: any[] = []): Promise<T[]> {
+  const database = await openDatabase();
+  const result = await execute(database, sql, params);
+  const items: T[] = [];
+  for (let i = 0; i < result.rows.length; i++) {
+    items.push(result.rows.item(i));
+  }
+  return items;
+}
+
+async function one<T = Row>(sql: string, params: any[] = []): Promise<T | null> {
+  const rows = await all<T>(sql, params);
+  return rows[0] || null;
+}
+
+async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
+  await execute(database, 'PRAGMA foreign_keys = ON');
+  const statements = [
+    `
+      CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'outline',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS chapters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL DEFAULT '',
+        synopsis TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'planned',
+        summary_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS fragments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        type TEXT NOT NULL DEFAULT 'seed',
+        content TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS plotlines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        color TEXT NOT NULL DEFAULT '#2563EB',
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS project_plotlines (
+        chapter_id INTEGER NOT NULL,
+        plotline_id INTEGER NOT NULL,
+        PRIMARY KEY (chapter_id, plotline_id),
+        FOREIGN KEY (chapter_id) REFERENCES chapters(id) ON DELETE CASCADE,
+        FOREIGN KEY (plotline_id) REFERENCES plotlines(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS characters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        source_type TEXT NOT NULL DEFAULT 'json',
+        data_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS worldbook_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        keyword_primary TEXT NOT NULL DEFAULT '',
+        keyword_secondary TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        comment TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS presets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        is_default INTEGER NOT NULL DEFAULT 0,
+        system_prompt TEXT NOT NULL DEFAULT '',
+        writing_style TEXT NOT NULL DEFAULT '',
+        temperature REAL NOT NULL DEFAULT 0.8,
+        top_p REAL NOT NULL DEFAULT 0.9,
+        max_tokens INTEGER NOT NULL DEFAULT 4000,
+        extra_instructions TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS llm_config (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        base_url TEXT NOT NULL DEFAULT '',
+        api_key TEXT NOT NULL DEFAULT '',
+        model_name TEXT NOT NULL DEFAULT ''
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT ''
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS project_resources (
+        project_id INTEGER NOT NULL,
+        resource_type TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (project_id, resource_type, resource_id),
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+  ];
+  for (const statement of statements) {
+    await execute(database, statement);
+  }
+}
+
+async function tableColumns(database: SQLite.SQLiteDatabase, table: string): Promise<Set<string>> {
+  const result = await execute(database, `PRAGMA table_info(${table})`);
+  const columns = new Set<string>();
+  for (let i = 0; i < result.rows.length; i++) {
+    columns.add(result.rows.item(i).name);
+  }
+  return columns;
+}
+
+async function ensureColumn(
+  database: SQLite.SQLiteDatabase,
+  table: string,
+  columns: Set<string>,
+  column: string,
+  definition: string,
+): Promise<void> {
+  if (columns.has(column)) return;
+  await execute(database, `ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  columns.add(column);
+}
+
+async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promise<void> {
+  const projects = await tableColumns(database, 'projects');
+  await ensureColumn(database, 'projects', projects, 'name', "name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'projects', projects, 'mode', "mode TEXT NOT NULL DEFAULT 'outline'");
+  await ensureColumn(database, 'projects', projects, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'projects', projects, 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+
+  const chapters = await tableColumns(database, 'chapters');
+  await ensureColumn(database, 'chapters', chapters, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'chapters', chapters, 'position', 'position INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'chapters', chapters, 'title', "title TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'chapters', chapters, 'synopsis', "synopsis TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'chapters', chapters, 'content', "content TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'chapters', chapters, 'status', "status TEXT NOT NULL DEFAULT 'planned'");
+  await ensureColumn(database, 'chapters', chapters, 'summary_json', 'summary_json TEXT');
+  await ensureColumn(database, 'chapters', chapters, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'chapters', chapters, 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+
+  const fragments = await tableColumns(database, 'fragments');
+  await ensureColumn(database, 'fragments', fragments, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'fragments', fragments, 'position', 'position INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'fragments', fragments, 'type', "type TEXT NOT NULL DEFAULT 'seed'");
+  await ensureColumn(database, 'fragments', fragments, 'content', "content TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'fragments', fragments, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+
+  const plotlines = await tableColumns(database, 'plotlines');
+  await ensureColumn(database, 'plotlines', plotlines, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'plotlines', plotlines, 'name', "name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'plotlines', plotlines, 'description', "description TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'plotlines', plotlines, 'color', "color TEXT NOT NULL DEFAULT '#2563EB'");
+
+  const characters = await tableColumns(database, 'characters');
+  await ensureColumn(database, 'characters', characters, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'characters', characters, 'name', "name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'characters', characters, 'source_type', "source_type TEXT NOT NULL DEFAULT 'json'");
+  await ensureColumn(database, 'characters', characters, 'data_json', "data_json TEXT NOT NULL DEFAULT '{}'");
+  await ensureColumn(database, 'characters', characters, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+
+  const worldbook = await tableColumns(database, 'worldbook_entries');
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'keyword_primary', "keyword_primary TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'keyword_secondary', "keyword_secondary TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'content', "content TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'comment', "comment TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'enabled', 'enabled INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'position', 'position INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+
+  const notes = await tableColumns(database, 'notes');
+  await ensureColumn(database, 'notes', notes, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'notes', notes, 'title', "title TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'notes', notes, 'content', "content TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'notes', notes, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'notes', notes, 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+
+  const presets = await tableColumns(database, 'presets');
+  await ensureColumn(database, 'presets', presets, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'presets', presets, 'name', "name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'presets', presets, 'is_default', 'is_default INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'presets', presets, 'system_prompt', "system_prompt TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'presets', presets, 'writing_style', "writing_style TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'presets', presets, 'temperature', 'temperature REAL NOT NULL DEFAULT 0.8');
+  await ensureColumn(database, 'presets', presets, 'top_p', 'top_p REAL NOT NULL DEFAULT 0.9');
+  await ensureColumn(database, 'presets', presets, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 4000');
+  await ensureColumn(database, 'presets', presets, 'extra_instructions', "extra_instructions TEXT NOT NULL DEFAULT ''");
+
+  const llm = await tableColumns(database, 'llm_config');
+  await ensureColumn(database, 'llm_config', llm, 'base_url', "base_url TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'llm_config', llm, 'api_key', "api_key TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'llm_config', llm, 'model_name', "model_name TEXT NOT NULL DEFAULT ''");
+
+  const settings = await tableColumns(database, 'settings');
+  await ensureColumn(database, 'settings', settings, 'key', "key TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'settings', settings, 'value', "value TEXT NOT NULL DEFAULT ''");
+}
+
+async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
+  await ensureGlobalProject(database);
+  await execute(
+    database,
+    'INSERT OR IGNORE INTO llm_config (id, base_url, api_key, model_name) VALUES (1, ?, ?, ?)',
+    ['', '', ''],
+  );
+  await ensureDefaultPreset(database);
+}
+
+async function ensureGlobalProject(database: SQLite.SQLiteDatabase): Promise<void> {
+  const timestamp = now();
+  await execute(
+    database,
+    'INSERT OR IGNORE INTO projects (id, name, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    [GLOBAL_PROJECT_ID, GLOBAL_PROJECT_NAME, 'outline', timestamp, timestamp],
+  );
+}
+
+async function migrate(database: SQLite.SQLiteDatabase): Promise<void> {
+  const result = await execute(database, 'SELECT value FROM settings WHERE key = ?', ['schema_version']);
+  const current = result.rows.length > 0 ? result.rows.item(0).value : null;
+  if (current === SCHEMA_VERSION) return;
+
+  await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [
+    'schema_version',
+    SCHEMA_VERSION,
+  ]);
+  await migrateLegacyProjectResources(database);
+}
+
+async function migrateLegacyProjectResources(database: SQLite.SQLiteDatabase): Promise<void> {
+  await execute(
+    database,
+    "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'character', id, 1 FROM characters WHERE project_id > 0",
+  );
+  await execute(
+    database,
+    "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'worldbook', id, enabled FROM worldbook_entries WHERE project_id > 0",
+  );
+  await execute(
+    database,
+    "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'note', id, 1 FROM notes WHERE project_id > 0",
+  );
+  await execute(
+    database,
+    "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'preset', id, 1 FROM presets WHERE project_id > 0",
+  );
+}
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+function parseChapter(row: Row): Chapter {
+  let summary = null;
+  if (row.summary_json) {
+    try {
+      summary = typeof row.summary_json === 'string' ? JSON.parse(row.summary_json) : row.summary_json;
+    } catch {
+      summary = null;
+    }
+  }
+  return { ...row, summary_json: summary } as Chapter;
+}
+
+export async function getAllProjects(): Promise<Project[]> {
+  return all<Project>('SELECT * FROM projects WHERE id > 0 ORDER BY updated_at DESC');
+}
+
+export async function getProjectById(id: number): Promise<Project | null> {
+  return one<Project>('SELECT * FROM projects WHERE id = ? AND id > 0', [id]);
+}
+
+export async function createProject(name: string, mode: ProjectMode | string): Promise<number> {
+  const database = await openDatabase();
+  const timestamp = now();
+  const result = await execute(
+    database,
+    'INSERT INTO projects (name, mode, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    [name, mode, timestamp, timestamp],
+  );
+  const projectId = result.insertId!;
+  const presetId = await ensureDefaultPreset();
+  await setProjectResourceEnabled(projectId, 'preset', presetId, true);
+  await createChapter(projectId, 0, '第 1 章');
+  return projectId;
+}
+
+export async function updateProject(id: number, name: string): Promise<void> {
+  await execute(await openDatabase(), 'UPDATE projects SET name = ?, updated_at = ? WHERE id = ?', [name, now(), id]);
+}
+
+export async function deleteProject(id: number): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM projects WHERE id = ?', [id]);
+}
+
+export async function getChaptersByProject(projectId: number): Promise<Chapter[]> {
+  const rows = await all<Row>('SELECT * FROM chapters WHERE project_id = ? ORDER BY position ASC', [projectId]);
+  return rows.map(parseChapter);
+}
+
+export async function getChapterById(id: number): Promise<Chapter | null> {
+  const row = await one<Row>('SELECT * FROM chapters WHERE id = ?', [id]);
+  return row ? parseChapter(row) : null;
+}
+
+export async function createChapter(projectId: number, position: number, title?: string): Promise<number> {
+  const timestamp = now();
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [projectId, position, title || `第 ${position + 1} 章`, '', '', 'planned', timestamp, timestamp],
+  );
+  await touchProject(projectId);
+  return result.insertId!;
+}
+
+const CHAPTER_COLUMNS = new Set(['title', 'synopsis', 'content', 'status', 'summary_json', 'position']);
+
+export async function updateChapter(id: number, fields: Partial<Chapter>): Promise<void> {
+  const chapter = await getChapterById(id);
+  const sets = ['updated_at = ?'];
+  const values: any[] = [now()];
+  for (const [key, value] of Object.entries(fields)) {
+    if (!CHAPTER_COLUMNS.has(key)) continue;
+    sets.push(`${key} = ?`);
+    values.push(key === 'summary_json' && value !== null ? JSON.stringify(value) : value);
+  }
+  if (sets.length === 1) return;
+  values.push(id);
+  await execute(await openDatabase(), `UPDATE chapters SET ${sets.join(', ')} WHERE id = ?`, values);
+  if (chapter) await touchProject(chapter.project_id);
+}
+
+export async function deleteChapter(id: number): Promise<void> {
+  const chapter = await getChapterById(id);
+  await execute(await openDatabase(), 'DELETE FROM chapters WHERE id = ?', [id]);
+  if (chapter) await touchProject(chapter.project_id);
+}
+
+export async function getFragmentsByProject(projectId: number): Promise<Fragment[]> {
+  return all<Fragment>('SELECT * FROM fragments WHERE project_id = ? ORDER BY position ASC', [projectId]);
+}
+
+export async function createFragment(
+  projectId: number,
+  type: FragmentType | string,
+  content: string,
+  position: number,
+): Promise<number> {
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO fragments (project_id, position, type, content, created_at) VALUES (?, ?, ?, ?, ?)',
+    [projectId, position, type, content, now()],
+  );
+  await touchProject(projectId);
+  return result.insertId!;
+}
+
+export async function deleteFragment(id: number): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM fragments WHERE id = ?', [id]);
+}
+
+export async function getPlotlinesByProject(projectId: number): Promise<Plotline[]> {
+  return all<Plotline>('SELECT * FROM plotlines WHERE project_id = ? ORDER BY id ASC', [projectId]);
+}
+
+export async function createPlotline(projectId: number, name: string, description: string, color: string): Promise<number> {
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO plotlines (project_id, name, description, color) VALUES (?, ?, ?, ?)',
+    [projectId, name, description, color],
+  );
+  return result.insertId!;
+}
+
+export async function deletePlotline(id: number): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM plotlines WHERE id = ?', [id]);
+}
+
+export async function setChapterPlotlines(chapterId: number, plotlineIds: number[]): Promise<void> {
+  const database = await openDatabase();
+  await database.transaction(async (tx) => {
+    await tx.executeSql('DELETE FROM project_plotlines WHERE chapter_id = ?', [chapterId]);
+    for (const plotlineId of plotlineIds) {
+      await tx.executeSql('INSERT INTO project_plotlines (chapter_id, plotline_id) VALUES (?, ?)', [chapterId, plotlineId]);
+    }
+  });
+}
+
+export async function getChapterPlotlineIds(chapterId: number): Promise<number[]> {
+  const rows = await all<{ plotline_id: number }>('SELECT plotline_id FROM project_plotlines WHERE chapter_id = ?', [chapterId]);
+  return rows.map((row) => row.plotline_id);
+}
+
+export async function setProjectResourceEnabled(
+  projectId: number,
+  resourceType: ResourceType,
+  resourceId: number,
+  enabled: boolean,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+    [projectId, resourceType, resourceId, enabled ? 1 : 0],
+  );
+}
+
+async function deleteProjectResourceLinks(resourceType: ResourceType, resourceId: number): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?', [
+    resourceType,
+    resourceId,
+  ]);
+}
+
+async function linkResourceToProject(projectId: number, resourceType: ResourceType, resourceId: number): Promise<void> {
+  if (projectId > 0) {
+    await setProjectResourceEnabled(projectId, resourceType, resourceId, true);
+  }
+}
+
+function usageJoin(resourceType: ResourceType, alias: string, projectId?: number): string {
+  if (!projectId) return '0 AS enabled_for_project';
+  return `COALESCE((SELECT enabled FROM project_resources pr WHERE pr.project_id = ${Number(projectId)} AND pr.resource_type = '${resourceType}' AND pr.resource_id = ${alias}.id), 0) AS enabled_for_project`;
+}
+
+export async function getAllCharacters(projectId?: number): Promise<Row[]> {
+  return all<Row>(`SELECT c.*, ${usageJoin('character', 'c', projectId)} FROM characters c ORDER BY c.id DESC`);
+}
+
+export async function getCharactersByProject(projectId: number): Promise<Row[]> {
+  return all<Row>(
+    `SELECT c.* FROM characters c
+     JOIN project_resources pr ON pr.resource_id = c.id AND pr.resource_type = 'character'
+     WHERE pr.project_id = ? AND pr.enabled = 1
+     ORDER BY c.id ASC`,
+    [projectId],
+  );
+}
+
+export async function getCharacterById(id: number): Promise<Row | null> {
+  return one<Row>('SELECT * FROM characters WHERE id = ?', [id]);
+}
+
+export async function createCharacter(projectId: number, name: string, sourceType: string, dataJson: string): Promise<number> {
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO characters (project_id, name, source_type, data_json, created_at) VALUES (?, ?, ?, ?, ?)',
+    [0, name, sourceType, dataJson, now()],
+  );
+  const id = result.insertId!;
+  await linkResourceToProject(projectId, 'character', id);
+  return id;
+}
+
+export async function updateCharacter(id: number, name: string, dataJson: string): Promise<void> {
+  await execute(await openDatabase(), 'UPDATE characters SET name = ?, data_json = ? WHERE id = ?', [name, dataJson, id]);
+}
+
+export async function deleteCharacter(id: number): Promise<void> {
+  await deleteProjectResourceLinks('character', id);
+  await execute(await openDatabase(), 'DELETE FROM characters WHERE id = ?', [id]);
+}
+
+export async function getAllWorldbookEntries(projectId?: number): Promise<Row[]> {
+  return all<Row>(
+    `SELECT w.*, ${usageJoin('worldbook', 'w', projectId)} FROM worldbook_entries w ORDER BY w.position ASC, w.id DESC`,
+  );
+}
+
+export async function getWorldbookEntriesByProject(projectId: number): Promise<Row[]> {
+  return all<Row>(
+    `SELECT w.* FROM worldbook_entries w
+     JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook'
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND w.enabled = 1
+     ORDER BY w.position ASC, w.id ASC`,
+    [projectId],
+  );
+}
+
+export async function getWorldbookEntryById(id: number): Promise<Row | null> {
+  return one<Row>('SELECT * FROM worldbook_entries WHERE id = ?', [id]);
+}
+
+export async function createWorldbookEntry(
+  projectId: number,
+  keywordPrimary: string,
+  content: string,
+  enabled: number,
+  extra: Partial<Row> = {},
+): Promise<number> {
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO worldbook_entries (project_id, keyword_primary, keyword_secondary, content, comment, enabled, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      0,
+      keywordPrimary,
+      extra.keyword_secondary || '',
+      content,
+      extra.comment || '',
+      enabled,
+      Number(extra.position || 0),
+      now(),
+    ],
+  );
+  const id = result.insertId!;
+  await linkResourceToProject(projectId, 'worldbook', id);
+  return id;
+}
+
+const WB_COLUMNS = new Set(['keyword_primary', 'keyword_secondary', 'content', 'comment', 'enabled', 'position']);
+
+export async function updateWorldbookEntry(id: number, fields: Row): Promise<void> {
+  await updateColumns('worldbook_entries', id, WB_COLUMNS, fields);
+}
+
+export async function deleteWorldbookEntry(id: number): Promise<void> {
+  await deleteProjectResourceLinks('worldbook', id);
+  await execute(await openDatabase(), 'DELETE FROM worldbook_entries WHERE id = ?', [id]);
+}
+
+export async function getAllNotes(projectId?: number): Promise<Note[]> {
+  return all<Note>(`SELECT n.*, ${usageJoin('note', 'n', projectId)} FROM notes n ORDER BY n.updated_at DESC`);
+}
+
+export async function getNotesByProject(projectId: number): Promise<Note[]> {
+  return all<Note>(
+    `SELECT n.* FROM notes n
+     JOIN project_resources pr ON pr.resource_id = n.id AND pr.resource_type = 'note'
+     WHERE pr.project_id = ? AND pr.enabled = 1
+     ORDER BY n.updated_at DESC`,
+    [projectId],
+  );
+}
+
+export async function createNote(projectId: number, title: string, content = ''): Promise<number> {
+  const timestamp = now();
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO notes (project_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    [0, title, content, timestamp, timestamp],
+  );
+  const id = result.insertId!;
+  await linkResourceToProject(projectId, 'note', id);
+  return id;
+}
+
+export async function updateNote(id: number, title: string, content: string): Promise<void> {
+  await execute(await openDatabase(), 'UPDATE notes SET title = ?, content = ?, updated_at = ? WHERE id = ?', [
+    title,
+    content,
+    now(),
+    id,
+  ]);
+}
+
+export async function deleteNote(id: number): Promise<void> {
+  await deleteProjectResourceLinks('note', id);
+  await execute(await openDatabase(), 'DELETE FROM notes WHERE id = ?', [id]);
+}
+
+export async function getAllPresets(projectId?: number): Promise<Preset[]> {
+  return all<Preset>(
+    `SELECT p.*, ${usageJoin('preset', 'p', projectId)} FROM presets p ORDER BY p.is_default DESC, p.id ASC`,
+  );
+}
+
+export async function getPresetsByProject(projectId: number): Promise<Preset[]> {
+  return all<Preset>(
+    `SELECT p.* FROM presets p
+     JOIN project_resources pr ON pr.resource_id = p.id AND pr.resource_type = 'preset'
+     WHERE pr.project_id = ? AND pr.enabled = 1
+     ORDER BY p.is_default DESC, p.id ASC`,
+    [projectId],
+  );
+}
+
+const PRESET_COLUMNS = new Set([
+  'name',
+  'is_default',
+  'system_prompt',
+  'writing_style',
+  'temperature',
+  'top_p',
+  'max_tokens',
+  'extra_instructions',
+]);
+
+export async function updatePreset(id: number, fields: Partial<Preset>): Promise<void> {
+  if (fields.is_default === 1) {
+    await execute(await openDatabase(), 'UPDATE presets SET is_default = 0 WHERE id != ?', [id]);
+  }
+  await updateColumns('presets', id, PRESET_COLUMNS, fields);
+}
+
+export async function createPreset(projectId: number, name: string, isDefault = false): Promise<number> {
+  if (isDefault) {
+    await execute(await openDatabase(), 'UPDATE presets SET is_default = 0');
+  }
+  const result = await execute(
+    await openDatabase(),
+    `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions)
+     VALUES (?, ?, ?, ?, ?, 0.8, 0.9, 4000, ?)`,
+    [
+      0,
+      name,
+      isDefault ? 1 : 0,
+      '你是一位经验丰富的中文小说作者。请保持人物一致、场景清晰、节奏自然，并承接上文继续创作。',
+      '文学化叙事，注重氛围和人物心理。',
+      '每次输出控制在 800-1500 字，结尾自然停在段落或情节转折处。',
+    ],
+  );
+  const id = result.insertId!;
+  await linkResourceToProject(projectId, 'preset', id);
+  return id;
+}
+
+export async function deletePreset(id: number): Promise<void> {
+  await deleteProjectResourceLinks('preset', id);
+  await execute(await openDatabase(), 'DELETE FROM presets WHERE id = ?', [id]);
+}
+
+async function ensureDefaultPreset(database?: SQLite.SQLiteDatabase): Promise<number> {
+  const target = database || (await openDatabase());
+  const existing = await execute(target, 'SELECT id FROM presets WHERE is_default = 1 ORDER BY id ASC LIMIT 1');
+  if (existing.rows.length > 0) return existing.rows.item(0).id;
+
+  const result = await execute(
+    target,
+    `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions)
+     VALUES (?, ?, 1, ?, ?, 0.8, 0.9, 4000, ?)`,
+    [
+      0,
+      '默认写作预设',
+      '你是一位经验丰富的中文小说作者。请保持人物一致、场景清晰、节奏自然，并承接上文继续创作。',
+      '文学化叙事，注重氛围和人物心理。',
+      '每次输出控制在 800-1500 字，结尾自然停在段落或情节转折处。',
+    ],
+  );
+  return result.insertId!;
+}
+
+export async function getLLMConfig(): Promise<LLMConfig> {
+  const config = await one<LLMConfig>('SELECT * FROM llm_config WHERE id = 1');
+  const apiKey = await getSecureLLMApiKey();
+  if (config?.api_key && !apiKey) {
+    await setSecureLLMApiKey(config.api_key);
+    await execute(await openDatabase(), 'UPDATE llm_config SET api_key = ? WHERE id = 1', ['']);
+    return { ...config, api_key: config.api_key };
+  }
+  return { ...(config || { id: 1, base_url: '', api_key: '', model_name: '' }), api_key: apiKey };
+}
+
+export async function setLLMConfig(baseUrl: string, apiKey: string, modelName: string): Promise<void> {
+  await setSecureLLMApiKey(apiKey);
+  await execute(
+    await openDatabase(),
+    'INSERT OR REPLACE INTO llm_config (id, base_url, api_key, model_name) VALUES (1, ?, ?, ?)',
+    [baseUrl.trim(), '', modelName.trim()],
+  );
+}
+
+export async function getSetting(key: string): Promise<string | null> {
+  const row = await one<{ value: string }>('SELECT value FROM settings WHERE key = ?', [key]);
+  return row?.value ?? null;
+}
+
+export async function setSetting(key: string, value: string): Promise<void> {
+  await execute(await openDatabase(), 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [key, value]);
+}
+
+export async function getContextConfig(): Promise<ContextConfig> {
+  return {
+    strategy: ((await getSetting('context_strategy')) as ContextConfig['strategy']) || 'sliding',
+    slidingWindowSize: Number((await getSetting('sliding_window_size')) || 4000),
+    customRangeStart: Number((await getSetting('custom_range_start')) || 0),
+    customRangeEnd: Number((await getSetting('custom_range_end')) || -1),
+    resourceBudget: Number((await getSetting('resource_budget')) || 2000),
+    includeResources: (await getSetting('include_resources')) !== 'false',
+  };
+}
+
+export async function setContextConfig(config: ContextConfig): Promise<void> {
+  await setSetting('context_strategy', config.strategy);
+  await setSetting('sliding_window_size', String(config.slidingWindowSize));
+  await setSetting('custom_range_start', String(config.customRangeStart));
+  await setSetting('custom_range_end', String(config.customRangeEnd));
+  await setSetting('resource_budget', String(config.resourceBudget));
+  await setSetting('include_resources', String(config.includeResources));
+}
+
+async function touchProject(projectId: number): Promise<void> {
+  await execute(await openDatabase(), 'UPDATE projects SET updated_at = ? WHERE id = ?', [now(), projectId]);
+}
+
+async function updateColumns(table: string, id: number, allowed: Set<string>, fields: Row): Promise<void> {
+  const sets: string[] = [];
+  const values: any[] = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (!allowed.has(key)) continue;
+    sets.push(`${key} = ?`);
+    values.push(value);
+  }
+  if (sets.length === 0) return;
+  values.push(id);
+  await execute(await openDatabase(), `UPDATE ${table} SET ${sets.join(', ')} WHERE id = ?`, values);
+}

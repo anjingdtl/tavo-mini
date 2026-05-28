@@ -1,0 +1,266 @@
+import React from 'react';
+import {
+  ActivityIndicator,
+  GestureResponderEvent,
+  StyleSheet,
+  Text,
+  TextInput,
+  TextInputProps,
+  TouchableOpacity,
+  View,
+  ViewStyle,
+} from 'react-native';
+import type { LucideIcon } from 'lucide-react-native';
+import { useThemeStore } from '../store/themeStore';
+
+export const spacing = {
+  xs: 4,
+  sm: 8,
+  md: 12,
+  lg: 16,
+  xl: 24,
+};
+
+export function Screen({
+  children,
+  padded = false,
+}: {
+  children: React.ReactNode;
+  padded?: boolean;
+}) {
+  const { theme } = useThemeStore();
+  return (
+    <View style={[styles.screen, { backgroundColor: theme.colors.background }, padded && styles.padded]}>
+      {children}
+    </View>
+  );
+}
+
+export function Header({
+  title,
+  subtitle,
+  action,
+}: {
+  title: string;
+  subtitle?: string;
+  action?: React.ReactNode;
+}) {
+  const { theme } = useThemeStore();
+  return (
+    <View style={[styles.header, { borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+      <View style={styles.headerText}>
+        <Text style={[styles.title, { color: theme.colors.textPrimary }]} numberOfLines={1}>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text style={[styles.subtitle, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
+      {action}
+    </View>
+  );
+}
+
+export function Section({ title, children }: { title?: string; children: React.ReactNode }) {
+  const { theme } = useThemeStore();
+  return (
+    <View style={styles.section}>
+      {title ? <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>{title}</Text> : null}
+      {children}
+    </View>
+  );
+}
+
+export function Card({ children, style }: { children: React.ReactNode; style?: ViewStyle }) {
+  const { theme } = useThemeStore();
+  return <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, style]}>{children}</View>;
+}
+
+export function Button({
+  label,
+  onPress,
+  variant = 'primary',
+  disabled = false,
+  icon: Icon,
+}: {
+  label: string;
+  onPress?: (event: GestureResponderEvent) => void;
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  disabled?: boolean;
+  icon?: LucideIcon;
+}) {
+  const { theme } = useThemeStore();
+  const background =
+    variant === 'primary'
+      ? theme.colors.accent
+      : variant === 'danger'
+        ? theme.colors.danger
+        : variant === 'secondary'
+          ? theme.colors.accentSoft
+          : 'transparent';
+  const foreground = variant === 'primary' || variant === 'danger' ? '#FFFFFF' : theme.colors.accent;
+  return (
+    <TouchableOpacity
+      accessibilityRole="button"
+      onPress={onPress}
+      disabled={disabled}
+      style={[
+        styles.button,
+        { backgroundColor: background, opacity: disabled ? 0.5 : 1, borderColor: theme.colors.border },
+        variant === 'ghost' && styles.ghostButton,
+      ]}
+    >
+      {Icon ? <Icon size={16} color={foreground} /> : null}
+      <Text style={[styles.buttonText, { color: foreground }]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+export function IconButton({
+  icon: Icon,
+  label,
+  onPress,
+}: {
+  icon: LucideIcon;
+  label: string;
+  onPress?: () => void;
+}) {
+  const { theme } = useThemeStore();
+  return (
+    <TouchableOpacity accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={[styles.iconButton, { borderColor: theme.colors.border }]}>
+      <Icon size={18} color={theme.colors.textSecondary} />
+    </TouchableOpacity>
+  );
+}
+
+export function Field({
+  label,
+  inputStyle,
+  ...props
+}: TextInputProps & {
+  label?: string;
+  inputStyle?: ViewStyle;
+}) {
+  const { theme } = useThemeStore();
+  return (
+    <View style={styles.field}>
+      {label ? <Text style={[styles.label, { color: theme.colors.textSecondary }]}>{label}</Text> : null}
+      <TextInput
+        {...props}
+        placeholderTextColor={theme.colors.textMuted}
+        style={[
+          styles.input,
+          {
+            backgroundColor: theme.colors.card,
+            borderColor: theme.colors.border,
+            color: theme.colors.textPrimary,
+          },
+          inputStyle,
+        ]}
+      />
+    </View>
+  );
+}
+
+export function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  const { theme } = useThemeStore();
+  return (
+    <View style={[styles.segmented, { backgroundColor: theme.colors.accentSoft }]}>
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <TouchableOpacity
+            key={option.value}
+            onPress={() => onChange(option.value)}
+            style={[styles.segment, active && { backgroundColor: theme.colors.card }]}
+          >
+            <Text style={[styles.segmentText, { color: active ? theme.colors.accent : theme.colors.textSecondary }]}>{option.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+export function EmptyState({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description?: string;
+  action?: React.ReactNode;
+}) {
+  const { theme } = useThemeStore();
+  return (
+    <View style={styles.empty}>
+      <Text style={[styles.emptyTitle, { color: theme.colors.textPrimary }]}>{title}</Text>
+      {description ? <Text style={[styles.emptyDesc, { color: theme.colors.textSecondary }]}>{description}</Text> : null}
+      {action ? <View style={styles.emptyAction}>{action}</View> : null}
+    </View>
+  );
+}
+
+export function LoadingState({ label = '加载中...' }: { label?: string }) {
+  const { theme } = useThemeStore();
+  return (
+    <View style={styles.empty}>
+      <ActivityIndicator color={theme.colors.accent} />
+      <Text style={[styles.emptyDesc, { color: theme.colors.textSecondary }]}>{label}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1 },
+  padded: { padding: spacing.lg },
+  header: {
+    minHeight: 64,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  headerText: { flex: 1 },
+  title: { fontSize: 20, fontWeight: '700' },
+  subtitle: { fontSize: 12, marginTop: 2 },
+  section: { marginBottom: spacing.lg },
+  sectionTitle: { fontSize: 12, fontWeight: '700', marginBottom: spacing.sm, textTransform: 'uppercase' },
+  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, marginBottom: spacing.md },
+  button: {
+    minHeight: 40,
+    paddingHorizontal: spacing.md,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  ghostButton: { borderWidth: StyleSheet.hairlineWidth },
+  buttonText: { fontSize: 14, fontWeight: '700' },
+  iconButton: { width: 40, height: 40, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  field: { marginBottom: spacing.md },
+  label: { fontSize: 12, fontWeight: '700', marginBottom: spacing.xs },
+  input: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, fontSize: 15 },
+  segmented: { flexDirection: 'row', padding: 4, borderRadius: 8, gap: 4 },
+  segment: { flex: 1, minHeight: 36, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
+  segmentText: { fontSize: 13, fontWeight: '700' },
+  empty: { flex: 1, minHeight: 180, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
+  emptyTitle: { fontSize: 17, fontWeight: '700', textAlign: 'center' },
+  emptyDesc: { fontSize: 14, lineHeight: 20, textAlign: 'center', marginTop: spacing.sm },
+  emptyAction: { marginTop: spacing.lg },
+});
