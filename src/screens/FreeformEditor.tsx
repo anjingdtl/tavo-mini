@@ -1,11 +1,15 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Plus, Trash2 } from 'lucide-react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Bot, Plus, Trash2 } from 'lucide-react-native';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
+import { debounce } from '../utils/debounce';
+import { estimateTokens } from '../utils/tokenEstimator';
 import * as db from '../services/database';
-import type { Fragment, FragmentType } from '../types/novel';
+import { buildContext } from '../services/contextBuilder';
+import { callLLMResult } from '../services/llm';
+import type { Chapter, Fragment, FragmentType } from '../types/novel';
 
 const TYPE_OPTIONS: { value: FragmentType; label: string }[] = [
   { value: 'seed', label: '种子' },
@@ -18,18 +22,43 @@ export const FreeformEditor: React.FC = () => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
   const [fragments, setFragments] = useState<Fragment[]>([]);
+  const [documentText, setDocumentText] = useState('');
+  const [steerText, setSteerText] = useState('');
+  const [saveState, setSaveState] = useState('已保存');
+  const [generating, setGenerating] = useState(false);
+  const [lastUsage, setLastUsage] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [text, setText] = useState('');
   const [type, setType] = useState<FragmentType>('user');
+  const autoSaveRef = useRef(
+    debounce(async (projectId: number, content: string) => {
+      await db.setFreeformDocument(projectId, content);
+      setSaveState('已保存');
+    }, 900),
+  );
 
-  const loadFragments = useCallback(async () => {
+  const loadData = useCallback(async () => {
     if (!currentProject) return;
-    setFragments(await db.getFragmentsByProject(currentProject.id));
+    const [nextFragments, content] = await Promise.all([
+      db.getFragmentsByProject(currentProject.id),
+      db.getFreeformDocument(currentProject.id),
+    ]);
+    setFragments(nextFragments);
+    setDocumentText(content);
   }, [currentProject]);
 
   useEffect(() => {
-    loadFragments();
-  }, [loadFragments]);
+    loadData();
+    const autoSave = autoSaveRef.current;
+    return () => autoSave.cancel();
+  }, [loadData]);
+
+  const changeDocument = (content: string) => {
+    if (!currentProject) return;
+    setDocumentText(content);
+    setSaveState('保存中...');
+    autoSaveRef.current.call(currentProject.id, content);
+  };
 
   const addFragment = async () => {
     if (!currentProject || !text.trim()) return;
@@ -37,13 +66,68 @@ export const FreeformEditor: React.FC = () => {
     setText('');
     setType('user');
     setShowModal(false);
-    await loadFragments();
+    await loadData();
+  };
+
+  const appendFragment = (fragment: Fragment) => {
+    changeDocument(`${documentText}${documentText ? '\n\n' : ''}${fragment.content}`);
+  };
+
+  const generateContinuation = async () => {
+    if (!currentProject || generating) return;
+    setGenerating(true);
+    try {
+      const config = await db.getContextConfig();
+      const presets = await db.getPresetsByProject(currentProject.id);
+      const pseudoChapter: Chapter = {
+        id: 0,
+        project_id: currentProject.id,
+        position: Number.MAX_SAFE_INTEGER,
+        title: '自由写作',
+        synopsis: steerText,
+        content: documentText,
+        status: 'draft',
+        summary_json: null,
+        created_at: '',
+        updated_at: '',
+      };
+      const messages = await buildContext(pseudoChapter, config, currentProject.id, presets[0]);
+      messages.push({
+        role: 'user',
+        content: `以下是自由写作正文，请继续创作下一段并直接输出正文。\n\n${documentText || '（这是故事开头）'}\n\n用户指示：${steerText || '自然承接，推进剧情。'}`,
+      });
+      const result = await callLLMResult(messages, presets[0]?.max_tokens || 2000, {
+        max_tokens: presets[0]?.max_tokens || 2000,
+        scenario: 'freeform_continue',
+      });
+      if (result.text?.trim()) {
+        const next = `${documentText}${documentText ? '\n\n' : ''}${result.text.trim()}`;
+        setDocumentText(next);
+        await db.setFreeformDocument(currentProject.id, next);
+        await db.createFragment(currentProject.id, 'generated', result.text.trim(), fragments.length);
+        setSteerText('');
+        setLastUsage(`本轮 tokens：输入 ${result.inputTokens} / 输出 ${result.outputTokens} / 总计 ${result.totalTokens}`);
+        setSaveState('已保存');
+        await loadData();
+      }
+    } catch (error: any) {
+      Alert.alert('续写失败', error?.message || '请检查 API 配置。');
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const deleteFragment = (fragment: Fragment) => {
     Alert.alert('删除片段', '确定删除这个片段？', [
       { text: '取消', style: 'cancel' },
-      { text: '删除', style: 'destructive', onPress: async () => { await db.deleteFragment(fragment.id); await loadFragments(); } },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          await db.deleteFragment(fragment.id);
+          await loadData();
+        },
+      },
     ]);
   };
 
@@ -51,32 +135,54 @@ export const FreeformEditor: React.FC = () => {
     return (
       <Screen>
         <Header title="自由写作" subtitle="请先选择项目" />
-        <EmptyState title="没有当前项目" description="进入项目页选择项目后，可以在这里组织片段。" />
+        <EmptyState title="没有当前项目" description="进入项目页选择项目后，可以在这里自由写正文。" />
       </Screen>
     );
   }
 
   return (
     <Screen>
-      <Header title={currentProject.name} subtitle="自由片段工作流" action={<Button label="片段" icon={Plus} onPress={() => setShowModal(true)} />} />
-      {fragments.length === 0 ? (
-        <EmptyState title="还没有片段" description="添加种子文本、手写片段或 AI 生成片段，逐步拼出故事。" action={<Button label="添加片段" icon={Plus} onPress={() => setShowModal(true)} />} />
-      ) : (
-        <FlatList
-          data={fragments}
-          keyExtractor={(item) => String(item.id)}
-          contentContainerStyle={styles.list}
-          renderItem={({ item }) => (
-            <Card>
-              <View style={styles.fragmentHeader}>
-                <Text style={[styles.type, { color: theme.colors.accent }]}>{TYPE_OPTIONS.find((option) => option.value === item.type)?.label || item.type}</Text>
-                <Button label="删除" icon={Trash2} variant="ghost" onPress={() => deleteFragment(item)} />
-              </View>
-              <Text style={[styles.content, { color: theme.colors.textPrimary }]}>{item.content}</Text>
-            </Card>
-          )}
+      <Header title={currentProject.name} subtitle={`自由正文 · ${saveState}`} action={<Button label="片段" icon={Plus} onPress={() => setShowModal(true)} />} />
+      <ScrollView contentContainerStyle={styles.content}>
+        <Field
+          label="正文"
+          value={documentText}
+          onChangeText={changeDocument}
+          placeholder="直接在这里写正文，AI 续写也会追加到这里..."
+          multiline
+          inputStyle={styles.editor}
         />
-      )}
+        <Field label="AI 续写指示" value={steerText} onChangeText={setSteerText} placeholder="可选：下一段想写什么" multiline inputStyle={styles.steer} />
+        <View style={styles.toolbar}>
+          <Button label={generating ? '续写中...' : 'AI 续写'} icon={Bot} onPress={generateContinuation} disabled={generating} />
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            {documentText.length} 字 · 预估 {estimateTokens(documentText)} tokens
+          </Text>
+        </View>
+        {lastUsage ? <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>{lastUsage}</Text> : null}
+        <Text style={[styles.sectionTitle, { color: theme.colors.textPrimary }]}>素材片段</Text>
+        {fragments.length === 0 ? (
+          <EmptyState title="还没有片段" description="添加种子文本、手写片段或 AI 生成片段，作为自由正文的素材。" />
+        ) : (
+          <FlatList
+            data={fragments}
+            scrollEnabled={false}
+            keyExtractor={(item) => String(item.id)}
+            renderItem={({ item }) => (
+              <Card>
+                <View style={styles.fragmentHeader}>
+                  <Text style={[styles.type, { color: theme.colors.accent }]}>{TYPE_OPTIONS.find((option) => option.value === item.type)?.label || item.type}</Text>
+                  <View style={styles.fragmentActions}>
+                    <Button label="追加" variant="secondary" onPress={() => appendFragment(item)} />
+                    <Button label="删除" icon={Trash2} variant="ghost" onPress={() => deleteFragment(item)} />
+                  </View>
+                </View>
+                <Text style={[styles.fragmentContent, { color: theme.colors.textPrimary }]}>{item.content}</Text>
+              </Card>
+            )}
+          />
+        )}
+      </ScrollView>
       <Modal visible={showModal} transparent animationType="slide" onRequestClose={() => setShowModal(false)}>
         <Pressable style={styles.overlay} onPress={() => setShowModal(false)}>
           <Pressable style={[styles.modal, { backgroundColor: theme.colors.surface }]} onPress={(event) => event.stopPropagation()}>
@@ -95,10 +201,16 @@ export const FreeformEditor: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  list: { padding: spacing.lg, paddingBottom: 96 },
-  fragmentHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
+  content: { padding: spacing.lg, paddingBottom: 120 },
+  editor: { minHeight: 360, textAlignVertical: 'top', fontSize: 16, lineHeight: 25 },
+  steer: { minHeight: 72, textAlignVertical: 'top' },
+  toolbar: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.md, marginBottom: spacing.sm },
+  meta: { fontSize: 12, fontWeight: '700' },
+  sectionTitle: { fontSize: 16, fontWeight: '800', marginTop: spacing.lg, marginBottom: spacing.sm },
+  fragmentHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, marginBottom: spacing.sm },
+  fragmentActions: { flexDirection: 'row', gap: spacing.sm },
   type: { fontSize: 12, fontWeight: '800' },
-  content: { fontSize: 15, lineHeight: 23 },
+  fragmentContent: { fontSize: 15, lineHeight: 23 },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
   modal: { borderTopLeftRadius: 8, borderTopRightRadius: 8, padding: spacing.lg, gap: spacing.md },
   modalTitle: { fontSize: 18, fontWeight: '800' },

@@ -1,6 +1,7 @@
 import * as db from './database';
 import { callLLM } from './llm';
 import { extractJSON } from '../utils/jsonExtractor';
+import { estimateTokens } from '../utils/tokenEstimator';
 import type { ChapterSummary } from '../types/novel';
 
 const EMPTY_SUMMARY: ChapterSummary = {
@@ -55,4 +56,34 @@ export async function batchGenerateSummaries(projectId: number): Promise<{ succe
     }
   }
   return { success, total: chapters.length };
+}
+
+export async function generateMemorySummary(chapterId: number, targetChars = 200): Promise<string> {
+  const chapter = await db.getChapterById(chapterId);
+  if (!chapter) throw new Error('章节不存在。');
+  if (!chapter.content.trim()) throw new Error('章节正文为空，无法生成记忆摘要。');
+
+  const result = await callLLM(
+    [
+      {
+        role: 'system',
+        content: '你是小说编辑助手。请生成一段简洁的章节记忆摘要，用于后续章节检索上下文。',
+      },
+      {
+        role: 'user',
+        content: `请用约 ${targetChars} 字总结以下章节的核心剧情、人物变化和关键事件，保留重要人名、地名、物品名。\n\n章节标题：${chapter.title}\n章节概要：${chapter.synopsis || '无'}\n\n正文：\n${chapter.content}`,
+      },
+    ],
+    Math.max(targetChars * 2, 500),
+    { scenario: 'memory_summary' },
+  );
+
+  const memorySummary = (result || '').trim();
+  if (!memorySummary) throw new Error('模型没有返回记忆摘要。');
+
+  await db.updateChapter(chapterId, {
+    memory_summary: memorySummary,
+    memory_summary_tokens: estimateTokens(memorySummary),
+  } as any);
+  return memorySummary;
 }

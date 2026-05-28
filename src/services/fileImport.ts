@@ -333,15 +333,18 @@ export async function importSelectedWorldBook(projectId: number): Promise<WorldB
   if (!file) return null;
 
   const parsed = parseWorldBookJSON(await RNFS.readFile(file.localPath, 'utf8'));
+  const collectionId = await db.createWorldbookCollection(projectId, parsed.name, { enabled: 1 });
   let count = 0;
   for (const entry of parsed.entries) {
     await db.createWorldbookEntry(projectId, entry.keyword_primary, entry.content, entry.enabled, {
+      collection_id: collectionId,
       keyword_secondary: entry.keyword_secondary,
       comment: entry.comment,
       position: entry.position,
     });
     count++;
   }
+  await db.updateWorldbookCollectionTokenEstimate(collectionId);
   return { ...parsed, entriesImported: count };
 }
 
@@ -359,14 +362,17 @@ export async function importWorldBookFromJSON(
   jsonText: string,
 ): Promise<WorldBookImportResult> {
   const parsed = parseWorldBookJSON(jsonText);
+  const collectionId = await db.createWorldbookCollection(projectId, parsed.name, { enabled: 1 });
   let count = 0;
   for (const entry of parsed.entries) {
     await db.createWorldbookEntry(projectId, entry.keyword_primary, entry.content, entry.enabled, {
+      collection_id: collectionId,
       keyword_secondary: entry.keyword_secondary,
       comment: entry.comment,
       position: entry.position,
     });
     count++;
   }
+  await db.updateWorldbookCollectionTokenEstimate(collectionId);
   return { ...parsed, entriesImported: count };
 }
