@@ -1,0 +1,181 @@
+/* eslint-env jest */
+
+type TableRows = Record<string, any>[];
+
+const createRows = (rows: TableRows) => ({
+  length: rows.length,
+  item: (index: number) => rows[index],
+  raw: () => rows,
+});
+
+function createLegacySQLiteMock() {
+  const schemas = new Map<string, Set<string>>([
+    ['projects', new Set(['id', 'name'])],
+    ['llm_config', new Set(['id'])],
+    ['settings', new Set(['key', 'value'])],
+  ]);
+  const rows = new Map<string, TableRows>([
+    ['projects', []],
+    ['llm_config', [{ id: 1 }]],
+    ['settings', []],
+  ]);
+  const inserts = new Map<string, number>();
+  const executed: string[] = [];
+
+  const ensureTable = (table: string) => {
+    if (!schemas.has(table)) schemas.set(table, new Set(['id']));
+    if (!rows.has(table)) rows.set(table, []);
+  };
+
+  const parseCreateTable = (sql: string) => {
+    const match = sql.match(/CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(([\s\S]+)\)/i);
+    if (!match) return;
+    const table = match[1];
+    if (schemas.has(table)) return;
+    const columns = match[2]
+      .split(',')
+      .map((part) => part.trim().split(/\s+/)[0])
+      .filter((name) => name && !['PRIMARY', 'FOREIGN', 'UNIQUE'].includes(name.toUpperCase()));
+    schemas.set(table, new Set(columns));
+    rows.set(table, []);
+  };
+
+  const insertRow = (table: string, columns: string[], params: any[]) => {
+    ensureTable(table);
+    const schema = schemas.get(table)!;
+    for (const column of columns) {
+      if (!schema.has(column)) {
+        throw new Error(`no such column: ${table}.${column}`);
+      }
+    }
+    const tableRows = rows.get(table)!;
+    const nextId = (inserts.get(table) || tableRows.length) + 1;
+    inserts.set(table, nextId);
+    const row: Record<string, any> = {};
+    columns.forEach((column, index) => {
+      row[column] = params[index];
+    });
+    if (schema.has('id') && row.id == null) row.id = nextId;
+    tableRows.push(row);
+    return nextId;
+  };
+
+  const executeSql = jest.fn(async (sql: string, params: any[] = []) => {
+    executed.push(sql);
+    const normalized = sql.replace(/\s+/g, ' ').trim();
+
+    const pragma = normalized.match(/^PRAGMA table_info\((\w+)\)/i);
+    if (pragma) {
+      const schema = schemas.get(pragma[1]) || new Set<string>();
+      const info = Array.from(schema).map((name, cid) => ({ cid, name }));
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(info) }];
+    }
+
+    const alter = normalized.match(/^ALTER TABLE (\w+) ADD COLUMN (\w+)/i);
+    if (alter) {
+      ensureTable(alter[1]);
+      schemas.get(alter[1])!.add(alter[2]);
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
+    }
+
+    if (/^CREATE TABLE IF NOT EXISTS/i.test(normalized)) {
+      parseCreateTable(sql);
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
+    }
+
+    if (/^INSERT OR IGNORE INTO llm_config/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
+    }
+
+    if (/^INSERT OR REPLACE INTO llm_config/i.test(normalized)) {
+      const schema = schemas.get('llm_config')!;
+      for (const column of ['base_url', 'api_key', 'model_name']) {
+        if (!schema.has(column)) throw new Error(`no such column: llm_config.${column}`);
+      }
+      rows.set('llm_config', [{ id: 1, base_url: params[0], api_key: params[1], model_name: params[2] }]);
+      return [{ insertId: 1, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^INSERT OR REPLACE INTO settings/i.test(normalized)) {
+      rows.set('settings', [{ key: params[0], value: params[1] }]);
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^UPDATE settings/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
+    }
+
+    const insert = normalized.match(/^INSERT INTO (\w+) \(([^)]+)\)/i);
+    if (insert) {
+      const table = insert[1];
+      const columns = insert[2].split(',').map((column) => column.trim());
+      const id = insertRow(table, columns, params);
+      return [{ insertId: id, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^SELECT \* FROM projects WHERE id = \?/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(rows.get('projects')!.filter((row) => row.id === params[0])) }];
+    }
+
+    if (/^SELECT \* FROM projects/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(rows.get('projects')!) }];
+    }
+
+    if (/^SELECT \* FROM presets/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(rows.get('presets') || []) }];
+    }
+
+    if (/^SELECT \* FROM llm_config/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(rows.get('llm_config') || []) }];
+    }
+
+    if (/^SELECT value FROM settings/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(rows.get('settings')!.filter((row) => row.key === params[0])) }];
+    }
+
+    if (/^UPDATE projects/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
+  });
+
+  return {
+    SQLite: {
+      enablePromise: jest.fn(),
+      openDatabase: jest.fn(async () => ({
+        executeSql,
+        transaction: jest.fn(async (scope: (tx: { executeSql: typeof executeSql }) => void) => {
+          scope({ executeSql });
+        }),
+      })),
+    },
+    executed,
+  };
+}
+
+describe('database migration for legacy installs', () => {
+  test('upgrades old tables before creating projects and saving LLM config', async () => {
+    jest.resetModules();
+    const mock = createLegacySQLiteMock();
+    jest.doMock('react-native-sqlite-storage', () => mock.SQLite);
+
+    const database = require('../src/services/database');
+
+    const projectId = await database.createProject('真实项目', 'outline');
+    await database.setLLMConfig('https://api.example.com/v1', 'sk-real', 'gpt-real');
+    const projects = await database.getAllProjects();
+    const llmConfig = await database.getLLMConfig();
+
+    expect(projectId).toBe(1);
+    expect(projects[0]).toMatchObject({ name: '真实项目', mode: 'outline' });
+    expect(llmConfig).toMatchObject({
+      base_url: 'https://api.example.com/v1',
+      api_key: 'sk-real',
+      model_name: 'gpt-real',
+    });
+    expect(mock.executed.join('\n')).toContain('ALTER TABLE projects ADD COLUMN mode');
+    expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN base_url');
+    expect(mock.executed.join('\n')).toContain('INSERT OR IGNORE INTO projects (id, name, mode, created_at, updated_at)');
+  });
+});
