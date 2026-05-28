@@ -20,6 +20,9 @@ export interface Chapter {
   content: string;
   status: ChapterStatus;
   summary_json: ChapterSummary | null;
+  memory_summary?: string;
+  memory_summary_tokens?: number;
+  finalized_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -53,6 +56,8 @@ export interface Note {
   project_id: number;
   title: string;
   content: string;
+  max_tokens?: number;
+  estimated_tokens?: number;
   created_at: string;
   updated_at: string;
   enabled_for_project?: number;
@@ -79,6 +84,16 @@ export interface LLMConfig {
   model_name: string;
 }
 
+export interface WorldbookCollection {
+  id: number;
+  project_id: number;
+  name: string;
+  enabled: number;
+  max_tokens: number;
+  estimated_tokens: number;
+  created_at: string;
+}
+
 export interface ContextConfig {
   strategy: ContextStrategy;
   slidingWindowSize: number;
@@ -86,6 +101,9 @@ export interface ContextConfig {
   customRangeEnd: number;
   resourceBudget: number;
   includeResources: boolean;
+  summaryBudgetTokens?: number;
+  memoryTopK?: number;
+  recentChapterCount?: number;
 }
 
 export interface SummaryConfig {

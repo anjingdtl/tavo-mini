@@ -1,21 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import {
-  BookMarked,
-  FilePlus2,
-  Import,
-  NotebookPen,
-  Pencil,
-  SlidersHorizontal,
-  Trash2,
-  UserRound,
-} from 'lucide-react-native';
+import { BookMarked, FilePlus2, Import, NotebookPen, Pencil, SlidersHorizontal, Trash2, UserRound } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
 import type { ResourceType } from '../services/database';
+import { estimateTokens } from '../utils/tokenEstimator';
 import {
   getCharacterImagePath,
   importSelectedCharacter,
@@ -26,6 +18,7 @@ import {
 } from '../services/fileImport';
 
 type ResourceTab = 'characters' | 'worldbook' | 'notes' | 'presets';
+type EditorKind = ResourceTab | 'worldbookCollection';
 
 const TABS: { value: ResourceTab; label: string }[] = [
   { value: 'characters', label: '角色' },
@@ -42,6 +35,7 @@ const RESOURCE_TYPE: Record<ResourceTab, ResourceType> = {
 };
 
 interface EditorState {
+  kind: EditorKind;
   item: any;
   name: string;
   content: string;
@@ -64,19 +58,26 @@ export const ResourceLibrary: React.FC = () => {
   const { currentProject } = useProjectStore();
   const [tab, setTab] = useState<ResourceTab>('characters');
   const [items, setItems] = useState<Record<ResourceTab, any[]>>({ characters: [], worldbook: [], notes: [], presets: [] });
+  const [collections, setCollections] = useState<any[]>([]);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
   const [editor, setEditor] = useState<EditorState | null>(null);
   const projectId = currentProject?.id || 0;
 
   const loadData = useCallback(async () => {
-    const [characters, worldbook, notes, presets] = await Promise.all([
+    const [characters, worldbook, notes, presets, worldbookCollections] = await Promise.all([
       db.getAllCharacters(projectId),
       db.getAllWorldbookEntries(projectId),
       db.getAllNotes(projectId),
       db.getAllPresets(projectId),
+      db.getWorldbookCollections(projectId),
     ]);
     setItems({ characters, worldbook, notes, presets });
-  }, [projectId]);
+    setCollections(worldbookCollections);
+    if (selectedCollectionId && !worldbookCollections.some((collection: any) => collection.id === selectedCollectionId)) {
+      setSelectedCollectionId(null);
+    }
+  }, [projectId, selectedCollectionId]);
 
   useEffect(() => {
     loadData();
@@ -118,7 +119,13 @@ export const ResourceLibrary: React.FC = () => {
     const value = draft.trim();
     if (!value) return;
     try {
-      if (tab === 'worldbook') await db.createWorldbookEntry(projectId, value, '', 1);
+      if (tab === 'worldbook') {
+        if (selectedCollectionId) {
+          await db.createWorldbookEntry(projectId, value, '', 1, { collection_id: selectedCollectionId });
+        } else {
+          await db.createWorldbookCollection(projectId, value, { enabled: 1 });
+        }
+      }
       if (tab === 'notes') await db.createNote(projectId, value);
       if (tab === 'presets') await db.createPreset(projectId, value);
       setDraft('');
@@ -128,11 +135,12 @@ export const ResourceLibrary: React.FC = () => {
     }
   };
 
-  const openEditor = (item: any) => {
+  const openEditor = (kind: EditorKind, item: any) => {
     setEditor({
+      kind,
       item,
-      name: titleFor(tab, item),
-      content: tab === 'notes' ? item.content || '' : tab === 'worldbook' ? item.content || '' : '',
+      name: titleFor(kind, item),
+      content: kind === 'notes' ? item.content || '' : kind === 'worldbook' ? item.content || '' : '',
       secondary: item.keyword_secondary || '',
       comment: item.comment || '',
       dataJson: item.data_json || '{}',
@@ -142,7 +150,7 @@ export const ResourceLibrary: React.FC = () => {
       extraInstructions: item.extra_instructions || '',
       temperature: String(item.temperature ?? 0.8),
       topP: String(item.top_p ?? 0.9),
-      maxTokens: String(item.max_tokens ?? 4000),
+      maxTokens: String(item.max_tokens ?? defaultMaxTokens(kind)),
       enabled: item.enabled !== 0,
       isDefault: item.is_default === 1,
     });
@@ -151,25 +159,36 @@ export const ResourceLibrary: React.FC = () => {
   const saveEditor = async () => {
     if (!editor) return;
     const item = editor.item;
+    const maxTokens = Number(editor.maxTokens) || defaultMaxTokens(editor.kind);
     try {
-      if (tab === 'characters') {
+      if (editor.kind === 'characters') {
         const parsed = JSON.parse(editor.dataJson);
         const data = editor.imagePath ? withCharacterImageAsset(parsed, editor.imagePath) : parsed;
         await db.updateCharacter(item.id, editor.name.trim() || '未命名角色', JSON.stringify(data));
+        await db.updateCharacterTokenBudget(item.id, maxTokens);
       }
-      if (tab === 'worldbook') {
+      if (editor.kind === 'worldbookCollection') {
+        await db.updateWorldbookCollection(item.id, {
+          name: editor.name.trim() || '未命名世界书',
+          enabled: editor.enabled ? 1 : 0,
+          max_tokens: maxTokens,
+        });
+      }
+      if (editor.kind === 'worldbook') {
         await db.updateWorldbookEntry(item.id, {
           keyword_primary: editor.name.trim() || '未命名条目',
           keyword_secondary: editor.secondary,
           content: editor.content,
           comment: editor.comment,
           enabled: editor.enabled ? 1 : 0,
+          max_tokens: maxTokens,
         });
       }
-      if (tab === 'notes') {
+      if (editor.kind === 'notes') {
         await db.updateNote(item.id, editor.name.trim() || '无标题笔记', editor.content);
+        await db.updateNoteTokenBudget(item.id, maxTokens);
       }
-      if (tab === 'presets') {
+      if (editor.kind === 'presets') {
         await db.updatePreset(item.id, {
           name: editor.name.trim() || '未命名预设',
           is_default: editor.isDefault ? 1 : 0,
@@ -178,14 +197,14 @@ export const ResourceLibrary: React.FC = () => {
           extra_instructions: editor.extraInstructions,
           temperature: Number(editor.temperature) || 0.8,
           top_p: Number(editor.topP) || 0.9,
-          max_tokens: Number(editor.maxTokens) || 4000,
+          max_tokens: maxTokens,
         });
       }
       setEditor(null);
       await loadData();
       Toast.show({ type: 'success', text1: '资料已保存' });
     } catch (error: any) {
-      Alert.alert('保存失败', tab === 'characters' ? '角色卡 JSON 格式不正确。' : error?.message || '资料保存失败。');
+      Alert.alert('保存失败', editor.kind === 'characters' ? '角色卡 JSON 格式不正确。' : error?.message || '资料保存失败。');
     }
   };
 
@@ -193,7 +212,8 @@ export const ResourceLibrary: React.FC = () => {
     if (!editor) return;
     try {
       const imagePath = await pickCharacterPngImageReplacement();
-      if (imagePath) setEditor({ ...editor, imagePath });
+      if (!imagePath) return;
+      setEditor({ ...editor, imagePath });
     } catch (error: any) {
       Alert.alert('替换图片失败', error?.message || '请选择有效的 PNG 图片。');
     }
@@ -201,53 +221,119 @@ export const ResourceLibrary: React.FC = () => {
 
   const toggleProjectUsage = async (item: any) => {
     if (!currentProject) {
-      Alert.alert('未选择项目', '请先在项目页选择一个当前项目，再配置该项目使用哪些资料。');
+      Alert.alert('未选择项目', '请先在项目页选择当前项目。');
       return;
     }
     await db.setProjectResourceEnabled(currentProject.id, RESOURCE_TYPE[tab], item.id, item.enabled_for_project !== 1);
     await loadData();
   };
 
-  const remove = (id: number, title: string) => {
-    Alert.alert('删除全局资料', `确定删除「${title}」？所有项目都将无法再使用它。`, [
+  const setAllCharacters = async (enabled: boolean) => {
+    if (!currentProject) {
+      Alert.alert('未选择项目', '请先在项目页选择当前项目。');
+      return;
+    }
+    await db.setAllProjectResourcesEnabled(currentProject.id, 'character', enabled);
+    await loadData();
+  };
+
+  const toggleCollection = async (collection: any) => {
+    await db.updateWorldbookCollection(collection.id, { enabled: collection.enabled === 1 ? 0 : 1 });
+    await loadData();
+  };
+
+  const remove = (kind: EditorKind, id: number, title: string) => {
+    Alert.alert('删除资料', `确定删除「${title}」？`, [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
         style: 'destructive',
         onPress: async () => {
-          if (tab === 'characters') await db.deleteCharacter(id);
-          if (tab === 'worldbook') await db.deleteWorldbookEntry(id);
-          if (tab === 'notes') await db.deleteNote(id);
-          if (tab === 'presets') await db.deletePreset(id);
+          if (kind === 'characters') await db.deleteCharacter(id);
+          if (kind === 'worldbookCollection') {
+            await db.deleteWorldbookCollection(id);
+            setSelectedCollectionId(null);
+          }
+          if (kind === 'worldbook') await db.deleteWorldbookEntry(id);
+          if (kind === 'notes') await db.deleteNote(id);
+          if (kind === 'presets') await db.deletePreset(id);
           await loadData();
         },
       },
     ]);
   };
 
-  const activeItems = items[tab];
+  const activeItems = tab === 'worldbook' && selectedCollectionId
+    ? items.worldbook.filter((item) => item.collection_id === selectedCollectionId)
+    : items[tab];
   const canAddManual = tab !== 'characters';
-  const editorTitle = useMemo(() => (editor ? `编辑${tabLabel(tab)}` : ''), [editor, tab]);
+  const editorTitle = useMemo(() => (editor ? `编辑${tabLabel(editor.kind)}` : ''), [editor]);
 
   return (
     <Screen>
       <Header title="资料库" subtitle={subtitle} />
       <View style={styles.tabs}>
-        <SegmentedControl value={tab} options={TABS} onChange={setTab} />
+        <SegmentedControl value={tab} options={TABS} onChange={(value) => { setTab(value); setSelectedCollectionId(null); }} />
       </View>
       <View style={styles.actions}>
-        {tab === 'characters' ? <Button label="导入角色卡" icon={Import} onPress={importCharacter} /> : null}
-        {tab === 'worldbook' ? <Button label="导入世界书" icon={Import} onPress={importWorldbook} /> : null}
+        {tab === 'characters' ? (
+          <>
+            <Button label="导入角色卡" icon={Import} onPress={importCharacter} />
+            <View style={styles.rowActions}>
+              <Button label="启用全部角色" variant="secondary" onPress={() => setAllCharacters(true)} disabled={!currentProject} />
+              <Button label="停用全部角色" variant="ghost" onPress={() => setAllCharacters(false)} disabled={!currentProject} />
+            </View>
+          </>
+        ) : null}
+        {tab === 'worldbook' ? (
+          <>
+            <Button label="导入世界书" icon={Import} onPress={importWorldbook} />
+            {selectedCollectionId ? <Button label="返回合集" variant="secondary" onPress={() => setSelectedCollectionId(null)} /> : null}
+          </>
+        ) : null}
         {tab === 'notes' ? <Button label="导入 TXT 笔记" icon={Import} onPress={importNoteText} /> : null}
         {canAddManual ? (
           <>
-            <Field value={draft} onChangeText={setDraft} placeholder={placeholderFor(tab)} inputStyle={styles.inlineInput} />
-            <Button label="添加全局资料" icon={FilePlus2} onPress={addManual} disabled={!draft.trim()} />
+            <Field value={draft} onChangeText={setDraft} placeholder={placeholderFor(tab, Boolean(selectedCollectionId))} inputStyle={styles.inlineInput} />
+            <Button label="添加" icon={FilePlus2} onPress={addManual} disabled={!draft.trim()} />
           </>
         ) : null}
       </View>
-      {activeItems.length === 0 ? (
-        <EmptyState title={emptyTitle(tab)} description="使用上方按钮导入或创建全局资料。" />
+
+      {tab === 'worldbook' && !selectedCollectionId ? (
+        collections.length === 0 ? (
+          <EmptyState title="还没有世界书合集" description="导入世界书文件会自动创建合集，也可以手动添加合集。" />
+        ) : (
+          <FlatList
+            data={collections}
+            keyExtractor={(item) => String(item.id)}
+            contentContainerStyle={styles.list}
+            renderItem={({ item }) => (
+              <Card>
+                <View style={styles.row}>
+                  <BookMarked size={20} color={theme.colors.accent} />
+                  <View style={styles.rowText}>
+                    <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name || '未命名世界书'}</Text>
+                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>
+                      {item.entry_count || 0} 条 · 预估 {item.estimated_tokens || 0} / Max {item.max_tokens || 50000} tokens
+                    </Text>
+                    <View style={styles.usageRow}>
+                      <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>合集启用</Text>
+                      <Switch value={item.enabled === 1} onValueChange={() => toggleCollection(item)} />
+                    </View>
+                  </View>
+                </View>
+                <View style={styles.cardActions}>
+                  <Button label="打开" variant="secondary" onPress={() => setSelectedCollectionId(item.id)} />
+                  <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor('worldbookCollection', item)} />
+                  <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove('worldbookCollection', item.id, item.name)} />
+                </View>
+              </Card>
+            )}
+          />
+        )
+      ) : activeItems.length === 0 ? (
+        <EmptyState title={emptyTitle(tab)} description="使用上方按钮导入或创建资料。" />
       ) : (
         <FlatList
           data={activeItems}
@@ -262,6 +348,9 @@ export const ResourceLibrary: React.FC = () => {
                   <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]} numberOfLines={2}>
                     {metaFor(tab, item)}
                   </Text>
+                  <Text style={[styles.tokenMeta, { color: theme.colors.textSecondary }]}>
+                    预估 {item.estimated_tokens ?? estimateTokens(item.content || item.data_json || '')} / Max {item.max_tokens ?? defaultMaxTokens(tab)} tokens
+                  </Text>
                   <View style={styles.usageRow}>
                     <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>当前项目使用</Text>
                     <Switch
@@ -275,8 +364,8 @@ export const ResourceLibrary: React.FC = () => {
                 </View>
               </View>
               <View style={styles.cardActions}>
-                <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor(item)} />
-                <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove(item.id, titleFor(tab, item))} />
+                <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor(tab, item)} />
+                <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove(tab, item.id, titleFor(tab, item))} />
               </View>
             </Card>
           )}
@@ -290,36 +379,38 @@ export const ResourceLibrary: React.FC = () => {
             {editor ? (
               <ScrollView keyboardShouldPersistTaps="handled">
                 <Field label="名称 / 标题 / 主关键词" value={editor.name} onChangeText={(name) => setEditor({ ...editor, name })} />
-                {tab === 'characters' ? (
+                <Field label="Max Tokens" value={editor.maxTokens} onChangeText={(maxTokens) => setEditor({ ...editor, maxTokens })} keyboardType="number-pad" />
+                <Text style={[styles.tokenMeta, { color: theme.colors.textSecondary }]}>
+                  当前预估 {estimateEditorTokens(editor)} tokens
+                </Text>
+                {editor.kind === 'characters' ? (
                   <>
-                    {editor.imagePath ? (
-                      <Image source={{ uri: `file://${editor.imagePath}` }} style={styles.characterImage} resizeMode="cover" />
-                    ) : null}
+                    {editor.imagePath ? <Image source={{ uri: `file://${editor.imagePath}` }} style={styles.characterImage} resizeMode="cover" /> : null}
                     <Button label={editor.imagePath ? '替换 PNG 图片' : '选择 PNG 图片'} icon={Import} variant="secondary" onPress={replaceCharacterPng} />
-                    <Field
-                      label="角色卡 JSON"
-                      value={editor.dataJson}
-                      onChangeText={(dataJson) => setEditor({ ...editor, dataJson })}
-                      multiline
-                      inputStyle={styles.largeInput}
-                    />
+                    <Field label="角色卡 JSON" value={editor.dataJson} onChangeText={(dataJson) => setEditor({ ...editor, dataJson })} multiline inputStyle={styles.largeInput} />
                   </>
                 ) : null}
-                {tab === 'worldbook' ? (
+                {editor.kind === 'worldbookCollection' ? (
+                  <View style={styles.usageRow}>
+                    <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>合集启用</Text>
+                    <Switch value={editor.enabled} onValueChange={(enabled) => setEditor({ ...editor, enabled })} />
+                  </View>
+                ) : null}
+                {editor.kind === 'worldbook' ? (
                   <>
                     <Field label="次关键词" value={editor.secondary} onChangeText={(secondary) => setEditor({ ...editor, secondary })} />
                     <Field label="说明" value={editor.comment} onChangeText={(comment) => setEditor({ ...editor, comment })} />
                     <Field label="内容" value={editor.content} onChangeText={(content) => setEditor({ ...editor, content })} multiline inputStyle={styles.largeInput} />
                     <View style={styles.usageRow}>
-                      <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>世界书条目可用</Text>
+                      <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>条目启用</Text>
                       <Switch value={editor.enabled} onValueChange={(enabled) => setEditor({ ...editor, enabled })} />
                     </View>
                   </>
                 ) : null}
-                {tab === 'notes' ? (
+                {editor.kind === 'notes' ? (
                   <Field label="笔记内容" value={editor.content} onChangeText={(content) => setEditor({ ...editor, content })} multiline inputStyle={styles.largeInput} />
                 ) : null}
-                {tab === 'presets' ? (
+                {editor.kind === 'presets' ? (
                   <>
                     <Field label="系统提示词" value={editor.systemPrompt} onChangeText={(systemPrompt) => setEditor({ ...editor, systemPrompt })} multiline inputStyle={styles.largeInput} />
                     <Field label="写作风格" value={editor.writingStyle} onChangeText={(writingStyle) => setEditor({ ...editor, writingStyle })} multiline />
@@ -327,7 +418,6 @@ export const ResourceLibrary: React.FC = () => {
                     <View style={styles.numberRow}>
                       <Field label="温度" value={editor.temperature} onChangeText={(temperature) => setEditor({ ...editor, temperature })} keyboardType="decimal-pad" inputStyle={styles.numberInput} />
                       <Field label="Top P" value={editor.topP} onChangeText={(topP) => setEditor({ ...editor, topP })} keyboardType="decimal-pad" inputStyle={styles.numberInput} />
-                      <Field label="Max" value={editor.maxTokens} onChangeText={(maxTokens) => setEditor({ ...editor, maxTokens })} keyboardType="number-pad" inputStyle={styles.numberInput} />
                     </View>
                     <View style={styles.usageRow}>
                       <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>设为全局默认预设</Text>
@@ -356,15 +446,24 @@ function iconFor(tab: ResourceTab, color: string) {
   return <SlidersHorizontal {...props} />;
 }
 
-function tabLabel(tab: ResourceTab): string {
-  if (tab === 'characters') return '角色卡';
-  if (tab === 'worldbook') return '世界书';
-  if (tab === 'notes') return '笔记';
+function defaultMaxTokens(kind: EditorKind): number {
+  if (kind === 'characters') return 50000;
+  if (kind === 'worldbookCollection') return 50000;
+  if (kind === 'worldbook') return 2000;
+  if (kind === 'notes') return 30000;
+  return 4000;
+}
+
+function tabLabel(kind: EditorKind): string {
+  if (kind === 'characters') return '角色卡';
+  if (kind === 'worldbookCollection') return '世界书合集';
+  if (kind === 'worldbook') return '世界书条目';
+  if (kind === 'notes') return '笔记';
   return '预设';
 }
 
-function placeholderFor(tab: ResourceTab): string {
-  if (tab === 'worldbook') return '新世界书主关键词';
+function placeholderFor(tab: ResourceTab, addingEntry: boolean): string {
+  if (tab === 'worldbook') return addingEntry ? '新世界书条目主关键词' : '新世界书合集名称';
   if (tab === 'notes') return '新笔记标题';
   return '新预设名称';
 }
@@ -376,31 +475,42 @@ function emptyTitle(tab: ResourceTab): string {
   return '还没有预设';
 }
 
-function titleFor(tab: ResourceTab, item: any): string {
-  if (tab === 'characters') return item.name || '未命名角色';
-  if (tab === 'worldbook') return item.keyword_primary || '未命名条目';
+function titleFor(kind: EditorKind, item: any): string {
+  if (kind === 'characters') return item.name || '未命名角色';
+  if (kind === 'worldbookCollection') return item.name || '未命名世界书';
+  if (kind === 'worldbook') return item.keyword_primary || '未命名条目';
   return item.title || item.name || '未命名';
 }
 
 function metaFor(tab: ResourceTab, item: any): string {
   if (tab === 'characters') return item.source_type === 'png' ? 'PNG 角色卡' : 'JSON 角色卡';
-  if (tab === 'worldbook') return `${item.enabled ? '资料可用' : '资料停用'} · ${item.content || '暂无内容'}`;
+  if (tab === 'worldbook') return `${item.collection_name || '未分组'} · ${item.enabled ? '条目可用' : '条目停用'} · ${item.content || '暂无内容'}`;
   if (tab === 'notes') return item.content || '空白笔记';
   return `${item.is_default ? '全局默认 · ' : ''}T=${item.temperature} / P=${item.top_p} / Max=${item.max_tokens}`;
+}
+
+function estimateEditorTokens(editor: EditorState): number {
+  if (editor.kind === 'characters') return estimateTokens(editor.dataJson);
+  if (editor.kind === 'worldbook') return estimateTokens(editor.content);
+  if (editor.kind === 'notes') return estimateTokens(editor.content);
+  if (editor.kind === 'presets') return estimateTokens([editor.systemPrompt, editor.writingStyle, editor.extraInstructions].join('\n'));
+  return Number(editor.item.estimated_tokens || 0);
 }
 
 const styles = StyleSheet.create({
   tabs: { padding: spacing.lg, paddingBottom: 0 },
   actions: { padding: spacing.lg, paddingBottom: 0, gap: spacing.sm },
+  rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   inlineInput: { minHeight: 40 },
   list: { padding: spacing.lg, paddingBottom: 96 },
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   rowText: { flex: 1 },
   itemTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
   itemMeta: { fontSize: 13, lineHeight: 18 },
+  tokenMeta: { fontSize: 12, fontWeight: '700', marginTop: 4, marginBottom: spacing.sm },
   usageRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md, marginTop: spacing.sm },
   usageText: { fontSize: 13, fontWeight: '700' },
-  cardActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm, marginTop: spacing.md },
+  cardActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: spacing.sm, marginTop: spacing.md },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', padding: spacing.lg },
   modal: { maxHeight: '88%', borderRadius: 8, padding: spacing.lg },
   modalTitle: { fontSize: 18, fontWeight: '800', marginBottom: spacing.md },

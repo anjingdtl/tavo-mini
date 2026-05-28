@@ -12,11 +12,12 @@ import type {
   ProjectMode,
 } from '../types/novel';
 import { getSecureLLMApiKey, setSecureLLMApiKey } from './secureStorage';
+import { estimateTokens } from '../utils/tokenEstimator';
 
 SQLite.enablePromise(true);
 
 const DB_NAME = 'tavo_mini.db';
-const SCHEMA_VERSION = '3';
+const SCHEMA_VERSION = '4';
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
 let db: SQLite.SQLiteDatabase | null = null;
@@ -87,6 +88,9 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         content TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'planned',
         summary_json TEXT,
+        memory_summary TEXT NOT NULL DEFAULT '',
+        memory_summary_tokens INTEGER NOT NULL DEFAULT 0,
+        finalized_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -129,6 +133,20 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         name TEXT NOT NULL DEFAULT '',
         source_type TEXT NOT NULL DEFAULT 'json',
         data_json TEXT NOT NULL DEFAULT '{}',
+        max_tokens INTEGER NOT NULL DEFAULT 50000,
+        estimated_tokens INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS worldbook_collections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        max_tokens INTEGER NOT NULL DEFAULT 50000,
+        estimated_tokens INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       )
@@ -137,11 +155,14 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       CREATE TABLE IF NOT EXISTS worldbook_entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL,
+        collection_id INTEGER NOT NULL DEFAULT 0,
         keyword_primary TEXT NOT NULL DEFAULT '',
         keyword_secondary TEXT NOT NULL DEFAULT '',
         content TEXT NOT NULL DEFAULT '',
         comment TEXT NOT NULL DEFAULT '',
         enabled INTEGER NOT NULL DEFAULT 1,
+        max_tokens INTEGER NOT NULL DEFAULT 2000,
+        estimated_tokens INTEGER NOT NULL DEFAULT 0,
         position INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -153,6 +174,8 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         project_id INTEGER NOT NULL,
         title TEXT NOT NULL DEFAULT '',
         content TEXT NOT NULL DEFAULT '',
+        max_tokens INTEGER NOT NULL DEFAULT 30000,
+        estimated_tokens INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -194,6 +217,26 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         resource_id INTEGER NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (project_id, resource_type, resource_id),
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS llm_usage_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scenario TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT '',
+        error_code TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS freeform_documents (
+        project_id INTEGER PRIMARY KEY,
+        content TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       )
     `,
@@ -239,6 +282,9 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
   await ensureColumn(database, 'chapters', chapters, 'content', "content TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'chapters', chapters, 'status', "status TEXT NOT NULL DEFAULT 'planned'");
   await ensureColumn(database, 'chapters', chapters, 'summary_json', 'summary_json TEXT');
+  await ensureColumn(database, 'chapters', chapters, 'memory_summary', "memory_summary TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'chapters', chapters, 'memory_summary_tokens', 'memory_summary_tokens INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'chapters', chapters, 'finalized_at', 'finalized_at TEXT');
   await ensureColumn(database, 'chapters', chapters, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'chapters', chapters, 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
 
@@ -260,15 +306,28 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
   await ensureColumn(database, 'characters', characters, 'name', "name TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'characters', characters, 'source_type', "source_type TEXT NOT NULL DEFAULT 'json'");
   await ensureColumn(database, 'characters', characters, 'data_json', "data_json TEXT NOT NULL DEFAULT '{}'");
+  await ensureColumn(database, 'characters', characters, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 50000');
+  await ensureColumn(database, 'characters', characters, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'characters', characters, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+
+  const collections = await tableColumns(database, 'worldbook_collections');
+  await ensureColumn(database, 'worldbook_collections', collections, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'worldbook_collections', collections, 'name', "name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'worldbook_collections', collections, 'enabled', 'enabled INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(database, 'worldbook_collections', collections, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 50000');
+  await ensureColumn(database, 'worldbook_collections', collections, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'worldbook_collections', collections, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
 
   const worldbook = await tableColumns(database, 'worldbook_entries');
   await ensureColumn(database, 'worldbook_entries', worldbook, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'collection_id', 'collection_id INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'worldbook_entries', worldbook, 'keyword_primary', "keyword_primary TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'worldbook_entries', worldbook, 'keyword_secondary', "keyword_secondary TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'worldbook_entries', worldbook, 'content', "content TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'worldbook_entries', worldbook, 'comment', "comment TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'worldbook_entries', worldbook, 'enabled', 'enabled INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 2000');
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'worldbook_entries', worldbook, 'position', 'position INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'worldbook_entries', worldbook, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
 
@@ -276,6 +335,8 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
   await ensureColumn(database, 'notes', notes, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'notes', notes, 'title', "title TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'notes', notes, 'content', "content TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'notes', notes, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 30000');
+  await ensureColumn(database, 'notes', notes, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'notes', notes, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'notes', notes, 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
 
@@ -329,6 +390,7 @@ async function migrate(database: SQLite.SQLiteDatabase): Promise<void> {
     SCHEMA_VERSION,
   ]);
   await migrateLegacyProjectResources(database);
+  await migrateLegacyWorldbookCollections(database);
 }
 
 async function migrateLegacyProjectResources(database: SQLite.SQLiteDatabase): Promise<void> {
@@ -348,6 +410,20 @@ async function migrateLegacyProjectResources(database: SQLite.SQLiteDatabase): P
     database,
     "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'preset', id, 1 FROM presets WHERE project_id > 0",
   );
+}
+
+async function migrateLegacyWorldbookCollections(database: SQLite.SQLiteDatabase): Promise<void> {
+  const existing = await execute(database, 'SELECT id FROM worldbook_collections ORDER BY id ASC LIMIT 1');
+  let collectionId = existing.rows.length > 0 ? existing.rows.item(0).id : null;
+  if (!collectionId) {
+    const result = await execute(
+      database,
+      'INSERT INTO worldbook_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, 1, 50000, 0, ?)',
+      [0, '未分组/手动条目', now()],
+    );
+    collectionId = result.insertId!;
+  }
+  await execute(database, 'UPDATE worldbook_entries SET collection_id = ? WHERE collection_id = 0', [collectionId]);
 }
 
 function now(): string {
@@ -418,7 +494,17 @@ export async function createChapter(projectId: number, position: number, title?:
   return result.insertId!;
 }
 
-const CHAPTER_COLUMNS = new Set(['title', 'synopsis', 'content', 'status', 'summary_json', 'position']);
+const CHAPTER_COLUMNS = new Set([
+  'title',
+  'synopsis',
+  'content',
+  'status',
+  'summary_json',
+  'memory_summary',
+  'memory_summary_tokens',
+  'finalized_at',
+  'position',
+]);
 
 export async function updateChapter(id: number, fields: Partial<Chapter>): Promise<void> {
   const chapter = await getChapterById(id);
@@ -546,10 +632,11 @@ export async function getCharacterById(id: number): Promise<Row | null> {
 }
 
 export async function createCharacter(projectId: number, name: string, sourceType: string, dataJson: string): Promise<number> {
+  const estimatedTokens = estimateTokens(dataJson);
   const result = await execute(
     await openDatabase(),
-    'INSERT INTO characters (project_id, name, source_type, data_json, created_at) VALUES (?, ?, ?, ?, ?)',
-    [0, name, sourceType, dataJson, now()],
+    'INSERT INTO characters (project_id, name, source_type, data_json, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [0, name, sourceType, dataJson, 50000, estimatedTokens, now()],
   );
   const id = result.insertId!;
   await linkResourceToProject(projectId, 'character', id);
@@ -557,7 +644,16 @@ export async function createCharacter(projectId: number, name: string, sourceTyp
 }
 
 export async function updateCharacter(id: number, name: string, dataJson: string): Promise<void> {
-  await execute(await openDatabase(), 'UPDATE characters SET name = ?, data_json = ? WHERE id = ?', [name, dataJson, id]);
+  await execute(await openDatabase(), 'UPDATE characters SET name = ?, data_json = ?, estimated_tokens = ? WHERE id = ?', [
+    name,
+    dataJson,
+    estimateTokens(dataJson),
+    id,
+  ]);
+}
+
+export async function updateCharacterTokenBudget(id: number, maxTokens: number): Promise<void> {
+  await execute(await openDatabase(), 'UPDATE characters SET max_tokens = ? WHERE id = ?', [maxTokens, id]);
 }
 
 export async function deleteCharacter(id: number): Promise<void> {
@@ -567,18 +663,86 @@ export async function deleteCharacter(id: number): Promise<void> {
 
 export async function getAllWorldbookEntries(projectId?: number): Promise<Row[]> {
   return all<Row>(
-    `SELECT w.*, ${usageJoin('worldbook', 'w', projectId)} FROM worldbook_entries w ORDER BY w.position ASC, w.id DESC`,
+    `SELECT w.*, wc.name AS collection_name, wc.enabled AS collection_enabled, wc.max_tokens AS collection_max_tokens, ${usageJoin('worldbook', 'w', projectId)}
+     FROM worldbook_entries w
+     LEFT JOIN worldbook_collections wc ON wc.id = w.collection_id
+     ORDER BY wc.id DESC, w.position ASC, w.id DESC`,
   );
+}
+
+export async function setAllProjectResourcesEnabled(
+  projectId: number,
+  resourceType: ResourceType,
+  enabled: boolean,
+): Promise<void> {
+  const idColumnSql: Record<ResourceType, string> = {
+    character: 'SELECT id FROM characters',
+    worldbook: 'SELECT id FROM worldbook_entries',
+    note: 'SELECT id FROM notes',
+    preset: 'SELECT id FROM presets',
+  };
+  const rows = await all<{ id: number }>(idColumnSql[resourceType]);
+  for (const row of rows) {
+    await setProjectResourceEnabled(projectId, resourceType, row.id, enabled);
+  }
 }
 
 export async function getWorldbookEntriesByProject(projectId: number): Promise<Row[]> {
   return all<Row>(
-    `SELECT w.* FROM worldbook_entries w
+    `SELECT w.*, wc.name AS collection_name, wc.enabled AS collection_enabled, wc.max_tokens AS collection_max_tokens FROM worldbook_entries w
      JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook'
-     WHERE pr.project_id = ? AND pr.enabled = 1 AND w.enabled = 1
+     LEFT JOIN worldbook_collections wc ON wc.id = w.collection_id
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND w.enabled = 1 AND COALESCE(wc.enabled, 1) = 1
      ORDER BY w.position ASC, w.id ASC`,
     [projectId],
   );
+}
+
+export async function getWorldbookCollections(projectId?: number): Promise<Row[]> {
+  if (!projectId) {
+    return all<Row>('SELECT * FROM worldbook_collections ORDER BY id DESC');
+  }
+  return all<Row>(
+    `SELECT wc.*, COUNT(w.id) AS entry_count
+     FROM worldbook_collections wc
+     LEFT JOIN worldbook_entries w ON w.collection_id = wc.id
+     LEFT JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook' AND pr.project_id = ?
+     GROUP BY wc.id
+     ORDER BY wc.id DESC`,
+    [projectId],
+  );
+}
+
+export async function createWorldbookCollection(
+  projectId: number,
+  name: string,
+  extra: Partial<Row> = {},
+): Promise<number> {
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO worldbook_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [0, name, extra.enabled === 0 ? 0 : 1, Number(extra.max_tokens || 50000), Number(extra.estimated_tokens || 0), now()],
+  );
+  return result.insertId!;
+}
+
+export async function updateWorldbookCollection(id: number, fields: Row): Promise<void> {
+  await updateColumns('worldbook_collections', id, new Set(['name', 'enabled', 'max_tokens', 'estimated_tokens']), fields);
+}
+
+export async function updateWorldbookCollectionTokenEstimate(id: number): Promise<void> {
+  const rows = await all<{ content: string }>('SELECT content FROM worldbook_entries WHERE collection_id = ?', [id]);
+  const estimatedTokens = rows.reduce((total, row) => total + estimateTokens(row.content), 0);
+  await updateWorldbookCollection(id, { estimated_tokens: estimatedTokens });
+}
+
+export async function deleteWorldbookCollection(id: number): Promise<void> {
+  const entries = await all<{ id: number }>('SELECT id FROM worldbook_entries WHERE collection_id = ?', [id]);
+  for (const entry of entries) {
+    await deleteProjectResourceLinks('worldbook', entry.id);
+  }
+  await execute(await openDatabase(), 'DELETE FROM worldbook_entries WHERE collection_id = ?', [id]);
+  await execute(await openDatabase(), 'DELETE FROM worldbook_collections WHERE id = ?', [id]);
 }
 
 export async function getWorldbookEntryById(id: number): Promise<Row | null> {
@@ -592,34 +756,56 @@ export async function createWorldbookEntry(
   enabled: number,
   extra: Partial<Row> = {},
 ): Promise<number> {
+  const estimatedTokens = estimateTokens(content);
   const result = await execute(
     await openDatabase(),
-    'INSERT INTO worldbook_entries (project_id, keyword_primary, keyword_secondary, content, comment, enabled, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO worldbook_entries (project_id, collection_id, keyword_primary, keyword_secondary, content, comment, enabled, max_tokens, estimated_tokens, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       0,
+      Number(extra.collection_id || 0),
       keywordPrimary,
       extra.keyword_secondary || '',
       content,
       extra.comment || '',
       enabled,
+      Number(extra.max_tokens || 2000),
+      estimatedTokens,
       Number(extra.position || 0),
       now(),
     ],
   );
   const id = result.insertId!;
   await linkResourceToProject(projectId, 'worldbook', id);
+  if (extra.collection_id) await updateWorldbookCollectionTokenEstimate(Number(extra.collection_id));
   return id;
 }
 
-const WB_COLUMNS = new Set(['keyword_primary', 'keyword_secondary', 'content', 'comment', 'enabled', 'position']);
+const WB_COLUMNS = new Set([
+  'collection_id',
+  'keyword_primary',
+  'keyword_secondary',
+  'content',
+  'comment',
+  'enabled',
+  'max_tokens',
+  'estimated_tokens',
+  'position',
+]);
 
 export async function updateWorldbookEntry(id: number, fields: Row): Promise<void> {
+  if (typeof fields.content === 'string' && fields.estimated_tokens == null) {
+    fields.estimated_tokens = estimateTokens(fields.content);
+  }
   await updateColumns('worldbook_entries', id, WB_COLUMNS, fields);
+  const entry = await getWorldbookEntryById(id);
+  if (entry?.collection_id) await updateWorldbookCollectionTokenEstimate(Number(entry.collection_id));
 }
 
 export async function deleteWorldbookEntry(id: number): Promise<void> {
+  const entry = await getWorldbookEntryById(id);
   await deleteProjectResourceLinks('worldbook', id);
   await execute(await openDatabase(), 'DELETE FROM worldbook_entries WHERE id = ?', [id]);
+  if (entry?.collection_id) await updateWorldbookCollectionTokenEstimate(Number(entry.collection_id));
 }
 
 export async function getAllNotes(projectId?: number): Promise<Note[]> {
@@ -640,8 +826,8 @@ export async function createNote(projectId: number, title: string, content = '')
   const timestamp = now();
   const result = await execute(
     await openDatabase(),
-    'INSERT INTO notes (project_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    [0, title, content, timestamp, timestamp],
+    'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [0, title, content, 30000, estimateTokens(content), timestamp, timestamp],
   );
   const id = result.insertId!;
   await linkResourceToProject(projectId, 'note', id);
@@ -649,12 +835,17 @@ export async function createNote(projectId: number, title: string, content = '')
 }
 
 export async function updateNote(id: number, title: string, content: string): Promise<void> {
-  await execute(await openDatabase(), 'UPDATE notes SET title = ?, content = ?, updated_at = ? WHERE id = ?', [
+  await execute(await openDatabase(), 'UPDATE notes SET title = ?, content = ?, estimated_tokens = ?, updated_at = ? WHERE id = ?', [
     title,
     content,
+    estimateTokens(content),
     now(),
     id,
   ]);
+}
+
+export async function updateNoteTokenBudget(id: number, maxTokens: number): Promise<void> {
+  await execute(await openDatabase(), 'UPDATE notes SET max_tokens = ? WHERE id = ?', [maxTokens, id]);
 }
 
 export async function deleteNote(id: number): Promise<void> {
@@ -780,6 +971,9 @@ export async function getContextConfig(): Promise<ContextConfig> {
     customRangeEnd: Number((await getSetting('custom_range_end')) || -1),
     resourceBudget: Number((await getSetting('resource_budget')) || 2000),
     includeResources: (await getSetting('include_resources')) !== 'false',
+    summaryBudgetTokens: Number((await getSetting('summary_budget_tokens')) || 20000),
+    memoryTopK: Number((await getSetting('memory_top_k')) || 10),
+    recentChapterCount: Number((await getSetting('recent_chapter_count')) || 3),
   };
 }
 
@@ -790,6 +984,47 @@ export async function setContextConfig(config: ContextConfig): Promise<void> {
   await setSetting('custom_range_end', String(config.customRangeEnd));
   await setSetting('resource_budget', String(config.resourceBudget));
   await setSetting('include_resources', String(config.includeResources));
+  await setSetting('summary_budget_tokens', String(config.summaryBudgetTokens ?? 20000));
+  await setSetting('memory_top_k', String(config.memoryTopK ?? 10));
+  await setSetting('recent_chapter_count', String(config.recentChapterCount ?? 3));
+}
+
+export async function logLLMUsage(fields: {
+  scenario: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  status: string;
+  errorCode?: string;
+}): Promise<void> {
+  await execute(
+    await openDatabase(),
+    `INSERT INTO llm_usage_logs (scenario, input_tokens, output_tokens, total_tokens, status, error_code, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      fields.scenario,
+      fields.inputTokens,
+      fields.outputTokens,
+      fields.totalTokens,
+      fields.status,
+      fields.errorCode || '',
+      now(),
+    ],
+  );
+}
+
+export async function getFreeformDocument(projectId: number): Promise<string> {
+  const row = await one<{ content: string }>('SELECT content FROM freeform_documents WHERE project_id = ?', [projectId]);
+  return row?.content || '';
+}
+
+export async function setFreeformDocument(projectId: number, content: string): Promise<void> {
+  await execute(
+    await openDatabase(),
+    'INSERT OR REPLACE INTO freeform_documents (project_id, content, updated_at) VALUES (?, ?, ?)',
+    [projectId, content, now()],
+  );
+  await touchProject(projectId);
 }
 
 async function touchProject(projectId: number): Promise<void> {

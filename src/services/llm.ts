@@ -1,15 +1,61 @@
 import * as db from './database';
+import { estimateMessagesTokens, estimateTokens } from '../utils/tokenEstimator';
 
 export interface LLMCallConfig {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  scenario?: string;
 }
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
+
+export interface LLMResult {
+  text: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  errorCode?: string;
+  rawUsage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+export type LLMTask<T> = () => Promise<T>;
+
+export function createConcurrencyLimiter(limit: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const runNext = () => {
+    if (active >= limit) return;
+    const next = queue.shift();
+    if (!next) return;
+    active++;
+    next();
+  };
+
+  return function limitTask<T>(task: LLMTask<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      queue.push(() => {
+        task()
+          .then(resolve, reject)
+          .finally(() => {
+            active--;
+            runNext();
+          });
+      });
+      runNext();
+    });
+  };
+}
+
+const limitLLMRequest = createConcurrencyLimiter(250);
 
 export function normalizeChatCompletionUrl(baseUrl: string): string {
   let url = baseUrl.trim();
@@ -24,6 +70,28 @@ export function normalizeChatCompletionUrl(baseUrl: string): string {
 
 export function createLLMConfigError(): Error {
   return new Error('请先在设置中配置 API 地址、API Key 和模型名称。');
+}
+
+export function formatLLMError(status: number, responseText: string): Error & { code?: string; status?: number } {
+  let code = `HTTP_${status}`;
+  let message = responseText.slice(0, 300);
+
+  try {
+    const parsed = JSON.parse(responseText);
+    const error = parsed?.error || parsed;
+    code = String(error?.code || error?.type || code);
+    message = String(error?.message || message);
+  } catch {
+    // Keep raw text for non-JSON providers.
+  }
+
+  const formatted = new Error(`API 请求失败 (${status}, ${code}): ${message}`) as Error & {
+    code?: string;
+    status?: number;
+  };
+  formatted.code = code;
+  formatted.status = status;
+  return formatted;
 }
 
 async function getRequestConfig() {
@@ -64,7 +132,7 @@ export async function testLLMConnection(baseUrl: string, apiKey: string, modelNa
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`API 请求失败 (${response.status})：${text.slice(0, 200)}`);
+      throw formatLLMError(response.status, text);
     }
 
     const data = await response.json();
@@ -84,39 +152,79 @@ export async function callLLM(
   maxTokens?: number,
   config?: LLMCallConfig,
 ): Promise<string | null> {
+  const result = await callLLMResult(messages, maxTokens, config);
+  return result.text;
+}
+
+export async function callLLMResult(
+  messages: ChatMessage[],
+  maxTokens?: number,
+  config?: LLMCallConfig,
+): Promise<LLMResult> {
   const llmConfig = await getRequestConfig();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60000);
+  const inputEstimate = estimateMessagesTokens(messages);
+  const scenario = config?.scenario || 'chat';
 
   try {
-    const response = await fetch(llmConfig.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${llmConfig.api_key}`,
-      },
-      body: JSON.stringify({
-        model: llmConfig.model_name,
-        messages,
-        temperature: config?.temperature ?? 0.8,
-        top_p: config?.top_p ?? 0.9,
-        max_tokens: maxTokens ?? config?.max_tokens ?? 4000,
-        stream: false,
+    const response = await limitLLMRequest(() =>
+      fetch(llmConfig.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${llmConfig.api_key}`,
+        },
+        body: JSON.stringify({
+          model: llmConfig.model_name,
+          messages,
+          temperature: config?.temperature ?? 0.8,
+          top_p: config?.top_p ?? 0.9,
+          max_tokens: maxTokens ?? config?.max_tokens ?? 4000,
+          stream: false,
+        }),
+        signal: controller.signal,
       }),
-      signal: controller.signal,
-    });
+    );
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`API 请求失败 (${response.status})：${text.slice(0, 200)}`);
+      throw formatLLMError(response.status, text);
     }
 
     const data = await response.json();
-    return data.choices?.[0]?.message?.content || null;
+    const text = data.choices?.[0]?.message?.content || null;
+    const usage = data.usage || {};
+    const inputTokens = Number(usage.prompt_tokens || inputEstimate);
+    const outputTokens = Number(usage.completion_tokens || estimateTokens(text || ''));
+    const totalTokens = Number(usage.total_tokens || inputTokens + outputTokens);
+
+    await safeLogUsage({ scenario, inputTokens, outputTokens, totalTokens, status: 'success' });
+
+    return { text, inputTokens, outputTokens, totalTokens, rawUsage: data.usage };
   } catch (error: any) {
     if (error?.name === 'AbortError') {
-      throw new Error('请求超时，请检查网络或模型服务。');
+      const timeoutError = new Error('请求超时，请检查网络或模型服务。') as Error & { code?: string };
+      timeoutError.code = 'timeout';
+      await safeLogUsage({
+        scenario,
+        inputTokens: inputEstimate,
+        outputTokens: 0,
+        totalTokens: inputEstimate,
+        status: 'error',
+        errorCode: timeoutError.code,
+      });
+      throw timeoutError;
     }
+
+    await safeLogUsage({
+      scenario,
+      inputTokens: inputEstimate,
+      outputTokens: 0,
+      totalTokens: inputEstimate,
+      status: 'error',
+      errorCode: String(error?.code || error?.status || 'unknown'),
+    });
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -141,4 +249,19 @@ export async function callLLMStream(
     onDone?.(result);
   }
   return result;
+}
+
+async function safeLogUsage(fields: {
+  scenario: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  status: string;
+  errorCode?: string;
+}) {
+  try {
+    await db.logLLMUsage(fields);
+  } catch {
+    // Usage logging must never break generation.
+  }
 }
