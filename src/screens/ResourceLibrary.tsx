@@ -51,6 +51,7 @@ interface EditorState {
   maxTokens: string;
   enabled: boolean;
   isDefault: boolean;
+  constant: boolean;
 }
 
 export const ResourceLibrary: React.FC = () => {
@@ -153,6 +154,7 @@ export const ResourceLibrary: React.FC = () => {
       maxTokens: String(item.max_tokens ?? defaultMaxTokens(kind)),
       enabled: item.enabled !== 0,
       isDefault: item.is_default === 1,
+      constant: item.constant === 1,
     });
   };
 
@@ -176,11 +178,12 @@ export const ResourceLibrary: React.FC = () => {
       }
       if (editor.kind === 'worldbook') {
         await db.updateWorldbookEntry(item.id, {
-          keyword_primary: editor.name.trim() || '未命名条目',
+          keyword_primary: editor.name.trim(),
           keyword_secondary: editor.secondary,
           content: editor.content,
           comment: editor.comment,
           enabled: editor.enabled ? 1 : 0,
+          constant: editor.constant ? 1 : 0,
           max_tokens: maxTokens,
         });
       }
@@ -401,6 +404,10 @@ export const ResourceLibrary: React.FC = () => {
                     <Field label="次关键词" value={editor.secondary} onChangeText={(secondary) => setEditor({ ...editor, secondary })} />
                     <Field label="说明" value={editor.comment} onChangeText={(comment) => setEditor({ ...editor, comment })} />
                     <Field label="内容" value={editor.content} onChangeText={(content) => setEditor({ ...editor, content })} multiline inputStyle={styles.largeInput} />
+                    <View style={styles.usageRow}>
+                      <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>常驻条目（不需要关键词触发）</Text>
+                      <Switch value={editor.constant} onValueChange={(constant) => setEditor({ ...editor, constant })} />
+                    </View>
                     <View style={styles.usageRow}>
                       <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>条目启用</Text>
                       <Switch value={editor.enabled} onValueChange={(enabled) => setEditor({ ...editor, enabled })} />

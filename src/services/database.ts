@@ -161,6 +161,7 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         content TEXT NOT NULL DEFAULT '',
         comment TEXT NOT NULL DEFAULT '',
         enabled INTEGER NOT NULL DEFAULT 1,
+        constant INTEGER NOT NULL DEFAULT 0,
         max_tokens INTEGER NOT NULL DEFAULT 2000,
         estimated_tokens INTEGER NOT NULL DEFAULT 0,
         position INTEGER NOT NULL DEFAULT 0,
@@ -326,6 +327,7 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
   await ensureColumn(database, 'worldbook_entries', worldbook, 'content', "content TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'worldbook_entries', worldbook, 'comment', "comment TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'worldbook_entries', worldbook, 'enabled', 'enabled INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(database, 'worldbook_entries', worldbook, 'constant', 'constant INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'worldbook_entries', worldbook, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 2000');
   await ensureColumn(database, 'worldbook_entries', worldbook, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'worldbook_entries', worldbook, 'position', 'position INTEGER NOT NULL DEFAULT 0');
@@ -759,7 +761,7 @@ export async function createWorldbookEntry(
   const estimatedTokens = estimateTokens(content);
   const result = await execute(
     await openDatabase(),
-    'INSERT INTO worldbook_entries (project_id, collection_id, keyword_primary, keyword_secondary, content, comment, enabled, max_tokens, estimated_tokens, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO worldbook_entries (project_id, collection_id, keyword_primary, keyword_secondary, content, comment, enabled, constant, max_tokens, estimated_tokens, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       0,
       Number(extra.collection_id || 0),
@@ -768,6 +770,7 @@ export async function createWorldbookEntry(
       content,
       extra.comment || '',
       enabled,
+      Number(extra.constant || 0),
       Number(extra.max_tokens || 2000),
       estimatedTokens,
       Number(extra.position || 0),
@@ -787,6 +790,7 @@ const WB_COLUMNS = new Set([
   'content',
   'comment',
   'enabled',
+  'constant',
   'max_tokens',
   'estimated_tokens',
   'position',
@@ -974,6 +978,8 @@ export async function getContextConfig(): Promise<ContextConfig> {
     summaryBudgetTokens: Number((await getSetting('summary_budget_tokens')) || 20000),
     memoryTopK: Number((await getSetting('memory_top_k')) || 10),
     recentChapterCount: Number((await getSetting('recent_chapter_count')) || 3),
+    worldbookRecursive: (await getSetting('worldbook_recursive')) !== 'false',
+    worldbookScanDepth: Number((await getSetting('worldbook_scan_depth')) || 4),
   };
 }
 
@@ -987,6 +993,8 @@ export async function setContextConfig(config: ContextConfig): Promise<void> {
   await setSetting('summary_budget_tokens', String(config.summaryBudgetTokens ?? 20000));
   await setSetting('memory_top_k', String(config.memoryTopK ?? 10));
   await setSetting('recent_chapter_count', String(config.recentChapterCount ?? 3));
+  await setSetting('worldbook_recursive', String(config.worldbookRecursive ?? true));
+  await setSetting('worldbook_scan_depth', String(config.worldbookScanDepth ?? 4));
 }
 
 export async function logLLMUsage(fields: {

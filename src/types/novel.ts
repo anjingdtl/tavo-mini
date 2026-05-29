@@ -104,6 +104,8 @@ export interface ContextConfig {
   summaryBudgetTokens?: number;
   memoryTopK?: number;
   recentChapterCount?: number;
+  worldbookRecursive?: boolean;
+  worldbookScanDepth?: number;
 }
 
 export interface SummaryConfig {

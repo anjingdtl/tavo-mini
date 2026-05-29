@@ -9,6 +9,7 @@ import * as db from '../services/database';
 import { buildContext } from '../services/contextBuilder';
 import { callLLMResult } from '../services/llm';
 import { generateMemorySummary } from '../services/summaryGenerator';
+import { createChapterGenerationRequest, mergeChapterGenerationResult } from '../services/chapterGeneration';
 import type { Chapter, ChapterStatus } from '../types/novel';
 
 const STATUS_OPTIONS: { value: ChapterStatus; label: string }[] = [
@@ -93,23 +94,32 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
 
   const generateContinuation = async () => {
     if (!chapter) return;
+    if (chapter.status === 'final') {
+      Alert.alert('章节已定稿', '请先将章节状态切回“修订”，再使用 AI 修改正文。');
+      return;
+    }
+    if (chapter.status === 'revision' && !chapter.content.trim()) {
+      Alert.alert('无法修订', '当前正文为空，请先写入正文或切回草稿进行续写。');
+      return;
+    }
     setGenerating(true);
     try {
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(chapter.project_id);
       const messages = await buildContext(chapter, config, chapter.project_id, presets[0]);
+      const request = createChapterGenerationRequest(chapter);
       messages.push({
         role: 'user',
-        content: `请继续创作章节「${chapter.title}」。当前正文如下：\n\n${chapter.content || '（空）'}\n\n要求：延续已建立的语气和情节，不重复前文。`,
+        content: request.userPrompt,
       });
       const result = await callLLMResult(messages, presets[0]?.max_tokens || 1600, {
         max_tokens: presets[0]?.max_tokens || 1600,
-        scenario: 'chapter_continue',
+        scenario: request.scenario,
       });
-      if (result.text) {
-        const content = `${chapter.content || ''}${chapter.content ? '\n\n' : ''}${result.text.trim()}`;
-        setChapter({ ...chapter, content, status: 'draft' });
-        await db.updateChapter(chapter.id, { content, status: 'draft' });
+      if (result.text?.trim()) {
+        const merged = mergeChapterGenerationResult(chapter, result.text);
+        setChapter({ ...chapter, ...merged });
+        await db.updateChapter(chapter.id, merged);
         setLastUsage(`本轮 tokens：输入 ${result.inputTokens} / 输出 ${result.outputTokens} / 总计 ${result.totalTokens}`);
         setSaveState('已保存');
       }
@@ -143,7 +153,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         />
         <SegmentedControl value={chapter.status} options={STATUS_OPTIONS} onChange={changeStatus} />
         <View style={styles.toolbar}>
-          <Button label={generating ? '生成中...' : 'AI 续写'} icon={Bot} onPress={generateContinuation} disabled={generating || finalizing} />
+          <Button label={generating ? '生成中...' : chapter.status === 'revision' ? 'AI 修订' : 'AI 续写'} icon={Bot} onPress={generateContinuation} disabled={generating || finalizing} />
           <Button label="保存" icon={Save} variant="secondary" onPress={() => db.updateChapter(chapter.id, chapter).then(() => setSaveState('已保存'))} />
           <Button label={finalizing ? '定稿中...' : '定稿'} icon={CheckCircle2} variant="secondary" onPress={finalizeChapter} disabled={finalizing} />
           <Button label="摘要" icon={FileText} variant="secondary" onPress={() => Alert.alert('章节摘要', chapter.memory_summary || '暂无记忆摘要。')} />
