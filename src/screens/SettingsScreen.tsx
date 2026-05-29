@@ -1,6 +1,7 @@
 import React from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Download, KeyRound, Moon, Palette, Sun, TreePine } from 'lucide-react-native';
+import { Download, Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine } from 'lucide-react-native';
+import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, Header, Section, SegmentedControl, spacing } from '../components/ui';
@@ -20,6 +21,7 @@ export const SettingsScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { theme, mode, setMode } = useThemeStore();
   const { currentProject } = useProjectStore();
+  const unresolvedCount = usePipelineTaskStore((s) => s.getUnresolvedCount());
 
   const changeTheme = async (next: ThemeMode) => {
     setMode(next);
@@ -54,6 +56,12 @@ export const SettingsScreen: React.FC = () => {
             <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>OpenAI 兼容接口</Text>
             <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>配置 API 地址、Key 和模型名称后，可用于续写、摘要和情节线生成。</Text>
             <Button label="LLM 设置" icon={KeyRound} onPress={() => navigation.navigate('LLMSettings')} />
+          </Card>
+          <Card>
+            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>多角色流水线</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>4 阶段协作写作：初稿作者 → 审阅编辑 + 事实核查员 → 终审校对员。</Text>
+            <Button label="流水线配置" icon={Factory} onPress={() => navigation.navigate('PipelineConfig')} />
+            <Button label={`流水线任务${unresolvedCount > 0 ? ` (${unresolvedCount})` : ''}`} icon={ListChecks} variant="secondary" onPress={() => navigation.navigate('PipelineTask')} />
           </Card>
         </Section>
         <Section title="主题">

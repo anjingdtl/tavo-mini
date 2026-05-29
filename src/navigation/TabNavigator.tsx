@@ -16,6 +16,9 @@ import { ChapterSummaryScreen } from '../screens/ChapterSummary';
 import { PlotlineManager } from '../screens/PlotlineManager';
 import { StoryOverview } from '../screens/StoryOverview';
 import { ContextConfigScreen } from '../screens/ContextConfig';
+import { PipelineConfigScreen } from '../screens/PipelineConfigScreen';
+import { PipelineTaskScreen } from '../screens/PipelineTaskScreen';
+import { PipelineResultScreen } from '../screens/PipelineResultScreen';
 
 export type EditorStackParamList = {
   EditorMain: undefined;
@@ -24,11 +27,15 @@ export type EditorStackParamList = {
   PlotlineManager: undefined;
   StoryOverview: undefined;
   ContextConfig: undefined;
+  PipelineResult: { taskId: string };
 };
 
 export type SettingsStackParamList = {
   SettingsMain: undefined;
   LLMSettings: undefined;
+  PipelineConfig: undefined;
+  PipelineTask: undefined;
+  PipelineResult: { taskId: string };
 };
 
 const Tab = createBottomTabNavigator();
@@ -64,6 +71,7 @@ const EditorStackScreen = () => (
     <EditorStack.Screen name="PlotlineManager" component={PlotlineManager} />
     <EditorStack.Screen name="StoryOverview" component={StoryOverview} />
     <EditorStack.Screen name="ContextConfig" component={ContextConfigScreen} />
+    <EditorStack.Screen name="PipelineResult" component={PipelineResultScreen} />
   </EditorStack.Navigator>
 );
 
@@ -71,6 +79,9 @@ const SettingsStackScreen = () => (
   <SettingsStack.Navigator screenOptions={{ headerShown: false }}>
     <SettingsStack.Screen name="SettingsMain" component={SettingsScreen} />
     <SettingsStack.Screen name="LLMSettings" component={LLMSettingsScreen} />
+    <SettingsStack.Screen name="PipelineConfig" component={PipelineConfigScreen} />
+    <SettingsStack.Screen name="PipelineTask" component={PipelineTaskScreen} />
+    <SettingsStack.Screen name="PipelineResult" component={PipelineResultScreen} />
   </SettingsStack.Navigator>
 );
 
