@@ -11,6 +11,7 @@ import type {
   Project,
   ProjectMode,
 } from '../types/novel';
+import type { PipelineConfig } from '../types/pipeline';
 import { getSecureLLMApiKey, setSecureLLMApiKey } from './secureStorage';
 import { estimateTokens } from '../utils/tokenEstimator';
 
@@ -1050,4 +1051,36 @@ async function updateColumns(table: string, id: number, allowed: Set<string>, fi
   if (sets.length === 0) return;
   values.push(id);
   await execute(await openDatabase(), `UPDATE ${table} SET ${sets.join(', ')} WHERE id = ?`, values);
+}
+
+export async function getPipelineConfig(): Promise<PipelineConfig> {
+  return {
+    draftPresetId: (await getSetting('pipeline_draft_preset_id')) !== null
+      ? Number(await getSetting('pipeline_draft_preset_id'))
+      : null,
+    reviewPresetId: (await getSetting('pipeline_review_preset_id')) !== null
+      ? Number(await getSetting('pipeline_review_preset_id'))
+      : null,
+    factCheckPresetId: (await getSetting('pipeline_factcheck_preset_id')) !== null
+      ? Number(await getSetting('pipeline_factcheck_preset_id'))
+      : null,
+    proofPresetId: (await getSetting('pipeline_proof_preset_id')) !== null
+      ? Number(await getSetting('pipeline_proof_preset_id'))
+      : null,
+    draftMaxTokens: Number((await getSetting('pipeline_draft_max_tokens')) || 4000),
+    reviewMaxTokens: Number((await getSetting('pipeline_review_max_tokens')) || 1500),
+    factCheckMaxTokens: Number((await getSetting('pipeline_factcheck_max_tokens')) || 1500),
+    proofMaxTokens: Number((await getSetting('pipeline_proof_max_tokens')) || 4000),
+  };
+}
+
+export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
+  await setSetting('pipeline_draft_preset_id', config.draftPresetId !== null ? String(config.draftPresetId) : '');
+  await setSetting('pipeline_review_preset_id', config.reviewPresetId !== null ? String(config.reviewPresetId) : '');
+  await setSetting('pipeline_factcheck_preset_id', config.factCheckPresetId !== null ? String(config.factCheckPresetId) : '');
+  await setSetting('pipeline_proof_preset_id', config.proofPresetId !== null ? String(config.proofPresetId) : '');
+  await setSetting('pipeline_draft_max_tokens', String(config.draftMaxTokens));
+  await setSetting('pipeline_review_max_tokens', String(config.reviewMaxTokens));
+  await setSetting('pipeline_factcheck_max_tokens', String(config.factCheckMaxTokens));
+  await setSetting('pipeline_proof_max_tokens', String(config.proofMaxTokens));
 }

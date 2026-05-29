@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Bot, CheckCircle2, FileText, Save } from 'lucide-react-native';
+import { Bot, CheckCircle2, FileText, GitBranch, Save } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
+import { usePipelineTaskStore } from '../store/pipelineTaskStore';
+import { runChapterPipeline } from '../services/pipelineRunner';
 import { Button, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { debounce } from '../utils/debounce';
@@ -26,6 +29,7 @@ interface Props {
 
 export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const { theme } = useThemeStore();
+  const navigation = useNavigation();
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [saveState, setSaveState] = useState('已保存');
   const [generating, setGenerating] = useState(false);
@@ -130,6 +134,40 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     }
   };
 
+  const runPipeline = async () => {
+    if (!chapter) return;
+    if (chapter.status === 'final') {
+      Alert.alert('章节已定稿', '请先将章节状态切回“修订”，再使用流水线写作。');
+      return;
+    }
+
+    const { createTask, getActiveTaskForTarget } = usePipelineTaskStore.getState();
+    const existing = getActiveTaskForTarget('chapter', chapter.id);
+    if (existing) {
+      Alert.alert('已有进行中的流水线', '请等待当前任务完成或到任务中心取消。');
+      return;
+    }
+
+    const taskId = createTask('chapter', chapter.id);
+    try {
+      await runChapterPipeline(taskId, chapter, (status) => {
+        // Stage updates are handled by toast in the caller if needed
+      });
+
+      const store = usePipelineTaskStore.getState();
+      const finishedTask = store.tasks.find((t) => t.id === taskId);
+      if (finishedTask?.status === 'completed') {
+        // Navigate to result page
+        // @ts-ignore
+        navigation.navigate('PipelineResult', { taskId });
+      } else if (finishedTask?.status === 'failed') {
+        Alert.alert('流水线失败', finishedTask.error || '未知错误');
+      }
+    } catch (error: any) {
+      Alert.alert('流水线异常', error.message || '请检查 API 配置。');
+    }
+  };
+
   if (!chapter) {
     return (
       <Screen>
@@ -154,6 +192,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         <SegmentedControl value={chapter.status} options={STATUS_OPTIONS} onChange={changeStatus} />
         <View style={styles.toolbar}>
           <Button label={generating ? '生成中...' : chapter.status === 'revision' ? 'AI 修订' : 'AI 续写'} icon={Bot} onPress={generateContinuation} disabled={generating || finalizing} />
+          <Button label="流水线" icon={GitBranch} variant="secondary" onPress={runPipeline} disabled={generating || finalizing} />
           <Button label="保存" icon={Save} variant="secondary" onPress={() => db.updateChapter(chapter.id, chapter).then(() => setSaveState('已保存'))} />
           <Button label={finalizing ? '定稿中...' : '定稿'} icon={CheckCircle2} variant="secondary" onPress={finalizeChapter} disabled={finalizing} />
           <Button label="摘要" icon={FileText} variant="secondary" onPress={() => Alert.alert('章节摘要', chapter.memory_summary || '暂无记忆摘要。')} />

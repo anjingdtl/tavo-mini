@@ -8,12 +8,13 @@
 - `npx react-native run-android` — 运行 Android 开发版
 - `cd android && ./gradlew assembleDebug` — 构建 debug APK
 - `cd android && ./gradlew assembleRelease` — 构建 release APK
-
-无自动化测试框架，手动测试验证。
+- `npm test` — Jest 全部测试
+- `npx jest __tests__/llm.test.ts` — 运行单个测试文件
+- `npm run lint` — ESLint 检查
 
 ## 架构
 
-React Native CLI + TypeScript。Zustand 状态管理，SQLite 本地持久化。底部 4 Tab 导航（项目/编辑/资料/设置），三色主题系统。
+React Native CLI + TypeScript。Zustand 状态管理（4 个 store），SQLite 本地持久化（15 张表）。底部 4 Tab 导航（项目/编辑/资料/设置），三色主题系统，多阶段 AI 管线。
 
 ### 文件结构
 
@@ -23,29 +24,33 @@ tavo-mini/
   src/
     main/index.tsx                    -- App 入口（ThemeProvider + NavigationContainer）
     navigation/TabNavigator.tsx       -- 底部 Tab + Stack 导航
-    screens/                          -- 16 个页面组件
-    components/                       -- ChapterCard, AIStreamText, ThemeProvider
+    screens/                          -- 18 个页面组件（含 3 个 pipeline 页面）
+    components/                       -- ChapterCard, AIStreamText, ThemeProvider, ui
     services/                         -- database, llm, contextBuilder, macroReplace,
-                                        summaryGenerator, fileImport, exportService
-    store/                            -- projectStore, settingsStore, themeStore
+                                        summaryGenerator, chapterGeneration, fileImport,
+                                        exportService, secureStorage,
+                                        pipelineMessages, pipelineRunner
+    store/                            -- projectStore, settingsStore, themeStore,
+                                        pipelineTaskStore
     native/PngMetadataModule.ts       -- PNG tEXt 块解析桥接
-    types/                            -- novel, character, worldbook, theme
-    utils/                            -- debounce, jsonExtractor
+    types/                            -- novel, character, worldbook, theme, pipeline
+    utils/                            -- debounce, jsonExtractor, tokenEstimator
   index.js                            -- RN 入口
 ```
 
 ### 数据层
 
-SQLite 数据库 `tavo_mini.db`，11 张表：projects、chapters、fragments、plotlines、project_plotlines、characters、worldbook_entries、notes、presets、llm_config、settings。
+SQLite 数据库 `tavo_mini.db`，15 张表：projects、chapters、fragments、plotlines、project_plotlines、characters、worldbook_collections、worldbook_entries、notes、presets、llm_config、settings、project_resources、llm_usage_logs、freeform_documents。
 
 服务层 `src/services/database.ts` 提供全部 CRUD 操作。
 
 ### 状态管理
 
-三个 Zustand store：
+四个 Zustand store：
 - `projectStore` — 项目列表、当前项目、CRUD
 - `settingsStore` — LLM 配置
 - `themeStore` — 主题模式（亮色/暗色/护眼）
+- `pipelineTaskStore` — 多阶段生成任务状态（草稿→审查→事实核查→校对）
 
 ### 主题配色
 
@@ -59,6 +64,10 @@ SQLite 数据库 `tavo_mini.db`，11 张表：projects、chapters、fragments、
 - `services/contextBuilder.ts` — 三种上下文策略（滑动窗口/完整/自定义），角色+世界书注入
 - `services/macroReplace.ts` — `{{char}}`/`{{user}}`/`{{chapter}}`/`{{synopsis}}` 宏替换
 - `services/summaryGenerator.ts` — LLM 生成结构化章节摘要
+- `services/chapterGeneration.ts` — LLM 驱动的章节续写生成
+- `services/pipelineRunner.ts` — 多阶段 AI 管线（草稿→审查→事实核查→校对），支持取消和分步回退
+- `services/pipelineMessages.ts` — 管线各阶段的 prompt 构建
+- `services/secureStorage.ts` — Android Keystore 安全存储（react-native-keychain）
 
 ### 文件导入导出
 
@@ -74,5 +83,5 @@ SQLite 数据库 `tavo_mini.db`，11 张表：projects、chapters、fragments、
 
 ## 安全
 
-- API Key 以明文存储在 SQLite 数据库 `llm_config` 表中（Android 私有目录，其他应用不可访问）
+- API Key 通过 Android Keystore 安全存储（`secureStorage.ts` + react-native-keychain），SQLite `llm_config` 表仅存 base_url 和 model_name
 - 无 WebView、无远程代码执行
