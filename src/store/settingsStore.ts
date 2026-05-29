@@ -17,6 +17,11 @@ const defaultContextConfig: ContextConfig = {
   customRangeEnd: -1,
   resourceBudget: 2000,
   includeResources: true,
+  summaryBudgetTokens: 20000,
+  memoryTopK: 10,
+  recentChapterCount: 3,
+  worldbookRecursive: true,
+  worldbookScanDepth: 4,
 };
 
 export const useSettingsStore = create<SettingsState>((set) => ({

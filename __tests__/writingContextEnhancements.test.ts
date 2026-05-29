@@ -136,6 +136,218 @@ describe('writing context enhancements', () => {
     expect(text).toContain('Clock Tower secret was discovered');
   });
 
+  test('selects previous chapters according to sliding full and custom strategies', () => {
+    const { selectPreviousChapters } = require('../src/services/contextBuilder');
+    const chapters = [
+      { id: 1, project_id: 7, position: 0, title: 'Chapter 1', synopsis: '', content: 'one', status: 'final', summary_json: null },
+      { id: 2, project_id: 7, position: 1, title: 'Chapter 2', synopsis: '', content: 'two', status: 'final', summary_json: null },
+      { id: 3, project_id: 7, position: 2, title: 'Chapter 3', synopsis: '', content: 'three', status: 'draft', summary_json: null },
+      { id: 4, project_id: 7, position: 3, title: 'Chapter 4', synopsis: '', content: '', status: 'planned', summary_json: null },
+    ];
+    const current = chapters[3];
+
+    expect(selectPreviousChapters(current, { strategy: 'sliding', recentChapterCount: 2 }, chapters).map((chapter: any) => chapter.title)).toEqual(['Chapter 2', 'Chapter 3']);
+    expect(selectPreviousChapters(current, { strategy: 'full' }, chapters).map((chapter: any) => chapter.title)).toEqual(['Chapter 1', 'Chapter 2', 'Chapter 3']);
+    expect(selectPreviousChapters(current, { strategy: 'custom', customRangeStart: 1, customRangeEnd: 2 }, chapters).map((chapter: any) => chapter.title)).toEqual(['Chapter 2', 'Chapter 3']);
+  });
+
+  test('clips previous content from the end to preserve the latest chapter ending', () => {
+    const { buildPreviousContentText } = require('../src/services/contextBuilder');
+    const current = { id: 3, project_id: 7, position: 2, title: 'Chapter 3', synopsis: '', content: '', status: 'planned', summary_json: null };
+    const chapters = [
+      { id: 1, project_id: 7, position: 0, title: 'Chapter 1', synopsis: '', content: 'older opening should disappear', status: 'final', summary_json: null },
+      { id: 2, project_id: 7, position: 1, title: 'Chapter 2', synopsis: '', content: '雨夜钟楼最后响起', status: 'final', summary_json: null },
+    ];
+
+    const text = buildPreviousContentText(current, { strategy: 'full', slidingWindowSize: 8 }, chapters);
+
+    expect(text).toContain('钟楼最后响起');
+    expect(text).not.toContain('older opening');
+  });
+
+  test('activates worldbook entries by keywords constants secondary keys and one recursion pass', async () => {
+    jest.doMock('../src/services/database', () => ({
+      getWorldbookEntriesByProject: jest.fn(async () => [
+        {
+          id: 1,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 200,
+          enabled: 1,
+          max_tokens: 80,
+          keyword_primary: '钟楼',
+          keyword_secondary: '',
+          content: '钟楼下藏着银钥匙。',
+          position: 10,
+          constant: 0,
+        },
+        {
+          id: 2,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 200,
+          enabled: 1,
+          max_tokens: 80,
+          keyword_primary: '银钥匙',
+          keyword_secondary: '',
+          content: '银钥匙能打开地下档案室。',
+          position: 20,
+          constant: 0,
+        },
+        {
+          id: 3,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 200,
+          enabled: 1,
+          max_tokens: 80,
+          keyword_primary: '雨夜',
+          keyword_secondary: '档案员',
+          content: '只有档案员知道雨夜的钟声含义。',
+          position: 30,
+          constant: 0,
+        },
+        {
+          id: 4,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 200,
+          enabled: 1,
+          max_tokens: 80,
+          keyword_primary: '',
+          keyword_secondary: '',
+          content: '常驻规则：保持悬疑叙事。',
+          position: 0,
+          constant: 1,
+        },
+        {
+          id: 5,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 200,
+          enabled: 1,
+          max_tokens: 80,
+          keyword_primary: '未出现',
+          keyword_secondary: '',
+          content: '不应注入。',
+          position: 40,
+          constant: 0,
+        },
+      ]),
+    }));
+
+    const { buildWorldbookContext } = require('../src/services/contextBuilder');
+    const text = await buildWorldbookContext(7, 500, '主角回到钟楼。', true);
+
+    expect(text).toContain('常驻规则');
+    expect(text).toContain('钟楼下藏着银钥匙');
+    expect(text).toContain('银钥匙能打开地下档案室');
+    expect(text).not.toContain('只有档案员知道');
+    expect(text).not.toContain('不应注入');
+  });
+
+  test('builds character context with common SillyTavern card fields', async () => {
+    jest.doMock('../src/services/database', () => ({
+      getCharactersByProject: jest.fn(async () => [
+        {
+          name: '林岚',
+          max_tokens: 500,
+          data_json: JSON.stringify({
+            data: {
+              description: '钟楼守夜人。',
+              personality: '冷静克制。',
+              scenario: '她正在调查旧城档案。',
+              first_mes: '钟声又响了。',
+              mes_example: '<START>\n林岚：别回头。',
+              system_prompt: '以第三人称描写林岚。',
+              post_history_instructions: '保持悬疑感。',
+            },
+          }),
+        },
+      ]),
+    }));
+
+    const { buildCharacterContext } = require('../src/services/contextBuilder');
+    const text = await buildCharacterContext(7, 2000);
+
+    expect(text).toContain('钟楼守夜人');
+    expect(text).toContain('她正在调查旧城档案');
+    expect(text).toContain('钟声又响了');
+    expect(text).toContain('保持悬疑感');
+  });
+
+  test('revision generation replaces current chapter text instead of appending', () => {
+    const { createChapterGenerationRequest, mergeChapterGenerationResult } = require('../src/services/chapterGeneration');
+    const chapter = {
+      id: 1,
+      project_id: 7,
+      position: 0,
+      title: '雨夜',
+      synopsis: '修顺节奏',
+      content: '旧正文。',
+      status: 'revision',
+      summary_json: null,
+    };
+
+    const request = createChapterGenerationRequest(chapter);
+    const merged = mergeChapterGenerationResult(chapter, '新修订正文。');
+
+    expect(request.scenario).toBe('chapter_revision');
+    expect(request.userPrompt).toContain('完整修订稿');
+    expect(merged).toEqual({ content: '新修订正文。', status: 'revision' });
+  });
+
+  test('reserves resource budget for triggered worldbook when character cards are large', async () => {
+    jest.doMock('../src/services/database', () => ({
+      getCharactersByProject: jest.fn(async () => [
+        {
+          name: 'Huge Character',
+          max_tokens: 5000,
+          data_json: JSON.stringify({
+            data: {
+              description: '\u949f'.repeat(500),
+            },
+          }),
+        },
+      ]),
+      getWorldbookEntriesByProject: jest.fn(async () => [
+        {
+          id: 1,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 500,
+          enabled: 1,
+          max_tokens: 100,
+          keyword_primary: 'clocktower',
+          keyword_secondary: '',
+          content: 'WB_KEEP_THIS lore.',
+          position: 0,
+          constant: 0,
+        },
+      ]),
+      getNotesByProject: jest.fn(async () => []),
+      getChaptersByProject: jest.fn(async () => []),
+    }));
+    jest.doMock('../src/services/macroReplace', () => ({ processMacros: jest.fn(async (text: string) => text) }));
+
+    const { buildContext } = require('../src/services/contextBuilder');
+    const messages = await buildContext(
+      { id: 1, project_id: 7, position: 0, title: 'Chapter', synopsis: 'return to clocktower', content: '', status: 'planned' },
+      {
+        includeResources: true,
+        resourceBudget: 120,
+        strategy: 'sliding',
+        slidingWindowSize: 4000,
+        customRangeStart: 0,
+        customRangeEnd: -1,
+      },
+      7,
+    );
+    const text = messages.map((message: any) => message.content).join('\n');
+
+    expect(text).toContain('WB_KEEP_THIS');
+  });
+
   test('clips character and worldbook collection context by per-resource token budgets', async () => {
     jest.doMock('../src/services/database', () => ({
       getCharactersByProject: jest.fn(async () => [
@@ -163,7 +375,7 @@ describe('writing context enhancements', () => {
 
     const { buildContext } = require('../src/services/contextBuilder');
     const messages = await buildContext(
-      { id: 1, project_id: 7, position: 0, title: 'Chapter', synopsis: '', content: '', status: 'planned' },
+      { id: 1, project_id: 7, position: 0, title: 'Chapter', synopsis: 'return to 钟楼', content: '', status: 'planned' },
       {
         includeResources: true,
         resourceBudget: 2000,
