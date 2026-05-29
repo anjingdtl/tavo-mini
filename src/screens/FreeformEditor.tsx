@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Bot, Plus, Trash2 } from 'lucide-react-native';
+import { Bot, GitBranch, Plus, Trash2 } from 'lucide-react-native';
+import { usePipelineTaskStore } from '../store/pipelineTaskStore';
+import { runFreeformPipeline } from '../services/pipelineRunner';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
@@ -117,6 +119,32 @@ export const FreeformEditor: React.FC = () => {
     }
   };
 
+  const runFreeformPipelineFlow = async () => {
+    if (!currentProject) return;
+
+    const { createTask, getActiveTaskForTarget } = usePipelineTaskStore.getState();
+    const existing = getActiveTaskForTarget('freeform', currentProject.id);
+    if (existing) {
+      Alert.alert('已有进行中的流水线', '请等待当前任务完成或到任务中心取消。');
+      return;
+    }
+
+    const taskId = createTask('freeform', currentProject.id);
+    try {
+      await runFreeformPipeline(taskId, currentProject.id, documentText, steerText);
+
+      const store = usePipelineTaskStore.getState();
+      const finishedTask = store.tasks.find((t) => t.id === taskId);
+      if (finishedTask?.status === 'completed') {
+        Alert.alert('流水线完成', '自由写作流水线已完成，请到任务中心查看结果。');
+      } else if (finishedTask?.status === 'failed') {
+        Alert.alert('流水线失败', finishedTask.error || '未知错误');
+      }
+    } catch (error: any) {
+      Alert.alert('流水线异常', error.message || '请检查 API 配置。');
+    }
+  };
+
   const deleteFragment = (fragment: Fragment) => {
     Alert.alert('删除片段', '确定删除这个片段？', [
       { text: '取消', style: 'cancel' },
@@ -155,6 +183,7 @@ export const FreeformEditor: React.FC = () => {
         <Field label="AI 续写指示" value={steerText} onChangeText={setSteerText} placeholder="可选：下一段想写什么" multiline inputStyle={styles.steer} />
         <View style={styles.toolbar}>
           <Button label={generating ? '续写中...' : 'AI 续写'} icon={Bot} onPress={generateContinuation} disabled={generating} />
+          <Button label="流水线续写" icon={GitBranch} variant="secondary" onPress={runFreeformPipelineFlow} disabled={generating} />
           <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
             {documentText.length} 字 · 预估 {estimateTokens(documentText)} tokens
           </Text>
