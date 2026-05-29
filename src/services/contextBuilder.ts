@@ -28,52 +28,63 @@ const STOP_WORDS = new Set([
   '她们',
 ]);
 
+type PartialContextConfig = Partial<ContextConfig>;
+
 export async function buildContext(
   currentChapter: Chapter,
   config: ContextConfig,
   projectId: number,
   preset?: Preset | string,
 ): Promise<ChatMessage[]> {
-  const systemPrompt = typeof preset === 'string' ? preset : buildPresetPrompt(preset);
-  const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt || DEFAULT_SYSTEM_PROMPT }];
-
-  if (config.includeResources && config.resourceBudget > 0) {
-    const resourceText = await buildResourceContext(projectId, config.resourceBudget);
-    if (resourceText) {
-      messages.push({ role: 'user', content: `以下是故事设定资料：\n\n${resourceText}` });
-      messages.push({ role: 'assistant', content: '我已了解故事设定，会在后续创作中保持一致。' });
-    }
-  }
-
   const chapters = await db.getChaptersByProject(projectId);
+  const previousContent = buildPreviousContentText(currentChapter, config, chapters);
   const memoryText = buildMemoryContext(
     chapters.filter((chapter) => chapter.position < currentChapter.position),
     currentChapter,
     config.memoryTopK ?? 10,
     config.summaryBudgetTokens ?? 20000,
   );
-  if (memoryText) {
-    messages.push({ role: 'user', content: `以下是历史记忆摘要：\n\n${memoryText}` });
-    messages.push({ role: 'assistant', content: '我会参考历史记忆延续剧情。' });
+  const worldbookScanContent = selectPreviousChapters(
+    currentChapter,
+    { strategy: 'sliding', recentChapterCount: config.worldbookScanDepth ?? 4 },
+    chapters,
+  )
+    .map((chapter) => chapter.content)
+    .join('\n\n');
+  const scanText = [currentChapter.title, currentChapter.synopsis, currentChapter.content, worldbookScanContent, memoryText]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const systemPrompt = typeof preset === 'string' ? preset : buildPresetPrompt(preset);
+  const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt || DEFAULT_SYSTEM_PROMPT }];
+
+  if (config.includeResources && config.resourceBudget > 0) {
+    const resourceText = await buildResourceContext(projectId, config.resourceBudget, scanText, config.worldbookRecursive !== false);
+    if (resourceText) {
+      messages.push({ role: 'system', content: `以下是本次写作必须参考的设定资料：\n\n${resourceText}` });
+    }
   }
 
-  const prevContent = await getPreviousContent(currentChapter, config, chapters);
-  if (prevContent) {
-    const processed = await processMacros(prevContent, {
+  if (memoryText) {
+    messages.push({ role: 'system', content: `以下是历史记忆摘要：\n\n${memoryText}` });
+  }
+
+  if (previousContent) {
+    const processed = await processMacros(previousContent, {
       projectId,
       chapterTitle: currentChapter.title,
       chapterSynopsis: currentChapter.synopsis,
     });
-    messages.push({ role: 'user', content: `以下是最近前文正文：\n\n${processed}` });
-    messages.push({ role: 'assistant', content: '我已了解最近前文，现在继续创作。' });
+    messages.push({ role: 'user', content: `以下是最近前文正文，请重点承接最后发生的事件：\n\n${processed}` });
   }
 
-  if (currentChapter.synopsis) {
-    messages.push({
-      role: 'user',
-      content: `当前章节「${currentChapter.title}」概要：${currentChapter.synopsis}`,
-    });
-  }
+  messages.push({
+    role: 'user',
+    content: [
+      `当前章节：「${currentChapter.title || `第 ${currentChapter.position + 1} 章`}」`,
+      `章节概要：${currentChapter.synopsis || '无明确概要，请自然承接前文推进剧情。'}`,
+    ].join('\n'),
+  });
 
   return messages;
 }
@@ -86,75 +97,192 @@ function buildPresetPrompt(preset?: Preset): string {
   return parts.join('\n\n');
 }
 
-async function buildResourceContext(projectId: number, budget: number): Promise<string> {
+async function buildResourceContext(
+  projectId: number,
+  budget: number,
+  scanText: string,
+  recursiveWorldbook: boolean,
+): Promise<string> {
   const parts: string[] = [];
-  let remaining = budget;
-  const addPart = (title: string, text: string, maxTokens?: number) => {
-    if (!text || remaining <= 0) return;
-    const clipped = clipTextToTokenBudget(text, Math.min(remaining, maxTokens || remaining));
+  const characterBudget = Math.floor(budget * 0.35);
+  const noteBudget = Math.floor(budget * 0.2);
+  const worldbookBudget = Math.max(0, budget - characterBudget - noteBudget);
+  const addPart = (title: string, text: string, sectionBudget: number) => {
+    if (!text || sectionBudget <= 0) return;
+    const clipped = clipTextToTokenBudget(text, sectionBudget);
     if (!clipped) return;
     parts.push(`${title}：\n${clipped}`);
-    remaining -= estimateTokens(clipped);
   };
 
-  const characters = await db.getCharactersByProject(projectId);
-  const characterText = characters
-    .map((character: any) => {
-      const data = safeJson(character.data_json);
-      const card = data.data || data;
-      const text = [
-        `角色「${character.name}」`,
-        card.description && `描述：${card.description}`,
-        card.personality && `性格：${card.personality}`,
-        card.mes_example && `对话示例：${card.mes_example}`,
-      ]
-        .filter(Boolean)
-        .join('\n');
-      return clipTextToTokenBudget(text, Number(character.max_tokens || 50000));
-    })
-    .join('\n\n');
-  addPart('人物设定', characterText);
+  addPart('人物设定', await buildCharacterContext(projectId, characterBudget), characterBudget);
+  addPart('项目笔记', await buildNoteContext(projectId, noteBudget), noteBudget);
+  addPart('世界书', await buildWorldbookContext(projectId, worldbookBudget, scanText, recursiveWorldbook), worldbookBudget);
 
-  const worldbook = await db.getWorldbookEntriesByProject(projectId);
+  return parts.join('\n\n');
+}
+
+export async function buildCharacterContext(projectId: number, budget: number): Promise<string> {
+  const characters = await db.getCharactersByProject(projectId);
+  const parts: string[] = [];
+  let remaining = budget;
+
+  for (const character of characters as any[]) {
+    if (remaining <= 0) break;
+    const data = safeJson(character.data_json);
+    const card = data.data || data;
+    const text = [
+      `角色「${character.name || card.name || '未命名角色'}」`,
+      card.system_prompt && `角色系统提示：${card.system_prompt}`,
+      card.description && `描述：${card.description}`,
+      card.personality && `性格：${card.personality}`,
+      card.scenario && `场景：${card.scenario}`,
+      card.first_mes && `开场消息：${card.first_mes}`,
+      card.mes_example && `对话示例：${card.mes_example}`,
+      card.post_history_instructions && `后置指令：${card.post_history_instructions}`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const clipped = clipTextToTokenBudget(text, Math.min(remaining, Number(character.max_tokens || 50000)));
+    if (!clipped) continue;
+    parts.push(clipped);
+    remaining -= estimateTokens(clipped);
+  }
+
+  return parts.join('\n\n');
+}
+
+async function buildNoteContext(projectId: number, budget: number): Promise<string> {
+  const notes = await db.getNotesByProject(projectId);
+  const parts: string[] = [];
+  let remaining = budget;
+
+  for (const note of notes) {
+    if (remaining <= 0) break;
+    const text = `笔记「${note.title || '无标题'}」：${note.content || ''}`;
+    const clipped = clipTextToTokenBudget(text, Math.min(remaining, note.max_tokens || 30000));
+    if (!clipped) continue;
+    parts.push(clipped);
+    remaining -= estimateTokens(clipped);
+  }
+
+  return parts.join('\n\n');
+}
+
+export async function buildWorldbookContext(
+  projectId: number,
+  budget: number,
+  scanText: string,
+  recursive = true,
+): Promise<string> {
+  if (budget <= 0) return '';
+  const entries = ((await db.getWorldbookEntriesByProject(projectId)) as any[])
+    .filter((entry) => entry.enabled !== 0 && entry.collection_enabled !== 0)
+    .sort((a, b) => Number(a.position || 0) - Number(b.position || 0) || Number(a.id || 0) - Number(b.id || 0));
+
+  const activated = new Map<number, any>();
+  const activatePass = (haystack: string) => {
+    for (const entry of entries) {
+      const id = Number(entry.id || entries.indexOf(entry));
+      if (activated.has(id)) continue;
+      if (isWorldbookEntryActive(entry, haystack)) {
+        activated.set(id, entry);
+      }
+    }
+  };
+
+  activatePass(scanText);
+  if (recursive && activated.size > 0) {
+    activatePass(`${scanText}\n\n${Array.from(activated.values()).map((entry) => entry.content || '').join('\n')}`);
+  }
+
   const collectionUsage = new Map<number, number>();
-  const worldLines: string[] = [];
-  for (const entry of worldbook.filter((item: any) => item.enabled && item.collection_enabled !== 0)) {
+  const lines: string[] = [];
+  let remaining = budget;
+  for (const entry of activated.values()) {
+    if (remaining <= 0) break;
     const collectionId = Number(entry.collection_id || 0);
     const collectionBudget = Number(entry.collection_max_tokens || 50000);
     const used = collectionUsage.get(collectionId) || 0;
     const remainingForCollection = Math.max(0, collectionBudget - used);
     if (remainingForCollection <= 0) continue;
-    const body = clipTextToTokenBudget(entry.content || '', Math.min(Number(entry.max_tokens || 2000), remainingForCollection));
+
+    const label = normalizeKeys(entry.keyword_primary)[0];
+    const body = clipTextToTokenBudget(String(entry.content || ''), Math.min(remaining, remainingForCollection, Number(entry.max_tokens || 2000)));
     if (!body) continue;
-    collectionUsage.set(collectionId, used + estimateTokens(body));
-    worldLines.push(`关键词「${entry.keyword_primary}」：${body}`);
+    const line = label ? `关键词「${label}」：${body}` : body;
+    lines.push(line);
+    const tokenCost = estimateTokens(body);
+    collectionUsage.set(collectionId, used + tokenCost);
+    remaining -= tokenCost;
   }
-  const worldText = worldLines.join('\n');
-  addPart('世界书', worldText);
 
-  const notes = await db.getNotesByProject(projectId);
-  const noteText = notes
-    .map((note) => `笔记「${note.title || '无标题'}」：${clipTextToTokenBudget(note.content, note.max_tokens || 30000)}`)
-    .join('\n\n');
-  addPart('项目笔记', noteText);
-
-  return parts.join('\n\n');
+  return lines.join('\n');
 }
 
-async function getPreviousContent(
+function isWorldbookEntryActive(entry: any, scanText: string): boolean {
+  const primaryKeys = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword);
+  const secondaryKeys = normalizeKeys(entry.keyword_secondary ?? entry.keysecondary ?? entry.secondary_keys);
+  if (entry.constant === 1 || entry.constant === true || primaryKeys.length === 0) return true;
+  if (!primaryKeys.some((key) => includesKey(scanText, key))) return false;
+  if (secondaryKeys.length === 0) return true;
+  return secondaryKeys.some((key) => includesKey(scanText, key));
+}
+
+function includesKey(text: string, key: string): boolean {
+  return text.toLocaleLowerCase().includes(key.toLocaleLowerCase());
+}
+
+function normalizeKeys(raw: any): string[] {
+  if (Array.isArray(raw)) return raw.map(String).map((item) => item.trim()).filter(Boolean);
+  if (typeof raw === 'string') return raw.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+export function selectPreviousChapters(
   currentChapter: Chapter,
-  config: ContextConfig,
-  chapters = [] as Chapter[],
-): Promise<string> {
-  const allChapters = chapters.length ? chapters : await db.getChaptersByProject(currentChapter.project_id);
-  const previous = allChapters
-    .filter((chapter) => chapter.position < currentChapter.position && chapter.content)
+  config: PartialContextConfig,
+  chapters: Chapter[],
+): Chapter[] {
+  const previous = chapters
+    .filter((chapter) => chapter.position < currentChapter.position && Boolean(chapter.content))
     .sort((a, b) => a.position - b.position);
 
-  const recentCount = Math.max(1, config.recentChapterCount ?? 3);
-  const recent = previous.slice(-recentCount);
-  const text = recent.map((chapter) => chapter.content).join('\n\n');
-  return clipTextToTokenBudget(text, config.slidingWindowSize || 50000);
+  if (config.strategy === 'full') return previous;
+
+  if (config.strategy === 'custom') {
+    const start = Math.max(0, Number(config.customRangeStart ?? 0));
+    const end = Number(config.customRangeEnd ?? -1);
+    return previous.filter((chapter) => chapter.position >= start && (end < 0 || chapter.position <= end));
+  }
+
+  const recentCount = Math.max(1, Number(config.recentChapterCount ?? 3));
+  return previous.slice(-recentCount);
+}
+
+export function buildPreviousContentText(
+  currentChapter: Chapter,
+  config: PartialContextConfig,
+  chapters: Chapter[],
+): string {
+  const selected = selectPreviousChapters(currentChapter, config, chapters);
+  const text = selected
+    .map((chapter) => `第 ${chapter.position + 1} 章「${chapter.title || '未命名'}」\n${chapter.content}`)
+    .join('\n\n');
+  return clipTextTailToTokenBudget(text, Number(config.slidingWindowSize || 50000));
+}
+
+function clipTextTailToTokenBudget(text: string, budget: number): string {
+  if (budget <= 0 || !text) return '';
+  let used = 0;
+  let output = '';
+  for (let index = text.length - 1; index >= 0; index--) {
+    const char = text[index];
+    const nextCost = estimateTokens(char);
+    if (used + nextCost > budget) break;
+    used += nextCost;
+    output = char + output;
+  }
+  return output.trimStart();
 }
 
 export function buildMemoryContext(

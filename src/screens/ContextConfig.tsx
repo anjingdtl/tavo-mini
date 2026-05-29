@@ -42,6 +42,7 @@ export const ContextConfigScreen: React.FC = () => {
         <Field label="记忆摘要预算 tokens" value={String(draft.summaryBudgetTokens ?? 20000)} onChangeText={(value) => setDraft({ ...draft, summaryBudgetTokens: Number(value) || 20000 })} keyboardType="number-pad" />
         <Field label="记忆摘要 Top K" value={String(draft.memoryTopK ?? 10)} onChangeText={(value) => setDraft({ ...draft, memoryTopK: Number(value) || 10 })} keyboardType="number-pad" />
         <Field label="资料预算 tokens" value={String(draft.resourceBudget)} onChangeText={(value) => setDraft({ ...draft, resourceBudget: Number(value) || 0 })} keyboardType="number-pad" />
+        <Field label="世界书扫描深度" value={String(draft.worldbookScanDepth ?? 4)} onChangeText={(value) => setDraft({ ...draft, worldbookScanDepth: Number(value) || 4 })} keyboardType="number-pad" />
         <Field label="自定义开始章节序号" value={String(draft.customRangeStart)} onChangeText={(value) => setDraft({ ...draft, customRangeStart: Number(value) || 0 })} keyboardType="number-pad" />
         <Field label="自定义结束章节序号（-1 表示最后）" value={String(draft.customRangeEnd)} onChangeText={(value) => setDraft({ ...draft, customRangeEnd: Number(value) || -1 })} keyboardType="number-pad" />
         <View style={styles.switchRow}>
@@ -50,6 +51,13 @@ export const ContextConfigScreen: React.FC = () => {
             <Text style={[styles.switchHint, { color: theme.colors.textSecondary }]}>关闭后只使用章节前文和记忆摘要。</Text>
           </View>
           <Switch value={draft.includeResources} onValueChange={(includeResources) => setDraft({ ...draft, includeResources })} />
+        </View>
+        <View style={styles.switchRow}>
+          <View style={styles.switchText}>
+            <Text style={[styles.switchTitle, { color: theme.colors.textPrimary }]}>世界书递归触发</Text>
+            <Text style={[styles.switchHint, { color: theme.colors.textSecondary }]}>启用后，已命中的世界书内容可再触发一轮相关条目。</Text>
+          </View>
+          <Switch value={draft.worldbookRecursive !== false} onValueChange={(worldbookRecursive) => setDraft({ ...draft, worldbookRecursive })} />
         </View>
         <Button label="保存配置" icon={Save} onPress={save} />
       </ScrollView>

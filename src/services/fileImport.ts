@@ -23,6 +23,7 @@ export interface ParsedWorldBookEntry {
   content: string;
   comment: string;
   enabled: number;
+  constant: number;
   position: number;
 }
 
@@ -142,15 +143,18 @@ export function parseWorldBookJSON(jsonText: string): WorldBookImportResult {
   const parsed = entries
     .map((entry, index): ParsedWorldBookEntry | null => {
       const keys = normalizeKeys(entry.keys ?? entry.key ?? entry.keyword ?? entry.keyword_primary);
+      const secondaryKeys = normalizeKeys(entry.secondary_keys ?? entry.keysecondary ?? entry.keyword_secondary);
       const content = String(entry.content || '').trim();
-      if (keys.length === 0 || !content) return null;
+      const constant = entry.constant === true || entry.constant === 1 || keys.length === 0 ? 1 : 0;
+      if (!content || (keys.length === 0 && !constant)) return null;
       return {
-        keyword_primary: keys[0],
-        keyword_secondary: keys.slice(1).join(', '),
+        keyword_primary: keys[0] || '',
+        keyword_secondary: secondaryKeys.length ? secondaryKeys.join(', ') : keys.slice(1).join(', '),
         content,
         comment: String(entry.comment || entry.name || ''),
         enabled: entry.enabled === false || entry.disable === true ? 0 : 1,
-        position: Number(entry.position ?? entry.order ?? index) || index,
+        constant,
+        position: Number(entry.position ?? entry.insertion_order ?? entry.order ?? index) || index,
       };
     })
     .filter((entry): entry is ParsedWorldBookEntry => Boolean(entry));
@@ -340,6 +344,7 @@ export async function importSelectedWorldBook(projectId: number): Promise<WorldB
       collection_id: collectionId,
       keyword_secondary: entry.keyword_secondary,
       comment: entry.comment,
+      constant: entry.constant,
       position: entry.position,
     });
     count++;
@@ -369,6 +374,7 @@ export async function importWorldBookFromJSON(
       collection_id: collectionId,
       keyword_secondary: entry.keyword_secondary,
       comment: entry.comment,
+      constant: entry.constant,
       position: entry.position,
     });
     count++;
