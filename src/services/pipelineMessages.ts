@@ -81,16 +81,17 @@ export function buildAssessmentMessages(draftText: string): ChatMessage[] {
     {
       role: 'system',
       content: [
-        '你是小说流水线的快速质检员。请判断这份草稿是否必须进入终审润色。',
+        '你是小说流水线的快速质检编辑。请先给出可展示给作者的短评，再判断这份草稿是否必须进入终审润色。',
         '只检查会明显影响读者体验的问题：严重逻辑矛盾、角色行为明显不一致、前后衔接断裂、语言可读性很差。',
-        '如果只是轻微措辞或标点问题，needsProof 应为 false。',
+        '如果只是轻微措辞或标点问题，needsProof 应为 false，但仍要给出简短评价。',
         '必须输出严格 JSON，不要使用 Markdown，不要输出解释。',
-        '格式固定为：{"needsProof": boolean, "reasons": string[]}',
+        '格式固定为：{"needsProof": boolean, "shortReview": "一句话短评", "issues": string[], "suggestions": string[], "reasons": string[]}',
+        'issues 写主要问题，没有问题则为空数组；suggestions 写可执行修改意见，没有必要修改则为空数组；reasons 写 needsProof 判断依据。',
       ].join('\n'),
     },
     {
       role: 'user',
-      content: `请快速评估以下小说草稿：\n\n${draftText}`,
+      content: `请快速评估以下小说草稿，并输出短评与修改意见：\n\n${draftText}`,
     },
   ];
 }
