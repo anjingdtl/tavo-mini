@@ -82,8 +82,8 @@ android {
         applicationId "com.tavomini"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 14
-        versionName "V1.3.1"
+        versionCode 15
+        versionName "V1.3.2"
     }
     signingConfigs {
         debug {
