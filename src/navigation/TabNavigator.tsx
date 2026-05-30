@@ -3,6 +3,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator, NativeStackScreenProps } from '@react-navigation/native-stack';
 import { BookOpen, Boxes, FolderKanban, Settings } from 'lucide-react-native';
 import { Text } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
 import { ProjectListScreen } from '../screens/ProjectListScreen';
@@ -87,6 +88,16 @@ const SettingsStackScreen = () => (
 
 export const TabNavigator: React.FC = () => {
   const { theme } = useThemeStore();
+  const insets = useSafeAreaInsets();
+
+  const tabBarIcon = ({ route, color, size }: { route: any; color: string; size: number }) => {
+    const props = { color, size: size || 20 };
+    if (route.name === 'Projects') return <FolderKanban {...props} />;
+    if (route.name === 'Editor') return <BookOpen {...props} />;
+    if (route.name === 'Resources') return <Boxes {...props} />;
+    if (route.name === 'Settings') return <Settings {...props} />;
+    return <Text />;
+  };
 
   return (
     <Tab.Navigator
@@ -97,19 +108,12 @@ export const TabNavigator: React.FC = () => {
         tabBarStyle: {
           backgroundColor: theme.colors.surface,
           borderTopColor: theme.colors.border,
-          height: 62,
+          height: 62 + insets.bottom,
           paddingTop: 6,
-          paddingBottom: 8,
+          paddingBottom: Math.max(8, insets.bottom),
         },
         tabBarLabelStyle: { fontSize: 12, fontWeight: '700' },
-        tabBarIcon: ({ color, size }) => {
-          const props = { color, size: size || 20 };
-          if (route.name === 'Projects') return <FolderKanban {...props} />;
-          if (route.name === 'Editor') return <BookOpen {...props} />;
-          if (route.name === 'Resources') return <Boxes {...props} />;
-          if (route.name === 'Settings') return <Settings {...props} />;
-          return <Text />;
-        },
+        tabBarIcon: ({ color, size }) => tabBarIcon({ route, color, size: size || 20 }),
       })}
     >
       <Tab.Screen name="Projects" component={ProjectStackScreen} options={{ tabBarLabel: '项目' }} />

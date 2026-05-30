@@ -1,4 +1,5 @@
 export type PipelineStageName = 'draft' | 'review' | 'factCheck' | 'proof';
+export type PipelineMode = 'twoStage' | 'conditional' | 'full';
 
 export type PipelineTaskStatus =
   | 'idle'
@@ -10,6 +11,7 @@ export type PipelineTaskStatus =
   | 'failed';
 
 export interface PipelineConfig {
+  pipelineMode: PipelineMode;
   draftPresetId: number | null;
   reviewPresetId: number | null;
   factCheckPresetId: number | null;
@@ -23,7 +25,7 @@ export interface PipelineConfig {
 export interface PipelineStageResult {
   stage: PipelineStageName;
   text: string;
-  status: 'success' | 'failed';
+  status: 'success' | 'failed' | 'skipped';
   error?: string;
   tokens?: { input: number; output: number; total: number };
   durationMs: number;
@@ -40,4 +42,5 @@ export interface PipelineTask {
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;
+  resolvedAction?: 'accept' | 'reject' | null;
 }

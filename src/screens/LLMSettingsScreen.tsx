@@ -1,16 +1,34 @@
-import React, { useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { Save } from 'lucide-react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { useSettingsStore } from '../store/settingsStore';
+import { useThemeStore } from '../store/themeStore';
 import { testLLMConnection } from '../services/llm';
+import type { LLMConfig } from '../types/novel';
+
+const emptyDraft: LLMConfig = {
+  id: 0,
+  name: '新配置',
+  base_url: '',
+  api_key: '',
+  model_name: '',
+  is_active: 0,
+};
 
 export const LLMSettingsScreen: React.FC = () => {
-  const { llmConfig, loadSettings, setLLMConfig } = useSettingsStore();
-  const [baseUrl, setBaseUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [modelName, setModelName] = useState('');
+  const { theme } = useThemeStore();
+  const {
+    llmConfig,
+    llmConfigs,
+    loadSettings,
+    saveLLMConfig,
+    setActiveLLMConfig,
+    deleteLLMConfig,
+  } = useSettingsStore();
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<LLMConfig>(emptyDraft);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
 
@@ -19,27 +37,44 @@ export const LLMSettingsScreen: React.FC = () => {
   }, [loadSettings]);
 
   useEffect(() => {
-    setBaseUrl(llmConfig.base_url);
-    setApiKey(llmConfig.api_key);
-    setModelName(llmConfig.model_name);
-  }, [llmConfig]);
+    if (selectedId === 0) return;
+    const selected = (selectedId != null ? llmConfigs.find((config) => config.id === selectedId) : undefined)
+      || llmConfigs.find((config) => config.is_active === 1)
+      || llmConfigs.find((config) => config.id === llmConfig.id)
+      || llmConfigs[0]
+      || emptyDraft;
+    setSelectedId(selected.id);
+    setDraft(selected);
+  }, [llmConfig, llmConfigs, selectedId]);
+
+  const activeName = useMemo(() => llmConfigs.find((config) => config.is_active === 1)?.name || '未选择', [llmConfigs]);
 
   const validate = () => {
-    if (!baseUrl.trim() || !apiKey.trim() || !modelName.trim()) {
-      Alert.alert('配置不完整', '请填写 API 地址、API Key 和模型名称。');
+    if (!draft.name.trim() || !draft.base_url.trim() || !draft.api_key.trim() || !draft.model_name.trim()) {
+      Alert.alert('配置不完整', '请填写配置名称、API 地址、API Key 和模型名称。');
       return false;
     }
     return true;
+  };
+
+  const updateDraft = (fields: Partial<LLMConfig>) => {
+    setDraft((current) => ({ ...current, ...fields }));
+  };
+
+  const startNewConfig = () => {
+    setSelectedId(0);
+    setDraft({ ...emptyDraft, name: `配置 ${llmConfigs.length + 1}` });
   };
 
   const save = async () => {
     if (!validate()) return;
     setSaving(true);
     try {
-      await setLLMConfig(baseUrl, apiKey, modelName);
+      const id = await saveLLMConfig(draft);
+      setSelectedId(id);
       Toast.show({ type: 'success', text1: 'LLM 配置已保存' });
     } catch (error: any) {
-      Alert.alert('保存失败', error?.message || '配置写入失败，请重启应用后再试。');
+      Alert.alert('保存失败', error?.message || '配置写入失败，请重试。');
     } finally {
       setSaving(false);
     }
@@ -49,8 +84,9 @@ export const LLMSettingsScreen: React.FC = () => {
     if (!validate()) return;
     setTesting(true);
     try {
-      await setLLMConfig(baseUrl, apiKey, modelName);
-      const message = await testLLMConnection(baseUrl, apiKey, modelName);
+      const id = await saveLLMConfig(draft);
+      setSelectedId(id);
+      const message = await testLLMConnection(draft.base_url, draft.api_key, draft.model_name);
       Alert.alert('连接成功', message.slice(0, 120));
     } catch (error: any) {
       Alert.alert('连接失败', error?.message || '请检查 API 地址、API Key、模型名称和手机网络。');
@@ -59,18 +95,79 @@ export const LLMSettingsScreen: React.FC = () => {
     }
   };
 
+  const activate = async () => {
+    if (draft.id <= 0) {
+      Alert.alert('请先保存', '新配置保存后才能设为当前启用。');
+      return;
+    }
+    await setActiveLLMConfig(draft.id);
+    Toast.show({ type: 'success', text1: '已切换当前 LLM 配置' });
+  };
+
+  const remove = () => {
+    if (draft.id <= 0) {
+      startNewConfig();
+      return;
+    }
+    if (llmConfigs.length <= 1) {
+      Alert.alert('无法删除', '至少需要保留一个 LLM 配置。');
+      return;
+    }
+    Alert.alert('删除配置', `确定删除「${draft.name}」？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          await deleteLLMConfig(draft.id);
+          Toast.show({ type: 'success', text1: 'LLM 配置已删除' });
+        },
+      },
+    ]);
+  };
+
   return (
     <Screen>
-      <Header title="LLM 设置" subtitle="OpenAI 兼容 API" />
+      <Header title="LLM 设置" subtitle={`OpenAI 兼容 API · 当前：${activeName}`} />
       <ScrollView contentContainerStyle={styles.content}>
-        <Field label="Base URL" value={baseUrl} onChangeText={setBaseUrl} placeholder="https://api.openai.com" autoCapitalize="none" autoCorrect={false} />
-        <Field label="API Key" value={apiKey} onChangeText={setApiKey} placeholder="sk-..." autoCapitalize="none" autoCorrect={false} secureTextEntry />
-        <Field label="模型名称" value={modelName} onChangeText={setModelName} placeholder="gpt-4.1 或兼容模型名称" autoCapitalize="none" autoCorrect={false} />
-        <View style={styles.action}>
-          <Button label={saving ? '保存中...' : '保存配置'} icon={Save} onPress={save} disabled={saving || testing} />
+        <View style={styles.configList}>
+          {llmConfigs.map((config) => {
+            const selected = config.id === draft.id;
+            const active = config.is_active === 1;
+            return (
+              <TouchableOpacity
+                key={config.id}
+                style={[
+                  styles.configChip,
+                  {
+                    backgroundColor: selected ? theme.colors.accentSoft : theme.colors.card,
+                    borderColor: active ? theme.colors.accent : theme.colors.border,
+                  },
+                ]}
+                onPress={() => setSelectedId(config.id)}
+              >
+                <Text style={[styles.configName, { color: selected ? theme.colors.accent : theme.colors.textPrimary }]}>
+                  {config.name || '未命名配置'}
+                </Text>
+                {active ? <CheckCircle2 size={14} color={theme.colors.accent} /> : null}
+              </TouchableOpacity>
+            );
+          })}
+          <Button label="新增" icon={Plus} variant="secondary" onPress={startNewConfig} compact />
         </View>
-        <View style={styles.action}>
-          <Button label={testing ? '测试中...' : '保存并测试连接'} variant="secondary" onPress={saveAndTest} disabled={saving || testing} />
+
+        <Field label="配置名称" value={draft.name} onChangeText={(name) => updateDraft({ name })} placeholder="例如：OpenAI / 本地模型 / DeepSeek" />
+        <Field label="Base URL" value={draft.base_url} onChangeText={(base_url) => updateDraft({ base_url })} placeholder="https://api.openai.com" autoCapitalize="none" autoCorrect={false} />
+        <Field label="API Key" value={draft.api_key} onChangeText={(api_key) => updateDraft({ api_key })} placeholder="sk-..." autoCapitalize="none" autoCorrect={false} secureTextEntry />
+        <Field label="模型名称" value={draft.model_name} onChangeText={(model_name) => updateDraft({ model_name })} placeholder="gpt-4.1 或兼容模型名称" autoCapitalize="none" autoCorrect={false} />
+
+        <View style={styles.actionRow}>
+          <Button label={saving ? '保存中...' : '保存配置'} icon={Save} onPress={save} disabled={saving || testing} flex />
+          <Button label="设为当前" icon={CheckCircle2} variant="secondary" onPress={activate} disabled={saving || testing || draft.is_active === 1} flex />
+        </View>
+        <View style={styles.actionRow}>
+          <Button label={testing ? '测试中...' : '保存并测试'} variant="secondary" onPress={saveAndTest} disabled={saving || testing} flex />
+          <Button label="删除" icon={Trash2} variant="ghost" onPress={remove} disabled={saving || testing} flex />
         </View>
       </ScrollView>
     </Screen>
@@ -79,5 +176,17 @@ export const LLMSettingsScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 96 },
-  action: { marginTop: spacing.md },
+  configList: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.lg },
+  configChip: {
+    minHeight: 34,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  configName: { fontSize: 13, fontWeight: '800' },
+  actionRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
 });

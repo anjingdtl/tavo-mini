@@ -1,15 +1,13 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { BarChart3, Bot, FileText, Network, Plus, Settings2, Trash2 } from 'lucide-react-native';
-import { useNavigation } from '@react-navigation/native';
+import { BarChart3, Bot, FileText, Plus, Settings2, Trash2 } from 'lucide-react-native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Button, Card, EmptyState, Field, Header, Screen, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
-import { buildContext } from '../services/contextBuilder';
-import { callLLMResult } from '../services/llm';
-import { generateMemorySummary } from '../services/summaryGenerator';
+import { runBatchChapterPipeline } from '../services/batchChapterPipeline';
 import type { EditorStackParamList } from '../navigation/TabNavigator';
 import type { Chapter } from '../types/novel';
 
@@ -34,9 +32,11 @@ export const OutlineEditor: React.FC = () => {
     setChapters(await db.getChaptersByProject(currentProject.id));
   }, [currentProject]);
 
-  useEffect(() => {
-    loadChapters();
-  }, [loadChapters]);
+  useFocusEffect(
+    useCallback(() => {
+      loadChapters();
+    }, [loadChapters]),
+  );
 
   const addChapter = async () => {
     if (!currentProject) return;
@@ -69,54 +69,17 @@ export const OutlineEditor: React.FC = () => {
         .map((line) => line.trim())
         .filter(Boolean);
 
-      let working = await db.getChaptersByProject(currentProject.id);
-      while (working.length < count) {
-        const index = working.length;
-        const line = outlineLines[index] || '';
-        const title = line.replace(/^\d+[.、\s-]*/, '').split(/[：:]/)[0] || `第 ${index + 1} 章`;
-        const id = await db.createChapter(currentProject.id, index, title);
-        if (line) await db.updateChapter(id, { synopsis: line });
-        working = await db.getChaptersByProject(currentProject.id);
-      }
-
-      const targets = working
-        .filter((chapter) => chapter.status !== 'final')
-        .slice(0, count);
-
-      if (targets.length === 0) {
-        Alert.alert('无需生成', '前 N 章都已经定稿。');
-        return;
-      }
-
-      for (let index = 0; index < targets.length; index++) {
-        const chapter = targets[index];
-        setBatchProgress(`正在生成 ${index + 1}/${targets.length}：${chapter.title}`);
-        const config = await db.getContextConfig();
-        const presets = await db.getPresetsByProject(chapter.project_id);
-        const freshChapter = (await db.getChapterById(chapter.id)) || chapter;
-        const messages = await buildContext(freshChapter, config, chapter.project_id, presets[0]);
-        messages.push({
-          role: 'user',
-          content: `请根据章节标题和概要创作完整正文。\n\n章节：${freshChapter.title}\n概要：${freshChapter.synopsis || outlineLines[index] || '请承接前文自然推进剧情。'}\n\n要求：只输出正文，不要输出分析或标题。`,
-        });
-        const result = await callLLMResult(messages, presets[0]?.max_tokens || 4000, {
-          max_tokens: presets[0]?.max_tokens || 4000,
-          scenario: 'batch_chapter_generate',
-        });
-        if (result.text?.trim()) {
-          await db.updateChapter(chapter.id, { content: result.text.trim(), status: 'draft' });
-          try {
-            await generateMemorySummary(chapter.id, 200);
-          } catch {
-            // Batch writing should continue even if one memory summary fails.
-          }
-        }
-      }
+      const result = await runBatchChapterPipeline({
+        projectId: currentProject.id,
+        count,
+        outlineLines,
+        onProgress: setBatchProgress,
+      });
 
       setShowBatch(false);
       setBatchProgress('');
       await loadChapters();
-      Alert.alert('批量生成完成', `已串行生成 ${targets.length} 章。`);
+      Alert.alert('批量生成完成', `已完成 ${result.completed} 章，失败 ${result.failed} 章。`);
     } catch (error: any) {
       Alert.alert('批量生成失败', error?.message || '请检查 API 配置。');
     } finally {
@@ -159,10 +122,9 @@ export const OutlineEditor: React.FC = () => {
     <Screen>
       <Header title={currentProject.name} subtitle="章节、大纲、摘要和上下文" action={<Button label="章节" icon={Plus} onPress={addChapter} />} />
       <View style={styles.quickActions}>
-        <Button label="AI 写 N 章" icon={Bot} onPress={() => setShowBatch(true)} />
-        <Button label="情节线" icon={Network} variant="secondary" onPress={() => navigation.navigate('PlotlineManager')} />
-        <Button label="故事概览" icon={BarChart3} variant="secondary" onPress={() => navigation.navigate('StoryOverview')} />
-        <Button label="上下文" icon={Settings2} variant="secondary" onPress={() => navigation.navigate('ContextConfig')} />
+        <Button label="AI 写 N 章" icon={Bot} onPress={() => setShowBatch(true)} compact flex />
+        <Button label="故事概览" icon={BarChart3} variant="secondary" onPress={() => navigation.navigate('StoryOverview')} compact flex />
+        <Button label="上下文" icon={Settings2} variant="secondary" onPress={() => navigation.navigate('ContextConfig')} compact flex />
       </View>
       {chapters.length === 0 ? (
         <EmptyState title="还没有章节" description="先创建一个章节，然后补充概要和正文。" action={<Button label="创建章节" icon={FileText} onPress={addChapter} />} />

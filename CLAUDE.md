@@ -6,15 +6,24 @@
 
 - `npm install` — 安装依赖
 - `npx react-native run-android` — 运行 Android 开发版
-- `cd android && ./gradlew assembleDebug` — 构建 debug APK
-- `cd android && ./gradlew assembleRelease` — 构建 release APK
+- `npm run apk:debug` — 构建测试 APK 并复制到统一产物目录
+- `npm run apk:release` — 构建正式 APK 并复制到统一产物目录
 - `npm test` — Jest 全部测试
 - `npx jest __tests__/llm.test.ts` — 运行单个测试文件
 - `npm run lint` — ESLint 检查
 
+## APK 产物管理
+
+统一只从项目根目录的 `dist/apk/` 取 APK。Gradle 自己的 `android/app/build/outputs/apk/` 只是中间产物，不作为对外交付路径；不要再手工复制 APK 到项目其他目录。
+
+- 测试 APK：运行 `npm run apk:debug`，产物为 `dist/apk/debug/TavoMini-V<版本号>-debug.apk`
+- 正式 APK：运行 `npm run apk:release`，产物为 `dist/apk/release/TavoMini-V<版本号>-release.apk`
+- 当前版本示例：`dist/apk/debug/TavoMini-V1.3.1-debug.apk`、`dist/apk/release/TavoMini-V1.3.1-release.apk`
+- 直接运行 `cd android && ./gradlew assembleDebug|assembleRelease` 仍会在 Gradle 默认目录生成 APK，但这不是项目规范交付目录。
+
 ## 架构
 
-React Native CLI + TypeScript。Zustand 状态管理（4 个 store），SQLite 本地持久化（15 张表）。底部 4 Tab 导航（项目/编辑/资料/设置），三色主题系统，多阶段 AI 管线。
+React Native CLI + TypeScript。Zustand 状态管理（4 个 store），SQLite 本地持久化（16 张表，schema version 5）。底部 4 Tab 导航（项目/编辑/资料/设置），三色主题系统，多阶段 AI 管线。
 
 ### 文件结构
 
@@ -27,7 +36,8 @@ tavo-mini/
     screens/                          -- 18 个页面组件（含 3 个 pipeline 页面）
     components/                       -- ChapterCard, AIStreamText, ThemeProvider, ui
     services/                         -- database, llm, contextBuilder, macroReplace,
-                                        summaryGenerator, chapterGeneration, fileImport,
+                                        summaryGenerator, chapterGeneration,
+                                        batchChapterPipeline, fileImport,
                                         exportService, secureStorage,
                                         pipelineMessages, pipelineRunner
     store/                            -- projectStore, settingsStore, themeStore,
@@ -40,7 +50,7 @@ tavo-mini/
 
 ### 数据层
 
-SQLite 数据库 `tavo_mini.db`，15 张表：projects、chapters、fragments、plotlines、project_plotlines、characters、worldbook_collections、worldbook_entries、notes、presets、llm_config、settings、project_resources、llm_usage_logs、freeform_documents。
+SQLite 数据库 `tavo_mini.db`，16 张表（schema version 5）：projects、chapters、fragments、plotlines、project_plotlines、characters、worldbook_collections、worldbook_entries、notes、presets、llm_config、settings、project_resources、llm_usage_logs、freeform_documents、pipeline_tasks。
 
 服务层 `src/services/database.ts` 提供全部 CRUD 操作。
 
@@ -65,6 +75,7 @@ SQLite 数据库 `tavo_mini.db`，15 张表：projects、chapters、fragments、
 - `services/macroReplace.ts` — `{{char}}`/`{{user}}`/`{{chapter}}`/`{{synopsis}}` 宏替换
 - `services/summaryGenerator.ts` — LLM 生成结构化章节摘要
 - `services/chapterGeneration.ts` — LLM 驱动的章节续写生成
+- `services/batchChapterPipeline.ts` — “AI 写 N 章”逐章创建并执行多角色流水线任务
 - `services/pipelineRunner.ts` — 多阶段 AI 管线（草稿→审查→事实核查→校对），支持取消和分步回退
 - `services/pipelineMessages.ts` — 管线各阶段的 prompt 构建
 - `services/secureStorage.ts` — Android Keystore 安全存储（react-native-keychain）
@@ -83,5 +94,5 @@ SQLite 数据库 `tavo_mini.db`，15 张表：projects、chapters、fragments、
 
 ## 安全
 
-- API Key 通过 Android Keystore 安全存储（`secureStorage.ts` + react-native-keychain），SQLite `llm_config` 表仅存 base_url 和 model_name
+- API Key 通过 Android Keystore 按 LLM 配置 id 安全存储（`secureStorage.ts` + react-native-keychain），SQLite `llm_config` 表仅存 name、base_url、model_name、is_active 等非密钥字段
 - 无 WebView、无远程代码执行

@@ -1,9 +1,11 @@
 {
   "name": "TavoMini",
-  "version": "0.0.1",
+  "version": "1.3.1",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
+    "apk:debug": "node scripts/build-apk.js debug",
+    "apk:release": "node scripts/build-apk.js release",
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "postinstall": "node scripts/patch-sqlite-storage-gradle.js",

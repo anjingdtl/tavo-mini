@@ -13,6 +13,12 @@ const STRATEGIES: { value: ContextStrategy; label: string }[] = [
   { value: 'custom', label: '自定义' },
 ];
 
+const STRATEGY_HELP: Record<ContextStrategy, string> = {
+  sliding: '读取最近若干章，并按 token 预算截取末尾正文，适合日常续写和长篇连载。',
+  full: '尽量读取所有前文，再按预算裁剪，适合短篇或上下文窗口较大的模型。',
+  custom: '只读取指定章节序号范围，适合重写某段、跳章或指定参考范围。',
+};
+
 export const ContextConfigScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const { contextConfig, loadSettings, setContextConfig } = useSettingsStore();
@@ -37,6 +43,21 @@ export const ContextConfigScreen: React.FC = () => {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.label, { color: theme.colors.textSecondary }]}>前文策略</Text>
         <SegmentedControl value={draft.strategy} options={STRATEGIES} onChange={(strategy) => setDraft({ ...draft, strategy })} />
+        <View style={[styles.helpBox, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
+          {STRATEGIES.map((strategy) => {
+            const active = strategy.value === draft.strategy;
+            return (
+              <View key={strategy.value} style={styles.helpItem}>
+                <Text style={[styles.helpTitle, { color: active ? theme.colors.accent : theme.colors.textPrimary }]}>
+                  {strategy.label}
+                </Text>
+                <Text style={[styles.helpText, { color: active ? theme.colors.textPrimary : theme.colors.textSecondary }]}>
+                  {STRATEGY_HELP[strategy.value]}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
         <Field label="最近正文窗口 tokens" value={String(draft.slidingWindowSize)} onChangeText={(value) => setDraft({ ...draft, slidingWindowSize: Number(value) || 0 })} keyboardType="number-pad" />
         <Field label="最近正文章数" value={String(draft.recentChapterCount ?? 3)} onChangeText={(value) => setDraft({ ...draft, recentChapterCount: Number(value) || 3 })} keyboardType="number-pad" />
         <Field label="记忆摘要预算 tokens" value={String(draft.summaryBudgetTokens ?? 20000)} onChangeText={(value) => setDraft({ ...draft, summaryBudgetTokens: Number(value) || 20000 })} keyboardType="number-pad" />
@@ -68,6 +89,10 @@ export const ContextConfigScreen: React.FC = () => {
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 96, gap: spacing.md },
   label: { fontSize: 12, fontWeight: '800' },
+  helpBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, gap: spacing.sm },
+  helpItem: { gap: 2 },
+  helpTitle: { fontSize: 13, fontWeight: '800' },
+  helpText: { fontSize: 12, lineHeight: 18 },
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.md },
   switchText: { flex: 1 },
   switchTitle: { fontSize: 15, fontWeight: '800' },
