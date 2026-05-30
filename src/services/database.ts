@@ -12,13 +12,18 @@ import type {
   ProjectMode,
 } from '../types/novel';
 import type { PipelineConfig } from '../types/pipeline';
-import { getSecureLLMApiKey, setSecureLLMApiKey } from './secureStorage';
+import {
+  clearSecureLLMApiKey,
+  getSecureLLMApiKey,
+  migrateLegacyLLMApiKey,
+  setSecureLLMApiKey,
+} from './secureStorage';
 import { estimateTokens } from '../utils/tokenEstimator';
 
 SQLite.enablePromise(true);
 
 const DB_NAME = 'tavo_mini.db';
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '5';
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
 let db: SQLite.SQLiteDatabase | null = null;
@@ -200,10 +205,12 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     `,
     `
       CREATE TABLE IF NOT EXISTS llm_config (
-        id INTEGER PRIMARY KEY DEFAULT 1,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL DEFAULT '',
         base_url TEXT NOT NULL DEFAULT '',
         api_key TEXT NOT NULL DEFAULT '',
-        model_name TEXT NOT NULL DEFAULT ''
+        model_name TEXT NOT NULL DEFAULT '',
+        is_active INTEGER NOT NULL DEFAULT 0
       )
     `,
     `
@@ -232,6 +239,21 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         status TEXT NOT NULL DEFAULT '',
         error_code TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS pipeline_tasks (
+        id TEXT PRIMARY KEY,
+        target_type TEXT NOT NULL,
+        target_id INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'idle',
+        stage_results TEXT NOT NULL DEFAULT '[]',
+        final_text TEXT,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        resolved_action TEXT
       )
     `,
     `
@@ -355,9 +377,11 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
   await ensureColumn(database, 'presets', presets, 'extra_instructions', "extra_instructions TEXT NOT NULL DEFAULT ''");
 
   const llm = await tableColumns(database, 'llm_config');
+  await ensureColumn(database, 'llm_config', llm, 'name', "name TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'llm_config', llm, 'base_url', "base_url TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'llm_config', llm, 'api_key', "api_key TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'llm_config', llm, 'model_name', "model_name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'llm_config', llm, 'is_active', 'is_active INTEGER NOT NULL DEFAULT 0');
 
   const settings = await tableColumns(database, 'settings');
   await ensureColumn(database, 'settings', settings, 'key', "key TEXT NOT NULL DEFAULT ''");
@@ -368,9 +392,14 @@ async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
   await ensureGlobalProject(database);
   await execute(
     database,
-    'INSERT OR IGNORE INTO llm_config (id, base_url, api_key, model_name) VALUES (1, ?, ?, ?)',
-    ['', '', ''],
+    'INSERT OR IGNORE INTO llm_config (id, name, base_url, api_key, model_name, is_active) VALUES (1, ?, ?, ?, ?, 1)',
+    ['默认配置', '', '', ''],
   );
+  await execute(database, "UPDATE llm_config SET name = '默认配置' WHERE id = 1 AND name = ''");
+  const active = await execute(database, 'SELECT id FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
+  if (active.rows.length === 0) {
+    await execute(database, 'UPDATE llm_config SET is_active = 1 WHERE id = (SELECT id FROM llm_config ORDER BY id ASC LIMIT 1)');
+  }
   await ensureDefaultPreset(database);
 }
 
@@ -939,24 +968,127 @@ async function ensureDefaultPreset(database?: SQLite.SQLiteDatabase): Promise<nu
   return result.insertId!;
 }
 
-export async function getLLMConfig(): Promise<LLMConfig> {
-  const config = await one<LLMConfig>('SELECT * FROM llm_config WHERE id = 1');
-  const apiKey = await getSecureLLMApiKey();
-  if (config?.api_key && !apiKey) {
-    await setSecureLLMApiKey(config.api_key);
-    await execute(await openDatabase(), 'UPDATE llm_config SET api_key = ? WHERE id = 1', ['']);
-    return { ...config, api_key: config.api_key };
+function normalizeLLMConfig(row?: Partial<LLMConfig> | null): LLMConfig {
+  return {
+    id: Number(row?.id || 1),
+    name: row?.name || '默认配置',
+    base_url: row?.base_url || '',
+    api_key: row?.api_key || '',
+    model_name: row?.model_name || '',
+    is_active: Number(row?.is_active ?? 1),
+  };
+}
+
+async function hydrateLLMConfig(row: LLMConfig): Promise<LLMConfig> {
+  let apiKey = await getSecureLLMApiKey(row.id);
+  if (!apiKey && row.id === 1) {
+    apiKey = await migrateLegacyLLMApiKey(row.id);
   }
-  return { ...(config || { id: 1, base_url: '', api_key: '', model_name: '' }), api_key: apiKey };
+  if (row.api_key && !apiKey) {
+    apiKey = row.api_key;
+    await setSecureLLMApiKey(row.api_key, row.id);
+  }
+  if (row.api_key) {
+    await execute(await openDatabase(), 'UPDATE llm_config SET api_key = ? WHERE id = ?', ['', row.id]);
+  }
+  return { ...row, api_key: apiKey };
+}
+
+export async function getLLMConfigs(): Promise<LLMConfig[]> {
+  const rows = await all<LLMConfig>('SELECT * FROM llm_config ORDER BY is_active DESC, id ASC');
+  if (rows.length === 0) {
+    await execute(
+      await openDatabase(),
+      'INSERT INTO llm_config (name, base_url, api_key, model_name, is_active) VALUES (?, ?, ?, ?, 1)',
+      ['默认配置', '', '', ''],
+    );
+    return getLLMConfigs();
+  }
+  return Promise.all(rows.map((row) => hydrateLLMConfig(normalizeLLMConfig(row))));
+}
+
+export async function getActiveLLMConfig(): Promise<LLMConfig> {
+  let config = await one<LLMConfig>('SELECT * FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
+  if (!config) {
+    const fallback = await one<LLMConfig>('SELECT * FROM llm_config ORDER BY id ASC LIMIT 1');
+    if (!fallback) {
+      const id = await saveLLMConfig({ name: '默认配置', base_url: '', api_key: '', model_name: '', is_active: 1 });
+      config = await one<LLMConfig>('SELECT * FROM llm_config WHERE id = ?', [id]);
+    } else {
+      await setActiveLLMConfig(fallback.id);
+      config = await one<LLMConfig>('SELECT * FROM llm_config WHERE id = ?', [fallback.id]);
+    }
+  }
+  return hydrateLLMConfig(normalizeLLMConfig(config));
+}
+
+export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number> {
+  const name = (config.name || '').trim() || '未命名配置';
+  const baseUrl = (config.base_url || '').trim();
+  const modelName = (config.model_name || '').trim();
+  const isActive = Number(config.is_active || 0) === 1 ? 1 : 0;
+  const database = await openDatabase();
+
+  let id = Number(config.id || 0);
+  if (id > 0) {
+    await execute(
+      database,
+      'UPDATE llm_config SET name = ?, base_url = ?, api_key = ?, model_name = ?, is_active = ? WHERE id = ?',
+      [name, baseUrl, '', modelName, isActive, id],
+    );
+  } else {
+    const result = await execute(
+      database,
+      'INSERT INTO llm_config (name, base_url, api_key, model_name, is_active) VALUES (?, ?, ?, ?, ?)',
+      [name, baseUrl, '', modelName, isActive],
+    );
+    id = Number(result.insertId);
+  }
+
+  if (config.api_key !== undefined) {
+    await setSecureLLMApiKey(config.api_key, id);
+  }
+  if (isActive) {
+    await setActiveLLMConfig(id);
+  }
+  return id;
+}
+
+export async function setActiveLLMConfig(id: number): Promise<void> {
+  const database = await openDatabase();
+  await execute(database, 'UPDATE llm_config SET is_active = 0');
+  await execute(database, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [id]);
+}
+
+export async function deleteLLMConfig(id: number): Promise<void> {
+  const configs = await getLLMConfigs();
+  if (configs.length <= 1) {
+    throw new Error('至少需要保留一个 LLM 配置。');
+  }
+
+  const target = configs.find((config) => config.id === id);
+  await execute(await openDatabase(), 'DELETE FROM llm_config WHERE id = ?', [id]);
+  await clearSecureLLMApiKey(id);
+
+  if (target?.is_active === 1) {
+    const next = await one<LLMConfig>('SELECT * FROM llm_config ORDER BY id ASC LIMIT 1');
+    if (next) await setActiveLLMConfig(next.id);
+  }
+}
+
+export async function getLLMConfig(): Promise<LLMConfig> {
+  return getActiveLLMConfig();
 }
 
 export async function setLLMConfig(baseUrl: string, apiKey: string, modelName: string): Promise<void> {
-  await setSecureLLMApiKey(apiKey);
-  await execute(
-    await openDatabase(),
-    'INSERT OR REPLACE INTO llm_config (id, base_url, api_key, model_name) VALUES (1, ?, ?, ?)',
-    [baseUrl.trim(), '', modelName.trim()],
-  );
+  const active = await getActiveLLMConfig();
+  await saveLLMConfig({
+    ...active,
+    base_url: baseUrl,
+    api_key: apiKey,
+    model_name: modelName,
+    is_active: 1,
+  });
 }
 
 export async function getSetting(key: string): Promise<string | null> {
@@ -1054,7 +1186,14 @@ async function updateColumns(table: string, id: number, allowed: Set<string>, fi
 }
 
 export async function getPipelineConfig(): Promise<PipelineConfig> {
+  const savedMode = await getSetting('pipeline_mode');
+  const pipelineMode =
+    savedMode === 'conditional' || savedMode === 'full' || savedMode === 'twoStage'
+      ? savedMode
+      : 'twoStage';
+
   return {
+    pipelineMode,
     draftPresetId: (await getSetting('pipeline_draft_preset_id')) !== null
       ? Number(await getSetting('pipeline_draft_preset_id'))
       : null,
@@ -1075,6 +1214,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
 }
 
 export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
+  await setSetting('pipeline_mode', config.pipelineMode);
   await setSetting('pipeline_draft_preset_id', config.draftPresetId !== null ? String(config.draftPresetId) : '');
   await setSetting('pipeline_review_preset_id', config.reviewPresetId !== null ? String(config.reviewPresetId) : '');
   await setSetting('pipeline_factcheck_preset_id', config.factCheckPresetId !== null ? String(config.factCheckPresetId) : '');
@@ -1083,4 +1223,95 @@ export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
   await setSetting('pipeline_review_max_tokens', String(config.reviewMaxTokens));
   await setSetting('pipeline_factcheck_max_tokens', String(config.factCheckMaxTokens));
   await setSetting('pipeline_proof_max_tokens', String(config.proofMaxTokens));
+}
+
+// =============================================================================
+// Pipeline Tasks CRUD (BUG1 fix: persist tasks to SQLite)
+// =============================================================================
+
+export async function savePipelineTask(task: {
+  id: string;
+  targetType: string;
+  targetId: number;
+  status: string;
+  stageResults: any[];
+  finalText: string | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt: number | null;
+  resolvedAction?: string | null;
+}): Promise<void> {
+  await execute(
+    await openDatabase(),
+    `INSERT OR REPLACE INTO pipeline_tasks (id, target_type, target_id, status, stage_results, final_text, error, created_at, updated_at, resolved_at, resolved_action)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      task.id,
+      task.targetType,
+      task.targetId,
+      task.status,
+      JSON.stringify(task.stageResults),
+      task.finalText,
+      task.error,
+      task.createdAt,
+      task.updatedAt,
+      task.resolvedAt,
+      task.resolvedAction || null,
+    ],
+  );
+}
+
+export async function getUnresolvedPipelineTasks(): Promise<any[]> {
+  const rows = await all<Row>('SELECT * FROM pipeline_tasks WHERE resolved_at IS NULL ORDER BY created_at DESC');
+  return rows.map((row) => ({
+    id: row.id,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    status: row.status,
+    stageResults: (() => { try { return JSON.parse(row.stage_results); } catch { return []; } })(),
+    finalText: row.final_text,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at,
+    resolvedAction: row.resolved_action,
+  }));
+}
+
+export async function getAllPipelineTasks(): Promise<any[]> {
+  const rows = await all<Row>('SELECT * FROM pipeline_tasks ORDER BY created_at DESC');
+  return rows.map((row) => ({
+    id: row.id,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    status: row.status,
+    stageResults: (() => { try { return JSON.parse(row.stage_results); } catch { return []; } })(),
+    finalText: row.final_text,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at,
+    resolvedAction: row.resolved_action,
+  }));
+}
+
+export async function deletePipelineTask(id: string): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM pipeline_tasks WHERE id = ?', [id]);
+}
+
+export async function deleteResolvedPipelineTasks(): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM pipeline_tasks WHERE resolved_at IS NOT NULL');
+}
+
+// =============================================================================
+// Worldbook collection batch enable (优化2: enable all entries when collection enabled)
+// =============================================================================
+
+export async function setAllWorldbookEntriesEnabledByCollection(collectionId: number, enabled: boolean): Promise<void> {
+  await execute(
+    await openDatabase(),
+    'UPDATE worldbook_entries SET enabled = ? WHERE collection_id = ?',
+    [enabled ? 1 : 0, collectionId],
+  );
 }

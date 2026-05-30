@@ -3,24 +3,54 @@ import * as Keychain from 'react-native-keychain';
 const LLM_API_KEY_SERVICE = 'com.tavomini.llm.api-key';
 const LLM_API_KEY_ACCOUNT = 'llm-api-key';
 
-const keychainOptions = {
-  service: LLM_API_KEY_SERVICE,
-  accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-};
+function serviceForConfig(configId?: number): string {
+  return configId == null ? LLM_API_KEY_SERVICE : `${LLM_API_KEY_SERVICE}.${configId}`;
+}
 
-export async function getSecureLLMApiKey(): Promise<string> {
-  const credentials = await Keychain.getGenericPassword(keychainOptions);
+function accountForConfig(configId?: number): string {
+  return configId == null ? LLM_API_KEY_ACCOUNT : `${LLM_API_KEY_ACCOUNT}-${configId}`;
+}
+
+function keychainOptions(configId?: number) {
+  return {
+    service: serviceForConfig(configId),
+    accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+  };
+}
+
+export async function getSecureLLMApiKey(configId?: number): Promise<string> {
+  const credentials = await Keychain.getGenericPassword(keychainOptions(configId));
   return credentials ? credentials.password : '';
 }
 
-export async function setSecureLLMApiKey(apiKey: string): Promise<void> {
+export async function clearSecureLLMApiKey(configId?: number): Promise<void> {
+  await Keychain.resetGenericPassword({ service: serviceForConfig(configId) });
+}
+
+export async function setSecureLLMApiKey(apiKey: string, configId?: number): Promise<void> {
   const trimmed = apiKey.trim();
   if (!trimmed) {
-    await Keychain.resetGenericPassword({ service: LLM_API_KEY_SERVICE });
+    await clearSecureLLMApiKey(configId);
     return;
   }
-  const result = await Keychain.setGenericPassword(LLM_API_KEY_ACCOUNT, trimmed, keychainOptions);
+  const result = await Keychain.setGenericPassword(accountForConfig(configId), trimmed, keychainOptions(configId));
   if (!result) {
     throw new Error('API Key 安全存储写入失败。');
   }
 }
+
+export async function migrateLegacyLLMApiKey(configId: number): Promise<string> {
+  const current = await getSecureLLMApiKey(configId);
+  if (current) return current;
+
+  const legacy = await getSecureLLMApiKey();
+  if (!legacy) return '';
+
+  await setSecureLLMApiKey(legacy, configId);
+  return legacy;
+}
+
+export const legacyLLMKeychainOptions = {
+  service: LLM_API_KEY_SERVICE,
+  accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};

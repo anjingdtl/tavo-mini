@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Download, Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine } from 'lucide-react-native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
@@ -22,6 +22,11 @@ export const SettingsScreen: React.FC = () => {
   const { theme, mode, setMode } = useThemeStore();
   const { currentProject } = useProjectStore();
   const unresolvedCount = usePipelineTaskStore((s) => s.getUnresolvedCount());
+  const loadFromDB = usePipelineTaskStore((s) => s.loadFromDB);
+
+  useEffect(() => {
+    loadFromDB();
+  }, [loadFromDB]);
 
   const changeTheme = async (next: ThemeMode) => {
     setMode(next);
@@ -83,7 +88,7 @@ export const SettingsScreen: React.FC = () => {
         <Section title="关于">
           <Card>
             <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>Tavo Mini</Text>
-            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Android 手机小说工作台 · v1.0.0</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Android 手机小说工作台 · V1.3.1</Text>
           </Card>
         </Section>
       </ScrollView>

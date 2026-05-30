@@ -79,9 +79,11 @@ export interface Preset {
 
 export interface LLMConfig {
   id: number;
+  name: string;
   base_url: string;
   api_key: string;
   model_name: string;
+  is_active: number;
 }
 
 export interface WorldbookCollection {

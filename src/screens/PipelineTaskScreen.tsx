@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { Button, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
@@ -6,20 +6,20 @@ import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import type { PipelineTask } from '../types/pipeline';
 
-const STATUS_EMOJI: Record<string, string> = {
-  idle: '⏳',
-  drafting: '✍️',
-  reviewing: '🔍',
-  proofing: '✒️',
-  completed: '✅',
-  cancelled: '🚫',
-  failed: '❌',
+const STATUS_MARK: Record<string, string> = {
+  idle: '等待',
+  drafting: '初稿',
+  reviewing: '审阅',
+  proofing: '终审',
+  completed: '完成',
+  cancelled: '取消',
+  failed: '失败',
 };
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '等待中',
   drafting: '创作初稿',
-  reviewing: '审阅核查',
+  reviewing: '审阅/评估',
   proofing: '终审校对',
   completed: '已完成',
   cancelled: '已取消',
@@ -29,13 +29,18 @@ const STATUS_LABEL: Record<string, string> = {
 export const PipelineTaskScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const navigation = useNavigation();
-  const { tasks, clearResolved, resolveTask } = usePipelineTaskStore();
+  const { tasks, clearResolved, resolveTask, loadFromDB } = usePipelineTaskStore();
+
+  useEffect(() => {
+    loadFromDB();
+  }, [loadFromDB]);
 
   const unresolvedTasks = tasks.filter((t) => t.resolvedAt === null);
 
   const renderItem = ({ item }: { item: PipelineTask }) => {
     const isRunning = ['idle', 'drafting', 'reviewing', 'proofing'].includes(item.status);
     const stageCount = item.stageResults.length;
+    const skippedCount = item.stageResults.filter((stage) => stage.status === 'skipped').length;
     const totalStages = 4;
     const duration = item.updatedAt - item.createdAt;
     const durationText = duration > 60000 ? `${Math.round(duration / 60000)}m` : `${Math.round(duration / 1000)}s`;
@@ -43,13 +48,15 @@ export const PipelineTaskScreen: React.FC = () => {
     return (
       <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
         <View style={styles.row}>
-          <Text style={{ fontSize: 20 }}>{STATUS_EMOJI[item.status] || '•'}</Text>
+          <View style={[styles.statusPill, { borderColor: theme.colors.border }]}>
+            <Text style={[styles.statusPillText, { color: theme.colors.accent }]}>{STATUS_MARK[item.status] || '-'}</Text>
+          </View>
           <View style={styles.info}>
             <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
               {item.targetType === 'chapter' ? `章节 #${item.targetId}` : '自由写作'}
             </Text>
             <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-              {STATUS_LABEL[item.status]} · {stageCount}/{totalStages} 阶段 · {durationText}
+              {STATUS_LABEL[item.status]} · {stageCount}/{totalStages} 阶段 · 跳过 {skippedCount} · {durationText}
             </Text>
           </View>
         </View>
@@ -89,7 +96,7 @@ export const PipelineTaskScreen: React.FC = () => {
           renderItem={renderItem}
         />
       )}
-      <View style={styles.footer}>
+      <View style={[styles.footer, { borderTopColor: theme.colors.border }]}>
         <Button label="清空已完成" variant="ghost" onPress={clearResolved} />
       </View>
     </Screen>
@@ -107,4 +114,6 @@ const styles = StyleSheet.create({
   meta: { fontSize: 12, marginTop: 2 },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   footer: { padding: spacing.lg, borderTopWidth: StyleSheet.hairlineWidth },
+  statusPill: { minWidth: 44, minHeight: 32, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  statusPillText: { fontSize: 12, fontWeight: '800' },
 });

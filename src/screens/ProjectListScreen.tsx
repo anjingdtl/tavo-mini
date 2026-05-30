@@ -45,7 +45,7 @@ export const ProjectListScreen: React.FC = () => {
     const active = currentProject?.id === item.id;
     return (
       <TouchableOpacity onPress={() => setCurrentProject(item)} activeOpacity={0.75}>
-        <Card style={active ? { borderColor: theme.colors.accent, borderLeftWidth: 4 } : undefined}>
+        <Card style={active ? [styles.activeCard, { borderColor: theme.colors.accent }] : undefined}>
           <View style={styles.cardHeader}>
             <View style={styles.cardText}>
               <Text style={[styles.projectName, { color: theme.colors.textPrimary }]}>{item.name}</Text>
@@ -108,4 +108,5 @@ const styles = StyleSheet.create({
   modal: { borderRadius: 8, padding: spacing.lg },
   modalTitle: { fontSize: 18, fontWeight: '800', marginBottom: spacing.md },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md, marginTop: spacing.lg },
+  activeCard: { borderLeftWidth: 4 },
 });

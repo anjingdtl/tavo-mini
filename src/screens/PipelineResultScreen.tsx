@@ -4,11 +4,33 @@ import { Button, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
-import { mergeChapterGenerationResult } from '../services/chapterGeneration';
 import * as db from '../services/database';
 import type { PipelineStageResult } from '../types/pipeline';
 
 type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'PipelineResult'>;
+
+const STAGE_LABELS: Record<PipelineStageResult['stage'], string> = {
+  draft: '初稿',
+  review: '审阅/评估',
+  factCheck: '事实核查',
+  proof: '终稿',
+};
+
+const STATUS_LABELS: Record<PipelineStageResult['status'], string> = {
+  success: '成功',
+  failed: '失败',
+  skipped: '已跳过',
+};
+
+function formatStageText(stage: PipelineStageResult): string {
+  if (!stage.text) return stage.status === 'skipped' ? '该阶段已跳过。' : '';
+  if (stage.stage !== 'review' && stage.stage !== 'factCheck') return stage.text;
+  try {
+    return JSON.stringify(JSON.parse(stage.text), null, 2);
+  } catch {
+    return stage.text;
+  }
+}
 
 export const PipelineResultScreen: React.FC = () => {
   const { theme } = useThemeStore();
@@ -31,6 +53,7 @@ export const PipelineResultScreen: React.FC = () => {
     (sum, r) => sum + (r.tokens?.total || 0),
     0,
   );
+  const skippedCount = task.stageResults.filter((stage) => stage.status === 'skipped').length;
   const duration = task.updatedAt - task.createdAt;
   const durationText = duration > 60000
     ? `${Math.floor(duration / 60000)}m ${Math.round((duration % 60000) / 1000)}s`
@@ -54,10 +77,9 @@ export const PipelineResultScreen: React.FC = () => {
         Alert.alert('章节不存在');
         return;
       }
-      const merged = mergeChapterGenerationResult(chapter, task.finalText);
-      await db.updateChapter(chapter.id, merged);
+      await db.updateChapter(chapter.id, { content: task.finalText });
       resolveTask(task.id, 'accept');
-      Alert.alert('已采纳', '文本已合并到章节并保存。');
+      Alert.alert('已采纳', '流水线正文已覆盖到章节并保存。');
       navigation.goBack();
     } catch (error: any) {
       Alert.alert('采纳失败', error.message);
@@ -72,29 +94,30 @@ export const PipelineResultScreen: React.FC = () => {
   const renderStageCard = (stage: PipelineStageResult) => {
     const isExpanded = expanded.has(stage.stage);
     const textLength = stage.text?.length || 0;
-    const isJson = stage.stage === 'review' || stage.stage === 'factCheck';
-    const stageLabel =
-      stage.stage === 'draft'
-        ? '初稿'
-        : stage.stage === 'review'
-          ? '审阅'
-          : stage.stage === 'factCheck'
-            ? '核查'
-            : '终稿';
+    const statusColor = stage.status === 'failed'
+      ? theme.colors.danger
+      : stage.status === 'skipped'
+        ? theme.colors.textMuted
+        : theme.colors.accent;
 
     return (
       <View key={stage.stage} style={[styles.card, { backgroundColor: theme.colors.card }]}>
         <Button
-          label={`${stageLabel} ${stage.status === 'success' ? '✅' : '⚠️'} (${textLength} 字)`}
+          label={`${STAGE_LABELS[stage.stage]} · ${STATUS_LABELS[stage.status]} (${textLength} 字)`}
           variant="ghost"
           onPress={() => toggleExpanded(stage.stage)}
         />
+        <Text style={[styles.stageMeta, { color: statusColor }]}>
+          耗时 {Math.round(stage.durationMs / 1000)}s
+          {stage.tokens ? ` · ${stage.tokens.total.toLocaleString()} tokens` : ''}
+          {stage.error ? ` · ${stage.error}` : ''}
+        </Text>
         {isExpanded && (
           <Text
             style={[styles.stageText, { color: theme.colors.textPrimary }]}
             selectable
           >
-            {isJson ? JSON.stringify(stage.text, null, 2) : stage.text}
+            {formatStageText(stage)}
           </Text>
         )}
       </View>
@@ -109,7 +132,7 @@ export const PipelineResultScreen: React.FC = () => {
       />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
-          {task.status === 'completed' ? '✅ 已完成' : '❌ 异常终止'} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens
+          {task.status === 'completed' ? '已完成' : '异常终止'} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
         </Text>
         {task.stageResults.map(renderStageCard)}
         {task.finalText && (
@@ -126,7 +149,8 @@ export const PipelineResultScreen: React.FC = () => {
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 120 },
   summary: { fontSize: 13, fontWeight: '700' },
-  card: { borderRadius: 8, padding: spacing.md },
+  card: { borderRadius: 8, padding: spacing.md, gap: spacing.sm },
+  stageMeta: { fontSize: 12, fontWeight: '700' },
   stageText: { fontSize: 14, lineHeight: 22, marginTop: spacing.sm },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md, marginTop: spacing.lg },
 });

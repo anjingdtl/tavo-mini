@@ -8,8 +8,10 @@ import {
   TextInputProps,
   TouchableOpacity,
   View,
+  StyleProp,
   ViewStyle,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { LucideIcon } from 'lucide-react-native';
 import { useThemeStore } from '../store/themeStore';
 
@@ -29,8 +31,17 @@ export function Screen({
   padded?: boolean;
 }) {
   const { theme } = useThemeStore();
+  const insets = useSafeAreaInsets();
+  const topPadding = insets.top + (padded ? spacing.lg : 0);
   return (
-    <View style={[styles.screen, { backgroundColor: theme.colors.background }, padded && styles.padded]}>
+    <View
+      style={[
+        styles.screen,
+        { backgroundColor: theme.colors.background, paddingTop: topPadding },
+        padded && styles.padded,
+        { paddingTop: topPadding },
+      ]}
+    >
       {children}
     </View>
   );
@@ -73,7 +84,7 @@ export function Section({ title, children }: { title?: string; children: React.R
   );
 }
 
-export function Card({ children, style }: { children: React.ReactNode; style?: ViewStyle }) {
+export function Card({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
   const { theme } = useThemeStore();
   return <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, style]}>{children}</View>;
 }
@@ -84,12 +95,16 @@ export function Button({
   variant = 'primary',
   disabled = false,
   icon: Icon,
+  compact = false,
+  flex = false,
 }: {
   label: string;
   onPress?: (event: GestureResponderEvent) => void;
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
   disabled?: boolean;
   icon?: LucideIcon;
+  compact?: boolean;
+  flex?: boolean;
 }) {
   const { theme } = useThemeStore();
   const background =
@@ -108,12 +123,15 @@ export function Button({
       disabled={disabled}
       style={[
         styles.button,
-        { backgroundColor: background, opacity: disabled ? 0.5 : 1, borderColor: theme.colors.border },
+        { backgroundColor: background, borderColor: theme.colors.border },
+        disabled && styles.buttonDisabled,
         variant === 'ghost' && styles.ghostButton,
+        compact && styles.buttonCompact,
+        flex && styles.buttonFlex,
       ]}
     >
-      {Icon ? <Icon size={16} color={foreground} /> : null}
-      <Text style={[styles.buttonText, { color: foreground }]}>{label}</Text>
+      {Icon ? <Icon size={compact ? 14 : 16} color={foreground} /> : null}
+      <Text style={[styles.buttonText, { color: foreground }, compact && styles.buttonTextCompact]} numberOfLines={1}>{label}</Text>
     </TouchableOpacity>
   );
 }
@@ -249,6 +267,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  buttonDisabled: { opacity: 0.5 },
+  buttonCompact: {
+    minHeight: 34,
+    paddingHorizontal: spacing.sm,
+    gap: 4,
+  },
+  buttonTextCompact: {
+    fontSize: 12,
+  },
+  buttonFlex: {
+    flex: 1,
   },
   ghostButton: { borderWidth: StyleSheet.hairlineWidth },
   buttonText: { fontSize: 14, fontWeight: '700' },

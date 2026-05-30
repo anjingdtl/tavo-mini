@@ -24,15 +24,19 @@ jest.mock('@react-native-documents/picker', () => ({
 }));
 
 jest.mock('react-native-keychain', () => {
-  let password = '';
+  const passwords = new Map();
+  const defaultService = 'com.tavomini.llm.api-key';
   return {
-    setGenericPassword: jest.fn(async (_username, nextPassword) => {
-      password = nextPassword;
+    setGenericPassword: jest.fn(async (_username, nextPassword, options = {}) => {
+      passwords.set(options.service || defaultService, nextPassword);
       return true;
     }),
-    getGenericPassword: jest.fn(async () => (password ? { username: 'llm-api-key', password } : false)),
-    resetGenericPassword: jest.fn(async () => {
-      password = '';
+    getGenericPassword: jest.fn(async (options = {}) => {
+      const password = passwords.get(options.service || defaultService) || '';
+      return password ? { username: 'llm-api-key', password } : false;
+    }),
+    resetGenericPassword: jest.fn(async (options = {}) => {
+      passwords.delete(options.service || defaultService);
       return true;
     }),
     ACCESSIBLE: { WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'AccessibleWhenUnlockedThisDeviceOnly' },
