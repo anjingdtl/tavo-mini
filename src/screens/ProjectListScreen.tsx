@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Plus, Trash2 } from 'lucide-react-native';
+import { Download, Plus, Trash2 } from 'lucide-react-native';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
+import { exportTavoNovelJSON, exportToMarkdown, exportToText } from '../services/exportService';
 import type { Project, ProjectMode } from '../types/novel';
 
 export const ProjectListScreen: React.FC = () => {
@@ -41,6 +42,29 @@ export const ProjectListScreen: React.FC = () => {
     ]);
   };
 
+  const exportProject = async (project: Project, type: 'md' | 'txt' | 'json') => {
+    try {
+      const path =
+        type === 'md'
+          ? await exportToMarkdown(project.id)
+          : type === 'txt'
+            ? await exportToText(project.id)
+            : await exportTavoNovelJSON(project.id);
+      Alert.alert('导出成功', path);
+    } catch (error: any) {
+      Alert.alert('导出失败', error.message);
+    }
+  };
+
+  const showExportOptions = (project: Project) => {
+    Alert.alert('导出项目', `选择「${project.name}」的导出格式：`, [
+      { text: '取消', style: 'cancel' },
+      { text: 'Markdown', onPress: () => exportProject(project, 'md') },
+      { text: 'TXT', onPress: () => exportProject(project, 'txt') },
+      { text: '项目 JSON', onPress: () => exportProject(project, 'json') },
+    ]);
+  };
+
   const renderProject = ({ item }: { item: Project }) => {
     const active = currentProject?.id === item.id;
     return (
@@ -53,7 +77,10 @@ export const ProjectListScreen: React.FC = () => {
                 {item.mode === 'outline' ? '大纲模式' : '自由写作'} · 更新于 {new Date(item.updated_at).toLocaleDateString('zh-CN')}
               </Text>
             </View>
-            <TouchableOpacity accessibilityLabel="删除项目" onPress={() => confirmDelete(item)} style={styles.deleteButton}>
+            <TouchableOpacity accessibilityLabel="导出项目" onPress={() => showExportOptions(item)} style={styles.iconButton}>
+              <Download size={18} color={theme.colors.accent} />
+            </TouchableOpacity>
+            <TouchableOpacity accessibilityLabel="删除项目" onPress={() => confirmDelete(item)} style={styles.iconButton}>
               <Trash2 size={18} color={theme.colors.danger} />
             </TouchableOpacity>
           </View>
@@ -103,7 +130,7 @@ const styles = StyleSheet.create({
   projectName: { fontSize: 17, fontWeight: '700', marginBottom: 4 },
   meta: { fontSize: 12 },
   activeText: { marginTop: spacing.sm, fontSize: 12, fontWeight: '700' },
-  deleteButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  iconButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', padding: spacing.xl },
   modal: { borderRadius: 8, padding: spacing.lg },
   modalTitle: { fontSize: 18, fontWeight: '800', marginBottom: spacing.md },

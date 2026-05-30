@@ -17,6 +17,14 @@ import type { ChatMessage } from './llm';
 
 const cancelledTasks = new Set<string>();
 
+interface AssessmentPayload {
+  needsProof: boolean;
+  shortReview: string;
+  issues: string[];
+  suggestions: string[];
+  reasons: string[];
+}
+
 export function cancelPipeline(taskId: string): void {
   cancelledTasks.add(taskId);
 }
@@ -67,19 +75,94 @@ function markSkipped(taskId: string, stage: PipelineStageName, text: string): vo
   });
 }
 
-function shouldProofFromAssessment(text: string | null): boolean {
-  if (!text) return true;
-  try {
-    const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(match ? match[0] : cleaned);
-    const value = parsed?.needsProof ?? parsed?.needs_proof ?? parsed?.needProof;
-    if (typeof value === 'boolean') return value;
-    if (typeof value === 'string') return value.toLowerCase() !== 'false';
-    return true;
-  } catch {
-    return true;
+function parseAssessmentJson(text: string | null): any {
+  if (!text) throw new Error('快速评估返回空内容');
+  const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  return JSON.parse(match ? match[0] : cleaned);
+}
+
+function normalizeList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(String).map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizeAssessment(text: string): AssessmentPayload {
+  const parsed = parseAssessmentJson(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('快速评估返回格式无效');
   }
+
+  const rawNeedsProof = parsed?.needsProof ?? parsed?.needs_proof ?? parsed?.needProof;
+  const issues = normalizeList(parsed.issues);
+  const suggestions = normalizeList(parsed.suggestions);
+  const reasons = normalizeList(parsed.reasons);
+  let needsProof = true;
+
+  if (typeof rawNeedsProof === 'boolean') {
+    needsProof = rawNeedsProof;
+  } else if (typeof rawNeedsProof === 'string') {
+    needsProof = rawNeedsProof.toLowerCase() !== 'false';
+  }
+
+  if (issues.length > 0 || suggestions.length > 0) {
+    needsProof = true;
+  }
+
+  return {
+    needsProof,
+    shortReview: String(
+      parsed.shortReview ||
+        parsed.short_review ||
+        (needsProof ? '草稿存在明显问题，建议进入终审修改。' : '草稿整体可用，未发现必须终审的问题。'),
+    ),
+    issues,
+    suggestions,
+    reasons,
+  };
+}
+
+function shouldProofFromAssessmentPayload(assessment: AssessmentPayload): boolean {
+  return assessment.needsProof || assessment.issues.length > 0 || assessment.suggestions.length > 0;
+}
+
+function shouldProofFromAssessment(text: string | null): boolean {
+  try {
+    return shouldProofFromAssessmentPayload(normalizeAssessment(text || ''));
+  } catch {
+    // Invalid assessment output should take the safer proof path.
+  }
+  return true;
+}
+
+function normalizeAssessmentText(text: string): string {
+  return JSON.stringify(normalizeAssessment(text));
+}
+
+function buildAssessmentFallback(reason: string): string {
+  return JSON.stringify({
+    needsProof: true,
+    shortReview: '快速评估未返回有效短评，已转入终审处理。',
+    issues: ['评估阶段没有返回可用内容。'],
+    suggestions: ['请查看终审结果；如终审仍不理想，建议手动检查草稿的衔接、逻辑和角色一致性。'],
+    reasons: [reason],
+  });
+}
+
+function buildAssessmentProofText(text: string): string {
+  const assessment = normalizeAssessment(text);
+  return [
+    `短评：${assessment.shortReview}`,
+    '',
+    '主要问题：',
+    ...(assessment.issues.length > 0 ? assessment.issues.map((item) => `- ${item}`) : ['- 未列出明显问题。']),
+    '',
+    '修改意见：',
+    ...(assessment.suggestions.length > 0 ? assessment.suggestions.map((item) => `- ${item}`) : ['- 请做必要的轻量校对，保持原稿风格。']),
+    '',
+    '判断依据：',
+    ...(assessment.reasons.length > 0 ? assessment.reasons.map((item) => `- ${item}`) : ['- 未列出额外依据。']),
+  ].join('\n');
 }
 
 async function runProofStage({
@@ -232,7 +315,11 @@ export async function runChapterPipeline(
         assessmentMaxTokens,
         buildCallConfig(reviewPreset, assessmentMaxTokens, 'pipeline_assessment'),
       );
-      assessmentText = assessmentResult.text || '';
+      const rawAssessmentText = (assessmentResult.text || '').trim();
+      if (!rawAssessmentText) {
+        throw new Error('快速评估返回空内容');
+      }
+      assessmentText = normalizeAssessmentText(rawAssessmentText);
       store.updateTaskStage(taskId, {
         stage: 'review',
         text: assessmentText,
@@ -245,7 +332,7 @@ export async function runChapterPipeline(
         durationMs: Date.now() - assessmentStart,
       });
     } catch (error: any) {
-      assessmentText = '{"needsProof":true,"reasons":["assessment_failed"]}';
+      assessmentText = buildAssessmentFallback('assessment_failed');
       store.updateTaskStage(taskId, {
         stage: 'review',
         text: assessmentText,
@@ -264,10 +351,11 @@ export async function runChapterPipeline(
 
     if (checkCancelled(taskId)) return;
     onStageUpdate?.('快速评估建议终审，正在校对...');
+    const assessmentProofText = buildAssessmentProofText(assessmentText);
     const finalText = await runProofStage({
       taskId,
       draftText,
-      reviewText: assessmentText,
+      reviewText: assessmentProofText,
       factCheckText: '',
       maxTokens: config.proofMaxTokens,
       proofPreset,

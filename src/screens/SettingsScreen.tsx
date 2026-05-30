@@ -1,14 +1,12 @@
 import React, { useEffect } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Download, Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine } from 'lucide-react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine } from 'lucide-react-native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
-import { Button, Card, Header, Section, SegmentedControl, spacing } from '../components/ui';
-import { useProjectStore } from '../store/projectStore';
+import { Button, Card, Header, Screen, Section, SegmentedControl, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
-import { exportTavoNovelJSON, exportToMarkdown, exportToText } from '../services/exportService';
 import type { ThemeMode } from '../types/theme';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
@@ -20,7 +18,6 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
 export const SettingsScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { theme, mode, setMode } = useThemeStore();
-  const { currentProject } = useProjectStore();
   const unresolvedCount = usePipelineTaskStore((s) => s.getUnresolvedCount());
   const loadFromDB = usePipelineTaskStore((s) => s.loadFromDB);
 
@@ -34,27 +31,9 @@ export const SettingsScreen: React.FC = () => {
     Toast.show({ type: 'success', text1: '主题已切换' });
   };
 
-  const exportProject = async (type: 'md' | 'txt' | 'json') => {
-    if (!currentProject) {
-      Toast.show({ type: 'error', text1: '请先选择项目' });
-      return;
-    }
-    try {
-      const path =
-        type === 'md'
-          ? await exportToMarkdown(currentProject.id)
-          : type === 'txt'
-            ? await exportToText(currentProject.id)
-            : await exportTavoNovelJSON(currentProject.id);
-      Alert.alert('导出成功', path);
-    } catch (error: any) {
-      Alert.alert('导出失败', error.message);
-    }
-  };
-
   return (
-    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <Header title="设置" subtitle="模型、主题、导出和诊断" />
+    <Screen>
+      <Header title="设置" subtitle="模型、主题和诊断" />
       <ScrollView contentContainerStyle={styles.content}>
         <Section title="AI">
           <Card>
@@ -78,29 +57,20 @@ export const SettingsScreen: React.FC = () => {
             <Palette size={18} color={theme.colors.textSecondary} />
           </View>
         </Section>
-        <Section title="导出">
-          <View style={styles.exportGrid}>
-            <Button label="Markdown" icon={Download} onPress={() => exportProject('md')} />
-            <Button label="TXT" icon={Download} variant="secondary" onPress={() => exportProject('txt')} />
-            <Button label="项目 JSON" icon={Download} variant="secondary" onPress={() => exportProject('json')} />
-          </View>
-        </Section>
         <Section title="关于">
           <Card>
             <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>Tavo Mini</Text>
-            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Android 手机小说工作台 · V1.3.1</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Android 手机小说工作台 · V1.3.2</Text>
           </Card>
         </Section>
       </ScrollView>
-    </View>
+    </Screen>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
   content: { padding: spacing.lg, paddingBottom: 96 },
   cardTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
   cardMeta: { fontSize: 13, lineHeight: 20, marginBottom: spacing.md },
-  exportGrid: { gap: spacing.sm },
   themeHints: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
 });
