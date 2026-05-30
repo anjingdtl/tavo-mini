@@ -84,7 +84,28 @@ function createLegacySQLiteMock() {
     }
 
     if (/^INSERT OR IGNORE INTO llm_config/i.test(normalized)) {
+      const tableRows = rows.get('llm_config') || [];
+      if (!tableRows.some((row) => row.id === 1)) {
+        tableRows.push({
+          id: 1,
+          name: params[0],
+          base_url: params[1],
+          api_key: params[2],
+          model_name: params[3],
+          is_active: 1,
+        });
+        rows.set('llm_config', tableRows);
+      }
       return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
+    }
+
+    if (/^INSERT INTO llm_config \(name, base_url, api_key, model_name, is_active\)/i.test(normalized)) {
+      const schema = schemas.get('llm_config')!;
+      for (const column of ['name', 'base_url', 'api_key', 'model_name', 'is_active']) {
+        if (!schema.has(column)) throw new Error(`no such column: llm_config.${column}`);
+      }
+      const id = insertRow('llm_config', ['name', 'base_url', 'api_key', 'model_name', 'is_active'], params);
+      return [{ insertId: id, rowsAffected: 1, rows: createRows([]) }];
     }
 
     if (/^INSERT OR REPLACE INTO llm_config/i.test(normalized)) {
@@ -92,8 +113,54 @@ function createLegacySQLiteMock() {
       for (const column of ['base_url', 'api_key', 'model_name']) {
         if (!schema.has(column)) throw new Error(`no such column: llm_config.${column}`);
       }
-      rows.set('llm_config', [{ id: 1, base_url: params[0], api_key: params[1], model_name: params[2] }]);
+      rows.set('llm_config', [{ id: 1, name: '默认配置', base_url: params[0], api_key: params[1], model_name: params[2], is_active: 1 }]);
       return [{ insertId: 1, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^UPDATE llm_config SET name = '默认配置'/i.test(normalized)) {
+      rows.set('llm_config', (rows.get('llm_config') || []).map((row) => (
+        row.id === 1 && !row.name ? { ...row, name: '默认配置' } : row
+      )));
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^UPDATE llm_config SET name = \?, base_url = \?, api_key = \?, model_name = \?, is_active = \? WHERE id = \?/i.test(normalized)) {
+      rows.set('llm_config', (rows.get('llm_config') || []).map((row) => (
+        row.id === params[5]
+          ? { ...row, name: params[0], base_url: params[1], api_key: params[2], model_name: params[3], is_active: params[4] }
+          : row
+      )));
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^UPDATE llm_config SET api_key = \? WHERE id = \?/i.test(normalized)) {
+      rows.set('llm_config', (rows.get('llm_config') || []).map((row) => (
+        row.id === params[1] ? { ...row, api_key: params[0] } : row
+      )));
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^UPDATE llm_config SET is_active = 0/i.test(normalized)) {
+      rows.set('llm_config', (rows.get('llm_config') || []).map((row) => ({ ...row, is_active: 0 })));
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^UPDATE llm_config SET is_active = 1 WHERE id = \?/i.test(normalized)) {
+      rows.set('llm_config', (rows.get('llm_config') || []).map((row) => (
+        row.id === params[0] ? { ...row, is_active: 1 } : row
+      )));
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^UPDATE llm_config SET is_active = 1 WHERE id = \(SELECT id FROM llm_config/i.test(normalized)) {
+      const tableRows = rows.get('llm_config') || [];
+      if (tableRows[0]) tableRows[0].is_active = 1;
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^DELETE FROM llm_config WHERE id = \?/i.test(normalized)) {
+      rows.set('llm_config', (rows.get('llm_config') || []).filter((row) => row.id !== params[0]));
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
     }
 
     if (/^INSERT OR REPLACE INTO settings/i.test(normalized)) {
@@ -123,6 +190,18 @@ function createLegacySQLiteMock() {
 
     if (/^SELECT \* FROM presets/i.test(normalized)) {
       return [{ insertId: 0, rowsAffected: 0, rows: createRows(rows.get('presets') || []) }];
+    }
+
+    if (/^SELECT id FROM llm_config WHERE is_active = 1/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows((rows.get('llm_config') || []).filter((row) => row.is_active === 1).slice(0, 1)) }];
+    }
+
+    if (/^SELECT \* FROM llm_config WHERE is_active = 1/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows((rows.get('llm_config') || []).filter((row) => row.is_active === 1).slice(0, 1)) }];
+    }
+
+    if (/^SELECT \* FROM llm_config WHERE id = \?/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows((rows.get('llm_config') || []).filter((row) => row.id === params[0])) }];
     }
 
     if (/^SELECT \* FROM llm_config/i.test(normalized)) {
@@ -170,12 +249,54 @@ describe('database migration for legacy installs', () => {
     expect(projectId).toBe(1);
     expect(projects[0]).toMatchObject({ name: '真实项目', mode: 'outline' });
     expect(llmConfig).toMatchObject({
+      name: '默认配置',
       base_url: 'https://api.example.com/v1',
       api_key: 'sk-real',
       model_name: 'gpt-real',
+      is_active: 1,
     });
     expect(mock.executed.join('\n')).toContain('ALTER TABLE projects ADD COLUMN mode');
+    expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN name');
     expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN base_url');
+    expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN is_active');
     expect(mock.executed.join('\n')).toContain('INSERT OR IGNORE INTO projects (id, name, mode, created_at, updated_at)');
+  });
+
+  test('supports multiple LLM configs and reassigns active config when deleting the active one', async () => {
+    jest.resetModules();
+    const mock = createLegacySQLiteMock();
+    jest.doMock('react-native-sqlite-storage', () => mock.SQLite);
+
+    const database = require('../src/services/database');
+
+    await database.setLLMConfig('https://api.one/v1', 'sk-one', 'model-one');
+    const secondId = await database.saveLLMConfig({
+      name: '备用配置',
+      base_url: 'https://api.two/v1',
+      api_key: 'sk-two',
+      model_name: 'model-two',
+      is_active: 1,
+    });
+    await database.deleteLLMConfig(secondId);
+
+    await expect(database.getLLMConfig()).resolves.toMatchObject({
+      name: '默认配置',
+      base_url: 'https://api.one/v1',
+      api_key: 'sk-one',
+      model_name: 'model-one',
+      is_active: 1,
+    });
+  });
+
+  test('uses two-stage as the default pipeline mode for legacy settings', async () => {
+    jest.resetModules();
+    const mock = createLegacySQLiteMock();
+    jest.doMock('react-native-sqlite-storage', () => mock.SQLite);
+
+    const database = require('../src/services/database');
+
+    await expect(database.getPipelineConfig()).resolves.toMatchObject({
+      pipelineMode: 'twoStage',
+    });
   });
 });

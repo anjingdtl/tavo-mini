@@ -241,7 +241,12 @@ export const ResourceLibrary: React.FC = () => {
   };
 
   const toggleCollection = async (collection: any) => {
-    await db.updateWorldbookCollection(collection.id, { enabled: collection.enabled === 1 ? 0 : 1 });
+    const newEnabled = collection.enabled === 1 ? 0 : 1;
+    await db.updateWorldbookCollection(collection.id, { enabled: newEnabled });
+    // 优化2: 只在启用合集时级联开启所有子条目，禁用时不级联（保护用户个体配置）
+    if (newEnabled === 1) {
+      await db.setAllWorldbookEntriesEnabledByCollection(collection.id, true);
+    }
     await loadData();
   };
 

@@ -90,7 +90,7 @@ export const PlotlineManager: React.FC = () => {
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={styles.list}
           renderItem={({ item }) => (
-            <Card style={{ borderLeftWidth: 4, borderLeftColor: item.color }}>
+            <Card style={[styles.plotlineCard, { borderLeftColor: item.color }]}>
               <View style={styles.row}>
                 <View style={styles.rowText}>
                   <Text style={[styles.title, { color: theme.colors.textPrimary }]}>{item.name}</Text>
@@ -114,4 +114,5 @@ const styles = StyleSheet.create({
   rowText: { flex: 1 },
   title: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
   meta: { fontSize: 13, lineHeight: 19 },
+  plotlineCard: { borderLeftWidth: 4 },
 });

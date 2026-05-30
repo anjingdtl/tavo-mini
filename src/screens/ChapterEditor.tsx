@@ -1,26 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Bot, CheckCircle2, FileText, GitBranch, Save } from 'lucide-react-native';
-import { useNavigation } from '@react-navigation/native';
+import { ArrowUp, Bot, FileText, Trash2 } from 'lucide-react-native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { runChapterPipeline } from '../services/pipelineRunner';
-import { Button, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { debounce } from '../utils/debounce';
 import { estimateTokens } from '../utils/tokenEstimator';
 import * as db from '../services/database';
-import { buildContext } from '../services/contextBuilder';
-import { callLLMResult } from '../services/llm';
 import { generateMemorySummary } from '../services/summaryGenerator';
-import { createChapterGenerationRequest, mergeChapterGenerationResult } from '../services/chapterGeneration';
-import type { Chapter, ChapterStatus } from '../types/novel';
-
-const STATUS_OPTIONS: { value: ChapterStatus; label: string }[] = [
-  { value: 'planned', label: '计划' },
-  { value: 'draft', label: '草稿' },
-  { value: 'revision', label: '修订' },
-  { value: 'final', label: '定稿' },
-];
+import type { Chapter } from '../types/novel';
 
 interface Props {
   chapterId: number;
@@ -34,7 +24,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const [saveState, setSaveState] = useState('已保存');
   const [generating, setGenerating] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
-  const [lastUsage, setLastUsage] = useState('');
+  const scrollRef = useRef<ScrollView>(null);
   const autoSaveRef = useRef(
     debounce(async (id: number, fields: Partial<Chapter>) => {
       await db.updateChapter(id, fields);
@@ -46,11 +36,16 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     setChapter(await db.getChapterById(chapterId));
   }, [chapterId]);
 
+  useFocusEffect(
+    useCallback(() => {
+      loadChapter();
+    }, [loadChapter]),
+  );
+
   useEffect(() => {
-    loadChapter();
     const autoSave = autoSaveRef.current;
     return () => autoSave.cancel();
-  }, [loadChapter]);
+  }, []);
 
   const changeField = (field: keyof Chapter, value: string) => {
     if (!chapter) return;
@@ -60,86 +55,49 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     autoSaveRef.current.call(chapter.id, { [field]: value } as Partial<Chapter>);
   };
 
-  const changeStatus = async (status: ChapterStatus) => {
-    if (!chapter) return;
-    if (status === 'final') {
-      await finalizeChapter();
-      return;
-    }
-    setChapter({ ...chapter, status });
-    await db.updateChapter(chapter.id, { status });
-  };
-
   const finalizeChapter = async () => {
     if (!chapter || finalizing) return;
     setFinalizing(true);
-    const finalizedAt = new Date().toISOString();
-    const next = { ...chapter, status: 'final' as ChapterStatus, finalized_at: finalizedAt };
-    setChapter(next);
     try {
       await db.updateChapter(chapter.id, {
         title: chapter.title,
         synopsis: chapter.synopsis,
         content: chapter.content,
-        status: 'final',
-        finalized_at: finalizedAt,
       } as any);
-      setSaveState('定稿已保存，正在生成记忆摘要...');
+      setSaveState('已保存，正在生成摘要...');
       const memorySummary = await generateMemorySummary(chapter.id, 200);
-      setChapter({ ...next, memory_summary: memorySummary, memory_summary_tokens: estimateTokens(memorySummary) });
-      setSaveState('定稿已保存');
+      await db.updateChapter(chapter.id, {
+        memory_summary: memorySummary,
+        memory_summary_tokens: estimateTokens(memorySummary),
+      } as any);
+      await loadChapter();
+      setSaveState('已保存并生成摘要');
     } catch (error: any) {
-      setSaveState('定稿已保存，摘要生成失败');
-      Alert.alert('摘要生成失败', error?.message || '章节已定稿，但自动记忆摘要生成失败。');
+      setSaveState('已保存，摘要生成失败');
+      Alert.alert('摘要生成失败', error?.message || '章节已保存，但自动记忆摘要生成失败。');
     } finally {
       setFinalizing(false);
     }
   };
 
-  const generateContinuation = async () => {
+  const clearContent = () => {
     if (!chapter) return;
-    if (chapter.status === 'final') {
-      Alert.alert('章节已定稿', '请先将章节状态切回“修订”，再使用 AI 修改正文。');
-      return;
-    }
-    if (chapter.status === 'revision' && !chapter.content.trim()) {
-      Alert.alert('无法修订', '当前正文为空，请先写入正文或切回草稿进行续写。');
-      return;
-    }
-    setGenerating(true);
-    try {
-      const config = await db.getContextConfig();
-      const presets = await db.getPresetsByProject(chapter.project_id);
-      const messages = await buildContext(chapter, config, chapter.project_id, presets[0]);
-      const request = createChapterGenerationRequest(chapter);
-      messages.push({
-        role: 'user',
-        content: request.userPrompt,
-      });
-      const result = await callLLMResult(messages, presets[0]?.max_tokens || 1600, {
-        max_tokens: presets[0]?.max_tokens || 1600,
-        scenario: request.scenario,
-      });
-      if (result.text?.trim()) {
-        const merged = mergeChapterGenerationResult(chapter, result.text);
-        setChapter({ ...chapter, ...merged });
-        await db.updateChapter(chapter.id, merged);
-        setLastUsage(`本轮 tokens：输入 ${result.inputTokens} / 输出 ${result.outputTokens} / 总计 ${result.totalTokens}`);
-        setSaveState('已保存');
-      }
-    } catch (error: any) {
-      Alert.alert('生成失败', error.message || '请检查 API 配置。');
-    } finally {
-      setGenerating(false);
-    }
+    Alert.alert('清空正文', '确定要清空当前章节的全部正文内容？', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '清空',
+        style: 'destructive',
+        onPress: async () => {
+          await db.updateChapter(chapter.id, { content: '' });
+          await loadChapter();
+          setSaveState('已清空');
+        },
+      },
+    ]);
   };
 
   const runPipeline = async () => {
     if (!chapter) return;
-    if (chapter.status === 'final') {
-      Alert.alert('章节已定稿', '请先将章节状态切回“修订”，再使用流水线写作。');
-      return;
-    }
 
     const { createTask, getActiveTaskForTarget } = usePipelineTaskStore.getState();
     const existing = getActiveTaskForTarget('chapter', chapter.id);
@@ -148,16 +106,28 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       return;
     }
 
+    if (chapter.content.trim()) {
+      Alert.alert('覆盖正文', '当前章节已有正文内容，流水线生成将覆盖现有正文。确定继续？', [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '覆盖并生成',
+          onPress: () => executeRunPipeline(createTask),
+        },
+      ]);
+    } else {
+      executeRunPipeline(createTask);
+    }
+  };
+
+  const executeRunPipeline = async (createTask: (targetType: 'chapter' | 'freeform', targetId: number) => string) => {
+    if (!chapter) return;
+    setGenerating(true);
     const taskId = createTask('chapter', chapter.id);
     try {
-      await runChapterPipeline(taskId, chapter, (status) => {
-        // Stage updates are handled by toast in the caller if needed
-      });
-
+      await runChapterPipeline(taskId, chapter, () => {});
       const store = usePipelineTaskStore.getState();
       const finishedTask = store.tasks.find((t) => t.id === taskId);
       if (finishedTask?.status === 'completed') {
-        // Navigate to result page
         // @ts-ignore
         navigation.navigate('PipelineResult', { taskId });
       } else if (finishedTask?.status === 'failed') {
@@ -165,8 +135,17 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       }
     } catch (error: any) {
       Alert.alert('流水线异常', error.message || '请检查 API 配置。');
+    } finally {
+      setGenerating(false);
     }
   };
+
+  // 性能优化：memoize token 估算，避免每次渲染都重新计算
+  const content = chapter?.content || '';
+  const estimatedTokenCount = useMemo(
+    () => estimateTokens(content),
+    [content],
+  );
 
   if (!chapter) {
     return (
@@ -179,7 +158,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   return (
     <Screen>
       <Header title="章节编辑" subtitle={saveState} action={<Button label="返回" variant="ghost" onPress={onClose} />} />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
         <Field label="章节标题" value={chapter.title} onChangeText={(value) => changeField('title', value)} placeholder="章节标题" />
         <Field
           label="章节概要"
@@ -189,13 +168,11 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           multiline
           inputStyle={styles.synopsis}
         />
-        <SegmentedControl value={chapter.status} options={STATUS_OPTIONS} onChange={changeStatus} />
         <View style={styles.toolbar}>
-          <Button label={generating ? '生成中...' : chapter.status === 'revision' ? 'AI 修订' : 'AI 续写'} icon={Bot} onPress={generateContinuation} disabled={generating || finalizing} />
-          <Button label="流水线" icon={GitBranch} variant="secondary" onPress={runPipeline} disabled={generating || finalizing} />
-          <Button label="保存" icon={Save} variant="secondary" onPress={() => db.updateChapter(chapter.id, chapter).then(() => setSaveState('已保存'))} />
-          <Button label={finalizing ? '定稿中...' : '定稿'} icon={CheckCircle2} variant="secondary" onPress={finalizeChapter} disabled={finalizing} />
-          <Button label="摘要" icon={FileText} variant="secondary" onPress={() => Alert.alert('章节摘要', chapter.memory_summary || '暂无记忆摘要。')} />
+          <Button label={generating ? '生成中...' : 'AI 续写'} icon={Bot} onPress={runPipeline} disabled={generating || finalizing} compact flex />
+          <Button label={finalizing ? '定稿中...' : '保存定稿'} icon={FileText} variant="secondary" onPress={finalizeChapter} disabled={finalizing || generating} compact flex />
+          <Button label="摘要" icon={FileText} variant="secondary" onPress={() => Alert.alert('章节摘要', chapter.memory_summary || '暂无记忆摘要。')} compact flex />
+          <Button label="清空" icon={Trash2} variant="ghost" onPress={clearContent} disabled={generating || finalizing} compact flex />
         </View>
         <Field label="正文" value={chapter.content} onChangeText={(value) => changeField('content', value)} placeholder="开始写作..." multiline inputStyle={styles.editor} />
         {chapter.memory_summary ? (
@@ -205,12 +182,16 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           </View>
         ) : null}
         <View style={styles.footer}>
-          <CheckCircle2 size={16} color={theme.colors.success} />
           <Text style={[styles.footerText, { color: theme.colors.textSecondary }]}>
-            {chapter.content.length} 字 · 预估 {estimateTokens(chapter.content)} tokens · {saveState}
+            {chapter.content.length} 字 · 预估 {estimatedTokenCount} tokens · {saveState}
           </Text>
         </View>
-        {lastUsage ? <Text style={[styles.usage, { color: theme.colors.textSecondary }]}>{lastUsage}</Text> : null}
+        <Button
+          label="回到顶部"
+          icon={ArrowUp}
+          variant="secondary"
+          onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })}
+        />
       </ScrollView>
     </Screen>
   );
@@ -223,7 +204,6 @@ const styles = StyleSheet.create({
   editor: { minHeight: 420, textAlignVertical: 'top', fontSize: 16, lineHeight: 25 },
   footer: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md },
   footerText: { flex: 1, fontSize: 12, fontWeight: '700' },
-  usage: { fontSize: 12, fontWeight: '700', marginTop: spacing.sm },
   summaryBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, marginBottom: spacing.md },
   summaryTitle: { fontSize: 14, fontWeight: '800', marginBottom: spacing.xs },
   summaryText: { fontSize: 13, lineHeight: 20 },
