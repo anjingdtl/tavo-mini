@@ -82,3 +82,6 @@ dist/
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Generated version info
+src/constants/version.json
