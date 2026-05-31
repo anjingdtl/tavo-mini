@@ -9,10 +9,14 @@ jest.mock('react-native-fs', () => ({
   DocumentDirectoryPath: '/tmp/documents',
   CachesDirectoryPath: '/tmp/cache',
   DownloadDirectoryPath: '/tmp',
+  ExternalDirectoryPath: '/tmp/external',
   readFile: jest.fn(),
   writeFile: jest.fn(),
   copyFile: jest.fn(),
   mkdir: jest.fn(),
+  readDir: jest.fn(),
+  unlink: jest.fn(),
+  exists: jest.fn(),
 }));
 
 jest.mock('@react-native-documents/picker', () => ({
