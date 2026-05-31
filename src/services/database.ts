@@ -570,7 +570,7 @@ export async function updateChapter(id: number, fields: Partial<Chapter>): Promi
   for (const [key, value] of Object.entries(fields)) {
     if (!CHAPTER_COLUMNS.has(key)) continue;
     sets.push(`${key} = ?`);
-    values.push(key === 'summary_json' && value !== null ? JSON.stringify(value) : value);
+    values.push(key === 'summary_json' && value !== null && typeof value !== 'string' ? JSON.stringify(value) : value);
   }
   if (sets.length === 1) return;
   values.push(id);
@@ -794,16 +794,26 @@ export async function updateWorldbookCollectionTokenEstimate(id: number): Promis
 }
 
 export async function deleteWorldbookCollection(id: number): Promise<void> {
+  const database = await openDatabase();
   const entries = await all<{ id: number }>('SELECT id FROM worldbook_entries WHERE collection_id = ?', [id]);
-  for (const entry of entries) {
-    await deleteProjectResourceLinks('worldbook', entry.id);
-  }
-  await execute(await openDatabase(), 'DELETE FROM worldbook_entries WHERE collection_id = ?', [id]);
-  await execute(await openDatabase(), 'DELETE FROM worldbook_collections WHERE id = ?', [id]);
+  await database.transaction(async (tx) => {
+    for (const entry of entries) {
+      await tx.executeSql('DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?', ['worldbook', entry.id]);
+    }
+    await tx.executeSql('DELETE FROM worldbook_entries WHERE collection_id = ?', [id]);
+    await tx.executeSql('DELETE FROM worldbook_collections WHERE id = ?', [id]);
+  });
 }
 
 export async function getWorldbookEntryById(id: number): Promise<Row | null> {
   return one<Row>('SELECT * FROM worldbook_entries WHERE id = ?', [id]);
+}
+
+export async function getWorldbookEntriesByCollection(collectionId: number): Promise<Row[]> {
+  return all<Row>(
+    'SELECT * FROM worldbook_entries WHERE collection_id = ? ORDER BY position ASC, id ASC',
+    [collectionId],
+  );
 }
 
 export async function createWorldbookEntry(

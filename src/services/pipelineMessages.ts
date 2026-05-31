@@ -5,6 +5,8 @@ export function buildDraftMessages(
   chapterTitle: string,
   existingContent: string,
   userPrompt: string,
+  previousChapterEnding?: string,
+  chapterSynopsis?: string,
 ): ChatMessage[] {
   const messages: ChatMessage[] = [...baseMessages];
   const roleInstruction = [
@@ -14,6 +16,12 @@ export function buildDraftMessages(
   ].join('\n');
 
   let content = roleInstruction;
+  if (previousChapterEnding) {
+    content += `\n\n【前章衔接】上一章结尾：\n${previousChapterEnding}\n请确保本章开头自然承接上一章结尾的场景、情节和情绪，保持叙事连贯。`;
+  }
+  if (chapterSynopsis) {
+    content += `\n\n【章节大纲（必须遵循）】${chapterSynopsis}\n请严格按此大纲创作本章内容。`;
+  }
   if (existingContent.trim()) {
     const tail = existingContent.slice(-1500);
     content += `\n\n当前已有正文末尾：\n${tail}\n\n请自然续写，不要重复前文内容。`;

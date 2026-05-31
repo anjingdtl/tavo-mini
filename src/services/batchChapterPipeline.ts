@@ -9,6 +9,7 @@ export interface BatchChapterPipelineOptions {
   count: number;
   outlineLines: string[];
   onProgress?: (message: string) => void;
+  onProgressNumeric?: (current: number, total: number) => void;
 }
 
 export interface BatchChapterPipelineResult {
@@ -25,17 +26,18 @@ function parseOutlineTitle(line: string, index: number): string {
 
 async function ensureTargetChapters(projectId: number, count: number, outlineLines: string[]): Promise<Chapter[]> {
   let working = await db.getChaptersByProject(projectId);
-  while (working.length < count) {
+  let nonFinal = working.filter((c) => c.status !== 'final');
+
+  while (nonFinal.length < count) {
     const index = working.length;
     const line = outlineLines[index] || '';
     const id = await db.createChapter(projectId, index, parseOutlineTitle(line, index));
     if (line) await db.updateChapter(id, { synopsis: line });
     working = await db.getChaptersByProject(projectId);
+    nonFinal = working.filter((c) => c.status !== 'final');
   }
 
-  return working
-    .filter((chapter) => chapter.status !== 'final')
-    .slice(0, count);
+  return nonFinal.slice(0, count);
 }
 
 export async function runBatchChapterPipeline({
@@ -43,6 +45,7 @@ export async function runBatchChapterPipeline({
   count,
   outlineLines,
   onProgress,
+  onProgressNumeric,
 }: BatchChapterPipelineOptions): Promise<BatchChapterPipelineResult> {
   const targetCount = Math.max(1, count);
   const targets = await ensureTargetChapters(projectId, targetCount, outlineLines);
@@ -51,6 +54,7 @@ export async function runBatchChapterPipeline({
   for (let index = 0; index < targets.length; index++) {
     const chapter = targets[index];
     onProgress?.(`正在生成 ${index + 1}/${targets.length}：${chapter.title || `第 ${chapter.position + 1} 章`}`);
+    onProgressNumeric?.(index + 1, targets.length);
 
     const freshChapter = (await db.getChapterById(chapter.id)) || chapter;
     const taskId = usePipelineTaskStore.getState().createTask('chapter', freshChapter.id);

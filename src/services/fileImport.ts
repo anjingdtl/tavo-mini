@@ -117,9 +117,11 @@ function entriesFromUnknown(rawEntries: any): any[] {
   return [];
 }
 
-export function parseWorldBookJSON(jsonText: string): WorldBookImportResult {
+export function parseWorldBookJSON(jsonText: string, sourceName?: string): WorldBookImportResult {
   const data = readJsonObject(jsonText);
-  let name = '导入的世界书';
+  let name = sourceName
+    ? sourceName.replace(/\.[^.]+$/, '').trim() || '导入的世界书'
+    : '导入的世界书';
   let entries: any[] = [];
 
   if (data.spec === 'lorebook_v3' && data.data) {
@@ -171,8 +173,13 @@ function decodeLatin1(bytes: number[]): string {
 }
 
 function decodeUtf8Bytes(bytes: number[]): string {
-  const escaped = bytes.map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('');
-  return decodeURIComponent(escaped);
+  try {
+    const escaped = bytes.map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('');
+    return decodeURIComponent(escaped);
+  } catch {
+    // Invalid UTF-8 sequence — fallback to lossy Latin-1 decode
+    return decodeLatin1(bytes);
+  }
 }
 
 function decodeBase64(base64: string): string {
@@ -336,21 +343,27 @@ export async function importSelectedWorldBook(projectId: number): Promise<WorldB
   const file = await pickLocalFile([types.json]);
   if (!file) return null;
 
-  const parsed = parseWorldBookJSON(await RNFS.readFile(file.localPath, 'utf8'));
+  const parsed = parseWorldBookJSON(await RNFS.readFile(file.localPath, 'utf8'), file.name);
   const collectionId = await db.createWorldbookCollection(projectId, parsed.name, { enabled: 1 });
-  let count = 0;
-  for (const entry of parsed.entries) {
-    await db.createWorldbookEntry(projectId, entry.keyword_primary, entry.content, entry.enabled, {
-      collection_id: collectionId,
-      keyword_secondary: entry.keyword_secondary,
-      comment: entry.comment,
-      constant: entry.constant,
-      position: entry.position,
-    });
-    count++;
+  try {
+    let count = 0;
+    for (const entry of parsed.entries) {
+      await db.createWorldbookEntry(projectId, entry.keyword_primary, entry.content, entry.enabled, {
+        collection_id: collectionId,
+        keyword_secondary: entry.keyword_secondary,
+        comment: entry.comment,
+        constant: entry.constant,
+        position: entry.position,
+      });
+      count++;
+    }
+    await db.updateWorldbookCollectionTokenEstimate(collectionId);
+    return { ...parsed, entriesImported: count };
+  } catch (error) {
+    // Partial import failed — clean up the orphaned collection
+    await db.deleteWorldbookCollection(collectionId).catch(() => {});
+    throw error;
   }
-  await db.updateWorldbookCollectionTokenEstimate(collectionId);
-  return { ...parsed, entriesImported: count };
 }
 
 export async function importCharacterFromJSON(
@@ -368,17 +381,22 @@ export async function importWorldBookFromJSON(
 ): Promise<WorldBookImportResult> {
   const parsed = parseWorldBookJSON(jsonText);
   const collectionId = await db.createWorldbookCollection(projectId, parsed.name, { enabled: 1 });
-  let count = 0;
-  for (const entry of parsed.entries) {
-    await db.createWorldbookEntry(projectId, entry.keyword_primary, entry.content, entry.enabled, {
-      collection_id: collectionId,
-      keyword_secondary: entry.keyword_secondary,
-      comment: entry.comment,
-      constant: entry.constant,
-      position: entry.position,
-    });
-    count++;
+  try {
+    let count = 0;
+    for (const entry of parsed.entries) {
+      await db.createWorldbookEntry(projectId, entry.keyword_primary, entry.content, entry.enabled, {
+        collection_id: collectionId,
+        keyword_secondary: entry.keyword_secondary,
+        comment: entry.comment,
+        constant: entry.constant,
+        position: entry.position,
+      });
+      count++;
+    }
+    await db.updateWorldbookCollectionTokenEstimate(collectionId);
+    return { ...parsed, entriesImported: count };
+  } catch (error) {
+    await db.deleteWorldbookCollection(collectionId).catch(() => {});
+    throw error;
   }
-  await db.updateWorldbookCollectionTokenEstimate(collectionId);
-  return { ...parsed, entriesImported: count };
 }

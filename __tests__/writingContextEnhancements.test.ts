@@ -112,7 +112,7 @@ describe('writing context enhancements', () => {
     jest.doMock('../src/services/macroReplace', () => ({ processMacros: jest.fn(async (text: string) => text) }));
 
     const { buildContext } = require('../src/services/contextBuilder');
-    const messages = await buildContext(
+    const { messages } = await buildContext(
       { id: 5, project_id: 7, position: 4, title: 'Chapter 5', synopsis: 'return to Clock Tower', content: '', status: 'planned' },
       {
         includeResources: true,
@@ -331,7 +331,7 @@ describe('writing context enhancements', () => {
     jest.doMock('../src/services/macroReplace', () => ({ processMacros: jest.fn(async (text: string) => text) }));
 
     const { buildContext } = require('../src/services/contextBuilder');
-    const messages = await buildContext(
+    const { messages } = await buildContext(
       { id: 1, project_id: 7, position: 0, title: 'Chapter', synopsis: 'return to clocktower', content: '', status: 'planned' },
       {
         includeResources: true,
@@ -374,7 +374,7 @@ describe('writing context enhancements', () => {
     jest.doMock('../src/services/macroReplace', () => ({ processMacros: jest.fn(async (text: string) => text) }));
 
     const { buildContext } = require('../src/services/contextBuilder');
-    const messages = await buildContext(
+    const { messages } = await buildContext(
       { id: 1, project_id: 7, position: 0, title: 'Chapter', synopsis: 'return to 钟楼', content: '', status: 'planned' },
       {
         includeResources: true,
