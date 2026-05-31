@@ -82,8 +82,21 @@ android {
         applicationId "com.tavomini"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 15
-        versionName "V1.3.2"
+
+        def gitCommitCount = {
+            try {
+                return Integer.parseInt("git rev-list --count HEAD".execute(null, rootDir).text.trim())
+            } catch (Exception e) {
+                def pkg = new groovy.json.JsonSlurper().parse(file("../../package.json"))
+                def parts = pkg.version.split("\\.")
+                return Integer.parseInt(parts[0]) * 10000 + Integer.parseInt(parts[1]) * 100 + Integer.parseInt(parts[2])
+            }
+        }()
+
+        def pkgVersion = new groovy.json.JsonSlurper().parse(file("../../package.json")).version
+
+        versionCode gitCommitCount
+        versionName "V${pkgVersion}"
     }
     signingConfigs {
         debug {
@@ -123,3 +136,10 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+task generateVersionJson(type: Exec) {
+    workingDir "../../"
+    commandLine "node", "scripts/generate-version-json.js"
+}
+
+preBuild.dependsOn generateVersionJson
