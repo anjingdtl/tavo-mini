@@ -19,11 +19,13 @@ import {
   setSecureLLMApiKey,
 } from './secureStorage';
 import { estimateTokens } from '../utils/tokenEstimator';
+import { runMigrations, SCHEMA_VERSION, hasBreakingMigration, isIncompatibleUpgrade } from './migrations';
+import type { InstallInfo, InstallType, MigrationResult } from './migrations/types';
+import appVersionJson from '../constants/version.json';
 
 SQLite.enablePromise(true);
 
 const DB_NAME = 'tavo_mini.db';
-const SCHEMA_VERSION = '5';
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
 let db: SQLite.SQLiteDatabase | null = null;
@@ -412,50 +414,73 @@ async function ensureGlobalProject(database: SQLite.SQLiteDatabase): Promise<voi
   );
 }
 
-async function migrate(database: SQLite.SQLiteDatabase): Promise<void> {
-  const result = await execute(database, 'SELECT value FROM settings WHERE key = ?', ['schema_version']);
-  const current = result.rows.length > 0 ? result.rows.item(0).value : null;
-  if (current === SCHEMA_VERSION) return;
+export async function detectInstallType(database: SQLite.SQLiteDatabase): Promise<InstallInfo> {
+  const currentVersion = appVersionJson.versionName.replace(/^V/, '');
+  const storedVersionResult = await execute(database, 'SELECT value FROM settings WHERE key = ?', ['app_version']);
+  const storedVersion = storedVersionResult.rows.length > 0 ? storedVersionResult.rows.item(0).value : null;
 
-  await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [
-    'schema_version',
-    SCHEMA_VERSION,
-  ]);
-  await migrateLegacyProjectResources(database);
-  await migrateLegacyWorldbookCollections(database);
-}
+  const firstInstallResult = await execute(database, 'SELECT value FROM settings WHERE key = ?', ['first_install_version']);
+  const firstInstallVersion = firstInstallResult.rows.length > 0 ? firstInstallResult.rows.item(0).value : currentVersion;
 
-async function migrateLegacyProjectResources(database: SQLite.SQLiteDatabase): Promise<void> {
-  await execute(
-    database,
-    "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'character', id, 1 FROM characters WHERE project_id > 0",
-  );
-  await execute(
-    database,
-    "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'worldbook', id, enabled FROM worldbook_entries WHERE project_id > 0",
-  );
-  await execute(
-    database,
-    "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'note', id, 1 FROM notes WHERE project_id > 0",
-  );
-  await execute(
-    database,
-    "INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'preset', id, 1 FROM presets WHERE project_id > 0",
-  );
-}
+  let installType: InstallType;
+  let previousVersion: string | null = null;
 
-async function migrateLegacyWorldbookCollections(database: SQLite.SQLiteDatabase): Promise<void> {
-  const existing = await execute(database, 'SELECT id FROM worldbook_collections ORDER BY id ASC LIMIT 1');
-  let collectionId = existing.rows.length > 0 ? existing.rows.item(0).id : null;
-  if (!collectionId) {
-    const result = await execute(
-      database,
-      'INSERT INTO worldbook_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, 1, 50000, 0, ?)',
-      [0, '未分组/手动条目', now()],
-    );
-    collectionId = result.insertId!;
+  if (!storedVersion) {
+    installType = 'fresh';
+    await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['first_install_version', currentVersion]);
+  } else if (storedVersion !== currentVersion) {
+    installType = 'upgrade';
+    previousVersion = storedVersion;
+    await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['previous_version', storedVersion]);
+  } else {
+    installType = 'same';
   }
-  await execute(database, 'UPDATE worldbook_entries SET collection_id = ? WHERE collection_id = 0', [collectionId]);
+
+  await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['app_version', currentVersion]);
+  await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['app_version_code', String(appVersionJson.versionCode)]);
+  await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['install_type', installType]);
+
+  const schemaVersionResult = await execute(database, 'SELECT value FROM settings WHERE key = ?', ['schema_version']);
+  const schemaVersion = schemaVersionResult.rows.length > 0 ? parseInt(schemaVersionResult.rows.item(0).value, 10) : 0;
+
+  return {
+    installType,
+    currentVersion,
+    previousVersion,
+    firstInstallVersion: storedVersion ? firstInstallVersion : currentVersion,
+    schemaVersion,
+  };
+}
+
+export let lastInstallInfo: InstallInfo | null = null;
+export let lastMigrationResult: MigrationResult | null = null;
+
+async function migrate(database: SQLite.SQLiteDatabase): Promise<void> {
+  const installInfo = await detectInstallType(database);
+  lastInstallInfo = installInfo;
+
+  if (installInfo.installType === 'fresh') {
+    await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [
+      'schema_version', String(SCHEMA_VERSION),
+    ]);
+    return;
+  }
+
+  if (installInfo.installType === 'same') {
+    return;
+  }
+
+  const fromSchema = installInfo.schemaVersion || 1;
+  if (fromSchema >= SCHEMA_VERSION) {
+    return;
+  }
+
+  if (hasBreakingMigration(fromSchema) || isIncompatibleUpgrade(fromSchema)) {
+    return;
+  }
+
+  const migrationResult = await runMigrations(database, fromSchema);
+  lastMigrationResult = migrationResult;
 }
 
 function now(): string {
