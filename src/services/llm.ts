@@ -60,6 +60,9 @@ const limitLLMRequest = createConcurrencyLimiter(250);
 export function normalizeChatCompletionUrl(baseUrl: string): string {
   let url = baseUrl.trim();
   if (!url) return '';
+  if (url.startsWith('http://')) {
+    console.warn(`[LLM] ⚠️ 正在使用非 HTTPS 地址：${url}，API Key 将以明文传输。`);
+  }
   if (url.endsWith('/chat/completions')) return url;
   if (url.endsWith('/chat/completions/')) return url.slice(0, -1);
   url = url.replace(/\/+$/, '');

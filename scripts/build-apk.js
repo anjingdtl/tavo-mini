@@ -37,7 +37,10 @@ if (build.status !== 0) {
 
 const buildGradle = fs.readFileSync(path.join(androidDir, 'app', 'build.gradle'), 'utf8');
 const versionMatch = buildGradle.match(/versionName\s+["']([^"']+)["']/);
-const versionName = versionMatch ? versionMatch[1] : `V${require('../package.json').version}`;
+const rawVersion = versionMatch ? versionMatch[1] : '';
+// If build.gradle contains a Gradle variable like ${pkgVersion}, resolve from package.json instead
+const pkgVersion = require('../package.json').version;
+const versionName = rawVersion.includes('$') ? `V${pkgVersion}` : rawVersion;
 const source = path.join(androidDir, 'app', 'build', 'outputs', 'apk', variant, `app-${variant}.apk`);
 const outDir = path.join(projectRoot, 'dist', 'apk', variant);
 const target = path.join(outDir, `TavoMini-${versionName}-${variant}.apk`);

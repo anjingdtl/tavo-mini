@@ -32,6 +32,7 @@ jest.mock('../src/services/database', () => ({
       max_tokens: 1000,
     },
   ]),
+  getChaptersByProject: jest.fn(async () => []),
 }));
 
 jest.mock('../src/services/llm', () => ({
@@ -39,7 +40,7 @@ jest.mock('../src/services/llm', () => ({
 }));
 
 jest.mock('../src/services/contextBuilder', () => ({
-  buildContext: jest.fn(async () => [{ role: 'system', content: 'story context' }]),
+  buildContext: jest.fn(async () => ({ messages: [{ role: 'system', content: 'story context' }], chapters: [] })),
 }));
 
 jest.mock('../src/services/chapterGeneration', () => ({
