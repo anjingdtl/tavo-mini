@@ -30,12 +30,17 @@ const STOP_WORDS = new Set([
 
 type PartialContextConfig = Partial<ContextConfig>;
 
+export interface BuildContextResult {
+  messages: ChatMessage[];
+  chapters: Chapter[];
+}
+
 export async function buildContext(
   currentChapter: Chapter,
   config: ContextConfig,
   projectId: number,
   preset?: Preset | string,
-): Promise<ChatMessage[]> {
+): Promise<BuildContextResult> {
   const chapters = await db.getChaptersByProject(projectId);
   const previousContent = buildPreviousContentText(currentChapter, config, chapters);
   const memoryText = buildMemoryContext(
@@ -86,7 +91,7 @@ export async function buildContext(
     ].join('\n'),
   });
 
-  return messages;
+  return { messages, chapters };
 }
 
 function buildPresetPrompt(preset?: Preset): string {

@@ -93,7 +93,7 @@ export const FreeformEditor: React.FC = () => {
         created_at: '',
         updated_at: '',
       };
-      const messages = await buildContext(pseudoChapter, config, currentProject.id, presets[0]);
+      const { messages } = await buildContext(pseudoChapter, config, currentProject.id, presets[0]);
       messages.push({
         role: 'user',
         content: `以下是自由写作正文，请继续创作下一段并直接输出正文。\n\n${documentText || '（这是故事开头）'}\n\n用户指示：${steerText || '自然承接，推进剧情。'}`,

@@ -241,13 +241,22 @@ export async function runChapterPipeline(
   store.setTaskStatus(taskId, 'drafting');
   onStageUpdate?.('正在创作初稿...');
 
-  const baseContext = await buildContext(chapter, contextConfig, chapter.project_id, draftPreset || undefined);
+  const { messages: baseContext, chapters: allChapters } = await buildContext(chapter, contextConfig, chapter.project_id, draftPreset || undefined);
   const request = createChapterGenerationRequest(chapter);
+
+  // Extract previous chapter ending from already-fetched chapters
+  const prevChapter = allChapters
+    .filter(c => c.position < chapter.position && c.content)
+    .sort((a, b) => b.position - a.position)[0];
+  const prevEnding = prevChapter?.content?.slice(-800) || '';
+
   const draftMessages = buildDraftMessages(
     baseContext,
     chapter.title || `第 ${chapter.position + 1} 章`,
     chapter.content || '',
     request.userPrompt,
+    prevEnding,
+    chapter.synopsis,
   );
 
   let draftText = '';

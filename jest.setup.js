@@ -15,7 +15,7 @@ jest.mock('react-native-fs', () => ({
   copyFile: jest.fn(),
   mkdir: jest.fn(),
   readDir: jest.fn(),
-  unlink: jest.fn(),
+  unlink: jest.fn(() => Promise.resolve()),
   exists: jest.fn(),
 }));
 

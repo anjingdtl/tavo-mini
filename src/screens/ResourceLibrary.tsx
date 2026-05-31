@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Alert, FlatList, Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import { BookMarked, FilePlus2, Import, NotebookPen, Pencil, SlidersHorizontal, Trash2, UserRound } from 'lucide-react-native';
+import { BookMarked, Download, FilePlus2, Import, NotebookPen, Pencil, SlidersHorizontal, Trash2, UserRound } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
+import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import { CharacterEditor } from '../components/CharacterEditor';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
@@ -16,6 +18,7 @@ import {
   pickCharacterPngImageReplacement,
   withCharacterImageAsset,
 } from '../services/fileImport';
+import * as exportService from '../services/exportService';
 
 type ResourceTab = 'characters' | 'worldbook' | 'notes' | 'presets';
 type EditorKind = ResourceTab | 'worldbookCollection';
@@ -80,9 +83,11 @@ export const ResourceLibrary: React.FC = () => {
     }
   }, [projectId, selectedCollectionId]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData]),
+  );
 
   const subtitle = currentProject ? `全局资料库 · 当前项目：${currentProject.name}` : '全局资料库 · 选择项目后可配置启用关系';
 
@@ -96,6 +101,17 @@ export const ResourceLibrary: React.FC = () => {
     }
   };
 
+  const addNewCharacter = async () => {
+    try {
+      const id = await db.createCharacter(projectId, '未命名角色', 'json', '{}');
+      await loadData();
+      const newItem = await db.getCharacterById(id);
+      if (newItem) openEditor('characters', newItem);
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '新建失败', text2: error.message });
+    }
+  };
+
   const importWorldbook = async () => {
     try {
       const result = await importSelectedWorldBook(projectId);
@@ -103,6 +119,31 @@ export const ResourceLibrary: React.FC = () => {
       await loadData();
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导入失败', text2: error.message });
+    }
+  };
+
+  const addNewWorldbook = async () => {
+    try {
+      const id = await db.createWorldbookCollection(projectId, '未命名世界书', { enabled: 1 });
+      await loadData();
+      const collections = await db.getWorldbookCollections(projectId);
+      const newItem = collections.find((c: any) => c.id === id);
+      if (newItem) openEditor('worldbookCollection', newItem);
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '新建失败', text2: error.message });
+    }
+  };
+
+  const addNewWorldbookEntry = async () => {
+    if (!selectedCollectionId) return;
+    try {
+      const id = await db.createWorldbookEntry(projectId, '', '', 1, { collection_id: selectedCollectionId });
+      await loadData();
+      const entries = await db.getWorldbookEntriesByCollection(selectedCollectionId);
+      const newItem = entries.find((e: any) => e.id === id);
+      if (newItem) openEditor('worldbook', newItem);
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '新建失败', text2: error.message });
     }
   };
 
@@ -222,6 +263,42 @@ export const ResourceLibrary: React.FC = () => {
     }
   };
 
+  const handleExportCharacter = async (item: any) => {
+    try {
+      await exportService.exportCharacterJSON(item.id);
+      Toast.show({ type: 'success', text1: '角色卡已导出' });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '导出失败', text2: error.message });
+    }
+  };
+
+  const handleExportWorldbook = async (item: any) => {
+    try {
+      await exportService.exportWorldbookCollectionJSON(item.id);
+      Toast.show({ type: 'success', text1: '世界书已导出' });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '导出失败', text2: error.message });
+    }
+  };
+
+  const handleExportNote = async (item: any) => {
+    try {
+      await exportService.exportNoteMarkdown(item.id);
+      Toast.show({ type: 'success', text1: '笔记已导出' });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '导出失败', text2: error.message });
+    }
+  };
+
+  const handleExportPreset = async (item: any) => {
+    try {
+      await exportService.exportPresetJSON(item.id);
+      Toast.show({ type: 'success', text1: '预设已导出' });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '导出失败', text2: error.message });
+    }
+  };
+
   const toggleProjectUsage = async (item: any) => {
     if (!currentProject) {
       Alert.alert('未选择项目', '请先在项目页选择当前项目。');
@@ -286,7 +363,10 @@ export const ResourceLibrary: React.FC = () => {
       <View style={styles.actions}>
         {tab === 'characters' ? (
           <>
-            <Button label="导入角色卡" icon={Import} onPress={importCharacter} />
+            <View style={styles.rowActions}>
+              <Button label="导入角色卡" icon={Import} onPress={importCharacter} />
+              <Button label="新建角色卡" icon={FilePlus2} variant="secondary" onPress={addNewCharacter} />
+            </View>
             <View style={styles.rowActions}>
               <Button label="启用全部角色" variant="secondary" onPress={() => setAllCharacters(true)} disabled={!currentProject} />
               <Button label="停用全部角色" variant="ghost" onPress={() => setAllCharacters(false)} disabled={!currentProject} />
@@ -295,7 +375,11 @@ export const ResourceLibrary: React.FC = () => {
         ) : null}
         {tab === 'worldbook' ? (
           <>
-            <Button label="导入世界书" icon={Import} onPress={importWorldbook} />
+            <View style={styles.rowActions}>
+              <Button label="导入世界书" icon={Import} onPress={importWorldbook} />
+              {!selectedCollectionId && <Button label="新建世界书" icon={FilePlus2} variant="secondary" onPress={addNewWorldbook} />}
+              {selectedCollectionId && <Button label="新建条目" icon={FilePlus2} variant="secondary" onPress={addNewWorldbookEntry} />}
+            </View>
             {selectedCollectionId ? <Button label="返回合集" variant="secondary" onPress={() => setSelectedCollectionId(null)} /> : null}
           </>
         ) : null}
@@ -333,6 +417,7 @@ export const ResourceLibrary: React.FC = () => {
                 </View>
                 <View style={styles.cardActions}>
                   <Button label="打开" variant="secondary" onPress={() => setSelectedCollectionId(item.id)} />
+                  <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportWorldbook(item)} />
                   <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor('worldbookCollection', item)} />
                   <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove('worldbookCollection', item.id, item.name)} />
                 </View>
@@ -373,6 +458,9 @@ export const ResourceLibrary: React.FC = () => {
               </View>
               <View style={styles.cardActions}>
                 <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor(tab, item)} />
+                {tab === 'characters' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportCharacter(item)} />}
+                {tab === 'notes' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportNote(item)} />}
+                {tab === 'presets' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportPreset(item)} />}
                 <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove(tab, item.id, titleFor(tab, item))} />
               </View>
             </Card>
@@ -381,8 +469,9 @@ export const ResourceLibrary: React.FC = () => {
       )}
 
       <Modal visible={Boolean(editor)} transparent animationType="fade" onRequestClose={() => setEditor(null)}>
-        <Pressable style={styles.overlay} onPress={() => setEditor(null)}>
-          <Pressable style={[styles.modal, { backgroundColor: theme.colors.surface }]} onPress={(event) => event.stopPropagation()}>
+        <View style={styles.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setEditor(null)} />
+          <View style={[styles.modal, { backgroundColor: theme.colors.surface }]}>
             <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>{editorTitle}</Text>
             {editor ? (
               <ScrollView keyboardShouldPersistTaps="handled">
@@ -395,7 +484,10 @@ export const ResourceLibrary: React.FC = () => {
                   <>
                     {editor.imagePath ? <Image source={{ uri: `file://${editor.imagePath}` }} style={styles.characterImage} resizeMode="cover" /> : null}
                     <Button label={editor.imagePath ? '替换 PNG 图片' : '选择 PNG 图片'} icon={Import} variant="secondary" onPress={replaceCharacterPng} />
-                    <Field label="角色卡 JSON" value={editor.dataJson} onChangeText={(dataJson) => setEditor({ ...editor, dataJson })} multiline inputStyle={styles.largeInput} />
+                    <CharacterEditor
+                      dataJson={editor.dataJson}
+                      onChange={(dataJson) => setEditor({ ...editor, dataJson })}
+                    />
                   </>
                 ) : null}
                 {editor.kind === 'worldbookCollection' ? (
@@ -443,8 +535,8 @@ export const ResourceLibrary: React.FC = () => {
               <Button label="取消" variant="ghost" onPress={() => setEditor(null)} />
               <Button label="保存" onPress={saveEditor} />
             </View>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </Modal>
     </Screen>
   );

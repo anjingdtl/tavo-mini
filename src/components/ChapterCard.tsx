@@ -2,12 +2,20 @@ import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import type { Chapter, ChapterStatus } from '../types/novel';
 
+interface ThemeColors {
+  card: string;
+  accent: string;
+  border: string;
+  textPrimary: string;
+  textSecondary: string;
+}
+
 interface Props {
   chapter: Chapter;
   isActive: boolean;
   plotlineColors: string[];
   onPress: () => void;
-  theme: any;
+  theme: ThemeColors;
 }
 
 const STATUS_LABELS: Record<ChapterStatus, string> = {

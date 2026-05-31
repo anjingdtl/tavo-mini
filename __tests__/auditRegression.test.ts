@@ -26,6 +26,8 @@ describe('audit regression fixes', () => {
       }),
     );
     expect(result).toBe('content://exports/rain.md');
+    // Cleanup: cache file should be unlinked after save
+    expect(RNFS.unlink).toHaveBeenCalled();
   });
 
   test('includes project-enabled notes in AI resource context', async () => {
@@ -38,7 +40,7 @@ describe('audit regression fixes', () => {
     jest.doMock('../src/services/macroReplace', () => ({ processMacros: jest.fn(async (text: string) => text) }));
 
     const { buildContext } = require('../src/services/contextBuilder');
-    const messages = await buildContext(
+    const { messages } = await buildContext(
       { id: 1, project_id: 7, position: 0, title: '第一章', synopsis: '', content: '', status: 'planned' },
       { includeResources: true, resourceBudget: 2000, strategy: 'sliding', slidingWindowSize: 4000, customRangeStart: 0, customRangeEnd: -1 },
       7,

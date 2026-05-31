@@ -23,6 +23,8 @@ export const OutlineEditor: React.FC = () => {
   const [batchOutline, setBatchOutline] = useState('');
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchProgress, setBatchProgress] = useState('');
+  const [batchProgressCurrent, setBatchProgressCurrent] = useState(0);
+  const [batchProgressTotal, setBatchProgressTotal] = useState(0);
 
   const loadChapters = useCallback(async () => {
     if (!currentProject) {
@@ -45,7 +47,7 @@ export const OutlineEditor: React.FC = () => {
     navigation.navigate('ChapterEditor', { chapterId: id });
   };
 
-  const deleteChapter = (chapter: Chapter) => {
+  const deleteChapter = useCallback((chapter: Chapter) => {
     Alert.alert('删除章节', `确定删除「${chapter.title}」？`, [
       { text: '取消', style: 'cancel' },
       {
@@ -57,7 +59,7 @@ export const OutlineEditor: React.FC = () => {
         },
       },
     ]);
-  };
+  }, [loadChapters]);
 
   const runBatchGenerate = async () => {
     if (!currentProject || batchRunning) return;
@@ -74,10 +76,16 @@ export const OutlineEditor: React.FC = () => {
         count,
         outlineLines,
         onProgress: setBatchProgress,
+        onProgressNumeric: (current, total) => {
+          setBatchProgressCurrent(current);
+          setBatchProgressTotal(total);
+        },
       });
 
       setShowBatch(false);
       setBatchProgress('');
+      setBatchProgressCurrent(0);
+      setBatchProgressTotal(0);
       await loadChapters();
       Alert.alert('批量生成完成', `已完成 ${result.completed} 章，失败 ${result.failed} 章。`);
     } catch (error: any) {
@@ -87,16 +95,7 @@ export const OutlineEditor: React.FC = () => {
     }
   };
 
-  if (!currentProject) {
-    return (
-      <Screen>
-        <Header title="写作" subtitle="请先在项目页创建或选择项目" />
-        <EmptyState title="没有当前项目" description="进入项目页选择项目后，这里会显示章节和写作工具。" />
-      </Screen>
-    );
-  }
-
-  const renderChapter = ({ item }: { item: Chapter }) => (
+  const renderChapter = useCallback(({ item }: { item: Chapter }) => (
     <TouchableOpacity activeOpacity={0.78} onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })}>
       <Card>
         <View style={styles.chapterHeader}>
@@ -112,11 +111,20 @@ export const OutlineEditor: React.FC = () => {
         </View>
         <View style={styles.statusRow}>
           <Text style={[styles.status, { color: theme.colors.textSecondary }]}>{statusLabel(item.status)}</Text>
-          <Text style={[styles.status, { color: theme.colors.textSecondary }]}>{item.content.length} 字</Text>
+          <Text style={[styles.status, { color: theme.colors.textSecondary }]}>{(item.content || '').length} 字</Text>
         </View>
       </Card>
     </TouchableOpacity>
-  );
+  ), [deleteChapter, navigation, theme]);
+
+  if (!currentProject) {
+    return (
+      <Screen>
+        <Header title="写作" subtitle="请先在项目页创建或选择项目" />
+        <EmptyState title="没有当前项目" description="进入项目页选择项目后，这里会显示章节和写作工具。" />
+      </Screen>
+    );
+  }
 
   return (
     <Screen>
@@ -143,7 +151,31 @@ export const OutlineEditor: React.FC = () => {
               multiline
               inputStyle={styles.outlineInput}
             />
-            {batchProgress ? <Text style={[styles.progress, { color: theme.colors.textSecondary }]}>{batchProgress}</Text> : null}
+            {batchProgress || batchRunning ? (
+              <View style={styles.progressContainer}>
+                <View style={styles.progressInfoRow}>
+                  <Text style={[styles.progressLabel, { color: theme.colors.textPrimary }]} numberOfLines={1}>
+                    {batchProgress || '准备中...'}
+                  </Text>
+                  <Text style={[styles.progressPercent, { color: theme.colors.accent }]}>
+                    {batchProgressTotal > 0 ? `${Math.round((batchProgressCurrent / batchProgressTotal) * 100)}%` : ''}
+                  </Text>
+                </View>
+                {batchProgressTotal > 0 ? (
+                  <View style={[styles.progressTrack, { backgroundColor: theme.colors.border }]}>
+                    <View
+                      style={[
+                        styles.progressFill,
+                        {
+                          backgroundColor: theme.colors.accent,
+                          width: `${Math.round((batchProgressCurrent / batchProgressTotal) * 100)}%`,
+                        },
+                      ]}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
             <View style={styles.modalActions}>
               <Button label="取消" variant="ghost" onPress={() => setShowBatch(false)} disabled={batchRunning} />
               <Button label={batchRunning ? '生成中...' : '开始生成'} onPress={runBatchGenerate} disabled={batchRunning} />
@@ -177,5 +209,10 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 18, fontWeight: '800' },
   outlineInput: { minHeight: 140, textAlignVertical: 'top' },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md },
-  progress: { fontSize: 13, fontWeight: '700' },
+  progressContainer: { gap: spacing.sm },
+  progressInfoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  progressLabel: { fontSize: 13, fontWeight: '700', flex: 1 },
+  progressPercent: { fontSize: 14, fontWeight: '800' },
+  progressTrack: { height: 8, borderRadius: 4, overflow: 'hidden' },
+  progressFill: { height: '100%', borderRadius: 4 },
 });
