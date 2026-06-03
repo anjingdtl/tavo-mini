@@ -122,7 +122,8 @@ export async function exportNoteMarkdown(noteId: number): Promise<string> {
   const note = notes.find((n: any) => n.id === noteId);
   if (!note) throw new Error('未找到笔记。');
   const fileName = safeFileName(note.title || 'note') + '.md';
-  const content = `# ${note.title || '无标题'}\n\n${note.content || ''}`;
+  const noteContent = await db.getNoteContentById(noteId);
+  const content = `# ${note.title || '无标题'}\n\n${noteContent}`;
   return saveTextDocument(fileName, content, 'text/markdown');
 }
 

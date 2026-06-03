@@ -8,14 +8,14 @@ import type { Preset } from '../types/novel';
 import type { PipelineConfig, PipelineMode } from '../types/pipeline';
 
 const MODE_OPTIONS: { value: PipelineMode; label: string }[] = [
-  { value: 'twoStage', label: '两段式' },
-  { value: 'conditional', label: '条件式' },
+  { value: 'twoStage', label: '仅评估' },
+  { value: 'conditional', label: '仅核查' },
   { value: 'full', label: '完整' },
 ];
 
 const MODE_HELP: Record<PipelineMode, string> = {
-  twoStage: '草稿生成后直接轻量终审，跳过独立审阅和事实核查，默认更快。',
-  conditional: '草稿生成后先短评估；问题少则直接完成，问题明显时再终审。',
+  twoStage: '草稿生成后只运行审阅/评估，再由终审根据评估意见修订完稿。',
+  conditional: '草稿生成后只运行事实核查员，再由终审根据核查结果修订完稿。',
   full: '保留草稿、审阅、事实核查、终审四阶段，质量优先但耗时最长。',
 };
 

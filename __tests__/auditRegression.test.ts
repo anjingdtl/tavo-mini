@@ -34,7 +34,8 @@ describe('audit regression fixes', () => {
     jest.doMock('../src/services/database', () => ({
       getCharactersByProject: jest.fn(async () => []),
       getWorldbookEntriesByProject: jest.fn(async () => []),
-      getNotesByProject: jest.fn(async () => [{ title: '时间线', content: '主角必须在雨夜抵达钟楼。' }]),
+      getNotesByProject: jest.fn(async () => [{ id: 1, title: '时间线', content: '主角必须在雨夜抵达钟楼。' }]),
+      getNoteContentById: jest.fn(async () => '主角必须在雨夜抵达钟楼。'),
       getChaptersByProject: jest.fn(async () => []),
     }));
     jest.doMock('../src/services/macroReplace', () => ({ processMacros: jest.fn(async (text: string) => text) }));

@@ -3,11 +3,9 @@ import { callLLMResult } from './llm';
 import { buildContext } from './contextBuilder';
 import { createChapterGenerationRequest } from './chapterGeneration';
 import {
-  buildAssessmentMessages,
   buildDraftMessages,
   buildReviewMessages,
   buildFactCheckMessages,
-  buildLightProofMessages,
   buildProofMessages,
 } from './pipelineMessages';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
@@ -16,14 +14,6 @@ import type { PipelineStageName } from '../types/pipeline';
 import type { ChatMessage } from './llm';
 
 const cancelledTasks = new Set<string>();
-
-interface AssessmentPayload {
-  needsProof: boolean;
-  shortReview: string;
-  issues: string[];
-  suggestions: string[];
-  reasons: string[];
-}
 
 export function cancelPipeline(taskId: string): void {
   cancelledTasks.add(taskId);
@@ -75,96 +65,6 @@ function markSkipped(taskId: string, stage: PipelineStageName, text: string): vo
   });
 }
 
-function parseAssessmentJson(text: string | null): any {
-  if (!text) throw new Error('快速评估返回空内容');
-  const cleaned = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  return JSON.parse(match ? match[0] : cleaned);
-}
-
-function normalizeList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.map(String).map((item) => item.trim()).filter(Boolean);
-}
-
-function normalizeAssessment(text: string): AssessmentPayload {
-  const parsed = parseAssessmentJson(text);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('快速评估返回格式无效');
-  }
-
-  const rawNeedsProof = parsed?.needsProof ?? parsed?.needs_proof ?? parsed?.needProof;
-  const issues = normalizeList(parsed.issues);
-  const suggestions = normalizeList(parsed.suggestions);
-  const reasons = normalizeList(parsed.reasons);
-  let needsProof = true;
-
-  if (typeof rawNeedsProof === 'boolean') {
-    needsProof = rawNeedsProof;
-  } else if (typeof rawNeedsProof === 'string') {
-    needsProof = rawNeedsProof.toLowerCase() !== 'false';
-  }
-
-  if (issues.length > 0 || suggestions.length > 0) {
-    needsProof = true;
-  }
-
-  return {
-    needsProof,
-    shortReview: String(
-      parsed.shortReview ||
-        parsed.short_review ||
-        (needsProof ? '草稿存在明显问题，建议进入终审修改。' : '草稿整体可用，未发现必须终审的问题。'),
-    ),
-    issues,
-    suggestions,
-    reasons,
-  };
-}
-
-function shouldProofFromAssessmentPayload(assessment: AssessmentPayload): boolean {
-  return assessment.needsProof || assessment.issues.length > 0 || assessment.suggestions.length > 0;
-}
-
-function shouldProofFromAssessment(text: string | null): boolean {
-  try {
-    return shouldProofFromAssessmentPayload(normalizeAssessment(text || ''));
-  } catch {
-    // Invalid assessment output should take the safer proof path.
-  }
-  return true;
-}
-
-function normalizeAssessmentText(text: string): string {
-  return JSON.stringify(normalizeAssessment(text));
-}
-
-function buildAssessmentFallback(reason: string): string {
-  return JSON.stringify({
-    needsProof: true,
-    shortReview: '快速评估未返回有效短评，已转入终审处理。',
-    issues: ['评估阶段没有返回可用内容。'],
-    suggestions: ['请查看终审结果；如终审仍不理想，建议手动检查草稿的衔接、逻辑和角色一致性。'],
-    reasons: [reason],
-  });
-}
-
-function buildAssessmentProofText(text: string): string {
-  const assessment = normalizeAssessment(text);
-  return [
-    `短评：${assessment.shortReview}`,
-    '',
-    '主要问题：',
-    ...(assessment.issues.length > 0 ? assessment.issues.map((item) => `- ${item}`) : ['- 未列出明显问题。']),
-    '',
-    '修改意见：',
-    ...(assessment.suggestions.length > 0 ? assessment.suggestions.map((item) => `- ${item}`) : ['- 请做必要的轻量校对，保持原稿风格。']),
-    '',
-    '判断依据：',
-    ...(assessment.reasons.length > 0 ? assessment.reasons.map((item) => `- ${item}`) : ['- 未列出额外依据。']),
-  ].join('\n');
-}
-
 async function runProofStage({
   taskId,
   draftText,
@@ -173,7 +73,6 @@ async function runProofStage({
   maxTokens,
   proofPreset,
   scenario = 'pipeline_proof',
-  light = false,
 }: {
   taskId: string,
   draftText: string;
@@ -182,16 +81,13 @@ async function runProofStage({
   maxTokens: number;
   proofPreset: Preset | null;
   scenario?: string;
-  light?: boolean;
 }): Promise<string> {
   const store = usePipelineTaskStore.getState();
   store.setTaskStatus(taskId, 'proofing');
 
   const proofStart = Date.now();
   try {
-    const messages = light
-      ? buildLightProofMessages(draftText)
-      : buildProofMessages(draftText, reviewText, factCheckText);
+    const messages = buildProofMessages(draftText, reviewText, factCheckText);
     const proofResult = await callLLMResult(
       messages,
       maxTokens,
@@ -292,19 +188,50 @@ export async function runChapterPipeline(
   }
 
   if (config.pipelineMode === 'twoStage') {
-    markSkipped(taskId, 'review', '两段式已跳过独立审阅');
-    markSkipped(taskId, 'factCheck', '两段式已跳过独立事实核查');
     if (checkCancelled(taskId)) return;
-    onStageUpdate?.('正在进行轻量终审...');
+    store.setTaskStatus(taskId, 'reviewing');
+    onStageUpdate?.('正在审阅/评估草稿...');
+
+    const reviewStart = Date.now();
+    let reviewText = '';
+    try {
+      const reviewResult = await callLLMResult(
+        buildReviewMessages(draftText),
+        config.reviewMaxTokens,
+        buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review'),
+      );
+      reviewText = reviewResult.text || '';
+      store.updateTaskStage(taskId, {
+        stage: 'review',
+        text: reviewText,
+        status: 'success',
+        tokens: {
+          input: reviewResult.inputTokens,
+          output: reviewResult.outputTokens,
+          total: reviewResult.totalTokens,
+        },
+        durationMs: Date.now() - reviewStart,
+      });
+    } catch (error: any) {
+      store.updateTaskStage(taskId, {
+        stage: 'review',
+        text: '',
+        status: 'failed',
+        error: error.message || '审阅/评估失败',
+        durationMs: Date.now() - reviewStart,
+      });
+    }
+
+    markSkipped(taskId, 'factCheck', '仅评估模式已跳过事实核查');
+    if (checkCancelled(taskId)) return;
+    onStageUpdate?.('正在根据审阅/评估终审...');
     const finalText = await runProofStage({
       taskId,
       draftText,
-      reviewText: '',
+      reviewText,
       factCheckText: '',
       maxTokens: config.proofMaxTokens,
       proofPreset,
-      scenario: 'pipeline_light_proof',
-      light: true,
     });
     store.completeTask(taskId, finalText);
     return;
@@ -313,59 +240,47 @@ export async function runChapterPipeline(
   if (config.pipelineMode === 'conditional') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.('正在快速评估草稿...');
+    onStageUpdate?.('正在事实核查草稿...');
 
-    const assessmentMaxTokens = Math.min(config.reviewMaxTokens, 512);
-    const assessmentStart = Date.now();
-    let assessmentText = '';
+    const contextText = buildContextPreview(baseContext);
+    const factCheckStart = Date.now();
+    let factCheckText = '';
     try {
-      const assessmentResult = await callLLMResult(
-        buildAssessmentMessages(draftText),
-        assessmentMaxTokens,
-        buildCallConfig(reviewPreset, assessmentMaxTokens, 'pipeline_assessment'),
+      const factCheckResult = await callLLMResult(
+        buildFactCheckMessages(draftText, contextText),
+        config.factCheckMaxTokens,
+        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck'),
       );
-      const rawAssessmentText = (assessmentResult.text || '').trim();
-      if (!rawAssessmentText) {
-        throw new Error('快速评估返回空内容');
-      }
-      assessmentText = normalizeAssessmentText(rawAssessmentText);
+      factCheckText = factCheckResult.text || '';
       store.updateTaskStage(taskId, {
-        stage: 'review',
-        text: assessmentText,
+        stage: 'factCheck',
+        text: factCheckText,
         status: 'success',
         tokens: {
-          input: assessmentResult.inputTokens,
-          output: assessmentResult.outputTokens,
-          total: assessmentResult.totalTokens,
+          input: factCheckResult.inputTokens,
+          output: factCheckResult.outputTokens,
+          total: factCheckResult.totalTokens,
         },
-        durationMs: Date.now() - assessmentStart,
+        durationMs: Date.now() - factCheckStart,
       });
     } catch (error: any) {
-      assessmentText = buildAssessmentFallback('assessment_failed');
       store.updateTaskStage(taskId, {
-        stage: 'review',
-        text: assessmentText,
+        stage: 'factCheck',
+        text: '',
         status: 'failed',
-        error: error.message || '快速评估失败，转入终审',
-        durationMs: Date.now() - assessmentStart,
+        error: error.message || '事实核查失败',
+        durationMs: Date.now() - factCheckStart,
       });
     }
 
-    markSkipped(taskId, 'factCheck', '条件模式已跳过独立事实核查');
-    if (!shouldProofFromAssessment(assessmentText)) {
-      markSkipped(taskId, 'proof', '快速评估认为无需终审');
-      store.completeTask(taskId, draftText);
-      return;
-    }
-
+    markSkipped(taskId, 'review', '仅核查模式已跳过审阅/评估');
     if (checkCancelled(taskId)) return;
-    onStageUpdate?.('快速评估建议终审，正在校对...');
-    const assessmentProofText = buildAssessmentProofText(assessmentText);
+    onStageUpdate?.('正在根据事实核查终审...');
     const finalText = await runProofStage({
       taskId,
       draftText,
-      reviewText: assessmentProofText,
-      factCheckText: '',
+      reviewText: '',
+      factCheckText,
       maxTokens: config.proofMaxTokens,
       proofPreset,
     });
