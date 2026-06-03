@@ -28,6 +28,8 @@ SQLite.enablePromise(true);
 const DB_NAME = 'tavo_mini.db';
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
+const NOTE_TEXT_CHUNK_CHARS = 120000;
+const NOTE_LIST_PREVIEW_CHARS = 1200;
 let db: SQLite.SQLiteDatabase | null = null;
 let opening: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -43,6 +45,7 @@ export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
     await ensureSchemaCompatibility(database);
     await seedDefaults(database);
     await migrate(database);
+    await repairOversizedNotes(database);
     db = database;
     opening = null;
     return database;
@@ -744,6 +747,27 @@ export async function setAllProjectResourcesEnabled(
   }
 }
 
+export async function setWorldbookCollectionEnabledForProject(
+  projectId: number,
+  collectionId: number,
+  enabled: boolean,
+): Promise<void> {
+  const database = await openDatabase();
+  await database.transaction(async (tx) => {
+    await tx.executeSql('UPDATE worldbook_collections SET enabled = ? WHERE id = ?', [enabled ? 1 : 0, collectionId]);
+    if (!enabled) return;
+    await tx.executeSql('UPDATE worldbook_entries SET enabled = 1 WHERE collection_id = ?', [collectionId]);
+    const [result] = await tx.executeSql('SELECT id FROM worldbook_entries WHERE collection_id = ?', [collectionId]);
+    for (let i = 0; i < result.rows.length; i++) {
+      const row = result.rows.item(i);
+      await tx.executeSql(
+        'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, 1)',
+        [projectId, 'worldbook', row.id],
+      );
+    }
+  });
+}
+
 export async function getWorldbookEntriesByProject(projectId: number): Promise<Row[]> {
   return all<Row>(
     `SELECT w.*, wc.name AS collection_name, wc.enabled AS collection_enabled, wc.max_tokens AS collection_max_tokens FROM worldbook_entries w
@@ -877,13 +901,126 @@ export async function deleteWorldbookEntry(id: number): Promise<void> {
   if (entry?.collection_id) await updateWorldbookCollectionTokenEstimate(Number(entry.collection_id));
 }
 
+export function splitNoteTextIntoChunks(text: string, chunkSize = NOTE_TEXT_CHUNK_CHARS): string[] {
+  if (!text) return [''];
+  if (text.length <= chunkSize) return [text];
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + chunkSize, text.length);
+    if (end < text.length) {
+      const newline = text.lastIndexOf('\n', end);
+      if (newline > start + Math.floor(chunkSize * 0.5)) {
+        end = newline + 1;
+      }
+    }
+    chunks.push(text.slice(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
+async function insertNoteRow(database: SQLite.SQLiteDatabase, title: string, content: string): Promise<number> {
+  const timestamp = now();
+  const result = await execute(
+    database,
+    'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [0, title, content, 30000, estimateTokens(content), timestamp, timestamp],
+  );
+  return result.insertId!;
+}
+
+export async function createNotesFromTextChunks(
+  projectId: number,
+  title: string,
+  content: string,
+): Promise<{ firstId: number; createdCount: number }> {
+  const database = await openDatabase();
+  const chunks = splitNoteTextIntoChunks(content);
+  let firstId = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const noteTitle = chunks.length === 1 ? title : `${title} (${i + 1}/${chunks.length})`;
+    const id = await insertNoteRow(database, noteTitle, chunks[i]);
+    if (!firstId) firstId = id;
+    await linkResourceToProject(projectId, 'note', id);
+  }
+  return { firstId, createdCount: chunks.length };
+}
+
+async function getNoteContentByIdFromDatabase(database: SQLite.SQLiteDatabase, id: number): Promise<string> {
+  const meta = await execute(database, 'SELECT length(content) AS length FROM notes WHERE id = ?', [id]);
+  if (meta.rows.length === 0) return '';
+  const totalLength = Number(meta.rows.item(0).length || 0);
+  let content = '';
+  for (let offset = 1; offset <= totalLength; offset += NOTE_TEXT_CHUNK_CHARS) {
+    const result = await execute(database, 'SELECT substr(content, ?, ?) AS chunk FROM notes WHERE id = ?', [
+      offset,
+      NOTE_TEXT_CHUNK_CHARS,
+      id,
+    ]);
+    content += result.rows.item(0)?.chunk || '';
+  }
+  return content;
+}
+
+export async function getNoteContentById(id: number): Promise<string> {
+  return getNoteContentByIdFromDatabase(await openDatabase(), id);
+}
+
+async function repairOversizedNotes(database: SQLite.SQLiteDatabase): Promise<void> {
+  try {
+    const oversized = await execute(
+      database,
+      'SELECT id, title FROM notes WHERE length(content) > ? ORDER BY id ASC',
+      [NOTE_TEXT_CHUNK_CHARS],
+    );
+    for (let i = 0; i < oversized.rows.length; i++) {
+      const note = oversized.rows.item(i);
+      const content = await getNoteContentByIdFromDatabase(database, note.id);
+      const chunks = splitNoteTextIntoChunks(content);
+      if (chunks.length <= 1) continue;
+      const links = await execute(
+        database,
+        'SELECT project_id, enabled FROM project_resources WHERE resource_type = ? AND resource_id = ?',
+        ['note', note.id],
+      );
+      const newIds: number[] = [];
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+        const newId = await insertNoteRow(database, `${note.title} (${chunkIndex + 1}/${chunks.length})`, chunks[chunkIndex]);
+        newIds.push(newId);
+      }
+      await database.transaction(async (tx) => {
+        for (const newId of newIds) {
+          for (let linkIndex = 0; linkIndex < links.rows.length; linkIndex++) {
+            const link = links.rows.item(linkIndex);
+            await tx.executeSql(
+              'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+              [link.project_id, 'note', newId, link.enabled],
+            );
+          }
+        }
+        await tx.executeSql('DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?', ['note', note.id]);
+        await tx.executeSql('DELETE FROM notes WHERE id = ?', [note.id]);
+      });
+    }
+  } catch (error) {
+    console.warn('[database] repairOversizedNotes failed:', error);
+  }
+}
+
 export async function getAllNotes(projectId?: number): Promise<Note[]> {
-  return all<Note>(`SELECT n.*, ${usageJoin('note', 'n', projectId)} FROM notes n ORDER BY n.updated_at DESC`);
+  return all<Note>(
+    `SELECT n.id, n.project_id, n.title, substr(n.content, 1, ${NOTE_LIST_PREVIEW_CHARS}) AS content,
+            n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at, ${usageJoin('note', 'n', projectId)}
+     FROM notes n ORDER BY n.updated_at DESC`,
+  );
 }
 
 export async function getNotesByProject(projectId: number): Promise<Note[]> {
   return all<Note>(
-    `SELECT n.* FROM notes n
+    `SELECT n.id, n.project_id, n.title, substr(n.content, 1, ${NOTE_LIST_PREVIEW_CHARS}) AS content,
+            n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at
+     FROM notes n
      JOIN project_resources pr ON pr.resource_id = n.id AND pr.resource_type = 'note'
      WHERE pr.project_id = ? AND pr.enabled = 1
      ORDER BY n.updated_at DESC`,
@@ -892,13 +1029,7 @@ export async function getNotesByProject(projectId: number): Promise<Note[]> {
 }
 
 export async function createNote(projectId: number, title: string, content = ''): Promise<number> {
-  const timestamp = now();
-  const result = await execute(
-    await openDatabase(),
-    'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [0, title, content, 30000, estimateTokens(content), timestamp, timestamp],
-  );
-  const id = result.insertId!;
+  const id = await insertNoteRow(await openDatabase(), title, content);
   await linkResourceToProject(projectId, 'note', id);
   return id;
 }

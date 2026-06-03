@@ -126,8 +126,8 @@ export const ResourceLibrary: React.FC = () => {
     try {
       const id = await db.createWorldbookCollection(projectId, '未命名世界书', { enabled: 1 });
       await loadData();
-      const collections = await db.getWorldbookCollections(projectId);
-      const newItem = collections.find((c: any) => c.id === id);
+      const refreshedCollections = await db.getWorldbookCollections(projectId);
+      const newItem = refreshedCollections.find((c: any) => c.id === id);
       if (newItem) openEditor('worldbookCollection', newItem);
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '新建失败', text2: error.message });
@@ -149,8 +149,8 @@ export const ResourceLibrary: React.FC = () => {
 
   const importNoteText = async () => {
     try {
-      const id = await importSelectedNoteText(projectId);
-      if (id) Toast.show({ type: 'success', text1: 'TXT 已导入为笔记' });
+      const result = await importSelectedNoteText(projectId);
+      if (result) Toast.show({ type: 'success', text1: 'TXT 已导入为笔记', text2: `${result.createdCount} 条笔记` });
       await loadData();
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导入失败', text2: error.message });
@@ -177,12 +177,13 @@ export const ResourceLibrary: React.FC = () => {
     }
   };
 
-  const openEditor = (kind: EditorKind, item: any) => {
+  const openEditor = async (kind: EditorKind, item: any) => {
+    const noteContent = kind === 'notes' ? await db.getNoteContentById(item.id) : '';
     setEditor({
       kind,
       item,
       name: titleFor(kind, item),
-      content: kind === 'notes' ? item.content || '' : kind === 'worldbook' ? item.content || '' : '',
+      content: kind === 'notes' ? noteContent : kind === 'worldbook' ? item.content || '' : '',
       secondary: item.keyword_secondary || '',
       comment: item.comment || '',
       dataJson: item.data_json || '{}',
@@ -213,9 +214,9 @@ export const ResourceLibrary: React.FC = () => {
       if (editor.kind === 'worldbookCollection') {
         await db.updateWorldbookCollection(item.id, {
           name: editor.name.trim() || '未命名世界书',
-          enabled: editor.enabled ? 1 : 0,
           max_tokens: maxTokens,
         });
+        await db.setWorldbookCollectionEnabledForProject(projectId, item.id, editor.enabled);
       }
       if (editor.kind === 'worldbook') {
         await db.updateWorldbookEntry(item.id, {
@@ -319,11 +320,7 @@ export const ResourceLibrary: React.FC = () => {
 
   const toggleCollection = async (collection: any) => {
     const newEnabled = collection.enabled === 1 ? 0 : 1;
-    await db.updateWorldbookCollection(collection.id, { enabled: newEnabled });
-    // 优化2: 只在启用合集时级联开启所有子条目，禁用时不级联（保护用户个体配置）
-    if (newEnabled === 1) {
-      await db.setAllWorldbookEntriesEnabledByCollection(collection.id, true);
-    }
+    await db.setWorldbookCollectionEnabledForProject(projectId, collection.id, newEnabled === 1);
     await loadData();
   };
 
