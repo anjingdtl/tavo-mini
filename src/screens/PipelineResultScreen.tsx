@@ -32,6 +32,16 @@ function formatStageText(stage: PipelineStageResult): string {
   }
 }
 
+export function summarizePipelineTokens(stageResults: PipelineStageResult[]): { inputTokens: number; totalTokens: number } {
+  return stageResults.reduce(
+    (summary, stage) => ({
+      inputTokens: summary.inputTokens + (stage.tokens?.input || 0),
+      totalTokens: summary.totalTokens + (stage.tokens?.total || 0),
+    }),
+    { inputTokens: 0, totalTokens: 0 },
+  );
+}
+
 export const PipelineResultScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const navigation = useNavigation();
@@ -49,10 +59,7 @@ export const PipelineResultScreen: React.FC = () => {
     );
   }
 
-  const totalTokens = task.stageResults.reduce(
-    (sum, r) => sum + (r.tokens?.total || 0),
-    0,
-  );
+  const { inputTokens, totalTokens } = summarizePipelineTokens(task.stageResults);
   const skippedCount = task.stageResults.filter((stage) => stage.status === 'skipped').length;
   const duration = task.updatedAt - task.createdAt;
   const durationText = duration > 60000
@@ -133,6 +140,9 @@ export const PipelineResultScreen: React.FC = () => {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
           {task.status === 'completed' ? '已完成' : '异常终止'} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
+        </Text>
+        <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
+          本次输入上下文 tokens：{inputTokens.toLocaleString()}
         </Text>
         {task.stageResults.map(renderStageCard)}
         {task.finalText && (

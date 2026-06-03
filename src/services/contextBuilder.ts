@@ -163,7 +163,8 @@ async function buildNoteContext(projectId: number, budget: number): Promise<stri
 
   for (const note of notes) {
     if (remaining <= 0) break;
-    const text = `笔记「${note.title || '无标题'}」：${note.content || ''}`;
+    const content = await db.getNoteContentById(note.id);
+    const text = `笔记「${note.title || '无标题'}」：${content}`;
     const clipped = clipTextToTokenBudget(text, Math.min(remaining, note.max_tokens || 30000));
     if (!clipped) continue;
     parts.push(clipped);

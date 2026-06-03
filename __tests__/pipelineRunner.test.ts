@@ -61,8 +61,8 @@ const chapter: Chapter = {
   id: 1,
   project_id: 10,
   position: 0,
-  title: '第一章',
-  synopsis: '开端',
+  title: 'Chapter 1',
+  synopsis: 'Opening',
   content: '',
   status: 'draft',
   summary_json: null,
@@ -91,20 +91,21 @@ beforeEach(() => {
   mockCallLLMResult.mockReset();
 });
 
-test('two-stage pipeline skips review and fact-check calls', async () => {
+test('two-stage pipeline runs review-only mode before proof', async () => {
   mockCallLLMResult
     .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
+    .mockResolvedValueOnce({ text: '{"issues":["tighten ending"]}', inputTokens: 8, outputTokens: 6, totalTokens: 14 })
     .mockResolvedValueOnce({ text: 'polished', inputTokens: 15, outputTokens: 20, totalTokens: 35 });
 
   const { runChapterPipeline } = require('../src/services/pipelineRunner');
   await runChapterPipeline('task-two-stage', chapter);
 
-  expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
-  expect(mockCallLLMResult.mock.calls[1][0][0].content).toContain('轻量终审');
-  expect(mockCallLLMResult.mock.calls[1][2]).toMatchObject({ scenario: 'pipeline_light_proof' });
+  expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
+  expect(mockCallLLMResult.mock.calls[1][2]).toMatchObject({ scenario: 'pipeline_review' });
+  expect(mockCallLLMResult.mock.calls[2][0][1].content).toContain('tighten ending');
   expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
     'task-two-stage',
-    expect.objectContaining({ stage: 'review', status: 'skipped' }),
+    expect.objectContaining({ stage: 'review', status: 'success' }),
   );
   expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
     'task-two-stage',
@@ -113,149 +114,45 @@ test('two-stage pipeline skips review and fact-check calls', async () => {
   expect(mockStore.completeTask).toHaveBeenCalledWith('task-two-stage', 'polished');
 });
 
-test('conditional pipeline completes with draft when assessment says proof is unnecessary', async () => {
+test('conditional pipeline runs fact-check-only mode before proof', async () => {
   mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'conditional' }));
   mockCallLLMResult
     .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
-    .mockResolvedValueOnce({ text: '{"needsProof":false,"reasons":[]}', inputTokens: 6, outputTokens: 4, totalTokens: 10 });
+    .mockResolvedValueOnce({ text: '{"errors":["timeline mismatch"]}', inputTokens: 9, outputTokens: 6, totalTokens: 15 })
+    .mockResolvedValueOnce({ text: 'final after fact check', inputTokens: 14, outputTokens: 20, totalTokens: 34 });
 
   const { runChapterPipeline } = require('../src/services/pipelineRunner');
-  await runChapterPipeline('task-conditional-clean', chapter);
-
-  expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
-  expect(mockCallLLMResult.mock.calls[1][0][0].content).toContain('严格 JSON');
-  expect(mockCallLLMResult.mock.calls[1][2]).toMatchObject({ scenario: 'pipeline_assessment' });
-  expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
-    'task-conditional-clean',
-    expect.objectContaining({
-      stage: 'review',
-      status: 'success',
-      text: expect.stringContaining('shortReview'),
-    }),
-  );
-  expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
-    'task-conditional-clean',
-    expect.objectContaining({
-      stage: 'review',
-      text: expect.stringContaining('suggestions'),
-    }),
-  );
-  expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
-    'task-conditional-clean',
-    expect.objectContaining({ stage: 'proof', status: 'skipped' }),
-  );
-  expect(mockStore.completeTask).toHaveBeenCalledWith('task-conditional-clean', 'draft');
-});
-
-test('conditional pipeline runs proof when assessment JSON is invalid', async () => {
-  mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'conditional' }));
-  mockCallLLMResult
-    .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
-    .mockResolvedValueOnce({ text: '需要再润色一下', inputTokens: 6, outputTokens: 4, totalTokens: 10 })
-    .mockResolvedValueOnce({ text: 'final after invalid assessment', inputTokens: 12, outputTokens: 20, totalTokens: 32 });
-
-  const { runChapterPipeline } = require('../src/services/pipelineRunner');
-  await runChapterPipeline('task-conditional-invalid', chapter);
+  await runChapterPipeline('task-conditional', chapter);
 
   expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
-  expect(mockStore.completeTask).toHaveBeenCalledWith('task-conditional-invalid', 'final after invalid assessment');
-});
-
-test('conditional pipeline sends assessment suggestions into proof stage', async () => {
-  mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'conditional' }));
-  mockCallLLMResult
-    .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
-    .mockResolvedValueOnce({
-      text: JSON.stringify({
-        needsProof: false,
-        shortReview: '节奏顺畅，但结尾衔接略突兀。',
-        issues: [],
-        suggestions: ['补一两句过渡，让结尾动作更自然。'],
-        reasons: ['存在可执行修改意见'],
-      }),
-      inputTokens: 6,
-      outputTokens: 20,
-      totalTokens: 26,
-    })
-    .mockResolvedValueOnce({ text: 'final with transition', inputTokens: 12, outputTokens: 20, totalTokens: 32 });
-
-  const { runChapterPipeline } = require('../src/services/pipelineRunner');
-  await runChapterPipeline('task-conditional-suggestions', chapter);
-
-  expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
-  expect(mockCallLLMResult.mock.calls[2][0][1].content).toContain('短评：节奏顺畅，但结尾衔接略突兀。');
-  expect(mockCallLLMResult.mock.calls[2][0][1].content).toContain('补一两句过渡，让结尾动作更自然。');
-  expect(mockStore.completeTask).toHaveBeenCalledWith('task-conditional-suggestions', 'final with transition');
-});
-
-test('conditional pipeline records fallback review when assessment is empty', async () => {
-  mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'conditional' }));
-  mockCallLLMResult
-    .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
-    .mockResolvedValueOnce({ text: '', inputTokens: 6, outputTokens: 0, totalTokens: 6 })
-    .mockResolvedValueOnce({ text: 'final after empty assessment', inputTokens: 12, outputTokens: 20, totalTokens: 32 });
-
-  const { runChapterPipeline } = require('../src/services/pipelineRunner');
-  await runChapterPipeline('task-conditional-empty', chapter);
-
-  expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
+  expect(mockCallLLMResult.mock.calls[1][2]).toMatchObject({ scenario: 'pipeline_factcheck' });
+  expect(mockCallLLMResult.mock.calls[2][0][1].content).toContain('timeline mismatch');
   expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
-    'task-conditional-empty',
-    expect.objectContaining({
-      stage: 'review',
-      status: 'failed',
-      text: expect.stringContaining('shortReview'),
-    }),
+    'task-conditional',
+    expect.objectContaining({ stage: 'review', status: 'skipped' }),
   );
   expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
-    'task-conditional-empty',
-    expect.objectContaining({
-      stage: 'review',
-      text: expect.stringContaining('suggestions'),
-    }),
+    'task-conditional',
+    expect.objectContaining({ stage: 'factCheck', status: 'success' }),
   );
-  expect(mockStore.completeTask).toHaveBeenCalledWith('task-conditional-empty', 'final after empty assessment');
+  expect(mockStore.completeTask).toHaveBeenCalledWith('task-conditional', 'final after fact check');
 });
 
-test('two-stage pipeline falls back to draft when proof fails', async () => {
+test('two-stage pipeline falls back to draft when review-only proof fails', async () => {
   mockCallLLMResult
     .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
+    .mockResolvedValueOnce({ text: '{"issues":[]}', inputTokens: 8, outputTokens: 6, totalTokens: 14 })
     .mockRejectedValueOnce(new Error('proof LLM error'));
 
   const { runChapterPipeline } = require('../src/services/pipelineRunner');
   await runChapterPipeline('task-two-stage-proof-fail', chapter);
 
-  expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
+  expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
   expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
     'task-two-stage-proof-fail',
     expect.objectContaining({ stage: 'proof', status: 'failed' }),
   );
   expect(mockStore.completeTask).toHaveBeenCalledWith('task-two-stage-proof-fail', 'draft');
-});
-
-test('conditional pipeline forces proof when needsProof is false but issues exist', async () => {
-  mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'conditional' }));
-  mockCallLLMResult
-    .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
-    .mockResolvedValueOnce({
-      text: JSON.stringify({
-        needsProof: false,
-        shortReview: '整体不错但有问题。',
-        issues: ['角色名字前后不一致'],
-        suggestions: [],
-        reasons: ['存在明显问题'],
-      }),
-      inputTokens: 6,
-      outputTokens: 20,
-      totalTokens: 26,
-    })
-    .mockResolvedValueOnce({ text: 'final with fixes', inputTokens: 12, outputTokens: 20, totalTokens: 32 });
-
-  const { runChapterPipeline } = require('../src/services/pipelineRunner');
-  await runChapterPipeline('task-conditional-issues-override', chapter);
-
-  expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
-  expect(mockStore.completeTask).toHaveBeenCalledWith('task-conditional-issues-override', 'final with fixes');
 });
 
 test('full pipeline keeps review and fact-check before proofing', async () => {

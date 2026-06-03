@@ -331,12 +331,12 @@ export async function pickCharacterPngImageReplacement(): Promise<string | null>
   return persistCharacterPngImage(file.localPath, file.name);
 }
 
-export async function importSelectedNoteText(projectId: number): Promise<number | null> {
+export async function importSelectedNoteText(projectId: number): Promise<{ firstId: number; createdCount: number } | null> {
   const file = await pickLocalFile([types.plainText, types.allFiles]);
   if (!file) return null;
   const content = await RNFS.readFile(file.localPath, 'utf8');
   const title = file.name.replace(/\.[^.]+$/, '').trim() || '导入的 TXT 笔记';
-  return db.createNote(projectId, title, content);
+  return db.createNotesFromTextChunks(projectId, title, content);
 }
 
 export async function importSelectedWorldBook(projectId: number): Promise<WorldBookImportResult | null> {

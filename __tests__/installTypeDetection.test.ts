@@ -76,7 +76,7 @@ describe('install type detection', () => {
 
   test('detects same version when stored version = current version', async () => {
     const { db, settings } = createMockDb({
-      app_version: '1.3.2',
+      app_version: '1.3.7',
       schema_version: '5',
       first_install_version: '1.0.0',
     });
