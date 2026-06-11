@@ -8,6 +8,7 @@ import { Button, Card, Header, Screen, Section, SegmentedControl, spacing } from
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
 import type { ThemeMode } from '../types/theme';
+import appVersionJson from '../constants/version.json';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'light', label: '明亮' },
@@ -60,7 +61,7 @@ export const SettingsScreen: React.FC = () => {
         <Section title="关于">
           <Card>
             <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>Tavo Mini</Text>
-            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Android 手机小说工作台 · V1.3.2</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Android 手机小说工作台 · {appVersionJson.versionName}</Text>
           </Card>
         </Section>
       </ScrollView>

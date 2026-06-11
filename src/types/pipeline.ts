@@ -1,5 +1,5 @@
 export type PipelineStageName = 'draft' | 'review' | 'factCheck' | 'proof';
-export type PipelineMode = 'twoStage' | 'conditional' | 'full';
+export type PipelineMode = 'noReview' | 'twoStage' | 'conditional' | 'full';
 
 export type PipelineTaskStatus =
   | 'idle'
