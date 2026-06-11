@@ -187,6 +187,15 @@ export async function runChapterPipeline(
     return;
   }
 
+  if (config.pipelineMode === 'noReview') {
+    onStageUpdate?.('无审核模式，初稿即为完稿');
+    markSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
+    markSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
+    markSkipped(taskId, 'proof', '无审核模式已跳过终审校对');
+    store.completeTask(taskId, draftText);
+    return;
+  }
+
   if (config.pipelineMode === 'twoStage') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
