@@ -8,12 +8,14 @@ import type { Preset } from '../types/novel';
 import type { PipelineConfig, PipelineMode } from '../types/pipeline';
 
 const MODE_OPTIONS: { value: PipelineMode; label: string }[] = [
+  { value: 'noReview', label: '无审核' },
   { value: 'twoStage', label: '仅评估' },
   { value: 'conditional', label: '仅核查' },
   { value: 'full', label: '完整' },
 ];
 
 const MODE_HELP: Record<PipelineMode, string> = {
+  noReview: '仅生成初稿，不运行任何评估、核查或终审，速度最快。',
   twoStage: '草稿生成后只运行审阅/评估，再由终审根据评估意见修订完稿。',
   conditional: '草稿生成后只运行事实核查员，再由终审根据核查结果修订完稿。',
   full: '保留草稿、审阅、事实核查、终审四阶段，质量优先但耗时最长。',
@@ -36,6 +38,13 @@ const DEFAULT_CONFIG: PipelineConfig = {
   reviewMaxTokens: 1500,
   factCheckMaxTokens: 1500,
   proofMaxTokens: 4000,
+};
+
+const STAGES_FOR_MODE: Record<PipelineMode, typeof STAGE_LABELS> = {
+  noReview: STAGE_LABELS.filter((s) => s.key === 'draft'),
+  twoStage: STAGE_LABELS.filter((s) => s.key !== 'factCheck'),
+  conditional: STAGE_LABELS.filter((s) => s.key !== 'review'),
+  full: STAGE_LABELS,
 };
 
 export const PipelineConfigScreen: React.FC = () => {
@@ -122,7 +131,7 @@ export const PipelineConfigScreen: React.FC = () => {
         <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
           为每个阶段绑定一个写作预设。未绑定时将使用项目默认预设。
         </Text>
-        {STAGE_LABELS.map((stage) => (
+        {STAGES_FOR_MODE[config.pipelineMode].map((stage) => (
           <View key={stage.key} style={[styles.card, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>{stage.name}</Text>
             {renderPresetPicker(stage.presetKey, '绑定预设')}

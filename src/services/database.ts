@@ -1119,6 +1119,11 @@ async function ensureDefaultPreset(database?: SQLite.SQLiteDatabase): Promise<nu
   const existing = await execute(target, 'SELECT id FROM presets WHERE is_default = 1 ORDER BY id ASC LIMIT 1');
   if (existing.rows.length > 0) return existing.rows.item(0).id;
 
+  // If user already has presets (e.g. from a previous version), respect them —
+  // do NOT create a duplicate default preset during upgrades.
+  const anyPreset = await execute(target, 'SELECT id FROM presets ORDER BY id ASC LIMIT 1');
+  if (anyPreset.rows.length > 0) return anyPreset.rows.item(0).id;
+
   const result = await execute(
     target,
     `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions)
@@ -1354,7 +1359,7 @@ async function updateColumns(table: string, id: number, allowed: Set<string>, fi
 export async function getPipelineConfig(): Promise<PipelineConfig> {
   const savedMode = await getSetting('pipeline_mode');
   const pipelineMode =
-    savedMode === 'conditional' || savedMode === 'full' || savedMode === 'twoStage'
+    savedMode === 'noReview' || savedMode === 'conditional' || savedMode === 'full' || savedMode === 'twoStage'
       ? savedMode
       : 'twoStage';
 
