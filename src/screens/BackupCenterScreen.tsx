@@ -12,9 +12,10 @@ import {
 } from '../services/backupService';
 import type { BackupSummary } from '../services/backupService';
 import { openDatabase } from '../services/database';
+import { SCHEMA_VERSION } from '../services/migrations';
 
 const appVersion = require('../constants/version.json').versionName.replace(/^V/, '');
-const schemaVersion = '6';
+const schemaVersion = SCHEMA_VERSION;
 
 const KIND_LABELS: Record<BackupSummary['kind'], string> = {
   automatic: '自动',

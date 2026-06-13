@@ -32,6 +32,7 @@ const ALL_TABLES = [
   'pipeline_tasks',
   'freeform_documents',
   'content_revisions',
+  'generation_drafts',
 ];
 
 const createRows = (rows: TableRows) => ({

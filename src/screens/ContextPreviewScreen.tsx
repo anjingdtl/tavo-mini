@@ -18,7 +18,7 @@ import {
   Users,
   X,
 } from 'lucide-react-native';
-import { Button, Card, Header, LoadingState, Screen, spacing } from '../components/ui';
+import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
 import { buildContext } from '../services/contextBuilder';
@@ -58,12 +58,17 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [showMessages, setShowMessages] = useState(false);
   const [expandedMsg, setExpandedMsg] = useState<number | null>(null);
+  const [notFound, setNotFound] = useState(false);
 
   const loadContext = useCallback(async () => {
     setLoading(true);
     try {
       const chapter = await db.getChapterById(chapterId);
-      if (!chapter) return;
+      if (!chapter) {
+        setNotFound(true);
+        return;
+      }
+      setNotFound(false);
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(chapter.project_id);
       const result = await buildContext(chapter, config, chapter.project_id, presets[0]);
@@ -84,6 +89,15 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
       <Screen>
         <Header title="上下文预览" action={<Button label="关闭" variant="ghost" onPress={onClose} />} />
         <LoadingState label="正在构建上下文..." />
+      </Screen>
+    );
+  }
+
+  if (notFound) {
+    return (
+      <Screen>
+        <Header title="上下文预览" action={<Button label="关闭" variant="ghost" onPress={onClose} />} />
+        <EmptyState label="章节不存在或已被删除" />
       </Screen>
     );
   }
