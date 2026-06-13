@@ -3,6 +3,7 @@ import { processMacros } from './macroReplace';
 import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
 import type { Chapter, ChapterSummary, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
+import type { ContextTraceItem } from '../types/contextTrace';
 
 const DEFAULT_SYSTEM_PROMPT =
   '你是一位经验丰富的中文小说作者。请根据既有设定、人物状态、章节概要和前文内容，继续创作自然、连贯、有画面感的中文小说。';
@@ -33,6 +34,8 @@ type PartialContextConfig = Partial<ContextConfig>;
 export interface BuildContextResult {
   messages: ChatMessage[];
   chapters: Chapter[];
+  trace: ContextTraceItem[];
+  estimatedInputTokens: number;
 }
 
 export async function buildContext(
@@ -41,6 +44,7 @@ export async function buildContext(
   projectId: number,
   preset?: Preset | string,
 ): Promise<BuildContextResult> {
+  const trace: ContextTraceItem[] = [];
   const chapters = await db.getChaptersByProject(projectId);
   const previousContent = buildPreviousContentText(currentChapter, config, chapters);
   const memoryText = buildMemoryContext(
@@ -61,17 +65,42 @@ export async function buildContext(
     .join('\n\n');
 
   const systemPrompt = typeof preset === 'string' ? preset : buildPresetPrompt(preset);
-  const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt || DEFAULT_SYSTEM_PROMPT }];
+  const resolvedSystemPrompt = systemPrompt || DEFAULT_SYSTEM_PROMPT;
+  const messages: ChatMessage[] = [{ role: 'system', content: resolvedSystemPrompt }];
+
+  trace.push({
+    kind: 'preset',
+    sourceId: typeof preset !== 'string' && preset ? (preset as any).id ?? null : null,
+    title: typeof preset !== 'string' && preset ? preset.name || '预设' : '系统提示词',
+    reason: '系统提示词和预设配置',
+    estimatedTokens: estimateTokens(resolvedSystemPrompt),
+    included: true,
+    clipped: false,
+    preview: resolvedSystemPrompt.slice(0, 500),
+  });
 
   if (config.includeResources && config.resourceBudget > 0) {
-    const resourceText = await buildResourceContext(projectId, config.resourceBudget, scanText, config.worldbookRecursive !== false);
+    const { text: resourceText, traceItems: resourceTrace } = await buildResourceContext(projectId, config.resourceBudget, scanText, config.worldbookRecursive !== false);
     if (resourceText) {
-      messages.push({ role: 'system', content: `以下是本次写作必须参考的设定资料：\n\n${resourceText}` });
+      const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceText}`;
+      messages.push({ role: 'system', content: resourceMessage });
     }
+    trace.push(...resourceTrace);
   }
 
   if (memoryText) {
-    messages.push({ role: 'system', content: `以下是历史记忆摘要：\n\n${memoryText}` });
+    const memoryMessage = `以下是历史记忆摘要：\n\n${memoryText}`;
+    messages.push({ role: 'system', content: memoryMessage });
+    trace.push({
+      kind: 'memory',
+      sourceId: null,
+      title: '历史记忆摘要',
+      reason: '记忆摘要检索',
+      estimatedTokens: estimateTokens(memoryMessage),
+      included: true,
+      clipped: false,
+      preview: memoryMessage.slice(0, 500),
+    });
   }
 
   if (previousContent) {
@@ -80,18 +109,41 @@ export async function buildContext(
       chapterTitle: currentChapter.title,
       chapterSynopsis: currentChapter.synopsis,
     });
-    messages.push({ role: 'user', content: `以下是最近前文正文，请重点承接最后发生的事件：\n\n${processed}` });
+    const prevMessage = `以下是最近前文正文，请重点承接最后发生的事件：\n\n${processed}`;
+    messages.push({ role: 'user', content: prevMessage });
+    trace.push({
+      kind: 'chapter',
+      sourceId: currentChapter.id ?? null,
+      title: '前文滑动窗口',
+      reason: '前文滑动窗口',
+      estimatedTokens: estimateTokens(prevMessage),
+      included: true,
+      clipped: false,
+      preview: prevMessage.slice(0, 500),
+    });
   }
 
+  const instructionContent = [
+    `当前章节：「${currentChapter.title || `第 ${currentChapter.position + 1} 章`}」`,
+    `章节概要：${currentChapter.synopsis || '无明确概要，请自然承接前文推进剧情。'}`,
+  ].join('\n');
   messages.push({
     role: 'user',
-    content: [
-      `当前章节：「${currentChapter.title || `第 ${currentChapter.position + 1} 章`}」`,
-      `章节概要：${currentChapter.synopsis || '无明确概要，请自然承接前文推进剧情。'}`,
-    ].join('\n'),
+    content: instructionContent,
+  });
+  trace.push({
+    kind: 'instruction',
+    sourceId: currentChapter.id ?? null,
+    title: currentChapter.title || `第 ${currentChapter.position + 1} 章`,
+    reason: '当前章节指令',
+    estimatedTokens: estimateTokens(instructionContent),
+    included: true,
+    clipped: false,
+    preview: instructionContent.slice(0, 500),
   });
 
-  return { messages, chapters };
+  const estimatedInputTokens = trace.reduce((sum, item) => sum + item.estimatedTokens, 0);
+  return { messages, chapters, trace, estimatedInputTokens };
 }
 
 function buildPresetPrompt(preset?: Preset): string {
@@ -107,8 +159,9 @@ async function buildResourceContext(
   budget: number,
   scanText: string,
   recursiveWorldbook: boolean,
-): Promise<string> {
+): Promise<{ text: string; traceItems: ContextTraceItem[] }> {
   const parts: string[] = [];
+  const allTraceItems: ContextTraceItem[] = [];
   const characterBudget = Math.floor(budget * 0.35);
   const noteBudget = Math.floor(budget * 0.2);
   const worldbookBudget = Math.max(0, budget - characterBudget - noteBudget);
@@ -119,24 +172,33 @@ async function buildResourceContext(
     parts.push(`${title}：\n${clipped}`);
   };
 
-  addPart('人物设定', await buildCharacterContext(projectId, characterBudget), characterBudget);
-  addPart('项目笔记', await buildNoteContext(projectId, noteBudget), noteBudget);
-  addPart('世界书', await buildWorldbookContext(projectId, worldbookBudget, scanText, recursiveWorldbook), worldbookBudget);
+  const charResult = await buildCharacterContext(projectId, characterBudget);
+  addPart('人物设定', charResult.text, characterBudget);
+  allTraceItems.push(...charResult.items);
 
-  return parts.join('\n\n');
+  const noteResult = await buildNoteContext(projectId, noteBudget);
+  addPart('项目笔记', noteResult.text, noteBudget);
+  allTraceItems.push(...noteResult.items);
+
+  const wbResult = await buildWorldbookContext(projectId, worldbookBudget, scanText, recursiveWorldbook);
+  addPart('世界书', wbResult.text, worldbookBudget);
+  allTraceItems.push(...wbResult.items);
+
+  return { text: parts.join('\n\n'), traceItems: allTraceItems };
 }
 
-export async function buildCharacterContext(projectId: number, budget: number): Promise<string> {
+export async function buildCharacterContext(projectId: number, budget: number): Promise<{ text: string; items: ContextTraceItem[] }> {
   const characters = await db.getCharactersByProject(projectId);
   const parts: string[] = [];
+  const items: ContextTraceItem[] = [];
   let remaining = budget;
 
   for (const character of characters as any[]) {
-    if (remaining <= 0) break;
     const data = safeJson(character.data_json);
     const card = data.data || data;
+    const charName = character.name || card.name || '未命名角色';
     const text = [
-      `角色「${character.name || card.name || '未命名角色'}」`,
+      `角色「${charName}」`,
       card.system_prompt && `角色系统提示：${card.system_prompt}`,
       card.description && `描述：${card.description}`,
       card.personality && `性格：${card.personality}`,
@@ -147,31 +209,121 @@ export async function buildCharacterContext(projectId: number, budget: number): 
     ]
       .filter(Boolean)
       .join('\n');
-    const clipped = clipTextToTokenBudget(text, Math.min(remaining, Number(character.max_tokens || 50000)));
-    if (!clipped) continue;
-    parts.push(clipped);
-    remaining -= estimateTokens(clipped);
+    const charBudget = Math.min(remaining, Number(character.max_tokens || 50000));
+    const clipped = clipTextToTokenBudget(text, charBudget);
+    const wasClipped = clipped !== text && clipped.length < text.length;
+    const included = clipped.length > 0;
+
+    if (included) {
+      parts.push(clipped);
+      remaining -= estimateTokens(clipped);
+    }
+
+    items.push({
+      kind: 'character',
+      sourceId: Number(character.id) || null,
+      title: charName,
+      reason: `角色设定：${charName}`,
+      estimatedTokens: included ? estimateTokens(clipped) : estimateTokens(text),
+      included,
+      clipped: wasClipped,
+      preview: text.slice(0, 500),
+    });
+
+    if (remaining <= 0) break;
   }
 
-  return parts.join('\n\n');
+  // Mark characters that weren't processed due to budget as clipped
+  for (let i = 0; i < (characters as any[]).length; i++) {
+    const character = (characters as any[])[i];
+    const existingItem = items.find(it => it.sourceId === Number(character.id));
+    if (!existingItem) {
+      const data = safeJson(character.data_json);
+      const card = data.data || data;
+      const charName = character.name || card.name || '未命名角色';
+      const text = [
+        `角色「${charName}」`,
+        card.system_prompt && `角色系统提示：${card.system_prompt}`,
+        card.description && `描述：${card.description}`,
+        card.personality && `性格：${card.personality}`,
+        card.scenario && `场景：${card.scenario}`,
+        card.first_mes && `开场消息：${card.first_mes}`,
+        card.mes_example && `对话示例：${card.mes_example}`,
+        card.post_history_instructions && `后置指令：${card.post_history_instructions}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      items.push({
+        kind: 'character',
+        sourceId: Number(character.id) || null,
+        title: charName,
+        reason: `角色设定：${charName}`,
+        estimatedTokens: estimateTokens(text),
+        included: false,
+        clipped: true,
+        preview: text.slice(0, 500),
+      });
+    }
+  }
+
+  return { text: parts.join('\n\n'), items };
 }
 
-async function buildNoteContext(projectId: number, budget: number): Promise<string> {
+async function buildNoteContext(projectId: number, budget: number): Promise<{ text: string; items: ContextTraceItem[] }> {
   const notes = await db.getNotesByProject(projectId);
   const parts: string[] = [];
+  const items: ContextTraceItem[] = [];
   let remaining = budget;
 
   for (const note of notes) {
-    if (remaining <= 0) break;
     const content = await db.getNoteContentById(note.id);
-    const text = `笔记「${note.title || '无标题'}」：${content}`;
-    const clipped = clipTextToTokenBudget(text, Math.min(remaining, note.max_tokens || 30000));
-    if (!clipped) continue;
-    parts.push(clipped);
-    remaining -= estimateTokens(clipped);
+    const noteTitle = note.title || '无标题';
+    const text = `笔记「${noteTitle}」：${content}`;
+    const noteBudget = Math.min(remaining, note.max_tokens || 30000);
+    const clipped = clipTextToTokenBudget(text, noteBudget);
+    const wasClipped = clipped !== text && clipped.length < text.length;
+    const included = clipped.length > 0;
+
+    if (included) {
+      parts.push(clipped);
+      remaining -= estimateTokens(clipped);
+    }
+
+    items.push({
+      kind: 'note',
+      sourceId: Number(note.id) || null,
+      title: noteTitle,
+      reason: `项目笔记：${noteTitle}`,
+      estimatedTokens: included ? estimateTokens(clipped) : estimateTokens(text),
+      included,
+      clipped: wasClipped,
+      preview: text.slice(0, 500),
+    });
+
+    if (remaining <= 0) break;
   }
 
-  return parts.join('\n\n');
+  // Mark notes that weren't processed due to budget as clipped
+  for (const note of notes) {
+    const existingItem = items.find(it => it.sourceId === Number(note.id));
+    if (!existingItem) {
+      const content = await db.getNoteContentById(note.id);
+      const noteTitle = note.title || '无标题';
+      const text = `笔记「${noteTitle}」：${content}`;
+      items.push({
+        kind: 'note',
+        sourceId: Number(note.id) || null,
+        title: noteTitle,
+        reason: `项目笔记：${noteTitle}`,
+        estimatedTokens: estimateTokens(text),
+        included: false,
+        clipped: true,
+        preview: text.slice(0, 500),
+      });
+    }
+  }
+
+  return { text: parts.join('\n\n'), items };
 }
 
 export async function buildWorldbookContext(
@@ -179,59 +331,122 @@ export async function buildWorldbookContext(
   budget: number,
   scanText: string,
   recursive = true,
-): Promise<string> {
-  if (budget <= 0) return '';
+): Promise<{ text: string; items: ContextTraceItem[] }> {
+  if (budget <= 0) return { text: '', items: [] };
   const entries = ((await db.getWorldbookEntriesByProject(projectId)) as any[])
     .filter((entry) => entry.enabled !== 0 && entry.collection_enabled !== 0)
     .sort((a, b) => Number(a.position || 0) - Number(b.position || 0) || Number(a.id || 0) - Number(b.id || 0));
 
   const activated = new Map<number, any>();
-  const activatePass = (haystack: string) => {
+  const activationReason = new Map<number, string>();
+
+  const determineReason = (entry: any, haystack: string): string => {
+    if (entry.constant === 1 || entry.constant === true) return '常驻';
+    const primaryKeys = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword);
+    if (primaryKeys.length === 0) return '常驻';
+    const primaryHit = primaryKeys.some((key) => includesKey(haystack, key));
+    if (!primaryHit) return '';
+    const secondaryKeys = normalizeKeys(entry.keyword_secondary ?? entry.keysecondary ?? entry.secondary_keys);
+    if (secondaryKeys.length === 0) return '主关键词命中';
+    const secondaryHit = secondaryKeys.some((key) => includesKey(haystack, key));
+    return secondaryHit ? '主+次关键词命中' : '主关键词命中';
+  };
+
+  const activatePass = (haystack: string, isRecursive = false) => {
     for (const entry of entries) {
       const id = Number(entry.id || entries.indexOf(entry));
       if (activated.has(id)) continue;
-      if (isWorldbookEntryActive(entry, haystack)) {
+      const reason = determineReason(entry, haystack);
+      if (reason) {
         activated.set(id, entry);
+        activationReason.set(id, isRecursive ? '递归命中' : reason);
       }
     }
   };
 
   activatePass(scanText);
   if (recursive && activated.size > 0) {
-    activatePass(`${scanText}\n\n${Array.from(activated.values()).map((entry) => entry.content || '').join('\n')}`);
+    activatePass(`${scanText}\n\n${Array.from(activated.values()).map((entry) => entry.content || '').join('\n')}`, true);
   }
 
   const collectionUsage = new Map<number, number>();
   const lines: string[] = [];
+  const items: ContextTraceItem[] = [];
   let remaining = budget;
   for (const entry of activated.values()) {
-    if (remaining <= 0) break;
+    const id = Number(entry.id);
+    const entryContent = String(entry.content || '');
+    const label = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword)[0];
+    const reason = activationReason.get(id) || '主关键词命中';
+    const entryBudget = Math.min(remaining, Number(entry.max_tokens || 2000));
+
     const collectionId = Number(entry.collection_id || 0);
     const collectionBudget = Number(entry.collection_max_tokens || 50000);
     const used = collectionUsage.get(collectionId) || 0;
     const remainingForCollection = Math.max(0, collectionBudget - used);
-    if (remainingForCollection <= 0) continue;
 
-    const label = normalizeKeys(entry.keyword_primary)[0];
-    const body = clipTextToTokenBudget(String(entry.content || ''), Math.min(remaining, remainingForCollection, Number(entry.max_tokens || 2000)));
-    if (!body) continue;
-    const line = label ? `关键词「${label}」：${body}` : body;
-    lines.push(line);
-    const tokenCost = estimateTokens(body);
-    collectionUsage.set(collectionId, used + tokenCost);
-    remaining -= tokenCost;
+    if (remainingForCollection <= 0 || entryBudget <= 0) {
+      items.push({
+        kind: 'worldbook',
+        sourceId: id || null,
+        title: label || `条目#${id}`,
+        reason,
+        estimatedTokens: estimateTokens(entryContent),
+        included: false,
+        clipped: true,
+        preview: entryContent.slice(0, 500),
+      });
+      continue;
+    }
+
+    const effectiveBudget = Math.min(entryBudget, remainingForCollection);
+    const body = clipTextToTokenBudget(entryContent, effectiveBudget);
+    const wasClipped = body !== entryContent && body.length < entryContent.length;
+    const included = body.length > 0;
+
+    if (included) {
+      const line = label ? `关键词「${label}」：${body}` : body;
+      lines.push(line);
+      const tokenCost = estimateTokens(body);
+      collectionUsage.set(collectionId, used + tokenCost);
+      remaining -= tokenCost;
+    }
+
+    items.push({
+      kind: 'worldbook',
+      sourceId: id || null,
+      title: label || `条目#${id}`,
+      reason,
+      estimatedTokens: included ? estimateTokens(body) : estimateTokens(entryContent),
+      included,
+      clipped: wasClipped || !included,
+      preview: entryContent.slice(0, 500),
+    });
+
+    if (remaining <= 0) break;
   }
 
-  return lines.join('\n');
-}
+  // Mark entries that were activated but not processed due to budget
+  for (const [id, entry] of activated) {
+    const existingItem = items.find(it => it.sourceId === id);
+    if (!existingItem) {
+      const entryContent = String(entry.content || '');
+      const label = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword)[0];
+      const reason = activationReason.get(id) || '主关键词命中';
+      items.push({
+        kind: 'worldbook',
+        sourceId: id || null,
+        title: label || `条目#${id}`,
+        reason,
+        estimatedTokens: estimateTokens(entryContent),
+        included: false,
+        clipped: true,
+        preview: entryContent.slice(0, 500),
+      });
+    }
+  }
 
-function isWorldbookEntryActive(entry: any, scanText: string): boolean {
-  const primaryKeys = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword);
-  const secondaryKeys = normalizeKeys(entry.keyword_secondary ?? entry.keysecondary ?? entry.secondary_keys);
-  if (entry.constant === 1 || entry.constant === true || primaryKeys.length === 0) return true;
-  if (!primaryKeys.some((key) => includesKey(scanText, key))) return false;
-  if (secondaryKeys.length === 0) return true;
-  return secondaryKeys.some((key) => includesKey(scanText, key));
+  return { text: lines.join('\n'), items };
 }
 
 function includesKey(text: string, key: string): boolean {

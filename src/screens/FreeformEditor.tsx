@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Bot, GitBranch, Plus, Trash2 } from 'lucide-react-native';
+import { Alert, AppState, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Bot, GitBranch, History, Plus, Trash2 } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { runFreeformPipeline } from '../services/pipelineRunner';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
@@ -23,10 +24,11 @@ const TYPE_OPTIONS: { value: FragmentType; label: string }[] = [
 export const FreeformEditor: React.FC = () => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
+  const navigation = useNavigation();
   const [fragments, setFragments] = useState<Fragment[]>([]);
   const [documentText, setDocumentText] = useState('');
   const [steerText, setSteerText] = useState('');
-  const [saveState, setSaveState] = useState('已保存');
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'failed'>('saved');
   const [generating, setGenerating] = useState(false);
   const [lastUsage, setLastUsage] = useState('');
   const [showModal, setShowModal] = useState(false);
@@ -34,8 +36,12 @@ export const FreeformEditor: React.FC = () => {
   const [type, setType] = useState<FragmentType>('user');
   const autoSaveRef = useRef(
     debounce(async (projectId: number, content: string) => {
-      await db.setFreeformDocument(projectId, content);
-      setSaveState('已保存');
+      try {
+        await db.setFreeformDocument(projectId, content);
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('failed');
+      }
     }, 900),
   );
 
@@ -52,15 +58,26 @@ export const FreeformEditor: React.FC = () => {
   useEffect(() => {
     loadData();
     const autoSave = autoSaveRef.current;
-    return () => autoSave.cancel();
+    // Flush on background/inactive
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'background' || state === 'inactive') {
+        autoSave.flush().catch(() => {});
+      }
+    });
+    return () => {
+      autoSave.flush().catch(() => {});
+      sub.remove();
+    };
   }, [loadData]);
 
   const changeDocument = (content: string) => {
     if (!currentProject) return;
     setDocumentText(content);
-    setSaveState('保存中...');
+    setSaveStatus('saving');
     autoSaveRef.current.call(currentProject.id, content);
   };
+
+  const saveLabel = saveStatus === 'saved' ? '已保存' : saveStatus === 'saving' ? '保存中...' : '保存失败';
 
   const addFragment = async () => {
     if (!currentProject || !text.trim()) return;
@@ -109,7 +126,7 @@ export const FreeformEditor: React.FC = () => {
         await db.createFragment(currentProject.id, 'generated', result.text.trim(), fragments.length);
         setSteerText('');
         setLastUsage(`本轮 tokens：输入 ${result.inputTokens} / 输出 ${result.outputTokens} / 总计 ${result.totalTokens}`);
-        setSaveState('已保存');
+        setSaveStatus('saved');
         await loadData();
       }
     } catch (error: any) {
@@ -170,7 +187,7 @@ export const FreeformEditor: React.FC = () => {
 
   return (
     <Screen>
-      <Header title={currentProject.name} subtitle={`自由正文 · ${saveState}`} action={<Button label="片段" icon={Plus} onPress={() => setShowModal(true)} />} />
+      <Header title={currentProject.name} subtitle={`自由正文 · ${saveLabel}`} action={<Button label="片段" icon={Plus} onPress={() => setShowModal(true)} />} />
       <ScrollView contentContainerStyle={styles.content}>
         <Field
           label="正文"
@@ -184,6 +201,10 @@ export const FreeformEditor: React.FC = () => {
         <View style={styles.toolbar}>
           <Button label={generating ? '续写中...' : 'AI 续写'} icon={Bot} onPress={generateContinuation} disabled={generating} />
           <Button label="流水线续写" icon={GitBranch} variant="secondary" onPress={runFreeformPipelineFlow} disabled={generating} />
+          <Button label="历史" icon={History} variant="ghost" onPress={() => {
+            // @ts-ignore
+            navigation.navigate('RevisionHistory', { targetType: 'freeform', targetId: currentProject.id, projectId: currentProject.id });
+          }} />
           <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
             {documentText.length} 字 · 预估 {estimateTokens(documentText)} tokens
           </Text>

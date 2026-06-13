@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine } from 'lucide-react-native';
+import { Database, Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine, BarChart3 } from 'lucide-react-native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
@@ -57,6 +57,18 @@ export const SettingsScreen: React.FC = () => {
             <TreePine size={18} color={theme.colors.textSecondary} />
             <Palette size={18} color={theme.colors.textSecondary} />
           </View>
+        </Section>
+        <Section title="数据">
+          <Card>
+            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>数据与备份</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>创建、查看和恢复数据备份。恢复前会自动创建安全快照。</Text>
+            <Button label="备份中心" icon={Database} onPress={() => navigation.navigate('BackupCenter')} />
+          </Card>
+          <Card>
+            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>用量统计</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>查看 LLM 调用次数和 Token 消耗统计。</Text>
+            <Button label="用量统计" icon={BarChart3} onPress={() => navigation.navigate('UsageStats')} />
+          </Card>
         </Section>
         <Section title="关于">
           <Card>

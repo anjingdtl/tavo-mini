@@ -47,8 +47,8 @@ export async function exportTavoNovelJSON(projectId: number): Promise<string> {
   ]);
 
   const data = {
-    spec: 'tavo-mini-project-v1',
-    version: '1.0',
+    spec: 'tavo-mini-project-v2',
+    version: '2.0',
     exportedAt: new Date().toISOString(),
     project,
     chapters,
