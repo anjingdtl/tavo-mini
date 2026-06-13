@@ -40,7 +40,7 @@ jest.mock('../src/services/llm', () => ({
 }));
 
 jest.mock('../src/services/contextBuilder', () => ({
-  buildContext: jest.fn(async () => ({ messages: [{ role: 'system', content: 'story context' }], chapters: [] })),
+  buildContext: jest.fn(async () => ({ messages: [{ role: 'system', content: 'story context' }], chapters: [], trace: [], estimatedInputTokens: 0 })),
 }));
 
 jest.mock('../src/services/chapterGeneration', () => ({

@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Download, Plus, Trash2 } from 'lucide-react-native';
+import { Download, Plus, Trash2, Upload } from 'lucide-react-native';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { exportTavoNovelJSON, exportToMarkdown, exportToText } from '../services/exportService';
+import { pickAndPreviewProjectPackage, importProjectPackage } from '../services/projectImport';
 import type { Project, ProjectMode } from '../types/novel';
 
 export const ProjectListScreen: React.FC = () => {
@@ -14,6 +15,11 @@ export const ProjectListScreen: React.FC = () => {
   const [newName, setNewName] = useState('');
   const [newMode, setNewMode] = useState<ProjectMode>('outline');
   const [creating, setCreating] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredProjects = searchQuery.trim()
+    ? projects.filter(p => p.name.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+    : projects;
 
   useEffect(() => {
     loadProjects();
@@ -65,6 +71,37 @@ export const ProjectListScreen: React.FC = () => {
     ]);
   };
 
+  const handleImport = async () => {
+    try {
+      const result = await pickAndPreviewProjectPackage();
+      if (!result) return;
+      const { preview, pkg } = result;
+      Alert.alert(
+        '导入项目',
+        `项目名：${preview.name}\n模式：${preview.mode === 'outline' ? '大纲' : '自由写作'}\n章节：${preview.chapterCount}\n资料：${preview.resourceCount}\n\n将作为新项目导入。`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '导入',
+            onPress: async () => {
+              try {
+                const newId = await importProjectPackage(pkg);
+                await loadProjects();
+                const newProject = useProjectStore.getState().projects.find(p => p.id === newId);
+                if (newProject) setCurrentProject(newProject);
+                Alert.alert('导入成功', `项目「${preview.name}」已导入。`);
+              } catch (error: any) {
+                Alert.alert('导入失败', error?.message || '未知错误');
+              }
+            },
+          },
+        ],
+      );
+    } catch (error: any) {
+      Alert.alert('导入失败', error?.message || '无法读取项目文件。');
+    }
+  };
+
   const renderProject = ({ item }: { item: Project }) => {
     const active = currentProject?.id === item.id;
     return (
@@ -92,11 +129,25 @@ export const ProjectListScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="小说项目" subtitle="选择一个项目后进入写作、资料和导出流程" action={<Button label="新建" icon={Plus} onPress={() => setShowNewModal(true)} />} />
+      <Header title="小说项目" subtitle="选择一个项目后进入写作、资料和导出流程" action={
+        <View style={styles.headerActions}>
+          <Button label="导入" icon={Upload} variant="ghost" onPress={handleImport} compact />
+          <Button label="新建" icon={Plus} onPress={() => setShowNewModal(true)} compact />
+        </View>
+      } />
       {projects.length === 0 ? (
         <EmptyState title="还没有小说项目" description="新建一个项目后，可以创建章节、整理资料并调用 AI 续写。" action={<Button label="新建项目" icon={Plus} onPress={() => setShowNewModal(true)} />} />
       ) : (
-        <FlatList data={projects} keyExtractor={(item) => String(item.id)} renderItem={renderProject} contentContainerStyle={styles.list} />
+        <>
+          <View style={styles.searchBar}>
+            <Field placeholder="搜索项目..." value={searchQuery} onChangeText={setSearchQuery} />
+          </View>
+          {filteredProjects.length === 0 ? (
+            <EmptyState title="无匹配项目" description="没有找到匹配的项目，试试其他关键词。" />
+          ) : (
+            <FlatList data={filteredProjects} keyExtractor={(item) => String(item.id)} renderItem={renderProject} contentContainerStyle={styles.list} />
+          )}
+        </>
       )}
 
       <Modal visible={showNewModal} transparent animationType="fade" onRequestClose={() => setShowNewModal(false)}>
@@ -125,6 +176,7 @@ export const ProjectListScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   list: { padding: spacing.lg, paddingBottom: 96 },
+  searchBar: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   cardText: { flex: 1 },
   projectName: { fontSize: 17, fontWeight: '700', marginBottom: 4 },
@@ -136,4 +188,5 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 18, fontWeight: '800', marginBottom: spacing.md },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md, marginTop: spacing.lg },
   activeCard: { borderLeftWidth: 4 },
+  headerActions: { flexDirection: 'row', gap: spacing.xs },
 });

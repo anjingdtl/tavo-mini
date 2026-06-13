@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ArrowUp, Bot, FileText, Trash2 } from 'lucide-react-native';
+import { Alert, AppState, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ArrowUp, Bot, Eye, FileText, Focus, History, Inbox, Trash2 } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { runChapterPipeline } from '../services/pipelineRunner';
@@ -9,8 +9,11 @@ import { useThemeStore } from '../store/themeStore';
 import { debounce } from '../utils/debounce';
 import { estimateTokens } from '../utils/tokenEstimator';
 import * as db from '../services/database';
+import { createRevision } from '../services/revisionService';
 import { generateMemorySummary } from '../services/summaryGenerator';
 import type { Chapter } from '../types/novel';
+
+type SaveStatus = 'saved' | 'saving' | 'failed';
 
 interface Props {
   chapterId: number;
@@ -21,14 +24,19 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const { theme } = useThemeStore();
   const navigation = useNavigation();
   const [chapter, setChapter] = useState<Chapter | null>(null);
-  const [saveState, setSaveState] = useState('已保存');
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [generating, setGenerating] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const autoSaveRef = useRef(
     debounce(async (id: number, fields: Partial<Chapter>) => {
-      await db.updateChapter(id, fields);
-      setSaveState('已保存');
+      try {
+        await db.updateChapter(id, fields);
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('failed');
+      }
     }, 900),
   );
 
@@ -42,18 +50,44 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     }, [loadChapter]),
   );
 
+  // Flush on background/inactive
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'background' || state === 'inactive') {
+        autoSaveRef.current.flush().catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Cleanup: flush instead of cancel
   useEffect(() => {
     const autoSave = autoSaveRef.current;
-    return () => autoSave.cancel();
+    return () => { autoSave.flush().catch(() => {}); };
   }, []);
 
   const changeField = (field: keyof Chapter, value: string) => {
     if (!chapter) return;
     const next = { ...chapter, [field]: value };
     setChapter(next);
-    setSaveState('保存中...');
+    setSaveStatus('saving');
     autoSaveRef.current.call(chapter.id, { [field]: value } as Partial<Chapter>);
   };
+
+  const flushAndClose = async () => {
+    try {
+      await autoSaveRef.current.flush();
+      onClose();
+    } catch {
+      setSaveStatus('failed');
+      Alert.alert('保存失败', '内容尚未保存，是否仍然退出？', [
+        { text: '重试', onPress: flushAndClose },
+        { text: '仍然退出', style: 'destructive', onPress: onClose },
+      ]);
+    }
+  };
+
+  const saveLabel = saveStatus === 'saved' ? '已保存' : saveStatus === 'saving' ? '保存中...' : '保存失败';
 
   const finalizeChapter = async () => {
     if (!chapter || finalizing) return;
@@ -64,16 +98,16 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         synopsis: chapter.synopsis,
         content: chapter.content,
       } as any);
-      setSaveState('已保存，正在生成摘要...');
+      setSaveStatus('saved');
       const memorySummary = await generateMemorySummary(chapter.id, 200);
       await db.updateChapter(chapter.id, {
         memory_summary: memorySummary,
         memory_summary_tokens: estimateTokens(memorySummary),
       } as any);
       await loadChapter();
-      setSaveState('已保存并生成摘要');
+      setSaveStatus('saved');
     } catch (error: any) {
-      setSaveState('已保存，摘要生成失败');
+      setSaveStatus('saved');
       Alert.alert('摘要生成失败', error?.message || '章节已保存，但自动记忆摘要生成失败。');
     } finally {
       setFinalizing(false);
@@ -88,12 +122,33 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         text: '清空',
         style: 'destructive',
         onPress: async () => {
+          await createRevision({
+            projectId: chapter.project_id,
+            targetType: 'chapter',
+            targetId: chapter.id,
+            title: chapter.title,
+            content: chapter.content,
+            source: 'before_clear',
+          });
           await db.updateChapter(chapter.id, { content: '' });
           await loadChapter();
-          setSaveState('已清空');
+          setSaveStatus('saved');
         },
       },
     ]);
+  };
+
+  const manualCheckpoint = async () => {
+    if (!chapter) return;
+    await createRevision({
+      projectId: chapter.project_id,
+      targetType: 'chapter',
+      targetId: chapter.id,
+      title: chapter.title,
+      content: chapter.content,
+      source: 'manual_checkpoint',
+    });
+    Alert.alert('版本已保存', '当前内容已保存为手动版本快照。');
   };
 
   const runPipeline = async () => {
@@ -157,24 +212,48 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
 
   return (
     <Screen>
-      <Header title="章节编辑" subtitle={saveState} action={<Button label="返回" variant="ghost" onPress={onClose} />} />
+      <Header title={focusMode ? '专注模式' : '章节编辑'} subtitle={saveLabel} action={
+        <View style={styles.headerActions}>
+          <Button label={focusMode ? '退出' : '专注'} icon={Focus} variant="ghost" onPress={() => setFocusMode(!focusMode)} compact />
+          <Button label="返回" variant="ghost" onPress={flushAndClose} compact />
+        </View>
+      } />
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
-        <Field label="章节标题" value={chapter.title} onChangeText={(value) => changeField('title', value)} placeholder="章节标题" />
-        <Field
-          label="章节概要"
-          value={chapter.synopsis}
-          onChangeText={(value) => changeField('synopsis', value)}
-          placeholder="写下本章目标、冲突和结尾"
-          multiline
-          inputStyle={styles.synopsis}
-        />
+        {!focusMode && (
+          <>
+            <Field label="章节标题" value={chapter.title} onChangeText={(value) => changeField('title', value)} placeholder="章节标题" />
+            <Field
+              label="章节概要"
+              value={chapter.synopsis}
+              onChangeText={(value) => changeField('synopsis', value)}
+              placeholder="写下本章目标、冲突和结尾"
+              multiline
+              inputStyle={styles.synopsis}
+            />
+          </>
+        )}
+        {!focusMode && (
         <View style={styles.toolbar}>
           <Button label={generating ? '生成中...' : 'AI 续写'} icon={Bot} onPress={runPipeline} disabled={generating || finalizing} compact flex />
           <Button label={finalizing ? '定稿中...' : '保存定稿'} icon={FileText} variant="secondary" onPress={finalizeChapter} disabled={finalizing || generating} compact flex />
           <Button label="摘要" icon={FileText} variant="secondary" onPress={() => Alert.alert('章节摘要', chapter.memory_summary || '暂无记忆摘要。')} compact flex />
+          <Button label="版本" icon={History} variant="secondary" onPress={manualCheckpoint} compact flex />
+          <Button label="历史" icon={History} variant="ghost" onPress={() => {
+            // @ts-ignore
+            navigation.navigate('RevisionHistory', { targetType: 'chapter', targetId: chapter.id, projectId: chapter.project_id });
+          }} compact flex />
+          <Button label="上下文" icon={Eye} variant="ghost" onPress={() => {
+            // @ts-ignore
+            navigation.navigate('ContextPreview', { chapterId: chapter.id });
+          }} compact flex />
+          <Button label="草稿" icon={Inbox} variant="ghost" onPress={() => {
+            // @ts-ignore
+            navigation.navigate('DraftPreview', { targetType: 'chapter', targetId: chapter.id, projectId: chapter.project_id });
+          }} compact flex />
           <Button label="清空" icon={Trash2} variant="ghost" onPress={clearContent} disabled={generating || finalizing} compact flex />
         </View>
-        <Field label="正文" value={chapter.content} onChangeText={(value) => changeField('content', value)} placeholder="开始写作..." multiline inputStyle={styles.editor} />
+        )}
+        <Field label="正文" value={chapter.content} onChangeText={(value) => changeField('content', value)} placeholder="开始写作..." multiline inputStyle={focusMode ? styles.focusEditor : styles.editor} />
         {chapter.memory_summary ? (
           <View style={[styles.summaryBox, { borderColor: theme.colors.border, backgroundColor: theme.colors.card }]}>
             <Text style={[styles.summaryTitle, { color: theme.colors.textPrimary }]}>记忆摘要</Text>
@@ -183,7 +262,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         ) : null}
         <View style={styles.footer}>
           <Text style={[styles.footerText, { color: theme.colors.textSecondary }]}>
-            {chapter.content.length} 字 · 预估 {estimatedTokenCount} tokens · {saveState}
+            {chapter.content.length} 字 · 预估 {estimatedTokenCount} tokens · {saveLabel}
           </Text>
         </View>
         <Button
@@ -202,6 +281,8 @@ const styles = StyleSheet.create({
   synopsis: { minHeight: 76, textAlignVertical: 'top' },
   toolbar: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginVertical: spacing.lg },
   editor: { minHeight: 420, textAlignVertical: 'top', fontSize: 16, lineHeight: 25 },
+  focusEditor: { minHeight: 600, textAlignVertical: 'top', fontSize: 18, lineHeight: 30 },
+  headerActions: { flexDirection: 'row', gap: spacing.xs },
   footer: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.md },
   footerText: { flex: 1, fontSize: 12, fontWeight: '700' },
   summaryBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, marginBottom: spacing.md },

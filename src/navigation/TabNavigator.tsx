@@ -20,6 +20,11 @@ import { ContextConfigScreen } from '../screens/ContextConfig';
 import { PipelineConfigScreen } from '../screens/PipelineConfigScreen';
 import { PipelineTaskScreen } from '../screens/PipelineTaskScreen';
 import { PipelineResultScreen } from '../screens/PipelineResultScreen';
+import { RevisionHistoryScreen } from '../screens/RevisionHistoryScreen';
+import { BackupCenterScreen } from '../screens/BackupCenterScreen';
+import { ContextPreviewScreen } from '../screens/ContextPreviewScreen';
+import { DraftPreviewScreen } from '../screens/DraftPreviewScreen';
+import { UsageStatsScreen } from '../screens/UsageStatsScreen';
 
 export type EditorStackParamList = {
   EditorMain: undefined;
@@ -29,6 +34,9 @@ export type EditorStackParamList = {
   StoryOverview: undefined;
   ContextConfig: undefined;
   PipelineResult: { taskId: string };
+  RevisionHistory: { targetType: 'chapter' | 'freeform'; targetId: number; projectId: number };
+  ContextPreview: { chapterId: number };
+  DraftPreview: { targetType: 'chapter' | 'freeform'; targetId: number; projectId: number };
 };
 
 export type SettingsStackParamList = {
@@ -37,6 +45,8 @@ export type SettingsStackParamList = {
   PipelineConfig: undefined;
   PipelineTask: undefined;
   PipelineResult: { taskId: string };
+  BackupCenter: undefined;
+  UsageStats: undefined;
 };
 
 const Tab = createBottomTabNavigator();
@@ -64,6 +74,18 @@ const ChapterSummaryRoute = ({ route, navigation }: NativeStackScreenProps<Edito
   <ChapterSummaryScreen chapterId={route.params.chapterId} onClose={() => navigation.goBack()} />
 );
 
+const RevisionHistoryRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'RevisionHistory'>) => (
+  <RevisionHistoryScreen targetType={route.params.targetType} targetId={route.params.targetId} projectId={route.params.projectId} onClose={() => navigation.goBack()} />
+);
+
+const ContextPreviewRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'ContextPreview'>) => (
+  <ContextPreviewScreen chapterId={route.params.chapterId} onClose={() => navigation.goBack()} />
+);
+
+const DraftPreviewRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'DraftPreview'>) => (
+  <DraftPreviewScreen targetType={route.params.targetType} targetId={route.params.targetId} projectId={route.params.projectId} onClose={() => navigation.goBack()} />
+);
+
 const EditorStackScreen = () => (
   <EditorStack.Navigator screenOptions={{ headerShown: false }}>
     <EditorStack.Screen name="EditorMain" component={EditorMainScreen} />
@@ -73,6 +95,9 @@ const EditorStackScreen = () => (
     <EditorStack.Screen name="StoryOverview" component={StoryOverview} />
     <EditorStack.Screen name="ContextConfig" component={ContextConfigScreen} />
     <EditorStack.Screen name="PipelineResult" component={PipelineResultScreen} />
+    <EditorStack.Screen name="RevisionHistory" component={RevisionHistoryRoute} />
+    <EditorStack.Screen name="ContextPreview" component={ContextPreviewRoute} />
+    <EditorStack.Screen name="DraftPreview" component={DraftPreviewRoute} />
   </EditorStack.Navigator>
 );
 
@@ -83,6 +108,8 @@ const SettingsStackScreen = () => (
     <SettingsStack.Screen name="PipelineConfig" component={PipelineConfigScreen} />
     <SettingsStack.Screen name="PipelineTask" component={PipelineTaskScreen} />
     <SettingsStack.Screen name="PipelineResult" component={PipelineResultScreen} />
+    <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
+    <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
   </SettingsStack.Navigator>
 );
 

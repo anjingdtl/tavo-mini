@@ -327,10 +327,10 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
       {/* 对话示例 */}
       <SectionTitle theme={theme}>对话示例</SectionTitle>
       <View style={styles.toggleRow}>
-        <TouchableOpacity onPress={() => setShowRawDialogue(false)} style={[styles.toggleBtn, !showRawDialogue && { borderBottomWidth: 2, borderBottomColor: theme.colors.accent }]}>
+        <TouchableOpacity onPress={() => setShowRawDialogue(false)} style={[styles.toggleBtn, !showRawDialogue && styles.activeTab, !showRawDialogue && { borderBottomColor: theme.colors.accent }]}>
           <Text style={[styles.toggleText, { color: !showRawDialogue ? theme.colors.accent : theme.colors.textSecondary }]}>可视化</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => setShowRawDialogue(true)} style={[styles.toggleBtn, showRawDialogue && { borderBottomWidth: 2, borderBottomColor: theme.colors.accent }]}>
+        <TouchableOpacity onPress={() => setShowRawDialogue(true)} style={[styles.toggleBtn, showRawDialogue && styles.activeTab, showRawDialogue && { borderBottomColor: theme.colors.accent }]}>
           <Text style={[styles.toggleText, { color: showRawDialogue ? theme.colors.accent : theme.colors.textSecondary }]}>纯文本</Text>
         </TouchableOpacity>
       </View>
@@ -522,6 +522,7 @@ const styles = StyleSheet.create({
   // Dialogue
   toggleRow: { flexDirection: 'row', marginBottom: spacing.sm },
   toggleBtn: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  activeTab: { borderBottomWidth: 2 },
   toggleText: { fontSize: 13, fontWeight: '700' },
   dialogueContainer: { gap: spacing.md },
   dialogueCard: { padding: spacing.sm },

@@ -50,22 +50,22 @@ describe('migration engine', () => {
   });
 
   test('runs no migrations when already at latest version', async () => {
-    const { db, settings } = createMockDb('5');
+    const { db, settings } = createMockDb('8');
     const { runMigrations } = require('../src/services/migrations');
-    const result = await runMigrations(db as any, 5);
+    const result = await runMigrations(db as any, 8);
     expect(result.migrationsRun).toBe(0);
     expect(result.hadBreaking).toBe(false);
-    expect(settings.get('schema_version')).toBe('5');
+    expect(settings.get('schema_version')).toBe('8');
   });
 
-  test('runs only needed migrations from v3 to v5', async () => {
+  test('runs only needed migrations from v3 to v8', async () => {
     const { db, settings } = createMockDb('3');
     const { runMigrations } = require('../src/services/migrations');
     const result = await runMigrations(db as any, 3);
     expect(result.fromVersion).toBe(3);
-    expect(result.toVersion).toBe(5);
-    expect(result.migrationsRun).toBe(2);
-    expect(settings.get('schema_version')).toBe('5');
+    expect(result.toVersion).toBe(8);
+    expect(result.migrationsRun).toBe(5);
+    expect(settings.get('schema_version')).toBe('8');
   });
 
   test('detects breaking migrations', async () => {
