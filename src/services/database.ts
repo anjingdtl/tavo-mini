@@ -45,6 +45,14 @@ export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
     await ensureSchemaCompatibility(database);
     await seedDefaults(database);
     await migrate(database);
+    // Create the usage-log index AFTER migrations: the project_id column it
+    // depends on is added by the v7→v8 migration, which runs in migrate().
+    // Creating it earlier (in createTables) crashes on upgrade from <V1.6.0
+    // because the legacy llm_usage_logs table lacks project_id.
+    await execute(
+      database,
+      'CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month ON llm_usage_logs(project_id, created_at)',
+    );
     await repairOversizedNotes(database);
     db = database;
     opening = null;
@@ -303,11 +311,15 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       )
     `,
-    // Indexes used by revision/draft/usage queries. Mirrored from migrations
-    // (v5-to-v6 / v6-to-v7 / v7-to-v8) so fresh installs get the same indexes.
+    // Indexes for the two NEW tables above. Safe to create here because both
+    // tables are created fresh in this same statements list (CREATE TABLE IF
+    // NOT EXISTS), so their columns always exist by the time the index runs.
+    // NOTE: idx_llm_usage_logs_month is intentionally NOT created here — its
+    // project_id column is only added by the v7→v8 migration, so on an upgrade
+    // the column does not exist yet at this point. That index is created after
+    // migrations finish in openDatabase().
     `CREATE INDEX IF NOT EXISTS idx_content_revisions_target ON content_revisions(target_type, target_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_generation_drafts_target ON generation_drafts(target_type, target_id, created_at DESC)`,
-    `CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month ON llm_usage_logs(project_id, created_at)`,
   ];
   for (const statement of statements) {
     await execute(database, statement);
@@ -430,6 +442,13 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
   const settings = await tableColumns(database, 'settings');
   await ensureColumn(database, 'settings', settings, 'key', "key TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'settings', settings, 'value', "value TEXT NOT NULL DEFAULT ''");
+
+  // llm_usage_logs: columns added by the v7→v8 migration. We also ensure them
+  // here (which runs before migrate()) so that legacy databases upgrading from
+  // <V1.6.0 have the columns in place before the post-migration index creation.
+  const usageLogs = await tableColumns(database, 'llm_usage_logs');
+  await ensureColumn(database, 'llm_usage_logs', usageLogs, 'model_name', "model_name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'llm_usage_logs', usageLogs, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
 }
 
 async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
