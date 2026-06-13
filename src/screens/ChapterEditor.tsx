@@ -29,12 +29,25 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const [finalizing, setFinalizing] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  // Accumulate field edits across multiple changeField calls within one debounce
+  // window. Without this, a fast title+synopsis edit would overwrite the pending
+  // args and lose one of the edits (debounce only keeps the latest call's args).
+  const pendingFieldsRef = useRef<Partial<Chapter>>({});
+  const pendingChapterIdRef = useRef<number | null>(null);
   const autoSaveRef = useRef(
-    debounce(async (id: number, fields: Partial<Chapter>) => {
+    debounce(async () => {
+      // Snapshot and clear the accumulator under the debounce callback so any
+      // edits queued during the DB write land in the next window.
+      const id = pendingChapterIdRef.current;
+      const fields = pendingFieldsRef.current;
+      pendingFieldsRef.current = {};
+      if (id == null) return;
       try {
         await db.updateChapter(id, fields);
         setSaveStatus('saved');
       } catch {
+        // Restore the failed fields so a later flush can retry them.
+        pendingFieldsRef.current = { ...fields, ...pendingFieldsRef.current };
         setSaveStatus('failed');
       }
     }, 900),
@@ -66,22 +79,51 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     return () => { autoSave.flush().catch(() => {}); };
   }, []);
 
+  // Intercept hardware back / swipe-back so pending edits are flushed before
+  // leaving the screen. The default goBack() does not trigger flushAndClose.
+  // We only prevent the default when there is unsaved content; otherwise we
+  // let navigation proceed immediately to avoid blocking the user.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
+      if (!autoSaveRef.current.pending()) return;
+      // Defer flush then resume navigation. We do not surface a modal here
+      // (the hardware back button has no UI to host one reliably); a failed
+      // flush is swallowed so the user is never trapped on the screen.
+      e.preventDefault();
+      autoSaveRef.current.flush().catch(() => {}).finally(() => {
+        navigation.dispatch(e.data.action);
+      });
+    });
+    return unsubscribe;
+  }, [navigation]);
+
   const changeField = (field: keyof Chapter, value: string) => {
     if (!chapter) return;
     const next = { ...chapter, [field]: value };
     setChapter(next);
     setSaveStatus('saving');
-    autoSaveRef.current.call(chapter.id, { [field]: value } as Partial<Chapter>);
+    pendingFieldsRef.current = { ...pendingFieldsRef.current, [field]: value };
+    pendingChapterIdRef.current = chapter.id;
+    autoSaveRef.current.call();
   };
 
   const flushAndClose = async () => {
+    // Nothing pending → safe to close immediately, skipping the debounce flush
+    // to avoid a redundant (and potentially failing) DB write.
+    if (!autoSaveRef.current.pending()) {
+      onClose();
+      return;
+    }
     try {
       await autoSaveRef.current.flush();
       onClose();
     } catch {
       setSaveStatus('failed');
       Alert.alert('保存失败', '内容尚未保存，是否仍然退出？', [
-        { text: '重试', onPress: flushAndClose },
+        // Retry only the flush (not the whole close flow) so a persistently
+        // failing DB write does not recurse indefinitely. If flush keeps
+        // failing the user can still choose to discard.
+        { text: '重试保存', onPress: () => { flushAndClose(); } },
         { text: '仍然退出', style: 'destructive', onPress: onClose },
       ]);
     }
@@ -97,17 +139,17 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         title: chapter.title,
         synopsis: chapter.synopsis,
         content: chapter.content,
-      } as any);
+      });
       setSaveStatus('saved');
       const memorySummary = await generateMemorySummary(chapter.id, 200);
       await db.updateChapter(chapter.id, {
         memory_summary: memorySummary,
         memory_summary_tokens: estimateTokens(memorySummary),
-      } as any);
+      });
       await loadChapter();
-      setSaveStatus('saved');
     } catch (error: any) {
-      setSaveStatus('saved');
+      // The chapter body was already saved above; only the memory summary
+      // failed. Leave saveStatus as-is (saved) but surface the summary error.
       Alert.alert('摘要生成失败', error?.message || '章节已保存，但自动记忆摘要生成失败。');
     } finally {
       setFinalizing(false);

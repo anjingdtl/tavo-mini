@@ -71,7 +71,13 @@ export const RevisionHistoryScreen: React.FC<Props> = ({ targetType, targetId, p
               targetType === 'chapter'
                 ? (content: string) => db.updateChapter(targetId, { content } as any)
                 : (content: string) => db.setFreeformDocument(projectId, content);
-            await restoreRevision(revision, updateFn);
+            // Provide the current content so restoreRevision can snapshot it
+            // (not the restore target) for an accurate "before_restore" entry.
+            const getCurrentContent =
+              targetType === 'chapter'
+                ? async () => (await db.getChapterById(targetId))?.content || ''
+                : async () => db.getFreeformDocument(projectId);
+            await restoreRevision(revision, updateFn, getCurrentContent);
             await load();
           } catch (e: any) {
             Alert.alert('恢复失败', e?.message || '未知错误');
