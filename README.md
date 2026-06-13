@@ -1,97 +1,194 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Tavo Mini
 
-# Getting Started
+A personal novel writing workbench for Android, built with React Native. Designed for long-form fiction authors who need data safety, AI controllability, and efficient writing workflows — all offline, all local.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+## Features
 
-## Step 1: Start Metro
+### Writing & Editing
+- Multi-project management with chapter-based and freeform document editing
+- Auto-save with flushable async debounce — your last keystroke is never lost
+- Content revision history with one-click restore and reversible snapshot chains
+- Focus mode for distraction-free writing
+- Chapter reordering with up/down controls
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+### AI-Powered Generation
+- Multi-stage AI pipeline: Draft → Review → Fact-Check → Proofread
+- Context preview before generation — see exactly what sources the AI uses
+- Generation drafts — AI output goes to preview first, never overwrites directly
+- Pipeline checkpoint resume — interrupted tasks continue from the last successful stage
+- OpenAI-compatible API with streaming support and automatic fallback
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+### Data Safety
+- Backup center with format v2 validation, checksums, and transactional restore
+- Category-based retention: 3 automatic / 10 manual / 3 pre-restore backups
+- Project package import/export (v2 format with v1 backward compatibility)
+- All high-risk operations (clear, AI replace, restore) create recoverable snapshots
+
+### Research & Organization
+- Character cards (CCv1/v2/v3), world books (lorebook_v3), and PNG character import
+- Story overview with chapter count, word count, and per-chapter statistics
+- Project search across chapters, notes, world books, and characters
+- LLM usage analytics by time range, model, and scenario
+
+### Security
+- API keys stored in Android Keystore via react-native-keychain
+- Database never stores credentials in plaintext
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | React Native 0.85 (Android-only) |
+| Language | TypeScript 5.8 |
+| State | Zustand 5 (4 stores) |
+| Database | SQLite (react-native-sqlite-storage), 16 tables, schema v8 |
+| Navigation | React Navigation 7 (Bottom Tabs + Native Stack) |
+| AI | OpenAI-compatible API (streaming + non-streaming) |
+| Security | Android Keystore (react-native-keychain) |
+| Testing | Jest + React Native Testing Library |
+
+## Requirements
+
+- **Node.js** >= 22.11.0
+- **Android SDK**: minSdk 24, compileSdk/targetSdk 36
+- **Kotlin** 2.1.20
+- **Java** 17+
+
+## Getting Started
+
+### Install Dependencies
 
 ```sh
-# Using npm
+npm install
+```
+
+The postinstall script automatically patches `react-native-sqlite-storage` Gradle config (replaces `jcenter()` with `mavenCentral()`).
+
+### Start Metro
+
+```sh
 npm start
-
-# OR using Yarn
-yarn start
 ```
 
-## Step 2: Build and run your app
-
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+### Run on Android
 
 ```sh
-# Using npm
 npm run android
-
-# OR using Yarn
-yarn android
 ```
 
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+### Build APK
 
 ```sh
-bundle install
+# Debug APK
+npm run apk:debug
+
+# Release APK
+npm run apk:release
 ```
 
-Then, and every time you update your native dependencies, run:
+APK output path: `dist/apk/{debug|release}/TavoMini-V<version>-{debug|release}.apk`
+
+> The Gradle output at `android/app/build/outputs/apk/` is an intermediate artifact. Only use APKs from `dist/apk/`.
+
+### Release Signing
+
+The release keystore is at `android/keystores/tavo-mini-release.keystore`. Override credentials via environment variables:
+
+```
+TAVO_MINI_RELEASE_STORE_PASSWORD
+TAVO_MINI_RELEASE_KEY_ALIAS
+TAVO_MINI_RELEASE_KEY_PASSWORD
+```
+
+## Testing & Linting
 
 ```sh
-bundle exec pod install
+# Run all tests
+npm test
+
+# Run a single test file
+npx jest __tests__/llm.test.ts
+
+# ESLint
+npm run lint
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+## Project Structure
 
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
+```
+tavo-mini/
+  android/                           # Android native project
+  scripts/                           # Build scripts (build-apk, generate-version-json, patch-sqlite)
+  src/
+    main/index.tsx                    # App entry (splash → upgrade detection → ThemeProvider + Navigation)
+    navigation/TabNavigator.tsx       # Bottom tabs + Stack navigation
+    screens/                          # 24 screen components
+    components/                       # ChapterCard, AIStreamText, ThemeProvider, ui
+    services/                         # database, llm, contextBuilder, macroReplace,
+                                       summaryGenerator, chapterGeneration,
+                                       batchChapterPipeline, fileImport,
+                                       exportService, secureStorage,
+                                       pipelineMessages, pipelineRunner,
+                                       backupService, revisionService,
+                                       draftService, projectImport,
+                                       migrations/
+    services/migrations/              # Incremental migration engine (v3→v4→v5→v6→v7→v8)
+    store/                            # projectStore, settingsStore, themeStore,
+                                       pipelineTaskStore
+    constants/                        # defaults.ts, version.json (auto-generated)
+    native/PngMetadataModule.ts       # PNG tEXt chunk parsing bridge
+    types/                            # novel, character, worldbook, theme, pipeline,
+                                       revision, draft, contextTrace
+    utils/                            # debounce, jsonExtractor, tokenEstimator
+  index.js                            # RN entry
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+## Database Schema
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+SQLite database `tavo_mini.db`, 16 tables at schema version 8:
 
-## Step 3: Modify your app
+| Table | Purpose |
+|---|---|
+| `projects` | Novel projects |
+| `chapters` | Chapter content and metadata |
+| `fragments` | Chapter text fragments |
+| `plotlines` | Plot line definitions |
+| `project_plotlines` | Plot line ↔ project associations |
+| `characters` | Character cards |
+| `worldbook_collections` | World book groups |
+| `worldbook_entries` | World book entries |
+| `notes` | Project notes |
+| `presets` | AI presets |
+| `llm_config` | LLM provider configurations (no API keys) |
+| `settings` | App settings |
+| `project_resources` | Project resource links |
+| `llm_usage_logs` | LLM call logs with model and duration |
+| `freeform_documents` | Freeform writing documents |
+| `pipeline_tasks` | Multi-stage AI pipeline tasks |
+| `content_revisions` | Content version history (v6+) |
+| `generation_drafts` | AI generation drafts (v7+) |
 
-Now that you have successfully run the app, let's make changes!
+## Theme
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+Base tri-color palette: `#439EA6` (primary) / `#B0E0E3` (secondary) / `#D7F1F4` (background)
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+Three themes via `useThemeStore`: Light / Dark / Eye-care. No hardcoded colors.
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+## Import & Export
 
-## Congratulations! :tada:
+| Direction | Format |
+|---|---|
+| Import | JSON character cards (CCv1/v2/v3), world books (lorebook_v3), PNG character cards |
+| Export | Markdown, Plain text (UTF-8 BOM), `.tavo-novel.json` (tavo-maker compatible) |
 
-You've successfully run and modified your React Native App. :partying_face:
+## Data Safety Notes
 
-### Now what?
+- Editor auto-save uses flushable debounce with AppState monitoring — content is saved before backgrounding or navigation
+- All destructive operations (clear, AI replace, restore) create revision snapshots
+- Backups use format v2 with validation and checksums; restore is transactional
+- Database migrations are non-breaking and incremental
+- Pre-restore backups are created automatically before any restore operation
 
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
+## License
 
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+Private project. All rights reserved.
