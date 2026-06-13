@@ -57,18 +57,24 @@ export const FreeformEditor: React.FC = () => {
 
   useEffect(() => {
     loadData();
+  }, [loadData]);
+
+  // Flush on background/inactive (registered once, independent of currentProject).
+  useEffect(() => {
     const autoSave = autoSaveRef.current;
-    // Flush on background/inactive
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'background' || state === 'inactive') {
         autoSave.flush().catch(() => {});
       }
     });
-    return () => {
-      autoSave.flush().catch(() => {});
-      sub.remove();
-    };
-  }, [loadData]);
+    return () => sub.remove();
+  }, []);
+
+  // Cleanup on unmount: flush instead of cancel so pending edits are not lost.
+  useEffect(() => {
+    const autoSave = autoSaveRef.current;
+    return () => { autoSave.flush().catch(() => {}); };
+  }, []);
 
   const changeDocument = (content: string) => {
     if (!currentProject) return;

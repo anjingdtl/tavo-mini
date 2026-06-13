@@ -34,13 +34,18 @@ export async function getRevisions(
 export async function restoreRevision(
   revision: ContentRevision,
   updateFn: (content: string) => Promise<void>,
+  getCurrentContent: () => Promise<string>,
 ): Promise<void> {
+  // Snapshot the CURRENT content (not the restore target) so the user can
+  // undo a restore. Previously this saved revision.content, which made the
+  // "before_restore" snapshot useless (it duplicated the target state).
+  const currentContent = await getCurrentContent();
   await createRevision({
     projectId: revision.projectId,
     targetType: revision.targetType as RevisionTargetType,
     targetId: revision.targetId,
     title: revision.title,
-    content: revision.content,
+    content: currentContent,
     source: 'before_restore' as RevisionSource,
     sourceRef: `restoring-from-${revision.id}`,
   });

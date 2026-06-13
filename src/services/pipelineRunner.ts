@@ -48,12 +48,13 @@ function buildContextPreview(messages: ChatMessage[]): string {
     .join('\n\n');
 }
 
-function buildCallConfig(preset: Preset | null, maxTokens: number, scenario: string) {
+function buildCallConfig(preset: Preset | null, maxTokens: number, scenario: string, projectId?: number) {
   return {
     temperature: preset?.temperature,
     top_p: preset?.top_p,
     max_tokens: maxTokens,
     scenario,
+    projectId,
   };
 }
 
@@ -74,6 +75,7 @@ async function runProofStage({
   maxTokens,
   proofPreset,
   scenario = 'pipeline_proof',
+  projectId,
 }: {
   taskId: string,
   draftText: string;
@@ -82,6 +84,7 @@ async function runProofStage({
   maxTokens: number;
   proofPreset: Preset | null;
   scenario?: string;
+  projectId?: number;
 }): Promise<string> {
   const store = usePipelineTaskStore.getState();
   store.setTaskStatus(taskId, 'proofing');
@@ -92,7 +95,7 @@ async function runProofStage({
     const proofResult = await callLLMResult(
       messages,
       maxTokens,
-      buildCallConfig(proofPreset, maxTokens, scenario),
+      buildCallConfig(proofPreset, maxTokens, scenario, projectId),
     );
     const finalText = proofResult.text || draftText;
     store.updateTaskStage(taskId, {
@@ -176,7 +179,7 @@ export async function runChapterPipeline(
     const draftResult = await callLLMResult(
       draftMessages,
       config.draftMaxTokens,
-      buildCallConfig(draftPreset, config.draftMaxTokens, 'pipeline_draft'),
+      buildCallConfig(draftPreset, config.draftMaxTokens, 'pipeline_draft', chapter.project_id),
     );
     draftText = draftResult.text || '';
     store.updateTaskStage(taskId, {
@@ -222,7 +225,7 @@ export async function runChapterPipeline(
       const reviewResult = await callLLMResult(
         buildReviewMessages(draftText),
         config.reviewMaxTokens,
-        buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review'),
+        buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
       );
       reviewText = reviewResult.text || '';
       store.updateTaskStage(taskId, {
@@ -256,6 +259,7 @@ export async function runChapterPipeline(
       factCheckText: '',
       maxTokens: config.proofMaxTokens,
       proofPreset,
+      projectId: chapter.project_id,
     });
     saveDraftAndComplete(finalText);
     return;
@@ -273,7 +277,7 @@ export async function runChapterPipeline(
       const factCheckResult = await callLLMResult(
         buildFactCheckMessages(draftText, contextText),
         config.factCheckMaxTokens,
-        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck'),
+        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
       );
       factCheckText = factCheckResult.text || '';
       store.updateTaskStage(taskId, {
@@ -307,8 +311,9 @@ export async function runChapterPipeline(
       factCheckText,
       maxTokens: config.proofMaxTokens,
       proofPreset,
+      projectId: chapter.project_id,
     });
-    store.completeTask(taskId, finalText);
+    await saveDraftAndComplete(finalText);
     return;
   }
 
@@ -323,12 +328,12 @@ export async function runChapterPipeline(
   const reviewPromise = callLLMResult(
     buildReviewMessages(draftText),
     config.reviewMaxTokens,
-    buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review'),
+    buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
   );
   const factCheckPromise = callLLMResult(
     buildFactCheckMessages(draftText, contextText),
     config.factCheckMaxTokens,
-    buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck'),
+    buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
   );
 
   let reviewText = '';
@@ -400,6 +405,7 @@ export async function runChapterPipeline(
     factCheckText,
     maxTokens: config.proofMaxTokens,
     proofPreset,
+    projectId: chapter.project_id,
   });
   saveDraftAndComplete(finalText);
 }
@@ -489,7 +495,7 @@ export async function resumePipeline(
         const reviewCallResult = await callLLMResult(
           buildReviewMessages(draftText),
           config.reviewMaxTokens,
-          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review'),
+          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
         );
         reviewText = reviewCallResult.text || '';
         store.updateTaskStage(taskId, {
@@ -508,7 +514,7 @@ export async function resumePipeline(
 
     if (checkCancelled(taskId)) return;
     onStageUpdate?.('正在终审校对（续跑）...');
-    const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset });
+    const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id });
     saveDraftAndComplete(finalText);
     return;
   }
@@ -524,7 +530,7 @@ export async function resumePipeline(
       const factCheckCallResult = await callLLMResult(
         buildFactCheckMessages(draftText, contextText),
         config.factCheckMaxTokens,
-        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck'),
+        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
       );
       factCheckText = factCheckCallResult.text || '';
       store.updateTaskStage(taskId, {
@@ -541,6 +547,6 @@ export async function resumePipeline(
 
   if (checkCancelled(taskId)) return;
   onStageUpdate?.('正在终审校对（续跑）...');
-  const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset });
+  const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id });
   saveDraftAndComplete(finalText);
 }

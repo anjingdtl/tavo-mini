@@ -243,6 +243,8 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         total_tokens INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT '',
         error_code TEXT NOT NULL DEFAULT '',
+        model_name TEXT NOT NULL DEFAULT '',
+        project_id INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
       )
     `,
@@ -269,6 +271,43 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       )
     `,
+    // V1.4.0 (schema 6): content revision snapshots for chapter/freeform.
+    // Mirrored here from migrations/v5-to-v6.ts so fresh installs have the
+    // same schema as upgraded installs (fresh installs skip all migrations).
+    `
+      CREATE TABLE IF NOT EXISTS content_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL,
+        source_ref TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    // V1.5.0 (schema 7): pipeline generation drafts. See migrations/v6-to-v7.ts.
+    `
+      CREATE TABLE IF NOT EXISTS generation_drafts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id INTEGER NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL,
+        pipeline_task_id TEXT,
+        token_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    // Indexes used by revision/draft/usage queries. Mirrored from migrations
+    // (v5-to-v6 / v6-to-v7 / v7-to-v8) so fresh installs get the same indexes.
+    `CREATE INDEX IF NOT EXISTS idx_content_revisions_target ON content_revisions(target_type, target_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_generation_drafts_target ON generation_drafts(target_type, target_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month ON llm_usage_logs(project_id, created_at)`,
   ];
   for (const statement of statements) {
     await execute(database, statement);
@@ -1308,11 +1347,13 @@ export async function logLLMUsage(fields: {
   totalTokens: number;
   status: string;
   errorCode?: string;
+  modelName?: string;
+  projectId?: number;
 }): Promise<void> {
   await execute(
     await openDatabase(),
-    `INSERT INTO llm_usage_logs (scenario, input_tokens, output_tokens, total_tokens, status, error_code, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO llm_usage_logs (scenario, input_tokens, output_tokens, total_tokens, status, error_code, model_name, project_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       fields.scenario,
       fields.inputTokens,
@@ -1320,6 +1361,8 @@ export async function logLLMUsage(fields: {
       fields.totalTokens,
       fields.status,
       fields.errorCode || '',
+      fields.modelName || '',
+      fields.projectId ?? 0,
       now(),
     ],
   );
