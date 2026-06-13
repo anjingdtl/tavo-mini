@@ -9,6 +9,7 @@ import {
   buildProofMessages,
 } from './pipelineMessages';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
+import { saveDraft } from './draftService';
 import type { Chapter, Preset } from '../types/novel';
 import type { PipelineStageName } from '../types/pipeline';
 import type { ChatMessage } from './llm';
@@ -133,6 +134,20 @@ export async function runChapterPipeline(
   const factCheckPreset = resolvePreset(config.factCheckPresetId, presets as Preset[]);
   const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
 
+  const saveDraftAndComplete = async (text: string) => {
+    try {
+      await saveDraft({
+        projectId: chapter.project_id,
+        targetType: chapter.id > 0 ? 'chapter' : 'freeform',
+        targetId: chapter.id > 0 ? chapter.id : chapter.project_id,
+        content: text,
+        source: 'pipeline',
+        pipelineTaskId: taskId,
+      });
+    } catch { /* best-effort */ }
+    store.completeTask(taskId, text);
+  };
+
   if (checkCancelled(taskId)) return;
   store.setTaskStatus(taskId, 'drafting');
   onStageUpdate?.('正在创作初稿...');
@@ -192,7 +207,7 @@ export async function runChapterPipeline(
     markSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
     markSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
     markSkipped(taskId, 'proof', '无审核模式已跳过终审校对');
-    store.completeTask(taskId, draftText);
+    saveDraftAndComplete(draftText);
     return;
   }
 
@@ -242,7 +257,7 @@ export async function runChapterPipeline(
       maxTokens: config.proofMaxTokens,
       proofPreset,
     });
-    store.completeTask(taskId, finalText);
+    saveDraftAndComplete(finalText);
     return;
   }
 
@@ -372,7 +387,7 @@ export async function runChapterPipeline(
   }
 
   if (reviewFailed && factCheckFailed) {
-    store.completeTask(taskId, draftText);
+    saveDraftAndComplete(draftText);
     return;
   }
 
@@ -386,7 +401,7 @@ export async function runChapterPipeline(
     maxTokens: config.proofMaxTokens,
     proofPreset,
   });
-  store.completeTask(taskId, finalText);
+  saveDraftAndComplete(finalText);
 }
 
 export async function runFreeformPipeline(
@@ -409,4 +424,123 @@ export async function runFreeformPipeline(
     updated_at: '',
   };
   await runChapterPipeline(taskId, pseudoChapter, onStageUpdate);
+}
+
+export async function resumePipeline(
+  taskId: string,
+  chapter: Chapter,
+  onStageUpdate?: (status: string) => void,
+): Promise<void> {
+  const store = usePipelineTaskStore.getState();
+  const task = store.tasks.find(t => t.id === taskId);
+  if (!task) throw new Error('找不到管线任务');
+
+  const completedStages = new Set(
+    task.stageResults
+      .filter(s => s.status === 'success')
+      .map(s => s.stage),
+  );
+
+  const draftResult = task.stageResults.find(s => s.stage === 'draft' && s.status === 'success');
+  const reviewResult = task.stageResults.find(s => s.stage === 'review' && s.status === 'success');
+  const factCheckResult = task.stageResults.find(s => s.stage === 'factCheck' && s.status === 'success');
+
+  if (!draftResult) {
+    await runChapterPipeline(taskId, chapter, onStageUpdate);
+    return;
+  }
+
+  const config = await db.getPipelineConfig();
+  const presets = await db.getPresetsByProject(chapter.project_id);
+  const reviewPreset = resolvePreset(config.reviewPresetId, presets as Preset[]);
+  const factCheckPreset = resolvePreset(config.factCheckPresetId, presets as Preset[]);
+  const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
+
+  const saveDraftAndComplete = async (text: string) => {
+    try {
+      await saveDraft({
+        projectId: chapter.project_id,
+        targetType: chapter.id > 0 ? 'chapter' : 'freeform',
+        targetId: chapter.id > 0 ? chapter.id : chapter.project_id,
+        content: text,
+        source: 'pipeline',
+        pipelineTaskId: taskId,
+      });
+    } catch { /* best-effort */ }
+    store.completeTask(taskId, text);
+  };
+
+  const draftText = draftResult.text;
+
+  if (config.pipelineMode === 'noReview') {
+    saveDraftAndComplete(draftText);
+    return;
+  }
+
+  let reviewText = reviewResult?.text || '';
+  let factCheckText = factCheckResult?.text || '';
+
+  if (config.pipelineMode === 'twoStage') {
+    if (!completedStages.has('review')) {
+      if (checkCancelled(taskId)) return;
+      store.setTaskStatus(taskId, 'reviewing');
+      onStageUpdate?.('正在审阅/评估草稿（续跑）...');
+      try {
+        const reviewCallResult = await callLLMResult(
+          buildReviewMessages(draftText),
+          config.reviewMaxTokens,
+          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review'),
+        );
+        reviewText = reviewCallResult.text || '';
+        store.updateTaskStage(taskId, {
+          stage: 'review',
+          text: reviewText,
+          status: 'success',
+          tokens: { input: reviewCallResult.inputTokens, output: reviewCallResult.outputTokens, total: reviewCallResult.totalTokens },
+          durationMs: Date.now(),
+        });
+      } catch (error: any) {
+        store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() });
+        saveDraftAndComplete(draftText);
+        return;
+      }
+    }
+
+    if (checkCancelled(taskId)) return;
+    onStageUpdate?.('正在终审校对（续跑）...');
+    const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset });
+    saveDraftAndComplete(finalText);
+    return;
+  }
+
+  // conditional / full
+  if (!completedStages.has('factCheck') && config.pipelineMode !== 'twoStage') {
+    if (checkCancelled(taskId)) return;
+    store.setTaskStatus(taskId, 'reviewing');
+    onStageUpdate?.('正在事实核查（续跑）...');
+    try {
+      const { messages: baseContext } = await buildContext(chapter, await db.getContextConfig(), chapter.project_id);
+      const contextText = buildContextPreview(baseContext);
+      const factCheckCallResult = await callLLMResult(
+        buildFactCheckMessages(draftText, contextText),
+        config.factCheckMaxTokens,
+        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck'),
+      );
+      factCheckText = factCheckCallResult.text || '';
+      store.updateTaskStage(taskId, {
+        stage: 'factCheck',
+        text: factCheckText,
+        status: 'success',
+        tokens: { input: factCheckCallResult.inputTokens, output: factCheckCallResult.outputTokens, total: factCheckCallResult.totalTokens },
+        durationMs: Date.now(),
+      });
+    } catch (error: any) {
+      store.updateTaskStage(taskId, { stage: 'factCheck', text: '', status: 'failed', error: error.message || '事实核查失败', durationMs: Date.now() });
+    }
+  }
+
+  if (checkCancelled(taskId)) return;
+  onStageUpdate?.('正在终审校对（续跑）...');
+  const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset });
+  saveDraftAndComplete(finalText);
 }

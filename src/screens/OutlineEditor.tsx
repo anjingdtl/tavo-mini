@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { BarChart3, Bot, FileText, Plus, Settings2, Trash2 } from 'lucide-react-native';
+import { BarChart3, Bot, FileText, Plus, Settings2, Trash2, ArrowUp, ArrowDown } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Button, Card, EmptyState, Field, Header, Screen, spacing } from '../components/ui';
@@ -61,6 +61,16 @@ export const OutlineEditor: React.FC = () => {
     ]);
   }, [loadChapters]);
 
+  const moveChapter = useCallback(async (fromIndex: number, toIndex: number) => {
+    if (!currentProject) return;
+    const allChapters = await db.getChaptersByProject(currentProject.id);
+    if (fromIndex < 0 || fromIndex >= allChapters.length || toIndex < 0 || toIndex >= allChapters.length) return;
+    const moved = allChapters.splice(fromIndex, 1)[0];
+    allChapters.splice(toIndex, 0, moved);
+    await Promise.all(allChapters.map((ch, idx) => db.updateChapter(ch.id, { position: idx })));
+    await loadChapters();
+  }, [currentProject, loadChapters]);
+
   const runBatchGenerate = async () => {
     if (!currentProject || batchRunning) return;
     const count = Math.max(1, Number(batchCount) || 1);
@@ -95,7 +105,7 @@ export const OutlineEditor: React.FC = () => {
     }
   };
 
-  const renderChapter = useCallback(({ item }: { item: Chapter }) => (
+  const renderChapter = useCallback(({ item, index }: { item: Chapter; index: number }) => (
     <TouchableOpacity activeOpacity={0.78} onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })}>
       <Card>
         <View style={styles.chapterHeader}>
@@ -105,9 +115,13 @@ export const OutlineEditor: React.FC = () => {
               {item.synopsis || item.memory_summary || '未填写章节概要'}
             </Text>
           </View>
-          <TouchableOpacity accessibilityLabel="删除章节" onPress={() => deleteChapter(item)} style={styles.iconCell}>
-            <Trash2 size={17} color={theme.colors.danger} />
-          </TouchableOpacity>
+          <View style={styles.chapterActions}>
+            <Button label="" icon={ArrowUp} variant="ghost" compact onPress={() => moveChapter(index, index - 1)} disabled={index === 0} />
+            <Button label="" icon={ArrowDown} variant="ghost" compact onPress={() => moveChapter(index, index + 1)} disabled={index === chapters.length - 1} />
+            <TouchableOpacity accessibilityLabel="删除章节" onPress={() => deleteChapter(item)} style={styles.iconCell}>
+              <Trash2 size={17} color={theme.colors.danger} />
+            </TouchableOpacity>
+          </View>
         </View>
         <View style={styles.statusRow}>
           <Text style={[styles.status, { color: theme.colors.textSecondary }]}>{statusLabel(item.status)}</Text>
@@ -115,7 +129,7 @@ export const OutlineEditor: React.FC = () => {
         </View>
       </Card>
     </TouchableOpacity>
-  ), [deleteChapter, navigation, theme]);
+  ), [chapters.length, deleteChapter, moveChapter, navigation, theme]);
 
   if (!currentProject) {
     return (
@@ -199,6 +213,7 @@ const styles = StyleSheet.create({
   list: { padding: spacing.lg, paddingBottom: 96 },
   chapterHeader: { flexDirection: 'row', gap: spacing.md },
   chapterBody: { flex: 1 },
+  chapterActions: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   chapterTitle: { fontSize: 16, fontWeight: '800', marginBottom: 6 },
   meta: { fontSize: 13, lineHeight: 19 },
   iconCell: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },

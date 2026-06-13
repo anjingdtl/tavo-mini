@@ -237,13 +237,13 @@ describe('writing context enhancements', () => {
     }));
 
     const { buildWorldbookContext } = require('../src/services/contextBuilder');
-    const text = await buildWorldbookContext(7, 500, '主角回到钟楼。', true);
+    const result = await buildWorldbookContext(7, 500, '主角回到钟楼。', true);
 
-    expect(text).toContain('常驻规则');
-    expect(text).toContain('钟楼下藏着银钥匙');
-    expect(text).toContain('银钥匙能打开地下档案室');
-    expect(text).not.toContain('只有档案员知道');
-    expect(text).not.toContain('不应注入');
+    expect(result.text).toContain('常驻规则');
+    expect(result.text).toContain('钟楼下藏着银钥匙');
+    expect(result.text).toContain('银钥匙能打开地下档案室');
+    expect(result.text).not.toContain('只有档案员知道');
+    expect(result.text).not.toContain('不应注入');
   });
 
   test('builds character context with common SillyTavern card fields', async () => {
@@ -268,12 +268,12 @@ describe('writing context enhancements', () => {
     }));
 
     const { buildCharacterContext } = require('../src/services/contextBuilder');
-    const text = await buildCharacterContext(7, 2000);
+    const result = await buildCharacterContext(7, 2000);
 
-    expect(text).toContain('钟楼守夜人');
-    expect(text).toContain('她正在调查旧城档案');
-    expect(text).toContain('钟声又响了');
-    expect(text).toContain('保持悬疑感');
+    expect(result.text).toContain('钟楼守夜人');
+    expect(result.text).toContain('她正在调查旧城档案');
+    expect(result.text).toContain('钟声又响了');
+    expect(result.text).toContain('保持悬疑感');
   });
 
   test('revision generation replaces current chapter text instead of appending', () => {

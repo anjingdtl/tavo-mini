@@ -2,6 +2,8 @@
 
 type TableRows = Record<string, any>[];
 
+const currentVersion = require('../src/constants/version.json').versionName.replace(/^V/, '');
+
 const createRows = (rows: TableRows) => ({
   length: rows.length,
   item: (index: number) => rows[index],
@@ -76,7 +78,7 @@ describe('install type detection', () => {
 
   test('detects same version when stored version = current version', async () => {
     const { db, settings } = createMockDb({
-      app_version: '1.3.7',
+      app_version: currentVersion,
       schema_version: '5',
       first_install_version: '1.0.0',
     });

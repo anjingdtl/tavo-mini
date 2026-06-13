@@ -1486,3 +1486,186 @@ export async function setAllWorldbookEntriesEnabledByCollection(collectionId: nu
     [enabled ? 1 : 0, collectionId],
   );
 }
+
+// ---------------------------------------------------------------------------
+// Content Revisions
+// ---------------------------------------------------------------------------
+
+export async function createContentRevision(fields: {
+  projectId: number;
+  targetType: string;
+  targetId: number;
+  title: string;
+  content: string;
+  source: string;
+  sourceRef?: string | null;
+}): Promise<number> {
+  const createdAt = new Date().toISOString();
+  const result = await execute(
+    await openDatabase(),
+    `INSERT INTO content_revisions (project_id, target_type, target_id, title, content, source, source_ref, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [fields.projectId, fields.targetType, fields.targetId, fields.title, fields.content, fields.source, fields.sourceRef ?? null, createdAt],
+  );
+  return result.insertId;
+}
+
+export async function getContentRevisions(
+  targetType: string,
+  targetId: number,
+): Promise<any[]> {
+  return all(
+    `SELECT * FROM content_revisions WHERE target_type = ? AND target_id = ? ORDER BY created_at DESC`,
+    [targetType, targetId],
+  );
+}
+
+export async function getLatestContentRevision(
+  targetType: string,
+  targetId: number,
+): Promise<any | null> {
+  return one(
+    `SELECT * FROM content_revisions WHERE target_type = ? AND target_id = ? ORDER BY created_at DESC LIMIT 1`,
+    [targetType, targetId],
+  );
+}
+
+export async function deleteContentRevision(id: number): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM content_revisions WHERE id = ?', [id]);
+}
+
+export async function trimContentRevisions(
+  targetType: string,
+  targetId: number,
+  maxAuto = 50,
+  maxManual = 20,
+): Promise<void> {
+  const database = await openDatabase();
+  await database.transaction(async (tx) => {
+    const [autoResult] = await tx.executeSql(
+      `SELECT id FROM content_revisions
+       WHERE target_type = ? AND target_id = ? AND source != 'manual_checkpoint'
+       ORDER BY created_at DESC`,
+      [targetType, targetId],
+    );
+    const autoIds: number[] = [];
+    for (let i = 0; i < autoResult.rows.length; i++) {
+      autoIds.push(autoResult.rows.item(i).id);
+    }
+    const toDeleteAuto = autoIds.slice(maxAuto);
+    for (const id of toDeleteAuto) {
+      await tx.executeSql('DELETE FROM content_revisions WHERE id = ?', [id]);
+    }
+
+    const [manualResult] = await tx.executeSql(
+      `SELECT id FROM content_revisions
+       WHERE target_type = ? AND target_id = ? AND source = 'manual_checkpoint'
+       ORDER BY created_at DESC`,
+      [targetType, targetId],
+    );
+    const manualIds: number[] = [];
+    for (let i = 0; i < manualResult.rows.length; i++) {
+      manualIds.push(manualResult.rows.item(i).id);
+    }
+    const toDeleteManual = manualIds.slice(maxManual);
+    for (const id of toDeleteManual) {
+      await tx.executeSql('DELETE FROM content_revisions WHERE id = ?', [id]);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Generation Drafts
+// ---------------------------------------------------------------------------
+
+export async function createGenerationDraft(fields: {
+  projectId: number;
+  targetType: string;
+  targetId: number;
+  content: string;
+  source: string;
+  pipelineTaskId?: string | null;
+  tokenCount: number;
+}): Promise<number> {
+  const createdAt = new Date().toISOString();
+  const result = await execute(
+    await openDatabase(),
+    `INSERT INTO generation_drafts (project_id, target_type, target_id, content, source, pipeline_task_id, token_count, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [fields.projectId, fields.targetType, fields.targetId, fields.content, fields.source, fields.pipelineTaskId ?? null, fields.tokenCount, createdAt],
+  );
+  return result.insertId;
+}
+
+export async function getGenerationDrafts(
+  targetType: string,
+  targetId: number,
+): Promise<any[]> {
+  return all(
+    `SELECT * FROM generation_drafts WHERE target_type = ? AND target_id = ? ORDER BY created_at DESC`,
+    [targetType, targetId],
+  );
+}
+
+export async function getGenerationDraft(id: number): Promise<any | null> {
+  return one(
+    `SELECT * FROM generation_drafts WHERE id = ?`,
+    [id],
+  );
+}
+
+export async function deleteGenerationDraft(id: number): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM generation_drafts WHERE id = ?', [id]);
+}
+
+export async function deleteGenerationDraftsByTarget(
+  targetType: string,
+  targetId: number,
+): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM generation_drafts WHERE target_type = ? AND target_id = ?', [targetType, targetId]);
+}
+
+// ---------------------------------------------------------------------------
+// LLM Usage Stats
+// ---------------------------------------------------------------------------
+
+export async function getLLMUsageStats(projectId: number | null): Promise<any[]> {
+  const database = await openDatabase();
+  const projectFilter = projectId ? 'WHERE project_id = ?' : '';
+  const params = projectId ? [projectId] : [];
+  const [result] = await database.executeSql(
+    `SELECT
+      DATE(created_at) as date,
+      COUNT(*) as call_count,
+      SUM(input_tokens) as total_input_tokens,
+      SUM(output_tokens) as total_output_tokens,
+      SUM(total_tokens) as total_tokens,
+      GROUP_CONCAT(DISTINCT model_name) as models
+    FROM llm_usage_logs ${projectFilter}
+    GROUP BY DATE(created_at)
+    ORDER BY date DESC
+    LIMIT 30`,
+    params,
+  );
+  const rows: any[] = [];
+  for (let i = 0; i < result.rows.length; i++) {
+    rows.push(result.rows.item(i));
+  }
+  return rows;
+}
+
+export async function getLLMUsageSummary(projectId: number | null): Promise<any> {
+  const database = await openDatabase();
+  const projectFilter = projectId ? 'WHERE project_id = ?' : '';
+  const params = projectId ? [projectId] : [];
+  const [result] = await database.executeSql(
+    `SELECT
+      COUNT(*) as total_calls,
+      COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+      COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+      COALESCE(SUM(total_tokens), 0) as total_tokens
+    FROM llm_usage_logs ${projectFilter}`,
+    params,
+  );
+  return result.rows.length > 0 ? result.rows.item(0) : { total_calls: 0, total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0 };
+}

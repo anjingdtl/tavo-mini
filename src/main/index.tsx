@@ -74,7 +74,7 @@ export const App: React.FC = () => {
       const database = await openDatabase();
       const fromSchema = lastInstallInfo?.schemaVersion || 1;
       await runMigrations(database, fromSchema, async () => {
-        return createBackup(database, lastInstallInfo?.previousVersion || '', String(fromSchema));
+        return createBackup(database, lastInstallInfo?.previousVersion || '', fromSchema, 'automatic');
       });
       setUpgradeStatus('success');
       setTimeout(() => {
