@@ -6,6 +6,7 @@ export interface LLMCallConfig {
   top_p?: number;
   max_tokens?: number;
   scenario?: string;
+  projectId?: number;
 }
 
 export interface ChatMessage {
@@ -169,6 +170,8 @@ export async function callLLMResult(
   const timeout = setTimeout(() => controller.abort(), 60000);
   const inputEstimate = estimateMessagesTokens(messages);
   const scenario = config?.scenario || 'chat';
+  const modelName = llmConfig.model_name;
+  const projectId = config?.projectId;
 
   try {
     const response = await limitLLMRequest(() =>
@@ -202,7 +205,7 @@ export async function callLLMResult(
     const outputTokens = Number(usage.completion_tokens || estimateTokens(text || ''));
     const totalTokens = Number(usage.total_tokens || inputTokens + outputTokens);
 
-    await safeLogUsage({ scenario, inputTokens, outputTokens, totalTokens, status: 'success' });
+    await safeLogUsage({ scenario, inputTokens, outputTokens, totalTokens, status: 'success', modelName, projectId });
 
     return { text, inputTokens, outputTokens, totalTokens, rawUsage: data.usage };
   } catch (error: any) {
@@ -216,6 +219,8 @@ export async function callLLMResult(
         totalTokens: inputEstimate,
         status: 'error',
         errorCode: timeoutError.code,
+        modelName,
+        projectId,
       });
       throw timeoutError;
     }
@@ -227,6 +232,8 @@ export async function callLLMResult(
       totalTokens: inputEstimate,
       status: 'error',
       errorCode: String(error?.code || error?.status || 'unknown'),
+      modelName,
+      projectId,
     });
     throw error;
   } finally {
@@ -261,6 +268,8 @@ async function safeLogUsage(fields: {
   totalTokens: number;
   status: string;
   errorCode?: string;
+  modelName?: string;
+  projectId?: number;
 }) {
   try {
     await db.logLLMUsage(fields);

@@ -97,7 +97,7 @@ describe('revisionService', () => {
   });
 
   describe('restoreRevision', () => {
-    test('restores chapter content after creating before_restore snapshot', async () => {
+    test('snapshots the current content (not the restore target) before restoring', async () => {
       const { restoreRevision } = require('../src/services/revisionService');
       mockGetLatestContentRevision.mockResolvedValue(null);
       mockCreateContentRevision.mockResolvedValue(200);
@@ -115,10 +115,15 @@ describe('revisionService', () => {
       };
 
       const updateFn = jest.fn().mockResolvedValue(undefined);
-      await restoreRevision(revision, updateFn);
+      // getCurrentContent returns the live content currently in the editor,
+      // which must be what gets snapshotted (not the restore target).
+      const getCurrentContent = jest.fn().mockResolvedValue('current live content');
+      await restoreRevision(revision, updateFn, getCurrentContent);
 
+      expect(getCurrentContent).toHaveBeenCalled();
       expect(mockCreateContentRevision).toHaveBeenCalledWith(
         expect.objectContaining({
+          content: 'current live content',
           source: 'before_restore',
           sourceRef: 'restoring-from-50',
         }),
