@@ -31,7 +31,24 @@ export async function getDrafts(
   targetType: DraftTargetType,
   targetId: number,
 ): Promise<GenerationDraft[]> {
-  return getGenerationDrafts(targetType, targetId);
+  // getGenerationDrafts returns raw rows with snake_case columns
+  // (project_id, target_type, token_count, created_at, ...). The
+  // GenerationDraft type contract is camelCase, so map explicitly. Without
+  // this, the draft list crashed with
+  // "Cannot read property 'toLocaleString' of undefined" because
+  // item.tokenCount was undefined even though token_count was set in SQLite.
+  const rows = await getGenerationDrafts(targetType, targetId);
+  return rows.map((r: any) => ({
+    id: r.id,
+    projectId: r.project_id,
+    targetType: r.target_type,
+    targetId: r.target_id,
+    content: r.content ?? '',
+    source: r.source,
+    pipelineTaskId: r.pipeline_task_id ?? null,
+    tokenCount: typeof r.token_count === 'number' ? r.token_count : 0,
+    createdAt: r.created_at,
+  }));
 }
 
 export async function removeDraft(id: number): Promise<void> {
