@@ -1,6 +1,14 @@
 # Tavo Mini
 
+> **Current version: V1.6.3** (versionCode 52) · Last updated 2026-06-14
+
 A personal novel writing workbench for Android, built with React Native. Designed for long-form fiction authors who need data safety, AI controllability, and efficient writing workflows — all offline, all local.
+
+## Latest Updates (V1.6.3)
+
+- **Dismissible pipeline-result prompt.** The "流水线已完成 / 流水线失败" prompt that surfaces a finished AI task is now a controlled React Modal (`src/components/PipelineResultPrompt.tsx`) instead of a native `Alert.alert`. Tapping "查看结果" dismisses the modal *in lockstep* with the navigation, so it no longer lingers on top of the result page or feels like it is being re-fired on every screen change.
+- **Strict once-per-task prompting.** The root subscription in `src/main/index.tsx` now ignores tasks whose `resolvedAt` is non-null, which is the critical guard for batch runs (`batchChapterPipeline` resolves every sub-task right after `completeTask`). A batch generation no longer pops one global prompt per chapter — the per-chapter summary in `OutlineEditor` remains the canonical feedback.
+- **110/110 tests passing** across 25 suites (`npm test`); `npm run lint` clean.
 
 ## Features
 
@@ -13,9 +21,10 @@ A personal novel writing workbench for Android, built with React Native. Designe
 
 ### AI-Powered Generation
 - Multi-stage AI pipeline: Draft → Review → Fact-Check → Proofread
-- Context preview before generation — see exactly what sources the AI uses
+- Live progress UI (`PipelineProgress`) that surfaces the current stage, label, and elapsed time
 - Generation drafts — AI output goes to preview first, never overwrites directly
 - Pipeline checkpoint resume — interrupted tasks continue from the last successful stage
+- Global completion prompt that fires no matter which screen the user is on when a pipeline finishes; double-dismissal and batch-replay are explicitly prevented
 - OpenAI-compatible API with streaming support and automatic fallback
 
 ### Data Safety
@@ -45,7 +54,7 @@ A personal novel writing workbench for Android, built with React Native. Designe
 | Navigation | React Navigation 7 (Bottom Tabs + Native Stack) |
 | AI | OpenAI-compatible API (streaming + non-streaming) |
 | Security | Android Keystore (react-native-keychain) |
-| Testing | Jest + React Native Testing Library |
+| Testing | Jest + React Native Testing Library (110 tests, 25 suites) |
 
 ## Requirements
 
@@ -90,6 +99,8 @@ APK output path: `dist/apk/{debug|release}/TavoMini-V<version>-{debug|release}.a
 
 > The Gradle output at `android/app/build/outputs/apk/` is an intermediate artifact. Only use APKs from `dist/apk/`.
 
+The `prebuild` step also auto-generates `src/constants/version.json` from `package.json` and the current `git rev-list --count HEAD` (used as `versionCode`).
+
 ### Release Signing
 
 The release keystore is at `android/keystores/tavo-mini-release.keystore`. Override credentials via environment variables:
@@ -103,7 +114,7 @@ TAVO_MINI_RELEASE_KEY_PASSWORD
 ## Testing & Linting
 
 ```sh
-# Run all tests
+# Run all tests (110 tests / 25 suites)
 npm test
 
 # Run a single test file
@@ -120,10 +131,16 @@ tavo-mini/
   android/                           # Android native project
   scripts/                           # Build scripts (build-apk, generate-version-json, patch-sqlite)
   src/
-    main/index.tsx                    # App entry (splash → upgrade detection → ThemeProvider + Navigation)
-    navigation/TabNavigator.tsx       # Bottom tabs + Stack navigation
+    main/index.tsx                    # App entry (splash → upgrade detection → ThemeProvider + Navigation,
+                                      #   root pipeline-task subscription, dismissible result prompt)
+    navigation/
+      TabNavigator.tsx                # Bottom tabs + Stack navigation
+      navigationRef.ts                # Root navigation ref + helpers used by the
+                                      #   global pipeline prompt (navigateToPipelineResult etc.)
     screens/                          # 24 screen components
-    components/                       # ChapterCard, AIStreamText, ThemeProvider, ui
+    components/                       # ChapterCard, AIStreamText, ThemeProvider, ui,
+                                      #   PipelineProgress, GenerationResultModal,
+                                      #   PipelineResultPrompt
     services/                         # database, llm, contextBuilder, macroReplace,
                                        summaryGenerator, chapterGeneration,
                                        batchChapterPipeline, fileImport,
@@ -188,6 +205,25 @@ Three themes via `useThemeStore`: Light / Dark / Eye-care. No hardcoded colors.
 - Backups use format v2 with validation and checksums; restore is transactional
 - Database migrations are non-breaking and incremental
 - Pre-restore backups are created automatically before any restore operation
+- AI generation never overwrites the chapter body in place: results land in `generation_drafts` and require an explicit adopt
+
+## Changelog
+
+### V1.6.3 — 2026-06-14
+- Dismissible pipeline-result prompt (controlled React Modal) replacing native `Alert.alert`, so the prompt no longer lingers on top of the result screen after navigation
+- Root subscription guards `resolvedAt === null` to ensure each task is prompted at most once and that batch sub-tasks do not trigger the global prompt
+- Test coverage: `__tests__/pipelineResultPrompt.test.tsx`, additional case in `__tests__/pipelineAutoPrompt.test.tsx` (auto-resolved batch tasks stay silent)
+- 110/110 tests passing, ESLint clean
+
+### V1.6.2 — 2026-06-14
+- `PipelineProgress` component surfacing the current stage, label, and elapsed time
+- `GenerationResultModal` so the user can preview pipeline output without leaving the editor
+- `BackupCenterScreen` create-row layout fix (z-order + elevation against the FlatList)
+
+### V1.6.1 — 2026-06-14
+- Stability fix for `DraftPreviewScreen` adopt / delete / clear crash caused by nested Alert + setState on unmounted component
+- Chapter editor toolbar reflowed from a single wide row to a 4×4 grid with shorter labels
+- 11 new tests, 93/93 passing
 
 ## License
 
