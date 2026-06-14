@@ -75,6 +75,10 @@ dist/
 /android/SetClipboard.*
 /android/classes.dex
 
+# Local uiautomator dump parsing helpers (developer-only)
+scripts/parse-ui.ps1
+scripts/parse-ui.py
+
 # Yarn
 .yarn/*
 !.yarn/patches
