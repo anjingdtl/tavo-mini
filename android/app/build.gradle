@@ -2,6 +2,14 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+// react-native-keychain 10.0.0 and react-native-svg both fork `node --print`
+// from this subproject's rootDir to resolve the react-native package. On
+// Windows that process often returns an empty string ("Cannot convert '' to
+// File") or exits with a non-zero code. Setting REACT_NATIVE_NODE_MODULES_DIR
+// here short-circuits the fork in both libraries.
+rootProject.ext.REACT_NATIVE_NODE_MODULES_DIR = file("../../node_modules/react-native").absolutePath
+project.ext.REACT_NATIVE_NODE_MODULES_DIR = file("../../node_modules/react-native").absolutePath
+
 /**
  * This is the configuration block to customize your React Native Android app.
  * By default you don't need to apply any configuration, just uncomment the lines you need.
@@ -137,9 +145,14 @@ dependencies {
     }
 }
 
+// `npm run apk:debug` (and apk:release) run `node scripts/generate-version-json.js`
+// via the `prebuild` script in package.json BEFORE invoking gradle, so the
+// `version.json` file is already up-to-date on disk. Running it again as a
+// Gradle Exec task on Windows hits "Process 'command 'node'' finished with
+// non-zero exit value 268435659" (a STATUS-class error from the daemon
+// forking node through a long pipe chain). The task is left here for
+// reference but its preBuild hook is intentionally not wired.
 task generateVersionJson(type: Exec) {
     workingDir "../../"
     commandLine "node", "scripts/generate-version-json.js"
 }
-
-preBuild.dependsOn generateVersionJson

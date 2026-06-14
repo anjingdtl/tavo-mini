@@ -9,7 +9,7 @@
     "apk:release": "npm run prebuild && node scripts/build-apk.js release",
     "ios": "react-native run-ios",
     "lint": "eslint .",
-    "postinstall": "node scripts/patch-sqlite-storage-gradle.js",
+    "postinstall": "node scripts/patch-sqlite-storage-gradle.js && node scripts/patch-deps.js",
     "start": "react-native start",
     "test": "jest"
   },

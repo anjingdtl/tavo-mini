@@ -64,6 +64,17 @@ describe('DraftPreviewScreen', () => {
     mockClearDrafts.mockResolvedValue(undefined);
   });
 
+  // Flush any pending async state updates left over from useEffect microtasks
+  // (e.g. the `.finally(() => setLoading(false))` in the initial `load()` call,
+  // or the `setAdopting(null)` in `runAdopt`'s `finally`). Without this hook,
+  // those setStates would land in a microtask fired *after* `findBy*` / `act`
+  // has returned, which triggers the React 19 "not wrapped in act" warning.
+  afterEach(async () => {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  });
+
   it('renders adopt and delete buttons for each draft', async () => {
     const onClose = jest.fn();
     const { findAllByText } = render(
@@ -118,10 +129,14 @@ describe('DraftPreviewScreen', () => {
     );
 
     const adopts = await findAllByText('采纳');
-    // Three rapid taps on the first adopt button.
-    fireEvent.press(adopts[0]);
-    fireEvent.press(adopts[0]);
-    fireEvent.press(adopts[0]);
+    // Three rapid taps on the first adopt button. Wrap in act so the
+    // resulting async setState calls (Alert → runAdopt → setAdopting) are
+    // tracked and don't emit "not wrapped in act(...)" warnings.
+    await act(async () => {
+      fireEvent.press(adopts[0]);
+      fireEvent.press(adopts[0]);
+      fireEvent.press(adopts[0]);
+    });
 
     // Allow microtasks to flush.
     await act(async () => {
@@ -154,7 +169,10 @@ describe('DraftPreviewScreen', () => {
     );
 
     const adopts = await findAllByText('采纳');
-    fireEvent.press(adopts[0]);
+    // Wrap in act so Alert → runAdopt → setAdopting / setErrorMessage are tracked.
+    await act(async () => {
+      fireEvent.press(adopts[0]);
+    });
 
     await waitFor(() => {
       expect(alertSpy).toHaveBeenCalledWith('采纳确认', expect.any(String), expect.any(Array));
@@ -191,7 +209,10 @@ describe('DraftPreviewScreen', () => {
     );
 
     const adopts = await findAllByText('采纳');
-    fireEvent.press(adopts[0]);
+    // Wrap in act so Alert → runAdopt → setAdopting is tracked.
+    await act(async () => {
+      fireEvent.press(adopts[0]);
+    });
 
     // Unmount before adopt resolves.
     unmount();
