@@ -71,11 +71,18 @@ export async function runBatchChapterPipeline({
         } catch {
           // Batch writing should continue even if one memory summary fails.
         }
+        // Mark the task as resolved so the global completion prompt in
+        // src/main/index.tsx does not pop a result modal for every single
+        // chapter in the batch. The batch summary alert in OutlineEditor
+        // is the canonical feedback for batch runs.
+        usePipelineTaskStore.getState().resolveTask(taskId, 'accept');
       } else {
         result.failed++;
+        usePipelineTaskStore.getState().resolveTask(taskId, 'reject');
       }
     } catch {
       result.failed++;
+      usePipelineTaskStore.getState().resolveTask(taskId, 'reject');
     }
   }
 
