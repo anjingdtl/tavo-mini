@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { getDrafts, removeDraft, clearDrafts } from '../services/draftService';
 import { createRevision } from '../services/revisionService';
 import * as db from '../services/database';
+import { canStartAdopt } from '../utils/draftAdoptGuard';
 import type { GenerationDraft, DraftSource } from '../types/draft';
 
 interface Props {
@@ -32,20 +33,41 @@ export const DraftPreviewScreen: React.FC<Props> = ({ targetType, targetId, proj
   const [loading, setLoading] = useState(true);
   const [adopting, setAdopting] = useState<number | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const isMountedRef = useRef(true);
+  const adoptingRef = useRef<number | null>(null);
 
   const load = useCallback(async () => {
+    if (!isMountedRef.current) return;
     setLoading(true);
     try {
       const list = await getDrafts(targetType, targetId);
+      if (!isMountedRef.current) return;
       setDrafts(list);
+    } catch (e: any) {
+      if (isMountedRef.current) setErrorMessage(e?.message || '加载草稿失败');
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   }, [targetType, targetId]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!errorMessage) return;
+    const t = setTimeout(() => {
+      if (isMountedRef.current) setErrorMessage(null);
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [errorMessage]);
 
   const toggleExpand = (id: number) => {
     setExpandedIds(prev => {
@@ -56,89 +78,92 @@ export const DraftPreviewScreen: React.FC<Props> = ({ targetType, targetId, proj
     });
   };
 
-  const handleAdopt = (draft: GenerationDraft) => {
+  const runAdopt = useCallback(async (draft: GenerationDraft) => {
+    if (!canStartAdopt(adoptingRef.current, draft.id)) return;
+    if (!isMountedRef.current) return;
+    adoptingRef.current = draft.id;
+    setAdopting(draft.id);
+    try {
+      const currentContent =
+        targetType === 'chapter'
+          ? (await db.getChapterById(targetId))?.content ?? ''
+          : await db.getFreeformDocument(projectId);
+
+      await createRevision({
+        projectId,
+        targetType,
+        targetId,
+        title: `采纳前快照 - ${SOURCE_LABELS[draft.source]}`,
+        content: currentContent,
+        source: 'before_pipeline_accept',
+        sourceRef: `draft-${draft.id}`,
+      });
+
+      if (targetType === 'chapter') {
+        await db.updateChapter(targetId, { content: draft.content } as any);
+      } else {
+        await db.setFreeformDocument(projectId, draft.content);
+      }
+
+      await removeDraft(draft.id);
+      await load();
+    } catch (e: any) {
+      if (isMountedRef.current) setErrorMessage(e?.message || '采纳失败');
+    } finally {
+      adoptingRef.current = null;
+      if (isMountedRef.current) setAdopting(null);
+    }
+  }, [targetType, targetId, projectId, load]);
+
+  const handleAdopt = useCallback((draft: GenerationDraft) => {
     Alert.alert('采纳确认', '采纳后将覆盖当前内容（采纳前会自动保存版本快照），确定采纳？', [
       { text: '取消', style: 'cancel' },
-      {
-        text: '采纳',
-        style: 'destructive',
-        onPress: async () => {
-          setAdopting(draft.id);
-          try {
-            const currentContent =
-              targetType === 'chapter'
-                ? (await db.getChapterById(targetId))?.content ?? ''
-                : await db.getFreeformDocument(projectId);
-
-            await createRevision({
-              projectId,
-              targetType,
-              targetId,
-              title: `采纳前快照 - ${SOURCE_LABELS[draft.source]}`,
-              content: currentContent,
-              source: 'before_pipeline_accept',
-              sourceRef: `draft-${draft.id}`,
-            });
-
-            if (targetType === 'chapter') {
-              await db.updateChapter(targetId, { content: draft.content } as any);
-            } else {
-              await db.setFreeformDocument(projectId, draft.content);
-            }
-
-            await removeDraft(draft.id);
-            await load();
-          } catch (e: any) {
-            Alert.alert('采纳失败', e?.message || '未知错误');
-          } finally {
-            setAdopting(null);
-          }
-        },
-      },
+      { text: '采纳', style: 'destructive', onPress: () => { runAdopt(draft); } },
     ]);
-  };
+  }, [runAdopt]);
 
-  const handleDelete = (draft: GenerationDraft) => {
+  const runDelete = useCallback(async (draft: GenerationDraft) => {
+    if (!isMountedRef.current) return;
+    try {
+      await removeDraft(draft.id);
+      await load();
+    } catch (e: any) {
+      if (isMountedRef.current) setErrorMessage(e?.message || '删除失败');
+    }
+  }, [load]);
+
+  const handleDelete = useCallback((draft: GenerationDraft) => {
     Alert.alert('删除确认', '确定删除此草稿？', [
       { text: '取消', style: 'cancel' },
-      {
-        text: '删除',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await removeDraft(draft.id);
-            await load();
-          } catch (e: any) {
-            Alert.alert('删除失败', e?.message || '未知错误');
-          }
-        },
-      },
+      { text: '删除', style: 'destructive', onPress: () => { runDelete(draft); } },
     ]);
-  };
+  }, [runDelete]);
 
-  const handleAdoptLatest = () => {
+  const handleAdoptLatest = useCallback(() => {
     if (drafts.length === 0) return;
     const latest = drafts[drafts.length - 1];
-    handleAdopt(latest);
-  };
+    Alert.alert('采纳最近草稿', '将采纳最近一份草稿并覆盖当前内容，确定继续？', [
+      { text: '取消', style: 'cancel' },
+      { text: '采纳', style: 'destructive', onPress: () => { runAdopt(latest); } },
+    ]);
+  }, [drafts, runAdopt]);
 
-  const handleClearAll = () => {
+  const runClear = useCallback(async () => {
+    if (!isMountedRef.current) return;
+    try {
+      await clearDrafts(targetType, targetId);
+      await load();
+    } catch (e: any) {
+      if (isMountedRef.current) setErrorMessage(e?.message || '清空失败');
+    }
+  }, [targetType, targetId, load]);
+
+  const handleClearAll = useCallback(() => {
     Alert.alert('清空确认', '确定清空所有草稿？此操作不可恢复。', [
       { text: '取消', style: 'cancel' },
-      {
-        text: '清空',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await clearDrafts(targetType, targetId);
-            await load();
-          } catch (e: any) {
-            Alert.alert('清空失败', e?.message || '未知错误');
-          }
-        },
-      },
+      { text: '清空', style: 'destructive', onPress: () => { runClear(); } },
     ]);
-  };
+  }, [runClear]);
 
   const renderItem = ({ item }: { item: GenerationDraft }) => {
     const isExpanded = expandedIds.has(item.id);
@@ -202,6 +227,18 @@ export const DraftPreviewScreen: React.FC<Props> = ({ targetType, targetId, proj
           </View>
         }
       />
+      {errorMessage ? (
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="关闭错误"
+          onPress={() => setErrorMessage(null)}
+          style={[styles.errorBar, { backgroundColor: theme.colors.danger + '22', borderColor: theme.colors.danger }]}
+        >
+          <Text style={[styles.errorText, { color: theme.colors.danger }]} numberOfLines={2}>
+            {errorMessage}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
       {loading ? (
         <LoadingState />
       ) : drafts.length === 0 ? (
@@ -229,4 +266,16 @@ const styles = StyleSheet.create({
   actionRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.sm, gap: spacing.sm },
   statusHint: { fontSize: 12 },
   headerActions: { flexDirection: 'row', gap: spacing.xs, alignItems: 'center' },
+  errorBar: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  errorText: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
 });
