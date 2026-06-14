@@ -185,7 +185,7 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
         subtitle="管理与恢复数据备份"
         action={<Button label="关闭" variant="ghost" compact onPress={handleClose} />}
       />
-      <View style={styles.createRow}>
+      <View style={[styles.createRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}>
         <Button
           label="创建备份"
           onPress={handleCreate}
@@ -216,10 +216,14 @@ const styles = StyleSheet.create({
   createRow: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
-    paddingBottom: spacing.sm,
+    paddingBottom: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    elevation: 2,
+    zIndex: 2,
   },
   list: {
     padding: spacing.lg,
+    paddingTop: spacing.md,
     paddingBottom: 96,
   },
   row: {
