@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
@@ -65,6 +65,26 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const handleClose = onClose ?? (() => navigation.goBack());
 
   const task = tasks.find((t) => t.id === taskId);
+
+  // Mark the task as resolved when the result screen is dismissed without an
+  // explicit accept/reject. Otherwise the ChapterEditor's pipeline
+  // subscription would re-open this same modal every time the user enters
+  // the chapter editor for the same chapter. We capture the latest task
+  // snapshot in a ref so the unmount-time check does not need a fresh
+  // `getState` call (which would race with cleanup elsewhere in the stack).
+  const taskRef = useRef(task);
+  taskRef.current = task;
+  useEffect(() => {
+    return () => {
+      setTimeout(() => {
+        const current = taskRef.current;
+        if (current && current.resolvedAt === null) {
+          resolveTask(taskId, 'reject');
+        }
+      }, 0);
+    };
+  }, [taskId, resolveTask]);
+
   if (!task) {
     return (
       <Screen>
