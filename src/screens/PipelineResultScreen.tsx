@@ -42,18 +42,33 @@ export function summarizePipelineTokens(stageResults: PipelineStageResult[]): { 
   );
 }
 
-export const PipelineResultScreen: React.FC = () => {
+export interface PipelineResultScreenProps {
+  taskId?: string;
+  onClose?: () => void;
+  onAdopted?: (text: string) => void;
+}
+
+export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ taskId: propTaskId, onClose, onAdopted }) => {
   const { theme } = useThemeStore();
   const navigation = useNavigation();
-  const route = useRoute<ResultRouteProp>();
+  let routeTaskId: string | undefined;
+  try {
+    const route = useRoute<ResultRouteProp>();
+    routeTaskId = route.params?.taskId;
+  } catch {
+    // Not inside a navigation route (Modal mode)
+  }
+  const taskId = propTaskId ?? routeTaskId;
   const { tasks, resolveTask } = usePipelineTaskStore();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const task = tasks.find((t) => t.id === route.params.taskId);
+  const handleClose = onClose ?? (() => navigation.goBack());
+
+  const task = tasks.find((t) => t.id === taskId);
   if (!task) {
     return (
       <Screen>
-        <Header title="流水线结果" action={<Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />} />
+        <Header title="流水线结果" action={<Button label="返回" variant="ghost" onPress={handleClose} />} />
         <Text style={{ padding: spacing.lg, color: theme.colors.textSecondary }}>任务不存在或已被清除。</Text>
       </Screen>
     );
@@ -87,7 +102,8 @@ export const PipelineResultScreen: React.FC = () => {
       await db.updateChapter(chapter.id, { content: task.finalText });
       resolveTask(task.id, 'accept');
       Alert.alert('已采纳', '流水线正文已覆盖到章节并保存。');
-      navigation.goBack();
+      onAdopted?.(task.finalText);
+      handleClose();
     } catch (error: any) {
       Alert.alert('采纳失败', error.message);
     }
@@ -95,7 +111,7 @@ export const PipelineResultScreen: React.FC = () => {
 
   const handleReject = () => {
     resolveTask(task.id, 'reject');
-    navigation.goBack();
+    handleClose();
   };
 
   const renderStageCard = (stage: PipelineStageResult) => {
@@ -135,7 +151,7 @@ export const PipelineResultScreen: React.FC = () => {
     <Screen>
       <Header
         title="流水线结果"
-        action={<Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />}
+        action={<Button label="返回" variant="ghost" onPress={handleClose} />}
       />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
