@@ -1,6 +1,6 @@
 # Tavo Mini 升级改造进度记录
 
-> 版本路径：V1.3.8 → V1.4.0 → V1.5.0 → V1.6.0 → V1.6.1
+> 版本路径：V1.3.8 → V1.4.0 → V1.5.0 → V1.6.0 → V1.6.1 → V1.6.2
 > 日期：2026-06-13 ~ 2026-06-14
 > 设计文档：
 > - `docs/superpowers/specs/2026-06-13-personal-novel-workbench-optimization-design.md`
@@ -24,6 +24,21 @@
 > - LLM 写作管线动态进度条
 > - 流水线写作结束自动弹出结果
 > - 备份中心备份列表展示
+
+---
+
+## V1.6.2 / 写作管线 UX 打磨
+
+三个写作流体验改进：进度反馈、结果自动弹窗、备份布局修复。
+
+- 进度条：新增 `PipelineProgress` 组件（ActivityIndicator + 阶段名 + 已用时长），`pipelineRunner.runChapterPipeline` 的 `onStageUpdate` 回调扩展为结构化 `StageInfo` 对象（向后兼容），ChapterEditor 在 generating 时渲染进度条。
+- 结果弹窗：新增 `GenerationResultModal` 组件（Modal + PipelineResultScreen），流水线完成后不再 navigate 而是在 ChapterEditor 之上弹 Modal；PipelineResultScreen 增加可选 `taskId` / `onClose` / `onAdopted` props 支持非路由模式。
+- 备份布局：`BackupCenterScreen` 的 createRow 加 elevation=2 / zIndex=2 / backgroundColor / borderBottom，修复与 FlatList 的视觉重叠。
+- 测试：新增 3 个测试套件（`pipelineProgress` / `generationResultModal` / `backupCenterLayout`），共 7 个用例。
+- 总计：23 个测试套件 / 100 个测试用例全部通过，ESLint 0 error。
+
+> 设计文档：`docs/superpowers/specs/2026-06-14-v1.6.2-backlog-ux-polish-design.md`
+> 建设计划：`docs/superpowers/plans/2026-06-14-v1.6.2-backlog-ux-polish.md`
 
 
 ---
