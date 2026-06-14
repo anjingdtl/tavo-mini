@@ -155,14 +155,10 @@ export const FreeformEditor: React.FC = () => {
     const taskId = createTask('freeform', currentProject.id);
     try {
       await runFreeformPipeline(taskId, currentProject.id, documentText, steerText);
-
-      const store = usePipelineTaskStore.getState();
-      const finishedTask = store.tasks.find((t) => t.id === taskId);
-      if (finishedTask?.status === 'completed') {
-        Alert.alert('流水线完成', '自由写作流水线已完成，请到任务中心查看结果。');
-      } else if (finishedTask?.status === 'failed') {
-        Alert.alert('流水线失败', finishedTask.error || '未知错误');
-      }
+      // Result handling is done by the root pipeline subscription in
+      // src/main/index.tsx. That path works regardless of which screen the
+      // user is on, including the case where they have navigated away
+      // before the pipeline completes.
     } catch (error: any) {
       Alert.alert('流水线异常', error.message || '请检查 API 配置。');
     }

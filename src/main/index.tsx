@@ -5,11 +5,17 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../components/ThemeProvider';
 import { TabNavigator } from '../navigation/TabNavigator';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
+import {
+  navigateToPipelineResult,
+  navigateToPipelineTaskCenter,
+  navigationRef,
+} from '../navigation/navigationRef';
 import Toast from 'react-native-toast-message';
 import { openDatabase, lastInstallInfo } from '../services/database';
 import { hasBreakingMigration } from '../services/migrations';
 import { UpgradeScreen } from '../screens/UpgradeScreen';
 import appVersionJson from '../constants/version.json';
+import type { PipelineTask } from '../types/pipeline';
 
 const splashImage = require('../assets/splash.png');
 const SPLASH_VISIBLE_MS = 1200;
@@ -57,13 +63,95 @@ export const App: React.FC = () => {
         if (runningTasks.length > 0) {
           Alert.alert(
             '流水线任务提醒',
-            '检测到未完成的流水线任务。由于系统限制，切换应用可能导致任务中断。请检查任务中心确认状态。',
-            [{ text: '知道了' }],
+            `检测到 ${runningTasks.length} 个未完成的流水线任务。由于系统限制，切换应用可能导致任务中断。点击下方按钮查看任务中心。`,
+            [
+              { text: '知道了' },
+              {
+                text: '查看任务中心',
+                onPress: () => { navigateToPipelineTaskCenter(); },
+              },
+            ],
           );
         }
       }
     });
     return () => subscription.remove();
+  }, []);
+
+  // Watch for newly-completed / failed pipeline tasks and surface a result
+  // prompt. The original ChapterEditor-local `executeRunPipeline` only worked
+  // when the user stayed on the screen; the navigation back from
+  // ChapterEditor would unmount that closure and the result was lost in the
+  // store. A root-level subscription makes the result reachable no matter
+  // where the user is.
+  React.useEffect(() => {
+    // Track which taskIds have already been prompted in this session, so a
+    // store reload (e.g. on app cold start) does not re-prompt historical
+    // tasks.
+    const prompted = new Set<string>();
+
+    // Seed the prompted set with anything that was already terminal before
+    // this effect ran (loaded from DB on app start).
+    usePipelineTaskStore.getState().tasks.forEach((t) => {
+      if (t.status === 'completed' || t.status === 'failed') {
+        prompted.add(t.id);
+      }
+    });
+
+    const unsubscribe = usePipelineTaskStore.subscribe((state, prevState) => {
+      // Only react to changes in the `tasks` array; if a write did not touch
+      // any task (e.g. an unrelated setState in some future code), no-op.
+      if (state.tasks === prevState.tasks) return;
+      const tasks = state.tasks;
+      // Find the most recent task whose terminal state hasn't been prompted.
+      // We sort by updatedAt descending so the user is always shown the
+      // freshest finished work first.
+      const finished = tasks
+        .filter((t: PipelineTask) =>
+          !prompted.has(t.id) && (t.status === 'completed' || t.status === 'failed'),
+        )
+        .sort((a: PipelineTask, b: PipelineTask) => b.updatedAt - a.updatedAt);
+      if (finished.length === 0) return;
+      const task = finished[0];
+      prompted.add(task.id);
+      promptForPipelineResult(task);
+    });
+    return unsubscribe;
+  }, [promptForPipelineResult]);
+
+  // Surface a finished pipeline task to the user. Completed tasks go through
+  // the result preview screen (where they can adopt into the chapter body);
+  // failed tasks just report the error in-place.
+  const promptForPipelineResult = React.useCallback((task: PipelineTask) => {
+    if (task.status === 'failed') {
+      Alert.alert(
+        '流水线失败',
+        task.error || '未知错误。',
+        [{ text: '我知道了' }],
+      );
+      return;
+    }
+    if (task.status !== 'completed') return;
+    if (!task.finalText || !task.finalText.trim()) {
+      // Completed but produced empty text - show a different message.
+      Alert.alert(
+        '流水线完成',
+        '流水线已完成，但本次生成内容为空。',
+        [{ text: '我知道了' }],
+      );
+      return;
+    }
+    Alert.alert(
+      '流水线已完成',
+      `章节 #${task.targetId} 的流水线已生成新内容。是否前往查看并采纳？`,
+      [
+        { text: '稍后处理', style: 'cancel' },
+        {
+          text: '查看结果',
+          onPress: () => { navigateToPipelineResult(task.id); },
+        },
+      ],
+    );
   }, []);
 
   const handleUpgradeConfirm = React.useCallback(async () => {
@@ -103,7 +191,7 @@ export const App: React.FC = () => {
               errorMessage={upgradeError}
             />
             {ready && (
-              <NavigationContainer>
+              <NavigationContainer ref={navigationRef}>
                 <TabNavigator />
               </NavigationContainer>
             )}

@@ -31,6 +31,9 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
       getActiveTaskForTarget: mockGetActiveTaskForTarget,
       tasks: [],
     }),
+    // The ChapterEditor effect subscribes to task changes; tests that do not
+    // exercise the subscription path can no-op it.
+    subscribe: () => () => {},
   },
 }));
 
