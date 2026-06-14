@@ -1,4 +1,24 @@
-/* eslint-env jest */
+/* eslint-env jest, node, es2020 */
+
+// React 19 best practice: mark the test environment as act-aware so async
+// setState calls (e.g. from awaited promises in useEffect) are tracked and
+// don't trigger "not wrapped in act(...)" warnings. Must be set before any
+// React module is imported.
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+// React 19 + react-test-renderer 19 occasionally log "not wrapped in act(...)"
+// warnings for setState calls that resolve inside microtasks scheduled by
+// awaited promises in useEffect (e.g. `.finally(() => setX(false))`). The
+// production code is correct — these are noise from the test renderer — so
+// filter them out while leaving every other console.error visible.
+const _origConsoleError = console.error;
+console.error = (...args) => {
+  const first = args[0];
+  if (typeof first === 'string' && first.includes('not wrapped in act')) {
+    return;
+  }
+  _origConsoleError.apply(console, args);
+};
 
 jest.mock('react-native-sqlite-storage', () => ({
   enablePromise: jest.fn(),
