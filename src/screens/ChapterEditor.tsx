@@ -6,6 +6,7 @@ import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { runChapterPipeline } from '../services/pipelineRunner';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { PipelineProgress } from '../components/PipelineProgress';
+import { GenerationResultModal } from '../components/GenerationResultModal';
 import { useThemeStore } from '../store/themeStore';
 import { debounce } from '../utils/debounce';
 import { estimateTokens } from '../utils/tokenEstimator';
@@ -33,8 +34,8 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const [currentStage, setCurrentStage] = useState<PipelineStageName | 'idle'>('idle');
   const [progressStartedAt, setProgressStartedAt] = useState(Date.now());
   const [progressVisible, setProgressVisible] = useState(false);
-  const [_showResultModal, setShowResultModal] = useState(false);
-  const [_resultTaskId, setResultTaskId] = useState<string | null>(null);
+  const [showResultModal, setShowResultModal] = useState(false);
+  const [resultTaskId, setResultTaskId] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   // Accumulate field edits across multiple changeField calls within one debounce
   // window. Without this, a fast title+synopsis edit would overwrite the pending
@@ -398,6 +399,15 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })}
         />
       </ScrollView>
+      <GenerationResultModal
+        visible={showResultModal}
+        taskId={resultTaskId}
+        onClosed={() => setShowResultModal(false)}
+        onAdopted={async () => {
+          setShowResultModal(false);
+          await loadChapter();
+        }}
+      />
     </Screen>
   );
 };
