@@ -1,9 +1,30 @@
 # Tavo Mini 升级改造进度记录
 
-> 版本路径：V1.3.8 → V1.4.0 → V1.5.0 → V1.6.0
+> 版本路径：V1.3.8 → V1.4.0 → V1.5.0 → V1.6.0 → V1.6.1
 > 日期：2026-06-13 ~ 2026-06-14
-> 设计文档：`docs/superpowers/specs/2026-06-13-personal-novel-workbench-optimization-design.md`
-> 建设计划：`docs/superpowers/plans/2026-06-13-personal-novel-workbench-optimization.md`
+> 设计文档：
+> - `docs/superpowers/specs/2026-06-13-personal-novel-workbench-optimization-design.md`
+> - `docs/superpowers/specs/2026-06-14-draft-crashfix-and-toolbar-relayout-design.md`
+> 建设计划：
+> - `docs/superpowers/plans/2026-06-13-personal-novel-workbench-optimization.md`
+> - `docs/superpowers/plans/2026-06-14-draft-crashfix-and-toolbar-relayout.md`
+
+---
+
+## V1.6.1 / 闪退修复与工具栏重排
+
+修复草稿预览页采纳/删除/清空按钮在异步流程中因 Alert 套嵌 + 组件卸载导致 setState 抛错而闪退的稳定性问题，并把章节编辑工具栏从一字排开重排为清晰的两行 4×4 布局，按钮 label 全部缩短到 ≤2 汉字。
+
+- 草稿预览：`isMountedRef` 守卫所有 setState；`adoptingRef` 全局锁防止双击并发；Alert 回调扁平化，仅触发稳定 async `runAdopt / runDelete / runClear`；错误反馈从 Alert 改为 inline 文字 + 4 秒自动消失。
+- 章节编辑：工具栏拆为两个 `toolbarRow`（4×4），移除 Button 的 `flex: 1` 强制均分，新增可选 `minWidth` prop。
+- 测试：新增 3 个测试套件（`draftAdoptGuard` / `draftPreview` / `chapterEditorToolbar`），共 11 个用例。
+- 总计：20 个测试套件 / 93 个测试用例全部通过，ESLint 0 error。
+
+> 延后到 V1.6.2+ 的 backlog：
+> - LLM 写作管线动态进度条
+> - 流水线写作结束自动弹出结果
+> - 备份中心备份列表展示
+
 
 ---
 
