@@ -102,7 +102,10 @@ describe('pipeline auto-prompt integration', () => {
       if (state.tasks === prevState.tasks) return;
       const tasks = state.tasks;
       const finished = tasks.find(
-        (t) => !seen.has(t.id) && (t.status === 'completed' || t.status === 'failed'),
+        (t) =>
+          !seen.has(t.id)
+          && t.resolvedAt === null
+          && (t.status === 'completed' || t.status === 'failed'),
       );
       if (finished) {
         seen.add(finished.id);
@@ -134,5 +137,20 @@ describe('pipeline auto-prompt integration', () => {
     await act(async () => { await Promise.resolve(); });
     expect(mockAlert).toHaveBeenCalledTimes(1);
     unsub();
+  });
+
+  it('does not prompt for tasks that were auto-resolved by the batch runner', async () => {
+    // Simulate the batchChapterPipeline pattern: a task transitions
+    // completed -> resolved in the same tick. The subscribe callback should
+    // see the *final* state where resolvedAt is set, and skip the prompt.
+    act(() => {
+      const id = usePipelineTaskStore.getState().createTask('chapter', 11);
+      // Mark completed and immediately resolve, mirroring the batch path.
+      usePipelineTaskStore.getState().completeTask(id, 'batch text');
+      usePipelineTaskStore.getState().resolveTask(id, 'accept');
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(mockAlert).not.toHaveBeenCalled();
   });
 });
