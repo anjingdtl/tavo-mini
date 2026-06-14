@@ -122,10 +122,16 @@ async function runProofStage({
   }
 }
 
+export type StageInfo = {
+  stage: PipelineStageName | 'idle';
+  label: string;
+  startedAt: number;
+};
+
 export async function runChapterPipeline(
   taskId: string,
   chapter: Chapter,
-  onStageUpdate?: (status: string) => void,
+  onStageUpdate?: (info: StageInfo | string) => void,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const config = await db.getPipelineConfig();
@@ -153,7 +159,7 @@ export async function runChapterPipeline(
 
   if (checkCancelled(taskId)) return;
   store.setTaskStatus(taskId, 'drafting');
-  onStageUpdate?.('正在创作初稿...');
+  onStageUpdate?.({ stage: 'draft', label: '草稿中...', startedAt: Date.now() });
 
   const { messages: baseContext, chapters: allChapters } = await buildContext(chapter, contextConfig, chapter.project_id, draftPreset || undefined);
   const request = createChapterGenerationRequest(chapter);
@@ -206,7 +212,7 @@ export async function runChapterPipeline(
   }
 
   if (config.pipelineMode === 'noReview') {
-    onStageUpdate?.('无审核模式，初稿即为完稿');
+    onStageUpdate?.({ stage: 'idle', label: '无审核模式，初稿即为完稿', startedAt: Date.now() });
     markSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
     markSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
     markSkipped(taskId, 'proof', '无审核模式已跳过终审校对');
@@ -217,7 +223,7 @@ export async function runChapterPipeline(
   if (config.pipelineMode === 'twoStage') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.('正在审阅/评估草稿...');
+    onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
 
     const reviewStart = Date.now();
     let reviewText = '';
@@ -251,7 +257,7 @@ export async function runChapterPipeline(
 
     markSkipped(taskId, 'factCheck', '仅评估模式已跳过事实核查');
     if (checkCancelled(taskId)) return;
-    onStageUpdate?.('正在根据审阅/评估终审...');
+    onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
     const finalText = await runProofStage({
       taskId,
       draftText,
@@ -268,7 +274,7 @@ export async function runChapterPipeline(
   if (config.pipelineMode === 'conditional') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.('正在事实核查草稿...');
+    onStageUpdate?.({ stage: 'factCheck', label: '事实检查中...', startedAt: Date.now() });
 
     const contextText = buildContextPreview(baseContext);
     const factCheckStart = Date.now();
@@ -303,7 +309,7 @@ export async function runChapterPipeline(
 
     markSkipped(taskId, 'review', '仅核查模式已跳过审阅/评估');
     if (checkCancelled(taskId)) return;
-    onStageUpdate?.('正在根据事实核查终审...');
+    onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
     const finalText = await runProofStage({
       taskId,
       draftText,
@@ -319,7 +325,7 @@ export async function runChapterPipeline(
 
   if (checkCancelled(taskId)) return;
   store.setTaskStatus(taskId, 'reviewing');
-  onStageUpdate?.('正在并行审阅与事实核查...');
+  onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
 
   const contextText = buildContextPreview(baseContext);
   const reviewStart = Date.now();
@@ -397,7 +403,7 @@ export async function runChapterPipeline(
   }
 
   if (checkCancelled(taskId)) return;
-  onStageUpdate?.('正在终审校对...');
+  onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
   const finalText = await runProofStage({
     taskId,
     draftText,
@@ -415,7 +421,7 @@ export async function runFreeformPipeline(
   projectId: number,
   documentText: string,
   steerText: string,
-  onStageUpdate?: (status: string) => void,
+  onStageUpdate?: (info: StageInfo | string) => void,
 ): Promise<void> {
   const pseudoChapter: Chapter = {
     id: 0,
@@ -435,7 +441,7 @@ export async function runFreeformPipeline(
 export async function resumePipeline(
   taskId: string,
   chapter: Chapter,
-  onStageUpdate?: (status: string) => void,
+  onStageUpdate?: (info: StageInfo | string) => void,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const task = store.tasks.find(t => t.id === taskId);
@@ -490,7 +496,7 @@ export async function resumePipeline(
     if (!completedStages.has('review')) {
       if (checkCancelled(taskId)) return;
       store.setTaskStatus(taskId, 'reviewing');
-      onStageUpdate?.('正在审阅/评估草稿（续跑）...');
+      onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
       try {
         const reviewCallResult = await callLLMResult(
           buildReviewMessages(draftText),
@@ -513,7 +519,7 @@ export async function resumePipeline(
     }
 
     if (checkCancelled(taskId)) return;
-    onStageUpdate?.('正在终审校对（续跑）...');
+    onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
     const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id });
     saveDraftAndComplete(finalText);
     return;
@@ -523,7 +529,7 @@ export async function resumePipeline(
   if (!completedStages.has('factCheck') && config.pipelineMode !== 'twoStage') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.('正在事实核查（续跑）...');
+    onStageUpdate?.({ stage: 'factCheck', label: '事实检查中...', startedAt: Date.now() });
     try {
       const { messages: baseContext } = await buildContext(chapter, await db.getContextConfig(), chapter.project_id);
       const contextText = buildContextPreview(baseContext);
