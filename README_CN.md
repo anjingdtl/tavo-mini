@@ -1,6 +1,14 @@
 # Tavo Mini
 
+> **当前版本：V1.6.3**（versionCode 52）· 最后更新 2026-06-14
+
 基于 React Native 的安卓个人小说写作工作台。为长篇小说作者设计，提供数据安全、AI 可控和高效写作流程——全部离线、全部本地。
+
+## 最新更新（V1.6.3）
+
+- **可关闭的流水线结果提示框**。"流水线已完成 / 流水线失败" 改用受控的 React Modal（`src/components/PipelineResultPrompt.tsx`），不再用原生 `Alert.alert`。点"查看结果"会**与导航同步**关闭提示框，不再像之前那样残留在结果页上像"反复弹出"。
+- **严格的一次性提示**。`src/main/index.tsx` 的根订阅现在会跳过 `resolvedAt` 非空的任务——这是批量生成的关键守卫（`batchChapterPipeline` 在 `completeTask` 后立即 `resolveTask`）。"AI 写 N 章" 完成后**不再**为每章各弹一次全局提示，章节总览的"批量生成完成"汇总提示保持权威。
+- **110/110 测试通过**，25 个测试套件（`npm test`）；`npm run lint` 0 错。
 
 ## 功能特性
 
@@ -13,9 +21,10 @@
 
 ### AI 驱动生成
 - 多阶段 AI 管线：草稿 → 审查 → 事实核查 → 校对
-- 生成前上下文预览——精确查看 AI 使用了哪些来源
+- 实时进度 UI（`PipelineProgress`），展示当前阶段、阶段名和已用时长
 - 生成草稿——AI 输出先进预览，绝不直接覆盖正文
 - 管线断点续跑——中断任务从最后成功阶段继续
+- 全局完成提示：无论用户身处哪一屏，流水线跑完都会弹出结果提示；**明确**防止重复弹出和批量回放
 - 兼容 OpenAI API，支持流式输出和自动回退
 
 ### 数据安全
@@ -45,7 +54,7 @@
 | 导航 | React Navigation 7（底部 Tab + Native Stack） |
 | AI | 兼容 OpenAI API（流式 + 非流式） |
 | 安全 | Android Keystore（react-native-keychain） |
-| 测试 | Jest + React Native Testing Library |
+| 测试 | Jest + React Native Testing Library（110 个测试，25 个套件） |
 
 ## 环境要求
 
@@ -90,6 +99,8 @@ APK 产物路径：`dist/apk/{debug|release}/TavoMini-V<版本号>-{debug|releas
 
 > Gradle 原生输出 `android/app/build/outputs/apk/` 只是中间产物，请只使用 `dist/apk/` 下的 APK。
 
+`prebuild` 步骤还会从 `package.json` 和当前 `git rev-list --count HEAD` 自动生成 `src/constants/version.json`（commit 数作为 `versionCode`）。
+
 ### Release 签名
 
 Release 签名 keystore 位于 `android/keystores/tavo-mini-release.keystore`。可通过环境变量覆盖密码：
@@ -103,7 +114,7 @@ TAVO_MINI_RELEASE_KEY_PASSWORD
 ## 测试与检查
 
 ```sh
-# 运行全部测试
+# 运行全部测试（110 个测试 / 25 个套件）
 npm test
 
 # 运行单个测试文件
@@ -120,10 +131,16 @@ tavo-mini/
   android/                           # Android 原生工程
   scripts/                           # 构建脚本（build-apk, generate-version-json, patch-sqlite）
   src/
-    main/index.tsx                    # 应用入口（splash → 升级检测 → ThemeProvider + Navigation）
-    navigation/TabNavigator.tsx       # 底部 Tab + Stack 导航
+    main/index.tsx                    # 应用入口（splash → 升级检测 → ThemeProvider + 导航，
+                                      #   根流水线任务订阅，可关闭的结果提示框）
+    navigation/
+      TabNavigator.tsx                # 底部 Tab + Stack 导航
+      navigationRef.ts                # 根导航 ref + 全局流水线提示调用
+                                      #   （navigateToPipelineResult 等）
     screens/                          # 24 个页面组件
-    components/                       # ChapterCard, AIStreamText, ThemeProvider, ui
+    components/                       # ChapterCard, AIStreamText, ThemeProvider, ui,
+                                      #   PipelineProgress, GenerationResultModal,
+                                      #   PipelineResultPrompt
     services/                         # database, llm, contextBuilder, macroReplace,
                                        summaryGenerator, chapterGeneration,
                                        batchChapterPipeline, fileImport,
@@ -188,6 +205,25 @@ SQLite 数据库 `tavo_mini.db`，schema version 8，16 张表：
 - 备份使用格式 v2，带校验和验证；恢复在事务中执行
 - 数据库迁移为非破坏性增量升级
 - 恢复操作前自动创建安全备份
+- AI 生成绝不直接覆盖正文：结果先进 `generation_drafts`，必须由用户显式采纳
+
+## 更新日志
+
+### V1.6.3 — 2026-06-14
+- 可关闭的流水线结果提示框（受控 React Modal）替换原生 `Alert.alert`，导航后不再残留在结果页上
+- 根订阅加 `resolvedAt === null` 守卫，确保每个任务最多弹一次，批量子任务不会触发全局提示
+- 测试覆盖：`__tests__/pipelineResultPrompt.test.tsx`、在 `__tests__/pipelineAutoPrompt.test.tsx` 增加批量自动 resolve 用例
+- 110/110 测试通过，ESLint 0 错
+
+### V1.6.2 — 2026-06-14
+- 新增 `PipelineProgress` 组件，展示当前阶段、阶段名和已用时长
+- 新增 `GenerationResultModal`，用户无需离开编辑器即可预览流水线输出
+- 修复 `BackupCenterScreen` create-row 布局（z 序 + elevation 解决与 FlatList 的视觉重叠）
+
+### V1.6.1 — 2026-06-14
+- 修复 `DraftPreviewScreen` 采纳/删除/清空时的稳定性问题（Alert 套嵌 + 已卸载组件 setState 导致崩溃）
+- 章节编辑器工具栏从一字排开重排为 4×4 网格，按钮 label 缩短
+- 新增 11 个测试，93/93 通过
 
 ## 许可
 
