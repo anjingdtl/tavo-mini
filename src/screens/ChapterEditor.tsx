@@ -37,6 +37,10 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const [showResultModal, setShowResultModal] = useState(false);
   const [resultTaskId, setResultTaskId] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+  // Tracks the most recent taskId whose result modal we have surfaced, so a
+  // redundant store update does not re-open the same modal twice (e.g. when
+  // the user navigates back into the screen while the task is still fresh).
+  const resultTaskIdRef = useRef<string | null>(null);
   // Accumulate field edits across multiple changeField calls within one debounce
   // window. Without this, a fast title+synopsis edit would overwrite the pending
   // args and lose one of the edits (debounce only keeps the latest call's args).
@@ -86,6 +90,63 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     const autoSave = autoSaveRef.current;
     return () => { autoSave.flush().catch(() => {}); };
   }, []);
+
+  // Subscribe to the pipeline store for this chapter. If a task started on
+  // this screen is still running in the background (e.g. the user navigated
+  // away and came back), surface its current state in the progress bar and
+  // auto-open the result modal the moment it transitions to completed. This
+  // mirrors the global prompt in src/main/index.tsx, scoped to tasks that
+  // belong to the chapter the user is currently editing.
+  const [, setTrackedTaskId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!chapter) return;
+    const findTask = () => usePipelineTaskStore.getState().tasks.find(
+      (t) => t.targetType === 'chapter' && t.targetId === chapter.id && t.resolvedAt === null
+        && (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'proofing'
+          || t.status === 'completed' || t.status === 'failed'),
+    );
+    const handleTerminal = (t: { id: string; status: string; error?: string | null }) => {
+      if (t.id === resultTaskIdRef.current) return;
+      if (t.status === 'completed') {
+        resultTaskIdRef.current = t.id;
+        setResultTaskId(t.id);
+        setShowResultModal(true);
+        setProgressVisible(false);
+        setGenerating(false);
+      } else if (t.status === 'failed') {
+        resultTaskIdRef.current = t.id;
+        setProgressVisible(false);
+        setGenerating(false);
+        Alert.alert('流水线失败', t.error || '未知错误');
+      }
+    };
+    const initial = findTask();
+    if (initial) {
+      setTrackedTaskId(initial.id);
+      // If the task finished while we were off-screen, pop the result
+      // modal immediately. This is the key UX fix: returning to the
+      // chapter editor after a background pipeline should feel the same
+      // as staying on the screen throughout the run.
+      if (initial.status === 'completed' || initial.status === 'failed') {
+        handleTerminal(initial as any);
+      }
+    }
+    const unsubscribe = usePipelineTaskStore.subscribe((state, prevState) => {
+      if (state.tasks === prevState.tasks) return;
+      const tasks = state.tasks;
+      const t = tasks.find(
+        (task) => task.targetType === 'chapter' && task.targetId === chapterId
+          && (task.status === 'idle' || task.status === 'drafting' || task.status === 'reviewing'
+            || task.status === 'proofing' || task.status === 'completed' || task.status === 'failed')
+          && task.resolvedAt === null,
+      );
+      if (t) {
+        setTrackedTaskId((prev) => (prev === t.id ? prev : t.id));
+        handleTerminal(t as any);
+      }
+    });
+    return unsubscribe;
+  }, [chapter, chapterId]);
 
   // Intercept hardware back / swipe-back so pending edits are flushed before
   // leaving the screen. The default goBack() does not trigger flushAndClose.
@@ -240,9 +301,14 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       const store = usePipelineTaskStore.getState();
       const finishedTask = store.tasks.find((t) => t.id === taskId);
       if (finishedTask?.status === 'completed') {
+        // The store subscription (added below) is the primary path for
+        // showing the result modal; setting the ref here as well keeps the
+        // two paths in sync if the effect happens to miss a tick.
+        resultTaskIdRef.current = taskId;
         setResultTaskId(taskId);
         setShowResultModal(true);
       } else if (finishedTask?.status === 'failed') {
+        resultTaskIdRef.current = taskId;
         Alert.alert('流水线失败', finishedTask.error || '未知错误');
       }
     } catch (error: any) {
@@ -402,9 +468,19 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       <GenerationResultModal
         visible={showResultModal}
         taskId={resultTaskId}
-        onClosed={() => setShowResultModal(false)}
+        onClosed={() => {
+          setShowResultModal(false);
+          // Allow the next completed task to re-trigger the modal once it
+          // arrives. Without clearing, the ref would gate future completed
+          // tasks sharing the same id (e.g. if the user re-runs the
+          // pipeline on the same chapter).
+          resultTaskIdRef.current = null;
+          setResultTaskId(null);
+        }}
         onAdopted={async () => {
           setShowResultModal(false);
+          resultTaskIdRef.current = null;
+          setResultTaskId(null);
           await loadChapter();
         }}
       />

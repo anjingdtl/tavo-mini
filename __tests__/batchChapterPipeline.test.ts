@@ -31,6 +31,7 @@ const mockRunChapterPipeline = jest.fn();
 const mockCreateTask = jest.fn();
 const mockUpdateChapter = jest.fn();
 const mockGenerateMemorySummary = jest.fn();
+const mockResolveTask = jest.fn();
 
 let mockTasks: any[] = [];
 
@@ -54,6 +55,7 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
     getState: () => ({
       tasks: mockTasks,
       createTask: mockCreateTask,
+      resolveTask: mockResolveTask,
     }),
   },
 }));
