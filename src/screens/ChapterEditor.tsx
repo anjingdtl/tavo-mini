@@ -5,6 +5,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { runChapterPipeline } from '../services/pipelineRunner';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
+import { PipelineProgress } from '../components/PipelineProgress';
 import { useThemeStore } from '../store/themeStore';
 import { debounce } from '../utils/debounce';
 import { estimateTokens } from '../utils/tokenEstimator';
@@ -12,6 +13,7 @@ import * as db from '../services/database';
 import { createRevision } from '../services/revisionService';
 import { generateMemorySummary } from '../services/summaryGenerator';
 import type { Chapter } from '../types/novel';
+import type { PipelineStageName } from '../types/pipeline';
 
 type SaveStatus = 'saved' | 'saving' | 'failed';
 
@@ -28,6 +30,11 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const [generating, setGenerating] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [currentStage, setCurrentStage] = useState<PipelineStageName | 'idle'>('idle');
+  const [progressStartedAt, setProgressStartedAt] = useState(Date.now());
+  const [progressVisible, setProgressVisible] = useState(false);
+  const [_showResultModal, setShowResultModal] = useState(false);
+  const [_resultTaskId, setResultTaskId] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   // Accumulate field edits across multiple changeField calls within one debounce
   // window. Without this, a fast title+synopsis edit would overwrite the pending
@@ -219,18 +226,26 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const executeRunPipeline = async (createTask: (targetType: 'chapter' | 'freeform', targetId: number) => string) => {
     if (!chapter) return;
     setGenerating(true);
+    setProgressVisible(true);
     const taskId = createTask('chapter', chapter.id);
     try {
-      await runChapterPipeline(taskId, chapter, () => {});
+      await runChapterPipeline(taskId, chapter, (info) => {
+        if (typeof info === 'object') {
+          setCurrentStage(info.stage);
+          setProgressStartedAt(info.startedAt);
+        }
+      });
+      setProgressVisible(false);
       const store = usePipelineTaskStore.getState();
       const finishedTask = store.tasks.find((t) => t.id === taskId);
       if (finishedTask?.status === 'completed') {
-        // @ts-ignore
-        navigation.navigate('PipelineResult', { taskId });
+        setResultTaskId(taskId);
+        setShowResultModal(true);
       } else if (finishedTask?.status === 'failed') {
         Alert.alert('流水线失败', finishedTask.error || '未知错误');
       }
     } catch (error: any) {
+      setProgressVisible(false);
       Alert.alert('流水线异常', error.message || '请检查 API 配置。');
     } finally {
       setGenerating(false);
@@ -260,6 +275,13 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           <Button label="返回" variant="ghost" onPress={flushAndClose} compact />
         </View>
       } />
+      {progressVisible && !focusMode && (
+        <PipelineProgress
+          stage={currentStage}
+          startedAt={progressStartedAt}
+          visible={progressVisible}
+        />
+      )}
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
         {!focusMode && (
           <>
