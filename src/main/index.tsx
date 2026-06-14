@@ -10,6 +10,7 @@ import {
   navigateToPipelineTaskCenter,
   navigationRef,
 } from '../navigation/navigationRef';
+import { PipelineResultPrompt } from '../components/PipelineResultPrompt';
 import Toast from 'react-native-toast-message';
 import { openDatabase, lastInstallInfo } from '../services/database';
 import { hasBreakingMigration } from '../services/migrations';
@@ -26,6 +27,11 @@ export const App: React.FC = () => {
   const [upgradeStatus, setUpgradeStatus] = React.useState<'waiting' | 'migrating' | 'success' | 'error'>('waiting');
   const [upgradeError, setUpgradeError] = React.useState('');
   const [ready, setReady] = React.useState(false);
+  // The most recent pipeline task we have surfaced to the user. Held in
+  // state (not via Alert.alert) so we can dismiss it from the
+  // navigateToPipelineResult call site and avoid the "prompt sticks
+  // around after navigating" UX bug.
+  const [pendingPrompt, setPendingPrompt] = React.useState<PipelineTask | null>(null);
 
   React.useEffect(() => {
     const init = async () => {
@@ -91,9 +97,10 @@ export const App: React.FC = () => {
     const prompted = new Set<string>();
 
     // Seed the prompted set with anything that was already terminal before
-    // this effect ran (loaded from DB on app start).
+    // this effect ran (loaded from DB on app start). Skip auto-resolved
+    // tasks (e.g. batch sub-tasks that were already handled).
     usePipelineTaskStore.getState().tasks.forEach((t) => {
-      if (t.status === 'completed' || t.status === 'failed') {
+      if (t.resolvedAt === null && (t.status === 'completed' || t.status === 'failed')) {
         prompted.add(t.id);
       }
     });
@@ -108,50 +115,31 @@ export const App: React.FC = () => {
       // freshest finished work first.
       const finished = tasks
         .filter((t: PipelineTask) =>
-          !prompted.has(t.id) && (t.status === 'completed' || t.status === 'failed'),
+          // A task is only eligible to be prompted if:
+          //  1. we have not surfaced it before, AND
+          //  2. it has reached a terminal status (completed or failed), AND
+          //  3. it has not been auto-resolved by a batch / batch-runner.
+          // The resolvedAt guard is critical for the batch case: the
+          // batchChapterPipeline marks every sub-task as resolved right
+          // after completeTask so the per-chapter summary alert in
+          // OutlineEditor stays canonical, and we must not pop the
+          // global prompt for those.
+          !prompted.has(t.id)
+          && t.resolvedAt === null
+          && (t.status === 'completed' || t.status === 'failed'),
         )
         .sort((a: PipelineTask, b: PipelineTask) => b.updatedAt - a.updatedAt);
       if (finished.length === 0) return;
       const task = finished[0];
       prompted.add(task.id);
-      promptForPipelineResult(task);
+      // Render via a controlled React Modal (see PipelineResultPrompt)
+      // instead of Alert.alert. Native Alerts stick around on top of any
+      // screen the user navigates to, which made the prompt feel like it
+      // was re-firing on every navigation. A controlled modal can be
+      // dismissed in lockstep with the result-screen navigation.
+      setPendingPrompt(task);
     });
     return unsubscribe;
-  }, [promptForPipelineResult]);
-
-  // Surface a finished pipeline task to the user. Completed tasks go through
-  // the result preview screen (where they can adopt into the chapter body);
-  // failed tasks just report the error in-place.
-  const promptForPipelineResult = React.useCallback((task: PipelineTask) => {
-    if (task.status === 'failed') {
-      Alert.alert(
-        '流水线失败',
-        task.error || '未知错误。',
-        [{ text: '我知道了' }],
-      );
-      return;
-    }
-    if (task.status !== 'completed') return;
-    if (!task.finalText || !task.finalText.trim()) {
-      // Completed but produced empty text - show a different message.
-      Alert.alert(
-        '流水线完成',
-        '流水线已完成，但本次生成内容为空。',
-        [{ text: '我知道了' }],
-      );
-      return;
-    }
-    Alert.alert(
-      '流水线已完成',
-      `章节 #${task.targetId} 的流水线已生成新内容。是否前往查看并采纳？`,
-      [
-        { text: '稍后处理', style: 'cancel' },
-        {
-          text: '查看结果',
-          onPress: () => { navigateToPipelineResult(task.id); },
-        },
-      ],
-    );
   }, []);
 
   const handleUpgradeConfirm = React.useCallback(async () => {
@@ -197,6 +185,16 @@ export const App: React.FC = () => {
             )}
           </>
         )}
+        <PipelineResultPrompt
+          task={pendingPrompt}
+          onDismiss={() => { setPendingPrompt(null); }}
+          onViewResult={(taskId) => {
+            // Dismiss *before* navigation so the modal does not flash on
+            // top of the result screen for a frame.
+            setPendingPrompt(null);
+            navigateToPipelineResult(taskId);
+          }}
+        />
         <Toast />
       </ThemeProvider>
     </SafeAreaProvider>
