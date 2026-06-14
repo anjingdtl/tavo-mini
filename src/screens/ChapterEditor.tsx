@@ -276,23 +276,85 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         )}
         {!focusMode && (
         <View style={styles.toolbar}>
-          <Button label={generating ? '生成中...' : 'AI 续写'} icon={Bot} onPress={runPipeline} disabled={generating || finalizing} compact flex />
-          <Button label={finalizing ? '定稿中...' : '保存定稿'} icon={FileText} variant="secondary" onPress={finalizeChapter} disabled={finalizing || generating} compact flex />
-          <Button label="摘要" icon={FileText} variant="secondary" onPress={() => Alert.alert('章节摘要', chapter.memory_summary || '暂无记忆摘要。')} compact flex />
-          <Button label="版本" icon={History} variant="secondary" onPress={manualCheckpoint} compact flex />
-          <Button label="历史" icon={History} variant="ghost" onPress={() => {
-            // @ts-ignore
-            navigation.navigate('RevisionHistory', { targetType: 'chapter', targetId: chapter.id, projectId: chapter.project_id });
-          }} compact flex />
-          <Button label="上下文" icon={Eye} variant="ghost" onPress={() => {
-            // @ts-ignore
-            navigation.navigate('ContextPreview', { chapterId: chapter.id });
-          }} compact flex />
-          <Button label="草稿" icon={Inbox} variant="ghost" onPress={() => {
-            // @ts-ignore
-            navigation.navigate('DraftPreview', { targetType: 'chapter', targetId: chapter.id, projectId: chapter.project_id });
-          }} compact flex />
-          <Button label="清空" icon={Trash2} variant="ghost" onPress={clearContent} disabled={generating || finalizing} compact flex />
+          <View style={styles.toolbarRow}>
+            <Button
+              label={generating ? '续写中…' : '续写'}
+              icon={Bot}
+              onPress={runPipeline}
+              disabled={generating || finalizing}
+              compact
+              minWidth={72}
+            />
+            <Button
+              label={finalizing ? '定稿中…' : '定稿'}
+              icon={FileText}
+              variant="secondary"
+              onPress={finalizeChapter}
+              disabled={finalizing || generating}
+              compact
+              minWidth={72}
+            />
+            <Button
+              label="版本"
+              icon={History}
+              variant="secondary"
+              onPress={manualCheckpoint}
+              compact
+              minWidth={72}
+            />
+            <Button
+              label="清空"
+              icon={Trash2}
+              variant="ghost"
+              onPress={clearContent}
+              disabled={generating || finalizing}
+              compact
+              minWidth={72}
+            />
+          </View>
+          <View style={styles.toolbarRow}>
+            <Button
+              label="摘要"
+              icon={FileText}
+              variant="ghost"
+              onPress={() => Alert.alert('章节摘要', chapter.memory_summary || '暂无记忆摘要。')}
+              compact
+              minWidth={72}
+            />
+            <Button
+              label="历史"
+              icon={History}
+              variant="ghost"
+              onPress={() => {
+                // @ts-ignore
+                navigation.navigate('RevisionHistory', { targetType: 'chapter', targetId: chapter.id, projectId: chapter.project_id });
+              }}
+              compact
+              minWidth={72}
+            />
+            <Button
+              label="上下文"
+              icon={Eye}
+              variant="ghost"
+              onPress={() => {
+                // @ts-ignore
+                navigation.navigate('ContextPreview', { chapterId: chapter.id });
+              }}
+              compact
+              minWidth={72}
+            />
+            <Button
+              label="草稿"
+              icon={Inbox}
+              variant="ghost"
+              onPress={() => {
+                // @ts-ignore
+                navigation.navigate('DraftPreview', { targetType: 'chapter', targetId: chapter.id, projectId: chapter.project_id });
+              }}
+              compact
+              minWidth={72}
+            />
+          </View>
         </View>
         )}
         <Field label="正文" value={chapter.content} onChangeText={(value) => changeField('content', value)} placeholder="开始写作..." multiline inputStyle={focusMode ? styles.focusEditor : styles.editor} />
@@ -321,7 +383,8 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 120 },
   synopsis: { minHeight: 76, textAlignVertical: 'top' },
-  toolbar: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginVertical: spacing.lg },
+  toolbar: { marginVertical: spacing.lg, gap: spacing.sm },
+  toolbarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   editor: { minHeight: 420, textAlignVertical: 'top', fontSize: 16, lineHeight: 25 },
   focusEditor: { minHeight: 600, textAlignVertical: 'top', fontSize: 18, lineHeight: 30 },
   headerActions: { flexDirection: 'row', gap: spacing.xs },
