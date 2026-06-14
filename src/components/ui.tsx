@@ -97,6 +97,7 @@ export function Button({
   icon: Icon,
   compact = false,
   flex = false,
+  minWidth = 0,
 }: {
   label: string;
   onPress?: (event: GestureResponderEvent) => void;
@@ -105,6 +106,7 @@ export function Button({
   icon?: LucideIcon;
   compact?: boolean;
   flex?: boolean;
+  minWidth?: number;
 }) {
   const { theme } = useThemeStore();
   const background =
@@ -128,6 +130,7 @@ export function Button({
         variant === 'ghost' && styles.ghostButton,
         compact && styles.buttonCompact,
         flex && styles.buttonFlex,
+        minWidth > 0 && { minWidth },
       ]}
     >
       {Icon ? <Icon size={compact ? 14 : 16} color={foreground} /> : null}
