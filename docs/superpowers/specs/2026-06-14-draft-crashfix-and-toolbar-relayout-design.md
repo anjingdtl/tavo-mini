@@ -316,14 +316,34 @@ style={[..., typeof minWidth === 'number' && { minWidth }]}
 
 ## 9. 测试策略
 
-### 9.1 单元测试（`__tests__/draftPreview.test.tsx` 新增）
+### 9.1 单元测试
 
-不引入新的依赖，使用 React Native Testing Library（如果项目尚未安装，本轮不安装；见 9.3）。
+#### 9.1.1 纯函数测试（`__tests__/draftAdoptGuard.test.ts` 新增）
 
-退而求其次：把 `runAdopt / runDelete / runClear` 三个核心 async 函数暴露为可通过 props 注入的回调（不实际暴露 API，**仅在测试中通过 ref** 验证逻辑），或：
+把 `runAdopt` 内的同步判断（`adoptingRef.current !== null` → return）抽成可单测的 helper `canStartAdopt(currentAdopting, targetDraftId)`。测试覆盖：
 
-- 走更轻量方案：**新增针对 `runAdopt` 逻辑的纯函数测试**，把 `runAdopt` 内的同步判断（`adoptingRef.current !== null` → return）抽成可单测的 helper `canStartAdopt(currentAdopting, targetDraftId)`，并新增 `__tests__/draftAdoptGuard.test.ts`。
-- 这种方式不依赖 RTL，依赖 Jest，与项目现有 17 个测试套件保持一致风格。
+- `canStartAdopt(null, 1)` → true
+- `canStartAdopt(1, 1)` → false（已有同 id 采纳中）
+- `canStartAdopt(1, 2)` → false（已有其他 id 采纳中）
+- `canStartAdopt(0, 1)` → true（0/falsy 视为空）
+
+#### 9.1.2 组件级测试（`__tests__/draftPreview.test.tsx` 新增）
+
+项目 devDependencies 已含 `@testing-library/react-native: ^13.3.3`（无需新装）。使用 `render / fireEvent / waitFor` 覆盖：
+
+- 渲染草稿列表 → 出现"采纳""删除"按钮。
+- 快速连续点击"采纳" 3 次 → `runAdopt` 实际只被调用 1 次（验证操作锁）。
+- 组件卸载后，`runAdopt` 内部 `setErrorMessage` 不抛错（验证挂载守卫）。
+- 错误反馈以 inline 文字显示（`getByText(/失败/)`），不弹 Alert。
+- 空列表时不渲染"全部采纳""清空草稿"按钮。
+
+`Alert.alert` 通过 `jest.spyOn(Alert, 'alert')` 验证被调用，但**不依赖**弹窗返回值——所有副作用走 `runAdopt` 等稳定 async 函数。
+
+#### 9.1.3 章节编辑器工具栏（`__tests__/chapterEditorToolbar.test.tsx` 新增）
+
+- 渲染 → 出现 8 个 Button label：续写、定稿、版本、清空、摘要、历史、上下文、草稿。
+- `focusMode = true` → 整个工具栏不渲染。
+- 验证不出现"AI 续写""保存定稿"等旧文案。
 
 ### 9.2 现有测试更新
 
@@ -332,9 +352,8 @@ style={[..., typeof minWidth === 'number' && { minWidth }]}
 
 ### 9.3 不引入的依赖
 
-- 不引入 `@testing-library/react-native`（避免本轮增加 native 测试配置）。
-- 不引入 `react-test-renderer`（项目未使用）。
-- 行为验证依赖手工操作 + 设备 logcat（见 10）。
+- **不**引入新的 npm 依赖（RTL 和 react-test-renderer 已在 devDependencies）。
+- 不引入原生模块测试工具。
 
 ## 10. 验证方式
 
