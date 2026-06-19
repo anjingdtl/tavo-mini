@@ -12,6 +12,8 @@ import type {
   ProjectMode,
 } from '../types/novel';
 import type { PipelineConfig } from '../types/pipeline';
+import type { VoiceConfig } from '../types/tts';
+import { DEFAULT_VOICE_CONFIG } from '../constants/voice';
 import {
   clearSecureLLMApiKey,
   getSecureLLMApiKey,
@@ -1357,6 +1359,21 @@ export async function setContextConfig(config: ContextConfig): Promise<void> {
   await setSetting('recent_chapter_count', String(config.recentChapterCount ?? 3));
   await setSetting('worldbook_recursive', String(config.worldbookRecursive ?? true));
   await setSetting('worldbook_scan_depth', String(config.worldbookScanDepth ?? 4));
+}
+
+export async function getVoiceConfig(): Promise<VoiceConfig> {
+  const raw = await getSetting('voice_config');
+  if (!raw) return DEFAULT_VOICE_CONFIG;
+  try {
+    const parsed = JSON.parse(raw) as Partial<VoiceConfig>;
+    return { ...DEFAULT_VOICE_CONFIG, ...parsed };
+  } catch {
+    return DEFAULT_VOICE_CONFIG;
+  }
+}
+
+export async function setVoiceConfig(config: VoiceConfig): Promise<void> {
+  await setSetting('voice_config', JSON.stringify(config));
 }
 
 export async function logLLMUsage(fields: {
