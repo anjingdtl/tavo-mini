@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, AppState, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ArrowUp, Bot, Eye, FileText, Focus, History, Inbox, Trash2 } from 'lucide-react-native';
+import { ArrowUp, Bot, Eye, FileText, Focus, History, Inbox, Square, Trash2, Volume2 } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { runChapterPipeline } from '../services/pipelineRunner';
@@ -8,6 +8,7 @@ import { suppressGlobalPipelinePrompt } from '../navigation/pipelinePromptSuppre
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { PipelineProgress } from '../components/PipelineProgress';
 import { useThemeStore } from '../store/themeStore';
+import { useVoiceStore } from '../store/voiceStore';
 import { debounce } from '../utils/debounce';
 import { estimateTokens } from '../utils/tokenEstimator';
 import * as db from '../services/database';
@@ -39,6 +40,7 @@ interface Props {
 
 export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const { theme } = useThemeStore();
+  const { isSynthesizing, isPlaying, loadVoiceConfig, playChapter, stop } = useVoiceStore();
   const navigation = useNavigation();
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
@@ -118,6 +120,14 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     const autoSave = autoSaveRef.current;
     return () => { autoSave.flush().catch(() => {}); };
   }, []);
+
+  useEffect(() => {
+    loadVoiceConfig();
+  }, [loadVoiceConfig]);
+
+  useEffect(() => {
+    return () => { stop().catch(() => {}); };
+  }, [stop]);
 
   // Subscribe to the pipeline store for this chapter. If a task started on
   // this screen is still running in the background (e.g. the user navigated
@@ -288,6 +298,15 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     Alert.alert('版本已保存', '当前内容已保存为手动版本快照。');
   };
 
+  const toggleTts = async () => {
+    if (!chapter) return;
+    if (isSynthesizing || isPlaying) {
+      await stop();
+      return;
+    }
+    await playChapter(chapter.content);
+  };
+
   const runPipeline = async () => {
     if (!chapter) return;
 
@@ -440,6 +459,15 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
                 // @ts-ignore
                 navigation.navigate('RevisionHistory', { targetType: 'chapter', targetId: chapter.id, projectId: chapter.project_id });
               }}
+              compact
+              minWidth={72}
+            />
+            <Button
+              label={isSynthesizing ? '生成中…' : isPlaying ? '停止' : '朗读'}
+              icon={isPlaying ? Square : Volume2}
+              variant={isPlaying ? 'secondary' : 'ghost'}
+              onPress={toggleTts}
+              disabled={!chapter.content.trim() && !isSynthesizing && !isPlaying}
               compact
               minWidth={72}
             />

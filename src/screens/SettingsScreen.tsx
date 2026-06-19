@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Database, Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine, BarChart3 } from 'lucide-react-native';
+import { Database, Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine, BarChart3, Volume2 } from 'lucide-react-native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
@@ -47,6 +47,11 @@ export const SettingsScreen: React.FC = () => {
             <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>4 阶段协作写作：初稿作者 → 审阅编辑 + 事实核查员 → 终审校对员。</Text>
             <Button label="流水线配置" icon={Factory} onPress={() => navigation.navigate('PipelineConfig')} />
             <Button label={`流水线任务${unresolvedCount > 0 ? ` (${unresolvedCount})` : ''}`} icon={ListChecks} variant="secondary" onPress={() => navigation.navigate('PipelineTask')} />
+          </Card>
+          <Card>
+            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>语音朗读</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>配置 MiniMax API Key、音色与语速，在章节编辑页朗读正文。</Text>
+            <Button label="语音设置" icon={Volume2} onPress={() => navigation.navigate('VoiceSettings')} />
           </Card>
         </Section>
         <Section title="主题">
