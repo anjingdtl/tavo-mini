@@ -10,6 +10,7 @@ const mockStore = {
 
 const mockGetPipelineConfig = jest.fn();
 const mockCallLLMResult = jest.fn();
+const mockSaveDraft = jest.fn();
 
 jest.mock('../src/services/database', () => ({
   getPipelineConfig: (...args: any[]) => mockGetPipelineConfig(...args),
@@ -37,6 +38,10 @@ jest.mock('../src/services/database', () => ({
 
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (...args: any[]) => mockCallLLMResult(...args),
+}));
+
+jest.mock('../src/services/draftService', () => ({
+  saveDraft: (...args: any[]) => mockSaveDraft(...args),
 }));
 
 jest.mock('../src/services/contextBuilder', () => ({
@@ -89,6 +94,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockGetPipelineConfig.mockResolvedValue(baseConfig());
   mockCallLLMResult.mockReset();
+  mockSaveDraft.mockResolvedValue(1);
 });
 
 test('two-stage pipeline runs review-only mode before proof', async () => {
@@ -112,6 +118,52 @@ test('two-stage pipeline runs review-only mode before proof', async () => {
     expect.objectContaining({ stage: 'factCheck', status: 'skipped' }),
   );
   expect(mockStore.completeTask).toHaveBeenCalledWith('task-two-stage', 'polished');
+});
+
+test('pipeline does not resolve until the completed draft is saved and task is completed', async () => {
+  let releaseSave!: () => void;
+  mockSaveDraft.mockReturnValueOnce(new Promise<number>((resolve) => {
+    releaseSave = () => resolve(1);
+  }));
+  mockCallLLMResult
+    .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
+    .mockResolvedValueOnce({ text: '{"issues":[]}', inputTokens: 8, outputTokens: 6, totalTokens: 14 })
+    .mockResolvedValueOnce({ text: 'polished', inputTokens: 15, outputTokens: 20, totalTokens: 35 });
+
+  const { runChapterPipeline } = require('../src/services/pipelineRunner');
+  let resolved = false;
+  const run = runChapterPipeline('task-await-save', chapter).then(() => {
+    resolved = true;
+  });
+
+  for (let i = 0; i < 10 && mockSaveDraft.mock.calls.length === 0; i += 1) {
+    await Promise.resolve();
+  }
+  await Promise.resolve();
+
+  expect(mockSaveDraft).toHaveBeenCalledWith(expect.objectContaining({
+    content: 'polished',
+    pipelineTaskId: 'task-await-save',
+    source: 'pipeline',
+  }));
+  expect(resolved).toBe(false);
+  expect(mockStore.completeTask).not.toHaveBeenCalledWith('task-await-save', 'polished');
+
+  releaseSave();
+  await run;
+
+  expect(resolved).toBe(true);
+  expect(mockStore.completeTask).toHaveBeenCalledWith('task-await-save', 'polished');
+});
+
+test('pipeline marks setup errors as failed tasks instead of leaving them unclear', async () => {
+  mockGetPipelineConfig.mockRejectedValueOnce(new Error('配置读取失败'));
+
+  const { runChapterPipeline } = require('../src/services/pipelineRunner');
+  await runChapterPipeline('task-config-fail', chapter);
+
+  expect(mockStore.failTask).toHaveBeenCalledWith('task-config-fail', '配置读取失败');
+  expect(mockCallLLMResult).not.toHaveBeenCalled();
 });
 
 test('conditional pipeline runs fact-check-only mode before proof', async () => {
