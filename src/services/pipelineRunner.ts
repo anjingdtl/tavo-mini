@@ -58,6 +58,10 @@ function buildCallConfig(preset: Preset | null, maxTokens: number, scenario: str
   };
 }
 
+function getErrorMessage(error: any, fallback: string): string {
+  return error?.message ? String(error.message) : fallback;
+}
+
 function markSkipped(taskId: string, stage: PipelineStageName, text: string): void {
   usePipelineTaskStore.getState().updateTaskStage(taskId, {
     stage,
@@ -134,9 +138,17 @@ export async function runChapterPipeline(
   onStageUpdate?: (info: StageInfo | string) => void,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
-  const config = await db.getPipelineConfig();
-  const contextConfig = await db.getContextConfig();
-  const presets = await db.getPresetsByProject(chapter.project_id);
+  let config;
+  let contextConfig;
+  let presets;
+  try {
+    config = await db.getPipelineConfig();
+    contextConfig = await db.getContextConfig();
+    presets = await db.getPresetsByProject(chapter.project_id);
+  } catch (error: any) {
+    store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
+    return;
+  }
 
   const draftPreset = resolvePreset(config.draftPresetId, presets as Preset[]);
   const reviewPreset = resolvePreset(config.reviewPresetId, presets as Preset[]);
@@ -161,27 +173,29 @@ export async function runChapterPipeline(
   store.setTaskStatus(taskId, 'drafting');
   onStageUpdate?.({ stage: 'draft', label: '草稿中...', startedAt: Date.now() });
 
-  const { messages: baseContext, chapters: allChapters } = await buildContext(chapter, contextConfig, chapter.project_id, draftPreset || undefined);
-  const request = createChapterGenerationRequest(chapter);
-
-  // Extract previous chapter ending from already-fetched chapters
-  const prevChapter = allChapters
-    .filter(c => c.position < chapter.position && c.content)
-    .sort((a, b) => b.position - a.position)[0];
-  const prevEnding = prevChapter?.content?.slice(-800) || '';
-
-  const draftMessages = buildDraftMessages(
-    baseContext,
-    chapter.title || `第 ${chapter.position + 1} 章`,
-    chapter.content || '',
-    request.userPrompt,
-    prevEnding,
-    chapter.synopsis,
-  );
-
+  let baseContext: ChatMessage[] = [];
   let draftText = '';
   const draftStart = Date.now();
   try {
+    const { messages, chapters: allChapters } = await buildContext(chapter, contextConfig, chapter.project_id, draftPreset || undefined);
+    baseContext = messages;
+    const request = createChapterGenerationRequest(chapter);
+
+    // Extract previous chapter ending from already-fetched chapters.
+    const prevChapter = allChapters
+      .filter(c => c.position < chapter.position && c.content)
+      .sort((a, b) => b.position - a.position)[0];
+    const prevEnding = prevChapter?.content?.slice(-800) || '';
+
+    const draftMessages = buildDraftMessages(
+      baseContext,
+      chapter.title || `第 ${chapter.position + 1} 章`,
+      chapter.content || '',
+      request.userPrompt,
+      prevEnding,
+      chapter.synopsis,
+    );
+
     const draftResult = await callLLMResult(
       draftMessages,
       config.draftMaxTokens,
@@ -207,7 +221,7 @@ export async function runChapterPipeline(
       error: error.message || '初稿生成失败',
       durationMs: Date.now() - draftStart,
     });
-    store.failTask(taskId, error.message || '初稿生成失败');
+    store.failTask(taskId, getErrorMessage(error, '初稿生成失败'));
     return;
   }
 
@@ -216,7 +230,7 @@ export async function runChapterPipeline(
     markSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
     markSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
     markSkipped(taskId, 'proof', '无审核模式已跳过终审校对');
-    saveDraftAndComplete(draftText);
+    await saveDraftAndComplete(draftText);
     return;
   }
 
@@ -267,7 +281,7 @@ export async function runChapterPipeline(
       proofPreset,
       projectId: chapter.project_id,
     });
-    saveDraftAndComplete(finalText);
+    await saveDraftAndComplete(finalText);
     return;
   }
 
@@ -398,7 +412,7 @@ export async function runChapterPipeline(
   }
 
   if (reviewFailed && factCheckFailed) {
-    saveDraftAndComplete(draftText);
+    await saveDraftAndComplete(draftText);
     return;
   }
 
@@ -413,7 +427,7 @@ export async function runChapterPipeline(
     proofPreset,
     projectId: chapter.project_id,
   });
-  saveDraftAndComplete(finalText);
+  await saveDraftAndComplete(finalText);
 }
 
 export async function runFreeformPipeline(
@@ -462,8 +476,15 @@ export async function resumePipeline(
     return;
   }
 
-  const config = await db.getPipelineConfig();
-  const presets = await db.getPresetsByProject(chapter.project_id);
+  let config;
+  let presets;
+  try {
+    config = await db.getPipelineConfig();
+    presets = await db.getPresetsByProject(chapter.project_id);
+  } catch (error: any) {
+    store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
+    return;
+  }
   const reviewPreset = resolvePreset(config.reviewPresetId, presets as Preset[]);
   const factCheckPreset = resolvePreset(config.factCheckPresetId, presets as Preset[]);
   const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
@@ -485,7 +506,7 @@ export async function resumePipeline(
   const draftText = draftResult.text;
 
   if (config.pipelineMode === 'noReview') {
-    saveDraftAndComplete(draftText);
+    await saveDraftAndComplete(draftText);
     return;
   }
 
@@ -513,7 +534,7 @@ export async function resumePipeline(
         });
       } catch (error: any) {
         store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() });
-        saveDraftAndComplete(draftText);
+        await saveDraftAndComplete(draftText);
         return;
       }
     }
@@ -521,7 +542,7 @@ export async function resumePipeline(
     if (checkCancelled(taskId)) return;
     onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
     const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id });
-    saveDraftAndComplete(finalText);
+    await saveDraftAndComplete(finalText);
     return;
   }
 
@@ -554,5 +575,5 @@ export async function resumePipeline(
   if (checkCancelled(taskId)) return;
   onStageUpdate?.('正在终审校对（续跑）...');
   const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id });
-  saveDraftAndComplete(finalText);
+  await saveDraftAndComplete(finalText);
 }

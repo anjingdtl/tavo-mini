@@ -10,6 +10,12 @@ import { Alert } from 'react-native';
 import { act } from '@testing-library/react-native';
 import { usePipelineTaskStore } from '../src/store/pipelineTaskStore';
 
+jest.mock('../src/services/database', () => ({
+  savePipelineTask: jest.fn(async () => undefined),
+  getAllPipelineTasks: jest.fn(async () => []),
+  deleteResolvedPipelineTasks: jest.fn(async () => undefined),
+}));
+
 const mockAlert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
 
 afterAll(() => {
