@@ -13,6 +13,22 @@ let mockTasks: any[] = [];
 jest.mock('../src/services/database', () => ({
   updateChapter: (...args: any[]) => mockUpdateChapter(...args),
   getChapterById: (...args: any[]) => mockGetChapterById(...args),
+  getVoiceConfig: jest.fn(async () => ({
+    model: 'speech-2.8-hd',
+    voiceId: 'male-qn-qingse',
+    speed: 1,
+    vol: 1,
+    pitch: 0,
+    sampleRate: 32000,
+    bitrate: 128000,
+    format: 'mp3',
+  })),
+}));
+
+jest.mock('../src/services/secureStorage', () => ({
+  getSecureMiniMaxApiKey: jest.fn(async () => ''),
+  setSecureMiniMaxApiKey: jest.fn(async () => undefined),
+  clearSecureMiniMaxApiKey: jest.fn(async () => undefined),
 }));
 
 jest.mock('../src/services/pipelineRunner', () => ({
@@ -103,12 +119,12 @@ describe('ChapterEditor toolbar', () => {
     mockUpdateChapter.mockResolvedValue(undefined);
   });
 
-  it('renders all 8 short-label buttons', async () => {
+  it('renders all 9 short-label buttons', async () => {
     const onClose = jest.fn();
     const { findByText } = render(
       <ChapterEditor chapterId={1} onClose={onClose} />,
     );
-    for (const label of ['续写', '定稿', '版本', '清空', '摘要', '历史', '上下文', '草稿']) {
+    for (const label of ['续写', '定稿', '版本', '清空', '摘要', '历史', '上下文', '草稿', '朗读']) {
       expect(await findByText(label)).toBeTruthy();
     }
   });
