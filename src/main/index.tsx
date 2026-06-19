@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, AppState, ImageBackground, StyleSheet } from 'react-native';
+import { ImageBackground, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../components/ThemeProvider';
@@ -7,9 +7,9 @@ import { TabNavigator } from '../navigation/TabNavigator';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import {
   navigateToPipelineResult,
-  navigateToPipelineTaskCenter,
   navigationRef,
 } from '../navigation/navigationRef';
+import { consumeSuppressedPipelinePrompt } from '../navigation/pipelinePromptSuppression';
 import { PipelineResultPrompt } from '../components/PipelineResultPrompt';
 import Toast from 'react-native-toast-message';
 import { openDatabase, lastInstallInfo } from '../services/database';
@@ -60,30 +60,6 @@ export const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, []);
 
-  React.useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (nextAppState === 'active') {
-        const runningTasks = usePipelineTaskStore.getState().tasks.filter(
-          (t) => t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'proofing'
-        );
-        if (runningTasks.length > 0) {
-          Alert.alert(
-            '流水线任务提醒',
-            `检测到 ${runningTasks.length} 个未完成的流水线任务。由于系统限制，切换应用可能导致任务中断。点击下方按钮查看任务中心。`,
-            [
-              { text: '知道了' },
-              {
-                text: '查看任务中心',
-                onPress: () => { navigateToPipelineTaskCenter(); },
-              },
-            ],
-          );
-        }
-      }
-    });
-    return () => subscription.remove();
-  }, []);
-
   // Watch for newly-completed / failed pipeline tasks and surface a result
   // prompt. The original ChapterEditor-local `executeRunPipeline` only worked
   // when the user stayed on the screen; the navigation back from
@@ -114,7 +90,7 @@ export const App: React.FC = () => {
       // We sort by updatedAt descending so the user is always shown the
       // freshest finished work first.
       const finished = tasks
-        .filter((t: PipelineTask) =>
+        .filter((t: PipelineTask) => {
           // A task is only eligible to be prompted if:
           //  1. we have not surfaced it before, AND
           //  2. it has reached a terminal status (completed or failed), AND
@@ -124,10 +100,16 @@ export const App: React.FC = () => {
           // after completeTask so the per-chapter summary alert in
           // OutlineEditor stays canonical, and we must not pop the
           // global prompt for those.
-          !prompted.has(t.id)
-          && t.resolvedAt === null
-          && (t.status === 'completed' || t.status === 'failed'),
-        )
+          const isEligible = !prompted.has(t.id)
+            && t.resolvedAt === null
+            && (t.status === 'completed' || t.status === 'failed');
+          if (!isEligible) return false;
+          if (consumeSuppressedPipelinePrompt(t.id)) {
+            prompted.add(t.id);
+            return false;
+          }
+          return true;
+        })
         .sort((a: PipelineTask, b: PipelineTask) => b.updatedAt - a.updatedAt);
       if (finished.length === 0) return;
       const task = finished[0];
