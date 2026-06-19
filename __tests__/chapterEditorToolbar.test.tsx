@@ -1,11 +1,14 @@
 import React from 'react';
-import { render } from '@testing-library/react-native';
+import { act, fireEvent, render } from '@testing-library/react-native';
 
 const mockUpdateChapter = jest.fn();
 const mockGetChapterById = jest.fn();
 const mockGetActiveTaskForTarget = jest.fn(() => null);
 const mockCreateTask = jest.fn(() => 'task-1');
 const mockRunChapterPipeline = jest.fn();
+const mockNavigate = jest.fn();
+const mockGenerationResultModal = jest.fn(() => null);
+let mockTasks: any[] = [];
 
 jest.mock('../src/services/database', () => ({
   updateChapter: (...args: any[]) => mockUpdateChapter(...args),
@@ -29,7 +32,7 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
     getState: () => ({
       createTask: mockCreateTask,
       getActiveTaskForTarget: mockGetActiveTaskForTarget,
-      tasks: [],
+      tasks: mockTasks,
     }),
     // The ChapterEditor effect subscribes to task changes; tests that do not
     // exercise the subscription path can no-op it.
@@ -37,9 +40,13 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
   },
 }));
 
+jest.mock('../src/components/GenerationResultModal', () => ({
+  GenerationResultModal: (props: any) => mockGenerationResultModal(props),
+}));
+
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({
-    navigate: jest.fn(),
+    navigate: mockNavigate,
     goBack: jest.fn(),
     addListener: jest.fn(() => () => {}),
     dispatch: jest.fn(),
@@ -69,6 +76,29 @@ const sampleChapter = {
 describe('ChapterEditor toolbar', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockTasks = [];
+    mockCreateTask.mockImplementation(() => {
+      mockTasks.push({
+        id: 'task-1',
+        targetType: 'chapter',
+        targetId: 1,
+        status: 'idle',
+        stageResults: [],
+        finalText: null,
+        error: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        resolvedAt: null,
+      });
+      return 'task-1';
+    });
+    mockRunChapterPipeline.mockImplementation(async (taskId: string) => {
+      mockTasks = mockTasks.map(task =>
+        task.id === taskId
+          ? { ...task, status: 'completed', finalText: '生成后的正文', updatedAt: Date.now() }
+          : task,
+      );
+    });
     mockGetChapterById.mockResolvedValue(sampleChapter as any);
     mockUpdateChapter.mockResolvedValue(undefined);
   });
@@ -91,5 +121,50 @@ describe('ChapterEditor toolbar', () => {
     await findByText('续写');
     expect(queryByText('AI 续写')).toBeNull();
     expect(queryByText('保存定稿')).toBeNull();
+  });
+
+  it('navigates to the pipeline result screen as soon as chapter continuation completes', async () => {
+    const onClose = jest.fn();
+    const { findByText } = render(
+      <ChapterEditor chapterId={1} onClose={onClose} />,
+    );
+    const continueButton = await findByText('续写');
+
+    await act(async () => {
+      fireEvent.press(continueButton);
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith('PipelineResult', { taskId: 'task-1' });
+    expect(mockGenerationResultModal).not.toHaveBeenCalledWith(
+      expect.objectContaining({ visible: true }),
+      expect.anything(),
+    );
+    expect(mockRunChapterPipeline).toHaveBeenCalledWith(
+      'task-1',
+      expect.objectContaining({ id: 1 }),
+      expect.any(Function),
+    );
+  });
+
+  it('shows the running pipeline progress when returning to a chapter with an active task', async () => {
+    mockTasks = [{
+      id: 'task-running',
+      targetType: 'chapter',
+      targetId: 1,
+      status: 'reviewing',
+      stageResults: [],
+      finalText: null,
+      error: null,
+      createdAt: Date.now() - 3000,
+      updatedAt: Date.now() - 1000,
+      resolvedAt: null,
+    }];
+
+    const onClose = jest.fn();
+    const { findByText } = render(
+      <ChapterEditor chapterId={1} onClose={onClose} />,
+    );
+
+    expect(await findByText('点评中...')).toBeTruthy();
   });
 });
