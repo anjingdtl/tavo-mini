@@ -25,6 +25,7 @@ import { BackupCenterScreen } from '../screens/BackupCenterScreen';
 import { ContextPreviewScreen } from '../screens/ContextPreviewScreen';
 import { DraftPreviewScreen } from '../screens/DraftPreviewScreen';
 import { UsageStatsScreen } from '../screens/UsageStatsScreen';
+import { VoiceSettingsScreen } from '../screens/VoiceSettingsScreen';
 
 export type EditorStackParamList = {
   EditorMain: undefined;
@@ -42,6 +43,7 @@ export type EditorStackParamList = {
 export type SettingsStackParamList = {
   SettingsMain: undefined;
   LLMSettings: undefined;
+  VoiceSettings: undefined;
   PipelineConfig: undefined;
   PipelineTask: undefined;
   PipelineResult: { taskId: string };
@@ -105,6 +107,7 @@ const SettingsStackScreen = () => (
   <SettingsStack.Navigator screenOptions={{ headerShown: false }}>
     <SettingsStack.Screen name="SettingsMain" component={SettingsScreen} />
     <SettingsStack.Screen name="LLMSettings" component={LLMSettingsScreen} />
+    <SettingsStack.Screen name="VoiceSettings" component={VoiceSettingsScreen} />
     <SettingsStack.Screen name="PipelineConfig" component={PipelineConfigScreen} />
     <SettingsStack.Screen name="PipelineTask" component={PipelineTaskScreen} />
     <SettingsStack.Screen name="PipelineResult" component={PipelineResultScreen} />

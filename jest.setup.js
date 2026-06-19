@@ -96,3 +96,12 @@ jest.mock('lucide-react-native', () => {
   const Icon = ({ testID }) => React.createElement(Text, { testID }, 'icon');
   return new Proxy({}, { get: () => Icon });
 });
+
+jest.mock('react-native', () => {
+  const RN = jest.requireActual('react-native');
+  RN.NativeModules.TtsAudio = {
+    playAudioFile: jest.fn(() => Promise.resolve()),
+    stopAudio: jest.fn(() => Promise.resolve()),
+  };
+  return RN;
+});
