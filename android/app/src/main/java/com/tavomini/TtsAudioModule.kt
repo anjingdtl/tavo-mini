@@ -18,7 +18,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun playAudioFile(path: String, promise: Promise) {
-    stopAudioInternal()
+    stopAudioInternal(rejectPending = true)
 
     val file = File(path)
     if (!file.exists()) {
@@ -31,12 +31,12 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       mediaPlayer = MediaPlayer().apply {
         setDataSource(path)
         setOnCompletionListener {
-          stopAudioInternal()
+          releasePlayer()
           currentPromise?.resolve(null)
           currentPromise = null
         }
         setOnErrorListener { _, what, extra ->
-          stopAudioInternal()
+          releasePlayer()
           currentPromise?.reject("PLAYBACK_ERROR", "播放失败: what=$what extra=$extra")
           currentPromise = null
           true
@@ -46,7 +46,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       }
     } catch (e: Exception) {
       Log.e("TtsAudio", "playAudioFile failed", e)
-      stopAudioInternal()
+      releasePlayer()
       currentPromise?.reject("PLAYBACK_EXCEPTION", "播放异常: ${e.message}")
       currentPromise = null
     }
@@ -54,11 +54,19 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun stopAudio(promise: Promise) {
-    stopAudioInternal()
+    stopAudioInternal(rejectPending = true)
     promise.resolve(null)
   }
 
-  private fun stopAudioInternal() {
+  private fun stopAudioInternal(rejectPending: Boolean) {
+    releasePlayer()
+    if (rejectPending && currentPromise != null) {
+      currentPromise?.reject("CANCELLED", "播放已停止")
+      currentPromise = null
+    }
+  }
+
+  private fun releasePlayer() {
     try {
       mediaPlayer?.let { player ->
         if (player.isPlaying) {
@@ -68,13 +76,9 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
         player.release()
       }
     } catch (e: Exception) {
-      Log.e("TtsAudio", "stopAudioInternal error", e)
+      Log.e("TtsAudio", "releasePlayer error", e)
     } finally {
       mediaPlayer = null
-      if (currentPromise != null) {
-        currentPromise?.reject("CANCELLED", "播放已停止")
-        currentPromise = null
-      }
     }
   }
 }

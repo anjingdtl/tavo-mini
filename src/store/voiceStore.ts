@@ -3,8 +3,8 @@ import Toast from 'react-native-toast-message';
 import * as db from '../services/database';
 import { synthesizeToFile, cancelTts, isTtsTextTooLong } from '../services/tts';
 import {
-  getSecureMiniMaxApiKey,
-  setSecureMiniMaxApiKey,
+  getSecureVoiceApiKey,
+  setSecureVoiceApiKey,
 } from '../services/secureStorage';
 import { TtsAudio } from '../native/TtsAudioModule';
 import { DEFAULT_VOICE_CONFIG } from '../constants/voice';
@@ -18,6 +18,7 @@ interface VoiceState {
   isPlaying: boolean;
   loadVoiceConfig: () => Promise<void>;
   saveVoiceConfig: (config: VoiceConfig) => Promise<void>;
+  setVoiceApiKey: (key: string) => Promise<void>;
   setMiniMaxApiKey: (key: string) => Promise<void>;
   playChapter: (text: string) => Promise<void>;
   stop: () => Promise<void>;
@@ -42,7 +43,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   loadVoiceConfig: async () => {
     const [config, apiKey] = await Promise.all([
       db.getVoiceConfig(),
-      getSecureMiniMaxApiKey(),
+      getSecureVoiceApiKey(),
     ]);
     set({ config, apiKey });
   },
@@ -52,9 +53,13 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     set({ config });
   },
 
-  setMiniMaxApiKey: async (key) => {
-    await setSecureMiniMaxApiKey(key);
+  setVoiceApiKey: async (key) => {
+    await setSecureVoiceApiKey(key);
     set({ apiKey: key.trim() });
+  },
+
+  setMiniMaxApiKey: async (key) => {
+    await get().setVoiceApiKey(key);
   },
 
   playChapter: async (text) => {
@@ -63,7 +68,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       return;
     }
     if (!apiKey.trim()) {
-      Toast.show({ type: 'error', text1: '请先配置 MiniMax API Key' });
+      Toast.show({ type: 'error', text1: '请先配置语音 API Key' });
       return;
     }
     if (!text.trim()) {

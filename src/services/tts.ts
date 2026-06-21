@@ -2,8 +2,6 @@ import RNFS from 'react-native-fs';
 import type { VoiceConfig } from '../types/tts';
 import { MAX_TTS_CHARS } from '../constants/voice';
 
-const MINIMAX_TTS_URL = 'https://api.minimaxi.com/v1/t2a_v2';
-
 interface MiniMaxTtsResponse {
   data?: {
     audio?: string;
@@ -67,10 +65,14 @@ export async function synthesizeToFile(
   apiKey: string,
 ): Promise<string> {
   if (!apiKey.trim()) {
-    throw new Error('请先配置 MiniMax API Key。');
+    throw new Error('请先配置语音 API Key。');
   }
   if (!text.trim()) {
     throw new Error('没有可朗读的内容。');
+  }
+  const apiUrl = voiceConfig.apiUrl?.trim();
+  if (!apiUrl) {
+    throw new Error('请先填写语音 API URL。');
   }
 
   currentAbortController = new AbortController();
@@ -99,7 +101,7 @@ export async function synthesizeToFile(
 
   let response: Response;
   try {
-    response = await fetch(MINIMAX_TTS_URL, {
+    response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -126,7 +128,11 @@ export async function synthesizeToFile(
 
   if (!response.ok || json.base_resp.status_code !== 0) {
     cleanup();
-    const msg = json.base_resp?.status_msg || `HTTP ${response.status}`;
+    const providerCode = json.base_resp?.status_code;
+    const providerMsg = json.base_resp?.status_msg?.trim();
+    const msg = providerCode
+      ? `${providerCode} ${providerMsg || `HTTP ${response.status}`}`
+      : providerMsg || `HTTP ${response.status}`;
     throw new Error(`语音合成失败：${msg}`);
   }
 
