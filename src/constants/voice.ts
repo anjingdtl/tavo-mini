@@ -1,6 +1,8 @@
 import type { VoiceConfig, VoicePreset } from '../types/tts';
 
 export const MAX_TTS_CHARS = 10000;
+export const VOICE_API_URL_EXAMPLE = 'https://api.minimaxi.com/v1/t2a_v2';
+export const DEFAULT_VOICE_API_URL = '';
 
 export const VOICE_PRESETS: VoicePreset[] = [
   { id: 'male-qn-qingse', name: '青涩青年' },
@@ -19,6 +21,7 @@ export const VOICE_PRESETS: VoicePreset[] = [
 ];
 
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
+  apiUrl: DEFAULT_VOICE_API_URL,
   model: 'speech-2.8-hd',
   voiceId: 'male-qn-qingse',
   speed: 1,

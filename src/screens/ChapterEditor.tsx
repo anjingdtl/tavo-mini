@@ -406,7 +406,12 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         )}
         {!focusMode && (
         <View style={styles.toolbar}>
-          <View style={styles.toolbarRow}>
+          <ScrollView
+            testID="chapter-toolbar-scroll"
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.toolbarRow}
+          >
             <Button
               label={generating ? '续写中…' : '续写'}
               icon={Bot}
@@ -441,8 +446,6 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
               compact
               minWidth={72}
             />
-          </View>
-          <View style={styles.toolbarRow}>
             <Button
               label="摘要"
               icon={FileText}
@@ -493,7 +496,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
               compact
               minWidth={72}
             />
-          </View>
+          </ScrollView>
         </View>
         )}
         <Field label="正文" value={chapter.content} onChangeText={(value) => changeField('content', value)} placeholder="开始写作..." multiline inputStyle={focusMode ? styles.focusEditor : styles.editor} />
@@ -522,8 +525,8 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 120 },
   synopsis: { minHeight: 76, textAlignVertical: 'top' },
-  toolbar: { marginVertical: spacing.lg, gap: spacing.sm },
-  toolbarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  toolbar: { marginVertical: spacing.lg },
+  toolbarRow: { flexDirection: 'row', gap: spacing.sm, paddingRight: spacing.lg },
   editor: { minHeight: 420, textAlignVertical: 'top', fontSize: 16, lineHeight: 25 },
   focusEditor: { minHeight: 600, textAlignVertical: 'top', fontSize: 18, lineHeight: 30 },
   headerActions: { flexDirection: 'row', gap: spacing.xs },

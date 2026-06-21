@@ -34,23 +34,69 @@ describe('tts service', () => {
       }),
     }) as unknown as typeof fetch;
 
-    const path = await synthesizeToFile('hello', DEFAULT_VOICE_CONFIG, 'test-key');
+    const path = await synthesizeToFile(
+      'hello',
+      { ...DEFAULT_VOICE_CONFIG, apiUrl: 'https://api.minimaxi.com/v1/t2a_v2' },
+      'test-key',
+    );
     expect(path).toContain('tts_');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://api.minimaxi.com/v1/t2a_v2',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer test-key',
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
     expect(RNFS.writeFile).toHaveBeenCalledTimes(1);
     expect(RNFS.writeFile).toHaveBeenCalledWith(expect.any(String), 'SGVsbG8=', 'base64');
   });
 
-  it('throws on api error', async () => {
+  it('does not ship a hidden default voice API URL', () => {
+    expect(DEFAULT_VOICE_CONFIG.apiUrl).toBe('');
+  });
+
+  it('uses the configured voice API URL', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({
+        data: { audio: '48656c6c6f', status: 2 },
+        base_resp: { status_code: 0, status_msg: 'success' },
+      }),
+    }) as unknown as typeof fetch;
+
+    await synthesizeToFile(
+      'hello',
+      { ...DEFAULT_VOICE_CONFIG, apiUrl: 'https://voice.example.test/v1/speech' },
+      'test-key',
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://voice.example.test/v1/speech',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('throws on api error with provider status code', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
       json: jest.fn().mockResolvedValue({
         data: null,
-        base_resp: { status_code: 1001, status_msg: 'invalid key' },
+        base_resp: { status_code: 2049, status_msg: 'invalid api key' },
       }),
     }) as unknown as typeof fetch;
 
-    await expect(synthesizeToFile('hello', DEFAULT_VOICE_CONFIG, 'test-key')).rejects.toThrow('invalid key');
+    await expect(
+      synthesizeToFile(
+        'hello',
+        { ...DEFAULT_VOICE_CONFIG, apiUrl: 'https://voice.example.test/v1/speech' },
+        'test-key',
+      ),
+    ).rejects.toThrow('语音合成失败：2049 invalid api key');
   });
 
   it('throws when no audio returned', async () => {
@@ -63,10 +109,25 @@ describe('tts service', () => {
       }),
     }) as unknown as typeof fetch;
 
-    await expect(synthesizeToFile('hello', DEFAULT_VOICE_CONFIG, 'test-key')).rejects.toThrow('未返回音频数据');
+    await expect(
+      synthesizeToFile(
+        'hello',
+        { ...DEFAULT_VOICE_CONFIG, apiUrl: 'https://voice.example.test/v1/speech' },
+        'test-key',
+      ),
+    ).rejects.toThrow('未返回音频数据');
   });
 
   it('throws when api key missing', async () => {
     await expect(synthesizeToFile('hello', DEFAULT_VOICE_CONFIG, '')).rejects.toThrow('API Key');
+  });
+
+  it('throws when voice API URL missing without calling fetch', async () => {
+    global.fetch = jest.fn() as unknown as typeof fetch;
+
+    await expect(
+      synthesizeToFile('hello', { ...DEFAULT_VOICE_CONFIG, apiUrl: '   ' }, 'test-key'),
+    ).rejects.toThrow('语音 API URL');
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });
