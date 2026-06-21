@@ -1,6 +1,6 @@
 {
   "name": "TavoMini",
-  "version": "1.6.4",
+  "version": "1.6.8",
   "private": true,
   "scripts": {
     "android": "react-native run-android",

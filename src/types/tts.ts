@@ -1,4 +1,4 @@
-export type TtsModel = 'speech-2.8-hd' | 'speech-2.8-turbo';
+export type TtsModel = string;
 
 export type TtsAudioFormat = 'mp3' | 'wav' | 'flac';
 
@@ -7,6 +7,7 @@ export type TtsSampleRate = 16000 | 24000 | 32000 | 44100;
 export type TtsBitrate = 32000 | 64000 | 128000;
 
 export interface VoiceConfig {
+  apiUrl: string;
   model: TtsModel;
   voiceId: string;
   speed: number;

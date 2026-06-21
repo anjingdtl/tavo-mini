@@ -26,6 +26,9 @@ jest.mock('../src/services/database', () => ({
 }));
 
 jest.mock('../src/services/secureStorage', () => ({
+  getSecureVoiceApiKey: jest.fn(async () => ''),
+  setSecureVoiceApiKey: jest.fn(async () => undefined),
+  clearSecureVoiceApiKey: jest.fn(async () => undefined),
   getSecureMiniMaxApiKey: jest.fn(async () => ''),
   setSecureMiniMaxApiKey: jest.fn(async () => undefined),
   clearSecureMiniMaxApiKey: jest.fn(async () => undefined),
@@ -121,12 +124,13 @@ describe('ChapterEditor toolbar', () => {
 
   it('renders all 9 short-label buttons', async () => {
     const onClose = jest.fn();
-    const { findByText } = render(
+    const { findByText, getByTestId } = render(
       <ChapterEditor chapterId={1} onClose={onClose} />,
     );
     for (const label of ['续写', '定稿', '版本', '清空', '摘要', '历史', '上下文', '草稿', '朗读']) {
       expect(await findByText(label)).toBeTruthy();
     }
+    expect(getByTestId('chapter-toolbar-scroll').props.horizontal).toBe(true);
   });
 
   it('does not render the old long labels', async () => {
