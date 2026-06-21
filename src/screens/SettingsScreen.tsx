@@ -50,7 +50,7 @@ export const SettingsScreen: React.FC = () => {
           </Card>
           <Card>
             <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>语音朗读</Text>
-            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>配置 MiniMax API Key、音色与语速，在章节编辑页朗读正文。</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>配置语音 API Key、URL、模型、音色与语速，在章节编辑页朗读正文。</Text>
             <Button label="语音设置" icon={Volume2} onPress={() => navigation.navigate('VoiceSettings')} />
           </Card>
         </Section>
@@ -79,6 +79,7 @@ export const SettingsScreen: React.FC = () => {
           <Card>
             <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>Tavo Mini</Text>
             <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Android 手机小说工作台 · {appVersionJson.versionName}</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>软件作者：ShineHe</Text>
           </Card>
         </Section>
       </ScrollView>
