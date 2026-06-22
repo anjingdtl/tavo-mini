@@ -86,7 +86,7 @@ interface BackupMeta {
 }
 
 interface BackupV2 {
-  format: 'tavo-mini-backup';
+  format: 'shinewriter-backup';
   format_version: 2;
   meta: BackupMeta;
   tables: Record<string, any[]>;
@@ -156,7 +156,7 @@ export async function createBackup(
   const rowCount = countAllRows(tables);
 
   const backup: BackupV2 = {
-    format: 'tavo-mini-backup',
+    format: 'shinewriter-backup',
     format_version: 2,
     meta: {
       app_version: appVersion,
@@ -240,7 +240,7 @@ export async function validateBackup(path: string): Promise<BackupValidation> {
     }
 
     // v2 format
-    if (backup.format !== 'tavo-mini-backup') {
+    if (backup.format !== 'shinewriter-backup') {
       errors.push(`format 字段不正确: ${backup.format}`);
     }
 
@@ -307,7 +307,7 @@ export async function listBackups(): Promise<BackupSummary[]> {
         let schemaVersion = 0;
         let createdAt = '';
 
-        if (backup.format === 'tavo-mini-backup' && backup.format_version >= 2) {
+        if (backup.format === 'shinewriter-backup' && backup.format_version >= 2) {
           kind = backup.meta.kind || 'automatic';
           appVersion = backup.meta.app_version || '';
           schemaVersion = backup.meta.schema_version || 0;

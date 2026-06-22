@@ -1,4 +1,4 @@
-# Tavo Mini
+# ShineWriter
 
 > **Current version: V1.6.3** (versionCode 52) · Last updated 2026-06-14
 
@@ -95,7 +95,7 @@ npm run apk:debug
 npm run apk:release
 ```
 
-APK output path: `dist/apk/{debug|release}/TavoMini-V<version>-{debug|release}.apk`
+APK output path: `dist/apk/{debug|release}/ShineWriter-V<version>-{debug|release}.apk`
 
 > The Gradle output at `android/app/build/outputs/apk/` is an intermediate artifact. Only use APKs from `dist/apk/`.
 
@@ -103,12 +103,12 @@ The `prebuild` step also auto-generates `src/constants/version.json` from `packa
 
 ### Release Signing
 
-The release keystore is at `android/keystores/tavo-mini-release.keystore`. Override credentials via environment variables:
+The release keystore is at `android/keystores/shine-writer-release.keystore`. Override credentials via environment variables:
 
 ```
-TAVO_MINI_RELEASE_STORE_PASSWORD
-TAVO_MINI_RELEASE_KEY_ALIAS
-TAVO_MINI_RELEASE_KEY_PASSWORD
+SHINE_WRITER_RELEASE_STORE_PASSWORD
+SHINE_WRITER_RELEASE_KEY_ALIAS
+SHINE_WRITER_RELEASE_KEY_PASSWORD
 ```
 
 ## Testing & Linting
@@ -127,7 +127,7 @@ npm run lint
 ## Project Structure
 
 ```
-tavo-mini/
+shinewriter/
   android/                           # Android native project
   scripts/                           # Build scripts (build-apk, generate-version-json, patch-sqlite)
   src/
@@ -162,7 +162,7 @@ tavo-mini/
 
 ## Database Schema
 
-SQLite database `tavo_mini.db`, 16 tables at schema version 8:
+SQLite database `shine_writer.db`, 16 tables at schema version 8:
 
 | Table | Purpose |
 |---|---|

@@ -8,7 +8,7 @@ jest.mock('../src/services/database', () => ({
   openDatabase: jest.fn(),
 }));
 
-test('renders the real Tavo Mini workspace tabs', async () => {
+test('renders the real ShineWriter workspace tabs', async () => {
   const screen = render(<App />);
 
   await waitFor(() => {

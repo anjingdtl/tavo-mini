@@ -1,8 +1,8 @@
 import * as Keychain from 'react-native-keychain';
 
-const LLM_API_KEY_SERVICE = 'com.tavomini.llm.api-key';
+const LLM_API_KEY_SERVICE = 'com.shinewriter.llm.api-key';
 const LLM_API_KEY_ACCOUNT = 'llm-api-key';
-const VOICE_API_KEY_SERVICE = 'com.tavomini.minimax.api-key';
+const VOICE_API_KEY_SERVICE = 'com.shinewriter.minimax.api-key';
 const VOICE_API_KEY_ACCOUNT = 'voice-api-key';
 const LEGACY_MINIMAX_API_KEY_ACCOUNT = 'minimax-api-key';
 

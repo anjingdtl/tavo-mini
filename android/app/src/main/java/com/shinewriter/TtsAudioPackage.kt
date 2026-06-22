@@ -1,4 +1,4 @@
-package com.tavomini
+package com.shinewriter
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
