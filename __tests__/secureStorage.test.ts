@@ -9,7 +9,7 @@ test('stores LLM API keys in keychain instead of plain app data', async () => {
   expect(Keychain.setGenericPassword).toHaveBeenCalledWith(
     'llm-api-key',
     'sk-real',
-    expect.objectContaining({ service: 'com.tavomini.llm.api-key' }),
+    expect.objectContaining({ service: 'com.shinewriter.llm.api-key' }),
   );
 });
 
@@ -25,7 +25,7 @@ test('stores and reads LLM API keys by config id', async () => {
   expect(Keychain.setGenericPassword).toHaveBeenCalledWith(
     'llm-api-key-42',
     'sk-alt',
-    expect.objectContaining({ service: 'com.tavomini.llm.api-key.42' }),
+    expect.objectContaining({ service: 'com.shinewriter.llm.api-key.42' }),
   );
 
   (Keychain.getGenericPassword as jest.Mock).mockResolvedValue({ username: 'llm-api-key-42', password: 'sk-alt' });
@@ -36,6 +36,6 @@ test('clears a config-specific LLM API key', async () => {
   await clearSecureLLMApiKey(42);
 
   expect(Keychain.resetGenericPassword).toHaveBeenCalledWith({
-    service: 'com.tavomini.llm.api-key.42',
+    service: 'com.shinewriter.llm.api-key.42',
   });
 });

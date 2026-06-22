@@ -1,4 +1,4 @@
-# Tavo Mini
+# Shine小说工作台
 
 > **当前版本：V1.6.3**（versionCode 52）· 最后更新 2026-06-14
 
@@ -95,7 +95,7 @@ npm run apk:debug
 npm run apk:release
 ```
 
-APK 产物路径：`dist/apk/{debug|release}/TavoMini-V<版本号>-{debug|release}.apk`
+APK 产物路径：`dist/apk/{debug|release}/ShineWriter-V<版本号>-{debug|release}.apk`
 
 > Gradle 原生输出 `android/app/build/outputs/apk/` 只是中间产物，请只使用 `dist/apk/` 下的 APK。
 
@@ -103,12 +103,12 @@ APK 产物路径：`dist/apk/{debug|release}/TavoMini-V<版本号>-{debug|releas
 
 ### Release 签名
 
-Release 签名 keystore 位于 `android/keystores/tavo-mini-release.keystore`。可通过环境变量覆盖密码：
+Release 签名 keystore 位于 `android/keystores/shine-writer-release.keystore`。可通过环境变量覆盖密码：
 
 ```
-TAVO_MINI_RELEASE_STORE_PASSWORD
-TAVO_MINI_RELEASE_KEY_ALIAS
-TAVO_MINI_RELEASE_KEY_PASSWORD
+SHINE_WRITER_RELEASE_STORE_PASSWORD
+SHINE_WRITER_RELEASE_KEY_ALIAS
+SHINE_WRITER_RELEASE_KEY_PASSWORD
 ```
 
 ## 测试与检查
@@ -127,7 +127,7 @@ npm run lint
 ## 项目结构
 
 ```
-tavo-mini/
+shinewriter/
   android/                           # Android 原生工程
   scripts/                           # 构建脚本（build-apk, generate-version-json, patch-sqlite）
   src/
@@ -162,7 +162,7 @@ tavo-mini/
 
 ## 数据库结构
 
-SQLite 数据库 `tavo_mini.db`，schema version 8，16 张表：
+SQLite 数据库 `shine_writer.db`，schema version 8，16 张表：
 
 | 表名 | 用途 |
 |---|---|

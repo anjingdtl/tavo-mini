@@ -2,7 +2,7 @@
 
 > **For agentic workers:** 按以下任务逐项实现，每完成一项打勾并校验。
 
-**Goal:** 在 Tavo Mini 章节编辑页接入 MiniMax Speech 2.8 语音合成，按预设音色朗读正文。
+**Goal:** 在 ShineWriter 章节编辑页接入 MiniMax Speech 2.8 语音合成，按预设音色朗读正文。
 
 **Architecture:** 配置存 SQLite settings + API Key 存 Keystore；HTTP 调用 MiniMax `/v1/t2a_v2` 获取 hex 音频；RNFS 写入临时 MP3；原生 Kotlin `MediaPlayer` 播放；Zustand store 统一状态。
 
@@ -29,7 +29,7 @@
 - Modify: `src/services/secureStorage.ts`
 
 **内容：**
-- 新增 `getSecureMiniMaxApiKey / setSecureMiniMaxApiKey / clearSecureMiniMaxApiKey`，service 为 `com.tavomini.minimax.api-key`。
+- 新增 `getSecureMiniMaxApiKey / setSecureMiniMaxApiKey / clearSecureMiniMaxApiKey`，service 为 `com.shinewriter.minimax.api-key`。
 
 ---
 
@@ -58,10 +58,10 @@
 ### Task 5: 原生音频播放模块
 
 **Files:**
-- Create: `android/app/src/main/java/com/tavomini/TtsAudioModule.kt`
-- Create: `android/app/src/main/java/com/tavomini/TtsAudioPackage.kt`
+- Create: `android/app/src/main/java/com/shinewriter/TtsAudioModule.kt`
+- Create: `android/app/src/main/java/com/shinewriter/TtsAudioPackage.kt`
 - Create: `src/native/TtsAudioModule.ts`
-- Modify: `android/app/src/main/java/com/tavomini/MainApplication.kt`
+- Modify: `android/app/src/main/java/com/shinewriter/MainApplication.kt`
 
 **内容：**
 - Kotlin 模块暴露 `playAudioFile(path)`（播放完成后 resolve）和 `stopAudio()`。

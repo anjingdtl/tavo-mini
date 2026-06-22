@@ -4,7 +4,7 @@ import { Download, Plus, Trash2, Upload } from 'lucide-react-native';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
-import { exportTavoNovelJSON, exportToMarkdown, exportToText } from '../services/exportService';
+import { exportShineWriterNovelJSON, exportToMarkdown, exportToText } from '../services/exportService';
 import { pickAndPreviewProjectPackage, importProjectPackage } from '../services/projectImport';
 import type { Project, ProjectMode } from '../types/novel';
 
@@ -55,7 +55,7 @@ export const ProjectListScreen: React.FC = () => {
           ? await exportToMarkdown(project.id)
           : type === 'txt'
             ? await exportToText(project.id)
-            : await exportTavoNovelJSON(project.id);
+            : await exportShineWriterNovelJSON(project.id);
       Alert.alert('导出成功', path);
     } catch (error: any) {
       Alert.alert('导出失败', error.message);

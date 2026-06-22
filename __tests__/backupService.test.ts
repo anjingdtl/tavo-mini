@@ -86,7 +86,7 @@ function makeFullTables(overrides: Record<string, TableRows> = {}): Record<strin
 function makeV2Backup(overrides: Record<string, TableRows> = {}, metaOverrides: Record<string, any> = {}) {
   const tables = makeFullTables(overrides);
   return {
-    format: 'tavo-mini-backup',
+    format: 'shinewriter-backup',
     format_version: 2,
     meta: {
       app_version: '1.3.8',
@@ -130,7 +130,7 @@ describe('backupService', () => {
     );
 
     const writtenJson = JSON.parse((RNFS.writeFile as jest.Mock).mock.calls[0][1]);
-    expect(writtenJson.format).toBe('tavo-mini-backup');
+    expect(writtenJson.format).toBe('shinewriter-backup');
     expect(writtenJson.format_version).toBe(2);
     expect(writtenJson.meta.app_version).toBe('1.2.0');
     expect(writtenJson.meta.schema_version).toBe(6);

@@ -73,7 +73,7 @@ export interface VoiceConfig {
 
 ### 4.3 安全存储
 
-- service：`com.tavomini.minimax.api-key`
+- service：`com.shinewriter.minimax.api-key`
 - account：`minimax-api-key`
 - 与现有 `secureStorage.ts` 风格一致，新增 `getSecureMiniMaxApiKey / setSecureMiniMaxApiKey / clearSecureMiniMaxApiKey`。
 
@@ -165,7 +165,7 @@ export function cancelSynthesis(): void;
 
 ### 8.1 Kotlin 模块 `TtsAudioModule`
 
-路径：`android/app/src/main/java/com/tavomini/TtsAudioModule.kt`
+路径：`android/app/src/main/java/com/shinewriter/TtsAudioModule.kt`
 
 暴露方法：
 - `playAudioFile(path: String, promise: Promise)`：用 `MediaPlayer` 播放本地音频，播放结束后释放资源。
@@ -257,8 +257,8 @@ interface VoiceState {
   - `src/store/voiceStore.ts`
   - `src/screens/VoiceSettingsScreen.tsx`
   - `src/native/TtsAudioModule.ts`
-  - `android/app/src/main/java/com/tavomini/TtsAudioModule.kt`
-  - `android/app/src/main/java/com/tavomini/TtsAudioPackage.kt`
+  - `android/app/src/main/java/com/shinewriter/TtsAudioModule.kt`
+  - `android/app/src/main/java/com/shinewriter/TtsAudioPackage.kt`
   - `__tests__/tts.test.ts`
 - 修改
   - `src/services/secureStorage.ts`（新增 MiniMax Key 方法）
