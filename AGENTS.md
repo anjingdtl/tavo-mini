@@ -1,4 +1,4 @@
-# tavo-mini
+# shinewriter
 
 基于 tavo-maker 小说家工作台的 **Android-only** React Native 应用。React Native CLI + TypeScript。
 
@@ -16,7 +16,7 @@
 
 ### APK 产物目录
 
-`dist/apk/{debug|release}/TavoMini-V<ver>-{debug|release}.apk` 是唯一交付路径。Gradle 原生 `android/app/build/outputs/apk/` 只是中间产物，不要手动复制 APK 到项目其他目录。
+`dist/apk/{debug|release}/ShineWriter-V<ver>-{debug|release}.apk` 是唯一交付路径。Gradle 原生 `android/app/build/outputs/apk/` 只是中间产物，不要手动复制 APK 到项目其他目录。
 
 ## 架构要点
 
@@ -32,7 +32,7 @@
 - `pipelineTaskStore` — 多阶段 AI 管线任务状态
 
 ### 数据层
-SQLite 数据库 `tavo_mini.db`，16 张表（schema version 5）。服务层 `src/services/database.ts` 提供全部 CRUD。表：projects、chapters、fragments、plotlines、project_plotlines、characters、worldbook_collections、worldbook_entries、notes、presets、llm_config、settings、project_resources、llm_usage_logs、freeform_documents、pipeline_tasks。
+SQLite 数据库 `shine_writer.db`，16 张表（schema version 5）。服务层 `src/services/database.ts` 提供全部 CRUD。表：projects、chapters、fragments、plotlines、project_plotlines、characters、worldbook_collections、worldbook_entries、notes、presets、llm_config、settings、project_resources、llm_usage_logs、freeform_documents、pipeline_tasks。
 
 ### 主题配色
 基准三色：`#439EA6`（主色）/ `#B0E0E3`（辅助）/ `#D7F1F4`（底色）。所有屏幕通过 `useThemeStore` 读取颜色，不硬编码。
@@ -53,7 +53,7 @@ SQLite 数据库 `tavo_mini.db`，16 张表（schema version 5）。服务层 `s
 
 ### Gradle 与签名
 - `android/build.gradle` 和 `settings.gradle` 使用阿里云 Maven 镜像，修改时不要删掉
-- Release 签名 keystore 在 `android/keystores/tavo-mini-release.keystore`，密码可通过 `TAVO_MINI_RELEASE_STORE_PASSWORD` / `TAVO_MINI_RELEASE_KEY_ALIAS` / `TAVO_MINI_RELEASE_KEY_PASSWORD` 环境变量覆盖
+- Release 签名 keystore 在 `android/keystores/shine-writer-release.keystore`，密码可通过 `SHINE_WRITER_RELEASE_STORE_PASSWORD` / `SHINE_WRITER_RELEASE_KEY_ALIAS` / `SHINE_WRITER_RELEASE_KEY_PASSWORD` 环境变量覆盖
 
 ### SQLite Patch
 - `scripts/patch-sqlite-storage-gradle.js` 在 `npm install` 后自动执行：将 `react-native-sqlite-storage` 的 Android `build.gradle` 中的 `jcenter()` 替换为 `mavenCentral()`
@@ -61,7 +61,7 @@ SQLite 数据库 `tavo_mini.db`，16 张表（schema version 5）。服务层 `s
 
 ### PNG 元数据原生模块
 - `src/native/PngMetadataModule.ts` 桥接 Android 原生模块解析 PNG tEXt 块（角色卡导入）
-- 相关 Kotlin 代码在 `android/app/src/main/java/com/tavomini/`
+- 相关 Kotlin 代码在 `android/app/src/main/java/com/shinewriter/`
 
 ## 测试
 

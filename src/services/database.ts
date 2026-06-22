@@ -27,7 +27,7 @@ import appVersionJson from '../constants/version.json';
 
 SQLite.enablePromise(true);
 
-const DB_NAME = 'tavo_mini.db';
+const DB_NAME = 'shine_writer.db';
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
 const NOTE_TEXT_CHUNK_CHARS = 120000;

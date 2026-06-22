@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 修复 TavoMini V1.6.0 草稿预览页面按钮点击后闪退的稳定性 bug，并把章节编辑工具栏从拥挤的单行重排为清晰的两行 4×4 布局。
+**Goal:** 修复 ShineWriter V1.6.0 草稿预览页面按钮点击后闪退的稳定性 bug，并把章节编辑工具栏从拥挤的单行重排为清晰的两行 4×4 布局。
 
 **Architecture:** 改动仅涉及 UI 层。草稿预览侧引入 `isMountedRef` + `adoptingRef` 守卫所有 setState 与采纳入口；采纳/删除/清空流程从"Alert 内嵌 async"重构为"Alert 单次确认 → 稳定 async 函数"模式；错误反馈从 Alert 改为组件顶部 inline 文字 + 4s 自动消失。章节编辑侧拆 `toolbar` 为两个 `toolbarRow`，移除 Button 的 `flex: 1` 强制均分，并在 `ui.tsx` 的 `Button` 组件上新增可选 `minWidth` prop。所有变更不引入新依赖（RTL 已在 devDependencies）。
 

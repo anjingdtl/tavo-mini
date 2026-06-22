@@ -49,7 +49,7 @@ jest.mock('@react-native-documents/picker', () => ({
 
 jest.mock('react-native-keychain', () => {
   const passwords = new Map();
-  const defaultService = 'com.tavomini.llm.api-key';
+  const defaultService = 'com.shinewriter.llm.api-key';
   return {
     setGenericPassword: jest.fn(async (_username, nextPassword, options = {}) => {
       passwords.set(options.service || defaultService, nextPassword);

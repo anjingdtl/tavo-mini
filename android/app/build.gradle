@@ -85,9 +85,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.tavomini"
+    namespace "com.shinewriter"
     defaultConfig {
-        applicationId "com.tavomini"
+        applicationId "com.shinewriter"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
 
@@ -114,10 +114,10 @@ android {
             keyPassword 'android'
         }
         release {
-            storeFile file('../keystores/tavo-mini-release.keystore')
-            storePassword System.getenv("TAVO_MINI_RELEASE_STORE_PASSWORD") ?: "tavo-mini-2026"
-            keyAlias System.getenv("TAVO_MINI_RELEASE_KEY_ALIAS") ?: "tavo-mini-release"
-            keyPassword System.getenv("TAVO_MINI_RELEASE_KEY_PASSWORD") ?: "tavo-mini-2026"
+            storeFile file('../keystores/shine-writer-release.keystore')
+            storePassword System.getenv("SHINE_WRITER_RELEASE_STORE_PASSWORD") ?: "shine-writer-2026"
+            keyAlias System.getenv("SHINE_WRITER_RELEASE_KEY_ALIAS") ?: "shine-writer-release"
+            keyPassword System.getenv("SHINE_WRITER_RELEASE_KEY_PASSWORD") ?: "shine-writer-2026"
         }
     }
     buildTypes {

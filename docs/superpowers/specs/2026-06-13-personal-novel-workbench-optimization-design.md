@@ -1,4 +1,4 @@
-# Tavo Mini 个人小说工作台优化改造设计
+# ShineWriter 个人小说工作台优化改造设计
 
 > 日期：2026-06-13
 > 状态：已确认，待实施
@@ -6,7 +6,7 @@
 
 ## 1. 背景
 
-Tavo Mini 已经具备项目、章节、自由写作、资料库、上下文构建、多阶段 AI
+ShineWriter 已经具备项目、章节、自由写作、资料库、上下文构建、多阶段 AI
 管线、密钥安全存储、数据库迁移、升级备份和多格式导出能力。当前短板不在于
 “能否生成”，而在于个人长期创作最需要的三个保障：
 
@@ -70,7 +70,7 @@ Phase 2 从 6 升至 7，Phase 3 从 7 升至 8。
 | `utils/debounce.ts` | 支持 `flush()` 的异步防抖，不负责 UI |
 | `services/revisionService.ts` | 创建、查询、恢复和清理正文快照 |
 | `services/backupService.ts` | 备份清单、校验、事务恢复和保留策略 |
-| `services/projectImport.ts` | 校验并导入 `.tavo-mini.json` |
+| `services/projectImport.ts` | 校验并导入 `.shinewriter.json` |
 | `services/contextInspector.ts` | 将上下文构建结果转换为可展示的来源清单 |
 | `services/generationDraftService.ts` | 保存生成结果及采纳状态 |
 | `services/pipelineResume.ts` | 计算可恢复阶段并续跑任务 |
@@ -175,7 +175,7 @@ CREATE INDEX idx_content_revisions_target
 
 ```json
 {
-  "format": "tavo-mini-backup",
+  "format": "shinewriter-backup",
   "format_version": 2,
   "meta": {
     "app_version": "1.4.0",
@@ -205,7 +205,7 @@ CREATE INDEX idx_content_revisions_target
 
 ### 5.4 项目 JSON 导入
 
-导出规范统一为 `tavo-mini-project-v2`，保留读取 v1 的兼容能力。
+导出规范统一为 `shinewriter-project-v2`，保留读取 v1 的兼容能力。
 
 导入流程：
 
@@ -426,7 +426,7 @@ ALTER TABLE llm_usage_logs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0;
 
 - 删除 `package.json` 的 `ios` 脚本。
 - 删除已跟踪的 `ios/` 目录。
-- README 重写为 Tavo Mini Android 开发、测试、构建、签名和产物说明。
+- README 重写为 ShineWriter Android 开发、测试、构建、签名和产物说明。
 - 修复版本检测测试，不再硬编码当前版本。
 - 清理现有 lint warning。
 - 增加 release checklist，要求测试、lint、APK 产物和版本信息验证。

@@ -11,7 +11,7 @@ export interface CharacterImportPayload {
   data: Record<string, unknown>;
 }
 
-interface TavoCharacterAsset {
+interface ShineWriterCharacterAsset {
   imagePath?: string;
   imageSourceName?: string;
   imageUpdatedAt?: string;
@@ -63,7 +63,7 @@ export function withCharacterImageAsset<T extends Record<string, any>>(
   data: T,
   imagePath: string,
   sourceName?: string,
-): T & { __tavo?: TavoCharacterAsset } {
+): T & { __tavo?: ShineWriterCharacterAsset } {
   return {
     ...data,
     __tavo: {
@@ -290,7 +290,7 @@ async function pickLocalFile(allowedTypes: string[]): Promise<{ localPath: strin
   if (!selected) return null;
 
   const [copy] = await keepLocalCopy({
-    files: [{ uri: selected.uri, fileName: selected.name || 'tavo-import' }],
+    files: [{ uri: selected.uri, fileName: selected.name || 'shinewriter-import' }],
     destination: 'cachesDirectory',
   });
   if (copy.status === 'error') {
@@ -299,7 +299,7 @@ async function pickLocalFile(allowedTypes: string[]): Promise<{ localPath: strin
 
   return {
     localPath: copy.localUri.replace(/^file:\/\//, ''),
-    name: selected.name || 'tavo-import',
+    name: selected.name || 'shinewriter-import',
     mimeType: selected.type,
   };
 }

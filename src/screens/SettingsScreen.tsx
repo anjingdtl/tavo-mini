@@ -77,8 +77,8 @@ export const SettingsScreen: React.FC = () => {
         </Section>
         <Section title="关于">
           <Card>
-            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>Tavo Mini</Text>
-            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Android 手机小说工作台 · {appVersionJson.versionName}</Text>
+            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>ShineWriter</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>Shine小说工作台 · {appVersionJson.versionName}</Text>
             <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>软件作者：ShineHe</Text>
           </Card>
         </Section>

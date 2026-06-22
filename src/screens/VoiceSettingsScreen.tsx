@@ -8,7 +8,7 @@ import { useVoiceStore } from '../store/voiceStore';
 import { VOICE_PRESETS, DEFAULT_VOICE_CONFIG, VOICE_API_URL_EXAMPLE } from '../constants/voice';
 import type { VoiceConfig, TtsAudioFormat, TtsSampleRate, TtsBitrate } from '../types/tts';
 
-const SAMPLE_TEXT = '这是 Tavo Mini 的语音测试，Hello world，一二三四五。';
+const SAMPLE_TEXT = '这是 ShineWriter 的语音测试，Hello world，一二三四五。';
 
 const FORMAT_OPTIONS: { value: TtsAudioFormat; label: string }[] = [
   { value: 'mp3', label: 'MP3' },

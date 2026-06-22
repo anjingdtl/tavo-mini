@@ -1,4 +1,4 @@
-package com.tavomini
+package com.shinewriter
 
 import android.media.MediaPlayer
 import android.util.Log
