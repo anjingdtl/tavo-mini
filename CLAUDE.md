@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-# tavo-mini
+# shinewriter
 
 基于 tavo-maker 小说家工作台的安卓手机应用。React Native 纯安卓实现。
 
@@ -20,8 +20,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 统一只从项目根目录的 `dist/apk/` 取 APK。Gradle 自己的 `android/app/build/outputs/apk/` 只是中间产物，不作为对外交付路径。
 
-- 测试 APK：`npm run apk:debug` → `dist/apk/debug/TavoMini-V<版本号>-debug.apk`
-- 正式 APK：`npm run apk:release` → `dist/apk/release/TavoMini-V<版本号>-release.apk`
+- 测试 APK：`npm run apk:debug` → `dist/apk/debug/ShineWriter-V<版本号>-debug.apk`
+- 正式 APK：`npm run apk:release` → `dist/apk/release/ShineWriter-V<版本号>-release.apk`
 
 构建前会自动执行 `prebuild`（`scripts/generate-version-json.js`），用 git commit count 生成 versionCode，写入 `src/constants/version.json`。
 
@@ -32,7 +32,7 @@ React Native CLI + TypeScript。Zustand 状态管理（4 个 store），SQLite �
 ### 文件结构
 
 ```
-tavo-mini/
+shinewriter/
   android/                           -- Android 原生工程
   scripts/                           -- 构建脚本（build-apk, generate-version-json, patch-sqlite）
   src/
@@ -62,7 +62,7 @@ tavo-mini/
 
 ### 数据层
 
-SQLite 数据库 `tavo_mini.db`，16 张表（schema version 5）：projects、chapters、fragments、plotlines、project_plotlines、characters、worldbook_collections、worldbook_entries、notes、presets、llm_config、settings、project_resources、llm_usage_logs、freeform_documents、pipeline_tasks。
+SQLite 数据库 `shine_writer.db`，16 张表（schema version 5）：projects、chapters、fragments、plotlines、project_plotlines、characters、worldbook_collections、worldbook_entries、notes、presets、llm_config、settings、project_resources、llm_usage_logs、freeform_documents、pipeline_tasks。
 
 服务层 `src/services/database.ts` 提供全部 CRUD 操作。
 

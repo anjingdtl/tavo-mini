@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-               BuildableName = "TavoMini.app"
-               BlueprintName = "TavoMini"
-               ReferencedContainer = "container:TavoMini.xcodeproj">
+               BuildableName = "ShineWriter.app"
+               BlueprintName = "ShineWriter"
+               ReferencedContainer = "container:ShineWriter.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -33,9 +33,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "00E356ED1AD99517003FC87E"
-               BuildableName = "TavoMiniTests.xctest"
-               BlueprintName = "TavoMiniTests"
-               ReferencedContainer = "container:TavoMini.xcodeproj">
+               BuildableName = "ShineWriterTests.xctest"
+               BlueprintName = "ShineWriterTests"
+               ReferencedContainer = "container:ShineWriter.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -55,9 +55,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "TavoMini.app"
-            BlueprintName = "TavoMini"
-            ReferencedContainer = "container:TavoMini.xcodeproj">
+            BuildableName = "ShineWriter.app"
+            BlueprintName = "ShineWriter"
+            ReferencedContainer = "container:ShineWriter.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -72,9 +72,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "TavoMini.app"
-            BlueprintName = "TavoMini"
-            ReferencedContainer = "container:TavoMini.xcodeproj">
+            BuildableName = "ShineWriter.app"
+            BlueprintName = "ShineWriter"
+            ReferencedContainer = "container:ShineWriter.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

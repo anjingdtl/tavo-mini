@@ -1,8 +1,8 @@
-# Tavo Mini Personal Novel Workbench Optimization Implementation Plan
+# ShineWriter Personal Novel Workbench Optimization Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 分三个可独立发布的阶段，把 Tavo Mini 升级为防丢、可恢复、可解释并适合长篇个人创作的 Android 小说工作台。
+**Goal:** 分三个可独立发布的阶段，把 ShineWriter 升级为防丢、可恢复、可解释并适合长篇个人创作的 Android 小说工作台。
 
 **Architecture:** 保持 React Native + Zustand + SQLite 的现有结构，所有业务数据继续通过 `services/database.ts` 访问。新增版本历史、生成草稿、上下文追踪、管线恢复、搜索与统计等聚焦服务，每个阶段通过独立数据库迁移增量交付。
 
@@ -493,7 +493,7 @@ Expected: 0 errors。
 
 Run: `npm run apk:debug`
 
-Expected: `dist/apk/debug/TavoMini-V1.4.0-debug.apk` 存在。
+Expected: `dist/apk/debug/ShineWriter-V1.4.0-debug.apk` 存在。
 
 - [ ] **Step 6: Commit**
 
@@ -708,7 +708,7 @@ Run: `npm run lint`
 
 Run: `npm run apk:debug`
 
-Expected: 全部通过，APK 位于 `dist/apk/debug/TavoMini-V1.5.0-debug.apk`。
+Expected: 全部通过，APK 位于 `dist/apk/debug/ShineWriter-V1.5.0-debug.apk`。
 
 - [ ] **Step 6: Commit**
 
@@ -949,11 +949,11 @@ Expected: 0 errors。
 
 Run: `npm run apk:debug`
 
-Expected: `dist/apk/debug/TavoMini-V1.6.0-debug.apk`。
+Expected: `dist/apk/debug/ShineWriter-V1.6.0-debug.apk`。
 
 Run: `npm run apk:release`
 
-Expected: `dist/apk/release/TavoMini-V1.6.0-release.apk`。
+Expected: `dist/apk/release/ShineWriter-V1.6.0-release.apk`。
 
 - [ ] **Step 5: Android 真机检查**
 

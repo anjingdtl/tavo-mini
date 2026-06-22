@@ -39,11 +39,11 @@ export function parseProjectPackage(text: string): ParsedProjectPackage {
   }
 
   const spec = String(data.spec || '');
-  if (!spec.startsWith('tavo-mini-project')) {
+  if (!spec.startsWith('tavo-mini-project') && !spec.startsWith('shinewriter-project')) {
     throw new Error(`不支持的项目包格式：${spec || '缺少 spec 字段'}`);
   }
 
-  const specVersionMatch = spec.match(/tavo-mini-project-v(\d+)/);
+  const specVersionMatch = spec.match(/(?:tavo-mini-project|shinewriter-project)-v(\d+)/);
   if (!specVersionMatch) {
     throw new Error(`无法识别的项目包版本：${spec}`);
   }
@@ -259,7 +259,7 @@ export async function pickAndPreviewProjectPackage(): Promise<{
   let localPath: string;
   try {
     const [copy] = await keepLocalCopy({
-      files: [{ uri: selected.uri, fileName: selected.name || 'tavo-import' }],
+      files: [{ uri: selected.uri, fileName: selected.name || 'shinewriter-import' }],
       destination: 'cachesDirectory',
     });
     if (copy.status === 'error') {

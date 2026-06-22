@@ -1,4 +1,4 @@
-package com.tavomini
+package com.shinewriter
 
 import android.app.Application
 import com.facebook.react.PackageList

@@ -43,7 +43,7 @@ const pkgVersion = require('../package.json').version;
 const versionName = rawVersion.includes('$') ? `V${pkgVersion}` : rawVersion;
 const source = path.join(androidDir, 'app', 'build', 'outputs', 'apk', variant, `app-${variant}.apk`);
 const outDir = path.join(projectRoot, 'dist', 'apk', variant);
-const target = path.join(outDir, `TavoMini-${versionName}-${variant}.apk`);
+const target = path.join(outDir, `ShineWriter-${versionName}-${variant}.apk`);
 
 if (!fs.existsSync(source)) {
   console.error(`APK not found: ${source}`);

@@ -34,7 +34,7 @@ export async function exportToText(projectId: number): Promise<string> {
   return saveTextDocument(`${projectName}.txt`, `﻿${text}`, 'text/plain');
 }
 
-export async function exportTavoNovelJSON(projectId: number): Promise<string> {
+export async function exportShineWriterNovelJSON(projectId: number): Promise<string> {
   const project = await db.getProjectById(projectId);
   const [chapters, fragments, plotlines, characters, worldbookEntries, notes, presets] = await Promise.all([
     db.getChaptersByProject(projectId),
@@ -47,7 +47,7 @@ export async function exportTavoNovelJSON(projectId: number): Promise<string> {
   ]);
 
   const data = {
-    spec: 'tavo-mini-project-v2',
+    spec: 'shinewriter-project-v2',
     version: '2.0',
     exportedAt: new Date().toISOString(),
     project,
@@ -67,7 +67,7 @@ export async function exportTavoNovelJSON(projectId: number): Promise<string> {
   };
 
   const projectName = safeFileName(project?.name || 'novel-project');
-  return saveTextDocument(`${projectName}.tavo-mini.json`, JSON.stringify(data, null, 2), 'application/json');
+  return saveTextDocument(`${projectName}.shinewriter.json`, JSON.stringify(data, null, 2), 'application/json');
 }
 
 function safeJson(text: string): unknown {
@@ -133,7 +133,7 @@ export async function exportPresetJSON(presetId: number): Promise<string> {
   if (!preset) throw new Error('未找到预设。');
   const fileName = safeFileName(preset.name || 'preset') + '.json';
   const exportData = {
-    spec: 'tavo-preset-v1',
+    spec: 'shinewriter-preset-v1',
     name: preset.name,
     system_prompt: preset.system_prompt,
     writing_style: preset.writing_style,
