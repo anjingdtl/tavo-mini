@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import { Save } from 'lucide-react-native';
+import { Alert, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { RotateCcw, Save } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import { DEFAULT_CONTEXT_CONFIG } from '../constants/defaults';
 import { useSettingsStore } from '../store/settingsStore';
 import { useThemeStore } from '../store/themeStore';
 import type { ContextConfig, ContextStrategy } from '../types/novel';
@@ -35,6 +36,24 @@ export const ContextConfigScreen: React.FC = () => {
   const save = async () => {
     await setContextConfig(draft);
     Toast.show({ type: 'success', text1: '上下文配置已保存' });
+  };
+
+  const handleReset = () => {
+    Alert.alert(
+      '恢复默认配置',
+      '将把所有上下文参数重置为初始推荐值。此操作只更新当前表单，需点击「保存配置」才会生效。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '恢复默认',
+          style: 'destructive',
+          onPress: () => {
+            setDraft({ ...DEFAULT_CONTEXT_CONFIG });
+            Toast.show({ type: 'info', text1: '已恢复默认值，请点击保存生效' });
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -80,7 +99,10 @@ export const ContextConfigScreen: React.FC = () => {
           </View>
           <Switch value={draft.worldbookRecursive !== false} onValueChange={(worldbookRecursive) => setDraft({ ...draft, worldbookRecursive })} />
         </View>
-        <Button label="保存配置" icon={Save} onPress={save} />
+        <View style={styles.buttonRow}>
+          <Button label="恢复默认" icon={RotateCcw} variant="ghost" flex onPress={handleReset} />
+          <Button label="保存配置" icon={Save} flex onPress={save} />
+        </View>
       </ScrollView>
     </Screen>
   );
@@ -97,4 +119,5 @@ const styles = StyleSheet.create({
   switchText: { flex: 1 },
   switchTitle: { fontSize: 15, fontWeight: '800' },
   switchHint: { fontSize: 12, marginTop: 2 },
+  buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
 });

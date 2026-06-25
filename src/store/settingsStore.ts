@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as db from '../services/database';
+import { DEFAULT_CONTEXT_CONFIG } from '../constants/defaults';
 import type { ContextConfig, LLMConfig } from '../types/novel';
 
 interface SettingsState {
@@ -14,20 +15,6 @@ interface SettingsState {
   setContextConfig: (config: ContextConfig) => Promise<void>;
 }
 
-const defaultContextConfig: ContextConfig = {
-  strategy: 'sliding',
-  slidingWindowSize: 4000,
-  customRangeStart: 0,
-  customRangeEnd: -1,
-  resourceBudget: 2000,
-  includeResources: true,
-  summaryBudgetTokens: 20000,
-  memoryTopK: 10,
-  recentChapterCount: 3,
-  worldbookRecursive: true,
-  worldbookScanDepth: 4,
-};
-
 const emptyLLMConfig: LLMConfig = {
   id: 1,
   name: '默认配置',
@@ -40,7 +27,7 @@ const emptyLLMConfig: LLMConfig = {
 export const useSettingsStore = create<SettingsState>((set) => ({
   llmConfig: emptyLLMConfig,
   llmConfigs: [emptyLLMConfig],
-  contextConfig: defaultContextConfig,
+  contextConfig: DEFAULT_CONTEXT_CONFIG,
 
   loadSettings: async () => {
     const [llmConfigs, contextConfig] = await Promise.all([db.getLLMConfigs(), db.getContextConfig()]);
