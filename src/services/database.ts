@@ -14,6 +14,7 @@ import type {
 import type { PipelineConfig } from '../types/pipeline';
 import type { VoiceConfig, TtsEngine, SystemTtsConfig } from '../types/tts';
 import { DEFAULT_VOICE_CONFIG, DEFAULT_SYSTEM_TTS_CONFIG } from '../constants/voice';
+import { DEFAULT_CONTEXT_CONFIG } from '../constants/defaults';
 import {
   clearSecureLLMApiKey,
   getSecureLLMApiKey,
@@ -1355,17 +1356,17 @@ export async function setSetting(key: string, value: string): Promise<void> {
 
 export async function getContextConfig(): Promise<ContextConfig> {
   return {
-    strategy: ((await getSetting('context_strategy')) as ContextConfig['strategy']) || 'sliding',
-    slidingWindowSize: Number((await getSetting('sliding_window_size')) || 4000),
-    customRangeStart: Number((await getSetting('custom_range_start')) || 0),
-    customRangeEnd: Number((await getSetting('custom_range_end')) || -1),
-    resourceBudget: Number((await getSetting('resource_budget')) || 2000),
+    strategy: ((await getSetting('context_strategy')) as ContextConfig['strategy']) || DEFAULT_CONTEXT_CONFIG.strategy,
+    slidingWindowSize: Number((await getSetting('sliding_window_size')) || DEFAULT_CONTEXT_CONFIG.slidingWindowSize),
+    customRangeStart: Number((await getSetting('custom_range_start')) || DEFAULT_CONTEXT_CONFIG.customRangeStart),
+    customRangeEnd: Number((await getSetting('custom_range_end')) || DEFAULT_CONTEXT_CONFIG.customRangeEnd),
+    resourceBudget: Number((await getSetting('resource_budget')) || DEFAULT_CONTEXT_CONFIG.resourceBudget),
     includeResources: (await getSetting('include_resources')) !== 'false',
-    summaryBudgetTokens: Number((await getSetting('summary_budget_tokens')) || 20000),
-    memoryTopK: Number((await getSetting('memory_top_k')) || 10),
-    recentChapterCount: Number((await getSetting('recent_chapter_count')) || 3),
+    summaryBudgetTokens: Number((await getSetting('summary_budget_tokens')) || DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens),
+    memoryTopK: Number((await getSetting('memory_top_k')) || DEFAULT_CONTEXT_CONFIG.memoryTopK),
+    recentChapterCount: Number((await getSetting('recent_chapter_count')) || DEFAULT_CONTEXT_CONFIG.recentChapterCount),
     worldbookRecursive: (await getSetting('worldbook_recursive')) !== 'false',
-    worldbookScanDepth: Number((await getSetting('worldbook_scan_depth')) || 4),
+    worldbookScanDepth: Number((await getSetting('worldbook_scan_depth')) || DEFAULT_CONTEXT_CONFIG.worldbookScanDepth),
   };
 }
 
@@ -1376,11 +1377,21 @@ export async function setContextConfig(config: ContextConfig): Promise<void> {
   await setSetting('custom_range_end', String(config.customRangeEnd));
   await setSetting('resource_budget', String(config.resourceBudget));
   await setSetting('include_resources', String(config.includeResources));
-  await setSetting('summary_budget_tokens', String(config.summaryBudgetTokens ?? 20000));
-  await setSetting('memory_top_k', String(config.memoryTopK ?? 10));
-  await setSetting('recent_chapter_count', String(config.recentChapterCount ?? 3));
-  await setSetting('worldbook_recursive', String(config.worldbookRecursive ?? true));
-  await setSetting('worldbook_scan_depth', String(config.worldbookScanDepth ?? 4));
+  await setSetting('summary_budget_tokens', String(config.summaryBudgetTokens ?? DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens));
+  await setSetting('memory_top_k', String(config.memoryTopK ?? DEFAULT_CONTEXT_CONFIG.memoryTopK));
+  await setSetting('recent_chapter_count', String(config.recentChapterCount ?? DEFAULT_CONTEXT_CONFIG.recentChapterCount));
+  await setSetting('worldbook_recursive', String(config.worldbookRecursive ?? DEFAULT_CONTEXT_CONFIG.worldbookRecursive));
+  await setSetting('worldbook_scan_depth', String(config.worldbookScanDepth ?? DEFAULT_CONTEXT_CONFIG.worldbookScanDepth));
+}
+
+export async function getBackgroundPipelineEnabled(): Promise<boolean> {
+  const v = await getSetting('background_pipeline_enabled');
+  if (v == null) return true; // 默认开启
+  return v !== 'false';
+}
+
+export async function setBackgroundPipelineEnabled(enabled: boolean): Promise<void> {
+  await setSetting('background_pipeline_enabled', String(enabled));
 }
 
 export async function getVoiceConfig(): Promise<VoiceConfig> {
