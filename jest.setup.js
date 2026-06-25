@@ -114,5 +114,13 @@ jest.mock('react-native', () => {
       Promise.resolve([{ key: 'zh-cn-x', name: '中文女声', locale: 'zh-CN' }]),
     ),
   };
+  RN.NativeModules.PipelineForeground = {
+    start: jest.fn(() => Promise.resolve()),
+    updateProgress: jest.fn(() => Promise.resolve()),
+    notifyComplete: jest.fn(() => Promise.resolve()),
+    notifyFailed: jest.fn(() => Promise.resolve()),
+    stop: jest.fn(() => Promise.resolve()),
+    isAvailable: jest.fn(() => Promise.resolve(true)),
+  };
   return RN;
 });
