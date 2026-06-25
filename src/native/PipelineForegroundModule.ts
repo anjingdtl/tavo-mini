@@ -8,6 +8,7 @@ interface PipelineForegroundNative {
   notifyFailed(taskId: string, title: string, message: string): Promise<void>;
   stop(taskId: string): Promise<void>;
   isAvailable(): Promise<boolean>;
+  consumeDeepLinkTaskId(): Promise<string | null>;
 }
 
 const native: PipelineForegroundNative | undefined = NativeModules.PipelineForeground;
@@ -97,6 +98,19 @@ class PipelineForegroundBridge {
       return await native.isAvailable();
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * 读取并清除通知点击暂存的 taskId（App 冷启动或从后台恢复时调用）。
+   * 返回非 null 时，调用方应导航到对应任务的 PipelineResult。
+   */
+  async consumeDeepLinkTaskId(): Promise<string | null> {
+    if (!native) return null;
+    try {
+      return await native.consumeDeepLinkTaskId();
+    } catch {
+      return null;
     }
   }
 }

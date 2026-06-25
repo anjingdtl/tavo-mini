@@ -7,12 +7,14 @@ interface SettingsState {
   llmConfig: LLMConfig;
   llmConfigs: LLMConfig[];
   contextConfig: ContextConfig;
+  backgroundPipelineEnabled: boolean;
   loadSettings: () => Promise<void>;
   setLLMConfig: (baseUrl: string, apiKey: string, modelName: string) => Promise<void>;
   saveLLMConfig: (config: Partial<LLMConfig>) => Promise<number>;
   setActiveLLMConfig: (id: number) => Promise<void>;
   deleteLLMConfig: (id: number) => Promise<void>;
   setContextConfig: (config: ContextConfig) => Promise<void>;
+  setBackgroundPipelineEnabled: (enabled: boolean) => Promise<void>;
 }
 
 const emptyLLMConfig: LLMConfig = {
@@ -28,11 +30,19 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   llmConfig: emptyLLMConfig,
   llmConfigs: [emptyLLMConfig],
   contextConfig: DEFAULT_CONTEXT_CONFIG,
+  backgroundPipelineEnabled: true,
 
   loadSettings: async () => {
-    const [llmConfigs, contextConfig] = await Promise.all([db.getLLMConfigs(), db.getContextConfig()]);
+    const [llmConfigs, contextConfig, backgroundPipelineEnabled] = await Promise.all([
+      db.getLLMConfigs(),
+      db.getContextConfig(),
+      db.getBackgroundPipelineEnabled(),
+    ]);
     const llmConfig = llmConfigs.find((config) => config.is_active === 1) || llmConfigs[0] || emptyLLMConfig;
-    set({ llmConfig, llmConfigs, contextConfig });
+    set({ llmConfig, llmConfigs, contextConfig, backgroundPipelineEnabled });
+    // 同步到 PipelineForeground 桥接，决定流水线入口是否起前台服务
+    const { PipelineForeground } = require('../native/PipelineForegroundModule');
+    PipelineForeground.setEnabled(backgroundPipelineEnabled);
   },
 
   setLLMConfig: async (baseUrl, apiKey, modelName) => {
@@ -67,5 +77,12 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setContextConfig: async (contextConfig) => {
     await db.setContextConfig(contextConfig);
     set({ contextConfig });
+  },
+
+  setBackgroundPipelineEnabled: async (enabled) => {
+    await db.setBackgroundPipelineEnabled(enabled);
+    set({ backgroundPipelineEnabled: enabled });
+    const { PipelineForeground } = require('../native/PipelineForegroundModule');
+    PipelineForeground.setEnabled(enabled);
   },
 }));
