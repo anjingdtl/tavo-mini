@@ -121,6 +121,7 @@ jest.mock('react-native', () => {
     notifyFailed: jest.fn(() => Promise.resolve()),
     stop: jest.fn(() => Promise.resolve()),
     isAvailable: jest.fn(() => Promise.resolve(true)),
+    consumeDeepLinkTaskId: jest.fn(() => Promise.resolve(null)),
   };
   return RN;
 });
