@@ -5,7 +5,10 @@ const mockLoadVoiceConfig = jest.fn();
 const mockSaveVoiceConfig = jest.fn(async () => undefined);
 const mockSetVoiceApiKey = jest.fn(async () => undefined);
 const mockPlayChapter = jest.fn(async () => undefined);
+const mockSaveSystemTtsConfig = jest.fn(async () => undefined);
+const mockSetEngine = jest.fn(async () => undefined);
 const mockConfiguredVoiceState = {
+  engine: 'cloud' as const,
   config: {
     apiUrl: 'https://voice.example.test/v1/audio',
     model: 'custom-voice-model',
@@ -18,9 +21,19 @@ const mockConfiguredVoiceState = {
     format: 'mp3',
   },
   apiKey: 'voice-key',
+  systemConfig: {
+    enginePackage: '',
+    voiceKey: '',
+    language: 'zh-CN',
+    speed: 1,
+    pitch: 1,
+    volume: 1,
+  },
   loadVoiceConfig: mockLoadVoiceConfig,
   saveVoiceConfig: mockSaveVoiceConfig,
   setVoiceApiKey: mockSetVoiceApiKey,
+  saveSystemTtsConfig: mockSaveSystemTtsConfig,
+  setEngine: mockSetEngine,
   playChapter: mockPlayChapter,
 };
 let mockVoiceState = mockConfiguredVoiceState;

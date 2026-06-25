@@ -23,6 +23,15 @@ jest.mock('../src/services/database', () => ({
     bitrate: 128000,
     format: 'mp3',
   })),
+  getTtsEngine: jest.fn(async () => 'system'),
+  getSystemTtsConfig: jest.fn(async () => ({
+    enginePackage: '',
+    voiceKey: '',
+    language: 'zh-CN',
+    speed: 1,
+    pitch: 1,
+    volume: 1,
+  })),
 }));
 
 jest.mock('../src/services/secureStorage', () => ({

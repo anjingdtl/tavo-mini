@@ -12,8 +12,8 @@ import type {
   ProjectMode,
 } from '../types/novel';
 import type { PipelineConfig } from '../types/pipeline';
-import type { VoiceConfig } from '../types/tts';
-import { DEFAULT_VOICE_CONFIG } from '../constants/voice';
+import type { VoiceConfig, TtsEngine, SystemTtsConfig } from '../types/tts';
+import { DEFAULT_VOICE_CONFIG, DEFAULT_SYSTEM_TTS_CONFIG } from '../constants/voice';
 import {
   clearSecureLLMApiKey,
   getSecureLLMApiKey,
@@ -1396,6 +1396,30 @@ export async function getVoiceConfig(): Promise<VoiceConfig> {
 
 export async function setVoiceConfig(config: VoiceConfig): Promise<void> {
   await setSetting('voice_config', JSON.stringify(config));
+}
+
+export async function getTtsEngine(): Promise<TtsEngine> {
+  const value = await getSetting('tts_engine');
+  return value === 'cloud' ? 'cloud' : 'system';
+}
+
+export async function setTtsEngine(engine: TtsEngine): Promise<void> {
+  await setSetting('tts_engine', engine);
+}
+
+export async function getSystemTtsConfig(): Promise<SystemTtsConfig> {
+  const raw = await getSetting('system_tts_config');
+  if (!raw) return DEFAULT_SYSTEM_TTS_CONFIG;
+  try {
+    const parsed = JSON.parse(raw) as Partial<SystemTtsConfig>;
+    return { ...DEFAULT_SYSTEM_TTS_CONFIG, ...parsed };
+  } catch {
+    return DEFAULT_SYSTEM_TTS_CONFIG;
+  }
+}
+
+export async function setSystemTtsConfig(config: SystemTtsConfig): Promise<void> {
+  await setSetting('system_tts_config', JSON.stringify(config));
 }
 
 export async function logLLMUsage(fields: {

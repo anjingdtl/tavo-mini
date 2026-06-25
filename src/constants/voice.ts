@@ -1,4 +1,9 @@
-import type { VoiceConfig, VoicePreset } from '../types/tts';
+import type {
+  VoiceConfig,
+  VoicePreset,
+  TtsEngine,
+  SystemTtsConfig,
+} from '../types/tts';
 
 export const MAX_TTS_CHARS = 10000;
 export const VOICE_API_URL_EXAMPLE = 'https://api.minimaxi.com/v1/t2a_v2';
@@ -31,3 +36,20 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   bitrate: 128000,
   format: 'mp3',
 };
+
+export const DEFAULT_TTS_ENGINE: TtsEngine = 'system';
+
+export const DEFAULT_SYSTEM_TTS_CONFIG: SystemTtsConfig = {
+  enginePackage: '',
+  voiceKey: '',
+  language: 'zh-CN',
+  speed: 1.0,
+  pitch: 1.0,
+  volume: 1.0,
+};
+
+export const SYSTEM_TTS_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'zh-CN', label: '简体中文' },
+  { value: 'zh-TW', label: '繁體中文' },
+  { value: 'en-US', label: 'English (US)' },
+];

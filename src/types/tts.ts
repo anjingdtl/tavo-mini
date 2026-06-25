@@ -22,3 +22,35 @@ export interface VoicePreset {
   id: string;
   name: string;
 }
+
+export type TtsEngine = 'system' | 'cloud';
+
+export interface SystemTtsConfig {
+  enginePackage: string;
+  voiceKey: string;
+  language: string;
+  speed: number;
+  pitch: number;
+  volume: number;
+}
+
+export interface SystemTtsEngineInfo {
+  name: string;
+  label: string;
+  isDefault: boolean;
+}
+
+export interface SystemTtsVoiceInfo {
+  key: string;
+  name: string;
+  locale: string;
+}
+
+export interface SpeakConfig {
+  enginePackage: string;
+  voiceKey: string;
+  language: string;
+  speed: number;
+  pitch: number;
+  volume: number;
+}
