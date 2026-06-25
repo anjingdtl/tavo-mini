@@ -1,0 +1,130 @@
+package com.shinewriter
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import androidx.core.app.NotificationCompat
+
+/**
+ * 写作流水线前台保活服务。
+ *
+ * 职责仅限两件事：
+ *  1. startForeground 持有常驻通知，让系统把 App 当作前台进程，
+ *     避免 JS 线程在 App 切后台时被冻结/杀死。
+ *  2. 持有 PARTIAL_WAKE_LOCK 防止 CPU 休眠。
+ *
+ * 不做任何 LLM 网络调用、不读写数据库、不触碰密钥——所有业务在 JS 层。
+ * 终态通知（完成/失败）由 PipelineForegroundModule 直接通过
+ * NotificationManager 发出，不走本 Service。
+ */
+class PipelineForegroundService : Service() {
+
+  private var wakeLock: PowerManager.WakeLock? = null
+  private var currentTaskId: String? = null
+
+  override fun onBind(intent: Intent?): IBinder? = null
+
+  override fun onCreate() {
+    super.onCreate()
+    ensureChannels()
+  }
+
+  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
+    val title = intent?.getStringExtra(EXTRA_TITLE) ?: "ShineWriter 写作中"
+    val stageLabel = intent?.getStringExtra(EXTRA_STAGE_LABEL) ?: "正在生成"
+
+    if (taskId != null) currentTaskId = taskId
+
+    startForegroundInternal(title, stageLabel)
+    acquireWakeLock()
+
+    return START_NOT_STICKY
+  }
+
+  override fun onDestroy() {
+    releaseWakeLock()
+    super.onDestroy()
+  }
+
+  private fun startForegroundInternal(title: String, stageLabel: String) {
+    val notification = buildOngoingNotification(title, stageLabel)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+      // Android 14+ 必须指定 foregroundServiceType
+      startForeground(ONGOING_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+    } else {
+      startForeground(ONGOING_NOTIFICATION_ID, notification)
+    }
+  }
+
+  private fun ensureChannels() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      // 运行中常驻通知：低重要性，无声
+      val ongoing = NotificationChannel(
+        CHANNEL_ONGOING,
+        "写作运行状态",
+        NotificationManager.IMPORTANCE_LOW
+      ).apply {
+        description = "显示当前流水线写作进度"
+        setShowBadge(false)
+      }
+      // 完成通知：默认重要性，可响
+      val done = NotificationChannel(
+        CHANNEL_DONE,
+        "写作完成通知",
+        NotificationManager.IMPORTANCE_DEFAULT
+      ).apply {
+        description = "流水线完成、失败或取消时通知"
+      }
+      nm.createNotificationChannels(listOf(ongoing, done))
+    }
+  }
+
+  private fun buildOngoingNotification(title: String, stageLabel: String): Notification {
+    val text = if (stageLabel.isNotBlank()) "$title · $stageLabel" else title
+    return NotificationCompat.Builder(this, CHANNEL_ONGOING)
+      .setContentTitle("ShineWriter 写作中")
+      .setContentText(text)
+      .setSmallIcon(android.R.drawable.stat_notify_sync)
+      .setOngoing(true)
+      .setOnlyAlertOnce(true)
+      .setPriority(NotificationCompat.PRIORITY_LOW)
+      .build()
+  }
+
+  private fun acquireWakeLock() {
+    if (wakeLock?.isHeld == true) return
+    val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
+    wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+  }
+
+  private fun releaseWakeLock() {
+    try {
+      if (wakeLock?.isHeld == true) wakeLock?.release()
+    } catch (e: Exception) {
+      // best-effort
+    }
+    wakeLock = null
+  }
+
+  companion object {
+    const val EXTRA_TASK_ID = "shinewriter.pipeline.task_id"
+    const val EXTRA_TITLE = "shinewriter.pipeline.title"
+    const val EXTRA_STAGE_LABEL = "shinewriter.pipeline.stage_label"
+    const val ONGOING_NOTIFICATION_ID = 0x5A01
+    const val DONE_NOTIFICATION_BASE_ID = 0x5B00
+    private const val CHANNEL_ONGOING = "pipeline_ongoing"
+    private const val CHANNEL_DONE = "pipeline_done"
+    private const val WAKE_LOCK_TAG = "shinewriter:pipeline"
+    private const val WAKE_LOCK_TIMEOUT_MS = 30 * 60 * 1000L // 30 分钟上限
+  }
+}

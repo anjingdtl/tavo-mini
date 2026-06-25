@@ -62,6 +62,20 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
   },
 }));
 
+jest.mock('../src/native/PipelineForegroundModule', () => ({
+  PipelineForeground: {
+    setEnabled: jest.fn(),
+    isEnabled: jest.fn(() => false),
+    start: jest.fn(() => Promise.resolve()),
+    updateProgress: jest.fn(() => Promise.resolve()),
+    notifyComplete: jest.fn(() => Promise.resolve()),
+    notifyFailed: jest.fn(() => Promise.resolve()),
+    stop: jest.fn(() => Promise.resolve()),
+    isAvailable: jest.fn(() => Promise.resolve(false)),
+    consumeDeepLinkTaskId: jest.fn(() => Promise.resolve(null)),
+  },
+}));
+
 const chapter: Chapter = {
   id: 1,
   project_id: 10,

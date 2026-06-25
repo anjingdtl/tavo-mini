@@ -1,11 +1,12 @@
 import React, { useEffect } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { Database, Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine, BarChart3, Volume2 } from 'lucide-react-native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, Header, Screen, Section, SegmentedControl, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
+import { useSettingsStore } from '../store/settingsStore';
 import * as db from '../services/database';
 import type { ThemeMode } from '../types/theme';
 import appVersionJson from '../constants/version.json';
@@ -19,6 +20,7 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
 export const SettingsScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { theme, mode, setMode } = useThemeStore();
+  const { backgroundPipelineEnabled, setBackgroundPipelineEnabled } = useSettingsStore();
   const unresolvedCount = usePipelineTaskStore((s) => s.getUnresolvedCount());
   const loadFromDB = usePipelineTaskStore((s) => s.loadFromDB);
 
@@ -30,6 +32,26 @@ export const SettingsScreen: React.FC = () => {
     setMode(next);
     await db.setSetting('theme_mode', next);
     Toast.show({ type: 'success', text1: '主题已切换' });
+  };
+
+  const toggleBackgroundPipeline = async (value: boolean) => {
+    if (value) {
+      // 开启时检查通知可用性，未授权则引导用户去系统设置
+      const { PipelineForeground } = require('../native/PipelineForegroundModule');
+      const ok = await PipelineForeground.isAvailable();
+      if (!ok) {
+        Alert.alert(
+          '需要通知权限',
+          '为保持后台写作并提醒任务完成，请前往系统设置授予 ShineWriter 通知权限。',
+          [
+            { text: '稍后', style: 'cancel' },
+            { text: '去设置', onPress: () => Linking.openSettings() },
+          ],
+        );
+      }
+    }
+    await setBackgroundPipelineEnabled(value);
+    Toast.show({ type: 'success', text1: value ? '已开启后台写作' : '已关闭后台写作' });
   };
 
   return (
@@ -52,6 +74,19 @@ export const SettingsScreen: React.FC = () => {
             <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>语音朗读</Text>
             <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>配置语音 API Key、URL、模型、音色与语速，在章节编辑页朗读正文。</Text>
             <Button label="语音设置" icon={Volume2} onPress={() => navigation.navigate('VoiceSettings')} />
+          </Card>
+          <Card>
+            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>后台写作</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>
+              开启后，写作时以系统通知保持运行，切到其他 App 或锁屏不会暂停流水线，完成后会通知你。
+            </Text>
+            <View style={styles.switchRow}>
+              <View style={styles.switchText}>
+                <Text style={[styles.switchTitle, { color: theme.colors.textPrimary }]}>保持后台运行</Text>
+                <Text style={[styles.switchHint, { color: theme.colors.textSecondary }]}>默认开启</Text>
+              </View>
+              <Switch value={backgroundPipelineEnabled} onValueChange={toggleBackgroundPipeline} />
+            </View>
           </Card>
         </Section>
         <Section title="主题">
@@ -92,4 +127,8 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
   cardMeta: { fontSize: 13, lineHeight: 20, marginBottom: spacing.md },
   themeHints: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
+  switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.md },
+  switchText: { flex: 1 },
+  switchTitle: { fontSize: 15, fontWeight: '800' },
+  switchHint: { fontSize: 12, marginTop: 2 },
 });
