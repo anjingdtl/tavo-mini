@@ -1,10 +1,7 @@
 package com.shinewriter
 
-import android.content.ComponentName
-import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -191,7 +188,8 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
         if (voices != null) {
           for (voice in voices) {
             val map: WritableMap = Arguments.createMap()
-            map.putString("key", voice.key ?: "")
+            // Android Voice 类用 name 作为唯一标识（无 key 字段），JS 侧的 key 字段对应 voice.name
+            map.putString("key", voice.name ?: "")
             map.putString("name", voice.name ?: "")
             map.putString("locale", voice.locale?.toLanguageTag() ?: "")
             result.pushMap(map)
@@ -251,11 +249,11 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
         ttsInstance.language = locale
       }
 
-      // 设置声线（API 21+）
+      // 设置声线（API 21+）。Android Voice 用 name 作唯一标识，匹配 voiceKey
       if (!voiceKey.isNullOrEmpty()) {
         val voices = ttsInstance.voices
         if (voices != null) {
-          val matched = voices.find { it.key == voiceKey }
+          val matched = voices.find { it.name == voiceKey }
           if (matched != null) {
             ttsInstance.voice = matched
           }
@@ -290,9 +288,8 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
   }
 
   private fun rebuildTtsWithEngine(enginePackage: String) {
-    // 注意：TextToSpeech.EngineInfo 不暴露 service class name，无法精确构造
-    // ComponentName 切换到指定引擎。这里采用「查询已安装 TTS 服务的 MainInterface
-    // Service」的方式找到对应 class name，构造 ComponentName 后重建 TTS 实例。
+    // TextToSpeech 三参构造函数直接接受 engine 包名字符串：
+    //   TextToSpeech(context, listener, engine: String)
     currentEnginePackage = enginePackage
     try {
       tts?.shutdown()
@@ -302,30 +299,25 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     tts = null
     ttsReady = false
     try {
-      val engine = resolveEngineComponent(enginePackage)
-      if (engine != null) {
-        tts = TextToSpeech(reactApplicationContext, { status ->
-          ttsReady = status == TextToSpeech.SUCCESS
-          if (ttsReady) {
-            applyAudioAttributes(tts)
-            tts?.setOnUtteranceProgressListener(utteranceListener)
-            doSpeak()
-          } else {
-            pendingSpeakPromise?.reject("TTS_ENGINE_NOT_READY", "引擎切换失败")
-            clearPendingSpeak()
-          }
-        }, engine)
-      } else {
-        // 找不到 service class，回退默认引擎
-        Log.w("TtsAudio", "engine service not found for $enginePackage, fallback to default")
-        currentEnginePackage = null
-        ensureTts { ok ->
-          if (ok) doSpeak() else {
-            pendingSpeakPromise?.reject("TTS_ENGINE_NOT_READY", "引擎切换失败")
-            clearPendingSpeak()
+      val initListener = TextToSpeech.OnInitListener { status ->
+        ttsReady = status == TextToSpeech.SUCCESS
+        if (ttsReady) {
+          applyAudioAttributes(tts)
+          tts?.setOnUtteranceProgressListener(utteranceListener)
+          doSpeak()
+        } else {
+          // 引擎切换失败，回退默认引擎重试一次
+          Log.w("TtsAudio", "engine $enginePackage init failed, fallback to default")
+          currentEnginePackage = null
+          ensureTts { ok ->
+            if (ok) doSpeak() else {
+              pendingSpeakPromise?.reject("TTS_ENGINE_NOT_READY", "引擎切换失败")
+              clearPendingSpeak()
+            }
           }
         }
       }
+      tts = TextToSpeech(reactApplicationContext, initListener, enginePackage)
     } catch (e: Exception) {
       Log.e("TtsAudio", "rebuildTtsWithEngine failed", e)
       currentEnginePackage = null
@@ -335,29 +327,6 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
           clearPendingSpeak()
         }
       }
-    }
-  }
-
-  /**
-   * 查询系统中实现了 ACTION_TTS_SERVICE 的服务，匹配目标包名，返回其 ComponentName。
-   * 返回 null 表示未找到。
-   */
-  private fun resolveEngineComponent(enginePackage: String): ComponentName? {
-    return try {
-      val pm = reactApplicationContext.packageManager
-      val intent = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
-      val resolveInfos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        pm.queryIntentServices(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
-      } else {
-        @Suppress("DEPRECATION")
-        pm.queryIntentServices(intent, 0)
-      }
-      resolveInfos?.find { it.serviceInfo?.packageName == enginePackage }?.let {
-        ComponentName(it.serviceInfo.packageName, it.serviceInfo.name)
-      }
-    } catch (e: Exception) {
-      Log.e("TtsAudio", "resolveEngineComponent failed", e)
-      null
     }
   }
 
