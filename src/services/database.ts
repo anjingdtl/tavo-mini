@@ -322,6 +322,28 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     // migrations finish in openDatabase().
     `CREATE INDEX IF NOT EXISTS idx_content_revisions_target ON content_revisions(target_type, target_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_generation_drafts_target ON generation_drafts(target_type, target_id, created_at DESC)`,
+    // V1.7.0 (schema 9): 笔记双模式相关表
+    `
+      CREATE TABLE IF NOT EXISTS project_note_config (
+        project_id INTEGER PRIMARY KEY,
+        mode TEXT NOT NULL DEFAULT 'none',
+        style_weights TEXT NOT NULL DEFAULT '{}',
+        retrieval_top_k INTEGER NOT NULL DEFAULT 5,
+        enabled_note_ids TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS note_style_profiles (
+        note_id INTEGER PRIMARY KEY,
+        profile_text TEXT NOT NULL DEFAULT '',
+        profile_json TEXT NOT NULL DEFAULT '{}',
+        analyzed_at TEXT NOT NULL,
+        source_hash TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+      )
+    `,
   ];
   for (const statement of statements) {
     await execute(database, statement);
@@ -1747,4 +1769,118 @@ export async function getLLMUsageSummary(projectId: number | null): Promise<any>
     params,
   );
   return result.rows.length > 0 ? result.rows.item(0) : { total_calls: 0, total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// 笔记双模式（V1.7.0 / schema 9）
+// ---------------------------------------------------------------------------
+
+export type NoteMode = 'none' | 'style' | 'retrieval';
+
+export interface ProjectNoteConfig {
+  projectId: number;
+  mode: NoteMode;
+  styleWeights: Record<string, number>;
+  retrievalTopK: number;
+  enabledNoteIds: number[];
+  updatedAt: string;
+}
+
+function safeJsonParse(text: string, fallback: any): any {
+  try {
+    return JSON.parse(text) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function getProjectNoteConfig(projectId: number): Promise<ProjectNoteConfig | null> {
+  const result = await execute(
+    await openDatabase(),
+    'SELECT * FROM project_note_config WHERE project_id = ?',
+    [projectId],
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows.item(0);
+  return {
+    projectId: Number(row.project_id),
+    mode: row.mode as NoteMode,
+    styleWeights: safeJsonParse(row.style_weights, {}),
+    retrievalTopK: Number(row.retrieval_top_k) || 5,
+    enabledNoteIds: safeJsonParse(row.enabled_note_ids, []),
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function setProjectNoteConfig(
+  projectId: number,
+  config: Partial<Omit<ProjectNoteConfig, 'projectId' | 'updatedAt'>>,
+): Promise<void> {
+  const existing = await getProjectNoteConfig(projectId);
+  const mode = config.mode ?? existing?.mode ?? 'none';
+  const styleWeights = JSON.stringify(config.styleWeights ?? existing?.styleWeights ?? {});
+  const retrievalTopK = config.retrievalTopK ?? existing?.retrievalTopK ?? 5;
+  const enabledNoteIds = JSON.stringify(config.enabledNoteIds ?? existing?.enabledNoteIds ?? []);
+  const updatedAt = new Date().toISOString();
+  await execute(
+    await openDatabase(),
+    `INSERT OR REPLACE INTO project_note_config (project_id, mode, style_weights, retrieval_top_k, enabled_note_ids, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [projectId, mode, styleWeights, retrievalTopK, enabledNoteIds, updatedAt],
+  );
+}
+
+export interface NoteStyleProfileRow {
+  noteId: number;
+  profileText: string;
+  profileJson: string;
+  analyzedAt: string;
+  sourceHash: string;
+}
+
+export async function getNoteStyleProfile(noteId: number): Promise<NoteStyleProfileRow | null> {
+  const result = await execute(
+    await openDatabase(),
+    'SELECT * FROM note_style_profiles WHERE note_id = ?',
+    [noteId],
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows.item(0);
+  return {
+    noteId: Number(row.note_id),
+    profileText: row.profile_text || '',
+    profileJson: row.profile_json || '{}',
+    analyzedAt: row.analyzed_at,
+    sourceHash: row.source_hash || '',
+  };
+}
+
+export async function setNoteStyleProfile(
+  noteId: number,
+  profileText: string,
+  profileJson: string,
+  sourceHash: string,
+): Promise<void> {
+  const analyzedAt = new Date().toISOString();
+  await execute(
+    await openDatabase(),
+    `INSERT OR REPLACE INTO note_style_profiles (note_id, profile_text, profile_json, analyzed_at, source_hash)
+     VALUES (?, ?, ?, ?, ?)`,
+    [noteId, profileText, profileJson, analyzedAt, sourceHash],
+  );
+}
+
+export async function deleteNoteStyleProfile(noteId: number): Promise<void> {
+  await execute(await openDatabase(), 'DELETE FROM note_style_profiles WHERE note_id = ?', [noteId]);
+}
+
+// 简易 hash（非加密级别，用于笔记内容变更检测）
+export async function computeNoteSourceHash(content: string): Promise<string> {
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(16).padStart(8, '0') + '_' + content.length.toString(16);
 }
