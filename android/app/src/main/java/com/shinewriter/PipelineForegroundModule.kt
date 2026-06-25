@@ -119,6 +119,22 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
     }
   }
 
+  /**
+   * 读取并清除 MainActivity 暂存的 deep link taskId。
+   * JS 侧 App 启动时调用，若返回非 null 则导航到对应任务结果。
+   * 用静态字段存储，因为 Module 和 Activity 是不同实例，但同进程。
+   */
+  @ReactMethod
+  fun consumeDeepLinkTaskId(promise: Promise) {
+    try {
+      val id = pendingDeepLinkTaskId
+      pendingDeepLinkTaskId = null
+      promise.resolve(id)
+    } catch (e: Exception) {
+      promise.resolve(null)
+    }
+  }
+
   private fun postDoneNotification(taskId: String, title: String, message: String, success: Boolean) {
     val launchIntent = Intent(reactContext, MainActivity::class.java).apply {
       flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -148,5 +164,16 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
      * 必须与 MainActivity.kt 中读取的 key 一致。
      */
     const val EXTRA_DEEP_LINK_TASK_ID = "shinewriter.deeplink.task_id"
+
+    /**
+     * 暂存从通知 intent 读到的 taskId，供 JS 通过 consumeDeepLinkTaskId 取走。
+     * 用静态字段，跨 Activity/Module 实例共享（同进程）。
+     */
+    @Volatile
+    private var pendingDeepLinkTaskId: String? = null
+
+    fun setPendingDeepLinkTaskId(id: String?) {
+      pendingDeepLinkTaskId = id
+    }
   }
 }

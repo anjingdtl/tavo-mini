@@ -15,6 +15,7 @@ import Toast from 'react-native-toast-message';
 import { openDatabase, lastInstallInfo } from '../services/database';
 import { hasBreakingMigration } from '../services/migrations';
 import { UpgradeScreen } from '../screens/UpgradeScreen';
+import { PipelineForeground } from '../native/PipelineForegroundModule';
 import appVersionJson from '../constants/version.json';
 import type { PipelineTask } from '../types/pipeline';
 
@@ -144,6 +145,22 @@ export const App: React.FC = () => {
       setUpgradeError(err?.message || '未知错误');
     }
   }, []);
+
+  // 处理通知点击 deep link：App 启动或从后台恢复时，读取原生暂存的
+  // taskId（由 MainActivity 从通知 intent extra 写入 PipelineForegroundModule），
+  // 若存在则导航到对应任务的 PipelineResult。
+  React.useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    const consume = async () => {
+      const taskId = await PipelineForeground.consumeDeepLinkTaskId();
+      if (cancelled || !taskId) return;
+      // 等待导航容器就绪后再跳转
+      setTimeout(() => navigateToPipelineResult(taskId), 100);
+    };
+    consume();
+    return () => { cancelled = true; };
+  }, [ready]);
 
   return (
     <SafeAreaProvider>
