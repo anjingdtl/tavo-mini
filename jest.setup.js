@@ -102,6 +102,17 @@ jest.mock('react-native', () => {
   RN.NativeModules.TtsAudio = {
     playAudioFile: jest.fn(() => Promise.resolve()),
     stopAudio: jest.fn(() => Promise.resolve()),
+    speak: jest.fn(() => Promise.resolve()),
+    stopSpeak: jest.fn(() => Promise.resolve()),
+    isTtsReady: jest.fn(() => Promise.resolve(true)),
+    getEngines: jest.fn(() =>
+      Promise.resolve([
+        { name: 'com.google.android.tts', label: 'Google TTS', isDefault: true },
+      ]),
+    ),
+    getVoices: jest.fn(() =>
+      Promise.resolve([{ key: 'zh-cn-x', name: '中文女声', locale: 'zh-CN' }]),
+    ),
   };
   return RN;
 });
