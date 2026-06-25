@@ -4,6 +4,8 @@ import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
 import type { Chapter, ChapterSummary, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
 import type { ContextTraceItem } from '../types/contextTrace';
+import { getOrAnalyzeNoteStyle, mergeStyleProfiles, DEFAULT_STYLE_WEIGHTS, type StyleWeights } from './styleAnalyzer';
+import { retrieveNoteFragments, type RetrievalQuery } from './noteRetriever';
 
 const DEFAULT_SYSTEM_PROMPT =
   '你是一位经验丰富的中文小说作者。请根据既有设定、人物状态、章节概要和前文内容，继续创作自然、连贯、有画面感的中文小说。';
@@ -176,7 +178,7 @@ async function buildResourceContext(
   addPart('人物设定', charResult.text, characterBudget);
   allTraceItems.push(...charResult.items);
 
-  const noteResult = await buildNoteContext(projectId, noteBudget);
+  const noteResult = await buildNoteContext(projectId, noteBudget, scanText);
   addPart('项目笔记', noteResult.text, noteBudget);
   allTraceItems.push(...noteResult.items);
 
@@ -269,7 +271,110 @@ export async function buildCharacterContext(projectId: number, budget: number): 
   return { text: parts.join('\n\n'), items };
 }
 
-async function buildNoteContext(projectId: number, budget: number): Promise<{ text: string; items: ContextTraceItem[] }> {
+async function buildNoteContext(
+  projectId: number,
+  budget: number,
+  scanText: string,
+): Promise<{ text: string; items: ContextTraceItem[] }> {
+  let config;
+  try {
+    config = await db.getProjectNoteConfig(projectId);
+  } catch {
+    config = null;
+  }
+  const mode = config?.mode || 'none';
+
+  if (mode === 'style') {
+    return buildStyleContext(projectId, budget, config);
+  }
+  if (mode === 'retrieval') {
+    return buildRetrievedNoteContext(projectId, budget, scanText, config);
+  }
+  return buildNoteContextOriginal(projectId, budget);
+}
+
+// 仿写模式：注入缓存的风格画像 + 项目级要素权重
+async function buildStyleContext(
+  projectId: number,
+  budget: number,
+  config: any,
+): Promise<{ text: string; items: ContextTraceItem[] }> {
+  try {
+    let noteIds: number[] = config?.enabledNoteIds ?? [];
+    if (noteIds.length === 0) {
+      const notes = await db.getNotesByProject(projectId);
+      noteIds = notes.map((n: any) => n.id);
+    }
+    if (noteIds.length === 0) return { text: '', items: [] };
+
+    const profiles = await Promise.all(noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)));
+    const weights: StyleWeights = { ...DEFAULT_STYLE_WEIGHTS, ...(config?.styleWeights || {}) };
+    const mergedText = mergeStyleProfiles(profiles, weights);
+    if (!mergedText) return { text: '', items: [] };
+
+    const fullText = `以下是本次写作必须遵循的风格画像，请严格按照对应权重的维度进行仿写：\n${mergedText}`;
+    const clipped = clipTextToTokenBudget(fullText, budget);
+    return {
+      text: clipped,
+      items: [
+        {
+          kind: 'note',
+          sourceId: null,
+          title: '风格画像（仿写）',
+          reason: `仿写模式：${noteIds.length} 篇笔记联合风格`,
+          estimatedTokens: estimateTokens(clipped),
+          included: clipped.length > 0,
+          clipped: clipped.length < fullText.length,
+          preview: mergedText.slice(0, 500),
+        },
+      ],
+    };
+  } catch {
+    // 风格分析失败，回退到原始全量注入
+    return buildNoteContextOriginal(projectId, budget);
+  }
+}
+
+// 资料库模式：LLM 检索 → 注入命中片段
+async function buildRetrievedNoteContext(
+  projectId: number,
+  budget: number,
+  scanText: string,
+  config: any,
+): Promise<{ text: string; items: ContextTraceItem[] }> {
+  try {
+    const topK = config?.retrievalTopK ?? 5;
+    const query: RetrievalQuery = {
+      chapterTitle: '',
+      chapterSynopsis: '',
+      previousEnding: scanText.slice(-500),
+      userPrompt: '',
+    };
+    const fragments = await retrieveNoteFragments(projectId, query, topK);
+    if (fragments.length === 0) return { text: '', items: [] };
+
+    const parts = fragments.map((f) => `[笔记「${f.noteTitle}」] ${f.fragment}`);
+    const fullText = `以下是本次写作可参考的资料片段，请结合上下文合理引用：\n${parts.join('\n')}`;
+    const clipped = clipTextToTokenBudget(fullText, budget);
+    return {
+      text: clipped,
+      items: fragments.map((f) => ({
+        kind: 'note' as const,
+        sourceId: f.noteId,
+        title: f.noteTitle,
+        reason: `资料库检索：${f.relevance}`,
+        estimatedTokens: estimateTokens(f.fragment),
+        included: true,
+        clipped: false,
+        preview: f.fragment.slice(0, 500),
+      })),
+    };
+  } catch {
+    return { text: '', items: [] };
+  }
+}
+
+async function buildNoteContextOriginal(projectId: number, budget: number): Promise<{ text: string; items: ContextTraceItem[] }> {
   const notes = await db.getNotesByProject(projectId);
   const parts: string[] = [];
   const items: ContextTraceItem[] = [];
