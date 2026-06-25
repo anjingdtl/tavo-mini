@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { Alert, FlatList, Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import { BookMarked, Download, FilePlus2, Import, NotebookPen, Pencil, SlidersHorizontal, Trash2, UserRound } from 'lucide-react-native';
+import { BookMarked, Download, FilePlus2, Import, NotebookPen, Pencil, RefreshCw, SlidersHorizontal, Trash2, UserRound } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
@@ -10,6 +10,7 @@ import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
 import type { ResourceType } from '../services/database';
 import { estimateTokens } from '../utils/tokenEstimator';
+import { DEFAULT_STYLE_WEIGHTS, type StyleWeights, analyzeNotesStyle } from '../services/styleAnalyzer';
 import {
   getCharacterImagePath,
   importSelectedCharacter,
@@ -66,18 +67,38 @@ export const ResourceLibrary: React.FC = () => {
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [noteMode, setNoteMode] = useState<'none' | 'style' | 'retrieval'>('none');
+  const [styleWeights, setStyleWeights] = useState<StyleWeights>(DEFAULT_STYLE_WEIGHTS);
+  const [retrievalTopK, setRetrievalTopK] = useState(5);
+  const [enabledNoteIds, setEnabledNoteIds] = useState<number[]>([]);
+  const [showNotePicker, setShowNotePicker] = useState(false);
+  const [showStyleProfile, setShowStyleProfile] = useState(false);
+  const [styleProfileText, setStyleProfileText] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
   const projectId = currentProject?.id || 0;
 
   const loadData = useCallback(async () => {
-    const [characters, worldbook, notes, presets, worldbookCollections] = await Promise.all([
+    const [characters, worldbook, notes, presets, worldbookCollections, noteConfig] = await Promise.all([
       db.getAllCharacters(projectId),
       db.getAllWorldbookEntries(projectId),
       db.getAllNotes(projectId),
       db.getAllPresets(projectId),
       db.getWorldbookCollections(projectId),
+      db.getProjectNoteConfig(projectId),
     ]);
     setItems({ characters, worldbook, notes, presets });
     setCollections(worldbookCollections);
+    if (noteConfig) {
+      setNoteMode(noteConfig.mode);
+      setStyleWeights({ ...DEFAULT_STYLE_WEIGHTS, ...noteConfig.styleWeights });
+      setRetrievalTopK(noteConfig.retrievalTopK);
+      setEnabledNoteIds(noteConfig.enabledNoteIds);
+    } else {
+      setNoteMode('none');
+      setStyleWeights(DEFAULT_STYLE_WEIGHTS);
+      setRetrievalTopK(5);
+      setEnabledNoteIds([]);
+    }
     if (selectedCollectionId && !worldbookCollections.some((collection: any) => collection.id === selectedCollectionId)) {
       setSelectedCollectionId(null);
     }
@@ -154,6 +175,76 @@ export const ResourceLibrary: React.FC = () => {
       await loadData();
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导入失败', text2: error.message });
+    }
+  };
+
+  const handleNoteModeChange = async (mode: 'none' | 'style' | 'retrieval') => {
+    setNoteMode(mode);
+    try {
+      await db.setProjectNoteConfig(projectId, { mode, styleWeights, retrievalTopK, enabledNoteIds });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '保存失败', text2: error.message });
+    }
+  };
+
+  const handleWeightChange = async (key: keyof StyleWeights, value: number) => {
+    const newWeights = { ...styleWeights, [key]: value };
+    setStyleWeights(newWeights);
+    try {
+      await db.setProjectNoteConfig(projectId, { mode: 'style', styleWeights: newWeights, retrievalTopK, enabledNoteIds });
+    } catch {
+      // 静默失败，不打断用户调整
+    }
+  };
+
+  const handleTopKChange = async (value: number) => {
+    setRetrievalTopK(value);
+    try {
+      await db.setProjectNoteConfig(projectId, { mode: 'retrieval', styleWeights, retrievalTopK: value, enabledNoteIds });
+    } catch {
+      // 静默失败
+    }
+  };
+
+  const handleToggleNoteId = async (noteId: number) => {
+    const newIds = enabledNoteIds.includes(noteId)
+      ? enabledNoteIds.filter((id) => id !== noteId)
+      : [...enabledNoteIds, noteId];
+    setEnabledNoteIds(newIds);
+    try {
+      await db.setProjectNoteConfig(projectId, { mode: noteMode, styleWeights, retrievalTopK, enabledNoteIds: newIds });
+    } catch {
+      // 静默失败
+    }
+  };
+
+  const handleReanalyze = async () => {
+    setAnalyzing(true);
+    try {
+      const ids = enabledNoteIds.length > 0 ? enabledNoteIds : items.notes.map((n: any) => n.id);
+      if (ids.length === 0) {
+        Toast.show({ type: 'info', text1: '没有可分析的笔记' });
+        return;
+      }
+      await analyzeNotesStyle(ids);
+      Toast.show({ type: 'success', text1: '风格分析完成' });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '风格分析失败', text2: error.message });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const handleViewProfile = async () => {
+    if (items.notes.length === 0) return;
+    const id = enabledNoteIds[0] || items.notes[0].id;
+    try {
+      const profile = await db.getNoteStyleProfile(id);
+      setStyleProfileText(profile?.profileText || '暂无风格画像');
+      setShowStyleProfile(true);
+    } catch {
+      setStyleProfileText('读取画像失败');
+      setShowStyleProfile(true);
     }
   };
 
@@ -380,6 +471,76 @@ export const ResourceLibrary: React.FC = () => {
             {selectedCollectionId ? <Button label="返回合集" variant="secondary" onPress={() => setSelectedCollectionId(null)} /> : null}
           </>
         ) : null}
+        {tab === 'notes' && currentProject ? (
+          <View style={styles.noteModePanel}>
+            <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>笔记模式</Text>
+            <SegmentedControl
+              value={noteMode}
+              options={[
+                { value: 'none', label: '禁用' },
+                { value: 'style', label: '仿写' },
+                { value: 'retrieval', label: '资料库' },
+              ]}
+              onChange={(value) => handleNoteModeChange(value)}
+            />
+            {noteMode === 'style' ? (
+              <View style={styles.noteModeSection}>
+                <Pressable onPress={() => setShowNotePicker(true)}>
+                  <Text style={[styles.noteModeLink, { color: theme.colors.accent }]}>
+                    参与仿写的笔记：{enabledNoteIds.length > 0 ? enabledNoteIds.length : items.notes.length}/{items.notes.length} 篇
+                  </Text>
+                </Pressable>
+                <Text style={[styles.noteModeLabel, { color: theme.colors.textSecondary }]}>风格要素权重：</Text>
+                {([
+                  { key: 'sentence_structure' as const, label: '句式结构' },
+                  { key: 'tone_emotion' as const, label: '语气与情感' },
+                  { key: 'vocabulary' as const, label: '常用词汇搭配' },
+                  { key: 'character_voice' as const, label: '角色设定' },
+                  { key: 'narrative_rhythm' as const, label: '叙事节奏' },
+                ]).map((item) => (
+                  <View key={item.key} style={styles.weightRow}>
+                    <Text style={[styles.weightLabel, { color: theme.colors.textPrimary }]}>{item.label}</Text>
+                    <SegmentedControl
+                      value={String(styleWeights[item.key] ?? 0)}
+                      options={[
+                        { value: '0', label: '关' },
+                        { value: '1', label: '弱' },
+                        { value: '2', label: '中' },
+                        { value: '3', label: '强' },
+                      ]}
+                      onChange={(val) => handleWeightChange(item.key, Number(val))}
+                    />
+                  </View>
+                ))}
+                <View style={styles.rowActions}>
+                  <Button label={analyzing ? '分析中...' : '重新分析风格'} icon={RefreshCw} variant="secondary" onPress={handleReanalyze} disabled={analyzing} />
+                  <Button label="查看画像" variant="ghost" onPress={handleViewProfile} />
+                </View>
+              </View>
+            ) : null}
+            {noteMode === 'retrieval' ? (
+              <View style={styles.noteModeSection}>
+                <Pressable onPress={() => setShowNotePicker(true)}>
+                  <Text style={[styles.noteModeLink, { color: theme.colors.accent }]}>
+                    参与检索的笔记：{enabledNoteIds.length > 0 ? enabledNoteIds.length : items.notes.length}/{items.notes.length} 篇
+                  </Text>
+                </Pressable>
+                <Text style={[styles.noteModeLabel, { color: theme.colors.textSecondary }]}>检索片段数上限：</Text>
+                <SegmentedControl
+                  value={String(retrievalTopK)}
+                  options={[
+                    { value: '3', label: '3' },
+                    { value: '5', label: '5' },
+                    { value: '8', label: '8' },
+                    { value: '10', label: '10' },
+                  ]}
+                  onChange={(val) => handleTopKChange(Number(val))}
+                />
+                <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>生成正文时会自动从笔记中检索相关内容</Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
         {tab === 'notes' ? <Button label="导入 TXT 笔记" icon={Import} onPress={importNoteText} /> : null}
         {canAddManual ? (
           <>
@@ -434,7 +595,14 @@ export const ResourceLibrary: React.FC = () => {
               <View style={styles.row}>
                 {iconFor(tab, theme.colors.accent)}
                 <View style={styles.rowText}>
-                  <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{titleFor(tab, item)}</Text>
+                  <View style={styles.titleRow}>
+                    <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{titleFor(tab, item)}</Text>
+                    {tab === 'notes' && noteMode !== 'none' ? (
+                      <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>
+                        {noteMode === 'style' ? '仿写' : '资料库'}
+                      </Text>
+                    ) : null}
+                  </View>
                   <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]} numberOfLines={2}>
                     {metaFor(tab, item)}
                   </Text>
@@ -535,6 +703,52 @@ export const ResourceLibrary: React.FC = () => {
           </View>
         </View>
       </Modal>
+
+      {/* 笔记选择器 Modal */}
+      <Modal visible={showNotePicker} transparent animationType="fade" onRequestClose={() => setShowNotePicker(false)}>
+        <View style={styles.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowNotePicker(false)} />
+          <View style={[styles.modal, { backgroundColor: theme.colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>选择笔记</Text>
+            <ScrollView style={styles.notePickerList}>
+              {items.notes.map((note: any) => {
+                const isSelected = enabledNoteIds.includes(note.id);
+                return (
+                  <Pressable
+                    key={note.id}
+                    style={[styles.notePickerItem, { borderColor: isSelected ? theme.colors.accent : theme.colors.border }]}
+                    onPress={() => handleToggleNoteId(note.id)}
+                  >
+                    <Text style={[styles.notePickerTitle, { color: theme.colors.textPrimary }]}>{note.title || '无标题'}</Text>
+                    <Text style={[styles.notePickerCheck, { color: isSelected ? theme.colors.accent : theme.colors.textMuted }]}>
+                      {isSelected ? '✓' : '○'}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <View style={styles.modalActions}>
+              <Button label="关闭" variant="ghost" onPress={() => setShowNotePicker(false)} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 风格画像查看 Modal */}
+      <Modal visible={showStyleProfile} transparent animationType="fade" onRequestClose={() => setShowStyleProfile(false)}>
+        <View style={styles.overlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowStyleProfile(false)} />
+          <View style={[styles.modal, { backgroundColor: theme.colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>风格画像</Text>
+            <ScrollView style={styles.profileViewer}>
+              <Text style={[styles.profileText, { color: theme.colors.textSecondary }]}>{styleProfileText || '暂无画像'}</Text>
+            </ScrollView>
+            <View style={styles.modalActions}>
+              <Button label="关闭" variant="ghost" onPress={() => setShowStyleProfile(false)} />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Screen>
   );
 };
@@ -620,4 +834,21 @@ const styles = StyleSheet.create({
   characterImage: { width: 128, height: 180, borderRadius: 8, marginBottom: spacing.md, alignSelf: 'center' },
   numberRow: { flexDirection: 'row', gap: spacing.sm },
   numberInput: { minWidth: 80 },
+  // 笔记双模式 UI
+  noteModePanel: { gap: spacing.sm },
+  noteModeTitle: { fontSize: 15, fontWeight: '800' },
+  noteModeSection: { gap: spacing.xs, marginTop: spacing.xs },
+  noteModeLabel: { fontSize: 13, fontWeight: '700', marginTop: spacing.xs },
+  noteModeLink: { fontSize: 13, fontWeight: '700' },
+  noteModeHint: { fontSize: 12, marginTop: spacing.xs },
+  weightRow: { gap: 4 },
+  weightLabel: { fontSize: 13, fontWeight: '600' },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
+  modeTag: { fontSize: 11, fontWeight: '700', borderWidth: 1, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  notePickerList: { maxHeight: 400 },
+  notePickerItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.md, borderWidth: 1, borderRadius: 6, marginBottom: spacing.xs },
+  notePickerTitle: { fontSize: 14, fontWeight: '600', flex: 1 },
+  notePickerCheck: { fontSize: 18, fontWeight: '800' },
+  profileViewer: { maxHeight: 400 },
+  profileText: { fontSize: 14, lineHeight: 22 },
 });
