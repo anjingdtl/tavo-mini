@@ -23,6 +23,8 @@ const SOURCE_LABELS: Record<DraftSource, string> = {
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
+  // 10.9: 校验 Invalid Date，避免渲染"NaN-NaN-NaN"
+  if (isNaN(d.getTime())) return '—';
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
@@ -31,6 +31,8 @@ export const LLMSettingsScreen: React.FC = () => {
   const [draft, setDraft] = useState<LLMConfig>(emptyDraft);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  // 10.6: 编辑态 ref，用户主动编辑后 store 变化不再覆盖本地 draft
+  const isEditingRef = useRef(false);
 
   useEffect(() => {
     loadSettings();
@@ -44,7 +46,8 @@ export const LLMSettingsScreen: React.FC = () => {
       || llmConfigs[0]
       || emptyDraft;
     setSelectedId(selected.id);
-    setDraft(selected);
+    // 10.6: 用户主动编辑过 draft 后，store 变化（如 activate 触发 llmConfigs 更新）不再覆盖本地草稿
+    if (!isEditingRef.current) setDraft(selected);
   }, [llmConfig, llmConfigs, selectedId]);
 
   const activeName = useMemo(() => llmConfigs.find((config) => config.is_active === 1)?.name || '未选择', [llmConfigs]);
@@ -58,6 +61,7 @@ export const LLMSettingsScreen: React.FC = () => {
   };
 
   const updateDraft = (fields: Partial<LLMConfig>) => {
+    isEditingRef.current = true;
     setDraft((current) => ({ ...current, ...fields }));
   };
 

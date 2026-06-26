@@ -31,7 +31,7 @@ export const UpgradeScreen: React.FC<UpgradeScreenProps> = ({
             <Text style={styles.description}>
               本次升级涉及数据结构重大变更，将自动迁移您的数据。迁移前已自动备份。
             </Text>
-            <TouchableOpacity style={styles.button} onPress={onConfirm}>
+            <TouchableOpacity style={styles.button} onPress={onConfirm} disabled={status !== 'waiting'}>
               <Text style={styles.buttonText}>开始升级</Text>
             </TouchableOpacity>
           </>

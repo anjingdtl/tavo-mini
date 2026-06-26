@@ -58,6 +58,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const taskId = propTaskId ?? routeTaskId;
   const { tasks, resolveTask } = usePipelineTaskStore();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // 10.2: 采纳进行中状态，disable 采纳/放弃按钮防止重复点击触发多次 updateChapter
+  const [adopting, setAdopting] = useState(false);
   // 标记是否已被 handleAccept 标记为 accept，避免 unmount cleanup 的
   // setTimeout 与 handleAccept 的 resolveTask('accept') 竞态重复 resolve。
   const acceptedRef = useRef(false);
@@ -117,10 +119,13 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   };
 
   const handleAccept = async () => {
+    // 10.2: 防止按钮被重复点击触发多次 updateChapter
+    if (adopting) return;
     if (!task.finalText || task.targetType !== 'chapter') {
       Alert.alert('无法采纳', '该任务不支持直接采纳，请手动复制文本。');
       return;
     }
+    setAdopting(true);
     try {
       const chapter = await db.getChapterById(task.targetId);
       if (!chapter) {
@@ -135,10 +140,13 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       handleClose();
     } catch (error: any) {
       Alert.alert('采纳失败', error.message);
+      setAdopting(false);
     }
   };
 
   const handleReject = () => {
+    // 10.2: 采纳进行中时禁止 reject，避免竞态
+    if (adopting) return;
     resolveTask(task.id, 'reject');
     handleClose();
   };
@@ -192,8 +200,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         {task.stageResults.map(renderStageCard)}
         {task.finalText && (
           <View style={styles.actions}>
-            <Button label="放弃" variant="ghost" onPress={handleReject} />
-            <Button label="采纳" onPress={handleAccept} />
+            <Button label="放弃" variant="ghost" onPress={handleReject} disabled={adopting} />
+            <Button label={adopting ? '采纳中…' : '采纳'} onPress={handleAccept} disabled={adopting} />
           </View>
         )}
       </ScrollView>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { RotateCcw, Save } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
@@ -24,12 +24,20 @@ export const ContextConfigScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const { contextConfig, loadSettings, setContextConfig } = useSettingsStore();
   const [draft, setDraft] = useState<ContextConfig>(contextConfig);
+  // 10.5: 编辑态 ref，用户主动编辑后 store 变化不再覆盖本地草稿
+  const isEditingRef = useRef(false);
+  const updateDraft = (next: ContextConfig) => {
+    isEditingRef.current = true;
+    setDraft(next);
+  };
 
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
 
   useEffect(() => {
+    // 10.5: 用户主动编辑过 draft 后，store 变更（如别处保存）不再覆盖本地草稿
+    if (isEditingRef.current) return;
     setDraft(contextConfig);
   }, [contextConfig]);
 
@@ -53,7 +61,7 @@ export const ContextConfigScreen: React.FC = () => {
           text: '恢复默认',
           style: 'destructive',
           onPress: () => {
-            setDraft({ ...DEFAULT_CONTEXT_CONFIG });
+            updateDraft({ ...DEFAULT_CONTEXT_CONFIG });
             Toast.show({ type: 'info', text1: '已恢复默认值，请点击保存生效' });
           },
         },
@@ -66,7 +74,7 @@ export const ContextConfigScreen: React.FC = () => {
       <Header title="上下文配置" subtitle="控制 AI 读取多少前文、摘要和资料" />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.label, { color: theme.colors.textSecondary }]}>前文策略</Text>
-        <SegmentedControl value={draft.strategy} options={STRATEGIES} onChange={(strategy) => setDraft({ ...draft, strategy })} />
+        <SegmentedControl value={draft.strategy} options={STRATEGIES} onChange={(strategy) => updateDraft({ ...draft, strategy })} />
         <View style={[styles.helpBox, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }]}>
           {STRATEGIES.map((strategy) => {
             const active = strategy.value === draft.strategy;
@@ -82,27 +90,27 @@ export const ContextConfigScreen: React.FC = () => {
             );
           })}
         </View>
-        <Field label="最近正文窗口 tokens" value={String(draft.slidingWindowSize)} onChangeText={(value) => setDraft({ ...draft, slidingWindowSize: Number(value) || 0 })} keyboardType="number-pad" />
-        <Field label="最近正文章数" value={String(draft.recentChapterCount ?? 3)} onChangeText={(value) => setDraft({ ...draft, recentChapterCount: Number(value) || 3 })} keyboardType="number-pad" />
-        <Field label="记忆摘要预算 tokens" value={String(draft.summaryBudgetTokens ?? 20000)} onChangeText={(value) => setDraft({ ...draft, summaryBudgetTokens: Number(value) || 20000 })} keyboardType="number-pad" />
-        <Field label="记忆摘要 Top K" value={String(draft.memoryTopK ?? 10)} onChangeText={(value) => setDraft({ ...draft, memoryTopK: Number(value) || 10 })} keyboardType="number-pad" />
-        <Field label="资料预算 tokens" value={String(draft.resourceBudget)} onChangeText={(value) => setDraft({ ...draft, resourceBudget: Number(value) || 0 })} keyboardType="number-pad" />
-        <Field label="世界书扫描深度" value={String(draft.worldbookScanDepth ?? 4)} onChangeText={(value) => setDraft({ ...draft, worldbookScanDepth: Number(value) || 4 })} keyboardType="number-pad" />
-        <Field label="自定义开始章节序号" value={String(draft.customRangeStart)} onChangeText={(value) => setDraft({ ...draft, customRangeStart: Number(value) || 0 })} keyboardType="number-pad" />
-        <Field label="自定义结束章节序号（-1 表示最后）" value={String(draft.customRangeEnd)} onChangeText={(value) => setDraft({ ...draft, customRangeEnd: Number(value) || -1 })} keyboardType="number-pad" />
+        <Field label="最近正文窗口 tokens" value={String(draft.slidingWindowSize)} onChangeText={(value) => updateDraft({ ...draft, slidingWindowSize: Number(value) ?? 0 })} keyboardType="number-pad" />
+        <Field label="最近正文章数" value={String(draft.recentChapterCount ?? 3)} onChangeText={(value) => updateDraft({ ...draft, recentChapterCount: Number(value) ?? 3 })} keyboardType="number-pad" />
+        <Field label="记忆摘要预算 tokens" value={String(draft.summaryBudgetTokens ?? 20000)} onChangeText={(value) => updateDraft({ ...draft, summaryBudgetTokens: Number(value) ?? 20000 })} keyboardType="number-pad" />
+        <Field label="记忆摘要 Top K" value={String(draft.memoryTopK ?? 10)} onChangeText={(value) => updateDraft({ ...draft, memoryTopK: Number(value) ?? 10 })} keyboardType="number-pad" />
+        <Field label="资料预算 tokens" value={String(draft.resourceBudget)} onChangeText={(value) => updateDraft({ ...draft, resourceBudget: Number(value) ?? 0 })} keyboardType="number-pad" />
+        <Field label="世界书扫描深度" value={String(draft.worldbookScanDepth ?? 4)} onChangeText={(value) => updateDraft({ ...draft, worldbookScanDepth: Number(value) ?? 4 })} keyboardType="number-pad" />
+        <Field label="自定义开始章节序号" value={String(draft.customRangeStart)} onChangeText={(value) => updateDraft({ ...draft, customRangeStart: Number(value) ?? 0 })} keyboardType="number-pad" />
+        <Field label="自定义结束章节序号（-1 表示最后）" value={String(draft.customRangeEnd)} onChangeText={(value) => updateDraft({ ...draft, customRangeEnd: Number(value) ?? -1 })} keyboardType="number-pad" />
         <View style={styles.switchRow}>
           <View style={styles.switchText}>
             <Text style={[styles.switchTitle, { color: theme.colors.textPrimary }]}>注入角色、世界书和笔记</Text>
             <Text style={[styles.switchHint, { color: theme.colors.textSecondary }]}>关闭后只使用章节前文和记忆摘要。</Text>
           </View>
-          <Switch value={draft.includeResources} onValueChange={(includeResources) => setDraft({ ...draft, includeResources })} />
+          <Switch value={draft.includeResources} onValueChange={(includeResources) => updateDraft({ ...draft, includeResources })} />
         </View>
         <View style={styles.switchRow}>
           <View style={styles.switchText}>
             <Text style={[styles.switchTitle, { color: theme.colors.textPrimary }]}>世界书递归触发</Text>
             <Text style={[styles.switchHint, { color: theme.colors.textSecondary }]}>启用后，已命中的世界书内容可再触发一轮相关条目。</Text>
           </View>
-          <Switch value={draft.worldbookRecursive !== false} onValueChange={(worldbookRecursive) => setDraft({ ...draft, worldbookRecursive })} />
+          <Switch value={draft.worldbookRecursive !== false} onValueChange={(worldbookRecursive) => updateDraft({ ...draft, worldbookRecursive })} />
         </View>
         <View style={styles.buttonRow}>
           <Button label="恢复默认" icon={RotateCcw} variant="ghost" flex onPress={handleReset} />

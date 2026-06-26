@@ -21,6 +21,11 @@ import java.io.FileInputStream
 class PngMetadataModule(reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 
+  companion object {
+    // tEXt 块通常 KB 级，设 50MB 上限防御恶意构造的大 length
+    private const val MAX_CHUNK_SIZE = 50 * 1024 * 1024
+  }
+
   override fun getName(): String = "PngMetadata"
 
   @ReactMethod
@@ -47,6 +52,12 @@ class PngMetadataModule(reactContext: ReactApplicationContext) :
           val typeBytes = ByteArray(4)
           input.readFully(typeBytes)
           val type = String(typeBytes, Charsets.US_ASCII)
+
+          // 10.17 修复：chunk length 无上限校验，恶意大文件 OOM
+          if (length < 0 || length > MAX_CHUNK_SIZE) {
+            promise.reject("INVALID_CHUNK", "PNG chunk 长度异常: $length")
+            return
+          }
 
           // chunk data（length 可能为 0）
           val data = ByteArray(length)

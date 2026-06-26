@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
@@ -53,6 +53,15 @@ export const PipelineConfigScreen: React.FC = () => {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [config, setConfig] = useState<PipelineConfig>(DEFAULT_CONFIG);
   const [saving, setSaving] = useState(false);
+  // 10.8: isMountedRef 守卫异步 loadData，避免卸载后 setState
+  const isMountedRef = useRef(true);
+
+  // 10.8: cleanup 标记卸载，loadData 后续 setState 受守卫
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const loadData = async () => {
@@ -62,9 +71,11 @@ export const PipelineConfigScreen: React.FC = () => {
           db.getPipelineConfig(),
           db.getPresetsByProject(currentProject.id),
         ]);
+        if (!isMountedRef.current) return;
         setConfig(savedConfig);
         setPresets(projectPresets as Preset[]);
       } catch (e: any) {
+        if (!isMountedRef.current) return;
         Alert.alert('加载配置失败', e?.message || '未知错误');
       }
     };
