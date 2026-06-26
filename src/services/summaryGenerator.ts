@@ -29,6 +29,9 @@ export async function generateSummary(chapterId: number): Promise<boolean> {
       },
     ],
     1200,
+    // scenario/projectId 修复：原调用未传 config，scenario 回退 'chat'，
+    // 用量统计面板混入 chat 类别且无项目归属
+    { scenario: 'chapter_summary', projectId: chapter.project_id },
   );
   if (!result) return false;
 

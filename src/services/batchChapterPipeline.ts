@@ -26,13 +26,14 @@ function parseOutlineTitle(line: string, index: number): string {
 
 async function ensureTargetChapters(projectId: number, count: number, outlineLines: string[]): Promise<Chapter[]> {
   let working = await db.getChaptersByProject(projectId);
-  let nonFinal = working.filter((c) => c.status !== 'final');
+  // 批量生成覆盖已有草稿修复：只挑选 content 为空的章节，避免覆盖用户已有草稿
+  let emptyChapters = working.filter((c) => c.status !== 'final' && !c.content?.trim());
 
   // 最大创建次数上限，防止 createChapter 返回无效 id 时死循环
   const maxAttempts = count * 2 + 5;
   let attempts = 0;
 
-  while (nonFinal.length < count && attempts < maxAttempts) {
+  while (emptyChapters.length < count && attempts < maxAttempts) {
     const beforeLength = working.length;
     const index = working.length;
     const line = outlineLines[index] || '';
@@ -41,11 +42,11 @@ async function ensureTargetChapters(projectId: number, count: number, outlineLin
     working = await db.getChaptersByProject(projectId);
     // 章节数量未增长说明创建失败，跳出避免死循环
     if (working.length <= beforeLength) break;
-    nonFinal = working.filter((c) => c.status !== 'final');
+    emptyChapters = working.filter((c) => c.status !== 'final' && !c.content?.trim());
     attempts++;
   }
 
-  return nonFinal.slice(0, count);
+  return emptyChapters.slice(0, count);
 }
 
 export async function runBatchChapterPipeline({

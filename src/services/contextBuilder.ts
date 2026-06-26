@@ -67,7 +67,14 @@ export async function buildContext(
     .join('\n\n');
 
   const systemPrompt = typeof preset === 'string' ? preset : buildPresetPrompt(preset);
-  const resolvedSystemPrompt = systemPrompt || DEFAULT_SYSTEM_PROMPT;
+  const rawSystemPrompt = systemPrompt || DEFAULT_SYSTEM_PROMPT;
+  // 宏替换覆盖系统提示词修复：preset.system_prompt / writing_style / extra_instructions
+  // 里的 {{char}}/{{user}}/{{chapter}}/{{synopsis}} 也需要替换，否则以字面量进入 LLM
+  const resolvedSystemPrompt = await processMacros(rawSystemPrompt, {
+    projectId,
+    chapterTitle: currentChapter.title,
+    chapterSynopsis: currentChapter.synopsis,
+  });
   const messages: ChatMessage[] = [{ role: 'system', content: resolvedSystemPrompt }];
 
   trace.push({
@@ -82,7 +89,7 @@ export async function buildContext(
   });
 
   if (config.includeResources && config.resourceBudget > 0) {
-    const { text: resourceText, traceItems: resourceTrace } = await buildResourceContext(projectId, config.resourceBudget, scanText, config.worldbookRecursive !== false);
+    const { text: resourceText, traceItems: resourceTrace } = await buildResourceContext(projectId, config.resourceBudget, scanText, config.worldbookRecursive !== false, currentChapter);
     if (resourceText) {
       const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceText}`;
       messages.push({ role: 'system', content: resourceMessage });
@@ -161,6 +168,7 @@ async function buildResourceContext(
   budget: number,
   scanText: string,
   recursiveWorldbook: boolean,
+  currentChapter?: Chapter,
 ): Promise<{ text: string; traceItems: ContextTraceItem[] }> {
   const parts: string[] = [];
   const allTraceItems: ContextTraceItem[] = [];
@@ -178,7 +186,7 @@ async function buildResourceContext(
   addPart('人物设定', charResult.text, characterBudget);
   allTraceItems.push(...charResult.items);
 
-  const noteResult = await buildNoteContext(projectId, noteBudget, scanText);
+  const noteResult = await buildNoteContext(projectId, noteBudget, scanText, currentChapter?.title || '', currentChapter?.synopsis || '', '');
   addPart('项目笔记', noteResult.text, noteBudget);
   allTraceItems.push(...noteResult.items);
 
@@ -211,7 +219,7 @@ export async function buildCharacterContext(projectId: number, budget: number): 
     ]
       .filter(Boolean)
       .join('\n');
-    const charBudget = Math.min(remaining, Number(character.max_tokens || 50000));
+    const charBudget = Math.min(remaining, Number(character.max_tokens ?? 50000));
     const clipped = clipTextToTokenBudget(text, charBudget);
     const wasClipped = clipped !== text && clipped.length < text.length;
     const included = clipped.length > 0;
@@ -275,6 +283,9 @@ async function buildNoteContext(
   projectId: number,
   budget: number,
   scanText: string,
+  chapterTitle = '',
+  chapterSynopsis = '',
+  userPrompt = '',
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   let config;
   try {
@@ -288,7 +299,7 @@ async function buildNoteContext(
     return buildStyleContext(projectId, budget, config);
   }
   if (mode === 'retrieval') {
-    return buildRetrievedNoteContext(projectId, budget, scanText, config);
+    return buildRetrievedNoteContext(projectId, budget, scanText, config, chapterTitle, chapterSynopsis, userPrompt);
   }
   return buildNoteContextOriginal(projectId, budget);
 }
@@ -341,14 +352,17 @@ async function buildRetrievedNoteContext(
   budget: number,
   scanText: string,
   config: any,
+  chapterTitle = '',
+  chapterSynopsis = '',
+  userPrompt = '',
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   try {
     const topK = config?.retrievalTopK ?? 5;
     const query: RetrievalQuery = {
-      chapterTitle: '',
-      chapterSynopsis: '',
+      chapterTitle,
+      chapterSynopsis,
       previousEnding: scanText.slice(-500),
-      userPrompt: '',
+      userPrompt,
     };
     const fragments = await retrieveNoteFragments(projectId, query, topK);
     if (fragments.length === 0) return { text: '', items: [] };
@@ -384,7 +398,7 @@ async function buildNoteContextOriginal(projectId: number, budget: number): Prom
     const content = await db.getNoteContentById(note.id);
     const noteTitle = note.title || '无标题';
     const text = `笔记「${noteTitle}」：${content}`;
-    const noteBudget = Math.min(remaining, note.max_tokens || 30000);
+    const noteBudget = Math.min(remaining, note.max_tokens ?? 30000);
     const clipped = clipTextToTokenBudget(text, noteBudget);
     const wasClipped = clipped !== text && clipped.length < text.length;
     const included = clipped.length > 0;
@@ -459,7 +473,9 @@ export async function buildWorldbookContext(
 
   const activatePass = (haystack: string, isRecursive = false) => {
     for (const entry of entries) {
-      const id = Number(entry.id || entries.indexOf(entry));
+      // entry.id=0 回退 indexOf 修复：id=0 时 indexOf 当 id，可能与其他条目 id 撞号。
+      // 直接取 Number(entry.id)，0 当作无效统一回退 null（activated Map 用 null key 不会撞）
+      const id = Number(entry.id) || null;
       if (activated.has(id)) continue;
       const reason = determineReason(entry, haystack);
       if (reason) {
@@ -483,10 +499,10 @@ export async function buildWorldbookContext(
     const entryContent = String(entry.content || '');
     const label = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword)[0];
     const reason = activationReason.get(id) || '主关键词命中';
-    const entryBudget = Math.min(remaining, Number(entry.max_tokens || 2000));
+    const entryBudget = Math.min(remaining, Number(entry.max_tokens ?? 2000));
 
     const collectionId = Number(entry.collection_id || 0);
-    const collectionBudget = Number(entry.collection_max_tokens || 50000);
+    const collectionBudget = Number(entry.collection_max_tokens ?? 50000);
     const used = collectionUsage.get(collectionId) || 0;
     const remainingForCollection = Math.max(0, collectionBudget - used);
 
@@ -599,16 +615,17 @@ export function buildPreviousContentText(
 
 function clipTextTailToTokenBudget(text: string, budget: number): string {
   if (budget <= 0 || !text) return '';
+  // O(n²) 拼接修复：先反向遍历累计 token 找到起始下标，最后 slice，整体 O(n)
   let used = 0;
-  let output = '';
+  let startIdx = text.length;
   for (let index = text.length - 1; index >= 0; index--) {
     const char = text[index];
     const nextCost = estimateTokens(char);
     if (used + nextCost > budget) break;
     used += nextCost;
-    output = char + output;
+    startIdx = index;
   }
-  return output.trimStart();
+  return text.slice(startIdx).trimStart();
 }
 
 export function buildMemoryContext(

@@ -224,7 +224,9 @@ export async function callLLMResult(
     if (error?.name === 'AbortError') {
       // 区分用户主动取消和请求超时：外部 signal 被 abort 视为用户取消，不当作失败
       if (externalSignal?.aborted) {
-        const cancelError = new Error('朗读已取消') as Error & { code?: string };
+        // 改为通用文案"已取消"：callLLMResult 被管线/摘要/风格分析共享，
+        // 管线取消时显示"朗读已取消"语义错乱
+        const cancelError = new Error('已取消') as Error & { code?: string };
         cancelError.code = 'cancelled';
         throw cancelError;
       }

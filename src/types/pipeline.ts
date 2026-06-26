@@ -5,6 +5,7 @@ export type PipelineTaskStatus =
   | 'idle'
   | 'drafting'
   | 'reviewing'
+  | 'factChecking'
   | 'proofing'
   | 'completed'
   | 'cancelled'

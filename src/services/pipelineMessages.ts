@@ -127,8 +127,11 @@ export function buildProofMessages(
   reviewText: string,
   factCheckText: string,
 ): ChatMessage[] {
-  const reviewAvailable = reviewText && !reviewText.includes('未能完成');
-  const factAvailable = factCheckText && !factCheckText.includes('未能完成');
+  // 子串判断修复：原代码用 !reviewText.includes('未能完成') 判断审阅是否可用，
+  // LLM 返回的 JSON 文本里恰好包含"未能完成"四字（如"主角未能完成任务"）会误判。
+  // 改用 trim() 判空，空串表示审阅失败。
+  const reviewAvailable = !!(reviewText && reviewText.trim());
+  const factAvailable = !!(factCheckText && factCheckText.trim());
 
   return [
     {
