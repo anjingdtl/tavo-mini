@@ -12,19 +12,24 @@ describe('PipelineForegroundBridge', () => {
   it('enabled=false 时 start/updateProgress 静默 no-op', async () => {
     PipelineForeground.setEnabled(false);
     await PipelineForeground.start('t1', '标题', '草稿中');
-    await PipelineForeground.updateProgress('t1', '审阅中');
+    await PipelineForeground.updateProgress('t1', '审阅中', 50);
     expect(NativeModules.PipelineForeground.start).not.toHaveBeenCalled();
     expect(NativeModules.PipelineForeground.updateProgress).not.toHaveBeenCalled();
   });
 
-  it('start 调用原生 start', async () => {
+  it('start 调用原生 start（默认进度 0）', async () => {
     await PipelineForeground.start('t1', '第1章', '草稿中');
-    expect(NativeModules.PipelineForeground.start).toHaveBeenCalledWith('t1', '第1章', '草稿中');
+    expect(NativeModules.PipelineForeground.start).toHaveBeenCalledWith('t1', '第1章', '草稿中', 0);
   });
 
-  it('updateProgress 调用原生 updateProgress', async () => {
-    await PipelineForeground.updateProgress('t1', '审阅中');
-    expect(NativeModules.PipelineForeground.updateProgress).toHaveBeenCalledWith('t1', '审阅中');
+  it('start 可指定初始进度', async () => {
+    await PipelineForeground.start('t1', '第1章', '草稿中', 25);
+    expect(NativeModules.PipelineForeground.start).toHaveBeenCalledWith('t1', '第1章', '草稿中', 25);
+  });
+
+  it('updateProgress 调用原生 updateProgress 并透传进度', async () => {
+    await PipelineForeground.updateProgress('t1', '审阅中', 50);
+    expect(NativeModules.PipelineForeground.updateProgress).toHaveBeenCalledWith('t1', '审阅中', 50);
   });
 
   it('前台时 notifyComplete 不发系统通知（复用现有弹窗）', async () => {

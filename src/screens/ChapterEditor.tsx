@@ -6,6 +6,7 @@ import Toast from 'react-native-toast-message';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { cancelPipeline, runChapterPipeline } from '../services/pipelineRunner';
 import { suppressGlobalPipelinePrompt } from '../navigation/pipelinePromptSuppression';
+import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { PipelineProgress } from '../components/PipelineProgress';
 import { useThemeStore } from '../store/themeStore';
@@ -389,6 +390,16 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     setProgressVisible(true);
     const taskId = createTask('chapter', chapter.id);
     suppressGlobalPipelinePrompt(taskId);
+    // 后台运行需要通知权限：若缺失则提示用户开启（不阻塞流水线，仅影响后台体验）
+    PipelineForeground.isAvailable().then((ok) => {
+      if (!ok) {
+        Toast.show({
+          type: 'info',
+          text1: '未开启通知权限',
+          text2: '切到后台时将无法显示写作进度，建议在系统设置中开启',
+        });
+      }
+    });
     try {
       await runChapterPipeline(taskId, chapter, (info) => {
         if (typeof info === 'object') {
