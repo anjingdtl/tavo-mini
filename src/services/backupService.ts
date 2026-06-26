@@ -29,12 +29,15 @@ const ALL_TABLES = [
   'freeform_documents',
   'content_revisions',
   'generation_drafts',
+  'project_note_config',
+  'note_style_profiles',
 ];
 
 // Delete order: child tables first, then parent tables
 const DELETE_ORDER = [
   'project_plotlines',
   'project_resources',
+  'note_style_profiles',
   'fragments',
   'chapters',
   'characters',
@@ -50,6 +53,7 @@ const DELETE_ORDER = [
   'freeform_documents',
   'content_revisions',
   'generation_drafts',
+  'project_note_config',
   'projects',
 ];
 
