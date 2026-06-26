@@ -16,6 +16,8 @@ interface PipelineTaskState {
   clearResolved: () => void;
   getActiveTaskForTarget: (targetType: 'chapter' | 'freeform', targetId: number) => PipelineTask | undefined;
   getUnresolvedCount: () => number;
+  /** 把 updatedAt 超过 staleMs 的活跃任务标记为 failed（用于回前台自愈）。返回标记的任务数。 */
+  markStaleTasksAsFailed: (staleMs?: number) => number;
 }
 
 let taskIdCounter = 0;
@@ -191,6 +193,34 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         t.resolvedAt === null &&
         (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'proofing')
     );
+  },
+
+  markStaleTasksAsFailed: (staleMs = 5 * 60 * 1000) => {
+    const now = Date.now();
+    const staleStatuses: PipelineTaskStatus[] = ['idle', 'drafting', 'reviewing', 'proofing'];
+    let marked = 0;
+    set((state) => {
+      const tasks = state.tasks.map((t) => {
+        if (
+          !t.resolvedAt &&
+          staleStatuses.includes(t.status) &&
+          now - (t.updatedAt || t.createdAt) > staleMs
+        ) {
+          marked += 1;
+          const updated: PipelineTask = {
+            ...t,
+            status: 'failed' as PipelineTaskStatus,
+            error: '运行被中断（App 可能被系统挂起）',
+            updatedAt: now,
+          };
+          persistTask(updated);
+          return updated;
+        }
+        return t;
+      });
+      return { tasks };
+    });
+    return marked;
   },
 
   getUnresolvedCount: () => {
