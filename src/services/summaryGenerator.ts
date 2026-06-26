@@ -34,7 +34,12 @@ export async function generateSummary(chapterId: number): Promise<boolean> {
 
   const json = extractJSON(result);
   if (!json) throw new Error('模型没有返回有效 JSON 摘要。');
-  const parsed = JSON.parse(json);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(json);
+  } catch (e: any) {
+    throw new Error(`解析摘要 JSON 失败：${e?.message || '未知错误'}`);
+  }
   const summary: ChapterSummary = {
     brief: String(parsed.brief || ''),
     plotPoints: Array.isArray(parsed.plotPoints) ? parsed.plotPoints.map(String) : [],
