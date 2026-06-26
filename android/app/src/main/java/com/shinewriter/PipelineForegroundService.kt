@@ -8,8 +8,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 /**
@@ -28,6 +31,21 @@ class PipelineForegroundService : Service() {
 
   private var wakeLock: PowerManager.WakeLock? = null
   private var currentTaskId: String? = null
+  private val handler = Handler(Looper.getMainLooper())
+  private val wakeLockRenewRunnable = object : Runnable {
+    override fun run() {
+      // 10.18 修复：wakelock 超时后无续期，长任务 CPU 休眠；周期检查并重新 acquire
+      try {
+        if (wakeLock?.isHeld != true) {
+          Log.d("PipelineFgSvc", "wakelock released (timeout?), re-acquiring")
+          acquireWakeLock()
+        }
+      } catch (e: Exception) {
+        Log.w("PipelineFgSvc", "wakelock renew check failed", e)
+      }
+      handler.postDelayed(this, WAKE_LOCK_RENEW_INTERVAL_MS)
+    }
+  }
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -45,11 +63,15 @@ class PipelineForegroundService : Service() {
 
     startForegroundInternal(title, stageLabel)
     acquireWakeLock()
+    // 启动周期续期检查
+    handler.removeCallbacks(wakeLockRenewRunnable)
+    handler.postDelayed(wakeLockRenewRunnable, WAKE_LOCK_RENEW_INTERVAL_MS)
 
     return START_NOT_STICKY
   }
 
   override fun onDestroy() {
+    handler.removeCallbacks(wakeLockRenewRunnable)
     releaseWakeLock()
     super.onDestroy()
   }
@@ -78,9 +100,15 @@ class PipelineForegroundService : Service() {
 
   private fun acquireWakeLock() {
     if (wakeLock?.isHeld == true) return
-    val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
-    wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+    // 10.19 修复：newWakeLock 可能抛 SecurityException，未 catch 会传播到 onStartCommand 致 Service 崩溃
+    try {
+      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+      wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
+      wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+    } catch (e: Exception) {
+      Log.e("PipelineFgSvc", "acquireWakeLock failed", e)
+      wakeLock = null
+    }
   }
 
   private fun releaseWakeLock() {
@@ -102,6 +130,8 @@ class PipelineForegroundService : Service() {
     private const val CHANNEL_DONE = "pipeline_done"
     private const val WAKE_LOCK_TAG = "shinewriter:pipeline"
     private const val WAKE_LOCK_TIMEOUT_MS = 30 * 60 * 1000L // 30 分钟上限
+    // 10.18：续期检查间隔，取 timeout 的一半，确保超时前有一次续期机会
+    private const val WAKE_LOCK_RENEW_INTERVAL_MS = 15 * 60 * 1000L
 
     /**
      * 确保通知 channel 已创建。

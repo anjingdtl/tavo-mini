@@ -2,6 +2,7 @@ import RNFS from 'react-native-fs';
 import { keepLocalCopy, pick, types } from '@react-native-documents/picker';
 import { inflate } from 'pako';
 import * as db from './database';
+import { PngMetadata } from '../native/PngMetadataModule';
 
 /* eslint-disable no-bitwise */
 
@@ -284,8 +285,31 @@ function parsePngTextChunks(base64: string): Record<string, string> {
 }
 
 export async function parseCharacterCardPNG(filePath: string): Promise<CharacterImportPayload> {
-  const base64 = await RNFS.readFile(filePath, 'base64');
-  const chunks = parsePngTextChunks(base64);
+  // 10.12 修复：PngMetadata 原生模块此前是死代码，优先调用原生解析（性能更好，避免 base64 大文件内存压力）
+  let chunks: Record<string, string>;
+  if (PngMetadata) {
+    try {
+      const nativeResults = await PngMetadata.parsePngMetadata(filePath);
+      if (nativeResults.length > 0) {
+        chunks = {};
+        for (const item of nativeResults) {
+          chunks[item.key] = item.data;
+        }
+      } else {
+        // 原生未找到 tEXt 块（可能是 zTXt 压缩块，原生不支持），回退 JS 解析
+        const base64 = await RNFS.readFile(filePath, 'base64');
+        chunks = parsePngTextChunks(base64);
+      }
+    } catch {
+      // 原生解析失败，回退 JS 解析
+      const base64 = await RNFS.readFile(filePath, 'base64');
+      chunks = parsePngTextChunks(base64);
+    }
+  } else {
+    const base64 = await RNFS.readFile(filePath, 'base64');
+    chunks = parsePngTextChunks(base64);
+  }
+
   const raw = chunks.chara || chunks.ccv3 || chunks.character || chunks.Description;
   if (!raw) {
     throw new Error('PNG 中未找到 SillyTavern 角色卡元数据。');

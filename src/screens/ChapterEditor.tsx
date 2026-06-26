@@ -132,6 +132,14 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     return () => { autoSave.flush().catch(() => {}); };
   }, []);
 
+  // 10.11: 组件卸载时清空 seenTerminalRef，避免长时间使用 / Hot Reload 累积
+  useEffect(() => {
+    const seenTerminal = seenTerminalRef.current;
+    return () => {
+      seenTerminal.clear();
+    };
+  }, []);
+
   useEffect(() => {
     loadVoiceConfig();
   }, [loadVoiceConfig]);
@@ -146,11 +154,13 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   // auto-open the result screen the moment it transitions to completed. This
   // mirrors the global prompt in src/main/index.tsx, scoped to tasks that
   // belong to the chapter the user is currently editing.
+  // 依赖只用 chapterId：subscribe 回调按 chapterId 过滤即可，不需要 chapter
+  // 实例。原来依赖含 chapter 对象，每次编辑都会退订重订，subscribe 失去
+  // 连续性。
   const [, setTrackedTaskId] = useState<string | null>(null);
   useEffect(() => {
-    if (!chapter) return;
     const findTask = () => usePipelineTaskStore.getState().tasks.find(
-      (t) => t.targetType === 'chapter' && t.targetId === chapter.id && t.resolvedAt === null
+      (t) => t.targetType === 'chapter' && t.targetId === chapterId && t.resolvedAt === null
         && (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'proofing'
           || t.status === 'completed' || t.status === 'failed'),
     );
@@ -195,7 +205,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       }
     });
     return unsubscribe;
-  }, [attachRunningPipelineTask, chapter, chapterId, openPipelineResult]);
+  }, [attachRunningPipelineTask, chapterId, openPipelineResult]);
 
   // Intercept hardware back / swipe-back so pending edits are flushed before
   // leaving the screen. The default goBack() does not trigger flushAndClose.
