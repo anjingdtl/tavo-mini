@@ -26,7 +26,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const current = selectedId
         ? projects.find((project) => project.id === Number(selectedId)) || null
         : get().currentProject;
-      set({ projects, currentProject: current && projects.some((project) => project.id === current.id) ? current : projects[0] || null });
+      // 8.13 修复：current 不在 projects 时回退 projects[0] 但不同步 DB，每次启动都走回退
+      const fallback = projects[0] || null;
+      const resolved = current && projects.some((project) => project.id === current.id) ? current : fallback;
+      if (resolved && (!current || !projects.some((p) => p.id === current.id))) {
+        // 回退时同步写 DB，避免下次启动重复走回退分支
+        await db.setSetting('current_project_id', String(resolved.id));
+      }
+      set({ projects, currentProject: resolved });
+    } catch (error) {
+      // 8.12 修复：loadProjects 仅 try-finally 无 catch，抛错时 unhandled rejection
+      console.warn('[projectStore] loadProjects failed:', error);
     } finally {
       set({ loading: false });
     }
