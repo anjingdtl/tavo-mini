@@ -28,13 +28,21 @@ async function ensureTargetChapters(projectId: number, count: number, outlineLin
   let working = await db.getChaptersByProject(projectId);
   let nonFinal = working.filter((c) => c.status !== 'final');
 
-  while (nonFinal.length < count) {
+  // 最大创建次数上限，防止 createChapter 返回无效 id 时死循环
+  const maxAttempts = count * 2 + 5;
+  let attempts = 0;
+
+  while (nonFinal.length < count && attempts < maxAttempts) {
+    const beforeLength = working.length;
     const index = working.length;
     const line = outlineLines[index] || '';
     const id = await db.createChapter(projectId, index, parseOutlineTitle(line, index));
     if (line) await db.updateChapter(id, { synopsis: line });
     working = await db.getChaptersByProject(projectId);
+    // 章节数量未增长说明创建失败，跳出避免死循环
+    if (working.length <= beforeLength) break;
     nonFinal = working.filter((c) => c.status !== 'final');
+    attempts++;
   }
 
   return nonFinal.slice(0, count);
@@ -61,7 +69,12 @@ export async function runBatchChapterPipeline({
     result.taskIds.push(taskId);
 
     try {
-      await runChapterPipeline(taskId, freshChapter, onProgress);
+      // onStageUpdate 可能传入 StageInfo 对象，适配为 onProgress 期望的 string
+      await runChapterPipeline(
+        taskId,
+        freshChapter,
+        onProgress ? (info) => onProgress(typeof info === 'string' ? info : info.label) : undefined,
+      );
       const finishedTask = usePipelineTaskStore.getState().tasks.find((task) => task.id === taskId);
       if (finishedTask?.status === 'completed' && finishedTask.finalText?.trim()) {
         await db.updateChapter(freshChapter.id, { content: finishedTask.finalText.trim(), status: 'draft' });
