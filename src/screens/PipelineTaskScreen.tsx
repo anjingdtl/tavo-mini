@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
+import Toast from 'react-native-toast-message';
 import { Button, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
@@ -73,7 +74,14 @@ export const PipelineTaskScreen: React.FC = () => {
             <Button
               label="删除"
               variant="ghost"
-              onPress={() => resolveTask(item.id, 'reject')}
+              // Phase9-BUG#19: 原 onPress 未 await + 未 try-catch，改为 await + try-catch
+              onPress={async () => {
+                try {
+                  await resolveTask(item.id, 'reject');
+                } catch (e: any) {
+                  Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+                }
+              }}
             />
           </View>
         )}

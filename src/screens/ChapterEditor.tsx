@@ -47,6 +47,8 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [generating, setGenerating] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  // Phase9-BUG#2: 清空正文时的进行中状态，避免重复点击
+  const [clearing, setClearing] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [currentStage, setCurrentStage] = useState<PipelineStageName | 'idle'>('idle');
   const [progressStartedAt, setProgressStartedAt] = useState(Date.now());
@@ -83,7 +85,12 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   );
 
   const loadChapter = useCallback(async () => {
-    setChapter(await db.getChapterById(chapterId));
+    // Phase9-BUG#1: 包裹 try-catch，DB 异常时不再产生 unhandled rejection 导致白屏
+    try {
+      setChapter(await db.getChapterById(chapterId));
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   }, [chapterId]);
 
   const openPipelineResult = useCallback((taskId: string) => {
@@ -280,24 +287,32 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   };
 
   const clearContent = () => {
-    if (!chapter) return;
+    if (!chapter || clearing) return;
     Alert.alert('清空正文', '确定要清空当前章节的全部正文内容？', [
       { text: '取消', style: 'cancel' },
       {
         text: '清空',
         style: 'destructive',
         onPress: async () => {
-          await createRevision({
-            projectId: chapter.project_id,
-            targetType: 'chapter',
-            targetId: chapter.id,
-            title: chapter.title,
-            content: chapter.content,
-            source: 'before_clear',
-          });
-          await db.updateChapter(chapter.id, { content: '' });
-          await loadChapter();
-          setSaveStatus('saved');
+          // Phase9-BUG#2: 包裹 try-catch + Toast + clearing 状态，避免清空失败时静默无反馈
+          setClearing(true);
+          try {
+            await createRevision({
+              projectId: chapter.project_id,
+              targetType: 'chapter',
+              targetId: chapter.id,
+              title: chapter.title,
+              content: chapter.content,
+              source: 'before_clear',
+            });
+            await db.updateChapter(chapter.id, { content: '' });
+            await loadChapter();
+            setSaveStatus('saved');
+          } catch (e: any) {
+            Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+          } finally {
+            setClearing(false);
+          }
         },
       },
     ]);
@@ -305,24 +320,34 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
 
   const manualCheckpoint = async () => {
     if (!chapter) return;
-    await createRevision({
-      projectId: chapter.project_id,
-      targetType: 'chapter',
-      targetId: chapter.id,
-      title: chapter.title,
-      content: chapter.content,
-      source: 'manual_checkpoint',
-    });
-    Alert.alert('版本已保存', '当前内容已保存为手动版本快照。');
+    // Phase9-BUG#3: 包裹 try-catch，失败时不弹"版本已保存"误导用户
+    try {
+      await createRevision({
+        projectId: chapter.project_id,
+        targetType: 'chapter',
+        targetId: chapter.id,
+        title: chapter.title,
+        content: chapter.content,
+        source: 'manual_checkpoint',
+      });
+      Alert.alert('版本已保存', '当前内容已保存为手动版本快照。');
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   const toggleTts = async () => {
     if (!chapter) return;
-    if (isSynthesizing || isPlaying) {
-      await stop();
-      return;
+    // Phase9-BUG#4: 包裹 try-catch + Toast，朗读启停失败时给用户反馈
+    try {
+      if (isSynthesizing || isPlaying) {
+        await stop();
+        return;
+      }
+      await playChapter(chapter.content);
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
     }
-    await playChapter(chapter.content);
   };
 
   const runPipeline = async () => {
@@ -485,11 +510,11 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
               minWidth={72}
             />
             <Button
-              label="清空"
+              label={clearing ? '清空中…' : '清空'}
               icon={Trash2}
               variant="ghost"
               onPress={clearContent}
-              disabled={generating || finalizing}
+              disabled={generating || finalizing || clearing}
               compact
               minWidth={72}
             />

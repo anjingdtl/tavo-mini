@@ -81,7 +81,13 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         // 已 accept 则不再 reject，避免与 handleAccept 竞态
         if (acceptedRef.current) return;
         if (current && current.resolvedAt === null) {
-          resolveTask(taskId, 'reject');
+          // Phase9-BUG#20: cleanup 兜底。resolveTask 返回 void（内部 DB 调用已
+          // .catch 静默吞错），此处用 try-catch 做最后兜底，避免 cleanup 抛错中断。
+          try {
+            resolveTask(taskId, 'reject');
+          } catch {
+            // 静默兜底，cleanup 不应抛错
+          }
         }
       }, 0);
     };
