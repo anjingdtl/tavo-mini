@@ -39,17 +39,3 @@ export function createChapterGenerationRequest(chapter: Chapter): ChapterGenerat
     ].join('\n'),
   };
 }
-
-export function mergeChapterGenerationResult(
-  chapter: Chapter,
-  generatedText: string,
-): { content: string; status: Chapter['status'] } {
-  const text = generatedText.trim();
-  if (chapter.status === 'revision') {
-    return { content: text, status: 'revision' };
-  }
-  return {
-    content: `${chapter.content || ''}${chapter.content ? '\n\n' : ''}${text}`,
-    status: 'draft',
-  };
-}

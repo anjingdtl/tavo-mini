@@ -399,9 +399,17 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       sendEvent("ttsDone", null)
     }
 
+    // 11.17 修复：新版 API（API 21+）系统回调此带 errorCode 的重载，
+    // 旧版 onError(String?) 在新版系统上不再被回调，必须 override 此方法才能收到错误
+    override fun onError(utteranceId: String?, errorCode: Int) {
+      Log.w("TtsAudio", "TTS utterance error: $utteranceId code=$errorCode")
+      sendEvent("ttsError", null)
+    }
+
+    // 旧版 API（已废弃）：保留 override 以兼容旧设备/引擎，新版系统不再回调此方法
+    @Deprecated("旧版回调，新版 API 改用 onError(utteranceId, errorCode)")
     override fun onError(utteranceId: String?) {
-      // 朗读错误：通知 JS 层重置 isPlaying 状态
-      Log.w("TtsAudio", "TTS utterance error: $utteranceId")
+      Log.w("TtsAudio", "TTS utterance error (legacy): $utteranceId")
       sendEvent("ttsError", null)
     }
   }
