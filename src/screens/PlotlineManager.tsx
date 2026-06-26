@@ -30,10 +30,14 @@ export const PlotlineManager: React.FC = () => {
 
   const add = async () => {
     if (!currentProject || !name.trim()) return;
-    await db.createPlotline(currentProject.id, name.trim(), description.trim(), COLORS[plotlines.length % COLORS.length]);
-    setName('');
-    setDescription('');
-    await loadPlotlines();
+    try {
+      await db.createPlotline(currentProject.id, name.trim(), description.trim(), COLORS[plotlines.length % COLORS.length]);
+      setName('');
+      setDescription('');
+      await loadPlotlines();
+    } catch (e: any) {
+      Alert.alert('添加情节线失败', e?.message || '未知错误');
+    }
   };
 
   const generate = async () => {
@@ -53,8 +57,17 @@ export const PlotlineManager: React.FC = () => {
       if (!json) throw new Error('模型没有返回有效 JSON。');
       const parsed = JSON.parse(json);
       if (!Array.isArray(parsed.plotlines)) throw new Error('JSON 中缺少 plotlines 数组。');
-      for (const item of parsed.plotlines) {
-        await db.createPlotline(currentProject.id, String(item.name || '情节线'), String(item.description || ''), COLORS[plotlines.length % COLORS.length]);
+      // 闭包陷阱修复：原代码循环中读 plotlines.length（闭包变量，循环内不更新），
+      // 导致所有新情节线拿到同一颜色。改用循环索引 i 计算颜色，确保循环分布。
+      const base = plotlines.length;
+      for (let i = 0; i < parsed.plotlines.length; i++) {
+        const item = parsed.plotlines[i];
+        await db.createPlotline(
+          currentProject.id,
+          String(item.name || '情节线'),
+          String(item.description || ''),
+          COLORS[(base + i) % COLORS.length],
+        );
       }
       await loadPlotlines();
     } catch (error: any) {

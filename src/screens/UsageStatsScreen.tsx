@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Header, LoadingState, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
@@ -45,6 +46,8 @@ export const UsageStatsScreen: React.FC<Props> = ({ onClose }) => {
       ]);
       setSummary(s);
       setDailyStats(d);
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '加载用量数据失败', text2: e?.message });
     } finally {
       setLoading(false);
     }

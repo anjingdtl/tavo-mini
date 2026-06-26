@@ -212,9 +212,10 @@ export async function callLLMResult(
     const data = await response.json();
     const text = data.choices?.[0]?.message?.content || null;
     const usage = data.usage || {};
-    const inputTokens = Number(usage.prompt_tokens || inputEstimate);
-    const outputTokens = Number(usage.completion_tokens || estimateTokens(text || ''));
-    const totalTokens = Number(usage.total_tokens || inputTokens + outputTokens);
+    // 用 ?? 而非 ||：provider 返回 0 是有效值（如纯嵌入请求），不应回退到估算。
+    const inputTokens = Number(usage.prompt_tokens ?? inputEstimate);
+    const outputTokens = Number(usage.completion_tokens ?? estimateTokens(text || ''));
+    const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens);
 
     await safeLogUsage({ scenario, inputTokens, outputTokens, totalTokens, status: 'success', modelName, projectId });
 
