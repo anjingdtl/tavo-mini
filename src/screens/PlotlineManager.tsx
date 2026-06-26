@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
 import { Bot, Plus, Trash2 } from 'lucide-react-native';
+import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Field, Header, Screen, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
@@ -80,7 +81,19 @@ export const PlotlineManager: React.FC = () => {
   const remove = (item: Plotline) => {
     Alert.alert('删除情节线', `确定删除「${item.name}」？`, [
       { text: '取消', style: 'cancel' },
-      { text: '删除', style: 'destructive', onPress: async () => { await db.deletePlotline(item.id); await loadPlotlines(); } },
+      {
+        text: '删除',
+        style: 'destructive',
+        // Phase9-BUG#15: 包裹 try-catch + Toast，删除失败时给用户反馈
+        onPress: async () => {
+          try {
+            await db.deletePlotline(item.id);
+            await loadPlotlines();
+          } catch (e: any) {
+            Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+          }
+        },
+      },
     ]);
   };
 
