@@ -84,44 +84,6 @@ export function buildFactCheckMessages(draftText: string, contextText: string): 
   ];
 }
 
-export function buildAssessmentMessages(draftText: string): ChatMessage[] {
-  return [
-    {
-      role: 'system',
-      content: [
-        '你是小说流水线的快速质检编辑。请先给出可展示给作者的短评，再判断这份草稿是否必须进入终审润色。',
-        '只检查会明显影响读者体验的问题：严重逻辑矛盾、角色行为明显不一致、前后衔接断裂、语言可读性很差。',
-        '如果只是轻微措辞或标点问题，needsProof 应为 false，但仍要给出简短评价。',
-        '必须输出严格 JSON，不要使用 Markdown，不要输出解释。',
-        '格式固定为：{"needsProof": boolean, "shortReview": "一句话短评", "issues": string[], "suggestions": string[], "reasons": string[]}',
-        'issues 写主要问题，没有问题则为空数组；suggestions 写可执行修改意见，没有必要修改则为空数组；reasons 写 needsProof 判断依据。',
-      ].join('\n'),
-    },
-    {
-      role: 'user',
-      content: `请快速评估以下小说草稿，并输出短评与修改意见：\n\n${draftText}`,
-    },
-  ];
-}
-
-export function buildLightProofMessages(draftText: string): ChatMessage[] {
-  return [
-    {
-      role: 'system',
-      content: [
-        '你是小说流水线的轻量终审校对员。',
-        '请只做必要润色：修正明显错别字、病句、衔接断裂、重复表达和轻微一致性问题。',
-        '不要重写剧情，不要增加分析，不要输出标题或修改说明。',
-        '如果原稿已经通顺，也必须输出完整正文，而不是说明无需修改。',
-      ].join('\n'),
-    },
-    {
-      role: 'user',
-      content: `请对以下小说草稿进行轻量终审，并直接输出完整正文：\n\n${draftText}`,
-    },
-  ];
-}
-
 export function buildProofMessages(
   draftText: string,
   reviewText: string,

@@ -39,7 +39,8 @@ export const ChapterCard: React.FC<Props> = ({ chapter, isActive, plotlineColors
       {plotlineColors.length > 0 && (
         <View style={styles.plotlineBar}>
           {plotlineColors.map((color, i) => (
-            <View key={i} style={[styles.plotlineDot, { backgroundColor: color }]} />
+            // 11.14 修复：用 color 值作稳定 key，避免 index 作 key 在增删时复用错位
+            <View key={`${color}-${i}`} style={[styles.plotlineDot, { backgroundColor: color }]} />
           ))}
         </View>
       )}

@@ -121,6 +121,9 @@ async function allRows(db: SQLite.SQLiteDatabase, table: string): Promise<Record
   return items;
 }
 
+// 11.12 说明：该 checksum 非加密用途，仅用于检测备份完整性（写入后是否被篡改/损坏），
+// 而非安全校验。charCodeAt 循环 O(n) 在大备份下偏慢但可接受，未引入 crypto 是为
+// 兼容 RN 环境且避免额外原生依赖；如需强校验可后续替换为 sha256。
 function computeChecksum(tables: Record<string, any[]>): string {
   const json = JSON.stringify(tables);
   // Simple deterministic fingerprint: string length + first 50 chars
@@ -394,7 +397,10 @@ export async function restoreFromBackup(
     for (const table of INSERT_ORDER) {
       const rows: Record<string, any>[] = backup.tables?.[table] || [];
       for (const row of rows) {
-        // Skip api_key field in llm_config (security: keys are in Keystore)
+        // 11.13 说明：llm_config 行跳过 api_key 字段，因为明文密钥不入库——
+        // 运行时 API Key 按 llm_config.id 走 Android Keystore（react-native-keychain），
+        // 备份文件中即使残留 api_key 也不可恢复（密钥不在备份范围内），故此处显式过滤，
+        // 避免把历史遗留的明文/空值写回 llm_config.api_key 列。
         const keys = Object.keys(row).filter(k => {
           if (table === 'llm_config' && k === 'api_key') return false;
           return true;

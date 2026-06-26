@@ -27,7 +27,6 @@ interface VoiceState {
   saveSystemTtsConfig: (config: SystemTtsConfig) => Promise<void>;
   setEngine: (engine: TtsEngine) => Promise<void>;
   setVoiceApiKey: (key: string) => Promise<void>;
-  setMiniMaxApiKey: (key: string) => Promise<void>;
   playChapter: (text: string) => Promise<void>;
   stop: () => Promise<void>;
 }
@@ -79,10 +78,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   setVoiceApiKey: async (key) => {
     await setSecureVoiceApiKey(key);
     set({ apiKey: key.trim() });
-  },
-
-  setMiniMaxApiKey: async (key) => {
-    await get().setVoiceApiKey(key);
   },
 
   playChapter: async (text) => {

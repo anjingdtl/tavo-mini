@@ -265,26 +265,6 @@ export async function callLLMResult(
   }
 }
 
-export async function callLLMStream(
-  messages: ChatMessage[],
-  config?: LLMCallConfig,
-  onChunk?: (chunk: string, fullText: string) => void,
-  onDone?: (fullText: string) => void,
-  abortSignal?: AbortSignal,
-): Promise<string | null> {
-  if (abortSignal?.aborted) {
-    onDone?.('');
-    return '';
-  }
-
-  const result = await callLLM(messages, config?.max_tokens, config);
-  if (result) {
-    onChunk?.(result, result);
-    onDone?.(result);
-  }
-  return result;
-}
-
 async function safeLogUsage(fields: {
   scenario: string;
   inputTokens: number;

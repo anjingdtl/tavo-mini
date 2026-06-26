@@ -189,14 +189,16 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
       {showMessages ? (
         <FlatList
           data={messages}
-          keyExtractor={(_, i) => String(i)}
+          // 11.15 修复：ChatMessage 无 id，用 index+role 拼接稳定 key
+          keyExtractor={(item, i) => `${i}-${item.role}`}
           renderItem={renderMessageItem}
           contentContainerStyle={styles.listContent}
         />
       ) : (
         <FlatList
           data={trace}
-          keyExtractor={(_, i) => String(i)}
+          // 11.15 修复：ContextTraceItem 有 sourceId，用 kind+sourceId+title 组合稳定 key
+          keyExtractor={(item) => `${item.kind}-${item.sourceId ?? 'none'}-${item.title}`}
           renderItem={renderTraceItem}
           contentContainerStyle={styles.listContent}
         />
