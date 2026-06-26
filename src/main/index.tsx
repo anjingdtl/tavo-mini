@@ -1,5 +1,5 @@
 import React from 'react';
-import { ImageBackground, StyleSheet } from 'react-native';
+import { AppState, ImageBackground, StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../components/ThemeProvider';
@@ -73,14 +73,14 @@ export const App: React.FC = () => {
     // tasks.
     const prompted = new Set<string>();
 
-    // Seed the prompted set with anything that was already terminal before
-    // this effect ran (loaded from DB on app start). Skip auto-resolved
-    // tasks (e.g. batch sub-tasks that were already handled).
-    usePipelineTaskStore.getState().tasks.forEach((t) => {
-      if (t.resolvedAt === null && (t.status === 'completed' || t.status === 'failed')) {
-        prompted.add(t.id);
-      }
-    });
+    const seedPromptedFromCurrentState = () => {
+      usePipelineTaskStore.getState().tasks.forEach((t) => {
+        if (t.resolvedAt === null && (t.status === 'completed' || t.status === 'failed')) {
+          prompted.add(t.id);
+        }
+      });
+    };
+    seedPromptedFromCurrentState();
 
     const unsubscribe = usePipelineTaskStore.subscribe((state, prevState) => {
       // Only react to changes in the `tasks` array; if a write did not touch
@@ -122,7 +122,28 @@ export const App: React.FC = () => {
       // dismissed in lockstep with the result-screen navigation.
       setPendingPrompt(task);
     });
-    return unsubscribe;
+
+    // 回前台时：1) 把僵尸任务（被系统挂起导致 fetch 永不返回）标 failed；
+    // 2) 重新 seed prompted，避免刚刚被 mark 的任务立即弹窗（因为是自愈触发，
+    //    不是用户当前会话感知到的失败，应当静默）。
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return;
+      const marked = usePipelineTaskStore.getState().markStaleTasksAsFailed();
+      if (marked > 0) {
+        seedPromptedFromCurrentState();
+        // 同时清空已经在 pending 的同类弹窗（如果有的话）
+        setPendingPrompt((prev) => {
+          if (!prev) return prev;
+          if (prompted.has(prev.id)) return null;
+          return prev;
+        });
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      appStateSub.remove();
+    };
   }, []);
 
   const handleUpgradeConfirm = React.useCallback(async () => {
