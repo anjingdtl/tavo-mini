@@ -209,7 +209,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
   @ReactMethod
   fun openTtsSettings(promise: Promise) {
     try {
-      val intent = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
+      val intent = Intent(Settings.ACTION_TEXT_TO_SPEECH_SETTINGS)
       intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
       reactApplicationContext.startActivity(intent)
       promise.resolve(true)
@@ -336,6 +336,14 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
           // 引擎切换失败，回退默认引擎重试一次
           Log.w("TtsAudio", "engine $enginePackage init failed, fallback to default")
           currentEnginePackage = null
+          // 先 shutdown 失败的引擎实例并置空，否则 ensureTts 检查 tts != null 直接返回 false
+          try {
+            tts?.shutdown()
+          } catch (e: Exception) {
+            Log.e("TtsAudio", "shutdown failed engine instance error", e)
+          }
+          tts = null
+          ttsReady = false
           ensureTts { ok ->
             if (ok) doSpeak() else {
               pendingSpeakPromise?.reject("TTS_ENGINE_NOT_READY", "引擎切换失败")

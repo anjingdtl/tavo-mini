@@ -52,7 +52,7 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
         putExtra(PipelineForegroundService.EXTRA_TASK_ID, taskId)
         putExtra(PipelineForegroundService.EXTRA_STAGE_LABEL, stageLabel)
       }
-      reactContext.startService(intent)
+      ContextCompat.startForegroundService(reactContext, intent)
       promise.resolve(null)
     } catch (e: Exception) {
       promise.reject("UPDATE_FAILED", "更新进度失败: ${e.message}", e)
@@ -136,6 +136,9 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
   }
 
   private fun postDoneNotification(taskId: String, title: String, message: String, success: Boolean) {
+    // 先确保 channel 已创建（Service 可能从未启动，channel 不存在会导致 Android 8.0+ 静默丢弃通知）
+    PipelineForegroundService.ensureNotificationChannels(reactContext)
+
     val launchIntent = Intent(reactContext, MainActivity::class.java).apply {
       flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
       putExtra(EXTRA_DEEP_LINK_TASK_ID, taskId)
