@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, ToastAndroid, TouchableOpacity, View } from 'react-native';
 import { BarChart3, Bot, FileText, Plus, Settings2, Trash2, ArrowUp, ArrowDown } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -42,9 +42,13 @@ export const OutlineEditor: React.FC = () => {
 
   const addChapter = async () => {
     if (!currentProject) return;
-    const id = await db.createChapter(currentProject.id, chapters.length);
-    await loadChapters();
-    navigation.navigate('ChapterEditor', { chapterId: id });
+    try {
+      const id = await db.createChapter(currentProject.id, chapters.length);
+      await loadChapters();
+      navigation.navigate('ChapterEditor', { chapterId: id });
+    } catch (e: any) {
+      Alert.alert('创建章节失败', e?.message || '未知错误');
+    }
   };
 
   const deleteChapter = useCallback((chapter: Chapter) => {
@@ -54,8 +58,12 @@ export const OutlineEditor: React.FC = () => {
         text: '删除',
         style: 'destructive',
         onPress: async () => {
-          await db.deleteChapter(chapter.id);
-          await loadChapters();
+          try {
+            await db.deleteChapter(chapter.id);
+            await loadChapters();
+          } catch (e: any) {
+            Alert.alert('删除章节失败', e?.message || '未知错误');
+          }
         },
       },
     ]);
@@ -63,12 +71,23 @@ export const OutlineEditor: React.FC = () => {
 
   const moveChapter = useCallback(async (fromIndex: number, toIndex: number) => {
     if (!currentProject) return;
-    const allChapters = await db.getChaptersByProject(currentProject.id);
-    if (fromIndex < 0 || fromIndex >= allChapters.length || toIndex < 0 || toIndex >= allChapters.length) return;
-    const moved = allChapters.splice(fromIndex, 1)[0];
-    allChapters.splice(toIndex, 0, moved);
-    await Promise.all(allChapters.map((ch, idx) => db.updateChapter(ch.id, { position: idx })));
-    await loadChapters();
+    try {
+      const allChapters = await db.getChaptersByProject(currentProject.id);
+      if (fromIndex < 0 || fromIndex >= allChapters.length || toIndex < 0 || toIndex >= allChapters.length) return;
+      const moved = allChapters.splice(fromIndex, 1)[0];
+      allChapters.splice(toIndex, 0, moved);
+      // 用 allSettled：单条 update 失败不应让整个排序回滚，部分失败用 Toast 提示。
+      const results = await Promise.allSettled(
+        allChapters.map((ch, idx) => db.updateChapter(ch.id, { position: idx })),
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      if (failed > 0) {
+        ToastAndroid.show(`${failed} 个章节位置更新失败`, ToastAndroid.SHORT);
+      }
+      await loadChapters();
+    } catch (e: any) {
+      Alert.alert('调整顺序失败', e?.message || '未知错误');
+    }
   }, [currentProject, loadChapters]);
 
   const runBatchGenerate = async () => {

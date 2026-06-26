@@ -52,23 +52,36 @@ export const PipelineConfigScreen: React.FC = () => {
   const { currentProject } = useProjectStore();
   const [presets, setPresets] = useState<Preset[]>([]);
   const [config, setConfig] = useState<PipelineConfig>(DEFAULT_CONFIG);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
       if (!currentProject) return;
-      const [savedConfig, projectPresets] = await Promise.all([
-        db.getPipelineConfig(),
-        db.getPresetsByProject(currentProject.id),
-      ]);
-      setConfig(savedConfig);
-      setPresets(projectPresets as Preset[]);
+      try {
+        const [savedConfig, projectPresets] = await Promise.all([
+          db.getPipelineConfig(),
+          db.getPresetsByProject(currentProject.id),
+        ]);
+        setConfig(savedConfig);
+        setPresets(projectPresets as Preset[]);
+      } catch (e: any) {
+        Alert.alert('加载配置失败', e?.message || '未知错误');
+      }
     };
     loadData();
   }, [currentProject]);
 
   const save = async () => {
-    await db.setPipelineConfig(config);
-    Alert.alert('保存成功', '流水线配置已更新。');
+    if (saving) return;
+    setSaving(true);
+    try {
+      await db.setPipelineConfig(config);
+      Alert.alert('保存成功', '流水线配置已更新。');
+    } catch (e: any) {
+      Alert.alert('保存失败', e?.message || '未知错误');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const renderPresetPicker = (
@@ -146,7 +159,7 @@ export const PipelineConfigScreen: React.FC = () => {
             />
           </View>
         ))}
-        <Button label="保存配置" onPress={save} />
+        <Button label={saving ? '保存中...' : '保存配置'} onPress={save} disabled={saving} />
       </ScrollView>
     </Screen>
   );

@@ -43,12 +43,13 @@ jest.mock('../src/store/pipelineTaskStore', () => {
 
 jest.mock('@react-navigation/native', () => {
   // 工厂内部不能用外部变量，必须 require。给出一个真实的空 Context，
-  // 避免 PipelineResultScreen 里 useContext(undefined) 抛错。
-  const React = require('react');
+  // 避免 PipelineResultScreen 里 useContext(undefined) 抛错。变量名改 R
+  // 避免与外层 import 的 React 命名空间 shadow（eslint no-shadow）。
+  const R = require('react');
   return {
     useNavigation: () => ({ goBack: jest.fn(), navigate: jest.fn() }),
     useRoute: () => ({ params: {} }),
-    NavigationRouteContext: React.createContext(undefined),
+    NavigationRouteContext: R.createContext(undefined),
   };
 });
 
