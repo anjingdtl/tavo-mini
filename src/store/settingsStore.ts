@@ -33,16 +33,21 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   backgroundPipelineEnabled: true,
 
   loadSettings: async () => {
-    const [llmConfigs, contextConfig, backgroundPipelineEnabled] = await Promise.all([
-      db.getLLMConfigs(),
-      db.getContextConfig(),
-      db.getBackgroundPipelineEnabled(),
-    ]);
-    const llmConfig = llmConfigs.find((config) => config.is_active === 1) || llmConfigs[0] || emptyLLMConfig;
-    set({ llmConfig, llmConfigs, contextConfig, backgroundPipelineEnabled });
-    // 同步到 PipelineForeground 桥接，决定流水线入口是否起前台服务
-    const { PipelineForeground } = require('../native/PipelineForegroundModule');
-    PipelineForeground.setEnabled(backgroundPipelineEnabled);
+    try {
+      const [llmConfigs, contextConfig, backgroundPipelineEnabled] = await Promise.all([
+        db.getLLMConfigs(),
+        db.getContextConfig(),
+        db.getBackgroundPipelineEnabled(),
+      ]);
+      const llmConfig = llmConfigs.find((config) => config.is_active === 1) || llmConfigs[0] || emptyLLMConfig;
+      set({ llmConfig, llmConfigs, contextConfig, backgroundPipelineEnabled });
+      // 同步到 PipelineForeground 桥接，决定流水线入口是否起前台服务
+      const { PipelineForeground } = require('../native/PipelineForegroundModule');
+      PipelineForeground.setEnabled(backgroundPipelineEnabled);
+    } catch (error) {
+      // 8.14 修复：loadSettings Promise.all 无 try-catch，失败导致 PipelineForeground.setEnabled 不执行
+      console.warn('[settingsStore] loadSettings failed:', error);
+    }
   },
 
   setLLMConfig: async (baseUrl, apiKey, modelName) => {

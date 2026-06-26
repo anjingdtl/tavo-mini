@@ -157,8 +157,13 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         // ignore
       }
     } else {
+      // 8.4 修复：cancelTts 未 try-catch，抛错后 stopAudio 不执行，原生音频泄漏
       if (isSynthesizing) {
-        await cancelTts();
+        try {
+          await cancelTts();
+        } catch {
+          // ignore cancel errors
+        }
       }
       if (isPlaying) {
         try {

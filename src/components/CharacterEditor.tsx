@@ -12,10 +12,12 @@ import { useThemeStore } from '../store/themeStore';
 
 // ---------------------------------------------------------------------------
 // Simple debounce for serializing card to JSON
-let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
-function debounceNotify(fn: () => void, ms = 300) {
-  if (_debounceTimer) clearTimeout(_debounceTimer);
-  _debounceTimer = setTimeout(fn, ms);
+// 8.8 修复：_debounceTimer 从模块级改为实例级 useRef，避免多实例互相 clearTimeout
+function debounceNotifyFactory(timerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) {
+  return (fn: () => void, ms = 300) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(fn, ms);
+  };
 }
 
 // Types
@@ -193,29 +195,34 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
   }, [dataJson]);
 
   // Debounced serializer — collects latest field values and notifies parent
+  // 8.8 修复：debounce timer 从模块级改为实例 useRef
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debounceNotify = debounceNotifyFactory(debounceTimerRef);
   const fieldsRef = useRef<Record<string, unknown>>({});
   const metaRef = useRef<{ hasEnvelope: boolean; outer: Record<string, unknown> }>({ hasEnvelope: false, outer: {} });
 
+  // 8.1 修复 emitChange 闭包陷阱：每帧同步 fieldsRef.current 为最新字段值，
+  // emitChange 仅合并 updates，不再从闭包读取可能过期的值
+  fieldsRef.current = {
+    name,
+    description,
+    personality,
+    scenario,
+    first_mes: firstMes,
+    mes_example: mesExample,
+    system_prompt: systemPrompt,
+    post_history_instructions: postHistory,
+    tags,
+    alternate_greetings: alternateGreetings,
+    creator,
+    character_version: version,
+  };
+  metaRef.current = { hasEnvelope, outer: outerRef };
+
   const emitChange = useCallback(
     (updates: Partial<Record<string, unknown>>) => {
-      // Merge updates into the ref
-      fieldsRef.current = {
-        name,
-        description,
-        personality,
-        scenario,
-        first_mes: firstMes,
-        mes_example: mesExample,
-        system_prompt: systemPrompt,
-        post_history_instructions: postHistory,
-        tags,
-        alternate_greetings: alternateGreetings,
-        creator,
-        character_version: version,
-        ...updates,
-      };
-      metaRef.current = { hasEnvelope, outer: outerRef };
-
+      // 仅合并 updates，fieldsRef 已在每帧同步为最新值
+      Object.assign(fieldsRef.current, updates);
       const capturedFields = { ...fieldsRef.current };
       const capturedMeta = { ...metaRef.current };
 
@@ -225,9 +232,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
         onChange(json);
       });
     },
-    // Deliberately keep deps minimal — we read latest via ref pattern
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [onChange],
+    // 依赖 onChange + debounceNotify（现在 debounceNotify 每帧重建，但引用稳定因 debounceNotifyFactory 闭包）
+    [onChange, debounceNotify],
   );
 
   // Field update helpers
@@ -327,7 +333,14 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
       {/* 对话示例 */}
       <SectionTitle theme={theme}>对话示例</SectionTitle>
       <View style={styles.toggleRow}>
-        <TouchableOpacity onPress={() => setShowRawDialogue(false)} style={[styles.toggleBtn, !showRawDialogue && styles.activeTab, !showRawDialogue && { borderBottomColor: theme.colors.accent }]}>
+        <TouchableOpacity
+          onPress={() => {
+            // 8.9 修复：切换到可视化时重新 parse mesExample，避免显示旧对话组
+            setShowRawDialogue(false);
+            setDialogueGroups(parseMesExample(mesExample));
+          }}
+          style={[styles.toggleBtn, !showRawDialogue && styles.activeTab, !showRawDialogue && { borderBottomColor: theme.colors.accent }]}
+        >
           <Text style={[styles.toggleText, { color: !showRawDialogue ? theme.colors.accent : theme.colors.textSecondary }]}>可视化</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => setShowRawDialogue(true)} style={[styles.toggleBtn, showRawDialogue && styles.activeTab, showRawDialogue && { borderBottomColor: theme.colors.accent }]}>

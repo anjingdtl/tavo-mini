@@ -66,7 +66,9 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         taskIdCounter = tasks.length + 100;
       }
       set({ tasks, _loaded: true });
-    } catch {
+    } catch (error) {
+      // 8.6 修复：loadFromDB catch 吞错，DB 故障时 UI 显示"无任务"无反馈
+      console.warn('[pipelineTaskStore] loadFromDB failed:', error);
       set({ _loaded: true });
     }
   },

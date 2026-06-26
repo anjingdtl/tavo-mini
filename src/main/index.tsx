@@ -36,20 +36,28 @@ export const App: React.FC = () => {
 
   React.useEffect(() => {
     const init = async () => {
-      await openDatabase();
-      const info = lastInstallInfo;
+      // 8.2 修复：init 无 try-catch，openDatabase 抛错时 setReady 永不执行，App 永久卡白屏
+      try {
+        await openDatabase();
+        const info = lastInstallInfo;
 
-      if (
-        info?.installType === 'upgrade' &&
-        info.previousVersion &&
-        hasBreakingMigration(info.schemaVersion || 1)
-      ) {
-        setUpgradeVisible(true);
-      } else {
-        setReady(true);
-        if (info?.installType === 'upgrade') {
-          Toast.show({ type: 'info', text1: `已升级到 ${appVersionJson.versionName}`, visibilityTime: 1000 });
+        if (
+          info?.installType === 'upgrade' &&
+          info.previousVersion &&
+          hasBreakingMigration(info.schemaVersion || 1)
+        ) {
+          setUpgradeVisible(true);
+        } else {
+          setReady(true);
+          if (info?.installType === 'upgrade') {
+            Toast.show({ type: 'info', text1: `已升级到 ${appVersionJson.versionName}`, visibilityTime: 1000 });
+          }
         }
+      } catch (error: any) {
+        // 数据库初始化失败时仍标记 ready，让用户看到主界面（而非白屏），
+        // 但通过 Toast 提示错误。后续 DB 操作会各自抛错。
+        setReady(true);
+        Toast.show({ type: 'error', text1: '数据库初始化失败', text2: error?.message });
       }
     };
 
@@ -173,14 +181,19 @@ export const App: React.FC = () => {
   React.useEffect(() => {
     if (!ready) return;
     let cancelled = false;
+    // 8.17 修复：保存 timer id 在 cleanup 中 clearTimeout，避免 ready 变化时旧 timer 仍执行
+    let navTimer: ReturnType<typeof setTimeout> | null = null;
     const consume = async () => {
       const taskId = await PipelineForeground.consumeDeepLinkTaskId();
       if (cancelled || !taskId) return;
       // 等待导航容器就绪后再跳转
-      setTimeout(() => navigateToPipelineResult(taskId), 100);
+      navTimer = setTimeout(() => navigateToPipelineResult(taskId), 100);
     };
     consume();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (navTimer) clearTimeout(navTimer);
+    };
   }, [ready]);
 
   return (
