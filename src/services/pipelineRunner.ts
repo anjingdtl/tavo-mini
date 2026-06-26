@@ -44,6 +44,9 @@ function resolvePreset(presetId: number | null, presets: Preset[]): Preset | nul
   if (presetId != null) {
     const found = presets.find((p) => p.id === presetId);
     if (found) return found;
+    // resolvePreset 静默回退修复：presetId 找不到时（被删除/换项目）不报错，
+    // 静默用第一个 preset，用户以为用自定义预设实际用默认
+    console.warn(`[pipeline] presetId=${presetId} not found, falling back to first preset`);
   }
   return presets[0] || null;
 }
@@ -259,6 +262,12 @@ async function runChapterPipelineInner(
       durationMs: Date.now() - draftStart,
     });
   } catch (error: any) {
+    // 取消信号在阶段内被吞修复：先判断是否为用户取消，是则走取消路径不走 fail
+    if (abortSignal?.aborted || error?.code === 'cancelled') {
+      store.cancelTask(taskId);
+      await PipelineForeground.stop(taskId);
+      return;
+    }
     store.updateTaskStage(taskId, {
       stage: 'draft',
       text: '',
@@ -338,7 +347,9 @@ async function runChapterPipelineInner(
 
   if (config.pipelineMode === 'conditional') {
     if (checkCancelled(taskId)) return;
-    store.setTaskStatus(taskId, 'reviewing');
+    // conditional 模式状态语义错配修复：factCheck 阶段不应设为 'reviewing'
+    // 改为 'factChecking' 让 UI 状态栏正确显示"事实核查中"
+    store.setTaskStatus(taskId, 'factChecking');
     onStageUpdate?.({ stage: 'factCheck', label: '事实检查中...', startedAt: Date.now() });
     PipelineForeground.updateProgress(taskId, '事实检查中');
 
@@ -597,6 +608,8 @@ async function resumePipelineInner(
       store.setTaskStatus(taskId, 'reviewing');
       onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
     PipelineForeground.updateProgress(taskId, '点评中');
+      // resume 阶段 durationMs 修复：记录 start，写 Date.now()-start 而非时间戳
+      const reviewStart = Date.now();
       try {
         const reviewCallResult = await callLLMResult(
           buildReviewMessages(draftText),
@@ -610,10 +623,10 @@ async function resumePipelineInner(
           text: reviewText,
           status: 'success',
           tokens: { input: reviewCallResult.inputTokens, output: reviewCallResult.outputTokens, total: reviewCallResult.totalTokens },
-          durationMs: Date.now(),
+          durationMs: Date.now() - reviewStart,
         });
       } catch (error: any) {
-        store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() });
+        store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() - reviewStart });
         // review 失败时不直接结束，统一与首次运行一致：用空 reviewText 继续走 proof
       }
     }
@@ -633,6 +646,8 @@ async function resumePipelineInner(
     store.setTaskStatus(taskId, 'reviewing');
     onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
     PipelineForeground.updateProgress(taskId, '点评中');
+    // resume 阶段 durationMs 修复
+    const reviewStart = Date.now();
     try {
       const reviewCallResult = await callLLMResult(
         buildReviewMessages(draftText),
@@ -646,10 +661,10 @@ async function resumePipelineInner(
         text: reviewText,
         status: 'success',
         tokens: { input: reviewCallResult.inputTokens, output: reviewCallResult.outputTokens, total: reviewCallResult.totalTokens },
-        durationMs: Date.now(),
+        durationMs: Date.now() - reviewStart,
       });
     } catch (error: any) {
-      store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() });
+      store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() - reviewStart });
     }
   }
 
@@ -658,6 +673,8 @@ async function resumePipelineInner(
     store.setTaskStatus(taskId, 'reviewing');
     onStageUpdate?.({ stage: 'factCheck', label: '事实检查中...', startedAt: Date.now() });
     PipelineForeground.updateProgress(taskId, '事实检查中');
+    // resume 阶段 durationMs 修复
+    const factCheckStart = Date.now();
     try {
       const { messages: baseContext } = await buildContext(chapter, await db.getContextConfig(), chapter.project_id);
       const contextText = buildContextPreview(baseContext);
@@ -673,10 +690,10 @@ async function resumePipelineInner(
         text: factCheckText,
         status: 'success',
         tokens: { input: factCheckCallResult.inputTokens, output: factCheckCallResult.outputTokens, total: factCheckCallResult.totalTokens },
-        durationMs: Date.now(),
+        durationMs: Date.now() - factCheckStart,
       });
     } catch (error: any) {
-      store.updateTaskStage(taskId, { stage: 'factCheck', text: '', status: 'failed', error: error.message || '事实核查失败', durationMs: Date.now() });
+      store.updateTaskStage(taskId, { stage: 'factCheck', text: '', status: 'failed', error: error.message || '事实核查失败', durationMs: Date.now() - factCheckStart });
     }
   }
 

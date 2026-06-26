@@ -80,6 +80,11 @@ function buildProfileText(elements: StyleElements): string {
 // 分析单条笔记，结果缓存到 note_style_profiles
 export async function analyzeNoteStyle(noteId: number): Promise<StyleProfile> {
   const content = await db.getNoteContentById(noteId);
+  // 空内容校验修复：空串发往 LLM 返回噪声，parseProfileJson 解析出空 elements
+  // 污染 note_style_profiles 缓存
+  if (!content || !content.trim()) {
+    throw new Error('笔记内容为空，无法分析风格。');
+  }
   const sourceHash = await db.computeNoteSourceHash(content);
 
   const result = await callLLMResult(

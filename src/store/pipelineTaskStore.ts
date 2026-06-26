@@ -191,13 +191,13 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         t.targetType === targetType &&
         t.targetId === targetId &&
         t.resolvedAt === null &&
-        (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'proofing')
+        (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'factChecking' || t.status === 'proofing')
     );
   },
 
   markStaleTasksAsFailed: (staleMs = 5 * 60 * 1000) => {
     const now = Date.now();
-    const staleStatuses: PipelineTaskStatus[] = ['idle', 'drafting', 'reviewing', 'proofing'];
+    const staleStatuses: PipelineTaskStatus[] = ['idle', 'drafting', 'reviewing', 'factChecking', 'proofing'];
     let marked = 0;
     set((state) => {
       const tasks = state.tasks.map((t) => {
