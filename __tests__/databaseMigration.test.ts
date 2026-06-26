@@ -224,8 +224,8 @@ function createLegacySQLiteMock() {
       enablePromise: jest.fn(),
       openDatabase: jest.fn(async () => ({
         executeSql,
-        transaction: jest.fn(async (scope: (tx: { executeSql: typeof executeSql }) => void) => {
-          scope({ executeSql });
+        transaction: jest.fn(async (scope: (tx: { executeSql: typeof executeSql }) => Promise<void> | void) => {
+          await scope({ executeSql });
         }),
       })),
     },

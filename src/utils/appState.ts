@@ -16,6 +16,23 @@ class AppStateTracker {
     AppState.addEventListener('change', (next) => {
       this.current = next;
     });
+    // 11.18 修复：冷启动时 AppState.currentState 可能不可靠（部分设备首帧返回
+    // 'unknown' 或 undefined）。延迟 500ms 主动读一次校正：仅当当前值不在
+    // 已知可靠集合内时才覆盖，避免覆盖事件/测试已设置的 active/background/inactive。
+    // 用可选链读取：测试环境或模块卸载后 AppState 绑定可能失效，避免抛错。
+    setTimeout(() => {
+      if (
+        this.current === 'active' ||
+        this.current === 'background' ||
+        this.current === 'inactive'
+      ) {
+        return;
+      }
+      const latest = AppState?.currentState;
+      if (latest && latest !== 'unknown') {
+        this.current = latest;
+      }
+    }, 500);
   }
 
   /** App 当前是否处于前台（active 状态）。 */

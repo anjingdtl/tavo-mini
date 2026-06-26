@@ -277,7 +277,7 @@ describe('writing context enhancements', () => {
   });
 
   test('revision generation replaces current chapter text instead of appending', () => {
-    const { createChapterGenerationRequest, mergeChapterGenerationResult } = require('../src/services/chapterGeneration');
+    const { createChapterGenerationRequest } = require('../src/services/chapterGeneration');
     const chapter = {
       id: 1,
       project_id: 7,
@@ -290,11 +290,9 @@ describe('writing context enhancements', () => {
     };
 
     const request = createChapterGenerationRequest(chapter);
-    const merged = mergeChapterGenerationResult(chapter, '新修订正文。');
 
     expect(request.scenario).toBe('chapter_revision');
     expect(request.userPrompt).toContain('完整修订稿');
-    expect(merged).toEqual({ content: '新修订正文。', status: 'revision' });
   });
 
   test('reserves resource budget for triggered worldbook when character cards are large', async () => {

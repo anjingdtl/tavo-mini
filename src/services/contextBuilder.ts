@@ -1,7 +1,7 @@
 import * as db from './database';
 import { processMacros } from './macroReplace';
 import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
-import type { Chapter, ChapterSummary, ContextConfig, Preset } from '../types/novel';
+import type { Chapter, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
 import type { ContextTraceItem } from '../types/contextTrace';
 import { getOrAnalyzeNoteStyle, mergeStyleProfiles, DEFAULT_STYLE_WEIGHTS, type StyleWeights } from './styleAnalyzer';
@@ -665,25 +665,6 @@ export function buildMemoryContext(
   }
 
   return lines.join('\n');
-}
-
-export function buildSummaryContext(chapters: Chapter[], budget: number): string {
-  let remaining = budget;
-  const summaries: string[] = [];
-
-  for (const chapter of chapters) {
-    if (remaining <= 0) break;
-    const summary = chapter.summary_json as ChapterSummary | null;
-    if (!summary?.brief) continue;
-    let entry = `第 ${chapter.position + 1} 章「${chapter.title}」：${summary.brief}`;
-    if (summary.plotPoints?.length) entry += `\n情节：${summary.plotPoints.join('；')}`;
-    if (summary.characterStates?.length) entry += `\n人物：${summary.characterStates.join('；')}`;
-    entry = clipTextToTokenBudget(entry, remaining);
-    summaries.push(entry);
-    remaining -= estimateTokens(entry);
-  }
-
-  return summaries.join('\n\n');
 }
 
 function tokenize(text: string): string[] {
