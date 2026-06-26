@@ -161,6 +161,8 @@ export async function runChapterPipeline(
     await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
   } finally {
     releaseTaskAbort(taskId);
+    // 任务结束（无论成功/失败/取消）后清理取消标记，避免 cancelledTasks 累积
+    cancelledTasks.delete(taskId);
   }
 }
 
@@ -520,6 +522,8 @@ export async function resumePipeline(
     await resumePipelineInner(taskId, chapter, onStageUpdate, abortSignal);
   } finally {
     releaseTaskAbort(taskId);
+    // 任务结束（无论成功/失败/取消）后清理取消标记，避免 cancelledTasks 累积
+    cancelledTasks.delete(taskId);
   }
 }
 
@@ -610,8 +614,7 @@ async function resumePipelineInner(
         });
       } catch (error: any) {
         store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() });
-        await saveDraftAndComplete(draftText);
-        return;
+        // review 失败时不直接结束，统一与首次运行一致：用空 reviewText 继续走 proof
       }
     }
 
@@ -624,6 +627,32 @@ async function resumePipelineInner(
   }
 
   // conditional / full
+  // full 模式下补做 review 阶段（conditional 模式跳过 review）
+  if (config.pipelineMode === 'full' && !completedStages.has('review')) {
+    if (checkCancelled(taskId)) return;
+    store.setTaskStatus(taskId, 'reviewing');
+    onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
+    PipelineForeground.updateProgress(taskId, '点评中');
+    try {
+      const reviewCallResult = await callLLMResult(
+        buildReviewMessages(draftText),
+        config.reviewMaxTokens,
+        buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+        abortSignal,
+      );
+      reviewText = reviewCallResult.text || '';
+      store.updateTaskStage(taskId, {
+        stage: 'review',
+        text: reviewText,
+        status: 'success',
+        tokens: { input: reviewCallResult.inputTokens, output: reviewCallResult.outputTokens, total: reviewCallResult.totalTokens },
+        durationMs: Date.now(),
+      });
+    } catch (error: any) {
+      store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() });
+    }
+  }
+
   if (!completedStages.has('factCheck') && config.pipelineMode !== 'twoStage') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
