@@ -26,9 +26,11 @@ function buildCopy(task: PipelineTask): { title: string; body: string; confirmLa
       cancelLabel: '关闭',
     };
   }
+  // 8.7 修复：buildCopy 硬编码"章节 #N"，freeform 任务也显示"章节"
+  const targetLabel = task.targetType === 'freeform' ? '自由文档' : `章节 #${task.targetId}`;
   return {
     title: '流水线已完成',
-    body: `章节 #${task.targetId} 的流水线已生成新内容。是否前往查看并采纳？`,
+    body: `${targetLabel} 的流水线已生成新内容。是否前往查看并采纳？`,
     confirmLabel: '查看结果',
     cancelLabel: '稍后处理',
   };
