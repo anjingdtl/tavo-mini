@@ -184,42 +184,51 @@ export async function callLLMResult(
   const modelName = llmConfig.model_name;
   const projectId = config?.projectId;
 
-  try {
-    const response = await limitLLMRequest(() =>
-      fetch(llmConfig.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${llmConfig.api_key}`,
-        },
-        body: JSON.stringify({
-          model: llmConfig.model_name,
-          messages,
-          temperature: config?.temperature ?? 0.8,
-          top_p: config?.top_p ?? 0.9,
-          max_tokens: maxTokens ?? config?.max_tokens ?? 4000,
-          stream: false,
-        }),
-        signal: controller.signal,
-      }),
-    );
+  // 共用请求体（stream 字段由各路径覆盖）
+  const buildBody = (stream: boolean) =>
+    JSON.stringify({
+      model: llmConfig.model_name,
+      messages,
+      temperature: config?.temperature ?? 0.8,
+      top_p: config?.top_p ?? 0.9,
+      max_tokens: maxTokens ?? config?.max_tokens ?? 4000,
+      stream,
+    });
+  const fetchHeaders = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${llmConfig.api_key}`,
+  };
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw formatLLMError(response.status, text);
+  try {
+    // 优先流式：reader 循环周期性读取让 JS 线程保持活跃，
+    // 显著降低 App 切后台时被 Android 判定为"空闲可挂起"的概率。
+    // 失败时（provider 不支持 SSE / 解析异常 / 非 200）降级非流式。
+    let result: LLMResult;
+    try {
+      if (controller.signal.aborted) throw new Error('aborted');
+      result = await limitLLMRequest(() =>
+        fetchStreaming(llmConfig.url, fetchHeaders, buildBody(true), controller.signal, inputEstimate),
+      );
+    } catch (streamError: any) {
+      // 用户取消或超时不降级，直接抛出走统一错误处理
+      if (streamError?.name === 'AbortError' || controller.signal.aborted) throw streamError;
+      // 流式不可用，降级非流式（兼容不支持 SSE 的 provider）
+      result = await limitLLMRequest(() =>
+        fetchNonStreaming(llmConfig.url, fetchHeaders, buildBody(false), controller.signal, inputEstimate),
+      );
     }
 
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || null;
-    const usage = data.usage || {};
-    // 用 ?? 而非 ||：provider 返回 0 是有效值（如纯嵌入请求），不应回退到估算。
-    const inputTokens = Number(usage.prompt_tokens ?? inputEstimate);
-    const outputTokens = Number(usage.completion_tokens ?? estimateTokens(text || ''));
-    const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens);
+    await safeLogUsage({
+      scenario,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      totalTokens: result.totalTokens,
+      status: 'success',
+      modelName,
+      projectId,
+    });
 
-    await safeLogUsage({ scenario, inputTokens, outputTokens, totalTokens, status: 'success', modelName, projectId });
-
-    return { text, inputTokens, outputTokens, totalTokens, rawUsage: data.usage };
+    return result;
   } catch (error: any) {
     if (error?.name === 'AbortError') {
       // 区分用户主动取消和请求超时：外部 signal 被 abort 视为用户取消，不当作失败
@@ -263,6 +272,106 @@ export async function callLLMResult(
       externalSignal.removeEventListener('abort', onAbort);
     }
   }
+}
+
+/**
+ * 流式 SSE 请求：逐 chunk 读取响应，保持 JS 线程活跃（后台保活关键）。
+ * 解析 OpenAI 兼容的 data: 行，累积 content 与末尾 usage。
+ */
+async function fetchStreaming(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  signal: AbortSignal,
+  inputEstimate: number,
+): Promise<LLMResult> {
+  const response = await fetch(url, { method: 'POST', headers, body, signal });
+  if (!response.ok) {
+    const text = await response.text();
+    throw formatLLMError(response.status, text);
+  }
+  // 部分_provider 对 stream 请求仍返回普通 JSON（非 SSE），按 content-type 兜底
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('text/event-stream') && !contentType.includes('application/x-ndjson')) {
+    // 非流式响应体，按 JSON 解析
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content || null;
+    const usage = data.usage || {};
+    return {
+      text,
+      inputTokens: Number(usage.prompt_tokens ?? inputEstimate),
+      outputTokens: Number(usage.completion_tokens ?? estimateTokens(text || '')),
+      totalTokens: Number(usage.total_tokens ?? inputEstimate + (Number(usage.completion_tokens ?? estimateTokens(text || '')))),
+      rawUsage: data.usage,
+    };
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('STREAM_NO_READER');
+
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let content = '';
+  let usage: any = null;
+
+  // reader.read() 循环：每次 await 让 JS 事件循环保持活跃，是后台保活的核心
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // SSE 以 \n\n 分隔事件，按行处理已完整的行
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; // 保留最后不完整的一行
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || !line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') continue;
+      try {
+        const json = JSON.parse(payload);
+        const delta = json.choices?.[0]?.delta?.content;
+        if (typeof delta === 'string') content += delta;
+        // 流式 usage 通常在最后一个 chunk 携带
+        if (json.usage) usage = json.usage;
+      } catch {
+        // 单行解析失败不影响整体累积
+      }
+    }
+  }
+
+  const outputEstimate = estimateTokens(content);
+  return {
+    text: content || null,
+    inputTokens: Number(usage?.prompt_tokens ?? inputEstimate),
+    outputTokens: Number(usage?.completion_tokens ?? outputEstimate),
+    totalTokens: Number(usage?.total_tokens ?? inputEstimate + outputEstimate),
+    rawUsage: usage || undefined,
+  };
+}
+
+/**
+ * 非流式请求（流式降级路径，或 provider 不支持 SSE 时使用）。
+ */
+async function fetchNonStreaming(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  signal: AbortSignal,
+  inputEstimate: number,
+): Promise<LLMResult> {
+  const response = await fetch(url, { method: 'POST', headers, body, signal });
+  if (!response.ok) {
+    const text = await response.text();
+    throw formatLLMError(response.status, text);
+  }
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content || null;
+  const usage = data.usage || {};
+  // 用 ?? 而非 ||：provider 返回 0 是有效值（如纯嵌入请求），不应回退到估算。
+  const inputTokens = Number(usage.prompt_tokens ?? inputEstimate);
+  const outputTokens = Number(usage.completion_tokens ?? estimateTokens(text || ''));
+  const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens);
+  return { text, inputTokens, outputTokens, totalTokens, rawUsage: data.usage };
 }
 
 async function safeLogUsage(fields: {

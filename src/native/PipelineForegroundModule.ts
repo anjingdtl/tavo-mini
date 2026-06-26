@@ -2,8 +2,8 @@ import { NativeModules } from 'react-native';
 import { appStateTracker } from '../utils/appState';
 
 interface PipelineForegroundNative {
-  start(taskId: string, title: string, stageLabel: string): Promise<void>;
-  updateProgress(taskId: string, stageLabel: string): Promise<void>;
+  start(taskId: string, title: string, stageLabel: string, progress: number): Promise<void>;
+  updateProgress(taskId: string, stageLabel: string, progress: number): Promise<void>;
   notifyComplete(taskId: string, title: string, message: string): Promise<void>;
   notifyFailed(taskId: string, title: string, message: string): Promise<void>;
   stop(taskId: string): Promise<void>;
@@ -34,21 +34,21 @@ class PipelineForegroundBridge {
     return this.enabled;
   }
 
-  /** 流水线入口：启动前台服务。 */
-  async start(taskId: string, title: string, stageLabel: string): Promise<void> {
+  /** 流水线入口：启动前台服务。progress 为初始进度百分比 0-100。 */
+  async start(taskId: string, title: string, stageLabel: string, progress = 0): Promise<void> {
     if (!this.enabled || !native) return;
     try {
-      await native.start(taskId, title, stageLabel);
+      await native.start(taskId, title, stageLabel, Math.round(progress));
     } catch (e) {
       console.warn('[PipelineForeground] start failed', e);
     }
   }
 
-  /** 阶段切换：更新常驻通知文本。 */
-  async updateProgress(taskId: string, stageLabel: string): Promise<void> {
+  /** 阶段切换：更新常驻通知文本与进度条。progress 为百分比 0-100。 */
+  async updateProgress(taskId: string, stageLabel: string, progress: number): Promise<void> {
     if (!this.enabled || !native) return;
     try {
-      await native.updateProgress(taskId, stageLabel);
+      await native.updateProgress(taskId, stageLabel, Math.round(progress));
     } catch (e) {
       console.warn('[PipelineForeground] updateProgress failed', e);
     }

@@ -14,6 +14,7 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
 
   it('marks tasks whose updatedAt exceeds the stale threshold as failed', () => {
     const now = Date.now();
+    // 默认阈值为 10 分钟，staleTask 超过该阈值
     const staleTask: any = {
       id: 'stale-1',
       targetType: 'chapter',
@@ -22,8 +23,8 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
       stageResults: [],
       finalText: null,
       error: null,
-      createdAt: now - 10 * 60 * 1000,
-      updatedAt: now - 10 * 60 * 1000,
+      createdAt: now - 15 * 60 * 1000,
+      updatedAt: now - 15 * 60 * 1000,
       resolvedAt: null,
     };
     const freshTask: any = {

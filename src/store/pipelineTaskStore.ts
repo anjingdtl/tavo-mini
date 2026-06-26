@@ -197,7 +197,9 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     );
   },
 
-  markStaleTasksAsFailed: (staleMs = 5 * 60 * 1000) => {
+  markStaleTasksAsFailed: (staleMs = 10 * 60 * 1000) => {
+    // 阈值从 5 分钟提到 10 分钟：流式保活改造后后台执行更可靠，
+    // 单阶段 LLM 耗时可能较长（尤其长文本生成），过短阈值会误判仍在运行的任务。
     const now = Date.now();
     const staleStatuses: PipelineTaskStatus[] = ['idle', 'drafting', 'reviewing', 'factChecking', 'proofing'];
     let marked = 0;
