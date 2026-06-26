@@ -89,3 +89,9 @@ scripts/parse-ui.py
 
 # Generated version info
 src/constants/version.json
+
+# Knowledge-graph memory file (local tooling artifact, not source)
+clound
+
+# superpowers 施工方案/计划文档（本地工作产物，不纳入仓库）
+docs/superpowers/
