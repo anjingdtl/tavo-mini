@@ -6,6 +6,7 @@ const mockGetChapterById = jest.fn();
 const mockGetActiveTaskForTarget = jest.fn(() => null);
 const mockCreateTask = jest.fn(() => 'task-1');
 const mockRunChapterPipeline = jest.fn();
+const mockCancelPipeline = jest.fn();
 const mockNavigate = jest.fn();
 const mockGenerationResultModal = jest.fn(() => null);
 let mockTasks: any[] = [];
@@ -45,6 +46,7 @@ jest.mock('../src/services/secureStorage', () => ({
 
 jest.mock('../src/services/pipelineRunner', () => ({
   runChapterPipeline: (...args: any[]) => mockRunChapterPipeline(...args),
+  cancelPipeline: (...args: any[]) => mockCancelPipeline(...args),
 }));
 
 jest.mock('../src/services/revisionService', () => ({
@@ -105,6 +107,7 @@ describe('ChapterEditor toolbar', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockTasks = [];
+    mockCancelPipeline.mockClear();
     mockCreateTask.mockImplementation(() => {
       mockTasks.push({
         id: 'task-1',
@@ -195,5 +198,28 @@ describe('ChapterEditor toolbar', () => {
     );
 
     expect(await findByText('点评中...')).toBeTruthy();
+  });
+
+  it('shows a stop button while pipeline is generating and triggers cancelPipeline', async () => {
+    // 让 runChapterPipeline 永远不 resolve，保持 generating 状态
+    let releasePipeline!: () => void;
+    mockRunChapterPipeline.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releasePipeline = resolve; }),
+    );
+    mockCancelPipeline.mockClear();
+
+    const { findByText } = render(
+      <ChapterEditor chapterId={1} onClose={jest.fn()} />,
+    );
+    const continueButton = await findByText('续写');
+    await act(async () => { fireEvent.press(continueButton); });
+
+    const stopButton = await findByText('停止');
+    expect(stopButton).toBeTruthy();
+
+    await act(async () => { fireEvent.press(stopButton); });
+    expect(mockCancelPipeline).toHaveBeenCalledWith('task-1');
+
+    releasePipeline();
   });
 });

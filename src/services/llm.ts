@@ -164,10 +164,19 @@ export async function callLLMResult(
   messages: ChatMessage[],
   maxTokens?: number,
   config?: LLMCallConfig,
+  externalSignal?: AbortSignal,
 ): Promise<LLMResult> {
   const llmConfig = await getRequestConfig();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60000);
+  // 联动外部 signal：用户取消流水线时立即 abort，无需等 60s 超时
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
   const inputEstimate = estimateMessagesTokens(messages);
   const scenario = config?.scenario || 'chat';
   const modelName = llmConfig.model_name;
