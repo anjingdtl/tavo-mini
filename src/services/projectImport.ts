@@ -27,9 +27,11 @@ export interface ParsedProjectPackage {
 }
 
 export function parseProjectPackage(text: string): ParsedProjectPackage {
+  // 去除 UTF-8 BOM，避免 Windows 编辑器生成的文件解析失败
+  const stripped = text.replace(/^\uFEFF/, '');
   let data: any;
   try {
-    data = JSON.parse(text);
+    data = JSON.parse(stripped);
   } catch {
     throw new Error('文件内容不是有效的 JSON。');
   }

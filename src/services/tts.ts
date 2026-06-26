@@ -74,6 +74,10 @@ export async function synthesizeToFile(
   if (!apiUrl) {
     throw new Error('请先填写语音 API URL。');
   }
+  // 并发保护：已有进行中的合成任务时拒绝新任务，避免覆盖引用
+  if (currentAbortController) {
+    throw new Error('正在合成中，请等待完成或先取消');
+  }
 
   currentAbortController = new AbortController();
   const fileName = `tts_${Date.now()}.${voiceConfig.format}`;
@@ -126,10 +130,12 @@ export async function synthesizeToFile(
     throw new Error('解析语音响应失败，请稍后重试。');
   }
 
-  if (!response.ok || json.base_resp.status_code !== 0) {
+  // 先校验 base_resp 是否存在，避免服务端缺少该字段时抛 TypeError
+  const baseResp = json.base_resp;
+  if (!response.ok || !baseResp || baseResp.status_code !== 0) {
     cleanup();
-    const providerCode = json.base_resp?.status_code;
-    const providerMsg = json.base_resp?.status_msg?.trim();
+    const providerCode = baseResp?.status_code;
+    const providerMsg = baseResp?.status_msg?.trim();
     const msg = providerCode
       ? `${providerCode} ${providerMsg || `HTTP ${response.status}`}`
       : providerMsg || `HTTP ${response.status}`;
@@ -163,6 +169,7 @@ export async function cancelTts(): Promise<void> {
 }
 
 async function cleanup(): Promise<void> {
+  currentAbortController = null;
   if (currentTempFile) {
     try {
       const exists = await RNFS.exists(currentTempFile);

@@ -34,7 +34,14 @@ export interface WorldBookImportResult {
 }
 
 function readJsonObject(jsonText: string): Record<string, any> {
-  const data = JSON.parse(jsonText);
+  // 去除 UTF-8 BOM，避免 Windows 编辑器生成的文件解析失败
+  const stripped = jsonText.replace(/^\uFEFF/, '');
+  let data: any;
+  try {
+    data = JSON.parse(stripped);
+  } catch {
+    throw new Error('文件内容不是有效的 JSON 格式。');
+  }
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     throw new Error('文件内容不是有效的 JSON 对象。');
   }
@@ -169,7 +176,11 @@ export function parseWorldBookJSON(jsonText: string, sourceName?: string): World
 }
 
 function decodeLatin1(bytes: number[]): string {
-  return String.fromCharCode(...bytes);
+  let result = '';
+  for (let i = 0; i < bytes.length; i += 8192) {
+    result += String.fromCharCode.apply(null, bytes.slice(i, i + 8192));
+  }
+  return result;
 }
 
 function decodeUtf8Bytes(bytes: number[]): string {
