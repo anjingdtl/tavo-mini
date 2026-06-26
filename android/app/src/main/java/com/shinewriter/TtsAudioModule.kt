@@ -116,6 +116,8 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       return
     }
 
+    // 10.14 修复：覆盖 pending 前 reject 旧的 promise，避免 rebuildTtsWithEngine 等待期间旧 promise 永久挂起
+    pendingSpeakPromise?.reject("CANCELLED", "新的朗读请求已覆盖")
     pendingSpeakPromise = promise
     pendingSpeakText = text
     pendingSpeakConfig = config
@@ -273,7 +275,13 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       if (!language.isNullOrEmpty()) {
         val parts = language.split("-")
         val locale = if (parts.size >= 2) Locale(parts[0], parts[1]) else Locale(parts[0])
-        ttsInstance.language = locale
+        // 10.16 修复：检查 setLanguage 返回值，不支持时 reject 而非静默用错误语言
+        val langResult = ttsInstance.setLanguage(locale)
+        if (langResult < 0) {
+          promise.reject("TTS_LANG_NOT_SUPPORTED", "TTS 不支持语言: $language")
+          clearPendingSpeak()
+          return
+        }
       }
 
       // 设置声线（API 21+）。Android Voice 用 name 作唯一标识，匹配 voiceKey
@@ -287,8 +295,11 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
         }
       }
 
-      ttsInstance.setSpeechRate(speed.toFloat())
-      ttsInstance.setPitch(pitch.toFloat())
+      // 10.15 修复：speed/pitch=0 或负数触发 IllegalArgumentException，clamp 到合法范围
+      val safeSpeed = speed.coerceIn(0.1, 4.0)
+      val safePitch = pitch.coerceIn(0.1, 2.0)
+      ttsInstance.setSpeechRate(safeSpeed.toFloat())
+      ttsInstance.setPitch(safePitch.toFloat())
 
       val params = android.os.Bundle()
       params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume.toFloat())
