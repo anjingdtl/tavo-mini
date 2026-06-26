@@ -170,11 +170,13 @@ export async function callLLMResult(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60000);
   // 联动外部 signal：用户取消流水线时立即 abort，无需等 60s 超时
+  // handler 提到外部作用域，便于在 finally 中移除，避免监听器累积
+  const onAbort = () => controller.abort();
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort();
     } else {
-      externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+      externalSignal.addEventListener('abort', onAbort, { once: true });
     }
   }
   const inputEstimate = estimateMessagesTokens(messages);
@@ -219,6 +221,12 @@ export async function callLLMResult(
     return { text, inputTokens, outputTokens, totalTokens, rawUsage: data.usage };
   } catch (error: any) {
     if (error?.name === 'AbortError') {
+      // 区分用户主动取消和请求超时：外部 signal 被 abort 视为用户取消，不当作失败
+      if (externalSignal?.aborted) {
+        const cancelError = new Error('朗读已取消') as Error & { code?: string };
+        cancelError.code = 'cancelled';
+        throw cancelError;
+      }
       const timeoutError = new Error('请求超时，请检查网络或模型服务。') as Error & { code?: string };
       timeoutError.code = 'timeout';
       await safeLogUsage({
@@ -247,6 +255,10 @@ export async function callLLMResult(
     throw error;
   } finally {
     clearTimeout(timeout);
+    // 正常完成时移除监听器，避免监听器累积
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onAbort);
+    }
   }
 }
 
