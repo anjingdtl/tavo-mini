@@ -69,7 +69,7 @@ const EditorMainScreen = () => {
 };
 
 const ChapterEditorRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'ChapterEditor'>) => (
-  <ChapterEditor chapterId={route.params.chapterId} onClose={() => navigation.goBack()} />
+  <ChapterEditor key={route.params.chapterId} chapterId={route.params.chapterId} onClose={() => navigation.goBack()} />
 );
 
 const ChapterSummaryRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'ChapterSummary'>) => (

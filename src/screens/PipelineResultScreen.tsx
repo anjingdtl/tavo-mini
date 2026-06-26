@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useNavigation, NavigationRouteContext, type RouteProp } from '@react-navigation/native';
 import * as db from '../services/database';
 import type { PipelineStageResult } from '../types/pipeline';
 
@@ -51,16 +51,16 @@ export interface PipelineResultScreenProps {
 export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ taskId: propTaskId, onClose, onAdopted }) => {
   const { theme } = useThemeStore();
   const navigation = useNavigation();
-  let routeTaskId: string | undefined;
-  try {
-    const route = useRoute<ResultRouteProp>();
-    routeTaskId = route.params?.taskId;
-  } catch {
-    // Not inside a navigation route (Modal mode)
-  }
+  // Hook 必须在顶层调用：直接读取 NavigationRouteContext，避免 useRoute 在
+  // 非导航上下文（Modal 模式）中抛错。用可选链安全访问 params。
+  const route = useContext(NavigationRouteContext) as ResultRouteProp | undefined;
+  const routeTaskId: string | undefined = route?.params?.taskId;
   const taskId = propTaskId ?? routeTaskId;
   const { tasks, resolveTask } = usePipelineTaskStore();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // 标记是否已被 handleAccept 标记为 accept，避免 unmount cleanup 的
+  // setTimeout 与 handleAccept 的 resolveTask('accept') 竞态重复 resolve。
+  const acceptedRef = useRef(false);
 
   const handleClose = onClose ?? (() => navigation.goBack());
 
@@ -78,6 +78,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     return () => {
       setTimeout(() => {
         const current = taskRef.current;
+        // 已 accept 则不再 reject，避免与 handleAccept 竞态
+        if (acceptedRef.current) return;
         if (current && current.resolvedAt === null) {
           resolveTask(taskId, 'reject');
         }
@@ -121,6 +123,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       }
       await db.updateChapter(chapter.id, { content: task.finalText });
       resolveTask(task.id, 'accept');
+      acceptedRef.current = true; // 标记已 accept，阻止 unmount cleanup 重复 resolve
       Alert.alert('已采纳', '流水线正文已覆盖到章节并保存。');
       onAdopted?.(task.finalText);
       handleClose();

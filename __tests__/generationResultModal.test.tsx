@@ -41,10 +41,16 @@ jest.mock('../src/store/pipelineTaskStore', () => {
   };
 });
 
-jest.mock('@react-navigation/native', () => ({
-  useNavigation: () => ({ goBack: jest.fn(), navigate: jest.fn() }),
-  useRoute: () => ({ params: {} }),
-}));
+jest.mock('@react-navigation/native', () => {
+  // 工厂内部不能用外部变量，必须 require。给出一个真实的空 Context，
+  // 避免 PipelineResultScreen 里 useContext(undefined) 抛错。
+  const React = require('react');
+  return {
+    useNavigation: () => ({ goBack: jest.fn(), navigate: jest.fn() }),
+    useRoute: () => ({ params: {} }),
+    NavigationRouteContext: React.createContext(undefined),
+  };
+});
 
 import { GenerationResultModal } from '../src/components/GenerationResultModal';
 import * as storeModule from '../src/store/pipelineTaskStore';
