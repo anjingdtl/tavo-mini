@@ -276,9 +276,20 @@ const SystemTtsFields: React.FC<SystemTtsFieldsProps> = ({
 }) => (
   <View>
     {engines.length === 0 ? (
-      <Text style={[styles.hintText, { color: theme.colors.textSecondary }]}>
-        未检测到 TTS 引擎，请前往手机系统设置安装。
-      </Text>
+      <View style={styles.engineHintContainer}>
+        <Text style={[styles.hintText, { color: theme.colors.textSecondary }]}>
+          未检测到 TTS 引擎，部分手机未预装语音引擎。请前往系统设置安装后重试。
+        </Text>
+        <TouchableOpacity
+          accessibilityRole="button"
+          onPress={() => TtsAudio.openTtsSettings().catch(() => {})}
+          style={[styles.engineHintButton, { borderColor: theme.colors.accent }]}
+        >
+          <Text style={[styles.engineHintButtonText, { color: theme.colors.accent }]}>
+            前往系统 TTS 设置
+          </Text>
+        </TouchableOpacity>
+      </View>
     ) : null}
 
     <Text style={[styles.sectionLabel, { color: theme.colors.textSecondary }]}>TTS 引擎</Text>
@@ -575,6 +586,16 @@ const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 120 },
   sectionLabel: { fontSize: 12, fontWeight: '700', marginTop: spacing.md, marginBottom: spacing.sm },
   hintText: { fontSize: 12, marginTop: spacing.sm, marginBottom: spacing.sm },
+  engineHintContainer: { marginTop: spacing.sm, marginBottom: spacing.sm },
+  engineHintButton: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    alignSelf: 'flex-start',
+    marginTop: spacing.xs,
+  },
+  engineHintButtonText: { fontSize: 13, fontWeight: '600' },
   dropdownButton: {
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 8,

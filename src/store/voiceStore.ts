@@ -6,7 +6,7 @@ import {
   getSecureVoiceApiKey,
   setSecureVoiceApiKey,
 } from '../services/secureStorage';
-import { TtsAudio } from '../native/TtsAudioModule';
+import { TtsAudio, TtsAudioEmitter } from '../native/TtsAudioModule';
 import {
   DEFAULT_VOICE_CONFIG,
   DEFAULT_SYSTEM_TTS_CONFIG,
@@ -99,7 +99,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       set({ isSynthesizing: true });
       try {
         // 约定：原生 speak 在入队成功时 resolve；isPlaying=true 表示「朗读已启动」，
-        // 由 stop() 或 App 退出置回 false（详见 spec 5.3 完成回调约定）。
+        // 由原生 ttsDone/ttsError 事件回调或 stop() 置回 false。
         await TtsAudio.speak(text, state.systemConfig);
         set({ isSynthesizing: false, isPlaying: true });
       } catch (error: any) {
@@ -170,3 +170,20 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }
   },
 }));
+
+// 监听原生 TTS 朗读完成/出错事件，自动重置 isPlaying 状态。
+// 修复 Bug：系统 TTS 朗读结束或引擎出错后，isPlaying 卡在 true 导致无法再次朗读。
+TtsAudioEmitter.addListener('ttsDone', () => {
+  const { engine, isPlaying } = useVoiceStore.getState();
+  if (engine === 'system' && isPlaying) {
+    useVoiceStore.setState({ isSynthesizing: false, isPlaying: false });
+  }
+});
+
+TtsAudioEmitter.addListener('ttsError', () => {
+  const { engine, isPlaying } = useVoiceStore.getState();
+  if (engine === 'system' && isPlaying) {
+    useVoiceStore.setState({ isSynthesizing: false, isPlaying: false });
+    Toast.show({ type: 'error', text1: '朗读出错，请检查系统 TTS 引擎' });
+  }
+});
