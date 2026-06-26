@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Bot, Save } from 'lucide-react-native';
+import Toast from 'react-native-toast-message';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
@@ -49,8 +50,13 @@ export const ChapterSummaryScreen: React.FC<Props> = ({ chapterId, onClose }) =>
   };
 
   const save = async () => {
-    await db.updateChapter(chapterId, { summary_json: summary } as any);
-    Alert.alert('已保存', '摘要已更新。');
+    // Phase9-BUG#14: 包裹 try-catch，失败时不弹"已保存"误导用户
+    try {
+      await db.updateChapter(chapterId, { summary_json: summary } as any);
+      Alert.alert('已保存', '摘要已更新。');
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   const updateList = (field: keyof Omit<ChapterSummaryType, 'brief'>, text: string) => {

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Download, Plus, Trash2, Upload } from 'lucide-react-native';
+import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
@@ -46,7 +47,18 @@ export const ProjectListScreen: React.FC = () => {
   const confirmDelete = (project: Project) => {
     Alert.alert('删除项目', `确定删除「${project.name}」？此操作不可撤销。`, [
       { text: '取消', style: 'cancel' },
-      { text: '删除', style: 'destructive', onPress: () => deleteProject(project.id) },
+      {
+        text: '删除',
+        style: 'destructive',
+        // Phase9-BUG#18: 包裹 try-catch + Toast，删除失败时给用户反馈
+        onPress: async () => {
+          try {
+            await deleteProject(project.id);
+          } catch (e: any) {
+            Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+          }
+        },
+      },
     ]);
   };
 

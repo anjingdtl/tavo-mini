@@ -396,8 +396,13 @@ export const ResourceLibrary: React.FC = () => {
       Alert.alert('未选择项目', '请先在项目页选择当前项目。');
       return;
     }
-    await db.setProjectResourceEnabled(currentProject.id, RESOURCE_TYPE[tab], item.id, item.enabled_for_project !== 1);
-    await loadData();
+    // Phase9-BUG#11: 包裹 try-catch，失败时 Toast 提示（状态会通过 store 自动同步）
+    try {
+      await db.setProjectResourceEnabled(currentProject.id, RESOURCE_TYPE[tab], item.id, item.enabled_for_project !== 1);
+      await loadData();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   const setAllCharacters = async (enabled: boolean) => {
@@ -405,14 +410,24 @@ export const ResourceLibrary: React.FC = () => {
       Alert.alert('未选择项目', '请先在项目页选择当前项目。');
       return;
     }
-    await db.setAllProjectResourcesEnabled(currentProject.id, 'character', enabled);
-    await loadData();
+    // Phase9-BUG#12: 包裹 try-catch + Toast
+    try {
+      await db.setAllProjectResourcesEnabled(currentProject.id, 'character', enabled);
+      await loadData();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   const toggleCollection = async (collection: any) => {
     const newEnabled = collection.enabled === 1 ? 0 : 1;
-    await db.setWorldbookCollectionEnabledForProject(projectId, collection.id, newEnabled === 1);
-    await loadData();
+    // Phase9-BUG#12: 包裹 try-catch + Toast
+    try {
+      await db.setWorldbookCollectionEnabledForProject(projectId, collection.id, newEnabled === 1);
+      await loadData();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   const remove = (kind: EditorKind, id: number, title: string) => {
@@ -422,15 +437,20 @@ export const ResourceLibrary: React.FC = () => {
         text: '删除',
         style: 'destructive',
         onPress: async () => {
-          if (kind === 'characters') await db.deleteCharacter(id);
-          if (kind === 'worldbookCollection') {
-            await db.deleteWorldbookCollection(id);
-            setSelectedCollectionId(null);
+          // Phase9-BUG#10: 包裹 try-catch + Toast，串联多个 deleteXxx 任一失败时给用户反馈
+          try {
+            if (kind === 'characters') await db.deleteCharacter(id);
+            if (kind === 'worldbookCollection') {
+              await db.deleteWorldbookCollection(id);
+              setSelectedCollectionId(null);
+            }
+            if (kind === 'worldbook') await db.deleteWorldbookEntry(id);
+            if (kind === 'notes') await db.deleteNote(id);
+            if (kind === 'presets') await db.deletePreset(id);
+            await loadData();
+          } catch (e: any) {
+            Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
           }
-          if (kind === 'worldbook') await db.deleteWorldbookEntry(id);
-          if (kind === 'notes') await db.deleteNote(id);
-          if (kind === 'presets') await db.deletePreset(id);
-          await loadData();
         },
       },
     ]);
