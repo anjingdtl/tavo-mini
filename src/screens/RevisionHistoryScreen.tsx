@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
 import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
@@ -44,22 +44,33 @@ export const RevisionHistoryScreen: React.FC<Props> = ({ targetType, targetId, p
   const [revisions, setRevisions] = useState<ContentRevision[]>([]);
   const [loading, setLoading] = useState(true);
   const [restoring, setRestoring] = useState<number | null>(null);
+  // 10.7: 守卫 restore 异步流程，避免组件卸载后 setState
+  const isMountedRef = useRef(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const list = await getRevisions(targetType, targetId);
+      if (!isMountedRef.current) return;
       setRevisions(list);
     } catch (e: any) {
+      if (!isMountedRef.current) return;
       Toast.show({ type: 'error', text1: '加载历史版本失败', text2: e?.message });
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   }, [targetType, targetId]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // 10.7: cleanup 标记卸载，load / handleRestore 后续 setState 受守卫
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const handleRestore = (revision: ContentRevision) => {
     Alert.alert('恢复确认', '确定要将内容恢复到此版本吗？当前内容会先自动保存为历史版本。', [
@@ -81,11 +92,14 @@ export const RevisionHistoryScreen: React.FC<Props> = ({ targetType, targetId, p
                 ? async () => (await db.getChapterById(targetId))?.content || ''
                 : async () => db.getFreeformDocument(projectId);
             await restoreRevision(revision, updateFn, getCurrentContent);
+            // 10.7: 卸载后不再 setState，避免 React 警告与潜在内存泄漏
+            if (!isMountedRef.current) return;
             await load();
           } catch (e: any) {
+            if (!isMountedRef.current) return;
             Alert.alert('恢复失败', e?.message || '未知错误');
           } finally {
-            setRestoring(null);
+            if (isMountedRef.current) setRestoring(null);
           }
         },
       },

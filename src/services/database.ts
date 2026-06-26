@@ -37,6 +37,7 @@ let db: SQLite.SQLiteDatabase | null = null;
 let opening: Promise<SQLite.SQLiteDatabase> | null = null;
 
 type Row = Record<string, any>;
+export type RowRecord = Row;
 export type ResourceType = 'character' | 'worldbook' | 'note' | 'preset';
 
 export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {

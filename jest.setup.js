@@ -126,5 +126,11 @@ jest.mock('react-native', () => {
     isAvailable: jest.fn(() => Promise.resolve(true)),
     consumeDeepLinkTaskId: jest.fn(() => Promise.resolve(null)),
   };
+  // 10.13 修复：补充 PngMetadata 原生模块 mock，避免导入角色卡 PNG 时 NativeModules.PngMetadata 为 undefined
+  RN.NativeModules.PngMetadata = {
+    parsePngMetadata: jest.fn(() => Promise.resolve([])),
+    addListener: jest.fn(),
+    removeListeners: jest.fn(),
+  };
   return RN;
 });

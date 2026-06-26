@@ -27,6 +27,8 @@ class MainActivity : ReactActivity() {
     val taskId = intent?.getStringExtra(PipelineForegroundModule.EXTRA_DEEP_LINK_TASK_ID)
     if (!taskId.isNullOrEmpty()) {
       PipelineForegroundModule.setPendingDeepLinkTaskId(taskId)
+      // 10.20 修复：去除已处理 extra，Activity 重建（如旋转屏幕）时不会重复导航
+      intent.removeExtra(PipelineForegroundModule.EXTRA_DEEP_LINK_TASK_ID)
     }
   }
 
