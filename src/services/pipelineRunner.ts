@@ -16,13 +16,28 @@ import type { PipelineStageName } from '../types/pipeline';
 import type { ChatMessage } from './llm';
 
 const cancelledTasks = new Set<string>();
+const taskAbortControllers = new Map<string, AbortController>();
 
 export function cancelPipeline(taskId: string): void {
   cancelledTasks.add(taskId);
+  const controller = taskAbortControllers.get(taskId);
+  if (controller) {
+    controller.abort();
+  }
 }
 
 export function isPipelineCancelled(taskId: string): boolean {
   return cancelledTasks.has(taskId);
+}
+
+function registerTaskAbort(taskId: string): AbortSignal {
+  const controller = new AbortController();
+  taskAbortControllers.set(taskId, controller);
+  return controller.signal;
+}
+
+function releaseTaskAbort(taskId: string): void {
+  taskAbortControllers.delete(taskId);
 }
 
 function resolvePreset(presetId: number | null, presets: Preset[]): Preset | null {
@@ -81,6 +96,7 @@ async function runProofStage({
   proofPreset,
   scenario = 'pipeline_proof',
   projectId,
+  abortSignal,
 }: {
   taskId: string,
   draftText: string;
@@ -90,6 +106,7 @@ async function runProofStage({
   proofPreset: Preset | null;
   scenario?: string;
   projectId?: number;
+  abortSignal?: AbortSignal;
 }): Promise<string> {
   const store = usePipelineTaskStore.getState();
   store.setTaskStatus(taskId, 'proofing');
@@ -101,6 +118,7 @@ async function runProofStage({
       messages,
       maxTokens,
       buildCallConfig(proofPreset, maxTokens, scenario, projectId),
+      abortSignal,
     );
     const finalText = proofResult.text || draftText;
     store.updateTaskStage(taskId, {
@@ -137,6 +155,20 @@ export async function runChapterPipeline(
   taskId: string,
   chapter: Chapter,
   onStageUpdate?: (info: StageInfo | string) => void,
+): Promise<void> {
+  const abortSignal = registerTaskAbort(taskId);
+  try {
+    await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
+  } finally {
+    releaseTaskAbort(taskId);
+  }
+}
+
+async function runChapterPipelineInner(
+  taskId: string,
+  chapter: Chapter,
+  onStageUpdate?: (info: StageInfo | string) => void,
+  abortSignal?: AbortSignal,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
   let config;
@@ -210,6 +242,7 @@ export async function runChapterPipeline(
       draftMessages,
       config.draftMaxTokens,
       buildCallConfig(draftPreset, config.draftMaxTokens, 'pipeline_draft', chapter.project_id),
+      abortSignal,
     );
     draftText = draftResult.text || '';
     store.updateTaskStage(taskId, {
@@ -259,6 +292,7 @@ export async function runChapterPipeline(
         buildReviewMessages(draftText),
         config.reviewMaxTokens,
         buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+        abortSignal,
       );
       reviewText = reviewResult.text || '';
       store.updateTaskStage(taskId, {
@@ -294,6 +328,7 @@ export async function runChapterPipeline(
       maxTokens: config.proofMaxTokens,
       proofPreset,
       projectId: chapter.project_id,
+      abortSignal,
     });
     await saveDraftAndComplete(finalText);
     return;
@@ -313,6 +348,7 @@ export async function runChapterPipeline(
         buildFactCheckMessages(draftText, contextText),
         config.factCheckMaxTokens,
         buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
+        abortSignal,
       );
       factCheckText = factCheckResult.text || '';
       store.updateTaskStage(taskId, {
@@ -348,6 +384,7 @@ export async function runChapterPipeline(
       maxTokens: config.proofMaxTokens,
       proofPreset,
       projectId: chapter.project_id,
+      abortSignal,
     });
     await saveDraftAndComplete(finalText);
     return;
@@ -366,11 +403,13 @@ export async function runChapterPipeline(
     buildReviewMessages(draftText),
     config.reviewMaxTokens,
     buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+    abortSignal,
   );
   const factCheckPromise = callLLMResult(
     buildFactCheckMessages(draftText, contextText),
     config.factCheckMaxTokens,
     buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
+    abortSignal,
   );
 
   let reviewText = '';
@@ -444,6 +483,7 @@ export async function runChapterPipeline(
     maxTokens: config.proofMaxTokens,
     proofPreset,
     projectId: chapter.project_id,
+    abortSignal,
   });
   await saveDraftAndComplete(finalText);
 }
@@ -475,6 +515,20 @@ export async function resumePipeline(
   chapter: Chapter,
   onStageUpdate?: (info: StageInfo | string) => void,
 ): Promise<void> {
+  const abortSignal = registerTaskAbort(taskId);
+  try {
+    await resumePipelineInner(taskId, chapter, onStageUpdate, abortSignal);
+  } finally {
+    releaseTaskAbort(taskId);
+  }
+}
+
+async function resumePipelineInner(
+  taskId: string,
+  chapter: Chapter,
+  onStageUpdate?: (info: StageInfo | string) => void,
+  abortSignal?: AbortSignal,
+): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const task = store.tasks.find(t => t.id === taskId);
   if (!task) throw new Error('找不到管线任务');
@@ -490,7 +544,7 @@ export async function resumePipeline(
   const factCheckResult = task.stageResults.find(s => s.stage === 'factCheck' && s.status === 'success');
 
   if (!draftResult) {
-    await runChapterPipeline(taskId, chapter, onStageUpdate);
+    await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
     return;
   }
 
@@ -544,6 +598,7 @@ export async function resumePipeline(
           buildReviewMessages(draftText),
           config.reviewMaxTokens,
           buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+          abortSignal,
         );
         reviewText = reviewCallResult.text || '';
         store.updateTaskStage(taskId, {
@@ -563,7 +618,7 @@ export async function resumePipeline(
     if (checkCancelled(taskId)) return;
     onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
     PipelineForeground.updateProgress(taskId, '终审打磨中');
-    const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id });
+    const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id, abortSignal });
     await saveDraftAndComplete(finalText);
     return;
   }
@@ -581,6 +636,7 @@ export async function resumePipeline(
         buildFactCheckMessages(draftText, contextText),
         config.factCheckMaxTokens,
         buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
+        abortSignal,
       );
       factCheckText = factCheckCallResult.text || '';
       store.updateTaskStage(taskId, {
@@ -597,6 +653,6 @@ export async function resumePipeline(
 
   if (checkCancelled(taskId)) return;
   onStageUpdate?.('正在终审校对（续跑）...');
-  const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id });
+  const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id, abortSignal });
   await saveDraftAndComplete(finalText);
 }

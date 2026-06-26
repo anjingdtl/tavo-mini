@@ -3,7 +3,7 @@ import { Alert, AppState, ScrollView, StyleSheet, Text, View } from 'react-nativ
 import { ArrowUp, Bot, Eye, FileText, Focus, History, Inbox, Square, Trash2, Volume2 } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
-import { runChapterPipeline } from '../services/pipelineRunner';
+import { cancelPipeline, runChapterPipeline } from '../services/pipelineRunner';
 import { suppressGlobalPipelinePrompt } from '../navigation/pipelinePromptSuppression';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { PipelineProgress } from '../components/PipelineProgress';
@@ -54,6 +54,9 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   // Tracks the most recent taskId whose result screen we have surfaced, so a
   // redundant store update does not navigate to the same result twice.
   const resultTaskIdRef = useRef<string | null>(null);
+  // 每个终态 taskId 在本屏只触发一次 Alert/跳转，避免切屏期间 failTask
+  // 触发的 subscribe 与全局 PipelineResultPrompt Modal 双弹。
+  const seenTerminalRef = useRef<Set<string>>(new Set());
   // Accumulate field edits across multiple changeField calls within one debounce
   // window. Without this, a fast title+synopsis edit would overwrite the pending
   // args and lose one of the edits (debounce only keeps the latest call's args).
@@ -145,13 +148,15 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     );
     const handleTerminal = (t: { id: string; status: string; error?: string | null }) => {
       if (t.id === resultTaskIdRef.current) return;
+      if (seenTerminalRef.current.has(t.id)) return;
+      seenTerminalRef.current.add(t.id);
       if (t.status === 'completed') {
         openPipelineResult(t.id);
       } else if (t.status === 'failed') {
         resultTaskIdRef.current = t.id;
         setProgressVisible(false);
         setGenerating(false);
-        Alert.alert('流水线失败', t.error || '未知错误');
+        // 失败提示交给全局 PipelineResultPrompt Modal 统一展示，避免双重弹窗
       }
     };
     const initial = findTask();
@@ -360,6 +365,25 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     }
   };
 
+  const stopPipeline = () => {
+    // 立即重置 UI 状态，避免用户点完按钮还要等 fetch 超时
+    setGenerating(false);
+    setProgressVisible(false);
+    // 找到当前章节正在跑的 taskId，通知 runner 立即 abort fetch
+    const runningTask = usePipelineTaskStore
+      .getState()
+      .tasks.find(
+        (t) =>
+          t.targetType === 'chapter' &&
+          t.targetId === chapterId &&
+          (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'proofing') &&
+          t.resolvedAt === null,
+      );
+    if (runningTask) {
+      cancelPipeline(runningTask.id);
+    }
+  };
+
   // 性能优化：memoize token 估算，避免每次渲染都重新计算
   const content = chapter?.content || '';
   const estimatedTokenCount = useMemo(
@@ -420,6 +444,16 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
               compact
               minWidth={72}
             />
+            {generating && (
+              <Button
+                label="停止"
+                icon={Square}
+                variant="secondary"
+                onPress={stopPipeline}
+                compact
+                minWidth={72}
+              />
+            )}
             <Button
               label={finalizing ? '定稿中…' : '定稿'}
               icon={FileText}
