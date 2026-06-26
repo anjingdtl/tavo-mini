@@ -553,6 +553,13 @@ async function migrate(database: SQLite.SQLiteDatabase): Promise<void> {
   }
 
   if (installInfo.installType === 'same') {
+    // 修复：即使 app_version 相同，也检查 schema_version 是否需要补迁移
+    // 防止迁移失败后 app_version 已更新但 schema_version 卡在旧值
+    const fromSchema = installInfo.schemaVersion || 1;
+    if (fromSchema < SCHEMA_VERSION && !hasBreakingMigration(fromSchema) && !isIncompatibleUpgrade(fromSchema)) {
+      const migrationResult = await runMigrations(database, fromSchema);
+      lastMigrationResult = migrationResult;
+    }
     return;
   }
 
@@ -613,6 +620,7 @@ export async function updateProject(id: number, name: string): Promise<void> {
 }
 
 export async function deleteProject(id: number): Promise<void> {
+  if (id <= 0) return; // 防止删除全局资源（project_id=0 的数据）
   await execute(await openDatabase(), 'DELETE FROM projects WHERE id = ?', [id]);
 }
 
@@ -1067,12 +1075,17 @@ async function repairOversizedNotes(database: SQLite.SQLiteDatabase): Promise<vo
         'SELECT project_id, enabled FROM project_resources WHERE resource_type = ? AND resource_id = ?',
         ['note', note.id],
       );
-      const newIds: number[] = [];
-      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-        const newId = await insertNoteRow(database, `${note.title} (${chunkIndex + 1}/${chunks.length})`, chunks[chunkIndex]);
-        newIds.push(newId);
-      }
+      // 修复：整个流程（建新笔记+迁移链接+删旧）包进一个事务，防止中途失败产生孤儿数据
       await database.transaction(async (tx) => {
+        const timestamp = now();
+        const newIds: number[] = [];
+        for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+          const [insertResult] = await tx.executeSql(
+            'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [0, `${note.title} (${chunkIndex + 1}/${chunks.length})`, chunks[chunkIndex], 30000, estimateTokens(chunks[chunkIndex]), timestamp, timestamp],
+          );
+          newIds.push(insertResult.insertId);
+        }
         for (const newId of newIds) {
           for (let linkIndex = 0; linkIndex < links.rows.length; linkIndex++) {
             const link = links.rows.item(linkIndex);
@@ -1310,8 +1323,10 @@ export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number>
 
 export async function setActiveLLMConfig(id: number): Promise<void> {
   const database = await openDatabase();
-  await execute(database, 'UPDATE llm_config SET is_active = 0');
-  await execute(database, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [id]);
+  await database.transaction(async (tx) => {
+    await tx.executeSql('UPDATE llm_config SET is_active = 0');
+    await tx.executeSql('UPDATE llm_config SET is_active = 1 WHERE id = ?', [id]);
+  });
 }
 
 export async function deleteLLMConfig(id: number): Promise<void> {
