@@ -25,14 +25,16 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
 
   /**
    * 启动前台服务（开始写作）。taskId 用于标识当前任务。
+   * progress：初始进度百分比 0-100。
    */
   @ReactMethod
-  fun start(taskId: String, title: String, stageLabel: String, promise: Promise) {
+  fun start(taskId: String, title: String, stageLabel: String, progress: Int, promise: Promise) {
     try {
       val intent = Intent(reactContext, PipelineForegroundService::class.java).apply {
         putExtra(PipelineForegroundService.EXTRA_TASK_ID, taskId)
         putExtra(PipelineForegroundService.EXTRA_TITLE, title)
         putExtra(PipelineForegroundService.EXTRA_STAGE_LABEL, stageLabel)
+        putExtra(PipelineForegroundService.EXTRA_PROGRESS, progress)
       }
       ContextCompat.startForegroundService(reactContext, intent)
       promise.resolve(null)
@@ -42,17 +44,25 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
   }
 
   /**
-   * 更新常驻通知文本（不弹新通知）。
-   * 通过重新投递 start intent 让 Service.onStartCommand 刷新前台通知。
+   * 更新常驻通知进度（不弹新通知）。
+   * 优先直接 notify 刷新（轻量），服务未运行时 fallback 重新 startForegroundService。
    */
   @ReactMethod
-  fun updateProgress(taskId: String, stageLabel: String, promise: Promise) {
+  fun updateProgress(taskId: String, stageLabel: String, progress: Int, promise: Promise) {
     try {
-      val intent = Intent(reactContext, PipelineForegroundService::class.java).apply {
-        putExtra(PipelineForegroundService.EXTRA_TASK_ID, taskId)
-        putExtra(PipelineForegroundService.EXTRA_STAGE_LABEL, stageLabel)
+      val service = PipelineForegroundService.instance
+      if (service != null) {
+        // 服务已在前台运行，直接刷新通知（避免重投 Intent 的系统开销与限制）
+        service.updateNotification(stageLabel, progress)
+      } else {
+        // 服务尚未运行（罕见，如被系统回收），fallback 重新启动
+        val intent = Intent(reactContext, PipelineForegroundService::class.java).apply {
+          putExtra(PipelineForegroundService.EXTRA_TASK_ID, taskId)
+          putExtra(PipelineForegroundService.EXTRA_STAGE_LABEL, stageLabel)
+          putExtra(PipelineForegroundService.EXTRA_PROGRESS, progress)
+        }
+        ContextCompat.startForegroundService(reactContext, intent)
       }
-      ContextCompat.startForegroundService(reactContext, intent)
       promise.resolve(null)
     } catch (e: Exception) {
       promise.reject("UPDATE_FAILED", "更新进度失败: ${e.message}", e)

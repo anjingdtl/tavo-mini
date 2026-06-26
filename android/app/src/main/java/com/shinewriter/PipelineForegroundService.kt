@@ -31,6 +31,9 @@ class PipelineForegroundService : Service() {
 
   private var wakeLock: PowerManager.WakeLock? = null
   private var currentTaskId: String? = null
+  private var currentTitle: String = "ShineWriter 写作中"
+  private var currentStageLabel: String = "正在生成"
+  private var currentProgress: Int = 0
   private val handler = Handler(Looper.getMainLooper())
   private val wakeLockRenewRunnable = object : Runnable {
     override fun run() {
@@ -52,16 +55,21 @@ class PipelineForegroundService : Service() {
   override fun onCreate() {
     super.onCreate()
     ensureNotificationChannels(this)
+    instance = this
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
     val title = intent?.getStringExtra(EXTRA_TITLE) ?: "ShineWriter 写作中"
     val stageLabel = intent?.getStringExtra(EXTRA_STAGE_LABEL) ?: "正在生成"
+    val progress = intent?.getIntExtra(EXTRA_PROGRESS, currentProgress) ?: currentProgress
 
     if (taskId != null) currentTaskId = taskId
+    currentTitle = title
+    currentStageLabel = stageLabel
+    currentProgress = progress.coerceIn(0, 100)
 
-    startForegroundInternal(title, stageLabel)
+    startForegroundInternal(currentTitle, currentStageLabel, currentProgress)
     acquireWakeLock()
     // 启动周期续期检查
     handler.removeCallbacks(wakeLockRenewRunnable)
@@ -73,11 +81,12 @@ class PipelineForegroundService : Service() {
   override fun onDestroy() {
     handler.removeCallbacks(wakeLockRenewRunnable)
     releaseWakeLock()
+    instance = null
     super.onDestroy()
   }
 
-  private fun startForegroundInternal(title: String, stageLabel: String) {
-    val notification = buildOngoingNotification(title, stageLabel)
+  private fun startForegroundInternal(title: String, stageLabel: String, progress: Int) {
+    val notification = buildOngoingNotification(title, stageLabel, progress)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
       // Android 14+ 必须指定 foregroundServiceType
       startForeground(ONGOING_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -86,15 +95,29 @@ class PipelineForegroundService : Service() {
     }
   }
 
-  private fun buildOngoingNotification(title: String, stageLabel: String): Notification {
-    val text = if (stageLabel.isNotBlank()) "$title · $stageLabel" else title
+  /**
+   * 更新常驻通知内容（不重投 startForegroundService Intent，降低系统开销与限制触发）。
+   * 仅在服务已通过 startForeground 进入前台状态后调用。
+   */
+  fun updateNotification(stageLabel: String, progress: Int) {
+    currentStageLabel = stageLabel
+    currentProgress = progress.coerceIn(0, 100)
+    val notification = buildOngoingNotification(currentTitle, currentStageLabel, currentProgress)
+    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    nm.notify(ONGOING_NOTIFICATION_ID, notification)
+  }
+
+  private fun buildOngoingNotification(title: String, stageLabel: String, progress: Int): Notification {
+    val pct = progress.coerceIn(0, 100)
+    val text = if (stageLabel.isNotBlank()) "$stageLabel · $pct%" else "$pct%"
     return NotificationCompat.Builder(this, CHANNEL_ONGOING)
-      .setContentTitle("ShineWriter 写作中")
+      .setContentTitle(title)
       .setContentText(text)
       .setSmallIcon(android.R.drawable.stat_notify_sync)
       .setOngoing(true)
       .setOnlyAlertOnce(true)
       .setPriority(NotificationCompat.PRIORITY_LOW)
+      .setProgress(100, pct, false) // 确定型进度条
       .build()
   }
 
@@ -124,8 +147,17 @@ class PipelineForegroundService : Service() {
     const val EXTRA_TASK_ID = "shinewriter.pipeline.task_id"
     const val EXTRA_TITLE = "shinewriter.pipeline.title"
     const val EXTRA_STAGE_LABEL = "shinewriter.pipeline.stage_label"
+    const val EXTRA_PROGRESS = "shinewriter.pipeline.progress"
     const val ONGOING_NOTIFICATION_ID = 0x5A01
     const val DONE_NOTIFICATION_BASE_ID = 0x5B00
+
+    /**
+     * 当前运行中的 Service 实例（单例语义：本应用同时只有一个流水线前台服务）。
+     * 供 Module 直接调用 updateNotification 刷新通知，避免重投 startForegroundService Intent。
+     * onCreate 置位、onDestroy 清空。
+     */
+    @Volatile
+    var instance: PipelineForegroundService? = null
     private const val CHANNEL_ONGOING = "pipeline_ongoing"
     private const val CHANNEL_DONE = "pipeline_done"
     private const val WAKE_LOCK_TAG = "shinewriter:pipeline"
