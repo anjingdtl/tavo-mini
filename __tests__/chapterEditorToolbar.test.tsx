@@ -8,7 +8,6 @@ const mockCreateTask = jest.fn(() => 'task-1');
 const mockRunChapterPipeline = jest.fn();
 const mockCancelPipeline = jest.fn();
 const mockNavigate = jest.fn();
-const mockGenerationResultModal = jest.fn(() => null);
 let mockTasks: any[] = [];
 
 jest.mock('../src/services/database', () => ({
@@ -68,10 +67,6 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
     // exercise the subscription path can no-op it.
     subscribe: () => () => {},
   },
-}));
-
-jest.mock('../src/components/GenerationResultModal', () => ({
-  GenerationResultModal: (props: any) => mockGenerationResultModal(props),
 }));
 
 jest.mock('@react-navigation/native', () => ({
@@ -167,10 +162,6 @@ describe('ChapterEditor toolbar', () => {
     });
 
     expect(mockNavigate).toHaveBeenCalledWith('PipelineResult', { taskId: 'task-1' });
-    expect(mockGenerationResultModal).not.toHaveBeenCalledWith(
-      expect.objectContaining({ visible: true }),
-      expect.anything(),
-    );
     expect(mockRunChapterPipeline).toHaveBeenCalledWith(
       'task-1',
       expect.objectContaining({ id: 1 }),

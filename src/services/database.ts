@@ -604,15 +604,30 @@ export async function getProjectById(id: number): Promise<Project | null> {
 export async function createProject(name: string, mode: ProjectMode | string): Promise<number> {
   const database = await openDatabase();
   const timestamp = now();
-  const result = await execute(
-    database,
-    'INSERT INTO projects (name, mode, created_at, updated_at) VALUES (?, ?, ?, ?)',
-    [name, mode, timestamp, timestamp],
-  );
-  const projectId = result.insertId!;
-  const presetId = await ensureDefaultPreset();
-  await setProjectResourceEnabled(projectId, 'preset', presetId, true);
-  await createChapter(projectId, 0, '第 1 章');
+  let projectId = 0;
+  // 11.7 修复：INSERT + ensureDefaultPreset + 绑定预设 + 建首章整体包进事务，
+  // 任一步失败回滚，避免留下无预设/无章节的半成品项目
+  await database.transaction(async (tx) => {
+    const txx = tx as unknown as SQLite.SQLiteDatabase;
+    const result = await execute(
+      txx,
+      'INSERT INTO projects (name, mode, created_at, updated_at) VALUES (?, ?, ?, ?)',
+      [name, mode, timestamp, timestamp],
+    );
+    projectId = result.insertId!;
+    const presetId = await ensureDefaultPreset(txx);
+    await execute(
+      txx,
+      'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+      [projectId, 'preset', presetId, 1],
+    );
+    await execute(
+      txx,
+      'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [projectId, 0, '第 1 章', '', '', 'planned', timestamp, timestamp],
+    );
+    await execute(txx, 'UPDATE projects SET updated_at = ? WHERE id = ?', [timestamp, projectId]);
+  });
   return projectId;
 }
 
@@ -1337,13 +1352,22 @@ export async function deleteLLMConfig(id: number): Promise<void> {
   }
 
   const target = configs.find((config) => config.id === id);
-  await execute(await openDatabase(), 'DELETE FROM llm_config WHERE id = ?', [id]);
+  const database = await openDatabase();
+  // 11.8 修复：DELETE + 切换激活配置整体包进事务，保证原子性；
+  // clearSecureLLMApiKey 是异步 keystore 操作，放事务外执行避免嵌入 SQLite 事务
+  await database.transaction(async (tx) => {
+    const txx = tx as unknown as SQLite.SQLiteDatabase;
+    await execute(txx, 'DELETE FROM llm_config WHERE id = ?', [id]);
+    if (target?.is_active === 1) {
+      const next = await execute(txx, 'SELECT id FROM llm_config ORDER BY id ASC LIMIT 1');
+      if (next.rows.length > 0) {
+        const nextId = next.rows.item(0).id;
+        await execute(txx, 'UPDATE llm_config SET is_active = 0');
+        await execute(txx, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [nextId]);
+      }
+    }
+  });
   await clearSecureLLMApiKey(id);
-
-  if (target?.is_active === 1) {
-    const next = await one<LLMConfig>('SELECT * FROM llm_config ORDER BY id ASC LIMIT 1');
-    if (next) await setActiveLLMConfig(next.id);
-  }
 }
 
 export async function getLLMConfig(): Promise<LLMConfig> {
@@ -1509,30 +1533,46 @@ async function updateColumns(table: string, id: number, allowed: Set<string>, fi
 }
 
 export async function getPipelineConfig(): Promise<PipelineConfig> {
-  const savedMode = await getSetting('pipeline_mode');
+  // 11.9 优化：原实现每个字段独立 getSetting（最多 9 次独立 SQL），合并为单次 SELECT
+  const keys = [
+    'pipeline_mode',
+    'pipeline_draft_preset_id',
+    'pipeline_review_preset_id',
+    'pipeline_factcheck_preset_id',
+    'pipeline_proof_preset_id',
+    'pipeline_draft_max_tokens',
+    'pipeline_review_max_tokens',
+    'pipeline_factcheck_max_tokens',
+    'pipeline_proof_max_tokens',
+  ];
+  const rows = await all<{ key: string; value: string }>(
+    `SELECT key, value FROM settings WHERE key IN (${keys.map(() => '?').join(', ')})`,
+    keys,
+  );
+  const settingsMap = new Map(rows.map((r) => [r.key, r.value]));
+  const get = (k: string): string | null => settingsMap.get(k) ?? null;
+
+  const savedMode = get('pipeline_mode');
   const pipelineMode =
     savedMode === 'noReview' || savedMode === 'conditional' || savedMode === 'full' || savedMode === 'twoStage'
       ? savedMode
       : 'twoStage';
 
+  const presetId = (k: string): number | null => {
+    const v = get(k);
+    return v !== null ? Number(v) : null;
+  };
+
   return {
     pipelineMode,
-    draftPresetId: (await getSetting('pipeline_draft_preset_id')) !== null
-      ? Number(await getSetting('pipeline_draft_preset_id'))
-      : null,
-    reviewPresetId: (await getSetting('pipeline_review_preset_id')) !== null
-      ? Number(await getSetting('pipeline_review_preset_id'))
-      : null,
-    factCheckPresetId: (await getSetting('pipeline_factcheck_preset_id')) !== null
-      ? Number(await getSetting('pipeline_factcheck_preset_id'))
-      : null,
-    proofPresetId: (await getSetting('pipeline_proof_preset_id')) !== null
-      ? Number(await getSetting('pipeline_proof_preset_id'))
-      : null,
-    draftMaxTokens: Number((await getSetting('pipeline_draft_max_tokens')) || 4000),
-    reviewMaxTokens: Number((await getSetting('pipeline_review_max_tokens')) || 1500),
-    factCheckMaxTokens: Number((await getSetting('pipeline_factcheck_max_tokens')) || 1500),
-    proofMaxTokens: Number((await getSetting('pipeline_proof_max_tokens')) || 4000),
+    draftPresetId: presetId('pipeline_draft_preset_id'),
+    reviewPresetId: presetId('pipeline_review_preset_id'),
+    factCheckPresetId: presetId('pipeline_factcheck_preset_id'),
+    proofPresetId: presetId('pipeline_proof_preset_id'),
+    draftMaxTokens: Number(get('pipeline_draft_max_tokens') || 4000),
+    reviewMaxTokens: Number(get('pipeline_review_max_tokens') || 1500),
+    factCheckMaxTokens: Number(get('pipeline_factcheck_max_tokens') || 1500),
+    proofMaxTokens: Number(get('pipeline_proof_max_tokens') || 4000),
   };
 }
 
@@ -1845,6 +1885,18 @@ function safeJsonParse(text: string, fallback: any): any {
   }
 }
 
+function parseProjectNoteConfigRow(row: Row): ProjectNoteConfig {
+  return {
+    projectId: Number(row.project_id),
+    mode: row.mode as NoteMode,
+    styleWeights: safeJsonParse(row.style_weights, {}),
+    // 11.10 修复：原 || 把 0 当 falsy 回退到 5，改用 ?? 保留显式 0
+    retrievalTopK: Number(row.retrieval_top_k) ?? 5,
+    enabledNoteIds: safeJsonParse(row.enabled_note_ids, []),
+    updatedAt: row.updated_at,
+  };
+}
+
 export async function getProjectNoteConfig(projectId: number): Promise<ProjectNoteConfig | null> {
   const result = await execute(
     await openDatabase(),
@@ -1852,33 +1904,32 @@ export async function getProjectNoteConfig(projectId: number): Promise<ProjectNo
     [projectId],
   );
   if (result.rows.length === 0) return null;
-  const row = result.rows.item(0);
-  return {
-    projectId: Number(row.project_id),
-    mode: row.mode as NoteMode,
-    styleWeights: safeJsonParse(row.style_weights, {}),
-    retrievalTopK: Number(row.retrieval_top_k) || 5,
-    enabledNoteIds: safeJsonParse(row.enabled_note_ids, []),
-    updatedAt: row.updated_at,
-  };
+  return parseProjectNoteConfigRow(result.rows.item(0));
 }
 
 export async function setProjectNoteConfig(
   projectId: number,
   config: Partial<Omit<ProjectNoteConfig, 'projectId' | 'updatedAt'>>,
 ): Promise<void> {
-  const existing = await getProjectNoteConfig(projectId);
-  const mode = config.mode ?? existing?.mode ?? 'none';
-  const styleWeights = JSON.stringify(config.styleWeights ?? existing?.styleWeights ?? {});
-  const retrievalTopK = config.retrievalTopK ?? existing?.retrievalTopK ?? 5;
-  const enabledNoteIds = JSON.stringify(config.enabledNoteIds ?? existing?.enabledNoteIds ?? []);
-  const updatedAt = new Date().toISOString();
-  await execute(
-    await openDatabase(),
-    `INSERT OR REPLACE INTO project_note_config (project_id, mode, style_weights, retrieval_top_k, enabled_note_ids, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [projectId, mode, styleWeights, retrievalTopK, enabledNoteIds, updatedAt],
-  );
+  const database = await openDatabase();
+  // 11.11 修复：SELECT existing + INSERT OR REPLACE 整体包进事务，
+  // 避免并发写入间读到中间态或被覆盖
+  await database.transaction(async (tx) => {
+    const txx = tx as unknown as SQLite.SQLiteDatabase;
+    const result = await execute(txx, 'SELECT * FROM project_note_config WHERE project_id = ?', [projectId]);
+    const existing = result.rows.length > 0 ? parseProjectNoteConfigRow(result.rows.item(0)) : null;
+    const mode = config.mode ?? existing?.mode ?? 'none';
+    const styleWeights = JSON.stringify(config.styleWeights ?? existing?.styleWeights ?? {});
+    const retrievalTopK = config.retrievalTopK ?? existing?.retrievalTopK ?? 5;
+    const enabledNoteIds = JSON.stringify(config.enabledNoteIds ?? existing?.enabledNoteIds ?? []);
+    const updatedAt = new Date().toISOString();
+    await execute(
+      txx,
+      `INSERT OR REPLACE INTO project_note_config (project_id, mode, style_weights, retrieval_top_k, enabled_note_ids, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [projectId, mode, styleWeights, retrievalTopK, enabledNoteIds, updatedAt],
+    );
+  });
 }
 
 export interface NoteStyleProfileRow {
