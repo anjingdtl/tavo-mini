@@ -48,6 +48,8 @@ export const SettingsScreen: React.FC = () => {
             { text: '去设置', onPress: () => Linking.openSettings() },
           ],
         );
+        // 未授权时不能开启后台写作，否则用户会被误导为已生效
+        return;
       }
     }
     await setBackgroundPipelineEnabled(value);
