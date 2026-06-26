@@ -1,7 +1,9 @@
 package com.shinewriter
 
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -13,6 +15,7 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
+import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
 import java.util.Locale
 
@@ -203,6 +206,30 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  @ReactMethod
+  fun openTtsSettings(promise: Promise) {
+    try {
+      val intent = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
+      intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+      reactApplicationContext.startActivity(intent)
+      promise.resolve(true)
+    } catch (e: Exception) {
+      Log.e("TtsAudio", "openTtsSettings failed", e)
+      promise.reject("OPEN_TTS_SETTINGS_FAILED", "无法打开系统 TTS 设置")
+    }
+  }
+
+  // NativeEventEmitter 要求原生模块实现这两个方法（空实现即可）
+  @ReactMethod
+  fun addListener(eventName: String) {
+    // No-op: 事件发送走 RCTDeviceEventEmitter.emit，无需跟踪监听器
+  }
+
+  @ReactMethod
+  fun removeListeners(count: Int) {
+    // No-op: 同上
+  }
+
   // ===== Internal helpers =====
 
   private fun ensureTts(callback: (Boolean) -> Unit) {
@@ -349,12 +376,24 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     }
 
     override fun onDone(utteranceId: String?) {
-      // 朗读完成（约定：不驱动 promise，仅清理内部状态）
+      // 朗读完成：通知 JS 层重置 isPlaying 状态
+      sendEvent("ttsDone", null)
     }
 
     override fun onError(utteranceId: String?) {
-      // 朗读错误（约定：promise 已在入队成功时 resolve）
+      // 朗读错误：通知 JS 层重置 isPlaying 状态
       Log.w("TtsAudio", "TTS utterance error: $utteranceId")
+      sendEvent("ttsError", null)
+    }
+  }
+
+  private fun sendEvent(eventName: String, params: WritableMap?) {
+    try {
+      reactApplicationContext
+        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit(eventName, params)
+    } catch (e: Exception) {
+      Log.e("TtsAudio", "sendEvent $eventName failed", e)
     }
   }
 
