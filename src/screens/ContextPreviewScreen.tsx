@@ -20,6 +20,7 @@ import {
 } from 'lucide-react-native';
 import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
+import Toast from 'react-native-toast-message';
 import * as db from '../services/database';
 import { buildContext } from '../services/contextBuilder';
 import type { ContextTraceItem, ContextSourceKind } from '../types/contextTrace';
@@ -75,6 +76,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
       setTrace(result.trace);
       setEstimatedInputTokens(result.estimatedInputTokens);
       setMessages(result.messages);
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '构建上下文失败', text2: e?.message });
     } finally {
       setLoading(false);
     }

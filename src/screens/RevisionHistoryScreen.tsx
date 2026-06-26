@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
 import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
+import Toast from 'react-native-toast-message';
 import { getRevisions, restoreRevision } from '../services/revisionService';
 import * as db from '../services/database';
 import type { ContentRevision, RevisionSource } from '../types/revision';
@@ -49,6 +50,8 @@ export const RevisionHistoryScreen: React.FC<Props> = ({ targetType, targetId, p
     try {
       const list = await getRevisions(targetType, targetId);
       setRevisions(list);
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '加载历史版本失败', text2: e?.message });
     } finally {
       setLoading(false);
     }

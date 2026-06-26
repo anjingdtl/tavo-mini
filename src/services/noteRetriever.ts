@@ -83,6 +83,11 @@ async function prefilterNotes(
   return results;
 }
 
+// 缓存检索时固定向 LLM 请求较大数量，避免不同 topK 请求间缓存无法复用：
+// 首次 topK=3 时 LLM 只返回 3 条并缓存，后续 topK=5 时 cached.slice(0,5)
+// 仍只能拿到 3 条。这里固定请求 LIMIT_FOR_CACHE 条，缓存完整结果，读取时再 slice。
+const LIMIT_FOR_CACHE = 10;
+
 export async function retrieveNoteFragments(
   projectId: number,
   query: RetrievalQuery,
@@ -121,7 +126,7 @@ export async function retrieveNoteFragments(
 ${fragmentText}
 
 返回格式：{"selected":[{"noteId":1,"noteTitle":"标题","fragment":"原文片段","relevance":"相关性说明"}]}
-最多返回 ${topK} 条。`;
+最多返回 ${LIMIT_FOR_CACHE} 条。`;
 
   let fragments: RetrievedNoteFragment[];
   try {

@@ -15,6 +15,8 @@ export const ProjectListScreen: React.FC = () => {
   const [newName, setNewName] = useState('');
   const [newMode, setNewMode] = useState<ProjectMode>('outline');
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [exportingId, setExportingId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   const filteredProjects = searchQuery.trim()
@@ -49,6 +51,9 @@ export const ProjectListScreen: React.FC = () => {
   };
 
   const exportProject = async (project: Project, type: 'md' | 'txt' | 'json') => {
+    // 防重复点击：同一项目导出进行中时拒绝再次触发
+    if (exportingId === project.id) return;
+    setExportingId(project.id);
     try {
       const path =
         type === 'md'
@@ -59,6 +64,8 @@ export const ProjectListScreen: React.FC = () => {
       Alert.alert('导出成功', path);
     } catch (error: any) {
       Alert.alert('导出失败', error.message);
+    } finally {
+      setExportingId(null);
     }
   };
 
@@ -72,6 +79,8 @@ export const ProjectListScreen: React.FC = () => {
   };
 
   const handleImport = async () => {
+    if (importing) return;
+    setImporting(true);
     try {
       const result = await pickAndPreviewProjectPackage();
       if (!result) return;
@@ -99,6 +108,8 @@ export const ProjectListScreen: React.FC = () => {
       );
     } catch (error: any) {
       Alert.alert('导入失败', error?.message || '无法读取项目文件。');
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -131,7 +142,7 @@ export const ProjectListScreen: React.FC = () => {
     <Screen>
       <Header title="小说项目" subtitle="选择一个项目后进入写作、资料和导出流程" action={
         <View style={styles.headerActions}>
-          <Button label="导入" icon={Upload} variant="ghost" onPress={handleImport} compact />
+          <Button label="导入" icon={Upload} variant="ghost" onPress={handleImport} disabled={importing} compact />
           <Button label="新建" icon={Plus} onPress={() => setShowNewModal(true)} compact />
         </View>
       } />
