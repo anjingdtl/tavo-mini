@@ -33,7 +33,7 @@ class PipelineForegroundService : Service() {
 
   override fun onCreate() {
     super.onCreate()
-    ensureChannels()
+    ensureNotificationChannels(this)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -61,30 +61,6 @@ class PipelineForegroundService : Service() {
       startForeground(ONGOING_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     } else {
       startForeground(ONGOING_NOTIFICATION_ID, notification)
-    }
-  }
-
-  private fun ensureChannels() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-      // 运行中常驻通知：低重要性，无声
-      val ongoing = NotificationChannel(
-        CHANNEL_ONGOING,
-        "写作运行状态",
-        NotificationManager.IMPORTANCE_LOW
-      ).apply {
-        description = "显示当前流水线写作进度"
-        setShowBadge(false)
-      }
-      // 完成通知：默认重要性，可响
-      val done = NotificationChannel(
-        CHANNEL_DONE,
-        "写作完成通知",
-        NotificationManager.IMPORTANCE_DEFAULT
-      ).apply {
-        description = "流水线完成、失败或取消时通知"
-      }
-      nm.createNotificationChannels(listOf(ongoing, done))
     }
   }
 
@@ -126,5 +102,34 @@ class PipelineForegroundService : Service() {
     private const val CHANNEL_DONE = "pipeline_done"
     private const val WAKE_LOCK_TAG = "shinewriter:pipeline"
     private const val WAKE_LOCK_TIMEOUT_MS = 30 * 60 * 1000L // 30 分钟上限
+
+    /**
+     * 确保通知 channel 已创建。
+     * Service onCreate 和 Module postDoneNotification 都会调用，
+     * 保证无论 Service 是否启动过，完成通知 channel 都存在（Android 8.0+ 否则静默丢弃通知）。
+     */
+    fun ensureNotificationChannels(context: Context) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // 运行中常驻通知：低重要性，无声
+        val ongoing = NotificationChannel(
+          CHANNEL_ONGOING,
+          "写作运行状态",
+          NotificationManager.IMPORTANCE_LOW
+        ).apply {
+          description = "显示当前流水线写作进度"
+          setShowBadge(false)
+        }
+        // 完成通知：默认重要性，可响
+        val done = NotificationChannel(
+          CHANNEL_DONE,
+          "写作完成通知",
+          NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+          description = "流水线完成、失败或取消时通知"
+        }
+        nm.createNotificationChannels(listOf(ongoing, done))
+      }
+    }
   }
 }
