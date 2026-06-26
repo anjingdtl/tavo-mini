@@ -152,7 +152,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   resolveTask: (taskId, action) => {
     set((state) => {
       const tasks = state.tasks.map((t) =>
-        t.id === taskId ? { ...t, resolvedAt: Date.now(), updatedAt: Date.now() } : t
+        t.id === taskId ? { ...t, resolvedAt: Date.now(), resolvedAction: action, updatedAt: Date.now() } : t
       );
       const task = tasks.find((t) => t.id === taskId);
       if (task) {

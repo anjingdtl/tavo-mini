@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AppState, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ArrowUp, Bot, Eye, FileText, Focus, History, Inbox, Square, Trash2, Volume2 } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import Toast from 'react-native-toast-message';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { cancelPipeline, runChapterPipeline } from '../services/pipelineRunner';
 import { suppressGlobalPipelinePrompt } from '../navigation/pipelinePromptSuppression';
@@ -197,12 +198,21 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
       if (!autoSaveRef.current.pending()) return;
       // Defer flush then resume navigation. We do not surface a modal here
-      // (the hardware back button has no UI to host one reliably); a failed
-      // flush is swallowed so the user is never trapped on the screen.
+      // (the hardware back button has no UI to host one reliably). flush 失败
+      // 时不能继续离开，否则会静默丢失未保存内容；改为只在成功时 dispatch。
       e.preventDefault();
-      autoSaveRef.current.flush().catch(() => {}).finally(() => {
-        navigation.dispatch(e.data.action);
-      });
+      autoSaveRef.current.flush()
+        .then(() => {
+          navigation.dispatch(e.data.action);
+        })
+        .catch(() => {
+          setSaveStatus('failed');
+          Toast.show({
+            type: 'error',
+            text1: '保存失败',
+            text2: '请手动复制未保存内容',
+          });
+        });
     });
     return unsubscribe;
   }, [navigation]);
@@ -245,6 +255,9 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     if (!chapter || finalizing) return;
     setFinalizing(true);
     try {
+      // 先 flush 自动保存队列中尚未落盘的编辑，避免后续 loadChapter 用 DB
+      // 旧值覆盖内存最新值（pending 的 title/synopsis/content 会丢失）。
+      await autoSaveRef.current?.flush();
       await db.updateChapter(chapter.id, {
         title: chapter.title,
         synopsis: chapter.synopsis,
