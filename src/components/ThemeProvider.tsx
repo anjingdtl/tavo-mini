@@ -9,10 +9,13 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const barStyle = theme.mode === 'dark' ? 'light-content' : 'dark-content';
 
   useEffect(() => {
+    // 8.18 修复：db.getSetting 无 .catch，失败时 unhandled rejection
     db.getSetting('theme_mode').then((value) => {
       if (value === 'light' || value === 'dark' || value === 'eyecare') {
         setMode(value as ThemeMode);
       }
+    }).catch((error) => {
+      console.warn('[ThemeProvider] 读取主题模式失败:', error);
     });
   }, [setMode]);
 
