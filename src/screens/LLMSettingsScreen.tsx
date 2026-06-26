@@ -100,8 +100,13 @@ export const LLMSettingsScreen: React.FC = () => {
       Alert.alert('请先保存', '新配置保存后才能设为当前启用。');
       return;
     }
-    await setActiveLLMConfig(draft.id);
-    Toast.show({ type: 'success', text1: '已切换当前 LLM 配置' });
+    // Phase9-BUG#17: 包裹 try-catch，失败时不显示"已切换"成功 Toast 误导用户
+    try {
+      await setActiveLLMConfig(draft.id);
+      Toast.show({ type: 'success', text1: '已切换当前 LLM 配置' });
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   const remove = () => {
@@ -118,9 +123,14 @@ export const LLMSettingsScreen: React.FC = () => {
       {
         text: '删除',
         style: 'destructive',
+        // Phase9-BUG#17: 包裹 try-catch，失败时不显示"已删除"成功 Toast
         onPress: async () => {
-          await deleteLLMConfig(draft.id);
-          Toast.show({ type: 'success', text1: 'LLM 配置已删除' });
+          try {
+            await deleteLLMConfig(draft.id);
+            Toast.show({ type: 'success', text1: 'LLM 配置已删除' });
+          } catch (e: any) {
+            Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+          }
         },
       },
     ]);

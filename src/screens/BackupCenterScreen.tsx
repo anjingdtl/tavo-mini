@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import {
@@ -50,9 +51,12 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
 
   const load = useCallback(async () => {
     setLoading(true);
+    // Phase9-BUG#16: 原 try-finally 缺少 catch，补 catch + Toast
     try {
       const list = await listBackups();
       setBackups(list);
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
     } finally {
       setLoading(false);
     }

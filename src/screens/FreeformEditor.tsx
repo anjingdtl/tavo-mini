@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Bot, GitBranch, History, Plus, Trash2 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
+import Toast from 'react-native-toast-message';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { runFreeformPipeline } from '../services/pipelineRunner';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
@@ -47,12 +48,17 @@ export const FreeformEditor: React.FC = () => {
 
   const loadData = useCallback(async () => {
     if (!currentProject) return;
-    const [nextFragments, content] = await Promise.all([
-      db.getFragmentsByProject(currentProject.id),
-      db.getFreeformDocument(currentProject.id),
-    ]);
-    setFragments(nextFragments);
-    setDocumentText(content);
+    // Phase9-BUG#5: 包裹 try-catch + Toast，避免加载失败时片段和正文都不显示
+    try {
+      const [nextFragments, content] = await Promise.all([
+        db.getFragmentsByProject(currentProject.id),
+        db.getFreeformDocument(currentProject.id),
+      ]);
+      setFragments(nextFragments);
+      setDocumentText(content);
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   }, [currentProject]);
 
   useEffect(() => {
@@ -87,11 +93,16 @@ export const FreeformEditor: React.FC = () => {
 
   const addFragment = async () => {
     if (!currentProject || !text.trim()) return;
-    await db.createFragment(currentProject.id, type, text.trim(), fragments.length);
-    setText('');
-    setType('user');
-    setShowModal(false);
-    await loadData();
+    // Phase9-BUG#6: 包裹 try-catch，失败时不 clear 输入，让用户能重试
+    try {
+      await db.createFragment(currentProject.id, type, text.trim(), fragments.length);
+      setText('');
+      setType('user');
+      setShowModal(false);
+      await loadData();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   const appendFragment = (fragment: Fragment) => {
@@ -171,8 +182,13 @@ export const FreeformEditor: React.FC = () => {
         text: '删除',
         style: 'destructive',
         onPress: async () => {
-          await db.deleteFragment(fragment.id);
-          await loadData();
+          // Phase9-BUG#7: 包裹 try-catch + Toast，删除失败时给用户反馈
+          try {
+            await db.deleteFragment(fragment.id);
+            await loadData();
+          } catch (e: any) {
+            Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+          }
         },
       },
     ]);

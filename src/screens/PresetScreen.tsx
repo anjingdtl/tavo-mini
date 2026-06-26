@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { FlatList, StyleSheet, Text } from 'react-native';
+import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Field, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
@@ -24,9 +25,14 @@ export const PresetScreen: React.FC<Props> = ({ projectId }) => {
 
   const add = async () => {
     if (!name.trim()) return;
-    await db.createPreset(projectId, name.trim());
-    setName('');
-    await load();
+    // Phase9-BUG#9: 包裹 try-catch，失败时不 clear 名称输入，让用户能重试
+    try {
+      await db.createPreset(projectId, name.trim());
+      setName('');
+      await load();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   return (

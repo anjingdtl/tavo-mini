@@ -34,8 +34,13 @@ export const ContextConfigScreen: React.FC = () => {
   }, [contextConfig]);
 
   const save = async () => {
-    await setContextConfig(draft);
-    Toast.show({ type: 'success', text1: '上下文配置已保存' });
+    // Phase9-BUG#13: 包裹 try-catch，失败时不显示成功 Toast 误导用户
+    try {
+      await setContextConfig(draft);
+      Toast.show({ type: 'success', text1: '上下文配置已保存' });
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
   };
 
   const handleReset = () => {
