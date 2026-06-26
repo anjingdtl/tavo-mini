@@ -113,6 +113,9 @@ jest.mock('react-native', () => {
     getVoices: jest.fn(() =>
       Promise.resolve([{ key: 'zh-cn-x', name: '中文女声', locale: 'zh-CN' }]),
     ),
+    openTtsSettings: jest.fn(() => Promise.resolve(true)),
+    addListener: jest.fn(),
+    removeListeners: jest.fn(),
   };
   RN.NativeModules.PipelineForeground = {
     start: jest.fn(() => Promise.resolve()),
