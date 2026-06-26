@@ -3,7 +3,6 @@ package com.shinewriter
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -211,8 +210,9 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
   @ReactMethod
   fun openTtsSettings(promise: Promise) {
     try {
-      val intent = Intent(Settings.ACTION_TEXT_TO_SPEECH_SETTINGS)
-      intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+      // android.provider.Settings 未提供 TTS 设置常量，使用标准 action 字符串打开系统 TTS 设置页
+      val intent = Intent("com.android.settings.TTS_SETTINGS")
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       reactApplicationContext.startActivity(intent)
       promise.resolve(true)
     } catch (e: Exception) {
