@@ -44,7 +44,10 @@ function tokenize(text: string): string[] {
 }
 
 function extractContextWindow(content: string, keyword: string, radius = 500): string {
-  const idx = content.indexOf(keyword);
+  // 大小写敏感修复：query 与 note 内容大小写不一致时（如英文专有名词）漏匹配
+  const lowerContent = content.toLowerCase();
+  const lowerKeyword = keyword.toLowerCase();
+  const idx = lowerContent.indexOf(lowerKeyword);
   if (idx === -1) return '';
   const start = Math.max(0, idx - radius);
   const end = Math.min(content.length, idx + keyword.length + radius);
