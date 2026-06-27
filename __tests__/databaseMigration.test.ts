@@ -124,10 +124,10 @@ function createLegacySQLiteMock() {
       return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
     }
 
-    if (/^UPDATE llm_config SET name = \?, base_url = \?, api_key = \?, model_name = \?, is_active = \? WHERE id = \?/i.test(normalized)) {
+    if (/^UPDATE llm_config SET name = \?, base_url = \?, api_key = \?, model_name = \? WHERE id = \?/i.test(normalized)) {
       rows.set('llm_config', (rows.get('llm_config') || []).map((row) => (
-        row.id === params[5]
-          ? { ...row, name: params[0], base_url: params[1], api_key: params[2], model_name: params[3], is_active: params[4] }
+        row.id === params[4]
+          ? { ...row, name: params[0], base_url: params[1], api_key: params[2], model_name: params[3] }
           : row
       )));
       return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
