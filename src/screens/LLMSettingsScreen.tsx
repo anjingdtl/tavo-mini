@@ -76,6 +76,12 @@ export const LLMSettingsScreen: React.FC = () => {
     try {
       const id = await saveLLMConfig(draft);
       setSelectedId(id);
+      // V2.2.1 双保险：立即更新 draft.id，不依赖 useEffect 的 selectedId !== 0 判断
+      // （selectedId=0 时 useEffect 会提前 return，导致 draft.id 永远停留在 0）
+      setDraft((current) => ({ ...current, id }));
+      // 修复#B: 保存成功后重置 isEditingRef，让 useEffect 能从 store 同步最新 draft
+      // （包括 setActiveLLMConfig 后变化的 is_active 字段），避免 draft.is_active 过时
+      isEditingRef.current = false;
       Toast.show({ type: 'success', text1: 'LLM 配置已保存' });
     } catch (error: any) {
       Alert.alert('保存失败', error?.message || '配置写入失败，请重试。');
@@ -90,6 +96,8 @@ export const LLMSettingsScreen: React.FC = () => {
     try {
       const id = await saveLLMConfig(draft);
       setSelectedId(id);
+      setDraft((current) => ({ ...current, id }));
+      isEditingRef.current = false;
       const message = await testLLMConnection(draft.base_url, draft.api_key, draft.model_name);
       Alert.alert('连接成功', message.slice(0, 120));
     } catch (error: any) {
@@ -107,6 +115,9 @@ export const LLMSettingsScreen: React.FC = () => {
     // Phase9-BUG#17: 包裹 try-catch，失败时不显示"已切换"成功 Toast 误导用户
     try {
       await setActiveLLMConfig(draft.id);
+      // 修复#B: 切换后重置 isEditingRef，让 useEffect 把 draft.is_active 同步为 1，
+      // 否则 draft 还停留在 is_active=0 的过时状态，"设为当前"按钮 disabled 条件错乱
+      isEditingRef.current = false;
       Toast.show({ type: 'success', text1: '已切换当前 LLM 配置' });
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });

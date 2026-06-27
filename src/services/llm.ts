@@ -183,6 +183,9 @@ export async function callLLMResult(
   const scenario = config?.scenario || 'chat';
   const modelName = llmConfig.model_name;
   const projectId = config?.projectId;
+  // V2.2.0 (schema 10): 用量日志按配置区分，多 LLM 切换可追溯来源
+  const llmConfigId = llmConfig.id;
+  const llmConfigName = llmConfig.name;
 
   try {
     const response = await limitLLMRequest(() =>
@@ -217,7 +220,17 @@ export async function callLLMResult(
     const outputTokens = Number(usage.completion_tokens ?? estimateTokens(text || ''));
     const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens);
 
-    await safeLogUsage({ scenario, inputTokens, outputTokens, totalTokens, status: 'success', modelName, projectId });
+    await safeLogUsage({
+      scenario,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      status: 'success',
+      modelName,
+      projectId,
+      llmConfigId,
+      llmConfigName,
+    });
 
     return { text, inputTokens, outputTokens, totalTokens, rawUsage: data.usage };
   } catch (error: any) {
@@ -241,6 +254,8 @@ export async function callLLMResult(
         errorCode: timeoutError.code,
         modelName,
         projectId,
+        llmConfigId,
+        llmConfigName,
       });
       throw timeoutError;
     }
@@ -254,6 +269,8 @@ export async function callLLMResult(
       errorCode: String(error?.code || error?.status || 'unknown'),
       modelName,
       projectId,
+      llmConfigId,
+      llmConfigName,
     });
     throw error;
   } finally {
@@ -274,6 +291,9 @@ async function safeLogUsage(fields: {
   errorCode?: string;
   modelName?: string;
   projectId?: number;
+  // V2.2.0 (schema 10): 按配置区分用量，便于多 LLM 场景下识别来源
+  llmConfigId?: number;
+  llmConfigName?: string;
 }) {
   try {
     await db.logLLMUsage(fields);
