@@ -8,6 +8,9 @@ test.each([
   ['https://api.deepseek.com', 'https://api.deepseek.com/chat/completions'],
   ['https://api.deepseek.com/', 'https://api.deepseek.com/chat/completions'],
   ['https://api.deepseek.com/v1', 'https://api.deepseek.com/v1/chat/completions'],
+  // 智谱 BigModel 用 /v4 版本段，不应再追加 /v1（否则 404）
+  ['https://open.bigmodel.cn/api/paas/v4', 'https://open.bigmodel.cn/api/paas/v4/chat/completions'],
+  ['https://open.bigmodel.cn/api/coding/paas/v4', 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'],
 ])('normalizes OpenAI-compatible endpoint %s', (input, expected) => {
   expect(normalizeChatCompletionUrl(input)).toBe(expected);
 });

@@ -68,7 +68,9 @@ export function normalizeChatCompletionUrl(baseUrl: string): string {
   if (url.endsWith('/chat/completions/')) return url.slice(0, -1);
   url = url.replace(/\/+$/, '');
   if (/^https?:\/\/api\.deepseek\.com$/i.test(url)) return `${url}/chat/completions`;
-  if (url.endsWith('/v1')) return `${url}/chat/completions`;
+  // 识别任意版本号段（/v1、/v2、/v4 等）：智谱 BigModel 用 /v4，只追加 /chat/completions，
+  // 不能强塞 /v1 否则会拼成 /v4/v1/chat/completions 触发 404
+  if (/\/v\d+$/.test(url)) return `${url}/chat/completions`;
   return `${url}/v1/chat/completions`;
 }
 
