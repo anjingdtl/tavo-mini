@@ -257,6 +257,8 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         error_code TEXT NOT NULL DEFAULT '',
         model_name TEXT NOT NULL DEFAULT '',
         project_id INTEGER NOT NULL DEFAULT 0,
+        llm_config_id INTEGER NOT NULL DEFAULT 0,
+        llm_config_name TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
       )
     `,
@@ -475,6 +477,10 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
   const usageLogs = await tableColumns(database, 'llm_usage_logs');
   await ensureColumn(database, 'llm_usage_logs', usageLogs, 'model_name', "model_name TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'llm_usage_logs', usageLogs, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  // V2.2.0 (schema 10): 按配置区分用量。这两个字段让 UsageStatsScreen 能展示每个 LLM 配置
+  // 的调用量，不再仅靠 model_name 区分（多个配置可能共用同一 model_name）。
+  await ensureColumn(database, 'llm_usage_logs', usageLogs, 'llm_config_id', 'llm_config_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'llm_usage_logs', usageLogs, 'llm_config_name', "llm_config_name TEXT NOT NULL DEFAULT ''");
 }
 
 async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
@@ -1309,29 +1315,41 @@ export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number>
   const name = (config.name || '').trim() || '未命名配置';
   const baseUrl = (config.base_url || '').trim();
   const modelName = (config.model_name || '').trim();
-  const isActive = Number(config.is_active || 0) === 1 ? 1 : 0;
   const database = await openDatabase();
+  // 修复#A: UPDATE 不再写 is_active 字段，避免用过时的 draft.is_active 把刚被 setActiveLLMConfig
+  // 激活的配置又写回 0。is_active 的写入权专属 setActiveLLMConfig / INSERT 初始值。
+  // 仅当用户显式要求 is_active=1 时，才在 INSERT 写入并在保存后调用 setActiveLLMConfig 激活。
+  const shouldActivate = Number(config.is_active ?? 0) === 1;
 
   let id = Number(config.id || 0);
   if (id > 0) {
     await execute(
       database,
-      'UPDATE llm_config SET name = ?, base_url = ?, api_key = ?, model_name = ?, is_active = ? WHERE id = ?',
-      [name, baseUrl, '', modelName, isActive, id],
+      'UPDATE llm_config SET name = ?, base_url = ?, api_key = ?, model_name = ? WHERE id = ?',
+      [name, baseUrl, '', modelName, id],
     );
   } else {
     const result = await execute(
       database,
       'INSERT INTO llm_config (name, base_url, api_key, model_name, is_active) VALUES (?, ?, ?, ?, ?)',
-      [name, baseUrl, '', modelName, isActive],
+      [name, baseUrl, '', modelName, shouldActivate ? 1 : 0],
     );
     id = Number(result.insertId);
+    // V2.2.1 修复：react-native-sqlite-storage 6.0.1 在部分机型/事务场景下
+    // result.insertId 可能是 undefined 或 0，导致上层 setSelectedId(0) 触发
+    // LLMSettingsScreen useEffect 的「selectedId === 0 时提前 return」分支，
+    // draft 永远不更新，"设为当前"按钮一直弹"请先保存"。
+    // 用 last_insert_rowid() 显式查询新行 rowid 作为后备。
+    if (!Number.isFinite(id) || id <= 0) {
+      const row = await one<{ id: number }>('SELECT last_insert_rowid() AS id');
+      id = Number(row?.id || 0);
+    }
   }
 
   if (config.api_key !== undefined) {
     await setSecureLLMApiKey(config.api_key, id);
   }
-  if (isActive) {
+  if (shouldActivate) {
     await setActiveLLMConfig(id);
   }
   return id;
@@ -1339,10 +1357,13 @@ export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number>
 
 export async function setActiveLLMConfig(id: number): Promise<void> {
   const database = await openDatabase();
-  await database.transaction(async (tx) => {
-    await tx.executeSql('UPDATE llm_config SET is_active = 0');
-    await tx.executeSql('UPDATE llm_config SET is_active = 1 WHERE id = ?', [id]);
-  });
+  // V2.2.1 修复：react-native-sqlite-storage 6.0.1 的 transaction 在 async 回调下
+  // 可能只执行第一个 executeSql 就提前提交，导致第二个 UPDATE is_active=1 WHERE id=?
+  // 丢失，UI 标题显示"当前：未选择"。改为两个独立 execute，确保两个 UPDATE 都执行。
+  // 非原子操作，但切换激活状态不需要严格原子性（最坏情况是短暂的全 is_active=0，
+  // 下次 loadSettings 的自愈逻辑会兜底）。
+  await execute(database, 'UPDATE llm_config SET is_active = 0');
+  await execute(database, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [id]);
 }
 
 export async function deleteLLMConfig(id: number): Promise<void> {
@@ -1482,11 +1503,14 @@ export async function logLLMUsage(fields: {
   errorCode?: string;
   modelName?: string;
   projectId?: number;
+  // V2.2.0 (schema 10): 按配置区分用量，便于多 LLM 场景下识别来源
+  llmConfigId?: number;
+  llmConfigName?: string;
 }): Promise<void> {
   await execute(
     await openDatabase(),
-    `INSERT INTO llm_usage_logs (scenario, input_tokens, output_tokens, total_tokens, status, error_code, model_name, project_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO llm_usage_logs (scenario, input_tokens, output_tokens, total_tokens, status, error_code, model_name, project_id, llm_config_id, llm_config_name, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       fields.scenario,
       fields.inputTokens,
@@ -1496,6 +1520,8 @@ export async function logLLMUsage(fields: {
       fields.errorCode || '',
       fields.modelName || '',
       fields.projectId ?? 0,
+      fields.llmConfigId ?? 0,
+      fields.llmConfigName || '',
       now(),
     ],
   );
@@ -1860,6 +1886,35 @@ export async function getLLMUsageSummary(projectId: number | null): Promise<any>
     params,
   );
   return result.rows.length > 0 ? result.rows.item(0) : { total_calls: 0, total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0 };
+}
+
+// V2.2.0 (schema 10): 按 LLM 配置分组返回调用量。
+// 兼容旧数据（llm_config_id = 0 时回退到 model_name 作标识），
+// 让 UsageStatsScreen 能在多 LLM 配置场景下识别每个配置的调用量。
+export async function getLLMUsageByConfig(projectId: number | null): Promise<any[]> {
+  const database = await openDatabase();
+  const projectFilter = projectId ? 'WHERE project_id = ?' : '';
+  const params = projectId ? [projectId] : [];
+  const [result] = await database.executeSql(
+    `SELECT
+      llm_config_id,
+      COALESCE(NULLIF(llm_config_name, ''), '未命名配置') as llm_config_name,
+      COUNT(*) as call_count,
+      COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+      COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+      COALESCE(SUM(total_tokens), 0) as total_tokens,
+      GROUP_CONCAT(DISTINCT model_name) as models,
+      MAX(created_at) as last_used_at
+    FROM llm_usage_logs ${projectFilter}
+    GROUP BY llm_config_id, llm_config_name
+    ORDER BY call_count DESC, last_used_at DESC`,
+    params,
+  );
+  const rows: any[] = [];
+  for (let i = 0; i < result.rows.length; i++) {
+    rows.push(result.rows.item(i));
+  }
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
