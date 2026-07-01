@@ -368,6 +368,28 @@ test('V2.2.0: 流式抛 stream_not_supported 自动回退到非流式，仍完�
   expect(mockStore.completeTask).toHaveBeenCalledWith('task-stream-fallback', 'fallback-final');
 });
 
+test('V2.2.0: 流式抛 no_body（RN fetch 无 ReadableStream）自动回退到非流式', async () => {
+  // RN 默认 fetch polyfill 不暴露 response.body.getReader()，即使 provider 返回 SSE
+  // 也无法流式读取，callLLMStream 会抛 code='no_body'，应回退到非流式
+  mockCallLLMStream.mockImplementationOnce(async (_m: any, _max: any, _cfg: any, handlers: any) => {
+    const err: any = new Error('No readable body in stream response');
+    err.code = 'no_body';
+    handlers.onError(err);
+    throw err;
+  });
+  mockCallLLMResult
+    .mockResolvedValueOnce({ text: 'fallback-draft', inputTokens: 1, outputTokens: 2, totalTokens: 3 }) // draft (回退)
+    .mockResolvedValueOnce({ text: 'review-out', inputTokens: 1, outputTokens: 1, totalTokens: 2 }) // review
+    .mockResolvedValueOnce({ text: 'fallback-final', inputTokens: 1, outputTokens: 2, totalTokens: 3 }); // proof
+
+  const { runChapterPipeline } = require('../src/services/pipelineRunner');
+  await runChapterPipeline('task-stream-nobody', chapter); // 默认 useDraftStream=true
+
+  expect(mockCallLLMStream).toHaveBeenCalledTimes(1);
+  expect(mockCallLLMResult).toHaveBeenCalledTimes(3); // draft(回退) + review + proof
+  expect(mockStore.completeTask).toHaveBeenCalledWith('task-stream-nobody', 'fallback-final');
+});
+
 test('V2.2.0: 流式用户取消触发 cancelTask 而非 failTask', async () => {
   mockCallLLMStream.mockImplementationOnce(async (_m: any, _max: any, _cfg: any, handlers: any) => {
     const err: any = new Error('已取消');
