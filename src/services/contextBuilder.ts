@@ -49,12 +49,33 @@ export async function buildContext(
   const trace: ContextTraceItem[] = [];
   const chapters = await db.getChaptersByProject(projectId);
   const previousContent = buildPreviousContentText(currentChapter, config, chapters);
-  const memoryText = buildMemoryContext(
-    chapters.filter((chapter) => chapter.position < currentChapter.position),
-    currentChapter,
-    config.memoryTopK ?? 10,
-    config.summaryBudgetTokens ?? 20000,
-  );
+  const previousChapters = chapters.filter((chapter) => chapter.position < currentChapter.position);
+  // V2.2.0：IDF 缓存——同项目 memory_summary 不变时复用，避免每次 tokenize+buildIdf
+  let memoryText: string;
+  try {
+    const idfCache = await import('../utils/idfCache');
+    const signature = idfCache.computeMemorySummarySignature(previousChapters);
+    let idf = idfCache.getCachedIdf(projectId, signature);
+    if (!idf) {
+      idf = buildIdf(previousChapters.map((c) => String((c as any).memory_summary || '')).filter(Boolean));
+      idfCache.setCachedIdf(projectId, signature, idf);
+    }
+    memoryText = buildMemoryContextWithIdf(
+      previousChapters,
+      currentChapter,
+      idf,
+      config.memoryTopK ?? 10,
+      config.summaryBudgetTokens ?? 20000,
+    );
+  } catch {
+    // idfCache 不可用或失败时回退原始 buildMemoryContext（O(N²) 但保证正确性）
+    memoryText = buildMemoryContext(
+      previousChapters,
+      currentChapter,
+      config.memoryTopK ?? 10,
+      config.summaryBudgetTokens ?? 20000,
+    );
+  }
   const worldbookScanContent = selectPreviousChapters(
     currentChapter,
     { strategy: 'sliding', recentChapterCount: config.worldbookScanDepth ?? 4 },
@@ -405,8 +426,21 @@ async function buildNoteContextOriginal(projectId: number, budget: number): Prom
   const items: ContextTraceItem[] = [];
   let remaining = budget;
 
+  // V2.2.0：bulk fetch 一次拿回所有笔记内容，避免对每条 getNoteContentById 的 N 次 round-trip。
+  // 单条实现里每条笔记还会按 120k chunk 分块拉多次，所以 60 条笔记 = 上百次往返；
+  // 现在统一 1 次往返 + 仅对超大笔记追加 chunk。
+  let contents: Record<number, string> = {};
+  if (notes.length > 0) {
+    try {
+      contents = await db.getNotesContentByIds(notes.map((n) => Number(n.id)));
+    } catch {
+      // bulk 失败时回退单条，最坏情况是性能回退到老路径
+      contents = {};
+    }
+  }
+
   for (const note of notes) {
-    const content = await db.getNoteContentById(note.id);
+    const content = contents[Number(note.id)] ?? '';
     const noteTitle = note.title || '无标题';
     const text = `笔记「${noteTitle}」：${content}`;
     const noteBudget = Math.min(remaining, note.max_tokens ?? 30000);
@@ -434,23 +468,22 @@ async function buildNoteContextOriginal(projectId: number, budget: number): Prom
   }
 
   // Mark notes that weren't processed due to budget as clipped
+  const processedIds = new Set(items.map((it) => it.sourceId));
   for (const note of notes) {
-    const existingItem = items.find(it => it.sourceId === Number(note.id));
-    if (!existingItem) {
-      const content = await db.getNoteContentById(note.id);
-      const noteTitle = note.title || '无标题';
-      const text = `笔记「${noteTitle}」：${content}`;
-      items.push({
-        kind: 'note',
-        sourceId: Number(note.id) || null,
-        title: noteTitle,
-        reason: `项目笔记：${noteTitle}`,
-        estimatedTokens: estimateTokens(text),
-        included: false,
-        clipped: true,
-        preview: text.slice(0, 500),
-      });
-    }
+    if (processedIds.has(Number(note.id))) continue;
+    const content = contents[Number(note.id)] ?? '';
+    const noteTitle = note.title || '无标题';
+    const text = `笔记「${noteTitle}」：${content}`;
+    items.push({
+      kind: 'note',
+      sourceId: Number(note.id) || null,
+      title: noteTitle,
+      reason: `项目笔记：${noteTitle}`,
+      estimatedTokens: estimateTokens(text),
+      included: false,
+      clipped: true,
+      preview: text.slice(0, 500),
+    });
   }
 
   return { text: parts.join('\n\n'), items };
@@ -655,6 +688,37 @@ export function buildMemoryContext(
   if (docs.length === 0 || topK <= 0 || budgetTokens <= 0) return '';
 
   const idf = buildIdf(docs.map((doc) => doc.text));
+  return assembleMemoryContextFromIdf(docs, currentChapter, idf, topK, budgetTokens);
+}
+
+/**
+ * V2.2.0：用预先计算/缓存好的 IDF 直接召回，避免 O(N) tokenize+buildIdf。
+ */
+export function buildMemoryContextWithIdf(
+  previousChapters: Chapter[],
+  currentChapter: Chapter,
+  idf: Map<string, number>,
+  topK: number,
+  budgetTokens: number,
+): string {
+  const docs = previousChapters
+    .map((chapter) => ({
+      chapter,
+      text: String((chapter as any).memory_summary || ''),
+    }))
+    .filter((item) => item.text.trim());
+
+  if (docs.length === 0 || topK <= 0 || budgetTokens <= 0 || idf.size === 0) return '';
+  return assembleMemoryContextFromIdf(docs, currentChapter, idf, topK, budgetTokens);
+}
+
+function assembleMemoryContextFromIdf(
+  docs: Array<{ chapter: Chapter; text: string }>,
+  currentChapter: Chapter,
+  idf: Map<string, number>,
+  topK: number,
+  budgetTokens: number,
+): string {
   const query = `${currentChapter.title}\n${currentChapter.synopsis}\n${currentChapter.content?.slice(0, 500) || ''}`;
   const queryVector = vectorize(query, idf);
   const scored = docs
@@ -674,7 +738,6 @@ export function buildMemoryContext(
     lines.push(clipped);
     remaining -= estimateTokens(clipped);
   }
-
   return lines.join('\n');
 }
 
