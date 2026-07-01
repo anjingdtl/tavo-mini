@@ -35,6 +35,7 @@ describe('audit regression fixes', () => {
       getCharactersByProject: jest.fn(async () => []),
       getWorldbookEntriesByProject: jest.fn(async () => []),
       getNotesByProject: jest.fn(async () => [{ id: 1, title: '时间线', content: '主角必须在雨夜抵达钟楼。' }]),
+      getNotesContentByIds: jest.fn(async () => ({ 1: '主角必须在雨夜抵达钟楼。' })),
       getNoteContentById: jest.fn(async () => '主角必须在雨夜抵达钟楼。'),
       getChaptersByProject: jest.fn(async () => []),
     }));
