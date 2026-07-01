@@ -4,10 +4,16 @@ import type { PipelineTask, PipelineStageResult, PipelineTaskStatus } from '../t
 
 interface PipelineTaskState {
   tasks: PipelineTask[];
+  /** V2.2.0：草稿阶段流式预览（按 taskId 索引）。完成或新草稿时会清空旧 task 的预览。 */
+  draftPreviews: Record<string, string>;
   _loaded: boolean;
   loadFromDB: () => Promise<void>;
   createTask: (targetType: 'chapter' | 'freeform', targetId: number) => string;
   updateTaskStage: (taskId: string, result: PipelineStageResult) => void;
+  /** V2.2.0：流式更新草稿预览。pipelineRunner 会按 200 字符/1.5s 节流，store 不再二次节流。 */
+  setDraftPreview: (taskId: string, text: string) => void;
+  /** V2.2.0：清空指定 task 的草稿预览（stage 结束或取消时调用）。 */
+  clearDraftPreview: (taskId: string) => void;
   setTaskStatus: (taskId: string, status: PipelineTaskStatus) => void;
   completeTask: (taskId: string, finalText: string) => void;
   failTask: (taskId: string, error: string) => void;
@@ -42,6 +48,7 @@ function persistTask(task: PipelineTask) {
 
 export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   tasks: [],
+  draftPreviews: {},
   _loaded: false,
 
   loadFromDB: async () => {
@@ -101,8 +108,26 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       );
       const task = tasks.find((t) => t.id === taskId);
       if (task) persistTask(task);
-      return { tasks };
+      // stage 完成（success/failed/skipped）后清空该 task 的流式预览，避免 UI 残留旧草稿
+      const shouldClearPreview =
+        result.stage === 'draft' && (result.status === 'success' || result.status === 'failed' || result.status === 'skipped');
+      const draftPreviews = shouldClearPreview
+        ? Object.fromEntries(Object.entries(state.draftPreviews).filter(([k]) => k !== taskId))
+        : state.draftPreviews;
+      return { tasks, draftPreviews };
     });
+  },
+
+  setDraftPreview: (taskId, text) => {
+    set((state) => ({
+      draftPreviews: { ...state.draftPreviews, [taskId]: text },
+    }));
+  },
+
+  clearDraftPreview: (taskId) => {
+    set((state) => ({
+      draftPreviews: Object.fromEntries(Object.entries(state.draftPreviews).filter(([k]) => k !== taskId)),
+    }));
   },
 
   setTaskStatus: (taskId, status) => {
