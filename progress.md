@@ -43,6 +43,21 @@
 
 ---
 
+## V2.2.x / 资料-笔记模式修复与稳健性加固
+
+修复"资料→笔记"页面里"禁用 / 仿写 / 资料库"模式选择不持久化的问题（用户反馈：切换便签后自动回退到"禁用"），并加固上下文注入和数据库解析的边界条件。
+
+- **mode 持久化**：移除 ResourceLibrary 的 self-test useEffect（之前会在 mount 时强制覆盖为 style/retrieval/none）；数据库读写分离，`setProjectNoteConfig` 改为只写用户传入的字段、保留其它字段（之前全字段重写会丢 mode）。
+- **saveProjectNoteConfig 入口统一**：`handleWeightChange` / `handleTopKChange` / `handleToggleNoteId` 三个 partial update 入口改为走统一的 `setProjectNoteConfig` + 当前 `noteMode`，避免写死 `mode:'style'` / `mode:'retrieval'` 把对方模式抹掉。
+- **safeJsonParse 健壮性**：`JSON.parse('null')` 会返回 null，原 `?? fallback` 捕获不到 null；改为显式判 `null/undefined` 后回退到 fallback，防止 `style_weights` / `enabled_note_ids` 字段污染 state 导致 `.length` on undefined 渲染崩溃。
+- **loadData 防御默认值**：`getProjectNoteConfig` 返回 null 或字段缺失时，mode / weights / topK / enabledNoteIds 各自回退到默认值，不再让缺失字段污染 useState。
+- **buildStyleContext 友好 trace**：所有笔记画像都解析失败时返回明确 "无画像可用，建议点击「重新分析风格」" 的提示项，避免空文本静默丢失。
+- **测试**：新增 `__tests__/userFlowNoteMode.test.ts`，覆盖 inner-tab 切换 / outer-tab 重入 / partial update 不丢 mode / null DB 字段防御 等场景。
+
+> 模拟器侧未能在 adb tap 上完成端到端重现（emulator-5554 的 input tap 在新架构 + react-native-screens 4.25 下路由不到目标 View），代码层修复以 jest 单测为验证依据。Debug + Release APK 均已构建到 `dist/apk/`。
+
+---
+
 ## 改造目标
 
 将 ShineWriter 从"能用"升级为"防丢、可恢复、可解释、适合长篇创作"的 Android 小说工作台，聚焦三大方向：
