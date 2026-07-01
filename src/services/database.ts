@@ -1995,7 +1995,12 @@ export interface ProjectNoteConfig {
 
 function safeJsonParse(text: string, fallback: any): any {
   try {
-    return JSON.parse(text) ?? fallback;
+    // ?? 只匹配 null/undefined，但 JSON.parse('null') 会返回 null 也会污染 state
+    // 改用 || 同时拦截 null 和空对象（空对象会导致后续 .length/.map 报错）
+    if (text == null || text === '') return fallback;
+    const parsed = JSON.parse(text);
+    if (parsed == null) return fallback;
+    return parsed;
   } catch {
     return fallback;
   }
