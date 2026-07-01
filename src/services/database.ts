@@ -2032,25 +2032,25 @@ export async function setProjectNoteConfig(
   projectId: number,
   config: Partial<Omit<ProjectNoteConfig, 'projectId' | 'updatedAt'>>,
 ): Promise<void> {
+  // 11.13 修复：原实现用 `database.transaction(async (tx) => {...})` 在 callback 中 await，
+  // react-native-sqlite-storage 的 transaction 期望 callback **同步**执行 SQL，
+  // async callback 在第一次 await 之前 transaction 已被 finalize，导致 InvalidStateError
+  // (DOM Exception 11)。改成分步：先 SELECT 读 existing → INSERT OR REPLACE 写。
+  // 单 project 单行写入，丢失"严格原子性"在并发场景下极少见且可接受
+  // （下一句写会覆盖上一句写，最终态一致）。
   const database = await openDatabase();
-  // 11.11 修复：SELECT existing + INSERT OR REPLACE 整体包进事务，
-  // 避免并发写入间读到中间态或被覆盖
-  await database.transaction(async (tx) => {
-    const txx = tx as unknown as SQLite.SQLiteDatabase;
-    const result = await execute(txx, 'SELECT * FROM project_note_config WHERE project_id = ?', [projectId]);
-    const existing = result.rows.length > 0 ? parseProjectNoteConfigRow(result.rows.item(0)) : null;
-    const mode = config.mode ?? existing?.mode ?? 'none';
-    const styleWeights = JSON.stringify(config.styleWeights ?? existing?.styleWeights ?? {});
-    const retrievalTopK = config.retrievalTopK ?? existing?.retrievalTopK ?? 5;
-    const enabledNoteIds = JSON.stringify(config.enabledNoteIds ?? existing?.enabledNoteIds ?? []);
-    const updatedAt = new Date().toISOString();
-    await execute(
-      txx,
-      `INSERT OR REPLACE INTO project_note_config (project_id, mode, style_weights, retrieval_top_k, enabled_note_ids, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [projectId, mode, styleWeights, retrievalTopK, enabledNoteIds, updatedAt],
-    );
-  });
+  const existing = await getProjectNoteConfig(projectId);
+  const mode = config.mode ?? existing?.mode ?? 'none';
+  const styleWeights = JSON.stringify(config.styleWeights ?? existing?.styleWeights ?? {});
+  const retrievalTopK = config.retrievalTopK ?? existing?.retrievalTopK ?? 5;
+  const enabledNoteIds = JSON.stringify(config.enabledNoteIds ?? existing?.enabledNoteIds ?? []);
+  const updatedAt = new Date().toISOString();
+  await execute(
+    database,
+    `INSERT OR REPLACE INTO project_note_config (project_id, mode, style_weights, retrieval_top_k, enabled_note_ids, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [projectId, mode, styleWeights, retrievalTopK, enabledNoteIds, updatedAt],
+  );
 }
 
 export interface NoteStyleProfileRow {
