@@ -426,54 +426,69 @@ async function runChapterPipelineInner(
   if (config.pipelineMode === 'twoStage') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
-    PipelineForeground.updateProgress(taskId, '点评中', pct(1));
-
-    const reviewStart = Date.now();
-    let reviewText = '';
-    try {
-      const reviewResult = await callLLMResult(
-        buildReviewMessages(draftText),
-        config.reviewMaxTokens,
-        buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
-        abortSignal,
-      );
-      reviewText = reviewResult.text || '';
-      store.updateTaskStage(taskId, {
-        stage: 'review',
-        text: reviewText,
-        status: 'success',
-        tokens: {
-          input: reviewResult.inputTokens,
-          output: reviewResult.outputTokens,
-          total: reviewResult.totalTokens,
-        },
-        durationMs: Date.now() - reviewStart,
-      });
-    } catch (error: any) {
-      store.updateTaskStage(taskId, {
-        stage: 'review',
-        text: '',
-        status: 'failed',
-        error: error.message || '审阅/评估失败',
-        durationMs: Date.now() - reviewStart,
-      });
-    }
+    onStageUpdate?.({ stage: 'review', label: '点评中...（与打磨并行）', startedAt: Date.now() });
+    PipelineForeground.updateProgress(taskId, '点评与打磨中', pct(1));
 
     markSkipped(taskId, 'factCheck', '仅评估模式已跳过事实核查');
-    if (checkCancelled(taskId)) return;
-    onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
-    PipelineForeground.updateProgress(taskId, '终审打磨中', pct(2));
-    const finalText = await runProofStage({
-      taskId,
-      draftText,
-      reviewText,
-      factCheckText: '',
-      maxTokens: config.proofMaxTokens,
-      proofPreset,
-      projectId: chapter.project_id,
-      abortSignal,
-    });
+
+    // V2.2.0：review 和 proof 并行启动，节省一个阶段的延迟
+    // proof 看到的是纯 draft；如果 review 完成后 proof 也完成，不再二次调用
+    const reviewStart = Date.now();
+    const reviewPromise = (async () => {
+      try {
+        const reviewResult = await callLLMResult(
+          buildReviewMessages(draftText),
+          config.reviewMaxTokens,
+          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+          abortSignal,
+        );
+        const reviewText = reviewResult.text || '';
+        store.updateTaskStage(taskId, {
+          stage: 'review',
+          text: reviewText,
+          status: 'success',
+          tokens: {
+            input: reviewResult.inputTokens,
+            output: reviewResult.outputTokens,
+            total: reviewResult.totalTokens,
+          },
+          durationMs: Date.now() - reviewStart,
+        });
+        return reviewText;
+      } catch (error: any) {
+        store.updateTaskStage(taskId, {
+          stage: 'review',
+          text: '',
+          status: 'failed',
+          error: error.message || '审阅/评估失败',
+          durationMs: Date.now() - reviewStart,
+        });
+        return '';
+      }
+    })();
+
+    onStageUpdate?.({ stage: 'proof', label: '打磨中...（与点评并行）', startedAt: Date.now() });
+    const proofPromise = (async () => {
+      const text = await runProofStage({
+        taskId,
+        draftText,
+        reviewText: '',
+        factCheckText: '',
+        maxTokens: config.proofMaxTokens,
+        proofPreset,
+        projectId: chapter.project_id,
+        abortSignal,
+      });
+      // proof 完成（不论成功/失败回退）之后才返回结果
+      return text;
+    })();
+
+    // 同时等 review 和 proof。如果 proof 完成而 review 失败/慢，不二次调用 proof
+    await Promise.all([
+      reviewPromise.catch(() => ''),
+      proofPromise.catch(() => draftText),
+    ]);
+    const finalText = await proofPromise.catch(() => draftText);
     await saveDraftAndComplete(finalText);
     return;
   }
@@ -483,55 +498,66 @@ async function runChapterPipelineInner(
     // conditional 模式状态语义错配修复：factCheck 阶段不应设为 'reviewing'
     // 改为 'factChecking' 让 UI 状态栏正确显示"事实核查中"
     store.setTaskStatus(taskId, 'factChecking');
-    onStageUpdate?.({ stage: 'factCheck', label: '事实检查中...', startedAt: Date.now() });
-    PipelineForeground.updateProgress(taskId, '事实检查中', pct(1));
-
-    const contextText = buildContextPreview(baseContext);
-    const factCheckStart = Date.now();
-    let factCheckText = '';
-    try {
-      const factCheckResult = await callLLMResult(
-        buildFactCheckMessages(draftText, contextText),
-        config.factCheckMaxTokens,
-        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
-        abortSignal,
-      );
-      factCheckText = factCheckResult.text || '';
-      store.updateTaskStage(taskId, {
-        stage: 'factCheck',
-        text: factCheckText,
-        status: 'success',
-        tokens: {
-          input: factCheckResult.inputTokens,
-          output: factCheckResult.outputTokens,
-          total: factCheckResult.totalTokens,
-        },
-        durationMs: Date.now() - factCheckStart,
-      });
-    } catch (error: any) {
-      store.updateTaskStage(taskId, {
-        stage: 'factCheck',
-        text: '',
-        status: 'failed',
-        error: error.message || '事实核查失败',
-        durationMs: Date.now() - factCheckStart,
-      });
-    }
+    onStageUpdate?.({ stage: 'factCheck', label: '事实检查中...（与打磨并行）', startedAt: Date.now() });
+    PipelineForeground.updateProgress(taskId, '事实检查与打磨中', pct(1));
 
     markSkipped(taskId, 'review', '仅核查模式已跳过审阅/评估');
-    if (checkCancelled(taskId)) return;
-    onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
-    PipelineForeground.updateProgress(taskId, '终审打磨中', pct(2));
-    const finalText = await runProofStage({
-      taskId,
-      draftText,
-      reviewText: '',
-      factCheckText,
-      maxTokens: config.proofMaxTokens,
-      proofPreset,
-      projectId: chapter.project_id,
-      abortSignal,
-    });
+
+    // V2.2.0：factCheck 和 proof 并行启动（逻辑同 twoStage 的 review+proof 并行）
+    const contextText = buildContextPreview(baseContext);
+    const factCheckStart = Date.now();
+    const factCheckPromise = (async () => {
+      try {
+        const result = await callLLMResult(
+          buildFactCheckMessages(draftText, contextText),
+          config.factCheckMaxTokens,
+          buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
+          abortSignal,
+        );
+        const text = result.text || '';
+        store.updateTaskStage(taskId, {
+          stage: 'factCheck',
+          text,
+          status: 'success',
+          tokens: {
+            input: result.inputTokens,
+            output: result.outputTokens,
+            total: result.totalTokens,
+          },
+          durationMs: Date.now() - factCheckStart,
+        });
+        return text;
+      } catch (error: any) {
+        store.updateTaskStage(taskId, {
+          stage: 'factCheck',
+          text: '',
+          status: 'failed',
+          error: error.message || '事实核查失败',
+          durationMs: Date.now() - factCheckStart,
+        });
+        return '';
+      }
+    })();
+
+    onStageUpdate?.({ stage: 'proof', label: '打磨中...（与事实核查并行）', startedAt: Date.now() });
+    const proofPromise = (async () => {
+      return runProofStage({
+        taskId,
+        draftText,
+        reviewText: '',
+        factCheckText: '',
+        maxTokens: config.proofMaxTokens,
+        proofPreset,
+        projectId: chapter.project_id,
+        abortSignal,
+      });
+    })();
+
+    await Promise.all([
+      factCheckPromise.catch(() => ''),
+      proofPromise.catch(() => draftText),
+    ]);
+    const finalText = await proofPromise.catch(() => draftText);
     await saveDraftAndComplete(finalText);
     return;
   }
