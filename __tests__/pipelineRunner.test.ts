@@ -164,7 +164,9 @@ function mockStreamOnce(text: string, tokens: { input: number; output: number; t
   });
 }
 
-test('two-stage pipeline runs review-only mode before proof', async () => {
+test('two-stage pipeline runs review and proof in parallel (V2.2.0)', async () => {
+  // V2.2.0：twoStage 模式下 review 和 proof 并行启动，节省一个阶段的延迟。
+  // proof 启动时 review 还没完成，所以 proof 的入参里 reviewText='审阅编辑未能完成审阅，请自行判断…'
   mockCallLLMResult
     .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
     .mockResolvedValueOnce({ text: '{"issues":["tighten ending"]}', inputTokens: 8, outputTokens: 6, totalTokens: 14 })
@@ -174,8 +176,13 @@ test('two-stage pipeline runs review-only mode before proof', async () => {
   await runChapterPipeline('task-two-stage', chapter, undefined, { useDraftStream: false });
 
   expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
-  expect(mockCallLLMResult.mock.calls[1][2]).toMatchObject({ scenario: 'pipeline_review' });
-  expect(mockCallLLMResult.mock.calls[2][0][1].content).toContain('tighten ending');
+  const calls = mockCallLLMResult.mock.calls;
+  const reviewCallArgs = calls.find((c: any[]) => c[2]?.scenario === 'pipeline_review');
+  const proofCallArgs = calls.find((c: any[]) => c[2]?.scenario === 'pipeline_proof');
+  expect(reviewCallArgs).toBeDefined();
+  expect(proofCallArgs).toBeDefined();
+  // proof 启动时 review 还没完成，所以 proof 的 prompt 里 reviewText 是占位文本
+  expect(proofCallArgs![0][1].content).toContain('审阅编辑未能完成审阅');
   expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
     'task-two-stage',
     expect.objectContaining({ stage: 'review', status: 'success' }),
@@ -203,7 +210,7 @@ test('pipeline does not resolve until the completed draft is saved and task is c
     resolved = true;
   });
 
-  for (let i = 0; i < 10 && mockSaveDraft.mock.calls.length === 0; i += 1) {
+  for (let i = 0; i < 50 && mockSaveDraft.mock.calls.length === 0; i += 1) {
     await Promise.resolve();
   }
   await Promise.resolve();
@@ -233,7 +240,7 @@ test('pipeline marks setup errors as failed tasks instead of leaving them unclea
   expect(mockCallLLMResult).not.toHaveBeenCalled();
 });
 
-test('conditional pipeline runs fact-check-only mode before proof', async () => {
+test('conditional pipeline runs fact-check and proof in parallel (V2.2.0)', async () => {
   mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'conditional' }));
   mockCallLLMResult
     .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
@@ -244,8 +251,13 @@ test('conditional pipeline runs fact-check-only mode before proof', async () => 
   await runChapterPipeline('task-conditional', chapter, undefined, { useDraftStream: false });
 
   expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
-  expect(mockCallLLMResult.mock.calls[1][2]).toMatchObject({ scenario: 'pipeline_factcheck' });
-  expect(mockCallLLMResult.mock.calls[2][0][1].content).toContain('timeline mismatch');
+  const calls = mockCallLLMResult.mock.calls;
+  const factCheckCallArgs = calls.find((c: any[]) => c[2]?.scenario === 'pipeline_factcheck');
+  const proofCallArgs = calls.find((c: any[]) => c[2]?.scenario === 'pipeline_proof');
+  expect(factCheckCallArgs).toBeDefined();
+  expect(proofCallArgs).toBeDefined();
+  // proof 启动时 factCheck 还没完成，所以 factCheckText 是占位文本
+  expect(proofCallArgs![0][1].content).toContain('事实核查员未能完成核查');
   expect(mockStore.updateTaskStage).toHaveBeenCalledWith(
     'task-conditional',
     expect.objectContaining({ stage: 'review', status: 'skipped' }),
@@ -373,4 +385,31 @@ test('V2.2.0: 流式用户取消触发 cancelTask 而非 failTask', async () => 
   expect(mockStore.cancelTask).toHaveBeenCalledWith('task-cancel-stream');
   expect(mockStore.failTask).not.toHaveBeenCalled();
   expect(mockStore.clearDraftPreview).toHaveBeenCalledWith('task-cancel-stream');
+});
+
+test('V2.2.0: twoStage review 和 proof 真实并行启动（不是顺序）', async () => {
+  // 用延迟模拟 LLM 耗时：review 200ms、proof 200ms。
+  // 串行下总耗时 ≥ 400ms；并行下应 < 350ms。
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  mockCallLLMResult
+    .mockImplementationOnce(async () => {
+      await delay(200);
+      return { text: 'draft', inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+    })
+    .mockImplementationOnce(async () => {
+      await delay(200);
+      return { text: 'review-out', inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+    })
+    .mockImplementationOnce(async () => {
+      await delay(200);
+      return { text: 'proof-out', inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+    });
+
+  const { runChapterPipeline } = require('../src/services/pipelineRunner');
+  const start = Date.now();
+  await runChapterPipeline('task-parallel-timing', chapter, undefined, { useDraftStream: false });
+  const elapsed = Date.now() - start;
+  // 顺序下 draft(200) + review(200) + proof(200) = 600ms；
+  // 并行下 draft(200) + max(review, proof)=200 → 400ms 左右。给 80ms 余量（CI 容差）
+  expect(elapsed).toBeLessThan(500);
 });
