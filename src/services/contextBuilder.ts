@@ -332,12 +332,29 @@ async function buildStyleContext(
   config: any,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   try {
-    let noteIds: number[] = config?.enabledNoteIds ?? [];
+    let noteIds: number[] = Array.isArray(config?.enabledNoteIds) ? config.enabledNoteIds : [];
     if (noteIds.length === 0) {
       const notes = await db.getNotesByProject(projectId);
       noteIds = notes.map((n: any) => n.id);
     }
-    if (noteIds.length === 0) return { text: '', items: [] };
+    if (noteIds.length === 0) {
+      // 没有任何候选笔记 → 不回退到原始注入（用户选的是仿写），但要明确告知
+      return {
+        text: '',
+        items: [
+          {
+            kind: 'note',
+            sourceId: null,
+            title: '风格画像（仿写）',
+            reason: '仿写模式已启用，但当前项目暂无可用笔记，无法生成风格画像。',
+            estimatedTokens: 0,
+            included: false,
+            clipped: false,
+            preview: '',
+          },
+        ],
+      };
+    }
 
     // 用 allSettled：单条笔记风格分析失败（空内容 / LLM 报错）不影响整体注入，
     // 避免整个仿写被一条坏数据拉回到原始笔记注入
@@ -349,7 +366,27 @@ async function buildStyleContext(
 
     const weights: StyleWeights = { ...DEFAULT_STYLE_WEIGHTS, ...(config?.styleWeights || {}) };
     const mergedText = mergeStyleProfiles(profiles, weights);
-    if (!mergedText) return { text: '', items: [] };
+    if (!mergedText) {
+      // 有候选笔记但都没拿到可用画像（可能都为空、LLM 失败、权重全 0）
+      const reasonText = profiles.length === 0
+        ? `仿写模式：${noteIds.length} 篇候选笔记均未生成可用画像，请检查笔记内容或点击"重新分析风格"。`
+        : `仿写模式：所有画像维度权重均为 0，未生成风格指令。`;
+      return {
+        text: '',
+        items: [
+          {
+            kind: 'note',
+            sourceId: null,
+            title: '风格画像（仿写）',
+            reason: reasonText,
+            estimatedTokens: 0,
+            included: false,
+            clipped: false,
+            preview: '',
+          },
+        ],
+      };
+    }
 
     const fullText = `以下是本次写作必须遵循的风格画像，请严格按照对应权重的维度进行仿写：\n${mergedText}`;
     const clipped = clipTextToTokenBudget(fullText, budget);

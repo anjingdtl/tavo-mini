@@ -89,10 +89,11 @@ export const ResourceLibrary: React.FC = () => {
     setItems({ characters, worldbook, notes, presets });
     setCollections(worldbookCollections);
     if (noteConfig) {
-      setNoteMode(noteConfig.mode);
-      setStyleWeights({ ...DEFAULT_STYLE_WEIGHTS, ...noteConfig.styleWeights });
-      setRetrievalTopK(noteConfig.retrievalTopK);
-      setEnabledNoteIds(noteConfig.enabledNoteIds);
+      // 防御性归一化：DB 异常返回 null/undefined 时回退默认，避免渲染时 .length 报错
+      setNoteMode(noteConfig.mode || 'none');
+      setStyleWeights({ ...DEFAULT_STYLE_WEIGHTS, ...(noteConfig.styleWeights || {}) });
+      setRetrievalTopK(typeof noteConfig.retrievalTopK === 'number' ? noteConfig.retrievalTopK : 5);
+      setEnabledNoteIds(Array.isArray(noteConfig.enabledNoteIds) ? noteConfig.enabledNoteIds : []);
     } else {
       setNoteMode('none');
       setStyleWeights(DEFAULT_STYLE_WEIGHTS);
@@ -191,7 +192,8 @@ export const ResourceLibrary: React.FC = () => {
     const newWeights = { ...styleWeights, [key]: value };
     setStyleWeights(newWeights);
     try {
-      await db.setProjectNoteConfig(projectId, { mode: 'style', styleWeights: newWeights, retrievalTopK, enabledNoteIds });
+      // 用当前 noteMode 而非写死 'style'，避免在 retrieval 模式下被误调时覆盖
+      await db.setProjectNoteConfig(projectId, { mode: noteMode, styleWeights: newWeights, retrievalTopK, enabledNoteIds });
     } catch {
       // 静默失败，不打断用户调整
     }
@@ -200,7 +202,8 @@ export const ResourceLibrary: React.FC = () => {
   const handleTopKChange = async (value: number) => {
     setRetrievalTopK(value);
     try {
-      await db.setProjectNoteConfig(projectId, { mode: 'retrieval', styleWeights, retrievalTopK: value, enabledNoteIds });
+      // 用当前 noteMode 而非写死 'retrieval'
+      await db.setProjectNoteConfig(projectId, { mode: noteMode, styleWeights, retrievalTopK: value, enabledNoteIds });
     } catch {
       // 静默失败
     }
