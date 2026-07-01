@@ -1080,6 +1080,67 @@ export async function getNoteContentById(id: number): Promise<string> {
   return getNoteContentByIdFromDatabase(await openDatabase(), id);
 }
 
+/**
+ * V2.2.0：批量读取笔记内容，返回 id → content 映射。
+ *
+ * 单条实现 getNoteContentById 在 60 条笔记时是 60 次 round-trip（每条还会按 120k 分块多次 fetch）。
+ * 这里一次性把所有 chunk 拉回来按 id 聚合，1 次 round-trip。
+ *
+ * ids 为空直接返回空 Map；不抛错。ids 中不存在的 id 不会出现在结果中（调用方按需 fallback）。
+ */
+export async function getNotesContentByIds(ids: number[]): Promise<Record<number, string>> {
+  const out: Record<number, string> = {};
+  if (!ids?.length) return out;
+  const idList = ids.filter((n) => Number.isFinite(n) && n > 0);
+  if (idList.length === 0) return out;
+  const placeholders = idList.map(() => '?').join(',');
+  const rows = await all<{ id: number; chunk: string }>(
+    `SELECT id, substr(content, ?, ?) AS chunk
+     FROM notes
+     WHERE id IN (${placeholders})`,
+    [1, NOTE_TEXT_CHUNK_CHARS, ...idList],
+  );
+  // 同 id 的多个 chunk 按顺序追加（SQLite substr 配合 OFFSET 即可保证顺序）
+  for (const row of rows) {
+    const id = Number(row.id);
+    out[id] = (out[id] || '') + (row.chunk || '');
+  }
+  // 大小超过 NOTE_TEXT_CHUNK_CHARS 的笔记续拉：
+  // 用第二次查询拿到每个 id 的总长度，然后追加（NOTE_TEXT_CHUNK_CHARS 截断的尾巴）
+  const idsNeedingMore: Array<{ id: number; offset: number }> = [];
+  const lengthRows = await all<{ id: number; length: number }>(
+    `SELECT id, length(content) AS length FROM notes WHERE id IN (${placeholders})`,
+    idList,
+  );
+  for (const lr of lengthRows) {
+    let off = NOTE_TEXT_CHUNK_CHARS + 1;
+    while (off <= Number(lr.length || 0)) {
+      idsNeedingMore.push({ id: Number(lr.id), offset: off });
+      off += NOTE_TEXT_CHUNK_CHARS;
+    }
+  }
+  if (idsNeedingMore.length > 0) {
+    // 仍然批量：按 offset 分组批量查
+    const groupedByOffset = new Map<number, number[]>();
+    for (const r of idsNeedingMore) {
+      if (!groupedByOffset.has(r.offset)) groupedByOffset.set(r.offset, []);
+      groupedByOffset.get(r.offset)!.push(r.id);
+    }
+    for (const [offset, subIds] of groupedByOffset.entries()) {
+      const ph = subIds.map(() => '?').join(',');
+      const moreRows = await all<{ id: number; chunk: string }>(
+        `SELECT id, substr(content, ?, ?) AS chunk FROM notes WHERE id IN (${ph})`,
+        [offset, NOTE_TEXT_CHUNK_CHARS, ...subIds],
+      );
+      for (const row of moreRows) {
+        const id = Number(row.id);
+        out[id] = (out[id] || '') + (row.chunk || '');
+      }
+    }
+  }
+  return out;
+}
+
 async function repairOversizedNotes(database: SQLite.SQLiteDatabase): Promise<void> {
   try {
     const oversized = await execute(
