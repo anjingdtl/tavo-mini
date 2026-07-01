@@ -100,3 +100,6 @@ docs/superpowers/
 /jest.e
 /jest.o
 /jest.txt
+
+# local memory logs (not source)
+.workbuddy/
