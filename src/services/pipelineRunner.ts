@@ -363,7 +363,15 @@ async function runChapterPipelineInner(
         draftText = store.getState().draftPreviews[taskId] || '';
       } catch (streamErr: any) {
         // 不支持流式的 provider 立即回退（保留一次非流式重试），其他错向上抛出
-        if (streamErr?.code !== 'stream_not_supported') throw streamErr;
+        // - stream_not_supported: Content-Type 非 SSE（provider 不支持流式）
+        // - no_body: RN fetch polyfill 不暴露 ReadableStream（response.body 不可读），
+        //   即使 Content-Type 是 SSE 也无法流式读取，需回退到非流式
+        if (
+          streamErr?.code !== 'stream_not_supported' &&
+          streamErr?.code !== 'no_body'
+        ) {
+          throw streamErr;
+        }
         streamAttempted = false;
       }
     }
