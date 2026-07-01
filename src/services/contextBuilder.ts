@@ -318,13 +318,24 @@ async function buildStyleContext(
     }
     if (noteIds.length === 0) return { text: '', items: [] };
 
-    const profiles = await Promise.all(noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)));
+    // 用 allSettled：单条笔记风格分析失败（空内容 / LLM 报错）不影响整体注入，
+    // 避免整个仿写被一条坏数据拉回到原始笔记注入
+    const settled = await Promise.allSettled(noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)));
+    const profiles = settled
+      .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof getOrAnalyzeNoteStyle>>> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((p) => p && p.profileJson && Object.keys(p.profileJson).length > 0);
+
     const weights: StyleWeights = { ...DEFAULT_STYLE_WEIGHTS, ...(config?.styleWeights || {}) };
     const mergedText = mergeStyleProfiles(profiles, weights);
     if (!mergedText) return { text: '', items: [] };
 
     const fullText = `以下是本次写作必须遵循的风格画像，请严格按照对应权重的维度进行仿写：\n${mergedText}`;
     const clipped = clipTextToTokenBudget(fullText, budget);
+    const failedCount = noteIds.length - profiles.length;
+    const reason = failedCount > 0
+      ? `仿写模式：${profiles.length}/${noteIds.length} 篇笔记联合风格（${failedCount} 篇未生成画像）`
+      : `仿写模式：${noteIds.length} 篇笔记联合风格`;
     return {
       text: clipped,
       items: [
@@ -332,7 +343,7 @@ async function buildStyleContext(
           kind: 'note',
           sourceId: null,
           title: '风格画像（仿写）',
-          reason: `仿写模式：${noteIds.length} 篇笔记联合风格`,
+          reason,
           estimatedTokens: estimateTokens(clipped),
           included: clipped.length > 0,
           clipped: clipped.length < fullText.length,
