@@ -1,5 +1,5 @@
 import * as db from './database';
-import { callLLMResult } from './llm';
+import { callLLMResult, callLLMStream, type LLMStreamHandlers } from './llm';
 import { buildContext } from './contextBuilder';
 import { createChapterGenerationRequest } from './chapterGeneration';
 import {
@@ -11,6 +11,7 @@ import {
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { saveDraft } from './draftService';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
+import { getStageProgressPercent } from '../utils/stages';
 import type { Chapter, Preset } from '../types/novel';
 import type { PipelineStageName } from '../types/pipeline';
 import type { ChatMessage } from './llm';
@@ -154,14 +155,105 @@ export type StageInfo = {
   startedAt: number;
 };
 
+export interface PipelineRunOptions {
+  /** V2.2.0：草稿阶段是否使用流式输出（默认 true）。false 时回退到 V2.1.5 callLLMResult。 */
+  useDraftStream?: boolean;
+}
+
+/**
+ * V2.2.0：草稿阶段流式执行。
+ * - 把每次 chunk 节流累计，超过 200 字符或 1.5 秒时刷新到 pipelineTaskStore.draftPreviews
+ * - onDone 时把最终文本塞入 draftPreviews（store 的 updateTaskStage 会在 success 后清理预览）
+ * - 返回 token 统计供 updateTaskStage 写入 stage_results
+ * - 若 provider 不支持 SSE（code='stream_not_supported'）抛错让调用方降级
+ */
+async function runDraftStageStream({
+  taskId,
+  messages,
+  maxTokens,
+  preset,
+  projectId,
+  abortSignal,
+  store,
+}: {
+  taskId: string;
+  messages: ChatMessage[];
+  maxTokens: number;
+  preset: Preset | null;
+  projectId: number;
+  abortSignal?: AbortSignal;
+  store: ReturnType<typeof usePipelineTaskStore.getState>;
+}): Promise<{ inputTokens: number; outputTokens: number; totalTokens: number }> {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    let lastFlushLen = 0;
+    let lastFlushTs = Date.now();
+    let result: { inputTokens: number; outputTokens: number; totalTokens: number } | null = null;
+    let settled = false;
+
+    const safeResolve = (r: typeof result) => {
+      if (settled) return;
+      settled = true;
+      resolve(r ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    };
+    const safeReject = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(e);
+    };
+
+    const handlers: LLMStreamHandlers = {
+      onChunk: (delta) => {
+        buf += delta;
+        const now = Date.now();
+        if (buf.length - lastFlushLen > 200 || now - lastFlushTs > 1500) {
+          store.setDraftPreview(taskId, buf);
+          lastFlushLen = buf.length;
+          lastFlushTs = now;
+        }
+      },
+      onDone: (r) => {
+        if (buf) {
+          store.setDraftPreview(taskId, r.text || buf);
+        }
+        result = {
+          inputTokens: r.inputTokens,
+          outputTokens: r.outputTokens,
+          totalTokens: r.totalTokens,
+        };
+        safeResolve(result);
+      },
+      onError: (err) => safeReject(err),
+    };
+
+    try {
+      // callLLMStream 返回 Promise；只要保证 attach .catch，所有 reject 都会走 safeReject
+      callLLMStream(
+        messages,
+        maxTokens,
+        buildCallConfig(preset, maxTokens, 'pipeline_draft', projectId),
+        handlers,
+        abortSignal,
+        // options 不传 → 按 scenario 'pipeline_draft' 默认 5min total / 30s stall
+      ).catch((e: any) => {
+        // 安全网：理论上所有错误都会先走 handlers.onError，不该到这里
+        safeReject(e instanceof Error ? e : new Error(String(e)));
+      });
+    } catch (e: any) {
+      safeReject(e instanceof Error ? e : new Error(String(e)));
+    }
+  });
+}
+
 export async function runChapterPipeline(
   taskId: string,
   chapter: Chapter,
   onStageUpdate?: (info: StageInfo | string) => void,
+  options?: PipelineRunOptions,
 ): Promise<void> {
   const abortSignal = registerTaskAbort(taskId);
   try {
-    await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
+    await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal, options);
   } finally {
     releaseTaskAbort(taskId);
     // 任务结束（无论成功/失败/取消）后清理取消标记，避免 cancelledTasks 累积
@@ -174,8 +266,10 @@ async function runChapterPipelineInner(
   chapter: Chapter,
   onStageUpdate?: (info: StageInfo | string) => void,
   abortSignal?: AbortSignal,
+  options?: PipelineRunOptions,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
+  const useDraftStream = options?.useDraftStream !== false; // 默认 true
   let config;
   let contextConfig;
   let presets;
@@ -195,14 +289,10 @@ async function runChapterPipelineInner(
   const factCheckPreset = resolvePreset(config.factCheckPresetId, presets as Preset[]);
   const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
 
-  // 通知栏进度计算：按 pipelineMode 确定阶段总数，各阶段起点百分比。
-  // 策略——阶段"开始"时跳到该阶段起点，saveDraftAndComplete 时设 100，
+  // 通知栏进度计算封装到 utils/stages，便于测试与 resume 共用。
+  // 阶段"开始"时跳到该阶段起点，saveDraftAndComplete 时设 100，
   // 让用户在通知栏看到进度条单调递增。
-  const totalStages = config.pipelineMode === 'noReview' ? 1
-    : (config.pipelineMode === 'twoStage' || config.pipelineMode === 'conditional') ? 3
-    : 4; // full
-  // 各阶段"开始"时对应的已完成阶段数 → 百分比
-  const pct = (completedStages: number) => Math.min(99, Math.round((completedStages / totalStages) * 100));
+  const pct = (completedStages: number) => getStageProgressPercent(config.pipelineMode, completedStages);
 
   const saveDraftAndComplete = async (text: string) => {
     try {
@@ -222,6 +312,7 @@ async function runChapterPipelineInner(
   };
 
   if (checkCancelled(taskId)) {
+    store.clearDraftPreview(taskId);
     await PipelineForeground.notifyFailed(taskId, chapter.title || '流水线', '已取消');
     await PipelineForeground.stop(taskId);
     return;
@@ -232,6 +323,7 @@ async function runChapterPipelineInner(
 
   let baseContext: ChatMessage[] = [];
   let draftText = '';
+  let draftMessages: ChatMessage[] = [];
   const draftStart = Date.now();
   try {
     const { messages, chapters: allChapters } = await buildContext(chapter, contextConfig, chapter.project_id, draftPreset || undefined);
@@ -244,7 +336,7 @@ async function runChapterPipelineInner(
       .sort((a, b) => b.position - a.position)[0];
     const prevEnding = prevChapter?.content?.slice(-800) || '';
 
-    const draftMessages = buildDraftMessages(
+    draftMessages = buildDraftMessages(
       baseContext,
       chapter.title || `第 ${chapter.position + 1} 章`,
       chapter.content || '',
@@ -253,26 +345,57 @@ async function runChapterPipelineInner(
       chapter.synopsis,
     );
 
-    const draftResult = await callLLMResult(
-      draftMessages,
-      config.draftMaxTokens,
-      buildCallConfig(draftPreset, config.draftMaxTokens, 'pipeline_draft', chapter.project_id),
-      abortSignal,
-    );
-    draftText = draftResult.text || '';
+    // V2.2.0：草稿阶段默认走流式，UI 实时显示 draftPreview。
+    // useDraftStream=false 时回退到老的非流式调用，行为完全等价 V2.1.5。
+    let draftTokens = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    let streamAttempted = useDraftStream;
+    if (useDraftStream) {
+      try {
+        draftTokens = await runDraftStageStream({
+          taskId,
+          messages: draftMessages,
+          maxTokens: config.draftMaxTokens,
+          preset: draftPreset,
+          projectId: chapter.project_id,
+          abortSignal,
+          store,
+        });
+        draftText = store.getState().draftPreviews[taskId] || '';
+      } catch (streamErr: any) {
+        // 不支持流式的 provider 立即回退（保留一次非流式重试），其他错向上抛出
+        if (streamErr?.code !== 'stream_not_supported') throw streamErr;
+        streamAttempted = false;
+      }
+    }
+    if (!useDraftStream || (useDraftStream && !streamAttempted)) {
+      const draftResult = await callLLMResult(
+        draftMessages,
+        config.draftMaxTokens,
+        buildCallConfig(draftPreset, config.draftMaxTokens, 'pipeline_draft', chapter.project_id),
+        abortSignal,
+      );
+      draftText = draftResult.text || '';
+      draftTokens = {
+        inputTokens: draftResult.inputTokens,
+        outputTokens: draftResult.outputTokens,
+        totalTokens: draftResult.totalTokens,
+      };
+    }
+
     store.updateTaskStage(taskId, {
       stage: 'draft',
       text: draftText,
       status: 'success',
       tokens: {
-        input: draftResult.inputTokens,
-        output: draftResult.outputTokens,
-        total: draftResult.totalTokens,
+        input: draftTokens.inputTokens,
+        output: draftTokens.outputTokens,
+        total: draftTokens.totalTokens,
       },
       durationMs: Date.now() - draftStart,
     });
   } catch (error: any) {
     // 取消信号在阶段内被吞修复：先判断是否为用户取消，是则走取消路径不走 fail
+    store.clearDraftPreview(taskId);
     if (abortSignal?.aborted || error?.code === 'cancelled') {
       store.cancelTask(taskId);
       await PipelineForeground.stop(taskId);
