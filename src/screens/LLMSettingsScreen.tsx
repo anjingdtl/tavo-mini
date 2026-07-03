@@ -99,7 +99,12 @@ export const LLMSettingsScreen: React.FC = () => {
       setDraft((current) => ({ ...current, id }));
       isEditingRef.current = false;
       const message = await testLLMConnection(draft.base_url, draft.api_key, draft.model_name);
-      Alert.alert('连接成功', message.slice(0, 120));
+      // V2.2.2 修复：原代码 title="连接成功" + message="连接成功" 重复显示。
+      // 现在 title 改为"测试通过"，message 显示真实 LLM 回复（最多 120 字符），
+      // 并附带模型名称，让用户看到是哪个模型测试的。
+      const modelLabel = draft.model_name || '当前模型';
+      const reply = message && message.length > 0 ? message.slice(0, 120) : '（模型未返回内容）';
+      Alert.alert('测试通过', `模型 ${modelLabel} 已连通。\n\n回复：${reply}`);
     } catch (error: any) {
       Alert.alert('连接失败', error?.message || '请检查 API 地址、API Key、模型名称和手机网络。');
     } finally {
