@@ -22,7 +22,6 @@ import {
   pickCharacterPngImageReplacement,
   pickLocalFiles,
   withCharacterImageAsset,
-  type BatchImportResult,
 } from '../services/fileImport';
 import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
@@ -560,6 +559,7 @@ export const ResourceLibrary: React.FC = () => {
           <>
             <View style={styles.rowActions}>
               <Button label="导入世界书" icon={Import} onPress={importWorldbook} />
+              <Button label="批量导入世界书" icon={Import} variant="secondary" onPress={importWorldbooksBatch} />
               {!selectedCollectionId && <Button label="新建世界书" icon={FilePlus2} variant="secondary" onPress={addNewWorldbook} />}
               {selectedCollectionId && <Button label="新建条目" icon={FilePlus2} variant="secondary" onPress={addNewWorldbookEntry} />}
             </View>
@@ -637,6 +637,7 @@ export const ResourceLibrary: React.FC = () => {
           </View>
         ) : null}
         {tab === 'notes' ? <Button label="导入 TXT 笔记" icon={Import} onPress={importNoteText} /> : null}
+        {tab === 'notes' ? <Button label="批量导入 TXT" icon={Import} variant="secondary" onPress={importNotesBatch} /> : null}
         {canAddManual ? (
           <>
             <Field value={draft} onChangeText={setDraft} placeholder={placeholderFor(tab, Boolean(selectedCollectionId))} inputStyle={styles.inlineInput} />
