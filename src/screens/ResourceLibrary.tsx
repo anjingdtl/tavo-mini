@@ -551,10 +551,11 @@ export const ResourceLibrary: React.FC = () => {
   return (
     <Screen>
       <Header title="资料库" subtitle={subtitle} />
-      <View style={styles.tabs}>
-        <SegmentedControl value={tab} options={TABS} onChange={(value) => { setTab(value); setSelectedCollectionId(null); }} />
-      </View>
-      <View style={styles.actions}>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.tabs}>
+          <SegmentedControl value={tab} options={TABS} onChange={(value) => { setTab(value); setSelectedCollectionId(null); }} />
+        </View>
+        <View style={styles.actions}>
         {tab === 'characters' ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionScroll}>
             <Button label="导入角色卡" icon={Import} compact onPress={importCharacter} />
@@ -664,6 +665,7 @@ export const ResourceLibrary: React.FC = () => {
           ) : (
             <FlatList
               data={collections}
+              scrollEnabled={false}
               keyExtractor={(item) => String(item.id)}
               contentContainerStyle={styles.list}
               renderItem={({ item }) => (
@@ -696,6 +698,7 @@ export const ResourceLibrary: React.FC = () => {
         ) : (
           <FlatList
             data={activeItems}
+            scrollEnabled={false}
             keyExtractor={(item) => String(item.id)}
             contentContainerStyle={styles.list}
             renderItem={({ item }) => (
@@ -740,7 +743,8 @@ export const ResourceLibrary: React.FC = () => {
             )}
           />
         )}
-      </View>
+        </View>
+      </ScrollView>
 
       <Modal visible={Boolean(editor)} transparent animationType="fade" onRequestClose={() => setEditor(null)}>
         <View style={styles.overlay}>
@@ -936,7 +940,8 @@ const styles = StyleSheet.create({
   actionScroll: { flexDirection: 'row', gap: spacing.sm, paddingRight: spacing.lg, paddingVertical: spacing.xs },
   rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   inlineInput: { minHeight: 40 },
-  listContainer: { flex: 1 },
+  scrollContent: { paddingBottom: 120 },
+  listContainer: { minHeight: 240 },
   list: { padding: spacing.lg, paddingBottom: 96 },
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   rowText: { flex: 1 },
