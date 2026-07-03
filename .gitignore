@@ -75,9 +75,20 @@ dist/
 /android/SetClipboard.*
 /android/classes.dex
 
-# Local uiautomator dump parsing helpers (developer-only)
-scripts/parse-ui.ps1
-scripts/parse-ui.py
+# react-native bundle 产物（每次构建重新生成，不入库）
+/android/app/src/main/assets/index.android.bundle
+/android/app/src/main/res/drawable-mdpi/node_modules_*
+/android/app/src/main/res/drawable-mdpi/src_*
+/android/app/src/main/res/drawable-xhdpi/node_modules_*
+/android/app/src/main/res/drawable-xxhdpi/node_modules_*
+/android/app/src/main/res/drawable-xxxhdpi/node_modules_*
+/android/app/src/main/res/raw/keep.xml
+
+# 本地 UI 自动化测试截图
+test-screenshots/
+
+# 本地调试日志
+push-cleanup.log
 
 # Yarn
 .yarn/*
