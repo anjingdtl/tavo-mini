@@ -134,7 +134,7 @@ describe('ChapterEditor toolbar', () => {
     const { findByText, getByTestId } = render(
       <ChapterEditor chapterId={1} onClose={onClose} />,
     );
-    for (const label of ['续写', '定稿', '版本', '清空', '摘要', '历史', '上下文', '草稿', '朗读']) {
+    for (const label of ['AI 重新生成', '定稿', '版本', '清空', '摘要', '历史', '上下文', '草稿', '朗读']) {
       expect(await findByText(label)).toBeTruthy();
     }
     expect(getByTestId('chapter-toolbar-scroll').props.horizontal).toBe(true);
@@ -145,7 +145,7 @@ describe('ChapterEditor toolbar', () => {
     const { findByText, queryByText } = render(
       <ChapterEditor chapterId={1} onClose={onClose} />,
     );
-    await findByText('续写');
+    await findByText('AI 重新生成');
     expect(queryByText('AI 续写')).toBeNull();
     expect(queryByText('保存定稿')).toBeNull();
   });
@@ -155,7 +155,7 @@ describe('ChapterEditor toolbar', () => {
     const { findByText } = render(
       <ChapterEditor chapterId={1} onClose={onClose} />,
     );
-    const continueButton = await findByText('续写');
+    const continueButton = await findByText('AI 重新生成');
 
     await act(async () => {
       fireEvent.press(continueButton);
@@ -202,7 +202,7 @@ describe('ChapterEditor toolbar', () => {
     const { findByText } = render(
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
     );
-    const continueButton = await findByText('续写');
+    const continueButton = await findByText('AI 重新生成');
     await act(async () => { fireEvent.press(continueButton); });
 
     const stopButton = await findByText('停止');
