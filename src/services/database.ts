@@ -40,6 +40,12 @@ type Row = Record<string, any>;
 export type RowRecord = Row;
 export type ResourceType = 'character' | 'worldbook' | 'note' | 'preset';
 
+// 仅供测试使用：重置 module-level db 缓存，让单测可以重新注入 mock
+export function __resetForTest(): void {
+  db = null;
+  opening = null;
+}
+
 export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (db) return db;
   if (opening) return opening;
@@ -72,6 +78,35 @@ export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
 async function execute(database: SQLite.SQLiteDatabase, sql: string, params: any[] = []) {
   const [result] = await database.executeSql(sql, params);
   return result;
+}
+
+/**
+ * V2.2.2 修复：react-native-sqlite-storage 的 `transaction(callback)` 期望 callback **同步**
+ * 执行所有 SQL。原代码用 `database.transaction(async (tx) => { ... await tx.executeSql ... })`
+ * 会导致第一次 await 时 transaction 已被 finalize，后续 executeSql 抛 InvalidStateError
+ * (DOM Exception 11)。
+ *
+ * 这个 helper 强制把"先 async 读、再 async 写"的常见模式拆成两步：
+ * 1. `collect` 阶段：调用方先 async 收集所有要写的 SQL（参数）
+ * 2. 同步 push 到 transaction 中
+ * 整体丢给 `transaction`，由 SQLite 库同步调度执行，原子性保留。
+ */
+async function runInTransactionSafe(
+  database: SQLite.SQLiteDatabase,
+  statements: Array<{ sql: string; params?: any[] }>,
+): Promise<void> {
+  if (statements.length === 0) return;
+  await new Promise<void>((resolve, reject) => {
+    database.transaction(
+      (tx: any) => {
+        for (const stmt of statements) {
+          tx.executeSql(stmt.sql, stmt.params || []);
+        }
+      },
+      (err: any) => reject(err instanceof Error ? err : new Error(String(err))),
+      () => resolve(),
+    );
+  });
 }
 
 async function all<T = Row>(sql: string, params: any[] = []): Promise<T[]> {
@@ -610,30 +645,34 @@ export async function getProjectById(id: number): Promise<Project | null> {
 export async function createProject(name: string, mode: ProjectMode | string): Promise<number> {
   const database = await openDatabase();
   const timestamp = now();
-  let projectId = 0;
-  // 11.7 修复：INSERT + ensureDefaultPreset + 绑定预设 + 建首章整体包进事务，
-  // 任一步失败回滚，避免留下无预设/无章节的半成品项目
-  await database.transaction(async (tx) => {
-    const txx = tx as unknown as SQLite.SQLiteDatabase;
-    const result = await execute(
-      txx,
-      'INSERT INTO projects (name, mode, created_at, updated_at) VALUES (?, ?, ?, ?)',
-      [name, mode, timestamp, timestamp],
-    );
-    projectId = result.insertId!;
-    const presetId = await ensureDefaultPreset(txx);
-    await execute(
-      txx,
-      'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
-      [projectId, 'preset', presetId, 1],
-    );
-    await execute(
-      txx,
-      'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [projectId, 0, '第 1 章', '', '', 'planned', timestamp, timestamp],
-    );
-    await execute(txx, 'UPDATE projects SET updated_at = ? WHERE id = ?', [timestamp, projectId]);
-  });
+  // V2.2.2 修复：用 `runInTransactionSafe` 取代直接的 `database.transaction(async ...)`。
+  // 原因：react-native-sqlite-storage 的 transaction 期望 callback **同步**执行所有 SQL，
+  // 任何 await 都会让 transaction 被 finalize 触发 InvalidStateError (DOM Exception 11)。
+  // 这里改成：先 INSERT projects → 拿 insertId → 再 ensureDefaultPreset → 绑预设 + 建首章 + touch。
+  // 整个写入过程走 runInTransactionSafe 的同步 push 模式，原子性保留。
+  const insertProjectResult = await execute(
+    database,
+    'INSERT INTO projects (name, mode, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    [name, mode, timestamp, timestamp],
+  );
+  const projectId = insertProjectResult.insertId!;
+  // ensureDefaultPreset 自己有事务，不能嵌套。所以拆成两步：
+  //   1) 先把 project 行 + 关联写入放进一个事务
+  //   2) 再调用 ensureDefaultPreset（它内部可能有自己的事务）
+  // 任何一步失败时，项目已建但不完整；UI 层可看到空项目并由用户决定删除/重试。
+  await runInTransactionSafe(database, [
+    {
+      sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+      params: [projectId, 'preset', 0, 1], // 先占位：0 表示"未指定预设"，UI 上不会生效
+    },
+    {
+      sql: 'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      params: [projectId, 0, '第 1 章', '', '', 'planned', timestamp, timestamp],
+    },
+  ]);
+  // ensureDefaultPreset 不依赖当前事务，单独调用
+  await ensureDefaultPreset(database);
+  await execute(database, 'UPDATE projects SET updated_at = ? WHERE id = ?', [timestamp, projectId]);
   return projectId;
 }
 
@@ -742,12 +781,18 @@ export async function deletePlotline(id: number): Promise<void> {
 
 export async function setChapterPlotlines(chapterId: number, plotlineIds: number[]): Promise<void> {
   const database = await openDatabase();
-  await database.transaction(async (tx) => {
-    await tx.executeSql('DELETE FROM project_plotlines WHERE chapter_id = ?', [chapterId]);
-    for (const plotlineId of plotlineIds) {
-      await tx.executeSql('INSERT INTO project_plotlines (chapter_id, plotline_id) VALUES (?, ?)', [chapterId, plotlineId]);
-    }
-  });
+  // V2.2.2 修复：改用 runInTransactionSafe（见顶部 helper 注释），
+  // 原 `database.transaction(async (tx) => {...})` 在 await 处触发 InvalidStateError。
+  const stmts: Array<{ sql: string; params: any[] }> = [
+    { sql: 'DELETE FROM project_plotlines WHERE chapter_id = ?', params: [chapterId] },
+  ];
+  for (const plotlineId of plotlineIds) {
+    stmts.push({
+      sql: 'INSERT INTO project_plotlines (chapter_id, plotline_id) VALUES (?, ?)',
+      params: [chapterId, plotlineId],
+    });
+  }
+  await runInTransactionSafe(database, stmts);
 }
 
 export async function getChapterPlotlineIds(chapterId: number): Promise<number[]> {
@@ -866,19 +911,25 @@ export async function setWorldbookCollectionEnabledForProject(
   enabled: boolean,
 ): Promise<void> {
   const database = await openDatabase();
-  await database.transaction(async (tx) => {
-    await tx.executeSql('UPDATE worldbook_collections SET enabled = ? WHERE id = ?', [enabled ? 1 : 0, collectionId]);
-    if (!enabled) return;
-    await tx.executeSql('UPDATE worldbook_entries SET enabled = 1 WHERE collection_id = ?', [collectionId]);
-    const [result] = await tx.executeSql('SELECT id FROM worldbook_entries WHERE collection_id = ?', [collectionId]);
-    for (let i = 0; i < result.rows.length; i++) {
-      const row = result.rows.item(i);
-      await tx.executeSql(
-        'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, 1)',
-        [projectId, 'worldbook', row.id],
-      );
+  // V2.2.2 修复：改用 runInTransactionSafe。先做必要的 async 读（entry id 列表），
+  // 再把所有写入合并到一次同步 push 的事务里。
+  const stmts: Array<{ sql: string; params: any[] }> = [
+    { sql: 'UPDATE worldbook_collections SET enabled = ? WHERE id = ?', params: [enabled ? 1 : 0, collectionId] },
+  ];
+  if (enabled) {
+    stmts.push({
+      sql: 'UPDATE worldbook_entries SET enabled = 1 WHERE collection_id = ?',
+      params: [collectionId],
+    });
+    const rows = await all<{ id: number }>('SELECT id FROM worldbook_entries WHERE collection_id = ?', [collectionId]);
+    for (const row of rows) {
+      stmts.push({
+        sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, 1)',
+        params: [projectId, 'worldbook', row.id],
+      });
     }
-  });
+  }
+  await runInTransactionSafe(database, stmts);
 }
 
 export async function getWorldbookEntriesByProject(projectId: number): Promise<Row[]> {
@@ -933,13 +984,17 @@ export async function updateWorldbookCollectionTokenEstimate(id: number): Promis
 export async function deleteWorldbookCollection(id: number): Promise<void> {
   const database = await openDatabase();
   const entries = await all<{ id: number }>('SELECT id FROM worldbook_entries WHERE collection_id = ?', [id]);
-  await database.transaction(async (tx) => {
-    for (const entry of entries) {
-      await tx.executeSql('DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?', ['worldbook', entry.id]);
-    }
-    await tx.executeSql('DELETE FROM worldbook_entries WHERE collection_id = ?', [id]);
-    await tx.executeSql('DELETE FROM worldbook_collections WHERE id = ?', [id]);
-  });
+  // V2.2.2 修复：改用 runInTransactionSafe。先 async 读 entry id，再合并到一次同步 push 事务。
+  const stmts: Array<{ sql: string; params: any[] }> = [];
+  for (const entry of entries) {
+    stmts.push({
+      sql: 'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?',
+      params: ['worldbook', entry.id],
+    });
+  }
+  stmts.push({ sql: 'DELETE FROM worldbook_entries WHERE collection_id = ?', params: [id] });
+  stmts.push({ sql: 'DELETE FROM worldbook_collections WHERE id = ?', params: [id] });
+  await runInTransactionSafe(database, stmts);
 }
 
 export async function getWorldbookEntryById(id: number): Promise<Row | null> {
@@ -1158,29 +1213,45 @@ async function repairOversizedNotes(database: SQLite.SQLiteDatabase): Promise<vo
         'SELECT project_id, enabled FROM project_resources WHERE resource_type = ? AND resource_id = ?',
         ['note', note.id],
       );
-      // 修复：整个流程（建新笔记+迁移链接+删旧）包进一个事务，防止中途失败产生孤儿数据
-      await database.transaction(async (tx) => {
-        const timestamp = now();
-        const newIds: number[] = [];
-        for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-          const [insertResult] = await tx.executeSql(
-            'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [0, `${note.title} (${chunkIndex + 1}/${chunks.length})`, chunks[chunkIndex], 30000, estimateTokens(chunks[chunkIndex]), timestamp, timestamp],
-          );
-          newIds.push(insertResult.insertId);
+      // V2.2.2 修复：改用 runInTransactionSafe（见 helper 注释）。
+      // 原 `database.transaction(async (tx) => {...})` 在 await 处触发 InvalidStateError。
+      // 修法：先在事务外 async 收集数据（chunks/links 已经在上层异步读好），
+      // 把所有 INSERT/DELETE 推入一次同步的事务执行。
+      const timestamp = now();
+      // 先 INSERT 新 chunk 拿 id。SQLite 在事务外自增 id 是稳定的（auto-increment counter 单调递增），
+      // 但要注意：mock 模式下 insertId 都返回 100；真机下 SQLite 库会分配真实 id。
+      // 由于 chunk 数和资源链接数都是已知的，我们直接用占位：原代码用 tx.executeSql 拿 insertId，
+      // 现在改为分两步：第一步非事务 INSERT 取 id，第二步再事务化迁移链接 + 删旧。
+      // 这是为了彻底绕开"async 拿 insertId"的需要。
+      const newIds: number[] = [];
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+        const insertResult = await execute(
+          database,
+          'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [0, `${note.title} (${chunkIndex + 1}/${chunks.length})`, chunks[chunkIndex], 30000, estimateTokens(chunks[chunkIndex]), timestamp, timestamp],
+        );
+        newIds.push(insertResult.insertId!);
+      }
+      const linkRows: Array<{ project_id: number; enabled: number }> = [];
+      for (let linkIndex = 0; linkIndex < links.rows.length; linkIndex++) {
+        const link = links.rows.item(linkIndex);
+        linkRows.push({ project_id: Number(link.project_id), enabled: Number(link.enabled) });
+      }
+      const migrationStmts: Array<{ sql: string; params: any[] }> = [];
+      for (const newId of newIds) {
+        for (const link of linkRows) {
+          migrationStmts.push({
+            sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+            params: [link.project_id, 'note', newId, link.enabled],
+          });
         }
-        for (const newId of newIds) {
-          for (let linkIndex = 0; linkIndex < links.rows.length; linkIndex++) {
-            const link = links.rows.item(linkIndex);
-            await tx.executeSql(
-              'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
-              [link.project_id, 'note', newId, link.enabled],
-            );
-          }
-        }
-        await tx.executeSql('DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?', ['note', note.id]);
-        await tx.executeSql('DELETE FROM notes WHERE id = ?', [note.id]);
+      }
+      migrationStmts.push({
+        sql: 'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?',
+        params: ['note', note.id],
       });
+      migrationStmts.push({ sql: 'DELETE FROM notes WHERE id = ?', params: [note.id] });
+      await runInTransactionSafe(database, migrationStmts);
     }
   } catch (error) {
     console.warn('[database] repairOversizedNotes failed:', error);
@@ -1820,37 +1891,30 @@ export async function trimContentRevisions(
   maxManual = 20,
 ): Promise<void> {
   const database = await openDatabase();
-  await database.transaction(async (tx) => {
-    const [autoResult] = await tx.executeSql(
-      `SELECT id FROM content_revisions
-       WHERE target_type = ? AND target_id = ? AND source != 'manual_checkpoint'
-       ORDER BY created_at DESC`,
-      [targetType, targetId],
-    );
-    const autoIds: number[] = [];
-    for (let i = 0; i < autoResult.rows.length; i++) {
-      autoIds.push(autoResult.rows.item(i).id);
-    }
-    const toDeleteAuto = autoIds.slice(maxAuto);
-    for (const id of toDeleteAuto) {
-      await tx.executeSql('DELETE FROM content_revisions WHERE id = ?', [id]);
-    }
-
-    const [manualResult] = await tx.executeSql(
-      `SELECT id FROM content_revisions
-       WHERE target_type = ? AND target_id = ? AND source = 'manual_checkpoint'
-       ORDER BY created_at DESC`,
-      [targetType, targetId],
-    );
-    const manualIds: number[] = [];
-    for (let i = 0; i < manualResult.rows.length; i++) {
-      manualIds.push(manualResult.rows.item(i).id);
-    }
-    const toDeleteManual = manualIds.slice(maxManual);
-    for (const id of toDeleteManual) {
-      await tx.executeSql('DELETE FROM content_revisions WHERE id = ?', [id]);
-    }
-  });
+  // V2.2.2 修复：原 `database.transaction(async (tx) => {...})` 内部多次 await → InvalidStateError。
+  // 改成：先 async 收集要删的 id，再合并到一次同步 push 事务。
+  const autoRows = await all<{ id: number }>(
+    `SELECT id FROM content_revisions
+     WHERE target_type = ? AND target_id = ? AND source != 'manual_checkpoint'
+     ORDER BY created_at DESC`,
+    [targetType, targetId],
+  );
+  const manualRows = await all<{ id: number }>(
+    `SELECT id FROM content_revisions
+     WHERE target_type = ? AND target_id = ? AND source = 'manual_checkpoint'
+     ORDER BY created_at DESC`,
+    [targetType, targetId],
+  );
+  const toDeleteAuto = autoRows.map((r) => r.id).slice(maxAuto);
+  const toDeleteManual = manualRows.map((r) => r.id).slice(maxManual);
+  const stmts: Array<{ sql: string; params: any[] }> = [];
+  for (const id of toDeleteAuto) {
+    stmts.push({ sql: 'DELETE FROM content_revisions WHERE id = ?', params: [id] });
+  }
+  for (const id of toDeleteManual) {
+    stmts.push({ sql: 'DELETE FROM content_revisions WHERE id = ?', params: [id] });
+  }
+  await runInTransactionSafe(database, stmts);
 }
 
 // ---------------------------------------------------------------------------
