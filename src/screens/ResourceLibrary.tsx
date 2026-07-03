@@ -560,6 +560,12 @@ export const ResourceLibrary: React.FC = () => {
             {selectedCollectionId ? <Button label="返回合集" variant="secondary" compact onPress={() => setSelectedCollectionId(null)} /> : null}
           </ScrollView>
         ) : null}
+        {tab === 'notes' ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionScroll}>
+            <Button label="导入 TXT 笔记" icon={Import} compact onPress={importNoteText} />
+            <Button label="批量导入 TXT" icon={Import} variant="secondary" compact onPress={importNotesBatch} />
+          </ScrollView>
+        ) : null}
         {tab === 'notes' && currentProject ? (
           <View style={styles.noteModePanel}>
             <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>笔记模式</Text>
@@ -630,8 +636,6 @@ export const ResourceLibrary: React.FC = () => {
             ) : null}
           </View>
         ) : null}
-        {tab === 'notes' ? <Button label="导入 TXT 笔记" icon={Import} onPress={importNoteText} /> : null}
-        {tab === 'notes' ? <Button label="批量导入 TXT" icon={Import} variant="secondary" onPress={importNotesBatch} /> : null}
         {canAddManual ? (
           <>
             <Field value={draft} onChangeText={setDraft} placeholder={placeholderFor(tab, Boolean(selectedCollectionId))} inputStyle={styles.inlineInput} />
