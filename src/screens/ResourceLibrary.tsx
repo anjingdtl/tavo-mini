@@ -344,10 +344,22 @@ export const ResourceLibrary: React.FC = () => {
 
   const openEditor = async (kind: EditorKind, item: any) => {
     const noteContent = kind === 'notes' ? await db.getNoteContentById(item.id) : '';
+    // BUG-8 修复：新建的角色/世界书 name 是 "未命名角色" 等占位符，
+    // 如果直接预填到 TextInput 会让用户的输入被拼接到占位符后面（"未命名角色Xxx"），
+    // 即使保存成功也保留占位符。这里把已存在的真实 name 才预填，否则留空让 placeholder 显示。
+    const placeholderByKind: Record<EditorKind, string> = {
+      characters: '未命名角色',
+      worldbookCollection: '未命名世界书',
+      worldbook: '未命名条目',
+      notes: '无标题笔记',
+      presets: '未命名预设',
+    };
+    const storedName = item.name || '';
+    const isPlaceholder = storedName === placeholderByKind[kind];
     setEditor({
       kind,
       item,
-      name: titleFor(kind, item),
+      name: isPlaceholder ? '' : storedName,
       content: kind === 'notes' ? noteContent : kind === 'worldbook' ? item.content || '' : '',
       secondary: item.keyword_secondary || '',
       comment: item.comment || '',
