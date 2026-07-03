@@ -13,12 +13,18 @@ import { estimateTokens } from '../utils/tokenEstimator';
 import { DEFAULT_STYLE_WEIGHTS, type StyleWeights, analyzeNotesStyle } from '../services/styleAnalyzer';
 import {
   getCharacterImagePath,
+  importCharacters,
+  importNotes,
   importSelectedCharacter,
   importSelectedNoteText,
   importSelectedWorldBook,
+  importWorldBooks,
   pickCharacterPngImageReplacement,
+  pickLocalFiles,
   withCharacterImageAsset,
+  type BatchImportResult,
 } from '../services/fileImport';
+import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
 
 type ResourceTab = 'characters' | 'worldbook' | 'notes' | 'presets';
@@ -73,6 +79,14 @@ export const ResourceLibrary: React.FC = () => {
   const [enabledNoteIds, setEnabledNoteIds] = useState<number[]>([]);
   const [showNotePicker, setShowNotePicker] = useState(false);
   const [showStyleProfile, setShowStyleProfile] = useState(false);
+  const [batchResult, setBatchResult] = useState<
+    | {
+        title: string;
+        success: Array<{ fileName: string; id: any }>;
+        failed: Array<{ fileName: string; error: string }>;
+      }
+    | null
+  >(null);
   const [styleProfileText, setStyleProfileText] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const projectId = currentProject?.id || 0;
@@ -176,6 +190,63 @@ export const ResourceLibrary: React.FC = () => {
       await loadData();
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导入失败', text2: error.message });
+    }
+  };
+
+  const importCharactersBatch = async () => {
+    const files = await pickLocalFiles([types.json, types.images], 50);
+    if (!files) return;
+    try {
+      const result = await importCharacters(projectId, files);
+      if (result.total === 0) return;
+      Toast.show({
+        type: result.failed.length === 0 ? 'success' : 'info',
+        text1: `角色卡批量导入：${result.success.length} 成功 / ${result.failed.length} 失败`,
+      });
+      if (result.failed.length > 0) {
+        setBatchResult({ title: '批量导入角色卡', success: result.success, failed: result.failed });
+      }
+      await loadData();
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '批量导入失败', text2: error.message });
+    }
+  };
+
+  const importWorldbooksBatch = async () => {
+    const files = await pickLocalFiles([types.json], 50);
+    if (!files) return;
+    try {
+      const result = await importWorldBooks(projectId, files);
+      if (result.total === 0) return;
+      Toast.show({
+        type: result.failed.length === 0 ? 'success' : 'info',
+        text1: `世界书批量导入：${result.success.length} 成功 / ${result.failed.length} 失败`,
+      });
+      if (result.failed.length > 0) {
+        setBatchResult({ title: '批量导入世界书', success: result.success, failed: result.failed });
+      }
+      await loadData();
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '批量导入失败', text2: error.message });
+    }
+  };
+
+  const importNotesBatch = async () => {
+    const files = await pickLocalFiles([types.plainText, types.allFiles], 50);
+    if (!files) return;
+    try {
+      const result = await importNotes(projectId, files);
+      if (result.total === 0) return;
+      Toast.show({
+        type: result.failed.length === 0 ? 'success' : 'info',
+        text1: `TXT 笔记批量导入：${result.success.length} 成功 / ${result.failed.length} 失败`,
+      });
+      if (result.failed.length > 0) {
+        setBatchResult({ title: '批量导入 TXT 笔记', success: result.success, failed: result.failed });
+      }
+      await loadData();
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '批量导入失败', text2: error.message });
     }
   };
 
@@ -476,6 +547,7 @@ export const ResourceLibrary: React.FC = () => {
           <>
             <View style={styles.rowActions}>
               <Button label="导入角色卡" icon={Import} onPress={importCharacter} />
+              <Button label="批量导入角色卡" icon={Import} variant="secondary" onPress={importCharactersBatch} />
               <Button label="新建角色卡" icon={FilePlus2} variant="secondary" onPress={addNewCharacter} />
             </View>
             <View style={styles.rowActions}>
@@ -772,6 +844,15 @@ export const ResourceLibrary: React.FC = () => {
           </View>
         </View>
       </Modal>
+    {batchResult ? (
+        <BatchImportResultModal
+          visible
+          title={batchResult.title}
+          success={batchResult.success}
+          failed={batchResult.failed}
+          onClose={() => setBatchResult(null)}
+        />
+      ) : null}
     </Screen>
   );
 };
