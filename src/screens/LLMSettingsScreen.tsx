@@ -53,8 +53,13 @@ export const LLMSettingsScreen: React.FC = () => {
   const activeName = useMemo(() => llmConfigs.find((config) => config.is_active === 1)?.name || '未选择', [llmConfigs]);
 
   const validate = () => {
-    if (!draft.name.trim() || !draft.base_url.trim() || !draft.api_key.trim() || !draft.model_name.trim()) {
-      Alert.alert('配置不完整', '请填写配置名称、API 地址、API Key 和模型名称。');
+    const missing: string[] = [];
+    if (!draft.name.trim()) missing.push('配置名称');
+    if (!draft.base_url.trim()) missing.push('API 地址');
+    if (!draft.api_key.trim()) missing.push('API Key');
+    if (!draft.model_name.trim()) missing.push('模型名称');
+    if (missing.length > 0) {
+      Alert.alert('配置不完整', `请填写以下必填项：\n\n• ${missing.join('\n• ')}`);
       return false;
     }
     return true;

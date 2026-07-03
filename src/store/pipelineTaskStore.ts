@@ -215,6 +215,10 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
             status: 'failed' as PipelineTaskStatus,
             error: '运行被中断（App 可能被系统挂起）',
             updatedAt: now,
+            // BUG-10 修复：必须同时设置 resolvedAt，否则 (resolvedAt===null && status==='failed')
+            // 会持续触发 App.tsx 的 pendingPrompt 弹窗（每次冷启动都弹）。
+            resolvedAt: now,
+            resolvedAction: 'reject',
           };
           persistTask(updated);
           return updated;
