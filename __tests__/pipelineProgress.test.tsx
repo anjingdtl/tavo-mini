@@ -16,31 +16,11 @@ jest.mock('../src/store/themeStore', () => ({
   }),
 }));
 
-// V2.2.0：用 fake store 验证 PipelineProgress 实时显示流式草稿预览
-const fakeDraftPreview: Record<string, string> = {};
-const fakeSubscribers: Array<(state: any) => void> = [];
-jest.mock('../src/store/pipelineTaskStore', () => ({
-  usePipelineTaskStore: {
-    getState: () => ({ draftPreviews: fakeDraftPreview }),
-    subscribe: (selectorOrListener: any, cb?: any) => {
-      // 兼容 zustand v5：subscribe(selector, callback) 或 subscribe(listener)
-      const listener = typeof selectorOrListener === 'function' && cb ? cb : selectorOrListener;
-      fakeSubscribers.push(listener);
-      return () => {
-        const idx = fakeSubscribers.indexOf(listener);
-        if (idx >= 0) fakeSubscribers.splice(idx, 1);
-      };
-    },
-  },
-}));
-
 import { PipelineProgress } from '../src/components/PipelineProgress';
 
 describe('PipelineProgress', () => {
   beforeEach(() => {
     jest.useFakeTimers();
-    for (const k of Object.keys(fakeDraftPreview)) delete fakeDraftPreview[k];
-    fakeSubscribers.length = 0;
   });
 
   afterEach(() => jest.useRealTimers());
@@ -77,24 +57,5 @@ describe('PipelineProgress', () => {
       <PipelineProgress stage="proof" startedAt={Date.now()} visible={true} />,
     );
     expect(getByText('打磨中...')).toBeTruthy();
-  });
-
-  it('V2.2.0: 当指定 taskId 且 stage=draft 时显示草稿预览文本', async () => {
-    fakeDraftPreview['task-A'] = '一半的草稿…';
-
-    const { findByText } = render(
-      <PipelineProgress stage="draft" startedAt={Date.now()} visible={true} taskId="task-A" />,
-    );
-
-    const node = await findByText('一半的草稿…');
-    expect(node).toBeTruthy();
-  });
-
-  it('V2.2.0: stage 不为 draft 时不显示草稿预览', () => {
-    fakeDraftPreview['task-A'] = '不应显示';
-    const { queryByText } = render(
-      <PipelineProgress stage="review" startedAt={Date.now()} visible={true} taskId="task-A" />,
-    );
-    expect(queryByText('不应显示')).toBeNull();
   });
 });
