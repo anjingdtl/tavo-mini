@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Download, Plus, Trash2, Upload } from 'lucide-react-native';
+import { Download, Plus, Trash2, Upload, X } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
@@ -163,7 +163,25 @@ export const ProjectListScreen: React.FC = () => {
       ) : (
         <>
           <View style={styles.searchBar}>
-            <Field placeholder="搜索项目..." value={searchQuery} onChangeText={setSearchQuery} />
+            <View style={styles.searchInputWrap}>
+              <Field
+                placeholder="搜索项目..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                inputStyle={styles.searchInput}
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="清空搜索"
+                  onPress={() => setSearchQuery('')}
+                  style={styles.searchClearButton}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <X size={16} color={theme.colors.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
           {filteredProjects.length === 0 ? (
             <EmptyState title="无匹配项目" description="没有找到匹配的项目，试试其他关键词。" />
@@ -200,6 +218,17 @@ export const ProjectListScreen: React.FC = () => {
 const styles = StyleSheet.create({
   list: { padding: spacing.lg, paddingBottom: 96 },
   searchBar: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
+  searchInputWrap: { position: 'relative', justifyContent: 'center' },
+  searchInput: { paddingRight: 36 },
+  searchClearButton: {
+    position: 'absolute',
+    right: spacing.sm,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm,
+  },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   cardText: { flex: 1 },
   projectName: { fontSize: 17, fontWeight: '700', marginBottom: 4 },

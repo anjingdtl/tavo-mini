@@ -372,7 +372,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     }
 
     if (chapter.content.trim()) {
-      Alert.alert('覆盖正文', '当前章节已有正文内容，流水线生成将覆盖现有正文。确定继续？', [
+      Alert.alert('覆盖并重新生成', '当前章节已有正文内容，AI 流水线将覆盖现有正文生成新版本（不会续写到末尾）。确定继续？', [
         { text: '取消', style: 'cancel' },
         {
           text: '覆盖并生成',
@@ -496,12 +496,12 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
             contentContainerStyle={styles.toolbarRow}
           >
             <Button
-              label={generating ? '续写中…' : '续写'}
+              label={generating ? 'AI 生成中…' : 'AI 重新生成'}
               icon={Bot}
               onPress={runPipeline}
               disabled={generating || finalizing}
               compact
-              minWidth={72}
+              minWidth={92}
             />
             {generating && (
               <Button
