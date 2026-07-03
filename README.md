@@ -1,230 +1,360 @@
-# ShineWriter
+# ShineWriter / 小说工作台
 
-> **Current version: V1.6.3** (versionCode 52) · Last updated 2026-06-14
+<div align="center">
 
-A personal novel writing workbench for Android, built with React Native. Designed for long-form fiction authors who need data safety, AI controllability, and efficient writing workflows — all offline, all local.
+**移动端小说创作 · 资料 · AI 工作台**
 
-## Latest Updates (V1.6.3)
+[![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#-技术栈)
+[![React Native](https://img.shields.io/badge/React%20Native-0.85-61DAFB.svg)](https://reactnative.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6.svg)](https://www.typescriptlang.org/)
+[![License](https://img.shields.io/badge/Version-V2.2.2-blue.svg)](CHANGELOG)
+[![Tests](https://img.shields.io/badge/Tests-223%2F223%20passed-success.svg)](#-测试)
 
-- **Dismissible pipeline-result prompt.** The "流水线已完成 / 流水线失败" prompt that surfaces a finished AI task is now a controlled React Modal (`src/components/PipelineResultPrompt.tsx`) instead of a native `Alert.alert`. Tapping "查看结果" dismisses the modal *in lockstep* with the navigation, so it no longer lingers on top of the result page or feels like it is being re-fired on every screen change.
-- **Strict once-per-task prompting.** The root subscription in `src/main/index.tsx` now ignores tasks whose `resolvedAt` is non-null, which is the critical guard for batch runs (`batchChapterPipeline` resolves every sub-task right after `completeTask`). A batch generation no longer pops one global prompt per chapter — the per-chapter summary in `OutlineEditor` remains the canonical feedback.
-- **110/110 tests passing** across 25 suites (`npm test`); `npm run lint` clean.
+A mobile novel-writing studio with project management, world-book & character
+library, multi-stage AI pipeline, voice dictation, and offline-first SQLite
+storage.
 
-## Features
+[English](#-english) · [中文](#-中文)
 
-### Writing & Editing
-- Multi-project management with chapter-based and freeform document editing
-- Auto-save with flushable async debounce — your last keystroke is never lost
-- Content revision history with one-click restore and reversible snapshot chains
-- Focus mode for distraction-free writing
-- Chapter reordering with up/down controls
+</div>
 
-### AI-Powered Generation
-- Multi-stage AI pipeline: Draft → Review → Fact-Check → Proofread
-- Live progress UI (`PipelineProgress`) that surfaces the current stage, label, and elapsed time
-- Generation drafts — AI output goes to preview first, never overwrites directly
-- Pipeline checkpoint resume — interrupted tasks continue from the last successful stage
-- Global completion prompt that fires no matter which screen the user is on when a pipeline finishes; double-dismissal and batch-replay are explicitly prevented
-- OpenAI-compatible API with streaming support and automatic fallback
+---
 
-### Data Safety
-- Backup center with format v2 validation, checksums, and transactional restore
-- Category-based retention: 3 automatic / 10 manual / 3 pre-restore backups
-- Project package import/export (v2 format with v1 backward compatibility)
-- All high-risk operations (clear, AI replace, restore) create recoverable snapshots
+## 📑 目录 / Table of Contents
 
-### Research & Organization
-- Character cards (CCv1/v2/v3), world books (lorebook_v3), and PNG character import
-- Story overview with chapter count, word count, and per-chapter statistics
-- Project search across chapters, notes, world books, and characters
-- LLM usage analytics by time range, model, and scenario
+- [🌟 项目亮点](#-项目亮点)
+- [✨ 主要功能](#-主要功能)
+- [🛠 技术栈](#-技术栈)
+- [🚀 快速开始](#-快速开始)
+- [📦 构建发布](#-构建发布)
+- [🧪 测试](#-测试)
+- [📁 项目结构](#-项目结构)
+- [🔧 V2.2.2 更新日志](#-v222-更新日志)
+- [🤝 贡献](#-贡献)
+- [📄 许可证](#-许可证)
+- [🇬🇧 English](#-english)
 
-### Security
-- API keys stored in Android Keystore via react-native-keychain
-- Database never stores credentials in plaintext
+---
 
-## Tech Stack
+## 🌟 项目亮点
 
-| Layer | Technology |
-|---|---|
-| Framework | React Native 0.85 (Android-only) |
-| Language | TypeScript 5.8 |
-| State | Zustand 5 (4 stores) |
-| Database | SQLite (react-native-sqlite-storage), 16 tables, schema v8 |
-| Navigation | React Navigation 7 (Bottom Tabs + Native Stack) |
-| AI | OpenAI-compatible API (streaming + non-streaming) |
-| Security | Android Keystore (react-native-keychain) |
-| Testing | Jest + React Native Testing Library (110 tests, 25 suites) |
+- **📱 完全离线优先** — 数据全部保存在本地 SQLite，断网也能写作；AI 调用是唯一外网依赖。
+- **🤖 多角色 AI 流水线** — 4 阶段流水线（初稿作者 → 审阅编辑 + 事实核查员 → 终审校对员）协作生成高质量内容。
+- **🌊 流式输出 + 后台保活** — 草稿阶段实时流式渲染；前台服务保活 + Wake Lock 让 App 切后台也能继续生成。
+- **📚 富文本资料库** — 角色卡（PNG 元数据导入）、世界书集合、笔记资料库、预设管理。
+- **🎙 语音朗读** — TTS 引擎集成，多音色多语速，章节正文一键朗读。
+- **🔌 OpenAI 兼容接口** — 支持任何 OpenAI 兼容 API（DeepSeek、Moonshot、自部署等）。
+- **🎨 自研三色主题** — `#439EA6 / #B0E0E3 / #D7F1F4` 全局色彩语言。
 
-## Requirements
+---
 
-- **Node.js** >= 22.11.0
-- **Android SDK**: minSdk 24, compileSdk/targetSdk 36
-- **Kotlin** 2.1.20
-- **Java** 17+
+## ✨ 主要功能
 
-## Getting Started
+| 模块 | 功能 |
+|------|------|
+| **项目** | 创建 / 删除 / 切换小说项目；大纲 / 自由模式选择 |
+| **写作** | 章节 CRUD；正文 2 秒防抖自动保存；AI 续写 / 定稿 / 版本回退 |
+| **资料** | 角色卡（PNG 元数据导入）；世界书（collection + entry 二级结构）；笔记（仿写 / 资料库模式）；预设管理 |
+| **设置** | LLM 配置（多端点 + 测通）；流水线 4 阶段配置；TTS 引擎选择；后台运行开关 |
+| **导出** | Markdown 导出；Android Documents 保存 |
+| **诊断** | 任务用量统计；前端日志；崩溃追踪 |
 
-### Install Dependencies
+---
 
-```sh
+## 🛠 技术栈
+
+- **框架**: React Native 0.85.3 + React 19.2.3
+- **语言**: TypeScript 5.8
+- **导航**: React Navigation 7
+- **状态管理**: Zustand 5
+- **本地存储**: SQLite（react-native-sqlite-storage）+ AsyncStorage + Keychain（API Key）
+- **网络**: fetch + SSE 流式（自实现 ReadableStream 适配）
+- **原生模块**: Kotlin (PipelineForegroundService / PngMetadata / TtsAudio)
+- **测试**: Jest 29 + @testing-library/react-native 13
+
+---
+
+## 🚀 快速开始
+
+### 环境要求
+
+- **Node.js** >= 22.11
+- **Android SDK** + JDK 17 + Gradle 9
+- **React Native CLI** 环境（`@react-native-community/cli`）
+
+### 安装
+
+```bash
+git clone https://github.com/anjingdtl/tavo-mini.git
+cd tavo-mini
 npm install
 ```
 
-The postinstall script automatically patches `react-native-sqlite-storage` Gradle config (replaces `jcenter()` with `mavenCentral()`).
+### 启动 Metro
 
-### Start Metro
-
-```sh
+```bash
 npm start
 ```
 
-### Run on Android
+### 运行 Android
 
-```sh
+```bash
 npm run android
 ```
 
-### Build APK
+或者先构建 APK 再安装：
 
-```sh
-# Debug APK
-npm run apk:debug
-
-# Release APK
-npm run apk:release
+```bash
+npm run apk:debug      # 生成 dist/apk/debug/ShineWriter-V2.2.2-debug.apk
+adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
 ```
 
-APK output path: `dist/apk/{debug|release}/ShineWriter-V<version>-{debug|release}.apk`
+---
 
-> The Gradle output at `android/app/build/outputs/apk/` is an intermediate artifact. Only use APKs from `dist/apk/`.
+## 📦 构建发布
 
-The `prebuild` step also auto-generates `src/constants/version.json` from `package.json` and the current `git rev-list --count HEAD` (used as `versionCode`).
+| 命令 | 产物 |
+|------|------|
+| `npm run apk:debug` | `dist/apk/debug/ShineWriter-V{version}-debug.apk` |
+| `npm run apk:release` | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 
-### Release Signing
+构建脚本会自动：
+1. 调用 `prebuild` 从 git commit 数生成 `versionCode` 和 `buildTime`
+2. 调用 Gradle `assembleDebug` / `assembleRelease`
+3. 拷贝 APK 到 `dist/apk/{variant}/`
 
-The release keystore is at `android/keystores/shine-writer-release.keystore`. Override credentials via environment variables:
+---
 
-```
-SHINE_WRITER_RELEASE_STORE_PASSWORD
-SHINE_WRITER_RELEASE_KEY_ALIAS
-SHINE_WRITER_RELEASE_KEY_PASSWORD
-```
+## 🧪 测试
 
-## Testing & Linting
-
-```sh
-# Run all tests (110 tests / 25 suites)
-npm test
-
-# Run a single test file
-npx jest __tests__/llm.test.ts
-
-# ESLint
-npm run lint
+```bash
+npm test                # 跑全部 Jest 套件（45 suites / 223 tests）
+npm run lint            # ESLint 全量检查
 ```
 
-## Project Structure
+测试覆盖：数据库迁移、SQLite 事务、流水线各阶段、LLM 流式、笔记双模式、
+上下文构建、备份/恢复、安全存储、UI 组件等核心模块。
+
+---
+
+## 📁 项目结构
 
 ```
-shinewriter/
-  android/                           # Android native project
-  scripts/                           # Build scripts (build-apk, generate-version-json, patch-sqlite)
-  src/
-    main/index.tsx                    # App entry (splash → upgrade detection → ThemeProvider + Navigation,
-                                      #   root pipeline-task subscription, dismissible result prompt)
-    navigation/
-      TabNavigator.tsx                # Bottom tabs + Stack navigation
-      navigationRef.ts                # Root navigation ref + helpers used by the
-                                      #   global pipeline prompt (navigateToPipelineResult etc.)
-    screens/                          # 24 screen components
-    components/                       # ChapterCard, AIStreamText, ThemeProvider, ui,
-                                      #   PipelineProgress, GenerationResultModal,
-                                      #   PipelineResultPrompt
-    services/                         # database, llm, contextBuilder, macroReplace,
-                                       summaryGenerator, chapterGeneration,
-                                       batchChapterPipeline, fileImport,
-                                       exportService, secureStorage,
-                                       pipelineMessages, pipelineRunner,
-                                       backupService, revisionService,
-                                       draftService, projectImport,
-                                       migrations/
-    services/migrations/              # Incremental migration engine (v3→v4→v5→v6→v7→v8)
-    store/                            # projectStore, settingsStore, themeStore,
-                                       pipelineTaskStore
-    constants/                        # defaults.ts, version.json (auto-generated)
-    native/PngMetadataModule.ts       # PNG tEXt chunk parsing bridge
-    types/                            # novel, character, worldbook, theme, pipeline,
-                                       revision, draft, contextTrace
-    utils/                            # debounce, jsonExtractor, tokenEstimator
-  index.js                            # RN entry
+tavo-mini/
+├── src/
+│   ├── components/         # 通用 UI 组件
+│   ├── constants/          # 常量（主题色、默认值、版本号）
+│   ├── navigation/         # 导航栈 + 全局跳转引用
+│   ├── native/             # 原生模块 JS 侧包装
+│   ├── screens/            # 屏幕组件
+│   ├── services/           # 业务服务（database/llm/pipeline/...）
+│   ├── store/              # Zustand 状态
+│   ├── types/              # TypeScript 类型
+│   ├── utils/              # 工具函数
+│   └── main/               # App 入口
+├── android/                # Android 原生工程
+├── __tests__/              # Jest 测试套件（45 suites）
+├── scripts/                # 构建/补丁脚本
+└── dist/apk/               # 打包产物
 ```
 
-## Database Schema
+---
 
-SQLite database `shine_writer.db`, 16 tables at schema version 8:
+## 🔧 V2.2.2 更新日志
 
-| Table | Purpose |
-|---|---|
-| `projects` | Novel projects |
-| `chapters` | Chapter content and metadata |
-| `fragments` | Chapter text fragments |
-| `plotlines` | Plot line definitions |
-| `project_plotlines` | Plot line ↔ project associations |
-| `characters` | Character cards |
-| `worldbook_collections` | World book groups |
-| `worldbook_entries` | World book entries |
-| `notes` | Project notes |
-| `presets` | AI presets |
-| `llm_config` | LLM provider configurations (no API keys) |
-| `settings` | App settings |
-| `project_resources` | Project resource links |
-| `llm_usage_logs` | LLM call logs with model and duration |
-| `freeform_documents` | Freeform writing documents |
-| `pipeline_tasks` | Multi-stage AI pipeline tasks |
-| `content_revisions` | Content version history (v6+) |
-| `generation_drafts` | AI generation drafts (v7+) |
+V2.2.2 是一个 bug-fix 版本，聚焦于数据库稳定性和流水线可靠性：
 
-## Theme
+### 修复
 
-Base tri-color palette: `#439EA6` (primary) / `#B0E0E3` (secondary) / `#D7F1F4` (background)
+1. **🗄 SQLite InvalidStateError（DOM Exception 11）**
+   `database.transaction(async (tx) => {...})` 在 await 处触发 transaction
+   finalize，导致第二次 executeSql 抛错。修复：新增 `runInTransactionSafe`
+   helper，把所有 7 处 transaction 调用方改造成「事务外预读 + 同步 push」。
 
-Three themes via `useThemeStore`: Light / Dark / Eye-care. No hardcoded colors.
+2. **🧹 流水线冷启动清理 stale 任务**
+   旧实现只在 `AppState.change='active'` 事件触发清理，但冷启动不发该事件，
+   导致上次中断的流水线任务永远卡死。修复：在 `index.tsx` 启动序列主动
+   调 `loadFromDB + markStaleTasksAsFailed()`。
 
-## Import & Export
+3. **💬 LLM「保存并测试」弹窗文案**
+   弹窗标题和正文都是「连接成功」造成视觉重复。修复：标题改为「测试通过」，
+   正文显示真实模型名 + 模型回复内容。
 
-| Direction | Format |
-|---|---|
-| Import | JSON character cards (CCv1/v2/v3), world books (lorebook_v3), PNG character cards |
-| Export | Markdown, Plain text (UTF-8 BOM), `.tavo-novel.json` (tavo-maker compatible) |
+### 测试
 
-## Data Safety Notes
+- 新增 2 个测试套件（`createProjectNoAsyncTransaction.test.ts`、
+  `pipelineStaleOnColdStart.test.ts`），全量回归 223/223 通过。
 
-- Editor auto-save uses flushable debounce with AppState monitoring — content is saved before backgrounding or navigation
-- All destructive operations (clear, AI replace, restore) create revision snapshots
-- Backups use format v2 with validation and checksums; restore is transactional
-- Database migrations are non-breaking and incremental
-- Pre-restore backups are created automatically before any restore operation
-- AI generation never overwrites the chapter body in place: results land in `generation_drafts` and require an explicit adopt
+---
 
-## Changelog
+## 🤝 贡献
 
-### V1.6.3 — 2026-06-14
-- Dismissible pipeline-result prompt (controlled React Modal) replacing native `Alert.alert`, so the prompt no longer lingers on top of the result screen after navigation
-- Root subscription guards `resolvedAt === null` to ensure each task is prompted at most once and that batch sub-tasks do not trigger the global prompt
-- Test coverage: `__tests__/pipelineResultPrompt.test.tsx`, additional case in `__tests__/pipelineAutoPrompt.test.tsx` (auto-resolved batch tasks stay silent)
-- 110/110 tests passing, ESLint clean
+欢迎提 Issue 和 PR：
 
-### V1.6.2 — 2026-06-14
-- `PipelineProgress` component surfacing the current stage, label, and elapsed time
-- `GenerationResultModal` so the user can preview pipeline output without leaving the editor
-- `BackupCenterScreen` create-row layout fix (z-order + elevation against the FlatList)
+1. Fork 仓库
+2. 创建分支：`git checkout -b feature/your-feature`
+3. 提交：遵循 Conventional Commits（`feat:` / `fix:` / `chore:` 等）
+4. 测试：`npm test` + `npm run lint` 全绿
+5. Push 并开 PR
 
-### V1.6.1 — 2026-06-14
-- Stability fix for `DraftPreviewScreen` adopt / delete / clear crash caused by nested Alert + setState on unmounted component
-- Chapter editor toolbar reflowed from a single wide row to a 4×4 grid with shorter labels
-- 11 new tests, 93/93 passing
+---
 
-## License
+## 📄 许可证
 
-Private project. All rights reserved.
+MIT License — 详见 [LICENSE](LICENSE)。
+
+---
+
+# 🇬🇧 English
+
+## 🌟 Highlights
+
+- **📱 Fully offline-first** — All data stored locally in SQLite; AI is the only network dependency.
+- **🤖 Multi-role AI pipeline** — 4 stages (Draft Author → Reviewer + Fact-Checker → Final Proofreader) collaborate to produce high-quality prose.
+- **🌊 Streaming + foreground keep-alive** — Real-time streaming during draft stage; `PipelineForegroundService` with Wake Lock keeps generation running even when the app is backgrounded.
+- **📚 Rich resource library** — Character cards (PNG metadata import), world-book collections, notes, presets.
+- **🎙 Voice dictation** — TTS engine integration with multiple voices and speeds; one-tap read-aloud for chapter body.
+- **🔌 OpenAI-compatible API** — Works with any OpenAI-compatible endpoint (DeepSeek, Moonshot, self-hosted, etc.).
+- **🎨 Custom tri-color theme** — `#439EA6 / #B0E0E3 / #D7F1F4` global color language.
+
+## ✨ Features
+
+| Module | Capabilities |
+|--------|--------------|
+| **Projects** | Create / delete / switch novel projects; outline vs. freeform mode |
+| **Writing** | Chapter CRUD; 2-second debounced auto-save; AI continue / finalize / version rollback |
+| **Library** | Character cards (PNG metadata import); world-book (collection + entry); notes (imitation / library mode); presets |
+| **Settings** | LLM configuration (multi-endpoint + connectivity test); 4-stage pipeline config; TTS engine selection; background run toggle |
+| **Export** | Markdown export via Android Documents |
+| **Diagnostics** | Per-task token usage; in-app logs; crash tracking |
+
+## 🛠 Tech Stack
+
+- **Framework**: React Native 0.85.3 + React 19.2.3
+- **Language**: TypeScript 5.8
+- **Navigation**: React Navigation 7
+- **State**: Zustand 5
+- **Storage**: SQLite (react-native-sqlite-storage) + AsyncStorage + Keychain (API keys)
+- **Network**: fetch + self-implemented SSE streaming adapter
+- **Native modules**: Kotlin (PipelineForegroundService / PngMetadata / TtsAudio)
+- **Tests**: Jest 29 + @testing-library/react-native 13
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Node.js** >= 22.11
+- **Android SDK** + JDK 17 + Gradle 9
+- **React Native CLI** environment (`@react-native-community/cli`)
+
+### Install
+
+```bash
+git clone https://github.com/anjingdtl/tavo-mini.git
+cd tavo-mini
+npm install
+```
+
+### Start Metro
+
+```bash
+npm start
+```
+
+### Run Android
+
+```bash
+npm run android
+```
+
+Or build the APK first and install:
+
+```bash
+npm run apk:debug      # outputs dist/apk/debug/ShineWriter-V2.2.2-debug.apk
+adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
+```
+
+## 📦 Building
+
+| Command | Output |
+|---------|--------|
+| `npm run apk:debug` | `dist/apk/debug/ShineWriter-V{version}-debug.apk` |
+| `npm run apk:release` | `dist/apk/release/ShineWriter-V{version}-release.apk` |
+
+Build script will:
+1. Call `prebuild` to generate `versionCode` and `buildTime` from git
+2. Run Gradle `assembleDebug` / `assembleRelease`
+3. Copy APK to `dist/apk/{variant}/`
+
+## 🧪 Tests
+
+```bash
+npm test                # Run all Jest suites (45 suites / 223 tests)
+npm run lint            # ESLint full check
+```
+
+Coverage: database migrations, SQLite transactions, pipeline stages, LLM
+streaming, dual-mode notes, context building, backup/restore, secure storage,
+UI components, and other core modules.
+
+## 📁 Project Layout
+
+```
+tavo-mini/
+├── src/
+│   ├── components/         # Reusable UI components
+│   ├── constants/          # Constants (theme, defaults, version)
+│   ├── navigation/         # Navigation stack + global refs
+│   ├── native/             # Native module JS wrappers
+│   ├── screens/            # Screen components
+│   ├── services/           # Business services (database/llm/pipeline/...)
+│   ├── store/              # Zustand stores
+│   ├── types/              # TypeScript types
+│   ├── utils/              # Utilities
+│   └── main/               # App entry
+├── android/                # Android native project
+├── __tests__/              # Jest suites (45 suites)
+├── scripts/                # Build / patch scripts
+└── dist/apk/               # Build artifacts
+```
+
+## 🔧 V2.2.2 Changelog
+
+V2.2.2 is a bug-fix release focused on database stability and pipeline reliability:
+
+### Fixed
+
+1. **🗄 SQLite InvalidStateError (DOM Exception 11)**
+   `database.transaction(async (tx) => {...})` finalized the transaction on
+   the first await, throwing on subsequent executeSql. Fix: introduced
+   `runInTransactionSafe` helper; refactored all 7 transaction call sites to
+   "pre-read outside transaction, then sync-push into transaction".
+
+2. **🧹 Cold-start cleanup of stale pipeline tasks**
+   The previous implementation only cleaned up stale tasks on the
+   `AppState.change='active'` event, which cold start does not emit, leaving
+   `drafting` tasks permanently stuck. Fix: explicitly invoke
+   `loadFromDB + markStaleTasksAsFailed()` in `index.tsx` startup sequence.
+
+3. **💬 LLM "Save & Test" dialog copy**
+   Title and body both rendered "连接成功", causing visual duplication.
+   Fix: title changed to "测试通过"; body now shows the actual model name
+   and reply content.
+
+### Tests
+
+- 2 new test suites added; full regression 223/223 passing.
+
+## 🤝 Contributing
+
+Issues and PRs are welcome:
+
+1. Fork the repo
+2. Create a branch: `git checkout -b feature/your-feature`
+3. Commit using Conventional Commits (`feat:` / `fix:` / `chore:` etc.)
+4. Test: ensure `npm test` + `npm run lint` pass
+5. Push and open a PR
+
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE).
