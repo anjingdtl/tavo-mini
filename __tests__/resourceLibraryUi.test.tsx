@@ -109,11 +109,11 @@ describe('ResourceLibrary UI', () => {
     }
   });
 
-  it('renders the list container with flex:1 style', async () => {
+  it('renders the list container with scrollable minHeight style', async () => {
     const { findByText, getByTestId } = render(<ResourceLibrary />);
     await findByText('导入角色卡');
 
     const container = getByTestId('resource-list-container');
-    expect(container.props.style).toMatchObject({ flex: 1 });
+    expect(container.props.style).toMatchObject({ minHeight: 240 });
   });
 });
