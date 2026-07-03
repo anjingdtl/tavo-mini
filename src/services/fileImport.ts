@@ -339,6 +339,44 @@ async function pickLocalFile(allowedTypes: string[]): Promise<{ localPath: strin
   };
 }
 
+export interface PickedFile {
+  localPath: string;
+  name: string;
+  mimeType?: string | null;
+}
+
+export interface BatchImportResult<T> {
+  success: Array<{ fileName: string; id: T }>;
+  failed: Array<{ fileName: string; error: string }>;
+  total: number;
+}
+
+export async function pickLocalFiles(
+  allowedTypes: string[],
+  max: number = 50,
+): Promise<PickedFile[] | null> {
+  const selected = await pick({ type: allowedTypes, allowMultiSelection: true, mode: 'import', limit: max });
+  if (!selected || selected.length === 0) return null;
+
+  const copies = await keepLocalCopy({
+    files: selected.map((s) => ({ uri: s.uri, fileName: s.name || 'shinewriter-import' })),
+    destination: 'cachesDirectory',
+  });
+
+  const result: PickedFile[] = [];
+  for (let i = 0; i < copies.length; i += 1) {
+    const copy = copies[i];
+    if (copy.status !== 'success') continue;
+    const original = selected[i];
+    result.push({
+      localPath: copy.localUri.replace(/^file:\/\//, ''),
+      name: original.name || 'shinewriter-import',
+      mimeType: original.type,
+    });
+  }
+  return result;
+}
+
 function isPngSelection(file: { name: string; mimeType?: string | null }): boolean {
   return file.name.toLowerCase().endsWith('.png') || file.mimeType === 'image/png';
 }
@@ -434,4 +472,82 @@ export async function importWorldBookFromJSON(
     await db.deleteWorldbookCollection(collectionId).catch(() => {});
     throw error;
   }
+}
+
+async function importOneCharacterFromFile(projectId: number, file: PickedFile): Promise<number> {
+  const isPng = isPngSelection(file);
+  let payload = isPng
+    ? await parseCharacterCardPNG(file.localPath)
+    : parseCharacterCardJSON(await RNFS.readFile(file.localPath, 'utf8'), file.name);
+  if (isPng) {
+    const imagePath = await persistCharacterPngImage(file.localPath, file.name);
+    payload = { ...payload, data: withCharacterImageAsset(payload.data, imagePath, file.name) };
+  }
+  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data));
+}
+
+export async function importCharacters(
+  projectId: number,
+  files: PickedFile[],
+): Promise<BatchImportResult<number>> {
+  const success: Array<{ fileName: string; id: number }> = [];
+  const failed: Array<{ fileName: string; error: string }> = [];
+  for (const file of files) {
+    try {
+      const id = await importOneCharacterFromFile(projectId, file);
+      success.push({ fileName: file.name, id });
+    } catch (e: any) {
+      failed.push({ fileName: file.name, error: String(e?.message || e) });
+    }
+  }
+  return { success, failed, total: files.length };
+}
+
+export async function importWorldBooks(
+  projectId: number,
+  files: PickedFile[],
+): Promise<BatchImportResult<{ collectionId: number; entriesImported: number }>> {
+  const success: Array<{ fileName: string; id: { collectionId: number; entriesImported: number } }> = [];
+  const failed: Array<{ fileName: string; error: string }> = [];
+  for (const file of files) {
+    try {
+      const parsed = parseWorldBookJSON(await RNFS.readFile(file.localPath, 'utf8'), file.name);
+      const collectionId = await db.createWorldbookCollection(projectId, parsed.name, { enabled: 1 });
+      let count = 0;
+      for (const entry of parsed.entries) {
+        await db.createWorldbookEntry(projectId, entry.keyword_primary, entry.content, entry.enabled, {
+          collection_id: collectionId,
+          keyword_secondary: entry.keyword_secondary,
+          comment: entry.comment,
+          constant: entry.constant,
+          position: entry.position,
+        });
+        count += 1;
+      }
+      await db.updateWorldbookCollectionTokenEstimate(collectionId);
+      success.push({ fileName: file.name, id: { collectionId, entriesImported: count } });
+    } catch (e: any) {
+      failed.push({ fileName: file.name, error: String(e?.message || e) });
+    }
+  }
+  return { success, failed, total: files.length };
+}
+
+export async function importNotes(
+  projectId: number,
+  files: PickedFile[],
+): Promise<BatchImportResult<{ firstId: number; createdCount: number }>> {
+  const success: Array<{ fileName: string; id: { firstId: number; createdCount: number } }> = [];
+  const failed: Array<{ fileName: string; error: string }> = [];
+  for (const file of files) {
+    try {
+      const content = await RNFS.readFile(file.localPath, 'utf8');
+      const title = file.name.replace(/\.[^.]+$/, '').trim() || '导入的 TXT 笔记';
+      const ret = await db.createNotesFromTextChunks(projectId, title, content);
+      success.push({ fileName: file.name, id: ret });
+    } catch (e: any) {
+      failed.push({ fileName: file.name, error: String(e?.message || e) });
+    }
+  }
+  return { success, failed, total: files.length };
 }
