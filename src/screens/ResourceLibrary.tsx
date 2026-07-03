@@ -644,7 +644,7 @@ export const ResourceLibrary: React.FC = () => {
         ) : null}
       </View>
 
-      <View style={styles.listContainer}>
+      <View testID="resource-list-container" style={styles.listContainer}>
         {tab === 'worldbook' && !selectedCollectionId ? (
           collections.length === 0 ? (
             <EmptyState title="还没有世界书合集" description="导入世界书文件会自动创建合集，也可以手动添加合集。" />
