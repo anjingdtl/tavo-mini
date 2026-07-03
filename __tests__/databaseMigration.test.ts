@@ -224,8 +224,20 @@ function createLegacySQLiteMock() {
       enablePromise: jest.fn(),
       openDatabase: jest.fn(async () => ({
         executeSql,
-        transaction: jest.fn(async (scope: (tx: { executeSql: typeof executeSql }) => Promise<void> | void) => {
-          await scope({ executeSql });
+        // V2.2.2 适配：兼容两种 transaction 调用风格：
+        //   1) 老式 `transaction(scope)` —— 1 个 callback
+        //   2) 新式 `transaction(cb, err, success)` —— 3 个参数（react-native-sqlite-storage promise 风格）
+        // 新代码用 `runInTransactionSafe` 走风格 2，3 参数的 success() 必须被同步调起。
+        transaction: jest.fn((arg1: any, _arg2?: any, arg3?: any) => {
+          if (typeof arg3 === 'function') {
+            // 3-arg style: 同步调用 cb，调 success
+            arg1({ executeSql });
+            if (typeof arg3 === 'function') arg3();
+            return;
+          }
+          // 1-arg style: 兼容老代码
+          const scope = arg1;
+          Promise.resolve(scope({ executeSql })).catch(() => {});
         }),
       })),
     },
