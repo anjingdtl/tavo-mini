@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { Alert, FlatList, Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { BookMarked, Download, FilePlus2, Import, NotebookPen, Pencil, RefreshCw, SlidersHorizontal, Trash2, UserRound } from 'lucide-react-native';
+import { types } from '@react-native-documents/picker';
 import Toast from 'react-native-toast-message';
 import { useFocusEffect } from '@react-navigation/native';
 import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
