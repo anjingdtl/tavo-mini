@@ -13,7 +13,8 @@ class AppStateTracker {
   private current: AppStateStatus = AppState.currentState;
 
   constructor() {
-    AppState.addEventListener('change', (next) => {
+    const appState = AppState;
+    appState.addEventListener('change', (next) => {
       this.current = next;
     });
     // 11.18 修复：冷启动时 AppState.currentState 可能不可靠（部分设备首帧返回
@@ -28,7 +29,12 @@ class AppStateTracker {
       ) {
         return;
       }
-      const latest = AppState?.currentState;
+      let latest: AppStateStatus | undefined;
+      try {
+        latest = appState?.currentState;
+      } catch {
+        return;
+      }
       if (latest && latest !== 'unknown') {
         this.current = latest;
       }
