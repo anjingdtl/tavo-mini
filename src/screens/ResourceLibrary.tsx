@@ -543,28 +543,22 @@ export const ResourceLibrary: React.FC = () => {
       </View>
       <View style={styles.actions}>
         {tab === 'characters' ? (
-          <>
-            <View style={styles.rowActions}>
-              <Button label="导入角色卡" icon={Import} onPress={importCharacter} />
-              <Button label="批量导入角色卡" icon={Import} variant="secondary" onPress={importCharactersBatch} />
-              <Button label="新建角色卡" icon={FilePlus2} variant="secondary" onPress={addNewCharacter} />
-            </View>
-            <View style={styles.rowActions}>
-              <Button label="启用全部角色" variant="secondary" onPress={() => setAllCharacters(true)} disabled={!currentProject} />
-              <Button label="停用全部角色" variant="ghost" onPress={() => setAllCharacters(false)} disabled={!currentProject} />
-            </View>
-          </>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionScroll}>
+            <Button label="导入角色卡" icon={Import} compact onPress={importCharacter} />
+            <Button label="批量导入角色卡" icon={Import} variant="secondary" compact onPress={importCharactersBatch} />
+            <Button label="新建角色卡" icon={FilePlus2} variant="secondary" compact onPress={addNewCharacter} />
+            <Button label="启用全部角色" variant="secondary" compact onPress={() => setAllCharacters(true)} disabled={!currentProject} />
+            <Button label="停用全部角色" variant="ghost" compact onPress={() => setAllCharacters(false)} disabled={!currentProject} />
+          </ScrollView>
         ) : null}
         {tab === 'worldbook' ? (
-          <>
-            <View style={styles.rowActions}>
-              <Button label="导入世界书" icon={Import} onPress={importWorldbook} />
-              <Button label="批量导入世界书" icon={Import} variant="secondary" onPress={importWorldbooksBatch} />
-              {!selectedCollectionId && <Button label="新建世界书" icon={FilePlus2} variant="secondary" onPress={addNewWorldbook} />}
-              {selectedCollectionId && <Button label="新建条目" icon={FilePlus2} variant="secondary" onPress={addNewWorldbookEntry} />}
-            </View>
-            {selectedCollectionId ? <Button label="返回合集" variant="secondary" onPress={() => setSelectedCollectionId(null)} /> : null}
-          </>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionScroll}>
+            <Button label="导入世界书" icon={Import} compact onPress={importWorldbook} />
+            <Button label="批量导入世界书" icon={Import} variant="secondary" compact onPress={importWorldbooksBatch} />
+            {!selectedCollectionId && <Button label="新建世界书" icon={FilePlus2} variant="secondary" compact onPress={addNewWorldbook} />}
+            {selectedCollectionId && <Button label="新建条目" icon={FilePlus2} variant="secondary" compact onPress={addNewWorldbookEntry} />}
+            {selectedCollectionId ? <Button label="返回合集" variant="secondary" compact onPress={() => setSelectedCollectionId(null)} /> : null}
+          </ScrollView>
         ) : null}
         {tab === 'notes' && currentProject ? (
           <View style={styles.noteModePanel}>
@@ -920,6 +914,7 @@ function estimateEditorTokens(editor: EditorState): number {
 const styles = StyleSheet.create({
   tabs: { padding: spacing.lg, paddingBottom: 0 },
   actions: { padding: spacing.lg, paddingBottom: 0, gap: spacing.sm },
+  actionScroll: { flexDirection: 'row', gap: spacing.sm, paddingRight: spacing.lg, paddingVertical: spacing.xs },
   rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   inlineInput: { minHeight: 40 },
   list: { padding: spacing.lg, paddingBottom: 96 },
