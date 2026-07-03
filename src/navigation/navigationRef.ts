@@ -1,4 +1,4 @@
-import { createNavigationContainerRef } from '@react-navigation/native';
+import { CommonActions, createNavigationContainerRef } from '@react-navigation/native';
 import type { EditorStackParamList, SettingsStackParamList } from './TabNavigator';
 
 type RootStackParamList = EditorStackParamList & SettingsStackParamList;
@@ -9,18 +9,37 @@ export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 let pendingTaskId: string | null = null;
 let pendingTimer: ReturnType<typeof setInterval> | null = null;
 
+// PipelineResult 同时注册在 EditorStack 和 SettingsStack 两个子 stack 里。
+// 从根 navigationRef 直接 navigate('PipelineResult') 会触发
+// "The action 'NAVIGATE' with payload {name:'PipelineResult'} was not handled
+// by any navigator." 修复：用嵌套语法先切到 Settings Tab，再 push PipelineResult。
 function doNavigateToPipelineResult(taskId: string): void {
+  // 优先走 Settings → PipelineResult（更常见的入口：流水线任务中心 → 详情）
   try {
-    navigationRef.navigate('PipelineResult' as never, { taskId } as never);
+    navigationRef.dispatch(
+      CommonActions.navigate({
+        name: 'Settings',
+        params: { screen: 'PipelineResult', params: { taskId } },
+      } as never),
+    );
     return;
   } catch {
     // fall through
   }
+  // 退化：尝试 Editor → PipelineResult
   try {
-    navigationRef.navigate('PipelineTask' as never);
+    navigationRef.dispatch(
+      CommonActions.navigate({
+        name: 'Editor',
+        params: { screen: 'PipelineResult', params: { taskId } },
+      } as never),
+    );
+    return;
   } catch {
-    // last-resort: no-op
+    // fall through
   }
+  // last-resort: 跳到流水线任务中心
+  navigateToPipelineTaskCenter();
 }
 
 function flushPendingTask(): void {
@@ -68,9 +87,15 @@ export function navigateToPipelineResult(taskId: string): void {
 
 export function navigateToPipelineTaskCenter(): void {
   if (!navigationRef.isReady()) return;
+  // PipelineTask 在 SettingsStack 里，同样需要嵌套 navigate
   try {
-    navigationRef.navigate('PipelineTask' as never);
+    navigationRef.dispatch(
+      CommonActions.navigate({
+        name: 'Settings',
+        params: { screen: 'PipelineTask' },
+      } as never),
+    );
   } catch {
-    // editor stack variant may also exist; ignore
+    // ignore
   }
 }
