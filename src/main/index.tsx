@@ -39,6 +39,15 @@ export const App: React.FC = () => {
       // 8.2 修复：init 无 try-catch，openDatabase 抛错时 setReady 永不执行，App 永久卡白屏
       try {
         await openDatabase();
+        // V2.2.2 修复：冷启动时主动清理上次挂掉时遗留的 stale 任务。
+        // 旧逻辑只在 AppState.change='active' 触发才跑 markStaleTasksAsFailed，
+        // 冷启动不会发 'active' 事件，导致上次异常退出的流水线任务永远卡在 drafting 状态。
+        // 这里在 DB 就绪后（loadFromDB 会从 DB 拉取 tasks）立刻调用一次。
+        await usePipelineTaskStore.getState().loadFromDB();
+        const marked = usePipelineTaskStore.getState().markStaleTasksAsFailed();
+        if (marked > 0) {
+          console.log(`[App] cold-start cleanup: marked ${marked} stale pipeline task(s) as failed`);
+        }
         const info = lastInstallInfo;
 
         if (
