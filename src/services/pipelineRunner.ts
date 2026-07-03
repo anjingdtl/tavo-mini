@@ -236,7 +236,12 @@ async function runChapterPipelineInner(
   }
   store.setTaskStatus(taskId, 'drafting');
   onStageUpdate?.({ stage: 'draft', label: '草稿中...', startedAt: Date.now() });
-  await PipelineForeground.start(taskId, chapter.title || '流水线', '草稿中', pct(0));
+  // BUG-8 修复：start 内部涉及 Android 前台服务+wakelock，在通知权限 NONE 或后台运行未启用时
+  // 可能 hang 或抛 SecurityException 让 promise 不 resolve，阻塞下游 buildContext/callLLMResult。
+  // fire-and-forget：通知/保活失败不该阻塞业务，错误已在桥内部 try-catch warn
+  PipelineForeground.start(taskId, chapter.title || '流水线', '草稿中', pct(0)).catch((e) => {
+    console.warn('[pipeline] foreground start failed (non-fatal):', e);
+  });
 
   let baseContext: ChatMessage[] = [];
   let draftText = '';

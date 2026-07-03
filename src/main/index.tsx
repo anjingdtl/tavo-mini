@@ -91,8 +91,12 @@ export const App: React.FC = () => {
     const prompted = new Set<string>();
 
     const seedPromptedFromCurrentState = () => {
+      // BUG-10 强化：seed 时把已 batchResolved 的任务也加入 prompted，避免冷启动时再次弹出全局 prompt
       usePipelineTaskStore.getState().tasks.forEach((t) => {
-        if (t.resolvedAt === null && (t.status === 'completed' || t.status === 'failed')) {
+        const isBatchResolved = t.resolvedAction === 'accept' || t.resolvedAction === 'reject';
+        if (isBatchResolved) {
+          prompted.add(t.id);
+        } else if (t.resolvedAt === null && (t.status === 'completed' || t.status === 'failed')) {
           prompted.add(t.id);
         }
       });

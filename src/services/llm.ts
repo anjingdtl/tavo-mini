@@ -155,7 +155,11 @@ export async function testLLMConnection(baseUrl: string, apiKey: string, modelNa
     }
 
     const data = await response.json();
-    return data.choices?.[0]?.message?.content || '连接成功';
+    const replyText =
+      data.choices?.[0]?.message?.content ||
+      data.choices?.[0]?.message?.reasoning_content ||
+      '连接成功';
+    return replyText;
   } catch (error: any) {
     if (error?.name === 'AbortError') {
       throw new Error('连接测试超时，请检查手机网络、API 地址和模型服务。');
@@ -228,7 +232,8 @@ export async function callLLMResult(
     }
 
     const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || null;
+    const message = data.choices?.[0]?.message || {};
+    const text = message.content || message.reasoning_content || null;
     const usage = data.usage || {};
     // 用 ?? 而非 ||：provider 返回 0 是有效值（如纯嵌入请求），不应回退到估算。
     const inputTokens = Number(usage.prompt_tokens ?? inputEstimate);
