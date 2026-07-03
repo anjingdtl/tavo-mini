@@ -1,5 +1,5 @@
 import * as db from './database';
-import { callLLMResult, callLLMStream, type LLMStreamHandlers } from './llm';
+import { callLLMResult, resolveLLMRequestConfig, type LLMRequestConfig } from './llm';
 import { buildContext } from './contextBuilder';
 import { createChapterGenerationRequest } from './chapterGeneration';
 import {
@@ -68,13 +68,20 @@ function buildContextPreview(messages: ChatMessage[]): string {
     .join('\n\n');
 }
 
-function buildCallConfig(preset: Preset | null, maxTokens: number, scenario: string, projectId?: number) {
+function buildCallConfig(
+  preset: Preset | null,
+  maxTokens: number,
+  scenario: string,
+  projectId?: number,
+  requestConfig?: LLMRequestConfig,
+) {
   return {
     temperature: preset?.temperature,
     top_p: preset?.top_p,
     max_tokens: maxTokens,
     scenario,
     projectId,
+    requestConfig,
   };
 }
 
@@ -100,6 +107,7 @@ async function runProofStage({
   proofPreset,
   scenario = 'pipeline_proof',
   projectId,
+  requestConfig,
   abortSignal,
 }: {
   taskId: string,
@@ -110,6 +118,7 @@ async function runProofStage({
   proofPreset: Preset | null;
   scenario?: string;
   projectId?: number;
+  requestConfig?: LLMRequestConfig;
   abortSignal?: AbortSignal;
 }): Promise<string> {
   const store = usePipelineTaskStore.getState();
@@ -121,7 +130,7 @@ async function runProofStage({
     const proofResult = await callLLMResult(
       messages,
       maxTokens,
-      buildCallConfig(proofPreset, maxTokens, scenario, projectId),
+      buildCallConfig(proofPreset, maxTokens, scenario, projectId, requestConfig),
       abortSignal,
     );
     const finalText = proofResult.text || draftText;
@@ -155,105 +164,14 @@ export type StageInfo = {
   startedAt: number;
 };
 
-export interface PipelineRunOptions {
-  /** V2.2.0：草稿阶段是否使用流式输出（默认 true）。false 时回退到 V2.1.5 callLLMResult。 */
-  useDraftStream?: boolean;
-}
-
-/**
- * V2.2.0：草稿阶段流式执行。
- * - 把每次 chunk 节流累计，超过 200 字符或 1.5 秒时刷新到 pipelineTaskStore.draftPreviews
- * - onDone 时把最终文本塞入 draftPreviews（store 的 updateTaskStage 会在 success 后清理预览）
- * - 返回 token 统计供 updateTaskStage 写入 stage_results
- * - 若 provider 不支持 SSE（code='stream_not_supported'）抛错让调用方降级
- */
-async function runDraftStageStream({
-  taskId,
-  messages,
-  maxTokens,
-  preset,
-  projectId,
-  abortSignal,
-  store,
-}: {
-  taskId: string;
-  messages: ChatMessage[];
-  maxTokens: number;
-  preset: Preset | null;
-  projectId: number;
-  abortSignal?: AbortSignal;
-  store: ReturnType<typeof usePipelineTaskStore.getState>;
-}): Promise<{ inputTokens: number; outputTokens: number; totalTokens: number }> {
-  return new Promise((resolve, reject) => {
-    let buf = '';
-    let lastFlushLen = 0;
-    let lastFlushTs = Date.now();
-    let result: { inputTokens: number; outputTokens: number; totalTokens: number } | null = null;
-    let settled = false;
-
-    const safeResolve = (r: typeof result) => {
-      if (settled) return;
-      settled = true;
-      resolve(r ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
-    };
-    const safeReject = (e: Error) => {
-      if (settled) return;
-      settled = true;
-      reject(e);
-    };
-
-    const handlers: LLMStreamHandlers = {
-      onChunk: (delta) => {
-        buf += delta;
-        const now = Date.now();
-        if (buf.length - lastFlushLen > 200 || now - lastFlushTs > 1500) {
-          store.setDraftPreview(taskId, buf);
-          lastFlushLen = buf.length;
-          lastFlushTs = now;
-        }
-      },
-      onDone: (r) => {
-        if (buf) {
-          store.setDraftPreview(taskId, r.text || buf);
-        }
-        result = {
-          inputTokens: r.inputTokens,
-          outputTokens: r.outputTokens,
-          totalTokens: r.totalTokens,
-        };
-        safeResolve(result);
-      },
-      onError: (err) => safeReject(err),
-    };
-
-    try {
-      // callLLMStream 返回 Promise；只要保证 attach .catch，所有 reject 都会走 safeReject
-      callLLMStream(
-        messages,
-        maxTokens,
-        buildCallConfig(preset, maxTokens, 'pipeline_draft', projectId),
-        handlers,
-        abortSignal,
-        // options 不传 → 按 scenario 'pipeline_draft' 默认 5min total / 30s stall
-      ).catch((e: any) => {
-        // 安全网：理论上所有错误都会先走 handlers.onError，不该到这里
-        safeReject(e instanceof Error ? e : new Error(String(e)));
-      });
-    } catch (e: any) {
-      safeReject(e instanceof Error ? e : new Error(String(e)));
-    }
-  });
-}
-
 export async function runChapterPipeline(
   taskId: string,
   chapter: Chapter,
   onStageUpdate?: (info: StageInfo | string) => void,
-  options?: PipelineRunOptions,
 ): Promise<void> {
   const abortSignal = registerTaskAbort(taskId);
   try {
-    await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal, options);
+    await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
   } finally {
     releaseTaskAbort(taskId);
     // 任务结束（无论成功/失败/取消）后清理取消标记，避免 cancelledTasks 累积
@@ -266,17 +184,17 @@ async function runChapterPipelineInner(
   chapter: Chapter,
   onStageUpdate?: (info: StageInfo | string) => void,
   abortSignal?: AbortSignal,
-  options?: PipelineRunOptions,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
-  const useDraftStream = options?.useDraftStream !== false; // 默认 true
   let config;
   let contextConfig;
   let presets;
+  let requestConfig: LLMRequestConfig;
   try {
     config = await db.getPipelineConfig();
     contextConfig = await db.getContextConfig();
     presets = await db.getPresetsByProject(chapter.project_id);
+    requestConfig = await resolveLLMRequestConfig();
   } catch (error: any) {
     store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
     await PipelineForeground.notifyFailed(taskId, chapter.title || '流水线', '配置读取失败');
@@ -312,7 +230,6 @@ async function runChapterPipelineInner(
   };
 
   if (checkCancelled(taskId)) {
-    store.clearDraftPreview(taskId);
     await PipelineForeground.notifyFailed(taskId, chapter.title || '流水线', '已取消');
     await PipelineForeground.stop(taskId);
     return;
@@ -345,50 +262,18 @@ async function runChapterPipelineInner(
       chapter.synopsis,
     );
 
-    // V2.2.0：草稿阶段默认走流式，UI 实时显示 draftPreview。
-    // useDraftStream=false 时回退到老的非流式调用，行为完全等价 V2.1.5。
-    let draftTokens = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-    let streamAttempted = useDraftStream;
-    if (useDraftStream) {
-      try {
-        draftTokens = await runDraftStageStream({
-          taskId,
-          messages: draftMessages,
-          maxTokens: config.draftMaxTokens,
-          preset: draftPreset,
-          projectId: chapter.project_id,
-          abortSignal,
-          store,
-        });
-        draftText = store.getState().draftPreviews[taskId] || '';
-      } catch (streamErr: any) {
-        // 不支持流式的 provider 立即回退（保留一次非流式重试），其他错向上抛出
-        // - stream_not_supported: Content-Type 非 SSE（provider 不支持流式）
-        // - no_body: RN fetch polyfill 不暴露 ReadableStream（response.body 不可读），
-        //   即使 Content-Type 是 SSE 也无法流式读取，需回退到非流式
-        if (
-          streamErr?.code !== 'stream_not_supported' &&
-          streamErr?.code !== 'no_body'
-        ) {
-          throw streamErr;
-        }
-        streamAttempted = false;
-      }
-    }
-    if (!useDraftStream || (useDraftStream && !streamAttempted)) {
-      const draftResult = await callLLMResult(
-        draftMessages,
-        config.draftMaxTokens,
-        buildCallConfig(draftPreset, config.draftMaxTokens, 'pipeline_draft', chapter.project_id),
-        abortSignal,
-      );
-      draftText = draftResult.text || '';
-      draftTokens = {
-        inputTokens: draftResult.inputTokens,
-        outputTokens: draftResult.outputTokens,
-        totalTokens: draftResult.totalTokens,
-      };
-    }
+    const draftResult = await callLLMResult(
+      draftMessages,
+      config.draftMaxTokens,
+      buildCallConfig(draftPreset, config.draftMaxTokens, 'pipeline_draft', chapter.project_id, requestConfig),
+      abortSignal,
+    );
+    draftText = draftResult.text || '';
+    const draftTokens = {
+      inputTokens: draftResult.inputTokens,
+      outputTokens: draftResult.outputTokens,
+      totalTokens: draftResult.totalTokens,
+    };
 
     store.updateTaskStage(taskId, {
       stage: 'draft',
@@ -403,7 +288,6 @@ async function runChapterPipelineInner(
     });
   } catch (error: any) {
     // 取消信号在阶段内被吞修复：先判断是否为用户取消，是则走取消路径不走 fail
-    store.clearDraftPreview(taskId);
     if (abortSignal?.aborted || error?.code === 'cancelled') {
       store.cancelTask(taskId);
       await PipelineForeground.stop(taskId);
@@ -447,7 +331,7 @@ async function runChapterPipelineInner(
         const reviewResult = await callLLMResult(
           buildReviewMessages(draftText),
           config.reviewMaxTokens,
-          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id, requestConfig),
           abortSignal,
         );
         const reviewText = reviewResult.text || '';
@@ -485,6 +369,7 @@ async function runChapterPipelineInner(
         maxTokens: config.proofMaxTokens,
         proofPreset,
         projectId: chapter.project_id,
+        requestConfig,
         abortSignal,
       });
       // proof 完成（不论成功/失败回退）之后才返回结果
@@ -519,7 +404,7 @@ async function runChapterPipelineInner(
         const result = await callLLMResult(
           buildFactCheckMessages(draftText, contextText),
           config.factCheckMaxTokens,
-          buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
+          buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id, requestConfig),
           abortSignal,
         );
         const text = result.text || '';
@@ -557,6 +442,7 @@ async function runChapterPipelineInner(
         maxTokens: config.proofMaxTokens,
         proofPreset,
         projectId: chapter.project_id,
+        requestConfig,
         abortSignal,
       });
     })();
@@ -582,13 +468,13 @@ async function runChapterPipelineInner(
   const reviewPromise = callLLMResult(
     buildReviewMessages(draftText),
     config.reviewMaxTokens,
-    buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+    buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id, requestConfig),
     abortSignal,
   );
   const factCheckPromise = callLLMResult(
     buildFactCheckMessages(draftText, contextText),
     config.factCheckMaxTokens,
-    buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
+    buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id, requestConfig),
     abortSignal,
   );
 
@@ -663,6 +549,7 @@ async function runChapterPipelineInner(
     maxTokens: config.proofMaxTokens,
     proofPreset,
     projectId: chapter.project_id,
+    requestConfig,
     abortSignal,
   });
   await saveDraftAndComplete(finalText);
@@ -732,9 +619,11 @@ async function resumePipelineInner(
 
   let config;
   let presets;
+  let requestConfig: LLMRequestConfig;
   try {
     config = await db.getPipelineConfig();
     presets = await db.getPresetsByProject(chapter.project_id);
+    requestConfig = await resolveLLMRequestConfig();
   } catch (error: any) {
     store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
     return;
@@ -799,7 +688,7 @@ async function resumePipelineInner(
         const reviewCallResult = await callLLMResult(
           buildReviewMessages(draftText),
           config.reviewMaxTokens,
-          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id, requestConfig),
           abortSignal,
         );
         reviewText = reviewCallResult.text || '';
@@ -819,7 +708,7 @@ async function resumePipelineInner(
     if (checkCancelled(taskId)) return;
     onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
     PipelineForeground.updateProgress(taskId, '终审打磨中', pct(2));
-    const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id, abortSignal });
+    const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id, requestConfig, abortSignal });
     await saveDraftAndComplete(finalText);
     return;
   }
@@ -837,7 +726,7 @@ async function resumePipelineInner(
       const reviewCallResult = await callLLMResult(
         buildReviewMessages(draftText),
         config.reviewMaxTokens,
-        buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id),
+        buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id, requestConfig),
         abortSignal,
       );
       reviewText = reviewCallResult.text || '';
@@ -866,7 +755,7 @@ async function resumePipelineInner(
       const factCheckCallResult = await callLLMResult(
         buildFactCheckMessages(draftText, contextText),
         config.factCheckMaxTokens,
-        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id),
+        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id, requestConfig),
         abortSignal,
       );
       factCheckText = factCheckCallResult.text || '';
@@ -884,6 +773,6 @@ async function resumePipelineInner(
 
   if (checkCancelled(taskId)) return;
   onStageUpdate?.('正在终审校对（续跑）...');
-  const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id, abortSignal });
+  const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id, requestConfig, abortSignal });
   await saveDraftAndComplete(finalText);
 }

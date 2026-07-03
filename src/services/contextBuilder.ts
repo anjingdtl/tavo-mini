@@ -203,17 +203,24 @@ async function buildResourceContext(
     parts.push(`${title}：\n${clipped}`);
   };
 
-  const charResult = await buildCharacterContext(projectId, characterBudget);
-  addPart('人物设定', charResult.text, characterBudget);
-  allTraceItems.push(...charResult.items);
+  const [charSettled, noteSettled, wbSettled] = await Promise.allSettled([
+    buildCharacterContext(projectId, characterBudget),
+    buildNoteContext(projectId, noteBudget, scanText, currentChapter?.title || '', currentChapter?.synopsis || '', ''),
+    buildWorldbookContext(projectId, worldbookBudget, scanText, recursiveWorldbook),
+  ]);
 
-  const noteResult = await buildNoteContext(projectId, noteBudget, scanText, currentChapter?.title || '', currentChapter?.synopsis || '', '');
-  addPart('项目笔记', noteResult.text, noteBudget);
-  allTraceItems.push(...noteResult.items);
-
-  const wbResult = await buildWorldbookContext(projectId, worldbookBudget, scanText, recursiveWorldbook);
-  addPart('世界书', wbResult.text, worldbookBudget);
-  allTraceItems.push(...wbResult.items);
+  if (charSettled.status === 'fulfilled') {
+    addPart('人物设定', charSettled.value.text, characterBudget);
+    allTraceItems.push(...charSettled.value.items);
+  }
+  if (noteSettled.status === 'fulfilled') {
+    addPart('项目笔记', noteSettled.value.text, noteBudget);
+    allTraceItems.push(...noteSettled.value.items);
+  }
+  if (wbSettled.status === 'fulfilled') {
+    addPart('世界书', wbSettled.value.text, worldbookBudget);
+    allTraceItems.push(...wbSettled.value.items);
+  }
 
   return { text: parts.join('\n\n'), traceItems: allTraceItems };
 }

@@ -140,11 +140,9 @@ export const App: React.FC = () => {
       setPendingPrompt(task);
     });
 
-    // 回前台时的恢复策略（配合后台流式保活改造）：
-    //  1. 流式 SSE 让后台期间 JS 线程更可能保持活跃，多数情况下流水线会继续推进。
-    //  2. 回前台时若任务 updatedAt 在最近 10 分钟内（仍在合理运行窗口），
-    //     不立即判死——给流式请求一个完成的机会。
-    //  3. 超过 10 分钟仍无更新的任务才视为真停滞，标 failed（自愈，静默不弹窗）。
+    // 回前台时的恢复策略：
+    //  1. 若任务 updatedAt 在最近 10 分钟内（仍在合理运行窗口），不立即判死。
+    //  2. 超过 10 分钟仍无更新的任务才视为真停滞，标 failed（自愈，静默不弹窗）。
     const appStateSub = AppState.addEventListener('change', (next) => {
       if (next !== 'active') return;
       const marked = usePipelineTaskStore.getState().markStaleTasksAsFailed();

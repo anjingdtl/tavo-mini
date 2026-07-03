@@ -177,4 +177,69 @@ describe('V2.2.0: getNotesContentByIds bulk fetch', () => {
       expect(idfCache.getCachedIdf(9999, sig)).toBeNull();
     });
   });
+
+  test('buildContext 并行构建人物、笔记和世界书资源', async () => {
+    jest.resetModules();
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const fakeDb = {
+      getChaptersByProject: jest.fn(async () => []),
+      getCharactersByProject: jest.fn(async () => {
+        await delay(80);
+        return [];
+      }),
+      getProjectNoteConfig: jest.fn(async () => {
+        await delay(80);
+        return { mode: 'none' };
+      }),
+      getNotesByProject: jest.fn(async () => []),
+      getNotesContentByIds: jest.fn(async () => ({})),
+      getWorldbookEntriesByProject: jest.fn(async () => {
+        await delay(80);
+        return [];
+      }),
+    };
+    jest.doMock('../src/services/database', () => fakeDb);
+    jest.doMock('../src/services/macroReplace', () => ({ processMacros: (t: string) => t }));
+    jest.doMock('../src/services/styleAnalyzer', () => ({
+      DEFAULT_STYLE_WEIGHTS: {},
+      getOrAnalyzeNoteStyle: jest.fn(),
+      mergeStyleProfiles: jest.fn(() => ''),
+    }));
+    jest.doMock('../src/services/noteRetriever', () => ({ retrieveNoteFragments: jest.fn() }));
+
+    const cb = require('../src/services/contextBuilder');
+    const chapter = {
+      id: 101,
+      project_id: 1,
+      position: 0,
+      title: 't',
+      synopsis: 's',
+      content: '',
+      status: 'draft' as const,
+      summary_json: null,
+      created_at: '',
+      updated_at: '',
+    };
+    const config = {
+      strategy: 'sliding' as const,
+      slidingWindowSize: 100000,
+      customRangeStart: 0,
+      customRangeEnd: -1,
+      resourceBudget: 50000,
+      includeResources: true,
+      worldbookScanDepth: 4,
+      worldbookRecursive: true,
+      memoryTopK: 5,
+      summaryBudgetTokens: 5000,
+    };
+
+    const start = Date.now();
+    await cb.buildContext(chapter, config, 1);
+    const elapsed = Date.now() - start;
+
+    expect(fakeDb.getCharactersByProject).toHaveBeenCalledTimes(1);
+    expect(fakeDb.getProjectNoteConfig).toHaveBeenCalledTimes(1);
+    expect(fakeDb.getWorldbookEntriesByProject).toHaveBeenCalledTimes(1);
+    expect(elapsed).toBeLessThan(180);
+  });
 });
