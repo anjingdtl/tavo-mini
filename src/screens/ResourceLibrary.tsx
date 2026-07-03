@@ -644,88 +644,90 @@ export const ResourceLibrary: React.FC = () => {
         ) : null}
       </View>
 
-      {tab === 'worldbook' && !selectedCollectionId ? (
-        collections.length === 0 ? (
-          <EmptyState title="还没有世界书合集" description="导入世界书文件会自动创建合集，也可以手动添加合集。" />
+      <View style={styles.listContainer}>
+        {tab === 'worldbook' && !selectedCollectionId ? (
+          collections.length === 0 ? (
+            <EmptyState title="还没有世界书合集" description="导入世界书文件会自动创建合集，也可以手动添加合集。" />
+          ) : (
+            <FlatList
+              data={collections}
+              keyExtractor={(item) => String(item.id)}
+              contentContainerStyle={styles.list}
+              renderItem={({ item }) => (
+                <Card>
+                  <View style={styles.row}>
+                    <BookMarked size={20} color={theme.colors.accent} />
+                    <View style={styles.rowText}>
+                      <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name || '未命名世界书'}</Text>
+                      <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>
+                        {item.entry_count || 0} 条 · 预估 {item.estimated_tokens || 0} / Max {item.max_tokens || 50000} tokens
+                      </Text>
+                      <View style={styles.usageRow}>
+                        <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>合集启用</Text>
+                        <Switch value={item.enabled === 1} onValueChange={() => toggleCollection(item)} />
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.cardActions}>
+                    <Button label="打开" variant="secondary" onPress={() => setSelectedCollectionId(item.id)} />
+                    <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportWorldbook(item)} />
+                    <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor('worldbookCollection', item)} />
+                    <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove('worldbookCollection', item.id, item.name)} />
+                  </View>
+                </Card>
+              )}
+            />
+          )
+        ) : activeItems.length === 0 ? (
+          <EmptyState title={emptyTitle(tab)} description="使用上方按钮导入或创建资料。" />
         ) : (
           <FlatList
-            data={collections}
+            data={activeItems}
             keyExtractor={(item) => String(item.id)}
             contentContainerStyle={styles.list}
             renderItem={({ item }) => (
               <Card>
                 <View style={styles.row}>
-                  <BookMarked size={20} color={theme.colors.accent} />
+                  {iconFor(tab, theme.colors.accent)}
                   <View style={styles.rowText}>
-                    <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name || '未命名世界书'}</Text>
-                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>
-                      {item.entry_count || 0} 条 · 预估 {item.estimated_tokens || 0} / Max {item.max_tokens || 50000} tokens
+                    <View style={styles.titleRow}>
+                      <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{titleFor(tab, item)}</Text>
+                      {tab === 'notes' && noteMode !== 'none' ? (
+                        <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>
+                          {noteMode === 'style' ? '仿写' : '资料库'}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]} numberOfLines={2}>
+                      {metaFor(tab, item)}
+                    </Text>
+                    <Text style={[styles.tokenMeta, { color: theme.colors.textSecondary }]}>
+                      预估 {item.estimated_tokens ?? estimateTokens(item.content || item.data_json || '')} / Max {item.max_tokens ?? defaultMaxTokens(tab)} tokens
                     </Text>
                     <View style={styles.usageRow}>
-                      <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>合集启用</Text>
-                      <Switch value={item.enabled === 1} onValueChange={() => toggleCollection(item)} />
+                      <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>当前项目使用</Text>
+                      <Switch
+                        value={item.enabled_for_project === 1}
+                        disabled={!currentProject}
+                        onValueChange={() => toggleProjectUsage(item)}
+                        trackColor={{ false: theme.colors.border, true: theme.colors.accentSoft }}
+                        thumbColor={item.enabled_for_project === 1 ? theme.colors.accent : theme.colors.textMuted}
+                      />
                     </View>
                   </View>
                 </View>
                 <View style={styles.cardActions}>
-                  <Button label="打开" variant="secondary" onPress={() => setSelectedCollectionId(item.id)} />
-                  <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportWorldbook(item)} />
-                  <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor('worldbookCollection', item)} />
-                  <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove('worldbookCollection', item.id, item.name)} />
+                  <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor(tab, item)} />
+                  {tab === 'characters' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportCharacter(item)} />}
+                  {tab === 'notes' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportNote(item)} />}
+                  {tab === 'presets' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportPreset(item)} />}
+                  <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove(tab, item.id, titleFor(tab, item))} />
                 </View>
               </Card>
             )}
           />
-        )
-      ) : activeItems.length === 0 ? (
-        <EmptyState title={emptyTitle(tab)} description="使用上方按钮导入或创建资料。" />
-      ) : (
-        <FlatList
-          data={activeItems}
-          keyExtractor={(item) => String(item.id)}
-          contentContainerStyle={styles.list}
-          renderItem={({ item }) => (
-            <Card>
-              <View style={styles.row}>
-                {iconFor(tab, theme.colors.accent)}
-                <View style={styles.rowText}>
-                  <View style={styles.titleRow}>
-                    <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{titleFor(tab, item)}</Text>
-                    {tab === 'notes' && noteMode !== 'none' ? (
-                      <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>
-                        {noteMode === 'style' ? '仿写' : '资料库'}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]} numberOfLines={2}>
-                    {metaFor(tab, item)}
-                  </Text>
-                  <Text style={[styles.tokenMeta, { color: theme.colors.textSecondary }]}>
-                    预估 {item.estimated_tokens ?? estimateTokens(item.content || item.data_json || '')} / Max {item.max_tokens ?? defaultMaxTokens(tab)} tokens
-                  </Text>
-                  <View style={styles.usageRow}>
-                    <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>当前项目使用</Text>
-                    <Switch
-                      value={item.enabled_for_project === 1}
-                      disabled={!currentProject}
-                      onValueChange={() => toggleProjectUsage(item)}
-                      trackColor={{ false: theme.colors.border, true: theme.colors.accentSoft }}
-                      thumbColor={item.enabled_for_project === 1 ? theme.colors.accent : theme.colors.textMuted}
-                    />
-                  </View>
-                </View>
-              </View>
-              <View style={styles.cardActions}>
-                <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor(tab, item)} />
-                {tab === 'characters' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportCharacter(item)} />}
-                {tab === 'notes' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportNote(item)} />}
-                {tab === 'presets' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportPreset(item)} />}
-                <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove(tab, item.id, titleFor(tab, item))} />
-              </View>
-            </Card>
-          )}
-        />
-      )}
+        )}
+      </View>
 
       <Modal visible={Boolean(editor)} transparent animationType="fade" onRequestClose={() => setEditor(null)}>
         <View style={styles.overlay}>
@@ -921,6 +923,7 @@ const styles = StyleSheet.create({
   actionScroll: { flexDirection: 'row', gap: spacing.sm, paddingRight: spacing.lg, paddingVertical: spacing.xs },
   rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   inlineInput: { minHeight: 40 },
+  listContainer: { flex: 1 },
   list: { padding: spacing.lg, paddingBottom: 96 },
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   rowText: { flex: 1 },
