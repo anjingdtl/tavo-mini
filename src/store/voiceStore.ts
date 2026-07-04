@@ -11,8 +11,15 @@ import {
   DEFAULT_VOICE_CONFIG,
   DEFAULT_SYSTEM_TTS_CONFIG,
   DEFAULT_TTS_ENGINE,
+  getSystemTtsErrorMessage,
 } from '../constants/voice';
-import type { VoiceConfig, TtsEngine, SystemTtsConfig } from '../types/tts';
+import type {
+  VoiceConfig,
+  TtsEngine,
+  SystemTtsConfig,
+  TtsErrorEvent,
+  TtsSessionEvent,
+} from '../types/tts';
 import RNFS from 'react-native-fs';
 
 interface VoiceState {
@@ -22,6 +29,9 @@ interface VoiceState {
   systemConfig: SystemTtsConfig;
   isSynthesizing: boolean;
   isPlaying: boolean;
+  activeTtsSessionId: string | null;
+  ttsProgress: { chunkIndex: number; chunkCount: number } | null;
+  lastTtsError: TtsErrorEvent | null;
   loadVoiceConfig: () => Promise<void>;
   saveVoiceConfig: (config: VoiceConfig) => Promise<void>;
   saveSystemTtsConfig: (config: SystemTtsConfig) => Promise<void>;
@@ -41,6 +51,14 @@ async function deleteIfExists(path: string): Promise<void> {
   }
 }
 
+function isCurrentSession(state: VoiceState, event: TtsSessionEvent): boolean {
+  return state.activeTtsSessionId === event.sessionId;
+}
+
+function generateSessionId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
 export const useVoiceStore = create<VoiceState>((set, get) => ({
   engine: DEFAULT_TTS_ENGINE,
   config: DEFAULT_VOICE_CONFIG,
@@ -48,6 +66,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   systemConfig: DEFAULT_SYSTEM_TTS_CONFIG,
   isSynthesizing: false,
   isPlaying: false,
+  activeTtsSessionId: null,
+  ttsProgress: null,
+  lastTtsError: null,
 
   loadVoiceConfig: async () => {
     const [config, apiKey, engine, systemConfig] = await Promise.all([
@@ -91,19 +112,42 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }
 
     if (state.engine === 'system') {
-      set({ isSynthesizing: true });
+      const sessionId = generateSessionId();
+      set({
+        isSynthesizing: true,
+        isPlaying: false,
+        activeTtsSessionId: sessionId,
+        ttsProgress: null,
+        lastTtsError: null,
+      });
       try {
-        // 约定：原生 speak 在入队成功时 resolve；isPlaying=true 表示「朗读已启动」，
-        // 由原生 ttsDone/ttsError 事件回调或 stop() 置回 false。
-        await TtsAudio.speak(text, state.systemConfig);
+        // 原生 speak 在首段入队成功时 resolve；
+        // 朗读实际开始/完成/错误/停止通过事件通知。
+        await TtsAudio.speak(text, { ...state.systemConfig, sessionId });
         set({ isSynthesizing: false, isPlaying: true });
       } catch (error: any) {
-        set({ isSynthesizing: false, isPlaying: false });
-        const message = error?.message || '朗读失败';
-        if (!message.includes('取消') && !message.includes('停止')) {
+        set({
+          isSynthesizing: false,
+          isPlaying: false,
+          activeTtsSessionId: null,
+          lastTtsError: error,
+        });
+        const code = error?.code;
+        const message = getSystemTtsErrorMessage(code);
+        if (code !== 'TTS_CANCELLED') {
           Toast.show({ type: 'error', text1: message });
         }
       }
+      return;
+    }
+
+    if (state.engine === 'builtin') {
+      // Milestone B：实际内置 TTS 播放 deferred，点击时提示用户。
+      Toast.show({
+        type: 'info',
+        text1: '内置离线 TTS 即将上线',
+        text2: '请先使用系统 TTS 或云端 API',
+      });
       return;
     }
 
@@ -146,6 +190,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     if (!isSynthesizing && !isPlaying) return;
     set({ isSynthesizing: false, isPlaying: false });
     if (engine === 'system') {
+      // 即使在合成/初始化阶段也要调用 stopSpeak，取消待处理请求。
       try {
         await TtsAudio.stopSpeak();
       } catch {
@@ -171,19 +216,62 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
 }));
 
-// 监听原生 TTS 朗读完成/出错事件，自动重置 isPlaying 状态。
-// 修复 Bug：系统 TTS 朗读结束或引擎出错后，isPlaying 卡在 true 导致无法再次朗读。
-TtsAudioEmitter.addListener('ttsDone', () => {
-  const { engine, isPlaying } = useVoiceStore.getState();
-  if (engine === 'system' && isPlaying) {
-    useVoiceStore.setState({ isSynthesizing: false, isPlaying: false });
-  }
-});
+// 模块级单例保护：防止热重载或测试环境重复注册监听器。
+let ttsListenersInitialized = false;
 
-TtsAudioEmitter.addListener('ttsError', () => {
-  const { engine, isPlaying } = useVoiceStore.getState();
-  if (engine === 'system' && isPlaying) {
-    useVoiceStore.setState({ isSynthesizing: false, isPlaying: false });
-    Toast.show({ type: 'error', text1: '朗读出错，请检查系统 TTS 引擎' });
-  }
-});
+export function initializeTtsListeners(): void {
+  if (ttsListenersInitialized) return;
+  ttsListenersInitialized = true;
+
+  TtsAudioEmitter.addListener('ttsStart', (event: TtsSessionEvent) => {
+    const state = useVoiceStore.getState();
+    if (!isCurrentSession(state, event)) return;
+    useVoiceStore.setState({ isPlaying: true });
+  });
+
+  TtsAudioEmitter.addListener('ttsProgress', (event: TtsSessionEvent) => {
+    const state = useVoiceStore.getState();
+    if (!isCurrentSession(state, event)) return;
+    useVoiceStore.setState({
+      ttsProgress: { chunkIndex: event.chunkIndex, chunkCount: event.chunkCount },
+    });
+  });
+
+  TtsAudioEmitter.addListener('ttsDone', (event: TtsSessionEvent) => {
+    const state = useVoiceStore.getState();
+    if (!isCurrentSession(state, event)) return;
+    useVoiceStore.setState({
+      isSynthesizing: false,
+      isPlaying: false,
+      activeTtsSessionId: null,
+      ttsProgress: null,
+    });
+  });
+
+  TtsAudioEmitter.addListener('ttsError', (event: TtsErrorEvent) => {
+    const state = useVoiceStore.getState();
+    if (!isCurrentSession(state, event)) return;
+    useVoiceStore.setState({
+      isSynthesizing: false,
+      isPlaying: false,
+      activeTtsSessionId: null,
+      ttsProgress: null,
+      lastTtsError: event,
+    });
+    const message = getSystemTtsErrorMessage(event.errorCode);
+    Toast.show({ type: 'error', text1: message });
+  });
+
+  TtsAudioEmitter.addListener('ttsStopped', (event: TtsSessionEvent) => {
+    const state = useVoiceStore.getState();
+    if (!isCurrentSession(state, event)) return;
+    useVoiceStore.setState({
+      isSynthesizing: false,
+      isPlaying: false,
+      activeTtsSessionId: null,
+      ttsProgress: null,
+    });
+  });
+}
+
+initializeTtsListeners();
