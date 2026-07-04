@@ -99,6 +99,7 @@ jest.mock('lucide-react-native', () => {
 
 jest.mock('react-native', () => {
   const RN = jest.requireActual('react-native');
+  const ttsListeners = new Map();
   RN.NativeModules.TtsAudio = {
     playAudioFile: jest.fn(() => Promise.resolve()),
     stopAudio: jest.fn(() => Promise.resolve()),
@@ -107,15 +108,43 @@ jest.mock('react-native', () => {
     isTtsReady: jest.fn(() => Promise.resolve(true)),
     getEngines: jest.fn(() =>
       Promise.resolve([
-        { name: 'com.google.android.tts', label: 'Google TTS', isDefault: true },
+        { name: 'com.google.android.tts', label: 'Google TTS', isDefault: true, isCurrent: true },
       ]),
     ),
     getVoices: jest.fn(() =>
-      Promise.resolve([{ key: 'zh-cn-x', name: '中文女声', locale: 'zh-CN' }]),
+      Promise.resolve([
+        { key: 'zh-cn-x', name: '中文女声', locale: 'zh-CN', quality: 300, latency: 200, requiresNetwork: false, features: [] },
+      ]),
     ),
+    getDiagnostics: jest.fn(() =>
+      Promise.resolve({
+        initialized: true,
+        manufacturer: 'Google',
+        model: 'sdk_gphone64_arm64',
+        androidVersion: '14',
+        sdkInt: 34,
+        requestedEngine: '',
+        currentEngine: 'com.google.android.tts',
+        defaultEngine: 'com.google.android.tts',
+        installedEngineCount: 1,
+        selectedEngineInstalled: true,
+        language: 'zh-CN',
+        languageStatus: 'available',
+        voiceCount: 1,
+        matchingVoiceCount: 1,
+        offlineVoiceCount: 1,
+        maxInputLength: 4000,
+      }),
+    ),
+    installTtsData: jest.fn(() => Promise.resolve(true)),
     openTtsSettings: jest.fn(() => Promise.resolve(true)),
-    addListener: jest.fn(),
+    addListener: jest.fn((eventName) => {
+      ttsListeners.set(eventName, (ttsListeners.get(eventName) || []).concat(jest.fn()));
+    }),
     removeListeners: jest.fn(),
+    __emitTtsEvent: (eventName, data) => {
+      RN.DeviceEventEmitter.emit(eventName, data);
+    },
   };
   RN.NativeModules.PipelineForeground = {
     start: jest.fn(() => Promise.resolve()),
