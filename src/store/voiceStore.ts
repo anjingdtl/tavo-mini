@@ -22,6 +22,8 @@ import type {
 } from '../types/tts';
 import RNFS from 'react-native-fs';
 
+type PlaybackState = 'idle' | 'synthesizing' | 'playing';
+
 interface VoiceState {
   engine: TtsEngine;
   config: VoiceConfig;
@@ -29,6 +31,8 @@ interface VoiceState {
   systemConfig: SystemTtsConfig;
   isSynthesizing: boolean;
   isPlaying: boolean;
+  playbackState: PlaybackState;
+  lastPlayEndedAt: number | null;
   activeTtsSessionId: string | null;
   ttsProgress: { chunkIndex: number; chunkCount: number } | null;
   lastTtsError: TtsErrorEvent | null;
@@ -116,6 +120,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       set({
         isSynthesizing: true,
         isPlaying: false,
+        playbackState: 'synthesizing',
         activeTtsSessionId: sessionId,
         ttsProgress: null,
         lastTtsError: null,
@@ -124,11 +129,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         // 原生 speak 在首段入队成功时 resolve；
         // 朗读实际开始/完成/错误/停止通过事件通知。
         await TtsAudio.speak(text, { ...state.systemConfig, sessionId });
-        set({ isSynthesizing: false, isPlaying: true });
+        set({ isSynthesizing: false, isPlaying: true, playbackState: 'playing' });
       } catch (error: any) {
         set({
           isSynthesizing: false,
           isPlaying: false,
+          playbackState: 'idle',
           activeTtsSessionId: null,
           lastTtsError: error,
         });
@@ -160,21 +166,21 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       Toast.show({ type: 'info', text1: '正文超过 10000 字，将只朗读前 10000 字' });
     }
 
-    set({ isSynthesizing: true });
+    set({ isSynthesizing: true, playbackState: 'synthesizing' });
     let audioPath: string | null = null;
     try {
       audioPath = await synthesizeToFile(text, state.config, state.apiKey);
-      set({ isSynthesizing: false, isPlaying: true });
+      set({ isSynthesizing: false, isPlaying: true, playbackState: 'playing' });
       try {
         await TtsAudio.playAudioFile(audioPath);
       } finally {
-        set({ isPlaying: false });
+        set({ isPlaying: false, playbackState: 'idle', lastPlayEndedAt: Date.now() });
         if (audioPath) {
           await deleteIfExists(audioPath);
         }
       }
     } catch (error: any) {
-      set({ isSynthesizing: false, isPlaying: false });
+      set({ isSynthesizing: false, isPlaying: false, playbackState: 'idle', lastPlayEndedAt: Date.now() });
       if (audioPath) {
         await deleteIfExists(audioPath);
       }
@@ -226,7 +232,7 @@ export function initializeTtsListeners(): void {
   TtsAudioEmitter.addListener('ttsStart', (event: TtsSessionEvent) => {
     const state = useVoiceStore.getState();
     if (!isCurrentSession(state, event)) return;
-    useVoiceStore.setState({ isPlaying: true });
+    useVoiceStore.setState({ isPlaying: true, playbackState: 'playing' });
   });
 
   TtsAudioEmitter.addListener('ttsProgress', (event: TtsSessionEvent) => {
@@ -243,6 +249,8 @@ export function initializeTtsListeners(): void {
     useVoiceStore.setState({
       isSynthesizing: false,
       isPlaying: false,
+      playbackState: 'idle',
+      lastPlayEndedAt: Date.now(),
       activeTtsSessionId: null,
       ttsProgress: null,
     });
@@ -254,6 +262,8 @@ export function initializeTtsListeners(): void {
     useVoiceStore.setState({
       isSynthesizing: false,
       isPlaying: false,
+      playbackState: 'idle',
+      lastPlayEndedAt: Date.now(),
       activeTtsSessionId: null,
       ttsProgress: null,
       lastTtsError: event,

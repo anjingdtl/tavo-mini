@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ArrowUp, Bot, Eye, FileText, Focus, History, Inbox, Square, Trash2, Volume2 } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
@@ -42,7 +42,24 @@ interface Props {
 
 export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const { theme } = useThemeStore();
-  const { isSynthesizing, isPlaying, loadVoiceConfig, playChapter, stop } = useVoiceStore();
+  const { isSynthesizing, isPlaying, lastPlayEndedAt, loadVoiceConfig, playChapter, stop } = useVoiceStore();
+  const [rangePickerVisible, setRangePickerVisible] = useState(false);
+  // Bug 2 修复：在 ttsDone 后的 2.5 秒内，把工具栏的"朗读"按钮换成"已结束"，
+  // 避免用户在系统 TTS 自动结束后又误点按"停止"按钮误以为在播，然后再次触发 range picker。
+  // 用 setInterval 周期性刷新 now，2.5 秒窗口过后按钮自动变回"朗读"。
+  const JUST_FINISHED_WINDOW_MS = 2500;
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!lastPlayEndedAt) return;
+    setNow(Date.now());
+    const interval = setInterval(() => setNow(Date.now()), 300);
+    return () => clearInterval(interval);
+  }, [lastPlayEndedAt]);
+  const isJustFinished =
+    !isSynthesizing &&
+    !isPlaying &&
+    lastPlayEndedAt !== null &&
+    now - lastPlayEndedAt < JUST_FINISHED_WINDOW_MS;
   const navigation = useNavigation();
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
@@ -355,24 +372,26 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         await stop();
         return;
       }
-      Alert.alert('选择朗读范围', '请选择要连续朗读的章节范围。', [
-        {
-          text: '本章',
-          onPress: () => playReadingRange('current'),
-        },
-        {
-          text: '从本章到结尾',
-          onPress: () => playReadingRange('fromCurrent'),
-        },
-        {
-          text: '全书',
-          onPress: () => playReadingRange('all'),
-        },
-        { text: '取消', style: 'cancel' },
-      ]);
+      // Bug 2 修复：刚结束的 2.5 秒内，按钮是"已结束"，再按一次只 toast 提示，
+      // 不弹 range picker，避免误触。这里直接读 store 的 lastPlayEndedAt，
+      // 不依赖 React state 的渲染时机，避免出现"UI 显示已结束但点完又弹 Modal"
+      // 的竞态。
+      const { lastPlayEndedAt: endedAt } = useVoiceStore.getState();
+      if (endedAt != null && Date.now() - endedAt < 2500) {
+        Toast.show({ type: 'info', text1: '朗读已结束', text2: '稍等片刻或重新选择范围' });
+        return;
+      }
+      // Bug 1 修复：改用自建 Modal，避免原生 Alert.alert 在某些 Android 版本上
+      // 缺少"取消"按钮且 BACK 键无法 dismiss 的问题。
+      setRangePickerVisible(true);
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
     }
+  };
+
+  const handleRangeSelected = (range: db.ChapterReadingRange) => {
+    setRangePickerVisible(false);
+    void playReadingRange(range);
   };
 
   const playReadingRange = async (range: db.ChapterReadingRange) => {
@@ -587,7 +606,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
               minWidth={72}
             />
             <Button
-              label={isSynthesizing ? '生成中…' : isPlaying ? '停止' : '朗读'}
+              label={isSynthesizing ? '生成中…' : isPlaying ? '停止' : isJustFinished ? '已结束' : '朗读'}
               icon={isPlaying ? Square : Volume2}
               variant={isPlaying ? 'secondary' : 'ghost'}
               onPress={toggleTts}
@@ -638,6 +657,34 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })}
         />
       </ScrollView>
+      <Modal
+        visible={rangePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRangePickerVisible(false)}
+      >
+        <Pressable
+          testID="range-picker-backdrop"
+          style={styles.rangeBackdrop}
+          onPress={() => setRangePickerVisible(false)}
+        >
+          <Pressable
+            style={[styles.rangeSheet, { backgroundColor: theme.colors.surface }]}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <Text style={[styles.rangeTitle, { color: theme.colors.textPrimary }]}>选择朗读范围</Text>
+            <Text style={[styles.rangeSubtitle, { color: theme.colors.textSecondary }]}>
+              请选择要连续朗读的章节范围。
+            </Text>
+            <View style={styles.rangeActions}>
+              <Button label="本章" variant="secondary" onPress={() => handleRangeSelected('current')} />
+              <Button label="从本章到结尾" variant="secondary" onPress={() => handleRangeSelected('fromCurrent')} />
+              <Button label="全书" onPress={() => handleRangeSelected('all')} />
+              <Button label="取消" variant="ghost" onPress={() => setRangePickerVisible(false)} />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
   );
 };
@@ -655,4 +702,17 @@ const styles = StyleSheet.create({
   summaryBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, marginBottom: spacing.md },
   summaryTitle: { fontSize: 14, fontWeight: '800', marginBottom: spacing.xs },
   summaryText: { fontSize: 13, lineHeight: 20 },
+  rangeBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    padding: spacing.xl,
+  },
+  rangeSheet: {
+    borderRadius: 8,
+    padding: spacing.lg,
+  },
+  rangeTitle: { fontSize: 18, fontWeight: '800', marginBottom: spacing.xs },
+  rangeSubtitle: { fontSize: 13, marginBottom: spacing.md, lineHeight: 20 },
+  rangeActions: { gap: spacing.sm },
 });
