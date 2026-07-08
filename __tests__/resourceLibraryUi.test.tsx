@@ -2,12 +2,18 @@ import React from 'react';
 import { act, fireEvent, render } from '@testing-library/react-native';
 
 jest.mock('../src/services/database', () => ({
-  getAllCharacters: jest.fn(async () => []),
+  getAllCharacters: jest.fn(async () => [
+    { id: 1, name: '角色 A', source_type: 'json', data_json: '{}', collection_id: 9, enabled_for_project: 1, max_tokens: 50000, estimated_tokens: 3 },
+  ]),
   getAllWorldbookEntries: jest.fn(async () => []),
   getAllNotes: jest.fn(async () => []),
   getAllPresets: jest.fn(async () => []),
+  getCharacterCollections: jest.fn(async () => [
+    { id: 9, name: '角色合集 A', enabled: 1, character_count: 1, estimated_tokens: 3, max_tokens: 50000 },
+  ]),
   getWorldbookCollections: jest.fn(async () => []),
   getProjectNoteConfig: jest.fn(async () => null),
+  setCharacterCollectionEnabledForProject: jest.fn(async () => undefined),
 }));
 
 jest.mock('../src/services/fileImport', () => ({
@@ -18,6 +24,7 @@ jest.mock('../src/services/fileImport', () => ({
   importSelectedNoteText: jest.fn(async () => null),
   importSelectedWorldBook: jest.fn(async () => null),
   importWorldBooks: jest.fn(async () => ({ total: 0, success: [], failed: [] })),
+  pickCharacterFolderFiles: jest.fn(async () => []),
   pickCharacterPngImageReplacement: jest.fn(async () => null),
   pickLocalFiles: jest.fn(async () => []),
   withCharacterImageAsset: jest.fn((data) => data),
@@ -69,14 +76,32 @@ jest.mock('../src/store/themeStore', () => ({
 }));
 
 import { ResourceLibrary } from '../src/screens/ResourceLibrary';
+import * as db from '../src/services/database';
 
 describe('ResourceLibrary UI', () => {
   it('renders characters action buttons after data loads', async () => {
     const { findByText } = render(<ResourceLibrary />);
 
-    for (const label of ['导入角色卡', '批量导入角色卡', '新建角色卡', '启用全部角色', '停用全部角色']) {
+    for (const label of ['导入角色卡', '批量导入角色卡', '导入文件夹', '新建角色合集', '整理已导入']) {
       expect(await findByText(label)).toBeTruthy();
     }
+  });
+
+  it('opens a character collection and toggles collection enablement', async () => {
+    const { findByText, getByText, getByTestId } = render(<ResourceLibrary />);
+
+    expect(await findByText('角色合集 A')).toBeTruthy();
+    act(() => {
+      fireEvent(getByTestId('character-collection-toggle-9'), 'valueChange', false);
+    });
+    expect(db.setCharacterCollectionEnabledForProject).toHaveBeenCalledWith(1, 9, false);
+
+    act(() => {
+      fireEvent.press(getByText('打开'));
+    });
+
+    expect(await findByText('返回合集')).toBeTruthy();
+    expect(await findByText('角色 A')).toBeTruthy();
   });
 
   it('renders worldbook action buttons after switching to worldbook tab', async () => {

@@ -1,10 +1,11 @@
-import { pickLocalFiles, importCharacters, importWorldBooks, importNotes } from '../src/services/fileImport';
+import { pickLocalFiles, importCharacters, importCharactersAsCollection, importWorldBooks, importNotes } from '../src/services/fileImport';
 import * as picker from '@react-native-documents/picker';
 import * as db from '../src/services/database';
 import RNFS from 'react-native-fs';
 
 jest.mock('@react-native-documents/picker', () => ({
   pick: jest.fn(),
+  pickDirectory: jest.fn(),
   keepLocalCopy: jest.fn(),
   types: {
     json: 'application/json',
@@ -16,6 +17,9 @@ jest.mock('@react-native-documents/picker', () => ({
 
 jest.mock('../src/services/database', () => ({
   createCharacter: jest.fn(async () => 42),
+  createCharacterCollection: jest.fn(async () => 7),
+  deleteCharacterCollection: jest.fn(async () => undefined),
+  updateCharacterCollectionTokenEstimate: jest.fn(async () => undefined),
   createWorldbookCollection: jest.fn(async () => 1),
   createWorldbookEntry: jest.fn(async () => 1),
   updateWorldbookCollectionTokenEstimate: jest.fn(async () => undefined),
@@ -27,6 +31,7 @@ jest.mock('react-native-fs', () => ({
   DocumentDirectoryPath: '/app/docs',
   mkdir: jest.fn(async () => undefined),
   copyFile: jest.fn(async () => undefined),
+  readDir: jest.fn(async () => []),
 }));
 
 jest.mock('../src/native/PngMetadataModule', () => ({
@@ -112,6 +117,46 @@ describe('importCharacters', () => {
   test('empty file list returns empty result', async () => {
     const result = await importCharacters(1, []);
     expect(result).toEqual({ success: [], failed: [], total: 0 });
+  });
+
+  test('imports selected character files into an existing collection', async () => {
+    const files = [
+      { localPath: '/c/a.json', name: 'a.json', mimeType: 'application/json' },
+      { localPath: '/c/b.json', name: 'b.json', mimeType: 'application/json' },
+    ];
+
+    await importCharacters(1, files, { collectionId: 7 });
+
+    expect(db.createCharacter).toHaveBeenCalledWith(
+      1,
+      'x',
+      'json',
+      expect.any(String),
+      { collectionId: 7 },
+    );
+  });
+
+  test('imports a batch as one new character collection', async () => {
+    let idCounter = 10;
+    (db.createCharacter as jest.Mock).mockImplementation(async () => idCounter++);
+    const files = [
+      { localPath: '/c/a.json', name: 'a.json', mimeType: 'application/json' },
+      { localPath: '/c/b.json', name: 'b.json', mimeType: 'application/json' },
+    ];
+
+    const result = await importCharactersAsCollection(1, 'Folder A', files);
+
+    expect(db.createCharacterCollection).toHaveBeenCalledWith(1, 'Folder A', { enabled: 1 });
+    expect(db.createCharacter).toHaveBeenCalledWith(
+      1,
+      'x',
+      'json',
+      expect.any(String),
+      { collectionId: 7 },
+    );
+    expect(db.updateCharacterCollectionTokenEstimate).toHaveBeenCalledWith(7);
+    expect(result.success).toHaveLength(2);
+    expect(result.success[0].id.collectionId).toBe(7);
   });
 });
 
