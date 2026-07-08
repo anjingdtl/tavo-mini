@@ -82,7 +82,6 @@ jest.mock('@react-navigation/native', () => ({
   },
 }));
 
-import { Alert } from 'react-native';
 import { ChapterEditor } from '../src/screens/ChapterEditor';
 import * as db from '../src/services/database';
 import { TtsAudio } from '../src/native/TtsAudioModule';
@@ -106,6 +105,15 @@ describe('ChapterEditor toolbar', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockTasks = [];
+    // 重置 voiceStore 状态以避免测试间状态泄漏
+    const { useVoiceStore } = require('../src/store/voiceStore');
+    useVoiceStore.setState({
+      isSynthesizing: false,
+      isPlaying: false,
+      playbackState: 'idle',
+      lastPlayEndedAt: null,
+      activeTtsSessionId: null,
+    });
     mockCancelPipeline.mockClear();
     mockCreateTask.mockImplementation(() => {
       mockTasks.push({
@@ -146,9 +154,8 @@ describe('ChapterEditor toolbar', () => {
 
   it('opens a range picker for reading and reads the whole book selection', async () => {
     mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
-    const alertSpy = jest.spyOn(Alert, 'alert');
     const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
-    const { findByText } = render(
+    const { findByText, queryByText } = render(
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
     );
 
@@ -156,25 +163,106 @@ describe('ChapterEditor toolbar', () => {
       fireEvent.press(await findByText('朗读'));
     });
 
-    expect(alertSpy).toHaveBeenCalledWith(
-      '选择朗读范围',
-      '请选择要连续朗读的章节范围。',
-      expect.arrayContaining([
-        expect.objectContaining({ text: '本章' }),
-        expect.objectContaining({ text: '从本章到结尾' }),
-        expect.objectContaining({ text: '全书' }),
-      ]),
-    );
+    // Bug1 修复：不再用原生 Alert.alert，全部走自定义 Modal，列出 4 个选项（含取消）
+    expect(await findByText('选择朗读范围')).toBeTruthy();
+    expect(await findByText('本章')).toBeTruthy();
+    expect(await findByText('从本章到结尾')).toBeTruthy();
+    expect(await findByText('全书')).toBeTruthy();
+    expect(await findByText('取消')).toBeTruthy();
 
-    const actions = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
-    const allAction = actions.find(action => action.text === '全书');
     await act(async () => {
-      await allAction?.onPress?.();
+      fireEvent.press(await findByText('全书'));
     });
 
     expect(db.buildChapterReadingText).toHaveBeenCalledWith(10, 1, 'all');
     expect(speakSpy).toHaveBeenCalledWith('朗读范围:all', expect.objectContaining({ sessionId: expect.any(String) }));
-    alertSpy.mockRestore();
+
+    // 选完之后 Modal 关闭
+    expect(queryByText('选择朗读范围')).toBeNull();
+    speakSpy.mockRestore();
+  });
+
+  it('range picker can be dismissed by pressing the cancel button', async () => {
+    mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
+    const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
+    const { findByText, queryByText } = render(
+      <ChapterEditor chapterId={1} onClose={jest.fn()} />,
+    );
+
+    await act(async () => {
+      fireEvent.press(await findByText('朗读'));
+    });
+    expect(await findByText('选择朗读范围')).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.press(await findByText('取消'));
+    });
+
+    // 取消后 Modal 关闭，且 TTS 没被调用
+    expect(queryByText('选择朗读范围')).toBeNull();
+    expect(speakSpy).not.toHaveBeenCalled();
+    expect(db.buildChapterReadingText).not.toHaveBeenCalled();
+    speakSpy.mockRestore();
+  });
+
+  it('does not reopen the range picker when the reading button is pressed right after playback ends', async () => {
+    mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
+    const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
+    const { findByText, queryByText } = render(
+      <ChapterEditor chapterId={1} onClose={jest.fn()} />,
+    );
+
+    // 1) 第一次点朗读 → 选"本章" → 启动播放
+    await act(async () => {
+      fireEvent.press(await findByText('朗读'));
+    });
+    await act(async () => {
+      fireEvent.press(await findByText('本章'));
+    });
+    expect(speakSpy).toHaveBeenCalledTimes(1);
+
+    // 2) 模拟系统 TTS 正常播完：fire ttsDone 给 voiceStore
+    const TtsAudioEmitter = require('../src/native/TtsAudioModule').TtsAudioEmitter;
+    const sessionId = (require('../src/store/voiceStore').useVoiceStore.getState().activeTtsSessionId) || 'unknown';
+    await act(async () => {
+      TtsAudioEmitter.emit('ttsDone', {
+        sessionId,
+        enginePackage: '',
+        chunkIndex: 0,
+        chunkCount: 1,
+      });
+    });
+
+    // 3) 用户在 lastPlayEndedAt 防抖窗口内再按"朗读"按钮：不应该弹 range picker
+    //    按钮文字应该变成"已结束"，并 toast 提示
+    const justFinished = await findByText('已结束');
+    expect(justFinished).toBeTruthy();
+    await act(async () => {
+      fireEvent.press(justFinished);
+    });
+    expect(queryByText('选择朗读范围')).toBeNull();
+    expect(speakSpy).toHaveBeenCalledTimes(1); // 没有第二次启动
+    speakSpy.mockRestore();
+  });
+
+  it('range picker can be dismissed by tapping the backdrop', async () => {
+    mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
+    const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
+    const { findByText, getByTestId, queryByText } = render(
+      <ChapterEditor chapterId={1} onClose={jest.fn()} />,
+    );
+
+    await act(async () => {
+      fireEvent.press(await findByText('朗读'));
+    });
+    expect(await findByText('选择朗读范围')).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.press(getByTestId('range-picker-backdrop'));
+    });
+
+    expect(queryByText('选择朗读范围')).toBeNull();
+    expect(speakSpy).not.toHaveBeenCalled();
     speakSpy.mockRestore();
   });
 
