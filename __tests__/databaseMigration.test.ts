@@ -246,6 +246,20 @@ function createLegacySQLiteMock() {
 }
 
 describe('database migration for legacy installs', () => {
+  test('creates character collection schema for fresh installs', async () => {
+    jest.resetModules();
+    const mock = createLegacySQLiteMock();
+    jest.doMock('react-native-sqlite-storage', () => mock.SQLite);
+
+    const database = require('../src/services/database');
+
+    await database.createProject('角色合集项目', 'outline');
+
+    const executed = mock.executed.join('\n');
+    expect(executed).toContain('CREATE TABLE IF NOT EXISTS character_collections');
+    expect(executed).toContain('collection_id INTEGER NOT NULL DEFAULT 0');
+  });
+
   test('upgrades old tables before creating projects and saving LLM config', async () => {
     jest.resetModules();
     const mock = createLegacySQLiteMock();

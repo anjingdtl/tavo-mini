@@ -13,6 +13,7 @@ let mockTasks: any[] = [];
 jest.mock('../src/services/database', () => ({
   updateChapter: (...args: any[]) => mockUpdateChapter(...args),
   getChapterById: (...args: any[]) => mockGetChapterById(...args),
+  buildChapterReadingText: jest.fn(async (_projectId: number, _chapterId: number, range: string) => `朗读范围:${range}`),
   getVoiceConfig: jest.fn(async () => ({
     model: 'speech-2.8-hd',
     voiceId: 'male-qn-qingse',
@@ -81,7 +82,10 @@ jest.mock('@react-navigation/native', () => ({
   },
 }));
 
+import { Alert } from 'react-native';
 import { ChapterEditor } from '../src/screens/ChapterEditor';
+import * as db from '../src/services/database';
+import { TtsAudio } from '../src/native/TtsAudioModule';
 
 const sampleChapter = {
   id: 1,
@@ -138,6 +142,40 @@ describe('ChapterEditor toolbar', () => {
       expect(await findByText(label)).toBeTruthy();
     }
     expect(getByTestId('chapter-toolbar-scroll').props.horizontal).toBe(true);
+  });
+
+  it('opens a range picker for reading and reads the whole book selection', async () => {
+    mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
+    const { findByText } = render(
+      <ChapterEditor chapterId={1} onClose={jest.fn()} />,
+    );
+
+    await act(async () => {
+      fireEvent.press(await findByText('朗读'));
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      '选择朗读范围',
+      '请选择要连续朗读的章节范围。',
+      expect.arrayContaining([
+        expect.objectContaining({ text: '本章' }),
+        expect.objectContaining({ text: '从本章到结尾' }),
+        expect.objectContaining({ text: '全书' }),
+      ]),
+    );
+
+    const actions = alertSpy.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+    const allAction = actions.find(action => action.text === '全书');
+    await act(async () => {
+      await allAction?.onPress?.();
+    });
+
+    expect(db.buildChapterReadingText).toHaveBeenCalledWith(10, 1, 'all');
+    expect(speakSpy).toHaveBeenCalledWith('朗读范围:all', expect.objectContaining({ sessionId: expect.any(String) }));
+    alertSpy.mockRestore();
+    speakSpy.mockRestore();
   });
 
   it('does not render the old long labels', async () => {

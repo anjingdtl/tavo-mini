@@ -7,8 +7,9 @@ import { migrateV6toV7 } from './v6-to-v7';
 import { migrateV7toV8 } from './v7-to-v8';
 import { migrateV8toV9 } from './v8-to-v9';
 import { migrateV9toV10 } from './v9-to-v10';
+import { migrateV10toV11 } from './v10-to-v11';
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -20,6 +21,7 @@ const MIGRATIONS: Migration[] = [
   { from: 7, to: 8, breaking: false, migrate: migrateV7toV8 },
   { from: 8, to: 9, breaking: false, migrate: migrateV8toV9 },
   { from: 9, to: 10, breaking: false, migrate: migrateV9toV10 },
+  { from: 10, to: 11, breaking: false, migrate: migrateV10toV11 },
 ];
 
 async function execute(db: SQLite.SQLiteDatabase, sql: string, params: any[] = []) {

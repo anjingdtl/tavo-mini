@@ -1,5 +1,5 @@
 import RNFS from 'react-native-fs';
-import { keepLocalCopy, pick, types } from '@react-native-documents/picker';
+import { keepLocalCopy, pick, pickDirectory, types } from '@react-native-documents/picker';
 import { inflate } from 'pako';
 import * as db from './database';
 import { PngMetadata } from '../native/PngMetadataModule';
@@ -377,11 +377,33 @@ export async function pickLocalFiles(
   return result;
 }
 
+export async function pickCharacterFolderFiles(max = 200): Promise<PickedFile[] | null> {
+  const selected = await pickDirectory({ requestLongTermAccess: false });
+  if (!selected?.uri) return null;
+
+  const directoryPath = decodeURIComponent(selected.uri.replace(/^file:\/\//, ''));
+  if (/^content:\/\//i.test(directoryPath)) {
+    throw new Error('当前系统目录授权无法直接枚举文件，请使用“批量导入角色卡”选择文件夹内的 JSON/PNG 文件。');
+  }
+
+  const entries = await RNFS.readDir(directoryPath);
+  const supported = entries
+    .filter((entry: any) => entry.isFile?.() !== false)
+    .filter((entry: any) => /\.(json|png)$/i.test(entry.name))
+    .slice(0, max);
+
+  return supported.map((entry: any) => ({
+    localPath: entry.path,
+    name: entry.name,
+    mimeType: entry.name.toLowerCase().endsWith('.png') ? 'image/png' : 'application/json',
+  }));
+}
+
 function isPngSelection(file: { name: string; mimeType?: string | null }): boolean {
   return file.name.toLowerCase().endsWith('.png') || file.mimeType === 'image/png';
 }
 
-export async function importSelectedCharacter(projectId: number): Promise<number | null> {
+export async function importSelectedCharacter(projectId: number, collectionId = 0): Promise<number | null> {
   const file = await pickLocalFile([types.json, types.images]);
   if (!file) return null;
   const isPng = isPngSelection(file);
@@ -392,7 +414,7 @@ export async function importSelectedCharacter(projectId: number): Promise<number
     const imagePath = await persistCharacterPngImage(file.localPath, file.name);
     payload = { ...payload, data: withCharacterImageAsset(payload.data, imagePath, file.name) };
   }
-  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data));
+  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data), { collectionId });
 }
 
 export async function pickCharacterPngImageReplacement(): Promise<string | null> {
@@ -443,9 +465,10 @@ export async function importCharacterFromJSON(
   projectId: number,
   jsonText: string,
   sourceName = 'character.json',
+  collectionId = 0,
 ): Promise<number> {
   const payload = parseCharacterCardJSON(jsonText, sourceName);
-  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data));
+  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data), { collectionId });
 }
 
 export async function importWorldBookFromJSON(
@@ -474,7 +497,7 @@ export async function importWorldBookFromJSON(
   }
 }
 
-async function importOneCharacterFromFile(projectId: number, file: PickedFile): Promise<number> {
+async function importOneCharacterFromFile(projectId: number, file: PickedFile, collectionId = 0): Promise<number> {
   const isPng = isPngSelection(file);
   let payload = isPng
     ? await parseCharacterCardPNG(file.localPath)
@@ -483,23 +506,52 @@ async function importOneCharacterFromFile(projectId: number, file: PickedFile): 
     const imagePath = await persistCharacterPngImage(file.localPath, file.name);
     payload = { ...payload, data: withCharacterImageAsset(payload.data, imagePath, file.name) };
   }
-  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data));
+  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data), { collectionId });
 }
 
 export async function importCharacters(
   projectId: number,
   files: PickedFile[],
+  options: { collectionId?: number } = {},
 ): Promise<BatchImportResult<number>> {
   const success: Array<{ fileName: string; id: number }> = [];
   const failed: Array<{ fileName: string; error: string }> = [];
   for (const file of files) {
     try {
-      const id = await importOneCharacterFromFile(projectId, file);
+      const id = await importOneCharacterFromFile(projectId, file, options.collectionId || 0);
       success.push({ fileName: file.name, id });
     } catch (e: any) {
       failed.push({ fileName: file.name, error: String(e?.message || e) });
     }
   }
+  return { success, failed, total: files.length };
+}
+
+export async function importCharactersAsCollection(
+  projectId: number,
+  collectionName: string,
+  files: PickedFile[],
+): Promise<BatchImportResult<{ collectionId: number; characterId: number }>> {
+  const success: Array<{ fileName: string; id: { collectionId: number; characterId: number } }> = [];
+  const failed: Array<{ fileName: string; error: string }> = [];
+  if (files.length === 0) return { success, failed, total: 0 };
+
+  const collectionId = await db.createCharacterCollection(projectId, collectionName.trim() || '角色卡合集', { enabled: 1 });
+  for (const file of files) {
+    try {
+      const characterId = await importOneCharacterFromFile(projectId, file, collectionId);
+      success.push({ fileName: file.name, id: { collectionId, characterId } });
+    } catch (e: any) {
+      failed.push({ fileName: file.name, error: String(e?.message || e) });
+    }
+  }
+
+  if (success.length === 0) {
+    await db.deleteCharacterCollection(collectionId).catch(() => {});
+  } else {
+    await db.updateCharacterCollectionTokenEstimate(collectionId);
+  }
+
   return { success, failed, total: files.length };
 }
 
