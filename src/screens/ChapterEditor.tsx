@@ -355,9 +355,37 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         await stop();
         return;
       }
-      await playChapter(chapter.content);
+      Alert.alert('选择朗读范围', '请选择要连续朗读的章节范围。', [
+        {
+          text: '本章',
+          onPress: () => playReadingRange('current'),
+        },
+        {
+          text: '从本章到结尾',
+          onPress: () => playReadingRange('fromCurrent'),
+        },
+        {
+          text: '全书',
+          onPress: () => playReadingRange('all'),
+        },
+        { text: '取消', style: 'cancel' },
+      ]);
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
+  };
+
+  const playReadingRange = async (range: db.ChapterReadingRange) => {
+    if (!chapter) return;
+    try {
+      const text = await db.buildChapterReadingText(chapter.project_id, chapter.id, range);
+      if (!text.trim()) {
+        Toast.show({ type: 'error', text1: '没有可朗读的正文内容' });
+        return;
+      }
+      await playChapter(text);
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '朗读失败', text2: e?.message });
     }
   };
 
@@ -563,7 +591,6 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
               icon={isPlaying ? Square : Volume2}
               variant={isPlaying ? 'secondary' : 'ghost'}
               onPress={toggleTts}
-              disabled={!chapter.content.trim() && !isSynthesizing && !isPlaying}
               compact
               minWidth={72}
             />

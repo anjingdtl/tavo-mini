@@ -188,9 +188,22 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
       CREATE TABLE IF NOT EXISTS characters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL,
+        collection_id INTEGER NOT NULL DEFAULT 0,
         name TEXT NOT NULL DEFAULT '',
         source_type TEXT NOT NULL DEFAULT 'json',
         data_json TEXT NOT NULL DEFAULT '{}',
+        max_tokens INTEGER NOT NULL DEFAULT 50000,
+        estimated_tokens INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS character_collections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
         max_tokens INTEGER NOT NULL DEFAULT 50000,
         estimated_tokens INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
@@ -446,12 +459,21 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
 
   const characters = await tableColumns(database, 'characters');
   await ensureColumn(database, 'characters', characters, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'characters', characters, 'collection_id', 'collection_id INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'characters', characters, 'name', "name TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'characters', characters, 'source_type', "source_type TEXT NOT NULL DEFAULT 'json'");
   await ensureColumn(database, 'characters', characters, 'data_json', "data_json TEXT NOT NULL DEFAULT '{}'");
   await ensureColumn(database, 'characters', characters, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 50000');
   await ensureColumn(database, 'characters', characters, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(database, 'characters', characters, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+
+  const characterCollections = await tableColumns(database, 'character_collections');
+  await ensureColumn(database, 'character_collections', characterCollections, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'character_collections', characterCollections, 'name', "name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, 'character_collections', characterCollections, 'enabled', 'enabled INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(database, 'character_collections', characterCollections, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 50000');
+  await ensureColumn(database, 'character_collections', characterCollections, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'character_collections', characterCollections, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
 
   const collections = await tableColumns(database, 'worldbook_collections');
   await ensureColumn(database, 'worldbook_collections', collections, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
@@ -695,6 +717,41 @@ export async function getChapterById(id: number): Promise<Chapter | null> {
   return row ? parseChapter(row) : null;
 }
 
+export type ChapterReadingRange = 'current' | 'fromCurrent' | 'all';
+
+export async function buildChapterReadingText(
+  projectId: number,
+  chapterId: number,
+  range: ChapterReadingRange,
+): Promise<string> {
+  const current = await getChapterById(chapterId);
+  if (!current) return '';
+
+  let rows: Row[];
+  if (range === 'current') {
+    rows = [current as unknown as Row];
+  } else if (range === 'fromCurrent') {
+    rows = await all<Row>(
+      'SELECT * FROM chapters WHERE project_id = ? AND position >= ? ORDER BY position ASC, id ASC',
+      [projectId, current.position],
+    );
+  } else {
+    rows = await all<Row>(
+      'SELECT * FROM chapters WHERE project_id = ? ORDER BY position ASC, id ASC',
+      [projectId],
+    );
+  }
+
+  return rows
+    .map(parseChapter)
+    .filter((chapter) => chapter.content.trim())
+    .map((chapter, index) => {
+      const title = chapter.title.trim() || `第 ${index + 1} 章`;
+      return `${title}\n\n${chapter.content.trim()}`;
+    })
+    .join('\n\n');
+}
+
 export async function createChapter(projectId: number, position: number, title?: string): Promise<number> {
   const timestamp = now();
   const result = await execute(
@@ -832,51 +889,174 @@ function usageJoin(resourceType: ResourceType, alias: string, projectId?: number
 }
 
 export async function getAllCharacters(projectId?: number): Promise<Row[]> {
-  return all<Row>(`SELECT c.*, ${usageJoin('character', 'c', projectId)} FROM characters c ORDER BY c.id DESC`);
+  return all<Row>(
+    `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, cc.max_tokens AS collection_max_tokens, ${usageJoin('character', 'c', projectId)}
+     FROM characters c
+     LEFT JOIN character_collections cc ON cc.id = c.collection_id
+     ORDER BY cc.id DESC, c.id DESC`,
+  );
 }
 
 export async function getCharactersByProject(projectId: number): Promise<Row[]> {
   return all<Row>(
-    `SELECT c.* FROM characters c
+    `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, cc.max_tokens AS collection_max_tokens
+     FROM characters c
      JOIN project_resources pr ON pr.resource_id = c.id AND pr.resource_type = 'character'
-     WHERE pr.project_id = ? AND pr.enabled = 1
+     LEFT JOIN character_collections cc ON cc.id = c.collection_id
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND COALESCE(cc.enabled, 1) = 1
      ORDER BY c.id ASC`,
     [projectId],
   );
 }
 
 export async function getCharacterById(id: number): Promise<Row | null> {
-  return one<Row>('SELECT * FROM characters WHERE id = ?', [id]);
+  return one<Row>(
+    `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, cc.max_tokens AS collection_max_tokens
+     FROM characters c
+     LEFT JOIN character_collections cc ON cc.id = c.collection_id
+     WHERE c.id = ?`,
+    [id],
+  );
 }
 
-export async function createCharacter(projectId: number, name: string, sourceType: string, dataJson: string): Promise<number> {
-  const estimatedTokens = estimateTokens(dataJson);
+export async function getCharacterCollections(projectId?: number): Promise<Row[]> {
+  if (!projectId) {
+    return all<Row>('SELECT * FROM character_collections ORDER BY id DESC');
+  }
+  return all<Row>(
+    `SELECT cc.*, COUNT(c.id) AS character_count
+     FROM character_collections cc
+     LEFT JOIN characters c ON c.collection_id = cc.id
+     GROUP BY cc.id
+     ORDER BY cc.id DESC`,
+  );
+}
+
+export async function createCharacterCollection(
+  _projectId: number,
+  name: string,
+  extra: Partial<Row> = {},
+): Promise<number> {
   const result = await execute(
     await openDatabase(),
-    'INSERT INTO characters (project_id, name, source_type, data_json, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [0, name, sourceType, dataJson, 50000, estimatedTokens, now()],
+    'INSERT INTO character_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [0, name, extra.enabled === 0 ? 0 : 1, Number(extra.max_tokens || 50000), Number(extra.estimated_tokens || 0), now()],
+  );
+  return result.insertId!;
+}
+
+export async function updateCharacterCollection(id: number, fields: Row): Promise<void> {
+  await updateColumns('character_collections', id, new Set(['name', 'enabled', 'max_tokens', 'estimated_tokens']), fields);
+}
+
+export async function updateCharacterCollectionTokenEstimate(id: number): Promise<void> {
+  const rows = await all<{ estimated_tokens: number }>('SELECT estimated_tokens FROM characters WHERE collection_id = ?', [id]);
+  const estimatedTokens = rows.reduce((total, row) => total + Number(row.estimated_tokens || 0), 0);
+  await updateCharacterCollection(id, { estimated_tokens: estimatedTokens });
+}
+
+export async function ensureDefaultCharacterCollection(projectId: number, name = '未分组角色'): Promise<number> {
+  const existing = await one<{ id: number }>('SELECT id FROM character_collections ORDER BY id ASC LIMIT 1');
+  if (existing?.id) return existing.id;
+  return createCharacterCollection(projectId, name, { enabled: 1 });
+}
+
+export async function getCharactersByCollection(collectionId: number, projectId?: number): Promise<Row[]> {
+  return all<Row>(
+    `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, ${usageJoin('character', 'c', projectId)}
+     FROM characters c
+     LEFT JOIN character_collections cc ON cc.id = c.collection_id
+     WHERE c.collection_id = ?
+     ORDER BY c.id DESC`,
+    [collectionId],
+  );
+}
+
+export async function setCharacterCollectionEnabledForProject(
+  projectId: number,
+  collectionId: number,
+  enabled: boolean,
+): Promise<void> {
+  const database = await openDatabase();
+  const rows = await all<{ id: number }>('SELECT id FROM characters WHERE collection_id = ?', [collectionId]);
+  const stmts: Array<{ sql: string; params: any[] }> = [
+    { sql: 'UPDATE character_collections SET enabled = ? WHERE id = ?', params: [enabled ? 1 : 0, collectionId] },
+  ];
+  for (const row of rows) {
+    stmts.push({
+      sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+      params: [projectId, 'character', row.id, enabled ? 1 : 0],
+    });
+  }
+  await runInTransactionSafe(database, stmts);
+}
+
+export async function setAllCharactersCollectionId(projectId: number, collectionId: number): Promise<void> {
+  await execute(await openDatabase(), 'UPDATE characters SET collection_id = ? WHERE collection_id = 0', [collectionId]);
+  await updateCharacterCollectionTokenEstimate(collectionId);
+  const rows = await all<{ id: number }>('SELECT id FROM characters WHERE collection_id = ?', [collectionId]);
+  for (const row of rows) {
+    await linkResourceToProject(projectId, 'character', row.id);
+  }
+}
+
+export async function deleteCharacterCollection(id: number): Promise<void> {
+  const database = await openDatabase();
+  const characters = await all<{ id: number }>('SELECT id FROM characters WHERE collection_id = ?', [id]);
+  const stmts: Array<{ sql: string; params: any[] }> = [];
+  for (const character of characters) {
+    stmts.push({
+      sql: 'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?',
+      params: ['character', character.id],
+    });
+  }
+  stmts.push({ sql: 'DELETE FROM characters WHERE collection_id = ?', params: [id] });
+  stmts.push({ sql: 'DELETE FROM character_collections WHERE id = ?', params: [id] });
+  await runInTransactionSafe(database, stmts);
+}
+
+export async function createCharacter(
+  projectId: number,
+  name: string,
+  sourceType: string,
+  dataJson: string,
+  extra: Partial<Row> = {},
+): Promise<number> {
+  const estimatedTokens = estimateTokens(dataJson);
+  const collectionId = Number(extra.collectionId ?? extra.collection_id ?? 0);
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO characters (project_id, collection_id, name, source_type, data_json, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [0, collectionId, name, sourceType, dataJson, Number(extra.max_tokens || 50000), estimatedTokens, now()],
   );
   const id = result.insertId!;
   await linkResourceToProject(projectId, 'character', id);
+  if (collectionId) await updateCharacterCollectionTokenEstimate(collectionId);
   return id;
 }
 
 export async function updateCharacter(id: number, name: string, dataJson: string): Promise<void> {
+  const existing = await getCharacterById(id);
   await execute(await openDatabase(), 'UPDATE characters SET name = ?, data_json = ?, estimated_tokens = ? WHERE id = ?', [
     name,
     dataJson,
     estimateTokens(dataJson),
     id,
   ]);
+  if (existing?.collection_id) await updateCharacterCollectionTokenEstimate(Number(existing.collection_id));
 }
 
 export async function updateCharacterTokenBudget(id: number, maxTokens: number): Promise<void> {
+  const existing = await getCharacterById(id);
   await execute(await openDatabase(), 'UPDATE characters SET max_tokens = ? WHERE id = ?', [maxTokens, id]);
+  if (existing?.collection_id) await updateCharacterCollectionTokenEstimate(Number(existing.collection_id));
 }
 
 export async function deleteCharacter(id: number): Promise<void> {
+  const existing = await getCharacterById(id);
   await deleteProjectResourceLinks('character', id);
   await execute(await openDatabase(), 'DELETE FROM characters WHERE id = ?', [id]);
+  if (existing?.collection_id) await updateCharacterCollectionTokenEstimate(Number(existing.collection_id));
 }
 
 export async function getAllWorldbookEntries(projectId?: number): Promise<Row[]> {
