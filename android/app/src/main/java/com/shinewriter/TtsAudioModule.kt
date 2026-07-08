@@ -661,6 +661,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
 
   private val utteranceListener = object : UtteranceProgressListener() {
     override fun onStart(utteranceId: String?) {
+      Log.i(TAG, "onStart utteranceId=$utteranceId")
       val session = activeSession ?: return
       val parsed = parseUtteranceId(utteranceId) ?: return
       val (_, index, _) = parsed
@@ -672,6 +673,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     }
 
     override fun onDone(utteranceId: String?) {
+      Log.i(TAG, "onDone utteranceId=$utteranceId")
       val session = activeSession ?: return
       val parsed = parseUtteranceId(utteranceId) ?: return
       val (_, index, total) = parsed
@@ -704,7 +706,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     }
 
     override fun onError(utteranceId: String?, errorCode: Int) {
-      Log.w(TAG, "utterance error: $utteranceId code=$errorCode")
+      Log.w(TAG, "onError utteranceId=$utteranceId code=$errorCode")
       val session = activeSession ?: return
       sendErrorEvent(session, ERR_SPEAK_FAILED, "系统朗读错误 code=$errorCode", errorCode)
       activeSession = null
@@ -712,14 +714,14 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
 
     @Deprecated("旧版回调")
     override fun onError(utteranceId: String?) {
-      Log.w(TAG, "utterance error (legacy): $utteranceId")
+      Log.w(TAG, "onError legacy utteranceId=$utteranceId")
       val session = activeSession ?: return
       sendErrorEvent(session, ERR_SPEAK_FAILED, "系统朗读错误")
       activeSession = null
     }
 
     override fun onStop(utteranceId: String?, interrupted: Boolean) {
-      Log.i(TAG, "utterance stopped: $utteranceId interrupted=$interrupted")
+      Log.i(TAG, "onStop utteranceId=$utteranceId interrupted=$interrupted")
       activeSession = null
     }
   }
@@ -774,6 +776,8 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
   }
 
   private fun sendEvent(eventName: String, params: WritableMap?) {
+    val sessionId = params?.getString("sessionId") ?: "<none>"
+    Log.i(TAG, "sendEvent $eventName sessionId=$sessionId")
     try {
       reactApplicationContext
         .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
