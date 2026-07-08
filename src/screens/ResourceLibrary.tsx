@@ -15,11 +15,13 @@ import { DEFAULT_STYLE_WEIGHTS, type StyleWeights, analyzeNotesStyle } from '../
 import {
   getCharacterImagePath,
   importCharacters,
+  importCharactersAsCollection,
   importNotes,
   importSelectedCharacter,
   importSelectedNoteText,
   importSelectedWorldBook,
   importWorldBooks,
+  pickCharacterFolderFiles,
   pickCharacterPngImageReplacement,
   pickLocalFiles,
   withCharacterImageAsset,
@@ -28,7 +30,7 @@ import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
 
 type ResourceTab = 'characters' | 'worldbook' | 'notes' | 'presets';
-type EditorKind = ResourceTab | 'worldbookCollection';
+type EditorKind = ResourceTab | 'worldbookCollection' | 'characterCollection';
 
 const TABS: { value: ResourceTab; label: string }[] = [
   { value: 'characters', label: '角色' },
@@ -69,7 +71,9 @@ export const ResourceLibrary: React.FC = () => {
   const { currentProject } = useProjectStore();
   const [tab, setTab] = useState<ResourceTab>('characters');
   const [items, setItems] = useState<Record<ResourceTab, any[]>>({ characters: [], worldbook: [], notes: [], presets: [] });
+  const [characterCollections, setCharacterCollections] = useState<any[]>([]);
   const [collections, setCollections] = useState<any[]>([]);
+  const [selectedCharacterCollectionId, setSelectedCharacterCollectionId] = useState<number | null>(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -92,15 +96,17 @@ export const ResourceLibrary: React.FC = () => {
   const projectId = currentProject?.id || 0;
 
   const loadData = useCallback(async () => {
-    const [characters, worldbook, notes, presets, worldbookCollections, noteConfig] = await Promise.all([
+    const [characters, worldbook, notes, presets, characterCollectionRows, worldbookCollections, noteConfig] = await Promise.all([
       db.getAllCharacters(projectId),
       db.getAllWorldbookEntries(projectId),
       db.getAllNotes(projectId),
       db.getAllPresets(projectId),
+      db.getCharacterCollections(projectId),
       db.getWorldbookCollections(projectId),
       db.getProjectNoteConfig(projectId),
     ]);
     setItems({ characters, worldbook, notes, presets });
+    setCharacterCollections(characterCollectionRows);
     setCollections(worldbookCollections);
     if (noteConfig) {
       // 防御性归一化：DB 异常返回 null/undefined 时回退默认，避免渲染时 .length 报错
@@ -117,7 +123,10 @@ export const ResourceLibrary: React.FC = () => {
     if (selectedCollectionId && !worldbookCollections.some((collection: any) => collection.id === selectedCollectionId)) {
       setSelectedCollectionId(null);
     }
-  }, [projectId, selectedCollectionId]);
+    if (selectedCharacterCollectionId && !characterCollectionRows.some((collection: any) => collection.id === selectedCharacterCollectionId)) {
+      setSelectedCharacterCollectionId(null);
+    }
+  }, [projectId, selectedCollectionId, selectedCharacterCollectionId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -129,7 +138,8 @@ export const ResourceLibrary: React.FC = () => {
 
   const importCharacter = async () => {
     try {
-      const id = await importSelectedCharacter(projectId);
+      const collectionId = selectedCharacterCollectionId || await db.ensureDefaultCharacterCollection(projectId);
+      const id = await importSelectedCharacter(projectId, collectionId);
       if (id) Toast.show({ type: 'success', text1: '角色卡已导入' });
       await loadData();
     } catch (error: any) {
@@ -139,10 +149,23 @@ export const ResourceLibrary: React.FC = () => {
 
   const addNewCharacter = async () => {
     try {
-      const id = await db.createCharacter(projectId, '未命名角色', 'json', '{}');
+      const collectionId = selectedCharacterCollectionId || await db.ensureDefaultCharacterCollection(projectId);
+      const id = await db.createCharacter(projectId, '未命名角色', 'json', '{}', { collectionId });
       await loadData();
       const newItem = await db.getCharacterById(id);
       if (newItem) openEditor('characters', newItem);
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '新建失败', text2: error.message });
+    }
+  };
+
+  const addNewCharacterCollection = async () => {
+    try {
+      const id = await db.createCharacterCollection(projectId, '未命名角色合集', { enabled: 1 });
+      await loadData();
+      const refreshedCollections = await db.getCharacterCollections(projectId);
+      const newItem = refreshedCollections.find((c: any) => c.id === id);
+      if (newItem) openEditor('characterCollection', newItem);
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '新建失败', text2: error.message });
     }
@@ -197,7 +220,9 @@ export const ResourceLibrary: React.FC = () => {
     const files = await pickLocalFiles([types.json, types.images], 50);
     if (!files) return;
     try {
-      const result = await importCharacters(projectId, files);
+      const result = selectedCharacterCollectionId
+        ? await importCharacters(projectId, files, { collectionId: selectedCharacterCollectionId })
+        : await importCharactersAsCollection(projectId, `批量角色卡 ${new Date().toLocaleString('zh-CN', { hour12: false })}`, files);
       if (result.total === 0) return;
       Toast.show({
         type: result.failed.length === 0 ? 'success' : 'info',
@@ -209,6 +234,42 @@ export const ResourceLibrary: React.FC = () => {
       await loadData();
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '批量导入失败', text2: error.message });
+    }
+  };
+
+  const importCharactersFolder = async () => {
+    try {
+      const files = await pickCharacterFolderFiles();
+      if (!files) return;
+      if (files.length === 0) {
+        Toast.show({ type: 'info', text1: '文件夹内没有 JSON/PNG 角色卡' });
+        return;
+      }
+      const result = selectedCharacterCollectionId
+        ? await importCharacters(projectId, files, { collectionId: selectedCharacterCollectionId })
+        : await importCharactersAsCollection(projectId, `文件夹角色卡 ${new Date().toLocaleString('zh-CN', { hour12: false })}`, files);
+      Toast.show({
+        type: result.failed.length === 0 ? 'success' : 'info',
+        text1: `文件夹导入：${result.success.length} 成功 / ${result.failed.length} 失败`,
+      });
+      if (result.failed.length > 0) {
+        setBatchResult({ title: '文件夹导入角色卡', success: result.success, failed: result.failed });
+      }
+      await loadData();
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '文件夹导入失败', text2: error.message });
+    }
+  };
+
+  const collectUngroupedCharacters = async () => {
+    try {
+      const id = await db.createCharacterCollection(projectId, '全部人物卡', { enabled: 1 });
+      await db.setAllCharactersCollectionId(projectId, id);
+      setSelectedCharacterCollectionId(id);
+      await loadData();
+      Toast.show({ type: 'success', text1: '已整理到人物卡合集' });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '整理失败', text2: error.message });
     }
   };
 
@@ -349,6 +410,7 @@ export const ResourceLibrary: React.FC = () => {
     // 即使保存成功也保留占位符。这里把已存在的真实 name 才预填，否则留空让 placeholder 显示。
     const placeholderByKind: Record<EditorKind, string> = {
       characters: '未命名角色',
+      characterCollection: '未命名角色合集',
       worldbookCollection: '未命名世界书',
       worldbook: '未命名条目',
       notes: '无标题笔记',
@@ -387,6 +449,13 @@ export const ResourceLibrary: React.FC = () => {
         const data = editor.imagePath ? withCharacterImageAsset(parsed, editor.imagePath) : parsed;
         await db.updateCharacter(item.id, editor.name.trim() || '未命名角色', JSON.stringify(data));
         await db.updateCharacterTokenBudget(item.id, maxTokens);
+      }
+      if (editor.kind === 'characterCollection') {
+        await db.updateCharacterCollection(item.id, {
+          name: editor.name.trim() || '未命名角色合集',
+          max_tokens: maxTokens,
+        });
+        await db.setCharacterCollectionEnabledForProject(projectId, item.id, editor.enabled);
       }
       if (editor.kind === 'worldbookCollection') {
         await db.updateWorldbookCollection(item.id, {
@@ -491,14 +560,10 @@ export const ResourceLibrary: React.FC = () => {
     }
   };
 
-  const setAllCharacters = async (enabled: boolean) => {
-    if (!currentProject) {
-      Alert.alert('未选择项目', '请先在项目页选择当前项目。');
-      return;
-    }
-    // Phase9-BUG#12: 包裹 try-catch + Toast
+  const toggleCharacterCollection = async (collection: any) => {
+    const newEnabled = collection.enabled === 1 ? 0 : 1;
     try {
-      await db.setAllProjectResourcesEnabled(currentProject.id, 'character', enabled);
+      await db.setCharacterCollectionEnabledForProject(projectId, collection.id, newEnabled === 1);
       await loadData();
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
@@ -526,6 +591,10 @@ export const ResourceLibrary: React.FC = () => {
           // Phase9-BUG#10: 包裹 try-catch + Toast，串联多个 deleteXxx 任一失败时给用户反馈
           try {
             if (kind === 'characters') await db.deleteCharacter(id);
+            if (kind === 'characterCollection') {
+              await db.deleteCharacterCollection(id);
+              setSelectedCharacterCollectionId(null);
+            }
             if (kind === 'worldbookCollection') {
               await db.deleteWorldbookCollection(id);
               setSelectedCollectionId(null);
@@ -542,9 +611,11 @@ export const ResourceLibrary: React.FC = () => {
     ]);
   };
 
-  const activeItems = tab === 'worldbook' && selectedCollectionId
-    ? items.worldbook.filter((item) => item.collection_id === selectedCollectionId)
-    : items[tab];
+  const activeItems = tab === 'characters' && selectedCharacterCollectionId
+    ? items.characters.filter((item) => item.collection_id === selectedCharacterCollectionId)
+    : tab === 'worldbook' && selectedCollectionId
+      ? items.worldbook.filter((item) => item.collection_id === selectedCollectionId)
+      : items[tab];
   const canAddManual = tab !== 'characters';
   const editorTitle = useMemo(() => (editor ? `编辑${tabLabel(editor.kind)}` : ''), [editor]);
 
@@ -553,16 +624,18 @@ export const ResourceLibrary: React.FC = () => {
       <Header title="资料库" subtitle={subtitle} />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.tabs}>
-          <SegmentedControl value={tab} options={TABS} onChange={(value) => { setTab(value); setSelectedCollectionId(null); }} />
+          <SegmentedControl value={tab} options={TABS} onChange={(value) => { setTab(value); setSelectedCollectionId(null); setSelectedCharacterCollectionId(null); }} />
         </View>
         <View style={styles.actions}>
         {tab === 'characters' ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionScroll}>
             <Button label="导入角色卡" icon={Import} compact onPress={importCharacter} />
             <Button label="批量导入角色卡" icon={Import} variant="secondary" compact onPress={importCharactersBatch} />
-            <Button label="新建角色卡" icon={FilePlus2} variant="secondary" compact onPress={addNewCharacter} />
-            <Button label="启用全部角色" variant="secondary" compact onPress={() => setAllCharacters(true)} disabled={!currentProject} />
-            <Button label="停用全部角色" variant="ghost" compact onPress={() => setAllCharacters(false)} disabled={!currentProject} />
+            <Button label="导入文件夹" icon={Import} variant="secondary" compact onPress={importCharactersFolder} />
+            {!selectedCharacterCollectionId && <Button label="新建角色合集" icon={FilePlus2} variant="secondary" compact onPress={addNewCharacterCollection} />}
+            {selectedCharacterCollectionId && <Button label="新建角色卡" icon={FilePlus2} variant="secondary" compact onPress={addNewCharacter} />}
+            {!selectedCharacterCollectionId && <Button label="整理已导入" variant="secondary" compact onPress={collectUngroupedCharacters} disabled={!currentProject} />}
+            {selectedCharacterCollectionId ? <Button label="返回合集" variant="secondary" compact onPress={() => setSelectedCharacterCollectionId(null)} /> : null}
           </ScrollView>
         ) : null}
         {tab === 'worldbook' ? (
@@ -659,7 +732,44 @@ export const ResourceLibrary: React.FC = () => {
       </View>
 
       <View testID="resource-list-container" style={styles.listContainer}>
-        {tab === 'worldbook' && !selectedCollectionId ? (
+        {tab === 'characters' && !selectedCharacterCollectionId ? (
+          characterCollections.length === 0 ? (
+            <EmptyState title="还没有角色合集" description="导入角色卡或新建合集后，可以集中启用和停用人物卡。" />
+          ) : (
+            <FlatList
+              data={characterCollections}
+              scrollEnabled={false}
+              keyExtractor={(item) => String(item.id)}
+              contentContainerStyle={styles.list}
+              renderItem={({ item }) => (
+                <Card>
+                  <View style={styles.row}>
+                    <UserRound size={20} color={theme.colors.accent} />
+                    <View style={styles.rowText}>
+                      <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name || '未命名角色合集'}</Text>
+                      <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>
+                        {item.character_count || 0} 张 · 预估 {item.estimated_tokens || 0} / Max {item.max_tokens || 50000} tokens
+                      </Text>
+                      <View style={styles.usageRow}>
+                        <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>合集启用</Text>
+                        <Switch
+                          testID={`character-collection-toggle-${item.id}`}
+                          value={item.enabled === 1}
+                          onValueChange={() => toggleCharacterCollection(item)}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.cardActions}>
+                    <Button label="打开" variant="secondary" onPress={() => setSelectedCharacterCollectionId(item.id)} />
+                    <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor('characterCollection', item)} />
+                    <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove('characterCollection', item.id, item.name)} />
+                  </View>
+                </Card>
+              )}
+            />
+          )
+        ) : tab === 'worldbook' && !selectedCollectionId ? (
           collections.length === 0 ? (
             <EmptyState title="还没有世界书合集" description="导入世界书文件会自动创建合集，也可以手动添加合集。" />
           ) : (
@@ -767,6 +877,12 @@ export const ResourceLibrary: React.FC = () => {
                       onChange={(dataJson) => setEditor({ ...editor, dataJson })}
                     />
                   </>
+                ) : null}
+                {editor.kind === 'characterCollection' ? (
+                  <View style={styles.usageRow}>
+                    <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>合集启用</Text>
+                    <Switch value={editor.enabled} onValueChange={(enabled) => setEditor({ ...editor, enabled })} />
+                  </View>
                 ) : null}
                 {editor.kind === 'worldbookCollection' ? (
                   <View style={styles.usageRow}>
@@ -885,6 +1001,7 @@ function iconFor(tab: ResourceTab, color: string) {
 
 function defaultMaxTokens(kind: EditorKind): number {
   if (kind === 'characters') return 50000;
+  if (kind === 'characterCollection') return 50000;
   if (kind === 'worldbookCollection') return 50000;
   if (kind === 'worldbook') return 2000;
   if (kind === 'notes') return 30000;
@@ -893,6 +1010,7 @@ function defaultMaxTokens(kind: EditorKind): number {
 
 function tabLabel(kind: EditorKind): string {
   if (kind === 'characters') return '角色卡';
+  if (kind === 'characterCollection') return '角色合集';
   if (kind === 'worldbookCollection') return '世界书合集';
   if (kind === 'worldbook') return '世界书条目';
   if (kind === 'notes') return '笔记';
@@ -914,13 +1032,14 @@ function emptyTitle(tab: ResourceTab): string {
 
 function titleFor(kind: EditorKind, item: any): string {
   if (kind === 'characters') return item.name || '未命名角色';
+  if (kind === 'characterCollection') return item.name || '未命名角色合集';
   if (kind === 'worldbookCollection') return item.name || '未命名世界书';
   if (kind === 'worldbook') return item.keyword_primary || '未命名条目';
   return item.title || item.name || '未命名';
 }
 
 function metaFor(tab: ResourceTab, item: any): string {
-  if (tab === 'characters') return item.source_type === 'png' ? 'PNG 角色卡' : 'JSON 角色卡';
+  if (tab === 'characters') return `${item.collection_name || '未分组'} · ${item.source_type === 'png' ? 'PNG 角色卡' : 'JSON 角色卡'}`;
   if (tab === 'worldbook') return `${item.collection_name || '未分组'} · ${item.enabled ? '条目可用' : '条目停用'} · ${item.content || '暂无内容'}`;
   if (tab === 'notes') return item.content || '空白笔记';
   return `${item.is_default ? '全局默认 · ' : ''}T=${item.temperature} / P=${item.top_p} / Max=${item.max_tokens}`;
