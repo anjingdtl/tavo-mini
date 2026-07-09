@@ -36,6 +36,7 @@ function formatStatusLabel(status: LocalModel['status']): string {
     corrupted: '已损坏',
     missing: '文件缺失',
     error: '错误',
+    unavailable: '不可用',
   };
   return labels[status] || status;
 }
@@ -57,7 +58,7 @@ export const LocalModelManagerScreen: React.FC = () => {
         mode: 'open',
         type: types.allFiles,
       });
-      if (!result.name?.toLowerCase().endsWith('.gguf') && !result.name?.toLowerCase().endsWith('.litertlm')) {
+      if (!result.name?.toLowerCase().endsWith('.gguf')) {
         Alert.alert('无法导入', '请选择扩展名为 .gguf 的模型文件。');
         return;
       }
@@ -91,7 +92,7 @@ export const LocalModelManagerScreen: React.FC = () => {
         api_key: '',
         model_name: model.display_name,
         local_model_id: model.id,
-        local_backend: 'auto',
+        local_backend: 'cpu',
         context_window: model.context_length ?? 4096,
         max_output_tokens: model.max_output_tokens ?? 4000,
       });
@@ -138,12 +139,12 @@ export const LocalModelManagerScreen: React.FC = () => {
       <ScrollView contentContainerStyle={styles.content}>
         <Card style={styles.noticeCard}>
           <Text style={[styles.noticeText, { color: theme.colors.textSecondary }]}>
-            模型文件将保存在应用私有目录。卸载应用或清除数据会删除这些文件，请自行保留原始模型文件。
+            支持 Qwen2.5 / Llama-3 / Mistral / Phi 等 GGUF 量化模型。推荐 Q4_K_M 量化，1-3B 参数模型约需 1.5-3GB 存储空间。模型文件保存在应用私有目录，卸载应用会删除这些文件，请自行保留原始模型文件。
           </Text>
         </Card>
 
         <Button
-          label="导入 GGUF 模型"
+          label="导入 .gguf 模型"
           icon={Plus}
           onPress={handleImport}
           disabled={importing || importState.state !== 'idle'}
@@ -176,15 +177,11 @@ export const LocalModelManagerScreen: React.FC = () => {
 
                 <View style={styles.statsRow}>
                   <Stat label="大小" value={formatBytes(model.file_size)} theme={theme.colors.textSecondary} />
-                  <Stat label="后端" value={model.validated_backend || model.backend_preference || 'auto'} theme={theme.colors.textSecondary} />
+                  <Stat label="后端" value={model.validated_backend || model.actual_backend || model.backend_preference || 'cpu'} theme={theme.colors.textSecondary} />
+                  <Stat label="模板" value={model.prompt_template || 'chatml'} theme={theme.colors.textSecondary} />
                   <Stat
                     label="加载耗时"
                     value={model.load_time_ms ? `${model.load_time_ms}ms` : '-'}
-                    theme={theme.colors.textSecondary}
-                  />
-                  <Stat
-                    label="速度"
-                    value={model.tokens_per_second ? `${model.tokens_per_second.toFixed(1)} t/s` : '-'}
                     theme={theme.colors.textSecondary}
                   />
                 </View>
@@ -236,6 +233,7 @@ export const LocalModelManagerScreen: React.FC = () => {
             <Text style={[styles.modalState, { color: theme.colors.textSecondary }]}>
               {importState.state === 'selecting' && '准备中…'}
               {importState.state === 'copying' && `复制中 ${progressPercent}%`}
+              {importState.state === 'hashing' && '计算文件哈希中…'}
               {importState.state === 'validating' && '验证模型中…'}
               {importState.state === 'ready' && '导入完成'}
               {importState.state === 'error' && `导入失败：${importState.errorMessage || importState.errorCode || '未知错误'}`}
