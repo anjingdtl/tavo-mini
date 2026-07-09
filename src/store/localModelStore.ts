@@ -8,11 +8,23 @@ import {
   deleteLocalModel,
 } from '../services/localModels';
 import type { LocalModel } from '../services/localModels';
-import { subscribeImportEvents, isLlamaCppAvailable } from '../native/LlamaCppModule';
+import {
+  subscribeImportEvents,
+  isLlamaCppAvailable,
+  probeLlamaCppAvailable,
+} from '../native/LlamaCppModule';
 
 interface ImportState {
   importId: string | null;
-  state: 'idle' | 'selecting' | 'copying' | 'hashing' | 'validating' | 'ready' | 'error';
+  state:
+    | 'idle'
+    | 'preparing'
+    | 'selecting'
+    | 'copying'
+    | 'hashing'
+    | 'validating'
+    | 'ready'
+    | 'error';
   bytesCopied: number;
   totalBytes: number;
   errorCode: string | null;
@@ -61,15 +73,34 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
   },
 
   startImport: async (sourceUri, originalFilename, displayName) => {
-    if (!isLlamaCppAvailable()) {
-      throw new Error('本地 llama.cpp 模块尚未就绪，请检查应用安装或重新启动。');
+    // 同步判定 + 异步再探测一次，避开 RN 0.85 bridgeless 模式下 TurboModule 注入
+    // 与首次 importModel 调用之间的竞态。
+    const quickAvailable = isLlamaCppAvailable();
+    const probedAvailable = quickAvailable ? true : await probeLlamaCppAvailable(2000);
+    if (!probedAvailable) {
+      const err = new Error('本地模型引擎初始化失败，请重启 App 后再试。');
+      (err as { code?: string }).code = 'ENGINE_UNAVAILABLE';
+      set({
+        import: {
+          ...initialImportState,
+          importId: null,
+          bytesCopied: 0,
+          totalBytes: 0,
+          state: 'error',
+          errorCode: (err as { code?: string }).code ?? 'ENGINE_UNAVAILABLE',
+          errorMessage: err.message,
+        },
+      });
+      throw err;
     }
 
+    // 先把状态切到 preparing，让 UI 立刻出现“正在准备模型文件…”模态，
+    // 避免原生层挂起时用户看到“点完没反应”。
     set({
       import: {
         ...initialImportState,
         importId: '',
-        state: 'selecting',
+        state: 'preparing',
       },
     });
 
@@ -103,9 +134,25 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       },
     });
 
+    // 兜底：原生层 90s 还没把第一个事件推上来就直接报错，避免永远卡在 preparing。
+    let firstEventTimer: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      firstEventTimer = setTimeout(() => {
+        reject(
+          Object.assign(new Error('本地模型引擎无响应（90 秒超时），请检查应用安装后重试。'), {
+            code: 'IMPORT_TIMEOUT',
+          }),
+        );
+      }, 90_000);
+    });
+
     try {
-      const model = await importLocalModel(sourceUri, originalFilename, displayName);
+      const model = await Promise.race<ReturnType<typeof importLocalModel>>([
+        importLocalModel(sourceUri, originalFilename, displayName),
+        timeoutPromise,
+      ]);
       activeImportId = model.id;
+      if (firstEventTimer) clearTimeout(firstEventTimer);
 
       set({
         import: {
@@ -129,18 +176,25 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
 
       await get().refreshModels();
     } catch (error: any) {
+      if (firstEventTimer) clearTimeout(firstEventTimer);
+      // 把常见的引擎未就绪 / 模型引擎挂起错误翻译为可读中文消息
+      const rawMessage: string = error?.message || '模型导入失败';
+      const friendlyMessage = rawMessage.includes('llama.cpp')
+        ? '本地模型引擎尚未就绪，请检查应用安装或重新启动。'
+        : rawMessage;
       set({
         import: {
           ...get().import,
           importId: activeImportId,
           state: 'error',
           errorCode: error?.code || 'IMPORT_FAILED',
-          errorMessage: error?.message || '模型导入失败',
+          errorMessage: friendlyMessage,
         },
       });
       throw error;
     } finally {
       unsub();
+      if (firstEventTimer) clearTimeout(firstEventTimer);
     }
   },
 

@@ -262,7 +262,138 @@ npm start
 | 生成速度慢 | 调整 `ctx_params.n_threads`（当前 4） |
 | JNI 函数签名不匹配 | 对照 `android/app/jni/llama.cpp/include/llama.h` 实际 API |
 | 导入卡在 'hashing' | ModelImporter 在 copy 完成后发 progress(bytesCopied>=totalBytes)，store 据此切 'hashing'；如未切，检查 native 事件发射 |
-| APP 红屏（无法加载脚本） | 未做 `adb reverse tcp:8081 tcp:8081` |
+
+---
+
+## 三、2026-07-09 晚间追加：UI 反馈层修复 + 根本问题交接
+
+> **最后更新：** 2026-07-09 (Asia/Shanghai)
+> **负责人：** TRAE 会话（接到世恒哥反馈"点完导入没反应"开始）
+> **状态：** UI 反馈修复已完成并提交到 main；**真正的根因（JS 端调不到 LlamaCpp TurboModule）待交接**
+
+### 3.1 问题表象
+
+用户在 V2.4.0 debug APK 上：
+- 进入「设置 → LLM 设置 → 本地 GGUF → 管理本地模型 → 导入 .gguf 模型」
+- 选完 GGUF 文件后，**Modal 没出来 / 看上去卡住**
+- 多次重试都没反应，必须手动重启 App
+
+### 3.2 已做的调查（按时间顺序）
+
+1. **V2.3.1 release 复现失败** → 设备跑的是 release 产物，源码已是 V2.4.0，行为不一致，**改用 V2.4.0 debug APK 复现**。
+2. **抓 logcat** 发现关键日志：
+   ```
+   LlamaCppPackage.getModule: name='LlamaCpp' (BEFORE ROUTING)
+   LlamaCppPackage: instantiating LlamaCppModule
+   LlamaCppPackage.getModule: name='LlamaCpp' AFTER ROUTING (result=LlamaCppModule)
+   ```
+   **模块在 native 侧成功实例化**，但之后**没有 `importModel` 之类的调用日志**——说明 JS 端没有真正调到 native。
+3. **对比 RN 0.85 bridgeless 模式下 TurboModule 解析流程**（参考 `ReactAndroid/src/main/java/com/facebook/react/internal/turbomodule/core/TurboModuleManager.kt` 与 `node_modules/react-native/Libraries/TurboModule/TurboModuleRegistry.js`）：
+   - `TurboModuleRegistry.get('LlamaCpp')` 内部走 `global.__turboModuleProxy('LlamaCpp')` → `NativeModules[name]`
+   - **只有 codegen 注册过的 TurboModule 才会被 `__turboModuleProxy` 暴露**（看 `react-native-codegen` 文档）
+   - 我们 `LlamaCpp` 没有 codegen spec，所以 JS 端**根本拿不到**这个模块
+   - `NativeModules.LlamaCpp` 也永远是 `undefined`
+
+### 3.3 本次会话已实施的修复（已在 main 分支，commit + push 完毕）
+
+1. **JS 端状态机改进**（`src/store/localModelStore.ts`）
+   - `startImport` 一开始就把状态切到 `'preparing'`，避免原生层挂起时 UI 永远停在 `'idle'` 让人误以为"没反应"
+   - 加 90 秒 `Promise.race` 兜底，防止永远卡在 preparing
+   - 引擎不可用时（`isLlamaCppAvailable()` 同步或异步探测都返回 false）直接 `set state='error'` + 抛 `ENGINE_UNAVAILABLE` 中文消息（"本地模型引擎初始化失败，请重启 App 后再试。"）
+   - 错误消息中文化：包含 `llama.cpp` 字样的原生错误自动翻译为"本地模型引擎尚未就绪，请检查应用安装或重新启动。"
+
+2. **JS 端引擎探测加强**（`src/native/LlamaCppModule.ts`）
+   - `isLlamaCppAvailable()` 不再只看 `NativeModules.LlamaCpp`，额外探测 `global.__turboModuleProxy('LlamaCpp')` 和 `TurboModuleRegistry.get('LlamaCpp')`
+   - 新增 `probeLlamaCppAvailable(timeoutMs)` 异步探测，给 TurboModule 异步注入留 2 秒时间窗
+
+3. **UI 改进**（`src/screens/LocalModelManagerScreen.tsx`）
+   - 进度 Modal 加 `'preparing' 正在准备模型文件…` 文案
+   - 导入按钮 `disabled` 条件：`importing || importState.state !== 'idle'`，避免重复点击
+
+4. **Native 日志增强**（`android/app/src/main/java/com/shinewriter/llamacpp/LlamaCppPackage.kt`）
+   - `getModule` 加 try-catch + AFTER_ROUTING 日志，方便下次复现排查
+
+5. **回归测试**（`__tests__/localModelImportRegression.test.tsx`）
+   - 4 个测试全部覆盖：
+     1. 选完文件后 import 状态立刻变非 idle（即使原生层永远不 resolve）
+     2. 引擎不可用时弹 Alert + state 落 error
+     3. 错误消息中文化（含"本地模型引擎"/"llama.cpp"/"重启"）
+     4. RN 0.85 bridgeless 异步探测场景：sync 判定 false 但 async probe 成功时正确恢复
+
+### 3.4 当前真机表现
+
+V2.4.0 debug APK 装到模拟器，选完 GGUF 文件后：
+
+```
+正在导入模型
+导入失败：本地模型引擎初始化失败，请重启 App 后再试。
+[关闭]
+```
+
+- ✅ Modal 出来了
+- ✅ 用户看到明确反馈
+- ✅ 不再"点完没反应"
+- ❌ 但**导入本身还是失败**（因为 LlamaCpp JS 端拿不到）
+
+### 3.5 给下一个 agent 的交接清单
+
+> **真正的根因**：`LlamaCpp` 这个 TurboModule 没有 codegen spec，所以 RN 0.85 bridgeless 模式下 JS 端通过任何路径（`NativeModules.LlamaCpp` / `global.__turboModuleProxy` / `TurboModuleRegistry.get`）都拿不到，调用永远走不进去 native。
+>
+> **下一步必须做的事（任选其一）：**
+
+**方案 A：加 codegen spec（RN 0.85 bridgeless 标准路径，推荐）**
+1. 新建 `src/native/specs/NativeLlamaCpp.ts`，定义 `TurboModuleRegistry.getEnforcing<Spec>('LlamaCpp')` 的 TypeScript interface
+2. 写 `@ReactModule(name = "LlamaCpp")` 注解到 `LlamaCppModule.kt`（注意 V2.4.0 当前只有 `implements TurboModule`，没 codegen）
+3. 在 `android/app/build.gradle` 启用 codegen（`react { autolinkLibrariesFromCommand() }` + `enableSeparateBuildPerCpuArchitecture` 等）
+4. 跑 `npx react-native codegen` 生成 cpp spec + Java spec
+5. 重新构建 APK，验证 `global.__turboModuleProxy('LlamaCpp')` 返回非空
+
+**方案 B：退回 legacy module 路径（风险更高，但工作量小）**
+1. 去掉 `LlamaCppModule(reactContext) : ..., TurboModule` 中的 `TurboModule` 实现（V2.3.1 时代是 legacy，但因为 P0-#1 崩溃才改成 TurboModule）
+2. `LlamaCppPackage.getReactModuleInfoProvider()` 里 `ReactModuleInfo.isTurboModule` 改成 `false`
+3. 重新构建、验证 `NativeModules.LlamaCpp` 在 JS 端不再为 undefined
+4. ⚠️ **风险**：V2.3.1 → V2.4.0 的 P0-#1 fix 会被撤销，需要在测试机上跑一遍 LlamaCpp 完整路径确认
+
+**方案 C：bridge hybrid 模块（中间路线）**
+1. 保留 TurboModule marker，但在 `MainApplication.kt` 里手动把 LlamaCpp module 实例注入到 JS 的 `global.LlamaCpp` 命名空间
+2. JS 端直接走 `global.LlamaCpp.importModel(...)`，绕过 TurboModuleRegistry
+3. 这种方法比较 hack，不推荐走生产
+
+### 3.6 测试 + 验证状态
+
+- ✅ 全套测试：**253 passed / 253 total**（新增 4 个）
+- ✅ ESLint：**0 errors**（6 warnings 全是历史文件）
+- ✅ V2.4.0 debug APK 构建成功（51.18 MB）
+- ✅ 模拟器实测：UI 反馈层修复生效（弹 Modal + 中文提示）
+- ⏳ 真机端到端导入测试：因 LlamaCpp 桥问题仍未通过
+
+### 3.7 关键文件清单（给下一个 agent）
+
+| 文件 | 状态 | 说明 |
+|---|---|---|
+| `src/store/localModelStore.ts` | 已修改 | 加 `preparing` 状态 + 90s 兜底 + 中文错误消息 |
+| `src/native/LlamaCppModule.ts` | 已修改 | `isLlamaCppAvailable()` + `probeLlamaCppAvailable()` 多路探测 |
+| `src/screens/LocalModelManagerScreen.tsx` | 已修改 | Modal 加 preparing 文案 |
+| `android/app/src/main/java/com/shinewriter/llamacpp/LlamaCppPackage.kt` | 已修改 | `getModule` 加 try-catch + 日志 |
+| `__tests__/localModelImportRegression.test.tsx` | 新增 | 4 个回归测试 |
+| `src/constants/version.json` | 已 bump | V2.4.0 versionCode=145（构建产物） |
+| `android/app/jni/llama.cpp/` | 已存在 | JNI + CMake 构建产物（不动） |
+| `src/native/specs/` | **不存在** | codegen spec 缺失（**核心交接**） |
+
+### 3.8 下一步任务建议优先级
+
+1. **P0** 走方案 A 加 codegen spec（这是 RN 0.85 bridgeless 的官方推荐）
+2. **P1** 如果方案 A 困难，先把 `LlamaCppModule.kt` 的 codegen 走通后回退 legacy module
+3. **P2** 给 LlamaCppEngine 的 `nativeInit` 加更详细的日志（目前 `System.loadLibrary("llamacpp_jni")` 成功但内部异常吃掉了），把真机 OOM / libllama 缺失的错误暴露给 JS
+4. **P3** 在本地模型管理页加「重新探测引擎」按钮，让用户在重启 App 前可以重试一次 TurboModule 探测
+5. **P4** V2.4.0 真机验收（联调 P0/P1/P2/P3 全部修完后跑一遍完整 GGUF 导入 → 加载 → 生成链路）
+
+### 3.9 后续 agent 接手前请务必阅读
+
+- `docs/superpowers/specs/2026-07-09-tavo-mini-llama-cpp-local-model-SPEC.md` — 完整设计
+- `docs/superpowers/plans/2026-07-09-llama-cpp-local-model.md` — 实施计划
+- `node_modules/react-native/Libraries/TurboModule/TurboModuleRegistry.js` — TurboModule 解析机制
+- `node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/internal/turbomodule/core/TurboModuleManager.kt` — bridgeless 模式下 TurboModule 加载流程
 
 ### 完成后
 

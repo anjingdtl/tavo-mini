@@ -20,15 +20,25 @@ class LlamaCppPackage : BaseReactPackage() {
         reactContext: ReactApplicationContext,
     ): NativeModule? {
         Log.d(TAG, "LlamaCppPackage.getModule: name='$name' (BEFORE ROUTING)")
-        return when (name) {
-            "LlamaCpp" -> LlamaCppModule(reactContext)
-            "PlatformConstants" -> {
-                Log.i(TAG, "LlamaCppPackage routing PlatformConstants -> AndroidInfoModule")
-                AndroidInfoModule::class.java
-                    .getDeclaredConstructor(ReactApplicationContext::class.java)
-                    .newInstance(reactContext)
+        return try {
+            val result: NativeModule? = when (name) {
+                "LlamaCpp" -> {
+                    Log.d(TAG, "LlamaCppPackage: instantiating LlamaCppModule")
+                    LlamaCppModule(reactContext)
+                }
+                "PlatformConstants" -> {
+                    Log.i(TAG, "LlamaCppPackage routing PlatformConstants -> AndroidInfoModule")
+                    AndroidInfoModule::class.java
+                        .getDeclaredConstructor(ReactApplicationContext::class.java)
+                        .newInstance(reactContext)
+                }
+                else -> null
             }
-            else -> null
+            Log.d(TAG, "LlamaCppPackage.getModule: name='$name' AFTER ROUTING (result=${result?.javaClass?.simpleName})")
+            result
+        } catch (e: Throwable) {
+            Log.e(TAG, "LlamaCppPackage.getModule failed for name='$name'", e)
+            null
         }
     }
 
