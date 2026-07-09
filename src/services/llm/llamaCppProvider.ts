@@ -70,9 +70,16 @@ function runGeneration(
   template: PromptTemplate,
   messages: ChatMessage[],
   opts: { max_tokens: number; temperature: number; top_p: number },
+  onToken?: (delta: string, sequence: number) => void,
 ): Promise<CompletedEvent> {
   return new Promise<CompletedEvent>((resolve, reject) => {
+    // P1-#8 修复：onToken 必须和 onCompleted / onError 一起在 nativeGenerate 之前注册，
+    // 否则 native 端已经 emit 的 token 会被 RN bridge 丢弃（DeviceEventEmitter
+    // 对没有 listener 的事件直接 swallow）。
     const unsub = observeGeneration(requestId, {
+      onToken: onToken
+        ? (e) => onToken(e.delta, e.sequence)
+        : undefined,
       onCompleted: (e) => {
         unsub();
         resolve(e);

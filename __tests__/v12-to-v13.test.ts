@@ -27,7 +27,7 @@ function createMockDb() {
     return tables.get(name)!;
   }
 
-  const executeSql = jest.fn(async (sql: string, params: any[] = []) => {
+  const executeSql = jest.fn(async (sql: string, _params: any[] = []) => {
     const normalized = sql.replace(/\s+/g, ' ').trim();
 
     // ALTER TABLE ... ADD COLUMN
@@ -139,7 +139,7 @@ function createMockDb() {
     const table = ensureTable(tableName);
     const id = table.nextId++;
     // Add all columns from this row
-    for (const [key, val] of Object.entries(row)) {
+    for (const [key] of Object.entries(row)) {
       if (!table.columns.has(key)) {
         table.columns.set(key, { type: 'TEXT', default: null });
       }
@@ -187,12 +187,6 @@ function createMockDb() {
 
 describe('migrateV12ToV13', () => {
   it('adds prompt_template column with default chatml', async () => {
-    const { db, getColumns } = createMockDb();
-    // Ensure the table exists
-    const table = db.executeSql; // trigger table creation via PRAGMA
-    // Insert a row before migration
-    const { insertRow } = createMockDb();
-    // We use the same mock db instance
     const mock = createMockDb();
     mock.insertRow('local_llm_models', {
       id: 'model-1',
