@@ -13,6 +13,12 @@ function createLegacySQLiteMock() {
     ['projects', new Set(['id', 'name'])],
     ['llm_config', new Set(['id'])],
     ['settings', new Set(['key', 'value'])],
+    ['local_llm_models', new Set([
+      'id', 'display_name', 'original_filename', 'relative_path', 'file_size', 'sha256',
+      'status', 'backend_preference', 'validated_backend', 'context_length', 'max_output_tokens',
+      'load_time_ms', 'first_token_ms', 'tokens_per_second', 'imported_at', 'last_used_at',
+      'last_validated_at', 'error_code', 'error_message',
+    ])],
   ]);
   const rows = new Map<string, TableRows>([
     ['projects', []],
@@ -89,22 +95,28 @@ function createLegacySQLiteMock() {
         tableRows.push({
           id: 1,
           name: params[0],
-          base_url: params[1],
-          api_key: params[2],
-          model_name: params[3],
-          is_active: 1,
+          provider_type: params[1],
+          base_url: params[2],
+          api_key: params[3],
+          model_name: params[4],
+          is_active: params[5],
+          local_model_id: params[6],
+          local_backend: params[7],
+          context_window: params[8],
+          max_output_tokens: params[9],
         });
         rows.set('llm_config', tableRows);
       }
       return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
     }
 
-    if (/^INSERT INTO llm_config \(name, base_url, api_key, model_name, is_active\)/i.test(normalized)) {
+    if (/^INSERT INTO llm_config \(/i.test(normalized)) {
       const schema = schemas.get('llm_config')!;
-      for (const column of ['name', 'base_url', 'api_key', 'model_name', 'is_active']) {
+      const llmColumns = normalized.match(/\(([^)]+)\)/)?.[1].split(',').map((c) => c.trim()) || [];
+      for (const column of llmColumns) {
         if (!schema.has(column)) throw new Error(`no such column: llm_config.${column}`);
       }
-      const id = insertRow('llm_config', ['name', 'base_url', 'api_key', 'model_name', 'is_active'], params);
+      const id = insertRow('llm_config', llmColumns, params);
       return [{ insertId: id, rowsAffected: 1, rows: createRows([]) }];
     }
 
@@ -113,22 +125,13 @@ function createLegacySQLiteMock() {
       for (const column of ['base_url', 'api_key', 'model_name']) {
         if (!schema.has(column)) throw new Error(`no such column: llm_config.${column}`);
       }
-      rows.set('llm_config', [{ id: 1, name: '默认配置', base_url: params[0], api_key: params[1], model_name: params[2], is_active: 1 }]);
+      rows.set('llm_config', [{ id: 1, name: '默认配置', provider_type: 'openai_compatible', base_url: params[0], api_key: params[1], model_name: params[2], is_active: 1, local_model_id: null, local_backend: null, context_window: 4096, max_output_tokens: 4000 }]);
       return [{ insertId: 1, rowsAffected: 1, rows: createRows([]) }];
     }
 
     if (/^UPDATE llm_config SET name = '默认配置'/i.test(normalized)) {
       rows.set('llm_config', (rows.get('llm_config') || []).map((row) => (
         row.id === 1 && !row.name ? { ...row, name: '默认配置' } : row
-      )));
-      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
-    }
-
-    if (/^UPDATE llm_config SET name = \?, base_url = \?, api_key = \?, model_name = \? WHERE id = \?/i.test(normalized)) {
-      rows.set('llm_config', (rows.get('llm_config') || []).map((row) => (
-        row.id === params[4]
-          ? { ...row, name: params[0], base_url: params[1], api_key: params[2], model_name: params[3] }
-          : row
       )));
       return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
     }
@@ -155,6 +158,26 @@ function createLegacySQLiteMock() {
     if (/^UPDATE llm_config SET is_active = 1 WHERE id = \(SELECT id FROM llm_config/i.test(normalized)) {
       const tableRows = rows.get('llm_config') || [];
       if (tableRows[0]) tableRows[0].is_active = 1;
+      return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
+    }
+
+    if (/^UPDATE llm_config SET name = \?/i.test(normalized)) {
+      rows.set('llm_config', (rows.get('llm_config') || []).map((row) => (
+        row.id === params[params.length - 1]
+          ? {
+              ...row,
+              name: params[0],
+              provider_type: params[1],
+              base_url: params[2],
+              api_key: params[3],
+              model_name: params[4],
+              local_model_id: params[5],
+              local_backend: params[6],
+              context_window: params[7],
+              max_output_tokens: params[8],
+            }
+          : row
+      )));
       return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
     }
 
@@ -281,10 +304,13 @@ describe('database migration for legacy installs', () => {
       model_name: 'gpt-real',
       is_active: 1,
     });
-    expect(mock.executed.join('\n')).toContain('ALTER TABLE projects ADD COLUMN mode');
     expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN name');
     expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN base_url');
+    expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN api_key');
     expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN is_active');
+    expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN provider_type');
+    expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN local_model_id');
+    expect(mock.executed.join('\n')).toContain('ALTER TABLE llm_config ADD COLUMN context_window');
     expect(mock.executed.join('\n')).toContain('INSERT OR IGNORE INTO projects (id, name, mode, created_at, updated_at)');
   });
 

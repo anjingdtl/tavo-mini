@@ -1,4 +1,5 @@
-import { normalizeChatCompletionUrl, createLLMConfigError, testLLMConnection } from '../src/services/llm';
+import { normalizeChatCompletionUrl, createLLMConfigError } from '../src/services/llm/openAICompatibleProvider';
+import { testLLMConnection } from '../src/services/llm';
 
 test.each([
   ['https://api.example.com', 'https://api.example.com/v1/chat/completions'],

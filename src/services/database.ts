@@ -11,6 +11,7 @@ import type {
   Project,
   ProjectMode,
 } from '../types/novel';
+import type { LocalModel } from '../types/localModel';
 import type { PipelineConfig } from '../types/pipeline';
 import type { VoiceConfig, TtsEngine, SystemTtsConfig } from '../types/tts';
 import { DEFAULT_VOICE_CONFIG, DEFAULT_SYSTEM_TTS_CONFIG } from '../constants/voice';
@@ -275,9 +276,39 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         base_url TEXT NOT NULL DEFAULT '',
         api_key TEXT NOT NULL DEFAULT '',
         model_name TEXT NOT NULL DEFAULT '',
-        is_active INTEGER NOT NULL DEFAULT 0
+        is_active INTEGER NOT NULL DEFAULT 0,
+        provider_type TEXT NOT NULL DEFAULT 'openai_compatible',
+        local_model_id TEXT,
+        local_backend TEXT,
+        context_window INTEGER NOT NULL DEFAULT 4096,
+        max_output_tokens INTEGER NOT NULL DEFAULT 4000
       )
     `,
+    `
+      CREATE TABLE IF NOT EXISTS local_llm_models (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        original_filename TEXT NOT NULL,
+        relative_path TEXT NOT NULL UNIQUE,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        sha256 TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'importing',
+        backend_preference TEXT NOT NULL DEFAULT 'auto',
+        validated_backend TEXT,
+        context_length INTEGER,
+        max_output_tokens INTEGER,
+        load_time_ms INTEGER,
+        first_token_ms INTEGER,
+        tokens_per_second REAL,
+        imported_at TEXT NOT NULL,
+        last_used_at TEXT,
+        last_validated_at TEXT,
+        error_code TEXT,
+        error_message TEXT
+      )
+    `,
+    `CREATE INDEX IF NOT EXISTS idx_local_llm_models_status ON local_llm_models(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_local_llm_models_last_used ON local_llm_models(last_used_at)`,
     `
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -523,6 +554,11 @@ async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promi
   await ensureColumn(database, 'llm_config', llm, 'api_key', "api_key TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'llm_config', llm, 'model_name', "model_name TEXT NOT NULL DEFAULT ''");
   await ensureColumn(database, 'llm_config', llm, 'is_active', 'is_active INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(database, 'llm_config', llm, 'provider_type', "provider_type TEXT NOT NULL DEFAULT 'openai_compatible'");
+  await ensureColumn(database, 'llm_config', llm, 'local_model_id', 'local_model_id TEXT');
+  await ensureColumn(database, 'llm_config', llm, 'local_backend', 'local_backend TEXT');
+  await ensureColumn(database, 'llm_config', llm, 'context_window', 'context_window INTEGER NOT NULL DEFAULT 4096');
+  await ensureColumn(database, 'llm_config', llm, 'max_output_tokens', 'max_output_tokens INTEGER NOT NULL DEFAULT 4000');
 
   const settings = await tableColumns(database, 'settings');
   await ensureColumn(database, 'settings', settings, 'key', "key TEXT NOT NULL DEFAULT ''");
@@ -544,8 +580,11 @@ async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
   await ensureGlobalProject(database);
   await execute(
     database,
-    'INSERT OR IGNORE INTO llm_config (id, name, base_url, api_key, model_name, is_active) VALUES (1, ?, ?, ?, ?, 1)',
-    ['默认配置', '', '', ''],
+    `INSERT OR IGNORE INTO llm_config (
+      id, name, provider_type, base_url, api_key, model_name, is_active,
+      local_model_id, local_backend, context_window, max_output_tokens
+    ) VALUES (1, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+    ['默认配置', 'openai_compatible', '', '', '', null, null, 4096, 4000],
   );
   await execute(database, "UPDATE llm_config SET name = '默认配置' WHERE id = 1 AND name = ''");
   const active = await execute(database, 'SELECT id FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
@@ -1573,10 +1612,15 @@ function normalizeLLMConfig(row?: Partial<LLMConfig> | null): LLMConfig {
   return {
     id: Number(row?.id || 1),
     name: row?.name || '默认配置',
+    provider_type: row?.provider_type || 'openai_compatible',
     base_url: row?.base_url || '',
     api_key: row?.api_key || '',
     model_name: row?.model_name || '',
     is_active: Number(row?.is_active ?? 1),
+    local_model_id: row?.local_model_id ?? null,
+    local_backend: row?.local_backend ?? null,
+    context_window: Number(row?.context_window ?? 4096),
+    max_output_tokens: Number(row?.max_output_tokens ?? 4000),
   };
 }
 
@@ -1600,8 +1644,11 @@ export async function getLLMConfigs(): Promise<LLMConfig[]> {
   if (rows.length === 0) {
     await execute(
       await openDatabase(),
-      'INSERT INTO llm_config (name, base_url, api_key, model_name, is_active) VALUES (?, ?, ?, ?, 1)',
-      ['默认配置', '', '', ''],
+      `INSERT INTO llm_config (
+        name, provider_type, base_url, api_key, model_name, is_active,
+        local_model_id, local_backend, context_window, max_output_tokens
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+      ['默认配置', 'openai_compatible', '', '', '', null, null, 4096, 4000],
     );
     return getLLMConfigs();
   }
@@ -1625,8 +1672,13 @@ export async function getActiveLLMConfig(): Promise<LLMConfig> {
 
 export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number> {
   const name = (config.name || '').trim() || '未命名配置';
+  const providerType = config.provider_type || 'openai_compatible';
   const baseUrl = (config.base_url || '').trim();
   const modelName = (config.model_name || '').trim();
+  const localModelId = config.local_model_id ?? null;
+  const localBackend = config.local_backend ?? null;
+  const contextWindow = Number(config.context_window ?? 4096);
+  const maxOutputTokens = Number(config.max_output_tokens ?? 4000);
   const database = await openDatabase();
   // 修复#A: UPDATE 不再写 is_active 字段，避免用过时的 draft.is_active 把刚被 setActiveLLMConfig
   // 激活的配置又写回 0。is_active 的写入权专属 setActiveLLMConfig / INSERT 初始值。
@@ -1637,14 +1689,20 @@ export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number>
   if (id > 0) {
     await execute(
       database,
-      'UPDATE llm_config SET name = ?, base_url = ?, api_key = ?, model_name = ? WHERE id = ?',
-      [name, baseUrl, '', modelName, id],
+      `UPDATE llm_config SET
+        name = ?, provider_type = ?, base_url = ?, api_key = ?, model_name = ?,
+        local_model_id = ?, local_backend = ?, context_window = ?, max_output_tokens = ?
+      WHERE id = ?`,
+      [name, providerType, baseUrl, '', modelName, localModelId, localBackend, contextWindow, maxOutputTokens, id],
     );
   } else {
     const result = await execute(
       database,
-      'INSERT INTO llm_config (name, base_url, api_key, model_name, is_active) VALUES (?, ?, ?, ?, ?)',
-      [name, baseUrl, '', modelName, shouldActivate ? 1 : 0],
+      `INSERT INTO llm_config (
+        name, provider_type, base_url, api_key, model_name, is_active,
+        local_model_id, local_backend, context_window, max_output_tokens
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [name, providerType, baseUrl, '', modelName, shouldActivate ? 1 : 0, localModelId, localBackend, contextWindow, maxOutputTokens],
     );
     id = Number(result.insertId);
     // V2.2.1 修复：react-native-sqlite-storage 6.0.1 在部分机型/事务场景下
@@ -1716,6 +1774,86 @@ export async function setLLMConfig(baseUrl: string, apiKey: string, modelName: s
     model_name: modelName,
     is_active: 1,
   });
+}
+
+export async function listLocalModels(): Promise<LocalModel[]> {
+  const database = await openDatabase();
+  const result = await execute(database, 'SELECT * FROM local_llm_models ORDER BY imported_at DESC');
+  const models: LocalModel[] = [];
+  for (let i = 0; i < result.rows.length; i += 1) {
+    models.push(result.rows.item(i) as LocalModel);
+  }
+  return models;
+}
+
+export async function getLocalModelById(id: string): Promise<LocalModel | null> {
+  const database = await openDatabase();
+  const result = await execute(database, 'SELECT * FROM local_llm_models WHERE id = ?', [id]);
+  return result.rows.length > 0 ? (result.rows.item(0) as LocalModel) : null;
+}
+
+export async function getLocalModelBySha256(sha256: string): Promise<LocalModel | null> {
+  const database = await openDatabase();
+  const result = await execute(database, 'SELECT * FROM local_llm_models WHERE sha256 = ?', [sha256]);
+  return result.rows.length > 0 ? (result.rows.item(0) as LocalModel) : null;
+}
+
+export async function createLocalModel(model: Omit<LocalModel, 'imported_at'> & { imported_at?: string }): Promise<void> {
+  const database = await openDatabase();
+  await execute(
+    database,
+    `INSERT INTO local_llm_models (
+      id, display_name, original_filename, relative_path, file_size, sha256,
+      status, backend_preference, validated_backend,
+      context_length, max_output_tokens,
+      load_time_ms, first_token_ms, tokens_per_second,
+      imported_at, last_used_at, last_validated_at, error_code, error_message
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      model.id,
+      model.display_name,
+      model.original_filename,
+      model.relative_path,
+      model.file_size,
+      model.sha256,
+      model.status,
+      model.backend_preference,
+      model.validated_backend,
+      model.context_length,
+      model.max_output_tokens,
+      model.load_time_ms,
+      model.first_token_ms,
+      model.tokens_per_second,
+      model.imported_at || now(),
+      model.last_used_at,
+      model.last_validated_at,
+      model.error_code,
+      model.error_message,
+    ],
+  );
+}
+
+export async function updateLocalModel(
+  id: string,
+  fields: Partial<Omit<LocalModel, 'id' | 'sha256'>>,
+): Promise<void> {
+  const keys = Object.keys(fields);
+  if (keys.length === 0) return;
+  const sets = keys.map(k => `${k} = ?`).join(', ');
+  const values = keys.map(k => (fields as Record<string, any>)[k]);
+  const database = await openDatabase();
+  await execute(database, `UPDATE local_llm_models SET ${sets} WHERE id = ?`, [...values, id]);
+}
+
+export async function deleteLocalModelRecord(id: string): Promise<void> {
+  const database = await openDatabase();
+  await execute(database, 'DELETE FROM local_llm_models WHERE id = ?', [id]);
+}
+
+export async function countLLMConfigsUsingModel(modelId: string): Promise<number> {
+  const database = await openDatabase();
+  const result = await execute(database, 'SELECT COUNT(*) AS cnt FROM llm_config WHERE local_model_id = ?', [modelId]);
+  return result.rows.length > 0 ? Number(result.rows.item(0).cnt || 0) : 0;
 }
 
 export async function getSetting(key: string): Promise<string | null> {

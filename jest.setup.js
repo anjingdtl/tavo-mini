@@ -161,5 +161,6 @@ jest.mock('react-native', () => {
     addListener: jest.fn(),
     removeListeners: jest.fn(),
   };
+
   return RN;
 });

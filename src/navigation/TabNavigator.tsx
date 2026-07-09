@@ -26,6 +26,7 @@ import { ContextPreviewScreen } from '../screens/ContextPreviewScreen';
 import { DraftPreviewScreen } from '../screens/DraftPreviewScreen';
 import { UsageStatsScreen } from '../screens/UsageStatsScreen';
 import { VoiceSettingsScreen } from '../screens/VoiceSettingsScreen';
+import { LocalModelManagerScreen } from '../screens/LocalModelManagerScreen';
 
 export type EditorStackParamList = {
   EditorMain: undefined;
@@ -49,6 +50,7 @@ export type SettingsStackParamList = {
   PipelineResult: { taskId: string };
   BackupCenter: undefined;
   UsageStats: undefined;
+  LocalModelManager: undefined;
 };
 
 const Tab = createBottomTabNavigator();
@@ -105,15 +107,16 @@ const EditorStackScreen = () => (
 
 const SettingsStackScreen = () => (
   <SettingsStack.Navigator screenOptions={{ headerShown: false }}>
-    <SettingsStack.Screen name="SettingsMain" component={SettingsScreen} />
-    <SettingsStack.Screen name="LLMSettings" component={LLMSettingsScreen} />
-    <SettingsStack.Screen name="VoiceSettings" component={VoiceSettingsScreen} />
-    <SettingsStack.Screen name="PipelineConfig" component={PipelineConfigScreen} />
-    <SettingsStack.Screen name="PipelineTask" component={PipelineTaskScreen} />
-    <SettingsStack.Screen name="PipelineResult" component={PipelineResultScreen} />
-    <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
-    <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
-  </SettingsStack.Navigator>
+      <SettingsStack.Screen name="SettingsMain" component={SettingsScreen} />
+      <SettingsStack.Screen name="LLMSettings" component={LLMSettingsScreen} />
+      <SettingsStack.Screen name="VoiceSettings" component={VoiceSettingsScreen} />
+      <SettingsStack.Screen name="PipelineConfig" component={PipelineConfigScreen} />
+      <SettingsStack.Screen name="PipelineTask" component={PipelineTaskScreen} />
+      <SettingsStack.Screen name="PipelineResult" component={PipelineResultScreen} />
+      <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
+      <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
+      <SettingsStack.Screen name="LocalModelManager" component={LocalModelManagerScreen} />
+    </SettingsStack.Navigator>
 );
 
 export const TabNavigator: React.FC = () => {
