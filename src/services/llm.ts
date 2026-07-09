@@ -1,5 +1,21 @@
 import * as db from './database';
-import { estimateMessagesTokens, estimateTokens } from '../utils/tokenEstimator';
+import { getProvider } from './llm/providerRegistry';
+import { normalizeChatCompletionUrl } from './llm/openAICompatibleProvider';
+import type {
+  ChatMessage,
+  LLMProviderType,
+  LLMRequestConfig,
+  LLMResult,
+} from './llm/types';
+
+export type { ChatMessage, LLMGenerateOptions, LLMProviderType, LLMRequestConfig, LLMResult } from './llm/types';
+
+export {
+  normalizeChatCompletionUrl,
+  createLLMConfigError,
+  formatLLMError,
+  createConcurrencyLimiter,
+} from './llm/openAICompatibleProvider';
 
 export interface LLMCallConfig {
   temperature?: number;
@@ -10,164 +26,39 @@ export interface LLMCallConfig {
   requestConfig?: LLMRequestConfig;
 }
 
-export interface LLMRequestConfig {
-  id?: number;
-  name?: string;
-  api_key: string;
-  model_name: string;
-  url: string;
-}
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-export interface LLMResult {
-  text: string | null;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  errorCode?: string;
-  rawUsage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-}
-
-export type LLMTask<T> = () => Promise<T>;
-
-export function createConcurrencyLimiter(limit: number) {
-  let active = 0;
-  const queue: Array<() => void> = [];
-
-  const runNext = () => {
-    if (active >= limit) return;
-    const next = queue.shift();
-    if (!next) return;
-    active++;
-    next();
-  };
-
-  return function limitTask<T>(task: LLMTask<T>): Promise<T> {
-    return new Promise((resolve, reject) => {
-      queue.push(() => {
-        task()
-          .then(resolve, reject)
-          .finally(() => {
-            active--;
-            runNext();
-          });
-      });
-      runNext();
-    });
-  };
-}
-
-const limitLLMRequest = createConcurrencyLimiter(250);
-
-export function normalizeChatCompletionUrl(baseUrl: string): string {
-  let url = baseUrl.trim();
-  if (!url) return '';
-  if (url.startsWith('http://')) {
-    console.warn(`[LLM] ⚠️ 正在使用非 HTTPS 地址：${url}，API Key 将以明文传输。`);
-  }
-  if (url.endsWith('/chat/completions')) return url;
-  if (url.endsWith('/chat/completions/')) return url.slice(0, -1);
-  url = url.replace(/\/+$/, '');
-  if (/^https?:\/\/api\.deepseek\.com$/i.test(url)) return `${url}/chat/completions`;
-  // 识别任意版本号段（/v1、/v2、/v4 等）：智谱 BigModel 用 /v4，只追加 /chat/completions，
-  // 不能强塞 /v1 否则会拼成 /v4/v1/chat/completions 触发 404
-  if (/\/v\d+$/.test(url)) return `${url}/chat/completions`;
-  return `${url}/v1/chat/completions`;
-}
-
-export function createLLMConfigError(): Error {
-  return new Error('请先在设置中配置 API 地址、API Key 和模型名称。');
-}
-
-export function formatLLMError(status: number, responseText: string): Error & { code?: string; status?: number } {
-  let code = `HTTP_${status}`;
-  let message = responseText.slice(0, 300);
-
-  try {
-    const parsed = JSON.parse(responseText);
-    const error = parsed?.error || parsed;
-    code = String(error?.code || error?.type || code);
-    message = String(error?.message || message);
-  } catch {
-    // Keep raw text for non-JSON providers.
-  }
-
-  const formatted = new Error(`API 请求失败 (${status}, ${code}): ${message}`) as Error & {
-    code?: string;
-    status?: number;
-  };
-  formatted.code = code;
-  formatted.status = status;
-  return formatted;
-}
-
-async function getRequestConfig() {
-  const llmConfig = await db.getLLMConfig();
-  if (!llmConfig.base_url || !llmConfig.api_key || !llmConfig.model_name) {
-    throw createLLMConfigError();
-  }
-  return {
-    ...llmConfig,
-    url: normalizeChatCompletionUrl(llmConfig.base_url),
-  };
-}
-
 export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
-  return getRequestConfig();
+  const config = await db.getLLMConfig();
+  const raw = config as LLMRequestConfig & { base_url?: string };
+  const providerType = raw.provider_type || 'openai_compatible';
+  return {
+    id: config.id,
+    name: config.name,
+    provider_type: providerType,
+    api_key: providerType === 'openai_compatible' ? config.api_key : '',
+    model_name: config.model_name,
+    url: normalizeChatCompletionUrl(config.base_url),
+    local_model_id: raw.local_model_id,
+    local_backend: raw.local_backend,
+    context_window: raw.context_window,
+    max_output_tokens: raw.max_output_tokens,
+  };
 }
 
-export async function testLLMConnection(baseUrl: string, apiKey: string, modelName: string): Promise<string> {
-  const url = normalizeChatCompletionUrl(baseUrl);
-  if (!url || !apiKey.trim() || !modelName.trim()) {
-    throw createLLMConfigError();
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey.trim()}`,
-      },
-      body: JSON.stringify({
-        model: modelName.trim(),
-        messages: [{ role: 'user', content: '请回复“连接成功”。' }],
-        temperature: 0,
-        max_tokens: 16,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw formatLLMError(response.status, text);
-    }
-
-    const data = await response.json();
-    const replyText =
-      data.choices?.[0]?.message?.content ||
-      data.choices?.[0]?.message?.reasoning_content ||
-      '连接成功';
-    return replyText;
-  } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      throw new Error('连接测试超时，请检查手机网络、API 地址和模型服务。');
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
+export async function testLLMConnection(
+  baseUrl: string,
+  apiKey: string,
+  modelName: string,
+  providerType: LLMProviderType = 'openai_compatible',
+  localModelId?: string,
+): Promise<string> {
+  const provider = getProvider(providerType);
+  return provider.test({
+    provider_type: providerType,
+    api_key: apiKey,
+    model_name: modelName,
+    url: normalizeChatCompletionUrl(baseUrl),
+    local_model_id: localModelId,
+  });
 }
 
 export async function callLLM(
@@ -185,139 +76,18 @@ export async function callLLMResult(
   config?: LLMCallConfig,
   externalSignal?: AbortSignal,
 ): Promise<LLMResult> {
-  const llmConfig = config?.requestConfig ?? await getRequestConfig();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
-  // 联动外部 signal：用户取消流水线时立即 abort，无需等 60s 超时
-  // handler 提到外部作用域，便于在 finally 中移除，避免监听器累积
-  const onAbort = () => controller.abort();
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      controller.abort();
-    } else {
-      externalSignal.addEventListener('abort', onAbort, { once: true });
-    }
-  }
-  const inputEstimate = estimateMessagesTokens(messages);
-  const scenario = config?.scenario || 'chat';
-  const modelName = llmConfig.model_name;
-  const projectId = config?.projectId;
-  // V2.2.0 (schema 10): 用量日志按配置区分，多 LLM 切换可追溯来源
-  const llmConfigId = llmConfig.id;
-  const llmConfigName = llmConfig.name;
-
-  try {
-    const response = await limitLLMRequest(() =>
-      fetch(llmConfig.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${llmConfig.api_key}`,
-        },
-        body: JSON.stringify({
-          model: llmConfig.model_name,
-          messages,
-          temperature: config?.temperature ?? 0.8,
-          top_p: config?.top_p ?? 0.9,
-          max_tokens: maxTokens ?? config?.max_tokens ?? 4000,
-          stream: false,
-        }),
-        signal: controller.signal,
-      }),
-    );
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw formatLLMError(response.status, text);
-    }
-
-    const data = await response.json();
-    const message = data.choices?.[0]?.message || {};
-    const text = message.content || message.reasoning_content || null;
-    const usage = data.usage || {};
-    // 用 ?? 而非 ||：provider 返回 0 是有效值（如纯嵌入请求），不应回退到估算。
-    const inputTokens = Number(usage.prompt_tokens ?? inputEstimate);
-    const outputTokens = Number(usage.completion_tokens ?? estimateTokens(text || ''));
-    const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens);
-
-    await safeLogUsage({
-      scenario,
-      inputTokens,
-      outputTokens,
-      totalTokens,
-      status: 'success',
-      modelName,
-      projectId,
-      llmConfigId,
-      llmConfigName,
-    });
-
-    return { text, inputTokens, outputTokens, totalTokens, rawUsage: data.usage };
-  } catch (error: any) {
-    if (error?.name === 'AbortError') {
-      // 区分用户主动取消和请求超时：外部 signal 被 abort 视为用户取消，不当作失败
-      if (externalSignal?.aborted) {
-        // 改为通用文案"已取消"：callLLMResult 被管线/摘要/风格分析共享，
-        // 管线取消时显示"朗读已取消"语义错乱
-        const cancelError = new Error('已取消') as Error & { code?: string };
-        cancelError.code = 'cancelled';
-        throw cancelError;
-      }
-      const timeoutError = new Error('请求超时，请检查网络或模型服务。') as Error & { code?: string };
-      timeoutError.code = 'timeout';
-      await safeLogUsage({
-        scenario,
-        inputTokens: inputEstimate,
-        outputTokens: 0,
-        totalTokens: inputEstimate,
-        status: 'error',
-        errorCode: timeoutError.code,
-        modelName,
-        projectId,
-        llmConfigId,
-        llmConfigName,
-      });
-      throw timeoutError;
-    }
-
-    await safeLogUsage({
-      scenario,
-      inputTokens: inputEstimate,
-      outputTokens: 0,
-      totalTokens: inputEstimate,
-      status: 'error',
-      errorCode: String(error?.code || error?.status || 'unknown'),
-      modelName,
-      projectId,
-      llmConfigId,
-      llmConfigName,
-    });
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-    // 正常完成时移除监听器，避免监听器累积
-    if (externalSignal) {
-      externalSignal.removeEventListener('abort', onAbort);
-    }
-  }
-}
-
-async function safeLogUsage(fields: {
-  scenario: string;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  status: string;
-  errorCode?: string;
-  modelName?: string;
-  projectId?: number;
-  // V2.2.0 (schema 10): 按配置区分用量，便于多 LLM 场景下识别来源
-  llmConfigId?: number;
-  llmConfigName?: string;
-}) {
-  try {
-    await db.logLLMUsage(fields);
-  } catch {
-    // Usage logging must never break generation.
-  }
+  const requestConfig = config?.requestConfig ?? await resolveLLMRequestConfig();
+  const provider = getProvider(requestConfig.provider_type);
+  return provider.generate(
+    messages,
+    {
+      temperature: config?.temperature,
+      top_p: config?.top_p,
+      max_tokens: maxTokens ?? config?.max_tokens,
+      scenario: config?.scenario,
+      projectId: config?.projectId,
+      requestConfig,
+    },
+    externalSignal,
+  );
 }

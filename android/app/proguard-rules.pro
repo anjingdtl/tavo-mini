@@ -8,3 +8,7 @@
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
 # Add any project specific keep options here:
+
+# LiteRT-LM local model runtime: keep all public classes/methods used by the
+# native engine and JNI so that ProGuard/R8 does not strip them in release builds.
+-keep class com.google.ai.edge.litertlm.** { *; }

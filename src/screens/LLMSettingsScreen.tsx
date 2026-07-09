@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
-import { Button, Field, Header, Screen, spacing } from '../components/ui';
+import { Button, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import { LocalModelSelector } from '../components/LocalModelSelector';
 import { useSettingsStore } from '../store/settingsStore';
 import { useThemeStore } from '../store/themeStore';
 import { testLLMConnection } from '../services/llm';
 import type { LLMConfig } from '../types/novel';
+import type { SettingsStackParamList } from '../navigation/TabNavigator';
 
 const emptyDraft: LLMConfig = {
   id: 0,
@@ -15,10 +19,16 @@ const emptyDraft: LLMConfig = {
   api_key: '',
   model_name: '',
   is_active: 0,
+  provider_type: 'openai_compatible',
+  local_model_id: null,
+  local_backend: null,
+  context_window: 4096,
+  max_output_tokens: 4000,
 };
 
 export const LLMSettingsScreen: React.FC = () => {
   const { theme } = useThemeStore();
+  const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
   const {
     llmConfig,
     llmConfigs,
@@ -51,13 +61,21 @@ export const LLMSettingsScreen: React.FC = () => {
   }, [llmConfig, llmConfigs, selectedId]);
 
   const activeName = useMemo(() => llmConfigs.find((config) => config.is_active === 1)?.name || '未选择', [llmConfigs]);
+  const activeProvider = useMemo(
+    () => llmConfigs.find((config) => config.is_active === 1)?.provider_type || 'openai_compatible',
+    [llmConfigs],
+  );
 
   const validate = () => {
     const missing: string[] = [];
     if (!draft.name.trim()) missing.push('配置名称');
-    if (!draft.base_url.trim()) missing.push('API 地址');
-    if (!draft.api_key.trim()) missing.push('API Key');
-    if (!draft.model_name.trim()) missing.push('模型名称');
+    if (draft.provider_type === 'openai_compatible') {
+      if (!draft.base_url.trim()) missing.push('API 地址');
+      if (!draft.api_key.trim()) missing.push('API Key');
+      if (!draft.model_name.trim()) missing.push('模型名称');
+    } else {
+      if (!draft.local_model_id) missing.push('已导入且可用的本地模型');
+    }
     if (missing.length > 0) {
       Alert.alert('配置不完整', `请填写以下必填项：\n\n• ${missing.join('\n• ')}`);
       return false;
@@ -103,11 +121,19 @@ export const LLMSettingsScreen: React.FC = () => {
       setSelectedId(id);
       setDraft((current) => ({ ...current, id }));
       isEditingRef.current = false;
-      const message = await testLLMConnection(draft.base_url, draft.api_key, draft.model_name);
+      const message = await testLLMConnection(
+        draft.base_url,
+        draft.api_key,
+        draft.model_name,
+        draft.provider_type,
+        draft.local_model_id || undefined,
+      );
       // V2.2.2 修复：原代码 title="连接成功" + message="连接成功" 重复显示。
       // 现在 title 改为"测试通过"，message 显示真实 LLM 回复（最多 120 字符），
       // 并附带模型名称，让用户看到是哪个模型测试的。
-      const modelLabel = draft.model_name || '当前模型';
+      const modelLabel = draft.provider_type === 'llama_cpp'
+        ? draft.name || '本地模型'
+        : draft.model_name || '当前模型';
       const reply = message && message.length > 0 ? message.slice(0, 120) : '（模型未返回内容）';
       Alert.alert('测试通过', `模型 ${modelLabel} 已连通。\n\n回复：${reply}`);
     } catch (error: any) {
@@ -163,7 +189,10 @@ export const LLMSettingsScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="LLM 设置" subtitle={`OpenAI 兼容 API · 当前：${activeName}`} />
+      <Header
+        title="LLM 设置"
+        subtitle={`${activeProvider === 'llama_cpp' ? '本地离线模型' : 'OpenAI 兼容 API'} · 当前：${activeName}`}
+      />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.configList}>
           {llmConfigs.map((config) => {
@@ -191,10 +220,71 @@ export const LLMSettingsScreen: React.FC = () => {
           <Button label="新增" icon={Plus} variant="secondary" onPress={startNewConfig} compact />
         </View>
 
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>模型来源</Text>
+          <SegmentedControl
+            value={draft.provider_type}
+            options={[
+              { value: 'openai_compatible', label: '在线 API' },
+              { value: 'llama_cpp', label: '本地离线模型' },
+            ]}
+            onChange={(provider_type) => updateDraft({ provider_type })}
+          />
+        </View>
+
         <Field label="配置名称" value={draft.name} onChangeText={(name) => updateDraft({ name })} placeholder="例如：OpenAI / 本地模型 / DeepSeek" />
-        <Field label="Base URL" value={draft.base_url} onChangeText={(base_url) => updateDraft({ base_url })} placeholder="https://api.openai.com" autoCapitalize="none" autoCorrect={false} />
-        <Field label="API Key" value={draft.api_key} onChangeText={(api_key) => updateDraft({ api_key })} placeholder="sk-..." autoCapitalize="none" autoCorrect={false} secureTextEntry />
-        <Field label="模型名称" value={draft.model_name} onChangeText={(model_name) => updateDraft({ model_name })} placeholder="gpt-4.1 或兼容模型名称" autoCapitalize="none" autoCorrect={false} />
+
+        {draft.provider_type === 'openai_compatible' ? (
+          <>
+            <Field label="Base URL" value={draft.base_url} onChangeText={(base_url) => updateDraft({ base_url })} placeholder="https://api.openai.com" autoCapitalize="none" autoCorrect={false} />
+            <Field label="API Key" value={draft.api_key} onChangeText={(api_key) => updateDraft({ api_key })} placeholder="sk-..." autoCapitalize="none" autoCorrect={false} secureTextEntry />
+            <Field label="模型名称" value={draft.model_name} onChangeText={(model_name) => updateDraft({ model_name })} placeholder="gpt-4.1 或兼容模型名称" autoCapitalize="none" autoCorrect={false} />
+          </>
+        ) : (
+          <>
+            <LocalModelSelector
+              selectedId={draft.local_model_id}
+              onSelect={(local_model_id) => updateDraft({ local_model_id })}
+            />
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>运行后端</Text>
+              <SegmentedControl
+                value={draft.local_backend || 'auto'}
+                options={[
+                  { value: 'auto', label: '自动' },
+                  { value: 'gpu', label: 'GPU' },
+                  { value: 'cpu', label: 'CPU' },
+                ]}
+                onChange={(local_backend) => updateDraft({ local_backend })}
+              />
+            </View>
+            <Field
+              label="上下文长度"
+              value={String(draft.context_window)}
+              onChangeText={(text) => {
+                const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
+                updateDraft({ context_window: Number.isFinite(value) ? value : 0 });
+              }}
+              placeholder="4096"
+              keyboardType="numeric"
+            />
+            <Field
+              label="最大输出 Token"
+              value={String(draft.max_output_tokens)}
+              onChangeText={(text) => {
+                const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
+                updateDraft({ max_output_tokens: Number.isFinite(value) ? value : 0 });
+              }}
+              placeholder="4000"
+              keyboardType="numeric"
+            />
+            <Button
+              label="管理本地模型"
+              variant="secondary"
+              onPress={() => navigation.navigate('LocalModelManager')}
+            />
+          </>
+        )}
 
         <View style={styles.actionRow}>
           <Button label={saving ? '保存中...' : '保存配置'} icon={Save} onPress={save} disabled={saving || testing} flex />
@@ -223,5 +313,7 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   configName: { fontSize: 13, fontWeight: '800' },
+  section: { marginBottom: spacing.md },
+  sectionTitle: { fontSize: 12, fontWeight: '700', marginBottom: spacing.sm },
   actionRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
 });
