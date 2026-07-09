@@ -24,12 +24,15 @@ export const LocalModelSelector: React.FC<{
   }, [refreshModels]);
 
   const readyModels = models.filter((m) => m.status === 'ready');
+  const unavailableModels = models.filter((m) => m.status === 'unavailable');
 
   if (readyModels.length === 0) {
     return (
       <Card style={styles.emptyCard}>
         <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>
-          暂无可用的本地模型，请先到「管理本地模型」页面导入。
+          {unavailableModels.length > 0
+            ? `${unavailableModels.length} 个旧模型已不可用（LiteRT-LM 引擎已移除），请重新导入 GGUF 模型。`
+            : '暂无可用的本地模型，请先到「管理本地模型」页面导入。'}
         </Text>
       </Card>
     );
@@ -49,7 +52,7 @@ export const LocalModelSelector: React.FC<{
                     {model.display_name}
                   </Text>
                   <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-                    {formatBytes(model.file_size)} · {model.validated_backend || 'auto'}
+                    {formatBytes(model.file_size)} · {model.validated_backend || 'cpu'} · {model.prompt_template}
                   </Text>
                 </View>
                 {selected ? <CheckCircle2 size={18} color={theme.colors.accent} /> : null}
