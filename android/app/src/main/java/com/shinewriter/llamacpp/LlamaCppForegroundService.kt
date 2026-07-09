@@ -11,7 +11,7 @@ import androidx.core.app.NotificationCompat
 /**
  * 导入大文件期间的前台通知服务，防止 Android 杀进程导致导入中断。
  *
- * Manifest 声明 foregroundServiceType="dataTransfer"（Android 15+ 推荐的文件传输场景类型）。
+ * Manifest 声明 foregroundServiceType="dataSync"（文件传输/数据处理场景）。
  * onCreate 内 5 秒内必须调 startForeground，否则 Android 11+ 抛异常。
  */
 class LlamaCppForegroundService : Service() {
@@ -38,7 +38,7 @@ class LlamaCppForegroundService : Service() {
             startForeground(
                 LlamaCppNotification.NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_TRANSFER,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
             )
         } else {
             startForeground(LlamaCppNotification.NOTIFICATION_ID, notification)
