@@ -24,7 +24,8 @@
       android:allowBackup="false"
       android:theme="@style/AppTheme"
       android:usesCleartextTraffic="${usesCleartextTraffic}"
-      android:supportsRtl="true">
+      android:supportsRtl="true"
+      android:extractNativeLibs="true">
 
       <activity
         android:name=".MainActivity"
@@ -45,7 +46,7 @@
       <service
         android:name=".llamacpp.LlamaCppForegroundService"
         android:exported="false"
-        android:foregroundServiceType="dataTransfer" />
+        android:foregroundServiceType="dataSync" />
 
     </application>
 </manifest>

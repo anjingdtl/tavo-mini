@@ -13,6 +13,7 @@ import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.facebook.react.turbomodule.core.interfaces.TurboModule
 
 /**
  * ReactMethod 桥接层：RN 调 Kotlin 的唯一入口。
@@ -20,9 +21,16 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
  * Promise 方法用于一次性请求/响应；流式生成通过 DeviceEventEmitter
  * 发送事件（LlamaCppToken / LlamaCppCompleted / LlamaCppError /
  * LlamaCppImportProgress / LlamaCppImportState），TS 侧监听这些事件。
+ *
+ * P0-#1 后续修复：RN 0.85 bridgeless 模式下，TurboModuleManager 走 cpp 端
+ * javaModuleProvider 找不到没有 codegen 的 Java module；fallback 到
+ * ReactPackageTurboModuleManagerDelegate.getModule()，但那里第 125-128 行
+ * 检查 `resolvedModule !is TurboModule` 时会直接 return null。
+ * 所以必须 implements TurboModule（BaseJavaModule 已提供 initialize/invalidate
+ * default no-op 实现，所以加上这个 marker interface 即可通过 type check）。
  */
 class LlamaCppModule(reactContext: ReactApplicationContext) :
-    ReactContextBaseJavaModule(reactContext) {
+    ReactContextBaseJavaModule(reactContext), TurboModule {
 
     companion object {
         private const val TAG = "LlamaCppModule"
@@ -90,11 +98,14 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
         displayName: String,
         promise: Promise,
     ) {
+        val svcIntent = Intent(reactApplicationContext, LlamaCppForegroundService::class.java)
         try {
-            // 启动前台服务，防止导入期间进程被杀
-            LlamaCppNotification.createChannel(reactApplicationContext)
-            val svcIntent = Intent(reactApplicationContext, LlamaCppForegroundService::class.java)
-            ContextCompat.startForegroundService(reactApplicationContext, svcIntent)
+            // 启动前台服务，防止导入期间进程被杀。
+            // 若服务已经在跑（用户连续触发导入），跳过 startForeground 避免 ANR。
+            if (!LlamaCppForegroundService.isRunning) {
+                LlamaCppNotification.createChannel(reactApplicationContext)
+                ContextCompat.startForegroundService(reactApplicationContext, svcIntent)
+            }
 
             importerInstance.importModel(
                 sourceUri = sourceUri,
@@ -115,7 +126,7 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
                     })
                 },
                 onComplete = { result ->
-                    reactApplicationContext.stopService(svcIntent)
+                    stopServiceIfRunning(svcIntent)
                     val map = Arguments.createMap().apply {
                         putString("importId", result.importId)
                         putString("originalFilename", result.originalFilename)
@@ -127,13 +138,27 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
                     promise.resolve(map)
                 },
                 onError = { importId, code, message ->
-                    reactApplicationContext.stopService(svcIntent)
+                    stopServiceIfRunning(svcIntent)
                     promise.reject(code, message)
                 },
             )
         } catch (e: Exception) {
             Log.e(TAG, "importModel failed", e)
+            // startForegroundService 或 importModel 自身抛异常时，确保 service 不残留
+            stopServiceIfRunning(svcIntent)
             promise.reject(LlamaCppErrors.IMPORT_COPY_FAILED, e.message, e)
+        }
+    }
+
+    /**
+     * 仅当 service 真的在跑时才 stop。
+     * P1-#7 修复：importModel 可能 startForegroundService 抛异常（onCreate 失败、OOM 等），
+     * 或 service 已被系统 / 其它流程 stop 过；这两种情况再次 stopService 是无意义的，
+     * 某些 Android 版本会返回 false 但调用本身没副作用。为避免噪音日志显式检查。
+     */
+    private fun stopServiceIfRunning(intent: Intent) {
+        if (LlamaCppForegroundService.isRunning) {
+            reactApplicationContext.stopService(intent)
         }
     }
 
@@ -209,34 +234,40 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
                 topP = if (request.hasKey("top_p")) request.getDouble("top_p").toFloat() else 0.9f,
             )
 
+            val cb = LlamaCppGenCallback().apply {
+                bind(
+                    requestId,
+                    onToken = { reqId, delta, sequence ->
+                        sendEvent(LlamaCppEvents.TOKEN, Arguments.createMap().apply {
+                            putString("requestId", reqId)
+                            putString("delta", delta)
+                            putInt("sequence", sequence)
+                        })
+                    },
+                    onComplete = { reqId, text, outputTokens, tps, elapsedMs, cancelled ->
+                        sendEvent(LlamaCppEvents.COMPLETED, Arguments.createMap().apply {
+                            putString("requestId", reqId)
+                            putString("text", text)
+                            putInt("outputTokens", outputTokens)
+                            putDouble("tokensPerSecond", tps.toDouble())
+                            putInt("elapsedMs", elapsedMs)
+                            putBoolean("cancelled", cancelled)
+                        })
+                    },
+                    onError = { reqId, message ->
+                        sendEvent(LlamaCppEvents.ERROR, Arguments.createMap().apply {
+                            putString("requestId", reqId)
+                            putString("code", LlamaCppErrors.GENERATION_FAILED)
+                            putString("message", message)
+                        })
+                    },
+                )
+            }
             engineInstance.generate(
                 requestId = requestId,
                 prompt = prompt,
                 opts = opts,
-                onToken = { reqId, delta, sequence ->
-                    sendEvent(LlamaCppEvents.TOKEN, Arguments.createMap().apply {
-                        putString("requestId", reqId)
-                        putString("delta", delta)
-                        putInt("sequence", sequence)
-                    })
-                },
-                onComplete = { reqId, text, outputTokens, tps, elapsedMs, cancelled ->
-                    sendEvent(LlamaCppEvents.COMPLETED, Arguments.createMap().apply {
-                        putString("requestId", reqId)
-                        putString("text", text)
-                        putInt("outputTokens", outputTokens)
-                        putDouble("tokensPerSecond", tps.toDouble())
-                        putInt("elapsedMs", elapsedMs)
-                        putBoolean("cancelled", cancelled)
-                    })
-                },
-                onError = { reqId, message ->
-                    sendEvent(LlamaCppEvents.ERROR, Arguments.createMap().apply {
-                        putString("requestId", reqId)
-                        putString("code", LlamaCppErrors.GENERATION_FAILED)
-                        putString("message", message)
-                    })
-                },
+                callback = cb,
             )
             // 立即 resolve 表示「开始生成」，实际结果走事件
             promise.resolve(null)
