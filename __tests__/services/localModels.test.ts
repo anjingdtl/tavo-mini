@@ -32,6 +32,67 @@ jest.mock('../../src/services/database', () => ({
   countLLMConfigsUsingModel: jest.fn(async (_modelId: string) => 0),
 }));
 
+// Mock LlamaCpp 原生模块：modelFileExists 默认返回 false 以模拟文件缺失，
+// 使 cleanupOrphanedModels 能把模型标记为 missing。
+jest.mock('../../src/native/LlamaCppModule', () => ({
+  isLlamaCppAvailable: jest.fn(() => true),
+  getCapabilities: jest.fn(async () => ({ available: true, cpuSupported: true, freeMemoryMB: 4096, totalMemoryMB: 8192 })),
+  importModel: jest.fn(async (_uri: string, originalFilename: string, displayName: string) => ({
+    importId: 'import-test',
+    originalFilename,
+    displayName,
+    fileSize: 0,
+    sha256: 'sha-test',
+    stagingRelativePath: 'test/test.gguf',
+  })),
+  validateModel: jest.fn(async () => ({ backend: 'cpu', loadTimeMs: 100 })),
+  loadModel: jest.fn(async () => ({ backend: 'cpu', loadTimeMs: 100 })),
+  generate: jest.fn(async () => undefined),
+  cancel: jest.fn(async () => undefined),
+  unloadModel: jest.fn(async () => undefined),
+  deleteModelFiles: jest.fn(async () => undefined),
+  modelFileExists: jest.fn(async () => false),
+  cleanupStagingFiles: jest.fn(async () => 0),
+  observeGeneration: jest.fn(() => () => {}),
+  observeImport: jest.fn(() => () => {}),
+  subscribeImportEvents: jest.fn(() => () => {}),
+  LlamaCppEvents: {
+    TOKEN: 'LlamaCppToken',
+    COMPLETED: 'LlamaCppCompleted',
+    ERROR: 'LlamaCppError',
+    IMPORT_PROGRESS: 'LlamaCppImportProgress',
+    IMPORT_STATE: 'LlamaCppImportState',
+  },
+  LlamaCppNative: {},
+}));
+
+function makeModel(overrides: Partial<Record<string, any>> = {}): any {
+  return {
+    id: 'model-x',
+    display_name: 'Test Model',
+    original_filename: 'test.gguf',
+    relative_path: 'model-x/model.gguf',
+    file_size: 1024,
+    sha256: 'sha-x',
+    status: 'ready',
+    backend_preference: 'auto',
+    validated_backend: 'cpu',
+    context_length: 2048,
+    max_output_tokens: 512,
+    load_time_ms: null,
+    first_token_ms: null,
+    tokens_per_second: null,
+    imported_at: new Date().toISOString(),
+    last_used_at: null,
+    last_validated_at: null,
+    error_code: null,
+    error_message: null,
+    prompt_template: 'chatml',
+    actual_backend: null,
+    ...overrides,
+  };
+}
+
 describe('localModels service', () => {
   beforeEach(() => {
     mockModels.length = 0;
@@ -39,26 +100,7 @@ describe('localModels service', () => {
   });
 
   it('creates and lists a local model', async () => {
-    await createLocalModel({
-      id: 'model-1',
-      display_name: 'Test Model',
-      original_filename: 'test.litertlm',
-      relative_path: 'model-1/model.litertlm',
-      file_size: 1024,
-      sha256: 'abc123',
-      status: 'ready',
-      backend_preference: 'auto',
-      validated_backend: 'cpu',
-      context_length: 2048,
-      max_output_tokens: 512,
-      load_time_ms: null,
-      first_token_ms: null,
-      tokens_per_second: null,
-      last_used_at: null,
-      last_validated_at: null,
-      error_code: null,
-      error_message: null,
-    });
+    await createLocalModel(makeModel({ id: 'model-1', display_name: 'Test Model' }));
 
     const models = await listLocalModels();
     expect(models).toHaveLength(1);
@@ -66,26 +108,7 @@ describe('localModels service', () => {
   });
 
   it('finds model by sha256', async () => {
-    await createLocalModel({
-      id: 'model-2',
-      display_name: 'Another Model',
-      original_filename: 'another.litertlm',
-      relative_path: 'model-2/model.litertlm',
-      file_size: 2048,
-      sha256: 'def456',
-      status: 'ready',
-      backend_preference: 'gpu',
-      validated_backend: 'gpu',
-      context_length: 4096,
-      max_output_tokens: 1024,
-      load_time_ms: null,
-      first_token_ms: null,
-      tokens_per_second: null,
-      last_used_at: null,
-      last_validated_at: null,
-      error_code: null,
-      error_message: null,
-    });
+    await createLocalModel(makeModel({ id: 'model-2', display_name: 'Another Model', sha256: 'def456' }));
 
     const found = await getLocalModelBySha256('def456');
     expect(found?.display_name).toBe('Another Model');
@@ -93,26 +116,7 @@ describe('localModels service', () => {
   });
 
   it('updates and deletes a model', async () => {
-    await createLocalModel({
-      id: 'model-3',
-      display_name: 'Old Name',
-      original_filename: 'old.litertlm',
-      relative_path: 'model-3/model.litertlm',
-      file_size: 512,
-      sha256: 'ghi789',
-      status: 'importing',
-      backend_preference: 'auto',
-      validated_backend: null,
-      context_length: null,
-      max_output_tokens: null,
-      load_time_ms: null,
-      first_token_ms: null,
-      tokens_per_second: null,
-      last_used_at: null,
-      last_validated_at: null,
-      error_code: null,
-      error_message: null,
-    });
+    await createLocalModel(makeModel({ id: 'model-3', display_name: 'Old Name', status: 'importing', sha256: 'ghi789' }));
 
     await updateLocalModel('model-3', { display_name: 'New Name', status: 'ready' });
     const updated = await getLocalModelById('model-3');
@@ -129,26 +133,7 @@ describe('localModels service', () => {
   });
 
   it('cleans up orphaned models when native module reports file missing', async () => {
-    await createLocalModel({
-      id: 'model-orphan',
-      display_name: 'Orphan',
-      original_filename: 'orphan.litertlm',
-      relative_path: 'model-orphan/model.litertlm',
-      file_size: 100,
-      sha256: 'orphan-sha',
-      status: 'ready',
-      backend_preference: 'auto',
-      validated_backend: 'cpu',
-      context_length: 2048,
-      max_output_tokens: 512,
-      load_time_ms: null,
-      first_token_ms: null,
-      tokens_per_second: null,
-      last_used_at: null,
-      last_validated_at: null,
-      error_code: null,
-      error_message: null,
-    });
+    await createLocalModel(makeModel({ id: 'model-orphan', display_name: 'Orphan', sha256: 'orphan-sha' }));
 
     await cleanupOrphanedModels();
     const model = await getLocalModelById('model-orphan');
