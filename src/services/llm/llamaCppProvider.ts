@@ -1,0 +1,254 @@
+import type { LLMProvider } from '../../types/llmProvider';
+import type { ChatMessage, LLMGenerateOptions, LLMRequestConfig, LLMResult } from './types';
+import type { PromptTemplate } from '../../types/localModel';
+import { getLocalModelById, logLLMUsage } from '../database';
+import { estimateMessagesTokens } from '../../utils/tokenEstimator';
+import {
+  isLlamaCppAvailable,
+  loadModel as nativeLoadModel,
+  generate as nativeGenerate,
+  cancel as nativeCancel,
+  observeGeneration,
+  type CompletedEvent,
+} from '../../native/LlamaCppModule';
+import { applyPromptTemplate } from './llamaCppPromptAdapter';
+
+/**
+ * llama.cpp 本地 Provider：实现 LLMProvider 接口，对接 NativeModules.LlamaCpp。
+ *
+ * - 模型加载缓存：模块级 currentLoadedModelId，同一模型重复 generate 不重 load。
+ *   若原生侧因内存压力卸载了模型，下次 generate 会收到「模型未加载」错误，
+ *   此时重置标记，用户重试即可重新加载。
+ * - 流式生成：native generate 立即 resolve，token/completed/error 走事件。
+ *   Provider 聚合为单个 Promise<CompletedEvent>。
+ * - 取消：externalSignal.aborted 时调 nativeCancel，原生侧发 cancelled=true 的 Completed。
+ */
+
+let currentLoadedModelId: string | null = null;
+
+/** 供 localModels.unloadLocalModel 调用：重置加载缓存标记。 */
+export function invalidateLoadedModel(): void {
+  currentLoadedModelId = null;
+}
+
+function makeRequestId(): string {
+  return `llamacpp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function safeLogUsage(fields: {
+  scenario: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  status: string;
+  errorCode?: string;
+  modelName?: string;
+  projectId?: number;
+  llmConfigId?: number;
+  llmConfigName?: string;
+}) {
+  try {
+    await logLLMUsage(fields);
+  } catch {
+    // Usage 日志不能中断生成。
+  }
+}
+
+async function ensureModelLoaded(modelId: string, relativePath: string): Promise<void> {
+  if (currentLoadedModelId === modelId) return;
+  await nativeLoadModel(modelId, relativePath);
+  currentLoadedModelId = modelId;
+}
+
+/**
+ * 调一次原生流式生成，聚合为 Promise<CompletedEvent>。
+ * 不处理 signal/usage，由调用方包装。modelId 传入用于原生层校验。
+ */
+function runGeneration(
+  requestId: string,
+  modelId: string,
+  template: PromptTemplate,
+  messages: ChatMessage[],
+  opts: { max_tokens: number; temperature: number; top_p: number },
+): Promise<CompletedEvent> {
+  return new Promise<CompletedEvent>((resolve, reject) => {
+    const unsub = observeGeneration(requestId, {
+      onCompleted: (e) => {
+        unsub();
+        resolve(e);
+      },
+      onError: (e) => {
+        unsub();
+        reject(Object.assign(new Error(e.message), { code: e.code }));
+      },
+    });
+    nativeGenerate(requestId, modelId, {
+      prompt: applyPromptTemplate(template, messages),
+      max_tokens: opts.max_tokens,
+      temperature: opts.temperature,
+      top_p: opts.top_p,
+    }).catch((err) => {
+      unsub();
+      reject(err);
+    });
+  });
+}
+
+export const llamaCppProvider: LLMProvider = {
+  type: 'llama_cpp',
+
+  async test(config: LLMRequestConfig): Promise<string> {
+    if (!isLlamaCppAvailable()) {
+      throw new Error('本地 llama.cpp 引擎不可用，请检查应用安装。');
+    }
+    const modelId = config.local_model_id;
+    if (!modelId) {
+      throw new Error('请先在设置中选择一个本地 GGUF 模型。');
+    }
+    const model = await getLocalModelById(modelId);
+    if (!model) {
+      throw new Error('所选本地模型已不存在，请重新选择。');
+    }
+
+    await ensureModelLoaded(model.id, model.relative_path);
+
+    const requestId = makeRequestId();
+    const result = await runGeneration(
+      requestId,
+      model.id,
+      model.prompt_template,
+      [{ role: 'user', content: '请回复“连接成功”。' }],
+      { max_tokens: 16, temperature: 0, top_p: 0.9 },
+    );
+
+    if (result.cancelled) {
+      throw new Error('连接测试已取消');
+    }
+    return result.text || '连接成功';
+  },
+
+  async generate(
+    messages: ChatMessage[],
+    options: LLMGenerateOptions,
+    externalSignal?: AbortSignal,
+  ): Promise<LLMResult> {
+    const config = options.requestConfig;
+    if (!config) {
+      throw new Error('缺少 LLM 请求配置');
+    }
+    const modelId = config.local_model_id;
+    if (!modelId) {
+      throw new Error('本地模型配置缺失：未指定 local_model_id。');
+    }
+    if (!isLlamaCppAvailable()) {
+      throw new Error('本地 llama.cpp 引擎不可用，请检查应用安装。');
+    }
+
+    const model = await getLocalModelById(modelId);
+    if (!model) {
+      throw new Error('所选本地模型已不存在，请重新选择。');
+    }
+    if (model.status !== 'ready') {
+      throw new Error(`模型当前状态为「${model.status}」，无法生成。请先完成校验。`);
+    }
+
+    const inputEstimate = estimateMessagesTokens(messages);
+    const scenario = options.scenario || 'chat';
+    const modelName = model.display_name;
+    const projectId = options.projectId;
+    const llmConfigId = config.id;
+    const llmConfigName = config.name;
+    const maxTokens = options.max_tokens ?? config.max_output_tokens ?? 512;
+    const temperature = options.temperature ?? 0.8;
+    const topP = options.top_p ?? 0.9;
+
+    if (externalSignal?.aborted) {
+      const err = new Error('已取消') as Error & { code?: string };
+      err.code = 'cancelled';
+      throw err;
+    }
+
+    const requestId = makeRequestId();
+    const onAbort = () => {
+      nativeCancel(requestId).catch(() => {});
+    };
+    if (externalSignal) {
+      externalSignal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    try {
+      await ensureModelLoaded(model.id, model.relative_path);
+
+      const result = await runGeneration(requestId, model.id, model.prompt_template, messages, {
+        max_tokens: maxTokens,
+        temperature,
+        top_p: topP,
+      });
+
+      if (result.cancelled) {
+        const cancelError = new Error('已取消') as Error & { code?: string };
+        cancelError.code = 'cancelled';
+        await safeLogUsage({
+          scenario,
+          inputTokens: inputEstimate,
+          outputTokens: 0,
+          totalTokens: inputEstimate,
+          status: 'error',
+          errorCode: 'cancelled',
+          modelName,
+          projectId,
+          llmConfigId,
+          llmConfigName,
+        });
+        throw cancelError;
+      }
+
+      const outputTokens = result.outputTokens;
+      const totalTokens = inputEstimate + outputTokens;
+      await safeLogUsage({
+        scenario,
+        inputTokens: inputEstimate,
+        outputTokens,
+        totalTokens,
+        status: 'success',
+        modelName,
+        projectId,
+        llmConfigId,
+        llmConfigName,
+      });
+
+      return {
+        text: result.text,
+        inputTokens: inputEstimate,
+        outputTokens,
+        totalTokens,
+      };
+    } catch (error: any) {
+      // 模型未加载类错误：重置缓存标记，下次重新加载
+      const msg = String(error?.message || '');
+      if (msg.includes('模型未加载') || error?.code === 'ENGINE_NOT_READY') {
+        currentLoadedModelId = null;
+      }
+      if (error?.code === 'cancelled') {
+        throw error;
+      }
+      await safeLogUsage({
+        scenario,
+        inputTokens: inputEstimate,
+        outputTokens: 0,
+        totalTokens: inputEstimate,
+        status: 'error',
+        errorCode: String(error?.code || 'unknown'),
+        modelName,
+        projectId,
+        llmConfigId,
+        llmConfigName,
+      });
+      throw error;
+    } finally {
+      if (externalSignal) {
+        externalSignal.removeEventListener('abort', onAbort);
+      }
+    }
+  },
+};

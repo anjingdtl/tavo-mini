@@ -304,7 +304,9 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         last_used_at TEXT,
         last_validated_at TEXT,
         error_code TEXT,
-        error_message TEXT
+        error_message TEXT,
+        prompt_template TEXT NOT NULL DEFAULT 'chatml',
+        actual_backend TEXT
       )
     `,
     `CREATE INDEX IF NOT EXISTS idx_local_llm_models_status ON local_llm_models(status)`,
@@ -1807,8 +1809,9 @@ export async function createLocalModel(model: Omit<LocalModel, 'imported_at'> & 
       status, backend_preference, validated_backend,
       context_length, max_output_tokens,
       load_time_ms, first_token_ms, tokens_per_second,
-      imported_at, last_used_at, last_validated_at, error_code, error_message
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      imported_at, last_used_at, last_validated_at, error_code, error_message,
+      prompt_template, actual_backend
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       model.id,
       model.display_name,
@@ -1829,6 +1832,8 @@ export async function createLocalModel(model: Omit<LocalModel, 'imported_at'> & 
       model.last_validated_at,
       model.error_code,
       model.error_message,
+      model.prompt_template,
+      model.actual_backend,
     ],
   );
 }

@@ -161,6 +161,35 @@ jest.mock('react-native', () => {
     addListener: jest.fn(),
     removeListeners: jest.fn(),
   };
+  // llama.cpp 本地模型原生模块 mock
+  RN.NativeModules.LlamaCpp = {
+    getCapabilities: jest.fn(() =>
+      Promise.resolve({ available: true, cpuSupported: true, freeMemoryMB: 4096, totalMemoryMB: 8192 }),
+    ),
+    importModel: jest.fn((_uri, originalFilename, displayName) =>
+      Promise.resolve({
+        importId: 'import-test',
+        originalFilename,
+        displayName,
+        fileSize: 0,
+        sha256: 'sha-test',
+        stagingRelativePath: 'test/test.gguf',
+      }),
+    ),
+    validateModel: jest.fn(() => Promise.resolve({ backend: 'cpu', loadTimeMs: 100 })),
+    loadModel: jest.fn(() => Promise.resolve({ backend: 'cpu', loadTimeMs: 100 })),
+    generate: jest.fn(() => Promise.resolve(null)),
+    cancel: jest.fn(() => Promise.resolve(null)),
+    unloadModel: jest.fn(() => Promise.resolve(null)),
+    deleteModelFiles: jest.fn(() => Promise.resolve(null)),
+    modelFileExists: jest.fn(() => Promise.resolve(true)),
+    cleanupStagingFiles: jest.fn(() => Promise.resolve(0)),
+    addListener: jest.fn(),
+    removeListeners: jest.fn(),
+    __emitLlamaCppEvent: (eventName, data) => {
+      RN.DeviceEventEmitter.emit(eventName, data);
+    },
+  };
 
   return RN;
 });
