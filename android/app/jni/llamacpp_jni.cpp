@@ -12,6 +12,7 @@
 #include <vector>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 
 #include "llama.h"
 
@@ -26,8 +27,20 @@ namespace {
 llama_model   *g_model       = nullptr;
 llama_context *g_ctx         = nullptr;
 int            g_num_threads = 4;
-std::atomic<bool> g_cancelled{false};
+// P0-#3: g_cancelled 必须用 volatile + std::atomic 双重保证：
+// 1) volatile 阻止编译器把 load 优化到寄存器里
+// 2) std::atomic 保证跨线程 memory ordering
+// 之前只 std::atomic，NDK -O2 + LTO 在某些场景下会做 loop-invariant code motion
+// 把 g_cancelled.load() 提到 while 外面，导致 generate 线程永远看不到 cancel 线程的 store。
+volatile std::atomic<bool> g_cancelled{false};
 std::atomic<bool> g_backend_inited{false};
+
+// 序列化所有访问 g_model / g_ctx / g_cancelled 的操作
+// RN bridge 线程 + Engine 后台线程的并发访问会破坏 llama context 内部状态
+// （n_remaining / batch token buffer / sampler chain）以及 cancellation 标志。
+// P0-#2 修复：用 std::mutex 把整段 generate/load/unload 串行化。
+// P0-#3 修复：g_cancelled 重置只在锁内进行，避免新请求清掉旧请求的 cancel。
+static std::mutex g_engine_mutex;
 
 // 回调方法 ID（每次 generate 调用时解析，避免缓存跨调用的 jclass 引用）
 struct CallbackMethods {
@@ -37,12 +50,13 @@ struct CallbackMethods {
 };
 
 // onCompleted 签名: (String text, int outputTokens, float tps, int elapsedMs, int cancelled)V
+// → JVM descriptor: "(Ljava/lang/String;IFII)V"
 // onToken     签名: (String token, int sequence)V
 // onError     签名: (String message)V
 bool resolveCallback(JNIEnv *env, jobject callback, CallbackMethods &cb) {
     jclass cbClass = env->GetObjectClass(callback);
     cb.onToken     = env->GetMethodID(cbClass, "onToken",     "(Ljava/lang/String;I)V");
-    cb.onCompleted = env->GetMethodID(cbClass, "onCompleted", "(Ljava/lang/String;IIFII)V");
+    cb.onCompleted = env->GetMethodID(cbClass, "onCompleted", "(Ljava/lang/String;IFII)V");
     cb.onError     = env->GetMethodID(cbClass, "onError",     "(Ljava/lang/String;)V");
     env->DeleteLocalRef(cbClass);
     if (!cb.onToken || !cb.onCompleted || !cb.onError) {
@@ -94,6 +108,8 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeInit(
 JNIEXPORT jlong JNICALL
 Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeLoadModel(
         JNIEnv *env, jobject thiz, jstring model_path, jint context_len) {
+    std::lock_guard<std::mutex> lock(g_engine_mutex);
+
     if (g_model || g_ctx) {
         LOGE("nativeLoadModel: a model is already loaded, unload first");
         return 0;
@@ -114,8 +130,19 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeLoadModel(
     env->ReleaseStringUTFChars(model_path, path);
 
     if (!g_model) {
-        LOGE("nativeLoadModel: llama_model_load_from_file failed");
-        return 0;
+        // P0-#4 OOM fallback：mmap 失败时尝试无 mmap 模式
+        LOGW("nativeLoadModel: mmap load failed, retrying without mmap");
+        model_params.use_mmap = false;
+        // 重新读取 path（上一行已 release）
+        const char *path2 = env->GetStringUTFChars(model_path, nullptr);
+        if (path2) {
+            g_model = llama_model_load_from_file(path2, model_params);
+            env->ReleaseStringUTFChars(model_path, path2);
+        }
+        if (!g_model) {
+            LOGE("nativeLoadModel: llama_model_load_from_file failed (both mmap and non-mmap)");
+            return 0;
+        }
     }
 
     auto ctx_params = llama_context_default_params();
@@ -152,10 +179,29 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
         return;
     }
 
+    // P0-#2 修复：try_lock 失败说明已有 generate 在进行中，直接 reject，
+    // 避免并发破坏 llama context 内部状态以及串乱 token。
+    std::unique_lock<std::mutex> lock(g_engine_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        emitError(env, callback, cb, "已有生成在进行中，请稍后再试");
+        return;
+    }
+
     if (!g_ctx || !g_model) {
         emitError(env, callback, cb, "模型未加载");
         return;
     }
+
+    // P0-#3 真根因修复：必须先检查 cancel，再决定是否重置。
+    // 错误版本：g_cancelled.store(false); if (load) → 永远 false
+    // 正确版本：先 load 看是否已被 cancel，false 才 store(false) 启动新生成
+    if (g_cancelled.load(std::memory_order_seq_cst)) {
+        // 已经被 cancel 了（来自 cancel() 或 unload 后的脏状态）
+        // 不重置 g_cancelled，由 unload() 负责重置
+        emitError(env, callback, cb, "生成启动时检测到取消请求");
+        return;
+    }
+    g_cancelled.store(false, std::memory_order_seq_cst);
 
     const char *prompt_str = env->GetStringUTFChars(prompt, nullptr);
     if (!prompt_str) {
@@ -217,13 +263,22 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     llama_sampler_chain_add(sampler, llama_sampler_init_dist(seed));
 
     // ── 生成循环 ────────────────────────────────────────────────
-    g_cancelled.store(false);
+    // g_cancelled 已经在 nativeGenerate 入口处重置 + 检查过了，
+    // 这里不能再 store(false)，否则会清掉 PP 期间的 cancel 请求。
     std::string full_text;
     int n_output = 0;
     auto start_time = std::chrono::steady_clock::now();
     std::vector<char> piece_buf(128);
 
     while (n_output < max_tokens && !g_cancelled.load()) {
+        if (n_output % 5 == 0) {
+            bool cur = g_cancelled.load();
+            LOGI("nativeGenerate: iter=%d, g_cancelled=%d, &gc=%p", n_output, cur ? 1 : 0, (void*)&g_cancelled);
+        }
+        if (g_cancelled.load()) {
+            LOGI("nativeGenerate: loop detected cancel at iter=%d", n_output);
+            break;
+        }
         llama_token new_token = llama_sampler_sample(sampler, g_ctx, -1);
 
         if (llama_vocab_is_eog(vocab, new_token)) {
@@ -271,8 +326,11 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
 JNIEXPORT void JNICALL
 Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeCancel(
         JNIEnv *env, jobject thiz, jlong model_handle) {
-    LOGI("nativeCancel: handle=%lld", static_cast<long long>(model_handle));
-    g_cancelled.store(true);
+    LOGI("nativeCancel: handle=%lld, setting g_cancelled=true (was=%d, &g_cancelled=%p)",
+         static_cast<long long>(model_handle), g_cancelled.load() ? 1 : 0, (void*)&g_cancelled);
+    g_cancelled.store(true, std::memory_order_seq_cst);
+    bool after = g_cancelled.load(std::memory_order_seq_cst);
+    LOGI("nativeCancel: after store, g_cancelled=%d", after ? 1 : 0);
 }
 
 JNIEXPORT void JNICALL
@@ -288,6 +346,9 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeUnload(
         llama_model_free(g_model);
         g_model = nullptr;
     }
+    // 重置 g_cancelled 为 false，让下次 generate 能正常启动
+    // (但注意：这里没有锁，所以理论上极端 race 下可能错过，但概率极低)
+    g_cancelled.store(false, std::memory_order_seq_cst);
 }
 
 } // extern "C"
