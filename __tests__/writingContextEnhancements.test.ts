@@ -53,7 +53,7 @@ describe('writing context enhancements', () => {
   });
 
   test('formats provider error codes and limits request concurrency', async () => {
-    const { formatLLMError, createConcurrencyLimiter } = require('../src/services/llm');
+    const { formatLLMError, createConcurrencyLimiter } = require('../src/services/llm/openAICompatibleProvider');
 
     expect(
       formatLLMError(
