@@ -191,7 +191,7 @@ export const LLMSettingsScreen: React.FC = () => {
     <Screen>
       <Header
         title="LLM 设置"
-        subtitle={`${activeProvider === 'llama_cpp' ? '本地离线模型' : 'OpenAI 兼容 API'} · 当前：${activeName}`}
+        subtitle={`${activeProvider === 'llama_cpp' ? '本地 GGUF 离线模型' : 'OpenAI 兼容 API'} · 当前：${activeName}`}
       />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.configList}>
@@ -226,9 +226,15 @@ export const LLMSettingsScreen: React.FC = () => {
             value={draft.provider_type}
             options={[
               { value: 'openai_compatible', label: '在线 API' },
-              { value: 'llama_cpp', label: '本地离线模型' },
+              { value: 'llama_cpp', label: '本地 GGUF' },
             ]}
-            onChange={(provider_type) => updateDraft({ provider_type })}
+            onChange={(provider_type) =>
+              updateDraft({
+                provider_type,
+                // 切到 llama_cpp 时锁定 cpu 后端；切回在线 API 时清空
+                local_backend: provider_type === 'llama_cpp' ? 'cpu' : null,
+              })
+            }
           />
         </View>
 
@@ -246,18 +252,6 @@ export const LLMSettingsScreen: React.FC = () => {
               selectedId={draft.local_model_id}
               onSelect={(local_model_id) => updateDraft({ local_model_id })}
             />
-            <View style={styles.section}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>运行后端</Text>
-              <SegmentedControl
-                value={draft.local_backend || 'auto'}
-                options={[
-                  { value: 'auto', label: '自动' },
-                  { value: 'gpu', label: 'GPU' },
-                  { value: 'cpu', label: 'CPU' },
-                ]}
-                onChange={(local_backend) => updateDraft({ local_backend })}
-              />
-            </View>
             <Field
               label="上下文长度"
               value={String(draft.context_window)}
