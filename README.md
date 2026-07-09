@@ -125,6 +125,18 @@ adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
 
 ---
 
+## 🤖 本地离线模型（LiteRT-LM）
+
+ShineWriter 支持导入 `.litertlm` 格式的本地模型，在飞行模式下也能运行 AI 生成。
+
+- **仅支持 `.litertlm`**：通过「设置 → LLM 配置 → 本地离线模型 → 管理本地模型」导入。
+- **模型存放位置**：导入后模型文件保存在应用私有目录，**不会**上传到任何服务器，运行时也不需要网络。
+- **数据清除会删除模型**：卸载 App 或在系统设置中「清除存储空间」会一并删除已导入的本地模型，请保留原始文件备份。
+- **离线运行**：选择本地模型配置后，AI 续写、润色、流水线等调用均不发送网络请求。
+- **兼容性**：当前集成 LiteRT-LM `0.14.0`，GPU/CPU 后端自动选择；部分模型可能需要在真机上才能正常加载。
+
+---
+
 ## 🧪 测试
 
 ```bash
@@ -285,6 +297,18 @@ Build script will:
 1. Call `prebuild` to generate `versionCode` and `buildTime` from git
 2. Run Gradle `assembleDebug` / `assembleRelease`
 3. Copy APK to `dist/apk/{variant}/`
+
+## 🤖 Local Offline Models (LiteRT-LM)
+
+ShineWriter supports importing `.litertlm` local models so AI generation works in airplane mode.
+
+- **`.litertlm` only**: import via *Settings → LLM Config → Local Offline Model → Manage Local Models*.
+- **Private app storage**: imported models are saved in the app's private directory; they are **never** uploaded and do not require a network connection at runtime.
+- **Data clearing deletes models**: uninstalling the app or clearing storage in system settings will remove imported models. Keep the original files as a backup.
+- **Offline execution**: when a local model config is selected, AI continue/finalize/pipeline calls do not send any network requests.
+- **Compatibility**: currently integrates LiteRT-LM `0.14.0` with automatic GPU/CPU backend selection; some models may need a real device to load correctly.
+
+---
 
 ## 🧪 Tests
 

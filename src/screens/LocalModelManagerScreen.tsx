@@ -1,0 +1,308 @@
+import React, { useEffect, useState } from 'react';
+import {
+  Alert,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { pick, types, isCancel } from '@react-native-documents/picker';
+import { ArrowLeft, Cpu, Play, Plus, Trash2 } from 'lucide-react-native';
+import Toast from 'react-native-toast-message';
+import { Button, Card, Header, Screen, spacing } from '../components/ui';
+import { useLocalModelStore } from '../store/localModelStore';
+import { useSettingsStore } from '../store/settingsStore';
+import { useThemeStore } from '../store/themeStore';
+import type { SettingsStackParamList } from '../navigation/TabNavigator';
+import type { LocalModel } from '../services/localModels';
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function formatStatusLabel(status: LocalModel['status']): string {
+  const labels: Record<LocalModel['status'], string> = {
+    importing: '导入中',
+    validating: '验证中',
+    ready: '可用',
+    incompatible: '不兼容',
+    corrupted: '已损坏',
+    missing: '文件缺失',
+    error: '错误',
+  };
+  return labels[status] || status;
+}
+
+export const LocalModelManagerScreen: React.FC = () => {
+  const { theme } = useThemeStore();
+  const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
+  const { models, import: importState, loadingModelId, refreshModels, startImport, cancelImport, loadModel, deleteModel } = useLocalModelStore();
+  const { saveLLMConfig } = useSettingsStore();
+  const [importing, setImporting] = useState(false);
+
+  useEffect(() => {
+    refreshModels();
+  }, [refreshModels]);
+
+  const handleImport = async () => {
+    try {
+      const [result] = await pick({
+        mode: 'open',
+        type: types.allFiles,
+      });
+      if (!result.name?.toLowerCase().endsWith('.gguf') && !result.name?.toLowerCase().endsWith('.litertlm')) {
+        Alert.alert('无法导入', '请选择扩展名为 .gguf 的模型文件。');
+        return;
+      }
+      setImporting(true);
+      await startImport(result.uri, result.name);
+      Toast.show({ type: 'success', text1: '模型导入成功' });
+    } catch (error: any) {
+      if (isCancel(error)) return;
+      Alert.alert('导入失败', error?.message || '请重试');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleTest = async (model: LocalModel) => {
+    try {
+      await loadModel(model.id);
+      Toast.show({ type: 'success', text1: '模型加载成功' });
+    } catch (error: any) {
+      Alert.alert('加载失败', error?.message || '模型加载失败');
+    }
+  };
+
+  const handleCreateConfig = async (model: LocalModel) => {
+    try {
+      const name = `本地：${model.display_name}`;
+      await saveLLMConfig({
+        name,
+        provider_type: 'llama_cpp',
+        base_url: '',
+        api_key: '',
+        model_name: model.display_name,
+        local_model_id: model.id,
+        local_backend: 'auto',
+        context_window: model.context_length ?? 4096,
+        max_output_tokens: model.max_output_tokens ?? 4000,
+      });
+      Toast.show({ type: 'success', text1: '已创建本地模型配置' });
+      navigation.navigate('LLMSettings');
+    } catch (error: any) {
+      Alert.alert('创建配置失败', error?.message || '请重试');
+    }
+  };
+
+  const handleDelete = (model: LocalModel) => {
+    Alert.alert('删除模型', `确定删除「${model.display_name}」？模型文件将一并删除。`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteModel(model.id);
+            Toast.show({ type: 'success', text1: '模型已删除' });
+          } catch (error: any) {
+            Alert.alert('删除失败', error?.message || '请重试');
+          }
+        },
+      },
+    ]);
+  };
+
+  const progressPercent = importState.totalBytes > 0
+    ? Math.min(100, Math.round((importState.bytesCopied / importState.totalBytes) * 100))
+    : 0;
+
+  return (
+    <Screen>
+      <Header
+        title="本地模型管理"
+        subtitle="导入并管理 GGUF 离线模型"
+        action={
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+            <ArrowLeft size={20} color={theme.colors.textPrimary} />
+          </TouchableOpacity>
+        }
+      />
+      <ScrollView contentContainerStyle={styles.content}>
+        <Card style={styles.noticeCard}>
+          <Text style={[styles.noticeText, { color: theme.colors.textSecondary }]}>
+            模型文件将保存在应用私有目录。卸载应用或清除数据会删除这些文件，请自行保留原始模型文件。
+          </Text>
+        </Card>
+
+        <Button
+          label="导入 GGUF 模型"
+          icon={Plus}
+          onPress={handleImport}
+          disabled={importing || importState.state !== 'idle'}
+        />
+
+        {models.length === 0 ? (
+          <Card style={styles.emptyCard}>
+            <Text style={[styles.emptyTitle, { color: theme.colors.textPrimary }]}>还没有本地模型</Text>
+            <Text style={[styles.emptyDesc, { color: theme.colors.textSecondary }]}>
+              点击上方按钮导入 GGUF 模型文件。
+            </Text>
+          </Card>
+        ) : (
+          <View style={styles.list}>
+            {models.map((model) => (
+              <Card key={model.id} style={styles.modelCard}>
+                <View style={styles.modelHeader}>
+                  <View style={styles.modelInfo}>
+                    <Text style={[styles.modelName, { color: theme.colors.textPrimary }]} numberOfLines={1}>
+                      {model.display_name}
+                    </Text>
+                    <Text style={[styles.modelFile, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                      {model.original_filename}
+                    </Text>
+                  </View>
+                  <View style={[styles.statusBadge, { backgroundColor: theme.colors.accentSoft }]}>
+                    <Text style={[styles.statusText, { color: theme.colors.accent }]}>{formatStatusLabel(model.status)}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.statsRow}>
+                  <Stat label="大小" value={formatBytes(model.file_size)} theme={theme.colors.textSecondary} />
+                  <Stat label="后端" value={model.validated_backend || model.backend_preference || 'auto'} theme={theme.colors.textSecondary} />
+                  <Stat
+                    label="加载耗时"
+                    value={model.load_time_ms ? `${model.load_time_ms}ms` : '-'}
+                    theme={theme.colors.textSecondary}
+                  />
+                  <Stat
+                    label="速度"
+                    value={model.tokens_per_second ? `${model.tokens_per_second.toFixed(1)} t/s` : '-'}
+                    theme={theme.colors.textSecondary}
+                  />
+                </View>
+
+                <View style={styles.actions}>
+                  <Button
+                    label="测试"
+                    icon={Play}
+                    variant="secondary"
+                    compact
+                    onPress={() => handleTest(model)}
+                    disabled={model.status !== 'ready' || loadingModelId === model.id}
+                    flex
+                  />
+                  <Button
+                    label="创建 AI 配置"
+                    icon={Cpu}
+                    variant="secondary"
+                    compact
+                    onPress={() => handleCreateConfig(model)}
+                    disabled={model.status !== 'ready'}
+                    flex
+                  />
+                  <Button
+                    label="删除"
+                    icon={Trash2}
+                    variant="ghost"
+                    compact
+                    onPress={() => handleDelete(model)}
+                    disabled={loadingModelId === model.id}
+                    flex
+                  />
+                </View>
+              </Card>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={importState.state !== 'idle'}
+        onRequestClose={cancelImport}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
+            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>正在导入模型</Text>
+            <Text style={[styles.modalState, { color: theme.colors.textSecondary }]}>
+              {importState.state === 'selecting' && '准备中…'}
+              {importState.state === 'copying' && `复制中 ${progressPercent}%`}
+              {importState.state === 'validating' && '验证模型中…'}
+              {importState.state === 'ready' && '导入完成'}
+              {importState.state === 'error' && `导入失败：${importState.errorMessage || importState.errorCode || '未知错误'}`}
+            </Text>
+            <View style={[styles.progressTrack, { backgroundColor: theme.colors.accentSoft }]}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { backgroundColor: theme.colors.accent, width: `${progressPercent}%` },
+                ]}
+              />
+            </View>
+            <Button
+              label={importState.state === 'error' || importState.state === 'ready' ? '关闭' : '取消'}
+              variant="secondary"
+              onPress={cancelImport}
+            />
+          </View>
+        </View>
+      </Modal>
+    </Screen>
+  );
+};
+
+const Stat: React.FC<{ label: string; value: string; theme: string }> = ({ label, value, theme }) => (
+  <View style={styles.stat}>
+    <Text style={[styles.statLabel, { color: theme }]}>{label}</Text>
+    <Text style={[styles.statValue, { color: theme }]}>{value}</Text>
+  </View>
+);
+
+const styles = StyleSheet.create({
+  content: { padding: spacing.lg, paddingBottom: 96 },
+  backButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  noticeCard: { marginBottom: spacing.md },
+  noticeText: { fontSize: 13, lineHeight: 20 },
+  emptyCard: { alignItems: 'center', justifyContent: 'center', paddingVertical: spacing.xl, marginTop: spacing.lg },
+  emptyTitle: { fontSize: 16, fontWeight: '700' },
+  emptyDesc: { fontSize: 14, marginTop: spacing.sm, textAlign: 'center' },
+  list: { marginTop: spacing.lg },
+  modelCard: { marginBottom: spacing.md },
+  modelHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.md, marginBottom: spacing.md },
+  modelInfo: { flex: 1 },
+  modelName: { fontSize: 16, fontWeight: '700' },
+  modelFile: { fontSize: 12, marginTop: 2 },
+  statusBadge: { borderRadius: 6, paddingHorizontal: spacing.sm, paddingVertical: 4, alignSelf: 'flex-start' },
+  statusText: { fontSize: 12, fontWeight: '700' },
+  statsRow: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.md },
+  stat: { flex: 1 },
+  statLabel: { fontSize: 11, marginBottom: 2 },
+  statValue: { fontSize: 13, fontWeight: '700' },
+  actions: { flexDirection: 'row', gap: spacing.sm },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  modalCard: {
+    borderRadius: 12,
+    padding: spacing.lg,
+    width: '100%',
+    maxWidth: 360,
+  },
+  modalTitle: { fontSize: 17, fontWeight: '700', marginBottom: spacing.sm },
+  modalState: { fontSize: 14, marginBottom: spacing.md },
+  progressTrack: { height: 8, borderRadius: 4, overflow: 'hidden', marginBottom: spacing.md },
+  progressFill: { height: '100%' },
+});
