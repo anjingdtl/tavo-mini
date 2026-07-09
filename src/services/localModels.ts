@@ -1,45 +1,62 @@
-import { LocalLLM } from '../native/LocalLLMModule';
-import type { LocalModel, LocalModelStatus, LocalModelBackend } from '../types/localModel';
+import * as db from './database';
+import type { LocalModel, LocalModelStatus, LocalModelBackend, PromptTemplate } from '../types/localModel';
 import {
-  listLocalModels as dbListLocalModels,
-  getLocalModelById as dbGetLocalModelById,
-  getLocalModelBySha256 as dbGetLocalModelBySha256,
-  createLocalModel as dbCreateLocalModel,
-  updateLocalModel as dbUpdateLocalModel,
-  deleteLocalModelRecord as dbDeleteLocalModelRecord,
-  countLLMConfigsUsingModel as dbCountLLMConfigsUsingModel,
-} from './database';
+  getCapabilities,
+  importModel as nativeImportModel,
+  validateModel as nativeValidateModel,
+  loadModel as nativeLoadModel,
+  unloadModel as nativeUnloadModel,
+  deleteModelFiles as nativeDeleteModelFiles,
+  modelFileExists as nativeModelFileExists,
+  cleanupStagingFiles as nativeCleanupStagingFiles,
+  isLlamaCppAvailable,
+  type CapabilitiesResult,
+  type ImportResult,
+  type LoadResult,
+} from '../native/LlamaCppModule';
+import { invalidateLoadedModel } from './llm/llamaCppProvider';
 
-export type { LocalModel, LocalModelStatus, LocalModelBackend };
+export type { LocalModel, LocalModelStatus, LocalModelBackend, PromptTemplate };
 
-export const listLocalModels = dbListLocalModels;
-export const getLocalModelById = dbGetLocalModelById;
-export const getLocalModelBySha256 = dbGetLocalModelBySha256;
-export const createLocalModel = dbCreateLocalModel;
-export const updateLocalModel = dbUpdateLocalModel;
-export const deleteLocalModelRecord = dbDeleteLocalModelRecord;
-export const countLLMConfigsUsingModel = dbCountLLMConfigsUsingModel;
+export const listLocalModels = db.listLocalModels;
+export const getLocalModelById = db.getLocalModelById;
+export const getLocalModelBySha256 = db.getLocalModelBySha256;
+export const createLocalModel = db.createLocalModel;
+export const updateLocalModel = db.updateLocalModel;
+export const deleteLocalModelRecord = db.deleteLocalModelRecord;
+export const countLLMConfigsUsingModel = db.countLLMConfigsUsingModel;
 
 function now(): string {
   return new Date().toISOString();
 }
 
-function ensureModule() {
-  if (!LocalLLM) {
+function ensureModule(): void {
+  if (!isLlamaCppAvailable()) {
     throw new Error('本地 llama.cpp 模块尚未就绪，请检查应用安装或重新启动。');
   }
 }
 
+/** 查询设备能力（CPU 支持、可用内存）。 */
+export async function getLocalModelCapabilities(): Promise<CapabilitiesResult> {
+  ensureModule();
+  return getCapabilities();
+}
+
+/**
+ * 导入 GGUF 模型：流式复制 + SHA-256 + GGUF 头校验（原生层完成）。
+ * promptTemplate 在导入时给定，默认 chatml，后续可用 updateLocalModel 修改。
+ */
 export async function importLocalModel(
   sourceUri: string,
   originalFilename: string,
   displayName?: string,
+  promptTemplate: PromptTemplate = 'chatml',
 ): Promise<LocalModel> {
   ensureModule();
-  const name = (displayName || originalFilename).replace(/\.(litertlm|gguf)$/i, '');
-  const result = await LocalLLM!.importModel(sourceUri, originalFilename, name);
+  const name = (displayName || originalFilename).replace(/\.gguf$/i, '');
+  const result: ImportResult = await nativeImportModel(sourceUri, originalFilename, name);
 
-  const existing = await dbGetLocalModelBySha256(result.sha256);
+  const existing = await db.getLocalModelBySha256(result.sha256);
   if (existing) {
     throw new Error('该模型文件已导入，请勿重复导入。');
   }
@@ -64,31 +81,35 @@ export async function importLocalModel(
     last_validated_at: null,
     error_code: null,
     error_message: null,
+    prompt_template: promptTemplate,
+    actual_backend: null,
   };
-  await dbCreateLocalModel(model);
+  await db.createLocalModel(model);
   return model;
 }
 
-export async function validateLocalModel(
-  model: LocalModel,
-  backend: LocalModelBackend = 'auto',
-): Promise<void> {
+/**
+ * 校验模型：原生层加载后立即卸载，确认 GGUF 可解析。
+ * 新引擎仅 CPU，返回的 LoadResult 只含 backend/loadTimeMs，
+ * context_length/max_output_tokens 暂置 null（llama.cpp 不强制上报）。
+ */
+export async function validateLocalModel(model: LocalModel): Promise<void> {
   ensureModule();
   try {
-    const result = await LocalLLM!.validateModel(model.id, model.relative_path, backend === 'npu' ? 'auto' : backend);
-    await dbUpdateLocalModel(model.id, {
+    const result: LoadResult = await nativeValidateModel(model.id, model.relative_path);
+    await db.updateLocalModel(model.id, {
       status: 'ready',
-      backend_preference: backend,
-      validated_backend: result.backend,
-      context_length: result.contextLength ?? null,
-      max_output_tokens: result.maxOutputTokens ?? null,
+      validated_backend: 'cpu',
+      actual_backend: result.backend,
+      context_length: null,
+      max_output_tokens: null,
       load_time_ms: result.loadTimeMs,
       last_validated_at: now(),
       error_code: null,
       error_message: null,
     });
   } catch (error: any) {
-    await dbUpdateLocalModel(model.id, {
+    await db.updateLocalModel(model.id, {
       status: 'error',
       error_code: error?.code || 'VALIDATION_FAILED',
       error_message: error?.message || '模型验证失败',
@@ -97,30 +118,38 @@ export async function validateLocalModel(
   }
 }
 
-export async function loadLocalModel(
-  model: LocalModel,
-  backend: LocalModelBackend = 'auto',
-) {
+/** 加载模型到内存（保持加载状态，供后续 generate 复用）。 */
+export async function loadLocalModel(model: LocalModel): Promise<LoadResult> {
   ensureModule();
-  return LocalLLM!.loadModel(model.id, model.relative_path, backend === 'npu' ? 'auto' : backend);
+  return nativeLoadModel(model.id, model.relative_path);
 }
 
+/** 卸载当前已加载模型，释放 JNI 资源 + 重置 Provider 加载缓存。 */
+export async function unloadLocalModel(): Promise<void> {
+  ensureModule();
+  invalidateLoadedModel();
+  return nativeUnloadModel();
+}
+
+/** 删除模型文件 + 数据库记录（需先确认未被 LLM 配置引用）。 */
 export async function deleteLocalModel(model: LocalModel): Promise<void> {
   ensureModule();
-  const usageCount = await dbCountLLMConfigsUsingModel(model.id);
+  const usageCount = await db.countLLMConfigsUsingModel(model.id);
   if (usageCount > 0) {
     throw new Error('该模型正被 LLM 配置使用，请先删除相关配置。');
   }
-  await LocalLLM!.deleteModelFiles(model.id, model.relative_path);
-  await dbDeleteLocalModelRecord(model.id);
+  await nativeDeleteModelFiles(model.id, model.relative_path);
+  await db.deleteLocalModelRecord(model.id);
 }
 
+/** 扫描所有模型记录，将磁盘上已缺失的标记为 missing。 */
 export async function cleanupOrphanedModels(): Promise<void> {
-  const models = await dbListLocalModels();
+  const models = await db.listLocalModels();
   for (const model of models) {
-    const exists = await LocalLLM?.modelFileExists(model.relative_path);
+    if (!isLlamaCppAvailable()) break;
+    const exists = await nativeModelFileExists(model.relative_path);
     if (!exists && model.status !== 'missing') {
-      await dbUpdateLocalModel(model.id, {
+      await db.updateLocalModel(model.id, {
         status: 'missing',
         error_code: 'MODEL_FILE_MISSING',
         error_message: '模型文件已丢失或已被移除',
@@ -129,6 +158,8 @@ export async function cleanupOrphanedModels(): Promise<void> {
   }
 }
 
+/** 清理 staging 临时文件，返回清理数量。 */
 export async function cleanupStagingFiles(): Promise<number> {
-  return LocalLLM?.cleanupStagingFiles() ?? Promise.resolve(0);
+  if (!isLlamaCppAvailable()) return 0;
+  return nativeCleanupStagingFiles();
 }
