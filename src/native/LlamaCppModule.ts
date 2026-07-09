@@ -98,21 +98,94 @@ export interface ImportObservers {
 /** 原生模块引用（可能在 JS-only 环境/测试中为 undefined）。 */
 export const LlamaCppNative = native;
 
+// RN 0.85 bridgeless 模式下，TurboModule 不再自动写入 NativeModules 代理；
+// 它们走 cpp 端的 __turboModuleProxy。这里加一层 fallback 探测：
+// 1. NativeModules.LlamaCpp（legacy + bridgeless shim）
+// 2. global.__turboModuleProxy('LlamaCpp')（codegen TurboModule）
+// 3. TurboModuleRegistry.get('LlamaCpp')（public API）
+function findNative(): unknown {
+  if (native) return native;
+  const anyGlobal = globalThis as unknown as {
+    __turboModuleProxy?: (name: string) => unknown;
+  };
+  if (typeof anyGlobal.__turboModuleProxy === 'function') {
+    try {
+      const m = anyGlobal.__turboModuleProxy('LlamaCpp');
+      if (m) return m;
+    } catch {
+      // 探测失败时静默忽略
+    }
+  }
+  try {
+    const TurboModuleRegistry = require('react-native').TurboModuleRegistry as
+      | { get?: (name: string) => unknown }
+      | undefined;
+    const m = TurboModuleRegistry?.get?.('LlamaCpp');
+    if (m) return m;
+  } catch {
+    // 探测失败时静默忽略
+  }
+  return null;
+}
+
+let cachedAvailable: boolean | null = null;
+let probePromise: Promise<boolean> | null = null;
+
+function probeOnce(): boolean {
+  if (findNative()) return true;
+  return false;
+}
+
 export function isLlamaCppAvailable(): boolean {
-  return !!native;
+  if (cachedAvailable !== null) return cachedAvailable;
+  const ok = probeOnce();
+  if (ok) {
+    cachedAvailable = true;
+    return true;
+  }
+  return false;
+}
+
+/** 异步探测本地模块是否真的就绪（用于 store 启动导入前的最后判断）。 */
+export async function probeLlamaCppAvailable(timeoutMs = 1000): Promise<boolean> {
+  if (cachedAvailable === true) return true;
+  if (probePromise) return probePromise;
+  probePromise = new Promise<boolean>((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      if (probeOnce()) {
+        cachedAvailable = true;
+        resolve(true);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        cachedAvailable = false;
+        resolve(false);
+        return;
+      }
+      setTimeout(check, 50);
+    };
+    check();
+  });
+  return probePromise;
 }
 
 function ensureModule(): void {
-  if (!native) {
+  if (!findNative()) {
     throw new Error('本地 llama.cpp 模块尚未就绪，请检查应用安装或重新启动。');
   }
+}
+
+function currentNative(): NonNullable<unknown> {
+  // 调用前确保 findNative() 已发现
+  return findNative() as NonNullable<unknown>;
 }
 
 // ── ReactMethod 包装 ─────────────────────────────────────────
 
 export async function getCapabilities(): Promise<CapabilitiesResult> {
   ensureModule();
-  return native.getCapabilities();
+  return (currentNative() as { getCapabilities: () => Promise<CapabilitiesResult> }).getCapabilities();
 }
 
 export async function importModel(
@@ -121,17 +194,23 @@ export async function importModel(
   displayName: string,
 ): Promise<ImportResult> {
   ensureModule();
-  return native.importModel(sourceUri, originalFilename, displayName);
+  return (currentNative() as {
+    importModel: (a: string, b: string, c: string) => Promise<ImportResult>;
+  }).importModel(sourceUri, originalFilename, displayName);
 }
 
 export async function validateModel(modelId: string, relativePath: string): Promise<LoadResult> {
   ensureModule();
-  return native.validateModel(modelId, relativePath);
+  return (currentNative() as {
+    validateModel: (a: string, b: string) => Promise<LoadResult>;
+  }).validateModel(modelId, relativePath);
 }
 
 export async function loadModel(modelId: string, relativePath: string): Promise<LoadResult> {
   ensureModule();
-  return native.loadModel(modelId, relativePath);
+  return (currentNative() as {
+    loadModel: (a: string, b: string) => Promise<LoadResult>;
+  }).loadModel(modelId, relativePath);
 }
 
 /**
@@ -144,32 +223,38 @@ export async function generate(
   request: GenerateRequest,
 ): Promise<void> {
   ensureModule();
-  return native.generate(requestId, modelId, request);
+  return (currentNative() as {
+    generate: (a: string, b: string, c: GenerateRequest) => Promise<void>;
+  }).generate(requestId, modelId, request);
 }
 
 export async function cancel(requestId: string): Promise<void> {
   ensureModule();
-  return native.cancel(requestId);
+  return (currentNative() as { cancel: (a: string) => Promise<void> }).cancel(requestId);
 }
 
 export async function unloadModel(): Promise<void> {
   ensureModule();
-  return native.unloadModel();
+  return (currentNative() as { unloadModel: () => Promise<void> }).unloadModel();
 }
 
 export async function deleteModelFiles(modelId: string, relativePath: string): Promise<void> {
   ensureModule();
-  return native.deleteModelFiles(modelId, relativePath);
+  return (currentNative() as {
+    deleteModelFiles: (a: string, b: string) => Promise<void>;
+  }).deleteModelFiles(modelId, relativePath);
 }
 
 export async function modelFileExists(relativePath: string): Promise<boolean> {
   ensureModule();
-  return native.modelFileExists(relativePath);
+  return (currentNative() as { modelFileExists: (a: string) => Promise<boolean> }).modelFileExists(
+    relativePath,
+  );
 }
 
 export async function cleanupStagingFiles(): Promise<number> {
   ensureModule();
-  return native.cleanupStagingFiles();
+  return (currentNative() as { cleanupStagingFiles: () => Promise<number> }).cleanupStagingFiles();
 }
 
 // ── 事件订阅辅助 ─────────────────────────────────────────────
