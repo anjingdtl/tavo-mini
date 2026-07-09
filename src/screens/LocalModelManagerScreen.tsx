@@ -231,6 +231,7 @@ export const LocalModelManagerScreen: React.FC = () => {
           <View style={[styles.modalCard, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>正在导入模型</Text>
             <Text style={[styles.modalState, { color: theme.colors.textSecondary }]}>
+              {importState.state === 'preparing' && '正在准备模型文件…'}
               {importState.state === 'selecting' && '准备中…'}
               {importState.state === 'copying' && `复制中 ${progressPercent}%`}
               {importState.state === 'hashing' && '计算文件哈希中…'}
