@@ -1,7 +1,7 @@
 # llama.cpp 本地离线模型接入 — 进度报告
 
-> **最后更新：** 2026-07-09 17:00 (Asia/Shanghai)
-> **状态：** Phase 0/1/4 已完成，Phase 2/3 进行中
+> **最后更新：** 2026-07-09 (Asia/Shanghai)
+> **状态：** Phase 0/1/2/3/4/5/6 已完成，仅剩 Phase 7 真机验收
 > **SPEC:** `docs/superpowers/specs/2026-07-09-tavo-mini-llama-cpp-local-model-SPEC.md`
 > **PLAN:** `docs/superpowers/plans/2026-07-09-llama-cpp-local-model.md`
 > **ADB 路径:** `C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe`
@@ -15,14 +15,14 @@
 |-------|------|------|------|
 | **Phase 0** | Spike — 验证 llama.cpp 编译 | ✅ 完成 | libllama.so + libllamacpp_jni.so 编译成功 |
 | **Phase 1** | 清除 LiteRT-LM | ✅ 完成 | 删除 12 个文件，编译通过 |
-| **Phase 2** | JNI + CMake + 源码集成（正式版） | ⏳ 待完成 | 当前是 stub 版本，需替换为完整流式生成 JNI |
-| **Phase 3** | Kotlin LlamaCppModule + Engine | ⏳ 待完成 | 当前只有最小 Engine 类，缺完整 Module/Package/Importer/Service 等 |
+| **Phase 2** | JNI + CMake + 源码集成（正式版） | ✅ 完成 | llamacpp_jni.cpp 完整流式生成（294 行），含采样/取消/资源释放 |
+| **Phase 3** | Kotlin LlamaCppModule + Engine | ✅ 完成 | 10 文件包：Module/Package/Engine/Errors/Events/Validator/FileManager/Importer/ForegroundService/Notification |
 | **Phase 4** | 数据库迁移 v12→v13 | ✅ 完成 | 迁移脚本+类型更新+9/9 测试通过 |
-| **Phase 5** | TS LlamaCppProvider + Prompt 适配 | ❌ 未开始 | 需 Phase 3 完成后启动 |
-| **Phase 6** | UI 适配 | ❌ 未开始 | LLMSettingsScreen + LocalModelManagerScreen |
-| **Phase 7** | 真机验收测试 | ❌ 未开始 | APK 构建 → 安装 → 导入 GGUF → 续写测试 |
+| **Phase 5** | TS LlamaCppProvider + Prompt 适配 | ✅ 完成 | 3 新文件 + 6 修改文件，249/249 测试通过 |
+| **Phase 6** | UI 适配 | ✅ 完成 | LLMSettings/LocalModelManager/LocalModelSelector 三处适配 |
+| **Phase 7** | 真机验收测试 | ⏳ 待执行 | 沙箱无法跑，需世恒哥本地构建 APK + 真机验收 |
 
-**完成度：约 35%**
+**完成度：约 90%（仅剩真机验收）**
 
 ---
 
@@ -91,176 +91,185 @@
 
 **验证结果：** 9/9 测试全部通过
 
+### Phase 2: JNI 正式版 ✅
+
+**重写文件：** `android/app/jni/llamacpp_jni.cpp`（294 行，从 stub 替换为完整版）
+
+**核心实现：**
+- `nativeInit` / `nativeLoadModel` / `nativeGenerate` / `nativeCancel` / `nativeUnload` 五个 JNI 函数
+- 使用 `llama_model_load_from_file` + `llama_init_from_model` 加载模型
+- `llama_sampler_chain` 采样（temp + top_p + dist）
+- `llama_decode` 循环 + `llama_token_to_piece` 流式输出
+- `std::atomic<bool> g_cancelled` 支持取消
+- 通过 JNI callback 对象回传 token/completed/error
+- 对照 `llama.cpp/include/llama.h` 实际 API 签名编写
+
+### Phase 3: Kotlin 完整模块 ✅
+
+**新建 10 文件包** `android/app/src/main/java/com/shinewriter/llamacpp/`：
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| LlamaCppModule.kt | 339 | ReactMethod 桥（10 个方法 + 事件发射） |
+| LlamaCppEngine.kt | 196 | JNI 封装单例，含内存安全检查 |
+| LlamaCppEvents.kt | 84 | 事件常量 + 数据类 |
+| LlamaCppErrors.kt | — | 20 个错误码常量 |
+| GgufValidator.kt | — | GGUF magic 0x46475547 + version 2/3 校验 |
+| ModelFileManager.kt | — | 路径安全（canonicalPath 越界检查）+ SHA-256 |
+| ModelImporter.kt | — | 流式复制 + 哈希同步计算 + GGUF 头校验 |
+| LlamaCppForegroundService.kt | — | 前台服务（type=dataTransfer） |
+| LlamaCppNotification.kt | — | 通知渠道 `llamacpp_import` |
+| LlamaCppPackage.kt | — | ReactPackage 注册 |
+
+**同时修改：** `MainApplication.kt`（注册 LlamaCppPackage + 内存回调）、`AndroidManifest.xml`（声明 ForegroundService）
+
+### Phase 5: TS Provider 层 ✅
+
+**新建 3 文件：**
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| src/native/LlamaCppModule.ts | 253 | TS 桥接：10 个 async 方法 + observeGeneration/observeImport/subscribeImportEvents 事件辅助 |
+| src/services/llm/llamaCppPromptAdapter.ts | 136 | 6 模板：chatml/llama3/alpaca/qwen(=chatml)/phi/mistral/custom |
+| src/services/llm/llamaCppProvider.ts | 255 | LLMProvider 实现，模块级 currentLoadedModelId 缓存 + 取消处理 + safeLogUsage |
+
+**修改 6 文件：** providerRegistry.ts（注册 llama_cpp）、database.ts（CREATE TABLE + createLocalModel 补两列）、localModels.ts（重写对接 LlamaCpp）、localModelStore.ts（重写 + 'hashing' 态）、LocalModelSelector.tsx、jest.setup.js（LlamaCpp mock）、jest.config.js（忽略 llama.cpp 子目录）
+
+**验证结果：** 249/249 测试全部通过（51 个 test suite）
+
+### Phase 6: UI 适配 ✅
+
+**修改 3 文件：**
+
+| 文件 | 改动 |
+|------|------|
+| LLMSettingsScreen.tsx | subtitle「本地 GGUF 离线模型」+ SegmentedControl label「本地 GGUF」+ 切到 llama_cpp 时锁 local_backend='cpu' + 移除运行后端 SegmentedControl（仅 CPU） |
+| LocalModelManagerScreen.tsx | formatStatusLabel 补 'unavailable' + 按钮文案「导入 .gguf 模型」+ 说明文字更新 + statsRow 改为大小/后端/模板/加载耗时 + Modal 补 'hashing' 文案 + handleCreateConfig local_backend='cpu' |
+| LocalModelSelector.tsx | 空状态增强：有 unavailable 模型时提示「旧模型已不可用，请重新导入 GGUF」 |
+
+**设计决策：** prompt_template 选择器未放 LLMSettingsScreen（因 LLMConfig 表无此字段），改为在模型卡片显示模板标签（model.prompt_template）。如需编辑模板可在后续迭代加。
+
+**验证结果：** 249/249 测试全部通过
+
 ---
 
-## 三、当前代码状态（接力起点）
+## 三、当前代码状态（全部就绪，待真机验收）
 
-### 关键文件清单（供下一个 agent 参考）
+### 关键文件清单
 
 ```
-✅ 已完成可用的文件：
-├── android/app/jni/
-│   ├── CMakeLists.txt              ← Spike 版本，CPU-only add_subdirectory(llama.cpp)
-│   ├── llamacpp_jni.cpp            ← Stub（需替换为完整版）
-│   └── llama.cpp/                  ← 最新 master 分支源码（完整）
-├── android/app/build.gradle        ← 已含 CMake 配置 + arm64-v8a
-├── android/app/src/main/java/com/shinewriter/llamacpp/
-│   └── LlamaCppEngine.kt           ← 最小版本（需扩展为完整 Engine）
-├── src/services/migrations/v12-to-v13.ts  ← 完成可用
-├── src/types/localModel.ts         ← 已含 PromptTemplate 等新字段
-└── src/types/novel.ts              ← LLMProviderType = 'openai_compatible' | 'llama_cpp'
+✅ JNI 层（Phase 0/2）：
+├── android/app/jni/CMakeLists.txt              ← CPU-only add_subdirectory(llama.cpp)
+├── android/app/jni/llamacpp_jni.cpp            ← 完整流式生成（294 行）
+└── android/app/jni/llama.cpp/                  ← 最新 master 分支源码
 
-❌ 尚未创建的文件（按优先级）：
-├── android/app/jni/llamacpp_jni.cpp              ← 需重写完整版（流式生成回调）
-├── android/app/src/main/java/com/shinewriter/llamacpp/
-│   ├── LlamaCppModule.kt                          ← RN ReactMethod 桥接
-│   ├── LlamaCppPackage.kt                         ← ReactPackage 注册
-│   ├── LlamaCppErrors.kt                          ← 错误码常量
-│   ├── LlamaCppEvents.kt                          ← 事件定义
-│   ├── GgufValidator.kt                           ← GGUF 文件头校验
-│   ├── ModelFileManager.kt                        ← 路径安全管理
-│   ├── ModelImporter.kt                          ← .gguf 流式导入
-│   ├── LlamaCppForegroundService.kt               ← 前台服务通知
-│   └── LlamaCppNotification.kt                    ← 通知渠道
-├── src/native/LlamaCppModule.ts                   ← TS 桥接类型
-├── src/services/llm/llamaCppProvider.ts           ← Provider 实现
-├── src/services/llm/llamaCppPromptAdapter.ts      ← Prompt 模板适配器
-├── android/app/src/main/AndroidManifest.xml       ← 需新增 LlamaCppForegroundService
-├── android/app/src/main/java/com/shinewriter/MainApplication.kt  ← 需注册 LlamaCppPackage
+✅ Kotlin 原生层（Phase 3，10 文件）：
+└── android/app/src/main/java/com/shinewriter/llamacpp/
+    ├── LlamaCppModule.kt          (339 行)   ← ReactMethod 桥
+    ├── LlamaCppEngine.kt          (196 行)   ← JNI 单例 + 内存安全
+    ├── LlamaCppEvents.kt          (84 行)    ← 事件常量 + 数据类
+    ├── LlamaCppErrors.kt                     ← 20 错误码
+    ├── GgufValidator.kt                      ← GGUF magic 校验
+    ├── ModelFileManager.kt                   ← 路径安全 + SHA-256
+    ├── ModelImporter.kt                      ← 流式导入
+    ├── LlamaCppForegroundService.kt          ← 前台服务
+    ├── LlamaCppNotification.kt               ← 通知渠道
+    └── LlamaCppPackage.kt                    ← ReactPackage
 
-❌ 尚未修改的文件：
-├── jest.setup.js                                  ← 需新增 LlamaCpp mock
-├── src/services/llm/providerRegistry.ts           ← 需注册 llama_cpp provider
-├── src/services/localModels.ts                    ← 需全面重写对接 LlamaCpp
-├── src/store/localModelStore.ts                  ← 需对接新模块
-├── src/components/LocalModelSelector.tsx          ← 适配新类型
-├── src/screens/LLMSettingsScreen.tsx              ← UI 改为「在线API/本地GGUF」+ prompt模板选择
-├── src/screens/LocalModelManagerScreen.tsx        ← UI 适配 .gguf
-└── src/services/llm.ts                            ← resolveLLMRequestConfig 适配
+✅ 数据库迁移（Phase 4）：
+├── src/services/migrations/v12-to-v13.ts      ← ALTER + UPDATE
+└── src/services/migrations/index.ts           ← SCHEMA_VERSION=13
+
+✅ TS Provider 层（Phase 5）：
+├── src/native/LlamaCppModule.ts               (253 行) ← TS 桥接 + 事件辅助
+├── src/services/llm/llamaCppPromptAdapter.ts  (136 行) ← 6 模板
+├── src/services/llm/llamaCppProvider.ts       (255 行) ← LLMProvider 实现
+├── src/services/llm/providerRegistry.ts       ← 注册 llama_cpp
+├── src/services/localModels.ts                ← 重写对接 LlamaCpp
+├── src/store/localModelStore.ts               ← 重写 + 'hashing' 态
+└── src/services/database.ts                   ← CREATE TABLE + createLocalModel 补两列
+
+✅ UI 层（Phase 6）：
+├── src/screens/LLMSettingsScreen.tsx          ← 「在线 API / 本地 GGUF」
+├── src/screens/LocalModelManagerScreen.tsx    ← .gguf 适配 + 模板显示
+└── src/components/LocalModelSelector.tsx      ← unavailable 提示
+
+✅ 测试基础设施：
+├── jest.setup.js                              ← LlamaCpp mock
+└── jest.config.js                             ← 忽略 llama.cpp 子目录
+
+✅ 类型定义：
+├── src/types/localModel.ts                    ← PromptTemplate + actual_backend
+├── src/types/novel.ts                         ← LLMProviderType 含 llama_cpp
+└── src/services/llm/types.ts                  ← 同步
 ```
 
----
+### 未提交状态
 
-## 四、后续工作详细任务清单
-
-### 🔴 Phase 2: JNI 正式版（最高优先级）
-
-**目标：** 将 stub `llamacpp_jni.cpp` 替换为包含完整推理逻辑的正式版本。
-
-**核心要求（PLAN Task 2.3）：**
-```cpp
-// 必须实现的函数：
-// nativeInit(numThreads) → 初始化 llama.cpp backend
-// nativeLoadModel(modelPath, contextLen) → 加载 GGUF 模型，返回 handle
-// nativeGenerate(handle, prompt, maxTokens, temperature, topP, callback) → 流式生成
-// nativeCancel(handle) → 取消生成（atomic flag）
-// nativeUnload(handle) → 释放资源
-```
-
-**关键实现点：**
-1. 使用 `llama_model_load_from_file()` 加载模型
-2. 使用 `llama_init_from_model()` 创建 context
-3. 使用 `llama_tokenize()` 做 tokenization
-4. 使用 `llama_decode()` 循环解码 + `llama_sampler_chain` 做采样
-5. 通过 Java callback interface 回传 token（onToken/onCompleted/onError）
-6. `std::atomic<bool>` 支持 cancel
-7. 注意：llama.cpp API 可能因版本而异，务必对照 `llama.cpp/include/llama.h` 中的实际函数签名
-
-**参考 PLAN 文件位置：** Phase 2, Task 2.3（有完整示例代码）
-
-**完成后验证：** `./gradlew :app:assembleDebug` 通过
+**所有 Phase 2/3/5/6 的改动均未 git commit**（本地工作区有 14 个 modified + 12 个 untracked 文件）。建议世恒哥 review 后按 Phase 拆分提交，或一次性提交。
 
 ---
 
-### 🔴 Phase 3: Kotlin 完整模块（与 Phase 2 并行或紧随其后）
+## 四、后续工作：Phase 7 真机验收（仅剩此项）
 
-**目标：** 创建完整的 `com.shinewriter.llamacpp` 包，共 10 个文件。
+### 验收标准（12 项）
 
-**文件创建顺序：**
+| # | 测试项 | 验收标准 |
+|---|---|---|
+| 1 | 安装启动 | 设置 → LLM 设置 → 可见「在线 API / 本地 GGUF」切换，不崩溃 |
+| 2 | 导入 GGUF | 导入 `qwen2.5-1.5b-instruct-q4_k_m.gguf`（约 1GB），进度通知正常，Modal 显示「复制中→计算哈希→验证中→完成」 |
+| 3 | 模型卡片 | 卡片显示 大小 / 后端(cpu) / 模板(chatml) / 加载耗时 |
+| 4 | 创建配置 | 点「创建 AI 配置」→ 跳转 LLM 设置，provider_type=llama_cpp，local_backend=cpu |
+| 5 | 设为当前 | 选中本地配置 → 设为当前 → subtitle 显示「本地 GGUF 离线模型」 |
+| 6 | AI 续写 | 切到写作 Tab → AI 续写 → 输出中文，Vivo V2405A 上 ≥ 5 token/sec |
+| 7 | 流式 | 流式输出 token（如启用） |
+| 8 | 取消 | 取消按钮即时终止生成 |
+| 9 | 持久化 | 卸装重装后，已导入模型仍在列表 |
+| 10 | 旧模型 | 旧 LiteRT-LM 模型记录标记为 unavailable，不崩溃，LocalModelSelector 提示重新导入 |
+| 11 | 内存安全 | 内存不足时拒绝加载并给出中文提示 |
+| 12 | 无效文件 | 非 GGUF 头文件导入时提示「文件格式不正确」 |
 
-1. **LlamaCppErrors.kt** — 错误码常量对象（20+ 个错误码字符串）
-2. **LlamaCppEvents.kt** — 数据类：TokenEvent / CompletedEvent / ErrorEvent / ImportProgressEvent / CapabilitiesResult / ImportResult / ValidationResult / LoadResult
-3. **GgufValidator.kt** — validateGgufHeader(file): Boolean，检查 magic bytes 0x46475547 + version 2/3
-4. **ModelFileManager.kt** — ensureDirs() / newStagingFile() / newModelDir() / modelFile()，路径安全校验
-5. **ModelImporter.kt** — importModel(uri) 流式复制 + SHA-256 校验
-6. **LlamaCppEngine.kt** — 扩展现有最小版为完整单例：load/generate/cancel/unload/checkAvailableMemory
-7. **LlamaCppForegroundService.kt** — 前台通知服务（导入进度）
-8. **LlamaCppNotification.kt** — 通知渠道 ID: `llamacpp_import`
-9. **LlamaCppModule.kt** — ReactMethod 桥接（getCapabilities/importModel/validateModel/loadModel/generate/cancel/unload/deleteModelFiles/modelFileExists/cleanupStagingFiles）
-10. **LlamaCppPackage.kt** — createNativeModules 返回 LlamaCppModule()
+### 操作命令备忘录
 
-**同时修改：**
-- **MainApplication.kt** — `add(LlamaCppPackage())`
-- **AndroidManifest.xml** — 新增 LlamaCppForegroundService 的 `<service>` 声明
-
-**完成后验证：** `./gradlew :app:assembleDebug` 通过
-
----
-
-### 🟡 Phase 5: TypeScript Provider 层（依赖 Phase 3 完成）
-
-**文件列表：**
-1. `src/native/LlamaCppModule.ts` — TS 类型声明 + DeviceEventEmitter 辅助
-2. `src/services/llm/llamaCppPromptAdapter.ts` — 6 种 prompt 模板（chatml/llama3/alpaca/qwen/phi/mistral/custom）
-3. `src/services/llm/llamaCppProvider.ts` — LLMProvider 接口实现
-4. `src/services/llm/providerRegistry.ts` — 注册 llama_cpp provider
-5. `src/services/localModels.ts` — 重写导入/删除/查询逻辑
-6. `src/store/localModelStore.ts` — 对接新模块
-7. `src/components/LocalModelSelector.tsx` — 适配新类型
-8. `jest.setup.js` — 新增 LlamaCpp mock
-
-**完成后验证：** `npm test` 全部通过
-
----
-
-### 🟢 Phase 6: UI 适配（依赖 Phase 5 完成）
-
-**修改文件：**
-1. `LLMSettingsScreen.tsx`:
-   - SegmentedControl 选项：「在线 API」/「本地 GGUF」（替换原来的 local_litertlm）
-   - 本地模式下显示：LocalModelSelector + Prompt 模板下拉选择 + 上下文长度 + 最大输出 Token + 「管理本地模型」按钮
-2. `LocalModelManagerScreen.tsx`:
-   - 标题改为「导入并管理 GGUF 离线模型」
-   - 按钮改为「导入 .gguf 模型」
-   - 说明文字改为 GGUF 格式说明
-   - 模型卡片显示 prompt_template 标签
-
-**完成后验证：** Metro 启动 + APP 加载不报红屏
-
----
-
-### 🟢 Phase 7: 真机验收测试（最终阶段）
-
-**验收标准（9 项）：**
-1. ✅ 设置 → LLM 设置 可见「在线 API / 本地 GGUF」切换
-2. ✅ 导入 qwen2.5-1.5b-instruct-q4_k_m.gguf 成功，进度通知正常
-3. ✅ 选该模型 → 设为当前 → 写作 Tab → AI 续写输出中文
-4. ✅ 流式输出 ≥ 5 token/sec（Vivo V2405A 上）
-5. ✅ 取消按钮即时终止生成
-6. ✅ 卸装重装后已导入模型仍在列表
-7. ✅ 旧 LiteRT-LM 模型标记 unavailable 不崩溃
-8. ✅ 内存不足时拒绝加载并提示中文
-9. ✅ 无效文件（非 GGUF 头）导入时提示格式错误
-
-**操作命令备忘录：**
 ```bash
-# 构建
+# 1. 构建 debug APK
 npm run apk:debug
 
-# 安装到真机
+# 2. 安装到真机（Vivo V2405A）
 & 'C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe' -s 10AEAF31XQ000UQ install -r dist/apk/debug/ShineWriter-V*.apk
 
-# 启动 APP
+# 3. Metro 端口转发 + 启动
+& adb -s 10AEAF31XQ000UQ reverse tcp:8081 tcp:8081
+npm start
+
+# 4. 启动 APP
 & adb -s 10AEAF31XQ000UQ shell am start -n com.shinewriter/.MainActivity
 
-# 截图
+# 5. 截图
 & adb -s 10AEAF31XQ000UQ shell screencap -p /sdcard/s.png; & adb pull /sdcard/s.png screen.png
 
-# 抓日志
+# 6. 抓日志（排查崩溃）
 & adb logcat -d > logcat.txt
+```
 
-# Metro 连接
-& adb reverse tcp:8081 tcp:8081; npm start
+### 常见问题排查
+
+| 现象 | 排查方向 |
+|---|---|
+| `libllama.so` 加载失败 | 检查 CMakeLists.txt 源文件路径是否匹配 llama.cpp master 实际结构；确认 `.so` 在 `android/app/build/.cxx/arm64-v8a/` 生成 |
+| 模型加载 OOM | 调整 `LlamaCppEngine.kt` 的 `MEMORY_SAFETY_FACTOR`（当前 1.5） |
+| 流式 token 乱码 | 检查 `llamacpp_jni.cpp` 的 `llama_token_to_piece` 编码处理 |
+| 生成速度慢 | 调整 `ctx_params.n_threads`（当前 4） |
+| JNI 函数签名不匹配 | 对照 `android/app/jni/llama.cpp/include/llama.h` 实际 API |
+| 导入卡在 'hashing' | ModelImporter 在 copy 完成后发 progress(bytesCopied>=totalBytes)，store 据此切 'hashing'；如未切，检查 native 事件发射 |
+| APP 红屏（无法加载脚本） | 未做 `adb reverse tcp:8081 tcp:8081` |
+
+### 完成后
+
+```bash
+git add -A
+git commit -m "fix: integration test fixes for llama.cpp on real device"
+git tag v2.4.0-llama-cpp
 ```
 
 ---

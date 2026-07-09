@@ -8,6 +8,8 @@ import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
+import com.shinewriter.llamacpp.LlamaCppModule
+import com.shinewriter.llamacpp.LlamaCppPackage
 
 class MainApplication : Application(), ReactApplication {
 
@@ -20,6 +22,7 @@ class MainApplication : Application(), ReactApplication {
           add(TtsAudioPackage())
           add(PipelineForegroundPackage())
           add(PngMetadataPackage())
+          add(LlamaCppPackage())
         },
     )
   }
@@ -29,7 +32,9 @@ class MainApplication : Application(), ReactApplication {
     loadReactNative(this)
     registerComponentCallbacks(object : ComponentCallbacks2 {
       override fun onTrimMemory(level: Int) {
-        // Reserved for future memory-sensitive cleanup.
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE) {
+          LlamaCppModule.onTrimMemory(level)
+        }
       }
 
       override fun onConfigurationChanged(newConfig: Configuration) {
@@ -37,7 +42,7 @@ class MainApplication : Application(), ReactApplication {
       }
 
       override fun onLowMemory() {
-        // Reserved for future low-memory cleanup.
+        LlamaCppModule.onLowMemory()
       }
     })
   }
