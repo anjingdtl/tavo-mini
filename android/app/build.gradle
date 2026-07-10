@@ -98,6 +98,17 @@ android {
         externalNativeBuild {
             cmake {
                 arguments "-DANDROID_STL=c++_shared"
+                // 修复 WIN-MAX_PATH：Android SDK 自带 cmake 3.22.1 集成的 ninja 版本太旧（1.10+），
+                // 在编译 react-native 新架构 codegen（C++ 源路径很长）时触发
+                //   ninja: error: Stat(...): Filename longer than 260 characters
+                // 因为老 ninja 走的是 MAX_PATH 限制的 Win32 API。指向用户本地的 1.13+ ninja 即可。
+                // 候选路径：Tauri 工具链 / 用户 .local/bin
+                def userNinja = [
+                    "C:/Users/${System.getProperty('user.name')}/.local/bin/ninja.exe",
+                ].find { f -> file(f).exists() }
+                if (userNinja) {
+                    arguments "-DCMAKE_MAKE_PROGRAM=${userNinja.replace('\\', '/')}"
+                }
             }
         }
 

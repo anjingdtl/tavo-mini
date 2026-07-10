@@ -26,8 +26,33 @@ export interface LLMCallConfig {
   requestConfig?: LLMRequestConfig;
 }
 
+async function repairLegacyLocalConfigSelection(config: Awaited<ReturnType<typeof db.getLLMConfig>>) {
+  const providerType = config.provider_type || 'openai_compatible';
+  const isBlankOnlineConfig = providerType === 'openai_compatible'
+    && !config.base_url.trim()
+    && !config.api_key.trim()
+    && !config.model_name.trim();
+
+  if (!isBlankOnlineConfig) return config;
+
+  const configs = await db.getLLMConfigs();
+  const localConfigs = configs.filter(item => item.provider_type === 'llama_cpp' && item.local_model_id);
+  for (const localConfig of localConfigs) {
+    const model = await db.getLocalModelById(localConfig.local_model_id!);
+    if (model?.status !== 'ready') continue;
+
+    await db.setActiveLLMConfig(localConfig.id);
+    return { ...localConfig, is_active: 1 };
+  }
+
+  return config;
+}
+
 export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
-  const config = await db.getLLMConfig();
+  const currentConfig = await db.getLLMConfig();
+  // Older builds created a local config without activating it. Repair that
+  // persisted state only when the selected online config is entirely blank.
+  const config = await repairLegacyLocalConfigSelection(currentConfig);
   const raw = config as LLMRequestConfig & { base_url?: string };
   const providerType = raw.provider_type || 'openai_compatible';
   return {

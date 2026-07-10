@@ -572,3 +572,27 @@ UI 同步弹出「测试通过」，回复内容来自本地 Qwen3 连接测试�
 
 3. **性能风险**
    - 当前 qwen3-0.6B-Q2_K 在模拟器约 `0.8 token/s`，真机 CPU 表现需要重新记录。
+
+---
+
+## 八、2026-07-10 流水线误报在线 API 配置修复
+
+### 8.1 根因与修复
+
+- 旧版「创建 AI 配置」只保存 `llama_cpp` 配置，没有将其设为当前配置。流水线继续读取空白的 `openai_compatible` 默认配置，因此误报缺少 API 地址、API Key 和模型名称。
+- 新建本地配置后立即调用 `setActiveLLMConfig`，后续创建流程会直接切换到该模型。
+- 为已受影响的升级用户增加运行时自愈：仅当当前在线配置完全为空时，寻找指向 `ready` 模型的本地配置并自动激活；已明确填写的在线配置不会被覆盖。
+
+### 8.2 回归与模拟器证据
+
+- Jest：57 个测试套件、267 项测试全部通过，其中新增 3 项历史配置自愈测试。
+- 模拟器先手动恢复为「空白默认配置激活、本地 Qwen3 配置未激活」的历史状态，再从 `versionCode 147` 保留数据升级到 `149`。
+- 点击「AI 重新生成」后日志直接进入本地链路：
+
+```text
+LlamaCppPackage.getModule: name='LlamaCpp' AFTER ROUTING (result=LlamaCppModule)
+load: success, modelId=import-e5e9f544-4953-405c-b107-37a476cd4f09, 2337ms
+nativeGenerate: maxTokens=256, temp=0.80, topP=0.90, promptLen=1433
+```
+
+结论：历史未激活的本地配置可以在流水线首次调用时自动修复，不再落入在线 API 配置校验。
