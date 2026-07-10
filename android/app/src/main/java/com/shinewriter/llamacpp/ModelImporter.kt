@@ -50,6 +50,12 @@ class ModelImporter(
         val importId = "import-${UUID.randomUUID()}"
         val stagingFile = fileManager.getStagingFile(importId, originalFilename)
 
+        // 在创建协程前同步通知调用方。RN 侧靠第一条状态事件确认原生模块
+        // 已接到请求；若等到 Dispatchers.IO 实际开始调度，某些真机在前台服务
+        // 切换期间可能长时间没有事件，最终被 JS 的导入看门狗误判为“引擎无响应”。
+        // 后台协程仍会发送一次 copying 状态，以兼容已有的事件消费者。
+        onStateChanged(importId, "copying")
+
         val job = scope.launch {
             try {
                 onStateChanged(importId, "copying")

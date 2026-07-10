@@ -58,6 +58,14 @@ export async function importLocalModel(
 
   const existing = await db.getLocalModelBySha256(result.sha256);
   if (existing) {
+    // 原生层在返回 SHA-256 前已将文件移动到最终目录。重复文件不能只在
+    // JS 层报错，否则会留下没有数据库记录、无法从管理页删除的整份模型。
+    // 清理失败不覆盖重复导入提示，避免把用户可操作的原因隐藏掉。
+    try {
+      await nativeDeleteModelFiles(result.importId, result.stagingRelativePath);
+    } catch {
+      // 下次启动的 staging 清理会作为兜底；仍向调用方返回重复文件错误。
+    }
     throw new Error('该模型文件已导入，请勿重复导入。');
   }
 

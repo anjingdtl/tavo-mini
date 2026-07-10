@@ -234,6 +234,8 @@ export const LLMSettingsScreen: React.FC = () => {
                 provider_type,
                 // 切到 llama_cpp 时锁定 cpu 后端；切回在线 API 时清空
                 local_backend: provider_type === 'llama_cpp' ? 'cpu' : null,
+                // 本地模型 CPU prefill 慢，默认上下文改小更友好
+                context_window: provider_type === 'llama_cpp' ? 2048 : draft.context_window,
                 max_output_tokens: provider_type === 'llama_cpp'
                   ? Math.min(
                     draft.max_output_tokens || LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,

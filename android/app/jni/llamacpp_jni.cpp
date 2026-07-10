@@ -222,8 +222,9 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeLoadModel(
 
     auto ctx_params = llama_context_default_params();
     ctx_params.n_ctx           = context_len > 0 ? static_cast<uint32_t>(context_len) : 4096;
-    ctx_params.n_batch         = 512;
-    ctx_params.n_ubatch        = 512;
+    // 模拟器/低端机 CPU prefill 512 token 一批太慢，降到 256 减少单次 decode 耗时。
+    ctx_params.n_batch         = 256;
+    ctx_params.n_ubatch        = 256;
     ctx_params.n_seq_max       = 1;
     ctx_params.n_threads       = g_num_threads;
     ctx_params.n_threads_batch = g_num_threads;
@@ -289,8 +290,8 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     std::string input(prompt_str);
     env->ReleaseStringUTFChars(prompt, prompt_str);
 
-    LOGI("nativeGenerate: maxTokens=%d, temp=%.2f, topP=%.2f, promptLen=%zu",
-         max_tokens, temperature, top_p, input.size());
+    LOGI("nativeGenerate: maxTokens=%d, temp=%.2f, topP=%.2f, promptLen=%zu, threads=%d",
+         max_tokens, temperature, top_p, input.size(), g_num_threads);
 
     const llama_vocab *vocab = llama_model_get_vocab(g_model);
 
@@ -318,6 +319,7 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
         return;
     }
     tokens.resize(n_tokens);
+    LOGI("nativeGenerate: promptTokens=%d, n_ctx=%d", n_tokens, n_prompt_max);
 
     // 清空 KV cache，保证续写从输入 prompt 重新开始
     llama_memory_t mem = llama_get_memory(g_ctx);
@@ -326,11 +328,16 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     }
 
     // ── 处理 prompt（一次性 batch decode）────────────────────────
+    auto prefill_start = std::chrono::steady_clock::now();
     llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
     if (llama_decode(g_ctx, batch) != 0) {
         emitError(env, callback, cb, "输入处理失败");
         return;
     }
+    auto prefill_end = std::chrono::steady_clock::now();
+    float prefill_sec = std::chrono::duration<float>(prefill_end - prefill_start).count();
+    LOGI("nativeGenerate: prefill done, %d tokens, %.1fs, %.1f t/s",
+         n_tokens, prefill_sec, prefill_sec > 0 ? n_tokens / prefill_sec : 0.0f);
 
     // ── 采样器链：temp → top_p → dist（随机种子保证输出多样性）─────
     llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -349,13 +356,15 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     std::vector<char> piece_buf(128);
 
     while (n_output < max_tokens && !g_cancelled.load()) {
-        if (n_output % 5 == 0) {
-            bool cur = g_cancelled.load();
-            LOGI("nativeGenerate: iter=%d, g_cancelled=%d, &gc=%p", n_output, cur ? 1 : 0, (void*)&g_cancelled);
-        }
         if (g_cancelled.load()) {
             LOGI("nativeGenerate: loop detected cancel at iter=%d", n_output);
             break;
+        }
+        if (n_output > 0 && n_output % 10 == 0) {
+            auto now = std::chrono::steady_clock::now();
+            float elapsed = std::chrono::duration<float>(now - start_time).count();
+            float cur_tps = elapsed > 0 ? n_output / elapsed : 0.0f;
+            LOGI("nativeGenerate: progress iter=%d, %.1fs, %.2f t/s", n_output, elapsed, cur_tps);
         }
         llama_token new_token = llama_sampler_sample(sampler, g_ctx, -1);
 
