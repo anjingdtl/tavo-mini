@@ -36,7 +36,8 @@ interface LocalModelState {
   import: ImportState;
   loadingModelId: string | null;
   loadModel: (modelId: string) => Promise<void>;
-  startImport: (sourceUri: string, originalFilename: string, displayName?: string) => Promise<void>;
+  startImport: (sourceUri: string, originalFilename: string, displayName?: string, fileSize?: number) => Promise<void>;
+  validateModel: (modelId: string) => Promise<void>;
   cancelImport: () => Promise<void>;
   deleteModel: (modelId: string) => Promise<void>;
   refreshModels: () => Promise<void>;
@@ -72,7 +73,7 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     }
   },
 
-  startImport: async (sourceUri, originalFilename, displayName) => {
+  startImport: async (sourceUri, originalFilename, displayName, fileSize) => {
     // 同步判定 + 异步再探测一次，避开 RN 0.85 bridgeless 模式下 TurboModule 注入
     // 与首次 importModel 调用之间的竞态。
     const quickAvailable = isLlamaCppAvailable();
@@ -111,13 +112,16 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       onProgress: (e) => {
         if (activeImportId === null) activeImportId = e.importId;
         if (e.importId !== activeImportId) return;
+        // content:// URI 通常拿不到总大小（原生层 totalBytes=-1），
+        // 用文件选择器返回的 size 补齐，让进度条能正常显示百分比。
+        const totalBytes = e.totalBytes > 0 ? e.totalBytes : fileSize ?? -1;
         set({
           import: {
             ...get().import,
             importId: activeImportId,
             bytesCopied: e.bytesCopied,
-            totalBytes: e.totalBytes,
-            state: e.totalBytes > 0 && e.bytesCopied >= e.totalBytes ? 'hashing' : 'copying',
+            totalBytes,
+            state: totalBytes > 0 && e.bytesCopied >= totalBytes ? 'hashing' : 'copying',
           },
         });
       },
@@ -134,16 +138,18 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
       },
     });
 
-    // 兜底：原生层 90s 还没把第一个事件推上来就直接报错，避免永远卡在 preparing。
+    // 兜底：原生层太久没把第一个事件推上来就直接报错，避免永远卡在 preparing。
+    // 大文件（如 2.8GB）复制可能超过 90 秒，按文件大小动态放宽：基础 90 秒 + 每 MB 250 毫秒。
+    const timeoutMs = Math.max(90_000, Math.floor((fileSize ?? 0) / (1024 * 1024) * 250));
     let firstEventTimer: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
       firstEventTimer = setTimeout(() => {
         reject(
-          Object.assign(new Error('本地模型引擎无响应（90 秒超时），请检查应用安装后重试。'), {
+          Object.assign(new Error(`本地模型引擎无响应（${Math.round(timeoutMs / 1000)} 秒超时），请检查应用安装后重试。`), {
             code: 'IMPORT_TIMEOUT',
           }),
         );
-      }, 90_000);
+      }, timeoutMs);
     });
 
     try {
@@ -202,6 +208,24 @@ export const useLocalModelStore = create<LocalModelState>((set, get) => ({
     // 当前原生层未暴露导入取消的 ReactMethod，导入会在后台继续完成；
     // 此处仅重置 UI 状态，完成后 refreshModels 会拉到结果。
     set({ import: initialImportState });
+  },
+
+  validateModel: async (modelId) => {
+    const model = await getLocalModelById(modelId);
+    if (!model) throw new Error('模型不存在');
+    set({
+      import: {
+        ...initialImportState,
+        importId: model.id,
+        state: 'validating',
+      },
+    });
+    try {
+      await validateLocalModel(model);
+      await get().refreshModels();
+    } finally {
+      set({ import: initialImportState });
+    }
   },
 
   deleteModel: async (modelId) => {

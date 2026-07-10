@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -45,13 +45,33 @@ function formatStatusLabel(status: LocalModel['status']): string {
 export const LocalModelManagerScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
-  const { models, import: importState, loadingModelId, refreshModels, startImport, cancelImport, loadModel, deleteModel } = useLocalModelStore();
+  const { models, import: importState, loadingModelId, refreshModels, startImport, cancelImport, loadModel, validateModel, deleteModel } = useLocalModelStore();
   const { saveLLMConfig, setActiveLLMConfig } = useSettingsStore();
   const [importing, setImporting] = useState(false);
+  const [indeterminateLeft, setIndeterminateLeft] = useState(0);
+  const indeterminateDirection = useRef(1);
 
   useEffect(() => {
     refreshModels();
   }, [refreshModels]);
+
+  // 不确定进度条动画：复制中但拿不到总大小时，让一个小条在轨道里来回跑。
+  useEffect(() => {
+    if (importState.state !== 'copying' || importState.totalBytes > 0) {
+      setIndeterminateLeft(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setIndeterminateLeft((prev) => {
+        const step = 2 * indeterminateDirection.current;
+        const next = prev + step;
+        if (next >= 75) indeterminateDirection.current = -1;
+        if (next <= 0) indeterminateDirection.current = 1;
+        return Math.max(0, Math.min(75, next));
+      });
+    }, 40);
+    return () => clearInterval(interval);
+  }, [importState.state, importState.totalBytes]);
 
   const handleImport = async () => {
     try {
@@ -64,7 +84,7 @@ export const LocalModelManagerScreen: React.FC = () => {
         return;
       }
       setImporting(true);
-      await startImport(result.uri, result.name);
+      await startImport(result.uri, result.name, undefined, result.size ?? undefined);
       Toast.show({ type: 'success', text1: '模型导入成功' });
     } catch (error: any) {
       if (isCancel(error)) return;
@@ -83,6 +103,18 @@ export const LocalModelManagerScreen: React.FC = () => {
     }
   };
 
+  const handleValidate = async (model: LocalModel) => {
+    try {
+      setImporting(true);
+      await validateModel(model.id);
+      Toast.show({ type: 'success', text1: '模型验证成功' });
+    } catch (error: any) {
+      Alert.alert('验证失败', error?.message || '模型验证失败');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleCreateConfig = async (model: LocalModel) => {
     try {
       const name = `本地：${model.display_name}`;
@@ -94,7 +126,8 @@ export const LocalModelManagerScreen: React.FC = () => {
         model_name: model.display_name,
         local_model_id: model.id,
         local_backend: 'cpu',
-        context_window: model.context_length ?? 4096,
+        // 本地模型在模拟器/低端机 CPU 上 prefill 慢，默认用 2048 上下文更友好。
+        context_window: model.context_length ?? 2048,
         max_output_tokens: model.max_output_tokens ?? LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
       });
       // 修复#LM-create：创建本地模型配置后自动激活。
@@ -129,6 +162,7 @@ export const LocalModelManagerScreen: React.FC = () => {
   const progressPercent = importState.totalBytes > 0
     ? Math.min(100, Math.round((importState.bytesCopied / importState.totalBytes) * 100))
     : 0;
+  const hasTotalBytes = importState.totalBytes > 0;
 
   return (
     <Screen>
@@ -192,15 +226,27 @@ export const LocalModelManagerScreen: React.FC = () => {
                 </View>
 
                 <View style={styles.actions}>
-                  <Button
-                    label="测试"
-                    icon={Play}
-                    variant="secondary"
-                    compact
-                    onPress={() => handleTest(model)}
-                    disabled={model.status !== 'ready' || loadingModelId === model.id}
-                    flex
-                  />
+                  {model.status === 'ready' ? (
+                    <Button
+                      label="测试"
+                      icon={Play}
+                      variant="secondary"
+                      compact
+                      onPress={() => handleTest(model)}
+                      disabled={loadingModelId === model.id}
+                      flex
+                    />
+                  ) : (
+                    <Button
+                      label="验证"
+                      icon={Play}
+                      variant="secondary"
+                      compact
+                      onPress={() => handleValidate(model)}
+                      disabled={importing || loadingModelId === model.id}
+                      flex
+                    />
+                  )}
                   <Button
                     label="创建 AI 配置"
                     icon={Cpu}
@@ -216,7 +262,7 @@ export const LocalModelManagerScreen: React.FC = () => {
                     variant="ghost"
                     compact
                     onPress={() => handleDelete(model)}
-                    disabled={loadingModelId === model.id}
+                    disabled={loadingModelId === model.id || importing}
                     flex
                   />
                 </View>
@@ -238,20 +284,35 @@ export const LocalModelManagerScreen: React.FC = () => {
             <Text style={[styles.modalState, { color: theme.colors.textSecondary }]}>
               {importState.state === 'preparing' && '正在准备模型文件…'}
               {importState.state === 'selecting' && '准备中…'}
-              {importState.state === 'copying' && `复制中 ${progressPercent}%`}
+              {importState.state === 'copying' && (
+                hasTotalBytes
+                  ? `复制中 ${progressPercent}%（${formatBytes(importState.bytesCopied)} / ${formatBytes(importState.totalBytes)}）`
+                  : `复制中 ${formatBytes(importState.bytesCopied)}`
+              )}
               {importState.state === 'hashing' && '计算文件哈希中…'}
               {importState.state === 'validating' && '验证模型中…'}
               {importState.state === 'ready' && '导入完成'}
               {importState.state === 'error' && `导入失败：${importState.errorMessage || importState.errorCode || '未知错误'}`}
             </Text>
-            <View style={[styles.progressTrack, { backgroundColor: theme.colors.accentSoft }]}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { backgroundColor: theme.colors.accent, width: `${progressPercent}%` },
-                ]}
-              />
-            </View>
+            {importState.state === 'copying' && !hasTotalBytes ? (
+              <View style={[styles.progressTrack, styles.progressTrackRelative, { backgroundColor: theme.colors.accentSoft }]}>
+                <View
+                  style={[
+                    styles.indeterminateFill,
+                    { backgroundColor: theme.colors.accent, left: `${indeterminateLeft}%` },
+                  ]}
+                />
+              </View>
+            ) : (
+              <View style={[styles.progressTrack, { backgroundColor: theme.colors.accentSoft }]}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { backgroundColor: theme.colors.accent, width: `${progressPercent}%` },
+                  ]}
+                />
+              </View>
+            )}
             <Button
               label={importState.state === 'error' || importState.state === 'ready' ? '关闭' : '取消'}
               variant="secondary"
@@ -308,5 +369,7 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 17, fontWeight: '700', marginBottom: spacing.sm },
   modalState: { fontSize: 14, marginBottom: spacing.md },
   progressTrack: { height: 8, borderRadius: 4, overflow: 'hidden', marginBottom: spacing.md },
+  progressTrackRelative: { position: 'relative' },
   progressFill: { height: '100%' },
+  indeterminateFill: { position: 'absolute', left: 0, top: 0, bottom: 0, width: '25%', borderRadius: 4 },
 });

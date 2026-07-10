@@ -3,14 +3,12 @@
     <application>
         <!-- debug-only entrypoint to bypass RN/TurboModule and exercise
              LlamaCppEngine directly. -->
+        <!-- debug-only test activity: keep it exported so it can still be launched
+             explicitly via `adb shell am start -n com.shinewriter/.debug.LlamaTestActivity`,
+             but do NOT make it a LAUNCHER entry to avoid hijacking normal app startup. -->
         <activity
             android:name=".debug.LlamaTestActivity"
             android:exported="true"
-            android:label="LlamaLocalTest">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:label="LlamaLocalTest" />
     </application>
 </manifest>

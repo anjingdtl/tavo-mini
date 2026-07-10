@@ -20,7 +20,8 @@ class LlamaCppEngine private constructor(private val context: Context) {
         // （CPU 推理时还会有 KV cache 临时占用，0.5B 模型约 100MB）。
         // 这里用 1.05 留出 KV cache 余量。
         private const val MEMORY_SAFETY_FACTOR = 1.05
-        private const val DEFAULT_NUM_THREADS = 4
+        // 模拟器/低端机固定 4 线程容易饱和，按实际 CPU 核心数动态取 2-4 线程。
+        private val DEFAULT_NUM_THREADS = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
 
         @Volatile
         private var instance: LlamaCppEngine? = null
