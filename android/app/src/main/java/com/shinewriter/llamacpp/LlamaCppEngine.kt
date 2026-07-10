@@ -171,8 +171,32 @@ class LlamaCppEngine private constructor(private val context: Context) {
         }
     }
 
-    /** 卸载当前模型，释放 JNI 资源。 */
-    fun unload() {
+    /** 卸载当前模型，释放 JNI 资源。会等待活跃生成结束，避免 use-after-free。 */
+    @JvmOverloads
+    fun unload(timeoutMs: Long = 5000) {
+        // P0-#2/#3 配套修复：Kotlin 层必须等生成线程退出后再调 nativeUnload。
+        // 否则 nativeUnload 在 C++ 层拿到锁释放 g_ctx/g_model 时，生成线程
+        // 仍可能正在 decode/采样，造成定稿/切章/导入下一个模型时闪退。
+        val active = synchronized(generateLock) { activeRequestId }
+        if (active != null) {
+            Log.i(TAG, "unload: cancelling active generation request=$active")
+            cancel()
+            val start = System.currentTimeMillis()
+            while (activeRequestId != null && System.currentTimeMillis() - start < timeoutMs) {
+                try {
+                    Thread.sleep(50)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            if (activeRequestId != null) {
+                Log.w(TAG, "unload: generation did not stop within ${timeoutMs}ms, forcing unload")
+            } else {
+                Log.i(TAG, "unload: generation stopped cleanly")
+            }
+        }
+
         if (modelHandle != 0L) {
             Log.i(TAG, "unload: releasing model handle")
             nativeUnload(modelHandle)
@@ -183,11 +207,11 @@ class LlamaCppEngine private constructor(private val context: Context) {
         currentModelPath = null
     }
 
-    /** 系统内存压力回调：级别较高时卸载模型。 */
+    /** 系统内存压力回调：级别较高时卸载模型。内存压力下不等待太久。 */
     fun trimMemory(level: Int) {
         if (level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE) {
             Log.i(TAG, "trimMemory: level=$level, unloading model")
-            unload()
+            unload(timeoutMs = 1500)
         }
     }
 

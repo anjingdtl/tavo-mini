@@ -155,6 +155,15 @@ void emitError(JNIEnv *env, jobject callback, const CallbackMethods &cb,
     env->DeleteLocalRef(jMsg);
 }
 
+// P0-#3 补充修复：nativeGenerate 任何路径退出时都必须把 g_cancelled 重置为 false。
+// 否则 cancel() 后如果不触发 unload（例如用户停止生成后继续写下一章），
+// g_cancelled 会永远为 true，下次 generate() 直接报「生成启动时检测到取消请求」。
+struct CancelResetGuard {
+    ~CancelResetGuard() {
+        g_cancelled.store(false, std::memory_order_seq_cst);
+    }
+};
+
 } // namespace
 
 extern "C" {
@@ -253,6 +262,9 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
         return;
     }
 
+    // 拿到锁之后再创建 guard：保证本函数任何退出路径都会重置 g_cancelled。
+    CancelResetGuard cancelGuard;
+
     if (!g_ctx || !g_model) {
         emitError(env, callback, cb, "模型未加载");
         return;
@@ -263,7 +275,7 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     // 正确版本：先 load 看是否已被 cancel，false 才 store(false) 启动新生成
     if (g_cancelled.load(std::memory_order_seq_cst)) {
         // 已经被 cancel 了（来自 cancel() 或 unload 后的脏状态）
-        // 不重置 g_cancelled，由 unload() 负责重置
+        // 由 CancelResetGuard 在 return 时重置，避免永远卡住
         emitError(env, callback, cb, "生成启动时检测到取消请求");
         return;
     }
@@ -392,6 +404,9 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
 JNIEXPORT void JNICALL
 Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeCancel(
         JNIEnv *env, jobject thiz, jlong model_handle) {
+    // nativeCancel 只设置原子标志，不竞争 g_engine_mutex；
+    // 如果 generate 正在持有 mutex，cancel 不应被阻塞，它只需要让 generate
+    // 循环尽快看到取消信号并退出。
     LOGI("nativeCancel: handle=%lld, setting g_cancelled=true (was=%d, &g_cancelled=%p)",
          static_cast<long long>(model_handle), g_cancelled.load() ? 1 : 0, (void*)&g_cancelled);
     g_cancelled.store(true, std::memory_order_seq_cst);
@@ -402,8 +417,11 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeCancel(
 JNIEXPORT void JNICALL
 Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeUnload(
         JNIEnv *env, jobject thiz, jlong model_handle) {
+    // 必须加锁：防止和 nativeGenerate/nativeLoadModel 并发，避免在生成线程
+    // 正在访问 g_ctx/g_model 时释放资源导致 use-after-free（定稿/继续写闪退）。
+    std::lock_guard<std::mutex> lock(g_engine_mutex);
     LOGI("nativeUnload: handle=%lld", static_cast<long long>(model_handle));
-    g_cancelled.store(true);
+    g_cancelled.store(true, std::memory_order_seq_cst);
     if (g_ctx) {
         llama_free(g_ctx);
         g_ctx = nullptr;
@@ -413,7 +431,6 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeUnload(
         g_model = nullptr;
     }
     // 重置 g_cancelled 为 false，让下次 generate 能正常启动
-    // (但注意：这里没有锁，所以理论上极端 race 下可能错过，但概率极低)
     g_cancelled.store(false, std::memory_order_seq_cst);
 }
 
