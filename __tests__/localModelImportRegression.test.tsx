@@ -6,6 +6,7 @@ import { act, fireEvent, render } from '@testing-library/react-native';
 
 const mockStartImport = jest.fn();
 const mockSaveLLMConfig = jest.fn();
+const mockSetActiveLLMConfig = jest.fn(async () => undefined);
 const mockAlert = jest.fn();
 const mockIsLlamaCppAvailable = jest.fn(() => true);
 
@@ -64,7 +65,10 @@ jest.mock('../src/services/llm/llamaCppProvider', () => ({
 }));
 
 jest.mock('../src/store/settingsStore', () => ({
-  useSettingsStore: () => ({ saveLLMConfig: mockSaveLLMConfig }),
+  useSettingsStore: () => ({
+    saveLLMConfig: mockSaveLLMConfig,
+    setActiveLLMConfig: mockSetActiveLLMConfig,
+  }),
 }));
 
 jest.mock('../src/store/themeStore', () => ({
@@ -360,5 +364,67 @@ describe('LocalModelManagerScreen import regression', () => {
         max_output_tokens: 512,
       }),
     );
+  });
+
+  // 回归测试：用户点击"创建 AI 配置"后，新建的本地模型配置必须自动激活。
+  // 之前只 saveLLMConfig 不激活，会导致用户在写作时仍然命中旧的 openai_compatible
+  // 默认配置，触发误报"请先在设置中配置 API 地址、API Key 和模型名称"。
+  it('auto-activates the new local LLM config after creating it (regression #LM-create)', async () => {
+    mockListLocalModels.mockResolvedValue([
+      {
+        id: 'local-qwen3',
+        display_name: 'Qwen3-0.6B-Q2_K',
+        original_filename: 'Qwen3-0.6B-Q2_K.gguf',
+        file_size: 296238784,
+        sha256: 'abc',
+        relative_path: 'local-qwen3/model.gguf',
+        status: 'ready',
+        backend_preference: 'cpu',
+        validated_backend: 'cpu',
+        actual_backend: 'cpu',
+        prompt_template: 'chatml',
+        context_length: 4096,
+        max_output_tokens: 1024,
+        load_time_ms: 2957,
+        imported_at: '2026-07-09T18:16:38.397Z',
+        last_validated_at: '2026-07-09T18:16:38.397Z',
+        error_code: null,
+        error_message: null,
+      },
+    ]);
+    mockSaveLLMConfig.mockResolvedValue(42);
+    mockSetActiveLLMConfig.mockClear();
+
+    rtl = render(<LocalModelManagerScreen />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const createLabel = rtl.getByText('创建 AI 配置');
+    let createButton: any = createLabel;
+    while (createButton && !createButton.props?.onPress && createButton.parent) {
+      createButton = createButton.parent;
+    }
+    expect(createButton).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.press(createButton);
+    });
+    // 让 save + setActive 的微任务链走完
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockSaveLLMConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider_type: 'llama_cpp',
+        local_model_id: 'local-qwen3',
+      }),
+    );
+    // 关键：创建后必须自动 setActiveLLMConfig(id)，否则写作时仍走老配置
+    expect(mockSetActiveLLMConfig).toHaveBeenCalledWith(42);
   });
 });
