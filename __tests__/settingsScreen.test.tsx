@@ -18,6 +18,7 @@ jest.mock('@react-navigation/native', () => ({
 }));
 
 import { SettingsScreen } from '../src/screens/SettingsScreen';
+import appVersionJson from '../src/constants/version.json';
 
 describe('SettingsScreen', () => {
   beforeEach(() => {
@@ -28,5 +29,11 @@ describe('SettingsScreen', () => {
     const { getByText } = render(<SettingsScreen />);
 
     expect(getByText('软件作者：ShineHe')).toBeTruthy();
+  });
+
+  it('shows the generated app version in About', () => {
+    const { getByText } = render(<SettingsScreen />);
+
+    expect(getByText(`Shine小说工作台 · ${appVersionJson.versionName}`)).toBeTruthy();
   });
 });
