@@ -19,7 +19,7 @@ function doNavigateToPipelineResult(taskId: string): void {
     navigationRef.dispatch(
       CommonActions.navigate({
         name: 'Settings',
-        params: { screen: 'PipelineResult', params: { taskId } },
+        params: { screen: 'PipelineResult', params: { taskId }, initial: false },
       } as never),
     );
     return;
@@ -31,7 +31,7 @@ function doNavigateToPipelineResult(taskId: string): void {
     navigationRef.dispatch(
       CommonActions.navigate({
         name: 'Editor',
-        params: { screen: 'PipelineResult', params: { taskId } },
+        params: { screen: 'PipelineResult', params: { taskId }, initial: false },
       } as never),
     );
     return;
@@ -92,7 +92,7 @@ export function navigateToPipelineTaskCenter(): void {
     navigationRef.dispatch(
       CommonActions.navigate({
         name: 'Settings',
-        params: { screen: 'PipelineTask' },
+        params: { screen: 'PipelineTask', initial: false },
       } as never),
     );
   } catch {

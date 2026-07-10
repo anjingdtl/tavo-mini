@@ -43,7 +43,7 @@ test('navigateToPipelineTaskCenter 走 Settings → PipelineTask 嵌套路由', 
   const action = mockDispatch.mock.calls[0][0];
   expect(action.type).toBe('NAVIGATE');
   expect(action.payload.name).toBe('Settings');
-  expect(action.payload.params).toEqual({ screen: 'PipelineTask' });
+  expect(action.payload.params).toEqual({ screen: 'PipelineTask', initial: false });
 });
 
 test('navigateToPipelineResult 优先走 Settings → PipelineResult，params 携带 taskId', () => {
@@ -54,6 +54,7 @@ test('navigateToPipelineResult 优先走 Settings → PipelineResult，params �
   expect(action.payload.params).toEqual({
     screen: 'PipelineResult',
     params: { taskId: 'pt_test_123' },
+    initial: false,
   });
 });
 
@@ -70,6 +71,7 @@ test('navigateToPipelineResult 退化到 Editor → PipelineResult', () => {
   expect(secondAction.payload.params).toEqual({
     screen: 'PipelineResult',
     params: { taskId: 'pt_test_fallback' },
+    initial: false,
   });
 });
 
