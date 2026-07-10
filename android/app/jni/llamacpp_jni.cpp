@@ -43,6 +43,12 @@ std::atomic<bool> g_backend_inited{false};
 // P0-#3 修复：g_cancelled 重置只在锁内进行，避免新请求清掉旧请求的 cancel。
 static std::mutex g_engine_mutex;
 
+// llama.cpp 会在 CPU decode 内部轮询此回调；相比只在 token 循环中检查
+// g_cancelled，它可以打断耗时很长的 prompt prefill。
+bool shouldAbort(void *) {
+    return g_cancelled.load(std::memory_order_seq_cst);
+}
+
 // 回调方法 ID（每次 generate 调用时解析，避免缓存跨调用的 jclass 引用）
 struct CallbackMethods {
     jmethodID onToken     = nullptr;
@@ -159,8 +165,16 @@ void emitError(JNIEnv *env, jobject callback, const CallbackMethods &cb,
 // 否则 cancel() 后如果不触发 unload（例如用户停止生成后继续写下一章），
 // g_cancelled 会永远为 true，下次 generate() 直接报「生成启动时检测到取消请求」。
 struct CancelResetGuard {
+    bool armed = true;
+
+    void disarm() {
+        armed = false;
+    }
+
     ~CancelResetGuard() {
-        g_cancelled.store(false, std::memory_order_seq_cst);
+        if (armed) {
+            g_cancelled.store(false, std::memory_order_seq_cst);
+        }
     }
 };
 
@@ -237,6 +251,10 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeLoadModel(
         g_model = nullptr;
         return 0;
     }
+
+    // 仅 CPU 后端支持 abort callback。它读取原子取消标记，不持有 JNI 锁，
+    // 因而 React Native 的 cancel() 可以在 prefill 期间立即生效。
+    llama_set_abort_callback(g_ctx, shouldAbort, nullptr);
 
     LOGI("nativeLoadModel: success, n_ctx=%u", llama_n_ctx(g_ctx));
     return reinterpret_cast<jlong>(g_model);
@@ -331,6 +349,14 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     auto prefill_start = std::chrono::steady_clock::now();
     llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
     if (llama_decode(g_ctx, batch) != 0) {
+        if (g_cancelled.load(std::memory_order_seq_cst)) {
+            LOGI("nativeGenerate: prefill cancelled");
+            g_cancelled.store(false, std::memory_order_seq_cst);
+            cancelGuard.disarm();
+            lock.unlock();
+            emitCompleted(env, callback, cb, "", 0, 0.0f, 0, 1);
+            return;
+        }
         emitError(env, callback, cb, "输入处理失败");
         return;
     }
@@ -338,6 +364,17 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     float prefill_sec = std::chrono::duration<float>(prefill_end - prefill_start).count();
     LOGI("nativeGenerate: prefill done, %d tokens, %.1fs, %.1f t/s",
          n_tokens, prefill_sec, prefill_sec > 0 ? n_tokens / prefill_sec : 0.0f);
+
+    // 根据实际输入长度限制输出 token，防止后续 decode 时 KV cache / context 溢出。
+    // 留 4 个 token 余量，避免 llama_decode 内部因边界触发异常。
+    const int effective_max_tokens = std::max(1, std::min(max_tokens, n_prompt_max - n_tokens - 4));
+    if (effective_max_tokens <= 0) {
+        emitError(env, callback, cb, "上下文长度不足以生成回复");
+        return;
+    }
+    if (effective_max_tokens < max_tokens) {
+        LOGI("nativeGenerate: clamp max_tokens %d -> %d to fit context", max_tokens, effective_max_tokens);
+    }
 
     // ── 采样器链：temp → top_p → dist（随机种子保证输出多样性）─────
     llama_sampler *sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -353,11 +390,18 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     std::string full_text;
     int n_output = 0;
     auto start_time = std::chrono::steady_clock::now();
+    // 兜底超时：单条生成长时间挂起时自动终止，避免 UI 无限转圈。
+    const auto generation_deadline = start_time + std::chrono::minutes(30);
     std::vector<char> piece_buf(128);
 
-    while (n_output < max_tokens && !g_cancelled.load()) {
+    while (n_output < effective_max_tokens && !g_cancelled.load()) {
         if (g_cancelled.load()) {
             LOGI("nativeGenerate: loop detected cancel at iter=%d", n_output);
+            break;
+        }
+        if (std::chrono::steady_clock::now() > generation_deadline) {
+            LOGW("nativeGenerate: generation exceeded 30 minutes, forcing stop");
+            g_cancelled.store(true, std::memory_order_seq_cst);
             break;
         }
         if (n_output > 0 && n_output % 10 == 0) {
@@ -391,8 +435,16 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
         // 下一轮 decode：用新 token 作为输入
         batch = llama_batch_get_one(&new_token, 1);
         if (llama_decode(g_ctx, batch) != 0) {
-            emitError(env, callback, cb, "生成解码失败");
             llama_sampler_free(sampler);
+            if (g_cancelled.load(std::memory_order_seq_cst)) {
+                LOGI("nativeGenerate: decode cancelled at iter=%d", n_output);
+                g_cancelled.store(false, std::memory_order_seq_cst);
+                cancelGuard.disarm();
+                lock.unlock();
+                emitCompleted(env, callback, cb, full_text, n_output, 0.0f, 0, 1);
+                return;
+            }
+            emitError(env, callback, cb, "生成解码失败");
             return;
         }
     }
@@ -403,9 +455,16 @@ Java_com_shinewriter_llamacpp_LlamaCppEngine_nativeGenerate(
     int elapsed_ms = static_cast<int>(elapsed_sec * 1000);
     int cancelled = g_cancelled.load() ? 1 : 0;
 
-    emitCompleted(env, callback, cb, full_text, n_output, tps, elapsed_ms, cancelled);
-
     llama_sampler_free(sampler);
+    // DeviceEventEmitter 会同步运行 JS 订阅者；必须在发 completed 前释放
+    // C++ 推理锁并复位取消标记。否则下一章在 completed 回调中立即开始时会
+    // try_lock 失败，表现为草稿界面一直转圈。
+    g_cancelled.store(false, std::memory_order_seq_cst);
+    // 旧请求已经在上面完成复位；解锁后可能立即有新请求开始，析构时绝不能
+    // 再把新请求的取消信号清掉。
+    cancelGuard.disarm();
+    lock.unlock();
+    emitCompleted(env, callback, cb, full_text, n_output, tps, elapsed_ms, cancelled);
     LOGI("nativeGenerate: done, %d tokens, %.1f t/s, cancelled=%d",
          n_output, tps, cancelled);
 }

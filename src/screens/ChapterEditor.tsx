@@ -20,9 +20,9 @@ import type { Chapter } from '../types/novel';
 import type { PipelineStageName, PipelineTask, PipelineTaskStatus } from '../types/pipeline';
 
 type SaveStatus = 'saved' | 'saving' | 'failed';
-type RunningPipelineStatus = Extract<PipelineTaskStatus, 'idle' | 'drafting' | 'reviewing' | 'proofing'>;
+type RunningPipelineStatus = Extract<PipelineTaskStatus, 'idle' | 'drafting' | 'reviewing' | 'factChecking' | 'proofing'>;
 
-const RUNNING_PIPELINE_STATUSES: RunningPipelineStatus[] = ['idle', 'drafting', 'reviewing', 'proofing'];
+const RUNNING_PIPELINE_STATUSES: RunningPipelineStatus[] = ['idle', 'drafting', 'reviewing', 'factChecking', 'proofing'];
 
 function isRunningPipelineStatus(status: PipelineTaskStatus): status is RunningPipelineStatus {
   return RUNNING_PIPELINE_STATUSES.includes(status as RunningPipelineStatus);
@@ -31,6 +31,7 @@ function isRunningPipelineStatus(status: PipelineTaskStatus): status is RunningP
 function stageFromTaskStatus(status: RunningPipelineStatus): PipelineStageName | 'idle' {
   if (status === 'drafting') return 'draft';
   if (status === 'reviewing') return 'review';
+  if (status === 'factChecking') return 'factCheck';
   if (status === 'proofing') return 'proof';
   return 'idle';
 }
@@ -179,7 +180,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   useEffect(() => {
     const findTask = () => usePipelineTaskStore.getState().tasks.find(
       (t) => t.targetType === 'chapter' && t.targetId === chapterId && t.resolvedAt === null
-        && (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'proofing'
+        && (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'factChecking' || t.status === 'proofing'
           || t.status === 'completed' || t.status === 'failed'),
     );
     const handleTerminal = (t: { id: string; status: string; error?: string | null }) => {
@@ -212,7 +213,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       const tasks = state.tasks;
       const t = tasks.find(
         (task) => task.targetType === 'chapter' && task.targetId === chapterId
-          && (task.status === 'idle' || task.status === 'drafting' || task.status === 'reviewing'
+          && (task.status === 'idle' || task.status === 'drafting' || task.status === 'reviewing' || task.status === 'factChecking'
             || task.status === 'proofing' || task.status === 'completed' || task.status === 'failed')
           && task.resolvedAt === null,
       );
@@ -482,7 +483,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         (t) =>
           t.targetType === 'chapter' &&
           t.targetId === chapterId &&
-          (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'proofing') &&
+          (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'factChecking' || t.status === 'proofing') &&
           t.resolvedAt === null,
       );
     if (runningTask) {

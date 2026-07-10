@@ -6,11 +6,15 @@ import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import type { PipelineTask } from '../types/pipeline';
+import { cancelPipeline } from '../services/pipelineRunner';
+
+const ACTIVE_STATUSES = new Set(['idle', 'drafting', 'reviewing', 'factChecking', 'proofing']);
 
 const STATUS_MARK: Record<string, string> = {
   idle: '等待',
   drafting: '初稿',
   reviewing: '审阅',
+  factChecking: '核查',
   proofing: '终审',
   completed: '完成',
   cancelled: '取消',
@@ -21,6 +25,7 @@ const STATUS_LABEL: Record<string, string> = {
   idle: '等待中',
   drafting: '创作初稿',
   reviewing: '审阅/评估',
+  factChecking: '事实核查',
   proofing: '终审校对',
   completed: '已完成',
   cancelled: '已取消',
@@ -37,9 +42,32 @@ export const PipelineTaskScreen: React.FC = () => {
   }, [loadFromDB]);
 
   const unresolvedTasks = tasks.filter((t) => t.resolvedAt === null);
+  const activeTasks = unresolvedTasks.filter((task) => ACTIVE_STATUSES.has(task.status));
+
+  const stopTask = (task: PipelineTask) => {
+    cancelPipeline(task.id);
+    Toast.show({ type: 'info', text1: '已请求终止任务', text2: '正在停止当前生成并保存已完成内容' });
+  };
+
+  const stopAllTasks = () => {
+    activeTasks.forEach((task) => cancelPipeline(task.id));
+    Toast.show({
+      type: 'info',
+      text1: activeTasks.length ? `已请求终止 ${activeTasks.length} 个任务` : '没有需要终止的任务',
+      text2: activeTasks.length ? '已停止的任务不会在重启后继续执行' : undefined,
+    });
+  };
+
+  const removeTask = async (taskId: string) => {
+    try {
+      await resolveTask(taskId, 'reject');
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
+  };
 
   const renderItem = ({ item }: { item: PipelineTask }) => {
-    const isRunning = ['idle', 'drafting', 'reviewing', 'proofing'].includes(item.status);
+    const isRunning = ACTIVE_STATUSES.has(item.status);
     const stageCount = item.stageResults.length;
     const skippedCount = item.stageResults.filter((stage) => stage.status === 'skipped').length;
     const totalStages = 4;
@@ -61,27 +89,26 @@ export const PipelineTaskScreen: React.FC = () => {
             </Text>
           </View>
         </View>
-        {!isRunning && item.status !== 'cancelled' && (
+        {isRunning ? (
           <View style={styles.actions}>
+            <Button label="终止任务" variant="danger" onPress={() => stopTask(item)} />
+          </View>
+        ) : (
+          <View style={styles.actions}>
+            {item.status !== 'cancelled' ? (
+              <Button
+                label="查看结果"
+                variant="secondary"
+                onPress={() => {
+                  // @ts-ignore
+                  navigation.navigate('PipelineResult', { taskId: item.id });
+                }}
+              />
+            ) : null}
             <Button
-              label="查看结果"
-              variant="secondary"
-              onPress={() => {
-                // @ts-ignore
-                navigation.navigate('PipelineResult', { taskId: item.id });
-              }}
-            />
-            <Button
-              label="删除"
+              label="从列表移除"
               variant="ghost"
-              // Phase9-BUG#19: 原 onPress 未 await + 未 try-catch，改为 await + try-catch
-              onPress={async () => {
-                try {
-                  await resolveTask(item.id, 'reject');
-                } catch (e: any) {
-                  Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
-                }
-              }}
+              onPress={() => removeTask(item.id)}
             />
           </View>
         )}
@@ -91,7 +118,11 @@ export const PipelineTaskScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="流水线任务" />
+      <Header
+        title="流水线任务"
+        subtitle={activeTasks.length ? `运行中 ${activeTasks.length} 项` : '可管理已完成、失败或已取消的任务'}
+        action={<Button label="终止全部" variant="danger" compact disabled={activeTasks.length === 0} onPress={stopAllTasks} />}
+      />
       {unresolvedTasks.length === 0 ? (
         <View style={styles.empty}>
           <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>没有进行中的流水线任务</Text>
@@ -105,7 +136,7 @@ export const PipelineTaskScreen: React.FC = () => {
         />
       )}
       <View style={[styles.footer, { borderTopColor: theme.colors.border }]}>
-        <Button label="清空已完成" variant="ghost" onPress={clearResolved} />
+        <Button label="清理已移除记录" variant="ghost" onPress={clearResolved} />
       </View>
     </Screen>
   );

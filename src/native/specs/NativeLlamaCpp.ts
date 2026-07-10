@@ -9,7 +9,7 @@ export interface Spec extends TurboModule {
     displayName: string,
   ): Promise<Object>;
   validateModel(modelId: string, relativePath: string): Promise<Object>;
-  loadModel(modelId: string, relativePath: string): Promise<Object>;
+  loadModel(modelId: string, relativePath: string, contextLength: number): Promise<Object>;
   generate(requestId: string, modelId: string, request: Object): Promise<void>;
   cancel(requestId: string): Promise<void>;
   unloadModel(): Promise<void>;

@@ -157,11 +157,25 @@ class LlamaCppEngine private constructor(private val context: Context) {
                     callback,
                 )
             } finally {
-                synchronized(generateLock) {
-                    activeRequestId = null
-                }
+                markRequestFinished(requestId)
             }
         }.start()
+    }
+
+    /**
+     * 在原生层发出 completed/error 事件前释放 Kotlin 侧占用标记。
+     *
+     * RN 的 DeviceEventEmitter 是同步派发的：若仍等 nativeGenerate 返回后才
+     * 清标记，JS 收到「完成」后立即开始下一章会被误判为「已有生成在进行中」。
+     * 保留 requestId 比对，避免旧线程的 finally 清掉后一轮请求。
+     */
+    fun markRequestFinished(requestId: String) {
+        synchronized(generateLock) {
+            if (activeRequestId == requestId) {
+                activeRequestId = null
+                Log.d(TAG, "generation terminal: request=$requestId")
+            }
+        }
     }
 
     /** 取消当前生成（设置 atomic 标志，生成线程自然结束）。 */

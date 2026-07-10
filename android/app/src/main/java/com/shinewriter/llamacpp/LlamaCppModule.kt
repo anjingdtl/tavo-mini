@@ -193,12 +193,13 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 加载（保持加载状态）──────────────────────────
 
     @ReactMethod
-    override fun loadModel(modelId: String, relativePath: String, promise: Promise) {
+    override fun loadModel(modelId: String, relativePath: String, contextLength: Double, promise: Promise) {
         // P0-#2/#3 配套修复：load 可能先 unload 等待活跃生成，模型加载本身也耗时，放后台线程。
         Thread {
             try {
                 val absPath = fileManagerInstance.resolveModelPath(relativePath).absolutePath
-                val loadResult = engineInstance.load(modelId, absPath)
+                val ctxLen = contextLength.toInt().coerceIn(512, 8192)
+                val loadResult = engineInstance.load(modelId, absPath, ctxLen)
                 if (loadResult.isSuccess) {
                     promise.resolve(loadResultMap(loadResult.getOrThrow()))
                 } else {
@@ -265,6 +266,11 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
                             putString("code", LlamaCppErrors.GENERATION_FAILED)
                             putString("message", message)
                         })
+                    },
+                    onTerminal = { reqId ->
+                        // 先释放 Kotlin 侧的 activeRequestId，再同步派发 RN 终态事件。
+                        // 否则用户刚完成第一章就开始第二章时，会撞上上一轮的退出窗口。
+                        engineInstance.markRequestFinished(reqId)
                     },
                 )
             }
