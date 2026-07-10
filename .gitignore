@@ -115,3 +115,11 @@ clound
 
 # local memory logs (not source)
 .workbuddy/
+
+# Local editor / agent tool config (not source)
+.codex/
+.trae/
+
+# Local-only PowerShell helper scripts (not source)
+scripts/probe-smtp.ps1
+scripts/zswebdav-put.ps1
