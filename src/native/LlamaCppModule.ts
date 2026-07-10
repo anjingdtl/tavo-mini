@@ -209,11 +209,15 @@ export async function validateModel(modelId: string, relativePath: string): Prom
   }).validateModel(modelId, relativePath);
 }
 
-export async function loadModel(modelId: string, relativePath: string): Promise<LoadResult> {
+export async function loadModel(
+  modelId: string,
+  relativePath: string,
+  contextLength = 4096,
+): Promise<LoadResult> {
   ensureModule();
   return (currentNative() as {
-    loadModel: (a: string, b: string) => Promise<LoadResult>;
-  }).loadModel(modelId, relativePath);
+    loadModel: (a: string, b: string, c: number) => Promise<LoadResult>;
+  }).loadModel(modelId, relativePath, contextLength);
 }
 
 /**

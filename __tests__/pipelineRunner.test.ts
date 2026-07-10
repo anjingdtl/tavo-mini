@@ -201,6 +201,16 @@ test('pipeline marks setup errors as failed tasks instead of leaving them unclea
   expect(mockCallLLMResult).not.toHaveBeenCalled();
 });
 
+test('explicit cancellation immediately persists the cancelled task and stops foreground work', async () => {
+  const { cancelPipeline } = require('../src/services/pipelineRunner');
+  const { PipelineForeground } = require('../src/native/PipelineForegroundModule');
+
+  cancelPipeline('task-stop-now');
+
+  expect(mockStore.cancelTask).toHaveBeenCalledWith('task-stop-now');
+  expect(PipelineForeground.stop).toHaveBeenCalledWith('task-stop-now');
+});
+
 test('conditional pipeline runs fact-check and proof in parallel (V2.2.0)', async () => {
   mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'conditional' }));
   mockCallLLMResult

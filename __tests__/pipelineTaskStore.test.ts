@@ -40,7 +40,7 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
     expect(marked).toBe(1);
     const tasks = usePipelineTaskStore.getState().tasks;
     expect(tasks.find(t => t.id === 'stale-1')?.status).toBe('failed');
-    expect(tasks.find(t => t.id === 'stale-1')?.error).toBe('运行被中断（App 可能被系统挂起）');
+    expect(tasks.find(t => t.id === 'stale-1')?.error).toMatch(/运行被中断/);
     expect(tasks.find(t => t.id === 'fresh-1')?.status).toBe('reviewing');
   });
 
@@ -101,5 +101,19 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
     // 10s threshold should mark it
     expect(usePipelineTaskStore.getState().markStaleTasksAsFailed(10 * 1000)).toBe(1);
     expect(usePipelineTaskStore.getState().tasks[0].status).toBe('failed');
+  });
+
+  it('marks even a recent active task as interrupted on a fresh app process', () => {
+    const now = Date.now();
+    usePipelineTaskStore.setState({ tasks: [{
+      id: 'just-stopped', targetType: 'chapter', targetId: 1, status: 'drafting',
+      stageResults: [], finalText: null, error: null, createdAt: now, updatedAt: now, resolvedAt: null,
+    } as any] });
+
+    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(1);
+    const task = usePipelineTaskStore.getState().tasks[0];
+    expect(task.status).toBe('failed');
+    expect(task.resolvedAt).not.toBeNull();
+    expect(task.error).toMatch(/已退出或任务已停止/);
   });
 });
