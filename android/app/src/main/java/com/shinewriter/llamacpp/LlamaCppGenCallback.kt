@@ -9,7 +9,7 @@ package com.shinewriter.llamacpp
  *
  * 用法：
  *   val cb = LlamaCppGenCallback()
- *   cb.bind(requestId, onToken, onComplete, onError)
+ *   cb.bind(requestId, onToken, onComplete, onError, onTerminal)
  *   engineInstance.generate(..., callback = cb)
  *
  * bind 必须在调用 engine.generate 之前完成（Kotlin 层会在启动后台线程
@@ -21,17 +21,20 @@ class LlamaCppGenCallback : LlamaCppEngine.GenerationCallback {
     private var onTokenFn: ((String, String, Int) -> Unit)? = null
     private var onCompleteFn: ((String, String, Int, Float, Int, Boolean) -> Unit)? = null
     private var onErrorFn: ((String, String) -> Unit)? = null
+    private var onTerminalFn: ((String) -> Unit)? = null
 
     fun bind(
         requestId: String,
         onToken: (String, String, Int) -> Unit,
         onComplete: (String, String, Int, Float, Int, Boolean) -> Unit,
         onError: (String, String) -> Unit,
+        onTerminal: (String) -> Unit,
     ) {
         this.requestId = requestId
         this.onTokenFn = onToken
         this.onCompleteFn = onComplete
         this.onErrorFn = onError
+        this.onTerminalFn = onTerminal
     }
 
     override fun onToken(token: String, sequence: Int) {
@@ -45,10 +48,12 @@ class LlamaCppGenCallback : LlamaCppEngine.GenerationCallback {
         elapsedMs: Int,
         cancelled: Int,
     ) {
+        onTerminalFn?.invoke(requestId)
         onCompleteFn?.invoke(requestId, text, outputTokens, tokensPerSecond, elapsedMs, cancelled == 1)
     }
 
     override fun onError(message: String) {
+        onTerminalFn?.invoke(requestId)
         onErrorFn?.invoke(requestId, message)
     }
 }

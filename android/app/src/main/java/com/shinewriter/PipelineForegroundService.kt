@@ -118,6 +118,7 @@ class PipelineForegroundService : Service() {
       .setOnlyAlertOnce(true)
       .setPriority(NotificationCompat.PRIORITY_LOW)
       .setProgress(100, pct, false) // 确定型进度条
+      .setContentIntent(null)
       .build()
   }
 

@@ -150,7 +150,7 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
     PipelineForegroundService.ensureNotificationChannels(reactContext)
 
     val launchIntent = Intent(reactContext, MainActivity::class.java).apply {
-      flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+      flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
       putExtra(EXTRA_DEEP_LINK_TASK_ID, taskId)
     }
     val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE

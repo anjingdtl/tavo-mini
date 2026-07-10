@@ -295,12 +295,12 @@ describe('ChapterEditor toolbar', () => {
     );
   });
 
-  it('shows the running pipeline progress when returning to a chapter with an active task', async () => {
+  it('shows fact-check progress when returning to a chapter with an active fact-check task', async () => {
     mockTasks = [{
       id: 'task-running',
       targetType: 'chapter',
       targetId: 1,
-      status: 'reviewing',
+      status: 'factChecking',
       stageResults: [],
       finalText: null,
       error: null,
@@ -314,7 +314,7 @@ describe('ChapterEditor toolbar', () => {
       <ChapterEditor chapterId={1} onClose={onClose} />,
     );
 
-    expect(await findByText('点评中...')).toBeTruthy();
+    expect(await findByText('事实检查中...')).toBeTruthy();
   });
 
   it('shows a stop button while pipeline is generating and triggers cancelPipeline', async () => {
