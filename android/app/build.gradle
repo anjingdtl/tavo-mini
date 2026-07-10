@@ -188,3 +188,12 @@ task generateVersionJson(type: Exec) {
     workingDir "../../"
     commandLine "node", "scripts/generate-version-json.js"
 }
+
+// React Native's bundle task does not reliably track imported JSON files.
+// Declare the generated version file explicitly so version-only releases
+// cannot reuse a stale JS bundle.
+tasks.matching { task ->
+    task.name.startsWith("createBundle") && task.name.endsWith("JsAndAssets")
+}.configureEach {
+    inputs.file(file("../../src/constants/version.json"))
+}
