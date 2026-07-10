@@ -14,6 +14,16 @@ if (!['debug', 'release'].includes(variant)) {
 const gradleScript = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
 const task = variant === 'debug' ? 'assembleDebug' : 'assembleRelease';
 const gradleArgs = [task];
+const pkgVersion = require('../package.json').version;
+const versionJson = require('../src/constants/version.json');
+const expectedVersionName = `V${pkgVersion}`;
+
+if (versionJson.versionName !== expectedVersionName) {
+  console.error(
+    `Version mismatch: package.json=${expectedVersionName}, version.json=${versionJson.versionName}`,
+  );
+  process.exit(1);
+}
 
 const gradlePath = path.join(androidDir, gradleScript);
 const build = process.platform === 'win32'
@@ -35,11 +45,25 @@ if (build.status !== 0) {
   process.exit(build.status || 1);
 }
 
+const bundlePath = path.join(
+  androidDir,
+  'app',
+  'build',
+  'generated',
+  'assets',
+  'react',
+  variant,
+  'index.android.bundle',
+);
+if (!fs.existsSync(bundlePath) || !fs.readFileSync(bundlePath, 'utf8').includes(expectedVersionName)) {
+  console.error(`Stale JS bundle: expected ${expectedVersionName} in ${bundlePath}`);
+  process.exit(1);
+}
+
 const buildGradle = fs.readFileSync(path.join(androidDir, 'app', 'build.gradle'), 'utf8');
 const versionMatch = buildGradle.match(/versionName\s+["']([^"']+)["']/);
 const rawVersion = versionMatch ? versionMatch[1] : '';
 // If build.gradle contains a Gradle variable like ${pkgVersion}, resolve from package.json instead
-const pkgVersion = require('../package.json').version;
 const versionName = rawVersion.includes('$') ? `V${pkgVersion}` : rawVersion;
 const source = path.join(androidDir, 'app', 'build', 'outputs', 'apk', variant, `app-${variant}.apk`);
 const outDir = path.join(projectRoot, 'dist', 'apk', variant);
