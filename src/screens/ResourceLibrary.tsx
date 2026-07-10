@@ -551,6 +551,10 @@ export const ResourceLibrary: React.FC = () => {
       Alert.alert('未选择项目', '请先在项目页选择当前项目。');
       return;
     }
+    if (tab === 'characters' && item.collection_enabled === 0) {
+      Toast.show({ type: 'info', text1: '该人物卡所属合集已禁用', text2: '请先启用合集，再单独控制人物卡。' });
+      return;
+    }
     // Phase9-BUG#11: 包裹 try-catch，失败时 Toast 提示（状态会通过 store 自动同步）
     try {
       await db.setProjectResourceEnabled(currentProject.id, RESOURCE_TYPE[tab], item.id, item.enabled_for_project !== 1);
@@ -833,11 +837,11 @@ export const ResourceLibrary: React.FC = () => {
                     <View style={styles.usageRow}>
                       <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>当前项目使用</Text>
                       <Switch
-                        value={item.enabled_for_project === 1}
-                        disabled={!currentProject}
+                        value={item.enabled_for_project === 1 && item.collection_enabled !== 0}
+                        disabled={!currentProject || item.collection_enabled === 0}
                         onValueChange={() => toggleProjectUsage(item)}
                         trackColor={{ false: theme.colors.border, true: theme.colors.accentSoft }}
-                        thumbColor={item.enabled_for_project === 1 ? theme.colors.accent : theme.colors.textMuted}
+                        thumbColor={item.enabled_for_project === 1 && item.collection_enabled !== 0 ? theme.colors.accent : theme.colors.textMuted}
                       />
                     </View>
                   </View>
