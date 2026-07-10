@@ -1023,11 +1023,14 @@ export async function setCharacterCollectionEnabledForProject(
   const stmts: Array<{ sql: string; params: any[] }> = [
     { sql: 'UPDATE character_collections SET enabled = ? WHERE id = ?', params: [enabled ? 1 : 0, collectionId] },
   ];
-  for (const row of rows) {
-    stmts.push({
-      sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
-      params: [projectId, 'character', row.id, enabled ? 1 : 0],
-    });
+  // projectId=0 表示尚未选择项目，只更新合集全局开关，不写 project_resources
+  if (projectId > 0) {
+    for (const row of rows) {
+      stmts.push({
+        sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+        params: [projectId, 'character', row.id, enabled ? 1 : 0],
+      });
+    }
   }
   await runInTransactionSafe(database, stmts);
 }

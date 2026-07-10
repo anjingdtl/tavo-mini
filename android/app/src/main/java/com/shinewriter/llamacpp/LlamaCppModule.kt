@@ -165,49 +165,55 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     override fun validateModel(modelId: String, relativePath: String, promise: Promise) {
-        try {
-            val absPath = fileManagerInstance.resolveModelPath(relativePath).absolutePath
-            val loadResult = engineInstance.load(modelId, absPath)
-            if (loadResult.isSuccess) {
-                // 仅校验，加载后立即卸载
-                engineInstance.unload()
-                val result = loadResult.getOrThrow()
-                promise.resolve(loadResultMap(result))
-            } else {
-                promise.reject(
-                    LlamaCppErrors.MODEL_LOAD_FAILED,
-                    loadResult.exceptionOrNull()?.message ?: "模型校验失败",
-                )
+        // P0-#2/#3 配套修复：load/unload 可能等待活跃生成结束，不能阻塞 RN bridge 线程。
+        Thread {
+            try {
+                val absPath = fileManagerInstance.resolveModelPath(relativePath).absolutePath
+                val loadResult = engineInstance.load(modelId, absPath)
+                if (loadResult.isSuccess) {
+                    // 仅校验，加载后立即卸载
+                    engineInstance.unload()
+                    val result = loadResult.getOrThrow()
+                    promise.resolve(loadResultMap(result))
+                } else {
+                    promise.reject(
+                        LlamaCppErrors.MODEL_LOAD_FAILED,
+                        loadResult.exceptionOrNull()?.message ?: "模型校验失败",
+                    )
+                }
+            } catch (e: SecurityException) {
+                promise.reject(LlamaCppErrors.MODEL_FILE_OUTSIDE_ROOT, e.message, e)
+            } catch (e: Exception) {
+                Log.e(TAG, "validateModel failed", e)
+                promise.reject(LlamaCppErrors.MODEL_LOAD_FAILED, e.message, e)
             }
-        } catch (e: SecurityException) {
-            promise.reject(LlamaCppErrors.MODEL_FILE_OUTSIDE_ROOT, e.message, e)
-        } catch (e: Exception) {
-            Log.e(TAG, "validateModel failed", e)
-            promise.reject(LlamaCppErrors.MODEL_LOAD_FAILED, e.message, e)
-        }
+        }.start()
     }
 
     // ── ReactMethod: 加载（保持加载状态）──────────────────────────
 
     @ReactMethod
     override fun loadModel(modelId: String, relativePath: String, promise: Promise) {
-        try {
-            val absPath = fileManagerInstance.resolveModelPath(relativePath).absolutePath
-            val loadResult = engineInstance.load(modelId, absPath)
-            if (loadResult.isSuccess) {
-                promise.resolve(loadResultMap(loadResult.getOrThrow()))
-            } else {
-                promise.reject(
-                    LlamaCppErrors.MODEL_LOAD_FAILED,
-                    loadResult.exceptionOrNull()?.message ?: "模型加载失败",
-                )
+        // P0-#2/#3 配套修复：load 可能先 unload 等待活跃生成，模型加载本身也耗时，放后台线程。
+        Thread {
+            try {
+                val absPath = fileManagerInstance.resolveModelPath(relativePath).absolutePath
+                val loadResult = engineInstance.load(modelId, absPath)
+                if (loadResult.isSuccess) {
+                    promise.resolve(loadResultMap(loadResult.getOrThrow()))
+                } else {
+                    promise.reject(
+                        LlamaCppErrors.MODEL_LOAD_FAILED,
+                        loadResult.exceptionOrNull()?.message ?: "模型加载失败",
+                    )
+                }
+            } catch (e: SecurityException) {
+                promise.reject(LlamaCppErrors.MODEL_FILE_OUTSIDE_ROOT, e.message, e)
+            } catch (e: Exception) {
+                Log.e(TAG, "loadModel failed", e)
+                promise.reject(LlamaCppErrors.MODEL_LOAD_FAILED, e.message, e)
             }
-        } catch (e: SecurityException) {
-            promise.reject(LlamaCppErrors.MODEL_FILE_OUTSIDE_ROOT, e.message, e)
-        } catch (e: Exception) {
-            Log.e(TAG, "loadModel failed", e)
-            promise.reject(LlamaCppErrors.MODEL_LOAD_FAILED, e.message, e)
-        }
+        }.start()
     }
 
     // ── ReactMethod: 流式生成（结果走事件）────────────────────────
@@ -288,24 +294,34 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     override fun unloadModel(promise: Promise) {
-        engineInstance.unload()
-        promise.resolve(null)
+        // P0-#2/#3 配套修复：unload 会等待活跃生成，放后台线程避免 bridge 无响应。
+        Thread {
+            engineInstance.unload()
+            promise.resolve(null)
+        }.start()
     }
 
     // ── ReactMethod: 删除 ────────────────────────────────────────
 
     @ReactMethod
     override fun deleteModelFiles(modelId: String, relativePath: String, promise: Promise) {
-        // 删除前先卸载（若当前加载的正是该模型）
-        if (engineInstance.loaded && engineInstance.loadedModelId == modelId) {
-            engineInstance.unload()
-        }
-        val ok = fileManagerInstance.deleteModelFiles(relativePath)
-        if (ok) {
-            promise.resolve(null)
-        } else {
-            promise.reject(LlamaCppErrors.DELETE_FAILED, "删除模型文件失败")
-        }
+        // 删除前先卸载（若当前加载的正是该模型）；unload 可能等待生成，放后台线程。
+        Thread {
+            try {
+                if (engineInstance.loaded && engineInstance.loadedModelId == modelId) {
+                    engineInstance.unload()
+                }
+                val ok = fileManagerInstance.deleteModelFiles(relativePath)
+                if (ok) {
+                    promise.resolve(null)
+                } else {
+                    promise.reject(LlamaCppErrors.DELETE_FAILED, "删除模型文件失败")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "deleteModelFiles failed", e)
+                promise.reject(LlamaCppErrors.DELETE_FAILED, e.message, e)
+            }
+        }.start()
     }
 
     // ── ReactMethod: 文件存在检查 ────────────────────────────────
