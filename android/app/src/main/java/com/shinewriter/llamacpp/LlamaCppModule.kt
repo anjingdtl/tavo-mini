@@ -7,13 +7,13 @@ import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
+import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.modules.core.DeviceEventManagerModule
-import com.facebook.react.turbomodule.core.interfaces.TurboModule
+import com.shinewriter.specs.NativeLlamaCppSpec
 
 /**
  * ReactMethod 桥接层：RN 调 Kotlin 的唯一入口。
@@ -26,11 +26,12 @@ import com.facebook.react.turbomodule.core.interfaces.TurboModule
  * javaModuleProvider 找不到没有 codegen 的 Java module；fallback 到
  * ReactPackageTurboModuleManagerDelegate.getModule()，但那里第 125-128 行
  * 检查 `resolvedModule !is TurboModule` 时会直接 return null。
- * 所以必须 implements TurboModule（BaseJavaModule 已提供 initialize/invalidate
- * default no-op 实现，所以加上这个 marker interface 即可通过 type check）。
+ * 2026-07-10：补上 codegen spec 后继承 NativeLlamaCppSpec，让 bridgeless
+ * JSI 层按生成签名调用 Kotlin module。
  */
+@ReactModule(name = NativeLlamaCppSpec.NAME)
 class LlamaCppModule(reactContext: ReactApplicationContext) :
-    ReactContextBaseJavaModule(reactContext), TurboModule {
+    NativeLlamaCppSpec(reactContext) {
 
     companion object {
         private const val TAG = "LlamaCppModule"
@@ -68,12 +69,10 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
             importer ?: ModelImporter(reactApplicationContext, fileManagerInstance).also { importer = it }
         }
 
-    override fun getName(): String = "LlamaCpp"
-
     // ── ReactMethod: 能力查询 ────────────────────────────────────
 
     @ReactMethod
-    fun getCapabilities(promise: Promise) {
+    override fun getCapabilities(promise: Promise) {
         try {
             val mi = engineInstance.checkAvailableMemory()
             val result = Arguments.createMap().apply {
@@ -92,7 +91,7 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 导入 ────────────────────────────────────────
 
     @ReactMethod
-    fun importModel(
+    override fun importModel(
         sourceUri: String,
         originalFilename: String,
         displayName: String,
@@ -165,7 +164,7 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 校验（加载后立即卸载）────────────────────────
 
     @ReactMethod
-    fun validateModel(modelId: String, relativePath: String, promise: Promise) {
+    override fun validateModel(modelId: String, relativePath: String, promise: Promise) {
         try {
             val absPath = fileManagerInstance.resolveModelPath(relativePath).absolutePath
             val loadResult = engineInstance.load(modelId, absPath)
@@ -191,7 +190,7 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 加载（保持加载状态）──────────────────────────
 
     @ReactMethod
-    fun loadModel(modelId: String, relativePath: String, promise: Promise) {
+    override fun loadModel(modelId: String, relativePath: String, promise: Promise) {
         try {
             val absPath = fileManagerInstance.resolveModelPath(relativePath).absolutePath
             val loadResult = engineInstance.load(modelId, absPath)
@@ -214,7 +213,7 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 流式生成（结果走事件）────────────────────────
 
     @ReactMethod
-    fun generate(requestId: String, modelId: String, request: ReadableMap, promise: Promise) {
+    override fun generate(requestId: String, modelId: String, request: ReadableMap, promise: Promise) {
         try {
             if (!engineInstance.loaded) {
                 promise.reject(LlamaCppErrors.ENGINE_NOT_READY, "模型未加载")
@@ -280,7 +279,7 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 取消 ────────────────────────────────────────
 
     @ReactMethod
-    fun cancel(requestId: String, promise: Promise) {
+    override fun cancel(requestId: String, promise: Promise) {
         engineInstance.cancel()
         promise.resolve(null)
     }
@@ -288,7 +287,7 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 卸载 ────────────────────────────────────────
 
     @ReactMethod
-    fun unloadModel(promise: Promise) {
+    override fun unloadModel(promise: Promise) {
         engineInstance.unload()
         promise.resolve(null)
     }
@@ -296,7 +295,7 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 删除 ────────────────────────────────────────
 
     @ReactMethod
-    fun deleteModelFiles(modelId: String, relativePath: String, promise: Promise) {
+    override fun deleteModelFiles(modelId: String, relativePath: String, promise: Promise) {
         // 删除前先卸载（若当前加载的正是该模型）
         if (engineInstance.loaded && engineInstance.loadedModelId == modelId) {
             engineInstance.unload()
@@ -312,26 +311,26 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
     // ── ReactMethod: 文件存在检查 ────────────────────────────────
 
     @ReactMethod
-    fun modelFileExists(relativePath: String, promise: Promise) {
+    override fun modelFileExists(relativePath: String, promise: Promise) {
         promise.resolve(fileManagerInstance.modelFileExists(relativePath))
     }
 
     // ── ReactMethod: 清理 staging ────────────────────────────────
 
     @ReactMethod
-    fun cleanupStagingFiles(promise: Promise) {
+    override fun cleanupStagingFiles(promise: Promise) {
         promise.resolve(fileManagerInstance.cleanupStagingFiles())
     }
 
     // ── RN 0.65+ 事件监听器要求（no-op）──────────────────────────
 
     @ReactMethod
-    fun addListener(eventName: String) {
+    override fun addListener(eventName: String) {
         // no-op: required by RN event emitter
     }
 
     @ReactMethod
-    fun removeListeners(count: Int) {
+    override fun removeListeners(count: Double) {
         // no-op: required by RN event emitter
     }
 

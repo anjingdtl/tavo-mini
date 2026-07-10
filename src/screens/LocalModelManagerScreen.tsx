@@ -19,6 +19,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useThemeStore } from '../store/themeStore';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
 import type { LocalModel } from '../services/localModels';
+import { LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS } from '../constants/llmDefaults';
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 B';
@@ -94,7 +95,7 @@ export const LocalModelManagerScreen: React.FC = () => {
         local_model_id: model.id,
         local_backend: 'cpu',
         context_window: model.context_length ?? 4096,
-        max_output_tokens: model.max_output_tokens ?? 4000,
+        max_output_tokens: model.max_output_tokens ?? LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
       });
       Toast.show({ type: 'success', text1: '已创建本地模型配置' });
       navigation.navigate('LLMSettings');

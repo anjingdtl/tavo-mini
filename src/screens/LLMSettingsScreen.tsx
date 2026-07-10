@@ -11,6 +11,7 @@ import { useThemeStore } from '../store/themeStore';
 import { testLLMConnection } from '../services/llm';
 import type { LLMConfig } from '../types/novel';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
+import { LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS } from '../constants/llmDefaults';
 
 const emptyDraft: LLMConfig = {
   id: 0,
@@ -233,6 +234,12 @@ export const LLMSettingsScreen: React.FC = () => {
                 provider_type,
                 // 切到 llama_cpp 时锁定 cpu 后端；切回在线 API 时清空
                 local_backend: provider_type === 'llama_cpp' ? 'cpu' : null,
+                max_output_tokens: provider_type === 'llama_cpp'
+                  ? Math.min(
+                    draft.max_output_tokens || LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
+                    LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
+                  )
+                  : draft.max_output_tokens,
               })
             }
           />
@@ -269,7 +276,7 @@ export const LLMSettingsScreen: React.FC = () => {
                 const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
                 updateDraft({ max_output_tokens: Number.isFinite(value) ? value : 0 });
               }}
-              placeholder="4000"
+              placeholder={String(LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS)}
               keyboardType="numeric"
             />
             <Button

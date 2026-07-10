@@ -103,6 +103,9 @@ export const LlamaCppNative = native;
 // 1. NativeModules.LlamaCpp（legacy + bridgeless shim）
 // 2. global.__turboModuleProxy('LlamaCpp')（codegen TurboModule）
 // 3. TurboModuleRegistry.get('LlamaCpp')（public API）
+//
+// 不在运行时 import codegen spec：NativeLlamaCpp.ts 使用 getEnforcing，
+// 若 app-level C++ provider 尚未装入 native binary，会直接触发红屏。
 function findNative(): unknown {
   if (native) return native;
   const anyGlobal = globalThis as unknown as {

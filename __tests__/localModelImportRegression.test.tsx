@@ -202,8 +202,6 @@ describe('LocalModelManagerScreen import regression', () => {
     });
 
     const finalState = useLocalModelStore.getState().import;
-    // eslint-disable-next-line no-console
-    console.log('DEBUG test finalState:', JSON.stringify(finalState));
     // 状态必须落到 error，不能卡在 idle 或 preparing
     expect(finalState.state).toBe('error');
     // Alert 必须被调用，给用户反馈
@@ -312,5 +310,55 @@ describe('LocalModelManagerScreen import regression', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+  });
+
+  it('creates llama.cpp configs with a local-friendly max output default when the model has no token limit', async () => {
+    mockListLocalModels.mockResolvedValue([
+      {
+        id: 'local-qwen3',
+        display_name: 'Qwen3-0.6B-Q2_K',
+        original_filename: 'Qwen3-0.6B-Q2_K.gguf',
+        file_size: 296238784,
+        sha256: 'abc',
+        relative_path: 'local-qwen3/model.gguf',
+        status: 'ready',
+        backend_preference: 'cpu',
+        validated_backend: 'cpu',
+        actual_backend: 'cpu',
+        prompt_template: 'chatml',
+        context_length: 4096,
+        max_output_tokens: null,
+        load_time_ms: 2957,
+        imported_at: '2026-07-09T18:16:38.397Z',
+        last_validated_at: '2026-07-09T18:16:38.397Z',
+        error_code: null,
+        error_message: null,
+      },
+    ]);
+    mockSaveLLMConfig.mockResolvedValue(2);
+
+    rtl = render(<LocalModelManagerScreen />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const createLabel = rtl.getByText('创建 AI 配置');
+    let createButton: any = createLabel;
+    while (createButton && !createButton.props?.onPress && createButton.parent) {
+      createButton = createButton.parent;
+    }
+
+    await act(async () => {
+      fireEvent.press(createButton);
+    });
+
+    expect(mockSaveLLMConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider_type: 'llama_cpp',
+        local_model_id: 'local-qwen3',
+        max_output_tokens: 512,
+      }),
+    );
   });
 });
