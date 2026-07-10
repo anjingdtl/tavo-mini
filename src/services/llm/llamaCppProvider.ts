@@ -29,10 +29,12 @@ import {
  */
 
 let currentLoadedModelId: string | null = null;
+let currentLoadedContextLength: number | null = null;
 
 /** 供 localModels.unloadLocalModel 调用：重置加载缓存标记。 */
 export function invalidateLoadedModel(): void {
   currentLoadedModelId = null;
+  currentLoadedContextLength = null;
 }
 
 function makeRequestId(): string {
@@ -108,10 +110,17 @@ async function safeLogUsage(fields: {
   }
 }
 
-async function ensureModelLoaded(modelId: string, relativePath: string): Promise<void> {
-  if (currentLoadedModelId === modelId) return;
-  await nativeLoadModel(modelId, relativePath);
+async function ensureModelLoaded(
+  modelId: string,
+  relativePath: string,
+  contextLength: number,
+): Promise<void> {
+  if (currentLoadedModelId === modelId && currentLoadedContextLength === contextLength) {
+    return;
+  }
+  await nativeLoadModel(modelId, relativePath, contextLength);
   currentLoadedModelId = modelId;
+  currentLoadedContextLength = contextLength;
 }
 
 /**
@@ -172,7 +181,8 @@ export const llamaCppProvider: LLMProvider = {
       throw new Error('所选本地模型已不存在，请重新选择。');
     }
 
-    await ensureModelLoaded(model.id, model.relative_path);
+    const contextLength = Math.max(512, Math.min(4096, config.context_window || 2048));
+    await ensureModelLoaded(model.id, model.relative_path, contextLength);
 
     const requestId = makeRequestId();
     const result = await runGeneration(
@@ -242,7 +252,8 @@ export const llamaCppProvider: LLMProvider = {
     }
 
     try {
-      await ensureModelLoaded(model.id, model.relative_path);
+      const contextLength = Math.max(512, Math.min(4096, config.context_window || 2048));
+      await ensureModelLoaded(model.id, model.relative_path, contextLength);
 
       const result = await runGeneration(requestId, model.id, model.prompt_template, generationMessages, {
         max_tokens: maxTokens,

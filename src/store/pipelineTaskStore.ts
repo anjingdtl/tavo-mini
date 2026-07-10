@@ -18,9 +18,24 @@ interface PipelineTaskState {
   getUnresolvedCount: () => number;
   /** 把 updatedAt 超过 staleMs 的活跃任务标记为 failed（用于回前台自愈）。返回标记的任务数。 */
   markStaleTasksAsFailed: (staleMs?: number) => number;
+  /** 冷启动时中断上次进程遗留的全部活跃任务；不会伪装为可继续运行。 */
+  markActiveTasksAsInterrupted: () => number;
 }
 
 let taskIdCounter = 0;
+const activeStatuses: PipelineTaskStatus[] = ['idle', 'drafting', 'reviewing', 'factChecking', 'proofing'];
+
+function interruptTask(task: PipelineTask, now: number): PipelineTask {
+  return {
+    ...task,
+    status: 'failed',
+    error: '运行被中断（App 已退出或任务已停止）',
+    updatedAt: now,
+    // 不再弹出过期任务的全局结果提示，也不会阻塞同章节重新生成。
+    resolvedAt: now,
+    resolvedAction: 'reject',
+  };
+}
 
 function persistTask(task: PipelineTask) {
   db.savePipelineTask({
@@ -200,30 +215,40 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   markStaleTasksAsFailed: (staleMs = 10 * 60 * 1000) => {
     // 单阶段 LLM 耗时可能较长（尤其长文本生成），过短阈值会误判仍在运行的任务。
     const now = Date.now();
-    const staleStatuses: PipelineTaskStatus[] = ['idle', 'drafting', 'reviewing', 'factChecking', 'proofing'];
     let marked = 0;
     set((state) => {
       const tasks = state.tasks.map((t) => {
         if (
           !t.resolvedAt &&
-          staleStatuses.includes(t.status) &&
+          activeStatuses.includes(t.status) &&
           now - (t.updatedAt || t.createdAt) > staleMs
         ) {
           marked += 1;
-          const updated: PipelineTask = {
-            ...t,
-            status: 'failed' as PipelineTaskStatus,
-            error: '运行被中断（App 可能被系统挂起）',
-            updatedAt: now,
-            // BUG-10 修复：必须同时设置 resolvedAt，否则 (resolvedAt===null && status==='failed')
-            // 会持续触发 App.tsx 的 pendingPrompt 弹窗（每次冷启动都弹）。
-            resolvedAt: now,
-            resolvedAction: 'reject',
-          };
+          const updated = interruptTask(t, now);
           persistTask(updated);
           return updated;
         }
         return t;
+      });
+      return { tasks };
+    });
+    return marked;
+  },
+
+  markActiveTasksAsInterrupted: () => {
+    const now = Date.now();
+    let marked = 0;
+    set((state) => {
+      const tasks = state.tasks.map((task) => {
+        // JS/原生流水线不具备跨进程恢复执行能力。冷启动时看到活跃状态，
+        // 只能说明上个进程已中断，绝不能继续占用章节的生成入口。
+        if (task.resolvedAt === null && activeStatuses.includes(task.status)) {
+          marked += 1;
+          const updated = interruptTask(task, now);
+          persistTask(updated);
+          return updated;
+        }
+        return task;
       });
       return { tasks };
     });
