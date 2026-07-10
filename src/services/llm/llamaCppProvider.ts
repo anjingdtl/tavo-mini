@@ -12,6 +12,10 @@ import {
   type CompletedEvent,
 } from '../../native/LlamaCppModule';
 import { applyPromptTemplate } from './llamaCppPromptAdapter';
+import {
+  LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
+  LOCAL_LLM_SAFE_MAX_OUTPUT_TOKENS,
+} from '../../constants/llmDefaults';
 
 /**
  * llama.cpp 本地 Provider：实现 LLMProvider 接口，对接 NativeModules.LlamaCpp。
@@ -33,6 +37,56 @@ export function invalidateLoadedModel(): void {
 
 function makeRequestId(): string {
   return `llamacpp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function positiveNumber(value?: number): number | null {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : null;
+}
+
+function resolveLocalMaxTokens(optionValue?: number, configValue?: number): number {
+  const candidates = [
+    positiveNumber(optionValue),
+    positiveNumber(configValue),
+    LOCAL_LLM_SAFE_MAX_OUTPUT_TOKENS,
+  ].filter((value): value is number => value !== null);
+  const requested = candidates.length > 0
+    ? Math.min(...candidates)
+    : LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS;
+  return Math.min(requested, LOCAL_LLM_SAFE_MAX_OUTPUT_TOKENS);
+}
+
+function shouldDisableReasoning(modelName?: string): boolean {
+  return /\bqwen3\b/i.test(modelName || '');
+}
+
+function addNoThinkInstruction(messages: ChatMessage[]): ChatMessage[] {
+  const nextMessages = messages.map(message => ({ ...message }));
+  const instruction = '不要输出思考过程、分析说明或 <think> 标签，只输出最终结果。';
+  const systemIndex = nextMessages.findIndex(message => message.role === 'system');
+  if (systemIndex >= 0) {
+    const systemMessage = nextMessages[systemIndex];
+    systemMessage.content = `${systemMessage.content}\n\n${instruction}`;
+  } else {
+    nextMessages.unshift({ role: 'system', content: instruction });
+  }
+
+  for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
+    if (nextMessages[index].role === 'user') {
+      nextMessages[index].content = `${nextMessages[index].content}\n\n/no_think`;
+      return nextMessages;
+    }
+  }
+  nextMessages.push({ role: 'user', content: '/no_think' });
+  return nextMessages;
+}
+
+function stripReasoningBlocks(text: string): string {
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  cleaned = cleaned.replace(/^\s*<think>[\s\S]*$/i, '');
+  return cleaned
+    .replace(/<\/?think>/gi, '')
+    .trim();
 }
 
 async function safeLogUsage(fields: {
@@ -89,8 +143,9 @@ function runGeneration(
         reject(Object.assign(new Error(e.message), { code: e.code }));
       },
     });
+    const prompt = applyPromptTemplate(template, messages);
     nativeGenerate(requestId, modelId, {
-      prompt: applyPromptTemplate(template, messages),
+      prompt,
       max_tokens: opts.max_tokens,
       temperature: opts.temperature,
       top_p: opts.top_p,
@@ -165,9 +220,12 @@ export const llamaCppProvider: LLMProvider = {
     const projectId = options.projectId;
     const llmConfigId = config.id;
     const llmConfigName = config.name;
-    const maxTokens = options.max_tokens ?? config.max_output_tokens ?? 512;
+    const maxTokens = resolveLocalMaxTokens(options.max_tokens, config.max_output_tokens);
     const temperature = options.temperature ?? 0.8;
     const topP = options.top_p ?? 0.9;
+    const generationMessages = shouldDisableReasoning(modelName)
+      ? addNoThinkInstruction(messages)
+      : messages;
 
     if (externalSignal?.aborted) {
       const err = new Error('已取消') as Error & { code?: string };
@@ -186,7 +244,7 @@ export const llamaCppProvider: LLMProvider = {
     try {
       await ensureModelLoaded(model.id, model.relative_path);
 
-      const result = await runGeneration(requestId, model.id, model.prompt_template, messages, {
+      const result = await runGeneration(requestId, model.id, model.prompt_template, generationMessages, {
         max_tokens: maxTokens,
         temperature,
         top_p: topP,
@@ -225,7 +283,7 @@ export const llamaCppProvider: LLMProvider = {
       });
 
       return {
-        text: result.text,
+        text: stripReasoningBlocks(result.text || ''),
         inputTokens: inputEstimate,
         outputTokens,
         totalTokens,

@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <cstdint>
 
 #include "llama.h"
 
@@ -67,9 +68,74 @@ bool resolveCallback(JNIEnv *env, jobject callback, CallbackMethods &cb) {
     return true;
 }
 
+jstring newStringFromUtf8(JNIEnv *env, const std::string &text) {
+    std::vector<jchar> chars;
+    chars.reserve(text.size());
+    const auto replacement = static_cast<jchar>(0xFFFD);
+
+    size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        uint32_t codepoint = 0;
+        size_t len = 0;
+
+        if (c <= 0x7F) {
+            codepoint = c;
+            len = 1;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            codepoint = c & 0x1F;
+            len = 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            codepoint = c & 0x0F;
+            len = 3;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            codepoint = c & 0x07;
+            len = 4;
+        } else {
+            chars.push_back(replacement);
+            i += 1;
+            continue;
+        }
+
+        if (i + len > text.size()) {
+            chars.push_back(replacement);
+            break;
+        }
+
+        bool valid = true;
+        for (size_t j = 1; j < len; j += 1) {
+            const unsigned char cc = static_cast<unsigned char>(text[i + j]);
+            if ((cc & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+            codepoint = (codepoint << 6) | (cc & 0x3F);
+        }
+
+        if (!valid || codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+            chars.push_back(replacement);
+            i += 1;
+            continue;
+        }
+
+        if (codepoint <= 0xFFFF) {
+            chars.push_back(static_cast<jchar>(codepoint));
+        } else {
+            codepoint -= 0x10000;
+            chars.push_back(static_cast<jchar>(0xD800 + (codepoint >> 10)));
+            chars.push_back(static_cast<jchar>(0xDC00 + (codepoint & 0x3FF)));
+        }
+        i += len;
+    }
+
+    return chars.empty()
+        ? env->NewString(nullptr, 0)
+        : env->NewString(chars.data(), static_cast<jsize>(chars.size()));
+}
+
 void emitToken(JNIEnv *env, jobject callback, const CallbackMethods &cb,
                const char *text, int sequence) {
-    jstring jText = env->NewStringUTF(text);
+    jstring jText = newStringFromUtf8(env, std::string(text));
     env->CallVoidMethod(callback, cb.onToken, jText, sequence);
     env->DeleteLocalRef(jText);
 }
@@ -77,14 +143,14 @@ void emitToken(JNIEnv *env, jobject callback, const CallbackMethods &cb,
 void emitCompleted(JNIEnv *env, jobject callback, const CallbackMethods &cb,
                    const std::string &fullText, int outputTokens,
                    float tps, int elapsedMs, int cancelled) {
-    jstring jText = env->NewStringUTF(fullText.c_str());
+    jstring jText = newStringFromUtf8(env, fullText);
     env->CallVoidMethod(callback, cb.onCompleted, jText, outputTokens, tps, elapsedMs, cancelled);
     env->DeleteLocalRef(jText);
 }
 
 void emitError(JNIEnv *env, jobject callback, const CallbackMethods &cb,
                const char *message) {
-    jstring jMsg = env->NewStringUTF(message);
+    jstring jMsg = newStringFromUtf8(env, std::string(message));
     env->CallVoidMethod(callback, cb.onError, jMsg);
     env->DeleteLocalRef(jMsg);
 }
