@@ -7,11 +7,11 @@ import java.io.File
  * GGUF 文件头校验。
  *
  * 只读前 8 字节（magic + version），不做全文件扫描。
- * magic = 0x46475547（ASCII "GGUF"，小端 uint32），version 接受 v2/v3。
+ * magic = 0x46554747（ASCII "GGUF"，小端 uint32），version 接受 v2/v3。
  */
 object GgufValidator {
     private const val TAG = "GgufValidator"
-    private const val GGUF_MAGIC: Long = 0x46475547L // "GGUF" little-endian uint32
+    private const val GGUF_MAGIC: Long = 0x46554747L // "GGUF" little-endian uint32
 
     fun validateHeader(file: File): Boolean {
         return try {

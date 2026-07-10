@@ -1,7 +1,7 @@
 # llama.cpp 本地离线模型接入 — 进度报告
 
-> **最后更新：** 2026-07-09 (Asia/Shanghai)
-> **状态：** Phase 0/1/2/3/4/5/6 已完成，仅剩 Phase 7 真机验收
+> **最后更新：** 2026-07-10 (Asia/Shanghai)
+> **状态：** Phase 0/1/2/3/4/5/6 已完成；Phase 7 模拟器端到端验收已打通，真机复测待执行
 > **SPEC:** `docs/superpowers/specs/2026-07-09-tavo-mini-llama-cpp-local-model-SPEC.md`
 > **PLAN:** `docs/superpowers/plans/2026-07-09-llama-cpp-local-model.md`
 > **ADB 路径:** `C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe`
@@ -20,9 +20,9 @@
 | **Phase 4** | 数据库迁移 v12→v13 | ✅ 完成 | 迁移脚本+类型更新+9/9 测试通过 |
 | **Phase 5** | TS LlamaCppProvider + Prompt 适配 | ✅ 完成 | 3 新文件 + 6 修改文件，249/249 测试通过 |
 | **Phase 6** | UI 适配 | ✅ 完成 | LLMSettings/LocalModelManager/LocalModelSelector 三处适配 |
-| **Phase 7** | 真机验收测试 | ⏳ 待执行 | 沙箱无法跑，需世恒哥本地构建 APK + 真机验收 |
+| **Phase 7** | 真机/模拟器验收测试 | ✅ 模拟器通过 / ⏳ 真机待复测 | 模拟器已验证 qwen3 GGUF 加载与生成链路；真机仍建议按验收清单复测 |
 
-**完成度：约 90%（仅剩真机验收）**
+**完成度：约 96%（核心链路已通，仅剩真机复测与输出质量调优）**
 
 ---
 
@@ -269,7 +269,7 @@ npm start
 
 > **最后更新：** 2026-07-09 (Asia/Shanghai)
 > **负责人：** TRAE 会话（接到世恒哥反馈"点完导入没反应"开始）
-> **状态：** UI 反馈修复已完成并提交到 main；**真正的根因（JS 端调不到 LlamaCpp TurboModule）待交接**
+> **状态：** UI 反馈修复已完成；**真正的根因（JS 端调不到 LlamaCpp TurboModule）已于 2026-07-10 接手修复**
 
 ### 3.1 问题表象
 
@@ -320,7 +320,7 @@ npm start
      3. 错误消息中文化（含"本地模型引擎"/"llama.cpp"/"重启"）
      4. RN 0.85 bridgeless 异步探测场景：sync 判定 false 但 async probe 成功时正确恢复
 
-### 3.4 当前真机表现
+### 3.4 当前真机表现（交接前）
 
 V2.4.0 debug APK 装到模拟器，选完 GGUF 文件后：
 
@@ -335,13 +335,13 @@ V2.4.0 debug APK 装到模拟器，选完 GGUF 文件后：
 - ✅ 不再"点完没反应"
 - ❌ 但**导入本身还是失败**（因为 LlamaCpp JS 端拿不到）
 
-### 3.5 给下一个 agent 的交接清单
+### 3.5 给下一个 agent 的交接清单（已完成）
 
 > **真正的根因**：`LlamaCpp` 这个 TurboModule 没有 codegen spec，所以 RN 0.85 bridgeless 模式下 JS 端通过任何路径（`NativeModules.LlamaCpp` / `global.__turboModuleProxy` / `TurboModuleRegistry.get`）都拿不到，调用永远走不进去 native。
 >
 > **下一步必须做的事（任选其一）：**
 
-**方案 A：加 codegen spec（RN 0.85 bridgeless 标准路径，推荐）**
+**方案 A：加 codegen spec（RN 0.85 bridgeless 标准路径，推荐，已采用）**
 1. 新建 `src/native/specs/NativeLlamaCpp.ts`，定义 `TurboModuleRegistry.getEnforcing<Spec>('LlamaCpp')` 的 TypeScript interface
 2. 写 `@ReactModule(name = "LlamaCpp")` 注解到 `LlamaCppModule.kt`（注意 V2.4.0 当前只有 `implements TurboModule`，没 codegen）
 3. 在 `android/app/build.gradle` 启用 codegen（`react { autolinkLibrariesFromCommand() }` + `enableSeparateBuildPerCpuArchitecture` 等）
@@ -359,7 +359,7 @@ V2.4.0 debug APK 装到模拟器，选完 GGUF 文件后：
 2. JS 端直接走 `global.LlamaCpp.importModel(...)`，绕过 TurboModuleRegistry
 3. 这种方法比较 hack，不推荐走生产
 
-### 3.6 测试 + 验证状态
+### 3.6 测试 + 验证状态（交接前）
 
 - ✅ 全套测试：**253 passed / 253 total**（新增 4 个）
 - ✅ ESLint：**0 errors**（6 warnings 全是历史文件）
@@ -476,3 +476,99 @@ git commit -m "feat(db): migrate schema v12→v13 for llama.cpp support"
 ---
 
 *此文档由塔拉编写于 2026-07-09 17:00。*
+
+---
+
+## 七、2026-07-10 接手修复结果：bridgeless codegen + qwen3 模拟器验收
+
+> **负责人：** 寇蒂斯
+> **状态：** 核心桥接与模拟器端到端生成已打通；qwen3-0.6B-Q2_K 输出质量偏弱，建议作为后续模型选择/模板调优项继续优化。
+
+### 7.1 已完成的关键修复
+
+1. **RN 0.85 bridgeless TurboModule codegen 修复**
+   - 新增 `src/native/specs/NativeLlamaCpp.ts`，为 `LlamaCpp` 提供 codegen TurboModule spec。
+   - `package.json` 新增 `codegenConfig`，生成 `com.shinewriter.specs.NativeLlamaCppSpec`。
+   - `LlamaCppModule.kt` 改为继承 `NativeLlamaCppSpec(reactContext)`，并保留 `@ReactModule` 注册。
+   - `src/native/LlamaCppModule.ts` 保留三路探测：`NativeModules`、`global.__turboModuleProxy`、`TurboModuleRegistry.get`。
+   - 模拟器日志确认：
+     - `LlamaCppPackage.getModule: name='LlamaCpp' AFTER ROUTING (result=LlamaCppModule)`
+     - JS 端可实际调用 native `loadModel` / `generate`。
+
+2. **GGUF 文件头校验修复**
+   - `GgufValidator.kt` 中 GGUF magic 从错误的 `0x46475547L` 修为小端读取后的正确值 `0x46554747L`。
+   - 根因：GGUF 文件头字节为 `47 47 55 46`，以 little-endian 读取应为 `0x46554747`；旧值会误拒绝有效 GGUF。
+
+3. **本地模型输出 token 上限修复**
+   - 新增 `src/constants/llmDefaults.ts`，本地 llama.cpp 默认/安全上限统一为 512。
+   - `LocalModelManagerScreen.tsx` 创建本地配置时不再默认写入 4000。
+   - `LLMSettingsScreen.tsx` 切到本地 GGUF 时自动锁定 `local_backend='cpu'`，并把异常大的 `max_output_tokens` 收敛到 512。
+   - `llamaCppProvider.ts` 修复调用方 `options.max_tokens` 覆盖本地配置的问题；现在取“调用方、配置、安全上限”三者中合理的较小值。
+
+4. **Qwen3 思考块与空章节提示修复**
+   - `llamaCppProvider.ts` 对 Qwen3 模型自动追加 `/no_think`，并清理返回文本中的 `<think>...</think>`。
+   - `chapterGeneration.ts` 对空章节单独生成“从零创作正文”的提示，不再把空内容写成 `(空)` 传给模型，降低模型复述说明文字的概率。
+
+5. **JNI 中文 token 崩溃修复**
+   - `llamacpp_jni.cpp` 不再用 `NewStringUTF` 直接传 token piece。
+   - 新增 UTF-8 bytes → UTF-16 转换后调用 `NewString`，避免 llama.cpp 分片输出中文/半个 UTF-8 字符时触发 CheckJNI：
+     - `JNI DETECTED ERROR IN APPLICATION: input is not valid Modified UTF-8`
+
+### 7.2 模拟器端到端证据
+
+测试设备：`emulator-5554`
+
+测试模型：
+
+| 字段 | 值 |
+|---|---|
+| 模型 ID | `import-e5e9f544-4953-405c-b107-37a476cd4f09` |
+| 模型名 | `Qwen3-0.6B-Q2_K` |
+| 文件路径 | `/data/user/0/com.shinewriter/files/local_models/import-e5e9f544-4953-405c-b107-37a476cd4f09/model.gguf` |
+| 文件大小 | `296238784` bytes |
+| 状态 | `ready` |
+
+关键 logcat 证据：
+
+```text
+load: enter, modelId=import-e5e9f544-4953-405c-b107-37a476cd4f09 path=/data/user/0/com.shinewriter/files/local_models/import-e5e9f544-4953-405c-b107-37a476cd4f09/model.gguf ctx=4096
+file exists, size=296238784 bytes
+nativeLoadModel: success, n_ctx=4096
+nativeGenerate: maxTokens=256, temp=0.80, topP=0.90, promptLen=1412
+nativeGenerate: done, 256 tokens, 0.8 t/s, cancelled=0
+```
+
+当前 debug APK 安装后，又通过「LLM 设置 → 本地 Qwen3 配置 → 保存并测试」做了 16 token 短连接测试，确认 codegen 桥不是旧日志残留：
+
+```text
+LlamaCppPackage.getModule: name='LlamaCpp' AFTER ROUTING (result=LlamaCppModule)
+load: file exists, size=296238784 bytes
+nativeLoadModel: success, n_ctx=4096
+nativeGenerate: maxTokens=16, temp=0.00, topP=0.90, promptLen=63
+nativeGenerate: done, 16 tokens, 1.0 t/s, cancelled=0
+```
+
+UI 同步弹出「测试通过」，回复内容来自本地 Qwen3 连接测试。
+
+生成后数据库证据：
+
+| 表 | 结果 |
+|---|---|
+| `chapters` | 第 1 章 `status='draft'`，`content` 长度 319 |
+| `chapters` | `has_think=False`，`is_placeholder=False` |
+| `llm_usage_logs` | `scenario='pipeline_draft'`，`status='success'`，`model_name='Qwen3-0.6B-Q2_K'`，`output_tokens=256` |
+
+结论：模拟器已确认真实 qwen3 GGUF 模型可以经 JS → TurboModule → JNI → llama.cpp 完整链路加载、生成、回写章节正文，不再是 UI 假成功或占位文本。
+
+### 7.3 当前剩余风险
+
+1. **输出质量风险**
+   - `Qwen3-0.6B-Q2_K` 可以生成并回写正文，但实际内容偏弱，存在复述任务说明和重复“好的”的现象。
+   - 这更像小尺寸 + 低量化模型能力问题，也可能与 prompt template 仍需针对 Qwen3 继续调优有关。
+   - 发布验收建议至少再用更高量化或更大参数的 Qwen3 GGUF 复测。
+
+2. **真机复测风险**
+   - 模拟器链路已通，但真机仍需按 Phase 7 清单复测导入、加载、生成、取消、低内存保护和无效文件提示。
+
+3. **性能风险**
+   - 当前 qwen3-0.6B-Q2_K 在模拟器约 `0.8 token/s`，真机 CPU 表现需要重新记录。

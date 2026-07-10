@@ -13,8 +13,12 @@ project(appmodules CXX)
 # doesn't conflict with the top-level `appmodules` target name.
 add_subdirectory(llama_jni)
 
-# React Native appmodules (OnLoad.cpp + autolinking cpp). This restores
-# the javaModuleProvider pointer that JS-side
-# `TurboModuleRegistry.getEnforcing('PlatformConstants')` etc. depend on.
+# React Native appmodules (OnLoad.cpp + autolinking cpp + app codegen).
+# The default setup includes ReactNative-application.cmake, which links
+# generated app-level providers such as ShineWriterSpec_ModuleProvider when
+# `android/app/build/generated/source/codegen/jni/CMakeLists.txt` exists.
+# This restores the javaModuleProvider pointer that JS-side
+# `TurboModuleRegistry.getEnforcing('PlatformConstants')` and local
+# TurboModules such as `LlamaCpp` depend on.
 add_subdirectory(${REACT_ANDROID_DIR}/cmake-utils/default-app-setup
                  ${CMAKE_CURRENT_BINARY_DIR}/default-app-setup-build)
