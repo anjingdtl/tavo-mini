@@ -1,9 +1,16 @@
-import React, { useContext, useEffect, useRef, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { Alert, BackHandler, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
-import { useNavigation, NavigationRouteContext, type RouteProp } from '@react-navigation/native';
+import {
+  CommonActions,
+  NavigationRouteContext,
+  useNavigation,
+  type NavigationProp,
+  type ParamListBase,
+  type RouteProp,
+} from '@react-navigation/native';
 import * as db from '../services/database';
 import type { PipelineStageResult } from '../types/pipeline';
 
@@ -48,6 +55,37 @@ export interface PipelineResultScreenProps {
   onAdopted?: (text: string) => void;
 }
 
+export function closePipelineResult(
+  navigation: Pick<NavigationProp<ParamListBase>, 'dispatch' | 'getState' | 'goBack'>,
+  onClose?: () => void,
+): void {
+  if (onClose) {
+    onClose();
+    return;
+  }
+
+  const state = navigation.getState();
+  if (state.index > 0) {
+    navigation.goBack();
+    return;
+  }
+
+  const fallbackRoute = state.routeNames.includes('SettingsMain')
+    ? 'SettingsMain'
+    : state.routeNames.includes('EditorMain')
+      ? 'EditorMain'
+      : null;
+  if (fallbackRoute) {
+    navigation.dispatch(CommonActions.reset({
+      index: 0,
+      routes: [{ name: fallbackRoute }],
+    }));
+    return;
+  }
+
+  navigation.goBack();
+}
+
 export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ taskId: propTaskId, onClose, onAdopted }) => {
   const { theme } = useThemeStore();
   const navigation = useNavigation();
@@ -64,7 +102,18 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   // setTimeout 与 handleAccept 的 resolveTask('accept') 竞态重复 resolve。
   const acceptedRef = useRef(false);
 
-  const handleClose = onClose ?? (() => navigation.goBack());
+  const handleClose = useCallback(
+    () => closePipelineResult(navigation, onClose),
+    [navigation, onClose],
+  );
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [handleClose]);
 
   const task = tasks.find((t) => t.id === taskId);
 

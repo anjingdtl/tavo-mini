@@ -596,3 +596,22 @@ nativeGenerate: maxTokens=256, temp=0.80, topP=0.90, promptLen=1433
 ```
 
 结论：历史未激活的本地配置可以在流水线首次调用时自动修复，不再落入在线 API 配置校验。
+
+---
+
+## 九、2026-07-10 冷启动结果页返回修复
+
+### 9.1 根因与修复
+
+- 冷启动通知恢复会跨 Tab 直接打开 `Settings → PipelineResult`。旧逻辑未保证 `SettingsMain` 已进入子栈，结果页又只调用 `navigation.goBack()`，在无历史路由时会静默无操作。
+- 跨 Tab 导航增加 `initial: false`，确保设置首页或写作首页先进入栈历史。
+- 结果页增加确定性关闭策略：有历史时正常返回；无历史时重置到当前子栈首页；Android 系统返回键复用同一策略。
+
+### 9.2 全量回归与模拟器证据
+
+- Jest：58 个测试套件、271 项测试全部通过。
+- ESLint：0 errors，保留项目原有 5 条 warnings。
+- 模拟器保留既有数据库覆盖安装 `versionCode 150`，通过 Intent extra 冷启动直达结果页：
+  - 顶部「返回」：结果页关闭，稳定进入设置首页。
+  - Android 系统返回键：`BEFORE_RESULT=True`、`AFTER_RESULT=False`、`AFTER_SETTINGS=True`，应用进程保持运行。
+- ADB UI 树和截图均确认结果页、设置首页显示完整，无重叠和黑屏。
