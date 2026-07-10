@@ -10,7 +10,9 @@ import {
   countLLMConfigsUsingModel,
   cleanupOrphanedModels,
   cleanupStagingFiles,
+  importLocalModel,
 } from '../../src/services/localModels';
+import { deleteModelFiles } from '../../src/native/LlamaCppModule';
 
 const mockModels: any[] = [];
 
@@ -113,6 +115,17 @@ describe('localModels service', () => {
     const found = await getLocalModelBySha256('def456');
     expect(found?.display_name).toBe('Another Model');
     expect(await getLocalModelBySha256('missing')).toBeNull();
+  });
+
+  it('removes the copied native file when an already-imported model is selected again', async () => {
+    mockModels.push(makeModel({ id: 'existing-model', sha256: 'sha-test' }));
+
+    await expect(importLocalModel('content://downloads/again.gguf', 'again.gguf')).rejects.toThrow(
+      '该模型文件已导入',
+    );
+
+    expect(deleteModelFiles).toHaveBeenCalledWith('import-test', 'test/test.gguf');
+    expect(mockModels).toHaveLength(1);
   });
 
   it('updates and deletes a model', async () => {
