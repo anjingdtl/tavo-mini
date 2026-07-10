@@ -46,7 +46,7 @@ export const LocalModelManagerScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
   const { models, import: importState, loadingModelId, refreshModels, startImport, cancelImport, loadModel, deleteModel } = useLocalModelStore();
-  const { saveLLMConfig } = useSettingsStore();
+  const { saveLLMConfig, setActiveLLMConfig } = useSettingsStore();
   const [importing, setImporting] = useState(false);
 
   useEffect(() => {
@@ -86,7 +86,7 @@ export const LocalModelManagerScreen: React.FC = () => {
   const handleCreateConfig = async (model: LocalModel) => {
     try {
       const name = `本地：${model.display_name}`;
-      await saveLLMConfig({
+      const id = await saveLLMConfig({
         name,
         provider_type: 'llama_cpp',
         base_url: '',
@@ -97,7 +97,11 @@ export const LocalModelManagerScreen: React.FC = () => {
         context_window: model.context_length ?? 4096,
         max_output_tokens: model.max_output_tokens ?? LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
       });
-      Toast.show({ type: 'success', text1: '已创建本地模型配置' });
+      // 修复#LM-create：创建本地模型配置后自动激活。
+      // 旧逻辑只 saveLLMConfig 不传 is_active，导致 is_active 留 0、激活位仍是历史默认 OpenAI
+      // 配置。用户写作时走 openAI provider → 没填 url/api_key → 误报"请先在设置中配置 API 地址"。
+      await setActiveLLMConfig(id);
+      Toast.show({ type: 'success', text1: '已创建并切换到该本地模型配置' });
       navigation.navigate('LLMSettings');
     } catch (error: any) {
       Alert.alert('创建配置失败', error?.message || '请重试');
