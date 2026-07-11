@@ -1,5 +1,9 @@
 import * as db from './database';
-import { callLLMResult, resolveLLMRequestConfig, type LLMRequestConfig } from './llm';
+import {
+  callLLMResult,
+  resolveLLMRequestConfig,
+  type LLMRequestConfig,
+} from './llm';
 import { buildContext } from './contextBuilder';
 import { createChapterGenerationRequest } from './chapterGeneration';
 import {
@@ -45,13 +49,18 @@ function releaseTaskAbort(taskId: string): void {
   taskAbortControllers.delete(taskId);
 }
 
-function resolvePreset(presetId: number | null, presets: Preset[]): Preset | null {
+function resolvePreset(
+  presetId: number | null,
+  presets: Preset[],
+): Preset | null {
   if (presetId != null) {
-    const found = presets.find((p) => p.id === presetId);
+    const found = presets.find(p => p.id === presetId);
     if (found) return found;
     // resolvePreset 静默回退修复：presetId 找不到时（被删除/换项目）不报错，
     // 静默用第一个 preset，用户以为用自定义预设实际用默认
-    console.warn(`[pipeline] presetId=${presetId} not found, falling back to first preset`);
+    console.warn(
+      `[pipeline] presetId=${presetId} not found, falling back to first preset`,
+    );
   }
   return presets[0] || null;
 }
@@ -67,8 +76,8 @@ function checkCancelled(taskId: string): boolean {
 
 function buildContextPreview(messages: ChatMessage[]): string {
   return messages
-    .filter((m) => m.role === 'system')
-    .map((m) => m.content)
+    .filter(m => m.role === 'system')
+    .map(m => m.content)
     .join('\n\n');
 }
 
@@ -93,7 +102,11 @@ function getErrorMessage(error: any, fallback: string): string {
   return error?.message ? String(error.message) : fallback;
 }
 
-function markSkipped(taskId: string, stage: PipelineStageName, text: string): void {
+function markSkipped(
+  taskId: string,
+  stage: PipelineStageName,
+  text: string,
+): void {
   usePipelineTaskStore.getState().updateTaskStage(taskId, {
     stage,
     text,
@@ -114,7 +127,7 @@ async function runProofStage({
   requestConfig,
   abortSignal,
 }: {
-  taskId: string,
+  taskId: string;
   draftText: string;
   reviewText: string;
   factCheckText: string;
@@ -134,7 +147,13 @@ async function runProofStage({
     const proofResult = await callLLMResult(
       messages,
       maxTokens,
-      buildCallConfig(proofPreset, maxTokens, scenario, projectId, requestConfig),
+      buildCallConfig(
+        proofPreset,
+        maxTokens,
+        scenario,
+        projectId,
+        requestConfig,
+      ),
       abortSignal,
     );
     const finalText = proofResult.text || draftText;
@@ -205,27 +224,41 @@ async function runChapterPipelineInner(
       contextConfig = {
         ...contextConfig,
         slidingWindowSize: Math.min(contextConfig.slidingWindowSize, 1024),
-        summaryBudgetTokens: Math.min(contextConfig.summaryBudgetTokens ?? 20000, 1024),
+        summaryBudgetTokens: Math.min(
+          contextConfig.summaryBudgetTokens ?? 20000,
+          1024,
+        ),
         resourceBudget: Math.min(contextConfig.resourceBudget, 512),
         worldbookScanDepth: Math.min(contextConfig.worldbookScanDepth ?? 4, 1),
       };
     }
   } catch (error: any) {
     store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
-    await PipelineForeground.notifyFailed(taskId, chapter.title || '流水线', '配置读取失败');
+    await PipelineForeground.notifyFailed(
+      taskId,
+      chapter.title || '流水线',
+      '配置读取失败',
+    );
     await PipelineForeground.stop(taskId);
     return;
   }
 
   const draftPreset = resolvePreset(config.draftPresetId, presets as Preset[]);
-  const reviewPreset = resolvePreset(config.reviewPresetId, presets as Preset[]);
-  const factCheckPreset = resolvePreset(config.factCheckPresetId, presets as Preset[]);
+  const reviewPreset = resolvePreset(
+    config.reviewPresetId,
+    presets as Preset[],
+  );
+  const factCheckPreset = resolvePreset(
+    config.factCheckPresetId,
+    presets as Preset[],
+  );
   const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
 
   // 通知栏进度计算封装到 utils/stages，便于测试与 resume 共用。
   // 阶段"开始"时跳到该阶段起点，saveDraftAndComplete 时设 100，
   // 让用户在通知栏看到进度条单调递增。
-  const pct = (completedStages: number) => getStageProgressPercent(config.pipelineMode, completedStages);
+  const pct = (completedStages: number) =>
+    getStageProgressPercent(config.pipelineMode, completedStages);
 
   const saveDraftAndComplete = async (text: string) => {
     try {
@@ -237,24 +270,43 @@ async function runChapterPipelineInner(
         source: 'pipeline',
         pipelineTaskId: taskId,
       });
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
     store.completeTask(taskId, text);
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
-    await PipelineForeground.notifyComplete(taskId, chapter.title || '流水线', '已写完，点击查看');
+    await PipelineForeground.notifyComplete(
+      taskId,
+      chapter.title || '流水线',
+      '已写完，点击查看',
+    );
     await PipelineForeground.stop(taskId);
   };
 
   if (checkCancelled(taskId)) {
-    await PipelineForeground.notifyFailed(taskId, chapter.title || '流水线', '已取消');
+    await PipelineForeground.notifyFailed(
+      taskId,
+      chapter.title || '流水线',
+      '已取消',
+    );
     await PipelineForeground.stop(taskId);
     return;
   }
   store.setTaskStatus(taskId, 'drafting');
-  onStageUpdate?.({ stage: 'draft', label: '草稿中...', startedAt: Date.now() });
+  onStageUpdate?.({
+    stage: 'draft',
+    label: '草稿中...',
+    startedAt: Date.now(),
+  });
   // BUG-8 修复：start 内部涉及 Android 前台服务+wakelock，在通知权限 NONE 或后台运行未启用时
   // 可能 hang 或抛 SecurityException 让 promise 不 resolve，阻塞下游 buildContext/callLLMResult。
   // fire-and-forget：通知/保活失败不该阻塞业务，错误已在桥内部 try-catch warn
-  PipelineForeground.start(taskId, chapter.title || '流水线', '草稿中', pct(0)).catch((e) => {
+  PipelineForeground.start(
+    taskId,
+    chapter.title || '流水线',
+    '草稿中',
+    pct(0),
+  ).catch(e => {
     console.warn('[pipeline] foreground start failed (non-fatal):', e);
   });
 
@@ -263,9 +315,15 @@ async function runChapterPipelineInner(
   let draftMessages: ChatMessage[] = [];
   const draftStart = Date.now();
   try {
-    const { messages, chapters: allChapters } = await buildContext(chapter, contextConfig, chapter.project_id, draftPreset || undefined);
-    baseContext = messages;
     const request = createChapterGenerationRequest(chapter);
+    const { messages, chapters: allChapters } = await buildContext(
+      chapter,
+      contextConfig,
+      chapter.project_id,
+      draftPreset || undefined,
+      { retrievalUserPrompt: request.userPrompt },
+    );
+    baseContext = messages;
 
     // Extract previous chapter ending from already-fetched chapters.
     const prevChapter = allChapters
@@ -285,7 +343,13 @@ async function runChapterPipelineInner(
     const draftResult = await callLLMResult(
       draftMessages,
       config.draftMaxTokens,
-      buildCallConfig(draftPreset, config.draftMaxTokens, 'pipeline_draft', chapter.project_id, requestConfig),
+      buildCallConfig(
+        draftPreset,
+        config.draftMaxTokens,
+        'pipeline_draft',
+        chapter.project_id,
+        requestConfig,
+      ),
       abortSignal,
     );
     draftText = draftResult.text || '';
@@ -321,13 +385,21 @@ async function runChapterPipelineInner(
       durationMs: Date.now() - draftStart,
     });
     store.failTask(taskId, getErrorMessage(error, '初稿生成失败'));
-    await PipelineForeground.notifyFailed(taskId, chapter.title || '流水线', '初稿生成失败');
+    await PipelineForeground.notifyFailed(
+      taskId,
+      chapter.title || '流水线',
+      '初稿生成失败',
+    );
     await PipelineForeground.stop(taskId);
     return;
   }
 
   if (config.pipelineMode === 'noReview') {
-    onStageUpdate?.({ stage: 'idle', label: '无审核模式，初稿即为完稿', startedAt: Date.now() });
+    onStageUpdate?.({
+      stage: 'idle',
+      label: '无审核模式，初稿即为完稿',
+      startedAt: Date.now(),
+    });
     markSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
     markSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
     markSkipped(taskId, 'proof', '无审核模式已跳过终审校对');
@@ -338,7 +410,11 @@ async function runChapterPipelineInner(
   if (config.pipelineMode === 'twoStage') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.({ stage: 'review', label: '点评中...（与打磨并行）', startedAt: Date.now() });
+    onStageUpdate?.({
+      stage: 'review',
+      label: '点评中...（与打磨并行）',
+      startedAt: Date.now(),
+    });
     PipelineForeground.updateProgress(taskId, '点评与打磨中', pct(1));
 
     markSkipped(taskId, 'factCheck', '仅评估模式已跳过事实核查');
@@ -351,7 +427,13 @@ async function runChapterPipelineInner(
         const reviewResult = await callLLMResult(
           buildReviewMessages(draftText),
           config.reviewMaxTokens,
-          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id, requestConfig),
+          buildCallConfig(
+            reviewPreset,
+            config.reviewMaxTokens,
+            'pipeline_review',
+            chapter.project_id,
+            requestConfig,
+          ),
           abortSignal,
         );
         const reviewText = reviewResult.text || '';
@@ -379,7 +461,11 @@ async function runChapterPipelineInner(
       }
     })();
 
-    onStageUpdate?.({ stage: 'proof', label: '打磨中...（与点评并行）', startedAt: Date.now() });
+    onStageUpdate?.({
+      stage: 'proof',
+      label: '打磨中...（与点评并行）',
+      startedAt: Date.now(),
+    });
     const proofPromise = (async () => {
       const text = await runProofStage({
         taskId,
@@ -411,7 +497,11 @@ async function runChapterPipelineInner(
     // conditional 模式状态语义错配修复：factCheck 阶段不应设为 'reviewing'
     // 改为 'factChecking' 让 UI 状态栏正确显示"事实核查中"
     store.setTaskStatus(taskId, 'factChecking');
-    onStageUpdate?.({ stage: 'factCheck', label: '事实检查中...（与打磨并行）', startedAt: Date.now() });
+    onStageUpdate?.({
+      stage: 'factCheck',
+      label: '事实检查中...（与打磨并行）',
+      startedAt: Date.now(),
+    });
     PipelineForeground.updateProgress(taskId, '事实检查与打磨中', pct(1));
 
     markSkipped(taskId, 'review', '仅核查模式已跳过审阅/评估');
@@ -424,7 +514,13 @@ async function runChapterPipelineInner(
         const result = await callLLMResult(
           buildFactCheckMessages(draftText, contextText),
           config.factCheckMaxTokens,
-          buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id, requestConfig),
+          buildCallConfig(
+            factCheckPreset,
+            config.factCheckMaxTokens,
+            'pipeline_factcheck',
+            chapter.project_id,
+            requestConfig,
+          ),
           abortSignal,
         );
         const text = result.text || '';
@@ -452,7 +548,11 @@ async function runChapterPipelineInner(
       }
     })();
 
-    onStageUpdate?.({ stage: 'proof', label: '打磨中...（与事实核查并行）', startedAt: Date.now() });
+    onStageUpdate?.({
+      stage: 'proof',
+      label: '打磨中...（与事实核查并行）',
+      startedAt: Date.now(),
+    });
     const proofPromise = (async () => {
       return runProofStage({
         taskId,
@@ -478,7 +578,11 @@ async function runChapterPipelineInner(
 
   if (checkCancelled(taskId)) return;
   store.setTaskStatus(taskId, 'reviewing');
-  onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
+  onStageUpdate?.({
+    stage: 'review',
+    label: '点评中...',
+    startedAt: Date.now(),
+  });
   PipelineForeground.updateProgress(taskId, '审阅与核查中', pct(1));
 
   const contextText = buildContextPreview(baseContext);
@@ -488,13 +592,25 @@ async function runChapterPipelineInner(
   const reviewPromise = callLLMResult(
     buildReviewMessages(draftText),
     config.reviewMaxTokens,
-    buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id, requestConfig),
+    buildCallConfig(
+      reviewPreset,
+      config.reviewMaxTokens,
+      'pipeline_review',
+      chapter.project_id,
+      requestConfig,
+    ),
     abortSignal,
   );
   const factCheckPromise = callLLMResult(
     buildFactCheckMessages(draftText, contextText),
     config.factCheckMaxTokens,
-    buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id, requestConfig),
+    buildCallConfig(
+      factCheckPreset,
+      config.factCheckMaxTokens,
+      'pipeline_factcheck',
+      chapter.project_id,
+      requestConfig,
+    ),
     abortSignal,
   );
 
@@ -503,7 +619,10 @@ async function runChapterPipelineInner(
   let reviewFailed = false;
   let factCheckFailed = false;
 
-  const [reviewResult, factResult] = await Promise.allSettled([reviewPromise, factCheckPromise]);
+  const [reviewResult, factResult] = await Promise.allSettled([
+    reviewPromise,
+    factCheckPromise,
+  ]);
 
   if (reviewResult.status === 'fulfilled') {
     reviewText = reviewResult.value.text || '';
@@ -559,7 +678,11 @@ async function runChapterPipelineInner(
   }
 
   if (checkCancelled(taskId)) return;
-  onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
+  onStageUpdate?.({
+    stage: 'proof',
+    label: '打磨中...',
+    startedAt: Date.now(),
+  });
   PipelineForeground.updateProgress(taskId, '终审打磨中', pct(3));
   const finalText = await runProofStage({
     taskId,
@@ -623,14 +746,18 @@ async function resumePipelineInner(
   if (!task) throw new Error('找不到管线任务');
 
   const completedStages = new Set(
-    task.stageResults
-      .filter(s => s.status === 'success')
-      .map(s => s.stage),
+    task.stageResults.filter(s => s.status === 'success').map(s => s.stage),
   );
 
-  const draftResult = task.stageResults.find(s => s.stage === 'draft' && s.status === 'success');
-  const reviewResult = task.stageResults.find(s => s.stage === 'review' && s.status === 'success');
-  const factCheckResult = task.stageResults.find(s => s.stage === 'factCheck' && s.status === 'success');
+  const draftResult = task.stageResults.find(
+    s => s.stage === 'draft' && s.status === 'success',
+  );
+  const reviewResult = task.stageResults.find(
+    s => s.stage === 'review' && s.status === 'success',
+  );
+  const factCheckResult = task.stageResults.find(
+    s => s.stage === 'factCheck' && s.status === 'success',
+  );
 
   if (!draftResult) {
     await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
@@ -648,25 +775,45 @@ async function resumePipelineInner(
     store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
     return;
   }
-  const reviewPreset = resolvePreset(config.reviewPresetId, presets as Preset[]);
-  const factCheckPreset = resolvePreset(config.factCheckPresetId, presets as Preset[]);
+  const reviewPreset = resolvePreset(
+    config.reviewPresetId,
+    presets as Preset[],
+  );
+  const factCheckPreset = resolvePreset(
+    config.factCheckPresetId,
+    presets as Preset[],
+  );
   const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
 
   // 通知栏进度计算（与首次运行保持一致），各阶段起点百分比
-  const totalStages = config.pipelineMode === 'noReview' ? 1
-    : (config.pipelineMode === 'twoStage' || config.pipelineMode === 'conditional') ? 3
-    : 4; // full
-  const pct = (doneStages: number) => Math.min(99, Math.round((doneStages / totalStages) * 100));
+  const totalStages =
+    config.pipelineMode === 'noReview'
+      ? 1
+      : config.pipelineMode === 'twoStage' ||
+        config.pipelineMode === 'conditional'
+      ? 3
+      : 4; // full
+  const pct = (doneStages: number) =>
+    Math.min(99, Math.round((doneStages / totalStages) * 100));
 
   // resume 入口补启前台服务（原首次运行被系统杀后续跑，前台服务可能缺失）
   if (!completedStages.has('proof')) {
-    const nextLabel = !completedStages.has('review') ? '点评中'
-      : !completedStages.has('factCheck') ? '事实检查中'
+    const nextLabel = !completedStages.has('review')
+      ? '点评中'
+      : !completedStages.has('factCheck')
+      ? '事实检查中'
       : '终审打磨中';
-    const nextPct = !completedStages.has('review') ? pct(1)
-      : !completedStages.has('factCheck') ? pct(1)
+    const nextPct = !completedStages.has('review')
+      ? pct(1)
+      : !completedStages.has('factCheck')
+      ? pct(1)
       : pct(3);
-    await PipelineForeground.start(taskId, chapter.title || '流水线', nextLabel, nextPct);
+    await PipelineForeground.start(
+      taskId,
+      chapter.title || '流水线',
+      nextLabel,
+      nextPct,
+    );
   }
 
   const saveDraftAndComplete = async (text: string) => {
@@ -679,10 +826,16 @@ async function resumePipelineInner(
         source: 'pipeline',
         pipelineTaskId: taskId,
       });
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
     store.completeTask(taskId, text);
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
-    await PipelineForeground.notifyComplete(taskId, chapter.title || '流水线', '已写完，点击查看');
+    await PipelineForeground.notifyComplete(
+      taskId,
+      chapter.title || '流水线',
+      '已写完，点击查看',
+    );
     await PipelineForeground.stop(taskId);
   };
 
@@ -700,7 +853,11 @@ async function resumePipelineInner(
     if (!completedStages.has('review')) {
       if (checkCancelled(taskId)) return;
       store.setTaskStatus(taskId, 'reviewing');
-      onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
+      onStageUpdate?.({
+        stage: 'review',
+        label: '点评中...',
+        startedAt: Date.now(),
+      });
       PipelineForeground.updateProgress(taskId, '点评中', pct(1));
       // resume 阶段 durationMs 修复：记录 start，写 Date.now()-start 而非时间戳
       const reviewStart = Date.now();
@@ -708,7 +865,13 @@ async function resumePipelineInner(
         const reviewCallResult = await callLLMResult(
           buildReviewMessages(draftText),
           config.reviewMaxTokens,
-          buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id, requestConfig),
+          buildCallConfig(
+            reviewPreset,
+            config.reviewMaxTokens,
+            'pipeline_review',
+            chapter.project_id,
+            requestConfig,
+          ),
           abortSignal,
         );
         reviewText = reviewCallResult.text || '';
@@ -716,19 +879,43 @@ async function resumePipelineInner(
           stage: 'review',
           text: reviewText,
           status: 'success',
-          tokens: { input: reviewCallResult.inputTokens, output: reviewCallResult.outputTokens, total: reviewCallResult.totalTokens },
+          tokens: {
+            input: reviewCallResult.inputTokens,
+            output: reviewCallResult.outputTokens,
+            total: reviewCallResult.totalTokens,
+          },
           durationMs: Date.now() - reviewStart,
         });
       } catch (error: any) {
-        store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() - reviewStart });
+        store.updateTaskStage(taskId, {
+          stage: 'review',
+          text: '',
+          status: 'failed',
+          error: error.message || '审阅失败',
+          durationMs: Date.now() - reviewStart,
+        });
         // review 失败时不直接结束，统一与首次运行一致：用空 reviewText 继续走 proof
       }
     }
 
     if (checkCancelled(taskId)) return;
-    onStageUpdate?.({ stage: 'proof', label: '打磨中...', startedAt: Date.now() });
+    onStageUpdate?.({
+      stage: 'proof',
+      label: '打磨中...',
+      startedAt: Date.now(),
+    });
     PipelineForeground.updateProgress(taskId, '终审打磨中', pct(2));
-    const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText: '', maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id, requestConfig, abortSignal });
+    const finalText = await runProofStage({
+      taskId,
+      draftText,
+      reviewText,
+      factCheckText: '',
+      maxTokens: config.proofMaxTokens,
+      proofPreset,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+    });
     await saveDraftAndComplete(finalText);
     return;
   }
@@ -738,7 +925,11 @@ async function resumePipelineInner(
   if (config.pipelineMode === 'full' && !completedStages.has('review')) {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.({ stage: 'review', label: '点评中...', startedAt: Date.now() });
+    onStageUpdate?.({
+      stage: 'review',
+      label: '点评中...',
+      startedAt: Date.now(),
+    });
     PipelineForeground.updateProgress(taskId, '点评中', pct(1));
     // resume 阶段 durationMs 修复
     const reviewStart = Date.now();
@@ -746,7 +937,13 @@ async function resumePipelineInner(
       const reviewCallResult = await callLLMResult(
         buildReviewMessages(draftText),
         config.reviewMaxTokens,
-        buildCallConfig(reviewPreset, config.reviewMaxTokens, 'pipeline_review', chapter.project_id, requestConfig),
+        buildCallConfig(
+          reviewPreset,
+          config.reviewMaxTokens,
+          'pipeline_review',
+          chapter.project_id,
+          requestConfig,
+        ),
         abortSignal,
       );
       reviewText = reviewCallResult.text || '';
@@ -754,28 +951,52 @@ async function resumePipelineInner(
         stage: 'review',
         text: reviewText,
         status: 'success',
-        tokens: { input: reviewCallResult.inputTokens, output: reviewCallResult.outputTokens, total: reviewCallResult.totalTokens },
+        tokens: {
+          input: reviewCallResult.inputTokens,
+          output: reviewCallResult.outputTokens,
+          total: reviewCallResult.totalTokens,
+        },
         durationMs: Date.now() - reviewStart,
       });
     } catch (error: any) {
-      store.updateTaskStage(taskId, { stage: 'review', text: '', status: 'failed', error: error.message || '审阅失败', durationMs: Date.now() - reviewStart });
+      store.updateTaskStage(taskId, {
+        stage: 'review',
+        text: '',
+        status: 'failed',
+        error: error.message || '审阅失败',
+        durationMs: Date.now() - reviewStart,
+      });
     }
   }
 
   if (!completedStages.has('factCheck') && config.pipelineMode !== 'twoStage') {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.({ stage: 'factCheck', label: '事实检查中...', startedAt: Date.now() });
+    onStageUpdate?.({
+      stage: 'factCheck',
+      label: '事实检查中...',
+      startedAt: Date.now(),
+    });
     PipelineForeground.updateProgress(taskId, '事实检查中', pct(1));
     // resume 阶段 durationMs 修复
     const factCheckStart = Date.now();
     try {
-      const { messages: baseContext } = await buildContext(chapter, await db.getContextConfig(), chapter.project_id);
+      const { messages: baseContext } = await buildContext(
+        chapter,
+        await db.getContextConfig(),
+        chapter.project_id,
+      );
       const contextText = buildContextPreview(baseContext);
       const factCheckCallResult = await callLLMResult(
         buildFactCheckMessages(draftText, contextText),
         config.factCheckMaxTokens,
-        buildCallConfig(factCheckPreset, config.factCheckMaxTokens, 'pipeline_factcheck', chapter.project_id, requestConfig),
+        buildCallConfig(
+          factCheckPreset,
+          config.factCheckMaxTokens,
+          'pipeline_factcheck',
+          chapter.project_id,
+          requestConfig,
+        ),
         abortSignal,
       );
       factCheckText = factCheckCallResult.text || '';
@@ -783,16 +1004,36 @@ async function resumePipelineInner(
         stage: 'factCheck',
         text: factCheckText,
         status: 'success',
-        tokens: { input: factCheckCallResult.inputTokens, output: factCheckCallResult.outputTokens, total: factCheckCallResult.totalTokens },
+        tokens: {
+          input: factCheckCallResult.inputTokens,
+          output: factCheckCallResult.outputTokens,
+          total: factCheckCallResult.totalTokens,
+        },
         durationMs: Date.now() - factCheckStart,
       });
     } catch (error: any) {
-      store.updateTaskStage(taskId, { stage: 'factCheck', text: '', status: 'failed', error: error.message || '事实核查失败', durationMs: Date.now() - factCheckStart });
+      store.updateTaskStage(taskId, {
+        stage: 'factCheck',
+        text: '',
+        status: 'failed',
+        error: error.message || '事实核查失败',
+        durationMs: Date.now() - factCheckStart,
+      });
     }
   }
 
   if (checkCancelled(taskId)) return;
   onStageUpdate?.('正在终审校对（续跑）...');
-  const finalText = await runProofStage({ taskId, draftText, reviewText, factCheckText, maxTokens: config.proofMaxTokens, proofPreset, projectId: chapter.project_id, requestConfig, abortSignal });
+  const finalText = await runProofStage({
+    taskId,
+    draftText,
+    reviewText,
+    factCheckText,
+    maxTokens: config.proofMaxTokens,
+    proofPreset,
+    projectId: chapter.project_id,
+    requestConfig,
+    abortSignal,
+  });
   await saveDraftAndComplete(finalText);
 }
