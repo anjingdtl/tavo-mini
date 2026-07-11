@@ -10,8 +10,9 @@ import { migrateV9toV10 } from './v9-to-v10';
 import { migrateV10toV11 } from './v10-to-v11';
 import { migrateV11toV12 } from './v11-to-v12';
 import { migrateV12ToV13 } from './v12-to-v13';
+import { migrateV13ToV14 } from './v13-to-v14';
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -26,9 +27,14 @@ const MIGRATIONS: Migration[] = [
   { from: 10, to: 11, breaking: false, migrate: migrateV10toV11 },
   { from: 11, to: 12, breaking: false, migrate: migrateV11toV12 },
   { from: 12, to: 13, breaking: false, migrate: migrateV12ToV13 },
+  { from: 13, to: 14, breaking: false, migrate: migrateV13ToV14 },
 ];
 
-async function execute(db: SQLite.SQLiteDatabase, sql: string, params: any[] = []) {
+async function execute(
+  db: SQLite.SQLiteDatabase,
+  sql: string,
+  params: any[] = [],
+) {
   const [result] = await db.executeSql(sql, params);
   return result;
 }
@@ -38,7 +44,9 @@ export async function runMigrations(
   fromVersion: number,
   onBackup?: () => Promise<string | null>,
 ): Promise<MigrationResult> {
-  const needed = MIGRATIONS.filter(m => m.from >= fromVersion && m.to <= SCHEMA_VERSION);
+  const needed = MIGRATIONS.filter(
+    m => m.from >= fromVersion && m.to <= SCHEMA_VERSION,
+  );
   const hasBreaking = needed.some(m => m.breaking);
 
   let backupPath: string | null = null;
@@ -47,7 +55,7 @@ export async function runMigrations(
   }
 
   for (const migration of needed) {
-    await db.transaction(async (tx) => {
+    await db.transaction(async tx => {
       await migration.migrate(tx as unknown as SQLite.SQLiteDatabase);
       await execute(
         tx as unknown as SQLite.SQLiteDatabase,
@@ -67,7 +75,9 @@ export async function runMigrations(
 }
 
 export function hasBreakingMigration(fromVersion: number): boolean {
-  return MIGRATIONS.some(m => m.from >= fromVersion && m.to <= SCHEMA_VERSION && m.breaking);
+  return MIGRATIONS.some(
+    m => m.from >= fromVersion && m.to <= SCHEMA_VERSION && m.breaking,
+  );
 }
 
 export function isIncompatibleUpgrade(fromVersion: number): boolean {

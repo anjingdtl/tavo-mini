@@ -36,9 +36,11 @@ function createMockDb(startSchemaVersion: string | null) {
 
   const db = {
     executeSql,
-    transaction: jest.fn(async (scope: (tx: { executeSql: typeof executeSql }) => void) => {
-      await scope({ executeSql });
-    }),
+    transaction: jest.fn(
+      async (scope: (tx: { executeSql: typeof executeSql }) => void) => {
+        await scope({ executeSql });
+      },
+    ),
   };
 
   return { db, settings, executed };
@@ -50,22 +52,22 @@ describe('migration engine', () => {
   });
 
   test('runs no migrations when already at latest version', async () => {
-    const { db, settings } = createMockDb('13');
+    const { db, settings } = createMockDb('14');
     const { runMigrations } = require('../src/services/migrations');
-    const result = await runMigrations(db as any, 13);
+    const result = await runMigrations(db as any, 14);
     expect(result.migrationsRun).toBe(0);
     expect(result.hadBreaking).toBe(false);
-    expect(settings.get('schema_version')).toBe('13');
+    expect(settings.get('schema_version')).toBe('14');
   });
 
-  test('runs only needed migrations from v3 to v13', async () => {
+  test('runs only needed migrations from v3 to v14', async () => {
     const { db, settings } = createMockDb('3');
     const { runMigrations } = require('../src/services/migrations');
     const result = await runMigrations(db as any, 3);
     expect(result.fromVersion).toBe(3);
-    expect(result.toVersion).toBe(13);
-    expect(result.migrationsRun).toBe(10);
-    expect(settings.get('schema_version')).toBe('13');
+    expect(result.toVersion).toBe(14);
+    expect(result.migrationsRun).toBe(11);
+    expect(settings.get('schema_version')).toBe('14');
   });
 
   test('detects breaking migrations', async () => {
