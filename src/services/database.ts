@@ -26,6 +26,7 @@ import {
   setSecureLLMApiKey,
 } from './secureStorage';
 import { estimateTokens } from '../utils/tokenEstimator';
+import { getNoteChapters } from '../utils/noteChapters';
 import {
   runMigrations,
   SCHEMA_VERSION,
@@ -2183,6 +2184,45 @@ export function splitNoteTextIntoChunks(
 ): string[] {
   if (!text) return [''];
   if (text.length <= chunkSize) return [text];
+
+  const chapters = getNoteChapters(text);
+  if (chapters.length > 1) {
+    const chunkStarts = chapters[0].offset > 0 ? [{ title: '', offset: 0 }, ...chapters] : chapters;
+    return packChaptersIntoNoteChunks(
+      chunkStarts.map((chapter, index) =>
+        text.slice(chapter.offset, chunkStarts[index + 1]?.offset ?? text.length),
+      ),
+      chunkSize,
+    );
+  }
+  return splitOversizedNoteText(text, chunkSize);
+}
+
+function packChaptersIntoNoteChunks(chapters: string[], chunkSize: number): string[] {
+  const chunks: string[] = [];
+  let current = '';
+
+  const flush = () => {
+    if (current) chunks.push(current);
+    current = '';
+  };
+
+  for (const chapter of chapters) {
+    if (chapter.length > chunkSize) {
+      flush();
+      chunks.push(...splitOversizedNoteText(chapter, chunkSize));
+    } else if (current.length + chapter.length <= chunkSize) {
+      current += chapter;
+    } else {
+      flush();
+      current = chapter;
+    }
+  }
+  flush();
+  return chunks;
+}
+
+function splitOversizedNoteText(text: string, chunkSize: number): string[] {
   const chunks: string[] = [];
   let start = 0;
   while (start < text.length) {
