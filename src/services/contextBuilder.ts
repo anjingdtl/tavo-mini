@@ -4,7 +4,12 @@ import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
 import type { Chapter, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
 import type { ContextTraceItem } from '../types/contextTrace';
-import { getOrAnalyzeNoteStyle, mergeStyleProfiles, DEFAULT_STYLE_WEIGHTS, type StyleWeights } from './styleAnalyzer';
+import {
+  getOrAnalyzeNoteStyle,
+  mergeStyleProfiles,
+  DEFAULT_STYLE_WEIGHTS,
+  type StyleWeights,
+} from './styleAnalyzer';
 import { retrieveNoteFragments, type RetrievalQuery } from './noteRetriever';
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -40,16 +45,27 @@ export interface BuildContextResult {
   estimatedInputTokens: number;
 }
 
+export interface BuildContextOptions {
+  retrievalUserPrompt?: string;
+}
+
 export async function buildContext(
   currentChapter: Chapter,
   config: ContextConfig,
   projectId: number,
   preset?: Preset | string,
+  options: BuildContextOptions = {},
 ): Promise<BuildContextResult> {
   const trace: ContextTraceItem[] = [];
   const chapters = await db.getChaptersByProject(projectId);
-  const previousContent = buildPreviousContentText(currentChapter, config, chapters);
-  const previousChapters = chapters.filter((chapter) => chapter.position < currentChapter.position);
+  const previousContent = buildPreviousContentText(
+    currentChapter,
+    config,
+    chapters,
+  );
+  const previousChapters = chapters.filter(
+    chapter => chapter.position < currentChapter.position,
+  );
   // V2.2.0：IDF 缓存——同项目 memory_summary 不变时复用，避免每次 tokenize+buildIdf
   let memoryText: string;
   try {
@@ -57,7 +73,11 @@ export async function buildContext(
     const signature = idfCache.computeMemorySummarySignature(previousChapters);
     let idf = idfCache.getCachedIdf(projectId, signature);
     if (!idf) {
-      idf = buildIdf(previousChapters.map((c) => String((c as any).memory_summary || '')).filter(Boolean));
+      idf = buildIdf(
+        previousChapters
+          .map(c => String((c as any).memory_summary || ''))
+          .filter(Boolean),
+      );
       idfCache.setCachedIdf(projectId, signature, idf);
     }
     memoryText = buildMemoryContextWithIdf(
@@ -81,13 +101,20 @@ export async function buildContext(
     { strategy: 'sliding', recentChapterCount: config.worldbookScanDepth ?? 4 },
     chapters,
   )
-    .map((chapter) => chapter.content)
+    .map(chapter => chapter.content)
     .join('\n\n');
-  const scanText = [currentChapter.title, currentChapter.synopsis, currentChapter.content, worldbookScanContent, memoryText]
+  const scanText = [
+    currentChapter.title,
+    currentChapter.synopsis,
+    currentChapter.content,
+    worldbookScanContent,
+    memoryText,
+  ]
     .filter(Boolean)
     .join('\n\n');
 
-  const systemPrompt = typeof preset === 'string' ? preset : buildPresetPrompt(preset);
+  const systemPrompt =
+    typeof preset === 'string' ? preset : buildPresetPrompt(preset);
   const rawSystemPrompt = systemPrompt || DEFAULT_SYSTEM_PROMPT;
   // 宏替换覆盖系统提示词修复：preset.system_prompt / writing_style / extra_instructions
   // 里的 {{char}}/{{user}}/{{chapter}}/{{synopsis}} 也需要替换，否则以字面量进入 LLM
@@ -96,12 +123,18 @@ export async function buildContext(
     chapterTitle: currentChapter.title,
     chapterSynopsis: currentChapter.synopsis,
   });
-  const messages: ChatMessage[] = [{ role: 'system', content: resolvedSystemPrompt }];
+  const messages: ChatMessage[] = [
+    { role: 'system', content: resolvedSystemPrompt },
+  ];
 
   trace.push({
     kind: 'preset',
-    sourceId: typeof preset !== 'string' && preset ? (preset as any).id ?? null : null,
-    title: typeof preset !== 'string' && preset ? preset.name || '预设' : '系统提示词',
+    sourceId:
+      typeof preset !== 'string' && preset ? (preset as any).id ?? null : null,
+    title:
+      typeof preset !== 'string' && preset
+        ? preset.name || '预设'
+        : '系统提示词',
     reason: '系统提示词和预设配置',
     estimatedTokens: estimateTokens(resolvedSystemPrompt),
     included: true,
@@ -110,7 +143,15 @@ export async function buildContext(
   });
 
   if (config.includeResources && config.resourceBudget > 0) {
-    const { text: resourceText, traceItems: resourceTrace } = await buildResourceContext(projectId, config.resourceBudget, scanText, config.worldbookRecursive !== false, currentChapter);
+    const { text: resourceText, traceItems: resourceTrace } =
+      await buildResourceContext(
+        projectId,
+        config.resourceBudget,
+        scanText,
+        config.worldbookRecursive !== false,
+        currentChapter,
+        options.retrievalUserPrompt || '',
+      );
     if (resourceText) {
       const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceText}`;
       messages.push({ role: 'system', content: resourceMessage });
@@ -154,8 +195,12 @@ export async function buildContext(
   }
 
   const instructionContent = [
-    `当前章节：「${currentChapter.title || `第 ${currentChapter.position + 1} 章`}」`,
-    `章节概要：${currentChapter.synopsis || '无明确概要，请自然承接前文推进剧情。'}`,
+    `当前章节：「${
+      currentChapter.title || `第 ${currentChapter.position + 1} 章`
+    }」`,
+    `章节概要：${
+      currentChapter.synopsis || '无明确概要，请自然承接前文推进剧情。'
+    }`,
   ].join('\n');
   messages.push({
     role: 'user',
@@ -172,7 +217,10 @@ export async function buildContext(
     preview: instructionContent.slice(0, 500),
   });
 
-  const estimatedInputTokens = trace.reduce((sum, item) => sum + item.estimatedTokens, 0);
+  const estimatedInputTokens = trace.reduce(
+    (sum, item) => sum + item.estimatedTokens,
+    0,
+  );
   return { messages, chapters, trace, estimatedInputTokens };
 }
 
@@ -180,7 +228,8 @@ function buildPresetPrompt(preset?: Preset): string {
   if (!preset) return DEFAULT_SYSTEM_PROMPT;
   const parts = [preset.system_prompt || DEFAULT_SYSTEM_PROMPT];
   if (preset.writing_style) parts.push(`写作风格：${preset.writing_style}`);
-  if (preset.extra_instructions) parts.push(`附加要求：${preset.extra_instructions}`);
+  if (preset.extra_instructions)
+    parts.push(`附加要求：${preset.extra_instructions}`);
   return parts.join('\n\n');
 }
 
@@ -190,6 +239,7 @@ async function buildResourceContext(
   scanText: string,
   recursiveWorldbook: boolean,
   currentChapter?: Chapter,
+  retrievalUserPrompt = '',
 ): Promise<{ text: string; traceItems: ContextTraceItem[] }> {
   const parts: string[] = [];
   const allTraceItems: ContextTraceItem[] = [];
@@ -205,8 +255,20 @@ async function buildResourceContext(
 
   const [charSettled, noteSettled, wbSettled] = await Promise.allSettled([
     buildCharacterContext(projectId, characterBudget),
-    buildNoteContext(projectId, noteBudget, scanText, currentChapter?.title || '', currentChapter?.synopsis || '', ''),
-    buildWorldbookContext(projectId, worldbookBudget, scanText, recursiveWorldbook),
+    buildNoteContext(
+      projectId,
+      noteBudget,
+      scanText,
+      currentChapter?.title || '',
+      currentChapter?.synopsis || '',
+      retrievalUserPrompt,
+    ),
+    buildWorldbookContext(
+      projectId,
+      worldbookBudget,
+      scanText,
+      recursiveWorldbook,
+    ),
   ]);
 
   if (charSettled.status === 'fulfilled') {
@@ -225,7 +287,10 @@ async function buildResourceContext(
   return { text: parts.join('\n\n'), traceItems: allTraceItems };
 }
 
-export async function buildCharacterContext(projectId: number, budget: number): Promise<{ text: string; items: ContextTraceItem[] }> {
+export async function buildCharacterContext(
+  projectId: number,
+  budget: number,
+): Promise<{ text: string; items: ContextTraceItem[] }> {
   const characters = await db.getCharactersByProject(projectId);
   const parts: string[] = [];
   const items: ContextTraceItem[] = [];
@@ -243,11 +308,15 @@ export async function buildCharacterContext(projectId: number, budget: number): 
       card.scenario && `场景：${card.scenario}`,
       card.first_mes && `开场消息：${card.first_mes}`,
       card.mes_example && `对话示例：${card.mes_example}`,
-      card.post_history_instructions && `后置指令：${card.post_history_instructions}`,
+      card.post_history_instructions &&
+        `后置指令：${card.post_history_instructions}`,
     ]
       .filter(Boolean)
       .join('\n');
-    const charBudget = Math.min(remaining, Number(character.max_tokens ?? 50000));
+    const charBudget = Math.min(
+      remaining,
+      Number(character.max_tokens ?? 50000),
+    );
     const clipped = clipTextToTokenBudget(text, charBudget);
     const wasClipped = clipped !== text && clipped.length < text.length;
     const included = clipped.length > 0;
@@ -262,7 +331,9 @@ export async function buildCharacterContext(projectId: number, budget: number): 
       sourceId: Number(character.id) || null,
       title: charName,
       reason: `角色设定：${charName}`,
-      estimatedTokens: included ? estimateTokens(clipped) : estimateTokens(text),
+      estimatedTokens: included
+        ? estimateTokens(clipped)
+        : estimateTokens(text),
       included,
       clipped: wasClipped,
       preview: text.slice(0, 500),
@@ -287,7 +358,8 @@ export async function buildCharacterContext(projectId: number, budget: number): 
         card.scenario && `场景：${card.scenario}`,
         card.first_mes && `开场消息：${card.first_mes}`,
         card.mes_example && `对话示例：${card.mes_example}`,
-        card.post_history_instructions && `后置指令：${card.post_history_instructions}`,
+        card.post_history_instructions &&
+          `后置指令：${card.post_history_instructions}`,
       ]
         .filter(Boolean)
         .join('\n');
@@ -327,7 +399,15 @@ async function buildNoteContext(
     return buildStyleContext(projectId, budget, config);
   }
   if (mode === 'retrieval') {
-    return buildRetrievedNoteContext(projectId, budget, scanText, config, chapterTitle, chapterSynopsis, userPrompt);
+    return buildRetrievedNoteContext(
+      projectId,
+      budget,
+      scanText,
+      config,
+      chapterTitle,
+      chapterSynopsis,
+      userPrompt,
+    );
   }
   return buildNoteContextOriginal(projectId, budget);
 }
@@ -339,7 +419,9 @@ async function buildStyleContext(
   config: any,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   try {
-    let noteIds: number[] = Array.isArray(config?.enabledNoteIds) ? config.enabledNoteIds : [];
+    let noteIds: number[] = Array.isArray(config?.enabledNoteIds)
+      ? config.enabledNoteIds
+      : [];
     if (noteIds.length === 0) {
       const notes = await db.getNotesByProject(projectId);
       noteIds = notes.map((n: any) => n.id);
@@ -353,7 +435,8 @@ async function buildStyleContext(
             kind: 'note',
             sourceId: null,
             title: '风格画像（仿写）',
-            reason: '仿写模式已启用，但当前项目暂无可用笔记，无法生成风格画像。',
+            reason:
+              '仿写模式已启用，但当前项目暂无可用笔记，无法生成风格画像。',
             estimatedTokens: 0,
             included: false,
             clipped: false,
@@ -365,19 +448,31 @@ async function buildStyleContext(
 
     // 用 allSettled：单条笔记风格分析失败（空内容 / LLM 报错）不影响整体注入，
     // 避免整个仿写被一条坏数据拉回到原始笔记注入
-    const settled = await Promise.allSettled(noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)));
+    const settled = await Promise.allSettled(
+      noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)),
+    );
     const profiles = settled
-      .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof getOrAnalyzeNoteStyle>>> => r.status === 'fulfilled')
-      .map((r) => r.value)
-      .filter((p) => p && p.profileJson && Object.keys(p.profileJson).length > 0);
+      .filter(
+        (
+          r,
+        ): r is PromiseFulfilledResult<
+          Awaited<ReturnType<typeof getOrAnalyzeNoteStyle>>
+        > => r.status === 'fulfilled',
+      )
+      .map(r => r.value)
+      .filter(p => p && p.profileJson && Object.keys(p.profileJson).length > 0);
 
-    const weights: StyleWeights = { ...DEFAULT_STYLE_WEIGHTS, ...(config?.styleWeights || {}) };
+    const weights: StyleWeights = {
+      ...DEFAULT_STYLE_WEIGHTS,
+      ...(config?.styleWeights || {}),
+    };
     const mergedText = mergeStyleProfiles(profiles, weights);
     if (!mergedText) {
       // 有候选笔记但都没拿到可用画像（可能都为空、LLM 失败、权重全 0）
-      const reasonText = profiles.length === 0
-        ? `仿写模式：${noteIds.length} 篇候选笔记均未生成可用画像，请检查笔记内容或点击"重新分析风格"。`
-        : `仿写模式：所有画像维度权重均为 0，未生成风格指令。`;
+      const reasonText =
+        profiles.length === 0
+          ? `仿写模式：${noteIds.length} 篇候选笔记均未生成可用画像，请检查笔记内容或点击"重新分析风格"。`
+          : `仿写模式：所有画像维度权重均为 0，未生成风格指令。`;
       return {
         text: '',
         items: [
@@ -398,9 +493,10 @@ async function buildStyleContext(
     const fullText = `以下是本次写作必须遵循的风格画像，请严格按照对应权重的维度进行仿写：\n${mergedText}`;
     const clipped = clipTextToTokenBudget(fullText, budget);
     const failedCount = noteIds.length - profiles.length;
-    const reason = failedCount > 0
-      ? `仿写模式：${profiles.length}/${noteIds.length} 篇笔记联合风格（${failedCount} 篇未生成画像）`
-      : `仿写模式：${noteIds.length} 篇笔记联合风格`;
+    const reason =
+      failedCount > 0
+        ? `仿写模式：${profiles.length}/${noteIds.length} 篇笔记联合风格（${failedCount} 篇未生成画像）`
+        : `仿写模式：${noteIds.length} 篇笔记联合风格`;
     return {
       text: clipped,
       items: [
@@ -441,14 +537,33 @@ async function buildRetrievedNoteContext(
       userPrompt,
     };
     const fragments = await retrieveNoteFragments(projectId, query, topK);
-    if (fragments.length === 0) return { text: '', items: [] };
+    if (fragments.length === 0) {
+      return {
+        text: '',
+        items: [
+          {
+            kind: 'note',
+            sourceId: null,
+            title: '资料库检索',
+            reason:
+              '未在已选笔记中找到与本章标题、概要、前文结尾或写作指令相关的内容。',
+            estimatedTokens: 0,
+            included: false,
+            clipped: false,
+            preview: '',
+          },
+        ],
+      };
+    }
 
-    const parts = fragments.map((f) => `[笔记「${f.noteTitle}」] ${f.fragment}`);
-    const fullText = `以下是本次写作可参考的资料片段，请结合上下文合理引用：\n${parts.join('\n')}`;
+    const parts = fragments.map(f => `[笔记「${f.noteTitle}」] ${f.fragment}`);
+    const fullText = `以下是本次写作可参考的资料片段，请结合上下文合理引用：\n${parts.join(
+      '\n',
+    )}`;
     const clipped = clipTextToTokenBudget(fullText, budget);
     return {
       text: clipped,
-      items: fragments.map((f) => ({
+      items: fragments.map(f => ({
         kind: 'note' as const,
         sourceId: f.noteId,
         title: f.noteTitle,
@@ -464,7 +579,10 @@ async function buildRetrievedNoteContext(
   }
 }
 
-async function buildNoteContextOriginal(projectId: number, budget: number): Promise<{ text: string; items: ContextTraceItem[] }> {
+async function buildNoteContextOriginal(
+  projectId: number,
+  budget: number,
+): Promise<{ text: string; items: ContextTraceItem[] }> {
   const notes = await db.getNotesByProject(projectId);
   const parts: string[] = [];
   const items: ContextTraceItem[] = [];
@@ -476,7 +594,7 @@ async function buildNoteContextOriginal(projectId: number, budget: number): Prom
   let contents: Record<number, string> = {};
   if (notes.length > 0) {
     try {
-      contents = await db.getNotesContentByIds(notes.map((n) => Number(n.id)));
+      contents = await db.getNotesContentByIds(notes.map(n => Number(n.id)));
     } catch {
       // bulk 失败时回退单条，最坏情况是性能回退到老路径
       contents = {};
@@ -502,7 +620,9 @@ async function buildNoteContextOriginal(projectId: number, budget: number): Prom
       sourceId: Number(note.id) || null,
       title: noteTitle,
       reason: `项目笔记：${noteTitle}`,
-      estimatedTokens: included ? estimateTokens(clipped) : estimateTokens(text),
+      estimatedTokens: included
+        ? estimateTokens(clipped)
+        : estimateTokens(text),
       included,
       clipped: wasClipped,
       preview: text.slice(0, 500),
@@ -512,7 +632,7 @@ async function buildNoteContextOriginal(projectId: number, budget: number): Prom
   }
 
   // Mark notes that weren't processed due to budget as clipped
-  const processedIds = new Set(items.map((it) => it.sourceId));
+  const processedIds = new Set(items.map(it => it.sourceId));
   for (const note of notes) {
     if (processedIds.has(Number(note.id))) continue;
     const content = contents[Number(note.id)] ?? '';
@@ -541,21 +661,29 @@ export async function buildWorldbookContext(
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   if (budget <= 0) return { text: '', items: [] };
   const entries = ((await db.getWorldbookEntriesByProject(projectId)) as any[])
-    .filter((entry) => entry.enabled !== 0 && entry.collection_enabled !== 0)
-    .sort((a, b) => Number(a.position || 0) - Number(b.position || 0) || Number(a.id || 0) - Number(b.id || 0));
+    .filter(entry => entry.enabled !== 0 && entry.collection_enabled !== 0)
+    .sort(
+      (a, b) =>
+        Number(a.position || 0) - Number(b.position || 0) ||
+        Number(a.id || 0) - Number(b.id || 0),
+    );
 
   const activated = new Map<number, any>();
   const activationReason = new Map<number, string>();
 
   const determineReason = (entry: any, haystack: string): string => {
     if (entry.constant === 1 || entry.constant === true) return '常驻';
-    const primaryKeys = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword);
+    const primaryKeys = normalizeKeys(
+      entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword,
+    );
     if (primaryKeys.length === 0) return '常驻';
-    const primaryHit = primaryKeys.some((key) => includesKey(haystack, key));
+    const primaryHit = primaryKeys.some(key => includesKey(haystack, key));
     if (!primaryHit) return '';
-    const secondaryKeys = normalizeKeys(entry.keyword_secondary ?? entry.keysecondary ?? entry.secondary_keys);
+    const secondaryKeys = normalizeKeys(
+      entry.keyword_secondary ?? entry.keysecondary ?? entry.secondary_keys,
+    );
     if (secondaryKeys.length === 0) return '主关键词命中';
-    const secondaryHit = secondaryKeys.some((key) => includesKey(haystack, key));
+    const secondaryHit = secondaryKeys.some(key => includesKey(haystack, key));
     return secondaryHit ? '主+次关键词命中' : '主关键词命中';
   };
 
@@ -575,7 +703,12 @@ export async function buildWorldbookContext(
 
   activatePass(scanText);
   if (recursive && activated.size > 0) {
-    activatePass(`${scanText}\n\n${Array.from(activated.values()).map((entry) => entry.content || '').join('\n')}`, true);
+    activatePass(
+      `${scanText}\n\n${Array.from(activated.values())
+        .map(entry => entry.content || '')
+        .join('\n')}`,
+      true,
+    );
   }
 
   const collectionUsage = new Map<number, number>();
@@ -585,7 +718,9 @@ export async function buildWorldbookContext(
   for (const entry of activated.values()) {
     const id = Number(entry.id);
     const entryContent = String(entry.content || '');
-    const label = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword)[0];
+    const label = normalizeKeys(
+      entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword,
+    )[0];
     const reason = activationReason.get(id) || '主关键词命中';
     const entryBudget = Math.min(remaining, Number(entry.max_tokens ?? 2000));
 
@@ -610,7 +745,8 @@ export async function buildWorldbookContext(
 
     const effectiveBudget = Math.min(entryBudget, remainingForCollection);
     const body = clipTextToTokenBudget(entryContent, effectiveBudget);
-    const wasClipped = body !== entryContent && body.length < entryContent.length;
+    const wasClipped =
+      body !== entryContent && body.length < entryContent.length;
     const included = body.length > 0;
 
     if (included) {
@@ -626,7 +762,9 @@ export async function buildWorldbookContext(
       sourceId: id || null,
       title: label || `条目#${id}`,
       reason,
-      estimatedTokens: included ? estimateTokens(body) : estimateTokens(entryContent),
+      estimatedTokens: included
+        ? estimateTokens(body)
+        : estimateTokens(entryContent),
       included,
       clipped: wasClipped || !included,
       preview: entryContent.slice(0, 500),
@@ -640,7 +778,9 @@ export async function buildWorldbookContext(
     const existingItem = items.find(it => it.sourceId === id);
     if (!existingItem) {
       const entryContent = String(entry.content || '');
-      const label = normalizeKeys(entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword)[0];
+      const label = normalizeKeys(
+        entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword,
+      )[0];
       const reason = activationReason.get(id) || '主关键词命中';
       items.push({
         kind: 'worldbook',
@@ -663,8 +803,16 @@ function includesKey(text: string, key: string): boolean {
 }
 
 function normalizeKeys(raw: any): string[] {
-  if (Array.isArray(raw)) return raw.map(String).map((item) => item.trim()).filter(Boolean);
-  if (typeof raw === 'string') return raw.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
+  if (Array.isArray(raw))
+    return raw
+      .map(String)
+      .map(item => item.trim())
+      .filter(Boolean);
+  if (typeof raw === 'string')
+    return raw
+      .split(/[,，\n]/)
+      .map(item => item.trim())
+      .filter(Boolean);
   return [];
 }
 
@@ -674,7 +822,10 @@ export function selectPreviousChapters(
   chapters: Chapter[],
 ): Chapter[] {
   const previous = chapters
-    .filter((chapter) => chapter.position < currentChapter.position && Boolean(chapter.content))
+    .filter(
+      chapter =>
+        chapter.position < currentChapter.position && Boolean(chapter.content),
+    )
     .sort((a, b) => a.position - b.position);
 
   if (config.strategy === 'full') return previous;
@@ -682,7 +833,10 @@ export function selectPreviousChapters(
   if (config.strategy === 'custom') {
     const start = Math.max(0, Number(config.customRangeStart ?? 0));
     const end = Number(config.customRangeEnd ?? -1);
-    return previous.filter((chapter) => chapter.position >= start && (end < 0 || chapter.position <= end));
+    return previous.filter(
+      chapter =>
+        chapter.position >= start && (end < 0 || chapter.position <= end),
+    );
   }
 
   const recentCount = Math.max(1, Number(config.recentChapterCount ?? 3));
@@ -696,9 +850,17 @@ export function buildPreviousContentText(
 ): string {
   const selected = selectPreviousChapters(currentChapter, config, chapters);
   const text = selected
-    .map((chapter) => `第 ${chapter.position + 1} 章「${chapter.title || '未命名'}」\n${chapter.content}`)
+    .map(
+      chapter =>
+        `第 ${chapter.position + 1} 章「${chapter.title || '未命名'}」\n${
+          chapter.content
+        }`,
+    )
     .join('\n\n');
-  return clipTextTailToTokenBudget(text, Number(config.slidingWindowSize || 50000));
+  return clipTextTailToTokenBudget(
+    text,
+    Number(config.slidingWindowSize || 50000),
+  );
 }
 
 function clipTextTailToTokenBudget(text: string, budget: number): string {
@@ -723,16 +885,22 @@ export function buildMemoryContext(
   budgetTokens: number,
 ): string {
   const docs = previousChapters
-    .map((chapter) => ({
+    .map(chapter => ({
       chapter,
       text: String((chapter as any).memory_summary || ''),
     }))
-    .filter((item) => item.text.trim());
+    .filter(item => item.text.trim());
 
   if (docs.length === 0 || topK <= 0 || budgetTokens <= 0) return '';
 
-  const idf = buildIdf(docs.map((doc) => doc.text));
-  return assembleMemoryContextFromIdf(docs, currentChapter, idf, topK, budgetTokens);
+  const idf = buildIdf(docs.map(doc => doc.text));
+  return assembleMemoryContextFromIdf(
+    docs,
+    currentChapter,
+    idf,
+    topK,
+    budgetTokens,
+  );
 }
 
 /**
@@ -746,14 +914,21 @@ export function buildMemoryContextWithIdf(
   budgetTokens: number,
 ): string {
   const docs = previousChapters
-    .map((chapter) => ({
+    .map(chapter => ({
       chapter,
       text: String((chapter as any).memory_summary || ''),
     }))
-    .filter((item) => item.text.trim());
+    .filter(item => item.text.trim());
 
-  if (docs.length === 0 || topK <= 0 || budgetTokens <= 0 || idf.size === 0) return '';
-  return assembleMemoryContextFromIdf(docs, currentChapter, idf, topK, budgetTokens);
+  if (docs.length === 0 || topK <= 0 || budgetTokens <= 0 || idf.size === 0)
+    return '';
+  return assembleMemoryContextFromIdf(
+    docs,
+    currentChapter,
+    idf,
+    topK,
+    budgetTokens,
+  );
 }
 
 function assembleMemoryContextFromIdf(
@@ -763,10 +938,12 @@ function assembleMemoryContextFromIdf(
   topK: number,
   budgetTokens: number,
 ): string {
-  const query = `${currentChapter.title}\n${currentChapter.synopsis}\n${currentChapter.content?.slice(0, 500) || ''}`;
+  const query = `${currentChapter.title}\n${currentChapter.synopsis}\n${
+    currentChapter.content?.slice(0, 500) || ''
+  }`;
   const queryVector = vectorize(query, idf);
   const scored = docs
-    .map((doc) => ({
+    .map(doc => ({
       ...doc,
       score: cosineSimilarity(queryVector, vectorize(doc.text, idf)),
     }))
@@ -776,7 +953,9 @@ function assembleMemoryContextFromIdf(
   const lines: string[] = [];
   let remaining = budgetTokens;
   for (const item of scored) {
-    const line = `第 ${item.chapter.position + 1} 章「${item.chapter.title}」摘要：${item.text}`;
+    const line = `第 ${item.chapter.position + 1} 章「${
+      item.chapter.title
+    }」摘要：${item.text}`;
     const clipped = clipTextToTokenBudget(line, remaining);
     if (!clipped) break;
     lines.push(clipped);
@@ -790,11 +969,11 @@ function tokenize(text: string): string[] {
     .toLowerCase()
     .replace(/[^\u4e00-\u9fffa-z0-9_\s]/gi, ' ')
     .split(/\s+/)
-    .flatMap((token) => {
+    .flatMap(token => {
       if (/^[\u4e00-\u9fff]+$/.test(token)) return Array.from(token);
       return token;
     })
-    .filter((token) => token.length >= 1 && !STOP_WORDS.has(token));
+    .filter(token => token.length >= 1 && !STOP_WORDS.has(token));
 }
 
 function buildIdf(docs: string[]): Map<string, number> {
@@ -811,7 +990,10 @@ function buildIdf(docs: string[]): Map<string, number> {
   return idf;
 }
 
-function vectorize(text: string, idf: Map<string, number>): Map<string, number> {
+function vectorize(
+  text: string,
+  idf: Map<string, number>,
+): Map<string, number> {
   const tokens = tokenize(text);
   const tf = new Map<string, number>();
   for (const token of tokens) tf.set(token, (tf.get(token) || 0) + 1);
@@ -823,7 +1005,10 @@ function vectorize(text: string, idf: Map<string, number>): Map<string, number> 
   return vector;
 }
 
-function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
+function cosineSimilarity(
+  a: Map<string, number>,
+  b: Map<string, number>,
+): number {
   let dot = 0;
   let normA = 0;
   let normB = 0;

@@ -1,0 +1,12 @@
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+c = conn.cursor()
+print('=== projects ===')
+for row in c.execute('SELECT id, name FROM projects'): print(row)
+print('=== character_collections ===')
+for row in c.execute('SELECT id, project_id, name, enabled FROM character_collections'): print(row)
+print('=== characters ===')
+for row in c.execute('SELECT id, project_id, collection_id, name, source_type, estimated_tokens FROM characters'): print(row)
+print('=== project_resources character ===')
+for row in c.execute("SELECT * FROM project_resources WHERE resource_type='character' ORDER BY resource_id"): print(row)
+conn.close()

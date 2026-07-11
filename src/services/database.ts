@@ -14,7 +14,10 @@ import type {
 import type { LocalModel } from '../types/localModel';
 import type { PipelineConfig } from '../types/pipeline';
 import type { VoiceConfig, TtsEngine, SystemTtsConfig } from '../types/tts';
-import { DEFAULT_VOICE_CONFIG, DEFAULT_SYSTEM_TTS_CONFIG } from '../constants/voice';
+import {
+  DEFAULT_VOICE_CONFIG,
+  DEFAULT_SYSTEM_TTS_CONFIG,
+} from '../constants/voice';
 import { DEFAULT_CONTEXT_CONFIG } from '../constants/defaults';
 import {
   clearSecureLLMApiKey,
@@ -23,8 +26,17 @@ import {
   setSecureLLMApiKey,
 } from './secureStorage';
 import { estimateTokens } from '../utils/tokenEstimator';
-import { runMigrations, SCHEMA_VERSION, hasBreakingMigration, isIncompatibleUpgrade } from './migrations';
-import type { InstallInfo, InstallType, MigrationResult } from './migrations/types';
+import {
+  runMigrations,
+  SCHEMA_VERSION,
+  hasBreakingMigration,
+  isIncompatibleUpgrade,
+} from './migrations';
+import type {
+  InstallInfo,
+  InstallType,
+  MigrationResult,
+} from './migrations/types';
 import appVersionJson from '../constants/version.json';
 
 SQLite.enablePromise(true);
@@ -51,7 +63,10 @@ export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (db) return db;
   if (opening) return opening;
   opening = (async () => {
-    const database = await SQLite.openDatabase({ name: DB_NAME, location: 'default' });
+    const database = await SQLite.openDatabase({
+      name: DB_NAME,
+      location: 'default',
+    });
     await createTables(database);
     await ensureSchemaCompatibility(database);
     await seedDefaults(database);
@@ -68,7 +83,7 @@ export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
     db = database;
     opening = null;
     return database;
-  })().catch((error) => {
+  })().catch(error => {
     db = null;
     opening = null;
     throw error;
@@ -76,7 +91,11 @@ export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
   return opening;
 }
 
-async function execute(database: SQLite.SQLiteDatabase, sql: string, params: any[] = []) {
+async function execute(
+  database: SQLite.SQLiteDatabase,
+  sql: string,
+  params: any[] = [],
+) {
   const [result] = await database.executeSql(sql, params);
   return result;
 }
@@ -120,7 +139,10 @@ async function all<T = Row>(sql: string, params: any[] = []): Promise<T[]> {
   return items;
 }
 
-async function one<T = Row>(sql: string, params: any[] = []): Promise<T | null> {
+async function one<T = Row>(
+  sql: string,
+  params: any[] = [],
+): Promise<T | null> {
   const rows = await all<T>(sql, params);
   return rows[0] || null;
 }
@@ -414,6 +436,7 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
         mode TEXT NOT NULL DEFAULT 'none',
         style_weights TEXT NOT NULL DEFAULT '{}',
         retrieval_top_k INTEGER NOT NULL DEFAULT 5,
+        retrieval_fragment_chars INTEGER NOT NULL DEFAULT 1000,
         enabled_note_ids TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT NOT NULL,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -435,7 +458,10 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
   }
 }
 
-async function tableColumns(database: SQLite.SQLiteDatabase, table: string): Promise<Set<string>> {
+async function tableColumns(
+  database: SQLite.SQLiteDatabase,
+  table: string,
+): Promise<Set<string>> {
   const result = await execute(database, `PRAGMA table_info(${table})`);
   const columns = new Set<string>();
   for (let i = 0; i < result.rows.length; i++) {
@@ -456,126 +482,665 @@ async function ensureColumn(
   columns.add(column);
 }
 
-async function ensureSchemaCompatibility(database: SQLite.SQLiteDatabase): Promise<void> {
+async function ensureSchemaCompatibility(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
   const projects = await tableColumns(database, 'projects');
-  await ensureColumn(database, 'projects', projects, 'name', "name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'projects', projects, 'mode', "mode TEXT NOT NULL DEFAULT 'outline'");
-  await ensureColumn(database, 'projects', projects, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'projects', projects, 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'projects',
+    projects,
+    'name',
+    "name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'projects',
+    projects,
+    'mode',
+    "mode TEXT NOT NULL DEFAULT 'outline'",
+  );
+  await ensureColumn(
+    database,
+    'projects',
+    projects,
+    'created_at',
+    "created_at TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'projects',
+    projects,
+    'updated_at',
+    "updated_at TEXT NOT NULL DEFAULT ''",
+  );
 
   const chapters = await tableColumns(database, 'chapters');
-  await ensureColumn(database, 'chapters', chapters, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'chapters', chapters, 'position', 'position INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'chapters', chapters, 'title', "title TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'chapters', chapters, 'synopsis', "synopsis TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'chapters', chapters, 'content', "content TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'chapters', chapters, 'status', "status TEXT NOT NULL DEFAULT 'planned'");
-  await ensureColumn(database, 'chapters', chapters, 'summary_json', 'summary_json TEXT');
-  await ensureColumn(database, 'chapters', chapters, 'memory_summary', "memory_summary TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'chapters', chapters, 'memory_summary_tokens', 'memory_summary_tokens INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'chapters', chapters, 'finalized_at', 'finalized_at TEXT');
-  await ensureColumn(database, 'chapters', chapters, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'chapters', chapters, 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'position',
+    'position INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'title',
+    "title TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'synopsis',
+    "synopsis TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'content',
+    "content TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'status',
+    "status TEXT NOT NULL DEFAULT 'planned'",
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'summary_json',
+    'summary_json TEXT',
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'memory_summary',
+    "memory_summary TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'memory_summary_tokens',
+    'memory_summary_tokens INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'finalized_at',
+    'finalized_at TEXT',
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'created_at',
+    "created_at TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'chapters',
+    chapters,
+    'updated_at',
+    "updated_at TEXT NOT NULL DEFAULT ''",
+  );
 
   const fragments = await tableColumns(database, 'fragments');
-  await ensureColumn(database, 'fragments', fragments, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'fragments', fragments, 'position', 'position INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'fragments', fragments, 'type', "type TEXT NOT NULL DEFAULT 'seed'");
-  await ensureColumn(database, 'fragments', fragments, 'content', "content TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'fragments', fragments, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'fragments',
+    fragments,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'fragments',
+    fragments,
+    'position',
+    'position INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'fragments',
+    fragments,
+    'type',
+    "type TEXT NOT NULL DEFAULT 'seed'",
+  );
+  await ensureColumn(
+    database,
+    'fragments',
+    fragments,
+    'content',
+    "content TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'fragments',
+    fragments,
+    'created_at',
+    "created_at TEXT NOT NULL DEFAULT ''",
+  );
 
   const plotlines = await tableColumns(database, 'plotlines');
-  await ensureColumn(database, 'plotlines', plotlines, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'plotlines', plotlines, 'name', "name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'plotlines', plotlines, 'description', "description TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'plotlines', plotlines, 'color', "color TEXT NOT NULL DEFAULT '#2563EB'");
+  await ensureColumn(
+    database,
+    'plotlines',
+    plotlines,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'plotlines',
+    plotlines,
+    'name',
+    "name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'plotlines',
+    plotlines,
+    'description',
+    "description TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'plotlines',
+    plotlines,
+    'color',
+    "color TEXT NOT NULL DEFAULT '#2563EB'",
+  );
 
   const characters = await tableColumns(database, 'characters');
-  await ensureColumn(database, 'characters', characters, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'characters', characters, 'collection_id', 'collection_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'characters', characters, 'name', "name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'characters', characters, 'source_type', "source_type TEXT NOT NULL DEFAULT 'json'");
-  await ensureColumn(database, 'characters', characters, 'data_json', "data_json TEXT NOT NULL DEFAULT '{}'");
-  await ensureColumn(database, 'characters', characters, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 50000');
-  await ensureColumn(database, 'characters', characters, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'characters', characters, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'characters',
+    characters,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'characters',
+    characters,
+    'collection_id',
+    'collection_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'characters',
+    characters,
+    'name',
+    "name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'characters',
+    characters,
+    'source_type',
+    "source_type TEXT NOT NULL DEFAULT 'json'",
+  );
+  await ensureColumn(
+    database,
+    'characters',
+    characters,
+    'data_json',
+    "data_json TEXT NOT NULL DEFAULT '{}'",
+  );
+  await ensureColumn(
+    database,
+    'characters',
+    characters,
+    'max_tokens',
+    'max_tokens INTEGER NOT NULL DEFAULT 50000',
+  );
+  await ensureColumn(
+    database,
+    'characters',
+    characters,
+    'estimated_tokens',
+    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'characters',
+    characters,
+    'created_at',
+    "created_at TEXT NOT NULL DEFAULT ''",
+  );
 
-  const characterCollections = await tableColumns(database, 'character_collections');
-  await ensureColumn(database, 'character_collections', characterCollections, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'character_collections', characterCollections, 'name', "name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'character_collections', characterCollections, 'enabled', 'enabled INTEGER NOT NULL DEFAULT 1');
-  await ensureColumn(database, 'character_collections', characterCollections, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 50000');
-  await ensureColumn(database, 'character_collections', characterCollections, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'character_collections', characterCollections, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  const characterCollections = await tableColumns(
+    database,
+    'character_collections',
+  );
+  await ensureColumn(
+    database,
+    'character_collections',
+    characterCollections,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'character_collections',
+    characterCollections,
+    'name',
+    "name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'character_collections',
+    characterCollections,
+    'enabled',
+    'enabled INTEGER NOT NULL DEFAULT 1',
+  );
+  await ensureColumn(
+    database,
+    'character_collections',
+    characterCollections,
+    'max_tokens',
+    'max_tokens INTEGER NOT NULL DEFAULT 50000',
+  );
+  await ensureColumn(
+    database,
+    'character_collections',
+    characterCollections,
+    'estimated_tokens',
+    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'character_collections',
+    characterCollections,
+    'created_at',
+    "created_at TEXT NOT NULL DEFAULT ''",
+  );
 
   const collections = await tableColumns(database, 'worldbook_collections');
-  await ensureColumn(database, 'worldbook_collections', collections, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'worldbook_collections', collections, 'name', "name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'worldbook_collections', collections, 'enabled', 'enabled INTEGER NOT NULL DEFAULT 1');
-  await ensureColumn(database, 'worldbook_collections', collections, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 50000');
-  await ensureColumn(database, 'worldbook_collections', collections, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'worldbook_collections', collections, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'worldbook_collections',
+    collections,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_collections',
+    collections,
+    'name',
+    "name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'worldbook_collections',
+    collections,
+    'enabled',
+    'enabled INTEGER NOT NULL DEFAULT 1',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_collections',
+    collections,
+    'max_tokens',
+    'max_tokens INTEGER NOT NULL DEFAULT 50000',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_collections',
+    collections,
+    'estimated_tokens',
+    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_collections',
+    collections,
+    'created_at',
+    "created_at TEXT NOT NULL DEFAULT ''",
+  );
 
   const worldbook = await tableColumns(database, 'worldbook_entries');
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'collection_id', 'collection_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'keyword_primary', "keyword_primary TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'keyword_secondary', "keyword_secondary TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'content', "content TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'comment', "comment TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'enabled', 'enabled INTEGER NOT NULL DEFAULT 1');
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'constant', 'constant INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 2000');
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'position', 'position INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'worldbook_entries', worldbook, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'collection_id',
+    'collection_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'keyword_primary',
+    "keyword_primary TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'keyword_secondary',
+    "keyword_secondary TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'content',
+    "content TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'comment',
+    "comment TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'enabled',
+    'enabled INTEGER NOT NULL DEFAULT 1',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'constant',
+    'constant INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'max_tokens',
+    'max_tokens INTEGER NOT NULL DEFAULT 2000',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'estimated_tokens',
+    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'position',
+    'position INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'worldbook_entries',
+    worldbook,
+    'created_at',
+    "created_at TEXT NOT NULL DEFAULT ''",
+  );
 
   const notes = await tableColumns(database, 'notes');
-  await ensureColumn(database, 'notes', notes, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'notes', notes, 'title', "title TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'notes', notes, 'content', "content TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'notes', notes, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 30000');
-  await ensureColumn(database, 'notes', notes, 'estimated_tokens', 'estimated_tokens INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'notes', notes, 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'notes', notes, 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'notes',
+    notes,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'notes',
+    notes,
+    'title',
+    "title TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'notes',
+    notes,
+    'content',
+    "content TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'notes',
+    notes,
+    'max_tokens',
+    'max_tokens INTEGER NOT NULL DEFAULT 30000',
+  );
+  await ensureColumn(
+    database,
+    'notes',
+    notes,
+    'estimated_tokens',
+    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'notes',
+    notes,
+    'created_at',
+    "created_at TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'notes',
+    notes,
+    'updated_at',
+    "updated_at TEXT NOT NULL DEFAULT ''",
+  );
 
   const presets = await tableColumns(database, 'presets');
-  await ensureColumn(database, 'presets', presets, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'presets', presets, 'name', "name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'presets', presets, 'is_default', 'is_default INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'presets', presets, 'system_prompt', "system_prompt TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'presets', presets, 'writing_style', "writing_style TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'presets', presets, 'temperature', 'temperature REAL NOT NULL DEFAULT 0.8');
-  await ensureColumn(database, 'presets', presets, 'top_p', 'top_p REAL NOT NULL DEFAULT 0.9');
-  await ensureColumn(database, 'presets', presets, 'max_tokens', 'max_tokens INTEGER NOT NULL DEFAULT 4000');
-  await ensureColumn(database, 'presets', presets, 'extra_instructions', "extra_instructions TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'name',
+    "name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'is_default',
+    'is_default INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'system_prompt',
+    "system_prompt TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'writing_style',
+    "writing_style TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'temperature',
+    'temperature REAL NOT NULL DEFAULT 0.8',
+  );
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'top_p',
+    'top_p REAL NOT NULL DEFAULT 0.9',
+  );
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'max_tokens',
+    'max_tokens INTEGER NOT NULL DEFAULT 4000',
+  );
+  await ensureColumn(
+    database,
+    'presets',
+    presets,
+    'extra_instructions',
+    "extra_instructions TEXT NOT NULL DEFAULT ''",
+  );
 
   const llm = await tableColumns(database, 'llm_config');
-  await ensureColumn(database, 'llm_config', llm, 'name', "name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'llm_config', llm, 'base_url', "base_url TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'llm_config', llm, 'api_key', "api_key TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'llm_config', llm, 'model_name', "model_name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'llm_config', llm, 'is_active', 'is_active INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'llm_config', llm, 'provider_type', "provider_type TEXT NOT NULL DEFAULT 'openai_compatible'");
-  await ensureColumn(database, 'llm_config', llm, 'local_model_id', 'local_model_id TEXT');
-  await ensureColumn(database, 'llm_config', llm, 'local_backend', 'local_backend TEXT');
-  await ensureColumn(database, 'llm_config', llm, 'context_window', 'context_window INTEGER NOT NULL DEFAULT 4096');
-  await ensureColumn(database, 'llm_config', llm, 'max_output_tokens', 'max_output_tokens INTEGER NOT NULL DEFAULT 4000');
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'name',
+    "name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'base_url',
+    "base_url TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'api_key',
+    "api_key TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'model_name',
+    "model_name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'is_active',
+    'is_active INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'provider_type',
+    "provider_type TEXT NOT NULL DEFAULT 'openai_compatible'",
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'local_model_id',
+    'local_model_id TEXT',
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'local_backend',
+    'local_backend TEXT',
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'context_window',
+    'context_window INTEGER NOT NULL DEFAULT 4096',
+  );
+  await ensureColumn(
+    database,
+    'llm_config',
+    llm,
+    'max_output_tokens',
+    'max_output_tokens INTEGER NOT NULL DEFAULT 4000',
+  );
 
   const settings = await tableColumns(database, 'settings');
-  await ensureColumn(database, 'settings', settings, 'key', "key TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'settings', settings, 'value', "value TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'settings',
+    settings,
+    'key',
+    "key TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'settings',
+    settings,
+    'value',
+    "value TEXT NOT NULL DEFAULT ''",
+  );
 
   // llm_usage_logs: columns added by the v7→v8 migration. We also ensure them
   // here (which runs before migrate()) so that legacy databases upgrading from
   // <V1.6.0 have the columns in place before the post-migration index creation.
   const usageLogs = await tableColumns(database, 'llm_usage_logs');
-  await ensureColumn(database, 'llm_usage_logs', usageLogs, 'model_name', "model_name TEXT NOT NULL DEFAULT ''");
-  await ensureColumn(database, 'llm_usage_logs', usageLogs, 'project_id', 'project_id INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(
+    database,
+    'llm_usage_logs',
+    usageLogs,
+    'model_name',
+    "model_name TEXT NOT NULL DEFAULT ''",
+  );
+  await ensureColumn(
+    database,
+    'llm_usage_logs',
+    usageLogs,
+    'project_id',
+    'project_id INTEGER NOT NULL DEFAULT 0',
+  );
   // V2.2.0 (schema 10): 按配置区分用量。这两个字段让 UsageStatsScreen 能展示每个 LLM 配置
   // 的调用量，不再仅靠 model_name 区分（多个配置可能共用同一 model_name）。
-  await ensureColumn(database, 'llm_usage_logs', usageLogs, 'llm_config_id', 'llm_config_id INTEGER NOT NULL DEFAULT 0');
-  await ensureColumn(database, 'llm_usage_logs', usageLogs, 'llm_config_name', "llm_config_name TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(
+    database,
+    'llm_usage_logs',
+    usageLogs,
+    'llm_config_id',
+    'llm_config_id INTEGER NOT NULL DEFAULT 0',
+  );
+  await ensureColumn(
+    database,
+    'llm_usage_logs',
+    usageLogs,
+    'llm_config_name',
+    "llm_config_name TEXT NOT NULL DEFAULT ''",
+  );
 }
 
 async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
@@ -588,15 +1153,26 @@ async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
     ) VALUES (1, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
     ['默认配置', 'openai_compatible', '', '', '', null, null, 4096, 4000],
   );
-  await execute(database, "UPDATE llm_config SET name = '默认配置' WHERE id = 1 AND name = ''");
-  const active = await execute(database, 'SELECT id FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
+  await execute(
+    database,
+    "UPDATE llm_config SET name = '默认配置' WHERE id = 1 AND name = ''",
+  );
+  const active = await execute(
+    database,
+    'SELECT id FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1',
+  );
   if (active.rows.length === 0) {
-    await execute(database, 'UPDATE llm_config SET is_active = 1 WHERE id = (SELECT id FROM llm_config ORDER BY id ASC LIMIT 1)');
+    await execute(
+      database,
+      'UPDATE llm_config SET is_active = 1 WHERE id = (SELECT id FROM llm_config ORDER BY id ASC LIMIT 1)',
+    );
   }
   await ensureDefaultPreset(database);
 }
 
-async function ensureGlobalProject(database: SQLite.SQLiteDatabase): Promise<void> {
+async function ensureGlobalProject(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
   const timestamp = now();
   await execute(
     database,
@@ -605,34 +1181,77 @@ async function ensureGlobalProject(database: SQLite.SQLiteDatabase): Promise<voi
   );
 }
 
-export async function detectInstallType(database: SQLite.SQLiteDatabase): Promise<InstallInfo> {
+export async function detectInstallType(
+  database: SQLite.SQLiteDatabase,
+): Promise<InstallInfo> {
   const currentVersion = appVersionJson.versionName.replace(/^V/, '');
-  const storedVersionResult = await execute(database, 'SELECT value FROM settings WHERE key = ?', ['app_version']);
-  const storedVersion = storedVersionResult.rows.length > 0 ? storedVersionResult.rows.item(0).value : null;
+  const storedVersionResult = await execute(
+    database,
+    'SELECT value FROM settings WHERE key = ?',
+    ['app_version'],
+  );
+  const storedVersion =
+    storedVersionResult.rows.length > 0
+      ? storedVersionResult.rows.item(0).value
+      : null;
 
-  const firstInstallResult = await execute(database, 'SELECT value FROM settings WHERE key = ?', ['first_install_version']);
-  const firstInstallVersion = firstInstallResult.rows.length > 0 ? firstInstallResult.rows.item(0).value : currentVersion;
+  const firstInstallResult = await execute(
+    database,
+    'SELECT value FROM settings WHERE key = ?',
+    ['first_install_version'],
+  );
+  const firstInstallVersion =
+    firstInstallResult.rows.length > 0
+      ? firstInstallResult.rows.item(0).value
+      : currentVersion;
 
   let installType: InstallType;
   let previousVersion: string | null = null;
 
   if (!storedVersion) {
     installType = 'fresh';
-    await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['first_install_version', currentVersion]);
+    await execute(
+      database,
+      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      ['first_install_version', currentVersion],
+    );
   } else if (storedVersion !== currentVersion) {
     installType = 'upgrade';
     previousVersion = storedVersion;
-    await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['previous_version', storedVersion]);
+    await execute(
+      database,
+      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      ['previous_version', storedVersion],
+    );
   } else {
     installType = 'same';
   }
 
-  await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['app_version', currentVersion]);
-  await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['app_version_code', String(appVersionJson.versionCode)]);
-  await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['install_type', installType]);
+  await execute(
+    database,
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    ['app_version', currentVersion],
+  );
+  await execute(
+    database,
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    ['app_version_code', String(appVersionJson.versionCode)],
+  );
+  await execute(
+    database,
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    ['install_type', installType],
+  );
 
-  const schemaVersionResult = await execute(database, 'SELECT value FROM settings WHERE key = ?', ['schema_version']);
-  const schemaVersion = schemaVersionResult.rows.length > 0 ? parseInt(schemaVersionResult.rows.item(0).value, 10) : 0;
+  const schemaVersionResult = await execute(
+    database,
+    'SELECT value FROM settings WHERE key = ?',
+    ['schema_version'],
+  );
+  const schemaVersion =
+    schemaVersionResult.rows.length > 0
+      ? parseInt(schemaVersionResult.rows.item(0).value, 10)
+      : 0;
 
   return {
     installType,
@@ -651,9 +1270,11 @@ async function migrate(database: SQLite.SQLiteDatabase): Promise<void> {
   lastInstallInfo = installInfo;
 
   if (installInfo.installType === 'fresh') {
-    await execute(database, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [
-      'schema_version', String(SCHEMA_VERSION),
-    ]);
+    await execute(
+      database,
+      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      ['schema_version', String(SCHEMA_VERSION)],
+    );
     return;
   }
 
@@ -661,7 +1282,11 @@ async function migrate(database: SQLite.SQLiteDatabase): Promise<void> {
     // 修复：即使 app_version 相同，也检查 schema_version 是否需要补迁移
     // 防止迁移失败后 app_version 已更新但 schema_version 卡在旧值
     const fromSchema = installInfo.schemaVersion || 1;
-    if (fromSchema < SCHEMA_VERSION && !hasBreakingMigration(fromSchema) && !isIncompatibleUpgrade(fromSchema)) {
+    if (
+      fromSchema < SCHEMA_VERSION &&
+      !hasBreakingMigration(fromSchema) &&
+      !isIncompatibleUpgrade(fromSchema)
+    ) {
       const migrationResult = await runMigrations(database, fromSchema);
       lastMigrationResult = migrationResult;
     }
@@ -689,7 +1314,10 @@ function parseChapter(row: Row): Chapter {
   let summary = null;
   if (row.summary_json) {
     try {
-      summary = typeof row.summary_json === 'string' ? JSON.parse(row.summary_json) : row.summary_json;
+      summary =
+        typeof row.summary_json === 'string'
+          ? JSON.parse(row.summary_json)
+          : row.summary_json;
     } catch {
       summary = null;
     }
@@ -698,14 +1326,19 @@ function parseChapter(row: Row): Chapter {
 }
 
 export async function getAllProjects(): Promise<Project[]> {
-  return all<Project>('SELECT * FROM projects WHERE id > 0 ORDER BY updated_at DESC');
+  return all<Project>(
+    'SELECT * FROM projects WHERE id > 0 ORDER BY updated_at DESC',
+  );
 }
 
 export async function getProjectById(id: number): Promise<Project | null> {
   return one<Project>('SELECT * FROM projects WHERE id = ? AND id > 0', [id]);
 }
 
-export async function createProject(name: string, mode: ProjectMode | string): Promise<number> {
+export async function createProject(
+  name: string,
+  mode: ProjectMode | string,
+): Promise<number> {
   const database = await openDatabase();
   const timestamp = now();
   // V2.2.2 修复：用 `runInTransactionSafe` 取代直接的 `database.transaction(async ...)`。
@@ -730,26 +1363,49 @@ export async function createProject(name: string, mode: ProjectMode | string): P
     },
     {
       sql: 'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      params: [projectId, 0, '第 1 章', '', '', 'planned', timestamp, timestamp],
+      params: [
+        projectId,
+        0,
+        '第 1 章',
+        '',
+        '',
+        'planned',
+        timestamp,
+        timestamp,
+      ],
     },
   ]);
   // ensureDefaultPreset 不依赖当前事务，单独调用
   await ensureDefaultPreset(database);
-  await execute(database, 'UPDATE projects SET updated_at = ? WHERE id = ?', [timestamp, projectId]);
+  await execute(database, 'UPDATE projects SET updated_at = ? WHERE id = ?', [
+    timestamp,
+    projectId,
+  ]);
   return projectId;
 }
 
 export async function updateProject(id: number, name: string): Promise<void> {
-  await execute(await openDatabase(), 'UPDATE projects SET name = ?, updated_at = ? WHERE id = ?', [name, now(), id]);
+  await execute(
+    await openDatabase(),
+    'UPDATE projects SET name = ?, updated_at = ? WHERE id = ?',
+    [name, now(), id],
+  );
 }
 
 export async function deleteProject(id: number): Promise<void> {
   if (id <= 0) return; // 防止删除全局资源（project_id=0 的数据）
-  await execute(await openDatabase(), 'DELETE FROM projects WHERE id = ?', [id]);
+  await execute(await openDatabase(), 'DELETE FROM projects WHERE id = ?', [
+    id,
+  ]);
 }
 
-export async function getChaptersByProject(projectId: number): Promise<Chapter[]> {
-  const rows = await all<Row>('SELECT * FROM chapters WHERE project_id = ? ORDER BY position ASC', [projectId]);
+export async function getChaptersByProject(
+  projectId: number,
+): Promise<Chapter[]> {
+  const rows = await all<Row>(
+    'SELECT * FROM chapters WHERE project_id = ? ORDER BY position ASC',
+    [projectId],
+  );
   return rows.map(parseChapter);
 }
 
@@ -785,7 +1441,7 @@ export async function buildChapterReadingText(
 
   return rows
     .map(parseChapter)
-    .filter((chapter) => chapter.content.trim())
+    .filter(chapter => chapter.content.trim())
     .map((chapter, index) => {
       const title = chapter.title.trim() || `第 ${index + 1} 章`;
       return `${title}\n\n${chapter.content.trim()}`;
@@ -793,12 +1449,25 @@ export async function buildChapterReadingText(
     .join('\n\n');
 }
 
-export async function createChapter(projectId: number, position: number, title?: string): Promise<number> {
+export async function createChapter(
+  projectId: number,
+  position: number,
+  title?: string,
+): Promise<number> {
   const timestamp = now();
   const result = await execute(
     await openDatabase(),
     'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [projectId, position, title || `第 ${position + 1} 章`, '', '', 'planned', timestamp, timestamp],
+    [
+      projectId,
+      position,
+      title || `第 ${position + 1} 章`,
+      '',
+      '',
+      'planned',
+      timestamp,
+      timestamp,
+    ],
   );
   await touchProject(projectId);
   return result.insertId!;
@@ -816,29 +1485,47 @@ const CHAPTER_COLUMNS = new Set([
   'position',
 ]);
 
-export async function updateChapter(id: number, fields: Partial<Chapter>): Promise<void> {
+export async function updateChapter(
+  id: number,
+  fields: Partial<Chapter>,
+): Promise<void> {
   const chapter = await getChapterById(id);
   const sets = ['updated_at = ?'];
   const values: any[] = [now()];
   for (const [key, value] of Object.entries(fields)) {
     if (!CHAPTER_COLUMNS.has(key)) continue;
     sets.push(`${key} = ?`);
-    values.push(key === 'summary_json' && value !== null && typeof value !== 'string' ? JSON.stringify(value) : value);
+    values.push(
+      key === 'summary_json' && value !== null && typeof value !== 'string'
+        ? JSON.stringify(value)
+        : value,
+    );
   }
   if (sets.length === 1) return;
   values.push(id);
-  await execute(await openDatabase(), `UPDATE chapters SET ${sets.join(', ')} WHERE id = ?`, values);
+  await execute(
+    await openDatabase(),
+    `UPDATE chapters SET ${sets.join(', ')} WHERE id = ?`,
+    values,
+  );
   if (chapter) await touchProject(chapter.project_id);
 }
 
 export async function deleteChapter(id: number): Promise<void> {
   const chapter = await getChapterById(id);
-  await execute(await openDatabase(), 'DELETE FROM chapters WHERE id = ?', [id]);
+  await execute(await openDatabase(), 'DELETE FROM chapters WHERE id = ?', [
+    id,
+  ]);
   if (chapter) await touchProject(chapter.project_id);
 }
 
-export async function getFragmentsByProject(projectId: number): Promise<Fragment[]> {
-  return all<Fragment>('SELECT * FROM fragments WHERE project_id = ? ORDER BY position ASC', [projectId]);
+export async function getFragmentsByProject(
+  projectId: number,
+): Promise<Fragment[]> {
+  return all<Fragment>(
+    'SELECT * FROM fragments WHERE project_id = ? ORDER BY position ASC',
+    [projectId],
+  );
 }
 
 export async function createFragment(
@@ -857,14 +1544,26 @@ export async function createFragment(
 }
 
 export async function deleteFragment(id: number): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM fragments WHERE id = ?', [id]);
+  await execute(await openDatabase(), 'DELETE FROM fragments WHERE id = ?', [
+    id,
+  ]);
 }
 
-export async function getPlotlinesByProject(projectId: number): Promise<Plotline[]> {
-  return all<Plotline>('SELECT * FROM plotlines WHERE project_id = ? ORDER BY id ASC', [projectId]);
+export async function getPlotlinesByProject(
+  projectId: number,
+): Promise<Plotline[]> {
+  return all<Plotline>(
+    'SELECT * FROM plotlines WHERE project_id = ? ORDER BY id ASC',
+    [projectId],
+  );
 }
 
-export async function createPlotline(projectId: number, name: string, description: string, color: string): Promise<number> {
+export async function createPlotline(
+  projectId: number,
+  name: string,
+  description: string,
+  color: string,
+): Promise<number> {
   const result = await execute(
     await openDatabase(),
     'INSERT INTO plotlines (project_id, name, description, color) VALUES (?, ?, ?, ?)',
@@ -874,15 +1573,23 @@ export async function createPlotline(projectId: number, name: string, descriptio
 }
 
 export async function deletePlotline(id: number): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM plotlines WHERE id = ?', [id]);
+  await execute(await openDatabase(), 'DELETE FROM plotlines WHERE id = ?', [
+    id,
+  ]);
 }
 
-export async function setChapterPlotlines(chapterId: number, plotlineIds: number[]): Promise<void> {
+export async function setChapterPlotlines(
+  chapterId: number,
+  plotlineIds: number[],
+): Promise<void> {
   const database = await openDatabase();
   // V2.2.2 修复：改用 runInTransactionSafe（见顶部 helper 注释），
   // 原 `database.transaction(async (tx) => {...})` 在 await 处触发 InvalidStateError。
   const stmts: Array<{ sql: string; params: any[] }> = [
-    { sql: 'DELETE FROM project_plotlines WHERE chapter_id = ?', params: [chapterId] },
+    {
+      sql: 'DELETE FROM project_plotlines WHERE chapter_id = ?',
+      params: [chapterId],
+    },
   ];
   for (const plotlineId of plotlineIds) {
     stmts.push({
@@ -893,9 +1600,14 @@ export async function setChapterPlotlines(chapterId: number, plotlineIds: number
   await runInTransactionSafe(database, stmts);
 }
 
-export async function getChapterPlotlineIds(chapterId: number): Promise<number[]> {
-  const rows = await all<{ plotline_id: number }>('SELECT plotline_id FROM project_plotlines WHERE chapter_id = ?', [chapterId]);
-  return rows.map((row) => row.plotline_id);
+export async function getChapterPlotlineIds(
+  chapterId: number,
+): Promise<number[]> {
+  const rows = await all<{ plotline_id: number }>(
+    'SELECT plotline_id FROM project_plotlines WHERE chapter_id = ?',
+    [chapterId],
+  );
+  return rows.map(row => row.plotline_id);
 }
 
 export async function setProjectResourceEnabled(
@@ -911,34 +1623,54 @@ export async function setProjectResourceEnabled(
   );
 }
 
-async function deleteProjectResourceLinks(resourceType: ResourceType, resourceId: number): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?', [
-    resourceType,
-    resourceId,
-  ]);
+async function deleteProjectResourceLinks(
+  resourceType: ResourceType,
+  resourceId: number,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?',
+    [resourceType, resourceId],
+  );
 }
 
-async function linkResourceToProject(projectId: number, resourceType: ResourceType, resourceId: number): Promise<void> {
+async function linkResourceToProject(
+  projectId: number,
+  resourceType: ResourceType,
+  resourceId: number,
+): Promise<void> {
   if (projectId > 0) {
     await setProjectResourceEnabled(projectId, resourceType, resourceId, true);
   }
 }
 
-function usageJoin(resourceType: ResourceType, alias: string, projectId?: number): string {
+function usageJoin(
+  resourceType: ResourceType,
+  alias: string,
+  projectId?: number,
+): string {
   if (!projectId) return '0 AS enabled_for_project';
-  return `COALESCE((SELECT enabled FROM project_resources pr WHERE pr.project_id = ${Number(projectId)} AND pr.resource_type = '${resourceType}' AND pr.resource_id = ${alias}.id), 0) AS enabled_for_project`;
+  return `COALESCE((SELECT enabled FROM project_resources pr WHERE pr.project_id = ${Number(
+    projectId,
+  )} AND pr.resource_type = '${resourceType}' AND pr.resource_id = ${alias}.id), 0) AS enabled_for_project`;
 }
 
 export async function getAllCharacters(projectId?: number): Promise<Row[]> {
   return all<Row>(
-    `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, cc.max_tokens AS collection_max_tokens, ${usageJoin('character', 'c', projectId)}
+    `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, cc.max_tokens AS collection_max_tokens, ${usageJoin(
+      'character',
+      'c',
+      projectId,
+    )}
      FROM characters c
      LEFT JOIN character_collections cc ON cc.id = c.collection_id
      ORDER BY cc.id DESC, c.id DESC`,
   );
 }
 
-export async function getCharactersByProject(projectId: number): Promise<Row[]> {
+export async function getCharactersByProject(
+  projectId: number,
+): Promise<Row[]> {
   return all<Row>(
     `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, cc.max_tokens AS collection_max_tokens
      FROM characters c
@@ -960,7 +1692,9 @@ export async function getCharacterById(id: number): Promise<Row | null> {
   );
 }
 
-export async function getCharacterCollections(projectId?: number): Promise<Row[]> {
+export async function getCharacterCollections(
+  projectId?: number,
+): Promise<Row[]> {
   if (!projectId) {
     return all<Row>('SELECT * FROM character_collections ORDER BY id DESC');
   }
@@ -981,30 +1715,65 @@ export async function createCharacterCollection(
   const result = await execute(
     await openDatabase(),
     'INSERT INTO character_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [0, name, extra.enabled === 0 ? 0 : 1, Number(extra.max_tokens || 50000), Number(extra.estimated_tokens || 0), now()],
+    [
+      0,
+      name,
+      extra.enabled === 0 ? 0 : 1,
+      Number(extra.max_tokens || 50000),
+      Number(extra.estimated_tokens || 0),
+      now(),
+    ],
   );
   return result.insertId!;
 }
 
-export async function updateCharacterCollection(id: number, fields: Row): Promise<void> {
-  await updateColumns('character_collections', id, new Set(['name', 'enabled', 'max_tokens', 'estimated_tokens']), fields);
+export async function updateCharacterCollection(
+  id: number,
+  fields: Row,
+): Promise<void> {
+  await updateColumns(
+    'character_collections',
+    id,
+    new Set(['name', 'enabled', 'max_tokens', 'estimated_tokens']),
+    fields,
+  );
 }
 
-export async function updateCharacterCollectionTokenEstimate(id: number): Promise<void> {
-  const rows = await all<{ estimated_tokens: number }>('SELECT estimated_tokens FROM characters WHERE collection_id = ?', [id]);
-  const estimatedTokens = rows.reduce((total, row) => total + Number(row.estimated_tokens || 0), 0);
+export async function updateCharacterCollectionTokenEstimate(
+  id: number,
+): Promise<void> {
+  const rows = await all<{ estimated_tokens: number }>(
+    'SELECT estimated_tokens FROM characters WHERE collection_id = ?',
+    [id],
+  );
+  const estimatedTokens = rows.reduce(
+    (total, row) => total + Number(row.estimated_tokens || 0),
+    0,
+  );
   await updateCharacterCollection(id, { estimated_tokens: estimatedTokens });
 }
 
-export async function ensureDefaultCharacterCollection(projectId: number, name = '未分组角色'): Promise<number> {
-  const existing = await one<{ id: number }>('SELECT id FROM character_collections ORDER BY id ASC LIMIT 1');
+export async function ensureDefaultCharacterCollection(
+  projectId: number,
+  name = '未分组角色',
+): Promise<number> {
+  const existing = await one<{ id: number }>(
+    'SELECT id FROM character_collections ORDER BY id ASC LIMIT 1',
+  );
   if (existing?.id) return existing.id;
   return createCharacterCollection(projectId, name, { enabled: 1 });
 }
 
-export async function getCharactersByCollection(collectionId: number, projectId?: number): Promise<Row[]> {
+export async function getCharactersByCollection(
+  collectionId: number,
+  projectId?: number,
+): Promise<Row[]> {
   return all<Row>(
-    `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, ${usageJoin('character', 'c', projectId)}
+    `SELECT c.*, cc.name AS collection_name, cc.enabled AS collection_enabled, ${usageJoin(
+      'character',
+      'c',
+      projectId,
+    )}
      FROM characters c
      LEFT JOIN character_collections cc ON cc.id = c.collection_id
      WHERE c.collection_id = ?
@@ -1019,9 +1788,15 @@ export async function setCharacterCollectionEnabledForProject(
   enabled: boolean,
 ): Promise<void> {
   const database = await openDatabase();
-  const rows = await all<{ id: number }>('SELECT id FROM characters WHERE collection_id = ?', [collectionId]);
+  const rows = await all<{ id: number }>(
+    'SELECT id FROM characters WHERE collection_id = ?',
+    [collectionId],
+  );
   const stmts: Array<{ sql: string; params: any[] }> = [
-    { sql: 'UPDATE character_collections SET enabled = ? WHERE id = ?', params: [enabled ? 1 : 0, collectionId] },
+    {
+      sql: 'UPDATE character_collections SET enabled = ? WHERE id = ?',
+      params: [enabled ? 1 : 0, collectionId],
+    },
   ];
   // projectId=0 表示尚未选择项目，只更新合集全局开关，不写 project_resources
   if (projectId > 0) {
@@ -1035,10 +1810,20 @@ export async function setCharacterCollectionEnabledForProject(
   await runInTransactionSafe(database, stmts);
 }
 
-export async function setAllCharactersCollectionId(projectId: number, collectionId: number): Promise<void> {
-  await execute(await openDatabase(), 'UPDATE characters SET collection_id = ? WHERE collection_id = 0', [collectionId]);
+export async function setAllCharactersCollectionId(
+  projectId: number,
+  collectionId: number,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    'UPDATE characters SET collection_id = ? WHERE collection_id = 0',
+    [collectionId],
+  );
   await updateCharacterCollectionTokenEstimate(collectionId);
-  const rows = await all<{ id: number }>('SELECT id FROM characters WHERE collection_id = ?', [collectionId]);
+  const rows = await all<{ id: number }>(
+    'SELECT id FROM characters WHERE collection_id = ?',
+    [collectionId],
+  );
   for (const row of rows) {
     await linkResourceToProject(projectId, 'character', row.id);
   }
@@ -1046,7 +1831,10 @@ export async function setAllCharactersCollectionId(projectId: number, collection
 
 export async function deleteCharacterCollection(id: number): Promise<void> {
   const database = await openDatabase();
-  const characters = await all<{ id: number }>('SELECT id FROM characters WHERE collection_id = ?', [id]);
+  const characters = await all<{ id: number }>(
+    'SELECT id FROM characters WHERE collection_id = ?',
+    [id],
+  );
   const stmts: Array<{ sql: string; params: any[] }> = [];
   for (const character of characters) {
     stmts.push({
@@ -1054,8 +1842,14 @@ export async function deleteCharacterCollection(id: number): Promise<void> {
       params: ['character', character.id],
     });
   }
-  stmts.push({ sql: 'DELETE FROM characters WHERE collection_id = ?', params: [id] });
-  stmts.push({ sql: 'DELETE FROM character_collections WHERE id = ?', params: [id] });
+  stmts.push({
+    sql: 'DELETE FROM characters WHERE collection_id = ?',
+    params: [id],
+  });
+  stmts.push({
+    sql: 'DELETE FROM character_collections WHERE id = ?',
+    params: [id],
+  });
   await runInTransactionSafe(database, stmts);
 }
 
@@ -1071,7 +1865,16 @@ export async function createCharacter(
   const result = await execute(
     await openDatabase(),
     'INSERT INTO characters (project_id, collection_id, name, source_type, data_json, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [0, collectionId, name, sourceType, dataJson, Number(extra.max_tokens || 50000), estimatedTokens, now()],
+    [
+      0,
+      collectionId,
+      name,
+      sourceType,
+      dataJson,
+      Number(extra.max_tokens || 50000),
+      estimatedTokens,
+      now(),
+    ],
   );
   const id = result.insertId!;
   await linkResourceToProject(projectId, 'character', id);
@@ -1079,33 +1882,60 @@ export async function createCharacter(
   return id;
 }
 
-export async function updateCharacter(id: number, name: string, dataJson: string): Promise<void> {
+export async function updateCharacter(
+  id: number,
+  name: string,
+  dataJson: string,
+): Promise<void> {
   const existing = await getCharacterById(id);
-  await execute(await openDatabase(), 'UPDATE characters SET name = ?, data_json = ?, estimated_tokens = ? WHERE id = ?', [
-    name,
-    dataJson,
-    estimateTokens(dataJson),
-    id,
-  ]);
-  if (existing?.collection_id) await updateCharacterCollectionTokenEstimate(Number(existing.collection_id));
+  await execute(
+    await openDatabase(),
+    'UPDATE characters SET name = ?, data_json = ?, estimated_tokens = ? WHERE id = ?',
+    [name, dataJson, estimateTokens(dataJson), id],
+  );
+  if (existing?.collection_id)
+    await updateCharacterCollectionTokenEstimate(
+      Number(existing.collection_id),
+    );
 }
 
-export async function updateCharacterTokenBudget(id: number, maxTokens: number): Promise<void> {
+export async function updateCharacterTokenBudget(
+  id: number,
+  maxTokens: number,
+): Promise<void> {
   const existing = await getCharacterById(id);
-  await execute(await openDatabase(), 'UPDATE characters SET max_tokens = ? WHERE id = ?', [maxTokens, id]);
-  if (existing?.collection_id) await updateCharacterCollectionTokenEstimate(Number(existing.collection_id));
+  await execute(
+    await openDatabase(),
+    'UPDATE characters SET max_tokens = ? WHERE id = ?',
+    [maxTokens, id],
+  );
+  if (existing?.collection_id)
+    await updateCharacterCollectionTokenEstimate(
+      Number(existing.collection_id),
+    );
 }
 
 export async function deleteCharacter(id: number): Promise<void> {
   const existing = await getCharacterById(id);
   await deleteProjectResourceLinks('character', id);
-  await execute(await openDatabase(), 'DELETE FROM characters WHERE id = ?', [id]);
-  if (existing?.collection_id) await updateCharacterCollectionTokenEstimate(Number(existing.collection_id));
+  await execute(await openDatabase(), 'DELETE FROM characters WHERE id = ?', [
+    id,
+  ]);
+  if (existing?.collection_id)
+    await updateCharacterCollectionTokenEstimate(
+      Number(existing.collection_id),
+    );
 }
 
-export async function getAllWorldbookEntries(projectId?: number): Promise<Row[]> {
+export async function getAllWorldbookEntries(
+  projectId?: number,
+): Promise<Row[]> {
   return all<Row>(
-    `SELECT w.*, wc.name AS collection_name, wc.enabled AS collection_enabled, wc.max_tokens AS collection_max_tokens, ${usageJoin('worldbook', 'w', projectId)}
+    `SELECT w.*, wc.name AS collection_name, wc.enabled AS collection_enabled, wc.max_tokens AS collection_max_tokens, ${usageJoin(
+      'worldbook',
+      'w',
+      projectId,
+    )}
      FROM worldbook_entries w
      LEFT JOIN worldbook_collections wc ON wc.id = w.collection_id
      ORDER BY wc.id DESC, w.position ASC, w.id DESC`,
@@ -1138,14 +1968,20 @@ export async function setWorldbookCollectionEnabledForProject(
   // V2.2.2 修复：改用 runInTransactionSafe。先做必要的 async 读（entry id 列表），
   // 再把所有写入合并到一次同步 push 的事务里。
   const stmts: Array<{ sql: string; params: any[] }> = [
-    { sql: 'UPDATE worldbook_collections SET enabled = ? WHERE id = ?', params: [enabled ? 1 : 0, collectionId] },
+    {
+      sql: 'UPDATE worldbook_collections SET enabled = ? WHERE id = ?',
+      params: [enabled ? 1 : 0, collectionId],
+    },
   ];
   if (enabled) {
     stmts.push({
       sql: 'UPDATE worldbook_entries SET enabled = 1 WHERE collection_id = ?',
       params: [collectionId],
     });
-    const rows = await all<{ id: number }>('SELECT id FROM worldbook_entries WHERE collection_id = ?', [collectionId]);
+    const rows = await all<{ id: number }>(
+      'SELECT id FROM worldbook_entries WHERE collection_id = ?',
+      [collectionId],
+    );
     for (const row of rows) {
       stmts.push({
         sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, 1)',
@@ -1156,7 +1992,9 @@ export async function setWorldbookCollectionEnabledForProject(
   await runInTransactionSafe(database, stmts);
 }
 
-export async function getWorldbookEntriesByProject(projectId: number): Promise<Row[]> {
+export async function getWorldbookEntriesByProject(
+  projectId: number,
+): Promise<Row[]> {
   return all<Row>(
     `SELECT w.*, wc.name AS collection_name, wc.enabled AS collection_enabled, wc.max_tokens AS collection_max_tokens FROM worldbook_entries w
      JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook'
@@ -1167,7 +2005,9 @@ export async function getWorldbookEntriesByProject(projectId: number): Promise<R
   );
 }
 
-export async function getWorldbookCollections(projectId?: number): Promise<Row[]> {
+export async function getWorldbookCollections(
+  projectId?: number,
+): Promise<Row[]> {
   if (!projectId) {
     return all<Row>('SELECT * FROM worldbook_collections ORDER BY id DESC');
   }
@@ -1190,24 +2030,50 @@ export async function createWorldbookCollection(
   const result = await execute(
     await openDatabase(),
     'INSERT INTO worldbook_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [0, name, extra.enabled === 0 ? 0 : 1, Number(extra.max_tokens || 50000), Number(extra.estimated_tokens || 0), now()],
+    [
+      0,
+      name,
+      extra.enabled === 0 ? 0 : 1,
+      Number(extra.max_tokens || 50000),
+      Number(extra.estimated_tokens || 0),
+      now(),
+    ],
   );
   return result.insertId!;
 }
 
-export async function updateWorldbookCollection(id: number, fields: Row): Promise<void> {
-  await updateColumns('worldbook_collections', id, new Set(['name', 'enabled', 'max_tokens', 'estimated_tokens']), fields);
+export async function updateWorldbookCollection(
+  id: number,
+  fields: Row,
+): Promise<void> {
+  await updateColumns(
+    'worldbook_collections',
+    id,
+    new Set(['name', 'enabled', 'max_tokens', 'estimated_tokens']),
+    fields,
+  );
 }
 
-export async function updateWorldbookCollectionTokenEstimate(id: number): Promise<void> {
-  const rows = await all<{ content: string }>('SELECT content FROM worldbook_entries WHERE collection_id = ?', [id]);
-  const estimatedTokens = rows.reduce((total, row) => total + estimateTokens(row.content), 0);
+export async function updateWorldbookCollectionTokenEstimate(
+  id: number,
+): Promise<void> {
+  const rows = await all<{ content: string }>(
+    'SELECT content FROM worldbook_entries WHERE collection_id = ?',
+    [id],
+  );
+  const estimatedTokens = rows.reduce(
+    (total, row) => total + estimateTokens(row.content),
+    0,
+  );
   await updateWorldbookCollection(id, { estimated_tokens: estimatedTokens });
 }
 
 export async function deleteWorldbookCollection(id: number): Promise<void> {
   const database = await openDatabase();
-  const entries = await all<{ id: number }>('SELECT id FROM worldbook_entries WHERE collection_id = ?', [id]);
+  const entries = await all<{ id: number }>(
+    'SELECT id FROM worldbook_entries WHERE collection_id = ?',
+    [id],
+  );
   // V2.2.2 修复：改用 runInTransactionSafe。先 async 读 entry id，再合并到一次同步 push 事务。
   const stmts: Array<{ sql: string; params: any[] }> = [];
   for (const entry of entries) {
@@ -1216,8 +2082,14 @@ export async function deleteWorldbookCollection(id: number): Promise<void> {
       params: ['worldbook', entry.id],
     });
   }
-  stmts.push({ sql: 'DELETE FROM worldbook_entries WHERE collection_id = ?', params: [id] });
-  stmts.push({ sql: 'DELETE FROM worldbook_collections WHERE id = ?', params: [id] });
+  stmts.push({
+    sql: 'DELETE FROM worldbook_entries WHERE collection_id = ?',
+    params: [id],
+  });
+  stmts.push({
+    sql: 'DELETE FROM worldbook_collections WHERE id = ?',
+    params: [id],
+  });
   await runInTransactionSafe(database, stmts);
 }
 
@@ -1225,7 +2097,9 @@ export async function getWorldbookEntryById(id: number): Promise<Row | null> {
   return one<Row>('SELECT * FROM worldbook_entries WHERE id = ?', [id]);
 }
 
-export async function getWorldbookEntriesByCollection(collectionId: number): Promise<Row[]> {
+export async function getWorldbookEntriesByCollection(
+  collectionId: number,
+): Promise<Row[]> {
   return all<Row>(
     'SELECT * FROM worldbook_entries WHERE collection_id = ? ORDER BY position ASC, id ASC',
     [collectionId],
@@ -1260,7 +2134,8 @@ export async function createWorldbookEntry(
   );
   const id = result.insertId!;
   await linkResourceToProject(projectId, 'worldbook', id);
-  if (extra.collection_id) await updateWorldbookCollectionTokenEstimate(Number(extra.collection_id));
+  if (extra.collection_id)
+    await updateWorldbookCollectionTokenEstimate(Number(extra.collection_id));
   return id;
 }
 
@@ -1277,23 +2152,35 @@ const WB_COLUMNS = new Set([
   'position',
 ]);
 
-export async function updateWorldbookEntry(id: number, fields: Row): Promise<void> {
+export async function updateWorldbookEntry(
+  id: number,
+  fields: Row,
+): Promise<void> {
   if (typeof fields.content === 'string' && fields.estimated_tokens == null) {
     fields.estimated_tokens = estimateTokens(fields.content);
   }
   await updateColumns('worldbook_entries', id, WB_COLUMNS, fields);
   const entry = await getWorldbookEntryById(id);
-  if (entry?.collection_id) await updateWorldbookCollectionTokenEstimate(Number(entry.collection_id));
+  if (entry?.collection_id)
+    await updateWorldbookCollectionTokenEstimate(Number(entry.collection_id));
 }
 
 export async function deleteWorldbookEntry(id: number): Promise<void> {
   const entry = await getWorldbookEntryById(id);
   await deleteProjectResourceLinks('worldbook', id);
-  await execute(await openDatabase(), 'DELETE FROM worldbook_entries WHERE id = ?', [id]);
-  if (entry?.collection_id) await updateWorldbookCollectionTokenEstimate(Number(entry.collection_id));
+  await execute(
+    await openDatabase(),
+    'DELETE FROM worldbook_entries WHERE id = ?',
+    [id],
+  );
+  if (entry?.collection_id)
+    await updateWorldbookCollectionTokenEstimate(Number(entry.collection_id));
 }
 
-export function splitNoteTextIntoChunks(text: string, chunkSize = NOTE_TEXT_CHUNK_CHARS): string[] {
+export function splitNoteTextIntoChunks(
+  text: string,
+  chunkSize = NOTE_TEXT_CHUNK_CHARS,
+): string[] {
   if (!text) return [''];
   if (text.length <= chunkSize) return [text];
   const chunks: string[] = [];
@@ -1312,7 +2199,11 @@ export function splitNoteTextIntoChunks(text: string, chunkSize = NOTE_TEXT_CHUN
   return chunks;
 }
 
-async function insertNoteRow(database: SQLite.SQLiteDatabase, title: string, content: string): Promise<number> {
+async function insertNoteRow(
+  database: SQLite.SQLiteDatabase,
+  title: string,
+  content: string,
+): Promise<number> {
   const timestamp = now();
   const result = await execute(
     database,
@@ -1331,7 +2222,8 @@ export async function createNotesFromTextChunks(
   const chunks = splitNoteTextIntoChunks(content);
   let firstId = 0;
   for (let i = 0; i < chunks.length; i++) {
-    const noteTitle = chunks.length === 1 ? title : `${title} (${i + 1}/${chunks.length})`;
+    const noteTitle =
+      chunks.length === 1 ? title : `${title} (${i + 1}/${chunks.length})`;
     const id = await insertNoteRow(database, noteTitle, chunks[i]);
     if (!firstId) firstId = id;
     await linkResourceToProject(projectId, 'note', id);
@@ -1339,17 +2231,24 @@ export async function createNotesFromTextChunks(
   return { firstId, createdCount: chunks.length };
 }
 
-async function getNoteContentByIdFromDatabase(database: SQLite.SQLiteDatabase, id: number): Promise<string> {
-  const meta = await execute(database, 'SELECT length(content) AS length FROM notes WHERE id = ?', [id]);
+async function getNoteContentByIdFromDatabase(
+  database: SQLite.SQLiteDatabase,
+  id: number,
+): Promise<string> {
+  const meta = await execute(
+    database,
+    'SELECT length(content) AS length FROM notes WHERE id = ?',
+    [id],
+  );
   if (meta.rows.length === 0) return '';
   const totalLength = Number(meta.rows.item(0).length || 0);
   let content = '';
   for (let offset = 1; offset <= totalLength; offset += NOTE_TEXT_CHUNK_CHARS) {
-    const result = await execute(database, 'SELECT substr(content, ?, ?) AS chunk FROM notes WHERE id = ?', [
-      offset,
-      NOTE_TEXT_CHUNK_CHARS,
-      id,
-    ]);
+    const result = await execute(
+      database,
+      'SELECT substr(content, ?, ?) AS chunk FROM notes WHERE id = ?',
+      [offset, NOTE_TEXT_CHUNK_CHARS, id],
+    );
     content += result.rows.item(0)?.chunk || '';
   }
   return content;
@@ -1367,10 +2266,12 @@ export async function getNoteContentById(id: number): Promise<string> {
  *
  * ids 为空直接返回空 Map；不抛错。ids 中不存在的 id 不会出现在结果中（调用方按需 fallback）。
  */
-export async function getNotesContentByIds(ids: number[]): Promise<Record<number, string>> {
+export async function getNotesContentByIds(
+  ids: number[],
+): Promise<Record<number, string>> {
   const out: Record<number, string> = {};
   if (!ids?.length) return out;
-  const idList = ids.filter((n) => Number.isFinite(n) && n > 0);
+  const idList = ids.filter(n => Number.isFinite(n) && n > 0);
   if (idList.length === 0) return out;
   const placeholders = idList.map(() => '?').join(',');
   const rows = await all<{ id: number; chunk: string }>(
@@ -1420,7 +2321,9 @@ export async function getNotesContentByIds(ids: number[]): Promise<Record<number
   return out;
 }
 
-async function repairOversizedNotes(database: SQLite.SQLiteDatabase): Promise<void> {
+async function repairOversizedNotes(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
   try {
     const oversized = await execute(
       database,
@@ -1452,14 +2355,25 @@ async function repairOversizedNotes(database: SQLite.SQLiteDatabase): Promise<vo
         const insertResult = await execute(
           database,
           'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [0, `${note.title} (${chunkIndex + 1}/${chunks.length})`, chunks[chunkIndex], 30000, estimateTokens(chunks[chunkIndex]), timestamp, timestamp],
+          [
+            0,
+            `${note.title} (${chunkIndex + 1}/${chunks.length})`,
+            chunks[chunkIndex],
+            30000,
+            estimateTokens(chunks[chunkIndex]),
+            timestamp,
+            timestamp,
+          ],
         );
         newIds.push(insertResult.insertId!);
       }
       const linkRows: Array<{ project_id: number; enabled: number }> = [];
       for (let linkIndex = 0; linkIndex < links.rows.length; linkIndex++) {
         const link = links.rows.item(linkIndex);
-        linkRows.push({ project_id: Number(link.project_id), enabled: Number(link.enabled) });
+        linkRows.push({
+          project_id: Number(link.project_id),
+          enabled: Number(link.enabled),
+        });
       }
       const migrationStmts: Array<{ sql: string; params: any[] }> = [];
       for (const newId of newIds) {
@@ -1474,7 +2388,10 @@ async function repairOversizedNotes(database: SQLite.SQLiteDatabase): Promise<vo
         sql: 'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?',
         params: ['note', note.id],
       });
-      migrationStmts.push({ sql: 'DELETE FROM notes WHERE id = ?', params: [note.id] });
+      migrationStmts.push({
+        sql: 'DELETE FROM notes WHERE id = ?',
+        params: [note.id],
+      });
       await runInTransactionSafe(database, migrationStmts);
     }
   } catch (error) {
@@ -1485,7 +2402,11 @@ async function repairOversizedNotes(database: SQLite.SQLiteDatabase): Promise<vo
 export async function getAllNotes(projectId?: number): Promise<Note[]> {
   return all<Note>(
     `SELECT n.id, n.project_id, n.title, substr(n.content, 1, ${NOTE_LIST_PREVIEW_CHARS}) AS content,
-            n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at, ${usageJoin('note', 'n', projectId)}
+            n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at, ${usageJoin(
+              'note',
+              'n',
+              projectId,
+            )}
      FROM notes n ORDER BY n.updated_at DESC`,
   );
 }
@@ -1502,24 +2423,37 @@ export async function getNotesByProject(projectId: number): Promise<Note[]> {
   );
 }
 
-export async function createNote(projectId: number, title: string, content = ''): Promise<number> {
+export async function createNote(
+  projectId: number,
+  title: string,
+  content = '',
+): Promise<number> {
   const id = await insertNoteRow(await openDatabase(), title, content);
   await linkResourceToProject(projectId, 'note', id);
   return id;
 }
 
-export async function updateNote(id: number, title: string, content: string): Promise<void> {
-  await execute(await openDatabase(), 'UPDATE notes SET title = ?, content = ?, estimated_tokens = ?, updated_at = ? WHERE id = ?', [
-    title,
-    content,
-    estimateTokens(content),
-    now(),
-    id,
-  ]);
+export async function updateNote(
+  id: number,
+  title: string,
+  content: string,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    'UPDATE notes SET title = ?, content = ?, estimated_tokens = ?, updated_at = ? WHERE id = ?',
+    [title, content, estimateTokens(content), now(), id],
+  );
 }
 
-export async function updateNoteTokenBudget(id: number, maxTokens: number): Promise<void> {
-  await execute(await openDatabase(), 'UPDATE notes SET max_tokens = ? WHERE id = ?', [maxTokens, id]);
+export async function updateNoteTokenBudget(
+  id: number,
+  maxTokens: number,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    'UPDATE notes SET max_tokens = ? WHERE id = ?',
+    [maxTokens, id],
+  );
 }
 
 export async function deleteNote(id: number): Promise<void> {
@@ -1529,11 +2463,17 @@ export async function deleteNote(id: number): Promise<void> {
 
 export async function getAllPresets(projectId?: number): Promise<Preset[]> {
   return all<Preset>(
-    `SELECT p.*, ${usageJoin('preset', 'p', projectId)} FROM presets p ORDER BY p.is_default DESC, p.id ASC`,
+    `SELECT p.*, ${usageJoin(
+      'preset',
+      'p',
+      projectId,
+    )} FROM presets p ORDER BY p.is_default DESC, p.id ASC`,
   );
 }
 
-export async function getPresetsByProject(projectId: number): Promise<Preset[]> {
+export async function getPresetsByProject(
+  projectId: number,
+): Promise<Preset[]> {
   return all<Preset>(
     `SELECT p.* FROM presets p
      JOIN project_resources pr ON pr.resource_id = p.id AND pr.resource_type = 'preset'
@@ -1554,14 +2494,25 @@ const PRESET_COLUMNS = new Set([
   'extra_instructions',
 ]);
 
-export async function updatePreset(id: number, fields: Partial<Preset>): Promise<void> {
+export async function updatePreset(
+  id: number,
+  fields: Partial<Preset>,
+): Promise<void> {
   if (fields.is_default === 1) {
-    await execute(await openDatabase(), 'UPDATE presets SET is_default = 0 WHERE id != ?', [id]);
+    await execute(
+      await openDatabase(),
+      'UPDATE presets SET is_default = 0 WHERE id != ?',
+      [id],
+    );
   }
   await updateColumns('presets', id, PRESET_COLUMNS, fields);
 }
 
-export async function createPreset(projectId: number, name: string, isDefault = false): Promise<number> {
+export async function createPreset(
+  projectId: number,
+  name: string,
+  isDefault = false,
+): Promise<number> {
   if (isDefault) {
     await execute(await openDatabase(), 'UPDATE presets SET is_default = 0');
   }
@@ -1588,14 +2539,22 @@ export async function deletePreset(id: number): Promise<void> {
   await execute(await openDatabase(), 'DELETE FROM presets WHERE id = ?', [id]);
 }
 
-async function ensureDefaultPreset(database?: SQLite.SQLiteDatabase): Promise<number> {
+async function ensureDefaultPreset(
+  database?: SQLite.SQLiteDatabase,
+): Promise<number> {
   const target = database || (await openDatabase());
-  const existing = await execute(target, 'SELECT id FROM presets WHERE is_default = 1 ORDER BY id ASC LIMIT 1');
+  const existing = await execute(
+    target,
+    'SELECT id FROM presets WHERE is_default = 1 ORDER BY id ASC LIMIT 1',
+  );
   if (existing.rows.length > 0) return existing.rows.item(0).id;
 
   // If user already has presets (e.g. from a previous version), respect them —
   // do NOT create a duplicate default preset during upgrades.
-  const anyPreset = await execute(target, 'SELECT id FROM presets ORDER BY id ASC LIMIT 1');
+  const anyPreset = await execute(
+    target,
+    'SELECT id FROM presets ORDER BY id ASC LIMIT 1',
+  );
   if (anyPreset.rows.length > 0) return anyPreset.rows.item(0).id;
 
   const result = await execute(
@@ -1639,13 +2598,19 @@ async function hydrateLLMConfig(row: LLMConfig): Promise<LLMConfig> {
     await setSecureLLMApiKey(row.api_key, row.id);
   }
   if (row.api_key) {
-    await execute(await openDatabase(), 'UPDATE llm_config SET api_key = ? WHERE id = ?', ['', row.id]);
+    await execute(
+      await openDatabase(),
+      'UPDATE llm_config SET api_key = ? WHERE id = ?',
+      ['', row.id],
+    );
   }
   return { ...row, api_key: apiKey };
 }
 
 export async function getLLMConfigs(): Promise<LLMConfig[]> {
-  const rows = await all<LLMConfig>('SELECT * FROM llm_config ORDER BY is_active DESC, id ASC');
+  const rows = await all<LLMConfig>(
+    'SELECT * FROM llm_config ORDER BY is_active DESC, id ASC',
+  );
   if (rows.length === 0) {
     await execute(
       await openDatabase(),
@@ -1657,25 +2622,43 @@ export async function getLLMConfigs(): Promise<LLMConfig[]> {
     );
     return getLLMConfigs();
   }
-  return Promise.all(rows.map((row) => hydrateLLMConfig(normalizeLLMConfig(row))));
+  return Promise.all(
+    rows.map(row => hydrateLLMConfig(normalizeLLMConfig(row))),
+  );
 }
 
 export async function getActiveLLMConfig(): Promise<LLMConfig> {
-  let config = await one<LLMConfig>('SELECT * FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
+  let config = await one<LLMConfig>(
+    'SELECT * FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1',
+  );
   if (!config) {
-    const fallback = await one<LLMConfig>('SELECT * FROM llm_config ORDER BY id ASC LIMIT 1');
+    const fallback = await one<LLMConfig>(
+      'SELECT * FROM llm_config ORDER BY id ASC LIMIT 1',
+    );
     if (!fallback) {
-      const id = await saveLLMConfig({ name: '默认配置', base_url: '', api_key: '', model_name: '', is_active: 1 });
-      config = await one<LLMConfig>('SELECT * FROM llm_config WHERE id = ?', [id]);
+      const id = await saveLLMConfig({
+        name: '默认配置',
+        base_url: '',
+        api_key: '',
+        model_name: '',
+        is_active: 1,
+      });
+      config = await one<LLMConfig>('SELECT * FROM llm_config WHERE id = ?', [
+        id,
+      ]);
     } else {
       await setActiveLLMConfig(fallback.id);
-      config = await one<LLMConfig>('SELECT * FROM llm_config WHERE id = ?', [fallback.id]);
+      config = await one<LLMConfig>('SELECT * FROM llm_config WHERE id = ?', [
+        fallback.id,
+      ]);
     }
   }
   return hydrateLLMConfig(normalizeLLMConfig(config));
 }
 
-export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number> {
+export async function saveLLMConfig(
+  config: Partial<LLMConfig>,
+): Promise<number> {
   const name = (config.name || '').trim() || '未命名配置';
   const providerType = config.provider_type || 'openai_compatible';
   const baseUrl = (config.base_url || '').trim();
@@ -1698,7 +2681,18 @@ export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number>
         name = ?, provider_type = ?, base_url = ?, api_key = ?, model_name = ?,
         local_model_id = ?, local_backend = ?, context_window = ?, max_output_tokens = ?
       WHERE id = ?`,
-      [name, providerType, baseUrl, '', modelName, localModelId, localBackend, contextWindow, maxOutputTokens, id],
+      [
+        name,
+        providerType,
+        baseUrl,
+        '',
+        modelName,
+        localModelId,
+        localBackend,
+        contextWindow,
+        maxOutputTokens,
+        id,
+      ],
     );
   } else {
     const result = await execute(
@@ -1707,7 +2701,18 @@ export async function saveLLMConfig(config: Partial<LLMConfig>): Promise<number>
         name, provider_type, base_url, api_key, model_name, is_active,
         local_model_id, local_backend, context_window, max_output_tokens
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name, providerType, baseUrl, '', modelName, shouldActivate ? 1 : 0, localModelId, localBackend, contextWindow, maxOutputTokens],
+      [
+        name,
+        providerType,
+        baseUrl,
+        '',
+        modelName,
+        shouldActivate ? 1 : 0,
+        localModelId,
+        localBackend,
+        contextWindow,
+        maxOutputTokens,
+      ],
     );
     id = Number(result.insertId);
     // V2.2.1 修复：react-native-sqlite-storage 6.0.1 在部分机型/事务场景下
@@ -1738,7 +2743,9 @@ export async function setActiveLLMConfig(id: number): Promise<void> {
   // 非原子操作，但切换激活状态不需要严格原子性（最坏情况是短暂的全 is_active=0，
   // 下次 loadSettings 的自愈逻辑会兜底）。
   await execute(database, 'UPDATE llm_config SET is_active = 0');
-  await execute(database, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [id]);
+  await execute(database, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [
+    id,
+  ]);
 }
 
 export async function deleteLLMConfig(id: number): Promise<void> {
@@ -1747,19 +2754,24 @@ export async function deleteLLMConfig(id: number): Promise<void> {
     throw new Error('至少需要保留一个 LLM 配置。');
   }
 
-  const target = configs.find((config) => config.id === id);
+  const target = configs.find(config => config.id === id);
   const database = await openDatabase();
   // 11.8 修复：DELETE + 切换激活配置整体包进事务，保证原子性；
   // clearSecureLLMApiKey 是异步 keystore 操作，放事务外执行避免嵌入 SQLite 事务
-  await database.transaction(async (tx) => {
+  await database.transaction(async tx => {
     const txx = tx as unknown as SQLite.SQLiteDatabase;
     await execute(txx, 'DELETE FROM llm_config WHERE id = ?', [id]);
     if (target?.is_active === 1) {
-      const next = await execute(txx, 'SELECT id FROM llm_config ORDER BY id ASC LIMIT 1');
+      const next = await execute(
+        txx,
+        'SELECT id FROM llm_config ORDER BY id ASC LIMIT 1',
+      );
       if (next.rows.length > 0) {
         const nextId = next.rows.item(0).id;
         await execute(txx, 'UPDATE llm_config SET is_active = 0');
-        await execute(txx, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [nextId]);
+        await execute(txx, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [
+          nextId,
+        ]);
       }
     }
   });
@@ -1770,7 +2782,11 @@ export async function getLLMConfig(): Promise<LLMConfig> {
   return getActiveLLMConfig();
 }
 
-export async function setLLMConfig(baseUrl: string, apiKey: string, modelName: string): Promise<void> {
+export async function setLLMConfig(
+  baseUrl: string,
+  apiKey: string,
+  modelName: string,
+): Promise<void> {
   const active = await getActiveLLMConfig();
   await saveLLMConfig({
     ...active,
@@ -1783,7 +2799,10 @@ export async function setLLMConfig(baseUrl: string, apiKey: string, modelName: s
 
 export async function listLocalModels(): Promise<LocalModel[]> {
   const database = await openDatabase();
-  const result = await execute(database, 'SELECT * FROM local_llm_models ORDER BY imported_at DESC');
+  const result = await execute(
+    database,
+    'SELECT * FROM local_llm_models ORDER BY imported_at DESC',
+  );
   const models: LocalModel[] = [];
   for (let i = 0; i < result.rows.length; i += 1) {
     models.push(result.rows.item(i) as LocalModel);
@@ -1791,19 +2810,33 @@ export async function listLocalModels(): Promise<LocalModel[]> {
   return models;
 }
 
-export async function getLocalModelById(id: string): Promise<LocalModel | null> {
+export async function getLocalModelById(
+  id: string,
+): Promise<LocalModel | null> {
   const database = await openDatabase();
-  const result = await execute(database, 'SELECT * FROM local_llm_models WHERE id = ?', [id]);
+  const result = await execute(
+    database,
+    'SELECT * FROM local_llm_models WHERE id = ?',
+    [id],
+  );
   return result.rows.length > 0 ? (result.rows.item(0) as LocalModel) : null;
 }
 
-export async function getLocalModelBySha256(sha256: string): Promise<LocalModel | null> {
+export async function getLocalModelBySha256(
+  sha256: string,
+): Promise<LocalModel | null> {
   const database = await openDatabase();
-  const result = await execute(database, 'SELECT * FROM local_llm_models WHERE sha256 = ?', [sha256]);
+  const result = await execute(
+    database,
+    'SELECT * FROM local_llm_models WHERE sha256 = ?',
+    [sha256],
+  );
   return result.rows.length > 0 ? (result.rows.item(0) as LocalModel) : null;
 }
 
-export async function createLocalModel(model: Omit<LocalModel, 'imported_at'> & { imported_at?: string }): Promise<void> {
+export async function createLocalModel(
+  model: Omit<LocalModel, 'imported_at'> & { imported_at?: string },
+): Promise<void> {
   const database = await openDatabase();
   await execute(
     database,
@@ -1850,7 +2883,10 @@ export async function updateLocalModel(
   const sets = keys.map(k => `${k} = ?`).join(', ');
   const values = keys.map(k => (fields as Record<string, any>)[k]);
   const database = await openDatabase();
-  await execute(database, `UPDATE local_llm_models SET ${sets} WHERE id = ?`, [...values, id]);
+  await execute(database, `UPDATE local_llm_models SET ${sets} WHERE id = ?`, [
+    ...values,
+    id,
+  ]);
 }
 
 export async function deleteLocalModelRecord(id: string): Promise<void> {
@@ -1858,34 +2894,72 @@ export async function deleteLocalModelRecord(id: string): Promise<void> {
   await execute(database, 'DELETE FROM local_llm_models WHERE id = ?', [id]);
 }
 
-export async function countLLMConfigsUsingModel(modelId: string): Promise<number> {
+export async function countLLMConfigsUsingModel(
+  modelId: string,
+): Promise<number> {
   const database = await openDatabase();
-  const result = await execute(database, 'SELECT COUNT(*) AS cnt FROM llm_config WHERE local_model_id = ?', [modelId]);
+  const result = await execute(
+    database,
+    'SELECT COUNT(*) AS cnt FROM llm_config WHERE local_model_id = ?',
+    [modelId],
+  );
   return result.rows.length > 0 ? Number(result.rows.item(0).cnt || 0) : 0;
 }
 
 export async function getSetting(key: string): Promise<string | null> {
-  const row = await one<{ value: string }>('SELECT value FROM settings WHERE key = ?', [key]);
+  const row = await one<{ value: string }>(
+    'SELECT value FROM settings WHERE key = ?',
+    [key],
+  );
   return row?.value ?? null;
 }
 
 export async function setSetting(key: string, value: string): Promise<void> {
-  await execute(await openDatabase(), 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [key, value]);
+  await execute(
+    await openDatabase(),
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    [key, value],
+  );
 }
 
 export async function getContextConfig(): Promise<ContextConfig> {
   return {
-    strategy: ((await getSetting('context_strategy')) as ContextConfig['strategy']) || DEFAULT_CONTEXT_CONFIG.strategy,
-    slidingWindowSize: Number((await getSetting('sliding_window_size')) || DEFAULT_CONTEXT_CONFIG.slidingWindowSize),
-    customRangeStart: Number((await getSetting('custom_range_start')) || DEFAULT_CONTEXT_CONFIG.customRangeStart),
-    customRangeEnd: Number((await getSetting('custom_range_end')) || DEFAULT_CONTEXT_CONFIG.customRangeEnd),
-    resourceBudget: Number((await getSetting('resource_budget')) || DEFAULT_CONTEXT_CONFIG.resourceBudget),
+    strategy:
+      ((await getSetting('context_strategy')) as ContextConfig['strategy']) ||
+      DEFAULT_CONTEXT_CONFIG.strategy,
+    slidingWindowSize: Number(
+      (await getSetting('sliding_window_size')) ||
+        DEFAULT_CONTEXT_CONFIG.slidingWindowSize,
+    ),
+    customRangeStart: Number(
+      (await getSetting('custom_range_start')) ||
+        DEFAULT_CONTEXT_CONFIG.customRangeStart,
+    ),
+    customRangeEnd: Number(
+      (await getSetting('custom_range_end')) ||
+        DEFAULT_CONTEXT_CONFIG.customRangeEnd,
+    ),
+    resourceBudget: Number(
+      (await getSetting('resource_budget')) ||
+        DEFAULT_CONTEXT_CONFIG.resourceBudget,
+    ),
     includeResources: (await getSetting('include_resources')) !== 'false',
-    summaryBudgetTokens: Number((await getSetting('summary_budget_tokens')) || DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens),
-    memoryTopK: Number((await getSetting('memory_top_k')) || DEFAULT_CONTEXT_CONFIG.memoryTopK),
-    recentChapterCount: Number((await getSetting('recent_chapter_count')) || DEFAULT_CONTEXT_CONFIG.recentChapterCount),
+    summaryBudgetTokens: Number(
+      (await getSetting('summary_budget_tokens')) ||
+        DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens,
+    ),
+    memoryTopK: Number(
+      (await getSetting('memory_top_k')) || DEFAULT_CONTEXT_CONFIG.memoryTopK,
+    ),
+    recentChapterCount: Number(
+      (await getSetting('recent_chapter_count')) ||
+        DEFAULT_CONTEXT_CONFIG.recentChapterCount,
+    ),
     worldbookRecursive: (await getSetting('worldbook_recursive')) !== 'false',
-    worldbookScanDepth: Number((await getSetting('worldbook_scan_depth')) || DEFAULT_CONTEXT_CONFIG.worldbookScanDepth),
+    worldbookScanDepth: Number(
+      (await getSetting('worldbook_scan_depth')) ||
+        DEFAULT_CONTEXT_CONFIG.worldbookScanDepth,
+    ),
   };
 }
 
@@ -1896,11 +2970,34 @@ export async function setContextConfig(config: ContextConfig): Promise<void> {
   await setSetting('custom_range_end', String(config.customRangeEnd));
   await setSetting('resource_budget', String(config.resourceBudget));
   await setSetting('include_resources', String(config.includeResources));
-  await setSetting('summary_budget_tokens', String(config.summaryBudgetTokens ?? DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens));
-  await setSetting('memory_top_k', String(config.memoryTopK ?? DEFAULT_CONTEXT_CONFIG.memoryTopK));
-  await setSetting('recent_chapter_count', String(config.recentChapterCount ?? DEFAULT_CONTEXT_CONFIG.recentChapterCount));
-  await setSetting('worldbook_recursive', String(config.worldbookRecursive ?? DEFAULT_CONTEXT_CONFIG.worldbookRecursive));
-  await setSetting('worldbook_scan_depth', String(config.worldbookScanDepth ?? DEFAULT_CONTEXT_CONFIG.worldbookScanDepth));
+  await setSetting(
+    'summary_budget_tokens',
+    String(
+      config.summaryBudgetTokens ?? DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens,
+    ),
+  );
+  await setSetting(
+    'memory_top_k',
+    String(config.memoryTopK ?? DEFAULT_CONTEXT_CONFIG.memoryTopK),
+  );
+  await setSetting(
+    'recent_chapter_count',
+    String(
+      config.recentChapterCount ?? DEFAULT_CONTEXT_CONFIG.recentChapterCount,
+    ),
+  );
+  await setSetting(
+    'worldbook_recursive',
+    String(
+      config.worldbookRecursive ?? DEFAULT_CONTEXT_CONFIG.worldbookRecursive,
+    ),
+  );
+  await setSetting(
+    'worldbook_scan_depth',
+    String(
+      config.worldbookScanDepth ?? DEFAULT_CONTEXT_CONFIG.worldbookScanDepth,
+    ),
+  );
 }
 
 export async function getBackgroundPipelineEnabled(): Promise<boolean> {
@@ -1909,7 +3006,9 @@ export async function getBackgroundPipelineEnabled(): Promise<boolean> {
   return v !== 'false';
 }
 
-export async function setBackgroundPipelineEnabled(enabled: boolean): Promise<void> {
+export async function setBackgroundPipelineEnabled(
+  enabled: boolean,
+): Promise<void> {
   await setSetting('background_pipeline_enabled', String(enabled));
 }
 
@@ -1948,7 +3047,9 @@ export async function getSystemTtsConfig(): Promise<SystemTtsConfig> {
   }
 }
 
-export async function setSystemTtsConfig(config: SystemTtsConfig): Promise<void> {
+export async function setSystemTtsConfig(
+  config: SystemTtsConfig,
+): Promise<void> {
   await setSetting('system_tts_config', JSON.stringify(config));
 }
 
@@ -1986,11 +3087,17 @@ export async function logLLMUsage(fields: {
 }
 
 export async function getFreeformDocument(projectId: number): Promise<string> {
-  const row = await one<{ content: string }>('SELECT content FROM freeform_documents WHERE project_id = ?', [projectId]);
+  const row = await one<{ content: string }>(
+    'SELECT content FROM freeform_documents WHERE project_id = ?',
+    [projectId],
+  );
   return row?.content || '';
 }
 
-export async function setFreeformDocument(projectId: number, content: string): Promise<void> {
+export async function setFreeformDocument(
+  projectId: number,
+  content: string,
+): Promise<void> {
   await execute(
     await openDatabase(),
     'INSERT OR REPLACE INTO freeform_documents (project_id, content, updated_at) VALUES (?, ?, ?)',
@@ -2000,10 +3107,19 @@ export async function setFreeformDocument(projectId: number, content: string): P
 }
 
 async function touchProject(projectId: number): Promise<void> {
-  await execute(await openDatabase(), 'UPDATE projects SET updated_at = ? WHERE id = ?', [now(), projectId]);
+  await execute(
+    await openDatabase(),
+    'UPDATE projects SET updated_at = ? WHERE id = ?',
+    [now(), projectId],
+  );
 }
 
-async function updateColumns(table: string, id: number, allowed: Set<string>, fields: Row): Promise<void> {
+async function updateColumns(
+  table: string,
+  id: number,
+  allowed: Set<string>,
+  fields: Row,
+): Promise<void> {
   const sets: string[] = [];
   const values: any[] = [];
   for (const [key, value] of Object.entries(fields)) {
@@ -2013,7 +3129,11 @@ async function updateColumns(table: string, id: number, allowed: Set<string>, fi
   }
   if (sets.length === 0) return;
   values.push(id);
-  await execute(await openDatabase(), `UPDATE ${table} SET ${sets.join(', ')} WHERE id = ?`, values);
+  await execute(
+    await openDatabase(),
+    `UPDATE ${table} SET ${sets.join(', ')} WHERE id = ?`,
+    values,
+  );
 }
 
 export async function getPipelineConfig(): Promise<PipelineConfig> {
@@ -2030,15 +3150,20 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
     'pipeline_proof_max_tokens',
   ];
   const rows = await all<{ key: string; value: string }>(
-    `SELECT key, value FROM settings WHERE key IN (${keys.map(() => '?').join(', ')})`,
+    `SELECT key, value FROM settings WHERE key IN (${keys
+      .map(() => '?')
+      .join(', ')})`,
     keys,
   );
-  const settingsMap = new Map(rows.map((r) => [r.key, r.value]));
+  const settingsMap = new Map(rows.map(r => [r.key, r.value]));
   const get = (k: string): string | null => settingsMap.get(k) ?? null;
 
   const savedMode = get('pipeline_mode');
   const pipelineMode =
-    savedMode === 'noReview' || savedMode === 'conditional' || savedMode === 'full' || savedMode === 'twoStage'
+    savedMode === 'noReview' ||
+    savedMode === 'conditional' ||
+    savedMode === 'full' ||
+    savedMode === 'twoStage'
       ? savedMode
       : 'twoStage';
 
@@ -2062,13 +3187,31 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
 
 export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
   await setSetting('pipeline_mode', config.pipelineMode);
-  await setSetting('pipeline_draft_preset_id', config.draftPresetId !== null ? String(config.draftPresetId) : '');
-  await setSetting('pipeline_review_preset_id', config.reviewPresetId !== null ? String(config.reviewPresetId) : '');
-  await setSetting('pipeline_factcheck_preset_id', config.factCheckPresetId !== null ? String(config.factCheckPresetId) : '');
-  await setSetting('pipeline_proof_preset_id', config.proofPresetId !== null ? String(config.proofPresetId) : '');
+  await setSetting(
+    'pipeline_draft_preset_id',
+    config.draftPresetId !== null ? String(config.draftPresetId) : '',
+  );
+  await setSetting(
+    'pipeline_review_preset_id',
+    config.reviewPresetId !== null ? String(config.reviewPresetId) : '',
+  );
+  await setSetting(
+    'pipeline_factcheck_preset_id',
+    config.factCheckPresetId !== null ? String(config.factCheckPresetId) : '',
+  );
+  await setSetting(
+    'pipeline_proof_preset_id',
+    config.proofPresetId !== null ? String(config.proofPresetId) : '',
+  );
   await setSetting('pipeline_draft_max_tokens', String(config.draftMaxTokens));
-  await setSetting('pipeline_review_max_tokens', String(config.reviewMaxTokens));
-  await setSetting('pipeline_factcheck_max_tokens', String(config.factCheckMaxTokens));
+  await setSetting(
+    'pipeline_review_max_tokens',
+    String(config.reviewMaxTokens),
+  );
+  await setSetting(
+    'pipeline_factcheck_max_tokens',
+    String(config.factCheckMaxTokens),
+  );
   await setSetting('pipeline_proof_max_tokens', String(config.proofMaxTokens));
 }
 
@@ -2110,13 +3253,21 @@ export async function savePipelineTask(task: {
 }
 
 export async function getUnresolvedPipelineTasks(): Promise<any[]> {
-  const rows = await all<Row>('SELECT * FROM pipeline_tasks WHERE resolved_at IS NULL ORDER BY created_at DESC');
-  return rows.map((row) => ({
+  const rows = await all<Row>(
+    'SELECT * FROM pipeline_tasks WHERE resolved_at IS NULL ORDER BY created_at DESC',
+  );
+  return rows.map(row => ({
     id: row.id,
     targetType: row.target_type,
     targetId: row.target_id,
     status: row.status,
-    stageResults: (() => { try { return JSON.parse(row.stage_results); } catch { return []; } })(),
+    stageResults: (() => {
+      try {
+        return JSON.parse(row.stage_results);
+      } catch {
+        return [];
+      }
+    })(),
     finalText: row.final_text,
     error: row.error,
     createdAt: row.created_at,
@@ -2127,13 +3278,21 @@ export async function getUnresolvedPipelineTasks(): Promise<any[]> {
 }
 
 export async function getAllPipelineTasks(): Promise<any[]> {
-  const rows = await all<Row>('SELECT * FROM pipeline_tasks ORDER BY created_at DESC');
-  return rows.map((row) => ({
+  const rows = await all<Row>(
+    'SELECT * FROM pipeline_tasks ORDER BY created_at DESC',
+  );
+  return rows.map(row => ({
     id: row.id,
     targetType: row.target_type,
     targetId: row.target_id,
     status: row.status,
-    stageResults: (() => { try { return JSON.parse(row.stage_results); } catch { return []; } })(),
+    stageResults: (() => {
+      try {
+        return JSON.parse(row.stage_results);
+      } catch {
+        return [];
+      }
+    })(),
     finalText: row.final_text,
     error: row.error,
     createdAt: row.created_at,
@@ -2144,18 +3303,28 @@ export async function getAllPipelineTasks(): Promise<any[]> {
 }
 
 export async function deletePipelineTask(id: string): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM pipeline_tasks WHERE id = ?', [id]);
+  await execute(
+    await openDatabase(),
+    'DELETE FROM pipeline_tasks WHERE id = ?',
+    [id],
+  );
 }
 
 export async function deleteResolvedPipelineTasks(): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM pipeline_tasks WHERE resolved_at IS NOT NULL');
+  await execute(
+    await openDatabase(),
+    'DELETE FROM pipeline_tasks WHERE resolved_at IS NOT NULL',
+  );
 }
 
 // =============================================================================
 // Worldbook collection batch enable (优化2: enable all entries when collection enabled)
 // =============================================================================
 
-export async function setAllWorldbookEntriesEnabledByCollection(collectionId: number, enabled: boolean): Promise<void> {
+export async function setAllWorldbookEntriesEnabledByCollection(
+  collectionId: number,
+  enabled: boolean,
+): Promise<void> {
   await execute(
     await openDatabase(),
     'UPDATE worldbook_entries SET enabled = ? WHERE collection_id = ?',
@@ -2181,7 +3350,16 @@ export async function createContentRevision(fields: {
     await openDatabase(),
     `INSERT INTO content_revisions (project_id, target_type, target_id, title, content, source, source_ref, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [fields.projectId, fields.targetType, fields.targetId, fields.title, fields.content, fields.source, fields.sourceRef ?? null, createdAt],
+    [
+      fields.projectId,
+      fields.targetType,
+      fields.targetId,
+      fields.title,
+      fields.content,
+      fields.source,
+      fields.sourceRef ?? null,
+      createdAt,
+    ],
   );
   return result.insertId;
 }
@@ -2207,7 +3385,11 @@ export async function getLatestContentRevision(
 }
 
 export async function deleteContentRevision(id: number): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM content_revisions WHERE id = ?', [id]);
+  await execute(
+    await openDatabase(),
+    'DELETE FROM content_revisions WHERE id = ?',
+    [id],
+  );
 }
 
 export async function trimContentRevisions(
@@ -2231,14 +3413,20 @@ export async function trimContentRevisions(
      ORDER BY created_at DESC`,
     [targetType, targetId],
   );
-  const toDeleteAuto = autoRows.map((r) => r.id).slice(maxAuto);
-  const toDeleteManual = manualRows.map((r) => r.id).slice(maxManual);
+  const toDeleteAuto = autoRows.map(r => r.id).slice(maxAuto);
+  const toDeleteManual = manualRows.map(r => r.id).slice(maxManual);
   const stmts: Array<{ sql: string; params: any[] }> = [];
   for (const id of toDeleteAuto) {
-    stmts.push({ sql: 'DELETE FROM content_revisions WHERE id = ?', params: [id] });
+    stmts.push({
+      sql: 'DELETE FROM content_revisions WHERE id = ?',
+      params: [id],
+    });
   }
   for (const id of toDeleteManual) {
-    stmts.push({ sql: 'DELETE FROM content_revisions WHERE id = ?', params: [id] });
+    stmts.push({
+      sql: 'DELETE FROM content_revisions WHERE id = ?',
+      params: [id],
+    });
   }
   await runInTransactionSafe(database, stmts);
 }
@@ -2261,7 +3449,16 @@ export async function createGenerationDraft(fields: {
     await openDatabase(),
     `INSERT INTO generation_drafts (project_id, target_type, target_id, content, source, pipeline_task_id, token_count, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [fields.projectId, fields.targetType, fields.targetId, fields.content, fields.source, fields.pipelineTaskId ?? null, fields.tokenCount, createdAt],
+    [
+      fields.projectId,
+      fields.targetType,
+      fields.targetId,
+      fields.content,
+      fields.source,
+      fields.pipelineTaskId ?? null,
+      fields.tokenCount,
+      createdAt,
+    ],
   );
   return result.insertId;
 }
@@ -2277,28 +3474,35 @@ export async function getGenerationDrafts(
 }
 
 export async function getGenerationDraft(id: number): Promise<any | null> {
-  return one(
-    `SELECT * FROM generation_drafts WHERE id = ?`,
-    [id],
-  );
+  return one(`SELECT * FROM generation_drafts WHERE id = ?`, [id]);
 }
 
 export async function deleteGenerationDraft(id: number): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM generation_drafts WHERE id = ?', [id]);
+  await execute(
+    await openDatabase(),
+    'DELETE FROM generation_drafts WHERE id = ?',
+    [id],
+  );
 }
 
 export async function deleteGenerationDraftsByTarget(
   targetType: string,
   targetId: number,
 ): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM generation_drafts WHERE target_type = ? AND target_id = ?', [targetType, targetId]);
+  await execute(
+    await openDatabase(),
+    'DELETE FROM generation_drafts WHERE target_type = ? AND target_id = ?',
+    [targetType, targetId],
+  );
 }
 
 // ---------------------------------------------------------------------------
 // LLM Usage Stats
 // ---------------------------------------------------------------------------
 
-export async function getLLMUsageStats(projectId: number | null): Promise<any[]> {
+export async function getLLMUsageStats(
+  projectId: number | null,
+): Promise<any[]> {
   const database = await openDatabase();
   const projectFilter = projectId ? 'WHERE project_id = ?' : '';
   const params = projectId ? [projectId] : [];
@@ -2323,7 +3527,9 @@ export async function getLLMUsageStats(projectId: number | null): Promise<any[]>
   return rows;
 }
 
-export async function getLLMUsageSummary(projectId: number | null): Promise<any> {
+export async function getLLMUsageSummary(
+  projectId: number | null,
+): Promise<any> {
   const database = await openDatabase();
   const projectFilter = projectId ? 'WHERE project_id = ?' : '';
   const params = projectId ? [projectId] : [];
@@ -2336,13 +3542,22 @@ export async function getLLMUsageSummary(projectId: number | null): Promise<any>
     FROM llm_usage_logs ${projectFilter}`,
     params,
   );
-  return result.rows.length > 0 ? result.rows.item(0) : { total_calls: 0, total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0 };
+  return result.rows.length > 0
+    ? result.rows.item(0)
+    : {
+        total_calls: 0,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_tokens: 0,
+      };
 }
 
 // V2.2.0 (schema 10): 按 LLM 配置分组返回调用量。
 // 兼容旧数据（llm_config_id = 0 时回退到 model_name 作标识），
 // 让 UsageStatsScreen 能在多 LLM 配置场景下识别每个配置的调用量。
-export async function getLLMUsageByConfig(projectId: number | null): Promise<any[]> {
+export async function getLLMUsageByConfig(
+  projectId: number | null,
+): Promise<any[]> {
   const database = await openDatabase();
   const projectFilter = projectId ? 'WHERE project_id = ?' : '';
   const params = projectId ? [projectId] : [];
@@ -2379,6 +3594,7 @@ export interface ProjectNoteConfig {
   mode: NoteMode;
   styleWeights: Record<string, number>;
   retrievalTopK: number;
+  retrievalFragmentChars: number;
   enabledNoteIds: number[];
   updatedAt: string;
 }
@@ -2403,12 +3619,15 @@ function parseProjectNoteConfigRow(row: Row): ProjectNoteConfig {
     styleWeights: safeJsonParse(row.style_weights, {}),
     // 11.10 修复：原 || 把 0 当 falsy 回退到 5，改用 ?? 保留显式 0
     retrievalTopK: Number(row.retrieval_top_k) ?? 5,
+    retrievalFragmentChars: Number(row.retrieval_fragment_chars) || 1000,
     enabledNoteIds: safeJsonParse(row.enabled_note_ids, []),
     updatedAt: row.updated_at,
   };
 }
 
-export async function getProjectNoteConfig(projectId: number): Promise<ProjectNoteConfig | null> {
+export async function getProjectNoteConfig(
+  projectId: number,
+): Promise<ProjectNoteConfig | null> {
   const result = await execute(
     await openDatabase(),
     'SELECT * FROM project_note_config WHERE project_id = ?',
@@ -2431,15 +3650,29 @@ export async function setProjectNoteConfig(
   const database = await openDatabase();
   const existing = await getProjectNoteConfig(projectId);
   const mode = config.mode ?? existing?.mode ?? 'none';
-  const styleWeights = JSON.stringify(config.styleWeights ?? existing?.styleWeights ?? {});
+  const styleWeights = JSON.stringify(
+    config.styleWeights ?? existing?.styleWeights ?? {},
+  );
   const retrievalTopK = config.retrievalTopK ?? existing?.retrievalTopK ?? 5;
-  const enabledNoteIds = JSON.stringify(config.enabledNoteIds ?? existing?.enabledNoteIds ?? []);
+  const retrievalFragmentChars =
+    config.retrievalFragmentChars ?? existing?.retrievalFragmentChars ?? 1000;
+  const enabledNoteIds = JSON.stringify(
+    config.enabledNoteIds ?? existing?.enabledNoteIds ?? [],
+  );
   const updatedAt = new Date().toISOString();
   await execute(
     database,
-    `INSERT OR REPLACE INTO project_note_config (project_id, mode, style_weights, retrieval_top_k, enabled_note_ids, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [projectId, mode, styleWeights, retrievalTopK, enabledNoteIds, updatedAt],
+    `INSERT OR REPLACE INTO project_note_config (project_id, mode, style_weights, retrieval_top_k, retrieval_fragment_chars, enabled_note_ids, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      projectId,
+      mode,
+      styleWeights,
+      retrievalTopK,
+      retrievalFragmentChars,
+      enabledNoteIds,
+      updatedAt,
+    ],
   );
 }
 
@@ -2451,7 +3684,9 @@ export interface NoteStyleProfileRow {
   sourceHash: string;
 }
 
-export async function getNoteStyleProfile(noteId: number): Promise<NoteStyleProfileRow | null> {
+export async function getNoteStyleProfile(
+  noteId: number,
+): Promise<NoteStyleProfileRow | null> {
   const result = await execute(
     await openDatabase(),
     'SELECT * FROM note_style_profiles WHERE note_id = ?',
@@ -2484,7 +3719,11 @@ export async function setNoteStyleProfile(
 }
 
 export async function deleteNoteStyleProfile(noteId: number): Promise<void> {
-  await execute(await openDatabase(), 'DELETE FROM note_style_profiles WHERE note_id = ?', [noteId]);
+  await execute(
+    await openDatabase(),
+    'DELETE FROM note_style_profiles WHERE note_id = ?',
+    [noteId],
+  );
 }
 
 // 简易 hash（非加密级别，用于笔记内容变更检测）
@@ -2495,5 +3734,9 @@ export async function computeNoteSourceHash(content: string): Promise<string> {
     hash = (hash << 5) - hash + char;
     hash = hash & hash;
   }
-  return Math.abs(hash).toString(16).padStart(8, '0') + '_' + content.length.toString(16);
+  return (
+    Math.abs(hash).toString(16).padStart(8, '0') +
+    '_' +
+    content.length.toString(16)
+  );
 }

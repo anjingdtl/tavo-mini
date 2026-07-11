@@ -1,17 +1,52 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, FlatList, Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import { BookMarked, Download, FilePlus2, Import, NotebookPen, Pencil, RefreshCw, SlidersHorizontal, Trash2, UserRound } from 'lucide-react-native';
+import {
+  Alert,
+  FlatList,
+  Image,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+} from 'react-native';
+import {
+  BookMarked,
+  Download,
+  FilePlus2,
+  Import,
+  NotebookPen,
+  Pencil,
+  RefreshCw,
+  SlidersHorizontal,
+  Trash2,
+  UserRound,
+} from 'lucide-react-native';
 import { types } from '@react-native-documents/picker';
 import Toast from 'react-native-toast-message';
 import { useFocusEffect } from '@react-navigation/native';
-import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import {
+  Button,
+  Card,
+  EmptyState,
+  Field,
+  Header,
+  Screen,
+  SegmentedControl,
+  spacing,
+} from '../components/ui';
 import { CharacterEditor } from '../components/CharacterEditor';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
 import type { ResourceType } from '../services/database';
 import { estimateTokens } from '../utils/tokenEstimator';
-import { DEFAULT_STYLE_WEIGHTS, type StyleWeights, analyzeNotesStyle } from '../services/styleAnalyzer';
+import {
+  DEFAULT_STYLE_WEIGHTS,
+  type StyleWeights,
+  analyzeNotesStyle,
+} from '../services/styleAnalyzer';
 import {
   getCharacterImagePath,
   importCharacters,
@@ -70,33 +105,51 @@ export const ResourceLibrary: React.FC = () => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
   const [tab, setTab] = useState<ResourceTab>('characters');
-  const [items, setItems] = useState<Record<ResourceTab, any[]>>({ characters: [], worldbook: [], notes: [], presets: [] });
+  const [items, setItems] = useState<Record<ResourceTab, any[]>>({
+    characters: [],
+    worldbook: [],
+    notes: [],
+    presets: [],
+  });
   const [characterCollections, setCharacterCollections] = useState<any[]>([]);
   const [collections, setCollections] = useState<any[]>([]);
-  const [selectedCharacterCollectionId, setSelectedCharacterCollectionId] = useState<number | null>(null);
-  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
+  const [selectedCharacterCollectionId, setSelectedCharacterCollectionId] =
+    useState<number | null>(null);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<
+    number | null
+  >(null);
   const [draft, setDraft] = useState('');
   const [editor, setEditor] = useState<EditorState | null>(null);
-  const [noteMode, setNoteMode] = useState<'none' | 'style' | 'retrieval'>('none');
-  const [styleWeights, setStyleWeights] = useState<StyleWeights>(DEFAULT_STYLE_WEIGHTS);
+  const [noteMode, setNoteMode] = useState<'none' | 'style' | 'retrieval'>(
+    'none',
+  );
+  const [styleWeights, setStyleWeights] = useState<StyleWeights>(
+    DEFAULT_STYLE_WEIGHTS,
+  );
   const [retrievalTopK, setRetrievalTopK] = useState(5);
+  const [retrievalFragmentChars, setRetrievalFragmentChars] = useState(1000);
   const [enabledNoteIds, setEnabledNoteIds] = useState<number[]>([]);
   const [showNotePicker, setShowNotePicker] = useState(false);
   const [showStyleProfile, setShowStyleProfile] = useState(false);
-  const [batchResult, setBatchResult] = useState<
-    | {
-        title: string;
-        success: Array<{ fileName: string; id: any }>;
-        failed: Array<{ fileName: string; error: string }>;
-      }
-    | null
-  >(null);
+  const [batchResult, setBatchResult] = useState<{
+    title: string;
+    success: Array<{ fileName: string; id: any }>;
+    failed: Array<{ fileName: string; error: string }>;
+  } | null>(null);
   const [styleProfileText, setStyleProfileText] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const projectId = currentProject?.id || 0;
 
   const loadData = useCallback(async () => {
-    const [characters, worldbook, notes, presets, characterCollectionRows, worldbookCollections, noteConfig] = await Promise.all([
+    const [
+      characters,
+      worldbook,
+      notes,
+      presets,
+      characterCollectionRows,
+      worldbookCollections,
+      noteConfig,
+    ] = await Promise.all([
       db.getAllCharacters(projectId),
       db.getAllWorldbookEntries(projectId),
       db.getAllNotes(projectId),
@@ -111,19 +164,46 @@ export const ResourceLibrary: React.FC = () => {
     if (noteConfig) {
       // 防御性归一化：DB 异常返回 null/undefined 时回退默认，避免渲染时 .length 报错
       setNoteMode(noteConfig.mode || 'none');
-      setStyleWeights({ ...DEFAULT_STYLE_WEIGHTS, ...(noteConfig.styleWeights || {}) });
-      setRetrievalTopK(typeof noteConfig.retrievalTopK === 'number' ? noteConfig.retrievalTopK : 5);
-      setEnabledNoteIds(Array.isArray(noteConfig.enabledNoteIds) ? noteConfig.enabledNoteIds : []);
+      setStyleWeights({
+        ...DEFAULT_STYLE_WEIGHTS,
+        ...(noteConfig.styleWeights || {}),
+      });
+      setRetrievalTopK(
+        typeof noteConfig.retrievalTopK === 'number'
+          ? noteConfig.retrievalTopK
+          : 5,
+      );
+      setRetrievalFragmentChars(
+        typeof noteConfig.retrievalFragmentChars === 'number'
+          ? noteConfig.retrievalFragmentChars
+          : 1000,
+      );
+      setEnabledNoteIds(
+        Array.isArray(noteConfig.enabledNoteIds)
+          ? noteConfig.enabledNoteIds
+          : [],
+      );
     } else {
       setNoteMode('none');
       setStyleWeights(DEFAULT_STYLE_WEIGHTS);
       setRetrievalTopK(5);
+      setRetrievalFragmentChars(1000);
       setEnabledNoteIds([]);
     }
-    if (selectedCollectionId && !worldbookCollections.some((collection: any) => collection.id === selectedCollectionId)) {
+    if (
+      selectedCollectionId &&
+      !worldbookCollections.some(
+        (collection: any) => collection.id === selectedCollectionId,
+      )
+    ) {
       setSelectedCollectionId(null);
     }
-    if (selectedCharacterCollectionId && !characterCollectionRows.some((collection: any) => collection.id === selectedCharacterCollectionId)) {
+    if (
+      selectedCharacterCollectionId &&
+      !characterCollectionRows.some(
+        (collection: any) => collection.id === selectedCharacterCollectionId,
+      )
+    ) {
       setSelectedCharacterCollectionId(null);
     }
   }, [projectId, selectedCollectionId, selectedCharacterCollectionId]);
@@ -134,11 +214,15 @@ export const ResourceLibrary: React.FC = () => {
     }, [loadData]),
   );
 
-  const subtitle = currentProject ? `全局资料库 · 当前项目：${currentProject.name}` : '全局资料库 · 选择项目后可配置启用关系';
+  const subtitle = currentProject
+    ? `全局资料库 · 当前项目：${currentProject.name}`
+    : '全局资料库 · 选择项目后可配置启用关系';
 
   const importCharacter = async () => {
     try {
-      const collectionId = selectedCharacterCollectionId || await db.ensureDefaultCharacterCollection(projectId);
+      const collectionId =
+        selectedCharacterCollectionId ||
+        (await db.ensureDefaultCharacterCollection(projectId));
       const id = await importSelectedCharacter(projectId, collectionId);
       if (id) Toast.show({ type: 'success', text1: '角色卡已导入' });
       await loadData();
@@ -149,8 +233,16 @@ export const ResourceLibrary: React.FC = () => {
 
   const addNewCharacter = async () => {
     try {
-      const collectionId = selectedCharacterCollectionId || await db.ensureDefaultCharacterCollection(projectId);
-      const id = await db.createCharacter(projectId, '未命名角色', 'json', '{}', { collectionId });
+      const collectionId =
+        selectedCharacterCollectionId ||
+        (await db.ensureDefaultCharacterCollection(projectId));
+      const id = await db.createCharacter(
+        projectId,
+        '未命名角色',
+        'json',
+        '{}',
+        { collectionId },
+      );
       await loadData();
       const newItem = await db.getCharacterById(id);
       if (newItem) openEditor('characters', newItem);
@@ -161,7 +253,11 @@ export const ResourceLibrary: React.FC = () => {
 
   const addNewCharacterCollection = async () => {
     try {
-      const id = await db.createCharacterCollection(projectId, '未命名角色合集', { enabled: 1 });
+      const id = await db.createCharacterCollection(
+        projectId,
+        '未命名角色合集',
+        { enabled: 1 },
+      );
       await loadData();
       const refreshedCollections = await db.getCharacterCollections(projectId);
       const newItem = refreshedCollections.find((c: any) => c.id === id);
@@ -174,7 +270,12 @@ export const ResourceLibrary: React.FC = () => {
   const importWorldbook = async () => {
     try {
       const result = await importSelectedWorldBook(projectId);
-      if (result) Toast.show({ type: 'success', text1: '世界书已导入', text2: `${result.entriesImported || 0} 个条目` });
+      if (result)
+        Toast.show({
+          type: 'success',
+          text1: '世界书已导入',
+          text2: `${result.entriesImported || 0} 个条目`,
+        });
       await loadData();
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导入失败', text2: error.message });
@@ -183,7 +284,9 @@ export const ResourceLibrary: React.FC = () => {
 
   const addNewWorldbook = async () => {
     try {
-      const id = await db.createWorldbookCollection(projectId, '未命名世界书', { enabled: 1 });
+      const id = await db.createWorldbookCollection(projectId, '未命名世界书', {
+        enabled: 1,
+      });
       await loadData();
       const refreshedCollections = await db.getWorldbookCollections(projectId);
       const newItem = refreshedCollections.find((c: any) => c.id === id);
@@ -196,9 +299,13 @@ export const ResourceLibrary: React.FC = () => {
   const addNewWorldbookEntry = async () => {
     if (!selectedCollectionId) return;
     try {
-      const id = await db.createWorldbookEntry(projectId, '', '', 1, { collection_id: selectedCollectionId });
+      const id = await db.createWorldbookEntry(projectId, '', '', 1, {
+        collection_id: selectedCollectionId,
+      });
       await loadData();
-      const entries = await db.getWorldbookEntriesByCollection(selectedCollectionId);
+      const entries = await db.getWorldbookEntriesByCollection(
+        selectedCollectionId,
+      );
       const newItem = entries.find((e: any) => e.id === id);
       if (newItem) openEditor('worldbook', newItem);
     } catch (error: any) {
@@ -209,7 +316,12 @@ export const ResourceLibrary: React.FC = () => {
   const importNoteText = async () => {
     try {
       const result = await importSelectedNoteText(projectId);
-      if (result) Toast.show({ type: 'success', text1: 'TXT 已导入为笔记', text2: `${result.createdCount} 条笔记` });
+      if (result)
+        Toast.show({
+          type: 'success',
+          text1: 'TXT 已导入为笔记',
+          text2: `${result.createdCount} 条笔记`,
+        });
       await loadData();
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导入失败', text2: error.message });
@@ -221,19 +333,35 @@ export const ResourceLibrary: React.FC = () => {
     if (!files) return;
     try {
       const result = selectedCharacterCollectionId
-        ? await importCharacters(projectId, files, { collectionId: selectedCharacterCollectionId })
-        : await importCharactersAsCollection(projectId, `批量角色卡 ${new Date().toLocaleString('zh-CN', { hour12: false })}`, files);
+        ? await importCharacters(projectId, files, {
+            collectionId: selectedCharacterCollectionId,
+          })
+        : await importCharactersAsCollection(
+            projectId,
+            `批量角色卡 ${new Date().toLocaleString('zh-CN', {
+              hour12: false,
+            })}`,
+            files,
+          );
       if (result.total === 0) return;
       Toast.show({
         type: result.failed.length === 0 ? 'success' : 'info',
         text1: `角色卡批量导入：${result.success.length} 成功 / ${result.failed.length} 失败`,
       });
       if (result.failed.length > 0) {
-        setBatchResult({ title: '批量导入角色卡', success: result.success, failed: result.failed });
+        setBatchResult({
+          title: '批量导入角色卡',
+          success: result.success,
+          failed: result.failed,
+        });
       }
       await loadData();
     } catch (error: any) {
-      Toast.show({ type: 'error', text1: '批量导入失败', text2: error.message });
+      Toast.show({
+        type: 'error',
+        text1: '批量导入失败',
+        text2: error.message,
+      });
     }
   };
 
@@ -246,24 +374,42 @@ export const ResourceLibrary: React.FC = () => {
         return;
       }
       const result = selectedCharacterCollectionId
-        ? await importCharacters(projectId, files, { collectionId: selectedCharacterCollectionId })
-        : await importCharactersAsCollection(projectId, `文件夹角色卡 ${new Date().toLocaleString('zh-CN', { hour12: false })}`, files);
+        ? await importCharacters(projectId, files, {
+            collectionId: selectedCharacterCollectionId,
+          })
+        : await importCharactersAsCollection(
+            projectId,
+            `文件夹角色卡 ${new Date().toLocaleString('zh-CN', {
+              hour12: false,
+            })}`,
+            files,
+          );
       Toast.show({
         type: result.failed.length === 0 ? 'success' : 'info',
         text1: `文件夹导入：${result.success.length} 成功 / ${result.failed.length} 失败`,
       });
       if (result.failed.length > 0) {
-        setBatchResult({ title: '文件夹导入角色卡', success: result.success, failed: result.failed });
+        setBatchResult({
+          title: '文件夹导入角色卡',
+          success: result.success,
+          failed: result.failed,
+        });
       }
       await loadData();
     } catch (error: any) {
-      Toast.show({ type: 'error', text1: '文件夹导入失败', text2: error.message });
+      Toast.show({
+        type: 'error',
+        text1: '文件夹导入失败',
+        text2: error.message,
+      });
     }
   };
 
   const collectUngroupedCharacters = async () => {
     try {
-      const id = await db.createCharacterCollection(projectId, '全部人物卡', { enabled: 1 });
+      const id = await db.createCharacterCollection(projectId, '全部人物卡', {
+        enabled: 1,
+      });
       await db.setAllCharactersCollectionId(projectId, id);
       setSelectedCharacterCollectionId(id);
       await loadData();
@@ -284,11 +430,19 @@ export const ResourceLibrary: React.FC = () => {
         text1: `世界书批量导入：${result.success.length} 成功 / ${result.failed.length} 失败`,
       });
       if (result.failed.length > 0) {
-        setBatchResult({ title: '批量导入世界书', success: result.success, failed: result.failed });
+        setBatchResult({
+          title: '批量导入世界书',
+          success: result.success,
+          failed: result.failed,
+        });
       }
       await loadData();
     } catch (error: any) {
-      Toast.show({ type: 'error', text1: '批量导入失败', text2: error.message });
+      Toast.show({
+        type: 'error',
+        text1: '批量导入失败',
+        text2: error.message,
+      });
     }
   };
 
@@ -303,18 +457,32 @@ export const ResourceLibrary: React.FC = () => {
         text1: `TXT 笔记批量导入：${result.success.length} 成功 / ${result.failed.length} 失败`,
       });
       if (result.failed.length > 0) {
-        setBatchResult({ title: '批量导入 TXT 笔记', success: result.success, failed: result.failed });
+        setBatchResult({
+          title: '批量导入 TXT 笔记',
+          success: result.success,
+          failed: result.failed,
+        });
       }
       await loadData();
     } catch (error: any) {
-      Toast.show({ type: 'error', text1: '批量导入失败', text2: error.message });
+      Toast.show({
+        type: 'error',
+        text1: '批量导入失败',
+        text2: error.message,
+      });
     }
   };
 
   const handleNoteModeChange = async (mode: 'none' | 'style' | 'retrieval') => {
     setNoteMode(mode);
     try {
-      await db.setProjectNoteConfig(projectId, { mode, styleWeights, retrievalTopK, enabledNoteIds });
+      await db.setProjectNoteConfig(projectId, {
+        mode,
+        styleWeights,
+        retrievalTopK,
+        retrievalFragmentChars,
+        enabledNoteIds,
+      });
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '保存失败', text2: error.message });
     }
@@ -325,7 +493,13 @@ export const ResourceLibrary: React.FC = () => {
     setStyleWeights(newWeights);
     try {
       // 用当前 noteMode 而非写死 'style'，避免在 retrieval 模式下被误调时覆盖
-      await db.setProjectNoteConfig(projectId, { mode: noteMode, styleWeights: newWeights, retrievalTopK, enabledNoteIds });
+      await db.setProjectNoteConfig(projectId, {
+        mode: noteMode,
+        styleWeights: newWeights,
+        retrievalTopK,
+        retrievalFragmentChars,
+        enabledNoteIds,
+      });
     } catch {
       // 静默失败，不打断用户调整
     }
@@ -335,19 +509,46 @@ export const ResourceLibrary: React.FC = () => {
     setRetrievalTopK(value);
     try {
       // 用当前 noteMode 而非写死 'retrieval'
-      await db.setProjectNoteConfig(projectId, { mode: noteMode, styleWeights, retrievalTopK: value, enabledNoteIds });
+      await db.setProjectNoteConfig(projectId, {
+        mode: noteMode,
+        styleWeights,
+        retrievalTopK: value,
+        retrievalFragmentChars,
+        enabledNoteIds,
+      });
     } catch {
       // 静默失败
     }
   };
 
+  const handleFragmentCharsChange = async (value: number) => {
+    setRetrievalFragmentChars(value);
+    try {
+      await db.setProjectNoteConfig(projectId, {
+        mode: noteMode,
+        styleWeights,
+        retrievalTopK,
+        retrievalFragmentChars: value,
+        enabledNoteIds,
+      });
+    } catch {
+      // 静默失败，不打断用户调整
+    }
+  };
+
   const handleToggleNoteId = async (noteId: number) => {
     const newIds = enabledNoteIds.includes(noteId)
-      ? enabledNoteIds.filter((id) => id !== noteId)
+      ? enabledNoteIds.filter(id => id !== noteId)
       : [...enabledNoteIds, noteId];
     setEnabledNoteIds(newIds);
     try {
-      await db.setProjectNoteConfig(projectId, { mode: noteMode, styleWeights, retrievalTopK, enabledNoteIds: newIds });
+      await db.setProjectNoteConfig(projectId, {
+        mode: noteMode,
+        styleWeights,
+        retrievalTopK,
+        retrievalFragmentChars,
+        enabledNoteIds: newIds,
+      });
     } catch {
       // 静默失败
     }
@@ -356,7 +557,10 @@ export const ResourceLibrary: React.FC = () => {
   const handleReanalyze = async () => {
     setAnalyzing(true);
     try {
-      const ids = enabledNoteIds.length > 0 ? enabledNoteIds : items.notes.map((n: any) => n.id);
+      const ids =
+        enabledNoteIds.length > 0
+          ? enabledNoteIds
+          : items.notes.map((n: any) => n.id);
       if (ids.length === 0) {
         Toast.show({ type: 'info', text1: '没有可分析的笔记' });
         return;
@@ -364,7 +568,11 @@ export const ResourceLibrary: React.FC = () => {
       await analyzeNotesStyle(ids);
       Toast.show({ type: 'success', text1: '风格分析完成' });
     } catch (error: any) {
-      Toast.show({ type: 'error', text1: '风格分析失败', text2: error.message });
+      Toast.show({
+        type: 'error',
+        text1: '风格分析失败',
+        text2: error.message,
+      });
     } finally {
       setAnalyzing(false);
     }
@@ -389,7 +597,9 @@ export const ResourceLibrary: React.FC = () => {
     try {
       if (tab === 'worldbook') {
         if (selectedCollectionId) {
-          await db.createWorldbookEntry(projectId, value, '', 1, { collection_id: selectedCollectionId });
+          await db.createWorldbookEntry(projectId, value, '', 1, {
+            collection_id: selectedCollectionId,
+          });
         } else {
           await db.createWorldbookCollection(projectId, value, { enabled: 1 });
         }
@@ -404,7 +614,8 @@ export const ResourceLibrary: React.FC = () => {
   };
 
   const openEditor = async (kind: EditorKind, item: any) => {
-    const noteContent = kind === 'notes' ? await db.getNoteContentById(item.id) : '';
+    const noteContent =
+      kind === 'notes' ? await db.getNoteContentById(item.id) : '';
     // BUG-8 修复：新建的角色/世界书 name 是 "未命名角色" 等占位符，
     // 如果直接预填到 TextInput 会让用户的输入被拼接到占位符后面（"未命名角色Xxx"），
     // 即使保存成功也保留占位符。这里把已存在的真实 name 才预填，否则留空让 placeholder 显示。
@@ -422,7 +633,12 @@ export const ResourceLibrary: React.FC = () => {
       kind,
       item,
       name: isPlaceholder ? '' : storedName,
-      content: kind === 'notes' ? noteContent : kind === 'worldbook' ? item.content || '' : '',
+      content:
+        kind === 'notes'
+          ? noteContent
+          : kind === 'worldbook'
+          ? item.content || ''
+          : '',
       secondary: item.keyword_secondary || '',
       comment: item.comment || '',
       dataJson: item.data_json || '{}',
@@ -446,8 +662,14 @@ export const ResourceLibrary: React.FC = () => {
     try {
       if (editor.kind === 'characters') {
         const parsed = JSON.parse(editor.dataJson);
-        const data = editor.imagePath ? withCharacterImageAsset(parsed, editor.imagePath) : parsed;
-        await db.updateCharacter(item.id, editor.name.trim() || '未命名角色', JSON.stringify(data));
+        const data = editor.imagePath
+          ? withCharacterImageAsset(parsed, editor.imagePath)
+          : parsed;
+        await db.updateCharacter(
+          item.id,
+          editor.name.trim() || '未命名角色',
+          JSON.stringify(data),
+        );
         await db.updateCharacterTokenBudget(item.id, maxTokens);
       }
       if (editor.kind === 'characterCollection') {
@@ -455,14 +677,22 @@ export const ResourceLibrary: React.FC = () => {
           name: editor.name.trim() || '未命名角色合集',
           max_tokens: maxTokens,
         });
-        await db.setCharacterCollectionEnabledForProject(projectId, item.id, editor.enabled);
+        await db.setCharacterCollectionEnabledForProject(
+          projectId,
+          item.id,
+          editor.enabled,
+        );
       }
       if (editor.kind === 'worldbookCollection') {
         await db.updateWorldbookCollection(item.id, {
           name: editor.name.trim() || '未命名世界书',
           max_tokens: maxTokens,
         });
-        await db.setWorldbookCollectionEnabledForProject(projectId, item.id, editor.enabled);
+        await db.setWorldbookCollectionEnabledForProject(
+          projectId,
+          item.id,
+          editor.enabled,
+        );
       }
       if (editor.kind === 'worldbook') {
         await db.updateWorldbookEntry(item.id, {
@@ -476,7 +706,11 @@ export const ResourceLibrary: React.FC = () => {
         });
       }
       if (editor.kind === 'notes') {
-        await db.updateNote(item.id, editor.name.trim() || '无标题笔记', editor.content);
+        await db.updateNote(
+          item.id,
+          editor.name.trim() || '无标题笔记',
+          editor.content,
+        );
         await db.updateNoteTokenBudget(item.id, maxTokens);
       }
       if (editor.kind === 'presets') {
@@ -495,7 +729,12 @@ export const ResourceLibrary: React.FC = () => {
       await loadData();
       Toast.show({ type: 'success', text1: '资料已保存' });
     } catch (error: any) {
-      Alert.alert('保存失败', editor.kind === 'characters' ? '角色卡 JSON 格式不正确。' : error?.message || '资料保存失败。');
+      Alert.alert(
+        '保存失败',
+        editor.kind === 'characters'
+          ? '角色卡 JSON 格式不正确。'
+          : error?.message || '资料保存失败。',
+      );
     }
   };
 
@@ -552,12 +791,21 @@ export const ResourceLibrary: React.FC = () => {
       return;
     }
     if (tab === 'characters' && item.collection_enabled === 0) {
-      Toast.show({ type: 'info', text1: '该人物卡所属合集已禁用', text2: '请先启用合集，再单独控制人物卡。' });
+      Toast.show({
+        type: 'info',
+        text1: '该人物卡所属合集已禁用',
+        text2: '请先启用合集，再单独控制人物卡。',
+      });
       return;
     }
     // Phase9-BUG#11: 包裹 try-catch，失败时 Toast 提示（状态会通过 store 自动同步）
     try {
-      await db.setProjectResourceEnabled(currentProject.id, RESOURCE_TYPE[tab], item.id, item.enabled_for_project !== 1);
+      await db.setProjectResourceEnabled(
+        currentProject.id,
+        RESOURCE_TYPE[tab],
+        item.id,
+        item.enabled_for_project !== 1,
+      );
       await loadData();
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
@@ -567,7 +815,11 @@ export const ResourceLibrary: React.FC = () => {
   const toggleCharacterCollection = async (collection: any) => {
     const newEnabled = collection.enabled === 1 ? 0 : 1;
     try {
-      await db.setCharacterCollectionEnabledForProject(projectId, collection.id, newEnabled === 1);
+      await db.setCharacterCollectionEnabledForProject(
+        projectId,
+        collection.id,
+        newEnabled === 1,
+      );
       await loadData();
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
@@ -578,7 +830,11 @@ export const ResourceLibrary: React.FC = () => {
     const newEnabled = collection.enabled === 1 ? 0 : 1;
     // Phase9-BUG#12: 包裹 try-catch + Toast
     try {
-      await db.setWorldbookCollectionEnabledForProject(projectId, collection.id, newEnabled === 1);
+      await db.setWorldbookCollectionEnabledForProject(
+        projectId,
+        collection.id,
+        newEnabled === 1,
+      );
       await loadData();
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
@@ -615,322 +871,882 @@ export const ResourceLibrary: React.FC = () => {
     ]);
   };
 
-  const activeItems = tab === 'characters' && selectedCharacterCollectionId
-    ? items.characters.filter((item) => item.collection_id === selectedCharacterCollectionId)
-    : tab === 'worldbook' && selectedCollectionId
-      ? items.worldbook.filter((item) => item.collection_id === selectedCollectionId)
+  const activeItems =
+    tab === 'characters' && selectedCharacterCollectionId
+      ? items.characters.filter(
+          item => item.collection_id === selectedCharacterCollectionId,
+        )
+      : tab === 'worldbook' && selectedCollectionId
+      ? items.worldbook.filter(
+          item => item.collection_id === selectedCollectionId,
+        )
       : items[tab];
   const canAddManual = tab !== 'characters';
-  const editorTitle = useMemo(() => (editor ? `编辑${tabLabel(editor.kind)}` : ''), [editor]);
+  const editorTitle = useMemo(
+    () => (editor ? `编辑${tabLabel(editor.kind)}` : ''),
+    [editor],
+  );
 
   return (
     <Screen>
       <Header title="资料库" subtitle={subtitle} />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.tabs}>
-          <SegmentedControl value={tab} options={TABS} onChange={(value) => { setTab(value); setSelectedCollectionId(null); setSelectedCharacterCollectionId(null); }} />
+          <SegmentedControl
+            value={tab}
+            options={TABS}
+            onChange={value => {
+              setTab(value);
+              setSelectedCollectionId(null);
+              setSelectedCharacterCollectionId(null);
+            }}
+          />
         </View>
         <View style={styles.actions}>
-        {tab === 'characters' ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionScroll}>
-            <Button label="导入角色卡" icon={Import} compact onPress={importCharacter} />
-            <Button label="批量导入角色卡" icon={Import} variant="secondary" compact onPress={importCharactersBatch} />
-            <Button label="导入文件夹" icon={Import} variant="secondary" compact onPress={importCharactersFolder} />
-            {!selectedCharacterCollectionId && <Button label="新建角色合集" icon={FilePlus2} variant="secondary" compact onPress={addNewCharacterCollection} />}
-            {selectedCharacterCollectionId && <Button label="新建角色卡" icon={FilePlus2} variant="secondary" compact onPress={addNewCharacter} />}
-            {!selectedCharacterCollectionId && <Button label="整理已导入" variant="secondary" compact onPress={collectUngroupedCharacters} disabled={!currentProject} />}
-            {selectedCharacterCollectionId ? <Button label="返回合集" variant="secondary" compact onPress={() => setSelectedCharacterCollectionId(null)} /> : null}
-          </ScrollView>
-        ) : null}
-        {tab === 'worldbook' ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionScroll}>
-            <Button label="导入世界书" icon={Import} compact onPress={importWorldbook} />
-            <Button label="批量导入世界书" icon={Import} variant="secondary" compact onPress={importWorldbooksBatch} />
-            {!selectedCollectionId && <Button label="新建世界书" icon={FilePlus2} variant="secondary" compact onPress={addNewWorldbook} />}
-            {selectedCollectionId && <Button label="新建条目" icon={FilePlus2} variant="secondary" compact onPress={addNewWorldbookEntry} />}
-            {selectedCollectionId ? <Button label="返回合集" variant="secondary" compact onPress={() => setSelectedCollectionId(null)} /> : null}
-          </ScrollView>
-        ) : null}
-        {tab === 'notes' ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.actionScroll}>
-            <Button label="导入 TXT 笔记" icon={Import} compact onPress={importNoteText} />
-            <Button label="批量导入 TXT" icon={Import} variant="secondary" compact onPress={importNotesBatch} />
-          </ScrollView>
-        ) : null}
-        {tab === 'notes' && currentProject ? (
-          <View style={styles.noteModePanel}>
-            <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>笔记模式</Text>
-            <SegmentedControl
-              value={noteMode}
-              options={[
-                { value: 'none', label: '禁用' },
-                { value: 'style', label: '仿写' },
-                { value: 'retrieval', label: '资料库' },
-              ]}
-              onChange={(value) => handleNoteModeChange(value)}
-            />
-            {noteMode === 'style' ? (
-              <View style={styles.noteModeSection}>
-                <Pressable onPress={() => setShowNotePicker(true)}>
-                  <Text style={[styles.noteModeLink, { color: theme.colors.accent }]}>
-                    参与仿写的笔记：{enabledNoteIds.length > 0 ? enabledNoteIds.length : items.notes.length}/{items.notes.length} 篇
-                  </Text>
-                </Pressable>
-                <Text style={[styles.noteModeLabel, { color: theme.colors.textSecondary }]}>风格要素权重：</Text>
-                {([
-                  { key: 'sentence_structure' as const, label: '句式结构' },
-                  { key: 'tone_emotion' as const, label: '语气与情感' },
-                  { key: 'vocabulary' as const, label: '常用词汇搭配' },
-                  { key: 'character_voice' as const, label: '角色设定' },
-                  { key: 'narrative_rhythm' as const, label: '叙事节奏' },
-                ]).map((item) => (
-                  <View key={item.key} style={styles.weightRow}>
-                    <Text style={[styles.weightLabel, { color: theme.colors.textPrimary }]}>{item.label}</Text>
-                    <SegmentedControl
-                      value={String(styleWeights[item.key] ?? 0)}
-                      options={[
-                        { value: '0', label: '关' },
-                        { value: '1', label: '弱' },
-                        { value: '2', label: '中' },
-                        { value: '3', label: '强' },
+          {tab === 'characters' ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.actionScroll}
+            >
+              <Button
+                label="导入角色卡"
+                icon={Import}
+                compact
+                onPress={importCharacter}
+              />
+              <Button
+                label="批量导入角色卡"
+                icon={Import}
+                variant="secondary"
+                compact
+                onPress={importCharactersBatch}
+              />
+              <Button
+                label="导入文件夹"
+                icon={Import}
+                variant="secondary"
+                compact
+                onPress={importCharactersFolder}
+              />
+              {!selectedCharacterCollectionId && (
+                <Button
+                  label="新建角色合集"
+                  icon={FilePlus2}
+                  variant="secondary"
+                  compact
+                  onPress={addNewCharacterCollection}
+                />
+              )}
+              {selectedCharacterCollectionId && (
+                <Button
+                  label="新建角色卡"
+                  icon={FilePlus2}
+                  variant="secondary"
+                  compact
+                  onPress={addNewCharacter}
+                />
+              )}
+              {!selectedCharacterCollectionId && (
+                <Button
+                  label="整理已导入"
+                  variant="secondary"
+                  compact
+                  onPress={collectUngroupedCharacters}
+                  disabled={!currentProject}
+                />
+              )}
+              {selectedCharacterCollectionId ? (
+                <Button
+                  label="返回合集"
+                  variant="secondary"
+                  compact
+                  onPress={() => setSelectedCharacterCollectionId(null)}
+                />
+              ) : null}
+            </ScrollView>
+          ) : null}
+          {tab === 'worldbook' ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.actionScroll}
+            >
+              <Button
+                label="导入世界书"
+                icon={Import}
+                compact
+                onPress={importWorldbook}
+              />
+              <Button
+                label="批量导入世界书"
+                icon={Import}
+                variant="secondary"
+                compact
+                onPress={importWorldbooksBatch}
+              />
+              {!selectedCollectionId && (
+                <Button
+                  label="新建世界书"
+                  icon={FilePlus2}
+                  variant="secondary"
+                  compact
+                  onPress={addNewWorldbook}
+                />
+              )}
+              {selectedCollectionId && (
+                <Button
+                  label="新建条目"
+                  icon={FilePlus2}
+                  variant="secondary"
+                  compact
+                  onPress={addNewWorldbookEntry}
+                />
+              )}
+              {selectedCollectionId ? (
+                <Button
+                  label="返回合集"
+                  variant="secondary"
+                  compact
+                  onPress={() => setSelectedCollectionId(null)}
+                />
+              ) : null}
+            </ScrollView>
+          ) : null}
+          {tab === 'notes' ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.actionScroll}
+            >
+              <Button
+                label="导入 TXT 笔记"
+                icon={Import}
+                compact
+                onPress={importNoteText}
+              />
+              <Button
+                label="批量导入 TXT"
+                icon={Import}
+                variant="secondary"
+                compact
+                onPress={importNotesBatch}
+              />
+            </ScrollView>
+          ) : null}
+          {tab === 'notes' && currentProject ? (
+            <View style={styles.noteModePanel}>
+              <Text
+                style={[
+                  styles.noteModeTitle,
+                  { color: theme.colors.textPrimary },
+                ]}
+              >
+                笔记模式
+              </Text>
+              <SegmentedControl
+                value={noteMode}
+                options={[
+                  { value: 'none', label: '禁用' },
+                  { value: 'style', label: '仿写' },
+                  { value: 'retrieval', label: '资料库' },
+                ]}
+                onChange={value => handleNoteModeChange(value)}
+              />
+              {noteMode === 'style' ? (
+                <View style={styles.noteModeSection}>
+                  <Pressable onPress={() => setShowNotePicker(true)}>
+                    <Text
+                      style={[
+                        styles.noteModeLink,
+                        { color: theme.colors.accent },
                       ]}
-                      onChange={(val) => handleWeightChange(item.key, Number(val))}
+                    >
+                      参与仿写的笔记：
+                      {enabledNoteIds.length > 0
+                        ? enabledNoteIds.length
+                        : items.notes.length}
+                      /{items.notes.length} 篇
+                    </Text>
+                  </Pressable>
+                  <Text
+                    style={[
+                      styles.noteModeLabel,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    风格要素权重：
+                  </Text>
+                  {[
+                    { key: 'sentence_structure' as const, label: '句式结构' },
+                    { key: 'tone_emotion' as const, label: '语气与情感' },
+                    { key: 'vocabulary' as const, label: '常用词汇搭配' },
+                    { key: 'character_voice' as const, label: '角色设定' },
+                    { key: 'narrative_rhythm' as const, label: '叙事节奏' },
+                  ].map(item => (
+                    <View key={item.key} style={styles.weightRow}>
+                      <Text
+                        style={[
+                          styles.weightLabel,
+                          { color: theme.colors.textPrimary },
+                        ]}
+                      >
+                        {item.label}
+                      </Text>
+                      <SegmentedControl
+                        value={String(styleWeights[item.key] ?? 0)}
+                        options={[
+                          { value: '0', label: '关' },
+                          { value: '1', label: '弱' },
+                          { value: '2', label: '中' },
+                          { value: '3', label: '强' },
+                        ]}
+                        onChange={val =>
+                          handleWeightChange(item.key, Number(val))
+                        }
+                      />
+                    </View>
+                  ))}
+                  <View style={styles.rowActions}>
+                    <Button
+                      label={analyzing ? '分析中...' : '重新分析风格'}
+                      icon={RefreshCw}
+                      variant="secondary"
+                      onPress={handleReanalyze}
+                      disabled={analyzing}
+                    />
+                    <Button
+                      label="查看画像"
+                      variant="ghost"
+                      onPress={handleViewProfile}
                     />
                   </View>
-                ))}
-                <View style={styles.rowActions}>
-                  <Button label={analyzing ? '分析中...' : '重新分析风格'} icon={RefreshCw} variant="secondary" onPress={handleReanalyze} disabled={analyzing} />
-                  <Button label="查看画像" variant="ghost" onPress={handleViewProfile} />
                 </View>
-              </View>
-            ) : null}
-            {noteMode === 'retrieval' ? (
-              <View style={styles.noteModeSection}>
-                <Pressable onPress={() => setShowNotePicker(true)}>
-                  <Text style={[styles.noteModeLink, { color: theme.colors.accent }]}>
-                    参与检索的笔记：{enabledNoteIds.length > 0 ? enabledNoteIds.length : items.notes.length}/{items.notes.length} 篇
+              ) : null}
+              {noteMode === 'retrieval' ? (
+                <View style={styles.noteModeSection}>
+                  <Pressable onPress={() => setShowNotePicker(true)}>
+                    <Text
+                      style={[
+                        styles.noteModeLink,
+                        { color: theme.colors.accent },
+                      ]}
+                    >
+                      参与检索的笔记：
+                      {enabledNoteIds.length > 0
+                        ? enabledNoteIds.length
+                        : items.notes.length}
+                      /{items.notes.length} 篇
+                    </Text>
+                  </Pressable>
+                  <Text
+                    style={[
+                      styles.noteModeLabel,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    检索片段数上限：
                   </Text>
-                </Pressable>
-                <Text style={[styles.noteModeLabel, { color: theme.colors.textSecondary }]}>检索片段数上限：</Text>
-                <SegmentedControl
-                  value={String(retrievalTopK)}
-                  options={[
-                    { value: '3', label: '3' },
-                    { value: '5', label: '5' },
-                    { value: '8', label: '8' },
-                    { value: '10', label: '10' },
-                  ]}
-                  onChange={(val) => handleTopKChange(Number(val))}
-                />
-                <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>生成正文时会自动从笔记中检索相关内容</Text>
-              </View>
-            ) : null}
-          </View>
-        ) : null}
-        {canAddManual ? (
-          <>
-            <Field value={draft} onChangeText={setDraft} placeholder={placeholderFor(tab, Boolean(selectedCollectionId))} inputStyle={styles.inlineInput} />
-            <Button label="添加" icon={FilePlus2} onPress={addManual} disabled={!draft.trim()} />
-          </>
-        ) : null}
-      </View>
+                  <SegmentedControl
+                    value={String(retrievalTopK)}
+                    options={[
+                      { value: '3', label: '3' },
+                      { value: '5', label: '5' },
+                      { value: '8', label: '8' },
+                      { value: '10', label: '10' },
+                    ]}
+                    onChange={val => handleTopKChange(Number(val))}
+                  />
+                  <Text
+                    style={[
+                      styles.noteModeLabel,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    单条命中片段长度：
+                  </Text>
+                  <SegmentedControl
+                    value={String(retrievalFragmentChars)}
+                    options={[
+                      { value: '500', label: '500 字' },
+                      { value: '1000', label: '1000 字' },
+                      { value: '2000', label: '2000 字' },
+                      { value: '4000', label: '4000 字' },
+                    ]}
+                    onChange={val => handleFragmentCharsChange(Number(val))}
+                  />
+                  <Text
+                    style={[
+                      styles.noteModeHint,
+                      { color: theme.colors.textMuted },
+                    ]}
+                  >
+                    生成正文时会自动从笔记中检索相关内容
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+          {canAddManual ? (
+            <>
+              <Field
+                value={draft}
+                onChangeText={setDraft}
+                placeholder={placeholderFor(tab, Boolean(selectedCollectionId))}
+                inputStyle={styles.inlineInput}
+              />
+              <Button
+                label="添加"
+                icon={FilePlus2}
+                onPress={addManual}
+                disabled={!draft.trim()}
+              />
+            </>
+          ) : null}
+        </View>
 
-      <View testID="resource-list-container" style={styles.listContainer}>
-        {tab === 'characters' && !selectedCharacterCollectionId ? (
-          characterCollections.length === 0 ? (
-            <EmptyState title="还没有角色合集" description="导入角色卡或新建合集后，可以集中启用和停用人物卡。" />
+        <View testID="resource-list-container" style={styles.listContainer}>
+          {tab === 'characters' && !selectedCharacterCollectionId ? (
+            characterCollections.length === 0 ? (
+              <EmptyState
+                title="还没有角色合集"
+                description="导入角色卡或新建合集后，可以集中启用和停用人物卡。"
+              />
+            ) : (
+              <FlatList
+                data={characterCollections}
+                scrollEnabled={false}
+                keyExtractor={item => String(item.id)}
+                contentContainerStyle={styles.list}
+                renderItem={({ item }) => (
+                  <Card>
+                    <View style={styles.row}>
+                      <UserRound size={20} color={theme.colors.accent} />
+                      <View style={styles.rowText}>
+                        <Text
+                          style={[
+                            styles.itemTitle,
+                            { color: theme.colors.textPrimary },
+                          ]}
+                        >
+                          {item.name || '未命名角色合集'}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.itemMeta,
+                            { color: theme.colors.textSecondary },
+                          ]}
+                        >
+                          {item.character_count || 0} 张 · 预估{' '}
+                          {item.estimated_tokens || 0} / Max{' '}
+                          {item.max_tokens || 50000} tokens
+                        </Text>
+                        <View style={styles.usageRow}>
+                          <Text
+                            style={[
+                              styles.usageText,
+                              { color: theme.colors.textSecondary },
+                            ]}
+                          >
+                            合集启用
+                          </Text>
+                          <Switch
+                            testID={`character-collection-toggle-${item.id}`}
+                            value={item.enabled === 1}
+                            onValueChange={() =>
+                              toggleCharacterCollection(item)
+                            }
+                          />
+                        </View>
+                      </View>
+                    </View>
+                    <View style={styles.cardActions}>
+                      <Button
+                        label="打开"
+                        variant="secondary"
+                        onPress={() =>
+                          setSelectedCharacterCollectionId(item.id)
+                        }
+                      />
+                      <Button
+                        label="编辑"
+                        icon={Pencil}
+                        variant="secondary"
+                        onPress={() => openEditor('characterCollection', item)}
+                      />
+                      <Button
+                        label="删除"
+                        icon={Trash2}
+                        variant="ghost"
+                        onPress={() =>
+                          remove('characterCollection', item.id, item.name)
+                        }
+                      />
+                    </View>
+                  </Card>
+                )}
+              />
+            )
+          ) : tab === 'worldbook' && !selectedCollectionId ? (
+            collections.length === 0 ? (
+              <EmptyState
+                title="还没有世界书合集"
+                description="导入世界书文件会自动创建合集，也可以手动添加合集。"
+              />
+            ) : (
+              <FlatList
+                data={collections}
+                scrollEnabled={false}
+                keyExtractor={item => String(item.id)}
+                contentContainerStyle={styles.list}
+                renderItem={({ item }) => (
+                  <Card>
+                    <View style={styles.row}>
+                      <BookMarked size={20} color={theme.colors.accent} />
+                      <View style={styles.rowText}>
+                        <Text
+                          style={[
+                            styles.itemTitle,
+                            { color: theme.colors.textPrimary },
+                          ]}
+                        >
+                          {item.name || '未命名世界书'}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.itemMeta,
+                            { color: theme.colors.textSecondary },
+                          ]}
+                        >
+                          {item.entry_count || 0} 条 · 预估{' '}
+                          {item.estimated_tokens || 0} / Max{' '}
+                          {item.max_tokens || 50000} tokens
+                        </Text>
+                        <View style={styles.usageRow}>
+                          <Text
+                            style={[
+                              styles.usageText,
+                              { color: theme.colors.textSecondary },
+                            ]}
+                          >
+                            合集启用
+                          </Text>
+                          <Switch
+                            value={item.enabled === 1}
+                            onValueChange={() => toggleCollection(item)}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                    <View style={styles.cardActions}>
+                      <Button
+                        label="打开"
+                        variant="secondary"
+                        onPress={() => setSelectedCollectionId(item.id)}
+                      />
+                      <Button
+                        label="导出"
+                        icon={Download}
+                        variant="secondary"
+                        onPress={() => handleExportWorldbook(item)}
+                      />
+                      <Button
+                        label="编辑"
+                        icon={Pencil}
+                        variant="secondary"
+                        onPress={() => openEditor('worldbookCollection', item)}
+                      />
+                      <Button
+                        label="删除"
+                        icon={Trash2}
+                        variant="ghost"
+                        onPress={() =>
+                          remove('worldbookCollection', item.id, item.name)
+                        }
+                      />
+                    </View>
+                  </Card>
+                )}
+              />
+            )
+          ) : activeItems.length === 0 ? (
+            <EmptyState
+              title={emptyTitle(tab)}
+              description="使用上方按钮导入或创建资料。"
+            />
           ) : (
             <FlatList
-              data={characterCollections}
+              data={activeItems}
               scrollEnabled={false}
-              keyExtractor={(item) => String(item.id)}
+              keyExtractor={item => String(item.id)}
               contentContainerStyle={styles.list}
               renderItem={({ item }) => (
                 <Card>
                   <View style={styles.row}>
-                    <UserRound size={20} color={theme.colors.accent} />
+                    {iconFor(tab, theme.colors.accent)}
                     <View style={styles.rowText}>
-                      <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name || '未命名角色合集'}</Text>
-                      <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>
-                        {item.character_count || 0} 张 · 预估 {item.estimated_tokens || 0} / Max {item.max_tokens || 50000} tokens
+                      <View style={styles.titleRow}>
+                        <Text
+                          style={[
+                            styles.itemTitle,
+                            { color: theme.colors.textPrimary },
+                          ]}
+                        >
+                          {titleFor(tab, item)}
+                        </Text>
+                        {tab === 'notes' && noteMode !== 'none' ? (
+                          <Text
+                            style={[
+                              styles.modeTag,
+                              {
+                                color: theme.colors.accent,
+                                borderColor: theme.colors.accent,
+                              },
+                            ]}
+                          >
+                            {noteMode === 'style' ? '仿写' : '资料库'}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text
+                        style={[
+                          styles.itemMeta,
+                          { color: theme.colors.textSecondary },
+                        ]}
+                        numberOfLines={2}
+                      >
+                        {metaFor(tab, item)}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.tokenMeta,
+                          { color: theme.colors.textSecondary },
+                        ]}
+                      >
+                        预估{' '}
+                        {item.estimated_tokens ??
+                          estimateTokens(
+                            item.content || item.data_json || '',
+                          )}{' '}
+                        / Max {item.max_tokens ?? defaultMaxTokens(tab)} tokens
                       </Text>
                       <View style={styles.usageRow}>
-                        <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>合集启用</Text>
+                        <Text
+                          style={[
+                            styles.usageText,
+                            { color: theme.colors.textSecondary },
+                          ]}
+                        >
+                          当前项目使用
+                        </Text>
                         <Switch
-                          testID={`character-collection-toggle-${item.id}`}
-                          value={item.enabled === 1}
-                          onValueChange={() => toggleCharacterCollection(item)}
+                          value={
+                            item.enabled_for_project === 1 &&
+                            item.collection_enabled !== 0
+                          }
+                          disabled={
+                            !currentProject || item.collection_enabled === 0
+                          }
+                          onValueChange={() => toggleProjectUsage(item)}
+                          trackColor={{
+                            false: theme.colors.border,
+                            true: theme.colors.accentSoft,
+                          }}
+                          thumbColor={
+                            item.enabled_for_project === 1 &&
+                            item.collection_enabled !== 0
+                              ? theme.colors.accent
+                              : theme.colors.textMuted
+                          }
                         />
                       </View>
                     </View>
                   </View>
                   <View style={styles.cardActions}>
-                    <Button label="打开" variant="secondary" onPress={() => setSelectedCharacterCollectionId(item.id)} />
-                    <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor('characterCollection', item)} />
-                    <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove('characterCollection', item.id, item.name)} />
-                  </View>
-                </Card>
-              )}
-            />
-          )
-        ) : tab === 'worldbook' && !selectedCollectionId ? (
-          collections.length === 0 ? (
-            <EmptyState title="还没有世界书合集" description="导入世界书文件会自动创建合集，也可以手动添加合集。" />
-          ) : (
-            <FlatList
-              data={collections}
-              scrollEnabled={false}
-              keyExtractor={(item) => String(item.id)}
-              contentContainerStyle={styles.list}
-              renderItem={({ item }) => (
-                <Card>
-                  <View style={styles.row}>
-                    <BookMarked size={20} color={theme.colors.accent} />
-                    <View style={styles.rowText}>
-                      <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name || '未命名世界书'}</Text>
-                      <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>
-                        {item.entry_count || 0} 条 · 预估 {item.estimated_tokens || 0} / Max {item.max_tokens || 50000} tokens
-                      </Text>
-                      <View style={styles.usageRow}>
-                        <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>合集启用</Text>
-                        <Switch value={item.enabled === 1} onValueChange={() => toggleCollection(item)} />
-                      </View>
-                    </View>
-                  </View>
-                  <View style={styles.cardActions}>
-                    <Button label="打开" variant="secondary" onPress={() => setSelectedCollectionId(item.id)} />
-                    <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportWorldbook(item)} />
-                    <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor('worldbookCollection', item)} />
-                    <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove('worldbookCollection', item.id, item.name)} />
-                  </View>
-                </Card>
-              )}
-            />
-          )
-        ) : activeItems.length === 0 ? (
-          <EmptyState title={emptyTitle(tab)} description="使用上方按钮导入或创建资料。" />
-        ) : (
-          <FlatList
-            data={activeItems}
-            scrollEnabled={false}
-            keyExtractor={(item) => String(item.id)}
-            contentContainerStyle={styles.list}
-            renderItem={({ item }) => (
-              <Card>
-                <View style={styles.row}>
-                  {iconFor(tab, theme.colors.accent)}
-                  <View style={styles.rowText}>
-                    <View style={styles.titleRow}>
-                      <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{titleFor(tab, item)}</Text>
-                      {tab === 'notes' && noteMode !== 'none' ? (
-                        <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>
-                          {noteMode === 'style' ? '仿写' : '资料库'}
-                        </Text>
-                      ) : null}
-                    </View>
-                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]} numberOfLines={2}>
-                      {metaFor(tab, item)}
-                    </Text>
-                    <Text style={[styles.tokenMeta, { color: theme.colors.textSecondary }]}>
-                      预估 {item.estimated_tokens ?? estimateTokens(item.content || item.data_json || '')} / Max {item.max_tokens ?? defaultMaxTokens(tab)} tokens
-                    </Text>
-                    <View style={styles.usageRow}>
-                      <Text style={[styles.usageText, { color: theme.colors.textSecondary }]}>当前项目使用</Text>
-                      <Switch
-                        value={item.enabled_for_project === 1 && item.collection_enabled !== 0}
-                        disabled={!currentProject || item.collection_enabled === 0}
-                        onValueChange={() => toggleProjectUsage(item)}
-                        trackColor={{ false: theme.colors.border, true: theme.colors.accentSoft }}
-                        thumbColor={item.enabled_for_project === 1 && item.collection_enabled !== 0 ? theme.colors.accent : theme.colors.textMuted}
+                    <Button
+                      label="编辑"
+                      icon={Pencil}
+                      variant="secondary"
+                      onPress={() => openEditor(tab, item)}
+                    />
+                    {tab === 'characters' && (
+                      <Button
+                        label="导出"
+                        icon={Download}
+                        variant="secondary"
+                        onPress={() => handleExportCharacter(item)}
                       />
-                    </View>
+                    )}
+                    {tab === 'notes' && (
+                      <Button
+                        label="导出"
+                        icon={Download}
+                        variant="secondary"
+                        onPress={() => handleExportNote(item)}
+                      />
+                    )}
+                    {tab === 'presets' && (
+                      <Button
+                        label="导出"
+                        icon={Download}
+                        variant="secondary"
+                        onPress={() => handleExportPreset(item)}
+                      />
+                    )}
+                    <Button
+                      label="删除"
+                      icon={Trash2}
+                      variant="ghost"
+                      onPress={() => remove(tab, item.id, titleFor(tab, item))}
+                    />
                   </View>
-                </View>
-                <View style={styles.cardActions}>
-                  <Button label="编辑" icon={Pencil} variant="secondary" onPress={() => openEditor(tab, item)} />
-                  {tab === 'characters' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportCharacter(item)} />}
-                  {tab === 'notes' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportNote(item)} />}
-                  {tab === 'presets' && <Button label="导出" icon={Download} variant="secondary" onPress={() => handleExportPreset(item)} />}
-                  <Button label="删除" icon={Trash2} variant="ghost" onPress={() => remove(tab, item.id, titleFor(tab, item))} />
-                </View>
-              </Card>
-            )}
-          />
-        )}
+                </Card>
+              )}
+            />
+          )}
         </View>
       </ScrollView>
 
-      <Modal visible={Boolean(editor)} transparent animationType="fade" onRequestClose={() => setEditor(null)}>
+      <Modal
+        visible={Boolean(editor)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditor(null)}
+      >
         <View style={styles.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setEditor(null)} />
-          <View style={[styles.modal, { backgroundColor: theme.colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>{editorTitle}</Text>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setEditor(null)}
+          />
+          <View
+            style={[styles.modal, { backgroundColor: theme.colors.surface }]}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
+              {editorTitle}
+            </Text>
             {editor ? (
               <ScrollView keyboardShouldPersistTaps="handled">
-                <Field label="名称 / 标题 / 主关键词" value={editor.name} onChangeText={(name) => setEditor({ ...editor, name })} />
-                <Field label="Max Tokens" value={editor.maxTokens} onChangeText={(maxTokens) => setEditor({ ...editor, maxTokens })} keyboardType="number-pad" />
-                <Text style={[styles.tokenMeta, { color: theme.colors.textSecondary }]}>
+                <Field
+                  label="名称 / 标题 / 主关键词"
+                  value={editor.name}
+                  onChangeText={name => setEditor({ ...editor, name })}
+                />
+                <Field
+                  label="Max Tokens"
+                  value={editor.maxTokens}
+                  onChangeText={maxTokens =>
+                    setEditor({ ...editor, maxTokens })
+                  }
+                  keyboardType="number-pad"
+                />
+                <Text
+                  style={[
+                    styles.tokenMeta,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
                   当前预估 {estimateEditorTokens(editor)} tokens
                 </Text>
                 {editor.kind === 'characters' ? (
                   <>
-                    {editor.imagePath ? <Image source={{ uri: `file://${editor.imagePath}` }} style={styles.characterImage} resizeMode="cover" /> : null}
-                    <Button label={editor.imagePath ? '替换 PNG 图片' : '选择 PNG 图片'} icon={Import} variant="secondary" onPress={replaceCharacterPng} />
+                    {editor.imagePath ? (
+                      <Image
+                        source={{ uri: `file://${editor.imagePath}` }}
+                        style={styles.characterImage}
+                        resizeMode="cover"
+                      />
+                    ) : null}
+                    <Button
+                      label={
+                        editor.imagePath ? '替换 PNG 图片' : '选择 PNG 图片'
+                      }
+                      icon={Import}
+                      variant="secondary"
+                      onPress={replaceCharacterPng}
+                    />
                     <CharacterEditor
                       dataJson={editor.dataJson}
-                      onChange={(dataJson) => setEditor({ ...editor, dataJson })}
+                      onChange={dataJson => setEditor({ ...editor, dataJson })}
                     />
                   </>
                 ) : null}
                 {editor.kind === 'characterCollection' ? (
                   <View style={styles.usageRow}>
-                    <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>合集启用</Text>
-                    <Switch value={editor.enabled} onValueChange={(enabled) => setEditor({ ...editor, enabled })} />
+                    <Text
+                      style={[
+                        styles.usageText,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
+                      合集启用
+                    </Text>
+                    <Switch
+                      value={editor.enabled}
+                      onValueChange={enabled =>
+                        setEditor({ ...editor, enabled })
+                      }
+                    />
                   </View>
                 ) : null}
                 {editor.kind === 'worldbookCollection' ? (
                   <View style={styles.usageRow}>
-                    <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>合集启用</Text>
-                    <Switch value={editor.enabled} onValueChange={(enabled) => setEditor({ ...editor, enabled })} />
+                    <Text
+                      style={[
+                        styles.usageText,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
+                      合集启用
+                    </Text>
+                    <Switch
+                      value={editor.enabled}
+                      onValueChange={enabled =>
+                        setEditor({ ...editor, enabled })
+                      }
+                    />
                   </View>
                 ) : null}
                 {editor.kind === 'worldbook' ? (
                   <>
-                    <Field label="次关键词" value={editor.secondary} onChangeText={(secondary) => setEditor({ ...editor, secondary })} />
-                    <Field label="说明" value={editor.comment} onChangeText={(comment) => setEditor({ ...editor, comment })} />
-                    <Field label="内容" value={editor.content} onChangeText={(content) => setEditor({ ...editor, content })} multiline inputStyle={styles.largeInput} />
+                    <Field
+                      label="次关键词"
+                      value={editor.secondary}
+                      onChangeText={secondary =>
+                        setEditor({ ...editor, secondary })
+                      }
+                    />
+                    <Field
+                      label="说明"
+                      value={editor.comment}
+                      onChangeText={comment =>
+                        setEditor({ ...editor, comment })
+                      }
+                    />
+                    <Field
+                      label="内容"
+                      value={editor.content}
+                      onChangeText={content =>
+                        setEditor({ ...editor, content })
+                      }
+                      multiline
+                      inputStyle={styles.largeInput}
+                    />
                     <View style={styles.usageRow}>
-                      <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>常驻条目（不需要关键词触发）</Text>
-                      <Switch value={editor.constant} onValueChange={(constant) => setEditor({ ...editor, constant })} />
+                      <Text
+                        style={[
+                          styles.usageText,
+                          { color: theme.colors.textPrimary },
+                        ]}
+                      >
+                        常驻条目（不需要关键词触发）
+                      </Text>
+                      <Switch
+                        value={editor.constant}
+                        onValueChange={constant =>
+                          setEditor({ ...editor, constant })
+                        }
+                      />
                     </View>
                     <View style={styles.usageRow}>
-                      <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>条目启用</Text>
-                      <Switch value={editor.enabled} onValueChange={(enabled) => setEditor({ ...editor, enabled })} />
+                      <Text
+                        style={[
+                          styles.usageText,
+                          { color: theme.colors.textPrimary },
+                        ]}
+                      >
+                        条目启用
+                      </Text>
+                      <Switch
+                        value={editor.enabled}
+                        onValueChange={enabled =>
+                          setEditor({ ...editor, enabled })
+                        }
+                      />
                     </View>
                   </>
                 ) : null}
                 {editor.kind === 'notes' ? (
-                  <Field label="笔记内容" value={editor.content} onChangeText={(content) => setEditor({ ...editor, content })} multiline inputStyle={styles.largeInput} />
+                  <Field
+                    label="笔记内容"
+                    value={editor.content}
+                    onChangeText={content => setEditor({ ...editor, content })}
+                    multiline
+                    inputStyle={styles.largeInput}
+                  />
                 ) : null}
                 {editor.kind === 'presets' ? (
                   <>
-                    <Field label="系统提示词" value={editor.systemPrompt} onChangeText={(systemPrompt) => setEditor({ ...editor, systemPrompt })} multiline inputStyle={styles.largeInput} />
-                    <Field label="写作风格" value={editor.writingStyle} onChangeText={(writingStyle) => setEditor({ ...editor, writingStyle })} multiline />
-                    <Field label="额外约束" value={editor.extraInstructions} onChangeText={(extraInstructions) => setEditor({ ...editor, extraInstructions })} multiline />
+                    <Field
+                      label="系统提示词"
+                      value={editor.systemPrompt}
+                      onChangeText={systemPrompt =>
+                        setEditor({ ...editor, systemPrompt })
+                      }
+                      multiline
+                      inputStyle={styles.largeInput}
+                    />
+                    <Field
+                      label="写作风格"
+                      value={editor.writingStyle}
+                      onChangeText={writingStyle =>
+                        setEditor({ ...editor, writingStyle })
+                      }
+                      multiline
+                    />
+                    <Field
+                      label="额外约束"
+                      value={editor.extraInstructions}
+                      onChangeText={extraInstructions =>
+                        setEditor({ ...editor, extraInstructions })
+                      }
+                      multiline
+                    />
                     <View style={styles.numberRow}>
-                      <Field label="温度" value={editor.temperature} onChangeText={(temperature) => setEditor({ ...editor, temperature })} keyboardType="decimal-pad" inputStyle={styles.numberInput} />
-                      <Field label="Top P" value={editor.topP} onChangeText={(topP) => setEditor({ ...editor, topP })} keyboardType="decimal-pad" inputStyle={styles.numberInput} />
+                      <Field
+                        label="温度"
+                        value={editor.temperature}
+                        onChangeText={temperature =>
+                          setEditor({ ...editor, temperature })
+                        }
+                        keyboardType="decimal-pad"
+                        inputStyle={styles.numberInput}
+                      />
+                      <Field
+                        label="Top P"
+                        value={editor.topP}
+                        onChangeText={topP => setEditor({ ...editor, topP })}
+                        keyboardType="decimal-pad"
+                        inputStyle={styles.numberInput}
+                      />
                     </View>
                     <View style={styles.usageRow}>
-                      <Text style={[styles.usageText, { color: theme.colors.textPrimary }]}>设为全局默认预设</Text>
-                      <Switch value={editor.isDefault} onValueChange={(isDefault) => setEditor({ ...editor, isDefault })} />
+                      <Text
+                        style={[
+                          styles.usageText,
+                          { color: theme.colors.textPrimary },
+                        ]}
+                      >
+                        设为全局默认预设
+                      </Text>
+                      <Switch
+                        value={editor.isDefault}
+                        onValueChange={isDefault =>
+                          setEditor({ ...editor, isDefault })
+                        }
+                      />
                     </View>
                   </>
                 ) : null}
               </ScrollView>
             ) : null}
             <View style={styles.modalActions}>
-              <Button label="取消" variant="ghost" onPress={() => setEditor(null)} />
+              <Button
+                label="取消"
+                variant="ghost"
+                onPress={() => setEditor(null)}
+              />
               <Button label="保存" onPress={saveEditor} />
             </View>
           </View>
@@ -938,22 +1754,59 @@ export const ResourceLibrary: React.FC = () => {
       </Modal>
 
       {/* 笔记选择器 Modal */}
-      <Modal visible={showNotePicker} transparent animationType="fade" onRequestClose={() => setShowNotePicker(false)}>
+      <Modal
+        visible={showNotePicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowNotePicker(false)}
+      >
         <View style={styles.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowNotePicker(false)} />
-          <View style={[styles.modal, { backgroundColor: theme.colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>选择笔记</Text>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setShowNotePicker(false)}
+          />
+          <View
+            style={[styles.modal, { backgroundColor: theme.colors.surface }]}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
+              选择笔记
+            </Text>
             <ScrollView style={styles.notePickerList}>
               {items.notes.map((note: any) => {
                 const isSelected = enabledNoteIds.includes(note.id);
                 return (
                   <Pressable
                     key={note.id}
-                    style={[styles.notePickerItem, { borderColor: isSelected ? theme.colors.accent : theme.colors.border }]}
+                    style={[
+                      styles.notePickerItem,
+                      {
+                        borderColor: isSelected
+                          ? theme.colors.accent
+                          : theme.colors.border,
+                      },
+                    ]}
                     onPress={() => handleToggleNoteId(note.id)}
                   >
-                    <Text style={[styles.notePickerTitle, { color: theme.colors.textPrimary }]}>{note.title || '无标题'}</Text>
-                    <Text style={[styles.notePickerCheck, { color: isSelected ? theme.colors.accent : theme.colors.textMuted }]}>
+                    <Text
+                      style={[
+                        styles.notePickerTitle,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
+                      {note.title || '无标题'}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.notePickerCheck,
+                        {
+                          color: isSelected
+                            ? theme.colors.accent
+                            : theme.colors.textMuted,
+                        },
+                      ]}
+                    >
                       {isSelected ? '✓' : '○'}
                     </Text>
                   </Pressable>
@@ -961,28 +1814,57 @@ export const ResourceLibrary: React.FC = () => {
               })}
             </ScrollView>
             <View style={styles.modalActions}>
-              <Button label="关闭" variant="ghost" onPress={() => setShowNotePicker(false)} />
+              <Button
+                label="关闭"
+                variant="ghost"
+                onPress={() => setShowNotePicker(false)}
+              />
             </View>
           </View>
         </View>
       </Modal>
 
       {/* 风格画像查看 Modal */}
-      <Modal visible={showStyleProfile} transparent animationType="fade" onRequestClose={() => setShowStyleProfile(false)}>
+      <Modal
+        visible={showStyleProfile}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowStyleProfile(false)}
+      >
         <View style={styles.overlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowStyleProfile(false)} />
-          <View style={[styles.modal, { backgroundColor: theme.colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>风格画像</Text>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setShowStyleProfile(false)}
+          />
+          <View
+            style={[styles.modal, { backgroundColor: theme.colors.surface }]}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
+              风格画像
+            </Text>
             <ScrollView style={styles.profileViewer}>
-              <Text style={[styles.profileText, { color: theme.colors.textSecondary }]}>{styleProfileText || '暂无画像'}</Text>
+              <Text
+                style={[
+                  styles.profileText,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
+                {styleProfileText || '暂无画像'}
+              </Text>
             </ScrollView>
             <View style={styles.modalActions}>
-              <Button label="关闭" variant="ghost" onPress={() => setShowStyleProfile(false)} />
+              <Button
+                label="关闭"
+                variant="ghost"
+                onPress={() => setShowStyleProfile(false)}
+              />
             </View>
           </View>
         </View>
       </Modal>
-    {batchResult ? (
+      {batchResult ? (
         <BatchImportResultModal
           visible
           title={batchResult.title}
@@ -1022,7 +1904,8 @@ function tabLabel(kind: EditorKind): string {
 }
 
 function placeholderFor(tab: ResourceTab, addingEntry: boolean): string {
-  if (tab === 'worldbook') return addingEntry ? '新世界书条目主关键词' : '新世界书合集名称';
+  if (tab === 'worldbook')
+    return addingEntry ? '新世界书条目主关键词' : '新世界书合集名称';
   if (tab === 'notes') return '新笔记标题';
   return '新预设名称';
 }
@@ -1043,24 +1926,42 @@ function titleFor(kind: EditorKind, item: any): string {
 }
 
 function metaFor(tab: ResourceTab, item: any): string {
-  if (tab === 'characters') return `${item.collection_name || '未分组'} · ${item.source_type === 'png' ? 'PNG 角色卡' : 'JSON 角色卡'}`;
-  if (tab === 'worldbook') return `${item.collection_name || '未分组'} · ${item.enabled ? '条目可用' : '条目停用'} · ${item.content || '暂无内容'}`;
+  if (tab === 'characters')
+    return `${item.collection_name || '未分组'} · ${
+      item.source_type === 'png' ? 'PNG 角色卡' : 'JSON 角色卡'
+    }`;
+  if (tab === 'worldbook')
+    return `${item.collection_name || '未分组'} · ${
+      item.enabled ? '条目可用' : '条目停用'
+    } · ${item.content || '暂无内容'}`;
   if (tab === 'notes') return item.content || '空白笔记';
-  return `${item.is_default ? '全局默认 · ' : ''}T=${item.temperature} / P=${item.top_p} / Max=${item.max_tokens}`;
+  return `${item.is_default ? '全局默认 · ' : ''}T=${item.temperature} / P=${
+    item.top_p
+  } / Max=${item.max_tokens}`;
 }
 
 function estimateEditorTokens(editor: EditorState): number {
   if (editor.kind === 'characters') return estimateTokens(editor.dataJson);
   if (editor.kind === 'worldbook') return estimateTokens(editor.content);
   if (editor.kind === 'notes') return estimateTokens(editor.content);
-  if (editor.kind === 'presets') return estimateTokens([editor.systemPrompt, editor.writingStyle, editor.extraInstructions].join('\n'));
+  if (editor.kind === 'presets')
+    return estimateTokens(
+      [editor.systemPrompt, editor.writingStyle, editor.extraInstructions].join(
+        '\n',
+      ),
+    );
   return Number(editor.item.estimated_tokens || 0);
 }
 
 const styles = StyleSheet.create({
   tabs: { padding: spacing.lg, paddingBottom: 0 },
   actions: { padding: spacing.lg, paddingBottom: 0, gap: spacing.sm },
-  actionScroll: { flexDirection: 'row', gap: spacing.sm, paddingRight: spacing.lg, paddingVertical: spacing.xs },
+  actionScroll: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingRight: spacing.lg,
+    paddingVertical: spacing.xs,
+  },
   rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   inlineInput: { minHeight: 40 },
   scrollContent: { paddingBottom: 120 },
@@ -1070,16 +1971,49 @@ const styles = StyleSheet.create({
   rowText: { flex: 1 },
   itemTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
   itemMeta: { fontSize: 13, lineHeight: 18 },
-  tokenMeta: { fontSize: 12, fontWeight: '700', marginTop: 4, marginBottom: spacing.sm },
-  usageRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md, marginTop: spacing.sm },
+  tokenMeta: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 4,
+    marginBottom: spacing.sm,
+  },
+  usageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+    marginTop: spacing.sm,
+  },
   usageText: { fontSize: 13, fontWeight: '700' },
-  cardActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: spacing.sm, marginTop: spacing.md },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', padding: spacing.lg },
+  cardActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
   modal: { maxHeight: '88%', borderRadius: 8, padding: spacing.lg },
   modalTitle: { fontSize: 18, fontWeight: '800', marginBottom: spacing.md },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md, marginTop: spacing.md },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.md,
+    marginTop: spacing.md,
+  },
   largeInput: { minHeight: 160, textAlignVertical: 'top' },
-  characterImage: { width: 128, height: 180, borderRadius: 8, marginBottom: spacing.md, alignSelf: 'center' },
+  characterImage: {
+    width: 128,
+    height: 180,
+    borderRadius: 8,
+    marginBottom: spacing.md,
+    alignSelf: 'center',
+  },
   numberRow: { flexDirection: 'row', gap: spacing.sm },
   numberInput: { minWidth: 80 },
   // 笔记双模式 UI
@@ -1091,10 +2025,30 @@ const styles = StyleSheet.create({
   noteModeHint: { fontSize: 12, marginTop: spacing.xs },
   weightRow: { gap: 4 },
   weightLabel: { fontSize: 13, fontWeight: '600' },
-  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
-  modeTag: { fontSize: 11, fontWeight: '700', borderWidth: 1, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  modeTag: {
+    fontSize: 11,
+    fontWeight: '700',
+    borderWidth: 1,
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
   notePickerList: { maxHeight: 400 },
-  notePickerItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.md, borderWidth: 1, borderRadius: 6, marginBottom: spacing.xs },
+  notePickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    borderWidth: 1,
+    borderRadius: 6,
+    marginBottom: spacing.xs,
+  },
   notePickerTitle: { fontSize: 14, fontWeight: '600', flex: 1 },
   notePickerCheck: { fontSize: 18, fontWeight: '800' },
   profileViewer: { maxHeight: 400 },
