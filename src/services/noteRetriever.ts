@@ -19,9 +19,12 @@ export interface RetrievedNoteFragment {
 const MAX_CACHE_SIZE = 32;
 const cache = new Map<string, RetrievedNoteFragment[]>();
 
-function buildCacheKey(projectId: number, query: RetrievalQuery): string {
-  // 不含 userPrompt：同一章节的多次生成（pipeline 四阶段）复用同一次检索
-  return `${projectId}|${query.chapterTitle}|${query.chapterSynopsis}|${query.previousEnding}`;
+function buildCacheKey(
+  projectId: number,
+  query: RetrievalQuery,
+  fragmentChars: number,
+): string {
+  return `${projectId}|${fragmentChars}|${query.chapterTitle}|${query.chapterSynopsis}|${query.previousEnding}|${query.userPrompt}`;
 }
 
 export function clearRetrievalCache(projectId?: number): void {
@@ -37,13 +40,28 @@ export function clearRetrievalCache(projectId?: number): void {
 }
 
 function tokenize(text: string): string[] {
-  return text
+  const words = text
     .replace(/[\s，。、！？；：""''（）【】《》\-—…,.!?;:"'()]/g, ' ')
     .split(/\s+/)
-    .filter((t) => t.length >= 2);
+    .filter(t => t.length >= 2);
+  // 中文没有空格时，整句不能直接作为关键词。补充 2～6 字切片，
+  // 使“主角在雨夜抵达钟楼”能命中笔记中的“雨夜”或“钟楼”。
+  const chineseTerms: string[] = [];
+  for (const word of words) {
+    if (!/^[\u4e00-\u9fff]+$/.test(word)) continue;
+    for (let length = 2; length <= Math.min(6, word.length); length += 1) {
+      for (let start = 0; start <= word.length - length; start += 1)
+        chineseTerms.push(word.slice(start, start + length));
+    }
+  }
+  return Array.from(new Set([...words, ...chineseTerms]));
 }
 
-function extractContextWindow(content: string, keyword: string, radius = 500): string {
+function extractContextWindow(
+  content: string,
+  keyword: string,
+  radius = 500,
+): string {
   // 大小写敏感修复：query 与 note 内容大小写不一致时（如英文专有名词）漏匹配
   const lowerContent = content.toLowerCase();
   const lowerKeyword = keyword.toLowerCase();
@@ -63,8 +81,9 @@ interface PrefilterResult {
 async function prefilterNotes(
   noteIds: number[],
   query: RetrievalQuery,
+  fragmentChars: number,
 ): Promise<PrefilterResult[]> {
-  const queryText = `${query.chapterTitle} ${query.chapterSynopsis} ${query.userPrompt}`;
+  const queryText = `${query.chapterTitle} ${query.chapterSynopsis} ${query.previousEnding} ${query.userPrompt}`;
   const keywords = Array.from(new Set(tokenize(queryText)));
   const results: PrefilterResult[] = [];
 
@@ -76,11 +95,16 @@ async function prefilterNotes(
     const title = note.title || '无标题';
     const fragments: string[] = [];
     for (const kw of keywords) {
-      const ctx = extractContextWindow(content, kw);
+      const radius = Math.max(0, Math.floor((fragmentChars - kw.length) / 2));
+      const ctx = extractContextWindow(content, kw, radius);
       if (ctx) fragments.push(ctx);
     }
     if (fragments.length > 0) {
-      results.push({ noteId, noteTitle: title, fragments: fragments.slice(0, 3) });
+      results.push({
+        noteId,
+        noteTitle: title,
+        fragments: fragments.slice(0, 3),
+      });
     }
   }
   return results;
@@ -96,13 +120,17 @@ export async function retrieveNoteFragments(
   query: RetrievalQuery,
   topK: number,
 ): Promise<RetrievedNoteFragment[]> {
-  const cacheKey = buildCacheKey(projectId, query);
+  const config = await db.getProjectNoteConfig(projectId);
+  const fragmentChars = Math.min(
+    4000,
+    Math.max(200, Number(config?.retrievalFragmentChars) || 1000),
+  );
+  const cacheKey = buildCacheKey(projectId, query, fragmentChars);
   const cached = cache.get(cacheKey);
   if (cached) {
     return cached.slice(0, topK);
   }
 
-  const config = await db.getProjectNoteConfig(projectId);
   let noteIds: number[] = [];
   if (config && config.enabledNoteIds.length > 0) {
     noteIds = config.enabledNoteIds;
@@ -112,11 +140,15 @@ export async function retrieveNoteFragments(
   }
   if (noteIds.length === 0) return [];
 
-  const candidates = await prefilterNotes(noteIds, query);
+  const candidates = await prefilterNotes(noteIds, query, fragmentChars);
   if (candidates.length === 0) return [];
 
   const fragmentText = candidates
-    .map((c) => c.fragments.map((f, i) => `[笔记${c.noteId}「${c.noteTitle}」片段${i + 1}] ${f}`).join('\n'))
+    .map(c =>
+      c.fragments
+        .map((f, i) => `[笔记${c.noteId}「${c.noteTitle}」片段${i + 1}] ${f}`)
+        .join('\n'),
+    )
     .join('\n\n');
 
   const systemPrompt = `你是写作素材检索助手。根据当前章节的生成需求，从提供的笔记片段中选择最相关、最值得引用的片段。只返回 JSON，不要解释。`;
@@ -146,12 +178,12 @@ ${fragmentText}
     fragments = (parsed.selected || []).map((item: any) => ({
       noteId: Number(item.noteId),
       noteTitle: String(item.noteTitle || ''),
-      fragment: String(item.fragment || ''),
+      fragment: String(item.fragment || '').slice(0, fragmentChars),
       relevance: String(item.relevance || ''),
     }));
   } catch {
     // 回退到关键词预筛结果
-    fragments = candidates.slice(0, topK).map((c) => ({
+    fragments = candidates.slice(0, topK).map(c => ({
       noteId: c.noteId,
       noteTitle: c.noteTitle,
       fragment: c.fragments[0] || '',

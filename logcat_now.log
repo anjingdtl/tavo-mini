@@ -1,0 +1,107 @@
+--------- beginning of main
+07-10 07:14:47.647  7013  7023 W com.shinewriter: Suspending all threads took: 7.976ms
+07-10 07:14:47.747  7013  7023 I com.shinewriter: Background young concurrent mark compact GC freed 9232KB AllocSpace bytes, 0(0B) LOS objects, 45% free, 10MB/19MB, paused 34.173ms,6.844ms total 234.404ms
+07-10 07:15:22.144 12157 12157 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 07:15:22.241 12157 12157 I AndroidRuntime: Using default boot image
+07-10 07:15:22.242 12157 12157 I AndroidRuntime: Leaving lock profiling enabled
+07-10 07:15:22.941 12157 12157 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 07:15:29.152 12157 12157 D AndroidRuntime: Shutting down VM
+07-10 07:16:22.574 12244 12244 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 07:16:22.608 12244 12244 I AndroidRuntime: Using default boot image
+07-10 07:16:22.608 12244 12244 I AndroidRuntime: Leaving lock profiling enabled
+07-10 07:16:23.155 12244 12244 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 07:16:24.603 12244 12244 D AndroidRuntime: Shutting down VM
+07-10 07:19:34.641 12433 12433 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 07:19:34.679 12433 12433 I AndroidRuntime: Using default boot image
+07-10 07:19:34.679 12433 12433 I AndroidRuntime: Leaving lock profiling enabled
+07-10 07:19:35.206 12433 12433 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 07:19:36.618 12433 12433 D AndroidRuntime: Shutting down VM
+07-10 07:21:37.051 12535 12535 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 07:21:37.095 12535 12535 I AndroidRuntime: Using default boot image
+07-10 07:21:37.095 12535 12535 I AndroidRuntime: Leaving lock profiling enabled
+07-10 07:21:37.573 12535 12535 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 07:21:39.199 12535 12535 D AndroidRuntime: Shutting down VM
+07-10 07:31:55.535 13016 13016 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 07:31:55.571 13016 13016 I AndroidRuntime: Using default boot image
+07-10 07:31:55.571 13016 13016 I AndroidRuntime: Leaving lock profiling enabled
+07-10 07:31:56.138 13016 13016 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 07:31:57.630 13016 13016 D AndroidRuntime: Shutting down VM
+07-10 07:54:17.329 15940 15940 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 07:54:17.358 15940 15940 I AndroidRuntime: Using default boot image
+07-10 07:54:17.358 15940 15940 I AndroidRuntime: Leaving lock profiling enabled
+07-10 07:54:17.980 15940 15940 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 07:54:19.479 15940 15940 D AndroidRuntime: Shutting down VM
+07-10 07:55:42.581 16047 16047 I com.shinewriter: Late-enabling -Xcheck:jni
+07-10 07:55:42.622 16047 16047 I com.shinewriter: Using CollectorTypeCMC GC.
+07-10 07:55:42.626 16047 16047 W com.shinewriter: Unexpected CPU variant for x86: x86_64.
+07-10 07:55:42.626 16047 16047 W com.shinewriter: Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, goldmont-without-sha-xsaves, tremont, kabylake, alderlake, default
+07-10 07:55:43.685 16047 16047 I com.shinewriter: hiddenapi: Accessing hidden method Landroid/view/ViewGroup;->makeOptionalFitsSystemWindows()V (runtime_flags=0, domain=platform, api=unsupported) from Landroidx/appcompat/widget/ViewUtils; (domain=app, TargetSdkVersion=36) using reflection: allowed
+07-10 07:55:43.954 16047 16052 I com.shinewriter: Compiler allocated 5087KB to compile void android.view.ViewRootImpl.performTraversals()
+07-10 07:55:45.957 16047 16088 I ReactNativeJS: Running "ShineWriter"
+07-10 07:55:53.847 16047 16053 W com.shinewriter: userfaultfd: MOVE ioctl seems unsupported: Connection timed out
+07-10 08:09:20.561 16658 16658 I com.shinewriter: Late-enabling -Xcheck:jni
+07-10 08:09:20.577 16658 16658 I com.shinewriter: Using CollectorTypeCMC GC.
+07-10 08:09:20.577 16658 16658 W com.shinewriter: Unexpected CPU variant for x86: x86_64.
+07-10 08:09:20.577 16658 16658 W com.shinewriter: Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, goldmont-without-sha-xsaves, tremont, kabylake, alderlake, default
+07-10 08:09:21.479 16658 16658 I com.shinewriter: hiddenapi: Accessing hidden method Landroid/view/ViewGroup;->makeOptionalFitsSystemWindows()V (runtime_flags=0, domain=platform, api=unsupported) from Landroidx/appcompat/widget/ViewUtils; (domain=app, TargetSdkVersion=36) using reflection: allowed
+07-10 08:09:21.921 16658 16662 I com.shinewriter: Compiler allocated 5087KB to compile void android.view.ViewRootImpl.performTraversals()
+07-10 08:09:23.720 16658 16691 I ReactNativeJS: Running "ShineWriter"
+07-10 08:09:26.079 16658 16658 I com.shinewriter: hiddenapi: Accessing hidden field Landroid/widget/ScrollView;->mScroller:Landroid/widget/OverScroller; (runtime_flags=0, domain=platform, api=unsupported) from Lcom/facebook/react/views/scroll/ReactScrollView; (domain=app, TargetSdkVersion=36) using reflection: allowed
+07-10 08:09:33.581 16658 16663 W com.shinewriter: userfaultfd: MOVE ioctl seems unsupported: Connection timed out
+07-10 08:09:55.058 16658 16658 I com.shinewriter: hiddenapi: Accessing hidden field Landroid/widget/HorizontalScrollView;->mScroller:Landroid/widget/OverScroller; (runtime_flags=0, domain=platform, api=unsupported) from Lcom/facebook/react/views/scroll/ReactHorizontalScrollView; (domain=app, TargetSdkVersion=36) using reflection: allowed
+07-10 08:12:40.512 16900 16900 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:12:40.533 16900 16900 I AndroidRuntime: Using default boot image
+07-10 08:12:40.533 16900 16900 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:12:40.689 16900 16900 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:12:41.862 16900 16900 D AndroidRuntime: Shutting down VM
+07-10 08:21:39.053 17231 17231 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:21:39.054 17231 17231 I AndroidRuntime: Using default boot image
+07-10 08:21:39.054 17231 17231 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:21:39.129 17231 17231 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:21:40.240 17231 17231 D AndroidRuntime: Shutting down VM
+07-10 08:26:14.296 17409 17409 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:26:14.297 17409 17409 I AndroidRuntime: Using default boot image
+07-10 08:26:14.297 17409 17409 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:26:14.349 17409 17409 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:26:15.460 17409 17409 D AndroidRuntime: Shutting down VM
+07-10 08:28:06.683 17498 17498 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:28:06.685 17498 17498 I AndroidRuntime: Using default boot image
+07-10 08:28:06.685 17498 17498 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:28:06.736 17498 17498 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:28:07.843 17498 17498 D AndroidRuntime: Shutting down VM
+07-10 08:29:53.755 17597 17597 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:29:53.756 17597 17597 I AndroidRuntime: Using default boot image
+07-10 08:29:53.756 17597 17597 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:29:53.811 17597 17597 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:29:54.899 17597 17597 D AndroidRuntime: Shutting down VM
+07-10 08:30:22.564 17630 17630 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:30:22.566 17630 17630 I AndroidRuntime: Using default boot image
+07-10 08:30:22.567 17630 17630 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:30:22.638 17630 17630 D AndroidRuntime: Calling main entry com.android.commands.monkey.Monkey
+07-10 08:30:24.813 17630 17630 I AndroidRuntime: VM exiting with result code 0.
+07-10 08:30:24.853 17645 17645 I com.shinewriter: Late-enabling -Xcheck:jni
+07-10 08:30:24.907 17645 17645 I com.shinewriter: Using CollectorTypeCMC GC.
+07-10 08:30:24.908 17645 17645 W com.shinewriter: Unexpected CPU variant for x86: x86_64.
+07-10 08:30:24.908 17645 17645 W com.shinewriter: Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, goldmont-without-sha-xsaves, tremont, kabylake, alderlake, default
+07-10 08:30:26.356 17645 17650 I com.shinewriter: Compiler allocated 5087KB to compile void android.view.ViewRootImpl.performTraversals()
+07-10 08:30:27.884 17683 17683 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:30:27.886 17683 17683 I AndroidRuntime: Using default boot image
+07-10 08:30:27.887 17683 17683 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:30:27.951 17683 17683 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:30:28.986 17683 17683 D AndroidRuntime: Shutting down VM
+07-10 08:30:52.695 17726 17726 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:30:52.697 17726 17726 I AndroidRuntime: Using default boot image
+07-10 08:30:52.697 17726 17726 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:30:52.756 17726 17726 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:30:53.790 17726 17726 D AndroidRuntime: Shutting down VM
+07-10 08:30:57.252 17645 17651 W com.shinewriter: userfaultfd: MOVE ioctl seems unsupported: Connection timed out
+07-10 08:31:29.271 17774 17774 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:31:29.272 17774 17774 I AndroidRuntime: Using default boot image
+07-10 08:31:29.273 17774 17774 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:31:29.331 17774 17774 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:31:30.360 17774 17774 D AndroidRuntime: Shutting down VM
+07-10 08:32:37.707 17832 17832 D AndroidRuntime: >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+07-10 08:32:37.708 17832 17832 I AndroidRuntime: Using default boot image
+07-10 08:32:37.708 17832 17832 I AndroidRuntime: Leaving lock profiling enabled
+07-10 08:32:37.767 17832 17832 D AndroidRuntime: Calling main entry com.android.commands.uiautomator.Launcher
+07-10 08:32:38.811 17832 17832 D AndroidRuntime: Shutting down VM
