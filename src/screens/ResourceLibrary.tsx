@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import {
@@ -42,6 +43,7 @@ import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
 import type { ResourceType } from '../services/database';
 import { estimateTokens } from '../utils/tokenEstimator';
+import { getNoteChapters } from '../utils/noteChapters';
 import {
   DEFAULT_STYLE_WEIGHTS,
   type StyleWeights,
@@ -120,6 +122,9 @@ export const ResourceLibrary: React.FC = () => {
   >(null);
   const [draft, setDraft] = useState('');
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [showNoteChapters, setShowNoteChapters] = useState(false);
+  const [noteSelection, setNoteSelection] = useState({ start: 0, end: 0 });
+  const noteContentInputRef = useRef<TextInput>(null);
   const [noteMode, setNoteMode] = useState<'none' | 'style' | 'retrieval'>(
     'none',
   );
@@ -629,6 +634,8 @@ export const ResourceLibrary: React.FC = () => {
     };
     const storedName = item.name || '';
     const isPlaceholder = storedName === placeholderByKind[kind];
+    setShowNoteChapters(false);
+    setNoteSelection({ start: 0, end: 0 });
     setEditor({
       kind,
       item,
@@ -886,6 +893,16 @@ export const ResourceLibrary: React.FC = () => {
     () => (editor ? `编辑${tabLabel(editor.kind)}` : ''),
     [editor],
   );
+  const noteChapters = useMemo(
+    () => (editor?.kind === 'notes' ? getNoteChapters(editor.content) : []),
+    [editor],
+  );
+
+  const jumpToNoteChapter = (offset: number) => {
+    setShowNoteChapters(false);
+    setNoteSelection({ start: offset, end: offset });
+    setTimeout(() => noteContentInputRef.current?.focus(), 0);
+  };
 
   return (
     <Screen>
@@ -1668,13 +1685,44 @@ export const ResourceLibrary: React.FC = () => {
                   </>
                 ) : null}
                 {editor.kind === 'notes' ? (
-                  <Field
-                    label="笔记内容"
-                    value={editor.content}
-                    onChangeText={content => setEditor({ ...editor, content })}
-                    multiline
-                    inputStyle={styles.largeInput}
-                  />
+                  <>
+                    <View style={styles.noteContentHeader}>
+                      <Text
+                        style={[
+                          styles.noteContentLabel,
+                          { color: theme.colors.textSecondary },
+                        ]}
+                      >
+                        笔记内容
+                      </Text>
+                      <Button
+                        label={`章节${noteChapters.length ? ` (${noteChapters.length})` : ''}`}
+                        icon={BookMarked}
+                        variant="secondary"
+                        compact
+                        onPress={() => setShowNoteChapters(true)}
+                      />
+                    </View>
+                    <TextInput
+                      ref={noteContentInputRef}
+                      value={editor.content}
+                      onChangeText={content => setEditor({ ...editor, content })}
+                      onSelectionChange={event => setNoteSelection(event.nativeEvent.selection)}
+                      selection={noteSelection}
+                      multiline
+                      textAlignVertical="top"
+                      placeholder="请输入笔记内容"
+                      placeholderTextColor={theme.colors.textMuted}
+                      style={[
+                        styles.noteContentInput,
+                        {
+                          backgroundColor: theme.colors.card,
+                          borderColor: theme.colors.border,
+                          color: theme.colors.textPrimary,
+                        },
+                      ]}
+                    />
+                  </>
                 ) : null}
                 {editor.kind === 'presets' ? (
                   <>
@@ -1748,6 +1796,50 @@ export const ResourceLibrary: React.FC = () => {
                 onPress={() => setEditor(null)}
               />
               <Button label="保存" onPress={saveEditor} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showNoteChapters}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowNoteChapters(false)}
+      >
+        <View style={styles.overlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setShowNoteChapters(false)}
+          />
+          <View style={[styles.chapterModal, { backgroundColor: theme.colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>
+              笔记章节
+            </Text>
+            {noteChapters.length > 0 ? (
+              <ScrollView style={styles.chapterList} keyboardShouldPersistTaps="handled">
+                {noteChapters.map((chapter, index) => (
+                  <Pressable
+                    key={`${chapter.offset}-${chapter.title}`}
+                    style={[styles.chapterItem, { borderBottomColor: theme.colors.border }]}
+                    onPress={() => jumpToNoteChapter(chapter.offset)}
+                  >
+                    <Text style={[styles.chapterIndex, { color: theme.colors.textMuted }]}>
+                      {index + 1}
+                    </Text>
+                    <Text style={[styles.chapterTitle, { color: theme.colors.textPrimary }]}>
+                      {chapter.title}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : (
+              <Text style={[styles.chapterEmpty, { color: theme.colors.textSecondary }]}>
+                未识别到章节标题。可使用“第 1 章”、Markdown 标题或 Chapter 1 格式。
+              </Text>
+            )}
+            <View style={styles.modalActions}>
+              <Button label="关闭" variant="ghost" onPress={() => setShowNoteChapters(false)} />
             </View>
           </View>
         </View>
@@ -2023,6 +2115,15 @@ const styles = StyleSheet.create({
   noteModeLabel: { fontSize: 13, fontWeight: '700', marginTop: spacing.xs },
   noteModeLink: { fontSize: 13, fontWeight: '700' },
   noteModeHint: { fontSize: 12, marginTop: spacing.xs },
+  noteContentHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs },
+  noteContentLabel: { fontSize: 13, fontWeight: '600' },
+  noteContentInput: { minHeight: 280, borderWidth: 1, borderRadius: 12, padding: spacing.md, fontSize: 14, lineHeight: 21 },
+  chapterModal: { width: '88%', maxHeight: '74%', borderRadius: 16, padding: spacing.lg },
+  chapterList: { maxHeight: 420 },
+  chapterItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md, borderBottomWidth: StyleSheet.hairlineWidth },
+  chapterIndex: { width: 26, fontSize: 13, fontWeight: '700', textAlign: 'center' },
+  chapterTitle: { flex: 1, fontSize: 15, fontWeight: '600' },
+  chapterEmpty: { fontSize: 14, lineHeight: 21, paddingVertical: spacing.lg },
   weightRow: { gap: 4 },
   weightLabel: { fontSize: 13, fontWeight: '600' },
   titleRow: {

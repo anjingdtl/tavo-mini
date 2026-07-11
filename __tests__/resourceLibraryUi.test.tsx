@@ -7,6 +7,7 @@ jest.mock('../src/services/database', () => ({
   ]),
   getAllWorldbookEntries: jest.fn(async () => []),
   getAllNotes: jest.fn(async () => []),
+  getNoteContentById: jest.fn(async () => ''),
   getAllPresets: jest.fn(async () => []),
   getCharacterCollections: jest.fn(async () => [
     { id: 9, name: '角色合集 A', enabled: 1, character_count: 1, estimated_tokens: 3, max_tokens: 50000 },
@@ -132,6 +133,36 @@ describe('ResourceLibrary UI', () => {
     for (const label of ['禁用', '仿写', '资料库']) {
       expect((await findAllByText(label)).length).toBeGreaterThan(0);
     }
+  });
+
+  it('opens a note chapter directory and jumps to the selected heading', async () => {
+    (db.getAllNotes as jest.Mock).mockResolvedValue([
+      {
+        id: 8,
+        title: '长笔记',
+        content: '预览',
+        enabled_for_project: 1,
+        max_tokens: 30000,
+      },
+    ]);
+    (db.getNoteContentById as jest.Mock).mockResolvedValue(
+      '导语\n第1章 初遇\n正文\n第2章 重逢\n正文',
+    );
+
+    const { findByText, getAllByText, getByPlaceholderText, getByText } = render(<ResourceLibrary />);
+    await findByText('导入角色卡');
+    fireEvent.press(getByText('笔记'));
+    await findByText('长笔记');
+    fireEvent.press(getAllByText('编辑')[0]);
+    await findByText('章节 (2)');
+    fireEvent.press(getByText('章节 (2)'));
+    await findByText('第2章 重逢');
+    fireEvent.press(getByText('第2章 重逢'));
+
+    expect(getByPlaceholderText('请输入笔记内容').props.selection).toEqual({
+      start: 13,
+      end: 13,
+    });
   });
 
   it('renders the list container with scrollable minHeight style', async () => {
