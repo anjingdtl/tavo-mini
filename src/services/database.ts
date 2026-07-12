@@ -1142,6 +1142,54 @@ async function ensureSchemaCompatibility(
     'llm_config_name',
     "llm_config_name TEXT NOT NULL DEFAULT ''",
   );
+
+  // V2.4.3 修复：project_note_config 曾被 ensureSchemaCompatibility 遗漏，
+  // 导致从老版本升级且 v13→v14 迁移未跑到的设备缺 retrieval_fragment_chars 列，
+  // setProjectNoteConfig 的 INSERT 报 "no column named retrieval_fragment_chars"。
+  // 与其他表同款兜底，启动时无条件补齐。
+  const noteConfig = await tableColumns(database, 'project_note_config');
+  await ensureColumn(
+    database,
+    'project_note_config',
+    noteConfig,
+    'mode',
+    "mode TEXT NOT NULL DEFAULT 'none'",
+  );
+  await ensureColumn(
+    database,
+    'project_note_config',
+    noteConfig,
+    'style_weights',
+    "style_weights TEXT NOT NULL DEFAULT '{}'",
+  );
+  await ensureColumn(
+    database,
+    'project_note_config',
+    noteConfig,
+    'retrieval_top_k',
+    'retrieval_top_k INTEGER NOT NULL DEFAULT 5',
+  );
+  await ensureColumn(
+    database,
+    'project_note_config',
+    noteConfig,
+    'retrieval_fragment_chars',
+    'retrieval_fragment_chars INTEGER NOT NULL DEFAULT 1000',
+  );
+  await ensureColumn(
+    database,
+    'project_note_config',
+    noteConfig,
+    'enabled_note_ids',
+    "enabled_note_ids TEXT NOT NULL DEFAULT '[]'",
+  );
+  await ensureColumn(
+    database,
+    'project_note_config',
+    noteConfig,
+    'updated_at',
+    "updated_at TEXT NOT NULL DEFAULT ''",
+  );
 }
 
 async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
