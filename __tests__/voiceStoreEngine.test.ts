@@ -75,6 +75,7 @@ describe('voiceStore engine dispatch', () => {
     await useVoiceStore.getState().playChapter('你好世界');
 
     expect(speakSpy).toHaveBeenCalled();
+    expect(TtsAudio.beginBackgroundPlayback).toHaveBeenCalled();
     expect(synthSpy).not.toHaveBeenCalled();
     speakSpy.mockRestore();
     synthSpy.mockRestore();
@@ -90,6 +91,8 @@ describe('voiceStore engine dispatch', () => {
 
     expect(synthSpy).toHaveBeenCalled();
     expect(playSpy).toHaveBeenCalled();
+    expect(TtsAudio.beginBackgroundPlayback).toHaveBeenCalled();
+    expect(TtsAudio.endBackgroundPlayback).toHaveBeenCalled();
     expect(speakSpy).not.toHaveBeenCalled();
     speakSpy.mockRestore();
     synthSpy.mockRestore();
@@ -105,6 +108,7 @@ describe('voiceStore engine dispatch', () => {
 
     expect(stopSpeakSpy).toHaveBeenCalled();
     expect(stopAudioSpy).not.toHaveBeenCalled();
+    expect(TtsAudio.endBackgroundPlayback).toHaveBeenCalled();
     stopSpeakSpy.mockRestore();
     stopAudioSpy.mockRestore();
   });

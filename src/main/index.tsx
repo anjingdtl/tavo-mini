@@ -16,6 +16,7 @@ import { openDatabase, lastInstallInfo } from '../services/database';
 import { hasBreakingMigration } from '../services/migrations';
 import { UpgradeScreen } from '../screens/UpgradeScreen';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
+import { useSettingsStore } from '../store/settingsStore';
 import appVersionJson from '../constants/version.json';
 import type { PipelineTask } from '../types/pipeline';
 
@@ -39,6 +40,9 @@ export const App: React.FC = () => {
       // 8.2 修复：init 无 try-catch，openDatabase 抛错时 setReady 永不执行，App 永久卡白屏
       try {
         await openDatabase();
+        // 必须在任何写作入口可用前同步后台开关。此前只有进入设置页时才调用
+        // loadSettings，导致默认开启的前台服务桥接仍保持 false，流水线切后台即失去保活。
+        await useSettingsStore.getState().loadSettings();
         // 流水线无法跨进程恢复执行：冷启动时任何 active 状态都属于上次已中断
         // 的运行，必须立即终态化，不能等 10 分钟 stale 窗口后继续卡住章节。
         await usePipelineTaskStore.getState().loadFromDB();
