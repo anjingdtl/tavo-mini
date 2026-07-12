@@ -7,6 +7,7 @@ import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { cancelPipeline, runChapterPipeline } from '../services/pipelineRunner';
 import { suppressGlobalPipelinePrompt } from '../navigation/pipelinePromptSuppression';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
+import { requestNotificationPermission } from '../utils/notificationPermission';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { PipelineProgress } from '../components/PipelineProgress';
 import { useThemeStore } from '../store/themeStore';
@@ -438,16 +439,20 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     setProgressVisible(true);
     const taskId = createTask('chapter', chapter.id);
     suppressGlobalPipelinePrompt(taskId);
-    // 后台运行需要通知权限：若缺失则提示用户开启（不阻塞流水线，仅影响后台体验）
-    PipelineForeground.isAvailable().then((ok) => {
-      if (!ok) {
-        Toast.show({
-          type: 'info',
-          text1: '未开启通知权限',
-          text2: '切到后台时将无法显示写作进度，建议在系统设置中开启',
-        });
-      }
-    });
+    // 在用户明确开始写作时请求一次通知权限。前台服务仍会尝试运行，权限仅决定
+    // 运行进度和完成提醒是否能展示在通知栏。
+    requestNotificationPermission()
+      .then(async granted => {
+        const ok = granted && await PipelineForeground.isAvailable();
+        if (!ok) {
+          Toast.show({
+            type: 'info',
+            text1: '未开启通知权限',
+            text2: '后台写作会继续尝试运行，但无法显示进度和完成提醒。',
+          });
+        }
+      })
+      .catch(() => undefined);
     try {
       await runChapterPipeline(taskId, chapter, (info) => {
         if (typeof info === 'object') {
