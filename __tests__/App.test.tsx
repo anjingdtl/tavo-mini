@@ -4,6 +4,22 @@ import { App } from '../src/main';
 
 jest.mock('../src/services/database', () => ({
   getAllProjects: jest.fn(async () => []),
+  getAllPipelineTasks: jest.fn(async () => []),
+  getBackgroundPipelineEnabled: jest.fn(async () => true),
+  getLLMConfigs: jest.fn(async () => []),
+  getContextConfig: jest.fn(async () => ({
+    strategy: 'sliding',
+    slidingWindowSize: 4000,
+    recentChapterCount: 3,
+    summaryBudgetTokens: 20000,
+    memoryTopK: 10,
+    resourceBudget: 2000,
+    worldbookScanDepth: 4,
+    customRangeStart: 0,
+    customRangeEnd: -1,
+    includeResources: true,
+    worldbookRecursive: true,
+  })),
   getSetting: jest.fn(async () => null),
   openDatabase: jest.fn(),
 }));

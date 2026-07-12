@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 jest.mock('../src/services/database', () => ({
   getAllCharacters: jest.fn(async () => [
@@ -13,6 +13,7 @@ jest.mock('../src/services/database', () => ({
     { id: 9, name: '角色合集 A', enabled: 1, character_count: 1, estimated_tokens: 3, max_tokens: 50000 },
   ]),
   getWorldbookCollections: jest.fn(async () => []),
+  updateWorldbookEntry: jest.fn(async () => undefined),
   getProjectNoteConfig: jest.fn(async () => null),
   setCharacterCollectionEnabledForProject: jest.fn(async () => undefined),
 }));
@@ -171,5 +172,46 @@ describe('ResourceLibrary UI', () => {
 
     const container = getByTestId('resource-list-container');
     expect(container.props.style).toMatchObject({ minHeight: 240 });
+  });
+
+  it('keeps a saved worldbook primary keyword when reopening and saving the entry', async () => {
+    (db.getWorldbookCollections as jest.Mock).mockResolvedValue([
+      { id: 5, name: '港口设定', enabled: 1, entry_count: 1, estimated_tokens: 12, max_tokens: 50000 },
+    ]);
+    (db.getAllWorldbookEntries as jest.Mock).mockResolvedValue([
+      {
+        id: 7,
+        collection_id: 5,
+        keyword_primary: '雾港',
+        keyword_secondary: '',
+        content: '终年被海雾笼罩的港口。',
+        comment: '',
+        enabled: 1,
+        constant: 0,
+        enabled_for_project: 1,
+        collection_enabled: 1,
+        max_tokens: 2000,
+        estimated_tokens: 12,
+      },
+    ]);
+    (db.updateWorldbookEntry as jest.Mock).mockResolvedValue(undefined);
+
+    const { findByDisplayValue, findByText, getByText } = render(<ResourceLibrary />);
+    await findByText('导入角色卡');
+    fireEvent.press(getByText('世界书'));
+    await findByText('港口设定');
+    fireEvent.press(getByText('打开'));
+    await findByText('雾港');
+    fireEvent.press(getByText('编辑'));
+
+    expect(await findByDisplayValue('雾港')).toBeTruthy();
+
+    fireEvent.press(getByText('保存'));
+    await waitFor(() => {
+      expect(db.updateWorldbookEntry).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ keyword_primary: '雾港' }),
+      );
+    });
   });
 });

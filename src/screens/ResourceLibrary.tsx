@@ -632,7 +632,11 @@ export const ResourceLibrary: React.FC = () => {
       notes: '无标题笔记',
       presets: '未命名预设',
     };
-    const storedName = item.name || '';
+    // 世界书条目的名称实际存储在 keyword_primary，而不是通用的 name 字段。
+    // 若这里读取 item.name，编辑器会显示为空；用户随后仅修改正文再保存时，
+    // saveEditor 会把 keyword_primary 覆盖为空，列表就会回退显示“未命名条目”。
+    const storedName =
+      kind === 'worldbook' ? item.keyword_primary || '' : item.name || '';
     const isPlaceholder = storedName === placeholderByKind[kind];
     setShowNoteChapters(false);
     setNoteSelection({ start: 0, end: 0 });

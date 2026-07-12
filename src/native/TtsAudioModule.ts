@@ -7,6 +7,8 @@ import type {
 } from '../types/tts';
 
 interface TtsAudioNative {
+  beginBackgroundPlayback(): Promise<void>;
+  endBackgroundPlayback(): Promise<void>;
   playAudioFile(path: string): Promise<void>;
   stopAudio(): Promise<void>;
   speak(text: string, config: SpeakConfig): Promise<void>;
