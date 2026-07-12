@@ -8,6 +8,7 @@ import { Button, Card, Header, Screen, Section, SegmentedControl, spacing } from
 import { useThemeStore } from '../store/themeStore';
 import { useSettingsStore } from '../store/settingsStore';
 import * as db from '../services/database';
+import { requestNotificationPermission } from '../utils/notificationPermission';
 import type { ThemeMode } from '../types/theme';
 import appVersionJson from '../constants/version.json';
 
@@ -36,9 +37,11 @@ export const SettingsScreen: React.FC = () => {
 
   const toggleBackgroundPipeline = async (value: boolean) => {
     if (value) {
-      // 开启时检查通知可用性，未授权则引导用户去系统设置
+      // Android 13+ 可在此用户主动动作中直接请求通知权限；若用户此前拒绝或
+      // 在系统层关闭通知，再退回设置页引导。
+      const granted = await requestNotificationPermission();
       const { PipelineForeground } = require('../native/PipelineForegroundModule');
-      const ok = await PipelineForeground.isAvailable();
+      const ok = granted && await PipelineForeground.isAvailable();
       if (!ok) {
         Alert.alert(
           '需要通知权限',

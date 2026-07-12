@@ -21,6 +21,7 @@ import type {
   TtsSessionEvent,
 } from '../types/tts';
 import RNFS from 'react-native-fs';
+import { requestNotificationPermission } from '../utils/notificationPermission';
 
 type PlaybackState = 'idle' | 'synthesizing' | 'playing';
 
@@ -52,6 +53,22 @@ async function deleteIfExists(path: string): Promise<void> {
     }
   } catch {
     // ignore cleanup errors
+  }
+}
+
+async function beginBackgroundPlayback(): Promise<void> {
+  try {
+    await TtsAudio.beginBackgroundPlayback();
+  } catch {
+    // 前台服务启动失败不能阻止前台朗读；原生层也会记录具体原因。
+  }
+}
+
+async function endBackgroundPlayback(): Promise<void> {
+  try {
+    await TtsAudio.endBackgroundPlayback();
+  } catch {
+    // best-effort cleanup
   }
 }
 
@@ -125,12 +142,18 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         ttsProgress: null,
         lastTtsError: null,
       });
+      // 原生调用在发起时就会建立前台服务；不能 await 它，否则 Zustand 的“生成中”
+      // 状态会被额外的异步轮次推迟，造成工具栏短暂仍显示“朗读”。
+      // 服务启动失败也不应阻止前台朗读，具体失败会由原生层记录。
+      beginBackgroundPlayback();
+      requestNotificationPermission();
       try {
         // 原生 speak 在首段入队成功时 resolve；
         // 朗读实际开始/完成/错误/停止通过事件通知。
         await TtsAudio.speak(text, { ...state.systemConfig, sessionId });
         set({ isSynthesizing: false, isPlaying: true, playbackState: 'playing' });
       } catch (error: any) {
+        await endBackgroundPlayback();
         set({
           isSynthesizing: false,
           isPlaying: false,
@@ -166,6 +189,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       Toast.show({ type: 'info', text1: '正文超过 10000 字，将只朗读前 10000 字' });
     }
 
+    // 云端合成阶段也要保活，不能等音频文件准备好才启动媒体服务。原生调用会
+    // 立即发起服务，保持非阻塞以便 UI 立刻切换到“生成中”。
+    beginBackgroundPlayback();
+    requestNotificationPermission();
     set({ isSynthesizing: true, playbackState: 'synthesizing' });
     let audioPath: string | null = null;
     try {
@@ -178,6 +205,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         if (audioPath) {
           await deleteIfExists(audioPath);
         }
+        await endBackgroundPlayback();
       }
     } catch (error: any) {
       set({ isSynthesizing: false, isPlaying: false, playbackState: 'idle', lastPlayEndedAt: Date.now() });
@@ -188,6 +216,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       if (!message.includes('取消') && !message.includes('停止')) {
         Toast.show({ type: 'error', text1: message });
       }
+      await endBackgroundPlayback();
     }
   },
 
@@ -219,6 +248,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         }
       }
     }
+    await endBackgroundPlayback();
   },
 }));
 
@@ -278,6 +308,8 @@ export function initializeTtsListeners(): void {
     useVoiceStore.setState({
       isSynthesizing: false,
       isPlaying: false,
+      playbackState: 'idle',
+      lastPlayEndedAt: Date.now(),
       activeTtsSessionId: null,
       ttsProgress: null,
     });

@@ -45,6 +45,17 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     private const val ERR_VOICE_REQUIRES_NETWORK = "TTS_VOICE_REQUIRES_NETWORK"
     private const val ERR_SPEAK_FAILED = "TTS_SPEAK_FAILED"
     private const val ERR_OPEN_SETTINGS_FAILED = "OPEN_TTS_SETTINGS_FAILED"
+
+    @Volatile
+    private var activeModule: TtsAudioModule? = null
+
+    /** 供通知栏“停止朗读”和音频焦点回调复用，确保原生播放与 JS 状态一起结束。 */
+    fun stopActivePlaybackFromForegroundService() {
+      val module = activeModule ?: return
+      module.mainHandler.post {
+        if (activeModule === module) module.stopFromForegroundService()
+      }
+    }
   }
 
   // ===== MediaPlayer playback (cloud TTS) =====
@@ -67,34 +78,60 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
   private var pendingSpeakText: String? = null
   private var pendingSpeakConfig: ReadableMap? = null
 
+  init {
+    activeModule = this
+  }
+
   override fun getName(): String = "TtsAudio"
 
   // ===== MediaPlayer methods (unchanged behavior) =====
 
   @ReactMethod
+  fun beginBackgroundPlayback(promise: Promise) {
+    try {
+      TtsForegroundService.begin(reactApplicationContext)
+    } catch (e: Exception) {
+      Log.w(TAG, "begin background playback failed", e)
+    }
+    // 前台服务失败时仍让 JS 继续播放，避免后台能力反过来破坏原有前台朗读。
+    promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun endBackgroundPlayback(promise: Promise) {
+    TtsForegroundService.stop(reactApplicationContext)
+    promise.resolve(null)
+  }
+
+  @ReactMethod
   fun playAudioFile(path: String, promise: Promise) {
-    stopAudioInternal(rejectPending = true)
-    stopSpeakInternal(rejectPending = false, emitStopped = false)
+    // 复用本次已在“合成中”启动的服务，避免 stop/start 的异步竞态把新播放误停。
+    stopAudioInternal(rejectPending = true, stopForeground = false)
+    stopSpeakInternal(rejectPending = false, emitStopped = false, stopForeground = false)
 
     val file = File(path)
     if (!file.exists()) {
       promise.reject("FILE_NOT_FOUND", "音频文件不存在: $path")
+      TtsForegroundService.stop(reactApplicationContext)
       return
     }
 
     currentAudioPromise = promise
     try {
+      TtsForegroundService.promoteToPlayback(reactApplicationContext)
       mediaPlayer = MediaPlayer().apply {
         setDataSource(path)
         setOnCompletionListener {
           releasePlayer()
           currentAudioPromise?.resolve(null)
           currentAudioPromise = null
+          TtsForegroundService.stop(reactApplicationContext)
         }
         setOnErrorListener { _, what, extra ->
           releasePlayer()
           currentAudioPromise?.reject("PLAYBACK_ERROR", "播放失败: what=$what extra=$extra")
           currentAudioPromise = null
+          TtsForegroundService.stop(reactApplicationContext)
           true
         }
         prepare()
@@ -105,6 +142,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       releasePlayer()
       currentAudioPromise?.reject("PLAYBACK_EXCEPTION", "播放异常: ${e.message}")
       currentAudioPromise = null
+      TtsForegroundService.stop(reactApplicationContext)
     }
   }
 
@@ -114,11 +152,15 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     promise.resolve(null)
   }
 
-  private fun stopAudioInternal(rejectPending: Boolean) {
+  private fun stopAudioInternal(rejectPending: Boolean, stopForeground: Boolean = true) {
+    val hadActiveAudio = mediaPlayer != null || currentAudioPromise != null
     releasePlayer()
     if (rejectPending && currentAudioPromise != null) {
       currentAudioPromise?.reject("CANCELLED", "播放已停止")
       currentAudioPromise = null
+    }
+    if (stopForeground && hadActiveAudio) {
+      TtsForegroundService.stop(reactApplicationContext)
     }
   }
 
@@ -142,12 +184,15 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun speak(text: String, config: ReadableMap, promise: Promise) {
-    stopAudioInternal(rejectPending = true)
+    stopAudioInternal(rejectPending = true, stopForeground = false)
 
     if (text.isBlank()) {
       promise.reject(ERR_EMPTY_TEXT, "朗读文本为空")
       return
     }
+
+    // 支持直接从原生桥调用时也能在 TTS 初始化期间保活；JS 路径已提前调用同一方法。
+    TtsForegroundService.begin(reactApplicationContext)
 
     logDeviceInfo()
     Log.i(TAG, "speak requested enginePackage=${config.optString("enginePackage")} " +
@@ -167,15 +212,13 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
 
     if (needsRebuild) {
       Log.i(TAG, "engine switch required: current=$currentEnginePackage requested=$requestedEngine")
-      shutdownTts(resetEngine = true)
-      initializeTts(requestedEngine)
-      return
     }
 
     ensureTts(requestedEngine) { ok ->
       if (!ok) {
         pendingSpeakPromise?.reject(ERR_ENGINE_UNAVAILABLE, "未检测到可用的系统语音引擎")
         clearPendingSpeak()
+        TtsForegroundService.stop(reactApplicationContext)
         return@ensureTts
       }
       doSpeak()
@@ -414,18 +457,6 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     mainHandler.post { initializeTtsInstance(targetEngine) }
   }
 
-  private fun initializeTts(requestedEngine: String?) {
-    synchronized(this) {
-      if (initState == TtsInitState.INITIALIZING) {
-        return
-      }
-      shutdownTts(resetEngine = true)
-      initState = TtsInitState.INITIALIZING
-      currentEnginePackage = requestedEngine
-    }
-    mainHandler.post { initializeTtsInstance(requestedEngine) }
-  }
-
   private fun initializeTtsInstance(engine: String?) {
     Log.i(TAG, "initializeTtsInstance start engine=${engine ?: "default"}")
 
@@ -563,11 +594,13 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
         TextToSpeech.LANG_MISSING_DATA -> {
           promise.reject(ERR_LANGUAGE_DATA_MISSING, "当前引擎缺少中文语音数据")
           clearPendingSpeak()
+          TtsForegroundService.stop(reactApplicationContext)
           return
         }
         TextToSpeech.LANG_NOT_SUPPORTED -> {
           promise.reject(ERR_LANGUAGE_NOT_SUPPORTED, "当前引擎不支持所选语言: $language")
           clearPendingSpeak()
+          TtsForegroundService.stop(reactApplicationContext)
           return
         }
         else -> {
@@ -575,6 +608,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
           if (setResult < 0) {
             promise.reject(ERR_LANGUAGE_NOT_SUPPORTED, "设置语言失败: $language")
             clearPendingSpeak()
+            TtsForegroundService.stop(reactApplicationContext)
             return
           }
         }
@@ -587,11 +621,13 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
         if (matched == null) {
           promise.reject(ERR_VOICE_NOT_FOUND, "已保存的声线不存在，请重新选择")
           clearPendingSpeak()
+          TtsForegroundService.stop(reactApplicationContext)
           return
         }
         if (offlineOnly && matched.isNetworkConnectionRequired) {
           promise.reject(ERR_VOICE_REQUIRES_NETWORK, "所选声线需要联网，不符合离线设置")
           clearPendingSpeak()
+          TtsForegroundService.stop(reactApplicationContext)
           return
         }
         ttsInstance.voice = matched
@@ -608,6 +644,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       if (chunks.isEmpty()) {
         promise.reject(ERR_EMPTY_TEXT, "朗读文本为空")
         clearPendingSpeak()
+        TtsForegroundService.stop(reactApplicationContext)
         return
       }
 
@@ -618,6 +655,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       Log.i(TAG, "starting TTS session=$sessionId chunks=${chunks.size} maxLength=$maxLength")
 
       val firstUtteranceId = utteranceIdFor(sessionId, 0, chunks.size)
+      TtsForegroundService.promoteToPlayback(reactApplicationContext)
       val result = ttsInstance.speak(chunks[0], TextToSpeech.QUEUE_FLUSH, params, firstUtteranceId)
       if (result == TextToSpeech.SUCCESS) {
         promise.resolve(null)
@@ -626,12 +664,14 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
         activeSession = null
         promise.reject(ERR_SPEAK_FAILED, "系统未能开始朗读")
         clearPendingSpeak()
+        TtsForegroundService.stop(reactApplicationContext)
       }
     } catch (e: Exception) {
       Log.e(TAG, "doSpeak failed", e)
       activeSession = null
       promise.reject(ERR_SPEAK_FAILED, "朗读异常: ${e.message}")
       clearPendingSpeak()
+      TtsForegroundService.stop(reactApplicationContext)
     }
   }
 
@@ -684,6 +724,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
           sendEvent("ttsDone", utteranceProgressEvent(session))
         }
         activeSession = null
+        TtsForegroundService.stop(reactApplicationContext)
         return
       }
 
@@ -723,6 +764,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     override fun onStop(utteranceId: String?, interrupted: Boolean) {
       Log.i(TAG, "onStop utteranceId=$utteranceId interrupted=$interrupted")
       activeSession = null
+      TtsForegroundService.stop(reactApplicationContext)
     }
   }
 
@@ -732,9 +774,15 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     map.putString("message", message)
     nativeCode?.let { map.putInt("nativeErrorCode", it) }
     sendEvent("ttsError", map)
+    TtsForegroundService.stop(reactApplicationContext)
   }
 
-  private fun stopSpeakInternal(rejectPending: Boolean, emitStopped: Boolean) {
+  private fun stopSpeakInternal(
+    rejectPending: Boolean,
+    emitStopped: Boolean,
+    stopForeground: Boolean = true,
+  ) {
+    val hadActiveSpeech = activeSession != null || pendingSpeakPromise != null
     val session = activeSession
     if (session != null) {
       session.stopped = true
@@ -752,6 +800,14 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
       pendingSpeakPromise?.reject(ERR_CANCELLED, "朗读已停止")
     }
     clearPendingSpeak()
+    if (stopForeground && hadActiveSpeech) {
+      TtsForegroundService.stop(reactApplicationContext)
+    }
+  }
+
+  private fun stopFromForegroundService() {
+    stopAudioInternal(rejectPending = true, stopForeground = false)
+    stopSpeakInternal(rejectPending = true, emitStopped = true, stopForeground = false)
   }
 
   private fun clearPendingSpeak() {
@@ -842,6 +898,7 @@ class TtsAudioModule(reactContext: ReactApplicationContext) :
     stopAudioInternal(rejectPending = false)
     stopSpeakInternal(rejectPending = false, emitStopped = false)
     shutdownTts(resetEngine = true)
+    if (activeModule === this) activeModule = null
     super.onCatalystInstanceDestroy()
   }
 
