@@ -201,6 +201,32 @@ test('pipeline marks setup errors as failed tasks instead of leaving them unclea
   expect(mockCallLLMResult).not.toHaveBeenCalled();
 });
 
+test('pipeline starts its foreground service before asynchronous configuration loading', async () => {
+  let releaseConfig!: () => void;
+  mockGetPipelineConfig.mockReturnValueOnce(new Promise((resolve) => {
+    releaseConfig = () => resolve(baseConfig());
+  }));
+
+  const { runChapterPipeline } = require('../src/services/pipelineRunner');
+  const { PipelineForeground } = require('../src/native/PipelineForegroundModule');
+  const run = runChapterPipeline('task-start-foreground-early', chapter);
+
+  await Promise.resolve();
+  expect(PipelineForeground.start).toHaveBeenCalledWith(
+    'task-start-foreground-early',
+    'Chapter 1',
+    '正在准备写作',
+    0,
+  );
+
+  releaseConfig();
+  mockCallLLMResult
+    .mockResolvedValueOnce({ text: 'draft', inputTokens: 10, outputTokens: 20, totalTokens: 30 })
+    .mockResolvedValueOnce({ text: '{"issues":[]}', inputTokens: 8, outputTokens: 6, totalTokens: 14 })
+    .mockResolvedValueOnce({ text: 'polished', inputTokens: 15, outputTokens: 20, totalTokens: 35 });
+  await run;
+});
+
 test('explicit cancellation immediately persists the cancelled task and stops foreground work', async () => {
   const { cancelPipeline } = require('../src/services/pipelineRunner');
   const { PipelineForeground } = require('../src/native/PipelineForegroundModule');

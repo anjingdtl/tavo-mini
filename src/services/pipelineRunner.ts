@@ -193,6 +193,17 @@ export async function runChapterPipeline(
   onStageUpdate?: (info: StageInfo | string) => void,
 ): Promise<void> {
   const abortSignal = registerTaskAbort(taskId);
+  // 必须在用户仍处于前台、且任何数据库/网络 await 之前启动服务。若等到配置读取
+  // 完成后用户已经切到后台，Android 12+ 会拒绝 startForegroundService，原先错误被
+  // 静默降级后就表现为“流水线一切后台必失败”。
+  PipelineForeground.start(
+    taskId,
+    chapter.title || '流水线',
+    '正在准备写作',
+    0,
+  ).catch(error => {
+    console.warn('[pipeline] early foreground start failed (non-fatal):', error);
+  });
   try {
     await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
   } finally {
@@ -298,18 +309,6 @@ async function runChapterPipelineInner(
     label: '草稿中...',
     startedAt: Date.now(),
   });
-  // BUG-8 修复：start 内部涉及 Android 前台服务+wakelock，在通知权限 NONE 或后台运行未启用时
-  // 可能 hang 或抛 SecurityException 让 promise 不 resolve，阻塞下游 buildContext/callLLMResult。
-  // fire-and-forget：通知/保活失败不该阻塞业务，错误已在桥内部 try-catch warn
-  PipelineForeground.start(
-    taskId,
-    chapter.title || '流水线',
-    '草稿中',
-    pct(0),
-  ).catch(e => {
-    console.warn('[pipeline] foreground start failed (non-fatal):', e);
-  });
-
   let baseContext: ChatMessage[] = [];
   let draftText = '';
   let draftMessages: ChatMessage[] = [];
@@ -745,6 +744,11 @@ async function resumePipelineInner(
   const task = store.tasks.find(t => t.id === taskId);
   if (!task) throw new Error('找不到管线任务');
 
+  // 续跑同样要趁用户点击“续跑”仍在前台时建立前台服务，不能等配置读取完成。
+  PipelineForeground.start(taskId, chapter.title || '流水线', '正在恢复任务', 0).catch(error => {
+    console.warn('[pipeline] early foreground resume start failed (non-fatal):', error);
+  });
+
   const completedStages = new Set(
     task.stageResults.filter(s => s.status === 'success').map(s => s.stage),
   );
@@ -773,6 +777,12 @@ async function resumePipelineInner(
     requestConfig = await resolveLLMRequestConfig();
   } catch (error: any) {
     store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
+    await PipelineForeground.notifyFailed(
+      taskId,
+      chapter.title || '流水线',
+      '配置读取失败',
+    );
+    await PipelineForeground.stop(taskId);
     return;
   }
   const reviewPreset = resolvePreset(
@@ -808,12 +818,7 @@ async function resumePipelineInner(
       : !completedStages.has('factCheck')
       ? pct(1)
       : pct(3);
-    await PipelineForeground.start(
-      taskId,
-      chapter.title || '流水线',
-      nextLabel,
-      nextPct,
-    );
+    await PipelineForeground.updateProgress(taskId, nextLabel, nextPct);
   }
 
   const saveDraftAndComplete = async (text: string) => {
