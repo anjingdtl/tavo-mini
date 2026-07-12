@@ -17,6 +17,7 @@ export async function migrateV8toV9(db: SQLite.SQLiteDatabase): Promise<void> {
       mode TEXT NOT NULL DEFAULT 'none',
       style_weights TEXT NOT NULL DEFAULT '{}',
       retrieval_top_k INTEGER NOT NULL DEFAULT 5,
+      retrieval_fragment_chars INTEGER NOT NULL DEFAULT 1000,
       enabled_note_ids TEXT NOT NULL DEFAULT '[]',
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
