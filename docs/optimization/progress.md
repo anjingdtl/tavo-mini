@@ -185,6 +185,13 @@
 - Extended coverage collection to `src/data/**/*.ts`. The local gate passed with 75 suites / 360 tests and total coverage 79.91% lines, 78.42% statements, 86.30% functions, and 60.82% branches; the new Schema layer reached 96.47% lines / 90% branches.
 - `npm run typecheck`, `npm run lint` (0 errors, five existing warnings), `npm run test:ci`, `npm run test:coverage -- --silent`, and `git diff --check` passed after the extraction. The compatibility contract tests for migration, CRUD, and transaction safety passed separately before the full run.
 
+### 5.2 ChapterEditor 职责拆分 — 已完成
+
+- Added `src/screens/chapter-editor/ChapterEditorScreen.tsx` as the 264-line orchestration screen, with separate `ChapterFields`, `ChapterToolbar`, `ChapterPipelinePanel`, and `ChapterTtsControls` components.
+- Added `useChapterDocument`, `useChapterAutoSave`, `useUnsavedChangesGuard`, `useChapterPipeline`, and `useChapterTts` hooks. Loading, debounced persistence, background/exit flushing, pipeline state, and TTS range playback now have explicit ownership boundaries.
+- Kept `src/screens/ChapterEditor.tsx` as the one-line compatibility export used by navigation. The refactor removes the old `@ts-ignore` navigation calls and keeps page-exit persistence, pipeline continuation/cancellation, TTS completion feedback, and autosave behavior covered.
+- `npx jest --runInBand --ci __tests__/chapterEditorToolbar.test.tsx` passed 9/9 tests; `npm run typecheck`, `npm run lint` (0 errors, four existing bitwise warnings), and `git diff --check` passed after the split.
+
 ## Phase exit criteria
 
 - `npm run verify` passes for every committed task, or the pre-existing typecheck failure is explicitly recorded and approved before proceeding.
