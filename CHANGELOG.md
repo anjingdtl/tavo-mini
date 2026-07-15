@@ -19,5 +19,5 @@
 
 ### 验证 / Verification
 
-- Jest：68 suites / 319 tests 通过。
+- Jest：68 suites / 320 tests 通过。
 - Android Debug APK：`ShineWriter-V2.4.3-debug.apk` 构建通过。
