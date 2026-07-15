@@ -17,8 +17,12 @@ import { saveDraft } from './draftService';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { getStageProgressPercent } from '../utils/stages';
 import type { Chapter, Preset } from '../types/novel';
-import type { PipelineStageName } from '../types/pipeline';
+import type { PipelineStageName, PipelineTaskStatus } from '../types/pipeline';
 import type { ChatMessage } from './llm';
+import {
+  clearLLMTaskQueueDefaults,
+  setLLMTaskQueueDefaults,
+} from './llm/requestScheduler';
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -87,13 +91,32 @@ function buildCallConfig(
   scenario: string,
   projectId?: number,
   requestConfig?: LLMRequestConfig,
+  taskId?: string,
 ) {
+  const statusForScenario = (): PipelineTaskStatus => {
+    if (scenario === 'pipeline_draft') return 'drafting';
+    if (scenario === 'pipeline_review') return 'reviewing';
+    if (scenario === 'pipeline_factcheck') return 'factChecking';
+    return 'proofing';
+  };
   return {
     temperature: preset?.temperature,
     top_p: preset?.top_p,
     max_tokens: maxTokens,
     scenario,
     projectId,
+    taskId,
+    onQueueState: (state: 'queued' | 'running' | 'cancelled') => {
+      if (state === 'queued') {
+        usePipelineTaskStore.getState().setTaskStatus(taskId || '', 'queued');
+      } else if (state === 'running') {
+        usePipelineTaskStore
+          .getState()
+          .setTaskStatus(taskId || '', statusForScenario());
+      } else {
+        usePipelineTaskStore.getState().cancelTask(taskId || '');
+      }
+    },
     requestConfig,
   };
 }
@@ -153,6 +176,7 @@ async function runProofStage({
         scenario,
         projectId,
         requestConfig,
+        taskId,
       ),
       abortSignal,
     );
@@ -170,6 +194,11 @@ async function runProofStage({
     });
     return finalText;
   } catch (error: any) {
+    if (abortSignal?.aborted || error?.code === 'cancelled') {
+      store.cancelTask(taskId);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
     store.updateTaskStage(taskId, {
       stage: 'proof',
       text: draftText,
@@ -187,11 +216,21 @@ export type StageInfo = {
   startedAt: number;
 };
 
+export interface PipelineRunOptions {
+  queueClass?: 'pipeline' | 'background';
+  queuePriority?: 'manual' | 'background';
+}
+
 export async function runChapterPipeline(
   taskId: string,
   chapter: Chapter,
   onStageUpdate?: (info: StageInfo | string) => void,
+  options: PipelineRunOptions = {},
 ): Promise<void> {
+  setLLMTaskQueueDefaults(taskId, {
+    queueClass: options.queueClass || 'pipeline',
+    queuePriority: options.queuePriority || 'manual',
+  });
   const abortSignal = registerTaskAbort(taskId);
   // 必须在用户仍处于前台、且任何数据库/网络 await 之前启动服务。若等到配置读取
   // 完成后用户已经切到后台，Android 12+ 会拒绝 startForegroundService，原先错误被
@@ -202,12 +241,16 @@ export async function runChapterPipeline(
     '正在准备写作',
     0,
   ).catch(error => {
-    console.warn('[pipeline] early foreground start failed (non-fatal):', error);
+    console.warn(
+      '[pipeline] early foreground start failed (non-fatal):',
+      error,
+    );
   });
   try {
     await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
   } finally {
     releaseTaskAbort(taskId);
+    clearLLMTaskQueueDefaults(taskId);
     // 任务结束（无论成功/失败/取消）后清理取消标记，避免 cancelledTasks 累积
     cancelledTasks.delete(taskId);
   }
@@ -272,6 +315,7 @@ async function runChapterPipelineInner(
     getStageProgressPercent(config.pipelineMode, completedStages);
 
   const saveDraftAndComplete = async (text: string) => {
+    if (abortSignal?.aborted || checkCancelled(taskId)) return;
     try {
       await saveDraft({
         projectId: chapter.project_id,
@@ -348,6 +392,7 @@ async function runChapterPipelineInner(
         'pipeline_draft',
         chapter.project_id,
         requestConfig,
+        taskId,
       ),
       abortSignal,
     );
@@ -432,6 +477,7 @@ async function runChapterPipelineInner(
             'pipeline_review',
             chapter.project_id,
             requestConfig,
+            taskId,
           ),
           abortSignal,
         );
@@ -519,6 +565,7 @@ async function runChapterPipelineInner(
             'pipeline_factcheck',
             chapter.project_id,
             requestConfig,
+            taskId,
           ),
           abortSignal,
         );
@@ -597,6 +644,7 @@ async function runChapterPipelineInner(
       'pipeline_review',
       chapter.project_id,
       requestConfig,
+      taskId,
     ),
     abortSignal,
   );
@@ -609,6 +657,7 @@ async function runChapterPipelineInner(
       'pipeline_factcheck',
       chapter.project_id,
       requestConfig,
+      taskId,
     ),
     abortSignal,
   );
@@ -703,6 +752,7 @@ export async function runFreeformPipeline(
   documentText: string,
   steerText: string,
   onStageUpdate?: (info: StageInfo | string) => void,
+  options?: PipelineRunOptions,
 ): Promise<void> {
   const pseudoChapter: Chapter = {
     id: 0,
@@ -716,19 +766,25 @@ export async function runFreeformPipeline(
     created_at: '',
     updated_at: '',
   };
-  await runChapterPipeline(taskId, pseudoChapter, onStageUpdate);
+  await runChapterPipeline(taskId, pseudoChapter, onStageUpdate, options);
 }
 
 export async function resumePipeline(
   taskId: string,
   chapter: Chapter,
   onStageUpdate?: (info: StageInfo | string) => void,
+  options: PipelineRunOptions = {},
 ): Promise<void> {
+  setLLMTaskQueueDefaults(taskId, {
+    queueClass: options.queueClass || 'pipeline',
+    queuePriority: options.queuePriority || 'manual',
+  });
   const abortSignal = registerTaskAbort(taskId);
   try {
     await resumePipelineInner(taskId, chapter, onStageUpdate, abortSignal);
   } finally {
     releaseTaskAbort(taskId);
+    clearLLMTaskQueueDefaults(taskId);
     // 任务结束（无论成功/失败/取消）后清理取消标记，避免 cancelledTasks 累积
     cancelledTasks.delete(taskId);
   }
@@ -745,8 +801,16 @@ async function resumePipelineInner(
   if (!task) throw new Error('找不到管线任务');
 
   // 续跑同样要趁用户点击“续跑”仍在前台时建立前台服务，不能等配置读取完成。
-  PipelineForeground.start(taskId, chapter.title || '流水线', '正在恢复任务', 0).catch(error => {
-    console.warn('[pipeline] early foreground resume start failed (non-fatal):', error);
+  PipelineForeground.start(
+    taskId,
+    chapter.title || '流水线',
+    '正在恢复任务',
+    0,
+  ).catch(error => {
+    console.warn(
+      '[pipeline] early foreground resume start failed (non-fatal):',
+      error,
+    );
   });
 
   const completedStages = new Set(
@@ -822,6 +886,7 @@ async function resumePipelineInner(
   }
 
   const saveDraftAndComplete = async (text: string) => {
+    if (abortSignal?.aborted || checkCancelled(taskId)) return;
     try {
       await saveDraft({
         projectId: chapter.project_id,
@@ -876,6 +941,7 @@ async function resumePipelineInner(
             'pipeline_review',
             chapter.project_id,
             requestConfig,
+            taskId,
           ),
           abortSignal,
         );
@@ -948,6 +1014,7 @@ async function resumePipelineInner(
           'pipeline_review',
           chapter.project_id,
           requestConfig,
+          taskId,
         ),
         abortSignal,
       );
@@ -1001,6 +1068,7 @@ async function resumePipelineInner(
           'pipeline_factcheck',
           chapter.project_id,
           requestConfig,
+          taskId,
         ),
         abortSignal,
       );

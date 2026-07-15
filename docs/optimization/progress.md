@@ -192,6 +192,27 @@
 - Kept `src/screens/ChapterEditor.tsx` as the one-line compatibility export used by navigation. The refactor removes the old `@ts-ignore` navigation calls and keeps page-exit persistence, pipeline continuation/cancellation, TTS completion feedback, and autosave behavior covered.
 - `npx jest --runInBand --ci __tests__/chapterEditorToolbar.test.tsx` passed 9/9 tests; `npm run typecheck`, `npm run lint` (0 errors, four existing bitwise warnings), and `git diff --check` passed after the split.
 
+## Phase 6 — AI 与后台任务可靠性
+
+### 6.1 移动端 LLM 并发调度 — 已完成
+
+- Added `src/services/llm/requestScheduler.ts` with mobile-safe limits: normal online requests 3, same-project pipeline requests 1, cross-project background work 2, connection tests 1, and local model generation 1.
+- Queue entries carry `taskId`, support cancellation before network/native work starts, prioritize manual actions over background work, and expose `queued`/`running`/`cancelled` states to the UI.
+- Android memory-pressure events pause new work; returning to the foreground resumes queued work. Pipeline and chapter screens now display the queue state instead of appearing stuck.
+
+### 6.2 集中式超时与取消策略 — 已完成
+
+- Added `src/services/llm/requestPolicy.ts` for the documented 20-second connection, 60-second normal, 180-second chapter/pipeline, and local no-progress timeout tiers.
+- Online and local providers now share cancellation/error mapping, record request start/first-token/last-progress timestamps, and preserve user cancellation precedence over timeout errors.
+- Reliability tests cover queue cancellation, same-project serialization, low-memory pause/resume, timeout tiers, timing metrics, and cancellation precedence.
+
+### 6.3 HTTP/HTTPS 安全策略 — 已完成
+
+- Added `src/services/llm/networkPolicy.ts`; HTTPS remains the default, while opt-in HTTP is restricted to IPv4 loopback/private-LAN ranges and never permits public HTTP endpoints.
+- Added the persisted `允许不安全的局域网 HTTP 服务` switch with an explicit unencrypted-traffic warning. Online connection tests and generation use the same endpoint validator.
+- Added the Android Network Security Config and aligned Debug/Release manifest placeholders so the signed build follows the same JavaScript policy.
+- Focused reliability/provider tests passed; `npm run typecheck` passed; the debug APK built and was installed/launched on `emulator-5554`, with the LLM settings screen and network policy switch verified through the UI tree.
+
 ## Phase exit criteria
 
 - `npm run verify` passes for every committed task, or the pre-existing typecheck failure is explicitly recorded and approved before proceeding.
