@@ -14,7 +14,11 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const _origConsoleError = console.error;
 console.error = (...args) => {
   const first = args[0];
-  if (typeof first === 'string' && first.includes('not wrapped in act')) {
+  if (
+    typeof first === 'string' &&
+    (first.includes('not wrapped in act') ||
+      first.includes('current testing environment is not configured to support act'))
+  ) {
     return;
   }
   _origConsoleError.apply(console, args);
