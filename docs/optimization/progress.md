@@ -77,9 +77,9 @@
 - `npx tsc --noEmit`: exit 2, 1,588 TypeScript diagnostics / 1,641 output lines. The failures include vendored llama UI type environment plus existing application and test type incompatibilities.
 - `npm run apk:debug`: Windows CMake/Ninja fails because a generated object path exceeds the 260-character filename limit; no current V2.4.3 Debug delivery APK was produced.
 
-### Local workspace state intentionally excluded from Git
+### Generated metadata synchronized during branch cleanup
 
-- `package-lock.json`: `npm install` regenerated lock metadata and brought its root version to 2.4.3; it was excluded because this documentation-only handoff does not authorize dependency-lock changes.
-- `src/constants/version.json`: `npm run apk:debug` prebuild regenerated `versionCode` and `buildTime`; it was excluded because it is build-generated and the Debug APK failed.
+- `package-lock.json`: the `npm install` output synchronizes the root lockfile version to 2.4.3 and its npm-generated peer metadata. It is committed with this cleanup at the user's request.
+- `src/constants/version.json`: the failed Debug-build prebuild regenerated `versionCode` and `buildTime`. It is committed with this cleanup at the user's request; the next `npm run prebuild` will regenerate it again from the current Git history and time.
 
-The handoff computer must not assume those unstaged local changes exist after cloning `main`; run `git status` first and decide on them as a separate, intentional change.
+The next agent should start from a clean `main` checkout, run `npm ci`, and treat a future `version.json` change caused by prebuild as generated build output unless a release task explicitly requires it.
