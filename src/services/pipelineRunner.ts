@@ -974,7 +974,7 @@ async function resumePipelineInner(
     }
   }
 
-  if (!completedStages.has('factCheck') && config.pipelineMode !== 'twoStage') {
+  if (!completedStages.has('factCheck')) {
     if (checkCancelled(taskId)) return;
     store.setTaskStatus(taskId, 'reviewing');
     onStageUpdate?.({

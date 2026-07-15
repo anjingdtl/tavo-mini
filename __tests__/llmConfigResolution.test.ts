@@ -1,9 +1,9 @@
 /* eslint-env jest */
 
-const mockGetLLMConfig = jest.fn();
-const mockGetLLMConfigs = jest.fn();
-const mockGetLocalModelById = jest.fn();
-const mockSetActiveLLMConfig = jest.fn(async () => undefined);
+const mockGetLLMConfig = jest.fn(async (..._args: any[]): Promise<any> => undefined);
+const mockGetLLMConfigs = jest.fn(async (..._args: any[]): Promise<any[]> => []);
+const mockGetLocalModelById = jest.fn(async (..._args: any[]): Promise<any> => undefined);
+const mockSetActiveLLMConfig = jest.fn(async (..._args: any[]): Promise<void> => undefined);
 
 jest.mock('../src/services/database', () => ({
   getLLMConfig: (...args: any[]) => mockGetLLMConfig(...args),
