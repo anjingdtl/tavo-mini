@@ -3,8 +3,8 @@
 ## Execution scope
 
 - Plan source: `docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md` (user-provided; tracked in baseline commit `67063bdb8bc493608fec4c6ae51b6555e78c1d71`)
-- Approved scope: Phase 0 and Phase 1 only
-- Branch: `codex/data-reliability-optimization`
+- Approved scope: Phase 0 through Phase 3
+- Branch: `main`
 - Started: 2026-07-15
 - Design commit: `bf4bee1 docs: add data reliability phase design`
 - Implementation plan: `docs/superpowers/plans/2026-07-15-data-reliability-phase-0-1.md`
@@ -83,6 +83,32 @@
 - Focused verification: `npx jest __tests__/databaseMigration.test.ts __tests__/schemaValidator.test.ts __tests__/createProjectNoAsyncTransaction.test.ts __tests__/installTypeDetection.test.ts --runInBand` — passed, 4 suites / 18 tests.
 - Commit: `0dd6d51` (`feat(database): add runtime schema validation`).
 
+## Phase 2 — Backup and recovery safety
+
+### 2.1 Manifest-driven v3 backups — verified
+
+- Backup and restore table selection now comes directly from `SCHEMA_MANIFEST`, covering the current 22 persisted tables including `character_collections` and `local_llm_models`.
+- Local GGUF files are never embedded in JSON. Each model is represented in `external_assets[].local_model_reference` with filename, SHA-256, size, and `included: false`.
+- v1 and v2 files remain read-compatible; new files are generated only as format v3 with SHA-256 over format, metadata, table data, and external asset references.
+
+### 2.2 Credential isolation and privacy notice — verified
+
+- Credentials are removed before backup JSON is assembled, including LLM API keys, setting rows containing passwords/tokens, authorization headers, WebDAV credentials, sync credentials, and nested credential-shaped fields.
+- The Backup Center explicitly warns that novel content, characters, world-building, and notes are included and that unencrypted files must not be uploaded to untrusted locations.
+
+### 2.3 Atomic and verifiable restore — verified
+
+- Restore validates structure/checksum before mutation, creates a pre-restore v3 backup, builds all reads and SQL outside the SQLite transaction callback, and submits one batch through the shared executor.
+- Insert failures roll back the transaction. Post-commit foreign-key/Schema verification failures trigger a rollback batch from the captured pre-restore state.
+- Old backups may omit optional tables without deleting current data; missing core tables or unsupported row types reject before the transaction.
+- Restored local model records are marked `missing`, local configs referencing them are deactivated, secure LLM credentials are not restored, and settings keep the current schema version. Store reload and a re-import prompt are wired into the Backup Center.
+
+### 2.4 Phase 2 focused verification — verified
+
+- `npx jest __tests__/backupService.test.ts __tests__/backupCenterLayout.test.tsx __tests__/settingsStoreBackgroundPipeline.test.ts __tests__/llmConfigResolution.test.ts --runInBand --no-cache` — passed, 4 suites / 18 tests.
+- `npx eslint src/services/backupService.ts src/services/database.ts src/store/settingsStore.ts src/screens/BackupCenterScreen.tsx __tests__/backupService.test.ts` — passed with the two pre-existing bitwise warnings in `database.ts`.
+- Full repository tests and the Android build remain final Phase 2/3 gates.
+
 ## Phase exit criteria
 
 - `npm run verify` passes for every committed task, or the pre-existing typecheck failure is explicitly recorded and approved before proceeding.
@@ -92,7 +118,7 @@
 
 ## Handoff boundary — 2026-07-15
 
-### Delivered on the optimization branch
+### Delivered on main
 
 - Design scope and decisions: `bf4bee1 docs: add data reliability phase design`.
 - User-provided optimization execution plan: `67063bd docs: add data reliability implementation plan`.
@@ -100,7 +126,7 @@
 - Transaction executor and migration safety: `f5c354b`, `35e0815`, and `558608b`.
 - Initialization lifecycle and known-defect repair: `b757082`.
 - Runtime schema validation: `0dd6d51`.
-- The optimization work remains on `codex/data-reliability-optimization`; `.zcode/` is untracked user state and was intentionally preserved.
+- Phase 2 implementation is being committed on `main`; `.zcode/` is untracked user state and is intentionally preserved.
 
 ### Current quality-gate evidence
 
