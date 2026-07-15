@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
 [![Version](https://img.shields.io/badge/Version-V2.4.3-blue.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/Tests-366%2F366%20passed-success.svg)](#测试与质量门禁)
+[![Tests](https://img.shields.io/badge/Tests-381%2F381%20passed-success.svg)](#测试与质量门禁)
 
 </div>
 
@@ -102,7 +102,7 @@ npm run test:coverage
 npm run verify
 ```
 
-当前本地验证基线：**76 个 Jest suite / 366 个测试通过**。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`；Schema、迁移、数据库和备份服务有更高的定向阈值。
+当前本地验证基线：**78 个 Jest suite / 381 个测试通过**。最近一次覆盖率为 statements `78.21%`、branches `60.30%`、functions `85.92%`、lines `79.82%`；覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
 
 GitHub Actions `Verify` 对 `main` push 和 Pull Request 执行：
 
