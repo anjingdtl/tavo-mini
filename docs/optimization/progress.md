@@ -230,6 +230,21 @@
 - Added `docs/RELEASE_CHECKLIST.md` covering version metadata, npm/Jest/coverage/migration gates, Debug/Release APKs, signing and SHA-256, clean install/upgrade, backup/restore, online/local model, TTS/background, the 12 fault-injection scenarios, GitHub Release, and `main` parity.
 - The checklist is intentionally an evidence template; no GitHub Release is claimed until an actual release URL and artifact checksum are recorded.
 
+## Phase 8 — 产品级可靠性验证
+
+### 8.1 历史数据库升级矩阵 — 已完成
+
+- Added `scripts/generate-migration-fixtures.py` and 11 committed SQLite fixtures for Schema 3 through Schema 13.
+- Fixtures cover multi-project data, long and empty text, Chinese/English/special characters, references across content tables, local-model configuration, usage logs, revisions, drafts, note profiles, and pipeline tasks.
+- The validator upgrades a copy in memory, checks Schema 14, row counts, current-project state, foreign keys, required columns, duplicate constraints, and representative edge-case content without mutating the committed source fixture.
+- Fixed the Schema 10→11 fallback collection migration so an existing character collection cannot trigger a project-zero foreign-key failure; the regression is covered by `migrationCoverage.test.ts`.
+
+### 8.2 故障注入测试 — 已完成
+
+- Added `__tests__/faultInjectionMatrix.test.ts` and `docs/FAULT_INJECTION_MATRIX.md` for 12 release scenarios: migration/restore interruption, disk-full and backup corruption, checksum mismatch, autosave or migration kill, GGUF import kill, local OOM, offline network, and background TTS.
+- Jest locks the expected recovery contract for user messaging, database state, retry behavior, backup/orphan cleanup, stuck-task prevention, and diagnostics fields. Real-device long-kill, disk, and memory runs remain release-checklist evidence items.
+- Full local validation reached 78 suites / 381 tests with 78.21% statements, 60.30% branches, 85.92% functions, and 79.82% lines.
+
 ## Phase exit criteria
 
 - `npm run verify` passes for every committed task, or the pre-existing typecheck failure is explicitly recorded and approved before proceeding.
@@ -252,8 +267,8 @@
 
 ### Current quality-gate evidence
 
-- `npm run lint`: exit `0`, five pre-existing warnings only.
-- `npm run test:ci`: exit `0`, 68 suites / 320 tests.
+- `npm run lint`: exit `0`, four pre-existing warnings only.
+- `npm run test:ci`: exit `0`, 78 suites / 381 tests.
 - `npx tsc --noEmit`: exit `0` after narrowing the TypeScript project boundary and fixing the exposed app/test type errors.
 - `npm run apk:debug`: exit `0`; Gradle/CMake succeeded and produced `dist/apk/debug/ShineWriter-V2.4.3-debug.apk` (53,781,471 bytes / 51.29 MB); the emulator startup and writing-tab smoke path passed.
 - `npm run apk:release`: exit `0` with process-only signing variables; APK Signature Scheme v2 verification passed for one signer.
