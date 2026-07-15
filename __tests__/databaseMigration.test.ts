@@ -328,6 +328,28 @@ describe('database initialization lifecycle', () => {
     },
   );
 
+  test('repairs a missing deterministic usage index before startup can fail', async () => {
+    const mock = createLifecycleDb({ schemaVersion: SCHEMA_VERSION });
+    mock.indexes.get('llm_usage_logs')?.delete('idx_llm_usage_logs_config');
+
+    await initializeDatabase(mock.database as any);
+
+    expect(mock.indexes.get('llm_usage_logs')).toContain(
+      'idx_llm_usage_logs_config',
+    );
+    const repairIndex = mock.executed.findIndex(
+      sql =>
+        sql.startsWith(
+          'CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_config',
+        ),
+    );
+    const seedIndex = mock.executed.findIndex(sql =>
+      sql.startsWith('INSERT OR IGNORE INTO llm_config'),
+    );
+    expect(repairIndex).toBeGreaterThan(-1);
+    expect(repairIndex).toBeLessThan(seedIndex);
+  });
+
   test('schema 13 missing retrieval column is repaired by migration, not startup fallback', async () => {
     const mock = createLifecycleDb({ schemaVersion: 13 });
 
