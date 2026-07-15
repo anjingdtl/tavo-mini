@@ -16,8 +16,8 @@ const createRows = (rows: TableRows) => ({
  *
  * 双层防线：
  *   1. v8→v9 迁移的 CREATE 定义必须包含 retrieval_fragment_chars
- *   2. ensureSchemaCompatibility 启动时无条件兜底（私有函数不直接测，
- *      通过验证 CREATE 定义 + 现有 v8→v9 迁移覆盖该路径）
+ *   2. startup no longer performs broad compatibility repairs; the versioned
+ *      migration owns this column and the CREATE definition covers fresh installs.
  */
 function createMockDb(initialColumns: string[] = []) {
   const executed: string[] = [];
@@ -71,9 +71,7 @@ function createMockDb(initialColumns: string[] = []) {
       return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
     }
 
-    const alter = normalized.match(
-      /^ALTER TABLE (\w+) ADD COLUMN (\w+)/i,
-    );
+    const alter = normalized.match(/^ALTER TABLE (\w+) ADD COLUMN (\w+)/i);
     if (alter) {
       columns.add(alter[2]);
       return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
@@ -88,14 +86,20 @@ function createMockDb(initialColumns: string[] = []) {
 function createTransactionalDb(executeSql: ReturnType<typeof jest.fn>) {
   return {
     executeSql,
-    transaction: jest.fn((scope: (tx: { executeSql: typeof executeSql }) => void, onError: (error: unknown) => void, onSuccess: () => void) => {
-      try {
-        scope({ executeSql });
-        onSuccess();
-      } catch (error) {
-        onError(error);
-      }
-    }),
+    transaction: jest.fn(
+      (
+        scope: (tx: { executeSql: typeof executeSql }) => void,
+        onError: (error: unknown) => void,
+        onSuccess: () => void,
+      ) => {
+        try {
+          scope({ executeSql });
+          onSuccess();
+        } catch (error) {
+          onError(error);
+        }
+      },
+    ),
   };
 }
 
