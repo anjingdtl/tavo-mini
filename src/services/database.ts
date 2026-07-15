@@ -30,8 +30,7 @@ import { getNoteChapters } from '../utils/noteChapters';
 import {
   runMigrations,
   SCHEMA_VERSION,
-  hasBreakingMigration,
-  isIncompatibleUpgrade,
+  MIN_COMPATIBLE_SCHEMA_VERSION,
 } from './migrations';
 import type {
   InstallInfo,
@@ -69,19 +68,7 @@ export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
       name: DB_NAME,
       location: 'default',
     });
-    await createTables(database);
-    await ensureSchemaCompatibility(database);
-    await seedDefaults(database);
-    await migrate(database);
-    // Create the usage-log index AFTER migrations: the project_id column it
-    // depends on is added by the v7→v8 migration, which runs in migrate().
-    // Creating it earlier (in createTables) crashes on upgrade from <V1.6.0
-    // because the legacy llm_usage_logs table lacks project_id.
-    await execute(
-      database,
-      'CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month ON llm_usage_logs(project_id, created_at)',
-    );
-    await repairOversizedNotes(database);
+    await initializeDatabase(database);
     db = database;
     opening = null;
     return database;
@@ -120,8 +107,46 @@ async function one<T = Row>(
   return rows[0] || null;
 }
 
-async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
-  await execute(database, 'PRAGMA foreign_keys = ON');
+async function ensureMetadataTable(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  await execute(
+    database,
+    `CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL DEFAULT ''
+    )`,
+  );
+}
+
+async function tableExists(
+  database: SQLite.SQLiteDatabase,
+  table: string,
+): Promise<boolean> {
+  const result = await execute(
+    database,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [table],
+  );
+  return result.rows.length > 0;
+}
+
+async function ensureCurrentIndexes(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  await execute(
+    database,
+    'CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month ON llm_usage_logs(project_id, created_at)',
+  );
+  await execute(
+    database,
+    'CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_config ON llm_usage_logs(llm_config_id, created_at)',
+  );
+}
+
+async function createCurrentSchema(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
   const statements = [
     `
       CREATE TABLE IF NOT EXISTS projects (
@@ -396,12 +421,13 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
     // Indexes for the two NEW tables above. Safe to create here because both
     // tables are created fresh in this same statements list (CREATE TABLE IF
     // NOT EXISTS), so their columns always exist by the time the index runs.
-    // NOTE: idx_llm_usage_logs_month is intentionally NOT created here — its
-    // project_id column is only added by the v7→v8 migration, so on an upgrade
-    // the column does not exist yet at this point. That index is created after
-    // migrations finish in openDatabase().
+    // These indexes are safe here because fresh installs create the latest
+    // columns before index creation. Existing databases get them in the
+    // post-migration index step.
     `CREATE INDEX IF NOT EXISTS idx_content_revisions_target ON content_revisions(target_type, target_id, created_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_generation_drafts_target ON generation_drafts(target_type, target_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month ON llm_usage_logs(project_id, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_config ON llm_usage_logs(llm_config_id, created_at)`,
     // V1.7.0 (schema 9): 笔记双模式相关表
     `
       CREATE TABLE IF NOT EXISTS project_note_config (
@@ -429,739 +455,6 @@ async function createTables(database: SQLite.SQLiteDatabase): Promise<void> {
   for (const statement of statements) {
     await execute(database, statement);
   }
-}
-
-async function tableColumns(
-  database: SQLite.SQLiteDatabase,
-  table: string,
-): Promise<Set<string>> {
-  const result = await execute(database, `PRAGMA table_info(${table})`);
-  const columns = new Set<string>();
-  for (let i = 0; i < result.rows.length; i++) {
-    columns.add(result.rows.item(i).name);
-  }
-  return columns;
-}
-
-async function ensureColumn(
-  database: SQLite.SQLiteDatabase,
-  table: string,
-  columns: Set<string>,
-  column: string,
-  definition: string,
-): Promise<void> {
-  if (columns.has(column)) return;
-  await execute(database, `ALTER TABLE ${table} ADD COLUMN ${definition}`);
-  columns.add(column);
-}
-
-async function ensureSchemaCompatibility(
-  database: SQLite.SQLiteDatabase,
-): Promise<void> {
-  const projects = await tableColumns(database, 'projects');
-  await ensureColumn(
-    database,
-    'projects',
-    projects,
-    'name',
-    "name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'projects',
-    projects,
-    'mode',
-    "mode TEXT NOT NULL DEFAULT 'outline'",
-  );
-  await ensureColumn(
-    database,
-    'projects',
-    projects,
-    'created_at',
-    "created_at TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'projects',
-    projects,
-    'updated_at',
-    "updated_at TEXT NOT NULL DEFAULT ''",
-  );
-
-  const chapters = await tableColumns(database, 'chapters');
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'position',
-    'position INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'title',
-    "title TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'synopsis',
-    "synopsis TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'content',
-    "content TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'status',
-    "status TEXT NOT NULL DEFAULT 'planned'",
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'summary_json',
-    'summary_json TEXT',
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'memory_summary',
-    "memory_summary TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'memory_summary_tokens',
-    'memory_summary_tokens INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'finalized_at',
-    'finalized_at TEXT',
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'created_at',
-    "created_at TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'chapters',
-    chapters,
-    'updated_at',
-    "updated_at TEXT NOT NULL DEFAULT ''",
-  );
-
-  const fragments = await tableColumns(database, 'fragments');
-  await ensureColumn(
-    database,
-    'fragments',
-    fragments,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'fragments',
-    fragments,
-    'position',
-    'position INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'fragments',
-    fragments,
-    'type',
-    "type TEXT NOT NULL DEFAULT 'seed'",
-  );
-  await ensureColumn(
-    database,
-    'fragments',
-    fragments,
-    'content',
-    "content TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'fragments',
-    fragments,
-    'created_at',
-    "created_at TEXT NOT NULL DEFAULT ''",
-  );
-
-  const plotlines = await tableColumns(database, 'plotlines');
-  await ensureColumn(
-    database,
-    'plotlines',
-    plotlines,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'plotlines',
-    plotlines,
-    'name',
-    "name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'plotlines',
-    plotlines,
-    'description',
-    "description TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'plotlines',
-    plotlines,
-    'color',
-    "color TEXT NOT NULL DEFAULT '#2563EB'",
-  );
-
-  const characters = await tableColumns(database, 'characters');
-  await ensureColumn(
-    database,
-    'characters',
-    characters,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'characters',
-    characters,
-    'collection_id',
-    'collection_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'characters',
-    characters,
-    'name',
-    "name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'characters',
-    characters,
-    'source_type',
-    "source_type TEXT NOT NULL DEFAULT 'json'",
-  );
-  await ensureColumn(
-    database,
-    'characters',
-    characters,
-    'data_json',
-    "data_json TEXT NOT NULL DEFAULT '{}'",
-  );
-  await ensureColumn(
-    database,
-    'characters',
-    characters,
-    'max_tokens',
-    'max_tokens INTEGER NOT NULL DEFAULT 50000',
-  );
-  await ensureColumn(
-    database,
-    'characters',
-    characters,
-    'estimated_tokens',
-    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'characters',
-    characters,
-    'created_at',
-    "created_at TEXT NOT NULL DEFAULT ''",
-  );
-
-  const characterCollections = await tableColumns(
-    database,
-    'character_collections',
-  );
-  await ensureColumn(
-    database,
-    'character_collections',
-    characterCollections,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'character_collections',
-    characterCollections,
-    'name',
-    "name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'character_collections',
-    characterCollections,
-    'enabled',
-    'enabled INTEGER NOT NULL DEFAULT 1',
-  );
-  await ensureColumn(
-    database,
-    'character_collections',
-    characterCollections,
-    'max_tokens',
-    'max_tokens INTEGER NOT NULL DEFAULT 50000',
-  );
-  await ensureColumn(
-    database,
-    'character_collections',
-    characterCollections,
-    'estimated_tokens',
-    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'character_collections',
-    characterCollections,
-    'created_at',
-    "created_at TEXT NOT NULL DEFAULT ''",
-  );
-
-  const collections = await tableColumns(database, 'worldbook_collections');
-  await ensureColumn(
-    database,
-    'worldbook_collections',
-    collections,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_collections',
-    collections,
-    'name',
-    "name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'worldbook_collections',
-    collections,
-    'enabled',
-    'enabled INTEGER NOT NULL DEFAULT 1',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_collections',
-    collections,
-    'max_tokens',
-    'max_tokens INTEGER NOT NULL DEFAULT 50000',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_collections',
-    collections,
-    'estimated_tokens',
-    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_collections',
-    collections,
-    'created_at',
-    "created_at TEXT NOT NULL DEFAULT ''",
-  );
-
-  const worldbook = await tableColumns(database, 'worldbook_entries');
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'collection_id',
-    'collection_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'keyword_primary',
-    "keyword_primary TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'keyword_secondary',
-    "keyword_secondary TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'content',
-    "content TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'comment',
-    "comment TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'enabled',
-    'enabled INTEGER NOT NULL DEFAULT 1',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'constant',
-    'constant INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'max_tokens',
-    'max_tokens INTEGER NOT NULL DEFAULT 2000',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'estimated_tokens',
-    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'position',
-    'position INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'worldbook_entries',
-    worldbook,
-    'created_at',
-    "created_at TEXT NOT NULL DEFAULT ''",
-  );
-
-  const notes = await tableColumns(database, 'notes');
-  await ensureColumn(
-    database,
-    'notes',
-    notes,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'notes',
-    notes,
-    'title',
-    "title TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'notes',
-    notes,
-    'content',
-    "content TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'notes',
-    notes,
-    'max_tokens',
-    'max_tokens INTEGER NOT NULL DEFAULT 30000',
-  );
-  await ensureColumn(
-    database,
-    'notes',
-    notes,
-    'estimated_tokens',
-    'estimated_tokens INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'notes',
-    notes,
-    'created_at',
-    "created_at TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'notes',
-    notes,
-    'updated_at',
-    "updated_at TEXT NOT NULL DEFAULT ''",
-  );
-
-  const presets = await tableColumns(database, 'presets');
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'name',
-    "name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'is_default',
-    'is_default INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'system_prompt',
-    "system_prompt TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'writing_style',
-    "writing_style TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'temperature',
-    'temperature REAL NOT NULL DEFAULT 0.8',
-  );
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'top_p',
-    'top_p REAL NOT NULL DEFAULT 0.9',
-  );
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'max_tokens',
-    'max_tokens INTEGER NOT NULL DEFAULT 4000',
-  );
-  await ensureColumn(
-    database,
-    'presets',
-    presets,
-    'extra_instructions',
-    "extra_instructions TEXT NOT NULL DEFAULT ''",
-  );
-
-  const llm = await tableColumns(database, 'llm_config');
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'name',
-    "name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'base_url',
-    "base_url TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'api_key',
-    "api_key TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'model_name',
-    "model_name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'is_active',
-    'is_active INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'provider_type',
-    "provider_type TEXT NOT NULL DEFAULT 'openai_compatible'",
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'local_model_id',
-    'local_model_id TEXT',
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'local_backend',
-    'local_backend TEXT',
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'context_window',
-    'context_window INTEGER NOT NULL DEFAULT 4096',
-  );
-  await ensureColumn(
-    database,
-    'llm_config',
-    llm,
-    'max_output_tokens',
-    'max_output_tokens INTEGER NOT NULL DEFAULT 4000',
-  );
-
-  const settings = await tableColumns(database, 'settings');
-  await ensureColumn(
-    database,
-    'settings',
-    settings,
-    'key',
-    "key TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'settings',
-    settings,
-    'value',
-    "value TEXT NOT NULL DEFAULT ''",
-  );
-
-  // llm_usage_logs: columns added by the v7→v8 migration. We also ensure them
-  // here (which runs before migrate()) so that legacy databases upgrading from
-  // <V1.6.0 have the columns in place before the post-migration index creation.
-  const usageLogs = await tableColumns(database, 'llm_usage_logs');
-  await ensureColumn(
-    database,
-    'llm_usage_logs',
-    usageLogs,
-    'model_name',
-    "model_name TEXT NOT NULL DEFAULT ''",
-  );
-  await ensureColumn(
-    database,
-    'llm_usage_logs',
-    usageLogs,
-    'project_id',
-    'project_id INTEGER NOT NULL DEFAULT 0',
-  );
-  // V2.2.0 (schema 10): 按配置区分用量。这两个字段让 UsageStatsScreen 能展示每个 LLM 配置
-  // 的调用量，不再仅靠 model_name 区分（多个配置可能共用同一 model_name）。
-  await ensureColumn(
-    database,
-    'llm_usage_logs',
-    usageLogs,
-    'llm_config_id',
-    'llm_config_id INTEGER NOT NULL DEFAULT 0',
-  );
-  await ensureColumn(
-    database,
-    'llm_usage_logs',
-    usageLogs,
-    'llm_config_name',
-    "llm_config_name TEXT NOT NULL DEFAULT ''",
-  );
-
-  // V2.4.3 修复：project_note_config 曾被 ensureSchemaCompatibility 遗漏，
-  // 导致从老版本升级且 v13→v14 迁移未跑到的设备缺 retrieval_fragment_chars 列，
-  // setProjectNoteConfig 的 INSERT 报 "no column named retrieval_fragment_chars"。
-  // 与其他表同款兜底，启动时无条件补齐。
-  const noteConfig = await tableColumns(database, 'project_note_config');
-  await ensureColumn(
-    database,
-    'project_note_config',
-    noteConfig,
-    'mode',
-    "mode TEXT NOT NULL DEFAULT 'none'",
-  );
-  await ensureColumn(
-    database,
-    'project_note_config',
-    noteConfig,
-    'style_weights',
-    "style_weights TEXT NOT NULL DEFAULT '{}'",
-  );
-  await ensureColumn(
-    database,
-    'project_note_config',
-    noteConfig,
-    'retrieval_top_k',
-    'retrieval_top_k INTEGER NOT NULL DEFAULT 5',
-  );
-  await ensureColumn(
-    database,
-    'project_note_config',
-    noteConfig,
-    'retrieval_fragment_chars',
-    'retrieval_fragment_chars INTEGER NOT NULL DEFAULT 1000',
-  );
-  await ensureColumn(
-    database,
-    'project_note_config',
-    noteConfig,
-    'enabled_note_ids',
-    "enabled_note_ids TEXT NOT NULL DEFAULT '[]'",
-  );
-  await ensureColumn(
-    database,
-    'project_note_config',
-    noteConfig,
-    'updated_at',
-    "updated_at TEXT NOT NULL DEFAULT ''",
-  );
 }
 
 async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
@@ -1215,7 +508,6 @@ export async function detectInstallType(
     storedVersionResult.rows.length > 0
       ? storedVersionResult.rows.item(0).value
       : null;
-
   const firstInstallResult = await execute(
     database,
     'SELECT value FROM settings WHERE key = ?',
@@ -1225,33 +517,61 @@ export async function detectInstallType(
     firstInstallResult.rows.length > 0
       ? firstInstallResult.rows.item(0).value
       : currentVersion;
-
+  const schemaVersionResult = await execute(
+    database,
+    'SELECT value FROM settings WHERE key = ?',
+    ['schema_version'],
+  );
+  const schemaVersion =
+    schemaVersionResult.rows.length > 0
+      ? Number.parseInt(schemaVersionResult.rows.item(0).value, 10)
+      : 0;
+  const hasProjects = await tableExists(database, 'projects');
   let installType: InstallType;
   let previousVersion: string | null = null;
-
-  if (!storedVersion) {
+  if (!storedVersion && schemaVersion === 0 && !hasProjects) {
     installType = 'fresh';
-    await execute(
-      database,
-      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-      ['first_install_version', currentVersion],
-    );
-  } else if (storedVersion !== currentVersion) {
+  } else if (!storedVersion || storedVersion !== currentVersion) {
     installType = 'upgrade';
     previousVersion = storedVersion;
-    await execute(
-      database,
-      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-      ['previous_version', storedVersion],
-    );
   } else {
     installType = 'same';
   }
-
+  return {
+    installType,
+    currentVersion,
+    previousVersion,
+    firstInstallVersion,
+    schemaVersion: Number.isFinite(schemaVersion) ? schemaVersion : 0,
+  };
+}
+async function finalizeInstallInfo(
+  database: SQLite.SQLiteDatabase,
+  installInfo: InstallInfo,
+): Promise<void> {
+  const firstInstall = await execute(
+    database,
+    'SELECT value FROM settings WHERE key = ?',
+    ['first_install_version'],
+  );
+  if (firstInstall.rows.length === 0) {
+    await execute(
+      database,
+      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      ['first_install_version', installInfo.currentVersion],
+    );
+  }
+  if (installInfo.installType === 'upgrade' && installInfo.previousVersion) {
+    await execute(
+      database,
+      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      ['previous_version', installInfo.previousVersion],
+    );
+  }
   await execute(
     database,
     'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-    ['app_version', currentVersion],
+    ['app_version', installInfo.currentVersion],
   );
   await execute(
     database,
@@ -1261,70 +581,75 @@ export async function detectInstallType(
   await execute(
     database,
     'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-    ['install_type', installType],
+    ['install_type', installInfo.installType],
   );
-
-  const schemaVersionResult = await execute(
-    database,
-    'SELECT value FROM settings WHERE key = ?',
-    ['schema_version'],
-  );
-  const schemaVersion =
-    schemaVersionResult.rows.length > 0
-      ? parseInt(schemaVersionResult.rows.item(0).value, 10)
-      : 0;
-
-  return {
-    installType,
-    currentVersion,
-    previousVersion,
-    firstInstallVersion: storedVersion ? firstInstallVersion : currentVersion,
-    schemaVersion,
-  };
 }
-
 export let lastInstallInfo: InstallInfo | null = null;
 export let lastMigrationResult: MigrationResult | null = null;
-
-async function migrate(database: SQLite.SQLiteDatabase): Promise<void> {
+export async function initializeDatabase(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  lastMigrationResult = null;
+  await execute(database, 'PRAGMA foreign_keys = ON');
+  await ensureMetadataTable(database);
   const installInfo = await detectInstallType(database);
   lastInstallInfo = installInfo;
-
   if (installInfo.installType === 'fresh') {
+    await createCurrentSchema(database);
     await execute(
       database,
       'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
       ['schema_version', String(SCHEMA_VERSION)],
     );
-    return;
-  }
-
-  if (installInfo.installType === 'same') {
-    // 修复：即使 app_version 相同，也检查 schema_version 是否需要补迁移
-    // 防止迁移失败后 app_version 已更新但 schema_version 卡在旧值
-    const fromSchema = installInfo.schemaVersion || 1;
-    if (
-      fromSchema < SCHEMA_VERSION &&
-      !hasBreakingMigration(fromSchema) &&
-      !isIncompatibleUpgrade(fromSchema)
-    ) {
-      const migrationResult = await runMigrations(database, fromSchema);
-      lastMigrationResult = migrationResult;
+  } else {
+    if (installInfo.schemaVersion < MIN_COMPATIBLE_SCHEMA_VERSION) {
+      throw new Error(
+        `无法从 Schema ${installInfo.schemaVersion} 安全升级；最低支持版本为 ${MIN_COMPATIBLE_SCHEMA_VERSION}。`,
+      );
     }
-    return;
+    if (installInfo.schemaVersion > SCHEMA_VERSION) {
+      throw new Error(
+        `当前数据库 Schema ${installInfo.schemaVersion} 高于应用支持的版本 ${SCHEMA_VERSION}。`,
+      );
+    }
+    if (installInfo.schemaVersion < SCHEMA_VERSION) {
+      lastMigrationResult = await runMigrations(
+        database,
+        installInfo.schemaVersion,
+      );
+    }
   }
+  await repairKnownSchemaDefects(database, installInfo.schemaVersion);
+  await seedDefaults(database);
+  // Indexes are deterministic, idempotent schema artifacts. Keep this after
+  // validation and seeding so index creation cannot mask a migration defect.
+  await ensureCurrentIndexes(database);
+  await repairOversizedNotes(database);
+  await finalizeInstallInfo(database, installInfo);
+  // Keep the detected source schema for the upgrade screen and automatic
+  // backup flow; lastMigrationResult carries the successful target version.
+  lastInstallInfo = installInfo;
+}
 
-  const fromSchema = installInfo.schemaVersion || 1;
-  if (fromSchema >= SCHEMA_VERSION) {
-    return;
-  }
-
-  if (hasBreakingMigration(fromSchema) || isIncompatibleUpgrade(fromSchema)) {
-    return;
-  }
-
-  const migrationResult = await runMigrations(database, fromSchema);
-  lastMigrationResult = migrationResult;
+export async function repairKnownSchemaDefects(
+  database: SQLite.SQLiteDatabase,
+  schemaVersion: number,
+): Promise<void> {
+  // Historical column additions are now owned by their versioned migration.
+  // This diagnostic keeps the old compatibility hook explicit without
+  // becoming a second, unbounded migration engine.
+  if (schemaVersion <= 0 || schemaVersion >= SCHEMA_VERSION) return;
+  const result = await execute(
+    database,
+    'SELECT value FROM settings WHERE key = ?',
+    ['schema_version'],
+  );
+  const recordedVersion =
+    result.rows.length > 0 ? result.rows.item(0).value : 'missing';
+  console.debug(
+    `[database] schema ${schemaVersion} repairs are migration-owned; ` +
+      `validated schema_version=${String(recordedVersion)}`,
+  );
 }
 
 function now(): string {
@@ -2206,10 +1531,16 @@ export function splitNoteTextIntoChunks(
 
   const chapters = getNoteChapters(text);
   if (chapters.length > 1) {
-    const chunkStarts = chapters[0].offset > 0 ? [{ title: '', offset: 0 }, ...chapters] : chapters;
+    const chunkStarts =
+      chapters[0].offset > 0
+        ? [{ title: '', offset: 0 }, ...chapters]
+        : chapters;
     return packChaptersIntoNoteChunks(
       chunkStarts.map((chapter, index) =>
-        text.slice(chapter.offset, chunkStarts[index + 1]?.offset ?? text.length),
+        text.slice(
+          chapter.offset,
+          chunkStarts[index + 1]?.offset ?? text.length,
+        ),
       ),
       chunkSize,
     );
@@ -2217,7 +1548,10 @@ export function splitNoteTextIntoChunks(
   return splitOversizedNoteText(text, chunkSize);
 }
 
-function packChaptersIntoNoteChunks(chapters: string[], chunkSize: number): string[] {
+function packChaptersIntoNoteChunks(
+  chapters: string[],
+  chunkSize: number,
+): string[] {
   const chunks: string[] = [];
   let current = '';
 
