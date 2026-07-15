@@ -12,16 +12,20 @@ numbers follow [Semantic Versioning](https://semver.org/).
 - Added portable Maestro definitions for the core writing, resource, backup, LLM, and pipeline flows.
 - Split the SQLite connection/schema/repository layer and the ChapterEditor into smaller owned modules.
 - Added mobile-safe LLM scheduling, queue status UI, low-memory pausing, centralized timeout policy, request timing metrics, and private-LAN HTTP validation.
+- Added historical Schema 3–13 migration fixtures and a 12-scenario fault-injection recovery matrix.
 
 ### Changed
 
-- The current local verification baseline is 76 Jest suites and 366 tests.
+- The current local verification baseline is 78 Jest suites and 381 tests, with the latest local coverage recorded in `README.md` and `docs/optimization/progress.md`.
 - The release process now documents migration, backup/restore, online/local model, TTS, background, signing, and checksum checks in `docs/RELEASE_CHECKLIST.md`.
 
 ### Fixed
 
-- Jest CI now terminates deterministically after the quality gates finish instead of leaving the workflow hanging.
 - User cancellation is preserved as `cancelled` and is not reported as a timeout or provider failure.
+
+### Known limitations
+
+- Local Jest quality gates terminate cleanly, but repeated GitHub Actions `Verify` runs still time out during Jest after reporting passing suites; no remote green run is claimed until that behavior is resolved.
 
 ### Security
 
