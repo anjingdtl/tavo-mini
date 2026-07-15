@@ -7,6 +7,7 @@ module.exports = {
     '/__tests__/migrationTestUtils.ts$',
   ],
   collectCoverageFrom: [
+    'src/data/**/*.ts',
     'src/services/**/*.ts',
     'src/store/**/*.ts',
     'src/utils/**/*.ts',
@@ -25,6 +26,10 @@ module.exports = {
       lines: 80,
     },
     './src/services/database/**': {
+      branches: 70,
+      lines: 80,
+    },
+    './src/data/schema/**': {
       branches: 70,
       lines: 80,
     },
