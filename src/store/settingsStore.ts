@@ -8,13 +8,19 @@ interface SettingsState {
   llmConfigs: LLMConfig[];
   contextConfig: ContextConfig;
   backgroundPipelineEnabled: boolean;
+  allowInsecureLanHttp: boolean;
   loadSettings: () => Promise<void>;
-  setLLMConfig: (baseUrl: string, apiKey: string, modelName: string) => Promise<void>;
+  setLLMConfig: (
+    baseUrl: string,
+    apiKey: string,
+    modelName: string,
+  ) => Promise<void>;
   saveLLMConfig: (config: Partial<LLMConfig>) => Promise<number>;
   setActiveLLMConfig: (id: number) => Promise<void>;
   deleteLLMConfig: (id: number) => Promise<void>;
   setContextConfig: (config: ContextConfig) => Promise<void>;
   setBackgroundPipelineEnabled: (enabled: boolean) => Promise<void>;
+  setAllowInsecureLanHttp: (enabled: boolean) => Promise<void>;
 }
 
 const emptyLLMConfig: LLMConfig = {
@@ -41,24 +47,41 @@ async function isUsableLLMConfig(config: LLMConfig): Promise<boolean> {
   return model?.status === 'ready';
 }
 
-export const useSettingsStore = create<SettingsState>((set) => ({
+export const useSettingsStore = create<SettingsState>(set => ({
   llmConfig: emptyLLMConfig,
   llmConfigs: [emptyLLMConfig],
   contextConfig: DEFAULT_CONTEXT_CONFIG,
   backgroundPipelineEnabled: true,
+  allowInsecureLanHttp: false,
 
   loadSettings: async () => {
     // 后台保活必须独立于其余设置加载：LLM 配置或上下文配置读失败时，
     // 仍要把已持久化的后台开关同步给原生前台服务桥接。
     let backgroundPipelineEnabled = true;
+    let allowInsecureLanHttp = false;
     try {
       backgroundPipelineEnabled = await db.getBackgroundPipelineEnabled();
     } catch (error) {
-      console.warn('[settingsStore] load background pipeline setting failed:', error);
+      console.warn(
+        '[settingsStore] load background pipeline setting failed:',
+        error,
+      );
     }
-    const { PipelineForeground } = require('../native/PipelineForegroundModule');
+    if (typeof (db as any).getAllowInsecureLanHttp === 'function') {
+      try {
+        allowInsecureLanHttp = await db.getAllowInsecureLanHttp();
+      } catch (error) {
+        console.warn(
+          '[settingsStore] load network policy setting failed:',
+          error,
+        );
+      }
+    }
+    const {
+      PipelineForeground,
+    } = require('../native/PipelineForegroundModule');
     PipelineForeground.setEnabled(backgroundPipelineEnabled);
-    set({ backgroundPipelineEnabled });
+    set({ backgroundPipelineEnabled, allowInsecureLanHttp });
 
     try {
       const [llmConfigsInitial, contextConfig] = await Promise.all([
@@ -72,7 +95,10 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       // 修复#C: 自愈——若 DB 中无 active 配置（历史 bug 或外部修改导致 is_active 全为 0），
       // 自动激活第一个配置，避免 UI 一直显示"当前：未选择"
       let llmConfigs = llmConfigsInitial;
-      if (usableConfigs.length > 0 && !usableConfigs.some((c) => c.is_active === 1)) {
+      if (
+        usableConfigs.length > 0 &&
+        !usableConfigs.some(c => c.is_active === 1)
+      ) {
         await db.setActiveLLMConfig(usableConfigs[0].id);
         llmConfigs = await db.getLLMConfigs();
         usableConfigs = [];
@@ -80,10 +106,17 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           if (await isUsableLLMConfig(config)) usableConfigs.push(config);
         }
       }
-      const llmConfig = usableConfigs.find((config) => config.is_active === 1)
-        || usableConfigs[0]
-        || emptyLLMConfig;
-      set({ llmConfig, llmConfigs, contextConfig, backgroundPipelineEnabled });
+      const llmConfig =
+        usableConfigs.find(config => config.is_active === 1) ||
+        usableConfigs[0] ||
+        emptyLLMConfig;
+      set({
+        llmConfig,
+        llmConfigs,
+        contextConfig,
+        backgroundPipelineEnabled,
+        allowInsecureLanHttp,
+      });
     } catch (error) {
       console.warn('[settingsStore] loadSettings failed:', error);
     }
@@ -92,41 +125,62 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setLLMConfig: async (baseUrl, apiKey, modelName) => {
     await db.setLLMConfig(baseUrl, apiKey, modelName);
     const llmConfigs = await db.getLLMConfigs();
-    const llmConfig = llmConfigs.find((config) => config.is_active === 1) || llmConfigs[0] || emptyLLMConfig;
+    const llmConfig =
+      llmConfigs.find(config => config.is_active === 1) ||
+      llmConfigs[0] ||
+      emptyLLMConfig;
     set({ llmConfig, llmConfigs });
   },
 
-  saveLLMConfig: async (config) => {
+  saveLLMConfig: async config => {
     const id = await db.saveLLMConfig(config);
     const llmConfigs = await db.getLLMConfigs();
-    const llmConfig = llmConfigs.find((item) => item.is_active === 1) || llmConfigs[0] || emptyLLMConfig;
+    const llmConfig =
+      llmConfigs.find(item => item.is_active === 1) ||
+      llmConfigs[0] ||
+      emptyLLMConfig;
     set({ llmConfig, llmConfigs });
     return id;
   },
 
-  setActiveLLMConfig: async (id) => {
+  setActiveLLMConfig: async id => {
     await db.setActiveLLMConfig(id);
     const llmConfigs = await db.getLLMConfigs();
-    const llmConfig = llmConfigs.find((config) => config.is_active === 1) || llmConfigs[0] || emptyLLMConfig;
+    const llmConfig =
+      llmConfigs.find(config => config.is_active === 1) ||
+      llmConfigs[0] ||
+      emptyLLMConfig;
     set({ llmConfig, llmConfigs });
   },
 
-  deleteLLMConfig: async (id) => {
+  deleteLLMConfig: async id => {
     await db.deleteLLMConfig(id);
     const llmConfigs = await db.getLLMConfigs();
-    const llmConfig = llmConfigs.find((config) => config.is_active === 1) || llmConfigs[0] || emptyLLMConfig;
+    const llmConfig =
+      llmConfigs.find(config => config.is_active === 1) ||
+      llmConfigs[0] ||
+      emptyLLMConfig;
     set({ llmConfig, llmConfigs });
   },
 
-  setContextConfig: async (contextConfig) => {
+  setContextConfig: async contextConfig => {
     await db.setContextConfig(contextConfig);
     set({ contextConfig });
   },
 
-  setBackgroundPipelineEnabled: async (enabled) => {
+  setBackgroundPipelineEnabled: async enabled => {
     await db.setBackgroundPipelineEnabled(enabled);
     set({ backgroundPipelineEnabled: enabled });
-    const { PipelineForeground } = require('../native/PipelineForegroundModule');
+    const {
+      PipelineForeground,
+    } = require('../native/PipelineForegroundModule');
     PipelineForeground.setEnabled(enabled);
+  },
+
+  setAllowInsecureLanHttp: async enabled => {
+    if (typeof (db as any).setAllowInsecureLanHttp === 'function') {
+      await db.setAllowInsecureLanHttp(enabled);
+    }
+    set({ allowInsecureLanHttp: enabled });
   },
 }));

@@ -1,14 +1,30 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
-import { Button, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import {
+  Button,
+  Field,
+  Header,
+  Screen,
+  SegmentedControl,
+  spacing,
+} from '../components/ui';
 import { LocalModelSelector } from '../components/LocalModelSelector';
 import { useSettingsStore } from '../store/settingsStore';
 import { useThemeStore } from '../store/themeStore';
 import { testLLMConnection } from '../services/llm';
+import type { LLMQueueState } from '../services/llm';
 import type { LLMConfig } from '../types/novel';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
 import { LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS } from '../constants/llmDefaults';
@@ -29,7 +45,8 @@ const emptyDraft: LLMConfig = {
 
 export const LLMSettingsScreen: React.FC = () => {
   const { theme } = useThemeStore();
-  const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
   const {
     llmConfig,
     llmConfigs,
@@ -37,11 +54,16 @@ export const LLMSettingsScreen: React.FC = () => {
     saveLLMConfig,
     setActiveLLMConfig,
     deleteLLMConfig,
+    allowInsecureLanHttp,
+    setAllowInsecureLanHttp,
   } = useSettingsStore();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [draft, setDraft] = useState<LLMConfig>(emptyDraft);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [connectionQueueState, setConnectionQueueState] = useState<
+    LLMQueueState | 'idle'
+  >('idle');
   // 10.6: 编辑态 ref，用户主动编辑后 store 变化不再覆盖本地 draft
   const isEditingRef = useRef(false);
 
@@ -51,19 +73,27 @@ export const LLMSettingsScreen: React.FC = () => {
 
   useEffect(() => {
     if (selectedId === 0) return;
-    const selected = (selectedId != null ? llmConfigs.find((config) => config.id === selectedId) : undefined)
-      || llmConfigs.find((config) => config.is_active === 1)
-      || llmConfigs.find((config) => config.id === llmConfig.id)
-      || llmConfigs[0]
-      || emptyDraft;
+    const selected =
+      (selectedId != null
+        ? llmConfigs.find(config => config.id === selectedId)
+        : undefined) ||
+      llmConfigs.find(config => config.is_active === 1) ||
+      llmConfigs.find(config => config.id === llmConfig.id) ||
+      llmConfigs[0] ||
+      emptyDraft;
     setSelectedId(selected.id);
     // 10.6: 用户主动编辑过 draft 后，store 变化（如 activate 触发 llmConfigs 更新）不再覆盖本地草稿
     if (!isEditingRef.current) setDraft(selected);
   }, [llmConfig, llmConfigs, selectedId]);
 
-  const activeName = useMemo(() => llmConfigs.find((config) => config.is_active === 1)?.name || '未选择', [llmConfigs]);
+  const activeName = useMemo(
+    () => llmConfigs.find(config => config.is_active === 1)?.name || '未选择',
+    [llmConfigs],
+  );
   const activeProvider = useMemo(
-    () => llmConfigs.find((config) => config.is_active === 1)?.provider_type || 'openai_compatible',
+    () =>
+      llmConfigs.find(config => config.is_active === 1)?.provider_type ||
+      'openai_compatible',
     [llmConfigs],
   );
 
@@ -78,7 +108,10 @@ export const LLMSettingsScreen: React.FC = () => {
       if (!draft.local_model_id) missing.push('已导入且可用的本地模型');
     }
     if (missing.length > 0) {
-      Alert.alert('配置不完整', `请填写以下必填项：\n\n• ${missing.join('\n• ')}`);
+      Alert.alert(
+        '配置不完整',
+        `请填写以下必填项：\n\n• ${missing.join('\n• ')}`,
+      );
       return false;
     }
     return true;
@@ -86,7 +119,7 @@ export const LLMSettingsScreen: React.FC = () => {
 
   const updateDraft = (fields: Partial<LLMConfig>) => {
     isEditingRef.current = true;
-    setDraft((current) => ({ ...current, ...fields }));
+    setDraft(current => ({ ...current, ...fields }));
   };
 
   const startNewConfig = () => {
@@ -102,7 +135,7 @@ export const LLMSettingsScreen: React.FC = () => {
       setSelectedId(id);
       // V2.2.1 双保险：立即更新 draft.id，不依赖 useEffect 的 selectedId !== 0 判断
       // （selectedId=0 时 useEffect 会提前 return，导致 draft.id 永远停留在 0）
-      setDraft((current) => ({ ...current, id }));
+      setDraft(current => ({ ...current, id }));
       // 修复#B: 保存成功后重置 isEditingRef，让 useEffect 能从 store 同步最新 draft
       // （包括 setActiveLLMConfig 后变化的 is_active 字段），避免 draft.is_active 过时
       isEditingRef.current = false;
@@ -120,7 +153,7 @@ export const LLMSettingsScreen: React.FC = () => {
     try {
       const id = await saveLLMConfig(draft);
       setSelectedId(id);
-      setDraft((current) => ({ ...current, id }));
+      setDraft(current => ({ ...current, id }));
       isEditingRef.current = false;
       const message = await testLLMConnection(
         draft.base_url,
@@ -128,20 +161,60 @@ export const LLMSettingsScreen: React.FC = () => {
         draft.model_name,
         draft.provider_type,
         draft.local_model_id || undefined,
+        {
+          allowInsecureLanHttp,
+          onQueueState: setConnectionQueueState,
+        },
       );
       // V2.2.2 修复：原代码 title="连接成功" + message="连接成功" 重复显示。
       // 现在 title 改为"测试通过"，message 显示真实 LLM 回复（最多 120 字符），
       // 并附带模型名称，让用户看到是哪个模型测试的。
-      const modelLabel = draft.provider_type === 'llama_cpp'
-        ? draft.name || '本地模型'
-        : draft.model_name || '当前模型';
-      const reply = message && message.length > 0 ? message.slice(0, 120) : '（模型未返回内容）';
+      const modelLabel =
+        draft.provider_type === 'llama_cpp'
+          ? draft.name || '本地模型'
+          : draft.model_name || '当前模型';
+      const reply =
+        message && message.length > 0
+          ? message.slice(0, 120)
+          : '（模型未返回内容）';
       Alert.alert('测试通过', `模型 ${modelLabel} 已连通。\n\n回复：${reply}`);
     } catch (error: any) {
-      Alert.alert('连接失败', error?.message || '请检查 API 地址、API Key、模型名称和手机网络。');
+      Alert.alert(
+        '连接失败',
+        error?.message || '请检查 API 地址、API Key、模型名称和手机网络。',
+      );
     } finally {
       setTesting(false);
+      setConnectionQueueState('idle');
     }
+  };
+
+  const toggleInsecureLanHttp = (enabled: boolean) => {
+    if (!enabled) {
+      setAllowInsecureLanHttp(false).catch(error => {
+        Alert.alert('保存失败', error?.message || '网络安全设置保存失败。');
+      });
+      return;
+    }
+    Alert.alert(
+      '允许局域网 HTTP？',
+      'API Key 和小说内容可能通过未加密网络传输。仅应连接可信局域网设备。公网 HTTP 地址仍会被阻止。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '继续允许',
+          style: 'destructive',
+          onPress: () => {
+            setAllowInsecureLanHttp(true).catch(error => {
+              Alert.alert(
+                '保存失败',
+                error?.message || '网络安全设置保存失败。',
+              );
+            });
+          },
+        },
+      ],
+    );
   };
 
   const activate = async () => {
@@ -192,11 +265,15 @@ export const LLMSettingsScreen: React.FC = () => {
     <Screen>
       <Header
         title="LLM 设置"
-        subtitle={`${activeProvider === 'llama_cpp' ? '本地 GGUF 离线模型' : 'OpenAI 兼容 API'} · 当前：${activeName}`}
+        subtitle={`${
+          activeProvider === 'llama_cpp'
+            ? '本地 GGUF 离线模型'
+            : 'OpenAI 兼容 API'
+        } · 当前：${activeName}`}
       />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.configList}>
-          {llmConfigs.map((config) => {
+          {llmConfigs.map(config => {
             const selected = config.id === draft.id;
             const active = config.is_active === 1;
             return (
@@ -205,43 +282,71 @@ export const LLMSettingsScreen: React.FC = () => {
                 style={[
                   styles.configChip,
                   {
-                    backgroundColor: selected ? theme.colors.accentSoft : theme.colors.card,
-                    borderColor: active ? theme.colors.accent : theme.colors.border,
+                    backgroundColor: selected
+                      ? theme.colors.accentSoft
+                      : theme.colors.card,
+                    borderColor: active
+                      ? theme.colors.accent
+                      : theme.colors.border,
                   },
                 ]}
                 onPress={() => setSelectedId(config.id)}
               >
-                <Text style={[styles.configName, { color: selected ? theme.colors.accent : theme.colors.textPrimary }]}>
+                <Text
+                  style={[
+                    styles.configName,
+                    {
+                      color: selected
+                        ? theme.colors.accent
+                        : theme.colors.textPrimary,
+                    },
+                  ]}
+                >
                   {config.name || '未命名配置'}
                 </Text>
-                {active ? <CheckCircle2 size={14} color={theme.colors.accent} /> : null}
+                {active ? (
+                  <CheckCircle2 size={14} color={theme.colors.accent} />
+                ) : null}
               </TouchableOpacity>
             );
           })}
-          <Button label="新增" icon={Plus} variant="secondary" onPress={startNewConfig} compact />
+          <Button
+            label="新增"
+            icon={Plus}
+            variant="secondary"
+            onPress={startNewConfig}
+            compact
+          />
         </View>
 
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>模型来源</Text>
+          <Text
+            style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}
+          >
+            模型来源
+          </Text>
           <SegmentedControl
             value={draft.provider_type}
             options={[
               { value: 'openai_compatible', label: '在线 API' },
               { value: 'llama_cpp', label: '本地 GGUF' },
             ]}
-            onChange={(provider_type) =>
+            onChange={provider_type =>
               updateDraft({
                 provider_type,
                 // 切到 llama_cpp 时锁定 cpu 后端；切回在线 API 时清空
                 local_backend: provider_type === 'llama_cpp' ? 'cpu' : null,
                 // 本地模型 CPU prefill 慢，默认上下文改小更友好
-                context_window: provider_type === 'llama_cpp' ? 2048 : draft.context_window,
-                max_output_tokens: provider_type === 'llama_cpp'
-                  ? Math.min(
-                    draft.max_output_tokens || LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
-                    LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
-                  )
-                  : draft.max_output_tokens,
+                context_window:
+                  provider_type === 'llama_cpp' ? 2048 : draft.context_window,
+                max_output_tokens:
+                  provider_type === 'llama_cpp'
+                    ? Math.min(
+                        draft.max_output_tokens ||
+                          LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
+                        LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
+                      )
+                    : draft.max_output_tokens,
               })
             }
           />
@@ -251,7 +356,7 @@ export const LLMSettingsScreen: React.FC = () => {
           testID="llm-config-name"
           label="配置名称"
           value={draft.name}
-          onChangeText={(name) => updateDraft({ name })}
+          onChangeText={name => updateDraft({ name })}
           placeholder="例如：OpenAI / 本地模型 / DeepSeek"
         />
 
@@ -261,7 +366,7 @@ export const LLMSettingsScreen: React.FC = () => {
               testID="llm-base-url"
               label="Base URL"
               value={draft.base_url}
-              onChangeText={(base_url) => updateDraft({ base_url })}
+              onChangeText={base_url => updateDraft({ base_url })}
               placeholder="https://api.openai.com"
               autoCapitalize="none"
               autoCorrect={false}
@@ -270,7 +375,7 @@ export const LLMSettingsScreen: React.FC = () => {
               testID="llm-api-key"
               label="API Key"
               value={draft.api_key}
-              onChangeText={(api_key) => updateDraft({ api_key })}
+              onChangeText={api_key => updateDraft({ api_key })}
               placeholder="sk-..."
               autoCapitalize="none"
               autoCorrect={false}
@@ -280,24 +385,60 @@ export const LLMSettingsScreen: React.FC = () => {
               testID="llm-model-name"
               label="模型名称"
               value={draft.model_name}
-              onChangeText={(model_name) => updateDraft({ model_name })}
+              onChangeText={model_name => updateDraft({ model_name })}
               placeholder="gpt-4.1 或兼容模型名称"
               autoCapitalize="none"
               autoCorrect={false}
             />
+            <View
+              style={[
+                styles.networkPolicy,
+                {
+                  backgroundColor: theme.colors.card,
+                  borderColor: theme.colors.border,
+                },
+              ]}
+            >
+              <View style={styles.networkPolicyText}>
+                <Text
+                  style={[
+                    styles.networkPolicyTitle,
+                    { color: theme.colors.textPrimary },
+                  ]}
+                >
+                  允许不安全的局域网 HTTP 服务
+                </Text>
+                <Text
+                  style={[
+                    styles.networkPolicyDescription,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
+                  默认关闭。仅允许 127.0.0.1、10/8、172.16/12 和
+                  192.168/16，公网 HTTP 仍会被阻止。
+                </Text>
+              </View>
+              <Switch
+                testID="llm-allow-insecure-lan-http"
+                value={allowInsecureLanHttp}
+                onValueChange={toggleInsecureLanHttp}
+              />
+            </View>
           </>
         ) : (
           <>
             <LocalModelSelector
               selectedId={draft.local_model_id}
-              onSelect={(local_model_id) => updateDraft({ local_model_id })}
+              onSelect={local_model_id => updateDraft({ local_model_id })}
             />
             <Field
               label="上下文长度"
               value={String(draft.context_window)}
-              onChangeText={(text) => {
+              onChangeText={text => {
                 const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
-                updateDraft({ context_window: Number.isFinite(value) ? value : 0 });
+                updateDraft({
+                  context_window: Number.isFinite(value) ? value : 0,
+                });
               }}
               placeholder="4096"
               keyboardType="numeric"
@@ -305,9 +446,11 @@ export const LLMSettingsScreen: React.FC = () => {
             <Field
               label="最大输出 Token"
               value={String(draft.max_output_tokens)}
-              onChangeText={(text) => {
+              onChangeText={text => {
                 const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
-                updateDraft({ max_output_tokens: Number.isFinite(value) ? value : 0 });
+                updateDraft({
+                  max_output_tokens: Number.isFinite(value) ? value : 0,
+                });
               }}
               placeholder={String(LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS)}
               keyboardType="numeric"
@@ -321,12 +464,44 @@ export const LLMSettingsScreen: React.FC = () => {
         )}
 
         <View style={styles.actionRow}>
-          <Button label={saving ? '保存中...' : '保存配置'} icon={Save} onPress={save} disabled={saving || testing} flex />
-          <Button label="设为当前" icon={CheckCircle2} variant="secondary" onPress={activate} disabled={saving || testing || draft.is_active === 1} flex />
+          <Button
+            label={saving ? '保存中...' : '保存配置'}
+            icon={Save}
+            onPress={save}
+            disabled={saving || testing}
+            flex
+          />
+          <Button
+            label="设为当前"
+            icon={CheckCircle2}
+            variant="secondary"
+            onPress={activate}
+            disabled={saving || testing || draft.is_active === 1}
+            flex
+          />
         </View>
         <View style={styles.actionRow}>
-          <Button label={testing ? '测试中...' : '保存并测试'} variant="secondary" onPress={saveAndTest} disabled={saving || testing} flex />
-          <Button label="删除" icon={Trash2} variant="ghost" onPress={remove} disabled={saving || testing} flex />
+          <Button
+            label={
+              testing
+                ? connectionQueueState === 'queued'
+                  ? '排队中...'
+                  : '测试中...'
+                : '保存并测试'
+            }
+            variant="secondary"
+            onPress={saveAndTest}
+            disabled={saving || testing}
+            flex
+          />
+          <Button
+            label="删除"
+            icon={Trash2}
+            variant="ghost"
+            onPress={remove}
+            disabled={saving || testing}
+            flex
+          />
         </View>
       </ScrollView>
     </Screen>
@@ -335,7 +510,12 @@ export const LLMSettingsScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 96 },
-  configList: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.lg },
+  configList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginBottom: spacing.lg,
+  },
   configChip: {
     minHeight: 34,
     borderWidth: StyleSheet.hairlineWidth,
@@ -350,4 +530,16 @@ const styles = StyleSheet.create({
   section: { marginBottom: spacing.md },
   sectionTitle: { fontSize: 12, fontWeight: '700', marginBottom: spacing.sm },
   actionRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
+  networkPolicy: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  networkPolicyText: { flex: 1, gap: spacing.xs },
+  networkPolicyTitle: { fontSize: 14, fontWeight: '800' },
+  networkPolicyDescription: { fontSize: 12, lineHeight: 18 },
 });
