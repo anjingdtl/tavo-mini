@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      Cleartext transport is enabled at the Android transport layer so the
+      explicit JS LLM policy can allow trusted private-LAN endpoints in both
+      debug and release builds. Public HTTP endpoints are rejected before any
+      request is sent; HTTPS remains the default.
+    -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
