@@ -6,9 +6,24 @@ import type {
   LLMProviderType,
   LLMRequestConfig,
   LLMResult,
+  LLMQueueClass,
+  LLMQueuePriority,
+  LLMQueueState,
+  LLMRequestMetrics,
 } from './llm/types';
+import { scheduleLLMRequest } from './llm/requestScheduler';
 
-export type { ChatMessage, LLMGenerateOptions, LLMProviderType, LLMRequestConfig, LLMResult } from './llm/types';
+export type {
+  ChatMessage,
+  LLMGenerateOptions,
+  LLMProviderType,
+  LLMRequestConfig,
+  LLMResult,
+  LLMQueueClass,
+  LLMQueuePriority,
+  LLMQueueState,
+  LLMRequestMetrics,
+} from './llm/types';
 
 export {
   normalizeChatCompletionUrl,
@@ -23,20 +38,37 @@ export interface LLMCallConfig {
   max_tokens?: number;
   scenario?: string;
   projectId?: number;
+  taskId?: string;
+  queueClass?: LLMQueueClass;
+  queuePriority?: LLMQueuePriority;
+  onQueueState?: (state: LLMQueueState) => void;
+  onProgress?: (metrics: LLMRequestMetrics) => void;
   requestConfig?: LLMRequestConfig;
 }
 
-async function repairLegacyLocalConfigSelection(config: Awaited<ReturnType<typeof db.getLLMConfig>>) {
+export interface LLMConnectionOptions {
+  allowInsecureLanHttp?: boolean;
+  taskId?: string;
+  externalSignal?: AbortSignal;
+  onQueueState?: (state: LLMQueueState) => void;
+}
+
+async function repairLegacyLocalConfigSelection(
+  config: Awaited<ReturnType<typeof db.getLLMConfig>>,
+) {
   const providerType = config.provider_type || 'openai_compatible';
-  const isBlankOnlineConfig = providerType === 'openai_compatible'
-    && !config.base_url.trim()
-    && !config.api_key.trim()
-    && !config.model_name.trim();
+  const isBlankOnlineConfig =
+    providerType === 'openai_compatible' &&
+    !config.base_url.trim() &&
+    !config.api_key.trim() &&
+    !config.model_name.trim();
 
   if (!isBlankOnlineConfig) return config;
 
   const configs = await db.getLLMConfigs();
-  const localConfigs = configs.filter(item => item.provider_type === 'llama_cpp' && item.local_model_id);
+  const localConfigs = configs.filter(
+    item => item.provider_type === 'llama_cpp' && item.local_model_id,
+  );
   for (const localConfig of localConfigs) {
     const model = await db.getLocalModelById(localConfig.local_model_id!);
     if (model?.status !== 'ready') continue;
@@ -55,6 +87,10 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
   const config = await repairLegacyLocalConfigSelection(currentConfig);
   const raw = config as unknown as LLMRequestConfig & { base_url?: string };
   const providerType = raw.provider_type || 'openai_compatible';
+  const allowInsecureLanHttp =
+    typeof (db as any).getAllowInsecureLanHttp === 'function'
+      ? await (db as any).getAllowInsecureLanHttp()
+      : false;
   return {
     id: config.id,
     name: config.name,
@@ -66,6 +102,7 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
     local_backend: raw.local_backend,
     context_window: raw.context_window,
     max_output_tokens: raw.max_output_tokens,
+    allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
   };
 }
 
@@ -75,15 +112,34 @@ export async function testLLMConnection(
   modelName: string,
   providerType: LLMProviderType = 'openai_compatible',
   localModelId?: string,
+  options: boolean | LLMConnectionOptions = false,
 ): Promise<string> {
+  const connectionOptions: LLMConnectionOptions =
+    typeof options === 'boolean' ? { allowInsecureLanHttp: options } : options;
   const provider = getProvider(providerType);
-  return provider.test({
-    provider_type: providerType,
-    api_key: apiKey,
-    model_name: modelName,
-    url: normalizeChatCompletionUrl(baseUrl),
-    local_model_id: localModelId,
-  });
+  const queueClass = providerType === 'llama_cpp' ? 'local' : 'connection';
+  return scheduleLLMRequest(
+    signal =>
+      provider.test(
+        {
+          provider_type: providerType,
+          api_key: apiKey,
+          model_name: modelName,
+          url: normalizeChatCompletionUrl(baseUrl),
+          local_model_id: localModelId,
+          allow_insecure_lan_http:
+            connectionOptions.allowInsecureLanHttp === true,
+        },
+        signal,
+      ),
+    {
+      taskId: connectionOptions.taskId,
+      queueClass,
+      queuePriority: 'manual',
+      externalSignal: connectionOptions.externalSignal,
+      onQueueState: connectionOptions.onQueueState,
+    },
+  );
 }
 
 export async function callLLM(
@@ -101,7 +157,8 @@ export async function callLLMResult(
   config?: LLMCallConfig,
   externalSignal?: AbortSignal,
 ): Promise<LLMResult> {
-  const requestConfig = config?.requestConfig ?? await resolveLLMRequestConfig();
+  const requestConfig =
+    config?.requestConfig ?? (await resolveLLMRequestConfig());
   const provider = getProvider(requestConfig.provider_type);
   return provider.generate(
     messages,
@@ -111,6 +168,11 @@ export async function callLLMResult(
       max_tokens: maxTokens ?? config?.max_tokens,
       scenario: config?.scenario,
       projectId: config?.projectId,
+      taskId: config?.taskId,
+      queueClass: config?.queueClass,
+      queuePriority: config?.queuePriority,
+      onQueueState: config?.onQueueState,
+      onProgress: config?.onProgress,
       requestConfig,
     },
     externalSignal,

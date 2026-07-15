@@ -3,6 +3,7 @@ export type PipelineMode = 'noReview' | 'twoStage' | 'conditional' | 'full';
 
 export type PipelineTaskStatus =
   | 'idle'
+  | 'queued'
   | 'drafting'
   | 'reviewing'
   | 'factChecking'

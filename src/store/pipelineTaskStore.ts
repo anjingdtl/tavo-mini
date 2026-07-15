@@ -23,7 +23,7 @@ interface PipelineTaskState {
 }
 
 let taskIdCounter = 0;
-const activeStatuses: PipelineTaskStatus[] = ['idle', 'drafting', 'reviewing', 'factChecking', 'proofing'];
+const activeStatuses: PipelineTaskStatus[] = ['idle', 'queued', 'drafting', 'reviewing', 'factChecking', 'proofing'];
 
 function interruptTask(task: PipelineTask, now: number): PipelineTask {
   return {
@@ -208,7 +208,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         t.targetType === targetType &&
         t.targetId === targetId &&
         t.resolvedAt === null &&
-        (t.status === 'idle' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'factChecking' || t.status === 'proofing')
+        (t.status === 'idle' || t.status === 'queued' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'factChecking' || t.status === 'proofing')
     );
   },
 

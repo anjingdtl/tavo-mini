@@ -8,6 +8,7 @@ export interface LLMResult {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  metrics?: LLMRequestMetrics;
   errorCode?: string;
   rawUsage?: {
     prompt_tokens?: number;
@@ -22,7 +23,28 @@ export interface LLMGenerateOptions {
   max_tokens?: number;
   scenario?: string;
   projectId?: number;
+  taskId?: string;
+  queueClass?: LLMQueueClass;
+  queuePriority?: LLMQueuePriority;
+  onQueueState?: (state: LLMQueueState) => void;
+  onProgress?: (metrics: LLMRequestMetrics) => void;
   requestConfig?: LLMRequestConfig;
+}
+
+export type LLMQueueClass =
+  | 'normal'
+  | 'pipeline'
+  | 'background'
+  | 'connection'
+  | 'local';
+export type LLMQueuePriority = 'manual' | 'normal' | 'background';
+export type LLMQueueState = 'queued' | 'running' | 'cancelled';
+
+export interface LLMRequestMetrics {
+  taskId?: string;
+  startedAt: number;
+  firstTokenAt?: number;
+  lastProgressAt: number;
 }
 
 export type LLMProviderType = 'openai_compatible' | 'llama_cpp';
@@ -39,4 +61,5 @@ export interface LLMRequestConfig {
   local_backend?: 'auto' | 'gpu' | 'cpu';
   context_window?: number;
   max_output_tokens?: number;
+  allow_insecure_lan_http?: boolean;
 }
