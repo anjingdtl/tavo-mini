@@ -174,6 +174,17 @@
 - Built and installed `dist/apk/debug/ShineWriter-V2.4.3-debug.apk` on `emulator-5554`; adb/UI-tree evidence verified launch, project creation, chapter editing, autosave, exit, re-entry, and persisted正文 (`21 字`, `已保存`). No crash-buffer or React Native fatal error was observed.
 - The current Windows QA environment has adb and an emulator but no Maestro binary, so the YAML flows are committed as the portable runner and the writing lifecycle has an actual-device fallback proof. A complete execution of all six flows remains a release-environment follow-up once Maestro is available.
 
+## Phase 5 — 核心代码架构拆分
+
+### 5.1 database.ts → data connection/schema/repositories — 已完成
+
+- Added `src/data/connection/` for the SQLite opener, execute/query helpers, and the transaction compatibility boundary. `openDatabase` retains the existing single-flight initialization and test injection hooks.
+- Added `src/data/schema/` for fresh-schema creation and initialization/migration validation, with the existing schema manifest and validator exposed through the new data-layer path. Added `src/data/migrations/` compatibility exports so migration ownership remains versioned and unchanged.
+- Extracted the database contract into domain repositories under `src/data/repositories/`: project/chapter, character, worldbook, note, preset, online LLM configuration, local model, settings, usage, content revisions/drafts, pipeline tasks, and note-mode configuration.
+- Reduced `src/services/database.ts` to a 23-line compatibility export entry point, while every new repository and schema file remains below the 500-line target; the largest repository files are 349 lines.
+- Extended coverage collection to `src/data/**/*.ts`. The local gate passed with 75 suites / 360 tests and total coverage 79.91% lines, 78.42% statements, 86.30% functions, and 60.82% branches; the new Schema layer reached 96.47% lines / 90% branches.
+- `npm run typecheck`, `npm run lint` (0 errors, five existing warnings), `npm run test:ci`, `npm run test:coverage -- --silent`, and `git diff --check` passed after the extraction. The compatibility contract tests for migration, CRUD, and transaction safety passed separately before the full run.
+
 ## Phase exit criteria
 
 - `npm run verify` passes for every committed task, or the pre-existing typecheck failure is explicitly recorded and approved before proceeding.
