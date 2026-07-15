@@ -185,7 +185,7 @@ export function Field({
   );
 }
 
-export function SegmentedControl<T extends string>({
+export function SegmentedControl<T extends string | number>({
   value,
   options,
   onChange,

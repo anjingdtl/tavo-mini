@@ -44,6 +44,8 @@ jest.mock('@react-native-documents/picker', () => ({
   keepLocalCopy: jest.fn(),
   saveDocuments: jest.fn(),
   types: { json: 'application/json', images: 'image/*', plainText: 'text/plain', allFiles: '*/*' },
+  errorCodes: { OPERATION_CANCELED: 'OPERATION_CANCELED' },
+  isErrorWithCode: jest.fn(error => Boolean(error && error.code)),
   isCancel: jest.fn(() => false),
 }));
 

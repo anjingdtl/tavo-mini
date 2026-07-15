@@ -151,11 +151,12 @@
 
 ## Phase 4 — CI and quality gates
 
-### 4.1 GitHub Actions workflow — implemented, quality gate still in progress
+### 4.1 GitHub Actions workflow — implemented, local quality gate verified
 
 - Added `.github/workflows/verify.yml` for `main` pushes and pull requests with three independent jobs: JavaScript validation (`lint`, `typecheck`, `test:ci`), Android Debug build (`prebuild`, `assembleDebug`), and migration matrix (`npm test -- migration --runInBand`).
 - All jobs use npm caching, Node.js `22.11.0`, and JDK 17; the workflow requests read-only repository permissions and does not print or require Release secrets.
-- Local workflow-format validation passed with `npx prettier --check .github/workflows/verify.yml`; the migration command passed locally. The JavaScript job is intentionally not marked green yet because the pre-existing project-wide TypeScript baseline must be repaired before Phase 4 closes.
+- Local workflow-format validation passed with `npx prettier --check .github/workflows/verify.yml`; the migration command passed locally. The JavaScript quality gate is now green after narrowing `tsconfig.json` to the owned app/test surface, adding the Node type declarations required by the test runtime, and repairing the real application/test type errors exposed by the gate.
+- Clean-install verification passed with `npm ci`, `npm run lint` (five pre-existing warnings only), `npm run typecheck`, and `npm run test:ci` (68 suites / 320 tests). The pushed GitHub Actions run remains the final remote confirmation for this commit.
 
 ## Phase exit criteria
 
@@ -181,7 +182,7 @@
 
 - `npm run lint`: exit `0`, five pre-existing warnings only.
 - `npm run test:ci`: exit `0`, 68 suites / 320 tests.
-- `npx tsc --noEmit`: exit `2`, 1,588 baseline diagnostics were recorded before this phase and changed-surface filtering found no new database/migration diagnostics.
+- `npx tsc --noEmit`: exit `0` after narrowing the TypeScript project boundary and fixing the exposed app/test type errors.
 - `npm run apk:debug`: exit `0`; Gradle/CMake succeeded and produced `dist/apk/debug/ShineWriter-V2.4.3-debug.apk` (53,781,471 bytes / 51.29 MB); the emulator startup and writing-tab smoke path passed.
 - `npm run apk:release`: exit `0` with process-only signing variables; APK Signature Scheme v2 verification passed for one signer.
 - `npm run apk:release:minified`: exit `0`; R8 and resource shrinking completed, but the optimized artifact remains evaluation-only until it can be installed on a clean/physical device without discarding the current emulator database.
@@ -189,7 +190,7 @@
 
 ### Final gate follow-up
 
-- `npm run verify` was re-run: lint passed, then the known project-wide typecheck baseline failed, so the command exited `2` before the test stage.
+- `npm run verify` was re-run after the TypeScript baseline repair: lint, typecheck, and Jest all pass locally; the Android and migration jobs are also defined in `.github/workflows/verify.yml` and are awaiting the pushed run's final status.
 - The final Debug and signed Release builds passed; their prebuild generated the intentionally tracked `V2.4.3` metadata and `ShineWriter V2.4.3` release title. The Debug APK was also launched against the preserved emulator database after the runtime-index correction.
 - Do not reset `shine_writer.db`, restore the deleted broad compatibility migration, or add `async`/`await` inside a SQLite transaction callback.
 

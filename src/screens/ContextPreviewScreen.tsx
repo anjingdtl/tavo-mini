@@ -100,7 +100,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
     return (
       <Screen>
         <Header title="上下文预览" action={<Button label="关闭" variant="ghost" onPress={onClose} />} />
-        <EmptyState label="章节不存在或已被删除" />
+        <EmptyState title="章节不存在或已被删除" />
       </Screen>
     );
   }
