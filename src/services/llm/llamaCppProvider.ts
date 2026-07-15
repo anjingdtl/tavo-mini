@@ -1,5 +1,10 @@
 import type { LLMProvider } from '../../types/llmProvider';
-import type { ChatMessage, LLMGenerateOptions, LLMRequestConfig, LLMResult } from './types';
+import type {
+  ChatMessage,
+  LLMGenerateOptions,
+  LLMRequestConfig,
+  LLMResult,
+} from './types';
 import type { PromptTemplate } from '../../types/localModel';
 import { getLocalModelById, logLLMUsage } from '../database';
 import { estimateMessagesTokens } from '../../utils/tokenEstimator';
@@ -12,6 +17,15 @@ import {
   type CompletedEvent,
 } from '../../native/LlamaCppModule';
 import { applyPromptTemplate } from './llamaCppPromptAdapter';
+import {
+  scheduleLLMRequest,
+  getLLMTaskQueueDefaults,
+} from './requestScheduler';
+import {
+  createLLMTimeoutController,
+  resolveLLMTimeoutPolicy,
+  toLLMRequestError,
+} from './requestPolicy';
 import {
   LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
   LOCAL_LLM_SAFE_MAX_OUTPUT_TOKENS,
@@ -43,18 +57,24 @@ function makeRequestId(): string {
 
 function positiveNumber(value?: number): number | null {
   const numericValue = Number(value);
-  return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : null;
+  return Number.isFinite(numericValue) && numericValue > 0
+    ? numericValue
+    : null;
 }
 
-function resolveLocalMaxTokens(optionValue?: number, configValue?: number): number {
+function resolveLocalMaxTokens(
+  optionValue?: number,
+  configValue?: number,
+): number {
   const candidates = [
     positiveNumber(optionValue),
     positiveNumber(configValue),
     LOCAL_LLM_SAFE_MAX_OUTPUT_TOKENS,
   ].filter((value): value is number => value !== null);
-  const requested = candidates.length > 0
-    ? Math.min(...candidates)
-    : LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS;
+  const requested =
+    candidates.length > 0
+      ? Math.min(...candidates)
+      : LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS;
   return Math.min(requested, LOCAL_LLM_SAFE_MAX_OUTPUT_TOKENS);
 }
 
@@ -64,8 +84,11 @@ function shouldDisableReasoning(modelName?: string): boolean {
 
 function addNoThinkInstruction(messages: ChatMessage[]): ChatMessage[] {
   const nextMessages = messages.map(message => ({ ...message }));
-  const instruction = '不要输出思考过程、分析说明或 <think> 标签，只输出最终结果。';
-  const systemIndex = nextMessages.findIndex(message => message.role === 'system');
+  const instruction =
+    '不要输出思考过程、分析说明或 <think> 标签，只输出最终结果。';
+  const systemIndex = nextMessages.findIndex(
+    message => message.role === 'system',
+  );
   if (systemIndex >= 0) {
     const systemMessage = nextMessages[systemIndex];
     systemMessage.content = `${systemMessage.content}\n\n${instruction}`;
@@ -75,7 +98,9 @@ function addNoThinkInstruction(messages: ChatMessage[]): ChatMessage[] {
 
   for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
     if (nextMessages[index].role === 'user') {
-      nextMessages[index].content = `${nextMessages[index].content}\n\n/no_think`;
+      nextMessages[
+        index
+      ].content = `${nextMessages[index].content}\n\n/no_think`;
       return nextMessages;
     }
   }
@@ -86,9 +111,7 @@ function addNoThinkInstruction(messages: ChatMessage[]): ChatMessage[] {
 function stripReasoningBlocks(text: string): string {
   let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
   cleaned = cleaned.replace(/^\s*<think>[\s\S]*$/i, '');
-  return cleaned
-    .replace(/<\/?think>/gi, '')
-    .trim();
+  return cleaned.replace(/<\/?think>/gi, '').trim();
 }
 
 async function safeLogUsage(fields: {
@@ -115,7 +138,10 @@ async function ensureModelLoaded(
   relativePath: string,
   contextLength: number,
 ): Promise<void> {
-  if (currentLoadedModelId === modelId && currentLoadedContextLength === contextLength) {
+  if (
+    currentLoadedModelId === modelId &&
+    currentLoadedContextLength === contextLength
+  ) {
     return;
   }
   await nativeLoadModel(modelId, relativePath, contextLength);
@@ -140,14 +166,12 @@ function runGeneration(
     // 否则 native 端已经 emit 的 token 会被 RN bridge 丢弃（DeviceEventEmitter
     // 对没有 listener 的事件直接 swallow）。
     const unsub = observeGeneration(requestId, {
-      onToken: onToken
-        ? (e) => onToken(e.delta, e.sequence)
-        : undefined,
-      onCompleted: (e) => {
+      onToken: onToken ? e => onToken(e.delta, e.sequence) : undefined,
+      onCompleted: e => {
         unsub();
         resolve(e);
       },
-      onError: (e) => {
+      onError: e => {
         unsub();
         reject(Object.assign(new Error(e.message), { code: e.code }));
       },
@@ -158,7 +182,7 @@ function runGeneration(
       max_tokens: opts.max_tokens,
       temperature: opts.temperature,
       top_p: opts.top_p,
-    }).catch((err) => {
+    }).catch(err => {
       unsub();
       reject(err);
     });
@@ -168,7 +192,10 @@ function runGeneration(
 export const llamaCppProvider: LLMProvider = {
   type: 'llama_cpp',
 
-  async test(config: LLMRequestConfig): Promise<string> {
+  async test(
+    config: LLMRequestConfig,
+    externalSignal?: AbortSignal,
+  ): Promise<string> {
     if (!isLlamaCppAvailable()) {
       throw new Error('本地 llama.cpp 引擎不可用，请检查应用安装。');
     }
@@ -181,22 +208,43 @@ export const llamaCppProvider: LLMProvider = {
       throw new Error('所选本地模型已不存在，请重新选择。');
     }
 
-    const contextLength = Math.max(512, Math.min(4096, config.context_window || 2048));
-    await ensureModelLoaded(model.id, model.relative_path, contextLength);
+    const timeoutController = createLLMTimeoutController({
+      policy: resolveLLMTimeoutPolicy('connection_test', 'llama_cpp'),
+      externalSignal,
+    });
+    try {
+      const contextLength = Math.max(
+        512,
+        Math.min(4096, config.context_window || 2048),
+      );
+      await ensureModelLoaded(model.id, model.relative_path, contextLength);
+      if (timeoutController.signal.aborted) {
+        throw new Error('本地模型连接测试已取消');
+      }
 
-    const requestId = makeRequestId();
-    const result = await runGeneration(
-      requestId,
-      model.id,
-      model.prompt_template,
-      [{ role: 'user', content: '请回复“连接成功”。' }],
-      { max_tokens: 16, temperature: 0, top_p: 0.9 },
-    );
+      const requestId = makeRequestId();
+      const result = await runGeneration(
+        requestId,
+        model.id,
+        model.prompt_template,
+        [{ role: 'user', content: '请回复“连接成功”。' }],
+        { max_tokens: 16, temperature: 0, top_p: 0.9 },
+        () => timeoutController.markProgress('first_token'),
+      );
 
-    if (result.cancelled) {
-      throw new Error('连接测试已取消');
+      if (result.cancelled) {
+        throw new Error('连接测试已取消');
+      }
+      return result.text || '连接成功';
+    } catch (error: any) {
+      throw toLLMRequestError(
+        error,
+        timeoutController,
+        '本地模型连接测试失败。',
+      );
+    } finally {
+      timeoutController.dispose();
     }
-    return result.text || '连接成功';
   },
 
   async generate(
@@ -221,7 +269,9 @@ export const llamaCppProvider: LLMProvider = {
       throw new Error('所选本地模型已不存在，请重新选择。');
     }
     if (model.status !== 'ready') {
-      throw new Error(`模型当前状态为「${model.status}」，无法生成。请先完成校验。`);
+      throw new Error(
+        `模型当前状态为「${model.status}」，无法生成。请先完成校验。`,
+      );
     }
 
     const inputEstimate = estimateMessagesTokens(messages);
@@ -230,38 +280,93 @@ export const llamaCppProvider: LLMProvider = {
     const projectId = options.projectId;
     const llmConfigId = config.id;
     const llmConfigName = config.name;
-    const maxTokens = resolveLocalMaxTokens(options.max_tokens, config.max_output_tokens);
+    const maxTokens = resolveLocalMaxTokens(
+      options.max_tokens,
+      config.max_output_tokens,
+    );
     const temperature = options.temperature ?? 0.8;
     const topP = options.top_p ?? 0.9;
     const generationMessages = shouldDisableReasoning(modelName)
       ? addNoThinkInstruction(messages)
       : messages;
 
-    if (externalSignal?.aborted) {
-      const err = new Error('已取消') as Error & { code?: string };
-      err.code = 'cancelled';
-      throw err;
-    }
-
-    const requestId = makeRequestId();
-    const onAbort = () => {
-      nativeCancel(requestId).catch(() => {});
-    };
-    if (externalSignal) {
-      externalSignal.addEventListener('abort', onAbort, { once: true });
-    }
-
     try {
-      const contextLength = Math.max(512, Math.min(4096, config.context_window || 2048));
-      await ensureModelLoaded(model.id, model.relative_path, contextLength);
+      const result = await scheduleLLMRequest(
+        async queueSignal => {
+          const timeoutController = createLLMTimeoutController({
+            policy: resolveLLMTimeoutPolicy(scenario, 'llama_cpp'),
+            taskId: options.taskId,
+            externalSignal: queueSignal,
+            onProgress: options.onProgress,
+          });
+          const requestId = makeRequestId();
+          const onAbort = () => {
+            nativeCancel(requestId).catch(() => {});
+          };
+          queueSignal.addEventListener('abort', onAbort, { once: true });
+          try {
+            const contextLength = Math.max(
+              512,
+              Math.min(4096, config.context_window || 2048),
+            );
+            await ensureModelLoaded(
+              model.id,
+              model.relative_path,
+              contextLength,
+            );
+            if (timeoutController.signal.aborted) {
+              throw new Error('本地模型请求已取消');
+            }
 
-      const result = await runGeneration(requestId, model.id, model.prompt_template, generationMessages, {
-        max_tokens: maxTokens,
-        temperature,
-        top_p: topP,
-      });
+            const generationResult = await runGeneration(
+              requestId,
+              model.id,
+              model.prompt_template,
+              generationMessages,
+              {
+                max_tokens: maxTokens,
+                temperature,
+                top_p: topP,
+              },
+              () => timeoutController.markProgress('first_token'),
+            );
+            const abortCode = timeoutController.getAbortCode();
+            if (abortCode) {
+              const timeoutError = new Error('本地模型请求已停止') as Error & {
+                code?: string;
+              };
+              timeoutError.code = abortCode;
+              throw timeoutError;
+            }
+            return {
+              generationResult,
+              metrics: { ...timeoutController.metrics },
+            };
+          } catch (error: any) {
+            throw toLLMRequestError(
+              error,
+              timeoutController,
+              '本地模型生成失败。',
+            );
+          } finally {
+            queueSignal.removeEventListener('abort', onAbort);
+            timeoutController.dispose();
+          }
+        },
+        {
+          taskId: options.taskId,
+          queueClass: 'local',
+          queuePriority:
+            getLLMTaskQueueDefaults(options.taskId)?.queuePriority ||
+            options.queuePriority ||
+            'normal',
+          projectId,
+          externalSignal,
+          onQueueState: options.onQueueState,
+        },
+      );
 
-      if (result.cancelled) {
+      if (result.generationResult.cancelled) {
         const cancelError = new Error('已取消') as Error & { code?: string };
         cancelError.code = 'cancelled';
         await safeLogUsage({
@@ -279,7 +384,7 @@ export const llamaCppProvider: LLMProvider = {
         throw cancelError;
       }
 
-      const outputTokens = result.outputTokens;
+      const outputTokens = result.generationResult.outputTokens;
       const totalTokens = inputEstimate + outputTokens;
       await safeLogUsage({
         scenario,
@@ -294,10 +399,11 @@ export const llamaCppProvider: LLMProvider = {
       });
 
       return {
-        text: stripReasoningBlocks(result.text || ''),
+        text: stripReasoningBlocks(result.generationResult.text || ''),
         inputTokens: inputEstimate,
         outputTokens,
         totalTokens,
+        metrics: result.metrics,
       };
     } catch (error: any) {
       // 模型未加载类错误：重置缓存标记，下次重新加载
@@ -321,10 +427,6 @@ export const llamaCppProvider: LLMProvider = {
         llmConfigName,
       });
       throw error;
-    } finally {
-      if (externalSignal) {
-        externalSignal.removeEventListener('abort', onAbort);
-      }
     }
   },
 };
