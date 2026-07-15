@@ -1,5 +1,6 @@
 import RNFS from 'react-native-fs';
 import type SQLite from 'react-native-sqlite-storage';
+import { executeTransaction, type SqlStatement } from './database/transaction';
 
 const BACKUP_DIR = `${RNFS.ExternalDirectoryPath}/backups`;
 const MAX_AUTOMATIC_BACKUPS = 3;
@@ -384,37 +385,36 @@ export async function restoreFromBackup(
   const content = await RNFS.readFile(backupPath, 'utf8');
   const backup = JSON.parse(content);
 
-  // Use a single transaction for atomic restore
-  await db.transaction(async (tx) => {
-    const txx = tx as unknown as SQLite.SQLiteDatabase;
+  const statements: SqlStatement[] = [];
 
-    // Delete in order: child tables first
-    for (const table of DELETE_ORDER) {
-      await execute(txx, `DELETE FROM ${table}`);
-    }
+  // Build the complete restore batch before entering SQLite's synchronous
+  // transaction scope. A failed statement therefore rolls back the delete
+  // phase and all staged inserts together.
+  for (const table of DELETE_ORDER) {
+    statements.push({ sql: `DELETE FROM ${table}` });
+  }
 
-    // Insert in reverse order: parent tables first
-    for (const table of INSERT_ORDER) {
-      const rows: Record<string, any>[] = backup.tables?.[table] || [];
-      for (const row of rows) {
-        // 11.13 说明：llm_config 行跳过 api_key 字段，因为明文密钥不入库——
-        // 运行时 API Key 按 llm_config.id 走 Android Keystore（react-native-keychain），
-        // 备份文件中即使残留 api_key 也不可恢复（密钥不在备份范围内），故此处显式过滤，
-        // 避免把历史遗留的明文/空值写回 llm_config.api_key 列。
-        const keys = Object.keys(row).filter(k => {
-          if (table === 'llm_config' && k === 'api_key') return false;
-          return true;
-        });
-        const placeholders = keys.map(() => '?').join(', ');
-        const values = keys.map(k => row[k]);
-        await execute(
-          txx,
-          `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`,
-          values,
-        );
+  for (const table of INSERT_ORDER) {
+    const rows: Record<string, any>[] = backup.tables?.[table] || [];
+    for (const row of rows) {
+      // llm_config.api_key is intentionally excluded: runtime secrets belong
+      // to Android Keystore, not to the portable backup format.
+      const keys = Object.keys(row).filter(
+        key => !(table === 'llm_config' && key === 'api_key'),
+      );
+      if (keys.length === 0) {
+        statements.push({ sql: `INSERT INTO ${table} DEFAULT VALUES` });
+        continue;
       }
+      const placeholders = keys.map(() => '?').join(', ');
+      statements.push({
+        sql: `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`,
+        params: keys.map(key => row[key]),
+      });
     }
-  });
+  }
+
+  await executeTransaction(db, statements);
 }
 
 export async function deleteBackup(path: string): Promise<void> {
