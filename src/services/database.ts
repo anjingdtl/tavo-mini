@@ -38,6 +38,7 @@ import type {
   MigrationResult,
 } from './migrations/types';
 import { executeTransaction } from './database/transaction';
+import { assertValidSchema, validateSchema } from './database/schemaValidator';
 import appVersionJson from '../constants/version.json';
 
 SQLite.enablePromise(true);
@@ -619,12 +620,16 @@ export async function initializeDatabase(
       );
     }
   }
+  assertValidSchema(
+    await validateSchema(database, { requireActiveLlmConfig: false }),
+  );
   await repairKnownSchemaDefects(database, installInfo.schemaVersion);
   await seedDefaults(database);
   // Indexes are deterministic, idempotent schema artifacts. Keep this after
   // validation and seeding so index creation cannot mask a migration defect.
   await ensureCurrentIndexes(database);
   await repairOversizedNotes(database);
+  assertValidSchema(await validateSchema(database));
   await finalizeInstallInfo(database, installInfo);
   // Keep the detected source schema for the upgrade screen and automatic
   // backup flow; lastMigrationResult carries the successful target version.
