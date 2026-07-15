@@ -1,0 +1,61 @@
+appId: com.shinewriter
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- tapOn: '设置'
+- extendedWaitUntil:
+    visible: '设置'
+    timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: '备份中心'
+    direction: DOWN
+    timeout: 10000
+- tapOn: '备份中心'
+- extendedWaitUntil:
+    visible: '备份中心'
+    timeout: 10000
+- tapOn: '创建备份'
+- extendedWaitUntil:
+    visible: '手动'
+    timeout: 15000
+- assertVisible: '恢复'
+- back
+- tapOn: '写作'
+- extendedWaitUntil:
+    visible: 'E2E_CHAPTER'
+    timeout: 10000
+- tapOn: 'E2E_CHAPTER'
+- tapOn:
+    id: chapter-content-input
+- inputText: '_MODIFIED'
+- waitForAnimationToEnd
+- tapOn: '返回'
+- tapOn: '设置'
+- scrollUntilVisible:
+    element:
+      text: '备份中心'
+    direction: DOWN
+    timeout: 10000
+- tapOn: '备份中心'
+- extendedWaitUntil:
+    visible: '恢复'
+    timeout: 10000
+- tapOn: '恢复'
+- extendedWaitUntil:
+    visible: '恢复确认'
+    timeout: 10000
+- tapOn: '恢复'
+- extendedWaitUntil:
+    visible: '恢复成功'
+    timeout: 15000
+- tapOn: '确定'
+- back
+- tapOn: '写作'
+- tapOn: 'E2E_CHAPTER'
+- extendedWaitUntil:
+    visible: 'E2E_BODY_CONTENT'
+    timeout: 10000
+- assertNotVisible: 'E2E_BODY_CONTENT_MODIFIED'

@@ -83,6 +83,10 @@ export function navigateToPipelineResult(taskId: string): void {
       pendingTaskId = null;
     }
   }, 200);
+  // Node/Jest timers should not keep the process alive while the navigation
+  // container is intentionally unavailable. React Native timer handles do not
+  // expose unref(), so this remains a no-op on the Android runtime.
+  (pendingTimer as unknown as { unref?: () => void }).unref?.();
 }
 
 export function navigateToPipelineTaskCenter(): void {

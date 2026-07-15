@@ -247,13 +247,44 @@ export const LLMSettingsScreen: React.FC = () => {
           />
         </View>
 
-        <Field label="配置名称" value={draft.name} onChangeText={(name) => updateDraft({ name })} placeholder="例如：OpenAI / 本地模型 / DeepSeek" />
+        <Field
+          testID="llm-config-name"
+          label="配置名称"
+          value={draft.name}
+          onChangeText={(name) => updateDraft({ name })}
+          placeholder="例如：OpenAI / 本地模型 / DeepSeek"
+        />
 
         {draft.provider_type === 'openai_compatible' ? (
           <>
-            <Field label="Base URL" value={draft.base_url} onChangeText={(base_url) => updateDraft({ base_url })} placeholder="https://api.openai.com" autoCapitalize="none" autoCorrect={false} />
-            <Field label="API Key" value={draft.api_key} onChangeText={(api_key) => updateDraft({ api_key })} placeholder="sk-..." autoCapitalize="none" autoCorrect={false} secureTextEntry />
-            <Field label="模型名称" value={draft.model_name} onChangeText={(model_name) => updateDraft({ model_name })} placeholder="gpt-4.1 或兼容模型名称" autoCapitalize="none" autoCorrect={false} />
+            <Field
+              testID="llm-base-url"
+              label="Base URL"
+              value={draft.base_url}
+              onChangeText={(base_url) => updateDraft({ base_url })}
+              placeholder="https://api.openai.com"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <Field
+              testID="llm-api-key"
+              label="API Key"
+              value={draft.api_key}
+              onChangeText={(api_key) => updateDraft({ api_key })}
+              placeholder="sk-..."
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+            />
+            <Field
+              testID="llm-model-name"
+              label="模型名称"
+              value={draft.model_name}
+              onChangeText={(model_name) => updateDraft({ model_name })}
+              placeholder="gpt-4.1 或兼容模型名称"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
           </>
         ) : (
           <>
