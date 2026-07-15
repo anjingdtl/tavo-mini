@@ -62,9 +62,41 @@ react {
 }
 
 /**
- * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
+ * Release minification is opt-in until the signed APK has passed the complete
+ * real-device matrix (online/local LLM, TTS, backup and restore). The opt-in
+ * flag keeps the evaluation reproducible without silently shipping a package
+ * whose native reflection paths have not been exercised.
  */
-def enableProguardInReleaseBuilds = false
+def enableReleaseMinification = project.findProperty("enableReleaseMinification")?.toString()?.toBoolean() ?: false
+
+def releaseBuildRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.toLowerCase().contains("release")
+}
+
+def releaseSigningValues = [
+    "SHINE_WRITER_RELEASE_STORE_FILE",
+    "SHINE_WRITER_RELEASE_STORE_PASSWORD",
+    "SHINE_WRITER_RELEASE_KEY_ALIAS",
+    "SHINE_WRITER_RELEASE_KEY_PASSWORD",
+].collectEntries { name -> [name, System.getenv(name)] }
+
+if (releaseBuildRequested) {
+    def missingReleaseSigningValues = releaseSigningValues.findAll { name, value ->
+        value == null || value.trim().isEmpty()
+    }.keySet()
+    if (!missingReleaseSigningValues.isEmpty()) {
+        throw new GradleException(
+            "Release signing requires environment variable(s): ${missingReleaseSigningValues.join(', ')}. " +
+            "Debug builds do not require release signing secrets."
+        )
+    }
+    def releaseStoreFile = file(releaseSigningValues["SHINE_WRITER_RELEASE_STORE_FILE"])
+    if (!releaseStoreFile.exists()) {
+        throw new GradleException(
+            "Release signing keystore not found: ${releaseStoreFile.absolutePath}"
+        )
+    }
+}
 
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
@@ -112,20 +144,13 @@ android {
             }
         }
 
-        def gitCommitCount = {
-            try {
-                return Integer.parseInt("git rev-list --count HEAD".execute(null, rootDir).text.trim())
-            } catch (Exception e) {
-                def pkg = new groovy.json.JsonSlurper().parse(file("../../package.json"))
-                def parts = pkg.version.split("\\.")
-                return Integer.parseInt(parts[0]) * 10000 + Integer.parseInt(parts[1]) * 100 + Integer.parseInt(parts[2])
-            }
-        }()
+        // version.json is generated from package.json before npm APK builds.
+        // Gradle consumes that generated artifact so local and CI builds use
+        // one exact versionName/versionCode pair without Git-history input.
+        def versionMeta = new groovy.json.JsonSlurper().parse(file("../../src/constants/version.json"))
 
-        def pkgVersion = new groovy.json.JsonSlurper().parse(file("../../package.json")).version
-
-        versionCode gitCommitCount
-        versionName "V${pkgVersion}"
+        versionCode versionMeta.versionCode as int
+        versionName versionMeta.versionName as String
     }
     signingConfigs {
         debug {
@@ -135,10 +160,12 @@ android {
             keyPassword 'android'
         }
         release {
-            storeFile file('../keystores/tavo-mini-release.keystore')
-            storePassword System.getenv("SHINE_WRITER_RELEASE_STORE_PASSWORD") ?: "tavo-mini-2026"
-            keyAlias System.getenv("SHINE_WRITER_RELEASE_KEY_ALIAS") ?: "tavo-mini-release"
-            keyPassword System.getenv("SHINE_WRITER_RELEASE_KEY_PASSWORD") ?: "tavo-mini-2026"
+            if (releaseBuildRequested) {
+                storeFile file(releaseSigningValues["SHINE_WRITER_RELEASE_STORE_FILE"])
+                storePassword releaseSigningValues["SHINE_WRITER_RELEASE_STORE_PASSWORD"]
+                keyAlias releaseSigningValues["SHINE_WRITER_RELEASE_KEY_ALIAS"]
+                keyPassword releaseSigningValues["SHINE_WRITER_RELEASE_KEY_PASSWORD"]
+            }
         }
     }
     buildTypes {
@@ -150,7 +177,8 @@ android {
         release {
             signingConfig signingConfigs.release
             manifestPlaceholders = [usesCleartextTraffic: "false"]
-            minifyEnabled enableProguardInReleaseBuilds
+            minifyEnabled enableReleaseMinification
+            shrinkResources enableReleaseMinification
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }
