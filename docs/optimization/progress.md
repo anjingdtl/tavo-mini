@@ -2,7 +2,7 @@
 
 ## Execution scope
 
-- Plan source: `docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md` (user-provided, untracked)
+- Plan source: `docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md` (user-provided; tracked in baseline commit `67063bdb8bc493608fec4c6ae51b6555e78c1d71`)
 - Approved scope: Phase 0 and Phase 1 only
 - Branch: `codex/data-reliability-optimization`
 - Started: 2026-07-15
@@ -22,12 +22,16 @@
 
 - Outcome: Created `codex/data-reliability-optimization` from `main`.
 - Evidence: branch switch completed on 2026-07-15.
-- Risk: The source optimization plan is an existing untracked user file and will remain outside commits.
+- Risk: The source optimization plan is a user-provided tracked input; its scope remains outside this baseline documentation commit.
 - Commit: none required.
 
-### 0.2 Baseline capture — planned
+### 0.2 Baseline capture — blocked
 
-- Required evidence: Node, Java, Android SDK, application version, schema version, Jest results, lint, TypeScript, debug APK, APK size, and any pre-existing failures.
+- Evidence captured: `2026-07-15T17:09:18+08:00` in `docs/optimization/baseline.md`.
+- Start state: commit `67063bdb8bc493608fec4c6ae51b6555e78c1d71`; branch `codex/data-reliability-optimization`; initial worktree clean.
+- Outcomes: `npm install` and Jest passed (64 suites / 293 tests); `npm run lint`, `npx tsc --noEmit`, and `npm run apk:debug` failed. TypeScript was deterministically re-verified at `2026-07-15T17:22:43+08:00`: exit `2`, 1,588 diagnostics across 1,641 output lines.
+- Blocking commands: `npm run lint`; `npx tsc --noEmit`; `npm run apk:debug`.
+- APK evidence: V2.4.3 debug delivery APK was not produced because Ninja hit the Windows 260-character filename limit.
 
 ### 0.3 Unified verification commands — planned
 
