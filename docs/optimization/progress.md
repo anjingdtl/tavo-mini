@@ -3,7 +3,7 @@
 ## Execution scope
 
 - Plan source: `docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md` (user-provided; tracked in baseline commit `67063bdb8bc493608fec4c6ae51b6555e78c1d71`)
-- Approved scope: Phase 0 through Phase 3
+- Approved scope: Phase 0 through Phase 8
 - Branch: `main`
 - Started: 2026-07-15
 - Design commit: `bf4bee1 docs: add data reliability phase design`
@@ -148,6 +148,14 @@
 - The first emulator launch of the Phase 3 release-evidence build exposed a real startup defect: an existing Schema 14 database could be missing `idx_llm_usage_logs_config`, while strict validation ran before the idempotent index repair and blocked initialization.
 - `src/services/database.ts` now retries startup validation only when every issue is one of the two explicitly repairable deterministic `llm_usage_logs` indexes; tables, columns, foreign keys, and data-integrity issues still fail loudly. `__tests__/databaseMigration.test.ts` reproduces the missing-index database and verifies repair happens before seeding.
 - On `Pixel_10_Pro_XL` (`emulator-5554`), `adb install -r` preserved the existing project database; the repaired Debug APK launched into “小说项目”, and UI-tree navigation entered the existing project’s “写作” chapter page. No database initialization error or fatal app exception was observed.
+
+## Phase 4 — CI and quality gates
+
+### 4.1 GitHub Actions workflow — implemented, quality gate still in progress
+
+- Added `.github/workflows/verify.yml` for `main` pushes and pull requests with three independent jobs: JavaScript validation (`lint`, `typecheck`, `test:ci`), Android Debug build (`prebuild`, `assembleDebug`), and migration matrix (`npm test -- migration --runInBand`).
+- All jobs use npm caching, Node.js `22.11.0`, and JDK 17; the workflow requests read-only repository permissions and does not print or require Release secrets.
+- Local workflow-format validation passed with `npx prettier --check .github/workflows/verify.yml`; the migration command passed locally. The JavaScript job is intentionally not marked green yet because the pre-existing project-wide TypeScript baseline must be repaired before Phase 4 closes.
 
 ## Phase exit criteria
 
