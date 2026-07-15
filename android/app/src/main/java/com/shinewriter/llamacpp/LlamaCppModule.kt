@@ -38,20 +38,28 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
 
         @Volatile
         private var engine: LlamaCppEngine? = null
+        @Volatile
+        private var instance: LlamaCppModule? = null
         private var fileManager: ModelFileManager? = null
         private var importer: ModelImporter? = null
 
         /** MainApplication.onTrimMemory 转发入口。 */
         @JvmStatic
         fun onTrimMemory(level: Int) {
-            engine?.trimMemory(level)
+          engine?.trimMemory(level)
+          instance?.sendMemoryPressure(true, level)
         }
 
         /** MainApplication.onLowMemory 转发入口。 */
         @JvmStatic
         fun onLowMemory() {
-            engine?.unload()
+          engine?.unload()
+          instance?.sendMemoryPressure(true, -1)
         }
+    }
+
+    init {
+        instance = this
     }
 
     private val engineInstance: LlamaCppEngine
@@ -362,6 +370,13 @@ class LlamaCppModule(reactContext: ReactApplicationContext) :
         reactApplicationContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit(eventName, params)
+    }
+
+    private fun sendMemoryPressure(lowMemory: Boolean, level: Int) {
+        sendEvent(LlamaCppMemoryPressure.EVENT, Arguments.createMap().apply {
+            putBoolean("lowMemory", lowMemory)
+            putInt("level", level)
+        })
     }
 
     private fun loadResultMap(result: LoadResult): WritableMap {

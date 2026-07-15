@@ -7,11 +7,13 @@ export function ChapterPipelinePanel({
   progressStartedAt,
   progressVisible,
   focusMode,
+  queued = false,
 }: {
   currentStage: PipelineStageName | 'idle';
   progressStartedAt: number;
   progressVisible: boolean;
   focusMode: boolean;
+  queued?: boolean;
 }) {
   if (!progressVisible || focusMode) return null;
   return (
@@ -19,6 +21,7 @@ export function ChapterPipelinePanel({
       stage={currentStage}
       startedAt={progressStartedAt}
       visible={progressVisible}
+      queued={queued}
     />
   );
 }

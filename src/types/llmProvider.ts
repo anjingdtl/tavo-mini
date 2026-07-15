@@ -1,8 +1,14 @@
-import type { ChatMessage, LLMGenerateOptions, LLMResult, LLMProviderType, LLMRequestConfig } from '../services/llm/types';
+import type {
+  ChatMessage,
+  LLMGenerateOptions,
+  LLMResult,
+  LLMProviderType,
+  LLMRequestConfig,
+} from '../services/llm/types';
 
 export interface LLMProvider {
   readonly type: LLMProviderType;
-  test(config: LLMRequestConfig): Promise<string>;
+  test(config: LLMRequestConfig, signal?: AbortSignal): Promise<string>;
   generate(
     messages: ChatMessage[],
     options: LLMGenerateOptions,
