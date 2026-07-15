@@ -9,11 +9,12 @@ import {
   createManualBackup,
   restoreFromBackup,
   deleteBackup,
-  createPreRestoreBackup,
 } from '../services/backupService';
 import type { BackupSummary } from '../services/backupService';
 import { openDatabase } from '../services/database';
 import { SCHEMA_VERSION } from '../services/migrations';
+import { useLocalModelStore } from '../store/localModelStore';
+import { useSettingsStore } from '../store/settingsStore';
 
 const appVersion = require('../constants/version.json').versionName.replace(/^V/, '');
 const schemaVersion = SCHEMA_VERSION;
@@ -101,9 +102,21 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
             setOperating(true);
             try {
               const db = await openDatabase();
-              await createPreRestoreBackup(db, appVersion, Number(schemaVersion));
-              await restoreFromBackup(db, item.path);
-              Alert.alert('恢复成功', '数据已从备份恢复，部分设置可能需要重启应用生效。');
+              const result = await restoreFromBackup(db, item.path, {
+                appVersion,
+                schemaVersion: Number(schemaVersion),
+              });
+              await Promise.all([
+                useSettingsStore.getState().loadSettings(),
+                useLocalModelStore.getState().refreshModels(),
+              ]);
+              const missingModels = result.missingLocalModels
+                .map(model => model.filename || model.id)
+                .join('、');
+              const message = missingModels
+                ? `数据已恢复。以下本地模型文件未随普通备份导出，请重新导入：${missingModels}`
+                : '数据已从备份恢复，设置和列表已重新加载。';
+              Alert.alert('恢复成功', message);
               await load();
             } catch (e: any) {
               Alert.alert('恢复失败', e?.message || '未知错误');
@@ -197,6 +210,9 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
           flex
         />
       </View>
+      <View style={[styles.privacyNotice, { backgroundColor: theme.colors.surface }]}>
+        <Text style={[styles.privacyText, { color: theme.colors.textSecondary }]}>备份文件包含小说正文、人物、世界观和笔记等内容。请勿将未加密备份上传到不可信位置。</Text>
+      </View>
       {loading ? (
         <LoadingState label="加载备份列表..." />
       ) : backups.length === 0 ? (
@@ -224,6 +240,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     elevation: 2,
     zIndex: 2,
+  },
+  privacyNotice: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm,
+  },
+  privacyText: {
+    fontSize: 12,
+    lineHeight: 18,
   },
   list: {
     padding: spacing.lg,
