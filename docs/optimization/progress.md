@@ -33,9 +33,14 @@
 - Blocking commands: `npm run lint`; `npx tsc --noEmit`; `npm run apk:debug`.
 - APK evidence: V2.4.3 debug delivery APK was not produced because Ninja hit the Windows 260-character filename limit.
 
-### 0.3 Unified verification commands — planned
+### 0.3 Unified verification commands — in progress
 
-- Required evidence: `npm run verify` exit result after scripts are added.
+- Implemented `typecheck`, `test:ci`, and `verify` in `package.json` without changing the existing `test`, `lint`, or Android scripts.
+- `npm run typecheck`: exit `2`; the pre-existing project-wide TypeScript boundary and application/test diagnostics remain.
+- `npm run test:ci`: exit `0`; 64 suites / 293 tests passed.
+- `npm run verify`: exit `1` at the existing lint error in `__tests__/databaseNoteConfigSchema.test.ts`.
+- Gate decision: continue with the explicitly authorized Phase 0–1 work while preserving these failures as a tracked quality-gate item; the final phase gate must re-run the commands after the relevant repairs.
+- Commit: pending.
 
 ## Phase 1 — Database transaction and migration safety
 
