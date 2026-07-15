@@ -10,9 +10,23 @@ import {
   countLLMConfigsUsingModel,
   cleanupOrphanedModels,
   cleanupStagingFiles,
+  deleteLocalModel,
+  getLocalModelCapabilities,
+  loadLocalModel,
+  unloadLocalModel,
+  validateLocalModel,
   importLocalModel,
 } from '../../src/services/localModels';
-import { deleteModelFiles } from '../../src/native/LlamaCppModule';
+import * as db from '../../src/services/database';
+import {
+  deleteModelFiles,
+  getCapabilities,
+  importModel as nativeImportModel,
+  isLlamaCppAvailable,
+  loadModel as nativeLoadModel,
+  unloadModel as nativeUnloadModel,
+  validateModel as nativeValidateModel,
+} from '../../src/native/LlamaCppModule';
 
 const mockModels: any[] = [];
 
@@ -157,5 +171,68 @@ describe('localModels service', () => {
   it('returns 0 for cleanupStagingFiles with the stub native module', async () => {
     const removed = await cleanupStagingFiles();
     expect(removed).toBe(0);
+  });
+
+  it('runs the native capabilities, import, validation, load, unload, and delete lifecycle', async () => {
+    await expect(getLocalModelCapabilities()).resolves.toEqual({
+      available: true,
+      cpuSupported: true,
+      freeMemoryMB: 4096,
+      totalMemoryMB: 8192,
+    });
+
+    const imported = await importLocalModel('content://downloads/model.gguf', 'model.gguf');
+    expect(imported.status).toBe('validating');
+    expect(imported.display_name).toBe('model');
+    expect(imported.prompt_template).toBe('chatml');
+
+    await validateLocalModel(imported);
+    await expect(loadLocalModel(imported)).resolves.toEqual({ backend: 'cpu', loadTimeMs: 100 });
+    await unloadLocalModel();
+    await deleteLocalModel(imported);
+
+    expect(getCapabilities).toHaveBeenCalled();
+    expect(nativeImportModel).toHaveBeenCalledWith(
+      'content://downloads/model.gguf',
+      'model.gguf',
+      'model',
+    );
+    expect(nativeValidateModel).toHaveBeenCalledWith('import-test', 'test/test.gguf');
+    expect(nativeLoadModel).toHaveBeenCalledWith('import-test', 'test/test.gguf');
+    expect(nativeUnloadModel).toHaveBeenCalled();
+    expect(deleteModelFiles).toHaveBeenCalledWith('import-test', 'test/test.gguf');
+  });
+
+  it('records validation failures and blocks deletion of referenced models', async () => {
+    const model = makeModel({ id: 'invalid-model' });
+    const validationError = { code: 'GGUF_INVALID', message: 'invalid model' };
+    (nativeValidateModel as jest.Mock).mockRejectedValueOnce(validationError);
+
+    await expect(validateLocalModel(model)).rejects.toEqual(validationError);
+    expect(db.updateLocalModel).toHaveBeenCalledWith('invalid-model', {
+      status: 'error',
+      error_code: 'GGUF_INVALID',
+      error_message: 'invalid model',
+    });
+
+    (db.countLLMConfigsUsingModel as jest.Mock).mockResolvedValueOnce(1);
+    await expect(deleteLocalModel(model)).rejects.toThrow('正被 LLM 配置使用');
+    expect(deleteModelFiles).not.toHaveBeenCalledWith('invalid-model', model.relative_path);
+  });
+
+  it('handles unavailable native cleanup and already-missing records', async () => {
+    (isLlamaCppAvailable as jest.Mock).mockReturnValueOnce(false);
+    await expect(getLocalModelCapabilities()).rejects.toThrow('本地 llama.cpp 模块尚未就绪');
+
+    await createLocalModel(makeModel({ id: 'already-missing', status: 'missing' }));
+    (isLlamaCppAvailable as jest.Mock).mockReturnValueOnce(false);
+    await cleanupOrphanedModels();
+    expect(db.updateLocalModel).not.toHaveBeenCalledWith(
+      'already-missing',
+      expect.objectContaining({ status: 'missing' }),
+    );
+
+    (isLlamaCppAvailable as jest.Mock).mockReturnValueOnce(false);
+    await expect(cleanupStagingFiles()).resolves.toBe(0);
   });
 });

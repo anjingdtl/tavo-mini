@@ -61,6 +61,15 @@ export function __resetForTest(): void {
   opening = null;
 }
 
+// 仅供测试使用：把数据库连接注入到当前模块，绕过原生初始化流程，
+// 让 CRUD 单测可以在可控的 SQLite double 上覆盖完整的数据访问契约。
+export function __setDatabaseForTest(
+  database: SQLite.SQLiteDatabase | null,
+): void {
+  db = database;
+  opening = null;
+}
+
 export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (db) return db;
   if (opening) return opening;
