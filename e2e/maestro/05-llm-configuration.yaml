@@ -1,0 +1,34 @@
+appId: com.shinewriter
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- tapOn: '设置'
+- extendedWaitUntil:
+    visible: 'LLM 设置'
+    timeout: 10000
+- tapOn: 'LLM 设置'
+- extendedWaitUntil:
+    visible: '在线 API'
+    timeout: 10000
+- tapOn: '新增'
+- tapOn:
+    id: llm-config-name
+- eraseText: 50
+- inputText: 'E2E_LOCAL_API'
+- tapOn:
+    id: llm-base-url
+- inputText: 'http://10.0.2.2:8000/v1'
+- tapOn:
+    id: llm-api-key
+- inputText: 'E2E_TEST_KEY'
+- tapOn:
+    id: llm-model-name
+- inputText: 'E2E_TEST_MODEL'
+- tapOn: '保存并测试'
+- extendedWaitUntil:
+    visible: '连接失败'
+    timeout: 15000
+- tapOn: '确定'
+- back

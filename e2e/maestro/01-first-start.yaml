@@ -1,0 +1,12 @@
+appId: com.shinewriter
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- assertVisible: '项目'
+- assertVisible: '写作'
+- assertVisible: '资料'
+- assertVisible: '设置'
+- assertVisible: '新建'

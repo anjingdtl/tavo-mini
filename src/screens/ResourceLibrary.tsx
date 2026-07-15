@@ -1550,11 +1550,13 @@ export const ResourceLibrary: React.FC = () => {
             {editor ? (
               <ScrollView keyboardShouldPersistTaps="handled">
                 <Field
+                  testID="resource-editor-name"
                   label="名称 / 标题 / 主关键词"
                   value={editor.name}
                   onChangeText={name => setEditor({ ...editor, name })}
                 />
                 <Field
+                  testID="resource-editor-max-tokens"
                   label="Max Tokens"
                   value={editor.maxTokens}
                   onChangeText={maxTokens =>
@@ -1646,6 +1648,7 @@ export const ResourceLibrary: React.FC = () => {
                       }
                     />
                     <Field
+                      testID="resource-editor-content"
                       label="内容"
                       value={editor.content}
                       onChangeText={content =>
