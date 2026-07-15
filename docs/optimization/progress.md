@@ -40,7 +40,7 @@
 - `npm run test:ci`: exit `0`; 64 suites / 293 tests passed.
 - `npm run verify`: exit `1` at the existing lint error in `__tests__/databaseNoteConfigSchema.test.ts`.
 - Gate decision: continue with the explicitly authorized Phase 0–1 work while preserving these failures as a tracked quality-gate item; the final phase gate must re-run the commands after the relevant repairs.
-- Commit: pending.
+- Commit: `ed3466e` (`chore: add unified verification commands`).
 
 ## Phase 1 — Database transaction and migration safety
 
@@ -50,8 +50,8 @@
 - Changed files: `src/services/database/transaction.ts`, `src/services/database.ts`.
 - Added regression coverage: `__tests__/databaseTransaction.test.ts` (empty batch, ordering/parameters, statement and transaction errors, synchronous callback, default parameters, single completion).
 - Focused verification: `npx jest __tests__/databaseTransaction.test.ts __tests__/databaseMigration.test.ts __tests__/createProjectNoAsyncTransaction.test.ts --runInBand` — passed, 3 suites / 13 tests.
-- Remaining risk: migration runner and backup restore still contain their own legacy transaction implementations; those are handled by the next transaction-safety tasks.
-- Commit: pending.
+- Remaining risk: initialization order and runtime schema validation are handled by Tasks 1.3 and 1.4.
+- Commit: `f5c354b` (`refactor(database): add safe transaction executor`).
 
 ### 1.2 Transaction-safe migration runner and migration matrix — verified
 
@@ -62,7 +62,8 @@
 - Added `__tests__/migrationMatrix.test.ts`, `__tests__/migrationAtomicity.test.ts`, and the transactional migration test double `__tests__/migrationTestUtils.ts`.
 - Focused verification: migration matrix, atomicity, engine, v11→v12, v12→v13, v8→v9, and backup regression tests passed; the matrix covers schema 3–13 to 14, rollback, and rerun behavior.
 - Repository invariant: `rg "transaction\\(async" src android __tests__` returns no matches after the restore path was converted to the shared executor.
-- Commit: pending.
+- Commit: `35e0815` (`refactor(database): make migrations transaction-safe`).
+- Supplemental restore transaction containment: `src/services/backupService.ts` now prepares one statement batch and uses the shared executor; focused backup tests pass. Commit pending.
 
 ### 1.3 Initialization order and known-defect repair — planned
 
