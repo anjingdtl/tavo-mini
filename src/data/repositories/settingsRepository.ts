@@ -115,6 +115,15 @@ export async function setBackgroundPipelineEnabled(
   await setSetting('background_pipeline_enabled', String(enabled));
 }
 
+export async function getAllowInsecureLanHttp(): Promise<boolean> {
+  const value = await getSetting('allow_insecure_lan_http');
+  return value === 'true';
+}
+
+export async function setAllowInsecureLanHttp(enabled: boolean): Promise<void> {
+  await setSetting('allow_insecure_lan_http', String(enabled));
+}
+
 export async function getVoiceConfig(): Promise<VoiceConfig> {
   const raw = await getSetting('voice_config');
   if (!raw) return DEFAULT_VOICE_CONFIG;

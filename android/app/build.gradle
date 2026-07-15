@@ -176,7 +176,10 @@ android {
         }
         release {
             signingConfig signingConfigs.release
-            manifestPlaceholders = [usesCleartextTraffic: "false"]
+            // The JS network policy is identical in debug/release and rejects
+            // public HTTP. The manifest must still permit the explicit,
+            // private-LAN HTTP opt-in to work in a signed APK.
+            manifestPlaceholders = [usesCleartextTraffic: "true"]
             minifyEnabled enableReleaseMinification
             shrinkResources enableReleaseMinification
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
