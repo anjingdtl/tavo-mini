@@ -27,10 +27,6 @@
 -keep class com.facebook.react.module.annotations.** { *; }
 -keepattributes RuntimeVisibleAnnotations,RuntimeInvisibleAnnotations,Signature
 
-# LiteRT-LM local model runtime: keep all public classes/methods used by the
-# native engine and JNI so that ProGuard/R8 does not strip them in release builds.
--keep class com.google.ai.edge.litertlm.** { *; }
-
 # llama.cpp JNI bridge (android/app/jni/llamacpp_jni.cpp).
 # The native code calls back into Kotlin via reflection on these classes/methods.
 # Without these rules R8/D8 will rename or strip methods causing
