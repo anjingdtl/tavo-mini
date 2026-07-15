@@ -22,6 +22,7 @@
 
 - Outcome: Created `codex/data-reliability-optimization` from `main`.
 - Evidence: branch switch completed on 2026-07-15.
+- The branch work was merged into `main`; it is now retired as part of the 2026-07-16 mainline cleanup, leaving `main` as the only canonical branch.
 - Risk: The source optimization plan is a user-provided tracked input; its scope remains outside this baseline documentation commit.
 - Commit: none required.
 
@@ -130,7 +131,7 @@
 - `package.json.version` is the source of truth. `prebuild` generates `src/constants/version.json`; Gradle and `build-apk.js` consume that same file.
 - Git commit count is no longer used. The current `V2.4.3` metadata is `versionCode=2040300` (`build=0`) and `releaseTitle=ShineWriter V2.4.3`, using `major * 1,000,000 + minor * 10,000 + patch * 100 + build`.
 - The generator enforces a 0–99 build component, prevents version-code regression, supports `SHINE_WRITER_BUILD_NUMBER` / `GITHUB_RUN_NUMBER`, and preserves metadata when the inputs are unchanged.
-- The generator also updates the README Version badge; README and CHANGELOG now describe V2.4.3, the current 320-test suite, and GGUF + llama.cpp rather than the removed LiteRT-LM path.
+- The generator also updates the README Version badge; README and CHANGELOG now describe V2.4.3, the current 381-test suite, and GGUF + llama.cpp rather than the removed LiteRT-LM path.
 
 ### 3.4 Phase 3 verification — verified with external-input exceptions recorded
 
@@ -156,7 +157,7 @@
 - Added `.github/workflows/verify.yml` for `main` pushes and pull requests with three independent jobs: JavaScript validation (`lint`, `typecheck`, `test:ci`), Android Debug build (`prebuild`, `assembleDebug`), and migration matrix (`npm test -- migration --runInBand`).
 - All jobs use npm caching, Node.js `22.11.0`, and JDK 17; the workflow requests read-only repository permissions and does not print or require Release secrets.
 - Local workflow-format validation passed with `npx prettier --check .github/workflows/verify.yml`; the migration command passed locally. The JavaScript quality gate is now green after narrowing `tsconfig.json` to the owned app/test surface, adding the Node type declarations required by the test runtime, and repairing the real application/test type errors exposed by the gate.
-- Clean-install verification passed with `npm ci`, `npm run lint` (five pre-existing warnings only), `npm run typecheck`, and `npm run test:ci`. The pushed GitHub Actions run remains the final remote confirmation for this commit.
+- Clean-install verification passed with `npm ci`, `npm run lint` (four pre-existing warnings only), `npm run typecheck`, and `npm run test:ci`. Remote confirmation remains tracked separately because the JavaScript Jest job has repeatedly exceeded the GitHub Actions timeout after reporting passing suites.
 
 ### 4.2 覆盖率报告与阈值门禁 — 已完成
 
@@ -164,7 +165,7 @@
 - Global thresholds are branches 55%, functions 65%, lines 65%, and statements 65%. Database, database helpers, migrations, and backup service keep higher targeted gates of branches 70% and lines 80% where applicable.
 - Added `npm run test:coverage` to the JavaScript GitHub Actions job. Generated `coverage/` output is ignored by ESLint and Git because it is a verification artifact rather than source.
 - The local gate passed with 75 suites / 360 tests: total lines 79.91%, statements 78.42%, functions 86.30%, branches 60.82%; `database.ts` reached 89.62% lines / 70.37% branches, and all migration files passed their targeted thresholds.
-- Added branch tests for backup filesystem failures, database CRUD doubles, migration paths, project/settings/pipeline/local-model stores, secure storage, local-model lifecycle, and voice playback failure/event paths. Phase 4.2 exit criteria are met locally; the next remote run must confirm the same gate after this commit is pushed.
+- Added branch tests for backup filesystem failures, database CRUD doubles, migration paths, project/settings/pipeline/local-model stores, secure storage, local-model lifecycle, and voice playback failure/event paths. Phase 4.2 exit criteria are met locally; the remote timeout is recorded in the final gate follow-up.
 
 ### 4.3 核心用户流程 E2E — 已实现，写作主链路已实机验证
 
@@ -218,7 +219,7 @@
 ### 7.1 README — 已完成
 
 - Rewrote `README.md` around the current Android-only React Native 0.85.3 architecture, Schema 14 storage layer, online OpenAI-compatible APIs, GGUF/llama.cpp local models, secure API-key handling, backup/privacy boundaries, build/test commands, release download path, screenshots, and known limitations.
-- Corrected the stale 68-suite/320-test claims and removed obsolete model/runtime wording from the product README.
+- Corrected the stale 68-suite/320-test claims, updated the current 78-suite/381-test baseline, and removed obsolete model/runtime wording from the product README.
 
 ### 7.2 CHANGELOG — 已完成
 
@@ -277,9 +278,15 @@
 
 ### Final gate follow-up
 
-- `npm run verify` was re-run after the TypeScript baseline repair: lint, typecheck, and Jest all pass locally; the Android and migration jobs are also defined in `.github/workflows/verify.yml` and are awaiting the pushed run's final status.
+- `npm run verify` passes locally: lint, typecheck, and Jest all pass. GitHub Actions run `29432014007` confirms the Android Debug and migration jobs, while JavaScript validation remains stuck in Jest; earlier runs `29430303072`, `29429011388`, and `29426412122` were cancelled after the same timeout pattern. No remote green Verify result is claimed.
 - The final Debug and signed Release builds passed; their prebuild generated the intentionally tracked `V2.4.3` metadata and `ShineWriter V2.4.3` release title. The Debug APK was also launched against the preserved emulator database after the runtime-index correction.
 - Do not reset `shine_writer.db`, restore the deleted broad compatibility migration, or add `async`/`await` inside a SQLite transaction callback.
+
+### Mainline cleanup and documentation sync — 2026-07-16
+
+- `main` is the canonical branch. The merged `codex/data-reliability-optimization` branch is retired locally, and the remote branch set is kept to `main` (with `origin/HEAD -> origin/main` as the symbolic default-branch ref).
+- `README.md`, `CHANGELOG.md`, `docs/RELEASE_CHECKLIST.md`, and this progress record share the 78-suite / 381-test local baseline and the current remote CI caveat.
+- The final sync is verified with `git fetch origin --prune` and `git rev-list --left-right --count main...origin/main` returning `0 0` after the documentation commit is pushed.
 
 ### Generated metadata during final build
 
