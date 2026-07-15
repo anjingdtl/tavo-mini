@@ -156,7 +156,15 @@
 - Added `.github/workflows/verify.yml` for `main` pushes and pull requests with three independent jobs: JavaScript validation (`lint`, `typecheck`, `test:ci`), Android Debug build (`prebuild`, `assembleDebug`), and migration matrix (`npm test -- migration --runInBand`).
 - All jobs use npm caching, Node.js `22.11.0`, and JDK 17; the workflow requests read-only repository permissions and does not print or require Release secrets.
 - Local workflow-format validation passed with `npx prettier --check .github/workflows/verify.yml`; the migration command passed locally. The JavaScript quality gate is now green after narrowing `tsconfig.json` to the owned app/test surface, adding the Node type declarations required by the test runtime, and repairing the real application/test type errors exposed by the gate.
-- Clean-install verification passed with `npm ci`, `npm run lint` (five pre-existing warnings only), `npm run typecheck`, and `npm run test:ci` (68 suites / 320 tests). The pushed GitHub Actions run remains the final remote confirmation for this commit.
+- Clean-install verification passed with `npm ci`, `npm run lint` (five pre-existing warnings only), `npm run typecheck`, and `npm run test:ci`. The pushed GitHub Actions run remains the final remote confirmation for this commit.
+
+### 4.2 覆盖率报告与阈值门禁 — 已完成
+
+- `jest.config.js` now collects coverage from `src/services/**/*.ts`, `src/store/**/*.ts`, and `src/utils/**/*.ts` while excluding declaration files, and emits text summary, JSON summary, and LCOV reports.
+- Global thresholds are branches 55%, functions 65%, lines 65%, and statements 65%. Database, database helpers, migrations, and backup service keep higher targeted gates of branches 70% and lines 80% where applicable.
+- Added `npm run test:coverage` to the JavaScript GitHub Actions job. Generated `coverage/` output is ignored by ESLint and Git because it is a verification artifact rather than source.
+- The local gate passed with 75 suites / 360 tests: total lines 79.91%, statements 78.42%, functions 86.30%, branches 60.82%; `database.ts` reached 89.62% lines / 70.37% branches, and all migration files passed their targeted thresholds.
+- Added branch tests for backup filesystem failures, database CRUD doubles, migration paths, project/settings/pipeline/local-model stores, secure storage, local-model lifecycle, and voice playback failure/event paths. Phase 4.2 exit criteria are met locally; the next remote run must confirm the same gate after this commit is pushed.
 
 ## Phase exit criteria
 

@@ -39,6 +39,8 @@ jobs:
 
       - name: Jest
         run: npm run test:ci
+      - name: Coverage
+        run: npm run test:coverage
 
   android-debug:
     name: Android Debug build
