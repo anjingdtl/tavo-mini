@@ -6,6 +6,8 @@
 - Approved scope: Phase 0 and Phase 1 only
 - Branch: `codex/data-reliability-optimization`
 - Started: 2026-07-15
+- Design commit: `bf4bee1 docs: add data reliability phase design`
+- Implementation plan: `docs/superpowers/plans/2026-07-15-data-reliability-phase-0-1.md`
 
 ## Status legend
 
