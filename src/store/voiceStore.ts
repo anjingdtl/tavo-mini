@@ -87,6 +87,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   systemConfig: DEFAULT_SYSTEM_TTS_CONFIG,
   isSynthesizing: false,
   isPlaying: false,
+  playbackState: 'idle',
+  lastPlayEndedAt: null,
   activeTtsSessionId: null,
   ttsProgress: null,
   lastTtsError: null,
