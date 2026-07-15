@@ -9,6 +9,7 @@ export interface PipelineProgressProps {
   startedAt: number;
   visible: boolean;
   taskId?: string;
+  queued?: boolean;
 }
 
 const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
@@ -19,7 +20,12 @@ const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
   proof: '打磨中...',
 };
 
-export const PipelineProgress: React.FC<PipelineProgressProps> = ({ stage, startedAt, visible }) => {
+export const PipelineProgress: React.FC<PipelineProgressProps> = ({
+  stage,
+  startedAt,
+  visible,
+  queued = false,
+}) => {
   const { theme } = useThemeStore();
   const [elapsed, setElapsed] = useState(0);
 
@@ -35,11 +41,21 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({ stage, start
   if (!visible) return null;
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}>
+    <View
+      style={[
+        styles.container,
+        {
+          backgroundColor: theme.colors.surface,
+          borderBottomColor: theme.colors.border,
+        },
+      ]}
+    >
       <View style={styles.row}>
         <ActivityIndicator size="small" color={theme.colors.accent} />
         <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
-          {STAGE_LABELS[stage] || stage}
+          {queued
+            ? '排队中，等待可用的模型请求槽位...'
+            : STAGE_LABELS[stage] || stage}
         </Text>
         <Text style={[styles.timer, { color: theme.colors.textMuted }]}>
           {elapsed}s

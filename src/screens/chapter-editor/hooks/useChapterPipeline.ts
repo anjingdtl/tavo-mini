@@ -25,7 +25,7 @@ type ChapterNavigation = NativeStackNavigationProp<
 >;
 type RunningPipelineStatus = Extract<
   PipelineTaskStatus,
-  'idle' | 'drafting' | 'reviewing' | 'factChecking' | 'proofing'
+  'idle' | 'queued' | 'drafting' | 'reviewing' | 'factChecking' | 'proofing'
 >;
 type CreateTask = (
   targetType: 'chapter' | 'freeform',
@@ -34,6 +34,7 @@ type CreateTask = (
 
 const RUNNING_PIPELINE_STATUSES: RunningPipelineStatus[] = [
   'idle',
+  'queued',
   'drafting',
   'reviewing',
   'factChecking',
@@ -69,6 +70,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
   );
   const [progressStartedAt, setProgressStartedAt] = useState(Date.now());
   const [progressVisible, setProgressVisible] = useState(false);
+  const [queued, setQueued] = useState(false);
   const resultTaskIdRef = useRef<string | null>(null);
   const seenTerminalRef = useRef<Set<string>>(new Set());
 
@@ -78,6 +80,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       resultTaskIdRef.current = taskId;
       setProgressVisible(false);
       setGenerating(false);
+      setQueued(false);
       navigation.navigate('PipelineResult', { taskId });
     },
     [navigation],
@@ -89,6 +92,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     setProgressStartedAt(task.updatedAt || task.createdAt);
     setProgressVisible(true);
     setGenerating(true);
+    setQueued(task.status === 'queued');
   }, []);
 
   useEffect(() => {
@@ -117,6 +121,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         resultTaskIdRef.current = task.id;
         setProgressVisible(false);
         setGenerating(false);
+        setQueued(false);
       }
     };
 
@@ -185,6 +190,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           },
         );
         setProgressVisible(false);
+        setQueued(false);
         const finishedTask = usePipelineTaskStore
           .getState()
           .tasks.find(task => task.id === taskId);
@@ -196,6 +202,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         }
       } catch (error: any) {
         setProgressVisible(false);
+        setQueued(false);
         Alert.alert('流水线异常', error?.message || '请检查 API 配置。');
       } finally {
         setGenerating(false);
@@ -233,6 +240,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
   const stopPipeline = useCallback(() => {
     setGenerating(false);
     setProgressVisible(false);
+    setQueued(false);
     const runningTask = usePipelineTaskStore
       .getState()
       .tasks.find(
@@ -250,6 +258,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     generating,
     progressStartedAt,
     progressVisible,
+    queued,
     runPipeline,
     stopPipeline,
   };

@@ -8,10 +8,18 @@ import { useNavigation } from '@react-navigation/native';
 import type { PipelineTask } from '../types/pipeline';
 import { cancelPipeline } from '../services/pipelineRunner';
 
-const ACTIVE_STATUSES = new Set(['idle', 'drafting', 'reviewing', 'factChecking', 'proofing']);
+const ACTIVE_STATUSES = new Set([
+  'idle',
+  'queued',
+  'drafting',
+  'reviewing',
+  'factChecking',
+  'proofing',
+]);
 
 const STATUS_MARK: Record<string, string> = {
   idle: '等待',
+  queued: '排队',
   drafting: '初稿',
   reviewing: '审阅',
   factChecking: '核查',
@@ -23,6 +31,7 @@ const STATUS_MARK: Record<string, string> = {
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '等待中',
+  queued: '排队中',
   drafting: '创作初稿',
   reviewing: '审阅/评估',
   factChecking: '事实核查',
@@ -35,26 +44,37 @@ const STATUS_LABEL: Record<string, string> = {
 export const PipelineTaskScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const navigation = useNavigation();
-  const { tasks, clearResolved, resolveTask, loadFromDB } = usePipelineTaskStore();
+  const { tasks, clearResolved, resolveTask, loadFromDB } =
+    usePipelineTaskStore();
 
   useEffect(() => {
     loadFromDB();
   }, [loadFromDB]);
 
-  const unresolvedTasks = tasks.filter((t) => t.resolvedAt === null);
-  const activeTasks = unresolvedTasks.filter((task) => ACTIVE_STATUSES.has(task.status));
+  const unresolvedTasks = tasks.filter(t => t.resolvedAt === null);
+  const activeTasks = unresolvedTasks.filter(task =>
+    ACTIVE_STATUSES.has(task.status),
+  );
 
   const stopTask = (task: PipelineTask) => {
     cancelPipeline(task.id);
-    Toast.show({ type: 'info', text1: '已请求终止任务', text2: '正在停止当前生成并保存已完成内容' });
+    Toast.show({
+      type: 'info',
+      text1: '已请求终止任务',
+      text2: '正在停止当前生成并保存已完成内容',
+    });
   };
 
   const stopAllTasks = () => {
-    activeTasks.forEach((task) => cancelPipeline(task.id));
+    activeTasks.forEach(task => cancelPipeline(task.id));
     Toast.show({
       type: 'info',
-      text1: activeTasks.length ? `已请求终止 ${activeTasks.length} 个任务` : '没有需要终止的任务',
-      text2: activeTasks.length ? '已停止的任务不会在重启后继续执行' : undefined,
+      text1: activeTasks.length
+        ? `已请求终止 ${activeTasks.length} 个任务`
+        : '没有需要终止的任务',
+      text2: activeTasks.length
+        ? '已停止的任务不会在重启后继续执行'
+        : undefined,
     });
   };
 
@@ -69,29 +89,47 @@ export const PipelineTaskScreen: React.FC = () => {
   const renderItem = ({ item }: { item: PipelineTask }) => {
     const isRunning = ACTIVE_STATUSES.has(item.status);
     const stageCount = item.stageResults.length;
-    const skippedCount = item.stageResults.filter((stage) => stage.status === 'skipped').length;
+    const skippedCount = item.stageResults.filter(
+      stage => stage.status === 'skipped',
+    ).length;
     const totalStages = 4;
     const duration = item.updatedAt - item.createdAt;
-    const durationText = duration > 60000 ? `${Math.round(duration / 60000)}m` : `${Math.round(duration / 1000)}s`;
+    const durationText =
+      duration > 60000
+        ? `${Math.round(duration / 60000)}m`
+        : `${Math.round(duration / 1000)}s`;
 
     return (
       <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
         <View style={styles.row}>
-          <View style={[styles.statusPill, { borderColor: theme.colors.border }]}>
-            <Text style={[styles.statusPillText, { color: theme.colors.accent }]}>{STATUS_MARK[item.status] || '-'}</Text>
+          <View
+            style={[styles.statusPill, { borderColor: theme.colors.border }]}
+          >
+            <Text
+              style={[styles.statusPillText, { color: theme.colors.accent }]}
+            >
+              {STATUS_MARK[item.status] || '-'}
+            </Text>
           </View>
           <View style={styles.info}>
             <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
-              {item.targetType === 'chapter' ? `章节 #${item.targetId}` : '自由写作'}
+              {item.targetType === 'chapter'
+                ? `章节 #${item.targetId}`
+                : '自由写作'}
             </Text>
             <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-              {STATUS_LABEL[item.status]} · {stageCount}/{totalStages} 阶段 · 跳过 {skippedCount} · {durationText}
+              {STATUS_LABEL[item.status]} · {stageCount}/{totalStages} 阶段 ·
+              跳过 {skippedCount} · {durationText}
             </Text>
           </View>
         </View>
         {isRunning ? (
           <View style={styles.actions}>
-            <Button label="终止任务" variant="danger" onPress={() => stopTask(item)} />
+            <Button
+              label="终止任务"
+              variant="danger"
+              onPress={() => stopTask(item)}
+            />
           </View>
         ) : (
           <View style={styles.actions}>
@@ -120,23 +158,43 @@ export const PipelineTaskScreen: React.FC = () => {
     <Screen>
       <Header
         title="流水线任务"
-        subtitle={activeTasks.length ? `运行中 ${activeTasks.length} 项` : '可管理已完成、失败或已取消的任务'}
-        action={<Button label="终止全部" variant="danger" compact disabled={activeTasks.length === 0} onPress={stopAllTasks} />}
+        subtitle={
+          activeTasks.length
+            ? `运行中 ${activeTasks.length} 项`
+            : '可管理已完成、失败或已取消的任务'
+        }
+        action={
+          <Button
+            label="终止全部"
+            variant="danger"
+            compact
+            disabled={activeTasks.length === 0}
+            onPress={stopAllTasks}
+          />
+        }
       />
       {unresolvedTasks.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>没有进行中的流水线任务</Text>
+          <Text
+            style={[styles.emptyText, { color: theme.colors.textSecondary }]}
+          >
+            没有进行中的流水线任务
+          </Text>
         </View>
       ) : (
         <FlatList
           data={unresolvedTasks}
-          keyExtractor={(item) => item.id}
+          keyExtractor={item => item.id}
           contentContainerStyle={styles.list}
           renderItem={renderItem}
         />
       )}
       <View style={[styles.footer, { borderTopColor: theme.colors.border }]}>
-        <Button label="清理已移除记录" variant="ghost" onPress={clearResolved} />
+        <Button
+          label="清理已移除记录"
+          variant="ghost"
+          onPress={clearResolved}
+        />
       </View>
     </Screen>
   );
@@ -153,6 +211,13 @@ const styles = StyleSheet.create({
   meta: { fontSize: 12, marginTop: 2 },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   footer: { padding: spacing.lg, borderTopWidth: StyleSheet.hairlineWidth },
-  statusPill: { minWidth: 44, minHeight: 32, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  statusPill: {
+    minWidth: 44,
+    minHeight: 32,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   statusPillText: { fontSize: 12, fontWeight: '800' },
 });
