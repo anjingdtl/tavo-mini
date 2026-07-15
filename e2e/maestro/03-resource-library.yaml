@@ -1,0 +1,64 @@
+appId: com.shinewriter
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- tapOn: '资料'
+- extendedWaitUntil:
+    visible: '资料库'
+    timeout: 10000
+- tapOn: '新建角色合集'
+- extendedWaitUntil:
+    visible: '编辑角色合集'
+    timeout: 10000
+- tapOn:
+    id: resource-editor-name
+- inputText: 'E2E_CHARACTERS'
+- tapOn: '保存'
+- extendedWaitUntil:
+    visible: 'E2E_CHARACTERS'
+    timeout: 10000
+- tapOn: 'E2E_CHARACTERS'
+- extendedWaitUntil:
+    visible: '新建角色卡'
+    timeout: 10000
+- tapOn: '新建角色卡'
+- extendedWaitUntil:
+    visible: '编辑角色卡'
+    timeout: 10000
+- tapOn: '保存'
+- tapOn: '返回合集'
+- tapOn: '世界书'
+- extendedWaitUntil:
+    visible: '新建世界书'
+    timeout: 10000
+- tapOn: '新建世界书'
+- extendedWaitUntil:
+    visible: '编辑世界书合集'
+    timeout: 10000
+- tapOn:
+    id: resource-editor-name
+- inputText: 'E2E_WORLDBOOK'
+- tapOn: '保存'
+- extendedWaitUntil:
+    visible: 'E2E_WORLDBOOK'
+    timeout: 10000
+- tapOn: 'E2E_WORLDBOOK'
+- extendedWaitUntil:
+    visible: '新建条目'
+    timeout: 10000
+- tapOn: '新建条目'
+- extendedWaitUntil:
+    visible: '编辑世界书条目'
+    timeout: 10000
+- tapOn:
+    id: resource-editor-name
+- inputText: 'E2E_KEYWORD'
+- tapOn:
+    id: resource-editor-content
+- inputText: 'E2E_WORLD_CONTENT'
+- tapOn: '保存'
+- extendedWaitUntil:
+    visible: 'E2E_KEYWORD'
+    timeout: 10000

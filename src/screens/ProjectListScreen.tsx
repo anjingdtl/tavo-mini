@@ -195,7 +195,14 @@ export const ProjectListScreen: React.FC = () => {
         <Pressable style={styles.overlay} onPress={() => setShowNewModal(false)}>
           <Pressable style={[styles.modal, { backgroundColor: theme.colors.surface }]} onPress={(event) => event.stopPropagation()}>
             <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>新建小说项目</Text>
-            <Field label="项目名称" value={newName} onChangeText={setNewName} placeholder="例如：雨城纪事" autoFocus />
+            <Field
+              testID="new-project-name"
+              label="项目名称"
+              value={newName}
+              onChangeText={setNewName}
+              placeholder="例如：雨城纪事"
+              autoFocus
+            />
             <SegmentedControl
               value={newMode}
               onChange={setNewMode}
