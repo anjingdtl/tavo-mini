@@ -450,4 +450,14 @@ describe('backupService', () => {
     expect(RNFS.unlink).toHaveBeenCalledTimes(1);
     expect(RNFS.unlink).toHaveBeenCalledWith('/a/backup.json');
   });
+
+  test('best-effort listing and cleanup tolerate filesystem failures', async () => {
+    (RNFS.readFile as jest.Mock).mockRejectedValueOnce(new Error('损坏文件'));
+    await expect(validateBackup('/a/broken.json')).resolves.toMatchObject({ valid: false });
+
+    (RNFS.readDir as jest.Mock).mockRejectedValueOnce(new Error('目录不可读'));
+    await expect(listBackups()).resolves.toEqual([]);
+    (RNFS.readDir as jest.Mock).mockRejectedValueOnce(new Error('清理目录不可读'));
+    await expect(cleanupOldBackups()).resolves.toBeUndefined();
+  });
 });
