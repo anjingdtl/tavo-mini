@@ -1,0 +1,39 @@
+appId: com.shinewriter
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- tapOn: '新建'
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_WRITING_FLOW'
+- tapOn: '创建'
+- extendedWaitUntil:
+    visible: 'E2E_WRITING_FLOW'
+    timeout: 10000
+- tapOn: '写作'
+- extendedWaitUntil:
+    visible: '章节'
+    timeout: 10000
+- tapOn: '章节'
+- extendedWaitUntil:
+    visible: '章节编辑'
+    timeout: 10000
+- tapOn:
+    id: chapter-title-input
+- eraseText: 30
+- inputText: 'E2E_CHAPTER'
+- tapOn:
+    id: chapter-content-input
+- inputText: 'E2E_BODY_CONTENT'
+- waitForAnimationToEnd
+- tapOn: '返回'
+- extendedWaitUntil:
+    visible: 'E2E_CHAPTER'
+    timeout: 10000
+- tapOn: 'E2E_CHAPTER'
+- extendedWaitUntil:
+    visible: 'E2E_BODY_CONTENT'
+    timeout: 10000
+- assertVisible: '已保存'

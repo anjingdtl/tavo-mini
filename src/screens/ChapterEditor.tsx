@@ -529,8 +529,15 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
         {!focusMode && (
           <>
-            <Field label="章节标题" value={chapter.title} onChangeText={(value) => changeField('title', value)} placeholder="章节标题" />
             <Field
+              testID="chapter-title-input"
+              label="章节标题"
+              value={chapter.title}
+              onChangeText={(value) => changeField('title', value)}
+              placeholder="章节标题"
+            />
+            <Field
+              testID="chapter-synopsis-input"
               label="章节概要"
               value={chapter.synopsis}
               onChangeText={(value) => changeField('synopsis', value)}
@@ -644,7 +651,15 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           </ScrollView>
         </View>
         )}
-        <Field label="正文" value={chapter.content} onChangeText={(value) => changeField('content', value)} placeholder="开始写作..." multiline inputStyle={focusMode ? styles.focusEditor : styles.editor} />
+        <Field
+          testID="chapter-content-input"
+          label="正文"
+          value={chapter.content}
+          onChangeText={(value) => changeField('content', value)}
+          placeholder="开始写作..."
+          multiline
+          inputStyle={focusMode ? styles.focusEditor : styles.editor}
+        />
         {chapter.memory_summary ? (
           <View style={[styles.summaryBox, { borderColor: theme.colors.border, backgroundColor: theme.colors.card }]}>
             <Text style={[styles.summaryTitle, { color: theme.colors.textPrimary }]}>记忆摘要</Text>

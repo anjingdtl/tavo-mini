@@ -166,6 +166,14 @@
 - The local gate passed with 75 suites / 360 tests: total lines 79.91%, statements 78.42%, functions 86.30%, branches 60.82%; `database.ts` reached 89.62% lines / 70.37% branches, and all migration files passed their targeted thresholds.
 - Added branch tests for backup filesystem failures, database CRUD doubles, migration paths, project/settings/pipeline/local-model stores, secure storage, local-model lifecycle, and voice playback failure/event paths. Phase 4.2 exit criteria are met locally; the next remote run must confirm the same gate after this commit is pushed.
 
+### 4.3 核心用户流程 E2E — 已实现，写作主链路已实机验证
+
+- Added six portable Maestro flows under `e2e/maestro/`, covering all 16 required checkpoints: first launch, project/chapter/content lifecycle, character collection and character, worldbook, backup/restore, online LLM connection testing, and pipeline cancellation/failure feedback.
+- Added stable semantic `testID` selectors for project creation, chapter fields, resource editors, and online LLM configuration fields. The flows are ordered so the first disposable-state flow can seed the state used by the remaining flows.
+- Added the Jest timer `unref()` compatibility guards in `navigationRef` and `appState`; `npx jest --runInBand --ci --detectOpenHandles --forceExit --silent` now passes all 75 suites / 360 tests without an open-handle report.
+- Built and installed `dist/apk/debug/ShineWriter-V2.4.3-debug.apk` on `emulator-5554`; adb/UI-tree evidence verified launch, project creation, chapter editing, autosave, exit, re-entry, and persisted正文 (`21 字`, `已保存`). No crash-buffer or React Native fatal error was observed.
+- The current Windows QA environment has adb and an emulator but no Maestro binary, so the YAML flows are committed as the portable runner and the writing lifecycle has an actual-device fallback proof. A complete execution of all six flows remains a release-environment follow-up once Maestro is available.
+
 ## Phase exit criteria
 
 - `npm run verify` passes for every committed task, or the pre-existing typecheck failure is explicitly recorded and approved before proceeding.
