@@ -44,7 +44,14 @@
 
 ## Phase 1 — Database transaction and migration safety
 
-### 1.1 Safe transaction executor — planned
+### 1.1 Safe transaction executor — verified
+
+- Root cause: business code had a local transaction helper while migration and one LLM-config deletion path still bypassed the synchronous callback contract.
+- Changed files: `src/services/database/transaction.ts`, `src/services/database.ts`.
+- Added regression coverage: `__tests__/databaseTransaction.test.ts` (empty batch, ordering/parameters, statement and transaction errors, synchronous callback, default parameters, single completion).
+- Focused verification: `npx jest __tests__/databaseTransaction.test.ts __tests__/databaseMigration.test.ts __tests__/createProjectNoAsyncTransaction.test.ts --runInBand` — passed, 3 suites / 13 tests.
+- Remaining risk: migration runner and backup restore still contain their own legacy transaction implementations; those are handled by the next transaction-safety tasks.
+- Commit: pending.
 
 ### 1.2 Transaction-safe migration runner and migration matrix — planned
 

@@ -38,6 +38,7 @@ import type {
   InstallType,
   MigrationResult,
 } from './migrations/types';
+import { executeTransaction } from './database/transaction';
 import appVersionJson from '../constants/version.json';
 
 SQLite.enablePromise(true);
@@ -99,35 +100,6 @@ async function execute(
 ) {
   const [result] = await database.executeSql(sql, params);
   return result;
-}
-
-/**
- * V2.2.2 修复：react-native-sqlite-storage 的 `transaction(callback)` 期望 callback **同步**
- * 执行所有 SQL。原代码用 `database.transaction(async (tx) => { ... await tx.executeSql ... })`
- * 会导致第一次 await 时 transaction 已被 finalize，后续 executeSql 抛 InvalidStateError
- * (DOM Exception 11)。
- *
- * 这个 helper 强制把"先 async 读、再 async 写"的常见模式拆成两步：
- * 1. `collect` 阶段：调用方先 async 收集所有要写的 SQL（参数）
- * 2. 同步 push 到 transaction 中
- * 整体丢给 `transaction`，由 SQLite 库同步调度执行，原子性保留。
- */
-async function runInTransactionSafe(
-  database: SQLite.SQLiteDatabase,
-  statements: Array<{ sql: string; params?: any[] }>,
-): Promise<void> {
-  if (statements.length === 0) return;
-  await new Promise<void>((resolve, reject) => {
-    database.transaction(
-      (tx: any) => {
-        for (const stmt of statements) {
-          tx.executeSql(stmt.sql, stmt.params || []);
-        }
-      },
-      (err: any) => reject(err instanceof Error ? err : new Error(String(err))),
-      () => resolve(),
-    );
-  });
 }
 
 async function all<T = Row>(sql: string, params: any[] = []): Promise<T[]> {
@@ -1405,7 +1377,7 @@ export async function createProject(
   //   1) 先把 project 行 + 关联写入放进一个事务
   //   2) 再调用 ensureDefaultPreset（它内部可能有自己的事务）
   // 任何一步失败时，项目已建但不完整；UI 层可看到空项目并由用户决定删除/重试。
-  await runInTransactionSafe(database, [
+  await executeTransaction(database, [
     {
       sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
       params: [projectId, 'preset', 0, 1], // 先占位：0 表示"未指定预设"，UI 上不会生效
@@ -1646,7 +1618,7 @@ export async function setChapterPlotlines(
       params: [chapterId, plotlineId],
     });
   }
-  await runInTransactionSafe(database, stmts);
+  await executeTransaction(database, stmts);
 }
 
 export async function getChapterPlotlineIds(
@@ -1856,7 +1828,7 @@ export async function setCharacterCollectionEnabledForProject(
       });
     }
   }
-  await runInTransactionSafe(database, stmts);
+  await executeTransaction(database, stmts);
 }
 
 export async function setAllCharactersCollectionId(
@@ -1899,7 +1871,7 @@ export async function deleteCharacterCollection(id: number): Promise<void> {
     sql: 'DELETE FROM character_collections WHERE id = ?',
     params: [id],
   });
-  await runInTransactionSafe(database, stmts);
+  await executeTransaction(database, stmts);
 }
 
 export async function createCharacter(
@@ -2038,7 +2010,7 @@ export async function setWorldbookCollectionEnabledForProject(
       });
     }
   }
-  await runInTransactionSafe(database, stmts);
+  await executeTransaction(database, stmts);
 }
 
 export async function getWorldbookEntriesByProject(
@@ -2139,7 +2111,7 @@ export async function deleteWorldbookCollection(id: number): Promise<void> {
     sql: 'DELETE FROM worldbook_collections WHERE id = ?',
     params: [id],
   });
-  await runInTransactionSafe(database, stmts);
+  await executeTransaction(database, stmts);
 }
 
 export async function getWorldbookEntryById(id: number): Promise<Row | null> {
@@ -2480,7 +2452,7 @@ async function repairOversizedNotes(
         sql: 'DELETE FROM notes WHERE id = ?',
         params: [note.id],
       });
-      await runInTransactionSafe(database, migrationStmts);
+      await executeTransaction(database, migrationStmts);
     }
   } catch (error) {
     console.warn('[database] repairOversizedNotes failed:', error);
@@ -2844,25 +2816,29 @@ export async function deleteLLMConfig(id: number): Promise<void> {
 
   const target = configs.find(config => config.id === id);
   const database = await openDatabase();
-  // 11.8 修复：DELETE + 切换激活配置整体包进事务，保证原子性；
-  // clearSecureLLMApiKey 是异步 keystore 操作，放事务外执行避免嵌入 SQLite 事务
-  await database.transaction(async tx => {
-    const txx = tx as unknown as SQLite.SQLiteDatabase;
-    await execute(txx, 'DELETE FROM llm_config WHERE id = ?', [id]);
-    if (target?.is_active === 1) {
-      const next = await execute(
-        txx,
-        'SELECT id FROM llm_config ORDER BY id ASC LIMIT 1',
-      );
-      if (next.rows.length > 0) {
-        const nextId = next.rows.item(0).id;
-        await execute(txx, 'UPDATE llm_config SET is_active = 0');
-        await execute(txx, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [
-          nextId,
-        ]);
-      }
-    }
-  });
+  // Read the replacement before entering the synchronous transaction scope.
+  // clearSecureLLMApiKey remains outside SQLite because Android Keystore work
+  // is asynchronous and must not be mixed into a transaction callback.
+  const nextActive =
+    target?.is_active === 1
+      ? await one<{ id: number }>(
+          'SELECT id FROM llm_config WHERE id <> ? ORDER BY id ASC LIMIT 1',
+          [id],
+        )
+      : null;
+  const statements: Array<{ sql: string; params?: any[] }> = [
+    { sql: 'DELETE FROM llm_config WHERE id = ?', params: [id] },
+  ];
+  if (nextActive) {
+    statements.push(
+      { sql: 'UPDATE llm_config SET is_active = 0' },
+      {
+        sql: 'UPDATE llm_config SET is_active = 1 WHERE id = ?',
+        params: [nextActive.id],
+      },
+    );
+  }
+  await executeTransaction(database, statements);
   await clearSecureLLMApiKey(id);
 }
 
@@ -3516,7 +3492,7 @@ export async function trimContentRevisions(
       params: [id],
     });
   }
-  await runInTransactionSafe(database, stmts);
+  await executeTransaction(database, stmts);
 }
 
 // ---------------------------------------------------------------------------
