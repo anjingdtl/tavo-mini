@@ -1,43 +1,35 @@
 import type SQLite from 'react-native-sqlite-storage';
 import type { Migration, MigrationResult } from './types';
-import { migrateV3toV4 } from './v3-to-v4';
-import { migrateV4toV5 } from './v4-to-v5';
-import { migrateV5toV6 } from './v5-to-v6';
-import { migrateV6toV7 } from './v6-to-v7';
-import { migrateV7toV8 } from './v7-to-v8';
-import { migrateV8toV9 } from './v8-to-v9';
-import { migrateV9toV10 } from './v9-to-v10';
-import { migrateV10toV11 } from './v10-to-v11';
-import { migrateV11toV12 } from './v11-to-v12';
-import { migrateV12ToV13 } from './v12-to-v13';
-import { migrateV13ToV14 } from './v13-to-v14';
+import { executeTransaction } from '../database/transaction';
+import { buildV3toV4Statements } from './v3-to-v4';
+import { buildV4toV5Statements } from './v4-to-v5';
+import { buildV5toV6Statements } from './v5-to-v6';
+import { buildV6toV7Statements } from './v6-to-v7';
+import { buildV7toV8Statements } from './v7-to-v8';
+import { buildV8toV9Statements } from './v8-to-v9';
+import { buildV9toV10Statements } from './v9-to-v10';
+import { buildV10toV11Statements } from './v10-to-v11';
+import { buildV11toV12Statements } from './v11-to-v12';
+import { buildV12toV13Statements } from './v12-to-v13';
+import { buildV13toV14Statements } from './v13-to-v14';
 
 export const SCHEMA_VERSION = 14;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
-  { from: 2, to: 3, breaking: true, migrate: async () => {} },
-  { from: 3, to: 4, breaking: false, migrate: migrateV3toV4 },
-  { from: 4, to: 5, breaking: false, migrate: migrateV4toV5 },
-  { from: 5, to: 6, breaking: false, migrate: migrateV5toV6 },
-  { from: 6, to: 7, breaking: false, migrate: migrateV6toV7 },
-  { from: 7, to: 8, breaking: false, migrate: migrateV7toV8 },
-  { from: 8, to: 9, breaking: false, migrate: migrateV8toV9 },
-  { from: 9, to: 10, breaking: false, migrate: migrateV9toV10 },
-  { from: 10, to: 11, breaking: false, migrate: migrateV10toV11 },
-  { from: 11, to: 12, breaking: false, migrate: migrateV11toV12 },
-  { from: 12, to: 13, breaking: false, migrate: migrateV12ToV13 },
-  { from: 13, to: 14, breaking: false, migrate: migrateV13ToV14 },
+  { from: 2, to: 3, breaking: true, buildStatements: async () => [] },
+  { from: 3, to: 4, breaking: false, buildStatements: async () => buildV3toV4Statements() },
+  { from: 4, to: 5, breaking: false, buildStatements: async () => buildV4toV5Statements() },
+  { from: 5, to: 6, breaking: false, buildStatements: async () => buildV5toV6Statements() },
+  { from: 6, to: 7, breaking: false, buildStatements: async () => buildV6toV7Statements() },
+  { from: 7, to: 8, breaking: false, buildStatements: buildV7toV8Statements },
+  { from: 8, to: 9, breaking: false, buildStatements: async () => buildV8toV9Statements() },
+  { from: 9, to: 10, breaking: false, buildStatements: buildV9toV10Statements },
+  { from: 10, to: 11, breaking: false, buildStatements: buildV10toV11Statements },
+  { from: 11, to: 12, breaking: false, buildStatements: buildV11toV12Statements },
+  { from: 12, to: 13, breaking: false, buildStatements: buildV12toV13Statements },
+  { from: 13, to: 14, breaking: false, buildStatements: buildV13toV14Statements },
 ];
-
-async function execute(
-  db: SQLite.SQLiteDatabase,
-  sql: string,
-  params: any[] = [],
-) {
-  const [result] = await db.executeSql(sql, params);
-  return result;
-}
 
 export async function runMigrations(
   db: SQLite.SQLiteDatabase,
@@ -55,14 +47,12 @@ export async function runMigrations(
   }
 
   for (const migration of needed) {
-    await db.transaction(async tx => {
-      await migration.migrate(tx as unknown as SQLite.SQLiteDatabase);
-      await execute(
-        tx as unknown as SQLite.SQLiteDatabase,
-        'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-        ['schema_version', String(migration.to)],
-      );
+    const statements = await migration.buildStatements(db);
+    statements.push({
+      sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      params: ['schema_version', String(migration.to)],
     });
+    await executeTransaction(db, statements);
   }
 
   return {

@@ -1,6 +1,6 @@
 /* eslint-env jest */
 
-// Regression: V2.2.0 之前 createProject 用了 `database.transaction(async (tx) => {...})`，
+// Regression: V2.2.0 之前 createProject 用了异步 SQLite transaction callback，
 // react-native-sqlite-storage 的 transaction 期望 callback **同步**执行 SQL，
 // 任何 await 都会让 transaction 被 finalize，第二次 executeSql 触发 InvalidStateError
 // (DOM Exception 11)。
