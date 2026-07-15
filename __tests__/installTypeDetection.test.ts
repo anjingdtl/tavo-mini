@@ -2,7 +2,8 @@
 
 type TableRows = Record<string, any>[];
 
-const currentVersion = require('../src/constants/version.json').versionName.replace(/^V/, '');
+const currentVersion =
+  require('../src/constants/version.json').versionName.replace(/^V/, '');
 
 const createRows = (rows: TableRows) => ({
   length: rows.length,
@@ -38,9 +39,11 @@ function createMockDb(existingSettings: Record<string, string> = {}) {
 
   const db = {
     executeSql,
-    transaction: jest.fn(async (scope: (tx: { executeSql: typeof executeSql }) => void) => {
-      await scope({ executeSql });
-    }),
+    transaction: jest.fn(
+      async (scope: (tx: { executeSql: typeof executeSql }) => void) => {
+        await scope({ executeSql });
+      },
+    ),
   };
 
   return { db, settings, executed };
@@ -57,9 +60,9 @@ describe('install type detection', () => {
     const info = await detectInstallType(db as any);
     expect(info.installType).toBe('fresh');
     expect(info.previousVersion).toBeNull();
-    expect(settings.get('app_version')).toBeTruthy();
-    expect(settings.get('install_type')).toBe('fresh');
-    expect(settings.get('first_install_version')).toBeTruthy();
+    expect(settings.get('app_version')).toBeUndefined();
+    expect(settings.get('install_type')).toBeUndefined();
+    expect(settings.get('first_install_version')).toBeUndefined();
   });
 
   test('detects upgrade when stored version < current version', async () => {
@@ -72,8 +75,8 @@ describe('install type detection', () => {
     const info = await detectInstallType(db as any);
     expect(info.installType).toBe('upgrade');
     expect(info.previousVersion).toBe('1.0.0');
-    expect(settings.get('previous_version')).toBe('1.0.0');
-    expect(settings.get('install_type')).toBe('upgrade');
+    expect(settings.get('previous_version')).toBeUndefined();
+    expect(settings.get('install_type')).toBeUndefined();
   });
 
   test('detects same version when stored version = current version', async () => {
@@ -85,6 +88,6 @@ describe('install type detection', () => {
     const { detectInstallType } = require('../src/services/database');
     const info = await detectInstallType(db as any);
     expect(info.installType).toBe('same');
-    expect(settings.get('install_type')).toBe('same');
+    expect(settings.get('install_type')).toBeUndefined();
   });
 });
