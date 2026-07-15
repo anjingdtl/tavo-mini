@@ -116,28 +116,31 @@
 - `android/app/build.gradle` no longer contains a keystore path, signing password, alias, or key-password default.
 - Release tasks require `SHINE_WRITER_RELEASE_STORE_FILE`, `SHINE_WRITER_RELEASE_STORE_PASSWORD`, `SHINE_WRITER_RELEASE_KEY_ALIAS`, and `SHINE_WRITER_RELEASE_KEY_PASSWORD`; the error lists missing variable names without printing secret values.
 - `npm run apk:debug` passed without release signing variables.
-- `npm run apk:release` without signing variables failed during Gradle configuration with the intended explicit guard. A correctly signed Release APK was not built in this environment because those secret variables are unavailable; the repository now fails closed instead of falling back to a visible password.
+- `npm run apk:release` without signing variables failed during Gradle configuration with the intended explicit guard.
+- With the existing keystore supplied only through the process environment, `npm run apk:release` passed; `apksigner verify --verbose` confirmed one signer and APK Signature Scheme v2. Delivery artifact: `dist/apk/release/ShineWriter-V2.4.3-release.apk` (31,650,475 bytes; SHA-256 `C4F44A8633CB93FD80B1F902566BF667AC983C41E5737D680198734184E69EFC`). No signing secret is stored in the working tree.
 
 ### 3.2 Release minification preparation — verified with device-matrix hold
 
 - Added keep rules for the app's React Native bridge modules, SQLite, Keychain, RNFS, annotations, and existing local-model/JNI paths in `android/app/proguard-rules.pro`.
-- `minifyEnabled` and `shrinkResources` are controlled together by `-PenableReleaseMinification=true` and remain disabled by default.
-- This is intentionally not enabled for shipping: no Android device/ADB target is available in the current environment, so the required startup, new-project, chapter-edit, online LLM, local-model, TTS, backup, and restore matrix cannot be proven safely.
+- `minifyEnabled` and `shrinkResources` are controlled together by `-PenableReleaseMinification=true`; `npm run apk:release:minified` now exposes the same evaluation path and minification remains disabled by default.
+- `npm run apk:release:minified` passed through R8 and resource shrinking, producing a 27,138,356-byte evaluation APK (25.88 MB). The ADB daemon reports no attached devices, so the required startup, new-project, chapter-edit, online LLM, local-model, TTS, backup, and restore matrix is still a recorded external validation hold; the optimized package is not marked as the shipping artifact.
 
 ### 3.3 Unified version generation — verified
 
 - `package.json.version` is the source of truth. `prebuild` generates `src/constants/version.json`; Gradle and `build-apk.js` consume that same file.
-- Git commit count is no longer used. The current `V2.4.3` metadata is `versionCode=2040300` (`build=0`), using `major * 1,000,000 + minor * 10,000 + patch * 100 + build`.
+- Git commit count is no longer used. The current `V2.4.3` metadata is `versionCode=2040300` (`build=0`) and `releaseTitle=ShineWriter V2.4.3`, using `major * 1,000,000 + minor * 10,000 + patch * 100 + build`.
 - The generator enforces a 0–99 build component, prevents version-code regression, supports `SHINE_WRITER_BUILD_NUMBER` / `GITHUB_RUN_NUMBER`, and preserves metadata when the inputs are unchanged.
-- README build instructions now document the single-source version and Release signing requirements.
+- The generator also updates the README Version badge; README and CHANGELOG now describe V2.4.3, the current 319-test suite, and GGUF + llama.cpp rather than the removed LiteRT-LM path.
 
 ### 3.4 Phase 3 verification — verified with external-input exceptions recorded
 
 - `npm run lint` — passed with 0 errors and 5 pre-existing warnings.
 - `npm run test:ci` — passed, 68 suites / 319 tests.
 - Focused backup regression suite — passed, 4 suites / 18 tests.
-- `npm run apk:debug` — passed; delivery artifact: `dist/apk/debug/ShineWriter-V2.4.3-debug.apk`, 50,066,757 bytes.
+- `npm run apk:debug` — passed; delivery artifact: `dist/apk/debug/ShineWriter-V2.4.3-debug.apk`, 53,779,999 bytes; SHA-256 `B93F007AE6D2C12D2F69A9B90E281A5C97413D8528555B338B98B72DD7B93E91`.
 - `npm run apk:release` without signing variables — failed as required by the new security guard.
+- `npm run apk:release` with process-only signing variables — passed and produced a signature-verified Release artifact.
+- `npm run apk:release:minified` with process-only signing variables — passed through `minifyReleaseWithR8` and resource shrinking.
 - `npm run verify` — stops at the known project-wide TypeScript baseline (`exit 2`); changed-surface filtering shows no diagnostics in the Phase 2 database/backup/store files. The baseline remains explicitly recorded rather than hidden.
 
 ## Phase exit criteria
@@ -158,23 +161,26 @@
 - Initialization lifecycle and known-defect repair: `b757082`.
 - Runtime schema validation: `0dd6d51`.
 - Phase 2 implementation: `008c481` (`refactor(backup): complete phase 2 recovery flow`).
-- Phase 3 implementation is being committed on `main`; `.zcode/` is untracked user state and is intentionally preserved.
+- Phase 3 implementation: `fef5196` (`build(android): complete phase 3 release pipeline`); follow-up release-evidence and documentation hardening is pending the next mainline commit. `.zcode/` is untracked user state and is intentionally preserved.
 
 ### Current quality-gate evidence
 
 - `npm run lint`: exit `0`, five pre-existing warnings only.
 - `npm run test:ci`: exit `0`, 68 suites / 319 tests.
 - `npx tsc --noEmit`: exit `2`, 1,588 baseline diagnostics were recorded before this phase and changed-surface filtering found no new database/migration diagnostics.
-- `npm run apk:debug`: exit `0`; Gradle/CMake succeeded and produced `dist/apk/debug/ShineWriter-V2.4.3-debug.apk` (50,066,757 bytes / 47.75 MB).
+- `npm run apk:debug`: exit `0`; Gradle/CMake succeeded and produced `dist/apk/debug/ShineWriter-V2.4.3-debug.apk` (53,779,999 bytes / 51.29 MB).
+- `npm run apk:release`: exit `0` with process-only signing variables; APK Signature Scheme v2 verification passed for one signer.
+- `npm run apk:release:minified`: exit `0`; R8 and resource shrinking completed, but the optimized artifact remains evaluation-only until the real-device matrix is run.
 - `rg "transaction\\(async" src android __tests__`: no matches.
 
 ### Final gate follow-up
 
 - `npm run verify` was re-run: lint passed, then the known project-wide typecheck baseline failed, so the command exited `2` before the test stage.
-- The final debug build passed; its prebuild generated the intentionally tracked `V2.4.3` version metadata.
+- The final Debug and signed Release builds passed; their prebuild generated the intentionally tracked `V2.4.3` metadata and `ShineWriter V2.4.3` release title.
 - Do not reset `shine_writer.db`, restore the deleted broad compatibility migration, or add `async`/`await` inside a SQLite transaction callback.
 
 ### Generated metadata during final build
 
 - The final debug build used the normal `prebuild` generator and produced the ignored delivery artifact at `dist/apk/debug/ShineWriter-V2.4.3-debug.apk`.
-- `src/constants/version.json` is the committed generated metadata for the current package version; rerunning the generator is idempotent.
+- The final signed Release build produced `dist/apk/release/ShineWriter-V2.4.3-release.apk`; the optimized build remains a separate evaluation result.
+- `src/constants/version.json` is the committed generated metadata for the current package version; rerunning the generator is idempotent and keeps the README Version badge aligned.
