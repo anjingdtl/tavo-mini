@@ -2,6 +2,8 @@
 
 本清单用于每个 Android 发布版本。勾选前把命令输出、APK 路径、设备型号或 GitHub Actions URL 写入对应的证据栏；无法执行的项目必须注明原因和替代验证，不得默认为通过。
 
+当前主线同步基线（2026-07-16）：本地 `npm run test:ci` 为 78 个 suite / 381 个测试通过；GitHub Actions `Verify` 的迁移矩阵和 Android Debug 已通过，但 JavaScript Jest 步骤仍有超时记录，因此本清单不把远端质量门禁默认为通过。
+
 ## 版本与文档
 
 - [ ] `package.json` 的 `version` 已更新
