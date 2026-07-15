@@ -30,8 +30,8 @@ export async function buildV10toV11Statements(
       sql: `INSERT INTO character_collections (
         project_id, name, enabled, max_tokens, estimated_tokens, created_at
       )
-      SELECT 0, '全部人物卡', 1, 50000, COALESCE(SUM(estimated_tokens), 0), ?
-      FROM characters
+      SELECT 0, '全部人物卡', 1, 50000,
+        COALESCE((SELECT SUM(estimated_tokens) FROM characters), 0), ?
       WHERE NOT EXISTS (SELECT 1 FROM character_collections LIMIT 1)`,
       params: [new Date().toISOString()],
     },

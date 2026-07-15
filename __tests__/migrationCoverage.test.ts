@@ -71,6 +71,18 @@ describe('migration statement coverage', () => {
     await migrateV13ToV14(old);
   });
 
+  test('does not insert a project-zero character collection when one already exists', async () => {
+    const statements = await buildV10toV11Statements(fakeDatabase());
+    const collectionInsert = statements.find(statement =>
+      statement.sql.includes('INSERT INTO character_collections'),
+    );
+
+    expect(collectionInsert?.sql).toContain(
+      'COALESCE((SELECT SUM(estimated_tokens) FROM characters), 0)',
+    );
+    expect(collectionInsert?.sql).not.toMatch(/FROM characters\s+WHERE NOT EXISTS/i);
+  });
+
   test('runs the migration engine with and without the breaking backup path', async () => {
     const database = fakeDatabase();
     const onBackup = jest.fn(async () => '/backup/pre-v3.json');
