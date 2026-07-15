@@ -213,6 +213,23 @@
 - Added the Android Network Security Config and aligned Debug/Release manifest placeholders so the signed build follows the same JavaScript policy.
 - Focused reliability/provider tests passed; `npm run typecheck` passed; the debug APK built and was installed/launched on `emulator-5554`, with the LLM settings screen and network policy switch verified through the UI tree.
 
+## Phase 7 — 文档与发布规范
+
+### 7.1 README — 已完成
+
+- Rewrote `README.md` around the current Android-only React Native 0.85.3 architecture, Schema 14 storage layer, online OpenAI-compatible APIs, GGUF/llama.cpp local models, secure API-key handling, backup/privacy boundaries, build/test commands, release download path, screenshots, and known limitations.
+- Corrected the stale 68-suite/320-test claims and removed obsolete model/runtime wording from the product README.
+
+### 7.2 CHANGELOG — 已完成
+
+- Rebuilt `CHANGELOG.md` with Keep a Changelog sections for Unreleased and 2.4.0–2.4.3.
+- Each release records functional changes, Schema/upgrade risk, local-model/API compatibility, fixes, and security notes.
+
+### 7.3 发布清单 — 已完成
+
+- Added `docs/RELEASE_CHECKLIST.md` covering version metadata, npm/Jest/coverage/migration gates, Debug/Release APKs, signing and SHA-256, clean install/upgrade, backup/restore, online/local model, TTS/background, the 12 fault-injection scenarios, GitHub Release, and `main` parity.
+- The checklist is intentionally an evidence template; no GitHub Release is claimed until an actual release URL and artifact checksum are recorded.
+
 ## Phase exit criteria
 
 - `npm run verify` passes for every committed task, or the pre-existing typecheck failure is explicitly recorded and approved before proceeding.
