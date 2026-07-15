@@ -9,6 +9,24 @@
 
 # Add any project specific keep options here:
 
+# React Native discovers these modules through package metadata and invokes
+# their methods from JavaScript. Keep the bridge classes and annotations while
+# release minification is evaluated on a real device.
+-keep class com.shinewriter.** { *; }
+-keep class com.shinewriter.specs.** { *; }
+-keepclassmembers class com.shinewriter.** {
+    @com.facebook.react.bridge.ReactMethod <methods>;
+}
+
+# Native dependencies used by backup-adjacent runtime paths and app startup.
+# SQLitePlugin is reflection/package-discovered, Keychain uses annotated
+# modules and cipher implementations, and RNFS is used for backup files.
+-keep class org.pgsqlite.** { *; }
+-keep class com.oblador.keychain.** { *; }
+-keep class com.rnfs.** { *; }
+-keep class com.facebook.react.module.annotations.** { *; }
+-keepattributes RuntimeVisibleAnnotations,RuntimeInvisibleAnnotations,Signature
+
 # LiteRT-LM local model runtime: keep all public classes/methods used by the
 # native engine and JNI so that ProGuard/R8 does not strip them in release builds.
 -keep class com.google.ai.edge.litertlm.** { *; }

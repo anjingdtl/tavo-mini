@@ -107,7 +107,38 @@
 
 - `npx jest __tests__/backupService.test.ts __tests__/backupCenterLayout.test.tsx __tests__/settingsStoreBackgroundPipeline.test.ts __tests__/llmConfigResolution.test.ts --runInBand --no-cache` — passed, 4 suites / 18 tests.
 - `npx eslint src/services/backupService.ts src/services/database.ts src/store/settingsStore.ts src/screens/BackupCenterScreen.tsx __tests__/backupService.test.ts` — passed with the two pre-existing bitwise warnings in `database.ts`.
-- Full repository tests and the Android build remain final Phase 2/3 gates.
+- The full repository test suite and Android Debug build are recorded under the Phase 3 final gates below.
+
+## Phase 3 — Release delivery and build safety
+
+### 3.1 Release signing boundary — verified
+
+- `android/app/build.gradle` no longer contains a keystore path, signing password, alias, or key-password default.
+- Release tasks require `SHINE_WRITER_RELEASE_STORE_FILE`, `SHINE_WRITER_RELEASE_STORE_PASSWORD`, `SHINE_WRITER_RELEASE_KEY_ALIAS`, and `SHINE_WRITER_RELEASE_KEY_PASSWORD`; the error lists missing variable names without printing secret values.
+- `npm run apk:debug` passed without release signing variables.
+- `npm run apk:release` without signing variables failed during Gradle configuration with the intended explicit guard. A correctly signed Release APK was not built in this environment because those secret variables are unavailable; the repository now fails closed instead of falling back to a visible password.
+
+### 3.2 Release minification preparation — verified with device-matrix hold
+
+- Added keep rules for the app's React Native bridge modules, SQLite, Keychain, RNFS, annotations, and existing local-model/JNI paths in `android/app/proguard-rules.pro`.
+- `minifyEnabled` and `shrinkResources` are controlled together by `-PenableReleaseMinification=true` and remain disabled by default.
+- This is intentionally not enabled for shipping: no Android device/ADB target is available in the current environment, so the required startup, new-project, chapter-edit, online LLM, local-model, TTS, backup, and restore matrix cannot be proven safely.
+
+### 3.3 Unified version generation — verified
+
+- `package.json.version` is the source of truth. `prebuild` generates `src/constants/version.json`; Gradle and `build-apk.js` consume that same file.
+- Git commit count is no longer used. The current `V2.4.3` metadata is `versionCode=2040300` (`build=0`), using `major * 1,000,000 + minor * 10,000 + patch * 100 + build`.
+- The generator enforces a 0–99 build component, prevents version-code regression, supports `SHINE_WRITER_BUILD_NUMBER` / `GITHUB_RUN_NUMBER`, and preserves metadata when the inputs are unchanged.
+- README build instructions now document the single-source version and Release signing requirements.
+
+### 3.4 Phase 3 verification — verified with external-input exceptions recorded
+
+- `npm run lint` — passed with 0 errors and 5 pre-existing warnings.
+- `npm run test:ci` — passed, 68 suites / 319 tests.
+- Focused backup regression suite — passed, 4 suites / 18 tests.
+- `npm run apk:debug` — passed; delivery artifact: `dist/apk/debug/ShineWriter-V2.4.3-debug.apk`, 50,066,757 bytes.
+- `npm run apk:release` without signing variables — failed as required by the new security guard.
+- `npm run verify` — stops at the known project-wide TypeScript baseline (`exit 2`); changed-surface filtering shows no diagnostics in the Phase 2 database/backup/store files. The baseline remains explicitly recorded rather than hidden.
 
 ## Phase exit criteria
 
@@ -126,23 +157,24 @@
 - Transaction executor and migration safety: `f5c354b`, `35e0815`, and `558608b`.
 - Initialization lifecycle and known-defect repair: `b757082`.
 - Runtime schema validation: `0dd6d51`.
-- Phase 2 implementation is being committed on `main`; `.zcode/` is untracked user state and is intentionally preserved.
+- Phase 2 implementation: `008c481` (`refactor(backup): complete phase 2 recovery flow`).
+- Phase 3 implementation is being committed on `main`; `.zcode/` is untracked user state and is intentionally preserved.
 
 ### Current quality-gate evidence
 
-- `npm run lint`: exit `0`, five warnings only.
-- `npm run test:ci`: exit `0`, 68 suites / 324 tests.
+- `npm run lint`: exit `0`, five pre-existing warnings only.
+- `npm run test:ci`: exit `0`, 68 suites / 319 tests.
 - `npx tsc --noEmit`: exit `2`, 1,588 baseline diagnostics were recorded before this phase and changed-surface filtering found no new database/migration diagnostics.
-- `npm run apk:debug`: exit `0`; Gradle/CMake succeeded and produced `dist/apk/debug/ShineWriter-V2.4.3-debug.apk` (50,045,561 bytes / 47.73 MB).
+- `npm run apk:debug`: exit `0`; Gradle/CMake succeeded and produced `dist/apk/debug/ShineWriter-V2.4.3-debug.apk` (50,066,757 bytes / 47.75 MB).
 - `rg "transaction\\(async" src android __tests__`: no matches.
 
 ### Final gate follow-up
 
-- `npm run verify` was re-run: lint passed, then the known project-wide typecheck baseline failed, so the command exited `1` before the test stage.
-- The final debug build passed; its prebuild generated temporary version metadata, and the tracked `src/constants/version.json` was restored because no release version update was requested.
+- `npm run verify` was re-run: lint passed, then the known project-wide typecheck baseline failed, so the command exited `2` before the test stage.
+- The final debug build passed; its prebuild generated the intentionally tracked `V2.4.3` version metadata.
 - Do not reset `shine_writer.db`, restore the deleted broad compatibility migration, or add `async`/`await` inside a SQLite transaction callback.
 
 ### Generated metadata during final build
 
 - The final debug build used the normal `prebuild` generator and produced the ignored delivery artifact at `dist/apk/debug/ShineWriter-V2.4.3-debug.apk`.
-- The tracked `src/constants/version.json` was restored to the committed baseline after verification; a release task can intentionally commit a regenerated version file.
+- `src/constants/version.json` is the committed generated metadata for the current package version; rerunning the generator is idempotent.
