@@ -53,7 +53,7 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
   // Older builds created a local config without activating it. Repair that
   // persisted state only when the selected online config is entirely blank.
   const config = await repairLegacyLocalConfigSelection(currentConfig);
-  const raw = config as LLMRequestConfig & { base_url?: string };
+  const raw = config as unknown as LLMRequestConfig & { base_url?: string };
   const providerType = raw.provider_type || 'openai_compatible';
   return {
     id: config.id,

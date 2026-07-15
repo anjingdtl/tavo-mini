@@ -55,7 +55,11 @@ function safeParseCard(raw: string): { hasEnvelope: boolean; outer: Record<strin
 
 function serializeCard(hasEnvelope: boolean, outer: Record<string, unknown>, data: Record<string, unknown>): string {
   if (hasEnvelope) {
-    return JSON.stringify({ ...outer, data: { ...outer.data, ...data } });
+    const envelopeData =
+      outer.data && typeof outer.data === 'object' && !Array.isArray(outer.data)
+        ? (outer.data as Record<string, unknown>)
+        : {};
+    return JSON.stringify({ ...outer, data: { ...envelopeData, ...data } });
   }
   return JSON.stringify({ ...outer, ...data });
 }

@@ -11,7 +11,8 @@ const mockAlert = jest.fn();
 const mockIsLlamaCppAvailable = jest.fn(() => true);
 
 const mockPick = jest.fn();
-const mockIsCancel = jest.fn(() => false);
+const mockKeepLocalCopy = jest.fn(async (..._args: any[]): Promise<any[]> => []);
+const mockIsErrorWithCode = jest.fn((..._args: any[]) => false);
 
 // 不 mock localModelStore，使用真实 zustand store；
 // 通过 mock 它依赖的 LlamaCppModule + 数据库服务来跑真实状态机。
@@ -42,13 +43,13 @@ jest.mock('../src/native/LlamaCppModule', () => ({
   LlamaCppNative: {},
 }));
 
-const mockListLocalModels = jest.fn(async () => []);
-const mockGetLocalModelById = jest.fn(async () => null);
-const mockCreateLocalModel = jest.fn(async () => undefined);
-const mockUpdateLocalModel = jest.fn(async () => undefined);
-const mockGetLocalModelBySha256 = jest.fn(async () => null);
-const mockDeleteLocalModelRecord = jest.fn(async () => undefined);
-const mockCountLLMConfigsUsingModel = jest.fn(async () => 0);
+const mockListLocalModels = jest.fn(async (..._args: any[]): Promise<any[]> => []);
+const mockGetLocalModelById = jest.fn(async (..._args: any[]): Promise<any> => null);
+const mockCreateLocalModel = jest.fn(async (..._args: any[]): Promise<void> => undefined);
+const mockUpdateLocalModel = jest.fn(async (..._args: any[]): Promise<void> => undefined);
+const mockGetLocalModelBySha256 = jest.fn(async (..._args: any[]): Promise<any> => null);
+const mockDeleteLocalModelRecord = jest.fn(async (..._args: any[]): Promise<void> => undefined);
+const mockCountLLMConfigsUsingModel = jest.fn(async (..._args: any[]): Promise<number> => 0);
 
 jest.mock('../src/services/database', () => ({
   listLocalModels: (...args: any[]) => mockListLocalModels(...args),
@@ -92,7 +93,8 @@ jest.mock('@react-native-documents/picker', () => ({
   pick: (...args: any[]) => mockPick(...args),
   keepLocalCopy: (...args: any[]) => mockKeepLocalCopy(...args),
   types: { json: 'application/json', images: 'image/*', plainText: 'text/plain', allFiles: '*/*' },
-  isCancel: (...args: any[]) => mockIsCancel(...args),
+  errorCodes: { OPERATION_CANCELED: 'OPERATION_CANCELED' },
+  isErrorWithCode: (...args: any[]) => mockIsErrorWithCode(...args),
 }));
 
 jest.mock('@react-navigation/native', () => ({
@@ -172,7 +174,7 @@ describe('LocalModelManagerScreen import regression', () => {
     expect(mockAlert).not.toHaveBeenCalled();
 
     // 主动让 mock 解析，防止 store 内 await 链悬挂到测试结束之后
-    if (resolveImport) resolveImport();
+    (resolveImport as (() => void) | null)?.();
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -309,7 +311,7 @@ describe('LocalModelManagerScreen import regression', () => {
     expect(state).not.toBe('error');
     expect(mockAlert).not.toHaveBeenCalled();
 
-    if (resolveImport) resolveImport();
+    (resolveImport as (() => void) | null)?.();
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();

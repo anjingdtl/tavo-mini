@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { pick, types, isCancel } from '@react-native-documents/picker';
+import { errorCodes, isErrorWithCode, pick, types } from '@react-native-documents/picker';
 import { ArrowLeft, Cpu, Play, Plus, Trash2 } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, Header, Screen, spacing } from '../components/ui';
@@ -87,7 +87,7 @@ export const LocalModelManagerScreen: React.FC = () => {
       await startImport(result.uri, result.name, undefined, result.size ?? undefined);
       Toast.show({ type: 'success', text1: '模型导入成功' });
     } catch (error: any) {
-      if (isCancel(error)) return;
+      if (isErrorWithCode(error) && error.code === errorCodes.OPERATION_CANCELED) return;
       Alert.alert('导入失败', error?.message || '请重试');
     } finally {
       setImporting(false);

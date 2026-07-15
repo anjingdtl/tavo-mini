@@ -358,8 +358,12 @@ export async function pickLocalFiles(
   const selected = await pick({ type: allowedTypes, allowMultiSelection: true, mode: 'import', limit: max });
   if (!selected || selected.length === 0) return null;
 
+  const [firstSelected, ...remainingSelected] = selected;
   const copies = await keepLocalCopy({
-    files: selected.map((s) => ({ uri: s.uri, fileName: s.name || 'shinewriter-import' })),
+    files: [
+      { uri: firstSelected.uri, fileName: firstSelected.name || 'shinewriter-import' },
+      ...remainingSelected.map((s) => ({ uri: s.uri, fileName: s.name || 'shinewriter-import' })),
+    ],
     destination: 'cachesDirectory',
   });
 
