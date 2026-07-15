@@ -2,6 +2,7 @@
 
 import RNFS from 'react-native-fs';
 import {
+  computeBackupChecksum,
   createBackup,
   restoreFromBackup,
   cleanupOldBackups,
@@ -11,10 +12,13 @@ import {
   createPreRestoreBackup,
   deleteBackup,
 } from '../src/services/backupService';
+import { SCHEMA_MANIFEST } from '../src/services/database/schemaManifest';
+import { SCHEMA_VERSION } from '../src/services/migrations';
 
 type TableRows = Record<string, any>[];
 
-const ALL_TABLES = [
+const ALL_TABLES = SCHEMA_MANIFEST.filter(table => table.backup).map(table => table.name);
+const CORE_TABLES = [
   'projects',
   'chapters',
   'fragments',
@@ -27,12 +31,6 @@ const ALL_TABLES = [
   'presets',
   'llm_config',
   'settings',
-  'project_resources',
-  'llm_usage_logs',
-  'pipeline_tasks',
-  'freeform_documents',
-  'content_revisions',
-  'generation_drafts',
 ];
 
 const createRows = (rows: TableRows) => ({
@@ -41,65 +39,184 @@ const createRows = (rows: TableRows) => ({
   raw: () => rows,
 });
 
-function createMockDb(tableData: Record<string, TableRows>) {
-  const executeSql = jest.fn(async (sql: string, _params: any[] = []) => {
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value));
+}
+
+interface MockDbOptions {
+  failOnInsertTable?: string;
+}
+
+function createMockDb(initialData: Record<string, TableRows>, options: MockDbOptions = {}) {
+  const tableData: Record<string, TableRows> = clone(initialData);
+  const executeSql = jest.fn((sql: string, params: any[] = []) => {
     const normalized = sql.replace(/\s+/g, ' ').trim();
+    const pragmaTableInfo = normalized.match(/^PRAGMA table_info\((\w+)\)/i);
+    if (pragmaTableInfo) {
+      const manifest = SCHEMA_MANIFEST.find(table => table.name === pragmaTableInfo[1]);
+      const columns = (manifest?.columns || []).map((name, cid) => ({ name, cid }));
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(columns) }];
+    }
+
+    if (/^PRAGMA foreign_keys/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows([{ foreign_keys: 1 }]) }];
+    }
+    if (/^PRAGMA foreign_key_check/i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
+    }
+
+    if (/^SELECT name FROM sqlite_master WHERE type = 'table'/i.test(normalized)) {
+      return [{
+        insertId: 0,
+        rowsAffected: 0,
+        rows: createRows(ALL_TABLES.map(name => ({ name }))),
+      }];
+    }
+    if (/^SELECT name FROM sqlite_master WHERE type = 'index'/i.test(normalized)) {
+      const table = params[0];
+      const indexes = SCHEMA_MANIFEST.find(item => item.name === table)?.indexes || [];
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(indexes.map(name => ({ name }))) }];
+    }
+
+    const settingsVersion = normalized.match(/^SELECT value FROM settings WHERE key = \?/i);
+    if (settingsVersion) {
+      const row = tableData.settings?.find(item => item.key === params[0]);
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(row ? [row] : []) }];
+    }
+    if (/^SELECT id, provider_type, local_model_id, base_url, model_name FROM llm_config WHERE is_active = 1/i.test(normalized)) {
+      const rows = (tableData.llm_config || [])
+        .filter(row => Number(row.is_active) === 1)
+        .map(row => ({
+          id: row.id,
+          provider_type: row.provider_type,
+          local_model_id: row.local_model_id,
+          base_url: row.base_url,
+          model_name: row.model_name,
+        }));
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(rows) }];
+    }
+    if (/^SELECT id FROM local_llm_models WHERE id = \?/i.test(normalized)) {
+      const row = tableData.local_llm_models?.find(item => item.id === params[0]);
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows(row ? [row] : []) }];
+    }
+    if (/^SELECT .* LEFT JOIN /i.test(normalized)) {
+      return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
+    }
 
     const selectAll = normalized.match(/^SELECT \* FROM (\w+)/i);
     if (selectAll) {
-      const table = selectAll[1];
-      const rows = tableData[table] || [];
-      return [{ insertId: 0, rowsAffected: 0, rows: createRows(rows) }];
+      return [{
+        insertId: 0,
+        rowsAffected: 0,
+        rows: createRows(tableData[selectAll[1]] || []),
+      }];
     }
 
     const deleteFrom = normalized.match(/^DELETE FROM (\w+)/i);
     if (deleteFrom) {
-      const table = deleteFrom[1];
-      if (tableData[table]) tableData[table] = [];
+      tableData[deleteFrom[1]] = [];
       return [{ insertId: 0, rowsAffected: 1, rows: createRows([]) }];
     }
 
-    const insertInto = normalized.match(/^INSERT INTO (\w+)/i);
+    const insertInto = normalized.match(/^INSERT(?: OR REPLACE)? INTO (\w+) \(([^)]+)\) VALUES \(([^)]+)\)/i);
     if (insertInto) {
+      const table = insertInto[1];
+      if (options.failOnInsertTable === table) throw new Error(`injected insert failure: ${table}`);
+      const keys = insertInto[2].split(',').map(key => key.trim());
+      const row = Object.fromEntries(keys.map((key, index) => [key, params[index]]));
+      if (/^INSERT OR REPLACE/i.test(normalized)) {
+        const identity = table === 'settings' ? 'key' : 'id';
+        const existing = (tableData[table] || []).findIndex(item => item[identity] === row[identity]);
+        if (existing >= 0) tableData[table][existing] = row;
+        else (tableData[table] ||= []).push(row);
+      } else {
+        (tableData[table] ||= []).push(row);
+      }
       return [{ insertId: 1, rowsAffected: 1, rows: createRows([]) }];
     }
 
     return [{ insertId: 0, rowsAffected: 0, rows: createRows([]) }];
   });
 
-  const transaction = jest.fn(async (fn: (tx: any) => Promise<void>) => {
-    const tx = { executeSql };
-    await fn(tx);
+  const transaction = jest.fn((callback: (tx: any) => void, onError: (error: Error) => void, onSuccess: () => void) => {
+    const before = clone(tableData);
+    try {
+      callback({ executeSql });
+      onSuccess();
+    } catch (error) {
+      Object.keys(tableData).forEach(key => delete tableData[key]);
+      Object.assign(tableData, before);
+      onError(error as Error);
+    }
   });
 
-  return { executeSql, transaction } as any;
+  return {
+    executeSql,
+    transaction,
+    tableData,
+    snapshot: () => clone(tableData),
+  } as any;
 }
 
 function makeFullTables(overrides: Record<string, TableRows> = {}): Record<string, TableRows> {
   const tables: Record<string, TableRows> = {};
-  for (const t of ALL_TABLES) {
-    tables[t] = overrides[t] || [];
-  }
+  for (const table of ALL_TABLES) tables[table] = overrides[table] || [];
   return tables;
+}
+
+async function makeV3Backup(
+  overrides: Record<string, TableRows> = {},
+  metaOverrides: Record<string, any> = {},
+): Promise<any> {
+  const tables = makeFullTables(overrides);
+  const backup = {
+    format: 'shinewriter-backup' as const,
+    format_version: 3 as const,
+    meta: {
+      app_version: '2.4.3',
+      schema_version: SCHEMA_VERSION,
+      created_at: '2026-06-13T00:00:00Z',
+      kind: 'automatic' as const,
+      checksum_algorithm: 'sha256' as const,
+      checksum: '',
+      ...metaOverrides,
+    },
+    tables,
+    external_assets: [],
+  };
+  backup.meta.checksum = await computeBackupChecksum(backup);
+  return backup;
 }
 
 function makeV2Backup(overrides: Record<string, TableRows> = {}, metaOverrides: Record<string, any> = {}) {
   const tables = makeFullTables(overrides);
-  return {
+  const backup = {
     format: 'shinewriter-backup',
     format_version: 2,
     meta: {
       app_version: '1.3.8',
       schema_version: 6,
       created_at: '2026-06-13T00:00:00Z',
-      table_count: ALL_TABLES.length,
-      row_count: Object.values(tables).reduce((s, r) => s + r.length, 0),
+      table_count: CORE_TABLES.length,
+      row_count: Object.values(tables).reduce((sum, rows) => sum + rows.length, 0),
       kind: 'automatic',
       checksum: '',
       ...metaOverrides,
     },
     tables,
   };
+  const tablesJson = JSON.stringify(backup.tables);
+  let hash = 0;
+  const prime = 2147483647;
+  for (let index = 0; index < tablesJson.length; index += 1) {
+    hash = (hash * 31 + tablesJson.charCodeAt(index)) % prime;
+  }
+  backup.meta.checksum = `${tablesJson.length}:${tablesJson.substring(0, 50)}:${hash}`;
+  return backup;
+}
+
+function writeBackup(backup: any): void {
+  (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify(backup));
 }
 
 describe('backupService', () => {
@@ -113,293 +230,224 @@ describe('backupService', () => {
     (RNFS.exists as jest.Mock).mockResolvedValue(true);
   });
 
-  test('createBackup exports all tables to JSON file with v2 format', async () => {
+  test('createBackup exports the manifest tables with v3 SHA-256 and external model references', async () => {
     const mockDb = createMockDb({
       projects: [{ id: 1, name: '测试项目' }],
       chapters: [{ id: 1, project_id: 1, title: '第1章' }],
+      llm_config: [{ id: 1, name: '云端', api_key: 'sk-test-only', is_active: 1 }],
+      settings: [{ key: 'webdav_password', value: 'not-a-real-secret' }],
+      local_llm_models: [{
+        id: 'model-1',
+        original_filename: 'qwen.gguf',
+        relative_path: 'model-1/model.gguf',
+        sha256: 'abc123',
+        file_size: 42,
+      }],
     });
 
-    const backupPath = await createBackup(mockDb, '1.2.0', 6);
+    await createBackup(mockDb, '1.2.0', 6);
 
-    expect(backupPath).toBeTruthy();
-    expect(RNFS.mkdir).toHaveBeenCalled();
-    expect(RNFS.writeFile).toHaveBeenCalledWith(
-      expect.stringContaining('backup_v1.2.0_'),
-      expect.any(String),
-      'utf8',
-    );
-
-    const writtenJson = JSON.parse((RNFS.writeFile as jest.Mock).mock.calls[0][1]);
-    expect(writtenJson.format).toBe('shinewriter-backup');
-    expect(writtenJson.format_version).toBe(2);
-    expect(writtenJson.meta.app_version).toBe('1.2.0');
-    expect(writtenJson.meta.schema_version).toBe(6);
-    expect(writtenJson.meta.kind).toBe('automatic');
-    expect(writtenJson.meta.checksum).toBeTruthy();
-    expect(writtenJson.meta.row_count).toBeGreaterThanOrEqual(0);
-    expect(writtenJson.tables.projects).toHaveLength(1);
-    expect(writtenJson.tables.chapters).toHaveLength(1);
+    const written = JSON.parse((RNFS.writeFile as jest.Mock).mock.calls[0][1]);
+    expect(written.format).toBe('shinewriter-backup');
+    expect(written.format_version).toBe(3);
+    expect(written.meta.checksum_algorithm).toBe('sha256');
+    expect(written.meta.checksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(Object.keys(written.tables)).toEqual(ALL_TABLES);
+    expect(written.external_assets).toEqual([{
+      local_model_reference: {
+        id: 'model-1',
+        filename: 'qwen.gguf',
+        sha256: 'abc123',
+        file_size: 42,
+        included: false,
+      },
+    }]);
+    expect(written.tables.llm_config[0]).not.toHaveProperty('api_key');
+    expect((RNFS.writeFile as jest.Mock).mock.calls[0][1]).not.toMatch(/sk-|Bearer |"api_key"\s*:\s*"[^"\n]+"|password|token/i);
   });
 
-  test('createBackup with kind=manual uses manual prefix', async () => {
+  test('createBackup uses kind-specific prefixes', async () => {
     const mockDb = createMockDb({});
-    await createBackup(mockDb, '1.2.0', 6, 'manual');
-    expect(RNFS.writeFile).toHaveBeenCalledWith(
-      expect.stringContaining('manual_v1.2.0_'),
-      expect.any(String),
-      'utf8',
-    );
+    await createBackup(mockDb, '1.2.0', 6, 'automatic');
+    await createManualBackup(mockDb, '1.2.0', 6);
+    await createPreRestoreBackup(mockDb, '1.2.0', 6);
+    const paths = (RNFS.writeFile as jest.Mock).mock.calls.map(call => call[0]);
+    expect(paths.some(path => path.includes('backup_v1.2.0_'))).toBe(true);
+    expect(paths.some(path => path.includes('manual_v1.2.0_'))).toBe(true);
+    expect(paths.some(path => path.includes('prerestore_v1.2.0_'))).toBe(true);
   });
 
-  test('createBackup with kind=pre_restore uses prerestore prefix', async () => {
-    const mockDb = createMockDb({});
-    await createBackup(mockDb, '1.2.0', 6, 'pre_restore');
-    expect(RNFS.writeFile).toHaveBeenCalledWith(
-      expect.stringContaining('prerestore_v1.2.0_'),
-      expect.any(String),
-      'utf8',
-    );
-  });
+  test('validateBackup accepts v3 and detects checksum changes', async () => {
+    const backup = await makeV3Backup({ projects: [{ id: 1, name: 'p1' }] });
+    writeBackup(backup);
+    await expect(validateBackup('/fake/path/backup.json')).resolves.toMatchObject({
+      valid: true,
+      formatVersion: 3,
+      appVersion: '2.4.3',
+      schemaVersion: SCHEMA_VERSION,
+    });
 
-  test('createManualBackup delegates with kind=manual', async () => {
-    const mockDb = createMockDb({});
-    await createManualBackup(mockDb, '1.0.0', 5);
-    expect(RNFS.writeFile).toHaveBeenCalledWith(
-      expect.stringContaining('manual_v1.0.0_'),
-      expect.any(String),
-      'utf8',
-    );
-  });
-
-  test('createPreRestoreBackup delegates with kind=pre_restore', async () => {
-    const mockDb = createMockDb({});
-    await createPreRestoreBackup(mockDb, '1.0.0', 5);
-    expect(RNFS.writeFile).toHaveBeenCalledWith(
-      expect.stringContaining('prerestore_v1.0.0_'),
-      expect.any(String),
-      'utf8',
-    );
-  });
-
-  test('validateBackup returns valid for v2 backup', async () => {
-    const backup = makeV2Backup({ projects: [{ id: 1, name: 'p1' }] });
-    // Compute real checksum
-    const tablesJson = JSON.stringify(backup.tables);
-    let hash = 0;
-    const prime = 2147483647;
-    for (let i = 0; i < tablesJson.length; i++) {
-      hash = (hash * 31 + tablesJson.charCodeAt(i)) % prime;
-    }
-    backup.meta.checksum = `${tablesJson.length}:${tablesJson.substring(0, 50)}:${hash}`;
-
-    (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify(backup));
-
-    const result = await validateBackup('/fake/path/backup.json');
-    expect(result.valid).toBe(true);
-    expect(result.errors).toHaveLength(0);
-    expect(result.appVersion).toBe('1.3.8');
-    expect(result.schemaVersion).toBe(6);
-  });
-
-  test('validateBackup detects checksum mismatch', async () => {
-    const backup = makeV2Backup();
-    backup.meta.checksum = 'wrong-checksum';
-    (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify(backup));
-
+    backup.tables.projects[0].name = 'tampered';
+    writeBackup(backup);
     const result = await validateBackup('/fake/path/backup.json');
     expect(result.valid).toBe(false);
-    expect(result.errors).toContainEqual(expect.stringContaining('校验和'));
+    expect(result.errors.join('')).toContain('SHA-256');
   });
 
-  test('validateBackup accepts v1 backup for backward compat', async () => {
-    const v1Backup = {
-      meta: { app_version: '1.0.0', schema_version: '3', backup_date: '2026-01-01T00:00:00Z', table_count: 17 },
+  test('validateBackup accepts v1 and v2 backups for read compatibility', async () => {
+    const v2 = makeV2Backup({ projects: [{ id: 1, name: 'p1' }] });
+    writeBackup(v2);
+    expect((await validateBackup('/fake/path/v2.json')).valid).toBe(true);
+
+    const v1 = {
+      meta: { app_version: '1.0.0', schema_version: '3', backup_date: '2026-01-01T00:00:00Z' },
       tables: makeFullTables(),
     };
-    (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify(v1Backup));
-
-    const result = await validateBackup('/fake/path/backup.json');
-    expect(result.valid).toBe(true);
-    expect(result.appVersion).toBe('1.0.0');
-    expect(result.schemaVersion).toBe(3);
+    writeBackup(v1);
+    expect((await validateBackup('/fake/path/v1.json')).valid).toBe(true);
   });
 
-  test('validateBackup returns errors for invalid format', async () => {
-    (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify({
-      format: 'wrong-format',
-      format_version: 2,
-      meta: {},
-      tables: {},
-    }));
+  test('validateBackup rejects missing core tables and unsupported field types', async () => {
+    const missingCore = await makeV3Backup();
+    delete missingCore.tables.projects;
+    missingCore.meta.checksum = await computeBackupChecksum(missingCore);
+    writeBackup(missingCore);
+    const missingResult = await validateBackup('/fake/path/missing.json');
+    expect(missingResult.valid).toBe(false);
+    expect(missingResult.errors.join('')).toContain('projects');
 
-    const result = await validateBackup('/fake/path/backup.json');
-    expect(result.valid).toBe(false);
-    expect(result.errors.length).toBeGreaterThan(0);
+    const wrongType = await makeV3Backup({ projects: [{ id: { invalid: true } }] });
+    writeBackup(wrongType);
+    const typeResult = await validateBackup('/fake/path/type.json');
+    expect(typeResult.valid).toBe(false);
+    expect(typeResult.errors.join('')).toContain('类型不受支持');
   });
 
-  test('validateBackup handles unreadable file', async () => {
-    (RNFS.readFile as jest.Mock).mockRejectedValue(new Error('file not found'));
+  test('restore is atomic when an insert fails', async () => {
+    const backup = await makeV3Backup({
+      projects: [{ id: 2, name: '新项目' }],
+      chapters: [{ id: 2, project_id: 2, title: '新章节' }],
+    });
+    writeBackup(backup);
+    const mockDb = createMockDb(
+      { ...makeFullTables(), projects: [{ id: 1, name: '旧项目' }] },
+      { failOnInsertTable: 'chapters' },
+    );
+    const before = mockDb.snapshot();
 
-    const result = await validateBackup('/fake/path/backup.json');
-    expect(result.valid).toBe(false);
-    expect(result.errors.length).toBeGreaterThan(0);
+    await expect(restoreFromBackup(mockDb, '/fake/path/backup.json', { createPreRestoreBackup: false })).rejects.toThrow('injected insert failure');
+    expect(mockDb.snapshot()).toEqual(before);
   });
 
-  test('restoreFromBackup validates and restores v2 backup', async () => {
-    const backup = makeV2Backup({ projects: [{ id: 1, name: '恢复项目' }] });
-    // Compute real checksum
-    const tablesJson = JSON.stringify(backup.tables);
-    let hash = 0;
-    const prime = 2147483647;
-    for (let i = 0; i < tablesJson.length; i++) {
-      hash = (hash * 31 + tablesJson.charCodeAt(i)) % prime;
-    }
-    backup.meta.checksum = `${tablesJson.length}:${tablesJson.substring(0, 50)}:${hash}`;
+  test('restore verifies schema, strips API keys, preserves current schema version, and returns a pre-restore backup', async () => {
+    const backup = await makeV3Backup({
+      projects: [{ id: 2, name: '恢复项目' }],
+      llm_config: [{ id: 8, name: '恢复配置', api_key: 'sk-not-real', is_active: 1 }],
+      settings: [{ key: 'schema_version', value: '6' }, { key: 'theme_mode', value: 'dark' }],
+    });
+    writeBackup(backup);
+    const mockDb = createMockDb(makeFullTables({ projects: [{ id: 1, name: '旧项目' }] }));
 
-    (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify(backup));
-
-    const mockDb = createMockDb(makeFullTables());
-    await restoreFromBackup(mockDb, '/fake/path/backup.json');
-
-    expect(RNFS.readFile).toHaveBeenCalledWith('/fake/path/backup.json', 'utf8');
+    const result = await restoreFromBackup(mockDb, '/fake/path/backup.json');
+    expect(result.preRestoreBackupPath).toContain('prerestore_');
+    expect(RNFS.writeFile).toHaveBeenCalled();
+    expect(mockDb.tableData.projects).toEqual([{ id: 2, name: '恢复项目' }]);
+    expect(mockDb.tableData.llm_config[0]).not.toHaveProperty('api_key');
+    expect(mockDb.tableData.settings).toContainEqual({ key: 'schema_version', value: String(SCHEMA_VERSION) });
     expect(mockDb.transaction).toHaveBeenCalled();
   });
 
-  test('restoreFromBackup throws on validation failure', async () => {
-    (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify({
-      format: 'wrong',
-      format_version: 99,
-      meta: {},
-      tables: {},
+  test('missing optional tables remain compatible with older backups', async () => {
+    const backup = await makeV3Backup({ projects: [{ id: 2, name: '旧格式恢复' }] });
+    delete backup.tables.character_collections;
+    delete backup.tables.local_llm_models;
+    backup.meta.checksum = await computeBackupChecksum(backup);
+    writeBackup(backup);
+    const mockDb = createMockDb(makeFullTables({
+      character_collections: [{ id: 99, project_id: 1, name: '保留集合' }],
+      local_llm_models: [{ id: 'keep-model', status: 'ready' }],
     }));
 
-    const mockDb = createMockDb({});
-    await expect(restoreFromBackup(mockDb, '/fake/path/backup.json')).rejects.toThrow('备份验证失败');
+    await restoreFromBackup(mockDb, '/fake/path/backup.json', { createPreRestoreBackup: false });
+    expect(mockDb.tableData.character_collections).toEqual([{ id: 99, project_id: 1, name: '保留集合' }]);
+    expect(mockDb.tableData.local_llm_models).toEqual([{ id: 'keep-model', status: 'ready' }]);
   });
 
-  test('restoreFromBackup skips api_key in llm_config', async () => {
-    const backup = makeV2Backup({
-      llm_config: [{ id: 1, name: 'test', api_key: 'secret-key', base_url: 'http://x' }],
+  test('missing local model files do not block restore and deactivate local configs', async () => {
+    const model = {
+      id: 'missing-model',
+      display_name: 'Qwen',
+      original_filename: 'qwen.gguf',
+      relative_path: 'missing-model/qwen.gguf',
+      file_size: 1024,
+      sha256: 'sha-qwen',
+      status: 'ready',
+    };
+    const backup = await makeV3Backup({
+      local_llm_models: [model],
+      llm_config: [{ id: 9, provider_type: 'llama_cpp', local_model_id: 'missing-model', is_active: 1 }],
     });
-    const tablesJson = JSON.stringify(backup.tables);
-    let hash = 0;
-    const prime = 2147483647;
-    for (let i = 0; i < tablesJson.length; i++) {
-      hash = (hash * 31 + tablesJson.charCodeAt(i)) % prime;
-    }
-    backup.meta.checksum = `${tablesJson.length}:${tablesJson.substring(0, 50)}:${hash}`;
+    writeBackup(backup);
+    const mockDb = createMockDb(makeFullTables());
 
+    const result = await restoreFromBackup(mockDb, '/fake/path/backup.json', { createPreRestoreBackup: false });
+    expect(result.missingLocalModels[0]).toMatchObject({ id: 'missing-model', included: false });
+    expect(mockDb.tableData.local_llm_models[0]).toMatchObject({
+      id: 'missing-model',
+      status: 'missing',
+      error_code: 'MODEL_FILE_MISSING',
+    });
+    expect(mockDb.tableData.llm_config[0]).toMatchObject({ id: 9, is_active: 0 });
+  });
+
+  test('restore rejects invalid backups before opening a transaction', async () => {
+    writeBackup({ format: 'wrong', format_version: 99, meta: {}, tables: {} });
+    const mockDb = createMockDb(makeFullTables());
+    await expect(restoreFromBackup(mockDb, '/fake/path/bad.json', { createPreRestoreBackup: false })).rejects.toThrow('备份验证失败');
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  test('listBackups sorts v3 summaries and marks unreadable files invalid', async () => {
+    const backup1 = await makeV3Backup({}, { created_at: '2026-01-01T00:00:00Z', kind: 'automatic' });
+    const backup2 = await makeV3Backup({}, { created_at: '2026-06-01T00:00:00Z', kind: 'manual' });
+    const files = [
+      { name: 'backup_v1.json', path: '/a/1.json', mtime: new Date('2026-01-01'), size: 100 },
+      { name: 'manual_v2.json', path: '/a/2.json', mtime: new Date('2026-06-01'), size: 200 },
+      { name: 'broken.json', path: '/a/broken.json', mtime: new Date('2026-07-01'), size: 10 },
+    ];
+    (RNFS.readDir as jest.Mock).mockResolvedValue(files);
+    (RNFS.readFile as jest.Mock).mockImplementation(async (path: string) => {
+      if (path.includes('1.json')) return JSON.stringify(backup1);
+      if (path.includes('2.json')) return JSON.stringify(backup2);
+      throw new Error('parse error');
+    });
+
+    const summaries = await listBackups();
+    expect(summaries).toHaveLength(3);
+    expect(summaries.find(item => item.kind === 'manual')?.valid).toBe(true);
+    expect(summaries.find(item => item.path.includes('broken'))?.valid).toBe(false);
+  });
+
+  test('cleanupOldBackups enforces per-kind retention limits', async () => {
+    const files = Array.from({ length: 4 }, (_, index) => ({
+      name: `backup_v${index}.json`,
+      path: `/a/automatic-${index}.json`,
+      mtime: new Date(Date.now() - index * 1000),
+      size: 100,
+    }));
+    (RNFS.readDir as jest.Mock).mockResolvedValue(files);
+    const backup = await makeV3Backup();
     (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify(backup));
 
-    const mockDb = createMockDb(makeFullTables());
-    await restoreFromBackup(mockDb, '/fake/path/backup.json');
-
-    // Check that the INSERT for llm_config did not include api_key
-    const insertCalls = (mockDb.executeSql as jest.Mock).mock.calls.filter(
-      (c: string[]) => c[0].includes('INSERT INTO llm_config'),
-    );
-    if (insertCalls.length > 0) {
-      const sql = insertCalls[0][0];
-      expect(sql).not.toContain('api_key');
-    }
-  });
-
-  test('listBackups returns sorted summaries', async () => {
-    const backup1 = makeV2Backup({}, { created_at: '2026-01-01T00:00:00Z', kind: 'automatic' });
-    const backup2 = makeV2Backup({}, { created_at: '2026-06-01T00:00:00Z', kind: 'manual' });
-
-    const files = [
-      { name: 'backup_v1_1.json', path: '/a/1.json', mtime: new Date('2026-01-01'), size: 100 },
-      { name: 'manual_v1_2.json', path: '/a/2.json', mtime: new Date('2026-06-01'), size: 200 },
-    ];
-    (RNFS.readDir as jest.Mock).mockResolvedValue(files);
-    (RNFS.readFile as jest.Mock)
-      .mockResolvedValueOnce(JSON.stringify(backup1))
-      .mockResolvedValueOnce(JSON.stringify(backup2));
-
-    const summaries = await listBackups();
-    expect(summaries).toHaveLength(2);
-    // Newest first
-    expect(summaries[0].kind).toBe('manual');
-    expect(summaries[1].kind).toBe('automatic');
-  });
-
-  test('listBackups handles unparseable files as invalid', async () => {
-    const files = [
-      { name: 'bad.json', path: '/a/bad.json', mtime: new Date(), size: 10 },
-    ];
-    (RNFS.readDir as jest.Mock).mockResolvedValue(files);
-    (RNFS.readFile as jest.Mock).mockRejectedValue(new Error('parse error'));
-
-    const summaries = await listBackups();
-    expect(summaries).toHaveLength(1);
-    expect(summaries[0].valid).toBe(false);
-  });
-
-  test('deleteBackup removes existing file', async () => {
-    (RNFS.exists as jest.Mock).mockResolvedValue(true);
-    await deleteBackup('/a/backup.json');
-    expect(RNFS.unlink).toHaveBeenCalledWith('/a/backup.json');
-  });
-
-  test('deleteBackup skips non-existent file', async () => {
-    (RNFS.exists as jest.Mock).mockResolvedValue(false);
-    await deleteBackup('/a/backup.json');
-    expect(RNFS.unlink).not.toHaveBeenCalled();
-  });
-
-  test('cleanupOldBackups keeps per-kind limits', async () => {
-    const makeFile = (name: string, kind: string, idx: number) => ({
-        name,
-        path: `/a/${name}`,
-        mtime: new Date(Date.now() - idx * 1000),
-        size: 100,
-        kind,
-      });
-
-    // 4 automatic, 11 manual, 4 pre_restore
-    const files = [
-      makeFile('backup_v1_0.json', 'automatic', 0),
-      makeFile('backup_v1_1.json', 'automatic', 1),
-      makeFile('backup_v1_2.json', 'automatic', 2),
-      makeFile('backup_v1_3.json', 'automatic', 3),
-      makeFile('manual_v1_0.json', 'manual', 4),
-      makeFile('manual_v1_1.json', 'manual', 5),
-      makeFile('manual_v1_2.json', 'manual', 6),
-      makeFile('manual_v1_3.json', 'manual', 7),
-      makeFile('manual_v1_4.json', 'manual', 8),
-      makeFile('manual_v1_5.json', 'manual', 9),
-      makeFile('manual_v1_6.json', 'manual', 10),
-      makeFile('manual_v1_7.json', 'manual', 11),
-      makeFile('manual_v1_8.json', 'manual', 12),
-      makeFile('manual_v1_9.json', 'manual', 13),
-      makeFile('manual_v1_10.json', 'manual', 14),
-      makeFile('prerestore_v1_0.json', 'pre_restore', 15),
-      makeFile('prerestore_v1_1.json', 'pre_restore', 16),
-      makeFile('prerestore_v1_2.json', 'pre_restore', 17),
-      makeFile('prerestore_v1_3.json', 'pre_restore', 18),
-    ];
-
-    (RNFS.readDir as jest.Mock).mockResolvedValue(files);
-    // Each readFile returns a valid v2 backup
-    for (const f of files) {
-      const kind = f.name.startsWith('manual_') ? 'manual' : f.name.startsWith('prerestore_') ? 'pre_restore' : 'automatic';
-      const backup = makeV2Backup({}, { kind, created_at: f.mtime.toISOString() });
-      (RNFS.readFile as jest.Mock).mockResolvedValueOnce(JSON.stringify(backup));
-    }
-
-    // Need enough mock returns for validateBackup calls too
-    // listBackups calls readFile once per file, then validateBackup calls readFile again
-    // So we need double the mocks
-    for (const f of files) {
-      const kind = f.name.startsWith('manual_') ? 'manual' : f.name.startsWith('prerestore_') ? 'pre_restore' : 'automatic';
-      const backup = makeV2Backup({}, { kind, created_at: f.mtime.toISOString() });
-      (RNFS.readFile as jest.Mock).mockResolvedValueOnce(JSON.stringify(backup));
-    }
-
     await cleanupOldBackups();
+    expect(RNFS.unlink).toHaveBeenCalledTimes(1);
+  });
 
-    // Should delete: 1 automatic (4-3), 1 manual (11-10), 1 pre_restore (4-3) = 3 total
-    expect(RNFS.unlink).toHaveBeenCalledTimes(3);
+  test('deleteBackup only removes existing files', async () => {
+    (RNFS.exists as jest.Mock).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await deleteBackup('/a/backup.json');
+    await deleteBackup('/a/missing.json');
+    expect(RNFS.unlink).toHaveBeenCalledTimes(1);
+    expect(RNFS.unlink).toHaveBeenCalledWith('/a/backup.json');
   });
 });
