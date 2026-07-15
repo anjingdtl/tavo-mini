@@ -48,7 +48,17 @@ function createMockDb(initialColumns: string[] = []) {
 describe('migrateV11toV12', () => {
   it('creates local_llm_models and adds llm_config columns', async () => {
     const { executeSql, executed, columns, tables } = createMockDb(['id', 'name', 'base_url', 'api_key', 'model_name', 'is_active']);
-    const db = { executeSql, transaction: jest.fn() };
+    const db = {
+      executeSql,
+      transaction: jest.fn((scope: (tx: { executeSql: typeof executeSql }) => void, onError: (error: unknown) => void, onSuccess: () => void) => {
+        try {
+          scope({ executeSql });
+          onSuccess();
+        } catch (error) {
+          onError(error);
+        }
+      }),
+    };
 
     await migrateV11toV12(db as any);
 
@@ -68,7 +78,17 @@ describe('migrateV11toV12', () => {
       'id', 'name', 'base_url', 'api_key', 'model_name', 'is_active',
       'provider_type', 'local_model_id', 'local_backend', 'context_window', 'max_output_tokens',
     ]);
-    const db = { executeSql, transaction: jest.fn() };
+    const db = {
+      executeSql,
+      transaction: jest.fn((scope: (tx: { executeSql: typeof executeSql }) => void, onError: (error: unknown) => void, onSuccess: () => void) => {
+        try {
+          scope({ executeSql });
+          onSuccess();
+        } catch (error) {
+          onError(error);
+        }
+      }),
+    };
 
     await migrateV11toV12(db as any);
 
@@ -77,7 +97,17 @@ describe('migrateV11toV12', () => {
 
   it('defaults historical llm_config to openai_compatible provider_type', async () => {
     const { executeSql, executed } = createMockDb(['id', 'name', 'base_url', 'api_key', 'model_name', 'is_active']);
-    const db = { executeSql, transaction: jest.fn() };
+    const db = {
+      executeSql,
+      transaction: jest.fn((scope: (tx: { executeSql: typeof executeSql }) => void, onError: (error: unknown) => void, onSuccess: () => void) => {
+        try {
+          scope({ executeSql });
+          onSuccess();
+        } catch (error) {
+          onError(error);
+        }
+      }),
+    };
 
     await migrateV11toV12(db as any);
 

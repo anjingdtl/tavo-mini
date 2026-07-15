@@ -1362,11 +1362,11 @@ export async function createProject(
 ): Promise<number> {
   const database = await openDatabase();
   const timestamp = now();
-  // V2.2.2 修复：用 `runInTransactionSafe` 取代直接的 `database.transaction(async ...)`。
+  // V2.2.2 修复：用统一 transaction executor 取代旧的异步 callback。
   // 原因：react-native-sqlite-storage 的 transaction 期望 callback **同步**执行所有 SQL，
   // 任何 await 都会让 transaction 被 finalize 触发 InvalidStateError (DOM Exception 11)。
   // 这里改成：先 INSERT projects → 拿 insertId → 再 ensureDefaultPreset → 绑预设 + 建首章 + touch。
-  // 整个写入过程走 runInTransactionSafe 的同步 push 模式，原子性保留。
+  // 整个写入过程走同步 statement batch，原子性保留。
   const insertProjectResult = await execute(
     database,
     'INSERT INTO projects (name, mode, created_at, updated_at) VALUES (?, ?, ?, ?)',
@@ -1604,8 +1604,7 @@ export async function setChapterPlotlines(
   plotlineIds: number[],
 ): Promise<void> {
   const database = await openDatabase();
-  // V2.2.2 修复：改用 runInTransactionSafe（见顶部 helper 注释），
-  // 原 `database.transaction(async (tx) => {...})` 在 await 处触发 InvalidStateError。
+  // V2.2.2 修复：改用统一 transaction executor，避免异步 callback 在 await 处触发 InvalidStateError。
   const stmts: Array<{ sql: string; params: any[] }> = [
     {
       sql: 'DELETE FROM project_plotlines WHERE chapter_id = ?',
@@ -2400,8 +2399,7 @@ async function repairOversizedNotes(
         'SELECT project_id, enabled FROM project_resources WHERE resource_type = ? AND resource_id = ?',
         ['note', note.id],
       );
-      // V2.2.2 修复：改用 runInTransactionSafe（见 helper 注释）。
-      // 原 `database.transaction(async (tx) => {...})` 在 await 处触发 InvalidStateError。
+      // V2.2.2 修复：改用统一 transaction executor，避免异步 callback 在 await 处触发 InvalidStateError。
       // 修法：先在事务外 async 收集数据（chunks/links 已经在上层异步读好），
       // 把所有 INSERT/DELETE 推入一次同步的事务执行。
       const timestamp = now();
@@ -3463,7 +3461,7 @@ export async function trimContentRevisions(
   maxManual = 20,
 ): Promise<void> {
   const database = await openDatabase();
-  // V2.2.2 修复：原 `database.transaction(async (tx) => {...})` 内部多次 await → InvalidStateError。
+  // V2.2.2 修复：原 transaction callback 内部多次 await → InvalidStateError。
   // 改成：先 async 收集要删的 id，再合并到一次同步 push 事务。
   const autoRows = await all<{ id: number }>(
     `SELECT id FROM content_revisions
@@ -3705,7 +3703,7 @@ export async function setProjectNoteConfig(
   projectId: number,
   config: Partial<Omit<ProjectNoteConfig, 'projectId' | 'updatedAt'>>,
 ): Promise<void> {
-  // 11.13 修复：原实现用 `database.transaction(async (tx) => {...})` 在 callback 中 await，
+  // 11.13 修复：原实现用异步 transaction callback 在 callback 中 await，
   // react-native-sqlite-storage 的 transaction 期望 callback **同步**执行 SQL，
   // async callback 在第一次 await 之前 transaction 已被 finalize，导致 InvalidStateError
   // (DOM Exception 11)。改成分步：先 SELECT 读 existing → INSERT OR REPLACE 写。

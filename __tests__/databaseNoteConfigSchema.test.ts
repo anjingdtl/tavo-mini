@@ -85,23 +85,24 @@ function createMockDb(initialColumns: string[] = []) {
   return { executeSql, executed, columns, tables: tableSchemas };
 }
 
+function createTransactionalDb(executeSql: ReturnType<typeof jest.fn>) {
+  return {
+    executeSql,
+    transaction: jest.fn((scope: (tx: { executeSql: typeof executeSql }) => void, onError: (error: unknown) => void, onSuccess: () => void) => {
+      try {
+        scope({ executeSql });
+        onSuccess();
+      } catch (error) {
+        onError(error);
+      }
+    }),
+  };
+}
+
 describe('migrateV8toV9 — project_note_config schema (V2.4.3 回归)', () => {
   it('CREATE 定义包含 retrieval_fragment_chars 列', async () => {
-    const { executed } = createMockDb();
-    const db = { executeSql: createMockDb().executeSql, transaction: jest.fn() };
-
-    await migrateV8toV9(db as any);
-
-    // v8→v9 的 CREATE TABLE 语句必须包含 retrieval_fragment_chars 定义，
-    // 否则从 schema 8 升级的设备建表时就会缺这列。
-    const createNoteConfig = executed.find(sql =>
-      /CREATE TABLE IF NOT EXISTS project_note_config/i.test(
-        sql.replace(/\s+/g, ' '),
-      ),
-    );
-    // 上面 executed 来自一个空 mock，重做一次拿真实 executed
     const real = createMockDb();
-    const realDb = { executeSql: real.executeSql, transaction: jest.fn() };
+    const realDb = createTransactionalDb(real.executeSql);
     await migrateV8toV9(realDb as any);
     const createStmt = real.executed.find(sql =>
       /CREATE TABLE IF NOT EXISTS project_note_config/i.test(
@@ -114,7 +115,7 @@ describe('migrateV8toV9 — project_note_config schema (V2.4.3 回归)', () => {
 
   it('迁移后 project_note_config 拥有全部 6 列（含 retrieval_fragment_chars）', async () => {
     const mock = createMockDb([]);
-    const db = { executeSql: mock.executeSql, transaction: jest.fn() };
+    const db = createTransactionalDb(mock.executeSql);
 
     await migrateV8toV9(db as any);
 
@@ -137,7 +138,7 @@ describe('migrateV8toV9 — project_note_config schema (V2.4.3 回归)', () => {
     // project_note_config 缺 retrieval_fragment_chars，INSERT 引用该列 →
     // SQLite 报 "no column named retrieval_fragment_chars"。
     const mock = createMockDb([]);
-    const db = { executeSql: mock.executeSql, transaction: jest.fn() };
+    const db = createTransactionalDb(mock.executeSql);
 
     await migrateV8toV9(db as any);
 
