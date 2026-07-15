@@ -53,3 +53,33 @@
 - `transaction(async` has no matches in `src`, `android`, or `__tests__`.
 - `npm run apk:debug` completes after Phase 1.
 - Each independent task has a focused conventional commit and a corresponding progress entry.
+
+## Handoff boundary — 2026-07-15
+
+### Delivered to `main`
+
+- Design scope and decisions: `bf4bee1 docs: add data reliability phase design`.
+- User-provided optimization execution plan is tracked: `67063bd docs: add data reliability implementation plan`.
+- Detailed Phase 0–1 implementation plan is tracked in the same commit.
+- Baseline evidence, including the independently reviewed TypeScript recheck: `441ac4c docs: add optimization baseline`.
+- Task 0.1 is complete. Task 0.2 is complete as a **blocked baseline record**. Tasks 0.3 and 1.1–1.4 have not started; no production database, migration, backup, release-signing, or Android build code has been changed for this optimization.
+
+### Mandatory starting point for the next agent
+
+1. Pull `main`, read `docs/optimization/baseline.md`, this progress log, the Phase 0–1 design, and the detailed implementation plan before editing code.
+2. Resolve the existing quality-gate decision before creating Task 0.3 commits: either repair the baseline failures in separately authorized work, or obtain explicit approval to continue Phase 0–1 with the failures recorded and use focused tests plus `npm run verify` evidence where possible.
+3. Preserve database data: do not reset `shine_writer.db`, delete compatibility code, or add `async`/`await` inside a SQLite transaction callback.
+4. Start with Task 0.3 only after the gate decision, then execute Tasks 1.1–1.4 sequentially with red-green tests, individual commits, two-stage review, and a progress update per task.
+
+### Known environment blockers (not fixed in this handoff)
+
+- `npm run lint`: one unused `createNoteConfig` test binding error; five warnings.
+- `npx tsc --noEmit`: exit 2, 1,588 TypeScript diagnostics / 1,641 output lines. The failures include vendored llama UI type environment plus existing application and test type incompatibilities.
+- `npm run apk:debug`: Windows CMake/Ninja fails because a generated object path exceeds the 260-character filename limit; no current V2.4.3 Debug delivery APK was produced.
+
+### Local workspace state intentionally excluded from Git
+
+- `package-lock.json`: `npm install` regenerated lock metadata and brought its root version to 2.4.3; it was excluded because this documentation-only handoff does not authorize dependency-lock changes.
+- `src/constants/version.json`: `npm run apk:debug` prebuild regenerated `versionCode` and `buildTime`; it was excluded because it is build-generated and the Debug APK failed.
+
+The handoff computer must not assume those unstaged local changes exist after cloning `main`; run `git status` first and decide on them as a separate, intentional change.
