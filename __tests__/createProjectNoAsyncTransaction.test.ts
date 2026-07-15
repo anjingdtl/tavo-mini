@@ -1,5 +1,7 @@
 /* eslint-env jest */
 
+import { SCHEMA_MANIFEST } from '../src/services/database/schemaManifest';
+
 // Regression: V2.2.0 之前 createProject 用了异步 SQLite transaction callback，
 // react-native-sqlite-storage 的 transaction 期望 callback **同步**执行 SQL，
 // 任何 await 都会让 transaction 被 finalize，第二次 executeSql 触发 InvalidStateError
@@ -31,6 +33,8 @@ describe('createProject SQLite transaction safety (V2.2.2)', () => {
   beforeEach(() => {
     seenInserts = [];
     txCallbacks = [];
+    let schemaReady = false;
+    const settings = new Map<string, string>();
     // 模拟 react-native-sqlite-storage promise 风格 transaction
     // 关键点：mock 内部**同步**调用 cb，绝不等待任何 microtask
     fakeDb = {
@@ -48,11 +52,185 @@ describe('createProject SQLite transaction safety (V2.2.2)', () => {
         if (typeof success === 'function') success();
       }),
       executeSql: jest.fn(async (sql: string, params: any[] = []) => {
+        const normalized = sql.replace(/\s+/g, ' ').trim();
         recordSql(sql, params);
-        if (sql.replace(/\s+/g, ' ').trim().toUpperCase().startsWith('SELECT COUNT')) {
-          return [{ rows: { length: 0, item: () => ({ c: 0 }), raw: () => [] }, rowsAffected: 0, insertId: 0 }];
+        if (/^CREATE TABLE IF NOT EXISTS projects/i.test(normalized)) {
+          schemaReady = true;
         }
-        return [{ rows: { length: 0, item: () => null, raw: () => [] }, rowsAffected: 0, insertId: 100 }];
+        if (/^PRAGMA foreign_keys$/i.test(normalized)) {
+          const rows = [{ foreign_keys: 1 }];
+          return [
+            {
+              rows: {
+                length: rows.length,
+                item: (index: number) => rows[index],
+                raw: () => rows,
+              },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        if (
+          /^SELECT name FROM sqlite_master WHERE type = 'table' AND name = \?/i.test(
+            normalized,
+          )
+        ) {
+          const rows =
+            schemaReady &&
+            SCHEMA_MANIFEST.some(table => table.name === params[0])
+              ? [{ name: params[0] }]
+              : [];
+          return [
+            {
+              rows: {
+                length: rows.length,
+                item: (index: number) => rows[index],
+                raw: () => rows,
+              },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        if (
+          /^SELECT name FROM sqlite_master WHERE type = 'table'/i.test(
+            normalized,
+          )
+        ) {
+          const rows = schemaReady
+            ? SCHEMA_MANIFEST.map(table => ({ name: table.name }))
+            : [];
+          return [
+            {
+              rows: {
+                length: rows.length,
+                item: (index: number) => rows[index],
+                raw: () => rows,
+              },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        const tableInfo = normalized.match(/^PRAGMA table_info\((\w+)\)/i);
+        if (tableInfo) {
+          const table = SCHEMA_MANIFEST.find(
+            item => item.name === tableInfo[1],
+          );
+          const rows =
+            schemaReady && table ? table.columns.map(name => ({ name })) : [];
+          return [
+            {
+              rows: {
+                length: rows.length,
+                item: (index: number) => rows[index],
+                raw: () => rows,
+              },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        if (
+          /^SELECT name FROM sqlite_master WHERE type = 'index'/i.test(
+            normalized,
+          )
+        ) {
+          const table = SCHEMA_MANIFEST.find(item => item.name === params[0]);
+          const rows =
+            schemaReady && table
+              ? (table.indexes || []).map(name => ({ name }))
+              : [];
+          return [
+            {
+              rows: {
+                length: rows.length,
+                item: (index: number) => rows[index],
+                raw: () => rows,
+              },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        if (/^SELECT value FROM settings/i.test(normalized)) {
+          const value = settings.get(params[0]);
+          const rows = value === undefined ? [] : [{ value }];
+          return [
+            {
+              rows: {
+                length: rows.length,
+                item: (index: number) => rows[index],
+                raw: () => rows,
+              },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        if (/^INSERT OR REPLACE INTO settings/i.test(normalized)) {
+          settings.set(params[0], params[1]);
+          return [
+            {
+              rows: { length: 0, item: () => null, raw: () => [] },
+              rowsAffected: 1,
+              insertId: 0,
+            },
+          ];
+        }
+        if (/^SELECT id, provider_type, local_model_id/i.test(normalized)) {
+          const rows = [
+            {
+              id: 1,
+              provider_type: 'openai_compatible',
+              local_model_id: null,
+              base_url: '',
+              model_name: '',
+            },
+          ];
+          return [
+            {
+              rows: {
+                length: rows.length,
+                item: (index: number) => rows[index],
+                raw: () => rows,
+              },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        if (/^SELECT id FROM llm_config WHERE is_active/i.test(normalized)) {
+          const rows = [{ id: 1 }];
+          return [
+            {
+              rows: {
+                length: rows.length,
+                item: (index: number) => rows[index],
+                raw: () => rows,
+              },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        if (/^SELECT COUNT/i.test(normalized)) {
+          return [
+            {
+              rows: { length: 0, item: () => ({ c: 0 }), raw: () => [] },
+              rowsAffected: 0,
+              insertId: 0,
+            },
+          ];
+        }
+        return [
+          {
+            rows: { length: 0, item: () => null, raw: () => [] },
+            rowsAffected: 0,
+            insertId: 100,
+          },
+        ];
       }),
     };
     const sqliteStorage = require('react-native-sqlite-storage');
@@ -85,6 +263,8 @@ describe('createProject SQLite transaction safety (V2.2.2)', () => {
     await db.createProject('TaraRegression', 'outline');
 
     // 关键表都应当被写过
-    expect(seenInserts).toEqual(expect.arrayContaining(['PROJECTS', 'CHAPTERS']));
+    expect(seenInserts).toEqual(
+      expect.arrayContaining(['PROJECTS', 'CHAPTERS']),
+    );
   });
 });
