@@ -668,8 +668,8 @@ export async function buildWorldbookContext(
         Number(a.id || 0) - Number(b.id || 0),
     );
 
-  const activated = new Map<number, any>();
-  const activationReason = new Map<number, string>();
+  const activated = new Map<number | null, any>();
+  const activationReason = new Map<number | null, string>();
 
   const determineReason = (entry: any, haystack: string): string => {
     if (entry.constant === 1 || entry.constant === true) return '常驻';

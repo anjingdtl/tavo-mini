@@ -89,8 +89,8 @@ describe('V2.2.0: getNotesContentByIds bulk fetch', () => {
     delete require.cache[dbPath];
 
     const fakeDb = {
-      getNotesByProject: jest.fn(async () => []),
-      getNotesContentByIds: jest.fn(async () => ({})),
+      getNotesByProject: jest.fn(async (): Promise<any[]> => []),
+      getNotesContentByIds: jest.fn(async (_ids: number[]): Promise<Record<number, string>> => ({})),
       getChaptersByProject: jest.fn(async () => []),
       getCharactersByProject: jest.fn(async () => []),
       getWorldbookEntriesByProject: jest.fn(async () => []),
@@ -191,8 +191,8 @@ describe('V2.2.0: getNotesContentByIds bulk fetch', () => {
         await delay(80);
         return { mode: 'none' };
       }),
-      getNotesByProject: jest.fn(async () => []),
-      getNotesContentByIds: jest.fn(async () => ({})),
+       getNotesByProject: jest.fn(async (): Promise<any[]> => []),
+       getNotesContentByIds: jest.fn(async (_ids: number[]): Promise<Record<number, string>> => ({})),
       getWorldbookEntriesByProject: jest.fn(async () => {
         await delay(80);
         return [];

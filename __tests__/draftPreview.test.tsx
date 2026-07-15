@@ -114,7 +114,7 @@ describe('DraftPreviewScreen', () => {
     );
 
     const onClose = jest.fn();
-    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(((_title, _msg, buttons) => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(((_title: string, _msg?: string, buttons?: any[]) => {
       const adoptBtn = (buttons as any[]).find((b) => b.text === '采纳');
       adoptBtn.onPress();
     }) as any);
@@ -154,7 +154,7 @@ describe('DraftPreviewScreen', () => {
     mockUpdateChapter.mockRejectedValue(new Error('写库炸了'));
 
     const onClose = jest.fn();
-    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(((_title, _msg, buttons) => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(((_title: string, _msg?: string, buttons?: any[]) => {
       const adoptBtn = (buttons as any[]).find((b) => b.text === '采纳');
       adoptBtn.onPress();
     }) as any);
@@ -194,7 +194,7 @@ describe('DraftPreviewScreen', () => {
     );
 
     const onClose = jest.fn();
-    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(((_title, _msg, buttons) => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(((_title: string, _msg?: string, buttons?: any[]) => {
       const adoptBtn = (buttons as any[]).find((b) => b.text === '采纳');
       adoptBtn.onPress();
     }) as any);

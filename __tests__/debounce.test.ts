@@ -32,7 +32,7 @@ describe('flushable async debounce', () => {
   });
 
   test('call triggers execution after delay', async () => {
-    const save = jest.fn(async () => {});
+    const save = jest.fn(async (_data?: string) => {});
     const controller = debounce(save, 500);
     controller.call();
     expect(save).not.toHaveBeenCalled();
@@ -43,7 +43,7 @@ describe('flushable async debounce', () => {
   });
 
   test('cancel clears pending arguments', () => {
-    const save = jest.fn(async () => {});
+    const save = jest.fn(async (_data?: string) => {});
     const controller = debounce(save, 500);
     controller.call('data');
     controller.cancel();

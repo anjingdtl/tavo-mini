@@ -54,6 +54,7 @@
     "@react-native/typescript-config": "0.85.3",
     "@testing-library/react-native": "^13.3.3",
     "@types/jest": "^29.5.13",
+    "@types/node": "^22.20.1",
     "@types/react": "^19.2.0",
     "@types/react-native-sqlite-storage": "^6.0.5",
     "@types/react-test-renderer": "^19.1.0",
