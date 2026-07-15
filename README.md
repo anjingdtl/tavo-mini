@@ -7,8 +7,8 @@
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#-技术栈)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85-61DAFB.svg)](https://reactnative.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6.svg)](https://www.typescriptlang.org/)
-[![License](https://img.shields.io/badge/Version-V2.2.2-blue.svg)](CHANGELOG)
-[![Tests](https://img.shields.io/badge/Tests-223%2F223%20passed-success.svg)](#-测试)
+[![Version](https://img.shields.io/badge/Version-V2.4.3-blue.svg)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/Tests-319%2F319%20passed-success.svg)](#-测试)
 
 A mobile novel-writing studio with project management, world-book & character
 library, multi-stage AI pipeline, voice dictation, and offline-first SQLite
@@ -29,7 +29,7 @@ storage.
 - [📦 构建发布](#-构建发布)
 - [🧪 测试](#-测试)
 - [📁 项目结构](#-项目结构)
-- [🔧 V2.2.2 更新日志](#-v222-更新日志)
+- [🔧 V2.4.3 更新日志](#-v243-更新日志)
 - [🤝 贡献](#-贡献)
 - [📄 许可证](#-许可证)
 - [🇬🇧 English](#-english)
@@ -105,8 +105,8 @@ npm run android
 或者先构建 APK 再安装：
 
 ```bash
-npm run apk:debug      # 生成 dist/apk/debug/ShineWriter-V2.2.2-debug.apk
-adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
+npm run apk:debug      # 生成 dist/apk/debug/ShineWriter-V2.4.3-debug.apk
+adb install -r dist/apk/debug/ShineWriter-V2.4.3-debug.apk
 ```
 
 ---
@@ -117,32 +117,35 @@ adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
 |------|------|
 | `npm run apk:debug` | `dist/apk/debug/ShineWriter-V{version}-debug.apk` |
 | `npm run apk:release` | `dist/apk/release/ShineWriter-V{version}-release.apk` |
+| `npm run apk:release:minified` | 使用 R8/资源压缩的 Release 评估包；真机矩阵通过后再作为发布包 |
 
 构建脚本会自动：
-1. 调用 `prebuild` 从 `package.json.version` 和显式构建号生成 `versionName`、`versionCode` 和 `version.json`
+1. 调用 `prebuild` 从 `package.json.version` 和显式构建号生成 `versionName`、`versionCode`、Release 标题和 `version.json`
 2. 调用 Gradle `assembleDebug` / `assembleRelease`
 3. 拷贝 APK 到 `dist/apk/{variant}/`
 
 `versionCode` 使用 `major * 1,000,000 + minor * 10,000 + patch * 100 + build`，其中 `build` 来自 `SHINE_WRITER_BUILD_NUMBER`（未设置时沿用当前生成元数据，首次默认为 0，范围 0–99）。它不依赖 Git 提交数量，因此 shallow clone 和 rebase 不会让版本号倒退。Release 构建还必须提供 `SHINE_WRITER_RELEASE_STORE_FILE`、`SHINE_WRITER_RELEASE_STORE_PASSWORD`、`SHINE_WRITER_RELEASE_KEY_ALIAS`、`SHINE_WRITER_RELEASE_KEY_PASSWORD`。
 
+`apk:release:minified` 额外启用 `minifyEnabled` 和 `shrinkResources`，只用于完成启动、项目、章节、在线 LLM、本地 GGUF、TTS、备份和恢复真机矩阵后的评估。
+
 ---
 
-## 🤖 本地离线模型（LiteRT-LM）
+## 🤖 本地离线模型（GGUF + llama.cpp）
 
-ShineWriter 支持导入 `.litertlm` 格式的本地模型，在飞行模式下也能运行 AI 生成。
+ShineWriter 支持导入 `.gguf` 格式的本地模型，在飞行模式下也能运行 AI 生成。
 
-- **仅支持 `.litertlm`**：通过「设置 → LLM 配置 → 本地离线模型 → 管理本地模型」导入。
+- **仅支持 `.gguf`**：通过「设置 → LLM 配置 → 本地离线模型 → 管理本地模型」导入。
 - **模型存放位置**：导入后模型文件保存在应用私有目录，**不会**上传到任何服务器，运行时也不需要网络。
 - **数据清除会删除模型**：卸载 App 或在系统设置中「清除存储空间」会一并删除已导入的本地模型，请保留原始文件备份。
 - **离线运行**：选择本地模型配置后，AI 续写、润色、流水线等调用均不发送网络请求。
-- **兼容性**：当前集成 LiteRT-LM `0.14.0`，GPU/CPU 后端自动选择；部分模型可能需要在真机上才能正常加载。
+- **兼容性**：当前使用 Android `llama.cpp` JNI 引擎，支持 Qwen、Llama、Mistral、Phi 等 GGUF 量化模型；部分模型可能需要在真机上才能正常加载。
 
 ---
 
 ## 🧪 测试
 
 ```bash
-npm test                # 跑全部 Jest 套件（45 suites / 223 tests）
+npm test                # 跑全部 Jest 套件（68 suites / 319 tests）
 npm run lint            # ESLint 全量检查
 ```
 
@@ -167,37 +170,29 @@ tavo-mini/
 │   ├── utils/              # 工具函数
 │   └── main/               # App 入口
 ├── android/                # Android 原生工程
-├── __tests__/              # Jest 测试套件（45 suites）
+├── __tests__/              # Jest 测试套件（68 suites）
 ├── scripts/                # 构建/补丁脚本
 └── dist/apk/               # 打包产物
 ```
 
 ---
 
-## 🔧 V2.2.2 更新日志
+## 🔧 V2.4.3 更新日志
 
-V2.2.2 是一个 bug-fix 版本，聚焦于数据库稳定性和流水线可靠性：
+V2.4.3 聚焦于数据可靠性、备份恢复安全和 Android 发布流程：
 
-### 修复
+### 变更
 
-1. **🗄 SQLite InvalidStateError（DOM Exception 11）**
-   `database.transaction(async (tx) => {...})` 在 await 处触发 transaction
-   finalize，导致第二次 executeSql 抛错。修复：新增 `runInTransactionSafe`
-   helper，把所有 7 处 transaction 调用方改造成「事务外预读 + 同步 push」。
+1. **🗄 数据库迁移与运行时校验**：迁移改为事务外构造 statements，Schema 14 启动流程增加结构、外键和引用完整性校验。
 
-2. **🧹 流水线冷启动清理 stale 任务**
-   旧实现只在 `AppState.change='active'` 事件触发清理，但冷启动不发该事件，
-   导致上次中断的流水线任务永远卡死。修复：在 `index.tsx` 启动序列主动
-   调 `loadFromDB + markStaleTasksAsFailed()`。
+2. **💾 备份恢复**：新增 manifest 驱动的 v3 备份、SHA-256 校验、凭据隔离和原子恢复；本地 GGUF 文件通过外部资源引用重新导入。
 
-3. **💬 LLM「保存并测试」弹窗文案**
-   弹窗标题和正文都是「连接成功」造成视觉重复。修复：标题改为「测试通过」，
-   正文显示真实模型名 + 模型回复内容。
+3. **📦 Android 发布流程**：Release 签名改为强制外部环境变量，版本号统一从 `package.json` 生成，Debug APK 产物路径固定。
 
-### 测试
+### 验证
 
-- 新增 2 个测试套件（`createProjectNoAsyncTransaction.test.ts`、
-  `pipelineStaleOnColdStart.test.ts`），全量回归 223/223 通过。
+- Jest：68 suites / 319 tests 通过。
+- Android Debug：`ShineWriter-V2.4.3-debug.apk` 构建通过。
 
 ---
 
@@ -284,8 +279,8 @@ npm run android
 Or build the APK first and install:
 
 ```bash
-npm run apk:debug      # outputs dist/apk/debug/ShineWriter-V2.2.2-debug.apk
-adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
+npm run apk:debug      # outputs dist/apk/debug/ShineWriter-V2.4.3-debug.apk
+adb install -r dist/apk/debug/ShineWriter-V2.4.3-debug.apk
 ```
 
 ## 📦 Building
@@ -294,30 +289,33 @@ adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
 |---------|--------|
 | `npm run apk:debug` | `dist/apk/debug/ShineWriter-V{version}-debug.apk` |
 | `npm run apk:release` | `dist/apk/release/ShineWriter-V{version}-release.apk` |
+| `npm run apk:release:minified` | R8/resource-shrunk Release evaluation APK; ship only after the real-device matrix passes |
 
 Build script will:
-1. Call `prebuild` to generate `versionName`, `versionCode`, and `version.json` from `package.json.version` plus an explicit build number
+1. Call `prebuild` to generate `versionName`, `versionCode`, the Release title, and `version.json` from `package.json.version` plus an explicit build number
 2. Run Gradle `assembleDebug` / `assembleRelease`
 3. Copy APK to `dist/apk/{variant}/`
 
 `versionCode` uses `major * 1,000,000 + minor * 10,000 + patch * 100 + build`. The `build` component comes from `SHINE_WRITER_BUILD_NUMBER` (or the existing generated metadata when omitted; first generation defaults to 0, range 0–99), so shallow clones and rebases cannot make it move backward. Release builds also require `SHINE_WRITER_RELEASE_STORE_FILE`, `SHINE_WRITER_RELEASE_STORE_PASSWORD`, `SHINE_WRITER_RELEASE_KEY_ALIAS`, and `SHINE_WRITER_RELEASE_KEY_PASSWORD`.
 
-## 🤖 Local Offline Models (LiteRT-LM)
+`apk:release:minified` additionally enables `minifyEnabled` and `shrinkResources`; use it only after the startup, project, chapter, online LLM, local GGUF, TTS, backup, and restore real-device matrix has passed.
 
-ShineWriter supports importing `.litertlm` local models so AI generation works in airplane mode.
+## 🤖 Local Offline Models (GGUF + llama.cpp)
 
-- **`.litertlm` only**: import via *Settings → LLM Config → Local Offline Model → Manage Local Models*.
+ShineWriter supports importing `.gguf` local models so AI generation works in airplane mode.
+
+- **`.gguf` only**: import via *Settings → LLM Config → Local Offline Model → Manage Local Models*.
 - **Private app storage**: imported models are saved in the app's private directory; they are **never** uploaded and do not require a network connection at runtime.
 - **Data clearing deletes models**: uninstalling the app or clearing storage in system settings will remove imported models. Keep the original files as a backup.
 - **Offline execution**: when a local model config is selected, AI continue/finalize/pipeline calls do not send any network requests.
-- **Compatibility**: currently integrates LiteRT-LM `0.14.0` with automatic GPU/CPU backend selection; some models may need a real device to load correctly.
+- **Compatibility**: the app uses an Android `llama.cpp` JNI engine for quantized GGUF models; some models may need a real device to load correctly.
 
 ---
 
 ## 🧪 Tests
 
 ```bash
-npm test                # Run all Jest suites (45 suites / 223 tests)
+npm test                # Run all Jest suites (68 suites / 319 tests)
 npm run lint            # ESLint full check
 ```
 
@@ -341,37 +339,27 @@ tavo-mini/
 │   ├── utils/              # Utilities
 │   └── main/               # App entry
 ├── android/                # Android native project
-├── __tests__/              # Jest suites (45 suites)
+├── __tests__/              # Jest suites (68 suites)
 ├── scripts/                # Build / patch scripts
 └── dist/apk/               # Build artifacts
 ```
 
-## 🔧 V2.2.2 Changelog
+## 🔧 V2.4.3 Changelog
 
-V2.2.2 is a bug-fix release focused on database stability and pipeline reliability:
+V2.4.3 focuses on data reliability, backup/recovery safety, and Android release delivery:
 
-### Fixed
+### Changed
 
-1. **🗄 SQLite InvalidStateError (DOM Exception 11)**
-   `database.transaction(async (tx) => {...})` finalized the transaction on
-   the first await, throwing on subsequent executeSql. Fix: introduced
-   `runInTransactionSafe` helper; refactored all 7 transaction call sites to
-   "pre-read outside transaction, then sync-push into transaction".
+1. **🗄 Database migrations and runtime validation**: migrations now build statements outside SQLite transactions, and Schema 14 startup validates structure, foreign keys, and references.
 
-2. **🧹 Cold-start cleanup of stale pipeline tasks**
-   The previous implementation only cleaned up stale tasks on the
-   `AppState.change='active'` event, which cold start does not emit, leaving
-   `drafting` tasks permanently stuck. Fix: explicitly invoke
-   `loadFromDB + markStaleTasksAsFailed()` in `index.tsx` startup sequence.
+2. **💾 Backup and restore**: added manifest-driven v3 backups, SHA-256 checksums, credential isolation, and atomic restore; local GGUF files are restored through external references.
 
-3. **💬 LLM "Save & Test" dialog copy**
-   Title and body both rendered "连接成功", causing visual duplication.
-   Fix: title changed to "测试通过"; body now shows the actual model name
-   and reply content.
+3. **📦 Android release delivery**: Release signing now requires external environment variables, version metadata is generated from `package.json`, and Debug APK output is deterministic.
 
-### Tests
+### Verification
 
-- 2 new test suites added; full regression 223/223 passing.
+- Jest: 68 suites / 319 tests passing.
+- Android Debug: `ShineWriter-V2.4.3-debug.apk` builds successfully.
 
 ## 🤝 Contributing
 
