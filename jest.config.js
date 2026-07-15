@@ -4,6 +4,7 @@ module.exports = {
   testPathIgnorePatterns: [
     '/node_modules/',
     '/android/app/jni/llama.cpp/',
+    '/__tests__/migrationTestUtils.ts$',
   ],
   transformIgnorePatterns: [
     'node_modules/(?!((jest-)?react-native|@react-native|@react-navigation|react-native-screens|react-native-safe-area-context|lucide-react-native|react-native-svg|react-native-keychain|@react-native-documents/picker)/)',
