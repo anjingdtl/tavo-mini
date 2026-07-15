@@ -4,6 +4,7 @@ const path = require('path');
 const projectRoot = path.resolve(__dirname, '..');
 const packagePath = path.join(projectRoot, 'package.json');
 const versionPath = path.join(projectRoot, 'src', 'constants', 'version.json');
+const readmePath = path.join(projectRoot, 'README.md');
 const pkg = require(packagePath);
 
 const parts = String(pkg.version).split('.').map(Number);
@@ -42,6 +43,7 @@ if (!Number.isInteger(build) || build < 0 || build > 99) {
 
 const versionName = `V${pkg.version}`;
 const versionCode = major * 1_000_000 + minor * 10_000 + patch * 100 + build;
+const releaseTitle = `ShineWriter ${versionName}`;
 if (previous && Number.isInteger(previous.versionCode) && previous.versionCode > versionCode) {
   throw new Error(
     `versionCode would move backwards from ${previous.versionCode} to ${versionCode}; increase package.json or SHINE_WRITER_BUILD_NUMBER`,
@@ -59,6 +61,7 @@ const buildTime = previous?.versionName === versionName
 const versionJson = {
   versionName,
   versionCode,
+  releaseTitle,
   buildTime,
 };
 
@@ -68,4 +71,16 @@ if (!previous || JSON.stringify(previous) !== JSON.stringify(versionJson)) {
   fs.writeFileSync(versionPath, serialized);
 }
 
-console.log(`version.json: versionName=${versionName}, versionCode=${versionCode}, build=${build}`);
+if (fs.existsSync(readmePath)) {
+  const readme = fs.readFileSync(readmePath, 'utf8');
+  const versionBadge = `[![Version](https://img.shields.io/badge/Version-${versionName}-blue.svg)](CHANGELOG.md)`;
+  const updatedReadme = readme.replace(
+    /\[!\[Version\]\(https:\/\/img\.shields\.io\/badge\/Version-[^)]+\)\]\([^)]+\)/,
+    versionBadge,
+  );
+  if (updatedReadme !== readme) {
+    fs.writeFileSync(readmePath, updatedReadme);
+  }
+}
+
+console.log(`version.json: versionName=${versionName}, versionCode=${versionCode}, releaseTitle=${releaseTitle}, build=${build}`);
