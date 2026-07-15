@@ -8,7 +8,7 @@
 [![React Native](https://img.shields.io/badge/React%20Native-0.85-61DAFB.svg)](https://reactnative.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6.svg)](https://www.typescriptlang.org/)
 [![Version](https://img.shields.io/badge/Version-V2.4.3-blue.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/Tests-319%2F319%20passed-success.svg)](#-测试)
+[![Tests](https://img.shields.io/badge/Tests-320%2F320%20passed-success.svg)](#-测试)
 
 A mobile novel-writing studio with project management, world-book & character
 library, multi-stage AI pipeline, voice dictation, and offline-first SQLite
@@ -145,7 +145,7 @@ ShineWriter 支持导入 `.gguf` 格式的本地模型，在飞行模式下也�
 ## 🧪 测试
 
 ```bash
-npm test                # 跑全部 Jest 套件（68 suites / 319 tests）
+npm test                # 跑全部 Jest 套件（68 suites / 320 tests）
 npm run lint            # ESLint 全量检查
 ```
 
@@ -191,7 +191,7 @@ V2.4.3 聚焦于数据可靠性、备份恢复安全和 Android 发布流程：
 
 ### 验证
 
-- Jest：68 suites / 319 tests 通过。
+- Jest：68 suites / 320 tests 通过。
 - Android Debug：`ShineWriter-V2.4.3-debug.apk` 构建通过。
 
 ---
@@ -315,7 +315,7 @@ ShineWriter supports importing `.gguf` local models so AI generation works in ai
 ## 🧪 Tests
 
 ```bash
-npm test                # Run all Jest suites (68 suites / 319 tests)
+npm test                # Run all Jest suites (68 suites / 320 tests)
 npm run lint            # ESLint full check
 ```
 
@@ -358,7 +358,7 @@ V2.4.3 focuses on data reliability, backup/recovery safety, and Android release 
 
 ### Verification
 
-- Jest: 68 suites / 319 tests passing.
+- Jest: 68 suites / 320 tests passing.
 - Android Debug: `ShineWriter-V2.4.3-debug.apk` builds successfully.
 
 ## 🤝 Contributing

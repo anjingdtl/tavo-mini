@@ -145,6 +145,45 @@ async function ensureCurrentIndexes(
   );
 }
 
+const STARTUP_REPAIRABLE_INDEXES = new Set([
+  'idx_llm_usage_logs_month',
+  'idx_llm_usage_logs_config',
+]);
+
+async function validateSchemaBeforeStartup(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  const validation = await validateSchema(database, {
+    requireActiveLlmConfig: false,
+  });
+  if (validation.valid) return;
+
+  // Some older builds shipped a current-schema database without the
+  // deterministic usage-log indexes. Repair only those known index defects;
+  // missing tables, columns, foreign keys, or data-integrity issues must still
+  // stop startup instead of being silently repaired here.
+  const canRepairIndexes =
+    validation.issues.length > 0 &&
+    validation.issues.every(
+      issue =>
+        issue.code === 'MISSING_INDEX' &&
+        issue.index !== undefined &&
+        STARTUP_REPAIRABLE_INDEXES.has(issue.index),
+    );
+  if (!canRepairIndexes) {
+    assertValidSchema(validation);
+    return;
+  }
+
+  console.warn(
+    '[database] repairing missing deterministic usage-log indexes before startup validation',
+  );
+  await ensureCurrentIndexes(database);
+  assertValidSchema(
+    await validateSchema(database, { requireActiveLlmConfig: false }),
+  );
+}
+
 async function createCurrentSchema(
   database: SQLite.SQLiteDatabase,
 ): Promise<void> {
@@ -655,9 +694,7 @@ export async function initializeDatabase(
       );
     }
   }
-  assertValidSchema(
-    await validateSchema(database, { requireActiveLlmConfig: false }),
-  );
+  await validateSchemaBeforeStartup(database);
   await repairKnownSchemaDefects(database, installInfo.schemaVersion);
   await seedDefaults(database);
   // Indexes are deterministic, idempotent schema artifacts. Keep this after
