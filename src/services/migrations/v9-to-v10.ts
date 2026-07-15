@@ -1,21 +1,32 @@
 import type SQLite from 'react-native-sqlite-storage';
+import { applyMigration, tableColumns } from './helpers';
+import type { SqlStatement } from '../database/transaction';
 
-async function execute(db: SQLite.SQLiteDatabase, sql: string, params: any[] = []) {
-  const [result] = await db.executeSql(sql, params);
-  return result;
+export async function buildV9toV10Statements(
+  database: SQLite.SQLiteDatabase,
+): Promise<SqlStatement[]> {
+  const columns = await tableColumns(database, 'llm_usage_logs');
+  const statements: SqlStatement[] = [];
+  if (!columns.has('llm_config_id')) {
+    statements.push({
+      sql: 'ALTER TABLE llm_usage_logs ADD COLUMN llm_config_id INTEGER NOT NULL DEFAULT 0',
+    });
+  }
+  if (!columns.has('llm_config_name')) {
+    statements.push({
+      sql: "ALTER TABLE llm_usage_logs ADD COLUMN llm_config_name TEXT NOT NULL DEFAULT ''",
+    });
+  }
+  statements.push({
+    sql: `CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_config
+      ON llm_usage_logs(llm_config_id, created_at)`,
+  });
+  return statements;
 }
 
-// v9 → v10: llm_usage_logs 增加 llm_config_id / llm_config_name 字段，让用量统计
-// 能按 LLM 配置分组（不再仅靠 model_name，多个配置可能共用同一 model_name）。
-//
-// 字段实际由 ensureSchemaCompatibility() 通过 idempotent ALTER TABLE 添加，
-// 这里不重复 ALTER：react-native-sqlite-storage 在事务中遇到 "duplicate column
-// name" 会标记整个事务失败（即使 try-catch 也无法挽救），与 v7→v8 同样的处理。
-// 本 migration 只创建索引，让按 llm_config_id 的查询更快。
-export async function migrateV9toV10(db: SQLite.SQLiteDatabase): Promise<void> {
-  await execute(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_config
-     ON llm_usage_logs(llm_config_id, created_at)`,
-  );
+/** Backward-compatible direct entry point for migration unit tests. */
+export async function migrateV9toV10(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  await applyMigration(database, await buildV9toV10Statements(database));
 }

@@ -1,10 +1,13 @@
 import type SQLite from 'react-native-sqlite-storage';
+import type { SqlStatement } from '../database/transaction';
 
 export interface Migration {
   from: number;
   to: number;
   breaking: boolean;
-  migrate: (db: SQLite.SQLiteDatabase) => Promise<void>;
+  buildStatements: (
+    database: SQLite.SQLiteDatabase,
+  ) => Promise<SqlStatement[]>;
 }
 
 export interface MigrationResult {

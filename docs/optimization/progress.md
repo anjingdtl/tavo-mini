@@ -53,7 +53,16 @@
 - Remaining risk: migration runner and backup restore still contain their own legacy transaction implementations; those are handled by the next transaction-safety tasks.
 - Commit: pending.
 
-### 1.2 Transaction-safe migration runner and migration matrix — planned
+### 1.2 Transaction-safe migration runner and migration matrix — verified
+
+- Root cause: every migration mutated the database through an async transaction callback; several historical migrations also used pre-migration compatibility repairs instead of atomic version steps.
+- Changed files: `src/services/migrations/types.ts`, `src/services/migrations/index.ts`, `src/services/migrations/helpers.ts`, and `v3-to-v4.ts` through `v13-to-v14.ts`.
+- Migration builders now perform required PRAGMA reads before the transaction, return ordered SQL batches, and append the `schema_version` write as the final statement in the same transaction.
+- v7→v8, v9→v10, v10→v11, v11→v12, v12→v13, and v13→v14 conditionally build historical column repairs from preflight metadata; data conversions are idempotent SQL.
+- Added `__tests__/migrationMatrix.test.ts`, `__tests__/migrationAtomicity.test.ts`, and the transactional migration test double `__tests__/migrationTestUtils.ts`.
+- Focused verification: migration matrix, atomicity, engine, v11→v12, v12→v13, v8→v9, and backup regression tests passed; the matrix covers schema 3–13 to 14, rollback, and rerun behavior.
+- Repository invariant: `rg "transaction\\(async" src android __tests__` returns no matches after the restore path was converted to the shared executor.
+- Commit: pending.
 
 ### 1.3 Initialization order and known-defect repair — planned
 

@@ -1,21 +1,32 @@
 import type SQLite from 'react-native-sqlite-storage';
+import { applyMigration, tableColumns } from './helpers';
+import type { SqlStatement } from '../database/transaction';
 
-async function execute(db: SQLite.SQLiteDatabase, sql: string, params: any[] = []) {
-  const [result] = await db.executeSql(sql, params);
-  return result;
+export async function buildV7toV8Statements(
+  database: SQLite.SQLiteDatabase,
+): Promise<SqlStatement[]> {
+  const columns = await tableColumns(database, 'llm_usage_logs');
+  const statements: SqlStatement[] = [];
+  if (!columns.has('model_name')) {
+    statements.push({
+      sql: "ALTER TABLE llm_usage_logs ADD COLUMN model_name TEXT NOT NULL DEFAULT ''",
+    });
+  }
+  if (!columns.has('project_id')) {
+    statements.push({
+      sql: 'ALTER TABLE llm_usage_logs ADD COLUMN project_id INTEGER NOT NULL DEFAULT 0',
+    });
+  }
+  statements.push({
+    sql: `CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month
+      ON llm_usage_logs(project_id, created_at)`,
+  });
+  return statements;
 }
 
-// NOTE: The model_name and project_id columns on llm_usage_logs are added by
-// ensureSchemaCompatibility() (which runs before migrations) using PRAGMA-based
-// idempotent ALTER. We do NOT re-ALTER here: react-native-sqlite-storage marks
-// a transaction as failed when any executeSql inside it throws, so even a
-// caught "duplicate column name" error would abort the whole migration
-// transaction. ensureSchemaCompatibility is the single source of truth for
-// column additions; this migration only creates the index.
-export async function migrateV7toV8(db: SQLite.SQLiteDatabase): Promise<void> {
-  await execute(
-    db,
-    `CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month
-     ON llm_usage_logs(project_id, created_at)`,
-  );
+/** Backward-compatible direct entry point for migration unit tests. */
+export async function migrateV7toV8(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  await applyMigration(database, await buildV7toV8Statements(database));
 }
