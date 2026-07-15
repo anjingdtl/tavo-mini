@@ -20,11 +20,26 @@ interface SettingsState {
 const emptyLLMConfig: LLMConfig = {
   id: 1,
   name: '默认配置',
+  provider_type: 'openai_compatible',
   base_url: '',
   api_key: '',
   model_name: '',
   is_active: 1,
+  local_model_id: null,
+  local_backend: null,
+  context_window: 4096,
+  max_output_tokens: 4000,
 };
+
+async function isUsableLLMConfig(config: LLMConfig): Promise<boolean> {
+  if (config.provider_type !== 'llama_cpp') return true;
+  if (!config.local_model_id) return false;
+  // Some isolated store tests provide a deliberately minimal database mock.
+  // The production database always exposes this lookup.
+  if (typeof (db as any).getLocalModelById !== 'function') return false;
+  const model = await db.getLocalModelById(config.local_model_id);
+  return model?.status === 'ready';
+}
 
 export const useSettingsStore = create<SettingsState>((set) => ({
   llmConfig: emptyLLMConfig,
@@ -50,14 +65,24 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         db.getLLMConfigs(),
         db.getContextConfig(),
       ]);
+      let usableConfigs: LLMConfig[] = [];
+      for (const config of llmConfigsInitial) {
+        if (await isUsableLLMConfig(config)) usableConfigs.push(config);
+      }
       // 修复#C: 自愈——若 DB 中无 active 配置（历史 bug 或外部修改导致 is_active 全为 0），
       // 自动激活第一个配置，避免 UI 一直显示"当前：未选择"
       let llmConfigs = llmConfigsInitial;
-      if (llmConfigs.length > 0 && !llmConfigs.some((c) => c.is_active === 1)) {
-        await db.setActiveLLMConfig(llmConfigs[0].id);
+      if (usableConfigs.length > 0 && !usableConfigs.some((c) => c.is_active === 1)) {
+        await db.setActiveLLMConfig(usableConfigs[0].id);
         llmConfigs = await db.getLLMConfigs();
+        usableConfigs = [];
+        for (const config of llmConfigs) {
+          if (await isUsableLLMConfig(config)) usableConfigs.push(config);
+        }
       }
-      const llmConfig = llmConfigs.find((config) => config.is_active === 1) || llmConfigs[0] || emptyLLMConfig;
+      const llmConfig = usableConfigs.find((config) => config.is_active === 1)
+        || usableConfigs[0]
+        || emptyLLMConfig;
       set({ llmConfig, llmConfigs, contextConfig, backgroundPipelineEnabled });
     } catch (error) {
       console.warn('[settingsStore] loadSettings failed:', error);

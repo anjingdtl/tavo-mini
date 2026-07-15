@@ -474,13 +474,48 @@ async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
   );
   const active = await execute(
     database,
-    'SELECT id FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1',
+    `SELECT c.id
+     FROM llm_config c
+     LEFT JOIN local_llm_models m ON m.id = c.local_model_id
+     WHERE c.is_active = 1
+       AND (
+         COALESCE(c.provider_type, 'openai_compatible') NOT IN ('llama_cpp', 'local_litertlm')
+         OR (c.local_model_id IS NOT NULL AND m.status = 'ready')
+       )
+     ORDER BY c.id ASC
+     LIMIT 1`,
   );
   if (active.rows.length === 0) {
-    await execute(
+    const usable = await execute(
       database,
-      'UPDATE llm_config SET is_active = 1 WHERE id = (SELECT id FROM llm_config ORDER BY id ASC LIMIT 1)',
+      `SELECT c.id
+       FROM llm_config c
+       LEFT JOIN local_llm_models m ON m.id = c.local_model_id
+       WHERE COALESCE(c.provider_type, 'openai_compatible') NOT IN ('llama_cpp', 'local_litertlm')
+          OR (c.local_model_id IS NOT NULL AND m.status = 'ready')
+       ORDER BY c.id ASC
+       LIMIT 1`,
     );
+    if (usable.rows.length > 0) {
+      await execute(
+        database,
+        'UPDATE llm_config SET is_active = 1 WHERE id = ?',
+        [usable.rows.item(0).id],
+      );
+    } else {
+      // A restore may contain only a local configuration whose GGUF file is
+      // absent. Keep that configuration inactive and seed a blank online
+      // fallback so the next startup remains usable and can prompt for
+      // re-import instead of activating a broken local model.
+      await execute(
+        database,
+        `INSERT INTO llm_config (
+          name, provider_type, base_url, api_key, model_name, is_active,
+          local_model_id, local_backend, context_window, max_output_tokens
+        ) VALUES (?, 'openai_compatible', '', '', '', 1, NULL, NULL, 4096, 4000)`,
+        ['默认配置'],
+      );
+    }
   }
   await ensureDefaultPreset(database);
 }
@@ -2028,10 +2063,39 @@ export async function getActiveLLMConfig(): Promise<LLMConfig> {
   let config = await one<LLMConfig>(
     'SELECT * FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1',
   );
+  if (config) {
+    const providerType = String(config.provider_type || '');
+    const isLocal = providerType === 'llama_cpp' || providerType === 'local_litertlm';
+    if (isLocal) {
+      const model = config.local_model_id
+        ? await getLocalModelById(config.local_model_id)
+        : null;
+      if (model?.status !== 'ready') {
+        await execute(await openDatabase(), 'UPDATE llm_config SET is_active = 0 WHERE id = ?', [config.id]);
+        config = null;
+      }
+    }
+  }
   if (!config) {
-    const fallback = await one<LLMConfig>(
-      'SELECT * FROM llm_config ORDER BY id ASC LIMIT 1',
+    const candidates = await all<LLMConfig>(
+      'SELECT * FROM llm_config ORDER BY id ASC',
     );
+    let fallback: LLMConfig | null = null;
+    for (const candidate of candidates) {
+      const providerType = String(candidate.provider_type || '');
+      const isLocal = providerType === 'llama_cpp' || providerType === 'local_litertlm';
+      if (!isLocal) {
+        fallback = candidate;
+        break;
+      }
+      if (candidate.local_model_id) {
+        const model = await getLocalModelById(candidate.local_model_id);
+        if (model?.status === 'ready') {
+          fallback = candidate;
+          break;
+        }
+      }
+    }
     if (!fallback) {
       const id = await saveLLMConfig({
         name: '默认配置',
