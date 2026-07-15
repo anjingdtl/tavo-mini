@@ -18,9 +18,9 @@ const pkgVersion = require('../package.json').version;
 const versionJson = require('../src/constants/version.json');
 const expectedVersionName = `V${pkgVersion}`;
 
-if (versionJson.versionName !== expectedVersionName) {
+if (versionJson.versionName !== expectedVersionName || !Number.isInteger(versionJson.versionCode)) {
   console.error(
-    `Version mismatch: package.json=${expectedVersionName}, version.json=${versionJson.versionName}`,
+    `Version metadata mismatch: package.json=${expectedVersionName}, version.json=${versionJson.versionName}, versionCode=${versionJson.versionCode}`,
   );
   process.exit(1);
 }
@@ -60,11 +60,7 @@ if (!fs.existsSync(bundlePath) || !fs.readFileSync(bundlePath, 'utf8').includes(
   process.exit(1);
 }
 
-const buildGradle = fs.readFileSync(path.join(androidDir, 'app', 'build.gradle'), 'utf8');
-const versionMatch = buildGradle.match(/versionName\s+["']([^"']+)["']/);
-const rawVersion = versionMatch ? versionMatch[1] : '';
-// If build.gradle contains a Gradle variable like ${pkgVersion}, resolve from package.json instead
-const versionName = rawVersion.includes('$') ? `V${pkgVersion}` : rawVersion;
+const versionName = versionJson.versionName;
 const source = path.join(androidDir, 'app', 'build', 'outputs', 'apk', variant, `app-${variant}.apk`);
 const outDir = path.join(projectRoot, 'dist', 'apk', variant);
 const target = path.join(outDir, `ShineWriter-${versionName}-${variant}.apk`);

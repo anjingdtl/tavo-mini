@@ -205,8 +205,7 @@ function checksumPayload(backup: {
   tables: Record<string, any[]>;
   external_assets: BackupExternalAsset[];
 }): string {
-  const { checksum, ...metaWithoutChecksum } = backup.meta;
-  void checksum;
+  const metaWithoutChecksum = { ...backup.meta, checksum: undefined };
   return JSON.stringify({
     format: backup.format,
     format_version: backup.format_version,

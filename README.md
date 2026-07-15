@@ -119,9 +119,11 @@ adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
 | `npm run apk:release` | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 
 构建脚本会自动：
-1. 调用 `prebuild` 从 git commit 数生成 `versionCode` 和 `buildTime`
+1. 调用 `prebuild` 从 `package.json.version` 和显式构建号生成 `versionName`、`versionCode` 和 `version.json`
 2. 调用 Gradle `assembleDebug` / `assembleRelease`
 3. 拷贝 APK 到 `dist/apk/{variant}/`
+
+`versionCode` 使用 `major * 1,000,000 + minor * 10,000 + patch * 100 + build`，其中 `build` 来自 `SHINE_WRITER_BUILD_NUMBER`（未设置时沿用当前生成元数据，首次默认为 0，范围 0–99）。它不依赖 Git 提交数量，因此 shallow clone 和 rebase 不会让版本号倒退。Release 构建还必须提供 `SHINE_WRITER_RELEASE_STORE_FILE`、`SHINE_WRITER_RELEASE_STORE_PASSWORD`、`SHINE_WRITER_RELEASE_KEY_ALIAS`、`SHINE_WRITER_RELEASE_KEY_PASSWORD`。
 
 ---
 
@@ -294,9 +296,11 @@ adb install -r dist/apk/debug/ShineWriter-V2.2.2-debug.apk
 | `npm run apk:release` | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 
 Build script will:
-1. Call `prebuild` to generate `versionCode` and `buildTime` from git
+1. Call `prebuild` to generate `versionName`, `versionCode`, and `version.json` from `package.json.version` plus an explicit build number
 2. Run Gradle `assembleDebug` / `assembleRelease`
 3. Copy APK to `dist/apk/{variant}/`
+
+`versionCode` uses `major * 1,000,000 + minor * 10,000 + patch * 100 + build`. The `build` component comes from `SHINE_WRITER_BUILD_NUMBER` (or the existing generated metadata when omitted; first generation defaults to 0, range 0–99), so shallow clones and rebases cannot make it move backward. Release builds also require `SHINE_WRITER_RELEASE_STORE_FILE`, `SHINE_WRITER_RELEASE_STORE_PASSWORD`, `SHINE_WRITER_RELEASE_KEY_ALIAS`, and `SHINE_WRITER_RELEASE_KEY_PASSWORD`.
 
 ## 🤖 Local Offline Models (LiteRT-LM)
 
