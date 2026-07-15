@@ -7,6 +7,7 @@
     "prebuild": "node scripts/generate-version-json.js",
     "apk:debug": "npm run prebuild && node scripts/build-apk.js debug",
     "apk:release": "npm run prebuild && node scripts/build-apk.js release",
+    "apk:release:minified": "npm run prebuild && node scripts/build-apk.js release --minify",
     "ios": "react-native run-ios",
     "zspace:probe": "node scripts/zspace-webdav.mjs probe",
     "zspace:list": "node scripts/zspace-webdav.mjs list",
