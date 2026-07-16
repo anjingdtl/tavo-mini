@@ -222,8 +222,9 @@ describe('database CRUD contract coverage', () => {
 
     expect(await database.openDatabase()).toBe(fake.database);
     expect(await database.detectInstallType(fake.database)).toMatchObject({
-      installType: 'same',
+      installType: 'upgrade',
       schemaVersion: 14,
+      previousVersion: '2.4.3',
     });
     await database.repairKnownSchemaDefects(fake.database, 1);
 
