@@ -1,0 +1,43 @@
+appId: com.shinewriter
+---
+- launchApp:
+    clearState: true
+- runFlow:
+    when:
+      visible: 'Android App Compatibility'
+    commands:
+      - tapOn: "Don't Show Again"
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- tapOn: '新建'
+- tapOn:
+    id: new-project-name
+- inputText: 'FAULT_D6_PROJECT'
+- tapOn: '创建'
+- extendedWaitUntil:
+    visible: 'FAULT_D6_PROJECT'
+    timeout: 10000
+- tapOn: '写作'
+- tapOn: '章节'
+- extendedWaitUntil:
+    visible: '章节编辑'
+    timeout: 10000
+- tapOn:
+    id: chapter-title-input
+- eraseText: 30
+- inputText: 'FAULT_D6_CHAPTER'
+- tapOn:
+    id: chapter-content-input
+- inputText: 'D6_LAST_COMMITTED_CONTENT'
+- tapOn: '返回'
+- extendedWaitUntil:
+    visible: 'FAULT_D6_CHAPTER'
+    timeout: 10000
+- tapOn: 'FAULT_D6_CHAPTER'
+- extendedWaitUntil:
+    visible: 'D6_LAST_COMMITTED_CONTENT'
+    timeout: 10000
+- assertVisible: '已保存'
+- tapOn:
+    id: chapter-content-input

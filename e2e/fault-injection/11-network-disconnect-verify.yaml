@@ -1,0 +1,16 @@
+appId: com.shinewriter
+---
+- launchApp
+- runFlow:
+    when:
+      visible: '流水线失败'
+    commands:
+      - assertVisible: 'Network request failed'
+      - tapOn: '我知道了'
+- extendedWaitUntil:
+    visible: '流水线结果'
+    timeout: 15000
+- assertVisible: '异常终止.*'
+- assertVisible: '初稿 · 失败.*'
+- assertVisible: '.*Network request failed.*'
+- assertNotVisible: '运行中.*'
