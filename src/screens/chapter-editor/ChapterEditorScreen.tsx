@@ -10,6 +10,7 @@ import { createRevision } from '../../services/revisionService';
 import { generateMemorySummary } from '../../services/summaryGenerator';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { EditorStackParamList } from '../../navigation/TabNavigator';
+import type { Chapter } from '../../types/novel';
 import { ChapterFields } from './ChapterFields';
 import { ChapterPipelinePanel } from './ChapterPipelinePanel';
 import { ChapterToolbar } from './ChapterToolbar';
@@ -60,9 +61,12 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     toggleTts,
   } = useChapterTts(chapter);
   const scrollRef = useRef<ScrollView>(null);
+  const latestChapterRef = useRef(chapter);
+  latestChapterRef.current = chapter;
   const [focusMode, setFocusMode] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const clearingRef = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -97,25 +101,36 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     }
   }, [autoSaveRef, chapter, finalizing, loadChapter, setSaveStatus]);
 
+  const finishClearing = useCallback(() => {
+    clearingRef.current = false;
+    setClearing(false);
+  }, []);
+
   const clearContent = useCallback(() => {
-    if (!chapter || clearing) return;
+    const currentChapter = latestChapterRef.current;
+    if (!currentChapter || clearingRef.current) return;
+    clearingRef.current = true;
+    setClearing(true);
     Alert.alert('清空正文', '确定要清空当前章节的全部正文内容？', [
-      { text: '取消', style: 'cancel' },
+      { text: '取消', style: 'cancel', onPress: finishClearing },
       {
         text: '清空',
         style: 'destructive',
         onPress: async () => {
-          setClearing(true);
           try {
+            await autoSaveRef.current.flush();
+            const latestChapter = latestChapterRef.current;
+            if (!latestChapter) return;
             await createRevision({
-              projectId: chapter.project_id,
+              projectId: latestChapter.project_id,
               targetType: 'chapter',
-              targetId: chapter.id,
-              title: chapter.title,
-              content: chapter.content,
+              targetId: latestChapter.id,
+              title: latestChapter.title,
+              content: latestChapter.content,
               source: 'before_clear',
             });
-            await db.updateChapter(chapter.id, { content: '' });
+            await db.updateChapter(latestChapter.id, { content: '' });
+            latestChapterRef.current = { ...latestChapter, content: '' };
             await loadChapter();
             setSaveStatus('saved');
           } catch (error: any) {
@@ -125,12 +140,24 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
               text2: error?.message,
             });
           } finally {
-            setClearing(false);
+            finishClearing();
           }
         },
       },
-    ]);
-  }, [chapter, clearing, loadChapter, setSaveStatus]);
+    ], { cancelable: false });
+  }, [autoSaveRef, finishClearing, loadChapter, setSaveStatus]);
+
+  const changeEditableField = useCallback(
+    (field: keyof Chapter, value: string) => {
+      if (clearingRef.current) return;
+      const currentChapter = latestChapterRef.current;
+      if (currentChapter) {
+        latestChapterRef.current = { ...currentChapter, [field]: value };
+      }
+      changeField(field, value);
+    },
+    [changeField],
+  );
 
   const manualCheckpoint = useCallback(async () => {
     if (!chapter) return;
@@ -241,7 +268,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
         <ChapterFields
           chapter={chapter}
-          changeField={changeField}
+          changeField={changeEditableField}
           estimatedTokenCount={estimatedTokenCount}
           focusMode={focusMode}
           saveLabel={saveLabel}
