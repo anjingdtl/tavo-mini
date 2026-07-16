@@ -293,3 +293,14 @@
 - The final debug build used the normal `prebuild` generator and produced the ignored delivery artifact at `dist/apk/debug/ShineWriter-V2.4.3-debug.apk`.
 - The final signed Release build produced `dist/apk/release/ShineWriter-V2.4.3-release.apk`; the optimized build remains a separate evaluation result because the emulator's installed Debug certificate must not be replaced by uninstalling the app and resetting its test database.
 - `src/constants/version.json` is the committed generated metadata for the current package version; rerunning the generator is idempotent and keeps the README Version badge aligned.
+
+## V2.4.4 reliability tag closure — 2026-07-16
+
+- Version metadata advanced to `V2.4.4` / `versionCode=2040400`; database Schema remains 14 and no data migration was added.
+- Autosave failures now propagate to navigation guards, retryable debounce state is preserved, and chapter clearing waits for pending autosave before snapshot/write/reload.
+- Jest runs naturally on Node 24.14.1 without `--forceExit`. Final local gates: lint 0 errors / 4 existing warnings, typecheck exit 0, 82 suites / 401 tests, coverage 78.33% statements / 60.37% branches / 86.05% functions / 79.95% lines, and migration 7 suites / 37 tests.
+- Final branch-head GitHub Actions [Run 29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) passed JavaScript validation, Android Debug build, and Migration matrix.
+- The V2.4.4 tag gate produced `dist/apk/debug/ShineWriter-V2.4.4-debug.apk` (50,106,550 bytes; SHA-256 `69D99F8D0900E87F90636AE83B109BA2D6438003C166270EFF74168411DCEB28`). AAPT and the installed package both report `versionName=V2.4.4`, `versionCode=2040400`; `adb install -r` preserved app data and `MainActivity` resumed on `emulator-5556`. The implementation-equivalent V2.4.3 artifact had already passed all six Maestro flows on the same emulator in 4m24s.
+- Fault execution status is 7 PASS / 1 PARTIAL / 4 BLOCKED. Detailed methods and evidence live in `docs/FAULT_INJECTION_MATRIX.md`; contract-only Jest tests are not counted as real device injection.
+- `V2.4.4` is intentionally a Tag-only engineering release. No signed Release/Minified APK or GitHub Release asset is claimed; signing credentials, ARM64 physical-device evidence, controllable GGUF/OOM inputs, and complete TTS background verification remain outstanding.
+- The canonical branch is `main`. After the tag commit passes local gates, it is pushed to `origin/main`, annotated tag `V2.4.4` is pushed, the merged diagnostic branch is deleted locally/remotely, and parity/branch inventory is rechecked.

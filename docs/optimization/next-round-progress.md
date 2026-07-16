@@ -13,8 +13,8 @@
 - Maestro：本轮基线环境未发现 `maestro`。
 - Linux 复现环境：发现 `wsl.exe`；尚未确认是否安装可用发行版。
 - Release 签名环境变量：四项均未设置；未读取或输出任何密钥内容。
-- 用户已有未提交内容：`docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md`、`.zcode/`、`docs/superpowers/specs/tavo-mini-next-round-spec.md`。这些内容不属于本轮 Agent 修改，不还原、不清理、不混入功能提交。
-- 总体状态：`PARTIAL`
+- 施工开始时用户已有未提交内容：`docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md`、`.zcode/`、`docs/superpowers/specs/tavo-mini-next-round-spec.md`。旧 Plan 与 `.zcode/` 不还原、不清理、不混入提交；本轮作为唯一施工依据的 next-round Spec 在 V2.4.4 文档发布提交中纳入版本控制。
+- 总体状态：`PARTIAL`（可执行工程门禁完成；V2.4.4 Tag-only 发布，签名/设备门禁仍保留）
 
 ## Workstream A：自动保存可靠性
 
@@ -257,9 +257,10 @@
 ## Workstream E：文档与发布收口
 
 - 更新 `docs/FAULT_INJECTION_MATRIX.md` 与 `docs/RELEASE_CHECKLIST.md`，空缺发布字段明确写 `BLOCKED`，不伪造 signer、Release URL 或 rollback artifact。
-- Draft PR：https://github.com/anjingdtl/tavo-mini/pull/1
-- 最终 CI：https://github.com/anjingdtl/tavo-mini/actions/runs/29504035382（提交 `bbefa4d`；JavaScript validation 56s、Migration matrix 27s、Android Debug build 8m49s，全部 success）。
-- 未创建 `V2.4.4-rc.1`：签名 Release、Minified Release、D7-D10、D12 完整验收和 ARM64 物理设备仍缺证据。
+- Draft PR：https://github.com/anjingdtl/tavo-mini/pull/1；其全部提交将随 V2.4.4 直接快进到 `main` 后关闭并清理源分支。
+- 最终实现分支头 CI：https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163（JavaScript validation 64s、Migration matrix 27s、Android Debug build 9m43s，全部 success）。
+- 发布决策：按用户要求创建 `V2.4.4` Tag-only 工程验收版本；版本生成器不支持 SemVer prerelease 字符串，因此未使用 `V2.4.4-rc.1`。不创建或附加签名 APK 的 GitHub Release，阻塞项保持原状态。
+- V2.4.4 Tag 门禁：Debug APK 50,106,550 bytes，SHA-256 `69D99F8D0900E87F90636AE83B109BA2D6438003C166270EFF74168411DCEB28`；AAPT/设备均报告 `V2.4.4` / `2040400`，`adb install -r` 后 `MainActivity` 在 `emulator-5556` 正常恢复。
 - 最终本地门禁：`npm ci` PASS（npm audit 报 3 个 moderate dependency vulnerabilities）；lint PASS（4 warnings/0 errors）；typecheck PASS；test:ci 82 suites/401 tests PASS；coverage 78.33% statements / 60.37% branches / 86.05% functions / 79.95% lines；migration 7 suites/37 tests PASS；detectOpenHandles 82 suites/401 tests 自然退出，无 open handle 报告；最终 Debug APK 重建及 6/6 设备回归 PASS。
 - 安全扫描：签名相关命中均为环境变量名称/文档/Gradle 读取；API key/Bearer/password 命中为生产字段、明显假测试值或 vendored llama.cpp 示例，未发现真实凭据；`src`、`android`、`__tests__` 无 `transaction(async`。备份测试继续证明凭据不写入 JSON。
-- 当前状态：`PARTIAL`，不建议发布 RC。
+- 当前状态：`PARTIAL`。允许发布源码 Tag `V2.4.4`；仍不建议把该 Tag 当作可分发 APK RC。

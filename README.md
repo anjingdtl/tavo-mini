@@ -6,14 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.4.3-blue.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/Tests-381%2F381%20passed-success.svg)](#测试与质量门禁)
+[![Version](https://img.shields.io/badge/Version-V2.4.4-blue.svg)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/Tests-401%2F401%20passed-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.4.3** · 数据库 Schema：**14** · 最低 Android API：**24**
+当前版本：**V2.4.4** · 数据库 Schema：**14** · 最低 Android API：**24**
+
+`V2.4.4` 是可靠性与发布验收 Tag：自动保存失败传播、清空正文竞态、Jest 自然退出、CI、Maestro 和可执行故障注入均已收口。该 Tag 不附带签名 APK；Release/Minified Release、ARM64 物理设备及部分故障场景仍需外部凭据或设备补验，详见 `docs/RELEASE_CHECKLIST.md`。
 
 ## 主要能力
 
@@ -31,7 +33,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 
 - Android-only；`minSdk 24`，`compileSdk/targetSdk 36`。
 - React Native `0.85.3`、React `19.2.3`、TypeScript `5.8`、Kotlin `2.1.20`。
-- Node.js `>= 22.11.0`、JDK `17`、Android SDK 与 Gradle 环境。
+- Node.js `>= 24.3.0`、JDK `17`、Android SDK 与 Gradle 环境。
 - SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 14。
 - 本地模型：仅支持 `.gguf`，由 Android `llama.cpp` JNI 引擎加载；模型文件放在应用私有模型目录，不上传服务器。
 - 在线模型：OpenAI 兼容 Chat Completions 接口。默认只允许 HTTPS；局域网 HTTP 必须由用户显式开启，并限制在 `127.0.0.1`、`10/8`、`172.16/12`、`192.168/16`，公网 HTTP 永远拒绝。
@@ -102,7 +104,9 @@ npm run test:coverage
 npm run verify
 ```
 
-当前本地验证基线：**78 个 Jest suite / 381 个测试通过**。最近一次覆盖率为 statements `78.21%`、branches `60.30%`、functions `85.92%`、lines `79.82%`；覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
+当前本地验证基线：**82 个 Jest suite / 401 个测试通过**。最近一次覆盖率为 statements `78.33%`、branches `60.37%`、functions `86.05%`、lines `79.95%`；覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
+
+`npx jest --runInBand --ci --detectOpenHandles` 可在 Node 24.14.1 上自然退出，不使用 `--forceExit`，无 open-handle 报告或超时。最终分支头的 GitHub Actions [Verify Run 29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) 三个 Job 全部成功。
 
 GitHub Actions `Verify` 对 `main` push 和 Pull Request 执行：
 
@@ -139,12 +143,14 @@ dist/apk/                         本地 APK 交付目录
 - 局域网 HTTP 只适合可信网络；公网 HTTP 不支持绕过安全策略。
 - API Key 不随备份迁移，这是刻意的隐私边界；换设备或恢复备份后需要重新填写。
 - TTS 的可用音色、后台行为和性能受 Android 版本及设备厂商实现影响。
+- API 37 x86_64 模拟器会报告部分原生库的 16KB page-size/RELRO 兼容提示；ARM64 物理设备发布前仍需补验。
+- `V2.4.4` 为 Tag-only 工程验收版本，不包含签名 Release APK 或 GitHub Release 附件。
 
 ## English summary
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current release is **V2.4.3** with database Schema **14**. The app stores SQLite data and local models on-device. API keys are kept in Android Keystore through `react-native-keychain` and are excluded from backups. HTTPS is the default; opt-in HTTP is restricted to private IPv4 LAN ranges. See the Chinese sections above for build, test, release, privacy, and known-limit details.
+The current tag is **V2.4.4** with database Schema **14**. It is an engineering reliability tag without a signed Release APK. The app stores SQLite data and local models on-device. API keys are kept in Android Keystore through `react-native-keychain` and are excluded from backups. HTTPS is the default; opt-in HTTP is restricted to private IPv4 LAN ranges. See the Chinese sections above for build, test, release, privacy, and known-limit details.
 
 ## License
 

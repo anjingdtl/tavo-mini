@@ -6,35 +6,42 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+No unreleased changes are currently recorded.
+
+## [2.4.4] - 2026-07-16
+
 ### Added
 
-- Added GitHub Actions quality gates for lint, TypeScript, Jest, coverage, Android Debug, and migration tests.
-- Added portable Maestro definitions for the core writing, resource, backup, LLM, and pipeline flows.
-- Split the SQLite connection/schema/repository layer and the ChapterEditor into smaller owned modules.
-- Added mobile-safe LLM scheduling, queue status UI, low-memory pausing, centralized timeout policy, request timing metrics, and private-LAN HTTP validation.
-- Added historical Schema 3–13 migration fixtures and a 12-scenario fault-injection recovery matrix.
+- Added test-only migration/restore statement injection and real device flows for autosave kill, network interruption, and TTS background transitions.
+- Added final per-flow Maestro/JUnit, logcat, UI-tree, screenshot, APK hash, and GitHub Actions evidence.
 
 ### Changed
 
-- The current local verification baseline is 78 Jest suites and 381 tests, with the latest local coverage recorded in `README.md` and `docs/optimization/progress.md`.
-- The release process now documents migration, backup/restore, online/local model, TTS, background, signing, and checksum checks in `docs/RELEASE_CHECKLIST.md`.
+- Node.js support is now `>=24.3.0`; CI uses Node 24.14.1.
+- Jest CI and coverage run naturally without `--forceExit`, and GitHub Actions runs coverage once instead of executing the full suite twice.
+- Backup publication now writes a staging file and atomically moves it into place after a successful write.
+- The verification baseline is 82 Jest suites / 401 tests with 78.33% statements, 60.37% branches, 86.05% functions, and 79.95% lines.
 
 ### Fixed
 
-- User cancellation is preserved as `cancelled` and is not reported as a timeout or provider failure.
+- Autosave database failures propagate to exit guards and retain retryable pending state.
+- Clearing chapter content now serializes with pending autosave and cannot be overwritten by a stale debounced write.
+- Maestro selectors and navigation match the current Android UI, including API 37 compatibility prompts and deterministic pipeline cancellation.
 
 ### Known limitations
 
-- Local Jest quality gates terminate cleanly, but repeated GitHub Actions `Verify` runs still time out during Jest after reporting passing suites; no remote green run is claimed until that behavior is resolved.
+- `V2.4.4` is a Tag-only engineering release; no signed Release or Minified Release APK is attached because signing environment variables were unavailable.
+- Migration-kill, restore-kill, GGUF-import-kill, and native OOM execution remain blocked by missing pause injectors/model assets; TTS background verification is partial because the API 37 emulator engine returned native error `-7` after playback began.
+- API 37 reports a 16KB page-size/RELRO compatibility warning for native libraries; an ARM64 physical-device matrix remains required before distributing an RC APK.
 
 ### Security
 
-- HTTPS is the default for online LLM requests. HTTP requires an explicit warning-confirmed opt-in and is restricted to private IPv4 LAN ranges.
-- API keys remain in Android Keystore and are excluded from portable backups.
+- Fault-injection switches are test-only, cannot be enabled by remote input, and are disabled in Release builds.
+- Release signing still requires process environment variables; no signing password, API key, or user database is committed.
 
 ### Removed
 
-- No production capability was removed in this unreleased work.
+- No production capability was removed in V2.4.4.
 
 ## [2.4.3] - 2026-07-12
 
