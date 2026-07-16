@@ -108,7 +108,7 @@
 
 #### Commit
 
-- 提交信息计划为 `fix(editor): serialize autosave and clear-content actions`；SHA 在提交完成后补录。
+- `6262e52` — `fix(editor): serialize autosave and clear-content actions`
 
 #### CI Run URL
 
@@ -130,32 +130,50 @@
 
 ### Root cause
 
-- `package.json` 的 `test:ci` 与 `test:coverage` 均仍使用 `--forceExit`。
-- `.github/workflows/verify.yml` 连续执行两次全量 Jest，且当前基线无法证明 Jest 自然退出。
+- 远端 Run `29433210552` 的 JavaScript job 在 Linux Node 22.11.0 上执行全量 Jest 时，完成 `noteImport.test.ts` 后进入 `appPipelineReminder.test.tsx` 卡住，直至 20 分钟 job timeout；runner 最后强杀 `npm`、`sh`、`node`，Coverage 被跳过。
+- WSL2 同一提交、同一依赖复现：Node 22.11.0 与 22.13.0 单独执行 `appPipelineReminder.test.tsx` 均在产生测试结果前挂住；Node 24.14.1 在约 9 秒通过该 suite，完整 81 suites / 393 tests 在 11.965 秒自然退出。
+- `package.json` 的 `test:ci` 与 `test:coverage` 使用 `--forceExit`，掩盖本地自然退出状态。
+- `.github/workflows/verify.yml` 连续执行两次全量 Jest，第一遍卡住导致 Coverage 永远无法开始。
 
 ### Code changes
 
-- 待定位真实未释放资源后实施；不得仅删除参数或延长 timeout。
+- 将项目 Node engine 收紧为 `>=24.3.0`，CI 三个 job 固定 Node 24.14.1。
+- 从 `test:ci`、`test:coverage` 删除 `--forceExit`。
+- JavaScript job 合并为单次 `Jest with coverage`，保留 lint、typecheck 和 coverage threshold，不修改 timeout。
 
 ### Tests added
 
-- 待定位后记录。
+- 新增 `__tests__/ciConfiguration.test.ts`，锁定 Node engine、Actions Node 版本、无 `--forceExit`、且 workflow 只执行一次 coverage Jest。
 
 ### Commands run
 
-- 已核对 package scripts 和 Verify workflow。
+- `npx jest --runInBand --ci --detectOpenHandles`（Windows Node 24.14.1）
+- WSL2 Node 22.11.0/22.13.0：`npx jest __tests__/appPipelineReminder.test.tsx --runInBand --ci --detectOpenHandles`
+- WSL2 Node 24.14.1：同一专项命令及全量 `npx jest --runInBand --ci --detectOpenHandles`
+- `npm run lint`
+- `npm run typecheck`
+- `npm run test:ci`
+- `npm run test:coverage`
+- `npm test -- migration --runInBand`
+- `npx jest --runInBand --ci --detectOpenHandles`
 
 ### Results
 
-- 基线状态与 Spec 描述一致，当前为 `PARTIAL`。
+- 配置红测：修复前 3 tests failed，分别锁定不支持的 Node、`--forceExit` 和重复 Jest 步骤。
+- Windows 最终门禁：82 suites / 396 tests，退出码 0，自然退出，无 open handle 报告，无超时。
+- Coverage：Statements 78.29%、Branches 60.36%、Functions 86.05%、Lines 79.92%，退出码 0。
+- Migration：7 suites / 36 tests，退出码 0。
+- WSL2 Node 24.14.1：81 suites / 393 tests，11.965 秒，自然退出，无 open handle 报告。该克隆位于 `/tmp`，未触碰用户工作区。
 
 ### Commit
 
-- 待提交。
+- `f361b4f` — `test: make Jest terminate naturally on a supported runtime`
+- `9b6cc7d` — `ci: make JavaScript verification terminate naturally`
 
 ### CI Run URL
 
-- 待推送后记录。
+- 失败基线：https://github.com/anjingdtl/tavo-mini/actions/runs/29433210552
+- 修复后 Run：待诊断分支 PR 触发并记录。
 
 ### Device and APK
 
@@ -163,7 +181,7 @@
 
 ### Remaining risk
 
-- Windows 本机只能作为一条证据；还需 WSL2 或 GitHub Actions 的 Linux 自然退出证据。
+- WSL2 已提供 Linux 自然退出证据；Workstream B 仍需 GitHub Actions 三 job 全绿才可改为 PASS。
 
 ### Status
 
