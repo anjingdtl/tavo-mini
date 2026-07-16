@@ -23,6 +23,11 @@ export function debounce<TArgs extends unknown[]>(
     running = Promise.resolve(fn(...args));
     try {
       await running;
+    } catch (error) {
+      // A failed execution is still pending work. Preserve it so an explicit
+      // flush can retry instead of silently losing the latest arguments.
+      if (!latestArgs) latestArgs = args;
+      throw error;
     } finally {
       running = null;
     }
@@ -43,7 +48,9 @@ export function debounce<TArgs extends unknown[]>(
     call: (...args) => {
       latestArgs = args;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => { execute().catch(handleBackgroundError); }, delay);
+      timer = setTimeout(() => {
+        execute().catch(handleBackgroundError);
+      }, delay);
     },
     flush: async () => {
       if (running) await running;
