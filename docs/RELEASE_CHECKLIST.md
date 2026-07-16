@@ -2,23 +2,23 @@
 
 本清单用于每个 Android 发布版本。勾选前把命令输出、APK 路径、设备型号或 GitHub Actions URL 写入对应的证据栏；无法执行的项目必须注明原因和替代验证，不得默认为通过。
 
-当前候选分支基线（2026-07-16）：Draft PR [#1](https://github.com/anjingdtl/tavo-mini/pull/1)。最终 GitHub Actions Run [29504035382](https://github.com/anjingdtl/tavo-mini/actions/runs/29504035382) 的 JavaScript、Migration matrix、Android Debug 均成功。签名 Release、Minified Release、物理设备和部分故障注入仍 BLOCKED，因此本清单不批准 RC。
+当前发布基线（2026-07-16）：实现分支最终 GitHub Actions Run [29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) 的 JavaScript、Migration matrix、Android Debug 均成功。按用户要求发布源码 Tag `V2.4.4`；签名 Release、Minified Release、物理设备和部分故障注入仍 BLOCKED，因此不批准可分发 APK RC。
 
 ## 版本与文档
 
-- [ ] `package.json` 的 `version` 已更新
-- [ ] `src/constants/version.json` 已由 `npm run prebuild` 生成并与版本一致
-- [ ] Android `versionCode` 已递增且没有回退
-- [ ] `CHANGELOG.md` 已更新
-- [ ] `README.md` 与当前功能、测试数量、模型支持和隐私边界一致
-- [ ] 发布说明包含升级风险、已知限制和兼容性变化
+- [x] `package.json` 的 `version` 已更新
+- [x] `src/constants/version.json` 已由 `npm run prebuild` 生成并与版本一致
+- [x] Android `versionCode` 已递增且没有回退
+- [x] `CHANGELOG.md` 已更新
+- [x] `README.md` 与当前功能、测试数量、模型支持和隐私边界一致
+- [x] Tag 发布说明包含升级风险、已知限制和兼容性变化
 
 证据：
 
 ```text
-Version: 2.4.3（未创建 V2.4.4-rc.1）
-versionCode: 24（本轮未改）
-CHANGELOG / README commit: BLOCKED；未批准 RC，不写虚假发布记录
+Version: 2.4.4（Tag-only）
+versionCode: 2040400
+CHANGELOG / README commit: 本轮 V2.4.4 发布提交
 ```
 
 ## 依赖与质量门禁
@@ -46,8 +46,8 @@ npm test -- migration --runInBand
 Local commands / logs: Node 24.14.1；82 suites / 401 tests
 Coverage: Statements 78.33%, Branches 60.37%, Functions 86.05%, Lines 79.95%
 Jest natural exit: 82 suites / 401 tests，exit 0，无 --forceExit/open handles/timeout
-GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29504035382
-Jobs: JavaScript validation success 56s；Migration matrix success 27s；Android Debug success 8m49s
+GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163
+Jobs: JavaScript validation success 64s；Migration matrix success 27s；Android Debug success 9m43s
 ```
 
 ## Android 构建与签名
@@ -69,8 +69,8 @@ Get-FileHash -Algorithm SHA256 dist/apk/release/ShineWriter-V<version>-release.a
 证据：
 
 ```text
-Debug APK: dist/apk/debug/ShineWriter-V2.4.3-debug.apk
-Debug SHA-256: 1A4C284C2D729F2A7E30B757A8B428F823FEE7BA5891E909F378DA37E8E11FEF
+Debug APK: dist/apk/debug/ShineWriter-V2.4.4-debug.apk（50,106,550 bytes）
+Debug SHA-256: 69D99F8D0900E87F90636AE83B109BA2D6438003C166270EFF74168411DCEB28
 Release APK: BLOCKED；四项 SHINE_WRITER_RELEASE_* 环境变量未设置
 Minified Release APK: BLOCKED；同上
 Signer certificate digest: BLOCKED；未生成签名 Release，不复用历史值
@@ -154,7 +154,7 @@ Open issues: D7 migration kill、D8 restore kill、D9 GGUF import kill、D10 nat
 证据：
 
 ```text
-Release URL: BLOCKED；未创建 RC/Release
+Release URL: 不创建 GitHub Release；源码 Tag URL 为 https://github.com/anjingdtl/tavo-mini/releases/tag/V2.4.4
 Previous release / rollback artifact: BLOCKED；本轮未验证历史签名 APK
-main parity: 本轮工作在 Draft PR 分支发布，未合并 main；最终 push 后记录 branch parity
+main parity: 发布后执行 `git rev-list --left-right --count main...origin/main`，目标 `0 0`
 ```
