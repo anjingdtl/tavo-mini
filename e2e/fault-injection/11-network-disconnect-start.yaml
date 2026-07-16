@@ -1,0 +1,21 @@
+appId: com.shinewriter
+---
+- launchApp
+- tapOn:
+    point: '12%,95%'
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- tapOn: '写作'
+- extendedWaitUntil:
+    visible: 'E2E_CHAPTER'
+    timeout: 10000
+- tapOn: 'E2E_CHAPTER'
+- tapOn: 'AI 重新生成'
+- extendedWaitUntil:
+    visible: '覆盖并重新生成'
+    timeout: 10000
+- tapOn: '覆盖并生成'
+- extendedWaitUntil:
+    visible: '停止'
+    timeout: 10000
