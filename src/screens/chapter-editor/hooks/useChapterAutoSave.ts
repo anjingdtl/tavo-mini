@@ -16,6 +16,7 @@ export function useChapterAutoSave(
   setChapter: Dispatch<SetStateAction<Chapter | null>>,
 ) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
+  const [saveError, setSaveError] = useState<unknown>(null);
   const pendingFieldsRef = useRef<Partial<Chapter>>({});
   const pendingChapterIdRef = useRef<number | null>(null);
   const autoSaveRef = useRef<DebouncedAsync<[]>>(
@@ -26,10 +27,13 @@ export function useChapterAutoSave(
       if (id == null) return;
       try {
         await db.updateChapter(id, fields);
+        setSaveError(null);
         setSaveStatus('saved');
-      } catch {
+      } catch (error) {
         pendingFieldsRef.current = { ...fields, ...pendingFieldsRef.current };
+        setSaveError(error);
         setSaveStatus('failed');
+        throw error;
       }
     }, 900),
   );
@@ -40,6 +44,7 @@ export function useChapterAutoSave(
       setChapter(current =>
         current ? { ...current, [field]: value } : current,
       );
+      setSaveError(null);
       setSaveStatus('saving');
       pendingFieldsRef.current = {
         ...pendingFieldsRef.current,
@@ -51,5 +56,11 @@ export function useChapterAutoSave(
     [chapter, setChapter],
   );
 
-  return { autoSaveRef, changeField, saveStatus, setSaveStatus };
+  return {
+    autoSaveRef,
+    changeField,
+    saveError,
+    saveStatus,
+    setSaveStatus,
+  };
 }

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
@@ -29,6 +30,8 @@ export function useUnsavedChangesGuard({
   onClose,
   setSaveStatus,
 }: Params) {
+  const allowNextRemovalRef = useRef(false);
+
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'background' || state === 'inactive') {
@@ -45,36 +48,49 @@ export function useUnsavedChangesGuard({
     };
   }, [autoSaveRef]);
 
+  const saveBeforeExit = useCallback(
+    async (onSaved: () => void, onForceExit: () => void) => {
+      if (!autoSaveRef.current.pending()) {
+        onSaved();
+        return;
+      }
+      try {
+        await autoSaveRef.current.flush();
+        onSaved();
+      } catch {
+        setSaveStatus('failed');
+        Alert.alert('保存失败', '内容尚未保存，是否仍然退出？', [
+          {
+            text: '重试保存',
+            onPress: () => saveBeforeExit(onSaved, onForceExit).catch(() => {}),
+          },
+          { text: '仍然退出', style: 'destructive', onPress: onForceExit },
+        ]);
+      }
+    },
+    [autoSaveRef, setSaveStatus],
+  );
+
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (event: any) => {
+      if (allowNextRemovalRef.current) {
+        allowNextRemovalRef.current = false;
+        return;
+      }
       if (!autoSaveRef.current.pending()) return;
       event.preventDefault();
-      autoSaveRef.current
-        .flush()
-        .then(() => navigation.dispatch(event.data.action))
-        .catch(() => {
-          setSaveStatus('failed');
-        });
+      const dispatch = () => navigation.dispatch(event.data.action);
+      saveBeforeExit(dispatch, () => {
+        allowNextRemovalRef.current = true;
+        dispatch();
+      }).catch(() => {});
     });
     return unsubscribe;
-  }, [autoSaveRef, navigation, setSaveStatus]);
+  }, [autoSaveRef, navigation, saveBeforeExit]);
 
   const flushAndClose = useCallback(async () => {
-    if (!autoSaveRef.current.pending()) {
-      onClose();
-      return;
-    }
-    try {
-      await autoSaveRef.current.flush();
-      onClose();
-    } catch {
-      setSaveStatus('failed');
-      Alert.alert('保存失败', '内容尚未保存，是否仍然退出？', [
-        { text: '重试保存', onPress: () => flushAndClose().catch(() => {}) },
-        { text: '仍然退出', style: 'destructive', onPress: onClose },
-      ]);
-    }
-  }, [autoSaveRef, onClose, setSaveStatus]);
+    await saveBeforeExit(onClose, onClose);
+  }, [onClose, saveBeforeExit]);
 
   return { flushAndClose };
 }
