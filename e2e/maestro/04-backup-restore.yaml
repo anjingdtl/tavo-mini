@@ -51,7 +51,7 @@ appId: com.shinewriter
 - extendedWaitUntil:
     visible: '恢复成功'
     timeout: 15000
-- tapOn: '确定'
+- tapOn: 'OK'
 - back
 - tapOn: '写作'
 - tapOn: 'E2E_CHAPTER'
