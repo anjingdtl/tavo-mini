@@ -1,0 +1,27 @@
+appId: com.shinewriter
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- tapOn: '写作'
+- extendedWaitUntil:
+    visible: 'FAULT_D6_CHAPTER'
+    timeout: 10000
+- tapOn: 'FAULT_D6_CHAPTER'
+- swipe:
+    start: '90%,37%'
+    end: '15%,37%'
+    duration: 800
+- swipe:
+    start: '90%,37%'
+    end: '15%,37%'
+    duration: 800
+- tapOn: '朗读'
+- extendedWaitUntil:
+    visible: '选择朗读范围'
+    timeout: 10000
+- tapOn: '本章'
+- extendedWaitUntil:
+    visible: '停止'
+    timeout: 15000
