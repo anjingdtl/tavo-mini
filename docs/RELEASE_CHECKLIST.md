@@ -2,7 +2,7 @@
 
 本清单用于每个 Android 发布版本。勾选前把命令输出、APK 路径、设备型号或 GitHub Actions URL 写入对应的证据栏；无法执行的项目必须注明原因和替代验证，不得默认为通过。
 
-当前候选分支基线（2026-07-16）：Draft PR [#1](https://github.com/anjingdtl/tavo-mini/pull/1)。GitHub Actions Run [29495667191](https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191) 的 JavaScript、Migration matrix、Android Debug 均成功。签名 Release、Minified Release、物理设备和部分故障注入仍 BLOCKED，因此本清单不批准 RC。
+当前候选分支基线（2026-07-16）：Draft PR [#1](https://github.com/anjingdtl/tavo-mini/pull/1)。最终 GitHub Actions Run [29504035382](https://github.com/anjingdtl/tavo-mini/actions/runs/29504035382) 的 JavaScript、Migration matrix、Android Debug 均成功。签名 Release、Minified Release、物理设备和部分故障注入仍 BLOCKED，因此本清单不批准 RC。
 
 ## 版本与文档
 
@@ -46,8 +46,8 @@ npm test -- migration --runInBand
 Local commands / logs: Node 24.14.1；82 suites / 401 tests
 Coverage: Statements 78.33%, Branches 60.37%, Functions 86.05%, Lines 79.95%
 Jest natural exit: 82 suites / 401 tests，exit 0，无 --forceExit/open handles/timeout
-GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191
-Jobs: JavaScript validation success 59s；Migration matrix success 28s；Android Debug success 9m27s
+GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29504035382
+Jobs: JavaScript validation success 56s；Migration matrix success 27s；Android Debug success 8m49s
 ```
 
 ## Android 构建与签名
