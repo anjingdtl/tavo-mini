@@ -624,7 +624,19 @@ export async function createBackup(
   const kindPrefix = kind === 'manual' ? 'manual' : kind === 'pre_restore' ? 'prerestore' : 'backup';
   const fileName = `${kindPrefix}_v${appVersion}_${timestamp}.json`;
   const filePath = `${BACKUP_DIR}/${fileName}`;
-  await RNFS.writeFile(filePath, JSON.stringify(draft), 'utf8');
+  const stagingPath = `${filePath}.tmp`;
+  try {
+    await RNFS.writeFile(stagingPath, JSON.stringify(draft), 'utf8');
+    await RNFS.moveFile(stagingPath, filePath);
+  } catch (error) {
+    try {
+      await RNFS.unlink(stagingPath);
+    } catch {
+      // The write can fail before the staging file exists. Preserve the
+      // original storage error and let the next backup attempt retry cleanly.
+    }
+    throw error;
+  }
   await cleanupOldBackups();
   return filePath;
 }

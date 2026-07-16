@@ -223,6 +223,7 @@ describe('backupService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (RNFS.writeFile as jest.Mock).mockResolvedValue(undefined);
+    (RNFS.moveFile as jest.Mock).mockResolvedValue(undefined);
     (RNFS.readFile as jest.Mock).mockResolvedValue('{}');
     (RNFS.mkdir as jest.Mock).mockResolvedValue(undefined);
     (RNFS.readDir as jest.Mock).mockResolvedValue([]);
@@ -275,6 +276,31 @@ describe('backupService', () => {
     expect(paths.some(path => path.includes('backup_v1.2.0_'))).toBe(true);
     expect(paths.some(path => path.includes('manual_v1.2.0_'))).toBe(true);
     expect(paths.some(path => path.includes('prerestore_v1.2.0_'))).toBe(true);
+  });
+
+  test('createBackup publishes atomically only after the staging write succeeds', async () => {
+    const mockDb = createMockDb({ projects: [{ id: 1, name: '原子备份' }] });
+
+    const filePath = await createBackup(mockDb, '1.2.0', 6, 'manual');
+
+    const stagingPath = (RNFS.writeFile as jest.Mock).mock.calls[0][0];
+    expect(stagingPath).toBe(`${filePath}.tmp`);
+    expect(RNFS.moveFile).toHaveBeenCalledWith(stagingPath, filePath);
+  });
+
+  test('createBackup removes an ENOSPC staging file without publishing a corrupt backup', async () => {
+    const mockDb = createMockDb({ projects: [{ id: 1, name: '空间不足' }] });
+    const enospc = Object.assign(new Error('ENOSPC: no space left on device'), {
+      code: 'ENOSPC',
+    });
+    (RNFS.writeFile as jest.Mock).mockRejectedValueOnce(enospc);
+
+    await expect(createBackup(mockDb, '1.2.0', 6, 'manual')).rejects.toBe(enospc);
+
+    const stagingPath = (RNFS.writeFile as jest.Mock).mock.calls[0][0];
+    expect(stagingPath).toMatch(/\.json\.tmp$/);
+    expect(RNFS.unlink).toHaveBeenCalledWith(stagingPath);
+    expect(RNFS.moveFile).not.toHaveBeenCalled();
   });
 
   test('validateBackup accepts v3 and detects checksum changes', async () => {
