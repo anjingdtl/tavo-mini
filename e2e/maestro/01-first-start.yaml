@@ -2,6 +2,9 @@ appId: com.shinewriter
 ---
 - launchApp:
     clearState: true
+- tapOn:
+    text: "Don't Show Again"
+    optional: true
 - extendedWaitUntil:
     visible: '小说项目'
     timeout: 15000
