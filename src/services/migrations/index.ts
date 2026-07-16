@@ -52,7 +52,7 @@ export async function runMigrations(
       sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
       params: ['schema_version', String(migration.to)],
     });
-    await executeTransaction(db, statements);
+    await executeTransaction(db, statements, { faultDomain: 'migration' });
   }
 
   return {

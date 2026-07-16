@@ -1,4 +1,8 @@
 import type SQLite from 'react-native-sqlite-storage';
+import {
+  throwIfSqlStatementFault,
+  type SqlFaultDomain,
+} from '../../testing/faultInjection';
 
 export interface SqlStatement {
   sql: string;
@@ -18,6 +22,7 @@ type Failure = (error: unknown) => void;
 export function executeTransaction(
   database: SQLite.SQLiteDatabase,
   statements: readonly SqlStatement[],
+  options: { faultDomain?: SqlFaultDomain } = {},
 ): Promise<void> {
   if (statements.length === 0) return Promise.resolve();
 
@@ -36,7 +41,8 @@ export function executeTransaction(
 
     const scope = (tx: SQLite.Transaction): void => {
       try {
-        for (const statement of statements) {
+        for (const [index, statement] of statements.entries()) {
+          throwIfSqlStatementFault(options.faultDomain, index + 1);
           tx.executeSql(statement.sql, (statement.params || []) as any[]);
         }
       } catch (error) {
