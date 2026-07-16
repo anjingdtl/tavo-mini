@@ -1,6 +1,8 @@
 appId: com.shinewriter
 ---
 - launchApp
+- tapOn:
+    point: '12%,95%'
 - extendedWaitUntil:
     visible: '小说项目'
     timeout: 15000
@@ -24,9 +26,9 @@ appId: com.shinewriter
 - tapOn: '返回'
 - tapOn: '设置'
 - extendedWaitUntil:
-    visible: '流水线任务'
+    visible: '流水线任务.*'
     timeout: 10000
-- tapOn: '流水线任务'
+- tapOn: '流水线任务.*'
 - extendedWaitUntil:
-    visible: '已取消'
+    visible: '已取消.*'
     timeout: 15000
