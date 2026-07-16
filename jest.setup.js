@@ -36,6 +36,7 @@ jest.mock('react-native-fs', () => ({
   ExternalDirectoryPath: '/tmp/external',
   readFile: jest.fn(),
   writeFile: jest.fn(),
+  moveFile: jest.fn(),
   copyFile: jest.fn(),
   mkdir: jest.fn(),
   readDir: jest.fn(),
