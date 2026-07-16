@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="emulator-5556" tests="6" failures="0" time="264.0">
+    <testcase id="01-first-start" name="01-first-start" classname="01-first-start" file="e2e\maestro\01-first-start.yaml" time="9.0" status="SUCCESS"/>
+    <testcase id="02-writing-lifecycle" name="02-writing-lifecycle" classname="02-writing-lifecycle" file="e2e\maestro\02-writing-lifecycle.yaml" time="48.0" status="SUCCESS"/>
+    <testcase id="03-resource-library" name="03-resource-library" classname="03-resource-library" file="e2e\maestro\03-resource-library.yaml" time="65.0" status="SUCCESS"/>
+    <testcase id="04-backup-restore" name="04-backup-restore" classname="04-backup-restore" file="e2e\maestro\04-backup-restore.yaml" time="51.0" status="SUCCESS"/>
+    <testcase id="05-llm-configuration" name="05-llm-configuration" classname="05-llm-configuration" file="e2e\maestro\05-llm-configuration.yaml" time="62.0" status="SUCCESS"/>
+    <testcase id="06-pipeline-cancel" name="06-pipeline-cancel" classname="06-pipeline-cancel" file="e2e\maestro\06-pipeline-cancel.yaml" time="29.0" status="SUCCESS"/>
+  </testsuite>
+</testsuites>

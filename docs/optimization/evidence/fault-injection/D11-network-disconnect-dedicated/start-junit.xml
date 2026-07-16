@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="emulator-5556" tests="1" failures="0" time="18.0">
+    <testcase id="11-network-disconnect-start" name="11-network-disconnect-start" classname="11-network-disconnect-start" file="e2e\fault-injection\11-network-disconnect-start.yaml" time="18.0" status="SUCCESS"/>
+  </testsuite>
+</testsuites>
