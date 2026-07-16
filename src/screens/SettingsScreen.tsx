@@ -129,8 +129,8 @@ export const SettingsScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 96 },
-  cardTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
-  cardMeta: { fontSize: 13, lineHeight: 20, marginBottom: spacing.md },
+  cardTitle: { fontSize: 18, fontFamily: 'serif', fontWeight: '700', marginBottom: 5 },
+  cardMeta: { fontSize: 13, lineHeight: 21, marginBottom: spacing.md },
   themeHints: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.md },
   switchText: { flex: 1 },
