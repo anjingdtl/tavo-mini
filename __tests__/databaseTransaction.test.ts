@@ -42,6 +42,10 @@ function createDatabase(options: {
 }
 
 describe('executeTransaction', () => {
+  afterEach(() => {
+    delete process.env.FAIL_MIGRATION_AT_STATEMENT;
+  });
+
   test('resolves an empty batch without opening a transaction', async () => {
     const { database } = createDatabase();
 
@@ -99,5 +103,21 @@ describe('executeTransaction', () => {
     const { database } = createDatabase({ duplicateCompletion: true });
 
     await expect(executeTransaction(database as any, [{ sql: 'SELECT 1' }])).resolves.toBeUndefined();
+  });
+
+  test('test-only migration injection fails before scheduling statement three', async () => {
+    process.env.FAIL_MIGRATION_AT_STATEMENT = '3';
+    const { database, calls } = createDatabase();
+
+    await expect(executeTransaction(database as any, [
+      { sql: 'MIGRATION 1' },
+      { sql: 'MIGRATION 2' },
+      { sql: 'MIGRATION 3' },
+      { sql: 'MIGRATION 4' },
+    ], { faultDomain: 'migration' })).rejects.toThrow(
+      'FAULT_INJECTION: migration statement 3',
+    );
+
+    expect(calls.map(call => call.sql)).toEqual(['MIGRATION 1', 'MIGRATION 2']);
   });
 });
