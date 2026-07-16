@@ -17,5 +17,5 @@ export async function applyMigration(
   database: SQLite.SQLiteDatabase,
   statements: readonly SqlStatement[],
 ): Promise<void> {
-  await executeTransaction(database, statements);
+  await executeTransaction(database, statements, { faultDomain: 'migration' });
 }
