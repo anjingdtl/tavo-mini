@@ -56,7 +56,7 @@
 
 #### Commit
 
-- 提交信息计划为 `fix(editor): propagate autosave failures to exit guards`；SHA 在提交完成后补录。
+- `415883e` — `fix(editor): propagate autosave failures to exit guards`
 
 #### CI Run URL
 
@@ -82,23 +82,33 @@
 
 #### Code changes
 
-- 待实施。
+- `ChapterEditorScreen` 在打开清空确认时同步取得互斥锁并禁用清空入口；取消或结束后释放。
+- 清空确认后先 `await autoSaveRef.current.flush()`；失败立即停止，不创建快照、不写空正文、不刷新页面。
+- 用同步维护的最新章节引用创建快照，确保立即点击清空也保存最新正文。
+- 清空期间拒绝新的字段编辑；成功写空并重新加载后才标记 `saved`。全程未调用 `cancel()`。
 
 #### Tests added
 
-- 待先编写失败测试并记录复现。
+- 新增 `__tests__/chapterClearRace.test.tsx`，覆盖调用顺序、flush 失败阻断、debounce 窗口后无旧正文回写、最新快照、UI/数据库均为空、保存状态、快速重复点击、禁用态、清空写入失败可恢复、无残留 pending 写入。
 
 #### Commands run
 
 - 已检查 `ChapterEditorScreen.tsx` 清空流程及自动保存 Hook。
+- `npx jest __tests__/chapterClearRace.test.tsx --runInBand`（修复前）
+- `npx jest __tests__/chapterEditorToolbar.test.tsx __tests__/chapterAutosaveFailure.test.tsx __tests__/chapterUnsavedGuard.test.tsx __tests__/chapterClearRace.test.tsx __tests__/debounce.test.ts --runInBand`
+- `npm run typecheck`
+- `npm run lint`
 
 #### Results
 
-- 已从调用顺序静态确认竞态窗口；动态失败测试待执行。
+- 修复前：退出码 1；4 tests failed，实际观察到快照内容为旧正文、第一次写入为空正文、旧 pending 回写风险，以及重复弹出两个确认框。
+- 修复后专项：退出码 0；5 suites、28 tests 全部通过。
+- TypeScript：退出码 0。
+- ESLint：退出码 0；仅有 4 条既有 `no-bitwise` warning，无 error。
 
 #### Commit
 
-- 待提交。
+- 提交信息计划为 `fix(editor): serialize autosave and clear-content actions`；SHA 在提交完成后补录。
 
 #### CI Run URL
 
@@ -110,11 +120,11 @@
 
 #### Remaining risk
 
-- 必须保存最新正文后再创建版本快照；不得通过取消 pending autosave 规避竞态。
+- 清空确认框设置为不可点击外部区域取消，避免锁状态无法被明确释放；用户仍可使用“取消”按钮。
 
 #### Status
 
-`PARTIAL`
+`PASS`
 
 ## Workstream B：Jest 与 GitHub Actions
 
