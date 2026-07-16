@@ -803,7 +803,7 @@ export async function restoreFromBackup(
   });
 
   try {
-    await executeTransaction(db, statements);
+    await executeTransaction(db, statements, { faultDomain: 'restore' });
     try {
       await assertRestoredSchema(db);
     } catch (verificationError) {
