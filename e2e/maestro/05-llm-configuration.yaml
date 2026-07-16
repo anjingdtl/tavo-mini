@@ -1,6 +1,14 @@
 appId: com.shinewriter
 ---
 - launchApp
+- tapOn:
+    text: '我知道了'
+    optional: true
+- tapOn:
+    text: '关闭'
+    optional: true
+- tapOn:
+    point: '12%,95%'
 - extendedWaitUntil:
     visible: '小说项目'
     timeout: 15000
@@ -37,4 +45,11 @@ appId: com.shinewriter
     visible: '连接失败'
     timeout: 15000
 - tapOn: 'OK'
+- tapOn:
+    id: llm-allow-insecure-lan-http
+- extendedWaitUntil:
+    visible: '允许局域网 HTTP？'
+    timeout: 10000
+- tapOn: '继续允许'
+- tapOn: '设为当前'
 - back
