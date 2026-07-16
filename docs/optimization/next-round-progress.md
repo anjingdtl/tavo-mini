@@ -261,6 +261,7 @@
 - 最终实现分支头 CI：https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163（JavaScript validation 64s、Migration matrix 27s、Android Debug build 9m43s，全部 success）。
 - 发布决策：按用户要求创建 `V2.4.4` Tag-only 工程验收版本；版本生成器不支持 SemVer prerelease 字符串，因此未使用 `V2.4.4-rc.1`。不创建或附加签名 APK 的 GitHub Release，阻塞项保持原状态。
 - V2.4.4 Tag 门禁：Debug APK 50,106,550 bytes，SHA-256 `69D99F8D0900E87F90636AE83B109BA2D6438003C166270EFF74168411DCEB28`；AAPT/设备均报告 `V2.4.4` / `2040400`，`adb install -r` 后 `MainActivity` 在 `emulator-5556` 正常恢复。
+- V2.4.4 主线 CI：https://github.com/anjingdtl/tavo-mini/actions/runs/29506345363（JavaScript validation 67s、Migration matrix 28s、Android Debug build 9m13s，全部 success）。
 - 最终本地门禁：`npm ci` PASS（npm audit 报 3 个 moderate dependency vulnerabilities）；lint PASS（4 warnings/0 errors）；typecheck PASS；test:ci 82 suites/401 tests PASS；coverage 78.33% statements / 60.37% branches / 86.05% functions / 79.95% lines；migration 7 suites/37 tests PASS；detectOpenHandles 82 suites/401 tests 自然退出，无 open handle 报告；最终 Debug APK 重建及 6/6 设备回归 PASS。
 - 安全扫描：签名相关命中均为环境变量名称/文档/Gradle 读取；API key/Bearer/password 命中为生产字段、明显假测试值或 vendored llama.cpp 示例，未发现真实凭据；`src`、`android`、`__tests__` 无 `transaction(async`。备份测试继续证明凭据不写入 JSON。
 - 当前状态：`PARTIAL`。允许发布源码 Tag `V2.4.4`；仍不建议把该 Tag 当作可分发 APK RC。

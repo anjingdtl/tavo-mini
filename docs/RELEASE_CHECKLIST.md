@@ -46,8 +46,8 @@ npm test -- migration --runInBand
 Local commands / logs: Node 24.14.1；82 suites / 401 tests
 Coverage: Statements 78.33%, Branches 60.37%, Functions 86.05%, Lines 79.95%
 Jest natural exit: 82 suites / 401 tests，exit 0，无 --forceExit/open handles/timeout
-GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163
-Jobs: JavaScript validation success 64s；Migration matrix success 27s；Android Debug success 9m43s
+GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29506345363（main / e13c8a0）
+Jobs: JavaScript validation success 67s；Migration matrix success 28s；Android Debug success 9m13s
 ```
 
 ## Android 构建与签名
