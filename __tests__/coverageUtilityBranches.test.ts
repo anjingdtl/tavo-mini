@@ -221,10 +221,10 @@ describe('coverage branch contracts', () => {
   test('switches theme palettes through all supported modes', () => {
     const store = useThemeStore.getState();
     store.setMode('dark');
-    expect(useThemeStore.getState().theme.colors.background).toBe('#101418');
+    expect(useThemeStore.getState().theme.colors.background).toBe('#111916');
     store.setMode('eyecare');
-    expect(useThemeStore.getState().theme.colors.background).toBe('#F3F6EF');
+    expect(useThemeStore.getState().theme.colors.background).toBe('#EDF2E7');
     store.setMode('light');
-    expect(useThemeStore.getState().theme.colors.background).toBe('#F6F8FA');
+    expect(useThemeStore.getState().theme.colors.background).toBe('#F5F0E6');
   });
 });
