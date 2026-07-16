@@ -2,6 +2,7 @@ import React from 'react';
 import {
   ActivityIndicator,
   GestureResponderEvent,
+  ImageBackground,
   StyleSheet,
   Text,
   TextInput,
@@ -15,6 +16,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { LucideIcon } from 'lucide-react-native';
 import { useThemeStore } from '../store/themeStore';
 
+const bookishPaperBackground = require('../assets/bookish-paper-bg.png');
+const bookishDarkBackground = require('../assets/bookish-dark-bg.png');
+const bookishEyecareBackground = require('../assets/bookish-eyecare-bg.png');
+
 export const spacing = {
   xs: 4,
   sm: 8,
@@ -26,25 +31,48 @@ export const spacing = {
 export function Screen({
   children,
   padded = false,
+  showPaperBackdrop = true,
 }: {
   children: React.ReactNode;
   padded?: boolean;
+  showPaperBackdrop?: boolean;
 }) {
   const { theme } = useThemeStore();
   const insets = useSafeAreaInsets();
   const topPadding = insets.top + (padded ? spacing.lg : 0);
-  return (
+  const useBackdrop = showPaperBackdrop;
+  const backdropSource =
+    theme.mode === 'dark'
+      ? bookishDarkBackground
+      : theme.mode === 'eyecare'
+        ? bookishEyecareBackground
+        : bookishPaperBackground;
+  const content = (
     <View
       style={[
         styles.screen,
-        { backgroundColor: theme.colors.background, paddingTop: topPadding },
-        padded && styles.padded,
         { paddingTop: topPadding },
+        padded && styles.padded,
       ]}
     >
       {children}
     </View>
   );
+
+  if (useBackdrop) {
+    return (
+      <ImageBackground
+        source={backdropSource}
+        resizeMode="cover"
+        imageStyle={styles.backdropImage}
+        style={styles.screen}
+      >
+        {content}
+      </ImageBackground>
+    );
+  }
+
+  return content;
 }
 
 export function Header({
@@ -58,7 +86,7 @@ export function Header({
 }) {
   const { theme } = useThemeStore();
   return (
-    <View style={[styles.header, { borderBottomColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+    <View style={[styles.header, { borderBottomColor: theme.colors.border }]}>
       <View style={styles.headerText}>
         <Text style={[styles.title, { color: theme.colors.textPrimary }]} numberOfLines={1}>
           {title}
@@ -117,7 +145,7 @@ export function Button({
         : variant === 'secondary'
           ? theme.colors.accentSoft
           : 'transparent';
-  const foreground = variant === 'primary' || variant === 'danger' ? '#FFFFFF' : theme.colors.accent;
+  const foreground = variant === 'primary' || variant === 'danger' ? '#FFFCF5' : theme.colors.accent;
   return (
     <TouchableOpacity
       accessibilityRole="button"
@@ -127,7 +155,7 @@ export function Button({
         styles.button,
         { backgroundColor: background, borderColor: theme.colors.border },
         disabled && styles.buttonDisabled,
-        variant === 'ghost' && styles.ghostButton,
+        variant === 'ghost' && { borderColor: theme.colors.accent },
         compact && styles.buttonCompact,
         flex && styles.buttonFlex,
         minWidth > 0 && { minWidth },
@@ -244,9 +272,11 @@ export function LoadingState({ label = '加载中...' }: { label?: string }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  backdropImage: { opacity: 0.78 },
   padded: { padding: spacing.lg },
   header: {
     minHeight: 64,
+    backgroundColor: 'transparent',
     borderBottomWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
@@ -256,15 +286,25 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   headerText: { flex: 1 },
-  title: { fontSize: 20, fontWeight: '700' },
-  subtitle: { fontSize: 12, marginTop: 2 },
+  title: { fontSize: 22, fontFamily: 'serif', fontWeight: '700', letterSpacing: 0.2 },
+  subtitle: { fontSize: 13, marginTop: 3, letterSpacing: 0.2 },
   section: { marginBottom: spacing.lg },
-  sectionTitle: { fontSize: 12, fontWeight: '700', marginBottom: spacing.sm, textTransform: 'uppercase' },
-  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, marginBottom: spacing.md },
+  sectionTitle: { fontSize: 14, fontFamily: 'serif', fontWeight: '700', marginBottom: spacing.sm, letterSpacing: 0.6 },
+  card: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    shadowColor: '#8A7B65',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
   button: {
-    minHeight: 40,
+    minHeight: 42,
     paddingHorizontal: spacing.md,
-    borderRadius: 8,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -284,14 +324,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   ghostButton: { borderWidth: StyleSheet.hairlineWidth },
-  buttonText: { fontSize: 14, fontWeight: '700' },
-  iconButton: { width: 40, height: 40, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  buttonText: { fontSize: 14, fontWeight: '700', letterSpacing: 0.2 },
+  iconButton: { width: 40, height: 40, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
   field: { marginBottom: spacing.md },
   label: { fontSize: 12, fontWeight: '700', marginBottom: spacing.xs },
-  input: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, fontSize: 15 },
-  segmented: { flexDirection: 'row', padding: 4, borderRadius: 8, gap: 4 },
-  segment: { flex: 1, minHeight: 36, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
-  segmentText: { fontSize: 13, fontWeight: '700' },
+  input: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, fontSize: 15, lineHeight: 21 },
+  segmented: { flexDirection: 'row', padding: 4, borderRadius: 7, gap: 4 },
+  segment: { flex: 1, minHeight: 38, borderRadius: 5, alignItems: 'center', justifyContent: 'center' },
+  segmentText: { fontSize: 13, fontWeight: '700', letterSpacing: 0.2 },
   empty: { flex: 1, minHeight: 180, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   emptyTitle: { fontSize: 17, fontWeight: '700', textAlign: 'center' },
   emptyDesc: { fontSize: 14, lineHeight: 20, textAlign: 'center', marginTop: spacing.sm },

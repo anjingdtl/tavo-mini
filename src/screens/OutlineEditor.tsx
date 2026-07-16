@@ -126,7 +126,7 @@ export const OutlineEditor: React.FC = () => {
 
   const renderChapter = useCallback(({ item, index }: { item: Chapter; index: number }) => (
     <TouchableOpacity activeOpacity={0.78} onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })}>
-      <Card>
+      <Card style={[styles.chapterCard, { borderLeftColor: theme.colors.accent }]}>
         <View style={styles.chapterHeader}>
           <View style={styles.chapterBody}>
             <Text style={[styles.chapterTitle, { color: theme.colors.textPrimary }]}>{item.title || `第 ${item.position + 1} 章`}</Text>
@@ -161,11 +161,15 @@ export const OutlineEditor: React.FC = () => {
 
   return (
     <Screen>
-      <Header title={currentProject.name} subtitle="章节、大纲、摘要和上下文" action={<Button label="章节" icon={Plus} onPress={addChapter} />} />
+      <Header title={currentProject.name} subtitle="章节 · 大纲 · 摘要 · 上下文" action={<Button label="章节" icon={Plus} variant="ghost" onPress={addChapter} compact />} />
       <View style={styles.quickActions}>
-        <Button label="AI 写 N 章" icon={Bot} onPress={() => setShowBatch(true)} compact flex />
+        <Button label="AI 写 N 章" icon={Bot} variant="ghost" onPress={() => setShowBatch(true)} compact flex />
         <Button label="故事概览" icon={BarChart3} variant="secondary" onPress={() => navigation.navigate('StoryOverview')} compact flex />
         <Button label="上下文" icon={Settings2} variant="secondary" onPress={() => navigation.navigate('ContextConfig')} compact flex />
+      </View>
+      <View style={[styles.chapterMeta, { borderBottomColor: theme.colors.border }]}>
+        <Text style={[styles.chapterMetaTitle, { color: theme.colors.accent }]}>正文卷</Text>
+        <Text style={[styles.chapterMetaCount, { color: theme.colors.textMuted }]}>{chapters.length} 章</Text>
       </View>
       {chapters.length === 0 ? (
         <EmptyState title="还没有章节" description="先创建一个章节，然后补充概要和正文。" action={<Button label="创建章节" icon={FileText} onPress={addChapter} />} />
@@ -230,14 +234,18 @@ function statusLabel(status: Chapter['status']): string {
 const styles = StyleSheet.create({
   quickActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, padding: spacing.lg, paddingBottom: 0 },
   list: { padding: spacing.lg, paddingBottom: 96 },
+  chapterCard: { borderLeftWidth: 3, paddingLeft: spacing.md + 2 },
   chapterHeader: { flexDirection: 'row', gap: spacing.md },
   chapterBody: { flex: 1 },
   chapterActions: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  chapterTitle: { fontSize: 16, fontWeight: '800', marginBottom: 6 },
-  meta: { fontSize: 13, lineHeight: 19 },
+  chapterTitle: { fontSize: 18, fontFamily: 'serif', fontWeight: '700', marginBottom: 6 },
+  meta: { fontSize: 13, lineHeight: 20 },
   iconCell: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.md },
-  status: { fontSize: 12, fontWeight: '700' },
+  status: { fontSize: 12, fontWeight: '600' },
+  chapterMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: spacing.lg, marginTop: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth },
+  chapterMetaTitle: { fontSize: 14, fontFamily: 'serif', fontWeight: '700', letterSpacing: 0.5 },
+  chapterMetaCount: { fontSize: 12 },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
   modal: { borderTopLeftRadius: 8, borderTopRightRadius: 8, padding: spacing.lg, gap: spacing.md },
   modalTitle: { fontSize: 18, fontWeight: '800' },
