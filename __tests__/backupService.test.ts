@@ -231,6 +231,10 @@ describe('backupService', () => {
     (RNFS.exists as jest.Mock).mockResolvedValue(true);
   });
 
+  afterEach(() => {
+    delete process.env.FAIL_RESTORE_AT_STATEMENT;
+  });
+
   test('createBackup exports the manifest tables with v3 SHA-256 and external model references', async () => {
     const mockDb = createMockDb({
       projects: [{ id: 1, name: '测试项目' }],
@@ -363,6 +367,29 @@ describe('backupService', () => {
 
     await expect(restoreFromBackup(mockDb, '/fake/path/backup.json', { createPreRestoreBackup: false })).rejects.toThrow('injected insert failure');
     expect(mockDb.snapshot()).toEqual(before);
+  });
+
+  test('restore statement injection preserves the original database and pre-restore backup', async () => {
+    const backup = await makeV3Backup({
+      projects: [{ id: 2, name: '注入后的新项目' }],
+      chapters: [{ id: 2, project_id: 2, title: '注入后的新章节' }],
+    });
+    writeBackup(backup);
+    const mockDb = createMockDb(
+      makeFullTables({ projects: [{ id: 1, name: '注入前原项目' }] }),
+    );
+    const before = mockDb.snapshot();
+    process.env.FAIL_RESTORE_AT_STATEMENT = '3';
+
+    await expect(
+      restoreFromBackup(mockDb, '/fake/path/backup.json'),
+    ).rejects.toThrow('FAULT_INJECTION: restore statement 3');
+
+    expect(mockDb.snapshot()).toEqual(before);
+    expect(RNFS.moveFile).toHaveBeenCalledWith(
+      expect.stringMatching(/prerestore_.*\.json\.tmp$/),
+      expect.stringMatching(/prerestore_.*\.json$/),
+    );
   });
 
   test('restore verifies schema, strips API keys, preserves current schema version, and returns a pre-restore backup', async () => {
