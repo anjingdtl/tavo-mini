@@ -141,11 +141,14 @@ export const TabNavigator: React.FC = () => {
         tabBarStyle: {
           backgroundColor: theme.colors.surface,
           borderTopColor: theme.colors.border,
+          borderTopWidth: 1,
           height: 62 + insets.bottom,
           paddingTop: 6,
           paddingBottom: Math.max(8, insets.bottom),
+          elevation: 0,
         },
-        tabBarLabelStyle: { fontSize: 12, fontWeight: '700' },
+        tabBarItemStyle: { paddingHorizontal: 2 },
+        tabBarLabelStyle: { fontSize: 12, fontFamily: 'serif', fontWeight: '700', letterSpacing: 0.3 },
         tabBarIcon: ({ color, size }) => tabBarIcon({ route, color, size: size || 20 }),
       })}
     >
