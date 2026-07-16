@@ -258,7 +258,7 @@
 
 - 更新 `docs/FAULT_INJECTION_MATRIX.md` 与 `docs/RELEASE_CHECKLIST.md`，空缺发布字段明确写 `BLOCKED`，不伪造 signer、Release URL 或 rollback artifact。
 - Draft PR：https://github.com/anjingdtl/tavo-mini/pull/1
-- CI：https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191（当前已推送 A/B 范围全绿；C/D/E 提交推送后需再取最终 Run）。
+- 最终 CI：https://github.com/anjingdtl/tavo-mini/actions/runs/29504035382（提交 `bbefa4d`；JavaScript validation 56s、Migration matrix 27s、Android Debug build 8m49s，全部 success）。
 - 未创建 `V2.4.4-rc.1`：签名 Release、Minified Release、D7-D10、D12 完整验收和 ARM64 物理设备仍缺证据。
 - 最终本地门禁：`npm ci` PASS（npm audit 报 3 个 moderate dependency vulnerabilities）；lint PASS（4 warnings/0 errors）；typecheck PASS；test:ci 82 suites/401 tests PASS；coverage 78.33% statements / 60.37% branches / 86.05% functions / 79.95% lines；migration 7 suites/37 tests PASS；detectOpenHandles 82 suites/401 tests 自然退出，无 open handle 报告；最终 Debug APK 重建及 6/6 设备回归 PASS。
 - 安全扫描：签名相关命中均为环境变量名称/文档/Gradle 读取；API key/Bearer/password 命中为生产字段、明显假测试值或 vendored llama.cpp 示例，未发现真实凭据；`src`、`android`、`__tests__` 无 `transaction(async`。备份测试继续证明凭据不写入 JSON。
