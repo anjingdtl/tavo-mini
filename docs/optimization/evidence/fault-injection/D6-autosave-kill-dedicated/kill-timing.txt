@@ -1,0 +1,6 @@
+device=emulator-5556
+input_start=2026-07-16T21:11:49.1408621+08:00
+input_complete=2026-07-16T21:11:49.4397415+08:00
+force_stop_complete=2026-07-16T21:11:49.4997007+08:00
+input_ms=299
+stop_after_input_ms=60

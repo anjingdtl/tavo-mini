@@ -12,7 +12,7 @@
 - Android 工具：本轮基线环境未发现 `adb`。
 - Maestro：本轮基线环境未发现 `maestro`。
 - Linux 复现环境：发现 `wsl.exe`；尚未确认是否安装可用发行版。
-- Release 签名环境变量：三项均未设置；未读取或输出任何密钥内容。
+- Release 签名环境变量：四项均未设置；未读取或输出任何密钥内容。
 - 用户已有未提交内容：`docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md`、`.zcode/`、`docs/superpowers/specs/tavo-mini-next-round-spec.md`。这些内容不属于本轮 Agent 修改，不还原、不清理、不混入功能提交。
 - 总体状态：`PARTIAL`
 
@@ -60,7 +60,7 @@
 
 #### CI Run URL
 
-- 待推送诊断分支后记录。
+- https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191（全绿）。
 
 #### Device and APK
 
@@ -112,7 +112,7 @@
 
 #### CI Run URL
 
-- 待记录。
+- https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191（全绿）。
 
 #### Device and APK
 
@@ -173,7 +173,8 @@
 ### CI Run URL
 
 - 失败基线：https://github.com/anjingdtl/tavo-mini/actions/runs/29433210552
-- 修复后 Run：待诊断分支 PR 触发并记录。
+- 修复后 Run：https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191
+- Job：JavaScript validation 59s、Migration matrix 28s、Android Debug build 9m27s，均为 success。
 
 ### Device and APK
 
@@ -181,24 +182,84 @@
 
 ### Remaining risk
 
-- WSL2 已提供 Linux 自然退出证据；Workstream B 仍需 GitHub Actions 三 job 全绿才可改为 PASS。
+- Actions 使用的部分第三方 action 报 Node 20 runtime 将被强制切换到 Node 24 的平台 warning；不影响本次 job 结果，后续应升级 action major 版本。
 
 ### Status
 
-`PARTIAL`
+`PASS`
 
 ## Workstream C：E2E 与 Minified Release
 
-- 当前状态：`BLOCKED`
-- 基线缺失条件：未发现 `adb`、Maestro，Release 签名环境变量未设置。
-- 后续仍会完成全部不依赖这些条件的构建和自动化建设，并重新探测可用 Android/WSL 环境。
+### Root cause / construction
+
+- 初始 PATH 未暴露 `adb` 与 Maestro，但 Android SDK 实际位于 `C:\Users\Administrator\AppData\Local\Android\Sdk`；本轮安装 Maestro 2.6.1，并创建专用 AVD `ShineWriter_RC_API37`。
+- 原 Maestro 脚本与当前 UI 有五处漂移：API 37 兼容提示、资源合集返回路径、Android Alert 的 `OK`、LLM 表单键盘遮挡、流水线取消依赖不确定网络。逐项红跑后用最小脚本调整修复。
+- 双模拟器连接时 Maestro 默认选择 `emulator-5554`。发现后未沿用该设备归属结论，最终所有发布证据均显式 `--device emulator-5556` 重跑。
+
+### Code changes / tests
+
+- 调整 `e2e/maestro/01` 至 `06`；新增 `scripts/testing/hanging-http-server.js`，仅提供本地永不响应的假服务，不包含真实凭据。
+- 独立提交：`49c5da0`、`6efd968`、`b814319`、`5802988`、`95a5184`。
+
+### Commands and results
+
+- `npm run apk:debug`：PASS，1m08s。
+- 最终 Debug APK：`dist/apk/debug/ShineWriter-V2.4.3-debug.apk`，53,819,532 bytes，SHA-256 `1A4C284C2D729F2A7E30B757A8B428F823FEE7BA5891E909F378DA37E8E11FEF`。
+- 干净安装/首启：PASS，`emulator-5556`，`sdk_gphone16k_x86_64`，Android 17 / API 37，x86_64。
+- 最终 APK 覆盖安装后 Maestro 2.6.1（显式 `--device emulator-5556`）：6/6 PASS，4m24s；01 9s、02 48s、03 1m05s、04 51s、05 1m02s、06 29s。JUnit：`docs/optimization/evidence/maestro-debug/final-artifact-emulator-5556/01-06-junit.xml`。
+- `npm run apk:release`：BLOCKED，四项 `SHINE_WRITER_RELEASE_*` 环境变量均未设置，构建在读取凭据内容前 fail fast，退出码 1。
+- `npm run apk:release:minified`：同因 BLOCKED，退出码 1。
+- 未把 Debug 结果描述为签名 Release/Minified 通过。
+
+### Device / APK evidence
+
+- API 37 首启出现 Android 原生 16KB page-size 兼容提示；至少 `libsqliteJni.so` 的 RELRO alignment 不兼容，应用以 compatibility mode 可运行。这是 RC 风险，不在本轮无关功能范围内扩修。
+- 无 ARM64 物理设备、真实在线模型凭据或可控 GGUF；在线成功生成、本地 GGUF 导入/加载/生成、ARM64 性能均未验收。
+
+### Status
+
+`PARTIAL`：Debug 与模拟器 E2E PASS；Signed Release、Minified Release、物理设备与真实模型验收 BLOCKED。
 
 ## Workstream D：真实故障注入
 
-- 当前状态：`PARTIAL`
-- 尚未施工。真实 kill/OOM/后台切换等设备场景当前受 `adb` 缺失阻塞；可自动化的测试构建注入将按 Spec 建设并执行。
+### Root cause / code changes
+
+- 原 `faultInjectionMatrix.test.ts` 只写入期望状态，未调用生产恢复路径，因此不能作为故障执行证据。
+- 新增 `src/testing/faultInjection.ts`：仅 `NODE_ENV=test` 读取 SQL statement 注入变量；Release 默认恒定关闭、远程输入不可开启、测试自动 teardown。
+- migration 与 restore 的生产 transaction executor 接入独立 fault domain。
+- 发现备份直接写正式文件，ENOSPC 可留下损坏 JSON；改为 `.tmp` staging 后 `moveFile` 原子发布，失败 best-effort 清理并保留原错误。
+- 新增 `e2e/fault-injection` 中 D6/D11/D12 设备流程。
+
+### Tests / commands / results
+
+- 专项：`databaseTransaction`、`migrationAtomicity`、`backupService` 3 suites / 28 tests PASS；全量 82 suites / 401 tests PASS。
+- D1 PASS：第三条 migration SQL 注入后 rollback，schema version 与列集合不变。
+- D2 PASS：restore statement 3 失败后原库快照不变，pre-restore backup 存在。
+- D3 PASS：ENOSPC staging 清理、未发布 final backup。
+- D4 PASS：损坏 JSON/结构在 transaction 前拒绝。
+- D5 PASS：正文篡改+旧 SHA-256 在恢复前拒绝。
+- D6 PASS：ADB 输入完成后 60ms force-stop；最近提交正文恢复，防抖窗口内容允许丢失，无卡死/损坏。
+- D7 BLOCKED：无旧 Schema pause test APK；D1 不冒充 kill。
+- D8 BLOCKED：无 restore pause test APK；D2 不冒充 kill。
+- D9 BLOCKED：无可控 GGUF 测试资产与导入窗口。
+- D10 BLOCKED：无可控模型/native OOM injector。
+- D11 PASS：hanging server 中断后显示 `Network request failed`，流水线异常终止、0 tokens、无永久运行。
+- D12 PARTIAL：原生 `onStart` 后 38ms 切后台时 FGS 为 foreground，275ms 回前台画面显示“停止”；模拟器系统 TTS 随后报 `-7`，未取得同 session 手动停止证据。
+
+### Commits / evidence / risk
+
+- `3cbc59c` — `fix(backup): publish backup files atomically`
+- `6009165` — `test(reliability): inject migration and restore transaction failures`
+- `6a2535c` — `test(reliability): automate device fault injection scenarios`
+- 逐项字段、命令和证据路径见 `docs/FAULT_INJECTION_MATRIX.md`。
+- 当前状态：`PARTIAL`。12 项中 7 PASS、1 PARTIAL、4 BLOCKED。
 
 ## Workstream E：文档与发布收口
 
-- 当前状态：`PARTIAL`
-- 本文档已建立并将随每个任务持续更新。
+- 更新 `docs/FAULT_INJECTION_MATRIX.md` 与 `docs/RELEASE_CHECKLIST.md`，空缺发布字段明确写 `BLOCKED`，不伪造 signer、Release URL 或 rollback artifact。
+- Draft PR：https://github.com/anjingdtl/tavo-mini/pull/1
+- CI：https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191（当前已推送 A/B 范围全绿；C/D/E 提交推送后需再取最终 Run）。
+- 未创建 `V2.4.4-rc.1`：签名 Release、Minified Release、D7-D10、D12 完整验收和 ARM64 物理设备仍缺证据。
+- 最终本地门禁：`npm ci` PASS（npm audit 报 3 个 moderate dependency vulnerabilities）；lint PASS（4 warnings/0 errors）；typecheck PASS；test:ci 82 suites/401 tests PASS；coverage 78.33% statements / 60.37% branches / 86.05% functions / 79.95% lines；migration 7 suites/37 tests PASS；detectOpenHandles 82 suites/401 tests 自然退出，无 open handle 报告；最终 Debug APK 重建及 6/6 设备回归 PASS。
+- 安全扫描：签名相关命中均为环境变量名称/文档/Gradle 读取；API key/Bearer/password 命中为生产字段、明显假测试值或 vendored llama.cpp 示例，未发现真实凭据；`src`、`android`、`__tests__` 无 `transaction(async`。备份测试继续证明凭据不写入 JSON。
+- 当前状态：`PARTIAL`，不建议发布 RC。

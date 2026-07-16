@@ -1,0 +1,76 @@
+
+07-16 13:29:20.723   666  2081 E SystemServiceRegistry: 	at android.app.SystemServiceRegistry$StaticServiceFetcher.getService(SystemServiceRegistry.java:2909)
+07-16 13:29:20.815  3121  3121 I AiAiEcho: AppFetcherImplV2 updateApps package:[dev.mobile.maestro], userId:[0], reason:[package is added.].
+07-16 13:29:20.850   666   666 D BackupManagerConstants: getFullBackupRequiredNetworkType(...) returns 2
+07-16 13:29:20.916  3121  3366 I AiAiEcho: EchoSearch: WidgetFetcherImpl is initialized with [35] widgets [reason=package added for userId: 0]
+07-16 13:29:21.005  3121 29445 I AiAiEcho: AppFetcherImplV2 updateApps package:[dev.mobile.maestro], userId:[0], reason:[package is updated.].
+07-16 13:29:21.059   666  2109 E SystemServiceRegistry: 	at android.app.SystemServiceRegistry$StaticServiceFetcher.getService(SystemServiceRegistry.java:2909)
+07-16 13:29:21.060  8451 29521 W NetworkScheduler: Unexpected forwarded intent: Intent { act=android.intent.action.PACKAGE_ADDED dat=package: flg=0x4000010 pkg=com.google.android.gms cmp=com.google.android.gms/.chimera.PersistentIntentOperationService (has extras) }
+07-16 13:29:21.242  3121  3121 I AiAiEcho: AppFetcherImplV2 updateApps package:[dev.mobile.maestro.test], userId:[0], reason:[package is added.].
+07-16 13:29:21.275   666   666 D BackupManagerConstants: getFullBackupRequiredNetworkType(...) returns 2
+07-16 13:29:21.413  3121  3366 I AiAiEcho: EchoSearch: WidgetFetcherImpl is initialized with [35] widgets [reason=package added for userId: 0]
+07-16 13:29:21.530  3121 29518 I AiAiEcho: AppFetcherImplV2 updateApps package:[dev.mobile.maestro.test], userId:[0], reason:[package is updated.].
+07-16 13:29:21.570  8451 29507 W NetworkScheduler: Unexpected forwarded intent: Intent { act=android.intent.action.PACKAGE_ADDED dat=package: flg=0x4000010 pkg=com.google.android.gms cmp=com.google.android.gms/.chimera.PersistentIntentOperationService (has extras) }
+07-16 13:29:22.565 29557 29578 W MacAddressUtil: Failed to find a usable hardware address from the network interfaces; using random bytes: 3f:f6:99:b0:65:48:9e:f1
+07-16 13:29:26.161  8451  8504 I FontLog : (REDACTED) Fetch %s end status %s
+07-16 13:29:27.671 29660 29683 W unknown:ReconnectingWebSocket: Couldn't connect to "ws://10.0.2.2:8081/message?device=sdk_gphone16k_x86_64%20-%2017%20-%20API%2037&app=com.shinewriter&clientid=BridgelessDevSupportManager", will silently retry
+07-16 13:29:27.919 29660 29695 I ReactNativeJS: Running "ShineWriter"
+07-16 13:29:28.389 29660 29703 D nativeloader: Load /data/app/~~cXtZfbU90I3vEH9ujECZJw==/com.shinewriter-pe6GCR3_PHPvNO5MremvEg==/lib/x86_64/libimagepipeline.so using class loader ns clns-9 (caller=/data/app/~~cXtZfbU90I3vEH9ujECZJw==/com.shinewriter-pe6GCR3_PHPvNO5MremvEg==/base.apk!classes20.dex): ok
+07-16 13:29:30.273   666  1024 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:30.282   666  1024 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:30.283   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:30.284   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:30.284   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:30.286   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:30.287   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:30.287   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:34.919   666  1056 I AdbWifiNetworkMonitor: Wi-Fi network available
+07-16 13:29:34.919   666  1056 I AdbWifiNetworkMonitor: Received the same Wi-Fi SSID. Ignoring.
+07-16 13:29:34.926  8451 10842 I NullBinder: NullBinder for android.net.action.RECOMMEND_NETWORKS triggering remote TransactionTooLargeException due to Service without Chimera impl, calling uid: 1000, calling pid: 0
+07-16 13:29:35.430  8451  8636 I NearbySharing: Network state changed: NetworkState(isRestricted=false, isOnline=true, isCongested=false, isMetered=false, isWifiConnected=true)
+07-16 13:29:37.924   666  1056 I AdbWifiNetworkMonitor: Wi-Fi network available
+07-16 13:29:37.924   666  1056 I AdbWifiNetworkMonitor: Received the same Wi-Fi SSID. Ignoring.
+07-16 13:29:37.927  8451 10842 I NullBinder: NullBinder for android.net.action.RECOMMEND_NETWORKS triggering remote TransactionTooLargeException due to Service without Chimera impl, calling uid: 1000, calling pid: 0
+07-16 13:29:38.427  8451  8636 I NearbySharing: Network state changed: NetworkState(isRestricted=false, isOnline=true, isCongested=false, isMetered=false, isWifiConnected=true)
+07-16 13:29:39.199   666  2105 I ActivityManager: Background started FGS: Allowed [callingPackage: com.shinewriter; callingUid: 10229; uidState: TOP ; uidBFSL: [BFSL]; BFGS denied: false; intent: Intent { xflg=0x4 cmp=com.shinewriter/.PipelineForegroundService (has extras) }; code:PROC_STATE_TOP; tempAllowListReason:<null>; allowWiu:12; targetSdkVersion:36; callerTargetSdkVersion:36; startForegroundCount:0; bindFromPackage:null; isBindService:false]
+07-16 13:29:39.281   666  1019 I ActivityManager: Background started FGS: Allowed [callingPackage: com.shinewriter; callingUid: 10229; uidState: TOP ; uidBFSL: [BFSL]; BFGS denied: false; intent: Intent { cmp=com.shinewriter/.PipelineForegroundService }; code:PROC_STATE_TOP; tempAllowListReason:<null>; allowWiu:12; targetSdkVersion:36; callerTargetSdkVersion:36; startForegroundCount:0; bindFromPackage:null; isBindService:false]
+07-16 13:29:39.358  7869  7886 W Looper  : Slow delivery took 44848ms android.bg app=android.process.acore main=false group=FOREGROUND h=android.database.sqlite.SQLiteConnectionPool$IdleConnectionHandler c=null m=42
+07-16 13:29:40.930   666  1056 I AdbWifiNetworkMonitor: Wi-Fi network available
+07-16 13:29:40.930   666  1056 I AdbWifiNetworkMonitor: Received the same Wi-Fi SSID. Ignoring.
+07-16 13:29:40.935  8451 10842 I NullBinder: NullBinder for android.net.action.RECOMMEND_NETWORKS triggering remote TransactionTooLargeException due to Service without Chimera impl, calling uid: 1000, calling pid: 0
+07-16 13:29:41.205   666  1024 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.227   666  1024 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.438  8451  8636 I NearbySharing: Network state changed: NetworkState(isRestricted=false, isOnline=true, isCongested=false, isMetered=false, isWifiConnected=true)
+07-16 13:29:41.520  3121  3121 I AiAiEcho: AppFetcherImplV2 onPackageRemoved dev.mobile.maestro.
+07-16 13:29:41.537   666  1027 D WifiConfigManager: Remove all networks for app ApplicationInfo{591f806 dev.mobile.maestro}
+07-16 13:29:41.546   666  1027 D WifiConfigManager: Remove all networks for app ApplicationInfo{364c7b7 dev.mobile.maestro}
+07-16 13:29:41.562   666  1024 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.573  3121  3366 I AiAiEcho: EchoSearch: WidgetFetcherImpl is initialized with [35] widgets [reason=package removed for userId: 0]
+07-16 13:29:41.583   666  1024 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.606   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.607   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.607   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.609   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.610   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.610   666  1025 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:41.725  8304  8344 D WM-WorkConstraintsTrack: NetworkRequestConstraintController onCapabilitiesChanged callback
+07-16 13:29:42.013   666  1027 D WifiConfigManager: Remove all networks for app ApplicationInfo{9663a29 dev.mobile.maestro.test}
+07-16 13:29:42.026   666  1027 D WifiConfigManager: Remove all networks for app ApplicationInfo{ba9993d dev.mobile.maestro.test}
+07-16 13:29:42.042   666  1024 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:42.060   666  1024 W BestClock: java.time.DateTimeException: No network time available
+07-16 13:29:42.069  3121  3121 I AiAiEcho: AppFetcherImplV2 onPackageRemoved dev.mobile.maestro.test.
+07-16 13:29:42.138  3121  3366 I AiAiEcho: EchoSearch: WidgetFetcherImpl is initialized with [35] widgets [reason=package removed for userId: 0]
+07-16 13:29:43.934   666  1056 I AdbWifiNetworkMonitor: Wi-Fi network available
+07-16 13:29:43.934   666  1056 I AdbWifiNetworkMonitor: Received the same Wi-Fi SSID. Ignoring.
+07-16 13:29:43.939  8304  8344 D WM-WorkConstraintsTrack: NetworkRequestConstraintController onCapabilitiesChanged callback
+07-16 13:29:43.939  8451  9039 I NullBinder: NullBinder for android.net.action.RECOMMEND_NETWORKS triggering remote TransactionTooLargeException due to Service without Chimera impl, calling uid: 1000, calling pid: 0
+07-16 13:29:44.443  8451  8512 I NearbySharing: Network state changed: NetworkState(isRestricted=false, isOnline=true, isCongested=false, isMetered=false, isWifiConnected=true)
+07-16 13:29:46.943   666  1056 I AdbWifiNetworkMonitor: Wi-Fi network available
+07-16 13:29:46.943   666  1056 I AdbWifiNetworkMonitor: Received the same Wi-Fi SSID. Ignoring.
+07-16 13:29:46.948  8304  8344 D WM-WorkConstraintsTrack: NetworkRequestConstraintController onCapabilitiesChanged callback
+07-16 13:29:46.953  8451  8504 I NullBinder: NullBinder for android.net.action.RECOMMEND_NETWORKS triggering remote TransactionTooLargeException due to Service without Chimera impl, calling uid: 1000, calling pid: 0
+07-16 13:29:47.458  8451  8636 I NearbySharing: Network state changed: NetworkState(isRestricted=false, isOnline=true, isCongested=false, isMetered=false, isWifiConnected=true)
+07-16 13:29:51.394   666  1745 D ActivityManager: Stop FGS timeout: ServiceRecord{80df8d3 u0 com.shinewriter/.PipelineForegroundService c:com.shinewriter}
+07-16 13:29:52.953   666  1056 I AdbWifiNetworkMonitor: Wi-Fi network available
+07-16 13:29:52.953   666  1056 I AdbWifiNetworkMonitor: Received the same Wi-Fi SSID. Ignoring.
+07-16 13:29:52.955  8451  9039 I NullBinder: NullBinder for android.net.action.RECOMMEND_NETWORKS triggering remote TransactionTooLargeException due to Service without Chimera impl, calling uid: 1000, calling pid: 0

@@ -2,7 +2,7 @@
 
 本清单用于每个 Android 发布版本。勾选前把命令输出、APK 路径、设备型号或 GitHub Actions URL 写入对应的证据栏；无法执行的项目必须注明原因和替代验证，不得默认为通过。
 
-当前主线同步基线（2026-07-16）：本地 `npm run test:ci` 为 78 个 suite / 381 个测试通过；GitHub Actions `Verify` 的迁移矩阵和 Android Debug 已通过，但 JavaScript Jest 步骤仍有超时记录，因此本清单不把远端质量门禁默认为通过。
+当前候选分支基线（2026-07-16）：Draft PR [#1](https://github.com/anjingdtl/tavo-mini/pull/1)。GitHub Actions Run [29495667191](https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191) 的 JavaScript、Migration matrix、Android Debug 均成功。签名 Release、Minified Release、物理设备和部分故障注入仍 BLOCKED，因此本清单不批准 RC。
 
 ## 版本与文档
 
@@ -16,9 +16,9 @@
 证据：
 
 ```text
-Version:
-versionCode:
-CHANGELOG / README commit:
+Version: 2.4.3（未创建 V2.4.4-rc.1）
+versionCode: 24（本轮未改）
+CHANGELOG / README commit: BLOCKED；未批准 RC，不写虚假发布记录
 ```
 
 ## 依赖与质量门禁
@@ -33,18 +33,21 @@ npm test -- migration --runInBand
 ```
 
 - [ ] `npm ci` 成功
-- [ ] lint 通过（仅允许已记录的非阻断 warning）
-- [ ] typecheck 通过
-- [ ] Jest 通过
-- [ ] coverage 通过全局和定向阈值
-- [ ] migration matrix 通过
-- [ ] GitHub Actions `Verify` 的 JavaScript、Android Debug、Migration jobs 全部成功
+- [x] lint 通过（4 条既有 `no-bitwise` warning，0 error）
+- [x] typecheck 通过
+- [x] Jest 通过
+- [x] coverage 通过全局和定向阈值
+- [x] migration matrix 通过
+- [x] GitHub Actions `Verify` 的 JavaScript、Android Debug、Migration jobs 全部成功
 
 证据：
 
 ```text
-Local commands / logs:
-GitHub Actions run URL:
+Local commands / logs: Node 24.14.1；82 suites / 401 tests
+Coverage: Statements 78.33%, Branches 60.37%, Functions 86.05%, Lines 79.95%
+Jest natural exit: 82 suites / 401 tests，exit 0，无 --forceExit/open handles/timeout
+GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29495667191
+Jobs: JavaScript validation success 59s；Migration matrix success 28s；Android Debug success 9m27s
 ```
 
 ## Android 构建与签名
@@ -55,7 +58,7 @@ npm run apk:release
 Get-FileHash -Algorithm SHA256 dist/apk/release/ShineWriter-V<version>-release.apk
 ```
 
-- [ ] Android Debug 构建成功
+- [x] Android Debug 构建成功
 - [ ] Android Release 构建成功
 - [ ] Release APK 位于 `dist/apk/release/ShineWriter-V{version}-release.apk`
 - [ ] Release 使用外部签名变量：`SHINE_WRITER_RELEASE_STORE_FILE`、`SHINE_WRITER_RELEASE_STORE_PASSWORD`、`SHINE_WRITER_RELEASE_KEY_ALIAS`、`SHINE_WRITER_RELEASE_KEY_PASSWORD`
@@ -66,65 +69,67 @@ Get-FileHash -Algorithm SHA256 dist/apk/release/ShineWriter-V<version>-release.a
 证据：
 
 ```text
-Debug APK:
-Release APK:
-Signer certificate digest:
-SHA-256:
+Debug APK: dist/apk/debug/ShineWriter-V2.4.3-debug.apk
+Debug SHA-256: 1A4C284C2D729F2A7E30B757A8B428F823FEE7BA5891E909F378DA37E8E11FEF
+Release APK: BLOCKED；四项 SHINE_WRITER_RELEASE_* 环境变量未设置
+Minified Release APK: BLOCKED；同上
+Signer certificate digest: BLOCKED；未生成签名 Release，不复用历史值
+SHA-256: BLOCKED for Release / Minified Release
 ```
 
 ## 新安装与升级
 
-- [ ] 新安装测试通过
+- [x] 新安装测试通过（专用 Debug AVD）
 - [ ] 老版本升级测试通过
-- [ ] Schema 3 到当前 Schema 的历史数据库矩阵通过
+- [x] Schema 3 到当前 Schema 的历史数据库自动化矩阵通过
 - [ ] 启动后 Schema 版本正确、外键检查通过、无重复或孤儿记录
-- [ ] 备份恢复测试通过
-- [ ] 恢复失败时原数据库和保护性备份均可用
+- [x] 备份恢复测试通过
+- [x] 恢复失败时原数据库和保护性备份均可用（statement 注入）
 
 证据：
 
 ```text
-Clean-install device:
-Upgrade source version / device:
-Migration matrix result:
-Backup/restore result:
+Clean-install device: ShineWriter_RC_API37 / emulator-5556 / sdk_gphone16k_x86_64 / Android 17 API 37 / x86_64
+Upgrade source version / device: 真实老版 APK 升级 BLOCKED；历史 Schema 3-13 fixtures 自动化通过
+Migration matrix result: 7 suites / 36 tests PASS；GitHub Migration matrix success
+Backup/restore result: Maestro flow 04 PASS；D2 restore failure rollback PASS
 ```
 
 ## 核心功能实机验证
 
-- [ ] 项目创建、切换和删除通过
-- [ ] 章节创建、编辑、2 秒自动保存、退出再进入持久化通过
+- [x] 项目创建与切换通过（删除未列入本轮 Maestro flow）
+- [x] 章节创建、编辑、2 秒自动保存、退出再进入持久化通过
 - [ ] 在线模型测试通过
 - [ ] 本地 GGUF 模型导入、校验、加载、生成、取消通过
 - [ ] TTS 配置、播放、停止和完成回收通过
 - [ ] 前台/后台切换后写作和流水线状态正确
-- [ ] 流水线排队、取消、失败反馈和恢复通过
+- [x] 流水线取消与断网失败反馈通过；成功生成需真实服务，BLOCKED
 - [ ] 低内存或内存压力后不会启动新的 LLM 请求，回到前台后队列可恢复
-- [ ] 局域网 HTTP 开关默认关闭；开启后只允许私有 IPv4，公网 HTTP 仍被阻止
+- [x] 局域网 HTTP 开关默认关闭；开启后只允许私有 IPv4，公网 HTTP 仍被阻止
 
 证据：
 
 ```text
-Device model / Android version:
-ADB or Maestro evidence:
-Online provider:
-Local GGUF model:
-TTS engine:
+Device model / Android version: sdk_gphone16k_x86_64 / Android 17 API 37 / emulator-5556
+ADB or Maestro evidence: docs/optimization/evidence/maestro-debug/final-artifact-emulator-5556/01-06-junit.xml（最终 APK，6/6 PASS, 4m24s）
+Online provider: BLOCKED for success；D11 仅使用无密钥 hanging server 验证断网失败
+Local GGUF model: BLOCKED；无可控 GGUF 资产
+TTS engine: 默认系统 TTS；后台 FGS/按钮状态取得证据，但引擎第二段报 -7，PARTIAL
 ```
 
 ## 故障注入回归
 
-- [ ] migration 第三条 SQL 失败
-- [ ] 恢复中途失败
-- [ ] 磁盘空间不足
-- [ ] 备份文件损坏
-- [ ] 备份 checksum 错误
-- [ ] 自动保存时杀死 App
+- [x] migration 第三条 SQL 失败
+- [x] 恢复中途失败
+- [x] 磁盘空间不足
+- [x] 备份文件损坏
+- [x] 备份 checksum 错误
+- [x] 自动保存时杀死 App
 - [ ] 迁移时杀死 App
 - [ ] 恢复时杀死 App
 - [ ] GGUF 导入中杀死 App
 - [ ] 本地模型生成时内存不足
-- [ ] 在线模型请求中断网
+- [x] 在线模型请求中断网
 - [ ] TTS 播放中切后台
 
 每个故障场景都要记录：用户可见反馈、数据库状态、是否可重试、是否需要恢复备份、孤儿文件、卡死任务和诊断日志。
@@ -132,9 +137,9 @@ TTS engine:
 证据：
 
 ```text
-Fault-injection report:
-Logcat / app diagnostics:
-Open issues:
+Fault-injection report: docs/FAULT_INJECTION_MATRIX.md；7 PASS / 1 PARTIAL / 4 BLOCKED
+Logcat / app diagnostics: docs/optimization/evidence/fault-injection/
+Open issues: D7 migration kill、D8 restore kill、D9 GGUF import kill、D10 native OOM BLOCKED；D12 PARTIAL
 ```
 
 ## 发布与回滚
@@ -149,7 +154,7 @@ Open issues:
 证据：
 
 ```text
-Release URL:
-Previous release / rollback artifact:
-main parity:
+Release URL: BLOCKED；未创建 RC/Release
+Previous release / rollback artifact: BLOCKED；本轮未验证历史签名 APK
+main parity: 本轮工作在 Draft PR 分支发布，未合并 main；最终 push 后记录 branch parity
 ```
