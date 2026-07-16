@@ -29,6 +29,38 @@ describe('flushable async debounce', () => {
     }, 900);
     controller.call();
     await expect(controller.flush()).rejects.toThrow('write failed');
+    expect(controller.pending()).toBe(true);
+  });
+
+  test('failed work remains pending and can be retried', async () => {
+    const save = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValueOnce(undefined);
+    const controller = debounce(save, 900);
+    controller.call();
+
+    await expect(controller.flush()).rejects.toThrow('temporary failure');
+    await controller.flush();
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(controller.pending()).toBe(false);
+  });
+
+  test('background failures are reported without an unhandled rejection', async () => {
+    const onError = jest.fn();
+    const error = new Error('background write failed');
+    const controller = debounce(async () => {
+      throw error;
+    }, 500, onError);
+
+    controller.call();
+    jest.advanceTimersByTime(500);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onError).toHaveBeenCalledWith(error);
+    expect(controller.pending()).toBe(true);
   });
 
   test('call triggers execution after delay', async () => {
