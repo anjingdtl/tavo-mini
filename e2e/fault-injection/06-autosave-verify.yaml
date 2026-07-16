@@ -1,0 +1,17 @@
+appId: com.shinewriter
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- assertVisible: 'FAULT_D6_PROJECT'
+- tapOn: '写作'
+- extendedWaitUntil:
+    visible: 'FAULT_D6_CHAPTER'
+    timeout: 10000
+- tapOn: 'FAULT_D6_CHAPTER'
+- extendedWaitUntil:
+    visible: 'D6_LAST_COMMITTED_CONTENT'
+    timeout: 10000
+- assertNotVisible: 'D6_UNCOMMITTED_WINDOW'
+- assertVisible: '已保存'

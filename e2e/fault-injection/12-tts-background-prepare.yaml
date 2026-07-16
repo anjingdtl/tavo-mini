@@ -1,0 +1,32 @@
+appId: com.shinewriter
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+- tapOn: '写作'
+- extendedWaitUntil:
+    visible: 'FAULT_D6_CHAPTER'
+    timeout: 10000
+- tapOn: 'FAULT_D6_CHAPTER'
+- tapOn:
+    id: chapter-content-input
+- eraseText: 1000
+- inputText: 'BACKGROUND_TTS_RELIABILITY_SECTION_01_BACKGROUND_TTS_RELIABILITY_SECTION_02_BACKGROUND_TTS_RELIABILITY_SECTION_03_BACKGROUND_TTS_RELIABILITY_SECTION_04_BACKGROUND_TTS_RELIABILITY_SECTION_05_BACKGROUND_TTS_RELIABILITY_SECTION_06_BACKGROUND_TTS_RELIABILITY_SECTION_07_BACKGROUND_TTS_RELIABILITY_SECTION_08_BACKGROUND_TTS_RELIABILITY_SECTION_09_BACKGROUND_TTS_RELIABILITY_SECTION_10_BACKGROUND_TTS_RELIABILITY_SECTION_11_BACKGROUND_TTS_RELIABILITY_SECTION_12'
+- hideKeyboard
+- swipe:
+    start: '90%,37%'
+    end: '15%,37%'
+    duration: 800
+- swipe:
+    start: '90%,37%'
+    end: '15%,37%'
+    duration: 800
+- tapOn: '朗读'
+- extendedWaitUntil:
+    visible: '选择朗读范围'
+    timeout: 10000
+- tapOn: '本章'
+- extendedWaitUntil:
+    visible: '停止'
+    timeout: 15000
