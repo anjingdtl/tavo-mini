@@ -26,9 +26,15 @@ appId: com.shinewriter
 - tapOn:
     id: llm-model-name
 - inputText: 'E2E_TEST_MODEL'
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      text: '保存并测试'
+    direction: DOWN
+    timeout: 10000
 - tapOn: '保存并测试'
 - extendedWaitUntil:
     visible: '连接失败'
     timeout: 15000
-- tapOn: '确定'
+- tapOn: 'OK'
 - back
