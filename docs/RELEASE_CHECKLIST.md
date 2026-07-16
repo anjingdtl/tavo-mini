@@ -154,7 +154,7 @@ Open issues: D7 migration kill、D8 restore kill、D9 GGUF import kill、D10 nat
 证据：
 
 ```text
-Release URL: 不创建 GitHub Release；源码 Tag URL 为 https://github.com/anjingdtl/tavo-mini/releases/tag/V2.4.4
+Release URL: 不创建 GitHub Release；源码 Tag URL 为 https://github.com/anjingdtl/tavo-mini/tree/V2.4.4
 Previous release / rollback artifact: BLOCKED；本轮未验证历史签名 APK
 main parity: 发布后执行 `git rev-list --left-right --count main...origin/main`，目标 `0 0`
 ```
