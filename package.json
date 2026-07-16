@@ -14,8 +14,8 @@
     "zspace:put": "node scripts/zspace-webdav.mjs put",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:ci": "jest --runInBand --ci --forceExit",
-    "test:coverage": "jest --runInBand --ci --coverage --forceExit",
+    "test:ci": "jest --runInBand --ci",
+    "test:coverage": "jest --runInBand --ci --coverage",
     "verify": "npm run lint && npm run typecheck && npm run test:ci",
     "postinstall": "node scripts/patch-sqlite-storage-gradle.js && node scripts/patch-deps.js",
     "start": "react-native start",
@@ -66,7 +66,7 @@
     "typescript": "^5.8.3"
   },
   "engines": {
-    "node": ">= 22.11.0"
+    "node": ">=24.3.0"
   },
   "codegenConfig": {
     "name": "ShineWriterSpec",
