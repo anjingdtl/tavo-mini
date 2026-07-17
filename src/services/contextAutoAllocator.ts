@@ -187,7 +187,8 @@ import {
  * 跨项目，无 WHERE 限制。
  */
 export async function countAllResources(): Promise<ResourceCounts> {
-  const db = await openDatabase();
+  // 触发数据库初始化（与 connection/query.ts 内部行为一致）
+  await openDatabase();
   const countOf = async (table: string): Promise<number> => {
     const rows = await all<{ c: number }>(
       `SELECT COUNT(*) AS c FROM ${table}`,
@@ -201,8 +202,6 @@ export async function countAllResources(): Promise<ResourceCounts> {
       countOf('worldbook_entries'),
       countOf('worldbook_collections'),
     ]);
-  // 显式释放，避免后续 openDatabase 与本变量混淆
-  void db;
   return { characters, notes, worldbookEntries, worldbookCollections };
 }
 
