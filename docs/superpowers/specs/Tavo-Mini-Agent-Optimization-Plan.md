@@ -1689,3 +1689,109 @@ PR 合并前必须满足：
 - 剩余风险
 - 下一阶段建议
 ```
+
+---
+
+# 16. V2.4.6 阶段完成报告：上下文自动化配置
+
+## 背景
+
+针对"上下文配置过于专业、对小白用户不友好"的痛点，在设置板块新增独立模块，让用户只需填入一个数字（模型支持的最大上下文），系统按内置比例自动分配到现有 5 处分散的 token 配置点。
+
+## 设计与计划
+
+- **Spec**：`docs/superpowers/specs/2026-07-18-context-auto-config-design.md`
+- **Plan**：`docs/superpowers/plans/2026-07-18-context-auto-config.md`
+
+## 已完成任务
+
+### Phase 1：纯函数 `allocateContextBudget`
+- 输入侧 80% → 滑动窗口 65% / 资料预算 20% / 摘要预算 15%
+- 输出侧 20% → 草稿 50% / 审阅 15% / 事实核查 15% / 校对 20%
+- 资料预算内部沿用 `contextBuilder.ts` 既有 35/20/45 拆分
+- 资源级单项上限按实际数量动态分摊（R1 算法）
+- 所有数值有 `MIN_*` 下限兜底
+
+### Phase 2：`contextAutoRepository`
+- settings 表新增 2 个 key：`context_auto_input` / `context_auto_last_applied`
+- 5 个读写函数 + `buildAppliedRecord` helper
+- 在 `services/database.ts` re-export
+
+### Phase 3：`applyContextAutoAllocation` 应用函数
+- 单一 `executeTransaction` 原子写入
+- ContextConfig/PipelineConfig 用 `INSERT OR REPLACE INTO settings(key, value)` 单 key 覆写，保留 `strategy` / `pipelineMode` / `*PresetId` 等字段不动
+- llm_config 仅覆写非本地（`provider_type IS NOT 'llama_cpp'`）
+- 资源表 UPDATE 仅在 `count > 0` 时加入事务
+- 写 last_applied 记录供 UI 回显
+
+### Phase 4：屏幕 + 接线
+- `ContextAutoConfigScreen`：上次应用记录卡 + 快捷按钮（128K/200K/512K/1M）+ 自由输入 + 极小值警告 + 实时分配预览（输入/输出/资源/同步 4 组）+ 一键应用 + 恢复默认
+- `TabNavigator` 注册 `'ContextAutoConfig'` 路由
+- `SettingsScreen` AI 板块顶部加入口 Card（Gauge 图标）
+
+## 修改文件
+
+### 新增（5）
+- `src/services/contextAutoAllocator.ts`
+- `src/data/repositories/contextAutoRepository.ts`
+- `src/screens/ContextAutoConfigScreen.tsx`
+- `__tests__/contextAutoAllocator.test.ts`
+- `__tests__/contextAutoRepository.test.ts`
+
+### 修改（4）
+- `src/services/database.ts`（re-export contextAutoRepository）
+- `src/navigation/TabNavigator.tsx`（路由 + 栈注册）
+- `src/screens/SettingsScreen.tsx`（AI 板块入口 + Gauge 图标 import）
+- `README.md` / `CHANGELOG.md`（版本号、徽章、能力表、V2.4.6 条目）
+
+## 新增测试
+
+- `__tests__/contextAutoAllocator.test.ts`：19 个用例（纯函数 8 + 应用函数集成 11）
+- `__tests__/contextAutoRepository.test.ts`：12 个用例（4 函数 round-trip）
+
+覆盖：
+- 边界：0 / 负数 / NaN / Infinity / 1M 极大 / 100 极小 / 非整千
+- 比例常量自检（4 组相加 = 1）
+- 资源数量为 0 时跳过 UPDATE
+- 本地 llama_cpp 模型 context_window 不被覆写
+- 事务失败时不写 last_applied
+- ContextConfig/PipelineConfig 其他字段不被覆写（INSERT OR REPLACE 单 key 验证）
+
+## 测试结果
+
+```
+npm run verify
+Test Suites: 84 passed, 84 total
+Tests:       432 passed, 432 total
+```
+
+typecheck：PASS。lint：0 errors（4 baseline warnings 与本任务无关）。
+
+## Git Commit
+
+- `4a01c73` feat(context-auto): 添加上下文预算分配纯函数
+- `edde5b8` feat(context-auto): 添加 contextAutoRepository 读写 settings key
+- `6df4790` feat(context-auto): 添加 applyContextAutoAllocation 应用函数
+- `5fc952f` feat(context-auto): 添加上下文自动化配置屏幕与入口
+- （V2.4.6 tag commit）chore(release): prepare V2.4.6
+
+## 关键设计决定
+
+1. **不修改 Schema 版本**（保持 14）：复用 settings 键值表，避免迁移风险
+2. **不新增 repository 批量方法**：与 `executeTransaction` 单事务约束冲突，UPDATE 直接在应用函数内构建 SQL 语句列表
+3. **本地 GGUF 模型 context_window 不覆写**：避免破坏运行时（context_length 由 GGUF 元数据决定）
+4. **比例写死不可调**：符合"对小白友好"目标；进阶用户仍可去各配置屏手改
+5. **80/20 输入输出比 + 单值输入**：用户决策，简化心智模型
+
+## 剩余风险
+
+- 全局应用粒度：当前覆写所有项目的资源 max_tokens；如未来需按项目隔离，需扩展为按项目查询
+- 极小上下文（< 8000）虽弹警告但不阻止应用：用户可能误用，依赖 UI 警告
+- 应用前未做"未保存的现有字段值"备份：恢复默认仅能回滚 ContextConfig/PipelineConfig 的 token 字段，不能撤销对 llm_config/presets/资源表的覆写（YAGNI）
+
+## 下一阶段建议
+
+- 接入 Android 模拟器做完整 E2E：实机走"填 200K → 应用 → 验证各屏字段已更新 → 重启 App 仍生效"
+- 可选：在每个 LLM 配置里独立设置最大上下文（替代全局），适配多 LLM 场景
+- 可选：扩展为"预设档位"（均衡/偏输入/偏输出/省 token）
+
