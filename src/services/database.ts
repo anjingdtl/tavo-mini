@@ -29,3 +29,4 @@ export * from '../data/repositories/usageRepository';
 export * from '../data/repositories/contentRepository';
 export * from '../data/repositories/pipelineTaskRepository';
 export * from '../data/repositories/noteConfigRepository';
+export * from '../data/repositories/contextAutoRepository';
