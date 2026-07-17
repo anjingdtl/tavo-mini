@@ -135,3 +135,223 @@ describe('allocateContextBudget', () => {
     ).toBeCloseTo(1);
   });
 });
+
+// ============================================================================
+// 集成测试：applyContextAutoAllocation + 资源计数
+// ============================================================================
+
+jest.mock('../src/data/connection/openDatabase', () => ({
+  __esModule: true,
+  openDatabase: jest.fn(),
+}));
+
+jest.mock('../src/data/connection/query', () => ({
+  __esModule: true,
+  all: jest.fn(),
+}));
+
+jest.mock('../src/services/database/transaction', () => ({
+  __esModule: true,
+  executeTransaction: jest.fn(),
+}));
+
+jest.mock('../src/data/repositories/settingsRepository', () => ({
+  __esModule: true,
+  getSetting: jest.fn(),
+  setSetting: jest.fn(),
+}));
+
+jest.mock('../src/data/repositories/contextAutoRepository', () => ({
+  __esModule: true,
+  buildAppliedRecord: jest.fn(
+    (maxContextTokens: number, allocation: any, affectedCounts: any) => ({
+      maxContextTokens,
+      appliedAt: 1700000000000,
+      allocation,
+      affectedCounts,
+    }),
+  ),
+  setContextAutoLastApplied: jest.fn(),
+}));
+
+import { openDatabase } from '../src/data/connection/openDatabase';
+import { all } from '../src/data/connection/query';
+import { executeTransaction } from '../src/services/database/transaction';
+import { setContextAutoLastApplied } from '../src/data/repositories/contextAutoRepository';
+import {
+  applyContextAutoAllocation,
+  countAllResources,
+  countNonLocalLlmConfigs,
+  countAllPresets,
+} from '../src/services/contextAutoAllocator';
+
+const mockedOpenDatabase = openDatabase as jest.Mock;
+const mockedAll = all as jest.Mock;
+const mockedExecuteTransaction = executeTransaction as jest.Mock;
+const mockedSetContextAutoLastApplied = setContextAutoLastApplied as jest.Mock;
+
+describe('countAllResources', () => {
+  beforeEach(() => {
+    mockedAll.mockReset();
+    mockedOpenDatabase.mockReset();
+    mockedOpenDatabase.mockResolvedValue({});
+  });
+
+  test('聚合四个表的 COUNT', async () => {
+    mockedAll
+      .mockResolvedValueOnce([{ c: 5 }]) // characters
+      .mockResolvedValueOnce([{ c: 8 }]) // notes
+      .mockResolvedValueOnce([{ c: 20 }]) // worldbook_entries
+      .mockResolvedValueOnce([{ c: 3 }]); // worldbook_collections
+    const counts = await countAllResources();
+    expect(counts).toEqual({
+      characters: 5,
+      notes: 8,
+      worldbookEntries: 20,
+      worldbookCollections: 3,
+    });
+  });
+
+  test('空表返回 0', async () => {
+    mockedAll.mockResolvedValue([{ c: 0 }]);
+    const counts = await countAllResources();
+    expect(counts.characters).toBe(0);
+  });
+});
+
+describe('countNonLocalLlmConfigs', () => {
+  beforeEach(() => {
+    mockedAll.mockReset();
+  });
+  test('返回 COUNT 结果', async () => {
+    mockedAll.mockResolvedValueOnce([{ c: 2 }]);
+    expect(await countNonLocalLlmConfigs()).toBe(2);
+  });
+});
+
+describe('countAllPresets', () => {
+  beforeEach(() => {
+    mockedAll.mockReset();
+  });
+  test('返回 COUNT 结果', async () => {
+    mockedAll.mockResolvedValueOnce([{ c: 7 }]);
+    expect(await countAllPresets()).toBe(7);
+  });
+});
+
+describe('applyContextAutoAllocation', () => {
+  beforeEach(() => {
+    mockedAll.mockReset();
+    mockedExecuteTransaction.mockReset();
+    mockedSetContextAutoLastApplied.mockReset();
+    mockedOpenDatabase.mockReset();
+    mockedOpenDatabase.mockResolvedValue({});
+
+    // countAllResources 4 次 + countNonLocalLlmConfigs 1 次 + countAllPresets 1 次 = 6 次 all
+    mockedAll.mockResolvedValue([{ c: 1 }]);
+    mockedExecuteTransaction.mockResolvedValue(undefined);
+  });
+
+  test('成功路径：执行事务 + 写 last_applied 记录', async () => {
+    const record = await applyContextAutoAllocation(200000);
+    expect(mockedExecuteTransaction).toHaveBeenCalledTimes(1);
+    const [dbArg, statements] = mockedExecuteTransaction.mock.calls[0];
+    expect(dbArg).toEqual({});
+    // 7 个 settings + llm_config + presets + 4 个资源表（count=1>0）= 13 个
+    expect(statements.length).toBe(13);
+    // 检测参数（SQL 用 VALUES(?,?)，key 在 params[0]）
+    const settingsStmts = statements.filter(
+      (s: any) => typeof s.params[0] === 'string' && !s.sql.includes('UPDATE'),
+    );
+    const settingsKeys = settingsStmts.map((s: any) => s.params[0]);
+    expect(settingsKeys).toContain('sliding_window_size');
+    expect(settingsKeys).toContain('resource_budget');
+    expect(settingsKeys).toContain('summary_budget_tokens');
+    expect(settingsKeys).toContain('pipeline_draft_max_tokens');
+    expect(settingsKeys).toContain('pipeline_review_max_tokens');
+    expect(settingsKeys).toContain('pipeline_factcheck_max_tokens');
+    expect(settingsKeys).toContain('pipeline_proof_max_tokens');
+    // UPDATE 语句
+    const sqls = statements.map((s: any) => s.sql);
+    expect(sqls.some((s: string) => s.includes('UPDATE llm_config'))).toBe(true);
+    expect(sqls.some((s: string) => s.includes('UPDATE presets'))).toBe(true);
+    expect(sqls.some((s: string) => s.includes('UPDATE characters'))).toBe(true);
+    expect(sqls.some((s: string) => s.includes('UPDATE notes'))).toBe(true);
+    expect(sqls.some((s: string) => s.includes('UPDATE worldbook_entries'))).toBe(true);
+    expect(sqls.some((s: string) => s.includes('UPDATE worldbook_collections'))).toBe(true);
+    expect(mockedSetContextAutoLastApplied).toHaveBeenCalledTimes(1);
+    expect(record.maxContextTokens).toBe(200000);
+    expect(record.allocation.inputBudget).toBe(160000);
+  });
+
+  test('资源数量为 0 时跳过对应 UPDATE', async () => {
+    mockedAll.mockReset();
+    // 用 mockImplementation 按 SQL 内容区分，规避 Promise.all 顺序不确定性
+    mockedAll.mockImplementation(async (sql?: string) => {
+      if (!sql) return [{ c: 1 }];
+      if (sql.includes('FROM characters')) return [{ c: 0 }];
+      if (sql.includes('FROM notes')) return [{ c: 0 }];
+      if (sql.includes('FROM worldbook_entries')) return [{ c: 0 }];
+      if (sql.includes('FROM worldbook_collections')) return [{ c: 0 }];
+      if (sql.includes('FROM llm_config')) return [{ c: 1 }];
+      if (sql.includes('FROM presets')) return [{ c: 1 }];
+      return [{ c: 1 }];
+    });
+    await applyContextAutoAllocation(200000);
+    const [, statements] = mockedExecuteTransaction.mock.calls[0];
+    const sqls = statements.map((s: any) => s.sql);
+    expect(sqls.some((s: string) => s.includes('UPDATE characters'))).toBe(false);
+    expect(sqls.some((s: string) => s.includes('UPDATE notes'))).toBe(false);
+    expect(sqls.some((s: string) => s.includes('UPDATE worldbook_entries'))).toBe(false);
+    expect(sqls.some((s: string) => s.includes('UPDATE worldbook_collections'))).toBe(false);
+    // 仍然有 settings + llm_config + presets
+    expect(sqls.some((s: string) => s.includes('UPDATE llm_config'))).toBe(true);
+    expect(sqls.some((s: string) => s.includes('UPDATE presets'))).toBe(true);
+  });
+
+  test('llm_config UPDATE 排除 llama_cpp', async () => {
+    await applyContextAutoAllocation(200000);
+    const [, statements] = mockedExecuteTransaction.mock.calls[0];
+    const llmStmt = statements.find((s: any) => s.sql.includes('UPDATE llm_config'));
+    expect(llmStmt).toBeDefined();
+    expect(llmStmt.sql).toContain("provider_type IS NOT 'llama_cpp'");
+    expect(llmStmt.params).toEqual([200000, 40000]);
+  });
+
+  test('presets UPDATE 用 draftMaxTokens 作为 max_tokens', async () => {
+    await applyContextAutoAllocation(200000);
+    const [, statements] = mockedExecuteTransaction.mock.calls[0];
+    const presetStmt = statements.find((s: any) => s.sql.includes('UPDATE presets'));
+    expect(presetStmt.params).toEqual([20000]); // draftMaxTokens = 40000 * 0.5
+  });
+
+  test('事务失败抛错且不写 last_applied', async () => {
+    mockedExecuteTransaction.mockRejectedValue(new Error('transaction failed'));
+    await expect(applyContextAutoAllocation(200000)).rejects.toThrow(
+      /transaction failed/,
+    );
+    expect(mockedSetContextAutoLastApplied).not.toHaveBeenCalled();
+  });
+
+  test('maxContextTokens 非正数抛错（在 allocateContextBudget 阶段）', async () => {
+    await expect(applyContextAutoAllocation(0)).rejects.toThrow(/正数/);
+    await expect(applyContextAutoAllocation(-1)).rejects.toThrow(/正数/);
+    expect(mockedExecuteTransaction).not.toHaveBeenCalled();
+  });
+
+  test('ContextConfig/PipelineConfig 其他字段不被覆写（INSERT OR REPLACE 单 key）', async () => {
+    await applyContextAutoAllocation(200000);
+    const [, statements] = mockedExecuteTransaction.mock.calls[0];
+    // 7 个 settings INSERT OR REPLACE（3 ContextConfig + 4 PipelineConfig）
+    const settingsStmts = statements.filter((s: any) =>
+      s.sql.includes('INSERT OR REPLACE INTO settings'),
+    );
+    expect(settingsStmts.length).toBe(7);
+    // 不应包含 strategy / pipelineMode / presetId 等 key
+    const settingsKeys = settingsStmts.map((s: any) => s.params[0]);
+    expect(settingsKeys).not.toContain('context_strategy');
+    expect(settingsKeys).not.toContain('pipeline_mode');
+    expect(settingsKeys).not.toContain('pipeline_draft_preset_id');
+  });
+});
+
