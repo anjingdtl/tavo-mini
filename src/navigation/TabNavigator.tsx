@@ -27,6 +27,7 @@ import { DraftPreviewScreen } from '../screens/DraftPreviewScreen';
 import { UsageStatsScreen } from '../screens/UsageStatsScreen';
 import { VoiceSettingsScreen } from '../screens/VoiceSettingsScreen';
 import { LocalModelManagerScreen } from '../screens/LocalModelManagerScreen';
+import { ContextAutoConfigScreen } from '../screens/ContextAutoConfigScreen';
 
 export type EditorStackParamList = {
   EditorMain: undefined;
@@ -51,6 +52,7 @@ export type SettingsStackParamList = {
   BackupCenter: undefined;
   UsageStats: undefined;
   LocalModelManager: undefined;
+  ContextAutoConfig: undefined;
 };
 
 const Tab = createBottomTabNavigator();
@@ -116,6 +118,7 @@ const SettingsStackScreen = () => (
       <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
       <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
       <SettingsStack.Screen name="LocalModelManager" component={LocalModelManagerScreen} />
+      <SettingsStack.Screen name="ContextAutoConfig" component={ContextAutoConfigScreen} />
     </SettingsStack.Navigator>
 );
 

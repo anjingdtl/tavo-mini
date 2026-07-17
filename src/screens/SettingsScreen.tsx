@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { Alert, Linking, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import { Database, Factory, KeyRound, ListChecks, Moon, Palette, Sun, TreePine, BarChart3, Volume2 } from 'lucide-react-native';
+import { Database, Factory, Gauge, KeyRound, ListChecks, Moon, Palette, Sun, TreePine, BarChart3, Volume2 } from 'lucide-react-native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
@@ -64,6 +64,11 @@ export const SettingsScreen: React.FC = () => {
       <Header title="设置" subtitle="模型、主题和诊断" />
       <ScrollView contentContainerStyle={styles.content}>
         <Section title="AI">
+          <Card>
+            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>上下文自动化配置</Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>填一个数字（如 200K），自动分配滑动窗口、流水线、LLM 配置和资源级 token 预算。</Text>
+            <Button label="上下文自动化配置" icon={Gauge} onPress={() => navigation.navigate('ContextAutoConfig')} />
+          </Card>
           <Card>
             <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>OpenAI 兼容接口</Text>
             <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>配置 API 地址、Key 和模型名称后，可用于续写、摘要和情节线生成。</Text>
