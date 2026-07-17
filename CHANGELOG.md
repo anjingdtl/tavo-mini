@@ -8,6 +8,26 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 No unreleased changes are currently recorded.
 
+## [2.4.6] - 2026-07-18
+
+### Added
+
+- 设置板块新增"上下文自动化配置"模块：用户填入模型支持的最大上下文（如 200000），系统按内置比例（输入 80% / 输出 20%）自动分配到 ContextConfig（滑动窗口 65% / 资料预算 20% / 摘要预算 15%）、PipelineConfig（草稿 50% / 审阅 15% / 事实核查 15% / 校对 20%）、llm_config、presets 和资源级 max_tokens 共 5 处配置点。
+- 支持 128K / 200K / 512K / 1M 快捷按钮与自由输入，实时分配预览，一键应用与"恢复默认"。
+- 资源级 max_tokens 按各表实际数量动态分摊（R1 算法），单项有最小下限兜底。
+- 本地 GGUF 模型的 `context_window` 不被覆写，由模型文件元数据保留。
+- 应用过程走单一 `executeTransaction` 原子事务，写入失败整体回滚；记录"上次应用"卡片供回显。
+
+### Changed
+
+- 不修改数据库 Schema 版本（保持 14）；不引入新的 npm 依赖。
+- 设置页 AI 板块顶部新增独立入口。
+
+### Tests
+
+- 新增 `contextAutoAllocator`（19 个）与 `contextAutoRepository`（12 个）测试，覆盖分配算法典型/极大/极小/零资源/比例常量与 repository 读写 round-trip、应用函数事务原子性与字段保留语义。
+- 全量 Jest 基线：84 套件 / 432 测试通过。
+
 ## [2.4.4] - 2026-07-16
 
 ### Added
