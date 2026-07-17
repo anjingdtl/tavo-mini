@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.4.4-blue.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/Tests-401%2F401%20passed-success.svg)](#测试与质量门禁)
+[![Version](https://img.shields.io/badge/Version-V2.4.6-blue.svg)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/Tests-432%2F432%20passed-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.4.4** · 数据库 Schema：**14** · 最低 Android API：**24**
+当前版本：**V2.4.6** · 数据库 Schema：**14** · 最低 Android API：**24**
 
-`V2.4.4` 是可靠性与发布验收 Tag：自动保存失败传播、清空正文竞态、Jest 自然退出、CI、Maestro 和可执行故障注入均已收口。该 Tag 不附带签名 APK；Release/Minified Release、ARM64 物理设备及部分故障场景仍需外部凭据或设备补验，详见 `docs/RELEASE_CHECKLIST.md`。
+`V2.4.6` 在 `V2.4.4` 可靠性基线之上新增"上下文自动化配置"模块：用户填入模型支持的最大上下文（如 200K），系统按内置比例（输入 80% / 输出 20%）自动分配到 ContextConfig、PipelineConfig、llm_config、presets 和资源级 max_tokens 共 5 处配置点，降低小白用户面对 token 配置的门槛。该 Tag 不附带签名 APK；Release/Minified Release、ARM64 物理设备及部分故障场景仍需外部凭据或设备补验，详见 `docs/RELEASE_CHECKLIST.md`。
 
 ## 主要能力
 
@@ -24,7 +24,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 | 项目 | 创建、切换和删除小说项目；支持大纲模式与自由写作模式                                        |
 | 写作 | 章节 CRUD、2 秒防抖自动保存、AI 续写/修订、草稿与版本回退                                   |
 | 资料 | 角色卡 JSON/PNG 元数据导入、角色集合、世界书集合与条目、笔记资料库、预设                    |
-| AI   | OpenAI 兼容在线 API；GGUF + Android llama.cpp 本地模型；草稿 → 审查 → 事实核查 → 校对流水线 |
+| AI   | OpenAI 兼容在线 API；GGUF + Android llama.cpp 本地模型；草稿 → 审查 → 事实核查 → 校对流水线；上下文自动化配置（一个数字自动分配所有 token 预算） |
 | 语音 | 系统 TTS 与可配置语音服务；章节和选区朗读；前后台保活                                       |
 | 备份 | Manifest 驱动的 v3 备份、SHA-256 校验、原子恢复、外部模型资源引用                           |
 | 诊断 | LLM 用量日志、流水线任务状态、超时/取消/网络错误分类                                        |
@@ -144,13 +144,13 @@ dist/apk/                         本地 APK 交付目录
 - API Key 不随备份迁移，这是刻意的隐私边界；换设备或恢复备份后需要重新填写。
 - TTS 的可用音色、后台行为和性能受 Android 版本及设备厂商实现影响。
 - API 37 x86_64 模拟器会报告部分原生库的 16KB page-size/RELRO 兼容提示；ARM64 物理设备发布前仍需补验。
-- `V2.4.4` 为 Tag-only 工程验收版本，不包含签名 Release APK 或 GitHub Release 附件。
+- `V2.4.6` 为工程验收 Tag，不包含签名 Release APK 或 GitHub Release 附件。
 
 ## English summary
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current tag is **V2.4.4** with database Schema **14**. It is an engineering reliability tag without a signed Release APK. The app stores SQLite data and local models on-device. API keys are kept in Android Keystore through `react-native-keychain` and are excluded from backups. HTTPS is the default; opt-in HTTP is restricted to private IPv4 LAN ranges. See the Chinese sections above for build, test, release, privacy, and known-limit details.
+The current tag is **V2.4.6** with database Schema **14**. It is an engineering acceptance tag without a signed Release APK. The app stores SQLite data and local models on-device. API keys are kept in Android Keystore through `react-native-keychain` and are excluded from backups. HTTPS is the default; opt-in HTTP is restricted to private IPv4 LAN ranges. See the Chinese sections above for build, test, release, privacy, and known-limit details.
 
 ## License
 
