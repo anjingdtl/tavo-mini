@@ -203,6 +203,27 @@ describe('story memory rebuild', () => {
     );
   });
 
+  it('maps an in-flight LLM abort to a dirty retry state', async () => {
+    const controller = new AbortController();
+    mockCallLLMResult.mockImplementationOnce(async () => {
+      controller.abort();
+      const error = new Error('已取消') as Error & { code?: string };
+      error.code = 'cancelled';
+      throw error;
+    });
+
+    await expect(
+      rebuildStoryMemory(7, { mode: 'full', signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'MEMORY_REBUILD_CANCELLED' });
+    expect(mockDb.saveStoryMemoryUpdate).not.toHaveBeenCalled();
+    expect(mockDb.setStoryMemoryBuildStatus).toHaveBeenLastCalledWith(
+      7,
+      'dirty',
+      0,
+      '',
+    );
+  });
+
   it('uses legacy summaries without reading full chapter bodies', async () => {
     mockDb.getChaptersByProject.mockResolvedValue([
       chapter(0, '旧事件摘要：钟楼暗门被打开。'),
