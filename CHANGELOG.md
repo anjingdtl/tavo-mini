@@ -8,6 +8,28 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 No unreleased changes are currently recorded.
 
+## [2.5.1] - 2026-07-18
+
+### Fixed
+
+- 修复结构化故事记忆在模型请求已经发出后取消时被错误持久化为 `failed` 的问题；现在取消会保留已完成 checkpoint、恢复为 `dirty`，并允许继续重建。
+
+### Changed
+
+- 将长篇结构化故事记忆的正式发布版本统一推进至 V2.5.1，Schema 保持 15，不新增迁移。
+- 发布文档明确区分确定性 OpenAI 兼容服务的协议/运行时验证与真实外部模型语义验收。
+
+### Tests
+
+- Android API 37 x86_64 模拟器完成 29 个非空章节完整重建、正常输出、repair、二次非法失败、在途取消与继续、snapshot 回放和 clean 上下文注入。
+- 非空备份在清除应用数据后恢复 Story Memory 三表 1/29/2 行完全一致，且 API Key 未进入备份。
+- 最终本地门禁为 98 suites / 489 tests；覆盖率 statements 78.77%、branches 61.38%、functions 85.56%、lines 80.33%。
+
+### Known limitations
+
+- 真实外部模型的语义质量、限流与网络波动，以及 arm64 真机 llama.cpp 长上下文性能仍需专项验收。
+- Android 16 KB page-size 对话框报告的第三方原生库对齐风险仍未关闭。
+
 ## [2.5.0] - 2026-07-18
 
 ### Added
