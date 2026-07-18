@@ -6,6 +6,9 @@ export const DEFAULT_MAX_TOKENS = 4000;
 export const DEFAULT_SLIDING_WINDOW_SIZE = 4000;
 export const DEFAULT_RESOURCE_BUDGET = 2000;
 export const DEFAULT_SUMMARY_BUDGET = 20000;
+export const DEFAULT_STORY_STATE_BUDGET = 12000;
+export const DEFAULT_EPISODIC_MEMORY_BUDGET = 8000;
+export const DEFAULT_MEMORY_PATCH_MAX_TOKENS = 1200;
 export const DEFAULT_CONTEXT_STRATEGY = 'sliding';
 
 /**
@@ -19,6 +22,9 @@ export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   slidingWindowSize: 4000,
   recentChapterCount: 3,
   summaryBudgetTokens: 20000,
+  storyStateBudgetTokens: DEFAULT_STORY_STATE_BUDGET,
+  episodicMemoryBudgetTokens: DEFAULT_EPISODIC_MEMORY_BUDGET,
+  memoryPatchMaxTokens: DEFAULT_MEMORY_PATCH_MAX_TOKENS,
   memoryTopK: 10,
   resourceBudget: 2000,
   worldbookScanDepth: 4,
