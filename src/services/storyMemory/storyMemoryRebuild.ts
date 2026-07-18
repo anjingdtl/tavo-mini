@@ -198,8 +198,10 @@ export async function rebuildStoryMemory(
         });
       } catch (error) {
         if (
-          error instanceof StoryMemoryError &&
-          error.code === 'MEMORY_REBUILD_CANCELLED'
+          options.signal?.aborted ||
+          (error instanceof StoryMemoryError &&
+            error.code === 'MEMORY_REBUILD_CANCELLED') ||
+          (error as { code?: string } | null)?.code === 'cancelled'
         ) {
           await db.setStoryMemoryBuildStatus(
             projectId,
@@ -207,7 +209,13 @@ export async function rebuildStoryMemory(
             chapter.position,
             '',
           );
-          throw error;
+          throw error instanceof StoryMemoryError &&
+            error.code === 'MEMORY_REBUILD_CANCELLED'
+            ? error
+            : new StoryMemoryError(
+                'MEMORY_REBUILD_CANCELLED',
+                '故事记忆重建已取消。',
+              );
         }
         const message = error instanceof Error ? error.message : '未知错误';
         await db.setStoryMemoryBuildStatus(
