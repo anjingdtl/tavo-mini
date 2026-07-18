@@ -28,8 +28,7 @@ function hasCloseEvidenceSubstring(content: string, quote: string): boolean {
     const current = new Array<number>(pattern.length + 1);
     current[0] = 0;
     for (let index = 1; index <= pattern.length; index += 1) {
-      const substitutionCost =
-        pattern[index - 1] === sourceCharacter ? 0 : 1;
+      const substitutionCost = pattern[index - 1] === sourceCharacter ? 0 : 1;
       current[index] = Math.min(
         previous[index] + 1,
         current[index - 1] + 1,
@@ -110,9 +109,7 @@ function normalizeOptionalPatchFields(draft: ChapterMemoryPatchDraft): void {
     const raw = item as unknown as Record<string, unknown>;
     item.tempRef = text(item.tempRef || raw.ref || raw.id);
     item.aliases = textList(item.aliases);
-    item.evidenceQuote = text(
-      item.evidenceQuote || raw.quote || raw.evidence,
-    );
+    item.evidenceQuote = text(item.evidenceQuote || raw.quote || raw.evidence);
     const tempRef = item.tempRef;
     item.canonicalName = text(
       item.canonicalName ||
@@ -389,8 +386,8 @@ function normalizeDuplicateCharacterRefs(draft: ChapterMemoryPatchDraft): void {
       mentionedCandidates.length === 2
         ? mentionedCandidates
         : sharedCandidates?.length === 2
-          ? sharedCandidates
-          : undefined;
+        ? sharedCandidates
+        : undefined;
     if (endpoints) {
       [relationship.fromRef, relationship.toRef] = endpoints.map(
         candidate => candidate.ref,
@@ -589,7 +586,11 @@ export function validatePatchEvidence(
     ) {
       throw new StoryMemoryError(
         'MEMORY_EVIDENCE_NOT_FOUND',
-        '记忆补丁包含无法在章节正文中定位的证据。',
+        `证据“${
+          typeof quote === 'string' && quote.trim()
+            ? quote.trim().slice(0, 80)
+            : '（空）'
+        }”无法在章节正文中定位。evidenceQuote 必须使用与正文相同语言，直接逐字复制一段 4–80 字符的连续原文，不得翻译、改写或概括。`,
       );
     }
   }

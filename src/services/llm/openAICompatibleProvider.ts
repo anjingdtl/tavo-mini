@@ -221,26 +221,45 @@ export const openAICompatibleProvider: LLMProvider = {
             onProgress: options.onProgress,
           });
           try {
-            const response = await fetch(config.url, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${config.api_key}`,
-              },
-              body: JSON.stringify({
-                model: config.model_name,
-                messages,
-                temperature: options.temperature ?? 0.8,
-                top_p: options.top_p ?? 0.9,
-                max_tokens: options.max_tokens ?? 4000,
-                stream: false,
-              }),
-              signal: timeoutController.signal,
-            });
+            const requestBody: Record<string, unknown> = {
+              model: config.model_name,
+              messages,
+              temperature: options.temperature ?? 0.8,
+              top_p: options.top_p ?? 0.9,
+              max_tokens: options.max_tokens ?? 4000,
+              stream: false,
+            };
+            if (options.responseFormat === 'json_object') {
+              requestBody.response_format = { type: 'json_object' };
+            }
+            const sendRequest = () =>
+              fetch(config.url, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${config.api_key}`,
+                },
+                body: JSON.stringify(requestBody),
+                signal: timeoutController.signal,
+              });
+            let response = await sendRequest();
 
             if (!response.ok) {
               const text = await response.text();
-              throw formatLLMError(response.status, text);
+              const responseFormatUnsupported =
+                options.responseFormat === 'json_object' &&
+                response.status === 400 &&
+                /response[_ ]?format|json[_ ]?object|unsupported|unknown/i.test(
+                  text,
+                );
+              if (!responseFormatUnsupported) {
+                throw formatLLMError(response.status, text);
+              }
+              delete requestBody.response_format;
+              response = await sendRequest();
+              if (!response.ok) {
+                throw formatLLMError(response.status, await response.text());
+              }
             }
 
             const data = await response.json();
@@ -260,6 +279,7 @@ export const openAICompatibleProvider: LLMProvider = {
               inputTokens,
               outputTokens,
               totalTokens,
+              finishReason: data.choices?.[0]?.finish_reason ?? null,
               metrics: { ...timeoutController.metrics },
               rawUsage: data.usage,
             };
