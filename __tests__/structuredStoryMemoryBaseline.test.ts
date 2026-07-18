@@ -90,7 +90,7 @@ describe('structured story memory baseline protection', () => {
     expect(result.messages.map((message: { content: string }) => message.content)).toEqual([
       expect.stringContaining('经验丰富'),
       expect.stringContaining('设定资料'),
-      expect.stringContaining('历史记忆摘要'),
+      expect.stringContaining('相关历史章节事件'),
       expect.stringContaining('最近前文正文'),
       expect.stringContaining('当前章节'),
     ]);

@@ -35,6 +35,7 @@ const KIND_ICON: Record<ContextSourceKind, React.ComponentType<{ size: number; c
   preset: Bot,
   chapter: BookOpen,
   memory: Brain,
+  story_memory: Brain,
   character: Users,
   note: StickyNote,
   worldbook: Globe,
@@ -72,7 +73,13 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
       setNotFound(false);
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(chapter.project_id);
-      const result = await buildContext(chapter, config, chapter.project_id, presets[0]);
+      const result = await buildContext(
+        chapter,
+        config,
+        chapter.project_id,
+        presets[0],
+        { storyMemoryMode: 'preview' },
+      );
       setTrace(result.trace);
       setEstimatedInputTokens(result.estimatedInputTokens);
       setMessages(result.messages);
