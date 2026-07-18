@@ -48,4 +48,21 @@ describe('story memory context settings compatibility', () => {
     expect(mockSetSetting).toHaveBeenCalledWith('memory_patch_max_tokens', '3200');
     expect(mockSetSetting).toHaveBeenCalledWith('summary_budget_tokens', '48000');
   });
+
+  it('defaults the rollback feature flag on and persists an explicit disable', async () => {
+    const repository = require('../src/data/repositories/settingsRepository');
+    const query = require('../src/data/connection/query');
+    const execute = require('../src/data/connection/execute').execute;
+    const openDatabase = require('../src/data/connection/openDatabase').openDatabase;
+    query.one.mockResolvedValue(null);
+    await expect(repository.getStructuredStoryMemoryEnabled()).resolves.toBe(true);
+    openDatabase.mockResolvedValue({});
+    execute.mockResolvedValue(undefined);
+    await repository.setStructuredStoryMemoryEnabled(false);
+    expect(execute).toHaveBeenCalledWith(
+      {},
+      expect.stringContaining('INSERT OR REPLACE INTO settings'),
+      ['structured_story_memory_enabled', 'false'],
+    );
+  });
 });
