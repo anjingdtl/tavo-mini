@@ -5,7 +5,7 @@
  * 100 章带 memory_summary 时这是 O(N²) 词汇去重 + 标量计算；连续触发会在毫秒级。
  *
  * 这里提供按项目维度的 IDF 内存缓存，配合"signature 不变就不重算"策略：
- * - signature = `chapters.map(c => c.memory_summary?.length || 0).join('|')` + 项目 id
+ * - signature includes chapter identity, token count, and summary content
  * - 任意章节 summary 写入/重建即 invalidate
  *
  * 这是内存缓存，进程重启会重建。适合运行时单次会话内多章流水线触发 buildContext 的场景。
@@ -23,9 +23,21 @@ const cache = new Map<number, CachedIdf>();
 const TTL_MS = 30 * 60 * 1000; // 30 分钟，防止内存累积过多项目
 
 export function computeMemorySummarySignature(previousChapters: Chapter[]): string {
-  // 只取 memory_summary 的长度作为 signature：足够探测章节是否修改，
-  // 同时避免序列化大字符串到 key 里
-  return previousChapters.map((c) => String((c as any).memory_summary?.length || 0)).join('|');
+  return previousChapters
+    .map(chapter => {
+      const summary = chapter.memory_summary || '';
+      let first = 5381;
+      let second = 52711;
+      for (let index = 0; index < summary.length; index += 1) {
+        const code = summary.charCodeAt(index);
+        first = (first * 33 + code) % 4294967291;
+        second = (second * 131 + code) % 4294967279;
+      }
+      return `${chapter.id}:${chapter.memory_summary_tokens || 0}:${first.toString(
+        36,
+      )}${second.toString(36)}`;
+    })
+    .join('|');
 }
 
 export function getCachedIdf(
