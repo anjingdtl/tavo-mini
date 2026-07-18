@@ -316,3 +316,14 @@
 - Jest 全量基线：84 套件 / 432 测试通过（新增 contextAutoAllocator 19 个、contextAutoRepository 12 个）。
 - emulator-5554（Android 17 / x86_64）端到端穿测 8 模块（项目列表 / 写作 Tab / 资料库 / 设置 / 上下文自动化 / 备份中心 / LLM 设置 / 语音设置）全部通过，0 崩溃 / 0 ANR；备份 pre_restore 自动快照、900ms 章节自动保存 + 数据回流均验证通过。完整穿测报告见 ../V2.4.6-TEST-REPORT.md（含 6 张关键截图 docs/e2e-screenshots/V2.4.6-*.png）。
 - 已知阻塞（与 V2.4.4 相同）：第三方 .so（libllamacpp_jni、libreactnative、libhermesvm、libllama、libggml-xxx、libsqliteJni）16KB 页大小 / RELRO 对齐未满足，Android 15+ 真机无法启动；需升级 RN 0.85.x 16KB 兼容 patch + llama.cpp 重编后才能用于 Play Store 发布。本次 Tag 与 V2.4.4 一样不含签名 Release APK（SHINE_WRITER_RELEASE_xxx 环境变量未配置，签名 keystore 路径为 android/keystores/shine-writer-release.keystore，必须在 CI 注入）。
+
+## V2.5.1 structured story memory release closure — 2026-07-18
+
+- Version metadata advanced to V2.5.1 / versionCode 2050100; Schema remains 15 and no new migration is introduced from V2.5.0.
+- Structured story memory phases 0–9 are complete. Chapter episodic summaries and TF-IDF Top-K retrieval remain in place alongside project-level deterministic story state.
+- Emulator validation covered 29 non-empty chapter rebuilds, valid/repair/invalid model output, in-flight cancellation, checkpoint continuation, snapshot replay, clean context injection, and non-empty three-table backup restore with API-key exclusion.
+- An emulator-discovered cancellation bug was fixed in `f8218df`: an aborted in-flight provider request now restores `dirty`, preserves completed checkpoints, and does not persist a false failure.
+- Final local gates: `npm ci` PASS with both Android postinstall patches replayed (`npm audit`: 3 moderate dependency findings); `npm run verify` PASS, 98 suites / 489 tests; coverage 78.77% statements / 61.38% branches / 85.56% functions / 80.33% lines.
+- Signed Release APK: `dist/apk/release/ShineWriter-V2.5.1-release.apk`, 37,190,635 bytes, SHA-256 `41BE102B8499869118B2B83ABC0E22E3072CA2650A22F98F8E42637BB30BC13A`.
+- Release acceptance: official certificate SHA-256 matched, APK Signature Scheme v2 passed with one signer, 16 KB zipalign verification passed, and AAPT reported `com.shinewriter` / `V2.5.1` / `2050100` / compileSdk 36.
+- Remaining release risks: real external-model semantics and provider behavior, arm64 physical-device llama.cpp performance, vendor-ROM background/TTS/SAF behavior, and the compatibility dialog's third-party native-library 16 KB alignment findings.

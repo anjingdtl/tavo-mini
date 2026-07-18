@@ -265,3 +265,14 @@
 - 最终本地门禁：`npm ci` PASS（npm audit 报 3 个 moderate dependency vulnerabilities）；lint PASS（4 warnings/0 errors）；typecheck PASS；test:ci 82 suites/401 tests PASS；coverage 78.33% statements / 60.37% branches / 86.05% functions / 79.95% lines；migration 7 suites/37 tests PASS；detectOpenHandles 82 suites/401 tests 自然退出，无 open handle 报告；最终 Debug APK 重建及 6/6 设备回归 PASS。
 - 安全扫描：签名相关命中均为环境变量名称/文档/Gradle 读取；API key/Bearer/password 命中为生产字段、明显假测试值或 vendored llama.cpp 示例，未发现真实凭据；`src`、`android`、`__tests__` 无 `transaction(async`。备份测试继续证明凭据不写入 JSON。
 - 当前状态：`PARTIAL`。允许发布源码 Tag `V2.4.4`；仍不建议把该 Tag 当作可分发 APK RC。
+
+## Workstream F：V2.5.1 结构化故事记忆发布收口
+
+- 版本推进至 `V2.5.1` / `versionCode=2050100`，Schema 保持 15；README、CHANGELOG、Code Wiki、发布清单和专项报告已同步。
+- Story Memory Phase 0–9 已完成，章节事件摘要与 TF-IDF Top-K 保留；模拟器完成长篇完整重建、repair、失败停点、取消继续、snapshot、clean 上下文与非空三表备份恢复。
+- 在途取消误记为 `failed` 的问题由 `f8218df` 修复并在模拟器复测通过。
+- 本地最终门禁：`npm ci` PASS 并重放 postinstall 补丁（npm audit 有 3 个 moderate 依赖风险）；98 suites / 489 tests PASS；coverage 为 statements 78.77%、branches 61.38%、functions 85.56%、lines 80.33%。
+- 正式签名 Release APK：`dist/apk/release/ShineWriter-V2.5.1-release.apk`，37,190,635 bytes，SHA-256 `41BE102B8499869118B2B83ABC0E22E3072CA2650A22F98F8E42637BB30BC13A`。
+- 验收：正式证书 SHA-256 匹配、v2 单 signer 通过、16 KB zipalign 通过、AAPT 为 `com.shinewriter / V2.5.1 / 2050100 / compileSdk 36`。
+- 尚未关闭：真实外部模型语义、arm64 真机长上下文、本地模型内存/温度/耗电、厂商后台/TTS/SAF，以及第三方原生库 16 KB 对齐。
+- 状态：`CONDITIONAL PASS`。允许发布 V2.5.1 源码 Tag 与已验签 Release APK；不宣称完整 ARM64 真机验收。
