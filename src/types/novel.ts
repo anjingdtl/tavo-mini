@@ -111,6 +111,9 @@ export interface ContextConfig {
   resourceBudget: number;
   includeResources: boolean;
   summaryBudgetTokens?: number;
+  storyStateBudgetTokens?: number;
+  episodicMemoryBudgetTokens?: number;
+  memoryPatchMaxTokens?: number;
   memoryTopK?: number;
   recentChapterCount?: number;
   worldbookRecursive?: boolean;

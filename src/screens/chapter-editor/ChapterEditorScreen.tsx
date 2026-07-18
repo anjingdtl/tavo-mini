@@ -7,7 +7,7 @@ import Toast from 'react-native-toast-message';
 import { Button, Header, Screen, spacing } from '../../components/ui';
 import * as db from '../../services/database';
 import { createRevision } from '../../services/revisionService';
-import { generateMemorySummary } from '../../services/summaryGenerator';
+import { finalizeChapterMemory } from '../../services/storyMemory/storyMemoryService';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { EditorStackParamList } from '../../navigation/TabNavigator';
 import type { Chapter } from '../../types/novel';
@@ -85,16 +85,19 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         content: chapter.content,
       });
       setSaveStatus('saved');
-      const memorySummary = await generateMemorySummary(chapter.id, 200);
-      await db.updateChapter(chapter.id, {
-        memory_summary: memorySummary,
-        memory_summary_tokens: estimateTokens(memorySummary),
-      });
+      const result = await finalizeChapterMemory(chapter.id);
       await loadChapter();
+      Toast.show({
+        type: 'success',
+        text1: '章节已定稿',
+        text2: `故事记忆已更新到第 ${result.state.throughChapterPosition + 1} 章。`,
+      });
     } catch (error: any) {
       Alert.alert(
-        '摘要生成失败',
-        error?.message || '章节已保存，但自动记忆摘要生成失败。',
+        '故事记忆更新失败',
+        `章节正文已保存，但故事记忆更新失败。\n${
+          error?.message || '请稍后重试或重建故事记忆。'
+        }`,
       );
     } finally {
       setFinalizing(false);

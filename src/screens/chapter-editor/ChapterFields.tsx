@@ -75,7 +75,7 @@ export function ChapterFields({
           <Text
             style={[styles.summaryText, { color: theme.colors.textSecondary }]}
           >
-            {chapter.memory_summary}
+            系统章节事件记忆（用于相关历史事件检索）\n{chapter.memory_summary}
           </Text>
         </View>
       ) : null}
