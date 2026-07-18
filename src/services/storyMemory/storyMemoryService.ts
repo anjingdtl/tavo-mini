@@ -3,6 +3,7 @@ import { extractJSON } from '../../utils/jsonExtractor';
 import { invalidateIdf } from '../../utils/idfCache';
 import * as db from '../database';
 import { callLLMResult } from '../llm';
+import { generateMemorySummary } from '../summaryGenerator';
 import { fingerprintChapterSource } from './storyMemoryFingerprint';
 import { applyStoryMemoryPatch } from './storyMemoryMerger';
 import {
@@ -218,6 +219,22 @@ export async function finalizeChapterMemory(
   return withProjectMemoryLock(chapter.project_id, async () => {
     const freshChapter = await db.getChapterById(chapterId);
     if (!freshChapter) throw new Error('章节不存在。');
+    if (
+      typeof (db as any).getStructuredStoryMemoryEnabled === 'function' &&
+      !(await (db as any).getStructuredStoryMemoryEnabled())
+    ) {
+      const episodicMemoryText = await generateMemorySummary(chapterId, 200);
+      const finalizedAt = new Date().toISOString();
+      await db.updateChapter(chapterId, { status: 'final', finalized_at: finalizedAt });
+      invalidateIdf(freshChapter.project_id);
+      const record = await db.ensureProjectStoryMemoryRow(freshChapter.project_id);
+      return {
+        state: record.state,
+        patchId: '',
+        episodicMemoryText,
+        reused: false,
+      };
+    }
     const sourceFingerprint = fingerprintChapterSource(freshChapter);
     const existing = await db.getChapterMemoryPatch(chapterId);
     const currentRecord = await db.ensureProjectStoryMemoryRow(

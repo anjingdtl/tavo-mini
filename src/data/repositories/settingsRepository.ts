@@ -166,6 +166,16 @@ export async function setAllowInsecureLanHttp(enabled: boolean): Promise<void> {
   await setSetting('allow_insecure_lan_http', String(enabled));
 }
 
+export async function getStructuredStoryMemoryEnabled(): Promise<boolean> {
+  return (await getSetting('structured_story_memory_enabled')) !== 'false';
+}
+
+export async function setStructuredStoryMemoryEnabled(
+  enabled: boolean,
+): Promise<void> {
+  await setSetting('structured_story_memory_enabled', String(enabled));
+}
+
 export async function getVoiceConfig(): Promise<VoiceConfig> {
   const raw = await getSetting('voice_config');
   if (!raw) return DEFAULT_VOICE_CONFIG;
