@@ -48,8 +48,10 @@ jest.mock('../src/services/pipelineRunner', () => ({
   cancelPipeline: jest.fn(),
 }));
 
-jest.mock('../src/services/summaryGenerator', () => ({
-  generateMemorySummary: jest.fn(async () => ''),
+jest.mock('../src/services/storyMemory/storyMemoryService', () => ({
+  finalizeChapterMemory: jest.fn(async () => ({
+    state: { throughChapterPosition: 0 },
+  })),
 }));
 
 jest.mock('../src/store/pipelineTaskStore', () => ({
