@@ -1,6 +1,6 @@
 # ShineWriter Code Wiki
 
-> 版本：V2.4.6 ｜ Schema v14 ｜ 平台：Android-only
+> 版本：V2.5.0 ｜ Schema v15 ｜ 平台：Android-only
 > 本文档由代码静态分析自动整理，最后更新：2026-07-18
 
 ---
@@ -40,6 +40,7 @@
 - 角色卡 / 世界书 / 笔记 / 预设四类资料库
 - 系统 TTS + 云端 TTS 双引擎朗读
 - Manifest 驱动的 v3 备份/恢复
+- 人物 / 关系 / 故事主线三层结构化记忆，章节增量补丁与快照重建
 - Android 前台服务保活（管线/TTS/本地模型导入）
 
 **关键常量**：
@@ -47,8 +48,8 @@
 | 项 | 值 |
 |---|---|
 | 应用名 | ShineWriter |
-| 当前版本 | V2.4.6 |
-| Schema 版本 | 14（`MIN_COMPATIBLE_SCHEMA_VERSION = 3`） |
+| 当前版本 | V2.5.0 |
+| Schema 版本 | 15（`MIN_COMPATIBLE_SCHEMA_VERSION = 3`） |
 | 基准三色 | `#439EA6`（主）/ `#B0E0E3`（辅）/ `#D7F1F4`（底） |
 | Node 要求 | `>= 24.3.0` |
 | JDK | 17 |
@@ -64,7 +65,7 @@
 | 框架 | `react@19.2.3` / `react-native@0.85.3` | RN 0.85 Bridgeless 架构 |
 | 导航 | `@react-navigation/native`、`bottom-tabs`、`native-stack` | 4 Tab + 嵌套 Stack |
 | 状态 | `zustand@5.0.13` | 6 个 store，无 persist 中间件 |
-| 存储 | `react-native-sqlite-storage@6.0.1` | SQLite 本地数据库（22 张表） |
+| 存储 | `react-native-sqlite-storage@6.0.1` | SQLite 本地数据库（25 张表） |
 | 文件 | `react-native-fs@2.20.0` | 文件读写、备份落盘 |
 | 安全 | `react-native-keychain@10.0.0` | Android Keystore（API Key） |
 | 选择器 | `@react-native-documents/picker@12.0.1` | 文件/文件夹 SAF |

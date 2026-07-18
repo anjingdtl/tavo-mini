@@ -1,5 +1,21 @@
 # ShineWriter 发布清单
 
+## V2.5.0 结构化故事记忆专项
+
+- [x] Schema 14 → 15 自动化迁移与 fresh install 三表一致
+- [x] 新表进入 manifest 驱动备份/恢复
+- [x] 增量补丁、证据校验、稳定 ID、幂等与 base fingerprint 自动化通过
+- [x] dirty、snapshot、失败停点、取消和 100 章确定性回放自动化通过
+- [x] Story State 优先于资料和 Episodic TF-IDF 注入；dirty 预览不注入
+- [x] 128K / 200K / 512K / 1M 双层记忆预算自动化通过
+- [ ] Android 真机 30 章连续定稿与第 8 章修改重建
+- [ ] Android 强杀后 checkpoint 恢复与取消后继续
+- [ ] 备份 → 清空 App 数据 → 恢复 Story Memory 一致性
+- [ ] 在线模型生成/repair 各一次
+- [ ] 本地 GGUF 生成/截断 repair/取消各一次
+
+专项自动化与未完成矩阵见 [`V2.5.0-STORY-MEMORY-TEST-REPORT.md`](V2.5.0-STORY-MEMORY-TEST-REPORT.md)。
+
 本清单用于每个 Android 发布版本。勾选前把命令输出、APK 路径、设备型号或 GitHub Actions URL 写入对应的证据栏；无法执行的项目必须注明原因和替代验证，不得默认为通过。
 
 当前发布基线（2026-07-16）：实现分支最终 GitHub Actions Run [29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) 的 JavaScript、Migration matrix、Android Debug 均成功。按用户要求发布源码 Tag `V2.4.4`；签名 Release、Minified Release、物理设备和部分故障注入仍 BLOCKED，因此不批准可分发 APK RC。

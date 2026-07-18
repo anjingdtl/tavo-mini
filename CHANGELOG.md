@@ -8,6 +8,40 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 No unreleased changes are currently recorded.
 
+## [2.5.0] - 2026-07-18
+
+### Added
+
+- 新增长篇小说结构化故事记忆：项目级固定保存登场人物、人物关系和故事主线，每次章节生成作为连续性约束强制注入。
+- 每章定稿由模型只生成带正文证据的增量补丁，程序负责严格校验、稳定 ID 分配、确定性合并和章节事件文本渲染。
+- 新增 Schema 15 的 `project_story_memory`、`chapter_memory_patches`、`story_memory_snapshots`，支持原子保存、备份恢复、级联删除与按位置快照。
+- 新增 dirty 失效、base fingerprint 校验、补丁复用、取消/失败 checkpoint、完整重建和旧摘要快速初始化。
+- 故事概览新增“故事记忆”页面，可查看状态、三类记忆、构建进度和最近错误，并执行快速初始化、继续、完整、取消或清空重建。
+- 新增 `structured_story_memory_enabled` 回滚开关；关闭后保留新表并回退旧章节事件摘要定稿路径。
+
+### Changed
+
+- `chapters.memory_summary` 继续保留，但改为由已验证 episodic patch 确定性渲染；原 TF-IDF Top-K 检索能力保留。
+- 上下文顺序调整为系统预设 → 项目故事状态 → 资料 → 相关历史章节事件 → 最近正文 → 当前章节指令。
+- 自动上下文输入预算调整为正文 45% / 资料 20% / Story State 25% / Episodic Memory 10%，并新增每章补丁输出上限。
+- 数据库 Schema 从 14 升级为 15；迁移只建表和索引，不会在启动或迁移时调用模型。
+
+### Fixed
+
+- IDF 缓存签名改为章节 ID、token 数和内容指纹组合，可识别等长摘要内容变化。
+- 修改、删除或重排已定稿章节会把 dirty 起点合并到最早受影响位置，不再静默注入已知过期的全局状态。
+- 章节正文保存与记忆生成失败解耦；模型或事务失败不会回滚、清空正文或伪造新的定稿时间。
+
+### Tests
+
+- 新增领域合并、运行时校验、Schema 14→15、repository、LLM repair、定稿、重建、渲染、上下文、预算和 UI 定向测试。
+- 自动化结果与覆盖率见 [`docs/V2.5.0-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.0-STORY-MEMORY-TEST-REPORT.md)。
+
+### Known limitations
+
+- Android 真机 30 章场景、在线模型、本地 GGUF、强杀恢复与备份清空恢复仍需发布候选包补验。
+- 旧摘要快速初始化依赖原摘要质量；准确性要求高的项目应主动执行完整正文重建。
+
 ## [2.4.6] - 2026-07-18
 
 ### Added
