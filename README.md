@@ -75,6 +75,8 @@ npm run android
 
 ## 构建与发布
 
+> **Release 构建必读：** 自动化 Agent 和维护者在生成正式 APK 前，必须先阅读 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md)。指南包含用户级签名变量加载、原始签名身份校验、构建后验收和故障处理；不要新建 keystore 或使用 Debug 签名代替。
+
 APK 统一交付路径是 `dist/apk/{debug|release}/`：
 
 | 命令                           | 产物                                                  |
@@ -91,6 +93,8 @@ SHINE_WRITER_RELEASE_STORE_PASSWORD
 SHINE_WRITER_RELEASE_KEY_ALIAS
 SHINE_WRITER_RELEASE_KEY_PASSWORD
 ```
+
+主构建机将这些变量保存在 Windows 当前用户环境中。若 Agent、IDE 或终端在变量配置前已经启动，进程不会自动得到新值；请使用上述指南中的 PowerShell 安全加载片段，再运行 `npm run apk:release`。任何文档和日志都不得记录密码值。
 
 发布后的 APK 从 [GitHub Releases](https://github.com/anjingdtl/tavo-mini/releases) 下载；尚未创建 Release 时，可在对应 GitHub Actions 运行页查看 CI 产物。每次正式发布还应在发布说明中附带 APK SHA-256。
 
