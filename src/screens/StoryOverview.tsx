@@ -1,14 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
-import { Card, EmptyState, Header, Screen, spacing } from '../components/ui';
+import { Button, Card, EmptyState, Header, Screen, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
 import type { Chapter } from '../types/novel';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { EditorStackParamList } from '../navigation/TabNavigator';
 
 export const StoryOverview: React.FC = () => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
+  const navigation = useNavigation<NativeStackNavigationProp<EditorStackParamList>>();
   const [chapters, setChapters] = useState<Chapter[]>([]);
 
   const load = useCallback(async () => {
@@ -31,7 +35,7 @@ export const StoryOverview: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="故事概览" subtitle={currentProject?.name || '请先选择项目'} />
+      <Header title="故事概览" subtitle={currentProject?.name || '请先选择项目'} action={<Button label="故事记忆" variant="secondary" compact onPress={() => navigation.navigate('StoryMemory')} />} />
       {chapters.length === 0 ? (
         <EmptyState title="还没有可概览的章节" description="创建章节并补充摘要后，这里会形成故事进展视图。" />
       ) : (

@@ -28,6 +28,7 @@ import { UsageStatsScreen } from '../screens/UsageStatsScreen';
 import { VoiceSettingsScreen } from '../screens/VoiceSettingsScreen';
 import { LocalModelManagerScreen } from '../screens/LocalModelManagerScreen';
 import { ContextAutoConfigScreen } from '../screens/ContextAutoConfigScreen';
+import { StoryMemoryScreen } from '../screens/StoryMemoryScreen';
 
 export type EditorStackParamList = {
   EditorMain: undefined;
@@ -35,6 +36,7 @@ export type EditorStackParamList = {
   ChapterSummary: { chapterId: number };
   PlotlineManager: undefined;
   StoryOverview: undefined;
+  StoryMemory: undefined;
   ContextConfig: undefined;
   PipelineResult: { taskId: string };
   RevisionHistory: { targetType: 'chapter' | 'freeform'; targetId: number; projectId: number };
@@ -92,6 +94,10 @@ const DraftPreviewRoute = ({ route, navigation }: NativeStackScreenProps<EditorS
   <DraftPreviewScreen targetType={route.params.targetType} targetId={route.params.targetId} projectId={route.params.projectId} onClose={() => navigation.goBack()} />
 );
 
+const StoryMemoryRoute = ({ navigation }: NativeStackScreenProps<EditorStackParamList, 'StoryMemory'>) => (
+  <StoryMemoryScreen onClose={() => navigation.goBack()} />
+);
+
 const EditorStackScreen = () => (
   <EditorStack.Navigator screenOptions={{ headerShown: false }}>
     <EditorStack.Screen name="EditorMain" component={EditorMainScreen} />
@@ -99,6 +105,7 @@ const EditorStackScreen = () => (
     <EditorStack.Screen name="ChapterSummary" component={ChapterSummaryRoute} />
     <EditorStack.Screen name="PlotlineManager" component={PlotlineManager} />
     <EditorStack.Screen name="StoryOverview" component={StoryOverview} />
+    <EditorStack.Screen name="StoryMemory" component={StoryMemoryRoute} />
     <EditorStack.Screen name="ContextConfig" component={ContextConfigScreen} />
     <EditorStack.Screen name="PipelineResult" component={PipelineResultScreen} />
     <EditorStack.Screen name="RevisionHistory" component={RevisionHistoryRoute} />
