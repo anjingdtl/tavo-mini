@@ -305,3 +305,14 @@
 - `V2.4.4` is intentionally a Tag-only engineering release. No signed Release/Minified APK or GitHub Release asset is claimed; signing credentials, ARM64 physical-device evidence, controllable GGUF/OOM inputs, and complete TTS background verification remain outstanding.
 - The canonical branch is `main`. After the tag commit passes local gates, it is pushed to `origin/main`, annotated tag `V2.4.4` is pushed, the merged diagnostic branch is deleted locally/remotely, and parity/branch inventory is rechecked.
 - The V2.4.4 release-preparation commit passed mainline GitHub Actions [Run 29506345363](https://github.com/anjingdtl/tavo-mini/actions/runs/29506345363): JavaScript validation 67s, Migration matrix 28s, Android Debug build 9m13s. This final evidence-only update uses `[skip ci]`; the annotated tag is created on the resulting documentation-complete commit.
+
+
+
+## V2.4.6 上下文自动化配置 tag closure — 2026-07-18
+
+- 版本元数据推进到 V2.4.6，versionCode=2040600；数据库 Schema 仍为 14，不引入新迁移。
+- 新增"上下文自动化配置"模块：用户在设置页填入模型支持的最大上下文（如 200000），按比例（输入 65/20/15、输出 50/15/15/20、资源级 R1 + 单项下限兜底）自动分配到 ContextConfig、PipelineConfig、llm_config、presets 和资源级 max_tokens，共 5 个配置点。
+- 应用过程走单一 executeTransaction 原子事务，写入失败整体回滚；本地 GGUF 模型的 context_window 不被覆写；记录"上次应用"卡片供回显。
+- Jest 全量基线：84 套件 / 432 测试通过（新增 contextAutoAllocator 19 个、contextAutoRepository 12 个）。
+- emulator-5554（Android 17 / x86_64）端到端穿测 8 模块（项目列表 / 写作 Tab / 资料库 / 设置 / 上下文自动化 / 备份中心 / LLM 设置 / 语音设置）全部通过，0 崩溃 / 0 ANR；备份 pre_restore 自动快照、900ms 章节自动保存 + 数据回流均验证通过。完整穿测报告见 ../V2.4.6-TEST-REPORT.md（含 6 张关键截图 docs/e2e-screenshots/V2.4.6-*.png）。
+- 已知阻塞（与 V2.4.4 相同）：第三方 .so（libllamacpp_jni、libreactnative、libhermesvm、libllama、libggml-xxx、libsqliteJni）16KB 页大小 / RELRO 对齐未满足，Android 15+ 真机无法启动；需升级 RN 0.85.x 16KB 兼容 patch + llama.cpp 重编后才能用于 Play Store 发布。本次 Tag 与 V2.4.4 一样不含签名 Release APK（SHINE_WRITER_RELEASE_xxx 环境变量未配置，签名 keystore 路径为 android/keystores/shine-writer-release.keystore，必须在 CI 注入）。
