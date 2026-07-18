@@ -14,14 +14,11 @@ import {
   RATIO_RESOURCE_CHARACTER,
   RATIO_RESOURCE_NOTE,
   RATIO_RESOURCE_WORLDBOOK,
-  MIN_SLIDING_WINDOW,
-  MIN_SUMMARY_BUDGET,
   MIN_CHARACTER_TOKENS,
   MIN_NOTE_TOKENS,
   MIN_WORLDBOOK_ENTRY_TOKENS,
   MIN_WORLDBOOK_COLLECTION_TOKENS,
   MIN_PIPELINE_TOKENS,
-  MIN_RESOURCE_BUDGET,
 } from '../src/services/contextAutoAllocator';
 
 const ZERO_COUNTS = {
@@ -53,9 +50,12 @@ describe('allocateContextBudget', () => {
     expect(result.inputBudget).toBe(160000);
     expect(result.outputBudget).toBe(40000);
     // 输入侧（允许 round 误差 ±1）
-    expect(result.slidingWindowSize).toBe(104000);
+    expect(result.slidingWindowSize).toBe(80000);
     expect(result.resourceBudget).toBe(32000);
-    expect(result.summaryBudgetTokens).toBe(24000);
+    expect(result.storyStateBudgetTokens).toBe(32000);
+    expect(result.episodicMemoryBudgetTokens).toBe(16000);
+    expect(result.summaryBudgetTokens).toBe(48000);
+    expect(result.memoryPatchMaxTokens).toBe(3200);
     // 输出侧
     expect(result.draftMaxTokens).toBe(20000);
     expect(result.reviewMaxTokens).toBe(6000);
@@ -85,7 +85,7 @@ describe('allocateContextBudget', () => {
     });
     expect(result.inputBudget).toBe(800000);
     expect(result.outputBudget).toBe(200000);
-    expect(result.slidingWindowSize).toBe(520000);
+    expect(result.slidingWindowSize).toBe(592000);
     expect(result.draftMaxTokens).toBe(100000);
     // inputBudget=800000, resourceBudget=160000, characterTotal=56000, /50=1120
     expect(result.characterMaxTokens).toBe(1120);
@@ -104,10 +104,11 @@ describe('allocateContextBudget', () => {
 
   test('极小值 100 触发所有 floor', () => {
     const result = allocateContextBudget(100, ZERO_COUNTS);
-    // inputBudget=80, sliding=80*0.65=52 → floor 到 1000
-    expect(result.slidingWindowSize).toBe(MIN_SLIDING_WINDOW);
-    expect(result.summaryBudgetTokens).toBe(MIN_SUMMARY_BUDGET);
-    expect(result.resourceBudget).toBe(MIN_RESOURCE_BUDGET);
+    expect(result.slidingWindowSize).toBe(36);
+    expect(result.storyStateBudgetTokens).toBe(20);
+    expect(result.episodicMemoryBudgetTokens).toBe(8);
+    expect(result.summaryBudgetTokens).toBe(28);
+    expect(result.resourceBudget).toBe(16);
     expect(result.characterMaxTokens).toBe(MIN_CHARACTER_TOKENS);
     expect(result.noteMaxTokens).toBe(MIN_NOTE_TOKENS);
     expect(result.worldbookEntryMaxTokens).toBe(MIN_WORLDBOOK_ENTRY_TOKENS);
@@ -133,6 +134,31 @@ describe('allocateContextBudget', () => {
     expect(
       RATIO_RESOURCE_CHARACTER + RATIO_RESOURCE_NOTE + RATIO_RESOURCE_WORLDBOOK,
     ).toBeCloseTo(1);
+  });
+
+  test.each([128000, 200000, 512000, 1000000])(
+    '%i 上下文的输入分项总和不超过 inputBudget',
+    value => {
+      const result = allocateContextBudget(value, ZERO_COUNTS);
+      expect(
+        result.slidingWindowSize +
+          result.resourceBudget +
+          result.storyStateBudgetTokens +
+          result.episodicMemoryBudgetTokens,
+      ).toBe(result.inputBudget);
+      expect(result.storyStateBudgetTokens).toBeLessThanOrEqual(32000);
+      expect(result.episodicMemoryBudgetTokens).toBeLessThanOrEqual(16000);
+    },
+  );
+
+  test('8000 使用正常下限，小于 5000 输入预算使用比例 fallback', () => {
+    const normal = allocateContextBudget(8000, ZERO_COUNTS);
+    expect(normal.storyStateBudgetTokens).toBeGreaterThanOrEqual(2000);
+    expect(normal.episodicMemoryBudgetTokens).toBeGreaterThanOrEqual(1000);
+    const tiny = allocateContextBudget(4000, ZERO_COUNTS);
+    expect(tiny.inputBudget).toBe(3200);
+    expect(tiny.slidingWindowSize).toBe(1440);
+    expect(tiny.memoryPatchMaxTokens).toBe(800);
   });
 });
 
@@ -257,8 +283,8 @@ describe('applyContextAutoAllocation', () => {
     expect(mockedExecuteTransaction).toHaveBeenCalledTimes(1);
     const [dbArg, statements] = mockedExecuteTransaction.mock.calls[0];
     expect(dbArg).toEqual({});
-    // 7 个 settings + llm_config + presets + 4 个资源表（count=1>0）= 13 个
-    expect(statements.length).toBe(13);
+    // 10 个 settings + llm_config + presets + 4 个资源表（count=1>0）= 16 个
+    expect(statements.length).toBe(16);
     // 检测参数（SQL 用 VALUES(?,?)，key 在 params[0]）
     const settingsStmts = statements.filter(
       (s: any) => typeof s.params[0] === 'string' && !s.sql.includes('UPDATE'),
@@ -267,6 +293,9 @@ describe('applyContextAutoAllocation', () => {
     expect(settingsKeys).toContain('sliding_window_size');
     expect(settingsKeys).toContain('resource_budget');
     expect(settingsKeys).toContain('summary_budget_tokens');
+    expect(settingsKeys).toContain('story_state_budget_tokens');
+    expect(settingsKeys).toContain('episodic_memory_budget_tokens');
+    expect(settingsKeys).toContain('memory_patch_max_tokens');
     expect(settingsKeys).toContain('pipeline_draft_max_tokens');
     expect(settingsKeys).toContain('pipeline_review_max_tokens');
     expect(settingsKeys).toContain('pipeline_factcheck_max_tokens');
@@ -342,11 +371,11 @@ describe('applyContextAutoAllocation', () => {
   test('ContextConfig/PipelineConfig 其他字段不被覆写（INSERT OR REPLACE 单 key）', async () => {
     await applyContextAutoAllocation(200000);
     const [, statements] = mockedExecuteTransaction.mock.calls[0];
-    // 7 个 settings INSERT OR REPLACE（3 ContextConfig + 4 PipelineConfig）
+    // 10 个 settings INSERT OR REPLACE（6 ContextConfig + 4 PipelineConfig）
     const settingsStmts = statements.filter((s: any) =>
       s.sql.includes('INSERT OR REPLACE INTO settings'),
     );
-    expect(settingsStmts.length).toBe(7);
+    expect(settingsStmts.length).toBe(10);
     // 不应包含 strategy / pipelineMode / presetId 等 key
     const settingsKeys = settingsStmts.map((s: any) => s.params[0]);
     expect(settingsKeys).not.toContain('context_strategy');
@@ -354,4 +383,3 @@ describe('applyContextAutoAllocation', () => {
     expect(settingsKeys).not.toContain('pipeline_draft_preset_id');
   });
 });
-
