@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.3-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.1** · 数据库 Schema：**15** · 最低 Android API：**24**
+当前版本：**V2.5.3** · 数据库 Schema：**15** · 最低 Android API：**24**
 
-`V2.5.1` 发布长篇小说结构化故事记忆：项目级固定保存人物、关系和故事主线；章节定稿只生成带正文证据的增量补丁，由程序确定性合并。项目状态每次写作强制注入，章节事件继续通过 TF-IDF Top-K 按需召回，最近正文负责语言和场景衔接。Schema 15 支持快照、dirty 失效、顺序重建、旧摘要快速初始化和完整备份恢复；在途取消会保留 checkpoint 并回到可继续的 dirty 状态。
+`V2.5.3` 在 V2.5.2 的 Unicode 引用兼容基础上，修复中文模型为同章多名新人物复用同一临时引用的问题。故事记忆以全量人物实体表、人物关系图以及可并行演进的冲突/线索/伏笔结构保存连续性状态；第一章定稿后，项目级全局状态会注入后续章节。Schema 15 保持不变。
 
 ## 主要能力
 
@@ -85,8 +85,8 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-当前正式产物：`dist/apk/release/ShineWriter-V2.5.1-release.apk`（37,190,635 bytes），
-SHA-256：`41BE102B8499869118B2B83ABC0E22E3072CA2650A22F98F8E42637BB30BC13A`。
+当前正式产物：`dist/apk/release/ShineWriter-V2.5.3-release.apk`（37,259,951 bytes），
+SHA-256：`7CFCCB7519E935A33AE195AB9F7141E0B353312B01D5BAC4E27734F801AEA143`。
 该 APK 已通过正式证书、APK Signature Scheme v2、单 signer、16 KB zipalign 和 AAPT
 版本元数据验收；真实外部模型与 arm64 设备专项限制仍见发布清单。
 
@@ -113,7 +113,7 @@ npm run test:coverage
 npm run verify
 ```
 
-V2.5.1 的自动化命令、套件数量、覆盖率、模拟器证据和未完成真机矩阵记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
+V2.5.1 的结构化记忆基线、覆盖率和未完成真机矩阵记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md)；V2.5.2/V2.5.3 的 DeepSeek 真机问题复现与模拟器 release 回归记录在 [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
 
 `npx jest --runInBand --ci --detectOpenHandles` 可在 Node 24.14.1 上自然退出，不使用 `--forceExit`，无 open-handle 报告或超时。最终分支头的 GitHub Actions [Verify Run 29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) 三个 Job 全部成功。
 
@@ -176,7 +176,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.1** with database Schema **15**. Structured story memory keeps project-level character, relationship, and mainline state while retaining chapter-level TF-IDF episodic retrieval. In-flight rebuild cancellation preserves its checkpoint and remains resumable. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.3** with database Schema **15**. Structured story memory accepts safe Unicode references and deterministically disambiguates duplicate temporary references for multiple new characters while preserving relationship and mainline references. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 

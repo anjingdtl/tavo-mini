@@ -5,6 +5,7 @@ import {
 import { canonicalStringify } from '../src/services/storyMemory/storyMemoryFingerprint';
 import { applyStoryMemoryPatch } from '../src/services/storyMemory/storyMemoryMerger';
 import type { ChapterMemoryPatchDraft } from '../src/services/storyMemory/storyMemoryTypes';
+import { validateChapterMemoryPatch } from '../src/services/storyMemory/storyMemoryValidator';
 
 function firstPatch(): ChapterMemoryPatchDraft {
   const patch = createEmptyChapterMemoryPatch({
@@ -68,21 +69,31 @@ const context = {
 
 describe('deterministic story memory merger', () => {
   it('creates stable characters, normalizes aliases and relationship direction', () => {
-    const result = applyStoryMemoryPatch(createEmptyStoryMemory(7), firstPatch(), context);
+    const result = applyStoryMemoryPatch(
+      createEmptyStoryMemory(7),
+      firstPatch(),
+      context,
+    );
     const characters = Object.values(result.state.characters);
     const relationship = Object.values(result.state.relationships)[0];
     expect(characters).toHaveLength(2);
-    expect(characters.find(item => item.canonicalName === '林岚')?.aliases).toEqual([
-      '小岚',
-    ]);
-    expect(relationship.fromCharacterId < relationship.toCharacterId).toBe(true);
+    expect(
+      characters.find(item => item.canonicalName === '林岚')?.aliases,
+    ).toEqual(['小岚']);
+    expect(relationship.fromCharacterId < relationship.toCharacterId).toBe(
+      true,
+    );
     expect(Object.values(result.state.mainline.openThreads)[0].priority).toBe(
       'critical',
     );
   });
 
   it('updates character sets and resolves an open thread', () => {
-    const first = applyStoryMemoryPatch(createEmptyStoryMemory(7), firstPatch(), context);
+    const first = applyStoryMemoryPatch(
+      createEmptyStoryMemory(7),
+      firstPatch(),
+      context,
+    );
     const characterId = Object.values(first.state.characters).find(
       item => item.canonicalName === '林岚',
     )!.id;
@@ -129,6 +140,49 @@ describe('deterministic story memory merger', () => {
     expect(result.state.mainline.recentResolvedThreads[0].id).toBe(threadId);
   });
 
+  it('merges provider output that omits empty character-update fields', () => {
+    const first = applyStoryMemoryPatch(
+      createEmptyStoryMemory(7),
+      firstPatch(),
+      context,
+    );
+    const characterId = Object.values(first.state.characters)[0].id;
+    const patch = createEmptyChapterMemoryPatch({
+      chapterId: 2,
+      chapterPosition: 1,
+      title: '第二章',
+    });
+    patch.characterUpdates.push({
+      characterRef: characterId,
+      addAliases: undefined as unknown as string[],
+      profileCorrections: undefined as unknown as {},
+      stateChanges: { location: '地下档案室' },
+      correctionReason: undefined as unknown as string,
+      addKnowledge: undefined as unknown as string[],
+      removeKnowledge: undefined as unknown as string[],
+      addPossessions: undefined as unknown as string[],
+      removePossessions: undefined as unknown as string[],
+      addSecrets: undefined as unknown as string[],
+      removeSecrets: undefined as unknown as string[],
+      clearFields: undefined as unknown as string[],
+      evidenceQuote: '林岚进入地下档案室',
+    });
+    const validated = validateChapterMemoryPatch(
+      patch,
+      first.state,
+      '林岚进入地下档案室。',
+    );
+
+    expect(() =>
+      applyStoryMemoryPatch(first.state, validated, {
+        ...context,
+        chapterId: 2,
+        chapterPosition: 1,
+        sourceFingerprint: 'source-provider-omissions',
+      }),
+    ).not.toThrow();
+  });
+
   it('is idempotent and deterministic across replay', () => {
     const initial = createEmptyStoryMemory(7);
     const first = applyStoryMemoryPatch(initial, firstPatch(), context);
@@ -139,7 +193,9 @@ describe('deterministic story memory merger', () => {
       context,
     );
     expect(repeated.state).toBe(first.state);
-    expect(canonicalStringify(replay.state)).toBe(canonicalStringify(first.state));
+    expect(canonicalStringify(replay.state)).toBe(
+      canonicalStringify(first.state),
+    );
   });
 
   it('rejects a stale base fingerprint and earlier chapter position', () => {
@@ -149,7 +205,11 @@ describe('deterministic story memory merger', () => {
         baseMemoryFingerprint: 'stale',
       }),
     ).toThrow('基础指纹不匹配');
-    const first = applyStoryMemoryPatch(createEmptyStoryMemory(7), firstPatch(), context);
+    const first = applyStoryMemoryPatch(
+      createEmptyStoryMemory(7),
+      firstPatch(),
+      context,
+    );
     const earlierPatch = firstPatch();
     earlierPatch.chapterRef.chapterPosition = -1;
     expect(() =>
