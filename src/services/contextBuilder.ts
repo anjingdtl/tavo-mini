@@ -11,6 +11,8 @@ import {
   type StyleWeights,
 } from './styleAnalyzer';
 import { retrieveNoteFragments, type RetrievalQuery } from './noteRetriever';
+import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
+import { ensureStoryMemoryReady } from './storyMemory/storyMemoryRebuild';
 
 const DEFAULT_SYSTEM_PROMPT =
   '你是一位经验丰富的中文小说作者。请根据既有设定、人物状态、章节概要和前文内容，继续创作自然、连贯、有画面感的中文小说。';
@@ -47,6 +49,63 @@ export interface BuildContextResult {
 
 export interface BuildContextOptions {
   retrievalUserPrompt?: string;
+  storyMemoryMode?: 'generation' | 'preview';
+}
+
+export async function buildStoryMemoryContext(
+  projectId: number,
+  currentChapter: Chapter,
+  budgetTokens: number,
+): Promise<{ text: string; traceItems: ContextTraceItem[] }> {
+  if (typeof (db as any).getProjectStoryMemory !== 'function') {
+    return { text: '', traceItems: [] };
+  }
+  const record = await (db as any).getProjectStoryMemory(projectId);
+  const targetPosition = currentChapter.position - 1;
+  const usable =
+    record &&
+    record.state.throughChapterPosition >= targetPosition &&
+    (record.status === 'clean' ||
+      (record.status === 'dirty' &&
+        record.dirtyFromPosition != null &&
+        record.dirtyFromPosition > targetPosition));
+  if (!usable) {
+    return {
+      text: '',
+      traceItems: record
+        ? [{
+            kind: 'story_memory',
+            sourceId: projectId,
+            title: '全局故事状态',
+            reason:
+              record.status === 'empty'
+                ? '故事记忆尚未初始化'
+                : '不注入过期全局记忆',
+            estimatedTokens: 0,
+            included: false,
+            clipped: false,
+            preview: record.lastError || '',
+          }]
+        : [],
+    };
+  }
+  const rendered = renderStoryMemoryForContext(record.state, {
+    currentChapter,
+    budgetTokens,
+  });
+  return {
+    text: rendered.text,
+    traceItems: [{
+      kind: 'story_memory',
+      sourceId: projectId,
+      title: '全局故事状态',
+      reason: `已构建到第 ${record.state.throughChapterPosition + 1} 章`,
+      estimatedTokens: rendered.estimatedTokens,
+      included: true,
+      clipped: rendered.clipped,
+      preview: rendered.text.slice(0, 500),
+    }],
+  };
 }
 
 export async function buildContext(
@@ -85,7 +144,7 @@ export async function buildContext(
       currentChapter,
       idf,
       config.memoryTopK ?? 10,
-      config.summaryBudgetTokens ?? 20000,
+      config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
     );
   } catch {
     // idfCache 不可用或失败时回退原始 buildMemoryContext（O(N²) 但保证正确性）
@@ -93,7 +152,7 @@ export async function buildContext(
       previousChapters,
       currentChapter,
       config.memoryTopK ?? 10,
-      config.summaryBudgetTokens ?? 20000,
+      config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
     );
   }
   const worldbookScanContent = selectPreviousChapters(
@@ -142,6 +201,28 @@ export async function buildContext(
     preview: resolvedSystemPrompt.slice(0, 500),
   });
 
+  const storyTargetPosition = currentChapter.position - 1;
+  if (
+    storyTargetPosition >= 0 &&
+    options.storyMemoryMode !== 'preview' &&
+    typeof (db as any).ensureProjectStoryMemoryRow === 'function'
+  ) {
+    const readiness = await (db as any).ensureProjectStoryMemoryRow(projectId);
+    const ready =
+      readiness.status === 'clean' &&
+      readiness.state.throughChapterPosition >= storyTargetPosition;
+    if (!ready) await ensureStoryMemoryReady(projectId, storyTargetPosition);
+  }
+  const storyMemory = await buildStoryMemoryContext(
+    projectId,
+    currentChapter,
+    config.storyStateBudgetTokens ?? 8000,
+  );
+  if (storyMemory.text) {
+    messages.push({ role: 'system', content: storyMemory.text });
+  }
+  trace.push(...storyMemory.traceItems);
+
   if (config.includeResources && config.resourceBudget > 0) {
     const { text: resourceText, traceItems: resourceTrace } =
       await buildResourceContext(
@@ -160,13 +241,13 @@ export async function buildContext(
   }
 
   if (memoryText) {
-    const memoryMessage = `以下是历史记忆摘要：\n\n${memoryText}`;
+    const memoryMessage = `以下是相关历史章节事件：\n\n${memoryText}`;
     messages.push({ role: 'system', content: memoryMessage });
     trace.push({
       kind: 'memory',
       sourceId: null,
-      title: '历史记忆摘要',
-      reason: '记忆摘要检索',
+      title: '相关历史章节事件',
+      reason: '章节事件记忆 TF-IDF 检索',
       estimatedTokens: estimateTokens(memoryMessage),
       included: true,
       clipped: false,
