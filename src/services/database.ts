@@ -30,3 +30,4 @@ export * from '../data/repositories/contentRepository';
 export * from '../data/repositories/pipelineTaskRepository';
 export * from '../data/repositories/noteConfigRepository';
 export * from '../data/repositories/contextAutoRepository';
+export * from '../data/repositories/storyMemoryRepository';
