@@ -5,6 +5,7 @@ const mockDb = {
   getContextConfig: jest.fn(),
   saveStoryMemoryUpdate: jest.fn(),
   markStoryMemoryDirty: jest.fn(),
+  updateChapter: jest.fn(),
 };
 const mockCallLLMResult = jest.fn();
 
@@ -19,6 +20,7 @@ jest.mock('../src/services/database', () => ({
     mockDb.saveStoryMemoryUpdate(...args),
   markStoryMemoryDirty: (...args: unknown[]) =>
     mockDb.markStoryMemoryDirty(...args),
+  updateChapter: (...args: unknown[]) => mockDb.updateChapter(...args),
 }));
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (...args: unknown[]) => mockCallLLMResult(...args),
@@ -60,6 +62,7 @@ describe('chapter structured-memory finalization', () => {
     mockDb.getContextConfig.mockResolvedValue({ memoryPatchMaxTokens: 1200 });
     mockDb.saveStoryMemoryUpdate.mockResolvedValue(undefined);
     mockDb.markStoryMemoryDirty.mockResolvedValue(undefined);
+    mockDb.updateChapter.mockResolvedValue(undefined);
     const patch = createEmptyChapterMemoryPatch({
       chapterId: 1,
       chapterPosition: 0,
@@ -124,6 +127,43 @@ describe('chapter structured-memory finalization', () => {
     const second = await finalizeChapterMemory(1);
     expect(second.reused).toBe(true);
     expect(mockDb.saveStoryMemoryUpdate).not.toHaveBeenCalled();
+    expect(mockDb.updateChapter).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({
+        memory_summary: expect.stringContaining('雨夜里，林岚推开钟楼暗门'),
+        memory_summary_tokens: expect.any(Number),
+      }),
+    );
+  });
+
+  it('persists a deterministic synopsis fallback when provider summary is empty', async () => {
+    const chapterWithSynopsis = {
+      ...chapter,
+      synopsis: '林岚在雨夜发现钟楼暗门。',
+    };
+    mockDb.getChapterById.mockResolvedValue(chapterWithSynopsis);
+    const patch = createEmptyChapterMemoryPatch({
+      chapterId: 1,
+      chapterPosition: 0,
+      title: '第一章',
+    });
+    mockCallLLMResult.mockResolvedValue({
+      text: JSON.stringify(patch),
+      inputTokens: 10,
+      outputTokens: 10,
+      totalTokens: 20,
+    });
+
+    const result = await finalizeChapterMemory(1);
+
+    expect(result.episodicMemoryText).toBe(
+      '核心事件：林岚在雨夜发现钟楼暗门。',
+    );
+    expect(mockDb.saveStoryMemoryUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        episodicMemoryText: result.episodicMemoryText,
+      }),
+    );
   });
 
   it('keeps saved body and marks dirty when both model attempts fail', async () => {
@@ -150,5 +190,18 @@ describe('chapter structured-memory finalization', () => {
         resolvedThreads: [],
       }),
     ).toBe('');
+  });
+
+  it('falls back to chapter content after removing a markdown heading', () => {
+    expect(
+      renderEpisodicMemoryText(
+        createEmptyChapterMemoryPatch({
+          chapterId: 2,
+          chapterPosition: 1,
+          title: '第二章',
+        }).episodicSummary,
+        { synopsis: '', content: '# 第二章\n\n石璐和世恒走出公司。' },
+      ),
+    ).toBe('核心事件：石璐和世恒走出公司。');
   });
 });

@@ -1,5 +1,16 @@
 # ShineWriter 发布清单
 
+## V2.5.4 章节空摘要热修复
+
+- [x] 定位结构化补丁成功但 `episodicSummary` 全空仍写入空 `memory_summary`
+- [x] 章节概要兜底、正文兜底和已应用补丁修复自动化覆盖
+- [x] 正式签名 V2.5.4 release 第二章定稿后显示非空记忆摘要
+- [x] 摘要按钮从数据库读取同一非空摘要；第三章上下文已构建到第 2 章并包含 183 tok 章节事件记忆
+- [x] 已定稿空摘要章节再次定稿后自动补写（确定性服务测试）
+- [x] V2.5.4 APK 签名、zipalign、版本元数据和 SHA-256 验收
+
+证据：`test-logs/empty-summary-v254-20260718/`；DeepSeek 在线 API + 1M 上下文，Android API 37 x86_64 模拟器；APK 37,260,427 bytes，SHA-256 `3EAEF8EE3C8FF1FE2ECE12AE8996C714A9F86DC2E8214E4EF724E5508F8DDD41`，versionCode `2050400`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，APK Signature Scheme v2 / 单 signer / 16 KB zipalign 验证成功。`npm run verify`：98 suites / 500 tests。
+
 ## V2.5.3 DeepSeek 多人物引用热修复
 
 - [x] 真机复现同章多名新人物共享 `tempRef` 导致定稿失败

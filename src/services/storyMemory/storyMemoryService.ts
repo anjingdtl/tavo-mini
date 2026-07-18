@@ -1,6 +1,7 @@
 import type { Chapter } from '../../types/novel';
 import { extractJSON } from '../../utils/jsonExtractor';
 import { invalidateIdf } from '../../utils/idfCache';
+import { estimateTokens } from '../../utils/tokenEstimator';
 import * as db from '../database';
 import { callLLMResult } from '../llm';
 import { generateMemorySummary } from '../summaryGenerator';
@@ -159,6 +160,7 @@ export async function generateValidatedChapterMemoryPatch(
 
 export function renderEpisodicMemoryText(
   summary: ChapterMemoryPatchDraft['episodicSummary'],
+  chapter?: Pick<Chapter, 'synopsis' | 'content'>,
 ): string {
   const sections: Array<[string, string[]]> = [
     ['核心事件', [summary.brief, ...summary.events]],
@@ -169,7 +171,7 @@ export function renderEpisodicMemoryText(
     ['已解决事项', summary.resolvedThreads],
     ['关键词', summary.keywords],
   ];
-  return sections
+  const rendered = sections
     .map(([label, values]) => [
       ...new Set(values.map(value => value.trim()).filter(Boolean)),
     ].length
@@ -179,6 +181,17 @@ export function renderEpisodicMemoryText(
       : '')
     .filter(Boolean)
     .join('\n');
+  if (rendered || !chapter) return rendered;
+
+  const synopsis = chapter.synopsis.replace(/\s+/g, ' ').trim();
+  if (synopsis) return `核心事件：${synopsis.slice(0, 240)}`;
+
+  const contentExcerpt = chapter.content
+    .replace(/^\s*#{1,6}[^\n]*$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+  return contentExcerpt ? `核心事件：${contentExcerpt}` : '';
 }
 
 async function previousStateForChapter(chapter: Chapter): Promise<StoryMemoryState> {
@@ -246,12 +259,24 @@ export async function finalizeChapterMemory(
       existing.patch.sourceFingerprint === sourceFingerprint &&
       currentRecord.state.metadata.lastAppliedPatchId === existing.patch.patchId
     ) {
+      const episodicMemoryText = renderEpisodicMemoryText(
+        existing.patch.episodicSummary,
+        freshChapter,
+      );
+      if (
+        episodicMemoryText &&
+        freshChapter.memory_summary?.trim() !== episodicMemoryText
+      ) {
+        await db.updateChapter(chapterId, {
+          memory_summary: episodicMemoryText,
+          memory_summary_tokens: estimateTokens(episodicMemoryText),
+        });
+        invalidateIdf(freshChapter.project_id);
+      }
       return {
         state: currentRecord.state,
         patchId: existing.patch.patchId,
-        episodicMemoryText: renderEpisodicMemoryText(
-          existing.patch.episodicSummary,
-        ),
+        episodicMemoryText,
         reused: true,
       };
     }
@@ -275,6 +300,7 @@ export async function finalizeChapterMemory(
       });
       const episodicMemoryText = renderEpisodicMemoryText(
         draft.episodicSummary,
+        freshChapter,
       );
       await db.saveStoryMemoryUpdate({
         state: applied.state,
