@@ -17,6 +17,12 @@
 - `npm run verify` — 一次性跑 `lint && typecheck && test:ci`，是 PR 前的门禁
 - `npm run zspace:probe|list|put` — ZSpace WebDAV 产物上传辅助脚本
 
+### Release APK（Agent 必读）
+
+生成正式 APK 前必须阅读 `docs/RELEASE_APK_BUILD.md`，并按其中的“标准构建步骤”和“构建后验收”执行。主构建机的四项 `SHINE_WRITER_RELEASE_*` 已保存在 Windows 用户环境中；若当前 Agent/终端进程读取不到，先用指南里的 PowerShell 片段把 User 级变量加载到 Process 级，再运行 `npm run apk:release`。
+
+正式 keystore 是本地忽略文件 `android/keystores/tavo-mini-release.keystore`，alias 为 `tavo-mini-release`，证书 SHA-256 必须为 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。不得创建新 keystore、改用 Debug 签名、从 Git 历史传播密码或把密码写入仓库/日志。
+
 ### APK 产物目录
 
 `dist/apk/{debug|release}/ShineWriter-V<ver>-{debug|release}.apk` 是唯一交付路径。Gradle 原生 `android/app/build/outputs/apk/` 只是中间产物，不要手动复制 APK 到项目其他目录。
@@ -73,7 +79,7 @@ SQLite 数据库 `shine_writer.db`，**Schema version 14**（`src/services/migra
 
 ### Gradle 与签名
 - `android/build.gradle` 和 `settings.gradle` 使用阿里云 Maven 镜像，修改时不要删掉
-- Release 签名 keystore 在 `android/keystores/shine-writer-release.keystore`，Release 构建必须显式提供环境变量，**不会用默认密码**：`SHINE_WRITER_RELEASE_STORE_FILE` / `SHINE_WRITER_RELEASE_STORE_PASSWORD` / `SHINE_WRITER_RELEASE_KEY_ALIAS` / `SHINE_WRITER_RELEASE_KEY_PASSWORD`
+- Release 签名 keystore 在 `android/keystores/tavo-mini-release.keystore`（本地忽略文件），Release 构建必须显式提供环境变量，**不会用默认密码**：`SHINE_WRITER_RELEASE_STORE_FILE` / `SHINE_WRITER_RELEASE_STORE_PASSWORD` / `SHINE_WRITER_RELEASE_KEY_ALIAS` / `SHINE_WRITER_RELEASE_KEY_PASSWORD`
 - `--minify`（`-PenableReleaseMinification=true`）是 R8/资源压缩评估开关，正式发布仍需在真机验证
 
 ### postinstall 补丁
