@@ -3,11 +3,12 @@ import { extractJSON } from '../../utils/jsonExtractor';
 import { invalidateIdf } from '../../utils/idfCache';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import * as db from '../database';
-import { callLLMResult } from '../llm';
+import { callLLMResult, type LLMResult } from '../llm';
 import { generateMemorySummary } from '../summaryGenerator';
 import { fingerprintChapterSource } from './storyMemoryFingerprint';
 import { applyStoryMemoryPatch } from './storyMemoryMerger';
 import {
+  buildStoryMemoryFreshRetryMessages,
   buildStoryMemoryPatchMessages,
   buildStoryMemoryRepairMessages,
 } from './storyMemoryPrompts';
@@ -79,6 +80,20 @@ export function parseAndValidateMemoryPatch(
   return validateChapterMemoryPatch(parsed, previousState, chapterContent);
 }
 
+const MIN_MEMORY_PATCH_OUTPUT_TOKENS = 2400;
+const MAX_MEMORY_PATCH_OUTPUT_TOKENS = 16000;
+
+function clampPatchTokens(value: number): number {
+  return Math.min(
+    MAX_MEMORY_PATCH_OUTPUT_TOKENS,
+    Math.max(MIN_MEMORY_PATCH_OUTPUT_TOKENS, Math.round(value)),
+  );
+}
+
+function nextPatchTokenBudget(current: number): number {
+  return clampPatchTokens(Math.max(current * 2, 4800));
+}
+
 async function requestPatch(
   messages: Array<{
     role: 'system' | 'user' | 'assistant';
@@ -88,49 +103,69 @@ async function requestPatch(
   projectId: number,
   scenario: string,
   signal?: AbortSignal,
-): Promise<string> {
-  const result = await callLLMResult(
-    messages,
-    maxTokens,
-    {
-      temperature: 0.1,
-      scenario,
-      projectId,
-      queueClass: 'background',
-      queuePriority: 'normal',
-    },
-    signal,
-  );
-  if (!result.text?.trim()) {
+): Promise<LLMResult> {
+  let result: LLMResult | undefined;
+  for (let requestAttempt = 0; requestAttempt < 2; requestAttempt += 1) {
+    try {
+      result = await callLLMResult(
+        messages,
+        maxTokens,
+        {
+          temperature: 0.1,
+          scenario,
+          projectId,
+          queueClass: 'background',
+          queuePriority: 'normal',
+          responseFormat: 'json_object',
+        },
+        signal,
+      );
+      break;
+    } catch (error: any) {
+      const status = Number(error?.cause?.status || error?.status || 0);
+      const transient =
+        ['total_timeout', 'idle_timeout', 'network_error'].includes(
+          String(error?.code || ''),
+        ) ||
+        status === 429 ||
+        status >= 500;
+      if (!transient || requestAttempt > 0 || signal?.aborted) throw error;
+    }
+  }
+  if (!result?.text?.trim()) {
     throw new StoryMemoryError(
       'MEMORY_PATCH_INVALID_JSON',
       '模型没有返回记忆补丁。',
     );
   }
-  return result.text;
+  return result;
 }
 
 export async function generateValidatedChapterMemoryPatch(
   input: GenerateChapterMemoryPatchInput,
 ): Promise<ChapterMemoryPatchDraft> {
   if (input.signal?.aborted) {
-    throw new StoryMemoryError('MEMORY_REBUILD_CANCELLED', '故事记忆任务已取消。');
+    throw new StoryMemoryError(
+      'MEMORY_REBUILD_CANCELLED',
+      '故事记忆任务已取消。',
+    );
   }
   const messages = buildStoryMemoryPatchMessages(
     input.chapter,
     input.previousState,
   );
   const scenario = input.scenario || 'story_memory_patch';
-  const firstOutput = await requestPatch(
+  const firstBudget = clampPatchTokens(input.memoryPatchMaxTokens);
+  const firstResult = await requestPatch(
     messages,
-    input.memoryPatchMaxTokens,
+    firstBudget,
     input.chapter.project_id,
     scenario,
     input.signal,
   );
   try {
     return parseAndValidateMemoryPatch(
-      firstOutput,
+      firstResult.text || '',
       input.previousState,
       input.chapter.content,
     );
@@ -143,18 +178,66 @@ export async function generateValidatedChapterMemoryPatch(
     }
     const message =
       firstError instanceof Error ? firstError.message : '未知校验错误';
-    const repairedOutput = await requestPatch(
-      buildStoryMemoryRepairMessages(messages, firstOutput, message),
-      input.memoryPatchMaxTokens,
+    const repairBudget = nextPatchTokenBudget(firstBudget);
+    const repairedResult = await requestPatch(
+      buildStoryMemoryRepairMessages(
+        messages,
+        firstResult.text || '',
+        `${message}${
+          firstResult.finishReason === 'length' ? '（输出达到长度上限）' : ''
+        }`,
+      ),
+      repairBudget,
       input.chapter.project_id,
       'story_memory_patch_repair',
       input.signal,
     );
-    return parseAndValidateMemoryPatch(
-      repairedOutput,
-      input.previousState,
-      input.chapter.content,
-    );
+    try {
+      return parseAndValidateMemoryPatch(
+        repairedResult.text || '',
+        input.previousState,
+        input.chapter.content,
+      );
+    } catch (repairError) {
+      if (input.signal?.aborted) {
+        throw new StoryMemoryError(
+          'MEMORY_REBUILD_CANCELLED',
+          '故事记忆任务已取消。',
+        );
+      }
+      const repairMessage =
+        repairError instanceof Error ? repairError.message : '未知校验错误';
+      const finalBudget = nextPatchTokenBudget(repairBudget);
+      const finalResult = await requestPatch(
+        buildStoryMemoryFreshRetryMessages(
+          messages,
+          `${repairMessage}${
+            repairedResult.finishReason === 'length'
+              ? '（输出达到长度上限）'
+              : ''
+          }`,
+        ),
+        finalBudget,
+        input.chapter.project_id,
+        'story_memory_patch_retry',
+        input.signal,
+      );
+      try {
+        return parseAndValidateMemoryPatch(
+          finalResult.text || '',
+          input.previousState,
+          input.chapter.content,
+        );
+      } catch (finalError) {
+        if (finalResult.finishReason === 'length') {
+          throw new StoryMemoryError(
+            'MEMORY_PATCH_INVALID_JSON',
+            `模型连续返回被截断的记忆 JSON（已自动扩容到 ${finalBudget} tokens）。请检查模型的单次输出上限。`,
+          );
+        }
+        throw finalError;
+      }
+    }
   }
 }
 
@@ -172,13 +255,13 @@ export function renderEpisodicMemoryText(
     ['关键词', summary.keywords],
   ];
   const rendered = sections
-    .map(([label, values]) => [
-      ...new Set(values.map(value => value.trim()).filter(Boolean)),
-    ].length
-      ? `${label}：${[
-          ...new Set(values.map(value => value.trim()).filter(Boolean)),
-        ].join('；')}`
-      : '')
+    .map(([label, values]) =>
+      [...new Set(values.map(value => value.trim()).filter(Boolean))].length
+        ? `${label}：${[
+            ...new Set(values.map(value => value.trim()).filter(Boolean)),
+          ].join('；')}`
+        : '',
+    )
     .filter(Boolean)
     .join('\n');
   if (rendered || !chapter) return rendered;
@@ -194,7 +277,9 @@ export function renderEpisodicMemoryText(
   return contentExcerpt ? `核心事件：${contentExcerpt}` : '';
 }
 
-async function previousStateForChapter(chapter: Chapter): Promise<StoryMemoryState> {
+async function previousStateForChapter(
+  chapter: Chapter,
+): Promise<StoryMemoryState> {
   const record = await db.ensureProjectStoryMemoryRow(chapter.project_id);
   if (
     record.dirtyFromPosition != null &&
@@ -227,7 +312,8 @@ export async function finalizeChapterMemory(
 ): Promise<FinalizeChapterMemoryResult> {
   const chapter = await db.getChapterById(chapterId);
   if (!chapter) throw new Error('章节不存在。');
-  if (!chapter.content.trim()) throw new Error('章节正文为空，无法更新故事记忆。');
+  if (!chapter.content.trim())
+    throw new Error('章节正文为空，无法更新故事记忆。');
 
   return withProjectMemoryLock(chapter.project_id, async () => {
     const freshChapter = await db.getChapterById(chapterId);
@@ -238,9 +324,14 @@ export async function finalizeChapterMemory(
     ) {
       const episodicMemoryText = await generateMemorySummary(chapterId, 200);
       const finalizedAt = new Date().toISOString();
-      await db.updateChapter(chapterId, { status: 'final', finalized_at: finalizedAt });
+      await db.updateChapter(chapterId, {
+        status: 'final',
+        finalized_at: finalizedAt,
+      });
       invalidateIdf(freshChapter.project_id);
-      const record = await db.ensureProjectStoryMemoryRow(freshChapter.project_id);
+      const record = await db.ensureProjectStoryMemoryRow(
+        freshChapter.project_id,
+      );
       return {
         state: record.state,
         patchId: '',
