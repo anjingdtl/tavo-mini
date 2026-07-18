@@ -45,6 +45,43 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     restoreOrder: 30,
   },
   {
+    name: 'project_story_memory',
+    columns: [
+      'project_id', 'schema_version', 'through_chapter_id',
+      'through_chapter_position', 'memory_json', 'estimated_tokens',
+      'state_fingerprint', 'last_applied_patch_id', 'status', 'source',
+      'dirty_from_position', 'last_error', 'updated_at',
+    ],
+    indexes: ['idx_project_story_memory_status', 'idx_project_story_memory_dirty'],
+    backup: true,
+    restoreOrder: 35,
+  },
+  {
+    name: 'chapter_memory_patches',
+    columns: [
+      'chapter_id', 'project_id', 'chapter_position', 'patch_id',
+      'schema_version', 'source_fingerprint', 'base_memory_fingerprint',
+      'result_memory_fingerprint', 'episodic_summary_json', 'patch_json',
+      'estimated_tokens', 'status', 'last_error', 'generated_at', 'applied_at',
+    ],
+    indexes: [
+      'idx_chapter_memory_patches_project_position',
+      'idx_chapter_memory_patches_status',
+    ],
+    backup: true,
+    restoreOrder: 36,
+  },
+  {
+    name: 'story_memory_snapshots',
+    columns: [
+      'id', 'project_id', 'through_chapter_id', 'through_chapter_position',
+      'memory_json', 'estimated_tokens', 'state_fingerprint', 'created_at',
+    ],
+    indexes: ['idx_story_memory_snapshots_project_position'],
+    backup: true,
+    restoreOrder: 37,
+  },
+  {
     name: 'plotlines',
     columns: ['id', 'project_id', 'name', 'description', 'color'],
     backup: true,
