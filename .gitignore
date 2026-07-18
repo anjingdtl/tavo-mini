@@ -119,6 +119,7 @@ clound
 # Local editor / agent tool config (not source)
 .codex/
 .trae/
+.zcode/
 
 # Local-only PowerShell helper scripts (not source)
 scripts/probe-smtp.ps1
