@@ -8,6 +8,19 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 No unreleased changes are currently recorded.
 
+## [2.5.4] - 2026-07-18
+
+### Fixed
+
+- 修复结构化故事记忆成功推进章节、但模型返回空 `episodicSummary` 时仍提示“章节已定稿”且章节摘要为空的问题。
+- 摘要为空时优先使用章节概要生成确定性事件记忆；概要也为空时使用去除 Markdown 标题后的正文片段，确保后续章节事件检索始终有非空摘要。
+- 对已应用补丁但历史摘要为空的章节，再次点击定稿会复用补丁并自动补写摘要，无需重新生成故事状态。
+
+### Tests
+
+- 新增模型空摘要、概要兜底、正文兜底及已应用补丁摘要修复回归测试。
+- 使用 DeepSeek 在线 API、1M 上下文和正式签名 release 在 Android API 37 x86_64 模拟器验证第二章摘要落库、摘要弹窗读取及第三章事件上下文注入。
+
 ## [2.5.3] - 2026-07-18
 
 ### Fixed

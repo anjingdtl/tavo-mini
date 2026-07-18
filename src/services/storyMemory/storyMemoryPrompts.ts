@@ -14,6 +14,7 @@ export const STORY_MEMORY_SYSTEM_PROMPT = `你是小说连续性记录器，不�
 新实体只能使用 new_char_*、new_rel_*、new_thread_* 等临时引用；每个临时引用必须唯一，后缀只能包含中英文字母、数字、下划线或连字符（例如 new_char_石璐、new_char_1）。
 未发生变化的字段不要输出；范式要求的数组无变化时输出空数组。
 无法确认时保留为空数组，不得猜测。
+只要章节正文非空，episodicSummary.brief 必须是一句基于正文的非空简短事件摘要。
 只输出一个 JSON 对象，不要输出 Markdown、解释或代码围栏。`;
 
 const PATCH_ITEM_CONTRACT = `数组项字段契约（字段名必须逐字一致；没有内容时用空字符串、空数组或空对象，不得自创字段名）：
