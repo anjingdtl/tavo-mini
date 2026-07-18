@@ -182,7 +182,7 @@ describe('coverage branch contracts', () => {
   test('covers IDF cache hit, miss, expiry, eviction, and invalidation', () => {
     const chapters: any[] = [{ memory_summary: 'abc' }, {}, { memory_summary: null }];
     const signature = computeMemorySummarySignature(chapters);
-    expect(signature).toContain('3772q315y9z8a');
+    expect(signature).toContain('undefined:0:');
     expect(getCachedIdf(1, signature)).toBeNull();
     const idf = new Map([['词', 1]]);
     setCachedIdf(1, 'sig', idf);

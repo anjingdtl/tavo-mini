@@ -12,6 +12,7 @@
  */
 
 import type { Chapter } from '../types/novel';
+import { stableTextFingerprint } from '../services/storyMemory/storyMemoryFingerprint';
 
 type CachedIdf = {
   signature: string;
@@ -26,16 +27,9 @@ export function computeMemorySummarySignature(previousChapters: Chapter[]): stri
   return previousChapters
     .map(chapter => {
       const summary = chapter.memory_summary || '';
-      let first = 5381;
-      let second = 52711;
-      for (let index = 0; index < summary.length; index += 1) {
-        const code = summary.charCodeAt(index);
-        first = (first * 33 + code) % 4294967291;
-        second = (second * 131 + code) % 4294967279;
-      }
-      return `${chapter.id}:${chapter.memory_summary_tokens || 0}:${first.toString(
-        36,
-      )}${second.toString(36)}`;
+      return `${chapter.id}:${chapter.memory_summary_tokens || 0}:${stableTextFingerprint(
+        summary,
+      )}`;
     })
     .join('|');
 }
