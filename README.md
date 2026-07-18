@@ -116,6 +116,22 @@ GitHub Actions `Verify` 对 `main` push 和 Pull Request 执行：
 
 核心 UI 写作链路另有 `e2e/maestro/` 流程；真实 Android 验证使用 adb/UI tree 检查启动、项目/章节创建、自动保存、设置和持久化结果。
 
+### V2.4.6 端到端穿测（emulator-5554 / Android 17）
+
+V2.4.6 着重验证"上下文自动化配置"新功能与既有全功能回归。完整穿测报告含 6 张关键截图见 [`docs/V2.4.6-TEST-REPORT.md`](docs/V2.4.6-TEST-REPORT.md)，关键结论：
+
+| 维度 | 结果 |
+| ---- | ---- |
+| 8 大模块穿测 | ✅ 项目列表 / 写作 Tab / 资料库 / 设置 / **上下文自动化** / 备份中心 / LLM 设置 / 语音设置 全部通过 |
+| 新功能分配预览 | ✅ 13 个字段（输入 65/20/15 + 输出 50/15/15/20 + 资源级 + 同步写入）按设计比例精确显示 |
+| 章节自动保存 | ✅ 900ms 防抖，冷启动后 9 字数据完整保留 |
+| 备份 pre_restore 机制 | ✅ tap "恢复" 后自动生成快照 `manual_v2.4.6_<ts>.json` |
+| 崩溃 / ANR | ✅ 0 |
+
+发版前需处理的 **已知阻塞**：
+
+- 🔴 **16KB 页大小对齐** — Android 15+ 强制要求；当前 `lib/{x86_64,arm64-v8a}/libllamacpp_jni.so`、`libreactnative.so`、`libhermesvm.so`、`libllama.so`、`libggml*.so`、`libsqliteJni.so` 等未对齐，需要更新 RN 0.85.x 16KB patch + llama.cpp 重编才能上架。
+
 ## 项目结构
 
 ```text

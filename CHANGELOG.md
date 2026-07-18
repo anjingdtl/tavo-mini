@@ -27,6 +27,12 @@ No unreleased changes are currently recorded.
 
 - 新增 `contextAutoAllocator`（19 个）与 `contextAutoRepository`（12 个）测试，覆盖分配算法典型/极大/极小/零资源/比例常量与 repository 读写 round-trip、应用函数事务原子性与字段保留语义。
 - 全量 Jest 基线：84 套件 / 432 测试通过。
+- emulator-5554（Android 17 / x86_64）端到端穿测 8 模块 0 崩溃，完整报告见 [`docs/V2.4.6-TEST-REPORT.md`](docs/V2.4.6-TEST-REPORT.md)（含 6 张关键截图）。
+
+### Known limitations
+
+- `V2.4.6` 是工程验收 Tag，不含签名 Release/Minified Release APK（`SHINE_WRITER_RELEASE_*` 环境变量未配置）。V2.4.4/V2.4.3/V2.4.2 的 release APK 在 `dist/apk/release/ShineWriter-V<ver>-release.apk` 已历史产物。
+- 16KB 页大小 / RELRO 对齐警告仍然存在：`lib/{x86_64,arm64-v8a}/libllamacpp_jni.so`、`libreactnative.so`、`libhermesvm.so`、`libllama.so`、`libggml*.so`、`libsqliteJni.so` 等第三方 .so 未对齐，Android 15+ 真机无法启动；需 RN 0.85.x 的 16KB 兼容 patch + llama.cpp 重编后才能用于 Play Store 发布。
 
 ## [2.4.4] - 2026-07-16
 
