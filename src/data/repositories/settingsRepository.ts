@@ -26,6 +26,13 @@ export async function setSetting(key: string, value: string): Promise<void> {
 }
 
 export async function getContextConfig(): Promise<ContextConfig> {
+  const legacySummaryBudget = Number(
+    (await getSetting('summary_budget_tokens')) ||
+      DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens,
+  );
+  const storyStateRaw = await getSetting('story_state_budget_tokens');
+  const episodicRaw = await getSetting('episodic_memory_budget_tokens');
+  const memoryPatchRaw = await getSetting('memory_patch_max_tokens');
   return {
     strategy:
       ((await getSetting('context_strategy')) as ContextConfig['strategy']) ||
@@ -47,10 +54,19 @@ export async function getContextConfig(): Promise<ContextConfig> {
         DEFAULT_CONTEXT_CONFIG.resourceBudget,
     ),
     includeResources: (await getSetting('include_resources')) !== 'false',
-    summaryBudgetTokens: Number(
-      (await getSetting('summary_budget_tokens')) ||
-        DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens,
-    ),
+    summaryBudgetTokens: legacySummaryBudget,
+    storyStateBudgetTokens:
+      storyStateRaw == null
+        ? Math.round(legacySummaryBudget * 0.6)
+        : Number(storyStateRaw),
+    episodicMemoryBudgetTokens:
+      episodicRaw == null
+        ? legacySummaryBudget - Math.round(legacySummaryBudget * 0.6)
+        : Number(episodicRaw),
+    memoryPatchMaxTokens:
+      memoryPatchRaw == null
+        ? DEFAULT_CONTEXT_CONFIG.memoryPatchMaxTokens
+        : Number(memoryPatchRaw),
     memoryTopK: Number(
       (await getSetting('memory_top_k')) || DEFAULT_CONTEXT_CONFIG.memoryTopK,
     ),
@@ -76,7 +92,33 @@ export async function setContextConfig(config: ContextConfig): Promise<void> {
   await setSetting(
     'summary_budget_tokens',
     String(
-      config.summaryBudgetTokens ?? DEFAULT_CONTEXT_CONFIG.summaryBudgetTokens,
+      (config.storyStateBudgetTokens ??
+        DEFAULT_CONTEXT_CONFIG.storyStateBudgetTokens ??
+        0) +
+        (config.episodicMemoryBudgetTokens ??
+          DEFAULT_CONTEXT_CONFIG.episodicMemoryBudgetTokens ??
+          0),
+    ),
+  );
+  await setSetting(
+    'story_state_budget_tokens',
+    String(
+      config.storyStateBudgetTokens ??
+        DEFAULT_CONTEXT_CONFIG.storyStateBudgetTokens,
+    ),
+  );
+  await setSetting(
+    'episodic_memory_budget_tokens',
+    String(
+      config.episodicMemoryBudgetTokens ??
+        DEFAULT_CONTEXT_CONFIG.episodicMemoryBudgetTokens,
+    ),
+  );
+  await setSetting(
+    'memory_patch_max_tokens',
+    String(
+      config.memoryPatchMaxTokens ??
+        DEFAULT_CONTEXT_CONFIG.memoryPatchMaxTokens,
     ),
   );
   await setSetting(
