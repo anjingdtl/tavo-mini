@@ -25,7 +25,7 @@ export interface FinalizeChapterMemoryResult {
 
 const projectLocks = new Map<number, Promise<void>>();
 
-async function withProjectMemoryLock<T>(
+export async function withProjectMemoryLock<T>(
   projectId: number,
   operation: () => Promise<T>,
 ): Promise<T> {
