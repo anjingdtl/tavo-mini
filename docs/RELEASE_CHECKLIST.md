@@ -52,6 +52,8 @@ Jobs: JavaScript validation success 67s；Migration matrix success 28s；Android
 
 ## Android 构建与签名
 
+执行前先阅读 [`docs/RELEASE_APK_BUILD.md`](RELEASE_APK_BUILD.md)。若当前 PowerShell 读取不到签名变量，先按指南把 Windows User 级变量安全加载到 Process 级；不要在终端输出密码，也不要重建 keystore。
+
 ```powershell
 npm run apk:debug
 npm run apk:release
