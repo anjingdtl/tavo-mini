@@ -18,6 +18,8 @@ import {
   type Row,
 } from './shared';
 import { ensureDefaultPreset } from './presetRepository';
+import { markStoryMemoryDirty } from './storyMemoryRepository';
+import { invalidateIdf } from '../../utils/idfCache';
 
 export async function getAllProjects(): Promise<Project[]> {
   return all<Project>(
@@ -91,6 +93,7 @@ export async function deleteProject(id: number): Promise<void> {
   await execute(await openDatabase(), 'DELETE FROM projects WHERE id = ?', [
     id,
   ]);
+  invalidateIdf(id);
 }
 
 export async function getChaptersByProject(
@@ -203,6 +206,26 @@ export async function updateChapter(
     values,
   );
   if (chapter) await touchProject(chapter.project_id);
+  const continuityFields = ['title', 'synopsis', 'content', 'position'];
+  const changedContinuity = chapter && continuityFields.some(key => {
+    if (!(key in fields)) return false;
+    return fields[key as keyof Chapter] !== chapter[key as keyof Chapter];
+  });
+  if (
+    chapter &&
+    changedContinuity &&
+    (chapter.finalized_at != null || Boolean(chapter.memory_summary?.trim()))
+  ) {
+    const affectedPosition =
+      typeof fields.position === 'number'
+        ? Math.min(chapter.position, fields.position)
+        : chapter.position;
+    await markStoryMemoryDirty(
+      chapter.project_id,
+      affectedPosition,
+      '已定稿章节内容或顺序发生变化。',
+    );
+  }
 }
 
 export async function deleteChapter(id: number): Promise<void> {
@@ -211,6 +234,17 @@ export async function deleteChapter(id: number): Promise<void> {
     id,
   ]);
   if (chapter) await touchProject(chapter.project_id);
+  if (
+    chapter &&
+    (chapter.finalized_at != null || Boolean(chapter.memory_summary?.trim()))
+  ) {
+    await markStoryMemoryDirty(
+      chapter.project_id,
+      chapter.position,
+      '已删除章节，需要重建故事记忆。',
+    );
+    invalidateIdf(chapter.project_id);
+  }
 }
 
 export async function getFragmentsByProject(

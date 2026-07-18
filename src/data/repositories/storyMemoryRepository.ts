@@ -159,7 +159,7 @@ export async function getProjectStoryMemory(
     'SELECT * FROM project_story_memory WHERE project_id = ?',
     [projectId],
   );
-  return row ? mapProjectRow(row) : null;
+  return row && typeof row.memory_json === 'string' ? mapProjectRow(row) : null;
 }
 
 export async function ensureProjectStoryMemoryRow(
@@ -211,7 +211,7 @@ export async function getChapterMemoryPatch(
     'SELECT * FROM chapter_memory_patches WHERE chapter_id = ?',
     [chapterId],
   );
-  return row ? mapPatchRow(row) : null;
+  return row && typeof row.patch_json === 'string' ? mapPatchRow(row) : null;
 }
 
 export async function getChapterMemoryPatchesByProject(
@@ -328,7 +328,7 @@ export async function saveStoryMemoryUpdate(
     },
     {
       sql: `UPDATE chapters SET memory_summary = ?, memory_summary_tokens = ?,
-        finalized_at = ?, updated_at = ? WHERE id = ?`,
+        finalized_at = ?, status = 'final', updated_at = ? WHERE id = ?`,
       params: [
         input.episodicMemoryText,
         estimateTokens(input.episodicMemoryText),

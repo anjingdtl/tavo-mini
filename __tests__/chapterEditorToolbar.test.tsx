@@ -56,9 +56,11 @@ jest.mock('../src/services/revisionService', () => ({
   createRevision: jest.fn(async () => undefined),
 }));
 
-jest.mock('../src/services/summaryGenerator', () => ({
-  generateMemorySummary: (chapterId: number, targetChars?: number) =>
-    mockGenerateMemorySummary(chapterId, targetChars),
+jest.mock('../src/services/storyMemory/storyMemoryService', () => ({
+  finalizeChapterMemory: (chapterId: number) =>
+    mockGenerateMemorySummary(chapterId).then(() => ({
+      state: { throughChapterPosition: 0 },
+    })),
 }));
 
 jest.mock('../src/store/pipelineTaskStore', () => ({
@@ -305,7 +307,7 @@ describe('ChapterEditor toolbar', () => {
       expect.objectContaining({ content: '' }),
     );
     expect(alertSpy).toHaveBeenCalledWith(
-      '摘要生成失败',
+      '故事记忆更新失败',
       expect.stringContaining('模型不可用'),
     );
     alertSpy.mockRestore();
