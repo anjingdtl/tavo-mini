@@ -1,6 +1,7 @@
 import {
   normalizeChatCompletionUrl,
   createLLMConfigError,
+  openAICompatibleProvider,
 } from '../src/services/llm/openAICompatibleProvider';
 import { testLLMConnection } from '../src/services/llm';
 
@@ -38,7 +39,7 @@ test('uses a clear Chinese error when LLM configuration is incomplete', () => {
 });
 
 test('tests an OpenAI-compatible LLM connection with the provided runtime config', async () => {
-  const fetchMock = jest.fn(async () => ({
+  const fetchMock = jest.fn(async (..._args: any[]) => ({
     ok: true,
     json: async () => ({ choices: [{ message: { content: '连接成功' } }] }),
   }));
@@ -61,4 +62,76 @@ test('tests an OpenAI-compatible LLM connection with the provided runtime config
       headers: expect.objectContaining({ Authorization: 'Bearer sk-real' }),
     }),
   );
+});
+
+test('requests JSON mode and exposes the provider finish reason', async () => {
+  const fetchMock = jest.fn(async (..._args: any[]) => ({
+    ok: true,
+    json: async () => ({
+      choices: [
+        {
+          message: { content: '{"ok":true}' },
+          finish_reason: 'length',
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: 'Return JSON.' }],
+    {
+      max_tokens: 2400,
+      responseFormat: 'json_object',
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'test-key',
+        model_name: 'test-model',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  expect(result.finishReason).toBe('length');
+  const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+  expect(request.response_format).toEqual({ type: 'json_object' });
+});
+
+test('falls back without JSON mode when a compatible provider rejects it', async () => {
+  const fetchMock = jest
+    .fn<any, any[]>()
+    .mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => 'unknown response_format json_object',
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [
+          { message: { content: '{"ok":true}' }, finish_reason: 'stop' },
+        ],
+      }),
+    });
+  globalThis.fetch = fetchMock as any;
+
+  await expect(
+    openAICompatibleProvider.generate(
+      [{ role: 'user', content: 'Return JSON.' }],
+      {
+        responseFormat: 'json_object',
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'test-key',
+          model_name: 'test-model',
+          url: 'https://api.example.com/v1/chat/completions',
+        },
+      },
+    ),
+  ).resolves.toEqual(expect.objectContaining({ text: '{"ok":true}' }));
+
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const retryRequest = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
+  expect(retryRequest).not.toHaveProperty('response_format');
 });

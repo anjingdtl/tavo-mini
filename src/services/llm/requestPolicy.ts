@@ -45,6 +45,7 @@ export function resolveLLMTimeoutPolicy(
   if (
     scenario === 'chapter_draft' ||
     scenario === 'chapter_revision' ||
+    scenario.startsWith('story_memory_') ||
     scenario === 'pipeline_draft' ||
     scenario === 'pipeline_review' ||
     scenario === 'pipeline_factcheck' ||
