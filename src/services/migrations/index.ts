@@ -12,8 +12,9 @@ import { buildV10toV11Statements } from './v10-to-v11';
 import { buildV11toV12Statements } from './v11-to-v12';
 import { buildV12toV13Statements } from './v12-to-v13';
 import { buildV13toV14Statements } from './v13-to-v14';
+import { buildV14toV15Statements } from './v14-to-v15';
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -29,6 +30,7 @@ const MIGRATIONS: Migration[] = [
   { from: 11, to: 12, breaking: false, buildStatements: buildV11toV12Statements },
   { from: 12, to: 13, breaking: false, buildStatements: buildV12toV13Statements },
   { from: 13, to: 14, breaking: false, buildStatements: buildV13toV14Statements },
+  { from: 14, to: 15, breaking: false, buildStatements: async () => buildV14toV15Statements() },
 ];
 
 export async function runMigrations(
