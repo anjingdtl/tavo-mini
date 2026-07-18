@@ -1,5 +1,27 @@
 # ShineWriter 发布清单
 
+## V2.5.3 DeepSeek 多人物引用热修复
+
+- [x] 真机复现同章多名新人物共享 `tempRef` 导致定稿失败
+- [x] 任意数量人物引用确定性消歧、关系两端同步改写和同名重复抽取合并自动化覆盖
+- [x] 四人物、三条交叉关系、两条并行故事线自动化覆盖
+- [x] 正式签名 V2.5.3 release 双人物第一章定稿成功，人物 2、关系 1
+- [x] 第二章上下文包含非空全局故事状态（293 tok，已构建到第 1 章）
+- [x] V2.5.3 APK 签名、zipalign、版本元数据和 SHA-256 验收
+
+证据：`test-logs/deepseek-duplicate-ref-v253-20260718/`；DeepSeek 在线 API + 1M 上下文，Android API 37 x86_64 模拟器；APK 37,259,951 bytes，SHA-256 `7CFCCB7519E935A33AE195AB9F7141E0B353312B01D5BAC4E27734F801AEA143`，versionCode `2050300`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，APK Signature Scheme v2 / 单 signer / 16 KB zipalign 验证成功。`npm run verify`：98 suites / 498 tests。
+
+## V2.5.2 DeepSeek 故事记忆热修复
+
+- [x] 正式签名 V2.5.1 release + DeepSeek 在线 API + 1M 上下文复现第一章定稿失败
+- [x] 复现后确认第二章全局故事状态为 0 tok / 未包含
+- [x] Unicode、非法标点、重复新人物临时引用自动化覆盖
+- [x] 正式签名 V2.5.2 release 第一章定稿成功
+- [x] 第二章上下文预览包含非空全局故事状态（209 tok，已包含，消息截至第 1 章）
+- [x] V2.5.2 APK 签名、zipalign、版本元数据和 SHA-256 验收
+
+证据：`test-logs/deepseek-story-memory-20260718/`；APK 37,235,295 bytes，SHA-256 `5EA688CD9F90506E97D2B3104358762791B841A0241B83CB3A3F3315BBA1DEDE`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，16 KB zipalign 验证成功。
+
 ## V2.5.1 结构化故事记忆专项
 
 - [x] Schema 14 → 15 自动化迁移与 fresh install 三表一致

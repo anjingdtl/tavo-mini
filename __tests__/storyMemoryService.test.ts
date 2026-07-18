@@ -47,9 +47,9 @@ describe('story memory LLM patch service', () => {
 
   it('parses valid JSON and Markdown fenced JSON', () => {
     const state = createEmptyStoryMemory(7);
-    expect(parseAndValidateMemoryPatch(validOutput(), state, chapter.content)).toEqual(
-      expect.objectContaining({ schemaVersion: 1 }),
-    );
+    expect(
+      parseAndValidateMemoryPatch(validOutput(), state, chapter.content),
+    ).toEqual(expect.objectContaining({ schemaVersion: 1 }));
     expect(
       parseAndValidateMemoryPatch(
         `\`\`\`json\n${validOutput()}\n\`\`\``,
@@ -104,6 +104,73 @@ describe('story memory LLM patch service', () => {
       }),
     ).resolves.toBeTruthy();
     expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
+  });
+
+  it('normalizes duplicate new-character refs without consuming a repair call', async () => {
+    const twoPersonChapter = {
+      ...chapter,
+      content: '石璐和世恒是同事。石璐推了推金丝眼镜，世恒递给她一杯热咖啡。',
+    };
+    const patch = createEmptyChapterMemoryPatch({
+      chapterId: 1,
+      chapterPosition: 0,
+      title: '第一章',
+    });
+    patch.newCharacters.push(
+      {
+        tempRef: 'new_char_人物',
+        canonicalName: '石璐',
+        aliases: [],
+        role: '编辑',
+        identity: '',
+        stableTraits: [],
+        initialState: {},
+        status: 'active',
+        evidenceQuote: '石璐推了推金丝眼镜',
+      },
+      {
+        tempRef: 'new_char_人物',
+        canonicalName: '世恒',
+        aliases: [],
+        role: '编辑',
+        identity: '',
+        stableTraits: [],
+        initialState: {},
+        status: 'active',
+        evidenceQuote: '世恒递给她一杯热咖啡',
+      },
+    );
+    patch.newRelationships.push({
+      tempRef: 'new_rel_同事',
+      fromRef: 'new_char_人物',
+      toRef: 'new_char_人物',
+      direction: 'bidirectional',
+      relationType: '同事',
+      currentState: '共同加班',
+      trustLevel: 'medium',
+      publicStatus: '同事',
+      hiddenStatus: '',
+      reason: '长期搭档',
+      evidenceQuote: '石璐和世恒是同事',
+    });
+    mockCallLLMResult.mockResolvedValueOnce(response(JSON.stringify(patch)));
+
+    const result = await generateValidatedChapterMemoryPatch({
+      chapter: twoPersonChapter,
+      previousState: createEmptyStoryMemory(7),
+      memoryPatchMaxTokens: 1200,
+    });
+    expect(result.newCharacters.map(item => item.tempRef)).toEqual([
+      'new_char_石璐',
+      'new_char_世恒',
+    ]);
+    expect(result.newRelationships[0]).toEqual(
+      expect.objectContaining({
+        fromRef: 'new_char_石璐',
+        toRef: 'new_char_世恒',
+      }),
+    );
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(1);
   });
 
   it('stops after a failed repair or truncated local-model JSON', async () => {
