@@ -2,6 +2,7 @@ export type ContextSourceKind =
   | 'preset'
   | 'chapter'
   | 'memory'
+  | 'story_memory'
   | 'character'
   | 'note'
   | 'worldbook'
