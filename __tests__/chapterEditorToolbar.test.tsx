@@ -8,6 +8,9 @@ const mockCreateTask = jest.fn(() => 'task-1');
 const mockRunChapterPipeline = jest.fn();
 const mockCancelPipeline = jest.fn();
 const mockNavigate = jest.fn();
+const mockGenerateMemorySummary = jest.fn(
+  async (_chapterId: number, _targetChars?: number) => '章节事件摘要',
+);
 let mockTasks: any[] = [];
 
 jest.mock('../src/services/database', () => ({
@@ -54,7 +57,8 @@ jest.mock('../src/services/revisionService', () => ({
 }));
 
 jest.mock('../src/services/summaryGenerator', () => ({
-  generateMemorySummary: jest.fn(async () => ''),
+  generateMemorySummary: (chapterId: number, targetChars?: number) =>
+    mockGenerateMemorySummary(chapterId, targetChars),
 }));
 
 jest.mock('../src/store/pipelineTaskStore', () => ({
@@ -139,6 +143,7 @@ describe('ChapterEditor toolbar', () => {
     });
     mockGetChapterById.mockResolvedValue(sampleChapter as any);
     mockUpdateChapter.mockResolvedValue(undefined);
+    mockGenerateMemorySummary.mockResolvedValue('章节事件摘要');
   });
 
   it('renders all 9 short-label buttons', async () => {
@@ -274,6 +279,36 @@ describe('ChapterEditor toolbar', () => {
     await findByText('AI 重新生成');
     expect(queryByText('AI 续写')).toBeNull();
     expect(queryByText('保存定稿')).toBeNull();
+  });
+
+  it('preserves the saved chapter body when finalization summary generation fails', async () => {
+    const alertSpy = jest.spyOn(require('react-native').Alert, 'alert');
+    mockGetChapterById.mockResolvedValue({
+      ...sampleChapter,
+      content: '已经保存的正文',
+    } as any);
+    mockGenerateMemorySummary.mockRejectedValueOnce(new Error('模型不可用'));
+    const { findByText } = render(
+      <ChapterEditor chapterId={1} onClose={jest.fn()} />,
+    );
+
+    await act(async () => {
+      fireEvent.press(await findByText('定稿'));
+    });
+
+    expect(mockUpdateChapter).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ content: '已经保存的正文' }),
+    );
+    expect(mockUpdateChapter).not.toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ content: '' }),
+    );
+    expect(alertSpy).toHaveBeenCalledWith(
+      '摘要生成失败',
+      expect.stringContaining('模型不可用'),
+    );
+    alertSpy.mockRestore();
   });
 
   it('navigates to the pipeline result screen as soon as chapter continuation completes', async () => {
