@@ -5,7 +5,7 @@ import { buildV4toV5Statements } from '../src/services/migrations/v4-to-v5';
 import { createMigrationDb } from './migrationTestUtils';
 
 describe('migration schema matrix', () => {
-  test.each(Array.from({ length: 11 }, (_, index) => index + 3))(
+  test.each(Array.from({ length: 12 }, (_, index) => index + 3))(
     'upgrades schema %i to the current schema',
     async fromVersion => {
       const mock = createMigrationDb({ schemaVersion: fromVersion });
@@ -39,6 +39,11 @@ describe('migration schema matrix', () => {
         'idx_local_llm_models_status',
         'idx_local_llm_models_last_used',
         'idx_llm_usage_logs_config',
+        'idx_project_story_memory_status',
+        'idx_project_story_memory_dirty',
+        'idx_chapter_memory_patches_project_position',
+        'idx_chapter_memory_patches_status',
+        'idx_story_memory_snapshots_project_position',
       ]),
     );
   });
