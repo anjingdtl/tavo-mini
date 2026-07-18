@@ -280,6 +280,27 @@ export async function markStoryMemoryDirty(
   );
 }
 
+export async function setStoryMemoryBuildStatus(
+  projectId: number,
+  status: StoryMemoryBuildStatus,
+  dirtyFromPosition: number | null,
+  lastError = '',
+): Promise<void> {
+  await ensureProjectStoryMemoryRow(projectId);
+  await execute(
+    await openDatabase(),
+    `UPDATE project_story_memory SET status = ?, dirty_from_position = ?,
+      last_error = ?, updated_at = ? WHERE project_id = ?`,
+    [
+      status,
+      dirtyFromPosition,
+      lastError,
+      new Date().toISOString(),
+      projectId,
+    ],
+  );
+}
+
 export async function clearStoryMemory(projectId: number): Promise<void> {
   await executeTransaction(await openDatabase(), [
     { sql: 'DELETE FROM story_memory_snapshots WHERE project_id = ?', params: [projectId] },
