@@ -324,8 +324,18 @@ export const ContextAutoConfigScreen: React.FC = () => {
               color={theme.colors.textPrimary}
             />
             <PreviewRow
-              label="摘要预算"
-              value={preview.summaryBudgetTokens}
+              label="全局故事状态"
+              value={preview.storyStateBudgetTokens}
+              color={theme.colors.textPrimary}
+            />
+            <PreviewRow
+              label="历史章节事件"
+              value={preview.episodicMemoryBudgetTokens}
+              color={theme.colors.textPrimary}
+            />
+            <PreviewRow
+              label="每章记忆补丁输出上限"
+              value={preview.memoryPatchMaxTokens}
               color={theme.colors.textPrimary}
             />
 

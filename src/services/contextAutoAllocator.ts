@@ -4,7 +4,7 @@
  * 设计文档：docs/superpowers/specs/2026-07-18-context-auto-config-design.md
  *
  * 顶层分配：maxContextTokens 的 80% 作输入预算、20% 作输出预算。
- * 输入侧再按 65/20/15 拆给滑动窗口/资料/摘要；
+ * 输入侧按 45/20/25/10 拆给滑动窗口/资料/全局故事状态/章节事件；
  * 输出侧按 50/15/15/20 拆给草稿/审阅/事实/校对。
  * 资源级单项上限按实际数量动态分摊（R1 算法）。
  */
@@ -21,6 +21,9 @@ export interface AllocationResult {
   slidingWindowSize: number;
   resourceBudget: number;
   summaryBudgetTokens: number;
+  storyStateBudgetTokens: number;
+  episodicMemoryBudgetTokens: number;
+  memoryPatchMaxTokens: number;
   // 输出侧（写入 PipelineConfig）
   draftMaxTokens: number;
   reviewMaxTokens: number;
@@ -46,9 +49,12 @@ export const RATIO_INPUT = 0.8;
 export const RATIO_OUTPUT = 0.2;
 
 // 输入侧内部比例（占 inputBudget）
-export const RATIO_SLIDING_WINDOW = 0.65;
+export const RATIO_SLIDING_WINDOW = 0.45;
 export const RATIO_RESOURCE_BUDGET = 0.2;
-export const RATIO_SUMMARY_BUDGET = 0.15;
+export const RATIO_STORY_STATE_BUDGET = 0.25;
+export const RATIO_EPISODIC_MEMORY_BUDGET = 0.1;
+export const RATIO_SUMMARY_BUDGET =
+  RATIO_STORY_STATE_BUDGET + RATIO_EPISODIC_MEMORY_BUDGET;
 
 // 输出侧内部比例（占 outputBudget）
 export const RATIO_DRAFT = 0.5;
@@ -67,6 +73,12 @@ export const WARNING_CONTEXT_TOKENS = 8000;
 export const MIN_SLIDING_WINDOW = 1000;
 export const MIN_SUMMARY_BUDGET = 2000;
 export const MIN_RESOURCE_BUDGET = 500;
+export const MIN_STORY_STATE_BUDGET = 2000;
+export const MAX_STORY_STATE_BUDGET = 32000;
+export const MIN_EPISODIC_MEMORY_BUDGET = 1000;
+export const MAX_EPISODIC_MEMORY_BUDGET = 16000;
+export const MIN_MEMORY_PATCH_TOKENS = 800;
+export const MAX_MEMORY_PATCH_TOKENS = 4000;
 export const MIN_CHARACTER_TOKENS = 1000;
 export const MIN_NOTE_TOKENS = 500;
 export const MIN_WORLDBOOK_ENTRY_TOKENS = 500;
@@ -75,6 +87,8 @@ export const MIN_PIPELINE_TOKENS = 256;
 
 const floor = (value: number, min: number): number =>
   Math.max(min, Math.round(value));
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, Math.round(value)));
 
 /**
  * 根据用户输入的 maxContextTokens 和当前资源数量，
@@ -95,18 +109,72 @@ export function allocateContextBudget(
   const inputBudget = Math.round(maxContextTokens * RATIO_INPUT);
   const outputBudget = Math.round(maxContextTokens * RATIO_OUTPUT);
 
-  // 输入侧
-  const slidingWindowSize = floor(
-    inputBudget * RATIO_SLIDING_WINDOW,
-    MIN_SLIDING_WINDOW,
-  );
-  const resourceBudget = floor(
-    inputBudget * RATIO_RESOURCE_BUDGET,
-    MIN_RESOURCE_BUDGET,
-  );
-  const summaryBudgetTokens = floor(
-    inputBudget * RATIO_SUMMARY_BUDGET,
-    MIN_SUMMARY_BUDGET,
+  // 输入侧：极小预算只按比例分配，禁止固定 floor 反向撑爆总预算。
+  let resourceBudget: number;
+  let storyStateBudgetTokens: number;
+  let episodicMemoryBudgetTokens: number;
+  let slidingWindowSize: number;
+  if (inputBudget < 5000) {
+    resourceBudget = Math.max(1, Math.round(inputBudget * RATIO_RESOURCE_BUDGET));
+    storyStateBudgetTokens = Math.max(
+      1,
+      Math.round(inputBudget * RATIO_STORY_STATE_BUDGET),
+    );
+    episodicMemoryBudgetTokens = Math.max(
+      1,
+      Math.round(inputBudget * RATIO_EPISODIC_MEMORY_BUDGET),
+    );
+    slidingWindowSize = Math.max(
+      1,
+      inputBudget - resourceBudget - storyStateBudgetTokens - episodicMemoryBudgetTokens,
+    );
+  } else {
+    resourceBudget = floor(
+      inputBudget * RATIO_RESOURCE_BUDGET,
+      MIN_RESOURCE_BUDGET,
+    );
+    storyStateBudgetTokens = clamp(
+      inputBudget * RATIO_STORY_STATE_BUDGET,
+      MIN_STORY_STATE_BUDGET,
+      MAX_STORY_STATE_BUDGET,
+    );
+    episodicMemoryBudgetTokens = clamp(
+      inputBudget * RATIO_EPISODIC_MEMORY_BUDGET,
+      MIN_EPISODIC_MEMORY_BUDGET,
+      MAX_EPISODIC_MEMORY_BUDGET,
+    );
+    slidingWindowSize =
+      inputBudget -
+      resourceBudget -
+      storyStateBudgetTokens -
+      episodicMemoryBudgetTokens;
+    let deficit = Math.max(0, MIN_SLIDING_WINDOW - slidingWindowSize);
+    const episodicReduction = Math.min(
+      deficit,
+      Math.max(0, episodicMemoryBudgetTokens - 500),
+    );
+    episodicMemoryBudgetTokens -= episodicReduction;
+    deficit -= episodicReduction;
+    const storyReduction = Math.min(
+      deficit,
+      Math.max(0, storyStateBudgetTokens - 1000),
+    );
+    storyStateBudgetTokens -= storyReduction;
+    deficit -= storyReduction;
+    const resourceReduction = Math.min(deficit, resourceBudget);
+    resourceBudget -= resourceReduction;
+    slidingWindowSize =
+      inputBudget -
+      resourceBudget -
+      storyStateBudgetTokens -
+      episodicMemoryBudgetTokens;
+  }
+  const summaryBudgetTokens =
+    storyStateBudgetTokens + episodicMemoryBudgetTokens;
+  const memoryPatchMaxTokens = clamp(
+    storyStateBudgetTokens * 0.1,
+    MIN_MEMORY_PATCH_TOKENS,
+    MAX_MEMORY_PATCH_TOKENS,
   );
 
   // 输出侧
@@ -152,6 +220,9 @@ export function allocateContextBudget(
     slidingWindowSize,
     resourceBudget,
     summaryBudgetTokens,
+    storyStateBudgetTokens,
+    episodicMemoryBudgetTokens,
+    memoryPatchMaxTokens,
     draftMaxTokens,
     reviewMaxTokens,
     factCheckMaxTokens,
@@ -269,6 +340,18 @@ export async function applyContextAutoAllocation(
         String(allocation.summaryBudgetTokens),
       ],
     },
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['story_state_budget_tokens', String(allocation.storyStateBudgetTokens)],
+    },
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['episodic_memory_budget_tokens', String(allocation.episodicMemoryBudgetTokens)],
+    },
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['memory_patch_max_tokens', String(allocation.memoryPatchMaxTokens)],
+    },
     // PipelineConfig 字段
     {
       sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
@@ -354,4 +437,3 @@ export async function applyContextAutoAllocation(
 
   return record;
 }
-
