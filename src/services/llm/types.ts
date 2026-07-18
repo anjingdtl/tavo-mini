@@ -10,6 +10,7 @@ export interface LLMResult {
   totalTokens: number;
   metrics?: LLMRequestMetrics;
   errorCode?: string;
+  finishReason?: string | null;
   rawUsage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
@@ -21,6 +22,7 @@ export interface LLMGenerateOptions {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  responseFormat?: 'json_object';
   scenario?: string;
   projectId?: number;
   taskId?: string;

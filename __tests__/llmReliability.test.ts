@@ -123,6 +123,12 @@ describe('LLM request reliability policy', () => {
     expect(resolveLLMTimeoutPolicy('chat', 'llama_cpp')).toEqual({
       idleTimeoutMs: LLM_TIMEOUTS.localIdleMs,
     });
+    expect(
+      resolveLLMTimeoutPolicy('story_memory_patch', 'openai_compatible'),
+    ).toEqual({ totalTimeoutMs: LLM_TIMEOUTS.chapterDraftMs });
+    expect(
+      resolveLLMTimeoutPolicy('story_memory_patch_repair', 'openai_compatible'),
+    ).toEqual({ totalTimeoutMs: LLM_TIMEOUTS.chapterDraftMs });
   });
 
   test('records timing metrics and gives user cancellation priority', () => {

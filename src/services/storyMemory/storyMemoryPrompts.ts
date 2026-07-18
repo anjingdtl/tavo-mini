@@ -90,3 +90,21 @@ export function buildStoryMemoryRepairMessages(
     },
   ];
 }
+
+export function buildStoryMemoryFreshRetryMessages(
+  originalMessages: Array<{ role: 'system' | 'user'; content: string }>,
+  validationError: string,
+): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    ...originalMessages,
+    {
+      role: 'user',
+      content: [
+        `前两次输出无效：${validationError}`,
+        '从头重新生成完整 JSON，不要续写上一次被截断的内容。',
+        '只记录本章确有证据的增量；没有变化的数组保持为空，以缩短输出。',
+        '必须闭合所有对象和数组，只输出一个完整 JSON 对象。',
+      ].join('\n'),
+    },
+  ];
+}

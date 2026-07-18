@@ -38,6 +38,34 @@ describe('story memory patch validation', () => {
     );
   });
 
+  it('identifies the invalid evidence quote so the model can repair the exact field', () => {
+    const state = createEmptyStoryMemory(7);
+    const patch = createEmptyChapterMemoryPatch({
+      chapterId: 1,
+      chapterPosition: 0,
+      title: '第一章',
+    });
+    patch.newCharacters.push({
+      tempRef: 'new_char_agent9',
+      canonicalName: 'Agent9',
+      aliases: [],
+      role: '',
+      identity: '',
+      stableTraits: [],
+      initialState: {},
+      status: 'active',
+      evidenceQuote: '特工九在九号地点交出了线索',
+    });
+
+    expect(() =>
+      validateChapterMemoryPatch(
+        patch,
+        state,
+        'Agent9 gives Shilu Clue9 at Location9.',
+      ),
+    ).toThrow('证据“特工九在九号地点交出了线索”无法在章节正文中定位');
+  });
+
   it('rejects unknown references and immutable profile changes without a reason', () => {
     const state = createEmptyStoryMemory(7);
     const patch = createEmptyChapterMemoryPatch({
