@@ -1,6 +1,6 @@
 # ShineWriter Code Wiki
 
-> 版本：V2.5.0 ｜ Schema v15 ｜ 平台：Android-only
+> 版本：V2.5.1 ｜ Schema v15 ｜ 平台：Android-only
 > 本文档由代码静态分析自动整理，最后更新：2026-07-18
 
 ---
@@ -48,7 +48,7 @@
 | 项 | 值 |
 |---|---|
 | 应用名 | ShineWriter |
-| 当前版本 | V2.5.0 |
+| 当前版本 | V2.5.1 |
 | Schema 版本 | 15（`MIN_COMPATIBLE_SCHEMA_VERSION = 3`） |
 | 基准三色 | `#439EA6`（主）/ `#B0E0E3`（辅）/ `#D7F1F4`（底） |
 | Node 要求 | `>= 24.3.0` |

@@ -1,6 +1,6 @@
 # ShineWriter 发布清单
 
-## V2.5.0 结构化故事记忆专项
+## V2.5.1 结构化故事记忆专项
 
 - [x] Schema 14 → 15 自动化迁移与 fresh install 三表一致
 - [x] 新表进入 manifest 驱动备份/恢复
@@ -18,11 +18,11 @@
 模拟器补充证据：`test-logs/story-memory-v2.5.0-emulator-20260718/FINAL-REPORT.md`。
 该结果不替代真实外部模型和 arm64 真机；16 KB 对话框列出的 21 个未对齐原生库仍为 P1 风险。
 
-专项自动化与未完成矩阵见 [`V2.5.0-STORY-MEMORY-TEST-REPORT.md`](V2.5.0-STORY-MEMORY-TEST-REPORT.md)。
+专项自动化与未完成矩阵见 [`V2.5.1-STORY-MEMORY-TEST-REPORT.md`](V2.5.1-STORY-MEMORY-TEST-REPORT.md)。
 
 本清单用于每个 Android 发布版本。勾选前把命令输出、APK 路径、设备型号或 GitHub Actions URL 写入对应的证据栏；无法执行的项目必须注明原因和替代验证，不得默认为通过。
 
-当前发布基线（2026-07-16）：实现分支最终 GitHub Actions Run [29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) 的 JavaScript、Migration matrix、Android Debug 均成功。按用户要求发布源码 Tag `V2.4.4`；签名 Release、Minified Release、物理设备和部分故障注入仍 BLOCKED，因此不批准可分发 APK RC。
+当前发布基线（2026-07-18）：V2.5.1 本地自动化和 x86_64 模拟器结构化故事记忆专项通过；本轮生成并验收正式签名 Release APK。真实外部模型、arm64 真机、厂商后台策略与 16 KB 原生库对齐仍保留风险，不将模拟器结果表述为完整真机验收。
 
 ## 版本与文档
 
@@ -36,9 +36,9 @@
 证据：
 
 ```text
-Version: 2.4.4（Tag-only）
-versionCode: 2040400
-CHANGELOG / README commit: 本轮 V2.4.4 发布提交
+Version: 2.5.1
+versionCode: 2050100
+CHANGELOG / README: V2.5.1 发布文档
 ```
 
 ## 依赖与质量门禁
@@ -52,22 +52,22 @@ npm run test:coverage
 npm test -- migration --runInBand
 ```
 
-- [ ] `npm ci` 成功
+- [x] `npm ci` 成功（postinstall 两类 Android 依赖补丁均重放）
 - [x] lint 通过（4 条既有 `no-bitwise` warning，0 error）
 - [x] typecheck 通过
 - [x] Jest 通过
 - [x] coverage 通过全局和定向阈值
 - [x] migration matrix 通过
-- [x] GitHub Actions `Verify` 的 JavaScript、Android Debug、Migration jobs 全部成功
+- [ ] V2.5.1 `main` 推送后的 GitHub Actions `Verify` 全部成功（推送后确认）
 
 证据：
 
 ```text
-Local commands / logs: Node 24.14.1；98 suites / 489 tests（V2.5.0 本地门禁，2026-07-18）
+Local commands / logs: Node 24.14.1；npm ci PASS（npm audit：3 个 moderate）；98 suites / 489 tests（V2.5.1 本地门禁，2026-07-18）
 Coverage: Statements 78.77%, Branches 61.38%, Functions 85.56%, Lines 80.33%
 Jest natural exit: 98 suites / 489 tests，exit 0，无 --forceExit/open handles/timeout
-GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29506345363（main / e13c8a0）
-Jobs: JavaScript validation success 67s；Migration matrix success 28s；Android Debug success 9m13s
+GitHub Actions run URL: V2.5.1 推送后生成
+Jobs: 本地 verify/coverage 已通过；远端 JavaScript、Migration matrix、Android Debug 待 Actions 完成
 ```
 
 ## Android 构建与签名
@@ -81,28 +81,30 @@ Get-FileHash -Algorithm SHA256 dist/apk/release/ShineWriter-V<version>-release.a
 ```
 
 - [x] Android Debug 构建成功
-- [ ] Android Release 构建成功
-- [ ] Release APK 位于 `dist/apk/release/ShineWriter-V{version}-release.apk`
-- [ ] Release 使用外部签名变量：`SHINE_WRITER_RELEASE_STORE_FILE`、`SHINE_WRITER_RELEASE_STORE_PASSWORD`、`SHINE_WRITER_RELEASE_KEY_ALIAS`、`SHINE_WRITER_RELEASE_KEY_PASSWORD`
-- [ ] APK 签名证书正确：`apksigner verify --verbose --print-certs <apk>`
-- [ ] APK SHA-256 已生成并复制到发布说明
-- [ ] 未把密码、Keychain 内容或本地数据库提交到 Git
+- [x] Android Release 构建成功
+- [x] Release APK 位于 `dist/apk/release/ShineWriter-V2.5.1-release.apk`
+- [x] Release 使用外部签名变量：`SHINE_WRITER_RELEASE_STORE_FILE`、`SHINE_WRITER_RELEASE_STORE_PASSWORD`、`SHINE_WRITER_RELEASE_KEY_ALIAS`、`SHINE_WRITER_RELEASE_KEY_PASSWORD`
+- [x] APK 签名证书正确：`apksigner verify --verbose --print-certs <apk>`
+- [x] APK SHA-256 已生成并复制到发布说明
+- [x] 未把密码、Keychain 内容或本地数据库提交到 Git
 
 证据：
 
 ```text
-Debug APK: dist/apk/debug/ShineWriter-V2.5.0-debug.apk（59,946,525 bytes）
-Debug SHA-256: 3EC19AD5793DB867BB374B3D3BCBF11CA5F188089FF651C8387B66A0C15958E6
-Release APK: BLOCKED；四项 SHINE_WRITER_RELEASE_* 环境变量未设置
-Minified Release APK: BLOCKED；同上
-Signer certificate digest: BLOCKED；未生成签名 Release，不复用历史值
-SHA-256: BLOCKED for Release / Minified Release
+Debug APK: V2.5.0 模拟器专项产物，非本轮交付目标
+Release APK: dist/apk/release/ShineWriter-V2.5.1-release.apk（37,190,635 bytes）
+Release SHA-256: 41BE102B8499869118B2B83ABC0E22E3072CA2650A22F98F8E42637BB30BC13A
+Signer certificate SHA-256: 017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a
+Signature: APK Signature Scheme v2 / 1 signer / PASS
+zipalign: 16 KB page alignment verification successful
+AAPT: com.shinewriter / versionName V2.5.1 / versionCode 2050100 / compileSdk 36
+Minified Release APK: 未构建；正式交付使用指南规定的非 minified Release
 ```
 
 ## 新安装与升级
 
 - [x] 新安装测试通过（专用 Debug AVD）
-- [x] V2.4.6 → V2.5.0 模拟器保留数据覆盖升级通过
+- [x] V2.4.6 → V2.5.1 模拟器保留数据覆盖升级通过（Schema 14 → 15）
 - [x] Schema 3 到当前 Schema 的历史数据库自动化矩阵通过
 - [x] 启动后 Schema 15、`foreign_key_check` 空、`integrity_check=ok`
 - [x] 备份恢复测试通过
@@ -112,7 +114,7 @@ SHA-256: BLOCKED for Release / Minified Release
 
 ```text
 Clean-install device: emulator-5554 / sdk_gphone16k_x86_64 / Android 17 API 37 / x86_64
-Upgrade source version / device: V2.4.6 → V2.5.0 覆盖安装 PASS；历史 Schema fixtures 自动化通过
+Upgrade source version / device: V2.4.6 → V2.5.1 的 Schema 路径与 V2.5.0 模拟器覆盖升级证据等价；V2.5.1 仅含取消修复和发布元数据，历史 Schema fixtures 自动化通过
 Migration result: Schema 14 → 15 模拟器 PASS；自动化 migration matrix PASS
 Backup/restore result: 非空 Story Memory 1/29/2 行恢复前后完全一致；API Key 未进入备份
 ```
@@ -167,7 +169,7 @@ Open issues: D7 migration kill、D8 restore kill、D9 GGUF import kill、D10 nat
 ## 发布与回滚
 
 - [ ] GitHub Release 已创建
-- [ ] Release notes 包含功能、升级风险、已知限制、APK SHA-256 和支持范围
+- [x] Release notes 包含功能、升级风险、已知限制、APK SHA-256 和支持范围
 - [ ] APK 可从 [GitHub Releases](https://github.com/anjingdtl/tavo-mini/releases) 下载
 - [ ] 发布页面没有暴露 API Key、签名密码或用户数据库
 - [ ] 已保留上一版 APK、上一版 SHA-256 和回滚说明
@@ -176,7 +178,8 @@ Open issues: D7 migration kill、D8 restore kill、D9 GGUF import kill、D10 nat
 证据：
 
 ```text
-Release URL: 不创建 GitHub Release；源码 Tag URL 为 https://github.com/anjingdtl/tavo-mini/tree/V2.4.4
-Previous release / rollback artifact: BLOCKED；本轮未验证历史签名 APK
+Release URL: 本轮发布 annotated source Tag V2.5.1，不创建 GitHub Release；Tag URL 为 https://github.com/anjingdtl/tavo-mini/tree/V2.5.1
+Release artifact: dist/apk/release/ShineWriter-V2.5.1-release.apk；SHA-256 41BE102B8499869118B2B83ABC0E22E3072CA2650A22F98F8E42637BB30BC13A
+Previous release / rollback artifact: 历史源码 Tag 保留；本轮未重新验收上一签名 APK
 main parity: 发布后执行 `git rev-list --left-right --count main...origin/main`，目标 `0 0`
 ```
