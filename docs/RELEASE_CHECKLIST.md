@@ -1,5 +1,21 @@
 # ShineWriter 发布清单
 
+## V2.5.5 长篇定稿 JSON 截断修复
+
+- [x] OpenAI 兼容结构化请求发送 `response_format: json_object`
+- [x] 不支持 JSON Object 的兼容端点自动移除参数并重试
+- [x] 读取 `finish_reason=length`，输出预算从配置值逐级翻倍，最高 16000 tokens
+- [x] 第三次请求不携带被截断 assistant 输出，避免续写残缺 JSON
+- [x] 无效证据错误指出具体引文，repair 按正文原语言逐字修正
+- [x] 故事记忆使用 180 秒长任务超时；超时、网络错误、429/5xx 自动重试一次
+- [x] 自动化连续 20 章定稿，含每逢第 3 章连续两次截断故障注入
+- [x] 正式签名 V2.5.5 release 在模拟器使用 DeepSeek 连续定稿 20 章
+- [x] 最终故事记忆状态正常、构建到第 20 章、Dirty 起点无、20 名人物、35 条关系
+- [x] 第 9 章证据意译故障注入后精确 repair 成功；第 10 章慢响应使用长超时成功
+- [x] V2.5.5 APK 签名、zipalign、版本元数据和 SHA-256 验收
+
+模拟器证据：`test-logs/chapter20-rootcause-20260718/`（逐章 UI 树和 logcat）；最终 APK 37,264,135 bytes，SHA-256 `5E69E3A1E64F489EE8A33DF776505238BCD7FB79BFE3CF9A8F5DB12A74E66319`。
+
 ## V2.5.4 章节空摘要热修复
 
 - [x] 定位结构化补丁成功但 `episodicSummary` 全空仍写入空 `memory_summary`

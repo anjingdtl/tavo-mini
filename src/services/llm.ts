@@ -36,6 +36,7 @@ export interface LLMCallConfig {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  responseFormat?: 'json_object';
   scenario?: string;
   projectId?: number;
   taskId?: string;
@@ -166,6 +167,7 @@ export async function callLLMResult(
       temperature: config?.temperature,
       top_p: config?.top_p,
       max_tokens: maxTokens ?? config?.max_tokens,
+      responseFormat: config?.responseFormat,
       scenario: config?.scenario,
       projectId: config?.projectId,
       taskId: config?.taskId,

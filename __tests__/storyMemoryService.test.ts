@@ -72,8 +72,33 @@ describe('story memory LLM patch service', () => {
     ).resolves.toEqual(expect.objectContaining({ schemaVersion: 1 }));
     expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
     expect(mockCallLLMResult.mock.calls[1][2]).toEqual(
-      expect.objectContaining({ scenario: 'story_memory_patch_repair' }),
+      expect.objectContaining({
+        scenario: 'story_memory_patch_repair',
+        responseFormat: 'json_object',
+      }),
     );
+    expect(mockCallLLMResult.mock.calls[0][1]).toBe(2400);
+    expect(mockCallLLMResult.mock.calls[1][1]).toBe(4800);
+  });
+
+  it('retries a transient network or timeout failure before parsing', async () => {
+    mockCallLLMResult
+      .mockRejectedValueOnce(
+        Object.assign(new Error('请求超时'), { code: 'total_timeout' }),
+      )
+      .mockResolvedValueOnce(response(validOutput()));
+
+    await expect(
+      generateValidatedChapterMemoryPatch({
+        chapter,
+        previousState: createEmptyStoryMemory(7),
+        memoryPatchMaxTokens: 3200,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ schemaVersion: 1 }));
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
+    expect(mockCallLLMResult.mock.calls.map(call => call[1])).toEqual([
+      3200, 3200,
+    ]);
   });
 
   it('repairs missing evidence and unknown entity references', async () => {
@@ -173,18 +198,51 @@ describe('story memory LLM patch service', () => {
     expect(mockCallLLMResult).toHaveBeenCalledTimes(1);
   });
 
-  it('stops after a failed repair or truncated local-model JSON', async () => {
+  it('retries from scratch with a larger budget after two truncated JSON responses', async () => {
     mockCallLLMResult
-      .mockResolvedValueOnce(response('{"schemaVersion":1'))
-      .mockResolvedValueOnce(response('{still bad'));
+      .mockResolvedValueOnce({
+        ...response('{"schemaVersion":1'),
+        finishReason: 'length',
+      })
+      .mockResolvedValueOnce({
+        ...response('{still bad'),
+        finishReason: 'length',
+      })
+      .mockResolvedValueOnce(response(validOutput()));
     await expect(
       generateValidatedChapterMemoryPatch({
         chapter,
         previousState: createEmptyStoryMemory(7),
         memoryPatchMaxTokens: 800,
       }),
-    ).rejects.toThrow('完整的 JSON');
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
+    ).resolves.toEqual(expect.objectContaining({ schemaVersion: 1 }));
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
+    expect(mockCallLLMResult.mock.calls.map(call => call[1])).toEqual([
+      2400, 4800, 9600,
+    ]);
+    expect(mockCallLLMResult.mock.calls[2][2]).toEqual(
+      expect.objectContaining({ scenario: 'story_memory_patch_retry' }),
+    );
+    expect(mockCallLLMResult.mock.calls[2][0]).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: 'assistant' })]),
+    );
+  });
+
+  it('reports the expanded output limit when all JSON responses are truncated', async () => {
+    mockCallLLMResult.mockResolvedValue({
+      ...response('{"schemaVersion":1'),
+      finishReason: 'length',
+    });
+    await expect(
+      generateValidatedChapterMemoryPatch({
+        chapter,
+        previousState: createEmptyStoryMemory(7),
+        memoryPatchMaxTokens: 4000,
+      }),
+    ).rejects.toThrow('已自动扩容到 16000 tokens');
+    expect(mockCallLLMResult.mock.calls.map(call => call[1])).toEqual([
+      4000, 8000, 16000,
+    ]);
   });
 
   it('rejects empty output and respects an already aborted signal', async () => {
