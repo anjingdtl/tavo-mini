@@ -22,7 +22,10 @@ describe('story memory prompts', () => {
   it('forbids cumulative summaries and requires evidence and system IDs', () => {
     expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('不得输出完整故事摘要');
     expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('evidenceQuote');
+    expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('不得改词、增词或概括');
     expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('精确 ID');
+    expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('new_char_石璐');
+    expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('每个临时引用必须唯一');
     expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('不要输出 Markdown');
   });
 
@@ -33,6 +36,8 @@ describe('story memory prompts', () => {
     );
     expect(messages[1].content).toContain('林岚推开钟楼暗门');
     expect(messages[1].content).toContain('newCharacters');
+    expect(messages[1].content).toContain('canonicalName');
+    expect(messages[1].content).toContain('每条关系必须连接两个不同');
     expect(messages[1].content).toContain('throughChapterPosition');
   });
 

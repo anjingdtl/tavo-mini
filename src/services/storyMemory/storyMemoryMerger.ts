@@ -89,10 +89,7 @@ function archiveOverflow(state: StoryMemoryState): void {
     );
   }
   if (archived.length > 0) {
-    state.mainline.archiveDigest = [
-      state.mainline.archiveDigest,
-      ...archived,
-    ]
+    state.mainline.archiveDigest = [state.mainline.archiveDigest, ...archived]
       .filter(Boolean)
       .join('\n')
       .slice(-3000);
@@ -224,7 +221,7 @@ export function applyStoryMemoryPatch(
   for (const update of draft.characterUpdates) {
     const character = state.characters[update.characterRef];
     character.aliases = unique([...character.aliases, ...update.addAliases]);
-    if (Object.keys(update.profileCorrections).length > 0) {
+    if (Object.keys(update.profileCorrections || {}).length > 0) {
       character.immutableProfile = {
         ...character.immutableProfile,
         ...update.profileCorrections,
@@ -237,10 +234,14 @@ export function applyStoryMemoryPatch(
       };
     }
     for (const field of update.clearFields) {
-      if (field in character.currentState && typeof character.currentState[
-        field as keyof typeof character.currentState
-      ] === 'string') {
-        (character.currentState as unknown as Record<string, unknown>)[field] = '';
+      if (
+        field in character.currentState &&
+        typeof character.currentState[
+          field as keyof typeof character.currentState
+        ] === 'string'
+      ) {
+        (character.currentState as unknown as Record<string, unknown>)[field] =
+          '';
       }
     }
     character.currentState = {
@@ -309,7 +310,10 @@ export function applyStoryMemoryPatch(
       relationship,
       Object.fromEntries(
         Object.entries(update).filter(
-          ([key, value]) => key !== 'relationshipRef' && key !== 'evidenceQuote' && value !== undefined,
+          ([key, value]) =>
+            key !== 'relationshipRef' &&
+            key !== 'evidenceQuote' &&
+            value !== undefined,
         ),
       ),
     );
@@ -325,7 +329,10 @@ export function applyStoryMemoryPatch(
   const arc = draft.mainlinePatch.currentArcUpdate;
   if (arc.action === 'start') {
     mainline.currentArc = {
-      id: stableId(`arc_${context.projectId}`, `${arc.name}|${context.chapterId}`),
+      id: stableId(
+        `arc_${context.projectId}`,
+        `${arc.name}|${context.chapterId}`,
+      ),
       name: arc.name,
       summary: arc.summary,
       startedChapterId: context.chapterId,
@@ -347,9 +354,13 @@ export function applyStoryMemoryPatch(
     mainline.currentObjective = draft.mainlinePatch.currentObjective.value;
   }
   for (const item of draft.mainlinePatch.conflictUpserts) {
-    const id = item.ref && mainline.activeConflicts[item.ref]
-      ? item.ref
-      : stableId(`conflict_${context.projectId}`, `${item.title}|${context.chapterId}`);
+    const id =
+      item.ref && mainline.activeConflicts[item.ref]
+        ? item.ref
+        : stableId(
+            `conflict_${context.projectId}`,
+            `${item.title}|${context.chapterId}`,
+          );
     mainline.activeConflicts[id] = {
       id,
       title: item.title,
@@ -397,7 +408,8 @@ export function applyStoryMemoryPatch(
     thread.title = item.title || thread.title;
     thread.description = item.description || thread.description;
     thread.priority = item.priority || thread.priority;
-    thread.deadlineOrTrigger = item.deadlineOrTrigger || thread.deadlineOrTrigger;
+    thread.deadlineOrTrigger =
+      item.deadlineOrTrigger || thread.deadlineOrTrigger;
     thread.lastChangedChapterId = context.chapterId;
     thread.evidenceChapterIds = recentEvidence(
       thread.evidenceChapterIds,
@@ -423,9 +435,13 @@ export function applyStoryMemoryPatch(
     delete mainline.openThreads[id];
   }
   for (const item of draft.mainlinePatch.foreshadowingUpserts) {
-    const id = item.ref && mainline.foreshadowing[item.ref]
-      ? item.ref
-      : stableId(`foreshadow_${context.projectId}`, `${item.setup}|${context.chapterId}`);
+    const id =
+      item.ref && mainline.foreshadowing[item.ref]
+        ? item.ref
+        : stableId(
+            `foreshadow_${context.projectId}`,
+            `${item.setup}|${context.chapterId}`,
+          );
     mainline.foreshadowing[id] = {
       id,
       setup: item.setup || mainline.foreshadowing[id]?.setup || '',
@@ -442,7 +458,10 @@ export function applyStoryMemoryPatch(
     };
   }
   for (const item of draft.mainlinePatch.timelineAnchors) {
-    const id = stableId(`time_${context.projectId}`, `${item.label}|${context.chapterId}`);
+    const id = stableId(
+      `time_${context.projectId}`,
+      `${item.label}|${context.chapterId}`,
+    );
     mainline.timelineAnchors[id] = {
       id,
       label: item.label,
@@ -453,7 +472,10 @@ export function applyStoryMemoryPatch(
     };
   }
   for (const item of draft.mainlinePatch.completedBeats) {
-    const id = stableId(`beat_${context.projectId}`, `${item.summary}|${context.chapterId}`);
+    const id = stableId(
+      `beat_${context.projectId}`,
+      `${item.summary}|${context.chapterId}`,
+    );
     if (!mainline.recentCompletedBeats.some(beat => beat.id === id)) {
       mainline.recentCompletedBeats.push({
         id,
