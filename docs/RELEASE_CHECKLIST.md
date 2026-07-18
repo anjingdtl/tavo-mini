@@ -8,11 +8,15 @@
 - [x] dirty、snapshot、失败停点、取消和 100 章确定性回放自动化通过
 - [x] Story State 优先于资料和 Episodic TF-IDF 注入；dirty 预览不注入
 - [x] 128K / 200K / 512K / 1M 双层记忆预算自动化通过
-- [ ] Android 真机 30 章连续定稿与第 8 章修改重建
-- [ ] Android 强杀后 checkpoint 恢复与取消后继续
-- [ ] 备份 → 清空 App 数据 → 恢复 Story Memory 一致性
-- [ ] 在线模型生成/repair 各一次
-- [ ] 本地 GGUF 生成/截断 repair/取消各一次
+- [x] Android 模拟器 29 个非空章节完整重建与第 14 章修改后 snapshot 重建
+- [x] Android 模拟器在途取消、checkpoint 保留与继续（修复 `f8218df` 后）
+- [x] 非空 Story Memory 三表备份 → 清空 App 数据 → UI 恢复后逐行一致
+- [x] 可控 OpenAI 兼容服务正常生成、首次非法后 repair、二次非法失败
+- [ ] 真实外部在线模型生成/repair 各一次
+- [ ] arm64 真机本地 GGUF 长上下文生成/截断 repair/取消/unload
+
+模拟器补充证据：`test-logs/story-memory-v2.5.0-emulator-20260718/FINAL-REPORT.md`。
+该结果不替代真实外部模型和 arm64 真机；16 KB 对话框列出的 21 个未对齐原生库仍为 P1 风险。
 
 专项自动化与未完成矩阵见 [`V2.5.0-STORY-MEMORY-TEST-REPORT.md`](V2.5.0-STORY-MEMORY-TEST-REPORT.md)。
 
@@ -59,9 +63,9 @@ npm test -- migration --runInBand
 证据：
 
 ```text
-Local commands / logs: Node 24.14.1；82 suites / 401 tests
-Coverage: Statements 78.33%, Branches 60.37%, Functions 86.05%, Lines 79.95%
-Jest natural exit: 82 suites / 401 tests，exit 0，无 --forceExit/open handles/timeout
+Local commands / logs: Node 24.14.1；98 suites / 489 tests（V2.5.0 本地门禁，2026-07-18）
+Coverage: Statements 78.77%, Branches 61.38%, Functions 85.56%, Lines 80.33%
+Jest natural exit: 98 suites / 489 tests，exit 0，无 --forceExit/open handles/timeout
 GitHub Actions run URL: https://github.com/anjingdtl/tavo-mini/actions/runs/29506345363（main / e13c8a0）
 Jobs: JavaScript validation success 67s；Migration matrix success 28s；Android Debug success 9m13s
 ```
@@ -87,8 +91,8 @@ Get-FileHash -Algorithm SHA256 dist/apk/release/ShineWriter-V<version>-release.a
 证据：
 
 ```text
-Debug APK: dist/apk/debug/ShineWriter-V2.4.4-debug.apk（50,106,550 bytes）
-Debug SHA-256: 69D99F8D0900E87F90636AE83B109BA2D6438003C166270EFF74168411DCEB28
+Debug APK: dist/apk/debug/ShineWriter-V2.5.0-debug.apk（59,946,525 bytes）
+Debug SHA-256: 3EC19AD5793DB867BB374B3D3BCBF11CA5F188089FF651C8387B66A0C15958E6
 Release APK: BLOCKED；四项 SHINE_WRITER_RELEASE_* 环境变量未设置
 Minified Release APK: BLOCKED；同上
 Signer certificate digest: BLOCKED；未生成签名 Release，不复用历史值
@@ -98,27 +102,27 @@ SHA-256: BLOCKED for Release / Minified Release
 ## 新安装与升级
 
 - [x] 新安装测试通过（专用 Debug AVD）
-- [ ] 老版本升级测试通过
+- [x] V2.4.6 → V2.5.0 模拟器保留数据覆盖升级通过
 - [x] Schema 3 到当前 Schema 的历史数据库自动化矩阵通过
-- [ ] 启动后 Schema 版本正确、外键检查通过、无重复或孤儿记录
+- [x] 启动后 Schema 15、`foreign_key_check` 空、`integrity_check=ok`
 - [x] 备份恢复测试通过
 - [x] 恢复失败时原数据库和保护性备份均可用（statement 注入）
 
 证据：
 
 ```text
-Clean-install device: ShineWriter_RC_API37 / emulator-5556 / sdk_gphone16k_x86_64 / Android 17 API 37 / x86_64
-Upgrade source version / device: 真实老版 APK 升级 BLOCKED；历史 Schema 3-13 fixtures 自动化通过
-Migration matrix result: 7 suites / 36 tests PASS；GitHub Migration matrix success
-Backup/restore result: Maestro flow 04 PASS；D2 restore failure rollback PASS
+Clean-install device: emulator-5554 / sdk_gphone16k_x86_64 / Android 17 API 37 / x86_64
+Upgrade source version / device: V2.4.6 → V2.5.0 覆盖安装 PASS；历史 Schema fixtures 自动化通过
+Migration result: Schema 14 → 15 模拟器 PASS；自动化 migration matrix PASS
+Backup/restore result: 非空 Story Memory 1/29/2 行恢复前后完全一致；API Key 未进入备份
 ```
 
 ## 核心功能实机验证
 
 - [x] 项目创建与切换通过（删除未列入本轮 Maestro flow）
 - [x] 章节创建、编辑、2 秒自动保存、退出再进入持久化通过
-- [ ] 在线模型测试通过
-- [ ] 本地 GGUF 模型导入、校验、加载、生成、取消通过
+- [x] 可控 OpenAI 兼容服务连接、生成、repair、失败和取消通过；真实外部服务仍 BLOCKED
+- [ ] 本地 GGUF 模型导入、校验、加载、生成、取消通过（x86_64 短生成 PASS；ARM/长上下文待测）
 - [ ] TTS 配置、播放、停止和完成回收通过
 - [ ] 前台/后台切换后写作和流水线状态正确
 - [x] 流水线取消与断网失败反馈通过；成功生成需真实服务，BLOCKED
@@ -128,10 +132,10 @@ Backup/restore result: Maestro flow 04 PASS；D2 restore failure rollback PASS
 证据：
 
 ```text
-Device model / Android version: sdk_gphone16k_x86_64 / Android 17 API 37 / emulator-5556
+Device model / Android version: sdk_gphone16k_x86_64 / Android 17 API 37 / emulator-5554
 ADB or Maestro evidence: docs/optimization/evidence/maestro-debug/final-artifact-emulator-5556/01-06-junit.xml（最终 APK，6/6 PASS, 4m24s）
-Online provider: BLOCKED for success；D11 仅使用无密钥 hanging server 验证断网失败
-Local GGUF model: BLOCKED；无可控 GGUF 资产
+Online provider: 可控 OpenAI 兼容协议与运行时 PASS；真实外部服务 BLOCKED（无凭据）
+Local GGUF model: Qwen3-0.6B-Q2_K x86_64 加载与短生成 PASS；ARM/长上下文/运行时 unload DEVICE-PENDING
 TTS engine: 默认系统 TTS；后台 FGS/按钮状态取得证据，但引擎第二段报 -7，PARTIAL
 ```
 
