@@ -96,15 +96,23 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       const result = await finalizeChapterMemory(savedChapter.id);
       await loadChapter();
       Toast.show({
-        type: 'success',
+        type: result.checkpointAttempted && !result.checkpointUpdated
+          ? 'info'
+          : 'success',
         text1: '章节已定稿',
-        text2: `故事记忆已更新到第 ${result.state.throughChapterPosition + 1} 章。`,
+        text2: result.statusMessage || (
+          result.checkpointUpdated
+            ? `长期记忆已整理到第 ${result.state.throughChapterPosition + 1} 章。`
+            : result.pendingCount > 0
+              ? `长期记忆待整理 ${result.pendingCount} 章。`
+              : undefined
+        ),
       });
     } catch (error: any) {
       Alert.alert(
-        '故事记忆更新失败',
-        `章节正文已保存，但故事记忆更新失败。\n${
-          error?.message || '请稍后重试或重建故事记忆。'
+        '定稿失败',
+        `章节正文已尽量保存。\n${
+          error?.message || '请稍后重试。'
         }`,
       );
     } finally {

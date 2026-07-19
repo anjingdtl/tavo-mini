@@ -1,119 +1,530 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import Toast from 'react-native-toast-message';
-import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from '../components/ui';
+import {
+  Button,
+  Card,
+  EmptyState,
+  Header,
+  LoadingState,
+  Screen,
+  spacing,
+} from '../components/ui';
 import * as db from '../services/database';
+import {
+  describeStoryMemoryPolicy,
+  listPendingChapters,
+  predictNextCheckpointPosition,
+} from '../services/storyMemory/storyMemoryPolicy';
 import {
   rebuildStoryMemory,
   type StoryMemoryRebuildProgress,
 } from '../services/storyMemory/storyMemoryRebuild';
-import type { StoryMemoryState } from '../services/storyMemory/storyMemoryTypes';
+import type {
+  StoryMemoryPolicy,
+  StoryMemoryState,
+  StoryMemoryUpdateMode,
+} from '../services/storyMemory/storyMemoryTypes';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 
-const STATUS_LABEL = {
-  empty: '尚未初始化', clean: '正常', dirty: '需要重建',
-  rebuilding: '重建中', failed: '重建失败',
+const STATUS_LABEL: Record<string, string> = {
+  empty: '尚未初始化',
+  clean: '正常',
+  dirty: '需要重新整理',
+  rebuilding: '整理中',
+  failed: '整理失败',
 };
 
-export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
+const MODE_OPTIONS: Array<{ mode: StoryMemoryUpdateMode; label: string }> = [
+  { mode: 'smart', label: '智能更新（推荐）' },
+  { mode: 'fixed', label: '固定间隔' },
+  { mode: 'every_chapter', label: '每章更新' },
+  { mode: 'manual', label: '仅手动更新' },
+];
+
+function formatLocalTime(iso: string): string {
+  if (!iso) return '无';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function shortId(id: string): string {
+  if (id.length <= 12) return id;
+  return `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
+function characterName(
+  state: StoryMemoryState,
+  characterId: string,
+): string {
+  const character = state.characters[characterId];
+  if (character?.canonicalName) return character.canonicalName;
+  return `未知人物（${shortId(characterId)}）`;
+}
+
+export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
+  onClose,
+}) => {
   const { currentProject } = useProjectStore();
   const { theme } = useThemeStore();
   const [state, setState] = useState<StoryMemoryState | null>(null);
+  const [policy, setPolicy] = useState<StoryMemoryPolicy | null>(null);
+  const [pendingRange, setPendingRange] = useState('');
+  const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [progress, setProgress] = useState<StoryMemoryRebuildProgress | null>(null);
+  const [progress, setProgress] = useState<StoryMemoryRebuildProgress | null>(
+    null,
+  );
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [intervalText, setIntervalText] = useState('3');
   const controllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     if (!currentProject) {
       setState(null);
+      setPolicy(null);
       setLoading(false);
       return;
     }
     const record = await db.ensureProjectStoryMemoryRow(currentProject.id);
+    const contextConfig = await db.getContextConfig();
+    const nextPolicy = await db.ensureStoryMemoryPolicy(
+      currentProject.id,
+      contextConfig.slidingWindowSize,
+    );
+    const chapters = await db.getChaptersByProject(currentProject.id);
+    const pending = listPendingChapters(
+      chapters.filter(chapter => Boolean(chapter.content?.trim())),
+      record.state.throughChapterPosition,
+    );
     setState(record.state);
+    setPolicy(nextPolicy);
+    setIntervalText(String(nextPolicy.intervalChapters));
+    setPendingCount(pending.length);
+    if (pending.length === 0) {
+      setPendingRange('无');
+    } else {
+      const from = pending[0].position + 1;
+      const to = pending[pending.length - 1].position + 1;
+      setPendingRange(
+        from === to ? `第 ${from} 章（1章）` : `第 ${from}～${to} 章（${pending.length}章）`,
+      );
+    }
     setLoading(false);
   }, [currentProject]);
 
   useEffect(() => {
     load().catch(error => {
       setLoading(false);
-      Toast.show({ type: 'error', text1: '故事记忆读取失败', text2: error?.message });
+      Toast.show({
+        type: 'error',
+        text1: '故事记忆读取失败',
+        text2: error?.message,
+      });
     });
     return () => controllerRef.current?.abort();
   }, [load]);
 
-  const runRebuild = useCallback(async (
-    mode: 'auto' | 'full' | 'legacy_bootstrap',
-    clearFirst = false,
-  ) => {
+  const nextTrigger = useMemo(() => {
+    if (!policy || !state) return '—';
+    if (policy.mode === 'manual') return '仅手动或覆盖不足时';
+    const next = predictNextCheckpointPosition(
+      policy,
+      state.throughChapterPosition,
+      pendingCount,
+    );
+    return next == null ? '—' : `第 ${next} 章定稿后`;
+  }, [policy, state, pendingCount]);
+
+  const savePolicy = useCallback(
+    async (patch: Partial<StoryMemoryPolicy>) => {
+      if (!currentProject || !policy) return;
+      const next = await db.upsertStoryMemoryPolicy({
+        ...policy,
+        ...patch,
+        projectId: currentProject.id,
+        updatedAt: new Date().toISOString(),
+      });
+      setPolicy(next);
+      setIntervalText(String(next.intervalChapters));
+      Toast.show({ type: 'success', text1: '更新策略已保存' });
+    },
+    [currentProject, policy],
+  );
+
+  const runRebuild = useCallback(
+    async (
+      mode: 'auto' | 'full' | 'legacy_bootstrap',
+      clearFirst = false,
+    ) => {
+      if (!currentProject || controllerRef.current) return;
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      try {
+        if (clearFirst) await db.clearStoryMemory(currentProject.id);
+        const result = await rebuildStoryMemory(currentProject.id, {
+          mode,
+          signal: controller.signal,
+          onProgress: setProgress,
+        });
+        setState(result.state);
+        Toast.show({ type: 'success', text1: '故事记忆已重建完成' });
+        await load();
+      } catch (error: any) {
+        if (error?.code !== 'MEMORY_REBUILD_CANCELLED') {
+          Toast.show({
+            type: 'error',
+            text1: '故事记忆重建失败',
+            text2: error?.message,
+          });
+        }
+        await load();
+      } finally {
+        controllerRef.current = null;
+        setProgress(null);
+      }
+    },
+    [currentProject, load],
+  );
+
+  const runCheckpointNow = useCallback(async () => {
     if (!currentProject || controllerRef.current) return;
     const controller = new AbortController();
     controllerRef.current = controller;
     try {
-      if (clearFirst) await db.clearStoryMemory(currentProject.id);
-      const result = await rebuildStoryMemory(currentProject.id, {
-        mode,
-        signal: controller.signal,
-        onProgress: setProgress,
-      });
+      const { withProjectMemoryLock } = await import(
+        '../services/storyMemory/storyMemoryService'
+      );
+      const { advanceStoryMemoryCheckpointsUnlocked } = await import(
+        '../services/storyMemory/storyMemoryCheckpointService'
+      );
+      const result = await withProjectMemoryLock(currentProject.id, () =>
+        advanceStoryMemoryCheckpointsUnlocked({
+          projectId: currentProject.id,
+          signal: controller.signal,
+        }),
+      );
       setState(result.state);
-      Toast.show({ type: 'success', text1: '故事记忆已重建完成' });
+      Toast.show({
+        type: 'success',
+        text1:
+          result.batchesApplied > 0
+            ? `长期记忆已整理到第 ${result.state.throughChapterPosition + 1} 章`
+            : '没有待整理章节',
+      });
+      await load();
     } catch (error: any) {
-      if (error?.code !== 'MEMORY_REBUILD_CANCELLED') {
-        Toast.show({ type: 'error', text1: '故事记忆重建失败', text2: error?.message });
+      if (error?.code !== 'MEMORY_CHECKPOINT_CANCELLED') {
+        Toast.show({
+          type: 'error',
+          text1: '长期记忆整理失败',
+          text2: error?.message,
+        });
       }
       await load();
     } finally {
       controllerRef.current = null;
-      setProgress(null);
     }
   }, [currentProject, load]);
 
-  if (loading) return <Screen><Header title="故事记忆" /><LoadingState label="正在读取故事状态..." /></Screen>;
-  if (!currentProject || !state) return <Screen><Header title="故事记忆" action={onClose ? <Button label="关闭" variant="ghost" onPress={onClose} /> : undefined} /><EmptyState title="请先选择小说项目" /></Screen>;
+  if (loading) {
+    return (
+      <Screen>
+        <Header title="故事记忆" />
+        <LoadingState label="正在读取故事状态..." />
+      </Screen>
+    );
+  }
+  if (!currentProject || !state || !policy) {
+    return (
+      <Screen>
+        <Header
+          title="故事记忆"
+          action={
+            onClose ? (
+              <Button label="关闭" variant="ghost" onPress={onClose} />
+            ) : undefined
+          }
+        />
+        <EmptyState title="请先选择小说项目" />
+      </Screen>
+    );
+  }
 
   const characters = Object.values(state.characters);
   const relationships = Object.values(state.relationships);
   const mainline = state.mainline;
+  const showLegacyBootstrap =
+    state.metadata.status === 'empty' ||
+    state.metadata.source === 'legacy_bootstrap';
+
   return (
     <Screen>
-      <Header title="故事记忆" subtitle={currentProject.name} action={onClose ? <Button label="关闭" variant="ghost" onPress={onClose} /> : undefined} />
+      <Header
+        title="故事记忆"
+        subtitle={currentProject.name}
+        action={
+          onClose ? (
+            <Button label="关闭" variant="ghost" onPress={onClose} />
+          ) : undefined
+        }
+      />
       <ScrollView contentContainerStyle={styles.content}>
         <Card>
-          <Text style={[styles.title, { color: theme.colors.textPrimary }]}>状态：{STATUS_LABEL[state.metadata.status]}</Text>
-          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>已构建到：{state.throughChapterPosition >= 0 ? `第 ${state.throughChapterPosition + 1} 章` : '无'}</Text>
-          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>Dirty 起点：{state.metadata.dirtyFromPosition == null ? '无' : `第 ${state.metadata.dirtyFromPosition + 1} 章`}</Text>
-          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>预估 Token：{state.metadata.estimatedTokens.toLocaleString()}</Text>
-          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>来源：{state.metadata.source === 'legacy_bootstrap' ? '旧摘要快速初始化' : '完整正文'}</Text>
-          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>更新时间：{state.metadata.updatedAt || '无'}</Text>
-          {state.metadata.lastError ? <Text style={styles.error}>最近错误：{state.metadata.lastError}</Text> : null}
+          <Text
+            style={[styles.title, { color: theme.colors.textPrimary }]}
+            accessibilityRole="header"
+          >
+            长期记忆：{STATUS_LABEL[state.metadata.status] || state.metadata.status}
+          </Text>
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            已整理到：
+            {state.throughChapterPosition >= 0
+              ? `第 ${state.throughChapterPosition + 1} 章`
+              : '无'}
+          </Text>
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            待整理：{pendingRange}
+          </Text>
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            更新方式：{describeStoryMemoryPolicy(policy)}
+          </Text>
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            预计下次：{nextTrigger}
+          </Text>
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            上下文覆盖：{pendingCount >= 0 ? '由近期正文桥接' : '完整'}
+          </Text>
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            需要重新整理的位置：
+            {state.metadata.dirtyFromPosition == null
+              ? '无'
+              : `第 ${state.metadata.dirtyFromPosition + 1} 章`}
+          </Text>
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            整理来源：
+            {state.metadata.source === 'legacy_bootstrap'
+              ? '旧摘要快速初始化'
+              : '章节正文'}
+          </Text>
+          <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+            更新时间：{formatLocalTime(state.metadata.updatedAt)}
+          </Text>
+          {state.metadata.lastError ? (
+            <Text style={styles.error}>最近错误：{state.metadata.lastError}</Text>
+          ) : null}
         </Card>
 
-        {progress ? <Card><Text style={[styles.title, { color: theme.colors.textPrimary }]}>重建进度 {progress.completedChapters}/{progress.totalChapters}</Text><Text style={[styles.meta, { color: theme.colors.textSecondary }]}>复用 {progress.reusedPatches} · 重新生成 {progress.regeneratedPatches}</Text><Button label="取消重建" variant="secondary" onPress={() => controllerRef.current?.abort()} /></Card> : null}
+        <Card>
+          <Text style={[styles.section, { color: theme.colors.textPrimary }]}>
+            更新策略
+          </Text>
+          {MODE_OPTIONS.map(option => (
+            <Button
+              key={option.mode}
+              label={`${policy.mode === option.mode ? '● ' : '○ '}${option.label}`}
+              variant={policy.mode === option.mode ? 'primary' : 'secondary'}
+              onPress={() => savePolicy({ mode: option.mode })}
+            />
+          ))}
+          {(policy.mode === 'smart' || policy.mode === 'fixed') && (
+            <View style={styles.row}>
+              <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+                固定间隔：每
+              </Text>
+              <TextInput
+                value={intervalText}
+                onChangeText={setIntervalText}
+                onEndEditing={() => {
+                  const n = Number(intervalText);
+                  if (Number.isFinite(n)) {
+                    savePolicy({ intervalChapters: n }).catch(() => {});
+                  }
+                }}
+                keyboardType="number-pad"
+                style={[
+                  styles.intervalInput,
+                  {
+                    color: theme.colors.textPrimary,
+                    borderColor: theme.colors.border,
+                  },
+                ]}
+                accessibilityLabel="检查点间隔章节数"
+              />
+              <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+                章
+              </Text>
+            </View>
+          )}
+          {policy.mode === 'smart' ? (
+            <View style={styles.row}>
+              <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+                关键章节立即整理
+              </Text>
+              <Switch
+                value={policy.updateOnKeyChapter}
+                onValueChange={value =>
+                  savePolicy({ updateOnKeyChapter: value })
+                }
+                accessibilityLabel="关键章节立即整理开关"
+              />
+            </View>
+          ) : null}
+        </Card>
+
+        {progress ? (
+          <Card>
+            <Text
+              style={[styles.title, { color: theme.colors.textPrimary }]}
+              accessibilityLiveRegion="polite"
+            >
+              重建进度 {progress.completedChapters}/{progress.totalChapters}
+            </Text>
+            <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+              复用 {progress.reusedPatches} · 重新生成 {progress.regeneratedPatches}
+            </Text>
+            <Button
+              label="取消重建"
+              variant="secondary"
+              onPress={() => controllerRef.current?.abort()}
+            />
+          </Card>
+        ) : null}
 
         <View style={styles.actions}>
-          <Button label="快速初始化" onPress={() => runRebuild('legacy_bootstrap')} />
-          <Button label={state.metadata.status === 'failed' ? '从失败章继续' : '继续重建'} variant="secondary" onPress={() => runRebuild('auto')} />
-          <Button label="完整重建" variant="secondary" onPress={() => runRebuild('full')} />
-          <Button label="清空并重建" variant="danger" onPress={() => Alert.alert('清空并重建', '将删除现有结构化记忆并从正文重建，章节正文不会删除。', [{ text: '取消', style: 'cancel' }, { text: '继续', style: 'destructive', onPress: () => runRebuild('full', true) }])} />
+          <Button
+            label="立即整理长期记忆"
+            onPress={runCheckpointNow}
+          />
+          <Button
+            label={showAdvanced ? '收起高级操作' : '高级操作'}
+            variant="secondary"
+            onPress={() => setShowAdvanced(value => !value)}
+          />
+          {showAdvanced ? (
+            <>
+              <Button
+                label="从上次失败处继续"
+                variant="secondary"
+                onPress={() => runRebuild('auto')}
+              />
+              <Button
+                label="从有效检查点重建"
+                variant="secondary"
+                onPress={() => runRebuild('auto')}
+              />
+              {showLegacyBootstrap ? (
+                <Button
+                  label="快速初始化"
+                  variant="secondary"
+                  onPress={() => runRebuild('legacy_bootstrap')}
+                />
+              ) : null}
+              <Button
+                label="清空并重建"
+                variant="danger"
+                onPress={() =>
+                  Alert.alert(
+                    '清空并重建',
+                    '将删除现有结构化记忆并从正文重建，章节正文不会删除。',
+                    [
+                      { text: '取消', style: 'cancel' },
+                      {
+                        text: '继续',
+                        style: 'destructive',
+                        onPress: () => runRebuild('full', true),
+                      },
+                    ],
+                  )
+                }
+              />
+            </>
+          ) : null}
         </View>
 
         <Card>
-          <Text style={[styles.section, { color: theme.colors.textPrimary }]}>登场人物（{characters.length}）</Text>
-          {characters.length ? characters.map(item => <Text key={item.id} style={[styles.item, { color: theme.colors.textSecondary }]}>• {item.canonicalName}｜{item.role || '身份未知'}｜{item.currentState.location || '位置未知'}｜目标：{item.currentState.currentGoal || '无'}｜{item.status}</Text>) : <Text style={[styles.item, { color: theme.colors.textSecondary }]}>无</Text>}
+          <Text style={[styles.section, { color: theme.colors.textPrimary }]}>
+            登场人物（{characters.length}）
+          </Text>
+          {characters.length ? (
+            characters.map(item => (
+              <Text
+                key={item.id}
+                style={[styles.item, { color: theme.colors.textSecondary }]}
+              >
+                • {item.canonicalName}｜{item.role || '身份未知'}｜
+                {item.currentState.location || '位置未知'}｜目标：
+                {item.currentState.currentGoal || '无'}｜
+                {item.status === 'active' ? '活跃' : item.status}
+              </Text>
+            ))
+          ) : (
+            <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
+              无
+            </Text>
+          )}
         </Card>
         <Card>
-          <Text style={[styles.section, { color: theme.colors.textPrimary }]}>人物关系（{relationships.length}）</Text>
-          {relationships.length ? relationships.map(item => <Text key={item.id} style={[styles.item, { color: theme.colors.textSecondary }]}>• {item.fromCharacterId} {item.direction === 'bidirectional' ? '↔' : '→'} {item.toCharacterId}｜{item.relationType}｜{item.currentState}</Text>) : <Text style={[styles.item, { color: theme.colors.textSecondary }]}>无</Text>}
+          <Text style={[styles.section, { color: theme.colors.textPrimary }]}>
+            人物关系（{relationships.length}）
+          </Text>
+          {relationships.length ? (
+            relationships.map(item => (
+              <Text
+                key={item.id}
+                style={[styles.item, { color: theme.colors.textSecondary }]}
+              >
+                • {characterName(state, item.fromCharacterId)}{' '}
+                {item.direction === 'bidirectional' ? '↔' : '→'}{' '}
+                {characterName(state, item.toCharacterId)}｜{item.relationType}｜
+                {item.currentState}
+              </Text>
+            ))
+          ) : (
+            <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
+              无
+            </Text>
+          )}
         </Card>
         <Card>
-          <Text style={[styles.section, { color: theme.colors.textPrimary }]}>故事主线</Text>
-          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>剧情弧：{mainline.currentArc?.name || '无'}</Text>
-          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>当前目标：{mainline.currentObjective || '无'}</Text>
-          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>活跃冲突：{Object.values(mainline.activeConflicts).map(item => item.title).join('、') || '无'}</Text>
-          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>未解决线索：{Object.values(mainline.openThreads).map(item => item.title).join('、') || '无'}</Text>
-          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>未兑现伏笔：{Object.values(mainline.foreshadowing).filter(item => item.status !== 'paid').map(item => item.setup).join('、') || '无'}</Text>
+          <Text style={[styles.section, { color: theme.colors.textPrimary }]}>
+            故事主线
+          </Text>
+          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
+            剧情弧：{mainline.currentArc?.name || '无'}
+          </Text>
+          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
+            当前目标：{mainline.currentObjective || '无'}
+          </Text>
+          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
+            活跃冲突：
+            {Object.values(mainline.activeConflicts)
+              .map(item => item.title)
+              .join('、') || '无'}
+          </Text>
+          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
+            未解决线索：
+            {Object.values(mainline.openThreads)
+              .map(item => item.title)
+              .join('、') || '无'}
+          </Text>
+          <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
+            未兑现伏笔：
+            {Object.values(mainline.foreshadowing)
+              .filter(item => item.status !== 'paid')
+              .map(item => item.setup)
+              .join('、') || '无'}
+          </Text>
         </Card>
       </ScrollView>
     </Screen>
@@ -128,4 +539,18 @@ const styles = StyleSheet.create({
   item: { fontSize: 13, lineHeight: 21, marginBottom: spacing.xs },
   error: { color: '#dc2626', fontSize: 12, marginTop: spacing.sm },
   actions: { gap: spacing.sm },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  intervalInput: {
+    minWidth: 48,
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    textAlign: 'center',
+  },
 });

@@ -5,6 +5,10 @@ const mockDb = {
   getContextConfig: jest.fn(),
   saveStoryMemoryUpdate: jest.fn(),
   markStoryMemoryDirty: jest.fn(),
+  updateChapter: jest.fn(),
+  finalizeChapterLocally: jest.fn(),
+  getStoryMemoryCheckpointSchedulerEnabled: jest.fn(async () => false),
+  getStructuredStoryMemoryEnabled: jest.fn(async () => true),
 };
 const mockCallLLMResult = jest.fn();
 
@@ -19,6 +23,13 @@ jest.mock('../src/services/database', () => ({
     mockDb.saveStoryMemoryUpdate(...args),
   markStoryMemoryDirty: (...args: unknown[]) =>
     mockDb.markStoryMemoryDirty(...args),
+  updateChapter: (...args: unknown[]) => mockDb.updateChapter(...args),
+  finalizeChapterLocally: (...args: any[]) =>
+    mockDb.finalizeChapterLocally(...args),
+  getStoryMemoryCheckpointSchedulerEnabled: () =>
+    mockDb.getStoryMemoryCheckpointSchedulerEnabled(),
+  getStructuredStoryMemoryEnabled: () =>
+    mockDb.getStructuredStoryMemoryEnabled(),
 }));
 
 jest.mock('../src/services/llm', () => ({
