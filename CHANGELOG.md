@@ -6,7 +6,22 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-No unreleased changes are currently recorded.
+### Changed
+
+- 故事记忆改为检查点架构：默认 `smart` 策略、目标间隔 3 章；到达条件时一次批量 LLM 请求处理整批章节，禁止积压后补跑 N 次逐章请求。
+- 章节定稿先本地成功；长期记忆失败不回滚正文、不覆盖旧检查点。
+- 生成上下文改为 Checkpoint + Pending Bridge + Seam，移除生成前无条件 `ensureStoryMemoryReady` 追平。
+- 检查点覆盖范围外的新章/修改为 pending，不再误标 dirty。
+
+### Added
+
+- Schema 16：`project_story_memory_policy`、`story_memory_batches`，含迁移、fresh schema、manifest 与备份恢复。
+- 批量检查点 prompt/校验/合并、coverage 规划、策略引擎与 Context Preview `story_memory_bridge` 诊断。
+- 故事记忆页：更新策略、待整理范围、人物名称映射、中文状态与本地化时间。
+
+### Tests
+
+- 新增 policy/coverage/30 章请求数证明、Schema 15→16 迁移、检查点合并与预算测试。
 
 ## [2.5.6] - 2026-07-19
 
