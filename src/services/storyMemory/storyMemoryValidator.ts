@@ -596,6 +596,201 @@ export function validatePatchEvidence(
   }
 }
 
+function longestCommonSubstringLength(left: string, right: string): number {
+  if (!left || !right) return 0;
+  let previous = new Array<number>(right.length + 1).fill(0);
+  let best = 0;
+  for (const leftCharacter of left) {
+    const current = new Array<number>(right.length + 1).fill(0);
+    for (let index = 1; index <= right.length; index += 1) {
+      if (leftCharacter === right[index - 1]) {
+        current[index] = previous[index - 1] + 1;
+        best = Math.max(best, current[index]);
+      }
+    }
+    previous = current;
+  }
+  return best;
+}
+
+function collectEvidenceContext(value: unknown, key = ''): string[] {
+  if (key === 'evidenceQuote' || /Ref$/u.test(key)) return [];
+  if (typeof value === 'string') {
+    const text = normalizeEvidence(value);
+    return text.length >= 2 ? [text] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(item => collectEvidenceContext(item, key));
+  }
+  if (isRecord(value)) {
+    return Object.entries(value).flatMap(([entryKey, entryValue]) =>
+      collectEvidenceContext(entryValue, entryKey),
+    );
+  }
+  return [];
+}
+
+function chapterEvidenceSegments(chapterContent: string): string[] {
+  const normalized = normalizeEvidence(chapterContent);
+  const units = normalized
+    .split(/(?<=[。！？；])/u)
+    .map(segment => segment.trim())
+    .filter(Boolean);
+  const segments: string[] = [];
+  for (const unit of units.length ? units : normalized ? [normalized] : []) {
+    if (unit.length <= 80) {
+      segments.push(unit);
+      continue;
+    }
+    for (let offset = 0; offset < unit.length; offset += 60) {
+      segments.push(unit.slice(offset, offset + 80));
+    }
+  }
+  return segments;
+}
+
+function findRecoverableEvidenceQuote(
+  operation: Record<string, unknown>,
+  chapterContent: string,
+): string | null {
+  const originalQuote =
+    typeof operation.evidenceQuote === 'string'
+      ? normalizeEvidence(operation.evidenceQuote)
+      : '';
+  const compactQuote = normalizeEvidenceForMatch(originalQuote);
+  if (!compactQuote) return null;
+  const context = collectEvidenceContext(operation).filter(
+    candidate => candidate !== originalQuote,
+  );
+  const segments = chapterEvidenceSegments(chapterContent);
+  let best:
+    | { segment: string; quoteMatch: number; contextMatch: number }
+    | undefined;
+  for (const segment of segments) {
+    const compactSegment = normalizeEvidenceForMatch(segment);
+    if (!compactSegment) continue;
+    const quoteMatch = longestCommonSubstringLength(
+      compactQuote,
+      compactSegment,
+    );
+    const contextMatch = context.reduce(
+      (maximum, candidate) =>
+        Math.max(
+          maximum,
+          longestCommonSubstringLength(
+            normalizeEvidenceForMatch(candidate),
+            compactSegment,
+          ),
+        ),
+      0,
+    );
+    if (
+      !best ||
+      quoteMatch * 4 + contextMatch >
+        best.quoteMatch * 4 + best.contextMatch
+    ) {
+      best = { segment, quoteMatch, contextMatch };
+    }
+  }
+  if (!best) return null;
+
+  const quoteRequired =
+    compactQuote.length >= 16
+      ? Math.ceil(compactQuote.length * 0.4)
+      : Math.max(4, Math.ceil(compactQuote.length * 0.55));
+  const contextRequired = Math.max(6, Math.ceil(compactQuote.length * 0.3));
+  if (
+    best.quoteMatch < quoteRequired &&
+    (best.contextMatch < contextRequired || best.contextMatch < 6)
+  ) {
+    return null;
+  }
+  return best.segment.slice(0, 80);
+}
+
+/**
+ * Last-resort grounding for provider paraphrases. It only runs after the
+ * normal model repair attempts have failed. A recovered quote is always an
+ * actual excerpt from the chapter; an operation with no defensible excerpt is
+ * removed instead of allowing an ungrounded fact into story memory.
+ */
+export function recoverPatchEvidence(
+  draft: ChapterMemoryPatchDraft,
+  chapterContent: string,
+): { recovered: number; dropped: number } {
+  let recovered = 0;
+  let dropped = 0;
+  const recoverList = <T extends { evidenceQuote: string }>(items: T[]): T[] =>
+    items.filter(item => {
+      if (
+        typeof item.evidenceQuote === 'string' &&
+        validateEvidenceQuote(chapterContent, item.evidenceQuote)
+      ) {
+        return true;
+      }
+      const quote = findRecoverableEvidenceQuote(item, chapterContent);
+      if (quote) {
+        item.evidenceQuote = quote;
+        recovered += 1;
+        return true;
+      }
+      dropped += 1;
+      return false;
+    });
+
+  draft.newCharacters = recoverList(draft.newCharacters);
+  draft.characterUpdates = recoverList(draft.characterUpdates);
+  draft.newRelationships = recoverList(draft.newRelationships);
+  draft.relationshipUpdates = recoverList(draft.relationshipUpdates);
+  draft.mainlinePatch.conflictUpserts = recoverList(
+    draft.mainlinePatch.conflictUpserts,
+  );
+  draft.mainlinePatch.threadOpens = recoverList(draft.mainlinePatch.threadOpens);
+  draft.mainlinePatch.threadUpdates = recoverList(
+    draft.mainlinePatch.threadUpdates,
+  );
+  draft.mainlinePatch.threadResolutions = recoverList(
+    draft.mainlinePatch.threadResolutions,
+  );
+  draft.mainlinePatch.foreshadowingUpserts = recoverList(
+    draft.mainlinePatch.foreshadowingUpserts,
+  );
+  draft.mainlinePatch.timelineAnchors = recoverList(
+    draft.mainlinePatch.timelineAnchors,
+  );
+  draft.mainlinePatch.completedBeats = recoverList(
+    draft.mainlinePatch.completedBeats,
+  );
+
+  const arc = draft.mainlinePatch.currentArcUpdate;
+  if (arc.action !== 'none' && !validateEvidenceQuote(chapterContent, arc.evidenceQuote)) {
+    const quote = findRecoverableEvidenceQuote(arc, chapterContent);
+    if (quote) {
+      arc.evidenceQuote = quote;
+      recovered += 1;
+    } else {
+      arc.action = 'none';
+      arc.arcRef = '';
+      arc.name = '';
+      arc.summary = '';
+      arc.evidenceQuote = '';
+      dropped += 1;
+    }
+  }
+  const objective = draft.mainlinePatch.currentObjective;
+  if (objective && !validateEvidenceQuote(chapterContent, objective.evidenceQuote)) {
+    const quote = findRecoverableEvidenceQuote(objective, chapterContent);
+    if (quote) {
+      objective.evidenceQuote = quote;
+      recovered += 1;
+    } else {
+      delete draft.mainlinePatch.currentObjective;
+      dropped += 1;
+    }
+  }
+  return { recovered, dropped };
+}
+
 export function validateEntityReferences(
   draft: ChapterMemoryPatchDraft,
   state: StoryMemoryState,
@@ -678,12 +873,14 @@ export function validateChapterMemoryPatch(
   value: unknown,
   state: StoryMemoryState,
   chapterContent: string,
+  options: { recoverEvidence?: boolean } = {},
 ): ChapterMemoryPatchDraft {
   validatePatchShape(value);
   normalizeOptionalPatchFields(value);
   normalizeDuplicateCharacterRefs(value);
   normalizeRelationshipCharacterRefs(value, state);
   validateEntityReferences(value, state);
+  if (options.recoverEvidence) recoverPatchEvidence(value, chapterContent);
   validatePatchEvidence(value, chapterContent);
   return value;
 }
