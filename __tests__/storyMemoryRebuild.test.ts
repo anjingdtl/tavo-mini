@@ -8,8 +8,10 @@ const mockDb = {
   saveStoryMemoryUpdate: jest.fn(),
   // Keep rebuild unit tests on the legacy chapter path.
   getStoryMemoryCheckpointSchedulerEnabled: jest.fn(async () => false),
-  listStoryMemoryBatches: jest.fn(async () => []),
-  saveStoryMemoryBatchUpdate: jest.fn(),
+  listStoryMemoryBatches: jest.fn(
+    async (_projectId?: number, _statuses?: string[]) => [],
+  ),
+  saveStoryMemoryBatchUpdate: jest.fn(async (_input?: unknown) => undefined),
 };
 const mockCallLLMResult = jest.fn();
 
