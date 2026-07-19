@@ -131,6 +131,44 @@ describe('story memory LLM patch service', () => {
     expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
   });
 
+  it('grounds a repeated paraphrased evidence quote after model repair is exhausted', async () => {
+    const invalid = createEmptyChapterMemoryPatch({
+      chapterId: 1,
+      chapterPosition: 0,
+      title: '第一章',
+    });
+    invalid.newCharacters.push({
+      tempRef: 'new_char_世恒',
+      canonicalName: '世恒',
+      aliases: [],
+      role: '联系人',
+      identity: '',
+      stableTraits: [],
+      initialState: {},
+      status: 'active',
+      evidenceQuote: '世恒联系好了他的两个好朋友，李毅和周志豪。',
+    });
+    const modelOutput = JSON.stringify(invalid);
+    mockCallLLMResult.mockResolvedValue({
+      ...response(modelOutput),
+      finishReason: 'stop',
+    });
+
+    const result = await generateValidatedChapterMemoryPatch({
+      chapter: {
+        ...chapter,
+        content: '世恒联系好了他的秘密联系人，李毅与周志豪。',
+      },
+      previousState: createEmptyStoryMemory(7),
+      memoryPatchMaxTokens: 1200,
+    });
+
+    expect(result.newCharacters[0].evidenceQuote).toBe(
+      '世恒联系好了他的秘密联系人，李毅与周志豪。',
+    );
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
+  });
+
   it('normalizes duplicate new-character refs without consuming a repair call', async () => {
     const twoPersonChapter = {
       ...chapter,
