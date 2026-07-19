@@ -34,6 +34,19 @@ export interface FinalizeChapterMemoryResult {
   statusMessage: string;
 }
 
+/** Keep already-covered later chapters when rebuilding after an older edit. */
+export function resolveDirtyRebuildThroughPosition(
+  checkpointThroughPosition: number,
+  finalizedChapterPosition: number,
+  scheduledThroughPosition: number | null,
+): number {
+  return Math.max(
+    checkpointThroughPosition,
+    finalizedChapterPosition,
+    scheduledThroughPosition ?? -1,
+  );
+}
+
 const projectLocks = new Map<number, Promise<void>>();
 
 export async function withProjectMemoryLock<T>(
@@ -495,9 +508,9 @@ export async function finalizeChapterMemory(
       options.legacyEveryChapter === true
         ? false
         : typeof (db as any).getStoryMemoryCheckpointSchedulerEnabled ===
-            'function'
-          ? await (db as any).getStoryMemoryCheckpointSchedulerEnabled()
-          : true;
+          'function'
+        ? await (db as any).getStoryMemoryCheckpointSchedulerEnabled()
+        : true;
 
     if (!schedulerEnabled) {
       // Compatibility path: every chapter still uses v1 patch generation.
@@ -513,6 +526,7 @@ export async function finalizeChapterMemory(
     const { advanceStoryMemoryCheckpointsUnlocked } = await import(
       './storyMemoryCheckpointService'
     );
+    const { rebuildStoryMemoryUnlocked } = await import('./storyMemoryRebuild');
 
     const contextConfig = await db.getContextConfig();
     const policy =
@@ -532,7 +546,9 @@ export async function finalizeChapterMemory(
     }
 
     const allChapters = await db.getChaptersByProject(freshChapter.project_id);
-    const record = await db.ensureProjectStoryMemoryRow(freshChapter.project_id);
+    const record = await db.ensureProjectStoryMemoryRow(
+      freshChapter.project_id,
+    );
     const pending = listPendingChapters(
       allChapters.filter(
         item =>
@@ -584,8 +600,40 @@ export async function finalizeChapterMemory(
     }
 
     try {
-      const throughPosition =
-        due.throughPosition ?? freshChapter.position;
+      const throughPosition = resolveDirtyRebuildThroughPosition(
+        record.state.throughChapterPosition,
+        freshChapter.position,
+        due.throughPosition,
+      );
+      if (record.status === 'dirty') {
+        const rebuilt = await rebuildStoryMemoryUnlocked(
+          freshChapter.project_id,
+          {
+            mode: 'auto',
+            throughPosition,
+            signal: options.signal,
+          },
+        );
+        const pendingRemaining = allChapters.filter(
+          item =>
+            Boolean(item.content?.trim()) &&
+            (item.status === 'final' || item.finalized_at != null) &&
+            item.position > rebuilt.state.throughChapterPosition,
+        ).length;
+        return {
+          state: rebuilt.state,
+          patchId: rebuilt.state.metadata.lastAppliedPatchId || '',
+          episodicMemoryText: freshChapter.memory_summary || '',
+          reused: false,
+          chapterFinalized: true,
+          checkpointAttempted: true,
+          checkpointUpdated: rebuilt.completedChapters > 0,
+          pendingCount: pendingRemaining,
+          statusMessage: `长期记忆已从变更位置重建到第 ${
+            rebuilt.state.throughChapterPosition + 1
+          } 章。`,
+        };
+      }
       const advanced = await advanceStoryMemoryCheckpointsUnlocked({
         projectId: freshChapter.project_id,
         throughPosition,
@@ -608,12 +656,23 @@ export async function finalizeChapterMemory(
       // Chapter stays final; old checkpoint preserved.
       const message =
         error instanceof Error ? error.message : '长期记忆整理失败';
-      await db.setStoryMemoryBuildStatus(
-        freshChapter.project_id,
-        record.status === 'dirty' ? 'dirty' : record.status,
-        record.dirtyFromPosition,
-        message,
-      );
+      if (
+        error instanceof StoryMemoryError &&
+        error.code === 'MEMORY_BASE_FINGERPRINT_MISMATCH'
+      ) {
+        await db.markStoryMemoryDirty(
+          freshChapter.project_id,
+          freshChapter.position,
+          message,
+        );
+      } else {
+        await db.setStoryMemoryBuildStatus(
+          freshChapter.project_id,
+          record.status === 'dirty' ? 'dirty' : record.status,
+          record.dirtyFromPosition,
+          message,
+        );
+      }
       return {
         state: record.state,
         patchId: record.state.metadata.lastAppliedPatchId || '',
