@@ -10,6 +10,10 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 - dirty 重建时作废 `through >= dirty_from` 的已 applied 检查点批次，并在 dirty 路径禁止复用旧批次链，避免只重生变更批、后续仍复用旧世界状态；检查点 prompt 明确要求正文改写物品/线索时用 `removePossessions` / `addPossessions` 等纠正最终状态。
 
+### Tests
+
+- 新增 repository 级回归：`updateChapter` / `deleteChapter` → `markStoryMemoryDirtyIfCovered` → 作废 applied 批次；场景 C 模拟器签收完成（产品与自动化均为 PASS）。
+
 ## [2.5.6] - 2026-07-19
 
 ### Added
