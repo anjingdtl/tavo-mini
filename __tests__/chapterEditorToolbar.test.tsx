@@ -307,7 +307,7 @@ describe('ChapterEditor toolbar', () => {
       expect.objectContaining({ content: '' }),
     );
     expect(alertSpy).toHaveBeenCalledWith(
-      '故事记忆更新失败',
+      '定稿失败',
       expect.stringContaining('模型不可用'),
     );
     alertSpy.mockRestore();

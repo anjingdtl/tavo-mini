@@ -176,6 +176,22 @@ export async function setStructuredStoryMemoryEnabled(
   await setSetting('structured_story_memory_enabled', String(enabled));
 }
 
+/** Default true: use checkpoint batch scheduler instead of every-chapter patch. */
+export async function getStoryMemoryCheckpointSchedulerEnabled(): Promise<boolean> {
+  return (
+    (await getSetting('story_memory_checkpoint_scheduler_enabled')) !== 'false'
+  );
+}
+
+export async function setStoryMemoryCheckpointSchedulerEnabled(
+  enabled: boolean,
+): Promise<void> {
+  await setSetting(
+    'story_memory_checkpoint_scheduler_enabled',
+    String(enabled),
+  );
+}
+
 export async function getVoiceConfig(): Promise<VoiceConfig> {
   const raw = await getSetting('voice_config');
   if (!raw) return DEFAULT_VOICE_CONFIG;
