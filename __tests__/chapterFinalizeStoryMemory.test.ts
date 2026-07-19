@@ -42,6 +42,7 @@ import {
 import {
   finalizeChapterMemory,
   renderEpisodicMemoryText,
+  resolveDirtyRebuildThroughPosition,
 } from '../src/services/storyMemory/storyMemoryService';
 
 const chapter = {
@@ -194,11 +195,21 @@ describe('chapter structured-memory finalization', () => {
   it('omits empty episodic sections', () => {
     expect(
       renderEpisodicMemoryText({
-        brief: '', keywords: [], events: [], characterChanges: [],
-        relationshipChanges: [], mainlineChanges: [], newThreads: [],
+        brief: '',
+        keywords: [],
+        events: [],
+        characterChanges: [],
+        relationshipChanges: [],
+        mainlineChanges: [],
+        newThreads: [],
         resolvedThreads: [],
       }),
     ).toBe('');
+  });
+
+  it('keeps later covered chapters in scope when an older chapter becomes dirty', () => {
+    expect(resolveDirtyRebuildThroughPosition(4, 2, null)).toBe(4);
+    expect(resolveDirtyRebuildThroughPosition(4, 5, 5)).toBe(5);
   });
 
   it('falls back to chapter content after removing a markdown heading', () => {

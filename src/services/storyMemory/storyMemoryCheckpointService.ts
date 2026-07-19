@@ -90,7 +90,9 @@ function fingerprintBatchSource(chapters: Chapter[]): string {
     ordered
       .map(
         chapter =>
-          `${chapter.id}:${chapter.position}:${fingerprintChapterSource(chapter)}`,
+          `${chapter.id}:${chapter.position}:${fingerprintChapterSource(
+            chapter,
+          )}`,
       )
       .join('|'),
   );
@@ -311,6 +313,12 @@ export async function runStoryMemoryCheckpointBatch(input: {
   projectId: number;
   chapters: Chapter[];
   previousState: StoryMemoryState;
+  /**
+   * Fingerprint currently persisted in project_story_memory. During a rebuild
+   * this can differ from previousState because the latter comes from an older
+   * snapshot. The repository uses it as the atomic compare-and-swap guard.
+   */
+  expectedPersistedFingerprint?: string;
   memoryPatchMaxTokens?: number;
   createSnapshot?: boolean;
   signal?: AbortSignal;
@@ -368,7 +376,9 @@ export async function runStoryMemoryCheckpointBatch(input: {
     };
   });
   await db.saveStoryMemoryBatchUpdate({
-    previousFingerprint: input.previousState.metadata.stateFingerprint,
+    previousFingerprint:
+      input.expectedPersistedFingerprint ||
+      input.previousState.metadata.stateFingerprint,
     state: applied.state,
     batch: applied.resolvedBatch,
     chapterSummaries: chapterSummaryTexts,
@@ -434,8 +444,9 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
       const policy = await (db as any).ensureStoryMemoryPolicy(input.projectId);
       preferredBatch = policy?.intervalChapters || 3;
     } catch {
-      preferredBatch = createDefaultStoryMemoryPolicy(input.projectId)
-        .intervalChapters;
+      preferredBatch = createDefaultStoryMemoryPolicy(
+        input.projectId,
+      ).intervalChapters;
     }
   }
   const batches = splitCheckpointBatches(pending, preferredBatch);
@@ -457,8 +468,18 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
       state = result.state;
       batchesApplied += 1;
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : '检查点更新失败';
+      const message = error instanceof Error ? error.message : '检查点更新失败';
+      if (
+        error instanceof StoryMemoryError &&
+        error.code === 'MEMORY_BASE_FINGERPRINT_MISMATCH'
+      ) {
+        await db.markStoryMemoryDirty(
+          input.projectId,
+          batchChapters[0]?.position ?? state.throughChapterPosition + 1,
+          message,
+        );
+        throw error;
+      }
       await db.setStoryMemoryBuildStatus(
         input.projectId,
         record.status === 'dirty' ? 'dirty' : 'failed',

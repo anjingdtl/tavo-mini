@@ -29,6 +29,7 @@ import {
   getChapterMemoryPatch,
   getProjectStoryMemory,
   markStoryMemoryDirty,
+  saveStoryMemoryBatchUpdate,
   saveStoryMemoryUpdate,
 } from '../src/data/repositories/storyMemoryRepository';
 
@@ -82,7 +83,9 @@ describe('story memory repository', () => {
         source_fingerprint: 'source',
         base_memory_fingerprint: result.resolvedPatch.baseMemoryFingerprint,
         result_memory_fingerprint: result.resolvedPatch.resultMemoryFingerprint,
-        episodic_summary_json: JSON.stringify(result.resolvedPatch.episodicSummary),
+        episodic_summary_json: JSON.stringify(
+          result.resolvedPatch.episodicSummary,
+        ),
         patch_json: JSON.stringify(result.resolvedPatch.normalizedPatch),
         estimated_tokens: 10,
         status: 'applied',
@@ -135,7 +138,13 @@ describe('story memory repository', () => {
     expect(mockExecute).toHaveBeenCalledWith(
       mockDatabase,
       expect.stringContaining('INSERT OR IGNORE INTO project_story_memory'),
-      expect.arrayContaining([7, expect.any(String), expect.any(Number), expect.any(String), 2]),
+      expect.arrayContaining([
+        7,
+        expect.any(String),
+        expect.any(Number),
+        expect.any(String),
+        2,
+      ]),
     );
   });
 
@@ -174,17 +183,58 @@ describe('story memory repository', () => {
     });
     expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
     const statements = mockExecuteTransaction.mock.calls[0][1];
-    expect(statements.map((item: { sql: string }) => item.sql).join('\n')).toEqual(
-      expect.stringContaining('chapter_memory_patches'),
+    expect(
+      statements.map((item: { sql: string }) => item.sql).join('\n'),
+    ).toEqual(expect.stringContaining('chapter_memory_patches'));
+    expect(
+      statements.map((item: { sql: string }) => item.sql).join('\n'),
+    ).toEqual(expect.stringContaining('project_story_memory'));
+    expect(
+      statements.map((item: { sql: string }) => item.sql).join('\n'),
+    ).toEqual(expect.stringContaining('UPDATE chapters SET memory_summary'));
+    expect(
+      statements.map((item: { sql: string }) => item.sql).join('\n'),
+    ).toEqual(expect.stringContaining('story_memory_snapshots'));
+  });
+
+  it('guards a batch update with an atomic persisted-fingerprint check', async () => {
+    const state = createEmptyStoryMemory(7);
+    state.metadata.stateFingerprint = 'result-fingerprint';
+    await saveStoryMemoryBatchUpdate({
+      previousFingerprint: 'persisted-before-rebuild',
+      state,
+      batch: {
+        schemaVersion: 2,
+        batchId: 'batch-1',
+        projectId: 7,
+        fromChapterId: 1,
+        fromPosition: 0,
+        throughChapterId: 3,
+        throughPosition: 2,
+        sourceFingerprint: 'source',
+        baseStateFingerprint: 'snapshot-base',
+        resultStateFingerprint: 'result-fingerprint',
+        patch: {} as any,
+        chapterSummaries: [],
+        estimatedTokens: 10,
+        status: 'applied',
+        lastError: '',
+        generatedAt: '2026-07-18T00:00:00.000Z',
+        appliedAt: '2026-07-18T00:00:00.000Z',
+      },
+      chapterSummaries: [],
+      createSnapshot: false,
+    });
+
+    expect(mockOne).not.toHaveBeenCalled();
+    const first = mockExecuteTransaction.mock.calls[0][1][0];
+    expect(first.sql).toContain(
+      'SELECT state_fingerprint FROM project_story_memory',
     );
-    expect(statements.map((item: { sql: string }) => item.sql).join('\n')).toEqual(
-      expect.stringContaining('project_story_memory'),
-    );
-    expect(statements.map((item: { sql: string }) => item.sql).join('\n')).toEqual(
-      expect.stringContaining('UPDATE chapters SET memory_summary'),
-    );
-    expect(statements.map((item: { sql: string }) => item.sql).join('\n')).toEqual(
-      expect.stringContaining('story_memory_snapshots'),
+    expect(first.sql).toContain("status <> 'dirty'");
+    expect(first.sql).toContain('ELSE NULL');
+    expect(first.params).toEqual(
+      expect.arrayContaining([7, 'persisted-before-rebuild', 'snapshot-base']),
     );
   });
 
