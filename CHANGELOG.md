@@ -8,6 +8,18 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 No unreleased changes are currently recorded.
 
+## [2.5.6] - 2026-07-19
+
+### Fixed
+
+- 定稿遇到模型把 `evidenceQuote` 轻微改写时，自动从当前章节正文恢复为真实连续摘录；无法安全定位的条目会被忽略，避免整章因单条证据阻塞。
+- 定稿前重新读取自动保存后的章节，避免使用旧的编辑器快照覆盖最新正文；同步阻止重复点击触发并行定稿。
+
+### Tests
+
+- 新增证据恢复、无依据证据拒绝和定稿闭包竞态回归测试。
+- 在 Android API 37 x86_64 模拟器执行 DeepSeek 多章定稿与全量 Jest、类型检查、Lint 回归。
+
 ## [2.5.5] - 2026-07-18
 
 ### Fixed

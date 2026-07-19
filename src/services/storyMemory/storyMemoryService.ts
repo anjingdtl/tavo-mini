@@ -60,6 +60,7 @@ export function parseAndValidateMemoryPatch(
   output: string,
   previousState: StoryMemoryState,
   chapterContent: string,
+  options: { recoverEvidence?: boolean } = {},
 ): ChapterMemoryPatchDraft {
   const json = extractJSON(output);
   if (!json) {
@@ -77,7 +78,12 @@ export function parseAndValidateMemoryPatch(
       '模型返回的记忆补丁 JSON 无法解析。',
     );
   }
-  return validateChapterMemoryPatch(parsed, previousState, chapterContent);
+  return validateChapterMemoryPatch(
+    parsed,
+    previousState,
+    chapterContent,
+    options,
+  );
 }
 
 const MIN_MEMORY_PATCH_OUTPUT_TOKENS = 2400;
@@ -229,6 +235,22 @@ export async function generateValidatedChapterMemoryPatch(
           input.chapter.content,
         );
       } catch (finalError) {
+        if (
+          finalError instanceof StoryMemoryError &&
+          finalError.code === 'MEMORY_EVIDENCE_NOT_FOUND'
+        ) {
+          try {
+            return parseAndValidateMemoryPatch(
+              finalResult.text || '',
+              input.previousState,
+              input.chapter.content,
+              { recoverEvidence: true },
+            );
+          } catch {
+            // Keep the precise model/validation error below when recovery
+            // cannot ground or safely discard the offending operation.
+          }
+        }
         if (finalResult.finishReason === 'length') {
           throw new StoryMemoryError(
             'MEMORY_PATCH_INVALID_JSON',
