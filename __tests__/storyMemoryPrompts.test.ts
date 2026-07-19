@@ -1,7 +1,13 @@
 import { createEmptyStoryMemory } from '../src/services/storyMemory/storyMemoryDefaults';
 import {
+  buildStoryMemoryCheckpointMessages,
+  buildStoryMemoryCheckpointRepairMessages,
+  buildStoryMemoryCheckpointRetryMessages,
+  buildStoryMemoryFreshRetryMessages,
   buildStoryMemoryPatchMessages,
   buildStoryMemoryRepairMessages,
+  compactState,
+  STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT,
   STORY_MEMORY_SYSTEM_PROMPT,
 } from '../src/services/storyMemory/storyMemoryPrompts';
 
@@ -11,7 +17,7 @@ const chapter = {
   position: 2,
   title: '雨夜钟楼',
   synopsis: '发现暗门',
-  content: '林岚推开钟楼暗门。',
+  content: '林岚推开钟楼暗门。石璐在门外守夜。',
   status: 'final' as const,
   summary_json: null,
   created_at: '',
@@ -27,21 +33,52 @@ describe('story memory prompts', () => {
     expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('new_char_石璐');
     expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('每个临时引用必须唯一');
     expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('不要输出 Markdown');
+    expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('人物抽取硬性要求');
+    expect(STORY_MEMORY_SYSTEM_PROMPT).toContain('newCharacters');
   });
 
-  it('includes current state, full chapter content, and strict schema', () => {
-    const messages = buildStoryMemoryPatchMessages(
-      chapter,
-      createEmptyStoryMemory(7),
-    );
+  it('includes current state, full chapter content, roster, and strict schema', () => {
+    const state = createEmptyStoryMemory(7);
+    state.characters.char_x = {
+      id: 'char_x',
+      canonicalName: '周恪',
+      aliases: [],
+      role: '',
+      immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+      currentState: {
+        location: '',
+        physicalState: '',
+        emotionalState: '',
+        currentGoal: '',
+        knowledge: [],
+        possessions: [],
+        secrets: [],
+      },
+      status: 'active',
+      firstSeenChapterId: 1,
+      firstSeenPosition: 0,
+      lastChangedChapterId: 1,
+      lastChangedPosition: 0,
+      evidenceChapterIds: [1],
+    };
+    const messages = buildStoryMemoryPatchMessages(chapter, state);
     expect(messages[1].content).toContain('林岚推开钟楼暗门');
     expect(messages[1].content).toContain('newCharacters');
     expect(messages[1].content).toContain('canonicalName');
     expect(messages[1].content).toContain('每条关系必须连接两个不同');
     expect(messages[1].content).toContain('throughChapterPosition');
+    expect(messages[1].content).toContain('已知人物名册');
+    expect(messages[1].content).toContain('周恪');
+    expect(messages[1].content).toContain('人物字段优先');
+    // newCharacters should appear before episodicSummary in schema block
+    const schemaIdx = messages[1].content.indexOf('【严格输出范式');
+    const slice = messages[1].content.slice(schemaIdx);
+    expect(slice.indexOf('newCharacters')).toBeLessThan(
+      slice.indexOf('episodicSummary'),
+    );
   });
 
-  it('asks repair to preserve facts and fix only validation errors', () => {
+  it('asks repair to fix evidence without dropping characters', () => {
     const initial = buildStoryMemoryPatchMessages(
       chapter,
       createEmptyStoryMemory(7),
@@ -51,7 +88,87 @@ describe('story memory prompts', () => {
       '{bad',
       'JSON 无效',
     );
-    expect(repaired.at(-1)?.content).toContain('不要重新创作或增加事实');
+    expect(repaired.at(-1)?.content).toContain('不要重新创作剧情');
+    expect(repaired.at(-1)?.content).toContain('禁止通过删除 newCharacters');
     expect(repaired.at(-1)?.content).toContain('JSON 无效');
+  });
+
+  it('checkpoint prompts define net-change without omitting cast', () => {
+    expect(STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT).toContain('净变化');
+    expect(STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT).toContain(
+      '不指：可以省略本批新出现的人物',
+    );
+    expect(STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT).toContain(
+      '人物抽取硬性要求',
+    );
+    expect(STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT).toContain(
+      'newCharacters → characterUpdates',
+    );
+
+    const state = createEmptyStoryMemory(1);
+    const chapters = [
+      { ...chapter, id: 1, position: 0, content: '林岚出场。' },
+      { ...chapter, id: 2, position: 1, content: '周恪递地图。' },
+      { ...chapter, id: 3, position: 2, content: '两人会合。' },
+    ];
+    const messages = buildStoryMemoryCheckpointMessages(chapters as any, state);
+    const user = messages[1].content;
+    expect(user).toContain('已知人物名册');
+    expect(user).toContain('本批次范围');
+    expect(user).toContain('林岚出场');
+    expect(user).toContain('周恪递地图');
+    const schemaIdx = user.indexOf('【严格输出范式');
+    const slice = user.slice(schemaIdx);
+    expect(slice.indexOf('newCharacters')).toBeLessThan(
+      slice.indexOf('chapterSummaries'),
+    );
+  });
+
+  it('checkpoint repair/retry forbid dropping newCharacters to shorten output', () => {
+    const base = buildStoryMemoryCheckpointMessages(
+      [chapter as any],
+      createEmptyStoryMemory(1),
+    );
+    const repair = buildStoryMemoryCheckpointRepairMessages(
+      base,
+      '{}',
+      '证据无效',
+    );
+    expect(repair.at(-1)?.content).toContain('禁止删除 newCharacters');
+    const retry = buildStoryMemoryCheckpointRetryMessages(base, '截断');
+    expect(retry.at(-1)?.content).toContain('不要为了缩短输出而省略 newCharacters');
+    const fresh = buildStoryMemoryFreshRetryMessages(base, '截断');
+    expect(fresh.at(-1)?.content).toContain('不得为缩短输出而漏掉具名新人物');
+  });
+
+  it('compactState exposes roster and character count', () => {
+    const state = createEmptyStoryMemory(9);
+    state.characters.a = {
+      id: 'a',
+      canonicalName: '林岚',
+      aliases: ['小岚'],
+      role: '调查员',
+      immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+      currentState: {
+        location: '钟楼',
+        physicalState: '',
+        emotionalState: '',
+        currentGoal: '',
+        knowledge: [],
+        possessions: [],
+        secrets: [],
+      },
+      status: 'active',
+      firstSeenChapterId: 1,
+      firstSeenPosition: 0,
+      lastChangedChapterId: 1,
+      lastChangedPosition: 0,
+      evidenceChapterIds: [1],
+    };
+    const compact = compactState(state);
+    expect(compact).toContain('knownCharacterCount');
+    expect(compact).toContain('characterRoster');
+    expect(compact).toContain('林岚');
+    expect(compact).toContain('小岚');
   });
 });
