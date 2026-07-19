@@ -14,7 +14,6 @@ import { retrieveNoteFragments, type RetrievalQuery } from './noteRetriever';
 import {
   buildPendingBridgeText,
   excludeRawFromEpisodicCandidates,
-  planStoryMemoryCoverage,
 } from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
 import { prepareStoryMemoryForGeneration } from './storyMemory/storyMemoryPrepare';
