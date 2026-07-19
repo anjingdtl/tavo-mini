@@ -87,10 +87,40 @@ describe('writing context enhancements', () => {
   });
 
   test('builds outline context from three recent chapters and relevant memory summaries', async () => {
+    // Checkpoint covers chapter 1; pending bridge is chapters 2-4 only.
+    // Chapter 1 full text must not re-enter the bridge; its episodic summary may.
     jest.doMock('../src/services/database', () => ({
       getCharactersByProject: jest.fn(async () => []),
       getWorldbookEntriesByProject: jest.fn(async () => []),
       getNotesByProject: jest.fn(async () => []),
+      getProjectStoryMemory: jest.fn(async () => ({
+        status: 'clean',
+        dirtyFromPosition: null,
+        lastError: '',
+        state: {
+          throughChapterPosition: 0,
+          throughChapterId: 1,
+          characters: {},
+          relationships: {},
+          mainline: {
+            currentArc: null,
+            currentObjective: '',
+            activeConflicts: {},
+            openThreads: {},
+            foreshadowing: {},
+            timelineAnchors: {},
+            recentCompletedBeats: [],
+            recentResolvedThreads: [],
+            archiveDigest: '',
+          },
+          metadata: {
+            status: 'clean',
+            estimatedTokens: 10,
+            dirtyFromPosition: null,
+            lastError: '',
+          },
+        },
+      })),
       getChaptersByProject: jest.fn(async () => [
         {
           id: 1,
@@ -124,8 +154,11 @@ describe('writing context enhancements', () => {
         summaryBudgetTokens: 20000,
         memoryTopK: 2,
         recentChapterCount: 3,
+        storyStateBudgetTokens: 2000,
       },
       7,
+      undefined,
+      { storyMemoryMode: 'preview' },
     );
     const text = messages.map((message: any) => message.content).join('\n');
 
