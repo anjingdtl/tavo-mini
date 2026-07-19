@@ -171,13 +171,14 @@ dist/apk/                         本地 APK 交付目录
 - TTS 的可用音色、后台行为和性能受 Android 版本及设备厂商实现影响。
 - API 37 x86_64 模拟器会报告部分原生库的 16KB page-size/RELRO 兼容提示；ARM64 物理设备发布前仍需补验。
 - V2.5.6 已完成 x86_64 模拟器上的检查点架构 30 章多人物多线验收（11 人物 / 25 关系 / 10 批次 / through=29 clean）；arm64 真机与本地 GGUF 长上下文仍需专项验收。
-- dirty 重建已修复“变更批重生后仍复用后续旧批次”的问题（作废 applied 批次 + dirty 路径禁止 reuse + 矛盾事实 prompt）；首轮事实替换仍依赖模型质量，模拟器终验记录见 `test-logs/story-memory-emulator-final/EMULATOR-VALIDATION-REPORT.md`（本地产物）。
+- dirty 重建已修复「变更批重生后仍复用后续旧批次」的问题（作废 applied 批次 + dirty 路径禁止 reuse + 矛盾事实 prompt）。场景 C（改已覆盖章 → dirty → 立即整理 → 新事实进长期记忆）在 x86_64 模拟器上产品与自动化均为 **PASS**；仓库回归覆盖真实路径 `updateChapter` / `deleteChapter` → `markStoryMemoryDirtyIfCovered` → 作废 applied 批次。本地证据见 `test-logs/story-memory-scenario-c-signoff/` 与 `test-logs/story-memory-emulator-final/`（均 gitignore）。
+- 残余风险：模拟器场景 C 仍用 SQL 等价方式触发 dirty（中文 IME 纯 UI 改正文未重跑）；章节正文写入与 markDirty 尚未合并为同一 SQLite 事务。
 
 ## English summary
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.6** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.6** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. Dirty rebuild invalidates applied batches from the edit point so later checkpoints cannot reuse a pre-edit world. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 
