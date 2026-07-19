@@ -6,6 +6,10 @@ const mockDb = {
   setStoryMemoryBuildStatus: jest.fn(),
   getChapterMemoryPatch: jest.fn(),
   saveStoryMemoryUpdate: jest.fn(),
+  // Keep rebuild unit tests on the legacy chapter path.
+  getStoryMemoryCheckpointSchedulerEnabled: jest.fn(async () => false),
+  listStoryMemoryBatches: jest.fn(async () => []),
+  saveStoryMemoryBatchUpdate: jest.fn(),
 };
 const mockCallLLMResult = jest.fn();
 
@@ -23,6 +27,12 @@ jest.mock('../src/services/database', () => ({
     mockDb.getChapterMemoryPatch(...args),
   saveStoryMemoryUpdate: (...args: unknown[]) =>
     mockDb.saveStoryMemoryUpdate(...args),
+  getStoryMemoryCheckpointSchedulerEnabled: () =>
+    mockDb.getStoryMemoryCheckpointSchedulerEnabled(),
+  listStoryMemoryBatches: (projectId: number, statuses?: string[]) =>
+    mockDb.listStoryMemoryBatches(projectId, statuses),
+  saveStoryMemoryBatchUpdate: (input: unknown) =>
+    mockDb.saveStoryMemoryBatchUpdate(input),
 }));
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (...args: unknown[]) => mockCallLLMResult(...args),
