@@ -6,6 +6,7 @@ import {
   validateChapterMemoryPatch,
   validateEvidenceQuote,
   validateEntityReferences,
+  recoverPatchEvidence,
 } from '../src/services/storyMemory/storyMemoryValidator';
 
 describe('story memory patch validation', () => {
@@ -64,6 +65,50 @@ describe('story memory patch validation', () => {
         'Agent9 gives Shilu Clue9 at Location9.',
       ),
     ).toThrow('证据“特工九在九号地点交出了线索”无法在章节正文中定位');
+  });
+
+  it('grounds a provider paraphrase onto a real chapter sentence during recovery', () => {
+    const state = createEmptyStoryMemory(7);
+    const patch = createEmptyChapterMemoryPatch({
+      chapterId: 1,
+      chapterPosition: 0,
+      title: '第一章',
+    });
+    patch.newCharacters.push({
+      tempRef: 'new_char_世恒',
+      canonicalName: '世恒',
+      aliases: [],
+      role: '联系人',
+      identity: '',
+      stableTraits: [],
+      initialState: {},
+      status: 'active',
+      evidenceQuote: '世恒联系好了他的两个好朋友，李毅和周志豪。',
+    });
+
+    expect(() =>
+      validateChapterMemoryPatch(
+        patch,
+        state,
+        '世恒联系好了他的秘密联系人，李毅与周志豪。',
+      ),
+    ).toThrow('无法在章节正文中定位');
+
+    const result = recoverPatchEvidence(
+      patch,
+      '世恒联系好了他的秘密联系人，李毅与周志豪。',
+    );
+    expect(result.recovered).toBe(1);
+    expect(patch.newCharacters[0].evidenceQuote).toBe(
+      '世恒联系好了他的秘密联系人，李毅与周志豪。',
+    );
+    expect(() =>
+      validateChapterMemoryPatch(
+        patch,
+        state,
+        '世恒联系好了他的秘密联系人，李毅与周志豪。',
+      ),
+    ).not.toThrow();
   });
 
   it('rejects unknown references and immutable profile changes without a reason', () => {

@@ -65,6 +65,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   latestChapterRef.current = chapter;
   const [focusMode, setFocusMode] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const finalizingRef = useRef(false);
   const [clearing, setClearing] = useState(false);
   const clearingRef = useRef(false);
 
@@ -75,17 +76,24 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   );
 
   const finalizeChapter = useCallback(async () => {
-    if (!chapter || finalizing) return;
+    const currentChapter = latestChapterRef.current;
+    if (!currentChapter || finalizingRef.current) return;
+    finalizingRef.current = true;
     setFinalizing(true);
     try {
       await autoSaveRef.current.flush();
-      await db.updateChapter(chapter.id, {
-        title: chapter.title,
-        synopsis: chapter.synopsis,
-        content: chapter.content,
+      // Re-read after flushing the debounced write. Using the render-time
+      // chapter object here could overwrite the just-saved body with a stale
+      // snapshot, which then makes evidence validation fail intermittently.
+      const savedChapter = await db.getChapterById(currentChapter.id);
+      if (!savedChapter) throw new Error('章节不存在。');
+      await db.updateChapter(savedChapter.id, {
+        title: savedChapter.title,
+        synopsis: savedChapter.synopsis,
+        content: savedChapter.content,
       });
       setSaveStatus('saved');
-      const result = await finalizeChapterMemory(chapter.id);
+      const result = await finalizeChapterMemory(savedChapter.id);
       await loadChapter();
       Toast.show({
         type: 'success',
@@ -100,9 +108,10 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         }`,
       );
     } finally {
+      finalizingRef.current = false;
       setFinalizing(false);
     }
-  }, [autoSaveRef, chapter, finalizing, loadChapter, setSaveStatus]);
+  }, [autoSaveRef, loadChapter, setSaveStatus]);
 
   const finishClearing = useCallback(() => {
     clearingRef.current = false;
