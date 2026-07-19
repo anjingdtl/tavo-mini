@@ -1,9 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Alert,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
@@ -63,10 +68,7 @@ function shortId(id: string): string {
   return `${id.slice(0, 6)}…${id.slice(-4)}`;
 }
 
-function characterName(
-  state: StoryMemoryState,
-  characterId: string,
-): string {
+function characterName(state: StoryMemoryState, characterId: string): string {
   const character = state.characters[characterId];
   if (character?.canonicalName) return character.canonicalName;
   return `未知人物（${shortId(characterId)}）`;
@@ -117,7 +119,9 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
       const from = pending[0].position + 1;
       const to = pending[pending.length - 1].position + 1;
       setPendingRange(
-        from === to ? `第 ${from} 章（1章）` : `第 ${from}～${to} 章（${pending.length}章）`,
+        from === to
+          ? `第 ${from} 章（1章）`
+          : `第 ${from}～${to} 章（${pending.length}章）`,
       );
     }
     setLoading(false);
@@ -163,10 +167,7 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
   );
 
   const runRebuild = useCallback(
-    async (
-      mode: 'auto' | 'full' | 'legacy_bootstrap',
-      clearFirst = false,
-    ) => {
+    async (mode: 'auto' | 'full' | 'legacy_bootstrap', clearFirst = false) => {
       if (!currentProject || controllerRef.current) return;
       const controller = new AbortController();
       controllerRef.current = controller;
@@ -202,6 +203,23 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
     const controller = new AbortController();
     controllerRef.current = controller;
     try {
+      const record = await db.ensureProjectStoryMemoryRow(currentProject.id);
+      if (record.status === 'dirty') {
+        const rebuilt = await rebuildStoryMemory(currentProject.id, {
+          mode: 'auto',
+          signal: controller.signal,
+          onProgress: setProgress,
+        });
+        setState(rebuilt.state);
+        Toast.show({
+          type: 'success',
+          text1: `长期记忆已从变更位置重建到第 ${
+            rebuilt.state.throughChapterPosition + 1
+          } 章`,
+        });
+        await load();
+        return;
+      }
       const { withProjectMemoryLock } = await import(
         '../services/storyMemory/storyMemoryService'
       );
@@ -234,6 +252,7 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
       await load();
     } finally {
       controllerRef.current = null;
+      setProgress(null);
     }
   }, [currentProject, load]);
 
@@ -285,7 +304,8 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
             style={[styles.title, { color: theme.colors.textPrimary }]}
             accessibilityRole="header"
           >
-            长期记忆：{STATUS_LABEL[state.metadata.status] || state.metadata.status}
+            长期记忆：
+            {STATUS_LABEL[state.metadata.status] || state.metadata.status}
           </Text>
           <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
             已整理到：
@@ -303,7 +323,12 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
             预计下次：{nextTrigger}
           </Text>
           <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-            上下文覆盖：{pendingCount >= 0 ? '由近期正文桥接' : '完整'}
+            上下文覆盖：
+            {state.metadata.status === 'dirty'
+              ? '需重新整理'
+              : pendingCount > 0
+              ? '由近期正文桥接'
+              : '完整'}
           </Text>
           <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
             需要重新整理的位置：
@@ -321,7 +346,9 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
             更新时间：{formatLocalTime(state.metadata.updatedAt)}
           </Text>
           {state.metadata.lastError ? (
-            <Text style={styles.error}>最近错误：{state.metadata.lastError}</Text>
+            <Text style={styles.error}>
+              最近错误：{state.metadata.lastError}
+            </Text>
           ) : null}
         </Card>
 
@@ -332,14 +359,18 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
           {MODE_OPTIONS.map(option => (
             <Button
               key={option.mode}
-              label={`${policy.mode === option.mode ? '● ' : '○ '}${option.label}`}
+              label={`${policy.mode === option.mode ? '● ' : '○ '}${
+                option.label
+              }`}
               variant={policy.mode === option.mode ? 'primary' : 'secondary'}
               onPress={() => savePolicy({ mode: option.mode })}
             />
           ))}
           {(policy.mode === 'smart' || policy.mode === 'fixed') && (
             <View style={styles.row}>
-              <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+              <Text
+                style={[styles.meta, { color: theme.colors.textSecondary }]}
+              >
                 固定间隔：每
               </Text>
               <TextInput
@@ -361,25 +392,13 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
                 ]}
                 accessibilityLabel="检查点间隔章节数"
               />
-              <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+              <Text
+                style={[styles.meta, { color: theme.colors.textSecondary }]}
+              >
                 章
               </Text>
             </View>
           )}
-          {policy.mode === 'smart' ? (
-            <View style={styles.row}>
-              <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-                关键章节立即整理
-              </Text>
-              <Switch
-                value={policy.updateOnKeyChapter}
-                onValueChange={value =>
-                  savePolicy({ updateOnKeyChapter: value })
-                }
-                accessibilityLabel="关键章节立即整理开关"
-              />
-            </View>
-          ) : null}
         </Card>
 
         {progress ? (
@@ -391,7 +410,8 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
               重建进度 {progress.completedChapters}/{progress.totalChapters}
             </Text>
             <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-              复用 {progress.reusedPatches} · 重新生成 {progress.regeneratedPatches}
+              复用 {progress.reusedPatches} · 重新生成{' '}
+              {progress.regeneratedPatches}
             </Text>
             <Button
               label="取消重建"
@@ -402,10 +422,7 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
         ) : null}
 
         <View style={styles.actions}>
-          <Button
-            label="立即整理长期记忆"
-            onPress={runCheckpointNow}
-          />
+          <Button label="立即整理长期记忆" onPress={runCheckpointNow} />
           <Button
             label={showAdvanced ? '收起高级操作' : '高级操作'}
             variant="secondary"
@@ -486,8 +503,8 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
               >
                 • {characterName(state, item.fromCharacterId)}{' '}
                 {item.direction === 'bidirectional' ? '↔' : '→'}{' '}
-                {characterName(state, item.toCharacterId)}｜{item.relationType}｜
-                {item.currentState}
+                {characterName(state, item.toCharacterId)}｜{item.relationType}
+                ｜{item.currentState}
               </Text>
             ))
           ) : (

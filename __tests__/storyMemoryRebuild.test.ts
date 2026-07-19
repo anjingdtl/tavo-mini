@@ -14,6 +14,7 @@ const mockDb = {
   saveStoryMemoryBatchUpdate: jest.fn(async (_input?: unknown) => undefined),
 };
 const mockCallLLMResult = jest.fn();
+const mockRunCheckpointBatch = jest.fn();
 
 jest.mock('../src/services/database', () => ({
   getChaptersByProject: (...args: unknown[]) =>
@@ -38,6 +39,10 @@ jest.mock('../src/services/database', () => ({
 }));
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (...args: unknown[]) => mockCallLLMResult(...args),
+}));
+jest.mock('../src/services/storyMemory/storyMemoryCheckpointService', () => ({
+  runStoryMemoryCheckpointBatch: (...args: unknown[]) =>
+    mockRunCheckpointBatch(...args),
 }));
 
 import {
@@ -90,7 +95,11 @@ describe('story memory rebuild', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-18T00:00:00.000Z'));
     jest.clearAllMocks();
     const state = createEmptyStoryMemory(7);
-    mockDb.getChaptersByProject.mockResolvedValue([chapter(0), chapter(1), chapter(2)]);
+    mockDb.getChaptersByProject.mockResolvedValue([
+      chapter(0),
+      chapter(1),
+      chapter(2),
+    ]);
     mockDb.ensureProjectStoryMemoryRow.mockResolvedValue({
       state,
       status: 'empty',
@@ -101,6 +110,7 @@ describe('story memory rebuild', () => {
     mockDb.setStoryMemoryBuildStatus.mockResolvedValue(undefined);
     mockDb.getChapterMemoryPatch.mockResolvedValue(null);
     mockDb.saveStoryMemoryUpdate.mockResolvedValue(undefined);
+    mockRunCheckpointBatch.mockReset();
     mockCallLLMResult.mockImplementation(
       async (messages: Array<{ content: string }>) => ({
         text: outputForCall(messages),
@@ -119,11 +129,13 @@ describe('story memory rebuild', () => {
       mode: 'full',
       onProgress: progress,
     });
-    expect(result).toEqual(expect.objectContaining({
-      completedChapters: 3,
-      reusedPatches: 0,
-      regeneratedPatches: 3,
-    }));
+    expect(result).toEqual(
+      expect.objectContaining({
+        completedChapters: 3,
+        reusedPatches: 0,
+        regeneratedPatches: 3,
+      }),
+    );
     expect(result.state.throughChapterPosition).toBe(2);
     expect(mockDb.saveStoryMemoryUpdate).toHaveBeenCalledTimes(3);
     expect(progress).toHaveBeenLastCalledWith(
@@ -163,9 +175,19 @@ describe('story memory rebuild', () => {
       baseMemoryFingerprint: fingerprintStoryMemoryState(snapshot),
       now: '2026-07-18T00:00:00.000Z',
     }).resolvedPatch;
-    mockDb.getChaptersByProject.mockResolvedValue([firstChapter, secondChapter]);
+    mockDb.getChaptersByProject.mockResolvedValue([
+      firstChapter,
+      secondChapter,
+    ]);
     mockDb.ensureProjectStoryMemoryRow.mockResolvedValue({
-      state: { ...snapshot, metadata: { ...snapshot.metadata, status: 'dirty', dirtyFromPosition: 1 } },
+      state: {
+        ...snapshot,
+        metadata: {
+          ...snapshot.metadata,
+          status: 'dirty',
+          dirtyFromPosition: 1,
+        },
+      },
       status: 'dirty',
       dirtyFromPosition: 1,
     });
@@ -180,12 +202,68 @@ describe('story memory rebuild', () => {
     expect(mockCallLLMResult).not.toHaveBeenCalled();
   });
 
+  it('uses the dirty database fingerprint for the first batch replayed from a snapshot', async () => {
+    const snapshot = createEmptyStoryMemory(7);
+    snapshot.throughChapterId = 1;
+    snapshot.throughChapterPosition = 0;
+    snapshot.metadata.stateFingerprint = 'snapshot-fingerprint';
+    const dirtyState = {
+      ...snapshot,
+      metadata: {
+        ...snapshot.metadata,
+        status: 'dirty' as const,
+        dirtyFromPosition: 1,
+        stateFingerprint: 'persisted-dirty-fingerprint',
+      },
+    };
+    const resultState = {
+      ...snapshot,
+      throughChapterId: 3,
+      throughChapterPosition: 2,
+      metadata: {
+        ...snapshot.metadata,
+        status: 'clean' as const,
+        stateFingerprint: 'rebuilt-fingerprint',
+      },
+    };
+    mockDb.getStoryMemoryCheckpointSchedulerEnabled.mockResolvedValueOnce(true);
+    mockDb.getChaptersByProject.mockResolvedValue([
+      chapter(0),
+      chapter(1),
+      chapter(2),
+    ]);
+    mockDb.ensureProjectStoryMemoryRow.mockResolvedValue({
+      state: dirtyState,
+      status: 'dirty',
+      dirtyFromPosition: 1,
+    });
+    mockDb.getNearestStoryMemorySnapshot.mockResolvedValue({ state: snapshot });
+    mockRunCheckpointBatch.mockResolvedValue({ state: resultState });
+
+    await rebuildStoryMemory(7, { mode: 'auto' });
+
+    expect(mockRunCheckpointBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        previousState: snapshot,
+        expectedPersistedFingerprint: 'persisted-dirty-fingerprint',
+      }),
+    );
+  });
+
   it('stops at the failed chapter and records a retry position', async () => {
     mockCallLLMResult
       .mockImplementationOnce(async messages => ({
-        text: outputForCall(messages), inputTokens: 1, outputTokens: 1, totalTokens: 2,
+        text: outputForCall(messages),
+        inputTokens: 1,
+        outputTokens: 1,
+        totalTokens: 2,
       }))
-      .mockResolvedValue({ text: '{bad', inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+      .mockResolvedValue({
+        text: '{bad',
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      });
     await expect(rebuildStoryMemory(7, { mode: 'full' })).rejects.toThrow(
       '第 2 章故事记忆重建失败',
     );
@@ -254,7 +332,9 @@ describe('story memory rebuild', () => {
     const first = await rebuildStoryMemory(7, { mode: 'full' });
     mockDb.saveStoryMemoryUpdate.mockClear();
     const second = await rebuildStoryMemory(7, { mode: 'full' });
-    expect(canonicalStringify(second.state)).toBe(canonicalStringify(first.state));
+    expect(canonicalStringify(second.state)).toBe(
+      canonicalStringify(first.state),
+    );
     expect(second.completedChapters).toBe(100);
 
     mockDb.ensureProjectStoryMemoryRow.mockResolvedValue({
