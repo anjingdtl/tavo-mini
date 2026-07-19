@@ -111,7 +111,7 @@ describe('story memory patch validation', () => {
     ).not.toThrow();
   });
 
-  it('rejects unknown references and immutable profile changes without a reason', () => {
+  it('soft-drops unknown character updates instead of failing the whole patch', () => {
     const state = createEmptyStoryMemory(7);
     const patch = createEmptyChapterMemoryPatch({
       chapterId: 1,
@@ -133,9 +133,8 @@ describe('story memory patch validation', () => {
       clearFields: [],
       evidenceQuote: '林岚公开了新身份',
     });
-    expect(() => validateEntityReferences(patch, state)).toThrow(
-      '人物引用不存在',
-    );
+    expect(() => validateEntityReferences(patch, state)).not.toThrow();
+    expect(patch.characterUpdates).toHaveLength(0);
   });
 
   it('accepts a fully shaped patch with grounded evidence', () => {
