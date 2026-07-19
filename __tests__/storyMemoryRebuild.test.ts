@@ -94,6 +94,11 @@ describe('story memory rebuild', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-18T00:00:00.000Z'));
     jest.clearAllMocks();
+    // Default to legacy per-chapter path; batch tests opt in explicitly.
+    mockDb.getStoryMemoryCheckpointSchedulerEnabled.mockImplementation(
+      async () => false,
+    );
+    mockDb.listStoryMemoryBatches.mockResolvedValue([]);
     const state = createEmptyStoryMemory(7);
     mockDb.getChaptersByProject.mockResolvedValue([
       chapter(0),
@@ -200,6 +205,85 @@ describe('story memory rebuild', () => {
     expect(result.reusedPatches).toBe(1);
     expect(result.regeneratedPatches).toBe(0);
     expect(mockCallLLMResult).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse applied batches during dirty checkpoint rebuild', async () => {
+    const empty = createEmptyStoryMemory(7);
+    const midState = {
+      ...empty,
+      throughChapterId: 3,
+      throughChapterPosition: 2,
+      metadata: {
+        ...empty.metadata,
+        status: 'clean' as const,
+        stateFingerprint: 'after-0-2',
+      },
+    };
+    const finalState = {
+      ...midState,
+      throughChapterId: 6,
+      throughChapterPosition: 5,
+      metadata: {
+        ...midState.metadata,
+        stateFingerprint: 'after-3-5',
+      },
+    };
+    mockDb.getStoryMemoryCheckpointSchedulerEnabled.mockImplementation(
+      async () => true,
+    );
+    mockDb.getChaptersByProject.mockResolvedValue([
+      chapter(0),
+      chapter(1),
+      chapter(2),
+      chapter(3),
+      chapter(4),
+      chapter(5),
+    ]);
+    mockDb.ensureProjectStoryMemoryRow.mockResolvedValue({
+      state: {
+        ...finalState,
+        metadata: {
+          ...finalState.metadata,
+          status: 'dirty',
+          dirtyFromPosition: 1,
+          stateFingerprint: 'dirty-persisted',
+        },
+      },
+      status: 'dirty',
+      dirtyFromPosition: 1,
+    });
+    mockDb.getNearestStoryMemorySnapshot.mockResolvedValue(null);
+    // Stale applied batch that would be incorrectly reused without the fix.
+    mockDb.listStoryMemoryBatches.mockResolvedValue([
+      {
+        batchId: 'stale-0-2',
+        fromPosition: 0,
+        throughPosition: 2,
+        sourceFingerprint: 'anything',
+        baseStateFingerprint: fingerprintStoryMemoryState(empty),
+        status: 'applied',
+        patch: createEmptyChapterMemoryPatch({
+          chapterId: 3,
+          chapterPosition: 2,
+          title: 'x',
+        }),
+        chapterSummaries: [],
+      },
+    ] as any);
+    mockRunCheckpointBatch
+      .mockResolvedValueOnce({ state: midState })
+      .mockResolvedValueOnce({ state: finalState });
+
+    const result = await rebuildStoryMemory(7, {
+      mode: 'auto',
+      throughPosition: 5,
+    });
+
+    expect(result.reusedPatches).toBe(0);
+    expect(result.regeneratedPatches).toBe(6);
+    expect(mockRunCheckpointBatch).toHaveBeenCalledTimes(2);
+    // Dirty rebuild must not consult applied batches for reuse.
+    expect(mockDb.listStoryMemoryBatches).not.toHaveBeenCalled();
   });
 
   it('uses the dirty database fingerprint for the first batch replayed from a snapshot', async () => {

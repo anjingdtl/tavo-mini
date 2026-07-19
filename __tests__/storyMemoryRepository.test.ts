@@ -165,10 +165,21 @@ describe('story memory repository', () => {
       last_applied_patch_id: null,
     });
     await markStoryMemoryDirty(7, 8, '章节已修改');
-    expect(mockExecute).toHaveBeenLastCalledWith(
+    expect(mockExecute).toHaveBeenCalledWith(
       mockDatabase,
       expect.stringContaining('dirty_from_position = CASE'),
       expect.arrayContaining([8, 8, 8, '章节已修改']),
+    );
+    // Dirty must invalidate applied batches from the edit point forward so
+    // rebuild cannot reuse a pre-edit checkpoint chain.
+    expect(mockExecute).toHaveBeenLastCalledWith(
+      mockDatabase,
+      expect.stringContaining("status = 'invalidated'"),
+      expect.arrayContaining([
+        expect.stringContaining('已覆盖章节已变更'),
+        7,
+        8,
+      ]),
     );
   });
 

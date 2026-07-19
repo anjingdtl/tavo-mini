@@ -198,6 +198,12 @@ export const STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT = `你是小说连续性记�
 - 不指：可以省略本批新出现的人物/关系。
 - 程序会保留上一检查点的全部旧人物；你只需补“本批新增”和“本批有变化的更新”。
 
+【矛盾事实 / 改写正文——重建时尤其重要】
+1. 若本批正文明确改写、替换或否定了上一状态中的物品、线索、目标或位置，必须写入 characterUpdates（常用 addPossessions / removePossessions / stateChanges / correctionReason），使批次末状态与**当前正文**一致。
+2. 不得因为“旧检查点曾写过”就继续保留已被正文否定的旧物品名或旧事实（例如正文已改为“蓝色徽章”，不得仍以“红色钥匙”作为当前持有物）。
+3. 章节摘要 brief/events 与最终人物状态都必须以本批正文为准；摘要写了新事实时，人物 possessions/knowledge 也要同步纠正。
+4. 仅当旧事实在本批后文仍被正文确认时，才可继续保留。
+
 你不得续写、猜测、补全、评价或美化。
 你不得输出完整 StoryMemoryState，只能输出指定的 batch patch JSON。
 所有会改变状态的条目必须提供 evidence 数组；每条 evidence 必须包含 chapterId 与可在对应章节正文中找到的原文 quote。
