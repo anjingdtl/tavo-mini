@@ -363,3 +363,25 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 
 - Update `README.md` / `CHANGELOG.md` / this progress file for Schema 16 + checkpoint architecture.
 - Push `origin/main`, annotated tag `V2.5.6`, delete feature branch; leave only `main` local + remote.
+
+## V2.5.6 follow-up — dirty rebuild batch reuse fix — 2026-07-19
+
+- Status: **implemented and unit-tested** on `main` (post V2.5.6 tag).
+- Emulator final QA (`test-logs/story-memory-emulator-final/`): N=3 checkpoint / second batch / dirty UI+range / interrupt recover **PASS**; P1 was first-pass dirty rebuild keeping stale later batches so new facts (e.g. 蓝色徽章) did not reliably enter long-term state.
+
+### Code changes
+
+- `markStoryMemoryDirty` now invalidates **applied** batches with `through_position >= dirty_from` (`invalidateAppliedStoryMemoryBatchesFrom`).
+- Dirty checkpoint rebuild skips applied-batch reuse and cascades force-regenerate after any regenerated batch (`storyMemoryRebuild.ts`).
+- Checkpoint system prompt adds contradiction / rewrite rules for possessions and facts (`storyMemoryPrompts.ts`).
+
+### Tests
+
+- `__tests__/storyMemoryRebuild.test.ts` — dirty rebuild does not reuse applied batches.
+- `__tests__/storyMemoryRepository.test.ts` — dirty marks batches invalidated.
+- `__tests__/storyMemoryPrompts.test.ts` — prompt contains contradiction rules.
+- Focused: story-memory related suites **20 / 20 pass**; `tsc --noEmit` pass.
+
+### Remaining risk
+
+- Model may still under-extract a replaced object name even when batches are fully regenerated; structural reuse bug is closed. Re-run scenario C on a debug APK after this commit for product sign-off.
