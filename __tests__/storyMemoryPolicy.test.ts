@@ -48,12 +48,17 @@ describe('storyMemoryPolicy', () => {
     ]);
   });
 
-  it('splits batches at max 10 chapters', () => {
+  it('splits batches by preferred size (default 3), capped at 10', () => {
     const chapters = Array.from({ length: 11 }, (_, i) => chapter(i));
-    const batches = splitCheckpointBatches(chapters);
-    expect(batches).toHaveLength(2);
-    expect(batches[0]).toHaveLength(10);
-    expect(batches[1]).toHaveLength(1);
+    const byDefault = splitCheckpointBatches(chapters);
+    expect(byDefault).toHaveLength(4); // 3+3+3+2
+    expect(byDefault[0]).toHaveLength(3);
+    expect(byDefault[3]).toHaveLength(2);
+
+    const byTen = splitCheckpointBatches(chapters, 10);
+    expect(byTen).toHaveLength(2);
+    expect(byTen[0]).toHaveLength(10);
+    expect(byTen[1]).toHaveLength(1);
   });
 
   it('evaluates four modes and hard/dirty reasons', () => {

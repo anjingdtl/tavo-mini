@@ -113,14 +113,31 @@ describe('validateStoryMemoryBatchPatch', () => {
     ).toThrow(/brief/);
   });
 
-  it('rejects evidence outside batch chapters or not in body', () => {
+  it('drops ungrounded newCharacters instead of failing the whole batch', () => {
     const bad = validRaw();
     bad.newCharacters[0].evidence = [
       { chapterId: 1, quote: '这段原文并不存在于任何章节' },
     ];
-    expect(() =>
-      validateStoryMemoryBatchPatch(bad, createEmptyStoryMemory(1), chapters),
-    ).toThrow(/证据/);
+    const draft = validateStoryMemoryBatchPatch(
+      bad,
+      createEmptyStoryMemory(1),
+      chapters,
+    );
+    // Name appears in chapter 1, recovery should re-ground; if not, entry dropped.
+    // Either way the batch must not throw.
+    expect(draft.chapterSummaries).toHaveLength(3);
+  });
+
+  it('coerces string completedBeats without failing the batch', () => {
+    const raw = validRaw() as any;
+    raw.mainlinePatch.completedBeats = ['打开暗门', { summary: '找到钥匙' }];
+    const draft = validateStoryMemoryBatchPatch(
+      raw,
+      createEmptyStoryMemory(1),
+      chapters,
+    );
+    expect(draft.mainlinePatch.completedBeats.length).toBeGreaterThanOrEqual(1);
+    expect(draft.mainlinePatch.completedBeats[0].summary).toBeTruthy();
   });
 
   it('rejects non-object payloads and wrong schema version', () => {

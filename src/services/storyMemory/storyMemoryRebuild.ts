@@ -140,7 +140,19 @@ export async function rebuildStoryMemory(
     // updates, so cast accumulation rules stay consistent and we avoid N
     // per-chapter patches that under-extract people.
     if (schedulerEnabled && chapters.length > 0) {
-      const batches = splitCheckpointBatches(chapters);
+      let preferredBatch = 3;
+      if (typeof (db as any).ensureStoryMemoryPolicy === 'function') {
+        try {
+          const policy = await (db as any).ensureStoryMemoryPolicy(
+            projectId,
+            config.slidingWindowSize,
+          );
+          preferredBatch = policy?.intervalChapters || 3;
+        } catch {
+          preferredBatch = 3;
+        }
+      }
+      const batches = splitCheckpointBatches(chapters, preferredBatch);
       for (const batchChapters of batches) {
         if (options.signal?.aborted) {
           await db.setStoryMemoryBuildStatus(

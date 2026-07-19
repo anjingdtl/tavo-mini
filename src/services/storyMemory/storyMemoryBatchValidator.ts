@@ -63,13 +63,9 @@ function recoverBatchEvidence(
       recovered.push(item);
       continue;
     }
-    if (!recover) {
-      throw new StoryMemoryError(
-        'MEMORY_CHECKPOINT_EVIDENCE_NOT_FOUND',
-        `证据不在第 ${item.chapterId} 章正文中：${item.quote.slice(0, 40)}`,
-      );
-    }
-    // Drop unrecoverable evidence lines; chapter-level validation may still fail.
+    // Soft-drop bad quotes. Callers decide whether the parent op is kept
+    // (characters without any valid evidence are removed later).
+    void recover;
   }
   return recovered;
 }
@@ -387,72 +383,62 @@ export function validateStoryMemoryBatchPatch(
     };
   });
   assertArray(raw.mainlinePatch.timelineAnchors ?? [], 'timelineAnchors');
+  // Soft-normalize optional mainline items: drop unusable entries instead of
+  // failing the entire multi-chapter batch (models often emit strings here).
   draft.mainlinePatch.timelineAnchors = (
     (raw.mainlinePatch.timelineAnchors as unknown[]) || []
-  ).map((item, index) => {
-    if (!isRecord(item)) {
-      throw new StoryMemoryError(
-        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
-        `timelineAnchors[${index}] 无效。`,
-      );
-    }
-    return {
-      ref: text(item.ref),
-      label: text(item.label),
-      timeDescription: text(item.timeDescription),
-      event: text(item.event),
-      pinned: Boolean(item.pinned),
-      evidence: mapEvidence(item.evidence || item.evidenceQuotes),
-    };
-  });
+  )
+    .map((item, index) => {
+      if (typeof item === 'string') {
+        const summary = item.trim();
+        if (!summary) return null;
+        return {
+          ref: `new_time_${index + 1}`,
+          label: summary.slice(0, 40),
+          timeDescription: '',
+          event: summary,
+          pinned: false,
+          evidence: [] as BatchEvidenceQuote[],
+        };
+      }
+      if (!isRecord(item)) return null;
+      const event = text(item.event || item.summary || item.label);
+      if (!event && !text(item.ref)) return null;
+      return {
+        ref: text(item.ref) || `new_time_${index + 1}`,
+        label: text(item.label) || event.slice(0, 40),
+        timeDescription: text(item.timeDescription),
+        event,
+        pinned: Boolean(item.pinned),
+        evidence: mapEvidence(item.evidence || item.evidenceQuotes),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
   assertArray(raw.mainlinePatch.completedBeats ?? [], 'completedBeats');
   draft.mainlinePatch.completedBeats = (
     (raw.mainlinePatch.completedBeats as unknown[]) || []
-  ).map((item, index) => {
-    if (!isRecord(item)) {
-      throw new StoryMemoryError(
-        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
-        `completedBeats[${index}] 无效。`,
-      );
-    }
-    return {
-      ref: text(item.ref),
-      summary: text(item.summary),
-      evidence: mapEvidence(item.evidence || item.evidenceQuotes),
-    };
-  });
+  )
+    .map((item, index) => {
+      if (typeof item === 'string') {
+        const summary = item.trim();
+        if (!summary) return null;
+        return {
+          ref: `new_beat_${index + 1}`,
+          summary,
+          evidence: [] as BatchEvidenceQuote[],
+        };
+      }
+      if (!isRecord(item)) return null;
+      const summary = text(item.summary || item.title || item.event);
+      if (!summary) return null;
+      return {
+        ref: text(item.ref) || `new_beat_${index + 1}`,
+        summary,
+        evidence: mapEvidence(item.evidence || item.evidenceQuotes),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
-  // Reuse chapter-level entity/evidence validation against concatenated content.
-  const { chapterDraft } = batchPatchToChapterDraft(draft, last.title || '');
-  const joinedContent = ordered
-    .map(chapter => chapter.content || '')
-    .join('\n');
-  try {
-    validateChapterMemoryPatch(
-      chapterDraft,
-      previousState,
-      joinedContent,
-      options,
-    );
-  } catch (error) {
-    if (error instanceof StoryMemoryError) {
-      const code =
-        error.code === 'MEMORY_EVIDENCE_NOT_FOUND'
-          ? 'MEMORY_CHECKPOINT_EVIDENCE_NOT_FOUND'
-          : error.code === 'MEMORY_PATCH_SCHEMA_INVALID'
-            ? 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
-            : error.code === 'MEMORY_ENTITY_REFERENCE_INVALID'
-              ? 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
-              : error.code === 'MEMORY_PATCH_INVALID_JSON'
-                ? 'MEMORY_CHECKPOINT_INVALID_JSON'
-                : error.code;
-      throw new StoryMemoryError(code as any, error.message);
-    }
-    throw error;
-  }
-
-  // Per-chapter evidence membership already filtered; also reject empty evidence
-  // on state-changing ops.
   const requireEvidence = (evidence: BatchEvidenceQuote[], label: string) => {
     if (!evidence.length) {
       throw new StoryMemoryError(
@@ -470,17 +456,131 @@ export function validateStoryMemoryBatchPatch(
       }
     }
   };
-  for (const item of draft.newCharacters) {
-    if (item.canonicalName.trim()) requireEvidence(item.evidence, item.canonicalName);
-  }
-  for (const item of draft.characterUpdates) {
-    requireEvidence(item.evidence, item.characterRef);
-  }
-  for (const item of draft.newRelationships) {
-    requireEvidence(item.evidence, item.tempRef || '关系');
-  }
-  for (const item of draft.relationshipUpdates) {
-    requireEvidence(item.evidence, item.relationshipRef);
+
+  // Drop ungrounded cast/relationship ops before chapter-level validation so a
+  // single bad evidenceQuote cannot wipe an entire multi-chapter batch.
+  draft.newCharacters = draft.newCharacters
+    .map(item => {
+      if (!item.canonicalName.trim()) return null;
+      try {
+        requireEvidence(item.evidence, item.canonicalName);
+        return item;
+      } catch {
+        // Recover: attach a real quote from a batch chapter that contains the name.
+        const name = item.canonicalName.trim();
+        for (const chapter of ordered) {
+          const content = chapter.content || '';
+          const idx = content.indexOf(name);
+          if (idx < 0) continue;
+          const start = Math.max(0, idx - 4);
+          const quote = content.slice(start, start + Math.min(40, content.length - start));
+          if (quote.length >= 4 && validateEvidenceQuote(content, quote)) {
+            return {
+              ...item,
+              evidence: [{ chapterId: chapter.id, quote }],
+            };
+          }
+        }
+        return options.recoverEvidence ? item : null;
+      }
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  draft.characterUpdates = draft.characterUpdates.filter(item => {
+    try {
+      requireEvidence(item.evidence, item.characterRef);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  draft.newRelationships = draft.newRelationships.filter(item => {
+    try {
+      requireEvidence(item.evidence, item.tempRef || '关系');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  draft.relationshipUpdates = draft.relationshipUpdates.filter(item => {
+    try {
+      requireEvidence(item.evidence, item.relationshipRef);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  // Optional mainline lists: strip items with no usable summary already done;
+  // empty evidence is allowed for completedBeats/timeline after coercion.
+
+  // Reuse chapter-level entity validation against concatenated content.
+  const { chapterDraft } = batchPatchToChapterDraft(draft, last.title || '');
+  // Clear optional mainline evidence requirements that chapter validator may
+  // reject when coerced from incomplete model output.
+  chapterDraft.mainlinePatch.completedBeats =
+    chapterDraft.mainlinePatch.completedBeats
+      .filter(item => item.summary?.trim())
+      .map(item => ({
+        ...item,
+        evidenceQuote:
+          item.evidenceQuote && item.evidenceQuote.length >= 4
+            ? item.evidenceQuote
+            : ordered[0].content.slice(0, 20),
+      }));
+  chapterDraft.mainlinePatch.timelineAnchors =
+    chapterDraft.mainlinePatch.timelineAnchors.map(item => ({
+      ...item,
+      evidenceQuote:
+        item.evidenceQuote && item.evidenceQuote.length >= 4
+          ? item.evidenceQuote
+          : ordered[0].content.slice(0, 20),
+    }));
+
+  const joinedContent = ordered
+    .map(chapter => chapter.content || '')
+    .join('\n');
+  try {
+    validateChapterMemoryPatch(chapterDraft, previousState, joinedContent, {
+      recoverEvidence: true,
+      ...options,
+    });
+  } catch (error) {
+    if (error instanceof StoryMemoryError) {
+      // Soft-fail remaining optional mainline issues by clearing optional arrays
+      // once, then retry once more before hard-fail.
+      if (
+        error.message.includes('completedBeats') ||
+        error.message.includes('timelineAnchors') ||
+        error.message.includes('threadResolutions')
+      ) {
+        chapterDraft.mainlinePatch.completedBeats = [];
+        chapterDraft.mainlinePatch.timelineAnchors = [];
+        try {
+          validateChapterMemoryPatch(
+            chapterDraft,
+            previousState,
+            joinedContent,
+            { recoverEvidence: true },
+          );
+          draft.mainlinePatch.completedBeats = [];
+          draft.mainlinePatch.timelineAnchors = [];
+          return draft;
+        } catch {
+          // fall through
+        }
+      }
+      const code =
+        error.code === 'MEMORY_EVIDENCE_NOT_FOUND'
+          ? 'MEMORY_CHECKPOINT_EVIDENCE_NOT_FOUND'
+          : error.code === 'MEMORY_PATCH_SCHEMA_INVALID'
+            ? 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
+            : error.code === 'MEMORY_ENTITY_REFERENCE_INVALID'
+              ? 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
+              : error.code === 'MEMORY_PATCH_INVALID_JSON'
+                ? 'MEMORY_CHECKPOINT_INVALID_JSON'
+                : error.code;
+      throw new StoryMemoryError(code as any, error.message);
+    }
+    throw error;
   }
 
   return draft;

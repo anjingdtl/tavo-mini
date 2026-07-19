@@ -232,6 +232,13 @@ export function applyStoryMemoryPatch(
 
   for (const update of draft.characterUpdates) {
     const character = state.characters[update.characterRef];
+    if (!character) {
+      warnings.push({
+        code: 'CHARACTER_UPDATE_SKIPPED',
+        message: `待更新人物不存在，已跳过：${update.characterRef || '(空)'}`,
+      });
+      continue;
+    }
     character.aliases = unique([...character.aliases, ...update.addAliases]);
     if (Object.keys(update.profileCorrections || {}).length > 0) {
       character.immutableProfile = {
@@ -412,10 +419,13 @@ export function applyStoryMemoryPatch(
     const id = refMap.get(item.ref) || item.ref;
     const thread = mainline.openThreads[id];
     if (!thread) {
-      throw new StoryMemoryError(
-        'MEMORY_ENTITY_REFERENCE_INVALID',
-        `待更新线索不存在：${item.ref}`,
-      );
+      // Soft-skip: models often reference empty/unknown thread refs in batch
+      // mode. Dropping one thread update must not discard the whole cast batch.
+      warnings.push({
+        code: 'THREAD_UPDATE_SKIPPED',
+        message: `待更新线索不存在，已跳过：${item.ref || '(空)'}`,
+      });
+      continue;
     }
     thread.title = item.title || thread.title;
     thread.description = item.description || thread.description;
@@ -432,10 +442,11 @@ export function applyStoryMemoryPatch(
     const id = refMap.get(item.threadRef) || item.threadRef;
     const thread = mainline.openThreads[id];
     if (!thread) {
-      throw new StoryMemoryError(
-        'MEMORY_ENTITY_REFERENCE_INVALID',
-        `待解决线索不存在：${item.threadRef}`,
-      );
+      warnings.push({
+        code: 'THREAD_RESOLVE_SKIPPED',
+        message: `待解决线索不存在，已跳过：${item.threadRef || '(空)'}`,
+      });
+      continue;
     }
     mainline.recentResolvedThreads.push({
       id,
