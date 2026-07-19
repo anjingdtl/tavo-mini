@@ -165,16 +165,24 @@ describe('story memory repository', () => {
       last_applied_patch_id: null,
     });
     await markStoryMemoryDirty(7, 8, '章节已修改');
-    expect(mockExecute).toHaveBeenCalledWith(
-      mockDatabase,
+    // Dirty mark + applied-batch invalidation share one transaction.
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    const statements = mockExecuteTransaction.mock.calls[0][1] as Array<{
+      sql: string;
+      params?: unknown[];
+    }>;
+    expect(statements[0].sql).toEqual(
       expect.stringContaining('dirty_from_position = CASE'),
+    );
+    expect(statements[0].params).toEqual(
       expect.arrayContaining([8, 8, 8, '章节已修改']),
     );
     // Dirty must invalidate applied batches from the edit point forward so
     // rebuild cannot reuse a pre-edit checkpoint chain.
-    expect(mockExecute).toHaveBeenLastCalledWith(
-      mockDatabase,
+    expect(statements[1].sql).toEqual(
       expect.stringContaining("status = 'invalidated'"),
+    );
+    expect(statements[1].params).toEqual(
       expect.arrayContaining([
         expect.stringContaining('已覆盖章节已变更'),
         7,

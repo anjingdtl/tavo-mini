@@ -37,8 +37,19 @@
 - **生产路径回归 PASS**：`__tests__/projectChapterStoryMemoryDirty.test.ts`（updateChapter/deleteChapter → markStoryMemoryDirtyIfCovered → invalidate applied）。
 - **门禁**：`npm run verify` 108 suites / 551 tests PASS；`npm run test:coverage` exit 0。
 - **未改** `a6b90e2` 重建主体；本轮只落测试与文档到 `main`。
-- **残余风险**：模拟器仍 SQL 等价 dirty；章节写与 markDirty 非同事务（见 progress 收尾节）。
+- **残余风险（当时）**：模拟器仍 SQL 等价 dirty；章节写与 markDirty 非同事务 — **已由下方原子 dirty 收尾关闭**。
 - 详情：`docs/optimization/progress.md` →「V2.5.6 scenario C test wrap-up」。
+
+### 原子 dirty 事务收尾 → **V2.5.7 正式发布**（同日）
+
+- **问题**：`updateChapter`/`deleteChapter` 先提交章节再 markDirty；dirty 失败会导致正文新、记忆 clean，同文重试不再标脏；删除后章节已不在无法重触发。
+- **实现**：repository 层 SQL 构造器 + 单次 `executeTransaction`（章节写/删 + project touch + dirty CASE + applied/pending 失效）。
+- **测试**：故障注入 11 例 + transaction rollback；`verify` 108/557 PASS；coverage exit 0。
+- **模拟器**：Debug 路径项目 `AT07192232`；真实 autosave 改 ch2 → dirty；UI 删除已覆盖章 → dirty；重建 clean。
+- **证据**：`test-logs/story-memory-atomic-dirty-final/`（gitignore）。
+- **版本**：**V2.5.7**（`package.json` + CHANGELOG + README）；正式 APK：`dist/apk/release/ShineWriter-V2.5.7-release.apk`。
+- **Git**：提交并推送 `main`（用户明确要求）。
+- **本轮故事记忆不再扩展**，除非新的可复现 P0/P1。
 
 ## Workstream A：自动保存可靠性
 

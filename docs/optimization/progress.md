@@ -441,3 +441,55 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 
 - README known-limitations updated for scenario C product+automation PASS and `updateChapter → dirty` regression.
 - Tracked commit lands tests + docs only; production dirty-rebuild fix remains `a6b90e2`.
+
+## V2.5.6 atomic dirty transaction closure — 2026-07-19
+
+- Status: **implemented + fault-injection + verify/coverage + emulator happy-path PASS**
+- Closes the residual risk from scenario C wrap-up: chapter UPDATE/DELETE and story-memory dirty/batch invalidation now share one SQLite transaction.
+- Does **not** redesign checkpoint architecture (`a6b90e2` rebuild rules, N-chapter checkpoints, CAS, dirty UI) — only transaction composition.
+
+### Code
+
+- `storyMemoryRepository.ts`: pure SQL builders (`buildMarkStoryMemoryDirtyStatements`, applied/pending invalidation builders, `buildStoryMemoryContinuitySideEffects`); existing facade APIs keep compatibility.
+- `projectRepository.ts`: `updateChapter` / `deleteChapter` build chapter write + project touch + optional dirty/invalidation into one `executeTransaction`; `invalidateIdf` only after successful delete commit.
+- No new schema/migration.
+
+### Tests
+
+- `__tests__/projectChapterStoryMemoryDirty.test.ts` expanded to 11 cases: single transaction composition, reject-without-standalone-write, pending-only, no-memory-row, earlier dirty_from CASE, position min, non-continuity, equal content.
+- `storyMemoryRepository` dirty test updated for transactional dirty+invalidate.
+- Focused: dirty + repository + `databaseTransaction` **26/26 PASS**.
+- `npm run verify`: **108 suites / 557 tests PASS**.
+- `npm run test:coverage`: exit 0.
+
+### Emulator
+
+- Rebuild Debug APK from final sources: `dist/apk/debug/ShineWriter-V2.5.6-debug.apk` (60,277,673 bytes).
+- Disposable project `AT07192232` (id=10).
+- **S1 modify**: real editor autosave appends marker → dirty_from=1, applied→invalidated, UI 需要重新整理 / 第 2 章.
+- **S2 delete**: outline delete UI → chapter removed, dirty, batches invalidated.
+- Rebuild after harness unstuck stuck `rebuilding` → clean / applied≥1.
+- Evidence (gitignore): `test-logs/story-memory-atomic-dirty-final/ATOMIC-DIRTY-VALIDATION-REPORT.md`.
+
+### Residual risk
+
+- Force-stopped mid-rebuild can leave `status=rebuilding`; UI「立即整理」only full-rebuilds when `status==='dirty'` (harness lesson; optional product recovery later).
+- After deleting a mid-range chapter, through may converge (observed clean through=2).
+- Full Chinese IME rewrite not re-gated; ASCII marker autosave proved production `updateChapter` path.
+
+### Ship note
+
+- **Shipped as V2.5.7** (2026-07-19): version bump in `package.json`, CHANGELOG/README/progress updated; Release APK `dist/apk/release/ShineWriter-V2.5.7-release.apk`.
+- **Do not expand story-memory features further** unless a new reproducible P0/P1 appears.
+
+## V2.5.7 release summary — 2026-07-19
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.7** / Schema **16** (no migration) |
+| Core fix | Chapter `updateChapter`/`deleteChapter` + story-memory dirty + batch invalidation in **one SQLite transaction** |
+| Related | Dirty rebuild invalidates applied batches from edit point (`a6b90e2`, included in this release) |
+| Gates | `verify` 108/557 PASS; coverage exit 0; atomic dirty Jest 11 cases |
+| Emulator | Real autosave edit + outline delete dirty paths PASS; rebuild clean after unstick |
+| Evidence | `test-logs/story-memory-atomic-dirty-final/` (gitignore) |
+| Residual | Stuck `rebuilding` UI recovery; mid-chapter delete may shrink through; full CJK IME not gated; arm64/GGUF still special-case |
