@@ -84,11 +84,23 @@ export function listPendingChapters(
     .sort((a, b) => a.position - b.position);
 }
 
-export function splitCheckpointBatches(chapters: Chapter[]): Chapter[][] {
+/**
+ * Split pending chapters into checkpoint batches.
+ * Prefer the project interval (default 3); never exceed STORY_MEMORY_MAX_BATCH_SIZE.
+ * Large rebuilds with max=10 routinely truncate JSON on smaller models.
+ */
+export function splitCheckpointBatches(
+  chapters: Chapter[],
+  preferredBatchSize: number = STORY_MEMORY_DEFAULT_INTERVAL,
+): Chapter[][] {
   if (chapters.length === 0) return [];
+  const size = Math.min(
+    STORY_MEMORY_MAX_BATCH_SIZE,
+    Math.max(1, Math.round(preferredBatchSize || STORY_MEMORY_DEFAULT_INTERVAL)),
+  );
   const batches: Chapter[][] = [];
-  for (let i = 0; i < chapters.length; i += STORY_MEMORY_MAX_BATCH_SIZE) {
-    batches.push(chapters.slice(i, i + STORY_MEMORY_MAX_BATCH_SIZE));
+  for (let i = 0; i < chapters.length; i += size) {
+    batches.push(chapters.slice(i, i + size));
   }
   return batches;
 }

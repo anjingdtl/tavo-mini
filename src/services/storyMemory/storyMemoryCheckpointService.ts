@@ -426,8 +426,19 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
       pendingRemaining: 0,
     };
   }
-  const { splitCheckpointBatches } = await import('./storyMemoryPolicy');
-  const batches = splitCheckpointBatches(pending);
+  const { splitCheckpointBatches, createDefaultStoryMemoryPolicy } =
+    await import('./storyMemoryPolicy');
+  let preferredBatch = 3;
+  if (typeof (db as any).ensureStoryMemoryPolicy === 'function') {
+    try {
+      const policy = await (db as any).ensureStoryMemoryPolicy(input.projectId);
+      preferredBatch = policy?.intervalChapters || 3;
+    } catch {
+      preferredBatch = createDefaultStoryMemoryPolicy(input.projectId)
+        .intervalChapters;
+    }
+  }
+  const batches = splitCheckpointBatches(pending, preferredBatch);
   let batchesApplied = 0;
   for (const batchChapters of batches) {
     if (input.signal?.aborted) {
