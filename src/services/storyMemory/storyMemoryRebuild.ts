@@ -1,12 +1,18 @@
 import type { Chapter } from '../../types/novel';
+import { estimateTokens } from '../../utils/tokenEstimator';
 import { invalidateIdf } from '../../utils/idfCache';
 import * as db from '../database';
+import {
+  runStoryMemoryCheckpointBatch,
+} from './storyMemoryCheckpointService';
 import { createEmptyStoryMemory } from './storyMemoryDefaults';
 import {
   fingerprintChapterSource,
   fingerprintStoryMemoryState,
+  stableTextFingerprint,
 } from './storyMemoryFingerprint';
 import { applyStoryMemoryPatch } from './storyMemoryMerger';
+import { splitCheckpointBatches } from './storyMemoryPolicy';
 import {
   generateValidatedChapterMemoryPatch,
   renderEpisodicMemoryText,
@@ -124,110 +130,291 @@ export async function rebuildStoryMemory(
     emitProgress(options, { ...baseProgress(), status: 'preparing' });
     await db.setStoryMemoryBuildStatus(projectId, 'rebuilding', replayStart, '');
 
-    for (const chapter of chapters) {
-      if (options.signal?.aborted) {
-        await db.setStoryMemoryBuildStatus(
-          projectId,
-          'dirty',
-          chapter.position,
-          '',
-        );
-        throw new StoryMemoryError(
-          'MEMORY_REBUILD_CANCELLED',
-          '故事记忆重建已取消。',
-        );
-      }
-      emitProgress(options, { ...baseProgress(), currentPosition: chapter.position });
-      try {
-        const inputChapter =
-          mode === 'legacy_bootstrap' ? legacyChapter(chapter) : chapter;
-        const sourceFingerprint = fingerprintChapterSource(inputChapter);
-        const existing = await db.getChapterMemoryPatch(chapter.id);
-        let draft;
-        if (
-          existing &&
-          (existing.status === 'applied' || existing.status === 'generated') &&
-          existing.patch.schemaVersion === 1 &&
-          existing.patch.sourceFingerprint === sourceFingerprint &&
-          existing.patch.baseMemoryFingerprint ===
-            fingerprintStoryMemoryState(state)
-        ) {
-          draft = existing.patch.normalizedPatch;
-          reusedPatches += 1;
-        } else {
-          draft = await generateValidatedChapterMemoryPatch({
-            chapter: inputChapter,
-            previousState: state,
-            memoryPatchMaxTokens: config.memoryPatchMaxTokens || 1200,
-            signal: options.signal,
-            scenario:
-              mode === 'legacy_bootstrap'
-                ? 'story_memory_legacy_bootstrap'
-                : 'story_memory_patch',
-          });
-          regeneratedPatches += 1;
+    const schedulerEnabled =
+      mode !== 'legacy_bootstrap' &&
+      (typeof (db as any).getStoryMemoryCheckpointSchedulerEnabled === 'function'
+        ? await (db as any).getStoryMemoryCheckpointSchedulerEnabled()
+        : true);
+
+    // Batch rebuild path (default): same checkpoint extraction as incremental
+    // updates, so cast accumulation rules stay consistent and we avoid N
+    // per-chapter patches that under-extract people.
+    if (schedulerEnabled && chapters.length > 0) {
+      let preferredBatch = 3;
+      if (typeof (db as any).ensureStoryMemoryPolicy === 'function') {
+        try {
+          const policy = await (db as any).ensureStoryMemoryPolicy(
+            projectId,
+            config.slidingWindowSize,
+          );
+          preferredBatch = policy?.intervalChapters || 3;
+        } catch {
+          preferredBatch = 3;
         }
-        const applied = applyStoryMemoryPatch(state, draft, {
-          projectId,
-          chapterId: chapter.id,
-          chapterPosition: chapter.position,
-          sourceFingerprint,
-          baseMemoryFingerprint: fingerprintStoryMemoryState(state),
-          now: new Date().toISOString(),
-        });
-        state = applied.state;
-        state.metadata.source =
-          mode === 'legacy_bootstrap' ? 'legacy_bootstrap' : 'native';
-        completedChapters += 1;
-        const isLast = completedChapters === chapters.length;
-        state.metadata.status = isLast ? 'clean' : 'rebuilding';
-        state.metadata.dirtyFromPosition = isLast
-          ? null
-          : chapters[completedChapters]?.position ?? null;
+      }
+      const batches = splitCheckpointBatches(chapters, preferredBatch);
+      for (const batchChapters of batches) {
+        if (options.signal?.aborted) {
+          await db.setStoryMemoryBuildStatus(
+            projectId,
+            'dirty',
+            batchChapters[0]?.position ?? replayStart,
+            '',
+          );
+          throw new StoryMemoryError(
+            'MEMORY_REBUILD_CANCELLED',
+            '故事记忆重建已取消。',
+          );
+        }
         emitProgress(options, {
           ...baseProgress(),
-          currentPosition: chapter.position,
-          status: 'saving',
+          currentPosition: batchChapters[0].position,
+          status: 'running',
         });
-        await db.saveStoryMemoryUpdate({
-          state,
-          patch: applied.resolvedPatch,
-          episodicMemoryText: renderEpisodicMemoryText(draft.episodicSummary),
-          finalizedAt: applied.state.metadata.updatedAt,
-          createSnapshot: isLast,
-        });
-      } catch (error) {
-        if (
-          options.signal?.aborted ||
-          (error instanceof StoryMemoryError &&
-            error.code === 'MEMORY_REBUILD_CANCELLED') ||
-          (error as { code?: string } | null)?.code === 'cancelled'
-        ) {
+        try {
+          const sourceFingerprint = stableTextFingerprint(
+            batchChapters
+              .map(
+                chapter =>
+                  `${chapter.id}:${chapter.position}:${fingerprintChapterSource(
+                    chapter,
+                  )}`,
+              )
+              .join('|'),
+          );
+          const baseFingerprint = fingerprintStoryMemoryState(state);
+          const existingBatches =
+            typeof (db as any).listStoryMemoryBatches === 'function'
+              ? await (db as any).listStoryMemoryBatches(projectId, ['applied'])
+              : [];
+          const reusable = existingBatches.find(
+            (batch: {
+              fromPosition: number;
+              throughPosition: number;
+              sourceFingerprint: string;
+              baseStateFingerprint: string;
+              status: string;
+            }) =>
+              batch.fromPosition === batchChapters[0].position &&
+              batch.throughPosition ===
+                batchChapters[batchChapters.length - 1].position &&
+              batch.sourceFingerprint === sourceFingerprint &&
+              batch.baseStateFingerprint === baseFingerprint,
+          );
+          if (reusable?.patch) {
+            const { applyStoryMemoryBatchPatch } = await import(
+              './storyMemoryMerger'
+            );
+            const applied = applyStoryMemoryBatchPatch(state, reusable.patch, {
+              projectId,
+              sourceFingerprint,
+              baseMemoryFingerprint: baseFingerprint,
+              batchId: reusable.batchId,
+              now: new Date().toISOString(),
+              title: batchChapters[batchChapters.length - 1].title,
+            });
+            state = applied.state;
+            reusedPatches += batchChapters.length;
+            await db.saveStoryMemoryBatchUpdate({
+              previousFingerprint: baseFingerprint,
+              state: applied.state,
+              batch: applied.resolvedBatch,
+              chapterSummaries: (
+                reusable.chapterSummaries || []
+              ).map((summary: { chapterId: number; brief?: string }) => {
+                const chapter = batchChapters.find(
+                  item => item.id === summary.chapterId,
+                );
+                const text = renderEpisodicMemoryText(
+                  {
+                    brief: summary.brief || '',
+                    keywords: (summary as any).keywords || [],
+                    events: (summary as any).events || [],
+                    characterChanges: (summary as any).characterChanges || [],
+                    relationshipChanges:
+                      (summary as any).relationshipChanges || [],
+                    mainlineChanges: (summary as any).mainlineChanges || [],
+                    newThreads: (summary as any).newThreads || [],
+                    resolvedThreads: (summary as any).resolvedThreads || [],
+                  },
+                  chapter,
+                );
+                return {
+                  chapterId: summary.chapterId,
+                  text,
+                  estimatedTokens: estimateTokens(text),
+                };
+              }),
+              createSnapshot: true,
+            });
+          } else {
+            const result = await runStoryMemoryCheckpointBatch({
+              projectId,
+              chapters: batchChapters,
+              previousState: state,
+              memoryPatchMaxTokens: config.memoryPatchMaxTokens || 1200,
+              signal: options.signal,
+              createSnapshot: true,
+              scenario:
+                mode === 'legacy_bootstrap'
+                  ? 'story_memory_checkpoint_legacy_bootstrap'
+                  : 'story_memory_checkpoint',
+            });
+            state = result.state;
+            regeneratedPatches += batchChapters.length;
+          }
+          completedChapters += batchChapters.length;
+          emitProgress(options, {
+            ...baseProgress(),
+            currentPosition: batchChapters[batchChapters.length - 1].position,
+            status: 'saving',
+          });
+        } catch (error) {
+          if (
+            options.signal?.aborted ||
+            (error instanceof StoryMemoryError &&
+              (error.code === 'MEMORY_REBUILD_CANCELLED' ||
+                error.code === 'MEMORY_CHECKPOINT_CANCELLED')) ||
+            (error as { code?: string } | null)?.code === 'cancelled'
+          ) {
+            await db.setStoryMemoryBuildStatus(
+              projectId,
+              'dirty',
+              batchChapters[0]?.position ?? replayStart,
+              '',
+            );
+            throw error instanceof StoryMemoryError
+              ? error
+              : new StoryMemoryError(
+                  'MEMORY_REBUILD_CANCELLED',
+                  '故事记忆重建已取消。',
+                );
+          }
+          const message = error instanceof Error ? error.message : '未知错误';
+          await db.setStoryMemoryBuildStatus(
+            projectId,
+            'failed',
+            batchChapters[0]?.position ?? replayStart,
+            message,
+          );
+          throw new StoryMemoryError(
+            'MEMORY_REBUILD_FAILED',
+            `第 ${
+              (batchChapters[0]?.position ?? 0) + 1
+            } 章起检查点重建失败：${message}`,
+          );
+        }
+      }
+    } else {
+      // Legacy chapter-by-chapter path (bootstrap / scheduler off).
+      for (const chapter of chapters) {
+        if (options.signal?.aborted) {
           await db.setStoryMemoryBuildStatus(
             projectId,
             'dirty',
             chapter.position,
             '',
           );
-          throw error instanceof StoryMemoryError &&
-            error.code === 'MEMORY_REBUILD_CANCELLED'
-            ? error
-            : new StoryMemoryError(
-                'MEMORY_REBUILD_CANCELLED',
-                '故事记忆重建已取消。',
-              );
+          throw new StoryMemoryError(
+            'MEMORY_REBUILD_CANCELLED',
+            '故事记忆重建已取消。',
+          );
         }
-        const message = error instanceof Error ? error.message : '未知错误';
-        await db.setStoryMemoryBuildStatus(
-          projectId,
-          'failed',
-          chapter.position,
-          message,
-        );
-        throw new StoryMemoryError(
-          'MEMORY_REBUILD_FAILED',
-          `第 ${chapter.position + 1} 章故事记忆重建失败：${message}`,
-        );
+        emitProgress(options, {
+          ...baseProgress(),
+          currentPosition: chapter.position,
+        });
+        try {
+          const inputChapter =
+            mode === 'legacy_bootstrap' ? legacyChapter(chapter) : chapter;
+          const sourceFingerprint = fingerprintChapterSource(inputChapter);
+          const existing = await db.getChapterMemoryPatch(chapter.id);
+          let draft;
+          if (
+            existing &&
+            (existing.status === 'applied' || existing.status === 'generated') &&
+            existing.patch.schemaVersion === 1 &&
+            existing.patch.sourceFingerprint === sourceFingerprint &&
+            existing.patch.baseMemoryFingerprint ===
+              fingerprintStoryMemoryState(state)
+          ) {
+            draft = existing.patch.normalizedPatch;
+            reusedPatches += 1;
+          } else {
+            draft = await generateValidatedChapterMemoryPatch({
+              chapter: inputChapter,
+              previousState: state,
+              memoryPatchMaxTokens: config.memoryPatchMaxTokens || 1200,
+              signal: options.signal,
+              scenario:
+                mode === 'legacy_bootstrap'
+                  ? 'story_memory_legacy_bootstrap'
+                  : 'story_memory_patch',
+            });
+            regeneratedPatches += 1;
+          }
+          const applied = applyStoryMemoryPatch(state, draft, {
+            projectId,
+            chapterId: chapter.id,
+            chapterPosition: chapter.position,
+            sourceFingerprint,
+            baseMemoryFingerprint: fingerprintStoryMemoryState(state),
+            now: new Date().toISOString(),
+          });
+          state = applied.state;
+          state.metadata.source =
+            mode === 'legacy_bootstrap' ? 'legacy_bootstrap' : 'native';
+          completedChapters += 1;
+          const isLast = completedChapters === chapters.length;
+          state.metadata.status = isLast ? 'clean' : 'rebuilding';
+          state.metadata.dirtyFromPosition = isLast
+            ? null
+            : chapters[completedChapters]?.position ?? null;
+          emitProgress(options, {
+            ...baseProgress(),
+            currentPosition: chapter.position,
+            status: 'saving',
+          });
+          await db.saveStoryMemoryUpdate({
+            state,
+            patch: applied.resolvedPatch,
+            episodicMemoryText: renderEpisodicMemoryText(draft.episodicSummary),
+            finalizedAt: applied.state.metadata.updatedAt,
+            createSnapshot: isLast,
+          });
+        } catch (error) {
+          if (
+            options.signal?.aborted ||
+            (error instanceof StoryMemoryError &&
+              error.code === 'MEMORY_REBUILD_CANCELLED') ||
+            (error as { code?: string } | null)?.code === 'cancelled'
+          ) {
+            await db.setStoryMemoryBuildStatus(
+              projectId,
+              'dirty',
+              chapter.position,
+              '',
+            );
+            throw error instanceof StoryMemoryError &&
+              error.code === 'MEMORY_REBUILD_CANCELLED'
+              ? error
+              : new StoryMemoryError(
+                  'MEMORY_REBUILD_CANCELLED',
+                  '故事记忆重建已取消。',
+                );
+          }
+          const message = error instanceof Error ? error.message : '未知错误';
+          await db.setStoryMemoryBuildStatus(
+            projectId,
+            'failed',
+            chapter.position,
+            message,
+          );
+          throw new StoryMemoryError(
+            'MEMORY_REBUILD_FAILED',
+            `第 ${chapter.position + 1} 章故事记忆重建失败：${message}`,
+          );
+        }
       }
     }
     if (chapters.length === 0) {

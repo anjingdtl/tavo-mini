@@ -813,60 +813,52 @@ export function validateEntityReferences(
       `新人物临时引用格式无效：${invalidCharacterRef}。tempRef 必须以 new_char_ 开头，后缀只能包含中英文字母、数字、下划线或连字符。`,
     );
   }
-  for (const update of draft.characterUpdates) {
+  // Soft-drop invalid update refs so one bad model reference cannot discard
+  // an otherwise valid multi-character batch.
+  draft.characterUpdates = draft.characterUpdates.filter(update => {
     if (
       !Object.prototype.hasOwnProperty.call(
         state.characters,
         update.characterRef,
       )
     ) {
-      throw new StoryMemoryError(
-        'MEMORY_ENTITY_REFERENCE_INVALID',
-        `人物引用不存在：${update.characterRef}`,
-      );
+      return false;
     }
     if (
       Object.keys(update.profileCorrections || {}).length > 0 &&
       !update.correctionReason?.trim()
     ) {
-      throw new StoryMemoryError(
-        'MEMORY_PATCH_SCHEMA_INVALID',
-        '修正人物固定档案必须提供 correctionReason。',
-      );
+      return false;
     }
-  }
+    return true;
+  });
   const characterRefs = new Set([
     ...Object.keys(state.characters),
     ...newCharacterRefs,
   ]);
-  for (const relationship of draft.newRelationships) {
-    if (
-      !characterRefs.has(relationship.fromRef) ||
-      !characterRefs.has(relationship.toRef) ||
-      relationship.fromRef === relationship.toRef
-    ) {
-      throw new StoryMemoryError(
-        'MEMORY_ENTITY_REFERENCE_INVALID',
-        '关系补丁引用了无效人物或自身关系。',
-      );
-    }
-  }
-  for (const update of draft.relationshipUpdates) {
-    if (!state.relationships[update.relationshipRef]) {
-      throw new StoryMemoryError(
-        'MEMORY_ENTITY_REFERENCE_INVALID',
-        `关系引用不存在：${update.relationshipRef}`,
-      );
-    }
-  }
-  for (const resolution of draft.mainlinePatch.threadResolutions) {
-    if (!state.mainline.openThreads[resolution.threadRef]) {
-      throw new StoryMemoryError(
-        'MEMORY_ENTITY_REFERENCE_INVALID',
-        `待解决线索不存在：${resolution.threadRef}`,
-      );
-    }
-  }
+  draft.newRelationships = draft.newRelationships.filter(
+    relationship =>
+      characterRefs.has(relationship.fromRef) &&
+      characterRefs.has(relationship.toRef) &&
+      relationship.fromRef !== relationship.toRef,
+  );
+  draft.relationshipUpdates = draft.relationshipUpdates.filter(
+    update => Boolean(state.relationships[update.relationshipRef]),
+  );
+  const threadRefs = new Set([
+    ...Object.keys(state.mainline.openThreads),
+    ...draft.mainlinePatch.threadOpens.map(item => item.ref).filter(Boolean),
+  ]);
+  draft.mainlinePatch.threadUpdates = draft.mainlinePatch.threadUpdates.filter(
+    item => Boolean(item.ref) && threadRefs.has(item.ref),
+  );
+  draft.mainlinePatch.threadResolutions =
+    draft.mainlinePatch.threadResolutions.filter(
+      resolution =>
+        Boolean(resolution.threadRef) &&
+        (Boolean(state.mainline.openThreads[resolution.threadRef]) ||
+          threadRefs.has(resolution.threadRef)),
+    );
 }
 
 export function validateChapterMemoryPatch(

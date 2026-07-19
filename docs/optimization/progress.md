@@ -327,3 +327,39 @@
 - Signed Release APK: `dist/apk/release/ShineWriter-V2.5.1-release.apk`, 37,190,635 bytes, SHA-256 `41BE102B8499869118B2B83ABC0E22E3072CA2650A22F98F8E42637BB30BC13A`.
 - Release acceptance: official certificate SHA-256 matched, APK Signature Scheme v2 passed with one signer, 16 KB zipalign verification passed, and AAPT reported `com.shinewriter` / `V2.5.1` / `2050100` / compileSdk 36.
 - Remaining release risks: real external-model semantics and provider behavior, arm64 physical-device llama.cpp performance, vendor-ROM background/TTS/SAF behavior, and the compatibility dialog's third-party native-library 16 KB alignment findings.
+
+## V2.5.6 story-memory checkpoint architecture closure — 2026-07-19
+
+- Status: **verified** and merged to `main`; annotated tag `V2.5.6`.
+- Spec: `docs/superpowers/specs/2026-07-19-story-memory-checkpoint-architecture-spec.md`
+- Branch work: `codex/story-memory-checkpoints` (retired after merge).
+
+### Delivered
+
+- Schema **16**: `project_story_memory_policy`, `story_memory_batches`; migration `v15-to-v16`; fresh schema / manifest / backup restore aligned.
+- Checkpoint policy engine: default `smart` + `intervalChapters=3`; local chapter finalize before long-term memory; pending vs dirty separation.
+- Context composition: Checkpoint + Pending Bridge + Seam; remove unconditional pre-generation `ensureStoryMemoryReady`.
+- Batch rebuild prefers `intervalChapters` (not oversized 10-chapter batches that truncate JSON).
+- Soft-skip missing character/thread/relationship update refs so one bad model ref does not fail the whole batch.
+- Prompt hardening for multi-cast extraction and stable roster ordering.
+- Story Memory UI: policy, pending range, cast map, Chinese status / localized times.
+
+### Acceptance (DeepSeek `deepseek-v4-flash`, emulator)
+
+| Metric | Result |
+| --- | --- |
+| Chapters | 30 final, multi-cast multi-plotline novel |
+| through / status | **29 / clean** |
+| Cast | **11 / 11** expected names |
+| Relationships | **25** |
+| Applied batches | **10** × 3 chapters |
+| Main checkpoint requests | **10** (not 30 per-chapter patches) |
+| Chapter memory_summary | **30/30** non-empty |
+
+Evidence paths (local, gitignored): `test-logs/checkpoint-30ch-20260719/ACCEPTANCE-30CH-REPORT.md`  
+Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
+
+### Mainline hygiene
+
+- Update `README.md` / `CHANGELOG.md` / this progress file for Schema 16 + checkpoint architecture.
+- Push `origin/main`, annotated tag `V2.5.6`, delete feature branch; leave only `main` local + remote.

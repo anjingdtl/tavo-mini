@@ -24,6 +24,14 @@ export interface FinalizeChapterMemoryResult {
   patchId: string;
   episodicMemoryText: string;
   reused: boolean;
+  /** Local chapter finalize always succeeds first when this is true. */
+  chapterFinalized: boolean;
+  /** Whether a long-term checkpoint batch was attempted. */
+  checkpointAttempted: boolean;
+  /** Whether checkpoint batch succeeded. */
+  checkpointUpdated: boolean;
+  pendingCount: number;
+  statusMessage: string;
 }
 
 const projectLocks = new Map<number, Promise<void>>();
@@ -324,12 +332,115 @@ async function previousStateForChapter(
   return record.state;
 }
 
+async function finalizeChapterMemoryLegacyPerChapter(
+  freshChapter: Chapter,
+  options: {
+    forceRegenerate?: boolean;
+    createSnapshot?: boolean;
+    signal?: AbortSignal;
+  },
+): Promise<FinalizeChapterMemoryResult> {
+  const sourceFingerprint = fingerprintChapterSource(freshChapter);
+  const existing = await db.getChapterMemoryPatch(freshChapter.id);
+  const currentRecord = await db.ensureProjectStoryMemoryRow(
+    freshChapter.project_id,
+  );
+  if (
+    !options.forceRegenerate &&
+    existing?.status === 'applied' &&
+    existing.patch.sourceFingerprint === sourceFingerprint &&
+    currentRecord.state.metadata.lastAppliedPatchId === existing.patch.patchId
+  ) {
+    const episodicMemoryText = renderEpisodicMemoryText(
+      existing.patch.episodicSummary,
+      freshChapter,
+    );
+    if (
+      episodicMemoryText &&
+      freshChapter.memory_summary?.trim() !== episodicMemoryText
+    ) {
+      await db.updateChapter(freshChapter.id, {
+        memory_summary: episodicMemoryText,
+        memory_summary_tokens: estimateTokens(episodicMemoryText),
+      });
+      invalidateIdf(freshChapter.project_id);
+    }
+    return {
+      state: currentRecord.state,
+      patchId: existing.patch.patchId,
+      episodicMemoryText,
+      reused: true,
+      chapterFinalized: true,
+      checkpointAttempted: false,
+      checkpointUpdated: false,
+      pendingCount: 0,
+      statusMessage: `故事记忆已更新到第 ${
+        currentRecord.state.throughChapterPosition + 1
+      } 章。`,
+    };
+  }
+
+  try {
+    const previousState = await previousStateForChapter(freshChapter);
+    const contextConfig = await db.getContextConfig();
+    const draft = await generateValidatedChapterMemoryPatch({
+      chapter: freshChapter,
+      previousState,
+      memoryPatchMaxTokens: contextConfig.memoryPatchMaxTokens || 1200,
+      signal: options.signal,
+    });
+    const applied = applyStoryMemoryPatch(previousState, draft, {
+      projectId: freshChapter.project_id,
+      chapterId: freshChapter.id,
+      chapterPosition: freshChapter.position,
+      sourceFingerprint,
+      baseMemoryFingerprint: previousState.metadata.stateFingerprint,
+      now: new Date().toISOString(),
+    });
+    const episodicMemoryText = renderEpisodicMemoryText(
+      draft.episodicSummary,
+      freshChapter,
+    );
+    await db.saveStoryMemoryUpdate({
+      state: applied.state,
+      patch: applied.resolvedPatch,
+      episodicMemoryText,
+      finalizedAt: applied.state.metadata.updatedAt,
+      createSnapshot: options.createSnapshot,
+    });
+    invalidateIdf(freshChapter.project_id);
+    return {
+      state: applied.state,
+      patchId: applied.resolvedPatch.patchId,
+      episodicMemoryText,
+      reused: false,
+      chapterFinalized: true,
+      checkpointAttempted: true,
+      checkpointUpdated: true,
+      pendingCount: 0,
+      statusMessage: `长期记忆已整理到第 ${
+        applied.state.throughChapterPosition + 1
+      } 章。`,
+    };
+  } catch (error) {
+    // Legacy path marked dirty on failure; chapter may already be final.
+    await db.markStoryMemoryDirty(
+      freshChapter.project_id,
+      freshChapter.position,
+      error instanceof Error ? error.message : '故事记忆更新失败。',
+    );
+    throw error;
+  }
+}
+
 export async function finalizeChapterMemory(
   chapterId: number,
   options: {
     forceRegenerate?: boolean;
     createSnapshot?: boolean;
     signal?: AbortSignal;
+    /** Force legacy every-chapter patch path. */
+    legacyEveryChapter?: boolean;
   } = {},
 ): Promise<FinalizeChapterMemoryResult> {
   const chapter = await db.getChapterById(chapterId);
@@ -340,16 +451,29 @@ export async function finalizeChapterMemory(
   return withProjectMemoryLock(chapter.project_id, async () => {
     const freshChapter = await db.getChapterById(chapterId);
     if (!freshChapter) throw new Error('章节不存在。');
+
+    // Step A: local finalize first — never depends on LLM success.
+    const finalizedAt = new Date().toISOString();
+    if (typeof (db as any).finalizeChapterLocally === 'function') {
+      await (db as any).finalizeChapterLocally(freshChapter.id, finalizedAt);
+    } else {
+      await db.updateChapter(freshChapter.id, {
+        status: 'final',
+        finalized_at: finalizedAt,
+      });
+    }
+
     if (
       typeof (db as any).getStructuredStoryMemoryEnabled === 'function' &&
       !(await (db as any).getStructuredStoryMemoryEnabled())
     ) {
       const episodicMemoryText = await generateMemorySummary(chapterId, 200);
-      const finalizedAt = new Date().toISOString();
-      await db.updateChapter(chapterId, {
-        status: 'final',
-        finalized_at: finalizedAt,
-      });
+      if (episodicMemoryText) {
+        await db.updateChapter(chapterId, {
+          memory_summary: episodicMemoryText,
+          memory_summary_tokens: estimateTokens(episodicMemoryText),
+        });
+      }
       invalidateIdf(freshChapter.project_id);
       const record = await db.ensureProjectStoryMemoryRow(
         freshChapter.project_id,
@@ -359,83 +483,150 @@ export async function finalizeChapterMemory(
         patchId: '',
         episodicMemoryText,
         reused: false,
+        chapterFinalized: true,
+        checkpointAttempted: false,
+        checkpointUpdated: false,
+        pendingCount: 0,
+        statusMessage: '章节已定稿。',
       };
     }
-    const sourceFingerprint = fingerprintChapterSource(freshChapter);
-    const existing = await db.getChapterMemoryPatch(chapterId);
-    const currentRecord = await db.ensureProjectStoryMemoryRow(
-      freshChapter.project_id,
+
+    const schedulerEnabled =
+      options.legacyEveryChapter === true
+        ? false
+        : typeof (db as any).getStoryMemoryCheckpointSchedulerEnabled ===
+            'function'
+          ? await (db as any).getStoryMemoryCheckpointSchedulerEnabled()
+          : true;
+
+    if (!schedulerEnabled) {
+      // Compatibility path: every chapter still uses v1 patch generation.
+      return finalizeChapterMemoryLegacyPerChapter(freshChapter, options);
+    }
+
+    const {
+      createDefaultStoryMemoryPolicy,
+      evaluateStoryMemoryDue,
+      listPendingChapters,
+      predictNextCheckpointPosition,
+    } = await import('./storyMemoryPolicy');
+    const { advanceStoryMemoryCheckpointsUnlocked } = await import(
+      './storyMemoryCheckpointService'
     );
+
+    const contextConfig = await db.getContextConfig();
+    const policy =
+      typeof (db as any).ensureStoryMemoryPolicy === 'function'
+        ? await (db as any).ensureStoryMemoryPolicy(
+            freshChapter.project_id,
+            contextConfig.slidingWindowSize,
+          )
+        : createDefaultStoryMemoryPolicy(freshChapter.project_id);
+
+    // every_chapter mode uses batch size 1 path (still one batch request).
+    const useLegacySingle =
+      policy.mode === 'every_chapter' && options.forceRegenerate;
+
+    if (useLegacySingle) {
+      return finalizeChapterMemoryLegacyPerChapter(freshChapter, options);
+    }
+
+    const allChapters = await db.getChaptersByProject(freshChapter.project_id);
+    const record = await db.ensureProjectStoryMemoryRow(freshChapter.project_id);
+    const pending = listPendingChapters(
+      allChapters.filter(
+        item =>
+          Boolean(item.content?.trim()) &&
+          (item.status === 'final' ||
+            item.finalized_at != null ||
+            item.id === freshChapter.id),
+      ),
+      record.state.throughChapterPosition,
+    );
+    // Ensure current chapter is counted even if status race.
     if (
-      !options.forceRegenerate &&
-      existing?.status === 'applied' &&
-      existing.patch.sourceFingerprint === sourceFingerprint &&
-      currentRecord.state.metadata.lastAppliedPatchId === existing.patch.patchId
+      !pending.some(item => item.id === freshChapter.id) &&
+      freshChapter.position > record.state.throughChapterPosition
     ) {
-      const episodicMemoryText = renderEpisodicMemoryText(
-        existing.patch.episodicSummary,
-        freshChapter,
+      pending.push(freshChapter);
+      pending.sort((a, b) => a.position - b.position);
+    }
+
+    const due = evaluateStoryMemoryDue({
+      policy,
+      checkpointThroughPosition: record.state.throughChapterPosition,
+      pendingChapters: pending,
+      dirty: record.status === 'dirty',
+    });
+
+    if (!due.due) {
+      const nextPos = predictNextCheckpointPosition(
+        policy,
+        record.state.throughChapterPosition,
+        pending.length,
       );
-      if (
-        episodicMemoryText &&
-        freshChapter.memory_summary?.trim() !== episodicMemoryText
-      ) {
-        await db.updateChapter(chapterId, {
-          memory_summary: episodicMemoryText,
-          memory_summary_tokens: estimateTokens(episodicMemoryText),
-        });
-        invalidateIdf(freshChapter.project_id);
-      }
       return {
-        state: currentRecord.state,
-        patchId: existing.patch.patchId,
-        episodicMemoryText,
-        reused: true,
+        state: record.state,
+        patchId: record.state.metadata.lastAppliedPatchId || '',
+        episodicMemoryText: freshChapter.memory_summary || '',
+        reused: false,
+        chapterFinalized: true,
+        checkpointAttempted: false,
+        checkpointUpdated: false,
+        pendingCount: pending.length,
+        statusMessage:
+          pending.length > 0
+            ? `长期记忆待整理 ${pending.length} 章${
+                nextPos != null ? `，将在第 ${nextPos} 章后更新` : ''
+              }。`
+            : '章节已定稿。',
       };
     }
 
     try {
-      const previousState = await previousStateForChapter(freshChapter);
-      const contextConfig = await db.getContextConfig();
-      const draft = await generateValidatedChapterMemoryPatch({
-        chapter: freshChapter,
-        previousState,
-        memoryPatchMaxTokens: contextConfig.memoryPatchMaxTokens || 1200,
+      const throughPosition =
+        due.throughPosition ?? freshChapter.position;
+      const advanced = await advanceStoryMemoryCheckpointsUnlocked({
+        projectId: freshChapter.project_id,
+        throughPosition,
         signal: options.signal,
       });
-      const applied = applyStoryMemoryPatch(previousState, draft, {
-        projectId: freshChapter.project_id,
-        chapterId: freshChapter.id,
-        chapterPosition: freshChapter.position,
-        sourceFingerprint,
-        baseMemoryFingerprint: previousState.metadata.stateFingerprint,
-        now: new Date().toISOString(),
-      });
-      const episodicMemoryText = renderEpisodicMemoryText(
-        draft.episodicSummary,
-        freshChapter,
-      );
-      await db.saveStoryMemoryUpdate({
-        state: applied.state,
-        patch: applied.resolvedPatch,
-        episodicMemoryText,
-        finalizedAt: applied.state.metadata.updatedAt,
-        createSnapshot: options.createSnapshot,
-      });
-      invalidateIdf(freshChapter.project_id);
       return {
-        state: applied.state,
-        patchId: applied.resolvedPatch.patchId,
-        episodicMemoryText,
+        state: advanced.state,
+        patchId: advanced.state.metadata.lastAppliedPatchId || '',
+        episodicMemoryText: freshChapter.memory_summary || '',
         reused: false,
+        chapterFinalized: true,
+        checkpointAttempted: true,
+        checkpointUpdated: advanced.batchesApplied > 0,
+        pendingCount: advanced.pendingRemaining,
+        statusMessage: `长期记忆已整理到第 ${
+          advanced.state.throughChapterPosition + 1
+        } 章。`,
       };
     } catch (error) {
-      await db.markStoryMemoryDirty(
+      // Chapter stays final; old checkpoint preserved.
+      const message =
+        error instanceof Error ? error.message : '长期记忆整理失败';
+      await db.setStoryMemoryBuildStatus(
         freshChapter.project_id,
-        freshChapter.position,
-        error instanceof Error ? error.message : '故事记忆更新失败。',
+        record.status === 'dirty' ? 'dirty' : record.status,
+        record.dirtyFromPosition,
+        message,
       );
-      throw error;
+      return {
+        state: record.state,
+        patchId: record.state.metadata.lastAppliedPatchId || '',
+        episodicMemoryText: freshChapter.memory_summary || '',
+        reused: false,
+        chapterFinalized: true,
+        checkpointAttempted: true,
+        checkpointUpdated: false,
+        pendingCount: pending.length,
+        statusMessage: `章节已定稿，但长期记忆整理失败。正文已安全保存，可稍后重试。${
+          message ? `（${message.slice(0, 80)}）` : ''
+        }`,
+      };
     }
   });
 }

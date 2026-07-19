@@ -82,6 +82,32 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     restoreOrder: 37,
   },
   {
+    name: 'project_story_memory_policy',
+    columns: [
+      'project_id', 'mode', 'interval_chapters', 'pending_token_soft_limit',
+      'update_on_key_chapter', 'updated_at',
+    ],
+    backup: true,
+    restoreOrder: 38,
+  },
+  {
+    name: 'story_memory_batches',
+    columns: [
+      'batch_id', 'project_id', 'from_chapter_id', 'from_position',
+      'through_chapter_id', 'through_position', 'schema_version',
+      'source_fingerprint', 'base_state_fingerprint', 'result_state_fingerprint',
+      'patch_json', 'chapter_summaries_json', 'estimated_tokens', 'status',
+      'last_error', 'generated_at', 'applied_at',
+    ],
+    indexes: [
+      'idx_story_memory_batches_project_range',
+      'idx_story_memory_batches_project_through',
+      'idx_story_memory_batches_status',
+    ],
+    backup: true,
+    restoreOrder: 39,
+  },
+  {
     name: 'plotlines',
     columns: ['id', 'project_id', 'name', 'description', 'color'],
     backup: true,
