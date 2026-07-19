@@ -329,11 +329,237 @@ export type StoryMemoryErrorCode =
   | 'MEMORY_TRANSACTION_FAILED'
   | 'MEMORY_REBUILD_CANCELLED'
   | 'MEMORY_REBUILD_FAILED'
-  | 'MEMORY_STATE_CORRUPTED';
+  | 'MEMORY_STATE_CORRUPTED'
+  | 'MEMORY_CHECKPOINT_INVALID_JSON'
+  | 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
+  | 'MEMORY_CHECKPOINT_EVIDENCE_NOT_FOUND'
+  | 'MEMORY_CHECKPOINT_RANGE_MISMATCH'
+  | 'MEMORY_CHECKPOINT_COVERAGE_GAP'
+  | 'MEMORY_CHECKPOINT_TRANSACTION_FAILED'
+  | 'MEMORY_CHECKPOINT_CANCELLED'
+  | 'MEMORY_CHECKPOINT_FAILED';
 
 export class StoryMemoryError extends Error {
   constructor(public readonly code: StoryMemoryErrorCode, message: string) {
     super(message);
     this.name = 'StoryMemoryError';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint architecture (Schema 16 / batch patches)
+// ---------------------------------------------------------------------------
+
+export type StoryMemoryUpdateMode =
+  | 'smart'
+  | 'fixed'
+  | 'every_chapter'
+  | 'manual';
+
+export interface StoryMemoryPolicy {
+  projectId: number;
+  mode: StoryMemoryUpdateMode;
+  /** 2～10；默认 3 */
+  intervalChapters: number;
+  /** 默认取 slidingWindowSize 的 60% 或 2400 */
+  pendingTokenSoftLimit: number;
+  updateOnKeyChapter: boolean;
+  updatedAt: string;
+}
+
+export interface StoryMemoryDueDecision {
+  due: boolean;
+  hard: boolean;
+  reason:
+    | 'none'
+    | 'interval_reached'
+    | 'pending_token_limit'
+    | 'coverage_gap'
+    | 'key_chapter'
+    | 'manual'
+    | 'dirty_rebuild';
+  fromPosition: number | null;
+  throughPosition: number | null;
+}
+
+export interface StoryMemoryCoveragePlan {
+  checkpointThroughPosition: number;
+  pendingChapters: import('../../types/novel').Chapter[];
+  seamChapter: import('../../types/novel').Chapter | null;
+  rawChapterIds: number[];
+  episodicFallbackChapterIds: number[];
+  uncoveredChapterIds: number[];
+  estimatedRawTokens: number;
+  hardDue: boolean;
+  reason: string;
+}
+
+export interface BatchEvidenceQuote {
+  chapterId: number;
+  quote: string;
+}
+
+export interface BatchChapterSummary {
+  chapterId: number;
+  chapterPosition: number;
+  brief: string;
+  keywords: string[];
+  events: string[];
+  characterChanges: string[];
+  relationshipChanges: string[];
+  mainlineChanges: string[];
+  newThreads: string[];
+  resolvedThreads: string[];
+}
+
+export interface BatchNewCharacterPatch {
+  tempRef: string;
+  canonicalName: string;
+  aliases: string[];
+  role: string;
+  identity: string;
+  stableTraits: string[];
+  initialState: Partial<StoryCharacterCurrentState>;
+  status: StoryCharacterStatus;
+  evidence: BatchEvidenceQuote[];
+}
+
+export interface BatchCharacterUpdatePatch {
+  characterRef: string;
+  addAliases: string[];
+  profileCorrections: Partial<StoryCharacter['immutableProfile']>;
+  stateChanges: Partial<
+    Omit<StoryCharacterCurrentState, 'knowledge' | 'possessions' | 'secrets'>
+  >;
+  status?: StoryCharacterStatus;
+  correctionReason: string;
+  addKnowledge: string[];
+  removeKnowledge: string[];
+  addPossessions: string[];
+  removePossessions: string[];
+  addSecrets: string[];
+  removeSecrets: string[];
+  clearFields: string[];
+  evidence: BatchEvidenceQuote[];
+}
+
+export interface BatchNewRelationshipPatch {
+  tempRef: string;
+  fromRef: string;
+  toRef: string;
+  direction: RelationshipDirection;
+  relationType: string;
+  currentState: string;
+  trustLevel: StoryTrustLevel;
+  publicStatus: string;
+  hiddenStatus: string;
+  reason: string;
+  evidence: BatchEvidenceQuote[];
+}
+
+export interface BatchRelationshipUpdatePatch {
+  relationshipRef: string;
+  currentState?: string;
+  trustLevel?: StoryTrustLevel;
+  publicStatus?: string;
+  hiddenStatus?: string;
+  reason?: string;
+  evidence: BatchEvidenceQuote[];
+}
+
+export interface BatchMainlineEntityPatch {
+  ref: string;
+  title: string;
+  description?: string;
+  state?: string;
+  stakes?: string;
+  parties?: string[];
+  ownerCharacterRefs?: string[];
+  priority?: StoryThread['priority'];
+  deadlineOrTrigger?: string;
+  setup?: string;
+  expectedPayoff?: string;
+  status?: StoryForeshadowing['status'];
+  evidence: BatchEvidenceQuote[];
+}
+
+export interface BatchMainlinePatch {
+  currentArcUpdate: {
+    action: 'none' | 'start' | 'update' | 'complete';
+    arcRef: string;
+    name: string;
+    summary: string;
+    evidence: BatchEvidenceQuote[];
+  };
+  currentObjective?: { value: string; evidence: BatchEvidenceQuote[] };
+  conflictUpserts: BatchMainlineEntityPatch[];
+  threadOpens: BatchMainlineEntityPatch[];
+  threadUpdates: BatchMainlineEntityPatch[];
+  threadResolutions: Array<{
+    threadRef: string;
+    resolution: string;
+    evidence: BatchEvidenceQuote[];
+  }>;
+  foreshadowingUpserts: BatchMainlineEntityPatch[];
+  timelineAnchors: Array<{
+    ref: string;
+    label: string;
+    timeDescription: string;
+    event: string;
+    pinned: boolean;
+    evidence: BatchEvidenceQuote[];
+  }>;
+  completedBeats: Array<{
+    ref: string;
+    summary: string;
+    evidence: BatchEvidenceQuote[];
+  }>;
+}
+
+export interface StoryMemoryBatchPatchDraft {
+  schemaVersion: 2;
+  rangeRef: {
+    fromChapterId: number;
+    fromPosition: number;
+    throughChapterId: number;
+    throughPosition: number;
+  };
+  chapterSummaries: BatchChapterSummary[];
+  newCharacters: BatchNewCharacterPatch[];
+  characterUpdates: BatchCharacterUpdatePatch[];
+  newRelationships: BatchNewRelationshipPatch[];
+  relationshipUpdates: BatchRelationshipUpdatePatch[];
+  mainlinePatch: BatchMainlinePatch;
+}
+
+export type StoryMemoryBatchStatus =
+  | 'generated'
+  | 'applied'
+  | 'failed'
+  | 'invalidated';
+
+export interface StoredStoryMemoryBatch {
+  batchId: string;
+  projectId: number;
+  fromChapterId: number;
+  fromPosition: number;
+  throughChapterId: number;
+  throughPosition: number;
+  schemaVersion: 2;
+  sourceFingerprint: string;
+  baseStateFingerprint: string;
+  resultStateFingerprint: string;
+  patch: StoryMemoryBatchPatchDraft;
+  chapterSummaries: BatchChapterSummary[];
+  estimatedTokens: number;
+  status: StoryMemoryBatchStatus;
+  lastError: string;
+  generatedAt: string;
+  appliedAt: string | null;
+}
+
+export interface ApplyBatchPatchResult {
+  state: StoryMemoryState;
+  resolvedBatch: StoredStoryMemoryBatch;
+  warnings: StoryMemoryWarning[];
 }
