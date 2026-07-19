@@ -171,6 +171,7 @@ dist/apk/                         本地 APK 交付目录
 - TTS 的可用音色、后台行为和性能受 Android 版本及设备厂商实现影响。
 - API 37 x86_64 模拟器会报告部分原生库的 16KB page-size/RELRO 兼容提示；ARM64 物理设备发布前仍需补验。
 - V2.5.6 已完成 x86_64 模拟器上的检查点架构 30 章多人物多线验收（11 人物 / 25 关系 / 10 批次 / through=29 clean）；arm64 真机与本地 GGUF 长上下文仍需专项验收。
+- dirty 重建已修复“变更批重生后仍复用后续旧批次”的问题（作废 applied 批次 + dirty 路径禁止 reuse + 矛盾事实 prompt）；首轮事实替换仍依赖模型质量，模拟器终验记录见 `test-logs/story-memory-emulator-final/EMULATOR-VALIDATION-REPORT.md`（本地产物）。
 
 ## English summary
 
