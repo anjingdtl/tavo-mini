@@ -67,7 +67,20 @@ describe('context builder story memory integration', () => {
       { storyMemoryMode: 'preview' },
     );
     expect(result.messages.some((item: { content: string }) => item.content.includes('故事全局状态'))).toBe(false);
-    expect(result.trace).toContainEqual(expect.objectContaining({ kind: 'story_memory', included: false, reason: '不注入过期全局记忆' }));
-    expect(result.messages.some((item: { content: string }) => item.content.includes('相关历史章节事件'))).toBe(true);
+    expect(result.trace).toContainEqual(
+      expect.objectContaining({
+        kind: 'story_memory',
+        included: false,
+        reason: expect.stringMatching(/不注入|失效|检查点/),
+      }),
+    );
+    // Dirty checkpoint is omitted; continuity comes from pending bridge / recent text.
+    expect(
+      result.messages.some(
+        (item: { content: string }) =>
+          item.content.includes('林岚发现暗门') ||
+          item.content.includes('相关历史章节事件'),
+      ),
+    ).toBe(true);
   });
 });

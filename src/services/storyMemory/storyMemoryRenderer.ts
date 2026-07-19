@@ -44,7 +44,11 @@ export function renderStoryMemoryForContext(
     `- 关键时间锚点：${Object.values(mainline.timelineAnchors).filter(item => item.pinned).map(item => `[${item.id}] ${item.timeDescription}：${item.event}`).join('；') || '无'}`,
     `- 最近完成节点：${mainline.recentCompletedBeats.map(item => item.summary).join('；') || '无'}`,
   ];
-  const prefix = `以下是截至上一已定稿章节的全局故事状态，属于连续性约束。\n除非当前章节明确改变它，否则不得违背。\n\n【故事全局状态｜截至第 ${state.throughChapterPosition + 1} 章】`;
+  const throughLabel =
+    state.throughChapterPosition >= 0
+      ? `第 ${state.throughChapterPosition + 1} 章`
+      : '开篇前';
+  const prefix = `以下是截至${throughLabel}整理并验证的长期故事状态。\n${throughLabel}之后的近期正文可能包含更新；若两者冲突，以章节位置更晚的近期正文为准。\n除非近期正文或当前写作要求明确改变，否则不得违背该长期状态。\n\n【故事全局状态｜截至${throughLabel}】`;
   const selectedCharacters: typeof characterItems = [];
   const selectedRelationships: typeof relationshipItems = [];
   const render = () => [
