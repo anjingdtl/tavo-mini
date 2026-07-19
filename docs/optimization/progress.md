@@ -382,6 +382,46 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 - `__tests__/storyMemoryPrompts.test.ts` — prompt contains contradiction rules.
 - Focused: story-memory related suites **20 / 20 pass**; `tsc --noEmit` pass.
 
-### Remaining risk
+### Remaining risk (pre sign-off)
 
 - Model may still under-extract a replaced object name even when batches are fully regenerated; structural reuse bug is closed. Re-run scenario C on a debug APK after this commit for product sign-off.
+
+## V2.5.6 scenario C emulator sign-off — 2026-07-19
+
+- Status: **product sign-off PASS**
+- Commit under test: `a6b90e2` (`fix(story-memory): invalidate applied batches on dirty rebuild`)
+- APK: `dist/apk/debug/ShineWriter-V2.5.6-debug.apk` (rebuilt and installed after the fix)
+- Device: emulator-5554 · `sdk_gphone16k_x86_64` · Android 17 · x86_64
+- Disposable project: `SC07192130` (id=8)
+- Local evidence (gitignored): `test-logs/story-memory-scenario-c-signoff/SCENARIO-C-SIGNOFF-REPORT.md`
+
+### Flow executed
+
+1. Seed 6 chapters with distinctive facts (ch2 = 红色钥匙); policy `fixed` / N=3.
+2. Finalize ch1–6 via UI → clean / through=5; two applied batches `0→2` and `3→5`; long-term state contains 红色钥匙.
+3. Change ch2 body to 蓝色徽章; mark dirty (`dirty_from_position=1`); invalidate applied batches with `through_position >= 1`.
+4. Open Story Memory UI → 需要重新整理 / 第2章 / 需重新整理.
+5. Tap 立即整理长期记忆; wait for rebuild complete.
+
+### Product checks
+
+| Check | Result |
+| --- | --- |
+| setup clean through=5 | PASS |
+| dirty status + applied batches invalidated (2) | PASS |
+| dirty UI status / position / coverage | PASS |
+| rebuild clean through≥5, dirty cleared | PASS |
+| long-term memory contains 蓝色徽章 | **PASS** |
+| long-term memory no longer current-facts 红色钥匙 | **PASS** (`contains_red_key=false`) |
+| UI restored 正常 / 完整 | PASS |
+| fingerprint chain after rebuild (0→2 result == 3→5 base) | PASS |
+
+### Notes
+
+- Pre-fix P1 (first rebuild kept blue out of `memory_json`) is closed on this run.
+- `batch_3_5` may keep the same `batch_id` string when chapter 3–5 content fingerprints are unchanged; base/result fingerprints were updated and chained to the new 0→2 batch — not silent reuse of the pre-edit world.
+- LLM usage on project 8: `story_memory_checkpoint` ×4, `story_memory_checkpoint_repair` ×2 (includes setup batches + dirty rebuild).
+
+### Residual risk
+
+- Pure UI text edit path (without SQL seed for Chinese body) was not re-driven; markDirty via app `updateChapter` remains the production path and is covered by unit tests + this dirty rebuild exercise.

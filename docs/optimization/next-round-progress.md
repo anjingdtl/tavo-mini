@@ -21,7 +21,15 @@
 - 背景：V2.5.6 模拟器终验 `test-logs/story-memory-emulator-final/` 判定「有条件交付」；P1 为 dirty 首轮重建后新事实未稳定写入长期记忆。
 - 根因：`markStoryMemoryDirty` 未作废已 applied 的检查点批次，重建可能只重生变更批并复用后续旧批次。
 - 修复：作废 `through >= dirty_from` 的 applied 批次；dirty 重建禁止 reuse 并级联强制重生；checkpoint prompt 强化矛盾事实纠正。
-- 状态：代码 + 单测已完成，见 `docs/optimization/progress.md` 同日条目；建议装 Debug APK 复跑场景 C 作产品签收。
+- 状态：代码 + 单测已完成（`a6b90e2`）。
+
+### 场景 C 签收（同日）
+
+- 安装：`ShineWriter-V2.5.6-debug.apk`（含 `a6b90e2`）→ emulator-5554。
+- 项目：`SC07192130`；流程：6 章定稿至 through=5 → 第2章改蓝色徽章 → dirty → 立即整理。
+- **产品签收 PASS**：dirty UI/作废批次/重建覆盖到第6章；`memory_json` 含蓝色徽章且 `contains_red_key=false`；指纹链连续。
+- 证据（gitignore）：`test-logs/story-memory-scenario-c-signoff/SCENARIO-C-SIGNOFF-REPORT.md`。
+- 详情：`docs/optimization/progress.md` →「V2.5.6 scenario C emulator sign-off」。
 
 ## Workstream A：自动保存可靠性
 
