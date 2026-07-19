@@ -4,10 +4,21 @@ import { all, one } from '../connection/query';
 import { executeTransaction, type SqlStatement } from '../connection/transaction';
 import { canonicalStringify } from '../../services/storyMemory/storyMemoryFingerprint';
 import { createEmptyStoryMemory } from '../../services/storyMemory/storyMemoryDefaults';
+import {
+  clampIntervalChapters,
+  createDefaultStoryMemoryPolicy,
+  normalizeStoryMemoryMode,
+} from '../../services/storyMemory/storyMemoryPolicy';
 import type {
+  BatchChapterSummary,
   StoredChapterMemoryPatch,
+  StoredStoryMemoryBatch,
+  StoryMemoryBatchPatchDraft,
+  StoryMemoryBatchStatus,
   StoryMemoryBuildStatus,
+  StoryMemoryPolicy,
   StoryMemoryState,
+  StoryMemoryUpdateMode,
 } from '../../services/storyMemory/storyMemoryTypes';
 import { StoryMemoryError } from '../../services/storyMemory/storyMemoryTypes';
 import { estimateTokens } from '../../utils/tokenEstimator';
@@ -87,6 +98,47 @@ export interface SaveStoryMemoryUpdateInput {
   episodicMemoryText: string;
   finalizedAt: string;
   createSnapshot?: boolean;
+}
+
+export interface SaveStoryMemoryBatchUpdateInput {
+  previousFingerprint: string;
+  state: StoryMemoryState;
+  batch: StoredStoryMemoryBatch;
+  chapterSummaries: Array<{
+    chapterId: number;
+    text: string;
+    estimatedTokens: number;
+  }>;
+  createSnapshot?: boolean;
+}
+
+interface PolicyDbRow {
+  project_id: number;
+  mode: string;
+  interval_chapters: number;
+  pending_token_soft_limit: number;
+  update_on_key_chapter: number;
+  updated_at: string;
+}
+
+interface BatchDbRow {
+  batch_id: string;
+  project_id: number;
+  from_chapter_id: number;
+  from_position: number;
+  through_chapter_id: number;
+  through_position: number;
+  schema_version: number;
+  source_fingerprint: string;
+  base_state_fingerprint: string;
+  result_state_fingerprint: string;
+  patch_json: string;
+  chapter_summaries_json: string;
+  estimated_tokens: number;
+  status: StoryMemoryBatchStatus;
+  last_error: string;
+  generated_at: string;
+  applied_at: string | null;
 }
 
 function parseJson<T>(json: string, label: string): T {
@@ -303,11 +355,359 @@ export async function setStoryMemoryBuildStatus(
 
 export async function clearStoryMemory(projectId: number): Promise<void> {
   await executeTransaction(await openDatabase(), [
+    { sql: 'DELETE FROM story_memory_batches WHERE project_id = ?', params: [projectId] },
     { sql: 'DELETE FROM story_memory_snapshots WHERE project_id = ?', params: [projectId] },
     { sql: 'DELETE FROM chapter_memory_patches WHERE project_id = ?', params: [projectId] },
+    { sql: 'DELETE FROM project_story_memory_policy WHERE project_id = ?', params: [projectId] },
     { sql: 'DELETE FROM project_story_memory WHERE project_id = ?', params: [projectId] },
   ]);
 }
+
+function mapPolicyRow(row: PolicyDbRow): StoryMemoryPolicy {
+  return createDefaultStoryMemoryPolicy(row.project_id, {
+    mode: normalizeStoryMemoryMode(row.mode),
+    intervalChapters: clampIntervalChapters(row.interval_chapters),
+    pendingTokenSoftLimit: row.pending_token_soft_limit,
+    updateOnKeyChapter: row.update_on_key_chapter !== 0,
+    updatedAt: row.updated_at,
+  });
+}
+
+function mapBatchRow(row: BatchDbRow): StoredStoryMemoryBatch {
+  return {
+    batchId: row.batch_id,
+    projectId: row.project_id,
+    fromChapterId: row.from_chapter_id,
+    fromPosition: row.from_position,
+    throughChapterId: row.through_chapter_id,
+    throughPosition: row.through_position,
+    schemaVersion: 2,
+    sourceFingerprint: row.source_fingerprint,
+    baseStateFingerprint: row.base_state_fingerprint,
+    resultStateFingerprint: row.result_state_fingerprint,
+    patch: parseJson<StoryMemoryBatchPatchDraft>(row.patch_json, '检查点批次补丁'),
+    chapterSummaries: parseJson<BatchChapterSummary[]>(
+      row.chapter_summaries_json,
+      '检查点章节摘要',
+    ),
+    estimatedTokens: row.estimated_tokens,
+    status: row.status,
+    lastError: row.last_error,
+    generatedAt: row.generated_at,
+    appliedAt: row.applied_at,
+  };
+}
+
+export async function getStoryMemoryPolicy(
+  projectId: number,
+): Promise<StoryMemoryPolicy | null> {
+  const row = await one<PolicyDbRow>(
+    'SELECT * FROM project_story_memory_policy WHERE project_id = ?',
+    [projectId],
+  );
+  return row ? mapPolicyRow(row) : null;
+}
+
+export async function ensureStoryMemoryPolicy(
+  projectId: number,
+  slidingWindowSize?: number,
+): Promise<StoryMemoryPolicy> {
+  const existing = await getStoryMemoryPolicy(projectId);
+  if (existing) return existing;
+  const pendingTokenSoftLimit = Math.max(
+    200,
+    Math.round((slidingWindowSize || 4000) * 0.6),
+  );
+  const policy = createDefaultStoryMemoryPolicy(projectId, {
+    pendingTokenSoftLimit,
+  });
+  await upsertStoryMemoryPolicy(policy);
+  return policy;
+}
+
+export async function upsertStoryMemoryPolicy(
+  policy: StoryMemoryPolicy,
+): Promise<StoryMemoryPolicy> {
+  const mode = normalizeStoryMemoryMode(policy.mode);
+  const intervalChapters = clampIntervalChapters(policy.intervalChapters);
+  if (intervalChapters !== policy.intervalChapters || mode !== policy.mode) {
+    // repository-side clamp; callers may still validate UI input.
+  }
+  if (
+    !Number.isFinite(policy.pendingTokenSoftLimit) ||
+    policy.pendingTokenSoftLimit < 200
+  ) {
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+      'pendingTokenSoftLimit 无效。',
+    );
+  }
+  const normalized = createDefaultStoryMemoryPolicy(policy.projectId, {
+    ...policy,
+    mode,
+    intervalChapters,
+    updatedAt: policy.updatedAt || new Date().toISOString(),
+  });
+  await execute(
+    await openDatabase(),
+    `INSERT OR REPLACE INTO project_story_memory_policy (
+      project_id, mode, interval_chapters, pending_token_soft_limit,
+      update_on_key_chapter, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      normalized.projectId,
+      normalized.mode,
+      normalized.intervalChapters,
+      normalized.pendingTokenSoftLimit,
+      normalized.updateOnKeyChapter ? 1 : 0,
+      normalized.updatedAt,
+    ],
+  );
+  return normalized;
+}
+
+export async function getStoryMemoryBatch(
+  batchId: string,
+): Promise<StoredStoryMemoryBatch | null> {
+  const row = await one<BatchDbRow>(
+    'SELECT * FROM story_memory_batches WHERE batch_id = ?',
+    [batchId],
+  );
+  return row ? mapBatchRow(row) : null;
+}
+
+export async function listStoryMemoryBatches(
+  projectId: number,
+  statuses?: StoryMemoryBatchStatus[],
+): Promise<StoredStoryMemoryBatch[]> {
+  if (statuses && statuses.length > 0) {
+    const placeholders = statuses.map(() => '?').join(', ');
+    const rows = await all<BatchDbRow>(
+      `SELECT * FROM story_memory_batches
+       WHERE project_id = ? AND status IN (${placeholders})
+       ORDER BY through_position ASC`,
+      [projectId, ...statuses],
+    );
+    return rows.map(mapBatchRow);
+  }
+  const rows = await all<BatchDbRow>(
+    `SELECT * FROM story_memory_batches
+     WHERE project_id = ? ORDER BY through_position ASC`,
+    [projectId],
+  );
+  return rows.map(mapBatchRow);
+}
+
+export async function upsertStoryMemoryBatch(
+  batch: StoredStoryMemoryBatch,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    `INSERT OR REPLACE INTO story_memory_batches (
+      batch_id, project_id, from_chapter_id, from_position,
+      through_chapter_id, through_position, schema_version,
+      source_fingerprint, base_state_fingerprint, result_state_fingerprint,
+      patch_json, chapter_summaries_json, estimated_tokens, status,
+      last_error, generated_at, applied_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      batch.batchId,
+      batch.projectId,
+      batch.fromChapterId,
+      batch.fromPosition,
+      batch.throughChapterId,
+      batch.throughPosition,
+      batch.sourceFingerprint,
+      batch.baseStateFingerprint,
+      batch.resultStateFingerprint,
+      canonicalStringify(batch.patch),
+      canonicalStringify(batch.chapterSummaries),
+      batch.estimatedTokens,
+      batch.status,
+      batch.lastError,
+      batch.generatedAt,
+      batch.appliedAt,
+    ],
+  );
+}
+
+export async function invalidateStoryMemoryBatchesOverlapping(
+  projectId: number,
+  fromPosition: number,
+  toPosition: number = Number.MAX_SAFE_INTEGER,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    `UPDATE story_memory_batches
+     SET status = 'invalidated', last_error = ?
+     WHERE project_id = ?
+       AND status IN ('generated', 'failed')
+       AND from_position <= ?
+       AND through_position >= ?`,
+    [
+      'pending 范围章节已变更',
+      projectId,
+      toPosition,
+      fromPosition,
+    ],
+  );
+}
+
+export async function finalizeChapterLocally(
+  chapterId: number,
+  finalizedAt: string,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    `UPDATE chapters SET status = 'final', finalized_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [finalizedAt, finalizedAt, chapterId],
+  );
+}
+
+export async function saveStoryMemoryBatchUpdate(
+  input: SaveStoryMemoryBatchUpdateInput,
+): Promise<void> {
+  const { state, batch } = input;
+  const current = await getProjectStoryMemory(state.projectId);
+  if (!current) {
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_TRANSACTION_FAILED',
+      '项目故事记忆不存在，无法保存检查点。',
+    );
+  }
+  if (current.state.metadata.stateFingerprint !== input.previousFingerprint) {
+    throw new StoryMemoryError(
+      'MEMORY_BASE_FINGERPRINT_MISMATCH',
+      '故事记忆基础指纹已变化，检查点未写入。',
+    );
+  }
+  const stateJson = canonicalStringify(state);
+  const statements: SqlStatement[] = [
+    {
+      sql: `INSERT OR REPLACE INTO story_memory_batches (
+        batch_id, project_id, from_chapter_id, from_position,
+        through_chapter_id, through_position, schema_version,
+        source_fingerprint, base_state_fingerprint, result_state_fingerprint,
+        patch_json, chapter_summaries_json, estimated_tokens, status,
+        last_error, generated_at, applied_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, 'applied', '', ?, ?)`,
+      params: [
+        batch.batchId,
+        batch.projectId,
+        batch.fromChapterId,
+        batch.fromPosition,
+        batch.throughChapterId,
+        batch.throughPosition,
+        batch.sourceFingerprint,
+        batch.baseStateFingerprint,
+        batch.resultStateFingerprint || state.metadata.stateFingerprint,
+        canonicalStringify(batch.patch),
+        canonicalStringify(batch.chapterSummaries),
+        batch.estimatedTokens,
+        batch.generatedAt,
+        batch.appliedAt || state.metadata.updatedAt,
+      ],
+    },
+    {
+      sql: `INSERT OR REPLACE INTO project_story_memory (
+        project_id, schema_version, through_chapter_id,
+        through_chapter_position, memory_json, estimated_tokens,
+        state_fingerprint, last_applied_patch_id, status, source,
+        dirty_from_position, last_error, updated_at
+      ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        state.projectId,
+        state.throughChapterId,
+        state.throughChapterPosition,
+        stateJson,
+        state.metadata.estimatedTokens,
+        state.metadata.stateFingerprint,
+        state.metadata.lastAppliedPatchId,
+        state.metadata.status,
+        state.metadata.source,
+        state.metadata.dirtyFromPosition,
+        state.metadata.lastError,
+        state.metadata.updatedAt,
+      ],
+    },
+  ];
+  for (const summary of input.chapterSummaries) {
+    statements.push({
+      sql: `UPDATE chapters SET memory_summary = ?, memory_summary_tokens = ?,
+        updated_at = ? WHERE id = ?`,
+      params: [
+        summary.text,
+        summary.estimatedTokens,
+        state.metadata.updatedAt,
+        summary.chapterId,
+      ],
+    });
+  }
+  const shouldSnapshot =
+    input.createSnapshot !== false && state.throughChapterId != null;
+  if (shouldSnapshot) {
+    statements.push(
+      {
+        sql: `INSERT OR REPLACE INTO story_memory_snapshots (
+          project_id, through_chapter_id, through_chapter_position,
+          memory_json, estimated_tokens, state_fingerprint, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        params: [
+          state.projectId,
+          state.throughChapterId,
+          state.throughChapterPosition,
+          stateJson,
+          state.metadata.estimatedTokens,
+          state.metadata.stateFingerprint,
+          state.metadata.updatedAt,
+        ],
+      },
+      {
+        sql: `DELETE FROM story_memory_snapshots
+          WHERE project_id = ? AND id NOT IN (
+            SELECT id FROM story_memory_snapshots WHERE project_id = ?
+            ORDER BY through_chapter_position DESC LIMIT ?
+          )`,
+        params: [
+          state.projectId,
+          state.projectId,
+          STORY_MEMORY_MAX_SNAPSHOTS_PER_PROJECT,
+        ],
+      },
+    );
+  }
+  try {
+    await executeTransaction(await openDatabase(), statements);
+  } catch (error) {
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_TRANSACTION_FAILED',
+      error instanceof Error ? error.message : '检查点事务失败。',
+    );
+  }
+}
+
+/** Mark dirty only when edited/deleted position is within checkpoint coverage. */
+export async function markStoryMemoryDirtyIfCovered(
+  projectId: number,
+  affectedPosition: number,
+  reason = '',
+): Promise<'dirty' | 'pending_invalidated' | 'none'> {
+  const record = await getProjectStoryMemory(projectId);
+  if (!record) return 'none';
+  if (affectedPosition <= record.state.throughChapterPosition) {
+    await markStoryMemoryDirty(projectId, affectedPosition, reason);
+    return 'dirty';
+  }
+  await invalidateStoryMemoryBatchesOverlapping(
+    projectId,
+    affectedPosition,
+    affectedPosition,
+  );
+  return 'pending_invalidated';
+}
+
+export type { StoryMemoryUpdateMode };
 
 export async function saveStoryMemoryUpdate(
   input: SaveStoryMemoryUpdateInput,

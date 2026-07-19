@@ -36,6 +36,7 @@ const KIND_ICON: Record<ContextSourceKind, React.ComponentType<{ size: number; c
   chapter: BookOpen,
   memory: Brain,
   story_memory: Brain,
+  story_memory_bridge: BookOpen,
   character: Users,
   note: StickyNote,
   worldbook: Globe,

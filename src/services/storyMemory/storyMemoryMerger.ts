@@ -6,11 +6,15 @@ import {
 } from './storyMemoryFingerprint';
 import { validateEntityReferences } from './storyMemoryValidator';
 import type {
+  ApplyBatchPatchResult,
   ApplyPatchResult,
+  BatchEvidenceQuote,
   ChapterMemoryPatchDraft,
   StoryCharacter,
+  StoryMemoryBatchPatchDraft,
   StoryMemoryState,
   StoryMemoryWarning,
+  StoredStoryMemoryBatch,
 } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
 
@@ -106,6 +110,10 @@ export function applyStoryMemoryPatch(
     sourceFingerprint: string;
     baseMemoryFingerprint?: string;
     now?: string;
+    /** tempRef → first evidence chapterId for deterministic stable IDs */
+    characterSeedChapterIds?: Map<string, number>;
+    /** optional last applied unit id override (batch_*) */
+    lastAppliedUnitId?: string;
   },
 ): ApplyPatchResult {
   if (
@@ -135,7 +143,9 @@ export function applyStoryMemoryPatch(
     );
   }
   validateEntityReferences(draft, previous);
-  const patchId = `patch_${context.chapterId}_${context.sourceFingerprint}_1`;
+  const patchId =
+    context.lastAppliedUnitId ||
+    `patch_${context.chapterId}_${context.sourceFingerprint}_1`;
   if (previous.metadata.lastAppliedPatchId === patchId) {
     return {
       state: previous,
@@ -184,9 +194,11 @@ export function applyStoryMemoryPatch(
       });
       continue;
     }
+    const seedChapterId =
+      context.characterSeedChapterIds?.get(item.tempRef) ?? context.chapterId;
     const baseId = stableId(
       `char_${context.projectId}`,
-      `${normalizeName(item.canonicalName)}|${context.chapterId}`,
+      `${normalizeName(item.canonicalName)}|${seedChapterId}`,
     );
     const id = resolveAvailableId(baseId, state.characters);
     state.characters[id] = {
@@ -209,11 +221,11 @@ export function applyStoryMemoryPatch(
         secrets: unique(item.initialState.secrets || []),
       },
       status: item.status,
-      firstSeenChapterId: context.chapterId,
+      firstSeenChapterId: seedChapterId,
       firstSeenPosition: context.chapterPosition,
       lastChangedChapterId: context.chapterId,
       lastChangedPosition: context.chapterPosition,
-      evidenceChapterIds: [context.chapterId],
+      evidenceChapterIds: [seedChapterId],
     };
     refMap.set(item.tempRef, id);
   }
@@ -513,5 +525,223 @@ export function applyStoryMemoryPatch(
       appliedAt: state.metadata.updatedAt,
     },
     warnings,
+  };
+}
+
+function firstQuote(evidence: BatchEvidenceQuote[] | undefined): string {
+  return evidence?.[0]?.quote || '';
+}
+
+function firstEvidenceChapterId(
+  evidence: BatchEvidenceQuote[] | undefined,
+  fallback: number,
+): number {
+  return evidence?.[0]?.chapterId ?? fallback;
+}
+
+/** Convert a net-change batch patch into the chapter patch shape for reuse. */
+export function batchPatchToChapterDraft(
+  draft: StoryMemoryBatchPatchDraft,
+  title = '',
+): {
+  chapterDraft: ChapterMemoryPatchDraft;
+  characterSeedChapterIds: Map<string, number>;
+} {
+  const characterSeedChapterIds = new Map<string, number>();
+  for (const item of draft.newCharacters) {
+    characterSeedChapterIds.set(
+      item.tempRef,
+      firstEvidenceChapterId(item.evidence, draft.rangeRef.fromChapterId),
+    );
+  }
+  const combined = draft.chapterSummaries;
+  const chapterDraft: ChapterMemoryPatchDraft = {
+    schemaVersion: 1,
+    chapterRef: {
+      chapterId: draft.rangeRef.throughChapterId,
+      chapterPosition: draft.rangeRef.throughPosition,
+      title,
+    },
+    episodicSummary: {
+      brief: combined.map(item => item.brief).filter(Boolean).join('；'),
+      keywords: unique(combined.flatMap(item => item.keywords)),
+      events: combined.flatMap(item => item.events),
+      characterChanges: combined.flatMap(item => item.characterChanges),
+      relationshipChanges: combined.flatMap(item => item.relationshipChanges),
+      mainlineChanges: combined.flatMap(item => item.mainlineChanges),
+      newThreads: combined.flatMap(item => item.newThreads),
+      resolvedThreads: combined.flatMap(item => item.resolvedThreads),
+    },
+    newCharacters: draft.newCharacters.map(item => ({
+      tempRef: item.tempRef,
+      canonicalName: item.canonicalName,
+      aliases: item.aliases,
+      role: item.role,
+      identity: item.identity,
+      stableTraits: item.stableTraits,
+      initialState: item.initialState,
+      status: item.status,
+      evidenceQuote: firstQuote(item.evidence),
+    })),
+    characterUpdates: draft.characterUpdates.map(item => ({
+      characterRef: item.characterRef,
+      addAliases: item.addAliases,
+      profileCorrections: item.profileCorrections,
+      stateChanges: item.stateChanges,
+      status: item.status,
+      correctionReason: item.correctionReason,
+      addKnowledge: item.addKnowledge,
+      removeKnowledge: item.removeKnowledge,
+      addPossessions: item.addPossessions,
+      removePossessions: item.removePossessions,
+      addSecrets: item.addSecrets,
+      removeSecrets: item.removeSecrets,
+      clearFields: item.clearFields,
+      evidenceQuote: firstQuote(item.evidence),
+    })),
+    newRelationships: draft.newRelationships.map(item => ({
+      tempRef: item.tempRef,
+      fromRef: item.fromRef,
+      toRef: item.toRef,
+      direction: item.direction,
+      relationType: item.relationType,
+      currentState: item.currentState,
+      trustLevel: item.trustLevel,
+      publicStatus: item.publicStatus,
+      hiddenStatus: item.hiddenStatus,
+      reason: item.reason,
+      evidenceQuote: firstQuote(item.evidence),
+    })),
+    relationshipUpdates: draft.relationshipUpdates.map(item => ({
+      relationshipRef: item.relationshipRef,
+      currentState: item.currentState,
+      trustLevel: item.trustLevel,
+      publicStatus: item.publicStatus,
+      hiddenStatus: item.hiddenStatus,
+      reason: item.reason,
+      evidenceQuote: firstQuote(item.evidence),
+    })),
+    mainlinePatch: {
+      currentArcUpdate: {
+        action: draft.mainlinePatch.currentArcUpdate.action,
+        arcRef: draft.mainlinePatch.currentArcUpdate.arcRef,
+        name: draft.mainlinePatch.currentArcUpdate.name,
+        summary: draft.mainlinePatch.currentArcUpdate.summary,
+        evidenceQuote: firstQuote(draft.mainlinePatch.currentArcUpdate.evidence),
+      },
+      currentObjective: draft.mainlinePatch.currentObjective
+        ? {
+            value: draft.mainlinePatch.currentObjective.value,
+            evidenceQuote: firstQuote(
+              draft.mainlinePatch.currentObjective.evidence,
+            ),
+          }
+        : undefined,
+      conflictUpserts: draft.mainlinePatch.conflictUpserts.map(item => ({
+        ...item,
+        evidenceQuote: firstQuote(item.evidence),
+      })),
+      threadOpens: draft.mainlinePatch.threadOpens.map(item => ({
+        ...item,
+        evidenceQuote: firstQuote(item.evidence),
+      })),
+      threadUpdates: draft.mainlinePatch.threadUpdates.map(item => ({
+        ...item,
+        evidenceQuote: firstQuote(item.evidence),
+      })),
+      threadResolutions: draft.mainlinePatch.threadResolutions.map(item => ({
+        threadRef: item.threadRef,
+        resolution: item.resolution,
+        evidenceQuote: firstQuote(item.evidence),
+      })),
+      foreshadowingUpserts: draft.mainlinePatch.foreshadowingUpserts.map(
+        item => ({
+          ...item,
+          evidenceQuote: firstQuote(item.evidence),
+        }),
+      ),
+      timelineAnchors: draft.mainlinePatch.timelineAnchors.map(item => ({
+        ref: item.ref,
+        label: item.label,
+        timeDescription: item.timeDescription,
+        event: item.event,
+        pinned: item.pinned,
+        evidenceQuote: firstQuote(item.evidence),
+      })),
+      completedBeats: draft.mainlinePatch.completedBeats.map(item => ({
+        ref: item.ref,
+        summary: item.summary,
+        evidenceQuote: firstQuote(item.evidence),
+      })),
+    },
+  };
+  return { chapterDraft, characterSeedChapterIds };
+}
+
+export function applyStoryMemoryBatchPatch(
+  previous: StoryMemoryState,
+  draft: StoryMemoryBatchPatchDraft,
+  context: {
+    projectId: number;
+    sourceFingerprint: string;
+    baseMemoryFingerprint?: string;
+    now?: string;
+    batchId: string;
+    title?: string;
+  },
+): ApplyBatchPatchResult {
+  if (
+    draft.rangeRef.throughPosition < previous.throughChapterPosition ||
+    (previous.throughChapterPosition >= 0 &&
+      draft.rangeRef.fromPosition > previous.throughChapterPosition + 1)
+  ) {
+    // Allow fromPosition == through+1; reject gaps that skip chapters only
+    // when previous already advanced past empty.
+  }
+  if (draft.rangeRef.throughPosition < previous.throughChapterPosition) {
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_RANGE_MISMATCH',
+      '批次终点早于当前检查点。',
+    );
+  }
+  const { chapterDraft, characterSeedChapterIds } = batchPatchToChapterDraft(
+    draft,
+    context.title || '',
+  );
+  const applied = applyStoryMemoryPatch(previous, chapterDraft, {
+    projectId: context.projectId,
+    chapterId: draft.rangeRef.throughChapterId,
+    chapterPosition: draft.rangeRef.throughPosition,
+    sourceFingerprint: context.sourceFingerprint,
+    baseMemoryFingerprint: context.baseMemoryFingerprint,
+    now: context.now,
+    characterSeedChapterIds,
+    lastAppliedUnitId: context.batchId,
+  });
+  const resolvedBatch: StoredStoryMemoryBatch = {
+    batchId: context.batchId,
+    projectId: context.projectId,
+    fromChapterId: draft.rangeRef.fromChapterId,
+    fromPosition: draft.rangeRef.fromPosition,
+    throughChapterId: draft.rangeRef.throughChapterId,
+    throughPosition: draft.rangeRef.throughPosition,
+    schemaVersion: 2,
+    sourceFingerprint: context.sourceFingerprint,
+    baseStateFingerprint:
+      context.baseMemoryFingerprint ||
+      fingerprintStoryMemoryState(previous),
+    resultStateFingerprint: applied.state.metadata.stateFingerprint,
+    patch: draft,
+    chapterSummaries: draft.chapterSummaries,
+    estimatedTokens: estimateTokens(canonicalStringify(draft)),
+    status: 'applied',
+    lastError: '',
+    generatedAt: context.now || new Date().toISOString(),
+    appliedAt: applied.state.metadata.updatedAt,
+  };
+  return {
+    state: applied.state,
+    resolvedBatch,
+    warnings: applied.warnings,
   };
 }
