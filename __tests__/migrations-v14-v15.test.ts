@@ -13,9 +13,10 @@ describe('schema 15 story memory migration', () => {
     const result = await runMigrations(mock.database as any, 14);
     expect(result).toEqual(expect.objectContaining({
       fromVersion: 14,
-      toVersion: 15,
-      migrationsRun: 1,
+      toVersion: SCHEMA_VERSION,
+      migrationsRun: expect.any(Number),
     }));
+    expect(result.toVersion).toBeGreaterThanOrEqual(15);
     for (const table of [
       'project_story_memory',
       'chapter_memory_patches',
@@ -24,7 +25,7 @@ describe('schema 15 story memory migration', () => {
       expect(mock.schemas.has(table)).toBe(true);
     }
     expect(mock.indexes).toEqual(expect.objectContaining({}));
-    expect(mock.settings.get('schema_version')).toBe('15');
+    expect(mock.settings.get('schema_version')).toBe(String(SCHEMA_VERSION));
   });
 
   it('uses idempotent create statements through the migration entry point', async () => {
@@ -52,7 +53,7 @@ describe('schema 15 story memory migration', () => {
     expect(joined).toContain('CREATE TABLE IF NOT EXISTS project_story_memory');
     expect(joined).toContain('CREATE TABLE IF NOT EXISTS chapter_memory_patches');
     expect(joined).toContain('CREATE TABLE IF NOT EXISTS story_memory_snapshots');
-    expect(SCHEMA_VERSION).toBe(15);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(15);
     for (const tableName of [
       'project_story_memory',
       'chapter_memory_patches',

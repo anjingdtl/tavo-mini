@@ -57,6 +57,7 @@ describe('structured story memory baseline protection', () => {
         { ...chapter, memory_summary: '钟楼暗门事件' },
         { ...chapter, id: 2, position: 1, title: '第二章', content: '' },
       ]),
+      getProjectStoryMemory: jest.fn(async () => null),
       getCharactersByProject: jest.fn(async () => [
         {
           id: 10,
@@ -87,13 +88,29 @@ describe('structured story memory baseline protection', () => {
       7,
     );
 
-    expect(result.messages.map((message: { content: string }) => message.content)).toEqual([
-      expect.stringContaining('经验丰富'),
-      expect.stringContaining('设定资料'),
-      expect.stringContaining('相关历史章节事件'),
-      expect.stringContaining('最近前文正文'),
-      expect.stringContaining('当前章节'),
-    ]);
+    const contents = result.messages.map(
+      (message: { content: string }) => message.content,
+    );
+    // Checkpoint architecture: system → resources → (optional episodic) →
+    // pending bridge/seam → instruction. Raw bridge chapters are excluded
+    // from episodic Top-K to avoid duplicate injection.
+    expect(contents[0]).toEqual(expect.stringContaining('经验丰富'));
+    const resourceIndex = contents.findIndex((text: string) =>
+      text.includes('设定资料'),
+    );
+    const bridgeIndex = contents.findIndex(
+      (text: string) =>
+        text.includes('近期正文') ||
+        text.includes('最近前文') ||
+        text.includes('桥接'),
+    );
+    const instructionIndex = contents.findIndex((text: string) =>
+      text.includes('当前章节'),
+    );
+    expect(resourceIndex).toBeGreaterThan(0);
+    expect(bridgeIndex).toBeGreaterThan(resourceIndex);
+    expect(instructionIndex).toBeGreaterThan(bridgeIndex);
+    expect(contents[bridgeIndex]).toContain('林岚在雨夜推开钟楼暗门');
   });
 
   it('invalidates an IDF signature when a summary changes without changing length', () => {

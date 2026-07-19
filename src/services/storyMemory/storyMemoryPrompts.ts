@@ -1,7 +1,19 @@
 import type { Chapter } from '../../types/novel';
 import { canonicalStringify } from './storyMemoryFingerprint';
 import { createEmptyChapterMemoryPatch } from './storyMemoryDefaults';
-import type { StoryMemoryState } from './storyMemoryTypes';
+import type {
+  StoryMemoryBatchPatchDraft,
+  StoryMemoryState,
+} from './storyMemoryTypes';
+
+/**
+ * Prompt schema templates must preserve insertion order so models fill
+ * characters before long chapterSummaries (truncation resilience).
+ * Do NOT use canonicalStringify here — it sorts keys alphabetically.
+ */
+function promptStringify(value: unknown): string {
+  return JSON.stringify(value);
+}
 
 export const STORY_MEMORY_SYSTEM_PROMPT = `你是小说连续性记录器，不是小说作者。
 
@@ -12,6 +24,15 @@ export const STORY_MEMORY_SYSTEM_PROMPT = `你是小说连续性记录器，不�
 每个更新必须提供一段可在正文中找到的简短原文 evidenceQuote；直接连续复制正文文字，不得改词、增词或概括。
 已有实体必须使用输入中给出的精确 ID。
 新实体只能使用 new_char_*、new_rel_*、new_thread_* 等临时引用；每个临时引用必须唯一，后缀只能包含中英文字母、数字、下划线或连字符（例如 new_char_石璐、new_char_1）。
+
+【人物抽取硬性要求——优先于“缩短输出”】
+1. 本章正文中每一个有姓名（或明确称呼可当姓名）且参与行动/对话/被点名的人物，若还不在【已知人物名册】中，必须进入 newCharacters。
+2. 不得因为人物戏份少、只出场一次、是配角/路人具名角色就省略。
+3. 已在名册中的人物：若本章状态有变化，用 characterUpdates；若无变化则不要重复加入 newCharacters。
+4. 禁止用“净变化/无重要变化”为借口清空 newCharacters；名册外具名角色遗漏视为错误。
+5. 输出时优先写 newCharacters / characterUpdates / newRelationships，再写 episodicSummary，避免长度截断丢失人物。
+6. 宁可多记具名人物、字段从简，也不要漏人。
+
 未发生变化的字段不要输出；范式要求的数组无变化时输出空数组。
 无法确认时保留为空数组，不得猜测。
 只要章节正文非空，episodicSummary.brief 必须是一句基于正文的非空简短事件摘要。
@@ -26,32 +47,99 @@ const PATCH_ITEM_CONTRACT = `数组项字段契约（字段名必须逐字一致
 - threadResolutions[]: {"threadRef":"已有精确ID","resolution":"","evidenceQuote":"正文原句"}
 - timelineAnchors[]: {"ref":"new_time_唯一标识","label":"","timeDescription":"","event":"","pinned":false,"evidenceQuote":"正文原句"}
 - completedBeats[]: {"ref":"new_beat_唯一标识","summary":"","evidenceQuote":"正文原句"}
-每个 newCharacters 项必须同时包含唯一 tempRef 和非空 canonicalName。每条关系必须连接两个不同的真实人物引用。`;
+每个 newCharacters 项必须同时包含唯一 tempRef 和非空 canonicalName。每条关系必须连接两个不同的真实人物引用。
+evidenceQuote 从正文连续复制 4～80 字，必须与正文同语言且可定位。`;
 
-function compactState(state: StoryMemoryState): string {
+/** Compact previous state for prompt input; roster first so models see known names. */
+export function compactState(state: StoryMemoryState): string {
+  const characters = Object.values(state.characters);
+  const roster = characters
+    .map(
+      character =>
+        `${character.id}|${character.canonicalName}${
+          character.aliases.length
+            ? `(${character.aliases.slice(0, 4).join('/')})`
+            : ''
+        }`,
+    )
+    .sort();
   return canonicalStringify({
     throughChapterPosition: state.throughChapterPosition,
-    characters: Object.values(state.characters).map(character => ({
+    knownCharacterCount: characters.length,
+    characterRoster: roster,
+    characters: characters.map(character => ({
       id: character.id,
       canonicalName: character.canonicalName,
       aliases: character.aliases,
-      currentState: character.currentState,
+      role: character.role,
       status: character.status,
+      currentState: character.currentState,
     })),
-    relationships: Object.values(state.relationships),
-    mainline: state.mainline,
+    relationships: Object.values(state.relationships).map(relationship => ({
+      id: relationship.id,
+      fromCharacterId: relationship.fromCharacterId,
+      toCharacterId: relationship.toCharacterId,
+      direction: relationship.direction,
+      relationType: relationship.relationType,
+      currentState: relationship.currentState,
+      trustLevel: relationship.trustLevel,
+    })),
+    mainline: {
+      currentArc: state.mainline.currentArc,
+      currentObjective: state.mainline.currentObjective,
+      activeConflicts: state.mainline.activeConflicts,
+      openThreads: state.mainline.openThreads,
+      foreshadowing: state.mainline.foreshadowing,
+      timelineAnchors: state.mainline.timelineAnchors,
+      recentCompletedBeats: state.mainline.recentCompletedBeats.slice(-8),
+      recentResolvedThreads: state.mainline.recentResolvedThreads.slice(-8),
+      archiveDigest: state.mainline.archiveDigest
+        ? state.mainline.archiveDigest.slice(-800)
+        : '',
+    },
   });
+}
+
+function characterExtractionUserBlock(state: StoryMemoryState): string {
+  const names = Object.values(state.characters)
+    .map(character => character.canonicalName)
+    .filter(Boolean)
+    .sort();
+  return [
+    '【已知人物名册——禁止把下列人物再放入 newCharacters】',
+    names.length
+      ? names.map(name => `- ${name}`).join('\n')
+      : '- （空，开篇检查点：所有具名出场人物都应进入 newCharacters）',
+    '',
+    '【人物抽取检查清单】',
+    '1. 扫读本批/本章全部姓名与明确称呼。',
+    '2. 不在名册中的具名角色 → newCharacters（每人一条，tempRef 唯一）。',
+    '3. 已在名册中且本章有位置/目标/物品/关系等变化 → characterUpdates。',
+    '4. 新出现的人物关系 → newRelationships 或 relationshipUpdates。',
+    '5. 程序会保留上一检查点全部旧人物；你不需要也不能删除旧人物，但必须补全新人物。',
+  ].join('\n');
 }
 
 export function buildStoryMemoryPatchMessages(
   chapter: Chapter,
   state: StoryMemoryState,
 ): Array<{ role: 'system' | 'user'; content: string }> {
+  // Prefer character fields before episodicSummary so truncation keeps people.
   const schema = createEmptyChapterMemoryPatch({
     chapterId: chapter.id,
     chapterPosition: chapter.position,
     title: chapter.title,
   });
+  const orderedSchema = {
+    schemaVersion: schema.schemaVersion,
+    chapterRef: schema.chapterRef,
+    newCharacters: schema.newCharacters,
+    characterUpdates: schema.characterUpdates,
+    newRelationships: schema.newRelationships,
+    relationshipUpdates: schema.relationshipUpdates,
+    mainlinePatch: schema.mainlinePatch,
+    episodicSummary: schema.episodicSummary,
+  };
   return [
     { role: 'system', content: STORY_MEMORY_SYSTEM_PROMPT },
     {
@@ -60,6 +148,8 @@ export function buildStoryMemoryPatchMessages(
         '【上一版已验证故事状态】',
         compactState(state),
         '',
+        characterExtractionUserBlock(state),
+        '',
         '【当前章节】',
         `ID：${chapter.id}`,
         `位置：${chapter.position}`,
@@ -67,8 +157,8 @@ export function buildStoryMemoryPatchMessages(
         `概要：${chapter.synopsis || '无'}`,
         `正文：\n${chapter.content}`,
         '',
-        '【严格输出范式】',
-        canonicalStringify(schema),
+        '【严格输出范式——请按此字段顺序填写，人物字段优先】',
+        promptStringify(orderedSchema),
         '',
         PATCH_ITEM_CONTRACT,
       ].join('\n'),
@@ -86,7 +176,206 @@ export function buildStoryMemoryRepairMessages(
     { role: 'assistant', content: invalidOutput },
     {
       role: 'user',
-      content: `上一个 JSON 无效：${validationError}\n只修复结构、引用和证据问题。不要重新创作或增加事实，只输出修复后的 JSON 对象。`,
+      content: [
+        `上一个 JSON 无效：${validationError}`,
+        '只修复结构、引用和证据问题。不要重新创作剧情。',
+        '禁止通过删除 newCharacters / characterUpdates / newRelationships 条目来“绕过”校验。',
+        '若 evidenceQuote 不合格：改为从对应章节正文逐字复制 4～80 字连续原文。',
+        '若 tempRef 冲突：改为唯一 tempRef，并同步改写关系引用。',
+        '修复后仍须覆盖原文中全部具名新人物。',
+        '只输出修复后的完整 JSON 对象。',
+      ].join('\n'),
+    },
+  ];
+}
+
+export const STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT = `你是小说连续性记录器，不是小说作者。
+
+任务：阅读“上一检查点状态”和“一批连续章节正文”，输出从检查点到批次末尾的**净变化**批量 JSON。
+
+【“净变化”的正确定义】
+- 指：字段取值应反映批次末尾的最终状态（例如人物最后所在地），而不是逐章操作日志。
+- 不指：可以省略本批新出现的人物/关系。
+- 程序会保留上一检查点的全部旧人物；你只需补“本批新增”和“本批有变化的更新”。
+
+你不得续写、猜测、补全、评价或美化。
+你不得输出完整 StoryMemoryState，只能输出指定的 batch patch JSON。
+所有会改变状态的条目必须提供 evidence 数组；每条 evidence 必须包含 chapterId 与可在对应章节正文中找到的原文 quote。
+已有实体必须使用输入检查点中的精确 ID。
+新实体只能使用 new_char_*、new_rel_*、new_thread_* 等临时引用；每个临时引用必须在本批次内唯一。
+同一人物在批次中间的临时状态不要写入最终 current state；最终状态必须反映批次末尾。
+
+【人物抽取硬性要求——长篇连续性的核心】
+1. 本批任一章正文里出现的具名角色，若不在【已知人物名册】，必须进入 newCharacters。
+2. 配角、一次性出场、仅对话被称呼的具名角色也要记录；不得只保留主角。
+3. 禁止把多名不同人物合并成一个 canonicalName。
+4. 禁止因“净变化/缩短输出/不重要”而清空或大幅削减 newCharacters。
+5. 输出字段顺序必须优先：newCharacters → characterUpdates → newRelationships → relationshipUpdates → mainlinePatch → chapterSummaries。
+6. 若输出长度紧张：先保证人物与关系完整，chapterSummaries 的 events 可缩短，但每章 brief 仍须非空。
+7. 重建场景与增量场景规则相同：每一批都要把该批新出现的具名角色全部写入。
+
+chapterSummaries 必须与输入章节一一对应、顺序一致，不得缺章或重复；中间发生又撤销的事件写进对应章节摘要，但不要污染最终全局状态。
+只输出一个 JSON 对象，不要输出 Markdown、解释或代码围栏。`;
+
+const BATCH_ITEM_CONTRACT = `数组项字段契约：
+- evidence[]: {"chapterId":数字,"quote":"对应章节正文原句4-80字连续复制"}
+- newCharacters[]: {"tempRef":"new_char_唯一","canonicalName":"姓名","aliases":[],"role":"身份角色可短","identity":"","stableTraits":[],"initialState":{"location":"批次末位置优先","physicalState":"","emotionalState":"","currentGoal":"","knowledge":[],"possessions":[],"secrets":[]},"status":"active","evidence":[{"chapterId":首次出场章ID,"quote":"含姓名的正文原句"}]}
+- characterUpdates[]: {"characterRef":"已有精确ID","addAliases":[],"profileCorrections":{},"stateChanges":{},"correctionReason":"","addKnowledge":[],"removeKnowledge":[],"addPossessions":[],"removePossessions":[],"addSecrets":[],"removeSecrets":[],"clearFields":[],"evidence":[]}
+- newRelationships[]: {"tempRef":"new_rel_唯一","fromRef":"已有ID或本批new_char_*","toRef":"已有ID或本批new_char_*","direction":"directed或bidirectional","relationType":"","currentState":"","trustLevel":"unknown","publicStatus":"","hiddenStatus":"","reason":"","evidence":[]}
+- relationshipUpdates[]: {"relationshipRef":"已有精确ID","currentState":"","trustLevel":"unknown","publicStatus":"","hiddenStatus":"","reason":"","evidence":[]}
+- chapterSummaries[]: {"chapterId":数字,"chapterPosition":数字,"brief":"非空一句","keywords":[],"events":[],"characterChanges":["可列本章涉及人物名"],"relationshipChanges":[],"mainlineChanges":[],"newThreads":[],"resolvedThreads":[]}
+- mainlinePatch 与单章协议类似，但 evidenceQuote 改为 evidence 数组。
+填写顺序：先人物与关系，后章节摘要。newCharacters 宁可多不可漏。`;
+
+function createEmptyBatchPatch(chapters: Chapter[]): StoryMemoryBatchPatchDraft {
+  const ordered = [...chapters].sort((a, b) => a.position - b.position);
+  const first = ordered[0];
+  const last = ordered[ordered.length - 1];
+  return {
+    schemaVersion: 2,
+    rangeRef: {
+      fromChapterId: first.id,
+      fromPosition: first.position,
+      throughChapterId: last.id,
+      throughPosition: last.position,
+    },
+    // Character fields first in object order (prompt + stringify) so truncation
+    // is less likely to drop the cast.
+    newCharacters: [],
+    characterUpdates: [],
+    newRelationships: [],
+    relationshipUpdates: [],
+    mainlinePatch: {
+      currentArcUpdate: {
+        action: 'none',
+        arcRef: '',
+        name: '',
+        summary: '',
+        evidence: [],
+      },
+      conflictUpserts: [],
+      threadOpens: [],
+      threadUpdates: [],
+      threadResolutions: [],
+      foreshadowingUpserts: [],
+      timelineAnchors: [],
+      completedBeats: [],
+    },
+    chapterSummaries: ordered.map(chapter => ({
+      chapterId: chapter.id,
+      chapterPosition: chapter.position,
+      brief: '',
+      keywords: [],
+      events: [],
+      characterChanges: [],
+      relationshipChanges: [],
+      mainlineChanges: [],
+      newThreads: [],
+      resolvedThreads: [],
+    })),
+  };
+}
+
+/** Stable field order for model output: people before long summaries. */
+function orderedBatchSchemaForPrompt(
+  draft: StoryMemoryBatchPatchDraft,
+): Record<string, unknown> {
+  return {
+    schemaVersion: draft.schemaVersion,
+    rangeRef: draft.rangeRef,
+    newCharacters: draft.newCharacters,
+    characterUpdates: draft.characterUpdates,
+    newRelationships: draft.newRelationships,
+    relationshipUpdates: draft.relationshipUpdates,
+    mainlinePatch: draft.mainlinePatch,
+    chapterSummaries: draft.chapterSummaries,
+  };
+}
+
+export function buildStoryMemoryCheckpointMessages(
+  chapters: Chapter[],
+  state: StoryMemoryState,
+): Array<{ role: 'system' | 'user'; content: string }> {
+  const ordered = [...chapters].sort((a, b) => a.position - b.position);
+  const schema = createEmptyBatchPatch(ordered);
+  const chapterBlocks = ordered
+    .map(
+      chapter =>
+        [
+          `--- 章节 ---`,
+          `ID：${chapter.id}`,
+          `位置：${chapter.position}`,
+          `标题：${chapter.title}`,
+          `概要：${chapter.synopsis || '无'}`,
+          `正文：\n${chapter.content}`,
+        ].join('\n'),
+    )
+    .join('\n\n');
+  return [
+    { role: 'system', content: STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: [
+        '【上一检查点已验证故事状态】',
+        compactState(state),
+        '',
+        characterExtractionUserBlock(state),
+        '',
+        `【本批次范围】共 ${ordered.length} 章，position ${ordered[0].position}～${
+          ordered[ordered.length - 1].position
+        }。须抽取本批全部具名新人物。`,
+        '',
+        '【本批次章节（按 position 升序）】',
+        chapterBlocks,
+        '',
+        '【严格输出范式——字段顺序即填写优先级】',
+        promptStringify(orderedBatchSchemaForPrompt(schema)),
+        '',
+        BATCH_ITEM_CONTRACT,
+      ].join('\n'),
+    },
+  ];
+}
+
+export function buildStoryMemoryCheckpointRepairMessages(
+  originalMessages: Array<{ role: 'system' | 'user'; content: string }>,
+  invalidOutput: string,
+  validationError: string,
+): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+  return [
+    ...originalMessages,
+    { role: 'assistant', content: invalidOutput },
+    {
+      role: 'user',
+      content: [
+        `上一个批量检查点 JSON 无效：${validationError}`,
+        '只修复结构、range、章节摘要对应、引用和证据问题。不要重新创作剧情。',
+        '禁止删除 newCharacters 来通过校验；证据不合格时改为正文原句 quote。',
+        '禁止把本批具名新人物从结果中拿掉。',
+        '修复后仍须：chapterSummaries 一章一条；newCharacters 覆盖本批所有名册外具名角色。',
+        '优先保证人物/关系数组完整，再压缩摘要字段。',
+        '只输出修复后的完整 JSON 对象。',
+      ].join('\n'),
+    },
+  ];
+}
+
+export function buildStoryMemoryCheckpointRetryMessages(
+  originalMessages: Array<{ role: 'system' | 'user'; content: string }>,
+  validationError: string,
+): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    ...originalMessages,
+    {
+      role: 'user',
+      content: [
+        `上一次批量检查点生成失败：${validationError}`,
+        '请丢弃之前的不完整输出，严格按范式重新生成完整 JSON 对象。',
+        '不要为了缩短输出而省略 newCharacters。',
+        '字段顺序：newCharacters → characterUpdates → relationships → mainline → chapterSummaries。',
+        '本批正文中每一个不在已知名册的具名角色都必须出现在 newCharacters。',
+        '必须闭合所有对象和数组，只输出一个完整 JSON 对象。',
+      ].join('\n'),
     },
   ];
 }
@@ -102,7 +391,8 @@ export function buildStoryMemoryFreshRetryMessages(
       content: [
         `前两次输出无效：${validationError}`,
         '从头重新生成完整 JSON，不要续写上一次被截断的内容。',
-        '只记录本章确有证据的增量；没有变化的数组保持为空，以缩短输出。',
+        '优先完整输出 newCharacters / characterUpdates / newRelationships。',
+        '不得为缩短输出而漏掉具名新人物；摘要字段可以更短，但人物数组必须完整。',
         '必须闭合所有对象和数组，只输出一个完整 JSON 对象。',
       ].join('\n'),
     },

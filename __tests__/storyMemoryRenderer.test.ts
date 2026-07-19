@@ -50,7 +50,7 @@ describe('story memory context renderer', () => {
     expect(result.text).toContain('二、人物关系');
     expect(result.text).toContain('三、故事主线');
     expect(result.text).toContain('暗门通向何处');
-    expect(result.text).toContain('属于连续性约束');
+    expect(result.text).toContain('长期故事状态');
   });
 
   it('prioritizes a currently mentioned character when the budget clips details', () => {

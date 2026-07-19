@@ -3,6 +3,7 @@ export type ContextSourceKind =
   | 'chapter'
   | 'memory'
   | 'story_memory'
+  | 'story_memory_bridge'
   | 'character'
   | 'note'
   | 'worldbook'
