@@ -32,7 +32,11 @@ describe('StoryMemoryScreen', () => {
     state.metadata.status = 'dirty';
     state.metadata.dirtyFromPosition = 0;
     state.mainline.currentObjective = '调查钟楼';
-    mockEnsure.mockResolvedValue({ state, status: 'dirty', dirtyFromPosition: 0 });
+    mockEnsure.mockResolvedValue({
+      state,
+      status: 'dirty',
+      dirtyFromPosition: 0,
+    });
     mockEnsurePolicy.mockResolvedValue({
       projectId: 7,
       mode: 'smart',
@@ -45,7 +49,14 @@ describe('StoryMemoryScreen', () => {
     mockGetChapters.mockResolvedValue([]);
     mockUpsertPolicy.mockImplementation(async (policy: unknown) => policy);
     mockRebuild.mockResolvedValue({
-      state: { ...state, metadata: { ...state.metadata, status: 'clean', dirtyFromPosition: null } },
+      state: {
+        ...state,
+        metadata: {
+          ...state.metadata,
+          status: 'clean',
+          dirtyFromPosition: null,
+        },
+      },
       completedChapters: 1,
       reusedPatches: 0,
       regeneratedPatches: 1,
@@ -70,6 +81,8 @@ describe('StoryMemoryScreen', () => {
     expect(await findByText('故事主线')).toBeTruthy();
     expect(await findByText('立即整理长期记忆')).toBeTruthy();
     expect(await findByText('高级操作')).toBeTruthy();
+    expect(await findByText(/上下文覆盖：需重新整理/)).toBeTruthy();
+    expect(queryByText('关键章节立即整理')).toBeNull();
     expect(queryByText('编辑 JSON')).toBeNull();
   });
 
@@ -90,6 +103,18 @@ describe('StoryMemoryScreen', () => {
         signal: expect.any(Object),
         onProgress: expect.any(Function),
       }),
+    );
+  });
+
+  it('uses rebuild rather than incremental advance when dirty memory is整理 now', async () => {
+    const screen = render(<StoryMemoryScreen />);
+    const button = await screen.findByText('立即整理长期记忆');
+    await act(async () => {
+      fireEvent.press(button);
+    });
+    expect(mockRebuild).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ mode: 'auto', signal: expect.any(Object) }),
     );
   });
 });

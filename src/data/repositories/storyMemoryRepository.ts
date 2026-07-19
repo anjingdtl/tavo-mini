@@ -1,7 +1,10 @@
 import { execute } from '../connection/execute';
 import { openDatabase } from '../connection/openDatabase';
 import { all, one } from '../connection/query';
-import { executeTransaction, type SqlStatement } from '../connection/transaction';
+import {
+  executeTransaction,
+  type SqlStatement,
+} from '../connection/transaction';
 import { canonicalStringify } from '../../services/storyMemory/storyMemoryFingerprint';
 import { createEmptyStoryMemory } from '../../services/storyMemory/storyMemoryDefaults';
 import {
@@ -196,7 +199,9 @@ function mapPatchRow(row: ChapterMemoryPatchDbRow): ChapterMemoryPatchRecord {
   };
 }
 
-function mapSnapshotRow(row: StoryMemorySnapshotDbRow): StoryMemorySnapshotRecord {
+function mapSnapshotRow(
+  row: StoryMemorySnapshotDbRow,
+): StoryMemorySnapshotRecord {
   return {
     id: row.id,
     state: parseJson(row.memory_json, '故事记忆快照'),
@@ -343,23 +348,32 @@ export async function setStoryMemoryBuildStatus(
     await openDatabase(),
     `UPDATE project_story_memory SET status = ?, dirty_from_position = ?,
       last_error = ?, updated_at = ? WHERE project_id = ?`,
-    [
-      status,
-      dirtyFromPosition,
-      lastError,
-      new Date().toISOString(),
-      projectId,
-    ],
+    [status, dirtyFromPosition, lastError, new Date().toISOString(), projectId],
   );
 }
 
 export async function clearStoryMemory(projectId: number): Promise<void> {
   await executeTransaction(await openDatabase(), [
-    { sql: 'DELETE FROM story_memory_batches WHERE project_id = ?', params: [projectId] },
-    { sql: 'DELETE FROM story_memory_snapshots WHERE project_id = ?', params: [projectId] },
-    { sql: 'DELETE FROM chapter_memory_patches WHERE project_id = ?', params: [projectId] },
-    { sql: 'DELETE FROM project_story_memory_policy WHERE project_id = ?', params: [projectId] },
-    { sql: 'DELETE FROM project_story_memory WHERE project_id = ?', params: [projectId] },
+    {
+      sql: 'DELETE FROM story_memory_batches WHERE project_id = ?',
+      params: [projectId],
+    },
+    {
+      sql: 'DELETE FROM story_memory_snapshots WHERE project_id = ?',
+      params: [projectId],
+    },
+    {
+      sql: 'DELETE FROM chapter_memory_patches WHERE project_id = ?',
+      params: [projectId],
+    },
+    {
+      sql: 'DELETE FROM project_story_memory_policy WHERE project_id = ?',
+      params: [projectId],
+    },
+    {
+      sql: 'DELETE FROM project_story_memory WHERE project_id = ?',
+      params: [projectId],
+    },
   ]);
 }
 
@@ -385,7 +399,10 @@ function mapBatchRow(row: BatchDbRow): StoredStoryMemoryBatch {
     sourceFingerprint: row.source_fingerprint,
     baseStateFingerprint: row.base_state_fingerprint,
     resultStateFingerprint: row.result_state_fingerprint,
-    patch: parseJson<StoryMemoryBatchPatchDraft>(row.patch_json, '检查点批次补丁'),
+    patch: parseJson<StoryMemoryBatchPatchDraft>(
+      row.patch_json,
+      '检查点批次补丁',
+    ),
     chapterSummaries: parseJson<BatchChapterSummary[]>(
       row.chapter_summaries_json,
       '检查点章节摘要',
@@ -544,12 +561,7 @@ export async function invalidateStoryMemoryBatchesOverlapping(
        AND status IN ('generated', 'failed')
        AND from_position <= ?
        AND through_position >= ?`,
-    [
-      'pending 范围章节已变更',
-      projectId,
-      toPosition,
-      fromPosition,
-    ],
+    ['pending 范围章节已变更', projectId, toPosition, fromPosition],
   );
 }
 
@@ -569,19 +581,6 @@ export async function saveStoryMemoryBatchUpdate(
   input: SaveStoryMemoryBatchUpdateInput,
 ): Promise<void> {
   const { state, batch } = input;
-  const current = await getProjectStoryMemory(state.projectId);
-  if (!current) {
-    throw new StoryMemoryError(
-      'MEMORY_CHECKPOINT_TRANSACTION_FAILED',
-      '项目故事记忆不存在，无法保存检查点。',
-    );
-  }
-  if (current.state.metadata.stateFingerprint !== input.previousFingerprint) {
-    throw new StoryMemoryError(
-      'MEMORY_BASE_FINGERPRINT_MISMATCH',
-      '故事记忆基础指纹已变化，检查点未写入。',
-    );
-  }
   const stateJson = canonicalStringify(state);
   const statements: SqlStatement[] = [
     {
@@ -591,7 +590,13 @@ export async function saveStoryMemoryBatchUpdate(
         source_fingerprint, base_state_fingerprint, result_state_fingerprint,
         patch_json, chapter_summaries_json, estimated_tokens, status,
         last_error, generated_at, applied_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, 'applied', '', ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, 2, ?,
+        CASE
+          WHEN (SELECT state_fingerprint FROM project_story_memory
+                WHERE project_id = ? AND status <> 'dirty') = ? THEN ?
+          ELSE NULL
+        END,
+        ?, ?, ?, ?, 'applied', '', ?, ?)`,
       params: [
         batch.batchId,
         batch.projectId,
@@ -600,6 +605,8 @@ export async function saveStoryMemoryBatchUpdate(
         batch.throughChapterId,
         batch.throughPosition,
         batch.sourceFingerprint,
+        state.projectId,
+        input.previousFingerprint,
         batch.baseStateFingerprint,
         batch.resultStateFingerprint || state.metadata.stateFingerprint,
         canonicalStringify(batch.patch),
@@ -680,10 +687,14 @@ export async function saveStoryMemoryBatchUpdate(
   try {
     await executeTransaction(await openDatabase(), statements);
   } catch (error) {
-    throw new StoryMemoryError(
-      'MEMORY_CHECKPOINT_TRANSACTION_FAILED',
-      error instanceof Error ? error.message : '检查点事务失败。',
-    );
+    const message = error instanceof Error ? error.message : '检查点事务失败。';
+    if (message.includes('base_state_fingerprint')) {
+      throw new StoryMemoryError(
+        'MEMORY_BASE_FINGERPRINT_MISMATCH',
+        '故事记忆在整理期间发生了变化，本批次未写入。',
+      );
+    }
+    throw new StoryMemoryError('MEMORY_CHECKPOINT_TRANSACTION_FAILED', message);
   }
 }
 
@@ -725,10 +736,18 @@ export async function saveStoryMemoryUpdate(
         generated_at, applied_at
       ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'applied', '', ?, ?)`,
       params: [
-        patch.chapterId, patch.projectId, patch.chapterPosition, patch.patchId,
-        patch.sourceFingerprint, patch.baseMemoryFingerprint,
-        patch.resultMemoryFingerprint, episodicJson, patchJson,
-        estimateTokens(patchJson), patch.generatedAt, patch.appliedAt,
+        patch.chapterId,
+        patch.projectId,
+        patch.chapterPosition,
+        patch.patchId,
+        patch.sourceFingerprint,
+        patch.baseMemoryFingerprint,
+        patch.resultMemoryFingerprint,
+        episodicJson,
+        patchJson,
+        estimateTokens(patchJson),
+        patch.generatedAt,
+        patch.appliedAt,
       ],
     },
     {
@@ -739,11 +758,17 @@ export async function saveStoryMemoryUpdate(
         dirty_from_position, last_error, updated_at
       ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [
-        state.projectId, state.throughChapterId, state.throughChapterPosition,
-        stateJson, state.metadata.estimatedTokens,
-        state.metadata.stateFingerprint, state.metadata.lastAppliedPatchId,
-        state.metadata.status, state.metadata.source,
-        state.metadata.dirtyFromPosition, state.metadata.lastError,
+        state.projectId,
+        state.throughChapterId,
+        state.throughChapterPosition,
+        stateJson,
+        state.metadata.estimatedTokens,
+        state.metadata.stateFingerprint,
+        state.metadata.lastAppliedPatchId,
+        state.metadata.status,
+        state.metadata.source,
+        state.metadata.dirtyFromPosition,
+        state.metadata.lastError,
         state.metadata.updatedAt,
       ],
     },
@@ -771,9 +796,12 @@ export async function saveStoryMemoryUpdate(
           memory_json, estimated_tokens, state_fingerprint, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         params: [
-          state.projectId, state.throughChapterId,
-          state.throughChapterPosition, stateJson,
-          state.metadata.estimatedTokens, state.metadata.stateFingerprint,
+          state.projectId,
+          state.throughChapterId,
+          state.throughChapterPosition,
+          stateJson,
+          state.metadata.estimatedTokens,
+          state.metadata.stateFingerprint,
           state.metadata.updatedAt,
         ],
       },

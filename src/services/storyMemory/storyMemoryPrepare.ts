@@ -94,7 +94,17 @@ export async function prepareStoryMemoryForGeneration(
     const { advanceStoryMemoryCheckpointsUnlocked } = await import(
       './storyMemoryCheckpointService'
     );
+    const { rebuildStoryMemoryUnlocked } = await import('./storyMemoryRebuild');
     await withProjectMemoryLock(projectId, async () => {
+      const latestRecord = await db.ensureProjectStoryMemoryRow(projectId);
+      if (latestRecord.status === 'dirty') {
+        await rebuildStoryMemoryUnlocked(projectId, {
+          mode: 'auto',
+          throughPosition: currentChapter.position - 1,
+          signal: options.signal,
+        });
+        return;
+      }
       await advanceStoryMemoryCheckpointsUnlocked({
         projectId,
         // Catch up enough pending to close coverage gap.
@@ -106,12 +116,15 @@ export async function prepareStoryMemoryForGeneration(
     coverage = planStoryMemoryCoverage({
       currentChapter,
       chapters: await db.getChaptersByProject(projectId),
-      checkpointThroughPosition: refreshed.state.throughChapterPosition,
+      checkpointThroughPosition:
+        refreshed.status === 'dirty'
+          ? -1
+          : refreshed.state.throughChapterPosition,
       slidingBudgetTokens: config.slidingWindowSize || 4000,
     });
     if (coverage.uncoveredChapterIds.length > 0) {
       return {
-        checkpoint: refreshed,
+        checkpoint: refreshed.status === 'dirty' ? null : refreshed,
         coverage,
         checkpointUpdated: true,
         blocked: true,
@@ -120,7 +133,7 @@ export async function prepareStoryMemoryForGeneration(
       };
     }
     return {
-      checkpoint: refreshed,
+      checkpoint: refreshed.status === 'dirty' ? null : refreshed,
       coverage,
       checkpointUpdated: true,
       blocked: false,
@@ -146,13 +159,10 @@ export async function prepareStoryMemoryForGeneration(
         blockReason: '',
       };
     }
-    const message =
-      error instanceof Error ? error.message : '长期记忆整理失败';
+    const message = error instanceof Error ? error.message : '长期记忆整理失败';
     throw new StoryMemoryError(
       'MEMORY_CHECKPOINT_COVERAGE_GAP',
       `无法构建连续上下文：${message}`,
     );
   }
 }
-
-
