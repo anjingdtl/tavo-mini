@@ -26,10 +26,19 @@
 ### 场景 C 签收（同日）
 
 - 安装：`ShineWriter-V2.5.6-debug.apk`（含 `a6b90e2`）→ emulator-5554。
-- 项目：`SC07192130`；流程：6 章定稿至 through=5 → 第2章改蓝色徽章 → dirty → 立即整理。
-- **产品签收 PASS**：dirty UI/作废批次/重建覆盖到第6章；`memory_json` 含蓝色徽章且 `contains_red_key=false`；指纹链连续。
+- 首轮产品：`SC07192130`；dirty 重建产品行为 **PASS**。
 - 证据（gitignore）：`test-logs/story-memory-scenario-c-signoff/SCENARIO-C-SIGNOFF-REPORT.md`。
 - 详情：`docs/optimization/progress.md` →「V2.5.6 scenario C emulator sign-off」。
+
+### 场景 C 测试收尾（同日 · 未改生产主体）
+
+- **产品行为 PASS**：新项目 `SC07192158`（id=9）；夹具方案 A（ch2–5 蓝色徽章连续）；dirty 后 applied 作废；重建 clean/through=5；蓝徽章进记忆、红钥匙非当前事实；指纹链连续。
+- **自动化脚本 PASS**：修正「batch ID 必须全变」误检与 `from_position=0` 假值 bug；`overall` 与 `product_overall` 同一 critical 集合 → 均为 **PASS**，退出码 **0**。
+- **生产路径回归 PASS**：`__tests__/projectChapterStoryMemoryDirty.test.ts`（updateChapter/deleteChapter → markStoryMemoryDirtyIfCovered → invalidate applied）。
+- **门禁**：`npm run verify` 108 suites / 551 tests PASS；`npm run test:coverage` exit 0。
+- **未改** `a6b90e2` 重建主体；本轮只落测试与文档到 `main`。
+- **残余风险**：模拟器仍 SQL 等价 dirty；章节写与 markDirty 非同事务（见 progress 收尾节）。
+- 详情：`docs/optimization/progress.md` →「V2.5.6 scenario C test wrap-up」。
 
 ## Workstream A：自动保存可靠性
 
