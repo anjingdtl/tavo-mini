@@ -8,7 +8,10 @@ import type {
 } from '../../types/novel';
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
-import { executeTransaction } from '../connection/transaction';
+import {
+  executeTransaction,
+  type SqlStatement,
+} from '../connection/transaction';
 import { openDatabase } from '../connection/openDatabase';
 import {
   now,
@@ -18,7 +21,10 @@ import {
   type Row,
 } from './shared';
 import { ensureDefaultPreset } from './presetRepository';
-import { markStoryMemoryDirtyIfCovered } from './storyMemoryRepository';
+import {
+  buildStoryMemoryContinuitySideEffects,
+  getProjectStoryMemory,
+} from './storyMemoryRepository';
 import { invalidateIdf } from '../../utils/idfCache';
 
 export async function getAllProjects(): Promise<Project[]> {
@@ -187,8 +193,9 @@ export async function updateChapter(
   fields: Partial<Chapter>,
 ): Promise<void> {
   const chapter = await getChapterById(id);
+  const timestamp = now();
   const sets = ['updated_at = ?'];
-  const values: any[] = [now()];
+  const values: any[] = [timestamp];
   for (const [key, value] of Object.entries(fields)) {
     if (!CHAPTER_COLUMNS.has(key)) continue;
     sets.push(`${key} = ?`);
@@ -200,49 +207,89 @@ export async function updateChapter(
   }
   if (sets.length === 1) return;
   values.push(id);
-  await execute(
-    await openDatabase(),
-    `UPDATE chapters SET ${sets.join(', ')} WHERE id = ?`,
-    values,
-  );
-  if (chapter) await touchProject(chapter.project_id);
-  const continuityFields = ['title', 'synopsis', 'content', 'position'];
-  const changedContinuity = chapter && continuityFields.some(key => {
-    if (!(key in fields)) return false;
-    return fields[key as keyof Chapter] !== chapter[key as keyof Chapter];
-  });
-  if (
-    chapter &&
-    changedContinuity &&
-    (chapter.finalized_at != null || Boolean(chapter.memory_summary?.trim()))
-  ) {
-    const affectedPosition =
-      typeof fields.position === 'number'
-        ? Math.min(chapter.position, fields.position)
-        : chapter.position;
-    await markStoryMemoryDirtyIfCovered(
-      chapter.project_id,
-      affectedPosition,
-      '已定稿章节内容或顺序发生变化。',
-    );
+
+  // Chapter write + project touch + story-memory dirty/invalidation must share
+  // one SQLite transaction. A partial commit (new body + clean memory) would
+  // let equal-content autosave retries skip re-dirtying permanently.
+  const statements: SqlStatement[] = [
+    {
+      sql: `UPDATE chapters SET ${sets.join(', ')} WHERE id = ?`,
+      params: values,
+    },
+  ];
+
+  if (chapter) {
+    statements.push({
+      sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
+      params: [timestamp, chapter.project_id],
+    });
+
+    const continuityFields = ['title', 'synopsis', 'content', 'position'];
+    const changedContinuity = continuityFields.some(key => {
+      if (!(key in fields)) return false;
+      return fields[key as keyof Chapter] !== chapter[key as keyof Chapter];
+    });
+    if (
+      changedContinuity &&
+      (chapter.finalized_at != null || Boolean(chapter.memory_summary?.trim()))
+    ) {
+      const affectedPosition =
+        typeof fields.position === 'number'
+          ? Math.min(chapter.position, fields.position)
+          : chapter.position;
+      const memory = await getProjectStoryMemory(chapter.project_id);
+      const { statements: sideEffects } = buildStoryMemoryContinuitySideEffects(
+        memory,
+        chapter.project_id,
+        affectedPosition,
+        '已定稿章节内容或顺序发生变化。',
+        timestamp,
+      );
+      statements.push(...sideEffects);
+    }
   }
+
+  await executeTransaction(await openDatabase(), statements);
 }
 
 export async function deleteChapter(id: number): Promise<void> {
   const chapter = await getChapterById(id);
-  await execute(await openDatabase(), 'DELETE FROM chapters WHERE id = ?', [
-    id,
-  ]);
-  if (chapter) await touchProject(chapter.project_id);
-  if (
-    chapter &&
-    (chapter.finalized_at != null || Boolean(chapter.memory_summary?.trim()))
-  ) {
-    await markStoryMemoryDirtyIfCovered(
-      chapter.project_id,
-      chapter.position,
-      '已删除章节，需要重建故事记忆。',
-    );
+  const timestamp = now();
+  const statements: SqlStatement[] = [
+    {
+      sql: 'DELETE FROM chapters WHERE id = ?',
+      params: [id],
+    },
+  ];
+
+  let shouldInvalidateIdf = false;
+  if (chapter) {
+    statements.push({
+      sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
+      params: [timestamp, chapter.project_id],
+    });
+
+    if (
+      chapter.finalized_at != null ||
+      Boolean(chapter.memory_summary?.trim())
+    ) {
+      const memory = await getProjectStoryMemory(chapter.project_id);
+      const { statements: sideEffects } = buildStoryMemoryContinuitySideEffects(
+        memory,
+        chapter.project_id,
+        chapter.position,
+        '已删除章节，需要重建故事记忆。',
+        timestamp,
+      );
+      statements.push(...sideEffects);
+      // IDF is process-local; only clear after the DB transaction commits.
+      // Historical behavior: drop IDF for any deleted finalized/summarized chapter.
+      shouldInvalidateIdf = true;
+    }
+  }
+
+  await executeTransaction(await openDatabase(), statements);
+  if (shouldInvalidateIdf && chapter) {
     invalidateIdf(chapter.project_id);
   }
 }
