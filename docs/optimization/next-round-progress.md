@@ -16,6 +16,13 @@
 - 施工开始时用户已有未提交内容：`docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md`、`.zcode/`、`docs/superpowers/specs/tavo-mini-next-round-spec.md`。旧 Plan 与 `.zcode/` 不还原、不清理、不混入提交；本轮作为唯一施工依据的 next-round Spec 在 V2.4.4 文档发布提交中纳入版本控制。
 - 总体状态：`PARTIAL`（可执行工程门禁完成；V2.4.4 Tag-only 发布，签名/设备门禁仍保留）
 
+## 2026-07-19 追加：故事记忆 dirty 重建 P1
+
+- 背景：V2.5.6 模拟器终验 `test-logs/story-memory-emulator-final/` 判定「有条件交付」；P1 为 dirty 首轮重建后新事实未稳定写入长期记忆。
+- 根因：`markStoryMemoryDirty` 未作废已 applied 的检查点批次，重建可能只重生变更批并复用后续旧批次。
+- 修复：作废 `through >= dirty_from` 的 applied 批次；dirty 重建禁止 reuse 并级联强制重生；checkpoint prompt 强化矛盾事实纠正。
+- 状态：代码 + 单测已完成，见 `docs/optimization/progress.md` 同日条目；建议装 Debug APK 复跑场景 C 作产品签收。
+
 ## Workstream A：自动保存可靠性
 
 ### A1 保存失败传播与退出保护

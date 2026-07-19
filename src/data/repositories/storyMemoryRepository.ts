@@ -309,6 +309,27 @@ export async function listStoryMemorySnapshots(
   return rows.map(mapSnapshotRow);
 }
 
+/**
+ * Invalidate already-applied checkpoint batches that cover or follow a dirty
+ * edit. Without this, rebuild may regenerate only the changed batch while
+ * reusing later batches that still encode the pre-edit world.
+ */
+export async function invalidateAppliedStoryMemoryBatchesFrom(
+  projectId: number,
+  fromPosition: number,
+  reason = '已覆盖章节已变更，批次失效',
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    `UPDATE story_memory_batches
+     SET status = 'invalidated', last_error = ?
+     WHERE project_id = ?
+       AND status = 'applied'
+       AND through_position >= ?`,
+    [reason, projectId, fromPosition],
+  );
+}
+
 export async function markStoryMemoryDirty(
   projectId: number,
   fromPosition: number,
@@ -335,6 +356,9 @@ export async function markStoryMemoryDirty(
       projectId,
     ],
   );
+  // Drop applied batches from the dirty point forward so rebuild cannot reuse
+  // a stale post-edit checkpoint chain.
+  await invalidateAppliedStoryMemoryBatchesFrom(projectId, fromPosition);
 }
 
 export async function setStoryMemoryBuildStatus(

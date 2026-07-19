@@ -101,6 +101,11 @@ export async function rebuildStoryMemoryUnlocked(
       ? 'legacy_bootstrap'
       : 'full';
   }
+  // Capture before status flips to "rebuilding". Dirty rebuilds must not reuse
+  // applied batches that still describe the pre-edit story world.
+  const dirtyRebuild =
+    mode === 'auto' &&
+    (record.status === 'dirty' || record.dirtyFromPosition != null);
   const requestedStart =
     options.fromPosition ??
     record.dirtyFromPosition ??
@@ -168,6 +173,9 @@ export async function rebuildStoryMemoryUnlocked(
       }
     }
     const batches = splitCheckpointBatches(chapters, preferredBatch);
+    // Once any batch is regenerated, later batches must not reuse pre-edit
+    // applied patches even if fingerprints coincidentally match.
+    let forceRegenerateRemaining = dirtyRebuild;
     for (const batchChapters of batches) {
       if (options.signal?.aborted) {
         await db.setStoryMemoryBuildStatus(
@@ -199,6 +207,7 @@ export async function rebuildStoryMemoryUnlocked(
         );
         const baseFingerprint = fingerprintStoryMemoryState(state);
         const existingBatches =
+          !forceRegenerateRemaining &&
           typeof (db as any).listStoryMemoryBatches === 'function'
             ? await (db as any).listStoryMemoryBatches(projectId, ['applied'])
             : [];
@@ -281,6 +290,7 @@ export async function rebuildStoryMemoryUnlocked(
           state = result.state;
           expectedPersistedFingerprint = state.metadata.stateFingerprint;
           regeneratedPatches += batchChapters.length;
+          forceRegenerateRemaining = true;
         }
         completedChapters += batchChapters.length;
         emitProgress(options, {

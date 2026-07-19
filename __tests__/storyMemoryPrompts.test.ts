@@ -104,6 +104,12 @@ describe('story memory prompts', () => {
     expect(STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT).toContain(
       'newCharacters → characterUpdates',
     );
+    expect(STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT).toContain(
+      '矛盾事实 / 改写正文',
+    );
+    expect(STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT).toContain(
+      'removePossessions',
+    );
 
     const state = createEmptyStoryMemory(1);
     const chapters = [
