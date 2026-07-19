@@ -44,6 +44,8 @@ describe('migration schema matrix', () => {
         'idx_chapter_memory_patches_project_position',
         'idx_chapter_memory_patches_status',
         'idx_story_memory_snapshots_project_position',
+        'idx_story_memory_batches_project_through',
+        'idx_story_memory_batches_status',
       ]),
     );
   });
