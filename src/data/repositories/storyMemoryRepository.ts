@@ -310,6 +310,118 @@ export async function listStoryMemorySnapshots(
 }
 
 /**
+ * Pure SQL builders for composition into larger transactions (e.g. chapter
+ * update/delete + dirty + batch invalidation must share one SQLite transaction).
+ */
+export function buildInvalidateAppliedStoryMemoryBatchesFromStatements(
+  projectId: number,
+  fromPosition: number,
+  reason = '已覆盖章节已变更，批次失效',
+): SqlStatement[] {
+  return [
+    {
+      sql: `UPDATE story_memory_batches
+     SET status = 'invalidated', last_error = ?
+     WHERE project_id = ?
+       AND status = 'applied'
+       AND through_position >= ?`,
+      params: [reason, projectId, fromPosition],
+    },
+  ];
+}
+
+export function buildMarkStoryMemoryDirtyStatements(
+  projectId: number,
+  fromPosition: number,
+  reason = '',
+  updatedAt: string = new Date().toISOString(),
+): SqlStatement[] {
+  return [
+    {
+      sql: `UPDATE project_story_memory SET
+      status = 'dirty',
+      dirty_from_position = CASE
+        WHEN dirty_from_position IS NULL THEN ?
+        WHEN dirty_from_position > ? THEN ?
+        ELSE dirty_from_position
+      END,
+      last_error = ?, updated_at = ?
+     WHERE project_id = ?`,
+      params: [
+        fromPosition,
+        fromPosition,
+        fromPosition,
+        reason,
+        updatedAt,
+        projectId,
+      ],
+    },
+    // Drop applied batches from the dirty point forward so rebuild cannot reuse
+    // a stale post-edit checkpoint chain.
+    ...buildInvalidateAppliedStoryMemoryBatchesFromStatements(
+      projectId,
+      fromPosition,
+    ),
+  ];
+}
+
+export function buildInvalidateStoryMemoryBatchesOverlappingStatements(
+  projectId: number,
+  fromPosition: number,
+  toPosition: number = Number.MAX_SAFE_INTEGER,
+): SqlStatement[] {
+  return [
+    {
+      sql: `UPDATE story_memory_batches
+     SET status = 'invalidated', last_error = ?
+     WHERE project_id = ?
+       AND status IN ('generated', 'failed')
+       AND from_position <= ?
+       AND through_position >= ?`,
+      params: ['pending 范围章节已变更', projectId, toPosition, fromPosition],
+    },
+  ];
+}
+
+/**
+ * Decide dirty vs pending-invalidation side effects without opening a connection.
+ * Callers compose the returned statements into a larger transaction.
+ */
+export function buildStoryMemoryContinuitySideEffects(
+  record: ProjectStoryMemoryRecord | null,
+  projectId: number,
+  affectedPosition: number,
+  reason = '',
+  updatedAt: string = new Date().toISOString(),
+): {
+  outcome: 'dirty' | 'pending_invalidated' | 'none';
+  statements: SqlStatement[];
+} {
+  if (!record) {
+    return { outcome: 'none', statements: [] };
+  }
+  if (affectedPosition <= record.state.throughChapterPosition) {
+    return {
+      outcome: 'dirty',
+      statements: buildMarkStoryMemoryDirtyStatements(
+        projectId,
+        affectedPosition,
+        reason,
+        updatedAt,
+      ),
+    };
+  }
+  return {
+    outcome: 'pending_invalidated',
+    statements: buildInvalidateStoryMemoryBatchesOverlappingStatements(
+      projectId,
+      affectedPosition,
+      affectedPosition,
+    ),
+  };
+}
+
+/**
  * Invalidate already-applied checkpoint batches that cover or follow a dirty
  * edit. Without this, rebuild may regenerate only the changed batch while
  * reusing later batches that still encode the pre-edit world.
@@ -319,14 +431,13 @@ export async function invalidateAppliedStoryMemoryBatchesFrom(
   fromPosition: number,
   reason = '已覆盖章节已变更，批次失效',
 ): Promise<void> {
-  await execute(
+  await executeTransaction(
     await openDatabase(),
-    `UPDATE story_memory_batches
-     SET status = 'invalidated', last_error = ?
-     WHERE project_id = ?
-       AND status = 'applied'
-       AND through_position >= ?`,
-    [reason, projectId, fromPosition],
+    buildInvalidateAppliedStoryMemoryBatchesFromStatements(
+      projectId,
+      fromPosition,
+      reason,
+    ),
   );
 }
 
@@ -336,29 +447,10 @@ export async function markStoryMemoryDirty(
   reason = '',
 ): Promise<void> {
   await ensureProjectStoryMemoryRow(projectId);
-  await execute(
+  await executeTransaction(
     await openDatabase(),
-    `UPDATE project_story_memory SET
-      status = 'dirty',
-      dirty_from_position = CASE
-        WHEN dirty_from_position IS NULL THEN ?
-        WHEN dirty_from_position > ? THEN ?
-        ELSE dirty_from_position
-      END,
-      last_error = ?, updated_at = ?
-     WHERE project_id = ?`,
-    [
-      fromPosition,
-      fromPosition,
-      fromPosition,
-      reason,
-      new Date().toISOString(),
-      projectId,
-    ],
+    buildMarkStoryMemoryDirtyStatements(projectId, fromPosition, reason),
   );
-  // Drop applied batches from the dirty point forward so rebuild cannot reuse
-  // a stale post-edit checkpoint chain.
-  await invalidateAppliedStoryMemoryBatchesFrom(projectId, fromPosition);
 }
 
 export async function setStoryMemoryBuildStatus(
@@ -577,15 +669,13 @@ export async function invalidateStoryMemoryBatchesOverlapping(
   fromPosition: number,
   toPosition: number = Number.MAX_SAFE_INTEGER,
 ): Promise<void> {
-  await execute(
+  await executeTransaction(
     await openDatabase(),
-    `UPDATE story_memory_batches
-     SET status = 'invalidated', last_error = ?
-     WHERE project_id = ?
-       AND status IN ('generated', 'failed')
-       AND from_position <= ?
-       AND through_position >= ?`,
-    ['pending 范围章节已变更', projectId, toPosition, fromPosition],
+    buildInvalidateStoryMemoryBatchesOverlappingStatements(
+      projectId,
+      fromPosition,
+      toPosition,
+    ),
   );
 }
 
@@ -729,17 +819,16 @@ export async function markStoryMemoryDirtyIfCovered(
   reason = '',
 ): Promise<'dirty' | 'pending_invalidated' | 'none'> {
   const record = await getProjectStoryMemory(projectId);
-  if (!record) return 'none';
-  if (affectedPosition <= record.state.throughChapterPosition) {
-    await markStoryMemoryDirty(projectId, affectedPosition, reason);
-    return 'dirty';
-  }
-  await invalidateStoryMemoryBatchesOverlapping(
+  const { outcome, statements } = buildStoryMemoryContinuitySideEffects(
+    record,
     projectId,
     affectedPosition,
-    affectedPosition,
+    reason,
   );
-  return 'pending_invalidated';
+  if (statements.length > 0) {
+    await executeTransaction(await openDatabase(), statements);
+  }
+  return outcome;
 }
 
 export type { StoryMemoryUpdateMode };

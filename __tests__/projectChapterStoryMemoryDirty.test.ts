@@ -1,9 +1,7 @@
 /**
- * Production-path regression: updateChapter / deleteChapter →
- * markStoryMemoryDirtyIfCovered → markStoryMemoryDirty →
- * invalidateAppliedStoryMemoryBatchesFrom
- *
- * Exercises real repository modules with connection-layer mocks (not pure helpers).
+ * Production-path regression: updateChapter / deleteChapter compose chapter
+ * write + project touch + story-memory dirty/batch invalidation into ONE
+ * SQLite transaction (executeTransaction). Partial commit is forbidden.
  */
 import { createEmptyStoryMemory } from '../src/services/storyMemory/storyMemoryDefaults';
 
@@ -37,6 +35,7 @@ import {
   deleteChapter,
   updateChapter,
 } from '../src/data/repositories/projectRepository';
+import { invalidateIdf } from '../src/utils/idfCache';
 
 function memoryRow(opts: {
   projectId: number;
@@ -82,16 +81,22 @@ function chapterRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function sqlOf(call: unknown[]): string {
-  return String(call[1] ?? '');
+type TxStatement = { sql: string; params?: unknown[] };
+
+function txStatements(callIndex = 0): TxStatement[] {
+  return (mockExecuteTransaction.mock.calls[callIndex]?.[1] ??
+    []) as TxStatement[];
 }
 
-function findExecute(predicate: (sql: string) => boolean) {
-  return mockExecute.mock.calls.find(call => predicate(sqlOf(call)));
+function findTx(
+  predicate: (sql: string) => boolean,
+  callIndex = 0,
+): TxStatement | undefined {
+  return txStatements(callIndex).find(s => predicate(s.sql));
 }
 
 function wireQueries(opts: {
-  chapter: Record<string, unknown>;
+  chapter: Record<string, unknown> | null;
   memory: ReturnType<typeof memoryRow> | null;
 }) {
   mockOne.mockImplementation(async (sql: string) => {
@@ -105,7 +110,19 @@ function wireQueries(opts: {
   });
 }
 
-describe('updateChapter / deleteChapter → story memory dirty production path', () => {
+/** Chapter UPDATE/DELETE must never be scheduled via standalone execute(). */
+function expectNoStandaloneChapterWrite() {
+  const chapterWrite = mockExecute.mock.calls.find(call => {
+    const sql = String(call[1] ?? '');
+    return (
+      (sql.includes('UPDATE chapters SET') && sql.includes('WHERE id = ?')) ||
+      sql.includes('DELETE FROM chapters WHERE id = ?')
+    );
+  });
+  expect(chapterWrite).toBeUndefined();
+}
+
+describe('updateChapter / deleteChapter → atomic story-memory dirty transaction', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockExecute.mockResolvedValue({ rowsAffected: 1, insertId: 0 });
@@ -113,7 +130,7 @@ describe('updateChapter / deleteChapter → story memory dirty production path',
     mockAll.mockResolvedValue([]);
   });
 
-  it('saves covered finalized chapter content and marks dirty + invalidates applied batches', async () => {
+  it('UPDATE covered finalized chapter: one transaction with chapter+touch+dirty+applied invalidate', async () => {
     wireQueries({
       chapter: chapterRow(),
       memory: memoryRow({ projectId: 7, through: 5, status: 'clean' }),
@@ -121,20 +138,36 @@ describe('updateChapter / deleteChapter → story memory dirty production path',
 
     await updateChapter(42, { content: '林岚发现蓝色徽章。' });
 
-    const chapterUpdate = findExecute(
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expect(mockExecuteTransaction).toHaveBeenCalledWith(
+      mockDatabase,
+      expect.any(Array),
+    );
+    expectNoStandaloneChapterWrite();
+
+    const stmts = txStatements();
+    expect(stmts).toHaveLength(4);
+
+    const chapterUpdate = findTx(
       sql =>
         sql.includes('UPDATE chapters SET') && sql.includes('WHERE id = ?'),
     );
     expect(chapterUpdate).toBeTruthy();
-    expect(chapterUpdate![2]).toEqual(
+    expect(chapterUpdate!.params).toEqual(
       expect.arrayContaining(['林岚发现蓝色徽章。', 42]),
     );
 
-    const dirtyUpdate = findExecute(sql =>
+    const projectTouch = findTx(sql =>
+      sql.includes('UPDATE projects SET updated_at'),
+    );
+    expect(projectTouch).toBeTruthy();
+    expect(projectTouch!.params).toEqual(expect.arrayContaining([7]));
+
+    const dirtyUpdate = findTx(sql =>
       sql.includes('dirty_from_position = CASE'),
     );
     expect(dirtyUpdate).toBeTruthy();
-    expect(dirtyUpdate![2]).toEqual(
+    expect(dirtyUpdate!.params).toEqual(
       expect.arrayContaining([
         1,
         1,
@@ -144,13 +177,13 @@ describe('updateChapter / deleteChapter → story memory dirty production path',
       ]),
     );
 
-    const invalidate = findExecute(
+    const invalidate = findTx(
       sql =>
         sql.includes("status = 'invalidated'") &&
         sql.includes('through_position >='),
     );
     expect(invalidate).toBeTruthy();
-    expect(invalidate![2]).toEqual(
+    expect(invalidate!.params).toEqual(
       expect.arrayContaining([
         expect.stringContaining('已覆盖章节已变更'),
         7,
@@ -159,7 +192,136 @@ describe('updateChapter / deleteChapter → story memory dirty production path',
     );
   });
 
-  it('does not mark whole long-term memory dirty for uncovered pending positions', async () => {
+  it('rejects whole updateChapter when transaction rejects (dirty statement failure path)', async () => {
+    wireQueries({
+      chapter: chapterRow(),
+      memory: memoryRow({ projectId: 7, through: 5, status: 'clean' }),
+    });
+    const txError = new Error('FAULT_INJECTION: dirty statement failed');
+    mockExecuteTransaction.mockRejectedValueOnce(txError);
+
+    await expect(
+      updateChapter(42, { content: '林岚发现蓝色徽章。' }),
+    ).rejects.toBe(txError);
+
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expectNoStandaloneChapterWrite();
+    // All four statements were prepared for the single transaction — no
+    // sequential fallback path that could leave chapter committed alone.
+    const stmts = txStatements();
+    expect(stmts.map(s => s.sql).join('\n')).toEqual(
+      expect.stringContaining('UPDATE chapters SET'),
+    );
+    expect(stmts.map(s => s.sql).join('\n')).toEqual(
+      expect.stringContaining('dirty_from_position = CASE'),
+    );
+    expect(stmts.map(s => s.sql).join('\n')).toEqual(
+      expect.stringContaining("status = 'invalidated'"),
+    );
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it('rejects whole updateChapter when transaction rejects (batch invalidation failure path)', async () => {
+    wireQueries({
+      chapter: chapterRow(),
+      memory: memoryRow({ projectId: 7, through: 5, status: 'clean' }),
+    });
+    const txError = new Error('FAULT_INJECTION: applied invalidate failed');
+    mockExecuteTransaction.mockRejectedValueOnce(txError);
+
+    await expect(
+      updateChapter(42, { content: '林岚发现蓝色徽章。' }),
+    ).rejects.toThrow(/applied invalidate failed/);
+
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expectNoStandaloneChapterWrite();
+    const stmts = txStatements();
+    expect(stmts).toHaveLength(4);
+    expect(
+      stmts.some(
+        s =>
+          s.sql.includes("status = 'invalidated'") &&
+          s.sql.includes("status = 'applied'"),
+      ),
+    ).toBe(true);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it('DELETE covered chapter: one transaction with delete+touch+dirty+applied invalidate', async () => {
+    wireQueries({
+      chapter: chapterRow({ id: 42, position: 1 }),
+      memory: memoryRow({ projectId: 7, through: 5, status: 'clean' }),
+    });
+
+    await deleteChapter(42);
+
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expectNoStandaloneChapterWrite();
+
+    const stmts = txStatements();
+    expect(stmts).toHaveLength(4);
+
+    const deleteSql = findTx(sql =>
+      sql.includes('DELETE FROM chapters WHERE id = ?'),
+    );
+    expect(deleteSql).toBeTruthy();
+    expect(deleteSql!.params).toEqual([42]);
+
+    expect(findTx(sql => sql.includes('UPDATE projects SET updated_at'))).toBeTruthy();
+
+    const dirtyUpdate = findTx(sql =>
+      sql.includes('dirty_from_position = CASE'),
+    );
+    expect(dirtyUpdate).toBeTruthy();
+    expect(dirtyUpdate!.params).toEqual(
+      expect.arrayContaining([
+        1,
+        1,
+        1,
+        '已删除章节，需要重建故事记忆。',
+        7,
+      ]),
+    );
+
+    const invalidate = findTx(
+      sql =>
+        sql.includes("status = 'invalidated'") &&
+        sql.includes('through_position >='),
+    );
+    expect(invalidate).toBeTruthy();
+    expect(invalidate!.params).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('已覆盖章节已变更'),
+        7,
+        1,
+      ]),
+    );
+    expect(invalidateIdf).toHaveBeenCalledWith(7);
+  });
+
+  it('rejects whole deleteChapter when transaction rejects — no standalone DELETE fallback', async () => {
+    wireQueries({
+      chapter: chapterRow({ id: 42, position: 1 }),
+      memory: memoryRow({ projectId: 7, through: 5, status: 'clean' }),
+    });
+    const txError = new Error('FAULT_INJECTION: dirty/invalidate failed on delete');
+    mockExecuteTransaction.mockRejectedValueOnce(txError);
+
+    await expect(deleteChapter(42)).rejects.toBe(txError);
+
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expectNoStandaloneChapterWrite();
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(invalidateIdf).not.toHaveBeenCalled();
+
+    const stmts = txStatements();
+    expect(stmts.some(s => s.sql.includes('DELETE FROM chapters'))).toBe(true);
+    expect(stmts.some(s => s.sql.includes('dirty_from_position = CASE'))).toBe(
+      true,
+    );
+  });
+
+  it('uncovered pending chapter: same transaction invalidates pending only, no dirty/applied', async () => {
     wireQueries({
       chapter: chapterRow({
         id: 99,
@@ -172,27 +334,121 @@ describe('updateChapter / deleteChapter → story memory dirty production path',
 
     await updateChapter(99, { content: '后续草稿已改' });
 
-    expect(findExecute(sql => sql.includes('dirty_from_position = CASE'))).toBe(
-      undefined,
-    );
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expectNoStandaloneChapterWrite();
 
-    const pendingInvalidate = findExecute(
+    const stmts = txStatements();
+    // chapter update + project touch + pending invalidate
+    expect(stmts).toHaveLength(3);
+
+    expect(
+      findTx(sql => sql.includes('dirty_from_position = CASE')),
+    ).toBeUndefined();
+
+    const pendingInvalidate = findTx(
       sql =>
         sql.includes("status = 'invalidated'") &&
         sql.includes("status IN ('generated', 'failed')"),
     );
     expect(pendingInvalidate).toBeTruthy();
-    expect(pendingInvalidate![2]).toEqual(
+    expect(pendingInvalidate!.params).toEqual(
       expect.arrayContaining(['pending 范围章节已变更', 7, 8, 8]),
     );
 
-    const appliedInvalidate = findExecute(
+    expect(
+      findTx(
+        sql =>
+          sql.includes("status = 'invalidated'") &&
+          sql.includes("status = 'applied'") &&
+          sql.includes('through_position >='),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('no story-memory row: UPDATE/DELETE still commit without dirty SQL', async () => {
+    wireQueries({
+      chapter: chapterRow(),
+      memory: null,
+    });
+
+    await updateChapter(42, { content: '无记忆行也可保存' });
+
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expectNoStandaloneChapterWrite();
+    let stmts = txStatements();
+    expect(stmts).toHaveLength(2); // chapter + project touch
+    expect(
+      stmts.some(s => s.sql.includes('dirty_from_position')),
+    ).toBe(false);
+    expect(stmts.some(s => s.sql.includes('story_memory_batches'))).toBe(false);
+
+    jest.clearAllMocks();
+    mockExecuteTransaction.mockResolvedValue(undefined);
+    wireQueries({
+      chapter: chapterRow(),
+      memory: null,
+    });
+
+    await deleteChapter(42);
+
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expectNoStandaloneChapterWrite();
+    stmts = txStatements();
+    expect(stmts.some(s => s.sql.includes('DELETE FROM chapters'))).toBe(true);
+    expect(
+      stmts.some(s => s.sql.includes('dirty_from_position')),
+    ).toBe(false);
+  });
+
+  it('already dirty with earlier dirty_from keeps the earlier position in SQL CASE', async () => {
+    wireQueries({
+      chapter: chapterRow({ position: 4 }),
+      memory: memoryRow({
+        projectId: 7,
+        through: 5,
+        status: 'dirty',
+        dirtyFrom: 1,
+      }),
+    });
+
+    await updateChapter(42, { content: '再次修改第5章' });
+
+    const dirtyUpdate = findTx(sql =>
+      sql.includes('dirty_from_position = CASE'),
+    );
+    expect(dirtyUpdate).toBeTruthy();
+    // Params bind the NEW affected position (4); SQL CASE preserves earlier
+    // dirty_from_position when it is already smaller.
+    expect(dirtyUpdate!.params).toEqual(
+      expect.arrayContaining([4, 4, 4, 7]),
+    );
+    expect(dirtyUpdate!.sql).toContain('WHEN dirty_from_position > ? THEN ?');
+    expect(dirtyUpdate!.sql).toContain('ELSE dirty_from_position');
+  });
+
+  it('position change uses min(old, new) as dirty origin', async () => {
+    wireQueries({
+      chapter: chapterRow({ position: 4 }),
+      memory: memoryRow({ projectId: 7, through: 8, status: 'clean' }),
+    });
+
+    await updateChapter(42, { position: 2 });
+
+    const dirtyUpdate = findTx(sql =>
+      sql.includes('dirty_from_position = CASE'),
+    );
+    expect(dirtyUpdate).toBeTruthy();
+    // min(4, 2) = 2
+    expect(dirtyUpdate!.params).toEqual(
+      expect.arrayContaining([2, 2, 2, 7]),
+    );
+
+    const invalidate = findTx(
       sql =>
-        sql.includes("status = 'invalidated'") &&
         sql.includes("status = 'applied'") &&
         sql.includes('through_position >='),
     );
-    expect(appliedInvalidate).toBeUndefined();
+    expect(invalidate!.params).toEqual(expect.arrayContaining([7, 2]));
   });
 
   it('does not trigger dirty when only non-continuity fields change', async () => {
@@ -206,56 +462,16 @@ describe('updateChapter / deleteChapter → story memory dirty production path',
       memory_summary_tokens: 12,
     });
 
-    expect(findExecute(sql => sql.includes('UPDATE chapters SET'))).toBeTruthy();
-    expect(findExecute(sql => sql.includes('dirty_from_position = CASE'))).toBe(
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expectNoStandaloneChapterWrite();
+    const stmts = txStatements();
+    expect(findTx(sql => sql.includes('UPDATE chapters SET'))).toBeTruthy();
+    expect(findTx(sql => sql.includes('dirty_from_position = CASE'))).toBe(
       undefined,
     );
-    expect(
-      findExecute(sql => sql.includes("status = 'invalidated'")),
-    ).toBeUndefined();
-  });
-
-  it('deleteChapter on covered chapter marks dirty and invalidates from delete position', async () => {
-    wireQueries({
-      chapter: chapterRow({ id: 42, position: 1 }),
-      memory: memoryRow({ projectId: 7, through: 5, status: 'clean' }),
-    });
-
-    await deleteChapter(42);
-
-    const deleteSql = findExecute(sql =>
-      sql.includes('DELETE FROM chapters WHERE id = ?'),
-    );
-    expect(deleteSql).toBeTruthy();
-    expect(deleteSql![2]).toEqual([42]);
-
-    const dirtyUpdate = findExecute(sql =>
-      sql.includes('dirty_from_position = CASE'),
-    );
-    expect(dirtyUpdate).toBeTruthy();
-    expect(dirtyUpdate![2]).toEqual(
-      expect.arrayContaining([
-        1,
-        1,
-        1,
-        '已删除章节，需要重建故事记忆。',
-        7,
-      ]),
-    );
-
-    const invalidate = findExecute(
-      sql =>
-        sql.includes("status = 'invalidated'") &&
-        sql.includes('through_position >='),
-    );
-    expect(invalidate).toBeTruthy();
-    expect(invalidate![2]).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('已覆盖章节已变更'),
-        7,
-        1,
-      ]),
-    );
+    expect(findTx(sql => sql.includes("status = 'invalidated'"))).toBeUndefined();
+    // Still touches project in the same transaction
+    expect(stmts).toHaveLength(2);
   });
 
   it('does not dirty when content is unchanged even if key is present', async () => {
@@ -266,8 +482,9 @@ describe('updateChapter / deleteChapter → story memory dirty production path',
 
     await updateChapter(42, { content: '同一正文' });
 
-    expect(findExecute(sql => sql.includes('UPDATE chapters SET'))).toBeTruthy();
-    expect(findExecute(sql => sql.includes('dirty_from_position = CASE'))).toBe(
+    expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
+    expect(findTx(sql => sql.includes('UPDATE chapters SET'))).toBeTruthy();
+    expect(findTx(sql => sql.includes('dirty_from_position = CASE'))).toBe(
       undefined,
     );
   });
