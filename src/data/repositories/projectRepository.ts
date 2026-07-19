@@ -18,7 +18,7 @@ import {
   type Row,
 } from './shared';
 import { ensureDefaultPreset } from './presetRepository';
-import { markStoryMemoryDirty } from './storyMemoryRepository';
+import { markStoryMemoryDirtyIfCovered } from './storyMemoryRepository';
 import { invalidateIdf } from '../../utils/idfCache';
 
 export async function getAllProjects(): Promise<Project[]> {
@@ -220,7 +220,7 @@ export async function updateChapter(
       typeof fields.position === 'number'
         ? Math.min(chapter.position, fields.position)
         : chapter.position;
-    await markStoryMemoryDirty(
+    await markStoryMemoryDirtyIfCovered(
       chapter.project_id,
       affectedPosition,
       '已定稿章节内容或顺序发生变化。',
@@ -238,7 +238,7 @@ export async function deleteChapter(id: number): Promise<void> {
     chapter &&
     (chapter.finalized_at != null || Boolean(chapter.memory_summary?.trim()))
   ) {
-    await markStoryMemoryDirty(
+    await markStoryMemoryDirtyIfCovered(
       chapter.project_id,
       chapter.position,
       '已删除章节，需要重建故事记忆。',

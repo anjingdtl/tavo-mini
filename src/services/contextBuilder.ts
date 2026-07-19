@@ -11,8 +11,13 @@ import {
   type StyleWeights,
 } from './styleAnalyzer';
 import { retrieveNoteFragments, type RetrievalQuery } from './noteRetriever';
+import {
+  buildPendingBridgeText,
+  excludeRawFromEpisodicCandidates,
+  planStoryMemoryCoverage,
+} from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
-import { ensureStoryMemoryReady } from './storyMemory/storyMemoryRebuild';
+import { prepareStoryMemoryForGeneration } from './storyMemory/storyMemoryPrepare';
 
 const DEFAULT_SYSTEM_PROMPT =
   '你是一位经验丰富的中文小说作者。请根据既有设定、人物状态、章节概要和前文内容，继续创作自然、连贯、有画面感的中文小说。';
@@ -61,14 +66,12 @@ export async function buildStoryMemoryContext(
     return { text: '', traceItems: [] };
   }
   const record = await (db as any).getProjectStoryMemory(projectId);
-  const targetPosition = currentChapter.position - 1;
+  // Checkpoint may lag behind the previous chapter; still inject when clean.
+  // Dirty checkpoints must never be injected.
   const usable =
     record &&
-    record.state.throughChapterPosition >= targetPosition &&
-    (record.status === 'clean' ||
-      (record.status === 'dirty' &&
-        record.dirtyFromPosition != null &&
-        record.dirtyFromPosition > targetPosition));
+    record.status === 'clean' &&
+    record.state.throughChapterPosition >= 0;
   if (!usable) {
     return {
       text: '',
@@ -80,7 +83,9 @@ export async function buildStoryMemoryContext(
             reason:
               record.status === 'empty'
                 ? '故事记忆尚未初始化'
-                : '不注入过期全局记忆',
+                : record.status === 'dirty'
+                  ? '不注入已失效的检查点'
+                  : '检查点不可用',
             estimatedTokens: 0,
             included: false,
             clipped: false,
@@ -98,8 +103,8 @@ export async function buildStoryMemoryContext(
     traceItems: [{
       kind: 'story_memory',
       sourceId: projectId,
-      title: '全局故事状态',
-      reason: `已构建到第 ${record.state.throughChapterPosition + 1} 章`,
+      title: '长期故事检查点',
+      reason: `检查点截至第 ${record.state.throughChapterPosition + 1} 章`,
       estimatedTokens: rendered.estimatedTokens,
       included: true,
       clipped: rendered.clipped,
@@ -116,31 +121,58 @@ export async function buildContext(
   options: BuildContextOptions = {},
 ): Promise<BuildContextResult> {
   const trace: ContextTraceItem[] = [];
-  const chapters = await db.getChaptersByProject(projectId);
-  const previousContent = buildPreviousContentText(
-    currentChapter,
-    config,
-    chapters,
-  );
+  let chapters = await db.getChaptersByProject(projectId);
+
+  // Checkpoint / pending bridge / seam preparation. Never force catch-up to
+  // previous chapter; only hard-due may spend LLM tokens (generation mode).
+  let prepared: Awaited<
+    ReturnType<typeof prepareStoryMemoryForGeneration>
+  > | null = null;
+  if (typeof (db as any).getProjectStoryMemory === 'function' || true) {
+    prepared = await prepareStoryMemoryForGeneration(
+      projectId,
+      currentChapter,
+      config,
+      {
+        mode: options.storyMemoryMode === 'preview' ? 'preview' : 'generation',
+      },
+    );
+    if (prepared.blocked) {
+      throw new Error(
+        prepared.blockReason || '故事记忆覆盖不足，无法安全生成。',
+      );
+    }
+    if (prepared.checkpointUpdated) {
+      chapters = await db.getChaptersByProject(projectId);
+    }
+  }
+
+  const coverage = prepared?.coverage;
+  const rawChapterIds = coverage?.rawChapterIds || [];
   const previousChapters = chapters.filter(
     chapter => chapter.position < currentChapter.position,
   );
+  const episodicCandidates = excludeRawFromEpisodicCandidates(
+    previousChapters,
+    rawChapterIds,
+  );
+
   // V2.2.0：IDF 缓存——同项目 memory_summary 不变时复用，避免每次 tokenize+buildIdf
   let memoryText: string;
   try {
     const idfCache = await import('../utils/idfCache');
-    const signature = idfCache.computeMemorySummarySignature(previousChapters);
+    const signature = idfCache.computeMemorySummarySignature(episodicCandidates);
     let idf = idfCache.getCachedIdf(projectId, signature);
     if (!idf) {
       idf = buildIdf(
-        previousChapters
+        episodicCandidates
           .map(c => String((c as any).memory_summary || ''))
           .filter(Boolean),
       );
       idfCache.setCachedIdf(projectId, signature, idf);
     }
     memoryText = buildMemoryContextWithIdf(
-      previousChapters,
+      episodicCandidates,
       currentChapter,
       idf,
       config.memoryTopK ?? 10,
@@ -149,7 +181,7 @@ export async function buildContext(
   } catch {
     // idfCache 不可用或失败时回退原始 buildMemoryContext（O(N²) 但保证正确性）
     memoryText = buildMemoryContext(
-      previousChapters,
+      episodicCandidates,
       currentChapter,
       config.memoryTopK ?? 10,
       config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
@@ -201,18 +233,7 @@ export async function buildContext(
     preview: resolvedSystemPrompt.slice(0, 500),
   });
 
-  const storyTargetPosition = currentChapter.position - 1;
-  if (
-    storyTargetPosition >= 0 &&
-    options.storyMemoryMode !== 'preview' &&
-    typeof (db as any).ensureProjectStoryMemoryRow === 'function'
-  ) {
-    const readiness = await (db as any).ensureProjectStoryMemoryRow(projectId);
-    const ready =
-      readiness.status === 'clean' &&
-      readiness.state.throughChapterPosition >= storyTargetPosition;
-    if (!ready) await ensureStoryMemoryReady(projectId, storyTargetPosition);
-  }
+  // Story Memory Checkpoint (may lag behind previous chapter).
   const storyMemory = await buildStoryMemoryContext(
     projectId,
     currentChapter,
@@ -221,7 +242,34 @@ export async function buildContext(
   if (storyMemory.text) {
     messages.push({ role: 'system', content: storyMemory.text });
   }
-  trace.push(...storyMemory.traceItems);
+  if (coverage) {
+    const checkpointPos = coverage.checkpointThroughPosition;
+    trace.push({
+      kind: 'story_memory',
+      sourceId: projectId,
+      title: '长期故事检查点',
+      reason: [
+        checkpointPos >= 0
+          ? `检查点截至第 ${checkpointPos + 1} 章`
+          : '尚无检查点',
+        coverage.hardDue ? 'hardDue' : 'coverage完整',
+        coverage.uncoveredChapterIds.length
+          ? `未覆盖:${coverage.uncoveredChapterIds.join(',')}`
+          : '无空洞',
+        rawChapterIds.length
+          ? `Episodic排除raw:${rawChapterIds.join(',')}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('；'),
+      estimatedTokens: storyMemory.traceItems[0]?.estimatedTokens || 0,
+      included: Boolean(storyMemory.text),
+      clipped: storyMemory.traceItems[0]?.clipped || false,
+      preview: storyMemory.text.slice(0, 500),
+    });
+  } else {
+    trace.push(...storyMemory.traceItems);
+  }
 
   if (config.includeResources && config.resourceBudget > 0) {
     const { text: resourceText, traceItems: resourceTrace } =
@@ -247,12 +295,37 @@ export async function buildContext(
       kind: 'memory',
       sourceId: null,
       title: '相关历史章节事件',
-      reason: '章节事件记忆 TF-IDF 检索',
+      reason: '章节事件记忆 TF-IDF 检索（已排除 raw bridge 章节）',
       estimatedTokens: estimateTokens(memoryMessage),
       included: true,
       clipped: false,
       preview: memoryMessage.slice(0, 500),
     });
+  }
+
+  // Pending bridge + seam: prefer coverage plan; fall back to sliding window.
+  let previousContent = '';
+  if (coverage && coverage.pendingChapters.length > 0) {
+    const byId = new Map(chapters.map(chapter => [chapter.id, chapter]));
+    previousContent = buildPendingBridgeText(coverage, byId);
+    if (
+      coverage.seamChapter &&
+      !coverage.rawChapterIds.includes(coverage.seamChapter.id)
+    ) {
+      const seam = coverage.seamChapter;
+      const seamBlock = `【衔接章｜第 ${seam.position + 1} 章｜${
+        seam.title || ''
+      }】\n${seam.content}`;
+      previousContent = previousContent
+        ? `${previousContent}\n\n${seamBlock}`
+        : seamBlock;
+    }
+  } else {
+    previousContent = buildPreviousContentText(
+      currentChapter,
+      config,
+      chapters,
+    );
   }
 
   if (previousContent) {
@@ -261,13 +334,21 @@ export async function buildContext(
       chapterTitle: currentChapter.title,
       chapterSynopsis: currentChapter.synopsis,
     });
-    const prevMessage = `以下是最近前文正文，请重点承接最后发生的事件：\n\n${processed}`;
+    const prevMessage = `以下是检查点之后的近期正文/桥接内容，请重点承接最后发生的事件；若与长期状态冲突，以位置更晚的近期正文为准：\n\n${processed}`;
     messages.push({ role: 'user', content: prevMessage });
     trace.push({
-      kind: 'chapter',
+      kind: coverage?.pendingChapters.length
+        ? 'story_memory_bridge'
+        : 'chapter',
       sourceId: currentChapter.id ?? null,
-      title: '前文滑动窗口',
-      reason: '前文滑动窗口',
+      title: coverage?.pendingChapters.length
+        ? 'Pending Bridge / Seam'
+        : '前文滑动窗口',
+      reason: coverage
+        ? `raw:${coverage.rawChapterIds.join(',') || '无'}; episodicFallback:${
+            coverage.episodicFallbackChapterIds.join(',') || '无'
+          }; tokens≈${coverage.estimatedRawTokens}`
+        : '前文滑动窗口',
       estimatedTokens: estimateTokens(prevMessage),
       included: true,
       clipped: false,
