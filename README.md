@@ -15,16 +15,16 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 
 当前版本：**V2.5.6** · 数据库 Schema：**16** · 最低 Android API：**24**
 
-`V2.5.6+`（开发中）将结构化故事记忆调整为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`，并无损保留 Schema 15 的项目状态、逐章补丁与快照。
+`V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`，并无损保留 Schema 15 的项目状态、逐章补丁与快照。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
 ## 主要能力
 
 | 模块 | 能力                                                                                        |
 | ---- | ------------------------------------------------------------------------------------------- |
 | 项目 | 创建、切换和删除小说项目；支持大纲模式与自由写作模式                                        |
-| 写作 | 章节 CRUD、900ms 防抖自动保存、AI 续写/修订、草稿与版本回退、结构化故事记忆与重建             |
+| 写作 | 章节 CRUD、900ms 防抖自动保存、AI 续写/修订、草稿与版本回退、结构化故事记忆（检查点 + 重建） |
 | 资料 | 角色卡 JSON/PNG 元数据导入、角色集合、世界书集合与条目、笔记资料库、预设                    |
-| AI   | OpenAI 兼容在线 API；GGUF + Android llama.cpp；四阶段流水线；Story State + Episodic TF-IDF + 最近正文三层上下文；自动预算配置 |
+| AI   | OpenAI 兼容在线 API；GGUF + Android llama.cpp；四阶段流水线；Checkpoint + Pending Bridge + Seam + Episodic TF-IDF；自动预算配置 |
 | 语音 | 系统 TTS 与可配置语音服务；章节和选区朗读；前后台保活                                       |
 | 备份 | Manifest 驱动的 v3 备份、SHA-256 校验、原子恢复、外部模型资源引用                           |
 | 诊断 | LLM 用量日志、流水线任务状态、超时/取消/网络错误分类                                        |
@@ -34,7 +34,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 - Android-only；`minSdk 24`，`compileSdk/targetSdk 36`。
 - React Native `0.85.3`、React `19.2.3`、TypeScript `5.8`、Kotlin `2.1.20`。
 - Node.js `>= 24.3.0`、JDK `17`、Android SDK 与 Gradle 环境。
-- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 15。
+- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 16。
 - 本地模型：仅支持 `.gguf`，由 Android `llama.cpp` JNI 引擎加载；模型文件放在应用私有模型目录，不上传服务器。
 - 在线模型：OpenAI 兼容 Chat Completions 接口。默认只允许 HTTPS；局域网 HTTP 必须由用户显式开启，并限制在 `127.0.0.1`、`10/8`、`172.16/12`、`192.168/16`，公网 HTTP 永远拒绝。
 - API Key：通过 `react-native-keychain` 写入 Android Keystore；`llm_config` 只保存配置名称、地址、模型等非密钥字段。备份文件不包含 API Key，恢复后需要重新填写。
@@ -113,7 +113,7 @@ npm run test:coverage
 npm run verify
 ```
 
-V2.5.1 的结构化记忆基线、覆盖率和未完成真机矩阵记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md)；V2.5.2–V2.5.6 的 DeepSeek 真机问题复现与模拟器 release 回归记录在 [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
+V2.5.1 的结构化记忆基线记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md)；V2.5.6 检查点架构与 30 章多人物多线验收记录在 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)；V2.5.2–V2.5.6 的 DeepSeek 回归记录在 [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
 
 `npx jest --runInBand --ci --detectOpenHandles` 可在 Node 24.14.1 上自然退出，不使用 `--forceExit`，无 open-handle 报告或超时。最终分支头的 GitHub Actions [Verify Run 29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) 三个 Job 全部成功。
 
@@ -170,13 +170,13 @@ dist/apk/                         本地 APK 交付目录
 - API Key 不随备份迁移，这是刻意的隐私边界；换设备或恢复备份后需要重新填写。
 - TTS 的可用音色、后台行为和性能受 Android 版本及设备厂商实现影响。
 - API 37 x86_64 模拟器会报告部分原生库的 16KB page-size/RELRO 兼容提示；ARM64 物理设备发布前仍需补验。
-- V2.5.1 已完成 x86_64 模拟器上的 Story Memory 长篇重建、repair、取消、snapshot 与备份恢复；真实外部模型和 arm64 真机长上下文本地模型仍需专项验收。
+- V2.5.6 已完成 x86_64 模拟器上的检查点架构 30 章多人物多线验收（11 人物 / 25 关系 / 10 批次 / through=29 clean）；arm64 真机与本地 GGUF 长上下文仍需专项验收。
 
 ## English summary
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.6** with database Schema **15**. Structured chapter finalization uses JSON mode, detects length-truncated responses, recovers lightly paraphrased evidence quotes from the chapter body, and preserves atomic memory updates and non-empty episodic summaries. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.6** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 

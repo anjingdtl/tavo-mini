@@ -6,34 +6,34 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- 故事记忆改为检查点架构：默认 `smart` 策略、目标间隔 3 章；到达条件时一次批量 LLM 请求处理整批章节，禁止积压后补跑 N 次逐章请求。
-- 章节定稿先本地成功；长期记忆失败不回滚正文、不覆盖旧检查点。
-- 生成上下文改为 Checkpoint + Pending Bridge + Seam，移除生成前无条件 `ensureStoryMemoryReady` 追平。
-- 检查点覆盖范围外的新章/修改为 pending，不再误标 dirty。
+## [2.5.6] - 2026-07-19
 
 ### Added
 
 - Schema 16：`project_story_memory_policy`、`story_memory_batches`，含迁移、fresh schema、manifest 与备份恢复。
+- 故事记忆检查点架构：默认 `smart` 策略、目标间隔 3 章；到达条件时一次批量 LLM 请求处理整批章节，禁止积压后补跑 N 次逐章请求。
 - 批量检查点 prompt/校验/合并、coverage 规划、策略引擎与 Context Preview `story_memory_bridge` 诊断。
 - 故事记忆页：更新策略、待整理范围、人物名称映射、中文状态与本地化时间。
 
-### Tests
+### Changed
 
-- 新增 policy/coverage/30 章请求数证明、Schema 15→16 迁移、检查点合并与预算测试。
-
-## [2.5.6] - 2026-07-19
+- 章节定稿先本地成功；长期记忆失败不回滚正文、不覆盖旧检查点。
+- 生成上下文改为 Checkpoint + Pending Bridge + Seam，移除生成前无条件 `ensureStoryMemoryReady` 追平。
+- 检查点覆盖范围外的新章/修改为 pending，不再误标 dirty。
+- 重建默认按 `intervalChapters`（通常 3）分批，避免过大批次导致 JSON 截断。
+- 人物/线索/关系更新对缺失引用 soft-skip，避免单条坏引用拖垮整批检查点。
 
 ### Fixed
 
 - 定稿遇到模型把 `evidenceQuote` 轻微改写时，自动从当前章节正文恢复为真实连续摘录；无法安全定位的条目会被忽略，避免整章因单条证据阻塞。
 - 定稿前重新读取自动保存后的章节，避免使用旧的编辑器快照覆盖最新正文；同步阻止重复点击触发并行定稿。
+- 强化多人物抽取 prompt 与名单顺序，降低长篇 cast 漏人与重建缩水。
 
 ### Tests
 
+- 新增 policy/coverage/30 章请求数证明、Schema 15→16 迁移、检查点合并与预算测试。
 - 新增证据恢复、无依据证据拒绝和定稿闭包竞态回归测试。
-- 在 Android API 37 x86_64 模拟器执行 DeepSeek 多章定稿与全量 Jest、类型检查、Lint 回归。
+- DeepSeek `deepseek-v4-flash` 模拟器 30 章多人物多线验收：11/11 人物、25 关系、10 个 3 章批次、`through=29/clean`，主检查点请求 10（非 30 次逐章 patch）。
 
 ## [2.5.5] - 2026-07-18
 
