@@ -125,7 +125,7 @@ V2.5.1 的结构化记忆基线记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.
 
 `npx jest --runInBand --ci --detectOpenHandles` 可在 Node 24.14.1 上自然退出，不使用 `--forceExit`，无 open-handle 报告或超时。
 
-V2.5.11 发布提交的 GitHub Actions Verify 结果见 [`docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md`](docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md)（以该提交上的真实 Run 为准；不再用旧 Run 证明新版本）。
+V2.5.11 发布提交 `a319f82` 的 GitHub Actions [Verify Run 29748912852](https://github.com/anjingdtl/tavo-mini/actions/runs/29748912852) 三个 Job（JavaScript validation / Android Debug build / Migration matrix）全部 success。详情见 [`docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md`](docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md)。
 
 GitHub Actions `Verify` 对 `main` push 和 Pull Request 执行：
 
