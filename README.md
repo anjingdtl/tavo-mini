@@ -6,14 +6,14 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.12-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.13-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.12** · 数据库 Schema：**16** · 最低 Android API：**24**
+当前版本：**V2.5.13** · 数据库 Schema：**16** · 最低 Android API：**24**
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
@@ -28,6 +28,8 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 `V2.5.11` 故事记忆召回最终收口：统一 Episodic 全路径 Token 安全预算、Story Memory 硬上限与人物/关系优先级、小 topK 分数优先、统一人物实体命名空间、用户写作要求进入 Story Memory、IDF 空回退最近摘要。详见 [CHANGELOG](CHANGELOG.md)、`docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md`。
 
 `V2.5.12` hardens story-memory contracts: target-aware checkpoint eligibility (no future injection), shared character mention resolver for query/candidate/Story Memory, explicit characterId→name maps, relationship-first budget bundles, true empty-query path proofs, system-invariant tests, and automatic version consistency gate. See [CHANGELOG](CHANGELOG.md) and `docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md`.
+
+`V2.5.13` 故事记忆最终硬化补丁：人物历史桶/计数/组合优先级只用 `matchedCharacterIds`（删除姓名 includes 回退）；歧义词参与最长匹配并占用区间（修复"队长/长""老林/林"误激活）；单次 `buildContext()` 全程复用 `prepareStoryMemoryForGeneration()` 返回的同一 Checkpoint 快照（不再二次读 DB）；GitHub Actions 增加真实 `Version consistency` 步骤；README 英文摘要与正式 APK 信息由脚本精确校验。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md`。
 
 ## 主要能力
 
@@ -97,8 +99,7 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-当前正式产物：`dist/apk/release/ShineWriter-V2.5.8-release.apk`（37,377,747 bytes），SHA-256：`4830F8104FBD456E7AD961BBDA89DAAA6DC6CBF7C2AC7534EEDC93D955D39A64`。
-该 APK 已通过正式证书（证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`）、APK Signature Scheme v2、单 signer、16 KB zipalign 和 AAPT 版本元数据验收（`versionName=V2.5.8`，`versionCode=2050800`）；真实外部模型与 arm64 设备专项限制仍见发布清单。
+当前正式产物：`dist/apk/release/ShineWriter-V2.5.13-release.apk`，`versionName=V2.5.13`，`versionCode=2051300`。该 APK 的 SHA-256、正式证书 SHA-256、APK Signature Scheme、signer 数量、zipalign 和 AAPT 验收结果见 [`docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md`](docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md)。
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -191,7 +192,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.8** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. Dirty rebuild invalidates applied batches from the edit point so later checkpoints cannot reuse a pre-edit world. Chapter update/delete and story-memory dirty/batch invalidation share one SQLite transaction. Episodic recall (V2.5.8) adds denser memory summaries, query expansion, Chinese n-grams, light entity/pair boosts, and hybrid Top-K without extra pre-generation API calls. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.13** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. V2.5.13 final hardening: character-history bucket / count / pair priority read only `matchedCharacterIds` (no name `includes` fallback); ambiguous terms claim scan spans without activating characters ("队长/长", "老林/林" fixed); one `buildContext()` call reuses a single prepared Checkpoint snapshot (no second DB read); GitHub Actions runs `npm run verify:version` as a real release gate. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 

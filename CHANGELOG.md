@@ -6,6 +6,26 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.13] - 2026-07-20
+
+### Fixed
+
+- **人物历史桶彻底改用 characterId**：`ScoredMemoryCandidate` 新增 `matchedCharacterIds` 字段，混合 Top-K 的人物桶、人物计数和 pair priority 全部直接读该字段；删除生产路径中基于 canonical name / alias 字符串 `includes` 的回退判定。
+- **歧义词参与最长匹配和区间占用**：新增统一 `CharacterTermScanEntry` 扫描项；歧义词命中后占用文本区间但不激活任何人物；修复「队长/长」「老林/林」歧义长词内部短姓名误激活。
+- **单次 buildContext 使用同一 prepared Checkpoint 快照**：新增 `renderPreparedStoryMemoryContext()` 纯渲染入口；`buildContext()` 在 `prepareStoryMemoryForGeneration()` 之后复用同一份 `prepared.checkpoint`，不再二次读取数据库。coverage、entity state、Renderer、trace 全部来自同一快照。
+- **GitHub Actions 真实执行版本门禁**：`.github/workflows/verify.yml` JavaScript Job 增加 `Version consistency` 步骤（`npm run verify:version`），位于 Lint 之前。
+- **版本一致性脚本精确检查 README**：新增 `The current version is **VX.Y.Z**` 精确行匹配、`ShineWriter-VX.Y.Z-release.apk` 当前正式 APK 文件名、`versionName=`/`versionCode=` 精确字段，以及旧版本字符串残留检测。
+
+### Tests
+
+- 关系预算测试去除 `if (includedCharacterIds.length >= 2)` 条件放行，改用程序计算的确定预算做无条件断言（后续 agent 继续）。
+- 人物桶专项：重名 `李明/李明`、跨别名 `林岚 ↔ 小岚/岚姐`、歧义长词阻挡短词（后续 agent 继续）。
+- 集成测试 `storyMemoryPreparedSnapshotIntegration.test.ts`（后续 agent 继续）。
+
+### Notes
+
+- 升版 **V2.5.13** / `versionCode` **2051300**；Schema / 备份 / API 次数 / 默认预算均不变；无 Embedding 或第二模型。
+
 ## [2.5.12] - 2026-07-20
 
 ### Fixed
