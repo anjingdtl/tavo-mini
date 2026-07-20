@@ -6,20 +6,22 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.8-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.9-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.8** · 数据库 Schema：**16** · 最低 Android API：**24**
+当前版本：**V2.5.9** · 数据库 Schema：**16** · 最低 Android API：**24**
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
 `V2.5.7` 收尾故事记忆可靠性：已覆盖章节的修改/删除与 dirty 标记、检查点批次失效进入同一 SQLite 事务；dirty 重建作废后续 applied 批次，避免复用旧世界状态。
 
-`V2.5.8` 在现有 Checkpoint / Pending Bridge / Seam / Episodic TF-IDF 框架上强化长篇人物交互召回：约 300 字高密度 `memory_summary`、查询并入写作要求与上一章结尾、中文 n-gram、实体与人物组合加权、混合 Top-K，以及关系「姓名[ID]」渲染。**不增加**正文生成前远程 API 调用，**不改** Schema / 备份格式。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/optimization/progress.md`。
+`V2.5.8` 在现有 Checkpoint / Pending Bridge / Seam / Episodic TF-IDF 框架上强化长篇人物交互召回：约 300 字高密度 `memory_summary`、查询并入写作要求与上一章结尾、中文 n-gram、实体与人物组合加权、混合 Top-K，以及关系「姓名[ID]」渲染。**不增加**正文生成前远程 API 调用，**不改** Schema / 备份格式。
+
+`V2.5.9` 收尾四项召回修复：Checkpoint 主路径摘要密度、不可用 Story Memory 禁止实体加权、Token 预算先优先级后时间序、共用别名歧义处理。详见 [CHANGELOG](CHANGELOG.md)、`docs/V2.5.9-STORY-MEMORY-RETRIEVAL-FIX-REPORT.md` 与 `docs/optimization/progress.md`。
 
 ## 主要能力
 

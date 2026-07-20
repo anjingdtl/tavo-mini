@@ -130,6 +130,48 @@ describe('story memory prompts', () => {
     );
   });
 
+  it('checkpoint prompts require dense per-chapter retrieval summaries', () => {
+    const system = STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT;
+    expect(system).toContain('逐章检索摘要要求');
+    expect(system).toContain('谁对谁实施了什么行为');
+    expect(system).toContain('承诺');
+    expect(system).toContain('欺骗');
+    expect(system).toContain('冲突');
+    expect(system).toContain('合作');
+    expect(system).toContain('救援');
+    expect(system).toContain('拒绝');
+    expect(system).toContain('背叛');
+    expect(system).toContain('获得');
+    expect(system).toContain('失去');
+    expect(system).toContain('使用');
+    expect(system).toContain('交给谁');
+    expect(system).toContain('得知');
+    expect(system).toContain('误解');
+    expect(system).toContain('隐瞒');
+    expect(system).toContain('泄露');
+    expect(system).toContain('关系、信任');
+    expect(system).toContain('线索');
+    expect(system).toContain('秘密');
+    expect(system).toContain('误会');
+    expect(system).toContain('矛盾');
+    expect(system).toContain('模糊代词');
+    expect(system).toContain('二人');
+    expect(system).toContain('他们');
+    expect(system).toContain('双方');
+
+    const messages = buildStoryMemoryCheckpointMessages(
+      [chapter as any],
+      createEmptyStoryMemory(1),
+    );
+    const user = messages[1].content;
+    expect(user).toContain('主体、行为、对象和结果');
+    expect(user).toContain('人物A 对人物B 做了某事');
+    expect(user).toContain('双方姓名');
+    expect(user).toContain('涉及人物、物品、秘密或误会');
+    expect(user).toContain('谁对谁做了什么');
+    expect(user).toContain('禁止“二人/他们/双方/有人”');
+  });
+
   it('checkpoint repair/retry forbid dropping newCharacters to shorten output', () => {
     const base = buildStoryMemoryCheckpointMessages(
       [chapter as any],
