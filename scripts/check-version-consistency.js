@@ -87,13 +87,65 @@ if (!readme.includes(`当前版本：**${expectedVersionName}**`)) {
 if (!readme.includes(`Version-${expectedVersionName}-`)) {
   fail(`README English badge 缺少 Version-${expectedVersionName}`);
 }
-// At least one more English mention (summary line or explicit V)
+// V2.5.13+: English summary line MUST explicitly say "The current version is **VX.Y.Z**"
+// (single canonical source — no fuzzy counting of version strings).
+const englishSummaryPattern = new RegExp(
+  `The current version is \\*\\*${expectedVersionName.replace(/\./g, '\\.')}\\*\\*`,
+);
+if (!englishSummaryPattern.test(readme)) {
+  fail(
+    `README 英文摘要缺少精确行 "The current version is **${expectedVersionName}**"`,
+  );
+}
+// At least one more English mention (badge + summary)
 const englishHits = (readme.match(new RegExp(expectedVersionName, 'g')) || [])
   .length;
 if (englishHits < 2) {
   fail(
     `README 中 ${expectedVersionName} 出现次数过少 (${englishHits})，中英文摘要应同步`,
   );
+}
+
+// V2.5.13+: formal APK filename, versionName, versionCode must match current release.
+// Historical APK strings inside docs/CHANGELOG are fine; README must point to the
+// CURRENT release APK only.
+const expectedApkName = `ShineWriter-${expectedVersionName}-release.apk`;
+if (!readme.includes(expectedApkName)) {
+  fail(`README 缺少当前正式 APK 文件名 ${expectedApkName}`);
+}
+const expectedVersionNameEq = `versionName=${expectedVersionName}`;
+if (!readme.includes(expectedVersionNameEq)) {
+  fail(`README 缺少 ${expectedVersionNameEq}`);
+}
+// versionCode=V*100 + major*10000 + minor*100 + patch*1 as integer
+const expectedVersionCode = major * 1_000_000 + minor * 10_000 + patch * 100;
+const expectedVersionCodeEq = `versionCode=${expectedVersionCode}`;
+if (!readme.includes(expectedVersionCodeEq)) {
+  fail(`README 缺少 ${expectedVersionCodeEq}`);
+}
+// Old release APK references in README must not point to a previous version.
+// Look for ShineWriter-V<digits>.<digits>.<digits>-release.apk and ensure any
+// occurrence is for the current version.
+const staleApkPattern = /ShineWriter-V(\d+)\.(\d+)\.(\d+)-release\.apk/g;
+let apkMatch;
+while ((apkMatch = staleApkPattern.exec(readme)) !== null) {
+  const foundVersion = `${apkMatch[1]}.${apkMatch[2]}.${apkMatch[3]}`;
+  if (foundVersion !== version) {
+    fail(
+      `README 中仍存在旧正式 APK 引用 ShineWriter-V${foundVersion}-release.apk，应替换为 ${expectedApkName}`,
+    );
+  }
+}
+// Stale "The current version is **VX.Y.Z**" for older versions.
+const staleSummaryPattern = /The current version is \*\*V(\d+)\.(\d+)\.(\d+)\*\*/g;
+let summaryMatch;
+while ((summaryMatch = staleSummaryPattern.exec(readme)) !== null) {
+  const foundVersion = `${summaryMatch[1]}.${summaryMatch[2]}.${summaryMatch[3]}`;
+  if (foundVersion !== version) {
+    fail(
+      `README 英文摘要仍声明旧版本 "The current version is **V${foundVersion}**"，期望 ${expectedVersionName}`,
+    );
+  }
 }
 
 // 7 CHANGELOG top version
