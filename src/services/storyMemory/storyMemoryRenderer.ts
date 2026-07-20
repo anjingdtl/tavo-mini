@@ -7,6 +7,7 @@ import {
   collectStoryRetrievalTerms,
   findActiveStoryTerms,
 } from '../episodicMemoryRetriever';
+import { resolveCharacterMentionsInText } from './characterMentionResolver';
 import type { StoryMemoryState } from './storyMemoryTypes';
 
 export interface RenderStoryMemoryResult {
@@ -50,6 +51,14 @@ interface SelectableLine {
   kind: 'character' | 'relationship' | 'mainline';
 }
 
+interface RelationshipBundle {
+  relationshipId: string;
+  requiredCharacterIds: string[];
+  relationshipLine: string;
+  priority: number;
+  lastChangedPosition: number;
+}
+
 /**
  * Build scan text for relevance: title + synopsis + content head + user prompt.
  */
@@ -68,14 +77,20 @@ export function buildStoryMemoryScanText(
 }
 
 /**
- * Resolve currently relevant character IDs via the unified entity namespace
- * (ambiguity + longest-match). Never walks aliases with raw string includes alone.
+ * Resolve currently relevant character IDs via the shared mention resolver
+ * (same rules as Episodic query + candidate scoring).
  */
 export function resolveRelevantCharacterIds(
   state: StoryMemoryState,
   scanText: string,
 ): Set<string> {
   const terms = collectStoryRetrievalTerms(state);
+  const resolution = resolveCharacterMentionsInText(scanText, terms);
+  // Keep ActiveStoryTerms path available for object/thread callers; IDs from resolver.
+  if (resolution.characterIds.length > 0) {
+    return new Set(resolution.characterIds);
+  }
+  // Empty resolution still may use findActiveStoryTerms for legacy fixtures.
   const active = findActiveStoryTerms(scanText, terms);
   return new Set(active.activeCharacterIds || []);
 }
@@ -252,17 +267,31 @@ function renderFromSelection(
   ].join('\n');
 }
 
+function relationshipPriority(
+  fromId: string,
+  toId: string,
+  relevantIds: Set<string>,
+): number {
+  const both = relevantIds.has(fromId) && relevantIds.has(toId);
+  if (both) return 2;
+  if (relevantIds.has(fromId) || relevantIds.has(toId)) return 1;
+  return 0;
+}
+
 /**
  * Hard token-capped Story Memory renderer.
  *
- * Budget priority:
- *   current-relevant characters
- *   → relationships among those characters
- *   → other recently-changed characters
- *   → other relationships
- *   → mainline conflicts / threads / foreshadowing / anchors / beats
+ * Budget priority (relationship-first for current relevant pairs):
+ *   1. Highest-priority relationship's both character cards
+ *   2. That relationship line
+ *   3. Next high-priority relationships (missing cards + line as atomic bundle)
+ *   4. Remaining current-relevant characters
+ *   5. Other recently-changed characters
+ *   6. Other relationships
+ *   7. Mainline entries
  *
- * Every added line is re-checked against budgetTokens. Final text never exceeds budget.
+ * Never dumps all current characters before relationships.
+ * Final text never exceeds budgetTokens.
  */
 export function renderStoryMemoryForContext(
   state: StoryMemoryState,
@@ -302,8 +331,39 @@ export function renderStoryMemoryForContext(
     };
   }
 
-  // --- Build ordered candidate pools ---
   const allCharacters = Object.values(state.characters || {});
+  const allRelationships = Object.values(state.relationships || {});
+
+  const highPriorityBundles: RelationshipBundle[] = allRelationships
+    .map(r => {
+      const line = relationshipLine(state, r.id);
+      if (!line) return null;
+      const priority = relationshipPriority(
+        r.fromCharacterId,
+        r.toCharacterId,
+        relevantIds,
+      );
+      return {
+        relationshipId: r.id,
+        requiredCharacterIds: [r.fromCharacterId, r.toCharacterId],
+        relationshipLine: line,
+        priority,
+        lastChangedPosition: r.lastChangedPosition,
+      } as RelationshipBundle;
+    })
+    .filter((b): b is RelationshipBundle => b != null && b.priority >= 1)
+    .sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      if (b.lastChangedPosition !== a.lastChangedPosition) {
+        return b.lastChangedPosition - a.lastChangedPosition;
+      }
+      return a.relationshipId.localeCompare(b.relationshipId);
+    });
+
+  const highPriorityRelIds = new Set(
+    highPriorityBundles.map(b => b.relationshipId),
+  );
+
   const relevantCharacters = allCharacters
     .filter(c => relevantIds.has(c.id))
     .sort(
@@ -319,27 +379,12 @@ export function renderStoryMemoryForContext(
         a.id.localeCompare(b.id),
     );
 
-  const allRelationships = Object.values(state.relationships || {});
-  const relScore = (fromId: string, toId: string) => {
-    const both =
-      relevantIds.has(fromId) && relevantIds.has(toId) ? 2 : 0;
-    const one =
-      !both && (relevantIds.has(fromId) || relevantIds.has(toId)) ? 1 : 0;
-    return both + one;
-  };
-  const amongRelevantRels = allRelationships
-    .filter(r => relScore(r.fromCharacterId, r.toCharacterId) === 2)
-    .sort(
-      (a, b) =>
-        b.lastChangedPosition - a.lastChangedPosition ||
-        a.id.localeCompare(b.id),
-    );
   const otherRels = allRelationships
-    .filter(r => relScore(r.fromCharacterId, r.toCharacterId) < 2)
+    .filter(r => !highPriorityRelIds.has(r.id))
     .sort((a, b) => {
       const scoreDiff =
-        relScore(b.fromCharacterId, b.toCharacterId) -
-        relScore(a.fromCharacterId, a.toCharacterId);
+        relationshipPriority(b.fromCharacterId, b.toCharacterId, relevantIds) -
+        relationshipPriority(a.fromCharacterId, a.toCharacterId, relevantIds);
       if (scoreDiff !== 0) return scoreDiff;
       if (b.lastChangedPosition !== a.lastChangedPosition) {
         return b.lastChangedPosition - a.lastChangedPosition;
@@ -352,6 +397,8 @@ export function renderStoryMemoryForContext(
   const selectedCharacters: SelectableLine[] = [];
   const selectedRelationships: SelectableLine[] = [];
   const selectedMainline: SelectableLine[] = [];
+  const includedCharIds = new Set<string>();
+  const includedRelIds = new Set<string>();
   let clipped = false;
 
   const currentText = () =>
@@ -372,9 +419,46 @@ export function renderStoryMemoryForContext(
     return true;
   };
 
+  /**
+   * Atomic relationship bundle: missing character cards + relationship line.
+   * Only commit if the whole bundle fits; otherwise roll back entirely.
+   */
+  const tryAddRelationshipBundle = (bundle: RelationshipBundle): boolean => {
+    if (includedRelIds.has(bundle.relationshipId)) return true;
+
+    const charSnapshots: SelectableLine[] = [];
+    for (const charId of bundle.requiredCharacterIds) {
+      if (includedCharIds.has(charId)) continue;
+      const line = characterLine(state, charId);
+      if (!line) continue;
+      charSnapshots.push({ id: charId, line, kind: 'character' });
+    }
+    const relItem: SelectableLine = {
+      id: bundle.relationshipId,
+      line: bundle.relationshipLine,
+      kind: 'relationship',
+    };
+
+    for (const c of charSnapshots) selectedCharacters.push(c);
+    selectedRelationships.push(relItem);
+
+    if (estimateTokens(currentText()) > budgetTokens) {
+      // Roll back entire bundle.
+      for (let i = 0; i < charSnapshots.length; i += 1) {
+        selectedCharacters.pop();
+      }
+      selectedRelationships.pop();
+      clipped = true;
+      return false;
+    }
+
+    for (const c of charSnapshots) includedCharIds.add(c.id);
+    includedRelIds.add(bundle.relationshipId);
+    return true;
+  };
+
   // Skeleton with empty sections (prefix + headers + 「无」×3) must fit first.
   if (estimateTokens(currentText()) > budgetTokens) {
-    // Extremely tight: try prefix + minimal headers only by hard clip.
     const minimal = currentText();
     const safe = clipTextToTokenBudget(minimal, budgetTokens);
     const tokens = estimateTokens(safe);
@@ -388,51 +472,61 @@ export function renderStoryMemoryForContext(
     };
   }
 
-  // 1) Current-relevant characters
+  // 1–4) High-priority relationship bundles (both-relevant first, then one-side).
+  // Do NOT add all current characters before relationships.
+  for (const bundle of highPriorityBundles) {
+    tryAddRelationshipBundle(bundle);
+  }
+
+  // 5) Remaining current-relevant characters not already pulled by bundles.
   for (const character of relevantCharacters) {
+    if (includedCharIds.has(character.id)) continue;
     const line = characterLine(state, character.id);
     if (!line) continue;
-    tryAdd(selectedCharacters, {
-      id: character.id,
-      line,
-      kind: 'character',
-    });
+    if (
+      tryAdd(selectedCharacters, {
+        id: character.id,
+        line,
+        kind: 'character',
+      })
+    ) {
+      includedCharIds.add(character.id);
+    }
   }
 
-  // 2) Relationships among current-relevant characters (before other character cards)
-  for (const rel of amongRelevantRels) {
-    const line = relationshipLine(state, rel.id);
-    if (!line) continue;
-    tryAdd(selectedRelationships, {
-      id: rel.id,
-      line,
-      kind: 'relationship',
-    });
-  }
-
-  // 3) Other recently-changed characters
+  // 6) Other recently-changed characters
   for (const character of otherCharacters) {
+    if (includedCharIds.has(character.id)) continue;
     const line = characterLine(state, character.id);
     if (!line) continue;
-    tryAdd(selectedCharacters, {
-      id: character.id,
-      line,
-      kind: 'character',
-    });
+    if (
+      tryAdd(selectedCharacters, {
+        id: character.id,
+        line,
+        kind: 'character',
+      })
+    ) {
+      includedCharIds.add(character.id);
+    }
   }
 
-  // 4) Other relationships
+  // 7) Other relationships
   for (const rel of otherRels) {
+    if (includedRelIds.has(rel.id)) continue;
     const line = relationshipLine(state, rel.id);
     if (!line) continue;
-    tryAdd(selectedRelationships, {
-      id: rel.id,
-      line,
-      kind: 'relationship',
-    });
+    if (
+      tryAdd(selectedRelationships, {
+        id: rel.id,
+        line,
+        kind: 'relationship',
+      })
+    ) {
+      includedRelIds.add(rel.id);
+    }
   }
 
-  // 5) Mainline items one-by-one
+  // 8) Mainline items one-by-one
   for (const item of mainlineCandidates) {
     tryAdd(selectedMainline, item);
   }
@@ -446,7 +540,6 @@ export function renderStoryMemoryForContext(
     text = clipTextToTokenBudget(text, budgetTokens);
     estimated = estimateTokens(text);
     if (estimated > budgetTokens) {
-      // Last resort: empty rather than overflow.
       return emptyResult();
     }
   }
