@@ -579,3 +579,38 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | Emulator | emulator-5556 install V2.5.9; main tabs + settings; no FATAL (`test-logs/v259-emulator-smoke/`) |
 | Gates | verify 113/587 PASS; coverage exit 0 |
 | Report | `docs/V2.5.9-STORY-MEMORY-RETRIEVAL-FIX-REPORT.md` |
+
+## V2.5.10 story memory boundary fixes — 2026-07-20
+
+- Status: **implemented + tests + verify/coverage + release APK**
+- Baseline: V2.5.9 (`d856052` / report pin `bcea34b`) — already shipped, so patch bumped to **2.5.10**
+- Scope: two boundary-only fixes; no Schema/backup/Checkpoint/Pending Bridge/Seam/default budget/API count; no Embedding/second model
+
+### Fixes
+
+1. **Tiny token budget overflow** — `selectCandidatesWithinTokenBudget` deducts full chapter prefix tokens before body truncation; if prefix alone cannot fit, return empty; first overlong candidate may still truncate body after complete prefix; middle overlong candidates are skipped for later shorter ones
+2. **Entity term double compute** — `contextBuilder` collects `StoryRetrievalTerms` / `ActiveStoryTerms` once per Episodic retrieval and passes optional `precomputed` into `scoreMemoryCandidates`; scoring identical to legacy path
+
+### Code
+
+| File | Role |
+| --- | --- |
+| `src/services/episodicMemoryRetriever.ts` | Prefix-aware budget truncation; `PrecomputedStoryScoringTerms`; `formatMemoryCandidatePrefix` |
+| `src/services/contextBuilder.ts` | Collect/find once, pass precomputed into scorer |
+
+### Tests
+
+- Extended `__tests__/episodicMemoryRetriever.test.ts` (tiny budgets 1/5/10, prefix edge, precomputed equality, collect-once spy)
+- 30/100/300 chapter perf soft budgets remain in `longStoryRecallRegression.test.ts`
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.10** / Schema **16** |
+| APK | `dist/apk/release/ShineWriter-V2.5.10-release.apk` (37,380,703 bytes) |
+| SHA-256 | `638987B0BF59651B92D3F7C326E9C0BE888B26E4B4234744C75BC3C055D8F0C0` |
+| Signature | Release cert `017b3f…2a0a`, APK Sig v2, 1 signer, zipalign OK |
+| Emulator | emulator-5556 install V2.5.10; tabs 项目/写作/资料/设置; no FATAL (`test-logs/v2510-emulator-smoke/`) |
+| Gates | verify 113/595 PASS; coverage exit 0; 30/100/300 perf PASS |
+| Report | `docs/V2.5.10-STORY-MEMORY-BOUNDARY-FIX-REPORT.md` |
