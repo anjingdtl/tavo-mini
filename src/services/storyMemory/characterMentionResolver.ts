@@ -33,6 +33,18 @@ export interface CharacterMentionResolution {
   ambiguousTermsEncountered: string[];
 }
 
+/**
+ * Unified scan entry (V2.5.13+): unique terms and ambiguous terms share one
+ * longest-match pass. Ambiguous entries claim spans but never activate.
+ */
+export interface CharacterTermScanEntry {
+  normalizedTerm: string;
+  displayTerm: string;
+  owners: CharacterTermOwner[];
+  ambiguous: boolean;
+  length: number;
+}
+
 function uniqueNonEmpty(values: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -128,34 +140,60 @@ export function resolveCharacterMentionsInText(
       };
     }
 
-    // One representative surface per (normalizedTerm, characterId).
-    const uniqueTermCandidates = new Map<
-      string,
-      { owner: CharacterTermOwner; displayTerm: string }
-    >();
+    // Build one scan entry per (normalizedTerm, representative owner).
+    // - Unique normalized terms: single entry, ambiguous=false.
+    // - Ambiguous normalized terms: single entry, ambiguous=true (claims spans,
+    //   never activates). Representative displayTerm is the longest surface.
+    const scanEntriesByNormalized = new Map<string, CharacterTermScanEntry>();
     for (const owner of owners) {
       if (!owner.normalizedTerm || !owner.characterId) continue;
-      if (ambiguousNormalized.has(owner.normalizedTerm)) continue;
       const ownersForTerm =
         terms.termOwnersByNormalized?.[owner.normalizedTerm] || [owner];
       const uniqueIds = uniqueNonEmpty(ownersForTerm.map(o => o.characterId));
-      if (uniqueIds.length !== 1) continue;
-      const key = `${owner.normalizedTerm}::${owner.characterId}`;
-      const existing = uniqueTermCandidates.get(key);
-      if (!existing || owner.term.length > existing.displayTerm.length) {
-        uniqueTermCandidates.set(key, { owner, displayTerm: owner.term });
+      const isAmbiguous =
+        ambiguousNormalized.has(owner.normalizedTerm) || uniqueIds.length > 1;
+
+      const existing = scanEntriesByNormalized.get(owner.normalizedTerm);
+      if (existing) {
+        // Keep the longest display surface for the same normalized bucket.
+        if (owner.term.length > existing.displayTerm.length) {
+          existing.displayTerm = owner.term;
+          existing.length = owner.term.length;
+        }
+        // Merge owner (dedupe by characterId+type+term).
+        const alreadyHave = existing.owners.some(
+          o =>
+            o.characterId === owner.characterId &&
+            o.type === owner.type &&
+            o.term === owner.term,
+        );
+        if (!alreadyHave) existing.owners.push(owner);
+        continue;
       }
+
+      scanEntriesByNormalized.set(owner.normalizedTerm, {
+        normalizedTerm: owner.normalizedTerm,
+        displayTerm: owner.term,
+        owners: [owner],
+        ambiguous: isAmbiguous,
+        length: owner.term.length,
+      });
     }
 
-    const candidates = Array.from(uniqueTermCandidates.values()).sort(
+    // Sort: longest displayTerm first; among unambiguous entries of equal length,
+    // canonical before alias (stable); then by normalizedTerm / displayTerm.
+    const scanEntries = Array.from(scanEntriesByNormalized.values()).sort(
       (a, b) => {
-        if (b.displayTerm.length !== a.displayTerm.length) {
-          return b.displayTerm.length - a.displayTerm.length;
+        if (b.length !== a.length) return b.length - a.length;
+        if (!a.ambiguous && !b.ambiguous) {
+          const aType = a.owners[0]?.type;
+          const bType = b.owners[0]?.type;
+          if (aType !== bType) return aType === 'canonical' ? -1 : 1;
         }
-        if (a.owner.type !== b.owner.type) {
-          return a.owner.type === 'canonical' ? -1 : 1;
+        if (a.normalizedTerm !== b.normalizedTerm) {
+          return a.normalizedTerm < b.normalizedTerm ? -1 : 1;
         }
-        return a.displayTerm.localeCompare(b.displayTerm);
+        return a.displayTerm < b.displayTerm ? -1 : 1;
       },
     );
 
@@ -170,20 +208,33 @@ export function resolveCharacterMentionsInText(
     >();
     const mentions: CharacterMention[] = [];
 
-    for (const { owner, displayTerm } of candidates) {
-      const occurrences = findTermOccurrences(haystack, displayTerm);
+    for (const entry of scanEntries) {
+      const occurrences = findTermOccurrences(haystack, entry.displayTerm);
       if (occurrences.length === 0) continue;
       const free = occurrences.filter(
         span => !claimedSpans.some(claimed => rangesOverlap(claimed, span)),
       );
       if (free.length === 0) continue;
+
+      if (entry.ambiguous) {
+        // Ambiguous terms claim spans but never activate characters.
+        for (const span of free) {
+          claimedSpans.push(span);
+        }
+        ambiguousEncountered.add(entry.displayTerm);
+        continue;
+      }
+
+      // Unique term: activate its single characterId.
+      const owner = entry.owners[0];
+      if (!owner) continue;
       for (const span of free) {
         claimedSpans.push(span);
         mentions.push({
           characterId: owner.characterId,
           canonicalName: owner.canonicalName,
-          matchedTerm: displayTerm,
-          normalizedTerm: owner.normalizedTerm,
+          matchedTerm: entry.displayTerm,
+          normalizedTerm: entry.normalizedTerm,
           type: owner.type,
           start: span.start,
           end: span.end,
@@ -193,7 +244,7 @@ export function resolveCharacterMentionsInText(
         firstById.set(owner.characterId, {
           canonicalName: owner.canonicalName,
           type: owner.type,
-          matchedTerm: displayTerm,
+          matchedTerm: entry.displayTerm,
         });
       }
     }

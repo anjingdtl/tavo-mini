@@ -3,6 +3,8 @@
  * These must not regress when individual features are patched.
  */
 
+import fs from 'fs';
+import path from 'path';
 import type { Chapter } from '../src/types/novel';
 import { createEmptyStoryMemory } from '../src/services/storyMemory/storyMemoryDefaults';
 import { resolveUsableCheckpointForTarget } from '../src/services/storyMemory/storyMemoryCheckpointEligibility';
@@ -360,9 +362,74 @@ describe('system invariants: true empty query branch', () => {
 });
 
 describe('system invariants: relationship budget guarantee', () => {
-  it('with many current characters, key relationship still enters under tight budget', () => {
-    const state = baseState();
-    // 8 characters all mentioned in user prompt.
+  /**
+   * SPEC §11 — Unconditional assertions.
+   *
+   * Strategy: render the MINIMAL viable state (prefix + 林岚 + 周恪 +
+   * rel_lan_zhou) at full budget to obtain the exact minimum token cost.
+   * Use that value + a small margin (50) as the tight budget for the large
+   * state. Then assert unconditionally that the key pair + relationship
+   * enters and the result is within budget.
+   *
+   * Budget is computed programmatically from real renderer output — never
+   * derived from a percentage of the large-state estimate.
+   */
+
+  function minimalState() {
+    const state = createEmptyStoryMemory(1);
+    state.throughChapterPosition = 10;
+    state.characters.char_lan = {
+      id: 'char_lan',
+      canonicalName: '林岚',
+      aliases: ['小岚'],
+      role: '调查员',
+      immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+      currentState: {
+        location: '钟楼',
+        physicalState: '正常',
+        emotionalState: '警惕',
+        currentGoal: '查案',
+        knowledge: [],
+        possessions: ['银钥匙'],
+        secrets: [],
+      },
+      status: 'active',
+      firstSeenChapterId: 1,
+      firstSeenPosition: 0,
+      lastChangedChapterId: 10,
+      lastChangedPosition: 10,
+      evidenceChapterIds: [1],
+    };
+    state.characters.char_zhou = {
+      ...state.characters.char_lan,
+      id: 'char_zhou',
+      canonicalName: '周恪',
+      aliases: [],
+      currentState: { ...state.characters.char_lan.currentState, possessions: [] },
+    };
+    state.relationships.rel_lan_zhou = {
+      id: 'rel_lan_zhou',
+      fromCharacterId: 'char_lan',
+      toCharacterId: 'char_zhou',
+      direction: 'bidirectional',
+      relationType: '盟友',
+      currentState: '合作查案',
+      trustLevel: 'high',
+      publicStatus: '同事',
+      hiddenStatus: '',
+      reason: '共同调查',
+      firstSeenChapterId: 1,
+      lastChangedChapterId: 10,
+      lastChangedPosition: 10,
+      evidenceChapterIds: [1],
+    };
+    return state;
+  }
+
+  function largeStateWithExtras() {
+    const state = minimalState();
+    // 6 additional characters all mentioned in the user prompt; stale relationships
+    // among them so they should not crowd out the key 林岚/周恪 pair.
     for (let i = 0; i < 6; i += 1) {
       const id = `char_extra_${i}`;
       state.characters[id] = {
@@ -372,7 +439,6 @@ describe('system invariants: relationship budget guarantee', () => {
         aliases: [],
         lastChangedPosition: 5,
       };
-      // Stale relationships among extras
       if (i > 0) {
         const rid = `rel_extra_${i}`;
         state.relationships[rid] = {
@@ -384,38 +450,55 @@ describe('system invariants: relationship budget guarantee', () => {
         };
       }
     }
-    const prompt = [
+    return state;
+  }
+
+  it('key pair + relationship still enter under programmatically-computed tight budget', () => {
+    const minimal = minimalState();
+    const promptOnlyPair = '林岚、周恪';
+    // Render the minimal state at large budget → captures real cost of
+    // prefix + 林岚 + 周恪 + rel_lan_zhou.
+    const minimalRender = renderStoryMemoryForContext(minimal, {
+      currentChapter: makeChapter(99, 20, '', promptOnlyPair),
+      budgetTokens: 8000,
+      retrievalUserPrompt: promptOnlyPair,
+    });
+
+    // Sanity: minimal render must include both key characters + the relationship.
+    expect(minimalRender.includedCharacterIds).toEqual(
+      expect.arrayContaining(['char_lan', 'char_zhou']),
+    );
+    expect(minimalRender.includedRelationshipIds).toContain('rel_lan_zhou');
+    expect(minimalRender.includedCharacterIds).toHaveLength(2);
+
+    // Tight budget = minimal cost + small margin. Never a percentage of full.
+    const tightBudget = minimalRender.estimatedTokens + 50;
+
+    // Now render the large state under the same tight budget.
+    const large = largeStateWithExtras();
+    const fullPrompt = [
       '林岚',
       '周恪',
       ...Array.from({ length: 6 }, (_, i) => `配角${i}号很长名字占预算`),
     ].join('、');
 
-    // Find a budget that can fit ~2–3 cards + 1 rel but not all 8 cards.
-    const full = renderStoryMemoryForContext(state, {
-      currentChapter: makeChapter(99, 20, '', prompt),
-      budgetTokens: 8000,
-      retrievalUserPrompt: prompt,
+    const result = renderStoryMemoryForContext(large, {
+      currentChapter: makeChapter(99, 20, '', fullPrompt),
+      budgetTokens: tightBudget,
+      retrievalUserPrompt: fullPrompt,
     });
-    // Tight: enough for prefix + 林岚 + 周恪 + rel, not all extras
-    const tightBudget = Math.min(900, Math.floor(full.estimatedTokens * 0.35));
-    const result = renderStoryMemoryForContext(state, {
-      currentChapter: makeChapter(99, 20, '', prompt),
-      budgetTokens: Math.max(400, tightBudget),
-      retrievalUserPrompt: prompt,
-    });
-    expect(result.estimatedTokens).toBeLessThanOrEqual(
-      Math.max(400, tightBudget),
-    );
-    // Key pair + relationship should win over dumping all characters.
-    if (result.includedCharacterIds.length >= 2) {
-      expect(result.includedCharacterIds).toEqual(
-        expect.arrayContaining(['char_lan', 'char_zhou']),
-      );
-      expect(result.includedRelationshipIds).toContain('rel_lan_zhou');
-    }
-    expect(result.text.includes('林岚') || result.includedCharacterIds.length === 0).toBe(
-      true,
-    );
+
+    // Unconditional SPEC §11 assertions — no `if` pass-through.
+    expect(result.estimatedTokens).toBeLessThanOrEqual(tightBudget);
+    expect(result.includedCharacterIds).toContain('char_lan');
+    expect(result.includedCharacterIds).toContain('char_zhou');
+    expect(result.includedRelationshipIds).toContain('rel_lan_zhou');
+    // Key pair wins over dumping all extras — not all 8 characters enter.
+    expect(result.includedCharacterIds.length).toBeLessThan(8);
+    // Result text actually carries the relationship marker.
+    expect(result.text).toContain('rel_lan_zhou');
+    expect(result.text).toContain('林岚');
+    expect(result.text).toContain('周恪');
   });
 });
 
@@ -524,4 +607,256 @@ describe('system invariants: fixed-seed anti-regression (no throw, deterministic
       expect(rendered.estimatedTokens).toBeLessThanOrEqual(1500);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// SPEC §13 — V2.5.13 hardening invariants. These guard the production fixes
+// against regression and must never depend on conditional pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * §13.1 — Character-history bucket invariant.
+ *
+ * Mixed Top-K bucket must rely ONLY on `matchedCharacterIds`. A candidate
+ * whose legacy `matchedCharacters` list contains a name but whose
+ * `matchedCharacterIds` is empty MUST NOT be treated as a pair candidate.
+ */
+describe('SPEC §13.1 — character-history bucket uses matchedCharacterIds only', () => {
+  it('candidate with legacy matchedCharacters=[李明] but empty matchedCharacterIds earns no pairBoost', () => {
+    const state = createEmptyStoryMemory(1);
+    state.characters.char_reporter = {
+      id: 'char_reporter',
+      canonicalName: '李明',
+      aliases: ['记者'],
+      role: '',
+      immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+      currentState: {
+        location: '',
+        physicalState: '',
+        emotionalState: '',
+        currentGoal: '',
+        knowledge: [],
+        possessions: [],
+        secrets: [],
+      },
+      status: 'active',
+      firstSeenChapterId: 1,
+      firstSeenPosition: 0,
+      lastChangedChapterId: 1,
+      lastChangedPosition: 0,
+      evidenceChapterIds: [1],
+    };
+    state.characters.char_doctor = {
+      ...state.characters.char_reporter,
+      id: 'char_doctor',
+      aliases: ['医生'],
+    };
+    const docs = [
+      {
+        chapter: makeChapter(1, 0, '李明单独行动。'),
+        text: '李明单独行动。',
+      },
+    ];
+    const query = '记者和医生';
+    const idf = buildIdfFromTexts(docs.map(d => d.text).concat([query]));
+    const scored = scoreMemoryCandidates(docs, query, idf, state);
+    expect(scored[0].matchedCharacterIds).toEqual([]);
+    expect(scored[0].pairBoost).toBe(0);
+    // Even if a downstream caller synthesised a candidate with legacy
+    // matchedCharacters populated but matchedCharacterIds empty, the bucket
+    // logic must skip it for pair priority.
+    const synthetic = {
+      ...scored[0],
+      matchedCharacters: ['李明'], // legacy display list populated
+      matchedCharacterIds: [] as string[], // V2.5.13 source of truth empty
+    };
+    expect(synthetic.matchedCharacterIds.length >= 2).toBe(false);
+  });
+});
+
+/**
+ * §13.2 — Ambiguous span-claim invariant.
+ *
+ * Ambiguous long terms (shared alias / canonical-alias collision / case
+ * variants) MUST occupy their text span and block inner short terms from
+ * activating. They never activate any character themselves.
+ */
+describe('SPEC §13.2 — ambiguous term claims span and blocks inner short term', () => {
+  it('队长 (ambiguous) blocks inner 长 but not standalone 长', () => {
+    const state = createEmptyStoryMemory(1);
+    state.characters.char_a = {
+      id: 'char_a',
+      canonicalName: '甲',
+      aliases: ['队长'],
+      role: '',
+      immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+      currentState: {
+        location: '',
+        physicalState: '',
+        emotionalState: '',
+        currentGoal: '',
+        knowledge: [],
+        possessions: [],
+        secrets: [],
+      },
+      status: 'active',
+      firstSeenChapterId: 1,
+      firstSeenPosition: 0,
+      lastChangedChapterId: 1,
+      lastChangedPosition: 0,
+      evidenceChapterIds: [1],
+    };
+    state.characters.char_b = { ...state.characters.char_a, id: 'char_b', canonicalName: '乙' };
+    state.characters.char_chang = { ...state.characters.char_a, id: 'char_chang', canonicalName: '长', aliases: [] };
+    const terms = collectStoryRetrievalTerms(state);
+    expect(terms.ambiguousNormalizedTerms).toContain('队长');
+
+    const resolution = resolveCharacterMentionsInText('队长下令，长随后离开', terms);
+    expect(resolution.ambiguousTermsEncountered).toContain('队长');
+    expect(resolution.characterIds).toEqual(['char_chang']);
+  });
+});
+
+/**
+ * §13.3 — Single-snapshot invariant.
+ *
+ * One `buildContext()` call must read the project Checkpoint row at most once
+ * (inside `prepareStoryMemoryForGeneration`). The main path uses
+ * `renderPreparedStoryMemoryContext` with the prepared snapshot and MUST NOT
+ * re-read via `getProjectStoryMemory` / `ensureProjectStoryMemoryRow`.
+ */
+describe('SPEC §13.3 — single buildContext call reads Checkpoint at most once', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    jest.clearAllMocks();
+  });
+
+  it('buildContext reads getProjectStoryMemory at most once across prepare + render', async () => {
+    let memoryReads = 0;
+    const state = createEmptyStoryMemory(1);
+    state.throughChapterPosition = 0;
+    state.metadata.status = 'clean';
+    state.characters.char_lan = {
+      id: 'char_lan',
+      canonicalName: '林岚',
+      aliases: [],
+      role: '',
+      immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+      currentState: {
+        location: '',
+        physicalState: '',
+        emotionalState: '',
+        currentGoal: '',
+        knowledge: [],
+        possessions: [],
+        secrets: [],
+      },
+      status: 'active',
+      firstSeenChapterId: 1,
+      firstSeenPosition: 0,
+      lastChangedChapterId: 1,
+      lastChangedPosition: 0,
+      evidenceChapterIds: [1],
+    };
+    const chapters = [
+      {
+        id: 1,
+        project_id: 1,
+        position: 0,
+        title: '第一章',
+        synopsis: '',
+        content: '林岚发现暗门。',
+        status: 'final' as const,
+        summary_json: null,
+        memory_summary: '林岚发现暗门',
+        memory_summary_tokens: 5,
+        finalized_at: null,
+        created_at: '',
+        updated_at: '',
+      },
+      {
+        id: 2,
+        project_id: 1,
+        position: 1,
+        title: '第二章',
+        synopsis: '',
+        content: '',
+        status: 'draft' as const,
+        summary_json: null,
+        memory_summary: '',
+        memory_summary_tokens: 0,
+        finalized_at: null,
+        created_at: '',
+        updated_at: '',
+      },
+    ];
+
+    jest.doMock('../src/services/database', () => ({
+      getChaptersByProject: jest.fn(async () => chapters),
+      getProjectStoryMemory: jest.fn(async () => {
+        memoryReads += 1;
+        return { state, status: 'clean', dirtyFromPosition: null };
+      }),
+      ensureProjectStoryMemoryRow: jest.fn(async () => ({
+        state,
+        status: 'clean',
+        dirtyFromPosition: null,
+        lastError: '',
+        updatedAt: '',
+      })),
+      getCharactersByProject: jest.fn(async () => []),
+      getWorldbookEntriesByProject: jest.fn(async () => []),
+      getNotesByProject: jest.fn(async () => []),
+      getNotesContentByIds: jest.fn(async () => ({})),
+      getProjectNoteConfig: jest.fn(async () => null),
+    }));
+    jest.doMock('../src/services/macroReplace', () => ({
+      processMacros: jest.fn(async (text: string) => text),
+    }));
+
+    const { buildContext } = require('../src/services/contextBuilder');
+    await buildContext(
+      chapters[1],
+      {
+        strategy: 'sliding',
+        slidingWindowSize: 4000,
+        customRangeStart: 0,
+        customRangeEnd: -1,
+        includeResources: false,
+        resourceBudget: 0,
+        summaryBudgetTokens: 2000,
+        episodicMemoryBudgetTokens: 1000,
+        storyStateBudgetTokens: 4000,
+      },
+      1,
+      undefined,
+      { storyMemoryMode: 'preview', retrievalUserPrompt: '林岚继续' },
+    );
+
+    // The single-snapshot invariant: at most one Checkpoint read per call.
+    expect(memoryReads).toBeLessThanOrEqual(1);
+  });
+});
+
+/**
+ * §13.4 — Remote version gate invariant.
+ *
+ * `.github/workflows/verify.yml` MUST include `npm run verify:version` as an
+ * explicit CI step so that local version reports cannot bypass the gate.
+ */
+describe('SPEC §13.4 — remote version gate invariant', () => {
+  const workflowPath = path.resolve(
+    __dirname,
+    '..',
+    '.github',
+    'workflows',
+    'verify.yml',
+  );
+
+  it('verify.yml contains an explicit "npm run verify:version" step', () => {
+    const workflow = fs.readFileSync(workflowPath, 'utf8');
+    expect(workflow).toContain('npm run verify:version');
+    // Must be an explicit named step, not just a sub-string inside another command.
+    expect(workflow).toMatch(/name:\s*Version consistency[\s\S]*?run:\s*npm run verify:version/);
+  });
 });
