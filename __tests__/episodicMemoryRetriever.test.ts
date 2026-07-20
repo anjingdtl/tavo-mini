@@ -11,6 +11,7 @@ import {
   collectStoryRetrievalTerms,
   findActiveStoryTerms,
   formatMemoryCandidateLine,
+  formatMemoryCandidatePrefix,
   orderCandidatesForDisplay,
   scoreMemoryCandidates,
   selectCandidatesWithinTokenBudget,
@@ -18,6 +19,7 @@ import {
   tokenizeForMemoryRetrieval,
   type ScoredMemoryCandidate,
 } from '../src/services/episodicMemoryRetriever';
+import * as episodicMemoryRetriever from '../src/services/episodicMemoryRetriever';
 import { estimateTokens } from '../src/utils/tokenEstimator';
 import { buildMemoryContext } from '../src/services/contextBuilder';
 
@@ -467,6 +469,211 @@ describe('token budget selects by priority then displays chronologically', () =>
     const idxRecent = text.indexOf('第 29 章');
     expect(idxPromise).toBeGreaterThanOrEqual(0);
     expect(idxRecent).toBeGreaterThan(idxPromise);
+  });
+
+  it('tiny budgets 1/5/10 never exceed and return empty when below full prefix cost', () => {
+    const candidate = scored(
+      1,
+      0,
+      '林岚与周恪关于银钥匙的保密承诺细节。'.repeat(5),
+      1.0,
+      '承诺章',
+    );
+    const prefix = formatMemoryCandidatePrefix(candidate.chapter);
+    const prefixCost = estimateTokens(prefix);
+    expect(prefixCost).toBeGreaterThan(10);
+
+    for (const budget of [1, 5, 10]) {
+      const kept = selectCandidatesWithinTokenBudget([candidate], budget);
+      expect(kept).toEqual([]);
+      const memoryText = kept
+        .map(item => formatMemoryCandidateLine(item))
+        .join('\n');
+      expect(estimateTokens(memoryText)).toBeLessThanOrEqual(budget);
+      // Empty string estimates as 0.
+      expect(memoryText).toBe('');
+    }
+  });
+
+  it('returns empty when budget is strictly less than full prefix tokens', () => {
+    const candidate = scored(2, 4, '周恪隐瞒银钥匙来源。', 0.9, '短标题');
+    const prefixCost = estimateTokens(
+      formatMemoryCandidatePrefix(candidate.chapter),
+    );
+    const budget = Math.max(1, prefixCost - 1);
+    const kept = selectCandidatesWithinTokenBudget([candidate], budget);
+    expect(kept).toEqual([]);
+  });
+
+  it('fits prefix plus a short body when budget is exactly large enough', () => {
+    const body = '林岚追问。';
+    const candidate = scored(3, 1, body, 1.0, '夜');
+    const fullLine = formatMemoryCandidateLine(candidate);
+    const fullCost = estimateTokens(fullLine);
+    const prefixCost = estimateTokens(
+      formatMemoryCandidatePrefix(candidate.chapter),
+    );
+    // Budget between prefix and full line forces first-candidate body truncation,
+    // or equals fullCost when body is already short enough.
+    const budget =
+      prefixCost + Math.max(1, Math.min(3, fullCost - prefixCost));
+    expect(budget).toBeGreaterThanOrEqual(prefixCost);
+    expect(budget).toBeLessThanOrEqual(fullCost);
+
+    const kept = selectCandidatesWithinTokenBudget([candidate], budget);
+    expect(kept).toHaveLength(1);
+    const line = formatMemoryCandidateLine(kept[0]);
+    expect(line.startsWith(formatMemoryCandidatePrefix(candidate.chapter))).toBe(
+      true,
+    );
+    expect(estimateTokens(line)).toBeLessThanOrEqual(budget);
+    // Complete prefix retained (no partial-prefix reassembly bug).
+    expect(line).toContain('摘要：');
+    if (budget < fullCost) {
+      expect(kept[0].text.length).toBeLessThan(body.length);
+    }
+  });
+
+  it('truncates first overlong candidate body after complete prefix under mid budget', () => {
+    const body = '关键承诺与钥匙转交细节。'.repeat(40);
+    const candidate = scored(9, 3, body, 1.0, '超长摘要');
+    const prefix = formatMemoryCandidatePrefix(candidate.chapter);
+    const prefixCost = estimateTokens(prefix);
+    const fullCost = estimateTokens(formatMemoryCandidateLine(candidate));
+    const budget = prefixCost + 25;
+    expect(fullCost).toBeGreaterThan(budget);
+    expect(budget).toBeGreaterThan(prefixCost);
+
+    const kept = selectCandidatesWithinTokenBudget([candidate], budget);
+    expect(kept).toHaveLength(1);
+    const line = formatMemoryCandidateLine(kept[0]);
+    expect(line.startsWith(prefix)).toBe(true);
+    expect(kept[0].text.length).toBeLessThan(body.length);
+    expect(kept[0].text.length).toBeGreaterThan(0);
+    expect(estimateTokens(line)).toBeLessThanOrEqual(budget);
+  });
+
+  it('final formatted memory text never exceeds budgetTokens after truncation', () => {
+    const candidates = [
+      scored(1, 0, '早期填充描写。'.repeat(20), 0.4, '早期'),
+      scored(
+        2,
+        14,
+        '周恪答应林岚不告诉白薇银钥匙来源，立下保密承诺。'.repeat(8),
+        0.95,
+        '承诺',
+      ),
+      scored(3, 28, '白薇暗示知道钥匙来源。', 0.55, '近期'),
+    ];
+    for (const budget of [1, 5, 10, 30, 60, 120]) {
+      const kept = selectCandidatesWithinTokenBudget(
+        [candidates[1], candidates[2], candidates[0]],
+        budget,
+      );
+      const memoryText = kept
+        .map(item => formatMemoryCandidateLine(item))
+        .join('\n');
+      expect(estimateTokens(memoryText)).toBeLessThanOrEqual(budget);
+    }
+  });
+});
+
+describe('precomputed story scoring terms', () => {
+  it('precomputed path matches legacy scoreMemoryCandidates results exactly', () => {
+    const docs = [
+      {
+        chapter: makeChapter(1, 0, '林岚发现钟楼暗门。'),
+        text: '林岚发现钟楼暗门。',
+      },
+      {
+        chapter: makeChapter(2, 1, '周恪曾答应林岚隐瞒银钥匙的来源。'),
+        text: '周恪曾答应林岚隐瞒银钥匙的来源。',
+      },
+      {
+        chapter: makeChapter(3, 2, '白薇调查档案馆。'),
+        text: '白薇调查档案馆。',
+      },
+    ];
+    const query = '林岚追问周恪银钥匙的承诺';
+    const idf = buildIdfFromTexts(docs.map(d => d.text).concat([query]));
+    const state = storyStateWithEntities();
+    const storyTerms = collectStoryRetrievalTerms(state);
+    const activeTerms = findActiveStoryTerms(query, storyTerms);
+
+    const legacy = scoreMemoryCandidates(docs, query, idf, state);
+    const precomputed = scoreMemoryCandidates(
+      docs,
+      query,
+      idf,
+      state,
+      undefined,
+      undefined,
+      { storyTerms, activeTerms },
+    );
+    expect(precomputed).toEqual(legacy);
+
+    // Precomputed must not depend on re-reading storyState.
+    const withNullState = scoreMemoryCandidates(
+      docs,
+      query,
+      idf,
+      null,
+      undefined,
+      undefined,
+      { storyTerms, activeTerms },
+    );
+    expect(withNullState).toEqual(legacy);
+  });
+
+  it('null story memory still scores without entity boosts', () => {
+    const docs = [
+      {
+        chapter: makeChapter(1, 0, '林岚发现暗门。'),
+        text: '林岚发现暗门。',
+      },
+    ];
+    const query = '林岚银钥匙';
+    const idf = buildIdfFromTexts(docs.map(d => d.text).concat([query]));
+    const emptyTerms = collectStoryRetrievalTerms(null);
+    const emptyActive = findActiveStoryTerms(query, emptyTerms);
+    const scored = scoreMemoryCandidates(
+      docs,
+      query,
+      idf,
+      null,
+      undefined,
+      undefined,
+      { storyTerms: emptyTerms, activeTerms: emptyActive },
+    );
+    expect(scored[0].entityBoost).toBe(0);
+    expect(scored[0].pairBoost).toBe(0);
+    expect(scored[0].matchedCharacters).toEqual([]);
+  });
+
+  it('buildMemoryContext collects story retrieval terms only once per build', () => {
+    const spy = jest.spyOn(
+      episodicMemoryRetriever,
+      'collectStoryRetrievalTerms',
+    );
+    const chapters = [
+      makeChapter(1, 0, '林岚在钟楼发现暗门。', '一'),
+      makeChapter(2, 1, '周恪答应林岚隐瞒银钥匙来源。', '二'),
+      makeChapter(3, 2, '白薇调查档案馆。', '三'),
+    ];
+    const text = buildMemoryContext(
+      chapters,
+      makeChapter(99, 3, '', '当前'),
+      10,
+      2000,
+      {
+        queryText: '林岚追问周恪银钥匙的承诺',
+        storyState: storyStateWithEntities(),
+      },
+    );
+    expect(text.length).toBeGreaterThan(0);
+    // contextBuilder should collect once and pass precomputed into scorer.
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });
 

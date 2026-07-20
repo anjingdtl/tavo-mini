@@ -1163,8 +1163,9 @@ function assembleMemoryContextFromIdf(
         })
         .slice(0, topK);
     } else {
-      // Collect Story Memory terms once per retrieval and reuse.
+      // Collect Story Memory terms once per retrieval; pass into scorer (no recompute).
       const storyTerms = collectStoryRetrievalTerms(options?.storyState ?? null);
+      const active = findActiveStoryTerms(query, storyTerms);
       const scored = scoreMemoryCandidates(
         docs,
         query,
@@ -1172,8 +1173,8 @@ function assembleMemoryContextFromIdf(
         options?.storyState ?? null,
         cosineSimilarity,
         vectorize,
+        { storyTerms, activeTerms: active },
       );
-      const active = findActiveStoryTerms(query, storyTerms);
       const selected = selectMemoryCandidates(scored, active, topK);
       // Budget by hybrid priority first — do not chronological-sort before budget.
       const budgeted = selectCandidatesWithinTokenBudget(selected, budgetTokens);
