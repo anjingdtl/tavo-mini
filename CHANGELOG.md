@@ -6,6 +6,27 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.11] - 2026-07-20
+
+### Fixed
+
+- **统一 Episodic Token 安全预算**：空查询回退、legacy（`EPISODIC_RETRIEVAL_V2_ENABLED=false`）、IDF 为空回退四条路径全部走 `selectCandidatesWithinTokenBudget()`；预算小于完整前缀时返回空，不得整行截断后再拼前缀。
+- **Story Memory Renderer 硬 Token 上限**：主线冲突/线索/伏笔/锚点/完成节点拆成可选择条目，逐项检查预算；最终 `estimateTokens(text) <= budgetTokens`。
+- **人物与关系预算优先级**：当前相关人物 → 其间关系 → 其他人物 → 其他关系 → 主线，避免人物卡挤掉关键关系。
+- **topK < 5 分数优先**：先按 `finalScore` 取 Top-K，再保证最近章在场（替换最低分）；`topK=1` 默认最高分，全 0 分/空查询才取最近章。
+- **统一人物实体命名空间**：canonical + alias 同一标准化表；ASCII 小写；多 owner 歧义不激活；最长词优先，子串不误激活；激活/去重/组合奖励按 `characterId`。
+- **Story Memory 扫描用户写作要求**：`renderStoryMemoryForContext` / `buildStoryMemoryContext` 接收 `retrievalUserPrompt`，人物相关性复用实体歧义规则。
+- **IDF 为空回退最近摘要**：`idf.size === 0` 时注入最近有效 `memory_summary`，仍受统一预算约束，不阻断正文生成。
+
+### Tests
+
+- 空查询/legacy 预算 1/5/10；Renderer 大量线索/伏笔/冲突与预算 1/10/50/100；topK=1..4 与紧预算；canonical↔alias 冲突、Captain/captain、林/林岚 最长匹配；用户写作要求单独驱动人物与关系；空 IDF 回退。
+- 全量既有故事记忆召回回归（30 章场景、30/100/300 性能、Checkpoint/Bridge/Seam/Dirty）继续通过。
+
+### Notes
+
+- 升版 **V2.5.11** / `versionCode` **2051100**；Schema / 备份 / Checkpoint / Bridge / Seam / 默认预算 / API 次数均不变；无 Embedding 或第二模型。
+
 ## [2.5.10] - 2026-07-20
 
 ### Fixed

@@ -11,7 +11,7 @@ import {
 import type { StoryMemoryState } from './storyMemory/storyMemoryTypes';
 
 /** Feature flag: set false to restore legacy TF-IDF Top-K only. */
-export const EPISODIC_RETRIEVAL_V2_ENABLED = true;
+export let EPISODIC_RETRIEVAL_V2_ENABLED = true;
 
 export const CHARACTER_NAME_BOOST = 0.22;
 export const CHARACTER_ALIAS_BOOST = 0.12;
@@ -56,6 +56,15 @@ export interface MemoryRetrievalOptions {
   storyState?: StoryMemoryState | null;
 }
 
+/** Unified ownership for canonical names + aliases (shared normalized namespace). */
+export interface CharacterTermOwner {
+  characterId: string;
+  canonicalName: string;
+  term: string;
+  normalizedTerm: string;
+  type: 'canonical' | 'alias';
+}
+
 export interface StoryRetrievalTerms {
   canonicalCharacterNames: string[];
   aliases: string[];
@@ -65,6 +74,15 @@ export interface StoryRetrievalTerms {
   aliasToCanonicalNames: Record<string, string[]>;
   /** aliases owned by more than one character; never auto-activate */
   ambiguousAliases: string[];
+  /**
+   * normalizedTerm → owners. Same normalized form for ASCII case variants
+   * (Captain/captain) and for canonical vs alias collisions.
+   */
+  termOwnersByNormalized: Record<string, CharacterTermOwner[]>;
+  /** Normalized terms owned by more than one characterId (never auto-activate). */
+  ambiguousNormalizedTerms: string[];
+  /** Flat owner rows for longest-match activation. */
+  characterTermOwners: CharacterTermOwner[];
 }
 
 export interface ActiveStoryTerms {
@@ -72,10 +90,16 @@ export interface ActiveStoryTerms {
   aliases: string[];
   objectTerms: string[];
   threadTerms: string[];
-  /** Active characters by canonical name (deduped) */
+  /** Active characters by canonical name (display / debug; derived from ids) */
   activeCharacterNames: string[];
-  /** Unambiguous alias hits that map to a single canonical name */
-  aliasHits: Array<{ alias: string; canonicalName: string }>;
+  /** Active characters by characterId (activation / dedup / pair boost) */
+  activeCharacterIds: string[];
+  /** Unambiguous alias hits that map to a single character */
+  aliasHits: Array<{
+    alias: string;
+    canonicalName: string;
+    characterId: string;
+  }>;
 }
 
 export interface ScoredMemoryCandidate {
@@ -114,6 +138,49 @@ function includesInsensitive(haystack: string, needle: string): boolean {
     return haystack.includes(needle);
   }
   return haystack.toLowerCase().includes(needle.toLowerCase());
+}
+
+/** ASCII letters lowercased; non-ASCII (e.g. CJK) kept as-is. */
+export function normalizeCharacterTerm(term: string): string {
+  const value = String(term || '').trim();
+  if (!value) return '';
+  return value.replace(/[A-Za-z]+/g, segment => segment.toLowerCase());
+}
+
+function findTermOccurrences(
+  haystack: string,
+  term: string,
+): Array<{ start: number; end: number }> {
+  if (!term || !haystack) return [];
+  const occurrences: Array<{ start: number; end: number }> = [];
+  const hasAscii = /[a-zA-Z]/.test(term);
+  if (!hasAscii) {
+    let from = 0;
+    while (from <= haystack.length) {
+      const index = haystack.indexOf(term, from);
+      if (index < 0) break;
+      occurrences.push({ start: index, end: index + term.length });
+      from = index + 1;
+    }
+    return occurrences;
+  }
+  const lowerHay = haystack.toLowerCase();
+  const lowerTerm = term.toLowerCase();
+  let from = 0;
+  while (from <= lowerHay.length) {
+    const index = lowerHay.indexOf(lowerTerm, from);
+    if (index < 0) break;
+    occurrences.push({ start: index, end: index + term.length });
+    from = index + 1;
+  }
+  return occurrences;
+}
+
+function rangesOverlap(
+  a: { start: number; end: number },
+  b: { start: number; end: number },
+): boolean {
+  return a.start < b.end && b.start < a.end;
 }
 
 export function buildEpisodicRetrievalQuery(
@@ -192,6 +259,9 @@ export function collectStoryRetrievalTerms(
     threadTerms: [],
     aliasToCanonicalNames: {},
     ambiguousAliases: [],
+    termOwnersByNormalized: {},
+    ambiguousNormalizedTerms: [],
+    characterTermOwners: [],
   };
   if (!state) return empty;
 
@@ -200,21 +270,60 @@ export function collectStoryRetrievalTerms(
     const aliases: string[] = [];
     const objectTerms: string[] = [];
     const threadTerms: string[] = [];
+    const characterTermOwners: CharacterTermOwner[] = [];
+    const termOwnersByNormalized: Record<string, CharacterTermOwner[]> = {};
+    // Display-oriented alias map (raw alias string → canonical names).
     const aliasOwners = new Map<string, string[]>();
 
     for (const character of Object.values(state.characters || {})) {
+      const characterId = String(character.id || '').trim();
       const name = String(character.canonicalName || '').trim();
-      if (name) canonicalCharacterNames.push(name);
-      for (const alias of character.aliases || []) {
-        const a = String(alias || '').trim();
-        if (!a || !name) continue;
-        aliases.push(a);
-        const owners = aliasOwners.get(a) || [];
-        if (!owners.includes(name)) {
-          owners.push(name);
-          aliasOwners.set(a, owners);
+      if (!characterId) continue;
+
+      if (name) {
+        canonicalCharacterNames.push(name);
+        const normalizedTerm = normalizeCharacterTerm(name);
+        if (normalizedTerm) {
+          const owner: CharacterTermOwner = {
+            characterId,
+            canonicalName: name,
+            term: name,
+            normalizedTerm,
+            type: 'canonical',
+          };
+          characterTermOwners.push(owner);
+          const bucket = termOwnersByNormalized[normalizedTerm] || [];
+          bucket.push(owner);
+          termOwnersByNormalized[normalizedTerm] = bucket;
         }
       }
+
+      for (const alias of character.aliases || []) {
+        const a = String(alias || '').trim();
+        if (!a) continue;
+        aliases.push(a);
+        if (name) {
+          const owners = aliasOwners.get(a) || [];
+          if (!owners.includes(name)) {
+            owners.push(name);
+            aliasOwners.set(a, owners);
+          }
+        }
+        const normalizedTerm = normalizeCharacterTerm(a);
+        if (!normalizedTerm) continue;
+        const owner: CharacterTermOwner = {
+          characterId,
+          canonicalName: name || characterId,
+          term: a,
+          normalizedTerm,
+          type: 'alias',
+        };
+        characterTermOwners.push(owner);
+        const bucket = termOwnersByNormalized[normalizedTerm] || [];
+        bucket.push(owner);
+        termOwnersByNormalized[normalizedTerm] = bucket;
+      }
+
       for (const item of character.currentState?.possessions || []) {
         const term = String(item || '').trim();
         if (term.length >= MIN_OBJECT_THREAD_TERM_LENGTH) {
@@ -245,39 +354,184 @@ export function collectStoryRetrievalTerms(
       }
     }
 
+    // Collapse ownership by characterId per normalized term; multi-id → ambiguous.
+    const ambiguousNormalizedTerms: string[] = [];
+    for (const [normalized, owners] of Object.entries(termOwnersByNormalized)) {
+      const uniqueIds = uniqueNonEmpty(owners.map(o => o.characterId));
+      if (uniqueIds.length > 1) {
+        ambiguousNormalizedTerms.push(normalized);
+      }
+      // Also treat multi-owner raw aliases as ambiguous (legacy field).
+      if (uniqueIds.length > 1) {
+        for (const owner of owners) {
+          if (owner.type === 'alias' && !ambiguousAliases.includes(owner.term)) {
+            ambiguousAliases.push(owner.term);
+          }
+        }
+      }
+    }
+
+    // Promote canonical↔alias collisions into aliasToCanonicalNames for debug/tests.
+    for (const [_normalized, owners] of Object.entries(termOwnersByNormalized)) {
+      const uniqueIds = uniqueNonEmpty(owners.map(o => o.characterId));
+      if (uniqueIds.length <= 1) continue;
+      const names = uniqueNonEmpty(owners.map(o => o.canonicalName));
+      for (const owner of owners) {
+        if (owner.type !== 'alias') continue;
+        const existing = aliasToCanonicalNames[owner.term] || [];
+        for (const n of names) {
+          if (!existing.includes(n)) existing.push(n);
+        }
+        aliasToCanonicalNames[owner.term] = existing;
+        if (existing.length > 1 && !ambiguousAliases.includes(owner.term)) {
+          ambiguousAliases.push(owner.term);
+        }
+      }
+      // Case-variant aliases share normalized form; expose all raw terms as ambiguous.
+      const aliasTerms = uniqueNonEmpty(
+        owners.filter(o => o.type === 'alias').map(o => o.term),
+      );
+      if (aliasTerms.length >= 1 && uniqueIds.length > 1) {
+        for (const term of aliasTerms) {
+          if (!ambiguousAliases.includes(term)) ambiguousAliases.push(term);
+        }
+      }
+      // Same normalized alias owned by multiple characters (Captain / captain).
+      if (
+        uniqueIds.length > 1 &&
+        owners.every(o => o.type === 'alias' || o.type === 'canonical')
+      ) {
+        const onlyAliases = owners.filter(o => o.type === 'alias');
+        if (onlyAliases.length >= 2 || uniqueIds.length > 1) {
+          for (const owner of owners) {
+            if (owner.type === 'alias') {
+              aliasToCanonicalNames[owner.term] = uniqueNonEmpty(
+                owners.map(o => o.canonicalName),
+              );
+              if (!ambiguousAliases.includes(owner.term)) {
+                ambiguousAliases.push(owner.term);
+              }
+            }
+          }
+        }
+      }
+    }
+
     return {
       canonicalCharacterNames: uniqueNonEmpty(canonicalCharacterNames),
       aliases: uniqueNonEmpty(aliases),
       objectTerms: uniqueNonEmpty(objectTerms),
       threadTerms: uniqueNonEmpty(threadTerms),
       aliasToCanonicalNames,
-      ambiguousAliases,
+      ambiguousAliases: uniqueNonEmpty(ambiguousAliases),
+      termOwnersByNormalized,
+      ambiguousNormalizedTerms: uniqueNonEmpty(ambiguousNormalizedTerms),
+      characterTermOwners,
     };
   } catch {
     return empty;
   }
 }
 
+/**
+ * Activate characters from query using the unified term namespace:
+ * longest-match first, ambiguous multi-owner terms never auto-activate,
+ * substring spans already claimed by a longer term do not activate another character.
+ */
 export function findActiveStoryTerms(
   queryText: string,
   terms: StoryRetrievalTerms,
 ): ActiveStoryTerms {
   const query = queryText || '';
-  const ambiguous = new Set(terms.ambiguousAliases || []);
-  const canonicalCharacterNames = terms.canonicalCharacterNames.filter(name =>
-    includesInsensitive(query, name),
-  );
-  const aliasHits: Array<{ alias: string; canonicalName: string }> = [];
-  const aliases: string[] = [];
-  for (const alias of terms.aliases) {
-    if (!includesInsensitive(query, alias)) continue;
-    // Shared titles like 队长/师父 must not auto-activate any character.
-    if (ambiguous.has(alias)) continue;
-    const owners = terms.aliasToCanonicalNames[alias] || [];
-    if (owners.length !== 1) continue;
-    aliases.push(alias);
-    aliasHits.push({ alias, canonicalName: owners[0] });
+  const ambiguousNormalized = new Set(terms.ambiguousNormalizedTerms || []);
+  // Fallback when older fixtures omit the new fields.
+  if (
+    (!terms.characterTermOwners || terms.characterTermOwners.length === 0) &&
+    terms.canonicalCharacterNames.length + terms.aliases.length > 0
+  ) {
+    return findActiveStoryTermsLegacy(query, terms);
   }
+
+  // One representative owner per (normalizedTerm, characterId) for matching.
+  const uniqueTermCandidates = new Map<
+    string,
+    { owner: CharacterTermOwner; displayTerm: string }
+  >();
+  for (const owner of terms.characterTermOwners || []) {
+    if (ambiguousNormalized.has(owner.normalizedTerm)) continue;
+    const ownersForTerm = terms.termOwnersByNormalized?.[owner.normalizedTerm] || [
+      owner,
+    ];
+    const uniqueIds = uniqueNonEmpty(ownersForTerm.map(o => o.characterId));
+    if (uniqueIds.length !== 1) continue;
+    const key = `${owner.normalizedTerm}::${owner.characterId}`;
+    const existing = uniqueTermCandidates.get(key);
+    // Prefer longer surface form (canonical often equals; pick longest term).
+    if (!existing || owner.term.length > existing.displayTerm.length) {
+      uniqueTermCandidates.set(key, { owner, displayTerm: owner.term });
+    }
+  }
+
+  const candidates = Array.from(uniqueTermCandidates.values()).sort((a, b) => {
+    if (b.displayTerm.length !== a.displayTerm.length) {
+      return b.displayTerm.length - a.displayTerm.length;
+    }
+    // Prefer canonical over alias when same length.
+    if (a.owner.type !== b.owner.type) {
+      return a.owner.type === 'canonical' ? -1 : 1;
+    }
+    return a.displayTerm.localeCompare(b.displayTerm);
+  });
+
+  const claimedSpans: Array<{ start: number; end: number }> = [];
+  const activeById = new Map<
+    string,
+    { canonicalName: string; via: 'canonical' | 'alias'; term: string }
+  >();
+  const canonicalCharacterNames: string[] = [];
+  const aliases: string[] = [];
+  const aliasHits: Array<{
+    alias: string;
+    canonicalName: string;
+    characterId: string;
+  }> = [];
+
+  for (const { owner, displayTerm } of candidates) {
+    const occurrences = findTermOccurrences(query, displayTerm);
+    if (occurrences.length === 0) continue;
+    const free = occurrences.filter(
+      span => !claimedSpans.some(claimed => rangesOverlap(claimed, span)),
+    );
+    if (free.length === 0) continue;
+    for (const span of free) claimedSpans.push(span);
+
+    if (!activeById.has(owner.characterId)) {
+      activeById.set(owner.characterId, {
+        canonicalName: owner.canonicalName,
+        via: owner.type,
+        term: displayTerm,
+      });
+      if (owner.type === 'canonical') {
+        canonicalCharacterNames.push(owner.canonicalName);
+      } else {
+        aliases.push(displayTerm);
+        aliasHits.push({
+          alias: displayTerm,
+          canonicalName: owner.canonicalName,
+          characterId: owner.characterId,
+        });
+      }
+    } else if (owner.type === 'alias') {
+      // Extra alias evidence for already-active character (display only).
+      if (!aliases.includes(displayTerm)) aliases.push(displayTerm);
+    } else if (
+      owner.type === 'canonical' &&
+      !canonicalCharacterNames.includes(owner.canonicalName)
+    ) {
+      canonicalCharacterNames.push(owner.canonicalName);
+    }
+  }
+
   const objectTerms = terms.objectTerms.filter(term =>
     includesInsensitive(query, term),
   );
@@ -285,17 +539,66 @@ export function findActiveStoryTerms(
     includesInsensitive(query, term),
   );
 
+  const activeCharacterIds = Array.from(activeById.keys());
+  const activeCharacterNames = uniqueNonEmpty(
+    activeCharacterIds.map(id => activeById.get(id)!.canonicalName),
+  );
+
+  return {
+    canonicalCharacterNames: uniqueNonEmpty(canonicalCharacterNames),
+    aliases: uniqueNonEmpty(aliases),
+    objectTerms,
+    threadTerms,
+    activeCharacterNames,
+    activeCharacterIds,
+    aliasHits,
+  };
+}
+
+/** Pre-namespace fallback for incomplete term bags (tests / old callers). */
+function findActiveStoryTermsLegacy(
+  query: string,
+  terms: StoryRetrievalTerms,
+): ActiveStoryTerms {
+  const ambiguous = new Set(terms.ambiguousAliases || []);
+  const canonicalCharacterNames = terms.canonicalCharacterNames.filter(name =>
+    includesInsensitive(query, name),
+  );
+  const aliasHits: Array<{
+    alias: string;
+    canonicalName: string;
+    characterId: string;
+  }> = [];
+  const aliases: string[] = [];
+  for (const alias of terms.aliases) {
+    if (!includesInsensitive(query, alias)) continue;
+    if (ambiguous.has(alias)) continue;
+    const owners = terms.aliasToCanonicalNames[alias] || [];
+    if (owners.length !== 1) continue;
+    aliases.push(alias);
+    aliasHits.push({
+      alias,
+      canonicalName: owners[0],
+      characterId: owners[0],
+    });
+  }
+  const objectTerms = terms.objectTerms.filter(term =>
+    includesInsensitive(query, term),
+  );
+  const threadTerms = terms.threadTerms.filter(term =>
+    includesInsensitive(query, term),
+  );
   const activeCharacterNames = uniqueNonEmpty([
     ...canonicalCharacterNames,
     ...aliasHits.map(hit => hit.canonicalName),
   ]);
-
   return {
     canonicalCharacterNames,
     aliases,
     objectTerms,
     threadTerms,
     activeCharacterNames,
+    activeCharacterIds: activeCharacterNames,
     aliasHits,
   };
 }
@@ -359,28 +662,29 @@ export function scoreMemoryCandidates(
     const matchedObjects: string[] = [];
     const matchedThreads: string[] = [];
 
+    // Dedup rewards by characterId (not bare display-name string).
     const charactersCounted = new Set<string>();
+    const idToCanonical = buildActiveIdToCanonical(active);
 
-    for (const name of active.canonicalCharacterNames) {
-      if (!includesInsensitive(doc.text, name)) continue;
-      if (charactersCounted.has(name)) continue;
-      charactersCounted.add(name);
-      characterNameBoost += CHARACTER_NAME_BOOST;
-      matchedCharacters.push(name);
-    }
-
-    for (const hit of active.aliasHits) {
-      if (charactersCounted.has(hit.canonicalName)) {
-        // Name already counted as primary reward for this character.
-        continue;
+    for (const id of active.activeCharacterIds) {
+      if (charactersCounted.has(id)) continue;
+      const canonicalName = idToCanonical.get(id) || id;
+      const activatedViaCanonical = active.canonicalCharacterNames.includes(
+        canonicalName,
+      );
+      const aliasHit = active.aliasHits.find(h => h.characterId === id);
+      const docHasCanonical = includesInsensitive(doc.text, canonicalName);
+      const docHasAlias = Boolean(
+        aliasHit && includesInsensitive(doc.text, aliasHit.alias),
+      );
+      if (!docHasCanonical && !docHasAlias) continue;
+      charactersCounted.add(id);
+      if (activatedViaCanonical && docHasCanonical) {
+        characterNameBoost += CHARACTER_NAME_BOOST;
+      } else {
+        aliasBoost += CHARACTER_ALIAS_BOOST;
       }
-      const docHasAliasOrName =
-        includesInsensitive(doc.text, hit.alias) ||
-        includesInsensitive(doc.text, hit.canonicalName);
-      if (!docHasAliasOrName) continue;
-      charactersCounted.add(hit.canonicalName);
-      aliasBoost += CHARACTER_ALIAS_BOOST;
-      matchedCharacters.push(hit.canonicalName);
+      matchedCharacters.push(canonicalName);
     }
 
     for (const term of active.objectTerms) {
@@ -394,20 +698,16 @@ export function scoreMemoryCandidates(
       matchedThreads.push(term);
     }
 
-    if (active.activeCharacterNames.length >= 2) {
-      const present = active.activeCharacterNames.filter(name =>
-        includesInsensitive(doc.text, name),
-      );
-      // Also count aliases present in doc as their canonical.
-      for (const hit of active.aliasHits) {
-        if (
-          includesInsensitive(doc.text, hit.alias) &&
-          !present.includes(hit.canonicalName)
-        ) {
-          present.push(hit.canonicalName);
-        }
-      }
-      if (uniqueNonEmpty(present).length >= 2) {
+    if (active.activeCharacterIds.length >= 2) {
+      const presentIds = active.activeCharacterIds.filter(id => {
+        const canonicalName = idToCanonical.get(id) || id;
+        if (includesInsensitive(doc.text, canonicalName)) return true;
+        const aliasHit = active.aliasHits.find(h => h.characterId === id);
+        return Boolean(
+          aliasHit && includesInsensitive(doc.text, aliasHit.alias),
+        );
+      });
+      if (uniqueNonEmpty(presentIds).length >= 2) {
         pairBoost = CHARACTER_PAIR_BOOST;
       }
     }
@@ -448,12 +748,40 @@ export function compareScoredCandidates(
   return a.chapter.id - b.chapter.id;
 }
 
+function buildActiveIdToCanonical(
+  active: ActiveStoryTerms,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  const ids = active.activeCharacterIds || [];
+  const names = active.activeCharacterNames || [];
+  if (ids.length === names.length) {
+    ids.forEach((id, index) => map.set(id, names[index]));
+  } else {
+    ids.forEach((id, index) => {
+      map.set(id, names[index] || names[0] || id);
+    });
+  }
+  for (const hit of active.aliasHits || []) {
+    if (hit.characterId) map.set(hit.characterId, hit.canonicalName);
+  }
+  // When names were used as pseudo-ids (legacy), keep identity.
+  for (const name of names) {
+    if (!map.has(name)) map.set(name, name);
+  }
+  return map;
+}
+
 function candidateMentionsActiveCharacter(
   candidate: ScoredMemoryCandidate,
   active: ActiveStoryTerms,
 ): boolean {
-  if (active.activeCharacterNames.length === 0) return false;
-  for (const name of active.activeCharacterNames) {
+  const ids = active.activeCharacterIds || [];
+  if (ids.length === 0 && active.activeCharacterNames.length === 0) {
+    return false;
+  }
+  const idToCanonical = buildActiveIdToCanonical(active);
+  for (const id of ids.length ? ids : active.activeCharacterNames) {
+    const name = idToCanonical.get(id) || id;
     if (includesInsensitive(candidate.text, name)) return true;
   }
   for (const hit of active.aliasHits) {
@@ -467,12 +795,15 @@ function activeCharacterCountInCandidate(
   active: ActiveStoryTerms,
 ): number {
   const present = new Set<string>();
-  for (const name of active.activeCharacterNames) {
-    if (includesInsensitive(candidate.text, name)) present.add(name);
+  const ids = active.activeCharacterIds || [];
+  const idToCanonical = buildActiveIdToCanonical(active);
+  for (const id of ids.length ? ids : active.activeCharacterNames) {
+    const name = idToCanonical.get(id) || id;
+    if (includesInsensitive(candidate.text, name)) present.add(id);
   }
   for (const hit of active.aliasHits) {
     if (includesInsensitive(candidate.text, hit.alias)) {
-      present.add(hit.canonicalName);
+      present.add(hit.characterId || hit.canonicalName);
     }
   }
   return present.size;
@@ -480,6 +811,10 @@ function activeCharacterCountInCandidate(
 
 /**
  * Hybrid Top-K: semantic + character history + recent chapters.
+ *
+ * topK < 5: pick by finalScore first; ensure recent is present by replacing
+ * the lowest-score pick when missing. topK === 1 prefers highest score unless
+ * all scores are 0 (empty / zero-signal query) → recent chapter.
  */
 export function selectMemoryCandidates(
   candidates: ScoredMemoryCandidate[],
@@ -514,13 +849,22 @@ export function selectMemoryCandidates(
 
   if (topK < 5) {
     const byScore = [...all].sort(compareScoredCandidates);
-    // Always keep at least one recent valid summary.
-    if (recentOrdered[0]) pushUnique(recentOrdered[0]);
-    for (const item of byScore) {
-      pushUnique(item);
-      if (selected.length >= topK) break;
+    const allZero = byScore.every(item => item.finalScore === 0);
+    const recent = recentOrdered[0];
+
+    if (topK === 1) {
+      if (allZero && recent) return [recent];
+      return byScore.slice(0, 1);
     }
-    return selected.slice(0, topK);
+
+    // Score-first Top-K, then guarantee one recent when missing.
+    const picked = byScore.slice(0, topK);
+    if (recent && !picked.some(item => item.chapter.id === recent.chapter.id)) {
+      // Replace lowest-score pick (last in score-desc order).
+      picked[picked.length - 1] = recent;
+    }
+    // Budget priority still favors higher scores.
+    return [...picked].sort(compareScoredCandidates).slice(0, topK);
   }
 
   const semanticQuota = Math.max(1, Math.floor(topK * 0.6));

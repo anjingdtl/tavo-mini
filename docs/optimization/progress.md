@@ -615,3 +615,31 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | Emulator | emulator-5556 install V2.5.10; tabs 项目/写作/资料/设置; no FATAL (`test-logs/v2510-emulator-smoke/`) |
 | Gates | verify 113/595 PASS; coverage exit 0; 30/100/300 perf PASS |
 | Report | `docs/V2.5.10-STORY-MEMORY-BOUNDARY-FIX-REPORT.md` |
+
+## V2.5.11 story memory final closeout — 2026-07-20
+
+- Status: **implemented + tests + verify/coverage + release APK**
+- Baseline: V2.5.10 (`f1b9327` / report pin `97ce940`) — already shipped, so patch bumped to **2.5.11**
+- Scope: final closeout of remaining story-memory retrieval issues; no Schema/backup/Checkpoint/Pending Bridge/Seam/default budget/API count; no Embedding/second model
+
+### Fixes
+
+1. **Unified Episodic token budget** — empty-query, legacy V2-off, IDF-empty fallback all use `selectCandidatesWithinTokenBudget`
+2. **Story Memory hard token cap** — mainline items selected one-by-one; final text never exceeds `budgetTokens`
+3. **Character/relationship priority** — relevant characters → their relationships → others → mainline
+4. **topK < 5 score-first** — score Top-K then ensure recent; topK=1 highest score unless all-zero → recent
+5. **Unified character term namespace** — canonical+alias normalized ownership; ambiguity; longest-match spans; ID-based rewards
+6. **retrievalUserPrompt in Story Memory** — scan includes user writing instruction; entity rules shared with Episodic
+7. **Empty IDF recent fallback** — recent valid summaries + unified budget; does not block generation
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.11** / Schema **16** |
+| APK | `dist/apk/release/ShineWriter-V2.5.11-release.apk` (37,388,459 bytes) |
+| SHA-256 | `8FDAEA67D98336C732E84DD370DBB43C1E6416CC2BAF06A3870C42CF2E671BC3` |
+| Signature | Release cert `017b3f…2a0a`, APK Sig v2, 1 signer, zipalign OK |
+| Emulator | emulator-5556 install V2.5.11; tabs 项目/写作/资料/设置; no FATAL (`test-logs/v2511-emulator-smoke/`) |
+| Gates | verify 113/612 PASS; coverage exit 0; 30/100/300 perf PASS |
+| Report | `docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md` |
