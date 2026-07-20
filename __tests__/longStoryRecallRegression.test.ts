@@ -9,8 +9,10 @@ import {
   buildIdfFromTexts,
   collectStoryRetrievalTerms,
   findActiveStoryTerms,
+  formatMemoryCandidateLine,
   orderCandidatesForDisplay,
   scoreMemoryCandidates,
+  selectCandidatesWithinTokenBudget,
   selectMemoryCandidates,
 } from '../src/services/episodicMemoryRetriever';
 import { buildMemoryContext, buildMemoryContextWithIdf } from '../src/services/contextBuilder';
@@ -173,6 +175,72 @@ describe('long story recall regression (30 chapters)', () => {
       );
     }
   });
+
+  it('keeps key interaction chapters under a tight token budget (priority-first)', () => {
+    const previous = buildThirtyChapterCorpus().filter(c => c.position < 29);
+    const current = chapter(29, '', {
+      title: '夜探档案馆',
+      synopsis: '林岚与周恪再次交锋',
+      content: '',
+    });
+    const query = buildEpisodicRetrievalQuery({
+      currentChapter: current,
+      previousChapter: previous[previous.length - 1],
+      retrievalUserPrompt: '林岚再次追问周恪银钥匙和保密承诺',
+    });
+    const docs = previous
+      .map(c => ({ chapter: c, text: String(c.memory_summary) }))
+      .filter(d => d.text.trim());
+    const idf = buildIdfFromTexts(docs.map(d => d.text).concat([query]));
+    const state = interactionStoryState();
+    const scored = scoreMemoryCandidates(docs, query, idf, state);
+    const active = findActiveStoryTerms(
+      query,
+      collectStoryRetrievalTerms(state),
+    );
+    const selected = selectMemoryCandidates(scored, active, 10);
+
+    // Budget that would fail if chronology-first kept early fillers.
+    const interaction = selected.filter(s =>
+      [2, 7, 14].includes(s.chapter.position),
+    );
+    expect(interaction.length).toBeGreaterThanOrEqual(2);
+    const tightBudget =
+      interaction
+        .slice(0, 2)
+        .reduce(
+          (sum, item) => sum + estimateTokens(formatMemoryCandidateLine(item)),
+          0,
+        ) + 20;
+
+    const budgeted = selectCandidatesWithinTokenBudget(selected, tightBudget);
+    const positions = budgeted.map(s => s.chapter.position);
+    // At least one critical interaction must survive; early filler must not monopolize.
+    expect(positions.some(p => [2, 7, 14].includes(p))).toBe(true);
+    const total = budgeted.reduce(
+      (sum, item) => sum + estimateTokens(formatMemoryCandidateLine(item)),
+      0,
+    );
+    expect(total).toBeLessThanOrEqual(tightBudget);
+
+    const ordered = orderCandidatesForDisplay(budgeted);
+    for (let i = 1; i < ordered.length; i += 1) {
+      expect(ordered[i].chapter.position).toBeGreaterThanOrEqual(
+        ordered[i - 1].chapter.position,
+      );
+    }
+
+    const memoryText = buildMemoryContext(previous, current, 10, tightBudget, {
+      queryText: query,
+      storyState: state,
+    });
+    expect(estimateTokens(memoryText)).toBeLessThanOrEqual(tightBudget);
+    expect(
+      memoryText.includes('银钥匙') ||
+        memoryText.includes('保密') ||
+        memoryText.includes('周恪'),
+    ).toBe(true);
+  });
 });
 
 describe('episodic retrieval performance scale', () => {
@@ -213,6 +281,8 @@ describe('episodic retrieval performance scale', () => {
     );
     const selected = selectMemoryCandidates(scored, active, 10);
     const t4 = Date.now();
+    const budgeted = selectCandidatesWithinTokenBudget(selected, 20000);
+    const t5 = Date.now();
     const text = buildMemoryContextWithIdf(
       chapters,
       chapter(n, '', { title: '当前', content: '' }),
@@ -227,9 +297,11 @@ describe('episodic retrieval performance scale', () => {
       cacheHitMs: t2 - t1,
       scoreMs: t3 - t2,
       selectMs: t4 - t3,
+      budgetMs: t5 - t4,
       totalRecallMs: Date.now() - t2,
       tokens: estimateTokens(text),
       selected: selected.length,
+      budgeted: budgeted.length,
     };
   }
 

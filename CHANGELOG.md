@@ -6,6 +6,24 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.9] - 2026-07-20
+
+### Fixed
+
+- **Checkpoint 主路径摘要密度**：默认 smart Checkpoint 的 `chapterSummaries` 提示词与字段契约强化「谁对谁做了什么」、承诺/欺骗/冲突/合作/救援/拒绝/背叛、物品流转、信息与未解决矛盾，并禁止模糊代词，使默认主路径与 `generateMemorySummary()` 对齐。
+- **不可用 Story Memory 不参与实体加权**：Episodic 检索仅复用 `prepareStoryMemoryForGeneration()` 判定可用的 Checkpoint state；`dirty` / `empty` / `failed` / `rebuilding` / 异常一律 `storyState = null`，回退中文 n-gram TF-IDF。
+- **Token 预算优先序**：混合 Top-K 后先按召回优先级做预算筛选（超长跳过并尝试后续更短候选；尚无入选时可截断最高优先），再按 `chapter.position` 升序展示，避免早期次要摘要挤掉关键互动。
+- **共用别名歧义**：`aliasToCanonicalNames` 一对多；多人物共用「队长」等称呼记为歧义别名，不自动激活人物、不参与组合奖励；仅 canonical 名明确出现时激活。
+
+### Tests
+
+- 新增/扩展 Checkpoint 检索摘要、Dirty 状态、Token 预算、歧义别名与 30 章小预算回归测试。
+- 门禁：`npm run verify` / `npm run test:coverage`。
+
+### Notes
+
+- API 调用次数不变（正文生成前仍 1 次远程请求）；Schema / 备份格式不变。
+
 ## [2.5.8] - 2026-07-20
 
 ### Added

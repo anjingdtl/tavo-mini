@@ -22,9 +22,11 @@ import {
   buildEpisodicRetrievalQuery,
   collectStoryRetrievalTerms,
   findActiveStoryTerms,
+  formatMemoryCandidateLine,
   orderCandidatesForDisplay,
   resolvePreviousChapterForQuery,
   scoreMemoryCandidates,
+  selectCandidatesWithinTokenBudget,
   selectMemoryCandidates,
   tokenizeForMemoryRetrieval,
   type MemoryRetrievalOptions,
@@ -148,7 +150,7 @@ export async function buildContext(
   );
 
   // Episodic query: title + synopsis + user prompt + content head + previous tail.
-  // Story Memory is used only for local entity boosts; never block generation.
+  // Entity boosts only from prepare()-usable checkpoints (never dirty/empty/failed/rebuilding).
   const previousForQuery = resolvePreviousChapterForQuery(
     previousChapters,
     currentChapter,
@@ -158,15 +160,7 @@ export async function buildContext(
     previousChapter: previousForQuery,
     retrievalUserPrompt: options.retrievalUserPrompt,
   });
-  let storyStateForRetrieval: MemoryRetrievalOptions['storyState'] = null;
-  try {
-    if (typeof (db as any).getProjectStoryMemory === 'function') {
-      const storyRecord = await (db as any).getProjectStoryMemory(projectId);
-      storyStateForRetrieval = storyRecord?.state ?? null;
-    }
-  } catch {
-    storyStateForRetrieval = null;
-  }
+  const storyStateForRetrieval = resolveStoryStateForRetrieval(prepared);
   const retrievalOptions: MemoryRetrievalOptions = {
     queryText: episodicQuery,
     storyState: storyStateForRetrieval,
@@ -1114,6 +1108,31 @@ export function buildMemoryContextWithIdf(
   );
 }
 
+/**
+ * Only use Story Memory state that prepareStoryMemoryForGeneration marked usable.
+ * Dirty / empty / failed / rebuilding / missing / unreadable → null (TF-IDF only).
+ */
+export function resolveStoryStateForRetrieval(
+  prepared: Awaited<ReturnType<typeof prepareStoryMemoryForGeneration>> | null,
+): MemoryRetrievalOptions['storyState'] {
+  try {
+    const record = prepared?.checkpoint;
+    if (!record?.state) return null;
+    const status = record.status;
+    if (
+      status === 'dirty' ||
+      status === 'empty' ||
+      status === 'failed' ||
+      status === 'rebuilding'
+    ) {
+      return null;
+    }
+    return record.state;
+  } catch {
+    return null;
+  }
+}
+
 function assembleMemoryContextFromIdf(
   docs: Array<{ chapter: Chapter; text: string }>,
   currentChapter: Chapter,
@@ -1130,21 +1149,22 @@ function assembleMemoryContextFromIdf(
     legacyQuery.trim() ||
     `${currentChapter.title || ''}\n${currentChapter.synopsis || ''}`.trim();
 
-  let selectedDocs: Array<{ chapter: Chapter; text: string }>;
+  let priorityDocs: Array<{ chapter: Chapter; text: string }>;
 
   if (EPISODIC_RETRIEVAL_V2_ENABLED) {
     if (!query) {
-      // Empty query: pick most recent valid summaries only (no random early chapters).
-      selectedDocs = [...docs]
+      // Empty query: most recent valid summaries first (priority), budget later.
+      priorityDocs = [...docs]
         .sort((a, b) => {
           if (b.chapter.position !== a.chapter.position) {
             return b.chapter.position - a.chapter.position;
           }
           return a.chapter.id - b.chapter.id;
         })
-        .slice(0, topK)
-        .sort((a, b) => a.chapter.position - b.chapter.position);
+        .slice(0, topK);
     } else {
+      // Collect Story Memory terms once per retrieval and reuse.
+      const storyTerms = collectStoryRetrievalTerms(options?.storyState ?? null);
       const scored = scoreMemoryCandidates(
         docs,
         query,
@@ -1153,19 +1173,16 @@ function assembleMemoryContextFromIdf(
         cosineSimilarity,
         vectorize,
       );
-      const active = findActiveStoryTerms(
-        query,
-        collectStoryRetrievalTerms(options?.storyState ?? null),
-      );
+      const active = findActiveStoryTerms(query, storyTerms);
       const selected = selectMemoryCandidates(scored, active, topK);
-      selectedDocs = orderCandidatesForDisplay(selected).map(item => ({
-        chapter: item.chapter,
-        text: item.text,
-      }));
+      // Budget by hybrid priority first — do not chronological-sort before budget.
+      const budgeted = selectCandidatesWithinTokenBudget(selected, budgetTokens);
+      const ordered = orderCandidatesForDisplay(budgeted);
+      return ordered.map(item => formatMemoryCandidateLine(item)).join('\n');
     }
   } else {
     const queryVector = vectorize(query || legacyQuery, idf);
-    selectedDocs = docs
+    priorityDocs = docs
       .map(doc => ({
         ...doc,
         score: cosineSimilarity(queryVector, vectorize(doc.text, idf)),
@@ -1174,18 +1191,41 @@ function assembleMemoryContextFromIdf(
       .slice(0, topK);
   }
 
-  const lines: string[] = [];
+  // Legacy / empty-query path: budget in priority order, then display chronologically.
+  const budgeted: Array<{ chapter: Chapter; text: string }> = [];
   let remaining = budgetTokens;
-  for (const item of selectedDocs) {
-    const line = `第 ${item.chapter.position + 1} 章「${
-      item.chapter.title
-    }」摘要：${item.text}`;
-    const clipped = clipTextToTokenBudget(line, remaining);
-    if (!clipped) break;
-    lines.push(clipped);
-    remaining -= estimateTokens(clipped);
+  for (const item of priorityDocs) {
+    if (remaining <= 0) break;
+    const line = formatMemoryCandidateLine(item);
+    const cost = estimateTokens(line);
+    if (cost <= remaining) {
+      budgeted.push(item);
+      remaining -= cost;
+      continue;
+    }
+    if (budgeted.length === 0) {
+      const clipped = clipTextToTokenBudget(line, remaining);
+      if (!clipped) continue;
+      const prefix = `第 ${item.chapter.position + 1} 章「${
+        item.chapter.title
+      }」摘要：`;
+      budgeted.push({
+        chapter: item.chapter,
+        text: clipped.startsWith(prefix) ? clipped.slice(prefix.length) : clipped,
+      });
+      remaining -= estimateTokens(clipped);
+      continue;
+    }
   }
-  return lines.join('\n');
+  return budgeted
+    .sort((a, b) => {
+      if (a.chapter.position !== b.chapter.position) {
+        return a.chapter.position - b.chapter.position;
+      }
+      return a.chapter.id - b.chapter.id;
+    })
+    .map(item => formatMemoryCandidateLine(item))
+    .join('\n');
 }
 
 function tokenize(text: string): string[] {

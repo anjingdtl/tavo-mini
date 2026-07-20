@@ -220,6 +220,21 @@ export const STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT = `你是小说连续性记�
 6. 若输出长度紧张：先保证人物与关系完整，chapterSummaries 的 events 可缩短，但每章 brief 仍须非空。
 7. 重建场景与增量场景规则相同：每一批都要把该批新出现的具名角色全部写入。
 
+【逐章检索摘要要求——chapterSummaries 将直接用于后续长篇章节的历史事件检索】
+每章摘要必须优先保留：
+1. 本章重要人物的完整姓名及必要别名；
+2. 谁对谁实施了什么行为，以及行为结果；
+3. 人物之间的重要承诺、欺骗、冲突、合作、救援、拒绝或背叛；
+4. 重要物品由谁获得、失去、使用或交给谁；
+5. 人物新得知、误解、隐瞒或泄露的信息；
+6. 人物关系、信任、态度、目标或立场变化及原因；
+7. 本章产生但尚未解决的线索、秘密、误会、承诺和矛盾；
+8. 对后续连续性有约束的时间、地点和状态。
+
+必须明确写出行为主体和对象，避免使用“二人”“他们”“双方”“有人”等模糊代词。
+不得只写空泛主线概括，不得添加正文中没有发生的事实。
+普通章节渲染后的摘要建议约 180～320 个中文字符；简单章节可更短，关键章节可更长，不要求固定字数。
+
 chapterSummaries 必须与输入章节一一对应、顺序一致，不得缺章或重复；中间发生又撤销的事件写进对应章节摘要，但不要污染最终全局状态。
 只输出一个 JSON 对象，不要输出 Markdown、解释或代码围栏。`;
 
@@ -229,9 +244,9 @@ const BATCH_ITEM_CONTRACT = `数组项字段契约：
 - characterUpdates[]: {"characterRef":"已有精确ID","addAliases":[],"profileCorrections":{},"stateChanges":{},"correctionReason":"","addKnowledge":[],"removeKnowledge":[],"addPossessions":[],"removePossessions":[],"addSecrets":[],"removeSecrets":[],"clearFields":[],"evidence":[]}
 - newRelationships[]: {"tempRef":"new_rel_唯一","fromRef":"已有ID或本批new_char_*","toRef":"已有ID或本批new_char_*","direction":"directed或bidirectional","relationType":"","currentState":"","trustLevel":"unknown","publicStatus":"","hiddenStatus":"","reason":"","evidence":[]}
 - relationshipUpdates[]: {"relationshipRef":"已有精确ID","currentState":"","trustLevel":"unknown","publicStatus":"","hiddenStatus":"","reason":"","evidence":[]}
-- chapterSummaries[]: {"chapterId":数字,"chapterPosition":数字,"brief":"非空一句","keywords":[],"events":[],"characterChanges":["可列本章涉及人物名"],"relationshipChanges":[],"mainlineChanges":[],"newThreads":[],"resolvedThreads":[]}
+- chapterSummaries[]: {"chapterId":数字,"chapterPosition":数字,"brief":"非空一句，必须包含最重要的主体、行为、对象和结果","keywords":[],"events":["优先：人物A 对人物B 做了某事，造成某结果"],"characterChanges":["写明人物姓名、具体变化和原因"],"relationshipChanges":["写明双方姓名、变化内容和原因"],"mainlineChanges":[],"newThreads":["写明涉及人物、物品、秘密或误会"],"resolvedThreads":[]}
 - mainlinePatch 与单章协议类似，但 evidenceQuote 改为 evidence 数组。
-填写顺序：先人物与关系，后章节摘要。newCharacters 宁可多不可漏。`;
+填写顺序：先人物与关系，后章节摘要。newCharacters 宁可多不可漏。chapterSummaries 字段用于检索，须写清主体/对象，避免模糊代词。`;
 
 function createEmptyBatchPatch(chapters: Chapter[]): StoryMemoryBatchPatchDraft {
   const ordered = [...chapters].sort((a, b) => a.position - b.position);
@@ -338,6 +353,8 @@ export function buildStoryMemoryCheckpointMessages(
         promptStringify(orderedBatchSchemaForPrompt(schema)),
         '',
         BATCH_ITEM_CONTRACT,
+        '',
+        '【chapterSummaries 检索摘要提醒】每章 brief/events 须写清谁对谁做了什么；承诺、欺骗、冲突、合作、救援、拒绝、背叛；物品获得/失去/使用/转交；信息得知/误解/隐瞒/泄露；关系变化原因；未解决线索/秘密/误会/矛盾。禁止“二人/他们/双方/有人”等模糊代词。',
       ].join('\n'),
     },
   ];

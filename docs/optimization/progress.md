@@ -541,3 +541,41 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 - Existing sparse ~200-char summaries keep working but benefit less until regenerated naturally
 - No Jieba; n-gram only
 - Stuck `rebuilding` UI recovery still residual from V2.5.7
+
+## V2.5.9 story memory retrieval fix — 2026-07-20
+
+- Status: **implemented + tests + verify/coverage + release APK**
+- Spec: `docs/superpowers/specs/Tavo-Mini-V2.5.9-Story-Memory-Retrieval-Fix-SPEC.md`
+- Scope: four finish fixes on V2.5.8 episodic retrieval — no Embedding/vector DB/second model/schema/extra API.
+
+### Fixes
+
+1. Checkpoint `chapterSummaries` prompt/contract density (who-did-what, items, secrets, no vague pronouns)
+2. Entity boost only from prepare()-usable checkpoint state (`dirty/empty/failed/rebuilding` → null)
+3. Token budget after hybrid Top-K priority, then chronological display
+4. Shared aliases one-to-many; ambiguous aliases never auto-activate
+
+### Code
+
+| File | Role |
+| --- | --- |
+| `src/services/storyMemory/storyMemoryPrompts.ts` | Checkpoint system + BATCH_ITEM_CONTRACT + user reminder |
+| `src/services/contextBuilder.ts` | `resolveStoryStateForRetrieval`; priority-first budget assembly |
+| `src/services/episodicMemoryRetriever.ts` | `aliasToCanonicalNames` / ambiguous; `selectCandidatesWithinTokenBudget` |
+
+### Tests
+
+- `__tests__/checkpointRetrievalSummary.test.ts`
+- Extended `episodicMemoryRetriever` / `storyMemoryPrompts` / `contextBuilderStoryMemory` / `longStoryRecallRegression`
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.9** / Schema **16** |
+| APK | `dist/apk/release/ShineWriter-V2.5.9-release.apk` (37,380,191 bytes) |
+| SHA-256 | `DC9B6F5FE64AE0315840AAA86A3D8AD219678C2ADFD1D28C37094D019BB9039D` |
+| Signature | Release cert `017b3f…2a0a`, APK Sig v2, 1 signer, zipalign OK |
+| Emulator | emulator-5556 install V2.5.9; main tabs + settings; no FATAL (`test-logs/v259-emulator-smoke/`) |
+| Gates | verify 113/587 PASS; coverage exit 0 |
+| Report | `docs/V2.5.9-STORY-MEMORY-RETRIEVAL-FIX-REPORT.md` |
