@@ -6,6 +6,26 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.12] - 2026-07-20
+
+### Fixed
+
+- **未来 Checkpoint 隔离**：`resolveUsableCheckpointForTarget()` 成为唯一入口；`through >= target` 的检查点禁止注入、禁止实体加权、覆盖规划起点回退 `-1`。
+- **查询与候选共用人物解析器**：`resolveCharacterMentionsInText()` 统一 query / candidate summary / Story Memory 相关性扫描，跨别名（林岚/小岚/岚姐）稳定命中同一 `characterId`。
+- **显式 ID—姓名映射**：`ActiveStoryTerms` 增加 `activeCharacters` 与 `canonicalNameByCharacterId`；删除 `buildActiveIdToCanonical` 平行数组位置恢复。
+- **多人物关系预算保障**：Renderer 以高优先关系 bundle（双方人物卡 + 关系行）原子加入，避免人物卡挤掉关键关系。
+- **真实空查询与路径可观测**：`resolveEpisodicRetrievalMode()` 区分 `v2_query` / `empty_query_recent` / `legacy` / `empty_idf_recent`；空查询不走实体匹配。
+- **版本元数据门禁**：`scripts/check-version-consistency.js` + `npm run verify:version`，纳入 `npm run verify`。
+
+### Tests
+
+- 系统不变量测试集、Checkpoint/人物/Token 路径矩阵、固定种子 10/50/100 人规模、真实空查询分支证明。
+- 既有 Checkpoint / Bridge / Seam / Dirty / 30–300 章回归继续通过。
+
+### Notes
+
+- 升版 **V2.5.12** / `versionCode` **2051200**；Schema / 备份 / API 次数 / 默认预算均不变；无 Embedding 或第二模型。
+
 ## [2.5.11] - 2026-07-20
 
 ### Fixed
