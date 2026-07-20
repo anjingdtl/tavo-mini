@@ -643,3 +643,5 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | Emulator | emulator-5556 install V2.5.11; tabs 项目/写作/资料/设置; no FATAL (`test-logs/v2511-emulator-smoke/`) |
 | Gates | verify 113/612 PASS; coverage exit 0; 30/100/300 perf PASS |
 | Report | `docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md` |
+| Release commit | `a319f825aae82a129d0c1af97f8b4a5dbfc0d5df` |
+| CI | [Run 29748912852](https://github.com/anjingdtl/tavo-mini/actions/runs/29748912852) — JS / Android Debug / Migration matrix all success on `a319f82` |
