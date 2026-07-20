@@ -118,7 +118,7 @@ export async function runBatchChapterPipeline({
         });
         result.completed++;
         try {
-          await generateMemorySummary(freshChapter.id, 200);
+          await generateMemorySummary(freshChapter.id);
         } catch {
           // Batch writing should continue even if one memory summary fails.
         }
