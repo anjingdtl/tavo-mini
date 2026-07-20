@@ -142,6 +142,13 @@ export interface ScoredMemoryCandidate {
   entityBoost: number;
   pairBoost: number;
   finalScore: number;
+  /**
+   * Active characterIds mentioned by this candidate (candidate mentions ∩ query active ids).
+   * This is the ONLY source of truth for character-history bucket / pair priority.
+   * Never re-derive from name/alias string matching downstream.
+   */
+  matchedCharacterIds: string[];
+  /** Display-only canonical names; kept in same order as matchedCharacterIds where possible. */
   matchedCharacters: string[];
   matchedObjects: string[];
   matchedThreads: string[];
@@ -586,9 +593,10 @@ export function scoreMemoryCandidates(
     const matchedThreads: string[] = [];
 
     // Candidate side uses the same mention resolver as the query (cross-alias).
+    // Dedupe + stable order so bucket / pair logic downstream is deterministic.
     const candidateMentions = resolveCharacterMentionsInText(doc.text, terms);
-    const matchedCharacterIds = candidateMentions.characterIds.filter(id =>
-      activeIdSet.has(id),
+    const matchedCharacterIds = uniqueNonEmpty(
+      candidateMentions.characterIds.filter(id => activeIdSet.has(id)),
     );
 
     for (const id of matchedCharacterIds) {
@@ -635,6 +643,7 @@ export function scoreMemoryCandidates(
       entityBoost,
       pairBoost,
       finalScore,
+      matchedCharacterIds,
       matchedCharacters: uniqueNonEmpty(matchedCharacters),
       matchedObjects: uniqueNonEmpty(matchedObjects),
       matchedThreads: uniqueNonEmpty(matchedThreads),
@@ -658,57 +667,22 @@ export function compareScoredCandidates(
 }
 
 /**
- * Character-history bucket: whether candidate text mentions any active character.
- * Prefer matchedCharacters from scoring; fall back to shared mention resolver.
+ * Character-history bucket: whether candidate mentions any active character.
+ *
+ * Production path (V2.5.13+): reads `matchedCharacterIds` computed by
+ * `scoreMemoryCandidates` — never re-scans the candidate text and never falls
+ * back to name/alias string matching. Identity is characterId only.
  */
 function candidateMentionsActiveCharacter(
   candidate: ScoredMemoryCandidate,
-  active: ActiveStoryTerms,
-  terms?: StoryRetrievalTerms | null,
 ): boolean {
-  if (active.activeCharacterIds.length === 0) return false;
-  if (candidate.matchedCharacters.length > 0) return true;
-  if (!terms) {
-    // Fallback: check explicit name map without parallel-array recovery.
-    for (const id of active.activeCharacterIds) {
-      const name = active.canonicalNameByCharacterId[id];
-      if (name && includesInsensitive(candidate.text, name)) return true;
-    }
-    for (const hit of active.aliasHits) {
-      if (includesInsensitive(candidate.text, hit.alias)) return true;
-    }
-    return false;
-  }
-  const mentions = resolveCharacterMentionsInText(candidate.text, terms);
-  return mentions.characterIds.some(id =>
-    active.activeCharacterIds.includes(id),
-  );
+  return candidate.matchedCharacterIds.length > 0;
 }
 
 function activeCharacterCountInCandidate(
   candidate: ScoredMemoryCandidate,
-  active: ActiveStoryTerms,
-  terms?: StoryRetrievalTerms | null,
 ): number {
-  if (active.activeCharacterIds.length === 0) return 0;
-  if (terms) {
-    const mentions = resolveCharacterMentionsInText(candidate.text, terms);
-    return mentions.characterIds.filter(id =>
-      active.activeCharacterIds.includes(id),
-    ).length;
-  }
-  // Without terms, count via explicit id→name map + aliasHits only.
-  const present = new Set<string>();
-  for (const id of active.activeCharacterIds) {
-    const name = active.canonicalNameByCharacterId[id];
-    if (name && includesInsensitive(candidate.text, name)) present.add(id);
-  }
-  for (const hit of active.aliasHits) {
-    if (includesInsensitive(candidate.text, hit.alias)) {
-      present.add(hit.characterId);
-    }
-  }
-  return present.size;
+  return candidate.matchedCharacterIds.length;
 }
 
 /**
@@ -783,15 +757,15 @@ export function selectMemoryCandidates(
     if (pushUnique(item)) semanticTaken += 1;
   }
 
-  // Character bucket
+  // Character bucket — identity only via matchedCharacterIds (no name re-scan).
   const characterPool = all
-    .filter(item => candidateMentionsActiveCharacter(item, activeTerms))
+    .filter(item => candidateMentionsActiveCharacter(item))
     .sort((a, b) => {
-      const aPair = activeCharacterCountInCandidate(a, activeTerms) >= 2 ? 1 : 0;
-      const bPair = activeCharacterCountInCandidate(b, activeTerms) >= 2 ? 1 : 0;
+      const aPair = a.matchedCharacterIds.length >= 2 ? 1 : 0;
+      const bPair = b.matchedCharacterIds.length >= 2 ? 1 : 0;
       if (bPair !== aPair) return bPair - aPair;
-      const aCount = activeCharacterCountInCandidate(a, activeTerms);
-      const bCount = activeCharacterCountInCandidate(b, activeTerms);
+      const aCount = activeCharacterCountInCandidate(a);
+      const bCount = activeCharacterCountInCandidate(b);
       if (bCount !== aCount) return bCount - aCount;
       if (b.finalScore !== a.finalScore) return b.finalScore - a.finalScore;
       return b.chapter.position - a.chapter.position;

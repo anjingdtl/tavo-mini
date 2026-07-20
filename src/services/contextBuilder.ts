@@ -51,33 +51,38 @@ export interface BuildContextOptions {
   storyMemoryMode?: 'generation' | 'preview';
 }
 
-export async function buildStoryMemoryContext(
+/**
+ * Pure renderer for a prepared Story Memory snapshot.
+ *
+ * V2.5.13+ — main `buildContext()` MUST use this with `prepared.checkpoint`
+ * so coverage, entity boosts, Renderer and trace all see the SAME checkpoint
+ * snapshot. This function never touches the database; it only re-validates
+ * eligibility on the caller-supplied snapshot.
+ */
+export function renderPreparedStoryMemoryContext(
   projectId: number,
   currentChapter: Chapter,
+  checkpoint: import('../data/repositories/storyMemoryRepository').ProjectStoryMemoryRecord | null,
   budgetTokens: number,
   options?: { retrievalUserPrompt?: string },
-): Promise<{ text: string; traceItems: ContextTraceItem[] }> {
-  if (typeof (db as any).getProjectStoryMemory !== 'function') {
-    return { text: '', traceItems: [] };
-  }
-  const record = await (db as any).getProjectStoryMemory(projectId);
-  // Target-aware eligibility: never inject dirty / future / same-position.
+): { text: string; traceItems: ContextTraceItem[] } {
+  // Defensive re-check on the supplied snapshot only — never re-read DB.
   const eligibility = resolveUsableCheckpointForTarget(
-    record,
+    checkpoint,
     currentChapter.position,
   );
   if (!eligibility.usable || !eligibility.checkpoint?.state) {
     const reason =
       eligibility.reason === 'future_or_same_position'
         ? '不注入目标章节之后或同位置的检查点'
-        : record?.status === 'empty'
+        : checkpoint?.status === 'empty'
           ? '故事记忆尚未初始化'
-          : record?.status === 'dirty'
+          : checkpoint?.status === 'dirty'
             ? '不注入已失效的检查点'
             : '检查点不可用';
     return {
       text: '',
-      traceItems: record
+      traceItems: checkpoint
         ? [{
             kind: 'story_memory',
             sourceId: projectId,
@@ -86,7 +91,7 @@ export async function buildStoryMemoryContext(
             estimatedTokens: 0,
             included: false,
             clipped: false,
-            preview: record.lastError || '',
+            preview: checkpoint.lastError || '',
           }]
         : [],
     };
@@ -109,6 +114,31 @@ export async function buildStoryMemoryContext(
       preview: rendered.text.slice(0, 500),
     }],
   };
+}
+
+/**
+ * Legacy wrapper: DB read + eligibility + renderPreparedStoryMemoryContext.
+ * External callers that have NOT already run `prepareStoryMemoryForGeneration`
+ * may still use this. The main `buildContext()` MUST NOT — it must reuse the
+ * prepared snapshot via `renderPreparedStoryMemoryContext` instead.
+ */
+export async function buildStoryMemoryContext(
+  projectId: number,
+  currentChapter: Chapter,
+  budgetTokens: number,
+  options?: { retrievalUserPrompt?: string },
+): Promise<{ text: string; traceItems: ContextTraceItem[] }> {
+  if (typeof (db as any).getProjectStoryMemory !== 'function') {
+    return { text: '', traceItems: [] };
+  }
+  const record = await (db as any).getProjectStoryMemory(projectId);
+  return renderPreparedStoryMemoryContext(
+    projectId,
+    currentChapter,
+    record,
+    budgetTokens,
+    options,
+  );
 }
 
 export async function buildContext(
@@ -250,10 +280,13 @@ export async function buildContext(
     preview: resolvedSystemPrompt.slice(0, 500),
   });
 
-  // Story Memory Checkpoint (may lag behind previous chapter).
-  const storyMemory = await buildStoryMemoryContext(
+  // Story Memory Checkpoint — reuse the SAME prepared snapshot so coverage,
+  // entity boosts, Renderer and trace all see a consistent view. Never re-read
+  // the DB after prepare() inside this buildContext() call.
+  const storyMemory = renderPreparedStoryMemoryContext(
     projectId,
     currentChapter,
+    prepared?.checkpoint ?? null,
     config.storyStateBudgetTokens ?? 8000,
     { retrievalUserPrompt: options.retrievalUserPrompt },
   );
@@ -1145,6 +1178,7 @@ function assembleRecentSummariesWithinBudget(
       entityBoost: 0,
       pairBoost: 0,
       finalScore: 0,
+      matchedCharacterIds: [] as string[],
       matchedCharacters: [] as string[],
       matchedObjects: [] as string[],
       matchedThreads: [] as string[],
@@ -1222,6 +1256,7 @@ function assembleMemoryContextFromIdf(
           entityBoost: 0,
           pairBoost: 0,
           finalScore: score,
+          matchedCharacterIds: [] as string[],
           matchedCharacters: [] as string[],
           matchedObjects: [] as string[],
           matchedThreads: [] as string[],
@@ -1246,9 +1281,10 @@ function assembleMemoryContextFromIdf(
         entityBoost: 0,
         pairBoost: 0,
         finalScore: 0,
-        matchedCharacters: [],
-        matchedObjects: [],
-        matchedThreads: [],
+        matchedCharacterIds: [] as string[],
+        matchedCharacters: [] as string[],
+        matchedObjects: [] as string[],
+        matchedThreads: [] as string[],
       }));
   } else {
     // Collect Story Memory terms once per retrieval; pass into scorer (no recompute).
