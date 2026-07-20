@@ -1,6 +1,7 @@
 import type { Chapter, ContextConfig } from '../../types/novel';
 import * as db from '../database';
 import { planStoryMemoryCoverage } from './storyMemoryCoverage';
+import { resolveUsableCheckpointForTarget } from './storyMemoryCheckpointEligibility';
 import type { ProjectStoryMemoryRecord } from '../../data/repositories/storyMemoryRepository';
 import type { StoryMemoryCoveragePlan } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
@@ -17,6 +18,9 @@ export interface PrepareStoryMemoryResult {
  * Prepare story memory for generation/context build.
  * Only hard-due may trigger a checkpoint LLM update (generation mode).
  * Preview mode never calls LLM.
+ *
+ * Checkpoint injection / entity weighting / coverage start all go through
+ * resolveUsableCheckpointForTarget (future or same-position → unusable).
  */
 export async function prepareStoryMemoryForGeneration(
   projectId: number,
@@ -36,10 +40,11 @@ export async function prepareStoryMemoryForGeneration(
     record = await (db as any).ensureProjectStoryMemoryRow(projectId);
   }
 
-  const checkpointThrough =
-    record && record.status !== 'dirty'
-      ? record.state.throughChapterPosition
-      : -1;
+  const eligibility = resolveUsableCheckpointForTarget(
+    record,
+    currentChapter.position,
+  );
+  const checkpointThrough = eligibility.checkpointThroughPosition;
 
   let coverage = planStoryMemoryCoverage({
     currentChapter,
@@ -48,22 +53,10 @@ export async function prepareStoryMemoryForGeneration(
     slidingBudgetTokens: config.slidingWindowSize || 4000,
   });
 
-  // Dirty checkpoint must not be injected.
-  if (record?.status === 'dirty') {
-    coverage = planStoryMemoryCoverage({
-      currentChapter,
-      chapters,
-      checkpointThroughPosition: -1,
-      slidingBudgetTokens: config.slidingWindowSize || 4000,
-    });
-  }
-
   if (!coverage.hardDue) {
     return {
-      checkpoint:
-        record && record.status !== 'dirty' && record.status !== 'empty'
-          ? record
-          : null,
+      // Only return checkpoint when usable for this target chapter.
+      checkpoint: eligibility.usable ? eligibility.checkpoint : null,
       coverage,
       checkpointUpdated: false,
       blocked: false,
@@ -74,10 +67,7 @@ export async function prepareStoryMemoryForGeneration(
   // Preview never spends LLM tokens.
   if (mode === 'preview') {
     return {
-      checkpoint:
-        record && record.status !== 'dirty' && record.status !== 'empty'
-          ? record
-          : null,
+      checkpoint: eligibility.usable ? eligibility.checkpoint : null,
       coverage,
       checkpointUpdated: false,
       blocked: coverage.uncoveredChapterIds.length > 0,
@@ -113,18 +103,22 @@ export async function prepareStoryMemoryForGeneration(
       });
     });
     const refreshed = await db.ensureProjectStoryMemoryRow(projectId);
+    const refreshedEligibility = resolveUsableCheckpointForTarget(
+      refreshed,
+      currentChapter.position,
+    );
     coverage = planStoryMemoryCoverage({
       currentChapter,
       chapters: await db.getChaptersByProject(projectId),
       checkpointThroughPosition:
-        refreshed.status === 'dirty'
-          ? -1
-          : refreshed.state.throughChapterPosition,
+        refreshedEligibility.checkpointThroughPosition,
       slidingBudgetTokens: config.slidingWindowSize || 4000,
     });
     if (coverage.uncoveredChapterIds.length > 0) {
       return {
-        checkpoint: refreshed.status === 'dirty' ? null : refreshed,
+        checkpoint: refreshedEligibility.usable
+          ? refreshedEligibility.checkpoint
+          : null,
         coverage,
         checkpointUpdated: true,
         blocked: true,
@@ -133,7 +127,9 @@ export async function prepareStoryMemoryForGeneration(
       };
     }
     return {
-      checkpoint: refreshed.status === 'dirty' ? null : refreshed,
+      checkpoint: refreshedEligibility.usable
+        ? refreshedEligibility.checkpoint
+        : null,
       coverage,
       checkpointUpdated: true,
       blocked: false,
@@ -143,16 +139,21 @@ export async function prepareStoryMemoryForGeneration(
     // Re-plan after failure; allow if episodic fallback can cover.
     const chaptersAfter = await db.getChaptersByProject(projectId);
     const latest = await db.ensureProjectStoryMemoryRow(projectId);
+    const latestEligibility = resolveUsableCheckpointForTarget(
+      latest,
+      currentChapter.position,
+    );
     coverage = planStoryMemoryCoverage({
       currentChapter,
       chapters: chaptersAfter,
-      checkpointThroughPosition:
-        latest.status === 'dirty' ? -1 : latest.state.throughChapterPosition,
+      checkpointThroughPosition: latestEligibility.checkpointThroughPosition,
       slidingBudgetTokens: config.slidingWindowSize || 4000,
     });
     if (coverage.uncoveredChapterIds.length === 0) {
       return {
-        checkpoint: latest.status === 'dirty' ? null : latest,
+        checkpoint: latestEligibility.usable
+          ? latestEligibility.checkpoint
+          : null,
         coverage,
         checkpointUpdated: false,
         blocked: false,
