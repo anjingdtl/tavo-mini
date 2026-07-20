@@ -17,6 +17,7 @@ import {
 } from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
 import { prepareStoryMemoryForGeneration } from './storyMemory/storyMemoryPrepare';
+import { resolveUsableCheckpointForTarget } from './storyMemory/storyMemoryCheckpointEligibility';
 import * as episodicMemoryRetriever from './episodicMemoryRetriever';
 import {
   buildEpisodicRetrievalQuery,
@@ -24,6 +25,7 @@ import {
   findActiveStoryTerms,
   formatMemoryCandidateLine,
   orderCandidatesForDisplay,
+  resolveEpisodicRetrievalMode,
   resolvePreviousChapterForQuery,
   scoreMemoryCandidates,
   selectCandidatesWithinTokenBudget,
@@ -59,13 +61,20 @@ export async function buildStoryMemoryContext(
     return { text: '', traceItems: [] };
   }
   const record = await (db as any).getProjectStoryMemory(projectId);
-  // Checkpoint may lag behind the previous chapter; still inject when clean.
-  // Dirty checkpoints must never be injected.
-  const usable =
-    record &&
-    record.status === 'clean' &&
-    record.state.throughChapterPosition >= 0;
-  if (!usable) {
+  // Target-aware eligibility: never inject dirty / future / same-position.
+  const eligibility = resolveUsableCheckpointForTarget(
+    record,
+    currentChapter.position,
+  );
+  if (!eligibility.usable || !eligibility.checkpoint?.state) {
+    const reason =
+      eligibility.reason === 'future_or_same_position'
+        ? '不注入目标章节之后或同位置的检查点'
+        : record?.status === 'empty'
+          ? '故事记忆尚未初始化'
+          : record?.status === 'dirty'
+            ? '不注入已失效的检查点'
+            : '检查点不可用';
     return {
       text: '',
       traceItems: record
@@ -73,12 +82,7 @@ export async function buildStoryMemoryContext(
             kind: 'story_memory',
             sourceId: projectId,
             title: '全局故事状态',
-            reason:
-              record.status === 'empty'
-                ? '故事记忆尚未初始化'
-                : record.status === 'dirty'
-                  ? '不注入已失效的检查点'
-                  : '检查点不可用',
+            reason,
             estimatedTokens: 0,
             included: false,
             clipped: false,
@@ -87,7 +91,7 @@ export async function buildStoryMemoryContext(
         : [],
     };
   }
-  const rendered = renderStoryMemoryForContext(record.state, {
+  const rendered = renderStoryMemoryForContext(eligibility.checkpoint.state, {
     currentChapter,
     budgetTokens,
     retrievalUserPrompt: options?.retrievalUserPrompt,
@@ -98,7 +102,7 @@ export async function buildStoryMemoryContext(
       kind: 'story_memory',
       sourceId: projectId,
       title: '长期故事检查点',
-      reason: `检查点截至第 ${record.state.throughChapterPosition + 1} 章`,
+      reason: `检查点截至第 ${eligibility.checkpoint.state.throughChapterPosition + 1} 章`,
       estimatedTokens: rendered.estimatedTokens,
       included: true,
       clipped: rendered.clipped,
@@ -1158,21 +1162,18 @@ function assembleRecentSummariesWithinBudget(
  * Only use Story Memory state that prepareStoryMemoryForGeneration marked usable.
  * Dirty / empty / failed / rebuilding / missing / unreadable → null (TF-IDF only).
  */
+/**
+ * Entity-boost state only from prepare()'s usable checkpoint.
+ * prepare() already filters via resolveUsableCheckpointForTarget, so a non-null
+ * checkpoint is clean and through < target. Still refuse non-clean statuses.
+ */
 export function resolveStoryStateForRetrieval(
   prepared: Awaited<ReturnType<typeof prepareStoryMemoryForGeneration>> | null,
 ): MemoryRetrievalOptions['storyState'] {
   try {
     const record = prepared?.checkpoint;
     if (!record?.state) return null;
-    const status = record.status;
-    if (
-      status === 'dirty' ||
-      status === 'empty' ||
-      status === 'failed' ||
-      status === 'rebuilding'
-    ) {
-      return null;
-    }
+    if (record.status !== 'clean') return null;
     return record.state;
   } catch {
     return null;
@@ -1190,54 +1191,26 @@ function assembleMemoryContextFromIdf(
   const legacyQuery = `${currentChapter.title}\n${currentChapter.synopsis}\n${
     currentChapter.content?.slice(0, 500) || ''
   }`;
-  const query =
-    (options?.queryText && options.queryText.trim()) ||
-    legacyQuery.trim() ||
-    `${currentChapter.title || ''}\n${currentChapter.synopsis || ''}`.trim();
+  // Prefer explicit queryText when provided (even empty string = true empty query).
+  const hasExplicitQuery = options != null && 'queryText' in options;
+  const query = hasExplicitQuery
+    ? String(options?.queryText || '').trim()
+    : legacyQuery.trim() ||
+      `${currentChapter.title || ''}\n${currentChapter.synopsis || ''}`.trim();
 
   // All paths produce ScoredMemoryCandidate[] in budget-priority order, then
   // share selectCandidatesWithinTokenBudget + chronological display.
   let priorityCandidates: ReturnType<typeof scoreMemoryCandidates>;
 
-  if (episodicMemoryRetriever.EPISODIC_RETRIEVAL_V2_ENABLED) {
-    if (!query) {
-      // Empty query: recency priority (most recent first), same safe budget.
-      priorityCandidates = [...docs]
-        .sort((a, b) => {
-          if (b.chapter.position !== a.chapter.position) {
-            return b.chapter.position - a.chapter.position;
-          }
-          return a.chapter.id - b.chapter.id;
-        })
-        .slice(0, topK)
-        .map(item => ({
-          chapter: item.chapter,
-          text: item.text,
-          cosineScore: 0,
-          entityBoost: 0,
-          pairBoost: 0,
-          finalScore: 0,
-          matchedCharacters: [],
-          matchedObjects: [],
-          matchedThreads: [],
-        }));
-    } else {
-      // Collect Story Memory terms once per retrieval; pass into scorer (no recompute).
-      const storyTerms = collectStoryRetrievalTerms(options?.storyState ?? null);
-      const active = findActiveStoryTerms(query, storyTerms);
-      const scored = scoreMemoryCandidates(
-        docs,
-        query,
-        idf,
-        options?.storyState ?? null,
-        cosineSimilarity,
-        vectorize,
-        { storyTerms, activeTerms: active },
-      );
-      priorityCandidates = selectMemoryCandidates(scored, active, topK);
-    }
-  } else {
-    // Legacy TF-IDF Top-K only — still uses unified token-safe budget.
+  const mode = resolveEpisodicRetrievalMode({
+    v2Enabled: episodicMemoryRetriever.EPISODIC_RETRIEVAL_V2_ENABLED,
+    queryText: query,
+    idfSize: idf?.size ?? 0,
+  });
+  // Bind mode so tests can observe the taken branch without production logs.
+  (assembleMemoryContextFromIdf as { lastMode?: string }).lastMode = mode;
+
+  if (mode === 'legacy') {
     const queryVector = vectorize(query || legacyQuery, idf);
     priorityCandidates = docs
       .map(doc => {
@@ -1256,6 +1229,41 @@ function assembleMemoryContextFromIdf(
       })
       .sort((a, b) => b.finalScore - a.finalScore)
       .slice(0, topK);
+  } else if (mode === 'empty_query_recent' || mode === 'empty_idf_recent') {
+    // Empty query / empty IDF: recency priority, no Story Memory entity matching.
+    priorityCandidates = [...docs]
+      .sort((a, b) => {
+        if (b.chapter.position !== a.chapter.position) {
+          return b.chapter.position - a.chapter.position;
+        }
+        return a.chapter.id - b.chapter.id;
+      })
+      .slice(0, topK)
+      .map(item => ({
+        chapter: item.chapter,
+        text: item.text,
+        cosineScore: 0,
+        entityBoost: 0,
+        pairBoost: 0,
+        finalScore: 0,
+        matchedCharacters: [],
+        matchedObjects: [],
+        matchedThreads: [],
+      }));
+  } else {
+    // Collect Story Memory terms once per retrieval; pass into scorer (no recompute).
+    const storyTerms = collectStoryRetrievalTerms(options?.storyState ?? null);
+    const active = findActiveStoryTerms(query, storyTerms);
+    const scored = scoreMemoryCandidates(
+      docs,
+      query,
+      idf,
+      options?.storyState ?? null,
+      cosineSimilarity,
+      vectorize,
+      { storyTerms, activeTerms: active },
+    );
+    priorityCandidates = selectMemoryCandidates(scored, active, topK);
   }
 
   const budgeted = selectCandidatesWithinTokenBudget(
@@ -1265,6 +1273,11 @@ function assembleMemoryContextFromIdf(
   return orderCandidatesForDisplay(budgeted)
     .map(item => formatMemoryCandidateLine(item))
     .join('\n');
+}
+
+/** Test-only: last retrieval mode taken by assembleMemoryContextFromIdf. */
+export function getLastEpisodicRetrievalMode(): string | undefined {
+  return (assembleMemoryContextFromIdf as { lastMode?: string }).lastMode;
 }
 
 function tokenize(text: string): string[] {

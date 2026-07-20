@@ -1,6 +1,6 @@
 {
   "name": "ShineWriter",
-  "version": "2.5.11",
+  "version": "2.5.12",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "test:ci": "jest --runInBand --ci",
     "test:coverage": "jest --runInBand --ci --coverage",
-    "verify": "npm run lint && npm run typecheck && npm run test:ci",
+    "verify:version": "node scripts/check-version-consistency.js",
+    "verify": "npm run lint && npm run typecheck && npm run verify:version && npm run test:ci",
     "postinstall": "node scripts/patch-sqlite-storage-gradle.js && node scripts/patch-deps.js",
     "start": "react-native start",
     "test": "jest"
