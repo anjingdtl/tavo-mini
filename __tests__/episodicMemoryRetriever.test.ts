@@ -305,8 +305,9 @@ describe('ambiguous shared aliases', () => {
     const terms = collectStoryRetrievalTerms(stateWithSharedCaptainAlias());
     const unique = findActiveStoryTerms('小薇调查', terms);
     expect(unique.activeCharacterNames).toEqual(['白薇']);
+    expect(unique.activeCharacterIds).toEqual(['char_bai']);
     expect(unique.aliasHits).toEqual([
-      { alias: '小薇', canonicalName: '白薇' },
+      { alias: '小薇', canonicalName: '白薇', characterId: 'char_bai' },
     ]);
 
     const docs = [
@@ -785,5 +786,300 @@ describe('hybrid Top-K selection', () => {
     });
     expect(text).toContain('最近有效摘要');
     expect(text).not.toMatch(/最早无关摘要[\s\S]*最近有效摘要[\s\S]*中间/);
+  });
+});
+
+describe('unified character term namespace', () => {
+  it('does not activate both when A canonical and B alias share 林岚', () => {
+    const state = createEmptyStoryMemory(1);
+    state.characters.char_a = {
+      id: 'char_a',
+      canonicalName: '林岚',
+      aliases: [],
+      role: '',
+      immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+      currentState: {
+        location: '',
+        physicalState: '',
+        emotionalState: '',
+        currentGoal: '',
+        knowledge: [],
+        possessions: [],
+        secrets: [],
+      },
+      status: 'active',
+      firstSeenChapterId: 1,
+      firstSeenPosition: 0,
+      lastChangedChapterId: 1,
+      lastChangedPosition: 0,
+      evidenceChapterIds: [1],
+    };
+    state.characters.char_b = {
+      ...state.characters.char_a,
+      id: 'char_b',
+      canonicalName: '白薇',
+      aliases: ['林岚'],
+    };
+    const terms = collectStoryRetrievalTerms(state);
+    expect(terms.ambiguousNormalizedTerms).toContain(
+      episodicMemoryRetriever.normalizeCharacterTerm('林岚'),
+    );
+    const active = findActiveStoryTerms('林岚出现了', terms);
+    expect(active.activeCharacterIds).not.toContain('char_a');
+    expect(active.activeCharacterIds).not.toContain('char_b');
+    expect(active.activeCharacterNames).not.toContain('林岚');
+  });
+
+  it('treats Captain/captain as the same ambiguous English alias', () => {
+    const state = createEmptyStoryMemory(1);
+    for (const [id, name, alias] of [
+      ['char_a', 'Alice', 'Captain'],
+      ['char_b', 'Bob', 'captain'],
+    ] as const) {
+      state.characters[id] = {
+        id,
+        canonicalName: name,
+        aliases: [alias],
+        role: '',
+        immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+        currentState: {
+          location: '',
+          physicalState: '',
+          emotionalState: '',
+          currentGoal: '',
+          knowledge: [],
+          possessions: [],
+          secrets: [],
+        },
+        status: 'active',
+        firstSeenChapterId: 1,
+        firstSeenPosition: 0,
+        lastChangedChapterId: 1,
+        lastChangedPosition: 0,
+        evidenceChapterIds: [1],
+      };
+    }
+    const terms = collectStoryRetrievalTerms(state);
+    expect(terms.ambiguousNormalizedTerms).toContain('captain');
+    const active = findActiveStoryTerms('Captain ordered the team', terms);
+    expect(active.activeCharacterIds).toEqual([]);
+    expect(active.activeCharacterNames).toEqual([]);
+  });
+
+  it('prefers longer name 林岚 over substring 林', () => {
+    const state = createEmptyStoryMemory(1);
+    state.characters.char_short = {
+      id: 'char_short',
+      canonicalName: '林',
+      aliases: [],
+      role: '',
+      immutableProfile: { identity: '', stableTraits: [], affiliations: [] },
+      currentState: {
+        location: '',
+        physicalState: '',
+        emotionalState: '',
+        currentGoal: '',
+        knowledge: [],
+        possessions: [],
+        secrets: [],
+      },
+      status: 'active',
+      firstSeenChapterId: 1,
+      firstSeenPosition: 0,
+      lastChangedChapterId: 1,
+      lastChangedPosition: 0,
+      evidenceChapterIds: [1],
+    };
+    state.characters.char_long = {
+      ...state.characters.char_short,
+      id: 'char_long',
+      canonicalName: '林岚',
+    };
+    const terms = collectStoryRetrievalTerms(state);
+    const active = findActiveStoryTerms('林岚推开暗门', terms);
+    expect(active.activeCharacterIds).toEqual(['char_long']);
+    expect(active.activeCharacterNames).toEqual(['林岚']);
+    expect(active.activeCharacterIds).not.toContain('char_short');
+  });
+});
+
+describe('selectMemoryCandidates topK < 5 score-first', () => {
+  function scored(
+    id: number,
+    position: number,
+    text: string,
+    finalScore: number,
+  ): ScoredMemoryCandidate {
+    return {
+      chapter: makeChapter(id, position, text),
+      text,
+      cosineScore: finalScore,
+      entityBoost: 0,
+      pairBoost: 0,
+      finalScore,
+      matchedCharacters: [],
+      matchedObjects: [],
+      matchedThreads: [],
+    };
+  }
+
+  const emptyActive = findActiveStoryTerms(
+    '',
+    collectStoryRetrievalTerms(null),
+  );
+
+  it.each([1, 2, 3, 4])(
+    'topK=%s prefers high-score early chapter over long low-score recent',
+    topK => {
+      const longRecent =
+        '无关风景与路途描写。'.repeat(30) + '最近章节冗长低相关摘要。';
+      const promise =
+        '周恪答应林岚不告诉白薇银钥匙来源，双方立下保密承诺。';
+      const candidates = [
+        scored(1, 5, promise, 0.95),
+        scored(2, 10, '次要线索推进。', 0.4),
+        scored(3, 20, '白薇路过档案馆。', 0.35),
+        scored(4, 28, longRecent, 0.05),
+      ];
+      const selected = selectMemoryCandidates(candidates, emptyActive, topK);
+      expect(selected.length).toBeLessThanOrEqual(topK);
+      // Highest score chapter must be present for topK>=1 when scores are nonzero.
+      expect(selected.map(s => s.chapter.id)).toContain(1);
+      if (topK === 1) {
+        expect(selected[0].chapter.id).toBe(1);
+      }
+      // Budget priority: first item should be highest score among selected.
+      expect(selected[0].finalScore).toBeGreaterThanOrEqual(
+        selected[selected.length - 1].finalScore,
+      );
+    },
+  );
+
+  it('topK=1 picks recent only when all scores are 0', () => {
+    const candidates = [
+      scored(1, 0, '早期零分摘要。', 0),
+      scored(2, 5, '中间零分摘要。', 0),
+      scored(3, 10, '最近零分摘要。', 0),
+    ];
+    const selected = selectMemoryCandidates(candidates, emptyActive, 1);
+    expect(selected).toHaveLength(1);
+    expect(selected[0].chapter.id).toBe(3);
+  });
+
+  it('topK=3 replaces lowest with recent when recent missing from score top', () => {
+    const candidates = [
+      scored(1, 0, '高分历史承诺。', 0.9),
+      scored(2, 1, '次高分历史。', 0.8),
+      scored(3, 2, '第三高分。', 0.7),
+      scored(4, 20, '最近但低分。', 0.1),
+    ];
+    const selected = selectMemoryCandidates(candidates, emptyActive, 3);
+    expect(selected.map(s => s.chapter.id)).toContain(4);
+    expect(selected.map(s => s.chapter.id)).toContain(1);
+    expect(selected).toHaveLength(3);
+    // Highest score still first for budget priority.
+    expect(selected[0].chapter.id).toBe(1);
+  });
+
+  it('tight budget keeps high-score promise over long recent after topK=3', () => {
+    const longRecent = '无关填充文本。'.repeat(40);
+    const promise = '周恪答应林岚不告诉白薇银钥匙来源，立下保密承诺。';
+    const candidates = [
+      scored(1, 5, promise, 0.95),
+      scored(2, 10, '次要。', 0.5),
+      scored(3, 28, longRecent, 0.05),
+    ];
+    const selected = selectMemoryCandidates(candidates, emptyActive, 3);
+    const budget =
+      estimateTokens(formatMemoryCandidateLine(candidates[0])) + 10;
+    const kept = selectCandidatesWithinTokenBudget(selected, budget);
+    const text = kept.map(formatMemoryCandidateLine).join('\n');
+    expect(text).toContain('保密承诺');
+    expect(estimateTokens(text)).toBeLessThanOrEqual(budget);
+  });
+});
+
+describe('empty-query and legacy budget paths via buildMemoryContext', () => {
+  it('empty query with tiny budgets 1/5/10 never exceeds and may be empty', () => {
+    const chapters = [
+      makeChapter(
+        1,
+        0,
+        '林岚与周恪关于银钥匙的保密承诺细节。'.repeat(5),
+        '承诺章',
+      ),
+      makeChapter(2, 1, '最近有效摘要。', '最近'),
+    ];
+    for (const budget of [1, 5, 10]) {
+      const text = buildMemoryContext(
+        chapters,
+        makeChapter(9, 2, '', '当前'),
+        5,
+        budget,
+        { queryText: '   ', storyState: null },
+      );
+      expect(estimateTokens(text)).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it('legacy path (V2 disabled) still respects tiny budgets', () => {
+    const original = episodicMemoryRetriever.EPISODIC_RETRIEVAL_V2_ENABLED;
+    // Mutable binding used by contextBuilder via namespace import.
+    (episodicMemoryRetriever as { EPISODIC_RETRIEVAL_V2_ENABLED: boolean })
+      .EPISODIC_RETRIEVAL_V2_ENABLED = false;
+    try {
+      const chapters = [
+        makeChapter(
+          1,
+          0,
+          '林岚与周恪关于银钥匙的保密承诺细节。'.repeat(5),
+          '长摘要',
+        ),
+      ];
+      for (const budget of [1, 5, 10]) {
+        const text = buildMemoryContext(
+          chapters,
+          makeChapter(9, 1, '', '当前'),
+          5,
+          budget,
+          { queryText: '林岚银钥匙', storyState: null },
+        );
+        expect(estimateTokens(text)).toBeLessThanOrEqual(budget);
+      }
+    } finally {
+      (episodicMemoryRetriever as { EPISODIC_RETRIEVAL_V2_ENABLED: boolean })
+        .EPISODIC_RETRIEVAL_V2_ENABLED = original;
+    }
+  });
+
+  it('empty IDF falls back to recent valid summaries within budget', () => {
+    const { buildMemoryContextWithIdf } = require('../src/services/contextBuilder');
+    const chapters = [
+      makeChapter(1, 0, '。。。！！！'),
+      makeChapter(2, 1, 'the and 章节'),
+      makeChapter(3, 2, '最近有效摘要：林岚找到银钥匙。'),
+    ];
+    const emptyIdf = new Map<string, number>();
+    const text = buildMemoryContextWithIdf(
+      chapters,
+      makeChapter(9, 3, '', '当前'),
+      emptyIdf,
+      5,
+      2000,
+      { queryText: '任意', storyState: null },
+    );
+    expect(text).toContain('最近有效摘要');
+    expect(estimateTokens(text)).toBeLessThanOrEqual(2000);
+
+    for (const budget of [1, 5, 10]) {
+      const tiny = buildMemoryContextWithIdf(
+        chapters,
+        makeChapter(9, 3, '', '当前'),
+        emptyIdf,
+        5,
+        budget,
+      );
+      expect(estimateTokens(tiny)).toBeLessThanOrEqual(budget);
+    }
   });
 });

@@ -17,8 +17,8 @@ import {
 } from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
 import { prepareStoryMemoryForGeneration } from './storyMemory/storyMemoryPrepare';
+import * as episodicMemoryRetriever from './episodicMemoryRetriever';
 import {
-  EPISODIC_RETRIEVAL_V2_ENABLED,
   buildEpisodicRetrievalQuery,
   collectStoryRetrievalTerms,
   findActiveStoryTerms,
@@ -53,6 +53,7 @@ export async function buildStoryMemoryContext(
   projectId: number,
   currentChapter: Chapter,
   budgetTokens: number,
+  options?: { retrievalUserPrompt?: string },
 ): Promise<{ text: string; traceItems: ContextTraceItem[] }> {
   if (typeof (db as any).getProjectStoryMemory !== 'function') {
     return { text: '', traceItems: [] };
@@ -89,6 +90,7 @@ export async function buildStoryMemoryContext(
   const rendered = renderStoryMemoryForContext(record.state, {
     currentChapter,
     budgetTokens,
+    retrievalUserPrompt: options?.retrievalUserPrompt,
   });
   return {
     text: rendered.text,
@@ -249,6 +251,7 @@ export async function buildContext(
     projectId,
     currentChapter,
     config.storyStateBudgetTokens ?? 8000,
+    { retrievalUserPrompt: options.retrievalUserPrompt },
   );
   if (storyMemory.text) {
     messages.push({ role: 'system', content: storyMemory.text });
@@ -1080,6 +1083,8 @@ export function buildMemoryContext(
 
 /**
  * V2.2.0：用预先计算/缓存好的 IDF 直接召回，避免 O(N) tokenize+buildIdf。
+ * When IDF is empty (punctuation-only / stop-word-only summaries), fall back to
+ * recent valid summaries with the same token-safe budget path — never block generation.
  */
 export function buildMemoryContextWithIdf(
   previousChapters: Chapter[],
@@ -1096,8 +1101,12 @@ export function buildMemoryContextWithIdf(
     }))
     .filter(item => item.text.trim());
 
-  if (docs.length === 0 || topK <= 0 || budgetTokens <= 0 || idf.size === 0)
-    return '';
+  if (docs.length === 0 || topK <= 0 || budgetTokens <= 0) return '';
+
+  if (!idf || idf.size === 0) {
+    return assembleRecentSummariesWithinBudget(docs, topK, budgetTokens);
+  }
+
   return assembleMemoryContextFromIdf(
     docs,
     currentChapter,
@@ -1106,6 +1115,43 @@ export function buildMemoryContextWithIdf(
     budgetTokens,
     options,
   );
+}
+
+/**
+ * Recent-valid-summary fallback (empty IDF / zero-signal): priority by recency,
+ * budget via selectCandidatesWithinTokenBudget, display chronological.
+ */
+function assembleRecentSummariesWithinBudget(
+  docs: Array<{ chapter: Chapter; text: string }>,
+  topK: number,
+  budgetTokens: number,
+): string {
+  const recentPriority = [...docs]
+    .sort((a, b) => {
+      if (b.chapter.position !== a.chapter.position) {
+        return b.chapter.position - a.chapter.position;
+      }
+      return a.chapter.id - b.chapter.id;
+    })
+    .slice(0, topK)
+    .map(item => ({
+      chapter: item.chapter,
+      text: item.text,
+      cosineScore: 0,
+      entityBoost: 0,
+      pairBoost: 0,
+      finalScore: 0,
+      matchedCharacters: [] as string[],
+      matchedObjects: [] as string[],
+      matchedThreads: [] as string[],
+    }));
+  const budgeted = selectCandidatesWithinTokenBudget(
+    recentPriority,
+    budgetTokens,
+  );
+  return orderCandidatesForDisplay(budgeted)
+    .map(item => formatMemoryCandidateLine(item))
+    .join('\n');
 }
 
 /**
@@ -1149,19 +1195,32 @@ function assembleMemoryContextFromIdf(
     legacyQuery.trim() ||
     `${currentChapter.title || ''}\n${currentChapter.synopsis || ''}`.trim();
 
-  let priorityDocs: Array<{ chapter: Chapter; text: string }>;
+  // All paths produce ScoredMemoryCandidate[] in budget-priority order, then
+  // share selectCandidatesWithinTokenBudget + chronological display.
+  let priorityCandidates: ReturnType<typeof scoreMemoryCandidates>;
 
-  if (EPISODIC_RETRIEVAL_V2_ENABLED) {
+  if (episodicMemoryRetriever.EPISODIC_RETRIEVAL_V2_ENABLED) {
     if (!query) {
-      // Empty query: most recent valid summaries first (priority), budget later.
-      priorityDocs = [...docs]
+      // Empty query: recency priority (most recent first), same safe budget.
+      priorityCandidates = [...docs]
         .sort((a, b) => {
           if (b.chapter.position !== a.chapter.position) {
             return b.chapter.position - a.chapter.position;
           }
           return a.chapter.id - b.chapter.id;
         })
-        .slice(0, topK);
+        .slice(0, topK)
+        .map(item => ({
+          chapter: item.chapter,
+          text: item.text,
+          cosineScore: 0,
+          entityBoost: 0,
+          pairBoost: 0,
+          finalScore: 0,
+          matchedCharacters: [],
+          matchedObjects: [],
+          matchedThreads: [],
+        }));
     } else {
       // Collect Story Memory terms once per retrieval; pass into scorer (no recompute).
       const storyTerms = collectStoryRetrievalTerms(options?.storyState ?? null);
@@ -1175,56 +1234,35 @@ function assembleMemoryContextFromIdf(
         vectorize,
         { storyTerms, activeTerms: active },
       );
-      const selected = selectMemoryCandidates(scored, active, topK);
-      // Budget by hybrid priority first — do not chronological-sort before budget.
-      const budgeted = selectCandidatesWithinTokenBudget(selected, budgetTokens);
-      const ordered = orderCandidatesForDisplay(budgeted);
-      return ordered.map(item => formatMemoryCandidateLine(item)).join('\n');
+      priorityCandidates = selectMemoryCandidates(scored, active, topK);
     }
   } else {
+    // Legacy TF-IDF Top-K only — still uses unified token-safe budget.
     const queryVector = vectorize(query || legacyQuery, idf);
-    priorityDocs = docs
-      .map(doc => ({
-        ...doc,
-        score: cosineSimilarity(queryVector, vectorize(doc.text, idf)),
-      }))
-      .sort((a, b) => b.score - a.score)
+    priorityCandidates = docs
+      .map(doc => {
+        const score = cosineSimilarity(queryVector, vectorize(doc.text, idf));
+        return {
+          chapter: doc.chapter,
+          text: doc.text,
+          cosineScore: score,
+          entityBoost: 0,
+          pairBoost: 0,
+          finalScore: score,
+          matchedCharacters: [] as string[],
+          matchedObjects: [] as string[],
+          matchedThreads: [] as string[],
+        };
+      })
+      .sort((a, b) => b.finalScore - a.finalScore)
       .slice(0, topK);
   }
 
-  // Legacy / empty-query path: budget in priority order, then display chronologically.
-  const budgeted: Array<{ chapter: Chapter; text: string }> = [];
-  let remaining = budgetTokens;
-  for (const item of priorityDocs) {
-    if (remaining <= 0) break;
-    const line = formatMemoryCandidateLine(item);
-    const cost = estimateTokens(line);
-    if (cost <= remaining) {
-      budgeted.push(item);
-      remaining -= cost;
-      continue;
-    }
-    if (budgeted.length === 0) {
-      const clipped = clipTextToTokenBudget(line, remaining);
-      if (!clipped) continue;
-      const prefix = `第 ${item.chapter.position + 1} 章「${
-        item.chapter.title
-      }」摘要：`;
-      budgeted.push({
-        chapter: item.chapter,
-        text: clipped.startsWith(prefix) ? clipped.slice(prefix.length) : clipped,
-      });
-      remaining -= estimateTokens(clipped);
-      continue;
-    }
-  }
-  return budgeted
-    .sort((a, b) => {
-      if (a.chapter.position !== b.chapter.position) {
-        return a.chapter.position - b.chapter.position;
-      }
-      return a.chapter.id - b.chapter.id;
-    })
+  const budgeted = selectCandidatesWithinTokenBudget(
+    priorityCandidates,
+    budgetTokens,
+  );
+  return orderCandidatesForDisplay(budgeted)
     .map(item => formatMemoryCandidateLine(item))
     .join('\n');
 }
