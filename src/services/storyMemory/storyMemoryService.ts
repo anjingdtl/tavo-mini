@@ -480,7 +480,7 @@ export async function finalizeChapterMemory(
       typeof (db as any).getStructuredStoryMemoryEnabled === 'function' &&
       !(await (db as any).getStructuredStoryMemoryEnabled())
     ) {
-      const episodicMemoryText = await generateMemorySummary(chapterId, 200);
+      const episodicMemoryText = await generateMemorySummary(chapterId);
       if (episodicMemoryText) {
         await db.updateChapter(chapterId, {
           memory_summary: episodicMemoryText,

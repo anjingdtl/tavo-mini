@@ -6,18 +6,20 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.7-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.8-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.7** · 数据库 Schema：**16** · 最低 Android API：**24**
+当前版本：**V2.5.8** · 数据库 Schema：**16** · 最低 Android API：**24**
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
-`V2.5.7` 收尾故事记忆可靠性：已覆盖章节的修改/删除与 dirty 标记、检查点批次失效进入同一 SQLite 事务；dirty 重建作废后续 applied 批次，避免复用旧世界状态。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/optimization/progress.md`。
+`V2.5.7` 收尾故事记忆可靠性：已覆盖章节的修改/删除与 dirty 标记、检查点批次失效进入同一 SQLite 事务；dirty 重建作废后续 applied 批次，避免复用旧世界状态。
+
+`V2.5.8` 在现有 Checkpoint / Pending Bridge / Seam / Episodic TF-IDF 框架上强化长篇人物交互召回：约 300 字高密度 `memory_summary`、查询并入写作要求与上一章结尾、中文 n-gram、实体与人物组合加权、混合 Top-K，以及关系「姓名[ID]」渲染。**不增加**正文生成前远程 API 调用，**不改** Schema / 备份格式。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/optimization/progress.md`。
 
 ## 主要能力
 
@@ -26,7 +28,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 | 项目 | 创建、切换和删除小说项目；支持大纲模式与自由写作模式                                        |
 | 写作 | 章节 CRUD、900ms 防抖自动保存、AI 续写/修订、草稿与版本回退、结构化故事记忆（检查点 + 重建） |
 | 资料 | 角色卡 JSON/PNG 元数据导入、角色集合、世界书集合与条目、笔记资料库、预设                    |
-| AI   | OpenAI 兼容在线 API；GGUF + Android llama.cpp；四阶段流水线；Checkpoint + Pending Bridge + Seam + Episodic TF-IDF；自动预算配置 |
+| AI   | OpenAI 兼容在线 API；GGUF + Android llama.cpp；四阶段流水线；Checkpoint + Pending Bridge + Seam + 增强 Episodic 检索（中文 n-gram / 实体加权 / 混合 Top-K）；自动预算配置 |
 | 语音 | 系统 TTS 与可配置语音服务；章节和选区朗读；前后台保活                                       |
 | 备份 | Manifest 驱动的 v3 备份、SHA-256 校验、原子恢复、外部模型资源引用                           |
 | 诊断 | LLM 用量日志、流水线任务状态、超时/取消/网络错误分类                                        |
@@ -87,8 +89,8 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-当前正式产物：`dist/apk/release/ShineWriter-V2.5.7-release.apk`（37,365,699 bytes），SHA-256：`30BB3D59D24CF782B861E67EC6E355884DDEE07209BFA5A926D47E5FBB600787`。
-该 APK 已通过正式证书（证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`）、APK Signature Scheme v2、单 signer、16 KB zipalign 和 AAPT 版本元数据验收（`versionName=V2.5.7`，`versionCode=2050700`）；真实外部模型与 arm64 设备专项限制仍见发布清单。
+当前正式产物：`dist/apk/release/ShineWriter-V2.5.8-release.apk`（37,377,747 bytes），SHA-256：`4830F8104FBD456E7AD961BBDA89DAAA6DC6CBF7C2AC7534EEDC93D955D39A64`。
+该 APK 已通过正式证书（证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`）、APK Signature Scheme v2、单 signer、16 KB zipalign 和 AAPT 版本元数据验收（`versionName=V2.5.8`，`versionCode=2050800`）；真实外部模型与 arm64 设备专项限制仍见发布清单。
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -113,7 +115,7 @@ npm run test:coverage
 npm run verify
 ```
 
-V2.5.1 的结构化记忆基线记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md)；V2.5.6 检查点架构与 30 章多人物多线验收记录在 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)；V2.5.7 原子 dirty 事务与场景 C 收尾见 [`docs/optimization/progress.md`](docs/optimization/progress.md)；V2.5.2–V2.5.7 的 DeepSeek/发布回归记录在 [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
+V2.5.1 的结构化记忆基线记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md)；V2.5.6 检查点架构与 30 章多人物多线验收记录在 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)；V2.5.7 原子 dirty 事务与场景 C 收尾、V2.5.8 长篇召回优化见 [`docs/optimization/progress.md`](docs/optimization/progress.md)；V2.5.2–V2.5.8 的 DeepSeek/发布回归记录在 [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
 
 `npx jest --runInBand --ci --detectOpenHandles` 可在 Node 24.14.1 上自然退出，不使用 `--forceExit`，无 open-handle 报告或超时。最终分支头的 GitHub Actions [Verify Run 29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) 三个 Job 全部成功。
 
@@ -172,13 +174,14 @@ dist/apk/                         本地 APK 交付目录
 - API 37 x86_64 模拟器会报告部分原生库的 16KB page-size/RELRO 兼容提示；ARM64 物理设备发布前仍需补验。
 - V2.5.6 已完成 x86_64 模拟器上的检查点架构 30 章多人物多线验收（11 人物 / 25 关系 / 10 批次 / through=29 clean）；arm64 真机与本地 GGUF 长上下文仍需专项验收。
 - V2.5.7 将 **章节 UPDATE/DELETE 与故事记忆 dirty / 批次失效合并为同一 SQLite 事务**（失败整笔回滚），并纳入 dirty 重建作废后续 applied 批次的修复。场景 C 与原子 dirty 模拟器路径产品侧均为 **PASS**。本地证据（gitignore）：`test-logs/story-memory-scenario-c-signoff/`、`test-logs/story-memory-atomic-dirty-final/`。
+- V2.5.8 强化 Episodic 召回（查询/分词/实体加权/混合 Top-K）与约 300 字记忆摘要提示词；**不扩大**默认上下文预算、**不增加**正文前 API 调用、**不改** Schema。旧 `memory_summary` 可继续参与检索，无需强制全量重写。
 - 残余风险：进程被强杀后可能卡在 `rebuilding`，此时 UI「立即整理」不会自动走 dirty 重建入口（需恢复为 dirty 或重启流程）；删除中间章后覆盖 through 可能收敛；完整中文 IME 改正文未作为门禁重录；arm64 真机与本地 GGUF 长上下文仍需专项验收。
 
 ## English summary
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.7** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. Dirty rebuild invalidates applied batches from the edit point so later checkpoints cannot reuse a pre-edit world. Chapter update/delete and story-memory dirty/batch invalidation share one SQLite transaction. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.8** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. Dirty rebuild invalidates applied batches from the edit point so later checkpoints cannot reuse a pre-edit world. Chapter update/delete and story-memory dirty/batch invalidation share one SQLite transaction. Episodic recall (V2.5.8) adds denser memory summaries, query expansion, Chinese n-grams, light entity/pair boosts, and hybrid Top-K without extra pre-generation API calls. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 
