@@ -12,6 +12,33 @@ export interface RenderStoryMemoryResult {
 
 const list = (values: string[]) => values.filter(Boolean).join('、') || '无';
 
+/** Display label: 林岚[char_lan]; fall back to raw id when missing. */
+export function characterLabel(
+  state: StoryMemoryState,
+  characterId: string,
+): string {
+  const character = state.characters?.[characterId];
+  const name = character?.canonicalName?.trim();
+  if (name) return `${name}[${characterId}]`;
+  return characterId;
+}
+
+function relationshipMentionsCurrentChapter(
+  state: StoryMemoryState,
+  fromId: string,
+  toId: string,
+  scan: string,
+): boolean {
+  const ids = [fromId, toId];
+  return ids.some(id => {
+    const character = state.characters?.[id];
+    if (!character) return scan.includes(id);
+    return [character.canonicalName, ...(character.aliases || [])].some(
+      name => name && scan.includes(name),
+    );
+  });
+}
+
 export function renderStoryMemoryForContext(
   state: StoryMemoryState,
   options: { currentChapter: Chapter; budgetTokens: number },
@@ -27,12 +54,30 @@ export function renderStoryMemoryForContext(
     line: `- [${item.id}] ${item.canonicalName}（别名：${list(item.aliases)}）：${item.role || '身份未知'}；位置：${item.currentState.location || '未知'}；身体/情绪：${item.currentState.physicalState || '未知'}/${item.currentState.emotionalState || '未知'}；目标：${item.currentState.currentGoal || '无'}；已知：${list(item.currentState.knowledge)}；持有：${list(item.currentState.possessions)}；秘密：${list(item.currentState.secrets)}；状态：${item.status}`,
   }));
   const relationshipItems = Object.values(state.relationships)
-    .sort((a, b) => b.lastChangedPosition - a.lastChangedPosition)
+    .sort((a, b) => {
+      const aHit = relationshipMentionsCurrentChapter(
+        state,
+        a.fromCharacterId,
+        a.toCharacterId,
+        scan,
+      );
+      const bHit = relationshipMentionsCurrentChapter(
+        state,
+        b.fromCharacterId,
+        b.toCharacterId,
+        scan,
+      );
+      if (Number(bHit) !== Number(aHit)) return Number(bHit) - Number(aHit);
+      if (b.lastChangedPosition !== a.lastChangedPosition) {
+        return b.lastChangedPosition - a.lastChangedPosition;
+      }
+      return a.id.localeCompare(b.id);
+    })
     .map(item => ({
       id: item.id,
       from: item.fromCharacterId,
       to: item.toCharacterId,
-      line: `- [${item.id}] ${item.fromCharacterId} ${item.direction === 'bidirectional' ? '↔' : '→'} ${item.toCharacterId}：${item.relationType}；${item.currentState}；信任：${item.trustLevel}；公开：${item.publicStatus || '无'}；隐藏：${item.hiddenStatus || '无'}；原因：${item.reason || '无'}`,
+      line: `- [${item.id}] ${characterLabel(state, item.fromCharacterId)} ${item.direction === 'bidirectional' ? '↔' : '→'} ${characterLabel(state, item.toCharacterId)}：${item.relationType}；${item.currentState}；信任：${item.trustLevel}；公开：${item.publicStatus || '无'}；隐藏：${item.hiddenStatus || '无'}；原因：${item.reason || '无'}`,
     }));
   const mainline = state.mainline;
   const mainlineLines = [

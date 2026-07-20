@@ -493,3 +493,51 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | Emulator | Real autosave edit + outline delete dirty paths PASS; rebuild clean after unstick |
 | Evidence | `test-logs/story-memory-atomic-dirty-final/` (gitignore) |
 | Residual | Stuck `rebuilding` UI recovery; mid-chapter delete may shrink through; full CJK IME not gated; arm64/GGUF still special-case |
+
+## V2.5.8 long-story episodic retrieval optimization — 2026-07-20
+
+- Status: **implemented + unit/integration + verify/coverage + release APK**
+- Spec: `docs/superpowers/specs/Tavo-Mini-Story-Memory-Retrieval-Optimization-SPEC.md`
+- Scope: improve early character-interaction recall **without** vector DB, Embedding, second model, schema changes, or extra pre-generation API calls.
+
+### Code
+
+| File | Role |
+| --- | --- |
+| `src/services/summaryGenerator.ts` | Default `memory_summary` target ~300 chars; denser continuity-oriented prompt |
+| `src/services/episodicMemoryRetriever.ts` | Query build, Chinese n-gram tokenizer, entity terms, scoring, hybrid Top-K |
+| `src/services/contextBuilder.ts` | Wire retrieval query + Story Memory state into Episodic path; keep IDF cache + fallback |
+| `src/services/storyMemory/storyMemoryRenderer.ts` | Relationship labels `姓名[id]`; prioritize current-chapter relationships |
+| `src/services/batchChapterPipeline.ts` / `storyMemoryService.ts` | Use default 300-char memory summary target |
+
+### Tests
+
+- `__tests__/memorySummaryPrompt.test.ts`
+- `__tests__/episodicMemoryRetriever.test.ts`
+- `__tests__/storyMemoryRendererRetrieval.test.ts`
+- `__tests__/longStoryRecallRegression.test.ts` (30-chapter interaction + 30/100/300 perf soft budgets)
+- Baseline → after: `verify` **112 suites / 574 tests PASS**; `test:coverage` exit 0
+
+### Non-goals kept
+
+- No Schema / backup format change
+- Checkpoint interval / Dirty rebuild / Pending Bridge / Seam unchanged
+- Default episodic token budget unchanged
+- Pre-generation remote API count remains 1 for normal chapter body
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.8** / Schema **16** |
+| APK | `dist/apk/release/ShineWriter-V2.5.8-release.apk` (37,377,747 bytes) |
+| SHA-256 | `4830F8104FBD456E7AD961BBDA89DAAA6DC6CBF7C2AC7534EEDC93D955D39A64` |
+| Signature | Release cert `017b3f…2a0a`, APK Sig v2, 1 signer, zipalign OK |
+| Emulator | emulator-5556 install V2.5.8; main tabs/empty project list; no FATAL (`test-logs/v258-emulator-smoke/`) |
+| Report | `docs/V2.5.8-STORY-MEMORY-RETRIEVAL-REPORT.md` |
+
+### Residual / follow-ups (out of scope)
+
+- Existing sparse ~200-char summaries keep working but benefit less until regenerated naturally
+- No Jieba; n-gram only
+- Stuck `rebuilding` UI recovery still residual from V2.5.7
