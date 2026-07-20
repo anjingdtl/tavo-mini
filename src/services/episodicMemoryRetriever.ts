@@ -1,9 +1,13 @@
 /**
- * Episodic memory retrieval helpers (V2.5.8).
+ * Episodic memory retrieval helpers (V2.5.8+).
  * Pure functions only — no DB access, no Story Memory rebuild, no message assembly.
  */
 
 import type { Chapter } from '../types/novel';
+import {
+  clipTextToTokenBudget,
+  estimateTokens,
+} from '../utils/tokenEstimator';
 import type { StoryMemoryState } from './storyMemory/storyMemoryTypes';
 
 /** Feature flag: set false to restore legacy TF-IDF Top-K only. */
@@ -57,8 +61,10 @@ export interface StoryRetrievalTerms {
   aliases: string[];
   objectTerms: string[];
   threadTerms: string[];
-  /** alias → canonical name */
-  aliasToCanonical: Record<string, string>;
+  /** alias → one or more canonical names (shared aliases keep all owners) */
+  aliasToCanonicalNames: Record<string, string[]>;
+  /** aliases owned by more than one character; never auto-activate */
+  ambiguousAliases: string[];
 }
 
 export interface ActiveStoryTerms {
@@ -68,7 +74,7 @@ export interface ActiveStoryTerms {
   threadTerms: string[];
   /** Active characters by canonical name (deduped) */
   activeCharacterNames: string[];
-  /** alias hits that map to a canonical name */
+  /** Unambiguous alias hits that map to a single canonical name */
   aliasHits: Array<{ alias: string; canonicalName: string }>;
 }
 
@@ -184,7 +190,8 @@ export function collectStoryRetrievalTerms(
     aliases: [],
     objectTerms: [],
     threadTerms: [],
-    aliasToCanonical: {},
+    aliasToCanonicalNames: {},
+    ambiguousAliases: [],
   };
   if (!state) return empty;
 
@@ -193,16 +200,20 @@ export function collectStoryRetrievalTerms(
     const aliases: string[] = [];
     const objectTerms: string[] = [];
     const threadTerms: string[] = [];
-    const aliasToCanonical: Record<string, string> = {};
+    const aliasOwners = new Map<string, string[]>();
 
     for (const character of Object.values(state.characters || {})) {
       const name = String(character.canonicalName || '').trim();
       if (name) canonicalCharacterNames.push(name);
       for (const alias of character.aliases || []) {
         const a = String(alias || '').trim();
-        if (!a) continue;
+        if (!a || !name) continue;
         aliases.push(a);
-        if (name) aliasToCanonical[a] = name;
+        const owners = aliasOwners.get(a) || [];
+        if (!owners.includes(name)) {
+          owners.push(name);
+          aliasOwners.set(a, owners);
+        }
       }
       for (const item of character.currentState?.possessions || []) {
         const term = String(item || '').trim();
@@ -225,12 +236,22 @@ export function collectStoryRetrievalTerms(
       }
     }
 
+    const aliasToCanonicalNames: Record<string, string[]> = {};
+    const ambiguousAliases: string[] = [];
+    for (const [alias, owners] of aliasOwners) {
+      aliasToCanonicalNames[alias] = owners;
+      if (owners.length > 1) {
+        ambiguousAliases.push(alias);
+      }
+    }
+
     return {
       canonicalCharacterNames: uniqueNonEmpty(canonicalCharacterNames),
       aliases: uniqueNonEmpty(aliases),
       objectTerms: uniqueNonEmpty(objectTerms),
       threadTerms: uniqueNonEmpty(threadTerms),
-      aliasToCanonical,
+      aliasToCanonicalNames,
+      ambiguousAliases,
     };
   } catch {
     return empty;
@@ -242,6 +263,7 @@ export function findActiveStoryTerms(
   terms: StoryRetrievalTerms,
 ): ActiveStoryTerms {
   const query = queryText || '';
+  const ambiguous = new Set(terms.ambiguousAliases || []);
   const canonicalCharacterNames = terms.canonicalCharacterNames.filter(name =>
     includesInsensitive(query, name),
   );
@@ -249,9 +271,12 @@ export function findActiveStoryTerms(
   const aliases: string[] = [];
   for (const alias of terms.aliases) {
     if (!includesInsensitive(query, alias)) continue;
+    // Shared titles like 队长/师父 must not auto-activate any character.
+    if (ambiguous.has(alias)) continue;
+    const owners = terms.aliasToCanonicalNames[alias] || [];
+    if (owners.length !== 1) continue;
     aliases.push(alias);
-    const canonical = terms.aliasToCanonical[alias] || alias;
-    aliasHits.push({ alias, canonicalName: canonical });
+    aliasHits.push({ alias, canonicalName: owners[0] });
   }
   const objectTerms = terms.objectTerms.filter(term =>
     includesInsensitive(query, term),
@@ -545,6 +570,68 @@ export function orderCandidatesForDisplay(
     }
     return a.chapter.id - b.chapter.id;
   });
+}
+
+/** Full memory line used for token accounting and final injection. */
+export function formatMemoryCandidateLine(
+  candidate: Pick<ScoredMemoryCandidate, 'chapter' | 'text'>,
+): string {
+  return `第 ${candidate.chapter.position + 1} 章「${
+    candidate.chapter.title
+  }」摘要：${candidate.text}`;
+}
+
+/**
+ * Keep hybrid Top-K priority order for budget decisions.
+ * Do not chronological-sort before budgeting — early low-score lines must not
+ * crowd out higher-priority later interactions.
+ *
+ * Rules:
+ * 1. Fit whole line → keep
+ * 2. Too long for remaining → skip and try later (often shorter) candidates
+ * 3. Never break on first overflow
+ * 4. If nothing kept yet, allow truncating the highest-priority candidate
+ * 5. Total tokens never exceed budget
+ */
+export function selectCandidatesWithinTokenBudget(
+  selectedByPriority: ScoredMemoryCandidate[],
+  budgetTokens: number,
+): ScoredMemoryCandidate[] {
+  if (budgetTokens <= 0 || selectedByPriority.length === 0) return [];
+
+  const kept: ScoredMemoryCandidate[] = [];
+  let remaining = budgetTokens;
+
+  for (const candidate of selectedByPriority) {
+    if (remaining <= 0) break;
+    const line = formatMemoryCandidateLine(candidate);
+    const cost = estimateTokens(line);
+    if (cost <= remaining) {
+      kept.push(candidate);
+      remaining -= cost;
+      continue;
+    }
+    // Overflow: if nothing selected yet, allow a single truncated entry.
+    if (kept.length === 0) {
+      const clipped = clipTextToTokenBudget(line, remaining);
+      if (!clipped) continue;
+      const prefix = `第 ${candidate.chapter.position + 1} 章「${
+        candidate.chapter.title
+      }」摘要：`;
+      const textPart = clipped.startsWith(prefix)
+        ? clipped.slice(prefix.length)
+        : clipped;
+      kept.push({
+        ...candidate,
+        text: textPart,
+      });
+      remaining -= estimateTokens(clipped);
+      continue;
+    }
+    // Skip over-long middle candidates; try later ones that may still fit.
+  }
+
+  return kept;
 }
 
 function defaultVectorize(
