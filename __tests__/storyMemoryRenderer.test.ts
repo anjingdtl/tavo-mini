@@ -64,6 +64,21 @@ describe('story memory context renderer', () => {
     });
     expect(clipped.clipped).toBe(true);
     expect(clipped.includedCharacterIds[0]).toBe('char_lan');
-    expect(clipped.text).toContain('暗门通向何处');
+    // Character + relationship stay ahead of mainline under tight budget.
+    expect(clipped.text).toContain('林岚');
+    expect(clipped.text).toContain('rel_1');
+    // Hard cap: never exceed the reduced budget.
+    expect(clipped.estimatedTokens).toBeLessThanOrEqual(
+      Math.max(1, full.estimatedTokens - 50),
+    );
+  });
+
+  it('keeps open threads when budget is sufficient', () => {
+    const result = renderStoryMemoryForContext(populatedState(), {
+      currentChapter,
+      budgetTokens: 4000,
+    });
+    expect(result.text).toContain('暗门通向何处');
+    expect(result.clipped).toBe(false);
   });
 });

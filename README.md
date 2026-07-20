@@ -6,14 +6,14 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.10-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.11-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.10** · 数据库 Schema：**16** · 最低 Android API：**24**
+当前版本：**V2.5.11** · 数据库 Schema：**16** · 最低 Android API：**24**
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
@@ -24,6 +24,8 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 `V2.5.9` 收尾四项召回修复：Checkpoint 主路径摘要密度、不可用 Story Memory 禁止实体加权、Token 预算先优先级后时间序、共用别名歧义处理。详见 [CHANGELOG](CHANGELOG.md)、`docs/V2.5.9-STORY-MEMORY-RETRIEVAL-FIX-REPORT.md` 与 `docs/optimization/progress.md`。
 
 `V2.5.10` 收尾两项边界修复：极小 Token 预算前缀安全截断；Story Memory 实体词在单次 Episodic 检索中只计算一次并复用。详见 [CHANGELOG](CHANGELOG.md)、`docs/V2.5.10-STORY-MEMORY-BOUNDARY-FIX-REPORT.md`。
+
+`V2.5.11` 故事记忆召回最终收口：统一 Episodic 全路径 Token 安全预算、Story Memory 硬上限与人物/关系优先级、小 topK 分数优先、统一人物实体命名空间、用户写作要求进入 Story Memory、IDF 空回退最近摘要。详见 [CHANGELOG](CHANGELOG.md)、`docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md`。
 
 ## 主要能力
 
@@ -121,7 +123,9 @@ npm run verify
 
 V2.5.1 的结构化记忆基线记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md)；V2.5.6 检查点架构与 30 章多人物多线验收记录在 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)；V2.5.7 原子 dirty 事务与场景 C 收尾、V2.5.8 长篇召回优化见 [`docs/optimization/progress.md`](docs/optimization/progress.md)；V2.5.2–V2.5.8 的 DeepSeek/发布回归记录在 [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
 
-`npx jest --runInBand --ci --detectOpenHandles` 可在 Node 24.14.1 上自然退出，不使用 `--forceExit`，无 open-handle 报告或超时。最终分支头的 GitHub Actions [Verify Run 29504809163](https://github.com/anjingdtl/tavo-mini/actions/runs/29504809163) 三个 Job 全部成功。
+`npx jest --runInBand --ci --detectOpenHandles` 可在 Node 24.14.1 上自然退出，不使用 `--forceExit`，无 open-handle 报告或超时。
+
+V2.5.11 发布提交的 GitHub Actions Verify 结果见 [`docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md`](docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md)（以该提交上的真实 Run 为准；不再用旧 Run 证明新版本）。
 
 GitHub Actions `Verify` 对 `main` push 和 Pull Request 执行：
 
