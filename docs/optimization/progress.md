@@ -584,6 +584,7 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 
 - Status: **implemented + tests + verify/coverage + release APK**
 - Baseline: V2.5.9 (`d856052` / report pin `bcea34b`) — already shipped, so patch bumped to **2.5.10**
+- Release commit: `f1b9327a27304f00b631c547babae8255f3429af`
 - Scope: two boundary-only fixes; no Schema/backup/Checkpoint/Pending Bridge/Seam/default budget/API count; no Embedding/second model
 
 ### Fixes
