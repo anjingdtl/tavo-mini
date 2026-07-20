@@ -673,3 +673,5 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | Emulator | emulator-5556 install V2.5.12; MainActivity resumed; no FATAL (`test-logs/v2512-emulator-smoke/`) |
 | Gates | verify 115/655 PASS; coverage exit 0; 30/100/300 + 10/50/100 perf PASS |
 | Report | `docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md` |
+| Release commit | `a6820cf741473948332f92fc71dc80c62d4249b2` |
+| CI | [Run 29752469471](https://github.com/anjingdtl/tavo-mini/actions/runs/29752469471) — JS / Android Debug / Migration matrix all success on `a6820cf` |
