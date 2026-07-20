@@ -304,6 +304,12 @@ function clampBoost(value: number, max: number): number {
   return Math.min(value, max);
 }
 
+/** Optional precomputed entity terms to avoid duplicate collect/find per retrieval. */
+export interface PrecomputedStoryScoringTerms {
+  storyTerms: StoryRetrievalTerms;
+  activeTerms: ActiveStoryTerms;
+}
+
 export function scoreMemoryCandidates(
   docs: Array<{ chapter: Chapter; text: string }>,
   queryText: string,
@@ -314,9 +320,16 @@ export function scoreMemoryCandidates(
     docVector: Map<string, number>,
   ) => number,
   vectorizeFn?: (text: string, idf: Map<string, number>) => Map<string, number>,
+  /**
+   * When provided (e.g. by contextBuilder), reuse terms already collected for
+   * this retrieval. Callers that omit this keep the previous one-shot behavior.
+   */
+  precomputed?: PrecomputedStoryScoringTerms | null,
 ): ScoredMemoryCandidate[] {
-  const terms = collectStoryRetrievalTerms(storyState);
-  const active = findActiveStoryTerms(queryText, terms);
+  const terms =
+    precomputed?.storyTerms ?? collectStoryRetrievalTerms(storyState);
+  const active =
+    precomputed?.activeTerms ?? findActiveStoryTerms(queryText, terms);
 
   const vectorize =
     vectorizeFn ||
@@ -572,13 +585,18 @@ export function orderCandidatesForDisplay(
   });
 }
 
+/** Chapter prefix counted in the token budget (must stay complete in output). */
+export function formatMemoryCandidatePrefix(
+  chapter: Pick<Chapter, 'position' | 'title'>,
+): string {
+  return `第 ${chapter.position + 1} 章「${chapter.title}」摘要：`;
+}
+
 /** Full memory line used for token accounting and final injection. */
 export function formatMemoryCandidateLine(
   candidate: Pick<ScoredMemoryCandidate, 'chapter' | 'text'>,
 ): string {
-  return `第 ${candidate.chapter.position + 1} 章「${
-    candidate.chapter.title
-  }」摘要：${candidate.text}`;
+  return `${formatMemoryCandidatePrefix(candidate.chapter)}${candidate.text}`;
 }
 
 /**
@@ -590,8 +608,10 @@ export function formatMemoryCandidateLine(
  * 1. Fit whole line → keep
  * 2. Too long for remaining → skip and try later (often shorter) candidates
  * 3. Never break on first overflow
- * 4. If nothing kept yet, allow truncating the highest-priority candidate
- * 5. Total tokens never exceed budget
+ * 4. If nothing kept yet, allow truncating the body *after* a complete prefix
+ * 5. If even the complete prefix cannot fit, skip (may yield empty result)
+ * 6. Total tokens of formatted lines never exceed budget
+ *    (prefix is always deducted before body truncation; never re-add unbudgeted prefix)
  */
 export function selectCandidatesWithinTokenBudget(
   selectedByPriority: ScoredMemoryCandidate[],
@@ -611,21 +631,39 @@ export function selectCandidatesWithinTokenBudget(
       remaining -= cost;
       continue;
     }
-    // Overflow: if nothing selected yet, allow a single truncated entry.
+    // Overflow: if nothing selected yet, truncate body after a full prefix.
     if (kept.length === 0) {
-      const clipped = clipTextToTokenBudget(line, remaining);
-      if (!clipped) continue;
-      const prefix = `第 ${candidate.chapter.position + 1} 章「${
-        candidate.chapter.title
-      }」摘要：`;
-      const textPart = clipped.startsWith(prefix)
-        ? clipped.slice(prefix.length)
-        : clipped;
+      const prefix = formatMemoryCandidatePrefix(candidate.chapter);
+      const prefixCost = estimateTokens(prefix);
+      // Cannot emit a valid line without the complete prefix.
+      if (prefixCost > remaining) {
+        continue;
+      }
+      const bodyBudget = remaining - prefixCost;
+      let textPart =
+        bodyBudget <= 0
+          ? ''
+          : clipTextToTokenBudget(candidate.text, bodyBudget);
+
+      // Guard non-additive token edge cases on prefix+body join.
+      let finalCost = estimateTokens(`${prefix}${textPart}`);
+      if (finalCost > remaining && textPart) {
+        const chars = Array.from(textPart);
+        while (chars.length > 0 && finalCost > remaining) {
+          chars.pop();
+          textPart = chars.join('');
+          finalCost = estimateTokens(`${prefix}${textPart}`);
+        }
+      }
+      if (finalCost > remaining) {
+        continue;
+      }
+
       kept.push({
         ...candidate,
         text: textPart,
       });
-      remaining -= estimateTokens(clipped);
+      remaining -= finalCost;
       continue;
     }
     // Skip over-long middle candidates; try later ones that may still fit.

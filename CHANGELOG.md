@@ -6,6 +6,24 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.10] - 2026-07-20
+
+### Fixed
+
+- **极小 Token 预算不超限**：`selectCandidatesWithinTokenBudget()` 在截断前先扣除完整章节前缀 Token；预算连完整前缀都容纳不下时返回空结果，避免截断后由 `formatMemoryCandidateLine()` 重新加前缀导致超预算。
+- **Story Memory 实体词单次计算**：`contextBuilder` 每条 Episodic 检索只 `collectStoryRetrievalTerms` / `findActiveStoryTerms` 一次，经可选 `precomputed` 参数传入 `scoreMemoryCandidates()`，评分结果与旧路径完全一致。
+
+### Tests
+
+- 新增极小预算（1/5/10）、前缀不足、前缀+短正文、首候选截断与 `estimateTokens(memoryText) <= budget` 边界用例。
+- 新增预计算与旧调用评分一致性、`collectStoryRetrievalTerms` 单次构建只执行一次的断言。
+- 30/100/300 章性能软阈值回归继续通过。
+
+### Notes
+
+- V2.5.9 已正式发布（`d856052` / 报告 `docs/V2.5.9-STORY-MEMORY-RETRIEVAL-FIX-REPORT.md`），故本边界修复升版为 **V2.5.10**。
+- Schema / 备份格式 / Checkpoint / Pending Bridge / Seam / 默认 Token 预算 / API 调用次数均不变；无 Embedding 或第二模型。
+
 ## [2.5.9] - 2026-07-20
 
 ### Fixed
