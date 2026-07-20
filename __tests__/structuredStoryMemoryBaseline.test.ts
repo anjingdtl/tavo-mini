@@ -32,17 +32,17 @@ describe('structured story memory baseline protection', () => {
     jest.doMock('../src/services/llm', () => ({ callLLM }));
 
     const { generateMemorySummary } = require('../src/services/summaryGenerator');
-    await expect(generateMemorySummary(chapter.id, 200)).resolves.toBe(
+    await expect(generateMemorySummary(chapter.id)).resolves.toBe(
       '林岚发现钟楼暗门。',
     );
 
     expect(callLLM).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({
-          content: expect.stringContaining('核心剧情、人物变化和关键事件'),
+          content: expect.stringContaining('谁对谁做了什么'),
         }),
       ]),
-      500,
+      700,
       { scenario: 'memory_summary' },
     );
     expect(updateChapter).toHaveBeenCalledWith(

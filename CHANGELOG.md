@@ -6,6 +6,28 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.8] - 2026-07-20
+
+### Added
+
+- Episodic 历史摘要检索支持当前写作要求与上一章正文结尾进入查询。
+- 中文章节记忆检索新增单字、双字、三字联合 Token，保留英文/数字完整 Token 与停用词。
+- 基于现有 Story Memory 的人物姓名、别名、持有物、开放线索与伏笔做轻量实体加权；两名及以上当前相关人物共现时增加人物组合奖励。
+- Top-K 改为相关度 + 当前人物历史 + 最近章节的混合选择，注入上下文时按章节位置升序展示。
+- Story Memory 关系渲染改为「人物姓名[内部ID]」，并优先展示当前章节相关人物关系。
+- 新增纯函数模块 `src/services/episodicMemoryRetriever.ts`（可回退 `EPISODIC_RETRIEVAL_V2_ENABLED`）。
+
+### Improved
+
+- `memory_summary` 默认目标长度约 300 字；提示词强化人物行为、互动、承诺/欺骗/冲突、物品流转与未解决矛盾。
+- 长篇较早人物交互细节的回溯精度提升；普通章节正文生成前远程 API 调用次数保持 1 次。
+- 不改变 Checkpoint 默认策略、Pending Bridge / Seam、Dirty rebuild 主逻辑、Token 预算与数据库 Schema。
+
+### Tests
+
+- 新增 `__tests__/memorySummaryPrompt.test.ts`、`episodicMemoryRetriever.test.ts`、`storyMemoryRendererRetrieval.test.ts`、`longStoryRecallRegression.test.ts`（含 30 章交互场景与 30/100/300 章性能软阈值）。
+- 门禁：`npm run verify` 112 suites / 574 tests PASS；`npm run test:coverage` exit 0。
+
 ## [2.5.7] - 2026-07-19
 
 ### Fixed

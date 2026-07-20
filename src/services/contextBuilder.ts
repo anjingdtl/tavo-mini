@@ -17,30 +17,21 @@ import {
 } from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
 import { prepareStoryMemoryForGeneration } from './storyMemory/storyMemoryPrepare';
+import {
+  EPISODIC_RETRIEVAL_V2_ENABLED,
+  buildEpisodicRetrievalQuery,
+  collectStoryRetrievalTerms,
+  findActiveStoryTerms,
+  orderCandidatesForDisplay,
+  resolvePreviousChapterForQuery,
+  scoreMemoryCandidates,
+  selectMemoryCandidates,
+  tokenizeForMemoryRetrieval,
+  type MemoryRetrievalOptions,
+} from './episodicMemoryRetriever';
 
 const DEFAULT_SYSTEM_PROMPT =
   '你是一位经验丰富的中文小说作者。请根据既有设定、人物状态、章节概要和前文内容，继续创作自然、连贯、有画面感的中文小说。';
-
-const STOP_WORDS = new Set([
-  'the',
-  'and',
-  'for',
-  'with',
-  'that',
-  'this',
-  'from',
-  'into',
-  'chapter',
-  'return',
-  '以下',
-  '当前',
-  '章节',
-  '概要',
-  '一个',
-  '以及',
-  '他们',
-  '她们',
-]);
 
 type PartialContextConfig = Partial<ContextConfig>;
 
@@ -156,6 +147,31 @@ export async function buildContext(
     rawChapterIds,
   );
 
+  // Episodic query: title + synopsis + user prompt + content head + previous tail.
+  // Story Memory is used only for local entity boosts; never block generation.
+  const previousForQuery = resolvePreviousChapterForQuery(
+    previousChapters,
+    currentChapter,
+  );
+  const episodicQuery = buildEpisodicRetrievalQuery({
+    currentChapter,
+    previousChapter: previousForQuery,
+    retrievalUserPrompt: options.retrievalUserPrompt,
+  });
+  let storyStateForRetrieval: MemoryRetrievalOptions['storyState'] = null;
+  try {
+    if (typeof (db as any).getProjectStoryMemory === 'function') {
+      const storyRecord = await (db as any).getProjectStoryMemory(projectId);
+      storyStateForRetrieval = storyRecord?.state ?? null;
+    }
+  } catch {
+    storyStateForRetrieval = null;
+  }
+  const retrievalOptions: MemoryRetrievalOptions = {
+    queryText: episodicQuery,
+    storyState: storyStateForRetrieval,
+  };
+
   // V2.2.0：IDF 缓存——同项目 memory_summary 不变时复用，避免每次 tokenize+buildIdf
   let memoryText: string;
   try {
@@ -176,6 +192,7 @@ export async function buildContext(
       idf,
       config.memoryTopK ?? 10,
       config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
+      retrievalOptions,
     );
   } catch {
     // idfCache 不可用或失败时回退原始 buildMemoryContext（O(N²) 但保证正确性）
@@ -184,6 +201,7 @@ export async function buildContext(
       currentChapter,
       config.memoryTopK ?? 10,
       config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
+      retrievalOptions,
     );
   }
   const worldbookScanContent = selectPreviousChapters(
@@ -1044,6 +1062,7 @@ export function buildMemoryContext(
   currentChapter: Chapter,
   topK: number,
   budgetTokens: number,
+  options?: MemoryRetrievalOptions,
 ): string {
   const docs = previousChapters
     .map(chapter => ({
@@ -1061,6 +1080,7 @@ export function buildMemoryContext(
     idf,
     topK,
     budgetTokens,
+    options,
   );
 }
 
@@ -1073,6 +1093,7 @@ export function buildMemoryContextWithIdf(
   idf: Map<string, number>,
   topK: number,
   budgetTokens: number,
+  options?: MemoryRetrievalOptions,
 ): string {
   const docs = previousChapters
     .map(chapter => ({
@@ -1089,6 +1110,7 @@ export function buildMemoryContextWithIdf(
     idf,
     topK,
     budgetTokens,
+    options,
   );
 }
 
@@ -1098,22 +1120,63 @@ function assembleMemoryContextFromIdf(
   idf: Map<string, number>,
   topK: number,
   budgetTokens: number,
+  options?: MemoryRetrievalOptions,
 ): string {
-  const query = `${currentChapter.title}\n${currentChapter.synopsis}\n${
+  const legacyQuery = `${currentChapter.title}\n${currentChapter.synopsis}\n${
     currentChapter.content?.slice(0, 500) || ''
   }`;
-  const queryVector = vectorize(query, idf);
-  const scored = docs
-    .map(doc => ({
-      ...doc,
-      score: cosineSimilarity(queryVector, vectorize(doc.text, idf)),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+  const query =
+    (options?.queryText && options.queryText.trim()) ||
+    legacyQuery.trim() ||
+    `${currentChapter.title || ''}\n${currentChapter.synopsis || ''}`.trim();
+
+  let selectedDocs: Array<{ chapter: Chapter; text: string }>;
+
+  if (EPISODIC_RETRIEVAL_V2_ENABLED) {
+    if (!query) {
+      // Empty query: pick most recent valid summaries only (no random early chapters).
+      selectedDocs = [...docs]
+        .sort((a, b) => {
+          if (b.chapter.position !== a.chapter.position) {
+            return b.chapter.position - a.chapter.position;
+          }
+          return a.chapter.id - b.chapter.id;
+        })
+        .slice(0, topK)
+        .sort((a, b) => a.chapter.position - b.chapter.position);
+    } else {
+      const scored = scoreMemoryCandidates(
+        docs,
+        query,
+        idf,
+        options?.storyState ?? null,
+        cosineSimilarity,
+        vectorize,
+      );
+      const active = findActiveStoryTerms(
+        query,
+        collectStoryRetrievalTerms(options?.storyState ?? null),
+      );
+      const selected = selectMemoryCandidates(scored, active, topK);
+      selectedDocs = orderCandidatesForDisplay(selected).map(item => ({
+        chapter: item.chapter,
+        text: item.text,
+      }));
+    }
+  } else {
+    const queryVector = vectorize(query || legacyQuery, idf);
+    selectedDocs = docs
+      .map(doc => ({
+        ...doc,
+        score: cosineSimilarity(queryVector, vectorize(doc.text, idf)),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
 
   const lines: string[] = [];
   let remaining = budgetTokens;
-  for (const item of scored) {
+  for (const item of selectedDocs) {
     const line = `第 ${item.chapter.position + 1} 章「${
       item.chapter.title
     }」摘要：${item.text}`;
@@ -1126,15 +1189,7 @@ function assembleMemoryContextFromIdf(
 }
 
 function tokenize(text: string): string[] {
-  return (text || '')
-    .toLowerCase()
-    .replace(/[^\u4e00-\u9fffa-z0-9_\s]/gi, ' ')
-    .split(/\s+/)
-    .flatMap(token => {
-      if (/^[\u4e00-\u9fff]+$/.test(token)) return Array.from(token);
-      return token;
-    })
-    .filter(token => token.length >= 1 && !STOP_WORDS.has(token));
+  return tokenizeForMemoryRetrieval(text);
 }
 
 function buildIdf(docs: string[]): Map<string, number> {
