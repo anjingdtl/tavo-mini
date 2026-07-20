@@ -645,3 +645,31 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | Report | `docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md` |
 | Release commit | `a319f825aae82a129d0c1af97f8b4a5dbfc0d5df` |
 | CI | [Run 29748912852](https://github.com/anjingdtl/tavo-mini/actions/runs/29748912852) — JS / Android Debug / Migration matrix all success on `a319f82` |
+
+## V2.5.12 story memory hardening — 2026-07-20
+
+- Status: **implemented + tests + verify/coverage + release APK**
+- Baseline: V2.5.11 (`a319f82` / report pin `3a7d7ca`) — already shipped, so patch bumped to **2.5.12**
+- SPEC: `docs/superpowers/specs/Tavo-Mini-V2.5.12-Story-Memory-Hardening-SPEC.md`
+- Scope: unified checkpoint eligibility, shared character mention resolver, explicit ID maps, relationship budget bundles, true empty-query path, system invariants, version gate; no Schema/backup/API/Embedding
+
+### Fixes
+
+1. **Future checkpoint isolation** — `resolveUsableCheckpointForTarget()` only usable when clean and through < target
+2. **Shared character mention resolver** — query / candidate / Story Memory scan
+3. **Explicit characterId→name** — delete parallel-array recovery
+4. **Relationship-first budget bundles** — atomic both-cards + relationship line
+5. **True empty query + retrieval mode** — `resolveEpisodicRetrievalMode`
+6. **Version consistency gate** — `npm run verify:version` inside `verify`
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.12** / Schema **16** |
+| APK | `dist/apk/release/ShineWriter-V2.5.12-release.apk` (37,391,795 bytes) |
+| SHA-256 | `CC62769F6CEF8C170189744AB6CF0A3DF05E369AE18D7B1DCFB95B470A653D1E` |
+| Signature | Release cert `017b3f…2a0a`, APK Sig v2, 1 signer, zipalign OK |
+| Emulator | emulator-5556 install V2.5.12; MainActivity resumed; no FATAL (`test-logs/v2512-emulator-smoke/`) |
+| Gates | verify 115/655 PASS; coverage exit 0; 30/100/300 + 10/50/100 perf PASS |
+| Report | `docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md` |
