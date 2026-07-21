@@ -754,9 +754,10 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | --- | --- |
 | Version | **2.5.16** / Schema **16** |
 | Report | `docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md` |
-| Release commit | `19dc40b4b6222249a6ea084fb96331a06d5c0d07` |
-| APK | 未构建/验证（本轮不要求签名环境；目标文件名 `ShineWriter-V2.5.16-release.apk`） |
-| Gates | lint 0 errors；typecheck clean；verify:version ok V2.5.16/2051600；test:ci 125 suites / 851 tests PASS；verify exit 0 |
+| Release commit | `d5b2229edb71774a745057334e66196d2360bb1f` |
+| CI | [Run 29810232127](https://github.com/anjingdtl/tavo-mini/actions/runs/29810232127) — JS (Version consistency / Lint / TypeScript / Jest with coverage) / Android Debug build / Migration matrix 全部 **success** on `d5b2229e`；workflow head SHA == release commit；**未被** concurrency 取消。真实 PowerShell 解析用例 Linux CI `describe.skip`，本机 Windows 已执行 |
+| APK | **未构建、未验证**（无正式 keystore；目标文件名 `ShineWriter-V2.5.16-release.apk`） |
+| Gates | lint 0 errors；typecheck clean；verify:version ok V2.5.16/2051600；test:ci 125 suites / 857 tests PASS；test:coverage exit 0（stmt 77.52 / branch 59.89 / fn 83.5 / line 79.04）；verify exit 0 |
 
 ## V2.5.15 engineering reliability final fix — 2026-07-21
 
