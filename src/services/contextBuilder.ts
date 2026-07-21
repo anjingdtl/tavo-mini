@@ -4,6 +4,7 @@ import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
 import type { Chapter, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
 import type { ContextTraceItem } from '../types/contextTrace';
+import type { PipelineContextSnapshot } from '../types/pipelineContext';
 import {
   getOrAnalyzeNoteStyle,
   mergeStyleProfiles,
@@ -48,6 +49,12 @@ export interface BuildContextResult {
   chapters: Chapter[];
   trace: ContextTraceItem[];
   estimatedInputTokens: number;
+  /**
+   * Shared snapshot of the context actually injected into the draft messages.
+   * Downstream pipeline stages (review / factCheck / proof) MUST consume this
+   * instead of re-reading the DB or re-parsing `messages`. See SPEC §7.
+   */
+  pipelineContext: PipelineContextSnapshot;
 }
 
 export interface BuildContextOptions {
@@ -432,21 +439,29 @@ export async function buildContext(
     trace.push(...storyMemory.traceItems);
   }
 
+  // Snapshot partition capture (SPEC §7). Capture each section's text as it is
+  // assembled so downstream stages reuse the SAME view, never a re-read.
+  let snapshotCharacterText = '';
+  let snapshotNoteText = '';
+  let snapshotWorldbookText = '';
+
   if (config.includeResources && config.resourceBudget > 0) {
-    const { text: resourceText, traceItems: resourceTrace } =
-      await buildResourceContext(
-        projectId,
-        config.resourceBudget,
-        scanText,
-        config.worldbookRecursive !== false,
-        currentChapter,
-        options.retrievalUserPrompt || '',
-      );
-    if (resourceText) {
-      const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceText}`;
+    const resourceResult = await buildResourceContext(
+      projectId,
+      config.resourceBudget,
+      scanText,
+      config.worldbookRecursive !== false,
+      currentChapter,
+      options.retrievalUserPrompt || '',
+    );
+    snapshotCharacterText = resourceResult.characterText;
+    snapshotNoteText = resourceResult.noteText;
+    snapshotWorldbookText = resourceResult.worldbookText;
+    if (resourceResult.text) {
+      const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceResult.text}`;
       messages.push({ role: 'system', content: resourceMessage });
     }
-    trace.push(...resourceTrace);
+    trace.push(...resourceResult.traceItems);
   }
 
   if (memoryText) {
@@ -489,12 +504,17 @@ export async function buildContext(
     );
   }
 
+  // Pending bridge / seam text for the snapshot. Captured in macro-processed
+  // form because that is exactly what the draft saw — downstream stages must
+  // see the same view, not the raw pre-macro text.
+  let snapshotRecentBridgeText = '';
   if (previousContent) {
     const processed = await processMacros(previousContent, {
       projectId,
       chapterTitle: currentChapter.title,
       chapterSynopsis: currentChapter.synopsis,
     });
+    snapshotRecentBridgeText = processed;
     const prevMessage = `以下是检查点之后的近期正文/桥接内容，请重点承接最后发生的事件；若与长期状态冲突，以位置更晚的近期正文为准：\n\n${processed}`;
     messages.push({ role: 'user', content: prevMessage });
     trace.push({
@@ -544,7 +564,21 @@ export async function buildContext(
     (sum, item) => sum + item.estimatedTokens,
     0,
   );
-  return { messages, chapters, trace, estimatedInputTokens };
+
+  const pipelineContext: PipelineContextSnapshot = {
+    presetText: resolvedSystemPrompt,
+    storyMemoryText: storyMemory.text,
+    characterText: snapshotCharacterText,
+    noteText: snapshotNoteText,
+    worldbookText: snapshotWorldbookText,
+    episodicMemoryText: memoryText,
+    recentBridgeText: snapshotRecentBridgeText,
+    currentInstructionText: instructionContent,
+    retrievalUserPrompt: options.retrievalUserPrompt || '',
+    sourceFingerprint: `proj=${projectId}|chapter=${currentChapter.id ?? currentChapter.position}`,
+  };
+
+  return { messages, chapters, trace, estimatedInputTokens, pipelineContext };
 }
 
 function buildPresetPrompt(preset?: Preset): string {
@@ -556,6 +590,21 @@ function buildPresetPrompt(preset?: Preset): string {
   return parts.join('\n\n');
 }
 
+/**
+ * Resource context result with per-section text (SPEC §7.4). `text` keeps the
+ * legacy combined string the draft consumes; `characterText` / `noteText` /
+ * `worldbookText` preserve the activated bodies so downstream stages (review /
+ * factCheck / proof) can re-clip per their own budgets without re-reading the
+ * database or re-parsing the draft messages.
+ */
+interface ResourceContextResult {
+  text: string;
+  characterText: string;
+  noteText: string;
+  worldbookText: string;
+  traceItems: ContextTraceItem[];
+}
+
 async function buildResourceContext(
   projectId: number,
   budget: number,
@@ -563,7 +612,7 @@ async function buildResourceContext(
   recursiveWorldbook: boolean,
   currentChapter?: Chapter,
   retrievalUserPrompt = '',
-): Promise<{ text: string; traceItems: ContextTraceItem[] }> {
+): Promise<ResourceContextResult> {
   const parts: string[] = [];
   const allTraceItems: ContextTraceItem[] = [];
   const characterBudget = Math.floor(budget * 0.35);
@@ -594,6 +643,15 @@ async function buildResourceContext(
     ),
   ]);
 
+  // Capture the per-section text BEFORE addPart clips it, so the snapshot
+  // preserves the full activated body (downstream stages re-clip per budget).
+  const characterText =
+    charSettled.status === 'fulfilled' ? charSettled.value.text : '';
+  const noteText =
+    noteSettled.status === 'fulfilled' ? noteSettled.value.text : '';
+  const worldbookText =
+    wbSettled.status === 'fulfilled' ? wbSettled.value.text : '';
+
   if (charSettled.status === 'fulfilled') {
     addPart('人物设定', charSettled.value.text, characterBudget);
     allTraceItems.push(...charSettled.value.items);
@@ -607,7 +665,13 @@ async function buildResourceContext(
     allTraceItems.push(...wbSettled.value.items);
   }
 
-  return { text: parts.join('\n\n'), traceItems: allTraceItems };
+  return {
+    text: parts.join('\n\n'),
+    characterText,
+    noteText,
+    worldbookText,
+    traceItems: allTraceItems,
+  };
 }
 
 export async function buildCharacterContext(
