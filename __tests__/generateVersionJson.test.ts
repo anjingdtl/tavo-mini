@@ -258,4 +258,138 @@ describe('generate-version-json.js build suffix source (V2.5.14)', () => {
       proj.cleanup();
     }
   });
+
+  // --- V2.5.15: clarified build-suffix contract (suffix inheritance rules). ---
+
+  it('V2.5.15: a different previous versionName → suffix 0 (no inheritance)', () => {
+    const proj = makeTempProject();
+    try {
+      // Seed an old version.json for a DIFFERENT version name with suffix 7.
+      const otherMajor = major;
+      const otherMinor = minor;
+      const otherPatch = patch === 0 ? patch + 1 : patch - 1;
+      const otherVersion = `${otherMajor}.${otherMinor}.${otherPatch}`;
+      const otherBase =
+        otherMajor * 1_000_000 + otherMinor * 10_000 + otherPatch * 100;
+      fs.writeFileSync(
+        proj.versionJsonPath,
+        JSON.stringify({
+          versionName: `V${otherVersion}`,
+          versionCode: otherBase + 7,
+          releaseTitle: `ShineWriter V${otherVersion}`,
+          buildTime: '2026-01-01T00:00:00.000Z',
+        }),
+      );
+      // Re-run for the CURRENT version → suffix must NOT inherit 7; defaults 0.
+      const result = runScript(proj.projectDir, {});
+      expect(result.status).toBe(0);
+      expect(result.versionJson.versionCode).toBe(baseVersionCode);
+      expect(result.versionJson.versionName).toBe(`V${version}`);
+    } finally {
+      proj.cleanup();
+    }
+  });
+
+  it('V2.5.15: same-version previous suffix=99 is preserved', () => {
+    const proj = makeTempProject();
+    try {
+      fs.writeFileSync(
+        proj.versionJsonPath,
+        JSON.stringify({
+          versionName: `V${version}`,
+          versionCode: baseVersionCode + 99,
+          releaseTitle: `ShineWriter V${version}`,
+          buildTime: '2026-01-01T00:00:00.000Z',
+        }),
+      );
+      const result = runScript(proj.projectDir, {});
+      expect(result.status).toBe(0);
+      expect(result.versionJson.versionCode).toBe(baseVersionCode + 99);
+    } finally {
+      proj.cleanup();
+    }
+  });
+
+  it('V2.5.15: same-version previous suffix=100 is NOT inherited (explicit error)', () => {
+    const proj = makeTempProject();
+    try {
+      // An out-of-range inherited suffix (100) is illegal (range is 0–99). It is
+      // NOT carried over, so the computed versionCode would move backwards from
+      // base+100 to base+0 — the monotonic-versionCode guard rejects this with
+      // an explicit error (the spec's "回到 0 或明确报错" → "明确报错" path).
+      fs.writeFileSync(
+        proj.versionJsonPath,
+        JSON.stringify({
+          versionName: `V${version}`,
+          versionCode: baseVersionCode + 100,
+          releaseTitle: `ShineWriter V${version}`,
+          buildTime: '2026-01-01T00:00:00.000Z',
+        }),
+      );
+      const result = runScript(proj.projectDir, {});
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/backwards|from \d+ to \d+/);
+    } finally {
+      proj.cleanup();
+    }
+  });
+
+  it('V2.5.15: same-version previous versionCode below base is NOT inherited', () => {
+    const proj = makeTempProject();
+    try {
+      fs.writeFileSync(
+        proj.versionJsonPath,
+        JSON.stringify({
+          versionName: `V${version}`,
+          versionCode: baseVersionCode - 5,
+          releaseTitle: `ShineWriter V${version}`,
+          buildTime: '2026-01-01T00:00:00.000Z',
+        }),
+      );
+      const result = runScript(proj.projectDir, {});
+      expect(result.status).toBe(0);
+      // Below-base previous → previousBuild < 0 → not inherited → suffix 0.
+      expect(result.versionJson.versionCode).toBe(baseVersionCode);
+    } finally {
+      proj.cleanup();
+    }
+  });
+
+  it('V2.5.15: explicit SHINE_WRITER_BUILD_NUMBER overrides an inherited suffix', () => {
+    const proj = makeTempProject();
+    try {
+      // Seed a same-version suffix of 7.
+      fs.writeFileSync(
+        proj.versionJsonPath,
+        JSON.stringify({
+          versionName: `V${version}`,
+          versionCode: baseVersionCode + 7,
+          releaseTitle: `ShineWriter V${version}`,
+          buildTime: '2026-01-01T00:00:00.000Z',
+        }),
+      );
+      // Explicit env var must win over the inherited 7. Use 9 (>= 7) so the
+      // monotonic-versionCode guard is satisfied while still proving the
+      // explicit value — not the inherited 7 — is what is used.
+      const result = runScript(proj.projectDir, {
+        SHINE_WRITER_BUILD_NUMBER: '9',
+      });
+      expect(result.status).toBe(0);
+      expect(result.versionJson.versionCode).toBe(baseVersionCode + 9);
+    } finally {
+      proj.cleanup();
+    }
+  });
+
+  it('V2.5.15: fresh checkout (no version.json) → suffix 0', () => {
+    const proj = makeTempProject();
+    try {
+      // No version.json seeded.
+      const result = runScript(proj.projectDir, {});
+      expect(result.status).toBe(0);
+      expect(result.versionJson.versionCode).toBe(baseVersionCode);
+    } finally {
+      proj.cleanup();
+    }
+  });
 });
