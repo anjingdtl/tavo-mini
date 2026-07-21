@@ -52,12 +52,56 @@ export interface BuildContextOptions {
 }
 
 /**
+ * Human-readable diagnostic for an eligibility decision. Used by both the
+ * Renderer trace path and the coverage trace path so the reason surfaced to
+ * the user stays consistent with the snapshot actually consumed.
+ *
+ * Position values are 0-indexed internally; user-facing copy uses +1.
+ */
+export function describeCheckpointEligibility(
+  eligibility: import('./storyMemory/storyMemoryCheckpointEligibility').CheckpointEligibilityResult,
+): string {
+  switch (eligibility.reason) {
+    case 'usable':
+      return `检查点截至第 ${eligibility.originalThroughPosition + 1} 章`;
+    case 'missing':
+      return '当前项目尚无可用故事记忆检查点';
+    case 'future_or_same_position': {
+      const through = eligibility.originalThroughPosition;
+      const target = Number.isFinite(eligibility.targetChapterPosition)
+        ? eligibility.targetChapterPosition
+        : Number.NaN;
+      if (through >= 0 && Number.isFinite(target)) {
+        return `检测到检查点截至第 ${through + 1} 章，当前目标为第 ${target + 1} 章；为防止未来剧情污染，本次未注入该检查点`;
+      }
+      return '检测到未来或同位置检查点；为防止未来剧情污染，本次未注入该检查点';
+    }
+    case 'invalid_position':
+      return '故事记忆检查点位置无效，本次未注入长期故事状态';
+    case 'empty_state':
+      return eligibility.originalStatus
+        ? `当前故事记忆检查点状态不可用（${eligibility.originalStatus}），本次未注入长期故事状态`
+        : '当前故事记忆检查点状态不可用，本次未注入长期故事状态';
+    case 'not_clean':
+      return eligibility.originalStatus
+        ? `当前故事记忆检查点状态不可用（${eligibility.originalStatus}），本次未注入长期故事状态`
+        : '当前故事记忆检查点状态不可用，本次未注入长期故事状态';
+    default:
+      return '当前故事记忆检查点状态不可用，本次未注入长期故事状态';
+  }
+}
+
+/**
  * Pure renderer for a prepared Story Memory snapshot.
  *
  * V2.5.13+ — main `buildContext()` MUST use this with `prepared.checkpoint`
  * so coverage, entity boosts, Renderer and trace all see the SAME checkpoint
  * snapshot. This function never touches the database; it only re-validates
  * eligibility on the caller-supplied snapshot.
+ *
+ * V2.5.14+ — the trace `reason` now derives from the same eligibility decision
+ * so a future / dirty / empty / invalid checkpoint surfaces its real cause
+ * instead of a generic "尚无检查点".
  */
 export function renderPreparedStoryMemoryContext(
   projectId: number,
@@ -72,14 +116,10 @@ export function renderPreparedStoryMemoryContext(
     currentChapter.position,
   );
   if (!eligibility.usable || !eligibility.checkpoint?.state) {
-    const reason =
-      eligibility.reason === 'future_or_same_position'
-        ? '不注入目标章节之后或同位置的检查点'
-        : checkpoint?.status === 'empty'
-          ? '故事记忆尚未初始化'
-          : checkpoint?.status === 'dirty'
-            ? '不注入已失效的检查点'
-            : '检查点不可用';
+    const reason = describeCheckpointEligibility(eligibility);
+    // When the checkpoint exists but is unusable, surface its original status
+    // as extra diagnostic copy (e.g. "检查点状态：dirty"). Missing checkpoint
+    // produces no trace item, matching the legacy contract.
     return {
       text: '',
       traceItems: checkpoint
@@ -91,7 +131,9 @@ export function renderPreparedStoryMemoryContext(
             estimatedTokens: 0,
             included: false,
             clipped: false,
-            preview: checkpoint.lastError || '',
+            preview: eligibility.originalStatus
+              ? `检查点状态：${eligibility.originalStatus}`
+              : checkpoint.lastError || '',
           }]
         : [],
     };
@@ -107,7 +149,7 @@ export function renderPreparedStoryMemoryContext(
       kind: 'story_memory',
       sourceId: projectId,
       title: '长期故事检查点',
-      reason: `检查点截至第 ${eligibility.checkpoint.state.throughChapterPosition + 1} 章`,
+      reason: describeCheckpointEligibility(eligibility),
       estimatedTokens: rendered.estimatedTokens,
       included: true,
       clipped: rendered.clipped,
@@ -153,26 +195,25 @@ export async function buildContext(
 
   // Checkpoint / pending bridge / seam preparation. Never force catch-up to
   // previous chapter; only hard-due may spend LLM tokens (generation mode).
-  let prepared: Awaited<
-    ReturnType<typeof prepareStoryMemoryForGeneration>
-  > | null = null;
-  if (typeof (db as any).getProjectStoryMemory === 'function' || true) {
-    prepared = await prepareStoryMemoryForGeneration(
-      projectId,
-      currentChapter,
-      config,
-      {
-        mode: options.storyMemoryMode === 'preview' ? 'preview' : 'generation',
-      },
+  // V2.5.14: removed the `|| true` dead-code guard — the call is unconditional
+  // (prepare() itself falls back to ensureProjectStoryMemoryRow when
+  // getProjectStoryMemory is absent), so the gate was misleading. Coverage,
+  // entity weighting, Renderer and trace all reuse this single snapshot.
+  const prepared = await prepareStoryMemoryForGeneration(
+    projectId,
+    currentChapter,
+    config,
+    {
+      mode: options.storyMemoryMode === 'preview' ? 'preview' : 'generation',
+    },
+  );
+  if (prepared.blocked) {
+    throw new Error(
+      prepared.blockReason || '故事记忆覆盖不足，无法安全生成。',
     );
-    if (prepared.blocked) {
-      throw new Error(
-        prepared.blockReason || '故事记忆覆盖不足，无法安全生成。',
-      );
-    }
-    if (prepared.checkpointUpdated) {
-      chapters = await db.getChaptersByProject(projectId);
-    }
+  }
+  if (prepared.checkpointUpdated) {
+    chapters = await db.getChaptersByProject(projectId);
   }
 
   const coverage = prepared?.coverage;
@@ -295,14 +336,28 @@ export async function buildContext(
   }
   if (coverage) {
     const checkpointPos = coverage.checkpointThroughPosition;
+    // V2.5.14: derive the checkpoint reason from the SAME eligibility snapshot
+    // so a future / dirty / empty / invalid checkpoint surfaces its real cause
+    // instead of the generic "尚无检查点". Missing checkpoint (no row, no
+    // snapshot) keeps the legacy "尚无检查点" copy.
+    const eligibility = prepared?.checkpointEligibility;
+    const checkpointReason =
+      eligibility && !eligibility.usable
+        ? describeCheckpointEligibility(eligibility)
+        : checkpointPos >= 0
+          ? `检查点截至第 ${checkpointPos + 1} 章`
+          : '尚无检查点';
+    const statusDiagnostic =
+      eligibility && !eligibility.usable && eligibility.originalStatus
+        ? `检查点状态：${eligibility.originalStatus}`
+        : '';
     trace.push({
       kind: 'story_memory',
       sourceId: projectId,
       title: '长期故事检查点',
       reason: [
-        checkpointPos >= 0
-          ? `检查点截至第 ${checkpointPos + 1} 章`
-          : '尚无检查点',
+        checkpointReason,
+        statusDiagnostic,
         coverage.hardDue ? 'hardDue' : 'coverage完整',
         coverage.uncoveredChapterIds.length
           ? `未覆盖:${coverage.uncoveredChapterIds.join(',')}`
