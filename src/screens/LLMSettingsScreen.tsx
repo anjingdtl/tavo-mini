@@ -25,6 +25,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useThemeStore } from '../store/themeStore';
 import { testLLMConnection } from '../services/llm';
 import type { LLMQueueState } from '../services/llm';
+import { syncPipelineMaxTokensFromContextWindow } from '../services/contextAutoAllocator';
 import type { LLMConfig } from '../types/novel';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
 import { LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS } from '../constants/llmDefaults';
@@ -130,6 +131,11 @@ export const LLMSettingsScreen: React.FC = () => {
   const save = async () => {
     if (!validate()) return;
     setSaving(true);
+    // 记录保存前的 context_window，用于检测是否需要弹窗同步流水线 max_tokens
+    const prevContextWindow =
+      draft.id > 0
+        ? llmConfigs.find(c => c.id === draft.id)?.context_window ?? null
+        : null;
     try {
       const id = await saveLLMConfig(draft);
       setSelectedId(id);
@@ -140,11 +146,51 @@ export const LLMSettingsScreen: React.FC = () => {
       // （包括 setActiveLLMConfig 后变化的 is_active 字段），避免 draft.is_active 过时
       isEditingRef.current = false;
       Toast.show({ type: 'success', text1: 'LLM 配置已保存' });
+      // 上下文长度变化时弹窗确认同步流水线 max_tokens
+      if (
+        prevContextWindow !== null &&
+        prevContextWindow !== draft.context_window &&
+        draft.context_window > 0
+      ) {
+        maybePromptSyncPipeline(prevContextWindow, draft.context_window);
+      }
     } catch (error: any) {
       Alert.alert('保存失败', error?.message || '配置写入失败，请重试。');
     } finally {
       setSaving(false);
     }
+  };
+
+  // 上下文长度变化后弹窗确认是否同步流水线 4 阶段 max_tokens
+  // 复用 contextAutoAllocator 的 50/15/15/20 比例算法
+  const maybePromptSyncPipeline = (prev: number, next: number) => {
+    Alert.alert(
+      '上下文长度已更新',
+      `检测到上下文长度从 ${prev} 改为 ${next}。\n\n是否自动调整流水线各阶段的 Max Tokens？\n\n按 50/15/15/20 比例分配输出预算（context_window × 20%），将覆盖流水线配置页里的现有值。`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '同步',
+          onPress: async () => {
+            try {
+              const tokens = await syncPipelineMaxTokensFromContextWindow(
+                next,
+              );
+              Toast.show({
+                type: 'success',
+                text1: '流水线 max_tokens 已同步',
+                text2: `draft=${tokens.draftMaxTokens} / review=${tokens.reviewMaxTokens} / factCheck=${tokens.factCheckMaxTokens} / proof=${tokens.proofMaxTokens}`,
+              });
+            } catch (e: any) {
+              Alert.alert(
+                '同步失败',
+                e?.message || '流水线 max_tokens 同步失败。',
+              );
+            }
+          },
+        },
+      ],
+    );
   };
 
   const saveAndTest = async () => {
@@ -431,30 +477,6 @@ export const LLMSettingsScreen: React.FC = () => {
               selectedId={draft.local_model_id}
               onSelect={local_model_id => updateDraft({ local_model_id })}
             />
-            <Field
-              label="上下文长度"
-              value={String(draft.context_window)}
-              onChangeText={text => {
-                const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
-                updateDraft({
-                  context_window: Number.isFinite(value) ? value : 0,
-                });
-              }}
-              placeholder="4096"
-              keyboardType="numeric"
-            />
-            <Field
-              label="最大输出 Token"
-              value={String(draft.max_output_tokens)}
-              onChangeText={text => {
-                const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
-                updateDraft({
-                  max_output_tokens: Number.isFinite(value) ? value : 0,
-                });
-              }}
-              placeholder={String(LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS)}
-              keyboardType="numeric"
-            />
             <Button
               label="管理本地模型"
               variant="secondary"
@@ -462,6 +484,33 @@ export const LLMSettingsScreen: React.FC = () => {
             />
           </>
         )}
+
+        <Field
+          testID="llm-context-window"
+          label="上下文长度"
+          value={String(draft.context_window)}
+          onChangeText={text => {
+            const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
+            updateDraft({
+              context_window: Number.isFinite(value) ? value : 0,
+            });
+          }}
+          placeholder="4096"
+          keyboardType="numeric"
+        />
+        <Field
+          testID="llm-max-output-tokens"
+          label="最大输出 Token"
+          value={String(draft.max_output_tokens)}
+          onChangeText={text => {
+            const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
+            updateDraft({
+              max_output_tokens: Number.isFinite(value) ? value : 0,
+            });
+          }}
+          placeholder={String(LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS)}
+          keyboardType="numeric"
+        />
 
         <View style={styles.actionRow}>
           <Button
