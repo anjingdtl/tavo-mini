@@ -675,3 +675,32 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | Report | `docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md` |
 | Release commit | `a6820cf741473948332f92fc71dc80c62d4249b2` |
 | CI | [Run 29752469471](https://github.com/anjingdtl/tavo-mini/actions/runs/29752469471) — JS / Android Debug / Migration matrix all success on `a6820cf` |
+
+## V2.5.13 story memory final hardening — 2026-07-21
+
+- Status: **implemented + tests + verify/coverage + release APK**
+- Baseline: V2.5.12 (`a6820cf` / docs pin `4097ce1`) — already shipped, so patch bumped to **2.5.13**
+- SPEC: `docs/superpowers/specs/Tavo-Mini-V2.5.13-Story-Memory-Final-Hardening-SPEC.md`
+- Scope: matchedCharacterIds-only character bucket, ambiguous-term span claiming, single prepared checkpoint snapshot, real `verify:version` CI step, exact README version checks; no Schema/backup/API/Embedding
+
+### Fixes
+
+1. **Character-history bucket uses matchedCharacterIds only** — delete name `includesInsensitive` fallback
+2. **Ambiguous terms claim spans** — block inner short-term activation ("队长/长", "老林/林")
+3. **Single prepared checkpoint snapshot** — `renderPreparedStoryMemoryContext`, no second DB read in one `buildContext()`
+4. **CI `verify:version` as explicit step** — `Version consistency` step in `verify.yml`'s JavaScript job
+5. **Exact README version checks** — precise regex + reverse guards (no stale version residue)
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.13** / Schema **16** |
+| APK | `dist/apk/release/ShineWriter-V2.5.13-release.apk` (37,391,155 bytes) |
+| SHA-256 | `64549C37D961E34636362276E26C7932098BF3AF1A18829B76D578D2CBB046C4` |
+| Signature | Release cert `017b3f…2a0a`, APK Sig v2, 1 signer, zipalign OK |
+| Emulator | emulator-5556 install V2.5.13; `Running "ShineWriter"`; no FATAL (`test-logs/v2.5.13-emulator/`) |
+| Gates | verify 118/683 PASS; coverage exit 0; 30/100/300 + 10/50/100 perf PASS |
+| Report | `docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md` |
+| Release commit | `6e5ac424cf431b3f0500331b010496d7dda54774` |
+| CI | [Run 29760694051](https://github.com/anjingdtl/tavo-mini/actions/runs/29760694051) — JS (incl. Version consistency) / Android Debug / Migration matrix all success on `eddb4c6`（`6e5ac42` 的 run 被 concurrency cancel 取消；`eddb4c6` 为纯文档增量，等价验证） |
