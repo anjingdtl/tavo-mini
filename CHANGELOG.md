@@ -6,6 +6,27 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.14] - 2026-07-21
+
+### Fixed
+
+- **版本生成不再自动读取 `GITHUB_RUN_NUMBER`**：`scripts/generate-version-json.js` 只从 `SHINE_WRITER_BUILD_NUMBER` 取构建后缀，本地和 CI 默认 `0`。根因是 GitHub Actions 运行编号在超过 99 后会让 Android Debug Job 的 `npm run prebuild` 必然抛出 `must be an integer from 0 to 99`。非整数、负数或大于 99 继续报错；`versionCode` 单调递增规则、正式发布基础 `versionCode`、不依赖 Git 历史深度的约束均保持不变。
+- **Checkpoint eligibility 原因保留并写入 trace**：`CheckpointEligibilityResult` 与 `PrepareStoryMemoryResult` 增加 `checkpointEligibility`，携带 `reason` / `originalThroughPosition` / `targetChapterPosition` / `originalStatus`，全部来自 `resolveUsableCheckpointForTarget()` 的同一次判断，不再二次读取数据库。`buildContext()` 的 trace 据此区分 `missing` / `not_clean` / `empty_state` / `future_or_same_position` / `invalid_position` / `usable`，dirty/future/invalid 等不可用检查点不再统一显示“尚无检查点”。未来 Checkpoint 仍禁止注入、禁止实体加权，coverage 仍从 `-1` 重新规划。
+- **删除 `buildContext()` 中的 `|| true` 死代码**：`if (typeof (db as any).getProjectStoryMemory === 'function' || true)` 改为无条件调用 `prepareStoryMemoryForGeneration()`。prepare 的现有行为、单次 Checkpoint 读取、preview/generation/hardDue/blocked 路径均保持不变。
+- **Release APK 验证脚本改为硬断言**：`scripts/verify-release-apk.ps1` 不再只打印结果——apksigner 退出码、`Verified`、v2 scheme、signer 数量、固定正式证书 SHA-256、zipalign `Verification successful`、aapt `package name`/`versionName`/`versionCode` 任一不一致即 `throw` 并返回非零。脚本读取 `src/constants/version.json` 与 `package.json` 交叉校验，输出 APK 路径/大小/SHA-256/证书/signer/签名方案/zipalign/包名/版本汇总。
+
+### Tests
+
+- `__tests__/generateVersionJson.test.ts`：隔离并恢复进程环境变量，覆盖 `GITHUB_RUN_NUMBER=100/999/10000` 不影响版本生成、`SHINE_WRITER_BUILD_NUMBER=0/1/99/100/-1/abc` 边界、显式优先级、同版本重跑保留后缀。
+- `__tests__/storyMemoryCheckpointEligibilityTrace.test.ts`：eligibility reason 全矩阵、`originalThroughPosition` / `targetChapterPosition` / `originalStatus`、`describeCheckpointEligibility` 文案、`renderPreparedStoryMemoryContext` 各分支 trace。
+- `__tests__/storyMemoryPrepare.test.ts`：`checkpointEligibility` 在 usable / not_clean / future_or_same_position / missing 四条返回路径上的传播。
+- `__tests__/verifyReleaseApkScript.test.ts`：脚本文本契约（固定证书、signer=1、v2 scheme、包名、versionName、versionCode、zipalign/apksigner 失败 throw、SHA-256 输出、非零失败路径、禁止 Debug 兜底/新建 keystore/打印密码）+ PowerShell 解析函数 TS 镜像纯函数单测。
+- `__tests__/storyMemoryPreparedSnapshotIntegration.test.ts`：Scenario C trace 断言更新为“检测到检查点截至第 N 章，当前目标为第 M 章”，验证未来 Checkpoint 不再被误报为 missing。
+
+### Notes
+
+- 升版 **V2.5.14** / `versionCode` **2051400**；Schema / 备份 / API 次数 / 默认预算均不变；无 Embedding、向量库、第二模型、LLM reranker、新远程 API、新 Schema、新 UI 或事件数据库。
+
 ## [2.5.13] - 2026-07-20
 
 ### Fixed

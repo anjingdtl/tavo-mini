@@ -20,8 +20,11 @@ try {
   // The generated file may not exist on a fresh checkout.
 }
 
-const explicitBuildSource = process.env.SHINE_WRITER_BUILD_NUMBER
-  ?? process.env.GITHUB_RUN_NUMBER;
+// V2.5.14+: never auto-pull GITHUB_RUN_NUMBER. CI run numbers exceed 99 after
+// the first 99 runs, which previously broke prebuild with a hard throw. The
+// build suffix is now sourced ONLY from SHINE_WRITER_BUILD_NUMBER, and defaults
+// to '0' for local and CI builds. GITHUB_RUN_NUMBER is intentionally ignored.
+const explicitBuildSource = process.env.SHINE_WRITER_BUILD_NUMBER;
 const baseVersionCode = major * 1_000_000 + minor * 10_000 + patch * 100;
 let buildSource = explicitBuildSource ?? '0';
 if (!explicitBuildSource && previous?.versionName === `V${pkg.version}`) {
@@ -35,7 +38,14 @@ const build = Number(buildSource);
 // Two decimal digits are reserved for the explicit build number. This makes
 // every next patch release greater than every build of the previous patch and
 // avoids Git commit history/shallow clones changing the Android version code.
-if (!Number.isInteger(build) || build < 0 || build > 99) {
+// String form is validated first so non-numeric input (e.g. "abc") fails with
+// a clear message instead of silently coercing to 0/NaN.
+if (
+  !/^-?\d+$/.test(String(buildSource))
+  || !Number.isInteger(build)
+  || build < 0
+  || build > 99
+) {
   throw new Error(
     `SHINE_WRITER_BUILD_NUMBER must be an integer from 0 to 99; received ${buildSource}`,
   );

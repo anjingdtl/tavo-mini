@@ -1,4 +1,6 @@
 import { createEmptyStoryMemory } from '../src/services/storyMemory/storyMemoryDefaults';
+import { resolveUsableCheckpointForTarget } from '../src/services/storyMemory/storyMemoryCheckpointEligibility';
+import type { PrepareStoryMemoryResult } from '../src/services/storyMemory/storyMemoryPrepare';
 import {
   resolveStoryStateForRetrieval,
 } from '../src/services/contextBuilder';
@@ -7,6 +9,36 @@ import {
   buildIdfFromTexts,
   scoreMemoryCandidates,
 } from '../src/services/episodicMemoryRetriever';
+
+/** Build a PrepareStoryMemoryResult fixture, deriving eligibility from the snapshot. */
+function makePrepared(
+  checkpoint: PrepareStoryMemoryResult['checkpoint'],
+  targetPosition: number,
+  overrides: Partial<PrepareStoryMemoryResult> = {},
+): PrepareStoryMemoryResult {
+  return {
+    checkpoint,
+    checkpointEligibility: resolveUsableCheckpointForTarget(
+      checkpoint,
+      targetPosition,
+    ),
+    coverage: {
+      checkpointThroughPosition: -1,
+      pendingChapters: [],
+      seamChapter: null,
+      rawChapterIds: [],
+      episodicFallbackChapterIds: [],
+      uncoveredChapterIds: [],
+      estimatedRawTokens: 0,
+      hardDue: false,
+      reason: '',
+    },
+    checkpointUpdated: false,
+    blocked: false,
+    blockReason: '',
+    ...overrides,
+  };
+}
 
 const current = {
   id: 2, project_id: 7, position: 1, title: '第二章', synopsis: '重返钟楼',
@@ -133,52 +165,39 @@ describe('context builder story memory integration', () => {
     const state = staleEntityState();
     for (const status of ['dirty', 'empty', 'failed', 'rebuilding'] as const) {
       expect(
-        resolveStoryStateForRetrieval({
-          checkpoint: {
-            state,
-            status,
-            dirtyFromPosition: status === 'dirty' ? 0 : null,
-            lastError: '',
-            updatedAt: '',
-          },
-          coverage: {
-            checkpointThroughPosition: -1,
-            pendingChapterIds: [],
-            rawChapterIds: [],
-            uncoveredChapterIds: [],
-            hardDue: false,
-            softDue: false,
-          } as any,
-          checkpointUpdated: false,
-          blocked: false,
-          blockReason: '',
-        }),
+        resolveStoryStateForRetrieval(
+          makePrepared(
+            {
+              state,
+              status,
+              dirtyFromPosition: status === 'dirty' ? 0 : null,
+              lastError: '',
+              updatedAt: '',
+            },
+            current.position,
+          ),
+        ),
       ).toBeNull();
     }
     expect(
-      resolveStoryStateForRetrieval({
-        checkpoint: {
-          state,
-          status: 'clean',
-          dirtyFromPosition: null,
-          lastError: '',
-          updatedAt: '',
-        },
-        coverage: {} as any,
-        checkpointUpdated: false,
-        blocked: false,
-        blockReason: '',
-      }),
+      resolveStoryStateForRetrieval(
+        makePrepared(
+          {
+            state,
+            status: 'clean',
+            dirtyFromPosition: null,
+            lastError: '',
+            updatedAt: '',
+          },
+          current.position,
+        ),
+      ),
     ).toBe(state);
     expect(resolveStoryStateForRetrieval(null)).toBeNull();
     expect(
-      resolveStoryStateForRetrieval({
-        checkpoint: null,
-        coverage: {} as any,
-        checkpointUpdated: false,
-        blocked: false,
-        blockReason: '',
-      }),
+      resolveStoryStateForRetrieval(
+        makePrepared(null, current.position),
+      ),
     ).toBeNull();
   });
 
