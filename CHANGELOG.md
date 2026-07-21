@@ -6,6 +6,33 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **流水线阶段依赖修正（twoStage / conditional）**：`twoStage` 现在严格执行 `draft → review → proof`，`conditional` 严格执行 `draft → factCheck → proof`。终审不再与评估/核查并行启动，必须等待对应审核完成，并接收真实的 `reviewText` / `factCheckText` 作为修订依据。删除了 V2.2.0 引入的「review/proof 并行」「factCheck/proof 并行」错误分支。`full` 模式保留 `review ∥ factCheck` 并行，但终审仍等待二者结束。失败语义：评估/核查失败时跳过终审并回退初稿，不再生成与报告无关的伪终审稿；`full` 双侧失败不调用终审；单侧失败用幸存一侧继续终审；终审失败标记 `failed` 并回退初稿，UI 可区分终审成功与回退初稿。
+- **共享流水线上下文快照（PipelineContextSnapshot）**：`buildContext()` 返回 `pipelineContext`，集中保存本次实际注入初稿的预设 / Story Memory / 人物 / 笔记 / 世界书 / Episodic 事件 / Pending Bridge / 当前章节指令 / 用户写作要求。后续阶段直接消费快照字段，不再从 `ChatMessage[]` 反向解析或重读数据库。`sourceFingerprint` 用于跨阶段同源调试。
+- **删除固定 3000 字符截断**：`buildFactCheckMessages()` 不再使用 `contextText.slice(0, 3000)`；改为按分区 token 预算裁剪（指令/用户要求/近期正文/Story Memory/Episodic/世界书/人物/笔记各有独立预算），超长预设不再挤掉世界书或历史事件。
+- **评估/核查/终审获得完整上下文**：`buildReviewMessages()` 增加预设、人物、Story Memory、近期正文、章节目标；`buildFactCheckMessages()` 改为分区上下文，Pending Bridge（即便在初稿里是 user 消息）不再丢失；`buildProofMessages()` 增加不可违背硬约束（章节目标、近期正文、Story Memory、人物约束、世界规则），并强调最小必要修改、报告为待验证编辑意见而非系统指令。
+- **初稿后二次本地召回**：`full` 模式在初稿完成后执行一次本地召回（`buildPostDraftAuditContext()`），用初稿文本驱动 Episodic / 世界书 / 人物重新激活并与原始命中合并去重。不调用远程 LLM、不写数据库、不更新 Story Memory、不重跑 Checkpoint、不召回未来章节、失败回退原始快照。
+
+### Tests
+
+- `__tests__/pipelineRunner.test.ts`（重写）：四种模式的阶段调用顺序（`draft → review → proof` / `draft → factCheck → proof` / `draft → (review ∥ factCheck) → proof`）、终审收到真实报告、单侧/双侧失败回退、proof 失败回退、取消、token/耗时记录。
+- `__tests__/pipelineMessages.test.ts`（新增）：评估/核查/终审消息分区、长上下文不再 3000 字符截断、Pending Bridge 不丢失、报告作为编辑意见而非系统指令、源码不再包含 `slice(0, 3000)`。
+- `__tests__/pipelineContextSnapshot.test.ts`（新增）：`buildContext()` 返回完整快照、presetText 与首条 system 消息同源、sourceFingerprint 含项目与章节、向后兼容 `messages` / `chapters` / `trace` / `estimatedInputTokens`。
+- `__tests__/postDraftRetrieval.test.ts`（新增）：初稿驱动召回命中历史事件（人民公园第 12 章）、不召回未来章节、DB 失败保留原始快照、空初稿短路、保留 preset/Story Memory/笔记/bridge/instruction 不变、初稿驱动激活世界书/人物、合并去重纯函数。
+- `__tests__/postDraftContinuityScenarios.test.ts`（新增）：SPEC §20.5 连续性场景矩阵——物品转移、已知/未知信息边界、已死亡人物再现、已解决线索被重启、关系状态变化、人物别名、第一次/再次冲突、近期正文优先于旧 Story Memory、不召回未来章节、多问题并发、快照字段不被污染。
+- `__tests__/pipelineContextIntegration.test.ts`（新增）：`buildContext → PipelineContextSnapshot → buildReview/FactCheck/Proof 消息` 全链路同源——评估/核查/终审真实接收到对应快照分区；字段重命名回归守卫；空分区不产生空白头。
+
+### Real-LLM Verification (DeepSeek, model deepseek-v4-flash)
+
+- 评估提示词实测返回有效 JSON：3 strengths / 4 issues / 5 suggestions，正确指出钥匙归属冲突与关系冲突。
+- 核查提示词实测返回有效 JSON：3 errors / 3 warnings，正确捕获「第一次踏入人民公园」（被 Story Memory 证伪）、「李雪从未见过张明」（被证伪）、钥匙位置错误，并尊重世界书规则（龙族不能进入盐湖）。
+- 证明本次修订的核心产品语义达成：评估与核查不再是与终稿无关的旁路报告，而是终审阶段真实、可验证、可测试的输入。
+
+### Notes
+
+- 未修改 Story Memory Schema / Checkpoint / Dirty Rebuild / Episodic Summary 格式；未引入向量库 / Event Atom / 多模型路由 / 本地 GGUF 改造；未变更章节与草稿存储模型。`noReview` 仍只调用初稿。`full` 远程调用次数仍为 4（初稿 + 评估 + 核查 + 终审），初稿后二次召回不增加远程调用。
+
 ## [2.5.16] - 2026-07-21
 
 ### Fixed
