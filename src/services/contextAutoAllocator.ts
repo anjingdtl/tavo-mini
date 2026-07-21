@@ -252,6 +252,7 @@ import {
   setContextAutoLastApplied,
   type ContextAutoAppliedRecord,
 } from '../data/repositories/contextAutoRepository';
+import { setSetting } from '../data/repositories/settingsRepository';
 
 /**
  * 查询所有项目的资源数量（用于动态分配单项上限）。
@@ -436,4 +437,66 @@ export async function applyContextAutoAllocation(
   await setContextAutoLastApplied(record);
 
   return record;
+}
+
+// ============================================================================
+// 轻量级同步：LLM 设置保存后只更新流水线 4 阶段 max_tokens
+// ============================================================================
+
+/**
+ * 仅根据 LLM 上下文长度计算流水线 4 阶段的 max_tokens，不涉及资源分配。
+ * 复用 RATIO_OUTPUT / RATIO_DRAFT / RATIO_REVIEW / RATIO_FACT_CHECK / RATIO_PROOF。
+ *
+ * 与 allocateContextBudget 的区别：
+ * - allocateContextBudget 需要资源计数，会算出资料预算、滑动窗口等所有字段
+ * - 本函数只算 4 个 pipeline_*_max_tokens，用于 LLM 设置保存后的轻量级同步
+ *
+ * @throws Error 当 contextWindow <= 0 或非有限数
+ */
+export function computePipelineMaxTokensFromContextWindow(contextWindow: number): {
+  draftMaxTokens: number;
+  reviewMaxTokens: number;
+  factCheckMaxTokens: number;
+  proofMaxTokens: number;
+} {
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+    throw new Error(`contextWindow 必须为正数，收到：${contextWindow}`);
+  }
+  const outputBudget = Math.round(contextWindow * RATIO_OUTPUT);
+  return {
+    draftMaxTokens: floor(outputBudget * RATIO_DRAFT, MIN_PIPELINE_TOKENS),
+    reviewMaxTokens: floor(outputBudget * RATIO_REVIEW, MIN_PIPELINE_TOKENS),
+    factCheckMaxTokens: floor(
+      outputBudget * RATIO_FACT_CHECK,
+      MIN_PIPELINE_TOKENS,
+    ),
+    proofMaxTokens: floor(outputBudget * RATIO_PROOF, MIN_PIPELINE_TOKENS),
+  };
+}
+
+/**
+ * LLM 设置保存后的轻量级同步：仅根据 context_window 算出并写入 4 个 pipeline_*_max_tokens。
+ * 不涉及资源预算，不需要资源计数，不会修改 llm_config / presets / 资料表。
+ *
+ * 用户在 PipelineConfigScreen 手动调过的值会被覆盖，因此调用方应先弹窗确认。
+ */
+export async function syncPipelineMaxTokensFromContextWindow(
+  contextWindow: number,
+): Promise<{
+  draftMaxTokens: number;
+  reviewMaxTokens: number;
+  factCheckMaxTokens: number;
+  proofMaxTokens: number;
+}> {
+  const tokens = computePipelineMaxTokensFromContextWindow(contextWindow);
+  await Promise.all([
+    setSetting('pipeline_draft_max_tokens', String(tokens.draftMaxTokens)),
+    setSetting('pipeline_review_max_tokens', String(tokens.reviewMaxTokens)),
+    setSetting(
+      'pipeline_factcheck_max_tokens',
+      String(tokens.factCheckMaxTokens),
+    ),
+    setSetting('pipeline_proof_max_tokens', String(tokens.proofMaxTokens)),
+  ]);
+  return tokens;
 }
