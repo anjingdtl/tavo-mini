@@ -105,4 +105,80 @@ describe('prepareStoryMemoryForGeneration', () => {
     expect(result.blocked).toBe(true);
     expect(result.checkpointUpdated).toBe(false);
   });
+
+  // V2.5.14: checkpointEligibility is carried out of prepare() so trace can
+  // explain WHY a checkpoint was unusable without re-reading the DB.
+  it('carries checkpointEligibility reason=usable for clean through<target', async () => {
+    const chapters = [chapter(0), chapter(1), chapter(2)];
+    mockGetChapters.mockResolvedValue(chapters);
+    mockGetMemory.mockResolvedValue({
+      status: 'clean',
+      dirtyFromPosition: null,
+      state: { throughChapterPosition: 0, throughChapterId: 1 },
+    });
+    const result = await prepareStoryMemoryForGeneration(
+      1,
+      chapters[2],
+      { slidingWindowSize: 4000 } as any,
+      { mode: 'preview' },
+    );
+    expect(result.checkpointEligibility).toBeDefined();
+    expect(result.checkpointEligibility.reason).toBe('usable');
+    expect(result.checkpointEligibility.originalStatus).toBe('clean');
+    expect(result.checkpointEligibility.originalThroughPosition).toBe(0);
+    expect(result.checkpointEligibility.targetChapterPosition).toBe(2);
+  });
+
+  it('carries checkpointEligibility reason=not_clean for dirty checkpoint', async () => {
+    const chapters = [chapter(0), chapter(1)];
+    mockGetChapters.mockResolvedValue(chapters);
+    mockGetMemory.mockResolvedValue({
+      status: 'dirty',
+      dirtyFromPosition: 0,
+      state: { throughChapterPosition: 0, throughChapterId: 1 },
+    });
+    const result = await prepareStoryMemoryForGeneration(
+      1,
+      chapters[1],
+      { slidingWindowSize: 4000 } as any,
+      { mode: 'preview' },
+    );
+    expect(result.checkpointEligibility.reason).toBe('not_clean');
+    expect(result.checkpointEligibility.originalStatus).toBe('dirty');
+    expect(result.checkpoint).toBeNull();
+  });
+
+  it('carries checkpointEligibility reason=future_or_same_position for future snapshot', async () => {
+    const chapters = [chapter(0), chapter(1)];
+    mockGetChapters.mockResolvedValue(chapters);
+    mockGetMemory.mockResolvedValue({
+      status: 'clean',
+      dirtyFromPosition: null,
+      state: { throughChapterPosition: 5, throughChapterId: 6 },
+    });
+    const result = await prepareStoryMemoryForGeneration(
+      1,
+      chapters[1], // target position 1
+      { slidingWindowSize: 4000 } as any,
+      { mode: 'preview' },
+    );
+    expect(result.checkpointEligibility.reason).toBe('future_or_same_position');
+    expect(result.checkpointEligibility.originalThroughPosition).toBe(5);
+    expect(result.checkpointEligibility.targetChapterPosition).toBe(1);
+    expect(result.checkpoint).toBeNull();
+  });
+
+  it('carries checkpointEligibility reason=missing when DB returns null', async () => {
+    const chapters = [chapter(0), chapter(1)];
+    mockGetChapters.mockResolvedValue(chapters);
+    mockGetMemory.mockResolvedValue(null);
+    const result = await prepareStoryMemoryForGeneration(
+      1,
+      chapters[1],
+      { slidingWindowSize: 4000 } as any,
+      { mode: 'preview' },
+    );
+    expect(result.checkpointEligibility.reason).toBe('missing');
+    expect(result.checkpointEligibility.originalStatus).toBeNull();
+  });
 });

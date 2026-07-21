@@ -43,12 +43,44 @@ jest.mock('../src/services/macroReplace', () => ({
 }));
 
 import { prepareStoryMemoryForGeneration } from '../src/services/storyMemory/storyMemoryPrepare';
+import type { PrepareStoryMemoryResult } from '../src/services/storyMemory/storyMemoryPrepare';
+import { resolveUsableCheckpointForTarget } from '../src/services/storyMemory/storyMemoryCheckpointEligibility';
 import {
   buildContext,
   renderPreparedStoryMemoryContext,
   resolveStoryStateForRetrieval,
 } from '../src/services/contextBuilder';
 import type { ProjectStoryMemoryRecord } from '../src/data/repositories/storyMemoryRepository';
+
+/** Build a PrepareStoryMemoryResult fixture, deriving eligibility from the snapshot. */
+function makePrepared(
+  checkpoint: PrepareStoryMemoryResult['checkpoint'],
+  targetPosition: number,
+  overrides: Partial<PrepareStoryMemoryResult> = {},
+): PrepareStoryMemoryResult {
+  return {
+    checkpoint,
+    checkpointEligibility: resolveUsableCheckpointForTarget(
+      checkpoint,
+      targetPosition,
+    ),
+    coverage: {
+      checkpointThroughPosition: -1,
+      pendingChapters: [],
+      seamChapter: null,
+      rawChapterIds: [],
+      episodicFallbackChapterIds: [],
+      uncoveredChapterIds: [],
+      estimatedRawTokens: 0,
+      hardDue: false,
+      reason: '',
+    },
+    checkpointUpdated: false,
+    blocked: false,
+    blockReason: '',
+    ...overrides,
+  };
+}
 
 function makeChapter(
   id: number,
@@ -390,13 +422,17 @@ describe('SPEC §10.3 — single snapshot invariant (one buildContext call)', ()
     );
     expect(futureStoryMessage).toBeUndefined();
 
-    // Trace shows the future-checkpoint non-injection. Coverage branch records
-    // `尚无检查点` because checkpointThroughPosition=-1 after eligibility drops
-    // the future snapshot; `included: false` is the contract.
+    // Trace shows the future-checkpoint non-injection. V2.5.14+ surfaces the
+    // real reason ("检测到检查点截至第 N 章，当前目标为第 M 章") instead of
+    // the legacy generic "尚无检查点". `included: false` is the contract.
     const traceStory = result.trace.find(t => t.kind === 'story_memory');
     expect(traceStory).toBeDefined();
     expect(traceStory?.included).toBe(false);
-    expect(traceStory?.reason).toMatch(/尚无检查点|不注入|检查点不可用/);
+    // Future checkpoint (through 10, target 3) — diagnostic must mention both
+    // the original through position (11 = position+1) and the target (4).
+    expect(traceStory?.reason).toContain('检测到检查点截至第 11 章');
+    expect(traceStory?.reason).toContain('当前目标为第 4 章');
+    expect(traceStory?.reason).toContain('未注入');
   });
 });
 
@@ -439,16 +475,37 @@ describe('SPEC §10.5 — resolveStoryStateForRetrieval contract', () => {
     const state = smallCleanState(1);
     for (const status of ['dirty', 'empty', 'failed', 'rebuilding'] as const) {
       expect(
-        resolveStoryStateForRetrieval({
-          checkpoint: {
-            state,
-            status,
-            dirtyFromPosition: status === 'dirty' ? 0 : null,
-            lastError: '',
-            updatedAt: '',
-          },
+        resolveStoryStateForRetrieval(
+          makePrepared(
+            {
+              state,
+              status,
+              dirtyFromPosition: status === 'dirty' ? 0 : null,
+              lastError: '',
+              updatedAt: '',
+            },
+            2,
+          ),
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it('returns the clean state when checkpoint is clean', () => {
+    const state = smallCleanState(1);
+    const result = resolveStoryStateForRetrieval(
+      makePrepared(
+        {
+          state,
+          status: 'clean',
+          dirtyFromPosition: null,
+          lastError: '',
+          updatedAt: '',
+        },
+        2,
+        {
           coverage: {
-            checkpointThroughPosition: -1,
+            checkpointThroughPosition: 1,
             pendingChapters: [],
             seamChapter: null,
             rawChapterIds: [],
@@ -458,39 +515,9 @@ describe('SPEC §10.5 — resolveStoryStateForRetrieval contract', () => {
             hardDue: false,
             reason: '',
           },
-          checkpointUpdated: false,
-          blocked: false,
-          blockReason: '',
-        }),
-      ).toBeNull();
-    }
-  });
-
-  it('returns the clean state when checkpoint is clean', () => {
-    const state = smallCleanState(1);
-    const result = resolveStoryStateForRetrieval({
-      checkpoint: {
-        state,
-        status: 'clean',
-        dirtyFromPosition: null,
-        lastError: '',
-        updatedAt: '',
-      },
-      coverage: {
-        checkpointThroughPosition: 1,
-        pendingChapters: [],
-        seamChapter: null,
-        rawChapterIds: [],
-        episodicFallbackChapterIds: [],
-        uncoveredChapterIds: [],
-        estimatedRawTokens: 0,
-        hardDue: false,
-        reason: '',
-      },
-      checkpointUpdated: false,
-      blocked: false,
-      blockReason: '',
-    });
+        },
+      ),
+    );
     expect(result).toBe(state);
   });
 });
