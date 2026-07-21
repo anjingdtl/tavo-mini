@@ -704,3 +704,29 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | Report | `docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md` |
 | Release commit | `6e5ac424cf431b3f0500331b010496d7dda54774` |
 | CI | [Run 29760694051](https://github.com/anjingdtl/tavo-mini/actions/runs/29760694051) — JS (incl. Version consistency) / Android Debug / Migration matrix all success on `eddb4c6`（`6e5ac42` 的 run 被 concurrency cancel 取消；`eddb4c6` 为纯文档增量，等价验证） |
+
+## V2.5.14 engineering reliability hardening — 2026-07-21
+
+- Status: **implemented + tests + verify/coverage**
+- Baseline: V2.5.13 (`6e5ac42` / docs pin `1004910`) — already shipped, patch bumped to **2.5.14**
+- Scope: version-generation CI fix, checkpoint eligibility observability, `|| true` dead-code removal, Release APK verification hard-asserts; no Schema/backup/API/Embedding/second-model/UI changes
+
+### Root cause & fixes
+
+1. **`GITHUB_RUN_NUMBER` root cause** — `scripts/generate-version-json.js` previously did `process.env.SHINE_WRITER_BUILD_NUMBER ?? process.env.GITHUB_RUN_NUMBER`. CI run numbers > 99 made the `0..99` guard throw, breaking the Android Debug job's `npm run prebuild`. Fixed: source ONLY from `SHINE_WRITER_BUILD_NUMBER`, default `'0'`; GITHUB_RUN_NUMBER intentionally ignored.
+2. **Checkpoint eligibility data flow** — `CheckpointEligibilityResult` now carries `targetChapterPosition` / `originalThroughPosition` / `originalStatus`; `PrepareStoryMemoryResult` exposes `checkpointEligibility` from the single `resolveUsableCheckpointForTarget()` call. `buildContext()` trace + `renderPreparedStoryMemoryContext()` use `describeCheckpointEligibility()` to surface the real reason (missing / not_clean / empty_state / future_or_same_position / invalid_position / usable). No extra DB read; future/same-position still not injected and not entity-weighted.
+3. **`|| true` removal** — `buildContext()` now unconditionally calls `prepareStoryMemoryForGeneration()` (the `|| true` guard was dead code; prepare() falls back to `ensureProjectStoryMemoryRow` when `getProjectStoryMemory` is absent).
+4. **APK verify hard-asserts** — `scripts/verify-release-apk.ps1` throws on any of: apksigner exit≠0, Verified≠true, v2 scheme≠true, signers≠1, cert SHA-256≠`017b3fbe…2a0a` (case/colon-insensitive), zipalign exit≠0 or missing `Verification successful`, aapt packageName≠`com.shinewriter`, versionName≠version.json, versionCode≠version.json. Outputs APK path/size/SHA-256/cert/signer/scheme/zipalign/package/version summary.
+
+### Single-snapshot + read-count invariants
+
+- One `buildContext()` call still reads the checkpoint row exactly once (prepare()'s read); Renderer re-validates eligibility on the supplied snapshot only.
+- preview never calls LLM (no `ensureProjectStoryMemoryRow` batch rebuild).
+- Future checkpoint: `prepared.checkpoint === null`, `resolveStoryStateForRetrieval(prepared) === null`, Renderer text empty.
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.14** / Schema **16** |
+| Report | `docs/V2.5.14-ENGINEERING-RELIABILITY-HARDENING-REPORT.md` |
