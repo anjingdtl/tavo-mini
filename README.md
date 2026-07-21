@@ -6,14 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.16-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.17-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.16** · 数据库 Schema：**16** · 最低 Android API：**24**
+当前版本：**V2.5.17** · 数据库 Schema：**16** · 最低 Android API：**24**
+
+`V2.5.17` 完成流水线修订闭环：修正 `twoStage` / `conditional` 阶段依赖错误（终审不再与评估/核查并行，必须接收真实报告）、`full` 模式 `review ∥ factCheck` 并行经实测验证（79s ≈ 理论 78.7s）、共享 `PipelineContextSnapshot` 快照消除跨阶段反查、初稿后二次本地召回；新增 LLM 设置保存后弹窗同步流水线 `max_tokens`（复用 50/15/15/20 比例）。模拟器 4 模式 E2E 全通过，914 个单元测试 + 10 个新测试。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
@@ -105,9 +107,21 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-目标正式产物：`dist/apk/release/ShineWriter-V2.5.16-release.apk`，`versionName=V2.5.16`，`versionCode=2051600`。
+目标正式产物：`dist/apk/release/ShineWriter-V2.5.17-release.apk`，`versionName=V2.5.17`，`versionCode=2051700`。
 
-本轮 **未构建、未验证** Release APK：当前仓库未附带经过正式签名验收的 V2.5.16 产物，亦无 APK SHA-256 / 证书 SHA-256 / 签名方案 / signer 数量 / zipalign / AAPT 实测结果可回填。具备签名条件后按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` 与 `scripts/verify-release-apk.ps1`，再在发布报告或 GitHub Release 中记录真实结果。工程收口说明见 [`docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md`](docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md)。
+本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
+
+**实测验收数据**：
+
+| 验收项 | 实测结果 |
+|---|---|
+| apksigner verify | Verifies，Verified v2 = true |
+| 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
+| Number of signers | 1 |
+| zipalign -c | Verification successful |
+| versionName / versionCode | V2.5.17 / 2051700 |
+| 文件大小 | 37,422,535 bytes（35.69 MB） |
+| APK SHA-256 | `97CE827B10E1F58A8BCEFA4C90F3D76D971DBC68D5E4BB70A68935241F695247` |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
