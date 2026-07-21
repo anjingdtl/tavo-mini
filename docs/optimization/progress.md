@@ -735,6 +735,29 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | APK | 未构建/验证（当前环境缺 `SHINE_WRITER_RELEASE_*` 与本地 keystore；脚本由文本契约 + PowerShell 语法校验 + TS 解析镜像单测覆盖） |
 | Gates | lint 0 errors；typecheck clean；verify:version ok V2.5.14/2051400；test:coverage 全部门禁通过（stmt 77.48 / branch 59.73 / fn 83.46 / line 79.01）；verify exit 0；121 suites / 744 tests PASS |
 
+## V2.5.16 engineering reliability closure — 2026-07-21
+
+- Status: **implemented + tests + verify**
+- Baseline: V2.5.15 (`d1e8524` / docs pin `7615c9d`) — already shipped, patch bumped to **2.5.16**
+- Scope: hard-block illegal target chapter position before context assembly; distinguish `invalidPositionSource` target vs checkpoint; single APK signer acceptance entry; README target-APK wording; no Schema/backup/API/Embedding/second-model/UI changes; story-memory recall algorithm untouched
+
+### Root cause & fixes
+
+1. **Illegal target still reached coverage** — `resolveUsableCheckpointForTarget` already returned `invalid_position` for bad targets, but `prepareStoryMemoryForGeneration()` still called `planStoryMemoryCoverage` and could return `blocked: false`, allowing Episodic / context assembly / generation. Now target-source invalid hard-blocks prepare with empty coverage and never plans/advances/rebuilds/LLM.
+2. **`invalid_position` source collapse** — target illegal and checkpoint-through illegal shared one reason and one trace line ("检查点位置无效"). Added `invalidPositionSource: 'target' | 'checkpoint'` and split copy; checkpoint-through illegal remains safe degrade.
+3. **APK acceptance dual logic** — production `verify-release-apk.ps1` re-implemented V2/signer/cert if/throw while tests called `Test-ApkSignerAcceptance`. Main script now only calls the shared function for accept/reject.
+4. **README APK fact drift** — claimed a signed-verified V2.5.15 APK summary while the report recorded no release build. V2.5.16 uses "目标正式产物" wording and states the signed artifact is not attached.
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.16** / Schema **16** |
+| Report | `docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md` |
+| Release commit | `19dc40b4b6222249a6ea084fb96331a06d5c0d07` |
+| APK | 未构建/验证（本轮不要求签名环境；目标文件名 `ShineWriter-V2.5.16-release.apk`） |
+| Gates | lint 0 errors；typecheck clean；verify:version ok V2.5.16/2051600；test:ci 125 suites / 851 tests PASS；verify exit 0 |
+
 ## V2.5.15 engineering reliability final fix — 2026-07-21
 
 - Status: **implemented + tests + verify/coverage**

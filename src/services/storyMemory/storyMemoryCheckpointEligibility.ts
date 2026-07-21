@@ -27,6 +27,11 @@
  *    that was deemed unusable. Diagnostics still carry `reason` /
  *    `originalStatus` / `originalThroughPosition` / `targetChapterPosition`,
  *    which is enough for trace copy without ever leaking the snapshot body.
+ *
+ * V2.5.16+ — `invalid_position` now carries `invalidPositionSource` so callers
+ * can tell whether the *target chapter* position was illegal (must hard-block
+ * context build) or only the checkpoint's through position was illegal
+ * (safe degrade: no checkpoint inject / no entity weighting / coverage from -1).
  */
 
 import type { ProjectStoryMemoryRecord } from '../../data/repositories/storyMemoryRepository';
@@ -90,6 +95,13 @@ export type CheckpointEligibilityResult =
        * a scalar status label only — never the snapshot body.
        */
       originalStatus: string | null;
+      /**
+       * Present only when `reason === 'invalid_position'`. Distinguishes an
+       * illegal target chapter position (hard-block context build) from an
+       * illegal checkpoint through position (safe degrade). Undefined for
+       * every other reason.
+       */
+      invalidPositionSource?: 'target' | 'checkpoint';
     };
 
 /**
@@ -139,6 +151,7 @@ export function resolveUsableCheckpointForTarget(
     return {
       usable: false,
       reason: 'invalid_position',
+      invalidPositionSource: 'target',
       checkpoint: null,
       checkpointThroughPosition: -1,
       targetChapterPosition:
@@ -194,11 +207,14 @@ export function resolveUsableCheckpointForTarget(
   }
 
   // 5. invalid through position (same predicate as the target).
+  //    Source is 'checkpoint' — target was already validated above, so callers
+  //    may safely degrade (no inject / coverage from -1) without hard-blocking.
   const through = state.throughChapterPosition;
   if (!isValidChapterPosition(through)) {
     return {
       usable: false,
       reason: 'invalid_position',
+      invalidPositionSource: 'checkpoint',
       checkpoint: null,
       checkpointThroughPosition: -1,
       targetChapterPosition: target,
