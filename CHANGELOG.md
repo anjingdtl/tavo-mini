@@ -6,6 +6,13 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.17] - 2026-07-21
+
+### Added
+
+- **LLM 设置保存时弹窗同步流水线 max_tokens**：LLM 设置页编辑 `context_window` 并保存后，若值发生变化，弹 Alert 确认是否同步流水线 4 阶段 `pipeline_*_max_tokens`。复用 `contextAutoAllocator` 的 `RATIO_OUTPUT(0.2)` + `50/15/15/20` 比例算法，不污染 `ContextConfig` / `pipelineMode` / `presetId` / 资料表。Toast 显示 4 阶段新值（`draft / review / factCheck / proof`）。
+- **OpenAI 兼容模式补「上下文长度」「最大输出 Token」输入框**：原本仅在 `llama_cpp` 模式显示，导致 OpenAI 兼容 API 用户无法调整 `context_window`。现在两种模式都可编辑，是流水线 max_tokens 联动同步的前提。
+
 ### Fixed
 
 - **流水线阶段依赖修正（twoStage / conditional）**：`twoStage` 现在严格执行 `draft → review → proof`，`conditional` 严格执行 `draft → factCheck → proof`。终审不再与评估/核查并行启动，必须等待对应审核完成，并接收真实的 `reviewText` / `factCheckText` 作为修订依据。删除了 V2.2.0 引入的「review/proof 并行」「factCheck/proof 并行」错误分支。`full` 模式保留 `review ∥ factCheck` 并行，但终审仍等待二者结束。失败语义：评估/核查失败时跳过终审并回退初稿，不再生成与报告无关的伪终审稿；`full` 双侧失败不调用终审；单侧失败用幸存一侧继续终审；终审失败标记 `failed` 并回退初稿，UI 可区分终审成功与回退初稿。
@@ -29,9 +36,35 @@ numbers follow [Semantic Versioning](https://semver.org/).
 - 核查提示词实测返回有效 JSON：3 errors / 3 warnings，正确捕获「第一次踏入人民公园」（被 Story Memory 证伪）、「李雪从未见过张明」（被证伪）、钥匙位置错误，并尊重世界书规则（龙族不能进入盐湖）。
 - 证明本次修订的核心产品语义达成：评估与核查不再是与终稿无关的旁路报告，而是终审阶段真实、可验证、可测试的输入。
 
+### E2E Verification (emulator-5554, Pixel_10_Pro_XL)
+
+模拟器 4 模式真机端到端测试全部通过：
+
+| 模式 | task_id | 总耗时 | tokens | 阶段状态 |
+|---|---|---|---|---|
+| noReview | `pt_mruqvbzd_4` | 105s | 1,366 | draft success，review/factCheck/proof 全 skipped（语义化文案） |
+| twoStage | `pt_mruqkri7_3` | 298s | 11,125 | draft/review/proof success，factCheck skipped，review 返回真实 JSON |
+| conditional | `pt_mrur1ni6_5` | 119s | 8,057 | draft/factCheck/proof success，review skipped，factCheck 返回真实 JSON |
+| full | `pt_mrur7t0p_6` | 190s | 18,738 | 4 阶段全跑，`review ∥ factCheck` 并行实测验证：79s ≈ 理论 30.9+27.8+20.0=78.7s |
+
+跳过阶段均带语义化文案（如「无审核模式已跳过…」「仅评估模式已跳过事实核查」），非空占位。
+
+### Tests
+
+- `__tests__/pipelineRunner.test.ts`（重写）：四种模式的阶段调用顺序（`draft → review → proof` / `draft → factCheck → proof` / `draft → (review ∥ factCheck) → proof`）、终审收到真实报告、单侧/双侧失败回退、proof 失败回退、取消、token/耗时记录。
+- `__tests__/pipelineMessages.test.ts`（新增）：评估/核查/终审消息分区、长上下文不再 3000 字符截断、Pending Bridge 不丢失、报告作为编辑意见而非系统指令、源码不再包含 `slice(0, 3000)`。
+- `__tests__/pipelineContextSnapshot.test.ts`（新增）：`buildContext()` 返回完整快照、presetText 与首条 system 消息同源、sourceFingerprint 含项目与章节、向后兼容 `messages` / `chapters` / `trace` / `estimatedInputTokens`。
+- `__tests__/postDraftRetrieval.test.ts`（新增）：初稿驱动召回命中历史事件（人民公园第 12 章）、不召回未来章节、DB 失败保留原始快照、空初稿短路、保留 preset/Story Memory/笔记/bridge/instruction 不变、初稿驱动激活世界书/人物、合并去重纯函数。
+- `__tests__/postDraftContinuityScenarios.test.ts`（新增）：SPEC §20.5 连续性场景矩阵——物品转移、已知/未知信息边界、已死亡人物再现、已解决线索被重启、关系状态变化、人物别名、第一次/再次冲突、近期正文优先于旧 Story Memory、不召回未来章节、多问题并发、快照字段不被污染。
+- `__tests__/pipelineContextIntegration.test.ts`（新增）：`buildContext → PipelineContextSnapshot → buildReview/FactCheck/Proof 消息` 全链路同源——评估/核查/终审真实接收到对应快照分区；字段重命名回归守卫；空分区不产生空白头。
+- `__tests__/contextAutoAllocator.test.ts`（新增 10 用例）：`computePipelineMaxTokensFromContextWindow` 纯函数（含与 `allocateContextBudget` 输出侧一致性、DeepSeek 65536 上下文场景、极小值 floor）；`syncPipelineMaxTokensFromContextWindow` service 函数（`setSetting` 调用次数与 key、不污染 ContextConfig / pipelineMode / presetId、contextWindow ≤ 0 抛错且不调 `setSetting`、返回值与 compute 一致）。
+
 ### Notes
 
-- 未修改 Story Memory Schema / Checkpoint / Dirty Rebuild / Episodic Summary 格式；未引入向量库 / Event Atom / 多模型路由 / 本地 GGUF 改造；未变更章节与草稿存储模型。`noReview` 仍只调用初稿。`full` 远程调用次数仍为 4（初稿 + 评估 + 核查 + 终审），初稿后二次召回不增加远程调用。
+- 升版 **V2.5.17** / `versionCode` **2051700**；Schema / 备份 / API 次数 / 默认预算均不变；无 Embedding、向量库、第二模型、新远程 API、新 Schema、多历史 Checkpoint。
+- 未修改 Story Memory Schema / Checkpoint / Dirty Rebuild / Episodic Summary 格式；未变更章节与草稿存储模型。`noReview` 仍只调用初稿。`full` 远程调用次数仍为 4（初稿 + 评估 + 核查 + 终审），初稿后二次召回不增加远程调用。
+- LLM 设置保存后弹窗同步流水线 max_tokens 是**可选的**：用户点「取消」则保留 PipelineConfigScreen 手动值；用户点「同步」则按 `RATIO_OUTPUT(0.2)` × `50/15/15/20` 覆盖 4 个 `pipeline_*_max_tokens` settings key。
+- 已知非代码问题：DeepSeek 推理模型 `deepseek-v4-flash` 在 full 模式下 `reasoning_content` 占满默认 1500 token 配额，导致 review/factCheck 正式 JSON 被截断。本次新增的弹窗同步功能让用户能一键把 max_tokens 提到合理值（如 65536 上下文 → review/factCheck 各 1966），解决此问题。
 
 ## [2.5.16] - 2026-07-21
 
