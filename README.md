@@ -6,14 +6,14 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.15-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.16-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.15** · 数据库 Schema：**16** · 最低 Android API：**24**
+当前版本：**V2.5.16** · 数据库 Schema：**16** · 最低 Android API：**24**
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
@@ -30,6 +30,8 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 `V2.5.12` hardens story-memory contracts: target-aware checkpoint eligibility (no future injection), shared character mention resolver for query/candidate/Story Memory, explicit characterId→name maps, relationship-first budget bundles, true empty-query path proofs, system-invariant tests, and automatic version consistency gate. See [CHANGELOG](CHANGELOG.md) and `docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md`.
 
 `V2.5.13` 故事记忆最终硬化补丁：人物历史桶/计数/组合优先级只用 `matchedCharacterIds`（删除姓名 includes 回退）；歧义词参与最长匹配并占用区间（修复"队长/长""老林/林"误激活）；单次 `buildContext()` 全程复用 `prepareStoryMemoryForGeneration()` 返回的同一 Checkpoint 快照（不再二次读 DB）；GitHub Actions 增加真实 `Version consistency` 步骤；README 英文摘要与正式 APK 信息由脚本精确校验。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md`。
+
+`V2.5.16` 工程可靠性收口：非法目标章节 position 在 `prepareStoryMemoryForGeneration()` 中硬阻断上下文构建（不再继续 coverage / Episodic / 正文生成）；`invalid_position` 增加 `invalidPositionSource`（`target` | `checkpoint`）并修正 trace 文案；Release APK 主脚本强制复用 `Test-ApkSignerAcceptance` 作为唯一验收入口；README 改为“目标正式产物”措辞，不再把未签名验收的 APK 写成已交付。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md`。
 
 `V2.5.15` 工程可靠性最终补漏：Release APK 验证的 v2 签名校验彻底删除“检测到任意 `Verified using vN scheme` 行即视为 v2 成功”的兜底——`VerifiedV2` 只来自显式 `Verified using v2 scheme: true` 行，缺行或为 false 都 throw，解析逻辑拆到 `scripts/apk-verification-parsers.ps1` 并由真实 PowerShell 子进程测试覆盖；故事记忆检查点位置校验改为统一的 `isValidChapterPosition`（有限非负整数），目标章节位置先于 missing/dirty/empty/future 校验，非法 target 不再被掩盖；不可用 eligibility 结果改为判别联合，`usable=false` 时 `checkpoint` 恒为 `null`，类型层面无法再读到未来人物/秘密/关系；版本生成后缀契约澄清（干净 checkout 默认 0，同版本重跑保留合法 0–99 后缀防 versionCode 回退）；`buildContext()` 的最终 story_memory trace 合并逻辑封装为单一 `buildStoryMemoryTraceItem`。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/V2.5.15-ENGINEERING-RELIABILITY-FINAL-FIX-REPORT.md`。
 
@@ -103,7 +105,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-当前正式产物：`dist/apk/release/ShineWriter-V2.5.15-release.apk`，`versionName=V2.5.15`，`versionCode=2051500`。该 APK 的 SHA-256、正式证书 SHA-256、APK Signature Scheme、signer 数量、zipalign 和 AAPT 验收结果见 [`docs/V2.5.15-ENGINEERING-RELIABILITY-FINAL-FIX-REPORT.md`](docs/V2.5.15-ENGINEERING-RELIABILITY-FINAL-FIX-REPORT.md)。
+目标正式产物：`dist/apk/release/ShineWriter-V2.5.16-release.apk`，`versionName=V2.5.16`，`versionCode=2051600`。
+
+本轮 **未构建、未验证** Release APK：当前仓库未附带经过正式签名验收的 V2.5.16 产物，亦无 APK SHA-256 / 证书 SHA-256 / 签名方案 / signer 数量 / zipalign / AAPT 实测结果可回填。具备签名条件后按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` 与 `scripts/verify-release-apk.ps1`，再在发布报告或 GitHub Release 中记录真实结果。工程收口说明见 [`docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md`](docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md)。
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -202,7 +206,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.15** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. V2.5.15 final engineering-reliability fixes: the Release APK v2 signature check no longer has the "any `Verified using vN scheme` line implies v2 success" fallback — `VerifiedV2` comes only from the explicit `Verified using v2 scheme: true` line, the parser was extracted to `apk-verification-parsers.ps1` and is covered by a real PowerShell subprocess test; checkpoint position validity uses a single `isValidChapterPosition` predicate and the target is checked before missing/dirty/empty/future, so a bad target is never masked; unusable eligibility is now a discriminated union whose `checkpoint` is statically `null`, so future character/secret/relationship state can no longer be reached; the build-suffix contract was clarified (clean checkout defaults to 0; same-version reruns keep a legal 0–99 suffix to avoid versionCode regression); the final story_memory trace is merged by a single `buildStoryMemoryTraceItem`. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.16** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. V2.5.16 engineering-reliability closure: illegal target chapter positions hard-block `prepareStoryMemoryForGeneration()` before coverage / Episodic / generation; `invalid_position` now carries `invalidPositionSource` (`target` | `checkpoint`) with accurate trace copy; the Release APK main script reuses `Test-ApkSignerAcceptance` as the single acceptance entry; README documents the target APK filename without claiming a signature-verified artifact exists. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 

@@ -6,6 +6,24 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.16] - 2026-07-21
+
+### Fixed
+
+- **非法目标章节 position 硬阻断上下文构建**：`prepareStoryMemoryForGeneration()` 在 eligibility 判定后、调用 `planStoryMemoryCoverage()` 前，若 `invalidPositionSource === 'target'`（target 为 `-1` / `2.5` / `NaN` / `±Infinity` 等），立即返回 `blocked: true`，不执行 coverage 规划、Checkpoint advance/rebuild、Episodic 检索、Renderer 或 LLM。preview 与 generation 均失败，错误文案明确指出目标章节位置非法。
+- **区分非法位置来源**：`CheckpointEligibilityResult` 在 `reason === 'invalid_position'` 时增加 `invalidPositionSource: 'target' | 'checkpoint'`。target 非法与 checkpoint through 非法不再共用同一 trace 文案——前者为「目标章节位置无效，无法安全构建故事上下文」，后者仍为「故事记忆检查点位置无效，本次未注入长期故事状态」。Checkpoint through 非法继续安全降级（不注入、不实体加权、coverage 从 -1 规划），不得无条件阻止生成。
+- **APK 主脚本单一验收入口**：`scripts/verify-release-apk.ps1` 删除对 `V2LineFound` / `VerifiedV2` / `NumberSigners` / 证书 Hash 的独立 if/throw 决策，改为调用 `Test-ApkSignerAcceptance`；验收决策与 reason 码集中在 `scripts/apk-verification-parsers.ps1`，消除测试与生产逻辑漂移。
+- **README APK 事实措辞**：不再将未签名验收的 APK 写成「当前正式产物 / 已验证」；改为「目标正式产物」+ 明确说明仓库未附带经正式签名验收的 APK，正式构建后回填 SHA-256 / 证书 / scheme / signer / zipalign / AAPT。
+
+### Tests
+
+- `__tests__/storyMemoryInvalidTargetPositionV2516.test.ts`（新增）：target 非法矩阵（-1 / 2.5 / NaN / Infinity / -Infinity）× preview/generation 硬阻断，断言未调用 `planStoryMemoryCoverage`；`invalidPositionSource` 与文案矩阵；合法 target + 非法 through 安全降级不阻断。
+- `__tests__/verifyReleaseApkScript.test.ts` / `__tests__/apkVerificationPowershell.test.ts`：主脚本必须调用 `Test-ApkSignerAcceptance`，不得再独立判断 V2/signer/cert；`invalid_signer_count` reason 码稳定化。
+
+### Notes
+
+- 升版 **V2.5.16** / `versionCode` **2051600**；Schema / 备份 / API 次数 / 默认预算均不变；无 Embedding、向量库、第二模型、新远程 API、新 Schema、多历史 Checkpoint、新 UI 或无关重构。故事记忆召回算法未改动。
+
 ## [2.5.15] - 2026-07-21
 
 ### Fixed

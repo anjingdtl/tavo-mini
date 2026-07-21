@@ -296,6 +296,8 @@ describe('resolveUsableCheckpointForTarget — diagnostics are self-contained', 
             'targetChapterPosition',
             'originalThroughPosition',
             'originalStatus',
+            // V2.5.16: scalar only — target vs checkpoint source for invalid_position.
+            'invalidPositionSource',
           ].includes(k),
         ).toBe(true);
       }

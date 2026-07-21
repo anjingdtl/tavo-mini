@@ -200,7 +200,8 @@ describeReal(
       expect(result!.VerifiedV2).toBe(true);
       expect(result!.NumberSigners).toBe(2);
       expect(result!.Accepted).toBe(false);
-      expect(result!.Reason).toBe('signers=2');
+      // V2.5.16: stable reason code (no longer embeds the count in Reason).
+      expect(result!.Reason).toBe('invalid_signer_count');
     });
 
     it('scenario 5 — wrong cert (v2=true, signers=1, bad SHA-256): REJECTED', () => {
@@ -257,5 +258,29 @@ describe('apk-verification-parsers.ps1 — file wiring', () => {
     );
     expect(main).toMatch(/\. "\$PSScriptRoot\/apk-verification-parsers\.ps1"/);
     expect(main).not.toMatch(/verifiedAnySchemeLine/i);
+  });
+
+  // V2.5.16: production main script must reuse Test-ApkSignerAcceptance as the
+  // SINGLE accept/reject entry — never re-implement V2/signer/cert hard asserts.
+  it('V2.5.16: verify-release-apk.ps1 calls Test-ApkSignerAcceptance (single acceptance entry)', () => {
+    const main = fs.readFileSync(
+      path.join(root, 'scripts', 'verify-release-apk.ps1'),
+      'utf8',
+    );
+    expect(main).toMatch(/Test-ApkSignerAcceptance/);
+    // Main script must not independently decide accept/reject on these fields.
+    expect(main).not.toMatch(
+      /if\s*\(\s*-not\s+\$parsed\.V2LineFound\s*\)/,
+    );
+    expect(main).not.toMatch(
+      /if\s*\(\s*\$parsed\.VerifiedV2\s+-ne\s+\$true\s*\)/,
+    );
+    expect(main).not.toMatch(
+      /if\s*\(\s*\$parsed\.NumberSigners\s+-ne\s+1\s*\)/,
+    );
+    // No independent cert hash comparison for acceptance.
+    expect(main).not.toMatch(
+      /if\s*\(\s*\$certNorm\s+-ne\s+\$script:RELEASE_CERT_SHA256_NORM\s*\)/,
+    );
   });
 });

@@ -17,6 +17,26 @@ function chapterSummaryTokens(chapter: Chapter): number {
 }
 
 /**
+ * Empty coverage plan used when prepare() hard-blocks before planning
+ * (e.g. illegal target chapter position). Never triggers hardDue / LLM.
+ */
+export function createEmptyStoryMemoryCoveragePlan(
+  reason = 'invalid_target_position',
+): StoryMemoryCoveragePlan {
+  return {
+    checkpointThroughPosition: -1,
+    pendingChapters: [],
+    seamChapter: null,
+    rawChapterIds: [],
+    episodicFallbackChapterIds: [],
+    uncoveredChapterIds: [],
+    estimatedRawTokens: 0,
+    hardDue: false,
+    reason,
+  };
+}
+
+/**
  * Plan how pending chapters between the last checkpoint and the current
  * chapter are covered by raw text or episodic fallback summaries.
  *
