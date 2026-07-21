@@ -730,3 +730,7 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | --- | --- |
 | Version | **2.5.14** / Schema **16** |
 | Report | `docs/V2.5.14-ENGINEERING-RELIABILITY-HARDENING-REPORT.md` |
+| Release commit | `11ebc5e4aef4e9216794113c129a23f74ee9b45c` |
+| CI | [Run 29801509982](https://github.com/anjingdtl/tavo-mini/actions/runs/29801509982) — JS (incl. Version consistency / Lint / TypeScript / Jest with coverage) / Android Debug build / Migration matrix all success on `11ebc5e4`（等待 Run 完整结束后才创建 docs pin commit，未被 concurrency 取消） |
+| APK | 未构建/验证（当前环境缺 `SHINE_WRITER_RELEASE_*` 与本地 keystore；脚本由文本契约 + PowerShell 语法校验 + TS 解析镜像单测覆盖） |
+| Gates | lint 0 errors；typecheck clean；verify:version ok V2.5.14/2051400；test:coverage 全部门禁通过（stmt 77.48 / branch 59.73 / fn 83.46 / line 79.01）；verify exit 0；121 suites / 744 tests PASS |
