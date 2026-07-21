@@ -383,3 +383,127 @@ describe('applyContextAutoAllocation', () => {
     expect(settingsKeys).not.toContain('pipeline_draft_preset_id');
   });
 });
+
+// ============================================================================
+// 轻量级同步：computePipelineMaxTokensFromContextWindow + syncPipelineMaxTokensFromContextWindow
+// ============================================================================
+
+import {
+  computePipelineMaxTokensFromContextWindow,
+  syncPipelineMaxTokensFromContextWindow,
+} from '../src/services/contextAutoAllocator';
+import { setSetting } from '../src/data/repositories/settingsRepository';
+
+describe('computePipelineMaxTokensFromContextWindow', () => {
+  test('抛错：contextWindow <= 0', () => {
+    expect(() => computePipelineMaxTokensFromContextWindow(0)).toThrow(/正数/);
+    expect(() => computePipelineMaxTokensFromContextWindow(-1)).toThrow(/正数/);
+  });
+
+  test('抛错：contextWindow 非有限数', () => {
+    expect(() => computePipelineMaxTokensFromContextWindow(NaN)).toThrow(/正数/);
+    expect(() => computePipelineMaxTokensFromContextWindow(Infinity)).toThrow(
+      /正数/,
+    );
+  });
+
+  test('典型值 200000 的比例正确（与 allocateContextBudget 输出一致）', () => {
+    const tokens = computePipelineMaxTokensFromContextWindow(200000);
+    // outputBudget = 200000 * 0.2 = 40000
+    // draft = 40000 * 0.5 = 20000
+    // review = 40000 * 0.15 = 6000
+    // factCheck = 40000 * 0.15 = 6000
+    // proof = 40000 * 0.2 = 8000
+    expect(tokens.draftMaxTokens).toBe(20000);
+    expect(tokens.reviewMaxTokens).toBe(6000);
+    expect(tokens.factCheckMaxTokens).toBe(6000);
+    expect(tokens.proofMaxTokens).toBe(8000);
+  });
+
+  test('与 allocateContextBudget 的输出侧完全一致', () => {
+    const full = allocateContextBudget(200000, {
+      characters: 10,
+      notes: 10,
+      worldbookEntries: 20,
+      worldbookCollections: 4,
+    });
+    const lite = computePipelineMaxTokensFromContextWindow(200000);
+    expect(lite.draftMaxTokens).toBe(full.draftMaxTokens);
+    expect(lite.reviewMaxTokens).toBe(full.reviewMaxTokens);
+    expect(lite.factCheckMaxTokens).toBe(full.factCheckMaxTokens);
+    expect(lite.proofMaxTokens).toBe(full.proofMaxTokens);
+  });
+
+  test('极小值 100 触发 MIN_PIPELINE_TOKENS floor', () => {
+    const tokens = computePipelineMaxTokensFromContextWindow(100);
+    // outputBudget = 100 * 0.2 = 20
+    // draft = 20 * 0.5 = 10 → floor 到 256
+    expect(tokens.draftMaxTokens).toBe(MIN_PIPELINE_TOKENS);
+    expect(tokens.reviewMaxTokens).toBe(MIN_PIPELINE_TOKENS);
+    expect(tokens.factCheckMaxTokens).toBe(MIN_PIPELINE_TOKENS);
+    expect(tokens.proofMaxTokens).toBe(MIN_PIPELINE_TOKENS);
+  });
+
+  test('DeepSeek 常见上下文 65536 算出合理值', () => {
+    const tokens = computePipelineMaxTokensFromContextWindow(65536);
+    // outputBudget = 65536 * 0.2 = 13107
+    // draft = 13107 * 0.5 = 6554
+    // review = 13107 * 0.15 = 1966
+    // factCheck = 13107 * 0.15 = 1966
+    // proof = 13107 * 0.2 = 2621
+    expect(tokens.draftMaxTokens).toBe(6554);
+    expect(tokens.reviewMaxTokens).toBe(1966);
+    expect(tokens.factCheckMaxTokens).toBe(1966);
+    expect(tokens.proofMaxTokens).toBe(2621);
+    // review/factCheck 大于 1500 默认值，证明能解决 full 模式被截断的问题
+    expect(tokens.reviewMaxTokens).toBeGreaterThan(1500);
+    expect(tokens.factCheckMaxTokens).toBeGreaterThan(1500);
+  });
+});
+
+describe('syncPipelineMaxTokensFromContextWindow', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('调用 setSetting 4 次，写入正确的 key 和值', async () => {
+    const tokens = await syncPipelineMaxTokensFromContextWindow(200000);
+    expect(setSetting).toHaveBeenCalledTimes(4);
+    // 4 个 key 必须正确
+    const keys = (setSetting as jest.Mock).mock.calls.map(c => c[0]);
+    expect(keys).toEqual([
+      'pipeline_draft_max_tokens',
+      'pipeline_review_max_tokens',
+      'pipeline_factcheck_max_tokens',
+      'pipeline_proof_max_tokens',
+    ]);
+    // 值与 compute 函数一致
+    const calls = (setSetting as jest.Mock).mock.calls;
+    expect(calls[0][1]).toBe(String(tokens.draftMaxTokens));
+    expect(calls[1][1]).toBe(String(tokens.reviewMaxTokens));
+    expect(calls[2][1]).toBe(String(tokens.factCheckMaxTokens));
+    expect(calls[3][1]).toBe(String(tokens.proofMaxTokens));
+  });
+
+  test('不写其他 settings key（不污染 ContextConfig）', async () => {
+    await syncPipelineMaxTokensFromContextWindow(65536);
+    const keys = (setSetting as jest.Mock).mock.calls.map(c => c[0]);
+    expect(keys).not.toContain('sliding_window_size');
+    expect(keys).not.toContain('resource_budget');
+    expect(keys).not.toContain('pipeline_mode');
+    expect(keys).not.toContain('pipeline_draft_preset_id');
+  });
+
+  test('contextWindow <= 0 时抛错且不调 setSetting', async () => {
+    await expect(syncPipelineMaxTokensFromContextWindow(0)).rejects.toThrow(
+      /正数/,
+    );
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  test('返回值与 compute 函数一致', async () => {
+    const expected = computePipelineMaxTokensFromContextWindow(100000);
+    const actual = await syncPipelineMaxTokensFromContextWindow(100000);
+    expect(actual).toEqual(expected);
+  });
+});
