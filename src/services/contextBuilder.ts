@@ -81,6 +81,11 @@ export function describeCheckpointEligibility(
       return '检测到未来或同位置检查点；为防止未来剧情污染，本次未注入该检查点';
     }
     case 'invalid_position':
+      // V2.5.16: distinguish illegal target chapter position from illegal
+      // checkpoint through position — they must not share the same copy.
+      if (eligibility.invalidPositionSource === 'target') {
+        return '目标章节位置无效，无法安全构建故事上下文';
+      }
       return '故事记忆检查点位置无效，本次未注入长期故事状态';
     case 'empty_state':
       return eligibility.originalStatus

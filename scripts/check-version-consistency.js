@@ -106,12 +106,14 @@ if (englishHits < 2) {
   );
 }
 
-// V2.5.13+: formal APK filename, versionName, versionCode must match current release.
-// Historical APK strings inside docs/CHANGELOG are fine; README must point to the
-// CURRENT release APK only.
+// V2.5.13+: target APK filename, versionName, versionCode must match current
+// release metadata. This checks the *target* artifact name in README — it does
+// NOT imply the APK file has already been built or signature-verified.
+// Historical APK strings inside docs/CHANGELOG are fine; README must only
+// reference the current-version target APK filename.
 const expectedApkName = `ShineWriter-${expectedVersionName}-release.apk`;
 if (!readme.includes(expectedApkName)) {
-  fail(`README 缺少当前正式 APK 文件名 ${expectedApkName}`);
+  fail(`README 缺少目标正式 APK 文件名 ${expectedApkName}`);
 }
 const expectedVersionNameEq = `versionName=${expectedVersionName}`;
 if (!readme.includes(expectedVersionNameEq)) {

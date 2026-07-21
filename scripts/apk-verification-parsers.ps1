@@ -123,12 +123,21 @@ function Parse-AaptBadging {
 
 <#
     .SYNOPSIS
-        Mirrors the main script's hard-assert acceptance decision as a pure
-        function, so the Jest subprocess test can assert the END-TO-END
-        accept/reject outcome (not just parsed fields).
+        SINGLE acceptance decision for Release APK apksigner output (V2.5.16+).
+
+        Both the production main script (`verify-release-apk.ps1`) and the real
+        PowerShell Jest test MUST call this function. Do not re-implement the
+        V2LineFound / VerifiedV2 / NumberSigners / CertSha256 checks in the
+        main script — that is what caused test/prod drift.
 
     .DESCRIPTION
-        Returns @{ Accepted = $bool; Reason = '<why>' }.
+        Returns:
+          @{
+            Accepted = $true / $false
+            Reason = 'ok' | 'no_v2_line' | 'v2_not_true' |
+                     'invalid_signer_count' | 'no_cert' | 'cert_mismatch'
+            NormalizedCertSha256 = <normalized cert or $null>
+          }
 
         Accepted is true ONLY when ALL of:
           - the explicit v2 scheme line is present (V2LineFound)
@@ -146,20 +155,44 @@ function Test-ApkSignerAcceptance {
         [string]$ExpectedCertSha256Normalized
     )
     if (-not $Parsed.V2LineFound) {
-        return @{ Accepted = $false; Reason = 'no_v2_line' }
+        return @{
+            Accepted = $false
+            Reason = 'no_v2_line'
+            NormalizedCertSha256 = $null
+        }
     }
     if ($Parsed.VerifiedV2 -ne $true) {
-        return @{ Accepted = $false; Reason = 'v2_not_true' }
+        return @{
+            Accepted = $false
+            Reason = 'v2_not_true'
+            NormalizedCertSha256 = $null
+        }
     }
     if ($Parsed.NumberSigners -ne 1) {
-        return @{ Accepted = $false; Reason = "signers=$($Parsed.NumberSigners)" }
+        return @{
+            Accepted = $false
+            Reason = 'invalid_signer_count'
+            NormalizedCertSha256 = $null
+        }
     }
     if (-not $Parsed.CertSha256) {
-        return @{ Accepted = $false; Reason = 'no_cert' }
+        return @{
+            Accepted = $false
+            Reason = 'no_cert'
+            NormalizedCertSha256 = $null
+        }
     }
     $certNorm = ConvertTo-NormalizedHash $Parsed.CertSha256
     if ($certNorm -ne $ExpectedCertSha256Normalized) {
-        return @{ Accepted = $false; Reason = 'cert_mismatch' }
+        return @{
+            Accepted = $false
+            Reason = 'cert_mismatch'
+            NormalizedCertSha256 = $certNorm
+        }
     }
-    return @{ Accepted = $true; Reason = 'ok' }
+    return @{
+        Accepted = $true
+        Reason = 'ok'
+        NormalizedCertSha256 = $certNorm
+    }
 }
