@@ -17,7 +17,11 @@ import {
 } from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
 import { prepareStoryMemoryForGeneration } from './storyMemory/storyMemoryPrepare';
-import { resolveUsableCheckpointForTarget } from './storyMemory/storyMemoryCheckpointEligibility';
+import {
+  resolveUsableCheckpointForTarget,
+  type CheckpointEligibilityResult,
+} from './storyMemory/storyMemoryCheckpointEligibility';
+import type { StoryMemoryCoveragePlan } from './storyMemory/storyMemoryTypes';
 import * as episodicMemoryRetriever from './episodicMemoryRetriever';
 import {
   buildEpisodicRetrievalQuery,
@@ -89,6 +93,75 @@ export function describeCheckpointEligibility(
     default:
       return '当前故事记忆检查点状态不可用，本次未注入长期故事状态';
   }
+}
+
+/**
+ * V2.5.15 — single source of truth for the final story_memory trace item.
+ *
+ * `buildContext()` runs two independent passes that both know about the
+ * checkpoint:
+ *   1. `renderPreparedStoryMemoryContext()` re-validates the prepared snapshot
+ *      and produces the usable tokens / clipped flag / rendered preview.
+ *   2. The coverage/eligibility pass knows WHY the checkpoint was (or was not)
+ *      used.
+ *
+ * To avoid two conflicting story_memory trace entries, `buildContext()` emits
+ * EXACTLY ONE trace item, and this helper merges both passes into it:
+ *   - For an UNUSABLE checkpoint (future / dirty / empty / invalid / missing),
+ *     `prepared.checkpoint` is null, so the Renderer sees "missing" and
+ *     contributes empty text / no tokens. The reason comes from the prepared
+ *     `checkpointEligibility` (the real cause), never from a second DB read.
+ *   - For a USABLE checkpoint, the reason is the checkpoint position, and the
+ *     tokens / clipped / preview come from the Renderer result.
+ *
+ * Pure function — never reads the DB — so it is unit-testable in isolation.
+ */
+export interface StoryMemoryTraceInput {
+  eligibility: CheckpointEligibilityResult | undefined;
+  rendererResult: { text: string; traceItems: ContextTraceItem[] };
+  coverage: StoryMemoryCoveragePlan | undefined;
+  rawChapterIds: number[];
+  projectId: number;
+}
+
+export function buildStoryMemoryTraceItem(
+  input: StoryMemoryTraceInput,
+): ContextTraceItem {
+  const { eligibility, rendererResult, coverage, rawChapterIds, projectId } =
+    input;
+  const checkpointPos = coverage?.checkpointThroughPosition ?? -1;
+  const checkpointReason =
+    eligibility && !eligibility.usable
+      ? describeCheckpointEligibility(eligibility)
+      : checkpointPos >= 0
+        ? `检查点截至第 ${checkpointPos + 1} 章`
+        : '尚无检查点';
+  const statusDiagnostic =
+    eligibility && !eligibility.usable && eligibility.originalStatus
+      ? `检查点状态：${eligibility.originalStatus}`
+      : '';
+  return {
+    kind: 'story_memory',
+    sourceId: projectId,
+    title: '长期故事检查点',
+    reason: [
+      checkpointReason,
+      statusDiagnostic,
+      coverage?.hardDue ? 'hardDue' : 'coverage完整',
+      coverage && coverage.uncoveredChapterIds.length
+        ? `未覆盖:${coverage.uncoveredChapterIds.join(',')}`
+        : '无空洞',
+      rawChapterIds.length
+        ? `Episodic排除raw:${rawChapterIds.join(',')}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('；'),
+    estimatedTokens: rendererResult.traceItems[0]?.estimatedTokens || 0,
+    included: Boolean(rendererResult.text),
+    clipped: rendererResult.traceItems[0]?.clipped || false,
+    preview: rendererResult.text.slice(0, 500),
+  };
 }
 
 /**
@@ -335,44 +408,21 @@ export async function buildContext(
     messages.push({ role: 'system', content: storyMemory.text });
   }
   if (coverage) {
-    const checkpointPos = coverage.checkpointThroughPosition;
-    // V2.5.14: derive the checkpoint reason from the SAME eligibility snapshot
-    // so a future / dirty / empty / invalid checkpoint surfaces its real cause
-    // instead of the generic "尚无检查点". Missing checkpoint (no row, no
-    // snapshot) keeps the legacy "尚无检查点" copy.
-    const eligibility = prepared?.checkpointEligibility;
-    const checkpointReason =
-      eligibility && !eligibility.usable
-        ? describeCheckpointEligibility(eligibility)
-        : checkpointPos >= 0
-          ? `检查点截至第 ${checkpointPos + 1} 章`
-          : '尚无检查点';
-    const statusDiagnostic =
-      eligibility && !eligibility.usable && eligibility.originalStatus
-        ? `检查点状态：${eligibility.originalStatus}`
-        : '';
-    trace.push({
-      kind: 'story_memory',
-      sourceId: projectId,
-      title: '长期故事检查点',
-      reason: [
-        checkpointReason,
-        statusDiagnostic,
-        coverage.hardDue ? 'hardDue' : 'coverage完整',
-        coverage.uncoveredChapterIds.length
-          ? `未覆盖:${coverage.uncoveredChapterIds.join(',')}`
-          : '无空洞',
-        rawChapterIds.length
-          ? `Episodic排除raw:${rawChapterIds.join(',')}`
-          : '',
-      ]
-        .filter(Boolean)
-        .join('；'),
-      estimatedTokens: storyMemory.traceItems[0]?.estimatedTokens || 0,
-      included: Boolean(storyMemory.text),
-      clipped: storyMemory.traceItems[0]?.clipped || false,
-      preview: storyMemory.text.slice(0, 500),
-    });
+    // V2.5.15: a single consolidated story_memory trace item. For an unusable
+    // checkpoint `prepared.checkpoint` is null, so the Renderer above only saw
+    // "missing" (empty text / no tokens); the reason here comes from the
+    // prepared eligibility (the real cause: future / dirty / empty / invalid),
+    // never from a second DB read. For a usable checkpoint the reason is the
+    // checkpoint position and tokens/clipped/preview come from the Renderer.
+    trace.push(
+      buildStoryMemoryTraceItem({
+        eligibility: prepared?.checkpointEligibility,
+        rendererResult: storyMemory,
+        coverage,
+        rawChapterIds,
+        projectId,
+      }),
+    );
   } else {
     trace.push(...storyMemory.traceItems);
   }

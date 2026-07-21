@@ -21,9 +21,20 @@ try {
 }
 
 // V2.5.14+: never auto-pull GITHUB_RUN_NUMBER. CI run numbers exceed 99 after
-// the first 99 runs, which previously broke prebuild with a hard throw. The
-// build suffix is now sourced ONLY from SHINE_WRITER_BUILD_NUMBER, and defaults
-// to '0' for local and CI builds. GITHUB_RUN_NUMBER is intentionally ignored.
+// the first 99 runs, which previously broke prebuild with a hard throw.
+// GITHUB_RUN_NUMBER is intentionally ignored on every code path.
+//
+// Build suffix contract (V2.5.15, clarified — the code below already did this,
+// only the earlier comment was misleading):
+//   - Explicit SHINE_WRITER_BUILD_NUMBER (0–99) ALWAYS wins and overrides any
+//     inherited suffix.
+//   - Clean checkout / version bump (no version.json, or versionName differs
+//     from the current package version) → suffix defaults to 0.
+//   - Same-version re-run (version.json.versionName == current package version)
+//     with a previously-generated legal 0–99 suffix and no explicit env var →
+//     the previous suffix is PRESERVED, so the versionCode does not regress.
+//     An out-of-range inherited suffix (e.g. 100) or a versionCode below the
+//     base is NOT inherited and falls back to 0.
 const explicitBuildSource = process.env.SHINE_WRITER_BUILD_NUMBER;
 const baseVersionCode = major * 1_000_000 + minor * 10_000 + patch * 100;
 let buildSource = explicitBuildSource ?? '0';
