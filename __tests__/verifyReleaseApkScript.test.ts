@@ -25,36 +25,36 @@ const REQUIRED_CERT_SHA256_LOWER =
 
 describe('verify-release-apk.ps1 — hard-assertion text contract', () => {
   it('asserts the fixed release cert SHA-256', () => {
-    // Lowercase canonical form must appear at least once.
+    // Lowercase canonical form must appear at least once (expected constant).
     expect(script.toLowerCase()).toContain(REQUIRED_CERT_SHA256_LOWER);
-    // And a comparison must throw on mismatch (throw wraps the message).
-    expect(script).toMatch(/throw[^]*Cert SHA-256 mismatch/);
   });
 
-  it('asserts exactly 1 signer', () => {
-    expect(script).toMatch(/Number of signers[^]*1/);
-    expect(script).toMatch(/throw[^]*NumberSigners|NumberSigners[^]*throw/);
+  it('V2.5.16: single acceptance entry via Test-ApkSignerAcceptance', () => {
+    // Production must call the shared pure function — not re-implement
+    // V2LineFound / VerifiedV2 / NumberSigners / cert comparison as if/throw.
+    expect(script).toMatch(/Test-ApkSignerAcceptance/);
+    expect(script).toMatch(
+      /throw[^]*APK signer acceptance failed|acceptance failed/,
+    );
+    // Must not independently decide accept/reject on these fields.
+    expect(script).not.toMatch(/if\s*\(\s*-not\s+\$parsed\.V2LineFound\s*\)/);
+    expect(script).not.toMatch(
+      /if\s*\(\s*\$parsed\.VerifiedV2\s+-ne\s+\$true\s*\)/,
+    );
+    expect(script).not.toMatch(
+      /if\s*\(\s*\$parsed\.NumberSigners\s+-ne\s+1\s*\)/,
+    );
+    expect(script).not.toMatch(
+      /if\s*\(\s*\$certNorm\s+-ne\s+\$script:RELEASE_CERT_SHA256_NORM\s*\)/,
+    );
+    // May still reference parsed fields for summary output (Number of signers).
+    expect(script).toMatch(/Number of signers/);
   });
 
-  it('asserts the v2 signature scheme', () => {
-    expect(script).toMatch(/Verified\s+using\s+v2\s+scheme/);
-    // v2 scheme failure must throw.
-    expect(script).toMatch(/throw[^]*v2 scheme|throw[^]*VerifiedV2/);
-  });
-
-  it('V2.5.15: dot-sources the shared parser and hard-asserts V2LineFound', () => {
+  it('V2.5.15: dot-sources the shared parser', () => {
     // The parser is extracted so the real-PowerShell Jest test can exercise the
     // SAME function. The main script must dot-source it (not redefine it).
     expect(script).toMatch(/\. "\$PSScriptRoot\/apk-verification-parsers\.ps1"/);
-    // VerifiedV2 must come ONLY from the explicit v2 line — the main flow throws
-    // if that line is missing (V2LineFound) OR says false (VerifiedV2).
-    expect(script).toMatch(/V2LineFound/);
-    expect(script).toMatch(
-      /throw[^]*does not contain an explicit v2 scheme result/,
-    );
-    expect(script).toMatch(
-      /throw[^]*APK must be signed with APK Signature Scheme v2/,
-    );
   });
 
   it('V2.5.15: the v2 fallback ("any scheme line => v2 true") is gone', () => {
