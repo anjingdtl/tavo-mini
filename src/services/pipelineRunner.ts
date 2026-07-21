@@ -12,13 +12,22 @@ import {
   buildFactCheckMessages,
   buildProofMessages,
 } from './pipelineMessages';
+import {
+  buildReviewContextFromSnapshot,
+  buildFactCheckContextFromSnapshot,
+  buildProofConstraintsFromSnapshot,
+  type FactCheckContext,
+  type PipelineContextSnapshot,
+  type ProofConstraints,
+  type ReviewContext,
+} from '../types/pipelineContext';
+import { buildPostDraftAuditContext } from './postDraftRetrieval';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { saveDraft } from './draftService';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { getStageProgressPercent } from '../utils/stages';
 import type { Chapter, Preset } from '../types/novel';
 import type { PipelineStageName, PipelineTaskStatus } from '../types/pipeline';
-import type { ChatMessage } from './llm';
 import {
   clearLLMTaskQueueDefaults,
   setLLMTaskQueueDefaults,
@@ -78,13 +87,6 @@ function checkCancelled(taskId: string): boolean {
   return false;
 }
 
-function buildContextPreview(messages: ChatMessage[]): string {
-  return messages
-    .filter(m => m.role === 'system')
-    .map(m => m.content)
-    .join('\n\n');
-}
-
 function buildCallConfig(
   preset: Preset | null,
   maxTokens: number,
@@ -138,76 +140,8 @@ function markSkipped(
   });
 }
 
-async function runProofStage({
-  taskId,
-  draftText,
-  reviewText,
-  factCheckText,
-  maxTokens,
-  proofPreset,
-  scenario = 'pipeline_proof',
-  projectId,
-  requestConfig,
-  abortSignal,
-}: {
-  taskId: string;
-  draftText: string;
-  reviewText: string;
-  factCheckText: string;
-  maxTokens: number;
-  proofPreset: Preset | null;
-  scenario?: string;
-  projectId?: number;
-  requestConfig?: LLMRequestConfig;
-  abortSignal?: AbortSignal;
-}): Promise<string> {
-  const store = usePipelineTaskStore.getState();
-  store.setTaskStatus(taskId, 'proofing');
-
-  const proofStart = Date.now();
-  try {
-    const messages = buildProofMessages(draftText, reviewText, factCheckText);
-    const proofResult = await callLLMResult(
-      messages,
-      maxTokens,
-      buildCallConfig(
-        proofPreset,
-        maxTokens,
-        scenario,
-        projectId,
-        requestConfig,
-        taskId,
-      ),
-      abortSignal,
-    );
-    const finalText = proofResult.text || draftText;
-    store.updateTaskStage(taskId, {
-      stage: 'proof',
-      text: finalText,
-      status: 'success',
-      tokens: {
-        input: proofResult.inputTokens,
-        output: proofResult.outputTokens,
-        total: proofResult.totalTokens,
-      },
-      durationMs: Date.now() - proofStart,
-    });
-    return finalText;
-  } catch (error: any) {
-    if (abortSignal?.aborted || error?.code === 'cancelled') {
-      store.cancelTask(taskId);
-      await PipelineForeground.stop(taskId);
-      throw error;
-    }
-    store.updateTaskStage(taskId, {
-      stage: 'proof',
-      text: draftText,
-      status: 'failed',
-      error: error.message || '终审失败，已回退到初稿',
-      durationMs: Date.now() - proofStart,
-    });
-    return draftText;
-  }
+function isAbortError(error: any, abortSignal?: AbortSignal): boolean {
+  return Boolean(abortSignal?.aborted || error?.code === 'cancelled');
 }
 
 export type StageInfo = {
@@ -220,6 +154,227 @@ export interface PipelineRunOptions {
   queueClass?: 'pipeline' | 'background';
   queuePriority?: 'manual' | 'background';
 }
+
+/* =========================================================================
+ * Shared stage runners (SPEC §15)
+ *
+ * Each stage helper owns: status transitions, foreground notifications, the
+ * LLM call, token + durationMs accounting, cancellation, and the per-stage
+ * error → skipped/failed mapping. They NEVER start the next stage — that is the
+ * caller's job, so the dependency order stays explicit in the mode branches.
+ * ========================================================================= */
+
+interface StageCommonArgs {
+  taskId: string;
+  projectId: number;
+  requestConfig?: LLMRequestConfig;
+  abortSignal?: AbortSignal;
+}
+
+/**
+ * Literary review stage. Returns the review text on success or empty string on
+ * failure (caller decides whether to skip proof). Throws only on cancellation
+ * so the caller can short-circuit cleanup.
+ */
+async function runReviewStage(
+  args: StageCommonArgs & {
+    draftText: string;
+    context: ReviewContext;
+    maxTokens: number;
+    preset: Preset | null;
+  },
+): Promise<string> {
+  const { taskId, projectId, requestConfig, abortSignal } = args;
+  const store = usePipelineTaskStore.getState();
+  if (abortSignal?.aborted || checkCancelled(taskId)) {
+    throw new Error('cancelled');
+  }
+  store.setTaskStatus(taskId, 'reviewing');
+  const start = Date.now();
+  try {
+    const result = await callLLMResult(
+      buildReviewMessages(args.draftText, args.context),
+      args.maxTokens,
+      buildCallConfig(
+        args.preset,
+        args.maxTokens,
+        'pipeline_review',
+        projectId,
+        requestConfig,
+        taskId,
+      ),
+      abortSignal,
+    );
+    const text = result.text || '';
+    store.updateTaskStage(taskId, {
+      stage: 'review',
+      text,
+      status: 'success',
+      tokens: {
+        input: result.inputTokens,
+        output: result.outputTokens,
+        total: result.totalTokens,
+      },
+      durationMs: Date.now() - start,
+    });
+    return text;
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) {
+      store.cancelTask(taskId);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
+    store.updateTaskStage(taskId, {
+      stage: 'review',
+      text: '',
+      status: 'failed',
+      error: error.message || '文学评估失败',
+      durationMs: Date.now() - start,
+    });
+    return '';
+  }
+}
+
+/**
+ * Fact-check stage. Same contract as review: returns text or empty on failure,
+ * throws on cancellation.
+ */
+async function runFactCheckStage(
+  args: StageCommonArgs & {
+    draftText: string;
+    context: FactCheckContext;
+    maxTokens: number;
+    preset: Preset | null;
+  },
+): Promise<string> {
+  const { taskId, projectId, requestConfig, abortSignal } = args;
+  const store = usePipelineTaskStore.getState();
+  if (abortSignal?.aborted || checkCancelled(taskId)) {
+    throw new Error('cancelled');
+  }
+  store.setTaskStatus(taskId, 'factChecking');
+  const start = Date.now();
+  try {
+    const result = await callLLMResult(
+      buildFactCheckMessages(args.draftText, args.context),
+      args.maxTokens,
+      buildCallConfig(
+        args.preset,
+        args.maxTokens,
+        'pipeline_factcheck',
+        projectId,
+        requestConfig,
+        taskId,
+      ),
+      abortSignal,
+    );
+    const text = result.text || '';
+    store.updateTaskStage(taskId, {
+      stage: 'factCheck',
+      text,
+      status: 'success',
+      tokens: {
+        input: result.inputTokens,
+        output: result.outputTokens,
+        total: result.totalTokens,
+      },
+      durationMs: Date.now() - start,
+    });
+    return text;
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) {
+      store.cancelTask(taskId);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
+    store.updateTaskStage(taskId, {
+      stage: 'factCheck',
+      text: '',
+      status: 'failed',
+      error: error.message || '事实核查失败',
+      durationMs: Date.now() - start,
+    });
+    return '';
+  }
+}
+
+/**
+ * Proof / final-revision stage. Receives the REAL review + factCheck texts plus
+ * the hard constraints derived from the shared snapshot. Returns the final text
+ * on success, or the draft on failure (caller must not present the fallback as
+ * a successful proof). Throws on cancellation.
+ */
+async function runProofStage(
+  args: StageCommonArgs & {
+    draftText: string;
+    reviewText: string;
+    factCheckText: string;
+    constraints: ProofConstraints;
+    maxTokens: number;
+    preset: Preset | null;
+  },
+): Promise<string> {
+  const { taskId, projectId, requestConfig, abortSignal } = args;
+  const store = usePipelineTaskStore.getState();
+  if (abortSignal?.aborted || checkCancelled(taskId)) {
+    throw new Error('cancelled');
+  }
+  store.setTaskStatus(taskId, 'proofing');
+  const start = Date.now();
+  try {
+    const result = await callLLMResult(
+      buildProofMessages(
+        args.draftText,
+        args.reviewText,
+        args.factCheckText,
+        args.constraints,
+      ),
+      args.maxTokens,
+      buildCallConfig(
+        args.preset,
+        args.maxTokens,
+        'pipeline_proof',
+        projectId,
+        requestConfig,
+        taskId,
+      ),
+      abortSignal,
+    );
+    const finalText = result.text || args.draftText;
+    store.updateTaskStage(taskId, {
+      stage: 'proof',
+      text: finalText,
+      status: 'success',
+      tokens: {
+        input: result.inputTokens,
+        output: result.outputTokens,
+        total: result.totalTokens,
+      },
+      durationMs: Date.now() - start,
+    });
+    return finalText;
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) {
+      store.cancelTask(taskId);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
+    // SPEC §13.5: proof failure falls back to the draft, marked as failed so
+    // the UI can distinguish "real proof" from "fallback draft".
+    store.updateTaskStage(taskId, {
+      stage: 'proof',
+      text: args.draftText,
+      status: 'failed',
+      error: error.message || '终审失败，已回退到初稿',
+      durationMs: Date.now() - start,
+    });
+    return args.draftText;
+  }
+}
+
+/* =========================================================================
+ * Entry points
+ * ========================================================================= */
 
 export async function runChapterPipeline(
   taskId: string,
@@ -347,26 +502,32 @@ async function runChapterPipelineInner(
     await PipelineForeground.stop(taskId);
     return;
   }
+
+  /* ----------------------------- Draft ----------------------------- */
   store.setTaskStatus(taskId, 'drafting');
   onStageUpdate?.({
     stage: 'draft',
-    label: '草稿中...',
+    label: '正在生成初稿',
     startedAt: Date.now(),
   });
-  let baseContext: ChatMessage[] = [];
+  PipelineForeground.updateProgress(taskId, '正在生成初稿', pct(0)).catch(
+    () => {},
+  );
+
   let draftText = '';
-  let draftMessages: ChatMessage[] = [];
+  let pipelineContext: PipelineContextSnapshot;
   const draftStart = Date.now();
   try {
     const request = createChapterGenerationRequest(chapter);
-    const { messages, chapters: allChapters } = await buildContext(
-      chapter,
-      contextConfig,
-      chapter.project_id,
-      draftPreset || undefined,
-      { retrievalUserPrompt: request.userPrompt },
-    );
-    baseContext = messages;
+    const { messages: baseContext, chapters: allChapters, pipelineContext: ctx } =
+      await buildContext(
+        chapter,
+        contextConfig,
+        chapter.project_id,
+        draftPreset || undefined,
+        { retrievalUserPrompt: request.userPrompt },
+      );
+    pipelineContext = ctx;
 
     // Extract previous chapter ending from already-fetched chapters.
     const prevChapter = allChapters
@@ -374,7 +535,7 @@ async function runChapterPipelineInner(
       .sort((a, b) => b.position - a.position)[0];
     const prevEnding = prevChapter?.content?.slice(-800) || '';
 
-    draftMessages = buildDraftMessages(
+    const draftMessages = buildDraftMessages(
       baseContext,
       chapter.title || `第 ${chapter.position + 1} 章`,
       chapter.content || '',
@@ -397,26 +558,21 @@ async function runChapterPipelineInner(
       abortSignal,
     );
     draftText = draftResult.text || '';
-    const draftTokens = {
-      inputTokens: draftResult.inputTokens,
-      outputTokens: draftResult.outputTokens,
-      totalTokens: draftResult.totalTokens,
-    };
 
     store.updateTaskStage(taskId, {
       stage: 'draft',
       text: draftText,
       status: 'success',
       tokens: {
-        input: draftTokens.inputTokens,
-        output: draftTokens.outputTokens,
-        total: draftTokens.totalTokens,
+        input: draftResult.inputTokens,
+        output: draftResult.outputTokens,
+        total: draftResult.totalTokens,
       },
       durationMs: Date.now() - draftStart,
     });
   } catch (error: any) {
     // 取消信号在阶段内被吞修复：先判断是否为用户取消，是则走取消路径不走 fail
-    if (abortSignal?.aborted || error?.code === 'cancelled') {
+    if (isAbortError(error, abortSignal)) {
       store.cancelTask(taskId);
       await PipelineForeground.stop(taskId);
       return;
@@ -438,6 +594,7 @@ async function runChapterPipelineInner(
     return;
   }
 
+  /* ----------------------------- noReview ----------------------------- */
   if (config.pipelineMode === 'noReview') {
     onStageUpdate?.({
       stage: 'idle',
@@ -451,298 +608,306 @@ async function runChapterPipelineInner(
     return;
   }
 
-  if (config.pipelineMode === 'twoStage') {
-    if (checkCancelled(taskId)) return;
-    store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.({
-      stage: 'review',
-      label: '点评中...（与打磨并行）',
-      startedAt: Date.now(),
-    });
-    PipelineForeground.updateProgress(taskId, '点评与打磨中', pct(1));
+  /* ------------- Post-draft local retrieval (full only, SPEC §10) ------------- *
+   * Only `full` runs review + factCheck; the post-draft retrieval enriches the
+   * shared snapshot so fact-check can catch continuity issues the draft itself
+   * introduced (old character, "first time", etc.). twoStage / conditional do
+   * not need it because they only run one audit branch.
+   */
+  let auditContext = pipelineContext;
+  if (config.pipelineMode === 'full') {
+    try {
+      const retrieval = await buildPostDraftAuditContext(
+        pipelineContext,
+        draftText,
+        chapter.project_id,
+        chapter,
+        contextConfig,
+      );
+      auditContext = retrieval.snapshot;
+      // Dev-only observability (SPEC §22). Never logs full body / keys.
+      console.log(
+        `[pipeline] post-draft retrieval episodicHits=${retrieval.episodicHitsAdded} worldbookHits=${retrieval.worldbookHitsAdded} characterHits=${retrieval.characterHitsAdded} fellBack=${retrieval.fellBack}`,
+      );
+    } catch (error: any) {
+      // Never block the pipeline on local retrieval.
+      console.warn(
+        '[pipeline] post-draft retrieval error (non-fatal):',
+        error?.message,
+      );
+    }
+  }
 
+  /* ----------------------------- twoStage ----------------------------- *
+   * draft → review → proof (SEQUENTIAL). proof waits for review and receives
+   * the real reviewText. factCheck is skipped. (SPEC §5.2)
+   */
+  if (config.pipelineMode === 'twoStage') {
     markSkipped(taskId, 'factCheck', '仅评估模式已跳过事实核查');
 
-    // V2.2.0：review 和 proof 并行启动，节省一个阶段的延迟
-    // proof 看到的是纯 draft；如果 review 完成后 proof 也完成，不再二次调用
-    const reviewStart = Date.now();
-    const reviewPromise = (async () => {
-      try {
-        const reviewResult = await callLLMResult(
-          buildReviewMessages(draftText),
-          config.reviewMaxTokens,
-          buildCallConfig(
-            reviewPreset,
-            config.reviewMaxTokens,
-            'pipeline_review',
-            chapter.project_id,
-            requestConfig,
-            taskId,
-          ),
-          abortSignal,
-        );
-        const reviewText = reviewResult.text || '';
-        store.updateTaskStage(taskId, {
-          stage: 'review',
-          text: reviewText,
-          status: 'success',
-          tokens: {
-            input: reviewResult.inputTokens,
-            output: reviewResult.outputTokens,
-            total: reviewResult.totalTokens,
-          },
-          durationMs: Date.now() - reviewStart,
-        });
-        return reviewText;
-      } catch (error: any) {
-        store.updateTaskStage(taskId, {
-          stage: 'review',
-          text: '',
-          status: 'failed',
-          error: error.message || '审阅/评估失败',
-          durationMs: Date.now() - reviewStart,
-        });
-        return '';
+    onStageUpdate?.({
+      stage: 'review',
+      label: '正在进行文学评估',
+      startedAt: Date.now(),
+    });
+    PipelineForeground.updateProgress(taskId, '正在进行文学评估', pct(1)).catch(
+      () => {},
+    );
+
+    const reviewText = await runReviewStage({
+      taskId,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+      draftText,
+      context: buildReviewContextFromSnapshot(pipelineContext),
+      maxTokens: config.reviewMaxTokens,
+      preset: reviewPreset,
+    }).catch((error: any) => {
+      if (isAbortError(error, abortSignal)) {
+        return '__CANCELLED__';
       }
-    })();
+      return '';
+    });
+
+    if (reviewText === '__CANCELLED__') return;
+
+    if (!reviewText.trim()) {
+      // SPEC §13.2: review failed → no proof, fallback to draft.
+      markSkipped(taskId, 'proof', '文学评估失败，未执行终审');
+      store.failTask(
+        taskId,
+        '文学评估失败，已保留初稿，未生成终审稿。',
+      );
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        '文学评估失败，已保留初稿',
+      );
+      await saveDraftAndComplete(draftText);
+      return;
+    }
 
     onStageUpdate?.({
       stage: 'proof',
-      label: '打磨中...（与点评并行）',
+      label: '正在根据评估修订',
       startedAt: Date.now(),
     });
-    const proofPromise = (async () => {
-      const text = await runProofStage({
-        taskId,
-        draftText,
-        reviewText: '',
-        factCheckText: '',
-        maxTokens: config.proofMaxTokens,
-        proofPreset,
-        projectId: chapter.project_id,
-        requestConfig,
-        abortSignal,
-      });
-      // proof 完成（不论成功/失败回退）之后才返回结果
-      return text;
-    })();
+    PipelineForeground.updateProgress(taskId, '正在根据评估修订', pct(2)).catch(
+      () => {},
+    );
 
-    // 同时等 review 和 proof。如果 proof 完成而 review 失败/慢，不二次调用 proof
-    await Promise.all([
-      reviewPromise.catch(() => ''),
-      proofPromise.catch(() => draftText),
-    ]);
-    const finalText = await proofPromise.catch(() => draftText);
+    const finalText = await runProofStage({
+      taskId,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+      draftText,
+      reviewText,
+      factCheckText: '',
+      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+      maxTokens: config.proofMaxTokens,
+      preset: proofPreset,
+    }).catch((error: any) => {
+      if (isAbortError(error, abortSignal)) {
+        return '__CANCELLED__';
+      }
+      return draftText;
+    });
+
+    if (finalText === '__CANCELLED__') return;
+
     await saveDraftAndComplete(finalText);
     return;
   }
 
+  /* ----------------------------- conditional ----------------------------- *
+   * draft → factCheck → proof (SEQUENTIAL). proof waits for factCheck and
+   * receives the real factCheckText. review is skipped. (SPEC §5.3)
+   */
   if (config.pipelineMode === 'conditional') {
-    if (checkCancelled(taskId)) return;
-    // conditional 模式状态语义错配修复：factCheck 阶段不应设为 'reviewing'
-    // 改为 'factChecking' 让 UI 状态栏正确显示"事实核查中"
-    store.setTaskStatus(taskId, 'factChecking');
+    markSkipped(taskId, 'review', '仅核查模式已跳过文学评估');
+
     onStageUpdate?.({
       stage: 'factCheck',
-      label: '事实检查中...（与打磨并行）',
+      label: '正在进行事实核查',
       startedAt: Date.now(),
     });
-    PipelineForeground.updateProgress(taskId, '事实检查与打磨中', pct(1));
+    PipelineForeground.updateProgress(taskId, '正在进行事实核查', pct(1)).catch(
+      () => {},
+    );
 
-    markSkipped(taskId, 'review', '仅核查模式已跳过审阅/评估');
-
-    // V2.2.0：factCheck 和 proof 并行启动（逻辑同 twoStage 的 review+proof 并行）
-    const contextText = buildContextPreview(baseContext);
-    const factCheckStart = Date.now();
-    const factCheckPromise = (async () => {
-      try {
-        const result = await callLLMResult(
-          buildFactCheckMessages(draftText, contextText),
-          config.factCheckMaxTokens,
-          buildCallConfig(
-            factCheckPreset,
-            config.factCheckMaxTokens,
-            'pipeline_factcheck',
-            chapter.project_id,
-            requestConfig,
-            taskId,
-          ),
-          abortSignal,
-        );
-        const text = result.text || '';
-        store.updateTaskStage(taskId, {
-          stage: 'factCheck',
-          text,
-          status: 'success',
-          tokens: {
-            input: result.inputTokens,
-            output: result.outputTokens,
-            total: result.totalTokens,
-          },
-          durationMs: Date.now() - factCheckStart,
-        });
-        return text;
-      } catch (error: any) {
-        store.updateTaskStage(taskId, {
-          stage: 'factCheck',
-          text: '',
-          status: 'failed',
-          error: error.message || '事实核查失败',
-          durationMs: Date.now() - factCheckStart,
-        });
-        return '';
+    const factCheckText = await runFactCheckStage({
+      taskId,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+      draftText,
+      context: buildFactCheckContextFromSnapshot(pipelineContext),
+      maxTokens: config.factCheckMaxTokens,
+      preset: factCheckPreset,
+    }).catch((error: any) => {
+      if (isAbortError(error, abortSignal)) {
+        return '__CANCELLED__';
       }
-    })();
+      return '';
+    });
+
+    if (factCheckText === '__CANCELLED__') return;
+
+    if (!factCheckText.trim()) {
+      // SPEC §13.3: factCheck failed → no proof, fallback to draft.
+      markSkipped(taskId, 'proof', '事实核查失败，未执行终审');
+      store.failTask(
+        taskId,
+        '事实核查失败，已保留初稿，未生成终审稿。',
+      );
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        '事实核查失败，已保留初稿',
+      );
+      await saveDraftAndComplete(draftText);
+      return;
+    }
 
     onStageUpdate?.({
       stage: 'proof',
-      label: '打磨中...（与事实核查并行）',
+      label: '正在根据核查修订',
       startedAt: Date.now(),
     });
-    const proofPromise = (async () => {
-      return runProofStage({
-        taskId,
-        draftText,
-        reviewText: '',
-        factCheckText: '',
-        maxTokens: config.proofMaxTokens,
-        proofPreset,
-        projectId: chapter.project_id,
-        requestConfig,
-        abortSignal,
-      });
-    })();
+    PipelineForeground.updateProgress(taskId, '正在根据核查修订', pct(2)).catch(
+      () => {},
+    );
 
-    await Promise.all([
-      factCheckPromise.catch(() => ''),
-      proofPromise.catch(() => draftText),
-    ]);
-    const finalText = await proofPromise.catch(() => draftText);
+    const finalText = await runProofStage({
+      taskId,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+      draftText,
+      reviewText: '',
+      factCheckText,
+      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+      maxTokens: config.proofMaxTokens,
+      preset: proofPreset,
+    }).catch((error: any) => {
+      if (isAbortError(error, abortSignal)) {
+        return '__CANCELLED__';
+      }
+      return draftText;
+    });
+
+    if (finalText === '__CANCELLED__') return;
+
     await saveDraftAndComplete(finalText);
     return;
   }
 
-  if (checkCancelled(taskId)) return;
-  store.setTaskStatus(taskId, 'reviewing');
+  /* ----------------------------- full ----------------------------- *
+   * draft → (review ∥ factCheck) → proof. Review and factCheck run in parallel
+   * ONLY with each other. proof MUST wait for both. If both fail, no proof.
+   * (SPEC §5.4, §6, §13.4)
+   */
   onStageUpdate?.({
     stage: 'review',
-    label: '点评中...',
+    label: '正在进行文学评估与事实核查',
     startedAt: Date.now(),
   });
-  PipelineForeground.updateProgress(taskId, '审阅与核查中', pct(1));
+  PipelineForeground.updateProgress(
+    taskId,
+    '正在进行文学评估与事实核查',
+    pct(1),
+  ).catch(() => {});
+  console.log('[pipeline] review/factcheck started in parallel');
 
-  const contextText = buildContextPreview(baseContext);
-  const reviewStart = Date.now();
-  const factCheckStart = Date.now();
-
-  const reviewPromise = callLLMResult(
-    buildReviewMessages(draftText),
-    config.reviewMaxTokens,
-    buildCallConfig(
-      reviewPreset,
-      config.reviewMaxTokens,
-      'pipeline_review',
-      chapter.project_id,
-      requestConfig,
+  const [reviewSettled, factCheckSettled] = await Promise.allSettled([
+    runReviewStage({
       taskId,
-    ),
-    abortSignal,
-  );
-  const factCheckPromise = callLLMResult(
-    buildFactCheckMessages(draftText, contextText),
-    config.factCheckMaxTokens,
-    buildCallConfig(
-      factCheckPreset,
-      config.factCheckMaxTokens,
-      'pipeline_factcheck',
-      chapter.project_id,
+      projectId: chapter.project_id,
       requestConfig,
+      abortSignal,
+      draftText,
+      context: buildReviewContextFromSnapshot(auditContext),
+      maxTokens: config.reviewMaxTokens,
+      preset: reviewPreset,
+    }),
+    runFactCheckStage({
       taskId,
-    ),
-    abortSignal,
-  );
-
-  let reviewText = '';
-  let factCheckText = '';
-  let reviewFailed = false;
-  let factCheckFailed = false;
-
-  const [reviewResult, factResult] = await Promise.allSettled([
-    reviewPromise,
-    factCheckPromise,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+      draftText,
+      context: buildFactCheckContextFromSnapshot(auditContext),
+      maxTokens: config.factCheckMaxTokens,
+      preset: factCheckPreset,
+    }),
   ]);
 
-  if (reviewResult.status === 'fulfilled') {
-    reviewText = reviewResult.value.text || '';
-    store.updateTaskStage(taskId, {
-      stage: 'review',
-      text: reviewText,
-      status: 'success',
-      tokens: {
-        input: reviewResult.value.inputTokens,
-        output: reviewResult.value.outputTokens,
-        total: reviewResult.value.totalTokens,
-      },
-      durationMs: Date.now() - reviewStart,
-    });
-  } else {
-    reviewFailed = true;
-    store.updateTaskStage(taskId, {
-      stage: 'review',
-      text: '',
-      status: 'failed',
-      error: reviewResult.reason?.message || '审阅失败',
-      durationMs: Date.now() - reviewStart,
-    });
+  // Cancellation during the parallel window: short-circuit. Either stage may
+  // have already persisted cancelTask; we still stop the foreground service.
+  if (abortSignal?.aborted || checkCancelled(taskId)) {
+    await PipelineForeground.stop(taskId);
+    return;
   }
 
-  if (factResult.status === 'fulfilled') {
-    factCheckText = factResult.value.text || '';
-    store.updateTaskStage(taskId, {
-      stage: 'factCheck',
-      text: factCheckText,
-      status: 'success',
-      tokens: {
-        input: factResult.value.inputTokens,
-        output: factResult.value.outputTokens,
-        total: factResult.value.totalTokens,
-      },
-      durationMs: Date.now() - factCheckStart,
-    });
-  } else {
-    factCheckFailed = true;
-    store.updateTaskStage(taskId, {
-      stage: 'factCheck',
-      text: '',
-      status: 'failed',
-      error: factResult.reason?.message || '事实核查失败',
-      durationMs: Date.now() - factCheckStart,
-    });
-  }
+  const reviewText =
+    reviewSettled.status === 'fulfilled' ? reviewSettled.value : '';
+  const factCheckText =
+    factCheckSettled.status === 'fulfilled' ? factCheckSettled.value : '';
 
-  if (reviewFailed && factCheckFailed) {
+  console.log(
+    `[pipeline] review=${reviewText.trim() ? 'success' : 'failed'} factcheck=${factCheckText.trim() ? 'success' : 'failed'}`,
+  );
+
+  // SPEC §13.4: both failed → no proof, fallback to draft.
+  if (!reviewText.trim() && !factCheckText.trim()) {
+    markSkipped(taskId, 'proof', '文学评估与事实核查均失败，未执行终审');
+    store.failTask(
+      taskId,
+      '文学评估与事实核查均失败，已保留初稿，未生成终审稿。',
+    );
+    await PipelineForeground.notifyFailed(
+      taskId,
+      chapter.title || '流水线',
+      '评估与核查均失败，已保留初稿',
+    );
     await saveDraftAndComplete(draftText);
     return;
   }
 
-  if (checkCancelled(taskId)) return;
+  console.log(
+    `[pipeline] proof started with review=${Boolean(reviewText.trim())} factcheck=${Boolean(factCheckText.trim())}`,
+  );
   onStageUpdate?.({
     stage: 'proof',
-    label: '打磨中...',
+    label: '正在综合修订',
     startedAt: Date.now(),
   });
-  PipelineForeground.updateProgress(taskId, '终审打磨中', pct(3));
+  PipelineForeground.updateProgress(taskId, '正在综合修订', pct(3)).catch(
+    () => {},
+  );
+
   const finalText = await runProofStage({
     taskId,
-    draftText,
-    reviewText,
-    factCheckText,
-    maxTokens: config.proofMaxTokens,
-    proofPreset,
     projectId: chapter.project_id,
     requestConfig,
     abortSignal,
+    draftText,
+    reviewText,
+    factCheckText,
+    constraints: buildProofConstraintsFromSnapshot(auditContext),
+    maxTokens: config.proofMaxTokens,
+    preset: proofPreset,
+  }).catch((error: any) => {
+    if (isAbortError(error, abortSignal)) {
+      return '__CANCELLED__';
+    }
+    return draftText;
   });
+
+  if (finalText === '__CANCELLED__') return;
+
   await saveDraftAndComplete(finalText);
 }
 
@@ -769,6 +934,17 @@ export async function runFreeformPipeline(
   await runChapterPipeline(taskId, pseudoChapter, onStageUpdate, options);
 }
 
+/* =========================================================================
+ * Resume
+ *
+ * Resume re-runs any missing stage using the SAME corrected dependency order.
+ * It must not depend on the old parallel semantics: a resumed twoStage task
+ * will re-run review (if missing) THEN proof; a resumed conditional task will
+ * re-run factCheck THEN proof; a resumed full task re-runs both audits THEN
+ * proof. Already-succeeded stages are not re-run and the saved final text is
+ * never overwritten. (SPEC §18.3)
+ * ========================================================================= */
+
 export async function resumePipeline(
   taskId: string,
   chapter: Chapter,
@@ -785,7 +961,6 @@ export async function resumePipeline(
   } finally {
     releaseTaskAbort(taskId);
     clearLLMTaskQueueDefaults(taskId);
-    // 任务结束（无论成功/失败/取消）后清理取消标记，避免 cancelledTasks 累积
     cancelledTasks.delete(taskId);
   }
 }
@@ -833,10 +1008,12 @@ async function resumePipelineInner(
   }
 
   let config;
+  let contextConfig;
   let presets;
   let requestConfig: LLMRequestConfig;
   try {
     config = await db.getPipelineConfig();
+    contextConfig = await db.getContextConfig();
     presets = await db.getPresetsByProject(chapter.project_id);
     requestConfig = await resolveLLMRequestConfig();
   } catch (error: any) {
@@ -859,31 +1036,8 @@ async function resumePipelineInner(
   );
   const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
 
-  // 通知栏进度计算（与首次运行保持一致），各阶段起点百分比
-  const totalStages =
-    config.pipelineMode === 'noReview'
-      ? 1
-      : config.pipelineMode === 'twoStage' ||
-        config.pipelineMode === 'conditional'
-      ? 3
-      : 4; // full
-  const pct = (doneStages: number) =>
-    Math.min(99, Math.round((doneStages / totalStages) * 100));
-
-  // resume 入口补启前台服务（原首次运行被系统杀后续跑，前台服务可能缺失）
-  if (!completedStages.has('proof')) {
-    const nextLabel = !completedStages.has('review')
-      ? '点评中'
-      : !completedStages.has('factCheck')
-      ? '事实检查中'
-      : '终审打磨中';
-    const nextPct = !completedStages.has('review')
-      ? pct(1)
-      : !completedStages.has('factCheck')
-      ? pct(1)
-      : pct(3);
-    await PipelineForeground.updateProgress(taskId, nextLabel, nextPct);
-  }
+  const pct = (completedStageCount: number) =>
+    getStageProgressPercent(config.pipelineMode, completedStageCount);
 
   const saveDraftAndComplete = async (text: string) => {
     if (abortSignal?.aborted || checkCancelled(taskId)) return;
@@ -916,197 +1070,330 @@ async function resumePipelineInner(
     return;
   }
 
+  // Rebuild the shared snapshot for downstream stages. Resume is allowed to
+  // rebuild the snapshot because the original in-memory snapshot was lost when
+  // the previous process died; this read-only rebuild produces the same view
+  // buildContext would have produced. (SPEC §18.3 — does not modify saved
+  // final text, only re-derives the audit context.)
+  let pipelineContext: PipelineContextSnapshot;
+  try {
+    const built = await buildContext(
+      chapter,
+      contextConfig,
+      chapter.project_id,
+      presets[0],
+    );
+    pipelineContext = built.pipelineContext;
+  } catch (error: any) {
+    // Snapshot rebuild failed: fall back to an empty snapshot so stages still
+    // run with whatever the draft stored, rather than blocking resume.
+    console.warn(
+      '[pipeline] resume snapshot rebuild failed (non-fatal):',
+      error?.message,
+    );
+    pipelineContext = {
+      presetText: '',
+      storyMemoryText: '',
+      characterText: '',
+      noteText: '',
+      worldbookText: '',
+      episodicMemoryText: '',
+      recentBridgeText: '',
+      currentInstructionText: '',
+      retrievalUserPrompt: '',
+    };
+  }
+
   let reviewText = reviewResult?.text || '';
   let factCheckText = factCheckResult?.text || '';
 
+  /* ---------------- twoStage resume: review THEN proof ---------------- */
   if (config.pipelineMode === 'twoStage') {
     if (!completedStages.has('review')) {
       if (checkCancelled(taskId)) return;
-      store.setTaskStatus(taskId, 'reviewing');
+      markSkipped(taskId, 'factCheck', '仅评估模式已跳过事实核查');
       onStageUpdate?.({
         stage: 'review',
-        label: '点评中...',
+        label: '正在进行文学评估',
         startedAt: Date.now(),
       });
-      PipelineForeground.updateProgress(taskId, '点评中', pct(1));
-      // resume 阶段 durationMs 修复：记录 start，写 Date.now()-start 而非时间戳
-      const reviewStart = Date.now();
-      try {
-        const reviewCallResult = await callLLMResult(
-          buildReviewMessages(draftText),
-          config.reviewMaxTokens,
-          buildCallConfig(
-            reviewPreset,
-            config.reviewMaxTokens,
-            'pipeline_review',
-            chapter.project_id,
-            requestConfig,
-            taskId,
-          ),
-          abortSignal,
-        );
-        reviewText = reviewCallResult.text || '';
-        store.updateTaskStage(taskId, {
-          stage: 'review',
-          text: reviewText,
-          status: 'success',
-          tokens: {
-            input: reviewCallResult.inputTokens,
-            output: reviewCallResult.outputTokens,
-            total: reviewCallResult.totalTokens,
-          },
-          durationMs: Date.now() - reviewStart,
-        });
-      } catch (error: any) {
-        store.updateTaskStage(taskId, {
-          stage: 'review',
-          text: '',
-          status: 'failed',
-          error: error.message || '审阅失败',
-          durationMs: Date.now() - reviewStart,
-        });
-        // review 失败时不直接结束，统一与首次运行一致：用空 reviewText 继续走 proof
-      }
+      PipelineForeground.updateProgress(
+        taskId,
+        '正在进行文学评估',
+        pct(1),
+      ).catch(() => {});
+      reviewText = await runReviewStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        context: buildReviewContextFromSnapshot(pipelineContext),
+        maxTokens: config.reviewMaxTokens,
+        preset: reviewPreset,
+      }).catch((error: any) => {
+        if (isAbortError(error, abortSignal)) return '__CANCELLED__';
+        return '';
+      });
+      if (reviewText === '__CANCELLED__') return;
+    }
+
+    if (!reviewText.trim()) {
+      markSkipped(taskId, 'proof', '文学评估失败，未执行终审');
+      store.failTask(taskId, '文学评估失败，已保留初稿，未生成终审稿。');
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        '文学评估失败，已保留初稿',
+      );
+      await saveDraftAndComplete(draftText);
+      return;
     }
 
     if (checkCancelled(taskId)) return;
     onStageUpdate?.({
       stage: 'proof',
-      label: '打磨中...',
+      label: '正在根据评估修订',
       startedAt: Date.now(),
     });
-    PipelineForeground.updateProgress(taskId, '终审打磨中', pct(2));
+    PipelineForeground.updateProgress(taskId, '正在根据评估修订', pct(2)).catch(
+      () => {},
+    );
     const finalText = await runProofStage({
       taskId,
-      draftText,
-      reviewText,
-      factCheckText: '',
-      maxTokens: config.proofMaxTokens,
-      proofPreset,
       projectId: chapter.project_id,
       requestConfig,
       abortSignal,
+      draftText,
+      reviewText,
+      factCheckText: '',
+      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+      maxTokens: config.proofMaxTokens,
+      preset: proofPreset,
+    }).catch((error: any) => {
+      if (isAbortError(error, abortSignal)) return '__CANCELLED__';
+      return draftText;
     });
+    if (finalText === '__CANCELLED__') return;
     await saveDraftAndComplete(finalText);
     return;
   }
 
-  // conditional / full
-  // full 模式下补做 review 阶段（conditional 模式跳过 review）
-  if (config.pipelineMode === 'full' && !completedStages.has('review')) {
+  /* --------------- conditional resume: factCheck THEN proof --------------- */
+  if (config.pipelineMode === 'conditional') {
+    if (!completedStages.has('factCheck')) {
+      if (checkCancelled(taskId)) return;
+      markSkipped(taskId, 'review', '仅核查模式已跳过文学评估');
+      onStageUpdate?.({
+        stage: 'factCheck',
+        label: '正在进行事实核查',
+        startedAt: Date.now(),
+      });
+      PipelineForeground.updateProgress(
+        taskId,
+        '正在进行事实核查',
+        pct(1),
+      ).catch(() => {});
+      factCheckText = await runFactCheckStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        context: buildFactCheckContextFromSnapshot(pipelineContext),
+        maxTokens: config.factCheckMaxTokens,
+        preset: factCheckPreset,
+      }).catch((error: any) => {
+        if (isAbortError(error, abortSignal)) return '__CANCELLED__';
+        return '';
+      });
+      if (factCheckText === '__CANCELLED__') return;
+    }
+
+    if (!factCheckText.trim()) {
+      markSkipped(taskId, 'proof', '事实核查失败，未执行终审');
+      store.failTask(taskId, '事实核查失败，已保留初稿，未生成终审稿。');
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        '事实核查失败，已保留初稿',
+      );
+      await saveDraftAndComplete(draftText);
+      return;
+    }
+
     if (checkCancelled(taskId)) return;
-    store.setTaskStatus(taskId, 'reviewing');
     onStageUpdate?.({
-      stage: 'review',
-      label: '点评中...',
+      stage: 'proof',
+      label: '正在根据核查修订',
       startedAt: Date.now(),
     });
-    PipelineForeground.updateProgress(taskId, '点评中', pct(1));
-    // resume 阶段 durationMs 修复
-    const reviewStart = Date.now();
-    try {
-      const reviewCallResult = await callLLMResult(
-        buildReviewMessages(draftText),
-        config.reviewMaxTokens,
-        buildCallConfig(
-          reviewPreset,
-          config.reviewMaxTokens,
-          'pipeline_review',
-          chapter.project_id,
-          requestConfig,
-          taskId,
-        ),
+    PipelineForeground.updateProgress(taskId, '正在根据核查修订', pct(2)).catch(
+      () => {},
+    );
+    const finalText = await runProofStage({
+      taskId,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+      draftText,
+      reviewText: '',
+      factCheckText,
+      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+      maxTokens: config.proofMaxTokens,
+      preset: proofPreset,
+    }).catch((error: any) => {
+      if (isAbortError(error, abortSignal)) return '__CANCELLED__';
+      return draftText;
+    });
+    if (finalText === '__CANCELLED__') return;
+    await saveDraftAndComplete(finalText);
+    return;
+  }
+
+  /* --------------- full resume: review + factCheck THEN proof --------------- */
+  // Re-run whichever audit is missing. Conditional semantics: both audits may
+  // already be done (only proof missing), one may be done, or both missing.
+  if (!completedStages.has('review') && !completedStages.has('factCheck')) {
+    // Both missing: run them in parallel exactly like the first run.
+    if (checkCancelled(taskId)) return;
+    onStageUpdate?.({
+      stage: 'review',
+      label: '正在进行文学评估与事实核查',
+      startedAt: Date.now(),
+    });
+    PipelineForeground.updateProgress(
+      taskId,
+      '正在进行文学评估与事实核查',
+      pct(1),
+    ).catch(() => {});
+
+    const [reviewSettled, factCheckSettled] = await Promise.allSettled([
+      runReviewStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
         abortSignal,
-      );
-      reviewText = reviewCallResult.text || '';
-      store.updateTaskStage(taskId, {
+        draftText,
+        context: buildReviewContextFromSnapshot(pipelineContext),
+        maxTokens: config.reviewMaxTokens,
+        preset: reviewPreset,
+      }),
+      runFactCheckStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        context: buildFactCheckContextFromSnapshot(pipelineContext),
+        maxTokens: config.factCheckMaxTokens,
+        preset: factCheckPreset,
+      }),
+    ]);
+    if (abortSignal?.aborted || checkCancelled(taskId)) {
+      await PipelineForeground.stop(taskId);
+      return;
+    }
+    reviewText = reviewSettled.status === 'fulfilled' ? reviewSettled.value : '';
+    factCheckText =
+      factCheckSettled.status === 'fulfilled' ? factCheckSettled.value : '';
+  } else {
+    // At least one done; re-run only the missing one (sequentially is fine).
+    if (!completedStages.has('review')) {
+      if (checkCancelled(taskId)) return;
+      onStageUpdate?.({
         stage: 'review',
-        text: reviewText,
-        status: 'success',
-        tokens: {
-          input: reviewCallResult.inputTokens,
-          output: reviewCallResult.outputTokens,
-          total: reviewCallResult.totalTokens,
-        },
-        durationMs: Date.now() - reviewStart,
+        label: '正在进行文学评估',
+        startedAt: Date.now(),
       });
-    } catch (error: any) {
-      store.updateTaskStage(taskId, {
-        stage: 'review',
-        text: '',
-        status: 'failed',
-        error: error.message || '审阅失败',
-        durationMs: Date.now() - reviewStart,
+      PipelineForeground.updateProgress(
+        taskId,
+        '正在进行文学评估',
+        pct(1),
+      ).catch(() => {});
+      reviewText = await runReviewStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        context: buildReviewContextFromSnapshot(pipelineContext),
+        maxTokens: config.reviewMaxTokens,
+        preset: reviewPreset,
+      }).catch((error: any) => {
+        if (isAbortError(error, abortSignal)) return '__CANCELLED__';
+        return '';
       });
+      if (reviewText === '__CANCELLED__') return;
+    }
+    if (!completedStages.has('factCheck')) {
+      if (checkCancelled(taskId)) return;
+      onStageUpdate?.({
+        stage: 'factCheck',
+        label: '正在进行事实核查',
+        startedAt: Date.now(),
+      });
+      PipelineForeground.updateProgress(
+        taskId,
+        '正在进行事实核查',
+        pct(2),
+      ).catch(() => {});
+      factCheckText = await runFactCheckStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        context: buildFactCheckContextFromSnapshot(pipelineContext),
+        maxTokens: config.factCheckMaxTokens,
+        preset: factCheckPreset,
+      }).catch((error: any) => {
+        if (isAbortError(error, abortSignal)) return '__CANCELLED__';
+        return '';
+      });
+      if (factCheckText === '__CANCELLED__') return;
     }
   }
 
-  if (!completedStages.has('factCheck')) {
-    if (checkCancelled(taskId)) return;
-    store.setTaskStatus(taskId, 'reviewing');
-    onStageUpdate?.({
-      stage: 'factCheck',
-      label: '事实检查中...',
-      startedAt: Date.now(),
-    });
-    PipelineForeground.updateProgress(taskId, '事实检查中', pct(1));
-    // resume 阶段 durationMs 修复
-    const factCheckStart = Date.now();
-    try {
-      const { messages: baseContext } = await buildContext(
-        chapter,
-        await db.getContextConfig(),
-        chapter.project_id,
-      );
-      const contextText = buildContextPreview(baseContext);
-      const factCheckCallResult = await callLLMResult(
-        buildFactCheckMessages(draftText, contextText),
-        config.factCheckMaxTokens,
-        buildCallConfig(
-          factCheckPreset,
-          config.factCheckMaxTokens,
-          'pipeline_factcheck',
-          chapter.project_id,
-          requestConfig,
-          taskId,
-        ),
-        abortSignal,
-      );
-      factCheckText = factCheckCallResult.text || '';
-      store.updateTaskStage(taskId, {
-        stage: 'factCheck',
-        text: factCheckText,
-        status: 'success',
-        tokens: {
-          input: factCheckCallResult.inputTokens,
-          output: factCheckCallResult.outputTokens,
-          total: factCheckCallResult.totalTokens,
-        },
-        durationMs: Date.now() - factCheckStart,
-      });
-    } catch (error: any) {
-      store.updateTaskStage(taskId, {
-        stage: 'factCheck',
-        text: '',
-        status: 'failed',
-        error: error.message || '事实核查失败',
-        durationMs: Date.now() - factCheckStart,
-      });
-    }
+  if (!reviewText.trim() && !factCheckText.trim()) {
+    markSkipped(taskId, 'proof', '文学评估与事实核查均失败，未执行终审');
+    store.failTask(
+      taskId,
+      '文学评估与事实核查均失败，已保留初稿，未生成终审稿。',
+    );
+    await PipelineForeground.notifyFailed(
+      taskId,
+      chapter.title || '流水线',
+      '评估与核查均失败，已保留初稿',
+    );
+    await saveDraftAndComplete(draftText);
+    return;
   }
 
   if (checkCancelled(taskId)) return;
-  onStageUpdate?.('正在终审校对（续跑）...');
+  onStageUpdate?.({
+    stage: 'proof',
+    label: '正在综合修订',
+    startedAt: Date.now(),
+  });
+  PipelineForeground.updateProgress(taskId, '正在综合修订', pct(3)).catch(
+    () => {},
+  );
   const finalText = await runProofStage({
     taskId,
-    draftText,
-    reviewText,
-    factCheckText,
-    maxTokens: config.proofMaxTokens,
-    proofPreset,
     projectId: chapter.project_id,
     requestConfig,
     abortSignal,
+    draftText,
+    reviewText,
+    factCheckText,
+    constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+    maxTokens: config.proofMaxTokens,
+    preset: proofPreset,
+  }).catch((error: any) => {
+    if (isAbortError(error, abortSignal)) return '__CANCELLED__';
+    return draftText;
   });
+  if (finalText === '__CANCELLED__') return;
   await saveDraftAndComplete(finalText);
 }
