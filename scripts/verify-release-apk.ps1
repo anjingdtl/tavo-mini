@@ -9,8 +9,13 @@
 # set VerifiedV2=true whenever ANY "Verified using vN scheme" line existed, so an
 # APK signed with v1 only (v2: false) — or an output that omitted the v2 line —
 # was wrongly accepted. VerifiedV2 now comes ONLY from the explicit
-# "Verified using v2 scheme: true" line, and the main flow hard-throws if that
-# line is missing or false.
+# "Verified using v2 scheme: true" line.
+#
+# V2.5.16+: the main flow MUST call `Test-ApkSignerAcceptance` for the accept/
+# reject decision. Do NOT re-implement V2LineFound / VerifiedV2 / NumberSigners /
+# CertSha256 comparisons as independent if/throw blocks here — that caused
+# test/prod drift. The main script still owns: run apksigner, check exit code,
+# call parser, call acceptance, fill summary, zipalign, aapt, APK SHA-256.
 #
 # Required checks (all throw on failure):
 #   - APK exists at dist/apk/release/ShineWriter-V<versionName>-release.apk
@@ -100,26 +105,16 @@ if ($signerExit -ne 0) {
     throw "apksigner verify failed (exit $signerExit). Output:`n$signerOutput"
 }
 $parsed = Parse-ApkSignerOutput -Output $signerOutput
-# V2.5.15: VerifiedV2 comes ONLY from the explicit v2 scheme line. The output
-# MUST contain that line at all (V2LineFound), and it MUST say true. There is no
-# fallback: a v1-only signature (v2: false) or a missing v2 line both throw.
-if (-not $parsed.V2LineFound) {
-    throw "apksigner output does not contain an explicit v2 scheme result. Output:`n$signerOutput"
+# V2.5.16: SINGLE acceptance entry — all V2LineFound / VerifiedV2 /
+# NumberSigners / CertSha256 decisions live in Test-ApkSignerAcceptance.
+# Main script must not re-implement those hard asserts as independent if/throw.
+$acceptance = Test-ApkSignerAcceptance `
+    -Parsed $parsed `
+    -ExpectedCertSha256Normalized $script:RELEASE_CERT_SHA256_NORM
+if (-not $acceptance.Accepted) {
+    throw "APK signer acceptance failed: $($acceptance.Reason). Output:`n$signerOutput"
 }
-if ($parsed.VerifiedV2 -ne $true) {
-    throw "APK must be signed with APK Signature Scheme v2. Output:`n$signerOutput"
-}
-if ($parsed.NumberSigners -ne 1) {
-    throw "APK must have exactly 1 signer (got $($parsed.NumberSigners)). Output:`n$signerOutput"
-}
-if (-not $parsed.CertSha256) {
-    throw "Could not parse cert SHA-256 from apksigner output. Output:`n$signerOutput"
-}
-$certNorm = ConvertTo-NormalizedHash $parsed.CertSha256
-if ($certNorm -ne $script:RELEASE_CERT_SHA256_NORM) {
-    throw "Cert SHA-256 mismatch: got '$certNorm', expected '$($script:RELEASE_CERT_SHA256_NORM)'. Debug signing is not accepted."
-}
-$summary['Cert SHA-256'] = $parsed.CertSha256
+$summary['Cert SHA-256'] = $acceptance.NormalizedCertSha256
 $summary['Number of signers'] = $parsed.NumberSigners
 $summary['APK Signature Scheme'] = 'v2 (Verified using v2 scheme = true)'
 

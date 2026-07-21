@@ -1,6 +1,9 @@
 import type { Chapter, ContextConfig } from '../../types/novel';
 import * as db from '../database';
-import { planStoryMemoryCoverage } from './storyMemoryCoverage';
+import {
+  createEmptyStoryMemoryCoveragePlan,
+  planStoryMemoryCoverage,
+} from './storyMemoryCoverage';
 import {
   resolveUsableCheckpointForTarget,
   type CheckpointEligibilityResult,
@@ -19,6 +22,10 @@ import { StoryMemoryError } from './storyMemoryTypes';
  * `missing` reason maps to "尚无检查点"; `not_clean` / `empty_state` carry the
  * original status; `future_or_same_position` carries the original through vs.
  * target so the trace can say "检测到检查点截至第 N 章，当前目标为第 M 章".
+ *
+ * V2.5.16+ — illegal *target* chapter position hard-blocks prepare() before
+ * coverage planning / checkpoint advance / rebuild / LLM. Illegal checkpoint
+ * through position remains a safe degrade (no inject, coverage from -1).
  */
 export interface PrepareStoryMemoryResult {
   checkpoint: ProjectStoryMemoryRecord | null;
@@ -33,6 +40,10 @@ export interface PrepareStoryMemoryResult {
   blocked: boolean;
   blockReason: string;
 }
+
+/** User-facing copy when the target chapter position is not a legal position. */
+export const INVALID_TARGET_CHAPTER_POSITION_MESSAGE =
+  '目标章节位置无效，无法安全构建上下文。';
 
 /**
  * Prepare story memory for generation/context build.
@@ -64,6 +75,26 @@ export async function prepareStoryMemoryForGeneration(
     record,
     currentChapter.position,
   );
+
+  // V2.5.16: illegal target chapter position must hard-block BEFORE coverage
+  // planning, checkpoint advance/rebuild, Episodic scoring, or any LLM call.
+  // Illegal checkpoint through alone is NOT a hard block (handled below as
+  // usable=false with checkpointThroughPosition=-1).
+  if (
+    !eligibility.usable &&
+    eligibility.reason === 'invalid_position' &&
+    eligibility.invalidPositionSource === 'target'
+  ) {
+    return {
+      checkpoint: null,
+      checkpointEligibility: eligibility,
+      coverage: createEmptyStoryMemoryCoveragePlan('invalid_target_position'),
+      checkpointUpdated: false,
+      blocked: true,
+      blockReason: INVALID_TARGET_CHAPTER_POSITION_MESSAGE,
+    };
+  }
+
   const checkpointThrough = eligibility.checkpointThroughPosition;
 
   let coverage = planStoryMemoryCoverage({
