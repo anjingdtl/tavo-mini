@@ -130,6 +130,8 @@ V2.5.1 的结构化记忆基线记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.
 
 V2.5.12 发布提交 `a6820cf` 的 GitHub Actions [Verify Run 29752469471](https://github.com/anjingdtl/tavo-mini/actions/runs/29752469471) 三个 Job（JavaScript validation / Android Debug build / Migration matrix）全部 success。详情见 [`docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md`](docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md)。
 
+V2.5.13 发布提交 `6e5ac42` 的 run 因 `verify.yml` 的 `concurrency.cancel-in-progress` 被紧随其后的 docs commit `eddb4c6`（纯文档增量，无生产代码改动）取消，改由 `eddb4c6` 的 [Verify Run 29760694051](https://github.com/anjingdtl/tavo-mini/actions/runs/29760694051) 代替验证，三个 Job（JavaScript validation 含 Version consistency / Android Debug build / Migration matrix）全部 success。详情见 [`docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md`](docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md)。
+
 GitHub Actions `Verify` 对 `main` push 和 Pull Request 执行：
 
 - JavaScript：lint、typecheck、Jest、coverage。
