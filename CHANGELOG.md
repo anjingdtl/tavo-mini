@@ -6,6 +6,28 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.15] - 2026-07-21
+
+### Fixed
+
+- **APK v2 签名校验删除误放行兜底**：`scripts/verify-release-apk.ps1` 之前的 `Parse-ApkSignerOutput` 在检测到任意 `Verified using vN scheme` 行时会把 `VerifiedV2` 错误置为 true，导致仅启用 v1（v2=false）或缺少 v2 行的 APK 通过验收。解析逻辑现拆到独立的 `scripts/apk-verification-parsers.ps1`，`VerifiedV2` 只来自显式 `Verified using v2 scheme: true|false` 行；主流程对 `V2LineFound` 与 `VerifiedV2` 做硬断言，缺行或为 false 均 throw。apksigner 退出码 0、signer 严格等于 1、证书 SHA-256 严格等于固定正式证书、不接受 Debug 签名、不新建 keystore、不输出密码的既有约束不变。
+- **检查点章节位置统一校验且先于其它原因**：`resolveUsableCheckpointForTarget` 改用统一的 `isValidChapterPosition(value)`（有限、整数、非负），并同时校验 `targetChapterPosition` 与 `state.throughChapterPosition`。目标位置合法性先于 `missing` / `not_clean` / `empty_state` / `future_or_same_position` 判断——即使 Checkpoint 为 null，非法 target 也返回 `invalid_position`，不再被 missing 掩盖。
+- **不可用 Checkpoint 不再暴露完整状态**：`CheckpointEligibilityResult` 改为以 `usable` 为判别的联合类型，所有 `usable=false` 分支的 `checkpoint` 恒为 `null`，类型层面无法再经由 `prepared.checkpointEligibility.checkpoint?.state` 读取未来人物 / 秘密 / 关系 / 物品 / 剧情线。诊断仅保留 `reason` / `originalStatus` / `originalThroughPosition` / `targetChapterPosition`。
+- **版本后缀契约澄清**：`scripts/generate-version-json.js` 的注释修正为：显式 `SHINE_WRITER_BUILD_NUMBER`（0–99）始终覆盖；干净 checkout 或 versionName 变更时后缀默认 0；同版本重跑且旧 versionCode 含合法 0–99 后缀且无显式环境变量时保留该后缀（避免 versionCode 回退）；越界后缀（如 100）或低于 base 的旧 versionCode 不继承。`GITHUB_RUN_NUMBER` 在所有路径继续被忽略。代码逻辑未变，仅修正注释与测试。
+- **`buildContext()` 故事记忆 trace 单一事实来源**：最终 story_memory trace 合并逻辑封装为纯函数 `buildStoryMemoryTraceItem`。未来 Checkpoint 在 `prepared.checkpoint=null` 时 Renderer 只得到 missing，coverage trace 仍用 prepared eligibility 显示 future 原因；单次 `buildContext()` 只保留一个最终 story_memory trace 项；usable 的 tokens/clipped/preview 来自 Renderer，future/dirty/invalid 的 reason 来自 prepared eligibility，无二次数据库读取。
+
+### Tests
+
+- `__tests__/apkVerificationPowershell.test.ts`（新增）：在 Windows 本机通过 `powershell`/`pwsh` 子进程 dot-source 真实 `apk-verification-parsers.ps1`，对 `Parse-ApkSignerOutput` + `Test-ApkSignerAcceptance` 跑验收矩阵——正常 v2 通过，仅 v1 / 缺 v2 行 / 多 signer / 错证书均拒绝；Linux 无 PowerShell 时 `describe.skip` 并明确日志，不被谎报为已执行。
+- `__tests__/verifyReleaseApkScript.test.ts`：TS 镜像删除 `verified = verifiedV2 || verifiedAnySchemeLine` 兜底，改为与真实解析一致的 `v2LineFound` / `verifiedAny` 字段；新增 dot-source、`V2LineFound` 硬断言、兜底已删除的文本契约。
+- `__tests__/storyMemoryCheckpointEligibilityV2515.test.ts`（新增）：`isValidChapterPosition` 全矩阵；非法 target（-1 / 2.5 / NaN / Infinity / -Infinity / "3" / null / undefined）×（checkpoint=null 与 clean usable）均 `invalid_position` 且 `checkpoint=null`；0/0 为 future_or_same、1/0 为 usable；不可用结果全场景 `checkpoint===null` 且序列化不含人物/秘密/状态体。
+- `__tests__/contextBuilderStoryMemoryTraceItem.test.ts`（新增）：`buildStoryMemoryTraceItem` 单一事实来源——usable 取 Renderer 的 tokens/clipped/preview，future/dirty/invalid 取 prepared eligibility 原因，纯函数不读 DB。
+- `__tests__/generateVersionJson.test.ts`：新增不同 versionName 不继承、suffix=99 保留、suffix=100 明确报错、低于 base 不继承、显式覆盖旧后缀、干净 checkout 默认 0。
+
+### Notes
+
+- 升版 **V2.5.15** / `versionCode` **2051500**；Schema / 备份 / API 次数 / 默认预算均不变；无 Embedding、向量库、第二模型、新远程 API、新 Schema、多历史 Checkpoint、新 UI 或无关重构。故事记忆召回算法未改动。
+
 ## [2.5.14] - 2026-07-21
 
 ### Fixed

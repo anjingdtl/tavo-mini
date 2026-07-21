@@ -734,3 +734,28 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | CI | [Run 29801509982](https://github.com/anjingdtl/tavo-mini/actions/runs/29801509982) — JS (incl. Version consistency / Lint / TypeScript / Jest with coverage) / Android Debug build / Migration matrix all success on `11ebc5e4`（等待 Run 完整结束后才创建 docs pin commit，未被 concurrency 取消） |
 | APK | 未构建/验证（当前环境缺 `SHINE_WRITER_RELEASE_*` 与本地 keystore；脚本由文本契约 + PowerShell 语法校验 + TS 解析镜像单测覆盖） |
 | Gates | lint 0 errors；typecheck clean；verify:version ok V2.5.14/2051400；test:coverage 全部门禁通过（stmt 77.48 / branch 59.73 / fn 83.46 / line 79.01）；verify exit 0；121 suites / 744 tests PASS |
+
+## V2.5.15 engineering reliability final fix — 2026-07-21
+
+- Status: **implemented + tests + verify/coverage**
+- Baseline: V2.5.14 (`11ebc5e` / docs pin `6c5f3a7`) — already shipped, patch bumped to **2.5.15**
+- Scope: APK v2 verification false-positive removal, unified chapter-position validation, unusable-checkpoint state isolation, build-suffix contract clarification, trace single-source consolidation; no Schema/backup/API/Embedding/second-model/UI changes; story-memory recall algorithm untouched
+
+### Root cause & fixes
+
+1. **APK v2 false positive** — `Parse-ApkSignerOutput` had a fallback that set `VerifiedV2=true` whenever any `Verified using vN scheme` line existed, so a v1-only (v2:false) APK or an output missing the v2 line was wrongly accepted. The parser was extracted to `scripts/apk-verification-parsers.ps1`; `VerifiedV2` now comes ONLY from the explicit `Verified using v2 scheme: true|false` line; the main flow hard-throws on `V2LineFound=false` or `VerifiedV2=false`. `Test-ApkSignerAcceptance` mirrors the hard-assert decision as a pure function.
+2. **Chapter-position validity** — new `isValidChapterPosition(value)` (finite integer >= 0) is the single predicate for BOTH `targetChapterPosition` and `state.throughChapterPosition`. Target is validated FIRST, so a bad target surfaces as `invalid_position` even when the checkpoint is null/dirty/empty/future — no longer masked by `missing`.
+3. **Unusable checkpoint state isolation** — `CheckpointEligibilityResult` is now a discriminated union on `usable`; every `usable=false` branch returns `checkpoint: null`, so future characters/secrets/relationships are unreachable at the type level. Diagnostics keep only scalar `reason`/`originalStatus`/`originalThroughPosition`/`targetChapterPosition`.
+4. **Build-suffix contract** — `generate-version-json.js` code unchanged; comment corrected to: explicit `SHINE_WRITER_BUILD_NUMBER` always overrides; clean checkout / versionName change → suffix 0; same-version rerun with legal 0–99 suffix and no explicit env → keep it (avoid versionCode regression); out-of-range / below-base not inherited; `GITHUB_RUN_NUMBER` ignored everywhere.
+5. **Trace single source** — new pure `buildStoryMemoryTraceItem` produces the single final story_memory trace item: usable → tokens/clipped/preview from Renderer; unusable → reason from prepared eligibility; no second DB read.
+
+### Release
+
+| Item | Detail |
+| --- | --- |
+| Version | **2.5.15** / Schema **16** |
+| Report | `docs/V2.5.15-ENGINEERING-RELIABILITY-FINAL-FIX-REPORT.md` |
+| Release commit | _（docs pin commit 回填）_ |
+| CI | _（推送后等待 Verify Run 完成回填：workflow head SHA == release commit；Version consistency / Lint / TypeScript / Jest with coverage / Android Debug build / Migration matrix 全 success）_ |
+| APK | 未构建/验证（当前环境缺正式 keystore / `SHINE_WRITER_RELEASE_*`；真实 PowerShell 解析函数测试在本机执行 + 脚本文本契约 + TS 镜像覆盖） |
+| Gates | lint 0 errors；typecheck clean；verify:version ok V2.5.15/2051500；test:ci 124 suites / 818 tests PASS；test:coverage 全部门禁通过（stmt 77.48 / branch 59.8 / fn 83.49 / line 79.01，未下降）；verify exit 0 |

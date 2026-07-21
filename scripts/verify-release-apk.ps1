@@ -4,9 +4,18 @@
 # output and threw on apksigner/zipalign exit codes; it never asserted the cert
 # SHA-256, signer count, v2 scheme, package name, versionName or versionCode.
 #
+# V2.5.15+: the apksigner parser was extracted to `apk-verification-parsers.ps1`
+# and the v2 acceptance was tightened. The old inline parser had a fallback that
+# set VerifiedV2=true whenever ANY "Verified using vN scheme" line existed, so an
+# APK signed with v1 only (v2: false) — or an output that omitted the v2 line —
+# was wrongly accepted. VerifiedV2 now comes ONLY from the explicit
+# "Verified using v2 scheme: true" line, and the main flow hard-throws if that
+# line is missing or false.
+#
 # Required checks (all throw on failure):
 #   - APK exists at dist/apk/release/ShineWriter-V<versionName>-release.apk
-#   - apksigner: exit 0, Verified, v2 scheme = true, signers = 1,
+#   - apksigner: exit 0, explicit v2 scheme line present, VerifiedV2 = true,
+#     signers = 1,
 #     cert SHA-256 = 017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a
 #   - zipalign -c -P 16 -v 4: exit 0 + "Verification successful"
 #   - aapt dump badging: package name=com.shinewriter,
@@ -17,97 +26,11 @@
 # is never accepted as a fallback.
 
 #---
-# Public parsing helpers (kept simple so a Node contract test can mirror them).
+# Dot-source the shared parsing helpers (also exercised by the real-PowerShell
+# Jest test). Keeping them out-of-line guarantees the test exercises the SAME
+# parser the script uses, instead of a TS mirror that can drift.
 #---
-function ConvertTo-NormalizedHash {
-    param([string]$Value)
-    # Strip colons and lowercase so "017B3F:BE:..." and "017b3fbe..." compare equal.
-    return ($Value -replace ':', '').Trim().ToLowerInvariant()
-}
-
-function Parse-ApkSignerOutput {
-    <#
-        Parses `apksigner verify --verbose --print-certs` output into a stable
-        object. Tolerates Windows CRLF and the spacing variation between Build
-        Tools minor versions (e.g. "SHA-256 digest:    " vs "SHA-256 digest: ").
-    #>
-    param([string]$Output)
-    $normalized = ($Output -replace "`r`n", "`n")
-    $lines = $normalized -split "`n" | ForEach-Object { $_.Trim() }
-
-    function Get-Field($pattern) {
-        foreach ($line in $lines) {
-            if ($line -match $pattern) {
-                # Take everything after the first colon.
-                $idx = $line.IndexOf(':')
-                if ($idx -ge 0) {
-                    return $line.Substring($idx + 1).Trim()
-                }
-            }
-        }
-        return $null
-    }
-
-    $verified = $false
-    foreach ($line in $lines) {
-        if ($line -match '^Verified\s+using\s+v2\s+scheme:\s*(true|false)') {
-            $verified = ($matches[1] -eq 'true')
-            break
-        }
-    }
-    # Some Build Tools emit "Verifies" instead of per-scheme lines; also accept
-    # the explicit "Verified using v1/v2/v3 scheme" series emitted by newer tools.
-    $verifiedAnySchemeLine = ($lines | Where-Object { $_ -match '^Verified\s+using\s+v\d+\s+scheme:' }).Count
-    if (-not $verified -and $verifiedAnySchemeLine -gt 0) {
-        # Fall back to the legacy "Verifies" summary only when per-scheme lines exist.
-        $verified = $true
-    }
-
-    $numberSigners = $null
-    foreach ($line in $lines) {
-        if ($line -match '^Number of signers:\s*(\d+)') {
-            $numberSigners = [int]$matches[1]
-            break
-        }
-    }
-
-    $certSha256 = $null
-    foreach ($line in $lines) {
-        if ($line -match 'SHA-256.*digest') {
-            $idx = $line.IndexOf(':')
-            if ($idx -ge 0) {
-                $certSha256 = $line.Substring($idx + 1).Trim()
-                break
-            }
-        }
-    }
-
-    return @{
-        Verified = $verified
-        VerifiedV2 = $verified
-        NumberSigners = $numberSigners
-        CertSha256 = $certSha256
-        RawLineCount = $lines.Count
-    }
-}
-
-function Parse-AaptBadging {
-    <#
-        Parses `aapt dump badging` first `package:` line. Returns a hashtable
-        with packageName / versionName / versionCode (strings).
-    #>
-    param([string]$Output)
-    $normalized = ($Output -replace "`r`n", "`n")
-    $packageLine = ($normalized -split "`n" | Where-Object { $_ -match '^package:' } | Select-Object -First 1)
-    if (-not $packageLine) {
-        return $null
-    }
-    $result = @{ packageName = $null; versionName = $null; versionCode = $null }
-    if ($packageLine -match "name='([^']*)'") { $result.packageName = $matches[1] }
-    if ($packageLine -match "versionName='([^']*)'") { $result.versionName = $matches[1] }
-    if ($packageLine -match "versionCode='([^']*)'") { $result.versionCode = $matches[1] }
-    return $result
-}
+. "$PSScriptRoot/apk-verification-parsers.ps1"
 
 #---
 # Main
@@ -177,12 +100,14 @@ if ($signerExit -ne 0) {
     throw "apksigner verify failed (exit $signerExit). Output:`n$signerOutput"
 }
 $parsed = Parse-ApkSignerOutput -Output $signerOutput
-# "Verified using v2 scheme: true" (preferred) or at minimum Verified=true.
-if (-not $parsed.Verified) {
-    throw "apksigner did not report Verified=true. Output:`n$signerOutput"
+# V2.5.15: VerifiedV2 comes ONLY from the explicit v2 scheme line. The output
+# MUST contain that line at all (V2LineFound), and it MUST say true. There is no
+# fallback: a v1-only signature (v2: false) or a missing v2 line both throw.
+if (-not $parsed.V2LineFound) {
+    throw "apksigner output does not contain an explicit v2 scheme result. Output:`n$signerOutput"
 }
 if ($parsed.VerifiedV2 -ne $true) {
-    throw "APK must be signed with v2 scheme. Output:`n$signerOutput"
+    throw "APK must be signed with APK Signature Scheme v2. Output:`n$signerOutput"
 }
 if ($parsed.NumberSigners -ne 1) {
     throw "APK must have exactly 1 signer (got $($parsed.NumberSigners)). Output:`n$signerOutput"
