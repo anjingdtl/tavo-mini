@@ -1,13 +1,33 @@
 import type { Chapter, ContextConfig } from '../../types/novel';
 import * as db from '../database';
 import { planStoryMemoryCoverage } from './storyMemoryCoverage';
-import { resolveUsableCheckpointForTarget } from './storyMemoryCheckpointEligibility';
+import {
+  resolveUsableCheckpointForTarget,
+  type CheckpointEligibilityResult,
+} from './storyMemoryCheckpointEligibility';
 import type { ProjectStoryMemoryRecord } from '../../data/repositories/storyMemoryRepository';
 import type { StoryMemoryCoveragePlan } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
 
+/**
+ * V2.5.14+ — carry the eligibility decision (reason + original status /
+ * through / target) out of prepare() so trace/diagnostics can explain WHY a
+ * checkpoint was not injected, without re-reading the DB. The eligibility is
+ * always the result of `resolveUsableCheckpointForTarget()` on the SAME
+ * snapshot that coverage / entity-weighting / Renderer consumed.
+ *
+ * `missing` reason maps to "尚无检查点"; `not_clean` / `empty_state` carry the
+ * original status; `future_or_same_position` carries the original through vs.
+ * target so the trace can say "检测到检查点截至第 N 章，当前目标为第 M 章".
+ */
 export interface PrepareStoryMemoryResult {
   checkpoint: ProjectStoryMemoryRecord | null;
+  /**
+   * The eligibility snapshot from the final `resolveUsableCheckpointForTarget`
+   * call inside prepare(). Reflects the snapshot actually used for coverage
+   * planning and (when usable) injection. Never re-reads the DB downstream.
+   */
+  checkpointEligibility: CheckpointEligibilityResult;
   coverage: StoryMemoryCoveragePlan;
   checkpointUpdated: boolean;
   blocked: boolean;
@@ -57,6 +77,8 @@ export async function prepareStoryMemoryForGeneration(
     return {
       // Only return checkpoint when usable for this target chapter.
       checkpoint: eligibility.usable ? eligibility.checkpoint : null,
+      // Same single eligibility decision — never re-read DB downstream.
+      checkpointEligibility: eligibility,
       coverage,
       checkpointUpdated: false,
       blocked: false,
@@ -68,6 +90,7 @@ export async function prepareStoryMemoryForGeneration(
   if (mode === 'preview') {
     return {
       checkpoint: eligibility.usable ? eligibility.checkpoint : null,
+      checkpointEligibility: eligibility,
       coverage,
       checkpointUpdated: false,
       blocked: coverage.uncoveredChapterIds.length > 0,
@@ -119,6 +142,7 @@ export async function prepareStoryMemoryForGeneration(
         checkpoint: refreshedEligibility.usable
           ? refreshedEligibility.checkpoint
           : null,
+        checkpointEligibility: refreshedEligibility,
         coverage,
         checkpointUpdated: true,
         blocked: true,
@@ -130,6 +154,7 @@ export async function prepareStoryMemoryForGeneration(
       checkpoint: refreshedEligibility.usable
         ? refreshedEligibility.checkpoint
         : null,
+      checkpointEligibility: refreshedEligibility,
       coverage,
       checkpointUpdated: true,
       blocked: false,
@@ -154,6 +179,7 @@ export async function prepareStoryMemoryForGeneration(
         checkpoint: latestEligibility.usable
           ? latestEligibility.checkpoint
           : null,
+        checkpointEligibility: latestEligibility,
         coverage,
         checkpointUpdated: false,
         blocked: false,
