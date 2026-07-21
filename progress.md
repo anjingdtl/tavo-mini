@@ -1,7 +1,7 @@
 # ShineWriter 流水线修订 — 进度交接
 
-> 最后更新：2026-07-21（4 模式真机 E2E 测试完成）
-> 状态：**全部完成**。Phase 0–4 代码 + 914 单元测试 + 模拟器 4 模式 E2E 全部通过。
+> 最后更新：2026-07-21（V2.5.17 发版完成）
+> 状态：**全部完成**。Phase 0–4 代码 + 914 单元测试 + 模拟器 4 模式 E2E + LLM 设置弹窗同步流水线 max_tokens + V2.5.17 Release APK 构建 + commit + push。
 
 ---
 
@@ -151,6 +151,8 @@
 2. 或者换非推理模型（如 `deepseek-chat`），不会输出 reasoning_content
 3. 流水线代码已通过 914 个单元测试，无需改动
 
+**[2026-07-21 更新] 已通过代码改造解决**：见下文「四、V2.5.17 后续改造」。
+
 ### 验收要点对照
 
 | 验收点 | 结果 |
@@ -173,9 +175,85 @@
 
 ---
 
-## 三、git 状态
+## 三、V2.5.17 后续改造（已完成）
+
+### 起因
+
+4 模式 E2E 测试发现的「full 模式 review/factCheck 被 reasoning_content 占满 1500 token 配额」问题，根因是 **LLM 设置页改 `context_window` 不会联动流水线 `pipeline_*_max_tokens`**。`pipeline_review_max_tokens` / `pipeline_factcheck_max_tokens` 默认值是 1500，OpenAI 兼容模式的用户从未有过机会调整。
+
+### 改造内容
+
+**1. 新增纯函数 + service 函数**（`src/services/contextAutoAllocator.ts`）
+
+- `computePipelineMaxTokensFromContextWindow(contextWindow)`：复用 `RATIO_OUTPUT(0.2)` × `50/15/15/20` 比例，与 `allocateContextBudget` 输出侧完全一致，但不需要资源计数
+- `syncPipelineMaxTokensFromContextWindow(contextWindow)`：仅写 4 个 `pipeline_*_max_tokens` settings key，不污染 `ContextConfig` / `pipelineMode` / `presetId` / 资料表
+
+**2. LLMSettingsScreen 改造**（`src/screens/LLMSettingsScreen.tsx`）
+
+- OpenAI 兼容模式补「上下文长度」「最大输出 Token」输入框（原本只在 `llama_cpp` 模式显示）
+- `save()` 检测 `context_window` 变化，弹 Alert 确认是否同步流水线 max_tokens
+- 用户点「同步」→ 调 `syncPipelineMaxTokensFromContextWindow` → Toast 显示 4 阶段新值
+
+**3. 新增 10 个单元测试**（`__tests__/contextAutoAllocator.test.ts`）
+
+- 6 个测 `computePipelineMaxTokensFromContextWindow` 纯函数（含与 `allocateContextBudget` 一致性、DeepSeek 65536 场景、极小值 floor）
+- 4 个测 `syncPipelineMaxTokensFromContextWindow` service 函数（`setSetting` 调用、不污染其他 key、抛错、返回值）
+
+### 验证结果
+
+- `npm run lint`：0 errors（8 个预存在 warning）
+- `npm run typecheck`：0 errors
+- 6 相关 suites / 86 tests 全通过
+  （`contextAutoAllocator` + `contextAutoRepository` + `pipelineRunner` + `pipelineMessages` + `pipelineContextSnapshot` + `pipelineContextIntegration`）
+- commit `da058a2` 已推送到 `main`
+
+### 实际效果（以 DeepSeek 65536 上下文为例）
+
+用户在 LLM 设置页把「上下文长度」从默认 4096 改成 65536 保存后：
+- 弹窗：「检测到上下文长度从 4096 改为 65536，是否自动调整流水线各阶段的 Max Tokens？」
+- 点「同步」→ Toast 显示 `draft=6554 / review=1966 / factCheck=1966 / proof=2621`
+- review/factCheck 从 1500 提到 1966，full 模式下 DeepSeek 推理模型的 reasoning_content 不再占满配额
+
+---
+
+## 四、V2.5.17 发版（已完成）
+
+### 版本升级
+
+- `package.json` version：`2.5.16` → `2.5.17`
+- `versionCode`：`2051600` → `2051700`
+- `src/constants/version.json`：由 `npm run prebuild` 自动生成
+- `CHANGELOG.md`：[Unreleased] → [2.5.17]，新增 Added / E2E Verification / Tests / Notes 四节
+- `README.md`：badge、当前版本行、V2.5.17 变更说明、APK 产物路径、验收状态
+
+### Release APK 构建与验收
+
+按 `docs/RELEASE_APK_BUILD.md` 标准构建步骤执行：
+
+1. 加载 `SHINE_WRITER_RELEASE_*` 用户级环境变量到当前 PowerShell 进程
+2. `npm run apk:release` → `BUILD SUCCESSFUL` → APK 复制到 `dist/apk/release/ShineWriter-V2.5.17-release.apk`
+3. `apksigner verify --verbose --print-certs` → 签名验证成功，证书 SHA-256 = `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`
+4. `zipalign -c -P 16 -v 4` → `Verification successful`
+5. `aapt dump badging` → `versionName=V2.5.17`、`versionCode=2051700`
+
+**实测验收数据**：
+
+| 验收项 | 实测结果 |
+|---|---|
+| apksigner verify | Verifies，Verified v2 = true |
+| 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
+| Number of signers | 1 |
+| zipalign -c | Verification successful |
+| versionName | V2.5.17 |
+| versionCode | 2051700 |
+| 文件大小 | 37,422,535 bytes（35.69 MB） |
+| APK SHA-256 | `97CE827B10E1F58A8BCEFA4C90F3D76D971DBC68D5E4BB70A68935241F695247` |
+| 构建日志 | `test-logs/pipeline-4mode/apk-release-v2517.log` |
+
+### git 状态
 
 - 分支：`main`
-- 本次新增 commit：`docs(pipeline): record 4-mode E2E test results on emulator`（仅 `progress.md`）
-- Phase 0–4 代码变更已在前序 commit `1966f10` 推送远程
+- V2.5.17 发版 commit：`chore(release): V2.5.17 — pipeline revamp closure + LLM settings sync`
+- 包含变更：`package.json` + `CHANGELOG.md` + `README.md` + `progress.md` + 3 个代码文件 + 1 个测试文件
+- 前序 commit：`1966f10`（Phase 0–4 代码）+ `da058a2`（LLM 设置弹窗同步流水线）
 - 本次 commit + push 后任务全部完成
