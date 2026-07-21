@@ -129,6 +129,11 @@ describe('chapter clear-content autosave serialization', () => {
     const { findByText, getByTestId } = render(
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
     );
+    // loadChapter() 在 useFocusEffect 内异步执行；waitFor 在高负载机器上可能
+    // 在 setChapter 提交前就放弃重试。先显式 flush 一次微任务队列，再进入断言。
+    await act(async () => {
+      await new Promise(resolve => setImmediate(resolve));
+    });
     const input = await waitFor(() => getByTestId('chapter-content-input'));
 
     fireEvent.changeText(input, '刚输入的最新正文');
@@ -147,7 +152,9 @@ describe('chapter clear-content autosave serialization', () => {
       expect(getByTestId('chapter-content-input').props.value).toBe(''),
     );
     expect(await findByText('已保存')).toBeTruthy();
-  });
+    // 全量并发跑时该用例接近默认 5000ms 上限（高负载机器上 loadChapter 异步链 +
+    // alert/autosave/revision 多轮 flush 叠加），显式放宽以避免 flaky 超时。
+  }, 15000);
 
   it('does not snapshot or clear when flushing autosave fails', async () => {
     mockUpdateChapter.mockRejectedValueOnce(new Error('autosave failed'));
