@@ -755,7 +755,7 @@ Tracked report: `docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`
 | --- | --- |
 | Version | **2.5.15** / Schema **16** |
 | Report | `docs/V2.5.15-ENGINEERING-RELIABILITY-FINAL-FIX-REPORT.md` |
-| Release commit | _（docs pin commit 回填）_ |
-| CI | _（推送后等待 Verify Run 完成回填：workflow head SHA == release commit；Version consistency / Lint / TypeScript / Jest with coverage / Android Debug build / Migration matrix 全 success）_ |
+| Release commit | `d1e85245e162f537c5a7f7283da7bbac8bdfc0a8` |
+| CI | [Run 29806417082](https://github.com/anjingdtl/tavo-mini/actions/runs/29806417082) — JS (incl. Version consistency / Lint / TypeScript / Jest with coverage) / Android Debug build / Migration matrix 全部 success on `d1e85245`（workflow head SHA == release commit；未被 concurrency 取消）。CI 在 ubuntu-latest 运行，真实 PowerShell 解析用例 `describe.skip`，本机 Windows 已执行 |
 | APK | 未构建/验证（当前环境缺正式 keystore / `SHINE_WRITER_RELEASE_*`；真实 PowerShell 解析函数测试在本机执行 + 脚本文本契约 + TS 镜像覆盖） |
 | Gates | lint 0 errors；typecheck clean；verify:version ok V2.5.15/2051500；test:ci 124 suites / 818 tests PASS；test:coverage 全部门禁通过（stmt 77.48 / branch 59.8 / fn 83.49 / line 79.01，未下降）；verify exit 0 |
