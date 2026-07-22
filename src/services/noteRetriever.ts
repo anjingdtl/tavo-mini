@@ -23,9 +23,9 @@ function buildCacheKey(
   projectId: number,
   query: RetrievalQuery,
   fragmentChars: number,
-  noteIds: number[],
+  noteIdentity: string,
 ): string {
-  return `${projectId}|${fragmentChars}|${noteIds.join(',')}|${query.chapterTitle}|${query.chapterSynopsis}|${query.previousEnding}|${query.userPrompt}`;
+  return `${projectId}|${fragmentChars}|${noteIdentity}|${query.chapterTitle}|${query.chapterSynopsis}|${query.previousEnding}|${query.userPrompt}`;
 }
 
 export function clearRetrievalCache(projectId?: number): void {
@@ -77,6 +77,55 @@ interface PrefilterResult {
   noteId: number;
   noteTitle: string;
   fragments: string[];
+}
+
+function fallbackToCandidates(
+  candidates: PrefilterResult[],
+  topK: number,
+): RetrievedNoteFragment[] {
+  return candidates.slice(0, topK).map(candidate => ({
+    noteId: candidate.noteId,
+    noteTitle: candidate.noteTitle,
+    fragment: candidate.fragments[0] || '',
+    relevance: '关键词匹配回退',
+  }));
+}
+
+/**
+ * The model ranks candidate excerpts; it must not become a source of note
+ * content itself. Keep only selected ids from the prefilter and only excerpts
+ * that are literal parts of the supplied candidate windows.
+ */
+function validateSelectedFragments(
+  selected: unknown,
+  candidates: PrefilterResult[],
+  fragmentChars: number,
+): RetrievedNoteFragment[] {
+  if (!Array.isArray(selected)) return [];
+  const candidateById = new Map(candidates.map(item => [item.noteId, item]));
+  const seenIds = new Set<number>();
+  const valid: RetrievedNoteFragment[] = [];
+
+  for (const item of selected) {
+    const noteId = Number((item as any)?.noteId);
+    const candidate = candidateById.get(noteId);
+    if (!candidate || seenIds.has(noteId)) continue;
+
+    const requestedFragment = String((item as any)?.fragment || '').trim();
+    const sourceFragment = candidate.fragments.find(fragment =>
+      requestedFragment ? fragment.includes(requestedFragment) : false,
+    );
+    if (!sourceFragment) continue;
+
+    seenIds.add(noteId);
+    valid.push({
+      noteId,
+      noteTitle: candidate.noteTitle,
+      fragment: requestedFragment.slice(0, fragmentChars),
+      relevance: String((item as any)?.relevance || ''),
+    });
+  }
+  return valid;
 }
 
 async function prefilterNotes(
@@ -138,8 +187,19 @@ export async function retrieveNoteFragments(
       : eligibleIds;
   if (noteIds.length === 0) return [];
 
+  const notesById = new Map(
+    projectNotes.map((note: any) => [Number(note.id), note]),
+  );
+  const noteIdentity = noteIds
+    .map(id => {
+      const note = notesById.get(id);
+      return `${id}@${String(note?.updated_at ?? '')}`;
+    })
+    .join(',');
+
   // 参与名单是缓存身份的一部分，切换项目开关或选择笔记后不能复用旧结果。
-  const cacheKey = buildCacheKey(projectId, query, fragmentChars, noteIds);
+  // 笔记的 updated_at 同样属于缓存身份；正文修改后，同一生成请求不得复用旧片段。
+  const cacheKey = buildCacheKey(projectId, query, fragmentChars, noteIdentity);
   const cached = cache.get(cacheKey);
   if (cached) {
     return cached.slice(0, topK);
@@ -180,20 +240,14 @@ ${fragmentText}
     );
     const jsonStr = extractJSON(result.text || '') || '{"selected":[]}';
     const parsed = JSON.parse(jsonStr);
-    fragments = (parsed.selected || []).map((item: any) => ({
-      noteId: Number(item.noteId),
-      noteTitle: String(item.noteTitle || ''),
-      fragment: String(item.fragment || '').slice(0, fragmentChars),
-      relevance: String(item.relevance || ''),
-    }));
+    const selected = Array.isArray(parsed?.selected) ? parsed.selected : [];
+    fragments = validateSelectedFragments(selected, candidates, fragmentChars);
+    if (selected.length > 0 && fragments.length === 0) {
+      fragments = fallbackToCandidates(candidates, topK);
+    }
   } catch {
     // 回退到关键词预筛结果
-    fragments = candidates.slice(0, topK).map(c => ({
-      noteId: c.noteId,
-      noteTitle: c.noteTitle,
-      fragment: c.fragments[0] || '',
-      relevance: '关键词匹配回退',
-    }));
+    fragments = fallbackToCandidates(candidates, topK);
   }
 
   // LRU 淘汰

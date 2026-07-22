@@ -66,6 +66,7 @@ export function createEmptyChapterMemoryPatch(input: {
     newRelationships: [],
     relationshipUpdates: [],
     mainlinePatch: {
+      assessment: { result: 'unchanged', reason: '本章无持续主线变化' },
       currentArcUpdate: {
         action: 'none',
         arcRef: '',
@@ -74,6 +75,7 @@ export function createEmptyChapterMemoryPatch(input: {
         evidenceQuote: '',
       },
       conflictUpserts: [],
+      conflictResolutions: [],
       threadOpens: [],
       threadUpdates: [],
       threadResolutions: [],

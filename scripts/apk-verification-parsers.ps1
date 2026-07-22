@@ -10,7 +10,8 @@
 #
 # CRITICAL INVARIANT (the bug this file fixes):
 #   `VerifiedV2` is sourced ONLY from the explicit
-#       `Verified using v2 scheme: true|false`
+#       `Verified using v2 scheme: true|false` (with an optional Build Tools
+#       descriptor such as `(APK Signature Scheme v2)`)
 #   line. There is NO fallback that treats "any `Verified using vN scheme` line
 #   exists" as v2 success. An APK signed with only v1 (v2: false) or an output
 #   that omits the v2 line entirely MUST NOT be accepted.
@@ -28,10 +29,12 @@ function Parse-ApkSignerOutput {
         object with independent fields:
 
           VerifiedAny    - diagnostic: true if any "Verified using vN scheme:
-                           true" line OR a legacy "Verifies" summary is present.
+                           true" line (optionally carrying a descriptor) OR a
+                           legacy "Verifies" summary is present.
                            NOT used by the acceptance decision.
           V2LineFound    - true iff the explicit
-                           "Verified using v2 scheme: true|false" line exists.
+                           "Verified using v2 scheme: true|false" line exists,
+                           with an optional descriptor before the colon.
           VerifiedV2     - the boolean from THAT v2 line ONLY. False when the
                            line is missing or says false. Never derived from
                            v1/v3/v4 lines.
@@ -49,7 +52,7 @@ function Parse-ApkSignerOutput {
     $v2LineFound = $false
     $verifiedV2 = $false
     foreach ($line in $lines) {
-        if ($line -match '^Verified\s+using\s+v2\s+scheme:\s*(true|false)') {
+        if ($line -match '^Verified\s+using\s+v2\s+scheme(?:\s+\([^)]*\))?:\s*(true|false)\s*$') {
             $v2LineFound = $true
             $verifiedV2 = ($matches[1] -eq 'true')
             break
@@ -59,7 +62,7 @@ function Parse-ApkSignerOutput {
     # --- VerifiedAny: diagnostic only (any scheme true, or legacy "Verifies") ---
     $verifiedAny = $false
     foreach ($line in $lines) {
-        if ($line -match '^Verified\s+using\s+v\d+\s+scheme:\s*true') {
+        if ($line -match '^Verified\s+using\s+v\d+(?:\.\d+)?\s+scheme(?:\s+\([^)]*\))?:\s*true\s*$') {
             $verifiedAny = $true
             break
         }
@@ -83,14 +86,13 @@ function Parse-ApkSignerOutput {
     }
 
     # --- cert SHA-256 digest ---
+    # Newer Build Tools prefixes this with "V2 Signer: certificate", so capture
+    # the value after the digest label rather than the first colon on the line.
     $certSha256 = $null
     foreach ($line in $lines) {
-        if ($line -match 'SHA-256.*digest') {
-            $idx = $line.IndexOf(':')
-            if ($idx -ge 0) {
-                $certSha256 = $line.Substring($idx + 1).Trim()
-                break
-            }
+        if ($line -match 'SHA-256.*?digest\s*:\s*(.+)$') {
+            $certSha256 = $matches[1].Trim()
+            break
         }
     }
 

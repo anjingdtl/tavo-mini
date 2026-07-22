@@ -54,14 +54,16 @@ export async function createProject(
     [name, mode, timestamp, timestamp],
   );
   const projectId = insertProjectResult.insertId!;
-  // ensureDefaultPreset 自己有事务，不能嵌套。所以拆成两步：
-  //   1) 先把 project 行 + 关联写入放进一个事务
-  //   2) 再调用 ensureDefaultPreset（它内部可能有自己的事务）
-  // 任何一步失败时，项目已建但不完整；UI 层可看到空项目并由用户决定删除/重试。
+  // 默认预设的 id 需要先解析出来，不能把 resource_id=0 当占位写入：
+  // 项目级查询按实际 preset id join，0 会使新项目的写作/流水线预设列表为空。
+  const defaultPresetId = await ensureDefaultPreset(database);
+
+  // 项目行和默认预设关联、首章一起写入。ensureDefaultPreset 可能独立写入全局
+  // 预设，因此不能嵌套到这个事务中；后续关联仍必须使用它返回的真实 id。
   await executeTransaction(database, [
     {
       sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
-      params: [projectId, 'preset', 0, 1], // 先占位：0 表示"未指定预设"，UI 上不会生效
+      params: [projectId, 'preset', defaultPresetId, 1],
     },
     {
       sql: 'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -77,8 +79,6 @@ export async function createProject(
       ],
     },
   ]);
-  // ensureDefaultPreset 不依赖当前事务，单独调用
-  await ensureDefaultPreset(database);
   await execute(database, 'UPDATE projects SET updated_at = ? WHERE id = ?', [
     timestamp,
     projectId,

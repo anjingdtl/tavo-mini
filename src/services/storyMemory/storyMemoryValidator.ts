@@ -1,5 +1,6 @@
 import type {
   ChapterMemoryPatchDraft,
+  MainlinePatch,
   StoryMemoryState,
 } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
@@ -190,13 +191,25 @@ function normalizeOptionalPatchFields(draft: ChapterMemoryPatchDraft): void {
   }
 
   const arc = draft.mainlinePatch.currentArcUpdate;
-  arc.action = ['none', 'start', 'update', 'complete'].includes(arc.action)
+  arc.action = ['none', 'start', 'update', 'complete', 'replace'].includes(
+    arc.action,
+  )
     ? arc.action
     : 'none';
   arc.arcRef = text(arc.arcRef);
   arc.name = text(arc.name);
   arc.summary = text(arc.summary);
   arc.evidenceQuote = text(arc.evidenceQuote);
+  const assessment = draft.mainlinePatch.assessment as unknown;
+  if (isRecord(assessment)) {
+    const result = text(assessment.result);
+    draft.mainlinePatch.assessment = {
+      result: result === 'changed' ? 'changed' : 'unchanged',
+      reason: text(assessment.reason),
+    };
+  } else {
+    delete draft.mainlinePatch.assessment;
+  }
   if (draft.mainlinePatch.currentObjective) {
     draft.mainlinePatch.currentObjective.value = text(
       draft.mainlinePatch.currentObjective.value,
@@ -227,6 +240,12 @@ function normalizeOptionalPatchFields(draft: ChapterMemoryPatchDraft): void {
   }
   for (const item of draft.mainlinePatch.threadResolutions) {
     item.threadRef = text(item.threadRef);
+    item.resolution = text(item.resolution);
+    item.evidenceQuote = text(item.evidenceQuote);
+  }
+  draft.mainlinePatch.conflictResolutions ??= [];
+  for (const item of draft.mainlinePatch.conflictResolutions) {
+    item.conflictRef = text(item.conflictRef);
     item.resolution = text(item.resolution);
     item.evidenceQuote = text(item.evidenceQuote);
   }
@@ -528,6 +547,7 @@ export function validatePatchShape(
       '记忆补丁缺少剧情弧变更。',
     );
   }
+  value.mainlinePatch.conflictResolutions ??= [];
   for (const key of [
     'keywords',
     'events',
@@ -541,6 +561,7 @@ export function validatePatchShape(
   }
   for (const key of [
     'conflictUpserts',
+    'conflictResolutions',
     'threadOpens',
     'threadUpdates',
     'threadResolutions',
@@ -565,6 +586,7 @@ function collectEvidenceOperations(draft: ChapterMemoryPatchDraft): unknown[] {
       ? [draft.mainlinePatch.currentObjective]
       : []),
     ...draft.mainlinePatch.conflictUpserts,
+    ...draft.mainlinePatch.conflictResolutions,
     ...draft.mainlinePatch.threadOpens,
     ...draft.mainlinePatch.threadUpdates,
     ...draft.mainlinePatch.threadResolutions,
@@ -686,8 +708,7 @@ function findRecoverableEvidenceQuote(
     );
     if (
       !best ||
-      quoteMatch * 4 + contextMatch >
-        best.quoteMatch * 4 + best.contextMatch
+      quoteMatch * 4 + contextMatch > best.quoteMatch * 4 + best.contextMatch
     ) {
       best = { segment, quoteMatch, contextMatch };
     }
@@ -745,7 +766,12 @@ export function recoverPatchEvidence(
   draft.mainlinePatch.conflictUpserts = recoverList(
     draft.mainlinePatch.conflictUpserts,
   );
-  draft.mainlinePatch.threadOpens = recoverList(draft.mainlinePatch.threadOpens);
+  draft.mainlinePatch.conflictResolutions = recoverList(
+    draft.mainlinePatch.conflictResolutions ?? [],
+  );
+  draft.mainlinePatch.threadOpens = recoverList(
+    draft.mainlinePatch.threadOpens,
+  );
   draft.mainlinePatch.threadUpdates = recoverList(
     draft.mainlinePatch.threadUpdates,
   );
@@ -763,7 +789,10 @@ export function recoverPatchEvidence(
   );
 
   const arc = draft.mainlinePatch.currentArcUpdate;
-  if (arc.action !== 'none' && !validateEvidenceQuote(chapterContent, arc.evidenceQuote)) {
+  if (
+    arc.action !== 'none' &&
+    !validateEvidenceQuote(chapterContent, arc.evidenceQuote)
+  ) {
     const quote = findRecoverableEvidenceQuote(arc, chapterContent);
     if (quote) {
       arc.evidenceQuote = quote;
@@ -778,7 +807,10 @@ export function recoverPatchEvidence(
     }
   }
   const objective = draft.mainlinePatch.currentObjective;
-  if (objective && !validateEvidenceQuote(chapterContent, objective.evidenceQuote)) {
+  if (
+    objective &&
+    !validateEvidenceQuote(chapterContent, objective.evidenceQuote)
+  ) {
     const quote = findRecoverableEvidenceQuote(objective, chapterContent);
     if (quote) {
       objective.evidenceQuote = quote;
@@ -842,8 +874,8 @@ export function validateEntityReferences(
       characterRefs.has(relationship.toRef) &&
       relationship.fromRef !== relationship.toRef,
   );
-  draft.relationshipUpdates = draft.relationshipUpdates.filter(
-    update => Boolean(state.relationships[update.relationshipRef]),
+  draft.relationshipUpdates = draft.relationshipUpdates.filter(update =>
+    Boolean(state.relationships[update.relationshipRef]),
   );
   const threadRefs = new Set([
     ...Object.keys(state.mainline.openThreads),
@@ -859,13 +891,87 @@ export function validateEntityReferences(
         (Boolean(state.mainline.openThreads[resolution.threadRef]) ||
           threadRefs.has(resolution.threadRef)),
     );
+  draft.mainlinePatch.conflictResolutions = (
+    draft.mainlinePatch.conflictResolutions ?? []
+  ).filter(
+    resolution =>
+      Boolean(resolution.conflictRef) &&
+      Boolean(state.mainline.activeConflicts[resolution.conflictRef]),
+  );
+
+  const arc = draft.mainlinePatch.currentArcUpdate;
+  if (
+    ['update', 'complete', 'replace'].includes(arc.action) &&
+    (!state.mainline.currentArc || arc.arcRef !== state.mainline.currentArc.id)
+  ) {
+    throw new StoryMemoryError(
+      'MEMORY_ENTITY_REFERENCE_INVALID',
+      '剧情弧更新、完成或替换必须引用当前剧情弧的精确 ID。',
+    );
+  }
+  if (arc.action === 'start' && state.mainline.currentArc) {
+    throw new StoryMemoryError(
+      'MEMORY_ENTITY_REFERENCE_INVALID',
+      '已有当前剧情弧时必须使用 update、complete 或 replace，不能直接 start 覆盖。',
+    );
+  }
+}
+
+/** Whether the patch changes one of the five user-visible mainline fields. */
+export function hasMainlineStateMutation(patch: MainlinePatch): boolean {
+  return Boolean(
+    patch.currentArcUpdate.action !== 'none' ||
+      patch.currentObjective ||
+      patch.conflictUpserts.length ||
+      patch.conflictResolutions?.length ||
+      0 ||
+      patch.threadOpens.length ||
+      patch.threadUpdates.length ||
+      patch.threadResolutions.length ||
+      patch.foreshadowingUpserts.length,
+  );
+}
+
+export function validateMainlineAssessment(
+  patch: MainlinePatch,
+  requireAssessment = false,
+): void {
+  if (!requireAssessment) return;
+  const assessment = patch.assessment;
+  if (!assessment) {
+    if (!requireAssessment) return; // legacy persisted patches remain replayable.
+    throw new StoryMemoryError(
+      'MEMORY_PATCH_SCHEMA_INVALID',
+      '故事主线 assessment 缺失，无法判断本章是否存在持续性变化。',
+    );
+  }
+  if (!assessment.reason.trim()) {
+    if (!requireAssessment) return;
+    throw new StoryMemoryError(
+      'MEMORY_PATCH_SCHEMA_INVALID',
+      '故事主线 assessment 必须说明本章是否存在持续性变化。',
+    );
+  }
+  const changed = hasMainlineStateMutation(patch);
+  if (
+    (assessment.result === 'changed' && !changed) ||
+    (assessment.result === 'unchanged' && changed)
+  ) {
+    throw new StoryMemoryError(
+      'MEMORY_PATCH_SCHEMA_INVALID',
+      '故事主线 assessment 与实际主线操作不一致。',
+    );
+  }
 }
 
 export function validateChapterMemoryPatch(
   value: unknown,
   state: StoryMemoryState,
   chapterContent: string,
-  options: { recoverEvidence?: boolean } = {},
+  options: {
+    recoverEvidence?: boolean;
+    requireMainlineAssessment?: boolean;
+  } = {},
 ): ChapterMemoryPatchDraft {
   validatePatchShape(value);
   normalizeOptionalPatchFields(value);
@@ -874,5 +980,9 @@ export function validateChapterMemoryPatch(
   validateEntityReferences(value, state);
   if (options.recoverEvidence) recoverPatchEvidence(value, chapterContent);
   validatePatchEvidence(value, chapterContent);
+  validateMainlineAssessment(
+    value.mainlinePatch,
+    options.requireMainlineAssessment,
+  );
   return value;
 }

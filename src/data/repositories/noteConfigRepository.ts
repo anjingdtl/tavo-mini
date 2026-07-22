@@ -35,15 +35,56 @@ function safeJsonParse(text: string, fallback: any): any {
   }
 }
 
+function normalizeMode(value: unknown): NoteMode {
+  return value === 'style' || value === 'retrieval' || value === 'none'
+    ? value
+    : 'none';
+}
+
+function normalizeStyleWeights(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized: Record<string, number> = {};
+  for (const [key, weight] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    if (typeof weight === 'number' && Number.isFinite(weight)) {
+      normalized[key] = weight;
+    }
+  }
+  return normalized;
+}
+
+function normalizeTopK(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 5;
+}
+
+function normalizeFragmentChars(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1000;
+}
+
+function normalizeNoteIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set<number>();
+  for (const item of value) {
+    const id = Number(item);
+    if (Number.isSafeInteger(id) && id > 0) unique.add(id);
+  }
+  return Array.from(unique);
+}
+
 function parseProjectNoteConfigRow(row: Row): ProjectNoteConfig {
   return {
     projectId: Number(row.project_id),
-    mode: row.mode as NoteMode,
-    styleWeights: safeJsonParse(row.style_weights, {}),
-    // 11.10 修复：原 || 把 0 当 falsy 回退到 5，改用 ?? 保留显式 0
-    retrievalTopK: Number(row.retrieval_top_k) ?? 5,
-    retrievalFragmentChars: Number(row.retrieval_fragment_chars) || 1000,
-    enabledNoteIds: safeJsonParse(row.enabled_note_ids, []),
+    mode: normalizeMode(row.mode),
+    styleWeights: normalizeStyleWeights(safeJsonParse(row.style_weights, {})),
+    // 0 是合法的“本次不召回”；NaN 不能透传到 Context / 缓存键。
+    retrievalTopK: normalizeTopK(row.retrieval_top_k),
+    retrievalFragmentChars: normalizeFragmentChars(
+      row.retrieval_fragment_chars,
+    ),
+    enabledNoteIds: normalizeNoteIds(safeJsonParse(row.enabled_note_ids, [])),
     updatedAt: row.updated_at,
   };
 }
@@ -90,15 +131,18 @@ async function writeProjectNoteConfig(
   // （下一句写会覆盖上一句写，最终态一致）。
   const database = await openDatabase();
   const existing = await getProjectNoteConfig(projectId);
-  const mode = config.mode ?? existing?.mode ?? 'none';
+  const mode = normalizeMode(config.mode ?? existing?.mode);
   const styleWeights = JSON.stringify(
-    config.styleWeights ?? existing?.styleWeights ?? {},
+    normalizeStyleWeights(config.styleWeights ?? existing?.styleWeights),
   );
-  const retrievalTopK = config.retrievalTopK ?? existing?.retrievalTopK ?? 5;
-  const retrievalFragmentChars =
-    config.retrievalFragmentChars ?? existing?.retrievalFragmentChars ?? 1000;
+  const retrievalTopK = normalizeTopK(
+    config.retrievalTopK ?? existing?.retrievalTopK,
+  );
+  const retrievalFragmentChars = normalizeFragmentChars(
+    config.retrievalFragmentChars ?? existing?.retrievalFragmentChars,
+  );
   const enabledNoteIds = JSON.stringify(
-    config.enabledNoteIds ?? existing?.enabledNoteIds ?? [],
+    normalizeNoteIds(config.enabledNoteIds ?? existing?.enabledNoteIds),
   );
   const updatedAt = new Date().toISOString();
   await execute(

@@ -52,6 +52,7 @@ function baseBatch(): StoryMemoryBatchPatchDraft {
         evidence: [],
       },
       conflictUpserts: [],
+      conflictResolutions: [],
       threadOpens: [],
       threadUpdates: [],
       threadResolutions: [],

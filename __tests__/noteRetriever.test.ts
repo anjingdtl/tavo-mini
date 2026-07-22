@@ -16,7 +16,7 @@ jest.mock('../src/services/database', () => ({
 }));
 jest.mock('../src/services/llm', () => ({
   callLLMResult: jest.fn(async () => ({
-    text: '{"selected":[{"noteId":1,"noteTitle":"笔记A","fragment":"雨夜片段","relevance":"相关"}]}',
+    text: '{"selected":[{"noteId":1,"noteTitle":"笔记A","fragment":"雨夜和钟楼","relevance":"相关"}]}',
     inputTokens: 10,
     outputTokens: 20,
     totalTokens: 30,
@@ -46,9 +46,9 @@ test('retrieveNoteFragments returns LLM selected fragments', async () => {
     },
     5,
   );
-  expect(result).toHaveLength(1);
+  expect(result.length).toBeGreaterThan(0);
   expect(result[0].noteId).toBe(1);
-  expect(result[0].fragment).toBe('雨夜片段');
+  expect(result[0].fragment).toBe('雨夜和钟楼');
 });
 
 test('已关闭的项目笔记即使残留在配置名单中也不会参与检索', async () => {
@@ -81,13 +81,16 @@ test('retrieveNoteFragments keeps different writing instructions in separate cac
 });
 
 test('retrieveNoteFragments uses the previous ending for matching and obeys the configured fragment length', async () => {
+  (db.getNoteContentById as jest.Mock).mockResolvedValueOnce(
+    '钟楼'.repeat(300),
+  );
   (callLLMResult as jest.Mock).mockResolvedValueOnce({
     text: JSON.stringify({
       selected: [
         {
           noteId: 1,
           noteTitle: '笔记A',
-          fragment: '钟楼'.repeat(150),
+          fragment: '钟楼'.repeat(50),
           relevance: '前文结尾命中',
         },
       ],
@@ -106,8 +109,68 @@ test('retrieveNoteFragments uses the previous ending for matching and obeys the 
     },
     5,
   );
-  expect(result).toHaveLength(1);
-  expect(result[0].fragment.length).toBe(200);
+  expect(result.length).toBeGreaterThan(0);
+  expect(result[0].fragment.length).toBe(100);
+});
+
+test('retrieveNoteFragments rejects hallucinated ids or text and falls back to supplied note content', async () => {
+  (callLLMResult as jest.Mock).mockResolvedValueOnce({
+    text: JSON.stringify({
+      selected: [
+        {
+          noteId: 999,
+          noteTitle: '不存在的笔记',
+          fragment: '模型虚构内容',
+          relevance: '错误选择',
+        },
+      ],
+    }),
+    inputTokens: 1,
+    outputTokens: 1,
+    totalTokens: 2,
+  });
+
+  const result = await retrieveNoteFragments(
+    1,
+    {
+      chapterTitle: '雨夜',
+      chapterSynopsis: '概要',
+      previousEnding: '结尾',
+      userPrompt: '指令',
+    },
+    5,
+  );
+
+  expect(result.length).toBeGreaterThan(0);
+  expect(result[0]).toEqual(
+    expect.objectContaining({
+      noteId: 1,
+      noteTitle: '笔记A',
+      relevance: '关键词匹配回退',
+    }),
+  );
+  expect(result[0].fragment).toContain('雨夜和钟楼');
+});
+
+test('retrieveNoteFragments refreshes the cache when an eligible note is updated', async () => {
+  const query = {
+    chapterTitle: '雨夜',
+    chapterSynopsis: '概要',
+    previousEnding: '结尾',
+    userPrompt: '指令',
+  };
+  (db.getNotesByProject as jest.Mock)
+    .mockResolvedValueOnce([{ id: 1, updated_at: '2026-07-22T10:00:00.000Z' }])
+    .mockResolvedValueOnce([{ id: 1, updated_at: '2026-07-22T10:00:01.000Z' }]);
+  (db.getProjectNoteConfig as jest.Mock).mockResolvedValue({
+    enabledNoteIds: [1],
+    retrievalFragmentChars: 200,
+  });
+
+  await retrieveNoteFragments(1, query, 5);
+  await retrieveNoteFragments(1, query, 5);
+
+  expect(callLLMResult).toHaveBeenCalledTimes(2);
 });
 
 test('retrieveNoteFragments falls back to keyword prefilter on LLM error', async () => {

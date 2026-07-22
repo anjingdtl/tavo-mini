@@ -31,7 +31,7 @@ export async function getCharactersByProject(
      FROM characters c
      JOIN project_resources pr ON pr.resource_id = c.id AND pr.resource_type = 'character'
      LEFT JOIN character_collections cc ON cc.id = c.collection_id
-     WHERE pr.project_id = ? AND pr.enabled = 1 AND COALESCE(cc.enabled, 1) = 1
+     WHERE pr.project_id = ? AND pr.enabled = 1
      ORDER BY c.id ASC`,
     [projectId],
   );
@@ -54,11 +54,16 @@ export async function getCharacterCollections(
     return all<Row>('SELECT * FROM character_collections ORDER BY id DESC');
   }
   return all<Row>(
-    `SELECT cc.*, COUNT(c.id) AS character_count
+    `SELECT cc.*, COUNT(c.id) AS character_count,
+            CASE WHEN COUNT(c.id) = 0 THEN 1
+                 WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
+                 ELSE 0 END AS enabled_for_project
      FROM character_collections cc
      LEFT JOIN characters c ON c.collection_id = cc.id
+     LEFT JOIN project_resources pr ON pr.resource_id = c.id AND pr.resource_type = 'character' AND pr.project_id = ?
      GROUP BY cc.id
      ORDER BY cc.id DESC`,
+    [projectId],
   );
 }
 
@@ -147,13 +152,9 @@ export async function setCharacterCollectionEnabledForProject(
     'SELECT id FROM characters WHERE collection_id = ?',
     [collectionId],
   );
-  const stmts: Array<{ sql: string; params: any[] }> = [
-    {
-      sql: 'UPDATE character_collections SET enabled = ? WHERE id = ?',
-      params: [enabled ? 1 : 0, collectionId],
-    },
-  ];
-  // projectId=0 表示尚未选择项目，只更新合集全局开关，不写 project_resources
+  const stmts: Array<{ sql: string; params: any[] }> = [];
+  // 合集属于全局资料库；“当前项目使用”必须只改 project_resources，不能把
+  // 另一个项目的角色上下文一并关闭。
   if (projectId > 0) {
     for (const row of rows) {
       stmts.push({

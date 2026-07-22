@@ -34,13 +34,23 @@ describe('memory summary prompt (V2.5.8)', () => {
 
   it('defaults to about 300 characters and keeps a single API call', async () => {
     const callLLM = jest.fn(async () => '林岚发现钟楼暗门与银钥匙。');
-    const { generateMemorySummary, updateChapter } = await loadGenerator(callLLM);
+    const { generateMemorySummary, updateChapter } = await loadGenerator(
+      callLLM,
+    );
 
     await expect(generateMemorySummary(1)).resolves.toBe(
       '林岚发现钟楼暗门与银钥匙。',
     );
 
     expect(callLLM).toHaveBeenCalledTimes(1);
+    expect(callLLM).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.any(Number),
+      expect.objectContaining({
+        scenario: 'memory_summary',
+        projectId: 7,
+      }),
+    );
     const callArgs = callLLM.mock.calls[0] as unknown as [
       Array<{ role: string; content: string }>,
       number,
@@ -50,7 +60,7 @@ describe('memory summary prompt (V2.5.8)', () => {
     const maxTokens = callArgs[1];
     const config = callArgs[2];
     expect(maxTokens).toBe(700);
-    expect(config).toEqual({ scenario: 'memory_summary' });
+    expect(config).toEqual({ scenario: 'memory_summary', projectId: 7 });
 
     const userContent = messages.find(m => m.role === 'user')!
       .content as string;
