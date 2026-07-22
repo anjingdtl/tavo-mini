@@ -85,9 +85,19 @@ const ORPHAN_CHECKS: Array<{
     sql: 'SELECT we.id FROM worldbook_entries we LEFT JOIN projects p ON p.id = we.project_id WHERE p.id IS NULL LIMIT 1',
   },
   {
+    label: 'note_collections.project_id',
+    tables: ['note_collections', 'projects'],
+    sql: 'SELECT nc.id FROM note_collections nc LEFT JOIN projects p ON p.id = nc.project_id WHERE p.id IS NULL LIMIT 1',
+  },
+  {
     label: 'notes.project_id',
     tables: ['notes', 'projects'],
     sql: 'SELECT n.id FROM notes n LEFT JOIN projects p ON p.id = n.project_id WHERE p.id IS NULL LIMIT 1',
+  },
+  {
+    label: 'notes.collection_id',
+    tables: ['notes', 'note_collections'],
+    sql: 'SELECT n.id FROM notes n LEFT JOIN note_collections nc ON nc.id = n.collection_id WHERE n.collection_id <> 0 AND nc.id IS NULL LIMIT 1',
   },
   {
     label: 'presets.project_id',
