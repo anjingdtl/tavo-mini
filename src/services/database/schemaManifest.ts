@@ -184,10 +184,25 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     restoreOrder: 80,
   },
   {
+    name: 'note_collections',
+    columns: [
+      'id',
+      'project_id',
+      'name',
+      'enabled',
+      'max_tokens',
+      'estimated_tokens',
+      'created_at',
+    ],
+    backup: true,
+    restoreOrder: 85,
+  },
+  {
     name: 'notes',
     columns: [
       'id',
       'project_id',
+      'collection_id',
       'title',
       'content',
       'max_tokens',
@@ -195,6 +210,7 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'created_at',
       'updated_at',
     ],
+    indexes: ['idx_notes_collection_id'],
     backup: true,
     restoreOrder: 90,
   },

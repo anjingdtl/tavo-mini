@@ -13,9 +13,13 @@ jest.mock('../src/services/database', () => ({
     { id: 9, name: '角色合集 A', enabled: 1, character_count: 1, estimated_tokens: 3, max_tokens: 50000 },
   ]),
   getWorldbookCollections: jest.fn(async () => []),
+  getNoteCollections: jest.fn(async () => []),
   updateWorldbookEntry: jest.fn(async () => undefined),
   getProjectNoteConfig: jest.fn(async () => null),
   setCharacterCollectionEnabledForProject: jest.fn(async () => undefined),
+  setNoteCollectionEnabledForProject: jest.fn(async () => undefined),
+  updateNoteCollection: jest.fn(async () => undefined),
+  deleteNoteCollection: jest.fn(async () => undefined),
 }));
 
 jest.mock('../src/services/fileImport', () => ({
@@ -164,6 +168,27 @@ describe('ResourceLibrary UI', () => {
       start: 13,
       end: 13,
     });
+  });
+
+  it('opens an imported note collection and exposes a parent switch', async () => {
+    (db.getNoteCollections as jest.Mock).mockResolvedValue([
+      { id: 12, name: '超长设定', enabled: 1, note_count: 2, estimated_tokens: 60000 },
+    ]);
+    (db.getAllNotes as jest.Mock).mockResolvedValue([
+      { id: 21, collection_id: 12, title: '超长设定 (1/2)', content: '上半部分', enabled_for_project: 1, collection_enabled: 1 },
+      { id: 22, collection_id: 12, title: '超长设定 (2/2)', content: '下半部分', enabled_for_project: 0, collection_enabled: 1 },
+    ]);
+
+    const { findByText, getByText, getByTestId } = render(<ResourceLibrary />);
+    await findByText('导入角色卡');
+    fireEvent.press(getByText('笔记'));
+    expect(await findByText('超长设定')).toBeTruthy();
+    fireEvent(getByTestId('note-collection-toggle-12'), 'valueChange', false);
+    expect(db.setNoteCollectionEnabledForProject).toHaveBeenCalledWith(1, 12, false);
+    fireEvent.press(getByText('打开'));
+    expect(await findByText('超长设定 (1/2)')).toBeTruthy();
+    expect(await findByText('超长设定 (2/2)')).toBeTruthy();
+    expect(await findByText('返回合集')).toBeTruthy();
   });
 
   it('renders the list container with scrollable minHeight style', async () => {
