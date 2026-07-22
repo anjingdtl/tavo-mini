@@ -14,13 +14,13 @@ describe('schema 16 story memory checkpoint migration', () => {
     expect(result).toEqual(
       expect.objectContaining({
         fromVersion: 15,
-        toVersion: 16,
-        migrationsRun: 1,
+        toVersion: SCHEMA_VERSION,
+        migrationsRun: SCHEMA_VERSION - 15,
       }),
     );
     expect(mock.schemas.has('project_story_memory_policy')).toBe(true);
     expect(mock.schemas.has('story_memory_batches')).toBe(true);
-    expect(mock.settings.get('schema_version')).toBe('16');
+    expect(mock.settings.get('schema_version')).toBe(String(SCHEMA_VERSION));
   });
 
   it('is idempotent and does not rewrite existing story memory tables', async () => {
@@ -49,7 +49,7 @@ describe('schema 16 story memory checkpoint migration', () => {
       'CREATE TABLE IF NOT EXISTS project_story_memory_policy',
     );
     expect(joined).toContain('CREATE TABLE IF NOT EXISTS story_memory_batches');
-    expect(SCHEMA_VERSION).toBe(16);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(16);
     for (const tableName of [
       'project_story_memory_policy',
       'story_memory_batches',

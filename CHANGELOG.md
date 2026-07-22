@@ -6,6 +6,10 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **超大 TXT 笔记自动合集**：导入内容超过单条笔记上限时，按章节或自然换行拆分，并自动归入同名笔记合集。资料库新增合集层、父级总开关与分片子开关；关闭父级不会清除各分片原有状态。Schema 升级到 17，备份与恢复同步支持 `note_collections` 和 `notes.collection_id`。
+
 ## [2.5.17] - 2026-07-21
 
 ### Added

@@ -592,8 +592,8 @@ export async function importWorldBooks(
 export async function importNotes(
   projectId: number,
   files: PickedFile[],
-): Promise<BatchImportResult<{ firstId: number; createdCount: number }>> {
-  const success: Array<{ fileName: string; id: { firstId: number; createdCount: number } }> = [];
+): Promise<BatchImportResult<{ firstId: number; createdCount: number; collectionId?: number }>> {
+  const success: Array<{ fileName: string; id: { firstId: number; createdCount: number; collectionId?: number } }> = [];
   const failed: Array<{ fileName: string; error: string }> = [];
   for (const file of files) {
     try {
