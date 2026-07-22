@@ -1094,6 +1094,22 @@ async function runChapterPipelineInner(
     reviewSettled.status === 'fulfilled' ? reviewSettled.value : '';
   const factCheckText =
     factCheckSettled.status === 'fulfilled' ? factCheckSettled.value : '';
+  // 防御性诊断：Promise.allSettled 的 reject 不应被静默吞掉。
+  // runReviewStage / runFactCheckStage 内部已 catch 大部分异常并返回 ''，
+  // 但参数求值（如 buildFactCheckContextFromSnapshot）若抛异常会让 Promise reject，
+  // 此处打印 reason 便于未来排查"factCheck 被跳过"类问题。
+  if (reviewSettled.status === 'rejected') {
+    console.warn(
+      '[pipeline] review stage rejected:',
+      reviewSettled.reason?.message || reviewSettled.reason,
+    );
+  }
+  if (factCheckSettled.status === 'rejected') {
+    console.warn(
+      '[pipeline] factCheck stage rejected:',
+      factCheckSettled.reason?.message || factCheckSettled.reason,
+    );
+  }
 
   console.log(
     `[pipeline] review=${reviewText.trim() ? 'success' : 'failed'} factcheck=${factCheckText.trim() ? 'success' : 'failed'}`,
