@@ -464,9 +464,17 @@ async function runFactCheckStage(
   }
 }
 
+/** Structured result from the proof stage — callers must not complete on failure. */
+export interface ProofStageResult {
+  text: string;
+  succeeded: boolean;
+  error?: string;
+}
+
 /**
  * Proof / final-revision stage. Never uses reasoning_content as the final
- * manuscript. Empty content → failed + draft fallback.
+ * manuscript. Empty content / reasoning-only / request error → failed + draft
+ * fallback with succeeded=false (caller must not completeTask).
  */
 async function runProofStage(
   args: StageCommonArgs & {
@@ -477,7 +485,7 @@ async function runProofStage(
     maxTokens: number;
     preset: Preset | null;
   },
-): Promise<string> {
+): Promise<ProofStageResult> {
   const { taskId, projectId, requestConfig, abortSignal } = args;
   const store = usePipelineTaskStore.getState();
   if (abortSignal?.aborted || checkCancelled(taskId)) {
@@ -513,13 +521,14 @@ async function runProofStage(
       const hasReasoning =
         typeof result.reasoningText === 'string' &&
         result.reasoningText.trim().length > 0;
+      const error = hasReasoning
+        ? '终审仅返回推理内容，已回退到初稿'
+        : '终审输出为空，已回退到初稿';
       store.updateTaskStage(taskId, {
         stage: 'proof',
         text: args.draftText,
         status: 'failed',
-        error: hasReasoning
-          ? '终审仅返回推理内容，已回退到初稿'
-          : '终审输出为空，已回退到初稿',
+        error,
         tokens: {
           input: result.inputTokens,
           output: result.outputTokens,
@@ -527,7 +536,7 @@ async function runProofStage(
         },
         durationMs: Date.now() - start,
       });
-      return args.draftText;
+      return { text: args.draftText, succeeded: false, error };
     }
     store.updateTaskStage(taskId, {
       stage: 'proof',
@@ -540,7 +549,7 @@ async function runProofStage(
       },
       durationMs: Date.now() - start,
     });
-    return content;
+    return { text: content, succeeded: true };
   } catch (error: any) {
     if (isAbortError(error, abortSignal)) {
       store.cancelTask(taskId);
@@ -549,14 +558,15 @@ async function runProofStage(
     }
     // SPEC §13.5: proof failure falls back to the draft, marked as failed so
     // the UI can distinguish "real proof" from "fallback draft".
+    const message = error.message || '终审失败，已回退到初稿';
     store.updateTaskStage(taskId, {
       stage: 'proof',
       text: args.draftText,
       status: 'failed',
-      error: error.message || '终审失败，已回退到初稿',
+      error: message,
       durationMs: Date.now() - start,
     });
-    return args.draftText;
+    return { text: args.draftText, succeeded: false, error: message };
   }
 }
 
@@ -652,17 +662,18 @@ async function runChapterPipelineInner(
   const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
 
   // 通知栏进度计算封装到 utils/stages，便于测试与 resume 共用。
-  // 阶段"开始"时跳到该阶段起点，saveDraftAndComplete 时设 100，
+  // 阶段"开始"时跳到该阶段起点，成功 complete / 降级保留初稿 时设 100，
   // 让用户在通知栏看到进度条单调递增。
   const pct = (completedStages: number) =>
     getStageProgressPercent(config.pipelineMode, completedStages);
 
   /**
-   * Persist draft/final text and close the task.
-   * `degraded: true` is for audit-failed / proof-skipped paths: keep prior
-   * failTask error, never send a "已写完" success notification.
+   * Persist draft content (saveDraft) then set task terminal state.
+   * Success path: completeTask + "已完成" notify.
+   * Degraded path (audit/proof failed): setTaskFinalText only — never
+   * completeTask (would overwrite failed), never success notify.
    */
-  const saveDraftAndComplete = async (
+  const saveDraftAndFinalize = async (
     text: string,
     options?: { degraded?: boolean },
   ) => {
@@ -679,12 +690,14 @@ async function runChapterPipelineInner(
     } catch {
       /* best-effort */
     }
-    store.completeTask(taskId, text);
     if (options?.degraded) {
+      // Keep status/error from failTask; only attach retained draft text.
+      store.setTaskFinalText(taskId, text);
       await PipelineForeground.updateProgress(taskId, '已保留初稿', 100);
       await PipelineForeground.stop(taskId);
       return;
     }
+    store.completeTask(taskId, text);
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
     await PipelineForeground.notifyComplete(
       taskId,
@@ -692,6 +705,25 @@ async function runChapterPipelineInner(
       '已写完，点击查看',
     );
     await PipelineForeground.stop(taskId);
+  };
+
+  /** Finish after proof: only complete when proof actually succeeded. */
+  const finalizeAfterProof = async (proof: ProofStageResult) => {
+    if (abortSignal?.aborted || checkCancelled(taskId)) return;
+    if (!proof.succeeded) {
+      store.failTask(
+        taskId,
+        proof.error || '终审失败，已保留初稿，未生成终审稿。',
+      );
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        proof.error || '终审失败，已保留初稿',
+      );
+      await saveDraftAndFinalize(proof.text, { degraded: true });
+      return;
+    }
+    await saveDraftAndFinalize(proof.text);
   };
 
   if (checkCancelled(taskId)) {
@@ -805,7 +837,7 @@ async function runChapterPipelineInner(
     markSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
     markSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
     markSkipped(taskId, 'proof', '无审核模式已跳过终审校对');
-    await saveDraftAndComplete(draftText);
+    await saveDraftAndFinalize(draftText);
     return;
   }
 
@@ -885,7 +917,7 @@ async function runChapterPipelineInner(
         chapter.title || '流水线',
         '文学评估失败，已保留初稿',
       );
-      await saveDraftAndComplete(draftText, { degraded: true });
+      await saveDraftAndFinalize(draftText, { degraded: true });
       return;
     }
 
@@ -898,27 +930,30 @@ async function runChapterPipelineInner(
       () => {},
     );
 
-    const finalText = await runProofStage({
-      taskId,
-      projectId: chapter.project_id,
-      requestConfig,
-      abortSignal,
-      draftText,
-      reviewText,
-      factCheckText: '',
-      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
-      maxTokens: config.proofMaxTokens,
-      preset: proofPreset,
-    }).catch((error: any) => {
-      if (isAbortError(error, abortSignal)) {
-        return '__CANCELLED__';
-      }
-      return draftText;
-    });
+    let proofResult: ProofStageResult;
+    try {
+      proofResult = await runProofStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        reviewText,
+        factCheckText: '',
+        constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+        maxTokens: config.proofMaxTokens,
+        preset: proofPreset,
+      });
+    } catch (error: any) {
+      if (isAbortError(error, abortSignal)) return;
+      proofResult = {
+        text: draftText,
+        succeeded: false,
+        error: getErrorMessage(error, '终审失败，已回退到初稿'),
+      };
+    }
 
-    if (finalText === '__CANCELLED__') return;
-
-    await saveDraftAndComplete(finalText);
+    await finalizeAfterProof(proofResult);
     return;
   }
 
@@ -968,7 +1003,7 @@ async function runChapterPipelineInner(
         chapter.title || '流水线',
         '事实核查失败，已保留初稿',
       );
-      await saveDraftAndComplete(draftText, { degraded: true });
+      await saveDraftAndFinalize(draftText, { degraded: true });
       return;
     }
 
@@ -981,27 +1016,30 @@ async function runChapterPipelineInner(
       () => {},
     );
 
-    const finalText = await runProofStage({
-      taskId,
-      projectId: chapter.project_id,
-      requestConfig,
-      abortSignal,
-      draftText,
-      reviewText: '',
-      factCheckText,
-      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
-      maxTokens: config.proofMaxTokens,
-      preset: proofPreset,
-    }).catch((error: any) => {
-      if (isAbortError(error, abortSignal)) {
-        return '__CANCELLED__';
-      }
-      return draftText;
-    });
+    let proofResult: ProofStageResult;
+    try {
+      proofResult = await runProofStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        reviewText: '',
+        factCheckText,
+        constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+        maxTokens: config.proofMaxTokens,
+        preset: proofPreset,
+      });
+    } catch (error: any) {
+      if (isAbortError(error, abortSignal)) return;
+      proofResult = {
+        text: draftText,
+        succeeded: false,
+        error: getErrorMessage(error, '终审失败，已回退到初稿'),
+      };
+    }
 
-    if (finalText === '__CANCELLED__') return;
-
-    await saveDraftAndComplete(finalText);
+    await finalizeAfterProof(proofResult);
     return;
   }
 
@@ -1073,7 +1111,7 @@ async function runChapterPipelineInner(
       chapter.title || '流水线',
       '评估与核查均失败，已保留初稿',
     );
-    await saveDraftAndComplete(draftText, { degraded: true });
+    await saveDraftAndFinalize(draftText, { degraded: true });
     return;
   }
 
@@ -1089,27 +1127,30 @@ async function runChapterPipelineInner(
     () => {},
   );
 
-  const finalText = await runProofStage({
-    taskId,
-    projectId: chapter.project_id,
-    requestConfig,
-    abortSignal,
-    draftText,
-    reviewText,
-    factCheckText,
-    constraints: buildProofConstraintsFromSnapshot(auditContext),
-    maxTokens: config.proofMaxTokens,
-    preset: proofPreset,
-  }).catch((error: any) => {
-    if (isAbortError(error, abortSignal)) {
-      return '__CANCELLED__';
-    }
-    return draftText;
-  });
+  let proofResult: ProofStageResult;
+  try {
+    proofResult = await runProofStage({
+      taskId,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+      draftText,
+      reviewText,
+      factCheckText,
+      constraints: buildProofConstraintsFromSnapshot(auditContext),
+      maxTokens: config.proofMaxTokens,
+      preset: proofPreset,
+    });
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) return;
+    proofResult = {
+      text: draftText,
+      succeeded: false,
+      error: getErrorMessage(error, '终审失败，已回退到初稿'),
+    };
+  }
 
-  if (finalText === '__CANCELLED__') return;
-
-  await saveDraftAndComplete(finalText);
+  await finalizeAfterProof(proofResult);
 }
 
 export async function runFreeformPipeline(
@@ -1241,11 +1282,10 @@ async function resumePipelineInner(
     getStageProgressPercent(config.pipelineMode, completedStageCount);
 
   /**
-   * Persist draft/final text and close the task.
-   * `degraded: true` is for audit-failed / proof-skipped paths: keep prior
-   * failTask error, never send a "已写完" success notification.
+   * Persist draft content then set task terminal state.
+   * Degraded: setTaskFinalText only (keep failed), no success notify.
    */
-  const saveDraftAndComplete = async (
+  const saveDraftAndFinalize = async (
     text: string,
     options?: { degraded?: boolean },
   ) => {
@@ -1262,12 +1302,13 @@ async function resumePipelineInner(
     } catch {
       /* best-effort */
     }
-    store.completeTask(taskId, text);
     if (options?.degraded) {
+      store.setTaskFinalText(taskId, text);
       await PipelineForeground.updateProgress(taskId, '已保留初稿', 100);
       await PipelineForeground.stop(taskId);
       return;
     }
+    store.completeTask(taskId, text);
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
     await PipelineForeground.notifyComplete(
       taskId,
@@ -1277,10 +1318,28 @@ async function resumePipelineInner(
     await PipelineForeground.stop(taskId);
   };
 
+  const finalizeAfterProof = async (proof: ProofStageResult) => {
+    if (abortSignal?.aborted || checkCancelled(taskId)) return;
+    if (!proof.succeeded) {
+      store.failTask(
+        taskId,
+        proof.error || '终审失败，已保留初稿，未生成终审稿。',
+      );
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        proof.error || '终审失败，已保留初稿',
+      );
+      await saveDraftAndFinalize(proof.text, { degraded: true });
+      return;
+    }
+    await saveDraftAndFinalize(proof.text);
+  };
+
   const draftText = draftResult.text;
 
   if (config.pipelineMode === 'noReview') {
-    await saveDraftAndComplete(draftText);
+    await saveDraftAndFinalize(draftText);
     return;
   }
 
@@ -1360,7 +1419,7 @@ async function resumePipelineInner(
         chapter.title || '流水线',
         '文学评估失败，已保留初稿',
       );
-      await saveDraftAndComplete(draftText, { degraded: true });
+      await saveDraftAndFinalize(draftText, { degraded: true });
       return;
     }
 
@@ -1373,23 +1432,29 @@ async function resumePipelineInner(
     PipelineForeground.updateProgress(taskId, '正在根据评估修订', pct(2)).catch(
       () => {},
     );
-    const finalText = await runProofStage({
-      taskId,
-      projectId: chapter.project_id,
-      requestConfig,
-      abortSignal,
-      draftText,
-      reviewText,
-      factCheckText: '',
-      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
-      maxTokens: config.proofMaxTokens,
-      preset: proofPreset,
-    }).catch((error: any) => {
-      if (isAbortError(error, abortSignal)) return '__CANCELLED__';
-      return draftText;
-    });
-    if (finalText === '__CANCELLED__') return;
-    await saveDraftAndComplete(finalText);
+    let proofResult: ProofStageResult;
+    try {
+      proofResult = await runProofStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        reviewText,
+        factCheckText: '',
+        constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+        maxTokens: config.proofMaxTokens,
+        preset: proofPreset,
+      });
+    } catch (error: any) {
+      if (isAbortError(error, abortSignal)) return;
+      proofResult = {
+        text: draftText,
+        succeeded: false,
+        error: getErrorMessage(error, '终审失败，已回退到初稿'),
+      };
+    }
+    await finalizeAfterProof(proofResult);
     return;
   }
 
@@ -1432,7 +1497,7 @@ async function resumePipelineInner(
         chapter.title || '流水线',
         '事实核查失败，已保留初稿',
       );
-      await saveDraftAndComplete(draftText, { degraded: true });
+      await saveDraftAndFinalize(draftText, { degraded: true });
       return;
     }
 
@@ -1445,23 +1510,29 @@ async function resumePipelineInner(
     PipelineForeground.updateProgress(taskId, '正在根据核查修订', pct(2)).catch(
       () => {},
     );
-    const finalText = await runProofStage({
-      taskId,
-      projectId: chapter.project_id,
-      requestConfig,
-      abortSignal,
-      draftText,
-      reviewText: '',
-      factCheckText,
-      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
-      maxTokens: config.proofMaxTokens,
-      preset: proofPreset,
-    }).catch((error: any) => {
-      if (isAbortError(error, abortSignal)) return '__CANCELLED__';
-      return draftText;
-    });
-    if (finalText === '__CANCELLED__') return;
-    await saveDraftAndComplete(finalText);
+    let proofResult: ProofStageResult;
+    try {
+      proofResult = await runProofStage({
+        taskId,
+        projectId: chapter.project_id,
+        requestConfig,
+        abortSignal,
+        draftText,
+        reviewText: '',
+        factCheckText,
+        constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+        maxTokens: config.proofMaxTokens,
+        preset: proofPreset,
+      });
+    } catch (error: any) {
+      if (isAbortError(error, abortSignal)) return;
+      proofResult = {
+        text: draftText,
+        succeeded: false,
+        error: getErrorMessage(error, '终审失败，已回退到初稿'),
+      };
+    }
+    await finalizeAfterProof(proofResult);
     return;
   }
 
@@ -1580,7 +1651,7 @@ async function resumePipelineInner(
       chapter.title || '流水线',
       '评估与核查均失败，已保留初稿',
     );
-    await saveDraftAndComplete(draftText, { degraded: true });
+    await saveDraftAndFinalize(draftText, { degraded: true });
     return;
   }
 
@@ -1593,21 +1664,27 @@ async function resumePipelineInner(
   PipelineForeground.updateProgress(taskId, '正在综合修订', pct(3)).catch(
     () => {},
   );
-  const finalText = await runProofStage({
-    taskId,
-    projectId: chapter.project_id,
-    requestConfig,
-    abortSignal,
-    draftText,
-    reviewText,
-    factCheckText,
-    constraints: buildProofConstraintsFromSnapshot(pipelineContext),
-    maxTokens: config.proofMaxTokens,
-    preset: proofPreset,
-  }).catch((error: any) => {
-    if (isAbortError(error, abortSignal)) return '__CANCELLED__';
-    return draftText;
-  });
-  if (finalText === '__CANCELLED__') return;
-  await saveDraftAndComplete(finalText);
+  let proofResult: ProofStageResult;
+  try {
+    proofResult = await runProofStage({
+      taskId,
+      projectId: chapter.project_id,
+      requestConfig,
+      abortSignal,
+      draftText,
+      reviewText,
+      factCheckText,
+      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+      maxTokens: config.proofMaxTokens,
+      preset: proofPreset,
+    });
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) return;
+    proofResult = {
+      text: draftText,
+      succeeded: false,
+      error: getErrorMessage(error, '终审失败，已回退到初稿'),
+    };
+  }
+  await finalizeAfterProof(proofResult);
 }

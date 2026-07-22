@@ -10,6 +10,20 @@ import type {
 import { AUDIT_ECHO_THRESHOLDS } from '../types/pipelineAudit';
 import { extractJSON } from '../utils/jsonExtractor';
 
+const REVIEW_TOP_LEVEL_KEYS = new Set(['strengths', 'issues', 'suggestions']);
+const FACT_CHECK_TOP_LEVEL_KEYS = new Set(['errors', 'warnings', 'confirmed']);
+const FACT_ITEM_ALLOWED_KEYS = new Set([
+  'description',
+  'text',
+  'message',
+  'issue',
+  'category',
+  'draftQuote',
+  'evidenceType',
+  'evidence',
+  'suggestedAction',
+]);
+
 function fail<T>(
   reason: AuditValidationFailureReason,
   details?: string,
@@ -18,83 +32,159 @@ function fail<T>(
   return { valid: false, reason, details, ...extra };
 }
 
-function normalizeStringItem(value: unknown): string | null {
+type NormalizeOk<T> = { ok: true; items: T[] };
+type NormalizeErr = { ok: false; details: string };
+type NormalizeResult<T> = NormalizeOk<T> | NormalizeErr;
+
+/**
+ * Recursively collect every string leaf from a JSON value.
+ * Used to catch draft body stuffed into extra / nested fields.
+ */
+function collectAllStrings(value: unknown, out: string[]): void {
   if (typeof value === 'string') {
     const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    if (trimmed) out.push(trimmed);
+    return;
   }
-  if (value == null) return null;
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
+  if (Array.isArray(value)) {
+    for (const entry of value) collectAllStrings(entry, out);
+    return;
   }
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    const preferred =
-      obj.description ?? obj.text ?? obj.message ?? obj.issue ?? obj.suggestion;
-    if (typeof preferred === 'string' && preferred.trim()) {
-      return preferred.trim();
-    }
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return null;
+  if (value != null && typeof value === 'object') {
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      collectAllStrings(child, out);
     }
   }
-  return null;
 }
 
-function normalizeStringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
+function checkTopLevelWhitelist(
+  obj: Record<string, unknown>,
+  allowed: Set<string>,
+): string | null {
+  const extra = Object.keys(obj).filter(k => !allowed.has(k));
+  if (extra.length === 0) return null;
+  return `不允许的顶层字段: ${extra.join(', ')}`;
+}
+
+/**
+ * Review arrays only accept non-empty strings. Numbers, booleans, null,
+ * empty objects, and unrecognized objects are illegal (not silently dropped).
+ */
+function normalizeStringArrayStrict(value: unknown): NormalizeResult<string> {
+  if (!Array.isArray(value)) {
+    return { ok: false, details: '字段必须是数组' };
+  }
   const items: string[] = [];
-  for (const entry of value) {
-    const normalized = normalizeStringItem(entry);
-    if (normalized != null) items.push(normalized);
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i];
+    if (typeof entry === 'string') {
+      const trimmed = entry.trim();
+      if (trimmed.length > 0) items.push(trimmed);
+      continue;
+    }
+    if (entry == null) {
+      return { ok: false, details: `数组元素[${i}] 为 null/undefined` };
+    }
+    if (typeof entry === 'number' || typeof entry === 'boolean') {
+      return {
+        ok: false,
+        details: `数组元素[${i}] 类型非法 (${typeof entry})`,
+      };
+    }
+    if (typeof entry === 'object') {
+      return {
+        ok: false,
+        details: `数组元素[${i}] 必须是字符串，不能是对象`,
+      };
+    }
+    return { ok: false, details: `数组元素[${i}] 格式无法识别` };
   }
-  return items;
+  return { ok: true, items };
 }
 
-function normalizeFactItem(value: unknown): string | FactCheckItem | null {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  const obj = value as Record<string, unknown>;
-  const description = normalizeStringItem(
-    obj.description ?? obj.text ?? obj.message ?? obj.issue,
-  );
-  if (!description) return null;
-  const item: FactCheckItem = { description };
-  if (typeof obj.category === 'string' && obj.category.trim()) {
-    item.category = obj.category.trim();
-  }
-  if (typeof obj.draftQuote === 'string' && obj.draftQuote.trim()) {
-    item.draftQuote = obj.draftQuote.trim();
-  }
-  if (typeof obj.evidenceType === 'string' && obj.evidenceType.trim()) {
-    item.evidenceType = obj.evidenceType.trim();
-  }
-  if (typeof obj.evidence === 'string' && obj.evidence.trim()) {
-    item.evidence = obj.evidence.trim();
-  }
-  if (typeof obj.suggestedAction === 'string' && obj.suggestedAction.trim()) {
-    item.suggestedAction = obj.suggestedAction.trim();
-  }
-  return item;
-}
-
-function normalizeFactArray(
+/**
+ * Fact-check arrays accept non-empty strings or objects with a description
+ * (or text/message/issue). Illegal element types fail the whole report.
+ */
+function normalizeFactArrayStrict(
   value: unknown,
-): Array<string | FactCheckItem> | null {
-  if (!Array.isArray(value)) return null;
-  const items: Array<string | FactCheckItem> = [];
-  for (const entry of value) {
-    const normalized = normalizeFactItem(entry);
-    if (normalized != null) items.push(normalized);
+): NormalizeResult<string | FactCheckItem> {
+  if (!Array.isArray(value)) {
+    return { ok: false, details: '字段必须是数组' };
   }
-  return items;
+  const items: Array<string | FactCheckItem> = [];
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i];
+    if (typeof entry === 'string') {
+      const trimmed = entry.trim();
+      if (trimmed.length > 0) items.push(trimmed);
+      continue;
+    }
+    if (entry == null) {
+      return { ok: false, details: `数组元素[${i}] 为 null/undefined` };
+    }
+    if (typeof entry === 'number' || typeof entry === 'boolean') {
+      return {
+        ok: false,
+        details: `数组元素[${i}] 类型非法 (${typeof entry})`,
+      };
+    }
+    if (Array.isArray(entry)) {
+      return { ok: false, details: `数组元素[${i}] 不能是嵌套数组` };
+    }
+    if (typeof entry === 'object') {
+      const obj = entry as Record<string, unknown>;
+      const keys = Object.keys(obj);
+      if (keys.length === 0) {
+        return { ok: false, details: `数组元素[${i}] 为空对象` };
+      }
+      const unknownKeys = keys.filter(k => !FACT_ITEM_ALLOWED_KEYS.has(k));
+      if (unknownKeys.length > 0) {
+        return {
+          ok: false,
+          details: `数组元素[${i}] 含未知字段: ${unknownKeys.join(', ')}`,
+        };
+      }
+      const descriptionRaw =
+        obj.description ?? obj.text ?? obj.message ?? obj.issue;
+      if (typeof descriptionRaw !== 'string' || !descriptionRaw.trim()) {
+        return {
+          ok: false,
+          details: `数组元素[${i}] 缺少有效 description/text`,
+        };
+      }
+      const item: FactCheckItem = { description: descriptionRaw.trim() };
+      if (typeof obj.category === 'string' && obj.category.trim()) {
+        item.category = obj.category.trim();
+      }
+      if (typeof obj.draftQuote === 'string' && obj.draftQuote.trim()) {
+        item.draftQuote = obj.draftQuote.trim();
+      }
+      if (typeof obj.evidenceType === 'string' && obj.evidenceType.trim()) {
+        item.evidenceType = obj.evidenceType.trim();
+      }
+      if (typeof obj.evidence === 'string' && obj.evidence.trim()) {
+        item.evidence = obj.evidence.trim();
+      }
+      if (typeof obj.suggestedAction === 'string' && obj.suggestedAction.trim()) {
+        item.suggestedAction = obj.suggestedAction.trim();
+      }
+      // Non-string values in allowed keys are illegal.
+      for (const key of keys) {
+        const v = obj[key];
+        if (v != null && typeof v !== 'string') {
+          return {
+            ok: false,
+            details: `数组元素[${i}].${key} 必须是字符串`,
+          };
+        }
+      }
+      items.push(item);
+      continue;
+    }
+    return { ok: false, details: `数组元素[${i}] 格式无法识别` };
+  }
+  return { ok: true, items };
 }
 
 function itemTextLength(item: string | FactCheckItem): number {
@@ -327,6 +417,44 @@ function checkOversizedItems(
 }
 
 /**
+ * Scan every string leaf in the parsed JSON for draft echo / oversized body.
+ */
+function checkRecursiveDraftEcho(
+  parsed: unknown,
+  draftText: string,
+): AuditValidationResult<never> | null {
+  const allStrings: string[] = [];
+  collectAllStrings(parsed, allStrings);
+  const oversized = checkOversizedItems(allStrings);
+  if (oversized) return oversized;
+
+  const bodyBlob = allStrings.join('\n');
+  if (!bodyBlob) {
+    return null;
+  }
+  const echo = detectDraftEcho(bodyBlob, draftText);
+  if (echo.isEcho) {
+    return fail('draft_echo', echo.reason, { similarity: echo.similarity });
+  }
+  // Also flag individual long strings that highly overlap the draft even when
+  // the joined blob dilutes the ratio (e.g. short legitimate fields + one
+  // stuffed full-body extra field already rejected by top-level whitelist, but
+  // nested stuffing in allowed paths still needs coverage).
+  for (const s of allStrings) {
+    if (s.length < Math.min(200, Math.floor((draftText || '').length * 0.4))) {
+      continue;
+    }
+    const one = detectDraftEcho(s, draftText);
+    if (one.isEcho) {
+      return fail('draft_echo', one.reason || 'nested_field_draft_echo', {
+        similarity: one.similarity,
+      });
+    }
+  }
+  return null;
+}
+
+/**
  * Validate literary review LLM output. Only valid structured reports pass.
  */
 export function validateReviewResult(
@@ -388,6 +516,12 @@ export function validateReviewResult(
   }
 
   const obj = parsed as Record<string, unknown>;
+
+  const whitelistError = checkTopLevelWhitelist(obj, REVIEW_TOP_LEVEL_KEYS);
+  if (whitelistError) {
+    return fail('unexpected_shape', whitelistError);
+  }
+
   if (
     !('strengths' in obj) ||
     !('issues' in obj) ||
@@ -399,29 +533,48 @@ export function validateReviewResult(
     );
   }
 
-  const strengths = normalizeStringArray(obj.strengths);
-  const issues = normalizeStringArray(obj.issues);
-  const suggestions = normalizeStringArray(obj.suggestions);
-  if (!strengths || !issues || !suggestions) {
-    return fail('unexpected_shape', 'strengths/issues/suggestions 必须是数组');
+  // Recursively scan ALL string leaves (including any nested content) before
+  // trusting normalized arrays — catches stuffed body in nested structures.
+  const recursiveEcho = checkRecursiveDraftEcho(parsed, draftText);
+  if (recursiveEcho) {
+    return recursiveEcho as AuditValidationResult<ReviewReport>;
   }
 
-  const oversized = checkOversizedItems([
-    ...strengths,
-    ...issues,
-    ...suggestions,
-  ]);
-  if (oversized) return oversized as AuditValidationResult<ReviewReport>;
+  const strengths = normalizeStringArrayStrict(obj.strengths);
+  if (!strengths.ok) {
+    return fail(
+      'unexpected_shape',
+      `strengths: ${strengths.details}`,
+    );
+  }
+  const issues = normalizeStringArrayStrict(obj.issues);
+  if (!issues.ok) {
+    return fail('unexpected_shape', `issues: ${issues.details}`);
+  }
+  const suggestions = normalizeStringArrayStrict(obj.suggestions);
+  if (!suggestions.ok) {
+    return fail(
+      'unexpected_shape',
+      `suggestions: ${suggestions.details}`,
+    );
+  }
 
-  const report: ReviewReport = { strengths, issues, suggestions };
+  const report: ReviewReport = {
+    strengths: strengths.items,
+    issues: issues.items,
+    suggestions: suggestions.items,
+  };
   const normalizedText = JSON.stringify(report);
 
   if (normalizedText.length > AUDIT_ECHO_THRESHOLDS.MAX_REPORT_CHARS) {
     return fail('oversized_report', '报告整体过长');
   }
 
-  // Echo against draft using concatenated item text (catches stuffed body).
-  const bodyBlob = [...strengths, ...issues, ...suggestions].join('\n');
+  const bodyBlob = [
+    ...report.strengths,
+    ...report.issues,
+    ...report.suggestions,
+  ].join('\n');
   const echo = detectDraftEcho(bodyBlob, draftText);
   if (echo.isEcho) {
     return fail('draft_echo', echo.reason, { similarity: echo.similarity });
@@ -498,6 +651,12 @@ export function validateFactCheckResult(
   }
 
   const obj = parsed as Record<string, unknown>;
+
+  const whitelistError = checkTopLevelWhitelist(obj, FACT_CHECK_TOP_LEVEL_KEYS);
+  if (whitelistError) {
+    return fail('unexpected_shape', whitelistError);
+  }
+
   if (!('errors' in obj) || !('warnings' in obj) || !('confirmed' in obj)) {
     return fail(
       'missing_required_fields',
@@ -505,22 +664,25 @@ export function validateFactCheckResult(
     );
   }
 
-  const errors = normalizeFactArray(obj.errors);
-  const warnings = normalizeFactArray(obj.warnings);
-  const confirmed = normalizeFactArray(obj.confirmed);
-  if (!errors || !warnings || !confirmed) {
-    return fail('unexpected_shape', 'errors/warnings/confirmed 必须是数组');
+  const recursiveEcho = checkRecursiveDraftEcho(parsed, draftText);
+  if (recursiveEcho) {
+    return recursiveEcho as AuditValidationResult<FactCheckReport>;
   }
 
-  const allTexts: string[] = [];
-  for (const item of [...errors, ...warnings, ...confirmed]) {
-    if (typeof item === 'string') {
-      allTexts.push(item);
-    } else {
-      allTexts.push(item.description);
-      if (item.draftQuote) allTexts.push(item.draftQuote);
-      if (item.evidence) allTexts.push(item.evidence);
-    }
+  const errors = normalizeFactArrayStrict(obj.errors);
+  if (!errors.ok) {
+    return fail('unexpected_shape', `errors: ${errors.details}`);
+  }
+  const warnings = normalizeFactArrayStrict(obj.warnings);
+  if (!warnings.ok) {
+    return fail('unexpected_shape', `warnings: ${warnings.details}`);
+  }
+  const confirmed = normalizeFactArrayStrict(obj.confirmed);
+  if (!confirmed.ok) {
+    return fail('unexpected_shape', `confirmed: ${confirmed.details}`);
+  }
+
+  for (const item of [...errors.items, ...warnings.items, ...confirmed.items]) {
     if (itemTextLength(item) > AUDIT_ECHO_THRESHOLDS.MAX_SINGLE_AUDIT_ITEM_CHARS) {
       return fail(
         'oversized_report',
@@ -529,11 +691,26 @@ export function validateFactCheckResult(
     }
   }
 
-  const report: FactCheckReport = { errors, warnings, confirmed };
+  const report: FactCheckReport = {
+    errors: errors.items,
+    warnings: warnings.items,
+    confirmed: confirmed.items,
+  };
   const normalizedText = JSON.stringify(report);
 
   if (normalizedText.length > AUDIT_ECHO_THRESHOLDS.MAX_REPORT_CHARS) {
     return fail('oversized_report', '报告整体过长');
+  }
+
+  const allTexts: string[] = [];
+  for (const item of [...report.errors, ...report.warnings, ...report.confirmed]) {
+    if (typeof item === 'string') {
+      allTexts.push(item);
+    } else {
+      allTexts.push(item.description);
+      if (item.draftQuote) allTexts.push(item.draftQuote);
+      if (item.evidence) allTexts.push(item.evidence);
+    }
   }
 
   const bodyBlob = allTexts.join('\n');
