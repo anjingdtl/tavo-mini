@@ -10,6 +10,12 @@ interface PipelineTaskState {
   updateTaskStage: (taskId: string, result: PipelineStageResult) => void;
   setTaskStatus: (taskId: string, status: PipelineTaskStatus) => void;
   completeTask: (taskId: string, finalText: string) => void;
+  /**
+   * Persist final/draft text without changing task status.
+   * Used on degraded paths (audit/proof failed) so failed is not overwritten
+   * by completeTask, while UI can still show the retained draft.
+   */
+  setTaskFinalText: (taskId: string, finalText: string) => void;
   failTask: (taskId: string, error: string) => void;
   cancelTask: (taskId: string) => void;
   resolveTask: (taskId: string, action: 'accept' | 'reject') => void;
@@ -136,6 +142,19 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       const tasks = state.tasks.map((t) =>
         t.id === taskId
           ? { ...t, status: 'completed' as PipelineTaskStatus, finalText, updatedAt: Date.now() }
+          : t
+      );
+      const task = tasks.find((t) => t.id === taskId);
+      if (task) persistTask(task);
+      return { tasks };
+    });
+  },
+
+  setTaskFinalText: (taskId, finalText) => {
+    set((state) => {
+      const tasks = state.tasks.map((t) =>
+        t.id === taskId
+          ? { ...t, finalText, updatedAt: Date.now() }
           : t
       );
       const task = tasks.find((t) => t.id === taskId);
