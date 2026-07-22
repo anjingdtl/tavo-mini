@@ -43,12 +43,25 @@ const PATCH_ITEM_CONTRACT = `数组项字段契约（字段名必须逐字一致
 - characterUpdates[]: {"characterRef":"已有精确ID","addAliases":[],"profileCorrections":{},"stateChanges":{},"correctionReason":"","addKnowledge":[],"removeKnowledge":[],"addPossessions":[],"removePossessions":[],"addSecrets":[],"removeSecrets":[],"clearFields":[],"evidenceQuote":"正文原句"}
 - newRelationships[]: {"tempRef":"new_rel_唯一标识","fromRef":"已有ID或本次new_char引用","toRef":"已有ID或本次new_char引用","direction":"directed或bidirectional","relationType":"","currentState":"","trustLevel":"unknown","publicStatus":"","hiddenStatus":"","reason":"","evidenceQuote":"正文原句"}
 - relationshipUpdates[]: {"relationshipRef":"已有精确ID","currentState":"","trustLevel":"unknown","publicStatus":"","hiddenStatus":"","reason":"","evidenceQuote":"正文原句"}
+- assessment: {"result":"changed或unchanged","reason":"本章主线是否持续变化的简短判断"}
+- currentObjective: null 或 {"value":"当前核心行动方下一步明确目标；明确完成且无新目标时可为空字符串","evidenceQuote":"正文原句"}
 - conflictUpserts[]/threadOpens[]/threadUpdates[]/foreshadowingUpserts[]: {"ref":"","title":"","description":"","state":"","stakes":"","parties":[],"ownerCharacterRefs":[],"priority":"normal","deadlineOrTrigger":"","setup":"","expectedPayoff":"","status":"open","evidenceQuote":"正文原句"}
+- conflictResolutions[]: {"conflictRef":"已有精确ID","resolution":"冲突如何被正文解决","evidenceQuote":"正文原句"}
 - threadResolutions[]: {"threadRef":"已有精确ID","resolution":"","evidenceQuote":"正文原句"}
 - timelineAnchors[]: {"ref":"new_time_唯一标识","label":"","timeDescription":"","event":"","pinned":false,"evidenceQuote":"正文原句"}
 - completedBeats[]: {"ref":"new_beat_唯一标识","summary":"","evidenceQuote":"正文原句"}
 每个 newCharacters 项必须同时包含唯一 tempRef 和非空 canonicalName。每条关系必须连接两个不同的真实人物引用。
 evidenceQuote 从正文连续复制 4～80 字，必须与正文同语言且可定位。`;
+
+const MAINLINE_EXTRACTION_USER_BLOCK = `【故事主线检查清单】
+只记录会持续约束后续章节的主线状态，并以正文原句作为证据；可以做保守概括，但不得添加正文没有的事件、动机或结果。
+1. 当前剧情弧：当前持续推进的叙事阶段。无当前弧时可 start；已有弧推进时 update；结束时 complete；旧弧结束且新弧开始时 replace。
+2. 当前目标：核心行动方下一步明确、持续的目标。目标改变时更新；正文明确完成/放弃且暂无新目标时用空字符串清空；没有变化则写 null。
+3. 活跃冲突：仍未解决、会约束后续行动的对抗或障碍。新冲突写 conflictUpserts；已解决冲突写 conflictResolutions。
+4. 未解决线索：已提出但尚未闭合的问题、秘密或承诺。新线索写 threadOpens，更新/解决必须使用已有精确 ID。
+5. 未兑现伏笔：有明确铺垫且尚未回收的信号；用 status 表示 open、partially_paid 或 paid。
+6. 若 chapterSummaries 写了 mainlineChanges、newThreads 或 resolvedThreads，mainlinePatch 必须有对应结构化操作。
+7. 若五项均无变化，assessment.result 必须为 unchanged 并写明原因；不得只用空数组代替判断。若有任何五项变化，assessment.result 必须为 changed。`;
 
 /** Compact previous state for prompt input; roster first so models see known names. */
 export function compactState(state: StoryMemoryState): string {
@@ -137,7 +150,19 @@ export function buildStoryMemoryPatchMessages(
     characterUpdates: schema.characterUpdates,
     newRelationships: schema.newRelationships,
     relationshipUpdates: schema.relationshipUpdates,
-    mainlinePatch: schema.mainlinePatch,
+    mainlinePatch: {
+      assessment: schema.mainlinePatch.assessment,
+      currentArcUpdate: schema.mainlinePatch.currentArcUpdate,
+      currentObjective: null,
+      conflictUpserts: schema.mainlinePatch.conflictUpserts,
+      conflictResolutions: schema.mainlinePatch.conflictResolutions,
+      threadOpens: schema.mainlinePatch.threadOpens,
+      threadUpdates: schema.mainlinePatch.threadUpdates,
+      threadResolutions: schema.mainlinePatch.threadResolutions,
+      foreshadowingUpserts: schema.mainlinePatch.foreshadowingUpserts,
+      timelineAnchors: schema.mainlinePatch.timelineAnchors,
+      completedBeats: schema.mainlinePatch.completedBeats,
+    },
     episodicSummary: schema.episodicSummary,
   };
   return [
@@ -156,6 +181,8 @@ export function buildStoryMemoryPatchMessages(
         `标题：${chapter.title}`,
         `概要：${chapter.synopsis || '无'}`,
         `正文：\n${chapter.content}`,
+        '',
+        MAINLINE_EXTRACTION_USER_BLOCK,
         '',
         '【严格输出范式——请按此字段顺序填写，人物字段优先】',
         promptStringify(orderedSchema),
@@ -180,6 +207,7 @@ export function buildStoryMemoryRepairMessages(
         `上一个 JSON 无效：${validationError}`,
         '只修复结构、引用和证据问题。不要重新创作剧情。',
         '禁止通过删除 newCharacters / characterUpdates / newRelationships 条目来“绕过”校验。',
+        '若章节摘要已写主线变化、新线索或解决事项，禁止把 mainlinePatch 改成全空来绕过校验；修复 assessment 与结构化主线的一致性。',
         '若 evidenceQuote 不合格：改为从对应章节正文逐字复制 4～80 字连续原文。',
         '若 tempRef 冲突：改为唯一 tempRef，并同步改写关系引用。',
         '修复后仍须覆盖原文中全部具名新人物。',
@@ -244,11 +272,16 @@ const BATCH_ITEM_CONTRACT = `数组项字段契约：
 - characterUpdates[]: {"characterRef":"已有精确ID","addAliases":[],"profileCorrections":{},"stateChanges":{},"correctionReason":"","addKnowledge":[],"removeKnowledge":[],"addPossessions":[],"removePossessions":[],"addSecrets":[],"removeSecrets":[],"clearFields":[],"evidence":[]}
 - newRelationships[]: {"tempRef":"new_rel_唯一","fromRef":"已有ID或本批new_char_*","toRef":"已有ID或本批new_char_*","direction":"directed或bidirectional","relationType":"","currentState":"","trustLevel":"unknown","publicStatus":"","hiddenStatus":"","reason":"","evidence":[]}
 - relationshipUpdates[]: {"relationshipRef":"已有精确ID","currentState":"","trustLevel":"unknown","publicStatus":"","hiddenStatus":"","reason":"","evidence":[]}
+- assessment: {"result":"changed或unchanged","reason":"本批主线是否持续变化的简短判断"}
+- currentObjective: null 或 {"value":"当前核心行动方下一步明确目标；明确完成且无新目标时可为空字符串","evidence":[{"chapterId":数字,"quote":"正文原句"}]}
+- conflictResolutions[]: {"conflictRef":"已有精确ID","resolution":"冲突如何被正文解决","evidence":[]}
 - chapterSummaries[]: {"chapterId":数字,"chapterPosition":数字,"brief":"非空一句，必须包含最重要的主体、行为、对象和结果","keywords":[],"events":["优先：人物A 对人物B 做了某事，造成某结果"],"characterChanges":["写明人物姓名、具体变化和原因"],"relationshipChanges":["写明双方姓名、变化内容和原因"],"mainlineChanges":[],"newThreads":["写明涉及人物、物品、秘密或误会"],"resolvedThreads":[]}
 - mainlinePatch 与单章协议类似，但 evidenceQuote 改为 evidence 数组。
 填写顺序：先人物与关系，后章节摘要。newCharacters 宁可多不可漏。chapterSummaries 字段用于检索，须写清主体/对象，避免模糊代词。`;
 
-function createEmptyBatchPatch(chapters: Chapter[]): StoryMemoryBatchPatchDraft {
+function createEmptyBatchPatch(
+  chapters: Chapter[],
+): StoryMemoryBatchPatchDraft {
   const ordered = [...chapters].sort((a, b) => a.position - b.position);
   const first = ordered[0];
   const last = ordered[ordered.length - 1];
@@ -267,6 +300,7 @@ function createEmptyBatchPatch(chapters: Chapter[]): StoryMemoryBatchPatchDraft 
     newRelationships: [],
     relationshipUpdates: [],
     mainlinePatch: {
+      assessment: { result: 'unchanged', reason: '本批无持续主线变化' },
       currentArcUpdate: {
         action: 'none',
         arcRef: '',
@@ -275,6 +309,7 @@ function createEmptyBatchPatch(chapters: Chapter[]): StoryMemoryBatchPatchDraft 
         evidence: [],
       },
       conflictUpserts: [],
+      conflictResolutions: [],
       threadOpens: [],
       threadUpdates: [],
       threadResolutions: [],
@@ -308,7 +343,19 @@ function orderedBatchSchemaForPrompt(
     characterUpdates: draft.characterUpdates,
     newRelationships: draft.newRelationships,
     relationshipUpdates: draft.relationshipUpdates,
-    mainlinePatch: draft.mainlinePatch,
+    mainlinePatch: {
+      assessment: draft.mainlinePatch.assessment,
+      currentArcUpdate: draft.mainlinePatch.currentArcUpdate,
+      currentObjective: null,
+      conflictUpserts: draft.mainlinePatch.conflictUpserts,
+      conflictResolutions: draft.mainlinePatch.conflictResolutions,
+      threadOpens: draft.mainlinePatch.threadOpens,
+      threadUpdates: draft.mainlinePatch.threadUpdates,
+      threadResolutions: draft.mainlinePatch.threadResolutions,
+      foreshadowingUpserts: draft.mainlinePatch.foreshadowingUpserts,
+      timelineAnchors: draft.mainlinePatch.timelineAnchors,
+      completedBeats: draft.mainlinePatch.completedBeats,
+    },
     chapterSummaries: draft.chapterSummaries,
   };
 }
@@ -320,16 +367,15 @@ export function buildStoryMemoryCheckpointMessages(
   const ordered = [...chapters].sort((a, b) => a.position - b.position);
   const schema = createEmptyBatchPatch(ordered);
   const chapterBlocks = ordered
-    .map(
-      chapter =>
-        [
-          `--- 章节 ---`,
-          `ID：${chapter.id}`,
-          `位置：${chapter.position}`,
-          `标题：${chapter.title}`,
-          `概要：${chapter.synopsis || '无'}`,
-          `正文：\n${chapter.content}`,
-        ].join('\n'),
+    .map(chapter =>
+      [
+        `--- 章节 ---`,
+        `ID：${chapter.id}`,
+        `位置：${chapter.position}`,
+        `标题：${chapter.title}`,
+        `概要：${chapter.synopsis || '无'}`,
+        `正文：\n${chapter.content}`,
+      ].join('\n'),
     )
     .join('\n\n');
   return [
@@ -342,12 +388,14 @@ export function buildStoryMemoryCheckpointMessages(
         '',
         characterExtractionUserBlock(state),
         '',
-        `【本批次范围】共 ${ordered.length} 章，position ${ordered[0].position}～${
-          ordered[ordered.length - 1].position
-        }。须抽取本批全部具名新人物。`,
+        `【本批次范围】共 ${ordered.length} 章，position ${
+          ordered[0].position
+        }～${ordered[ordered.length - 1].position}。须抽取本批全部具名新人物。`,
         '',
         '【本批次章节（按 position 升序）】',
         chapterBlocks,
+        '',
+        MAINLINE_EXTRACTION_USER_BLOCK,
         '',
         '【严格输出范式——字段顺序即填写优先级】',
         promptStringify(orderedBatchSchemaForPrompt(schema)),
@@ -375,6 +423,7 @@ export function buildStoryMemoryCheckpointRepairMessages(
         '只修复结构、range、章节摘要对应、引用和证据问题。不要重新创作剧情。',
         '禁止删除 newCharacters 来通过校验；证据不合格时改为正文原句 quote。',
         '禁止把本批具名新人物从结果中拿掉。',
+        '若 chapterSummaries 已写主线变化、新线索或解决事项，禁止把 mainlinePatch 改成全空来绕过校验；修复 assessment、引用和对应结构化操作。',
         '修复后仍须：chapterSummaries 一章一条；newCharacters 覆盖本批所有名册外具名角色。',
         '优先保证人物/关系数组完整，再压缩摘要字段。',
         '只输出修复后的完整 JSON 对象。',
@@ -395,6 +444,7 @@ export function buildStoryMemoryCheckpointRetryMessages(
         `上一次批量检查点生成失败：${validationError}`,
         '请丢弃之前的不完整输出，严格按范式重新生成完整 JSON 对象。',
         '不要为了缩短输出而省略 newCharacters。',
+        '不得用空 mainlinePatch 或 unchanged assessment 掩盖章节摘要中的主线变化、新线索或解决事项。',
         '字段顺序：newCharacters → characterUpdates → relationships → mainline → chapterSummaries。',
         '本批正文中每一个不在已知名册的具名角色都必须出现在 newCharacters。',
         '必须闭合所有对象和数组，只输出一个完整 JSON 对象。',
@@ -416,6 +466,7 @@ export function buildStoryMemoryFreshRetryMessages(
         '从头重新生成完整 JSON，不要续写上一次被截断的内容。',
         '优先完整输出 newCharacters / characterUpdates / newRelationships。',
         '不得为缩短输出而漏掉具名新人物；摘要字段可以更短，但人物数组必须完整。',
+        '不得把已有主线变化清空来通过校验；assessment 必须与主线操作一致。',
         '必须闭合所有对象和数组，只输出一个完整 JSON 对象。',
       ].join('\n'),
     },

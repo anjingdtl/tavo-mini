@@ -244,16 +244,36 @@ export interface MainlineEntityPatch {
   evidenceQuote: string;
 }
 
+export type MainlineChangeResult = 'changed' | 'unchanged';
+
+/**
+ * Model-declared diagnostic for the five user-visible mainline fields.
+ * It is stored with patches for validation/debugging but never copied into
+ * StoryMemoryState.
+ */
+export interface MainlineChangeAssessment {
+  result: MainlineChangeResult;
+  reason: string;
+}
+
+export interface ConflictResolutionPatch {
+  conflictRef: string;
+  resolution: string;
+  evidenceQuote: string;
+}
+
 export interface MainlinePatch {
   currentArcUpdate: {
-    action: 'none' | 'start' | 'update' | 'complete';
+    action: 'none' | 'start' | 'update' | 'complete' | 'replace';
     arcRef: string;
     name: string;
     summary: string;
     evidenceQuote: string;
   };
+  assessment?: MainlineChangeAssessment;
   currentObjective?: { value: string; evidenceQuote: string };
   conflictUpserts: MainlineEntityPatch[];
+  conflictResolutions: ConflictResolutionPatch[];
   threadOpens: MainlineEntityPatch[];
   threadUpdates: MainlineEntityPatch[];
   threadResolutions: Array<{
@@ -483,16 +503,24 @@ export interface BatchMainlineEntityPatch {
   evidence: BatchEvidenceQuote[];
 }
 
+export interface BatchConflictResolutionPatch {
+  conflictRef: string;
+  resolution: string;
+  evidence: BatchEvidenceQuote[];
+}
+
 export interface BatchMainlinePatch {
   currentArcUpdate: {
-    action: 'none' | 'start' | 'update' | 'complete';
+    action: 'none' | 'start' | 'update' | 'complete' | 'replace';
     arcRef: string;
     name: string;
     summary: string;
     evidence: BatchEvidenceQuote[];
   };
+  assessment?: MainlineChangeAssessment;
   currentObjective?: { value: string; evidence: BatchEvidenceQuote[] };
   conflictUpserts: BatchMainlineEntityPatch[];
+  conflictResolutions: BatchConflictResolutionPatch[];
   threadOpens: BatchMainlineEntityPatch[];
   threadUpdates: BatchMainlineEntityPatch[];
   threadResolutions: Array<{

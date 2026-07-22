@@ -43,7 +43,7 @@ describe('structured story memory baseline protection', () => {
         }),
       ]),
       700,
-      { scenario: 'memory_summary' },
+      { scenario: 'memory_summary', projectId: chapter.project_id },
     );
     expect(updateChapter).toHaveBeenCalledWith(
       chapter.id,

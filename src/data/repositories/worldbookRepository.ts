@@ -51,27 +51,16 @@ export async function setWorldbookCollectionEnabledForProject(
   const database = await openDatabase();
   // V2.2.2 修复：改用 runInTransactionSafe。先做必要的 async 读（entry id 列表），
   // 再把所有写入合并到一次同步 push 的事务里。
-  const stmts: Array<{ sql: string; params: any[] }> = [
-    {
-      sql: 'UPDATE worldbook_collections SET enabled = ? WHERE id = ?',
-      params: [enabled ? 1 : 0, collectionId],
-    },
-  ];
-  if (enabled) {
+  const stmts: Array<{ sql: string; params: any[] }> = [];
+  const rows = await all<{ id: number }>(
+    'SELECT id FROM worldbook_entries WHERE collection_id = ?',
+    [collectionId],
+  );
+  for (const row of rows) {
     stmts.push({
-      sql: 'UPDATE worldbook_entries SET enabled = 1 WHERE collection_id = ?',
-      params: [collectionId],
+      sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+      params: [projectId, 'worldbook', row.id, enabled ? 1 : 0],
     });
-    const rows = await all<{ id: number }>(
-      'SELECT id FROM worldbook_entries WHERE collection_id = ?',
-      [collectionId],
-    );
-    for (const row of rows) {
-      stmts.push({
-        sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, 1)',
-        params: [projectId, 'worldbook', row.id],
-      });
-    }
   }
   await executeTransaction(database, stmts);
 }
@@ -83,7 +72,7 @@ export async function getWorldbookEntriesByProject(
     `SELECT w.*, wc.name AS collection_name, wc.enabled AS collection_enabled, wc.max_tokens AS collection_max_tokens FROM worldbook_entries w
      JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook'
      LEFT JOIN worldbook_collections wc ON wc.id = w.collection_id
-     WHERE pr.project_id = ? AND pr.enabled = 1 AND w.enabled = 1 AND COALESCE(wc.enabled, 1) = 1
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND w.enabled = 1
      ORDER BY w.position ASC, w.id ASC`,
     [projectId],
   );
@@ -96,7 +85,10 @@ export async function getWorldbookCollections(
     return all<Row>('SELECT * FROM worldbook_collections ORDER BY id DESC');
   }
   return all<Row>(
-    `SELECT wc.*, COUNT(w.id) AS entry_count
+    `SELECT wc.*, COUNT(w.id) AS entry_count,
+            CASE WHEN COUNT(w.id) = 0 THEN 1
+                 WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
+                 ELSE 0 END AS enabled_for_project
      FROM worldbook_collections wc
      LEFT JOIN worldbook_entries w ON w.collection_id = wc.id
      LEFT JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook' AND pr.project_id = ?
