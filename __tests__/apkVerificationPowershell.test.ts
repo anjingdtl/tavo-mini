@@ -156,6 +156,25 @@ describeReal(
       expect(result!.Reason).toBe('ok');
     });
 
+    it('accepts current Build Tools v2 output with a parenthetical descriptor', () => {
+      // Build Tools 36 emits this richer form. It is still the same explicit
+      // v2 line and must not be mistaken for a missing v2 assertion.
+      const sample = [
+        'Verifies',
+        'Verified using v1 scheme (JAR signing): false',
+        'Verified using v2 scheme (APK Signature Scheme v2): true',
+        'Verified using v3 scheme (APK Signature Scheme v3): false',
+        'Number of signers: 1',
+        `V2 Signer: certificate SHA-256 digest: ${REQUIRED_CERT_SHA256_LOWER}`,
+      ].join('\n');
+      const { result } = runRealParser(sample, REQUIRED_CERT_SHA256_LOWER);
+      expect(result).not.toBeNull();
+      expect(result!.V2LineFound).toBe(true);
+      expect(result!.VerifiedV2).toBe(true);
+      expect(result!.Accepted).toBe(true);
+      expect(result!.Reason).toBe('ok');
+    });
+
     it('scenario 2 — v1 only (v1=true, v2=false, signers=1): REJECTED (no fallback)', () => {
       // The exact regression V2.5.15 fixes: previously VerifiedV2 became true
       // because a v1 scheme line existed. VerifiedV2 must now be false and the

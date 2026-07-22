@@ -346,6 +346,15 @@ export function applyStoryMemoryPatch(
 
   const mainline = state.mainline;
   const arc = draft.mainlinePatch.currentArcUpdate;
+  const addCompletedBeat = (id: string, summary: string) => {
+    if (!mainline.recentCompletedBeats.some(beat => beat.id === id)) {
+      mainline.recentCompletedBeats.push({
+        id,
+        summary,
+        chapterId: context.chapterId,
+      });
+    }
+  };
   if (arc.action === 'start') {
     mainline.currentArc = {
       id: stableId(
@@ -361,16 +370,27 @@ export function applyStoryMemoryPatch(
     mainline.currentArc.summary = arc.summary || mainline.currentArc.summary;
   } else if (arc.action === 'complete') {
     if (mainline.currentArc) {
-      mainline.recentCompletedBeats.push({
-        id: mainline.currentArc.id,
-        summary: arc.summary || mainline.currentArc.summary,
-        chapterId: context.chapterId,
-      });
+      addCompletedBeat(
+        mainline.currentArc.id,
+        arc.summary || mainline.currentArc.summary,
+      );
     }
     mainline.currentArc = null;
+  } else if (arc.action === 'replace' && mainline.currentArc) {
+    addCompletedBeat(mainline.currentArc.id, mainline.currentArc.summary);
+    mainline.currentArc = {
+      id: stableId(
+        `arc_${context.projectId}`,
+        `${arc.name}|${context.chapterId}`,
+      ),
+      name: arc.name,
+      summary: arc.summary,
+      startedChapterId: context.chapterId,
+    };
   }
   if (draft.mainlinePatch.currentObjective) {
-    mainline.currentObjective = draft.mainlinePatch.currentObjective.value;
+    mainline.currentObjective =
+      draft.mainlinePatch.currentObjective.value.trim();
   }
   for (const item of draft.mainlinePatch.conflictUpserts) {
     const id =
@@ -394,6 +414,26 @@ export function applyStoryMemoryPatch(
         context.chapterId,
       ),
     };
+    if (item.ref) refMap.set(item.ref, id);
+  }
+  for (const item of draft.mainlinePatch.conflictResolutions ?? []) {
+    const id = refMap.get(item.conflictRef) || item.conflictRef;
+    const conflict = mainline.activeConflicts[id];
+    if (!conflict) {
+      warnings.push({
+        code: 'CONFLICT_RESOLVE_SKIPPED',
+        message: `待解决冲突不存在，已跳过：${item.conflictRef || '(空)'}`,
+      });
+      continue;
+    }
+    addCompletedBeat(
+      stableId(
+        `beat_${context.projectId}`,
+        `conflict|${conflict.id}|${context.chapterId}`,
+      ),
+      `冲突「${conflict.title}」解决：${item.resolution}`,
+    );
+    delete mainline.activeConflicts[id];
   }
   for (const item of draft.mainlinePatch.threadOpens) {
     const id = stableId(
@@ -465,17 +505,20 @@ export function applyStoryMemoryPatch(
             `foreshadow_${context.projectId}`,
             `${item.setup}|${context.chapterId}`,
           );
+    const existing = mainline.foreshadowing[id];
+    const requestedStatus = item.status || existing?.status || 'open';
     mainline.foreshadowing[id] = {
       id,
-      setup: item.setup || mainline.foreshadowing[id]?.setup || '',
-      expectedPayoff:
-        item.expectedPayoff || mainline.foreshadowing[id]?.expectedPayoff || '',
-      status: item.status || mainline.foreshadowing[id]?.status || 'open',
-      openedChapterId:
-        mainline.foreshadowing[id]?.openedChapterId || context.chapterId,
+      setup: item.setup || existing?.setup || '',
+      expectedPayoff: item.expectedPayoff || existing?.expectedPayoff || '',
+      status:
+        existing?.status === 'paid' && requestedStatus !== 'paid'
+          ? 'paid'
+          : requestedStatus,
+      openedChapterId: existing?.openedChapterId || context.chapterId,
       lastChangedChapterId: context.chapterId,
       evidenceChapterIds: recentEvidence(
-        mainline.foreshadowing[id]?.evidenceChapterIds || [],
+        existing?.evidenceChapterIds || [],
         context.chapterId,
       ),
     };
@@ -574,7 +617,10 @@ export function batchPatchToChapterDraft(
       title,
     },
     episodicSummary: {
-      brief: combined.map(item => item.brief).filter(Boolean).join('；'),
+      brief: combined
+        .map(item => item.brief)
+        .filter(Boolean)
+        .join('；'),
       keywords: unique(combined.flatMap(item => item.keywords)),
       events: combined.flatMap(item => item.events),
       characterChanges: combined.flatMap(item => item.characterChanges),
@@ -633,12 +679,15 @@ export function batchPatchToChapterDraft(
       evidenceQuote: firstQuote(item.evidence),
     })),
     mainlinePatch: {
+      assessment: draft.mainlinePatch.assessment,
       currentArcUpdate: {
         action: draft.mainlinePatch.currentArcUpdate.action,
         arcRef: draft.mainlinePatch.currentArcUpdate.arcRef,
         name: draft.mainlinePatch.currentArcUpdate.name,
         summary: draft.mainlinePatch.currentArcUpdate.summary,
-        evidenceQuote: firstQuote(draft.mainlinePatch.currentArcUpdate.evidence),
+        evidenceQuote: firstQuote(
+          draft.mainlinePatch.currentArcUpdate.evidence,
+        ),
       },
       currentObjective: draft.mainlinePatch.currentObjective
         ? {
@@ -652,6 +701,13 @@ export function batchPatchToChapterDraft(
         ...item,
         evidenceQuote: firstQuote(item.evidence),
       })),
+      conflictResolutions: (draft.mainlinePatch.conflictResolutions || []).map(
+        item => ({
+          conflictRef: item.conflictRef,
+          resolution: item.resolution,
+          evidenceQuote: firstQuote(item.evidence),
+        }),
+      ),
       threadOpens: draft.mainlinePatch.threadOpens.map(item => ({
         ...item,
         evidenceQuote: firstQuote(item.evidence),
@@ -739,8 +795,7 @@ export function applyStoryMemoryBatchPatch(
     schemaVersion: 2,
     sourceFingerprint: context.sourceFingerprint,
     baseStateFingerprint:
-      context.baseMemoryFingerprint ||
-      fingerprintStoryMemoryState(previous),
+      context.baseMemoryFingerprint || fingerprintStoryMemoryState(previous),
     resultStateFingerprint: applied.state.metadata.stateFingerprint,
     patch: draft,
     chapterSummaries: draft.chapterSummaries,

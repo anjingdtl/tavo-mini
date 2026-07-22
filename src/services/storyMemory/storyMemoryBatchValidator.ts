@@ -6,6 +6,7 @@ import type {
 } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
 import {
+  hasMainlineStateMutation,
   validateChapterMemoryPatch,
   validateEvidenceQuote,
 } from './storyMemoryValidator';
@@ -15,7 +16,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function assertArray(value: unknown, field: string): asserts value is unknown[] {
+function assertArray(
+  value: unknown,
+  field: string,
+): asserts value is unknown[] {
   if (!Array.isArray(value)) {
     throw new StoryMemoryError(
       'MEMORY_CHECKPOINT_SCHEMA_INVALID',
@@ -78,7 +82,10 @@ export function validateStoryMemoryBatchPatch(
   raw: unknown,
   previousState: StoryMemoryState,
   chapters: Chapter[],
-  options: { recoverEvidence?: boolean } = {},
+  options: {
+    recoverEvidence?: boolean;
+    requireMainlineAssessment?: boolean;
+  } = {},
 ): StoryMemoryBatchPatchDraft {
   if (!isRecord(raw)) {
     throw new StoryMemoryError(
@@ -210,7 +217,9 @@ export function validateStoryMemoryBatchPatch(
         role: text(item.role),
         identity: text(item.identity),
         stableTraits: textList(item.stableTraits),
-        initialState: isRecord(item.initialState) ? (item.initialState as any) : {},
+        initialState: isRecord(item.initialState)
+          ? (item.initialState as any)
+          : {},
         status: (text(item.status) || 'active') as any,
         evidence: mapEvidence(item.evidence || item.evidenceQuotes),
       };
@@ -228,7 +237,9 @@ export function validateStoryMemoryBatchPatch(
         profileCorrections: isRecord(item.profileCorrections)
           ? (item.profileCorrections as any)
           : {},
-        stateChanges: isRecord(item.stateChanges) ? (item.stateChanges as any) : {},
+        stateChanges: isRecord(item.stateChanges)
+          ? (item.stateChanges as any)
+          : {},
         status: item.status ? (text(item.status) as any) : undefined,
         correctionReason: text(item.correctionReason),
         addKnowledge: textList(item.addKnowledge),
@@ -271,15 +282,26 @@ export function validateStoryMemoryBatchPatch(
       }
       return {
         relationshipRef: text(item.relationshipRef || item.ref),
-        currentState: item.currentState != null ? text(item.currentState) : undefined,
-        trustLevel: item.trustLevel != null ? (text(item.trustLevel) as any) : undefined,
-        publicStatus: item.publicStatus != null ? text(item.publicStatus) : undefined,
-        hiddenStatus: item.hiddenStatus != null ? text(item.hiddenStatus) : undefined,
+        currentState:
+          item.currentState != null ? text(item.currentState) : undefined,
+        trustLevel:
+          item.trustLevel != null ? (text(item.trustLevel) as any) : undefined,
+        publicStatus:
+          item.publicStatus != null ? text(item.publicStatus) : undefined,
+        hiddenStatus:
+          item.hiddenStatus != null ? text(item.hiddenStatus) : undefined,
         reason: item.reason != null ? text(item.reason) : undefined,
         evidence: mapEvidence(item.evidence || item.evidenceQuotes),
       };
     }),
     mainlinePatch: {
+      assessment: isRecord(raw.mainlinePatch.assessment)
+        ? {
+            result: (text(raw.mainlinePatch.assessment.result) ||
+              'unchanged') as any,
+            reason: text(raw.mainlinePatch.assessment.reason),
+          }
+        : undefined,
       currentArcUpdate: {
         action: (text(
           isRecord(raw.mainlinePatch.currentArcUpdate)
@@ -314,6 +336,7 @@ export function validateStoryMemoryBatchPatch(
           }
         : undefined,
       conflictUpserts: [],
+      conflictResolutions: [],
       threadOpens: [],
       threadUpdates: [],
       threadResolutions: [],
@@ -378,6 +401,25 @@ export function validateStoryMemoryBatchPatch(
     }
     return {
       threadRef: text(item.threadRef || item.ref),
+      resolution: text(item.resolution),
+      evidence: mapEvidence(item.evidence || item.evidenceQuotes),
+    };
+  });
+  assertArray(
+    raw.mainlinePatch.conflictResolutions ?? [],
+    'conflictResolutions',
+  );
+  draft.mainlinePatch.conflictResolutions = (
+    (raw.mainlinePatch.conflictResolutions as unknown[]) || []
+  ).map((item, index) => {
+    if (!isRecord(item)) {
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        `conflictResolutions[${index}] 无效。`,
+      );
+    }
+    return {
+      conflictRef: text(item.conflictRef || item.ref),
       resolution: text(item.resolution),
       evidence: mapEvidence(item.evidence || item.evidenceQuotes),
     };
@@ -473,7 +515,10 @@ export function validateStoryMemoryBatchPatch(
           const idx = content.indexOf(name);
           if (idx < 0) continue;
           const start = Math.max(0, idx - 4);
-          const quote = content.slice(start, start + Math.min(40, content.length - start));
+          const quote = content.slice(
+            start,
+            start + Math.min(40, content.length - start),
+          );
           if (quote.length >= 4 && validateEvidenceQuote(content, quote)) {
             return {
               ...item,
@@ -539,10 +584,16 @@ export function validateStoryMemoryBatchPatch(
     .map(chapter => chapter.content || '')
     .join('\n');
   try {
-    validateChapterMemoryPatch(chapterDraft, previousState, joinedContent, {
-      recoverEvidence: true,
-      ...options,
-    });
+    const validatedChapterDraft = validateChapterMemoryPatch(
+      chapterDraft,
+      previousState,
+      joinedContent,
+      {
+        recoverEvidence: true,
+        ...options,
+      },
+    );
+    validateBatchMainlineSummaryConsistency(draft, validatedChapterDraft);
   } catch (error) {
     if (error instanceof StoryMemoryError) {
       // Soft-fail remaining optional mainline issues by clearing optional arrays
@@ -559,7 +610,10 @@ export function validateStoryMemoryBatchPatch(
             chapterDraft,
             previousState,
             joinedContent,
-            { recoverEvidence: true },
+            {
+              recoverEvidence: true,
+              ...options,
+            },
           );
           draft.mainlinePatch.completedBeats = [];
           draft.mainlinePatch.timelineAnchors = [];
@@ -572,16 +626,65 @@ export function validateStoryMemoryBatchPatch(
         error.code === 'MEMORY_EVIDENCE_NOT_FOUND'
           ? 'MEMORY_CHECKPOINT_EVIDENCE_NOT_FOUND'
           : error.code === 'MEMORY_PATCH_SCHEMA_INVALID'
-            ? 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
-            : error.code === 'MEMORY_ENTITY_REFERENCE_INVALID'
-              ? 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
-              : error.code === 'MEMORY_PATCH_INVALID_JSON'
-                ? 'MEMORY_CHECKPOINT_INVALID_JSON'
-                : error.code;
+          ? 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
+          : error.code === 'MEMORY_ENTITY_REFERENCE_INVALID'
+          ? 'MEMORY_CHECKPOINT_SCHEMA_INVALID'
+          : error.code === 'MEMORY_PATCH_INVALID_JSON'
+          ? 'MEMORY_CHECKPOINT_INVALID_JSON'
+          : error.code;
       throw new StoryMemoryError(code as any, error.message);
     }
     throw error;
   }
 
   return draft;
+}
+
+function hasText(items: string[]): boolean {
+  return items.some(item => item.trim().length > 0);
+}
+
+function validateBatchMainlineSummaryConsistency(
+  draft: StoryMemoryBatchPatchDraft,
+  chapterDraft: import('./storyMemoryTypes').ChapterMemoryPatchDraft,
+): void {
+  const summaries = draft.chapterSummaries;
+  const hasMainlineChanges = summaries.some(summary =>
+    hasText(summary.mainlineChanges),
+  );
+  const hasNewThreads = summaries.some(summary => hasText(summary.newThreads));
+  const hasResolvedThreads = summaries.some(summary =>
+    hasText(summary.resolvedThreads),
+  );
+  const mainline = chapterDraft.mainlinePatch;
+
+  if (hasMainlineChanges && !hasMainlineStateMutation(mainline)) {
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+      '章节摘要记录了主线变化，但结构化故事主线没有有效操作。',
+    );
+  }
+  if (
+    hasNewThreads &&
+    mainline.threadOpens.length === 0 &&
+    mainline.threadUpdates.length === 0
+  ) {
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+      '章节摘要记录了新增悬念，但结构化故事主线没有线索操作。',
+    );
+  }
+  if (
+    hasResolvedThreads &&
+    mainline.threadResolutions.length === 0 &&
+    mainline.conflictResolutions.length === 0 &&
+    mainline.currentArcUpdate.action !== 'complete' &&
+    mainline.currentArcUpdate.action !== 'replace' &&
+    !mainline.foreshadowingUpserts.some(item => item.status === 'paid')
+  ) {
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+      '章节摘要记录了已解决事项，但结构化故事主线没有闭合操作。',
+    );
+  }
 }

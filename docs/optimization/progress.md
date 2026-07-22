@@ -16,6 +16,15 @@
 - `blocked`: requires a decision or external input
 - `verified`: implementation and required checks completed
 
+## V2.5.18 writing-chain reliability audit — verified (2026-07-23)
+
+- Scope: chapter summaries, Story Memory mainline, character cards, world books, notes, and presets. Schema remains **17**; no backup format, model provider, or remote-request expansion.
+- Fixed: evidence-backed five-field Story Memory mainline contract and lifecycle; default-preset linking for new projects and safe shared-preset deletion; memory-summary project attribution; note retrieval source validation/cache freshness/config normalization; project-scoped character/world-book/note collection toggles.
+- Regression evidence: dedicated mainline contract/lifecycle/UI, preset integrity, note retrieval/config, project creation, and v16→v17 migration tests.
+- Gates: `npm run test:coverage` passed — 137 suites / 1015 tests (1 suite and 3 tests skipped); statements **78.21%**, branches **62.49%**, functions **82.87%**, lines **79.79%**. Final `npm run verify` passed with the same 137/1015 baseline; `npm run lint` has 0 errors / 9 existing warnings; `npm run typecheck` passed.
+- Release APK acceptance: `dist/apk/release/ShineWriter-V2.5.18-release.apk` is **37,476,631 bytes** with SHA-256 `345EC800BA3B0CA4036BE8C6EC2021674AE8BDC3247131C3691715B08D88A7BB`; official certificate SHA-256 matched, one signer and explicit v2 signature passed, `zipalign` passed, and AAPT reported `com.shinewriter` / `V2.5.18` / `2051800`.
+- Release source: annotated tag **V2.5.18** points to this release commit; the release is published from `main` together with that tag.
+
 ## Phase 0 — Baseline and quality gates
 
 ### 0.1 Optimization branch — verified

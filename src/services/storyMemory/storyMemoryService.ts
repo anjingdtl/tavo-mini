@@ -99,12 +99,10 @@ export function parseAndValidateMemoryPatch(
       '模型返回的记忆补丁 JSON 无法解析。',
     );
   }
-  return validateChapterMemoryPatch(
-    parsed,
-    previousState,
-    chapterContent,
-    options,
-  );
+  return validateChapterMemoryPatch(parsed, previousState, chapterContent, {
+    ...options,
+    requireMainlineAssessment: true,
+  });
 }
 
 const MIN_MEMORY_PATCH_OUTPUT_TOKENS = 2400;

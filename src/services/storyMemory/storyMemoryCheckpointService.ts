@@ -164,12 +164,10 @@ export function parseAndValidateBatchPatch(
       '模型返回的检查点 JSON 无法解析。',
     );
   }
-  return validateStoryMemoryBatchPatch(
-    parsed,
-    previousState,
-    chapters,
-    options,
-  );
+  return validateStoryMemoryBatchPatch(parsed, previousState, chapters, {
+    ...options,
+    requireMainlineAssessment: true,
+  });
 }
 
 export async function generateValidatedCheckpointBatch(input: {

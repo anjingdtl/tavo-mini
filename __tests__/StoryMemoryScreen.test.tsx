@@ -117,4 +117,79 @@ describe('StoryMemoryScreen', () => {
       expect.objectContaining({ mode: 'auto', signal: expect.any(Object) }),
     );
   });
+
+  it('explains a clean long-running memory whose visible mainline was never recognized', async () => {
+    const state = createEmptyStoryMemory(7);
+    state.metadata.status = 'clean';
+    state.throughChapterPosition = 5;
+    mockEnsure.mockResolvedValue({
+      state,
+      status: 'clean',
+      dirtyFromPosition: null,
+    });
+
+    const { findByText } = render(<StoryMemoryScreen />);
+    expect(
+      await findByText(/已完成多章长期记忆整理，但尚未识别到有效故事主线/),
+    ).toBeTruthy();
+  });
+
+  it('renders detailed active mainline fields and hides paid foreshadowing', async () => {
+    const state = createEmptyStoryMemory(7);
+    state.mainline.currentArc = {
+      id: 'arc_clocktower',
+      name: '钟楼调查',
+      summary: '追查暗门与失踪档案。',
+      startedChapterId: 1,
+    };
+    state.mainline.currentObjective = '找到地下档案室钥匙';
+    state.mainline.activeConflicts.guard = {
+      id: 'guard',
+      title: '守卫阻拦',
+      parties: [],
+      state: '僵持',
+      stakes: '无法取得档案',
+      openedChapterId: 1,
+      lastChangedChapterId: 1,
+      evidenceChapterIds: [1],
+    };
+    state.mainline.openThreads.door = {
+      id: 'door',
+      title: '暗门去向',
+      description: '确认暗门通往何处',
+      ownerCharacterIds: [],
+      priority: 'high',
+      openedChapterId: 1,
+      lastChangedChapterId: 1,
+      deadlineOrTrigger: '',
+      evidenceChapterIds: [1],
+    };
+    state.mainline.foreshadowing.key = {
+      id: 'key',
+      setup: '银钥匙家徽',
+      expectedPayoff: '揭示家徽主人',
+      status: 'open',
+      openedChapterId: 1,
+      lastChangedChapterId: 1,
+      evidenceChapterIds: [1],
+    };
+    state.mainline.foreshadowing.paid = {
+      ...state.mainline.foreshadowing.key,
+      id: 'paid',
+      setup: '已兑现伏笔',
+      status: 'paid',
+    };
+    mockEnsure.mockResolvedValue({
+      state,
+      status: 'clean',
+      dirtyFromPosition: null,
+    });
+
+    const { findByText, queryByText } = render(<StoryMemoryScreen />);
+    expect(await findByText(/钟楼调查｜追查暗门与失踪档案/)).toBeTruthy();
+    expect(await findByText(/守卫阻拦｜僵持｜代价：无法取得档案/)).toBeTruthy();
+    expect(await findByText(/暗门去向｜确认暗门通往何处/)).toBeTruthy();
+    expect(await findByText(/银钥匙家徽 → 揭示家徽主人/)).toBeTruthy();
+    expect(queryByText(/已兑现伏笔/)).toBeNull();
+  });
 });
