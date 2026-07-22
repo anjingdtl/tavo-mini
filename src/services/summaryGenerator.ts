@@ -25,7 +25,9 @@ export async function generateSummary(chapterId: number): Promise<boolean> {
       },
       {
         role: 'user',
-        content: `章节标题：${chapter.title}\n章节概要：${chapter.synopsis || '无'}\n\n正文：\n${chapter.content}`,
+        content: `章节标题：${chapter.title}\n章节概要：${
+          chapter.synopsis || '无'
+        }\n\n正文：\n${chapter.content}`,
       },
     ],
     1200,
@@ -45,16 +47,28 @@ export async function generateSummary(chapterId: number): Promise<boolean> {
   }
   const summary: ChapterSummary = {
     brief: String(parsed.brief || ''),
-    plotPoints: Array.isArray(parsed.plotPoints) ? parsed.plotPoints.map(String) : [],
-    characterStates: Array.isArray(parsed.characterStates) ? parsed.characterStates.map(String) : [],
-    sceneChanges: Array.isArray(parsed.sceneChanges) ? parsed.sceneChanges.map(String) : [],
+    plotPoints: Array.isArray(parsed.plotPoints)
+      ? parsed.plotPoints.map(String)
+      : [],
+    characterStates: Array.isArray(parsed.characterStates)
+      ? parsed.characterStates.map(String)
+      : [],
+    sceneChanges: Array.isArray(parsed.sceneChanges)
+      ? parsed.sceneChanges.map(String)
+      : [],
   };
-  await db.updateChapter(chapterId, { summary_json: { ...EMPTY_SUMMARY, ...summary } as any });
+  await db.updateChapter(chapterId, {
+    summary_json: { ...EMPTY_SUMMARY, ...summary } as any,
+  });
   return true;
 }
 
-export async function batchGenerateSummaries(projectId: number): Promise<{ success: number; total: number }> {
-  const chapters = (await db.getChaptersByProject(projectId)).filter((chapter) => chapter.content.trim().length >= 100);
+export async function batchGenerateSummaries(
+  projectId: number,
+): Promise<{ success: number; total: number }> {
+  const chapters = (await db.getChaptersByProject(projectId)).filter(
+    chapter => chapter.content.trim().length >= 100,
+  );
   let success = 0;
   for (const chapter of chapters) {
     try {
@@ -66,10 +80,14 @@ export async function batchGenerateSummaries(projectId: number): Promise<{ succe
   return { success, total: chapters.length };
 }
 
-export async function generateMemorySummary(chapterId: number, targetChars = 300): Promise<string> {
+export async function generateMemorySummary(
+  chapterId: number,
+  targetChars = 300,
+): Promise<string> {
   const chapter = await db.getChapterById(chapterId);
   if (!chapter) throw new Error('章节不存在。');
-  if (!chapter.content.trim()) throw new Error('章节正文为空，无法生成记忆摘要。');
+  if (!chapter.content.trim())
+    throw new Error('章节正文为空，无法生成记忆摘要。');
 
   const result = await callLLM(
     [
@@ -107,7 +125,7 @@ ${chapter.content}`,
       },
     ],
     Math.max(targetChars * 2, 700),
-    { scenario: 'memory_summary' },
+    { scenario: 'memory_summary', projectId: chapter.project_id },
   );
 
   const memorySummary = (result || '').trim();

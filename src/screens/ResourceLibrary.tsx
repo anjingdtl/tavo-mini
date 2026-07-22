@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Alert,
   FlatList,
@@ -87,6 +93,12 @@ const RESOURCE_TYPE: Record<ResourceTab, ResourceType> = {
   presets: 'preset',
 };
 
+function isCollectionEnabledForProject(collection: any): boolean {
+  return collection.enabled_for_project == null
+    ? collection.enabled === 1
+    : collection.enabled_for_project === 1;
+}
+
 interface EditorState {
   kind: EditorKind;
   item: any;
@@ -154,11 +166,7 @@ export const ResourceLibrary: React.FC = () => {
   const [analyzing, setAnalyzing] = useState(false);
   const projectId = currentProject?.id || 0;
   const projectEnabledNotes = useMemo(
-    () =>
-      items.notes.filter(
-        (note: any) =>
-          note.enabled_for_project === 1 && note.collection_enabled !== 0,
-      ),
+    () => items.notes.filter((note: any) => note.enabled_for_project === 1),
     [items.notes],
   );
   const effectiveEnabledNoteIds = useMemo(() => {
@@ -853,22 +861,6 @@ export const ResourceLibrary: React.FC = () => {
       Alert.alert('未选择项目', '请先在项目页选择当前项目。');
       return;
     }
-      if (tab === 'characters' && item.collection_enabled === 0) {
-      Toast.show({
-        type: 'info',
-        text1: '该人物卡所属合集已禁用',
-        text2: '请先启用合集，再单独控制人物卡。',
-      });
-      return;
-    }
-    if (tab === 'notes' && item.collection_enabled === 0) {
-      Toast.show({
-        type: 'info',
-        text1: '该笔记所属合集已禁用',
-        text2: '请先启用合集，再单独控制分片笔记。',
-      });
-      return;
-    }
     // Phase9-BUG#11: 包裹 try-catch，失败时 Toast 提示（状态会通过 store 自动同步）
     try {
       await db.setProjectResourceEnabled(
@@ -884,7 +876,7 @@ export const ResourceLibrary: React.FC = () => {
   };
 
   const toggleCharacterCollection = async (collection: any) => {
-    const newEnabled = collection.enabled === 1 ? 0 : 1;
+    const newEnabled = isCollectionEnabledForProject(collection) ? 0 : 1;
     try {
       await db.setCharacterCollectionEnabledForProject(
         projectId,
@@ -898,7 +890,7 @@ export const ResourceLibrary: React.FC = () => {
   };
 
   const toggleCollection = async (collection: any) => {
-    const newEnabled = collection.enabled === 1 ? 0 : 1;
+    const newEnabled = isCollectionEnabledForProject(collection) ? 0 : 1;
     // Phase9-BUG#12: 包裹 try-catch + Toast
     try {
       await db.setWorldbookCollectionEnabledForProject(
@@ -917,7 +909,7 @@ export const ResourceLibrary: React.FC = () => {
       await db.setNoteCollectionEnabledForProject(
         projectId,
         collection.id,
-        collection.enabled !== 1,
+        !isCollectionEnabledForProject(collection),
       );
       await loadData();
     } catch (e: any) {
@@ -1174,7 +1166,8 @@ export const ResourceLibrary: React.FC = () => {
                       ]}
                     >
                       参与仿写的笔记：
-                      {effectiveEnabledNoteIds.length}/{projectEnabledNotes.length} 篇
+                      {effectiveEnabledNoteIds.length}/
+                      {projectEnabledNotes.length} 篇
                     </Text>
                   </Pressable>
                   <Text
@@ -1241,7 +1234,8 @@ export const ResourceLibrary: React.FC = () => {
                       ]}
                     >
                       参与检索的笔记：
-                      {effectiveEnabledNoteIds.length}/{projectEnabledNotes.length} 篇
+                      {effectiveEnabledNoteIds.length}/
+                      {projectEnabledNotes.length} 篇
                     </Text>
                   </Pressable>
                   <Text
@@ -1357,7 +1351,7 @@ export const ResourceLibrary: React.FC = () => {
                           </Text>
                           <Switch
                             testID={`character-collection-toggle-${item.id}`}
-                            value={item.enabled === 1}
+                            value={isCollectionEnabledForProject(item)}
                             onValueChange={() =>
                               toggleCharacterCollection(item)
                             }
@@ -1437,7 +1431,7 @@ export const ResourceLibrary: React.FC = () => {
                             合集启用
                           </Text>
                           <Switch
-                            value={item.enabled === 1}
+                            value={isCollectionEnabledForProject(item)}
                             onValueChange={() => toggleCollection(item)}
                           />
                         </View>
@@ -1683,21 +1677,15 @@ export const ResourceLibrary: React.FC = () => {
                           当前项目使用
                         </Text>
                         <Switch
-                          value={
-                            item.enabled_for_project === 1 &&
-                            item.collection_enabled !== 0
-                          }
-                          disabled={
-                            !currentProject || item.collection_enabled === 0
-                          }
+                          value={item.enabled_for_project === 1}
+                          disabled={!currentProject}
                           onValueChange={() => toggleProjectUsage(item)}
                           trackColor={{
                             false: theme.colors.border,
                             true: theme.colors.accentSoft,
                           }}
                           thumbColor={
-                            item.enabled_for_project === 1 &&
-                            item.collection_enabled !== 0
+                            item.enabled_for_project === 1
                               ? theme.colors.accent
                               : theme.colors.textMuted
                           }
@@ -1943,7 +1931,9 @@ export const ResourceLibrary: React.FC = () => {
                         笔记内容
                       </Text>
                       <Button
-                        label={`章节${noteChapters.length ? ` (${noteChapters.length})` : ''}`}
+                        label={`章节${
+                          noteChapters.length ? ` (${noteChapters.length})` : ''
+                        }`}
                         icon={BookMarked}
                         variant="secondary"
                         compact
@@ -1953,8 +1943,12 @@ export const ResourceLibrary: React.FC = () => {
                     <TextInput
                       ref={noteContentInputRef}
                       value={editor.content}
-                      onChangeText={content => setEditor({ ...editor, content })}
-                      onSelectionChange={event => setNoteSelection(event.nativeEvent.selection)}
+                      onChangeText={content =>
+                        setEditor({ ...editor, content })
+                      }
+                      onSelectionChange={event =>
+                        setNoteSelection(event.nativeEvent.selection)
+                      }
                       selection={noteSelection}
                       multiline
                       textAlignVertical="top"
@@ -2059,34 +2053,67 @@ export const ResourceLibrary: React.FC = () => {
             style={StyleSheet.absoluteFill}
             onPress={() => setShowNoteChapters(false)}
           />
-          <View style={[styles.chapterModal, { backgroundColor: theme.colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>
+          <View
+            style={[
+              styles.chapterModal,
+              { backgroundColor: theme.colors.surface },
+            ]}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
               笔记章节
             </Text>
             {noteChapters.length > 0 ? (
-              <ScrollView style={styles.chapterList} keyboardShouldPersistTaps="handled">
+              <ScrollView
+                style={styles.chapterList}
+                keyboardShouldPersistTaps="handled"
+              >
                 {noteChapters.map((chapter, index) => (
                   <Pressable
                     key={`${chapter.offset}-${chapter.title}`}
-                    style={[styles.chapterItem, { borderBottomColor: theme.colors.border }]}
+                    style={[
+                      styles.chapterItem,
+                      { borderBottomColor: theme.colors.border },
+                    ]}
                     onPress={() => jumpToNoteChapter(chapter.offset)}
                   >
-                    <Text style={[styles.chapterIndex, { color: theme.colors.textMuted }]}>
+                    <Text
+                      style={[
+                        styles.chapterIndex,
+                        { color: theme.colors.textMuted },
+                      ]}
+                    >
                       {index + 1}
                     </Text>
-                    <Text style={[styles.chapterTitle, { color: theme.colors.textPrimary }]}>
+                    <Text
+                      style={[
+                        styles.chapterTitle,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
                       {chapter.title}
                     </Text>
                   </Pressable>
                 ))}
               </ScrollView>
             ) : (
-              <Text style={[styles.chapterEmpty, { color: theme.colors.textSecondary }]}>
-                未识别到章节标题。可使用“第 1 章”、Markdown 标题或 Chapter 1 格式。
+              <Text
+                style={[
+                  styles.chapterEmpty,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
+                未识别到章节标题。可使用“第 1 章”、Markdown 标题或 Chapter 1
+                格式。
               </Text>
             )}
             <View style={styles.modalActions}>
-              <Button label="关闭" variant="ghost" onPress={() => setShowNoteChapters(false)} />
+              <Button
+                label="关闭"
+                variant="ghost"
+                onPress={() => setShowNoteChapters(false)}
+              />
             </View>
           </View>
         </View>
@@ -2364,13 +2391,41 @@ const styles = StyleSheet.create({
   noteModeLabel: { fontSize: 13, fontWeight: '700', marginTop: spacing.xs },
   noteModeLink: { fontSize: 13, fontWeight: '700' },
   noteModeHint: { fontSize: 12, marginTop: spacing.xs },
-  noteContentHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs },
+  noteContentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.xs,
+  },
   noteContentLabel: { fontSize: 13, fontWeight: '600' },
-  noteContentInput: { minHeight: 280, borderWidth: 1, borderRadius: 12, padding: spacing.md, fontSize: 14, lineHeight: 21 },
-  chapterModal: { width: '88%', maxHeight: '74%', borderRadius: 16, padding: spacing.lg },
+  noteContentInput: {
+    minHeight: 280,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: spacing.md,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  chapterModal: {
+    width: '88%',
+    maxHeight: '74%',
+    borderRadius: 16,
+    padding: spacing.lg,
+  },
   chapterList: { maxHeight: 420 },
-  chapterItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md, borderBottomWidth: StyleSheet.hairlineWidth },
-  chapterIndex: { width: 26, fontSize: 13, fontWeight: '700', textAlign: 'center' },
+  chapterItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  chapterIndex: {
+    width: 26,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
   chapterTitle: { flex: 1, fontSize: 15, fontWeight: '600' },
   chapterEmpty: { fontSize: 14, lineHeight: 21, paddingVertical: spacing.lg },
   weightRow: { gap: 4 },

@@ -30,9 +30,7 @@ function makeChapter(position: number): Chapter {
   };
 }
 
-function emptyBatch(
-  chapters: Chapter[],
-): StoryMemoryBatchPatchDraft {
+function emptyBatch(chapters: Chapter[]): StoryMemoryBatchPatchDraft {
   const ordered = [...chapters].sort((a, b) => a.position - b.position);
   const first = ordered[0];
   const last = ordered[ordered.length - 1];
@@ -69,6 +67,7 @@ function emptyBatch(
         evidence: [],
       },
       conflictUpserts: [],
+      conflictResolutions: [],
       threadOpens: [],
       threadUpdates: [],
       threadResolutions: [],

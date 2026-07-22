@@ -283,6 +283,25 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
   const characters = Object.values(state.characters);
   const relationships = Object.values(state.relationships);
   const mainline = state.mainline;
+  const unpaidForeshadowing = Object.values(mainline.foreshadowing).filter(
+    item => item.status !== 'paid',
+  );
+  const mainlineIsEmpty =
+    !mainline.currentArc &&
+    !mainline.currentObjective.trim() &&
+    Object.keys(mainline.activeConflicts).length === 0 &&
+    Object.keys(mainline.openThreads).length === 0 &&
+    unpaidForeshadowing.length === 0;
+  const hasMainlineHistory =
+    mainline.recentCompletedBeats.length > 0 ||
+    mainline.recentResolvedThreads.length > 0 ||
+    Boolean(mainline.archiveDigest.trim());
+  const showUnrecognizedMainlineDiagnostic =
+    state.metadata.status === 'clean' &&
+    state.throughChapterPosition >= 5 &&
+    mainlineIsEmpty &&
+    !hasMainlineHistory;
+  const showClosedMainlineNotice = mainlineIsEmpty && hasMainlineHistory;
   const showLegacyBootstrap =
     state.metadata.status === 'empty' ||
     state.metadata.source === 'legacy_bootstrap';
@@ -517,8 +536,23 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
           <Text style={[styles.section, { color: theme.colors.textPrimary }]}>
             故事主线
           </Text>
+          {showUnrecognizedMainlineDiagnostic ? (
+            <Text style={[styles.diagnostic, { color: theme.colors.warning }]}>
+              已完成多章长期记忆整理，但尚未识别到有效故事主线。若正文包含持续目标、冲突或悬念，可在高级操作中清空并重建。
+            </Text>
+          ) : null}
+          {showClosedMainlineNotice ? (
+            <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+              当前没有活跃主线事项，最近主线节点已闭合。
+            </Text>
+          ) : null}
           <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
-            剧情弧：{mainline.currentArc?.name || '无'}
+            剧情弧：
+            {mainline.currentArc
+              ? [mainline.currentArc.name, mainline.currentArc.summary]
+                  .filter(Boolean)
+                  .join('｜')
+              : '无'}
           </Text>
           <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
             当前目标：{mainline.currentObjective || '无'}
@@ -526,20 +560,31 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
           <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
             活跃冲突：
             {Object.values(mainline.activeConflicts)
-              .map(item => item.title)
+              .map(item =>
+                [
+                  item.title,
+                  item.state,
+                  item.stakes ? '代价：' + item.stakes : '',
+                ]
+                  .filter(Boolean)
+                  .join('｜'),
+              )
               .join('、') || '无'}
           </Text>
           <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
             未解决线索：
             {Object.values(mainline.openThreads)
-              .map(item => item.title)
+              .map(item =>
+                [item.title, item.description].filter(Boolean).join('｜'),
+              )
               .join('、') || '无'}
           </Text>
           <Text style={[styles.item, { color: theme.colors.textSecondary }]}>
             未兑现伏笔：
-            {Object.values(mainline.foreshadowing)
-              .filter(item => item.status !== 'paid')
-              .map(item => item.setup)
+            {unpaidForeshadowing
+              .map(item =>
+                [item.setup, item.expectedPayoff].filter(Boolean).join(' → '),
+              )
               .join('、') || '无'}
           </Text>
         </Card>
@@ -554,6 +599,7 @@ const styles = StyleSheet.create({
   section: { fontSize: 16, fontWeight: '800', marginBottom: spacing.sm },
   meta: { fontSize: 12, lineHeight: 20 },
   item: { fontSize: 13, lineHeight: 21, marginBottom: spacing.xs },
+  diagnostic: { fontSize: 12, lineHeight: 20, marginBottom: spacing.sm },
   error: { color: '#dc2626', fontSize: 12, marginTop: spacing.sm },
   actions: { gap: spacing.sm },
   row: {
