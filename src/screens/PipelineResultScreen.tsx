@@ -182,13 +182,17 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const durationText = duration > 60000
     ? `${Math.floor(duration / 60000)}m ${Math.round((duration % 60000) / 1000)}s`
     : `${Math.round(duration / 1000)}s`;
+  const retainedDraft =
+    task.status === 'failed' && Boolean(task.finalText && task.finalText.trim());
   const statusSummary =
     task.status === 'completed'
       ? failedAuditCount > 0
         ? `已完成（${failedAuditCount} 项审核失败）`
         : '已完成'
       : task.status === 'failed'
-        ? '异常终止'
+        ? retainedDraft
+          ? '未完整完成（已保留初稿）'
+          : '异常终止'
         : task.status === 'cancelled'
           ? '已取消'
           : '进行中';

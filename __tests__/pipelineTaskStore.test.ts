@@ -117,3 +117,62 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
     expect(task.error).toMatch(/已退出或任务已停止/);
   });
 });
+
+describe('pipelineTaskStore.setTaskFinalText', () => {
+  beforeEach(() => {
+    usePipelineTaskStore.setState({ tasks: [], _loaded: true });
+    jest.clearAllMocks();
+  });
+
+  it('sets finalText without overwriting failed status or error', () => {
+    const now = Date.now();
+    usePipelineTaskStore.setState({
+      tasks: [
+        {
+          id: 'degraded-1',
+          targetType: 'chapter',
+          targetId: 1,
+          status: 'failed',
+          stageResults: [],
+          finalText: null,
+          error: '文学评估失败，已保留初稿，未生成终审稿。',
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        } as any,
+      ],
+    });
+
+    usePipelineTaskStore.getState().setTaskFinalText('degraded-1', 'draft body');
+
+    const task = usePipelineTaskStore.getState().tasks[0];
+    expect(task.status).toBe('failed');
+    expect(task.error).toMatch(/已保留初稿/);
+    expect(task.finalText).toBe('draft body');
+  });
+
+  it('completeTask still marks completed on success path', () => {
+    const now = Date.now();
+    usePipelineTaskStore.setState({
+      tasks: [
+        {
+          id: 'ok-1',
+          targetType: 'chapter',
+          targetId: 1,
+          status: 'proofing',
+          stageResults: [],
+          finalText: null,
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        } as any,
+      ],
+    });
+
+    usePipelineTaskStore.getState().completeTask('ok-1', 'final text');
+    const task = usePipelineTaskStore.getState().tasks[0];
+    expect(task.status).toBe('completed');
+    expect(task.finalText).toBe('final text');
+  });
+});
