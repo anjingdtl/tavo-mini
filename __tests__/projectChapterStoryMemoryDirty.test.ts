@@ -32,10 +32,12 @@ jest.mock('../src/utils/idfCache', () => ({
 }));
 
 import {
+  createProject,
   deleteChapter,
   updateChapter,
 } from '../src/data/repositories/projectRepository';
 import { invalidateIdf } from '../src/utils/idfCache';
+import { ensureDefaultPreset } from '../src/data/repositories/presetRepository';
 
 function memoryRow(opts: {
   projectId: number;
@@ -168,13 +170,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     );
     expect(dirtyUpdate).toBeTruthy();
     expect(dirtyUpdate!.params).toEqual(
-      expect.arrayContaining([
-        1,
-        1,
-        1,
-        '已定稿章节内容或顺序发生变化。',
-        7,
-      ]),
+      expect.arrayContaining([1, 1, 1, '已定稿章节内容或顺序发生变化。', 7]),
     );
 
     const invalidate = findTx(
@@ -267,20 +263,16 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(deleteSql).toBeTruthy();
     expect(deleteSql!.params).toEqual([42]);
 
-    expect(findTx(sql => sql.includes('UPDATE projects SET updated_at'))).toBeTruthy();
+    expect(
+      findTx(sql => sql.includes('UPDATE projects SET updated_at')),
+    ).toBeTruthy();
 
     const dirtyUpdate = findTx(sql =>
       sql.includes('dirty_from_position = CASE'),
     );
     expect(dirtyUpdate).toBeTruthy();
     expect(dirtyUpdate!.params).toEqual(
-      expect.arrayContaining([
-        1,
-        1,
-        1,
-        '已删除章节，需要重建故事记忆。',
-        7,
-      ]),
+      expect.arrayContaining([1, 1, 1, '已删除章节，需要重建故事记忆。', 7]),
     );
 
     const invalidate = findTx(
@@ -304,7 +296,9 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
       chapter: chapterRow({ id: 42, position: 1 }),
       memory: memoryRow({ projectId: 7, through: 5, status: 'clean' }),
     });
-    const txError = new Error('FAULT_INJECTION: dirty/invalidate failed on delete');
+    const txError = new Error(
+      'FAULT_INJECTION: dirty/invalidate failed on delete',
+    );
     mockExecuteTransaction.mockRejectedValueOnce(txError);
 
     await expect(deleteChapter(42)).rejects.toBe(txError);
@@ -377,9 +371,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expectNoStandaloneChapterWrite();
     let stmts = txStatements();
     expect(stmts).toHaveLength(2); // chapter + project touch
-    expect(
-      stmts.some(s => s.sql.includes('dirty_from_position')),
-    ).toBe(false);
+    expect(stmts.some(s => s.sql.includes('dirty_from_position'))).toBe(false);
     expect(stmts.some(s => s.sql.includes('story_memory_batches'))).toBe(false);
 
     jest.clearAllMocks();
@@ -395,9 +387,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expectNoStandaloneChapterWrite();
     stmts = txStatements();
     expect(stmts.some(s => s.sql.includes('DELETE FROM chapters'))).toBe(true);
-    expect(
-      stmts.some(s => s.sql.includes('dirty_from_position')),
-    ).toBe(false);
+    expect(stmts.some(s => s.sql.includes('dirty_from_position'))).toBe(false);
   });
 
   it('already dirty with earlier dirty_from keeps the earlier position in SQL CASE', async () => {
@@ -419,9 +409,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(dirtyUpdate).toBeTruthy();
     // Params bind the NEW affected position (4); SQL CASE preserves earlier
     // dirty_from_position when it is already smaller.
-    expect(dirtyUpdate!.params).toEqual(
-      expect.arrayContaining([4, 4, 4, 7]),
-    );
+    expect(dirtyUpdate!.params).toEqual(expect.arrayContaining([4, 4, 4, 7]));
     expect(dirtyUpdate!.sql).toContain('WHEN dirty_from_position > ? THEN ?');
     expect(dirtyUpdate!.sql).toContain('ELSE dirty_from_position');
   });
@@ -439,9 +427,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     );
     expect(dirtyUpdate).toBeTruthy();
     // min(4, 2) = 2
-    expect(dirtyUpdate!.params).toEqual(
-      expect.arrayContaining([2, 2, 2, 7]),
-    );
+    expect(dirtyUpdate!.params).toEqual(expect.arrayContaining([2, 2, 2, 7]));
 
     const invalidate = findTx(
       sql =>
@@ -469,7 +455,9 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(findTx(sql => sql.includes('dirty_from_position = CASE'))).toBe(
       undefined,
     );
-    expect(findTx(sql => sql.includes("status = 'invalidated'"))).toBeUndefined();
+    expect(
+      findTx(sql => sql.includes("status = 'invalidated'")),
+    ).toBeUndefined();
     // Still touches project in the same transaction
     expect(stmts).toHaveLength(2);
   });
@@ -487,5 +475,26 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(findTx(sql => sql.includes('dirty_from_position = CASE'))).toBe(
       undefined,
     );
+  });
+});
+
+describe('createProject → usable default preset link', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockExecute.mockResolvedValue({ rowsAffected: 1, insertId: 77 });
+    mockExecuteTransaction.mockResolvedValue(undefined);
+    (ensureDefaultPreset as jest.Mock).mockResolvedValue(11);
+  });
+
+  it('links the resolved default preset instead of the old resource-id zero placeholder', async () => {
+    await createProject('预设关联回归', 'outline');
+
+    expect(ensureDefaultPreset).toHaveBeenCalledWith(mockDatabase);
+    const statements = txStatements();
+    const presetLink = statements.find(statement =>
+      statement.sql.includes('project_resources'),
+    );
+    expect(presetLink?.params).toEqual([77, 'preset', 11, 1]);
+    expect(presetLink?.params).not.toContain(0);
   });
 });

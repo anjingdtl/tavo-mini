@@ -154,7 +154,9 @@ function parseApkSignerOutput(output: string): {
   let v2LineFound = false;
   let verifiedV2 = false;
   for (const line of lines) {
-    const m = line.match(/^Verified\s+using\s+v2\s+scheme:\s*(true|false)/i);
+    const m = line.match(
+      /^Verified\s+using\s+v2\s+scheme(?:\s+\([^)]*\))?:\s*(true|false)\s*$/i,
+    );
     if (m) {
       v2LineFound = true;
       verifiedV2 = m[1].toLowerCase() === 'true';
@@ -165,8 +167,9 @@ function parseApkSignerOutput(output: string): {
   // verifiedAny: diagnostic only — any scheme true or a legacy "Verifies" line.
   const verifiedAny = lines.some(
     l =>
-      /^Verified\s+using\s+v\d+\s+scheme:\s*true/i.test(l) ||
-      /^Verifies\s*$/i.test(l),
+      /^Verified\s+using\s+v\d+(?:\.\d+)?\s+scheme(?:\s+\([^)]*\))?:\s*true\s*$/i.test(
+        l,
+      ) || /^Verifies\s*$/i.test(l),
   );
 
   let numberSigners: number | null = null;
@@ -180,12 +183,10 @@ function parseApkSignerOutput(output: string): {
 
   let certSha256: string | null = null;
   for (const line of lines) {
-    if (/SHA-256.*digest/i.test(line)) {
-      const idx = line.indexOf(':');
-      if (idx >= 0) {
-        certSha256 = line.slice(idx + 1).trim();
-        break;
-      }
+    const match = line.match(/SHA-256.*?digest\s*:\s*(.+)$/i);
+    if (match) {
+      certSha256 = match[1].trim();
+      break;
     }
   }
 
@@ -238,6 +239,21 @@ describe('PowerShell parsing helpers — TS mirror (pure function coverage)', ()
     expect(parsed.v2LineFound).toBe(true);
     expect(parsed.verifiedV2).toBe(true);
     expect(parsed.numberSigners).toBe(1);
+    expect(parsed.certSha256).toBe(REQUIRED_CERT_SHA256_LOWER);
+  });
+
+  it('detects the parenthetical v2 descriptor emitted by current Build Tools', () => {
+    const sample = [
+      'Verified using v1 scheme (JAR signing): false',
+      'Verified using v2 scheme (APK Signature Scheme v2): true',
+      'Verified using v3 scheme (APK Signature Scheme v3): false',
+      'Number of signers: 1',
+      'V2 Signer: certificate SHA-256 digest: 017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a',
+    ].join('\n');
+    const parsed = parseApkSignerOutput(sample);
+    expect(parsed.v2LineFound).toBe(true);
+    expect(parsed.verifiedV2).toBe(true);
+    expect(parsed.verifiedAny).toBe(true);
     expect(parsed.certSha256).toBe(REQUIRED_CERT_SHA256_LOWER);
   });
 
