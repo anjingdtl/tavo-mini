@@ -13,7 +13,7 @@
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.17** · 数据库 Schema：**16** · 最低 Android API：**24**
+当前版本：**V2.5.17** · 数据库 Schema：**17** · 最低 Android API：**24**
 
 `V2.5.17` 完成流水线修订闭环：修正 `twoStage` / `conditional` 阶段依赖错误（终审不再与评估/核查并行，必须接收真实报告）、`full` 模式 `review ∥ factCheck` 并行经实测验证（79s ≈ 理论 78.7s）、共享 `PipelineContextSnapshot` 快照消除跨阶段反查、初稿后二次本地召回；新增 LLM 设置保存后弹窗同步流水线 `max_tokens`（复用 50/15/15/20 比例）。模拟器 4 模式 E2E 全通过，914 个单元测试 + 10 个新测试。详见 [CHANGELOG](CHANGELOG.md)。
 
@@ -56,7 +56,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 - Android-only；`minSdk 24`，`compileSdk/targetSdk 36`。
 - React Native `0.85.3`、React `19.2.3`、TypeScript `5.8`、Kotlin `2.1.20`。
 - Node.js `>= 24.3.0`、JDK `17`、Android SDK 与 Gradle 环境。
-- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 16。
+- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 17。
 - 本地模型：仅支持 `.gguf`，由 Android `llama.cpp` JNI 引擎加载；模型文件放在应用私有模型目录，不上传服务器。
 - 在线模型：OpenAI 兼容 Chat Completions 接口。默认只允许 HTTPS；局域网 HTTP 必须由用户显式开启，并限制在 `127.0.0.1`、`10/8`、`172.16/12`、`192.168/16`，公网 HTTP 永远拒绝。
 - API Key：通过 `react-native-keychain` 写入 Android Keystore；`llm_config` 只保存配置名称、地址、模型等非密钥字段。备份文件不包含 API Key，恢复后需要重新填写。
@@ -222,7 +222,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.17** with database Schema **16**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. V2.5.17 closes the pipeline revision loop: fixes `twoStage` / `conditional` stage dependencies (final proof no longer runs in parallel with review/factCheck, must receive real reports), `full` mode `review ∥ factCheck` parallelism verified by E2E (79s ≈ theoretical 78.7s), shared `PipelineContextSnapshot` eliminates cross-stage re-queries, post-draft secondary local retrieval added; new prompt to sync pipeline `max_tokens` after LLM settings save (reuses 50/15/15/20 ratio). Emulator 4-mode E2E all passed. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.17** with database Schema **17**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, soft-skip for missing entity refs, and atomic local finalization before long-term memory. V2.5.17 closes the pipeline revision loop: fixes `twoStage` / `conditional` stage dependencies (final proof no longer runs in parallel with review/factCheck, must receive real reports), `full` mode `review ∥ factCheck` parallelism verified by E2E (79s ≈ theoretical 78.7s), shared `PipelineContextSnapshot` eliminates cross-stage re-queries, post-draft secondary local retrieval added; new prompt to sync pipeline `max_tokens` after LLM settings save (reuses 50/15/15/20 ratio). Emulator 4-mode E2E all passed. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 

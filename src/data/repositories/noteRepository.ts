@@ -3,7 +3,7 @@ import type { Note } from '../../types/novel';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import { getNoteChapters } from '../../utils/noteChapters';
 import { execute } from '../connection/execute';
-import { all } from '../connection/query';
+import { all, one } from '../connection/query';
 import { executeTransaction } from '../connection/transaction';
 import { openDatabase } from '../connection/openDatabase';
 import { NOTE_LIST_PREVIEW_CHARS, NOTE_TEXT_CHUNK_CHARS, now } from './shared';
@@ -87,12 +87,13 @@ async function insertNoteRow(
   database: SQLite.SQLiteDatabase,
   title: string,
   content: string,
+  collectionId = 0,
 ): Promise<number> {
   const timestamp = now();
   const result = await execute(
     database,
-    'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [0, title, content, 30000, estimateTokens(content), timestamp, timestamp],
+    'INSERT INTO notes (project_id, collection_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [0, collectionId, title, content, 30000, estimateTokens(content), timestamp, timestamp],
   );
   return result.insertId!;
 }
@@ -101,18 +102,33 @@ export async function createNotesFromTextChunks(
   projectId: number,
   title: string,
   content: string,
-): Promise<{ firstId: number; createdCount: number }> {
+): Promise<{ firstId: number; createdCount: number; collectionId?: number }> {
   const database = await openDatabase();
   const chunks = splitNoteTextIntoChunks(content);
+  const collectionId =
+    chunks.length > 1
+      ? await createNoteCollection(projectId, title, {
+          estimated_tokens: estimateTokens(content),
+        })
+      : 0;
   let firstId = 0;
   for (let i = 0; i < chunks.length; i++) {
     const noteTitle =
       chunks.length === 1 ? title : `${title} (${i + 1}/${chunks.length})`;
-    const id = await insertNoteRow(database, noteTitle, chunks[i]);
+    const id = await insertNoteRow(
+      database,
+      noteTitle,
+      chunks[i],
+      collectionId,
+    );
     if (!firstId) firstId = id;
     await linkResourceToProject(projectId, 'note', id);
   }
-  return { firstId, createdCount: chunks.length };
+  return {
+    firstId,
+    createdCount: chunks.length,
+    ...(collectionId ? { collectionId } : {}),
+  };
 }
 
 async function getNoteContentByIdFromDatabase(
@@ -219,6 +235,12 @@ export async function repairOversizedNotes(
       const content = await getNoteContentByIdFromDatabase(database, note.id);
       const chunks = splitNoteTextIntoChunks(content);
       if (chunks.length <= 1) continue;
+      const collectionResult = await execute(
+        database,
+        'INSERT INTO note_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, 1, 50000, ?, ?)',
+        [0, note.title, estimateTokens(content), now()],
+      );
+      const collectionId = collectionResult.insertId!;
       const links = await execute(
         database,
         'SELECT project_id, enabled FROM project_resources WHERE resource_type = ? AND resource_id = ?',
@@ -237,9 +259,10 @@ export async function repairOversizedNotes(
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
         const insertResult = await execute(
           database,
-          'INSERT INTO notes (project_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO notes (project_id, collection_id, title, content, max_tokens, estimated_tokens, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           [
             0,
+            collectionId,
             `${note.title} (${chunkIndex + 1}/${chunks.length})`,
             chunks[chunkIndex],
             30000,
@@ -285,22 +308,26 @@ export async function repairOversizedNotes(
 export async function getAllNotes(projectId?: number): Promise<Note[]> {
   return all<Note>(
     `SELECT n.id, n.project_id, n.title, substr(n.content, 1, ${NOTE_LIST_PREVIEW_CHARS}) AS content,
+            n.collection_id, nc.name AS collection_name, nc.enabled AS collection_enabled,
             n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at, ${usageJoin(
               'note',
               'n',
               projectId,
             )}
-     FROM notes n ORDER BY n.updated_at DESC`,
+     FROM notes n
+     LEFT JOIN note_collections nc ON nc.id = n.collection_id
+     ORDER BY nc.id DESC, n.id ASC`,
   );
 }
 
 export async function getNotesByProject(projectId: number): Promise<Note[]> {
   return all<Note>(
     `SELECT n.id, n.project_id, n.title, substr(n.content, 1, ${NOTE_LIST_PREVIEW_CHARS}) AS content,
-            n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at
+            n.collection_id, n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at
      FROM notes n
      JOIN project_resources pr ON pr.resource_id = n.id AND pr.resource_type = 'note'
-     WHERE pr.project_id = ? AND pr.enabled = 1
+     LEFT JOIN note_collections nc ON nc.id = n.collection_id
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND COALESCE(nc.enabled, 1) = 1
      ORDER BY n.updated_at DESC`,
     [projectId],
   );
@@ -321,11 +348,18 @@ export async function updateNote(
   title: string,
   content: string,
 ): Promise<void> {
+  const note = await one<{ collection_id: number }>(
+    'SELECT collection_id FROM notes WHERE id = ?',
+    [id],
+  );
   await execute(
     await openDatabase(),
     'UPDATE notes SET title = ?, content = ?, estimated_tokens = ?, updated_at = ? WHERE id = ?',
     [title, content, estimateTokens(content), now(), id],
   );
+  if (note?.collection_id) {
+    await updateNoteCollectionTokenEstimate(Number(note.collection_id));
+  }
 }
 
 export async function updateNoteTokenBudget(
@@ -340,6 +374,115 @@ export async function updateNoteTokenBudget(
 }
 
 export async function deleteNote(id: number): Promise<void> {
+  const note = await one<{ collection_id: number }>(
+    'SELECT collection_id FROM notes WHERE id = ?',
+    [id],
+  );
   await deleteProjectResourceLinks('note', id);
   await execute(await openDatabase(), 'DELETE FROM notes WHERE id = ?', [id]);
+  if (note?.collection_id) {
+    await updateNoteCollectionTokenEstimate(Number(note.collection_id));
+  }
+}
+
+export async function getNoteCollections(projectId?: number): Promise<any[]> {
+  return all(
+    `SELECT nc.*, COUNT(n.id) AS note_count
+     FROM note_collections nc
+     LEFT JOIN notes n ON n.collection_id = nc.id
+     ${projectId ? "LEFT JOIN project_resources pr ON pr.resource_id = n.id AND pr.resource_type = 'note' AND pr.project_id = ?" : ''}
+     GROUP BY nc.id
+     ORDER BY nc.id DESC`,
+    projectId ? [projectId] : [],
+  );
+}
+
+export async function createNoteCollection(
+  _projectId: number,
+  name: string,
+  extra: Record<string, any> = {},
+): Promise<number> {
+  const result = await execute(
+    await openDatabase(),
+    'INSERT INTO note_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [
+      0,
+      name,
+      extra.enabled === 0 ? 0 : 1,
+      Number(extra.max_tokens || 50000),
+      Number(extra.estimated_tokens || 0),
+      now(),
+    ],
+  );
+  return result.insertId!;
+}
+
+export async function updateNoteCollection(
+  id: number,
+  fields: Record<string, any>,
+): Promise<void> {
+  const allowed = new Set([
+    'name',
+    'enabled',
+    'max_tokens',
+    'estimated_tokens',
+  ]);
+  const sets: string[] = [];
+  const values: any[] = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (!allowed.has(key)) continue;
+    sets.push(`${key} = ?`);
+    values.push(value);
+  }
+  if (!sets.length) return;
+  values.push(id);
+  await execute(
+    await openDatabase(),
+    `UPDATE note_collections SET ${sets.join(', ')} WHERE id = ?`,
+    values,
+  );
+}
+
+export async function updateNoteCollectionTokenEstimate(
+  id: number,
+): Promise<void> {
+  const rows = await all<{ estimated_tokens: number }>(
+    'SELECT estimated_tokens FROM notes WHERE collection_id = ?',
+    [id],
+  );
+  await updateNoteCollection(id, {
+    estimated_tokens: rows.reduce(
+      (total, row) => total + Number(row.estimated_tokens || 0),
+      0,
+    ),
+  });
+}
+
+export async function setNoteCollectionEnabledForProject(
+  _projectId: number,
+  collectionId: number,
+  enabled: boolean,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    'UPDATE note_collections SET enabled = ? WHERE id = ?',
+    [enabled ? 1 : 0, collectionId],
+  );
+}
+
+export async function deleteNoteCollection(id: number): Promise<void> {
+  const database = await openDatabase();
+  const notes = await all<{ id: number }>(
+    'SELECT id FROM notes WHERE collection_id = ?',
+    [id],
+  );
+  const statements: Array<{ sql: string; params: any[] }> = notes.map(note => ({
+    sql: 'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?',
+    params: ['note', note.id],
+  }));
+  statements.push(
+    { sql: 'DELETE FROM notes WHERE collection_id = ?', params: [id] },
+    { sql: 'DELETE FROM note_collections WHERE id = ?', params: [id] },
+  );
+  await executeTransaction(database, statements);
 }

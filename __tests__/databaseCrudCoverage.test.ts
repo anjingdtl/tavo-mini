@@ -452,6 +452,26 @@ describe('database CRUD contract coverage', () => {
     await database.createNotesFromTextChunks(1, '长笔记', '内容'.repeat(3));
     await database.trimContentRevisions('chapter', 1, 0, 0);
   });
+
+  test('groups oversized imported note chunks under one collection', async () => {
+    const fake = createCrudDatabase();
+    database.__setDatabaseForTest(fake.database);
+
+    const result = await database.createNotesFromTextChunks(
+      7,
+      '超长资料',
+      '甲'.repeat(120001),
+    );
+
+    expect(result).toMatchObject({ createdCount: 2 });
+    expect(result.collectionId).toBeGreaterThan(0);
+    expect(
+      fake.executed.some(sql => sql.startsWith('INSERT INTO note_collections')),
+    ).toBe(true);
+    expect(
+      fake.executed.filter(sql => sql.startsWith('INSERT INTO notes')),
+    ).toHaveLength(2);
+  });
 });
 
 function baseLocalModel() {
