@@ -54,6 +54,7 @@ export interface Plotline {
 export interface Note {
   id: number;
   project_id: number;
+  collection_id?: number;
   title: string;
   content: string;
   max_tokens?: number;
@@ -61,6 +62,7 @@ export interface Note {
   created_at: string;
   updated_at: string;
   enabled_for_project?: number;
+  collection_enabled?: number;
 }
 
 export interface Preset {

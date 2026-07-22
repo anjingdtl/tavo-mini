@@ -67,7 +67,11 @@ import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
 
 type ResourceTab = 'characters' | 'worldbook' | 'notes' | 'presets';
-type EditorKind = ResourceTab | 'worldbookCollection' | 'characterCollection';
+type EditorKind =
+  | ResourceTab
+  | 'worldbookCollection'
+  | 'characterCollection'
+  | 'noteCollection';
 
 const TABS: { value: ResourceTab; label: string }[] = [
   { value: 'characters', label: '角色' },
@@ -115,9 +119,13 @@ export const ResourceLibrary: React.FC = () => {
   });
   const [characterCollections, setCharacterCollections] = useState<any[]>([]);
   const [collections, setCollections] = useState<any[]>([]);
+  const [noteCollections, setNoteCollections] = useState<any[]>([]);
   const [selectedCharacterCollectionId, setSelectedCharacterCollectionId] =
     useState<number | null>(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState<
+    number | null
+  >(null);
+  const [selectedNoteCollectionId, setSelectedNoteCollectionId] = useState<
     number | null
   >(null);
   const [draft, setDraft] = useState('');
@@ -153,6 +161,7 @@ export const ResourceLibrary: React.FC = () => {
       presets,
       characterCollectionRows,
       worldbookCollections,
+      noteCollectionRows,
       noteConfig,
     ] = await Promise.all([
       db.getAllCharacters(projectId),
@@ -161,11 +170,13 @@ export const ResourceLibrary: React.FC = () => {
       db.getAllPresets(projectId),
       db.getCharacterCollections(projectId),
       db.getWorldbookCollections(projectId),
+      db.getNoteCollections(projectId),
       db.getProjectNoteConfig(projectId),
     ]);
     setItems({ characters, worldbook, notes, presets });
     setCharacterCollections(characterCollectionRows);
     setCollections(worldbookCollections);
+    setNoteCollections(noteCollectionRows);
     if (noteConfig) {
       // 防御性归一化：DB 异常返回 null/undefined 时回退默认，避免渲染时 .length 报错
       setNoteMode(noteConfig.mode || 'none');
@@ -196,6 +207,14 @@ export const ResourceLibrary: React.FC = () => {
       setEnabledNoteIds([]);
     }
     if (
+      selectedNoteCollectionId &&
+      !noteCollectionRows.some(
+        (collection: any) => collection.id === selectedNoteCollectionId,
+      )
+    ) {
+      setSelectedNoteCollectionId(null);
+    }
+    if (
       selectedCollectionId &&
       !worldbookCollections.some(
         (collection: any) => collection.id === selectedCollectionId,
@@ -211,7 +230,12 @@ export const ResourceLibrary: React.FC = () => {
     ) {
       setSelectedCharacterCollectionId(null);
     }
-  }, [projectId, selectedCollectionId, selectedCharacterCollectionId]);
+  }, [
+    projectId,
+    selectedCollectionId,
+    selectedCharacterCollectionId,
+    selectedNoteCollectionId,
+  ]);
 
   useFocusEffect(
     useCallback(() => {
@@ -628,6 +652,7 @@ export const ResourceLibrary: React.FC = () => {
       characters: '未命名角色',
       characterCollection: '未命名角色合集',
       worldbookCollection: '未命名世界书',
+      noteCollection: '未命名笔记合集',
       worldbook: '未命名条目',
       notes: '无标题笔记',
       presets: '未命名预设',
@@ -700,6 +725,17 @@ export const ResourceLibrary: React.FC = () => {
           max_tokens: maxTokens,
         });
         await db.setWorldbookCollectionEnabledForProject(
+          projectId,
+          item.id,
+          editor.enabled,
+        );
+      }
+      if (editor.kind === 'noteCollection') {
+        await db.updateNoteCollection(item.id, {
+          name: editor.name.trim() || '未命名笔记合集',
+          max_tokens: maxTokens,
+        });
+        await db.setNoteCollectionEnabledForProject(
           projectId,
           item.id,
           editor.enabled,
@@ -801,11 +837,19 @@ export const ResourceLibrary: React.FC = () => {
       Alert.alert('未选择项目', '请先在项目页选择当前项目。');
       return;
     }
-    if (tab === 'characters' && item.collection_enabled === 0) {
+      if (tab === 'characters' && item.collection_enabled === 0) {
       Toast.show({
         type: 'info',
         text1: '该人物卡所属合集已禁用',
         text2: '请先启用合集，再单独控制人物卡。',
+      });
+      return;
+    }
+    if (tab === 'notes' && item.collection_enabled === 0) {
+      Toast.show({
+        type: 'info',
+        text1: '该笔记所属合集已禁用',
+        text2: '请先启用合集，再单独控制分片笔记。',
       });
       return;
     }
@@ -852,6 +896,19 @@ export const ResourceLibrary: React.FC = () => {
     }
   };
 
+  const toggleNoteCollection = async (collection: any) => {
+    try {
+      await db.setNoteCollectionEnabledForProject(
+        projectId,
+        collection.id,
+        collection.enabled !== 1,
+      );
+      await loadData();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
+  };
+
   const remove = (kind: EditorKind, id: number, title: string) => {
     Alert.alert('删除资料', `确定删除「${title}」？`, [
       { text: '取消', style: 'cancel' },
@@ -871,6 +928,10 @@ export const ResourceLibrary: React.FC = () => {
               setSelectedCollectionId(null);
             }
             if (kind === 'worldbook') await db.deleteWorldbookEntry(id);
+            if (kind === 'noteCollection') {
+              await db.deleteNoteCollection(id);
+              setSelectedNoteCollectionId(null);
+            }
             if (kind === 'notes') await db.deleteNote(id);
             if (kind === 'presets') await db.deletePreset(id);
             await loadData();
@@ -890,6 +951,10 @@ export const ResourceLibrary: React.FC = () => {
       : tab === 'worldbook' && selectedCollectionId
       ? items.worldbook.filter(
           item => item.collection_id === selectedCollectionId,
+        )
+      : tab === 'notes' && selectedNoteCollectionId
+      ? items.notes.filter(
+          item => item.collection_id === selectedNoteCollectionId,
         )
       : items[tab];
   const canAddManual = tab !== 'characters';
@@ -920,6 +985,7 @@ export const ResourceLibrary: React.FC = () => {
               setTab(value);
               setSelectedCollectionId(null);
               setSelectedCharacterCollectionId(null);
+              setSelectedNoteCollectionId(null);
             }}
           />
         </View>
@@ -1053,6 +1119,14 @@ export const ResourceLibrary: React.FC = () => {
                 compact
                 onPress={importNotesBatch}
               />
+              {selectedNoteCollectionId ? (
+                <Button
+                  label="返回合集"
+                  variant="secondary"
+                  compact
+                  onPress={() => setSelectedNoteCollectionId(null)}
+                />
+              ) : null}
             </ScrollView>
           ) : null}
           {tab === 'notes' && currentProject ? (
@@ -1208,7 +1282,7 @@ export const ResourceLibrary: React.FC = () => {
               ) : null}
             </View>
           ) : null}
-          {canAddManual ? (
+          {canAddManual && !selectedNoteCollectionId ? (
             <>
               <Field
                 value={draft}
@@ -1390,6 +1464,144 @@ export const ResourceLibrary: React.FC = () => {
                 )}
               />
             )
+          ) : tab === 'notes' &&
+            !selectedNoteCollectionId &&
+            noteCollections.length > 0 ? (
+            <FlatList
+              data={[
+                ...noteCollections.map(item => ({
+                  ...item,
+                  _isNoteCollection: true,
+                })),
+                ...items.notes.filter(item => !item.collection_id),
+              ]}
+              scrollEnabled={false}
+              keyExtractor={item =>
+                `${item._isNoteCollection ? 'collection' : 'note'}-${item.id}`
+              }
+              contentContainerStyle={styles.list}
+              renderItem={({ item }) =>
+                item._isNoteCollection ? (
+                  <Card>
+                    <View style={styles.row}>
+                      <NotebookPen size={20} color={theme.colors.accent} />
+                      <View style={styles.rowText}>
+                        <Text
+                          style={[
+                            styles.itemTitle,
+                            { color: theme.colors.textPrimary },
+                          ]}
+                        >
+                          {item.name || '未命名笔记合集'}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.itemMeta,
+                            { color: theme.colors.textSecondary },
+                          ]}
+                        >
+                          {item.note_count || 0} 篇分片 · 预估{' '}
+                          {item.estimated_tokens || 0} / Max{' '}
+                          {item.max_tokens || 50000} tokens
+                        </Text>
+                        <View style={styles.usageRow}>
+                          <Text
+                            style={[
+                              styles.usageText,
+                              { color: theme.colors.textSecondary },
+                            ]}
+                          >
+                            合集启用
+                          </Text>
+                          <Switch
+                            testID={`note-collection-toggle-${item.id}`}
+                            value={item.enabled === 1}
+                            onValueChange={() => toggleNoteCollection(item)}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                    <View style={styles.cardActions}>
+                      <Button
+                        label="打开"
+                        variant="secondary"
+                        onPress={() => setSelectedNoteCollectionId(item.id)}
+                      />
+                      <Button
+                        label="编辑"
+                        icon={Pencil}
+                        variant="secondary"
+                        onPress={() => openEditor('noteCollection', item)}
+                      />
+                      <Button
+                        label="删除"
+                        icon={Trash2}
+                        variant="ghost"
+                        onPress={() =>
+                          remove('noteCollection', item.id, item.name)
+                        }
+                      />
+                    </View>
+                  </Card>
+                ) : (
+                  <Card>
+                    <View style={styles.row}>
+                      <NotebookPen size={20} color={theme.colors.accent} />
+                      <View style={styles.rowText}>
+                        <Text
+                          style={[
+                            styles.itemTitle,
+                            { color: theme.colors.textPrimary },
+                          ]}
+                        >
+                          {titleFor('notes', item)}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.itemMeta,
+                            { color: theme.colors.textSecondary },
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {metaFor('notes', item)}
+                        </Text>
+                        <View style={styles.usageRow}>
+                          <Text
+                            style={[
+                              styles.usageText,
+                              { color: theme.colors.textSecondary },
+                            ]}
+                          >
+                            当前项目使用
+                          </Text>
+                          <Switch
+                            value={item.enabled_for_project === 1}
+                            disabled={!currentProject}
+                            onValueChange={() => toggleProjectUsage(item)}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                    <View style={styles.cardActions}>
+                      <Button
+                        label="编辑"
+                        icon={Pencil}
+                        variant="secondary"
+                        onPress={() => openEditor('notes', item)}
+                      />
+                      <Button
+                        label="删除"
+                        icon={Trash2}
+                        variant="ghost"
+                        onPress={() =>
+                          remove('notes', item.id, titleFor('notes', item))
+                        }
+                      />
+                    </View>
+                  </Card>
+                )
+              }
+            />
           ) : activeItems.length === 0 ? (
             <EmptyState
               title={emptyTitle(tab)}
@@ -1614,6 +1826,24 @@ export const ResourceLibrary: React.FC = () => {
                   </View>
                 ) : null}
                 {editor.kind === 'worldbookCollection' ? (
+                  <View style={styles.usageRow}>
+                    <Text
+                      style={[
+                        styles.usageText,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
+                      合集启用
+                    </Text>
+                    <Switch
+                      value={editor.enabled}
+                      onValueChange={enabled =>
+                        setEditor({ ...editor, enabled })
+                      }
+                    />
+                  </View>
+                ) : null}
+                {editor.kind === 'noteCollection' ? (
                   <View style={styles.usageRow}>
                     <Text
                       style={[
@@ -1988,6 +2218,7 @@ function defaultMaxTokens(kind: EditorKind): number {
   if (kind === 'characters') return 50000;
   if (kind === 'characterCollection') return 50000;
   if (kind === 'worldbookCollection') return 50000;
+  if (kind === 'noteCollection') return 50000;
   if (kind === 'worldbook') return 2000;
   if (kind === 'notes') return 30000;
   return 4000;
@@ -1997,6 +2228,7 @@ function tabLabel(kind: EditorKind): string {
   if (kind === 'characters') return '角色卡';
   if (kind === 'characterCollection') return '角色合集';
   if (kind === 'worldbookCollection') return '世界书合集';
+  if (kind === 'noteCollection') return '笔记合集';
   if (kind === 'worldbook') return '世界书条目';
   if (kind === 'notes') return '笔记';
   return '预设';
