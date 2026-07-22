@@ -142,6 +142,74 @@ describe('validateReviewResult', () => {
     );
     expect(result.valid).toBe(true);
   });
+
+  test('extra top-level field is rejected (unexpected_shape)', () => {
+    const result = validateReviewResult(
+      llm({
+        text: JSON.stringify({
+          strengths: ['节奏好'],
+          issues: ['结尾仓促'],
+          suggestions: ['补收束'],
+          rewritten: DRAFT,
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+    expect(result.details).toMatch(/rewritten|不允许的顶层字段/);
+  });
+
+  test('extra top-level field containing full body is rejected', () => {
+    const result = validateReviewResult(
+      llm({
+        text: JSON.stringify({
+          strengths: [],
+          issues: [],
+          suggestions: [],
+          fullChapter: DRAFT + DRAFT,
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(['unexpected_shape', 'draft_echo', 'oversized_report']).toContain(
+      result.reason,
+    );
+  });
+
+  test('illegal array elements (number/boolean/null) yield unexpected_shape', () => {
+    for (const bad of [42, true, null, {}]) {
+      const result = validateReviewResult(
+        llm({
+          text: JSON.stringify({
+            strengths: [bad],
+            issues: [],
+            suggestions: [],
+          }),
+        }),
+        DRAFT,
+      );
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('unexpected_shape');
+    }
+  });
+
+  test('illegal elements are not silently dropped into empty success', () => {
+    // If numbers were filtered out, this would look like "no issues".
+    const result = validateReviewResult(
+      llm({
+        text: JSON.stringify({
+          strengths: [1, 2, 3],
+          issues: [false, null],
+          suggestions: [{}],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+  });
 });
 
 describe('validateFactCheckResult', () => {
@@ -235,6 +303,76 @@ describe('validateFactCheckResult', () => {
     );
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('reasoning_only');
+  });
+
+  test('extra top-level field with full body fails', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: [],
+          warnings: [],
+          confirmed: ['地点一致'],
+          manuscript: DRAFT,
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(['unexpected_shape', 'draft_echo', 'oversized_report']).toContain(
+      result.reason,
+    );
+  });
+
+  test('nested unknown field containing full draft fails', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: [
+            {
+              description: '钥匙问题',
+              fullText: DRAFT,
+            },
+          ],
+          warnings: [],
+          confirmed: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(['unexpected_shape', 'draft_echo', 'oversized_report']).toContain(
+      result.reason,
+    );
+  });
+
+  test('illegal array elements fail whole report (not empty success)', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: [123, null, true, {}],
+          warnings: [],
+          confirmed: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+  });
+
+  test('object item missing description fails (not silently dropped)', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: [{ category: 'item' }],
+          warnings: [],
+          confirmed: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
   });
 });
 
