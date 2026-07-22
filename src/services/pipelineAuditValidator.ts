@@ -67,8 +67,9 @@ function checkTopLevelWhitelist(
 }
 
 /**
- * Review arrays only accept non-empty strings. Numbers, booleans, null,
- * empty objects, and unrecognized objects are illegal (not silently dropped).
+ * Review arrays only accept non-empty strings. Empty/whitespace strings,
+ * numbers, booleans, null, empty objects, and unrecognized objects are
+ * illegal (not silently dropped).
  */
 function normalizeStringArrayStrict(value: unknown): NormalizeResult<string> {
   if (!Array.isArray(value)) {
@@ -79,7 +80,10 @@ function normalizeStringArrayStrict(value: unknown): NormalizeResult<string> {
     const entry = value[i];
     if (typeof entry === 'string') {
       const trimmed = entry.trim();
-      if (trimmed.length > 0) items.push(trimmed);
+      if (!trimmed) {
+        return { ok: false, details: `数组元素[${i}] 为空字符串` };
+      }
+      items.push(trimmed);
       continue;
     }
     if (entry == null) {
@@ -104,7 +108,8 @@ function normalizeStringArrayStrict(value: unknown): NormalizeResult<string> {
 
 /**
  * Fact-check arrays accept non-empty strings or objects with a description
- * (or text/message/issue). Illegal element types fail the whole report.
+ * (or text/message/issue). Empty/whitespace strings and illegal element types
+ * fail the whole report (not silently dropped).
  */
 function normalizeFactArrayStrict(
   value: unknown,
@@ -117,7 +122,10 @@ function normalizeFactArrayStrict(
     const entry = value[i];
     if (typeof entry === 'string') {
       const trimmed = entry.trim();
-      if (trimmed.length > 0) items.push(trimmed);
+      if (!trimmed) {
+        return { ok: false, details: `数组元素[${i}] 为空字符串` };
+      }
+      items.push(trimmed);
       continue;
     }
     if (entry == null) {
