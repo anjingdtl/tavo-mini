@@ -15,6 +15,8 @@ import {
   buildReviewMessages,
   buildFactCheckMessages,
   buildProofMessages,
+  buildReviewRepairMessages,
+  buildFactCheckRepairMessages,
 } from '../src/services/pipelineMessages';
 import type {
   FactCheckContext,
@@ -227,5 +229,35 @@ describe('buildProofMessages — targeted revision', () => {
     expect(content).toContain('world-rules');
     expect(content).toContain('char-constraints');
     expect(content).toContain('story-state');
+  });
+});
+
+describe('repair messages', () => {
+  test('review repair forbids prose and injects reason without invalid body', () => {
+    const invalidBody = '这是一整段无效正文' + 'X'.repeat(200);
+    const messages = buildReviewRepairMessages(
+      'draft',
+      baseReviewContext,
+      '输出了完整正文',
+    );
+    const joined = messages.map(m => m.content).join('\n');
+    expect(joined).toContain('不是有效的文学评估 JSON');
+    expect(joined).toContain('不要重写、续写、润色或复述小说正文');
+    expect(joined).toContain('上一轮错误类型：输出了完整正文');
+    expect(joined).toContain('"strengths"');
+    expect(joined).not.toContain(invalidBody);
+  });
+
+  test('factCheck repair forbids prose and keeps JSON-only instruction', () => {
+    const messages = buildFactCheckRepairMessages(
+      'draft',
+      baseFactCheckContext,
+      '输出被截断',
+    );
+    const joined = messages.map(m => m.content).join('\n');
+    expect(joined).toContain('不是有效的事实核查 JSON');
+    expect(joined).toContain('不要输出推理过程');
+    expect(joined).toContain('上一轮错误类型：输出被截断');
+    expect(joined).toContain('"errors"');
   });
 });
