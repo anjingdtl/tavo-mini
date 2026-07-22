@@ -374,6 +374,81 @@ export function buildProofMessages(
 }
 
 /**
+ * One-shot format repair for literary review. Does not re-inject the full
+ * invalid model output — only the failure reason code.
+ */
+export function buildReviewRepairMessages(
+  draftText: string,
+  context: ReviewContext = {
+    presetText: '',
+    characterText: '',
+    storyMemoryText: '',
+    recentBridgeText: '',
+    currentInstructionText: '',
+    retrievalUserPrompt: '',
+  },
+  failureReason?: string,
+): ChatMessage[] {
+  const base = buildReviewMessages(draftText, context);
+  const reasonLabel = failureReason
+    ? `上一轮错误类型：${failureReason}`
+    : '上一轮输出格式无效';
+  const repair = [
+    '你上一轮输出不是有效的文学评估 JSON。',
+    '不要重写、续写、润色或复述小说正文。',
+    '不要输出推理过程。',
+    '不要使用 Markdown 代码块。',
+    reasonLabel,
+    '',
+    '请只输出：',
+    '{',
+    '  "strengths": [],',
+    '  "issues": [],',
+    '  "suggestions": []',
+    '}',
+  ].join('\n');
+  return [...base, { role: 'user', content: repair }];
+}
+
+/**
+ * One-shot format repair for fact-check. Same constraints as review repair.
+ */
+export function buildFactCheckRepairMessages(
+  draftText: string,
+  context: FactCheckContext = {
+    currentInstructionText: '',
+    retrievalUserPrompt: '',
+    recentBridgeText: '',
+    storyMemoryText: '',
+    episodicMemoryText: '',
+    worldbookText: '',
+    characterText: '',
+    noteText: '',
+  },
+  failureReason?: string,
+): ChatMessage[] {
+  const base = buildFactCheckMessages(draftText, context);
+  const reasonLabel = failureReason
+    ? `上一轮错误类型：${failureReason}`
+    : '上一轮输出格式无效';
+  const repair = [
+    '你上一轮输出不是有效的事实核查 JSON。',
+    '不要重写、续写、润色或复述小说正文。',
+    '不要输出推理过程。',
+    '不要使用 Markdown 代码块。',
+    reasonLabel,
+    '',
+    '请只输出：',
+    '{',
+    '  "errors": [],',
+    '  "warnings": [],',
+    '  "confirmed": []',
+    '}',
+  ].join('\n');
+  return [...base, { role: 'user', content: repair }];
+}
+
+/**
  * Dev-only: estimate the input tokens of a stage's messages without assembling
  * them. Used by the pipeline observability log so we can record stage size
  * without leaking the full prompt body.

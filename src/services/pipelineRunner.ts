@@ -11,6 +11,8 @@ import {
   buildReviewMessages,
   buildFactCheckMessages,
   buildProofMessages,
+  buildReviewRepairMessages,
+  buildFactCheckRepairMessages,
 } from './pipelineMessages';
 import {
   buildReviewContextFromSnapshot,
@@ -32,6 +34,14 @@ import {
   clearLLMTaskQueueDefaults,
   setLLMTaskQueueDefaults,
 } from './llm/requestScheduler';
+import {
+  describeAuditFailureReason,
+  formatAuditFailureMessage,
+  logPipelineAudit,
+  validateFactCheckResult,
+  validateReviewResult,
+} from './pipelineAuditValidator';
+import type { LLMResult } from './llm/types';
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -94,6 +104,7 @@ function buildCallConfig(
   projectId?: number,
   requestConfig?: LLMRequestConfig,
   taskId?: string,
+  extras?: { responseFormat?: 'json_object' },
 ) {
   const statusForScenario = (): PipelineTaskStatus => {
     if (scenario === 'pipeline_draft') return 'drafting';
@@ -108,6 +119,7 @@ function buildCallConfig(
     scenario,
     projectId,
     taskId,
+    responseFormat: extras?.responseFormat,
     onQueueState: (state: 'queued' | 'running' | 'cancelled') => {
       if (state === 'queued') {
         usePipelineTaskStore.getState().setTaskStatus(taskId || '', 'queued');
@@ -120,6 +132,17 @@ function buildCallConfig(
       }
     },
     requestConfig,
+  };
+}
+
+function accumulateTokens(
+  acc: { input: number; output: number; total: number },
+  result: LLMResult,
+): { input: number; output: number; total: number } {
+  return {
+    input: acc.input + (result.inputTokens || 0),
+    output: acc.output + (result.outputTokens || 0),
+    total: acc.total + (result.totalTokens || 0),
   };
 }
 
@@ -172,9 +195,9 @@ interface StageCommonArgs {
 }
 
 /**
- * Literary review stage. Returns the review text on success or empty string on
- * failure (caller decides whether to skip proof). Throws only on cancellation
- * so the caller can short-circuit cleanup.
+ * Literary review stage. Validates structure + draft-echo before success.
+ * At most one format-repair retry. Returns normalized JSON on success or '' on
+ * failure (caller decides whether to skip proof). Throws only on cancellation.
  */
 async function runReviewStage(
   args: StageCommonArgs & {
@@ -191,8 +214,9 @@ async function runReviewStage(
   }
   store.setTaskStatus(taskId, 'reviewing');
   const start = Date.now();
+  let tokens = { input: 0, output: 0, total: 0 };
   try {
-    const result = await callLLMResult(
+    const first = await callLLMResult(
       buildReviewMessages(args.draftText, args.context),
       args.maxTokens,
       buildCallConfig(
@@ -202,22 +226,92 @@ async function runReviewStage(
         projectId,
         requestConfig,
         taskId,
+        { responseFormat: 'json_object' },
       ),
       abortSignal,
     );
-    const text = result.text || '';
+    tokens = accumulateTokens(tokens, first);
+
+    let validation = validateReviewResult(first, args.draftText);
+    logPipelineAudit({
+      stage: 'review',
+      attempt: 1,
+      valid: validation.valid,
+      reason: validation.reason,
+      textLength: first.text?.length || 0,
+      reasoningLength: first.reasoningText?.length || 0,
+      finishReason: first.finishReason,
+      similarity: validation.similarity,
+      taskId,
+    });
+
+    if (!validation.valid) {
+      PipelineForeground.updateProgress(
+        taskId,
+        '审核格式异常，正在重试',
+        getStageProgressPercent('twoStage', 1),
+      ).catch(() => {});
+      logPipelineAudit({
+        stage: 'review',
+        attempt: 2,
+        valid: false,
+        retry: true,
+        taskId,
+      });
+
+      const retry = await callLLMResult(
+        buildReviewRepairMessages(
+          args.draftText,
+          args.context,
+          describeAuditFailureReason(validation.reason),
+        ),
+        args.maxTokens,
+        buildCallConfig(
+          args.preset,
+          args.maxTokens,
+          'pipeline_review',
+          projectId,
+          requestConfig,
+          taskId,
+          { responseFormat: 'json_object' },
+        ),
+        abortSignal,
+      );
+      tokens = accumulateTokens(tokens, retry);
+      validation = validateReviewResult(retry, args.draftText);
+      logPipelineAudit({
+        stage: 'review',
+        attempt: 2,
+        valid: validation.valid,
+        reason: validation.reason,
+        textLength: retry.text?.length || 0,
+        reasoningLength: retry.reasoningText?.length || 0,
+        finishReason: retry.finishReason,
+        similarity: validation.similarity,
+        taskId,
+      });
+    }
+
+    if (validation.valid && validation.normalizedText) {
+      store.updateTaskStage(taskId, {
+        stage: 'review',
+        text: validation.normalizedText,
+        status: 'success',
+        tokens,
+        durationMs: Date.now() - start,
+      });
+      return validation.normalizedText;
+    }
+
     store.updateTaskStage(taskId, {
       stage: 'review',
-      text,
-      status: 'success',
-      tokens: {
-        input: result.inputTokens,
-        output: result.outputTokens,
-        total: result.totalTokens,
-      },
+      text: '',
+      status: 'failed',
+      error: formatAuditFailureMessage('review', validation.reason),
+      tokens,
       durationMs: Date.now() - start,
     });
-    return text;
+    return '';
   } catch (error: any) {
     if (isAbortError(error, abortSignal)) {
       store.cancelTask(taskId);
@@ -229,6 +323,7 @@ async function runReviewStage(
       text: '',
       status: 'failed',
       error: error.message || '文学评估失败',
+      tokens,
       durationMs: Date.now() - start,
     });
     return '';
@@ -236,8 +331,7 @@ async function runReviewStage(
 }
 
 /**
- * Fact-check stage. Same contract as review: returns text or empty on failure,
- * throws on cancellation.
+ * Fact-check stage. Same validation / one-shot repair contract as review.
  */
 async function runFactCheckStage(
   args: StageCommonArgs & {
@@ -254,8 +348,9 @@ async function runFactCheckStage(
   }
   store.setTaskStatus(taskId, 'factChecking');
   const start = Date.now();
+  let tokens = { input: 0, output: 0, total: 0 };
   try {
-    const result = await callLLMResult(
+    const first = await callLLMResult(
       buildFactCheckMessages(args.draftText, args.context),
       args.maxTokens,
       buildCallConfig(
@@ -265,22 +360,92 @@ async function runFactCheckStage(
         projectId,
         requestConfig,
         taskId,
+        { responseFormat: 'json_object' },
       ),
       abortSignal,
     );
-    const text = result.text || '';
+    tokens = accumulateTokens(tokens, first);
+
+    let validation = validateFactCheckResult(first, args.draftText);
+    logPipelineAudit({
+      stage: 'factCheck',
+      attempt: 1,
+      valid: validation.valid,
+      reason: validation.reason,
+      textLength: first.text?.length || 0,
+      reasoningLength: first.reasoningText?.length || 0,
+      finishReason: first.finishReason,
+      similarity: validation.similarity,
+      taskId,
+    });
+
+    if (!validation.valid) {
+      PipelineForeground.updateProgress(
+        taskId,
+        '审核格式异常，正在重试',
+        getStageProgressPercent('conditional', 1),
+      ).catch(() => {});
+      logPipelineAudit({
+        stage: 'factCheck',
+        attempt: 2,
+        valid: false,
+        retry: true,
+        taskId,
+      });
+
+      const retry = await callLLMResult(
+        buildFactCheckRepairMessages(
+          args.draftText,
+          args.context,
+          describeAuditFailureReason(validation.reason),
+        ),
+        args.maxTokens,
+        buildCallConfig(
+          args.preset,
+          args.maxTokens,
+          'pipeline_factcheck',
+          projectId,
+          requestConfig,
+          taskId,
+          { responseFormat: 'json_object' },
+        ),
+        abortSignal,
+      );
+      tokens = accumulateTokens(tokens, retry);
+      validation = validateFactCheckResult(retry, args.draftText);
+      logPipelineAudit({
+        stage: 'factCheck',
+        attempt: 2,
+        valid: validation.valid,
+        reason: validation.reason,
+        textLength: retry.text?.length || 0,
+        reasoningLength: retry.reasoningText?.length || 0,
+        finishReason: retry.finishReason,
+        similarity: validation.similarity,
+        taskId,
+      });
+    }
+
+    if (validation.valid && validation.normalizedText) {
+      store.updateTaskStage(taskId, {
+        stage: 'factCheck',
+        text: validation.normalizedText,
+        status: 'success',
+        tokens,
+        durationMs: Date.now() - start,
+      });
+      return validation.normalizedText;
+    }
+
     store.updateTaskStage(taskId, {
       stage: 'factCheck',
-      text,
-      status: 'success',
-      tokens: {
-        input: result.inputTokens,
-        output: result.outputTokens,
-        total: result.totalTokens,
-      },
+      text: '',
+      status: 'failed',
+      error: formatAuditFailureMessage('factCheck', validation.reason),
+      tokens,
       durationMs: Date.now() - start,
     });
-    return text;
+    return '';
   } catch (error: any) {
     if (isAbortError(error, abortSignal)) {
       store.cancelTask(taskId);
@@ -292,6 +457,7 @@ async function runFactCheckStage(
       text: '',
       status: 'failed',
       error: error.message || '事实核查失败',
+      tokens,
       durationMs: Date.now() - start,
     });
     return '';
@@ -299,10 +465,8 @@ async function runFactCheckStage(
 }
 
 /**
- * Proof / final-revision stage. Receives the REAL review + factCheck texts plus
- * the hard constraints derived from the shared snapshot. Returns the final text
- * on success, or the draft on failure (caller must not present the fallback as
- * a successful proof). Throws on cancellation.
+ * Proof / final-revision stage. Never uses reasoning_content as the final
+ * manuscript. Empty content → failed + draft fallback.
  */
 async function runProofStage(
   args: StageCommonArgs & {
@@ -340,10 +504,34 @@ async function runProofStage(
       ),
       abortSignal,
     );
-    const finalText = result.text || args.draftText;
+    // Strict: only official content may become the final manuscript.
+    const content =
+      typeof result.text === 'string' && result.text.trim().length > 0
+        ? result.text
+        : null;
+    if (!content) {
+      const hasReasoning =
+        typeof result.reasoningText === 'string' &&
+        result.reasoningText.trim().length > 0;
+      store.updateTaskStage(taskId, {
+        stage: 'proof',
+        text: args.draftText,
+        status: 'failed',
+        error: hasReasoning
+          ? '终审仅返回推理内容，已回退到初稿'
+          : '终审输出为空，已回退到初稿',
+        tokens: {
+          input: result.inputTokens,
+          output: result.outputTokens,
+          total: result.totalTokens,
+        },
+        durationMs: Date.now() - start,
+      });
+      return args.draftText;
+    }
     store.updateTaskStage(taskId, {
       stage: 'proof',
-      text: finalText,
+      text: content,
       status: 'success',
       tokens: {
         input: result.inputTokens,
@@ -352,7 +540,7 @@ async function runProofStage(
       },
       durationMs: Date.now() - start,
     });
-    return finalText;
+    return content;
   } catch (error: any) {
     if (isAbortError(error, abortSignal)) {
       store.cancelTask(taskId);
@@ -469,7 +657,15 @@ async function runChapterPipelineInner(
   const pct = (completedStages: number) =>
     getStageProgressPercent(config.pipelineMode, completedStages);
 
-  const saveDraftAndComplete = async (text: string) => {
+  /**
+   * Persist draft/final text and close the task.
+   * `degraded: true` is for audit-failed / proof-skipped paths: keep prior
+   * failTask error, never send a "已写完" success notification.
+   */
+  const saveDraftAndComplete = async (
+    text: string,
+    options?: { degraded?: boolean },
+  ) => {
     if (abortSignal?.aborted || checkCancelled(taskId)) return;
     try {
       await saveDraft({
@@ -484,6 +680,11 @@ async function runChapterPipelineInner(
       /* best-effort */
     }
     store.completeTask(taskId, text);
+    if (options?.degraded) {
+      await PipelineForeground.updateProgress(taskId, '已保留初稿', 100);
+      await PipelineForeground.stop(taskId);
+      return;
+    }
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
     await PipelineForeground.notifyComplete(
       taskId,
@@ -684,7 +885,7 @@ async function runChapterPipelineInner(
         chapter.title || '流水线',
         '文学评估失败，已保留初稿',
       );
-      await saveDraftAndComplete(draftText);
+      await saveDraftAndComplete(draftText, { degraded: true });
       return;
     }
 
@@ -767,7 +968,7 @@ async function runChapterPipelineInner(
         chapter.title || '流水线',
         '事实核查失败，已保留初稿',
       );
-      await saveDraftAndComplete(draftText);
+      await saveDraftAndComplete(draftText, { degraded: true });
       return;
     }
 
@@ -872,7 +1073,7 @@ async function runChapterPipelineInner(
       chapter.title || '流水线',
       '评估与核查均失败，已保留初稿',
     );
-    await saveDraftAndComplete(draftText);
+    await saveDraftAndComplete(draftText, { degraded: true });
     return;
   }
 
@@ -1039,7 +1240,15 @@ async function resumePipelineInner(
   const pct = (completedStageCount: number) =>
     getStageProgressPercent(config.pipelineMode, completedStageCount);
 
-  const saveDraftAndComplete = async (text: string) => {
+  /**
+   * Persist draft/final text and close the task.
+   * `degraded: true` is for audit-failed / proof-skipped paths: keep prior
+   * failTask error, never send a "已写完" success notification.
+   */
+  const saveDraftAndComplete = async (
+    text: string,
+    options?: { degraded?: boolean },
+  ) => {
     if (abortSignal?.aborted || checkCancelled(taskId)) return;
     try {
       await saveDraft({
@@ -1054,6 +1263,11 @@ async function resumePipelineInner(
       /* best-effort */
     }
     store.completeTask(taskId, text);
+    if (options?.degraded) {
+      await PipelineForeground.updateProgress(taskId, '已保留初稿', 100);
+      await PipelineForeground.stop(taskId);
+      return;
+    }
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
     await PipelineForeground.notifyComplete(
       taskId,
@@ -1146,7 +1360,7 @@ async function resumePipelineInner(
         chapter.title || '流水线',
         '文学评估失败，已保留初稿',
       );
-      await saveDraftAndComplete(draftText);
+      await saveDraftAndComplete(draftText, { degraded: true });
       return;
     }
 
@@ -1218,7 +1432,7 @@ async function resumePipelineInner(
         chapter.title || '流水线',
         '事实核查失败，已保留初稿',
       );
-      await saveDraftAndComplete(draftText);
+      await saveDraftAndComplete(draftText, { degraded: true });
       return;
     }
 
@@ -1366,7 +1580,7 @@ async function resumePipelineInner(
       chapter.title || '流水线',
       '评估与核查均失败，已保留初稿',
     );
-    await saveDraftAndComplete(draftText);
+    await saveDraftAndComplete(draftText, { degraded: true });
     return;
   }
 

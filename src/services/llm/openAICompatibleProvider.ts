@@ -264,11 +264,22 @@ export const openAICompatibleProvider: LLMProvider = {
 
             const data = await response.json();
             const message = data.choices?.[0]?.message || {};
-            const text = message.content || message.reasoning_content || null;
+            // Strict separation: never fall back reasoning_content into business text.
+            const rawContent = message.content;
+            const rawReasoning = message.reasoning_content;
+            const text =
+              typeof rawContent === 'string' && rawContent.trim().length > 0
+                ? rawContent
+                : null;
+            const reasoningText =
+              typeof rawReasoning === 'string' && rawReasoning.trim().length > 0
+                ? rawReasoning
+                : null;
             const usage = data.usage || {};
             const inputTokens = Number(usage.prompt_tokens ?? inputEstimate);
             const outputTokens = Number(
-              usage.completion_tokens ?? estimateTokens(text || ''),
+              usage.completion_tokens ??
+                estimateTokens(text || '') + estimateTokens(reasoningText || ''),
             );
             const totalTokens = Number(
               usage.total_tokens ?? inputTokens + outputTokens,
@@ -276,6 +287,7 @@ export const openAICompatibleProvider: LLMProvider = {
             timeoutController.markProgress('progress');
             return {
               text,
+              reasoningText,
               inputTokens,
               outputTokens,
               totalTokens,

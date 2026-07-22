@@ -29,12 +29,29 @@ const STATUS_LABELS: Record<PipelineStageResult['status'], string> = {
   skipped: '已跳过',
 };
 
-function formatStageText(stage: PipelineStageResult): string {
-  if (!stage.text) return stage.status === 'skipped' ? '该阶段已跳过。' : '';
-  if (stage.stage !== 'review' && stage.stage !== 'factCheck') return stage.text;
+/**
+ * Render stage body for the result cards.
+ * Audit stages must only show validated JSON reports — never raw novel prose
+ * or model reasoning (those are never persisted as stage text after the audit
+ * validity fix). Failed empty stages surface the structured error message.
+ */
+export function formatStageText(stage: PipelineStageResult): string {
+  if (stage.status === 'failed' && !stage.text?.trim()) {
+    return stage.error || '该阶段失败。';
+  }
+  if (!stage.text) {
+    return stage.status === 'skipped' ? '该阶段已跳过。' : '';
+  }
+  if (stage.stage !== 'review' && stage.stage !== 'factCheck') {
+    return stage.text;
+  }
   try {
     return JSON.stringify(JSON.parse(stage.text), null, 2);
   } catch {
+    // Safety net: never dump long invalid body into the audit card.
+    if (stage.text.length > 400) {
+      return stage.error || '审核结果格式异常，已隐藏无效内容。';
+    }
     return stage.text;
   }
 }
@@ -155,10 +172,26 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
 
   const { inputTokens, totalTokens } = summarizePipelineTokens(task.stageResults);
   const skippedCount = task.stageResults.filter((stage) => stage.status === 'skipped').length;
+  const failedAuditCount = task.stageResults.filter(
+    (stage) =>
+      (stage.stage === 'review' || stage.stage === 'factCheck') &&
+      stage.status === 'failed',
+  ).length;
+  const proofStage = task.stageResults.find((stage) => stage.stage === 'proof');
   const duration = task.updatedAt - task.createdAt;
   const durationText = duration > 60000
     ? `${Math.floor(duration / 60000)}m ${Math.round((duration % 60000) / 1000)}s`
     : `${Math.round(duration / 1000)}s`;
+  const statusSummary =
+    task.status === 'completed'
+      ? failedAuditCount > 0
+        ? `已完成（${failedAuditCount} 项审核失败）`
+        : '已完成'
+      : task.status === 'failed'
+        ? '异常终止'
+        : task.status === 'cancelled'
+          ? '已取消'
+          : '进行中';
 
   const toggleExpanded = (stage: string) => {
     const next = new Set(expanded);
@@ -208,11 +241,15 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       : stage.status === 'skipped'
         ? theme.colors.textMuted
         : theme.colors.accent;
+    const lengthLabel =
+      stage.status === 'failed' && !stage.text?.trim()
+        ? '无有效报告'
+        : `${textLength} 字`;
 
     return (
       <View key={stage.stage} style={[styles.card, { backgroundColor: theme.colors.card }]}>
         <Button
-          label={`${STAGE_LABELS[stage.stage]} · ${STATUS_LABELS[stage.status]} (${textLength} 字)`}
+          label={`${STAGE_LABELS[stage.stage]} · ${STATUS_LABELS[stage.status]} (${lengthLabel})`}
           variant="ghost"
           onPress={() => toggleExpanded(stage.stage)}
         />
@@ -241,8 +278,18 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
-          {task.status === 'completed' ? '已完成' : '异常终止'} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
+          {statusSummary} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
         </Text>
+        {proofStage?.status === 'skipped' && failedAuditCount > 0 ? (
+          <Text style={[styles.summary, { color: theme.colors.danger }]}>
+            审核未通过，未执行终审，已保留初稿
+          </Text>
+        ) : null}
+        {proofStage?.status === 'failed' ? (
+          <Text style={[styles.summary, { color: theme.colors.danger }]}>
+            {proofStage.error || '终审失败，已回退初稿'}
+          </Text>
+        ) : null}
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
           本次输入上下文 tokens：{inputTokens.toLocaleString()}
         </Text>
