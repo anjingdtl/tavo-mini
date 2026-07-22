@@ -210,6 +210,89 @@ describe('validateReviewResult', () => {
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('unexpected_shape');
   });
+
+  test('empty string in strengths fails as unexpected_shape (not filtered to success)', () => {
+    const result = validateReviewResult(
+      llm({
+        text: JSON.stringify({
+          strengths: [''],
+          issues: [],
+          suggestions: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+    expect(result.details).toMatch(/strengths/);
+    expect(result.details).toMatch(/数组元素\[0\]/);
+  });
+
+  test('whitespace-only string in issues fails as unexpected_shape', () => {
+    const result = validateReviewResult(
+      llm({
+        text: JSON.stringify({
+          strengths: [],
+          issues: ['   '],
+          suggestions: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+    expect(result.details).toMatch(/issues/);
+    expect(result.details).toMatch(/数组元素\[0\]/);
+  });
+
+  test('empty string mixed with valid suggestions fails whole report', () => {
+    const result = validateReviewResult(
+      llm({
+        text: JSON.stringify({
+          strengths: [],
+          issues: [],
+          suggestions: ['', '有效建议'],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+    expect(result.details).toMatch(/suggestions/);
+    expect(result.details).toMatch(/数组元素\[0\]/);
+  });
+
+  test('legal empty arrays still pass', () => {
+    const result = validateReviewResult(
+      llm({
+        text: JSON.stringify({
+          strengths: [],
+          issues: [],
+          suggestions: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(true);
+    expect(result.report?.strengths).toEqual([]);
+    expect(result.report?.issues).toEqual([]);
+    expect(result.report?.suggestions).toEqual([]);
+  });
+
+  test('legal non-empty strings are trimmed and kept', () => {
+    const result = validateReviewResult(
+      llm({
+        text: JSON.stringify({
+          strengths: ['  节奏好  '],
+          issues: ['结尾仓促'],
+          suggestions: ['补收束'],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(true);
+    expect(result.report?.strengths).toEqual(['节奏好']);
+  });
 });
 
 describe('validateFactCheckResult', () => {
@@ -373,6 +456,89 @@ describe('validateFactCheckResult', () => {
     );
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('unexpected_shape');
+  });
+
+  test('empty string in errors fails as unexpected_shape (not filtered to success)', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: [''],
+          warnings: [],
+          confirmed: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+    expect(result.details).toMatch(/errors/);
+    expect(result.details).toMatch(/数组元素\[0\]/);
+  });
+
+  test('whitespace-only string in warnings fails as unexpected_shape', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: [],
+          warnings: ['   '],
+          confirmed: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+    expect(result.details).toMatch(/warnings/);
+    expect(result.details).toMatch(/数组元素\[0\]/);
+  });
+
+  test('empty string mixed with valid confirmed fails whole report', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: [],
+          warnings: [],
+          confirmed: ['', '地点一致'],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('unexpected_shape');
+    expect(result.details).toMatch(/confirmed/);
+    expect(result.details).toMatch(/数组元素\[0\]/);
+  });
+
+  test('legal empty arrays still pass', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: [],
+          warnings: [],
+          confirmed: [],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(true);
+    expect(result.report?.errors).toEqual([]);
+    expect(result.report?.warnings).toEqual([]);
+    expect(result.report?.confirmed).toEqual([]);
+  });
+
+  test('legal non-empty strings are trimmed and kept', () => {
+    const result = validateFactCheckResult(
+      llm({
+        text: JSON.stringify({
+          errors: ['  银钥匙归属错误  '],
+          warnings: [],
+          confirmed: ['地点一致'],
+        }),
+      }),
+      DRAFT,
+    );
+    expect(result.valid).toBe(true);
+    expect(result.report?.errors).toEqual(['银钥匙归属错误']);
   });
 });
 
