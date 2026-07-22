@@ -806,13 +806,19 @@ async function buildStyleContext(
   config: any,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   try {
-    let noteIds: number[] = Array.isArray(config?.enabledNoteIds)
-      ? config.enabledNoteIds
+    // project_note_config 中可能残留已被当前项目关闭的笔记 ID。
+    // 无论是否配置了显式名单，都必须以当前项目实际启用的笔记为边界，
+    // 避免“当前项目使用”已关闭的笔记继续参与画像，甚至跨项目串用。
+    const projectNotes = await db.getNotesByProject(projectId);
+    const eligibleIds = projectNotes.map((note: any) => Number(note.id));
+    const eligibleSet = new Set(eligibleIds);
+    const configuredIds: number[] = Array.isArray(config?.enabledNoteIds)
+      ? config.enabledNoteIds.map(Number)
       : [];
-    if (noteIds.length === 0) {
-      const notes = await db.getNotesByProject(projectId);
-      noteIds = notes.map((n: any) => n.id);
-    }
+    const noteIds =
+      configuredIds.length > 0
+        ? configuredIds.filter(id => eligibleSet.has(id))
+        : eligibleIds;
     if (noteIds.length === 0) {
       // 没有任何候选笔记 → 不回退到原始注入（用户选的是仿写），但要明确告知
       return {

@@ -23,8 +23,9 @@ function buildCacheKey(
   projectId: number,
   query: RetrievalQuery,
   fragmentChars: number,
+  noteIds: number[],
 ): string {
-  return `${projectId}|${fragmentChars}|${query.chapterTitle}|${query.chapterSynopsis}|${query.previousEnding}|${query.userPrompt}`;
+  return `${projectId}|${fragmentChars}|${noteIds.join(',')}|${query.chapterTitle}|${query.chapterSynopsis}|${query.previousEnding}|${query.userPrompt}`;
 }
 
 export function clearRetrievalCache(projectId?: number): void {
@@ -125,20 +126,24 @@ export async function retrieveNoteFragments(
     4000,
     Math.max(200, Number(config?.retrievalFragmentChars) || 1000),
   );
-  const cacheKey = buildCacheKey(projectId, query, fragmentChars);
+  const projectNotes = await db.getNotesByProject(projectId);
+  const eligibleIds = projectNotes.map((note: any) => Number(note.id));
+  const eligibleSet = new Set(eligibleIds);
+  const configuredIds = Array.isArray(config?.enabledNoteIds)
+    ? config.enabledNoteIds.map(Number)
+    : [];
+  const noteIds =
+    configuredIds.length > 0
+      ? configuredIds.filter((id: number) => eligibleSet.has(id))
+      : eligibleIds;
+  if (noteIds.length === 0) return [];
+
+  // 参与名单是缓存身份的一部分，切换项目开关或选择笔记后不能复用旧结果。
+  const cacheKey = buildCacheKey(projectId, query, fragmentChars, noteIds);
   const cached = cache.get(cacheKey);
   if (cached) {
     return cached.slice(0, topK);
   }
-
-  let noteIds: number[] = [];
-  if (config && config.enabledNoteIds.length > 0) {
-    noteIds = config.enabledNoteIds;
-  } else {
-    const projectNotes = await db.getNotesByProject(projectId);
-    noteIds = projectNotes.map((n: any) => n.id);
-  }
-  if (noteIds.length === 0) return [];
 
   const candidates = await prefilterNotes(noteIds, query, fragmentChars);
   if (candidates.length === 0) return [];
