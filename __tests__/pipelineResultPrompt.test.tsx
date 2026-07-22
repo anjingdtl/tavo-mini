@@ -60,7 +60,7 @@ describe('PipelineResultPrompt', () => {
     expect(onViewResult).toHaveBeenCalledWith('pt_test');
   });
 
-  it('shows the failed copy and a single 我知道了 button on failure', () => {
+  it('shows the failed copy and a single 我知道了 button on failure without draft', () => {
     const onDismiss = jest.fn();
     const failed: PipelineTask = { ...baseTask, status: 'failed', finalText: null, error: '网络中断' };
     const { getByText, queryByText, getByTestId } = render(
@@ -73,6 +73,27 @@ describe('PipelineResultPrompt', () => {
     expect(queryByText('查看结果')).toBeNull();
     fireEvent.press(getByTestId('pipeline-prompt-dismiss'));
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows degraded audit-failure copy with 查看结果 when draft is retained', () => {
+    const onViewResult = jest.fn();
+    const degraded: PipelineTask = {
+      ...baseTask,
+      status: 'completed',
+      finalText: '初稿正文',
+      error: '事实核查失败，已保留初稿，未生成终审稿。',
+    };
+    const { getByText, getByTestId } = render(
+      <PipelineResultPrompt
+        task={degraded}
+        onDismiss={jest.fn()}
+        onViewResult={onViewResult}
+      />,
+    );
+    expect(getByText('流水线未完整完成')).toBeTruthy();
+    expect(getByText(/已保留初稿/)).toBeTruthy();
+    fireEvent.press(getByTestId('pipeline-prompt-confirm'));
+    expect(onViewResult).toHaveBeenCalledWith('pt_test');
   });
 
   it('treats a completed task with empty finalText as a special case', () => {

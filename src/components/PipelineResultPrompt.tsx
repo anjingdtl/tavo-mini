@@ -9,8 +9,18 @@ export interface PipelineResultPromptProps {
   onViewResult: (taskId: string) => void;
 }
 
-function buildCopy(task: PipelineTask): { title: string; body: string; confirmLabel: string; cancelLabel: string } {
-  if (task.status === 'failed') {
+export function buildPipelineResultPromptCopy(task: PipelineTask): {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  cancelLabel: string;
+} {
+  const hasDraft = Boolean(task.finalText && task.finalText.trim());
+  const auditDegraded =
+    Boolean(task.error) &&
+    /已保留初稿|审核失败|评估失败|核查失败|未生成终审/.test(task.error || '');
+
+  if (task.status === 'failed' && !hasDraft) {
     return {
       title: '流水线失败',
       body: task.error || '未知错误。',
@@ -18,7 +28,16 @@ function buildCopy(task: PipelineTask): { title: string; body: string; confirmLa
       cancelLabel: '关闭',
     };
   }
-  if (!task.finalText || !task.finalText.trim()) {
+  // Failed or degraded-complete with a retained draft: let user open result.
+  if (task.status === 'failed' || auditDegraded) {
+    return {
+      title: '流水线未完整完成',
+      body: task.error || '审核未通过，已保留初稿。',
+      confirmLabel: hasDraft ? '查看结果' : '我知道了',
+      cancelLabel: '关闭',
+    };
+  }
+  if (!hasDraft) {
     return {
       title: '流水线完成',
       body: '流水线已完成，但本次生成内容为空。',
@@ -34,6 +53,10 @@ function buildCopy(task: PipelineTask): { title: string; body: string; confirmLa
     confirmLabel: '查看结果',
     cancelLabel: '稍后处理',
   };
+}
+
+function buildCopy(task: PipelineTask) {
+  return buildPipelineResultPromptCopy(task);
 }
 
 /**
@@ -77,18 +100,33 @@ export const PipelineResultPrompt: React.FC<PipelineResultPromptProps> = ({
             >
               <Text style={[styles.buttonText, { color: theme.colors.textSecondary }]}>{cancelLabel}</Text>
             </Pressable>
-            <Pressable
-              onPress={() => { onViewResult(task.id); }}
-              testID="pipeline-prompt-confirm"
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.button,
-                styles.primaryButton,
-                { backgroundColor: theme.colors.accent, opacity: pressed ? 0.8 : 1 },
-              ]}
-            >
-              <Text style={[styles.buttonText, styles.primaryButtonText]}>{confirmLabel}</Text>
-            </Pressable>
+            {confirmLabel === '查看结果' ? (
+              <Pressable
+                onPress={() => { onViewResult(task.id); }}
+                testID="pipeline-prompt-confirm"
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.button,
+                  styles.primaryButton,
+                  { backgroundColor: theme.colors.accent, opacity: pressed ? 0.8 : 1 },
+                ]}
+              >
+                <Text style={[styles.buttonText, styles.primaryButtonText]}>{confirmLabel}</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={onDismiss}
+                testID="pipeline-prompt-confirm"
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.button,
+                  styles.primaryButton,
+                  { backgroundColor: theme.colors.accent, opacity: pressed ? 0.8 : 1 },
+                ]}
+              >
+                <Text style={[styles.buttonText, styles.primaryButtonText]}>{confirmLabel}</Text>
+              </Pressable>
+            )}
           </View>
         </View>
       </View>

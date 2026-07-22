@@ -4,7 +4,10 @@ export interface ChatMessage {
 }
 
 export interface LLMResult {
+  /** Official model output (message.content). Never filled from reasoning. */
   text: string | null;
+  /** Optional chain-of-thought (message.reasoning_content). Must not enter business text. */
+  reasoningText?: string | null;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
