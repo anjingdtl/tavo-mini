@@ -140,6 +140,40 @@ describe('ResourceLibrary UI', () => {
     }
   });
 
+  it('仿写选择器只展示当前项目已启用的笔记，并把空名单显示为全选', async () => {
+    (db.getAllNotes as jest.Mock).mockResolvedValue([
+      {
+        id: 31,
+        title: '笔记A',
+        content: 'A',
+        enabled_for_project: 1,
+        collection_enabled: 1,
+      },
+      {
+        id: 32,
+        title: '笔记B',
+        content: 'B',
+        enabled_for_project: 0,
+        collection_enabled: 1,
+      },
+    ]);
+    (db.getProjectNoteConfig as jest.Mock).mockResolvedValue({
+      mode: 'style',
+      styleWeights: {},
+      retrievalTopK: 5,
+      retrievalFragmentChars: 1000,
+      enabledNoteIds: [],
+    });
+
+    const { findByText, getAllByText, getByText } = render(<ResourceLibrary />);
+    fireEvent.press(await findByText('笔记'));
+    fireEvent.press(await findByText('参与仿写的笔记：1/1 篇'));
+
+    expect(getAllByText('笔记A')).toHaveLength(2);
+    expect(getAllByText('笔记B')).toHaveLength(1);
+    expect(getByText('✓')).toBeTruthy();
+  });
+
   it('opens a note chapter directory and jumps to the selected heading', async () => {
     (db.getAllNotes as jest.Mock).mockResolvedValue([
       {

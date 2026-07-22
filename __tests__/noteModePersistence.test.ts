@@ -69,7 +69,8 @@ describe('note mode persistence & style injection', () => {
         mode: 'style',
         styleWeights: { sentence_structure: 2, tone_emotion: 2, vocabulary: 1, character_voice: 2, narrative_rhythm: 2 },
         retrievalTopK: 5,
-        enabledNoteIds: [], // 触发 fallback → 全项目笔记
+        // 99 模拟已关闭但仍残留在旧配置名单中的笔记。
+        enabledNoteIds: [1, 2, 3, 99],
         updatedAt: '',
       })),
       getNoteStyleProfile: jest.fn(async (id: number) => {
@@ -133,6 +134,8 @@ describe('note mode persistence & style injection', () => {
     expect(styleTrace).toBeDefined();
     expect(styleTrace.kind).toBe('note');
     expect(styleTrace.reason).toContain('2/3 篇笔记联合风格');
+    const styleAnalyzer = require('../src/services/styleAnalyzer');
+    expect(styleAnalyzer.getOrAnalyzeNoteStyle).not.toHaveBeenCalledWith(99);
   });
 
   test('仿写模式下：所有可用画像维度都被关（weight=0）时输出空文本（不误注入笔记原文）', async () => {
