@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -142,6 +142,7 @@ export const ResourceLibrary: React.FC = () => {
   const [retrievalTopK, setRetrievalTopK] = useState(5);
   const [retrievalFragmentChars, setRetrievalFragmentChars] = useState(1000);
   const [enabledNoteIds, setEnabledNoteIds] = useState<number[]>([]);
+  const enabledNoteIdsRef = useRef<number[]>([]);
   const [showNotePicker, setShowNotePicker] = useState(false);
   const [showStyleProfile, setShowStyleProfile] = useState(false);
   const [batchResult, setBatchResult] = useState<{
@@ -152,6 +153,24 @@ export const ResourceLibrary: React.FC = () => {
   const [styleProfileText, setStyleProfileText] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
   const projectId = currentProject?.id || 0;
+  const projectEnabledNotes = useMemo(
+    () =>
+      items.notes.filter(
+        (note: any) =>
+          note.enabled_for_project === 1 && note.collection_enabled !== 0,
+      ),
+    [items.notes],
+  );
+  const effectiveEnabledNoteIds = useMemo(() => {
+    const eligibleIds = projectEnabledNotes.map((note: any) => Number(note.id));
+    if (enabledNoteIds.length === 0) return eligibleIds;
+    const eligibleSet = new Set(eligibleIds);
+    return enabledNoteIds.map(Number).filter(id => eligibleSet.has(id));
+  }, [enabledNoteIds, projectEnabledNotes]);
+
+  useEffect(() => {
+    enabledNoteIdsRef.current = enabledNoteIds;
+  }, [enabledNoteIds]);
 
   const loadData = useCallback(async () => {
     const [
@@ -194,16 +213,17 @@ export const ResourceLibrary: React.FC = () => {
           ? noteConfig.retrievalFragmentChars
           : 1000,
       );
-      setEnabledNoteIds(
-        Array.isArray(noteConfig.enabledNoteIds)
-          ? noteConfig.enabledNoteIds
-          : [],
-      );
+      const loadedIds = Array.isArray(noteConfig.enabledNoteIds)
+        ? noteConfig.enabledNoteIds.map(Number)
+        : [];
+      enabledNoteIdsRef.current = loadedIds;
+      setEnabledNoteIds(loadedIds);
     } else {
       setNoteMode('none');
       setStyleWeights(DEFAULT_STYLE_WEIGHTS);
       setRetrievalTopK(5);
       setRetrievalFragmentChars(1000);
+      enabledNoteIdsRef.current = [];
       setEnabledNoteIds([]);
     }
     if (
@@ -505,13 +525,7 @@ export const ResourceLibrary: React.FC = () => {
   const handleNoteModeChange = async (mode: 'none' | 'style' | 'retrieval') => {
     setNoteMode(mode);
     try {
-      await db.setProjectNoteConfig(projectId, {
-        mode,
-        styleWeights,
-        retrievalTopK,
-        retrievalFragmentChars,
-        enabledNoteIds,
-      });
+      await db.setProjectNoteConfig(projectId, { mode });
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '保存失败', text2: error.message });
     }
@@ -522,13 +536,7 @@ export const ResourceLibrary: React.FC = () => {
     setStyleWeights(newWeights);
     try {
       // 用当前 noteMode 而非写死 'style'，避免在 retrieval 模式下被误调时覆盖
-      await db.setProjectNoteConfig(projectId, {
-        mode: noteMode,
-        styleWeights: newWeights,
-        retrievalTopK,
-        retrievalFragmentChars,
-        enabledNoteIds,
-      });
+      await db.setProjectNoteConfig(projectId, { styleWeights: newWeights });
     } catch {
       // 静默失败，不打断用户调整
     }
@@ -538,13 +546,7 @@ export const ResourceLibrary: React.FC = () => {
     setRetrievalTopK(value);
     try {
       // 用当前 noteMode 而非写死 'retrieval'
-      await db.setProjectNoteConfig(projectId, {
-        mode: noteMode,
-        styleWeights,
-        retrievalTopK: value,
-        retrievalFragmentChars,
-        enabledNoteIds,
-      });
+      await db.setProjectNoteConfig(projectId, { retrievalTopK: value });
     } catch {
       // 静默失败
     }
@@ -554,11 +556,7 @@ export const ResourceLibrary: React.FC = () => {
     setRetrievalFragmentChars(value);
     try {
       await db.setProjectNoteConfig(projectId, {
-        mode: noteMode,
-        styleWeights,
-        retrievalTopK,
         retrievalFragmentChars: value,
-        enabledNoteIds,
       });
     } catch {
       // 静默失败，不打断用户调整
@@ -566,30 +564,38 @@ export const ResourceLibrary: React.FC = () => {
   };
 
   const handleToggleNoteId = async (noteId: number) => {
-    const newIds = enabledNoteIds.includes(noteId)
-      ? enabledNoteIds.filter(id => id !== noteId)
-      : [...enabledNoteIds, noteId];
+    const eligibleIds = projectEnabledNotes.map((note: any) => Number(note.id));
+    const eligibleSet = new Set(eligibleIds);
+    const configuredIds = enabledNoteIdsRef.current;
+    const selectedIds =
+      configuredIds.length > 0
+        ? configuredIds.map(Number).filter(id => eligibleSet.has(id))
+        : eligibleIds;
+    const newIds = selectedIds.includes(noteId)
+      ? selectedIds.filter(id => id !== noteId)
+      : [...selectedIds, noteId];
+    if (newIds.length === 0 && eligibleIds.length > 0) {
+      Toast.show({
+        type: 'info',
+        text1: '请至少保留一篇笔记',
+        text2: '如需全部关闭，请将笔记模式切换为“禁用”。',
+      });
+      return;
+    }
+    enabledNoteIdsRef.current = newIds;
     setEnabledNoteIds(newIds);
     try {
-      await db.setProjectNoteConfig(projectId, {
-        mode: noteMode,
-        styleWeights,
-        retrievalTopK,
-        retrievalFragmentChars,
-        enabledNoteIds: newIds,
-      });
-    } catch {
-      // 静默失败
+      await db.setProjectNoteConfig(projectId, { enabledNoteIds: newIds });
+    } catch (error: any) {
+      await loadData();
+      Toast.show({ type: 'error', text1: '保存失败', text2: error.message });
     }
   };
 
   const handleReanalyze = async () => {
     setAnalyzing(true);
     try {
-      const ids =
-        enabledNoteIds.length > 0
-          ? enabledNoteIds
-          : items.notes.map((n: any) => n.id);
+      const ids = effectiveEnabledNoteIds;
       if (ids.length === 0) {
         Toast.show({ type: 'info', text1: '没有可分析的笔记' });
         return;
@@ -608,11 +614,21 @@ export const ResourceLibrary: React.FC = () => {
   };
 
   const handleViewProfile = async () => {
-    if (items.notes.length === 0) return;
-    const id = enabledNoteIds[0] || items.notes[0].id;
+    if (effectiveEnabledNoteIds.length === 0) {
+      Toast.show({ type: 'info', text1: '当前项目没有参与仿写的笔记' });
+      return;
+    }
     try {
-      const profile = await db.getNoteStyleProfile(id);
-      setStyleProfileText(profile?.profileText || '暂无风格画像');
+      const profiles = await Promise.all(
+        effectiveEnabledNoteIds.map(async id => {
+          const note = projectEnabledNotes.find((item: any) => item.id === id);
+          const profile = await db.getNoteStyleProfile(id);
+          return `【${note?.title || '无标题'}】\n${
+            profile?.profileText || '暂无风格画像'
+          }`;
+        }),
+      );
+      setStyleProfileText(profiles.join('\n\n'));
       setShowStyleProfile(true);
     } catch {
       setStyleProfileText('读取画像失败');
@@ -1158,10 +1174,7 @@ export const ResourceLibrary: React.FC = () => {
                       ]}
                     >
                       参与仿写的笔记：
-                      {enabledNoteIds.length > 0
-                        ? enabledNoteIds.length
-                        : items.notes.length}
-                      /{items.notes.length} 篇
+                      {effectiveEnabledNoteIds.length}/{projectEnabledNotes.length} 篇
                     </Text>
                   </Pressable>
                   <Text
@@ -1228,10 +1241,7 @@ export const ResourceLibrary: React.FC = () => {
                       ]}
                     >
                       参与检索的笔记：
-                      {enabledNoteIds.length > 0
-                        ? enabledNoteIds.length
-                        : items.notes.length}
-                      /{items.notes.length} 篇
+                      {effectiveEnabledNoteIds.length}/{projectEnabledNotes.length} 篇
                     </Text>
                   </Pressable>
                   <Text
@@ -2103,8 +2113,8 @@ export const ResourceLibrary: React.FC = () => {
               选择笔记
             </Text>
             <ScrollView style={styles.notePickerList}>
-              {items.notes.map((note: any) => {
-                const isSelected = enabledNoteIds.includes(note.id);
+              {projectEnabledNotes.map((note: any) => {
+                const isSelected = effectiveEnabledNoteIds.includes(note.id);
                 return (
                   <Pressable
                     key={note.id}

@@ -18,6 +18,10 @@ export interface ProjectNoteConfig {
   updatedAt: string;
 }
 
+// 同一项目的配置写入必须串行。UI 中模式、权重和参与名单可能连续触发异步保存；
+// 若并发执行 SELECT → INSERT OR REPLACE，后完成的旧快照会覆盖先完成的新字段。
+const configWriteQueues = new Map<number, Promise<void>>();
+
 function safeJsonParse(text: string, fallback: any): any {
   try {
     // ?? 只匹配 null/undefined，但 JSON.parse('null') 会返回 null 也会污染 state
@@ -57,6 +61,24 @@ export async function getProjectNoteConfig(
 }
 
 export async function setProjectNoteConfig(
+  projectId: number,
+  config: Partial<Omit<ProjectNoteConfig, 'projectId' | 'updatedAt'>>,
+): Promise<void> {
+  const previous = configWriteQueues.get(projectId) ?? Promise.resolve();
+  const pending = previous
+    .catch(() => undefined)
+    .then(() => writeProjectNoteConfig(projectId, config));
+  configWriteQueues.set(projectId, pending);
+  try {
+    await pending;
+  } finally {
+    if (configWriteQueues.get(projectId) === pending) {
+      configWriteQueues.delete(projectId);
+    }
+  }
+}
+
+async function writeProjectNoteConfig(
   projectId: number,
   config: Partial<Omit<ProjectNoteConfig, 'projectId' | 'updatedAt'>>,
 ): Promise<void> {

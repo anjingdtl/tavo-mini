@@ -5,7 +5,7 @@ jest.mock('../src/services/database', () => ({
     enabledNoteIds: [1, 2],
     retrievalFragmentChars: 200,
   })),
-  getNotesByProject: jest.fn(async () => []),
+  getNotesByProject: jest.fn(async () => [{ id: 1 }, { id: 2 }]),
   getAllNotes: jest.fn(async () => [
     { id: 1, title: '笔记A' },
     { id: 2, title: '笔记B' },
@@ -28,6 +28,7 @@ import {
   clearRetrievalCache,
 } from '../src/services/noteRetriever';
 import { callLLMResult } from '../src/services/llm';
+import * as db from '../src/services/database';
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -48,6 +49,23 @@ test('retrieveNoteFragments returns LLM selected fragments', async () => {
   expect(result).toHaveLength(1);
   expect(result[0].noteId).toBe(1);
   expect(result[0].fragment).toBe('雨夜片段');
+});
+
+test('已关闭的项目笔记即使残留在配置名单中也不会参与检索', async () => {
+  (db.getNotesByProject as jest.Mock).mockResolvedValueOnce([{ id: 1 }]);
+  await retrieveNoteFragments(
+    1,
+    {
+      chapterTitle: '雨夜',
+      chapterSynopsis: '主角在雨夜行走',
+      previousEnding: '天黑了',
+      userPrompt: '继续写',
+    },
+    5,
+  );
+
+  expect(db.getNoteContentById).toHaveBeenCalledWith(1);
+  expect(db.getNoteContentById).not.toHaveBeenCalledWith(2);
 });
 
 test('retrieveNoteFragments keeps different writing instructions in separate cache entries', async () => {
