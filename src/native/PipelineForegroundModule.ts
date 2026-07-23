@@ -24,6 +24,10 @@ const native: PipelineForegroundNative | undefined = NativeModules.PipelineForeg
  */
 class PipelineForegroundBridge {
   private enabled = false;
+  // The native side exposes one foreground service for the whole app.  More
+  // than one chapter may nevertheless run at once (for example from a batch
+  // run), so stopping one task must never tear down the wakelock for another.
+  private activeTaskIds = new Set<string>();
 
   /** 由 settingsStore 在加载/切换时调用。 */
   setEnabled(value: boolean): void {
@@ -39,6 +43,7 @@ class PipelineForegroundBridge {
     if (!this.enabled || !native) return;
     try {
       await native.start(taskId, title, stageLabel, Math.round(progress));
+      this.activeTaskIds.add(taskId);
     } catch (e) {
       console.warn('[PipelineForeground] start failed', e);
     }
@@ -84,6 +89,11 @@ class PipelineForegroundBridge {
   /** 流水线结束：停止前台服务。无论 enabled 与否都尝试停止（清理资源）。 */
   async stop(taskId: string): Promise<void> {
     if (!native) return;
+    this.activeTaskIds.delete(taskId);
+    // Keep the shared service alive while another task is still running.  The
+    // old implementation unconditionally stopped it here, which removed the
+    // wakelock midway through a parallel/background pipeline.
+    if (this.activeTaskIds.size > 0) return;
     try {
       await native.stop(taskId);
     } catch (e) {
