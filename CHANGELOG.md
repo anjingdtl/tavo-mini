@@ -6,6 +6,17 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.19] - 2026-07-23
+
+### Fixed
+
+- **流水线取消可靠性**：用户停止流水线后，即使底层 LLM 请求在 abort 后晚到返回，也会在每次响应落地前重新检查取消状态，不再写入后续阶段、启动终审或把任务标为完成。取消标记持续到整条任务结束才释放。
+
+### Tests
+
+- 新增晚到 LLM 响应取消回归：取消后草稿请求才返回时，审核、终审和完成状态均不得发生。
+- Android 模拟器 `slow_response` 回归：点击停止后等待超过原先 91 秒复现窗口，Mock 调用保持 `draft=1 / review=0 / proof=0`，页面停留在章节编辑器。
+
 ## [2.5.18] - 2026-07-23
 
 ### Fixed

@@ -16,6 +16,12 @@
 - `blocked`: requires a decision or external input
 - `verified`: implementation and required checks completed
 
+## V2.5.19 pipeline cancellation race — verified (2026-07-23)
+
+- Fixed: late LLM responses after `AbortController.abort()` are checked again before any stage persistence or transition; the cancellation marker lives until the pipeline's `finally` cleanup.
+- Regression: new pipeline runner test proves a late draft response cannot start review/proof or complete the task. Debug APK regression on `emulator-5554` used `slow_response`; after stopping and waiting beyond the prior 91-second failure window, Mock counts remained `draft=1 / review=0 / proof=0` and the editor stayed open.
+- Gates: `npm run verify` passed (lint 0 errors, typecheck, version consistency, and Jest CI). Release APK acceptance passed: `dist/apk/release/ShineWriter-V2.5.19-release.apk`, 37,485,771 bytes, SHA-256 `C1F279C2BF654F6AD7A8B68FE7DC8584414126A8E73AD9B87CA6CDB21F891ED5`; official certificate matched, one signer, v2 signature and `zipalign -P 16` passed; AAPT reported `com.shinewriter` / `V2.5.19` / `2051900`.
+
 ## V2.5.18 writing-chain reliability audit — verified (2026-07-23)
 
 - Scope: chapter summaries, Story Memory mainline, character cards, world books, notes, and presets. Schema remains **17**; no backup format, model provider, or remote-request expansion.
