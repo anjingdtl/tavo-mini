@@ -219,6 +219,17 @@ export async function createCurrentSchema(
       )
     `,
     `
+      CREATE TABLE IF NOT EXISTS project_collection_settings (
+        project_id INTEGER NOT NULL,
+        resource_type TEXT NOT NULL,
+        collection_id INTEGER NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (project_id, resource_type, collection_id),
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      )
+    `,
+    `CREATE INDEX IF NOT EXISTS idx_project_collection_settings_lookup ON project_collection_settings(project_id, resource_type, collection_id)`,
+    `
       CREATE TABLE IF NOT EXISTS llm_usage_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scenario TEXT NOT NULL DEFAULT '',

@@ -38,6 +38,7 @@ describe('migration schema matrix', () => {
         'idx_llm_usage_logs_month',
         'idx_local_llm_models_status',
         'idx_notes_collection_id',
+        'idx_project_collection_settings_lookup',
         'idx_local_llm_models_last_used',
         'idx_llm_usage_logs_config',
         'idx_project_story_memory_status',
