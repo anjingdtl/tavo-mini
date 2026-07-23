@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.18-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.19-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.18** · 数据库 Schema：**17** · 最低 Android API：**24**
+当前版本：**V2.5.19** · 数据库 Schema：**17** · 最低 Android API：**24**
 
-`V2.5.18` 完成写作全链路可靠性审阅：故事主线以章节摘要交叉校验并支持剧情弧/冲突/伏笔完整生命周期；新项目立即关联真实默认预设；笔记检索只注入实际笔记原文且随内容更新失效缓存；角色、世界书、笔记合集开关严格限定在当前项目。Schema 保持 17，无新增远程调用。详见 [CHANGELOG](CHANGELOG.md)。
+`V2.5.19` 修复流水线取消竞争：底层 LLM 请求即使在取消后晚到返回，也不会推进审核、终审或完成状态。Schema 保持 17，无新增远程调用。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
@@ -107,7 +107,7 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-目标正式产物：`dist/apk/release/ShineWriter-V2.5.18-release.apk`，`versionName=V2.5.18`，`versionCode=2051800`。
+目标正式产物：`dist/apk/release/ShineWriter-V2.5.19-release.apk`，`versionName=V2.5.19`，`versionCode=2051900`。
 
 本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
 
@@ -119,9 +119,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
 | Number of signers | 1 |
 | zipalign -c | Verification successful |
-| versionName / versionCode | V2.5.18 / 2051800 |
-| 文件大小 | 37,476,631 bytes（35.74 MB） |
-| APK SHA-256 | `345EC800BA3B0CA4036BE8C6EC2021674AE8BDC3247131C3691715B08D88A7BB` |
+| versionName / versionCode | V2.5.19 / 2051900 |
+| 文件大小 | 37,485,771 bytes（35.75 MB） |
+| APK SHA-256 | `C1F279C2BF654F6AD7A8B68FE7DC8584414126A8E73AD9B87CA6CDB21F891ED5` |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -222,7 +222,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.18** with database Schema **17**. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context, and now validates meaningful mainline updates against chapter summaries. New projects receive a real default-preset link; note retrieval only injects supplied note excerpts and refreshes after note updates; character, world-book, and note collection toggles are scoped to the selected project. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.19** with database Schema **17**. Pipeline cancellation now rejects late LLM responses before they can advance review, proof, or completion. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 
