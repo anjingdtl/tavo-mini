@@ -75,7 +75,12 @@ class PipelineForegroundService : Service() {
     handler.removeCallbacks(wakeLockRenewRunnable)
     handler.postDelayed(wakeLockRenewRunnable, WAKE_LOCK_RENEW_INTERVAL_MS)
 
-    return START_NOT_STICKY
+    // This service is the only thing keeping a long-running JS/network task
+    // alive while the activity is backgrounded.  Do not opt out of recovery
+    // when Android temporarily reclaims the service under memory pressure.
+    // The JS runner explicitly calls stopService for every terminal task, so
+    // START_STICKY does not leave a completed task running.
+    return START_STICKY
   }
 
   override fun onDestroy() {

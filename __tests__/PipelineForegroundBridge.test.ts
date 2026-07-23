@@ -61,6 +61,17 @@ describe('PipelineForegroundBridge', () => {
     await expect(PipelineForeground.start('t1', 't', 's')).resolves.toBeUndefined();
   });
 
+  it('one parallel task finishing does not stop the shared foreground service', async () => {
+    await PipelineForeground.start('task-a', '第1章', '草稿中');
+    await PipelineForeground.start('task-b', '第2章', '草稿中');
+
+    await PipelineForeground.stop('task-a');
+    expect(NativeModules.PipelineForeground.stop).not.toHaveBeenCalled();
+
+    await PipelineForeground.stop('task-b');
+    expect(NativeModules.PipelineForeground.stop).toHaveBeenCalledWith('task-b');
+  });
+
   it('isAvailable 在原生可用时返回 true', async () => {
     await expect(PipelineForeground.isAvailable()).resolves.toBe(true);
   });
