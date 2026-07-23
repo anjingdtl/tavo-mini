@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import {
   BookMarked,
+  Bot,
   Download,
   FilePlus2,
   Import,
@@ -71,6 +72,10 @@ import {
 } from '../services/fileImport';
 import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
+import {
+  generateResourceFromPrompt,
+  type AiGeneratedResourceKind,
+} from '../services/resourceAiGenerator';
 
 type ResourceTab = 'characters' | 'worldbook' | 'notes' | 'presets';
 type EditorKind =
@@ -164,6 +169,9 @@ export const ResourceLibrary: React.FC = () => {
   } | null>(null);
   const [styleProfileText, setStyleProfileText] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
+  const [showAiGenerator, setShowAiGenerator] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [generatingResource, setGeneratingResource] = useState(false);
   const projectId = currentProject?.id || 0;
   const projectEnabledNotes = useMemo(
     () => items.notes.filter((note: any) => note.enabled_for_project === 1),
@@ -806,6 +814,65 @@ export const ResourceLibrary: React.FC = () => {
           ? '角色卡 JSON 格式不正确。'
           : error?.message || '资料保存失败。',
       );
+    }
+  };
+
+  const openAiGenerator = () => {
+    if (editor?.kind !== 'characters' && editor?.kind !== 'worldbook') return;
+    setAiPrompt('');
+    setShowAiGenerator(true);
+  };
+
+  const generateResource = async () => {
+    if (
+      !editor ||
+      (editor.kind !== 'characters' && editor.kind !== 'worldbook')
+    ) {
+      return;
+    }
+    const prompt = aiPrompt.trim();
+    if (!prompt) {
+      Toast.show({ type: 'info', text1: '请输入生成提示词' });
+      return;
+    }
+    const kind: AiGeneratedResourceKind = editor.kind;
+    setGeneratingResource(true);
+    try {
+      const generated = await generateResourceFromPrompt(kind, prompt, {
+        projectName: currentProject?.name,
+        existingCharacterNames: items.characters.map(item => item.name || ''),
+        existingWorldbookKeywords: items.worldbook.map(
+          item => item.keyword_primary || '',
+        ),
+      });
+      setEditor(previous => {
+        if (!previous || previous.kind !== generated.kind) return previous;
+        if (generated.kind === 'characters') {
+          return {
+            ...previous,
+            name: generated.name,
+            dataJson: generated.dataJson,
+          };
+        }
+        return {
+          ...previous,
+          name: generated.keywordPrimary,
+          secondary: generated.keywordSecondary,
+          comment: generated.comment,
+          content: generated.content,
+          constant: generated.constant,
+        };
+      });
+      setShowAiGenerator(false);
+      Toast.show({ type: 'success', text1: 'AI 内容已回填，请确认后保存' });
+    } catch (error: any) {
+      Toast.show({
+        type: 'error',
+        text1: 'AI 生成失败',
+        text2: error?.message || '请检查 LLM 配置后重试。',
+      });
+    } finally {
+      setGeneratingResource(false);
     }
   };
 
@@ -1782,6 +1849,14 @@ export const ResourceLibrary: React.FC = () => {
                 >
                   当前预估 {estimateEditorTokens(editor)} tokens
                 </Text>
+                {editor.kind === 'characters' || editor.kind === 'worldbook' ? (
+                  <Button
+                    label="AI 一键生成"
+                    icon={Bot}
+                    variant="secondary"
+                    onPress={openAiGenerator}
+                  />
+                ) : null}
                 {editor.kind === 'characters' ? (
                   <>
                     {editor.imagePath ? (
@@ -2037,6 +2112,71 @@ export const ResourceLibrary: React.FC = () => {
                 onPress={() => setEditor(null)}
               />
               <Button label="保存" onPress={saveEditor} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showAiGenerator}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !generatingResource && setShowAiGenerator(false)}
+      >
+        <View style={styles.overlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => !generatingResource && setShowAiGenerator(false)}
+          />
+          <View
+            style={[
+              styles.promptModal,
+              { backgroundColor: theme.colors.surface },
+            ]}
+          >
+            <Text
+              style={[
+                styles.modalTitle,
+                { color: theme.colors.textPrimary },
+              ]}
+            >
+              AI 生成{editor?.kind === 'worldbook' ? '世界书条目' : '角色卡'}
+            </Text>
+            <Text
+              style={[
+                styles.promptHint,
+                { color: theme.colors.textSecondary },
+              ]}
+            >
+              输入想要的设定，AI 会按当前项目的资料格式生成并回填到编辑器。回填会覆盖本次未保存的同类字段。
+            </Text>
+            <Field
+              testID="resource-ai-prompt"
+              label="生成提示词"
+              value={aiPrompt}
+              onChangeText={setAiPrompt}
+              placeholder={
+                editor?.kind === 'worldbook'
+                  ? '例如：设计一条关于月蚀魔法代价的世界规则'
+                  : '例如：设计一位表面温和、擅长机关术的反派角色'
+              }
+              multiline
+              inputStyle={styles.aiPromptInput}
+              editable={!generatingResource}
+            />
+            <View style={styles.modalActions}>
+              <Button
+                label="取消"
+                variant="ghost"
+                disabled={generatingResource}
+                onPress={() => setShowAiGenerator(false)}
+              />
+              <Button
+                label={generatingResource ? '生成中…' : '开始生成'}
+                icon={Bot}
+                disabled={generatingResource}
+                onPress={generateResource}
+              />
             </View>
           </View>
         </View>
@@ -2367,7 +2507,16 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
   },
   modal: { maxHeight: '88%', borderRadius: 8, padding: spacing.lg },
+  promptModal: {
+    width: '90%',
+    maxWidth: 520,
+    alignSelf: 'center',
+    borderRadius: 16,
+    padding: spacing.lg,
+    gap: spacing.md,
+  },
   modalTitle: { fontSize: 18, fontWeight: '800', marginBottom: spacing.md },
+  promptHint: { fontSize: 13, lineHeight: 20 },
   modalActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -2375,6 +2524,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   largeInput: { minHeight: 160, textAlignVertical: 'top' },
+  aiPromptInput: { minHeight: 150, textAlignVertical: 'top' },
   characterImage: {
     width: 128,
     height: 180,
