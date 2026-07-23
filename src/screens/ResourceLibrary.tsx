@@ -178,6 +178,7 @@ export const ResourceLibrary: React.FC = () => {
   const [showAiGenerator, setShowAiGenerator] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [generatingResource, setGeneratingResource] = useState(false);
+  const loadGenerationRef = useRef(0);
   const projectId = currentProject?.id || 0;
   const projectEnabledNotes = useMemo(
     () => items.notes.filter((note: any) => note.enabled_for_project === 1),
@@ -195,6 +196,7 @@ export const ResourceLibrary: React.FC = () => {
   }, [enabledNoteIds]);
 
   const loadData = useCallback(async () => {
+    const loadGeneration = ++loadGenerationRef.current;
     const [
       characters,
       worldbook,
@@ -214,6 +216,9 @@ export const ResourceLibrary: React.FC = () => {
       db.getNoteCollections(projectId),
       db.getProjectNoteConfig(projectId),
     ]);
+    // Project changes can start a second load before the first Promise.all
+    // settles. Never let the old project overwrite the newer screen state.
+    if (loadGeneration !== loadGenerationRef.current) return;
     setItems({ characters, worldbook, notes, presets });
     setCharacterCollections(characterCollectionRows);
     setCollections(worldbookCollections);

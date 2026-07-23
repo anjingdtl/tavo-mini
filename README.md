@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.19-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.20-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.19** · 数据库 Schema：**17** · 最低 Android API：**24**
+当前版本：**V2.5.20** · 数据库 Schema：**18** · 最低 Android API：**24**
 
-`V2.5.19` 修复流水线取消竞争：底层 LLM 请求即使在取消后晚到返回，也不会推进审核、终审或完成状态。Schema 保持 17，无新增远程调用。详见 [CHANGELOG](CHANGELOG.md)。
+`V2.5.20` 将角色、世界书和笔记的项目级父合集开关独立持久化，关闭父级不会覆盖子资料状态，空合集也能保存项目专属配置；资料库项目切换的迟到加载被丢弃，并发流水线通知按任务归属更新。Schema 升级至 18，无新增远程调用。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
 
@@ -56,7 +56,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 - Android-only；`minSdk 24`，`compileSdk/targetSdk 36`。
 - React Native `0.85.3`、React `19.2.3`、TypeScript `5.8`、Kotlin `2.1.20`。
 - Node.js `>= 24.3.0`、JDK `17`、Android SDK 与 Gradle 环境。
-- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 17。
+- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 18。
 - 本地模型：仅支持 `.gguf`，由 Android `llama.cpp` JNI 引擎加载；模型文件放在应用私有模型目录，不上传服务器。
 - 在线模型：OpenAI 兼容 Chat Completions 接口。默认只允许 HTTPS；局域网 HTTP 必须由用户显式开启，并限制在 `127.0.0.1`、`10/8`、`172.16/12`、`192.168/16`，公网 HTTP 永远拒绝。
 - API Key：通过 `react-native-keychain` 写入 Android Keystore；`llm_config` 只保存配置名称、地址、模型等非密钥字段。备份文件不包含 API Key，恢复后需要重新填写。
@@ -107,9 +107,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-目标正式产物：`dist/apk/release/ShineWriter-V2.5.19-release.apk`，`versionName=V2.5.19`，`versionCode=2051900`。
+目标正式产物：`dist/apk/release/ShineWriter-V2.5.20-release.apk`，`versionName=V2.5.20`，`versionCode=2052000`。
 
-本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
+本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收，并在 `emulator-5554` 上完成 V2.5.19→V2.5.20 原地升级启动验证。
 
 **实测验收数据**：
 
@@ -119,9 +119,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
 | Number of signers | 1 |
 | zipalign -c | Verification successful |
-| versionName / versionCode | V2.5.19 / 2051900 |
-| 文件大小 | 37,485,771 bytes（35.75 MB） |
-| APK SHA-256 | `C1F279C2BF654F6AD7A8B68FE7DC8584414126A8E73AD9B87CA6CDB21F891ED5` |
+| versionName / versionCode | V2.5.20 / 2052000 |
+| 文件大小 | 37,489,655 bytes（35.75 MB） |
+| APK SHA-256 | `75120CD26DC5945F84A0DAD4635244C2ADEFF8E64B47274D0F81A98BA965CC27` |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -222,7 +222,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.19** with database Schema **17**. Pipeline cancellation now rejects late LLM responses before they can advance review, proof, or completion. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.20** with database Schema **18**. Project-level collection switches are persisted without overwriting per-resource choices, stale resource-library loads are ignored after a project change, and concurrent pipeline notifications retain their task ownership. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 
