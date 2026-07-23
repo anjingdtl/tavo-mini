@@ -649,6 +649,38 @@ test('explicit cancellation immediately persists the cancelled task and stops fo
   expect(PipelineForeground.stop).toHaveBeenCalledWith('task-stop-now');
 });
 
+test('late LLM response after cancellation never advances to review, proof, or completion', async () => {
+  let releaseDraft!: (result: any) => void;
+  mockCallLLMResult.mockImplementation((_: any, __: any, cfg: any) => {
+    if (cfg.scenario === 'pipeline_draft') {
+      return new Promise(resolve => {
+        releaseDraft = resolve;
+      });
+    }
+    throw new Error(`must not start ${cfg.scenario} after cancellation`);
+  });
+
+  const { runChapterPipeline, cancelPipeline } = require('../src/services/pipelineRunner');
+  const run = runChapterPipeline('task-late-response-cancel', chapter);
+
+  for (let i = 0; i < 30 && !releaseDraft; i += 1) {
+    await Promise.resolve();
+  }
+  expect(releaseDraft).toBeDefined();
+
+  cancelPipeline('task-late-response-cancel');
+  releaseDraft({ text: 'late draft', inputTokens: 1, outputTokens: 1, totalTokens: 2 });
+  await run;
+
+  expect(mockStore.cancelTask).toHaveBeenCalledWith('task-late-response-cancel');
+  expect(callForScenario(mockCallLLMResult.mock.calls, 'pipeline_review')).toBeUndefined();
+  expect(callForScenario(mockCallLLMResult.mock.calls, 'pipeline_proof')).toBeUndefined();
+  expect(mockStore.completeTask).not.toHaveBeenCalledWith(
+    'task-late-response-cancel',
+    expect.anything(),
+  );
+});
+
 test('pipeline defaults to non-streaming draft generation and reuses one LLM request config', async () => {
   const llmRequestConfig = {
     id: 7,
