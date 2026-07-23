@@ -33,6 +33,7 @@ local.properties
 .cxx/
 *.keystore
 !debug.keystore
+shinewriter-keystore-pack/
 .kotlin/
 
 # node.js
