@@ -90,11 +90,18 @@ function resolvePreset(
 
 function checkCancelled(taskId: string): boolean {
   if (cancelledTasks.has(taskId)) {
-    cancelledTasks.delete(taskId);
     usePipelineTaskStore.getState().cancelTask(taskId);
     return true;
   }
   return false;
+}
+
+function throwIfCancelled(taskId: string, abortSignal?: AbortSignal): void {
+  if (abortSignal?.aborted || checkCancelled(taskId)) {
+    const error = new Error('已取消') as Error & { code?: string };
+    error.code = 'cancelled';
+    throw error;
+  }
 }
 
 function buildCallConfig(
@@ -230,6 +237,9 @@ async function runReviewStage(
       ),
       abortSignal,
     );
+    // Some provider implementations can settle after fetch has been aborted.
+    // A late response must never advance this pipeline to the next stage.
+    throwIfCancelled(taskId, abortSignal);
     tokens = accumulateTokens(tokens, first);
 
     let validation = validateReviewResult(first, args.draftText);
@@ -277,6 +287,7 @@ async function runReviewStage(
         ),
         abortSignal,
       );
+      throwIfCancelled(taskId, abortSignal);
       tokens = accumulateTokens(tokens, retry);
       validation = validateReviewResult(retry, args.draftText);
       logPipelineAudit({
@@ -364,6 +375,7 @@ async function runFactCheckStage(
       ),
       abortSignal,
     );
+    throwIfCancelled(taskId, abortSignal);
     tokens = accumulateTokens(tokens, first);
 
     let validation = validateFactCheckResult(first, args.draftText);
@@ -411,6 +423,7 @@ async function runFactCheckStage(
         ),
         abortSignal,
       );
+      throwIfCancelled(taskId, abortSignal);
       tokens = accumulateTokens(tokens, retry);
       validation = validateFactCheckResult(retry, args.draftText);
       logPipelineAudit({
@@ -512,6 +525,7 @@ async function runProofStage(
       ),
       abortSignal,
     );
+    throwIfCancelled(taskId, abortSignal);
     // Strict: only official content may become the final manuscript.
     const content =
       typeof result.text === 'string' && result.text.trim().length > 0
@@ -790,6 +804,7 @@ async function runChapterPipelineInner(
       ),
       abortSignal,
     );
+    throwIfCancelled(taskId, abortSignal);
     draftText = draftResult.text || '';
 
     store.updateTaskStage(taskId, {
