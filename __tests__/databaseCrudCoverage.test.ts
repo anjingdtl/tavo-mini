@@ -253,6 +253,7 @@ describe('database CRUD contract coverage', () => {
       ['setChapterPlotlines', [1, [1, 2]]],
       ['getChapterPlotlineIds', [1]],
       ['setProjectResourceEnabled', [1, 'character', 1, true]],
+      ['setProjectCollectionEnabled', [1, 'character', 1, false]],
       ['getAllCharacters', []],
       ['getAllCharacters', [1]],
       ['getCharactersByProject', [1]],
@@ -471,6 +472,23 @@ describe('database CRUD contract coverage', () => {
     expect(
       fake.executed.filter(sql => sql.startsWith('INSERT INTO notes')),
     ).toHaveLength(2);
+  });
+
+  test('stores parent collection switches separately from child resource switches', async () => {
+    const fake = createCrudDatabase();
+    database.__setDatabaseForTest(fake.database);
+
+    await database.setCharacterCollectionEnabledForProject(1, 11, false);
+    await database.setWorldbookCollectionEnabledForProject(1, 12, false);
+    await database.setNoteCollectionEnabledForProject(1, 13, false);
+
+    const parentWrites = fake.executed.filter(sql =>
+      sql.includes('project_collection_settings'),
+    );
+    expect(parentWrites).toHaveLength(3);
+    expect(fake.executed.some(sql =>
+      sql.includes("resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)"),
+    )).toBe(false);
   });
 });
 
