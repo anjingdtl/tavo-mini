@@ -48,6 +48,9 @@ export async function setWorldbookCollectionEnabledForProject(
   collectionId: number,
   enabled: boolean,
 ): Promise<void> {
+  if (projectId <= 0) {
+    throw new Error('请先选择项目，再设置世界书合集的启用状态。');
+  }
   const database = await openDatabase();
   // V2.2.2 修复：改用 runInTransactionSafe。先做必要的 async 读（entry id 列表），
   // 再把所有写入合并到一次同步 push 的事务里。
@@ -86,6 +89,7 @@ export async function getWorldbookCollections(
   }
   return all<Row>(
     `SELECT wc.*, COUNT(w.id) AS entry_count,
+            COALESCE(SUM(COALESCE(w.estimated_tokens, 0)), 0) AS calculated_estimated_tokens,
             CASE WHEN COUNT(w.id) = 0 THEN 1
                  WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
                  ELSE 0 END AS enabled_for_project

@@ -124,4 +124,16 @@ describe('PipelineTaskScreen', () => {
 
     expect(mockResolveTask).toHaveBeenCalledWith('cancelled-task', 'reject');
   });
+
+  it('keeps a completed but unadopted task available for viewing', () => {
+    mockTasks = [makeTask('completed-task', 'completed')];
+    mockTasks[0].finalText = '待采纳正文';
+    const { getAllByText, getByText } = render(<PipelineTaskScreen />);
+
+    expect(getAllByText(/已完成/).length).toBeGreaterThan(0);
+    fireEvent.press(getByText('查看结果'));
+    expect(mockNavigate).toHaveBeenCalledWith('PipelineResult', {
+      taskId: 'completed-task',
+    });
+  });
 });

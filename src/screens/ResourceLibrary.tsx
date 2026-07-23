@@ -104,6 +104,12 @@ function isCollectionEnabledForProject(collection: any): boolean {
     : collection.enabled_for_project === 1;
 }
 
+function collectionTokenEstimate(collection: any): number {
+  const calculated = Number(collection.calculated_estimated_tokens);
+  if (Number.isFinite(calculated) && calculated >= 0) return calculated;
+  return Number(collection.estimated_tokens || 0);
+}
+
 interface EditorState {
   kind: EditorKind;
   item: any;
@@ -957,6 +963,10 @@ export const ResourceLibrary: React.FC = () => {
   };
 
   const toggleCollection = async (collection: any) => {
+    if (!currentProject) {
+      Toast.show({ type: 'info', text1: '请先选择项目', text2: '世界书合集按项目独立启用或停用。' });
+      return;
+    }
     const newEnabled = isCollectionEnabledForProject(collection) ? 0 : 1;
     // Phase9-BUG#12: 包裹 try-catch + Toast
     try {
@@ -1485,7 +1495,7 @@ export const ResourceLibrary: React.FC = () => {
                           ]}
                         >
                           {item.entry_count || 0} 条 · 预估{' '}
-                          {item.estimated_tokens || 0} / Max{' '}
+                          {collectionTokenEstimate(item)} / Max{' '}
                           {item.max_tokens || 50000} tokens
                         </Text>
                         <View style={styles.usageRow}>
@@ -1499,6 +1509,7 @@ export const ResourceLibrary: React.FC = () => {
                           </Text>
                           <Switch
                             value={isCollectionEnabledForProject(item)}
+                            disabled={!currentProject}
                             onValueChange={() => toggleCollection(item)}
                           />
                         </View>
