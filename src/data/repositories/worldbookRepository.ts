@@ -6,6 +6,7 @@ import { openDatabase } from '../connection/openDatabase';
 import {
   linkResourceToProject,
   deleteProjectResourceLinks,
+  setProjectCollectionEnabled,
   setProjectResourceEnabled,
   usageJoin,
 } from './projectRepository';
@@ -51,21 +52,7 @@ export async function setWorldbookCollectionEnabledForProject(
   if (projectId <= 0) {
     throw new Error('请先选择项目，再设置世界书合集的启用状态。');
   }
-  const database = await openDatabase();
-  // V2.2.2 修复：改用 runInTransactionSafe。先做必要的 async 读（entry id 列表），
-  // 再把所有写入合并到一次同步 push 的事务里。
-  const stmts: Array<{ sql: string; params: any[] }> = [];
-  const rows = await all<{ id: number }>(
-    'SELECT id FROM worldbook_entries WHERE collection_id = ?',
-    [collectionId],
-  );
-  for (const row of rows) {
-    stmts.push({
-      sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
-      params: [projectId, 'worldbook', row.id, enabled ? 1 : 0],
-    });
-  }
-  await executeTransaction(database, stmts);
+  await setProjectCollectionEnabled(projectId, 'worldbook', collectionId, enabled);
 }
 
 export async function getWorldbookEntriesByProject(
@@ -75,9 +62,10 @@ export async function getWorldbookEntriesByProject(
     `SELECT w.*, wc.name AS collection_name, wc.enabled AS collection_enabled, wc.max_tokens AS collection_max_tokens FROM worldbook_entries w
      JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook'
      LEFT JOIN worldbook_collections wc ON wc.id = w.collection_id
-     WHERE pr.project_id = ? AND pr.enabled = 1 AND w.enabled = 1
+     LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'worldbook' AND pcs.collection_id = w.collection_id
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND w.enabled = 1 AND COALESCE(pcs.enabled, 1) = 1
      ORDER BY w.position ASC, w.id ASC`,
-    [projectId],
+    [projectId, projectId],
   );
 }
 
@@ -90,15 +78,17 @@ export async function getWorldbookCollections(
   return all<Row>(
     `SELECT wc.*, COUNT(w.id) AS entry_count,
             COALESCE(SUM(COALESCE(w.estimated_tokens, 0)), 0) AS calculated_estimated_tokens,
-            CASE WHEN COUNT(w.id) = 0 THEN 1
+            CASE WHEN COALESCE(pcs.enabled, 1) = 0 THEN 0
+                 WHEN COUNT(w.id) = 0 THEN 1
                  WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
                  ELSE 0 END AS enabled_for_project
      FROM worldbook_collections wc
      LEFT JOIN worldbook_entries w ON w.collection_id = wc.id
      LEFT JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook' AND pr.project_id = ?
-     GROUP BY wc.id
+     LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'worldbook' AND pcs.collection_id = wc.id
+     GROUP BY wc.id, pcs.enabled
      ORDER BY wc.id DESC`,
-    [projectId],
+    [projectId, projectId],
   );
 }
 
@@ -168,6 +158,10 @@ export async function deleteWorldbookCollection(id: number): Promise<void> {
   });
   stmts.push({
     sql: 'DELETE FROM worldbook_collections WHERE id = ?',
+    params: [id],
+  });
+  stmts.push({
+    sql: "DELETE FROM project_collection_settings WHERE resource_type = 'worldbook' AND collection_id = ?",
     params: [id],
   });
   await executeTransaction(database, stmts);

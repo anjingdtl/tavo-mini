@@ -11,6 +11,7 @@ import {
   deleteProjectResourceLinks,
   linkResourceToProject,
   usageJoin,
+  setProjectCollectionEnabled,
 } from './projectRepository';
 
 export function splitNoteTextIntoChunks(
@@ -336,9 +337,10 @@ export async function getNotesByProject(projectId: number): Promise<Note[]> {
      FROM notes n
      JOIN project_resources pr ON pr.resource_id = n.id AND pr.resource_type = 'note'
      LEFT JOIN note_collections nc ON nc.id = n.collection_id
-     WHERE pr.project_id = ? AND pr.enabled = 1
+     LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'note' AND pcs.collection_id = n.collection_id
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND COALESCE(pcs.enabled, 1) = 1
      ORDER BY n.updated_at DESC`,
-    [projectId],
+    [projectId, projectId],
   );
 }
 
@@ -406,15 +408,17 @@ export async function getNoteCollections(projectId?: number): Promise<any[]> {
   }
   return all(
     `SELECT nc.*, COUNT(n.id) AS note_count,
-            CASE WHEN COUNT(n.id) = 0 THEN 1
+            CASE WHEN COALESCE(pcs.enabled, 1) = 0 THEN 0
+                 WHEN COUNT(n.id) = 0 THEN 1
                  WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
                  ELSE 0 END AS enabled_for_project
      FROM note_collections nc
      LEFT JOIN notes n ON n.collection_id = nc.id
      LEFT JOIN project_resources pr ON pr.resource_id = n.id AND pr.resource_type = 'note' AND pr.project_id = ?
-     GROUP BY nc.id
+     LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'note' AND pcs.collection_id = nc.id
+     GROUP BY nc.id, pcs.enabled
      ORDER BY nc.id DESC`,
-    [projectId],
+    [projectId, projectId],
   );
 }
 
@@ -484,18 +488,7 @@ export async function setNoteCollectionEnabledForProject(
   collectionId: number,
   enabled: boolean,
 ): Promise<void> {
-  const database = await openDatabase();
-  const notes = await all<{ id: number }>(
-    'SELECT id FROM notes WHERE collection_id = ?',
-    [collectionId],
-  );
-  await executeTransaction(
-    database,
-    notes.map(note => ({
-      sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
-      params: [projectId, 'note', note.id, enabled ? 1 : 0],
-    })),
-  );
+  await setProjectCollectionEnabled(projectId, 'note', collectionId, enabled);
 }
 
 export async function deleteNoteCollection(id: number): Promise<void> {
@@ -511,6 +504,10 @@ export async function deleteNoteCollection(id: number): Promise<void> {
   statements.push(
     { sql: 'DELETE FROM notes WHERE collection_id = ?', params: [id] },
     { sql: 'DELETE FROM note_collections WHERE id = ?', params: [id] },
+    {
+      sql: "DELETE FROM project_collection_settings WHERE resource_type = 'note' AND collection_id = ?",
+      params: [id],
+    },
   );
   await executeTransaction(database, statements);
 }

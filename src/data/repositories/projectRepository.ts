@@ -33,6 +33,23 @@ export async function getAllProjects(): Promise<Project[]> {
   );
 }
 
+export async function setProjectCollectionEnabled(
+  projectId: number,
+  resourceType: 'character' | 'worldbook' | 'note',
+  collectionId: number,
+  enabled: boolean,
+): Promise<void> {
+  if (projectId <= 0) {
+    throw new Error('请先选择项目，再设置合集的启用状态。');
+  }
+  await execute(
+    await openDatabase(),
+    `INSERT OR REPLACE INTO project_collection_settings
+      (project_id, resource_type, collection_id, enabled) VALUES (?, ?, ?, ?)`,
+    [projectId, resourceType, collectionId, enabled ? 1 : 0],
+  );
+}
+
 export async function getProjectById(id: number): Promise<Project | null> {
   return one<Project>('SELECT * FROM projects WHERE id = ? AND id > 0', [id]);
 }
