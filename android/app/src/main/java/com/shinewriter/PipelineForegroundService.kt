@@ -30,10 +30,17 @@ import androidx.core.app.NotificationCompat
 class PipelineForegroundService : Service() {
 
   private var wakeLock: PowerManager.WakeLock? = null
-  private var currentTaskId: String? = null
-  private var currentTitle: String = "ShineWriter 写作中"
-  private var currentStageLabel: String = "正在生成"
-  private var currentProgress: Int = 0
+  private data class TaskNotificationState(
+    val title: String,
+    val stageLabel: String,
+    val progress: Int,
+    val updatedAt: Long,
+  )
+
+  // One foreground service represents multiple concurrent JS tasks. Keep the
+  // notification state per task so an update from task A never borrows task B's
+  // title. The most recently updated task is shown in the single ongoing slot.
+  private val taskNotifications = mutableMapOf<String, TaskNotificationState>()
   private val handler = Handler(Looper.getMainLooper())
   private val wakeLockRenewRunnable = object : Runnable {
     override fun run() {
@@ -62,14 +69,20 @@ class PipelineForegroundService : Service() {
     val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
     val title = intent?.getStringExtra(EXTRA_TITLE) ?: "ShineWriter 写作中"
     val stageLabel = intent?.getStringExtra(EXTRA_STAGE_LABEL) ?: "正在生成"
-    val progress = intent?.getIntExtra(EXTRA_PROGRESS, currentProgress) ?: currentProgress
+    val progress = intent?.getIntExtra(EXTRA_PROGRESS, 0) ?: 0
 
-    if (taskId != null) currentTaskId = taskId
-    currentTitle = title
-    currentStageLabel = stageLabel
-    currentProgress = progress.coerceIn(0, 100)
+    if (taskId != null) {
+      taskNotifications[taskId] = TaskNotificationState(
+        title,
+        stageLabel,
+        progress.coerceIn(0, 100),
+        System.currentTimeMillis(),
+      )
+    }
 
-    startForegroundInternal(currentTitle, currentStageLabel, currentProgress)
+    val current = (if (taskId != null) taskNotifications[taskId] else null)
+      ?: TaskNotificationState(title, stageLabel, progress.coerceIn(0, 100), System.currentTimeMillis())
+    startForegroundInternal(current.title, current.stageLabel, current.progress)
     acquireWakeLock()
     // 启动周期续期检查
     handler.removeCallbacks(wakeLockRenewRunnable)
@@ -86,6 +99,7 @@ class PipelineForegroundService : Service() {
   override fun onDestroy() {
     handler.removeCallbacks(wakeLockRenewRunnable)
     releaseWakeLock()
+    taskNotifications.clear()
     instance = null
     super.onDestroy()
   }
@@ -104,10 +118,16 @@ class PipelineForegroundService : Service() {
    * 更新常驻通知内容（不重投 startForegroundService Intent，降低系统开销与限制触发）。
    * 仅在服务已通过 startForeground 进入前台状态后调用。
    */
-  fun updateNotification(stageLabel: String, progress: Int) {
-    currentStageLabel = stageLabel
-    currentProgress = progress.coerceIn(0, 100)
-    val notification = buildOngoingNotification(currentTitle, currentStageLabel, currentProgress)
+  fun updateNotification(taskId: String, stageLabel: String, progress: Int) {
+    val previous = taskNotifications[taskId]
+    val state = TaskNotificationState(
+      previous?.title ?: "ShineWriter 写作中",
+      stageLabel,
+      progress.coerceIn(0, 100),
+      System.currentTimeMillis(),
+    )
+    taskNotifications[taskId] = state
+    val notification = buildOngoingNotification(state.title, state.stageLabel, state.progress)
     val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     nm.notify(ONGOING_NOTIFICATION_ID, notification)
   }

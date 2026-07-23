@@ -6,6 +6,7 @@ import { openDatabase } from '../connection/openDatabase';
 import {
   linkResourceToProject,
   deleteProjectResourceLinks,
+  setProjectCollectionEnabled,
   usageJoin,
 } from './projectRepository';
 import { now, updateColumns, type Row } from './shared';
@@ -31,9 +32,10 @@ export async function getCharactersByProject(
      FROM characters c
      JOIN project_resources pr ON pr.resource_id = c.id AND pr.resource_type = 'character'
      LEFT JOIN character_collections cc ON cc.id = c.collection_id
-     WHERE pr.project_id = ? AND pr.enabled = 1
+     LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'character' AND pcs.collection_id = c.collection_id
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND COALESCE(pcs.enabled, 1) = 1
      ORDER BY c.id ASC`,
-    [projectId],
+    [projectId, projectId],
   );
 }
 
@@ -55,15 +57,17 @@ export async function getCharacterCollections(
   }
   return all<Row>(
     `SELECT cc.*, COUNT(c.id) AS character_count,
-            CASE WHEN COUNT(c.id) = 0 THEN 1
+            CASE WHEN COALESCE(pcs.enabled, 1) = 0 THEN 0
+                 WHEN COUNT(c.id) = 0 THEN 1
                  WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
                  ELSE 0 END AS enabled_for_project
      FROM character_collections cc
      LEFT JOIN characters c ON c.collection_id = cc.id
      LEFT JOIN project_resources pr ON pr.resource_id = c.id AND pr.resource_type = 'character' AND pr.project_id = ?
-     GROUP BY cc.id
+     LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'character' AND pcs.collection_id = cc.id
+     GROUP BY cc.id, pcs.enabled
      ORDER BY cc.id DESC`,
-    [projectId],
+    [projectId, projectId],
   );
 }
 
@@ -147,23 +151,11 @@ export async function setCharacterCollectionEnabledForProject(
   collectionId: number,
   enabled: boolean,
 ): Promise<void> {
-  const database = await openDatabase();
-  const rows = await all<{ id: number }>(
-    'SELECT id FROM characters WHERE collection_id = ?',
-    [collectionId],
-  );
-  const stmts: Array<{ sql: string; params: any[] }> = [];
-  // 合集属于全局资料库；“当前项目使用”必须只改 project_resources，不能把
-  // 另一个项目的角色上下文一并关闭。
-  if (projectId > 0) {
-    for (const row of rows) {
-      stmts.push({
-        sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
-        params: [projectId, 'character', row.id, enabled ? 1 : 0],
-      });
-    }
-  }
-  await executeTransaction(database, stmts);
+  if (projectId <= 0) return;
+  // Parent preference is independent from individual project_resources rows.
+  // This keeps disabled child cards disabled after a parent off/on round trip
+  // and also persists the preference for an empty collection.
+  await setProjectCollectionEnabled(projectId, 'character', collectionId, enabled);
 }
 
 export async function setAllCharactersCollectionId(
@@ -204,6 +196,10 @@ export async function deleteCharacterCollection(id: number): Promise<void> {
   });
   stmts.push({
     sql: 'DELETE FROM character_collections WHERE id = ?',
+    params: [id],
+  });
+  stmts.push({
+    sql: "DELETE FROM project_collection_settings WHERE resource_type = 'character' AND collection_id = ?",
     params: [id],
   });
   await executeTransaction(database, stmts);

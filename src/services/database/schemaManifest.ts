@@ -291,6 +291,13 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     restoreOrder: 130,
   },
   {
+    name: 'project_collection_settings',
+    columns: ['project_id', 'resource_type', 'collection_id', 'enabled'],
+    indexes: ['idx_project_collection_settings_lookup'],
+    backup: true,
+    restoreOrder: 135,
+  },
+  {
     name: 'llm_usage_logs',
     columns: [
       'id',

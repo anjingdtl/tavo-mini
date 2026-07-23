@@ -16,6 +16,14 @@
 - `blocked`: requires a decision or external input
 - `verified`: implementation and required checks completed
 
+## V2.5.20 project collection and concurrent-notification repair — verified (2026-07-23)
+
+- Fixed: project-level parent collection settings for characters, world books, and notes now persist independently in Schema 18. Parent off/on no longer overwrites per-resource choices, including for empty collections; contextual queries exclude a disabled parent collection. Deleting a collection removes its settings in the same transaction.
+- Fixed: Resource Library discards a stale asynchronous load after the current project changes. Pipeline foreground notifications retain title, stage, and progress per task, so concurrent task updates cannot cross-label the visible notification.
+- Regression: v17→v18 migration and parent-setting write/query contracts are covered by new tests; full `npm run verify` passed (139 suites / 1025 tests passed; 1 suite / 3 tests skipped; lint 0 errors and 9 existing warnings). `npm run test:coverage` passed: statements **78.35%**, branches **62.67%**, functions **83.18%**, lines **79.98%**.
+- Emulator: only `emulator-5554` (Android 17 / x86_64) was used. Debug V2.5.20 launched successfully. Official-signature V2.5.19 was installed, then V2.5.20 was installed with `adb install -r`; the app started successfully and emitted `validated schema_version=18`.
+- Release APK acceptance: `dist/apk/release/ShineWriter-V2.5.20-release.apk`, 37,489,655 bytes, SHA-256 `75120CD26DC5945F84A0DAD4635244C2ADEFF8E64B47274D0F81A98BA965CC27`; official certificate matched, one signer and v2 signature passed, `zipalign -P 16` passed, and AAPT reported `com.shinewriter` / `V2.5.20` / `2052000`.
+
 ## V2.5.19 pipeline cancellation race — verified (2026-07-23)
 
 - Fixed: late LLM responses after `AbortController.abort()` are checked again before any stage persistence or transition; the cancellation marker lives until the pipeline's `finally` cleanup.

@@ -53,7 +53,7 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
       val service = PipelineForegroundService.instance
       if (service != null) {
         // 服务已在前台运行，直接刷新通知（避免重投 Intent 的系统开销与限制）
-        service.updateNotification(stageLabel, progress)
+        service.updateNotification(taskId, stageLabel, progress)
       } else {
         // 服务尚未运行（罕见，如被系统回收），fallback 重新启动
         val intent = Intent(reactContext, PipelineForegroundService::class.java).apply {
