@@ -1,7 +1,7 @@
 import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator, NativeStackScreenProps } from '@react-navigation/native-stack';
-import { BookOpen, Boxes, FolderKanban, Settings } from 'lucide-react-native';
+import { BookOpen, Boxes, FolderKanban, Hammer, Settings } from 'lucide-react-native';
 import { Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useThemeStore } from '../store/themeStore';
@@ -10,6 +10,7 @@ import { ProjectListScreen } from '../screens/ProjectListScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { LLMSettingsScreen } from '../screens/LLMSettingsScreen';
 import { ResourceLibrary } from '../screens/ResourceLibrary';
+import { BuildScreen } from '../screens/BuildScreen';
 import { OutlineEditor } from '../screens/OutlineEditor';
 import { FreeformEditor } from '../screens/FreeformEditor';
 import { ChapterEditor } from '../screens/ChapterEditor';
@@ -137,6 +138,7 @@ export const TabNavigator: React.FC = () => {
     const props = { color, size: size || 20 };
     if (route.name === 'Projects') return <FolderKanban {...props} />;
     if (route.name === 'Editor') return <BookOpen {...props} />;
+    if (route.name === 'Build') return <Hammer {...props} />;
     if (route.name === 'Resources') return <Boxes {...props} />;
     if (route.name === 'Settings') return <Settings {...props} />;
     return <Text />;
@@ -164,6 +166,7 @@ export const TabNavigator: React.FC = () => {
     >
       <Tab.Screen name="Projects" component={ProjectStackScreen} options={{ tabBarLabel: '项目' }} />
       <Tab.Screen name="Editor" component={EditorStackScreen} options={{ tabBarLabel: '写作' }} />
+      <Tab.Screen name="Build" component={BuildScreen} options={{ tabBarLabel: '构建' }} />
       <Tab.Screen name="Resources" component={ResourceLibrary} options={{ tabBarLabel: '资料' }} />
       <Tab.Screen name="Settings" component={SettingsStackScreen} options={{ tabBarLabel: '设置' }} />
     </Tab.Navigator>
