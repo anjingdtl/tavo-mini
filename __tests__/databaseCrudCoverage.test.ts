@@ -491,6 +491,34 @@ describe('database CRUD contract coverage', () => {
     )).toBe(false);
   });
 
+  // Parent switch display must read project_collection_settings only.
+  // Deriving from child project_resources made the toggle appear stuck OFF
+  // when a collection's items were unlinked or all disabled for the project.
+  test('collection list enabled_for_project comes from parent settings not children', async () => {
+    const fake = createCrudDatabase();
+    database.__setDatabaseForTest(fake.database);
+
+    await database.getCharacterCollections(1);
+    await database.getWorldbookCollections(1);
+    await database.getNoteCollections(1);
+
+    const listSql = fake.executed.filter(
+      sql =>
+        sql.includes('FROM character_collections') ||
+        sql.includes('FROM worldbook_collections') ||
+        sql.includes('FROM note_collections'),
+    );
+    expect(listSql.length).toBeGreaterThanOrEqual(3);
+    for (const sql of listSql) {
+      expect(sql).toMatch(/COALESCE\s*\(\s*pcs\.enabled\s*,\s*1\s*\)/i);
+      expect(sql).not.toMatch(
+        /SUM\s*\(\s*CASE\s+WHEN\s+pr\.enabled/i,
+      );
+      // Parent list queries no longer join project_resources for display.
+      expect(sql).not.toMatch(/JOIN\s+project_resources\s+pr/i);
+    }
+  });
+
   // 回归守护：删除单个世界书条目只能删该条目本身，绝不能把所属合集一起删掉。
   test('deleting a single worldbook entry never deletes its collection', async () => {
     const fake = createCrudDatabase();

@@ -6,14 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.20-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.21-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.20** · 数据库 Schema：**18** · 最低 Android API：**24**
+当前版本：**V2.5.21** · 数据库 Schema：**18** · 最低 Android API：**24**
+
+`V2.5.21` 修正父合集「合集启用」开关的展示来源：只读项目级 `project_collection_settings`，不再被子资料启用状态反向推导，避免跨项目时开关弹回关闭；AI 一键生成提示词框可在高度上限内滚动。Schema 仍为 18。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.5.20` 将角色、世界书和笔记的项目级父合集开关独立持久化，关闭父级不会覆盖子资料状态，空合集也能保存项目专属配置；资料库项目切换的迟到加载被丢弃，并发流水线通知按任务归属更新。Schema 升级至 18，无新增远程调用。详见 [CHANGELOG](CHANGELOG.md)。
 
@@ -107,9 +109,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-目标正式产物：`dist/apk/release/ShineWriter-V2.5.20-release.apk`，`versionName=V2.5.20`，`versionCode=2052000`。
+目标正式产物：`dist/apk/release/ShineWriter-V2.5.21-release.apk`，`versionName=V2.5.21`，`versionCode=2052100`。
 
-本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收，并在 `emulator-5554` 上完成 V2.5.19→V2.5.20 原地升级启动验证。
+本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收，并在 `emulator-5554` 上完成 Debug 穿越与 V2.5.21 安装启动验证。
 
 **实测验收数据**：
 
@@ -119,9 +121,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
 | Number of signers | 1 |
 | zipalign -c | Verification successful |
-| versionName / versionCode | V2.5.20 / 2052000 |
-| 文件大小 | 37,489,655 bytes（35.75 MB） |
-| APK SHA-256 | `75120CD26DC5945F84A0DAD4635244C2ADEFF8E64B47274D0F81A98BA965CC27` |
+| versionName / versionCode | V2.5.21 / 2052100 |
+| 文件大小 | 37,488,311 bytes（35.75 MB） |
+| APK SHA-256 | `DBF37A46B04513F19B5A4091F7474FB48109DDFF57FF89FFFC2A65371549208A` |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -222,7 +224,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.5.20** with database Schema **18**. Project-level collection switches are persisted without overwriting per-resource choices, stale resource-library loads are ignored after a project change, and concurrent pipeline notifications retain their task ownership. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.5.21** with database Schema **18**. Parent collection switches are displayed from `project_collection_settings` only (not derived from child resource rows). Project-level collection preferences remain independent of per-resource choices; stale resource-library loads are ignored after a project change; concurrent pipeline notifications retain task ownership. Story memory uses a checkpoint architecture (smart interval, typically every 3 chapters) with Checkpoint + Pending Bridge + Seam context. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 

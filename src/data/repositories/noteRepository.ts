@@ -406,19 +406,17 @@ export async function getNoteCollections(projectId?: number): Promise<any[]> {
        ORDER BY nc.id DESC`,
     );
   }
+  // Parent switch is project_collection_settings only (default ON).
+  // Child note project_resources no longer drive the parent toggle display.
   return all(
     `SELECT nc.*, COUNT(n.id) AS note_count,
-            CASE WHEN COALESCE(pcs.enabled, 1) = 0 THEN 0
-                 WHEN COUNT(n.id) = 0 THEN 1
-                 WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
-                 ELSE 0 END AS enabled_for_project
+            COALESCE(pcs.enabled, 1) AS enabled_for_project
      FROM note_collections nc
      LEFT JOIN notes n ON n.collection_id = nc.id
-     LEFT JOIN project_resources pr ON pr.resource_id = n.id AND pr.resource_type = 'note' AND pr.project_id = ?
      LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'note' AND pcs.collection_id = nc.id
      GROUP BY nc.id, pcs.enabled
      ORDER BY nc.id DESC`,
-    [projectId, projectId],
+    [projectId],
   );
 }
 

@@ -75,20 +75,19 @@ export async function getWorldbookCollections(
   if (!projectId) {
     return all<Row>('SELECT * FROM worldbook_collections ORDER BY id DESC');
   }
+  // Parent switch is project_collection_settings only (default ON).
+  // Independent of per-entry project_resources so empty / all-disabled
+  // collections still show and persist the parent preference correctly.
   return all<Row>(
     `SELECT wc.*, COUNT(w.id) AS entry_count,
             COALESCE(SUM(COALESCE(w.estimated_tokens, 0)), 0) AS calculated_estimated_tokens,
-            CASE WHEN COALESCE(pcs.enabled, 1) = 0 THEN 0
-                 WHEN COUNT(w.id) = 0 THEN 1
-                 WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
-                 ELSE 0 END AS enabled_for_project
+            COALESCE(pcs.enabled, 1) AS enabled_for_project
      FROM worldbook_collections wc
      LEFT JOIN worldbook_entries w ON w.collection_id = wc.id
-     LEFT JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook' AND pr.project_id = ?
      LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'worldbook' AND pcs.collection_id = wc.id
      GROUP BY wc.id, pcs.enabled
      ORDER BY wc.id DESC`,
-    [projectId, projectId],
+    [projectId],
   );
 }
 

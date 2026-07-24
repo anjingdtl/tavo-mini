@@ -6,6 +6,18 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.5.21] - 2026-07-24
+
+### Fixed
+
+- **父合集开关展示与持久化一致性**：角色 / 世界书 / 笔记合集的「合集启用」开关改为只读 `project_collection_settings`（默认开启），不再用子资料 `project_resources` 聚合结果推导。修复跨项目查看时开关被显示为关闭、再次打开后仍弹回关闭的问题；空合集与全部子项停用时父开关也能正确保持。
+- **AI 生成提示词框滚动**：资料库 AI 一键生成弹窗的提示词输入框显式启用 `scrollEnabled`，配合高度上限，长提示词可在框内滚动且不把按钮顶出屏幕。
+
+### Tests
+
+- 新增合集列表 SQL 契约：`enabled_for_project` 必须来自 `COALESCE(pcs.enabled, 1)`，禁止再 join/SUM 子资源启用状态。
+- emulator-5554 穿越回归：首启 Schema 18、双项目、合集开关、AI 弹窗、章节编辑器、默认预设、笔记/世界书入口。
+
 ## [2.5.20] - 2026-07-23
 
 ### Fixed
