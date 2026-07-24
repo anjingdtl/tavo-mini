@@ -115,10 +115,16 @@ describe('constructionAiGenerator', () => {
   });
 
   describe('mode: character_from_worldbook', () => {
-    it('embeds the worldbook source snapshot into the user prompt', () => {
+    it('embeds all worldbook source semantics into the user prompt', () => {
       const snapshot = buildWorldbookSourceSnapshot({
         name: '雾港纪事',
-        entries: [{ keys: ['雾港'], content: '海雾港口。' }],
+        entries: [{
+          keyword_primary: '雾港',
+          keyword_secondary: '海雾港, 港口',
+          content: '海雾港口。',
+          comment: '核心地点',
+          constant: 1,
+        }],
       });
       const { messages } = buildConstructionMessages({
         mode: 'character_from_worldbook',
@@ -129,6 +135,9 @@ describe('constructionAiGenerator', () => {
       const user = messages.find(m => m.role === 'user')!.content;
       expect(user).toContain('雾港纪事');
       expect(user).toContain('海雾港口');
+      expect(user).toContain('海雾港、港口');
+      expect(user).toContain('核心地点');
+      expect(user).toContain('常驻：是');
       expect(user).toContain('补充需求：设计一位机关师');
     });
   });
@@ -185,6 +194,31 @@ describe('constructionAiGenerator', () => {
       ).rejects.toThrow('缺少角色名称');
     });
 
+    it('rejects a character response that omits required fields instead of fabricating blanks', async () => {
+      (callLLMResult as jest.Mock).mockResolvedValue({
+        text: JSON.stringify({ name: '沈砚', description: '机关师' }),
+      });
+      await expect(
+        generateConstruction(
+          { mode: 'character_independent', theme: 'x' },
+          { maxTokens: 1000 },
+        ),
+      ).rejects.toThrow('缺少或错误填写字段');
+    });
+
+    it('rejects a length-truncated response even if its JSON is otherwise valid', async () => {
+      (callLLMResult as jest.Mock).mockResolvedValue({
+        text: CHARACTER_JSON,
+        finishReason: 'length',
+      });
+      await expect(
+        generateConstruction(
+          { mode: 'character_independent', theme: 'x' },
+          { maxTokens: 1000 },
+        ),
+      ).rejects.toThrow('输出因长度限制被截断');
+    });
+
     it('rejects a worldbook whose entry count does not match', async () => {
       (callLLMResult as jest.Mock).mockResolvedValue({
         text: JSON.stringify({
@@ -219,6 +253,30 @@ describe('constructionAiGenerator', () => {
           { maxTokens: 4096 },
         ),
       ).rejects.toThrow('重复主触发词');
+    });
+
+    it('preserves compatible boolean forms for worldbook entries', async () => {
+      const response = JSON.stringify({
+        name: '雾港',
+        entries: [
+          { keys: ['雾港'], content: '港口。', constant: 'true', enabled: 'false' },
+          { keys: ['行会'], content: '组织。', constant: 1, enabled: 1 },
+        ],
+      });
+      (callLLMResult as jest.Mock).mockResolvedValue({ text: response });
+      const artifact = await generateConstruction(
+        { mode: 'worldbook_independent', entryCount: 2 },
+        { maxTokens: 4096 },
+      );
+      if (artifact.kind !== 'worldbook') throw new Error('expected worldbook');
+      expect(artifact.lorebook.data.entries[0]).toMatchObject({
+        constant: true,
+        enabled: false,
+      });
+      expect(artifact.lorebook.data.entries[1]).toMatchObject({
+        constant: true,
+        enabled: true,
+      });
     });
 
     it('propagates cancellation from the LLM layer without producing an artifact', async () => {
