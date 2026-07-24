@@ -89,6 +89,9 @@ dist/
 test-screenshots/
 test-logs/
 
+# 本地内部进度文档（含穿测细节/设备标识/模型配置/token 数据等内部信息，不入库）
+PROGRESS-INTERNAL.md
+
 # 本地调试日志
 push-cleanup.log
 
