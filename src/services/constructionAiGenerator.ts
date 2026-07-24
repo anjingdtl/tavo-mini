@@ -66,6 +66,16 @@ function asStringArray(value: unknown): string[] {
   return s ? [s] : [];
 }
 
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  if (value === true || value === 1 || value === 'true') return true;
+  if (value === false || value === 0 || value === 'false') return false;
+  return fallback;
+}
+
+function hasOwnField(source: Record<string, unknown>, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(source, field);
+}
+
 /** 把模型可能返回的多种关键词形态归一化为字符串数组。 */
 function normalizeKeys(value: unknown): string[] {
   if (Array.isArray(value)) {
@@ -125,8 +135,21 @@ export function buildWorldbookSourceSnapshot(
       const keys = normalizeKeys(
         entry.keys ?? entry.keyword_primary ?? entry.key,
       );
+      const secondaryKeys = normalizeKeys(
+        entry.secondary_keys ?? entry.keyword_secondary ?? entry.keysecondary,
+      );
       const content = asString(entry.content);
-      return `${index + 1}. 触发词：${keys.join('、') || '（无）'}\n${content}`;
+      const comment = asString(entry.comment ?? entry.name);
+      const constant = asBoolean(entry.constant, false);
+      return [
+        `${index + 1}. 主触发词：${keys.join('、') || '（无）'}`,
+        secondaryKeys.length ? `次触发词：${secondaryKeys.join('、')}` : '',
+        comment ? `说明：${comment}` : '',
+        constant ? '常驻：是' : '',
+        `正文：${content}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
     })
     .join('\n');
   return `${header}\n${body}`;
@@ -300,6 +323,19 @@ export function estimateSourceSnapshotTokens(text: string): number {
 function parseCharacterResponse(text: string): CharacterArtifact {
   const raw = parseJsonObject(text);
   const source = unwrapData(raw);
+  if (!hasOwnField(source, 'name') || !asString(source.name)) {
+    throw new Error('生成的角色卡缺少角色名称。');
+  }
+  for (const field of CHARACTER_STRING_FIELDS) {
+    if (!hasOwnField(source, field) || typeof source[field] !== 'string') {
+      throw new Error(`生成的角色卡缺少或错误填写字段「${field}」。`);
+    }
+  }
+  for (const field of ['tags', 'alternate_greetings']) {
+    if (!hasOwnField(source, field) || !Array.isArray(source[field])) {
+      throw new Error(`生成的角色卡缺少或错误填写数组字段「${field}」。`);
+    }
+  }
   const data: CharaCardV3Data = {
     name: '',
     description: '',
@@ -324,9 +360,6 @@ function parseCharacterResponse(text: string): CharacterArtifact {
   const version = asString(source.character_version);
   if (version) data.character_version = version;
 
-  if (!data.name.trim()) {
-    throw new Error('生成的角色卡缺少角色名称。');
-  }
   if (!data.description.trim() && !data.personality.trim()) {
     throw new Error('生成的角色卡缺少简介或性格等核心文本。');
   }
@@ -401,8 +434,8 @@ function parseWorldbookResponse(
       secondary_keys: secondary,
       content,
       comment: asString(record.comment ?? record.name),
-      enabled: record.enabled !== false,
-      constant: record.constant === true,
+      enabled: asBoolean(record.enabled, true),
+      constant: asBoolean(record.constant, false),
       insertion_order: idx,
     };
   });
@@ -461,6 +494,12 @@ export async function generateConstruction(
     options.signal,
   );
 
+  if (options.signal?.aborted) {
+    throw new Error('已取消生成。');
+  }
+  if (result.finishReason === 'length') {
+    throw new Error('模型输出因长度限制被截断，请提高输出预留后重试。');
+  }
   if (!result.text || !result.text.trim()) {
     throw new Error('模型未返回生成内容。');
   }
