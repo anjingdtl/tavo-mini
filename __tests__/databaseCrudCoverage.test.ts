@@ -490,6 +490,30 @@ describe('database CRUD contract coverage', () => {
       sql.includes("resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)"),
     )).toBe(false);
   });
+
+  // 回归守护：删除单个世界书条目只能删该条目本身，绝不能把所属合集一起删掉。
+  test('deleting a single worldbook entry never deletes its collection', async () => {
+    const fake = createCrudDatabase();
+    database.__setDatabaseForTest(fake.database);
+
+    await database.deleteWorldbookEntry(42);
+
+    const sql = fake.executed.map(s => s.toLowerCase());
+    // 1) 确实删除了指定条目
+    expect(
+      sql.some(s => s.startsWith('delete from worldbook_entries where id =')),
+    ).toBe(true);
+    // 2) 清理了该条目的项目关联
+    expect(sql.some(s => s.includes('delete from project_resources'))).toBe(true);
+    // 3) 关键断言：没有任何删除合集的语句
+    expect(sql.some(s => s.includes('delete from worldbook_collections'))).toBe(
+      false,
+    );
+    // 4) 只更新（而非删除）合集的 token 预估
+    expect(
+      sql.some(s => s.startsWith('update worldbook_collections set')),
+    ).toBe(true);
+  });
 });
 
 function baseLocalModel() {
