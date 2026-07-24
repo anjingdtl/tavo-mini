@@ -6,6 +6,22 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **「构建」模块**：底部导航新增第五个 Tab「构建」（顺序：项目｜写作｜构建｜资料｜设置）。用当前在线 OpenAI 兼容 LLM 独立生成可移植的角色卡（`chara_card_v3`）与多条目世界书合集（`lorebook_v3`），支持三种模式：独立构建、基于手机里的世界书 JSON 构建角色卡、基于角色卡 JSON/PNG 构建世界书。每次构建提供 1%–15%（默认 5%）的输出预留滑块，按 `C / M / S` 公式计算输出预留与来源上下文预算，并受 `max_output_tokens` 限制；来源超预算、输出预留不足、模型返回无效 JSON、取消生成或取消保存均不产出文件或写入资料库。世界书默认 6 条（2–12 可调），生成后用现有资料库导入解析器回读校验；角色卡 / 世界书经 Android 系统保存窗口写入用户选择的手机目录，须在「资料」手动导入并启用后才参与写作。首版仅支持在线模型，本地 llama.cpp 配置会被明确拦截并引导前往 LLM 设置。
+- 新增服务：`src/services/construction/budget.ts`（预算纯函数）、`src/services/construction/targets.ts`（共享类型）、`src/services/constructionAiGenerator.ts`（提示词 / 解析 / 回读校验）、`src/services/constructionFileService.ts`（序列化与系统保存封装）、`src/components/ConstructionSlider.tsx`（无原生依赖的自研滑块）、`src/screens/BuildScreen.tsx`（构建流程 UI）。
+- `fileImport` 新增 `pickSourceFile` 公共方法，供构建模块模式二 / 模式三一次性读取来源文件，不写入资料库。
+
+### Changed
+
+- **资料库 AI 生成入口下线**：移除「资料」模块中角色卡与世界书条目的「AI 一键生成」按钮、提示词弹窗与回填逻辑（删除 `src/services/resourceAiGenerator.ts`）；手工维护、导入导出与合集管理保持不变。AI 生成能力统一收敛到「构建」模块，且不再直接回填资料库。
+- 底部导航由 4 Tab 增至 5 Tab，新增「构建」Tab（`Hammer` 图标）。
+- 公共 `Button` 组件新增可选 `testID` 属性。
+
+### Tests
+
+- 新增 `constructionBudget`（预算公式 / 安全余量 / 最低预留 / 可生成性 / M 与上下文上限）、`constructionAiGenerator`（四种模式提示词与场景、角色卡 v3 封装、世界书条目数与重复主触发词、无效 JSON、空返回、取消信号透传、Token 估算）、`constructionFileService`（命名与非法字符、保存成功、用户取消不报成功、真实错误抛出）、`BuildScreen`（在线 LLM 前置校验与前往设置、三模式生成与预览、取消生成、无效 JSON、来源格式错误、取消保存不报成功、保存成功提示、默认预算展示）与资料库 AI 入口已删除的回归测试。
+
 ## [2.5.21] - 2026-07-24
 
 ### Fixed
