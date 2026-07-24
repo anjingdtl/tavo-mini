@@ -4,7 +4,7 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.5.22] - 2026-07-25
 
 ### Added
 
@@ -21,6 +21,7 @@ numbers follow [Semantic Versioning](https://semver.org/).
 ### Tests
 
 - 新增 `constructionBudget`（预算公式 / 安全余量 / 最低预留 / 可生成性 / M 与上下文上限）、`constructionAiGenerator`（四种模式提示词与场景、角色卡 v3 封装、世界书条目数与重复主触发词、无效 JSON、空返回、取消信号透传、Token 估算）、`constructionFileService`（命名与非法字符、保存成功、用户取消不报成功、真实错误抛出）、`BuildScreen`（在线 LLM 前置校验与前往设置、三模式生成与预览、取消生成、无效 JSON、来源格式错误、取消保存不报成功、保存成功提示、默认预算展示）与资料库 AI 入口已删除的回归测试。
+- 穿越回归（V2.5.22 Debug）：在线 LLM 前置校验（本地 llama.cpp / 配置不完整被拦截并引导设置）、预算公式实测一致、输出预留不足拦截（提示提高预留比例）、自研滑块首次点击精确设值（硬化后不再跳到最大值）、模型输出长度截断检测（不静默返回半成品）、资料库「AI 一键生成」入口已确认下线、深色主题切换、项目 CRUD、章节编辑器加载。结论：未发现代码缺陷。
 
 ## [2.5.21] - 2026-07-24
 
