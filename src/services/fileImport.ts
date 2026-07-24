@@ -339,6 +339,16 @@ async function pickLocalFile(allowedTypes: string[]): Promise<{ localPath: strin
   };
 }
 
+/**
+ * 选择单个来源文件（构建模块模式二 / 模式三使用）。返回本地副本路径与原始文件名，
+ * 用户取消时返回 null。不写入资料库，仅用于一次性解析为构建来源快照。
+ */
+export async function pickSourceFile(
+  allowedTypes: string[],
+): Promise<PickedFile | null> {
+  return pickLocalFile(allowedTypes);
+}
+
 export interface PickedFile {
   localPath: string;
   name: string;

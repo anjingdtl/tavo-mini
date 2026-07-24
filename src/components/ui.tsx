@@ -126,6 +126,7 @@ export function Button({
   compact = false,
   flex = false,
   minWidth = 0,
+  testID,
 }: {
   label: string;
   onPress?: (event: GestureResponderEvent) => void;
@@ -135,6 +136,7 @@ export function Button({
   compact?: boolean;
   flex?: boolean;
   minWidth?: number;
+  testID?: string;
 }) {
   const { theme } = useThemeStore();
   const background =
@@ -149,6 +151,7 @@ export function Button({
   return (
     <TouchableOpacity
       accessibilityRole="button"
+      testID={testID}
       onPress={onPress}
       disabled={disabled}
       style={[
