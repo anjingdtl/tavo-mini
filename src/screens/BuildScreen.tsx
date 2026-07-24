@@ -268,9 +268,11 @@ export const BuildScreen: React.FC = () => {
 
   // ---------- 来源文件选择 ----------
   const pickWorldbookSource = async () => {
+    let copiedPath: string | null = null;
     try {
       const file = await pickSourceFile([types.json]);
       if (!file) return;
+      copiedPath = file.localPath;
       const text = await RNFS.readFile(file.localPath, 'utf8');
       const parsed = parseWorldBookJSON(text, file.name);
       const snapshot = buildWorldbookSourceSnapshot({
@@ -301,13 +303,18 @@ export const BuildScreen: React.FC = () => {
         text1: '来源格式错误',
         text2: error?.message || '无法解析该世界书文件。',
       });
+    } finally {
+      // pickSourceFile 总是把用户文件复制到 cachesDirectory；解析为快照后不再需要。
+      if (copiedPath) RNFS.unlink(copiedPath).catch(() => {});
     }
   };
 
   const pickCharacterSource = async () => {
+    let copiedPath: string | null = null;
     try {
       const file = await pickSourceFile([types.json, types.images]);
       if (!file) return;
+      copiedPath = file.localPath;
       const isPng =
         file.name.toLowerCase().endsWith('.png') ||
         file.mimeType === 'image/png';
@@ -344,6 +351,9 @@ export const BuildScreen: React.FC = () => {
         text1: '来源格式错误',
         text2: error?.message || '无法解析该角色卡文件。',
       });
+    } finally {
+      // 角色卡来源同样只保留内存中的解析快照，避免缓存文件累积。
+      if (copiedPath) RNFS.unlink(copiedPath).catch(() => {});
     }
   };
 

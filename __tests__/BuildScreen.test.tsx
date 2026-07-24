@@ -250,6 +250,7 @@ describe('BuildScreen', () => {
         }),
       );
     });
+    expect(RNFS.unlink).toHaveBeenCalledWith('/tmp/wb.json');
   });
 
   it('reads a character-card source (JSON) and shows the source summary', async () => {
@@ -267,6 +268,7 @@ describe('BuildScreen', () => {
     fireEvent.press(getByText('由角色卡'));
     fireEvent.press(await findByText('选择角色卡 JSON / PNG'));
     expect(await findByText('沈砚')).toBeTruthy();
+    expect(RNFS.unlink).toHaveBeenCalledWith('/tmp/c.json');
   });
 
   it('does not show a success toast when the user cancels the save window', async () => {
