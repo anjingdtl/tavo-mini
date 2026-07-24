@@ -6,18 +6,18 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.5.21-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.5.22-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.5.21** · 数据库 Schema：**18** · 最低 Android API：**24**
+当前版本：**V2.5.22** · 数据库 Schema：**18** · 最低 Android API：**24**
 
 `V2.5.21` 修正父合集「合集启用」开关的展示来源：只读项目级 `project_collection_settings`，不再被子资料启用状态反向推导，避免跨项目时开关弹回关闭；AI 一键生成提示词框可在高度上限内滚动。Schema 仍为 18。详见 [CHANGELOG](CHANGELOG.md)。
 
-`[预览]「构建」模块`：底部导航新增第五个 Tab「构建」（项目｜写作｜构建｜资料｜设置），用当前在线 OpenAI 兼容 LLM 独立生成可移植的角色卡（`chara_card_v3`）与多条目世界书合集（`lorebook_v3`）。支持三种模式——独立构建、基于手机里的世界书 JSON 构建角色卡、基于角色卡 JSON/PNG 构建世界书；提供 1%–15%（默认 5%）的输出预留滑块，按上下文容量与 `max_output_tokens` 计算预算，超预算或预留不足时禁止静默截断。产物保存到手机后，需在「资料」中手动导入并启用才会参与写作；原资料库的「AI 一键生成」入口已下线并迁移至此。详见 [CHANGELOG](CHANGELOG.md)。
+`V2.5.22`「构建」模块正式上线：底部导航新增第五个 Tab「构建」（项目｜写作｜构建｜资料｜设置），用当前在线 OpenAI 兼容 LLM 独立生成可移植的角色卡（`chara_card_v3`）与多条目世界书合集（`lorebook_v3`）。支持三种模式——独立构建、基于手机里的世界书 JSON 构建角色卡、基于角色卡 JSON/PNG 构建世界书；提供 1%–15%（默认 5%）的输出预留滑块，按上下文容量与 `max_output_tokens` 计算预算，超预算或预留不足时禁止静默截断。产物保存到手机后，需在「资料」中手动导入并启用才会参与写作；原资料库的「AI 一键生成」入口已下线并迁移至此。穿越回归验证：在线 LLM 前置校验、预算公式实测一致、预留不足拦截、自研滑块首次点击精确设值（硬化后不跳最大值）、模型输出截断检测、资料库 AI 入口下线、主题切换、项目与章节编辑全部通过，未发现代码缺陷。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.5.20` 将角色、世界书和笔记的项目级父合集开关独立持久化，关闭父级不会覆盖子资料状态，空合集也能保存项目专属配置；资料库项目切换的迟到加载被丢弃，并发流水线通知按任务归属更新。Schema 升级至 18，无新增远程调用。详见 [CHANGELOG](CHANGELOG.md)。
 
