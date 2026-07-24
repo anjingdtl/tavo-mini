@@ -55,19 +55,18 @@ export async function getCharacterCollections(
   if (!projectId) {
     return all<Row>('SELECT * FROM character_collections ORDER BY id DESC');
   }
+  // Parent switch is project_collection_settings only (default ON).
+  // Do not derive from child project_resources — that made the switch
+  // appear stuck OFF when children were unlinked or all disabled.
   return all<Row>(
     `SELECT cc.*, COUNT(c.id) AS character_count,
-            CASE WHEN COALESCE(pcs.enabled, 1) = 0 THEN 0
-                 WHEN COUNT(c.id) = 0 THEN 1
-                 WHEN SUM(CASE WHEN pr.enabled = 1 THEN 1 ELSE 0 END) > 0 THEN 1
-                 ELSE 0 END AS enabled_for_project
+            COALESCE(pcs.enabled, 1) AS enabled_for_project
      FROM character_collections cc
      LEFT JOIN characters c ON c.collection_id = cc.id
-     LEFT JOIN project_resources pr ON pr.resource_id = c.id AND pr.resource_type = 'character' AND pr.project_id = ?
      LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'character' AND pcs.collection_id = cc.id
      GROUP BY cc.id, pcs.enabled
      ORDER BY cc.id DESC`,
-    [projectId, projectId],
+    [projectId],
   );
 }
 

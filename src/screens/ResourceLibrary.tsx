@@ -2184,6 +2184,7 @@ export const ResourceLibrary: React.FC = () => {
                   : '例如：设计一位表面温和、擅长机关术的反派角色'
               }
               multiline
+              scrollEnabled
               inputStyle={styles.aiPromptInput}
               editable={!generatingResource}
             />
