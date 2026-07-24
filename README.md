@@ -17,6 +17,8 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 
 `V2.5.21` 修正父合集「合集启用」开关的展示来源：只读项目级 `project_collection_settings`，不再被子资料启用状态反向推导，避免跨项目时开关弹回关闭；AI 一键生成提示词框可在高度上限内滚动。Schema 仍为 18。详见 [CHANGELOG](CHANGELOG.md)。
 
+`[预览]「构建」模块`：底部导航新增第五个 Tab「构建」（项目｜写作｜构建｜资料｜设置），用当前在线 OpenAI 兼容 LLM 独立生成可移植的角色卡（`chara_card_v3`）与多条目世界书合集（`lorebook_v3`）。支持三种模式——独立构建、基于手机里的世界书 JSON 构建角色卡、基于角色卡 JSON/PNG 构建世界书；提供 1%–15%（默认 5%）的输出预留滑块，按上下文容量与 `max_output_tokens` 计算预算，超预算或预留不足时禁止静默截断。产物保存到手机后，需在「资料」中手动导入并启用才会参与写作；原资料库的「AI 一键生成」入口已下线并迁移至此。详见 [CHANGELOG](CHANGELOG.md)。
+
 `V2.5.20` 将角色、世界书和笔记的项目级父合集开关独立持久化，关闭父级不会覆盖子资料状态，空合集也能保存项目专属配置；资料库项目切换的迟到加载被丢弃，并发流水线通知按任务归属更新。Schema 升级至 18，无新增远程调用。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
@@ -47,6 +49,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 | ---- | ------------------------------------------------------------------------------------------- |
 | 项目 | 创建、切换和删除小说项目；支持大纲模式与自由写作模式                                        |
 | 写作 | 章节 CRUD、900ms 防抖自动保存、AI 续写/修订、草稿与版本回退、结构化故事记忆（检查点 + 重建） |
+| 构建 | 用在线 LLM 独立生成角色卡 / 多条目世界书合集；独立、由世界书、由角色卡三种模式；输出预留滑块与上下文预算；产物保存到手机，需手动导入资料库 |
 | 资料 | 角色卡 JSON/PNG 元数据导入、角色集合、世界书集合与条目、笔记资料库、预设                    |
 | AI   | OpenAI 兼容在线 API；GGUF + Android llama.cpp；四阶段流水线；Checkpoint + Pending Bridge + Seam + 增强 Episodic 检索（中文 n-gram / 实体加权 / 混合 Top-K）；自动预算配置 |
 | 语音 | 系统 TTS 与可配置语音服务；章节和选区朗读；前后台保活                                       |

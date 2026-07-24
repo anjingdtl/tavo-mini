@@ -233,6 +233,23 @@ describe('ResourceLibrary UI', () => {
     expect(container.props.style).toMatchObject({ minHeight: 240 });
   });
 
+  it('no longer exposes AI generation entry for characters or worldbook', async () => {
+    const { findByText, getByText, getAllByText, queryByText, queryByTestId } =
+      render(<ResourceLibrary />);
+    await findByText('导入角色卡');
+    fireEvent.press(getByText('打开'));
+    await findByText('角色 A');
+    fireEvent.press(getAllByText('编辑')[0]);
+
+    // AI 一键生成入口、提示词弹窗与回填逻辑已迁移到「构建」模块
+    expect(queryByText('AI 一键生成')).toBeNull();
+    expect(queryByTestId('resource-ai-prompt')).toBeNull();
+    expect(queryByText('AI 生成角色卡')).toBeNull();
+
+    fireEvent.press(getByText('世界书'));
+    expect(queryByText('AI 一键生成')).toBeNull();
+  });
+
   it('keeps a saved worldbook primary keyword when reopening and saving the entry', async () => {
     (db.getWorldbookCollections as jest.Mock).mockResolvedValue([
       { id: 5, name: '港口设定', enabled: 1, entry_count: 1, estimated_tokens: 12, max_tokens: 50000 },
