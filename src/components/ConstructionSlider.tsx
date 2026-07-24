@@ -24,6 +24,26 @@ function clamp(v: number, min: number, max: number): number {
   return v;
 }
 
+/**
+ * 将页面绝对坐标映射为离散滑块值。
+ * 轨道尚未完成 measure 时返回 null；调用方必须等待真实几何信息，不能以
+ * 默认坐标 { x: 0, width: 1 } 进行猜测，否则首次点击会被错误夹到最大值。
+ */
+export function valueFromTrackPosition(
+  pageX: number,
+  geometry: { x: number; width: number },
+  min: number,
+  max: number,
+  step = 1,
+): number | null {
+  if (!Number.isFinite(geometry.width) || geometry.width <= 0) return null;
+  const range = Math.max(1, max - min);
+  const fraction = clamp((pageX - geometry.x) / geometry.width, 0, 1);
+  const raw = min + fraction * range;
+  const stepped = Math.round(raw / step) * step;
+  return clamp(stepped, min, max);
+}
+
 export const ConstructionSlider: React.FC<ConstructionSliderProps> = ({
   min,
   max,
@@ -36,39 +56,46 @@ export const ConstructionSlider: React.FC<ConstructionSliderProps> = ({
   const { theme } = useThemeStore();
   const trackRef = useRef<View>(null);
   // 通过 measure 拿到的轨道绝对起点与宽度（拖拽映射需要绝对坐标）。
-  const geometryRef = useRef<{ x: number; width: number }>({ x: 0, width: 1 });
+  const geometryRef = useRef<{ x: number; width: number }>({ x: 0, width: 0 });
+  const onChangeRef = useRef(onChange);
+  const disabledRef = useRef(disabled);
+  onChangeRef.current = onChange;
+  disabledRef.current = disabled;
   const [layoutWidth, setLayoutWidth] = useState(0);
 
   const range = Math.max(1, max - min);
 
-  const valueFromPageX = (pageX: number): number => {
-    const { x, width } = geometryRef.current;
-    const safeWidth = width > 0 ? width : 1;
-    const fraction = clamp((pageX - x) / safeWidth, 0, 1);
-    const raw = min + fraction * range;
-    const stepped = Math.round(raw / step) * step;
-    return clamp(stepped, min, max);
+  const updateFromPageX = (pageX: number) => {
+    const nextValue = valueFromTrackPosition(
+      pageX,
+      geometryRef.current,
+      min,
+      max,
+      step,
+    );
+    if (nextValue !== null) onChangeRef.current(nextValue);
   };
 
-  const measureTrack = () => {
+  const measureTrack = (initialPageX?: number) => {
     const node = trackRef.current;
     if (!node) return;
-    node.measure((_ox, _oy, w, _h, pageX) => {
-      geometryRef.current = { x: pageX, width: w };
+    node.measure((_ox, _oy, w, _h, trackPageX) => {
+      geometryRef.current = { x: trackPageX, width: w };
       if (w > 0 && w !== layoutWidth) setLayoutWidth(w);
+      // measure 为异步回调；在这里才使用首次点击坐标，确保不会跳到最大值。
+      if (initialPageX !== undefined) updateFromPageX(initialPageX);
     });
   };
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => !disabled,
-      onMoveShouldSetPanResponder: () => !disabled,
+      onStartShouldSetPanResponder: () => !disabledRef.current,
+      onMoveShouldSetPanResponder: () => !disabledRef.current,
       onPanResponderGrant: event => {
-        measureTrack();
-        onChange(valueFromPageX(event.nativeEvent.pageX));
+        measureTrack(event.nativeEvent.pageX);
       },
       onPanResponderMove: event => {
-        onChange(valueFromPageX(event.nativeEvent.pageX));
+        updateFromPageX(event.nativeEvent.pageX);
       },
       onPanResponderTerminationRequest: () => true,
     }),
@@ -101,7 +128,10 @@ export const ConstructionSlider: React.FC<ConstructionSliderProps> = ({
     >
       <View
         ref={trackRef}
-        onLayout={event => setLayoutWidth(event.nativeEvent.layout.width)}
+        onLayout={event => {
+          setLayoutWidth(event.nativeEvent.layout.width);
+          measureTrack();
+        }}
         style={[styles.track, trackStyle]}
         {...panResponder.panHandlers}
       >
