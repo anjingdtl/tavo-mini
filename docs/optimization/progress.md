@@ -16,6 +16,15 @@
 - `blocked`: requires a decision or external input
 - `verified`: implementation and required checks completed
 
+## V2.5.21 parent-collection display + AI prompt scroll — verified (2026-07-24)
+
+- Emulator traversal (`emulator-5554`, Android 17 / x86_64) on Debug V2.5.20 first installed and exercised recent two-day paths: cold start, dual projects, character collection create/toggle, AI 一键生成 modal + long prompt height cap, chapter editor, default preset, notes/worldbook tabs, empty-prompt generate guard.
+- Bug found: parent collection switch `enabled_for_project` still derived from child `project_resources` SUM, so a collection with items unlinked (or all disabled) for the current project showed OFF and could not stick ON after V2.5.20 made parent settings independent.
+- Fixed: character / worldbook / note collection list queries now use `COALESCE(pcs.enabled, 1)` only; AI prompt Field sets `scrollEnabled` with the existing max-height cap.
+- Regression: new CRUD SQL contract test + resource library / v17→v18 suites passed; full `npm run verify` passed (139 suites / 1027 tests passed; 1 suite / 3 tests skipped; lint 0 errors / 9 existing warnings).
+- Emulator after-fix: V2.5.21 debug install; P2 parent switch default ON; OFF sticky across project switch; P1 independent ON; back ON sticky.
+- Release APK acceptance: `dist/apk/release/ShineWriter-V2.5.21-release.apk`, 37,488,311 bytes, SHA-256 `DBF37A46B04513F19B5A4091F7474FB48109DDFF57FF89FFFC2A65371549208A`; official certificate matched, one signer and v2 signature passed, `zipalign -P 16` passed, AAPT reported `com.shinewriter` / `V2.5.21` / `2052100`.
+
 ## V2.5.20 project collection and concurrent-notification repair — verified (2026-07-23)
 
 - Fixed: project-level parent collection settings for characters, world books, and notes now persist independently in Schema 18. Parent off/on no longer overwrites per-resource choices, including for empty collections; contextual queries exclude a disabled parent collection. Deleting a collection removes its settings in the same transaction.

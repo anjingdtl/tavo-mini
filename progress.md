@@ -1,7 +1,13 @@
 # ShineWriter 流水线修订 — 进度交接
 
-> 最后更新：2026-07-21（V2.5.17 发版完成）
-> 状态：**全部完成**。Phase 0–4 代码 + 914 单元测试 + 模拟器 4 模式 E2E + LLM 设置弹窗同步流水线 max_tokens + V2.5.17 Release APK 构建 + commit + push。
+> 最后更新：2026-07-24（V2.5.21 发版完成）
+> 状态：**V2.5.21 已完成**。近两天穿越测试发现父合集开关展示与 `project_collection_settings` 不一致；已修复并回归，Release APK 已构建。流水线 Phase 0–4 仍为完成态。
+
+## V2.5.21（2026-07-24）
+
+- 模拟器 `emulator-5554` 安装 Debug，穿越：首启 / 双项目 / 合集开关 / AI 生成弹窗 / 章节编辑 / 默认预设 / 笔记与世界书。
+- 修复：父合集 `enabled_for_project` 仅读 `project_collection_settings`；AI 提示词框 `scrollEnabled`。
+- 详情见 `docs/optimization/progress.md`、`CHANGELOG.md`、`README.md`。
 
 ---
 
