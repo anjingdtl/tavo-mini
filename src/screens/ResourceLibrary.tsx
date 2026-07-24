@@ -7,6 +7,7 @@ import React, {
 } from 'react';
 import {
   Alert,
+  Dimensions,
   FlatList,
   Image,
   Modal,
@@ -76,6 +77,12 @@ import {
   generateResourceFromPrompt,
   type AiGeneratedResourceKind,
 } from '../services/resourceAiGenerator';
+
+// AI 生成提示词输入框的高度上限：占屏幕高度的 40%，超出后内部滚动，
+// 避免长提示词把弹窗撑到屏幕外（issue: 提示词框体不能滑动）。
+const MAX_AI_PROMPT_INPUT_HEIGHT = Math.round(
+  Dimensions.get('window').height * 0.4,
+);
 
 type ResourceTab = 'characters' | 'worldbook' | 'notes' | 'presets';
 type EditorKind =
@@ -2526,6 +2533,7 @@ const styles = StyleSheet.create({
   promptModal: {
     width: '90%',
     maxWidth: 520,
+    maxHeight: '88%',
     alignSelf: 'center',
     borderRadius: 16,
     padding: spacing.lg,
@@ -2540,7 +2548,11 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   largeInput: { minHeight: 160, textAlignVertical: 'top' },
-  aiPromptInput: { minHeight: 150, textAlignVertical: 'top' },
+  aiPromptInput: {
+    minHeight: 150,
+    maxHeight: MAX_AI_PROMPT_INPUT_HEIGHT,
+    textAlignVertical: 'top',
+  },
   characterImage: {
     width: 128,
     height: 180,
