@@ -103,3 +103,20 @@ export function navigateToPipelineTaskCenter(): void {
     // ignore
   }
 }
+
+/**
+ * 从「构建」Tab 跳到设置里的 LLM 设置页（嵌套在 SettingsStack 下，需要先切 Tab）。
+ */
+export function navigateToLLMSettings(): void {
+  if (!navigationRef.isReady()) return;
+  try {
+    navigationRef.dispatch(
+      CommonActions.navigate({
+        name: 'Settings',
+        params: { screen: 'LLMSettings', initial: false },
+      } as never),
+    );
+  } catch {
+    // ignore
+  }
+}
