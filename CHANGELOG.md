@@ -4,6 +4,20 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.6.3] - 2026-07-25
+
+### Changed
+
+- **世界书默认常驻（构建 / 导入 / 启用）**：
+  1. 「构建」模块生成的世界书条目强制 `constant: true`，提示词与解析均按整本常驻输出。
+  2. 资料库导入世界书默认常驻；仅源文件显式 `constant: false/0` 时保留非常驻。
+  3. 项目侧打开世界书合集或单条「当前项目使用」时，后端同步将对应条目 `constant=1`。
+  4. 新建世界书条目默认常驻。
+
+### Tests
+
+- 构建产物全常驻、导入默认常驻 / 显式 false 保留、启用子条目写 constant 的单元测试覆盖。
+
 ## [2.6.2] - 2026-07-25
 
 ### Fixed

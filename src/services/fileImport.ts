@@ -155,7 +155,14 @@ export function parseWorldBookJSON(jsonText: string, sourceName?: string): World
       const keys = normalizeKeys(entry.keys ?? entry.key ?? entry.keyword ?? entry.keyword_primary);
       const secondaryKeys = normalizeKeys(entry.secondary_keys ?? entry.keysecondary ?? entry.keyword_secondary);
       const content = String(entry.content || '').trim();
-      const constant = entry.constant === true || entry.constant === 1 || keys.length === 0 ? 1 : 0;
+      // 资料库导入默认常驻：仅当源文件显式 constant=false/0 时才保留非常驻。
+      // 无 keys 的条目亦视为常驻（与构建模块默认策略一致）。
+      const constantExplicitOff =
+        entry.constant === false ||
+        entry.constant === 0 ||
+        entry.constant === '0' ||
+        entry.constant === 'false';
+      const constant = constantExplicitOff && keys.length > 0 ? 0 : 1;
       if (!content || (keys.length === 0 && !constant)) return null;
       // 主触发词必须保留全部 keys（逗号分隔），不能只存 keys[0]：
       // 构建/导入世界书常把别称放在 keys 数组里，丢掉后扫描永远命中不了。
