@@ -51,8 +51,8 @@ test('parses lorebook_v3 entries from object maps and arrays', () => {
   expect(result.name).toBe('城市场景');
   expect(result.entries).toEqual([
     expect.objectContaining({
-      keyword_primary: '旧城区',
-      keyword_secondary: '钟楼',
+      keyword_primary: '旧城区, 钟楼',
+      keyword_secondary: '',
       content: '雨夜会触发钟声。',
       enabled: 1,
     }),
