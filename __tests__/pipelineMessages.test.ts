@@ -27,13 +27,17 @@ import type {
 const baseReviewContext: ReviewContext = {
   presetText: 'preset-content',
   characterText: 'character-content',
+  noteText: 'note-content',
+  worldbookText: 'worldbook-content',
   storyMemoryText: 'story-memory-content',
+  episodicMemoryText: 'episodic-content',
   recentBridgeText: 'recent-bridge-content',
   currentInstructionText: 'instruction-content',
   retrievalUserPrompt: 'user-prompt-content',
 };
 
 const baseFactCheckContext: FactCheckContext = {
+  presetText: 'preset-content',
   currentInstructionText: 'instruction-content',
   retrievalUserPrompt: 'user-prompt-content',
   recentBridgeText: 'recent-bridge-content',
@@ -45,11 +49,14 @@ const baseFactCheckContext: FactCheckContext = {
 };
 
 const baseProofConstraints: ProofConstraints = {
+  presetText: 'preset-content',
   currentInstructionText: 'instruction-content',
   retrievalUserPrompt: 'user-prompt-content',
   relevantCharacterConstraints: 'char-constraints',
   relevantWorldRules: 'world-rules',
   currentStoryState: 'story-state',
+  episodicMemoryText: 'episodic-content',
+  noteText: 'note-content',
   recentBridgeText: 'recent-bridge-content',
 };
 

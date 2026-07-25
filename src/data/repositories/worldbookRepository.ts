@@ -6,7 +6,6 @@ import { openDatabase } from '../connection/openDatabase';
 import {
   linkResourceToProject,
   deleteProjectResourceLinks,
-  setProjectCollectionEnabled,
   setProjectResourceEnabled,
   usageJoin,
 } from './projectRepository';
@@ -52,7 +51,24 @@ export async function setWorldbookCollectionEnabledForProject(
   if (projectId <= 0) {
     throw new Error('请先选择项目，再设置世界书合集的启用状态。');
   }
-  await setProjectCollectionEnabled(projectId, 'worldbook', collectionId, enabled);
+  // 世界书父开关是明确的级联开关：开启时让每个子条目都参与当前项目，
+  // 关闭时让全部子条目停止参与。用户随后仍可单独关闭不需要的条目。
+  // 两类写入必须在同一事务中，避免父级显示已开而子项仍沿用旧状态。
+  await executeTransaction(await openDatabase(), [
+    {
+      sql: `INSERT OR REPLACE INTO project_collection_settings
+        (project_id, resource_type, collection_id, enabled) VALUES (?, ?, ?, ?)`,
+      params: [projectId, 'worldbook', collectionId, enabled ? 1 : 0],
+    },
+    {
+      sql: `INSERT OR REPLACE INTO project_resources
+        (project_id, resource_type, resource_id, enabled)
+        SELECT ?, 'worldbook', id, ?
+        FROM worldbook_entries
+        WHERE collection_id = ?`,
+      params: [projectId, enabled ? 1 : 0, collectionId],
+    },
+  ]);
 }
 
 export async function getWorldbookEntriesByProject(

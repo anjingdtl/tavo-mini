@@ -474,7 +474,7 @@ describe('database CRUD contract coverage', () => {
     ).toHaveLength(2);
   });
 
-  test('stores parent collection switches separately from child resource switches', async () => {
+  test('worldbook parent switch cascades to child resource switches while other parent switches stay independent', async () => {
     const fake = createCrudDatabase();
     database.__setDatabaseForTest(fake.database);
 
@@ -487,7 +487,12 @@ describe('database CRUD contract coverage', () => {
     );
     expect(parentWrites).toHaveLength(3);
     expect(fake.executed.some(sql =>
-      sql.includes("resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)"),
+      sql.includes("SELECT ?, 'worldbook', id, ?") &&
+      sql.includes('FROM worldbook_entries'),
+    )).toBe(true);
+    expect(fake.executed.some(sql =>
+      sql.includes("SELECT ?, 'character', id, ?") ||
+      sql.includes("SELECT ?, 'note', id, ?"),
     )).toBe(false);
   });
 
