@@ -782,7 +782,6 @@ export const ResourceLibrary: React.FC = () => {
           keyword_secondary: editor.secondary,
           content: editor.content,
           comment: editor.comment,
-          enabled: editor.enabled ? 1 : 0,
           constant: editor.constant ? 1 : 0,
           max_tokens: maxTokens,
         });
@@ -1917,22 +1916,6 @@ export const ResourceLibrary: React.FC = () => {
                         }
                       />
                     </View>
-                    <View style={styles.usageRow}>
-                      <Text
-                        style={[
-                          styles.usageText,
-                          { color: theme.colors.textPrimary },
-                        ]}
-                      >
-                        条目启用
-                      </Text>
-                      <Switch
-                        value={editor.enabled}
-                        onValueChange={enabled =>
-                          setEditor({ ...editor, enabled })
-                        }
-                      />
-                    </View>
                   </>
                 ) : null}
                 {editor.kind === 'notes' ? (
@@ -2315,9 +2298,7 @@ function metaFor(tab: ResourceTab, item: any): string {
       item.source_type === 'png' ? 'PNG 角色卡' : 'JSON 角色卡'
     }`;
   if (tab === 'worldbook')
-    return `${item.collection_name || '未分组'} · ${
-      item.enabled ? '条目可用' : '条目停用'
-    } · ${item.content || '暂无内容'}`;
+    return `${item.collection_name || '未分组'} · ${item.content || '暂无内容'}`;
   if (tab === 'notes') return item.content || '空白笔记';
   return `${item.is_default ? '全局默认 · ' : ''}T=${item.temperature} / P=${
     item.top_p

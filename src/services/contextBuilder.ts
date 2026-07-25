@@ -1053,9 +1053,7 @@ export async function buildWorldbookContext(
   recursive = true,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   if (budget <= 0) return { text: '', items: [] };
-  const entries = ((await db.getWorldbookEntriesByProject(projectId)) as any[])
-    .filter(entry => entry.enabled !== 0 && entry.collection_enabled !== 0)
-    .sort(
+  const entries = ((await db.getWorldbookEntriesByProject(projectId)) as any[]).sort(
       (a, b) =>
         Number(a.position || 0) - Number(b.position || 0) ||
         Number(a.id || 0) - Number(b.id || 0),
