@@ -1,7 +1,22 @@
 import RNFS from 'react-native-fs';
 import { saveDocuments } from '@react-native-documents/picker';
+
+jest.mock('../src/services/database', () => ({
+  ensureDefaultCharacterCollection: jest.fn(async () => 3),
+}));
+
+jest.mock('../src/services/fileImport', () => ({
+  importCharacterFromJSON: jest.fn(async () => 42),
+  importWorldBookFromJSON: jest.fn(async () => ({
+    name: '雾港纪事',
+    entries: [{}, {}],
+    entriesImported: 2,
+  })),
+}));
+
 import {
   buildConstructionFileName,
+  importConstructionArtifactToLibrary,
   saveConstructionArtifact,
   serializeArtifact,
 } from '../src/services/constructionFileService';
@@ -9,6 +24,11 @@ import type {
   CharacterArtifact,
   WorldbookArtifact,
 } from '../src/services/construction/targets';
+import * as db from '../src/services/database';
+import {
+  importCharacterFromJSON,
+  importWorldBookFromJSON,
+} from '../src/services/fileImport';
 
 const characterArtifact: CharacterArtifact = {
   kind: 'character',
@@ -140,6 +160,47 @@ describe('constructionFileService', () => {
       await expect(
         saveConstructionArtifact(characterArtifact),
       ).rejects.toThrow('无法写入该目录');
+    });
+  });
+
+  describe('importConstructionArtifactToLibrary', () => {
+    it('imports a character card into the default collection of the project', async () => {
+      const result = await importConstructionArtifactToLibrary(
+        characterArtifact,
+        7,
+      );
+      expect(db.ensureDefaultCharacterCollection).toHaveBeenCalledWith(7);
+      expect(importCharacterFromJSON).toHaveBeenCalledWith(
+        7,
+        expect.stringContaining('"spec": "chara_card_v3"'),
+        '沈砚-角色卡.json',
+        3,
+      );
+      expect(result).toEqual({ kind: 'character', id: 42, name: '沈砚' });
+    });
+
+    it('imports a worldbook collection with entry count', async () => {
+      const result = await importConstructionArtifactToLibrary(
+        worldbookArtifact,
+        7,
+      );
+      expect(importWorldBookFromJSON).toHaveBeenCalledWith(
+        7,
+        expect.stringContaining('"spec": "lorebook_v3"'),
+      );
+      expect(result).toEqual({
+        kind: 'worldbook',
+        name: '雾港纪事',
+        entriesImported: 2,
+      });
+    });
+
+    it('rejects invalid project ids without writing', async () => {
+      await expect(
+        importConstructionArtifactToLibrary(characterArtifact, 0),
+      ).rejects.toThrow(/选择一个项目/);
+      expect(importCharacterFromJSON).not.toHaveBeenCalled();
+      expect(importWorldBookFromJSON).not.toHaveBeenCalled();
     });
   });
 });
