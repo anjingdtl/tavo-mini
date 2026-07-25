@@ -112,19 +112,32 @@ export async function createWorldbookCollection(
   name: string,
   extra: Partial<Row> = {},
 ): Promise<number> {
+  const enabled = extra.enabled === 0 ? 0 : 1;
   const result = await execute(
     await openDatabase(),
     'INSERT INTO worldbook_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     [
       0,
       name,
-      extra.enabled === 0 ? 0 : 1,
+      enabled,
       Number(extra.max_tokens || 50000),
       Number(extra.estimated_tokens || 0),
       now(),
     ],
   );
-  return result.insertId!;
+  const id = result.insertId!;
+  // 在当前项目下新建合集时，同步写入项目级合集开关。
+  // 否则 getWorldbookCollections 只能靠 COALESCE(pcs,1) 显示“开着”，
+  // 一旦用户点一下开关会先关掉，或新项目 createProject 时漏记。
+  if (projectId > 0) {
+    await execute(
+      await openDatabase(),
+      `INSERT OR REPLACE INTO project_collection_settings
+        (project_id, resource_type, collection_id, enabled) VALUES (?, ?, ?, ?)`,
+      [projectId, 'worldbook', id, enabled],
+    );
+  }
+  return id;
 }
 
 export async function updateWorldbookCollection(
