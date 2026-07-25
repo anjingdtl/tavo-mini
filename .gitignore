@@ -128,3 +128,38 @@ clound
 # Local-only PowerShell helper scripts (not source)
 scripts/probe-smtp.ps1
 scripts/zswebdav-put.ps1
+
+# 根目录散落调试产物（运行时数据库 / 模拟器截图 / logcat / UI dump / 解析脚本，不入库）
+/shine_writer*.db
+/shine_writer*.b64
+/emulator_screenshot*.png
+/emulator_test_logcat.txt
+/screen*.png
+/screenshot*.png
+/logcat*
+/ui_*.xml
+/window_dump*.xml
+/parse_dump_*.py
+
+# 穿测证据目录（含设备标识 / maestro / fault-injection 日志，内部产物，不入库）
+/docs/optimization/evidence/
+
+# 内部穿测进度文档（移至本地未跟踪文档，不入库）
+/docs/optimization/progress.md
+/docs/optimization/next-round-progress.md
+
+# 内部穿测报告与计划文档（含设备标识/模型配置/穿测数据，移至本地）
+/docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md
+/docs/V2.4.6-TEST-REPORT.md
+/docs/V2.5.0-STORY-MEMORY-TEST-REPORT.md
+/docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md
+/docs/V2.5.8-STORY-MEMORY-RETRIEVAL-REPORT.md
+/docs/V2.5.9-STORY-MEMORY-RETRIEVAL-FIX-REPORT.md
+/docs/V2.5.10-STORY-MEMORY-BOUNDARY-FIX-REPORT.md
+/docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md
+/docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md
+/docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md
+/docs/superpowers/plans/2026-07-09-llama-cpp-local-model-progress.md
+
+# 端到端穿测截图（界面含配置文本，不入库）
+/docs/e2e-screenshots/
