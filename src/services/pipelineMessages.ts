@@ -50,13 +50,17 @@ export function buildDraftMessages(
 const REVIEW_BUDGET = {
   preset: 1500,
   character: 2000,
+  note: 1200,
+  worldbook: 2000,
   storyMemory: 1500,
+  episodic: 1500,
   recentBridge: 2500,
   instruction: 600,
   userPrompt: 600,
 };
 
 const FACTCHECK_BUDGET = {
+  preset: 1200,
   instruction: 800,
   userPrompt: 600,
   recentBridge: 3000,
@@ -68,11 +72,14 @@ const FACTCHECK_BUDGET = {
 };
 
 const PROOF_BUDGET = {
+  preset: 1200,
   instruction: 600,
   userPrompt: 500,
   character: 1500,
   worldRules: 2000,
   storyState: 2000,
+  episodic: 1800,
+  note: 1000,
   recentBridge: 2500,
 };
 
@@ -94,17 +101,18 @@ function partition(blocks: Array<[string, string]>): string {
 }
 
 /**
- * Literary review messages (SPEC §8.2). Review now receives preset, character,
- * Story Memory, recent bridge and current chapter instruction so it can judge
- * character voice, style consistency and scene continuity against the same
- * source of truth the draft used.
+ * Literary review messages. Review receives every enabled draft source so it
+ * judges style and continuity against the same project view as the author.
  */
 export function buildReviewMessages(
   draftText: string,
   context: ReviewContext = {
     presetText: '',
     characterText: '',
+    noteText: '',
+    worldbookText: '',
     storyMemoryText: '',
+    episodicMemoryText: '',
     recentBridgeText: '',
     currentInstructionText: '',
     retrievalUserPrompt: '',
@@ -113,7 +121,13 @@ export function buildReviewMessages(
   const ctx: ReviewContext = {
     presetText: clip(context.presetText, REVIEW_BUDGET.preset),
     characterText: clip(context.characterText, REVIEW_BUDGET.character),
+    noteText: clip(context.noteText, REVIEW_BUDGET.note),
+    worldbookText: clip(context.worldbookText, REVIEW_BUDGET.worldbook),
     storyMemoryText: clip(context.storyMemoryText, REVIEW_BUDGET.storyMemory),
+    episodicMemoryText: clip(
+      context.episodicMemoryText,
+      REVIEW_BUDGET.episodic,
+    ),
     recentBridgeText: clip(
       context.recentBridgeText,
       REVIEW_BUDGET.recentBridge,
@@ -131,7 +145,10 @@ export function buildReviewMessages(
   const contextBlock = partition([
     ['【写作预设与文风】', ctx.presetText],
     ['【人物设定】', ctx.characterText],
+    ['【项目笔记 / 仿写资料】', ctx.noteText],
+    ['【世界书 / 世界规则】', ctx.worldbookText],
     ['【当前故事状态】', ctx.storyMemoryText],
+    ['【历史章节事件】', ctx.episodicMemoryText],
     ['【近期正文 / 衔接】', ctx.recentBridgeText],
     ['【当前章节目标】', ctx.currentInstructionText],
     ['【用户本轮要求】', ctx.retrievalUserPrompt],
@@ -184,6 +201,7 @@ export function buildReviewMessages(
 export function buildFactCheckMessages(
   draftText: string,
   context: FactCheckContext = {
+    presetText: '',
     currentInstructionText: '',
     retrievalUserPrompt: '',
     recentBridgeText: '',
@@ -196,6 +214,7 @@ export function buildFactCheckMessages(
 ): ChatMessage[] {
   // Priority order from SPEC §9.3 — each section keeps its own budget.
   const ctx: FactCheckContext = {
+    presetText: clip(context.presetText, FACTCHECK_BUDGET.preset),
     currentInstructionText: clip(
       context.currentInstructionText,
       FACTCHECK_BUDGET.instruction,
@@ -219,6 +238,7 @@ export function buildFactCheckMessages(
   };
 
   const contextBlock = partition([
+    ['【写作预设与文风】', ctx.presetText],
     ['【当前章节目标】', ctx.currentInstructionText],
     ['【用户本轮要求】', ctx.retrievalUserPrompt],
     ['【近期正文 / Pending Bridge】', ctx.recentBridgeText],
@@ -279,11 +299,14 @@ export function buildProofMessages(
   reviewText: string,
   factCheckText: string,
   constraints: ProofConstraints = {
+    presetText: '',
     currentInstructionText: '',
     retrievalUserPrompt: '',
     relevantCharacterConstraints: '',
     relevantWorldRules: '',
     currentStoryState: '',
+    episodicMemoryText: '',
+    noteText: '',
     recentBridgeText: '',
   },
 ): ChatMessage[] {
@@ -292,6 +315,7 @@ export function buildProofMessages(
   const factAvailable = !!(factCheckText && factCheckText.trim());
 
   const c: ProofConstraints = {
+    presetText: clip(constraints.presetText, PROOF_BUDGET.preset),
     currentInstructionText: clip(
       constraints.currentInstructionText,
       PROOF_BUDGET.instruction,
@@ -312,6 +336,11 @@ export function buildProofMessages(
       constraints.currentStoryState,
       PROOF_BUDGET.storyState,
     ),
+    episodicMemoryText: clip(
+      constraints.episodicMemoryText,
+      PROOF_BUDGET.episodic,
+    ),
+    noteText: clip(constraints.noteText, PROOF_BUDGET.note),
     recentBridgeText: clip(
       constraints.recentBridgeText,
       PROOF_BUDGET.recentBridge,
@@ -319,12 +348,15 @@ export function buildProofMessages(
   };
 
   const constraintBlock = partition([
+    ['【写作预设与文风】', c.presetText],
     ['【当前章节目标】', c.currentInstructionText],
     ['【用户本轮要求】', c.retrievalUserPrompt],
     ['【近期正文 / 衔接】', c.recentBridgeText],
     ['【当前故事状态】', c.currentStoryState],
+    ['【历史章节事件】', c.episodicMemoryText],
     ['【相关人物硬约束】', c.relevantCharacterConstraints],
     ['【相关世界规则】', c.relevantWorldRules],
+    ['【项目笔记 / 仿写资料】', c.noteText],
   ]);
 
   const systemLines = [
@@ -382,7 +414,10 @@ export function buildReviewRepairMessages(
   context: ReviewContext = {
     presetText: '',
     characterText: '',
+    noteText: '',
+    worldbookText: '',
     storyMemoryText: '',
+    episodicMemoryText: '',
     recentBridgeText: '',
     currentInstructionText: '',
     retrievalUserPrompt: '',
@@ -416,6 +451,7 @@ export function buildReviewRepairMessages(
 export function buildFactCheckRepairMessages(
   draftText: string,
   context: FactCheckContext = {
+    presetText: '',
     currentInstructionText: '',
     retrievalUserPrompt: '',
     recentBridgeText: '',

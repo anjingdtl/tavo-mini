@@ -52,7 +52,7 @@ describe('pipeline task store complete lifecycle', () => {
   test('creates and updates every task status, stage, result, and resolution', async () => {
     const store = usePipelineTaskStore.getState();
     const id = store.createTask('chapter', 1);
-    await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(id).toMatch(/^pt_/);
     store.updateTaskStage(id, { stage: 'draft', status: 'completed', output: '草稿' } as any);
     store.setTaskStatus(id, 'reviewing');
@@ -73,6 +73,59 @@ describe('pipeline task store complete lifecycle', () => {
     store.failTask('missing', '');
     store.cancelTask('missing');
     store.resolveTask('missing', 'reject');
+  });
+
+  test('serializes snapshots so an older status write cannot erase a completed audit result', async () => {
+    const pending: Array<{ snapshot: any; resolve: () => void }> = [];
+    mockSavePipelineTask.mockImplementation(
+      (snapshot: any) =>
+        new Promise<void>(resolve => {
+          pending.push({ snapshot, resolve });
+        }),
+    );
+    const now = Date.now();
+    usePipelineTaskStore.setState({
+      tasks: [{
+        id: 'serialized-audit',
+        targetType: 'chapter',
+        targetId: 1,
+        status: 'drafting',
+        stageResults: [],
+        finalText: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        resolvedAt: null,
+      } as any],
+      _loaded: true,
+    });
+
+    const store = usePipelineTaskStore.getState();
+    store.setTaskStatus('serialized-audit', 'reviewing');
+    store.updateTaskStage('serialized-audit', {
+      stage: 'review',
+      status: 'success',
+      text: '{"issues":["审核内容"]}',
+      durationMs: 1,
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    // The newer write waits; it cannot race ahead and then be overwritten by
+    // the earlier status snapshot with an empty stageResults list.
+    expect(pending).toHaveLength(1);
+    expect(pending[0].snapshot.stageResults).toEqual([]);
+
+    pending[0].resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(pending).toHaveLength(2);
+    expect(pending[1].snapshot.stageResults).toEqual([
+      expect.objectContaining({
+        stage: 'review',
+        status: 'success',
+        text: '{"issues":["审核内容"]}',
+      }),
+    ]);
+    pending[1].resolve();
   });
 
   test('clears resolved tasks and exposes active-task queries', async () => {
