@@ -465,6 +465,11 @@ export async function setProjectResourceEnabled(
         sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
         params: [projectId, resourceType, resourceId, 1],
       },
+      // 项目启用世界书条目时默认常驻，保证写作上下文能直接带入
+      {
+        sql: 'UPDATE worldbook_entries SET constant = 1 WHERE id = ?',
+        params: [resourceId],
+      },
     ];
     if (collectionId > 0) {
       statements.push({

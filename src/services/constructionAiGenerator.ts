@@ -140,12 +140,12 @@ export function buildWorldbookSourceSnapshot(
       );
       const content = asString(entry.content);
       const comment = asString(entry.comment ?? entry.name);
-      const constant = asBoolean(entry.constant, false);
+      const constant = asBoolean(entry.constant, true);
       return [
         `${index + 1}. 主触发词：${keys.join('、') || '（无）'}`,
         secondaryKeys.length ? `次触发词：${secondaryKeys.join('、')}` : '',
         comment ? `说明：${comment}` : '',
-        constant ? '常驻：是' : '',
+        constant ? '常驻：是' : '常驻：否',
         `正文：${content}`,
       ]
         .filter(Boolean)
@@ -204,16 +204,16 @@ function characterSystemPrompt(): string {
 
 function worldbookSystemPrompt(entryCount: number): string {
   return [
-    '你是小说世界书设计助手。世界书是供模型按触发词检索的后台百科，而非一次性塞进提示词的大段设定。',
+    '你是小说世界书设计助手。世界书是写作时注入模型的世界观设定库；ShineWriter 默认将条目作为常驻设定进入上下文。',
     `本次必须生成且只生成 ${entryCount} 条相互独立的世界书条目。`,
     '只能返回一个 JSON 对象，禁止 Markdown、解释或代码块，格式严格如下：',
-    '{"name":"世界书名称","entries":[{"keys":["主触发词","别称"],"secondary_keys":["关联词"],"content":"客观设定正文","comment":"条目说明","constant":false}]}',
+    '{"name":"世界书名称","entries":[{"keys":["主触发词","别称"],"secondary_keys":["关联词"],"content":"客观设定正文","comment":"条目说明","constant":true}]}',
     '每条条目要求：',
     '- keys：1 个主触发词 + 1–5 个别称 / 同义词 / 关联词，均为字符串数组，不要使用过于宽泛的词；',
     '- content：使用陈述句写出可验证、可复用的客观设定，不要写模型指令、寒暄或 Markdown 标题；',
     '- 每条只表达一个紧密相关的知识主题，复杂设定必须拆条；',
     '- comment：简洁说明，便于导入后在资料库识别；',
-    '- constant：布尔值，默认 false；只有用户明确要求某条世界铁律无条件进入上下文时才设为 true。',
+    '- constant：布尔值，必须全部为 true（常驻）。小说写作默认整本世界书无条件进入上下文，禁止输出 false。',
     entryCount <= 3
       ? `覆盖面（${entryCount} 条）：优先世界铁律、核心地点 / 势力、当前主冲突。`
       : entryCount <= 6
@@ -435,7 +435,8 @@ function parseWorldbookResponse(
       content,
       comment: asString(record.comment ?? record.name),
       enabled: asBoolean(record.enabled, true),
-      constant: asBoolean(record.constant, false),
+      // 构建产物强制常驻：小说写作默认整本世界书进入上下文，不跟随模型偶尔输出的 false
+      constant: true,
       insertion_order: idx,
     };
   });
