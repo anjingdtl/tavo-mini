@@ -1,6 +1,6 @@
 # 故障注入验证矩阵
 
-执行日期：2026-07-16。测试构建：`ShineWriter-V2.4.3-debug.apk`。设备：`sdk_gphone16k_x86_64`，Android 17 / API 37，AVD `ShineWriter_RC_API37`（`emulator-5556`）。
+执行环境：Android x86_64 模拟器（API 37），Debug 测试构建。
 
 本报告区分真实执行、测试 wrapper 注入和合同测试。`__tests__/faultInjectionMatrix.test.ts` 仍只代表恢复合同，未计入下表的真实执行结论。
 
@@ -84,25 +84,25 @@
 
 ## D6：自动保存时杀死 App
 
-- Build: Debug APK，SHA-256 `67483C1DB4714C42DC42CD66D7063A28BFBFC09E877AEFEEE1C2FAB302F3EBD5`。
+- Build: Debug APK，SHA-256 `（APK SHA-256 已记录）`。
 - Commit: `6a2535c`（流程），`415883e` / `6262e52`（保存修复）。
-- Device: `emulator-5556`，Android 17 / API 37。
+- Device: `Android 模拟器`，Android 17 / API 37。
 - Injection method: 已提交正文重新打开后聚焦输入框；ADB 输入 `D6_UNCOMMITTED_WINDOW`，输入完成后 60ms `force-stop`。
 - Expected result: 最多丢失未提交防抖窗口，最近提交存在，无损坏/卡死。
-- Actual result: `D6_LAST_COMMITTED_CONTENT` 存在，未提交串不存在，状态“已保存”；数据库 176128 bytes，可打开，journal 0 bytes。
+- Actual result: `D6_LAST_COMMITTED_CONTENT` 存在，未提交串不存在，状态“已保存”；数据库，可打开，journal 0 bytes。
 - User-visible message: 正常恢复编辑页，无错误弹窗。
 - Database state: last commit。
 - Retry result: 可继续编辑。
 - Orphan files / stuck tasks: 无 / 无。
-- Logcat: `docs/optimization/evidence/fault-injection/D6-autosave-kill-dedicated/logcat.txt`。
-- Screenshots: `docs/optimization/evidence/fault-injection/D6-autosave-kill-dedicated/verified.png`。
+- Logcat：本地 test-logs/ 证据。
+- Screenshots：本地 test-logs/ 证据。
 - Status: PASS。
 
 ## D7 / D8 / D9 / D10：外部条件阻塞
 
 - Build: 当前 Debug APK 未包含可远程开启的暂停/OOM 开关，符合 Release 默认关闭原则。
 - Commit: 无伪造提交。
-- Device: `emulator-5556`。
+- Device: `Android 模拟器`。
 - Injection method: 未执行进程杀死/OOM；D1/D2 合同与 transaction 注入不替代 D7/D8。
 - Expected result: 见 Spec 8.2。
 - Actual result: 缺少旧 Schema 设备夹具、restore pause test build、可控 GGUF 与 native OOM injector。
@@ -115,7 +115,7 @@
 
 - Build: Debug APK。
 - Commit: `6a2535c`。
-- Device: `emulator-5556`，Android 17 / API 37。
+- Device: `Android 模拟器`，Android 17 / API 37。
 - Injection method: 私网 HTTP 配置连接 `10.0.2.2:8000` 的 hanging server；任务进入运行态后终止 server 进程。
 - Expected result: network error、正文不覆盖、可重试、无永久 loading。
 - Actual result: 冷启动提示“流水线失败 / Network request failed”；结果页为“异常终止 · 0 tokens”“初稿 · 失败”，无“运行中”。
@@ -124,15 +124,15 @@
 - Retry result: 网络/服务恢复后可重新发起；本轮未使用真实在线凭据执行成功生成。
 - Orphan files: 无。
 - Stuck tasks: 无。
-- Logcat: `docs/optimization/evidence/fault-injection/D11-network-disconnect-dedicated/logcat-after-disconnect.txt`。
-- Screenshots/UI: `docs/optimization/evidence/fault-injection/D11-network-disconnect-dedicated/verify-result-current.xml`。
+- Logcat：本地 test-logs/ 证据。
+- Screenshots/UI：本地 test-logs/ 证据。
 - Status: PASS。
 
 ## D12：TTS 播放时切后台
 
 - Build: Debug APK。
 - Commit: `6a2535c`。
-- Device: `emulator-5556`，Android 17 / API 37，默认系统 TTS。
+- Device: `Android 模拟器`，Android 17 / API 37，默认系统 TTS。
 - Injection method: 监听 `ShineWriterTts onStart`，38ms 后发送 HOME；抓取 service 后 275ms 内回前台。
 - Expected result: 状态正确、停止可用、无重复 session、无泄漏 FGS。
 - Actual result: 后台抓到 `TtsForegroundService isForeground=true` 与 ongoing notification；回前台画面仍显示“停止”。模拟器引擎随后在第二段报 `-7` 并自动回收服务，无法完成同一 session 的手动停止断言。
@@ -141,6 +141,6 @@
 - Retry result: 可重新点击朗读；同一模拟器仍会受语音数据限制。
 - Orphan files: 无。
 - Stuck tasks: 无。
-- Logcat: `docs/optimization/evidence/fault-injection/D12-tts-background-dedicated/live-window/tts-logcat.txt`。
-- Screenshots: `docs/optimization/evidence/fault-injection/D12-tts-background-dedicated/live-window/foreground-during-playback.png`。
+- Logcat：本地 test-logs/ 证据。
+- Screenshots：本地 test-logs/ 证据。
 - Status: PARTIAL。

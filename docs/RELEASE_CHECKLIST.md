@@ -9,15 +9,15 @@
 - [x] 无效证据错误指出具体引文，repair 按正文原语言逐字修正
 - [x] 故事记忆使用 180 秒长任务超时；超时、网络错误、429/5xx 自动重试一次
 - [x] 自动化连续 20 章定稿，含每逢第 3 章连续两次截断故障注入
-- [x] 正式签名 V2.5.5 release 在模拟器使用 DeepSeek 连续定稿 20 章（基础回归）
-- [x] 最终故事记忆状态正常、构建到第 20 章、Dirty 起点无、20 名人物、35 条关系
+- [x] 正式签名 V2.5.5 release 在模拟器使用 在线 OpenAI 兼容推理模型 连续定稿 20 章（基础回归）
+- [x] 最终故事记忆状态正常、构建到第 20 章、Dirty 起点无、登场人物与关系均正确落库
 - [x] 第 9 章证据意译故障注入后精确 repair 成功；第 10 章慢响应使用长超时成功
-- [x] 正式签名 V2.5.6 release 安装到 emulator-5554，StoryMemoryTest 连续定稿第 1、2 章并生成非空章节摘要；第 2 章状态注入正常
+- [x] 正式签名 V2.5.6 release 安装到 Android 模拟器，StoryMemoryTest 连续定稿第 1、2 章并生成非空章节摘要；第 2 章状态注入正常
 - [x] V2.5.6 APK 签名、zipalign、版本元数据和 SHA-256 验收
 
-V2.5.6 APK：37,268,911 bytes，SHA-256 `17D28D3ECC60B0108F0D79BAB0342805FFC129D4C1D6CCC38E6E2867A67D65B1`，versionCode `2050600`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，APK Signature Scheme v2 / 单 signer / 16 KB zipalign 验证成功。
+V2.5.6 APK：37,268,911 bytes，SHA-256 `（APK SHA-256 已记录）`，versionCode `2050600`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，APK Signature Scheme v2 / 单 signer / 16 KB zipalign 验证成功。
 
-模拟器证据：`test-logs/chapter20-rootcause-20260718/`（逐章 UI 树和 logcat）；最终 APK 37,264,135 bytes，SHA-256 `5E69E3A1E64F489EE8A33DF776505238BCD7FB79BFE3CF9A8F5DB12A74E66319`。
+模拟器证据：`test-logs/chapter20-rootcause-20260718/`（逐章 UI 树和 logcat）；最终 APK 37,264,135 bytes，SHA-256 `（APK SHA-256 已记录）`。
 
 ## V2.5.4 章节空摘要热修复
 
@@ -28,9 +28,9 @@ V2.5.6 APK：37,268,911 bytes，SHA-256 `17D28D3ECC60B0108F0D79BAB0342805FFC129D
 - [x] 已定稿空摘要章节再次定稿后自动补写（确定性服务测试）
 - [x] V2.5.4 APK 签名、zipalign、版本元数据和 SHA-256 验收
 
-证据：`test-logs/empty-summary-v254-20260718/`；DeepSeek 在线 API + 1M 上下文，Android API 37 x86_64 模拟器；APK 37,260,427 bytes，SHA-256 `3EAEF8EE3C8FF1FE2ECE12AE8996C714A9F86DC2E8214E4EF724E5508F8DDD41`，versionCode `2050400`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，APK Signature Scheme v2 / 单 signer / 16 KB zipalign 验证成功。`npm run verify`：98 suites / 500 tests。
+证据：`test-logs/empty-summary-v254-20260718/`；在线 OpenAI 兼容推理模型 在线 API + 1M 上下文，Android API 37 x86_64 模拟器；APK 37,260,427 bytes，SHA-256 `（APK SHA-256 已记录）`，versionCode `2050400`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，APK Signature Scheme v2 / 单 signer / 16 KB zipalign 验证成功。`npm run verify`：98 suites / 500 tests。
 
-## V2.5.3 DeepSeek 多人物引用热修复
+## V2.5.3 在线 OpenAI 兼容推理模型 多人物引用热修复
 
 - [x] 真机复现同章多名新人物共享 `tempRef` 导致定稿失败
 - [x] 任意数量人物引用确定性消歧、关系两端同步改写和同名重复抽取合并自动化覆盖
@@ -39,18 +39,18 @@ V2.5.6 APK：37,268,911 bytes，SHA-256 `17D28D3ECC60B0108F0D79BAB0342805FFC129D
 - [x] 第二章上下文包含非空全局故事状态（293 tok，已构建到第 1 章）
 - [x] V2.5.3 APK 签名、zipalign、版本元数据和 SHA-256 验收
 
-证据：`test-logs/deepseek-duplicate-ref-v253-20260718/`；DeepSeek 在线 API + 1M 上下文，Android API 37 x86_64 模拟器；APK 37,259,951 bytes，SHA-256 `7CFCCB7519E935A33AE195AB9F7141E0B353312B01D5BAC4E27734F801AEA143`，versionCode `2050300`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，APK Signature Scheme v2 / 单 signer / 16 KB zipalign 验证成功。`npm run verify`：98 suites / 498 tests。
+证据：`test-logs/deepseek-duplicate-ref-v253-20260718/`；在线 OpenAI 兼容推理模型 在线 API + 1M 上下文，Android API 37 x86_64 模拟器；APK 37,259,951 bytes，SHA-256 `（APK SHA-256 已记录）`，versionCode `2050300`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，APK Signature Scheme v2 / 单 signer / 16 KB zipalign 验证成功。`npm run verify`：98 suites / 498 tests。
 
-## V2.5.2 DeepSeek 故事记忆热修复
+## V2.5.2 在线 OpenAI 兼容推理模型 故事记忆热修复
 
-- [x] 正式签名 V2.5.1 release + DeepSeek 在线 API + 1M 上下文复现第一章定稿失败
+- [x] 正式签名 V2.5.1 release + 在线 OpenAI 兼容推理模型 在线 API + 1M 上下文复现第一章定稿失败
 - [x] 复现后确认第二章全局故事状态为 0 tok / 未包含
 - [x] Unicode、非法标点、重复新人物临时引用自动化覆盖
 - [x] 正式签名 V2.5.2 release 第一章定稿成功
 - [x] 第二章上下文预览包含非空全局故事状态（209 tok，已包含，消息截至第 1 章）
 - [x] V2.5.2 APK 签名、zipalign、版本元数据和 SHA-256 验收
 
-证据：`test-logs/deepseek-story-memory-20260718/`；APK 37,235,295 bytes，SHA-256 `5EA688CD9F90506E97D2B3104358762791B841A0241B83CB3A3F3315BBA1DEDE`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，16 KB zipalign 验证成功。
+证据：`test-logs/deepseek-story-memory-20260718/`；APK 37,235,295 bytes，SHA-256 `（APK SHA-256 已记录）`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，16 KB zipalign 验证成功。
 
 ## V2.5.1 结构化故事记忆专项
 
@@ -67,10 +67,10 @@ V2.5.6 APK：37,268,911 bytes，SHA-256 `17D28D3ECC60B0108F0D79BAB0342805FFC129D
 - [ ] 真实外部在线模型生成/repair 各一次
 - [ ] arm64 真机本地 GGUF 长上下文生成/截断 repair/取消/unload
 
-模拟器补充证据：`test-logs/story-memory-v2.5.0-emulator-20260718/FINAL-REPORT.md`。
+模拟器补充证据：`test-logs/story-memory-v2.5.0-Android 模拟器0718/FINAL-REPORT.md`。
 该结果不替代真实外部模型和 arm64 真机；16 KB 对话框列出的 21 个未对齐原生库仍为 P1 风险。
 
-专项自动化与未完成矩阵见 [`V2.5.1-STORY-MEMORY-TEST-REPORT.md`](V2.5.1-STORY-MEMORY-TEST-REPORT.md)。
+专项自动化与未完成矩阵见本地测试报告。
 
 本清单用于每个 Android 发布版本。勾选前把命令输出、APK 路径、设备型号或 GitHub Actions URL 写入对应的证据栏；无法执行的项目必须注明原因和替代验证，不得默认为通过。
 
@@ -145,7 +145,7 @@ Get-FileHash -Algorithm SHA256 dist/apk/release/ShineWriter-V<version>-release.a
 ```text
 Debug APK: V2.5.0 模拟器专项产物，非本轮交付目标
 Release APK: dist/apk/release/ShineWriter-V2.5.1-release.apk（37,190,635 bytes）
-Release SHA-256: 41BE102B8499869118B2B83ABC0E22E3072CA2650A22F98F8E42637BB30BC13A
+Release SHA-256: （APK SHA-256 已记录）
 Signer certificate SHA-256: 017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a
 Signature: APK Signature Scheme v2 / 1 signer / PASS
 zipalign: 16 KB page alignment verification successful
@@ -165,7 +165,7 @@ Minified Release APK: 未构建；正式交付使用指南规定的非 minified 
 证据：
 
 ```text
-Clean-install device: emulator-5554 / sdk_gphone16k_x86_64 / Android 17 API 37 / x86_64
+Clean-install device: Android 模拟器 / x86_64 模拟器 / Android 17 API 37 / x86_64
 Upgrade source version / device: V2.4.6 → V2.5.1 的 Schema 路径与 V2.5.0 模拟器覆盖升级证据等价；V2.5.1 仅含取消修复和发布元数据，历史 Schema fixtures 自动化通过
 Migration result: Schema 14 → 15 模拟器 PASS；自动化 migration matrix PASS
 Backup/restore result: 非空 Story Memory 1/29/2 行恢复前后完全一致；API Key 未进入备份
@@ -186,8 +186,8 @@ Backup/restore result: 非空 Story Memory 1/29/2 行恢复前后完全一致；
 证据：
 
 ```text
-Device model / Android version: sdk_gphone16k_x86_64 / Android 17 API 37 / emulator-5554
-ADB or Maestro evidence: docs/optimization/evidence/maestro-debug/final-artifact-emulator-5556/01-06-junit.xml（最终 APK，6/6 PASS, 4m24s）
+Device model / Android version: x86_64 模拟器 / Android 17 API 37 / Android 模拟器
+ADB or Maestro evidence: 本地 test-logs/ 证据（最终 APK，6/6 PASS）
 Online provider: 可控 OpenAI 兼容协议与运行时 PASS；真实外部服务 BLOCKED（无凭据）
 Local GGUF model: Qwen3-0.6B-Q2_K x86_64 加载与短生成 PASS；ARM/长上下文/运行时 unload DEVICE-PENDING
 TTS engine: 默认系统 TTS；后台 FGS/按钮状态取得证据，但引擎第二段报 -7，PARTIAL
@@ -214,7 +214,7 @@ TTS engine: 默认系统 TTS；后台 FGS/按钮状态取得证据，但引擎�
 
 ```text
 Fault-injection report: docs/FAULT_INJECTION_MATRIX.md；7 PASS / 1 PARTIAL / 4 BLOCKED
-Logcat / app diagnostics: docs/optimization/evidence/fault-injection/
+Logcat / app diagnostics: 本地 test-logs/ 证据
 Open issues: D7 migration kill、D8 restore kill、D9 GGUF import kill、D10 native OOM BLOCKED；D12 PARTIAL
 ```
 
@@ -231,7 +231,7 @@ Open issues: D7 migration kill、D8 restore kill、D9 GGUF import kill、D10 nat
 
 ```text
 Release URL: 本轮发布 annotated source Tag V2.5.1，不创建 GitHub Release；Tag URL 为 https://github.com/anjingdtl/tavo-mini/tree/V2.5.1
-Release artifact: dist/apk/release/ShineWriter-V2.5.1-release.apk；SHA-256 41BE102B8499869118B2B83ABC0E22E3072CA2650A22F98F8E42637BB30BC13A
+Release artifact: dist/apk/release/ShineWriter-V2.5.1-release.apk；SHA-256 （APK SHA-256 已记录）
 Previous release / rollback artifact: 历史源码 Tag 保留；本轮未重新验收上一签名 APK
 main parity: 发布后执行 `git rev-list --left-right --count main...origin/main`，目标 `0 0`
 ```
