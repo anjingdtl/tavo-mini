@@ -26,4 +26,4 @@ Checkpoint mapping:
 | 配置在线 LLM、测试连接                     | 05   |
 | 流水线开始、取消、失败提示                 | 06   |
 
-The current Windows QA environment has `emulator-5554` and adb but no Maestro binary. Until Maestro is installed, the first six writing checkpoints are verified through the adb/UI-tree smoke path recorded in `docs/optimization/progress.md`; the YAML remains the portable CI/device runner.
+The current Windows QA environment has an Android emulator and adb but no Maestro binary. Until Maestro is installed, the first six writing checkpoints are verified through the adb/UI-tree smoke path; the YAML remains the portable CI/device runner.
