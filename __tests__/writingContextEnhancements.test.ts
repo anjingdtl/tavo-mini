@@ -52,6 +52,56 @@ describe('writing context enhancements', () => {
     );
   });
 
+  test('includes worldbook entries even when w.enabled=0 (project-level switch is sole arbiter)', async () => {
+    // 方案 A：读取侧不再用 w.enabled / wc.enabled 做硬过滤。
+    // 模拟 SQL 已放行 w.enabled=0 与 collection_enabled=0 的条目，
+    // buildWorldbookContext 不应再二次过滤它们。
+    jest.doMock('../src/services/database', () => ({
+      getWorldbookEntriesByProject: jest.fn(async () => [
+        {
+          id: 1,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 500,
+          enabled: 0,
+          max_tokens: 100,
+          keyword_primary: '钟楼',
+          keyword_secondary: '',
+          content: 'WB_DISABLED_BUT_PROJECT_ON',
+          position: 0,
+          constant: 0,
+        },
+        {
+          id: 2,
+          collection_id: 1,
+          collection_enabled: 0,
+          collection_max_tokens: 500,
+          enabled: 1,
+          max_tokens: 100,
+          keyword_primary: '雨夜',
+          keyword_secondary: '',
+          content: 'WB_COLLECTION_GLOBAL_OFF',
+          position: 1,
+          constant: 0,
+        },
+      ]),
+    }));
+    const { buildWorldbookContext } = require('../src/services/contextBuilder');
+    const result = await buildWorldbookContext(7, 500, '主角回到钟楼，雨夜。', true);
+    expect(result.text).toContain('WB_DISABLED_BUT_PROJECT_ON');
+    expect(result.text).toContain('WB_COLLECTION_GLOBAL_OFF');
+  });
+
+  test('still respects project_collection_settings gate', async () => {
+    // 项目级闸门保留：pcs.enabled=0 时 SQL 层已过滤，返回空。
+    jest.doMock('../src/services/database', () => ({
+      getWorldbookEntriesByProject: jest.fn(async () => []),
+    }));
+    const { buildWorldbookContext } = require('../src/services/contextBuilder');
+    const result = await buildWorldbookContext(7, 500, '钟楼。', true);
+    expect(result.text).toBe('');
+  });
+
   test('formats provider error codes and limits request concurrency', async () => {
     const { formatLLMError, createConcurrencyLimiter } = require('../src/services/llm/openAICompatibleProvider');
 
