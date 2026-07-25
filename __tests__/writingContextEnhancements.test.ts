@@ -43,12 +43,13 @@ describe('writing context enhancements', () => {
 
     expect(result.name).toBe('City Lore');
     expect(createWorldbookCollection).toHaveBeenCalledWith(7, 'City Lore', expect.objectContaining({ enabled: 1 }));
+    // 主触发词保留 keys 全量（含别称），次关键词不再误塞 keys 剩余项
     expect(createWorldbookEntry).toHaveBeenCalledWith(
       7,
-      'Clock Tower',
+      'Clock Tower, bell',
       'The tower rings only in rain.',
       1,
-      expect.objectContaining({ collection_id: 42, keyword_secondary: 'bell' }),
+      expect.objectContaining({ collection_id: 42, keyword_secondary: '' }),
     );
   });
 
@@ -327,6 +328,57 @@ describe('writing context enhancements', () => {
     expect(result.text).toContain('银钥匙能打开地下档案室');
     expect(result.text).not.toContain('只有档案员知道');
     expect(result.text).not.toContain('不应注入');
+  });
+
+  test('falls back to project-enabled worldbook when no keywords match scan text', async () => {
+    // 空章开写：标题/概要/正文都不含触发词，且无常驻条目 → 仍应兜底注入项目已启用世界书
+    jest.doMock('../src/services/database', () => ({
+      getWorldbookEntriesByProject: jest.fn(async () => [
+        {
+          id: 11,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 500,
+          enabled: 1,
+          max_tokens: 200,
+          keyword_primary: '灵气, 修仙',
+          keyword_secondary: '',
+          content: 'WB_FALLBACK_SPIRIT_RULES',
+          position: 0,
+          constant: 0,
+        },
+      ]),
+    }));
+    const { buildWorldbookContext } = require('../src/services/contextBuilder');
+    const result = await buildWorldbookContext(7, 500, '第 1 章', true);
+    expect(result.text).toContain('WB_FALLBACK_SPIRIT_RULES');
+    expect(result.items.some((item: any) => item.reason === '项目启用兜底' && item.included)).toBe(
+      true,
+    );
+  });
+
+  test('activates worldbook entry via any alias listed in keyword_primary', async () => {
+    jest.doMock('../src/services/database', () => ({
+      getWorldbookEntriesByProject: jest.fn(async () => [
+        {
+          id: 12,
+          collection_id: 1,
+          collection_enabled: 1,
+          collection_max_tokens: 500,
+          enabled: 1,
+          max_tokens: 200,
+          keyword_primary: '灵气, 修仙, 灵力',
+          keyword_secondary: '',
+          content: 'WB_ALIAS_HIT',
+          position: 0,
+          constant: 0,
+        },
+      ]),
+    }));
+    const { buildWorldbookContext } = require('../src/services/contextBuilder');
+    const result = await buildWorldbookContext(7, 500, '少年踏上修仙之路。', true);
+    expect(result.text).toContain('WB_ALIAS_HIT');
+    expect(result.items[0].reason).toBe('主关键词命中');
   });
 
   test('builds character context with common SillyTavern card fields', async () => {

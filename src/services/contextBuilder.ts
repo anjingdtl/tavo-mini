@@ -367,10 +367,13 @@ export async function buildContext(
   )
     .map(chapter => chapter.content)
     .join('\n\n');
+  // retrievalUserPrompt 必须参与世界书扫描：空章开写时标题/概要往往不含触发词，
+  // 但生成指令（含章节概要复述、用户本轮要求）里经常出现设定关键词。
   const scanText = [
     currentChapter.title,
     currentChapter.synopsis,
     currentChapter.content,
+    options.retrievalUserPrompt || '',
     worldbookScanContent,
     memoryText,
   ]
@@ -1100,6 +1103,18 @@ export async function buildWorldbookContext(
         .join('\n')}`,
       true,
     );
+  }
+
+  // 小说写作场景兜底：当前章节标题/概要/正文/指令均未命中任何关键词，且也没有常驻条目时，
+  // 若用户已在项目中启用世界书，仍应注入设定（否则「资料库已开、写作却像空白世界」）。
+  // 有关键词命中时保持 ST 风格选择性注入，不把未命中条目强行塞进上下文。
+  if (activated.size === 0 && entries.length > 0) {
+    for (const entry of entries) {
+      const id = Number(entry.id) || null;
+      if (activated.has(id)) continue;
+      activated.set(id, entry);
+      activationReason.set(id, '项目启用兜底');
+    }
   }
 
   const collectionUsage = new Map<number, number>();

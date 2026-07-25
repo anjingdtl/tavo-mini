@@ -4,6 +4,20 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.6.2] - 2026-07-25
+
+### Fixed
+
+- **世界书写作上下文真正可用**：
+  1. **空章 / 无关键词命中兜底**：章节标题、概要、正文均不含触发词且无常驻条目时，项目已启用的世界书会以「项目启用兜底」注入，避免「资料库已开、初稿却像空白世界」。有关键词命中时仍保持选择性注入。
+  2. **多触发词完整保留**：导入 / 构建世界书时，`keys` 数组的全部主触发词写入 `keyword_primary`（逗号分隔），不再只保留 `keys[0]` 并把别称误塞进次关键词。
+  3. **生成指令参与扫描**：`retrievalUserPrompt`（章节生成指令）纳入世界书扫描文本，空章开写时也能靠概要复述命中触发词。
+  4. **新建合集同步项目开关**：在当前项目新建世界书合集时立即写入 `project_collection_settings`，避免 UI 仅靠默认值显示“开启”却与写入侧不一致。
+
+### Tests
+
+- 单元测试：无关键词命中时兜底注入、别称主关键词命中、lorebook 多 keys 导入字段；相关文件导入与写作上下文用例全量通过。
+
 ## [2.6.1] - 2026-07-25
 
 ### Fixed
