@@ -1,6 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<testsuites>
-  <testsuite name="Test Suite" device="emulator-5556" tests="1" failures="0" time="13.0">
-    <testcase id="06-autosave-verify" name="06-autosave-verify" classname="06-autosave-verify" file="e2e\fault-injection\06-autosave-verify.yaml" time="13.0" status="SUCCESS"/>
-  </testsuite>
-</testsuites>

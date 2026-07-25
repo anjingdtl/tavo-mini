@@ -1,6 +1,0 @@
-on_start_detected=2026-07-16T21:24:08.0790071+08:00
-home_complete=2026-07-16T21:24:08.1172090+08:00
-service_capture_complete=2026-07-16T21:24:08.1635310+08:00
-foreground_complete=2026-07-16T21:24:08.3540720+08:00
-home_after_detection_ms=38
-foreground_after_detection_ms=275

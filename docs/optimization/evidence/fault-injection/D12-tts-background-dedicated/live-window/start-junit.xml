@@ -1,6 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<testsuites>
-  <testsuite name="Test Suite" device="emulator-5556" tests="1" failures="0" time="21.0">
-    <testcase id="12-tts-start-only" name="12-tts-start-only" classname="12-tts-start-only" file="e2e\fault-injection\12-tts-start-only.yaml" time="21.0" status="SUCCESS"/>
-  </testsuite>
-</testsuites>

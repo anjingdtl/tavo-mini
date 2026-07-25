@@ -1,9 +1,0 @@
---------- beginning of main
-07-16 13:23:16.930 27893 27949 I ShineWriterTts: device manufacturer=Google model=sdk_gphone16k_x86_64 sdk=37
-07-16 13:23:16.930 27893 27949 I ShineWriterTts: speak requested enginePackage= voiceKey= language=zh-CN textLength=532
-07-16 13:23:16.967 27893 27893 I ShineWriterTts: initializeTtsInstance start engine=default
-07-16 13:23:17.606 27893 27893 I ShineWriterTts: TTS init success engine=default
-07-16 13:23:17.650 27893 27893 I ShineWriterTts: starting TTS session=1784208196924-sgc2oabeh chunks=2 maxLength=3744
-07-16 13:23:19.554 27893 27903 I ShineWriterTts: onStart utteranceId=shinewriter:1784208196924-sgc2oabeh:0:2
-07-16 13:23:19.554 27893 27903 I ShineWriterTts: sendEvent ttsStart sessionId=1784208196924-sgc2oabeh
-07-16 13:23:19.555 27893 27903 I ShineWriterTts: sendEvent ttsProgress sessionId=1784208196924-sgc2oabeh
