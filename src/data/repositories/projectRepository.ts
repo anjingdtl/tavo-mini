@@ -446,8 +446,38 @@ export async function setProjectResourceEnabled(
   resourceId: number,
   enabled: boolean,
 ): Promise<void> {
+  const database = await openDatabase();
+  // A newly-created project records its existing worldbook collections as
+  // disabled. If a user later enables just one entry (or creates a new entry),
+  // keeping that parent flag disabled makes the UI say "当前项目使用" while the
+  // context query correctly-but-surprisingly filters the entry out. Enabling
+  // an entry therefore also makes its project-level collection available.
+  // This does not cascade to sibling entries: only an explicit parent toggle
+  // should turn every child on/off.
+  if (resourceType === 'worldbook' && enabled) {
+    const entry = await one<{ collection_id: number }>(
+      'SELECT collection_id FROM worldbook_entries WHERE id = ?',
+      [resourceId],
+    );
+    const collectionId = Number(entry?.collection_id || 0);
+    const statements: SqlStatement[] = [
+      {
+        sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
+        params: [projectId, resourceType, resourceId, 1],
+      },
+    ];
+    if (collectionId > 0) {
+      statements.push({
+        sql: `INSERT OR REPLACE INTO project_collection_settings
+          (project_id, resource_type, collection_id, enabled) VALUES (?, ?, ?, 1)`,
+        params: [projectId, 'worldbook', collectionId],
+      });
+    }
+    await executeTransaction(database, statements);
+    return;
+  }
   await execute(
-    await openDatabase(),
+    database,
     'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
     [projectId, resourceType, resourceId, enabled ? 1 : 0],
   );
