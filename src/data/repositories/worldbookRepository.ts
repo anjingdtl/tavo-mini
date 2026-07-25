@@ -54,7 +54,9 @@ export async function setWorldbookCollectionEnabledForProject(
   // 世界书父开关是明确的级联开关：开启时让每个子条目都参与当前项目，
   // 关闭时让全部子条目停止参与。用户随后仍可单独关闭不需要的条目。
   // 两类写入必须在同一事务中，避免父级显示已开而子项仍沿用旧状态。
-  await executeTransaction(await openDatabase(), [
+  // 开启时同步把子条目标为常驻：小说写作默认「项目启用 = 进入上下文」，
+  // 避免导入后仍是关键词触发导致空章写不出设定。
+  const statements: Array<{ sql: string; params: any[] }> = [
     {
       sql: `INSERT OR REPLACE INTO project_collection_settings
         (project_id, resource_type, collection_id, enabled) VALUES (?, ?, ?, ?)`,
@@ -68,7 +70,14 @@ export async function setWorldbookCollectionEnabledForProject(
         WHERE collection_id = ?`,
       params: [projectId, enabled ? 1 : 0, collectionId],
     },
-  ]);
+  ];
+  if (enabled) {
+    statements.push({
+      sql: 'UPDATE worldbook_entries SET constant = 1 WHERE collection_id = ?',
+      params: [collectionId],
+    });
+  }
+  await executeTransaction(await openDatabase(), statements);
 }
 
 export async function getWorldbookEntriesByProject(
@@ -227,7 +236,8 @@ export async function createWorldbookEntry(
       content,
       extra.comment || '',
       enabled,
-      Number(extra.constant || 0),
+      // 新建默认常驻；仅显式传入 0/false 时才非常驻
+      extra.constant === 0 || extra.constant === false ? 0 : 1,
       Number(extra.max_tokens || 2000),
       estimatedTokens,
       Number(extra.position || 0),
