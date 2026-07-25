@@ -21,21 +21,21 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 
 `V2.5.20` 将角色、世界书和笔记的项目级父合集开关独立持久化，关闭父级不会覆盖子资料状态，空合集也能保存项目专属配置；资料库项目切换的迟到加载被丢弃，并发流水线通知按任务归属更新。Schema 升级至 18，无新增远程调用。详见 [CHANGELOG](CHANGELOG.md)。
 
-`V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。DeepSeek 30 章多人物多线验收见 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)。
+`V2.5.6` 将结构化故事记忆升级为检查点架构：默认智能更新、目标每 3 章一次批量整理；最近正文负责短期连续性，生成前不再无条件追平。Schema 16 新增 `project_story_memory_policy` 与 `story_memory_batches`。30 章多人物多线验收已通过。
 
 `V2.5.7` 收尾故事记忆可靠性：已覆盖章节的修改/删除与 dirty 标记、检查点批次失效进入同一 SQLite 事务；dirty 重建作废后续 applied 批次，避免复用旧世界状态。
 
 `V2.5.8` 在现有 Checkpoint / Pending Bridge / Seam / Episodic TF-IDF 框架上强化长篇人物交互召回：约 300 字高密度 `memory_summary`、查询并入写作要求与上一章结尾、中文 n-gram、实体与人物组合加权、混合 Top-K，以及关系「姓名[ID]」渲染。**不增加**正文生成前远程 API 调用，**不改** Schema / 备份格式。
 
-`V2.5.9` 收尾四项召回修复：Checkpoint 主路径摘要密度、不可用 Story Memory 禁止实体加权、Token 预算先优先级后时间序、共用别名歧义处理。详见 [CHANGELOG](CHANGELOG.md)、`docs/V2.5.9-STORY-MEMORY-RETRIEVAL-FIX-REPORT.md` 与 `docs/optimization/progress.md`。
+`V2.5.9` 收尾四项召回修复：Checkpoint 主路径摘要密度、不可用 Story Memory 禁止实体加权、Token 预算先优先级后时间序、共用别名歧义处理。详见 [CHANGELOG](CHANGELOG.md)。
 
-`V2.5.10` 收尾两项边界修复：极小 Token 预算前缀安全截断；Story Memory 实体词在单次 Episodic 检索中只计算一次并复用。详见 [CHANGELOG](CHANGELOG.md)、`docs/V2.5.10-STORY-MEMORY-BOUNDARY-FIX-REPORT.md`。
+`V2.5.10` 收尾两项边界修复：极小 Token 预算前缀安全截断；Story Memory 实体词在单次 Episodic 检索中只计算一次并复用。详见 [CHANGELOG](CHANGELOG.md)。
 
-`V2.5.11` 故事记忆召回最终收口：统一 Episodic 全路径 Token 安全预算、Story Memory 硬上限与人物/关系优先级、小 topK 分数优先、统一人物实体命名空间、用户写作要求进入 Story Memory、IDF 空回退最近摘要。详见 [CHANGELOG](CHANGELOG.md)、`docs/V2.5.11-STORY-MEMORY-FINAL-CLOSEOUT-REPORT.md`。
+`V2.5.11` 故事记忆召回最终收口：统一 Episodic 全路径 Token 安全预算、Story Memory 硬上限与人物/关系优先级、小 topK 分数优先、统一人物实体命名空间、用户写作要求进入 Story Memory、IDF 空回退最近摘要。详见 [CHANGELOG](CHANGELOG.md)。
 
-`V2.5.12` hardens story-memory contracts: target-aware checkpoint eligibility (no future injection), shared character mention resolver for query/candidate/Story Memory, explicit characterId→name maps, relationship-first budget bundles, true empty-query path proofs, system-invariant tests, and automatic version consistency gate. See [CHANGELOG](CHANGELOG.md) and `docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md`.
+`V2.5.12` hardens story-memory contracts: target-aware checkpoint eligibility (no future injection), shared character mention resolver for query/candidate/Story Memory, explicit characterId→name maps, relationship-first budget bundles, true empty-query path proofs, system-invariant tests, and automatic version consistency gate. See [CHANGELOG](CHANGELOG.md).
 
-`V2.5.13` 故事记忆最终硬化补丁：人物历史桶/计数/组合优先级只用 `matchedCharacterIds`（删除姓名 includes 回退）；歧义词参与最长匹配并占用区间（修复"队长/长""老林/林"误激活）；单次 `buildContext()` 全程复用 `prepareStoryMemoryForGeneration()` 返回的同一 Checkpoint 快照（不再二次读 DB）；GitHub Actions 增加真实 `Version consistency` 步骤；README 英文摘要与正式 APK 信息由脚本精确校验。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md`。
+`V2.5.13` 故事记忆最终硬化补丁：人物历史桶/计数/组合优先级只用 `matchedCharacterIds`（删除姓名 includes 回退）；歧义词参与最长匹配并占用区间（修复"队长/长""老林/林"误激活）；单次 `buildContext()` 全程复用 `prepareStoryMemoryForGeneration()` 返回的同一 Checkpoint 快照（不再二次读 DB）；GitHub Actions 增加真实 `Version consistency` 步骤；README 英文摘要与正式 APK 信息由脚本精确校验。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.5.16` 工程可靠性收口：非法目标章节 position 在 `prepareStoryMemoryForGeneration()` 中硬阻断上下文构建（不再继续 coverage / Episodic / 正文生成）；`invalid_position` 增加 `invalidPositionSource`（`target` | `checkpoint`）并修正 trace 文案；Release APK 主脚本强制复用 `Test-ApkSignerAcceptance` 作为唯一验收入口；README 改为“目标正式产物”措辞，不再把未签名验收的 APK 写成已交付。详见 [CHANGELOG](CHANGELOG.md) 与 `docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md`。
 
@@ -114,7 +114,7 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 
 目标正式产物：`dist/apk/release/ShineWriter-V2.5.21-release.apk`，`versionName=V2.5.21`，`versionCode=2052100`。
 
-本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收，并在 `emulator-5554` 上完成 Debug 穿越与 V2.5.21 安装启动验证。
+本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收，并在 Android 模拟器上完成 Debug 穿越与 V2.5.21 安装启动验证。
 
 **实测验收数据**：
 
@@ -151,13 +151,13 @@ npm run test:coverage
 npm run verify
 ```
 
-V2.5.1 的结构化记忆基线记录在 [`docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md`](docs/V2.5.1-STORY-MEMORY-TEST-REPORT.md)；V2.5.6 检查点架构与 30 章多人物多线验收记录在 [`docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md`](docs/STORY-MEMORY-CHECKPOINT-TEST-REPORT.md)；V2.5.7 原子 dirty 事务与场景 C 收尾、V2.5.8 长篇召回优化见 [`docs/optimization/progress.md`](docs/optimization/progress.md)；V2.5.2–V2.5.8 的 DeepSeek/发布回归记录在 [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
+V2.5.1 结构化记忆基线、V2.5.6 检查点架构与长篇多人物多线验收均已通过；V2.5.7 原子 dirty 事务与场景 C 收尾、V2.5.8 长篇召回优化详见各版本 HARDENING / RETRIEVAL 报告；V2.5.2–V2.5.8 的发布回归记录在 [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)。覆盖率门禁为全局 branches `55%`、functions `65%`、lines `65%`、statements `65%`，Schema、迁移、数据库和备份服务有更高的定向阈值。
 
 `npx jest --runInBand --ci --detectOpenHandles` 可在 Node 24.14.1 上自然退出，不使用 `--forceExit`，无 open-handle 报告或超时。
 
-V2.5.12 发布提交 `a6820cf` 的 GitHub Actions [Verify Run 29752469471](https://github.com/anjingdtl/tavo-mini/actions/runs/29752469471) 三个 Job（JavaScript validation / Android Debug build / Migration matrix）全部 success。详情见 [`docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md`](docs/V2.5.12-STORY-MEMORY-HARDENING-REPORT.md)。
+V2.5.12 发布提交 `a6820cf` 的 GitHub Actions [Verify Run 29752469471](https://github.com/anjingdtl/tavo-mini/actions/runs/29752469471) 三个 Job（JavaScript validation / Android Debug build / Migration matrix）全部 success。详情见 [CHANGELOG](CHANGELOG.md)。
 
-V2.5.13 发布提交 `6e5ac42` 的 run 因 `verify.yml` 的 `concurrency.cancel-in-progress` 被紧随其后的 docs commit `eddb4c6`（纯文档增量，无生产代码改动）取消，改由 `eddb4c6` 的 [Verify Run 29760694051](https://github.com/anjingdtl/tavo-mini/actions/runs/29760694051) 代替验证，三个 Job（JavaScript validation 含 Version consistency / Android Debug build / Migration matrix）全部 success。详情见 [`docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md`](docs/V2.5.13-STORY-MEMORY-FINAL-HARDENING-REPORT.md)。
+V2.5.13 发布提交 `6e5ac42` 的 run 因 `verify.yml` 的 `concurrency.cancel-in-progress` 被紧随其后的 docs commit `eddb4c6`（纯文档增量，无生产代码改动）取消，改由 `eddb4c6` 的 [Verify Run 29760694051](https://github.com/anjingdtl/tavo-mini/actions/runs/29760694051) 代替验证，三个 Job（JavaScript validation 含 Version consistency / Android Debug build / Migration matrix）全部 success。详情见 [CHANGELOG](CHANGELOG.md)。
 
 V2.5.16 发布提交 `d5b2229` 的 [Verify Run 29810232127](https://github.com/anjingdtl/tavo-mini/actions/runs/29810232127) 三个 Job（JavaScript validation 含 Version consistency / Lint / TypeScript / Jest with coverage / Android Debug build / Migration matrix）全部 success；workflow head SHA 等于 `d5b2229e`，未被 concurrency 取消。真实 PowerShell 解析用例在 Linux CI 上 `describe.skip`，本机 Windows 已执行。详情见 [`docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md`](docs/V2.5.16-ENGINEERING-RELIABILITY-CLOSURE-REPORT.md)。
 
@@ -173,9 +173,9 @@ GitHub Actions `Verify` 对 `main` push 和 Pull Request 执行：
 
 核心 UI 写作链路另有 `e2e/maestro/` 流程；真实 Android 验证使用 adb/UI tree 检查启动、项目/章节创建、自动保存、设置和持久化结果。
 
-### V2.4.6 端到端穿测（emulator-5554 / Android 17）
+### V2.4.6 端到端穿测（Android 模拟器）
 
-V2.4.6 着重验证"上下文自动化配置"新功能与既有全功能回归。完整穿测报告含 6 张关键截图见 [`docs/V2.4.6-TEST-REPORT.md`](docs/V2.4.6-TEST-REPORT.md)，关键结论：
+V2.4.6 着重验证"上下文自动化配置"新功能与既有全功能回归。关键结论：
 
 | 维度 | 结果 |
 | ---- | ---- |
@@ -218,7 +218,7 @@ dist/apk/                         本地 APK 交付目录
 - API Key 不随备份迁移，这是刻意的隐私边界；换设备或恢复备份后需要重新填写。
 - TTS 的可用音色、后台行为和性能受 Android 版本及设备厂商实现影响。
 - API 37 x86_64 模拟器会报告部分原生库的 16KB page-size/RELRO 兼容提示；ARM64 物理设备发布前仍需补验。
-- V2.5.6 已完成 x86_64 模拟器上的检查点架构 30 章多人物多线验收（11 人物 / 25 关系 / 10 批次 / through=29 clean）；arm64 真机与本地 GGUF 长上下文仍需专项验收。
+- V2.5.6 已完成 x86_64 模拟器上的检查点架构长篇多人物多线验收（登场人物与关系均正确落入检查点，through 状态 clean）；arm64 真机与本地 GGUF 长上下文仍需专项验收。
 - V2.5.7 将 **章节 UPDATE/DELETE 与故事记忆 dirty / 批次失效合并为同一 SQLite 事务**（失败整笔回滚），并纳入 dirty 重建作废后续 applied 批次的修复。场景 C 与原子 dirty 模拟器路径产品侧均为 **PASS**。本地证据（gitignore）：`test-logs/story-memory-scenario-c-signoff/`、`test-logs/story-memory-atomic-dirty-final/`。
 - V2.5.8 强化 Episodic 召回（查询/分词/实体加权/混合 Top-K）与约 300 字记忆摘要提示词；**不扩大**默认上下文预算、**不增加**正文前 API 调用、**不改** Schema。旧 `memory_summary` 可继续参与检索，无需强制全量重写。
 - 残余风险：进程被强杀后可能卡在 `rebuilding`，此时 UI「立即整理」不会自动走 dirty 重建入口（需恢复为 dirty 或重启流程）；删除中间章后覆盖 through 可能收敛；完整中文 IME 改正文未作为门禁重录；arm64 真机与本地 GGUF 长上下文仍需专项验收。
