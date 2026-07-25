@@ -79,7 +79,7 @@ export async function getWorldbookEntriesByProject(
      JOIN project_resources pr ON pr.resource_id = w.id AND pr.resource_type = 'worldbook'
      LEFT JOIN worldbook_collections wc ON wc.id = w.collection_id
      LEFT JOIN project_collection_settings pcs ON pcs.project_id = ? AND pcs.resource_type = 'worldbook' AND pcs.collection_id = w.collection_id
-     WHERE pr.project_id = ? AND pr.enabled = 1 AND w.enabled = 1 AND COALESCE(pcs.enabled, 1) = 1
+     WHERE pr.project_id = ? AND pr.enabled = 1 AND COALESCE(pcs.enabled, 1) = 1
      ORDER BY w.position ASC, w.id ASC`,
     [projectId, projectId],
   );
