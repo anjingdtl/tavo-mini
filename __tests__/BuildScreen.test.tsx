@@ -38,6 +38,17 @@ jest.mock('../src/store/settingsStore', () => ({
   useSettingsStore: () => ({ llmConfig: mockLlmConfig }),
 }));
 
+let mockCurrentProject: { id: number; name: string } | null = {
+  id: 7,
+  name: '测试小说',
+};
+jest.mock('../src/store/projectStore', () => ({
+  useProjectStore: (selector?: (s: any) => any) => {
+    const state = { currentProject: mockCurrentProject };
+    return typeof selector === 'function' ? selector(state) : state;
+  },
+}));
+
 jest.mock('../src/navigation/navigationRef', () => ({
   navigateToLLMSettings: jest.fn(),
 }));
@@ -51,6 +62,7 @@ jest.mock('../src/services/constructionAiGenerator', () => ({
 
 jest.mock('../src/services/constructionFileService', () => ({
   saveConstructionArtifact: jest.fn(),
+  importConstructionArtifactToLibrary: jest.fn(),
 }));
 
 jest.mock('../src/services/fileImport', () => ({
@@ -62,7 +74,10 @@ jest.mock('../src/services/fileImport', () => ({
 
 import { navigateToLLMSettings } from '../src/navigation/navigationRef';
 import { generateConstruction } from '../src/services/constructionAiGenerator';
-import { saveConstructionArtifact } from '../src/services/constructionFileService';
+import {
+  importConstructionArtifactToLibrary,
+  saveConstructionArtifact,
+} from '../src/services/constructionFileService';
 import {
   parseCharacterCardJSON,
   parseWorldBookJSON,
@@ -291,7 +306,7 @@ describe('BuildScreen', () => {
     ).toBe(false);
   });
 
-  it('shows a success toast and reminds manual import on save success', async () => {
+  it('shows a success toast on save success', async () => {
     (generateConstruction as jest.Mock).mockResolvedValue(characterArtifact);
     (saveConstructionArtifact as jest.Mock).mockResolvedValue({
       saved: true,
@@ -307,13 +322,58 @@ describe('BuildScreen', () => {
         expect.objectContaining({
           type: 'success',
           text1: '已保存到手机',
-          text2: expect.stringContaining('资料'),
+        }),
+      );
+    });
+  });
+
+  it('imports the artifact into the current project library', async () => {
+    mockCurrentProject = { id: 7, name: '测试小说' };
+    (generateConstruction as jest.Mock).mockResolvedValue(characterArtifact);
+    (importConstructionArtifactToLibrary as jest.Mock).mockResolvedValue({
+      kind: 'character',
+      id: 99,
+      name: '沈砚',
+    });
+    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
+    fireEvent.press(getByTestId('build-generate'));
+    fireEvent.press(await findByText('导入资料库'));
+    await waitFor(() => {
+      expect(importConstructionArtifactToLibrary).toHaveBeenCalledWith(
+        characterArtifact,
+        7,
+      );
+      expect(Toast.show).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'success',
+          text1: '已导入资料库',
+          text2: expect.stringContaining('沈砚'),
+        }),
+      );
+    });
+  });
+
+  it('blocks library import when no project is selected', async () => {
+    mockCurrentProject = null;
+    (generateConstruction as jest.Mock).mockResolvedValue(characterArtifact);
+    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
+    fireEvent.press(getByTestId('build-generate'));
+    fireEvent.press(await findByText('导入资料库'));
+    await waitFor(() => {
+      expect(importConstructionArtifactToLibrary).not.toHaveBeenCalled();
+      expect(Toast.show).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          text1: '请先选择项目',
         }),
       );
     });
   });
 
   it('renders the default reserve label and budget cells', () => {
+    mockCurrentProject = { id: 7, name: '测试小说' };
     const { getByText } = render(<BuildScreen />);
     // 默认 5%，outputReserve=1638 → label 含 1,638 Token
     expect(getByText('5')).toBeTruthy(); // 滑块数值

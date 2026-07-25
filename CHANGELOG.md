@@ -4,6 +4,16 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.6.4] - 2026-07-25
+
+### Added
+
+- **构建产物一键导入资料库**：预览页新增「导入资料库」按钮。角色卡 / 世界书序列化为与资料库相同的 `chara_card_v3` / `lorebook_v3` JSON 后，复用既有导入链路写入 SQLite，并按当前项目启用（角色卡落入默认合集，世界书新建合集 + 条目）。仍保留「保存到手机」；无当前项目时拦截并提示先在「项目」中选择。
+
+### Tests
+
+- `importConstructionArtifactToLibrary` 单元测试；BuildScreen 导入成功 / 无项目拦截用例。
+
 ## [2.6.3] - 2026-07-25
 
 ### Changed

@@ -11,6 +11,7 @@ import {
   Download,
   Eye,
   FileQuestion,
+  Library,
   RefreshCw,
   Wand2,
   XCircle,
@@ -29,6 +30,7 @@ import {
 } from '../components/ui';
 import { ConstructionSlider } from '../components/ConstructionSlider';
 import { useSettingsStore } from '../store/settingsStore';
+import { useProjectStore } from '../store/projectStore';
 import {
   navigateToLLMSettings,
 } from '../navigation/navigationRef';
@@ -50,7 +52,10 @@ import {
   estimateConstructionInputTokens,
   generateConstruction,
 } from '../services/constructionAiGenerator';
-import { saveConstructionArtifact } from '../services/constructionFileService';
+import {
+  importConstructionArtifactToLibrary,
+  saveConstructionArtifact,
+} from '../services/constructionFileService';
 import type { ConstructionArtifact, ConstructionInput } from '../services/constructionAiGenerator';
 import {
   parseCharacterCardJSON,
@@ -88,10 +93,12 @@ const TARGET_OPTIONS: { value: IndependentTarget; label: string }[] = [
 export const BuildScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const { llmConfig } = useSettingsStore();
+  const currentProject = useProjectStore(state => state.currentProject);
 
   const [mode, setMode] = useState<BuildMode>('independent');
   const [independentTarget, setIndependentTarget] =
     useState<IndependentTarget>('character');
+  const [importingToLibrary, setImportingToLibrary] = useState(false);
 
   // 独立角色卡字段
   const [charName, setCharName] = useState('');
@@ -407,7 +414,7 @@ export const BuildScreen: React.FC = () => {
     setStatus('idle');
   };
 
-  // ---------- 保存到手机（SPEC §9.3） ----------
+  // ---------- 保存到手机 ----------
   const handleSave = async () => {
     if (!artifact) return;
     try {
@@ -416,10 +423,10 @@ export const BuildScreen: React.FC = () => {
         Toast.show({
           type: 'success',
           text1: '已保存到手机',
-          text2: '请在「资料」中手动导入后启用。',
+          text2: '也可点「导入资料库」直接写入当前项目。',
         });
       }
-      // 用户取消保存：不显示成功提示，预览保持未保存状态（SPEC §9.3）。
+      // 用户取消保存：不显示成功提示，预览保持可操作状态。
     } catch (error: any) {
       Toast.show({
         type: 'error',
@@ -429,13 +436,58 @@ export const BuildScreen: React.FC = () => {
     }
   };
 
+  // ---------- 直接导入资料库 ----------
+  const handleImportToLibrary = async () => {
+    if (!artifact || importingToLibrary) return;
+    if (!currentProject?.id) {
+      Toast.show({
+        type: 'error',
+        text1: '请先选择项目',
+        text2: '导入资料库需要当前项目；请先在「项目」中打开一个项目。',
+      });
+      return;
+    }
+    setImportingToLibrary(true);
+    try {
+      const result = await importConstructionArtifactToLibrary(
+        artifact,
+        currentProject.id,
+      );
+      if (result.kind === 'character') {
+        Toast.show({
+          type: 'success',
+          text1: '已导入资料库',
+          text2: `角色卡「${result.name}」已写入并在当前项目启用。`,
+        });
+      } else {
+        Toast.show({
+          type: 'success',
+          text1: '已导入资料库',
+          text2: `世界书「${result.name}」· ${result.entriesImported} 条，已在当前项目启用。`,
+        });
+      }
+    } catch (error: any) {
+      Toast.show({
+        type: 'error',
+        text1: '导入资料库失败',
+        text2: error?.message || '写入资料库失败。',
+      });
+    } finally {
+      setImportingToLibrary(false);
+    }
+  };
+
   const generating = status === 'queued' || status === 'running';
 
   return (
     <Screen>
       <Header
         title="构建"
-        subtitle="独立生成文件；保存后请在资料库手动导入。"
+        subtitle={
+          currentProject
+            ? `可保存到手机，或直接导入当前项目「${currentProject.name}」资料库。`
+            : '可保存到手机；导入资料库前请先在「项目」中选择项目。'
+        }
       />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* 在线 LLM 前置校验 */}
@@ -577,6 +629,8 @@ export const BuildScreen: React.FC = () => {
                 }}
                 onViewJson={() => setShowJson(true)}
                 onSave={handleSave}
+                onImportToLibrary={handleImportToLibrary}
+                importingToLibrary={importingToLibrary}
               />
             ) : (
               <>
@@ -778,7 +832,17 @@ const PreviewPanel: React.FC<{
   onBackToEdit: () => void;
   onViewJson: () => void;
   onSave: () => void;
-}> = ({ artifact, onRegenerate, onBackToEdit, onViewJson, onSave }) => (
+  onImportToLibrary: () => void;
+  importingToLibrary: boolean;
+}> = ({
+  artifact,
+  onRegenerate,
+  onBackToEdit,
+  onViewJson,
+  onSave,
+  onImportToLibrary,
+  importingToLibrary,
+}) => (
   <Card>
     {artifact.kind === 'character' ? (
       <CharacterPreview artifact={artifact} />
@@ -789,7 +853,21 @@ const PreviewPanel: React.FC<{
       <Button label="重新生成" icon={RefreshCw} variant="secondary" onPress={onRegenerate} />
       <Button label="返回修改" variant="ghost" onPress={onBackToEdit} />
       <Button label="查看 JSON" icon={Eye} variant="ghost" onPress={onViewJson} />
-      <Button testID="build-save" label="保存到手机" icon={Download} onPress={onSave} />
+      <Button
+        testID="build-import-library"
+        label={importingToLibrary ? '导入中…' : '导入资料库'}
+        icon={Library}
+        onPress={onImportToLibrary}
+        disabled={importingToLibrary}
+      />
+      <Button
+        testID="build-save"
+        label="保存到手机"
+        icon={Download}
+        variant="secondary"
+        onPress={onSave}
+        disabled={importingToLibrary}
+      />
     </View>
   </Card>
 );
