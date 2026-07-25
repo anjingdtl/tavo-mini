@@ -4,6 +4,11 @@ import {
   isErrorWithCode,
   saveDocuments,
 } from '@react-native-documents/picker';
+import * as db from './database';
+import {
+  importCharacterFromJSON,
+  importWorldBookFromJSON,
+} from './fileImport';
 import type {
   CharacterArtifact,
   ConstructionArtifact,
@@ -11,11 +16,14 @@ import type {
 } from './construction/targets';
 
 /**
- * 「构建」模块的文件序列化与系统保存封装（SPEC §9.3）。
+ * 「构建」模块的文件序列化、系统保存与直接导入资料库封装。
  *
- * 复用现有 Android Storage Access Framework 流程（saveDocuments），不申请宽泛
- * 存储权限、不假定可写入固定公共目录。用户取消保存窗口时返回 null —— 调用方
- * 不得据此显示「保存成功」或写入资料库。
+ * 保存到手机：复用 Android Storage Access Framework（saveDocuments），不申请宽泛
+ * 存储权限、不假定可写入固定公共目录。用户取消保存窗口时返回 cancelled —— 调用方
+ * 不得据此显示「保存成功」。
+ *
+ * 导入资料库：序列化为与资料库相同的 chara_card_v3 / lorebook_v3 JSON，再走既有
+ * 导入解析链路写入 SQLite，并按当前项目启用（project_resources / 合集开关）。
  */
 
 const ARTIFACT_MIME_TYPE = 'application/json';
@@ -99,6 +107,51 @@ export async function saveConstructionArtifact(
       /* 临时缓存清理失败可忽略 */
     });
   }
+}
+
+export type ImportToLibraryResult =
+  | { kind: 'character'; id: number; name: string }
+  | { kind: 'worldbook'; name: string; entriesImported: number };
+
+/**
+ * 将构建预览产物直接写入资料库，并绑定到当前项目启用。
+ * - 角色卡：落入默认角色合集（无则创建「未分组角色」），JSON 与文件导入一致
+ * - 世界书：新建合集 + 条目（默认常驻策略与资料库导入一致）
+ * - projectId 无效时抛错，不写库
+ */
+export async function importConstructionArtifactToLibrary(
+  artifact: ConstructionArtifact,
+  projectId: number,
+): Promise<ImportToLibraryResult> {
+  if (!Number.isFinite(projectId) || projectId <= 0) {
+    throw new Error('请先在「项目」中选择一个项目。');
+  }
+
+  const json = serializeArtifact(artifact);
+  const sourceName = buildConstructionFileName(artifact);
+
+  if (artifact.kind === 'character') {
+    const collectionId = await db.ensureDefaultCharacterCollection(projectId);
+    const id = await importCharacterFromJSON(
+      projectId,
+      json,
+      sourceName,
+      collectionId,
+    );
+    return {
+      kind: 'character',
+      id,
+      name: artifact.name || artifact.card.data.name || '角色卡',
+    };
+  }
+
+  const imported = await importWorldBookFromJSON(projectId, json);
+  return {
+    kind: 'worldbook',
+    name: imported.name || artifact.name || '世界书',
+    entriesImported:
+      imported.entriesImported ?? imported.entries?.length ?? artifact.entryCount,
+  };
 }
 
 export type { CharacterArtifact, WorldbookArtifact };
