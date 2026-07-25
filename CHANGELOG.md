@@ -4,6 +4,16 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.5.24] - 2026-07-25
+
+### Fixed
+
+- **世界书子条目启用被父合集过滤**：新项目会先关闭已有资料；此前用户随后单独启用或新建世界书条目时，子条目的“当前项目使用”虽显示为开启，但关闭的项目级父合集仍会让上下文查询排除它。现在启用世界书子条目会原子地同步开启其所属项目合集，不会级联改变兄弟条目。
+
+### Tests
+
+- Android x86_64 模拟器复现并验证：父合集关闭 → 单独开启常驻子条目 → 父合集自动开启 → 章节上下文预览显示世界书条目“已包含”。
+
 ## [2.5.23] - 2026-07-25
 
 ### Fixed

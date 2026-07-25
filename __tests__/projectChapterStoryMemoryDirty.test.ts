@@ -34,6 +34,7 @@ jest.mock('../src/utils/idfCache', () => ({
 import {
   createProject,
   deleteChapter,
+  setProjectResourceEnabled,
   updateChapter,
 } from '../src/data/repositories/projectRepository';
 import { invalidateIdf } from '../src/utils/idfCache';
@@ -520,6 +521,26 @@ describe('createProject → resources start disabled', () => {
         expect.objectContaining({
           sql: expect.stringContaining("SELECT ?, 'worldbook', id, 0 FROM worldbook_collections"),
           params: [77],
+        }),
+      ]),
+    );
+  });
+
+  it('unlocks only the worldbook parent when a child is enabled after project creation', async () => {
+    mockOne.mockResolvedValueOnce({ collection_id: 29 });
+
+    await setProjectResourceEnabled(77, 'worldbook', 88, true);
+
+    const statements = txStatements();
+    expect(statements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sql: expect.stringContaining('project_resources'),
+          params: [77, 'worldbook', 88, 1],
+        }),
+        expect.objectContaining({
+          sql: expect.stringContaining('project_collection_settings'),
+          params: [77, 'worldbook', 29],
         }),
       ]),
     );
