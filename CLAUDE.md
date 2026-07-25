@@ -16,7 +16,7 @@ npm start                # Metro
 npm run android          # 运行 Android 开发版（需已连接设备/模拟器）
 # 等价：npx react-native run-android
 
-# 构建 APK（prebuild 自动用 git commit count 生成 versionCode 写入 src/constants/version.json）
+# 构建 APK（prebuild 按语义版本生成 versionCode：major*1e6+minor*1e4+patch*100，可加 SHINE_WRITER_BUILD_NUMBER 0-99 后缀；写入 src/constants/version.json）
 npm run apk:debug                 # → dist/apk/debug/ShineWriter-V<版本>-debug.apk
 npm run apk:release               # → dist/apk/release/ShineWriter-V<版本>-release.apk
 npm run apk:release:minified      # 压缩混淆版正式包（R8 评估用，正式发布默认不用）
