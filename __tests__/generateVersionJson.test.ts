@@ -265,9 +265,20 @@ describe('generate-version-json.js build suffix source (V2.5.14)', () => {
     const proj = makeTempProject();
     try {
       // Seed an old version.json for a DIFFERENT version name with suffix 7.
-      const otherMajor = major;
-      const otherMinor = minor;
-      const otherPatch = patch === 0 ? patch + 1 : patch - 1;
+      // 构造一个 baseVersionCode 严格更小的“旧版本”，避免触发脚本的
+      // versionCode 回退保护。patch≥1 时退 patch（与历史用例行为一致）；
+      // patch=0 时退 minor 并取合法 patch（2.6.0 等首个 patch=0 版本）。
+      let otherMajor = major;
+      let otherMinor = minor;
+      let otherPatch = patch - 1;
+      if (otherPatch < 0) {
+        otherPatch = 99;
+        otherMinor = minor - 1;
+        if (otherMinor < 0) {
+          otherMinor = 99;
+          otherMajor = major - 1;
+        }
+      }
       const otherVersion = `${otherMajor}.${otherMinor}.${otherPatch}`;
       const otherBase =
         otherMajor * 1_000_000 + otherMinor * 10_000 + otherPatch * 100;

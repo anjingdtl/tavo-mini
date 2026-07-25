@@ -4,6 +4,16 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] - 2026-07-25
+
+### Fixed
+
+- **写作上下文与流水线回归发布**：世界书合集开启后，常驻子条目会进入章节上下文、初稿、审阅、事实核查和终审；流水线审核阶段结果保持结构化且可查看。
+
+### Tests
+
+- Android x86_64 模拟器：新建六章项目；验证新项目资料默认关闭、世界书合集开启级联子条目、章节上下文预览包含常驻世界书；完整四阶段流水线（初稿、审阅、事实核查、终审）成功且审核 JSON 非空；定稿后手动整理长期记忆至第 6 章，状态正常、覆盖完整。
+
 ## [2.5.24] - 2026-07-25
 
 ### Fixed
