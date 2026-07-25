@@ -55,14 +55,39 @@ test('parses lorebook_v3 entries from object maps and arrays', () => {
       keyword_secondary: '',
       content: '雨夜会触发钟声。',
       enabled: 1,
+      constant: 1, // 导入默认常驻
     }),
     expect.objectContaining({
       keyword_primary: '地铁',
       keyword_secondary: '',
       content: '末班车后站台关闭。',
       enabled: 0,
+      constant: 1,
     }),
   ]);
+});
+
+test('import worldbook only keeps non-constant when source explicitly sets constant false', () => {
+  const result = parseWorldBookJSON(
+    JSON.stringify({
+      spec: 'lorebook_v3',
+      data: {
+        name: '可选触发',
+        entries: [
+          { keys: ['雨夜'], content: '关键词触发条目。', constant: false },
+          { keys: ['法则'], content: '常驻法则。', constant: true },
+        ],
+      },
+    }),
+  );
+  expect(result.entries[0]).toMatchObject({
+    keyword_primary: '雨夜',
+    constant: 0,
+  });
+  expect(result.entries[1]).toMatchObject({
+    keyword_primary: '法则',
+    constant: 1,
+  });
 });
 
 test('stores an editable PNG image path without losing character card metadata', () => {

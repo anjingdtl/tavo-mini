@@ -96,7 +96,10 @@ describe('constructionAiGenerator', () => {
       expect(artifact.lorebook.data.entries).toHaveLength(6);
       const orders = artifact.lorebook.data.entries.map(e => e.insertion_order);
       expect(orders).toEqual([0, 1, 2, 3, 4, 5]);
-      expect(artifact.lorebook.data.entries[2].constant).toBe(true);
+      // 构建产物强制全部常驻（不跟随模型输出的 false）
+      expect(
+        artifact.lorebook.data.entries.every(entry => entry.constant === true),
+      ).toBe(true);
     });
 
     it('uses the construction_worldbook_independent scenario', async () => {

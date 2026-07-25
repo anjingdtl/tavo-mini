@@ -539,6 +539,10 @@ describe('createProject → resources start disabled', () => {
           params: [77, 'worldbook', 88, 1],
         }),
         expect.objectContaining({
+          sql: expect.stringContaining('constant'),
+          params: [88],
+        }),
+        expect.objectContaining({
           sql: expect.stringContaining('project_collection_settings'),
           params: [77, 'worldbook', 29],
         }),
