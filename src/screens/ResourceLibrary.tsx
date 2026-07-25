@@ -722,7 +722,9 @@ export const ResourceLibrary: React.FC = () => {
       maxTokens: String(item.max_tokens ?? defaultMaxTokens(kind)),
       enabled: item.enabled !== 0,
       isDefault: item.is_default === 1,
-      constant: item.constant === 1,
+      // 世界书条目默认常驻；仅显式 constant=0 时关闭
+      constant:
+        kind === 'worldbook' ? item.constant !== 0 : item.constant === 1,
     });
   };
 
