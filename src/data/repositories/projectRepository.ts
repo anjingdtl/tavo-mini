@@ -75,12 +75,51 @@ export async function createProject(
   // 项目级查询按实际 preset id join，0 会使新项目的写作/流水线预设列表为空。
   const defaultPresetId = await ensureDefaultPreset(database);
 
-  // 项目行和默认预设关联、首章一起写入。ensureDefaultPreset 可能独立写入全局
-  // 预设，因此不能嵌套到这个事务中；后续关联仍必须使用它返回的真实 id。
+  // 新项目必须从“资料全关闭”开始。显式写入当前全部全局资料的项目级
+  // 开关，而不是依赖查询端的 COALESCE 默认值；这样随后新增项目、切换
+  // 合集或查看上下文时都不会意外带入旧项目的资料。
+  //
+  // ensureDefaultPreset 可能独立写入全局预设，因此不能嵌套到这个事务中；
+  // 但该预设也必须以关闭状态关联到新项目，写作时会安全回退内建默认提示词。
   await executeTransaction(database, [
     {
+      sql: `INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled)
+            SELECT ?, 'character', id, 0 FROM characters`,
+      params: [projectId],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled)
+            SELECT ?, 'worldbook', id, 0 FROM worldbook_entries`,
+      params: [projectId],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled)
+            SELECT ?, 'note', id, 0 FROM notes`,
+      params: [projectId],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled)
+            SELECT ?, 'preset', id, 0 FROM presets`,
+      params: [projectId],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO project_collection_settings (project_id, resource_type, collection_id, enabled)
+            SELECT ?, 'character', id, 0 FROM character_collections`,
+      params: [projectId],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO project_collection_settings (project_id, resource_type, collection_id, enabled)
+            SELECT ?, 'worldbook', id, 0 FROM worldbook_collections`,
+      params: [projectId],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO project_collection_settings (project_id, resource_type, collection_id, enabled)
+            SELECT ?, 'note', id, 0 FROM note_collections`,
+      params: [projectId],
+    },
+    {
       sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
-      params: [projectId, 'preset', defaultPresetId, 1],
+      params: [projectId, 'preset', defaultPresetId, 0],
     },
     {
       sql: 'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',

@@ -42,25 +42,28 @@ export interface PipelineContextSnapshot {
 }
 
 /**
- * Subset of {@link PipelineContextSnapshot} consumed by the literary review.
- * (SPEC §8.2) Review focuses on style/structure/character voice, so it does
- * NOT need episodic or worldbook text.
+ * Context consumed by the literary review. It includes every source injected
+ * into the draft, so reviews cannot misclassify an enabled rule or style note
+ * as a contradiction merely because it was omitted from their prompt.
  */
 export interface ReviewContext {
   presetText: string;
   characterText: string;
+  noteText: string;
+  worldbookText: string;
   storyMemoryText: string;
+  episodicMemoryText: string;
   recentBridgeText: string;
   currentInstructionText: string;
   retrievalUserPrompt: string;
 }
 
 /**
- * Subset consumed by the fact-check stage. (SPEC §8.3) Fact-check needs every
- * continuity source: world rules, Story Memory, episodic events, bridge body
- * and current chapter instruction.
+ * Context consumed by the fact-check stage. Explicit writing-preset rules may
+ * themselves be constraints, so the preset is part of its source snapshot.
  */
 export interface FactCheckContext {
+  presetText: string;
   currentInstructionText: string;
   retrievalUserPrompt: string;
   recentBridgeText: string;
@@ -72,16 +75,18 @@ export interface FactCheckContext {
 }
 
 /**
- * Hard constraints handed to the proof stage. (SPEC §8.4) The proof is a
- * targeted revision driven by the audit reports, not a free rewrite — it only
- * needs the constraints that must not be violated while editing.
+ * Hard constraints handed to the proof stage. The proof keeps every source
+ * used by the draft so targeted edits preserve facts and style references.
  */
 export interface ProofConstraints {
+  presetText: string;
   currentInstructionText: string;
   retrievalUserPrompt: string;
   relevantCharacterConstraints: string;
   relevantWorldRules: string;
   currentStoryState: string;
+  episodicMemoryText: string;
+  noteText: string;
   recentBridgeText: string;
 }
 
@@ -91,7 +96,10 @@ export function buildReviewContextFromSnapshot(
   return {
     presetText: snapshot.presetText,
     characterText: snapshot.characterText,
+    noteText: snapshot.noteText,
+    worldbookText: snapshot.worldbookText,
     storyMemoryText: snapshot.storyMemoryText,
+    episodicMemoryText: snapshot.episodicMemoryText,
     recentBridgeText: snapshot.recentBridgeText,
     currentInstructionText: snapshot.currentInstructionText,
     retrievalUserPrompt: snapshot.retrievalUserPrompt,
@@ -102,6 +110,7 @@ export function buildFactCheckContextFromSnapshot(
   snapshot: PipelineContextSnapshot,
 ): FactCheckContext {
   return {
+    presetText: snapshot.presetText,
     currentInstructionText: snapshot.currentInstructionText,
     retrievalUserPrompt: snapshot.retrievalUserPrompt,
     recentBridgeText: snapshot.recentBridgeText,
@@ -117,6 +126,7 @@ export function buildProofConstraintsFromSnapshot(
   snapshot: PipelineContextSnapshot,
 ): ProofConstraints {
   return {
+    presetText: snapshot.presetText,
     currentInstructionText: snapshot.currentInstructionText,
     retrievalUserPrompt: snapshot.retrievalUserPrompt,
     // Characters + worldbook + Story Memory carry the hard "must not violate"
@@ -124,6 +134,8 @@ export function buildProofConstraintsFromSnapshot(
     relevantCharacterConstraints: snapshot.characterText,
     relevantWorldRules: snapshot.worldbookText,
     currentStoryState: snapshot.storyMemoryText,
+    episodicMemoryText: snapshot.episodicMemoryText,
+    noteText: snapshot.noteText,
     recentBridgeText: snapshot.recentBridgeText,
   };
 }
