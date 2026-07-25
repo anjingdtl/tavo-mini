@@ -29,6 +29,11 @@ interface PipelineTaskState {
 }
 
 let taskIdCounter = 0;
+// Pipeline status changes are frequent and SQLite writes are asynchronous.
+// Keep a per-task write chain so an earlier "reviewing" snapshot cannot finish
+// after the successful review result and overwrite `stage_results` with stale
+// (often empty) data on disk.
+const taskPersistenceChains = new Map<string, Promise<void>>();
 const activeStatuses: PipelineTaskStatus[] = ['idle', 'queued', 'drafting', 'reviewing', 'factChecking', 'proofing'];
 
 function interruptTask(task: PipelineTask, now: number): PipelineTask {
@@ -44,21 +49,29 @@ function interruptTask(task: PipelineTask, now: number): PipelineTask {
 }
 
 function persistTask(task: PipelineTask) {
-  db.savePipelineTask({
+  // Capture an immutable value now: callers immediately continue to later
+  // stages and Zustand state is intentionally mutable over time.
+  const snapshot = {
     id: task.id,
     targetType: task.targetType,
     targetId: task.targetId,
     status: task.status,
-    stageResults: task.stageResults,
+    stageResults: task.stageResults.map(stage => ({ ...stage })),
     finalText: task.finalText,
     error: task.error,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     resolvedAt: task.resolvedAt,
     resolvedAction: task.resolvedAction || null,
-  }).catch((err) => {
-    console.warn('[pipelineTaskStore] persistTask failed:', task.id, err);
-  });
+  };
+  const previous = taskPersistenceChains.get(task.id) || Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => db.savePipelineTask(snapshot))
+    .catch(err => {
+      console.warn('[pipelineTaskStore] persistTask failed:', task.id, err);
+    });
+  taskPersistenceChains.set(task.id, next);
 }
 
 export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
@@ -191,21 +204,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         t.id === taskId ? { ...t, resolvedAt: Date.now(), resolvedAction: action, updatedAt: Date.now() } : t
       );
       const task = tasks.find((t) => t.id === taskId);
-      if (task) {
-        db.savePipelineTask({
-          id: task.id,
-          targetType: task.targetType,
-          targetId: task.targetId,
-          status: task.status,
-          stageResults: task.stageResults,
-          finalText: task.finalText,
-          error: task.error,
-          createdAt: task.createdAt,
-          updatedAt: task.updatedAt,
-          resolvedAt: task.resolvedAt,
-          resolvedAction: action,
-        }).catch(() => {});
-      }
+      if (task) persistTask(task);
       return { tasks };
     });
   },
