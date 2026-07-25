@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.6.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.6.1-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.6.0** · 数据库 Schema：**18** · 最低 Android API：**24**
+当前版本：**V2.6.1** · 数据库 Schema：**18** · 最低 Android API：**24**
 
-`V2.6.0` 完成写作到定稿的模拟器回归：新项目资料默认关闭、世界书合集级联开启、上下文预览中的常驻世界书、完整四阶段流水线审核结果和长期故事记忆整理均已验证。详见 [CHANGELOG](CHANGELOG.md)。
+`V2.6.1` 修正世界书条目进入写作上下文的读取侧过滤：与角色卡对齐，仅由项目级开关决定条目是否参与；导入带禁用标记的世界书条目也能在项目级启用后正常进入章节上下文与流水线各阶段。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.5.22`「构建」模块正式上线：底部导航新增第五个 Tab「构建」（项目｜写作｜构建｜资料｜设置），用当前在线 OpenAI 兼容 LLM 独立生成可移植的角色卡（`chara_card_v3`）与多条目世界书合集（`lorebook_v3`）。支持三种模式——独立构建、基于手机里的世界书 JSON 构建角色卡、基于角色卡 JSON/PNG 构建世界书；提供 1%–15%（默认 5%）的输出预留滑块，按上下文容量与 `max_output_tokens` 计算预算，超预算或预留不足时禁止静默截断。产物保存到手机后，需在「资料」中手动导入并启用才会参与写作；原资料库的「AI 一键生成」入口已下线并迁移至此。穿越回归验证：在线 LLM 前置校验、预算公式实测一致、预留不足拦截、自研滑块首次点击精确设值（硬化后不跳最大值）、模型输出截断检测、资料库 AI 入口下线、主题切换、项目与章节编辑全部通过，未发现代码缺陷。详见 [CHANGELOG](CHANGELOG.md)。
 
@@ -112,9 +112,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-目标正式产物：`dist/apk/release/ShineWriter-V2.6.0-release.apk`，`versionName=V2.6.0`，`versionCode=2060000`。
+目标正式产物：`dist/apk/release/ShineWriter-V2.6.1-release.apk`，`versionName=V2.6.1`，`versionCode=2060100`。
 
-本轮 **已构建并验证** Release APK：本次发版已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收，并在 Android 模拟器上完成 Debug 穿越与 V2.5.21 安装启动验证。
+本轮 **已构建并验证** Release APK：已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
 
 **实测验收数据**：
 
@@ -124,9 +124,8 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
 | Number of signers | 1 |
 | zipalign -c | Verification successful |
-| versionName / versionCode | V2.5.21 / 2052100 |
-| 文件大小 | 37,488,311 bytes（35.75 MB） |
-| APK SHA-256 | `DBF37A46B04513F19B5A4091F7474FB48109DDFF57FF89FFFC2A65371549208A` |
+| versionName / versionCode | V2.6.1 / 2060100 |
+| 文件大小 | 37,527,783 bytes（35.8 MB） |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -227,7 +226,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.6.0** with database Schema **18**. New projects explicitly start with all existing resource types disabled. When a world-book entry is subsequently enabled for a project, its parent collection is made available too, so the context query cannot silently filter an entry that the UI marks as enabled. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.6.1** with database Schema **18**. New projects explicitly start with all existing resource types disabled. When a world-book entry is subsequently enabled for a project, its parent collection is made available too, so the context query cannot silently filter an entry that the UI marks as enabled. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 
