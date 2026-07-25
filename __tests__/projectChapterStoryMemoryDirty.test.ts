@@ -478,7 +478,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
   });
 });
 
-describe('createProject → usable default preset link', () => {
+describe('createProject → resources start disabled', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockExecute.mockResolvedValue({ rowsAffected: 1, insertId: 77 });
@@ -486,15 +486,42 @@ describe('createProject → usable default preset link', () => {
     (ensureDefaultPreset as jest.Mock).mockResolvedValue(11);
   });
 
-  it('links the resolved default preset instead of the old resource-id zero placeholder', async () => {
+  it('links the resolved default preset as disabled and materializes disabled resource defaults', async () => {
     await createProject('预设关联回归', 'outline');
 
     expect(ensureDefaultPreset).toHaveBeenCalledWith(mockDatabase);
     const statements = txStatements();
     const presetLink = statements.find(statement =>
-      statement.sql.includes('project_resources'),
+      statement.sql.includes('project_resources') &&
+      statement.params?.[1] === 'preset' &&
+      statement.params?.[2] === 11,
     );
-    expect(presetLink?.params).toEqual([77, 'preset', 11, 1]);
-    expect(presetLink?.params).not.toContain(0);
+    expect(presetLink?.params).toEqual([77, 'preset', 11, 0]);
+    expect(presetLink?.params?.[2]).not.toBe(0);
+
+    expect(statements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sql: expect.stringContaining("SELECT ?, 'character', id, 0 FROM characters"),
+          params: [77],
+        }),
+        expect.objectContaining({
+          sql: expect.stringContaining("SELECT ?, 'worldbook', id, 0 FROM worldbook_entries"),
+          params: [77],
+        }),
+        expect.objectContaining({
+          sql: expect.stringContaining("SELECT ?, 'note', id, 0 FROM notes"),
+          params: [77],
+        }),
+        expect.objectContaining({
+          sql: expect.stringContaining("SELECT ?, 'preset', id, 0 FROM presets"),
+          params: [77],
+        }),
+        expect.objectContaining({
+          sql: expect.stringContaining("SELECT ?, 'worldbook', id, 0 FROM worldbook_collections"),
+          params: [77],
+        }),
+      ]),
+    );
   });
 });

@@ -35,6 +35,7 @@ jest.mock('../src/utils/idfCache', () => ({
 
 import { buildContext } from '../src/services/contextBuilder';
 import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
+import * as db from '../src/services/database';
 
 const baseChapter = {
   id: 1,
@@ -149,4 +150,46 @@ test('buildContext still returns messages / chapters / trace / estimatedInputTok
   expect(Array.isArray(result.chapters)).toBe(true);
   expect(Array.isArray(result.trace)).toBe(true);
   expect(typeof result.estimatedInputTokens).toBe('number');
+});
+
+test('re-reads newly enabled character cards and worldbook entries for the next chapter context', async () => {
+  (db.getCharactersByProject as jest.Mock).mockResolvedValueOnce([
+    {
+      id: 21,
+      name: '新启用角色',
+      max_tokens: 500,
+      data_json: JSON.stringify({ data: { description: '刚刚在写作中启用的角色设定。' } }),
+    },
+  ]);
+  (db.getWorldbookEntriesByProject as jest.Mock).mockResolvedValueOnce([
+    {
+      id: 31,
+      collection_id: 3,
+      collection_enabled: 1,
+      collection_max_tokens: 500,
+      enabled: 1,
+      max_tokens: 500,
+      keyword_primary: '新钟楼',
+      keyword_secondary: '',
+      content: '刚刚在写作中启用的世界书规则。',
+      constant: 0,
+      position: 0,
+    },
+  ]);
+
+  const result = await buildContext(
+    { ...baseChapter, title: '前往新钟楼', synopsis: '调查新钟楼' } as any,
+    baseConfig as any,
+    7,
+  );
+  const rendered = result.messages.map(message => message.content).join('\n');
+
+  expect(rendered).toContain('刚刚在写作中启用的角色设定。');
+  expect(rendered).toContain('刚刚在写作中启用的世界书规则。');
+  expect(result.trace).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ kind: 'character', sourceId: 21, included: true }),
+      expect.objectContaining({ kind: 'worldbook', sourceId: 31, included: true }),
+    ]),
+  );
 });

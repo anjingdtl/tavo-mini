@@ -38,7 +38,7 @@ function fullSnapshot(): PipelineContextSnapshot {
   };
 }
 
-test('review stage receives preset + character + storyMemory + bridge + instruction from snapshot', () => {
+test('review stage receives every enabled draft context from snapshot', () => {
   const snap = fullSnapshot();
   const ctx = buildReviewContextFromSnapshot(snap);
   const messages = buildReviewMessages('初稿正文', ctx);
@@ -47,17 +47,21 @@ test('review stage receives preset + character + storyMemory + bridge + instruct
   expect(userContent).toContain('冷峻克制');
   expect(userContent).toContain('张明');
   expect(userContent).toContain('旧识');
+  expect(userContent).toContain('龙族不能进入盐湖');
+  expect(userContent).toContain('心理阴影');
+  expect(userContent).toContain('铜钥匙');
   expect(userContent).toContain('银钥匙交给李雪');
   expect(userContent).toContain('第8章');
 });
 
-test('fact-check stage receives worldbook + storyMemory + episodic + bridge + character + note from snapshot', () => {
+test('fact-check stage receives every enabled draft context from snapshot', () => {
   const snap = fullSnapshot();
   const ctx = buildFactCheckContextFromSnapshot(snap);
   const messages = buildFactCheckMessages('初稿正文', ctx);
   const userContent = messages.find(m => m.role === 'user')!.content;
 
   // World rules
+  expect(userContent).toContain('冷峻克制');
   expect(userContent).toContain('龙族不能进入盐湖');
   // Story Memory
   expect(userContent).toContain('旧识');
@@ -72,7 +76,7 @@ test('fact-check stage receives worldbook + storyMemory + episodic + bridge + ch
   expect(userContent).toContain('心理阴影');
 });
 
-test('proof stage receives constraints + both reports from snapshot', () => {
+test('proof stage receives every enabled draft constraint + both reports from snapshot', () => {
   const snap = fullSnapshot();
   const constraints = buildProofConstraintsFromSnapshot(snap);
   const reviewText = '{"issues":["节奏过快"]}';
@@ -85,6 +89,9 @@ test('proof stage receives constraints + both reports from snapshot', () => {
   expect(userContent).toContain('银钥匙交给李雪');
   expect(userContent).toContain('刑警');
   expect(userContent).toContain('龙族不能进入盐湖');
+  expect(userContent).toContain('冷峻克制');
+  expect(userContent).toContain('心理阴影');
+  expect(userContent).toContain('铜钥匙');
   // Both audit reports
   expect(userContent).toContain('节奏过快');
   expect(userContent).toContain('张明不该持有银钥匙');
