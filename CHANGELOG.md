@@ -4,6 +4,16 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.6.1] - 2026-07-25
+
+### Fixed
+
+- **世界书条目读取侧对齐角色卡**：上下文查询此前额外叠了一层条目全局 `enabled` 硬过滤，导致导入带禁用标记的世界书条目、或在条目编辑器里关闭过启用的条目，即使项目级合集与条目均已启用，仍被排除在章节上下文、初稿与各审核阶段之外。现在世界书与角色卡一致，仅由项目级开关决定是否参与；合集级与条目级的项目开关成为唯一仲裁。条目编辑器中语义混淆的「条目启用」开关同步移除，统一收敛到列表项的「当前项目使用」。
+
+### Tests
+
+- 单元测试覆盖：条目全局 `enabled=0` 时仍可进入上下文、合集项目级关闭时仍被过滤；既有世界书激活与角色卡上下文用例全量回归通过。
+
 ## [2.6.0] - 2026-07-25
 
 ### Fixed
