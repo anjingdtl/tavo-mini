@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -63,32 +63,68 @@ import {
   parseWorldBookJSON,
   pickSourceFile,
 } from '../services/fileImport';
+import {
+  buildTextSourceSnapshot,
+  decodeTextSourceBase64,
+  parseConstructionTextSource,
+  type TextSourceSection,
+} from '../services/construction/textSourceParser';
+import {
+  DEFAULT_DETAIL_LEVEL,
+  getDetailConstraints,
+  type ConstructionDetailLevel,
+} from '../services/construction/quality';
 import { useThemeStore } from '../store/themeStore';
 
-type BuildMode = 'independent' | 'fromWorldbook' | 'fromCharacter';
+type BuildMode = 'independent' | 'fromWorldbook' | 'fromCharacter' | 'fromText';
 type IndependentTarget = 'character' | 'worldbook';
 type GenerateStatus = 'idle' | 'queued' | 'running' | 'preview';
 
 interface SourceState {
-  kind: 'worldbook' | 'character';
+  kind: 'worldbook' | 'character' | 'text';
   name: string;
   /** 喂给模型的来源快照文本（一次性参考，不落库）。 */
   snapshot: string;
   entryCount?: number;
   /** 预计输入 Token（来源快照本身的估算，用于展示）。 */
   tokens: number;
+  sections?: TextSourceSection[];
+  selectedSectionIds?: string[];
+  encoding?: string;
 }
 
 const MODE_OPTIONS: { value: BuildMode; label: string }[] = [
   { value: 'independent', label: '独立构建' },
   { value: 'fromWorldbook', label: '由世界书' },
   { value: 'fromCharacter', label: '由角色卡' },
+  { value: 'fromText', label: '由 TXT' },
 ];
 
 const TARGET_OPTIONS: { value: IndependentTarget; label: string }[] = [
   { value: 'character', label: '角色卡' },
   { value: 'worldbook', label: '世界书' },
 ];
+
+const DETAIL_OPTIONS: { value: ConstructionDetailLevel; label: string }[] = [
+  { value: 'compact', label: '紧凑' },
+  { value: 'full', label: '丰满' },
+  { value: 'deep', label: '深度' },
+];
+
+function formatGenerationError(error: unknown): string {
+  const message =
+    error && typeof error === 'object' && 'message' in error
+      ? String((error as { message?: unknown }).message || '')
+      : '';
+
+  // 认证失败在构建页中最常见，也最容易因 Toast 自动消失而被误判为“没有结果”。
+  // 不回显服务端原文，避免将请求中的凭据片段再次展示给用户。
+  if (/\b401\b|authentication\s+fails|invalid\s+(api\s*)?key/i.test(message)) {
+    return 'API 认证失败（HTTP 401）。请在 LLM 设置中更新 API Key，并使用「保存并测试」确认连接后再生成。';
+  }
+
+  return message || '请检查 LLM 配置与网络后重试。';
+}
 
 export const BuildScreen: React.FC = () => {
   const { theme } = useThemeStore();
@@ -115,14 +151,18 @@ export const BuildScreen: React.FC = () => {
   // 通用补充需求
   const [extra, setExtra] = useState('');
   const [entryCount, setEntryCount] = useState(DEFAULT_ENTRY_COUNT);
+  const [detailLevel, setDetailLevel] =
+    useState<ConstructionDetailLevel>(DEFAULT_DETAIL_LEVEL);
 
   const [reservePercent, setReservePercent] = useState(DEFAULT_RESERVE_PERCENT);
   const [source, setSource] = useState<SourceState | null>(null);
   const [status, setStatus] = useState<GenerateStatus>('idle');
   const [queueLabel, setQueueLabel] = useState<string>('');
+  const [generationError, setGenerationError] = useState<string | null>(null);
   const [artifact, setArtifact] = useState<ConstructionArtifact | null>(null);
   const [showJson, setShowJson] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const lastAutoBudgetSignature = useRef<string | null>(null);
 
   const target: IndependentTarget = useMemo(() => {
     if (mode === 'fromWorldbook') return 'character';
@@ -161,10 +201,24 @@ export const BuildScreen: React.FC = () => {
         maxOutputTokens: llmConfig.max_output_tokens,
         reservePercent,
         target,
+        detailLevel,
         entryCount: target === 'worldbook' ? entryCount : undefined,
       }),
-    [llmConfig, reservePercent, target, entryCount],
+    [llmConfig, reservePercent, target, entryCount, detailLevel],
   );
+
+  // 初始进入或切换规模/目标时，提高到刚好可生成的预留；用户手动调低后保留其选择并给出阻断提示。
+  const autoBudgetSignature = `${mode}:${target}:${detailLevel}:${entryCount}`;
+  useEffect(() => {
+    if (lastAutoBudgetSignature.current === autoBudgetSignature) return;
+    lastAutoBudgetSignature.current = autoBudgetSignature;
+    if (
+      budget.minReservePercent != null &&
+      budget.reservePercent < budget.minReservePercent
+    ) {
+      setReservePercent(budget.minReservePercent);
+    }
+  }, [autoBudgetSignature, budget.minReservePercent, budget.reservePercent]);
 
   // ---------- 组装 ConstructionInput ----------
   const independentCharFilled =
@@ -184,6 +238,7 @@ export const BuildScreen: React.FC = () => {
           personality: charPersonality,
           atmosphere: charAtmosphere,
           extra,
+          detailLevel,
         };
       }
       return {
@@ -195,6 +250,7 @@ export const BuildScreen: React.FC = () => {
         usage: wbUsage,
         extra,
         entryCount: clampEntryCount(entryCount),
+        detailLevel,
       };
     }
     if (!source) return null;
@@ -204,15 +260,39 @@ export const BuildScreen: React.FC = () => {
         sourceSnapshot: source.snapshot,
         sourceName: source.name,
         extra,
+        detailLevel,
       };
     }
-    return {
-      mode: 'worldbook_from_character',
-      sourceSnapshot: source.snapshot,
-      sourceName: source.name,
-      extra,
-      entryCount: clampEntryCount(entryCount),
-    };
+    if (mode === 'fromCharacter') {
+      return {
+        mode: 'worldbook_from_character',
+        sourceSnapshot: source.snapshot,
+        sourceName: source.name,
+        extra,
+        entryCount: clampEntryCount(entryCount),
+        detailLevel,
+      };
+    }
+    if (mode === 'fromText' && target === 'character') {
+      return {
+        mode: 'character_from_text',
+        sourceSnapshot: source.snapshot,
+        sourceName: source.name,
+        extra,
+        detailLevel,
+      };
+    }
+    if (mode === 'fromText') {
+      return {
+        mode: 'worldbook_from_text',
+        sourceSnapshot: source.snapshot,
+        sourceName: source.name,
+        extra,
+        entryCount: clampEntryCount(entryCount),
+        detailLevel,
+      };
+    }
+    return null;
   }, [
     mode,
     target,
@@ -230,6 +310,7 @@ export const BuildScreen: React.FC = () => {
     wbUsage,
     entryCount,
     source,
+    detailLevel,
   ]);
 
   const inputTokens = input ? estimateConstructionInputTokens(input) : 0;
@@ -251,10 +332,10 @@ export const BuildScreen: React.FC = () => {
     setStatus('idle');
     setSource(null);
     if (nextMode === 'independent' && nextTarget === 'worldbook') {
-      setEntryCount(DEFAULT_ENTRY_COUNT);
+      setEntryCount(getDetailConstraints(detailLevel).worldbook.defaultEntryCount);
     }
     if (nextMode !== 'independent') {
-      setEntryCount(DEFAULT_ENTRY_COUNT);
+      setEntryCount(getDetailConstraints(detailLevel).worldbook.defaultEntryCount);
     }
   };
 
@@ -265,6 +346,15 @@ export const BuildScreen: React.FC = () => {
   const handleTargetChange = (next: IndependentTarget) => {
     setIndependentTarget(next);
     resetToDefaults('independent', next);
+  };
+
+  const handleDetailLevelChange = (next: ConstructionDetailLevel) => {
+    setDetailLevel(next);
+    setArtifact(null);
+    setStatus('idle');
+    if (target === 'worldbook') {
+      setEntryCount(getDetailConstraints(next).worldbook.defaultEntryCount);
+    }
   };
 
   const handleEntryStep = (delta: number) => {
@@ -364,6 +454,107 @@ export const BuildScreen: React.FC = () => {
     }
   };
 
+  const pickTextSource = async () => {
+    let copiedPath: string | null = null;
+    try {
+      const file = await pickSourceFile([types.plainText, types.allFiles]);
+      if (!file) return;
+      copiedPath = file.localPath;
+      const isText = /\.txt$/i.test(file.name) || file.mimeType === 'text/plain';
+      if (!isText) throw new Error('请选择扩展名为 .txt 的文本文件。');
+      const decoded = decodeTextSourceBase64(
+        await RNFS.readFile(file.localPath, 'base64'),
+      );
+      const parsed = parseConstructionTextSource(
+        decoded.text,
+        file.name,
+        decoded.encoding,
+      );
+      const selectedSectionIds = parsed.sections.map(section => section.id);
+      const snapshot = buildTextSourceSnapshot(parsed, selectedSectionIds);
+      const sourceInput =
+        target === 'character'
+          ? {
+              mode: 'character_from_text' as const,
+              sourceSnapshot: snapshot,
+              detailLevel,
+            }
+          : {
+              mode: 'worldbook_from_text' as const,
+              sourceSnapshot: snapshot,
+              entryCount: clampEntryCount(entryCount),
+              detailLevel,
+            };
+      setSource({
+        kind: 'text',
+        name: parsed.name,
+        snapshot,
+        tokens: estimateConstructionInputTokens(sourceInput),
+        sections: parsed.sections,
+        selectedSectionIds,
+        encoding: parsed.encoding,
+      });
+      setArtifact(null);
+      setStatus('idle');
+      Toast.show({
+        type: 'success',
+        text1: '已读取 TXT 素材',
+        text2: `${parsed.sections.length} 个可选片段 · ${parsed.encoding.toUpperCase()}`,
+      });
+    } catch (error: any) {
+      Toast.show({
+        type: 'error',
+        text1: 'TXT 解析失败',
+        text2: error?.message || '无法读取该 TXT 文件。',
+      });
+    } finally {
+      if (copiedPath) RNFS.unlink(copiedPath).catch(() => {});
+    }
+  };
+
+  const toggleTextSection = (sectionId: string) => {
+    setSource(previous => {
+      if (!previous || previous.kind !== 'text' || !previous.sections) return previous;
+      const selected = new Set(previous.selectedSectionIds || []);
+      if (selected.has(sectionId)) selected.delete(sectionId);
+      else selected.add(sectionId);
+      const selectedSectionIds = previous.sections
+        .map(section => section.id)
+        .filter(id => selected.has(id));
+      if (selectedSectionIds.length === 0) {
+        Toast.show({ type: 'info', text1: '请至少保留一个 TXT 片段' });
+        return previous;
+      }
+      const parsed = {
+        name: previous.name,
+        encoding: (previous.encoding || 'utf-8') as 'utf-8' | 'utf-16le' | 'utf-16be',
+        sections: previous.sections,
+      };
+      const snapshot = buildTextSourceSnapshot(parsed, selectedSectionIds);
+      const sourceInput =
+        target === 'character'
+          ? {
+              mode: 'character_from_text' as const,
+              sourceSnapshot: snapshot,
+              detailLevel,
+            }
+          : {
+              mode: 'worldbook_from_text' as const,
+              sourceSnapshot: snapshot,
+              entryCount: clampEntryCount(entryCount),
+              detailLevel,
+            };
+      return {
+        ...previous,
+        snapshot,
+        tokens: estimateConstructionInputTokens(sourceInput),
+        selectedSectionIds,
+      };
+    });
+    setArtifact(null);
+    setStatus('idle');
+  };
+
   // ---------- 生成 / 取消 ----------
   const handleGenerate = async () => {
     if (!input || !canGenerate) return;
@@ -372,6 +563,7 @@ export const BuildScreen: React.FC = () => {
     setStatus('queued');
     setQueueLabel('排队中…');
     setArtifact(null);
+    setGenerationError(null);
     try {
       const result = await generateConstruction(input, {
         maxTokens: budget.outputReserve,
@@ -387,15 +579,19 @@ export const BuildScreen: React.FC = () => {
         },
       });
       setArtifact(result);
+      setGenerationError(null);
       setStatus('preview');
     } catch (error: any) {
       if (controller.signal.aborted) {
+        setGenerationError(null);
         Toast.show({ type: 'info', text1: '已取消生成' });
       } else {
+        const message = formatGenerationError(error);
+        setGenerationError(message);
         Toast.show({
           type: 'error',
           text1: '生成失败',
-          text2: error?.message || '请检查 LLM 配置与网络后重试。',
+          text2: message,
         });
       }
       setStatus('idle');
@@ -411,6 +607,7 @@ export const BuildScreen: React.FC = () => {
 
   const handleRegenerate = () => {
     setArtifact(null);
+    setGenerationError(null);
     setStatus('idle');
   };
 
@@ -512,7 +709,7 @@ export const BuildScreen: React.FC = () => {
         {/* 模式选择 */}
         <View style={styles.section}>
           <SegmentedControl value={mode} options={MODE_OPTIONS} onChange={handleModeChange} />
-          {mode === 'independent' ? (
+          {mode === 'independent' || mode === 'fromText' ? (
             <View style={styles.subTarget}>
               <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
                 目标类型
@@ -524,6 +721,14 @@ export const BuildScreen: React.FC = () => {
               />
             </View>
           ) : null}
+          <View style={styles.subTarget}>
+            <Text style={[styles.label, { color: theme.colors.textSecondary }]}>内容丰满度</Text>
+            <SegmentedControl
+              value={detailLevel}
+              options={DETAIL_OPTIONS}
+              onChange={handleDetailLevelChange}
+            />
+          </View>
         </View>
 
         {/* 需求表单 / 来源选择 */}
@@ -581,6 +786,30 @@ export const BuildScreen: React.FC = () => {
                   entryCount={entryCount}
                   onStep={handleEntryStep}
                 />
+              </>
+            ) : null}
+            {mode === 'fromText' ? (
+              <>
+                <SourcePicker
+                  label="TXT 素材来源"
+                  hint="仅在点击生成后把当前勾选的内容发送给在线模型；不会保存路径、写入资料库或备份。"
+                  buttonLabel={source ? '重新选择 TXT' : '选择 TXT'}
+                  onPick={pickTextSource}
+                  source={source}
+                />
+                {source?.kind === 'text' ? (
+                  <TextSourceSections
+                    sections={source.sections || []}
+                    selectedIds={source.selectedSectionIds || []}
+                    onToggle={toggleTextSection}
+                  />
+                ) : null}
+                {target === 'worldbook' ? (
+                  <EntryCountStepper
+                    entryCount={entryCount}
+                    onStep={handleEntryStep}
+                  />
+                ) : null}
               </>
             ) : null}
 
@@ -648,7 +877,7 @@ export const BuildScreen: React.FC = () => {
                 ) : null}
                 {sourceOverBudget ? (
                   <Text style={[styles.hint, { color: theme.colors.danger }]}>
-                    来源内容（约 {inputTokens.toLocaleString('en-US')} Token）超过可用预算（{budget.sourceBudget.toLocaleString('en-US')} Token）。请减少世界书条目、选择更小的来源文件、在仍满足最低输出时降低输出预留，或使用上下文更大的在线模型。
+                    来源内容（约 {inputTokens.toLocaleString('en-US')} Token）超过可用预算（{budget.sourceBudget.toLocaleString('en-US')} Token）。TXT 可取消勾选片段；其他来源请选择更小文件，或使用上下文更大的在线模型。
                   </Text>
                 ) : null}
                 {mode === 'independent' && target === 'character' && !independentCharFilled ? (
@@ -660,6 +889,37 @@ export const BuildScreen: React.FC = () => {
                   <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
                     请先选择来源文件。
                   </Text>
+                ) : null}
+                {generationError ? (
+                  <View
+                    testID="build-generation-error"
+                    style={[
+                      styles.generationError,
+                      { borderColor: theme.colors.danger },
+                    ]}
+                  >
+                    <Text style={[styles.generationErrorTitle, { color: theme.colors.danger }]}>
+                      生成失败
+                    </Text>
+                    <Text style={[styles.hint, { color: theme.colors.textPrimary }]}>
+                      {generationError}
+                    </Text>
+                    <View style={styles.generationErrorActions}>
+                      <Button
+                        testID="build-generation-error-settings"
+                        label="前往 LLM 设置"
+                        compact
+                        variant="secondary"
+                        onPress={navigateToLLMSettings}
+                      />
+                      <Button
+                        label="关闭提示"
+                        compact
+                        variant="ghost"
+                        onPress={() => setGenerationError(null)}
+                      />
+                    </View>
+                  </View>
                 ) : null}
               </>
             )}
@@ -770,11 +1030,48 @@ const SourcePicker: React.FC<{
           <Text style={[styles.sourceMeta, { color: theme.colors.textSecondary }]}>
             {source.kind === 'worldbook'
               ? `${source.entryCount ?? 0} 条条目 · `
-              : '角色卡 · '}
+              : source.kind === 'text'
+                ? `${source.selectedSectionIds?.length ?? 0}/${source.sections?.length ?? 0} 个片段 · ${source.encoding?.toUpperCase() || 'TXT'} · `
+                : '角色卡 · '}
             预计输入 {source.tokens.toLocaleString('en-US')} Token
           </Text>
         </View>
       ) : null}
+    </View>
+  );
+};
+
+const TextSourceSections: React.FC<{
+  sections: TextSourceSection[];
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+}> = ({ sections, selectedIds, onToggle }) => {
+  const { theme } = useThemeStore();
+  const selected = new Set(selectedIds);
+  return (
+    <View style={styles.textSections}>
+      <Text style={[styles.label, { color: theme.colors.textSecondary }]}>用于生成的 TXT 片段</Text>
+      {sections.map(section => {
+        const active = selected.has(section.id);
+        return (
+          <Pressable
+            key={section.id}
+            testID={`build-text-section-${section.id}`}
+            onPress={() => onToggle(section.id)}
+            style={[
+              styles.textSection,
+              { borderColor: active ? theme.colors.accent : theme.colors.border },
+            ]}
+          >
+            <Text style={[styles.textSectionTitle, { color: theme.colors.textPrimary }]}>
+              {active ? '☑' : '☐'} {section.title}
+            </Text>
+            <Text style={[styles.textSectionMeta, { color: theme.colors.textSecondary }]}>
+              {section.estimatedTokens.toLocaleString('en-US')} Token
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 };
@@ -802,6 +1099,7 @@ const BudgetPanel: React.FC<{
       </Text>
       <View style={styles.budgetGrid}>
         <BudgetCell label="上下文容量" value={budget.contextWindow.toLocaleString('en-US')} />
+        <BudgetCell label={`${getDetailConstraints(budget.detailLevel).label}档最低生成`} value={budget.requiredMinOutput.toLocaleString('en-US')} />
         <BudgetCell label="输出预留" value={budget.outputReserve.toLocaleString('en-US')} />
         <BudgetCell label="来源预算" value={budget.sourceBudget.toLocaleString('en-US')} />
         <BudgetCell label="预计输入" value={inputTokens.toLocaleString('en-US')} danger={sourceOverBudget} />
@@ -889,6 +1187,11 @@ const CharacterPreview: React.FC<{ artifact: Extract<ConstructionArtifact, { kin
       {artifact.card.data.first_mes ? (
         <Text style={[styles.previewText, { color: theme.colors.textSecondary }]} numberOfLines={4}>开场白：{artifact.card.data.first_mes}</Text>
       ) : null}
+      {artifact.qualityReport?.character ? (
+        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>
+          质量：约 {artifact.qualityReport.actualOutputTokens.toLocaleString('en-US')} Token · 描述 {artifact.qualityReport.character.fieldLengths.description} 字 · {artifact.qualityReport.character.dialogueTurns} 轮对话
+        </Text>
+      ) : null}
     </View>
   );
 };
@@ -909,6 +1212,11 @@ const WorldbookPreview: React.FC<{ artifact: Extract<ConstructionArtifact, { kin
           <Text style={[styles.entryContent, { color: theme.colors.textSecondary }]} numberOfLines={3}>{entry.content}</Text>
         </View>
       ))}
+      {artifact.qualityReport?.worldbook ? (
+        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>
+          全部常驻 · 估算常驻内容 {artifact.qualityReport.worldbook.totalEstimatedPersistentTokens.toLocaleString('en-US')} Token
+        </Text>
+      ) : null}
     </View>
   );
 };
@@ -924,6 +1232,9 @@ const styles = StyleSheet.create({
   largeInput: { minHeight: 96, textAlignVertical: 'top' },
   actions: { gap: spacing.sm },
   statusText: { fontSize: 15, fontWeight: '700' },
+  generationError: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, gap: spacing.xs },
+  generationErrorTitle: { fontSize: 14, fontWeight: '800' },
+  generationErrorActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.xs },
   stepperRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm },
   stepperLabel: { fontSize: 13, fontWeight: '700' },
   stepperControls: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
@@ -932,6 +1243,10 @@ const styles = StyleSheet.create({
   sourceSummary: { marginTop: spacing.xs },
   sourceName: { fontSize: 15, fontWeight: '800' },
   sourceMeta: { fontSize: 12, marginTop: 2 },
+  textSections: { gap: spacing.xs, marginBottom: spacing.md },
+  textSection: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: spacing.sm },
+  textSectionTitle: { fontSize: 13, fontWeight: '700' },
+  textSectionMeta: { fontSize: 11, marginTop: 2 },
   budgetBlock: { marginTop: spacing.md, gap: spacing.xs },
   budgetTitle: { fontSize: 13, fontWeight: '700' },
   budgetValue: { fontSize: 13, fontWeight: '700', textAlign: 'right' },

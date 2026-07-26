@@ -5,6 +5,7 @@ import {
   RESERVE_PERCENT_MAX,
   WORLDBOOK_ENTRY_MAX,
   WORLDBOOK_ENTRY_MIN,
+  WORLDBOOK_COLLECTION_OVERHEAD_TOKENS,
   WORLDBOOK_MIN_OUTPUT_PER_ENTRY,
   clampEntryCount,
   clampPercent,
@@ -41,7 +42,7 @@ describe('construction budget', () => {
       expect(clampPercent(20)).toBe(15);
       expect(clampPercent(NaN)).toBe(DEFAULT_RESERVE_PERCENT);
     });
-    it('clamps worldbook entry count into 2..12 with default 6', () => {
+    it('clamps worldbook entry count into 2..12 with default full-detail count', () => {
       expect(clampEntryCount(0)).toBe(WORLDBOOK_ENTRY_MIN);
       expect(clampEntryCount(1)).toBe(WORLDBOOK_ENTRY_MIN);
       expect(clampEntryCount(9)).toBe(9);
@@ -50,13 +51,13 @@ describe('construction budget', () => {
     });
   });
 
-  it('requiredMinOutput: character=512, worldbook=256*entries', () => {
+  it('requiredMinOutput uses the default full-detail lower bound', () => {
     expect(requiredMinOutput('character')).toBe(CHARACTER_MIN_OUTPUT);
     expect(requiredMinOutput('worldbook', 6)).toBe(
-      WORLDBOOK_MIN_OUTPUT_PER_ENTRY * 6,
+      WORLDBOOK_COLLECTION_OVERHEAD_TOKENS + WORLDBOOK_MIN_OUTPUT_PER_ENTRY * 6,
     );
     expect(requiredMinOutput('worldbook', 1)).toBe(
-      WORLDBOOK_MIN_OUTPUT_PER_ENTRY * WORLDBOOK_ENTRY_MIN,
+      WORLDBOOK_COLLECTION_OVERHEAD_TOKENS + WORLDBOOK_MIN_OUTPUT_PER_ENTRY * WORLDBOOK_ENTRY_MIN,
     );
   });
 
@@ -66,14 +67,14 @@ describe('construction budget', () => {
       const r = computeConstructionBudget({
         contextWindow: 32768,
         maxOutputTokens: 4096,
-        reservePercent: 5,
+        reservePercent: 10,
         target: 'character',
       });
-      expect(r.requestedOutput).toBe(1638); // round(32768*0.05)
+      expect(r.requestedOutput).toBe(3277); // round(32768*0.10)
       expect(r.safetyMargin).toBe(328);
-      expect(r.outputReserve).toBe(1638); // min(1638,4096,32440)
-      expect(r.sourceBudget).toBe(32768 - 1638 - 328);
-      expect(r.requiredMinOutput).toBe(512);
+      expect(r.outputReserve).toBe(3277); // min(3277,4096,32440)
+      expect(r.sourceBudget).toBe(32768 - 3277 - 328);
+      expect(r.requiredMinOutput).toBe(2800);
       expect(r.generatable).toBe(true);
       expect(r.feasible).toBe(true);
       expect(r.cappedByMaxOutput).toBe(false);
@@ -90,8 +91,8 @@ describe('construction budget', () => {
       expect(r.outputReserve).toBe(1000);
       expect(r.cappedByMaxOutput).toBe(true);
       expect(r.cappedByContext).toBe(false);
-      // 1000 still >= 512 → generatable
-      expect(r.generatable).toBe(true);
+      // 1000 is below the default full-detail lower bound.
+      expect(r.generatable).toBe(false);
     });
 
     it('is not generatable when the slider is too low, and reports min percent', () => {
@@ -101,12 +102,12 @@ describe('construction budget', () => {
         reservePercent: 1,
         target: 'character',
       });
-      // p=1 → 328 < 512
+      // p=1 → 328 < 2800
       expect(r.outputReserve).toBe(328);
       expect(r.generatable).toBe(false);
       expect(r.feasible).toBe(true);
-      expect(r.minReservePercent).toBe(2);
-      expect(r.reason).toContain('2%');
+      expect(r.minReservePercent).toBe(9);
+      expect(r.reason).toContain('9%');
     });
 
     it('is infeasible when max_output_tokens is below the minimum', () => {
@@ -123,20 +124,20 @@ describe('construction budget', () => {
   });
 
   describe('computeConstructionBudget — worldbook', () => {
-    it('requires 256 * entryCount and respects the count', () => {
+    it('requires overhead + per-entry lower bounds and respects the count', () => {
       const r = computeConstructionBudget({
         contextWindow: 32768,
         maxOutputTokens: 4096,
         reservePercent: 15,
         target: 'worldbook',
-        entryCount: 6,
+        entryCount: 4,
       });
-      expect(r.requiredMinOutput).toBe(256 * 6);
-      // p=15 → 4915, capped by M=4096 → 4096 >= 1536 → generatable
+      expect(r.requiredMinOutput).toBe(200 + 650 * 4);
+      // p=15 → 4915, capped by M=4096 → 4096 >= 2800 → generatable
       expect(r.outputReserve).toBe(4096);
       expect(r.cappedByMaxOutput).toBe(true);
       expect(r.generatable).toBe(true);
-      expect(r.entryCount).toBe(6);
+      expect(r.entryCount).toBe(4);
     });
 
     it('flags infeasibility when entry count needs >15% and guides the user', () => {
@@ -151,28 +152,28 @@ describe('construction budget', () => {
       expect(r.feasible).toBe(false);
       expect(r.minReservePercent).toBeNull();
       expect(r.reason).toContain('减少条目数');
-      expect(r.reason).toContain('1536');
+      expect(r.reason).toContain('4100');
     });
 
     it('recovers feasibility by lowering entry count', () => {
       const r = computeConstructionBudget({
-        contextWindow: 4096,
+        contextWindow: 10000,
         maxOutputTokens: 4096,
         reservePercent: 15,
         target: 'worldbook',
         entryCount: 2,
       });
-      expect(r.requiredMinOutput).toBe(512);
+      expect(r.requiredMinOutput).toBe(1500);
       expect(r.generatable).toBe(true);
     });
   });
 
   describe('findMinReservePercent', () => {
     it('returns the smallest percent that satisfies the minimum', () => {
-      // C=32768, min=512 → p=2 (655) is the first to clear 512
+      // C=32768, min=2800 → p=9 (2949) is the first to clear the default full bound
       expect(
         findMinReservePercent(32768, 4096, CHARACTER_MIN_OUTPUT),
-      ).toBe(2);
+      ).toBe(9);
     });
     it('returns null when the ceiling is below the minimum', () => {
       expect(findMinReservePercent(32768, 300, 512)).toBeNull();
