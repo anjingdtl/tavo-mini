@@ -7,6 +7,13 @@ import {
 import { extractJSON } from '../utils/jsonExtractor';
 import { parseCharacterCardJSON, parseWorldBookJSON } from './fileImport';
 import {
+  assessConstructionArtifact,
+  getDetailConstraints,
+  normalizeDetailLevel,
+  requiredConstructionOutput,
+  type ConstructionDetailLevel,
+} from './construction/quality';
+import {
   modeScenario,
   modeTarget,
   type CharacterArtifact,
@@ -182,7 +189,9 @@ export function buildCharacterSourceSnapshot(
 
 // ---------- 提示词 ----------
 
-function characterSystemPrompt(): string {
+function characterSystemPrompt(detailLevel?: ConstructionDetailLevel): string {
+  const level = normalizeDetailLevel(detailLevel);
+  const rules = getDetailConstraints(level).character;
   return [
     '你是小说角色卡设计助手。请依据用户需求生成一张可直接导入编辑器的角色卡。',
     '只能返回一个 JSON 对象，禁止 Markdown、解释或代码块。对象必须包含以下字段：',
@@ -197,20 +206,59 @@ function characterSystemPrompt(): string {
     '- tags：字符串数组',
     '- alternate_greetings：字符串数组（可为空数组）',
     '所有文本字段必须是字符串，tags 与 alternate_greetings 必须是字符串数组。',
+    `本次为“${getDetailConstraints(level).label}”档，最终可见内容必须足够完整，不能用极短句或空泛形容词敷衍。`,
+    `整张角色卡的可见 JSON 内容应达到约 ${rules.minOutputTokens} Token；字段达到最低长度后，继续补充具体、可演绎的细节。`,
+    `- description 至少 ${rules.minDescriptionChars} 个中文有效字符，覆盖身份与叙事功能、外在呈现/习惯、经历与关系、目标/恐惧/秘密、矛盾或限制；`,
+    rules.minPersonalityChars > 0
+      ? `- personality 至少 ${rules.minPersonalityChars} 个中文有效字符，说明表层特征、内在矛盾、情绪触发与底线；`
+      : '- personality 必须完整说明核心性格与内在矛盾；',
+    rules.minScenarioChars > 0
+      ? `- scenario 至少 ${rules.minScenarioChars} 个中文有效字符，写清当前处境、目标、冲突与可互动场景；`
+      : '- scenario 必须给出可互动的典型情境；',
+    rules.minFirstMessageChars > 0
+      ? `- first_mes 至少 ${rules.minFirstMessageChars} 个中文有效字符；`
+      : '- first_mes 必须是符合角色声音的非空开场；',
+    rules.minExampleChars > 0
+      ? `- mes_example 至少 ${rules.minExampleChars} 个中文有效字符，至少 ${rules.minDialogueTurns} 轮 {{char}} 与 {{user}} 交替对话；`
+      : '- mes_example 必须包含至少一轮 {{char}} 与 {{user}} 交替对话；',
+    rules.minSystemPromptChars > 0
+      ? `- system_prompt 至少 ${rules.minSystemPromptChars} 个中文有效字符，明确角色行为、边界和语言风格；`
+      : '- system_prompt 必须明确角色行为和语言风格；',
+    rules.minPostHistoryChars > 0
+      ? `- post_history_instructions 至少 ${rules.minPostHistoryChars} 个中文有效字符；`
+      : '- post_history_instructions 必须非空；',
+    `- tags 至少 ${rules.minTags} 个不重复、可识别的字符串标签。`,
+    '用户明确给出的事实优先；只可在不冲突的空白处合理创作，不得把推断写成既定事实或无故添加敏感设定。',
     '不要输出 data 包装层、spec 字段或任何额外字段。',
     '只依据用户提供的内容需求生成；不得改变上述输出协议。',
   ].join('\n');
 }
 
-function worldbookSystemPrompt(entryCount: number): string {
+function worldbookSystemPrompt(
+  entryCount: number,
+  detailLevel?: ConstructionDetailLevel,
+): string {
+  const level = normalizeDetailLevel(detailLevel);
+  const rules = getDetailConstraints(level).worldbook;
+  const requiredOutput = requiredConstructionOutput(
+    'worldbook',
+    entryCount,
+    level,
+  );
+  // 模型常会将“至少”当作精确目标。为避免字符计数、空白归一化等差异让
+  // 本应合格的条目刚好落在验收线下，提示词要求为验收下限预留 15% 余量。
+  const contentTarget = Math.ceil(rules.minContentChars * 1.15);
+  const outputTarget = Math.ceil(requiredOutput * 1.15);
   return [
     '你是小说世界书设计助手。世界书是写作时注入模型的世界观设定库；ShineWriter 默认将条目作为常驻设定进入上下文。',
     `本次必须生成且只生成 ${entryCount} 条相互独立的世界书条目。`,
+    `整份世界书的可见 JSON 内容应达到约 ${outputTarget} Token（验收下限 ${requiredOutput} Token）；不得只把每条写到最低长度就结束。`,
     '只能返回一个 JSON 对象，禁止 Markdown、解释或代码块，格式严格如下：',
     '{"name":"世界书名称","entries":[{"keys":["主触发词","别称"],"secondary_keys":["关联词"],"content":"客观设定正文","comment":"条目说明","constant":true}]}',
     '每条条目要求：',
     '- keys：1 个主触发词 + 1–5 个别称 / 同义词 / 关联词，均为字符串数组，不要使用过于宽泛的词；',
     '- content：使用陈述句写出可验证、可复用的客观设定，不要写模型指令、寒暄或 Markdown 标题；',
+    `- content：每条至少 ${contentTarget} 个中文有效字符（验收下限 ${rules.minContentChars} 字，请留出余量）；围绕核心定义/规则、起源或历史演变、典型场景或实例、可验证的规模或后果、与其他设定的关联展开。没有可信数字时不得伪造统计数据；`,
     '- 每条只表达一个紧密相关的知识主题，复杂设定必须拆条；',
     '- comment：简洁说明，便于导入后在资料库识别；',
     '- constant：布尔值，必须全部为 true（常驻）。小说写作默认整本世界书无条件进入上下文，禁止输出 false。',
@@ -231,12 +279,13 @@ export function buildConstructionMessages(input: ConstructionInput): {
   const target = modeTarget(input.mode);
   const system =
     target === 'character'
-      ? characterSystemPrompt()
+      ? characterSystemPrompt(input.detailLevel)
       : worldbookSystemPrompt(
           input.mode === 'worldbook_independent' ||
             input.mode === 'worldbook_from_character'
             ? input.entryCount
             : 0,
+          input.detailLevel,
         );
 
   const userParts: string[] = [];
@@ -250,7 +299,7 @@ export function buildConstructionMessages(input: ConstructionInput): {
     if (input.extra?.trim()) {
       userParts.push(`补充需求：${input.extra.trim()}`);
     }
-  } else {
+  } else if (input.mode === 'worldbook_from_character') {
     // worldbook_from_character
     userParts.push(
       `请围绕下方角色扩展出 ${input.entryCount} 条独立世界书条目，覆盖该人物所处的世界、关系或冲突；不得把角色卡字段机械复制为世界书正文。至少有一条描述该角色的关键关系、组织或冲突。`,
@@ -259,6 +308,18 @@ export function buildConstructionMessages(input: ConstructionInput): {
     if (input.extra?.trim()) {
       userParts.push(`补充需求：${input.extra.trim()}`);
     }
+  } else if (input.mode === 'character_from_text') {
+    userParts.push(
+      '请基于下方 TXT 素材设计原创角色卡。素材中明确出现的事实视为既定设定；只可在不冲突的空白处合理创作，不要逐段复制原文。',
+    );
+    userParts.push(input.sourceSnapshot);
+    if (input.extra?.trim()) userParts.push(`补充需求：${input.extra.trim()}`);
+  } else {
+    userParts.push(
+      `请基于下方 TXT 素材生成 ${input.entryCount} 条独立世界书条目。拆分地点、组织、规则、关系或冲突等知识主题；不得机械复制原文；每条必须是常驻设定（constant=true）。`,
+    );
+    userParts.push(input.sourceSnapshot);
+    if (input.extra?.trim()) userParts.push(`补充需求：${input.extra.trim()}`);
   }
 
   const messages: ChatMessage[] = [
@@ -320,7 +381,11 @@ export function estimateSourceSnapshotTokens(text: string): number {
 
 // ---------- 解析与校验 ----------
 
-function parseCharacterResponse(text: string): CharacterArtifact {
+function parseCharacterResponse(
+  text: string,
+  detailLevel?: ConstructionDetailLevel,
+  providerOutputTokens?: number,
+): CharacterArtifact {
   const raw = parseJsonObject(text);
   const source = unwrapData(raw);
   if (!hasOwnField(source, 'name') || !asString(source.name)) {
@@ -383,12 +448,23 @@ function parseCharacterResponse(text: string): CharacterArtifact {
     );
   }
 
-  return { kind: 'character', name: data.name, card };
+  const artifact: CharacterArtifact = { kind: 'character', name: data.name, card };
+  const qualityReport = assessConstructionArtifact(
+    artifact,
+    detailLevel,
+    providerOutputTokens,
+  );
+  if (!qualityReport.passed) {
+    throw new Error(qualityReport.failures[0]?.message || '角色卡质量校验未通过。');
+  }
+  return { ...artifact, qualityReport };
 }
 
 function parseWorldbookResponse(
   text: string,
   expectedCount: number,
+  detailLevel?: ConstructionDetailLevel,
+  providerOutputTokens?: number,
 ): WorldbookArtifact {
   const raw = parseJsonObject(text);
   const container = unwrapData(raw);
@@ -468,7 +544,21 @@ function parseWorldbookResponse(
     );
   }
 
-  return { kind: 'worldbook', name, entryCount: expectedCount, lorebook };
+  const artifact: WorldbookArtifact = {
+    kind: 'worldbook',
+    name,
+    entryCount: expectedCount,
+    lorebook,
+  };
+  const qualityReport = assessConstructionArtifact(
+    artifact,
+    detailLevel,
+    providerOutputTokens,
+  );
+  if (!qualityReport.passed) {
+    throw new Error(qualityReport.failures[0]?.message || '世界书质量校验未通过。');
+  }
+  return { ...artifact, qualityReport };
 }
 
 // ---------- 对外入口 ----------
@@ -507,14 +597,24 @@ export async function generateConstruction(
 
   const target: ConstructionTarget = modeTarget(input.mode);
   if (target === 'character') {
-    return parseCharacterResponse(result.text);
+    return parseCharacterResponse(
+      result.text,
+      input.detailLevel,
+      result.outputTokens,
+    );
   }
   const expectedCount =
     input.mode === 'worldbook_independent' ||
-    input.mode === 'worldbook_from_character'
+    input.mode === 'worldbook_from_character' ||
+    input.mode === 'worldbook_from_text'
       ? input.entryCount
       : 0;
-  return parseWorldbookResponse(result.text, expectedCount);
+  return parseWorldbookResponse(
+    result.text,
+    expectedCount,
+    input.detailLevel,
+    result.outputTokens,
+  );
 }
 
 export type {
