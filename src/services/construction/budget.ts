@@ -1,4 +1,12 @@
 import type { ConstructionTarget } from './targets';
+import {
+  DEFAULT_DETAIL_LEVEL,
+  getDetailConstraints,
+  normalizeDetailLevel,
+  requiredConstructionOutput,
+  WORLDBOOK_COLLECTION_OVERHEAD_TOKENS,
+  type ConstructionDetailLevel,
+} from './quality';
 
 /**
  * 「构建」模块的上下文 / 输出预算计算（SPEC.MD §6.2 / §6.3）。
@@ -22,14 +30,21 @@ export const RESERVE_PERCENT_MIN = 1;
 export const RESERVE_PERCENT_MAX = 15;
 export const DEFAULT_RESERVE_PERCENT = 5;
 
-/** 角色卡最低输出预留（SPEC §6.3）。 */
-export const CHARACTER_MIN_OUTPUT = 512;
-/** 单条世界书条目最低输出预留（SPEC §6.3，合集最低 256 × 条目数）。 */
-export const WORLDBOOK_MIN_OUTPUT_PER_ENTRY = 256;
+/** 默认（丰满）档角色最低输出预留。 */
+export const CHARACTER_MIN_OUTPUT = getDetailConstraints(
+  DEFAULT_DETAIL_LEVEL,
+).character.minOutputTokens;
+/** 默认（丰满）档单条世界书的最低输出预留。 */
+export const WORLDBOOK_MIN_OUTPUT_PER_ENTRY = getDetailConstraints(
+  DEFAULT_DETAIL_LEVEL,
+).worldbook.minOutputTokensPerEntry;
+export { WORLDBOOK_COLLECTION_OVERHEAD_TOKENS };
 /** 世界书条目数量范围（SPEC §7.2）。 */
 export const WORLDBOOK_ENTRY_MIN = 2;
 export const WORLDBOOK_ENTRY_MAX = 12;
-export const DEFAULT_ENTRY_COUNT = 6;
+export const DEFAULT_ENTRY_COUNT = getDetailConstraints(
+  DEFAULT_DETAIL_LEVEL,
+).worldbook.defaultEntryCount;
 
 export interface BudgetInput {
   /** C：当前在线模型的 context_window。 */
@@ -40,6 +55,8 @@ export interface BudgetInput {
   reservePercent: number;
   /** 目标类型。 */
   target: ConstructionTarget;
+  /** 内容丰满度。 */
+  detailLevel?: ConstructionDetailLevel;
   /** 世界书条目数量（仅 target='worldbook' 时使用，最少 2）。 */
   entryCount?: number;
 }
@@ -47,6 +64,7 @@ export interface BudgetInput {
 export interface BudgetResult {
   contextWindow: number;
   maxOutputTokens: number;
+  detailLevel: ConstructionDetailLevel;
   reservePercent: number;
   /** S：安全余量。 */
   safetyMargin: number;
@@ -102,9 +120,13 @@ export function computeSafetyMargin(contextWindow: number): number {
 export function requiredMinOutput(
   target: ConstructionTarget,
   entryCount?: number,
+  detailLevel?: ConstructionDetailLevel,
 ): number {
-  if (target === 'character') return CHARACTER_MIN_OUTPUT;
-  return WORLDBOOK_MIN_OUTPUT_PER_ENTRY * clampEntryCount(entryCount);
+  return requiredConstructionOutput(
+    target,
+    target === 'worldbook' ? clampEntryCount(entryCount) : undefined,
+    detailLevel,
+  );
 }
 
 function reserveAtPercent(contextWindow: number, percent: number): number {
@@ -136,9 +158,10 @@ export function computeConstructionBudget(input: BudgetInput): BudgetResult {
   const C = Math.max(0, Math.floor(input.contextWindow || 0));
   const M = Math.max(0, Math.floor(input.maxOutputTokens || 0));
   const target = input.target;
+  const detailLevel = normalizeDetailLevel(input.detailLevel);
   const entryCount =
     target === 'worldbook' ? clampEntryCount(input.entryCount) : undefined;
-  const requiredMin = requiredMinOutput(target, entryCount);
+  const requiredMin = requiredMinOutput(target, entryCount, detailLevel);
   const percent = clampPercent(input.reservePercent);
   const S = computeSafetyMargin(C);
   const requestedOutput = reserveAtPercent(C, percent);
@@ -180,6 +203,7 @@ export function computeConstructionBudget(input: BudgetInput): BudgetResult {
   return {
     contextWindow: C,
     maxOutputTokens: M,
+    detailLevel,
     reservePercent: percent,
     safetyMargin: S,
     requestedOutput,
