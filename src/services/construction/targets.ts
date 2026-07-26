@@ -1,3 +1,8 @@
+import type {
+  ConstructionDetailLevel,
+  ConstructionQualityReport,
+} from './quality';
+
 /**
  * 「构建」模块的共享类型。被 budget.ts、constructionAiGenerator.ts 与
  * constructionFileService.ts 复用，避免循环依赖。
@@ -17,7 +22,9 @@ export type ConstructionMode =
   | 'character_independent'
   | 'character_from_worldbook'
   | 'worldbook_independent'
-  | 'worldbook_from_character';
+  | 'worldbook_from_character'
+  | 'character_from_text'
+  | 'worldbook_from_text';
 
 export function modeScenario(mode: ConstructionMode): string {
   switch (mode) {
@@ -29,17 +36,26 @@ export function modeScenario(mode: ConstructionMode): string {
       return 'construction_worldbook_independent';
     case 'worldbook_from_character':
       return 'construction_worldbook_from_character';
+    case 'character_from_text':
+      return 'construction_character_from_text';
+    case 'worldbook_from_text':
+      return 'construction_worldbook_from_text';
   }
 }
 
 export function modeTarget(mode: ConstructionMode): ConstructionTarget {
-  return mode === 'worldbook_independent' || mode === 'worldbook_from_character'
+  return mode === 'worldbook_independent' || mode === 'worldbook_from_character' || mode === 'worldbook_from_text'
     ? 'worldbook'
     : 'character';
 }
 
 /** 用户填写的需求字段（独立角色卡，SPEC §5.1）。 */
-export interface IndependentCharacterInput {
+interface ConstructionSharedInput {
+  /** 构建内容规模；缺失时按“丰满”档兼容。 */
+  detailLevel?: ConstructionDetailLevel;
+}
+
+export interface IndependentCharacterInput extends ConstructionSharedInput {
   mode: 'character_independent';
   name?: string;
   theme?: string;
@@ -50,7 +66,7 @@ export interface IndependentCharacterInput {
 }
 
 /** 基于世界书合集构建角色卡（SPEC §5.2）。 */
-export interface CharacterFromWorldbookInput {
+export interface CharacterFromWorldbookInput extends ConstructionSharedInput {
   mode: 'character_from_worldbook';
   /** 已解析的世界书来源快照文本（一次性参考，不落库）。 */
   sourceSnapshot: string;
@@ -60,7 +76,7 @@ export interface CharacterFromWorldbookInput {
 }
 
 /** 独立构建世界书合集（SPEC §5.1）。 */
-export interface IndependentWorldbookInput {
+export interface IndependentWorldbookInput extends ConstructionSharedInput {
   mode: 'worldbook_independent';
   name?: string;
   theme?: string;
@@ -72,9 +88,28 @@ export interface IndependentWorldbookInput {
 }
 
 /** 基于角色卡构建世界书合集（SPEC §5.3）。 */
-export interface WorldbookFromCharacterInput {
+export interface WorldbookFromCharacterInput extends ConstructionSharedInput {
   mode: 'worldbook_from_character';
   /** 已解析的角色卡来源快照文本（一次性参考，不落库）。 */
+  sourceSnapshot: string;
+  sourceName?: string;
+  extra?: string;
+  entryCount: number;
+}
+
+/** 基于用户选择的 TXT 素材构建角色卡。 */
+export interface CharacterFromTextInput extends ConstructionSharedInput {
+  mode: 'character_from_text';
+  /** 已选择 TXT 分段生成的一次性快照，不含文件路径。 */
+  sourceSnapshot: string;
+  sourceName?: string;
+  extra?: string;
+}
+
+/** 基于用户选择的 TXT 素材构建世界书合集。 */
+export interface WorldbookFromTextInput extends ConstructionSharedInput {
+  mode: 'worldbook_from_text';
+  /** 已选择 TXT 分段生成的一次性快照，不含文件路径。 */
   sourceSnapshot: string;
   sourceName?: string;
   extra?: string;
@@ -85,7 +120,9 @@ export type ConstructionInput =
   | IndependentCharacterInput
   | CharacterFromWorldbookInput
   | IndependentWorldbookInput
-  | WorldbookFromCharacterInput;
+  | WorldbookFromCharacterInput
+  | CharacterFromTextInput
+  | WorldbookFromTextInput;
 
 // ---------- 产物结构（与资料库导入格式一致） ----------
 
@@ -131,6 +168,7 @@ export interface CharacterArtifact {
   kind: 'character';
   name: string;
   card: CharaCardV3;
+  qualityReport?: ConstructionQualityReport;
 }
 
 export interface WorldbookArtifact {
@@ -138,6 +176,7 @@ export interface WorldbookArtifact {
   name: string;
   entryCount: number;
   lorebook: LorebookV3;
+  qualityReport?: ConstructionQualityReport;
 }
 
 export type ConstructionArtifact = CharacterArtifact | WorldbookArtifact;

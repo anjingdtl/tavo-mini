@@ -224,7 +224,7 @@ describe('BuildScreen', () => {
     );
   });
 
-  it('surfaces an error toast on invalid model JSON and returns to idle', async () => {
+  it('keeps a recoverable error card visible on invalid model JSON and returns to idle', async () => {
     (generateConstruction as jest.Mock).mockRejectedValue(
       new Error('模型没有返回有效 JSON。'),
     );
@@ -240,8 +240,22 @@ describe('BuildScreen', () => {
         }),
       );
     });
+    expect(await findByText('模型没有返回有效 JSON。')).toBeTruthy();
+    expect(getByTestId('build-generation-error')).toBeTruthy();
     // 失败后回到 idle，生成按钮再次可见
     expect(await findByText('生成')).toBeTruthy();
+  });
+
+  it('turns API authentication errors into an actionable LLM-settings recovery card', async () => {
+    (generateConstruction as jest.Mock).mockRejectedValue(
+      new Error('API 请求失败 (401, invalid_request_error): Authentication Fails'),
+    );
+    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
+    fireEvent.press(getByTestId('build-generate'));
+    expect(await findByText(/API 认证失败/)).toBeTruthy();
+    fireEvent.press(getByTestId('build-generation-error-settings'));
+    expect(navigateToLLMSettings).toHaveBeenCalled();
   });
 
   it('reports a source format error when a picked worldbook file is invalid', async () => {
@@ -372,12 +386,21 @@ describe('BuildScreen', () => {
     });
   });
 
-  it('renders the default reserve label and budget cells', () => {
+  it('raises the default reserve to the full-detail minimum and renders budget cells', () => {
     mockCurrentProject = { id: 7, name: '测试小说' };
     const { getByText } = render(<BuildScreen />);
-    // 默认 5%，outputReserve=1638 → label 含 1,638 Token
-    expect(getByText('5')).toBeTruthy(); // 滑块数值
-    expect(getByText(/1,638 Token/)).toBeTruthy();
+    // 丰满档最低 2,800，C=32768 时自动升至 9%，outputReserve=2949。
+    expect(getByText('9')).toBeTruthy(); // 滑块数值
+    expect(getByText(/2,949 Token/)).toBeTruthy();
+    expect(getByText('丰满档最低生成')).toBeTruthy();
     expect(getByText('32,768')).toBeTruthy();
+  });
+
+  it('exposes TXT construction with an explicit target selector', () => {
+    const { getByText } = render(<BuildScreen />);
+    fireEvent.press(getByText('由 TXT'));
+    expect(getByText('TXT 素材来源')).toBeTruthy();
+    expect(getByText('选择 TXT')).toBeTruthy();
+    expect(getByText('目标类型')).toBeTruthy();
   });
 });

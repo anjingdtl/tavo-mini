@@ -13,26 +13,26 @@ import {
 
 const CHARACTER_JSON = JSON.stringify({
   name: '沈砚',
-  description: '表面温和的机关师。',
-  personality: '克制、记仇。',
-  scenario: '雾港码头深处的工坊。',
-  first_mes: '你推开门，他头也不抬。',
-  mes_example: '{{char}}: 需要什么？\n{{user}}: 看看机关。',
-  system_prompt: '扮演沈砚。',
-  post_history_instructions: '保持克制。',
-  tags: ['反派', '机关术'],
+  description: '雾港机关师的身份、经历、关系与矛盾。'.repeat(80),
+  personality: '表面克制，实际记仇，会因旧债与承诺动摇底线。'.repeat(12),
+  scenario: '雾港码头深处的工坊正被盐税之争波及，他需要决定是否交出机关图纸。'.repeat(8),
+  first_mes: '你推开门时，沈砚正把一枚齿轮放回暗格。他没有立刻抬头，只用指节敲了敲桌面，示意你先说明来意。'.repeat(3),
+  mes_example: '{{char}}: 需要什么？先说清楚代价。\n{{user}}: 我想看看机关图纸。\n{{char}}: 图纸可以看，但你得先回答谁让你来的。\n{{user}}: 没有人，我只是想救港口。\n{{char}}: 救港口的人很多，肯承担后果的人很少。\n{{user}}: 那我愿意承担。\n{{char}}: 好，别让我后悔把钥匙交给你。\n{{user}}: 我不会让你失望。'.repeat(3),
+  system_prompt: '扮演沈砚：保持克制、敏锐和带条件的善意；先评估风险，再作答；不轻易交出机关术秘密。'.repeat(3),
+  post_history_instructions: '保持角色的克制语气、风险意识与对旧债的敏感，不要突然变得轻率或全知。'.repeat(2),
+  tags: ['反派', '机关术', '雾港', '克制'],
   alternate_greetings: ['另一场开场'],
 });
 
 const WORLDBOOK_JSON = JSON.stringify({
   name: '雾港纪事',
   entries: [
-    { keys: ['雾港', '海雾港'], secondary_keys: ['港口'], content: '终年被海雾笼罩的港口城邦。', comment: '核心地点', constant: false },
-    { keys: ['机关行会'], secondary_keys: ['工匠组织'], content: '垄断雾港机关术的行会。', comment: '组织', constant: false },
-    { keys: ['月蚀'], secondary_keys: ['红月'], content: '月蚀期间施法会折损寿命。', comment: '世界铁律', constant: true },
-    { keys: ['盐税之争'], secondary_keys: ['冲突'], content: '内陆与雾港围绕盐税的长期冲突。', comment: '主冲突', constant: false },
-    { keys: ['沉船暗礁'], secondary_keys: ['暗礁'], content: '港区外的暗礁常致沉船。', comment: '地理', constant: false },
-    { keys: ['灰鳞鱼'], secondary_keys: ['特产'], content: '雾港特产的鱼类，可入药。', comment: '物产', constant: false },
+    { keys: ['雾港', '海雾港'], secondary_keys: ['港口'], content: '终年被海雾笼罩的港口城邦，其潮汐、税制与行会传统塑造了居民的生活。'.repeat(20), comment: '核心地点', constant: false },
+    { keys: ['机关行会'], secondary_keys: ['工匠组织'], content: '垄断雾港机关术的行会掌握学徒、图纸和维修权，并与各码头势力长期博弈。'.repeat(20), comment: '组织', constant: false },
+    { keys: ['月蚀'], secondary_keys: ['红月'], content: '月蚀期间施法会折损寿命，因此城市会实行宵禁、医疗配给和特殊航道管制。'.repeat(20), comment: '世界铁律', constant: true },
+    { keys: ['盐税之争'], secondary_keys: ['冲突'], content: '内陆与雾港围绕盐税的长期冲突牵动走私、议会投票、码头罢工和家族联盟。'.repeat(20), comment: '主冲突', constant: false },
+    { keys: ['沉船暗礁'], secondary_keys: ['暗礁'], content: '港区外的暗礁常致沉船，领航人会以雾灯、潮表和旧航图判断是否值得冒险。'.repeat(20), comment: '地理', constant: false },
+    { keys: ['灰鳞鱼'], secondary_keys: ['特产'], content: '雾港特产的灰鳞鱼可入药，也支撑渔民、药商和盐税官之间复杂的利益链。'.repeat(20), comment: '物产', constant: false },
   ],
 });
 
@@ -58,7 +58,7 @@ describe('constructionAiGenerator', () => {
       expect(artifact.card.spec).toBe('chara_card_v3');
       expect(artifact.card.spec_version).toBe('3.0');
       expect(artifact.card.data.creator).toBe('ShineWriter 构建');
-      expect(artifact.card.data.tags).toEqual(['反派', '机关术']);
+      expect(artifact.card.data.tags).toEqual(['反派', '机关术', '雾港', '克制']);
       expect(artifact.card.data.alternate_greetings).toEqual(['另一场开场']);
       expect(artifact.card.data.mes_example).toContain('{{char}}');
     });
@@ -142,6 +142,34 @@ describe('constructionAiGenerator', () => {
       expect(user).toContain('核心地点');
       expect(user).toContain('常驻：是');
       expect(user).toContain('补充需求：设计一位机关师');
+    });
+  });
+
+  describe('detail-level contracts', () => {
+    it('puts full-detail character requirements in the system prompt', () => {
+      const { messages } = buildConstructionMessages({
+        mode: 'character_independent',
+        theme: '蒸汽雾港',
+        detailLevel: 'full',
+      });
+      const system = messages.find(message => message.role === 'system')!.content;
+      expect(system).toContain('description 至少 1000');
+      expect(system).toContain('至少 3 轮');
+    });
+
+    it('keeps deep TXT worldbook output always-on in the prompt', () => {
+      const { messages } = buildConstructionMessages({
+        mode: 'worldbook_from_text',
+        sourceSnapshot: '【TXT 来源】雾港制度与盐税冲突。',
+        entryCount: 4,
+        detailLevel: 'deep',
+      });
+      const system = messages.find(message => message.role === 'system')!.content;
+      const user = messages.find(message => message.role === 'user')!.content;
+      expect(system).toContain('每条至少 920');
+      expect(system).toContain('constant：布尔值，必须全部为 true');
+      expect(user).toContain('TXT 素材');
+      expect(user).toContain('常驻设定');
     });
   });
 
@@ -262,13 +290,13 @@ describe('constructionAiGenerator', () => {
       const response = JSON.stringify({
         name: '雾港',
         entries: [
-          { keys: ['雾港'], content: '港口。', constant: 'true', enabled: 'false' },
-          { keys: ['行会'], content: '组织。', constant: 1, enabled: 1 },
+          { keys: ['雾港'], content: '港口设定。'.repeat(180), comment: '地点', constant: 'true', enabled: 'false' },
+          { keys: ['行会'], content: '组织设定。'.repeat(180), comment: '组织', constant: 1, enabled: 1 },
         ],
       });
       (callLLMResult as jest.Mock).mockResolvedValue({ text: response });
       const artifact = await generateConstruction(
-        { mode: 'worldbook_independent', entryCount: 2 },
+        { mode: 'worldbook_independent', entryCount: 2, detailLevel: 'compact' },
         { maxTokens: 4096 },
       );
       if (artifact.kind !== 'worldbook') throw new Error('expected worldbook');
