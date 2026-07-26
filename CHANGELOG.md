@@ -4,6 +4,23 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.6.5] - 2026-07-26
+
+### Added
+
+- **构建生成规模与质量控制**：角色卡、世界书新增紧凑 / 丰满 / 深度三档；预算同时计算可见产物的最低生成 Token，默认「丰满」档。角色卡按身份、经历、关系、目标、恐惧、秘密、矛盾、场景、开场和多轮示例对话生成并验收；世界书按条目正文长度、总常驻内容和条目数量验收。
+- **TXT 素材构建**：支持 UTF-8、UTF-16 LE/BE TXT，按标题与段落解析为可选择片段；可直接生成角色卡或世界书。仅在点击生成时发送所选文本，不保存来源路径、不写入资料库或备份。
+
+### Changed
+
+- **世界书常驻不变量**：构建世界书的提示词、解析和质量校验均强制所有条目 `constant: true`；预览显示「全部常驻」与估算常驻内容。
+- **失败可恢复性**：构建请求失败后保留可操作错误卡片；API 401 会明确引导用户更新 Key 并用「保存并测试」验证连接。
+- **边界质量稳定性**：世界书提示词要求在正文验收下限上预留 15% 余量，避免模型输出贴线而被质量校验拒绝。
+
+### Tests
+
+- 新增构建质量、TXT 解析、预算和界面恢复测试；Android x86_64 模拟器已验证 DeepSeek 连接、丰满角色卡预览和 4 条常驻世界书预览。
+
 ## [2.6.4] - 2026-07-25
 
 ### Added
