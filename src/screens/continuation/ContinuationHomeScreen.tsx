@@ -78,6 +78,10 @@ export const ContinuationHomeScreen: React.FC<{
     navigation.navigate('ContinuationSourceChapters', {});
   };
 
+  const handleAnalysis = () => {
+    navigation.navigate('CanonAnalysisOverview', {});
+  };
+
   const handleDelete = () => {
     if (!activeSource) return;
     Alert.alert(
@@ -177,6 +181,10 @@ export const ContinuationHomeScreen: React.FC<{
                 label="设置续写起点"
                 variant="ghost"
                 onPress={() => navigation.navigate('ContinuationBoundary', {})}
+              />
+              <Button
+                label="原著分析"
+                onPress={handleAnalysis}
               />
             </View>
             <TouchableOpacity
