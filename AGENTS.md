@@ -45,7 +45,7 @@
 - `voiceStore` — TTS 朗读状态/配置
 
 ### 数据层
-SQLite 数据库 `shine_writer.db`，**Schema version 14**（`src/services/migrations/index.ts` 的 `SCHEMA_VERSION`，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。当前 Schema 在 `src/data/schema/createCurrentSchema.ts` 创建，迁移在 `src/services/migrations/vN-to-vN+1.ts` 按版本递增。
+SQLite 数据库 `shine_writer.db`，**Schema version 19**（`src/services/migrations/index.ts` 的 `SCHEMA_VERSION`，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。当前 Schema 在 `src/data/schema/createCurrentSchema.ts` 创建，迁移在 `src/services/migrations/vN-to-vN+1.ts` 按版本递增。Schema 19 新增 5 张「原著续写」表（`continuation_sources` / `continuation_source_text_chunks` / `continuation_source_chapters` / `continuation_settings` / `continuation_import_jobs`），其中 `continuation_import_jobs` 是首张 `backup:false` 表；续写领域服务在 `src/services/continuation/`。
 
 数据访问分层，**不要绕过**：
 - `src/data/connection/` — SQLite 连接、查询、事务边界
