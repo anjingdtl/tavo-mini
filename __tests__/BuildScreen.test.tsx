@@ -18,6 +18,7 @@ jest.mock('../src/store/themeStore', () => ({
         accent: '#439EA6',
         accentSoft: '#B0E0E3',
         danger: '#C0392B',
+        warning: '#A56F39',
       },
     },
   }),
@@ -183,6 +184,37 @@ describe('BuildScreen', () => {
       expect.objectContaining({ mode: 'character_independent' }),
       expect.objectContaining({ maxTokens: expect.any(Number) }),
     );
+  });
+
+  it('keeps an under-target artifact usable and shows a quality warning', async () => {
+    (generateConstruction as jest.Mock).mockResolvedValue({
+      ...characterArtifact,
+      qualityReport: {
+        detailLevel: 'full',
+        actualOutputTokens: 1734,
+        requiredMinOutput: 2800,
+        passed: false,
+        failures: [
+          {
+            code: 'output_tokens_short',
+            message: '生成内容未达到“丰满”档目标。',
+          },
+        ],
+        character: {
+          fieldLengths: { description: 100 },
+          dialogueTurns: 1,
+          dimensionCoverage: [],
+        },
+      },
+    });
+    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派机关师');
+    fireEvent.press(getByTestId('build-generate'));
+
+    expect(await findByText('未完全达到“丰满”目标，已保留本次结果')).toBeTruthy();
+    expect(getByTestId('build-quality-warning')).toBeTruthy();
+    expect(await findByText('导入资料库')).toBeTruthy();
+    expect(await findByText('保存到手机')).toBeTruthy();
   });
 
   it('switches to worldbook target and generates a multi-entry collection', async () => {
@@ -392,7 +424,7 @@ describe('BuildScreen', () => {
     // 丰满档最低 2,800，C=32768 时自动升至 9%，outputReserve=2949。
     expect(getByText('9')).toBeTruthy(); // 滑块数值
     expect(getByText(/2,949 Token/)).toBeTruthy();
-    expect(getByText('丰满档最低生成')).toBeTruthy();
+    expect(getByText('丰满档生成目标')).toBeTruthy();
     expect(getByText('32,768')).toBeTruthy();
   });
 
