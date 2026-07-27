@@ -4,6 +4,12 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.6.6] - 2026-07-26
+
+### Fixed
+
+- **构建结果不再因质量目标被整份丢弃**：角色卡 / 世界书通过 JSON 结构、必填字段和现有导入回读校验后，即使模型未达到所选档位的 Token 或字段长度目标，也会保留到预览并显示差距与补强项，用户仍可保存或导入。截断、无效 JSON、缺少必填结构和不可导入产物继续硬阻断；不会静默发起第二次收费请求。
+
 ## [2.6.5] - 2026-07-26
 
 ### Added
