@@ -8,9 +8,11 @@ import { Button, Header, Screen, spacing } from '../../components/ui';
 import * as db from '../../services/database';
 import { createRevision } from '../../services/revisionService';
 import { finalizeChapterMemory } from '../../services/storyMemory/storyMemoryService';
+import { finalizeContinuationChapter } from '../../services/continuation/generation';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { EditorStackParamList } from '../../navigation/TabNavigator';
 import type { Chapter } from '../../types/novel';
+import { useProjectStore } from '../../store/projectStore';
 import { ChapterFields } from './ChapterFields';
 import { ChapterPipelinePanel } from './ChapterPipelinePanel';
 import { ChapterToolbar } from './ChapterToolbar';
@@ -93,21 +95,42 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         content: savedChapter.content,
       });
       setSaveStatus('saved');
-      const result = await finalizeChapterMemory(savedChapter.id);
-      await loadChapter();
-      Toast.show({
-        type: result.checkpointAttempted && !result.checkpointUpdated
-          ? 'info'
-          : 'success',
-        text1: '章节已定稿',
-        text2: result.statusMessage || (
-          result.checkpointUpdated
-            ? `长期记忆已整理到第 ${result.state.throughChapterPosition + 1} 章。`
-            : result.pendingCount > 0
-              ? `长期记忆待整理 ${result.pendingCount} 章。`
-              : undefined
-        ),
-      });
+      const project = useProjectStore.getState().currentProject;
+      if (project?.mode === 'continuation') {
+        // Spec §11: finalize inserts extract_state outbox; no LLM in transaction.
+        // UI hints that state extraction will be an extra billed call.
+        const fin = await finalizeContinuationChapter({
+          projectId: project.id,
+          chapterId: savedChapter.id,
+          content: savedChapter.content,
+        });
+        // Still run local SM finalize/dirty path for checkpoint eligibility.
+        const result = await finalizeChapterMemory(savedChapter.id);
+        await loadChapter();
+        Toast.show({
+          type: 'success',
+          text1: '章节已定稿',
+          text2: `状态提取已排队（hash ${fin.revisionHash.slice(0, 8)}）。${
+            result.statusMessage || '记忆将异步更新。'
+          }`,
+        });
+      } else {
+        const result = await finalizeChapterMemory(savedChapter.id);
+        await loadChapter();
+        Toast.show({
+          type: result.checkpointAttempted && !result.checkpointUpdated
+            ? 'info'
+            : 'success',
+          text1: '章节已定稿',
+          text2: result.statusMessage || (
+            result.checkpointUpdated
+              ? `长期记忆已整理到第 ${result.state.throughChapterPosition + 1} 章。`
+              : result.pendingCount > 0
+                ? `长期记忆待整理 ${result.pendingCount} 章。`
+                : undefined
+          ),
+        });
+      }
     } catch (error: any) {
       Alert.alert(
         '定稿失败',
@@ -226,6 +249,9 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       isJustFinished={isJustFinished}
       isPlaying={isPlaying}
       isSynthesizing={isSynthesizing}
+      isContinuation={
+        useProjectStore.getState().currentProject?.mode === 'continuation'
+      }
       onClear={clearContent}
       onContext={() =>
         navigation.navigate('ContextPreview', { chapterId: chapter.id })

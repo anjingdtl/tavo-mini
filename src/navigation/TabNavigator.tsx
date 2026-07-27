@@ -28,6 +28,7 @@ import { ContextConfigScreen } from '../screens/ContextConfig';
 import { PipelineConfigScreen } from '../screens/PipelineConfigScreen';
 import { PipelineTaskScreen } from '../screens/PipelineTaskScreen';
 import { PipelineResultScreen } from '../screens/PipelineResultScreen';
+import { ContinuationResultScreen } from '../screens/continuation/ContinuationResultScreen';
 import { RevisionHistoryScreen } from '../screens/RevisionHistoryScreen';
 import { BackupCenterScreen } from '../screens/BackupCenterScreen';
 import { ContextPreviewScreen } from '../screens/ContextPreviewScreen';
@@ -47,6 +48,7 @@ export type EditorStackParamList = {
   StoryMemory: undefined;
   ContextConfig: undefined;
   PipelineResult: { taskId: string };
+  ContinuationResult: { runId: string };
   RevisionHistory: { targetType: 'chapter' | 'freeform'; targetId: number; projectId: number };
   ContextPreview: { chapterId: number };
   DraftPreview: { targetType: 'chapter' | 'freeform'; targetId: number; projectId: number };
@@ -59,6 +61,7 @@ export type SettingsStackParamList = {
   PipelineConfig: undefined;
   PipelineTask: undefined;
   PipelineResult: { taskId: string };
+  ContinuationResult: { runId: string };
   BackupCenter: undefined;
   UsageStats: undefined;
   LocalModelManager: undefined;
@@ -125,6 +128,26 @@ const DraftPreviewRoute = ({ route, navigation }: NativeStackScreenProps<EditorS
   <DraftPreviewScreen targetType={route.params.targetType} targetId={route.params.targetId} projectId={route.params.projectId} onClose={() => navigation.goBack()} />
 );
 
+const ContinuationResultRoute = ({
+  route,
+  navigation,
+}: NativeStackScreenProps<EditorStackParamList, 'ContinuationResult'>) => (
+  <ContinuationResultScreen
+    runId={route.params.runId}
+    onClose={() => navigation.goBack()}
+  />
+);
+
+const SettingsContinuationResultRoute = ({
+  route,
+  navigation,
+}: NativeStackScreenProps<SettingsStackParamList, 'ContinuationResult'>) => (
+  <ContinuationResultScreen
+    runId={route.params.runId}
+    onClose={() => navigation.goBack()}
+  />
+);
+
 const StoryMemoryRoute = ({ navigation }: NativeStackScreenProps<EditorStackParamList, 'StoryMemory'>) => (
   <StoryMemoryScreen onClose={() => navigation.goBack()} />
 );
@@ -139,6 +162,7 @@ const EditorStackScreen = () => (
     <EditorStack.Screen name="StoryMemory" component={StoryMemoryRoute} />
     <EditorStack.Screen name="ContextConfig" component={ContextConfigScreen} />
     <EditorStack.Screen name="PipelineResult" component={PipelineResultScreen} />
+    <EditorStack.Screen name="ContinuationResult" component={ContinuationResultRoute} />
     <EditorStack.Screen name="RevisionHistory" component={RevisionHistoryRoute} />
     <EditorStack.Screen name="ContextPreview" component={ContextPreviewRoute} />
     <EditorStack.Screen name="DraftPreview" component={DraftPreviewRoute} />
@@ -153,6 +177,7 @@ const SettingsStackScreen = () => (
       <SettingsStack.Screen name="PipelineConfig" component={PipelineConfigScreen} />
       <SettingsStack.Screen name="PipelineTask" component={PipelineTaskScreen} />
       <SettingsStack.Screen name="PipelineResult" component={PipelineResultScreen} />
+      <SettingsStack.Screen name="ContinuationResult" component={SettingsContinuationResultRoute} />
       <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
       <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
       <SettingsStack.Screen name="LocalModelManager" component={LocalModelManagerScreen} />
