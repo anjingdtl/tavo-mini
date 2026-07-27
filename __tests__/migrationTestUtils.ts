@@ -107,6 +107,39 @@ export function createMigrationDb(options: {
     baseSchemas.get('local_llm_models')?.add('prompt_template');
     baseSchemas.get('local_llm_models')?.add('actual_backend');
   }
+  if (schemaVersion >= 19) {
+    baseSchemas.set(
+      'continuation_sources',
+      new Set(['id', 'project_id', 'version', 'status']),
+    );
+    baseSchemas.set(
+      'continuation_source_text_chunks',
+      new Set(['id', 'source_id', 'chunk_index']),
+    );
+    baseSchemas.set(
+      'continuation_source_chapters',
+      new Set(['id', 'source_id', 'position']),
+    );
+    baseSchemas.set(
+      'continuation_settings',
+      new Set([
+        'project_id',
+        'active_source_id',
+        'boundary_source_id',
+        'boundary_chapter_id',
+        'boundary_char_offset_global',
+        'boundary_mode',
+        'import_completed',
+        'analysis_status',
+        'created_at',
+        'updated_at',
+      ]),
+    );
+    baseSchemas.set(
+      'continuation_import_jobs',
+      new Set(['id', 'project_id', 'state']),
+    );
+  }
 
   const state: SchemaState = {
     schemas: baseSchemas,

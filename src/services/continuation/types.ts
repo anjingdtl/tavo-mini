@@ -107,7 +107,7 @@ export interface ContinuationSourceChapter {
   updatedAt: string;
 }
 
-/** Row shape of `continuation_settings` (Spec §9.5). */
+/** Row shape of `continuation_settings` (Spec §9.5 / Phase 2 §6.1). */
 export interface ContinuationSettings {
   projectId: number;
   activeSourceId: number | null;
@@ -117,6 +117,8 @@ export interface ContinuationSettings {
   boundaryMode: ContinuationBoundaryMode;
   importCompleted: boolean;
   analysisStatus: ContinuationAnalysisStatus;
+  /** Phase 2: only ready snapshot id; Phase 3 reads Canon only via this pointer. */
+  activeCanonSnapshotId: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -14,6 +14,9 @@ import { ResourceHomeScreen } from '../screens/continuation/ResourceHomeScreen';
 import { ContinuationHomeScreen } from '../screens/continuation/ContinuationHomeScreen';
 import { ContinuationSourceChaptersScreen } from '../screens/continuation/ContinuationSourceChaptersScreen';
 import { ContinuationBoundaryScreen } from '../screens/continuation/ContinuationBoundaryScreen';
+import { CanonAnalysisOverviewScreen } from '../screens/continuation/canon/CanonAnalysisOverviewScreen';
+import { CanonCategoryListScreen } from '../screens/continuation/canon/CanonCategoryListScreen';
+import { CanonAnalysisTasksScreen } from '../screens/continuation/canon/CanonAnalysisTasksScreen';
 import { BuildScreen } from '../screens/BuildScreen';
 import { OutlineEditor } from '../screens/OutlineEditor';
 import { FreeformEditor } from '../screens/FreeformEditor';
@@ -72,6 +75,13 @@ export type ResourceStackParamList = {
   ContinuationHome: undefined;
   ContinuationSourceChapters: undefined;
   ContinuationBoundary: undefined;
+  CanonAnalysisOverview: undefined;
+  CanonWorldRules: undefined;
+  CanonCharacters: undefined;
+  CanonRelationships: undefined;
+  CanonPlotThreads: undefined;
+  CanonExperiences: undefined;
+  CanonAnalysisTasks: undefined;
   ResourceLibrary: {
     initialTab?: 'characters' | 'worldbook' | 'notes' | 'presets';
   };
@@ -156,6 +166,23 @@ const ResourceStackScreen = () => (
     <ResourceStack.Screen name="ContinuationHome" component={ContinuationHomeScreen} />
     <ResourceStack.Screen name="ContinuationSourceChapters" component={ContinuationSourceChaptersScreen} />
     <ResourceStack.Screen name="ContinuationBoundary" component={ContinuationBoundaryScreen} />
+    <ResourceStack.Screen name="CanonAnalysisOverview" component={CanonAnalysisOverviewScreen} />
+    <ResourceStack.Screen name="CanonWorldRules">
+      {props => <CanonCategoryListScreen {...props} category="world" />}
+    </ResourceStack.Screen>
+    <ResourceStack.Screen name="CanonCharacters">
+      {props => <CanonCategoryListScreen {...props} category="characters" />}
+    </ResourceStack.Screen>
+    <ResourceStack.Screen name="CanonRelationships">
+      {props => <CanonCategoryListScreen {...props} category="relationships" />}
+    </ResourceStack.Screen>
+    <ResourceStack.Screen name="CanonPlotThreads">
+      {props => <CanonCategoryListScreen {...props} category="plot" />}
+    </ResourceStack.Screen>
+    <ResourceStack.Screen name="CanonExperiences">
+      {props => <CanonCategoryListScreen {...props} category="experiences" />}
+    </ResourceStack.Screen>
+    <ResourceStack.Screen name="CanonAnalysisTasks" component={CanonAnalysisTasksScreen} />
     <ResourceStack.Screen name="ResourceLibrary" component={ResourceLibrary} />
   </ResourceStack.Navigator>
 );
