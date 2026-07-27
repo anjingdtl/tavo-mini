@@ -31,7 +31,7 @@ const ENTRIES: {
     key: 'continuation',
     label: '续写',
     icon: BookOpen,
-    subtitle: '原著 TXT 导入、章节解析、续写起点',
+    subtitle: '原著导入、续写起点、Canon 分析',
   },
   {
     key: 'characters',

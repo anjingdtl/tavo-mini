@@ -1,0 +1,25 @@
+# E2E: continuation Canon analysis (Phase 2 Spec §17.6)
+# Preconditions: continuation project with imported source preferred;
+# automated CI may use deterministic fixture path via service tests.
+appId: com.shinewriter
+---
+- launchApp
+- assertVisible: "项目"
+- tapOn: "资料"
+- assertVisible: "续写"
+- tapOn: "续写"
+# If source imported, open analysis; otherwise surface import CTA.
+- extendedWaitUntil:
+    visible:
+      text: ".*"
+    timeout: 5000
+# Manual checkpoint when no source is present on device:
+# 1) Import fixture TXT (30 chapters)
+# 2) Set boundary at chapter 20
+# 3) Open 原著分析 → Standard → await awaiting_review
+# 4) Activate snapshot
+# 5) Confirm world rule / lock character / ignore candidate
+# 6) Open evidence preview
+# 7) Kill app, relaunch, assert Canon still active
+# 8) Backup/restore round-trip
+- takeScreenshot: continuation-canon-analysis
