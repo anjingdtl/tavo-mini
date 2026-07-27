@@ -1,0 +1,83 @@
+appId: com.shinewriter
+---
+# Phase 1 (Schema 19) — continuation import happy path (Spec §18.4).
+#
+# Covers:
+#   1. Create a continuation project.
+#   2. Open 资料 > 续写.
+#   3. Verify the not-imported state and privacy notice.
+#   4. (Manual) Import a test TXT fixture via the file picker — Maestro cannot
+#      drive the system document picker reliably, so this step is a manual
+#      checkpoint in CI; on a real device the operator picks the fixture.
+#   5. Verify the imported state (source name, chapter count, boundary).
+#   6. Set a non-tail continuation point.
+#   7. Re-enter and verify persistence.
+#
+# Test TXT must be a repo-owned, copyright-free Chinese fixture (see
+# e2e/fixtures/ — added alongside this flow).
+- launchApp
+- extendedWaitUntil:
+    visible: '小说项目'
+    timeout: 15000
+
+# 1. Create a continuation project.
+- tapOn:
+    id: new-project-button
+- extendedWaitUntil:
+    visible: '新建小说项目'
+    timeout: 10000
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_CONTINUATION'
+# Select 原著续写 mode (Phase 1 new-project picker).
+- tapOn: '原著续写'
+- tapOn: '创建'
+- extendedWaitUntil:
+    visible: 'E2E_CONTINUATION'
+    timeout: 10000
+
+# 2. Open 资料 > 续写.
+- tapOn: '资料'
+- extendedWaitUntil:
+    visible: '续写'
+    timeout: 10000
+- tapOn: '续写'
+
+# 3. Verify the not-imported state.
+- extendedWaitUntil:
+    visible: '导入 TXT 原著'
+    timeout: 10000
+- extendedWaitUntil:
+    visible: '原著仅保存在本设备'
+    timeout: 5000
+
+# 4. MANUAL CHECKPOINT (CI operator): tap 导入 TXT 原著 and pick a test fixture
+#    from e2e/fixtures/continuation-sample.txt. The native picker cannot be
+#    driven by Maestro; the operator confirms the chapter-parse preview.
+#    After confirm, the imported state appears.
+# --- operator pauses here, then resumes the flow ---
+
+# 5. Verify the imported state.
+- extendedWaitUntil:
+    visible: '识别章节'
+    timeout: 60000
+
+# 6. Set a non-tail continuation point.
+- tapOn: '设置续写起点'
+- extendedWaitUntil:
+    visible: '设为原著末尾'
+    timeout: 10000
+# Pick the first chapter as the continuation point.
+- tapOn:
+    text: '设此章末尾为续写起点'
+    index: 0
+- extendedWaitUntil:
+    visible: '续写起点已更新'
+    timeout: 10000
+
+# 7. Re-enter 资料 > 续写 and verify persistence.
+- tapOn: '资料'
+- tapOn: '续写'
+- extendedWaitUntil:
+    visible: '识别章节'
+    timeout: 10000
