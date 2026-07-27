@@ -1,0 +1,15 @@
+appId: com.shinewriter
+---
+# Phase 3: finalize → state extraction / rebuild hint.
+- launchApp
+- assertVisible: "项目"
+- tapOn: "写作"
+- extendedWaitUntil:
+    visible: "定稿"
+    timeout: 15000
+- tapOn: "定稿"
+- extendedWaitUntil:
+    visible:
+      text: "已定稿|状态提取|长期记忆|定稿失败"
+    timeout: 30000
+- takeScreenshot: continuation-finalize

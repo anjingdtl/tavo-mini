@@ -5,7 +5,7 @@ import { buildV4toV5Statements } from '../src/services/migrations/v4-to-v5';
 import { createMigrationDb } from './migrationTestUtils';
 
 describe('migration schema matrix', () => {
-  test.each(Array.from({ length: 17 }, (_, index) => index + 3))(
+  test.each(Array.from({ length: 18 }, (_, index) => index + 3))(
     'upgrades schema %i to the current schema',
     async fromVersion => {
       const mock = createMigrationDb({ schemaVersion: fromVersion });
@@ -29,12 +29,20 @@ describe('migration schema matrix', () => {
       expect(mock.schemas.has('continuation_source_chapters')).toBe(true);
       expect(mock.schemas.has('continuation_settings')).toBe(true);
       expect(mock.schemas.has('continuation_import_jobs')).toBe(true);
-      // Schema 20 Canon tables.
-      expect(mock.schemas.has('continuation_canon_snapshots')).toBe(true);
-      expect(mock.schemas.has('continuation_analysis_runs')).toBe(true);
-      expect(mock.schemas.has('canon_world_rules')).toBe(true);
-      expect(mock.schemas.has('canon_characters')).toBe(true);
-      expect(mock.schemas.has('canon_timeline_events')).toBe(true);
+      // Schema 20 Canon tables (only if migration path includes 19→20).
+      if (fromVersion <= 19) {
+        expect(mock.schemas.has('continuation_canon_snapshots')).toBe(true);
+        expect(mock.schemas.has('continuation_analysis_runs')).toBe(true);
+        expect(mock.schemas.has('canon_world_rules')).toBe(true);
+        expect(mock.schemas.has('canon_characters')).toBe(true);
+        expect(mock.schemas.has('canon_timeline_events')).toBe(true);
+      }
+      // Schema 21 Phase 3 generation tables (always after upgrade to 21).
+      expect(mock.schemas.has('continuation_generation_settings')).toBe(true);
+      expect(mock.schemas.has('continuation_generation_runs')).toBe(true);
+      expect(mock.schemas.has('continuation_state_proposals')).toBe(true);
+      expect(mock.schemas.has('continuation_state_events')).toBe(true);
+      expect(mock.schemas.has('continuation_state_sync_outbox')).toBe(true);
     },
   );
 
@@ -74,6 +82,14 @@ describe('migration schema matrix', () => {
       'idx_canon_world_rules_snapshot_review',
       'idx_canon_characters_snapshot_review',
       'idx_canon_timeline_events_snapshot_review',
+      // Schema 21 Phase 3 indexes.
+      'idx_continuation_runs_project_created',
+      'idx_continuation_runs_state',
+      'idx_continuation_artifacts_run_created',
+      'idx_continuation_checks_run_artifact',
+      'idx_continuation_proposals_project_status',
+      'idx_continuation_events_project_position',
+      'idx_continuation_outbox_state',
     ];
     for (const name of required) {
       expect(mock.indexes.has(name)).toBe(true);

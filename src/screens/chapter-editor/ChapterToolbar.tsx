@@ -19,6 +19,8 @@ interface Props {
   isJustFinished: boolean;
   isPlaying: boolean;
   isSynthesizing: boolean;
+  /** continuation projects use 续写 wording (Spec §10.1). */
+  isContinuation?: boolean;
   onClear: () => void;
   onContext: () => void;
   onDraft: () => void;
@@ -38,6 +40,7 @@ export function ChapterToolbar({
   isJustFinished,
   isPlaying,
   isSynthesizing,
+  isContinuation = false,
   onClear,
   onContext,
   onDraft,
@@ -49,6 +52,11 @@ export function ChapterToolbar({
   onToggleTts,
   onSummary,
 }: Props) {
+  const aiLabel = generating
+    ? 'AI 生成中…'
+    : isContinuation
+      ? 'AI 续写'
+      : 'AI 重新生成';
   return (
     <View style={styles.toolbar}>
       <ScrollView
@@ -58,7 +66,7 @@ export function ChapterToolbar({
         contentContainerStyle={styles.toolbarRow}
       >
         <Button
-          label={generating ? 'AI 生成中…' : 'AI 重新生成'}
+          label={aiLabel}
           icon={Bot}
           onPress={onRunPipeline}
           disabled={generating || finalizing}
