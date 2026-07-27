@@ -454,9 +454,8 @@ function parseCharacterResponse(
     detailLevel,
     providerOutputTokens,
   );
-  if (!qualityReport.passed) {
-    throw new Error(qualityReport.failures[0]?.message || '角色卡质量校验未通过。');
-  }
+  // 结构、必填字段与回读校验仍是硬门禁；模型未完全达到内容规模目标时，
+  // 保留可用产物并把差距交给预览层提示，避免一次有效生成被整份丢弃。
   return { ...artifact, qualityReport };
 }
 
@@ -555,9 +554,8 @@ function parseWorldbookResponse(
     detailLevel,
     providerOutputTokens,
   );
-  if (!qualityReport.passed) {
-    throw new Error(qualityReport.failures[0]?.message || '世界书质量校验未通过。');
-  }
+  // 世界书条目数、关键词、正文非空、回读和 constant=true 仍是硬门禁；
+  // 字数 / Token 目标未完全达到时保留产物，由预览明确提示用户。
   return { ...artifact, qualityReport };
 }
 
@@ -565,7 +563,8 @@ function parseWorldbookResponse(
 
 /**
  * 执行一次构建请求。复用现有在线 LLM 的调度 / 网络策略 / 取消 / 用量日志。
- * 失败、取消、超时、无效 JSON 均抛出，绝不返回半成品。
+ * 失败、取消、超时、截断、无效 JSON 或不可导入结构均抛出。
+ * 可回读产物若只是不足质量目标，仍返回并在 qualityReport 中标记差距。
  */
 export async function generateConstruction(
   input: ConstructionInput,

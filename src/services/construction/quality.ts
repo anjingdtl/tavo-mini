@@ -345,7 +345,7 @@ export function assessConstructionArtifact(
   if (actualOutputTokens < requiredMinOutput) {
     failures.unshift({
       code: 'output_tokens_short',
-      message: `生成内容低于“${getDetailConstraints(level).label}”档下限：实际约 ${actualOutputTokens} / 至少 ${requiredMinOutput} Token。`,
+      message: `生成内容未达到“${getDetailConstraints(level).label}”档目标：实际约 ${actualOutputTokens} / 目标 ${requiredMinOutput} Token。`,
     });
   }
   return {
