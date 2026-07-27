@@ -12,7 +12,9 @@ describe('schema 18 project collection settings migration', () => {
     const sql = buildV17toV18Statements().map(item => item.sql);
     expect(sql.some(item => item.includes('CREATE TABLE IF NOT EXISTS project_collection_settings'))).toBe(true);
     expect(sql.some(item => item.includes('idx_project_collection_settings_lookup'))).toBe(true);
-    expect(SCHEMA_VERSION).toBe(18);
+    // This migration ships under the current schema (now 19 after continuation
+    // Phase 1); pin to the live constant rather than a hardcoded number.
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(18);
   });
 
   it('executes the complete migration transaction', async () => {

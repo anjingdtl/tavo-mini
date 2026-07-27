@@ -6,6 +6,7 @@ import type {
   Project,
   ProjectMode,
 } from '../../types/novel';
+import { normalizeProjectMode } from '../../services/continuation/projectMode';
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import {
@@ -59,6 +60,11 @@ export async function createProject(
   mode: ProjectMode | string,
 ): Promise<number> {
   const database = await openDatabase();
+  // Boundary guard (Spec §8.1, §9.1): normalize before INSERT so unknown
+  // strings never reach `projects.mode`. Empty/undefined falls back to the
+  // historical `outline` default; genuinely unknown values throw here rather
+  // than persisting as an unreadable mode.
+  const resolvedMode = normalizeProjectMode(mode);
   const timestamp = now();
   // V2.2.2 修复：用统一 transaction executor 取代旧的异步 callback。
   // 原因：react-native-sqlite-storage 的 transaction 期望 callback **同步**执行所有 SQL，
@@ -68,7 +74,7 @@ export async function createProject(
   const insertProjectResult = await execute(
     database,
     'INSERT INTO projects (name, mode, created_at, updated_at) VALUES (?, ?, ?, ?)',
-    [name, mode, timestamp, timestamp],
+    [name, resolvedMode, timestamp, timestamp],
   );
   const projectId = insertProjectResult.insertId!;
   // 默认预设的 id 需要先解析出来，不能把 resource_id=0 当占位写入：
