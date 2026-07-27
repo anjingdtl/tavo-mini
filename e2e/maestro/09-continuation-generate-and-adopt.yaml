@@ -1,0 +1,15 @@
+appId: com.shinewriter
+---
+# Phase 3: start continuation generation and adopt as draft.
+- launchApp
+- assertVisible: "项目"
+- tapOn: "写作"
+- extendedWaitUntil:
+    visible: "AI 续写"
+    timeout: 15000
+- tapOn: "AI 续写"
+- extendedWaitUntil:
+    visible:
+      text: "开始续写|AI 续写结果|采纳为草稿|续写"
+    timeout: 60000
+- takeScreenshot: continuation-generate

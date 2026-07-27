@@ -26,8 +26,8 @@ const CANON_TABLES = [
 ] as const;
 
 describe('schema 20 continuation Canon migration', () => {
-  it('declares Canon tables and schema version 20', () => {
-    expect(SCHEMA_VERSION).toBe(20);
+  it('declares Canon tables and schema version >= 20', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(20);
     const sql = buildV19toV20Statements().map(item => item.sql);
     for (const table of CANON_TABLES) {
       expect(sql.some(s => s.includes(`CREATE TABLE IF NOT EXISTS ${table}`))).toBe(

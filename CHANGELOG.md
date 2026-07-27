@@ -4,6 +4,22 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.9.0] - 2026-07-27
+
+### Added — 原著续写 Phase 3（Canon 驱动 AI 续写闭环）
+
+- **Schema 21**：`continuation_generation_settings`、`continuation_generation_runs`（`ct_` id）、`continuation_generation_artifacts`、`continuation_plans`、`continuation_check_results`、`continuation_state_proposals` / `continuation_state_events`、`continuation_entities` / aliases、`continuation_state_sync_outbox`、`continuation_style_profiles`；全部 `backup:true`，format v3。
+- **独立 continuation runner**：阶段 `context → planner → writer → checker → repair → awaiting_user`，不修改 freeform `draft/review/factCheck/proof` 语义；共享冻结 Context snapshot；每阶段模型路由可独立配置。
+- **Context Builder**：经 bounded SourceReader + active `CanonQueryService` + Effective State 融合；禁止隐式 Story Memory LLM；token 预算与 capability 门禁（strict/balanced/loose）。
+- **Checker / Repair**：八类连续性检查，证据绑定与 UTF-16 半开定位；局部修复与旧 check obsolete。
+- **采纳 / 定稿 / 状态回灌**：采纳只写章节草稿；定稿插入 `extract_state` outbox；确认 proposal 原子写 event + dirty + rebuild outbox；**禁止在 SQLite 事务内调用 LLM**。
+- **UI**：续写入口文案「AI 续写」；`ContinuationResultScreen`；通知深链 `ct_` 优先；冷启动将 running run/outbox 标 interrupted。
+- **E2E**：`09/10/11-continuation-*.yaml`；连续 30 章验收用例。
+
+### Tests
+
+- Phase 3 核心/管线契约、Schema 20→21、迁移矩阵 3..20→21。
+
 ## [2.8.0] - 2026-07-27
 
 ### Added — 原著续写 Phase 2（Canon 分析与 Active Snapshot）
