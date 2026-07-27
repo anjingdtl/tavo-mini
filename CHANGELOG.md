@@ -4,6 +4,30 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] - 2026-07-27
+
+### Added — 原著续写 Phase 1（数据与产品底座）
+
+- **项目模式扩展**：新增 `continuation`（原著续写）模式，新建项目可选择「大纲创作」或「原著续写」；历史 `freeform` 项目保持兼容，可继续打开。`normalizeProjectMode()` 在写入边界统一校验，未知模式被阻断。
+- **Schema 19**：新增 5 张续写表（`continuation_sources`、`continuation_source_text_chunks`、`continuation_source_chapters`、`continuation_settings`、`continuation_import_jobs`），含 partial unique index（每项目最多一个 ready source / 一个活跃导入任务）、composite foreign key 与完整 CHECK 约束。
+- **TXT 原著导入**：Android 原生 `ContinuationTextImportModule` 分块解码 UTF-8/UTF-8 BOM/GBK/GB18030/UTF-16 LE/BE，处理多字节跨块边界；规范化层去除 BOM/NUL/控制字符、统一换行，记录 `normalization_version`；解析器识别中文章节（第N章/节/回、卷）、英文 Chapter、`正文 第一章` 前缀，拒绝正文误识别，无标题时回退整篇。
+- **可恢复导入任务**：导入任务支持 queued/running/paused/awaiting_review/completed/failed/cancelled/interrupted 状态机；App 重启后 `recoverInterruptedJobs` 将遗留活跃任务转为 interrupted，用户可继续/重来/取消。
+- **续写边界与未来原文防护**：`ContinuationSourceReader` 提供 bounded API（`listBoundedSourceChapters` / `readBoundedEvidenceRange`），每次调用在同一事务校验 snapshot（source id/version/hash/parser/normalizer/boundary），过期抛 `continuation_source_snapshot_outdated`；自定义边界落在章节中间时末章被物理裁剪。`ContinuationSourceBrowserService` 作为 UI-only 的未来原文浏览出口，禁止 canon/generation 模块导入。
+- **资料模块重构**：底部「资料」改为 `ResourceStack`（续写/角色/世界书/笔记/预设），不再新增底部主 Tab。
+- **备份与项目包**：4 张业务表进入备份（import_jobs 为首张 `backup:false`）；continuation 项目导出为 `shinewriter-project-v3`，携带 source/chunks/chapters/settings；v3 导入前校验 chunk 连续性、per-chunk SHA-256、总字符数与外键，失败回滚整个项目；v1/v2 包继续兼容。
+- **Phase 2 交接契约**：`ContinuationSourceSnapshot` + `ContinuationSourceReader` 接口固定，Phase 2 只能通过公开 service 获取 boundary 内原著章节。
+
+### Changed
+
+- 新建项目选择器不再展示「自由写作」（历史项目仍可打开）。
+- `schemaValidator` 跳过 `backup:false` 表的 MISSING_TABLE 检查，避免恢复后误报。
+- 迁移测试 harness 支持 `CREATE UNIQUE INDEX`（partial index）。
+
+### Tests
+
+- 新增 115+ 测试覆盖：项目模式、branded offset/UTF-16、bounded reader 不变量、chunk 连续性、解析器（含 30 章夹具）、edit log、导入服务 helper、设置/边界服务、项目包 v3、ResourceHome UI。
+- 全量 1222 测试通过；迁移矩阵覆盖 Schema 3–18 → 19。
+
 ## [2.6.6] - 2026-07-26
 
 ### Fixed
