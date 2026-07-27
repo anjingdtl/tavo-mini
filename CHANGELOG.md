@@ -4,6 +4,19 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.9.1] - 2026-07-28
+
+### Fixed
+
+- **首次安装可靠性**：修复 Schema 19→20 建表中 Canon 表约束先于专属列导致 SQLite `near "category"` 失败；同一空白首次安装若已留下基础表但尚无用户项目，现在会安全、幂等地补齐 current schema，旧的含用户数据 Schema 0 仍严格拒绝升级。
+- **续写产品接线**：`ContinuationSourceChaptersScreen` 已接入 Android 文件选择、`keepLocalCopy`、解析预览和确认激活；返回续写首页时用 focus reload 刷新已导入状态，不再显示过期的导入入口。
+- **Phase 3 收尾**：按配置 id 解析模型配置；章节采纳创建 revision；续写章节的改写/删除会使有效状态与 Story Memory 失效；定稿 outbox 在冷启动和定稿后实际执行并触发完整 Story Memory 重建，proposal 确认保持单事务。
+
+### Tests
+
+- 新增 Schema 19→20 Canon 建表顺序回归、首次安装中断恢复与含用户项目 Schema 0 拒绝测试。
+- Android API 37 模拟器实际通过：续写项目创建、TXT 选择/解析/导入、边界持久化重启、离线 Standard Canon 分析与激活、章节定稿和状态同步 outbox；未配置 API 的 AI 续写受明确配置门保护。
+
 ## [2.9.0] - 2026-07-27
 
 ### Added — 原著续写 Phase 3（Canon 驱动 AI 续写闭环）

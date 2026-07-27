@@ -5,17 +5,12 @@
 import type { ContinuationChapterPosition } from '../../../types/novel';
 import { openDatabase } from '../../../data/connection/openDatabase';
 import { executeTransaction } from '../../database/transaction';
-import { markStoryMemoryDirty } from '../../../data/repositories/storyMemoryRepository';
+import { v4 } from '../../uuidBridge';
 import { CanonQueryService } from '../canon/canonQueryService';
 import {
   countPendingMajorProposals,
   countPendingStateExtractions,
-  enqueueOutbox,
   getProposalById,
-  insertEntity,
-  insertStateEvent,
-  invalidateEventsFromPosition,
-  invalidateProposalsForChapter,
   listValidEventsBefore,
   updateProposalStatus,
 } from './generationRepository';
@@ -24,6 +19,7 @@ import type {
   TypedEntityRef,
 } from './types';
 import { ContinuationCapabilityBlockedError } from './types';
+import { processContinuationOutbox } from './continuationStateOutboxWorker';
 
 export async function getEffectiveContinuationState(input: {
   projectId: number;
@@ -236,25 +232,22 @@ export async function confirmProposal(input: {
     payload = {};
   }
 
+  let entityType: 'character' | 'location' | 'organization' | undefined;
+  let entityName: string | undefined;
   if (
     input.autoCreateEntity !== false &&
     (proposal.proposalType === 'new_character' ||
       proposal.proposalType === 'new_location' ||
       proposal.proposalType === 'new_organization')
   ) {
-    const entityType =
+    entityType =
       proposal.proposalType === 'new_character'
         ? 'character'
         : proposal.proposalType === 'new_location'
           ? 'location'
           : 'organization';
-    entityId = await insertEntity({
-      projectId: proposal.projectId,
-      entityType,
-      canonicalName: payload.name ?? payload.canonicalName ?? '未命名',
-      createdFromProposalId: proposal.id,
-      profileJson: proposal.payloadJson,
-    });
+    entityId = `cen_${v4().replace(/-/g, '')}`;
+    entityName = payload.name ?? payload.canonicalName ?? '未命名';
   }
 
   const entityRefs: TypedEntityRef[] = [];
@@ -278,28 +271,66 @@ export async function confirmProposal(input: {
     }
   }
 
-  const event = await insertStateEvent({
-    proposalId: proposal.id,
-    projectId: proposal.projectId,
-    chapterId: proposal.chapterId,
-    chapterPosition,
-    chapterRevisionHash: proposal.chapterRevisionHash,
-    eventType: proposal.proposalType,
-    entityRefs,
-    payloadJson: proposal.payloadJson,
-    validFromPosition: chapterPosition,
-  });
+  const eventId = `ce_${v4().replace(/-/g, '')}`;
+  const rebuildOutboxId = `co_${v4().replace(/-/g, '')}`;
+  const applyOutboxId = `co_${v4().replace(/-/g, '')}`;
+  const ts = new Date().toISOString();
+  const rebuildDedupeKey = `rebuild_story_memory:${proposal.projectId}:${chapterPosition}:${proposal.chapterRevisionHash}`;
 
-  await updateProposalStatus(
-    proposal.id,
-    'accepted',
-    input.decisionNote ?? null,
-  );
-
-  // Mark story memory dirty + enqueue rebuild (local only).
+  // Proposal decision, resulting event, memory invalidation and both outbox
+  // records form one durable local commit. No LLM work occurs in this tx.
   await executeTransaction(
     db,
     [
+      ...(entityId && entityType && entityName
+        ? [{
+            sql: `INSERT INTO continuation_entities (
+              id, project_id, entity_type, canonical_name, profile_json,
+              created_from_proposal_id, status, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?)`,
+            params: [
+              entityId,
+              proposal.projectId,
+              entityType,
+              entityName,
+              proposal.payloadJson,
+              proposal.id,
+              'active',
+              ts,
+              ts,
+            ],
+          }]
+        : []),
+      {
+        sql: `INSERT INTO continuation_state_events (
+          id, proposal_id, project_id, chapter_id, chapter_position,
+          chapter_revision_hash, event_type, entity_refs_json, payload_json,
+          valid_from_position, created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        params: [
+          eventId,
+          proposal.id,
+          proposal.projectId,
+          proposal.chapterId,
+          chapterPosition,
+          proposal.chapterRevisionHash,
+          proposal.proposalType,
+          JSON.stringify(entityRefs),
+          proposal.payloadJson,
+          chapterPosition,
+          ts,
+        ],
+      },
+      {
+        sql: `UPDATE continuation_state_proposals
+          SET status = 'accepted', decision_note = ?, decided_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'pending'`,
+        params: [input.decisionNote ?? null, ts, ts, proposal.id],
+      },
+      {
+        sql: 'INSERT OR IGNORE INTO project_story_memory (project_id, updated_at) VALUES (?, ?)',
+        params: [proposal.projectId, ts],
+      },
       {
         sql: `UPDATE project_story_memory SET status = 'dirty',
           dirty_from_position = CASE
@@ -313,40 +344,50 @@ export async function confirmProposal(input: {
           chapterPosition,
           chapterPosition,
           chapterPosition,
-          new Date().toISOString(),
+          ts,
           proposal.projectId,
+        ],
+      },
+      {
+        sql: `INSERT OR IGNORE INTO continuation_state_sync_outbox (
+          id, project_id, chapter_id, operation, payload_json, dedupe_key,
+          state, attempt_count, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
+        params: [
+          rebuildOutboxId,
+          proposal.projectId,
+          proposal.chapterId,
+          'rebuild_story_memory',
+          JSON.stringify({
+            fromPosition: chapterPosition,
+            proposalId: proposal.id,
+            eventId,
+          }),
+          rebuildDedupeKey,
+          ts,
+          ts,
+        ],
+      },
+      {
+        sql: `INSERT OR IGNORE INTO continuation_state_sync_outbox (
+          id, project_id, chapter_id, operation, payload_json, dedupe_key,
+          state, attempt_count, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
+        params: [
+          applyOutboxId,
+          proposal.projectId,
+          proposal.chapterId,
+          'apply_event',
+          JSON.stringify({ eventId, proposalId: proposal.id }),
+          `apply_event:${eventId}`,
+          ts,
+          ts,
         ],
       },
     ],
   );
-
-  try {
-    await markStoryMemoryDirty(proposal.projectId, chapterPosition, 'proposal_confirmed');
-  } catch {
-    // already dirtied above if memory row missing
-  }
-
-  await enqueueOutbox({
-    projectId: proposal.projectId,
-    chapterId: proposal.chapterId,
-    operation: 'rebuild_story_memory',
-    payload: {
-      fromPosition: chapterPosition,
-      proposalId: proposal.id,
-      eventId: event.id,
-    },
-    dedupeKey: `rebuild_story_memory:${proposal.projectId}:${chapterPosition}:${proposal.chapterRevisionHash}`,
-  });
-
-  await enqueueOutbox({
-    projectId: proposal.projectId,
-    chapterId: proposal.chapterId,
-    operation: 'apply_event',
-    payload: { eventId: event.id, proposalId: proposal.id },
-    dedupeKey: `apply_event:${event.id}`,
-  });
-
-  return { eventId: event.id, entityId };
+  processContinuationOutbox({ limit: 2 }).catch(() => {});
+  return { eventId, entityId };
 }
 
 export async function rejectProposal(
@@ -366,46 +407,80 @@ export async function invalidateContinuationStateFromPosition(input: {
   chapterIds?: number[];
   reason: string;
 }): Promise<void> {
-  await invalidateEventsFromPosition(
-    input.projectId,
-    input.fromPosition,
-    input.reason,
-  );
-  if (input.chapterIds) {
-    for (const chapterId of input.chapterIds) {
-      await invalidateProposalsForChapter(chapterId, input.reason);
-    }
-  }
   const db = await openDatabase();
+  const ts = new Date().toISOString();
+  const outboxId = `co_${v4().replace(/-/g, '')}`;
+  const statements: Array<{ sql: string; params?: any[] }> = [
+    {
+      sql: `UPDATE continuation_state_events
+        SET invalidated_at = ?, invalidation_reason = ?
+        WHERE project_id = ? AND invalidated_at IS NULL
+          AND (valid_from_position >= ? OR chapter_position >= ?)`,
+      params: [
+        ts,
+        input.reason,
+        input.projectId,
+        input.fromPosition,
+        input.fromPosition,
+      ],
+    },
+    {
+      sql: 'INSERT OR IGNORE INTO project_story_memory (project_id, updated_at) VALUES (?, ?)',
+      params: [input.projectId, ts],
+    },
+    {
+      sql: `UPDATE project_story_memory SET status = 'dirty',
+        dirty_from_position = CASE
+          WHEN dirty_from_position IS NULL THEN ?
+          WHEN dirty_from_position > ? THEN ?
+          ELSE dirty_from_position
+        END,
+        updated_at = ?
+        WHERE project_id = ?`,
+      params: [
+        input.fromPosition,
+        input.fromPosition,
+        input.fromPosition,
+        ts,
+        input.projectId,
+      ],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO continuation_state_sync_outbox (
+        id, project_id, chapter_id, operation, payload_json, dedupe_key,
+        state, attempt_count, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
+      params: [
+        outboxId,
+        input.projectId,
+        null,
+        'rebuild_story_memory',
+        JSON.stringify({ fromPosition: input.fromPosition, reason: input.reason }),
+        `rebuild_story_memory:${input.projectId}:${input.fromPosition}:${input.reason}`,
+        ts,
+        ts,
+      ],
+    },
+  ];
+  for (const chapterId of input.chapterIds ?? []) {
+    statements.splice(1, 0, {
+      sql: `UPDATE continuation_state_proposals
+        SET status = 'invalidated', decision_note = ?, decided_at = ?, updated_at = ?
+        WHERE chapter_id = ? AND status IN ('pending', 'accepted')`,
+      params: [input.reason, ts, ts, chapterId],
+    });
+    statements.splice(2, 0, {
+      sql: `UPDATE continuation_check_results
+        SET resolution_status = 'obsolete', updated_at = ?
+        WHERE chapter_id = ? AND resolution_status = 'open'`,
+      params: [ts, chapterId],
+    });
+  }
   await executeTransaction(
     db,
-    [
-      {
-        sql: `UPDATE project_story_memory SET status = 'dirty',
-          dirty_from_position = CASE
-            WHEN dirty_from_position IS NULL THEN ?
-            WHEN dirty_from_position > ? THEN ?
-            ELSE dirty_from_position
-          END,
-          updated_at = ?
-        WHERE project_id = ?`,
-        params: [
-          input.fromPosition,
-          input.fromPosition,
-          input.fromPosition,
-          new Date().toISOString(),
-          input.projectId,
-        ],
-      },
-    ],
+    statements,
   );
-  await enqueueOutbox({
-    projectId: input.projectId,
-    chapterId: null,
-    operation: 'rebuild_story_memory',
-    payload: { fromPosition: input.fromPosition, reason: input.reason },
-    dedupeKey: `rebuild_story_memory:${input.projectId}:${input.fromPosition}:${input.reason}`,
-  });
+  processContinuationOutbox({ limit: 1 }).catch(() => {});
 }
 
 /** When chapter content hash changes after finalize — clear finalized linkage. */

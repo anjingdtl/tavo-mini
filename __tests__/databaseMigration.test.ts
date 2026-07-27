@@ -21,6 +21,8 @@ function createLifecycleDb(
   options: {
     schemaVersion?: number;
     fresh?: boolean;
+    interruptedFresh?: boolean;
+    userProjectCount?: number;
     failWhenSqlIncludes?: string;
   } = {},
 ) {
@@ -38,7 +40,7 @@ function createLifecycleDb(
     }
   };
 
-  if (!options.fresh) {
+  if (!options.fresh && !options.interruptedFresh) {
     seedCurrentSchema();
     settings.set('schema_version', String(schemaVersion));
     settings.set('app_version', '1.0.0');
@@ -46,6 +48,10 @@ function createLifecycleDb(
     if (schemaVersion === 13) {
       tables.get('project_note_config')?.delete('retrieval_fragment_chars');
     }
+  }
+  if (options.interruptedFresh) {
+    const projects = SCHEMA_MANIFEST.find(table => table.name === 'projects');
+    tables.set('projects', new Set(projects?.columns || []));
   }
 
   type State = {
@@ -179,6 +185,15 @@ function createLifecycleDb(
       return [
         {
           rows: createRows(value === undefined ? [] : [{ value }]),
+          rowsAffected: 0,
+          insertId: 0,
+        },
+      ];
+    }
+    if (/^SELECT COUNT\(\*\) AS count FROM projects WHERE id != \?/i.test(normalized)) {
+      return [
+        {
+          rows: createRows([{ count: options.userProjectCount ?? 0 }]),
           rowsAffected: 0,
           insertId: 0,
         },
@@ -348,6 +363,28 @@ describe('database initialization lifecycle', () => {
     );
     expect(repairIndex).toBeGreaterThan(-1);
     expect(repairIndex).toBeLessThan(seedIndex);
+  });
+
+  test('completes an interrupted empty first install without treating it as a legacy Schema 0 upgrade', async () => {
+    const mock = createLifecycleDb({ interruptedFresh: true });
+
+    await initializeDatabase(mock.database as any);
+
+    expect(mock.settings.get('schema_version')).toBe(String(SCHEMA_VERSION));
+    expect(mock.settings.get('app_version')).toBe(
+      appVersionJson.versionName.replace(/^V/, ''),
+    );
+  });
+
+  test('keeps the Schema 0 compatibility guard when interrupted data contains a user project', async () => {
+    const mock = createLifecycleDb({
+      interruptedFresh: true,
+      userProjectCount: 1,
+    });
+
+    await expect(initializeDatabase(mock.database as any)).rejects.toThrow(
+      '无法从 Schema 0 安全升级',
+    );
   });
 
   test('schema 13 missing retrieval column is repaired by migration, not startup fallback', async () => {

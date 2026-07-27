@@ -107,6 +107,33 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
   };
 }
 
+/** Resolve a specific persisted configuration without changing the active one. */
+export async function resolveLLMRequestConfigById(
+  configId: number,
+): Promise<LLMRequestConfig> {
+  const configs = await db.getLLMConfigs();
+  const config = configs.find(item => item.id === configId);
+  if (!config) throw new Error(`未找到 LLM 配置：${configId}`);
+  const providerType = config.provider_type || 'openai_compatible';
+  const allowInsecureLanHttp =
+    typeof (db as any).getAllowInsecureLanHttp === 'function'
+      ? await (db as any).getAllowInsecureLanHttp()
+      : false;
+  return {
+    id: config.id,
+    name: config.name,
+    provider_type: providerType,
+    api_key: providerType === 'openai_compatible' ? config.api_key : '',
+    model_name: config.model_name,
+    url: normalizeChatCompletionUrl(config.base_url),
+    local_model_id: config.local_model_id ?? undefined,
+    local_backend: config.local_backend ?? undefined,
+    context_window: config.context_window,
+    max_output_tokens: config.max_output_tokens,
+    allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
+  };
+}
+
 export async function testLLMConnection(
   baseUrl: string,
   apiKey: string,
