@@ -104,15 +104,11 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           chapterId: savedChapter.id,
           content: savedChapter.content,
         });
-        // Still run local SM finalize/dirty path for checkpoint eligibility.
-        const result = await finalizeChapterMemory(savedChapter.id);
         await loadChapter();
         Toast.show({
           type: 'success',
           text1: '章节已定稿',
-          text2: `状态提取已排队（hash ${fin.revisionHash.slice(0, 8)}）。${
-            result.statusMessage || '记忆将异步更新。'
-          }`,
+          text2: `状态提取与故事记忆重建已排队（hash ${fin.revisionHash.slice(0, 8)}）。`,
         });
       } else {
         const result = await finalizeChapterMemory(savedChapter.id);

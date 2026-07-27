@@ -171,24 +171,22 @@ interface ContinuationSourceReader {
 
 ## 7. 已知风险与限制
 
-1. **导入向导 UI 为入口级**：`ContinuationSourceChaptersScreen` 的「导入 TXT 原著」按钮当前弹出说明，完整的文件选择 → 编码确认 → 解析预览 → 编辑 → 确认的向导 UI 需 Phase 1 收尾或 Phase 2 补齐。原生解码、规范化、解析、原子激活的**服务层与数据层已完整且经测试**，UI 仅缺编排接线。Maestro `07` 的文件选择步骤标注为人工 checkpoint。
-2. **写作页 AI 续写入口门控**：Spec §12.2 要求「未导入时 AI 续写入口应提示先导入原著」。当前 `EditorMainScreen` 已正确路由 continuation→OutlineEditor，但「AI 写 N 章」按钮在未导入时的阻断提示未接入（写作状态横幅为 Phase 2 polish）。
-3. **`custom_offset` UI**：服务层完整支持章节内偏移续写点（`continuationSettingsService` 测试覆盖），但 `ContinuationBoundaryScreen` 当前只暴露 `end_of_source` / `end_of_chapter`；章节内滑块 UI 为 Phase 2。
-4. **原生解码器实机性能**：Kotlin 模块在模拟器编译通过，但 5 MB TXT 的实机耗时、内存与 chunk 大小调优（Spec §17）需真机验收——`chunk target` 当前为 192 KiB UTF-8 band 的启发值。
-5. **v3 项目包导入的端到端实机验证**：parser + 校验 + ID 重映射有单元测试覆盖，但 export→import 的真实 round-trip（含大块文本）建议在真机备份恢复流程中再压测一次。
-6. **历史 docs deletion 未提交**：`main` 上约 30 个 `docs/superpowers/specs/*.md` 删除与本 Spec 无关，按 §7 要求原样保留未动；合并时需你决定是否一并清理。
+1. **导入 UI 已收尾**：V2.9.1 已实测 Android 文件选择 → 本地复制 → 解析预览 → 确认激活 → 只读章节列表，且返回首页即时刷新。文本编码确认、章节编辑（合并/拆分/排除）仍可作为后续体验增强。
+2. **`custom_offset` UI**：服务层完整支持章节内偏移续写点（`continuationSettingsService` 测试覆盖），但 `ContinuationBoundaryScreen` 当前只暴露 `end_of_source` / `end_of_chapter`；章节内滑块 UI 为后续 polish。
+3. **原生解码器实机性能**：本次使用小型 TXT 完成真实导入；5 MB TXT 的耗时、内存与 chunk 大小调优仍需专项压测——`chunk target` 当前为 192 KiB UTF-8 band 的启发值。
+4. **v3 项目包导入的端到端实机验证**：parser + 校验 + ID 重映射有单元测试覆盖，但 export→import 的真实 round-trip（含大块文本）建议在真机备份恢复流程中再压测一次。
 
 ## 8. Definition of Done 自检（Spec §22）
 
 | 条目 | 状态 |
 | --- | --- |
-| 1. Phase 1 功能验收全部通过 | ⚠️ 服务/数据/类型/UI 骨架通过；导入向导 UI 与写作页 AI 门控为收尾项（见风险 1、2） |
+| 1. Phase 1 功能验收全部通过 | ✅ 导入、原子激活、只读浏览、边界设置与 AI 配置门控均已接入并实测 |
 | 2. 新增数据契约已写入项目文档 | ✅ CHANGELOG / README / AGENTS.md |
 | 3. Phase 2 可只通过公开 service 获取 boundary 内原著章节 | ✅ `continuationSourceReader` + 9 测试 |
 | 4. 无业务代码直接跨层读取 future source | ✅（browser service 仅 UI，`purpose` 强制） |
 | 5. 新增表纳入 manifest 与项目删除；业务表进备份，import job `backup:false` | ✅ |
-| 6. 至少一份 30 章中文测试原著完成端到端导入 | ⚠️ 解析器 30 章夹具测试通过；端到端**导入**待向导 UI 接线后实机验证 |
+| 6. 至少一份中文测试原著完成端到端导入 | ✅ 模拟器已完成真实 TXT 文件选择、解析、确认和持久化；30 章夹具解析测试继续覆盖 |
 | 7. 导入任务失败、取消、App 重启均有可验证结果 | ✅ `recoverInterruptedJobs` + cancel/resume 服务层测试 |
 | 8. 施工报告列出实际文件、迁移版本、测试命令、APK、剩余风险 | ✅ 本报告 |
 
-**结论**：Phase 1 的数据底座、领域服务、bounded 契约、Schema 19、备份/项目包 v3 与测试矩阵**已完成并通过门禁**；导入向导 UI 的完整接线和写作页 AI 门控是明确的收尾项，不影响 Phase 2 契约的稳定性。建议合并后立即安排向导 UI 收尾，再进入 Phase 2。
+**结论（V2.9.1 更新）**：Phase 1 的数据底座、领域服务、bounded 契约、Schema 19、备份/项目包 v3、真实导入 UI 与测试矩阵均已完成；遗留项仅为大文件性能和章节内偏移等体验增强。

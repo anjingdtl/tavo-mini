@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { FileText, Trash2, Upload } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../../components/ui';
@@ -25,7 +26,7 @@ export const ContinuationHomeScreen: React.FC<{
   const [activeSource, setActiveSource] = useState<ContinuationSource | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     if (!currentProject) {
       setLoading(false);
       return;
@@ -38,10 +39,17 @@ export const ContinuationHomeScreen: React.FC<{
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentProject]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setLoading(true); reload(); }, [currentProject?.id]);
+  // The screen remains mounted while its child screens perform an import or
+  // change the boundary. Reload on focus so returning from those flows shows
+  // the committed source rather than the stale pre-import empty state.
+  useFocusEffect(
+    useCallback(() => {
+      setLoading(true);
+      reload().catch(() => {});
+    }, [reload]),
+  );
 
   // Non-continuation project: clear message, no import (Spec §8.4).
   if (currentProject && currentProject.mode !== 'continuation') {
