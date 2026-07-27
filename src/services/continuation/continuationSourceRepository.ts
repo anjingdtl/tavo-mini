@@ -103,12 +103,14 @@ function mapSettings(row: Row): ContinuationSettings {
     boundarySourceId: row.boundary_source_id ?? null,
     boundaryChapterId: row.boundary_chapter_id ?? null,
     boundaryCharOffsetGlobal:
-      row.boundary_char_offset_global === null
+      row.boundary_char_offset_global === null ||
+      row.boundary_char_offset_global === undefined
         ? null
         : asUtf16Offset(row.boundary_char_offset_global),
     boundaryMode: row.boundary_mode as ContinuationBoundaryMode,
     importCompleted: Number(row.import_completed) === 1,
     analysisStatus: row.analysis_status,
+    activeCanonSnapshotId: row.active_canon_snapshot_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -565,7 +567,20 @@ export async function updateBoundaryInTx(
   boundary: BoundaryUpdate,
 ): Promise<void> {
   const ts = now();
+  // Spec §5.9 / Phase 2 §14: boundary change invalidates active Canon snapshot.
   await executeTransaction(db, [
+    {
+      sql: `UPDATE continuation_canon_snapshots
+        SET status = 'outdated', updated_at = ?
+        WHERE project_id = ? AND status IN ('staging', 'awaiting_review', 'ready')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_analysis_runs
+        SET state = 'outdated', updated_at = ?
+        WHERE project_id = ? AND state IN ('queued', 'running', 'paused', 'awaiting_review')`,
+      params: [ts, projectId],
+    },
     {
       sql: `UPDATE continuation_settings SET
           active_source_id = ?,
@@ -574,6 +589,7 @@ export async function updateBoundaryInTx(
           boundary_char_offset_global = ?,
           boundary_mode = ?,
           analysis_status = 'outdated',
+          active_canon_snapshot_id = NULL,
           updated_at = ?
         WHERE project_id = ?`,
       params: [
@@ -589,16 +605,34 @@ export async function updateBoundaryInTx(
   ]);
 }
 
-/** Mark analysis outdated without changing the boundary (Spec §5.9 invalidation hook). */
+/** Mark analysis outdated without changing the boundary (Spec §5.9 / Phase 2 §14). */
 export async function markAnalysisOutdated(
   db: SQLite.SQLiteDatabase,
   projectId: number,
 ): Promise<void> {
-  await db.executeSql(
-    `UPDATE continuation_settings SET analysis_status = 'outdated', updated_at = ?
-      WHERE project_id = ? AND analysis_status IN ('ready', 'running')`,
-    [now(), projectId],
-  );
+  const ts = now();
+  await executeTransaction(db, [
+    {
+      sql: `UPDATE continuation_canon_snapshots
+        SET status = 'outdated', updated_at = ?
+        WHERE project_id = ? AND status IN ('staging', 'awaiting_review', 'ready')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_analysis_runs
+        SET state = 'outdated', updated_at = ?
+        WHERE project_id = ? AND state IN ('queued', 'running', 'paused', 'awaiting_review')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_settings SET
+          analysis_status = 'outdated',
+          active_canon_snapshot_id = NULL,
+          updated_at = ?
+        WHERE project_id = ?`,
+      params: [ts, projectId],
+    },
+  ]);
 }
 
 /** Clear the active source pointer, then physical-delete the source row (Spec §6). */
@@ -617,6 +651,7 @@ export async function clearActiveSourceAndDelete(
           boundary_char_offset_global = NULL,
           import_completed = 0,
           analysis_status = 'not_started',
+          active_canon_snapshot_id = NULL,
           updated_at = ?
         WHERE project_id = ?`,
       params: [ts, projectId],

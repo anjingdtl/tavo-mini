@@ -1,5 +1,6 @@
 import SQLite from 'react-native-sqlite-storage';
 import { execute } from '../connection/execute';
+import { buildSchema20PostSettingsStatements } from '../../services/migrations/v19-to-v20';
 
 export async function createCurrentSchema(
   database: SQLite.SQLiteDatabase,
@@ -508,6 +509,47 @@ export async function createCurrentSchema(
         CHECK(source_end_offset >= content_start_offset)
       )
     `,
+    // Schema 20: snapshots must exist before settings.active_canon_snapshot_id FK.
+    `
+      CREATE TABLE IF NOT EXISTS continuation_canon_snapshots (
+        id TEXT PRIMARY KEY,
+        project_id INTEGER NOT NULL,
+        source_id INTEGER NOT NULL,
+        analysis_run_id TEXT,
+        source_version INTEGER NOT NULL,
+        source_sha256 TEXT NOT NULL,
+        parser_version TEXT NOT NULL,
+        normalization_version TEXT NOT NULL,
+        boundary_chapter_id INTEGER NOT NULL,
+        boundary_position INTEGER NOT NULL,
+        boundary_char_offset_exclusive INTEGER NOT NULL,
+        extraction_version TEXT NOT NULL,
+        profile TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL CHECK(
+          status IN (
+            'staging', 'awaiting_review', 'ready',
+            'outdated', 'failed'
+          )
+        ),
+        capabilities_json TEXT NOT NULL,
+        coverage_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        activated_at TEXT,
+        CHECK(source_version >= 1),
+        CHECK(boundary_position >= 0),
+        CHECK(boundary_char_offset_exclusive >= 0),
+        CHECK(profile IN ('quick', 'standard', 'deep')),
+        CHECK(revision >= 1),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(source_id) REFERENCES continuation_sources(id) ON DELETE CASCADE,
+        FOREIGN KEY(boundary_chapter_id)
+          REFERENCES continuation_source_chapters(id) ON DELETE CASCADE
+      )
+    `,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_canon_snapshots_one_ready ON continuation_canon_snapshots(project_id) WHERE status = 'ready'`,
+    `CREATE INDEX IF NOT EXISTS idx_canon_snapshots_source ON continuation_canon_snapshots(project_id, source_id, status)`,
     `
       CREATE TABLE IF NOT EXISTS continuation_settings (
         project_id INTEGER PRIMARY KEY,
@@ -518,6 +560,7 @@ export async function createCurrentSchema(
         boundary_mode TEXT NOT NULL DEFAULT 'end_of_source',
         import_completed INTEGER NOT NULL DEFAULT 0,
         analysis_status TEXT NOT NULL DEFAULT 'not_started',
+        active_canon_snapshot_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -525,6 +568,8 @@ export async function createCurrentSchema(
           REFERENCES continuation_sources(project_id, id),
         FOREIGN KEY(boundary_source_id, boundary_chapter_id)
           REFERENCES continuation_source_chapters(source_id, id),
+        FOREIGN KEY(active_canon_snapshot_id)
+          REFERENCES continuation_canon_snapshots(id),
         CHECK(boundary_mode IN ('end_of_source', 'end_of_chapter', 'custom_offset')),
         CHECK(import_completed IN (0, 1)),
         CHECK(analysis_status IN ('not_started', 'running', 'ready', 'outdated', 'failed')),
@@ -575,6 +620,8 @@ export async function createCurrentSchema(
       )
     `,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_continuation_import_one_active ON continuation_import_jobs(project_id) WHERE state IN ('queued', 'running', 'paused', 'awaiting_review', 'interrupted')`,
+    // Schema 20 Canon / analysis tables (after settings + snapshots exist).
+    ...buildSchema20PostSettingsStatements().map(item => item.sql),
   ];
   for (const statement of statements) {
     await execute(database, statement);

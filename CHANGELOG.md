@@ -4,6 +4,22 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.8.0] - 2026-07-27
+
+### Added — 原著续写 Phase 2（Canon 分析与 Active Snapshot）
+
+- **Schema 20**：`continuation_canon_snapshots`（含每项目至多一个 `ready` partial unique index）、`continuation_analysis_runs` / `continuation_analysis_batches`、`canon_evidence` / `canon_evidence_links`、五类 Canon 表（世界观/人物/关系/剧情/经历）+ 别名/状态/知识/时间线/剧情参与关联；`continuation_settings.active_canon_snapshot_id` 作为 Phase 3 唯一可读入口。
+- **分析管线**：Quick/Standard/Deep 档位；snapshot 绑定 Phase 1 source id/version/hash/parser/normalizer/boundary；批次幂等键、冷启动 pause、证据校验、future leakage 阻断；默认确定性提取器（CI/离线）+ 可选 LLM 提取（本地 Schema 校验）。
+- **Active Snapshot 发布**：staging → awaiting_review → 用户激活事务（旧 ready→outdated、指针切换、`analysis_status=ready`）；未激活 run 不污染 Phase 3。
+- **人工治理**：确认/锁定/忽略/revision supersede；审核操作递增 snapshot revision。
+- **CanonQueryService**：Phase 3 唯一查询入口；`snapshotId+revision` 校验、位置不超过 boundary、默认排除 ignored/superseded；`getContextBundle` 支持 strict/balanced/loose 与 token 预算裁剪。
+- **UI**：资料 > 续写 > 原著分析概览 + 五类资料列表 + 分析任务；可查看证据预览。
+- **失效**：边界/源变更清空 `active_canon_snapshot_id` 并将 snapshot/run 标 outdated。
+
+### Tests
+
+- future leakage 阻断用例、实体消歧、JSON 校验、Query Service 契约、Schema 19→20 与迁移矩阵 3..19→20。
+
 ## [2.7.0] - 2026-07-27
 
 ### Added — 原著续写 Phase 1（数据与产品底座）

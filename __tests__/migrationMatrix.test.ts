@@ -5,7 +5,7 @@ import { buildV4toV5Statements } from '../src/services/migrations/v4-to-v5';
 import { createMigrationDb } from './migrationTestUtils';
 
 describe('migration schema matrix', () => {
-  test.each(Array.from({ length: 16 }, (_, index) => index + 3))(
+  test.each(Array.from({ length: 17 }, (_, index) => index + 3))(
     'upgrades schema %i to the current schema',
     async fromVersion => {
       const mock = createMigrationDb({ schemaVersion: fromVersion });
@@ -29,6 +29,12 @@ describe('migration schema matrix', () => {
       expect(mock.schemas.has('continuation_source_chapters')).toBe(true);
       expect(mock.schemas.has('continuation_settings')).toBe(true);
       expect(mock.schemas.has('continuation_import_jobs')).toBe(true);
+      // Schema 20 Canon tables.
+      expect(mock.schemas.has('continuation_canon_snapshots')).toBe(true);
+      expect(mock.schemas.has('continuation_analysis_runs')).toBe(true);
+      expect(mock.schemas.has('canon_world_rules')).toBe(true);
+      expect(mock.schemas.has('canon_characters')).toBe(true);
+      expect(mock.schemas.has('canon_timeline_events')).toBe(true);
     },
   );
 
@@ -37,32 +43,41 @@ describe('migration schema matrix', () => {
 
     await runMigrations(mock.database as any, 3);
 
-    expect(mock.indexes).toEqual(
-      new Set([
-        'idx_content_revisions_target',
-        'idx_generation_drafts_target',
-        'idx_llm_usage_logs_month',
-        'idx_local_llm_models_status',
-        'idx_notes_collection_id',
-        'idx_project_collection_settings_lookup',
-        'idx_local_llm_models_last_used',
-        'idx_llm_usage_logs_config',
-        'idx_project_story_memory_status',
-        'idx_project_story_memory_dirty',
-        'idx_chapter_memory_patches_project_position',
-        'idx_chapter_memory_patches_status',
-        'idx_story_memory_snapshots_project_position',
-        'idx_story_memory_batches_project_through',
-        'idx_story_memory_batches_status',
-        // Pre-existing unique index that the migration harness now registers
-        // correctly after broadening the CREATE INDEX matcher to include UNIQUE.
-        'idx_story_memory_batches_project_range',
-        // Schema 19 continuation indexes (Spec §9).
-        'idx_continuation_sources_one_ready',
-        'idx_continuation_text_chunks_range',
-        'idx_continuation_import_one_active',
-      ]),
-    );
+    const required = [
+      'idx_content_revisions_target',
+      'idx_generation_drafts_target',
+      'idx_llm_usage_logs_month',
+      'idx_local_llm_models_status',
+      'idx_notes_collection_id',
+      'idx_project_collection_settings_lookup',
+      'idx_local_llm_models_last_used',
+      'idx_llm_usage_logs_config',
+      'idx_project_story_memory_status',
+      'idx_project_story_memory_dirty',
+      'idx_chapter_memory_patches_project_position',
+      'idx_chapter_memory_patches_status',
+      'idx_story_memory_snapshots_project_position',
+      'idx_story_memory_batches_project_through',
+      'idx_story_memory_batches_status',
+      'idx_story_memory_batches_project_range',
+      // Schema 19 continuation indexes (Spec §9).
+      'idx_continuation_sources_one_ready',
+      'idx_continuation_text_chunks_range',
+      'idx_continuation_import_one_active',
+      // Schema 20 Canon indexes.
+      'idx_canon_snapshots_one_ready',
+      'idx_canon_snapshots_source',
+      'idx_analysis_runs_project_state',
+      'idx_continuation_analysis_batches_state',
+      'idx_canon_evidence_range',
+      'idx_canon_evidence_links_owner',
+      'idx_canon_world_rules_snapshot_review',
+      'idx_canon_characters_snapshot_review',
+      'idx_canon_timeline_events_snapshot_review',
+    ];
+    for (const name of required) {
+      expect(mock.indexes.has(name)).toBe(true);
+    }
   });
 
   test('keeps data conversion inserts idempotent on rerun', async () => {
