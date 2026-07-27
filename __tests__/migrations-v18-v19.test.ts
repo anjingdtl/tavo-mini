@@ -23,7 +23,7 @@ const CONTINUATION_INDEXES = [
 
 describe('schema 19 continuation foundation migration', () => {
   it('declares every continuation table, index and the bumped schema version', () => {
-    expect(SCHEMA_VERSION).toBe(19);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(19);
 
     const sql = buildV18toV19Statements().map(item => item.sql);
     for (const table of CONTINUATION_TABLES) {
