@@ -3,13 +3,15 @@
  * LLM calls happen OUTSIDE SQLite transactions (Spec §11, §4.14).
  */
 import { openDatabase } from '../../../data/connection/openDatabase';
-import { callLLMResult } from '../../llm';
+import { callLLMResult, resolveLLMRequestConfigById } from '../../llm';
+import { rebuildStoryMemory } from '../../storyMemory/storyMemoryRebuild';
 import { stripModelJson } from '../canon/canonJsonValidators';
 import { compileStateExtractionMessages } from './continuationPromptCompiler';
 import {
   casOutboxState,
   contentRevisionHash,
   insertProposals,
+  ensureGenerationSettings,
   listPendingOutbox,
   markRunsInterruptedOnColdStart,
 } from './generationRepository';
@@ -55,9 +57,12 @@ export async function processContinuationOutbox(options?: {
             item.projectId,
             payload.fromPosition ?? 0,
           );
+        } else {
+          await rebuildStoryMemory(item.projectId, {
+            fromPosition: payload.fromPosition ?? 0,
+            mode: 'auto',
+          });
         }
-        // Production: do not call Story Memory LLM here if no injector —
-        // mark dirty is enough; user/trigger can rebuild via existing SM UI.
       }
 
       await casOutboxState(item.id, ['running'], {
@@ -108,6 +113,12 @@ async function handleExtractState(
   if (callExtract) {
     raw = await callExtract(messages);
   } else {
+    const settings = await ensureGenerationSettings(payload.projectId);
+    const configId =
+      payload.llmConfigId ?? settings.stateExtractionLlmConfigId;
+    const requestConfig = configId
+      ? await resolveLLMRequestConfigById(configId)
+      : undefined;
     const result = await callLLMResult(messages, 2048, {
       queueClass: 'background',
       queuePriority: 'background',
@@ -115,6 +126,7 @@ async function handleExtractState(
       taskId: `extract_${payload.chapterId}`,
       scenario: 'continuation_state_extraction',
       responseFormat: 'json_object',
+      requestConfig,
     });
     raw = result.text ?? '';
   }

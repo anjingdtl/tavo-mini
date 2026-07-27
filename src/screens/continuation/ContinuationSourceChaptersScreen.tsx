@@ -10,11 +10,23 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Upload } from 'lucide-react-native';
+import {
+  errorCodes,
+  isErrorWithCode,
+  keepLocalCopy,
+  pick,
+  types,
+} from '@react-native-documents/picker';
 import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../../components/ui';
 import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
-import { getActiveContinuationSource } from '../../services/continuation/continuationImportService';
+import {
+  confirmContinuationSource,
+  getActiveContinuationSource,
+  previewParsedSource,
+  startContinuationImport,
+} from '../../services/continuation/continuationImportService';
 import {
   getChaptersBySource,
 } from '../../services/continuation/continuationSourceRepository';
@@ -27,6 +39,7 @@ export const ContinuationSourceChaptersScreen: React.FC<{
   const { currentProject } = useProjectStore();
   const [source, setSource] = useState<ContinuationSource | null>(null);
   const [chapters, setChapters] = useState<ContinuationSourceChapter[]>([]);
+  const [importing, setImporting] = useState(false);
 
   const reload = async () => {
     if (!currentProject) return;
@@ -47,20 +60,62 @@ export const ContinuationSourceChaptersScreen: React.FC<{
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { reload(); }, [currentProject?.id]);
 
-  const handleImport = () => {
+  const handleImport = async () => {
     if (!currentProject) return;
     if (currentProject.mode !== 'continuation') {
       Alert.alert('无法导入', '只有原著续写项目可以导入原著。');
       return;
     }
-    // The actual file-pick + import flow lives in the import wizard, which is
-    // launched from here. Phase 1 wires the entry; the full wizard UI is a
-    // follow-up task tracked in the施工报告.
-    Alert.alert(
-      '导入 TXT 原著',
-      '请通过文件选择器选择 TXT 文件。导入向导将处理编码识别、章节解析和续写起点设置。',
-      [{ text: '我知道了' }],
-    );
+    try {
+      const [selected] = await pick({
+        mode: 'import',
+        type: [types.plainText, types.allFiles],
+        allowMultiSelection: false,
+      });
+      if (!selected) return;
+      if (selected.name && !selected.name.toLowerCase().endsWith('.txt')) {
+        Alert.alert('无法导入', '请选择 .txt 格式的原著文件。');
+        return;
+      }
+      setImporting(true);
+      const [copy] = await keepLocalCopy({
+        files: [{ uri: selected.uri, fileName: selected.name || 'original.txt' }],
+        destination: 'cachesDirectory',
+      });
+      if (copy.status === 'error') {
+        throw new Error(copy.copyError || '复制导入文件失败。');
+      }
+      const job = await startContinuationImport({
+        projectId: currentProject.id,
+        localPath: copy.localUri.replace(/^file:\/\//, ''),
+        originalFileName: selected.name || 'original.txt',
+      });
+      const preview = await previewParsedSource(job.id);
+      Alert.alert(
+        '解析完成',
+        `已识别 ${preview.chapterCount} 章、${preview.detectedEncoding} 编码。\n将以原著末尾作为默认续写起点；之后可在“续写起点”中调整。`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '确认导入',
+            onPress: async () => {
+              try {
+                await confirmContinuationSource(job.id, { mode: 'end_of_source' });
+                await reload();
+                Toast.show({ type: 'success', text1: '原著导入完成' });
+              } catch (e: any) {
+                Toast.show({ type: 'error', text1: '确认导入失败', text2: e?.message });
+              }
+            },
+          },
+        ],
+      );
+    } catch (e: any) {
+      if (isErrorWithCode(e) && e.code === errorCodes.OPERATION_CANCELED) return;
+      Toast.show({ type: 'error', text1: '导入失败', text2: e?.message || '请重试' });
+    } finally {
+      setImporting(false);
+    }
   };
 
   if (!currentProject) {
@@ -83,11 +138,12 @@ export const ContinuationSourceChaptersScreen: React.FC<{
           />
           <TouchableOpacity
             accessibilityLabel="导入 TXT 原著"
-            onPress={handleImport}
+            onPress={() => handleImport().catch(() => {})}
+            disabled={importing}
             style={[styles.importBtn, { borderColor: theme.colors.accent }]}
           >
             <Upload size={16} color={theme.colors.accent} />
-            <Text style={[styles.importText, { color: theme.colors.accent }]}>导入 TXT 原著</Text>
+            <Text style={[styles.importText, { color: theme.colors.accent }]}>{importing ? '正在解析…' : '导入 TXT 原著'}</Text>
           </TouchableOpacity>
         </View>
       ) : (

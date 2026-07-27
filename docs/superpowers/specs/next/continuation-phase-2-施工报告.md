@@ -148,7 +148,7 @@ interface CanonContextBundle {
 ## 8. 剩余风险
 
 1. **LLM 提取质量**：真实长篇 Standard/Deep 依赖模型与 prompt；CI 走确定性夹具，真机在线验收仍需一轮。
-2. **导入向导 UI**：仍为 Phase 1 收尾项；分析 UI 假设源已导入且边界已设。
+2. **导入向导 UI**：V2.9.1 已完成真实文件选择、解析确认与激活；分析 UI 的 source/boundary 前置条件已在模拟器实际验证。
 3. **orphan evidence 与复杂 revision 合并**：激活前强制 orphan=0；人物合并/拆分 UI 未做完整交互，服务层具备基础 revision 与别名能力。
 4. **角色卡/世界书显式导出**：Spec 允许映射字段；本阶段以治理+查询为主，批量导出 UI 可后续补。
 5. **覆盖率**：新增大体积服务拉低全局覆盖率绝对值（仍过门禁）；后续可对 `canonAnalysisService`/`canonQueryService` 补集成测。

@@ -51,11 +51,17 @@ export const App: React.FC = () => {
           console.log(`[App] cold-start cleanup: marked ${marked} interrupted pipeline task(s) as failed`);
         }
         try {
-          const { coldStartNormalizeContinuation } = require('../services/continuation/generation');
+          const {
+            coldStartNormalizeContinuation,
+            processContinuationOutbox,
+          } = require('../services/continuation/generation');
           const ctMarked = await coldStartNormalizeContinuation();
           if (ctMarked > 0) {
             console.log(`[App] cold-start cleanup: marked ${ctMarked} continuation run/outbox item(s) interrupted`);
           }
+          processContinuationOutbox({ limit: 10 }).catch((outboxError: unknown) => {
+            console.warn('[App] continuation outbox processing skipped', outboxError);
+          });
         } catch (e) {
           console.warn('[App] continuation cold-start normalize skipped', e);
         }

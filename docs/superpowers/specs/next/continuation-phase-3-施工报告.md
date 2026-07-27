@@ -141,8 +141,8 @@ dist/apk/debug/ShineWriter-V2.9.0-debug.apk   (54.28 MB)
 
 1. **真机 LLM 质量**：CI/单测以确定性检查 + fake inject 为主；在线 Planner/Writer/Checker 质量依赖模型与 prompt，需设备矩阵补一轮。
 2. **Effective State 与章节 revision 交叉校验**：事件在失效路径上按 position 处理；章节 hash 不一致时依赖调用方触发 `onChapterContentChanged`，完整 UI 全路径需真机回归。
-3. **Story Memory rebuild**：outbox 标记 dirty + 可选 inject rebuild；生产默认不在 worker 内隐式大额 LLM，依赖现有 SM 入口/策略，避免事务内调用。
-4. **E2E Maestro 09–11**：YAML 已加，含人工/可见性 checkpoint；CI 无设备时为文档流程，真机需跑通。
+3. **Story Memory rebuild**：V2.9.1 的生产 worker 在定稿/确认后的 outbox 实际调用完整重建；LLM 调用仍严格位于事务外。未配置 API 时 outbox 记录可重试失败并给出明确配置错误，不会伪造成功。
+4. **E2E Maestro 09–11**：当前 Windows 环境未安装 Maestro 二进制，已以 ADB UI-tree 等价流程完成模拟器验收：导入、边界、Canon 分析激活、定稿和 outbox；在线生成的模型语义仍需要已配置服务的设备矩阵。
 5. **Style profile**：统计提取已实现；用户确认 UI 仍可后续打磨。
 6. **局部 UI 文案**：continuation 工具栏为「AI 续写」；outline/freeform 仍为「AI 重新生成」。
 
