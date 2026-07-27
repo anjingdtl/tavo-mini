@@ -69,7 +69,7 @@ describe('construction quality', () => {
     expect(report.character?.dialogueTurns).toBeGreaterThanOrEqual(3);
   });
 
-  test('rejects short characters even when a provider reports large hidden usage', () => {
+  test('reports short characters even when a provider reports large hidden usage', () => {
     const artifact = richCharacter();
     artifact.card.data.description = '很短';
     const report = assessConstructionArtifact(artifact, 'full', 100000);

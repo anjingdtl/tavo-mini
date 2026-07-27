@@ -237,6 +237,39 @@ describe('constructionAiGenerator', () => {
       ).rejects.toThrow('缺少或错误填写字段');
     });
 
+    it('keeps a structurally valid character when it misses the quality target', async () => {
+      const shortCharacter = JSON.stringify({
+        name: '沈砚',
+        description: '雾港机关师，背负旧债。',
+        personality: '克制而警惕。',
+        scenario: '工坊正被卷入盐税冲突。',
+        first_mes: '先说明你的来意。',
+        mes_example: '{{char}}: 谁让你来的？\n{{user}}: 没有人。',
+        system_prompt: '保持克制、敏锐的角色声音。',
+        post_history_instructions: '记住旧债与承诺。',
+        tags: ['机关师'],
+        alternate_greetings: [],
+      });
+      (callLLMResult as jest.Mock).mockResolvedValue({ text: shortCharacter });
+
+      const artifact = await generateConstruction(
+        {
+          mode: 'character_independent',
+          theme: '蒸汽雾港',
+          detailLevel: 'full',
+        },
+        { maxTokens: 3000 },
+      );
+
+      expect(artifact.kind).toBe('character');
+      expect(artifact.qualityReport?.passed).toBe(false);
+      expect(
+        artifact.qualityReport?.failures.some(
+          item => item.code === 'output_tokens_short',
+        ),
+      ).toBe(true);
+    });
+
     it('rejects a length-truncated response even if its JSON is otherwise valid', async () => {
       (callLLMResult as jest.Mock).mockResolvedValue({
         text: CHARACTER_JSON,

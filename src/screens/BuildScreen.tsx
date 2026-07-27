@@ -728,6 +728,9 @@ export const BuildScreen: React.FC = () => {
               options={DETAIL_OPTIONS}
               onChange={handleDetailLevelChange}
             />
+            <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+              档位用于提示模型并分配输出预算；未完全达标的可用结果仍会保留，并显示补强建议。
+            </Text>
           </View>
         </View>
 
@@ -1099,7 +1102,7 @@ const BudgetPanel: React.FC<{
       </Text>
       <View style={styles.budgetGrid}>
         <BudgetCell label="上下文容量" value={budget.contextWindow.toLocaleString('en-US')} />
-        <BudgetCell label={`${getDetailConstraints(budget.detailLevel).label}档最低生成`} value={budget.requiredMinOutput.toLocaleString('en-US')} />
+        <BudgetCell label={`${getDetailConstraints(budget.detailLevel).label}档生成目标`} value={budget.requiredMinOutput.toLocaleString('en-US')} />
         <BudgetCell label="输出预留" value={budget.outputReserve.toLocaleString('en-US')} />
         <BudgetCell label="来源预算" value={budget.sourceBudget.toLocaleString('en-US')} />
         <BudgetCell label="预计输入" value={inputTokens.toLocaleString('en-US')} danger={sourceOverBudget} />
@@ -1140,35 +1143,62 @@ const PreviewPanel: React.FC<{
   onSave,
   onImportToLibrary,
   importingToLibrary,
-}) => (
-  <Card>
-    {artifact.kind === 'character' ? (
-      <CharacterPreview artifact={artifact} />
-    ) : (
-      <WorldbookPreview artifact={artifact} />
-    )}
-    <View style={styles.previewActions}>
-      <Button label="重新生成" icon={RefreshCw} variant="secondary" onPress={onRegenerate} />
-      <Button label="返回修改" variant="ghost" onPress={onBackToEdit} />
-      <Button label="查看 JSON" icon={Eye} variant="ghost" onPress={onViewJson} />
-      <Button
-        testID="build-import-library"
-        label={importingToLibrary ? '导入中…' : '导入资料库'}
-        icon={Library}
-        onPress={onImportToLibrary}
-        disabled={importingToLibrary}
-      />
-      <Button
-        testID="build-save"
-        label="保存到手机"
-        icon={Download}
-        variant="secondary"
-        onPress={onSave}
-        disabled={importingToLibrary}
-      />
-    </View>
-  </Card>
-);
+}) => {
+  const { theme } = useThemeStore();
+  const qualityReport = artifact.qualityReport;
+  const qualityLabel = qualityReport
+    ? getDetailConstraints(qualityReport.detailLevel).label
+    : '';
+  return (
+    <Card>
+      {qualityReport && !qualityReport.passed ? (
+        <View
+          testID="build-quality-warning"
+          style={[styles.qualityWarning, { borderColor: theme.colors.warning }]}
+        >
+          <Text style={[styles.qualityWarningTitle, { color: theme.colors.warning }]}>
+            未完全达到“{qualityLabel}”目标，已保留本次结果
+          </Text>
+          <Text style={[styles.hint, { color: theme.colors.textPrimary }]}>
+            实际约 {qualityReport.actualOutputTokens.toLocaleString('en-US')} / 目标{' '}
+            {qualityReport.requiredMinOutput.toLocaleString('en-US')} Token。仍可预览、保存或导入；如需更丰富内容，可重新生成。
+          </Text>
+          {qualityReport.failures.length > 0 ? (
+            <Text style={[styles.hint, { color: theme.colors.textSecondary }]} numberOfLines={3}>
+              建议补强：{qualityReport.failures.slice(0, 2).map(item => item.message).join('；')}
+              {qualityReport.failures.length > 2 ? `；另有 ${qualityReport.failures.length - 2} 项` : ''}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+      {artifact.kind === 'character' ? (
+        <CharacterPreview artifact={artifact} />
+      ) : (
+        <WorldbookPreview artifact={artifact} />
+      )}
+      <View style={styles.previewActions}>
+        <Button label="重新生成" icon={RefreshCw} variant="secondary" onPress={onRegenerate} />
+        <Button label="返回修改" variant="ghost" onPress={onBackToEdit} />
+        <Button label="查看 JSON" icon={Eye} variant="ghost" onPress={onViewJson} />
+        <Button
+          testID="build-import-library"
+          label={importingToLibrary ? '导入中…' : '导入资料库'}
+          icon={Library}
+          onPress={onImportToLibrary}
+          disabled={importingToLibrary}
+        />
+        <Button
+          testID="build-save"
+          label="保存到手机"
+          icon={Download}
+          variant="secondary"
+          onPress={onSave}
+          disabled={importingToLibrary}
+        />
+      </View>
+    </Card>
+  );
+};
 
 const CharacterPreview: React.FC<{ artifact: Extract<ConstructionArtifact, { kind: 'character' }> }> = ({ artifact }) => {
   const { theme } = useThemeStore();
@@ -1235,6 +1265,8 @@ const styles = StyleSheet.create({
   generationError: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, gap: spacing.xs },
   generationErrorTitle: { fontSize: 14, fontWeight: '800' },
   generationErrorActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.xs },
+  qualityWarning: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, gap: spacing.xs, marginBottom: spacing.md },
+  qualityWarningTitle: { fontSize: 14, fontWeight: '800' },
   stepperRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm },
   stepperLabel: { fontSize: 13, fontWeight: '700' },
   stepperControls: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
