@@ -125,10 +125,14 @@ interface EditorState {
   constant: boolean;
 }
 
-export const ResourceLibrary: React.FC = () => {
+export const ResourceLibrary: React.FC<{
+  route?: { params?: { initialTab?: ResourceTab } };
+}> = ({ route }) => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
-  const [tab, setTab] = useState<ResourceTab>('characters');
+  const [tab, setTab] = useState<ResourceTab>(
+    route?.params?.initialTab ?? 'characters',
+  );
   const [items, setItems] = useState<Record<ResourceTab, any[]>>({
     characters: [],
     worldbook: [],
