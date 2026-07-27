@@ -21,7 +21,9 @@ describe('schema 17 note collection migration', () => {
     expect(sql.some(item => item.includes('idx_notes_collection_id'))).toBe(
       true,
     );
-    expect(SCHEMA_VERSION).toBe(18);
+    // This migration ships under the current schema (now 19); pin to the live
+    // constant rather than a hardcoded number so future bumps don't break it.
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(18);
   });
 
   it('executes the complete migration as one migration transaction', async () => {

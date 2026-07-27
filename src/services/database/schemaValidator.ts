@@ -161,6 +161,12 @@ export async function validateSchema(
     const tableNames = new Set(tableRows.map(row => row.name));
 
     for (const table of SCHEMA_MANIFEST) {
+      // Spec §15: tables marked backup:false (e.g. continuation_import_jobs)
+      // are runtime/transient state and never restored from backup. A missing
+      // backup:false table must not fail post-restore validation, because a
+      // restored DB is expected to recreate it on next schema init. Only
+      // persisted (backup:true) tables are required for a valid restore.
+      if (!table.backup) continue;
       if (!tableNames.has(table.name)) {
         issues.push({
           code: 'MISSING_TABLE',

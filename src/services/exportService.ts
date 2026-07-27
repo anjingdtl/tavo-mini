@@ -46,9 +46,17 @@ export async function exportShineWriterNovelJSON(projectId: number): Promise<str
     db.getPresetsByProject(projectId),
   ]);
 
-  const data = {
-    spec: 'shinewriter-project-v2',
-    version: '2.0',
+  // Spec §15: continuation projects export as shinewriter-project-v3, which
+  // carries the active source, text chunks, source chapters and settings/
+  // boundary. v1/v2 (outline/freeform) keep their existing shape.
+  const isContinuation = project?.mode === 'continuation';
+  const continuationPayload = isContinuation
+    ? await buildContinuationExportPayload(projectId)
+    : undefined;
+
+  const data: any = {
+    spec: isContinuation ? 'shinewriter-project-v3' : 'shinewriter-project-v2',
+    version: isContinuation ? '3.0' : '2.0',
     exportedAt: new Date().toISOString(),
     project,
     chapters,
@@ -65,9 +73,54 @@ export async function exportShineWriterNovelJSON(projectId: number): Promise<str
     },
     contextConfig: await db.getContextConfig(),
   };
+  if (continuationPayload) {
+    data.continuation = continuationPayload;
+  }
 
   const projectName = safeFileName(project?.name || 'novel-project');
   return saveTextDocument(`${projectName}.shinewriter.json`, JSON.stringify(data, null, 2), 'application/json');
+}
+
+/**
+ * Build the v3 continuation payload: active source + text chunks + source
+ * chapters + settings/boundary. Import jobs are NOT included (Spec §15).
+ */
+async function buildContinuationExportPayload(projectId: number): Promise<{
+  sources: any[];
+  textChunks: any[];
+  sourceChapters: any[];
+  settings: any | null;
+}> {
+  const { all } = await import('../data/connection/query');
+  // all() opens the shared DB internally; no handle needed here.
+  const sources = await all<any>(
+    `SELECT * FROM continuation_sources WHERE project_id = ? ORDER BY version ASC`,
+    [projectId],
+  );
+  const sourceIds = sources.map(s => s.id);
+  let textChunks: any[] = [];
+  let sourceChapters: any[] = [];
+  if (sourceIds.length > 0) {
+    const placeholders = sourceIds.map(() => '?').join(',');
+    textChunks = await all<any>(
+      `SELECT * FROM continuation_source_text_chunks WHERE source_id IN (${placeholders}) ORDER BY source_id, chunk_index ASC`,
+      sourceIds,
+    );
+    sourceChapters = await all<any>(
+      `SELECT * FROM continuation_source_chapters WHERE source_id IN (${placeholders}) ORDER BY source_id, position ASC`,
+      sourceIds,
+    );
+  }
+  const settingsRows = await all<any>(
+    `SELECT * FROM continuation_settings WHERE project_id = ?`,
+    [projectId],
+  );
+  return {
+    sources,
+    textChunks,
+    sourceChapters,
+    settings: settingsRows[0] ?? null,
+  };
 }
 
 function safeJson(text: string): unknown {
