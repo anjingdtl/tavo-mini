@@ -170,6 +170,18 @@ jest.mock('react-native', () => {
     addListener: jest.fn(),
     removeListeners: jest.fn(),
   };
+  // Schema 19: continuation TXT import native module (chunked GBK/GB18030/UTF-16 decoder)
+  RN.NativeModules.ContinuationTextImport = {
+    detectEncoding: jest.fn(() =>
+      Promise.resolve({ encoding: 'utf-8', confidence: 1.0, hasBom: false, fileSizeBytes: 0 }),
+    ),
+    readFileMeta: jest.fn(() => Promise.resolve({ fileSizeBytes: 0, canRead: true })),
+    decodeChunk: jest.fn(() =>
+      Promise.resolve({ text: '', nextByteOffset: 0, decodedChars: 0, bytesConsumed: 0, atEof: true }),
+    ),
+    addListener: jest.fn(),
+    removeListeners: jest.fn(),
+  };
   // llama.cpp 本地模型原生模块 mock
   RN.NativeModules.LlamaCpp = {
     getCapabilities: jest.fn(() =>
