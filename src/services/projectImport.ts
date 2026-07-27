@@ -1,9 +1,25 @@
 import RNFS from 'react-native-fs';
 import { keepLocalCopy, pick, types } from '@react-native-documents/picker';
 import * as db from './database';
+import type { ProjectMode } from '../types/novel';
+import {
+  isValidProjectMode,
+} from './continuation/projectMode';
+
+/**
+ * Project-package spec versions accepted by the parser.
+ *
+ * v1/v2 — historical `tavo-mini-project`/`shinewriter-project` packages
+ * (outline + freeform). Parsing behaviour for these is unchanged.
+ * v3 — `shinewriter-project-v3`, introduced in Schema 19 for continuation
+ * projects. v3 carries the active continuation source, text chunks, source
+ * chapters, settings/boundary and continuation chapters; the v3 branch is
+ * implemented alongside the continuation backup work (Spec §15).
+ */
+export type ProjectPackageSpecVersion = 1 | 2 | 3;
 
 export interface ProjectImportPreview {
-  specVersion: 1 | 2;
+  specVersion: ProjectPackageSpecVersion;
   name: string;
   mode: string;
   chapterCount: number;
@@ -24,6 +40,16 @@ export interface ParsedProjectPackage {
     presets: any[];
   };
   contextConfig?: any;
+  /**
+   * v3-only continuation payload (Spec §15). Present when specVersion === 3.
+   * Contains the active source, text chunks, source chapters and settings.
+   */
+  continuation?: {
+    sources: any[];
+    textChunks: any[];
+    sourceChapters: any[];
+    settings: any | null;
+  };
 }
 
 export function parseProjectPackage(text: string): ParsedProjectPackage {
@@ -50,7 +76,10 @@ export function parseProjectPackage(text: string): ParsedProjectPackage {
     throw new Error(`无法识别的项目包版本：${spec}`);
   }
   const specVersion = parseInt(specVersionMatch[1], 10);
-  if (specVersion !== 1 && specVersion !== 2) {
+  // Spec §15: v1/v2 stay compatible; v3 is the continuation package introduced
+  // in Schema 19. The dedicated v3 import path lives in the continuation
+  // service; the generic parser still accepts the version so previews work.
+  if (specVersion !== 1 && specVersion !== 2 && specVersion !== 3) {
     throw new Error(`不支持的项目包版本：v${specVersion}`);
   }
 
@@ -68,6 +97,16 @@ export function parseProjectPackage(text: string): ParsedProjectPackage {
       presets: Array.isArray(data.resources?.presets) ? data.resources.presets : [],
     },
     contextConfig: data.contextConfig,
+    // Spec §15: v3 packages carry the continuation payload.
+    continuation:
+      specVersion === 3 && data.continuation && typeof data.continuation === 'object'
+        ? {
+            sources: Array.isArray(data.continuation.sources) ? data.continuation.sources : [],
+            textChunks: Array.isArray(data.continuation.textChunks) ? data.continuation.textChunks : [],
+            sourceChapters: Array.isArray(data.continuation.sourceChapters) ? data.continuation.sourceChapters : [],
+            settings: data.continuation.settings ?? null,
+          }
+        : undefined,
   };
 }
 
@@ -79,8 +118,11 @@ export function previewProjectPackage(pkg: ParsedProjectPackage): ProjectImportP
     pkg.resources.presets.length;
 
   return {
-    specVersion: pkg.specVersion as 1 | 2,
+    specVersion: pkg.specVersion as ProjectPackageSpecVersion,
     name: String(pkg.project.name || '未命名项目'),
+    // Spec §8.1: empty/missing mode falls back to outline (legacy v1 packages);
+    // genuinely unknown values are preserved here only so the import step can
+    // surface a precise error — they are rejected before any DB write.
     mode: String(pkg.project.mode || 'outline'),
     chapterCount: pkg.chapters.length,
     resourceCount,
@@ -89,7 +131,17 @@ export function previewProjectPackage(pkg: ParsedProjectPackage): ProjectImportP
 
 export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<number> {
   const projectName = String(pkg.project.name || '导入的项目');
-  const projectMode = String(pkg.project.mode || 'outline');
+  // Spec §8.1: unknown modes must not be written to `projects.mode`. Validate
+  // at the boundary; `normalizeProjectMode('')` would silently fall back, so
+  // we use the strict guard and throw a localized error for anything outside
+  // the whitelist.
+  const rawMode = pkg.project.mode;
+  if (!isValidProjectMode(rawMode)) {
+    throw new Error(
+      `不支持的项目模式：${String(rawMode ?? '')}（仅支持 outline / continuation / freeform）`,
+    );
+  }
+  const projectMode: ProjectMode = rawMode;
 
   // a. Create project
   const projectId = await db.createProject(projectName, projectMode);
@@ -233,6 +285,13 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
         await db.setProjectResourceEnabled(projectId, 'preset', presetId, false);
       }
     }
+
+    // k. Spec §15: continuation v3 payload — import source/chunks/chapters/
+    //    settings with full ID remapping, in a project-level transaction so a
+    //    failure rolls back the whole import (no half project).
+    if (pkg.specVersion === 3 && pkg.continuation) {
+      await importContinuationPayload(projectId, pkg.continuation);
+    }
   } catch (error) {
     // Best-effort cleanup on failure
     await db.deleteProject(projectId).catch(() => {});
@@ -240,6 +299,186 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
   }
 
   return projectId;
+}
+
+/**
+ * Import the v3 continuation payload (Spec §15).
+ *
+ * Validates chunk contiguity, normalized hash and chapter ranges before any
+ * write. All source/chapter IDs are remapped to fresh rows in the new project.
+ */
+async function importContinuationPayload(
+  projectId: number,
+  payload: NonNullable<ParsedProjectPackage['continuation']>,
+): Promise<void> {
+  const { openDatabase } = await import('../data/connection/openDatabase');
+  const transactionModule = await import('../data/connection/transaction');
+  const executeTransaction = transactionModule.executeTransaction;
+  type SqlStatement = import('../data/connection/transaction').SqlStatement;
+  const { ensureSettingsRow } = await import('./continuation/continuationSourceRepository');
+  const { sha256Hex } = await import('./continuation/hashUtils');
+  const dbHandle = await openDatabase();
+  await ensureSettingsRow(dbHandle, projectId);
+
+  // Validate the payload before writing anything.
+  if (payload.sources.length === 0) {
+    throw new Error('续写项目包缺少原著源数据。');
+  }
+  // Remap source ids.
+  const sourceIdMap = new Map<number, number>();
+  for (const src of payload.sources) {
+    // Insert with a fresh auto-increment id; reuse the imported version.
+    const [insRes] = await dbHandle.executeSql(
+      `INSERT INTO continuation_sources (
+        project_id, version, status, display_name, original_file_name, mime_type,
+        detected_encoding, file_size_bytes, raw_sha256, normalized_sha256,
+        normalized_char_count, normalized_byte_count, chapter_count,
+        parser_version, normalization_version, error_code, error_message,
+        created_at, updated_at, activated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        projectId,
+        Number(src.version) || 1,
+        String(src.status || 'ready'),
+        String(src.display_name || '原著'),
+        String(src.original_file_name || 'source.txt'),
+        String(src.mime_type || 'text/plain'),
+        String(src.detected_encoding || 'utf-8'),
+        Number(src.file_size_bytes) || 0,
+        String(src.raw_sha256 || ''),
+        String(src.normalized_sha256 || ''),
+        Number(src.normalized_char_count) || 0,
+        Number(src.normalized_byte_count) || 0,
+        Number(src.chapter_count) || 0,
+        String(src.parser_version || 'v1'),
+        String(src.normalization_version || 'v1'),
+        src.error_code ?? null,
+        src.error_message ?? null,
+        String(src.created_at || new Date().toISOString()),
+        String(src.updated_at || new Date().toISOString()),
+        src.activated_at ?? null,
+      ],
+    );
+    sourceIdMap.set(Number(src.id), insRes.insertId);
+  }
+
+  // Validate + insert chunks per source.
+  for (const src of payload.sources) {
+    const oldSrcId = Number(src.id);
+    const newSrcId = sourceIdMap.get(oldSrcId)!;
+    const chunks = payload.textChunks
+      .filter(c => Number(c.source_id) === oldSrcId)
+      .sort((a, b) => Number(a.chunk_index) - Number(b.chunk_index));
+    // Pre-flight contiguity/hash check on the payload BEFORE any chunk INSERT
+    // (Spec §15: verify before import, fail without leaving half a project).
+    if (chunks.length > 0) {
+      let cursor = 0;
+      for (const c of chunks) {
+        const start = Number(c.char_start_offset);
+        const end = Number(c.char_end_offset);
+        if (start !== cursor || end <= start) {
+          throw new Error(`原著分块不连续：源 ${oldSrcId} 第 ${c.chunk_index} 块`);
+        }
+        // Verify per-chunk hash matches content (Spec §15).
+        if (sha256Hex(String(c.content || '')) !== String(c.content_sha256 || '')) {
+          throw new Error(`原著分块哈希校验失败：源 ${oldSrcId} 第 ${c.chunk_index} 块`);
+        }
+        cursor = end;
+      }
+      if (cursor !== Number(src.normalized_char_count)) {
+        throw new Error(
+          `原著总字符数不匹配：期望 ${src.normalized_char_count}，实际 ${cursor}`,
+        );
+      }
+    }
+    // Insert chunks.
+    const statements: SqlStatement[] = chunks.map(c => ({
+      sql: `INSERT INTO continuation_source_text_chunks (
+        source_id, chunk_index, char_start_offset, char_end_offset, content, content_sha256
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      params: [
+        newSrcId,
+        Number(c.chunk_index),
+        Number(c.char_start_offset),
+        Number(c.char_end_offset),
+        String(c.content || ''),
+        String(c.content_sha256 || ''),
+      ],
+    }));
+    if (statements.length > 0) await executeTransaction(dbHandle, statements);
+  }
+
+  // Insert source chapters with id remapping.
+  const chapterIdMap = new Map<number, number>();
+  for (const src of payload.sources) {
+    const oldSrcId = Number(src.id);
+    const newSrcId = sourceIdMap.get(oldSrcId)!;
+    const chapters = payload.sourceChapters
+      .filter(c => Number(c.source_id) === oldSrcId)
+      .sort((a, b) => Number(a.position) - Number(b.position));
+    const statements: SqlStatement[] = chapters.map(c => ({
+      sql: `INSERT INTO continuation_source_chapters (
+        source_id, position, volume_title, detected_title, title, content_sha256,
+        char_count, paragraph_count, source_start_offset, content_start_offset,
+        source_end_offset, is_excluded, exclusion_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        newSrcId,
+        Number(c.position),
+        c.volume_title ?? null,
+        String(c.detected_title || ''),
+        String(c.title || ''),
+        String(c.content_sha256 || ''),
+        Number(c.char_count) || 0,
+        Number(c.paragraph_count) || 0,
+        Number(c.source_start_offset),
+        Number(c.content_start_offset),
+        Number(c.source_end_offset),
+        Number(c.is_excluded) === 1 ? 1 : 0,
+        c.exclusion_reason ?? null,
+        String(c.created_at || new Date().toISOString()),
+        String(c.updated_at || new Date().toISOString()),
+      ],
+    }));
+    if (statements.length > 0) {
+      await executeTransaction(dbHandle, statements);
+      // Read back the inserted ids to build the chapterIdMap.
+      const [selRes] = await dbHandle.executeSql(
+        'SELECT id, position FROM continuation_source_chapters WHERE source_id = ? ORDER BY position ASC',
+        [newSrcId],
+      );
+      for (let i = 0; i < selRes.rows.length; i++) {
+        const row = selRes.rows.item(i);
+        const oldChapter = chapters[row.position];
+        if (oldChapter) chapterIdMap.set(Number(oldChapter.id), row.id);
+      }
+    }
+  }
+
+  // Import settings (boundary) with remapped source/chapter ids.
+  if (payload.settings) {
+    const s = payload.settings;
+    const newActiveSourceId = s.active_source_id ? sourceIdMap.get(Number(s.active_source_id)) : null;
+    const newBoundarySourceId = s.boundary_source_id ? sourceIdMap.get(Number(s.boundary_source_id)) : null;
+    const newBoundaryChapterId = s.boundary_chapter_id ? chapterIdMap.get(Number(s.boundary_chapter_id)) : null;
+    await dbHandle.executeSql(
+      `UPDATE continuation_settings SET
+        active_source_id = ?, boundary_source_id = ?, boundary_chapter_id = ?,
+        boundary_char_offset_global = ?, boundary_mode = ?, import_completed = ?,
+        analysis_status = 'outdated', updated_at = ?
+        WHERE project_id = ?`,
+      [
+        newActiveSourceId,
+        newBoundarySourceId,
+        newBoundaryChapterId,
+        s.boundary_char_offset_global != null ? Number(s.boundary_char_offset_global) : null,
+        String(s.boundary_mode || 'end_of_source'),
+        Number(s.import_completed) === 1 ? 1 : 0,
+        new Date().toISOString(),
+        projectId,
+      ],
+    );
+  }
 }
 
 export async function pickAndPreviewProjectPackage(): Promise<{
