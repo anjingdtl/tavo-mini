@@ -5,8 +5,14 @@ appId: com.shinewriter
     visible: '小说项目'
     timeout: 15000
 - tapOn: '资料'
+# Phase 1 (Schema 19): 资料 now opens ResourceHome with five entries
+# (续写/角色/世界书/笔记/预设). Tap 角色 to enter the existing ResourceLibrary.
 - extendedWaitUntil:
-    visible: '资料库'
+    visible: '角色'
+    timeout: 10000
+- tapOn: '角色'
+- extendedWaitUntil:
+    visible: '新建角色合集'
     timeout: 10000
 - tapOn: '新建角色合集'
 - extendedWaitUntil:

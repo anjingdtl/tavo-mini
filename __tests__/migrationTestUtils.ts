@@ -152,7 +152,10 @@ export function createMigrationDb(options: {
     }
 
     parseCreateTable(sql, target.schemas);
-    const index = normalized.match(/^CREATE INDEX IF NOT EXISTS (\w+)/i);
+    // Match both plain and partial/unique indexes (CREATE [UNIQUE] INDEX ...).
+    // Partial indexes (CREATE UNIQUE INDEX ... WHERE ...) are used by the
+    // continuation tables (Schema 19) and must be registered by name.
+    const index = normalized.match(/^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)/i);
     if (index) target.indexes.add(index[1]);
     if (
       /^INSERT .*INTO worldbook_collections/i.test(normalized) &&
