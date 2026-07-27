@@ -27,6 +27,7 @@ class MainApplication : Application(), ReactApplication {
       add(PipelineForegroundPackage())
       add(PngMetadataPackage())
       add(LlamaCppPackage())
+      add(ContinuationTextImportPackage())
     }
     getDefaultReactHost(
       context = applicationContext,

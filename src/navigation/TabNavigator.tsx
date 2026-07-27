@@ -10,6 +10,10 @@ import { ProjectListScreen } from '../screens/ProjectListScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { LLMSettingsScreen } from '../screens/LLMSettingsScreen';
 import { ResourceLibrary } from '../screens/ResourceLibrary';
+import { ResourceHomeScreen } from '../screens/continuation/ResourceHomeScreen';
+import { ContinuationHomeScreen } from '../screens/continuation/ContinuationHomeScreen';
+import { ContinuationSourceChaptersScreen } from '../screens/continuation/ContinuationSourceChaptersScreen';
+import { ContinuationBoundaryScreen } from '../screens/continuation/ContinuationBoundaryScreen';
 import { BuildScreen } from '../screens/BuildScreen';
 import { OutlineEditor } from '../screens/OutlineEditor';
 import { FreeformEditor } from '../screens/FreeformEditor';
@@ -58,10 +62,26 @@ export type SettingsStackParamList = {
   ContextAutoConfig: undefined;
 };
 
+/**
+ * Resource stack (Spec §8.3). 资料 becomes a nested stack with five routes:
+ * ResourceHome (entry list) → 续写 (ContinuationHome / Chapters / Boundary) and
+ * ResourceLibrary (the existing four-tab characters/worldbook/notes/presets).
+ */
+export type ResourceStackParamList = {
+  ResourceHome: undefined;
+  ContinuationHome: undefined;
+  ContinuationSourceChapters: undefined;
+  ContinuationBoundary: undefined;
+  ResourceLibrary: {
+    initialTab?: 'characters' | 'worldbook' | 'notes' | 'presets';
+  };
+};
+
 const Tab = createBottomTabNavigator();
 const ProjectStack = createNativeStackNavigator();
 const EditorStack = createNativeStackNavigator<EditorStackParamList>();
 const SettingsStack = createNativeStackNavigator<SettingsStackParamList>();
+const ResourceStack = createNativeStackNavigator<ResourceStackParamList>();
 
 const ProjectStackScreen = () => (
   <ProjectStack.Navigator screenOptions={{ headerShown: false }}>
@@ -130,6 +150,16 @@ const SettingsStackScreen = () => (
     </SettingsStack.Navigator>
 );
 
+const ResourceStackScreen = () => (
+  <ResourceStack.Navigator screenOptions={{ headerShown: false }}>
+    <ResourceStack.Screen name="ResourceHome" component={ResourceHomeScreen} />
+    <ResourceStack.Screen name="ContinuationHome" component={ContinuationHomeScreen} />
+    <ResourceStack.Screen name="ContinuationSourceChapters" component={ContinuationSourceChaptersScreen} />
+    <ResourceStack.Screen name="ContinuationBoundary" component={ContinuationBoundaryScreen} />
+    <ResourceStack.Screen name="ResourceLibrary" component={ResourceLibrary} />
+  </ResourceStack.Navigator>
+);
+
 export const TabNavigator: React.FC = () => {
   const { theme } = useThemeStore();
   const insets = useSafeAreaInsets();
@@ -167,7 +197,7 @@ export const TabNavigator: React.FC = () => {
       <Tab.Screen name="Projects" component={ProjectStackScreen} options={{ tabBarLabel: '项目' }} />
       <Tab.Screen name="Editor" component={EditorStackScreen} options={{ tabBarLabel: '写作' }} />
       <Tab.Screen name="Build" component={BuildScreen} options={{ tabBarLabel: '构建' }} />
-      <Tab.Screen name="Resources" component={ResourceLibrary} options={{ tabBarLabel: '资料' }} />
+      <Tab.Screen name="Resources" component={ResourceStackScreen} options={{ tabBarLabel: '资料' }} />
       <Tab.Screen name="Settings" component={SettingsStackScreen} options={{ tabBarLabel: '设置' }} />
     </Tab.Navigator>
   );
