@@ -1,0 +1,15 @@
+appId: com.shinewriter
+---
+# Phase 3: view checker issues and repair path on result page.
+- launchApp
+- assertVisible: "项目"
+- tapOn: "写作"
+- extendedWaitUntil:
+    visible: "AI 续写"
+    timeout: 15000
+- tapOn: "AI 续写"
+- extendedWaitUntil:
+    visible:
+      text: "一致性|blocking|采纳为草稿|AI 续写结果"
+    timeout: 90000
+- takeScreenshot: continuation-check
