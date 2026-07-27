@@ -1,9 +1,25 @@
 import RNFS from 'react-native-fs';
 import { keepLocalCopy, pick, types } from '@react-native-documents/picker';
 import * as db from './database';
+import type { ProjectMode } from '../types/novel';
+import {
+  isValidProjectMode,
+} from './continuation/projectMode';
+
+/**
+ * Project-package spec versions accepted by the parser.
+ *
+ * v1/v2 — historical `tavo-mini-project`/`shinewriter-project` packages
+ * (outline + freeform). Parsing behaviour for these is unchanged.
+ * v3 — `shinewriter-project-v3`, introduced in Schema 19 for continuation
+ * projects. v3 carries the active continuation source, text chunks, source
+ * chapters, settings/boundary and continuation chapters; the v3 branch is
+ * implemented alongside the continuation backup work (Spec §15).
+ */
+export type ProjectPackageSpecVersion = 1 | 2 | 3;
 
 export interface ProjectImportPreview {
-  specVersion: 1 | 2;
+  specVersion: ProjectPackageSpecVersion;
   name: string;
   mode: string;
   chapterCount: number;
@@ -50,7 +66,10 @@ export function parseProjectPackage(text: string): ParsedProjectPackage {
     throw new Error(`无法识别的项目包版本：${spec}`);
   }
   const specVersion = parseInt(specVersionMatch[1], 10);
-  if (specVersion !== 1 && specVersion !== 2) {
+  // Spec §15: v1/v2 stay compatible; v3 is the continuation package introduced
+  // in Schema 19. The dedicated v3 import path lives in the continuation
+  // service; the generic parser still accepts the version so previews work.
+  if (specVersion !== 1 && specVersion !== 2 && specVersion !== 3) {
     throw new Error(`不支持的项目包版本：v${specVersion}`);
   }
 
@@ -79,8 +98,11 @@ export function previewProjectPackage(pkg: ParsedProjectPackage): ProjectImportP
     pkg.resources.presets.length;
 
   return {
-    specVersion: pkg.specVersion as 1 | 2,
+    specVersion: pkg.specVersion as ProjectPackageSpecVersion,
     name: String(pkg.project.name || '未命名项目'),
+    // Spec §8.1: empty/missing mode falls back to outline (legacy v1 packages);
+    // genuinely unknown values are preserved here only so the import step can
+    // surface a precise error — they are rejected before any DB write.
     mode: String(pkg.project.mode || 'outline'),
     chapterCount: pkg.chapters.length,
     resourceCount,
@@ -89,7 +111,17 @@ export function previewProjectPackage(pkg: ParsedProjectPackage): ProjectImportP
 
 export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<number> {
   const projectName = String(pkg.project.name || '导入的项目');
-  const projectMode = String(pkg.project.mode || 'outline');
+  // Spec §8.1: unknown modes must not be written to `projects.mode`. Validate
+  // at the boundary; `normalizeProjectMode('')` would silently fall back, so
+  // we use the strict guard and throw a localized error for anything outside
+  // the whitelist.
+  const rawMode = pkg.project.mode;
+  if (!isValidProjectMode(rawMode)) {
+    throw new Error(
+      `不支持的项目模式：${String(rawMode ?? '')}（仅支持 outline / continuation / freeform）`,
+    );
+  }
+  const projectMode: ProjectMode = rawMode;
 
   // a. Create project
   const projectId = await db.createProject(projectName, projectMode);

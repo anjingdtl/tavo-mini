@@ -5,7 +5,7 @@ import { buildV4toV5Statements } from '../src/services/migrations/v4-to-v5';
 import { createMigrationDb } from './migrationTestUtils';
 
 describe('migration schema matrix', () => {
-  test.each(Array.from({ length: 12 }, (_, index) => index + 3))(
+  test.each(Array.from({ length: 16 }, (_, index) => index + 3))(
     'upgrades schema %i to the current schema',
     async fromVersion => {
       const mock = createMigrationDb({ schemaVersion: fromVersion });
@@ -23,6 +23,12 @@ describe('migration schema matrix', () => {
       expect(mock.schemas.has('note_style_profiles')).toBe(true);
       expect(mock.schemas.has('character_collections')).toBe(true);
       expect(mock.schemas.has('local_llm_models')).toBe(true);
+      // Schema 19 continuation tables must exist after every upgrade path.
+      expect(mock.schemas.has('continuation_sources')).toBe(true);
+      expect(mock.schemas.has('continuation_source_text_chunks')).toBe(true);
+      expect(mock.schemas.has('continuation_source_chapters')).toBe(true);
+      expect(mock.schemas.has('continuation_settings')).toBe(true);
+      expect(mock.schemas.has('continuation_import_jobs')).toBe(true);
     },
   );
 
@@ -48,6 +54,13 @@ describe('migration schema matrix', () => {
         'idx_story_memory_snapshots_project_position',
         'idx_story_memory_batches_project_through',
         'idx_story_memory_batches_status',
+        // Pre-existing unique index that the migration harness now registers
+        // correctly after broadening the CREATE INDEX matcher to include UNIQUE.
+        'idx_story_memory_batches_project_range',
+        // Schema 19 continuation indexes (Spec §9).
+        'idx_continuation_sources_one_ready',
+        'idx_continuation_text_chunks_range',
+        'idx_continuation_import_one_active',
       ]),
     );
   });

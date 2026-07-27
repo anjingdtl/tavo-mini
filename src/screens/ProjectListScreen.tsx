@@ -7,6 +7,11 @@ import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { exportShineWriterNovelJSON, exportToMarkdown, exportToText } from '../services/exportService';
 import { pickAndPreviewProjectPackage, importProjectPackage } from '../services/projectImport';
+import {
+  NEW_PROJECT_MODE_OPTIONS,
+  PROJECT_MODE_LABELS,
+  isValidProjectMode,
+} from '../services/continuation/projectMode';
 import type { Project, ProjectMode } from '../types/novel';
 
 export const ProjectListScreen: React.FC = () => {
@@ -99,7 +104,9 @@ export const ProjectListScreen: React.FC = () => {
       const { preview, pkg } = result;
       Alert.alert(
         '导入项目',
-        `项目名：${preview.name}\n模式：${preview.mode === 'outline' ? '大纲' : '自由写作'}\n章节：${preview.chapterCount}\n资料：${preview.resourceCount}\n\n将作为新项目导入。`,
+        `项目名：${preview.name}\n模式：${
+          isValidProjectMode(preview.mode) ? PROJECT_MODE_LABELS[preview.mode] : preview.mode
+        }\n章节：${preview.chapterCount}\n资料：${preview.resourceCount}\n\n将作为新项目导入。`,
         [
           { text: '取消', style: 'cancel' },
           {
@@ -134,7 +141,7 @@ export const ProjectListScreen: React.FC = () => {
             <View style={styles.cardText}>
               <Text style={[styles.projectName, { color: theme.colors.textPrimary }]}>{item.name}</Text>
               <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-                {item.mode === 'outline' ? '大纲模式' : '自由写作'} · 更新于 {new Date(item.updated_at).toLocaleDateString('zh-CN')}
+                {PROJECT_MODE_LABELS[item.mode] ?? item.mode} · 更新于 {new Date(item.updated_at).toLocaleDateString('zh-CN')}
               </Text>
             </View>
             <TouchableOpacity accessibilityLabel="导出项目" onPress={() => showExportOptions(item)} style={styles.iconButton}>
@@ -206,10 +213,7 @@ export const ProjectListScreen: React.FC = () => {
             <SegmentedControl
               value={newMode}
               onChange={setNewMode}
-              options={[
-                { value: 'outline', label: '大纲模式' },
-                { value: 'freeform', label: '自由写作' },
-              ]}
+              options={NEW_PROJECT_MODE_OPTIONS.map(o => ({ ...o }))}
             />
             <View style={styles.modalActions}>
               <Button label="取消" variant="ghost" onPress={() => setShowNewModal(false)} />
