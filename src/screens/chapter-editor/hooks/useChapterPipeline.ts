@@ -12,6 +12,11 @@ import { suppressGlobalPipelinePrompt } from '../../../navigation/pipelinePrompt
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
 import { usePipelineTaskStore } from '../../../store/pipelineTaskStore';
+import { useProjectStore } from '../../../store/projectStore';
+import {
+  cancelContinuationRun,
+  startContinuationRun,
+} from '../../../services/continuation/generation';
 import type { Chapter } from '../../../types/novel';
 import type {
   PipelineStageName,
@@ -211,8 +216,98 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     [chapter, openPipelineResult],
   );
 
+  const continuationRunIdRef = useRef<string | null>(null);
+
+  const runContinuation = useCallback(async () => {
+    if (!chapter) return;
+    const project = useProjectStore.getState().currentProject;
+    if (!project) {
+      Alert.alert('无法续写', '未选择项目。');
+      return;
+    }
+    setGenerating(true);
+    setProgressVisible(true);
+    setProgressStartedAt(Date.now());
+    setCurrentStage('draft');
+    setQueued(false);
+    try {
+      await requestNotificationPermission();
+      const instruction =
+        chapter.synopsis?.trim() ||
+        `续写第 ${chapter.position + 1} 章，保持与前文一致。`;
+      const run = await startContinuationRun({
+        projectId: project.id,
+        chapterId: chapter.id,
+        targetPosition: chapter.position,
+        userInstruction: instruction,
+        currentChapterContent: chapter.content ?? '',
+      });
+      continuationRunIdRef.current = run.id;
+      try {
+        await PipelineForeground.start(
+          run.id,
+          'AI 续写进行中',
+          '正在规划/生成…',
+          0,
+        );
+      } catch {
+        // foreground optional
+      }
+      // Poll until awaiting_user / terminal
+      const deadline = Date.now() + 15 * 60 * 1000;
+      while (Date.now() < deadline) {
+        const { getRunById } = await import(
+          '../../../services/continuation/generation'
+        );
+        const latest = await getRunById(run.id);
+        if (!latest) break;
+        if (
+          latest.state === 'awaiting_user' ||
+          latest.state === 'completed' ||
+          latest.state === 'failed' ||
+          latest.state === 'cancelled' ||
+          latest.state === 'outdated'
+        ) {
+          try {
+            await PipelineForeground.stop(run.id);
+          } catch {
+            // ignore
+          }
+          setProgressVisible(false);
+          setGenerating(false);
+          if (latest.state === 'failed') {
+            Alert.alert('续写失败', latest.errorMessage || '未知错误');
+          } else if (latest.state === 'cancelled') {
+            Toast.show({ type: 'info', text1: '已取消续写' });
+          } else {
+            navigation.navigate('ContinuationResult', { runId: run.id });
+          }
+          return;
+        }
+        await new Promise(r => setTimeout(r, 800));
+      }
+      setProgressVisible(false);
+      setGenerating(false);
+    } catch (error: any) {
+      setProgressVisible(false);
+      setGenerating(false);
+      Alert.alert('续写异常', error?.message || '请检查 Canon/API 配置。');
+    }
+  }, [chapter, navigation]);
+
   const runPipeline = useCallback(() => {
     if (!chapter) return;
+    const project = useProjectStore.getState().currentProject;
+    if (project?.mode === 'continuation') {
+      Alert.alert('AI 续写', '将基于 Canon 与续写状态生成本章，是否继续？', [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '开始续写',
+          onPress: () => runContinuation().catch(() => {}),
+        },
+      ]);
+      return;
+    }
     const { createTask, getActiveTaskForTarget } =
       usePipelineTaskStore.getState();
     const existing = getActiveTaskForTarget('chapter', chapter.id);
@@ -235,12 +330,19 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     } else {
       executeRunPipeline(createTask).catch(() => {});
     }
-  }, [chapter, executeRunPipeline]);
+  }, [chapter, executeRunPipeline, runContinuation]);
 
   const stopPipeline = useCallback(() => {
     setGenerating(false);
     setProgressVisible(false);
     setQueued(false);
+    if (continuationRunIdRef.current) {
+      const rid = continuationRunIdRef.current;
+      cancelContinuationRun(rid).catch(() => {});
+      continuationRunIdRef.current = null;
+      PipelineForeground.stop(rid).catch(() => {});
+      return;
+    }
     const runningTask = usePipelineTaskStore
       .getState()
       .tasks.find(

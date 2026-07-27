@@ -14,6 +14,40 @@ let pendingTimer: ReturnType<typeof setInterval> | null = null;
 // "The action 'NAVIGATE' with payload {name:'PipelineResult'} was not handled
 // by any navigator." 修复：用嵌套语法先切到 Settings Tab，再 push PipelineResult。
 function doNavigateToPipelineResult(taskId: string): void {
+  // Phase 3: continuation runs use ct_ prefix — independent result screen.
+  if (taskId.startsWith('ct_')) {
+    try {
+      navigationRef.dispatch(
+        CommonActions.navigate({
+          name: 'Settings',
+          params: {
+            screen: 'ContinuationResult',
+            params: { runId: taskId },
+            initial: false,
+          },
+        } as never),
+      );
+      return;
+    } catch {
+      // fall through
+    }
+    try {
+      navigationRef.dispatch(
+        CommonActions.navigate({
+          name: 'Editor',
+          params: {
+            screen: 'ContinuationResult',
+            params: { runId: taskId },
+            initial: false,
+          },
+        } as never),
+      );
+      return;
+    } catch {
+      // fall through
+    }
+  }
+
   // 优先走 Settings → PipelineResult（更常见的入口：流水线任务中心 → 详情）
   try {
     navigationRef.dispatch(
