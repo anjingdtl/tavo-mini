@@ -26,6 +26,20 @@ const CANON_TABLES = [
 ] as const;
 
 describe('schema 20 continuation Canon migration', () => {
+  it('emits Canon family columns before their table constraints', () => {
+    const worldRules = buildV19toV20Statements()
+      .map(item => item.sql)
+      .find(sql => sql.includes('CREATE TABLE IF NOT EXISTS canon_world_rules'));
+    expect(worldRules).toBeDefined();
+    const categoryIndex = worldRules!.indexOf('category TEXT NOT NULL');
+    const firstConstraintIndex = Math.min(
+      worldRules!.indexOf('CHECK(valid_from_position'),
+      worldRules!.indexOf('FOREIGN KEY(project_id)'),
+    );
+    expect(categoryIndex).toBeGreaterThan(-1);
+    expect(categoryIndex).toBeLessThan(firstConstraintIndex);
+  });
+
   it('declares Canon tables and schema version >= 20', () => {
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(20);
     const sql = buildV19toV20Statements().map(item => item.sql);

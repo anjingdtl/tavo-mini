@@ -27,6 +27,88 @@ import {
   getProjectStoryMemory,
 } from './storyMemoryRepository';
 import { invalidateIdf } from '../../utils/idfCache';
+import { v4 } from '../../services/uuidBridge';
+
+function buildContinuationStateInvalidationStatements(input: {
+  projectId: number;
+  chapterId: number;
+  fromPosition: number;
+  reason: string;
+  timestamp: string;
+  keepChapterReference: boolean;
+}): SqlStatement[] {
+  const outboxId = `co_${v4().replace(/-/g, '')}`;
+  const dedupeKey = `rebuild_story_memory:${input.projectId}:${input.fromPosition}:${input.reason}`;
+  return [
+    {
+      sql: `UPDATE continuation_state_events
+        SET invalidated_at = ?, invalidation_reason = ?
+        WHERE project_id = ? AND invalidated_at IS NULL
+          AND (valid_from_position >= ? OR chapter_position >= ?)`,
+      params: [
+        input.timestamp,
+        input.reason,
+        input.projectId,
+        input.fromPosition,
+        input.fromPosition,
+      ],
+    },
+    {
+      sql: `UPDATE continuation_state_proposals
+        SET status = 'invalidated', decision_note = ?, decided_at = ?, updated_at = ?
+        WHERE chapter_id = ? AND status IN ('pending', 'accepted')`,
+      params: [
+        input.reason,
+        input.timestamp,
+        input.timestamp,
+        input.chapterId,
+      ],
+    },
+    {
+      sql: `UPDATE continuation_check_results
+        SET resolution_status = 'obsolete', updated_at = ?
+        WHERE chapter_id = ? AND resolution_status = 'open'`,
+      params: [input.timestamp, input.chapterId],
+    },
+    {
+      sql: 'INSERT OR IGNORE INTO project_story_memory (project_id, updated_at) VALUES (?, ?)',
+      params: [input.projectId, input.timestamp],
+    },
+    {
+      sql: `UPDATE project_story_memory SET status = 'dirty',
+        dirty_from_position = CASE
+          WHEN dirty_from_position IS NULL THEN ?
+          WHEN dirty_from_position > ? THEN ?
+          ELSE dirty_from_position
+        END,
+        updated_at = ?
+        WHERE project_id = ?`,
+      params: [
+        input.fromPosition,
+        input.fromPosition,
+        input.fromPosition,
+        input.timestamp,
+        input.projectId,
+      ],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO continuation_state_sync_outbox (
+        id, project_id, chapter_id, operation, payload_json, dedupe_key,
+        state, attempt_count, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
+      params: [
+        outboxId,
+        input.projectId,
+        input.keepChapterReference ? input.chapterId : null,
+        'rebuild_story_memory',
+        JSON.stringify({ fromPosition: input.fromPosition, reason: input.reason }),
+        dedupeKey,
+        input.timestamp,
+        input.timestamp,
+      ],
+    },
+  ];
+}
 
 export async function getAllProjects(): Promise<Project[]> {
   return all<Project>(
@@ -308,6 +390,20 @@ export async function updateChapter(
         timestamp,
       );
       statements.push(...sideEffects);
+
+      const project = await getProjectById(chapter.project_id);
+      if (project?.mode === 'continuation') {
+        statements.push(
+          ...buildContinuationStateInvalidationStatements({
+            projectId: chapter.project_id,
+            chapterId: chapter.id,
+            fromPosition: affectedPosition,
+            reason: `chapter_content_changed:${timestamp}`,
+            timestamp,
+            keepChapterReference: true,
+          }),
+        );
+      }
     }
   }
 
@@ -344,6 +440,23 @@ export async function deleteChapter(id: number): Promise<void> {
         timestamp,
       );
       statements.push(...sideEffects);
+      const project = await getProjectById(chapter.project_id);
+      if (project?.mode === 'continuation') {
+        // The outbox row cannot retain a FK to a chapter that is deleted in
+        // this transaction, so it intentionally uses a null chapter_id.
+        statements.splice(
+          0,
+          0,
+          ...buildContinuationStateInvalidationStatements({
+            projectId: chapter.project_id,
+            chapterId: chapter.id,
+            fromPosition: chapter.position,
+            reason: `chapter_deleted:${timestamp}`,
+            timestamp,
+            keepChapterReference: false,
+          }),
+        );
+      }
       // IDF is process-local; only clear after the DB transaction commits.
       // Historical behavior: drop IDF for any deleted finalized/summarized chapter.
       shouldInvalidateIdf = true;

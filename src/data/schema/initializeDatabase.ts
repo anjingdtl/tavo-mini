@@ -44,6 +44,32 @@ async function tableExists(
   return result.rows.length > 0;
 }
 
+/**
+ * A failed first-install schema creation can leave `settings` and `projects`
+ * behind before the schema version is recorded.  It contains no user project,
+ * so completing the idempotent current schema is safe.  Do not use this as a
+ * general Schema 0 migration path: any user project keeps the existing
+ * fail-closed compatibility guard.
+ */
+async function isRecoverableInterruptedFreshInstall(
+  database: SQLite.SQLiteDatabase,
+  installInfo: InstallInfo,
+): Promise<boolean> {
+  if (
+    installInfo.installType !== 'upgrade' ||
+    installInfo.previousVersion !== null ||
+    installInfo.schemaVersion !== 0
+  ) {
+    return false;
+  }
+  const result = await execute(
+    database,
+    'SELECT COUNT(*) AS count FROM projects WHERE id != ?',
+    [GLOBAL_PROJECT_ID],
+  );
+  return Number(result.rows.item(0)?.count ?? 0) === 0;
+}
+
 async function ensureCurrentIndexes(
   database: SQLite.SQLiteDatabase,
 ): Promise<void> {
@@ -268,7 +294,9 @@ export async function initializeDatabase(
   await ensureMetadataTable(database);
   const installInfo = await detectInstallType(database);
   lastInstallInfo = installInfo;
-  if (installInfo.installType === 'fresh') {
+  const recoverInterruptedFreshInstall =
+    await isRecoverableInterruptedFreshInstall(database, installInfo);
+  if (installInfo.installType === 'fresh' || recoverInterruptedFreshInstall) {
     await createCurrentSchema(database);
     await execute(
       database,

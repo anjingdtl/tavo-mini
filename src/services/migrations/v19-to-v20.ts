@@ -33,7 +33,16 @@ const GOVERNANCE_COLUMNS = `
   supersedes_id INTEGER,
   user_reviewed_at TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+`.trim();
+
+/**
+ * Emit table constraints only after each Canon family's specific columns.
+ * SQLite does not allow a later column definition after a CHECK or FOREIGN
+ * KEY table constraint, which otherwise breaks fresh schema creation.
+ */
+function governanceFks(table: string): string {
+  return `
   CHECK(valid_from_position >= 0),
   CHECK(valid_to_position IS NULL OR valid_to_position > valid_from_position),
   CHECK(first_observed_position >= 0),
@@ -45,11 +54,8 @@ const GOVERNANCE_COLUMNS = `
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY(source_id) REFERENCES continuation_sources(id) ON DELETE CASCADE,
   FOREIGN KEY(snapshot_id) REFERENCES continuation_canon_snapshots(id) ON DELETE CASCADE,
-  FOREIGN KEY(analysis_run_id) REFERENCES continuation_analysis_runs(id) ON DELETE CASCADE
-`.trim();
-
-function governanceFks(table: string): string {
-  return `FOREIGN KEY(supersedes_id) REFERENCES ${table}(id) ON DELETE SET NULL`;
+  FOREIGN KEY(analysis_run_id) REFERENCES continuation_analysis_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY(supersedes_id) REFERENCES ${table}(id) ON DELETE SET NULL`;
 }
 
 function governanceIndexes(table: string, extra: string[] = []): SqlStatement[] {

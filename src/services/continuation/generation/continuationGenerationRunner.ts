@@ -3,7 +3,11 @@
  * Does not reuse freeform PipelineStageName or pipeline_tasks as authority.
  */
 import type { ChatMessage } from '../../llm/types';
-import { callLLMResult, resolveLLMRequestConfig } from '../../llm';
+import {
+  callLLMResult,
+  resolveLLMRequestConfig,
+  resolveLLMRequestConfigById,
+} from '../../llm';
 import { stripModelJson } from '../canon/canonJsonValidators';
 import { buildContinuationContext } from './continuationContextBuilder';
 import {
@@ -48,6 +52,7 @@ import {
 } from './types';
 import { openDatabase } from '../../../data/connection/openDatabase';
 import { executeTransaction } from '../../database/transaction';
+import { processContinuationOutbox } from './continuationStateOutboxWorker';
 
 
 export type StageLlmCaller = (input: {
@@ -135,6 +140,9 @@ async function defaultStageCaller(input: {
   projectId: number;
   runId: string;
 }): Promise<{ text: string; usage?: { prompt?: number; completion?: number } }> {
+  const requestConfig = input.configId
+    ? await resolveLLMRequestConfigById(input.configId)
+    : await resolveLLMRequestConfig();
   const result = await callLLMResult(
     input.messages,
     input.maxTokens,
@@ -146,6 +154,7 @@ async function defaultStageCaller(input: {
       scenario: `continuation_${input.stage}`,
       responseFormat:
         input.responseFormat === 'json_object' ? 'json_object' : undefined,
+      requestConfig,
     },
     input.signal,
   );
@@ -583,10 +592,24 @@ export async function adoptArtifactAsDraft(input: {
 
   const adoptedHash = artifact.contentHash;
   const ts = new Date().toISOString();
+  const chapter = ch.rows.item(0);
 
   // Single local transaction: revision snapshot + write draft content + mark run.
   // Never call LLM here.
   const statements: Array<{ sql: string; params?: any[] }> = [
+    {
+      sql: `INSERT INTO content_revisions (
+        project_id, target_type, target_id, title, content, source, source_ref, created_at
+      ) VALUES (?, 'chapter', ?, ?, ?, 'before_pipeline_accept', ?, ?)`,
+      params: [
+        run.projectId,
+        run.chapterId,
+        String(chapter.title ?? ''),
+        currentContent,
+        run.id,
+        ts,
+      ],
+    },
     {
       sql: `UPDATE chapters SET content = ?, status = CASE WHEN status = 'finalized' THEN status ELSE 'draft' END, updated_at = ? WHERE id = ?`,
       params: [artifact.content, ts, run.chapterId],
@@ -643,9 +666,27 @@ export async function finalizeContinuationChapter(input: {
   const position = ch.rows.item(0).position as number;
   const ts = new Date().toISOString();
 
+  let frozenStateExtractionConfigId: number | null = null;
+  if (input.sourceRunId) {
+    const sourceRun = await getRunById(input.sourceRunId);
+    if (sourceRun) {
+      try {
+        frozenStateExtractionConfigId = JSON.parse(
+          sourceRun.settingsSnapshotJson,
+        ).resolvedLlmConfigIds?.stateExtraction ?? null;
+      } catch {
+        frozenStateExtractionConfigId = null;
+      }
+    }
+  }
+
   await executeTransaction(
     db,
     [
+      {
+        sql: 'INSERT OR IGNORE INTO project_story_memory (project_id, updated_at) VALUES (?, ?)',
+        params: [input.projectId, ts],
+      },
       {
         sql: `UPDATE chapters SET content = ?, status = 'finalized',
           finalized_at = ?, updated_at = ? WHERE id = ?`,
@@ -681,9 +722,14 @@ export async function finalizeContinuationChapter(input: {
       chapterId: input.chapterId,
       chapterRevisionHash: revisionHash,
       sourceRunId: input.sourceRunId ?? null,
+      llmConfigId: frozenStateExtractionConfigId,
     },
     dedupeKey,
   });
+
+  // The worker claims items with CAS, so this is safe on repeated finalize
+  // taps and complements the cold-start recovery path.
+  processContinuationOutbox({ limit: 1 }).catch(() => {});
 
   return { revisionHash, outboxDedupeKey: dedupeKey };
 }
