@@ -47,6 +47,13 @@ export {
   isCanonReadyForGeneration,
 } from './canonInvalidationService';
 export {
+  queueHistoricalDigests,
+  processHistoricalDigest,
+  listHistoricalDigestReferences,
+  findHistoricalChapterCandidates,
+  markHistoricalDigestsOutdated,
+} from './historicalDigestService';
+export {
   normalizeAlias,
   longestMatchAliases,
   isAmbiguousShortAlias,

@@ -1,5 +1,16 @@
 # ShineWriter 发布清单
 
+## V2.10.4 历史摘要与近端 Canon 加速
+
+- [x] 升级 `package.json` / `package-lock.json` 至 `2.10.4`，`npm run prebuild` 生成 `V2.10.4` / `2100400`
+- [x] `CHANGELOG.md` 和 `README.md` 已同步两组 Canon 请求、历史摘要和 Schema 24 变更
+- [x] `npm run verify` 通过（ESLint 0 error；保留仓库既有 warning）
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.10.4-release.apk`
+- [x] `apksigner` 验收单 signer、v2、固定证书 SHA-256，`zipalign -c -P 16` 验证成功，`aapt` 显示 `com.shinewriter` / `V2.10.4` / `2100400`
+- [ ] 本轮未执行新的真机或模拟器回归；保留既有自动化与 APK 签名/元数据验收。
+
+证据：Release APK 38,175,275 bytes，SHA-256 `A47D21EBDD22BF1390B76E20FC1706CB330F562A96A37EF984119A5DC305BC18`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。
+
 ## V2.10.3 Canon 分析取消恢复与 JSON 兼容
 
 - [x] 升级 `package.json` / `package-lock.json` 至 `2.10.3`，`npm run prebuild` 生成 `V2.10.3` / `2100300`

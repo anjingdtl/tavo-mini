@@ -2,14 +2,14 @@
  * P1-E Source activation atomicity (fix-plan §6.2).
  *
  * Verifies that buildActivateSourceBoundaryStatements produces a single batch
- * (supersede + promote + settings pointer switch + run outdated) and that the
+ * (supersede + promote + settings pointer switch + run/digest outdated) and that the
  * continuation fault domain rolls the whole batch back on any statement fault —
  * so the settings pointer can never point at a superseded source.
  */
 import { buildActivateSourceBoundaryStatements } from '../src/services/continuation/continuationSourceRepository';
 
 describe('P1-E source activation atomic transaction (fix-plan §6.2)', () => {
-  it('builds all four statements in the correct order', () => {
+  it('builds all five statements in the correct order', () => {
     const stmts = buildActivateSourceBoundaryStatements({
       projectId: 1,
       newSourceId: 7,
@@ -18,7 +18,7 @@ describe('P1-E source activation atomic transaction (fix-plan §6.2)', () => {
       boundaryMode: 'end_of_chapter',
       ts: '2026-01-01T00:00:00.000Z',
     });
-    expect(stmts).toHaveLength(4);
+    expect(stmts).toHaveLength(5);
     // 1) supersede prior ready
     expect(stmts[0].sql).toContain("status = 'superseded'");
     // 2) promote new to ready
@@ -28,9 +28,12 @@ describe('P1-E source activation atomic transaction (fix-plan §6.2)', () => {
     expect(stmts[2].sql).toContain('active_source_id = ?');
     expect(stmts[2].params).toContain(7);
     expect(stmts[2].params).toContain(42);
-    // 4) run invalidation
+    // 4) continuation run invalidation
     expect(stmts[3].sql).toContain("state = 'outdated'");
     expect(stmts[3].sql).toContain("'queued', 'running', 'awaiting_user', 'interrupted'");
+    // 5) historical weak references must not survive a source switch.
+    expect(stmts[4].sql).toContain('continuation_historical_digests');
+    expect(stmts[4].sql).toContain("status = 'outdated'");
   });
 
   it('the settings pointer statement carries the new source id, not the old', () => {
@@ -58,10 +61,10 @@ describe('P1-E source activation atomic transaction (fix-plan §6.2)', () => {
       jobId: 'job_1',
       ts: '2026-01-01T00:00:00.000Z',
     });
-    expect(stmts).toHaveLength(5);
-    expect(stmts[4].sql).toContain('UPDATE continuation_import_jobs');
-    expect(stmts[4].sql).toContain("state = 'completed'");
-    expect(stmts[4].params).toContain('job_1');
+    expect(stmts).toHaveLength(6);
+    expect(stmts[5].sql).toContain('UPDATE continuation_import_jobs');
+    expect(stmts[5].sql).toContain("state = 'completed'");
+    expect(stmts[5].params).toContain('job_1');
   });
 
   it('the run-outdated statement targets only the creating project', () => {
@@ -201,8 +204,8 @@ describe('P1-E continuation fault domain (fix-plan §6.2 injection)', () => {
       onStatementComplete: (idx: number, rows: number) =>
         counts.push({ idx, rows }),
     });
-    expect(counts).toHaveLength(4);
+    expect(counts).toHaveLength(5);
     expect(counts.every(c => c.rows === 1)).toBe(true);
-    expect(counts.map(c => c.idx)).toEqual([1, 2, 3, 4]);
+    expect(counts.map(c => c.idx)).toEqual([1, 2, 3, 4, 5]);
   });
 });
