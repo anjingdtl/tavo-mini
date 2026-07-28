@@ -4,10 +4,12 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.10.4] - 2026-07-28
 
 ### Changed
 
+- **第三期历史记忆**：新增历史章节摘要、摘要章节映射与本地候选索引；摘要明确为非 Canon 弱参考，只有命中用户关键词时才进入续写上下文，源或续写边界变化会自动过期。
+- **Schema 24**：新增 `continuation_historical_digests`、`continuation_historical_digest_chapters`、`continuation_historical_index_terms`，纳入备份与恢复顺序。
 - **原著 Canon 两组请求协议**：新建分析任务每个章节批次改为「人物与状态」和「世界观与剧情」两次 LLM 请求，完整保留人物、关系、经历、知识、状态、世界规则、剧情和时间线字段；旧任务仍按原五类请求恢复，不会丢失已完成进度。
 - **Schema 23**：`continuation_analysis_work_items` 的可选请求类型扩展为两组新协议，升级时会原样迁移 Schema 22 的五类工作项。
 

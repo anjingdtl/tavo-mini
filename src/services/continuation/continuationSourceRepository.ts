@@ -326,6 +326,12 @@ export function buildActivateSourceBoundaryStatements(input: {
         WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
       params: ['source_or_boundary_changed', ts, projectId],
     },
+    {
+      sql: `UPDATE continuation_historical_digests
+        SET status = 'outdated', updated_at = ?
+        WHERE project_id = ? AND status IN ('queued', 'running', 'ready', 'failed')`,
+      params: [ts, projectId],
+    },
     ...(jobId
       ? [{
           sql: `UPDATE continuation_import_jobs SET
@@ -665,6 +671,12 @@ export async function updateBoundaryInTx(
       params: [ts, projectId],
     },
     {
+      sql: `UPDATE continuation_historical_digests
+        SET status = 'outdated', updated_at = ?
+        WHERE project_id = ? AND status IN ('queued', 'running', 'ready', 'failed')`,
+      params: [ts, projectId],
+    },
+    {
       sql: `UPDATE continuation_settings SET
           active_source_id = ?,
           boundary_source_id = ?,
@@ -705,6 +717,12 @@ export async function markAnalysisOutdated(
       sql: `UPDATE continuation_analysis_runs
         SET state = 'outdated', updated_at = ?
         WHERE project_id = ? AND state IN ('queued', 'running', 'paused', 'awaiting_review')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_historical_digests
+        SET status = 'outdated', updated_at = ?
+        WHERE project_id = ? AND status IN ('queued', 'running', 'ready', 'failed')`,
       params: [ts, projectId],
     },
     {
