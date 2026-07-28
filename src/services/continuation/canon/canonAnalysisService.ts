@@ -50,14 +50,30 @@ import {
 } from './canonJsonValidators';
 import { insertEvidenceAndLink } from './canonEvidenceService';
 import { executeTransaction } from '../../../data/connection/transaction';
+import {
+  callLLM,
+  resolveLLMRequestConfig,
+  resolveLLMRequestConfigById,
+} from '../../llm';
 
 export type AnalysisExtractorMode = 'deterministic' | 'llm';
+
+/**
+ * Quick is intentionally available offline for a fast local preview. The
+ * Standard and Deep products promise semantic Canon analysis, so they must
+ * use the configured model instead of silently falling back to regexes.
+ */
+export function defaultExtractorModeForProfile(
+  profile: AnalysisProfile,
+): AnalysisExtractorMode {
+  return profile === 'quick' ? 'deterministic' : 'llm';
+}
 
 export interface StartAnalysisInput {
   projectId: number;
   profile: AnalysisProfile;
   modelConfigId?: number | null;
-  /** Default deterministic for CI/offline; llm uses active LLM config. */
+  /** Explicit override retained for CI/offline fixtures. */
   extractorMode?: AnalysisExtractorMode;
   chaptersPerBatch?: number;
 }
@@ -683,6 +699,22 @@ export async function startAnalysis(
     throw new Error('边界内没有可分析章节。');
   }
 
+  const extractorMode =
+    input.extractorMode ?? defaultExtractorModeForProfile(input.profile);
+  let modelConfigId = input.modelConfigId ?? null;
+  if (extractorMode === 'llm') {
+    // Capture the selected configuration at run creation. A later change to
+    // the active configuration must not make resumed batches use another
+    // model/provider than the one recorded on this analysis run.
+    const requestConfig = modelConfigId
+      ? await resolveLLMRequestConfigById(modelConfigId)
+      : await resolveLLMRequestConfig();
+    if (!requestConfig.id) {
+      throw new Error('当前 LLM 配置无效，请在设置中重新保存并启用。');
+    }
+    modelConfigId = requestConfig.id;
+  }
+
   const snapshotId = v4();
   const runId = v4();
   const perBatch = Math.max(1, input.chaptersPerBatch ?? 3);
@@ -746,7 +778,7 @@ export async function startAnalysis(
     boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
     canonSnapshotId: snapshotId,
     profile: input.profile,
-    modelConfigId: input.modelConfigId ?? null,
+    modelConfigId,
     state: 'queued',
     stage: 'snapshot',
     progressCurrent: 0,
@@ -764,7 +796,7 @@ export async function startAnalysis(
   // Store extractor mode in checkpoint for resume.
   await updateRunState(db, runId, {
     checkpointJson: JSON.stringify({
-      extractorMode: input.extractorMode ?? 'deterministic',
+      extractorMode,
     }),
   });
 
@@ -831,7 +863,7 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
   const checkpoint = run.checkpointJson
     ? (JSON.parse(run.checkpointJson) as { extractorMode?: AnalysisExtractorMode })
     : {};
-  const mode = checkpoint.extractorMode ?? 'deterministic';
+  const mode = checkpoint.extractorMode ?? defaultExtractorModeForProfile(run.profile);
 
   await updateRunState(db, runId, {
     state: 'running',
@@ -866,7 +898,7 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
 
       let extraction: ChapterExtractionResult;
       if (mode === 'llm') {
-        extraction = await extractWithLlm(slice, run.profile);
+        extraction = await extractWithLlm(slice, run.profile, run.modelConfigId);
       } else {
         extraction = extractChapterDeterministic(slice);
       }
@@ -950,11 +982,14 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
       : 0,
   );
 
-  if (completedBatches.length === 0) {
+  if (failedBatches.length > 0) {
     await updateRunState(db, runId, {
       state: 'failed',
-      errorCode: 'all_batches_failed',
-      errorMessage: failedBatches[0]?.errorMessage ?? '全部批次失败',
+      stage: 'chapter_extraction',
+      errorCode: 'batch_failed',
+      errorMessage: `有 ${failedBatches.length}/${batches.length} 个分析批次失败：${
+        failedBatches[0]?.errorMessage ?? '请检查模型配置和网络后重试'
+      }`,
       completedAt: now(),
     });
     await updateSnapshotMeta(db, run.canonSnapshotId, {
@@ -994,36 +1029,44 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
   return (await getRunById(runId))!;
 }
 
-async function extractWithLlm(
+export async function extractWithLlm(
   chapters: BoundedSourceChapter[],
   profile: AnalysisProfile,
+  modelConfigId: number | null,
 ): Promise<ChapterExtractionResult> {
-  // Soft integration: call existing LLM entry if available; fall back to
-  // deterministic on any failure so analysis never hard-depends on network.
-  try {
-    const { callLLM } = await import('../../llm');
-    const prompt = [
-      '你是原著 Canon 提取器。只根据提供的章节提取结构化 JSON。',
-      '禁止编造未出现的情节。schemaVersion 必须为 1。',
-      `档位: ${profile}`,
-      '章节：',
-      ...chapters.map(
-        c => `### ${c.title} (pos=${c.position}, id=${c.id})\n${c.content.slice(0, 6000)}`,
-      ),
-      '输出 JSON：{schemaVersion:1,worldRules,characters,relationships,plotThreads,experiences,knowledge,states,timelineEvents}',
-    ].join('\n');
-    const text = await callLLM(
-      [{ role: 'user', content: prompt }],
-      undefined,
-      {
-        responseFormat: 'json_object',
-        queueClass: 'background',
-      },
-    );
-    return parseExtractionResultJson(String(text ?? ''));
-  } catch {
-    return extractChapterDeterministic(chapters);
+  if (!modelConfigId) {
+    throw new Error('分析任务缺少 LLM 配置；请重新发起 Standard 或 Deep 分析。');
   }
+  const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
+  const prompt = [
+    '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
+    '必须只返回一个合法 JSON 对象，不要 Markdown，不要解释。schemaVersion 必须为 1。',
+    `分析档位：${profile}。请同时填写 worldRules、characters、relationships、plotThreads、experiences、knowledge、states、timelineEvents 八个数组；没有被原文支持的事实才使用空数组。`,
+    '每一个数组条目都必须至少有一条 evidence。evidence 必须引用本批章节中连续、逐字一致的原文片段作为 quotePreview（不超过 160 字）。',
+    '每章 metadata 给出 bodyStart 和 bodyEnd：charStart/charEnd 是全书 UTF-16 绝对偏移；请使用 quotePreview 在该章正文中定位后填写，不能猜测。',
+    '人物的 canonicalName 使用原文最常用姓名；关系要写双方、关系性质和态度；剧情要写已发生事实与当前状态；经历必须归属到人物。',
+    'JSON 结构：{"schemaVersion":1,"worldRules":[],"characters":[],"relationships":[],"plotThreads":[],"experiences":[],"knowledge":[],"states":[],"timelineEvents":[]}。数组元素字段必须严格使用对应名称：worldRules(category,title,description,constraintLevel,confidence,evidence)；characters(canonicalName,aliases,description,importance,confidence,evidence)；relationships(sourceName,targetName,relationType,attitude,publicStatus,description,confidence,evidence)；plotThreads(title,description,level,status,characterNames,confidence,evidence)；experiences(characterName,eventType,title,description,importance,confidence,evidence)；knowledge(characterName,factKey,factSummary,knowledgeState,confidence,evidence)；states(characterName,location,physicalState,emotionalState,aliveState,summary,confidence,evidence)；timelineEvents(eventKey,title,summary,eventType,characterNames,importance,confidence,evidence)。',
+    'evidence 元素字段：chapterId、chapterPosition、charStart、charEnd、quotePreview。',
+    '章节正文：',
+    ...chapters.map(
+      c =>
+        `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${c.range.start}, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
+    ),
+  ].join('\n');
+  const text = await callLLM(
+    [{ role: 'user', content: prompt }],
+    profile === 'deep' ? 8000 : 5000,
+    {
+      responseFormat: 'json_object',
+      queueClass: 'background',
+      scenario: 'continuation_canon_analysis',
+      requestConfig,
+    },
+  );
+  if (!text?.trim()) {
+    throw new Error('LLM 未返回分析结果。');
+  }
+  return parseExtractionResultJson(text);
 }
 
 /**

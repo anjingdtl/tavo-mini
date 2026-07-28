@@ -17,6 +17,7 @@ import { useProjectStore } from '../../../store/projectStore';
 import { useThemeStore } from '../../../store/themeStore';
 import {
   activateSnapshot,
+  defaultExtractorModeForProfile,
   getAnalysisOverview,
   processAnalysisRun,
   startAnalysis,
@@ -76,7 +77,9 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         : '';
     Alert.alert(
       `开始 ${profile} 分析`,
-      `将仅读取续写起点之前的原著章节。离线确定性提取默认可用；若配置了在线模型可在后续批次中使用。\n\n分析过程可暂停/取消。${onlineNote}`,
+      profile === 'quick'
+        ? `将仅读取续写起点之前的原著章节。Quick 使用离线快速提取，结果只适合预览。\n\n分析过程可暂停/取消。${onlineNote}`
+        : `将仅读取续写起点之前的原著章节，并调用当前已启用的 LLM 生成带原文证据的结构化 Canon。模型调用或 JSON 校验失败会明确报错，不会降级为关键词结果。\n\n分析过程可暂停/取消。${onlineNote}`,
       [
         { text: '取消', style: 'cancel' },
         {
@@ -87,10 +90,13 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               const { runId, snapshotId } = await startAnalysis({
                 projectId: currentProject.id,
                 profile,
-                extractorMode: 'deterministic',
+                extractorMode: defaultExtractorModeForProfile(profile),
               });
               Toast.show({ type: 'info', text1: '分析已启动', text2: `批次处理中…` });
-              await processAnalysisRun(runId);
+              const run = await processAnalysisRun(runId);
+              if (run.state !== 'awaiting_review') {
+                throw new Error(run.errorMessage ?? '分析未完成，请检查模型配置后重试。');
+              }
               Toast.show({
                 type: 'success',
                 text1: '分析完成',
@@ -216,8 +222,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 发起分析
               </Text>
               <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-                分析只读取续写边界内的原著。Quick 不含完整关系/知识/时间线；Strict
-                生成请用 Standard/Deep。
+                分析只读取续写边界内的原著。Quick 是离线预览；Standard/Deep 会调用当前
+                LLM 并产出可审核的五类资料。正式续写请用 Standard/Deep。
               </Text>
               <View style={styles.row}>
                 <Button
