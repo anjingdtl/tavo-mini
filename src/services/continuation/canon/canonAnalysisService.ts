@@ -1,8 +1,8 @@
 /**
  * Canon analysis pipeline (Spec §8).
  *
- * Creates staging snapshot + run + batches, extracts via deterministic or LLM
- * path, validates evidence, and only publishes via explicit activateSnapshot.
+ * Creates staging snapshot + run + batches, extracts via LLM, validates
+ * evidence, and only publishes via explicit activateSnapshot.
  * Failed/cancelled/outdated runs never become Phase 3 active Canon.
  */
 import type SQLite from 'react-native-sqlite-storage';
@@ -20,9 +20,9 @@ import {
 import {
   emptyCapabilities,
   emptyCoverage,
-  ANALYSIS_MATERIAL_TYPES,
+  ANALYSIS_REQUEST_GROUPS,
   EXTRACTION_VERSION,
-  type AnalysisMaterialType,
+  type AnalysisWorkItemType,
   type AnalysisScope,
   type AnalysisProfile,
   type AnalysisRun,
@@ -70,12 +70,14 @@ import {
   resolveLLMRequestConfigById,
 } from '../../llm';
 
-export const ANALYSIS_MATERIAL_LABELS: Record<AnalysisMaterialType, string> = {
+export const ANALYSIS_MATERIAL_LABELS: Record<AnalysisWorkItemType, string> = {
   world_rules: '世界观',
   characters: '人物画像',
   relationships: '人物关系',
   plot_threads: '主线剧情',
   experiences: '人物经历',
+  character_state: '人物与状态',
+  world_plot: '世界观与剧情',
 };
 
 /**
@@ -146,7 +148,7 @@ export interface AnalysisProgressUpdate {
   stage: AnalysisStage;
   progressCurrent: number;
   progressTotal: number;
-  materialType?: AnalysisMaterialType;
+  materialType?: AnalysisWorkItemType;
   batchIndex?: number;
   state?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 }
@@ -917,14 +919,14 @@ export async function startAnalysis(
     state: 'queued',
     stage: 'snapshot',
     progressCurrent: 0,
-    progressTotal: batches.length * ANALYSIS_MATERIAL_TYPES.length,
+    progressTotal: batches.length * ANALYSIS_REQUEST_GROUPS.length,
     extractionVersion: EXTRACTION_VERSION,
   });
   await insertBatches(db, batches);
   await insertWorkItems(
     db,
     batches.flatMap(batch =>
-      ANALYSIS_MATERIAL_TYPES.map(materialType => ({
+      ANALYSIS_REQUEST_GROUPS.map(materialType => ({
         runId,
         batchIndex: batch.batchIndex,
         materialType,
@@ -941,9 +943,10 @@ export async function startAnalysis(
   // The complete plan is persisted so resume cannot silently widen a tail run.
   await updateRunState(db, runId, {
     checkpointJson: JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       mode: input.mode,
       extractorMode: 'llm',
+      workItemProtocol: 'request_groups_v2',
       scope: plan.effectiveScope,
       plannedChapterIds: plan.nearChapters.map(chapter => chapter.id),
       plannedRanges: plan.analyzedRanges,
@@ -1020,6 +1023,7 @@ async function processAnalysisRunInner(
   let checkpoint: {
     extractorMode?: 'llm' | 'deterministic';
     scope?: AnalysisScope;
+    workItemProtocol?: string;
   } = {};
   try {
     checkpoint = run.checkpointJson ? JSON.parse(run.checkpointJson) : {};
@@ -1043,7 +1047,7 @@ async function processAnalysisRunInner(
     sourceSnapshot,
   );
   const reportWorkItem = async (
-    materialType: AnalysisMaterialType,
+    materialType: AnalysisWorkItemType,
     batchIndex: number,
     state: AnalysisProgressUpdate['state'],
   ) => {
@@ -1052,13 +1056,13 @@ async function processAnalysisRunInner(
     await updateRunState(db, runId, {
       stage: 'chapter_extraction',
       progressCurrent: completed,
-      progressTotal: batches.length * ANALYSIS_MATERIAL_TYPES.length,
+      progressTotal: items.length,
     });
     options.onProgress?.({
       runId,
       stage: 'chapter_extraction',
       progressCurrent: completed,
-      progressTotal: batches.length * ANALYSIS_MATERIAL_TYPES.length,
+      progressTotal: items.length,
       materialType,
       batchIndex,
       state,
@@ -1090,7 +1094,7 @@ async function processAnalysisRunInner(
       const batchItems = (await listWorkItems(runId)).filter(
         item => item.batchIndex === batch.batchIndex,
       );
-      const runMaterial = async (materialType: AnalysisMaterialType) => {
+      const runMaterial = async (materialType: AnalysisWorkItemType) => {
         if (signal.aborted) throw new Error('分析已暂停或取消');
         const item = batchItems.find(
           candidate => candidate.materialType === materialType,
@@ -1150,7 +1154,7 @@ async function processAnalysisRunInner(
         }
       };
       const settled = await Promise.allSettled(
-        ANALYSIS_MATERIAL_TYPES.map(runMaterial),
+        batchItems.map(item => item.materialType).map(runMaterial),
       );
       const rejected = settled.find(
         (entry): entry is PromiseRejectedResult => entry.status === 'rejected',
@@ -1301,11 +1305,13 @@ async function processAnalysisRunInner(
     capabilities,
     coverage,
   });
+  const finalWorkItems = await listWorkItems(runId);
   await updateRunState(db, runId, {
     state: 'awaiting_review',
     stage: 'finalizing',
-    progressCurrent: completedBatches.length * ANALYSIS_MATERIAL_TYPES.length,
-    progressTotal: batches.length * ANALYSIS_MATERIAL_TYPES.length,
+    progressCurrent: finalWorkItems.filter(item => item.state === 'completed')
+      .length,
+    progressTotal: finalWorkItems.length,
     completedAt: now(),
   });
   await execute(
@@ -1334,7 +1340,7 @@ function emptyExtractionResult(): ChapterExtractionResult {
 
 function onlyMaterial(
   result: ChapterExtractionResult,
-  materialType: AnalysisMaterialType,
+  materialType: AnalysisWorkItemType,
 ): ChapterExtractionResult {
   const filtered = emptyExtractionResult();
   if (materialType === 'world_rules') filtered.worldRules = result.worldRules;
@@ -1350,6 +1356,18 @@ function onlyMaterial(
     filtered.timelineEvents = result.timelineEvents;
   }
   if (materialType === 'experiences') filtered.experiences = result.experiences;
+  if (materialType === 'character_state') {
+    filtered.characters = result.characters;
+    filtered.relationships = result.relationships;
+    filtered.experiences = result.experiences;
+    filtered.knowledge = result.knowledge;
+    filtered.states = result.states;
+  }
+  if (materialType === 'world_plot') {
+    filtered.worldRules = result.worldRules;
+    filtered.plotThreads = result.plotThreads;
+    filtered.timelineEvents = result.timelineEvents;
+  }
   return filtered;
 }
 
@@ -1372,19 +1390,23 @@ function mergeMaterialResults(
   );
 }
 
-const MATERIAL_PROMPTS: Record<AnalysisMaterialType, string> = {
+const MATERIAL_PROMPTS: Record<AnalysisWorkItemType, string> = {
   world_rules: '只填写 worldRules；其他数组必须为空。',
   characters: '只填写 characters、knowledge、states；其他数组必须为空。',
   relationships: '只填写 relationships；其他数组必须为空。',
   plot_threads: '只填写 plotThreads、timelineEvents；其他数组必须为空。',
   experiences: '只填写 experiences；其他数组必须为空。',
+  character_state:
+    '只填写 characters、relationships、experiences、knowledge、states；其他数组必须为空。人物之间的关系、当前状态和知识边界不得省略。',
+  world_plot:
+    '只填写 worldRules、plotThreads、timelineEvents；其他数组必须为空。剧情必须区分已发生事实、当前状态与未收束线索。',
 };
 
 export async function extractMaterialWithLlm(
   chapters: BoundedSourceChapter[],
   profile: AnalysisProfile,
   modelConfigId: number | null,
-  materialType: AnalysisMaterialType,
+  materialType: AnalysisWorkItemType,
   runId: string,
   signal: AbortSignal,
 ): Promise<ChapterExtractionResult> {

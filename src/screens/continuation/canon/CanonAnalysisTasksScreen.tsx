@@ -12,7 +12,6 @@ import {
   getAnalysisWorkItems,
   processAnalysisRun,
   resumeAnalysis,
-  type AnalysisMaterialType,
   type AnalysisRun,
   type AnalysisWorkItem,
 } from '../../../services/continuation/canon';
@@ -130,14 +129,10 @@ export const CanonAnalysisTasksScreen: React.FC<{
                     已持久化：完成 {completed}/{selectedItems.length} · 待处理{' '}
                     {queued} · 失败 {failed}
                   </Text>
-                  {(
-                    [
-                      'world_rules',
-                      'characters',
-                      'relationships',
-                      'plot_threads',
-                      'experiences',
-                    ] as const
+                  {Array.from(
+                    new Set(
+                      selectedItems.map(workItem => workItem.materialType),
+                    ),
                   ).map(materialType => {
                     const materialItems = selectedItems.filter(
                       workItem => workItem.materialType === materialType,
@@ -176,12 +171,8 @@ export const CanonAnalysisTasksScreen: React.FC<{
                       }}
                     >
                       第 {workItem.batchIndex + 1} 批 ·{' '}
-                      {
-                        ANALYSIS_MATERIAL_LABELS[
-                          workItem.materialType as AnalysisMaterialType
-                        ]
-                      }{' '}
-                      · {workItem.state}
+                      {ANALYSIS_MATERIAL_LABELS[workItem.materialType]} ·{' '}
+                      {workItem.state}
                       {workItem.attemptCount > 0
                         ? ` · 已尝试 ${workItem.attemptCount} 次`
                         : ''}
