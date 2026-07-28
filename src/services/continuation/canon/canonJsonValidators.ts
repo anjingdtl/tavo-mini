@@ -108,8 +108,20 @@ export interface ChapterExtractionResult {
 const CONSTRAINT = new Set(['hard', 'strong', 'reference']);
 const IMPORTANCE = new Set(['primary', 'major', 'supporting', 'minor']);
 const PUBLIC = new Set(['public', 'secret', 'misunderstood', 'one_sided']);
-const PLOT_LEVEL = new Set(['main', 'volume', 'arc', 'subplot', 'foreshadowing']);
-const PLOT_STATUS = new Set(['active', 'paused', 'resolved', 'abandoned', 'unknown']);
+const PLOT_LEVEL = new Set([
+  'main',
+  'volume',
+  'arc',
+  'subplot',
+  'foreshadowing',
+]);
+const PLOT_STATUS = new Set([
+  'active',
+  'paused',
+  'resolved',
+  'abandoned',
+  'unknown',
+]);
 const KNOW = new Set(['unknown', 'suspected', 'known', 'misunderstood']);
 const ALIVE = new Set(['alive', 'dead', 'unknown']);
 
@@ -150,37 +162,102 @@ function parseEvidence(raw: unknown): ExtractionEvidenceCandidate[] {
   return out;
 }
 
-/** Strip markdown code fences and extract the first JSON object/array. */
-export function stripModelJson(text: string): string {
-  let s = text.trim();
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) s = fence[1].trim();
-  const startObj = s.indexOf('{');
-  const startArr = s.indexOf('[');
-  let start = -1;
-  if (startObj >= 0 && (startArr < 0 || startObj < startArr)) start = startObj;
-  else if (startArr >= 0) start = startArr;
-  if (start < 0) return s;
-  // Find matching close by last index of complementary brace.
-  const open = s[start];
-  const close = open === '{' ? '}' : ']';
-  const end = s.lastIndexOf(close);
-  if (end > start) return s.slice(start, end + 1);
-  return s.slice(start);
-}
+/**
+ * Extract balanced JSON values while respecting quoted strings and escapes.
+ * Some OpenAI-compatible providers prepend a sentence or append usage text;
+ * using `lastIndexOf` in that situation used to accidentally join two JSON
+ * objects into one invalid payload.
+ */
+function findBalancedJsonValues(text: string): string[] {
+  const values: string[] = [];
+  for (let start = 0; start < text.length; start += 1) {
+    const open = text[start];
+    if (open !== '{' && open !== '[') continue;
 
-export function parseExtractionResultJson(raw: string): ChapterExtractionResult {
-  const cleaned = stripModelJson(raw);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error('提取结果不是合法 JSON');
+    const stack: string[] = [open === '{' ? '}' : ']'];
+    let quoted = false;
+    let escaped = false;
+    for (let index = start + 1; index < text.length; index += 1) {
+      const char = text[index];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') quoted = false;
+        continue;
+      }
+      if (char === '"') {
+        quoted = true;
+        continue;
+      }
+      if (char === '{') stack.push('}');
+      else if (char === '[') stack.push(']');
+      else if (char === '}' || char === ']') {
+        if (stack[stack.length - 1] !== char) break;
+        stack.pop();
+        if (stack.length === 0) {
+          values.push(text.slice(start, index + 1));
+          break;
+        }
+      }
+    }
   }
-  return validateExtractionResult(parsed);
+  return values;
 }
 
-export function validateExtractionResult(raw: unknown): ChapterExtractionResult {
+function modelJsonCandidates(text: string): string[] {
+  const trimmed = text.trim();
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fenced = fence?.[1]?.trim();
+  const sources = fenced && fenced !== trimmed ? [fenced, trimmed] : [trimmed];
+  const candidates: string[] = [];
+  for (const source of sources) {
+    if (source) candidates.push(source);
+    candidates.push(...findBalancedJsonValues(source));
+  }
+  return [...new Set(candidates)];
+}
+
+/** Strip surrounding prose/code fences and return the first balanced JSON value. */
+export function stripModelJson(text: string): string {
+  return (
+    modelJsonCandidates(text).find(candidate => {
+      try {
+        JSON.parse(candidate);
+        return true;
+      } catch {
+        return false;
+      }
+    }) ?? text.trim()
+  );
+}
+
+export function parseExtractionResultJson(
+  raw: string,
+): ChapterExtractionResult {
+  let validationError: Error | null = null;
+  for (const candidate of modelJsonCandidates(raw)) {
+    try {
+      return validateExtractionResult(JSON.parse(candidate));
+    } catch (error) {
+      // A valid but unrelated JSON object may be present before the actual
+      // result. Keep scanning candidates, but retain schema errors when it is
+      // the only JSON the model returned.
+      if (
+        validationError === null &&
+        !(error instanceof SyntaxError) &&
+        error instanceof Error
+      ) {
+        validationError = error;
+      }
+    }
+  }
+  if (validationError) throw validationError;
+  throw new Error('提取结果不是合法 JSON 或不符合 Canon schema');
+}
+
+export function validateExtractionResult(
+  raw: unknown,
+): ChapterExtractionResult {
   if (!isObj(raw)) throw new Error('提取结果必须是对象');
   const schemaVersion = num(raw.schemaVersion, 0);
   if (schemaVersion !== EXTRACTION_RESULT_SCHEMA_VERSION) {
@@ -214,7 +291,9 @@ export function validateExtractionResult(raw: unknown): ChapterExtractionResult 
     characters.push({
       canonicalName: name,
       aliases: Array.isArray(item.aliases)
-        ? item.aliases.filter((a): a is string => typeof a === 'string' && a.trim().length > 0)
+        ? item.aliases.filter(
+            (a): a is string => typeof a === 'string' && a.trim().length > 0,
+          )
         : [],
       description: str(item.description),
       importance: imp as ExtractionCharacter['importance'],
@@ -224,7 +303,9 @@ export function validateExtractionResult(raw: unknown): ChapterExtractionResult 
   }
 
   const relationships: ExtractionRelationship[] = [];
-  for (const item of Array.isArray(raw.relationships) ? raw.relationships : []) {
+  for (const item of Array.isArray(raw.relationships)
+    ? raw.relationships
+    : []) {
     if (!isObj(item)) continue;
     const sourceName = str(item.sourceName).trim();
     const targetName = str(item.targetName).trim();
@@ -309,8 +390,10 @@ export function validateExtractionResult(raw: unknown): ChapterExtractionResult 
     states.push({
       characterName,
       location: item.location == null ? null : str(item.location),
-      physicalState: item.physicalState == null ? null : str(item.physicalState),
-      emotionalState: item.emotionalState == null ? null : str(item.emotionalState),
+      physicalState:
+        item.physicalState == null ? null : str(item.physicalState),
+      emotionalState:
+        item.emotionalState == null ? null : str(item.emotionalState),
       aliveState: alive as ExtractionState['aliveState'],
       summary: str(item.summary),
       confidence: clamp01(num(item.confidence, 0.5)),
@@ -319,7 +402,9 @@ export function validateExtractionResult(raw: unknown): ChapterExtractionResult 
   }
 
   const timelineEvents: ExtractionTimelineEvent[] = [];
-  for (const item of Array.isArray(raw.timelineEvents) ? raw.timelineEvents : []) {
+  for (const item of Array.isArray(raw.timelineEvents)
+    ? raw.timelineEvents
+    : []) {
     if (!isObj(item)) continue;
     const eventKey = str(item.eventKey).trim();
     const title = str(item.title).trim();
@@ -363,6 +448,7 @@ export function assertJsonColumn(
     throw new Error('JSON 列无法解析');
   }
   if (kind === 'object' && !isObj(parsed)) throw new Error('JSON 列必须是对象');
-  if (kind === 'array' && !Array.isArray(parsed)) throw new Error('JSON 列必须是数组');
+  if (kind === 'array' && !Array.isArray(parsed))
+    throw new Error('JSON 列必须是数组');
   return value;
 }
