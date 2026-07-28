@@ -1,11 +1,13 @@
 /**
- * ResourceHome + ContinuationHome UI tests (Spec §8.3, §8.4, §18.3).
+ * ResourceLibrary 续写 tab + ContinuationHome UI tests (Spec §8.3, §8.4, §18.3).
  *
- * Verifies the new 资料 stack entry list renders the five resource entries and
- * that ContinuationHome gates non-continuation projects correctly.
+ * The old ResourceHomeScreen entry-list layer was removed and 续写 is now a
+ * first-class tab inside ResourceLibrary's SegmentedControl. These tests verify
+ * the flattened structure: the five tabs render, 续写 shows its embedded body,
+ * and ContinuationHome still gates non-continuation projects correctly.
  */
 import React from 'react';
-import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import { render, waitFor } from '@testing-library/react-native';
 
 // Mock the navigation object passed to screens.
 const mockNavigate = jest.fn();
@@ -29,11 +31,23 @@ jest.mock('../src/services/continuation/continuationImportService', () => ({
   deleteContinuationSource: jest.fn(async () => undefined),
 }));
 
-// ContinuationHomeScreen uses useFocusEffect to reload on focus. Mock the
-// React Navigation hook so the callback runs once on mount (via useEffect)
-// without a NavigationContainer. Using useEffect — not a direct call — avoids
-// the render → setState → re-render infinite loop, since the screen's focus
-// callback updates loading/source state.
+// ResourceLibrary calls into the DB facade on focus (loadData) even when the
+// continuation tab is active. Stub the facade so the content-tab loaders resolve
+// to empty lists without touching SQLite.
+jest.mock('../src/services/database', () => ({
+  getAllCharacters: jest.fn(async () => []),
+  getAllWorldbookEntries: jest.fn(async () => []),
+  getAllNotes: jest.fn(async () => []),
+  getAllPresets: jest.fn(async () => []),
+  getCharacterCollections: jest.fn(async () => []),
+  getWorldbookCollections: jest.fn(async () => []),
+  getNoteCollections: jest.fn(async () => []),
+  getProjectNoteConfig: jest.fn(async () => null),
+}));
+
+// Mock React Navigation hooks so screens mount without a NavigationContainer.
+// useFocusEffect runs the callback once on mount (via useEffect); useNavigation
+// returns the shared mock so the embedded ContinuationHomeBody can navigate.
 jest.mock('@react-navigation/native', () => {
   const { useEffect } = require('react');
   return {
@@ -44,19 +58,21 @@ jest.mock('@react-navigation/native', () => {
         }
       }, [cb]);
     },
+    useNavigation: () => navigation,
   };
 });
 
-import { ResourceHomeScreen } from '../src/screens/continuation/ResourceHomeScreen';
+import { ResourceLibrary } from '../src/screens/ResourceLibrary';
 import { ContinuationHomeScreen } from '../src/screens/continuation/ContinuationHomeScreen';
 
-describe('ResourceHome (Spec §8.3)', () => {
+describe('ResourceLibrary 续写 tab (Spec §8.3 flattened)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('renders all five resource entries', () => {
-    const { getByText } = render(<ResourceHomeScreen navigation={navigation as any} />);
+  it('renders all five tabs in the SegmentedControl', () => {
+    projectState.currentProject = { id: 1, name: '续写项目', mode: 'continuation' };
+    const { getByText } = render(<ResourceLibrary navigation={navigation as any} />);
     expect(getByText('续写')).toBeTruthy();
     expect(getByText('角色')).toBeTruthy();
     expect(getByText('世界书')).toBeTruthy();
@@ -64,18 +80,31 @@ describe('ResourceHome (Spec §8.3)', () => {
     expect(getByText('预设')).toBeTruthy();
   });
 
-  it('navigates to ContinuationHome when 续写 is tapped', () => {
-    const { getByText } = render(<ResourceHomeScreen navigation={navigation as any} />);
-    fireEvent.press(getByText('续写'));
-    expect(mockNavigate).toHaveBeenCalledWith('ContinuationHome', {});
+  it('shows the continuation import entry on the 续写 tab', async () => {
+    projectState.currentProject = { id: 1, name: '续写项目', mode: 'continuation' };
+    const { getAllByText, getByText } = render(
+      <ResourceLibrary
+        navigation={navigation as any}
+        route={{ params: { initialTab: 'continuation' } }}
+      />,
+    );
+    // The import card title + button both read '导入 TXT 原著'; wait for the
+    // async getActiveContinuationSource mock to flip loading off.
+    await waitFor(() => {
+      expect(getAllByText('导入 TXT 原著').length).toBeGreaterThan(0);
+    });
+    expect(getByText(/原著仅保存在本设备/)).toBeTruthy();
   });
 
-  it('navigates to ResourceLibrary with initialTab when a content entry is tapped', () => {
-    const { getByText } = render(<ResourceHomeScreen navigation={navigation as any} />);
-    fireEvent.press(getByText('世界书'));
-    expect(mockNavigate).toHaveBeenCalledWith('ResourceLibrary', {
-      initialTab: 'worldbook',
-    });
+  it('shows the not-continuation gate on the 续写 tab for an outline project', () => {
+    projectState.currentProject = { id: 2, name: '大纲项目', mode: 'outline' };
+    const { getByText } = render(
+      <ResourceLibrary
+        navigation={navigation as any}
+        route={{ params: { initialTab: 'continuation' } }}
+      />,
+    );
+    expect(getByText('当前项目不是原著续写项目')).toBeTruthy();
   });
 });
 

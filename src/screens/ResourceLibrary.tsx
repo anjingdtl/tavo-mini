@@ -32,7 +32,7 @@ import {
 } from 'lucide-react-native';
 import { types } from '@react-native-documents/picker';
 import Toast from 'react-native-toast-message';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import {
   Button,
   Card,
@@ -71,22 +71,31 @@ import {
 } from '../services/fileImport';
 import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
+import { ContinuationHomeBody } from './continuation/ContinuationHomeScreen';
 
-type ResourceTab = 'characters' | 'worldbook' | 'notes' | 'presets';
+// 续写 as a first-class tab of the resource library (Spec §8.3 flattened):
+// the old ResourceHomeScreen entry-list layer is removed, and 续写 sits beside
+// the four content tabs in the SegmentedControl. It renders an embedded body
+// (ContinuationHomeBody) instead of a DB-backed item list, so it is excluded
+// from the DB-loading/resource-type/editor paths below.
+type ResourceTab = 'continuation' | 'characters' | 'worldbook' | 'notes' | 'presets';
+/** Tabs that back a DB item list (everything except the continuation entry). */
+type ContentTab = Exclude<ResourceTab, 'continuation'>;
 type EditorKind =
-  | ResourceTab
+  | ContentTab
   | 'worldbookCollection'
   | 'characterCollection'
   | 'noteCollection';
 
 const TABS: { value: ResourceTab; label: string }[] = [
+  { value: 'continuation', label: '续写' },
   { value: 'characters', label: '角色' },
   { value: 'worldbook', label: '世界书' },
   { value: 'notes', label: '笔记' },
   { value: 'presets', label: '预设' },
 ];
 
-const RESOURCE_TYPE: Record<ResourceTab, ResourceType> = {
+const RESOURCE_TYPE: Record<ContentTab, ResourceType> = {
   characters: 'character',
   worldbook: 'worldbook',
   notes: 'note',
@@ -127,13 +136,16 @@ interface EditorState {
 
 export const ResourceLibrary: React.FC<{
   route?: { params?: { initialTab?: ResourceTab } };
-}> = ({ route }) => {
+  navigation?: { navigate: (screen: string, params?: any) => void };
+}> = ({ route, navigation: navProp }) => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
+  const reactNavigation = useNavigation<any>();
+  const navigation = navProp ?? reactNavigation;
   const [tab, setTab] = useState<ResourceTab>(
     route?.params?.initialTab ?? 'characters',
   );
-  const [items, setItems] = useState<Record<ResourceTab, any[]>>({
+  const [items, setItems] = useState<Record<ContentTab, any[]>>({
     characters: [],
     worldbook: [],
     notes: [],
@@ -877,6 +889,9 @@ export const ResourceLibrary: React.FC<{
       Alert.alert('未选择项目', '请先在项目页选择当前项目。');
       return;
     }
+    // Continuation tab has no DB-backed items; this handler is only wired up
+    // from content-tab list rows, but guard anyway for type safety.
+    if (tab === 'continuation') return;
     // Phase9-BUG#11: 包裹 try-catch，失败时 Toast 提示（状态会通过 store 自动同步）
     try {
       await db.setProjectResourceEnabled(
@@ -972,7 +987,9 @@ export const ResourceLibrary: React.FC<{
   };
 
   const activeItems =
-    tab === 'characters' && selectedCharacterCollectionId
+    tab === 'continuation'
+      ? [] // continuation tab renders an embedded body, no DB item list
+      : tab === 'characters' && selectedCharacterCollectionId
       ? items.characters.filter(
           item => item.collection_id === selectedCharacterCollectionId,
         )
@@ -1004,19 +1021,22 @@ export const ResourceLibrary: React.FC<{
   return (
     <Screen>
       <Header title="资料库" subtitle={subtitle} />
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.tabs}>
-          <SegmentedControl
-            value={tab}
-            options={TABS}
-            onChange={value => {
-              setTab(value);
-              setSelectedCollectionId(null);
-              setSelectedCharacterCollectionId(null);
-              setSelectedNoteCollectionId(null);
-            }}
-          />
-        </View>
+      <View style={styles.tabs}>
+        <SegmentedControl
+          value={tab}
+          options={TABS}
+          onChange={value => {
+            setTab(value);
+            setSelectedCollectionId(null);
+            setSelectedCharacterCollectionId(null);
+            setSelectedNoteCollectionId(null);
+          }}
+        />
+      </View>
+      {tab === 'continuation' ? (
+        <ContinuationHomeBody navigation={navigation} />
+      ) : (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.actions}>
           {tab === 'characters' ? (
             <ScrollView
@@ -1758,6 +1778,7 @@ export const ResourceLibrary: React.FC<{
           )}
         </View>
       </ScrollView>
+      )}
 
       <Modal
         visible={Boolean(editor)}
@@ -2248,7 +2269,7 @@ export const ResourceLibrary: React.FC<{
   );
 };
 
-function iconFor(tab: ResourceTab, color: string) {
+function iconFor(tab: ContentTab, color: string) {
   const props = { size: 20, color };
   if (tab === 'characters') return <UserRound {...props} />;
   if (tab === 'worldbook') return <BookMarked {...props} />;
@@ -2276,14 +2297,14 @@ function tabLabel(kind: EditorKind): string {
   return '预设';
 }
 
-function placeholderFor(tab: ResourceTab, addingEntry: boolean): string {
+function placeholderFor(tab: ContentTab, addingEntry: boolean): string {
   if (tab === 'worldbook')
     return addingEntry ? '新世界书条目主关键词' : '新世界书合集名称';
   if (tab === 'notes') return '新笔记标题';
   return '新预设名称';
 }
 
-function emptyTitle(tab: ResourceTab): string {
+function emptyTitle(tab: ContentTab): string {
   if (tab === 'characters') return '还没有角色卡';
   if (tab === 'worldbook') return '还没有世界书条目';
   if (tab === 'notes') return '还没有笔记';
@@ -2298,7 +2319,7 @@ function titleFor(kind: EditorKind, item: any): string {
   return item.title || item.name || '未命名';
 }
 
-function metaFor(tab: ResourceTab, item: any): string {
+function metaFor(tab: ContentTab, item: any): string {
   if (tab === 'characters')
     return `${item.collection_name || '未分组'} · ${
       item.source_type === 'png' ? 'PNG 角色卡' : 'JSON 角色卡'
