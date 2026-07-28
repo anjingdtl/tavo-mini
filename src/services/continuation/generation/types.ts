@@ -3,7 +3,11 @@
  * Independent of freeform PipelineStageName.
  */
 import type { ContinuationChapterPosition } from '../../../types/novel';
-import type { CanonCapabilities, CanonContextBundle } from '../canon/types';
+import type {
+  CanonCapabilities,
+  CanonContextBundle,
+  HistoricalDigest,
+} from '../canon/types';
 import type { ContinuationSourceSnapshot } from '../types';
 
 export type ContinuationStageName =
@@ -194,6 +198,8 @@ export interface EffectiveContinuationState {
 export interface ContinuationContextBundles {
   lockedRules: string[];
   canon: CanonContextBundle;
+  /** Weak historical overview only; never Canon evidence or a hard rule. */
+  historicalDigests?: HistoricalDigest[];
   effectiveState: EffectiveContinuationState;
   seam: { summary: string; excerpt: string };
   recentChapters: Array<{
@@ -219,6 +225,7 @@ export interface ContinuationContextSnapshot {
     revision: number;
     boundaryGlobalCharOffset: number;
     capabilities: CanonCapabilities;
+    coverageWarning?: string;
   };
   storyMemory: {
     stateFingerprint: string;

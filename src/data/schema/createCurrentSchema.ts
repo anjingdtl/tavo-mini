@@ -3,6 +3,7 @@ import { execute } from '../connection/execute';
 import { buildSchema20PostSettingsStatements } from '../../services/migrations/v19-to-v20';
 import { buildSchema21CreateSqls } from '../../services/migrations/v20-to-v21';
 import { buildSchema23CreateSqls } from '../../services/migrations/v22-to-v23';
+import { buildSchema24CreateSqls } from '../../services/migrations/v23-to-v24';
 
 export async function createCurrentSchema(
   database: SQLite.SQLiteDatabase,
@@ -629,6 +630,8 @@ export async function createCurrentSchema(
     // Schema 23 Canon request-group work items. This supersedes the Schema 22
     // five-family table on fresh installs.
     ...buildSchema23CreateSqls(),
+    // Schema 24 historical summaries / local candidate index.
+    ...buildSchema24CreateSqls(),
   ];
   for (const statement of statements) {
     await execute(database, statement);

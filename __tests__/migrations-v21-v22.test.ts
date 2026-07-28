@@ -9,7 +9,7 @@ import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 22 Canon material work-item migration', () => {
   it('creates the five-family resumable work-item table', () => {
-    expect(SCHEMA_VERSION).toBe(23);
+    expect(SCHEMA_VERSION).toBe(24);
     const sql = buildV21toV22Statements()
       .map(item => item.sql)
       .join('\n');

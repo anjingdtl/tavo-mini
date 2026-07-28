@@ -24,6 +24,8 @@ import {
   pauseAnalysis,
   processAnalysisRun,
   resumeAnalysis,
+  queueHistoricalDigests,
+  processHistoricalDigest,
   startAnalysis,
   type AnalysisRun,
   type CanonSnapshot,
@@ -309,6 +311,52 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     }
   };
 
+  const buildHistoricalDigests = () => {
+    if (!currentProject || !active) return;
+    Alert.alert(
+      '生成历史概览',
+      '将为未进入近端 Canon 的早期章节建立本地候选索引，并按每组约 30 章调用 LLM 生成历史概览。历史概览不是 Canon，也不能替代原文证据。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '开始生成',
+          onPress: async () => {
+            setBusy(true);
+            try {
+              const queued = await queueHistoricalDigests({
+                projectId: currentProject.id,
+              });
+              if (!queued.digestIds.length) {
+                Toast.show({
+                  type: 'info',
+                  text1: '无需生成历史概览',
+                  text2: '当前 Canon 已覆盖边界前的全部章节。',
+                });
+                return;
+              }
+              for (const digestId of queued.digestIds) {
+                await processHistoricalDigest(digestId);
+              }
+              Toast.show({
+                type: 'success',
+                text1: '历史概览已生成',
+                text2: '已索引 ' + queued.indexedChapterCount + ' 个早期章节',
+              });
+            } catch (e: any) {
+              Toast.show({
+                type: 'error',
+                text1: '历史概览生成失败',
+                text2: e?.message,
+              });
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   if (!currentProject) {
     return (
       <Screen>
@@ -365,11 +413,20 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                     覆盖 {active.coverage.analyzedChapterCount}/
                     {active.coverage.sourceChapterCount} 章
                   </Text>
-                  {active.coverage.scope?.kind === 'tail' && (
+                  {active.coverage.analyzedChapterCount <
+                    active.coverage.sourceChapterCount && (
                     <Text style={{ color: theme.colors.warning || '#b45309' }}>
-                      当前为最近 {active.coverage.scope.tailChapterCount}{' '}
-                      章的快速续写 分析；较早原著尚未覆盖。
+                      当前为近端 Canon 分析；较早原著尚未覆盖，可生成历史概览作为弱参考。
                     </Text>
+                  )}
+                  {active.coverage.analyzedChapterCount <
+                    active.coverage.sourceChapterCount && (
+                    <Button
+                      label="生成历史概览"
+                      variant="ghost"
+                      onPress={buildHistoricalDigests}
+                      disabled={busy}
+                    />
                   )}
                   {active.profile === 'quick' && (
                     <Text style={{ color: theme.colors.warning || '#b45309' }}>
