@@ -197,10 +197,14 @@ describe('bounded continuation SourceReader (Spec §12.3, §23)', () => {
     expect(chapters[0].clippedByBoundary).toBe(false);
     // content_start_offset 5 → end 40 ⇒ 35 'A' chars
     expect(chapters[0].content).toBe('A'.repeat(35));
+    // Canon evidence is computed from `content`, so its base must exclude
+    // the heading too; otherwise every evidence offset is title-length early.
+    expect(chapters[0].range.start).toBe(5);
     expect(chapters[1].id).toBe(101);
     expect(chapters[1].clippedByBoundary).toBe(false);
     // content_start_offset 45 → end 100 ⇒ 55 'B' chars
     expect(chapters[1].content).toBe('B'.repeat(55));
+    expect(chapters[1].range.start).toBe(45);
   });
 
   it('truncates the boundary chapter when the boundary falls mid-chapter', async () => {

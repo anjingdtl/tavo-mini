@@ -12,6 +12,8 @@
 export * from './types';
 export { CanonQueryService } from './canonQueryService';
 export {
+  defaultExtractorModeForProfile,
+  extractWithLlm,
   startAnalysis,
   processAnalysisRun,
   activateSnapshot,
