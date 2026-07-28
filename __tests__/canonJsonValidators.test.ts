@@ -65,6 +65,12 @@ describe('Canon extraction JSON validators (Spec §17.1)', () => {
     expect(r.characters[0].canonicalName).toBe('林凡');
   });
 
+  it('recovers a JSON object that an OpenAI-compatible gateway encoded twice', () => {
+    const raw = JSON.stringify(JSON.stringify(valid));
+    const r = parseExtractionResultJson(raw);
+    expect(r.characters[0].canonicalName).toBe('林凡');
+  });
+
   it('keeps braces inside JSON strings intact while extracting the result', () => {
     const raw = `前缀 ${JSON.stringify({
       ...valid,
