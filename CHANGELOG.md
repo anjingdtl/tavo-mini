@@ -4,6 +4,18 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.9.3] - 2026-07-28
+
+### Fixed
+
+- **续写 TXT 中文文件名导入**：Android 文件选择器返回的本地 `file://` URI 会对中文等非 ASCII 文件名进行百分号编码；导入前现在会统一还原为真实文件系统路径，原生 TXT 读取模块不再把 `%E7...` 当作文件名的一部分而误报“无法读取所选文件”。
+- **共享导入路径**：同一 URI 还原逻辑同步用于资料库单个/批量导入和项目包导入，避免中文文件名在其他本地导入入口出现同类读取失败。
+
+### Tests
+
+- 新增 URL 编码中文文件名、ASCII 文件名和异常百分号转义的路径还原单元测试。
+- Android API 37 模拟器使用桌面原文件《白篱梦》作者：希行.txt 实测：修复前稳定复现读取失败；修复后同一中文文件名成功解析 299 章、UTF-8。
+
 ## [2.9.2] - 2026-07-28
 
 ### Fixed

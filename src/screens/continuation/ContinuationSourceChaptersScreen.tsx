@@ -37,6 +37,7 @@ import {
 } from '../../services/continuation/continuationSourceRepository';
 import type { ContinuationSource, ContinuationSourceChapter } from '../../services/continuation/types';
 import { requireContinuationTextImport } from '../../native/ContinuationTextImportModule';
+import { localFileUriToPath } from '../../utils/localFileUri';
 
 /**
  * If encoding detection confidence is low (< 0.7, e.g. a BOM-less file that
@@ -200,7 +201,7 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       if (copy.status === 'error') {
         throw new Error(copy.copyError || '复制导入文件失败。');
       }
-      const localPath = copy.localUri.replace(/^file:\/\//, '');
+      const localPath = localFileUriToPath(copy.localUri);
       // If encoding detection is low-confidence (no BOM + ambiguous bytes),
       // ask the user to confirm before parsing — a wrong guess yields garbled
       // text or a decode_failed error. Spec §10.1 sets the threshold at 0.7.
