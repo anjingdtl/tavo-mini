@@ -15,7 +15,15 @@ describe('Canon extraction JSON validators (Spec §17.1)', () => {
         description: '天地灵气回归',
         constraintLevel: 'hard',
         confidence: 0.9,
-        evidence: [{ chapterId: 1, chapterPosition: 0, charStart: 0, charEnd: 4, quotePreview: '灵气' }],
+        evidence: [
+          {
+            chapterId: 1,
+            chapterPosition: 0,
+            charStart: 0,
+            charEnd: 4,
+            quotePreview: '灵气',
+          },
+        ],
       },
     ],
     characters: [
@@ -49,6 +57,25 @@ describe('Canon extraction JSON validators (Spec §17.1)', () => {
     expect(r.characters).toHaveLength(1);
   });
 
+  it('recovers the JSON object when a provider adds prose or another JSON value', () => {
+    const raw = `模型说明：{"ok":true}\n\n结果如下：\n${JSON.stringify(
+      valid,
+    )}\n\n调用结束`;
+    const r = parseExtractionResultJson(raw);
+    expect(r.characters[0].canonicalName).toBe('林凡');
+  });
+
+  it('keeps braces inside JSON strings intact while extracting the result', () => {
+    const raw = `前缀 ${JSON.stringify({
+      ...valid,
+      worldRules: [
+        { ...valid.worldRules[0], description: '规则文本含有 {花括号}。' },
+      ],
+    })} 后缀`;
+    const r = parseExtractionResultJson(raw);
+    expect(r.worldRules[0].description).toContain('{花括号}');
+  });
+
   it('rejects wrong schema version', () => {
     expect(() =>
       validateExtractionResult({ ...valid, schemaVersion: 99 }),
@@ -74,8 +101,20 @@ describe('Canon extraction JSON validators (Spec §17.1)', () => {
         {
           ...valid.worldRules[0],
           evidence: [
-            { chapterId: 1, chapterPosition: 0, charStart: 10, charEnd: 5, quotePreview: 'x' },
-            { chapterId: 1, chapterPosition: 0, charStart: 0, charEnd: 3, quotePreview: 'ok' },
+            {
+              chapterId: 1,
+              chapterPosition: 0,
+              charStart: 10,
+              charEnd: 5,
+              quotePreview: 'x',
+            },
+            {
+              chapterId: 1,
+              chapterPosition: 0,
+              charStart: 0,
+              charEnd: 3,
+              quotePreview: 'ok',
+            },
           ],
         },
       ],
