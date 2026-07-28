@@ -8,6 +8,7 @@ import { executeTransaction } from '../../database/transaction';
 import { v4 } from '../../uuidBridge';
 import { CanonQueryService } from '../canon/canonQueryService';
 import {
+  buildOutboxInsertStatement,
   countPendingMajorProposals,
   countPendingStateExtractions,
   getProposalById,
@@ -348,42 +349,28 @@ export async function confirmProposal(input: {
           proposal.projectId,
         ],
       },
-      {
-        sql: `INSERT OR IGNORE INTO continuation_state_sync_outbox (
-          id, project_id, chapter_id, operation, payload_json, dedupe_key,
-          state, attempt_count, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
-        params: [
-          rebuildOutboxId,
-          proposal.projectId,
-          proposal.chapterId,
-          'rebuild_story_memory',
-          JSON.stringify({
-            fromPosition: chapterPosition,
-            proposalId: proposal.id,
-            eventId,
-          }),
-          rebuildDedupeKey,
-          ts,
-          ts,
-        ],
-      },
-      {
-        sql: `INSERT OR IGNORE INTO continuation_state_sync_outbox (
-          id, project_id, chapter_id, operation, payload_json, dedupe_key,
-          state, attempt_count, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
-        params: [
-          applyOutboxId,
-          proposal.projectId,
-          proposal.chapterId,
-          'apply_event',
-          JSON.stringify({ eventId, proposalId: proposal.id }),
-          `apply_event:${eventId}`,
-          ts,
-          ts,
-        ],
-      },
+      buildOutboxInsertStatement({
+        id: rebuildOutboxId,
+        projectId: proposal.projectId,
+        chapterId: proposal.chapterId,
+        operation: 'rebuild_story_memory',
+        payload: {
+          fromPosition: chapterPosition,
+          proposalId: proposal.id,
+          eventId,
+        },
+        dedupeKey: rebuildDedupeKey,
+        ts,
+      }),
+      buildOutboxInsertStatement({
+        id: applyOutboxId,
+        projectId: proposal.projectId,
+        chapterId: proposal.chapterId,
+        operation: 'apply_event',
+        payload: { eventId, proposalId: proposal.id },
+        dedupeKey: `apply_event:${eventId}`,
+        ts,
+      }),
     ],
   );
   processContinuationOutbox({ limit: 2 }).catch(() => {});
@@ -445,22 +432,15 @@ export async function invalidateContinuationStateFromPosition(input: {
         input.projectId,
       ],
     },
-    {
-      sql: `INSERT OR IGNORE INTO continuation_state_sync_outbox (
-        id, project_id, chapter_id, operation, payload_json, dedupe_key,
-        state, attempt_count, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
-      params: [
-        outboxId,
-        input.projectId,
-        null,
-        'rebuild_story_memory',
-        JSON.stringify({ fromPosition: input.fromPosition, reason: input.reason }),
-        `rebuild_story_memory:${input.projectId}:${input.fromPosition}:${input.reason}`,
-        ts,
-        ts,
-      ],
-    },
+    buildOutboxInsertStatement({
+      id: outboxId,
+      projectId: input.projectId,
+      chapterId: null,
+      operation: 'rebuild_story_memory',
+      payload: { fromPosition: input.fromPosition, reason: input.reason },
+      dedupeKey: `rebuild_story_memory:${input.projectId}:${input.fromPosition}:${input.reason}`,
+      ts,
+    }),
   ];
   for (const chapterId of input.chapterIds ?? []) {
     statements.splice(1, 0, {

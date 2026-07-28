@@ -4,9 +4,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { FileText, Trash2, Upload } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../../components/ui';
+import { ContinuationSyncStatus } from '../../components/ContinuationSyncStatus';
 import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
 import { getActiveContinuationSource } from '../../services/continuation/continuationImportService';
+import { countPendingMajorProposals } from '../../services/continuation/generation';
 import { PROJECT_MODE_LABELS } from '../../services/continuation/projectMode';
 import type { ContinuationSource } from '../../services/continuation/types';
 
@@ -30,6 +32,7 @@ export function useContinuationHome(navigation: ContinuationHomeNavigation) {
   const { currentProject } = useProjectStore();
   const [activeSource, setActiveSource] = useState<ContinuationSource | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pendingProposalCount, setPendingProposalCount] = useState(0);
 
   const reload = useCallback(async () => {
     if (!currentProject) {
@@ -39,6 +42,14 @@ export function useContinuationHome(navigation: ContinuationHomeNavigation) {
     try {
       const src = await getActiveContinuationSource(currentProject.id);
       setActiveSource(src);
+      // Surface a badge count for pending major proposals so the user knows
+      // there are state changes to review (fix-plan §4.2).
+      try {
+        const n = await countPendingMajorProposals(currentProject.id);
+        setPendingProposalCount(n);
+      } catch {
+        setPendingProposalCount(0);
+      }
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '加载失败', text2: e?.message });
     } finally {
@@ -72,6 +83,10 @@ export function useContinuationHome(navigation: ContinuationHomeNavigation) {
     navigation.navigate('ContinuationBoundary', {});
   }, [navigation]);
 
+  const handleStateReview = useCallback(() => {
+    navigation.navigate('ContinuationStateReview', {});
+  }, [navigation]);
+
   const handleDelete = useCallback(() => {
     if (!activeSource || !currentProject) return;
     Alert.alert(
@@ -103,11 +118,13 @@ export function useContinuationHome(navigation: ContinuationHomeNavigation) {
     currentProject,
     activeSource,
     loading,
+    pendingProposalCount,
     reload,
     handleImport,
     handleAnalysis,
     handleViewChapters,
     handleBoundary,
+    handleStateReview,
     handleDelete,
   };
 }
@@ -151,6 +168,29 @@ export const ContinuationHomeBody: React.FC<{
 
   return (
     <ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: spacing.xl }}>
+      {/* Outbox sync health + retry (fix-plan §4.3). Hidden when nothing pending/failed. */}
+      <ContinuationSyncStatus projectId={currentProject.id} />
+      {home.pendingProposalCount > 0 && (
+        <Card>
+          <View style={styles.rowBetween}>
+            <Text style={[styles.title, { color: theme.colors.textPrimary, flex: 1 }]}>
+              状态待确认
+            </Text>
+            <Text style={[styles.badge, { color: theme.colors.danger }]}>
+              {home.pendingProposalCount}
+            </Text>
+          </View>
+          <Text style={[styles.body2, { color: theme.colors.textSecondary }]}>
+            有 {home.pendingProposalCount} 项重要状态变化等待你确认后纳入续写上下文。
+          </Text>
+          <Button
+            label="去审核"
+            variant="secondary"
+            onPress={home.handleStateReview}
+            compact
+          />
+        </Card>
+      )}
       {loading ? (
         <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>加载中…</Text>
       ) : !activeSource ? (
@@ -224,6 +264,11 @@ export const ContinuationHomeBody: React.FC<{
               label="原著分析"
               onPress={home.handleAnalysis}
             />
+            <Button
+              label="状态审核"
+              variant="ghost"
+              onPress={home.handleStateReview}
+            />
           </View>
           <TouchableOpacity
             accessibilityLabel="删除原著"
@@ -281,6 +326,7 @@ const styles = StyleSheet.create({
   privacy: { fontSize: 12, lineHeight: 20, marginBottom: spacing.md },
   hint: { fontSize: 14, textAlign: 'center', marginTop: spacing.xl },
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
+  badge: { fontSize: 14, fontWeight: '700' },
   metaGrid: { gap: spacing.xs, marginBottom: spacing.md },
   metaRow: { flexDirection: 'row', justifyContent: 'space-between' },
   metaLabel: { fontSize: 13 },

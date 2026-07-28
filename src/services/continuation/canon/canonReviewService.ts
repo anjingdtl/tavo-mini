@@ -33,6 +33,33 @@ async function bumpSnapshotRevision(snapshotId: string): Promise<void> {
   await updateSnapshotMeta(db, snapshotId, { revisionBump: true });
 }
 
+/**
+ * Invalidate in-flight continuation runs when an active Canon snapshot's
+ * revision changes (fix-plan §6.1). A frozen run snapshot that captured an
+ * older revision must never be adopted against the now-revised Canon. No-ops
+ * when the snapshot is not the active one for its project (a dormant snapshot
+ * revision bump doesn't affect any run). Never throws — invalidation is
+ * best-effort relative to the review op itself.
+ */
+async function invalidateRunsOnCanonRevision(snapshotId: string): Promise<void> {
+  try {
+    const db = await openDatabase();
+    const ts = now();
+    // Only the ACTIVE snapshot's revision change matters for run freshness.
+    await db.executeSql(
+      `UPDATE continuation_generation_runs
+       SET state = 'outdated', error_code = 'outdated',
+           error_message = ?, updated_at = ?
+       WHERE project_id IN (
+         SELECT project_id FROM continuation_settings WHERE active_canon_snapshot_id = ?
+       ) AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
+      ['canon_revision_changed', ts, snapshotId],
+    );
+  } catch {
+    // best-effort; a stale run is also caught at adoption time.
+  }
+}
+
 export async function setReviewStatus(input: {
   table: string;
   id: number;
@@ -72,6 +99,7 @@ export async function setReviewStatus(input: {
     [input.status, reviewed, ts, input.id, input.snapshotId],
   );
   await bumpSnapshotRevision(input.snapshotId);
+  await invalidateRunsOnCanonRevision(input.snapshotId);
 }
 
 export async function unlockRecord(input: {
@@ -88,6 +116,7 @@ export async function unlockRecord(input: {
     [now(), input.id, input.snapshotId],
   );
   await bumpSnapshotRevision(input.snapshotId);
+  await invalidateRunsOnCanonRevision(input.snapshotId);
 }
 
 /**
