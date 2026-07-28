@@ -4,6 +4,17 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.10.2] - 2026-07-28
+
+### Fixed
+
+- **原著分析模型输出恢复**：空响应、带说明文字或 Markdown 代码围栏的结构化响应会安全提取 JSON 并最多重试三次；只有连续失败后才将对应资料项标记为失败，并提示具体资料类型和模型 JSON 能力检查方向。
+- **原著分析任务进度固化可见**：分析任务页现在读取已持久化的工作项，按五类资料与批次展示完成、待处理、失败、错误和尝试次数；运行中自动刷新，返回页面或进程中断后已完成进度仍可查看，重试只处理未完成项。
+
+### Tests
+
+- 新增带前后缀/多 JSON 对象、JSON 字符串内花括号的解析回归测试，以及空响应和无效 JSON 自动重试测试。
+
 ## [2.10.1] - 2026-07-28
 
 ### Fixed

@@ -1,5 +1,16 @@
 # ShineWriter 发布清单
 
+## V2.10.2 Canon 分析输出恢复与任务进度固化
+
+- [x] 升级 `package.json` / `package-lock.json` 至 `2.10.2`，`npm run prebuild` 生成 `V2.10.2` / `2100200`
+- [x] `CHANGELOG.md` 和 `README.md` 同步本轮变更、正式 APK 名称和验收结果
+- [x] `npm run verify` 通过（ESLint 0 error；保留仓库既有 warning）
+- [x] `npm run apk:release` 使用正式签名构建成功，交付路径唯一为 `dist/apk/release/ShineWriter-V2.10.2-release.apk`
+- [x] `scripts/verify-release-apk.ps1` 硬断言通过：单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.10.2` / `2100200`
+- [ ] 本轮未执行真机或模拟器回归；仅完成自动化和 APK 签名/元数据验收
+
+证据：APK 38,140,759 bytes，SHA-256 `705C7DB5F5A2FE59A238F13440B494E53D39034C9FD4CA3FC527BAE0F67FAD01`，正式证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。
+
 ## V2.5.6 长篇定稿证据恢复与保存竞态修复
 
 - [x] OpenAI 兼容结构化请求发送 `response_format: json_object`
