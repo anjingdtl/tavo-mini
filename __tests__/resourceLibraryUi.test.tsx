@@ -54,6 +54,7 @@ jest.mock('@react-navigation/native', () => ({
       cb();
     }
   },
+  useNavigation: () => ({ navigate: jest.fn(), goBack: jest.fn() }),
 }));
 
 jest.mock('../src/store/projectStore', () => ({
