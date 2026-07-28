@@ -393,6 +393,19 @@ export const ANALYSIS_MATERIAL_TYPES = [
 ] as const;
 
 export type AnalysisMaterialType = (typeof ANALYSIS_MATERIAL_TYPES)[number];
+
+/**
+ * Schema 23 request protocol. New runs make two semantically complete LLM
+ * requests per batch; the legacy five-family values above remain readable so
+ * an interrupted Schema 22 run can resume without losing its completed work.
+ */
+export const ANALYSIS_REQUEST_GROUPS = [
+  'character_state',
+  'world_plot',
+] as const;
+
+export type AnalysisRequestGroup = (typeof ANALYSIS_REQUEST_GROUPS)[number];
+export type AnalysisWorkItemType = AnalysisMaterialType | AnalysisRequestGroup;
 export type AnalysisWorkItemState =
   | 'queued'
   | 'running'
@@ -403,7 +416,8 @@ export type AnalysisWorkItemState =
 export interface AnalysisWorkItem {
   runId: string;
   batchIndex: number;
-  materialType: AnalysisMaterialType;
+  /** Persisted column name retained for Schema 22 compatibility. */
+  materialType: AnalysisWorkItemType;
   state: AnalysisWorkItemState;
   attemptCount: number;
   resultJson: string | null;

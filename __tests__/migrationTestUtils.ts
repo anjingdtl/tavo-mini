@@ -46,10 +46,12 @@ function parseCreateTable(sql: string, schemas: Map<string, Set<string>>) {
   schemas.set(match[1], columns);
 }
 
-export function createMigrationDb(options: {
-  schemaVersion?: number;
-  failWhenSqlIncludes?: string;
-} = {}) {
+export function createMigrationDb(
+  options: {
+    schemaVersion?: number;
+    failWhenSqlIncludes?: string;
+  } = {},
+) {
   const schemaVersion = options.schemaVersion ?? 3;
   const baseSchemas = new Map<string, Set<string>>([
     ['projects', new Set(['id', 'name', 'mode', 'created_at', 'updated_at'])],
@@ -85,7 +87,10 @@ export function createMigrationDb(options: {
         'updated_at',
       ]),
     );
-    baseSchemas.set('note_style_profiles', new Set(['note_id', 'profile_text']));
+    baseSchemas.set(
+      'note_style_profiles',
+      new Set(['note_id', 'profile_text']),
+    );
   }
   if (schemaVersion >= 11) {
     baseSchemas.set('character_collections', new Set(['id', 'project_id']));
@@ -140,6 +145,24 @@ export function createMigrationDb(options: {
       new Set(['id', 'project_id', 'state']),
     );
   }
+  if (schemaVersion >= 22) {
+    baseSchemas.set(
+      'continuation_analysis_work_items',
+      new Set([
+        'run_id',
+        'batch_index',
+        'material_type',
+        'state',
+        'attempt_count',
+        'result_json',
+        'error_code',
+        'error_message',
+        'created_at',
+        'updated_at',
+        'completed_at',
+      ]),
+    );
+  }
 
   const state: SchemaState = {
     schemas: baseSchemas,
@@ -184,11 +207,29 @@ export function createMigrationDb(options: {
       return [{ rows: createRows([]), rowsAffected: 0, insertId: 0 }];
     }
 
+    const rename = normalized.match(/^ALTER TABLE (\w+) RENAME TO (\w+)/i);
+    if (rename) {
+      const columns = target.schemas.get(rename[1]);
+      if (columns) {
+        target.schemas.delete(rename[1]);
+        target.schemas.set(rename[2], columns);
+      }
+      return [{ rows: createRows([]), rowsAffected: 0, insertId: 0 }];
+    }
+
+    const drop = normalized.match(/^DROP TABLE (?:IF EXISTS )?(\w+)/i);
+    if (drop) {
+      target.schemas.delete(drop[1]);
+      return [{ rows: createRows([]), rowsAffected: 0, insertId: 0 }];
+    }
+
     parseCreateTable(sql, target.schemas);
     // Match both plain and partial/unique indexes (CREATE [UNIQUE] INDEX ...).
     // Partial indexes (CREATE UNIQUE INDEX ... WHERE ...) are used by the
     // continuation tables (Schema 19) and must be registered by name.
-    const index = normalized.match(/^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)/i);
+    const index = normalized.match(
+      /^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)/i,
+    );
     if (index) target.indexes.add(index[1]);
     if (
       /^INSERT .*INTO worldbook_collections/i.test(normalized) &&
@@ -208,9 +249,9 @@ export function createMigrationDb(options: {
     ),
     transaction: jest.fn(
       (
-        scope: (
-          tx: { executeSql: (sql: string, params?: any[]) => void },
-        ) => void,
+        scope: (tx: {
+          executeSql: (sql: string, params?: any[]) => void;
+        }) => void,
         onError: (error: unknown) => void,
         onSuccess: () => void,
       ) => {

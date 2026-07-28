@@ -13,7 +13,7 @@
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.10.3** · 数据库 Schema：**22** · 最低 Android API：**24**
+当前版本：**V2.10.3** · 数据库 Schema：**23** · 最低 Android API：**24**
 
 `V2.10.3` 修复原著续写 Canon 分析取消或意外退出后不能继续的问题：已完成资料项会保留，取消/冷启动中断的任务均可从原进度继续；同时兼容部分 OpenAI 兼容网关双重编码的 JSON 响应。详见 [CHANGELOG](CHANGELOG.md)。
 
@@ -63,7 +63,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 - Android-only；`minSdk 24`，`compileSdk/targetSdk 36`。
 - React Native `0.85.3`、React `19.2.3`、TypeScript `5.8`、Kotlin `2.1.20`。
 - Node.js `>= 24.3.0`、JDK `17`、Android SDK 与 Gradle 环境。
-- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 22。
+- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 23。
 - 本地模型：仅支持 `.gguf`，由 Android `llama.cpp` JNI 引擎加载；模型文件放在应用私有模型目录，不上传服务器。
 - 在线模型：OpenAI 兼容 Chat Completions 接口。默认只允许 HTTPS；局域网 HTTP 必须由用户显式开启，并限制在 `127.0.0.1`、`10/8`、`172.16/12`、`192.168/16`，公网 HTTP 永远拒绝。
 - API Key：通过 `react-native-keychain` 写入 Android Keystore；`llm_config` 只保存配置名称、地址、模型等非密钥字段。备份文件不包含 API Key，恢复后需要重新填写。
