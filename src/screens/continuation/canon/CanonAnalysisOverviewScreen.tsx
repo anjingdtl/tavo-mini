@@ -21,6 +21,7 @@ import {
   getAnalysisOverview,
   getAnalysisWorkItems,
   ANALYSIS_MATERIAL_LABELS,
+  ANALYSIS_MATERIAL_TYPES,
   cancelAnalysis,
   pauseAnalysis,
   processAnalysisRun,
@@ -36,7 +37,10 @@ import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
 
 export const CanonAnalysisOverviewScreen: React.FC<{
-  navigation: { navigate: (screen: string, params?: any) => void; goBack: () => void };
+  navigation: {
+    navigate: (screen: string, params?: any) => void;
+    goBack: () => void;
+  };
 }> = ({ navigation }) => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
@@ -63,7 +67,9 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         : [];
       // Five个并发工作项会几乎同时回写；以工作项实际终态数渲染进度，
       // 避免 run 表最后一次异步写入暂时落后于屏幕上的“已完成”明细。
-      const completedCount = items.filter(item => item.state === 'completed').length;
+      const completedCount = items.filter(
+        item => item.state === 'completed',
+      ).length;
       setLatestRun(
         overview.latestRun
           ? { ...overview.latestRun, progressCurrent: completedCount }
@@ -72,7 +78,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       setWorkItems(items);
       setBoundaryOk(ready);
     } catch (e: any) {
-      Toast.show({ type: 'error', text1: '加载分析概览失败', text2: e?.message });
+      Toast.show({
+        type: 'error',
+        text1: '加载分析概览失败',
+        text2: e?.message,
+      });
     } finally {
       setLoading(false);
     }
@@ -87,7 +97,9 @@ export const CanonAnalysisOverviewScreen: React.FC<{
 
   useEffect(() => {
     if (!latestRun || !['queued', 'running'].includes(latestRun.state)) return;
-    const timer = setInterval(() => { void reload(); }, 1000);
+    const timer = setInterval(() => {
+      void reload();
+    }, 1000);
     return () => clearInterval(timer);
   }, [latestRun, reload]);
 
@@ -118,17 +130,28 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 profile,
                 extractorMode: defaultExtractorModeForProfile(profile),
               });
-              Toast.show({ type: 'info', text1: '分析已启动', text2: `批次处理中…` });
+              Toast.show({
+                type: 'info',
+                text1: '分析已启动',
+                text2: `批次处理中…`,
+              });
               // 先把刚创建的 run 写回页面状态，再开始等待长耗时的分析。
               // 否则 processAnalysisRun 尚未返回时 latestRun 仍为空，轮询与
               // 可视进度条都不会启动，用户只能看到一组禁用按钮。
               await reload();
               await requestNotificationPermission().catch(() => false);
-              await PipelineForeground.start(runId, '原著分析进行中', '正在准备五类资料…', 0);
+              await PipelineForeground.start(
+                runId,
+                '原著分析进行中',
+                '正在准备五类资料…',
+                0,
+              );
               const run = await processAnalysisRun(runId, {
                 onProgress: update => {
                   const percent = update.progressTotal
-                    ? Math.round((update.progressCurrent / update.progressTotal) * 100)
+                    ? Math.round(
+                        (update.progressCurrent / update.progressTotal) * 100,
+                      )
                     : 0;
                   const material = update.materialType
                     ? ANALYSIS_MATERIAL_LABELS[update.materialType]
@@ -148,10 +171,12 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   '原著分析未完成',
                   run.errorMessage || '可在分析任务中继续或重试。',
                 );
-                throw new Error(run.errorMessage ?? '分析未完成，请检查模型配置后重试。');
+                throw new Error(
+                  run.errorMessage ?? '分析未完成，请检查模型配置后重试。',
+                );
               }
               await PipelineForeground.notifyComplete(
-                  `ca:${runId}`,
+                `ca:${runId}`,
                 '原著分析完成',
                 '五类资料已生成，等待您审核并激活。',
               );
@@ -163,7 +188,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               void snapshotId;
               await reload();
             } catch (e: any) {
-              Toast.show({ type: 'error', text1: '分析失败', text2: e?.message });
+              Toast.show({
+                type: 'error',
+                text1: '分析失败',
+                text2: e?.message,
+              });
             } finally {
               setBusy(false);
             }
@@ -173,20 +202,40 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     );
   };
 
-  const activeWorkItems = useMemo(
-    () => workItems.filter(item => item.state === 'running' || item.state === 'queued'),
-    [workItems],
-  );
   const completedWorkItems = useMemo(
     () => workItems.filter(item => item.state === 'completed').length,
     [workItems],
   );
-  const displayedProgressCurrent = workItems.length > 0
-    ? completedWorkItems
-    : (latestRun?.progressCurrent ?? 0);
+  const displayedProgressCurrent =
+    workItems.length > 0 ? completedWorkItems : latestRun?.progressCurrent ?? 0;
   const progressPercent = latestRun?.progressTotal
     ? Math.round((displayedProgressCurrent / latestRun.progressTotal) * 100)
     : 0;
+  const materialProgress = useMemo(
+    () =>
+      ANALYSIS_MATERIAL_TYPES.map(materialType => {
+        const items = workItems.filter(
+          item => item.materialType === materialType,
+        );
+        const completed = items.filter(
+          item => item.state === 'completed',
+        ).length;
+        const failed = items.find(item => item.state === 'failed');
+        const active = items.find(
+          item => item.state === 'running' || item.state === 'queued',
+        );
+        return {
+          materialType,
+          completed,
+          total: items.length,
+          state: failed
+            ? 'failed'
+            : active?.state ?? (items.length ? 'completed' : 'queued'),
+          errorMessage: failed?.errorMessage,
+        };
+      }),
+    [workItems],
+  );
 
   const stopRun = async (action: 'pause' | 'cancel') => {
     if (!latestRun) return;
@@ -194,7 +243,10 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       if (action === 'pause') await pauseAnalysis(latestRun.id);
       else await cancelAnalysis(latestRun.id);
       await PipelineForeground.stop(latestRun.id);
-      Toast.show({ type: 'info', text1: action === 'pause' ? '分析已暂停' : '分析已取消' });
+      Toast.show({
+        type: 'info',
+        text1: action === 'pause' ? '分析已暂停' : '分析已取消',
+      });
       await reload();
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
@@ -204,7 +256,12 @@ export const CanonAnalysisOverviewScreen: React.FC<{
   const continueRun = async () => {
     if (!latestRun) return;
     try {
-      await PipelineForeground.start(latestRun.id, '原著分析进行中', '正在继续分析…', progressPercent);
+      await PipelineForeground.start(
+        latestRun.id,
+        '原著分析进行中',
+        '正在继续分析…',
+        progressPercent,
+      );
       const run = await resumeAnalysis(latestRun.id, {
         onProgress: update => {
           const percent = update.progressTotal
@@ -223,7 +280,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       });
       await PipelineForeground.stop(latestRun.id);
       if (run.state === 'awaiting_review') {
-        await PipelineForeground.notifyComplete(`ca:${latestRun.id}`, '原著分析完成', '五类资料已生成，等待审核。');
+        await PipelineForeground.notifyComplete(
+          `ca:${latestRun.id}`,
+          '原著分析完成',
+          '五类资料已生成，等待审核。',
+        );
       }
       await reload();
     } catch (e: any) {
@@ -251,7 +312,13 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       <Screen>
         <Header
           title="分析概览"
-          action={<Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />}
+          action={
+            <Button
+              label="返回"
+              variant="ghost"
+              onPress={() => navigation.goBack()}
+            />
+          }
         />
         <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
           请先选择项目
@@ -265,7 +332,13 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       <Header
         title="分析概览"
         subtitle={currentProject.name}
-        action={<Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />}
+        action={
+          <Button
+            label="返回"
+            variant="ghost"
+            onPress={() => navigation.goBack()}
+          />
+        }
       />
       <ScrollView contentContainerStyle={styles.body}>
         {loading ? (
@@ -318,33 +391,125 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   </Text>
                   {latestRun.progressTotal > 0 && (
                     <>
-                      <View style={[styles.progressTrack, { backgroundColor: theme.colors.border }]}>
+                      <View
+                        style={[
+                          styles.progressTrack,
+                          { backgroundColor: theme.colors.border },
+                        ]}
+                      >
                         <View
                           style={[
                             styles.progressFill,
-                            { backgroundColor: theme.colors.accent, width: `${progressPercent}%` },
+                            {
+                              backgroundColor: theme.colors.accent,
+                              width: `${progressPercent}%`,
+                            },
                           ]}
                         />
                       </View>
-                      <Text style={{ color: theme.colors.accent, fontWeight: '700' }}>
-                        {progressPercent}% · {activeWorkItems.length > 0 ? '正在处理五类资料' : '正在汇总结果'}
+                      <Text
+                        style={{
+                          color: theme.colors.accent,
+                          fontWeight: '700',
+                        }}
+                      >
+                        {progressPercent}% ·{' '}
+                        {workItems.some(
+                          item =>
+                            item.state === 'running' || item.state === 'queued',
+                        )
+                          ? '正在处理五类资料'
+                          : '正在汇总结果'}
                       </Text>
                     </>
                   )}
-                  {(latestRun.state === 'queued' || latestRun.state === 'running') && (
+                  {(latestRun.state === 'queued' ||
+                    latestRun.state === 'running') && (
                     <View style={styles.row}>
-                      <Button label="暂停" variant="ghost" onPress={() => { void stopRun('pause'); }} />
-                      <Button label="取消" variant="ghost" onPress={() => { void stopRun('cancel'); }} />
+                      <Button
+                        label="暂停"
+                        variant="ghost"
+                        onPress={() => {
+                          void stopRun('pause');
+                        }}
+                      />
+                      <Button
+                        label="取消"
+                        variant="ghost"
+                        onPress={() => {
+                          void stopRun('cancel');
+                        }}
+                      />
                     </View>
                   )}
-                  {(latestRun.state === 'paused' || latestRun.state === 'failed') && (
-                    <Button label="继续 / 重试" onPress={() => { void continueRun(); }} />
+                  {latestRun.state === 'paused' && (
+                    <Button
+                      label="继续"
+                      onPress={() => {
+                        void continueRun();
+                      }}
+                    />
                   )}
-                  {workItems.map(item => (
-                    <Text key={`${item.batchIndex}-${item.materialType}`} style={{ color: item.state === 'failed' ? theme.colors.danger : theme.colors.textSecondary }}>
-                      第 {item.batchIndex + 1} 批 · {ANALYSIS_MATERIAL_LABELS[item.materialType]}：{item.state === 'completed' ? '已完成' : item.state === 'running' ? '分析中' : item.state === 'queued' ? '排队中' : item.state === 'failed' ? `失败${item.errorMessage ? `（${item.errorMessage}）` : ''}` : '已取消'}
-                    </Text>
-                  ))}
+                  {latestRun.state === 'failed' && (
+                    <Button
+                      label="重试未完成项"
+                      onPress={() => {
+                        void continueRun();
+                      }}
+                    />
+                  )}
+                  {materialProgress.map(item => {
+                    const percent = item.total
+                      ? Math.round((item.completed / item.total) * 100)
+                      : 0;
+                    const color =
+                      item.state === 'failed'
+                        ? theme.colors.danger
+                        : theme.colors.accent;
+                    const status =
+                      item.state === 'failed'
+                        ? '待重试'
+                        : item.state === 'running'
+                        ? '分析中'
+                        : item.state === 'queued'
+                        ? '排队中'
+                        : '已完成';
+                    return (
+                      <View
+                        key={item.materialType}
+                        style={styles.materialProgress}
+                      >
+                        <View style={styles.materialProgressHeader}>
+                          <Text style={{ color: theme.colors.textPrimary }}>
+                            {ANALYSIS_MATERIAL_LABELS[item.materialType]}
+                          </Text>
+                          <Text style={{ color }}>
+                            {item.completed}/{item.total} · {status}
+                          </Text>
+                        </View>
+                        <View
+                          style={[
+                            styles.progressTrack,
+                            { backgroundColor: theme.colors.border },
+                          ]}
+                        >
+                          <View
+                            style={[
+                              styles.progressFill,
+                              { backgroundColor: color, width: `${percent}%` },
+                            ]}
+                          />
+                        </View>
+                        {item.state === 'failed' && item.errorMessage ? (
+                          <Text
+                            style={{ color: theme.colors.danger, fontSize: 12 }}
+                          >
+                            {item.errorMessage}
+                          </Text>
+                        ) : null}
+                      </View>
+                    );
+                  })}
                   {latestRun.errorMessage ? (
                     <Text style={{ color: theme.colors.danger }}>
                       {latestRun.errorMessage}
@@ -359,7 +524,9 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   )}
                 </>
               ) : (
-                <Text style={{ color: theme.colors.textSecondary }}>暂无分析任务</Text>
+                <Text style={{ color: theme.colors.textSecondary }}>
+                  暂无分析任务
+                </Text>
               )}
             </Card>
 
@@ -367,9 +534,12 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
                 发起分析
               </Text>
-              <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-                分析只读取续写边界内的原著。Quick 是离线预览；Standard/Deep 会调用当前
-                LLM 并产出可审核的五类资料。正式续写请用 Standard/Deep。
+              <Text
+                style={[styles.hint, { color: theme.colors.textSecondary }]}
+              >
+                分析只读取续写边界内的原著。Quick 是离线预览；Standard/Deep
+                会调用当前 LLM 并产出可审核的五类资料。正式续写请用
+                Standard/Deep。
               </Text>
               <View style={styles.row}>
                 <Button
@@ -424,7 +594,23 @@ const styles = StyleSheet.create({
   card: { marginBottom: spacing.md, gap: spacing.xs },
   title: { fontSize: 16, fontWeight: '600', marginBottom: spacing.xs },
   hint: { fontSize: 13, lineHeight: 18, marginBottom: spacing.sm },
-  row: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
-  progressTrack: { height: 8, borderRadius: 4, overflow: 'hidden', marginTop: spacing.xs },
+  row: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  progressTrack: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginTop: spacing.xs,
+  },
   progressFill: { height: '100%', borderRadius: 4 },
+  materialProgress: { gap: 4, marginTop: spacing.xs },
+  materialProgressHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
 });

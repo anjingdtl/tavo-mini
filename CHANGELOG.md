@@ -4,6 +4,17 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.10.1] - 2026-07-28
+
+### Fixed
+
+- **原著分析调度可靠性**：Canon 长上下文请求从五路并发收敛为全局两路；单项请求使用三分钟超时，并对 429、5xx、网络波动和超时最多进行三次指数退避重试，降低服务排队或限流时留下零散失败项的概率。
+- **分析概览可读性与断点继续**：最近分析任务改为世界观、人物画像、人物关系、主线剧情、人物经历五条汇总进度条，不再逐批堆叠状态文本；暂停后提供明确的「继续」入口，失败时仅重试未完成项，已完成项复用持久化结果。
+
+### Tests
+
+- 新增 Canon 请求限流、三分钟超时策略和 429 自动重试回归测试。
+
 ## [2.10.0] - 2026-07-28
 
 ### Added

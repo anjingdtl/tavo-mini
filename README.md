@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.10.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.10.1-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.10.0** · 数据库 Schema：**22** · 最低 Android API：**24**
+当前版本：**V2.10.1** · 数据库 Schema：**22** · 最低 Android API：**24**
 
-`V2.10.0` 为原著续写 Canon 分析增加五类资料的动态进度、远程模型五路并行、可恢复工作项和 Android 前台保活；锁屏或切换 App 时可从通知掌握进度，完成后可直达分析任务。Schema 升级至 22。详见 [CHANGELOG](CHANGELOG.md)。
+`V2.10.1` 优化原著续写 Canon 分析调度：远程长上下文请求最多两路并行，429 / 5xx / 网络和超时会指数退避重试；请求超时延长至三分钟。分析概览收敛为五类资料进度条，暂停任务可从已持久化的未完成项继续。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.6.6` 修复构建生成的质量目标误拦截：通过结构与回读校验的角色卡、世界书即使未完全达到 Token 或字段长度目标，也会保留预览并可保存、导入；界面显示实际值、目标值和补强建议，不会静默发起第二次请求。`V2.6.5` 健全「构建」模块：角色卡与世界书增加紧凑 / 丰满 / 深度生成目标及可见产物质量报告；角色卡按多维人物信息与多轮对话生成；TXT 可解析为可选片段并直接生成角色卡或世界书。世界书构建结果强制全部常驻，预览会显示常驻内容估算。详见 [CHANGELOG](CHANGELOG.md)。
 
@@ -114,9 +114,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-下一正式产物：`dist/apk/release/ShineWriter-V2.10.0-release.apk`，`versionName=V2.10.0`，`versionCode=2100000`。
+下一正式产物：`dist/apk/release/ShineWriter-V2.10.1-release.apk`，`versionName=V2.10.1`，`versionCode=2100100`。
 
-V2.10.0 已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
+V2.10.1 将按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
 
 **实测验收数据**：
 
@@ -126,10 +126,10 @@ V2.10.0 已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm
 | 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
 | Number of signers | 1 |
 | zipalign -c | Verification successful |
-| versionName / versionCode | V2.10.0 / 2100000 |
-| 文件大小 | 38,131,791 bytes（36.36 MB） |
-| APK SHA-256 | `D343672C691B796BB7FAEB374D988B5AA0B602B1774C40E71611FA6BDBF361DE` |
-| Android 模拟器验收 | V2.10.0 Debug 已安装；进入“资料 → 续写 → 原著分析”，实测显示五类资料分批进度、逐项状态和前台通知授权；Release APK 的签名、对齐、包名和版本元数据已验收 |
+| versionName / versionCode | V2.10.1 / 2100100 |
+| 文件大小 | 38,135,439 bytes（36.37 MB） |
+| APK SHA-256 | `07C76997AF8EEDAB85BDBABD666BD7BA24B17E5CD1C1E63BA466604A3717976E` |
+| Android 模拟器验收 | V2.10.1 Debug 已安装至 Android 17 API 37 x86_64 模拟器；资料 → 续写 → 原著分析显示五条汇总进度条，暂停任务从 40/500 点击「继续」后推进到 45/500，并可再次暂停回可继续状态；无 JS/原生崩溃。Release APK 已完成签名、对齐、包名和版本元数据验收 |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -230,7 +230,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.10.0** with database Schema **22**. V2.10.0 adds five independently tracked Canon-analysis materials, five-way parallel remote LLM extraction, resumable work items, and Android foreground-service protection for original-analysis tasks. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.10.1** with database Schema **22**. V2.10.1 limits long-context Canon analysis to two concurrent remote requests, retries transient provider failures with exponential backoff, extends analysis timeouts, and presents five concise material progress bars with resumable work. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 
