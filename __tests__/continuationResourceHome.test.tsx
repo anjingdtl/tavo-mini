@@ -29,6 +29,24 @@ jest.mock('../src/services/continuation/continuationImportService', () => ({
   deleteContinuationSource: jest.fn(async () => undefined),
 }));
 
+// ContinuationHomeScreen uses useFocusEffect to reload on focus. Mock the
+// React Navigation hook so the callback runs once on mount (via useEffect)
+// without a NavigationContainer. Using useEffect — not a direct call — avoids
+// the render → setState → re-render infinite loop, since the screen's focus
+// callback updates loading/source state.
+jest.mock('@react-navigation/native', () => {
+  const { useEffect } = require('react');
+  return {
+    useFocusEffect: (cb: any) => {
+      useEffect(() => {
+        if (typeof cb === 'function') {
+          cb();
+        }
+      }, [cb]);
+    },
+  };
+});
+
 import { ResourceHomeScreen } from '../src/screens/continuation/ResourceHomeScreen';
 import { ContinuationHomeScreen } from '../src/screens/continuation/ContinuationHomeScreen';
 
