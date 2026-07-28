@@ -40,6 +40,62 @@ export function createLLMConfigError(): Error {
   return new Error('请先在设置中配置 API 地址、API Key 和模型名称。');
 }
 
+/**
+ * Normalise `message.content` into a trimmed business-text string.
+ *
+ * OpenAI's canonical shape is a string; a handful of compatible gateways
+ * instead return an array of typed parts (`[{type:'text',text:'...'}]`).
+ * We join the text parts so the emptiness decision reflects the real
+ * payload. Non-text parts (image_url etc.) are ignored. Returns `null`
+ * when there is no usable text — same contract as before.
+ */
+export function extractContentText(rawContent: unknown): string | null {
+  if (typeof rawContent === 'string') {
+    return rawContent.trim().length > 0 ? rawContent : null;
+  }
+  if (Array.isArray(rawContent)) {
+    const joined = rawContent
+      .filter(
+        (part): part is { type: string; text: string } =>
+          !!part &&
+          typeof part === 'object' &&
+          (part as { type?: unknown }).type === 'text' &&
+          typeof (part as { text?: unknown }).text === 'string',
+      )
+      .map(part => part.text)
+      .join('');
+    return joined.trim().length > 0 ? joined : null;
+  }
+  return null;
+}
+
+/**
+ * Map an empty `text` to a categorical reason (Spec §1 / S1). Ordered so the
+ * most actionable signals win: a content_filter or length finish_reason is
+ * more informative than a generic "empty", and reasoning-only output (where
+ * the model burned its budget on chain-of-thought) must not be conflated
+ * with "model does not support JSON".
+ */
+export function classifyEmptyResponse(input: {
+  finishReason: string | null;
+  hasReasoning: boolean;
+  hasChoices: boolean;
+}):
+  | 'length'
+  | 'content_filter'
+  | 'reasoning_only'
+  | 'no_choices'
+  | 'empty'
+  | undefined {
+  if (input.finishReason === 'content_filter') return 'content_filter';
+  if (input.finishReason === 'length') {
+    return input.hasReasoning ? 'reasoning_only' : 'length';
+  }
+  if (input.hasReasoning) return 'reasoning_only';
+  if (!input.hasChoices) return 'no_choices';
+  return 'empty';
+}
+
 export function formatLLMError(
   status: number,
   responseText: string,
@@ -263,18 +319,43 @@ export const openAICompatibleProvider: LLMProvider = {
             }
 
             const data = await response.json();
-            const message = data.choices?.[0]?.message || {};
+            // Some OpenAI-compatible gateways answer HTTP 200 but place the
+            // real error inside the body (`{"error":{...}}`, no `choices`).
+            // Surfacing it here prevents Canon analysis from retrying an
+            // unsupported-parameter failure three times and then reporting a
+            // misleading "model does not support JSON" message.
+            if (
+              !Array.isArray(data.choices) ||
+              data.choices.length === 0
+            ) {
+              if (data && typeof data === 'object' && 'error' in data) {
+                throw formatLLMError(200, JSON.stringify(data.error));
+              }
+            }
+            const choice = data.choices?.[0];
+            const message = choice?.message || {};
             // Strict separation: never fall back reasoning_content into business text.
             const rawContent = message.content;
             const rawReasoning = message.reasoning_content;
-            const text =
-              typeof rawContent === 'string' && rawContent.trim().length > 0
-                ? rawContent
-                : null;
+            // Some gateways serialise content as an array of typed parts
+            // ([{type:'text',text:'...'}, ...]). Join the text parts so the
+            // emptiness check below reflects the real payload.
+            const text = extractContentText(rawContent);
             const reasoningText =
               typeof rawReasoning === 'string' && rawReasoning.trim().length > 0
                 ? rawReasoning
                 : null;
+            const finishReason =
+              typeof choice?.finish_reason === 'string'
+                ? choice.finish_reason
+                : null;
+            const emptyReason = text
+              ? undefined
+              : classifyEmptyResponse({
+                  finishReason,
+                  hasReasoning: !!reasoningText,
+                  hasChoices: !!choice,
+                });
             const usage = data.usage || {};
             const inputTokens = Number(usage.prompt_tokens ?? inputEstimate);
             const outputTokens = Number(
@@ -291,7 +372,8 @@ export const openAICompatibleProvider: LLMProvider = {
               inputTokens,
               outputTokens,
               totalTokens,
-              finishReason: data.choices?.[0]?.finish_reason ?? null,
+              finishReason,
+              emptyReason,
               metrics: { ...timeoutController.metrics },
               rawUsage: data.usage,
             };

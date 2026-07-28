@@ -258,3 +258,152 @@ test('both empty content and reasoning yields null text', async () => {
   expect(result.text).toBeNull();
   expect(result.reasoningText).toBeNull();
 });
+
+// --- S1 fix: surface the real reason for an empty response (spec §1) ----
+
+test('classifies a length-truncated empty response as emptyReason=length', async () => {
+  const fetchMock = jest.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [
+        {
+          message: { content: '' },
+          finish_reason: 'length',
+        },
+      ],
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: 'x' }],
+    {
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  expect(result.text).toBeNull();
+  expect(result.emptyReason).toBe('length');
+});
+
+test('classifies a reasoning-only response as emptyReason=reasoning_only', async () => {
+  const fetchMock = jest.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [
+        {
+          message: { content: '', reasoning_content: '推理烧光预算' },
+          finish_reason: 'length',
+        },
+      ],
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: 'x' }],
+    {
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  expect(result.text).toBeNull();
+  expect(result.reasoningText).toBe('推理烧光预算');
+  expect(result.emptyReason).toBe('reasoning_only');
+});
+
+test('throws the real gateway error when a 200 response carries an error body', async () => {
+  const fetchMock = jest.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      error: {
+        code: 'unsupported_parameter',
+        message: 'response_format 不被当前模型支持',
+      },
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  await expect(
+    openAICompatibleProvider.generate(
+      [{ role: 'user', content: 'x' }],
+      {
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'k',
+          model_name: 'm',
+          url: 'https://api.example.com/v1/chat/completions',
+        },
+      },
+    ),
+  ).rejects.toThrow(/unsupported_parameter|response_format/);
+});
+
+test('joins content array parts before deciding emptiness', async () => {
+  // Some gateways return content as [{type:'text',text:'...'}].
+  const fetchMock = jest.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [
+        {
+          message: {
+            content: [
+              { type: 'text', text: '{"ok":' },
+              { type: 'text', text: 'true}' },
+            ],
+          },
+          finish_reason: 'stop',
+        },
+      ],
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: 'x' }],
+    {
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  expect(result.text).toBe('{"ok":true}');
+  expect(result.emptyReason).toBeUndefined();
+});
+
+test('marks a no-choices 200 response (without error body) as emptyReason=no_choices', async () => {
+  const fetchMock = jest.fn(async () => ({
+    ok: true,
+    json: async () => ({ choices: [] }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: 'x' }],
+    {
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  expect(result.text).toBeNull();
+  expect(result.emptyReason).toBe('no_choices');
+});
