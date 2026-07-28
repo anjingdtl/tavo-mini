@@ -224,13 +224,14 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         const active = items.find(
           item => item.state === 'running' || item.state === 'queued',
         );
+        const cancelled = items.find(item => item.state === 'cancelled');
         return {
           materialType,
           completed,
           total: items.length,
           state: failed
             ? 'failed'
-            : active?.state ?? (items.length ? 'completed' : 'queued'),
+            : active?.state ?? (cancelled ? 'cancelled' : items.length ? 'completed' : 'queued'),
           errorMessage: failed?.errorMessage,
         };
       }),
@@ -458,6 +459,14 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                       }}
                     />
                   )}
+                  {latestRun.state === 'cancelled' && (
+                    <Button
+                      label="从已取消进度继续"
+                      onPress={() => {
+                        void continueRun();
+                      }}
+                    />
+                  )}
                   {materialProgress.map(item => {
                     const percent = item.total
                       ? Math.round((item.completed / item.total) * 100)
@@ -465,6 +474,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                     const color =
                       item.state === 'failed'
                         ? theme.colors.danger
+                        : item.state === 'cancelled'
+                        ? theme.colors.textSecondary
                         : theme.colors.accent;
                     const status =
                       item.state === 'failed'
@@ -473,6 +484,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                         ? '分析中'
                         : item.state === 'queued'
                         ? '排队中'
+                        : item.state === 'cancelled'
+                        ? '已取消，可继续'
                         : '已完成';
                     return (
                       <View

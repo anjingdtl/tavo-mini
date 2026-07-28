@@ -1,5 +1,17 @@
 # ShineWriter 发布清单
 
+## V2.10.3 Canon 分析取消恢复与 JSON 兼容
+
+- [x] 升级 `package.json` / `package-lock.json` 至 `2.10.3`，`npm run prebuild` 生成 `V2.10.3` / `2100300`
+- [x] `CHANGELOG.md` 和 `README.md` 已同步取消恢复、冷启动恢复与 JSON 双重编码兼容变更
+- [x] `npm run verify` 通过（ESLint 0 error；保留仓库既有 warning）
+- [x] Android 17 x86_64 模拟器完成 299 章 / 1,033,681 字符 TXT Quick 分析：冷启动 `paused` 恢复、继续、取消、从取消进度继续，最终 500/500 与五类资料完成；无 JS/原生崩溃
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.10.3-release.apk`
+- [x] `scripts/verify-release-apk.ps1` 验收单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.10.3` / `2100300`
+- [x] Android 17 x86_64 已完成 Debug 穿测；为保留其中用于恢复验证的 299 章测试数据，未卸载 Debug 安装来强制替换为不同签名的 Release 包
+
+证据目录：`test-logs/canon-resume-v2103-20260728/`；Release APK：38,145,339 bytes，SHA-256 `5998EC4E444421BFEE7BD5BAE601133475DC7A8CFCE8CF67846817940E09AB74`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。
+
 ## V2.10.2 Canon 分析输出恢复与任务进度固化
 
 - [x] 升级 `package.json` / `package-lock.json` 至 `2.10.2`，`npm run prebuild` 生成 `V2.10.2` / `2100200`

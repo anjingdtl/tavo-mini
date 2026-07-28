@@ -4,6 +4,18 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.10.3] - 2026-07-28
+
+### Fixed
+
+- **原著分析取消后可继续**：取消不再丢弃已经完成的批次或资料项。分析概览和任务列表均提供「从已取消进度继续」，只重新排队未完成项；意外退出后残留的运行中批次/资料项在冷启动时也会安全转为可继续队列。
+- **非标准模型 JSON 兼容**：除 Markdown 和前后缀外，现可识别部分 OpenAI 兼容网关对 JSON 内容的双重编码；自动重试会明确要求模型重新生成完整 Canon schema，减少重复返回无效格式导致的失败。
+
+### Tests
+
+- 新增已取消任务可继续、未完成项重排队、双重 JSON 编码和重试纠错提示回归测试。
+- Android 17 x86_64 模拟器：299 章 / 1,033,681 字符 TXT 的 Quick 分析冷启动恢复、继续、取消、从取消进度继续并完成 500/500 均通过，无 JS 或原生崩溃。
+
 ## [2.10.2] - 2026-07-28
 
 ### Fixed

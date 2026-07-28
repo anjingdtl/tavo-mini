@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.10.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.10.3-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.10.2** · 数据库 Schema：**22** · 最低 Android API：**24**
+当前版本：**V2.10.3** · 数据库 Schema：**22** · 最低 Android API：**24**
 
-`V2.10.2` 修复原著续写 Canon 分析的模型输出恢复和进度可见性：空响应或非标准 JSON 会安全解析并自动重试；分析任务页按五类资料与批次读取持久化完成进度、错误和尝试次数，重试不会重跑已完成项。详见 [CHANGELOG](CHANGELOG.md)。
+`V2.10.3` 修复原著续写 Canon 分析取消或意外退出后不能继续的问题：已完成资料项会保留，取消/冷启动中断的任务均可从原进度继续；同时兼容部分 OpenAI 兼容网关双重编码的 JSON 响应。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.6.6` 修复构建生成的质量目标误拦截：通过结构与回读校验的角色卡、世界书即使未完全达到 Token 或字段长度目标，也会保留预览并可保存、导入；界面显示实际值、目标值和补强建议，不会静默发起第二次请求。`V2.6.5` 健全「构建」模块：角色卡与世界书增加紧凑 / 丰满 / 深度生成目标及可见产物质量报告；角色卡按多维人物信息与多轮对话生成；TXT 可解析为可选片段并直接生成角色卡或世界书。世界书构建结果强制全部常驻，预览会显示常驻内容估算。详见 [CHANGELOG](CHANGELOG.md)。
 
@@ -114,9 +114,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-下一正式产物：`dist/apk/release/ShineWriter-V2.10.2-release.apk`，`versionName=V2.10.2`，`versionCode=2100200`。
+下一正式产物：`dist/apk/release/ShineWriter-V2.10.3-release.apk`，`versionName=V2.10.3`，`versionCode=2100300`。
 
-V2.10.2 将按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
+V2.10.3 将按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
 
 **实测验收数据**：
 
@@ -126,10 +126,10 @@ V2.10.2 将按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm
 | 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
 | Number of signers | 1 |
 | zipalign -c | Verification successful |
-| versionName / versionCode | V2.10.2 / 2100200 |
-| 文件大小 | 38,140,759 bytes（36.37 MB） |
-| APK SHA-256 | `705C7DB5F5A2FE59A238F13440B494E53D39034C9FD4CA3FC527BAE0F67FAD01` |
-| Android 模拟器验收 | 本轮未执行真机或模拟器回归；Release APK 已完成签名、对齐、包名和版本元数据验收 |
+| versionName / versionCode | V2.10.3 / 2100300 |
+| 文件大小 | 38,145,339 bytes（36.38 MB） |
+| APK SHA-256 | `5998EC4E444421BFEE7BD5BAE601133475DC7A8CFCE8CF67846817940E09AB74` |
+| Android 模拟器验收 | Android 17 x86_64 Debug：299 章 TXT 分析冷启动恢复、取消后继续和完成 500/500 通过；Release APK 已完成签名、对齐、包名和版本元数据验收 |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -230,7 +230,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.10.2** with database Schema **22**. V2.10.2 safely recovers JSON from non-standard Canon model output, retries empty or invalid output, and makes persisted per-material and per-batch analysis progress visible from the task list. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.10.3** with database Schema **22**. V2.10.3 preserves completed Canon-analysis work after cancellation or an interrupted process and provides a direct resume action; it also handles doubly encoded JSON returned by some OpenAI-compatible gateways. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 
