@@ -538,7 +538,7 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     return res(rows);
   }
-  if (/UPDATE continuation_state_sync_outbox\s+SET state = 'pending', last_error = NULL/i.test(n)) {
+  if (/UPDATE continuation_state_sync_outbox\s+SET state = 'pending', (attempt_count = 0, )?last_error = NULL/i.test(n)) {
     // retryContinuationOutbox / retryFailedContinuationOutbox
     let affected = 0;
     for (const o of store.outbox) {
@@ -546,6 +546,7 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       const eligible = ['failed', 'interrupted'].includes(o.state);
       if (matchesProject && eligible) {
         o.state = 'pending';
+        if (/attempt_count = 0/i.test(n)) o.attempt_count = 0;
         o.last_error = null;
         affected += 1;
       }
@@ -1361,8 +1362,8 @@ describe('continuation Phase 3 repository coverage', () => {
       const row = await getOutboxById('co_retry1');
       expect(row!.state).toBe('pending');
       expect(row!.lastError).toBeNull();
-      // attempt_count preserved as audit (manual retry does not reset budget)
-      expect(row!.attemptCount).toBe(1);
+      // Manual recovery starts a fresh automatic retry streak.
+      expect(row!.attemptCount).toBe(0);
     });
 
     test('retryContinuationOutbox rejects non-eligible states', async () => {
@@ -1407,10 +1408,8 @@ describe('continuation Phase 3 repository coverage', () => {
     });
 
     test('worker stops auto-claiming past MAX_OUTBOX_AUTO_RETRY_ATTEMPTS', async () => {
-      // A row that already exhausted the budget must not be auto-claimed even
-      // after a manual retry puts it back to pending — actually manual retry is
-      // the explicit override; but a pending row whose attempt_count already
-      // exceeds the budget is skipped by the worker to avoid runaway billing.
+      // A pending row whose current automatic streak already exceeds the
+      // budget is skipped until a user explicitly retries it.
       store.outbox.push(
         seedOutbox({
           id: 'co_exhausted',
@@ -1426,6 +1425,24 @@ describe('continuation Phase 3 repository coverage', () => {
       expect(result.processed).toBe(0);
       // untouched
       expect((await getOutboxById('co_exhausted'))!.state).toBe('pending');
+    });
+
+    test('manual retry restarts an exhausted row so the worker can process it', async () => {
+      store.chapters[0].content = '人工恢复正文';
+      store.chapters[0].position = 21;
+      const hash = contentRevisionHash('人工恢复正文');
+      store.outbox.push(seedOutbox({
+        id: 'co_manual_exhausted',
+        dedupe_key: `extract_state:10:${hash}`,
+        payload_json: JSON.stringify({ projectId: 1, chapterId: 10, chapterRevisionHash: hash }),
+        attempt_count: MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
+      }));
+      await retryContinuationOutbox('co_manual_exhausted');
+      expect((await getOutboxById('co_manual_exhausted'))!.attemptCount).toBe(0);
+      await expect(processContinuationOutbox({
+        limit: 5,
+        callExtract: async () => JSON.stringify({ proposals: [] }),
+      })).resolves.toMatchObject({ processed: 1, failed: 0 });
     });
 
     test('failed extract_state can recover to completed after manual retry', async () => {
@@ -1921,6 +1938,8 @@ describe('continuation Phase 3 repository coverage', () => {
       mockExecuteSql.mockImplementation(original);
       // The stored chapter content was NOT overwritten (rowsAffected 0).
       expect(store.chapters[0].content).toBe('');
+      // A failed optimistic write must remain retryable, not falsely adopted.
+      expect(store.runs[0].state).toBe('awaiting_user');
     });
   });
 

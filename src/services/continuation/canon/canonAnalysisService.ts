@@ -1096,6 +1096,16 @@ export async function activateSnapshot(
         WHERE canon_snapshot_id = ? AND state = 'awaiting_review'`,
       params: [ts, snapshotId],
     },
+    {
+      // Any existing generation was compiled against another Canon revision.
+      // Stop it at the activation boundary instead of merely rejecting it at
+      // final adoption, which can otherwise consume unnecessary model calls.
+      sql: `UPDATE continuation_generation_runs
+        SET state = 'outdated', error_code = 'outdated',
+            error_message = ?, updated_at = ?
+        WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
+      params: ['active_canon_changed', ts, projectId],
+    },
   ]);
 
   const activated = await getSnapshotById(snapshotId);
