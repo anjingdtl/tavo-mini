@@ -23,12 +23,14 @@ import {
   ANALYSIS_MATERIAL_TYPES,
   EXTRACTION_VERSION,
   type AnalysisMaterialType,
+  type AnalysisScope,
   type AnalysisProfile,
   type AnalysisRun,
   type AnalysisStage,
   type CanonCapabilities,
   type CanonCoverage,
   type CanonSnapshot,
+  type ContinuationAnalysisMode,
 } from './types';
 import {
   getActiveSnapshot,
@@ -49,7 +51,12 @@ import {
   countOrphanEvidence,
   asSourcePosition,
 } from './canonRepository';
-import { extractChapterDeterministic } from './deterministicExtractor';
+import {
+  FAST_CONTINUATION_SCOPE,
+  FULL_ANALYSIS_SCOPE,
+  normalizeAnalysisScope,
+  planAnalysisScope,
+} from './analysisScopePlanner';
 import {
   parseExtractionResultJson,
   type ChapterExtractionResult,
@@ -62,8 +69,6 @@ import {
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
 } from '../../llm';
-
-export type AnalysisExtractorMode = 'deterministic' | 'llm';
 
 export const ANALYSIS_MATERIAL_LABELS: Record<AnalysisMaterialType, string> = {
   world_rules: '世界观',
@@ -85,9 +90,7 @@ export const CANON_ANALYSIS_RETRY_POLICY = {
 } as const;
 
 /** States whose persisted partial work can be safely resumed. */
-export function isResumableAnalysisState(
-  state: AnalysisRun['state'],
-): boolean {
+export function isResumableAnalysisState(state: AnalysisRun['state']): boolean {
   return state === 'paused' || state === 'failed' || state === 'cancelled';
 }
 
@@ -155,23 +158,21 @@ export interface ProcessAnalysisOptions {
 const analysisControllers = new Map<string, AbortController>();
 const analysisProcesses = new Map<string, Promise<AnalysisRun>>();
 
-/**
- * Quick is intentionally available offline for a fast local preview. The
- * Standard and Deep products promise semantic Canon analysis, so they must
- * use the configured model instead of silently falling back to regexes.
- */
-export function defaultExtractorModeForProfile(
-  profile: AnalysisProfile,
-): AnalysisExtractorMode {
-  return profile === 'quick' ? 'deterministic' : 'llm';
-}
+export const ANALYSIS_MODE_PRESETS: Record<
+  ContinuationAnalysisMode,
+  {
+    profile: Extract<AnalysisProfile, 'standard' | 'deep'>;
+    scope: AnalysisScope;
+  }
+> = {
+  fast_continuation: { profile: 'standard', scope: FAST_CONTINUATION_SCOPE },
+  full_canon: { profile: 'deep', scope: FULL_ANALYSIS_SCOPE },
+};
 
 export interface StartAnalysisInput {
   projectId: number;
-  profile: AnalysisProfile;
+  mode: ContinuationAnalysisMode;
   modelConfigId?: number | null;
-  /** Explicit override retained for CI/offline fixtures. */
-  extractorMode?: AnalysisExtractorMode;
   chaptersPerBatch?: number;
 }
 
@@ -750,6 +751,8 @@ async function buildCoverage(
   analyzedChapters: number,
   totalChapters: number,
   throughPos: number,
+  scope: AnalysisScope,
+  analyzedRanges: CanonCoverage['analyzedRanges'],
 ): Promise<{ capabilities: CanonCapabilities; coverage: CanonCoverage }> {
   const count = async (table: string) => {
     const [r] = await db.executeSql(
@@ -787,20 +790,17 @@ async function buildCoverage(
   caps.evidenceValidated = orphans === 0;
 
   const incomplete: string[] = [];
-  if (profile === 'quick') {
-    incomplete.push(
-      'quick_profile_incomplete_relationships_knowledge_timeline',
-    );
-  }
   if (!caps.evidenceValidated) incomplete.push('orphan_evidence');
   if (analyzedChapters < totalChapters)
     incomplete.push('partial_chapter_coverage');
 
   const coverage: CanonCoverage = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sourceChapterCount: totalChapters,
     analyzedChapterCount: analyzedChapters,
     analyzedThroughPosition: asSourcePosition(throughPos),
+    scope,
+    analyzedRanges,
     categoryCounts: {
       worldRules,
       characterProfiles: characters,
@@ -821,31 +821,32 @@ async function buildCoverage(
 export async function startAnalysis(
   input: StartAnalysisInput,
 ): Promise<{ runId: string; snapshotId: string }> {
+  const preset = ANALYSIS_MODE_PRESETS[input.mode];
+  if (!preset) throw new Error('不支持的原著分析模式');
   const sourceSnapshot = await continuationSourceReader.getSnapshot(
     input.projectId,
   );
-  const chapters = await continuationSourceReader.listBoundedSourceChapters(
+  const allChapters = await continuationSourceReader.listBoundedSourceChapters(
     sourceSnapshot,
   );
-  if (chapters.length === 0) {
+  if (allChapters.length === 0) {
     throw new Error('边界内没有可分析章节。');
   }
-
-  const extractorMode =
-    input.extractorMode ?? defaultExtractorModeForProfile(input.profile);
-  let modelConfigId = input.modelConfigId ?? null;
-  if (extractorMode === 'llm') {
-    // Capture the selected configuration at run creation. A later change to
-    // the active configuration must not make resumed batches use another
-    // model/provider than the one recorded on this analysis run.
-    const requestConfig = modelConfigId
-      ? await resolveLLMRequestConfigById(modelConfigId)
-      : await resolveLLMRequestConfig();
-    if (!requestConfig.id) {
-      throw new Error('当前 LLM 配置无效，请在设置中重新保存并启用。');
-    }
-    modelConfigId = requestConfig.id;
+  const plan = planAnalysisScope(allChapters, preset.scope);
+  if (plan.nearChapters.length === 0) {
+    throw new Error('当前分析范围内没有可分析章节。');
   }
+  const { profile } = preset;
+  let modelConfigId = input.modelConfigId ?? null;
+  // Both supported analysis modes require an LLM. Capturing the selected
+  // configuration keeps an interrupted run bound to one provider/model.
+  const requestConfig = modelConfigId
+    ? await resolveLLMRequestConfigById(modelConfigId)
+    : await resolveLLMRequestConfig();
+  if (!requestConfig.id) {
+    throw new Error('当前 LLM 配置无效，请在设置中重新保存并启用。');
+  }
+  modelConfigId = requestConfig.id;
 
   const snapshotId = v4();
   const runId = v4();
@@ -860,8 +861,8 @@ export async function startAnalysis(
     idempotencyKey: string;
   }> = [];
 
-  for (let i = 0; i < chapters.length; i += perBatch) {
-    const slice = chapters.slice(i, i + perBatch);
+  for (let i = 0; i < plan.nearChapters.length; i += perBatch) {
+    const slice = plan.nearChapters.slice(i, i + perBatch);
     const start = slice[0].position;
     const end = slice[slice.length - 1].position + 1; // half-open
     const inputHash = sha256Hex(
@@ -894,9 +895,9 @@ export async function startAnalysis(
     boundaryPosition: sourceSnapshot.boundary.chapterPosition,
     boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
     extractionVersion: EXTRACTION_VERSION,
-    profile: input.profile,
+    profile,
     status: 'staging',
-    capabilities: emptyCapabilities(input.profile),
+    capabilities: emptyCapabilities(profile),
     coverage: emptyCoverage(sourceSnapshot.boundary.chapterPosition),
   });
   await insertRun(db, {
@@ -911,7 +912,7 @@ export async function startAnalysis(
     boundaryPosition: sourceSnapshot.boundary.chapterPosition,
     boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
     canonSnapshotId: snapshotId,
-    profile: input.profile,
+    profile,
     modelConfigId,
     state: 'queued',
     stage: 'snapshot',
@@ -937,10 +938,15 @@ export async function startAnalysis(
     [now(), input.projectId],
   );
 
-  // Store extractor mode in checkpoint for resume.
+  // The complete plan is persisted so resume cannot silently widen a tail run.
   await updateRunState(db, runId, {
     checkpointJson: JSON.stringify({
-      extractorMode,
+      schemaVersion: 2,
+      mode: input.mode,
+      extractorMode: 'llm',
+      scope: plan.effectiveScope,
+      plannedChapterIds: plan.nearChapters.map(chapter => chapter.id),
+      plannedRanges: plan.analyzedRanges,
     }),
   });
 
@@ -981,6 +987,9 @@ async function processAnalysisRunInner(
   const db = await openDatabase();
   let run = await getRunById(runId);
   if (!run) throw new Error('分析任务不存在');
+  if (run.profile === 'quick') {
+    throw new Error('旧版 Quick 离线预览已退役，请重新发起 LLM 原著分析。');
+  }
   if (
     run.state === 'completed' ||
     run.state === 'cancelled' ||
@@ -1008,13 +1017,21 @@ async function processAnalysisRunInner(
     throw e;
   }
 
-  const checkpoint = run.checkpointJson
-    ? (JSON.parse(run.checkpointJson) as {
-        extractorMode?: AnalysisExtractorMode;
-      })
-    : {};
-  const mode =
-    checkpoint.extractorMode ?? defaultExtractorModeForProfile(run.profile);
+  let checkpoint: {
+    extractorMode?: 'llm' | 'deterministic';
+    scope?: AnalysisScope;
+  } = {};
+  try {
+    checkpoint = run.checkpointJson ? JSON.parse(run.checkpointJson) : {};
+  } catch {
+    // Old/corrupt checkpoint metadata must not make an already persisted batch
+    // range expand. Batches remain the source of truth; use full only for the
+    // coverage label of legacy online runs.
+  }
+  if (checkpoint.extractorMode && checkpoint.extractorMode !== 'llm') {
+    throw new Error('旧版 Quick 离线预览已退役，请重新发起 LLM 原著分析。');
+  }
+  const scope = normalizeAnalysisScope(checkpoint.scope);
 
   await updateRunState(db, runId, {
     state: 'running',
@@ -1092,17 +1109,14 @@ async function processAnalysisRunInner(
         });
         await reportWorkItem(materialType, batch.batchIndex, 'running');
         try {
-          const result =
-            mode === 'llm'
-              ? await extractMaterialWithLlm(
-                  slice,
-                  run.profile,
-                  run.modelConfigId,
-                  materialType,
-                  runId,
-                  signal,
-                )
-              : onlyMaterial(extractChapterDeterministic(slice), materialType);
+          const result = await extractMaterialWithLlm(
+            slice,
+            run.profile,
+            run.modelConfigId,
+            materialType,
+            runId,
+            signal,
+          );
           if (signal.aborted) throw new Error('分析已暂停或取消');
           await updateWorkItem(db, {
             runId,
@@ -1229,13 +1243,30 @@ async function processAnalysisRunInner(
   );
 
   await updateRunState(db, runId, { stage: 'finalizing' });
+  const analyzedRanges = completedBatches.map(batch => ({
+    startPosition: asSourcePosition(batch.startPosition),
+    endPosition: asSourcePosition(batch.endPosition),
+  }));
+  const analyzedChapters = allChapters.filter(chapter =>
+    completedBatches.some(
+      batch =>
+        chapter.position >= batch.startPosition &&
+        chapter.position < batch.endPosition,
+    ),
+  ).length;
+  const analyzedThroughPosition = completedBatches.reduce(
+    (max, batch) => Math.max(max, batch.endPosition - 1),
+    0,
+  );
   const { capabilities, coverage } = await buildCoverage(
     db,
     run.canonSnapshotId,
     run.profile,
-    completedBatches.length,
-    batches.length,
-    allChapters.length > 0 ? allChapters[allChapters.length - 1].position : 0,
+    analyzedChapters,
+    allChapters.length,
+    analyzedThroughPosition,
+    scope,
+    analyzedRanges,
   );
 
   if (failedBatches.length > 0) {
@@ -1520,6 +1551,9 @@ export async function activateSnapshot(
   if (!snap || snap.projectId !== projectId) {
     throw new Error('快照不存在');
   }
+  if (snap.profile === 'quick') {
+    throw new Error('旧版 Quick 离线预览不能激活，请重新发起 LLM 原著分析。');
+  }
   if (snap.status !== 'awaiting_review' && snap.status !== 'ready') {
     throw new Error(`快照状态 ${snap.status} 不可激活`);
   }
@@ -1660,6 +1694,9 @@ export async function resumeAnalysis(
   const db = await openDatabase();
   const run = await getRunById(runId);
   if (!run) throw new Error('分析任务不存在');
+  if (run.profile === 'quick') {
+    throw new Error('旧版 Quick 离线预览已退役，请重新发起 LLM 原著分析。');
+  }
   if (!isResumableAnalysisState(run.state)) {
     throw new Error('仅暂停、失败或已取消的任务可继续');
   }

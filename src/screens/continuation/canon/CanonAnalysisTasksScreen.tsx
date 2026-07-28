@@ -91,6 +91,7 @@ export const CanonAnalysisTasksScreen: React.FC<{
         contentContainerStyle={styles.list}
         renderItem={({ item }) => {
           const isSelected = item.id === selectedRunId;
+          const legacyQuick = item.profile === 'quick';
           const selectedItems = isSelected ? workItems : [];
           const completed = selectedItems.filter(
             workItem => workItem.state === 'completed',
@@ -196,7 +197,13 @@ export const CanonAnalysisTasksScreen: React.FC<{
                   {item.errorMessage}
                 </Text>
               ) : null}
-              {item.state === 'paused' && (
+              {legacyQuick && (
+                <Text style={{ color: theme.colors.warning || '#b45309' }}>
+                  旧版 Quick 离线预览已退役，不能继续或激活；请重新发起 LLM
+                  分析。
+                </Text>
+              )}
+              {!legacyQuick && item.state === 'paused' && (
                 <Button
                   label="继续"
                   onPress={async () => {
@@ -230,7 +237,7 @@ export const CanonAnalysisTasksScreen: React.FC<{
                   }}
                 />
               )}
-              {item.state === 'failed' && (
+              {!legacyQuick && item.state === 'failed' && (
                 <Button
                   label="重试未完成项"
                   onPress={async () => {
@@ -264,7 +271,7 @@ export const CanonAnalysisTasksScreen: React.FC<{
                   }}
                 />
               )}
-              {item.state === 'cancelled' && (
+              {!legacyQuick && item.state === 'cancelled' && (
                 <Button
                   label="从已取消进度继续"
                   onPress={async () => {
@@ -298,70 +305,71 @@ export const CanonAnalysisTasksScreen: React.FC<{
                   }}
                 />
               )}
-              {(item.state === 'queued' || item.state === 'running') && (
-                <>
-                  <Button
-                    label="立即处理"
-                    onPress={async () => {
-                      try {
-                        await requestNotificationPermission().catch(
-                          () => false,
-                        );
-                        await PipelineForeground.start(
-                          item.id,
-                          '原著分析进行中',
-                          '正在继续分析…',
-                          item.progressTotal
-                            ? Math.round(
-                                (item.progressCurrent / item.progressTotal) *
-                                  100,
-                              )
-                            : 0,
-                        );
-                        await processAnalysisRun(item.id, {
-                          onProgress: update => {
-                            const percent = update.progressTotal
+              {!legacyQuick &&
+                (item.state === 'queued' || item.state === 'running') && (
+                  <>
+                    <Button
+                      label="立即处理"
+                      onPress={async () => {
+                        try {
+                          await requestNotificationPermission().catch(
+                            () => false,
+                          );
+                          await PipelineForeground.start(
+                            item.id,
+                            '原著分析进行中',
+                            '正在继续分析…',
+                            item.progressTotal
                               ? Math.round(
-                                  (update.progressCurrent /
-                                    update.progressTotal) *
+                                  (item.progressCurrent / item.progressTotal) *
                                     100,
                                 )
-                              : 0;
-                            const material = update.materialType
-                              ? ANALYSIS_MATERIAL_LABELS[update.materialType]
-                              : '原著分析';
-                            void PipelineForeground.updateProgress(
-                              item.id,
-                              `第 ${
-                                (update.batchIndex ?? 0) + 1
-                              } 批 · ${material}`,
-                              percent,
-                            );
-                            void reload();
-                          },
-                        });
-                        await PipelineForeground.stop(item.id);
+                              : 0,
+                          );
+                          await processAnalysisRun(item.id, {
+                            onProgress: update => {
+                              const percent = update.progressTotal
+                                ? Math.round(
+                                    (update.progressCurrent /
+                                      update.progressTotal) *
+                                      100,
+                                  )
+                                : 0;
+                              const material = update.materialType
+                                ? ANALYSIS_MATERIAL_LABELS[update.materialType]
+                                : '原著分析';
+                              void PipelineForeground.updateProgress(
+                                item.id,
+                                `第 ${
+                                  (update.batchIndex ?? 0) + 1
+                                } 批 · ${material}`,
+                                percent,
+                              );
+                              void reload();
+                            },
+                          });
+                          await PipelineForeground.stop(item.id);
+                          await reload();
+                        } catch (e: any) {
+                          await PipelineForeground.stop(item.id);
+                          Toast.show({
+                            type: 'error',
+                            text1: '处理失败',
+                            text2: e?.message,
+                          });
+                        }
+                      }}
+                    />
+                    <Button
+                      label="取消"
+                      variant="ghost"
+                      onPress={async () => {
+                        await cancelAnalysis(item.id);
                         await reload();
-                      } catch (e: any) {
-                        await PipelineForeground.stop(item.id);
-                        Toast.show({
-                          type: 'error',
-                          text1: '处理失败',
-                          text2: e?.message,
-                        });
-                      }
-                    }}
-                  />
-                  <Button
-                    label="取消"
-                    variant="ghost"
-                    onPress={async () => {
-                      await cancelAnalysis(item.id);
-                      await reload();
-                    }}
-                  />
-                </>
-              )}
+                      }}
+                    />
+                  </>
+                )}
             </Card>
           );
         }}
