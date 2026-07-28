@@ -26,9 +26,9 @@ import { NORMALIZATION_VERSION, createStreamingNormalizer } from './continuation
 import { applyParsingEdits, type ParsingEdit } from './continuationEditLog';
 import { Sha256Stream, sha256Hex } from './hashUtils';
 import {
-  activateSourceInTx,
   asSourcePosition,
   asUtf16Offset,
+  buildActivateSourceBoundaryStatements,
   clearActiveSourceAndDelete,
   deleteSourceCascade,
   ensureSettingsRow,
@@ -645,8 +645,11 @@ export interface BoundaryInput {
 }
 
 /**
- * Confirm the source: validate boundary, then atomically activate
- * (supersede prior ready + promote new + switch pointers) in one tx (Spec §6, §14.1).
+ * Confirm the source: validate boundary, then atomically activate in ONE
+ * transaction (Spec §6, §14.1, fix-plan §6.2): supersede prior ready, promote
+ * the new source, switch the active+boundary pointers, AND mark in-flight
+ * continuation runs `outdated` so stale context is never adopted against the
+ * new boundary. Source status and the settings pointer can never diverge.
  */
 export async function confirmContinuationSource(
   jobId: string,
@@ -690,35 +693,19 @@ export async function confirmContinuationSource(
     }
   }
 
-  // Atomic activation (Spec §6): supersede prior ready, promote new source,
-  // then switch the active + boundary pointers. Both steps run against the
-  // same handle; SQLite serializes them. A future revision may wrap both in a
-  // single executeTransaction for stricter atomicity guarantees.
-  await activateSourceInTx(db, job.projectId, job.sourceId);
+  // Single atomic transaction (fix-plan §6.2): source activation + settings
+  // pointer switch + run invalidation commit or roll back together.
   const ts = now();
-  await executeTransaction(db, [
-    {
-      sql: `UPDATE continuation_settings SET
-        active_source_id = ?,
-        boundary_source_id = ?,
-        boundary_chapter_id = ?,
-        boundary_char_offset_global = ?,
-        boundary_mode = ?,
-        import_completed = 1,
-        analysis_status = 'not_started',
-        updated_at = ?
-        WHERE project_id = ?`,
-      params: [
-        job.sourceId,
-        job.sourceId,
-        boundaryChapter.id,
-        boundaryOffset,
-        boundary.mode,
-        ts,
-        job.projectId,
-      ],
-    },
-  ]);
+  const statements = buildActivateSourceBoundaryStatements({
+    projectId: job.projectId,
+    newSourceId: job.sourceId,
+    boundaryChapterId: boundaryChapter.id,
+    boundaryGlobalOffset: boundaryOffset,
+    boundaryMode: boundary.mode,
+    ts,
+  });
+  await executeTransaction(db, statements, { faultDomain: 'continuation' });
+
   await updateJob(db, jobId, {
     state: 'completed',
     stage: 'activating',
@@ -727,7 +714,8 @@ export async function confirmContinuationSource(
     completedAt: ts,
   });
 
-  // Clean up the private import copy on success (Spec §14.1 step 8).
+  // Clean up the private import copy on success (Spec §14.1 step 8). Best-effort
+  // only, never inside the transaction.
   if (job.inputCopyRelativePath) {
     try {
       await RNFS.unlink(`${RNFS.DocumentDirectoryPath}/${job.inputCopyRelativePath}`);

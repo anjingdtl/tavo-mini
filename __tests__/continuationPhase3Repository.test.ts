@@ -15,6 +15,9 @@ const store: {
   storyMemory: any[];
   style: any[];
   styleProfiles: any[];
+  ctSettings: any[]; // continuation_settings (active source/canon)
+  canonSnapshots: any[];
+  contentRevisions: any[];
 } = {
   settings: [],
   runs: [],
@@ -29,6 +32,9 @@ const store: {
   storyMemory: [],
   style: [],
   styleProfiles: [],
+  ctSettings: [],
+  canonSnapshots: [],
+  contentRevisions: [],
 };
 
 function res(rows: any[]) {
@@ -156,23 +162,46 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       }
       return res([]);
     }
-    // CAS update — find run by scanning params for known ids
+    // CAS update — find run by scanning params for known ids.
+    // params layout: [updated_at(nowIso), <SET values...>, runId, ...expectedStates]
+    // The TARGET state is the SET value bound right after updated_at (params[1]
+    // when state is set). The expected states are the trailing WHERE-IN values.
+    // We must read the target from the SET position, not scan all params (which
+    // would conflate target + expected and mis-apply transitions like failed).
     for (const r of store.runs) {
       if (String(params).includes(r.id) || params.includes(r.id)) {
-        if (params.includes(r.state) || true) {
-          // apply loosely
-          const stateIdx = n.indexOf('state =');
-          if (stateIdx >= 0) {
-            // params order depends — set common fields if present
+        // Parse the SET clause to map each assignment to its value. Supports
+        // both bind params (`col = ?`) and SQL literals (`col = 'completed'`),
+        // since adopt/finalize use literals while casUpdateRunState uses binds.
+        const setMatch = n.match(/SET (.+?) WHERE /i);
+        if (setMatch) {
+          const setClause = setMatch[1];
+          let paramIdx = 0;
+          const assignRegex = /(\w+)\s*=\s*(\?|'[^']*')/g;
+          let am: RegExpExecArray | null;
+          while ((am = assignRegex.exec(setClause)) !== null) {
+            const col = am[1];
+            const isLiteral = am[2] !== '?';
+            const val = isLiteral ? am[2].slice(1, -1) : params[paramIdx];
+            if (am[2] === '?') paramIdx += 1;
+            if (val === undefined) continue;
+            switch (col) {
+              case 'updated_at': r.updated_at = val; break;
+              case 'state': if (typeof val === 'string') r.state = val; break;
+              case 'stage': if (typeof val === 'string') r.stage = val; break;
+              case 'error_code': r.error_code = val; break;
+              case 'error_message': r.error_message = val; break;
+              case 'completion_reason': r.completion_reason = val; break;
+              case 'completed_at': r.completed_at = val; break;
+              case 'finalized_revision_hash': r.finalized_revision_hash = val; break;
+              case 'adopted_revision_hash': r.adopted_revision_hash = val; break;
+              default: break;
+            }
           }
+        } else {
           r.updated_at = params[0];
-          if (params.includes('awaiting_user')) r.state = 'awaiting_user';
-          if (params.includes('completed')) r.state = 'completed';
-          if (params.includes('cancelled')) r.state = 'cancelled';
-          if (params.includes('running')) r.state = 'running';
-          if (params.includes('adopted')) r.completion_reason = 'adopted';
-          return [{ rows: { length: 0, item: () => null }, rowsAffected: 1 }];
         }
+        return [{ rows: { length: 0, item: () => null }, rowsAffected: 1 }];
       }
     }
     // fallback: update first matching id in params
@@ -224,6 +253,12 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       .filter(a => a.run_id === params[0])
       .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     return res(rows.slice(0, 1));
+  }
+  // P2: getArtifactForRun matches BOTH id AND run_id (ownership check)
+  if (/SELECT \* FROM continuation_generation_artifacts WHERE id = \? AND run_id = \?/i.test(n)) {
+    return res(
+      store.artifacts.filter(a => a.id === params[0] && a.run_id === params[1]),
+    );
   }
   if (/SELECT \* FROM continuation_generation_artifacts WHERE id/i.test(n)) {
     return res(store.artifacts.filter(a => a.id === params[0]));
@@ -365,6 +400,20 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       },
     ]);
   }
+  if (/SELECT COUNT\(\*\) AS c.*FROM continuation_state_sync_outbox WHERE project_id/i.test(n)) {
+    // getOutboxSummary: pending/failed counts plus latest failure timestamp.
+    let rows = store.outbox.filter(o => o.project_id === params[0]);
+    if (/state IN/i.test(n)) {
+      const states = /'pending', 'interrupted', 'running'/.test(n)
+        ? ['pending', 'interrupted', 'running']
+        : ['failed'];
+      rows = rows.filter(o => states.includes(o.state));
+    } else if (/state = 'failed'/.test(n)) {
+      rows = rows.filter(o => o.state === 'failed');
+    }
+    const latest = rows.length ? rows.slice().sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0].updated_at : null;
+    return res([{ c: rows.length, latest }]);
+  }
   if (/SELECT COUNT\(\*\) AS c FROM continuation_state_sync_outbox/i.test(n)) {
     return res([
       {
@@ -446,9 +495,13 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     });
     return res([]);
   }
-  if (/INSERT INTO continuation_state_sync_outbox/i.test(n)) {
+  if (/INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_sync_outbox/i.test(n)) {
+    // INSERT OR IGNORE emulates the real UNIQUE(dedupe_key) constraint: a
+    // second enqueue with the same dedupe key is a no-op (rowsAffected 0)
+    // rather than a throw, so the repository's dedupe path returns the
+    // existing row. A genuine insert reports rowsAffected 1.
     if (store.outbox.some(o => o.dedupe_key === params[5])) {
-      throw new Error('UNIQUE');
+      return [{ rows: { length: 0, item: () => null }, rowsAffected: 0, insertId: 0 }];
     }
     store.outbox.push({
       id: params[0],
@@ -464,10 +517,40 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       updated_at: params[7],
       completed_at: null,
     });
-    return res([]);
+    return [{ rows: { length: 0, item: () => null }, rowsAffected: 1, insertId: 1 }];
   }
   if (/SELECT \* FROM continuation_state_sync_outbox WHERE dedupe_key/i.test(n)) {
     return res(store.outbox.filter(o => o.dedupe_key === params[0]));
+  }
+  if (/SELECT \* FROM continuation_state_sync_outbox WHERE id = \?/i.test(n)) {
+    return res(store.outbox.filter(o => o.id === params[0]));
+  }
+  if (/SELECT \* FROM continuation_state_sync_outbox WHERE project_id/i.test(n)) {
+    let rows = store.outbox.filter(o => o.project_id === params[0]);
+    if (/state = \?/i.test(n)) {
+      rows = rows.filter(o => o.state === params[1]);
+    }
+    return res(rows);
+  }
+  if (/SELECT last_error, dedupe_key FROM continuation_state_sync_outbox/i.test(n)) {
+    const rows = store.outbox
+      .filter(o => o.project_id === params[0] && o.state === 'failed' && o.updated_at === params[1])
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    return res(rows);
+  }
+  if (/UPDATE continuation_state_sync_outbox\s+SET state = 'pending', last_error = NULL/i.test(n)) {
+    // retryContinuationOutbox / retryFailedContinuationOutbox
+    let affected = 0;
+    for (const o of store.outbox) {
+      const matchesProject = o.project_id === params[1] || String(params).includes(o.id);
+      const eligible = ['failed', 'interrupted'].includes(o.state);
+      if (matchesProject && eligible) {
+        o.state = 'pending';
+        o.last_error = null;
+        affected += 1;
+      }
+    }
+    return [{ rows: { length: 0, item: () => null }, rowsAffected: affected }];
   }
   if (/SELECT \* FROM continuation_state_sync_outbox WHERE state IN/i.test(n)) {
     return res(
@@ -516,15 +599,60 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
   if (/SELECT content, title, status FROM chapters WHERE id/i.test(n)) {
     return res(store.chapters.filter(c => c.id === params[0]));
   }
+  // P2: adopt reads content + title + status + updated_at for optimistic locking
+  if (/SELECT content, title, status, updated_at FROM chapters WHERE id/i.test(n)) {
+    return res(store.chapters.filter(c => c.id === params[0]));
+  }
   if (/SELECT content, position FROM chapters WHERE id/i.test(n)) {
     return res(store.chapters.filter(c => c.id === params[0]));
   }
+  // P1-E: continuation_settings (active source / canon) for context-freshness checks
+  if (/SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id/i.test(n)) {
+    return res(store.ctSettings.filter(s => s.project_id === params[0]));
+  }
+  // P1-E: continuation_canon_snapshots revision lookup
+  if (/SELECT revision FROM continuation_canon_snapshots WHERE id/i.test(n)) {
+    return res(store.canonSnapshots.filter(s => s.id === params[0]));
+  }
+  // P1-E: content_revisions insert (before_pipeline_accept snapshot on adopt)
+  if (/INSERT INTO content_revisions/i.test(n)) {
+    store.contentRevisions.push({
+      project_id: params[0],
+      target_id: params[2],
+      title: params[3],
+      content: params[4],
+      source: params[5],
+      source_ref: params[6],
+      created_at: params[7],
+    });
+    return res([]);
+  }
   if (/UPDATE chapters SET content = \?, status/i.test(n)) {
-    const ch = store.chapters.find(c => c.id === params[params.length - 1]);
+    // Fix-plan §7.3: the adopt UPDATE carries `WHERE id = ? AND updated_at = ?`
+    // for optimistic concurrency. Detect the extra predicate and apply it.
+    const hasOptimisticLock = /AND updated_at = \?/i.test(n);
+    let ch: any;
+    let rowsAffected = 0;
+    if (hasOptimisticLock) {
+      // params: [content, ts, chapterId, expectedUpdatedAt]
+      const chapterId = params[params.length - 2];
+      const expectedUpdatedAt = params[params.length - 1];
+      ch = store.chapters.find(c => c.id === chapterId);
+      if (ch && String(ch.updated_at ?? '') === String(expectedUpdatedAt)) {
+        ch.content = params[0];
+        if (n.includes("'finalized'")) ch.status = 'finalized';
+        else if (n.includes("'draft'")) ch.status = 'draft';
+        ch.updated_at = params[1];
+        rowsAffected = 1;
+      }
+      // mismatch → 0 rows affected (concurrent edit)
+      return [{ rows: { length: 0, item: () => null }, rowsAffected, insertId: 0 }];
+    }
+    ch = store.chapters.find(c => c.id === params[params.length - 1]);
     if (ch) {
       ch.content = params[0];
-      if (params.includes('draft') || n.includes('draft')) ch.status = 'draft';
-      if (params.includes('finalized')) ch.status = 'finalized';
+      if (n.includes("'finalized'")) ch.status = 'finalized';
+      else if (n.includes("'draft'")) ch.status = 'draft';
     }
     return res([]);
   }
@@ -594,9 +722,25 @@ jest.mock('../src/data/connection/openDatabase', () => ({
 }));
 
 jest.mock('../src/services/database/transaction', () => ({
-  executeTransaction: jest.fn(async (_db: any, statements: any[]) => {
-    for (const s of statements) {
-      await mockExecuteSql(s.sql, s.params || []);
+  // Emulate SQLite transaction atomicity: snapshot the in-memory store before
+  // the batch, run each statement, and on any throw restore the snapshot so a
+  // failed multi-statement commit leaves no partial writes. This lets the
+  // fix-plan §2 rollback assertion observe true all-or-nothing semantics.
+  // Supports the onStatementComplete callback for optimistic-concurrency
+  // rows-affected accounting (fix-plan §7).
+  executeTransaction: jest.fn(async (_db: any, statements: any[], options: any = {}) => {
+    const snapshot = JSON.parse(JSON.stringify(store));
+    try {
+      for (let i = 0; i < statements.length; i++) {
+        const s = statements[i];
+        const result: any = await mockExecuteSql(s.sql, s.params || []);
+        if (options.onStatementComplete && result && result[0]) {
+          options.onStatementComplete(i + 1, result[0].rowsAffected ?? 0);
+        }
+      }
+    } catch (e) {
+      Object.assign(store, JSON.parse(JSON.stringify(snapshot)));
+      throw e;
     }
   }),
 }));
@@ -631,6 +775,7 @@ import {
   getArtifactById,
   savePlan,
   getPlan,
+  getArtifactForRun,
   insertCheckResults,
   listChecksForArtifact,
   markChecksObsolete,
@@ -650,6 +795,12 @@ import {
   listPendingOutbox,
   casOutboxState,
   getOutboxByDedupe,
+  retryContinuationOutbox,
+  retryFailedContinuationOutbox,
+  getOutboxSummary,
+  getOutboxById,
+  listOutboxForProject,
+  MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
   contentRevisionHash,
   newContinuationRunId,
 } from '../src/services/continuation/generation/generationRepository';
@@ -666,7 +817,10 @@ import {
   finalizeContinuationChapter,
   isContinuationRunId,
   cancelContinuationRun,
+  resumeInterruptedRun,
+  confirmPlanAndContinue,
 } from '../src/services/continuation/generation/continuationGenerationRunner';
+import { ContinuationOutdatedError } from '../src/services/continuation/generation/types';
 import {
   processContinuationOutbox,
   coldStartNormalizeContinuation,
@@ -693,6 +847,7 @@ beforeEach(() => {
       content: '',
       title: '续写一',
       status: 'planned',
+      updated_at: 't0',
     },
   ];
   store.storyMemory = [
@@ -707,6 +862,9 @@ beforeEach(() => {
     },
   ];
   store.styleProfiles = [];
+  store.ctSettings = [];
+  store.canonSnapshots = [];
+  store.contentRevisions = [];
   mockExecuteSql.mockClear();
 });
 
@@ -1030,6 +1188,740 @@ describe('continuation Phase 3 repository coverage', () => {
     });
     expect(result.processed + result.failed).toBeGreaterThanOrEqual(1);
     await coldStartNormalizeContinuation();
+  });
+
+  // ---- P1-A: finalize atomicity / idempotency / frozen config (fix-plan §2, §5.1) ----
+  describe('finalize atomic transaction + outbox idempotency', () => {
+    const frozenRun = (overrides: Partial<any> = {}) => ({
+      id: 'ct_fin1',
+      project_id: 1,
+      chapter_id: 10,
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      input_revision_hash: contentRevisionHash(''),
+      source_snapshot_json: '{}',
+      // Fix-plan §5.1: authoritative frozen field is resolvedModelConfigIds.
+      settings_snapshot_json: JSON.stringify({
+        resolvedModelConfigIds: { stateExtraction: 77 },
+      }),
+      token_usage_json: '{}',
+      target_position: 21,
+      canon_revision: 1,
+      story_memory_fingerprint: 'fp',
+      story_memory_through_position: -1,
+      user_instruction: 'x',
+      created_at: 't',
+      updated_at: 't',
+      completion_reason: null,
+      adopted_revision_hash: null,
+      finalized_revision_hash: null,
+      ...overrides,
+    });
+
+    test('finalize commits chapter + SM dirty + run linkage + outbox in one tx', async () => {
+      store.runs.push(frozenRun());
+      store.chapters[0].content = '定稿正文A';
+      store.chapters[0].status = 'draft';
+
+      const fin = await finalizeContinuationChapter({
+        projectId: 1,
+        chapterId: 10,
+        content: '定稿正文A',
+        sourceRunId: 'ct_fin1',
+      });
+
+      // Chapter finalized
+      expect(store.chapters[0].status).toBe('finalized');
+      // Story Memory marked dirty from the chapter position
+      expect(store.storyMemory[0].status).toBe('dirty');
+      expect(store.storyMemory[0].dirty_from_position).toBe(21);
+      // Exactly one extract_state outbox row, keyed by the new hash
+      const extractRows = store.outbox.filter(o => o.operation === 'extract_state');
+      expect(extractRows).toHaveLength(1);
+      expect(extractRows[0].dedupe_key).toBe(fin.outboxDedupeKey);
+      const payload = JSON.parse(extractRows[0].payload_json);
+      // Fix-plan §5.1: frozen stateExtraction config id captured from the
+      // resolvedModelConfigIds snapshot, not the legacy resolvedLlmConfigIds.
+      expect(payload.llmConfigId).toBe(77);
+    });
+
+    test('re-finalizing the same chapter content is idempotent (one outbox)', async () => {
+      store.runs.push(frozenRun());
+      store.chapters[0].content = '定稿正文B';
+      await finalizeContinuationChapter({
+        projectId: 1,
+        chapterId: 10,
+        content: '定稿正文B',
+        sourceRunId: 'ct_fin1',
+      });
+      await finalizeContinuationChapter({
+        projectId: 1,
+        chapterId: 10,
+        content: '定稿正文B',
+        sourceRunId: 'ct_fin1',
+      });
+      const extractRows = store.outbox.filter(o => o.operation === 'extract_state');
+      expect(extractRows).toHaveLength(1);
+    });
+
+    test('outbox insert failure rolls back chapter + SM dirty + run linkage', async () => {
+      store.runs.push(frozenRun());
+      store.chapters[0].content = '定稿正文C';
+      store.chapters[0].status = 'draft';
+      store.storyMemory[0].status = 'ready';
+      store.storyMemory[0].dirty_from_position = null;
+
+      // Inject a failure when the transaction tries to INSERT the outbox row.
+      const original = mockExecuteSql.getMockImplementation();
+      mockExecuteSql.mockImplementation(async (sql: string, params: any[] = []) => {
+        if (/INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_sync_outbox/i.test(sql)) {
+          throw new Error('FAULT_INJECTION: outbox insert');
+        }
+        return original!(sql, params);
+      });
+
+      await expect(
+        finalizeContinuationChapter({
+          projectId: 1,
+          chapterId: 10,
+          content: '定稿正文C',
+          sourceRunId: 'ct_fin1',
+        }),
+      ).rejects.toThrow('outbox insert');
+
+      mockExecuteSql.mockImplementation(original);
+
+      // Nothing committed: chapter still draft, SM still ready, no outbox, no
+      // run linkage. This is the core data-safety guarantee of fix-plan §2.
+      expect(store.chapters[0].status).toBe('draft');
+      expect(store.storyMemory[0].status).toBe('ready');
+      expect(store.storyMemory[0].dirty_from_position).toBeNull();
+      expect(store.outbox.filter(o => o.operation === 'extract_state')).toHaveLength(0);
+      // run linkage not advanced
+      expect(store.runs[0].finalized_revision_hash).toBeNull();
+    });
+
+    test('finalized chapter is discoverable for cold-start recovery', async () => {
+      store.runs.push(frozenRun());
+      store.chapters[0].content = '定稿正文D';
+      await finalizeContinuationChapter({
+        projectId: 1,
+        chapterId: 10,
+        content: '定稿正文D',
+        sourceRunId: 'ct_fin1',
+      });
+      // A pending extract_state outbox row must exist so cold-start processing
+      // can pick it up even if the app was killed right after the commit.
+      const pending = store.outbox.filter(
+        o => o.operation === 'extract_state' && (o.state === 'pending' || o.state === 'interrupted'),
+      );
+      expect(pending.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('missing/corrupt snapshot falls back to null config with audit note', async () => {
+      store.runs.push(frozenRun({ settings_snapshot_json: '{not json' }));
+      store.chapters[0].content = '定稿正文E';
+      await finalizeContinuationChapter({
+        projectId: 1,
+        chapterId: 10,
+        content: '定稿正文E',
+        sourceRunId: 'ct_fin1',
+      });
+      const row = store.outbox.find(o => o.operation === 'extract_state')!;
+      const payload = JSON.parse(row.payload_json);
+      expect(payload.llmConfigId).toBeNull();
+      // Audit reason present, but never the prompt or chapter body.
+      expect(payload.configNote).toBeTruthy();
+      expect(JSON.stringify(payload)).not.toContain('定稿正文E');
+    });
+  });
+
+  // ---- P1-B: outbox failed retry + visibility (fix-plan §3) ----
+  describe('outbox retry + visibility', () => {
+    const seedOutbox = (overrides: Partial<any> = {}) => ({
+      id: 'co_retry1',
+      project_id: 1,
+      chapter_id: 10,
+      operation: 'extract_state',
+      payload_json: JSON.stringify({ chapterId: 10, chapterRevisionHash: 'h' }),
+      dedupe_key: 'extract_state:10:h',
+      state: 'failed',
+      attempt_count: 1,
+      last_error: '网络错误',
+      created_at: 't1',
+      updated_at: 't1',
+      completed_at: null,
+      ...overrides,
+    });
+
+    test('retryContinuationOutbox resets failed/interrupted to pending, clears error', async () => {
+      store.outbox.push(seedOutbox());
+      const ok = await retryContinuationOutbox('co_retry1');
+      expect(ok).toBe(true);
+      const row = await getOutboxById('co_retry1');
+      expect(row!.state).toBe('pending');
+      expect(row!.lastError).toBeNull();
+      // attempt_count preserved as audit (manual retry does not reset budget)
+      expect(row!.attemptCount).toBe(1);
+    });
+
+    test('retryContinuationOutbox rejects non-eligible states', async () => {
+      store.outbox.push(seedOutbox({ id: 'co_done', state: 'completed' }));
+      const ok = await retryContinuationOutbox('co_done');
+      expect(ok).toBe(false);
+      expect((await getOutboxById('co_done'))!.state).toBe('completed');
+    });
+
+    test('retryFailedContinuationOutbox resets only failed rows for the project', async () => {
+      store.outbox.push(seedOutbox({ id: 'co_a' }));
+      store.outbox.push(seedOutbox({ id: 'co_b', dedupe_key: 'extract_state:10:h2', state: 'failed' }));
+      store.outbox.push(seedOutbox({ id: 'co_c', dedupe_key: 'extract_state:10:h3', state: 'pending' }));
+      store.outbox.push(seedOutbox({ id: 'co_other', project_id: 2, dedupe_key: 'extract_state:11:h' }));
+      const n = await retryFailedContinuationOutbox(1);
+      expect(n).toBe(2);
+      expect((await getOutboxById('co_a'))!.state).toBe('pending');
+      expect((await getOutboxById('co_b'))!.state).toBe('pending');
+      // pending row untouched
+      expect((await getOutboxById('co_c'))!.state).toBe('pending');
+      // other project untouched
+      expect((await getOutboxById('co_other'))!.state).toBe('failed');
+    });
+
+    test('getOutboxSummary reports pending/failed counts and last error without body', async () => {
+      store.outbox.push(seedOutbox({ id: 'co_p', state: 'pending', last_error: null }));
+      store.outbox.push(seedOutbox({ id: 'co_f1', last_error: '网络错误', updated_at: 't2' }));
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_f2',
+          dedupe_key: 'extract_state:10:h2',
+          last_error: 'State extraction JSON 解析失败',
+          updated_at: 't3',
+        }),
+      );
+      const summary = await getOutboxSummary(1);
+      expect(summary.pendingCount).toBe(1);
+      expect(summary.failedCount).toBe(2);
+      expect(summary.lastError).toBeTruthy();
+      // dedupe key present, but never the chapter body / prompt / credentials
+      expect(summary.lastFailedDedupeKey).toContain('extract_state');
+    });
+
+    test('worker stops auto-claiming past MAX_OUTBOX_AUTO_RETRY_ATTEMPTS', async () => {
+      // A row that already exhausted the budget must not be auto-claimed even
+      // after a manual retry puts it back to pending — actually manual retry is
+      // the explicit override; but a pending row whose attempt_count already
+      // exceeds the budget is skipped by the worker to avoid runaway billing.
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_exhausted',
+          state: 'pending',
+          attempt_count: MAX_OUTBOX_AUTO_RETRY_ATTEMPTS + 1,
+          last_error: null,
+        }),
+      );
+      const result = await processContinuationOutbox({
+        limit: 5,
+        callExtract: async () => JSON.stringify({ proposals: [] }),
+      });
+      expect(result.processed).toBe(0);
+      // untouched
+      expect((await getOutboxById('co_exhausted'))!.state).toBe('pending');
+    });
+
+    test('failed extract_state can recover to completed after manual retry', async () => {
+      store.chapters[0].content = '恢复正文';
+      store.chapters[0].position = 21;
+      const hash = contentRevisionHash('恢复正文');
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_recover',
+          dedupe_key: `extract_state:10:${hash}`,
+          payload_json: JSON.stringify({ projectId: 1, chapterId: 10, chapterRevisionHash: hash }),
+          state: 'failed',
+          attempt_count: 1,
+          last_error: '网络错误',
+        }),
+      );
+      // Manual retry surfaces it for the worker.
+      await retryContinuationOutbox('co_recover');
+      const result = await processContinuationOutbox({
+        limit: 5,
+        callExtract: async () => JSON.stringify({ proposals: [] }),
+      });
+      expect(result.processed).toBe(1);
+      expect(result.failed).toBe(0);
+      expect((await getOutboxById('co_recover'))!.state).toBe('completed');
+    });
+
+    test('listOutboxForProject filters by state for the sync card', async () => {
+      store.outbox.push(seedOutbox({ id: 'co_l1', state: 'failed' }));
+      store.outbox.push(seedOutbox({ id: 'co_l2', dedupe_key: 'extract_state:10:h2', state: 'pending' }));
+      store.outbox.push(seedOutbox({ id: 'co_l3', project_id: 2, dedupe_key: 'extract_state:11:h' }));
+      const failed = await listOutboxForProject(1, 'failed');
+      expect(failed.map(o => o.id)).toEqual(['co_l1']);
+      const all = await listOutboxForProject(1);
+      expect(all.length).toBe(2);
+    });
+  });
+
+  // ---- P1-D: model freeze + interrupted resume state machine (fix-plan §5) ----
+  describe('confirm + resume state machine', () => {
+    const baseSnapshot = {
+      schemaVersion: 1,
+      projectId: 1,
+      targetChapterId: 10,
+      targetPosition: 21,
+      source: { sourceId: 1 },
+      canon: { snapshotId: 'snap1', revision: 1, boundaryGlobalCharOffset: 100, capabilities: {} },
+      storyMemory: { stateFingerprint: 'fp', throughPosition: -1, status: 'ready' },
+      inputRevisionHash: 'h',
+      // Fix-plan §5.1: frozen config ids used by every stage
+      settingsSnapshot: {
+        schemaVersion: 1,
+        values: {
+          plannerConfirmationPolicy: 'never',
+          checkerEnabled: false,
+          maxRepairRounds: 0,
+          targetChapterChars: 100,
+        },
+        resolvedModelConfigIds: {
+          planner: 11,
+          writer: 22,
+          checker: 33,
+          repair: 44,
+          stateExtraction: 55,
+        },
+      },
+      bundles: {
+        lockedRules: [],
+        canon: { worldRules: [], characters: [], evidenceRefs: [], plotThreads: [] },
+        effectiveState: { characterStates: [], plotThreads: [], targetPosition: 21 },
+        seam: { summary: 's', excerpt: 'e' },
+        recentChapters: [],
+        storyMemory: { summary: 'm' },
+        episodic: [],
+        style: null,
+        userInstruction: '续写',
+      },
+      createdAt: 't',
+    };
+
+    const seedRun = (overrides: Partial<any> = {}) => ({
+      id: 'ct_resume1',
+      project_id: 1,
+      chapter_id: 10,
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      input_revision_hash: 'h',
+      source_snapshot_json: '{}',
+      settings_snapshot_json: JSON.stringify(baseSnapshot.settingsSnapshot),
+      context_snapshot_json: JSON.stringify(baseSnapshot),
+      context_trace_json: '{}',
+      token_usage_json: '{}',
+      target_position: 21,
+      source_id: 1,
+      canon_snapshot_id: 'snap1',
+      canon_revision: 1,
+      story_memory_fingerprint: 'fp',
+      story_memory_through_position: -1,
+      user_instruction: '续写',
+      created_at: 't',
+      updated_at: 't',
+      completion_reason: null,
+      adopted_revision_hash: null,
+      finalized_revision_hash: null,
+      error_code: null,
+      error_message: null,
+      ...overrides,
+    });
+
+    const seedPlan = (runId: string, status = 'pending') => {
+      store.plans.push({
+        run_id: runId,
+        schema_version: 1,
+        plan_json: JSON.stringify({
+          schemaVersion: 1,
+          chapterGoal: '目标',
+          centralConflict: '冲突',
+          beats: [],
+          participatingCharacterIds: [],
+          characterActions: [],
+          plotAdvances: [],
+          foreshadowingActions: [],
+          proposedStateChanges: [],
+          risks: [],
+        }),
+        plan_hash: 'ph',
+        confirmation_status: status,
+        confirmed_at: null,
+        created_at: 't',
+      });
+    };
+
+    test('confirmPlanAndContinue runs Writer and reaches awaiting_user', async () => {
+      store.runs.push(seedRun());
+      seedPlan('ct_resume1', 'pending');
+      const callStage = jest.fn(async (input: any) => {
+        if (input.stage === 'writer') return { text: '生成的正文内容', usage: {} };
+        return { text: '', usage: {} };
+      });
+      await confirmPlanAndContinue('ct_resume1', callStage as any, true);
+      // Writer was called with the FROZEN writer config id (22), not live.
+      expect(callStage).toHaveBeenCalledWith(
+        expect.objectContaining({ stage: 'writer', configId: 22 }),
+      );
+      const run = store.runs.find(r => r.id === 'ct_resume1')!;
+      expect(run.state).toBe('awaiting_user');
+      // plan marked confirmed
+      expect(store.plans[0].confirmation_status).toBe('confirmed');
+    });
+
+    test('confirmPlanAndContinue terminalizes to failed when Writer throws', async () => {
+      store.runs.push(seedRun());
+      seedPlan('ct_resume1', 'pending');
+      const callStage = jest.fn(async () => {
+        throw new Error('Writer 网络错误');
+      });
+      await expect(
+        confirmPlanAndContinue('ct_resume1', callStage as any, true),
+      ).rejects.toThrow('Writer 网络错误');
+      // Fix-plan §5.2: run must NOT be left in running
+      const run = store.runs.find(r => r.id === 'ct_resume1')!;
+      expect(run.state).toBe('failed');
+      expect(run.error_message).toContain('Writer 网络错误');
+    });
+
+    test('resume from planner re-runs the pipeline and reaches awaiting_user', async () => {
+      store.runs.push(seedRun({ id: 'ct_r_planner', state: 'interrupted', stage: 'planner' }));
+      seedPlan('ct_r_planner', 'not_required');
+      const callStage = jest.fn(async (input: any) => {
+        if (input.stage === 'planner') {
+          return {
+            text: JSON.stringify({
+              schemaVersion: 1,
+              chapterGoal: 'g',
+              centralConflict: 'c',
+              beats: [],
+              participatingCharacterIds: [],
+              characterActions: [],
+              plotAdvances: [],
+              foreshadowingActions: [],
+              proposedStateChanges: [],
+              risks: [],
+            }),
+            usage: {},
+          };
+        }
+        if (input.stage === 'writer') return { text: '恢复后的正文', usage: {} };
+        return { text: '', usage: {} };
+      });
+      await resumeInterruptedRun('ct_r_planner', callStage as any, true);
+      const run = store.runs.find(r => r.id === 'ct_r_planner')!;
+      expect(run.state).toBe('awaiting_user');
+    });
+
+    test('resume from writer (no artifact) continues directly from Writer', async () => {
+      // Fix-plan §5.2: the old code called confirmPlanAndContinue which only
+      // accepts awaiting_user and always threw here. We now resume the Writer.
+      store.runs.push(seedRun({ id: 'ct_r_writer', state: 'interrupted', stage: 'writer' }));
+      seedPlan('ct_r_writer', 'confirmed');
+      const callStage = jest.fn(async (input: any) => {
+        if (input.stage === 'writer') return { text: '恢复正文', usage: {} };
+        return { text: '', usage: {} };
+      });
+      await resumeInterruptedRun('ct_r_writer', callStage as any, true);
+      const run = store.runs.find(r => r.id === 'ct_r_writer')!;
+      expect(run.state).toBe('awaiting_user');
+      expect(callStage).toHaveBeenCalledWith(
+        expect.objectContaining({ stage: 'writer', configId: 22 }),
+      );
+    });
+
+    test('resume from checker with artifact re-checks without regenerating', async () => {
+      store.runs.push(seedRun({ id: 'ct_r_checker', state: 'interrupted', stage: 'checker' }));
+      seedPlan('ct_r_checker', 'confirmed');
+      store.artifacts.push({
+        id: 'ca_existing',
+        run_id: 'ct_r_checker',
+        stage: 'writer',
+        repair_round: 0,
+        parent_artifact_id: null,
+        content: '已有正文',
+        content_hash: contentRevisionHash('已有正文'),
+        created_at: 't',
+      });
+      const callStage = jest.fn(async (input: any) => {
+        // Writer must NOT be called when resuming checker with existing artifact
+        if (input.stage === 'writer') throw new Error('writer should not run');
+        return { text: '', usage: {} };
+      });
+      await resumeInterruptedRun('ct_r_checker', callStage as any, true);
+      const run = store.runs.find(r => r.id === 'ct_r_checker')!;
+      expect(run.state).toBe('awaiting_user');
+      expect(callStage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ stage: 'writer' }),
+      );
+    });
+
+    test('resume from awaiting_user with artifact hands back without model', async () => {
+      store.runs.push(seedRun({ id: 'ct_r_au', state: 'interrupted', stage: 'awaiting_user' }));
+      store.artifacts.push({
+        id: 'ca_au',
+        run_id: 'ct_r_au',
+        stage: 'writer',
+        repair_round: 0,
+        parent_artifact_id: null,
+        content: '正文',
+        content_hash: contentRevisionHash('正文'),
+        created_at: 't',
+      });
+      const callStage = jest.fn(async () => ({ text: '', usage: {} }));
+      await resumeInterruptedRun('ct_r_au', callStage as any, true);
+      const run = store.runs.find(r => r.id === 'ct_r_au')!;
+      expect(run.state).toBe('awaiting_user');
+      // no model call at all
+      expect(callStage).not.toHaveBeenCalled();
+    });
+
+    test('resume that throws terminalizes to failed, not stuck running', async () => {
+      store.runs.push(seedRun({ id: 'ct_r_fail', state: 'interrupted', stage: 'writer' }));
+      seedPlan('ct_r_fail', 'confirmed');
+      const callStage = jest.fn(async () => {
+        throw new Error('恢复时网络断开');
+      });
+      await expect(
+        resumeInterruptedRun('ct_r_fail', callStage as any, true),
+      ).rejects.toThrow('恢复时网络断开');
+      const run = store.runs.find(r => r.id === 'ct_r_fail')!;
+      expect(run.state).toBe('failed');
+    });
+  });
+
+  // ---- P1-E: Source/Canon freshness check on adopt (fix-plan §6.1) ----
+  describe('adopt context freshness', () => {
+    const seedAdoptRun = (overrides: Partial<any> = {}) => ({
+      id: 'ct_adopt_fresh',
+      project_id: 1,
+      chapter_id: 10,
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      input_revision_hash: contentRevisionHash(''),
+      source_snapshot_json: '{}',
+      settings_snapshot_json: '{}',
+      context_snapshot_json: '{}',
+      context_trace_json: '{}',
+      token_usage_json: '{}',
+      target_position: 21,
+      source_id: 5,
+      canon_snapshot_id: 'snap1',
+      canon_revision: 3,
+      story_memory_fingerprint: 'fp',
+      story_memory_through_position: -1,
+      user_instruction: 'x',
+      created_at: 't',
+      updated_at: 't',
+      completion_reason: null,
+      adopted_revision_hash: null,
+      finalized_revision_hash: null,
+      error_code: null,
+      error_message: null,
+      ...overrides,
+    });
+
+    const seedArtifact = () => {
+      store.artifacts.push({
+        id: 'ca_fresh',
+        run_id: 'ct_adopt_fresh',
+        stage: 'writer',
+        repair_round: 0,
+        parent_artifact_id: null,
+        content: '采纳正文',
+        content_hash: contentRevisionHash('采纳正文'),
+        created_at: 't',
+      });
+    };
+
+    test('adopts when source + canon snapshot + revision all match', async () => {
+      store.runs.push(seedAdoptRun());
+      seedArtifact();
+      store.ctSettings.push({ project_id: 1, active_source_id: 5, active_canon_snapshot_id: 'snap1' });
+      store.canonSnapshots.push({ id: 'snap1', revision: 3 });
+      const result = await adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' });
+      expect(result.contentHash).toBe(contentRevisionHash('采纳正文'));
+      const run = store.runs.find(r => r.id === 'ct_adopt_fresh')!;
+      expect(run.state).toBe('completed');
+    });
+
+    test('rejects adopt and marks outdated when active source changed', async () => {
+      store.runs.push(seedAdoptRun());
+      seedArtifact();
+      // active source is now 9, run froze source 5
+      store.ctSettings.push({ project_id: 1, active_source_id: 9, active_canon_snapshot_id: 'snap1' });
+      store.canonSnapshots.push({ id: 'snap1', revision: 3 });
+      await expect(adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' })).rejects.toThrow();
+      const run = store.runs.find(r => r.id === 'ct_adopt_fresh')!;
+      expect(run.state).toBe('outdated');
+      expect(run.error_code).toBe('outdated');
+    });
+
+    test('rejects adopt when canon snapshot id changed', async () => {
+      store.runs.push(seedAdoptRun());
+      seedArtifact();
+      store.ctSettings.push({ project_id: 1, active_source_id: 5, active_canon_snapshot_id: 'snap2' });
+      store.canonSnapshots.push({ id: 'snap2', revision: 3 });
+      await expect(
+        adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' }),
+      ).rejects.toBeInstanceOf(ContinuationOutdatedError);
+      const run = store.runs.find(r => r.id === 'ct_adopt_fresh')!;
+      expect(run.state).toBe('outdated');
+    });
+
+    test('rejects adopt when canon revision bumped (review edit)', async () => {
+      store.runs.push(seedAdoptRun());
+      seedArtifact();
+      store.ctSettings.push({ project_id: 1, active_source_id: 5, active_canon_snapshot_id: 'snap1' });
+      // same snapshot id but revision bumped from 3 to 4
+      store.canonSnapshots.push({ id: 'snap1', revision: 4 });
+      await expect(
+        adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' }),
+      ).rejects.toBeInstanceOf(ContinuationOutdatedError);
+      const run = store.runs.find(r => r.id === 'ct_adopt_fresh')!;
+      expect(run.state).toBe('outdated');
+      expect(run.error_message).toBe('canon_revision_changed');
+    });
+
+    test('rejects adopt when settings row is missing (source deleted)', async () => {
+      store.runs.push(seedAdoptRun());
+      seedArtifact();
+      // no ctSettings row
+      await expect(
+        adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' }),
+      ).rejects.toBeInstanceOf(ContinuationOutdatedError);
+      const run = store.runs.find(r => r.id === 'ct_adopt_fresh')!;
+      expect(run.state).toBe('outdated');
+    });
+  });
+
+  // ---- P2: artifact ownership + concurrent adopt (fix-plan §7) ----
+  describe('artifact ownership + concurrent adopt', () => {
+    const seedTwoRuns = () => {
+      // Two runs, each with its own artifact sharing the same content hash.
+      store.runs.push({
+        id: 'ct_own1',
+        project_id: 1,
+        chapter_id: 10,
+        state: 'awaiting_user',
+        stage: 'awaiting_user',
+        input_revision_hash: contentRevisionHash(''),
+        source_snapshot_json: '{}',
+        settings_snapshot_json: '{}',
+        token_usage_json: '{}',
+        target_position: 21,
+        canon_revision: 1,
+        story_memory_fingerprint: 'fp',
+        story_memory_through_position: -1,
+        user_instruction: 'x',
+        created_at: 't',
+        updated_at: 't',
+      });
+      store.runs.push({
+        id: 'ct_own2',
+        project_id: 1,
+        chapter_id: 10,
+        state: 'awaiting_user',
+        stage: 'awaiting_user',
+        input_revision_hash: contentRevisionHash(''),
+        source_snapshot_json: '{}',
+        settings_snapshot_json: '{}',
+        token_usage_json: '{}',
+        target_position: 21,
+        canon_revision: 1,
+        story_memory_fingerprint: 'fp',
+        story_memory_through_position: -1,
+        user_instruction: 'x',
+        created_at: 't',
+        updated_at: 't',
+      });
+      store.artifacts.push({
+        id: 'ca_own1',
+        run_id: 'ct_own1',
+        stage: 'writer',
+        repair_round: 0,
+        parent_artifact_id: null,
+        content: '正文A',
+        content_hash: contentRevisionHash('正文A'),
+        created_at: 't',
+      });
+      store.artifacts.push({
+        id: 'ca_own2',
+        run_id: 'ct_own2',
+        stage: 'writer',
+        repair_round: 0,
+        parent_artifact_id: null,
+        content: '正文B',
+        content_hash: contentRevisionHash('正文B'),
+        created_at: 't',
+      });
+    };
+
+    test('getArtifactForRun rejects an artifact belonging to another run', async () => {
+      seedTwoRuns();
+      // ca_own2 belongs to ct_own2; asking for it under ct_own1 must return null
+      const foreign = await getArtifactForRun('ct_own1', 'ca_own2');
+      expect(foreign).toBeNull();
+      const own = await getArtifactForRun('ct_own1', 'ca_own1');
+      expect(own).not.toBeNull();
+      expect(own!.runId).toBe('ct_own1');
+    });
+
+    test('adopt with another run\'s artifactId is refused (ownership never relaxed)', async () => {
+      seedTwoRuns();
+      await expect(
+        adoptArtifactAsDraft({ runId: 'ct_own1', artifactId: 'ca_own2' }),
+      ).rejects.toThrow('不属于本次续写');
+      // Neither run's chapter content was written.
+      expect(store.chapters[0].content).toBe('');
+    });
+
+    test('adopt refuses when the run was concurrently moved out of adoptable state', async () => {
+      seedTwoRuns();
+      // Simulate a concurrent cancel/abandon moving ct_own1 to completed before
+      // the adopt CAS runs.
+      store.runs[0].state = 'completed';
+      await expect(
+        adoptArtifactAsDraft({ runId: 'ct_own1', artifactId: 'ca_own1' }),
+      ).rejects.toThrow();
+      // Chapter content not overwritten
+      expect(store.chapters[0].content).toBe('');
+    });
+
+    test('adopt detects concurrent chapter edit via optimistic lock and does not overwrite', async () => {
+      seedTwoRuns();
+      // Simulate the chapter being edited between the read and the transaction:
+      // bump updated_at so the WHERE updated_at = ? predicate misses.
+      store.chapters[0].updated_at = 't0';
+      // The adopt reads updated_at='t0', but we flip it right before the tx by
+      // patching the handler to change updated_at on read. Easier: set the
+      // chapter updated_at to a value the run won't see. We simulate by making
+      // the chapter's updated_at differ from what the read returns.
+      // To make this deterministic, override mockExecuteSql for the adopt read
+      // to return 't0' but keep the stored value as 't1'.
+      store.chapters[0].updated_at = 't1';
+      const original = mockExecuteSql.getMockImplementation();
+      mockExecuteSql.mockImplementation(async (sql: string, params: any[] = []) => {
+        if (/SELECT content, title, status, updated_at FROM chapters WHERE id/i.test(sql)) {
+          // Return a stale updated_at so the optimistic lock misses
+          return res([{ ...store.chapters[0], updated_at: 't0' }]);
+        }
+        return original!(sql, params);
+      });
+      await expect(
+        adoptArtifactAsDraft({ runId: 'ct_own1', artifactId: 'ca_own1' }),
+      ).rejects.toThrow('并发编辑');
+      mockExecuteSql.mockImplementation(original);
+      // The stored chapter content was NOT overwritten (rowsAffected 0).
+      expect(store.chapters[0].content).toBe('');
+    });
   });
 
   test('prompt compilers produce messages', () => {

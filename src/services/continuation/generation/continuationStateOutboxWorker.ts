@@ -14,6 +14,7 @@ import {
   ensureGenerationSettings,
   listPendingOutbox,
   markRunsInterruptedOnColdStart,
+  MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
 } from './generationRepository';
 import type { ProposalType } from './types';
 
@@ -23,6 +24,12 @@ export async function coldStartNormalizeContinuation(): Promise<number> {
 
 /**
  * Process pending outbox items. Safe to call repeatedly (dedupe + CAS).
+ *
+ * Fix-plan §3: rows that have already exhausted the auto-retry budget
+ * (attempt_count >= MAX_OUTBOX_AUTO_RETRY_ATTEMPTS) are NOT claimed by the
+ * worker — they stay `failed` and only move back to `pending` via an explicit
+ * `retryContinuationOutbox` call. This prevents runaway retry/billing on
+ * persistent errors while keeping manual recovery a single user action.
  */
 export async function processContinuationOutbox(options?: {
   limit?: number;
@@ -36,6 +43,11 @@ export async function processContinuationOutbox(options?: {
   let failed = 0;
 
   for (const item of items) {
+    // Budget guard: a row that already burned through the auto-retry budget
+    // must not be auto-claimed again. Leave it `failed` for manual retry.
+    if (item.attemptCount >= MAX_OUTBOX_AUTO_RETRY_ATTEMPTS) {
+      continue;
+    }
     const claimed = await casOutboxState(
       item.id,
       ['pending', 'interrupted'],

@@ -633,6 +633,25 @@ export async function getArtifactById(
   return rowArtifact(res.rows.item(0));
 }
 
+/**
+ * Read an artifact that MUST belong to the given run (fix-plan §7.1). The SQL
+ * matches BOTH id AND run_id, so a caller passing another run's artifact id is
+ * rejected at the data layer — the ownership check cannot be bypassed by a
+ * stale or swapped id. Returns null if no row matches both predicates.
+ */
+export async function getArtifactForRun(
+  runId: string,
+  artifactId: string,
+): Promise<ContinuationArtifact | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    'SELECT * FROM continuation_generation_artifacts WHERE id = ? AND run_id = ?',
+    [artifactId, runId],
+  );
+  if (res.rows.length === 0) return null;
+  return rowArtifact(res.rows.item(0));
+}
+
 export async function savePlan(
   runId: string,
   plan: ContinuationPlan,
@@ -1086,6 +1105,44 @@ export async function insertEntity(input: {
   return id;
 }
 
+/**
+ * Build an INSERT statement for the outbox that can be embedded inside an
+ * external executeTransaction (Spec §11.1). Using `INSERT OR IGNORE` makes it
+ * idempotent against the UNIQUE(dedupe_key) constraint, so re-finalizing a
+ * chapter never duplicates the extract_state task. The statement builder is
+ * the single source of truth for the outbox INSERT shape; callers that need
+ * to commit the outbox record atomically with related writes (finalize,
+ * confirmProposal, invalidateContinuationStateFromPosition) must use this
+ * helper instead of hand-writing the SQL to avoid schema drift.
+ */
+export function buildOutboxInsertStatement(input: {
+  id: string;
+  projectId: number;
+  chapterId: number | null;
+  operation: OutboxOperation;
+  payload: Record<string, unknown>;
+  dedupeKey: string;
+  ts?: string;
+}): { sql: string; params: unknown[] } {
+  const ts = input.ts ?? nowIso();
+  return {
+    sql: `INSERT OR IGNORE INTO continuation_state_sync_outbox (
+        id, project_id, chapter_id, operation, payload_json, dedupe_key,
+        state, attempt_count, created_at, updated_at
+      ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
+    params: [
+      input.id,
+      input.projectId,
+      input.chapterId,
+      input.operation,
+      JSON.stringify(input.payload),
+      input.dedupeKey,
+      ts,
+      ts,
+    ],
+  };
+}
+
 export async function enqueueOutbox(input: {
   projectId: number;
   chapterId: number | null;
@@ -1097,43 +1154,43 @@ export async function enqueueOutbox(input: {
   const ts = nowIso();
   const db = await openDatabase();
   try {
-    await db.executeSql(
-      `INSERT INTO continuation_state_sync_outbox (
-        id, project_id, chapter_id, operation, payload_json, dedupe_key,
-        state, attempt_count, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?, 'pending', 0, ?, ?)`,
-      [
+    const stmt = buildOutboxInsertStatement({ ...input, id, ts });
+    const [res] = await db.executeSql(stmt.sql, stmt.params as any[]);
+    // INSERT OR IGNORE: a duplicate dedupe_key is a no-op (rowsAffected === 0)
+    // rather than a throw. Fall through to the dedupe lookup so callers always
+    // receive the canonical row for that dedupe key, matching the prior
+    // UNIQUE-conflict semantics.
+    if ((res?.rowsAffected ?? 1) > 0) {
+      return {
         id,
-        input.projectId,
-        input.chapterId,
-        input.operation,
-        JSON.stringify(input.payload),
-        input.dedupeKey,
-        ts,
-        ts,
-      ],
+        projectId: input.projectId,
+        chapterId: input.chapterId,
+        operation: input.operation,
+        payloadJson: JSON.stringify(input.payload),
+        dedupeKey: input.dedupeKey,
+        state: 'pending',
+        attemptCount: 0,
+        lastError: null,
+        createdAt: ts,
+        updatedAt: ts,
+        completedAt: null,
+      };
+    }
+    const [existing] = await db.executeSql(
+      'SELECT * FROM continuation_state_sync_outbox WHERE dedupe_key = ?',
+      [input.dedupeKey],
     );
-    return {
-      id,
-      projectId: input.projectId,
-      chapterId: input.chapterId,
-      operation: input.operation,
-      payloadJson: JSON.stringify(input.payload),
-      dedupeKey: input.dedupeKey,
-      state: 'pending',
-      attemptCount: 0,
-      lastError: null,
-      createdAt: ts,
-      updatedAt: ts,
-      completedAt: null,
-    };
-  } catch {
+    if (existing.rows.length > 0) return rowOutbox(existing.rows.item(0));
+    throw new Error('outbox insert failed');
+  } catch (e) {
+    // Some drivers/stubs still surface the UNIQUE violation as a throw rather
+    // than rowsAffected === 0; keep this path so behavior is consistent.
     const [res] = await db.executeSql(
       'SELECT * FROM continuation_state_sync_outbox WHERE dedupe_key = ?',
       [input.dedupeKey],
     );
     if (res.rows.length > 0) return rowOutbox(res.rows.item(0));
-    throw new Error('outbox insert failed');
+    throw e instanceof Error ? e : new Error('outbox insert failed');
   }
 }
 
@@ -1193,6 +1250,141 @@ export async function getOutboxByDedupe(
   );
   if (res.rows.length === 0) return null;
   return rowOutbox(res.rows.item(0));
+}
+
+/**
+ * Maximum attempts before the worker stops auto-claiming an outbox item
+ * (fix-plan §3). Past this the row stays `failed` and is only re-tried by an
+ * explicit user action (`retryContinuationOutbox`). Keeps automatic retry from
+ * looping forever and re-billing on persistent errors.
+ */
+export const MAX_OUTBOX_AUTO_RETRY_ATTEMPTS = 5;
+
+/**
+ * Manually retry a single outbox row (fix-plan §3). Only `failed` and
+ * `interrupted` rows are eligible. Atomically resets state to `pending` and
+ * clears the last error so the worker can claim it again. `attempt_count` is
+ * preserved as audit history — manual retry must NOT reset the budget, only
+ * surface the row for the worker's next pass.
+ */
+export async function retryContinuationOutbox(id: string): Promise<boolean> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `UPDATE continuation_state_sync_outbox
+     SET state = 'pending', last_error = NULL, updated_at = ?
+     WHERE id = ? AND state IN ('failed', 'interrupted')`,
+    [nowIso(), id],
+  );
+  return (res.rowsAffected ?? 0) > 0;
+}
+
+/**
+ * Retry all `failed` outbox rows for a project (fix-plan §3). Intended for
+ * cold-start recovery and a "retry all" UI action. Returns the count reset.
+ * Configuration-missing errors (`error_code` style reasons encoded in
+ * last_error) are intentionally NOT filtered here — the caller/UI decides what
+ * to surface; the worker's own attempt budget prevents runaway billing.
+ */
+export async function retryFailedContinuationOutbox(
+  projectId: number,
+  limit = 50,
+): Promise<number> {
+  const db = await openDatabase();
+  const ts = nowIso();
+  const [res] = await db.executeSql(
+    `UPDATE continuation_state_sync_outbox
+     SET state = 'pending', last_error = NULL, updated_at = ?
+     WHERE project_id = ? AND state = 'failed'
+     ORDER BY created_at ASC LIMIT ?`,
+    [ts, projectId, limit],
+  );
+  return res.rowsAffected ?? 0;
+}
+
+/**
+ * Per-project outbox health summary for the UI (fix-plan §3.4). Returns
+ * pending/failed counts plus the most recent failure reason so the sync card
+ * can show a retry button without exposing the prompt, chapter body or any
+ * credentials (last_error is the worker's short message only).
+ */
+export async function getOutboxSummary(
+  projectId: number,
+): Promise<{
+  pendingCount: number;
+  failedCount: number;
+  lastError: string | null;
+  lastFailedDedupeKey: string | null;
+}> {
+  const db = await openDatabase();
+  const [pendingRes] = await db.executeSql(
+    `SELECT COUNT(*) AS c FROM continuation_state_sync_outbox
+     WHERE project_id = ? AND state IN ('pending', 'interrupted', 'running')`,
+    [projectId],
+  );
+  const [failedRes] = await db.executeSql(
+    `SELECT COUNT(*) AS c, MAX(updated_at) AS latest FROM continuation_state_sync_outbox
+     WHERE project_id = ? AND state = 'failed'`,
+    [projectId],
+  );
+  let lastError: string | null = null;
+  let lastFailedDedupeKey: string | null = null;
+  const latest = failedRes.rows.item(0).latest;
+  if (latest) {
+    const [errRes] = await db.executeSql(
+      `SELECT last_error, dedupe_key FROM continuation_state_sync_outbox
+       WHERE project_id = ? AND state = 'failed' AND updated_at = ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [projectId, latest],
+    );
+    if (errRes.rows.length > 0) {
+      lastError = errRes.rows.item(0).last_error ?? null;
+      lastFailedDedupeKey = errRes.rows.item(0).dedupe_key ?? null;
+    }
+  }
+  return {
+    pendingCount: pendingRes.rows.item(0).c as number,
+    failedCount: failedRes.rows.item(0).c as number,
+    lastError,
+    lastFailedDedupeKey,
+  };
+}
+
+/** Read a single outbox row by id (for the retry UI). */
+export async function getOutboxById(
+  id: string,
+): Promise<ContinuationOutboxItem | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    'SELECT * FROM continuation_state_sync_outbox WHERE id = ?',
+    [id],
+  );
+  if (res.rows.length === 0) return null;
+  return rowOutbox(res.rows.item(0));
+}
+
+/**
+ * Outbox rows for a project, filtered by state, newest first. Used by the sync
+ * status card to list failed items individually.
+ */
+export async function listOutboxForProject(
+  projectId: number,
+  state?: string,
+): Promise<ContinuationOutboxItem[]> {
+  const db = await openDatabase();
+  const [res] = state
+    ? await db.executeSql(
+        `SELECT * FROM continuation_state_sync_outbox
+         WHERE project_id = ? AND state = ? ORDER BY updated_at DESC`,
+        [projectId, state],
+      )
+    : await db.executeSql(
+        `SELECT * FROM continuation_state_sync_outbox
+         WHERE project_id = ? ORDER BY updated_at DESC`,
+        [projectId],
+      );
+  const out: ContinuationOutboxItem[] = [];
+  for (let i = 0; i < res.rows.length; i++) out.push(rowOutbox(res.rows.item(i)));
+  return out;
 }
 
 /** Transaction helper for multi-statement local commits (no LLM). */

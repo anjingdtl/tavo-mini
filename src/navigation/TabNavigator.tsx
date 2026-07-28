@@ -28,6 +28,7 @@ import { PipelineConfigScreen } from '../screens/PipelineConfigScreen';
 import { PipelineTaskScreen } from '../screens/PipelineTaskScreen';
 import { PipelineResultScreen } from '../screens/PipelineResultScreen';
 import { ContinuationResultScreen } from '../screens/continuation/ContinuationResultScreen';
+import { ContinuationStateReviewScreen } from '../screens/continuation/ContinuationStateReviewScreen';
 import { RevisionHistoryScreen } from '../screens/RevisionHistoryScreen';
 import { BackupCenterScreen } from '../screens/BackupCenterScreen';
 import { ContextPreviewScreen } from '../screens/ContextPreviewScreen';
@@ -80,6 +81,7 @@ export type ResourceStackParamList = {
   ContinuationHome: undefined;
   ContinuationSourceChapters: undefined;
   ContinuationBoundary: undefined;
+  ContinuationStateReview: undefined;
   CanonAnalysisOverview: undefined;
   CanonWorldRules: undefined;
   CanonCharacters: undefined;
@@ -193,6 +195,11 @@ const ResourceStackScreen = () => (
     <ResourceStack.Screen name="ContinuationHome" component={ContinuationHomeScreen} />
     <ResourceStack.Screen name="ContinuationSourceChapters" component={ContinuationSourceChaptersScreen} />
     <ResourceStack.Screen name="ContinuationBoundary" component={ContinuationBoundaryScreen} />
+    <ResourceStack.Screen name="ContinuationStateReview">
+      {({ navigation }) => (
+        <ContinuationStateReviewScreen onClose={() => navigation.goBack()} />
+      )}
+    </ResourceStack.Screen>
     <ResourceStack.Screen name="CanonAnalysisOverview" component={CanonAnalysisOverviewScreen} />
     <ResourceStack.Screen name="CanonWorldRules">
       {props => <CanonCategoryListScreen {...props} category="world" />}
