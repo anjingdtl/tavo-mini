@@ -157,4 +157,28 @@ describe('Canon LLM analysis', () => {
     expect(callLLMResult).toHaveBeenCalledTimes(2);
     jest.useRealTimers();
   });
+
+  it('retries empty or malformed model output before failing a material', async () => {
+    jest.useFakeTimers();
+    (callLLMResult as jest.Mock)
+      .mockResolvedValueOnce({ text: '抱歉，以下是结果：' })
+      .mockResolvedValueOnce({ text: '' })
+      .mockResolvedValueOnce({ text: validResult });
+
+    const pending = extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'characters',
+      'run-output-retry',
+      new AbortController().signal,
+    );
+    await jest.runAllTimersAsync();
+
+    await expect(pending).resolves.toMatchObject({
+      characters: [expect.objectContaining({ canonicalName: '林凡' })],
+    });
+    expect(callLLMResult).toHaveBeenCalledTimes(3);
+    jest.useRealTimers();
+  });
 });
