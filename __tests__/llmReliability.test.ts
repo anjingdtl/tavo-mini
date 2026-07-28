@@ -89,6 +89,28 @@ describe('LLM request reliability policy', () => {
     expect(peak).toBe(1);
   });
 
+  test('starts all five Canon material requests in the dedicated analysis queue', async () => {
+    const gates = Array.from({ length: 5 }, () => deferred());
+    let active = 0;
+    let peak = 0;
+    const jobs = gates.map((gate, index) =>
+      scheduleLLMRequest(
+        async () => {
+          active += 1;
+          peak = Math.max(peak, active);
+          await gate.promise;
+          active -= 1;
+          return index;
+        },
+        { taskId: `canon-${index}`, queueClass: 'canon_analysis' },
+      ),
+    );
+    await Promise.resolve();
+    expect(peak).toBe(5);
+    gates.forEach(gate => gate.resolve());
+    await expect(Promise.all(jobs)).resolves.toEqual([0, 1, 2, 3, 4]);
+  });
+
   test('pauses new work during low-memory pressure and resumes it afterwards', async () => {
     llmRequestScheduler.setLowMemory(true);
     let started = false;

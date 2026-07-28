@@ -603,6 +603,25 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     restoreOrder: 280,
   },
   {
+    name: 'continuation_analysis_work_items',
+    columns: [
+      'run_id',
+      'batch_index',
+      'material_type',
+      'state',
+      'attempt_count',
+      'result_json',
+      'error_code',
+      'error_message',
+      'created_at',
+      'updated_at',
+      'completed_at',
+    ],
+    indexes: ['idx_continuation_analysis_work_items_state'],
+    backup: true,
+    restoreOrder: 285,
+  },
+  {
     name: 'canon_evidence',
     columns: [
       'id',

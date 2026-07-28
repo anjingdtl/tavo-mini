@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.9.3-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.10.0-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.9.3** · 数据库 Schema：**21** · 最低 Android API：**24**
+当前版本：**V2.10.0** · 数据库 Schema：**22** · 最低 Android API：**24**
 
-`V2.9.3` 修复「原著续写」TXT 导入对中文文件名的兼容性：文件选择器返回的 URL 编码本地路径会在进入原生读取前还原，使用《白篱梦》作者：希行.txt 实测成功解析 299 章；资料库和项目包导入同步复用该路径还原逻辑。`V2.9.2` 加固「原著续写」工作流：原生 SQLite 异步事务回调能正确识别章节乐观锁冲突；冲突 run 保持可重新采纳；耗尽的状态同步 outbox 可由用户手动恢复；Canon 激活与人工修订会立即使旧上下文续写失效；原著 source 激活和 import job 完成状态采用同一事务。详见 [CHANGELOG](CHANGELOG.md)。
+`V2.10.0` 为原著续写 Canon 分析增加五类资料的动态进度、远程模型五路并行、可恢复工作项和 Android 前台保活；锁屏或切换 App 时可从通知掌握进度，完成后可直达分析任务。Schema 升级至 22。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.6.6` 修复构建生成的质量目标误拦截：通过结构与回读校验的角色卡、世界书即使未完全达到 Token 或字段长度目标，也会保留预览并可保存、导入；界面显示实际值、目标值和补强建议，不会静默发起第二次请求。`V2.6.5` 健全「构建」模块：角色卡与世界书增加紧凑 / 丰满 / 深度生成目标及可见产物质量报告；角色卡按多维人物信息与多轮对话生成；TXT 可解析为可选片段并直接生成角色卡或世界书。世界书构建结果强制全部常驻，预览会显示常驻内容估算。详见 [CHANGELOG](CHANGELOG.md)。
 
@@ -63,7 +63,7 @@ ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目
 - Android-only；`minSdk 24`，`compileSdk/targetSdk 36`。
 - React Native `0.85.3`、React `19.2.3`、TypeScript `5.8`、Kotlin `2.1.20`。
 - Node.js `>= 24.3.0`、JDK `17`、Android SDK 与 Gradle 环境。
-- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 21。
+- SQLite：数据库文件名为 `shine_writer.db`，位于 Android 应用私有数据目录，当前 Schema 为 22。
 - 本地模型：仅支持 `.gguf`，由 Android `llama.cpp` JNI 引擎加载；模型文件放在应用私有模型目录，不上传服务器。
 - 在线模型：OpenAI 兼容 Chat Completions 接口。默认只允许 HTTPS；局域网 HTTP 必须由用户显式开启，并限制在 `127.0.0.1`、`10/8`、`172.16/12`、`192.168/16`，公网 HTTP 永远拒绝。
 - API Key：通过 `react-native-keychain` 写入 Android Keystore；`llm_config` 只保存配置名称、地址、模型等非密钥字段。备份文件不包含 API Key，恢复后需要重新填写。
@@ -114,9 +114,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-下一正式产物：`dist/apk/release/ShineWriter-V2.9.3-release.apk`，`versionName=V2.9.3`，`versionCode=2090300`。
+下一正式产物：`dist/apk/release/ShineWriter-V2.10.0-release.apk`，`versionName=V2.10.0`，`versionCode=2100000`。
 
-V2.9.3 已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
+V2.10.0 已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
 
 **实测验收数据**：
 
@@ -126,10 +126,10 @@ V2.9.3 已按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm 
 | 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
 | Number of signers | 1 |
 | zipalign -c | Verification successful |
-| versionName / versionCode | V2.9.3 / 2090300 |
-| 文件大小 | 38,101,471 bytes（36.34 MB） |
-| APK SHA-256 | `008DAB4FB52DC2D4ED44D7A507B9CE70C9208F5D7074090E560897D27530EF32` |
-| Android API 37 导入实测 | V2.9.3 Debug 安装后，桌面原文件《白篱梦》作者：希行.txt 成功解析 299 章并确认导入；Release APK 的签名、对齐、包名和版本元数据已验收 |
+| versionName / versionCode | V2.10.0 / 2100000 |
+| 文件大小 | 38,131,791 bytes（36.36 MB） |
+| APK SHA-256 | `D343672C691B796BB7FAEB374D988B5AA0B602B1774C40E71611FA6BDBF361DE` |
+| Android 模拟器验收 | V2.10.0 Debug 已安装；进入“资料 → 续写 → 原著分析”，实测显示五类资料分批进度、逐项状态和前台通知授权；Release APK 的签名、对齐、包名和版本元数据已验收 |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -230,7 +230,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.9.3** with database Schema **21**. V2.9.3 decodes document-picker `file://` paths before native reading, so percent-encoded Chinese TXT names import correctly in continuation mode; the same normalization protects library and project-package imports. V2.9.2 hardens the continuation workflow: native SQLite asynchronous transaction results now preserve optimistic concurrency, manual outbox retry restarts an exhausted retry streak, Canon changes invalidate stale in-flight runs, and source activation atomically completes its import job. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.10.0** with database Schema **22**. V2.10.0 adds five independently tracked Canon-analysis materials, five-way parallel remote LLM extraction, resumable work items, and Android foreground-service protection for original-analysis tasks. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 

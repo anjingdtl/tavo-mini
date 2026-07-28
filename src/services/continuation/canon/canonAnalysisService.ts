@@ -20,9 +20,12 @@ import {
 import {
   emptyCapabilities,
   emptyCoverage,
+  ANALYSIS_MATERIAL_TYPES,
   EXTRACTION_VERSION,
+  type AnalysisMaterialType,
   type AnalysisProfile,
   type AnalysisRun,
+  type AnalysisStage,
   type CanonCapabilities,
   type CanonCoverage,
   type CanonSnapshot,
@@ -33,11 +36,14 @@ import {
   getRunById,
   getSnapshotById,
   insertBatches,
+  insertWorkItems,
   insertRun,
   insertSnapshot,
   listBatches,
+  listWorkItems,
   listRunsForProject,
   updateRunState,
+  updateWorkItem,
   updateSnapshotMeta,
   countFutureEvidence,
   countOrphanEvidence,
@@ -52,11 +58,37 @@ import { insertEvidenceAndLink } from './canonEvidenceService';
 import { executeTransaction } from '../../../data/connection/transaction';
 import {
   callLLM,
+  callLLMResult,
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
 } from '../../llm';
 
 export type AnalysisExtractorMode = 'deterministic' | 'llm';
+
+export const ANALYSIS_MATERIAL_LABELS: Record<AnalysisMaterialType, string> = {
+  world_rules: '世界观',
+  characters: '人物画像',
+  relationships: '人物关系',
+  plot_threads: '主线剧情',
+  experiences: '人物经历',
+};
+
+export interface AnalysisProgressUpdate {
+  runId: string;
+  stage: AnalysisStage;
+  progressCurrent: number;
+  progressTotal: number;
+  materialType?: AnalysisMaterialType;
+  batchIndex?: number;
+  state?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+}
+
+export interface ProcessAnalysisOptions {
+  onProgress?: (update: AnalysisProgressUpdate) => void;
+}
+
+const analysisControllers = new Map<string, AbortController>();
+const analysisProcesses = new Map<string, Promise<AnalysisRun>>();
 
 /**
  * Quick is intentionally available offline for a fast local preview. The
@@ -782,10 +814,20 @@ export async function startAnalysis(
     state: 'queued',
     stage: 'snapshot',
     progressCurrent: 0,
-    progressTotal: batches.length,
+    progressTotal: batches.length * ANALYSIS_MATERIAL_TYPES.length,
     extractionVersion: EXTRACTION_VERSION,
   });
   await insertBatches(db, batches);
+  await insertWorkItems(
+    db,
+    batches.flatMap(batch =>
+      ANALYSIS_MATERIAL_TYPES.map(materialType => ({
+        runId,
+        batchIndex: batch.batchIndex,
+        materialType,
+      })),
+    ),
+  );
   await execute(
     db,
     `UPDATE continuation_settings SET analysis_status = 'running', updated_at = ?
@@ -829,7 +871,11 @@ async function assertSourceStillValid(
 }
 
 /** Process all queued batches for a run (Spec §8.2–8.7). */
-export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
+async function processAnalysisRunInner(
+  runId: string,
+  options: ProcessAnalysisOptions,
+  signal: AbortSignal,
+): Promise<AnalysisRun> {
   const db = await openDatabase();
   let run = await getRunById(runId);
   if (!run) throw new Error('分析任务不存在');
@@ -874,6 +920,28 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
   const allChapters = await continuationSourceReader.listBoundedSourceChapters(
     sourceSnapshot,
   );
+  const reportWorkItem = async (
+    materialType: AnalysisMaterialType,
+    batchIndex: number,
+    state: AnalysisProgressUpdate['state'],
+  ) => {
+    const items = await listWorkItems(runId);
+    const completed = items.filter(item => item.state === 'completed').length;
+    await updateRunState(db, runId, {
+      stage: 'chapter_extraction',
+      progressCurrent: completed,
+      progressTotal: batches.length * ANALYSIS_MATERIAL_TYPES.length,
+    });
+    options.onProgress?.({
+      runId,
+      stage: 'chapter_extraction',
+      progressCurrent: completed,
+      progressTotal: batches.length * ANALYSIS_MATERIAL_TYPES.length,
+      materialType,
+      batchIndex,
+      state,
+    });
+  };
 
   for (const batch of batches) {
     if (batch.state === 'completed') continue;
@@ -896,12 +964,82 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
         }
       }
 
-      let extraction: ChapterExtractionResult;
-      if (mode === 'llm') {
-        extraction = await extractWithLlm(slice, run.profile, run.modelConfigId);
-      } else {
-        extraction = extractChapterDeterministic(slice);
+      const batchItems = (await listWorkItems(runId)).filter(
+        item => item.batchIndex === batch.batchIndex,
+      );
+      const runMaterial = async (materialType: AnalysisMaterialType) => {
+        if (signal.aborted) throw new Error('分析已暂停或取消');
+        const item = batchItems.find(candidate => candidate.materialType === materialType);
+        if (item?.state === 'completed' && item.resultJson) {
+          return parseExtractionResultJson(item.resultJson);
+        }
+        await updateWorkItem(db, {
+          runId,
+          batchIndex: batch.batchIndex,
+          materialType,
+          state: 'running',
+          incrementAttempt: true,
+          errorCode: null,
+          errorMessage: null,
+        });
+        await reportWorkItem(materialType, batch.batchIndex, 'running');
+        try {
+          const result =
+            mode === 'llm'
+              ? await extractMaterialWithLlm(
+                  slice,
+                  run.profile,
+                  run.modelConfigId,
+                  materialType,
+                  runId,
+                  signal,
+                )
+              : onlyMaterial(extractChapterDeterministic(slice), materialType);
+          if (signal.aborted) throw new Error('分析已暂停或取消');
+          await updateWorkItem(db, {
+            runId,
+            batchIndex: batch.batchIndex,
+            materialType,
+            state: 'completed',
+            resultJson: JSON.stringify(result),
+            errorCode: null,
+            errorMessage: null,
+            completedAt: now(),
+          });
+          await reportWorkItem(materialType, batch.batchIndex, 'completed');
+          return result;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await updateWorkItem(db, {
+            runId,
+            batchIndex: batch.batchIndex,
+            materialType,
+            state: signal.aborted ? 'cancelled' : 'failed',
+            errorCode: signal.aborted ? 'cancelled' : 'material_failed',
+            errorMessage: message,
+          });
+          await reportWorkItem(
+            materialType,
+            batch.batchIndex,
+            signal.aborted ? 'cancelled' : 'failed',
+          );
+          throw error;
+        }
+      };
+      const settled = await Promise.allSettled(
+        ANALYSIS_MATERIAL_TYPES.map(runMaterial),
+      );
+      const rejected = settled.find(
+        (entry): entry is PromiseRejectedResult => entry.status === 'rejected',
+      );
+      if (rejected) throw rejected.reason;
+      const latest = await getRunById(runId);
+      if (!latest || latest.state !== 'running' || signal.aborted) {
+        return latest ?? run;
       }
+      const extraction = mergeMaterialResults(
+        settled.map(entry => (entry as PromiseFulfilledResult<ChapterExtractionResult>).value),
+      );
 
       await materializeBatchResult(
         db,
@@ -925,10 +1063,16 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
           WHERE run_id = ? AND batch_index = ?`,
         [JSON.stringify(extraction), now(), now(), runId, batch.batchIndex],
       );
-      await updateRunState(db, runId, {
-        progressCurrent: batch.batchIndex + 1,
-      });
     } catch (err) {
+      if (signal.aborted) {
+        await execute(
+          db,
+          `UPDATE continuation_analysis_batches SET state = 'cancelled', updated_at = ?
+            WHERE run_id = ? AND batch_index = ?`,
+          [now(), runId, batch.batchIndex],
+        );
+        return (await getRunById(runId)) ?? run;
+      }
       const message = err instanceof Error ? err.message : String(err);
       await execute(
         db,
@@ -1015,8 +1159,8 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
   await updateRunState(db, runId, {
     state: 'awaiting_review',
     stage: 'finalizing',
-    progressCurrent: completedBatches.length,
-    progressTotal: batches.length,
+    progressCurrent: completedBatches.length * ANALYSIS_MATERIAL_TYPES.length,
+    progressTotal: batches.length * ANALYSIS_MATERIAL_TYPES.length,
     completedAt: now(),
   });
   await execute(
@@ -1027,6 +1171,121 @@ export async function processAnalysisRun(runId: string): Promise<AnalysisRun> {
   );
 
   return (await getRunById(runId))!;
+}
+
+function emptyExtractionResult(): ChapterExtractionResult {
+  return {
+    schemaVersion: 1,
+    worldRules: [],
+    characters: [],
+    relationships: [],
+    plotThreads: [],
+    experiences: [],
+    knowledge: [],
+    states: [],
+    timelineEvents: [],
+  };
+}
+
+function onlyMaterial(
+  result: ChapterExtractionResult,
+  materialType: AnalysisMaterialType,
+): ChapterExtractionResult {
+  const filtered = emptyExtractionResult();
+  if (materialType === 'world_rules') filtered.worldRules = result.worldRules;
+  if (materialType === 'characters') {
+    filtered.characters = result.characters;
+    filtered.knowledge = result.knowledge;
+    filtered.states = result.states;
+  }
+  if (materialType === 'relationships') filtered.relationships = result.relationships;
+  if (materialType === 'plot_threads') {
+    filtered.plotThreads = result.plotThreads;
+    filtered.timelineEvents = result.timelineEvents;
+  }
+  if (materialType === 'experiences') filtered.experiences = result.experiences;
+  return filtered;
+}
+
+function mergeMaterialResults(results: ChapterExtractionResult[]): ChapterExtractionResult {
+  return results.reduce<ChapterExtractionResult>((merged, result) => ({
+    schemaVersion: 1,
+    worldRules: [...merged.worldRules, ...result.worldRules],
+    characters: [...merged.characters, ...result.characters],
+    relationships: [...merged.relationships, ...result.relationships],
+    plotThreads: [...merged.plotThreads, ...result.plotThreads],
+    experiences: [...merged.experiences, ...result.experiences],
+    knowledge: [...merged.knowledge, ...result.knowledge],
+    states: [...merged.states, ...result.states],
+    timelineEvents: [...merged.timelineEvents, ...result.timelineEvents],
+  }), emptyExtractionResult());
+}
+
+const MATERIAL_PROMPTS: Record<AnalysisMaterialType, string> = {
+  world_rules: '只填写 worldRules；其他数组必须为空。',
+  characters: '只填写 characters、knowledge、states；其他数组必须为空。',
+  relationships: '只填写 relationships；其他数组必须为空。',
+  plot_threads: '只填写 plotThreads、timelineEvents；其他数组必须为空。',
+  experiences: '只填写 experiences；其他数组必须为空。',
+};
+
+export async function extractMaterialWithLlm(
+  chapters: BoundedSourceChapter[],
+  profile: AnalysisProfile,
+  modelConfigId: number | null,
+  materialType: AnalysisMaterialType,
+  runId: string,
+  signal: AbortSignal,
+): Promise<ChapterExtractionResult> {
+  if (!modelConfigId) {
+    throw new Error('分析任务缺少 LLM 配置；请重新发起 Standard 或 Deep 分析。');
+  }
+  const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
+  const prompt = [
+    '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
+    '必须只返回一个合法 JSON 对象，不要 Markdown，不要解释。schemaVersion 必须为 1。',
+    `分析档位：${profile}。${MATERIAL_PROMPTS[materialType]}`,
+    '每一个数组条目都必须至少有一条 evidence。evidence 必须引用本批章节中连续、逐字一致的原文片段作为 quotePreview（不超过 160 字）。',
+    '每章 metadata 给出 bodyStart 和 bodyEnd：charStart/charEnd 是全书 UTF-16 绝对偏移；请使用 quotePreview 在该章正文中定位后填写，不能猜测。',
+    'JSON 结构：{"schemaVersion":1,"worldRules":[],"characters":[],"relationships":[],"plotThreads":[],"experiences":[],"knowledge":[],"states":[],"timelineEvents":[]}。',
+    '章节正文：',
+    ...chapters.map(
+      c =>
+        `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${c.range.start}, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
+    ),
+  ].join('\n');
+  const response = await callLLMResult(
+    [{ role: 'user', content: prompt }],
+    profile === 'deep' ? 8000 : 5000,
+    {
+      responseFormat: 'json_object',
+      queueClass: 'canon_analysis',
+      queuePriority: 'background',
+      scenario: 'continuation_canon_analysis',
+      taskId: runId,
+      requestConfig,
+    },
+    signal,
+  );
+  if (!response.text?.trim()) throw new Error('LLM 未返回分析结果。');
+  return onlyMaterial(parseExtractionResultJson(response.text), materialType);
+}
+
+/** One in-process owner per run prevents two screens from processing it twice. */
+export function processAnalysisRun(
+  runId: string,
+  options: ProcessAnalysisOptions = {},
+): Promise<AnalysisRun> {
+  const active = analysisProcesses.get(runId);
+  if (active) return active;
+  const controller = new AbortController();
+  analysisControllers.set(runId, controller);
+  const process = processAnalysisRunInner(runId, options, controller.signal).finally(() => {
+    analysisControllers.delete(runId);
+    analysisProcesses.delete(runId);
+  });
+  analysisProcesses.set(runId, process);
+  return process;
 }
 
 export async function extractWithLlm(
@@ -1160,21 +1419,38 @@ export async function activateSnapshot(
 
 export async function pauseAnalysis(runId: string): Promise<void> {
   const db = await openDatabase();
+  analysisControllers.get(runId)?.abort();
   await updateRunState(db, runId, { state: 'paused' });
+  await execute(
+    db,
+    `UPDATE continuation_analysis_work_items SET state = 'queued', updated_at = ?
+      WHERE run_id = ? AND state IN ('running', 'cancelled')`,
+    [now(), runId],
+  );
 }
 
 export async function cancelAnalysis(runId: string): Promise<void> {
   const db = await openDatabase();
   const run = await getRunById(runId);
   if (!run) return;
+  analysisControllers.get(runId)?.abort();
   await updateRunState(db, runId, {
     state: 'cancelled',
     completedAt: now(),
   });
   await updateSnapshotMeta(db, run.canonSnapshotId, { status: 'failed' });
+  await execute(
+    db,
+    `UPDATE continuation_analysis_work_items SET state = 'cancelled', updated_at = ?
+      WHERE run_id = ? AND state IN ('queued', 'running', 'failed')`,
+    [now(), runId],
+  );
 }
 
-export async function resumeAnalysis(runId: string): Promise<AnalysisRun> {
+export async function resumeAnalysis(
+  runId: string,
+  options: ProcessAnalysisOptions = {},
+): Promise<AnalysisRun> {
   const db = await openDatabase();
   const run = await getRunById(runId);
   if (!run) throw new Error('分析任务不存在');
@@ -1182,14 +1458,21 @@ export async function resumeAnalysis(runId: string): Promise<AnalysisRun> {
     throw new Error('仅暂停或失败的任务可继续');
   }
   await updateRunState(db, runId, { state: 'queued', errorCode: null, errorMessage: null });
-  return processAnalysisRun(runId);
+  return processAnalysisRun(runId, options);
 }
 
 /** Cold start: mark leftover running runs as paused (Spec §15). */
 export async function pauseInterruptedRuns(projectId?: number): Promise<number> {
   const db = await openDatabase();
   const ts = now();
+  let affected = 0;
   if (projectId != null) {
+    const [result] = await db.executeSql(
+      `SELECT COUNT(*) AS count FROM continuation_analysis_runs
+        WHERE project_id = ? AND state = 'running'`,
+      [projectId],
+    );
+    affected = result.rows.item(0).count as number;
     await execute(
       db,
       `UPDATE continuation_analysis_runs SET state = 'paused', updated_at = ?
@@ -1197,6 +1480,10 @@ export async function pauseInterruptedRuns(projectId?: number): Promise<number> 
       [ts, projectId],
     );
   } else {
+    const [result] = await db.executeSql(
+      `SELECT COUNT(*) AS count FROM continuation_analysis_runs WHERE state = 'running'`,
+    );
+    affected = result.rows.item(0).count as number;
     await execute(
       db,
       `UPDATE continuation_analysis_runs SET state = 'paused', updated_at = ?
@@ -1204,7 +1491,7 @@ export async function pauseInterruptedRuns(projectId?: number): Promise<number> 
       [ts],
     );
   }
-  return 0;
+  return affected;
 }
 
 export async function getAnalysisOverview(projectId: number): Promise<{
@@ -1219,6 +1506,10 @@ export async function getAnalysisOverview(projectId: number): Promise<{
     latestRun: runs[0] ?? null,
     runs,
   };
+}
+
+export async function getAnalysisWorkItems(runId: string) {
+  return listWorkItems(runId);
 }
 
 export { getActiveSnapshot, listRunsForProject, getRunById, getSnapshotById, getDb };

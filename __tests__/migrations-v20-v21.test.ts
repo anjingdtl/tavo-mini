@@ -22,8 +22,8 @@ const PHASE3_TABLES = [
 ] as const;
 
 describe('schema 21 continuation Phase 3 migration', () => {
-  it('declares Phase 3 tables and schema version 21', () => {
-    expect(SCHEMA_VERSION).toBe(21);
+  it('declares Phase 3 tables while the current schema version advances', () => {
+    expect(SCHEMA_VERSION).toBe(22);
     const sql = buildV20toV21Statements().map(item => item.sql);
     for (const table of PHASE3_TABLES) {
       expect(

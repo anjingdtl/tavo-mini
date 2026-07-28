@@ -80,6 +80,17 @@ export const App: React.FC = () => {
         } catch (e) {
           console.warn('[App] continuation cold-start normalize skipped', e);
         }
+        try {
+          const { pauseInterruptedRuns } = await import(
+            '../services/continuation/canon'
+          );
+          const paused = await pauseInterruptedRuns();
+          if (paused > 0) {
+            await PipelineForeground.stop('canon-cold-start');
+          }
+        } catch (e) {
+          console.warn('[App] Canon analysis cold-start normalize skipped', e);
+        }
         const info = lastInstallInfo;
 
         if (
