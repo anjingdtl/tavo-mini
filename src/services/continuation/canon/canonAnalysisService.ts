@@ -73,6 +73,54 @@ export const ANALYSIS_MATERIAL_LABELS: Record<AnalysisMaterialType, string> = {
   experiences: '人物经历',
 };
 
+/**
+ * Retry only failures where another identical request is safe and useful.
+ * The delays are deliberately modest: the scheduler already caps Canon work
+ * at two concurrent requests, while exponential backoff prevents a failing
+ * provider from being hit again in the same burst.
+ */
+export const CANON_ANALYSIS_RETRY_POLICY = {
+  maxAttempts: 3,
+  baseDelayMs: 1_000,
+} as const;
+
+function isTransientCanonAnalysisError(error: unknown): boolean {
+  const candidate = error as {
+    code?: unknown;
+    status?: unknown;
+    cause?: { status?: unknown };
+  };
+  const status = Number(candidate?.cause?.status ?? candidate?.status ?? 0);
+  const code = String(candidate?.code ?? '');
+  return (
+    ['total_timeout', 'idle_timeout', 'network_error'].includes(code) ||
+    status === 429 ||
+    status >= 500
+  );
+}
+
+function waitForCanonRetry(
+  signal: AbortSignal,
+  delayMs: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('分析已暂停或取消'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(new Error('分析已暂停或取消'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export interface AnalysisProgressUpdate {
   runId: string;
   stage: AnalysisStage;
@@ -358,8 +406,18 @@ export async function materializeBatchResult(
 
   if (ctx.profile !== 'quick') {
     for (const rel of result.relationships) {
-      const srcId = await ensureCharacter(rel.sourceName, 'supporting', '', rel.confidence);
-      const tgtId = await ensureCharacter(rel.targetName, 'supporting', '', rel.confidence);
+      const srcId = await ensureCharacter(
+        rel.sourceName,
+        'supporting',
+        '',
+        rel.confidence,
+      );
+      const tgtId = await ensureCharacter(
+        rel.targetName,
+        'supporting',
+        '',
+        rel.confidence,
+      );
       await execute(
         db,
         `INSERT INTO canon_relationships (
@@ -445,7 +503,12 @@ export async function materializeBatchResult(
     );
     const plotId = await lastInsertId(db);
     for (const name of plot.characterNames) {
-      const cid = await ensureCharacter(name, 'supporting', '', plot.confidence);
+      const cid = await ensureCharacter(
+        name,
+        'supporting',
+        '',
+        plot.confidence,
+      );
       await execute(
         db,
         `INSERT OR IGNORE INTO canon_plot_thread_characters
@@ -472,7 +535,12 @@ export async function materializeBatchResult(
   }
 
   for (const exp of result.experiences) {
-    const cid = await ensureCharacter(exp.characterName, 'supporting', '', exp.confidence);
+    const cid = await ensureCharacter(
+      exp.characterName,
+      'supporting',
+      '',
+      exp.confidence,
+    );
     await execute(
       db,
       `INSERT INTO canon_character_experiences (
@@ -525,7 +593,12 @@ export async function materializeBatchResult(
 
   if (ctx.profile !== 'quick') {
     for (const k of result.knowledge) {
-      const cid = await ensureCharacter(k.characterName, 'supporting', '', k.confidence);
+      const cid = await ensureCharacter(
+        k.characterName,
+        'supporting',
+        '',
+        k.confidence,
+      );
       await execute(
         db,
         `INSERT INTO canon_character_knowledge (
@@ -559,7 +632,12 @@ export async function materializeBatchResult(
     }
 
     for (const st of result.states) {
-      const cid = await ensureCharacter(st.characterName, 'supporting', '', st.confidence);
+      const cid = await ensureCharacter(
+        st.characterName,
+        'supporting',
+        '',
+        st.confidence,
+      );
       await execute(
         db,
         `INSERT INTO canon_character_state_snapshots (
@@ -693,10 +771,13 @@ async function buildCoverage(
 
   const incomplete: string[] = [];
   if (profile === 'quick') {
-    incomplete.push('quick_profile_incomplete_relationships_knowledge_timeline');
+    incomplete.push(
+      'quick_profile_incomplete_relationships_knowledge_timeline',
+    );
   }
   if (!caps.evidenceValidated) incomplete.push('orphan_evidence');
-  if (analyzedChapters < totalChapters) incomplete.push('partial_chapter_coverage');
+  if (analyzedChapters < totalChapters)
+    incomplete.push('partial_chapter_coverage');
 
   const coverage: CanonCoverage = {
     schemaVersion: 1,
@@ -723,7 +804,9 @@ async function buildCoverage(
 export async function startAnalysis(
   input: StartAnalysisInput,
 ): Promise<{ runId: string; snapshotId: string }> {
-  const sourceSnapshot = await continuationSourceReader.getSnapshot(input.projectId);
+  const sourceSnapshot = await continuationSourceReader.getSnapshot(
+    input.projectId,
+  );
   const chapters = await continuationSourceReader.listBoundedSourceChapters(
     sourceSnapshot,
   );
@@ -765,7 +848,9 @@ export async function startAnalysis(
     const start = slice[0].position;
     const end = slice[slice.length - 1].position + 1; // half-open
     const inputHash = sha256Hex(
-      slice.map(c => `${c.id}:${c.content.length}:${c.range.start}-${c.range.end}`).join('|'),
+      slice
+        .map(c => `${c.id}:${c.content.length}:${c.range.start}-${c.range.end}`)
+        .join('|'),
     );
     batches.push({
       runId,
@@ -907,9 +992,12 @@ async function processAnalysisRunInner(
   }
 
   const checkpoint = run.checkpointJson
-    ? (JSON.parse(run.checkpointJson) as { extractorMode?: AnalysisExtractorMode })
+    ? (JSON.parse(run.checkpointJson) as {
+        extractorMode?: AnalysisExtractorMode;
+      })
     : {};
-  const mode = checkpoint.extractorMode ?? defaultExtractorModeForProfile(run.profile);
+  const mode =
+    checkpoint.extractorMode ?? defaultExtractorModeForProfile(run.profile);
 
   await updateRunState(db, runId, {
     state: 'running',
@@ -955,7 +1043,8 @@ async function processAnalysisRunInner(
 
     try {
       const slice = allChapters.filter(
-        c => c.position >= batch.startPosition && c.position < batch.endPosition,
+        c =>
+          c.position >= batch.startPosition && c.position < batch.endPosition,
       );
       // Future leakage guard: only chapters already bounded by SourceReader.
       for (const ch of slice) {
@@ -969,7 +1058,9 @@ async function processAnalysisRunInner(
       );
       const runMaterial = async (materialType: AnalysisMaterialType) => {
         if (signal.aborted) throw new Error('分析已暂停或取消');
-        const item = batchItems.find(candidate => candidate.materialType === materialType);
+        const item = batchItems.find(
+          candidate => candidate.materialType === materialType,
+        );
         if (item?.state === 'completed' && item.resultJson) {
           return parseExtractionResultJson(item.resultJson);
         }
@@ -1009,7 +1100,8 @@ async function processAnalysisRunInner(
           await reportWorkItem(materialType, batch.batchIndex, 'completed');
           return result;
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           await updateWorkItem(db, {
             runId,
             batchIndex: batch.batchIndex,
@@ -1038,7 +1130,10 @@ async function processAnalysisRunInner(
         return latest ?? run;
       }
       const extraction = mergeMaterialResults(
-        settled.map(entry => (entry as PromiseFulfilledResult<ChapterExtractionResult>).value),
+        settled.map(
+          entry =>
+            (entry as PromiseFulfilledResult<ChapterExtractionResult>).value,
+        ),
       );
 
       await materializeBatchResult(
@@ -1109,7 +1204,9 @@ async function processAnalysisRunInner(
     return (await getRunById(runId))!;
   }
 
-  const failedBatches = (await listBatches(runId)).filter(b => b.state === 'failed');
+  const failedBatches = (await listBatches(runId)).filter(
+    b => b.state === 'failed',
+  );
   const completedBatches = (await listBatches(runId)).filter(
     b => b.state === 'completed',
   );
@@ -1121,9 +1218,7 @@ async function processAnalysisRunInner(
     run.profile,
     completedBatches.length,
     batches.length,
-    allChapters.length > 0
-      ? allChapters[allChapters.length - 1].position
-      : 0,
+    allChapters.length > 0 ? allChapters[allChapters.length - 1].position : 0,
   );
 
   if (failedBatches.length > 0) {
@@ -1131,7 +1226,9 @@ async function processAnalysisRunInner(
       state: 'failed',
       stage: 'chapter_extraction',
       errorCode: 'batch_failed',
-      errorMessage: `有 ${failedBatches.length}/${batches.length} 个分析批次失败：${
+      errorMessage: `有 ${failedBatches.length}/${
+        batches.length
+      } 个分析批次失败：${
         failedBatches[0]?.errorMessage ?? '请检查模型配置和网络后重试'
       }`,
       completedAt: now(),
@@ -1198,7 +1295,8 @@ function onlyMaterial(
     filtered.knowledge = result.knowledge;
     filtered.states = result.states;
   }
-  if (materialType === 'relationships') filtered.relationships = result.relationships;
+  if (materialType === 'relationships')
+    filtered.relationships = result.relationships;
   if (materialType === 'plot_threads') {
     filtered.plotThreads = result.plotThreads;
     filtered.timelineEvents = result.timelineEvents;
@@ -1207,18 +1305,23 @@ function onlyMaterial(
   return filtered;
 }
 
-function mergeMaterialResults(results: ChapterExtractionResult[]): ChapterExtractionResult {
-  return results.reduce<ChapterExtractionResult>((merged, result) => ({
-    schemaVersion: 1,
-    worldRules: [...merged.worldRules, ...result.worldRules],
-    characters: [...merged.characters, ...result.characters],
-    relationships: [...merged.relationships, ...result.relationships],
-    plotThreads: [...merged.plotThreads, ...result.plotThreads],
-    experiences: [...merged.experiences, ...result.experiences],
-    knowledge: [...merged.knowledge, ...result.knowledge],
-    states: [...merged.states, ...result.states],
-    timelineEvents: [...merged.timelineEvents, ...result.timelineEvents],
-  }), emptyExtractionResult());
+function mergeMaterialResults(
+  results: ChapterExtractionResult[],
+): ChapterExtractionResult {
+  return results.reduce<ChapterExtractionResult>(
+    (merged, result) => ({
+      schemaVersion: 1,
+      worldRules: [...merged.worldRules, ...result.worldRules],
+      characters: [...merged.characters, ...result.characters],
+      relationships: [...merged.relationships, ...result.relationships],
+      plotThreads: [...merged.plotThreads, ...result.plotThreads],
+      experiences: [...merged.experiences, ...result.experiences],
+      knowledge: [...merged.knowledge, ...result.knowledge],
+      states: [...merged.states, ...result.states],
+      timelineEvents: [...merged.timelineEvents, ...result.timelineEvents],
+    }),
+    emptyExtractionResult(),
+  );
 }
 
 const MATERIAL_PROMPTS: Record<AnalysisMaterialType, string> = {
@@ -1238,7 +1341,9 @@ export async function extractMaterialWithLlm(
   signal: AbortSignal,
 ): Promise<ChapterExtractionResult> {
   if (!modelConfigId) {
-    throw new Error('分析任务缺少 LLM 配置；请重新发起 Standard 或 Deep 分析。');
+    throw new Error(
+      '分析任务缺少 LLM 配置；请重新发起 Standard 或 Deep 分析。',
+    );
   }
   const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
   const prompt = [
@@ -1251,23 +1356,45 @@ export async function extractMaterialWithLlm(
     '章节正文：',
     ...chapters.map(
       c =>
-        `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${c.range.start}, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
+        `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${
+          c.range.start
+        }, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
     ),
   ].join('\n');
-  const response = await callLLMResult(
-    [{ role: 'user', content: prompt }],
-    profile === 'deep' ? 8000 : 5000,
-    {
-      responseFormat: 'json_object',
-      queueClass: 'canon_analysis',
-      queuePriority: 'background',
-      scenario: 'continuation_canon_analysis',
-      taskId: runId,
-      requestConfig,
-    },
-    signal,
-  );
-  if (!response.text?.trim()) throw new Error('LLM 未返回分析结果。');
+  let response: Awaited<ReturnType<typeof callLLMResult>> | undefined;
+  for (
+    let attempt = 1;
+    attempt <= CANON_ANALYSIS_RETRY_POLICY.maxAttempts;
+    attempt += 1
+  ) {
+    try {
+      response = await callLLMResult(
+        [{ role: 'user', content: prompt }],
+        profile === 'deep' ? 8000 : 5000,
+        {
+          responseFormat: 'json_object',
+          queueClass: 'canon_analysis',
+          queuePriority: 'background',
+          scenario: 'continuation_canon_analysis',
+          taskId: runId,
+          requestConfig,
+        },
+        signal,
+      );
+      break;
+    } catch (error) {
+      const canRetry =
+        attempt < CANON_ANALYSIS_RETRY_POLICY.maxAttempts &&
+        !signal.aborted &&
+        isTransientCanonAnalysisError(error);
+      if (!canRetry) throw error;
+      await waitForCanonRetry(
+        signal,
+        CANON_ANALYSIS_RETRY_POLICY.baseDelayMs * 2 ** (attempt - 1),
+      );
+    }
+  }
+  if (!response?.text?.trim()) throw new Error('LLM 未返回分析结果。');
   return onlyMaterial(parseExtractionResultJson(response.text), materialType);
 }
 
@@ -1280,7 +1407,11 @@ export function processAnalysisRun(
   if (active) return active;
   const controller = new AbortController();
   analysisControllers.set(runId, controller);
-  const process = processAnalysisRunInner(runId, options, controller.signal).finally(() => {
+  const process = processAnalysisRunInner(
+    runId,
+    options,
+    controller.signal,
+  ).finally(() => {
     analysisControllers.delete(runId);
     analysisProcesses.delete(runId);
   });
@@ -1294,7 +1425,9 @@ export async function extractWithLlm(
   modelConfigId: number | null,
 ): Promise<ChapterExtractionResult> {
   if (!modelConfigId) {
-    throw new Error('分析任务缺少 LLM 配置；请重新发起 Standard 或 Deep 分析。');
+    throw new Error(
+      '分析任务缺少 LLM 配置；请重新发起 Standard 或 Deep 分析。',
+    );
   }
   const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
   const prompt = [
@@ -1309,7 +1442,9 @@ export async function extractWithLlm(
     '章节正文：',
     ...chapters.map(
       c =>
-        `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${c.range.start}, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
+        `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${
+          c.range.start
+        }, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
     ),
   ].join('\n');
   const text = await callLLM(
@@ -1457,12 +1592,18 @@ export async function resumeAnalysis(
   if (run.state !== 'paused' && run.state !== 'failed') {
     throw new Error('仅暂停或失败的任务可继续');
   }
-  await updateRunState(db, runId, { state: 'queued', errorCode: null, errorMessage: null });
+  await updateRunState(db, runId, {
+    state: 'queued',
+    errorCode: null,
+    errorMessage: null,
+  });
   return processAnalysisRun(runId, options);
 }
 
 /** Cold start: mark leftover running runs as paused (Spec §15). */
-export async function pauseInterruptedRuns(projectId?: number): Promise<number> {
+export async function pauseInterruptedRuns(
+  projectId?: number,
+): Promise<number> {
   const db = await openDatabase();
   const ts = now();
   let affected = 0;
@@ -1512,4 +1653,10 @@ export async function getAnalysisWorkItems(runId: string) {
   return listWorkItems(runId);
 }
 
-export { getActiveSnapshot, listRunsForProject, getRunById, getSnapshotById, getDb };
+export {
+  getActiveSnapshot,
+  listRunsForProject,
+  getRunById,
+  getSnapshotById,
+  getDb,
+};

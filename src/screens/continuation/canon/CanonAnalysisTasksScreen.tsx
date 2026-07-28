@@ -43,7 +43,13 @@ export const CanonAnalysisTasksScreen: React.FC<{
     <Screen>
       <Header
         title="分析任务"
-        action={<Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />}
+        action={
+          <Button
+            label="返回"
+            variant="ghost"
+            onPress={() => navigation.goBack()}
+          />
+        }
       />
       <FlatList
         data={runs}
@@ -51,7 +57,9 @@ export const CanonAnalysisTasksScreen: React.FC<{
         contentContainerStyle={styles.list}
         renderItem={({ item }) => (
           <Card style={styles.card}>
-            <Text style={{ color: theme.colors.textPrimary, fontWeight: '600' }}>
+            <Text
+              style={{ color: theme.colors.textPrimary, fontWeight: '600' }}
+            >
               {item.profile} · {item.state}
             </Text>
             <Text style={{ color: theme.colors.textSecondary }}>
@@ -62,19 +70,62 @@ export const CanonAnalysisTasksScreen: React.FC<{
                 {item.errorMessage}
               </Text>
             ) : null}
-            {(item.state === 'paused' || item.state === 'failed') && (
+            {item.state === 'paused' && (
               <Button
-                label="继续 / 重试"
+                label="继续"
                 onPress={async () => {
                   try {
-                    await PipelineForeground.start(item.id, '原著分析进行中', '正在继续分析…', item.progressTotal ? Math.round((item.progressCurrent / item.progressTotal) * 100) : 0);
+                    await PipelineForeground.start(
+                      item.id,
+                      '原著分析进行中',
+                      '正在继续分析…',
+                      item.progressTotal
+                        ? Math.round(
+                            (item.progressCurrent / item.progressTotal) * 100,
+                          )
+                        : 0,
+                    );
                     await resumeAnalysis(item.id);
                     await PipelineForeground.stop(item.id);
                     Toast.show({ type: 'success', text1: '已继续' });
                     await reload();
                   } catch (e: any) {
                     await PipelineForeground.stop(item.id);
-                    Toast.show({ type: 'error', text1: '失败', text2: e?.message });
+                    Toast.show({
+                      type: 'error',
+                      text1: '失败',
+                      text2: e?.message,
+                    });
+                  }
+                }}
+              />
+            )}
+            {item.state === 'failed' && (
+              <Button
+                label="重试未完成项"
+                onPress={async () => {
+                  try {
+                    await PipelineForeground.start(
+                      item.id,
+                      '原著分析进行中',
+                      '正在重试未完成项…',
+                      item.progressTotal
+                        ? Math.round(
+                            (item.progressCurrent / item.progressTotal) * 100,
+                          )
+                        : 0,
+                    );
+                    await resumeAnalysis(item.id);
+                    await PipelineForeground.stop(item.id);
+                    Toast.show({ type: 'success', text1: '已开始重试' });
+                    await reload();
+                  } catch (e: any) {
+                    await PipelineForeground.stop(item.id);
+                    Toast.show({
+                      type: 'error',
+                      text1: '重试失败',
+                      text2: e?.message,
+                    });
                   }
                 }}
               />
@@ -86,19 +137,46 @@ export const CanonAnalysisTasksScreen: React.FC<{
                   onPress={async () => {
                     try {
                       await requestNotificationPermission().catch(() => false);
-                      await PipelineForeground.start(item.id, '原著分析进行中', '正在继续分析…', item.progressTotal ? Math.round((item.progressCurrent / item.progressTotal) * 100) : 0);
+                      await PipelineForeground.start(
+                        item.id,
+                        '原著分析进行中',
+                        '正在继续分析…',
+                        item.progressTotal
+                          ? Math.round(
+                              (item.progressCurrent / item.progressTotal) * 100,
+                            )
+                          : 0,
+                      );
                       await processAnalysisRun(item.id, {
                         onProgress: update => {
-                          const percent = update.progressTotal ? Math.round((update.progressCurrent / update.progressTotal) * 100) : 0;
-                          const material = update.materialType ? ANALYSIS_MATERIAL_LABELS[update.materialType] : '原著分析';
-                          void PipelineForeground.updateProgress(item.id, `第 ${(update.batchIndex ?? 0) + 1} 批 · ${material}`, percent);
+                          const percent = update.progressTotal
+                            ? Math.round(
+                                (update.progressCurrent /
+                                  update.progressTotal) *
+                                  100,
+                              )
+                            : 0;
+                          const material = update.materialType
+                            ? ANALYSIS_MATERIAL_LABELS[update.materialType]
+                            : '原著分析';
+                          void PipelineForeground.updateProgress(
+                            item.id,
+                            `第 ${
+                              (update.batchIndex ?? 0) + 1
+                            } 批 · ${material}`,
+                            percent,
+                          );
                         },
                       });
                       await PipelineForeground.stop(item.id);
                       await reload();
                     } catch (e: any) {
                       await PipelineForeground.stop(item.id);
-                      Toast.show({ type: 'error', text1: '处理失败', text2: e?.message });
+                      Toast.show({
+                        type: 'error',
+                        text1: '处理失败',
+                        text2: e?.message,
+                      });
                     }
                   }}
                 />
@@ -115,7 +193,9 @@ export const CanonAnalysisTasksScreen: React.FC<{
           </Card>
         )}
         ListEmptyComponent={
-          <Text style={{ color: theme.colors.textSecondary, padding: spacing.lg }}>
+          <Text
+            style={{ color: theme.colors.textSecondary, padding: spacing.lg }}
+          >
             暂无分析任务
           </Text>
         }
