@@ -9,6 +9,7 @@ import { openDatabase } from '../../../data/connection/openDatabase';
 import {
   CanonSnapshotOutdatedError,
   type CanonConstraintLevel,
+  type EvidenceOwnerType,
   type CanonContextBundle,
   type CanonEvidenceView,
   type CanonReviewStatus,
@@ -87,6 +88,40 @@ function assertPositionInBoundary(
   if (at > snap.boundaryPosition) {
     throw new Error('查询位置越过 Canon boundary');
   }
+}
+
+async function listEvidenceRefsForOwners(
+  db: Awaited<ReturnType<typeof openDatabase>>,
+  snapshotId: string,
+  owners: Array<{ type: EvidenceOwnerType; ids: number[] }>,
+): Promise<{
+  refs: number[];
+  byOwner: Partial<Record<EvidenceOwnerType, Record<number, number[]>>>;
+}> {
+  const byOwner: Partial<
+    Record<EvidenceOwnerType, Record<number, number[]>>
+  > = {};
+  const refs = new Set<number>();
+  for (const owner of owners) {
+    const ids = Array.from(new Set(owner.ids)).filter(Number.isFinite);
+    if (ids.length === 0) continue;
+    const placeholders = ids.map(() => '?').join(',');
+    const [result] = await db.executeSql(
+      `SELECT owner_id, evidence_id FROM canon_evidence_links
+       WHERE snapshot_id = ? AND owner_type = ? AND owner_id IN (${placeholders})`,
+      [snapshotId, owner.type, ...ids],
+    );
+    const group = (byOwner[owner.type] ??= {});
+    for (let i = 0; i < result.rows.length; i++) {
+      const row = result.rows.item(i);
+      const ownerId = Number(row.owner_id);
+      const evidenceId = Number(row.evidence_id);
+      if (!Number.isFinite(ownerId) || !Number.isFinite(evidenceId)) continue;
+      (group[ownerId] ??= []).push(evidenceId);
+      refs.add(evidenceId);
+    }
+  }
+  return { refs: Array.from(refs).sort((a, b) => a - b), byOwner };
 }
 
 export const CanonQueryService = {
@@ -605,6 +640,7 @@ export const CanonQueryService = {
       input.snapshotRevision,
     );
     assertPositionInBoundary(snap, input.atSourcePosition);
+    const db = await openDatabase();
     const statuses = statusesForPolicy(input.reviewPolicy);
     const omitted: Record<string, number> = {};
 
@@ -642,6 +678,29 @@ export const CanonQueryService = {
     const resolvedIds = new Set(input.characterIds);
     for (const m of mentions) {
       if (m.characterId) resolvedIds.add(m.characterId);
+    }
+    // A writing instruction often describes a scene without naming anyone.
+    // Keep a compact cast baseline so the planner/checker still remembers the
+    // original work's principal characters and their active constraints.
+    const confirmedStatuses = statuses.filter(
+      status => status !== 'pending',
+    );
+    const statusPlaceholders = confirmedStatuses.map(() => '?').join(',');
+    const [prominentRows] = await db.executeSql(
+      `SELECT id FROM canon_characters
+       WHERE snapshot_id = ? AND review_status IN (${statusPlaceholders})
+       ORDER BY CASE importance
+         WHEN 'primary' THEN 0
+         WHEN 'major' THEN 1
+         WHEN 'supporting' THEN 2
+         ELSE 3 END,
+         confidence DESC, id ASC
+       LIMIT 30`,
+      [input.snapshotId, ...confirmedStatuses],
+    );
+    for (let i = 0; i < prominentRows.rows.length; i++) {
+      const id = Number(prominentRows.rows.item(i).id);
+      if (Number.isFinite(id)) resolvedIds.add(id);
     }
     const characterIds = Array.from(resolvedIds);
 
@@ -686,7 +745,6 @@ export const CanonQueryService = {
       snapshotId: input.snapshotId,
       snapshotRevision: input.snapshotRevision,
       atSourcePosition: input.atSourcePosition,
-      characterIds,
       limit: 15,
     });
     // Timeline blocking only confirmed/locked in strict (Spec §6.14).
@@ -699,7 +757,6 @@ export const CanonQueryService = {
       snapshotId: input.snapshotId,
       snapshotRevision: input.snapshotRevision,
       atSourcePosition: input.atSourcePosition,
-      characterIds,
       limit: 20,
     });
     timelineEvents = timelineEvents.filter(e =>
@@ -728,17 +785,61 @@ export const CanonQueryService = {
       return kept;
     };
 
+    const selectedWorldRules = pack(
+      allRules,
+      r => r.title + r.description,
+      'worldRules',
+    );
+    const selectedCharacters = pack(
+      characters,
+      c => c.canonicalName + c.description,
+      'characters',
+    );
+    const selectedStates = pack(characterStates, s => s.summary, 'characterStates');
+    const selectedRelationships = pack(
+      relationships,
+      r => r.description + r.relationType,
+      'relationships',
+    );
+    const selectedExperiences = pack(
+      experiences,
+      e => e.title + e.description,
+      'experiences',
+    );
+    const selectedKnowledge = pack(knowledge, k => k.factSummary, 'knowledge');
+    const selectedPlots = pack(
+      plotThreads,
+      p => p.title + p.description,
+      'plotThreads',
+    );
+    const selectedTimeline = pack(
+      timelineEvents,
+      t => t.title + t.summary,
+      'timelineEvents',
+    );
+    const evidence = await listEvidenceRefsForOwners(db, input.snapshotId, [
+      { type: 'world_rule', ids: selectedWorldRules.map(item => item.id) },
+      { type: 'character', ids: selectedCharacters.map(item => item.id) },
+      { type: 'character_state', ids: selectedStates.map(item => item.id) },
+      { type: 'relationship', ids: selectedRelationships.map(item => item.id) },
+      { type: 'experience', ids: selectedExperiences.map(item => item.id) },
+      { type: 'knowledge', ids: selectedKnowledge.map(item => item.id) },
+      { type: 'plot_thread', ids: selectedPlots.map(item => item.id) },
+      { type: 'timeline_event', ids: selectedTimeline.map(item => item.id) },
+    ]);
+
     const bundle: CanonContextBundle = {
       snapshot: snap,
-      worldRules: pack(allRules, r => r.title + r.description, 'worldRules'),
-      characters: pack(characters, c => c.canonicalName + c.description, 'characters'),
-      characterStates: pack(characterStates, s => s.summary, 'characterStates'),
-      relationships: pack(relationships, r => r.description + r.relationType, 'relationships'),
-      experiences: pack(experiences, e => e.title + e.description, 'experiences'),
-      knowledge: pack(knowledge, k => k.factSummary, 'knowledge'),
-      plotThreads: pack(plotThreads, p => p.title + p.description, 'plotThreads'),
-      timelineEvents: pack(timelineEvents, t => t.title + t.summary, 'timelineEvents'),
-      evidenceRefs: [],
+      worldRules: selectedWorldRules,
+      characters: selectedCharacters,
+      characterStates: selectedStates,
+      relationships: selectedRelationships,
+      experiences: selectedExperiences,
+      knowledge: selectedKnowledge,
+      plotThreads: selectedPlots,
+      timelineEvents: selectedTimeline,
+      evidenceRefs: evidence.refs,
+      evidenceRefsByOwner: evidence.byOwner,
       estimatedTokens: used,
       omittedReasonCounts: omitted,
     };

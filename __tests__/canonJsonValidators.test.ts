@@ -90,7 +90,7 @@ describe('Canon extraction JSON validators (Spec §17.1)', () => {
     ).toThrow(/schema 版本/);
   });
 
-  it('drops invalid enums and empty titles', () => {
+  it('keeps invalid enums with a fallback but drops empty titles', () => {
     const r = validateExtractionResult({
       ...valid,
       worldRules: [
@@ -99,7 +99,8 @@ describe('Canon extraction JSON validators (Spec §17.1)', () => {
         valid.worldRules[0],
       ],
     });
-    expect(r.worldRules).toHaveLength(1);
+    expect(r.worldRules).toHaveLength(2);
+    expect(r.worldRules[0].constraintLevel).toBe('reference');
   });
 
   it('rejects illegal evidence ranges', () => {
@@ -324,5 +325,153 @@ describe('Canon extraction JSON validators (Spec §17.1)', () => {
         dropped: 0,
       });
     });
+  });
+
+  it('keeps the time, location, people and event details for plot and timeline facts', () => {
+    const result = validateExtractionResult({
+      ...valid,
+      plotThreads: [
+        {
+          title: '雁门救援',
+          description: '主角前往雁门救援同伴',
+          characterNames: ['林凡', '苏婉'],
+          time: '第三日清晨',
+          place: '雁门关',
+          evidence: [],
+        },
+      ],
+      timelineEvents: [
+        {
+          eventKey: 'yanmen-rescue',
+          title: '雁门救援',
+          summary: '林凡与苏婉在雁门关会合后救援',
+          characterNames: ['林凡', '苏婉'],
+          time: '第三日清晨',
+          place: '雁门关',
+          evidence: [],
+        },
+      ],
+    });
+
+    expect((result.plotThreads[0] as any).timeDescription).toBe('第三日清晨');
+    expect((result.plotThreads[0] as any).location).toBe('雁门关');
+    expect((result.timelineEvents[0] as any).timeDescription).toBe(
+      '第三日清晨',
+    );
+    expect((result.timelineEvents[0] as any).location).toBe('雁门关');
+    expect(result.timelineEvents[0].characterNames).toEqual(['林凡', '苏婉']);
+  });
+
+  it('accepts observed DeepSeek enum variants without changing canonical values', () => {
+    const result = validateExtractionResult({
+      schemaVersion: EXTRACTION_RESULT_SCHEMA_VERSION,
+      worldRules: [
+        {
+          title: '宗门戒律',
+          constraintLevel: '未明',
+          evidence: [],
+        },
+      ],
+      characters: [
+        { canonicalName: '林凡', importance: '高', evidence: [] },
+      ],
+      relationships: [
+        {
+          sourceName: '林凡',
+          targetName: '师父',
+          publicStatus: '公开（师徒）',
+          evidence: [],
+        },
+        {
+          sourceName: '林凡',
+          targetName: '仇人',
+          publicStatus: '隐秘',
+          evidence: [],
+        },
+      ],
+      plotThreads: [
+        { title: '主线', level: 'primary', status: 'active', evidence: [] },
+        { title: '次主线', level: 'major', status: 'active', evidence: [] },
+        { title: '中文主线', level: '主要', status: 'active', evidence: [] },
+      ],
+      experiences: [],
+      knowledge: [
+        {
+          characterName: '林凡',
+          factKey: '身世',
+          knowledgeState: '确知',
+          evidence: [],
+        },
+      ],
+      states: [
+        { characterName: '林凡', aliveState: '活着', evidence: [] },
+      ],
+      timelineEvents: [],
+    });
+
+    expect(result.worldRules[0].constraintLevel).toBe('reference');
+    expect(result.plotThreads.map(item => item.level)).toEqual([
+      'main',
+      'main',
+      'main',
+    ]);
+    expect(result.characters[0].importance).toBe('major');
+    expect(result.relationships.map(item => item.publicStatus)).toEqual([
+      'public',
+      'secret',
+    ]);
+    expect(result.knowledge[0].knowledgeState).toBe('known');
+    expect(result.states[0].aliveState).toBe('alive');
+  });
+
+  it('keeps otherwise valid Canon facts when a model emits descriptive enum prose', () => {
+    const result = validateExtractionResult({
+      schemaVersion: EXTRACTION_RESULT_SCHEMA_VERSION,
+      worldRules: [
+        { title: '天道规则', constraintLevel: '极其关键', evidence: [] },
+      ],
+      characters: [
+        { canonicalName: '主角', importance: '核心人物', evidence: [] },
+      ],
+      relationships: [
+        {
+          sourceName: '主角',
+          targetName: '同伴',
+          publicStatus: '关系尚待确认',
+          evidence: [],
+        },
+      ],
+      plotThreads: [
+        {
+          title: '谜团',
+          level: '贯穿全书的叙事线',
+          status: '仍在发展中',
+          evidence: [],
+        },
+      ],
+      experiences: [],
+      knowledge: [
+        {
+          characterName: '主角',
+          factKey: '身世',
+          knowledgeState: '暂时无法判断',
+          evidence: [],
+        },
+      ],
+      states: [
+        { characterName: '主角', aliveState: '生死未明', evidence: [] },
+      ],
+      timelineEvents: [],
+    });
+
+    expect(result.worldRules).toHaveLength(1);
+    expect(result.characters[0].importance).toBe('supporting');
+    expect(result.relationships[0].publicStatus).toBe('public');
+    expect(result.plotThreads[0]).toMatchObject({
+      level: 'subplot',
+      status: 'active',
+    });
+    expect(result.knowledge[0].knowledgeState).toBe('unknown');
+    expect(result.states[0].aliveState).toBe('unknown');
   });
 });

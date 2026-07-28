@@ -49,11 +49,13 @@ export {
 export {
   queueHistoricalDigests,
   processHistoricalDigest,
+  getHistoricalDigestCoverage,
   listHistoricalDigestReferences,
   findHistoricalChapterCandidates,
   markHistoricalDigestsOutdated,
 } from './historicalDigestService';
 export {
+  buildUniqueCharacterNameIndex,
   normalizeAlias,
   longestMatchAliases,
   isAmbiguousShortAlias,

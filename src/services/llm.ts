@@ -37,6 +37,8 @@ export interface LLMCallConfig {
   top_p?: number;
   max_tokens?: number;
   responseFormat?: 'json_object';
+  /** Optional OpenAI-compatible extension; omitted for existing callers. */
+  thinking?: { type: 'enabled' | 'disabled' };
   scenario?: string;
   projectId?: number;
   taskId?: string;
@@ -195,6 +197,7 @@ export async function callLLMResult(
       top_p: config?.top_p,
       max_tokens: maxTokens ?? config?.max_tokens,
       responseFormat: config?.responseFormat,
+      thinking: config?.thinking,
       scenario: config?.scenario,
       projectId: config?.projectId,
       taskId: config?.taskId,

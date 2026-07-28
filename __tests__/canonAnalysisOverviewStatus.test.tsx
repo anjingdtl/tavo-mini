@@ -7,7 +7,8 @@
  * rather than work-item state alone.
  */
 import React from 'react';
-import { render, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 
 const projectState: { currentProject: any } = {
   currentProject: { id: 1, name: '续写项目', mode: 'continuation' },
@@ -57,11 +58,13 @@ const overviewState: {
   latestRun: any;
   workItems: any[];
   boundaryReady: boolean;
+  historicalCoverage: any;
 } = {
   active: null,
   latestRun: null,
   workItems: [],
   boundaryReady: true,
+  historicalCoverage: { readyDigestCount: 0, readyChapterCount: 0, ranges: [] },
 };
 
 jest.mock('../src/services/continuation/canon', () => ({
@@ -80,6 +83,12 @@ jest.mock('../src/services/continuation/canon', () => ({
     character_state: '人物与状态',
     world_plot: '世界观与剧情',
   },
+  queueHistoricalDigests: jest.fn(async () => ({
+    digestIds: ['digest-1', 'digest-2'],
+    indexedChapterCount: 60,
+  })),
+  processHistoricalDigest: jest.fn(async () => ({})),
+  getHistoricalDigestCoverage: jest.fn(async () => overviewState.historicalCoverage),
 }));
 
 jest.mock('../src/services/continuation/continuationSettingsService', () => ({
@@ -148,22 +157,143 @@ function completedWorkItems(total = 4) {
 }
 
 describe('CanonAnalysisOverviewScreen status label (S2)', () => {
+  it('uses plain Chinese for the complete-analysis action', () => {
+    // Regression guard for the user-facing entry point: internal Canon names
+    // must not leak into the action and confirmation title.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const path = require('path');
+    const source = fs.readFileSync(
+      path.resolve(
+        __dirname,
+        '../src/screens/continuation/canon/CanonAnalysisOverviewScreen.tsx',
+      ),
+      'utf8',
+    );
+    expect(source).not.toContain("'开始完整 Canon 分析'");
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     overviewState.active = null;
     overviewState.boundaryReady = true;
+    overviewState.historicalCoverage = {
+      readyDigestCount: 0,
+      readyChapterCount: 0,
+      ranges: [],
+    };
   });
 
-  it('shows 分析完成，等待审核激活 for awaiting_review (not 正在汇总结果)', async () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('keeps the activate action next to a completed analysis', async () => {
     overviewState.latestRun = makeRun('awaiting_review', 'finalizing');
     overviewState.workItems = completedWorkItems();
     const { queryByText, getByText } = render(
       <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
     );
-    await waitFor(() =>
-      expect(getByText(/分析完成，等待审核激活/)).toBeTruthy(),
-    );
+    await waitFor(() => expect(getByText(/分析完成，可在此审核并激活/)).toBeTruthy());
+    expect(getByText('审核并启用原著资料')).toBeTruthy();
     expect(queryByText(/正在汇总结果/)).toBeNull();
+  });
+
+  it('also provides the same-page activation action for a completed run', async () => {
+    overviewState.latestRun = makeRun('completed', 'finalizing');
+    overviewState.workItems = completedWorkItems();
+    overviewState.historicalCoverage = {
+      readyDigestCount: 1,
+      readyChapterCount: 0,
+      ranges: [],
+    };
+    const { getByText } = render(
+      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+    );
+    await waitFor(() => expect(getByText('审核并启用原著资料')).toBeTruthy());
+  });
+
+  it('shows that a completed run is already enabled instead of asking to activate it again', async () => {
+    overviewState.active = {
+      id: 'snap',
+      revision: 1,
+      profile: 'standard',
+      boundaryPosition: 0,
+      boundaryCharOffsetExclusive: 0,
+      coverage: {
+        analyzedChapterCount: 3,
+        sourceChapterCount: 4,
+        analyzedRanges: [],
+        incompleteReasons: [],
+      },
+    };
+    overviewState.latestRun = makeRun('completed', 'finalizing');
+    overviewState.workItems = completedWorkItems();
+    overviewState.historicalCoverage = {
+      readyDigestCount: 1,
+      readyChapterCount: 1,
+      ranges: [{ startPosition: 0, endPosition: 1 }],
+    };
+    const { getByText, queryByText } = render(
+      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+    );
+    await waitFor(() =>
+      expect(getByText(/分析完成，已启用为当前原著资料/)).toBeTruthy(),
+    );
+    expect(getByText('当前启用的原著资料')).toBeTruthy();
+    expect(getByText(/快照 snap… · 版本 1 · 标准分析/)).toBeTruthy();
+    expect(getByText('分析边界：第 1 章')).toBeTruthy();
+    expect(getByText('完整原著分析')).toBeTruthy();
+    expect(getByText(/历史概览：已覆盖 1\/1 个未精读章节/)).toBeTruthy();
+    expect(queryByText('审核并启用原著资料')).toBeNull();
+  });
+
+  it('shows group progress and starts foreground retention for historical digests', async () => {
+    overviewState.active = {
+      id: 'active-snapshot',
+      revision: 1,
+      profile: 'standard',
+      boundaryPosition: 269,
+      boundaryCharOffsetExclusive: 0,
+      coverage: {
+        analyzedChapterCount: 30,
+        sourceChapterCount: 299,
+        analyzedRanges: [],
+        incompleteReasons: [],
+      },
+    };
+    overviewState.latestRun = null;
+    overviewState.workItems = [];
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, actions) => {
+      const start = actions?.find(action => action.text === '开始生成');
+      start?.onPress?.();
+    });
+    const { getByText } = render(
+      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+    );
+    await waitFor(() => expect(getByText('生成历史概览')).toBeTruthy());
+    fireEvent.press(getByText('生成历史概览'));
+    expect(Alert.alert).toHaveBeenCalledWith(
+      '生成历史概览',
+      expect.stringContaining('自动分组'),
+      expect.any(Array),
+    );
+    await waitFor(() => {
+      const { PipelineForeground } = require('../src/native/PipelineForegroundModule');
+      expect(PipelineForeground.start).toHaveBeenCalledWith(
+        expect.stringMatching(/^history:1:/),
+        '历史概览生成中',
+        expect.stringContaining('0/2'),
+        0,
+      );
+      expect(PipelineForeground.updateProgress).toHaveBeenCalledWith(
+        expect.stringMatching(/^history:1:/),
+        '第 1/2 组历史概览',
+        50,
+      );
+      expect(PipelineForeground.notifyComplete).toHaveBeenCalled();
+    });
   });
 
   it('shows 分析失败 for failed terminal state', async () => {
