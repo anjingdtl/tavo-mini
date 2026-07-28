@@ -10,7 +10,7 @@ import {
   resolveLLMRequestConfigById,
 } from '../src/services/llm';
 import {
-  defaultExtractorModeForProfile,
+  ANALYSIS_MODE_PRESETS,
   extractWithLlm,
   extractMaterialWithLlm,
 } from '../src/services/continuation/canon/canonAnalysisService';
@@ -70,10 +70,19 @@ describe('Canon LLM analysis', () => {
     });
   });
 
-  it('uses LLM for Standard and Deep while reserving Quick for offline preview', () => {
-    expect(defaultExtractorModeForProfile('quick')).toBe('deterministic');
-    expect(defaultExtractorModeForProfile('standard')).toBe('llm');
-    expect(defaultExtractorModeForProfile('deep')).toBe('llm');
+  it('exposes exactly two LLM analysis modes', () => {
+    expect(Object.keys(ANALYSIS_MODE_PRESETS)).toEqual([
+      'fast_continuation',
+      'full_canon',
+    ]);
+    expect(ANALYSIS_MODE_PRESETS.fast_continuation).toMatchObject({
+      profile: 'standard',
+      scope: { kind: 'tail', tailChapterCount: 30 },
+    });
+    expect(ANALYSIS_MODE_PRESETS.full_canon).toMatchObject({
+      profile: 'deep',
+      scope: { kind: 'full', tailChapterCount: null },
+    });
   });
 
   it('binds Deep extraction to the captured configuration and requests structured JSON', async () => {
@@ -179,9 +188,9 @@ describe('Canon LLM analysis', () => {
       characters: [expect.objectContaining({ canonicalName: '林凡' })],
     });
     expect(callLLMResult).toHaveBeenCalledTimes(3);
-    expect(
-      (callLLMResult as jest.Mock).mock.calls[1][0][0].content,
-    ).toContain('上一轮输出无法解析或不符合 schema');
+    expect((callLLMResult as jest.Mock).mock.calls[1][0][0].content).toContain(
+      '上一轮输出无法解析或不符合 schema',
+    );
     jest.useRealTimers();
   });
 });
