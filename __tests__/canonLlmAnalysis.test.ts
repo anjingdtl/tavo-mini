@@ -117,7 +117,7 @@ describe('Canon LLM analysis', () => {
 
   it('keeps legacy five-family requests readable for interrupted Schema 22 tasks', async () => {
     (callLLMResult as jest.Mock).mockResolvedValue({ text: validResult });
-    const result = await extractMaterialWithLlm(
+    const outcome = await extractMaterialWithLlm(
       [chapter],
       'standard',
       42,
@@ -125,8 +125,8 @@ describe('Canon LLM analysis', () => {
       'run-1',
       new AbortController().signal,
     );
-    expect(result.characters).toHaveLength(1);
-    expect(result.worldRules).toEqual([]);
+    expect(outcome.result.characters).toHaveLength(1);
+    expect(outcome.result.worldRules).toEqual([]);
     expect(callLLMResult).toHaveBeenCalledWith(
       expect.any(Array),
       5000,
@@ -142,7 +142,7 @@ describe('Canon LLM analysis', () => {
   it('extracts every character-state field in one Schema 23 request group', async () => {
     (callLLMResult as jest.Mock).mockResolvedValue({ text: validResult });
 
-    const result = await extractMaterialWithLlm(
+    const outcome = await extractMaterialWithLlm(
       [chapter],
       'standard',
       42,
@@ -151,8 +151,8 @@ describe('Canon LLM analysis', () => {
       new AbortController().signal,
     );
 
-    expect(result.characters).toHaveLength(1);
-    expect(result.worldRules).toEqual([]);
+    expect(outcome.result.characters).toHaveLength(1);
+    expect(outcome.result.worldRules).toEqual([]);
     expect((callLLMResult as jest.Mock).mock.calls[0][0][0].content).toContain(
       'relationships、experiences、knowledge、states',
     );
@@ -180,7 +180,9 @@ describe('Canon LLM analysis', () => {
     await jest.runAllTimersAsync();
 
     await expect(pending).resolves.toMatchObject({
-      characters: [expect.objectContaining({ canonicalName: '林凡' })],
+      result: {
+        characters: [expect.objectContaining({ canonicalName: '林凡' })],
+      },
     });
     expect(callLLMResult).toHaveBeenCalledTimes(2);
     jest.useRealTimers();
@@ -204,12 +206,117 @@ describe('Canon LLM analysis', () => {
     await jest.runAllTimersAsync();
 
     await expect(pending).resolves.toMatchObject({
-      characters: [expect.objectContaining({ canonicalName: '林凡' })],
+      result: {
+        characters: [expect.objectContaining({ canonicalName: '林凡' })],
+      },
     });
     expect(callLLMResult).toHaveBeenCalledTimes(3);
     expect((callLLMResult as jest.Mock).mock.calls[1][0][0].content).toContain(
       '上一轮输出无法解析或不符合 schema',
     );
     jest.useRealTimers();
+  });
+
+  it('exposes element-level field names in the prompt for grouped requests', async () => {
+    (callLLMResult as jest.Mock).mockResolvedValue({ text: validResult });
+
+    await extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'world_plot',
+      'run-prompt-spec',
+      new AbortController().signal,
+    );
+
+    const prompt = (callLLMResult as jest.Mock).mock.calls[0][0][0]
+      .content as string;
+    // The grouped prompt must teach the model the exact field names so it does
+    // not have to guess (S3 root cause). Both the array-spec and the
+    // evidence-spec lines must be present.
+    expect(prompt).toContain('characters(canonicalName');
+    expect(prompt).toContain('relationships(sourceName');
+    expect(prompt).toContain('knowledge(characterName');
+    expect(prompt).toContain('evidence');
+    expect(prompt).toContain('charStart');
+  });
+
+  it('triggers a stats-aware retry when received>0 but accepted=0 for a category', async () => {
+    jest.useFakeTimers();
+    // First attempt: characters all rejected (canonicalName missing, no alias
+    // to rescue them). This is the S3 "silent wipe" failure mode.
+    const allRejected = JSON.stringify({
+      schemaVersion: 1,
+      worldRules: [],
+      characters: [
+        { description: '无名字段', importance: 'primary', evidence: [] },
+      ],
+      relationships: [],
+      plotThreads: [],
+      experiences: [],
+      knowledge: [],
+      states: [],
+      timelineEvents: [],
+    });
+    (callLLMResult as jest.Mock)
+      .mockResolvedValueOnce({ text: allRejected })
+      .mockResolvedValueOnce({ text: validResult });
+
+    const pending = extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'characters',
+      'run-stats-retry',
+      new AbortController().signal,
+    );
+    await jest.runAllTimersAsync();
+
+    const outcome = await pending;
+    expect(outcome.result.characters[0].canonicalName).toBe('林凡');
+    expect(callLLMResult).toHaveBeenCalledTimes(2);
+    // The retry instruction must carry the dropped statistics so the model
+    // knows which field name it got wrong.
+    const retryPrompt = (callLLMResult as jest.Mock).mock.calls[1][0][0]
+      .content as string;
+    expect(retryPrompt).toContain('received');
+    expect(retryPrompt).toContain('accepted');
+    jest.useRealTimers();
+  });
+
+  it('emits a warning string (without retrying) when some items survive but some are dropped', async () => {
+    (callLLMResult as jest.Mock).mockResolvedValueOnce({
+      text: JSON.stringify({
+        schemaVersion: 1,
+        worldRules: [],
+        characters: [
+          { canonicalName: '林凡', importance: 'primary', evidence: [] },
+          { description: '缺名字', importance: 'primary', evidence: [] },
+        ],
+        relationships: [],
+        plotThreads: [],
+        experiences: [],
+        knowledge: [],
+        states: [],
+        timelineEvents: [],
+      }),
+    });
+
+    const outcome = await extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'characters',
+      'run-warning',
+      new AbortController().signal,
+    );
+
+    expect(outcome.result.characters).toHaveLength(1);
+    expect(outcome.result.characters[0].canonicalName).toBe('林凡');
+    expect(outcome.warning).toEqual(
+      expect.stringContaining('characters'),
+    );
+    expect(outcome.warning).toMatch(/dropped|丢弃/);
+    expect(callLLMResult).toHaveBeenCalledTimes(1);
   });
 });
