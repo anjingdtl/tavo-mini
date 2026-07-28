@@ -16,7 +16,7 @@ export async function isCanonReadyForGeneration(
 ): Promise<boolean> {
   const db = await openDatabase();
   const [r] = await db.executeSql(
-    `SELECT s.active_canon_snapshot_id AS sid, snap.status AS status
+    `SELECT s.active_canon_snapshot_id AS sid, snap.status AS status, snap.profile AS profile
       FROM continuation_settings s
       LEFT JOIN continuation_canon_snapshots snap
         ON snap.id = s.active_canon_snapshot_id
@@ -25,5 +25,5 @@ export async function isCanonReadyForGeneration(
   );
   if (r.rows.length === 0) return false;
   const row = r.rows.item(0);
-  return !!row.sid && row.status === 'ready';
+  return !!row.sid && row.status === 'ready' && row.profile !== 'quick';
 }

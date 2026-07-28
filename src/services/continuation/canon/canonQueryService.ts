@@ -67,7 +67,7 @@ async function assertActiveSnapshot(
     throw new CanonSnapshotOutdatedError('不是当前 active Canon snapshot');
   }
   const snap = await getSnapshotByIdInTx(db, snapshotId);
-  if (!snap || snap.status !== 'ready') {
+  if (!snap || snap.status !== 'ready' || snap.profile === 'quick') {
     throw new CanonSnapshotOutdatedError('snapshot 未就绪');
   }
   if (snap.revision !== snapshotRevision) {
@@ -106,7 +106,7 @@ export const CanonQueryService = {
       throw new CanonSnapshotOutdatedError('没有 active Canon snapshot');
     }
     const snap = await getSnapshotByIdInTx(db, activeId);
-    if (!snap || snap.status !== 'ready') {
+    if (!snap || snap.status !== 'ready' || snap.profile === 'quick') {
       throw new CanonSnapshotOutdatedError('active snapshot 不可用');
     }
     return snap;

@@ -17,7 +17,6 @@ import { useProjectStore } from '../../../store/projectStore';
 import { useThemeStore } from '../../../store/themeStore';
 import {
   activateSnapshot,
-  defaultExtractorModeForProfile,
   getAnalysisOverview,
   getAnalysisWorkItems,
   ANALYSIS_MATERIAL_LABELS,
@@ -30,8 +29,8 @@ import {
   type AnalysisRun,
   type CanonSnapshot,
   type AnalysisWorkItem,
+  type ContinuationAnalysisMode,
 } from '../../../services/continuation/canon';
-import type { AnalysisProfile } from '../../../services/continuation/canon/types';
 import { isBoundaryReady } from '../../../services/continuation/continuationSettingsService';
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
@@ -103,21 +102,18 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     return () => clearInterval(timer);
   }, [latestRun, reload]);
 
-  const runAnalysis = (profile: AnalysisProfile) => {
+  const runAnalysis = (mode: ContinuationAnalysisMode) => {
     if (!currentProject) return;
     if (!boundaryOk) {
       Alert.alert('请先设置续写起点', '导入原著并设置续写边界后再分析。');
       return;
     }
-    const onlineNote =
-      profile === 'deep'
-        ? '\n\nDeep 档位耗时与 Token 更高，建议确认模型额度。'
-        : '';
+    const fast = mode === 'fast_continuation';
     Alert.alert(
-      `开始 ${profile} 分析`,
-      profile === 'quick'
-        ? `将仅读取续写起点之前的原著章节。Quick 使用离线快速提取，结果只适合预览。\n\n分析过程可暂停/取消。${onlineNote}`
-        : `将仅读取续写起点之前的原著章节，并调用当前已启用的 LLM 生成带原文证据的结构化 Canon。模型调用或 JSON 校验失败会明确报错，不会降级为关键词结果。\n\n分析过程可暂停/取消。${onlineNote}`,
+      fast ? '开始快速续写分析' : '开始完整 Canon 分析',
+      fast
+        ? '将调用当前 LLM 精读续写起点前最后 30 章，生成带原文证据的结构化 Canon。更早章节尚未覆盖，可稍后补全。\n\n分析过程可暂停/取消。'
+        : '将调用当前 LLM 分析续写起点之前的全部原著章节，生成带原文证据的结构化 Canon。完整分析耗时与 Token 更高。\n\n分析过程可暂停/取消。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -127,8 +123,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
             try {
               const { runId, snapshotId } = await startAnalysis({
                 projectId: currentProject.id,
-                profile,
-                extractorMode: defaultExtractorModeForProfile(profile),
+                mode,
               });
               Toast.show({
                 type: 'info',
@@ -143,7 +138,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               await PipelineForeground.start(
                 runId,
                 '原著分析进行中',
-                '正在准备五类资料…',
+                fast ? '正在准备最近章节资料…' : '正在准备全书资料…',
                 0,
               );
               const run = await processAnalysisRun(runId, {
@@ -231,7 +226,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
           total: items.length,
           state: failed
             ? 'failed'
-            : active?.state ?? (cancelled ? 'cancelled' : items.length ? 'completed' : 'queued'),
+            : active?.state ??
+              (cancelled ? 'cancelled' : items.length ? 'completed' : 'queued'),
           errorMessage: failed?.errorMessage,
         };
       }),
@@ -364,6 +360,18 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                     覆盖 {active.coverage.analyzedChapterCount}/
                     {active.coverage.sourceChapterCount} 章
                   </Text>
+                  {active.coverage.scope?.kind === 'tail' && (
+                    <Text style={{ color: theme.colors.warning || '#b45309' }}>
+                      当前为最近 {active.coverage.scope.tailChapterCount}{' '}
+                      章的快速续写 分析；较早原著尚未覆盖。
+                    </Text>
+                  )}
+                  {active.profile === 'quick' && (
+                    <Text style={{ color: theme.colors.warning || '#b45309' }}>
+                      旧版 Quick 离线预览已退役，不能用于续写；请重新进行 LLM
+                      分析。
+                    </Text>
+                  )}
                   {active.coverage.incompleteReasons.length > 0 && (
                     <Text style={{ color: theme.colors.warning || '#b45309' }}>
                       不完整：{active.coverage.incompleteReasons.join('；')}
@@ -550,24 +558,19 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               <Text
                 style={[styles.hint, { color: theme.colors.textSecondary }]}
               >
-                分析只读取续写边界内的原著。Quick 是离线预览；Standard/Deep
-                会调用当前 LLM 并产出可审核的五类资料。正式续写请用
-                Standard/Deep。
+                两种模式都会调用当前 LLM，并产出带原文证据、可审核的五类 Canon
+                资料。快速续写只精读最后 30 章；完整 Canon 分析覆盖全部
+                边界内原著。
               </Text>
               <View style={styles.row}>
                 <Button
-                  label="Quick"
-                  onPress={() => runAnalysis('quick')}
+                  label="快速续写分析"
+                  onPress={() => runAnalysis('fast_continuation')}
                   disabled={busy || !boundaryOk}
                 />
                 <Button
-                  label="Standard"
-                  onPress={() => runAnalysis('standard')}
-                  disabled={busy || !boundaryOk}
-                />
-                <Button
-                  label="Deep"
-                  onPress={() => runAnalysis('deep')}
+                  label="完整 Canon 分析"
+                  onPress={() => runAnalysis('full_canon')}
                   disabled={busy || !boundaryOk}
                 />
               </View>

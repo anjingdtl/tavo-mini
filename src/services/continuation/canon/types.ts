@@ -3,15 +3,32 @@
  *
  * Phase 3 MUST consume Canon only via CanonQueryService — never query tables.
  */
-import type {
-  SourceChapterPosition,
-  Utf16Offset,
-} from '../../../types/novel';
+import type { SourceChapterPosition, Utf16Offset } from '../../../types/novel';
 
 export const EXTRACTION_VERSION = 'v1';
 export const CANON_SNAPSHOT_OUTDATED = 'canon_snapshot_outdated';
 
 export type AnalysisProfile = 'quick' | 'standard' | 'deep';
+
+/** The only two analysis experiences available for newly created runs. */
+export type ContinuationAnalysisMode = 'fast_continuation' | 'full_canon';
+
+export type AnalysisScopeKind = 'full' | 'tail' | 'adaptive';
+
+/**
+ * Persisted with the run checkpoint and coverage so partial Canon snapshots
+ * never look like a complete source analysis.
+ */
+export interface AnalysisScope {
+  schemaVersion: 1;
+  kind: AnalysisScopeKind;
+  tailChapterCount: number | null;
+}
+
+export interface AnalyzedChapterRange {
+  startPosition: SourceChapterPosition;
+  endPosition: SourceChapterPosition;
+}
 
 export type AnalysisRunState =
   | 'queued'
@@ -105,12 +122,16 @@ export interface CanonCapabilities {
 }
 
 export interface CanonCoverage {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   sourceChapterCount: number;
   analyzedChapterCount: number;
   analyzedThroughPosition: SourceChapterPosition;
   categoryCounts: Record<keyof CanonCapabilities, number>;
   incompleteReasons: string[];
+  /** Absent on Schema v1 coverage persisted before scoped analysis. */
+  scope?: AnalysisScope;
+  /** Absent on Schema v1 coverage persisted before scoped analysis. */
+  analyzedRanges?: AnalyzedChapterRange[];
 }
 
 export interface CanonGovernanceFields {

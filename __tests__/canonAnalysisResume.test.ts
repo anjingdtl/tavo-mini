@@ -69,4 +69,15 @@ describe('Canon analysis resume after interruption', () => {
       }),
     );
   });
+
+  it('does not requeue a retired legacy Quick task', async () => {
+    mockGetRunById.mockResolvedValueOnce({
+      ...cancelledRun,
+      profile: 'quick',
+    });
+
+    await expect(resumeAnalysis(cancelledRun.id)).rejects.toThrow('Quick');
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(mockUpdateRunState).not.toHaveBeenCalled();
+  });
 });
