@@ -28,6 +28,8 @@ export interface DecodedChunk {
 export interface FileMeta {
   fileSizeBytes: number;
   canRead: boolean;
+  /** Present when canRead is false due to the file exceeding the size ceiling. */
+  errorCode?: string;
 }
 
 export interface ContinuationTextImportModuleType {

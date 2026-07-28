@@ -21,11 +21,10 @@ import { executeTransaction, type SqlStatement } from '../../data/connection/tra
 import { openDatabase } from '../../data/connection/openDatabase';
 import { now } from '../../data/repositories/shared';
 import { requireContinuationTextImport } from '../../native/ContinuationTextImportModule';
-import { PARSER_VERSION } from './continuationParser';
-import { NORMALIZATION_VERSION, normalizeSourceText } from './continuationNormalizer';
-import { parseSourceChapters } from './continuationParser';
+import { PARSER_VERSION, createStreamingChapterParser, type ParsedChapter } from './continuationParser';
+import { NORMALIZATION_VERSION, createStreamingNormalizer } from './continuationNormalizer';
 import { applyParsingEdits, type ParsingEdit } from './continuationEditLog';
-import { sha256Hex } from './hashUtils';
+import { Sha256Stream, sha256Hex } from './hashUtils';
 import {
   activateSourceInTx,
   asSourcePosition,
@@ -42,7 +41,6 @@ import {
   nextSourceVersionInTx,
   updateSourceStatus,
   validateChunkContiguity,
-  type ChunkInput,
   type InsertChapterInput,
 } from './continuationSourceRepository';
 import type {
@@ -60,6 +58,15 @@ const ACTIVE_JOB_STATES: ImportJobState[] = [
   'awaiting_review',
   'interrupted',
 ];
+
+/**
+ * Hard ceiling on imported TXT size (mirrors the native MAX_FILE_BYTES).
+ * Enforced in readFileMeta (native) AND here in JS so a too-large file is
+ * rejected before being copied into the private import dir. Above this, the
+ * decode/normalize/parse pipeline — even streaming — risks device-specific
+ * storage/time limits.
+ */
+export const MAX_IMPORT_FILE_BYTES = 200 * 1024 * 1024;
 
 export interface ImportJob {
   id: string;
@@ -169,6 +176,29 @@ async function getJob(db: any, jobId: string): Promise<ImportJob | null> {
   return mapJob(res.rows.item(0));
 }
 
+/**
+ * Return the single active import job for a project, if any (Spec §14.2).
+ *
+ * "Active" matches the partial unique index `idx_continuation_import_one_active`
+ * (states queued/running/paused/awaiting_review/interrupted) — at most one such
+ * row may exist per project. Used by the import UI to surface a resumable /
+ * cancellable job and by startContinuationImport to avoid colliding with the
+ * unique index.
+ */
+export async function getActiveImportJob(
+  projectId: number,
+): Promise<ImportJob | null> {
+  const db = await getDb();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_import_jobs
+     WHERE project_id = ? AND state IN ('queued','running','paused','awaiting_review','interrupted')
+     ORDER BY started_at DESC LIMIT 1`,
+    [projectId],
+  );
+  if (res.rows.length === 0) return null;
+  return mapJob(res.rows.item(0));
+}
+
 // --- public API (Spec §13) --------------------------------------------------
 
 export interface StartImportInput {
@@ -190,8 +220,26 @@ export async function startContinuationImport(
   const db = await getDb();
   await ensureSettingsRow(db, input.projectId);
 
+  // Guard against the partial unique index idx_continuation_import_one_active:
+  // if a previous import on this project was interrupted (e.g. the app was
+  // killed mid-decode) and never resumed/cancelled, its job still occupies the
+  // index and a new insertJob would throw UNIQUE constraint failed. Clear any
+  // such leftover interrupted job (and its staging source) before proceeding.
+  const leftover = await getActiveImportJob(input.projectId);
+  if (leftover && leftover.state === 'interrupted') {
+    await cancelContinuationImport(leftover.id);
+  }
+
   const mod = requireContinuationTextImport();
   const meta = await mod.readFileMeta(input.localPath);
+  // Reject oversized files BEFORE copying into the private import dir (Spec §16,
+  // native MAX_FILE_BYTES). The native readFileMeta already marks these
+  // canRead=false + errorCode, but we double-check the byte count in JS too so
+  // the friendly error fires regardless of the native contract.
+  if (meta.errorCode === 'file_too_large' || meta.fileSizeBytes > MAX_IMPORT_FILE_BYTES) {
+    const mb = (MAX_IMPORT_FILE_BYTES / (1024 * 1024)).toFixed(0);
+    throw new Error(`文件过大（上限 ${mb} MB），请选择更小的原著文件或按章节拆分后导入。`);
+  }
   if (!meta.canRead) {
     throw new Error('无法读取所选文件，请重新选择。');
   }
@@ -253,76 +301,9 @@ export async function startContinuationImport(
   }
 }
 
-/** Decode → normalize → persist chunks → parse → persist chapters → validate. */
-async function runPipelineToReview(
-  db: any,
-  jobId: string,
-  sourceId: number,
-  absPath: string,
-  encoding: string,
-  fileSizeBytes: number,
-): Promise<void> {
-  const mod = requireContinuationTextImport();
-  const CHUNK_BYTES = 192 * 1024;
-
-  // --- decode + normalize (streaming chunks) ---
-  let byteCursor = 0;
-  let rawByteHasherInput = '';
-  const normalizedParts: string[] = [];
-  let normalizedCharCursor = 0;
-  const chunkInputs: ChunkInput[] = [];
-  let chunkIndex = 0;
-  const progressTotal = Math.max(1, Math.ceil(fileSizeBytes / CHUNK_BYTES));
-  await updateJob(db, jobId, { stage: 'decoding', progressTotal });
-
-  while (byteCursor < fileSizeBytes) {
-    const decoded = await mod.decodeChunk(absPath, encoding, byteCursor, CHUNK_BYTES, null);
-    if (decoded.bytesConsumed === 0 && !decoded.atEof) {
-      throw new Error('解码无进展，疑似编码不匹配，请确认文件编码。');
-    }
-    rawByteHasherInput += decoded.text;
-    normalizedParts.push(decoded.text);
-    byteCursor = decoded.nextByteOffset;
-    await updateJob(db, jobId, {
-      progressCurrent: Math.min(progressTotal, Math.ceil(byteCursor / CHUNK_BYTES)),
-      // checkpoint carries only cursor + small state, never full text (§9.6).
-      checkpointJson: JSON.stringify({ byteCursor, normalizedCharCursor, chunkIndex }),
-    });
-    if (decoded.atEof) break;
-  }
-
-  await updateJob(db, jobId, { stage: 'normalizing' });
-  const rawDecoded = rawByteHasherInput;
-  const normalized = normalizeSourceText(rawDecoded);
-
-  // --- persist text chunks (contiguous, no overlap, no hole) ---
-  // Slice the normalized text into ~192 KiB UTF-8 bands (Spec §9.3).
-  const CHUNK_CHAR_TARGET = Math.floor((192 * 1024) / 3); // rough CJK avg
-  for (let i = 0; i < normalized.text.length; i += CHUNK_CHAR_TARGET) {
-    const slice = normalized.text.slice(i, i + CHUNK_CHAR_TARGET);
-    const start = i;
-    const end = i + slice.length;
-    chunkInputs.push({
-      chunkIndex,
-      charStartOffset: asUtf16Offset(start),
-      charEndOffset: asUtf16Offset(end),
-      content: slice,
-      contentSha256: sha256Hex(slice),
-    });
-    chunkIndex += 1;
-  }
-  await insertChunks(db, sourceId, chunkInputs);
-  // checkpoint the chunk count so resume knows how far we got.
-  await updateJob(db, jobId, {
-    checkpointJson: JSON.stringify({ chunksWritten: chunkInputs.length }),
-  });
-
-  // --- parse chapters ---
-  await updateJob(db, jobId, { stage: 'detecting_chapters' });
-  const parsed = parseSourceChapters(normalized.text);
-
-  await updateJob(db, jobId, { stage: 'persisting' });
-  const chapterInputs: InsertChapterInput[] = parsed.chapters.map(c => ({
+/** Convert a finished ParsedChapter to a chapter row input. */
+function parsedChapterToInput(c: ParsedChapter): InsertChapterInput {
+  return {
     position: asSourcePosition(c.position),
     volumeTitle: c.volumeTitle,
     detectedTitle: c.detectedTitle,
@@ -335,18 +316,186 @@ async function runPipelineToReview(
     sourceEndOffset: c.sourceEndOffset,
     isExcluded: c.isExcluded,
     exclusionReason: c.exclusionReason,
-  }));
-  await insertChapters(db, sourceId, chapterInputs);
+  };
+}
 
-  // --- validate ---
+/**
+ * Decode → normalize → persist chunks → parse → persist chapters → validate.
+ *
+ * Single-pass streaming variant: each 192 KiB decoded byte-block is normalized,
+ * hashed, sliced into text chunks, and fed to the streaming chapter parser
+ * immediately, so the full novel never resides in JS memory at once. This
+ * replaces the original load-everything-then-process pipeline that OOMed on
+ * multi-MB novels. Output (chunks/chapters/hashes) is byte-for-byte identical
+ * to the original pipeline — the streaming normalizer/parser are equivalence-
+ * tested against the one-shot variants.
+ */
+async function runPipelineToReview(
+  db: any,
+  jobId: string,
+  sourceId: number,
+  absPath: string,
+  encoding: string,
+  fileSizeBytes: number,
+): Promise<void> {
+  const mod = requireContinuationTextImport();
+  const CHUNK_BYTES = 192 * 1024;
+  // Chunk the normalized text into ~192 KiB UTF-8 bands (Spec §9.3). 3 bytes
+  // per CJK char is the rough average used by the original pipeline.
+  const CHUNK_CHAR_TARGET = Math.floor((192 * 1024) / 3);
+
+  const rawHasher = new Sha256Stream(); // SHA-256 over the raw decoded text
+  const fallbackHasher = new Sha256Stream(); // SHA-256 over the full normalized text (fallback chapter)
+  const normalizer = createStreamingNormalizer();
+  const parser = createStreamingChapterParser();
+
+  let byteCursor = 0;
+  let normalizedCharCursor = 0; // running UTF-16 length of normalized output
+  let chunkBand = ''; // current normalized-text band being filled toward CHUNK_CHAR_TARGET
+  let chunkBandStart = 0; // UTF-16 offset where chunkBand begins
+  let chunkIndex = 0;
+  let chapterCount = 0;
+  // Pending partial line carried across decoded chunks (the decoder may split a
+  // line at any byte boundary; chapters are detected per complete line).
+  let pendingLine = '';
+  let pendingLineStartOffset = 0;
+  // Whole-text paragraph count over the normalized output (used only if the
+  // parser falls back to a single whole-text chapter). Counted online as each
+  // complete normalized line arrives.
+  let globalParagraphCount = 0;
+
+  const progressTotal = Math.max(1, Math.ceil(fileSizeBytes / CHUNK_BYTES));
+  await updateJob(db, jobId, { stage: 'decoding', progressTotal });
+
+  const flushChapterBatch = async (chapters: ParsedChapter[]) => {
+    if (chapters.length === 0) return;
+    await insertChapters(
+      db,
+      sourceId,
+      chapters.map(parsedChapterToInput),
+    );
+    chapterCount += chapters.length;
+  };
+
+  while (byteCursor < fileSizeBytes) {
+    const decoded = await mod.decodeChunk(absPath, encoding, byteCursor, CHUNK_BYTES, null);
+    if (decoded.bytesConsumed === 0 && !decoded.atEof) {
+      throw new Error('解码无进展，疑似编码不匹配，请确认文件编码。');
+    }
+    // Raw hash is over the decoded text before normalization (matches the
+    // original raw_sha256 = sha256Hex(rawDecoded)).
+    rawHasher.updateString(decoded.text);
+
+    // Normalize this byte-block incrementally; push() returns the normalized
+    // text produced from just this block.
+    const normalizedBlock = normalizer.push(decoded.text);
+    fallbackHasher.updateString(normalizedBlock);
+
+    // Split the normalized block into complete lines and feed the streaming
+    // chapter parser. A trailing partial line (no '\n') is held until the next
+    // block completes it. Line offsets are UTF-16 offsets into the normalized
+    // text, tracked via normalizedCharCursor.
+    let blockRest = normalizedBlock;
+    while (true) {
+      const nlIdx = blockRest.indexOf('\n');
+      if (nlIdx < 0) {
+        // No more complete lines in this block; carry the remainder.
+        pendingLine += blockRest;
+        break;
+      }
+      const completeLine = pendingLine + blockRest.slice(0, nlIdx);
+      const flushed = parser.pushLine(completeLine, pendingLineStartOffset);
+      await flushChapterBatch(flushed);
+      if (completeLine.trim().length > 0) globalParagraphCount += 1;
+      // Advance past the line content + the '\n'.
+      pendingLineStartOffset = pendingLineStartOffset + completeLine.length + 1;
+      pendingLine = '';
+      blockRest = blockRest.slice(nlIdx + 1);
+    }
+
+    // Accumulate the normalized block into chunk bands. When a band reaches
+    // CHUNK_CHAR_TARGET, flush it as a text chunk row.
+    chunkBand += normalizedBlock;
+    while (chunkBand.length >= CHUNK_CHAR_TARGET) {
+      const slice = chunkBand.slice(0, CHUNK_CHAR_TARGET);
+      const start = chunkBandStart;
+      const end = start + slice.length;
+      await insertChunks(db, sourceId, [
+        {
+          chunkIndex,
+          charStartOffset: asUtf16Offset(start),
+          charEndOffset: asUtf16Offset(end),
+          content: slice,
+          contentSha256: sha256Hex(slice),
+        },
+      ]);
+      chunkIndex += 1;
+      chunkBandStart = end;
+      chunkBand = chunkBand.slice(CHUNK_CHAR_TARGET);
+    }
+    normalizedCharCursor += normalizedBlock.length;
+
+    byteCursor = decoded.nextByteOffset;
+    await updateJob(db, jobId, {
+      progressCurrent: Math.min(progressTotal, Math.ceil(byteCursor / CHUNK_BYTES)),
+      // checkpoint carries only cursor + small state, never full text (§9.6).
+      checkpointJson: JSON.stringify({
+        byteCursor,
+        normalizedCharCursor,
+        chunkIndex,
+        chapterCount,
+      }),
+    });
+    if (decoded.atEof) break;
+  }
+
+  // Flush the trailing partial line (if any) so the parser sees the last line.
+  if (pendingLine.length > 0) {
+    const flushed = parser.pushLine(pendingLine, pendingLineStartOffset);
+    await flushChapterBatch(flushed);
+    pendingLine = '';
+  }
+
+  // Flush the final partial chunk band.
+  await updateJob(db, jobId, { stage: 'persisting' });
+  if (chunkBand.length > 0) {
+    const start = chunkBandStart;
+    const end = start + chunkBand.length;
+    await insertChunks(db, sourceId, [
+      {
+        chunkIndex,
+        charStartOffset: asUtf16Offset(start),
+        charEndOffset: asUtf16Offset(end),
+        content: chunkBand,
+        contentSha256: sha256Hex(chunkBand),
+      },
+    ]);
+    chunkIndex += 1;
+    chunkBand = '';
+  }
+
+  // Finalize the normalizer (aggregate normalized char/byte counts + sha) and
+  // the parser (close trailing chapter / build fallback). The fallback needs
+  // the whole-text hash + paragraph count, which the streaming normalizer's
+  // sha and an online paragraph count provide.
+  await updateJob(db, jobId, { stage: 'detecting_chapters' });
+  const normMeta = normalizer.finalize();
+  const parsedFinal = parser.finalize({
+    fallbackSha256: fallbackHasher.digest(),
+    fallbackParagraphCount: globalParagraphCount,
+    totalCharCount: normMeta.normalizedCharCount,
+  });
+  await flushChapterBatch(parsedFinal.chapters);
+
+  // --- validate chunk contiguity (DB-side, unchanged) ---
   await updateJob(db, jobId, { stage: 'validating' });
-  const contiguity = await validateChunkContiguity(db, sourceId, normalized.normalizedCharCount);
+  const contiguity = await validateChunkContiguity(db, sourceId, normMeta.normalizedCharCount);
   if (!contiguity.ok) {
     throw new Error(`分块完整性校验失败：${contiguity.gap ?? '未知'}`);
   }
 
   // --- finalize source metadata + job ---
-  const rawSha = sha256Hex(rawDecoded);
+  const rawSha = rawHasher.digest();
   await db.executeSql(
     `UPDATE continuation_sources SET
       raw_sha256 = ?, normalized_sha256 = ?, normalized_char_count = ?,
@@ -355,10 +504,10 @@ async function runPipelineToReview(
       WHERE id = ?`,
     [
       rawSha,
-      normalized.normalizedSha256,
-      normalized.normalizedCharCount,
-      normalized.normalizedByteCount,
-      parsed.chapters.length,
+      normMeta.normalizedSha256,
+      normMeta.normalizedCharCount,
+      normMeta.normalizedByteCount,
+      chapterCount,
       encoding,
       now(),
       sourceId,
