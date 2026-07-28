@@ -21,6 +21,7 @@ import {
   getAnalysisWorkItems,
   ANALYSIS_MATERIAL_LABELS,
   cancelAnalysis,
+  getHistoricalDigestCoverage,
   pauseAnalysis,
   processAnalysisRun,
   resumeAnalysis,
@@ -37,6 +38,39 @@ import { runStatusLabel } from './runStatusLabel';
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
 
+const RUN_STATE_LABELS: Record<AnalysisRun['state'], string> = {
+  queued: '排队中',
+  running: '分析中',
+  awaiting_review: '待审核激活',
+  paused: '已暂停',
+  failed: '失败',
+  cancelled: '已取消',
+  completed: '已完成',
+  outdated: '已失效',
+};
+
+const RUN_STAGE_LABELS: Record<AnalysisRun['stage'], string> = {
+  snapshot: '读取原著',
+  chapter_extraction: '章节提取',
+  entity_resolution: '资料归并',
+  temporal_merge: '时序归并',
+  global_synthesis: '全局归纳',
+  evidence_validation: '证据校验',
+  indexing: '建立索引',
+  finalizing: '结果整理',
+};
+
+const ANALYSIS_PROFILE_LABELS: Record<AnalysisRun['profile'], string> = {
+  quick: '快速分析',
+  standard: '标准分析',
+  deep: '深度分析',
+};
+
+function coverageReasonLabel(reason: string): string {
+  if (reason === 'partial_chapter_coverage') return '本次仅分析了部分章节';
+  return '仍有部分原著章节未覆盖';
+}
+
 export const CanonAnalysisOverviewScreen: React.FC<{
   navigation: {
     navigate: (screen: string, params?: any) => void;
@@ -51,6 +85,15 @@ export const CanonAnalysisOverviewScreen: React.FC<{
   const [latestRun, setLatestRun] = useState<AnalysisRun | null>(null);
   const [workItems, setWorkItems] = useState<AnalysisWorkItem[]>([]);
   const [boundaryOk, setBoundaryOk] = useState(false);
+  const [historicalCoverage, setHistoricalCoverage] = useState({
+    readyDigestCount: 0,
+    readyChapterCount: 0,
+    ranges: [] as Array<{ startPosition: number; endPosition: number }>,
+  });
+  const [historicalProgress, setHistoricalProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
 
   const reload = useCallback(async () => {
     if (!currentProject) {
@@ -58,9 +101,10 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       return;
     }
     try {
-      const [overview, ready] = await Promise.all([
+      const [overview, ready, historyCoverage] = await Promise.all([
         getAnalysisOverview(currentProject.id),
         isBoundaryReady(currentProject.id),
+        getHistoricalDigestCoverage(currentProject.id),
       ]);
       setActive(overview.activeSnapshot);
       const items = overview.latestRun
@@ -78,6 +122,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       );
       setWorkItems(items);
       setBoundaryOk(ready);
+      setHistoricalCoverage(historyCoverage);
     } catch (e: any) {
       Toast.show({
         type: 'error',
@@ -112,10 +157,10 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     }
     const fast = mode === 'fast_continuation';
     Alert.alert(
-      fast ? '开始快速续写分析' : '开始完整 Canon 分析',
+      fast ? '开始快速续写分析' : '开始完整原著分析',
       fast
-        ? '将调用当前 LLM 精读续写起点前最后 30 章，生成带原文证据的结构化 Canon。每个章节批次会请求「人物与状态」及「世界观与剧情」两组资料；更早章节尚未覆盖，可稍后补全。\n\n分析过程可暂停/取消。'
-        : '将调用当前 LLM 分析续写起点之前的全部原著章节，生成带原文证据的结构化 Canon。每个章节批次会请求两组资料；完整分析耗时与 Token 更高。\n\n分析过程可暂停/取消。',
+        ? '将调用当前模型精读续写起点前最后 30 章，生成带原文证据的结构化原著资料。每个章节批次会生成「人物与状态」及「世界观与剧情」两组资料；更早章节可由历史概览补充。\n\n分析过程可暂停或取消。'
+        : '将调用当前模型分析续写起点之前的全部原著章节，生成带原文证据的结构化原著资料。完整分析耗时与用量更高。\n\n分析过程可暂停或取消。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -162,7 +207,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 },
               });
               await PipelineForeground.stop(runId);
-              if (run.state !== 'awaiting_review') {
+                  if (run.state !== 'completed') {
                 await PipelineForeground.notifyFailed(
                   `ca:${runId}`,
                   '原著分析未完成',
@@ -173,14 +218,14 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 );
               }
               await PipelineForeground.notifyComplete(
-                `ca:${runId}`,
-                '原著分析完成',
-                '两组 Canon 资料已生成，等待您审核并激活。',
+                    `ca:${runId}`,
+                    '原著分析完成',
+                    '原著资料已自动启用，可按需删除或调整个别资料。',
               );
               Toast.show({
-                type: 'success',
-                text1: '分析完成',
-                text2: '请审核后激活快照',
+                    type: 'success',
+                    text1: '分析完成',
+                    text2: '原著资料已自动启用',
               });
               void snapshotId;
               await reload();
@@ -208,6 +253,27 @@ export const CanonAnalysisOverviewScreen: React.FC<{
   const progressPercent = latestRun?.progressTotal
     ? Math.round((displayedProgressCurrent / latestRun.progressTotal) * 100)
     : 0;
+  const needsActivation =
+    !!latestRun &&
+    ['awaiting_review', 'completed'].includes(latestRun.state) &&
+    active?.id !== latestRun.canonSnapshotId;
+  const displayedRunStatus =
+    latestRun && active?.id === latestRun.canonSnapshotId
+      ? '分析完成，已启用为当前原著资料'
+      : latestRun
+      ? runStatusLabel(latestRun, workItems)
+      : '';
+  const historicalTargetChapterCount = active
+    ? Math.max(
+        0,
+        active.coverage.sourceChapterCount - active.coverage.analyzedChapterCount,
+      )
+    : 0;
+  const historicalCoverageComplete =
+    historicalTargetChapterCount > 0 &&
+    historicalCoverage.readyChapterCount >= historicalTargetChapterCount;
+  const formatRange = (range: { startPosition: number; endPosition: number }) =>
+    `第 ${range.startPosition + 1}–${range.endPosition} 章`;
   const materialProgress = useMemo(
     () =>
       Array.from(new Set(workItems.map(item => item.materialType))).map(
@@ -284,11 +350,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         },
       });
       await PipelineForeground.stop(latestRun.id);
-      if (run.state === 'awaiting_review') {
-        await PipelineForeground.notifyComplete(
-          `ca:${latestRun.id}`,
-          '原著分析完成',
-          'Canon 请求组已生成，等待审核。',
+          if (run.state === 'completed') {
+            await PipelineForeground.notifyComplete(
+              `ca:${latestRun.id}`,
+              '原著分析完成',
+              '原著资料已自动启用。',
         );
       }
       await reload();
@@ -303,7 +369,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     setBusy(true);
     try {
       await activateSnapshot(currentProject.id, latestRun.canonSnapshotId);
-      Toast.show({ type: 'success', text1: 'Canon 快照已激活' });
+      Toast.show({ type: 'success', text1: '原著资料已启用' });
       await reload();
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '激活失败', text2: e?.message });
@@ -316,13 +382,15 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     if (!currentProject || !active) return;
     Alert.alert(
       '生成历史概览',
-      '将为未进入近端 Canon 的早期章节建立本地候选索引，并按每组约 30 章调用 LLM 生成历史概览。历史概览不是 Canon，也不能替代原文证据。',
+      '将为未进入近端原著分析的早期章节建立本地候选索引，并按当前模型的上下文容量自动分组生成历史概览。历史概览仅供参考，不能替代原文证据。',
       [
         { text: '取消', style: 'cancel' },
         {
           text: '开始生成',
           onPress: async () => {
             setBusy(true);
+            const taskId = `history:${currentProject.id}:${Date.now()}`;
+            let foregroundStarted = false;
             try {
               const queued = await queueHistoricalDigests({
                 projectId: currentProject.id,
@@ -335,21 +403,59 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 });
                 return;
               }
-              for (const digestId of queued.digestIds) {
+              setHistoricalProgress({
+                current: 0,
+                total: queued.digestIds.length,
+              });
+              await requestNotificationPermission().catch(() => false);
+              await PipelineForeground.start(
+                taskId,
+                '历史概览生成中',
+                `0/${queued.digestIds.length} 组历史概览`,
+                0,
+              );
+              foregroundStarted = true;
+              for (const [index, digestId] of queued.digestIds.entries()) {
                 await processHistoricalDigest(digestId);
+                const current = index + 1;
+                const percent = Math.round(
+                  (current / queued.digestIds.length) * 100,
+                );
+                setHistoricalProgress({
+                  current,
+                  total: queued.digestIds.length,
+                });
+                await PipelineForeground.updateProgress(
+                  taskId,
+                  `第 ${current}/${queued.digestIds.length} 组历史概览`,
+                  percent,
+                );
               }
+              await PipelineForeground.notifyComplete(
+                taskId,
+                '历史概览已生成',
+                `已索引 ${queued.indexedChapterCount} 个早期章节。`,
+              );
               Toast.show({
                 type: 'success',
                 text1: '历史概览已生成',
                 text2: '已索引 ' + queued.indexedChapterCount + ' 个早期章节',
               });
             } catch (e: any) {
+              if (foregroundStarted) {
+                await PipelineForeground.notifyFailed(
+                  taskId,
+                  '历史概览生成失败',
+                  '请检查模型配置后重新生成。',
+                );
+              }
               Toast.show({
                 type: 'error',
                 text1: '历史概览生成失败',
                 text2: e?.message,
               });
             } finally {
+              if (foregroundStarted) await PipelineForeground.stop(taskId);
               setBusy(false);
             }
           },
@@ -398,52 +504,91 @@ export const CanonAnalysisOverviewScreen: React.FC<{
           <>
             <Card style={styles.card}>
               <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
-                当前 Active Canon
+                当前启用的原著资料
               </Text>
               {active ? (
                 <>
                   <Text style={{ color: theme.colors.textSecondary }}>
-                    快照 {active.id.slice(0, 8)}… · rev {active.revision} ·{' '}
-                    {active.profile}
+                    快照 {active.id.slice(0, 8)}… · 版本 {active.revision} ·{' '}
+                    {ANALYSIS_PROFILE_LABELS[active.profile]}
                   </Text>
                   <Text style={{ color: theme.colors.textSecondary }}>
-                    边界章节 pos={active.boundaryPosition} · offset=
-                    {active.boundaryCharOffsetExclusive}
+                    分析边界：第 {active.boundaryPosition + 1} 章
                   </Text>
                   <Text style={{ color: theme.colors.textSecondary }}>
-                    覆盖 {active.coverage.analyzedChapterCount}/
+                    精读原著资料：覆盖 {active.coverage.analyzedChapterCount}/
                     {active.coverage.sourceChapterCount} 章
                   </Text>
-                  {active.coverage.analyzedChapterCount <
-                    active.coverage.sourceChapterCount && (
+                  {historicalTargetChapterCount > 0 && (
                     <Text style={{ color: theme.colors.warning || '#b45309' }}>
-                      当前为近端 Canon 分析；较早原著尚未覆盖，可生成历史概览作为弱参考。
+                      历史概览：已覆盖 {historicalCoverage.readyChapterCount}/
+                      {historicalTargetChapterCount} 个未精读章节
+                      {historicalCoverage.ranges.length
+                        ? `（${historicalCoverage.ranges
+                            .map(formatRange)
+                            .join('、')}，仅作参考）`
+                        : '（尚未生成）'}
                     </Text>
                   )}
-                  {active.coverage.analyzedChapterCount <
-                    active.coverage.sourceChapterCount && (
+                  {historicalTargetChapterCount > 0 &&
+                    !historicalCoverageComplete && (
                     <Button
-                      label="生成历史概览"
+                      label={
+                        historicalCoverage.readyChapterCount > 0
+                          ? '补生成历史概览'
+                          : '生成历史概览'
+                      }
                       variant="ghost"
                       onPress={buildHistoricalDigests}
                       disabled={busy}
                     />
                   )}
+                  {historicalProgress && (
+                    <View style={styles.historicalProgress}>
+                      <Text style={{ color: theme.colors.textSecondary }}>
+                        历史概览进度 {historicalProgress.current}/
+                        {historicalProgress.total} 组
+                      </Text>
+                      <View
+                        style={[
+                          styles.progressTrack,
+                          { backgroundColor: theme.colors.border },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.progressFill,
+                            {
+                              backgroundColor: theme.colors.accent,
+                              width: `${Math.round(
+                                (historicalProgress.current /
+                                  historicalProgress.total) *
+                                  100,
+                              )}%`,
+                            },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                  )}
                   {active.profile === 'quick' && (
                     <Text style={{ color: theme.colors.warning || '#b45309' }}>
-                      旧版 Quick 离线预览已退役，不能用于续写；请重新进行 LLM
-                      分析。
+                      旧版快速离线预览不能用于续写；请重新进行模型分析。
                     </Text>
                   )}
-                  {active.coverage.incompleteReasons.length > 0 && (
+                  {active.coverage.incompleteReasons.length > 0 &&
+                    !historicalCoverageComplete && (
                     <Text style={{ color: theme.colors.warning || '#b45309' }}>
-                      不完整：{active.coverage.incompleteReasons.join('；')}
+                      覆盖说明：
+                      {active.coverage.incompleteReasons
+                        .map(coverageReasonLabel)
+                        .join('；')}
                     </Text>
                   )}
                 </>
               ) : (
                 <Text style={{ color: theme.colors.textSecondary }}>
-                  尚未激活 Canon 快照。Phase 3 在此之前无法查询原著事实。
+                  尚未启用原著资料。请在分析完成后于下方审核并启用。
                 </Text>
               )}
             </Card>
@@ -455,11 +600,12 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               {latestRun ? (
                 <>
                   <Text style={{ color: theme.colors.textSecondary }}>
-                    状态 {latestRun.state} · 阶段 {latestRun.stage}
+                    状态 {RUN_STATE_LABELS[latestRun.state]} · 阶段{' '}
+                    {RUN_STAGE_LABELS[latestRun.stage]}
                   </Text>
                   <Text style={{ color: theme.colors.textSecondary }}>
                     进度 {displayedProgressCurrent}/{latestRun.progressTotal} ·{' '}
-                    {latestRun.profile}
+                    {ANALYSIS_PROFILE_LABELS[latestRun.profile]}
                   </Text>
                   {latestRun.progressTotal > 0 && (
                     <>
@@ -485,9 +631,16 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                           fontWeight: '700',
                         }}
                       >
-                        {progressPercent}% · {runStatusLabel(latestRun, workItems)}
+                        {progressPercent}% · {displayedRunStatus}
                       </Text>
                     </>
+                  )}
+                  {needsActivation && (
+                    <Button
+                      label="审核并启用原著资料"
+                      onPress={handleActivate}
+                      disabled={busy}
+                    />
                   )}
                   {(latestRun.state === 'queued' ||
                     latestRun.state === 'running') && (
@@ -593,13 +746,6 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                       {latestRun.errorMessage}
                     </Text>
                   ) : null}
-                  {latestRun.state === 'awaiting_review' && (
-                    <Button
-                      label="审核通过并激活"
-                      onPress={handleActivate}
-                      disabled={busy}
-                    />
-                  )}
                 </>
               ) : (
                 <Text style={{ color: theme.colors.textSecondary }}>
@@ -615,8 +761,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               <Text
                 style={[styles.hint, { color: theme.colors.textSecondary }]}
               >
-                两种模式都会调用当前 LLM，并产出带原文证据、可审核的 Canon
-                资料。快速续写只精读最后 30 章；完整 Canon 分析覆盖全部
+                两种模式都会调用当前模型，并产出带原文证据、可审核的原著资料。
+                快速续写只精读最后 30 章；完整原著分析覆盖全部
                 边界内原著。
               </Text>
               <View style={styles.row}>
@@ -626,7 +772,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   disabled={busy || !boundaryOk}
                 />
                 <Button
-                  label="完整 Canon 分析"
+                  label="完整原著分析"
                   onPress={() => runAnalysis('full_canon')}
                   disabled={busy || !boundaryOk}
                 />
@@ -635,7 +781,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
 
             <Card style={styles.card}>
               <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
-                Canon 资料
+                原著资料
               </Text>
               {(
                 [
@@ -681,6 +827,7 @@ const styles = StyleSheet.create({
   },
   progressFill: { height: '100%', borderRadius: 4 },
   materialProgress: { gap: 4, marginTop: spacing.xs },
+  historicalProgress: { gap: 4, marginTop: spacing.xs },
   materialProgressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',

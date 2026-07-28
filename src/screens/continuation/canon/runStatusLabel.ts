@@ -33,7 +33,7 @@ export function runStatusLabel(
       // share the neutral "summarising" label.
       return '正在汇总结果';
     case 'awaiting_review':
-      return '分析完成，等待审核激活';
+      return '分析完成，可在此审核并激活';
     case 'paused':
       return '已暂停，可继续';
     case 'failed':
@@ -41,7 +41,7 @@ export function runStatusLabel(
     case 'cancelled':
       return '已取消，可从断点继续';
     case 'completed':
-      return '分析完成，等待审核激活';
+      return '分析完成，可在此审核并激活';
     case 'outdated':
       return '源已变更，分析已失效';
     default:

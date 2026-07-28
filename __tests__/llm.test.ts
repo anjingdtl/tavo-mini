@@ -98,6 +98,32 @@ test('requests JSON mode and exposes the provider finish reason', async () => {
   expect(request.response_format).toEqual({ type: 'json_object' });
 });
 
+test('forwards an optional thinking control without changing callers that omit it', async () => {
+  const fetchMock = jest.fn(async (..._args: any[]) => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  await openAICompatibleProvider.generate(
+    [{ role: 'user', content: 'Return JSON.' }],
+    {
+      thinking: { type: 'disabled' },
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'test-key',
+        model_name: 'test-model',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+  expect(request.thinking).toEqual({ type: 'disabled' });
+});
+
 test('falls back without JSON mode when a compatible provider rejects it', async () => {
   const fetchMock = jest
     .fn<any, any[]>()

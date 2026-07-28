@@ -334,6 +334,14 @@ export interface CanonContextBundle {
   plotThreads: PlotThread[];
   timelineEvents: CanonTimelineEvent[];
   evidenceRefs: number[];
+  /**
+   * Selected facts' evidence ids, grouped by the evidence-link owner.  This is
+   * optional for backward-compatible frozen run snapshots created before the
+   * continuation fact-checker started rendering inline citations.
+   */
+  evidenceRefsByOwner?: Partial<
+    Record<EvidenceOwnerType, Record<number, number[]>>
+  >;
   estimatedTokens: number;
   omittedReasonCounts: Record<string, number>;
 }

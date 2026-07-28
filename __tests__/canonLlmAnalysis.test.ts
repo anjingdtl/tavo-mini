@@ -13,6 +13,7 @@ import {
   ANALYSIS_MODE_PRESETS,
   extractWithLlm,
   extractMaterialWithLlm,
+  resolveExtractionEvidenceAgainstChapters,
 } from '../src/services/continuation/canon/canonAnalysisService';
 import {
   asSourcePosition,
@@ -129,7 +130,7 @@ describe('Canon LLM analysis', () => {
     expect(outcome.result.worldRules).toEqual([]);
     expect(callLLMResult).toHaveBeenCalledWith(
       expect.any(Array),
-      8192,
+      16384,
       expect.objectContaining({
         queueClass: 'canon_analysis',
         taskId: 'run-1',
@@ -137,6 +138,97 @@ describe('Canon LLM analysis', () => {
       }),
       expect.any(AbortSignal),
     );
+    expect((callLLMResult as jest.Mock).mock.calls[0][2].thinking).toBeUndefined();
+  });
+
+  it('uses complete chapter text when the selected online model declares a large context window', async () => {
+    (resolveLLMRequestConfigById as jest.Mock).mockResolvedValue({
+      id: 42,
+      provider_type: 'openai_compatible',
+      model_name: 'test-model',
+      url: 'https://example.com/chat/completions',
+      api_key: 'test',
+      context_window: 1_000_000,
+      max_output_tokens: 200_000,
+    });
+    (callLLMResult as jest.Mock).mockResolvedValue({ text: validResult });
+    const longChapter = {
+      ...chapter,
+      content: `开头林凡${'中'.repeat(6_500)}结尾事实`,
+    };
+
+    await extractMaterialWithLlm(
+      [longChapter],
+      'standard',
+      42,
+      'characters',
+      'run-full-context',
+      new AbortController().signal,
+    );
+
+    expect((callLLMResult as jest.Mock).mock.calls[0][0][0].content).toContain(
+      '结尾事实',
+    );
+  });
+
+  it('re-locates quoted evidence against the supplied source and drops invented quotes', () => {
+    const result = {
+      schemaVersion: 1 as const,
+      worldRules: [],
+      characters: [
+        {
+          canonicalName: '林凡', aliases: [], description: '主角。',
+          importance: 'primary' as const, confidence: 0.9,
+          evidence: [
+            { chapterId: 999, chapterPosition: 9, charStart: 1, charEnd: 2, quotePreview: '林凡' },
+            { chapterId: 7, chapterPosition: 0, charStart: 12, charEnd: 14, quotePreview: '不存在的引文' },
+          ],
+        },
+      ],
+      relationships: [], plotThreads: [], experiences: [], knowledge: [], states: [], timelineEvents: [],
+    };
+
+    const resolved = resolveExtractionEvidenceAgainstChapters(result, [chapter]);
+
+    expect(resolved.stats).toEqual({ received: 2, resolved: 1, rejected: 1 });
+    expect(resolved.result.characters[0].evidence).toEqual([
+      expect.objectContaining({
+        chapterId: 7,
+        chapterPosition: 0,
+        charStart: 12,
+        charEnd: 14,
+        quotePreview: '林凡',
+      }),
+    ]);
+  });
+
+  it('accepts a close paraphrase only by storing the matched original excerpt as evidence', () => {
+    const sourceChapter = {
+      ...chapter,
+      content: '我和你一起去丽江旅行过。',
+    };
+    const result = {
+      schemaVersion: 1 as const,
+      worldRules: [],
+      characters: [
+        {
+          canonicalName: '林凡', aliases: [], description: '有旅行经历。',
+          importance: 'primary' as const, confidence: 0.8,
+          evidence: [{ chapterId: 7, chapterPosition: 0, charStart: 12, charEnd: 19, quotePreview: '我和你去过丽江' }],
+        },
+      ],
+      relationships: [], plotThreads: [], experiences: [], knowledge: [], states: [], timelineEvents: [],
+    };
+
+    const resolved = resolveExtractionEvidenceAgainstChapters(result, [sourceChapter]);
+
+    expect(resolved.result.characters[0].evidence).toEqual([
+      expect.objectContaining({
+        quotePreview: '我和你一起去丽江旅行过。',
+        charStart: 12,
+        charEnd: 24,
+      }),
+    ]);
   });
 
   it('extracts every character-state field in one Schema 23 request group', async () => {
@@ -281,6 +373,67 @@ describe('Canon LLM analysis', () => {
       .content as string;
     expect(retryPrompt).toContain('received');
     expect(retryPrompt).toContain('accepted');
+    expect(retryPrompt).toContain('characters(canonicalName,aliases');
+    expect(retryPrompt).not.toContain('详见下方规范');
+    jest.useRealTimers();
+  });
+
+  it('returns a redacted structural diagnostic after every retry rejects a category', async () => {
+    jest.useFakeTimers();
+    const allRejected = JSON.stringify({
+      schemaVersion: 1,
+      worldRules: [],
+      characters: [
+        {
+          display_name: '不应持久化的角色名',
+          secret: '不应持久化的值',
+          evidence: [{ quotePreview: '不应持久化的原著片段' }],
+        },
+      ],
+      relationships: [],
+      plotThreads: [],
+      experiences: [],
+      knowledge: [],
+      states: [],
+      timelineEvents: [],
+    });
+    (callLLMResult as jest.Mock).mockResolvedValue({ text: allRejected });
+
+    const pending = extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'characters',
+      'run-redacted-diagnostic',
+      new AbortController().signal,
+    );
+    const capturedError = pending.catch(reason => reason);
+    await jest.runAllTimersAsync();
+
+    const error = await capturedError;
+    const diagnostic = (error as { diagnostic?: unknown }).diagnostic;
+    expect(diagnostic).toEqual(
+      expect.objectContaining({
+        diagnosticVersion: 1,
+        kind: 'canon_extraction_validation_failure',
+        attempts: expect.arrayContaining([
+          expect.objectContaining({
+            responseLength: allRejected.length,
+            categories: expect.objectContaining({
+              characters: expect.objectContaining({
+                received: 1,
+                accepted: 0,
+                dropped: 1,
+                sampleKeySets: [['display_name', 'evidence', 'secret']],
+              }),
+            }),
+          }),
+        ]),
+      }),
+    );
+    expect(JSON.stringify(diagnostic)).not.toContain('不应持久化的角色名');
+    expect(JSON.stringify(diagnostic)).not.toContain('不应持久化的值');
+    expect(JSON.stringify(diagnostic)).not.toContain('不应持久化的原著片段');
     jest.useRealTimers();
   });
 
@@ -290,7 +443,19 @@ describe('Canon LLM analysis', () => {
         schemaVersion: 1,
         worldRules: [],
         characters: [
-          { canonicalName: '林凡', importance: 'primary', evidence: [] },
+          {
+            canonicalName: '林凡',
+            importance: 'primary',
+            evidence: [
+              {
+                chapterId: 7,
+                chapterPosition: 0,
+                charStart: 12,
+                charEnd: 14,
+                quotePreview: '林凡',
+              },
+            ],
+          },
           { description: '缺名字', importance: 'primary', evidence: [] },
         ],
         relationships: [],
@@ -344,11 +509,11 @@ describe('Canon LLM analysis', () => {
 
       expect(outcome.result.characters[0].canonicalName).toBe('林凡');
       expect(callLLMResult).toHaveBeenCalledTimes(2);
-      // Baseline for standard is now 8192; the length retry must double it.
+      // Thinking remains enabled, so Canon reserves a larger completion floor.
       const firstMaxTokens = (callLLMResult as jest.Mock).mock.calls[0][1];
       const secondMaxTokens = (callLLMResult as jest.Mock).mock.calls[1][1];
-      expect(firstMaxTokens).toBe(8192);
-      expect(secondMaxTokens).toBe(8192 * 2);
+      expect(firstMaxTokens).toBe(16384);
+      expect(secondMaxTokens).toBe(16384 * 2);
       jest.useRealTimers();
     });
 
@@ -377,12 +542,12 @@ describe('Canon LLM analysis', () => {
       expect(outcome.result.characters[0].canonicalName).toBe('林凡');
       const firstMaxTokens = (callLLMResult as jest.Mock).mock.calls[0][1];
       const secondMaxTokens = (callLLMResult as jest.Mock).mock.calls[1][1];
-      expect(firstMaxTokens).toBe(8192);
-      expect(secondMaxTokens).toBe(8192 * 2);
+      expect(firstMaxTokens).toBe(16384);
+      expect(secondMaxTokens).toBe(16384 * 2);
       jest.useRealTimers();
     });
 
-    it('uses a 16384 baseline for the deep profile and doubles on length retry', async () => {
+    it('uses a 32768 baseline for the deep profile and doubles on length retry', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock)
         .mockResolvedValueOnce({
@@ -403,8 +568,8 @@ describe('Canon LLM analysis', () => {
       await jest.runAllTimersAsync();
       await pending;
 
-      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(16384);
-      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(16384 * 2);
+      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(32768);
+      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(32768 * 2);
       jest.useRealTimers();
     });
 
@@ -429,7 +594,7 @@ describe('Canon LLM analysis', () => {
       expect(callLLMResult).toHaveBeenCalledTimes(1);
     });
 
-    it('attaches a diagnostic footer with finishReason and response prefix to the final failure message', async () => {
+    it('attaches a redacted diagnostic footer with finishReason to the final failure message', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock).mockResolvedValue({
         text: null,
@@ -453,6 +618,32 @@ describe('Canon LLM analysis', () => {
       await expect(pending).rejects.toThrow(
         /finishReason=length|max_tokens|截断/,
       );
+      jest.useRealTimers();
+    });
+
+    it('never includes reasoning or prompt-like text in a final failure message', async () => {
+      jest.useFakeTimers();
+      const echoedPrompt = '章节正文：这是不应出现在错误信息中的小说原文';
+      (callLLMResult as jest.Mock).mockResolvedValue({
+        text: null,
+        emptyReason: 'reasoning_only',
+        finishReason: 'length',
+        reasoningText: echoedPrompt,
+      });
+
+      const pending = extractMaterialWithLlm(
+        [chapter],
+        'standard',
+        42,
+        'characters',
+        'run-redacted-reasoning',
+        new AbortController().signal,
+      );
+      pending.catch(() => {});
+      await jest.runAllTimersAsync();
+
+      await expect(pending).rejects.not.toThrow(echoedPrompt);
+      await expect(pending).rejects.not.toThrow(/响应前 200 字符/);
       jest.useRealTimers();
     });
   });

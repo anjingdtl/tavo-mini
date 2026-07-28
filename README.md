@@ -6,16 +6,16 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#技术栈与支持范围)
 [![React Native](https://img.shields.io/badge/React%20Native-0.85.3-61DAFB.svg)](https://reactnative.dev/)
-[![Version](https://img.shields.io/badge/Version-V2.10.4-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.10.5-blue.svg)](CHANGELOG.md)
 [![Tests](https://img.shields.io/badge/Tests-Jest%20verified-success.svg)](#测试与质量门禁)
 
 </div>
 
 ShineWriter 是一款 Android-only 的离线优先小说工作台，覆盖项目管理、章节写作、角色与世界书、笔记资料库、多阶段 AI 流水线、TTS 朗读、备份与恢复。小说数据默认留在设备上；只有用户主动发起在线模型或云端语音请求时，相关内容才会发送到配置的服务商。
 
-当前版本：**V2.10.4** · 数据库 Schema：**24** · 最低 Android API：**24**
+当前版本：**V2.10.5** · 数据库 Schema：**24** · 最低 Android API：**24**
 
-`V2.10.4` 以近端 Canon 为优先，新增历史章节弱参考与本地候选索引：早期章节摘要必须显式生成，命中用户需求后才进入续写上下文，且不会替代 Canon 证据。详见 [CHANGELOG](CHANGELOG.md)。
+`V2.10.5` 修复完整原著 Canon 分析：成功快照自动启用，人物在五类资料中通过统一 ID 关联，剧情与时间线保留时间、地点、人物、事件；FULL 续写复核读取完整 Canon 事实和证据。详见 [CHANGELOG](CHANGELOG.md)。
 
 `V2.6.6` 修复构建生成的质量目标误拦截：通过结构与回读校验的角色卡、世界书即使未完全达到 Token 或字段长度目标，也会保留预览并可保存、导入；界面显示实际值、目标值和补强建议，不会静默发起第二次请求。`V2.6.5` 健全「构建」模块：角色卡与世界书增加紧凑 / 丰满 / 深度生成目标及可见产物质量报告；角色卡按多维人物信息与多轮对话生成；TXT 可解析为可选片段并直接生成角色卡或世界书。世界书构建结果强制全部常驻，预览会显示常驻内容估算。详见 [CHANGELOG](CHANGELOG.md)。
 
@@ -114,9 +114,9 @@ APK 统一交付路径是 `dist/apk/{debug|release}/`：
 | `npm run apk:release`          | `dist/apk/release/ShineWriter-V{version}-release.apk` |
 | `npm run apk:release:minified` | R8/资源压缩 Release 评估包                            |
 
-下一正式产物：`dist/apk/release/ShineWriter-V2.10.4-release.apk`，`versionName=V2.10.4`，`versionCode=2100400`。
+下一正式产物：`dist/apk/release/ShineWriter-V2.10.5-release.apk`，`versionName=V2.10.5`，`versionCode=2100500`。
 
-V2.10.4 将按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
+V2.10.5 将按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm run apk:release` + `apksigner verify` + `zipalign -c` + `aapt dump badging` 全套验收。
 
 **实测验收数据**：
 
@@ -126,10 +126,10 @@ V2.10.4 将按 [Release APK 构建指南](docs/RELEASE_APK_BUILD.md) 执行 `npm
 | 证书 SHA-256 | `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`（与固定值一致） |
 | Number of signers | 1 |
 | zipalign -c | Verification successful |
-| versionName / versionCode | V2.10.4 / 2100400 |
-| 文件大小 | 38,175,275 bytes（36.41 MB） |
-| APK SHA-256 | `A47D21EBDD22BF1390B76E20FC1706CB330F562A96A37EF984119A5DC305BC18` |
-| Android 模拟器验收 | Android 17 x86_64 Debug：299 章 TXT 分析冷启动恢复、取消后继续和完成 500/500 通过；Release APK 已完成签名、对齐、包名和版本元数据验收 |
+| versionName / versionCode | V2.10.5 / 2100500（构建后核验） |
+| 文件大小 | 38,218,551 bytes（36.45 MB） |
+| APK SHA-256 | `5947632A354E1265D8DA77E7E0E1E146CD0BF12D355866F19C5586C27A209667` |
+| Android 模拟器验收 | Android 17 x86_64：299 章 TXT 完整 Canon 分析 30/30、自动启用与五类资料入库通过；Release APK 已完成签名、对齐、包名和版本元数据验收 |
 
 构建脚本会从 `package.json` 生成版本元数据、运行 Gradle，并把 APK 复制到上述交付目录。Release 构建必须显式提供以下环境变量，不会使用默认签名密码：
 
@@ -230,7 +230,7 @@ dist/apk/                         本地 APK 交付目录
 
 ShineWriter is an Android-only, offline-first novel-writing workspace built with React Native 0.85.3 and TypeScript. It includes project/chapter editing, character and world-book libraries, notes, a four-stage AI pipeline, TTS, backups, OpenAI-compatible APIs, and local GGUF inference through Android llama.cpp.
 
-The current version is **V2.10.4** with database Schema **24**. V2.10.4 adds separately persisted historical digests and a local candidate index for partially covered Canon analysis. Historical summaries are weak references, never Canon evidence. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
+The current version is **V2.10.5** with database Schema **24**. V2.10.5 completes full-source Canon analysis with auto-adoption, stable character links, and time/place/person/event plot facts. Historical summaries remain weak references, never Canon evidence. The app stores SQLite data and local models on-device. API keys remain in Android Keystore and are excluded from backups.
 
 ## License
 

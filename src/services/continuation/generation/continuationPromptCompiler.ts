@@ -27,6 +27,51 @@ function canonHardBlock(s: ContinuationContextSnapshot): string {
   return `【原著 Canon】\n世界观:\n${rules || '（无）'}\n人物:\n${chars || '（无）'}`;
 }
 
+function evidenceLabel(
+  s: ContinuationContextSnapshot,
+  ownerType: string,
+  ownerId: number,
+): string {
+  const ids = s.bundles.canon.evidenceRefsByOwner?.[
+    ownerType as keyof NonNullable<
+      typeof s.bundles.canon.evidenceRefsByOwner
+    >
+  ]?.[ownerId];
+  return ids?.length ? `（证据:${ids.join(',')}）` : '';
+}
+
+/**
+ * The continuation checker is a factual gate, not merely a style reviewer.
+ * Keep every selected Canon family visible here; otherwise a run could have
+ * analysed relationships/knowledge/timeline yet never give them to the LLM
+ * that decides whether a generated chapter contradicts the original work.
+ */
+function canonFactCheckBlock(s: ContinuationContextSnapshot): string {
+  const canon = s.bundles.canon;
+  const names = new Map(
+    (canon.characters ?? []).map(character => [character.id, character.canonicalName]),
+  );
+  const nameOf = (id: number) => names.get(id) ?? `人物#${id}`;
+  const line = (body: string, ownerType: string, id: number) =>
+    `- ${body}${evidenceLabel(s, ownerType, id)}`;
+
+  const sections = [
+    ['世界规则', (canon.worldRules ?? []).map(r => line(`${r.title}: ${r.description}`, 'world_rule', r.id))],
+    ['人物资料', (canon.characters ?? []).map(c => line(`${c.canonicalName}: ${c.description}`, 'character', c.id))],
+    ['人物状态', (canon.characterStates ?? []).map(state => line(`${nameOf(state.characterId)}：${state.summary || `状态=${state.aliveState}`}`, 'character_state', state.id))],
+    ['人物关系', (canon.relationships ?? []).map(rel => line(`${nameOf(rel.sourceCharacterId)}→${nameOf(rel.targetCharacterId)}（${rel.relationType}/${rel.attitude}）：${rel.description}`, 'relationship', rel.id))],
+    ['人物经历', (canon.experiences ?? []).map(exp => line(`${nameOf(exp.characterId)}：${exp.title}；${exp.description}`, 'experience', exp.id))],
+    ['知识边界', (canon.knowledge ?? []).map(item => line(`${nameOf(item.characterId)}对“${item.factKey}”=${item.knowledgeState}；${item.factSummary}`, 'knowledge', item.id))],
+    ['剧情线索', (canon.plotThreads ?? []).map(plot => line(`${plot.title}（${plot.status}）：${plot.description}`, 'plot_thread', plot.id))],
+    ['时间线', (canon.timelineEvents ?? []).map(event => line(`${event.title}：${event.summary}`, 'timeline_event', event.id))],
+  ] as Array<[string, string[]]>;
+  const rendered = sections
+    .filter(([, lines]) => lines.length > 0)
+    .map(([title, lines]) => `${title}:\n${lines.join('\n')}`)
+    .join('\n');
+  return `【原著事实复核依据】\n${rendered || '（当前快照未检索到与本章相关的原著事实）'}`;
+}
+
 function stateBlock(s: ContinuationContextSnapshot): string {
   const st = s.bundles.effectiveState;
   const chars = st.characterStates
@@ -137,8 +182,10 @@ export function compileCheckerMessages(
     '你是续写一致性检查器。只输出 JSON 数组 issues[]，每项含 category, subtype, severity, confidence, generatedStart, generatedEnd, generatedExcerpt, description, evidenceIds, suggestedFix。',
     'category ∈ world|character|relationship|plot|experience|knowledge|timeline|style；severity ∈ info|warning|error|blocking。',
     '没有证据时只能 warning 并说明是推测。位置使用 UTF-16 半开区间。',
+    '若原著事实与正文冲突，必须输出问题；能对应行内证据编号时写入 evidenceIds。不得把缺少资料当作原著不存在。',
     lockedBlock(snapshot),
     canonHardBlock(snapshot),
+    canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
     `【可引用证据 id】${JSON.stringify(snapshot.bundles.canon.evidenceRefs.slice(0, 50))}`,
   ].join('\n\n');
@@ -166,6 +213,7 @@ export function compileRepairMessages(
   const system = [
     '你是续写局部修复助手。只修改冲突片段，保留无问题段落。只输出修复后的完整正文。',
     lockedBlock(snapshot),
+    canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
     `【待修复问题】\n${issues || '（无 blocking/error）'}`,
   ].join('\n\n');
