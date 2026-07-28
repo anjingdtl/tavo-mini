@@ -143,4 +143,58 @@ describe('Canon analysis start modes', () => {
     });
     expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(24);
   });
+
+  it('refuses to start when a 4096-window local model cannot fit 3×6000-char chapters (S1)', async () => {
+    // Local llama_cpp model with a 4096 context window.
+    mockResolveConfig.mockResolvedValueOnce({
+      id: 42,
+      provider_type: 'llama_cpp',
+      context_window: 4096,
+      model_name: 'local.gguf',
+      url: 'http://127.0.0.1:8080/v1/chat/completions',
+      api_key: 'local',
+    });
+    // Three 6000-char chapters; the standard output baseline (8192) alone
+    // already exceeds the 4096 effective window.
+    mockListBoundedSourceChapters.mockResolvedValueOnce([
+      chapter(0),
+      chapter(1),
+      chapter(2),
+    ].map(c => ({ ...c, content: '字'.repeat(6000) })));
+
+    await expect(
+      startAnalysis({ projectId: 9, mode: 'fast_continuation' }),
+    ).rejects.toThrow(/上下文不足|context/i);
+
+    // Nothing should have been persisted for a refused run.
+    expect(mockInsertSnapshot).not.toHaveBeenCalled();
+    expect(mockInsertRun).not.toHaveBeenCalled();
+    expect(mockInsertBatches).not.toHaveBeenCalled();
+  });
+
+  it('refuses a local model even when context_window is reported large, because the provider clamps n_ctx to 4096 (S1)', async () => {
+    // The llama.cpp provider clamps n_ctx to min(4096, context_window), so a
+    // locally-reported 20000 window is effectively 4096 at inference time.
+    // The preflight must use the same conservative ceiling and refuse rather
+    // than let the run enter three identical retries that can never succeed.
+    mockResolveConfig.mockResolvedValueOnce({
+      id: 42,
+      provider_type: 'llama_cpp',
+      context_window: 20000,
+      model_name: 'local.gguf',
+      url: 'http://127.0.0.1:8080/v1/chat/completions',
+      api_key: 'local',
+    });
+    mockListBoundedSourceChapters.mockResolvedValueOnce(
+      Array.from({ length: 6 }, (_, i) => ({
+        ...chapter(i),
+        content: '字'.repeat(6000),
+      })),
+    );
+
+    await expect(
+      startAnalysis({ projectId: 9, mode: 'fast_continuation' }),
+    ).rejects.toThrow(/上下文不足|context/i);
+    expect(mockInsertSnapshot).not.toHaveBeenCalled();
+  });
 });
