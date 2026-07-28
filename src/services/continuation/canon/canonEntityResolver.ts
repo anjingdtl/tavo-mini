@@ -9,6 +9,31 @@ export function normalizeAlias(alias: string): string {
 }
 
 /**
+ * Builds the unambiguous part of a snapshot-wide character-name catalogue.
+ * A spelling that points to two different people is deliberately omitted: the
+ * materializer must create/review a distinct record instead of silently
+ * attaching relationships, experiences or timeline events to the wrong one.
+ */
+export function buildUniqueCharacterNameIndex(
+  entries: Array<{ characterId: number; name: string }>,
+): Map<string, number> {
+  const candidates = new Map<string, Set<number>>();
+  for (const entry of entries) {
+    const normalized = normalizeAlias(entry.name);
+    if (!normalized) continue;
+    const ids = candidates.get(normalized) ?? new Set<number>();
+    ids.add(entry.characterId);
+    candidates.set(normalized, ids);
+  }
+
+  const unique = new Map<string, number>();
+  for (const [normalized, ids] of candidates) {
+    if (ids.size === 1) unique.set(normalized, [...ids][0]);
+  }
+  return unique;
+}
+
+/**
  * Longest-match alias resolution against a catalog. Ambiguous exact ties keep
  * multiple candidates; does not use naive includes as final identity.
  */

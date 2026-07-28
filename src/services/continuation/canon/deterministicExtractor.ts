@@ -124,6 +124,8 @@ export function extractChapterDeterministic(
       result.plotThreads.push({
         title: match[1].trim(),
         description: `见于「${chapter.title}」`,
+        timeDescription: '',
+        location: '',
         level: result.plotThreads.length === 0 ? 'main' : 'subplot',
         status: 'active',
         characterNames: [],
@@ -186,6 +188,8 @@ export function extractChapterDeterministic(
         title: match[2].trim(),
         summary: '',
         eventType: 'event',
+        timeDescription: '',
+        location: '',
         characterNames: [],
         importance: 1,
         confidence: 0.7,
