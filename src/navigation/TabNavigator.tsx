@@ -10,7 +10,6 @@ import { ProjectListScreen } from '../screens/ProjectListScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { LLMSettingsScreen } from '../screens/LLMSettingsScreen';
 import { ResourceLibrary } from '../screens/ResourceLibrary';
-import { ResourceHomeScreen } from '../screens/continuation/ResourceHomeScreen';
 import { ContinuationHomeScreen } from '../screens/continuation/ContinuationHomeScreen';
 import { ContinuationSourceChaptersScreen } from '../screens/continuation/ContinuationSourceChaptersScreen';
 import { ContinuationBoundaryScreen } from '../screens/continuation/ContinuationBoundaryScreen';
@@ -69,12 +68,15 @@ export type SettingsStackParamList = {
 };
 
 /**
- * Resource stack (Spec §8.3). 资料 becomes a nested stack with five routes:
- * ResourceHome (entry list) → 续写 (ContinuationHome / Chapters / Boundary) and
- * ResourceLibrary (the existing four-tab characters/worldbook/notes/presets).
+ * Resource stack (Spec §8.3, flattened). 资料 is a nested stack whose initial
+ * route is ResourceLibrary — now a five-tab SegmentedControl (续写 plus the
+ * original characters/worldbook/notes/presets). The old ResourceHome entry-list
+ * layer was removed; 续写 is embedded directly inside ResourceLibrary. The
+ * continuation sub-screens (Chapters / Boundary / Canon*) remain reachable via
+ * navigation from the embedded 续写 body. ContinuationHome is retained as a
+ * stack route for deep-link/standalone entry.
  */
 export type ResourceStackParamList = {
-  ResourceHome: undefined;
   ContinuationHome: undefined;
   ContinuationSourceChapters: undefined;
   ContinuationBoundary: undefined;
@@ -86,7 +88,7 @@ export type ResourceStackParamList = {
   CanonExperiences: undefined;
   CanonAnalysisTasks: undefined;
   ResourceLibrary: {
-    initialTab?: 'characters' | 'worldbook' | 'notes' | 'presets';
+    initialTab?: 'continuation' | 'characters' | 'worldbook' | 'notes' | 'presets';
   };
 };
 
@@ -186,8 +188,8 @@ const SettingsStackScreen = () => (
 );
 
 const ResourceStackScreen = () => (
-  <ResourceStack.Navigator screenOptions={{ headerShown: false }}>
-    <ResourceStack.Screen name="ResourceHome" component={ResourceHomeScreen} />
+  <ResourceStack.Navigator screenOptions={{ headerShown: false }} initialRouteName="ResourceLibrary">
+    <ResourceStack.Screen name="ResourceLibrary" component={ResourceLibrary} />
     <ResourceStack.Screen name="ContinuationHome" component={ContinuationHomeScreen} />
     <ResourceStack.Screen name="ContinuationSourceChapters" component={ContinuationSourceChaptersScreen} />
     <ResourceStack.Screen name="ContinuationBoundary" component={ContinuationBoundaryScreen} />
@@ -208,7 +210,6 @@ const ResourceStackScreen = () => (
       {props => <CanonCategoryListScreen {...props} category="experiences" />}
     </ResourceStack.Screen>
     <ResourceStack.Screen name="CanonAnalysisTasks" component={CanonAnalysisTasksScreen} />
-    <ResourceStack.Screen name="ResourceLibrary" component={ResourceLibrary} />
   </ResourceStack.Navigator>
 );
 
