@@ -13,6 +13,7 @@ export * from './types';
 export { CanonQueryService } from './canonQueryService';
 export {
   defaultExtractorModeForProfile,
+  ANALYSIS_MATERIAL_LABELS,
   extractWithLlm,
   startAnalysis,
   processAnalysisRun,
@@ -22,11 +23,17 @@ export {
   resumeAnalysis,
   pauseInterruptedRuns,
   getAnalysisOverview,
+  getAnalysisWorkItems,
   probeModelCapability,
   getCachedProbe,
   materializeBatchResult,
 } from './canonAnalysisService';
-export type { StartAnalysisInput, AnalysisExtractorMode } from './canonAnalysisService';
+export type {
+  StartAnalysisInput,
+  AnalysisExtractorMode,
+  AnalysisProgressUpdate,
+  ProcessAnalysisOptions,
+} from './canonAnalysisService';
 export {
   setReviewStatus,
   unlockRecord,
