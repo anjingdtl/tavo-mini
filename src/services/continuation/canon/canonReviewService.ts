@@ -183,6 +183,7 @@ export async function reviseWorldRule(input: {
   );
   const [idRow] = await db.executeSql('SELECT last_insert_rowid() AS id');
   await bumpSnapshotRevision(input.snapshotId);
+  await invalidateRunsOnCanonRevision(input.snapshotId);
   return idRow.rows.item(0).id as number;
 }
 
@@ -233,6 +234,7 @@ export async function createUserWorldRule(input: {
   );
   const [idRow] = await db.executeSql('SELECT last_insert_rowid() AS id');
   await bumpSnapshotRevision(input.snapshotId);
+  await invalidateRunsOnCanonRevision(input.snapshotId);
   return idRow.rows.item(0).id as number;
 }
 
@@ -261,6 +263,7 @@ export async function batchConfirmHighConfidence(input: {
     [ts, ts, input.snapshotId, min],
   );
   await bumpSnapshotRevision(input.snapshotId);
+  await invalidateRunsOnCanonRevision(input.snapshotId);
   const [r] = await db.executeSql(
     `SELECT changes() AS c`,
   );

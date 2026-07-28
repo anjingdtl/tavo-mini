@@ -4,6 +4,20 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.9.2] - 2026-07-28
+
+### Fixed
+
+- **续写采纳事务**：SQLite 原生异步 `executeSql` 回调现在正确传递受影响行数；章节乐观锁冲突不会再把 run 误记为已采纳，用户可重新采纳。
+- **状态同步恢复**：用户对耗尽自动重试额度的 outbox 执行手动重试时，会重置连续重试计数并真正重新进入 worker。
+- **上下文失效治理**：激活 Canon、修订/新增/批量确认 Canon 记录都会使使用旧 Canon 的进行中续写失效；恢复中断 run 不会隐式确认待确认计划。
+- **原著激活一致性**：原著 source 激活、边界切换、旧 run 失效与 import job 完成状态合并为同一个 SQLite 事务。
+
+### Tests
+
+- 新增原生异步事务回调、耗尽 outbox 人工重试、source 激活 job 原子完成和章节采纳冲突可重试的回归测试。
+- `npm run verify`、`npm run test:coverage` 通过；Android API 37 模拟器安装 Debug APK 后冷启动、Schema 21 初始化、普通项目隔离与原著续写项目的 TXT 导入入口均通过，无原生/JS 崩溃。
+
 ## [2.9.1] - 2026-07-28
 
 ### Fixed

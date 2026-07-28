@@ -263,8 +263,9 @@ export async function activateSourceInTx(
  * superseded source and an old run can never be adopted against the new
  * boundary. The caller wraps these in a single executeTransaction.
  *
- * Returns the statements plus the resolved boundary chapter id + global offset
- * so the caller can persist import-job completion separately.
+ * When `jobId` is supplied, import-job completion belongs to the same atomic
+ * boundary as source activation. A crash can then never leave an active source
+ * attached to a resumable/cancellable import job.
  */
 export function buildActivateSourceBoundaryStatements(input: {
   projectId: number;
@@ -273,6 +274,7 @@ export function buildActivateSourceBoundaryStatements(input: {
   boundaryGlobalOffset: number;
   boundaryMode: string;
   ts: string;
+  jobId?: string;
 }): SqlStatement[] {
   const {
     projectId,
@@ -281,6 +283,7 @@ export function buildActivateSourceBoundaryStatements(input: {
     boundaryGlobalOffset,
     boundaryMode,
     ts,
+    jobId,
   } = input;
   return [
     {
@@ -323,6 +326,15 @@ export function buildActivateSourceBoundaryStatements(input: {
         WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
       params: ['source_or_boundary_changed', ts, projectId],
     },
+    ...(jobId
+      ? [{
+          sql: `UPDATE continuation_import_jobs SET
+            state = 'completed', stage = 'activating', progress_current = 1,
+            progress_total = 1, completed_at = ?, updated_at = ?
+            WHERE id = ? AND project_id = ?`,
+          params: [ts, ts, jobId, projectId],
+        }]
+      : []),
   ];
 }
 
