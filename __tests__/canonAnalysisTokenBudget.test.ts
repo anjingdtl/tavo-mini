@@ -27,12 +27,16 @@ function chapter(position: number, chars = 6000) {
 }
 
 describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
-  it('returns ok without downgrade for an online model (no context_window)', () => {
+  it('returns ok without downgrade for an online model regardless of context_window', () => {
+    // Online (openai_compatible) models skip the preflight entirely. The user
+    // may have left the default context_window=4096 in the config UI — that
+    // must NOT trigger a local-model refusal.
     const plan = planAnalysisTokenBudget({
       chapters: [chapter(0), chapter(1), chapter(2)],
       profile: 'standard',
       perBatch: 3,
-      contextWindow: undefined,
+      providerType: 'openai_compatible',
+      contextWindow: 4096,
     });
     expect(plan.ok).toBe(true);
     expect(plan.downgraded).toBe(false);
@@ -46,6 +50,7 @@ describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
       chapters: [chapter(0, 100)],
       profile: 'standard',
       perBatch: 1,
+      providerType: 'llama_cpp',
       contextWindow: 4096,
     });
     expect(plan.ok).toBe(false);
@@ -59,6 +64,7 @@ describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
       chapters: [chapter(0), chapter(1), chapter(2)],
       profile: 'standard',
       perBatch: 3,
+      providerType: 'llama_cpp',
       // Bypass the 4096 clamp by asserting the planner honours a larger window
       // when the provider reports one (some local backends configure n_ctx
       // above 4096). The planner uses min(contextWindow, 4096) only as a
@@ -78,6 +84,7 @@ describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
       chapters: [chapter(0, 6000)],
       profile: 'standard',
       perBatch: 1,
+      providerType: 'llama_cpp',
       contextWindow: 1024,
     });
     expect(plan.ok).toBe(false);
@@ -91,6 +98,7 @@ describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
       chapters: [chapter(0, 100)],
       profile: 'deep',
       perBatch: 1,
+      providerType: 'llama_cpp',
       contextWindow: 4096,
     });
     // Deep needs 16384 output tokens; a 4096 window cannot reserve that.
