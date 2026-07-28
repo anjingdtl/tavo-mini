@@ -20,8 +20,9 @@ import { buildV18toV19Statements } from './v18-to-v19';
 import { buildV19toV20Statements } from './v19-to-v20';
 import { buildV20toV21Statements } from './v20-to-v21';
 import { buildV21toV22Statements } from './v21-to-v22';
+import { buildV22toV23Statements } from './v22-to-v23';
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -45,6 +46,7 @@ const MIGRATIONS: Migration[] = [
   { from: 19, to: 20, breaking: false, buildStatements: async () => buildV19toV20Statements() },
   { from: 20, to: 21, breaking: false, buildStatements: async () => buildV20toV21Statements() },
   { from: 21, to: 22, breaking: false, buildStatements: async () => buildV21toV22Statements() },
+  { from: 22, to: 23, breaking: false, buildStatements: async () => buildV22toV23Statements() },
 ];
 
 export async function runMigrations(

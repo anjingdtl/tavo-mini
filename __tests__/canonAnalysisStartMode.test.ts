@@ -100,7 +100,7 @@ describe('Canon analysis start modes', () => {
       expect.objectContaining({
         profile: 'standard',
         modelConfigId: 42,
-        progressTotal: 50,
+        progressTotal: 20,
       }),
     );
     const batches = mockInsertBatches.mock.calls[0][1];
@@ -117,6 +117,14 @@ describe('Canon analysis start modes', () => {
         checkpointJson: expect.stringContaining('"tailChapterCount":30'),
       }),
     );
+    expect(mockInsertWorkItems).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({ materialType: 'character_state' }),
+        expect.objectContaining({ materialType: 'world_plot' }),
+      ]),
+    );
+    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(20);
   });
 
   it('uses all chapters and the deep LLM preset for complete Canon analysis', async () => {
@@ -124,7 +132,7 @@ describe('Canon analysis start modes', () => {
 
     expect(mockInsertRun).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ profile: 'deep', progressTotal: 60 }),
+      expect.objectContaining({ profile: 'deep', progressTotal: 24 }),
     );
     const batches = mockInsertBatches.mock.calls[0][1];
     expect(batches).toHaveLength(12);
@@ -133,5 +141,6 @@ describe('Canon analysis start modes', () => {
       startPosition: 33,
       endPosition: 35,
     });
+    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(24);
   });
 });

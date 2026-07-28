@@ -2,29 +2,34 @@ import { createCurrentSchema } from '../src/data/schema/createCurrentSchema';
 import { SCHEMA_MANIFEST } from '../src/services/database/schemaManifest';
 import { SCHEMA_VERSION } from '../src/services/migrations';
 import {
-  buildV21toV22Statements,
-  migrateV21ToV22,
-} from '../src/services/migrations/v21-to-v22';
+  buildV22toV23Statements,
+  migrateV22ToV23,
+} from '../src/services/migrations/v22-to-v23';
 import { createMigrationDb } from './migrationTestUtils';
 
-describe('schema 22 Canon material work-item migration', () => {
-  it('creates the five-family resumable work-item table', () => {
+describe('schema 23 Canon request-group migration', () => {
+  it('expands work-item values while preserving legacy values', () => {
     expect(SCHEMA_VERSION).toBe(23);
-    const sql = buildV21toV22Statements()
+    const sql = buildV22toV23Statements()
       .map(item => item.sql)
       .join('\n');
-    expect(sql).toContain(
-      'CREATE TABLE IF NOT EXISTS continuation_analysis_work_items',
-    );
+    expect(sql).toContain('continuation_analysis_work_items_v22');
+    expect(sql).toContain("'character_state'");
+    expect(sql).toContain("'world_plot'");
     expect(sql).toContain("'world_rules'");
-    expect(sql).toContain("'experiences'");
-    expect(sql).toContain('idx_continuation_analysis_work_items_state');
+    expect(sql).toContain('INSERT INTO continuation_analysis_work_items');
   });
 
-  it('applies cleanly from schema 21', async () => {
-    const mock = createMigrationDb({ schemaVersion: 21 });
-    await migrateV21ToV22(mock.database as any);
+  it('rebuilds the Schema 22 work-item table cleanly', async () => {
+    const mock = createMigrationDb({ schemaVersion: 22 });
+    await migrateV22ToV23(mock.database as any);
     expect(mock.schemas.has('continuation_analysis_work_items')).toBe(true);
+    expect(mock.schemas.has('continuation_analysis_work_items_v22')).toBe(
+      false,
+    );
+    expect(mock.indexes.has('idx_continuation_analysis_work_items_state')).toBe(
+      true,
+    );
   });
 
   it('keeps fresh schema and backup manifest aligned', async () => {
@@ -35,9 +40,9 @@ describe('schema 22 Canon material work-item migration', () => {
         return [{ rows: { length: 0, item: () => null } }];
       }),
     } as any);
-    expect(sql.join('\n')).toContain(
-      'CREATE TABLE IF NOT EXISTS continuation_analysis_work_items',
-    );
+    const joined = sql.join('\n');
+    expect(joined).toContain("'character_state'");
+    expect(joined).toContain("'world_plot'");
     expect(
       SCHEMA_MANIFEST.find(
         table => table.name === 'continuation_analysis_work_items',
