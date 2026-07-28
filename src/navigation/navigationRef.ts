@@ -14,6 +14,19 @@ let pendingTimer: ReturnType<typeof setInterval> | null = null;
 // "The action 'NAVIGATE' with payload {name:'PipelineResult'} was not handled
 // by any navigator." 修复：用嵌套语法先切到 Settings Tab，再 push PipelineResult。
 function doNavigateToPipelineResult(taskId: string): void {
+  if (taskId.startsWith('ca:')) {
+    try {
+      navigationRef.dispatch(
+        CommonActions.navigate({
+          name: 'Resources',
+          params: { screen: 'CanonAnalysisTasks', initial: false },
+        } as never),
+      );
+      return;
+    } catch {
+      // fall through to the generic task center
+    }
+  }
   // Phase 3: continuation runs use ct_ prefix — independent result screen.
   if (taskId.startsWith('ct_')) {
     try {

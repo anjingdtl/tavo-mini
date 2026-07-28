@@ -7,6 +7,9 @@ const LIMITS: Record<LLMQueueClass, number> = {
   normal: 3,
   pipeline: 3,
   background: 2,
+  // A Canon batch has five independent material requests. Keep this isolated
+  // from generic background workers so they cannot silently serialize it.
+  canon_analysis: 5,
   connection: 1,
   local: 1,
 };

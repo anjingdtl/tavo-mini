@@ -40,6 +40,7 @@ export type LLMQueueClass =
   | 'normal'
   | 'pipeline'
   | 'background'
+  | 'canon_analysis'
   | 'connection'
   | 'local';
 export type LLMQueuePriority = 'manual' | 'normal' | 'background';

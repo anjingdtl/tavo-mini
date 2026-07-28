@@ -2,6 +2,7 @@ import SQLite from 'react-native-sqlite-storage';
 import { execute } from '../connection/execute';
 import { buildSchema20PostSettingsStatements } from '../../services/migrations/v19-to-v20';
 import { buildSchema21CreateSqls } from '../../services/migrations/v20-to-v21';
+import { buildSchema22CreateSqls } from '../../services/migrations/v21-to-v22';
 
 export async function createCurrentSchema(
   database: SQLite.SQLiteDatabase,
@@ -625,6 +626,8 @@ export async function createCurrentSchema(
     ...buildSchema20PostSettingsStatements().map(item => item.sql),
     // Schema 21 Phase 3 generation / state tables.
     ...buildSchema21CreateSqls(),
+    // Schema 22 Canon material work items.
+    ...buildSchema22CreateSqls(),
   ];
   for (const statement of statements) {
     await execute(database, statement);
