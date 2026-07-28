@@ -33,6 +33,7 @@ import {
   type ContinuationAnalysisMode,
 } from '../../../services/continuation/canon';
 import { isBoundaryReady } from '../../../services/continuation/continuationSettingsService';
+import { runStatusLabel } from './runStatusLabel';
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
 
@@ -484,13 +485,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                           fontWeight: '700',
                         }}
                       >
-                        {progressPercent}% ·{' '}
-                        {workItems.some(
-                          item =>
-                            item.state === 'running' || item.state === 'queued',
-                        )
-                          ? '正在处理 Canon 请求组'
-                          : '正在汇总结果'}
+                        {progressPercent}% · {runStatusLabel(latestRun, workItems)}
                       </Text>
                     </>
                   )}
