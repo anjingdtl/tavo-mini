@@ -338,6 +338,43 @@ export interface CanonContextBundle {
   omittedReasonCounts: Record<string, number>;
 }
 
+/**
+ * A compact LLM summary of chapters outside a scoped Canon window.
+ * It is expressly not Canon and has no evidence IDs; callers must present it
+ * as a lead for user-approved source verification rather than a fact.
+ */
+export interface HistoricalDigest {
+  id: string;
+  projectId: number;
+  sourceId: number;
+  sourceVersion: number;
+  sourceSha256: string;
+  parserVersion: string;
+  normalizationVersion: string;
+  boundaryChapterId: number;
+  boundaryPosition: SourceChapterPosition;
+  boundaryCharOffsetExclusive: Utf16Offset;
+  startPosition: SourceChapterPosition;
+  endPosition: SourceChapterPosition;
+  status: 'queued' | 'running' | 'ready' | 'failed' | 'outdated' | 'cancelled';
+  summary: string;
+  keywords: string[];
+  modelConfigId: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface HistoricalChapterCandidate {
+  digestId: string;
+  chapterId: number;
+  chapterPosition: SourceChapterPosition;
+  chapterTitle: string;
+  matchedTerms: string[];
+}
+
 export interface AnalysisRun {
   id: string;
   projectId: number;

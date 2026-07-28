@@ -11,6 +11,7 @@ import {
 } from '../../../utils/tokenEstimator';
 import { continuationSourceReader } from '../continuationSourceReader';
 import { CanonQueryService } from '../canon/canonQueryService';
+import { listHistoricalDigestReferences } from '../canon/historicalDigestService';
 import { getEffectiveContinuationState } from './continuationStateService';
 import {
   contentRevisionHash,
@@ -143,6 +144,26 @@ export async function buildContinuationContext(
     tokenBudget: Math.floor(inputBudget * 0.4),
     reviewPolicy,
   });
+  const partiallyCovered =
+    snap.coverage.analyzedChapterCount < snap.coverage.sourceChapterCount;
+  const historicalDigests = partiallyCovered
+    ? await listHistoricalDigestReferences({
+        projectId: input.projectId,
+        queryText: input.userInstruction,
+        limit: 3,
+      })
+        .then(items =>
+          items.map(item => ({
+            ...item,
+            // Historical cards are the first soft context to be dropped.
+            summary: clipTextToTokenBudget(
+              item.summary,
+              Math.max(100, Math.floor(inputBudget * 0.08)),
+            ),
+          })),
+        )
+        .catch(() => [])
+    : [];
 
   // Seam: last bounded source chapter excerpt via SourceReader only.
   const chapters =
@@ -278,6 +299,9 @@ export async function buildContinuationContext(
       revision: snap.revision,
       boundaryGlobalCharOffset: snap.boundaryCharOffsetExclusive as number,
       capabilities: snap.capabilities,
+      coverageWarning: partiallyCovered
+        ? `当前 Canon 仅覆盖 ${snap.coverage.analyzedChapterCount}/${snap.coverage.sourceChapterCount} 个原著章节；早期设定可能未覆盖。`
+        : undefined,
     },
     storyMemory: {
       stateFingerprint: smFingerprint,
@@ -289,6 +313,7 @@ export async function buildContinuationContext(
     bundles: {
       lockedRules,
       canon: canonBundle,
+      historicalDigests,
       effectiveState,
       seam: { summary: seamSummary, excerpt: seamExcerpt },
       recentChapters,
@@ -314,6 +339,13 @@ export async function buildContinuationContext(
       selected: canonBundle.worldRules.length + canonBundle.characters.length,
       tokens: canonBundle.estimatedTokens,
       omittedReasonCounts: canonBundle.omittedReasonCounts,
+    },
+    {
+      name: 'historicalDigests',
+      candidates: historicalDigests.length,
+      selected: historicalDigests.length,
+      tokens: estimateTokens(historicalDigests.map(item => item.summary).join('\n')),
+      omittedReasonCounts: {},
     },
     {
       name: 'effectiveState',
