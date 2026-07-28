@@ -237,7 +237,15 @@ export function parseExtractionResultJson(
   let validationError: Error | null = null;
   for (const candidate of modelJsonCandidates(raw)) {
     try {
-      return validateExtractionResult(JSON.parse(candidate));
+      // A few OpenAI-compatible gateways serialise `content` once more, so
+      // the model result arrives as a JSON string containing the JSON object.
+      // Accept that transport wrapper, but cap unwrapping to avoid treating
+      // arbitrary nested strings as an extraction result.
+      let parsed: unknown = JSON.parse(candidate);
+      for (let depth = 0; typeof parsed === 'string' && depth < 2; depth += 1) {
+        parsed = JSON.parse(parsed.trim());
+      }
+      return validateExtractionResult(parsed);
     } catch (error) {
       // A valid but unrelated JSON object may be present before the actual
       // result. Keep scanning candidates, but retain schema errors when it is
