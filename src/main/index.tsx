@@ -50,6 +50,21 @@ export const App: React.FC = () => {
         if (marked > 0) {
           console.log(`[App] cold-start cleanup: marked ${marked} interrupted pipeline task(s) as failed`);
         }
+        // Continuation TXT import: a job left running/paused when the app was
+        // killed must be terminally marked `interrupted` so the import UI can
+        // surface a resume/cancel card and startContinuationImport won't
+        // collide with the per-project unique index (Spec §14.2).
+        try {
+          const { recoverInterruptedJobs } = await import(
+            '../services/continuation/continuationImportService'
+          );
+          const { recovered } = await recoverInterruptedJobs();
+          if (recovered > 0) {
+            console.log(`[App] cold-start cleanup: marked ${recovered} continuation import job(s) interrupted`);
+          }
+        } catch (e) {
+          console.warn('[App] continuation import recovery skipped', e);
+        }
         try {
           const {
             coldStartNormalizeContinuation,

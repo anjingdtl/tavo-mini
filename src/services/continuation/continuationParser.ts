@@ -20,7 +20,7 @@ import type {
   SourceChapterPosition,
   Utf16Offset,
 } from '../../types/novel';
-import { sha256Hex } from './hashUtils';
+import { Sha256Stream, sha256Hex } from './hashUtils';
 
 /** Bumped when detection rules change (Spec §11.1). */
 export const PARSER_VERSION = 'v1';
@@ -255,4 +255,212 @@ export function parseSourceChapters(text: string): ParsedSource {
     fallbackUsed: false,
     warnings,
   };
+}
+
+/**
+ * Streaming chapter parser (Spec §11, streaming variant).
+ *
+ * The one-shot {@link parseSourceChapters} splits the whole normalized text on
+ * `\n` and slices each chapter body out of memory. The streaming variant is fed
+ * complete lines one at a time and emits a finished chapter whenever the next
+ * heading arrives, so memory stays O(current chapter) instead of O(whole text).
+ *
+ * The caller is responsible for:
+ *   - splitting decoded/normalized chunks into lines (handling a trailing
+ *     partial line across chunk boundaries) and tracking each line's UTF-16
+ *     start offset into the normalized text;
+ *   - feeding the whole-text hash/paragraph count into {@link finalize} so a
+ *     no-heading fallback chapter can be built without re-reading the text.
+ */
+export interface StreamingChapterParser {
+  /**
+   * Feed one complete line (no trailing newline). `lineStartOffset` is the
+   * UTF-16 offset of the first character of this line within the normalized
+   * text. Returns any chapters that closed as a result of this line being a
+   * heading (0 or 1 elements).
+   */
+  pushLine(line: string, lineStartOffset: number): ParsedChapter[];
+  /**
+   * Finalize the parse. Closes the trailing chapter and, if no headings were
+   * ever found, builds a fallback chapter from the caller-supplied whole-text
+   * hash and paragraph count.
+   */
+  finalize(opts: {
+    /** SHA-256 of the entire normalized text (for the fallback chapter). */
+    fallbackSha256: string;
+    /** Paragraph count of the entire normalized text (for the fallback chapter). */
+    fallbackParagraphCount: number;
+    /** Total UTF-16 length of the normalized text (chapter end offsets). */
+    totalCharCount: number;
+  }): { chapters: ParsedChapter[]; fallbackUsed: boolean; warnings: string[] };
+}
+
+export function createStreamingChapterParser(): StreamingChapterParser {
+  let currentVolume: string | null = null;
+  let openStart: { startOffset: number; headingLine: string } | null = null;
+  let nextPosition = 0;
+  let sawAnyHeading = false;
+
+  // Per-chapter body accumulators: a streaming hash + online paragraph count.
+  let bodyHasher: Sha256Stream | null = null;
+  let bodyParagraphCount = 0;
+  // Tracks the content_start_offset of the currently-open chapter (the offset
+  // of the first body line after the heading). Null until the first body line.
+  let openContentStartOffset: number | null = null;
+  // The body hash must reproduce text.slice(contentStart, sourceEnd) exactly.
+  // Each body line contributes its content plus a trailing '\n' ONLY when that
+  // '\n' falls before the chapter's sourceEndOffset (one-shot slice is exclusive
+  // of sourceEnd). We buffer one line and resolve its separator against the
+  // chapter end offset when the next line or finalize arrives.
+  let pendingBodyLine: { text: string; contentEndOffset: number } | null = null;
+
+  // Flush the buffered line. `chapterEndOffset` is the sourceEndOffset of the
+  // chapter being closed; the line's trailing '\n' is included iff it sits at
+  // contentEndOffset < chapterEndOffset (i.e. inside the body slice).
+  const flushPendingBodyLine = (chapterEndOffset: number) => {
+    if (pendingBodyLine === null || bodyHasher === null) return;
+    bodyHasher.updateString(pendingBodyLine.text);
+    if (pendingBodyLine.contentEndOffset < chapterEndOffset) {
+      bodyHasher.updateString('\n');
+    }
+    pendingBodyLine = null;
+  };
+
+  const closeChapter = (endOffset: number): ParsedChapter | null => {
+    if (!openStart || bodyHasher === null) return null;
+    flushPendingBodyLine(endOffset);
+    const sourceStartOffset = openStart.startOffset;
+    // content_start_offset = start of the line AFTER the heading line. We track
+    // it when the first body line arrives (see pushLine); fall back to just
+    // after the heading if the chapter has no body.
+    const contentStartOffset =
+      openContentStartOffset ?? sourceStartOffset + openStart.headingLine.length + 1;
+    const sourceEndOffset = endOffset;
+    const charCount = sourceEndOffset - sourceStartOffset;
+    const chapter: ParsedChapter = {
+      position: nextPosition as SourceChapterPosition,
+      volumeTitle: currentVolume,
+      detectedTitle: openStart.headingLine.trim(),
+      title: openStart.headingLine.trim(),
+      sourceStartOffset: sourceStartOffset as Utf16Offset,
+      contentStartOffset: contentStartOffset as Utf16Offset,
+      sourceEndOffset: sourceEndOffset as Utf16Offset,
+      charCount,
+      paragraphCount: bodyParagraphCount,
+      contentSha256: bodyHasher.digest(),
+    };
+    nextPosition += 1;
+    openStart = null;
+    bodyHasher = null;
+    bodyParagraphCount = 0;
+    openContentStartOffset = null;
+    pendingBodyLine = null;
+    return chapter;
+  };
+
+  const pushLine = (line: string, lineStartOffset: number): ParsedChapter[] => {
+    const match = matchHeading(line);
+    if (match) {
+      if (match.kind === 'volume') {
+        currentVolume = line.trim();
+        // A volume line does not close the current chapter, but it sits inside
+        // the chapter's body slice (one-shot computes body via text.slice over
+        // offsets, so any line between two chapter headings — including volume
+        // markers — is part of the body). Feed it to the body hash + paragraph
+        // counter just like an ordinary body line.
+        if (openStart && bodyHasher) {
+          if (openContentStartOffset === null) {
+            openContentStartOffset = lineStartOffset;
+          }
+          flushPendingBodyLine(lineStartOffset);
+          pendingBodyLine = {
+            text: line,
+            contentEndOffset: lineStartOffset + line.length,
+          };
+          // one-shot countParagraphs = body.split(/\n+/).filter(non-empty).length,
+          // which counts each non-blank line as its own paragraph (every line is
+          // '\n'-separated). Blank/whitespace-only lines do not count.
+          if (line.trim().length > 0) bodyParagraphCount += 1;
+        }
+        return [];
+      }
+      // Chapter heading: close the previous chapter at this heading's offset.
+      sawAnyHeading = true;
+      const closed: ParsedChapter[] = [];
+      if (openStart) {
+        const c = closeChapter(lineStartOffset);
+        if (c) closed.push(c);
+      }
+      openStart = { startOffset: lineStartOffset, headingLine: line };
+      bodyHasher = new Sha256Stream();
+      bodyParagraphCount = 0;
+      openContentStartOffset = null;
+      pendingBodyLine = null;
+      return closed;
+    }
+    // Body line of the currently-open chapter. Update the body hash + paragraph
+    // counter. If no chapter is open yet, the line belongs to the pre-first-
+    // heading preamble and is ignored (matches one-shot, which only records
+    // chapters starting at the first heading).
+    if (openStart && bodyHasher) {
+      if (openContentStartOffset === null) {
+        openContentStartOffset = lineStartOffset;
+      }
+      // Flush the previously-buffered line: the new line starts at lineStartOffset,
+      // which is strictly past the buffered line's contentEndOffset, so its '\n'
+      // separator is inside the body and must be hashed.
+      flushPendingBodyLine(lineStartOffset);
+      pendingBodyLine = {
+        text: line,
+        contentEndOffset: lineStartOffset + line.length,
+      };
+      // Each non-blank line is one paragraph (see note in the volume branch).
+      if (line.trim().length > 0) bodyParagraphCount += 1;
+    }
+    return [];
+  };
+
+  const finalize = (opts: {
+    fallbackSha256: string;
+    fallbackParagraphCount: number;
+    totalCharCount: number;
+  }): { chapters: ParsedChapter[]; fallbackUsed: boolean; warnings: string[] } => {
+    if (!sawAnyHeading) {
+      // No headings anywhere → whole-text fallback (Spec §11.3).
+      const title = '整篇（无标题）';
+      const fallback: ParsedChapter = {
+        position: 0 as SourceChapterPosition,
+        volumeTitle: null,
+        detectedTitle: title,
+        title,
+        sourceStartOffset: 0 as Utf16Offset,
+        contentStartOffset: 0 as Utf16Offset,
+        sourceEndOffset: opts.totalCharCount as Utf16Offset,
+        charCount: opts.totalCharCount,
+        paragraphCount: opts.fallbackParagraphCount,
+        contentSha256: opts.fallbackSha256,
+      };
+      return {
+        chapters: [fallback],
+        fallbackUsed: true,
+        warnings: ['未检测到章节标题，整篇作为单一章节。可手动拆分或选择按字数切分。'],
+      };
+    }
+    // Close the trailing chapter at end-of-text, if any is still open. The
+    // flushPendingBodyLine call inside closeChapter decides whether the final
+    // line's trailing '\n' belongs to the body by comparing its contentEndOffset
+    // against totalCharCount (one-shot slice is exclusive of totalCharCount).
+    const closed: ParsedChapter[] = [];
+    if (openStart) {
+      const c = closeChapter(opts.totalCharCount);
+      if (c) closed.push(c);
+    }
+    return {
+      chapters: closed,
+      fallbackUsed: false,
+      warnings: [],
+    };
+  };
+
+  return { pushLine, finalize };
 }
