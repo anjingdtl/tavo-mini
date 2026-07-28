@@ -2,6 +2,7 @@ import RNFS from 'react-native-fs';
 import { keepLocalCopy, pick, types } from '@react-native-documents/picker';
 import * as db from './database';
 import type { ProjectMode } from '../types/novel';
+import { localFileUriToPath } from '../utils/localFileUri';
 import {
   isValidProjectMode,
 } from './continuation/projectMode';
@@ -506,7 +507,7 @@ export async function pickAndPreviewProjectPackage(): Promise<{
     if (copy.status === 'error') {
       throw new Error(copy.copyError || '复制导入文件失败。');
     }
-    localPath = copy.localUri.replace(/^file:\/\//, '');
+    localPath = localFileUriToPath(copy.localUri);
   } catch (e: any) {
     if (e.message?.includes('cancel')) return null;
     throw new Error('复制导入文件失败。');

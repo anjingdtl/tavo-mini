@@ -3,6 +3,7 @@ import { keepLocalCopy, pick, pickDirectory, types } from '@react-native-documen
 import { inflate } from 'pako';
 import * as db from './database';
 import { PngMetadata } from '../native/PngMetadataModule';
+import { localFileUriToPath } from '../utils/localFileUri';
 
 /* eslint-disable no-bitwise */
 
@@ -343,7 +344,7 @@ async function pickLocalFile(allowedTypes: string[]): Promise<{ localPath: strin
   }
 
   return {
-    localPath: copy.localUri.replace(/^file:\/\//, ''),
+    localPath: localFileUriToPath(copy.localUri),
     name: selected.name || 'shinewriter-import',
     mimeType: selected.type,
   };
@@ -393,7 +394,7 @@ export async function pickLocalFiles(
     if (copy.status !== 'success') continue;
     const original = selected[i];
     result.push({
-      localPath: copy.localUri.replace(/^file:\/\//, ''),
+      localPath: localFileUriToPath(copy.localUri),
       name: original.name || 'shinewriter-import',
       mimeType: original.type,
     });
