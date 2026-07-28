@@ -84,6 +84,13 @@ export const CANON_ANALYSIS_RETRY_POLICY = {
   baseDelayMs: 1_000,
 } as const;
 
+/** States whose persisted partial work can be safely resumed. */
+export function isResumableAnalysisState(
+  state: AnalysisRun['state'],
+): boolean {
+  return state === 'paused' || state === 'failed' || state === 'cancelled';
+}
+
 function isTransientCanonAnalysisError(error: unknown): boolean {
   const candidate = error as {
     code?: unknown;
@@ -1378,8 +1385,12 @@ export async function extractMaterialWithLlm(
     attempt += 1
   ) {
     try {
+      const retryInstruction =
+        attempt > 1
+          ? '\n上一轮输出无法解析或不符合 schema。请重新生成完整 JSON；不要复用上轮文本，也不要输出任何解释、Markdown 或思考过程。'
+          : '';
       const response = await callLLMResult(
-        [{ role: 'user', content: prompt }],
+        [{ role: 'user', content: `${prompt}${retryInstruction}` }],
         profile === 'deep' ? 8000 : 5000,
         {
           responseFormat: 'json_object',
@@ -1605,7 +1616,9 @@ export async function cancelAnalysis(runId: string): Promise<void> {
   analysisControllers.get(runId)?.abort();
   await updateRunState(db, runId, {
     state: 'cancelled',
-    completedAt: now(),
+    // Cancelled analysis is intentionally resumable. `completed_at` is kept
+    // clear so task history and resume UI do not present it as a final result.
+    completedAt: null,
   });
   await updateSnapshotMeta(db, run.canonSnapshotId, { status: 'failed' });
   await execute(
@@ -1616,6 +1629,30 @@ export async function cancelAnalysis(runId: string): Promise<void> {
   );
 }
 
+async function resetInterruptedAnalysisWork(
+  db: SQLite.SQLiteDatabase,
+  runId: string,
+): Promise<void> {
+  const ts = now();
+  // Completed work is immutable and reused. Every other item is safe to run
+  // again; this covers an explicit cancel, a paused in-flight request, and a
+  // process that was killed before it could write its terminal state.
+  await execute(
+    db,
+    `UPDATE continuation_analysis_work_items
+      SET state = 'queued', error_code = NULL, error_message = NULL, updated_at = ?
+      WHERE run_id = ? AND state IN ('running', 'failed', 'cancelled')`,
+    [ts, runId],
+  );
+  await execute(
+    db,
+    `UPDATE continuation_analysis_batches
+      SET state = 'queued', error_code = NULL, error_message = NULL, updated_at = ?
+      WHERE run_id = ? AND state IN ('running', 'failed', 'cancelled')`,
+    [ts, runId],
+  );
+}
+
 export async function resumeAnalysis(
   runId: string,
   options: ProcessAnalysisOptions = {},
@@ -1623,13 +1660,15 @@ export async function resumeAnalysis(
   const db = await openDatabase();
   const run = await getRunById(runId);
   if (!run) throw new Error('分析任务不存在');
-  if (run.state !== 'paused' && run.state !== 'failed') {
-    throw new Error('仅暂停或失败的任务可继续');
+  if (!isResumableAnalysisState(run.state)) {
+    throw new Error('仅暂停、失败或已取消的任务可继续');
   }
+  await resetInterruptedAnalysisWork(db, runId);
   await updateRunState(db, runId, {
     state: 'queued',
     errorCode: null,
     errorMessage: null,
+    completedAt: null,
   });
   return processAnalysisRun(runId, options);
 }
@@ -1654,6 +1693,22 @@ export async function pauseInterruptedRuns(
         WHERE project_id = ? AND state = 'running'`,
       [ts, projectId],
     );
+    await execute(
+      db,
+      `UPDATE continuation_analysis_work_items SET state = 'queued', updated_at = ?
+        WHERE state = 'running' AND run_id IN (
+          SELECT id FROM continuation_analysis_runs WHERE project_id = ?
+        )`,
+      [ts, projectId],
+    );
+    await execute(
+      db,
+      `UPDATE continuation_analysis_batches SET state = 'queued', updated_at = ?
+        WHERE state = 'running' AND run_id IN (
+          SELECT id FROM continuation_analysis_runs WHERE project_id = ?
+        )`,
+      [ts, projectId],
+    );
   } else {
     const [result] = await db.executeSql(
       `SELECT COUNT(*) AS count FROM continuation_analysis_runs WHERE state = 'running'`,
@@ -1662,6 +1717,18 @@ export async function pauseInterruptedRuns(
     await execute(
       db,
       `UPDATE continuation_analysis_runs SET state = 'paused', updated_at = ?
+        WHERE state = 'running'`,
+      [ts],
+    );
+    await execute(
+      db,
+      `UPDATE continuation_analysis_work_items SET state = 'queued', updated_at = ?
+        WHERE state = 'running'`,
+      [ts],
+    );
+    await execute(
+      db,
+      `UPDATE continuation_analysis_batches SET state = 'queued', updated_at = ?
         WHERE state = 'running'`,
       [ts],
     );

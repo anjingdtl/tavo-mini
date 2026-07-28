@@ -264,6 +264,40 @@ export const CanonAnalysisTasksScreen: React.FC<{
                   }}
                 />
               )}
+              {item.state === 'cancelled' && (
+                <Button
+                  label="从已取消进度继续"
+                  onPress={async () => {
+                    try {
+                      await PipelineForeground.start(
+                        item.id,
+                        '原著分析进行中',
+                        '正在从已取消进度继续…',
+                        item.progressTotal
+                          ? Math.round(
+                              (item.progressCurrent / item.progressTotal) * 100,
+                            )
+                          : 0,
+                      );
+                      await resumeAnalysis(item.id, {
+                        onProgress: () => {
+                          void reload();
+                        },
+                      });
+                      await PipelineForeground.stop(item.id);
+                      Toast.show({ type: 'success', text1: '已从原进度继续' });
+                      await reload();
+                    } catch (e: any) {
+                      await PipelineForeground.stop(item.id);
+                      Toast.show({
+                        type: 'error',
+                        text1: '继续失败',
+                        text2: e?.message,
+                      });
+                    }
+                  }}
+                />
+              )}
               {(item.state === 'queued' || item.state === 'running') && (
                 <>
                   <Button
