@@ -263,185 +263,404 @@ export function parseExtractionResultJson(
   throw new Error('提取结果不是合法 JSON 或不符合 Canon schema');
 }
 
+/**
+ * Field-name alias table used to relax the validator (Spec §3, change 2).
+ *
+ * Models routinely guess field names (`name`/`source`/`target`/`character`
+ * /`fact`/`key`/`event`). Before validating we map every alias onto the
+ * canonical column name, but **only when the canonical field is absent** —
+ * this keeps the change strictly a relaxation: an explicit canonical value is
+ * never overwritten by an alias.
+ */
+const EXTRACTION_FIELD_ALIASES: Record<string, Array<[string, string]>> = {
+  characters: [['name', 'canonicalName']],
+  relationships: [
+    ['source', 'sourceName'],
+    ['from', 'sourceName'],
+    ['target', 'targetName'],
+    ['to', 'targetName'],
+  ],
+  experiences: [['character', 'characterName']],
+  knowledge: [
+    ['character', 'characterName'],
+    ['fact', 'factKey'],
+  ],
+  states: [['character', 'characterName']],
+  timelineEvents: [
+    ['key', 'eventKey'],
+    ['event', 'eventKey'],
+  ],
+  worldRules: [['name', 'title']],
+  plotThreads: [['name', 'title']],
+};
+
+/**
+ * Normalize a single raw extraction item by promoting aliases to their
+ * canonical field names. Mutates a shallow copy and returns it; the input
+ * object is never modified. Non-objects are returned unchanged.
+ */
+export function normalizeExtractionItem(
+  category: keyof typeof EXTRACTION_FIELD_ALIASES,
+  raw: unknown,
+): Record<string, unknown> {
+  if (!isObj(raw)) return raw as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...raw };
+  for (const [alias, canonical] of EXTRACTION_FIELD_ALIASES[category] ?? []) {
+    if (out[canonical] == null || out[canonical] === '') {
+      const value = out[alias];
+      if (value != null && value !== '') {
+        out[canonical] = value;
+      }
+    }
+  }
+  return out;
+}
+
+export interface ExtractionCategoryStats {
+  received: number;
+  accepted: number;
+  dropped: number;
+  firstDropReason?: string;
+}
+
+export type ExtractionStats = Record<
+  | 'worldRules'
+  | 'characters'
+  | 'relationships'
+  | 'plotThreads'
+  | 'experiences'
+  | 'knowledge'
+  | 'states'
+  | 'timelineEvents',
+  ExtractionCategoryStats
+>;
+
 export function validateExtractionResult(
   raw: unknown,
 ): ChapterExtractionResult {
+  return validateExtractionResultWithStats(raw).result;
+}
+
+export function validateExtractionResultWithStats(raw: unknown): {
+  result: ChapterExtractionResult;
+  stats: ExtractionStats;
+} {
   if (!isObj(raw)) throw new Error('提取结果必须是对象');
   const schemaVersion = num(raw.schemaVersion, 0);
   if (schemaVersion !== EXTRACTION_RESULT_SCHEMA_VERSION) {
     throw new Error(`不支持的提取 schema 版本：${schemaVersion}`);
   }
 
+  const stats: ExtractionStats = {
+    worldRules: { received: 0, accepted: 0, dropped: 0 },
+    characters: { received: 0, accepted: 0, dropped: 0 },
+    relationships: { received: 0, accepted: 0, dropped: 0 },
+    plotThreads: { received: 0, accepted: 0, dropped: 0 },
+    experiences: { received: 0, accepted: 0, dropped: 0 },
+    knowledge: { received: 0, accepted: 0, dropped: 0 },
+    states: { received: 0, accepted: 0, dropped: 0 },
+    timelineEvents: { received: 0, accepted: 0, dropped: 0 },
+  };
+
   const worldRules: ExtractionWorldRule[] = [];
   for (const item of Array.isArray(raw.worldRules) ? raw.worldRules : []) {
-    if (!isObj(item)) continue;
-    const level = str(item.constraintLevel, 'reference');
-    if (!CONSTRAINT.has(level)) continue;
-    const title = str(item.title).trim();
-    if (!title) continue;
+    stats.worldRules.received += 1;
+    if (!isObj(item)) {
+      recordDrop(stats.worldRules, 'worldRules: 非对象');
+      continue;
+    }
+    const normed = normalizeExtractionItem('worldRules', item);
+    const level = str(normed.constraintLevel, 'reference');
+    if (!CONSTRAINT.has(level)) {
+      recordDrop(stats.worldRules, `worldRules: constraintLevel=${level}`);
+      continue;
+    }
+    const title = str(normed.title).trim();
+    if (!title) {
+      recordDrop(stats.worldRules, 'worldRules: title 为空');
+      continue;
+    }
     worldRules.push({
-      category: str(item.category, 'other') || 'other',
+      category: str(normed.category, 'other') || 'other',
       title,
-      description: str(item.description),
+      description: str(normed.description),
       constraintLevel: level as ExtractionWorldRule['constraintLevel'],
-      confidence: clamp01(num(item.confidence, 0.5)),
-      evidence: parseEvidence(item.evidence),
+      confidence: clamp01(num(normed.confidence, 0.5)),
+      evidence: parseEvidence(normed.evidence),
     });
+    stats.worldRules.accepted += 1;
   }
 
   const characters: ExtractionCharacter[] = [];
   for (const item of Array.isArray(raw.characters) ? raw.characters : []) {
-    if (!isObj(item)) continue;
-    const name = str(item.canonicalName).trim();
-    if (!name) continue;
-    const imp = str(item.importance, 'supporting');
-    if (!IMPORTANCE.has(imp)) continue;
+    stats.characters.received += 1;
+    if (!isObj(item)) {
+      recordDrop(stats.characters, 'characters: 非对象');
+      continue;
+    }
+    const normed = normalizeExtractionItem('characters', item);
+    const name = str(normed.canonicalName).trim();
+    if (!name) {
+      recordDrop(stats.characters, 'characters: canonicalName 为空');
+      continue;
+    }
+    const imp = str(normed.importance, 'supporting');
+    if (!IMPORTANCE.has(imp)) {
+      recordDrop(stats.characters, `characters: importance=${imp}`);
+      continue;
+    }
     characters.push({
       canonicalName: name,
-      aliases: Array.isArray(item.aliases)
-        ? item.aliases.filter(
+      aliases: Array.isArray(normed.aliases)
+        ? normed.aliases.filter(
             (a): a is string => typeof a === 'string' && a.trim().length > 0,
           )
         : [],
-      description: str(item.description),
+      description: str(normed.description),
       importance: imp as ExtractionCharacter['importance'],
-      confidence: clamp01(num(item.confidence, 0.5)),
-      evidence: parseEvidence(item.evidence),
+      confidence: clamp01(num(normed.confidence, 0.5)),
+      evidence: parseEvidence(normed.evidence),
     });
+    stats.characters.accepted += 1;
   }
 
   const relationships: ExtractionRelationship[] = [];
   for (const item of Array.isArray(raw.relationships)
     ? raw.relationships
     : []) {
-    if (!isObj(item)) continue;
-    const sourceName = str(item.sourceName).trim();
-    const targetName = str(item.targetName).trim();
-    if (!sourceName || !targetName || sourceName === targetName) continue;
-    const pub = str(item.publicStatus, 'public');
-    if (!PUBLIC.has(pub)) continue;
+    stats.relationships.received += 1;
+    if (!isObj(item)) {
+      recordDrop(stats.relationships, 'relationships: 非对象');
+      continue;
+    }
+    const normed = normalizeExtractionItem('relationships', item);
+    const sourceName = str(normed.sourceName).trim();
+    const targetName = str(normed.targetName).trim();
+    if (!sourceName) {
+      recordDrop(stats.relationships, 'relationships: sourceName 为空');
+      continue;
+    }
+    if (!targetName) {
+      recordDrop(stats.relationships, 'relationships: targetName 为空');
+      continue;
+    }
+    if (sourceName === targetName) {
+      recordDrop(stats.relationships, 'relationships: source=target');
+      continue;
+    }
+    const pub = str(normed.publicStatus, 'public');
+    if (!PUBLIC.has(pub)) {
+      recordDrop(stats.relationships, `relationships: publicStatus=${pub}`);
+      continue;
+    }
     relationships.push({
       sourceName,
       targetName,
-      relationType: str(item.relationType, 'related') || 'related',
-      attitude: str(item.attitude),
+      relationType: str(normed.relationType, 'related') || 'related',
+      attitude: str(normed.attitude),
       publicStatus: pub as ExtractionRelationship['publicStatus'],
-      description: str(item.description),
-      confidence: clamp01(num(item.confidence, 0.5)),
-      evidence: parseEvidence(item.evidence),
+      description: str(normed.description),
+      confidence: clamp01(num(normed.confidence, 0.5)),
+      evidence: parseEvidence(normed.evidence),
     });
+    stats.relationships.accepted += 1;
   }
 
   const plotThreads: ExtractionPlotThread[] = [];
   for (const item of Array.isArray(raw.plotThreads) ? raw.plotThreads : []) {
-    if (!isObj(item)) continue;
-    const title = str(item.title).trim();
-    if (!title) continue;
-    const level = str(item.level, 'subplot');
-    const status = str(item.status, 'active');
-    if (!PLOT_LEVEL.has(level) || !PLOT_STATUS.has(status)) continue;
+    stats.plotThreads.received += 1;
+    if (!isObj(item)) {
+      recordDrop(stats.plotThreads, 'plotThreads: 非对象');
+      continue;
+    }
+    const normed = normalizeExtractionItem('plotThreads', item);
+    const title = str(normed.title).trim();
+    if (!title) {
+      recordDrop(stats.plotThreads, 'plotThreads: title 为空');
+      continue;
+    }
+    const level = str(normed.level, 'subplot');
+    const status = str(normed.status, 'active');
+    if (!PLOT_LEVEL.has(level)) {
+      recordDrop(stats.plotThreads, `plotThreads: level=${level}`);
+      continue;
+    }
+    if (!PLOT_STATUS.has(status)) {
+      recordDrop(stats.plotThreads, `plotThreads: status=${status}`);
+      continue;
+    }
     plotThreads.push({
       title,
-      description: str(item.description),
+      description: str(normed.description),
       level: level as ExtractionPlotThread['level'],
       status: status as ExtractionPlotThread['status'],
-      characterNames: Array.isArray(item.characterNames)
-        ? item.characterNames.filter((a): a is string => typeof a === 'string')
+      characterNames: Array.isArray(normed.characterNames)
+        ? normed.characterNames.filter(
+            (a): a is string => typeof a === 'string',
+          )
         : [],
-      confidence: clamp01(num(item.confidence, 0.5)),
-      evidence: parseEvidence(item.evidence),
+      confidence: clamp01(num(normed.confidence, 0.5)),
+      evidence: parseEvidence(normed.evidence),
     });
+    stats.plotThreads.accepted += 1;
   }
 
   const experiences: ExtractionExperience[] = [];
   for (const item of Array.isArray(raw.experiences) ? raw.experiences : []) {
-    if (!isObj(item)) continue;
-    const characterName = str(item.characterName).trim();
-    const title = str(item.title).trim();
-    if (!characterName || !title) continue;
+    stats.experiences.received += 1;
+    if (!isObj(item)) {
+      recordDrop(stats.experiences, 'experiences: 非对象');
+      continue;
+    }
+    const normed = normalizeExtractionItem('experiences', item);
+    const characterName = str(normed.characterName).trim();
+    if (!characterName) {
+      recordDrop(stats.experiences, 'experiences: characterName 为空');
+      continue;
+    }
+    const title = str(normed.title).trim();
+    if (!title) {
+      recordDrop(stats.experiences, 'experiences: title 为空');
+      continue;
+    }
     experiences.push({
       characterName,
-      eventType: str(item.eventType, 'other') || 'other',
+      eventType: str(normed.eventType, 'other') || 'other',
       title,
-      description: str(item.description),
-      importance: Math.floor(num(item.importance, 0)),
-      confidence: clamp01(num(item.confidence, 0.5)),
-      evidence: parseEvidence(item.evidence),
+      description: str(normed.description),
+      importance: Math.floor(num(normed.importance, 0)),
+      confidence: clamp01(num(normed.confidence, 0.5)),
+      evidence: parseEvidence(normed.evidence),
     });
+    stats.experiences.accepted += 1;
   }
 
   const knowledge: ExtractionKnowledge[] = [];
   for (const item of Array.isArray(raw.knowledge) ? raw.knowledge : []) {
-    if (!isObj(item)) continue;
-    const characterName = str(item.characterName).trim();
-    const factKey = str(item.factKey).trim();
-    if (!characterName || !factKey) continue;
-    const ks = str(item.knowledgeState, 'known');
-    if (!KNOW.has(ks)) continue;
+    stats.knowledge.received += 1;
+    if (!isObj(item)) {
+      recordDrop(stats.knowledge, 'knowledge: 非对象');
+      continue;
+    }
+    const normed = normalizeExtractionItem('knowledge', item);
+    const characterName = str(normed.characterName).trim();
+    if (!characterName) {
+      recordDrop(stats.knowledge, 'knowledge: characterName 为空');
+      continue;
+    }
+    const factKey = str(normed.factKey).trim();
+    if (!factKey) {
+      recordDrop(stats.knowledge, 'knowledge: factKey 为空');
+      continue;
+    }
+    const ks = str(normed.knowledgeState, 'known');
+    if (!KNOW.has(ks)) {
+      recordDrop(stats.knowledge, `knowledge: knowledgeState=${ks}`);
+      continue;
+    }
     knowledge.push({
       characterName,
       factKey,
-      factSummary: str(item.factSummary) || factKey,
+      factSummary: str(normed.factSummary) || factKey,
       knowledgeState: ks as ExtractionKnowledge['knowledgeState'],
-      confidence: clamp01(num(item.confidence, 0.5)),
-      evidence: parseEvidence(item.evidence),
+      confidence: clamp01(num(normed.confidence, 0.5)),
+      evidence: parseEvidence(normed.evidence),
     });
+    stats.knowledge.accepted += 1;
   }
 
   const states: ExtractionState[] = [];
   for (const item of Array.isArray(raw.states) ? raw.states : []) {
-    if (!isObj(item)) continue;
-    const characterName = str(item.characterName).trim();
-    if (!characterName) continue;
-    const alive = str(item.aliveState, 'unknown');
-    if (!ALIVE.has(alive)) continue;
+    stats.states.received += 1;
+    if (!isObj(item)) {
+      recordDrop(stats.states, 'states: 非对象');
+      continue;
+    }
+    const normed = normalizeExtractionItem('states', item);
+    const characterName = str(normed.characterName).trim();
+    if (!characterName) {
+      recordDrop(stats.states, 'states: characterName 为空');
+      continue;
+    }
+    const alive = str(normed.aliveState, 'unknown');
+    if (!ALIVE.has(alive)) {
+      recordDrop(stats.states, `states: aliveState=${alive}`);
+      continue;
+    }
     states.push({
       characterName,
-      location: item.location == null ? null : str(item.location),
+      location: normed.location == null ? null : str(normed.location),
       physicalState:
-        item.physicalState == null ? null : str(item.physicalState),
+        normed.physicalState == null ? null : str(normed.physicalState),
       emotionalState:
-        item.emotionalState == null ? null : str(item.emotionalState),
+        normed.emotionalState == null ? null : str(normed.emotionalState),
       aliveState: alive as ExtractionState['aliveState'],
-      summary: str(item.summary),
-      confidence: clamp01(num(item.confidence, 0.5)),
-      evidence: parseEvidence(item.evidence),
+      summary: str(normed.summary),
+      confidence: clamp01(num(normed.confidence, 0.5)),
+      evidence: parseEvidence(normed.evidence),
     });
+    stats.states.accepted += 1;
   }
 
   const timelineEvents: ExtractionTimelineEvent[] = [];
   for (const item of Array.isArray(raw.timelineEvents)
     ? raw.timelineEvents
     : []) {
-    if (!isObj(item)) continue;
-    const eventKey = str(item.eventKey).trim();
-    const title = str(item.title).trim();
-    if (!eventKey || !title) continue;
+    stats.timelineEvents.received += 1;
+    if (!isObj(item)) {
+      recordDrop(stats.timelineEvents, 'timelineEvents: 非对象');
+      continue;
+    }
+    const normed = normalizeExtractionItem('timelineEvents', item);
+    const eventKey = str(normed.eventKey).trim();
+    if (!eventKey) {
+      recordDrop(stats.timelineEvents, 'timelineEvents: eventKey 为空');
+      continue;
+    }
+    const title = str(normed.title).trim();
+    if (!title) {
+      recordDrop(stats.timelineEvents, 'timelineEvents: title 为空');
+      continue;
+    }
     timelineEvents.push({
       eventKey,
       title,
-      summary: str(item.summary),
-      eventType: str(item.eventType, 'event') || 'event',
-      characterNames: Array.isArray(item.characterNames)
-        ? item.characterNames.filter((a): a is string => typeof a === 'string')
+      summary: str(normed.summary),
+      eventType: str(normed.eventType, 'event') || 'event',
+      characterNames: Array.isArray(normed.characterNames)
+        ? normed.characterNames.filter(
+            (a): a is string => typeof a === 'string',
+          )
         : [],
-      importance: Math.floor(num(item.importance, 0)),
-      confidence: clamp01(num(item.confidence, 0.5)),
-      evidence: parseEvidence(item.evidence),
+      importance: Math.floor(num(normed.importance, 0)),
+      confidence: clamp01(num(normed.confidence, 0.5)),
+      evidence: parseEvidence(normed.evidence),
     });
+    stats.timelineEvents.accepted += 1;
   }
 
   return {
-    schemaVersion: EXTRACTION_RESULT_SCHEMA_VERSION,
-    worldRules,
-    characters,
-    relationships,
-    plotThreads,
-    experiences,
-    knowledge,
-    states,
-    timelineEvents,
+    result: {
+      schemaVersion: EXTRACTION_RESULT_SCHEMA_VERSION,
+      worldRules,
+      characters,
+      relationships,
+      plotThreads,
+      experiences,
+      knowledge,
+      states,
+      timelineEvents,
+    },
+    stats,
   };
+}
+
+function recordDrop(
+  bucket: ExtractionCategoryStats,
+  reason: string,
+): void {
+  bucket.dropped += 1;
+  if (!bucket.firstDropReason) bucket.firstDropReason = reason;
 }
 
 /** Validate free-form JSON columns before write (Spec §6.16). */

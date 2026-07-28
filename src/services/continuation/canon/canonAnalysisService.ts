@@ -59,8 +59,17 @@ import {
 } from './analysisScopePlanner';
 import {
   parseExtractionResultJson,
+  stripModelJson,
+  validateExtractionResultWithStats,
   type ChapterExtractionResult,
+  type ExtractionStats,
 } from './canonJsonValidators';
+import {
+  EXTRACTION_FIELD_SPEC,
+  EVIDENCE_FIELD_SPEC,
+  EXTRACTION_JSON_SKELETON,
+  buildExtractionRetryInstruction,
+} from './extractionPromptSpec';
 import { insertEvidenceAndLink } from './canonEvidenceService';
 import { executeTransaction } from '../../../data/connection/transaction';
 import {
@@ -1113,7 +1122,7 @@ async function processAnalysisRunInner(
         });
         await reportWorkItem(materialType, batch.batchIndex, 'running');
         try {
-          const result = await extractMaterialWithLlm(
+          const outcome = await extractMaterialWithLlm(
             slice,
             run.profile,
             run.modelConfigId,
@@ -1122,18 +1131,27 @@ async function processAnalysisRunInner(
             signal,
           );
           if (signal.aborted) throw new Error('分析已暂停或取消');
+          // Warnings (partial drops) are surfaced via the error_message column
+          // while the work item itself stays completed — the run can still
+          // proceed, but the user/operator sees what the model got wrong.
+          if (outcome.warning) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[canon] ${materialType} batch ${batch.batchIndex} warning: ${outcome.warning}`,
+            );
+          }
           await updateWorkItem(db, {
             runId,
             batchIndex: batch.batchIndex,
             materialType,
             state: 'completed',
-            resultJson: JSON.stringify(result),
-            errorCode: null,
-            errorMessage: null,
+            resultJson: JSON.stringify(outcome.result),
+            errorCode: outcome.warning ? 'partial_drop' : null,
+            errorMessage: outcome.warning,
             completedAt: now(),
           });
           await reportWorkItem(materialType, batch.batchIndex, 'completed');
-          return result;
+          return outcome.result;
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
@@ -1342,32 +1360,51 @@ function onlyMaterial(
   result: ChapterExtractionResult,
   materialType: AnalysisWorkItemType,
 ): ChapterExtractionResult {
+  return {
+    schemaVersion: 1,
+    ...pickMaterialFields(result, materialType),
+  };
+}
+
+/**
+ * The canonical categories each work item type is responsible for producing.
+ * Used both to filter the merged result and to decide which categories must be
+ * non-empty (S3: `received>0 && accepted===0` triggers a stats-aware retry).
+ */
+const MATERIAL_CATEGORY_OWNERSHIP: Record<
+  AnalysisWorkItemType,
+  Array<keyof ExtractionStats>
+> = {
+  world_rules: ['worldRules'],
+  characters: ['characters', 'knowledge', 'states'],
+  relationships: ['relationships'],
+  plot_threads: ['plotThreads', 'timelineEvents'],
+  experiences: ['experiences'],
+  character_state: [
+    'characters',
+    'relationships',
+    'experiences',
+    'knowledge',
+    'states',
+  ],
+  world_plot: ['worldRules', 'plotThreads', 'timelineEvents'],
+};
+
+function pickMaterialFields(
+  result: ChapterExtractionResult,
+  materialType: AnalysisWorkItemType,
+): Omit<ChapterExtractionResult, 'schemaVersion'> {
   const filtered = emptyExtractionResult();
-  if (materialType === 'world_rules') filtered.worldRules = result.worldRules;
-  if (materialType === 'characters') {
-    filtered.characters = result.characters;
-    filtered.knowledge = result.knowledge;
-    filtered.states = result.states;
-  }
-  if (materialType === 'relationships')
-    filtered.relationships = result.relationships;
-  if (materialType === 'plot_threads') {
-    filtered.plotThreads = result.plotThreads;
+  const owned = new Set(MATERIAL_CATEGORY_OWNERSHIP[materialType]);
+  if (owned.has('worldRules')) filtered.worldRules = result.worldRules;
+  if (owned.has('characters')) filtered.characters = result.characters;
+  if (owned.has('relationships')) filtered.relationships = result.relationships;
+  if (owned.has('plotThreads')) filtered.plotThreads = result.plotThreads;
+  if (owned.has('experiences')) filtered.experiences = result.experiences;
+  if (owned.has('knowledge')) filtered.knowledge = result.knowledge;
+  if (owned.has('states')) filtered.states = result.states;
+  if (owned.has('timelineEvents'))
     filtered.timelineEvents = result.timelineEvents;
-  }
-  if (materialType === 'experiences') filtered.experiences = result.experiences;
-  if (materialType === 'character_state') {
-    filtered.characters = result.characters;
-    filtered.relationships = result.relationships;
-    filtered.experiences = result.experiences;
-    filtered.knowledge = result.knowledge;
-    filtered.states = result.states;
-  }
-  if (materialType === 'world_plot') {
-    filtered.worldRules = result.worldRules;
-    filtered.plotThreads = result.plotThreads;
-    filtered.timelineEvents = result.timelineEvents;
-  }
   return filtered;
 }
 
@@ -1402,6 +1439,15 @@ const MATERIAL_PROMPTS: Record<AnalysisWorkItemType, string> = {
     '只填写 worldRules、plotThreads、timelineEvents；其他数组必须为空。剧情必须区分已发生事实、当前状态与未收束线索。',
 };
 
+export interface ExtractMaterialOutcome {
+  result: ChapterExtractionResult;
+  /**
+   * Non-fatal dropped-item summary written to the work item as a warning
+   * (state stays `completed`). `null` when nothing was dropped.
+   */
+  warning: string | null;
+}
+
 export async function extractMaterialWithLlm(
   chapters: BoundedSourceChapter[],
   profile: AnalysisProfile,
@@ -1409,7 +1455,7 @@ export async function extractMaterialWithLlm(
   materialType: AnalysisWorkItemType,
   runId: string,
   signal: AbortSignal,
-): Promise<ChapterExtractionResult> {
+): Promise<ExtractMaterialOutcome> {
   if (!modelConfigId) {
     throw new Error(
       '分析任务缺少 LLM 配置；请重新发起 Standard 或 Deep 分析。',
@@ -1422,7 +1468,9 @@ export async function extractMaterialWithLlm(
     `分析档位：${profile}。${MATERIAL_PROMPTS[materialType]}`,
     '每一个数组条目都必须至少有一条 evidence。evidence 必须引用本批章节中连续、逐字一致的原文片段作为 quotePreview（不超过 160 字）。',
     '每章 metadata 给出 bodyStart 和 bodyEnd：charStart/charEnd 是全书 UTF-16 绝对偏移；请使用 quotePreview 在该章正文中定位后填写，不能猜测。',
-    'JSON 结构：{"schemaVersion":1,"worldRules":[],"characters":[],"relationships":[],"plotThreads":[],"experiences":[],"knowledge":[],"states":[],"timelineEvents":[]}。',
+    EXTRACTION_FIELD_SPEC,
+    EVIDENCE_FIELD_SPEC,
+    EXTRACTION_JSON_SKELETON,
     '章节正文：',
     ...chapters.map(
       c =>
@@ -1432,6 +1480,7 @@ export async function extractMaterialWithLlm(
     ),
   ].join('\n');
   let lastOutputError: Error | null = null;
+  let lastDroppedStats: ExtractionStats | null = null;
   for (
     let attempt = 1;
     attempt <= CANON_ANALYSIS_RETRY_POLICY.maxAttempts;
@@ -1440,7 +1489,7 @@ export async function extractMaterialWithLlm(
     try {
       const retryInstruction =
         attempt > 1
-          ? '\n上一轮输出无法解析或不符合 schema。请重新生成完整 JSON；不要复用上轮文本，也不要输出任何解释、Markdown 或思考过程。'
+          ? buildExtractionRetryInstruction(lastDroppedStats ?? undefined)
           : '';
       const response = await callLLMResult(
         [{ role: 'user', content: `${prompt}${retryInstruction}` }],
@@ -1459,16 +1508,40 @@ export async function extractMaterialWithLlm(
       if (!response?.text?.trim()) {
         throw canonOutputError('LLM 未返回分析结果');
       }
+      let parsed: ChapterExtractionResult;
+      let stats: ExtractionStats;
       try {
-        return onlyMaterial(
-          parseExtractionResultJson(response.text),
-          materialType,
-        );
+        ({ result: parsed, stats } = validateExtractionResultWithStats(
+          // Recover the JSON object from prose/fences but DO NOT pre-validate:
+          // validateExtractionResultWithStats must see the raw shape so the
+          // received/accepted/dropped counts reflect the model's actual output.
+          parseRecoveredExtractionObject(response.text),
+        ));
       } catch (error) {
         throw canonOutputError(
           error instanceof Error ? error.message : '提取结果不是合法 JSON',
         );
       }
+      const filtered = onlyMaterial(parsed, materialType);
+      // S3: if a category this work item owns had input but every entry was
+      // dropped, the model produced a structurally unusable payload for that
+      // category. Surface it as a recoverable output error so the loop retries
+      // with the dropped statistics attached.
+      const ownedCategories = MATERIAL_CATEGORY_OWNERSHIP[materialType];
+      const wiped = ownedCategories.filter(
+        cat =>
+          stats[cat].received > 0 && stats[cat].accepted === 0,
+      );
+      if (wiped.length > 0) {
+        lastDroppedStats = stats;
+        throw canonOutputError(
+          `本组负责的分类全部被丢弃：${wiped
+            .map(cat => `${cat}(received=${stats[cat].received})`)
+            .join('、')}`,
+        );
+      }
+      const warning = buildDropWarning(materialType, stats, ownedCategories);
+      return { result: filtered, warning };
     } catch (error) {
       const canRetry =
         attempt < CANON_ANALYSIS_RETRY_POLICY.maxAttempts &&
@@ -1494,6 +1567,43 @@ export async function extractMaterialWithLlm(
     );
   }
   throw new Error('LLM 未返回分析结果。');
+}
+
+/**
+ * Recover the JSON object from provider prose / code fences / double-encoded
+ * wrappers WITHOUT running schema validation. The caller runs the stats-bearing
+ * validator next, so the raw parsed shape (with whatever field names the model
+ * used) must be preserved.
+ */
+function parseRecoveredExtractionObject(text: string): unknown {
+  const stripped = stripModelJson(text);
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    // Some gateways double-encode content as a JSON string.
+    try {
+      return JSON.parse(JSON.parse(stripped));
+    } catch {
+      throw new Error('提取结果不是合法 JSON 或不符合 Canon schema');
+    }
+  }
+}
+
+function buildDropWarning(
+  materialType: AnalysisWorkItemType,
+  stats: ExtractionStats,
+  ownedCategories: Array<keyof ExtractionStats>,
+): string | null {
+  const dropped = ownedCategories
+    .map(cat => ({ cat, s: stats[cat] }))
+    .filter(({ s }) => s.dropped > 0);
+  if (dropped.length === 0) return null;
+  const label = ANALYSIS_MATERIAL_LABELS[materialType];
+  const parts = dropped.map(
+    ({ cat, s }) =>
+      `${cat}: received=${s.received}, accepted=${s.accepted}, dropped=${s.dropped}`,
+  );
+  return `${label} 部分条目被丢弃：${parts.join('；')}`;
 }
 
 /** One in-process owner per run prevents two screens from processing it twice. */
@@ -1535,8 +1645,9 @@ export async function extractWithLlm(
     '每一个数组条目都必须至少有一条 evidence。evidence 必须引用本批章节中连续、逐字一致的原文片段作为 quotePreview（不超过 160 字）。',
     '每章 metadata 给出 bodyStart 和 bodyEnd：charStart/charEnd 是全书 UTF-16 绝对偏移；请使用 quotePreview 在该章正文中定位后填写，不能猜测。',
     '人物的 canonicalName 使用原文最常用姓名；关系要写双方、关系性质和态度；剧情要写已发生事实与当前状态；经历必须归属到人物。',
-    'JSON 结构：{"schemaVersion":1,"worldRules":[],"characters":[],"relationships":[],"plotThreads":[],"experiences":[],"knowledge":[],"states":[],"timelineEvents":[]}。数组元素字段必须严格使用对应名称：worldRules(category,title,description,constraintLevel,confidence,evidence)；characters(canonicalName,aliases,description,importance,confidence,evidence)；relationships(sourceName,targetName,relationType,attitude,publicStatus,description,confidence,evidence)；plotThreads(title,description,level,status,characterNames,confidence,evidence)；experiences(characterName,eventType,title,description,importance,confidence,evidence)；knowledge(characterName,factKey,factSummary,knowledgeState,confidence,evidence)；states(characterName,location,physicalState,emotionalState,aliveState,summary,confidence,evidence)；timelineEvents(eventKey,title,summary,eventType,characterNames,importance,confidence,evidence)。',
-    'evidence 元素字段：chapterId、chapterPosition、charStart、charEnd、quotePreview。',
+    EXTRACTION_FIELD_SPEC,
+    EVIDENCE_FIELD_SPEC,
+    EXTRACTION_JSON_SKELETON,
     '章节正文：',
     ...chapters.map(
       c =>
