@@ -78,6 +78,10 @@ import {
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
 } from '../../llm';
+import {
+  estimateMessagesTokens,
+  estimateTokens,
+} from '../../../utils/tokenEstimator';
 
 export const ANALYSIS_MATERIAL_LABELS: Record<AnalysisWorkItemType, string> = {
   world_rules: '世界观',
@@ -185,6 +189,156 @@ export interface StartAnalysisInput {
   mode: ContinuationAnalysisMode;
   modelConfigId?: number | null;
   chaptersPerBatch?: number;
+}
+
+/**
+ * Minimum context window a local model needs to even attempt Canon analysis.
+ * Used in error messages so the user understands the floor (Spec §1 / S1).
+ * Matches the llama.cpp n_ctx clamp floor; anything smaller cannot reserve the
+ * standard output baseline plus any input.
+ */
+export const CANON_LOCAL_MODEL_MIN_CONTEXT_WINDOW = 4096;
+
+/**
+ * Per-batch prompt overhead (instructions, JSON skeleton, field spec) in
+ * tokens. Pre-computed once from the shared prompt spec so the budget planner
+ * does not have to build a full prompt just to estimate.
+ */
+const CANON_PROMPT_OVERHEAD_TOKENS = 600;
+
+/**
+ * Output baseline per profile — kept in sync with extractMaterialWithLlm.
+ * The planner refuses when the window cannot reserve this much output.
+ */
+const CANON_OUTPUT_BASELINE_TOKENS: Record<AnalysisProfile, number> = {
+  quick: 4096,
+  standard: 8192,
+  deep: 16384,
+};
+
+export interface AnalysisTokenBudgetPlan {
+  ok: boolean;
+  downgraded: boolean;
+  perBatch: number;
+  /** Max characters of chapter body to include per chapter in a batch. */
+  sliceCharBudget: number;
+  inputEstimate: number;
+  effectiveWindow: number;
+  reason?: string;
+}
+
+/**
+ * Estimate whether a local model's context window can absorb a Canon analysis
+ * batch, downgrading chaptersPerBatch and the per-chapter slice before
+ * refusing (Spec §1, change 3).
+ *
+ * Online models (contextWindow == null) skip the check entirely — their
+ * windows are effectively unbounded from the client's perspective. For local
+ * models the effective window is `min(contextWindow, ceiling)`; the ceiling
+ * defaults to the llama.cpp n_ctx clamp (4096) but callers may pass a higher
+ * value when the backend reports a larger configured context.
+ */
+export function planAnalysisTokenBudget(input: {
+  chapters: BoundedSourceChapter[];
+  profile: AnalysisProfile;
+  perBatch: number;
+  contextWindow: number | null | undefined;
+  contextWindowCeiling?: number;
+}): AnalysisTokenBudgetPlan {
+  // Online model: no client-side budget enforcement.
+  if (input.contextWindow == null) {
+    return {
+      ok: true,
+      downgraded: false,
+      perBatch: Math.max(1, input.perBatch),
+      sliceCharBudget: 6000,
+      inputEstimate: 0,
+      effectiveWindow: 0,
+    };
+  }
+  const ceiling =
+    input.contextWindowCeiling ?? CANON_LOCAL_MODEL_MIN_CONTEXT_WINDOW;
+  const effectiveWindow = Math.min(input.contextWindow, ceiling);
+  const outputBaseline = CANON_OUTPUT_BASELINE_TOKENS[input.profile] ?? 8192;
+  const overhead = CANON_PROMPT_OVERHEAD_TOKENS + 256; // prompt + misc safety
+
+  const fitsWindow = (
+    perBatch: number,
+    sliceCharBudget: number,
+  ): { ok: boolean; inputEstimate: number } => {
+    const sampleChapters = input.chapters.slice(0, perBatch);
+    const messages = [
+      {
+        role: 'user' as const,
+        content:
+          '指令骨架'.repeat(20) +
+          sampleChapters
+            .map(c => `### ${c.title}\n${c.content.slice(0, sliceCharBudget)}`)
+            .join('\n'),
+      },
+    ];
+    const inputEstimate =
+      estimateMessagesTokens(messages) - estimateTokens('指令骨架'.repeat(20));
+    const total = inputEstimate + outputBaseline + overhead;
+    return { ok: total <= effectiveWindow, inputEstimate };
+  };
+
+  // Try the requested batch size first.
+  let perBatch = Math.max(1, input.perBatch);
+  let sliceCharBudget = 6000;
+  let probe = fitsWindow(perBatch, sliceCharBudget);
+
+  // Downgrade path 1: shrink chapters per batch to 1.
+  if (!probe.ok && perBatch > 1) {
+    perBatch = 1;
+    probe = fitsWindow(perBatch, sliceCharBudget);
+  }
+
+  // Downgrade path 2: shrink the per-chapter slice until it fits (or hits a floor).
+  if (!probe.ok) {
+    // Binary-shrink the slice char budget. Floor at 512 chars — anything smaller
+    // is not worth analysing and the run should refuse instead.
+    let lo = 512;
+    let hi = sliceCharBudget;
+    let bestFit: { ok: boolean; inputEstimate: number; budget: number } | null =
+      null;
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const trial = fitsWindow(perBatch, mid);
+      if (trial.ok) {
+        bestFit = { ...trial, budget: mid };
+        lo = mid + 1; // try to keep as much text as possible
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (bestFit) {
+      sliceCharBudget = bestFit.budget;
+      probe = { ok: true, inputEstimate: bestFit.inputEstimate };
+    }
+  }
+
+  if (probe.ok) {
+    return {
+      ok: true,
+      downgraded:
+        perBatch < input.perBatch || sliceCharBudget < 6000,
+      perBatch,
+      sliceCharBudget,
+      inputEstimate: probe.inputEstimate,
+      effectiveWindow,
+    };
+  }
+
+  return {
+    ok: false,
+    downgraded: true,
+    perBatch,
+    sliceCharBudget,
+    inputEstimate: probe.inputEstimate,
+    effectiveWindow,
+    reason: `本地模型上下文不足以执行 Canon 分析（估算输入 ${probe.inputEstimate} tokens / 有效窗口 ${effectiveWindow}，需预留输出 ${outputBaseline} tokens），请改用在线模型或扩大本地模型上下文窗口。`,
+  };
 }
 
 export interface ModelCapabilityProbe {
@@ -861,7 +1015,23 @@ export async function startAnalysis(
 
   const snapshotId = v4();
   const runId = v4();
-  const perBatch = Math.max(1, input.chaptersPerBatch ?? 3);
+  const requestedPerBatch = Math.max(1, input.chaptersPerBatch ?? 3);
+  // S1 preflight: estimate whether the local model's context window can absorb
+  // a Canon batch. Online models skip the check; local models that cannot
+  // reserve the output baseline are refused up front instead of burning three
+  // identical retries. When the input is the bottleneck we downgrade
+  // chaptersPerBatch (and remember the slice budget for extraction).
+  const tokenBudget = planAnalysisTokenBudget({
+    chapters: plan.nearChapters,
+    profile,
+    perBatch: requestedPerBatch,
+    contextWindow: requestConfig.context_window,
+  });
+  if (!tokenBudget.ok) {
+    throw new Error(tokenBudget.reason ?? '本地模型上下文不足以执行 Canon 分析');
+  }
+  const perBatch = tokenBudget.perBatch;
+  const sliceCharBudget = tokenBudget.sliceCharBudget;
   const batches: Array<{
     runId: string;
     canonSnapshotId: string;
@@ -959,6 +1129,15 @@ export async function startAnalysis(
       scope: plan.effectiveScope,
       plannedChapterIds: plan.nearChapters.map(chapter => chapter.id),
       plannedRanges: plan.analyzedRanges,
+      // S1: remember the budget planner's verdict so extraction/resume reuse
+      // the same downgraded chaptersPerBatch and slice budget instead of
+      // recomputing (and possibly widening) on resume.
+      tokenBudget: {
+        perBatch,
+        sliceCharBudget,
+        downgraded: tokenBudget.downgraded,
+        effectiveWindow: tokenBudget.effectiveWindow,
+      },
     }),
   });
 
