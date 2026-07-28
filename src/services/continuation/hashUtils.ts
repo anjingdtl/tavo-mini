@@ -71,6 +71,90 @@ export function utf8ByteLength(value: string): number {
   return utf8Encode(value).length;
 }
 
+/**
+ * Compress a single 64-byte block into the running hash state (SHA-256 core).
+ *
+ * Shared by the one-shot {@link sha256Hex} and the streaming {@link Sha256Stream}
+ * so both paths produce identical digests. `block` must be exactly 64 bytes;
+ * the caller schedules message-schedule words and updates h0..h7 in place.
+ */
+function compressBlock(
+  block: Uint8Array,
+  state: { h0: number; h1: number; h2: number; h3: number; h4: number; h5: number; h6: number; h7: number },
+): void {
+  const words = new Uint32Array(64);
+  for (let index = 0; index < 16; index += 1) {
+    const offset = index * 4;
+    words[index] = (
+      (block[offset] << 24)
+      | (block[offset + 1] << 16)
+      | (block[offset + 2] << 8)
+      | block[offset + 3]
+    ) >>> 0;
+  }
+  for (let index = 16; index < 64; index += 1) {
+    const s0 = rotateRight(words[index - 15], 7)
+      ^ rotateRight(words[index - 15], 18)
+      ^ (words[index - 15] >>> 3);
+    const s1 = rotateRight(words[index - 2], 17)
+      ^ rotateRight(words[index - 2], 19)
+      ^ (words[index - 2] >>> 10);
+    words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
+  }
+
+  let a = state.h0;
+  let b = state.h1;
+  let c = state.h2;
+  let d = state.h3;
+  let e = state.h4;
+  let f = state.h5;
+  let g = state.h6;
+  let h = state.h7;
+
+  for (let index = 0; index < 64; index += 1) {
+    const s1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
+    const choose = (e & f) ^ (~e & g);
+    const temp1 = (h + s1 + choose + SHA256_K[index] + words[index]) >>> 0;
+    const s0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
+    const majority = (a & b) ^ (a & c) ^ (b & c);
+    const temp2 = (s0 + majority) >>> 0;
+    h = g;
+    g = f;
+    f = e;
+    e = (d + temp1) >>> 0;
+    d = c;
+    c = b;
+    b = a;
+    a = (temp1 + temp2) >>> 0;
+  }
+
+  state.h0 = (state.h0 + a) >>> 0;
+  state.h1 = (state.h1 + b) >>> 0;
+  state.h2 = (state.h2 + c) >>> 0;
+  state.h3 = (state.h3 + d) >>> 0;
+  state.h4 = (state.h4 + e) >>> 0;
+  state.h5 = (state.h5 + f) >>> 0;
+  state.h6 = (state.h6 + g) >>> 0;
+  state.h7 = (state.h7 + h) >>> 0;
+}
+
+const INITIAL_STATE = {
+  h0: 0x6a09e667,
+  h1: 0xbb67ae85,
+  h2: 0x3c6ef372,
+  h3: 0xa54ff53a,
+  h4: 0x510e527f,
+  h5: 0x9b05688c,
+  h6: 0x1f83d9ab,
+  h7: 0x5be0cd19,
+};
+
+function stateToHex(state: typeof INITIAL_STATE): string {
+  return [state.h0, state.h1, state.h2, state.h3, state.h4, state.h5, state.h6, state.h7]
+    .map(word => word.toString(16).padStart(8, '0'))
+    .join('');
+}
+
 /** Synchronous SHA-256 lowercase hex of a string's UTF-8 bytes (Spec §6). */
 export function sha256Hex(value: string): string {
   const source = utf8Encode(value);
@@ -83,75 +167,84 @@ export function sha256Hex(value: string): string {
     bytes[paddedLength - 1 - offset] = (bitLength / 2 ** (offset * 8)) & 0xff;
   }
 
-  let h0 = 0x6a09e667;
-  let h1 = 0xbb67ae85;
-  let h2 = 0x3c6ef372;
-  let h3 = 0xa54ff53a;
-  let h4 = 0x510e527f;
-  let h5 = 0x9b05688c;
-  let h6 = 0x1f83d9ab;
-  let h7 = 0x5be0cd19;
-  const words = new Uint32Array(64);
-
+  const state = { ...INITIAL_STATE };
   for (let block = 0; block < paddedLength; block += 64) {
-    for (let index = 0; index < 16; index += 1) {
-      const offset = block + index * 4;
-      words[index] = (
-        (bytes[offset] << 24)
-        | (bytes[offset + 1] << 16)
-        | (bytes[offset + 2] << 8)
-        | bytes[offset + 3]
-      ) >>> 0;
-    }
-    for (let index = 16; index < 64; index += 1) {
-      const s0 = rotateRight(words[index - 15], 7)
-        ^ rotateRight(words[index - 15], 18)
-        ^ (words[index - 15] >>> 3);
-      const s1 = rotateRight(words[index - 2], 17)
-        ^ rotateRight(words[index - 2], 19)
-        ^ (words[index - 2] >>> 10);
-      words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
-    }
+    compressBlock(bytes.subarray(block, block + 64), state);
+  }
+  return stateToHex(state);
+}
 
-    let a = h0;
-    let b = h1;
-    let c = h2;
-    let d = h3;
-    let e = h4;
-    let f = h5;
-    let g = h6;
-    let h = h7;
+/**
+ * Incremental SHA-256 over UTF-8 bytes (Spec §6, streaming variant).
+ *
+ * The one-shot {@link sha256Hex} forces the entire input into JS memory, which
+ * OOMs the continuation import pipeline on multi-MB novels. Sha256Stream keeps
+ * only a <64-byte pending buffer plus the 8-word hash state, so memory is O(1)
+ * regardless of input size. `updateString` chunks may be fed in any sizes; the
+ * digest equals `sha256Hex` of the concatenated string.
+ *
+ * Usage:
+ *   const s = new Sha256Stream();
+ *   for (const chunk of chunks) s.updateString(chunk);
+ *   const hex = s.digest();
+ */
+export class Sha256Stream {
+  private state = { ...INITIAL_STATE };
+  private pending: Uint8Array = new Uint8Array(0);
+  private totalBytes = 0;
 
-    for (let index = 0; index < 64; index += 1) {
-      const s1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
-      const choose = (e & f) ^ (~e & g);
-      const temp1 = (h + s1 + choose + SHA256_K[index] + words[index]) >>> 0;
-      const s0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
-      const majority = (a & b) ^ (a & c) ^ (b & c);
-      const temp2 = (s0 + majority) >>> 0;
-      h = g;
-      g = f;
-      f = e;
-      e = (d + temp1) >>> 0;
-      d = c;
-      c = b;
-      b = a;
-      a = (temp1 + temp2) >>> 0;
+  /** Feed raw bytes into the hash. */
+  update(bytes: Uint8Array): void {
+    if (bytes.length === 0) return;
+    this.totalBytes += bytes.length;
+    // Combine with any leftover tail, then compress every full 64-byte block.
+    const combined =
+      this.pending.length === 0
+        ? bytes
+        : _concatBytes(this.pending, bytes);
+    const fullBlocks = Math.floor(combined.length / 64);
+    for (let i = 0; i < fullBlocks; i += 1) {
+      compressBlock(combined.subarray(i * 64, i * 64 + 64), this.state);
     }
-
-    h0 = (h0 + a) >>> 0;
-    h1 = (h1 + b) >>> 0;
-    h2 = (h2 + c) >>> 0;
-    h3 = (h3 + d) >>> 0;
-    h4 = (h4 + e) >>> 0;
-    h5 = (h5 + f) >>> 0;
-    h6 = (h6 + g) >>> 0;
-    h7 = (h7 + h) >>> 0;
+    const consumed = fullBlocks * 64;
+    this.pending = combined.subarray(consumed);
   }
 
-  return [h0, h1, h2, h3, h4, h5, h6, h7]
-    .map(word => word.toString(16).padStart(8, '0'))
-    .join('');
+  /** Feed a JS string's UTF-8 bytes into the hash (surrogate-aware). */
+  updateString(text: string): void {
+    this.update(utf8Encode(text));
+  }
+
+  /** Finalize and return the lowercase hex digest. The stream is exhausted. */
+  digest(): string {
+    const bitLength = this.totalBytes * 8;
+    // Append 0x80, then pad with zeros, leaving room for the 8-byte length.
+    const tailLen = this.pending.length;
+    // If tail fits 0x80 + 8 length bytes in one block, use one padding block;
+    // otherwise two. tailLen <= 63 always (pending holds <64 bytes).
+    const paddedLength = tailLen + 1 + 8 <= 64 ? 64 : 128;
+    const padded = new Uint8Array(paddedLength);
+    padded.set(this.pending);
+    padded[tailLen] = 0x80;
+    for (let offset = 0; offset < 8; offset += 1) {
+      padded[paddedLength - 1 - offset] = (bitLength / 2 ** (offset * 8)) & 0xff;
+    }
+    for (let block = 0; block < paddedLength; block += 64) {
+      compressBlock(padded.subarray(block, block + 64), this.state);
+    }
+    // Reset so a stray digest() call cannot return a half-baked state.
+    const hex = stateToHex(this.state);
+    this.pending = new Uint8Array(0);
+    this.totalBytes = 0;
+    return hex;
+  }
+}
+
+function _concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
 }
 
 /* eslint-enable no-bitwise */

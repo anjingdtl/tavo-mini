@@ -11,6 +11,11 @@ import {
   classifyError,
   sanitizeError,
   stripExtension,
+  MAX_IMPORT_FILE_BYTES,
+  getActiveImportJob,
+  recoverInterruptedJobs,
+  resumeContinuationImport,
+  cancelContinuationImport,
 } from '../src/services/continuation/continuationImportService';
 
 describe('continuation import service helpers (Spec §13, §19)', () => {
@@ -84,6 +89,21 @@ describe('continuation import service helpers (Spec §13, §19)', () => {
 
     it('handles non-string input gracefully', () => {
       expect(sanitizeError(undefined as unknown as string)).toBe('');
+    });
+  });
+
+  describe('import recovery + size-ceiling contract (Spec §14.2, §16)', () => {
+    it('exports the 200 MB size ceiling matching the native MAX_FILE_BYTES', () => {
+      expect(MAX_IMPORT_FILE_BYTES).toBe(200 * 1024 * 1024);
+    });
+
+    it('exports the recovery/resume/cancel/query API the UI relies on', () => {
+      // These were previously dead code (no callers). The flattened import UI
+      // now wires them up, so they must be importable from the service entry.
+      expect(typeof getActiveImportJob).toBe('function');
+      expect(typeof recoverInterruptedJobs).toBe('function');
+      expect(typeof resumeContinuationImport).toBe('function');
+      expect(typeof cancelContinuationImport).toBe('function');
     });
   });
 });
