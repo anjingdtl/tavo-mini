@@ -129,7 +129,7 @@ describe('Canon LLM analysis', () => {
     expect(outcome.result.worldRules).toEqual([]);
     expect(callLLMResult).toHaveBeenCalledWith(
       expect.any(Array),
-      5000,
+      8192,
       expect.objectContaining({
         queueClass: 'canon_analysis',
         taskId: 'run-1',
@@ -318,5 +318,142 @@ describe('Canon LLM analysis', () => {
     );
     expect(outcome.warning).toMatch(/dropped|丢弃/);
     expect(callLLMResult).toHaveBeenCalledTimes(1);
+  });
+
+  describe('S1: empty-response classification and adaptive retry', () => {
+    it('raises a length-specific message and doubles max_tokens on retry when finish_reason=length', async () => {
+      jest.useFakeTimers();
+      (callLLMResult as jest.Mock)
+        .mockResolvedValueOnce({
+          text: null,
+          emptyReason: 'length',
+          finishReason: 'length',
+        })
+        .mockResolvedValueOnce({ text: validResult });
+
+      const pending = extractMaterialWithLlm(
+        [chapter],
+        'standard',
+        42,
+        'characters',
+        'run-length',
+        new AbortController().signal,
+      );
+      await jest.runAllTimersAsync();
+      const outcome = await pending;
+
+      expect(outcome.result.characters[0].canonicalName).toBe('林凡');
+      expect(callLLMResult).toHaveBeenCalledTimes(2);
+      // Baseline for standard is now 8192; the length retry must double it.
+      const firstMaxTokens = (callLLMResult as jest.Mock).mock.calls[0][1];
+      const secondMaxTokens = (callLLMResult as jest.Mock).mock.calls[1][1];
+      expect(firstMaxTokens).toBe(8192);
+      expect(secondMaxTokens).toBe(8192 * 2);
+      jest.useRealTimers();
+    });
+
+    it('raises a reasoning-only message and doubles max_tokens when reasoning_content filled the budget', async () => {
+      jest.useFakeTimers();
+      (callLLMResult as jest.Mock)
+        .mockResolvedValueOnce({
+          text: null,
+          emptyReason: 'reasoning_only',
+          reasoningText: '推理内容',
+          finishReason: 'length',
+        })
+        .mockResolvedValueOnce({ text: validResult });
+
+      const pending = extractMaterialWithLlm(
+        [chapter],
+        'standard',
+        42,
+        'characters',
+        'run-reasoning',
+        new AbortController().signal,
+      );
+      await jest.runAllTimersAsync();
+      const outcome = await pending;
+
+      expect(outcome.result.characters[0].canonicalName).toBe('林凡');
+      const firstMaxTokens = (callLLMResult as jest.Mock).mock.calls[0][1];
+      const secondMaxTokens = (callLLMResult as jest.Mock).mock.calls[1][1];
+      expect(firstMaxTokens).toBe(8192);
+      expect(secondMaxTokens).toBe(8192 * 2);
+      jest.useRealTimers();
+    });
+
+    it('uses a 16384 baseline for the deep profile and doubles on length retry', async () => {
+      jest.useFakeTimers();
+      (callLLMResult as jest.Mock)
+        .mockResolvedValueOnce({
+          text: null,
+          emptyReason: 'length',
+          finishReason: 'length',
+        })
+        .mockResolvedValueOnce({ text: validResult });
+
+      const pending = extractMaterialWithLlm(
+        [chapter],
+        'deep',
+        42,
+        'characters',
+        'run-deep-length',
+        new AbortController().signal,
+      );
+      await jest.runAllTimersAsync();
+      await pending;
+
+      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(16384);
+      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(16384 * 2);
+      jest.useRealTimers();
+    });
+
+    it('surfaces the real gateway error (no empty-reason spin) when the provider throws', async () => {
+      const gatewayError = Object.assign(
+        new Error('API 请求失败 (200, unsupported_parameter): response_format 不被支持'),
+        { code: 'unsupported_parameter', status: 200 },
+      );
+      (callLLMResult as jest.Mock).mockRejectedValue(gatewayError);
+
+      await expect(
+        extractMaterialWithLlm(
+          [chapter],
+          'standard',
+          42,
+          'characters',
+          'run-gateway-error',
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow(/unsupported_parameter|response_format/);
+      // No retry: a 200-with-error-body is not transient.
+      expect(callLLMResult).toHaveBeenCalledTimes(1);
+    });
+
+    it('attaches a diagnostic footer with finishReason and response prefix to the final failure message', async () => {
+      jest.useFakeTimers();
+      (callLLMResult as jest.Mock).mockResolvedValue({
+        text: null,
+        emptyReason: 'length',
+        finishReason: 'length',
+      });
+
+      const pending = extractMaterialWithLlm(
+        [chapter],
+        'standard',
+        42,
+        'characters',
+        'run-length-exhausted',
+        new AbortController().signal,
+      );
+      // Attach a catch so the rejected promise does not become an unhandled
+      // rejection while fake timers stall the retry backoff.
+      pending.catch(() => {});
+      await jest.runAllTimersAsync();
+
+      await expect(pending).rejects.toThrow(
+        /finishReason=length|max_tokens|截断/,
+      );
+      jest.useRealTimers();
+    });
   });
 });

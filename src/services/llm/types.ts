@@ -14,6 +14,20 @@ export interface LLMResult {
   metrics?: LLMRequestMetrics;
   errorCode?: string;
   finishReason?: string | null;
+  /**
+   * Categorical reason for a null `text` (Spec §1 / S1). Present only when the
+   * provider could not produce business text. Lets Canon analysis distinguish
+   * "model does not support JSON" (a dead end) from "reasoning burned the
+   * output budget" (retryable with more tokens) from "gateway returned an
+   * error inside a 200 body" (a real provider error). Optional so every
+   * existing caller stays unaffected.
+   */
+  emptyReason?:
+    | 'length'
+    | 'content_filter'
+    | 'reasoning_only'
+    | 'no_choices'
+    | 'empty';
   rawUsage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
