@@ -99,6 +99,16 @@ function isTransientCanonAnalysisError(error: unknown): boolean {
   );
 }
 
+function isRecoverableCanonOutputError(error: unknown): boolean {
+  return (error as { name?: unknown })?.name === 'CanonAnalysisOutputError';
+}
+
+function canonOutputError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'CanonAnalysisOutputError';
+  return error;
+}
+
 function waitForCanonRetry(
   signal: AbortSignal,
   delayMs: number,
@@ -1348,7 +1358,7 @@ export async function extractMaterialWithLlm(
   const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
   const prompt = [
     '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
-    '必须只返回一个合法 JSON 对象，不要 Markdown，不要解释。schemaVersion 必须为 1。',
+    '必须只返回一个完整、可 JSON.parse 的 JSON 对象，不要 Markdown、思考过程、解释或任何前后缀。schemaVersion 必须为 1，八个数组字段都必须出现，不能返回 null 或空白。',
     `分析档位：${profile}。${MATERIAL_PROMPTS[materialType]}`,
     '每一个数组条目都必须至少有一条 evidence。evidence 必须引用本批章节中连续、逐字一致的原文片段作为 quotePreview（不超过 160 字）。',
     '每章 metadata 给出 bodyStart 和 bodyEnd：charStart/charEnd 是全书 UTF-16 绝对偏移；请使用 quotePreview 在该章正文中定位后填写，不能猜测。',
@@ -1361,18 +1371,19 @@ export async function extractMaterialWithLlm(
         }, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
     ),
   ].join('\n');
-  let response: Awaited<ReturnType<typeof callLLMResult>> | undefined;
+  let lastOutputError: Error | null = null;
   for (
     let attempt = 1;
     attempt <= CANON_ANALYSIS_RETRY_POLICY.maxAttempts;
     attempt += 1
   ) {
     try {
-      response = await callLLMResult(
+      const response = await callLLMResult(
         [{ role: 'user', content: prompt }],
         profile === 'deep' ? 8000 : 5000,
         {
           responseFormat: 'json_object',
+          temperature: 0.1,
           queueClass: 'canon_analysis',
           queuePriority: 'background',
           scenario: 'continuation_canon_analysis',
@@ -1381,21 +1392,44 @@ export async function extractMaterialWithLlm(
         },
         signal,
       );
-      break;
+      if (!response?.text?.trim()) {
+        throw canonOutputError('LLM 未返回分析结果');
+      }
+      try {
+        return onlyMaterial(
+          parseExtractionResultJson(response.text),
+          materialType,
+        );
+      } catch (error) {
+        throw canonOutputError(
+          error instanceof Error ? error.message : '提取结果不是合法 JSON',
+        );
+      }
     } catch (error) {
       const canRetry =
         attempt < CANON_ANALYSIS_RETRY_POLICY.maxAttempts &&
         !signal.aborted &&
-        isTransientCanonAnalysisError(error);
-      if (!canRetry) throw error;
+        (isTransientCanonAnalysisError(error) ||
+          isRecoverableCanonOutputError(error));
+      if (!canRetry) {
+        if (isRecoverableCanonOutputError(error)) {
+          lastOutputError = error as Error;
+          break;
+        }
+        throw error;
+      }
       await waitForCanonRetry(
         signal,
         CANON_ANALYSIS_RETRY_POLICY.baseDelayMs * 2 ** (attempt - 1),
       );
     }
   }
-  if (!response?.text?.trim()) throw new Error('LLM 未返回分析结果。');
-  return onlyMaterial(parseExtractionResultJson(response.text), materialType);
+  if (lastOutputError) {
+    throw new Error(
+      `${ANALYSIS_MATERIAL_LABELS[materialType]}的模型输出连续 ${CANON_ANALYSIS_RETRY_POLICY.maxAttempts} 次无效：${lastOutputError.message}。请检查模型是否支持 JSON 输出后重试。`,
+    );
+  }
+  throw new Error('LLM 未返回分析结果。');
 }
 
 /** One in-process owner per run prevents two screens from processing it twice. */
