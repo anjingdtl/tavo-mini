@@ -22,7 +22,16 @@ type Failure = (error: unknown) => void;
 export function executeTransaction(
   database: SQLite.SQLiteDatabase,
   statements: readonly SqlStatement[],
-  options: { faultDomain?: SqlFaultDomain } = {},
+  options: {
+    faultDomain?: SqlFaultDomain;
+    /** Optional per-statement callback for callers that need rows-affected
+     * counts (e.g. optimistic-concurrency conflict detection). Invoked inside
+     * the transaction scope, before the next statement runs. */
+    onStatementComplete?: (
+      oneBasedIndex: number,
+      rowsAffected: number,
+    ) => void;
+  } = {},
 ): Promise<void> {
   if (statements.length === 0) return Promise.resolve();
 
@@ -43,7 +52,31 @@ export function executeTransaction(
       try {
         for (const [index, statement] of statements.entries()) {
           throwIfSqlStatementFault(options.faultDomain, index + 1);
-          tx.executeSql(statement.sql, (statement.params || []) as any[]);
+          // react-native-sqlite-storage's tx.executeSql returns a ResultSet in
+          // test doubles synchronously and accepts a success callback in the
+          // native path. When onStatementComplete is provided, capture rows-
+          // affected from whichever form is available so optimistic-concurrency
+          // callers can detect 0-row chapter updates. The callback is optional;
+          // when absent we use the plain two-arg form exactly as before.
+          const onStmt = options.onStatementComplete;
+          if (onStmt) {
+            let captured = 0;
+            const r = tx.executeSql(
+              statement.sql,
+              (statement.params || []) as any[],
+              (_t: SQLite.Transaction, result: SQLite.ResultSet) => {
+                captured = (result as any).rowsAffected ?? 0;
+              },
+            ) as unknown;
+            // Test doubles resolve synchronously and may attach rowsAffected
+            // on the returned object; prefer that when present.
+            if (r && typeof (r as any).rowsAffected === 'number') {
+              captured = (r as any).rowsAffected;
+            }
+            onStmt(index + 1, captured);
+          } else {
+            tx.executeSql(statement.sql, (statement.params || []) as any[]);
+          }
         }
       } catch (error) {
         rejectOnce(error);

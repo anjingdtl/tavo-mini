@@ -255,6 +255,77 @@ export async function activateSourceInTx(
   );
 }
 
+/**
+ * Build the full statement list for an atomic source activation
+ * (fix-plan §6.2): supersede prior ready, promote the new source, switch the
+ * settings active+boundary pointers, and mark in-flight continuation runs as
+ * `outdated` — all as one batch so the settings pointer can never point at a
+ * superseded source and an old run can never be adopted against the new
+ * boundary. The caller wraps these in a single executeTransaction.
+ *
+ * Returns the statements plus the resolved boundary chapter id + global offset
+ * so the caller can persist import-job completion separately.
+ */
+export function buildActivateSourceBoundaryStatements(input: {
+  projectId: number;
+  newSourceId: number;
+  boundaryChapterId: number;
+  boundaryGlobalOffset: number;
+  boundaryMode: string;
+  ts: string;
+}): SqlStatement[] {
+  const {
+    projectId,
+    newSourceId,
+    boundaryChapterId,
+    boundaryGlobalOffset,
+    boundaryMode,
+    ts,
+  } = input;
+  return [
+    {
+      sql: `UPDATE continuation_sources SET status = 'superseded', updated_at = ?
+        WHERE project_id = ? AND status = 'ready'`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_sources SET status = 'ready', updated_at = ?, activated_at = ?
+        WHERE id = ? AND project_id = ?`,
+      params: [ts, ts, newSourceId, projectId],
+    },
+    {
+      sql: `UPDATE continuation_settings SET
+        active_source_id = ?,
+        boundary_source_id = ?,
+        boundary_chapter_id = ?,
+        boundary_char_offset_global = ?,
+        boundary_mode = ?,
+        import_completed = 1,
+        analysis_status = 'not_started',
+        updated_at = ?
+        WHERE project_id = ?`,
+      params: [
+        newSourceId,
+        newSourceId,
+        boundaryChapterId,
+        boundaryGlobalOffset,
+        boundaryMode,
+        ts,
+        projectId,
+      ],
+    },
+    {
+      // Invalidate in-flight continuation runs so stale context is never
+      // adopted against the new boundary (fix-plan §6.1).
+      sql: `UPDATE continuation_generation_runs
+        SET state = 'outdated', error_code = 'outdated',
+            error_message = ?, updated_at = ?
+        WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
+      params: ['source_or_boundary_changed', ts, projectId],
+    },
+  ];
+}
+
 export async function getSourceById(
   sourceId: number,
 ): Promise<ContinuationSource | null> {
@@ -659,6 +730,16 @@ export async function clearActiveSourceAndDelete(
     {
       sql: 'DELETE FROM continuation_sources WHERE id = ?',
       params: [sourceId],
+    },
+    {
+      // Fix-plan §6.1: deleting the active source invalidates in-flight runs so
+      // their frozen source snapshot can never be adopted against the now-empty
+      // active source.
+      sql: `UPDATE continuation_generation_runs
+        SET state = 'outdated', error_code = 'outdated',
+            error_message = ?, updated_at = ?
+        WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
+      params: ['source_deleted', ts, projectId],
     },
   ]);
 }
