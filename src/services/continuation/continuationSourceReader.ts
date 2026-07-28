@@ -146,7 +146,10 @@ export const continuationSourceReader: ContinuationSourceReader = {
         title: ch.title,
         content: text,
         range: {
-          start: ch.sourceStartOffset,
+          // `content` deliberately excludes the chapter heading, therefore
+          // evidence offsets must begin at the body start as well. Using the
+          // source start here shifted every Canon quote by the title length.
+          start: ch.contentStartOffset,
           end: asUtf16Offset(clippedEnd),
         },
         clippedByBoundary,
