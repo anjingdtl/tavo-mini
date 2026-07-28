@@ -1,4 +1,5 @@
 import {
+  buildUniqueCharacterNameIndex,
   isAmbiguousShortAlias,
   longestMatchAliases,
   normalizeAlias,
@@ -34,5 +35,19 @@ describe('Canon entity resolver (Spec §17.4)', () => {
   it('detects short alias nested in longer title', () => {
     expect(isAmbiguousShortAlias('林', '老林')).toBe(true);
     expect(isAmbiguousShortAlias('老林', '林')).toBe(false);
+  });
+
+  it('uses one stable character id for canonical names and unique aliases, but never guesses ambiguous aliases', () => {
+    const index = buildUniqueCharacterNameIndex([
+      { characterId: 1, name: '林凡' },
+      { characterId: 1, name: '林师兄' },
+      { characterId: 2, name: '苏婉' },
+      { characterId: 2, name: '师兄' },
+      { characterId: 3, name: '师兄' },
+    ]);
+
+    expect(index.get(normalizeAlias('林凡'))).toBe(1);
+    expect(index.get(normalizeAlias('林师兄'))).toBe(1);
+    expect(index.has(normalizeAlias('师兄'))).toBe(false);
   });
 });

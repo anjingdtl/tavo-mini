@@ -45,6 +45,10 @@ export interface ExtractionRelationship {
 export interface ExtractionPlotThread {
   title: string;
   description: string;
+  /** 原著明确交代时保留；未交代可为空，不能靠模型猜测。 */
+  timeDescription: string;
+  /** 原著明确交代时保留；未交代可为空，不能靠模型猜测。 */
+  location: string;
   level: 'main' | 'volume' | 'arc' | 'subplot' | 'foreshadowing';
   status: 'active' | 'paused' | 'resolved' | 'abandoned' | 'unknown';
   characterNames: string[];
@@ -87,6 +91,8 @@ export interface ExtractionTimelineEvent {
   title: string;
   summary: string;
   eventType: string;
+  timeDescription: string;
+  location: string;
   characterNames: string[];
   importance: number;
   confidence: number;
@@ -135,6 +141,19 @@ function num(v: unknown, fallback = 0): number {
 
 function str(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback;
+}
+
+/**
+ * 小说模型经常把枚举写成自然语言（例如“贯穿全书的叙事线”）。这类
+ * 值不应让名称、关系对象和证据都完整的事实被整条丢弃；归入保守的
+ * 规范默认值，保留其余可审核内容。
+ */
+function enumOrFallback(
+  value: string,
+  allowed: Set<string>,
+  fallback: string,
+): string {
+  return allowed.has(value) ? value : fallback;
 }
 
 function clamp01(v: number): number {
@@ -289,10 +308,75 @@ const EXTRACTION_FIELD_ALIASES: Record<string, Array<[string, string]>> = {
   timelineEvents: [
     ['key', 'eventKey'],
     ['event', 'eventKey'],
+    ['time', 'timeDescription'],
+    ['timeText', 'timeDescription'],
+    ['when', 'timeDescription'],
+    ['place', 'location'],
+    ['where', 'location'],
   ],
   worldRules: [['name', 'title']],
-  plotThreads: [['name', 'title']],
+  plotThreads: [
+    ['name', 'title'],
+    ['time', 'timeDescription'],
+    ['timeText', 'timeDescription'],
+    ['when', 'timeDescription'],
+    ['place', 'location'],
+    ['where', 'location'],
+  ],
 };
+
+/**
+ * Provider-observed enum variants. These are intentionally narrow: every
+ * entry below was captured by the redacted on-device extraction diagnostic.
+ * They are promoted to the existing canonical enum before validation, so this
+ * only relaxes input spelling and never broadens the persisted domain.
+ */
+const EXTRACTION_VALUE_ALIASES: Record<
+  string,
+  Record<string, Record<string, string>>
+> = {
+  worldRules: {
+    constraintLevel: {
+      未明: 'reference',
+      未明确: 'reference',
+    },
+  },
+  plotThreads: {
+    level: {
+      primary: 'main',
+      major: 'main',
+      主要: 'main',
+    },
+  },
+  characters: {
+    importance: { 高: 'major' },
+  },
+  relationships: {
+    publicStatus: { 隐秘: 'secret' },
+  },
+  knowledge: {
+    knowledgeState: { 确知: 'known' },
+  },
+  states: {
+    aliveState: { 活着: 'alive' },
+  },
+};
+
+function normalizeObservedEnumValue(
+  category: string,
+  field: string,
+  value: string,
+): string {
+  const exact = EXTRACTION_VALUE_ALIASES[category]?.[field]?.[value];
+  if (exact) return exact;
+  // The provider emitted publicStatus as a canonical Chinese label followed by
+  // a parenthetical explanation. The label itself is unambiguous, while the
+  // explanation is free-form prose and must not become part of the enum.
+  if (category === 'relationships' && field === 'publicStatus' && value.startsWith('公开')) {
+    return 'public';
+  }
+  return value;
+}
 
 /**
  * Normalize a single raw extraction item by promoting aliases to their
@@ -311,6 +395,12 @@ export function normalizeExtractionItem(
       if (value != null && value !== '') {
         out[canonical] = value;
       }
+    }
+  }
+  for (const field of Object.keys(EXTRACTION_VALUE_ALIASES[category] ?? {})) {
+    const value = out[field];
+    if (typeof value === 'string') {
+      out[field] = normalizeObservedEnumValue(category, field, value);
     }
   }
   return out;
@@ -370,11 +460,11 @@ export function validateExtractionResultWithStats(raw: unknown): {
       continue;
     }
     const normed = normalizeExtractionItem('worldRules', item);
-    const level = str(normed.constraintLevel, 'reference');
-    if (!CONSTRAINT.has(level)) {
-      recordDrop(stats.worldRules, `worldRules: constraintLevel=${level}`);
-      continue;
-    }
+    const level = enumOrFallback(
+      str(normed.constraintLevel, 'reference'),
+      CONSTRAINT,
+      'reference',
+    );
     const title = str(normed.title).trim();
     if (!title) {
       recordDrop(stats.worldRules, 'worldRules: title 为空');
@@ -404,11 +494,11 @@ export function validateExtractionResultWithStats(raw: unknown): {
       recordDrop(stats.characters, 'characters: canonicalName 为空');
       continue;
     }
-    const imp = str(normed.importance, 'supporting');
-    if (!IMPORTANCE.has(imp)) {
-      recordDrop(stats.characters, `characters: importance=${imp}`);
-      continue;
-    }
+    const imp = enumOrFallback(
+      str(normed.importance, 'supporting'),
+      IMPORTANCE,
+      'supporting',
+    );
     characters.push({
       canonicalName: name,
       aliases: Array.isArray(normed.aliases)
@@ -448,11 +538,11 @@ export function validateExtractionResultWithStats(raw: unknown): {
       recordDrop(stats.relationships, 'relationships: source=target');
       continue;
     }
-    const pub = str(normed.publicStatus, 'public');
-    if (!PUBLIC.has(pub)) {
-      recordDrop(stats.relationships, `relationships: publicStatus=${pub}`);
-      continue;
-    }
+    const pub = enumOrFallback(
+      str(normed.publicStatus, 'public'),
+      PUBLIC,
+      'public',
+    );
     relationships.push({
       sourceName,
       targetName,
@@ -479,19 +569,21 @@ export function validateExtractionResultWithStats(raw: unknown): {
       recordDrop(stats.plotThreads, 'plotThreads: title 为空');
       continue;
     }
-    const level = str(normed.level, 'subplot');
-    const status = str(normed.status, 'active');
-    if (!PLOT_LEVEL.has(level)) {
-      recordDrop(stats.plotThreads, `plotThreads: level=${level}`);
-      continue;
-    }
-    if (!PLOT_STATUS.has(status)) {
-      recordDrop(stats.plotThreads, `plotThreads: status=${status}`);
-      continue;
-    }
+    const level = enumOrFallback(
+      str(normed.level, 'subplot'),
+      PLOT_LEVEL,
+      'subplot',
+    );
+    const status = enumOrFallback(
+      str(normed.status, 'active'),
+      PLOT_STATUS,
+      'active',
+    );
     plotThreads.push({
       title,
       description: str(normed.description),
+      timeDescription: str(normed.timeDescription),
+      location: str(normed.location),
       level: level as ExtractionPlotThread['level'],
       status: status as ExtractionPlotThread['status'],
       characterNames: Array.isArray(normed.characterNames)
@@ -553,11 +645,11 @@ export function validateExtractionResultWithStats(raw: unknown): {
       recordDrop(stats.knowledge, 'knowledge: factKey 为空');
       continue;
     }
-    const ks = str(normed.knowledgeState, 'known');
-    if (!KNOW.has(ks)) {
-      recordDrop(stats.knowledge, `knowledge: knowledgeState=${ks}`);
-      continue;
-    }
+    const ks = enumOrFallback(
+      str(normed.knowledgeState, 'known'),
+      KNOW,
+      'unknown',
+    );
     knowledge.push({
       characterName,
       factKey,
@@ -582,11 +674,11 @@ export function validateExtractionResultWithStats(raw: unknown): {
       recordDrop(stats.states, 'states: characterName 为空');
       continue;
     }
-    const alive = str(normed.aliveState, 'unknown');
-    if (!ALIVE.has(alive)) {
-      recordDrop(stats.states, `states: aliveState=${alive}`);
-      continue;
-    }
+    const alive = enumOrFallback(
+      str(normed.aliveState, 'unknown'),
+      ALIVE,
+      'unknown',
+    );
     states.push({
       characterName,
       location: normed.location == null ? null : str(normed.location),
@@ -627,6 +719,8 @@ export function validateExtractionResultWithStats(raw: unknown): {
       title,
       summary: str(normed.summary),
       eventType: str(normed.eventType, 'event') || 'event',
+      timeDescription: str(normed.timeDescription),
+      location: str(normed.location),
       characterNames: Array.isArray(normed.characterNames)
         ? normed.characterNames.filter(
             (a): a is string => typeof a === 'string',

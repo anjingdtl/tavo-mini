@@ -119,6 +119,43 @@ const mockState = {
       constraint_level: 'reference',
     },
   ],
+  characters: [
+    {
+      id: 7,
+      project_id: 1,
+      source_id: 1,
+      snapshot_id: 'snap-ready',
+      analysis_run_id: 'run-1',
+      valid_from_position: 0,
+      valid_to_position: null,
+      first_observed_position: 0,
+      last_observed_position: 5,
+      confidence: 0.9,
+      review_status: 'confirmed',
+      origin: 'ai',
+      extraction_version: 'v1',
+      revision: 1,
+      supersedes_id: null,
+      user_reviewed_at: 't',
+      created_at: 't',
+      updated_at: 't',
+      canonical_name: '沈青',
+      description: '主角的剑术师父',
+      background: '',
+      appearance_json: '{}',
+      personality_json: '{}',
+      values_json: '[]',
+      behavior_patterns_json: '[]',
+      speech_style_json: '{}',
+      abilities_json: '[]',
+      weaknesses_json: '[]',
+      goals_json: '[]',
+      fears_json: '[]',
+      secrets_json: '[]',
+      first_appearance_position: 0,
+      importance: 'major',
+    },
+  ],
 };
 
 jest.mock('../src/data/connection/openDatabase', () => ({
@@ -172,6 +209,27 @@ jest.mock('../src/data/connection/openDatabase', () => ({
           r => r.valid_from_position <= (params[params.length - 3] ?? 0),
         );
         return [{ rows: rows(filtered) }];
+      }
+      if (/FROM canon_characters/i.test(n)) {
+        return [
+          {
+            rows: rows(
+              mockState.characters.filter(r => r.snapshot_id === params[0]),
+            ),
+          },
+        ];
+      }
+      if (/FROM canon_evidence_links/i.test(n)) {
+        return [
+          {
+            rows: rows([
+              {
+                owner_id: 1,
+                evidence_id: 11,
+              },
+            ]),
+          },
+        ];
       }
       return [{ rows: rows([]) }];
     }),
@@ -240,5 +298,36 @@ describe('CanonQueryService (Spec §13)', () => {
     });
     expect(rules.every(r => r.reviewStatus !== 'ignored')).toBe(true);
     expect(rules.some(r => r.title === '灵气')).toBe(true);
+  });
+
+  it('returns evidence ids for the selected facts so continuation checks can cite them', async () => {
+    const bundle = await CanonQueryService.getContextBundle({
+      projectId: 1,
+      snapshotId: 'snap-ready',
+      snapshotRevision: 3,
+      atSourcePosition: asSourcePosition(5),
+      queryText: '',
+      characterIds: [],
+      tokenBudget: 10000,
+      reviewPolicy: 'strict',
+    });
+
+    expect(bundle.evidenceRefs).toEqual([11]);
+    expect(bundle.evidenceRefsByOwner?.world_rule?.[1]).toEqual([11]);
+  });
+
+  it('keeps a base set of important original characters even before the prompt names one', async () => {
+    const bundle = await CanonQueryService.getContextBundle({
+      projectId: 1,
+      snapshotId: 'snap-ready',
+      snapshotRevision: 3,
+      atSourcePosition: asSourcePosition(5),
+      queryText: '推进剧情',
+      characterIds: [],
+      tokenBudget: 10000,
+      reviewPolicy: 'strict',
+    });
+
+    expect(bundle.characters.map(item => item.canonicalName)).toContain('沈青');
   });
 });

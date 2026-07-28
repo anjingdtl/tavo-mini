@@ -2,7 +2,8 @@
  * Canon analysis pipeline (Spec §8).
  *
  * Creates staging snapshot + run + batches, extracts via LLM, validates
- * evidence, and only publishes via explicit activateSnapshot.
+ * evidence, and publishes successful analysis as the active original-work
+ * memory by default.
  * Failed/cancelled/outdated runs never become Phase 3 active Canon.
  */
 import type SQLite from 'react-native-sqlite-storage';
@@ -12,6 +13,10 @@ import { now } from '../../../data/repositories/shared';
 import { v4 } from '../../uuidBridge';
 import { sha256Hex } from '../hashUtils';
 import { continuationSourceReader } from '../continuationSourceReader';
+import {
+  buildUniqueCharacterNameIndex,
+  normalizeAlias,
+} from './canonEntityResolver';
 import {
   ContinuationSnapshotOutdatedError,
   type BoundedSourceChapter,
@@ -62,6 +67,7 @@ import {
   stripModelJson,
   validateExtractionResultWithStats,
   type ChapterExtractionResult,
+  type ExtractionEvidenceCandidate,
   type ExtractionStats,
 } from './canonJsonValidators';
 import {
@@ -72,6 +78,7 @@ import {
 } from './extractionPromptSpec';
 import { insertEvidenceAndLink } from './canonEvidenceService';
 import { executeTransaction } from '../../../data/connection/transaction';
+import type { SqlStatement } from '../../../data/connection/transaction';
 import {
   callLLM,
   callLLMResult,
@@ -128,10 +135,124 @@ function isRecoverableCanonOutputError(error: unknown): boolean {
   return (error as { name?: unknown })?.name === 'CanonAnalysisOutputError';
 }
 
-function canonOutputError(message: string): Error {
-  const error = new Error(message);
-  error.name = 'CanonAnalysisOutputError';
-  return error;
+type ExtractionDiagnosticCategory = {
+  received: number;
+  accepted: number;
+  dropped: number;
+  firstDropReason?: string;
+  sampleKeySets: string[][];
+};
+
+const CANON_AUTO_ADOPT_TABLES = [
+  'canon_world_rules',
+  'canon_characters',
+  'canon_character_aliases',
+  'canon_character_state_snapshots',
+  'canon_relationships',
+  'canon_plot_threads',
+  'canon_character_experiences',
+  'canon_character_knowledge',
+  'canon_timeline_events',
+] as const;
+
+/**
+ * Canon is useful only when its extracted facts participate in continuation
+ * context. Activation therefore adopts every still-pending AI record by
+ * default; users can still ignore, revise, lock, or delete individual rows.
+ * `user_reviewed_at` intentionally remains untouched: this is a system default,
+ * not a claim that the user manually reviewed every record.
+ */
+export function buildDefaultCanonAdoptionStatements(
+  snapshotId: string,
+  timestamp: string,
+): SqlStatement[] {
+  return CANON_AUTO_ADOPT_TABLES.map(table => ({
+    sql: `UPDATE ${table}
+      SET review_status = 'confirmed', updated_at = ?
+      WHERE snapshot_id = ? AND review_status = 'pending'`,
+    params: [timestamp, snapshotId],
+  }));
+}
+
+type CanonExtractionFailureDiagnostic = {
+  diagnosticVersion: 1;
+  kind: 'canon_extraction_validation_failure';
+  attempts: Array<{
+    finishReason: string | null;
+    responseLength: number;
+    categories: Partial<
+      Record<keyof ExtractionStats, ExtractionDiagnosticCategory>
+    >;
+  }>;
+};
+
+class CanonAnalysisOutputError extends Error {
+  readonly diagnostic?: CanonExtractionFailureDiagnostic;
+
+  constructor(message: string, diagnostic?: CanonExtractionFailureDiagnostic) {
+    super(message);
+    this.name = 'CanonAnalysisOutputError';
+    this.diagnostic = diagnostic;
+  }
+}
+
+function canonOutputError(message: string): CanonAnalysisOutputError {
+  return new CanonAnalysisOutputError(message);
+}
+
+function extractionAttemptDiagnostic(
+  raw: unknown,
+  stats: ExtractionStats | null,
+  responseLength: number,
+  finishReason: string | null | undefined,
+): CanonExtractionFailureDiagnostic['attempts'][number] {
+  const categories: CanonExtractionFailureDiagnostic['attempts'][number]['categories'] =
+    {};
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
+  const categoryNames: Array<keyof ExtractionStats> = [
+    'worldRules',
+    'characters',
+    'relationships',
+    'plotThreads',
+    'experiences',
+    'knowledge',
+    'states',
+    'timelineEvents',
+  ];
+  for (const category of categoryNames) {
+    const sourceItems = Array.isArray(source[category]) ? source[category] : [];
+    const categoryStats = stats?.[category];
+    if (!categoryStats && sourceItems.length === 0) continue;
+    const sampleKeySets = sourceItems
+      .filter(
+        (item): item is Record<string, unknown> =>
+          !!item && typeof item === 'object' && !Array.isArray(item),
+      )
+      .slice(0, 3)
+      .map(item => Object.keys(item).sort().slice(0, 20));
+    categories[category] = {
+      received: categoryStats?.received ?? sourceItems.length,
+      accepted: categoryStats?.accepted ?? 0,
+      dropped: categoryStats?.dropped ?? 0,
+      ...(categoryStats?.firstDropReason
+        ? { firstDropReason: categoryStats.firstDropReason }
+        : {}),
+      sampleKeySets,
+    };
+  }
+  return {
+    finishReason: finishReason ?? null,
+    responseLength,
+    categories,
+  };
+}
+
+function failureDiagnosticJson(error: unknown): string | undefined {
+  const diagnostic = (error as { diagnostic?: unknown })?.diagnostic;
+  if (!diagnostic) return undefined;
+  return JSON.stringify(diagnostic);
 }
 
 function waitForCanonRetry(
@@ -205,6 +326,15 @@ export const CANON_LOCAL_MODEL_MIN_CONTEXT_WINDOW = 4096;
  * does not have to build a full prompt just to estimate.
  */
 const CANON_PROMPT_OVERHEAD_TOKENS = 600;
+const CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS = 65_536;
+
+/**
+ * A context window is a capacity limit, not a desired prompt size. Full-book
+ * analysis intentionally revisits the source in many focused passes so each
+ * request can extract secondary characters, short-lived relationships and
+ * local foreshadowing instead of returning only a coarse book summary.
+ */
+export const FULL_CANON_QUALITY_CHAPTERS_PER_BATCH = 20;
 
 /**
  * Output baseline per profile — kept in sync with extractMaterialWithLlm.
@@ -212,9 +342,73 @@ const CANON_PROMPT_OVERHEAD_TOKENS = 600;
  */
 const CANON_OUTPUT_BASELINE_TOKENS: Record<AnalysisProfile, number> = {
   quick: 4096,
-  standard: 8192,
-  deep: 16384,
+  standard: 16384,
+  deep: 32768,
 };
+
+/**
+ * Online models may expose a much larger context than local llama.cpp. Use the
+ * configured window to group consecutive chapters aggressively while reserving
+ * enough completion space for thinking plus the final JSON. If the provider
+ * does not declare a window, retain the conservative legacy three-chapter
+ * grouping instead of guessing.
+ */
+export function resolveContextDrivenChaptersPerBatch(input: {
+  providerType?: string | null;
+  contextWindow: number | null | undefined;
+  maxOutputTokens: number | null | undefined;
+  chapterCount: number;
+  largestChapterInputTokens: number;
+}): number {
+  if (
+    input.providerType === 'llama_cpp' ||
+    !Number.isFinite(input.contextWindow) ||
+    (input.contextWindow ?? 0) <= 0
+  ) {
+    return 3;
+  }
+  const outputReserve = Math.min(
+    Math.max(16_384, input.maxOutputTokens ?? 16_384),
+    CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS,
+  );
+  const inputBudget = Math.max(
+    1,
+    (input.contextWindow as number) -
+      outputReserve -
+      CANON_PROMPT_OVERHEAD_TOKENS,
+  );
+  const each = Math.max(1, input.largestChapterInputTokens);
+  return Math.max(1, Math.min(input.chapterCount, Math.floor(inputBudget / each)));
+}
+
+export function resolveQualityFirstChaptersPerBatch(input: {
+  mode: ContinuationAnalysisMode;
+  contextCapacity: number;
+}): number {
+  if (input.mode !== 'full_canon') return input.contextCapacity;
+  return Math.min(
+    input.contextCapacity,
+    FULL_CANON_QUALITY_CHAPTERS_PER_BATCH,
+  );
+}
+
+/**
+ * Online providers that explicitly declare their context window can receive
+ * the complete chapter text. The batch planner uses the same rule when it
+ * estimates capacity, preventing a large configured window from silently
+ * degrading into a fixed 6,000-character excerpt. Local and unbounded
+ * providers retain the conservative excerpt for predictable memory use.
+ */
+export function resolveCanonChapterTextLimit(input: {
+  providerType?: string | null;
+  contextWindow?: number | null;
+}): number {
+  return input.providerType !== 'llama_cpp' &&
+    Number.isFinite(input.contextWindow) &&
+    (input.contextWindow ?? 0) > 0
+    ? Number.MAX_SAFE_INTEGER
+    : 6000;
+}
 
 export interface AnalysisTokenBudgetPlan {
   ok: boolean;
@@ -406,7 +600,7 @@ export async function probeModelCapability(input: {
 }
 
 function nameKey(name: string): string {
-  return name.trim().replace(/\s+/g, '').toLowerCase();
+  return normalizeAlias(name);
 }
 
 async function lastInsertId(db: SQLite.SQLiteDatabase): Promise<number> {
@@ -448,11 +642,25 @@ export async function materializeBatchResult(
       WHERE snapshot_id = ? AND review_status != 'superseded'`,
     [ctx.snapshotId],
   );
-  const nameToId = new Map<string, number>();
+  const characterNameEntries: Array<{ characterId: number; name: string }> = [];
   for (let i = 0; i < charRows.rows.length; i++) {
     const row = charRows.rows.item(i);
-    nameToId.set(nameKey(row.canonical_name), row.id);
+    characterNameEntries.push({ characterId: row.id, name: row.canonical_name });
   }
+  const [aliasRows] = await db.executeSql(
+    `SELECT character_id, alias FROM canon_character_aliases
+      WHERE snapshot_id = ? AND review_status != 'superseded' AND is_ambiguous = 0`,
+    [ctx.snapshotId],
+  );
+  for (let i = 0; i < aliasRows.rows.length; i++) {
+    const row = aliasRows.rows.item(i);
+    characterNameEntries.push({ characterId: row.character_id, name: row.alias });
+  }
+  let nameToId = buildUniqueCharacterNameIndex(characterNameEntries);
+  const registerCharacterName = (characterId: number, name: string) => {
+    characterNameEntries.push({ characterId, name });
+    nameToId = buildUniqueCharacterNameIndex(characterNameEntries);
+  };
 
   const ensureCharacter = async (
     name: string,
@@ -495,7 +703,7 @@ export async function materializeBatchResult(
       ],
     );
     const id = await lastInsertId(db);
-    nameToId.set(key, id);
+    registerCharacterName(id, name);
     return id;
   };
 
@@ -549,6 +757,7 @@ export async function materializeBatchResult(
           nameKey(alias),
         ],
       );
+      registerCharacterName(id, alias);
     }
   }
 
@@ -664,6 +873,19 @@ export async function materializeBatchResult(
   }
 
   for (const plot of result.plotThreads) {
+    const participantIds = await Promise.all(
+      plot.characterNames.map(name =>
+        ensureCharacter(name, 'supporting', '', plot.confidence),
+      ),
+    );
+    const establishedFacts = JSON.stringify([
+      {
+        time: plot.timeDescription,
+        location: plot.location,
+        participantCharacterIds: [...new Set(participantIds)],
+        event: plot.description || plot.title,
+      },
+    ]);
     await execute(
       db,
       `INSERT INTO canon_plot_threads (
@@ -675,7 +897,7 @@ export async function materializeBatchResult(
         last_advanced_position, resolved_position, established_facts_json,
         unresolved_questions_json, expected_directions_json
       ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'pending', 'ai', ?, 1, NULL, NULL, ?, ?,
-        ?, ?, ?, ?, 0, ?, ?, NULL, '[]', '[]', '[]')`,
+        ?, ?, ?, ?, 0, ?, ?, NULL, ?, '[]', '[]')`,
       [
         ctx.projectId,
         ctx.sourceId,
@@ -694,16 +916,11 @@ export async function materializeBatchResult(
         plot.status,
         fromPos,
         pos,
+        establishedFacts,
       ],
     );
     const plotId = await lastInsertId(db);
-    for (const name of plot.characterNames) {
-      const cid = await ensureCharacter(
-        name,
-        'supporting',
-        '',
-        plot.confidence,
-      );
+    for (const cid of [...new Set(participantIds)]) {
       await execute(
         db,
         `INSERT OR IGNORE INTO canon_plot_thread_characters
@@ -824,6 +1041,22 @@ export async function materializeBatchResult(
           pos,
         ],
       );
+      const knowledgeId = await lastInsertId(db);
+      for (const evidence of k.evidence) {
+        await insertEvidenceAndLink(
+          db,
+          {
+            projectId: ctx.projectId,
+            sourceId: ctx.sourceId,
+            snapshotId: ctx.snapshotId,
+            analysisRunId: ctx.runId,
+            boundaryExclusive: ctx.boundaryExclusive,
+            candidate: evidence,
+          },
+          'knowledge',
+          knowledgeId,
+        );
+      }
     }
 
     for (const st of result.states) {
@@ -866,9 +1099,30 @@ export async function materializeBatchResult(
           st.summary,
         ],
       );
+      const stateId = await lastInsertId(db);
+      for (const evidence of st.evidence) {
+        await insertEvidenceAndLink(
+          db,
+          {
+            projectId: ctx.projectId,
+            sourceId: ctx.sourceId,
+            snapshotId: ctx.snapshotId,
+            analysisRunId: ctx.runId,
+            boundaryExclusive: ctx.boundaryExclusive,
+            candidate: evidence,
+          },
+          'character_state',
+          stateId,
+        );
+      }
     }
 
     for (const ev of result.timelineEvents) {
+      const participantIds = await Promise.all(
+        ev.characterNames.map(name =>
+          ensureCharacter(name, 'supporting', '', ev.confidence),
+        ),
+      );
       await execute(
         db,
         `INSERT INTO canon_timeline_events (
@@ -880,7 +1134,7 @@ export async function materializeBatchResult(
           participant_character_ids_json, location_before, location_after,
           relative_time_json, causes_event_ids_json, consequences_event_ids_json, importance
         ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'pending', 'ai', ?, 1, NULL, NULL, ?, ?,
-          ?, ?, ?, ?, ?, NULL, NULL, '[]', NULL, NULL, '{}', '[]', '[]', ?)`,
+          ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, '[]', '[]', ?)`,
         [
           ctx.projectId,
           ctx.sourceId,
@@ -898,6 +1152,11 @@ export async function materializeBatchResult(
           ev.summary,
           ev.eventType,
           pos,
+          JSON.stringify([...new Set(participantIds)]),
+          ev.location || null,
+          ev.timeDescription
+            ? JSON.stringify({ description: ev.timeDescription })
+            : '{}',
           ev.importance,
         ],
       );
@@ -1027,7 +1286,31 @@ export async function startAnalysis(
 
   const snapshotId = v4();
   const runId = v4();
-  const requestedPerBatch = Math.max(1, input.chaptersPerBatch ?? 3);
+  const chapterTextLimit = resolveCanonChapterTextLimit({
+    providerType: requestConfig.provider_type,
+    contextWindow: requestConfig.context_window,
+  });
+  const largestChapterInputTokens = Math.max(
+    ...plan.nearChapters.map(chapter =>
+      estimateTokens(chapter.title) +
+      estimateTokens(chapter.content.slice(0, chapterTextLimit)) +
+      64,
+    ),
+  );
+  const contextDrivenPerBatch = resolveContextDrivenChaptersPerBatch({
+    providerType: requestConfig.provider_type,
+    contextWindow: requestConfig.context_window,
+    maxOutputTokens: requestConfig.max_output_tokens,
+    chapterCount: plan.nearChapters.length,
+    largestChapterInputTokens,
+  });
+  const requestedPerBatch = Math.max(
+    1,
+    resolveQualityFirstChaptersPerBatch({
+      mode: input.mode,
+      contextCapacity: input.chaptersPerBatch ?? contextDrivenPerBatch,
+    }),
+  );
   // S1 preflight: estimate whether the local model's context window can absorb
   // a Canon batch. Online models skip the check; local models that cannot
   // reserve the output baseline are refused up front instead of burning three
@@ -1354,6 +1637,9 @@ async function processAnalysisRunInner(
             state: signal.aborted ? 'cancelled' : 'failed',
             errorCode: signal.aborted ? 'cancelled' : 'material_failed',
             errorMessage: message,
+            ...(signal.aborted
+              ? {}
+              : { resultJson: failureDiagnosticJson(error) }),
           });
           await reportWorkItem(
             materialType,
@@ -1509,7 +1795,9 @@ async function processAnalysisRunInner(
     return (await getRunById(runId))!;
   }
 
-  // Do NOT auto-activate. Enter awaiting_review (Spec §8.7).
+  // Publish a successful run immediately. Every pending record is adopted by
+  // default inside activateSnapshot; users only need to remove or revise facts
+  // they do not want, rather than manually approving a whole snapshot.
   await updateSnapshotMeta(db, run.canonSnapshotId, {
     status: 'awaiting_review',
     capabilities,
@@ -1530,6 +1818,18 @@ async function processAnalysisRunInner(
       WHERE project_id = ?`,
     [now(), run.projectId],
   );
+
+  await activateSnapshot(run.projectId, run.canonSnapshotId);
+  const activatedWorkItems = await listWorkItems(runId);
+  await updateRunState(db, runId, {
+    state: 'completed',
+    stage: 'finalizing',
+    progressCurrent: activatedWorkItems.filter(
+      item => item.state === 'completed',
+    ).length,
+    progressTotal: activatedWorkItems.length,
+    completedAt: now(),
+  });
 
   return (await getRunById(runId))!;
 }
@@ -1555,6 +1855,206 @@ function onlyMaterial(
   return {
     schemaVersion: 1,
     ...pickMaterialFields(result, materialType),
+  };
+}
+
+export interface ExtractionEvidenceResolutionStats {
+  received: number;
+  resolved: number;
+  rejected: number;
+}
+
+function normalizedEvidenceText(value: string): string {
+  return value.replace(/[\s\p{P}\p{S}_]+/gu, '');
+}
+
+function lcsLength(left: string, right: string): number {
+  let previous = new Array<number>(right.length + 1).fill(0);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = new Array<number>(right.length + 1).fill(0);
+    for (let j = 1; j <= right.length; j += 1) {
+      current[j] =
+        left[i - 1] === right[j - 1]
+          ? previous[j - 1] + 1
+          : Math.max(previous[j], current[j - 1]);
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function sourceSentenceExcerpt(content: string, anchor: number): {
+  start: number;
+  preview: string;
+} {
+  const boundaries = /[。！？!?\n]/g;
+  let start = 0;
+  let end = content.length;
+  for (const match of content.matchAll(boundaries)) {
+    const index = match.index ?? 0;
+    if (index < anchor) start = index + match[0].length;
+    else {
+      end = index + match[0].length;
+      break;
+    }
+  }
+  if (end - start > 160) {
+    start = Math.max(0, anchor - 64);
+    end = Math.min(content.length, start + 160);
+  }
+  return { start, preview: content.slice(start, end) };
+}
+
+function findCloseParaphraseMatch(
+  chapter: BoundedSourceChapter,
+  quote: string,
+): { start: number; preview: string } | null {
+  const normalizedQuote = normalizedEvidenceText(quote);
+  // Short fragments such as a name or "说道" are too ambiguous for a
+  // semantic fallback; exact matching still handles them above.
+  if (normalizedQuote.length < 6) return null;
+  const anchors = new Set<string>();
+  for (let size = Math.min(6, normalizedQuote.length); size >= 3; size -= 1) {
+    for (let index = 0; index <= normalizedQuote.length - size; index += 1) {
+      anchors.add(normalizedQuote.slice(index, index + size));
+    }
+  }
+  let best: { start: number; preview: string; score: number } | null = null;
+  for (const anchor of anchors) {
+    let index = chapter.content.indexOf(anchor);
+    while (index >= 0) {
+      const excerpt = sourceSentenceExcerpt(chapter.content, index);
+      const score =
+        lcsLength(normalizedQuote, normalizedEvidenceText(excerpt.preview)) /
+        normalizedQuote.length;
+      if (!best || score > best.score) {
+        best = { ...excerpt, score };
+      }
+      index = chapter.content.indexOf(anchor, index + Math.max(1, anchor.length));
+    }
+  }
+  // The model's paraphrase must retain most of its meaningful characters;
+  // otherwise a shared name/location alone could fabricate a connection.
+  return best && best.score >= 0.75 ? best : null;
+}
+
+/**
+ * A model may understand an event but still estimate the UTF-16 offsets
+ * imprecisely. Locate every quoted excerpt in the actual batch source before
+ * anything is persisted, and discard a fact when none of its evidence quotes
+ * is a verbatim source match. This deliberately sits after the public JSON
+ * validator: JSON shape remains permissive while evidence truth is enforced
+ * against the user's original text.
+ */
+export function resolveExtractionEvidenceAgainstChapters(
+  result: ChapterExtractionResult,
+  chapters: BoundedSourceChapter[],
+): {
+  result: ChapterExtractionResult;
+  stats: ExtractionEvidenceResolutionStats;
+} {
+  const stats: ExtractionEvidenceResolutionStats = {
+    received: 0,
+    resolved: 0,
+    rejected: 0,
+  };
+  const resolveEvidence = (
+    evidence: ExtractionEvidenceCandidate,
+  ): ExtractionEvidenceCandidate | null => {
+    stats.received += 1;
+    const quote = evidence.quotePreview;
+    if (!quote) {
+      stats.rejected += 1;
+      return null;
+    }
+    const matches: Array<{ chapter: BoundedSourceChapter; index: number }> = [];
+    for (const chapter of chapters) {
+      let index = chapter.content.indexOf(quote);
+      while (index >= 0) {
+        matches.push({ chapter, index });
+        index = chapter.content.indexOf(quote, index + Math.max(1, quote.length));
+      }
+    }
+    if (!matches.length) {
+      const statedChapters = chapters.filter(
+        chapter =>
+          chapter.id === evidence.chapterId ||
+          chapter.position === evidence.chapterPosition,
+      );
+      const paraphrase = statedChapters
+        .map(chapter => ({ chapter, match: findCloseParaphraseMatch(chapter, quote) }))
+        .find(
+          (
+            value,
+          ): value is {
+            chapter: BoundedSourceChapter;
+            match: { start: number; preview: string };
+          } => value.match !== null,
+        );
+      if (paraphrase) {
+        const charStart = Number(paraphrase.chapter.range.start) + paraphrase.match.start;
+        stats.resolved += 1;
+        return {
+          chapterId: paraphrase.chapter.id,
+          chapterPosition: Number(paraphrase.chapter.position),
+          charStart,
+          charEnd: charStart + paraphrase.match.preview.length,
+          quotePreview: paraphrase.match.preview,
+        };
+      }
+      stats.rejected += 1;
+      return null;
+    }
+    const sameChapter = matches.filter(
+      match =>
+        match.chapter.id === evidence.chapterId ||
+        match.chapter.position === evidence.chapterPosition,
+    );
+    const candidates = sameChapter.length ? sameChapter : matches;
+    candidates.sort(
+      (a, b) =>
+        Math.abs(Number(a.chapter.range.start) + a.index - evidence.charStart) -
+        Math.abs(Number(b.chapter.range.start) + b.index - evidence.charStart),
+    );
+    const selected = candidates[0];
+    const charStart = Number(selected.chapter.range.start) + selected.index;
+    stats.resolved += 1;
+    return {
+      chapterId: selected.chapter.id,
+      chapterPosition: Number(selected.chapter.position),
+      charStart,
+      charEnd: charStart + quote.length,
+      quotePreview: quote,
+    };
+  };
+
+  const resolveEntries = <T extends { evidence: ExtractionEvidenceCandidate[] }>(
+    entries: T[],
+  ): T[] =>
+    entries
+      .map(entry => ({
+        ...entry,
+        evidence: entry.evidence
+          .map(resolveEvidence)
+          .filter(
+            (evidence): evidence is ExtractionEvidenceCandidate => evidence !== null,
+          ),
+      }))
+      .filter(entry => entry.evidence.length > 0) as T[];
+
+  return {
+    result: {
+      schemaVersion: result.schemaVersion,
+      worldRules: resolveEntries(result.worldRules),
+      characters: resolveEntries(result.characters),
+      relationships: resolveEntries(result.relationships),
+      plotThreads: resolveEntries(result.plotThreads),
+      experiences: resolveEntries(result.experiences),
+      knowledge: resolveEntries(result.knowledge),
+      states: resolveEntries(result.states),
+      timelineEvents: resolveEntries(result.timelineEvents),
+    },
+    stats,
   };
 }
 
@@ -1654,6 +2154,10 @@ export async function extractMaterialWithLlm(
     );
   }
   const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
+  const chapterTextLimit = resolveCanonChapterTextLimit({
+    providerType: requestConfig.provider_type,
+    contextWindow: requestConfig.context_window,
+  });
   const prompt = [
     '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
     '必须只返回一个完整、可 JSON.parse 的 JSON 对象，不要 Markdown、思考过程、解释或任何前后缀。schemaVersion 必须为 1，八个数组字段都必须出现，不能返回 null 或空白。',
@@ -1668,23 +2172,30 @@ export async function extractMaterialWithLlm(
       c =>
         `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${
           c.range.start
-        }, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
+        }, bodyEnd=${c.range.end})\n${c.content.slice(0, chapterTextLimit)}`,
     ),
   ].join('\n');
-  // Baseline output budgets were too tight for the 8-array Canon JSON under a
-  // 3-chapter input (S1): reasoning-capable models routinely burned 5000 tokens
-  // on chain-of-thought and returned an empty content body. Raising the floor
-  // removes the most common deterministic-empty failure before it happens.
-  const baselineMaxTokens = profile === 'deep' ? 16384 : 8192;
+  // Preserve thinking for models that support it, but reserve a meaningful
+  // completion budget for both reasoning and the final eight-array JSON.
+  const profileBaseline =
+    CANON_OUTPUT_BASELINE_TOKENS[profile] ?? CANON_OUTPUT_BASELINE_TOKENS.standard;
+  const configuredOutputTokens = requestConfig.max_output_tokens ?? profileBaseline;
+  const baselineMaxTokens = Math.min(
+    Math.max(profileBaseline, configuredOutputTokens),
+    CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS,
+  );
   let currentMaxTokens = baselineMaxTokens;
-  // Cap the adaptive doubling so a length loop cannot request more tokens than
-  // the model can realistically return; 32768 covers every mainstream online
-  // model's output limit while still being a real retry (2× the deep baseline).
-  const maxTokenCeiling = 32768;
+  const maxTokenCeiling = Math.max(
+    baselineMaxTokens,
+    Math.min(
+      Math.max(configuredOutputTokens, baselineMaxTokens * 4),
+      131_072,
+    ),
+  );
   let lastOutputError: Error | null = null;
   let lastDroppedStats: ExtractionStats | null = null;
-  let lastDiagnostic: { finishReason?: string | null; preview?: string } | null =
-    null;
+  const attemptDiagnostics: CanonExtractionFailureDiagnostic['attempts'] = [];
+  let lastDiagnostic: { finishReason?: string | null } | null = null;
   for (
     let attempt = 1;
     attempt <= CANON_ANALYSIS_RETRY_POLICY.maxAttempts;
@@ -1716,11 +2227,8 @@ export async function extractMaterialWithLlm(
           ?.emptyReason;
         const finishReason = (response as { finishReason?: string | null })
           ?.finishReason;
-        const reasoning = (response as { reasoningText?: string | null })
-          ?.reasoningText;
         lastDiagnostic = {
           finishReason: finishReason ?? null,
-          preview: (reasoning ?? '').slice(0, 200),
         };
         // Adaptive retry: when the budget was the bottleneck (length or
         // reasoning_only), doubling max_tokens is a genuinely different
@@ -1732,23 +2240,37 @@ export async function extractMaterialWithLlm(
       }
       let parsed: ChapterExtractionResult;
       let stats: ExtractionStats;
+      let rawExtraction: unknown;
       try {
+        rawExtraction = parseRecoveredExtractionObject(response.text);
         ({ result: parsed, stats } = validateExtractionResultWithStats(
           // Recover the JSON object from prose/fences but DO NOT pre-validate:
           // validateExtractionResultWithStats must see the raw shape so the
           // received/accepted/dropped counts reflect the model's actual output.
-          parseRecoveredExtractionObject(response.text),
+          rawExtraction,
         ));
       } catch (error) {
+        attemptDiagnostics.push(
+          extractionAttemptDiagnostic(
+            rawExtraction,
+            null,
+            response.text.length,
+            (response as { finishReason?: string | null })?.finishReason,
+          ),
+        );
         lastDiagnostic = {
           finishReason: (response as { finishReason?: string | null })
             ?.finishReason,
-          preview: response.text.slice(0, 200),
         };
         throw canonOutputError(
           error instanceof Error ? error.message : '提取结果不是合法 JSON',
         );
       }
+      const evidenceResolution = resolveExtractionEvidenceAgainstChapters(
+        parsed,
+        chapters,
+      );
+      parsed = evidenceResolution.result;
       const filtered = onlyMaterial(parsed, materialType);
       // S3: if a category this work item owns had input but every entry was
       // dropped, the model produced a structurally unusable payload for that
@@ -1757,17 +2279,38 @@ export async function extractMaterialWithLlm(
       const ownedCategories = MATERIAL_CATEGORY_OWNERSHIP[materialType];
       const wiped = ownedCategories.filter(
         cat =>
-          stats[cat].received > 0 && stats[cat].accepted === 0,
+          stats[cat].received > 0 &&
+          (stats[cat].accepted === 0 || parsed[cat].length === 0),
       );
       if (wiped.length > 0) {
         lastDroppedStats = stats;
+        attemptDiagnostics.push(
+          extractionAttemptDiagnostic(
+            rawExtraction,
+            stats,
+            response.text.length,
+            (response as { finishReason?: string | null })?.finishReason,
+          ),
+        );
         throw canonOutputError(
           `本组负责的分类全部被丢弃：${wiped
             .map(cat => `${cat}(received=${stats[cat].received})`)
             .join('、')}`,
         );
       }
-      const warning = buildDropWarning(materialType, stats, ownedCategories);
+      const validatorWarning = buildDropWarning(
+        materialType,
+        stats,
+        ownedCategories,
+      );
+      const evidenceWarning = evidenceResolution.stats.rejected
+        ? `${ANALYSIS_MATERIAL_LABELS[materialType]} 有 ${
+            evidenceResolution.stats.rejected
+          } 条无法在原文逐字定位的引用，相关资料未采纳`
+        : null;
+      const warning = [validatorWarning, evidenceWarning]
+        .filter((value): value is string => !!value)
+        .join('；') || null;
       return { result: filtered, warning };
     } catch (error) {
       const canRetry =
@@ -1789,7 +2332,7 @@ export async function extractMaterialWithLlm(
     }
   }
   if (lastOutputError) {
-    throw new Error(
+    throw new CanonAnalysisOutputError(
       buildFinalFailureMessage(
         ANALYSIS_MATERIAL_LABELS[materialType],
         CANON_ANALYSIS_RETRY_POLICY.maxAttempts,
@@ -1798,6 +2341,13 @@ export async function extractMaterialWithLlm(
         baselineMaxTokens,
         currentMaxTokens,
       ),
+      attemptDiagnostics.length
+        ? {
+            diagnosticVersion: 1,
+            kind: 'canon_extraction_validation_failure',
+            attempts: attemptDiagnostics,
+          }
+        : undefined,
     );
   }
   throw new Error('LLM 未返回分析结果。');
@@ -1825,16 +2375,16 @@ function emptyResponseMessage(emptyReason?: string): string {
 }
 
 /**
- * Build the final failure message with a diagnostic footer (Spec §1). Only the
- * response fragment is attached — never the prompt, never the API key. The
- * finish reason and the doubled-budget trail tell the operator whether this
- * was a budget problem (retry with a larger model) or a schema problem.
+ * Build the final failure message with non-sensitive diagnostics (Spec §1).
+ * Provider reasoning can echo the request, so neither it nor response fragments
+ * may be shown to the user or persisted in an error. The finish reason and the
+ * doubled-budget trail remain sufficient to identify a budget problem.
  */
 function buildFinalFailureMessage(
   label: string,
   maxAttempts: number,
   lastError: Error,
-  diagnostic: { finishReason?: string | null; preview?: string } | null,
+  diagnostic: { finishReason?: string | null } | null,
   baselineMaxTokens: number,
   finalMaxTokens: number,
 ): string {
@@ -1847,9 +2397,6 @@ function buildFinalFailureMessage(
     footerParts.push(
       `max_tokens ${baselineMaxTokens}→${finalMaxTokens} 仍不足`,
     );
-  }
-  if (diagnostic?.preview) {
-    footerParts.push(`响应前 200 字符：${diagnostic.preview}`);
   }
   const footer = footerParts.length ? `[${footerParts.join('，')}]` : '';
   const tail =
@@ -1926,6 +2473,10 @@ export async function extractWithLlm(
     );
   }
   const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
+  const chapterTextLimit = resolveCanonChapterTextLimit({
+    providerType: requestConfig.provider_type,
+    contextWindow: requestConfig.context_window,
+  });
   const prompt = [
     '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
     '必须只返回一个合法 JSON 对象，不要 Markdown，不要解释。schemaVersion 必须为 1。',
@@ -1941,7 +2492,7 @@ export async function extractWithLlm(
       c =>
         `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${
           c.range.start
-        }, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
+        }, bodyEnd=${c.range.end})\n${c.content.slice(0, chapterTextLimit)}`,
     ),
   ].join('\n');
   const text = await callLLM(
@@ -2008,6 +2559,7 @@ export async function activateSnapshot(
 
   const ts = now();
   await executeTransaction(db, [
+    ...buildDefaultCanonAdoptionStatements(snapshotId, ts),
     {
       sql: `UPDATE continuation_canon_snapshots
         SET status = 'outdated', updated_at = ?

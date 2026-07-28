@@ -288,6 +288,9 @@ export const openAICompatibleProvider: LLMProvider = {
             if (options.responseFormat === 'json_object') {
               requestBody.response_format = { type: 'json_object' };
             }
+            if (options.thinking) {
+              requestBody.thinking = options.thinking;
+            }
             const sendRequest = () =>
               fetch(config.url, {
                 method: 'POST',

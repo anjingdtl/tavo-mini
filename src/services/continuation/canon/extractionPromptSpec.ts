@@ -19,11 +19,12 @@ export const EXTRACTION_FIELD_SPEC =
   'worldRules(category,title,description,constraintLevel,confidence,evidence)；' +
   'characters(canonicalName,aliases,description,importance,confidence,evidence)；' +
   'relationships(sourceName,targetName,relationType,attitude,publicStatus,description,confidence,evidence)；' +
-  'plotThreads(title,description,level,status,characterNames,confidence,evidence)；' +
+  'plotThreads(title,description,timeDescription,location,level,status,characterNames,confidence,evidence)；' +
   'experiences(characterName,eventType,title,description,importance,confidence,evidence)；' +
   'knowledge(characterName,factKey,factSummary,knowledgeState,confidence,evidence)；' +
   'states(characterName,location,physicalState,emotionalState,aliveState,summary,confidence,evidence)；' +
-  'timelineEvents(eventKey,title,summary,eventType,characterNames,importance,confidence,evidence)。';
+  'timelineEvents(eventKey,title,summary,eventType,timeDescription,location,characterNames,importance,confidence,evidence)。' +
+  '剧情与时间线应尽量完整记录时间、地点、人物、事件；原文未交代的时间或地点留空，禁止猜测。';
 
 /**
  * Evidence element field spec. `charStart`/`charEnd` are whole-book UTF-16
@@ -68,7 +69,9 @@ export function buildExtractionRetryInstruction(
   );
   return (
     `\n${base}\n` +
-    '上一轮各分类的接受/丢弃统计如下，请据此修正字段名（字段必须使用规范名称，详见下方规范），不要再次返回被丢弃的格式：\n' +
-    lines.join('\n')
+    '上一轮各分类的接受/丢弃统计如下，请据此修正字段名，不要再次返回被丢弃的格式：\n' +
+    `${lines.join('\n')}\n` +
+    '以下是本次重试必须使用的字段规范（不得改名、翻译或省略必填字段）：\n' +
+    `${EXTRACTION_FIELD_SPEC}\n${EVIDENCE_FIELD_SPEC}`
   );
 }
