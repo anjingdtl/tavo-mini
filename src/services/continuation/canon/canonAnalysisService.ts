@@ -232,20 +232,32 @@ export interface AnalysisTokenBudgetPlan {
  * batch, downgrading chaptersPerBatch and the per-chapter slice before
  * refusing (Spec §1, change 3).
  *
- * Online models (contextWindow == null) skip the check entirely — their
- * windows are effectively unbounded from the client's perspective. For local
- * models the effective window is `min(contextWindow, ceiling)`; the ceiling
- * defaults to the llama.cpp n_ctx clamp (4096) but callers may pass a higher
- * value when the backend reports a larger configured context.
+ * Only local (llama_cpp) models are checked — the llama.cpp provider clamps
+ * n_ctx to min(4096, context_window), so a Canon batch can silently overflow.
+ * Online models skip the check entirely: their windows are effectively
+ * unbounded from the client's perspective, and the user-facing context_window
+ * field is just an advisory value that must not trigger a refusal.
  */
 export function planAnalysisTokenBudget(input: {
   chapters: BoundedSourceChapter[];
   profile: AnalysisProfile;
   perBatch: number;
+  providerType?: string | null;
   contextWindow: number | null | undefined;
   contextWindowCeiling?: number;
 }): AnalysisTokenBudgetPlan {
-  // Online model: no client-side budget enforcement.
+  // Online model (or unknown provider): no client-side budget enforcement.
+  if (input.providerType !== 'llama_cpp') {
+    return {
+      ok: true,
+      downgraded: false,
+      perBatch: Math.max(1, input.perBatch),
+      sliceCharBudget: 6000,
+      inputEstimate: 0,
+      effectiveWindow: 0,
+    };
+  }
+  // Local model without a reported window: treat as the clamp floor.
   if (input.contextWindow == null) {
     return {
       ok: true,
@@ -1025,6 +1037,7 @@ export async function startAnalysis(
     chapters: plan.nearChapters,
     profile,
     perBatch: requestedPerBatch,
+    providerType: requestConfig.provider_type,
     contextWindow: requestConfig.context_window,
   });
   if (!tokenBudget.ok) {
