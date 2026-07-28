@@ -8,10 +8,13 @@ import { useThemeStore } from '../../../store/themeStore';
 import {
   cancelAnalysis,
   getAnalysisOverview,
+  ANALYSIS_MATERIAL_LABELS,
   processAnalysisRun,
   resumeAnalysis,
   type AnalysisRun,
 } from '../../../services/continuation/canon';
+import { PipelineForeground } from '../../../native/PipelineForegroundModule';
+import { requestNotificationPermission } from '../../../utils/notificationPermission';
 
 export const CanonAnalysisTasksScreen: React.FC<{
   navigation: { goBack: () => void };
@@ -64,10 +67,13 @@ export const CanonAnalysisTasksScreen: React.FC<{
                 label="继续 / 重试"
                 onPress={async () => {
                   try {
+                    await PipelineForeground.start(item.id, '原著分析进行中', '正在继续分析…', item.progressTotal ? Math.round((item.progressCurrent / item.progressTotal) * 100) : 0);
                     await resumeAnalysis(item.id);
+                    await PipelineForeground.stop(item.id);
                     Toast.show({ type: 'success', text1: '已继续' });
                     await reload();
                   } catch (e: any) {
+                    await PipelineForeground.stop(item.id);
                     Toast.show({ type: 'error', text1: '失败', text2: e?.message });
                   }
                 }}
@@ -79,9 +85,19 @@ export const CanonAnalysisTasksScreen: React.FC<{
                   label="立即处理"
                   onPress={async () => {
                     try {
-                      await processAnalysisRun(item.id);
+                      await requestNotificationPermission().catch(() => false);
+                      await PipelineForeground.start(item.id, '原著分析进行中', '正在继续分析…', item.progressTotal ? Math.round((item.progressCurrent / item.progressTotal) * 100) : 0);
+                      await processAnalysisRun(item.id, {
+                        onProgress: update => {
+                          const percent = update.progressTotal ? Math.round((update.progressCurrent / update.progressTotal) * 100) : 0;
+                          const material = update.materialType ? ANALYSIS_MATERIAL_LABELS[update.materialType] : '原著分析';
+                          void PipelineForeground.updateProgress(item.id, `第 ${(update.batchIndex ?? 0) + 1} 批 · ${material}`, percent);
+                        },
+                      });
+                      await PipelineForeground.stop(item.id);
                       await reload();
                     } catch (e: any) {
+                      await PipelineForeground.stop(item.id);
                       Toast.show({ type: 'error', text1: '处理失败', text2: e?.message });
                     }
                   }}

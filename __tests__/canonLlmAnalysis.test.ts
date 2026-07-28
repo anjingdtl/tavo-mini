@@ -1,12 +1,14 @@
 jest.mock('../src/services/llm', () => ({
   callLLM: jest.fn(),
+  callLLMResult: jest.fn(),
   resolveLLMRequestConfigById: jest.fn(),
 }));
 
-import { callLLM, resolveLLMRequestConfigById } from '../src/services/llm';
+import { callLLM, callLLMResult, resolveLLMRequestConfigById } from '../src/services/llm';
 import {
   defaultExtractorModeForProfile,
   extractWithLlm,
+  extractMaterialWithLlm,
 } from '../src/services/continuation/canon/canonAnalysisService';
 import {
   asSourcePosition,
@@ -97,6 +99,30 @@ describe('Canon LLM analysis', () => {
 
     await expect(extractWithLlm([chapter], 'deep', 42)).rejects.toThrow(
       'network unavailable',
+    );
+  });
+
+  it('binds a material request to the Canon five-way queue and strips unrelated arrays', async () => {
+    (callLLMResult as jest.Mock).mockResolvedValue({ text: validResult });
+    const result = await extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'characters',
+      'run-1',
+      new AbortController().signal,
+    );
+    expect(result.characters).toHaveLength(1);
+    expect(result.worldRules).toEqual([]);
+    expect(callLLMResult).toHaveBeenCalledWith(
+      expect.any(Array),
+      5000,
+      expect.objectContaining({
+        queueClass: 'canon_analysis',
+        taskId: 'run-1',
+        responseFormat: 'json_object',
+      }),
+      expect.any(AbortSignal),
     );
   });
 });

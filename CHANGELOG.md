@@ -4,6 +4,19 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.10.0] - 2026-07-28
+
+### Added
+
+- **原著分析可见进度与后台保活**：Standard / Deep Canon 分析现在把每个原著章节批次拆为世界观、人物画像、人物关系、主线剧情、人物经历五项可见工作；资料 > 续写 > 分析概览会实时显示确定型进度条、批次与资料类型状态，并支持暂停、取消和继续。
+- **Schema 22**：新增 `continuation_analysis_work_items`，持久化五类资料的请求状态、结果和错误；升级时为既有分析批次补齐工作项，任务恢复只重跑未完成或失败的资料项。
+- **五路并行 Canon 请求**：远程 OpenAI 兼容模型使用独立 `canon_analysis` 队列，单个批次最多并行五个资料请求；本地 llama.cpp 保持单路执行，避免显存竞争。
+- **后台任务通知**：复用 Android 前台服务和 WakeLock，在锁屏/切换 App 时保持分析；完成通知可直接跳到资料 > 分析任务。
+
+### Tests
+
+- 新增 Schema 21→22 迁移、备份 manifest 与 fresh schema 对齐测试；新增五路 Canon 队列并发和资料请求隔离测试。
+
 ## [2.9.3] - 2026-07-28
 
 ### Fixed

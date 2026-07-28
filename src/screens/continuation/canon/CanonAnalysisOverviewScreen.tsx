@@ -1,7 +1,7 @@
 /**
  * 分析概览 — Phase 2 UI entry (Spec §11.1).
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,13 +19,21 @@ import {
   activateSnapshot,
   defaultExtractorModeForProfile,
   getAnalysisOverview,
+  getAnalysisWorkItems,
+  ANALYSIS_MATERIAL_LABELS,
+  cancelAnalysis,
+  pauseAnalysis,
   processAnalysisRun,
+  resumeAnalysis,
   startAnalysis,
   type AnalysisRun,
   type CanonSnapshot,
+  type AnalysisWorkItem,
 } from '../../../services/continuation/canon';
 import type { AnalysisProfile } from '../../../services/continuation/canon/types';
 import { isBoundaryReady } from '../../../services/continuation/continuationSettingsService';
+import { PipelineForeground } from '../../../native/PipelineForegroundModule';
+import { requestNotificationPermission } from '../../../utils/notificationPermission';
 
 export const CanonAnalysisOverviewScreen: React.FC<{
   navigation: { navigate: (screen: string, params?: any) => void; goBack: () => void };
@@ -36,6 +44,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState<CanonSnapshot | null>(null);
   const [latestRun, setLatestRun] = useState<AnalysisRun | null>(null);
+  const [workItems, setWorkItems] = useState<AnalysisWorkItem[]>([]);
   const [boundaryOk, setBoundaryOk] = useState(false);
 
   const reload = useCallback(async () => {
@@ -49,7 +58,18 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         isBoundaryReady(currentProject.id),
       ]);
       setActive(overview.activeSnapshot);
-      setLatestRun(overview.latestRun);
+      const items = overview.latestRun
+        ? await getAnalysisWorkItems(overview.latestRun.id)
+        : [];
+      // Five个并发工作项会几乎同时回写；以工作项实际终态数渲染进度，
+      // 避免 run 表最后一次异步写入暂时落后于屏幕上的“已完成”明细。
+      const completedCount = items.filter(item => item.state === 'completed').length;
+      setLatestRun(
+        overview.latestRun
+          ? { ...overview.latestRun, progressCurrent: completedCount }
+          : null,
+      );
+      setWorkItems(items);
       setBoundaryOk(ready);
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '加载分析概览失败', text2: e?.message });
@@ -64,6 +84,12 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       reload();
     }, [reload]),
   );
+
+  useEffect(() => {
+    if (!latestRun || !['queued', 'running'].includes(latestRun.state)) return;
+    const timer = setInterval(() => { void reload(); }, 1000);
+    return () => clearInterval(timer);
+  }, [latestRun, reload]);
 
   const runAnalysis = (profile: AnalysisProfile) => {
     if (!currentProject) return;
@@ -93,10 +119,42 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 extractorMode: defaultExtractorModeForProfile(profile),
               });
               Toast.show({ type: 'info', text1: '分析已启动', text2: `批次处理中…` });
-              const run = await processAnalysisRun(runId);
+              // 先把刚创建的 run 写回页面状态，再开始等待长耗时的分析。
+              // 否则 processAnalysisRun 尚未返回时 latestRun 仍为空，轮询与
+              // 可视进度条都不会启动，用户只能看到一组禁用按钮。
+              await reload();
+              await requestNotificationPermission().catch(() => false);
+              await PipelineForeground.start(runId, '原著分析进行中', '正在准备五类资料…', 0);
+              const run = await processAnalysisRun(runId, {
+                onProgress: update => {
+                  const percent = update.progressTotal
+                    ? Math.round((update.progressCurrent / update.progressTotal) * 100)
+                    : 0;
+                  const material = update.materialType
+                    ? ANALYSIS_MATERIAL_LABELS[update.materialType]
+                    : '原著分析';
+                  void PipelineForeground.updateProgress(
+                    runId,
+                    `第 ${(update.batchIndex ?? 0) + 1} 批 · ${material}`,
+                    percent,
+                  );
+                  void reload();
+                },
+              });
+              await PipelineForeground.stop(runId);
               if (run.state !== 'awaiting_review') {
+                await PipelineForeground.notifyFailed(
+                  `ca:${runId}`,
+                  '原著分析未完成',
+                  run.errorMessage || '可在分析任务中继续或重试。',
+                );
                 throw new Error(run.errorMessage ?? '分析未完成，请检查模型配置后重试。');
               }
+              await PipelineForeground.notifyComplete(
+                  `ca:${runId}`,
+                '原著分析完成',
+                '五类资料已生成，等待您审核并激活。',
+              );
               Toast.show({
                 type: 'success',
                 text1: '分析完成',
@@ -113,6 +171,65 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         },
       ],
     );
+  };
+
+  const activeWorkItems = useMemo(
+    () => workItems.filter(item => item.state === 'running' || item.state === 'queued'),
+    [workItems],
+  );
+  const completedWorkItems = useMemo(
+    () => workItems.filter(item => item.state === 'completed').length,
+    [workItems],
+  );
+  const displayedProgressCurrent = workItems.length > 0
+    ? completedWorkItems
+    : (latestRun?.progressCurrent ?? 0);
+  const progressPercent = latestRun?.progressTotal
+    ? Math.round((displayedProgressCurrent / latestRun.progressTotal) * 100)
+    : 0;
+
+  const stopRun = async (action: 'pause' | 'cancel') => {
+    if (!latestRun) return;
+    try {
+      if (action === 'pause') await pauseAnalysis(latestRun.id);
+      else await cancelAnalysis(latestRun.id);
+      await PipelineForeground.stop(latestRun.id);
+      Toast.show({ type: 'info', text1: action === 'pause' ? '分析已暂停' : '分析已取消' });
+      await reload();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
+  };
+
+  const continueRun = async () => {
+    if (!latestRun) return;
+    try {
+      await PipelineForeground.start(latestRun.id, '原著分析进行中', '正在继续分析…', progressPercent);
+      const run = await resumeAnalysis(latestRun.id, {
+        onProgress: update => {
+          const percent = update.progressTotal
+            ? Math.round((update.progressCurrent / update.progressTotal) * 100)
+            : 0;
+          const material = update.materialType
+            ? ANALYSIS_MATERIAL_LABELS[update.materialType]
+            : '原著分析';
+          void PipelineForeground.updateProgress(
+            latestRun.id,
+            `第 ${(update.batchIndex ?? 0) + 1} 批 · ${material}`,
+            percent,
+          );
+          void reload();
+        },
+      });
+      await PipelineForeground.stop(latestRun.id);
+      if (run.state === 'awaiting_review') {
+        await PipelineForeground.notifyComplete(`ca:${latestRun.id}`, '原著分析完成', '五类资料已生成，等待审核。');
+      }
+      await reload();
+    } catch (e: any) {
+      await PipelineForeground.stop(latestRun.id);
+      Toast.show({ type: 'error', text1: '继续失败', text2: e?.message });
+    }
   };
 
   const handleActivate = async () => {
@@ -196,9 +313,38 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                     状态 {latestRun.state} · 阶段 {latestRun.stage}
                   </Text>
                   <Text style={{ color: theme.colors.textSecondary }}>
-                    进度 {latestRun.progressCurrent}/{latestRun.progressTotal} ·{' '}
+                    进度 {displayedProgressCurrent}/{latestRun.progressTotal} ·{' '}
                     {latestRun.profile}
                   </Text>
+                  {latestRun.progressTotal > 0 && (
+                    <>
+                      <View style={[styles.progressTrack, { backgroundColor: theme.colors.border }]}>
+                        <View
+                          style={[
+                            styles.progressFill,
+                            { backgroundColor: theme.colors.accent, width: `${progressPercent}%` },
+                          ]}
+                        />
+                      </View>
+                      <Text style={{ color: theme.colors.accent, fontWeight: '700' }}>
+                        {progressPercent}% · {activeWorkItems.length > 0 ? '正在处理五类资料' : '正在汇总结果'}
+                      </Text>
+                    </>
+                  )}
+                  {(latestRun.state === 'queued' || latestRun.state === 'running') && (
+                    <View style={styles.row}>
+                      <Button label="暂停" variant="ghost" onPress={() => { void stopRun('pause'); }} />
+                      <Button label="取消" variant="ghost" onPress={() => { void stopRun('cancel'); }} />
+                    </View>
+                  )}
+                  {(latestRun.state === 'paused' || latestRun.state === 'failed') && (
+                    <Button label="继续 / 重试" onPress={() => { void continueRun(); }} />
+                  )}
+                  {workItems.map(item => (
+                    <Text key={`${item.batchIndex}-${item.materialType}`} style={{ color: item.state === 'failed' ? theme.colors.danger : theme.colors.textSecondary }}>
+                      第 {item.batchIndex + 1} 批 · {ANALYSIS_MATERIAL_LABELS[item.materialType]}：{item.state === 'completed' ? '已完成' : item.state === 'running' ? '分析中' : item.state === 'queued' ? '排队中' : item.state === 'failed' ? `失败${item.errorMessage ? `（${item.errorMessage}）` : ''}` : '已取消'}
+                    </Text>
+                  ))}
                   {latestRun.errorMessage ? (
                     <Text style={{ color: theme.colors.danger }}>
                       {latestRun.errorMessage}
@@ -279,4 +425,6 @@ const styles = StyleSheet.create({
   title: { fontSize: 16, fontWeight: '600', marginBottom: spacing.xs },
   hint: { fontSize: 13, lineHeight: 18, marginBottom: spacing.sm },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
+  progressTrack: { height: 8, borderRadius: 4, overflow: 'hidden', marginTop: spacing.xs },
+  progressFill: { height: '100%', borderRadius: 4 },
 });
