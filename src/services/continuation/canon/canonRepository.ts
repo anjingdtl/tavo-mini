@@ -17,7 +17,7 @@ import {
   emptyCapabilities,
   emptyCoverage,
   type AnalysisBatch,
-  type AnalysisMaterialType,
+  type AnalysisWorkItemType,
   type AnalysisWorkItem,
   type AnalysisProfile,
   type AnalysisRun,
@@ -164,7 +164,7 @@ function mapWorkItem(row: Row): AnalysisWorkItem {
   return {
     runId: row.run_id,
     batchIndex: row.batch_index,
-    materialType: row.material_type as AnalysisMaterialType,
+    materialType: row.material_type as AnalysisWorkItemType,
     state: row.state,
     attemptCount: row.attempt_count,
     resultJson: row.result_json ?? null,
@@ -485,7 +485,7 @@ export async function insertWorkItems(
   items: Array<{
     runId: string;
     batchIndex: number;
-    materialType: AnalysisMaterialType;
+    materialType: AnalysisWorkItemType;
   }>,
 ): Promise<void> {
   const ts = now();
@@ -578,7 +578,7 @@ export async function updateWorkItem(
   input: {
     runId: string;
     batchIndex: number;
-    materialType: AnalysisMaterialType;
+    materialType: AnalysisWorkItemType;
     state?: AnalysisWorkItem['state'];
     incrementAttempt?: boolean;
     resultJson?: string | null;

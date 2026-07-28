@@ -20,7 +20,6 @@ import {
   getAnalysisOverview,
   getAnalysisWorkItems,
   ANALYSIS_MATERIAL_LABELS,
-  ANALYSIS_MATERIAL_TYPES,
   cancelAnalysis,
   pauseAnalysis,
   processAnalysisRun,
@@ -64,7 +63,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       const items = overview.latestRun
         ? await getAnalysisWorkItems(overview.latestRun.id)
         : [];
-      // Five个并发工作项会几乎同时回写；以工作项实际终态数渲染进度，
+      // 同批请求组会几乎同时回写；以工作项实际终态数渲染进度，
       // 避免 run 表最后一次异步写入暂时落后于屏幕上的“已完成”明细。
       const completedCount = items.filter(
         item => item.state === 'completed',
@@ -112,8 +111,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     Alert.alert(
       fast ? '开始快速续写分析' : '开始完整 Canon 分析',
       fast
-        ? '将调用当前 LLM 精读续写起点前最后 30 章，生成带原文证据的结构化 Canon。更早章节尚未覆盖，可稍后补全。\n\n分析过程可暂停/取消。'
-        : '将调用当前 LLM 分析续写起点之前的全部原著章节，生成带原文证据的结构化 Canon。完整分析耗时与 Token 更高。\n\n分析过程可暂停/取消。',
+        ? '将调用当前 LLM 精读续写起点前最后 30 章，生成带原文证据的结构化 Canon。每个章节批次会请求「人物与状态」及「世界观与剧情」两组资料；更早章节尚未覆盖，可稍后补全。\n\n分析过程可暂停/取消。'
+        : '将调用当前 LLM 分析续写起点之前的全部原著章节，生成带原文证据的结构化 Canon。每个章节批次会请求两组资料；完整分析耗时与 Token 更高。\n\n分析过程可暂停/取消。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -173,7 +172,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               await PipelineForeground.notifyComplete(
                 `ca:${runId}`,
                 '原著分析完成',
-                '五类资料已生成，等待您审核并激活。',
+                '两组 Canon 资料已生成，等待您审核并激活。',
               );
               Toast.show({
                 type: 'success',
@@ -208,29 +207,35 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     : 0;
   const materialProgress = useMemo(
     () =>
-      ANALYSIS_MATERIAL_TYPES.map(materialType => {
-        const items = workItems.filter(
-          item => item.materialType === materialType,
-        );
-        const completed = items.filter(
-          item => item.state === 'completed',
-        ).length;
-        const failed = items.find(item => item.state === 'failed');
-        const active = items.find(
-          item => item.state === 'running' || item.state === 'queued',
-        );
-        const cancelled = items.find(item => item.state === 'cancelled');
-        return {
-          materialType,
-          completed,
-          total: items.length,
-          state: failed
-            ? 'failed'
-            : active?.state ??
-              (cancelled ? 'cancelled' : items.length ? 'completed' : 'queued'),
-          errorMessage: failed?.errorMessage,
-        };
-      }),
+      Array.from(new Set(workItems.map(item => item.materialType))).map(
+        materialType => {
+          const items = workItems.filter(
+            item => item.materialType === materialType,
+          );
+          const completed = items.filter(
+            item => item.state === 'completed',
+          ).length;
+          const failed = items.find(item => item.state === 'failed');
+          const active = items.find(
+            item => item.state === 'running' || item.state === 'queued',
+          );
+          const cancelled = items.find(item => item.state === 'cancelled');
+          return {
+            materialType,
+            completed,
+            total: items.length,
+            state: failed
+              ? 'failed'
+              : active?.state ??
+                (cancelled
+                  ? 'cancelled'
+                  : items.length
+                  ? 'completed'
+                  : 'queued'),
+            errorMessage: failed?.errorMessage,
+          };
+        },
+      ),
     [workItems],
   );
 
@@ -280,7 +285,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         await PipelineForeground.notifyComplete(
           `ca:${latestRun.id}`,
           '原著分析完成',
-          '五类资料已生成，等待审核。',
+          'Canon 请求组已生成，等待审核。',
         );
       }
       await reload();
@@ -427,7 +432,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                           item =>
                             item.state === 'running' || item.state === 'queued',
                         )
-                          ? '正在处理五类资料'
+                          ? '正在处理 Canon 请求组'
                           : '正在汇总结果'}
                       </Text>
                     </>
@@ -558,7 +563,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               <Text
                 style={[styles.hint, { color: theme.colors.textSecondary }]}
               >
-                两种模式都会调用当前 LLM，并产出带原文证据、可审核的五类 Canon
+                两种模式都会调用当前 LLM，并产出带原文证据、可审核的 Canon
                 资料。快速续写只精读最后 30 章；完整 Canon 分析覆盖全部
                 边界内原著。
               </Text>
@@ -578,7 +583,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
 
             <Card style={styles.card}>
               <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
-                五类资料
+                Canon 资料
               </Text>
               {(
                 [
