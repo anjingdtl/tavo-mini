@@ -4,7 +4,11 @@ jest.mock('../src/services/llm', () => ({
   resolveLLMRequestConfigById: jest.fn(),
 }));
 
-import { callLLM, callLLMResult, resolveLLMRequestConfigById } from '../src/services/llm';
+import {
+  callLLM,
+  callLLMResult,
+  resolveLLMRequestConfigById,
+} from '../src/services/llm';
 import {
   defaultExtractorModeForProfile,
   extractWithLlm,
@@ -124,5 +128,33 @@ describe('Canon LLM analysis', () => {
       }),
       expect.any(AbortSignal),
     );
+  });
+
+  it('retries transient provider throttling before marking a material failed', async () => {
+    jest.useFakeTimers();
+    (callLLMResult as jest.Mock)
+      .mockRejectedValueOnce(
+        Object.assign(new Error('too many requests'), {
+          code: 'provider_error',
+          cause: { status: 429 },
+        }),
+      )
+      .mockResolvedValueOnce({ text: validResult });
+
+    const pending = extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'characters',
+      'run-retry',
+      new AbortController().signal,
+    );
+    await jest.runAllTimersAsync();
+
+    await expect(pending).resolves.toMatchObject({
+      characters: [expect.objectContaining({ canonicalName: '林凡' })],
+    });
+    expect(callLLMResult).toHaveBeenCalledTimes(2);
+    jest.useRealTimers();
   });
 });

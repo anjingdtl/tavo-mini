@@ -7,9 +7,11 @@ const LIMITS: Record<LLMQueueClass, number> = {
   normal: 3,
   pipeline: 3,
   background: 2,
-  // A Canon batch has five independent material requests. Keep this isolated
-  // from generic background workers so they cannot silently serialize it.
-  canon_analysis: 5,
+  // Canon batches contain five long-context requests. Keeping two in flight
+  // avoids a burst that can exhaust an account's RPM/TPM budget or leave all
+  // five requests competing for a provider's worker slots. The remainder stay
+  // visible as queued work items and are resumed from their persisted state.
+  canon_analysis: 2,
   connection: 1,
   local: 1,
 };
