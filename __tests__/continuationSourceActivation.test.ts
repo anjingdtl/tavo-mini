@@ -48,6 +48,22 @@ describe('P1-E source activation atomic transaction (fix-plan §6.2)', () => {
     expect(settingsParams[1]).toBe(9); // boundary_source_id
   });
 
+  it('includes import-job completion in the activation transaction when given a job id', () => {
+    const stmts = buildActivateSourceBoundaryStatements({
+      projectId: 1,
+      newSourceId: 7,
+      boundaryChapterId: 42,
+      boundaryGlobalOffset: 12345,
+      boundaryMode: 'end_of_chapter',
+      jobId: 'job_1',
+      ts: '2026-01-01T00:00:00.000Z',
+    });
+    expect(stmts).toHaveLength(5);
+    expect(stmts[4].sql).toContain('UPDATE continuation_import_jobs');
+    expect(stmts[4].sql).toContain("state = 'completed'");
+    expect(stmts[4].params).toContain('job_1');
+  });
+
   it('the run-outdated statement targets only the creating project', () => {
     const stmts = buildActivateSourceBoundaryStatements({
       projectId: 5,
@@ -182,7 +198,8 @@ describe('P1-E continuation fault domain (fix-plan §6.2 injection)', () => {
     });
     const counts: Array<{ idx: number; rows: number }> = [];
     await executeTransaction(handle, stmts, {
-      onStatementComplete: (idx, rows) => counts.push({ idx, rows }),
+      onStatementComplete: (idx: number, rows: number) =>
+        counts.push({ idx, rows }),
     });
     expect(counts).toHaveLength(4);
     expect(counts.every(c => c.rows === 1)).toBe(true);

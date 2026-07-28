@@ -1263,15 +1263,16 @@ export const MAX_OUTBOX_AUTO_RETRY_ATTEMPTS = 5;
 /**
  * Manually retry a single outbox row (fix-plan §3). Only `failed` and
  * `interrupted` rows are eligible. Atomically resets state to `pending` and
- * clears the last error so the worker can claim it again. `attempt_count` is
- * preserved as audit history — manual retry must NOT reset the budget, only
- * surface the row for the worker's next pass.
+ * clears the last error and restarts the automatic-attempt budget so the
+ * worker can claim it again. The count represents the current automatic retry
+ * streak, not lifetime history; retaining it would make an exhausted item
+ * permanently unclaimable after a user explicitly retries it.
  */
 export async function retryContinuationOutbox(id: string): Promise<boolean> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
     `UPDATE continuation_state_sync_outbox
-     SET state = 'pending', last_error = NULL, updated_at = ?
+     SET state = 'pending', attempt_count = 0, last_error = NULL, updated_at = ?
      WHERE id = ? AND state IN ('failed', 'interrupted')`,
     [nowIso(), id],
   );
@@ -1293,7 +1294,7 @@ export async function retryFailedContinuationOutbox(
   const ts = nowIso();
   const [res] = await db.executeSql(
     `UPDATE continuation_state_sync_outbox
-     SET state = 'pending', last_error = NULL, updated_at = ?
+     SET state = 'pending', attempt_count = 0, last_error = NULL, updated_at = ?
      WHERE project_id = ? AND state = 'failed'
      ORDER BY created_at ASC LIMIT ?`,
     [ts, projectId, limit],

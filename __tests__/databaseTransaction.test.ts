@@ -99,6 +99,32 @@ describe('executeTransaction', () => {
     expect(executeSql).toHaveBeenCalledWith('VACUUM', []);
   });
 
+  test('reports rows-affected from the native asynchronous success callback', async () => {
+    const callbacks: Array<(tx: any, result: any) => void> = [];
+    const database = {
+      transaction(scope: any, _onError: any, onSuccess: any) {
+        const tx = {
+          executeSql: jest.fn((_sql: string, _params: any[], success: any) => {
+            callbacks.push(success);
+            return undefined;
+          }),
+        };
+        scope(tx);
+        // This mirrors react-native-sqlite-storage: execution callbacks occur
+        // after scheduling the statement but before transaction completion.
+        callbacks[0](tx, { rowsAffected: 1 });
+        onSuccess();
+      },
+    };
+    const counts: number[] = [];
+
+    await executeTransaction(database as any, [{ sql: 'UPDATE demo' }], {
+      onStatementComplete: (_index, rowsAffected) => counts.push(rowsAffected),
+    });
+
+    expect(counts).toEqual([1]);
+  });
+
   test('settles successfully only once', async () => {
     const { database } = createDatabase({ duplicateCompletion: true });
 

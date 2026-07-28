@@ -25,8 +25,8 @@ export function executeTransaction(
   options: {
     faultDomain?: SqlFaultDomain;
     /** Optional per-statement callback for callers that need rows-affected
-     * counts (e.g. optimistic-concurrency conflict detection). Invoked inside
-     * the transaction scope, before the next statement runs. */
+     * counts (e.g. optimistic-concurrency conflict detection). Native SQLite
+     * invokes this from each statement's success callback. */
     onStatementComplete?: (
       oneBasedIndex: number,
       rowsAffected: number,
@@ -60,20 +60,25 @@ export function executeTransaction(
           // when absent we use the plain two-arg form exactly as before.
           const onStmt = options.onStatementComplete;
           if (onStmt) {
-            let captured = 0;
+            let delivered = false;
+            const deliver = (result: SQLite.ResultSet | { rowsAffected?: number }) => {
+              if (delivered) return;
+              delivered = true;
+              onStmt(index + 1, (result as any).rowsAffected ?? 0);
+            };
             const r = tx.executeSql(
               statement.sql,
               (statement.params || []) as any[],
               (_t: SQLite.Transaction, result: SQLite.ResultSet) => {
-                captured = (result as any).rowsAffected ?? 0;
+                deliver(result);
               },
             ) as unknown;
-            // Test doubles resolve synchronously and may attach rowsAffected
-            // on the returned object; prefer that when present.
+            // Some test doubles return a ResultSet instead of invoking the
+            // callback. The native module returns asynchronously, so never
+            // report a provisional zero before its success callback runs.
             if (r && typeof (r as any).rowsAffected === 'number') {
-              captured = (r as any).rowsAffected;
+              deliver(r as { rowsAffected?: number });
             }
-            onStmt(index + 1, captured);
           } else {
             tx.executeSql(statement.sql, (statement.params || []) as any[]);
           }

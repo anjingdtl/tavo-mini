@@ -805,8 +805,8 @@ export async function adoptArtifactAsDraft(input: {
   // Single local transaction: revision snapshot + write draft content with
   // optimistic concurrency. Never call LLM here. If the chapter was edited
   // concurrently (updated_at changed), the UPDATE affects 0 rows and we surface
-  // a conflict — the run is already claimed, so the user can retry the adopt
-  // against the now-current chapter content.
+  // a conflict. The provisional run claim is reverted below so the user can
+  // retry instead of being stranded behind a false adopted state.
   let chapterRowsAffected = 0;
   const statements: Array<{ sql: string; params?: any[] }> = [
     {
@@ -836,11 +836,16 @@ export async function adoptArtifactAsDraft(input: {
   });
 
   if (chapterRowsAffected === 0) {
-    // The chapter changed under us. The run is already marked completed/adopted,
-    // but the content was NOT overwritten — surface the conflict so the user can
-    // decide (the run linkage stays as audit). This is the rare concurrent-edit
-    // path; forceOverwrite does NOT bypass optimistic locking, only the
-    // input_revision_hash content check above.
+    // The chapter changed under us. Restore an adoptable state only if this
+    // invocation still owns the provisional adoption.
+    await casUpdateRunState(run.id, ['completed'], {
+      state: 'awaiting_user',
+      completionReason: null,
+      adoptedRevisionHash: null,
+      completedAt: null,
+      errorCode: 'adoption_conflict',
+      errorMessage: '章节在采纳期间被并发编辑，请重试',
+    });
     throw new ContinuationConflictError(
       '章节在采纳期间被并发编辑，正文未覆盖，请重试',
     );
@@ -1110,16 +1115,19 @@ export async function resumeInterruptedRun(
   }
 
   // Branch: Writer paused with a plan but no/partial artifact → resume directly
-  // from the Writer using the frozen snapshot + the stored plan. We do NOT call
-  // confirmPlanAndContinue (which only accepts awaiting_user). If the plan is
-  // pending user confirmation, treat the resume as an implicit confirmation.
+  // from the Writer using the frozen snapshot + the stored plan. A pending plan
+  // remains subject to explicit user confirmation after recovery.
   const planRow = await getPlan(runId);
   if (!planRow) {
     // No plan at all — cannot resume the Writer; surface to the user.
     throw new Error('缺少规划，无法恢复，请重新发起续写');
   }
   if (planRow.confirmationStatus === 'pending') {
-    await savePlan(runId, planRow.plan, 'confirmed');
+    await casUpdateRunState(runId, ['interrupted'], {
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+    });
+    return;
   }
   const ok = await casUpdateRunState(runId, ['interrupted'], {
     state: 'running',
