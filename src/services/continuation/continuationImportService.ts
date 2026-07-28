@@ -703,16 +703,9 @@ export async function confirmContinuationSource(
     boundaryGlobalOffset: boundaryOffset,
     boundaryMode: boundary.mode,
     ts,
+    jobId,
   });
   await executeTransaction(db, statements, { faultDomain: 'continuation' });
-
-  await updateJob(db, jobId, {
-    state: 'completed',
-    stage: 'activating',
-    progressCurrent: 1,
-    progressTotal: 1,
-    completedAt: ts,
-  });
 
   // Clean up the private import copy on success (Spec §14.1 step 8). Best-effort
   // only, never inside the transaction.
