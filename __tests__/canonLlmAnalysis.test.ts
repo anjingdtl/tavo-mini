@@ -115,7 +115,7 @@ describe('Canon LLM analysis', () => {
     );
   });
 
-  it('binds a material request to the Canon five-way queue and strips unrelated arrays', async () => {
+  it('keeps legacy five-family requests readable for interrupted Schema 22 tasks', async () => {
     (callLLMResult as jest.Mock).mockResolvedValue({ text: validResult });
     const result = await extractMaterialWithLlm(
       [chapter],
@@ -136,6 +136,25 @@ describe('Canon LLM analysis', () => {
         responseFormat: 'json_object',
       }),
       expect.any(AbortSignal),
+    );
+  });
+
+  it('extracts every character-state field in one Schema 23 request group', async () => {
+    (callLLMResult as jest.Mock).mockResolvedValue({ text: validResult });
+
+    const result = await extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'character_state',
+      'run-groups',
+      new AbortController().signal,
+    );
+
+    expect(result.characters).toHaveLength(1);
+    expect(result.worldRules).toEqual([]);
+    expect((callLLMResult as jest.Mock).mock.calls[0][0][0].content).toContain(
+      'relationships、experiences、knowledge、states',
     );
   });
 
