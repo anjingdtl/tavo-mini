@@ -605,6 +605,17 @@ jest.mock('../src/data/repositories/storyMemoryRepository', () => ({
   markStoryMemoryDirty: jest.fn(async () => undefined),
 }));
 
+// finalizeContinuationChapter asynchronously triggers the outbox worker
+// (processContinuationOutbox), which — without an injected extractor —
+// falls back to the real LLM call path (callLLMResult). Under the SQL mock
+// there is no usable LLM config, and the provider/scheduler path accumulates
+// until the worker OOMs. Mock the LLM entry points so the background worker
+// resolves with an empty (legal) extraction instead of hitting the network.
+jest.mock('../src/services/llm', () => ({
+  callLLMResult: jest.fn(async () => ({ text: '{"proposals":[]}', usage: null })),
+  resolveLLMRequestConfigById: jest.fn(async () => undefined),
+}));
+
 import {
   ensureGenerationSettings,
   updateGenerationSettings,
