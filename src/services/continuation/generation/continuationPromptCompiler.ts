@@ -61,6 +61,18 @@ function memoryBlock(s: ContinuationContextSnapshot): string {
   return `【Story Memory 摘要 status=${s.storyMemory.status}】\n${s.bundles.storyMemory.summary || '（无）'}`;
 }
 
+function historicalDigestBlock(s: ContinuationContextSnapshot): string {
+  const cards = (s.bundles.historicalDigests ?? [])
+    .map(
+      digest =>
+        `- position ${digest.startPosition}-${digest.endPosition - 1}: ${digest.summary}`,
+    )
+    .join('\n');
+  return cards
+    ? `【历史概览（非 Canon、非逐字核验事实）】\n${cards}\n仅作为可能相关线索；与 Canon 冲突时以 Canon 为准，需核实请回溯原文。`
+    : '【历史概览（非 Canon）】（无匹配卡片）';
+}
+
 function styleBlock(s: ContinuationContextSnapshot): string {
   const st = s.bundles.style;
   if (!st || s.settingsSnapshot.values.styleLevel === 'off') {
@@ -82,6 +94,7 @@ export function compilePlannerMessages(
     seamBlock(snapshot),
     recentBlock(snapshot),
     memoryBlock(snapshot),
+    historicalDigestBlock(snapshot),
   ].join('\n\n');
   return [
     { role: 'system', content: system },
@@ -104,6 +117,7 @@ export function compileWriterMessages(
     stateBlock(snapshot),
     seamBlock(snapshot),
     recentBlock(snapshot),
+    historicalDigestBlock(snapshot),
     styleBlock(snapshot),
   ].join('\n\n');
   return [

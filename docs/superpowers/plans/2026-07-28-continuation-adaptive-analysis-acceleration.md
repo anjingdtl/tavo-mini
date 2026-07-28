@@ -1,8 +1,8 @@
 # 原著续写：大型 TXT 自适应加速分析建设方案
 
-> 状态：Phase A、Phase B 已实施；Phase C 待实施
+> 状态：Phase A、Phase B 已实施；Phase C（历史摘要、索引与上下文弱参考）实施中
 > 日期：2026-07-28
-> 适用版本：Schema 23 / 原著续写 Canon Phase 2、Phase 3 现有实现
+> 适用版本：Schema 24 / 原著续写 Canon Phase 2、Phase 3 现有实现
 > 目标：让“从原著最后一章开始续写”先获得可靠、可用的近端 Canon，而不是等待整本 TXT 完成逐章深度分析。
 
 ## 1. 结论与建设目标
