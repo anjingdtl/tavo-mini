@@ -7,9 +7,10 @@
  * is supported via the import preview flow; this screen focuses on viewing an
  * already-active source. AI 续写 entries are gated until a source is active.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Upload } from 'lucide-react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   errorCodes,
   isErrorWithCode,
@@ -22,15 +23,59 @@ import { Button, Card, EmptyState, Header, Screen, spacing } from '../../compone
 import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
 import {
+  cancelContinuationImport,
   confirmContinuationSource,
   getActiveContinuationSource,
+  getActiveImportJob,
   previewParsedSource,
+  resumeContinuationImport,
   startContinuationImport,
 } from '../../services/continuation/continuationImportService';
+import type { ImportJob } from '../../services/continuation/continuationImportService';
 import {
   getChaptersBySource,
 } from '../../services/continuation/continuationSourceRepository';
 import type { ContinuationSource, ContinuationSourceChapter } from '../../services/continuation/types';
+import { requireContinuationTextImport } from '../../native/ContinuationTextImportModule';
+
+/**
+ * If encoding detection confidence is low (< 0.7, e.g. a BOM-less file that
+ * could be GBK or UTF-8), prompt the user to confirm the encoding before the
+ * full parse. Returns:
+ *   - undefined → proceed with auto-detection
+ *   - a string   → user-confirmed encoding override (e.g. 'gb18030')
+ *   - null       → user cancelled the whole import
+ */
+function confirmEncodingIfNeeded(localPath: string): Promise<string | undefined | null> {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (value: string | undefined | null) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+    requireContinuationTextImport()
+      .detectEncoding(localPath)
+      .then(detected => {
+        if (detected.confidence >= 0.7) {
+          finish(undefined);
+          return;
+        }
+        Alert.alert(
+          '编码不确定',
+          `自动探测为「${detected.encoding}」（置信度低）。若解析后出现乱码，请选择其他编码重试。`,
+          [
+            { text: '取消', style: 'cancel', onPress: () => finish(null) },
+            { text: '使用 UTF-8', onPress: () => finish('utf-8') },
+            { text: '使用 GBK', onPress: () => finish('gb18030') },
+            { text: '按探测继续', onPress: () => finish(undefined) },
+          ],
+        );
+      })
+      .catch(() => finish(undefined)); // detection failure is handled by the import pipeline
+    });
+}
 
 export const ContinuationSourceChaptersScreen: React.FC<{
   navigation: { navigate: (screen: string, params?: any) => void; goBack: () => void };
@@ -40,12 +85,19 @@ export const ContinuationSourceChaptersScreen: React.FC<{
   const [source, setSource] = useState<ContinuationSource | null>(null);
   const [chapters, setChapters] = useState<ContinuationSourceChapter[]>([]);
   const [importing, setImporting] = useState(false);
+  // A job left interrupted (app killed mid-import) that the user can resume or
+  // cancel. Surfaced as a card above the chapter list / import entry.
+  const [interruptedJob, setInterruptedJob] = useState<ImportJob | null>(null);
 
   const reload = async () => {
     if (!currentProject) return;
     try {
-      const src = await getActiveContinuationSource(currentProject.id);
+      const [src, job] = await Promise.all([
+        getActiveContinuationSource(currentProject.id),
+        getActiveImportJob(currentProject.id),
+      ]);
       setSource(src);
+      setInterruptedJob(job && job.state === 'interrupted' ? job : null);
       if (src) {
         const list = await getChaptersBySource(src.id);
         setChapters(list);
@@ -57,8 +109,71 @@ export const ContinuationSourceChaptersScreen: React.FC<{
     }
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { reload(); }, [currentProject?.id]);
+  // Reload on focus so returning from a child flow (or the app returning to the
+  // foreground after a kill) reflects the committed source / interrupted job.
+  // reload closes over currentProject?.id; we only want to re-subscribe when the
+  // project changes, so the dependency is the id rather than reload itself.
+  const reloadOnFocus = React.useCallback(() => {
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProject?.id]);
+  useFocusEffect(reloadOnFocus);
+
+  const handleResume = async () => {
+    if (!interruptedJob) return;
+    setImporting(true);
+    try {
+      const job = await resumeContinuationImport(interruptedJob.id);
+      const preview = await previewParsedSource(job.id);
+      Alert.alert(
+        '解析完成',
+        `已识别 ${preview.chapterCount} 章、${preview.detectedEncoding} 编码。\n将以原著末尾作为默认续写起点；之后可在“续写起点”中调整。`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '确认导入',
+            onPress: async () => {
+              try {
+                await confirmContinuationSource(job.id, { mode: 'end_of_source' });
+                await reload();
+                Toast.show({ type: 'success', text1: '原著导入完成' });
+              } catch (e: any) {
+                Toast.show({ type: 'error', text1: '确认导入失败', text2: e?.message });
+              }
+            },
+          },
+        ],
+      );
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '恢复导入失败', text2: e?.message });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleCancelJob = () => {
+    if (!interruptedJob) return;
+    Alert.alert(
+      '取消未完成的导入',
+      '将清除上次未完成的原著解析数据。已导入的原著不受影响。',
+      [
+        { text: '保留', style: 'cancel' },
+        {
+          text: '取消导入',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await cancelContinuationImport(interruptedJob.id);
+              await reload();
+              Toast.show({ type: 'success', text1: '已取消未完成的导入' });
+            } catch (e: any) {
+              Toast.show({ type: 'error', text1: '取消失败', text2: e?.message });
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const handleImport = async () => {
     if (!currentProject) return;
@@ -85,10 +200,17 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       if (copy.status === 'error') {
         throw new Error(copy.copyError || '复制导入文件失败。');
       }
+      const localPath = copy.localUri.replace(/^file:\/\//, '');
+      // If encoding detection is low-confidence (no BOM + ambiguous bytes),
+      // ask the user to confirm before parsing — a wrong guess yields garbled
+      // text or a decode_failed error. Spec §10.1 sets the threshold at 0.7.
+      const encodingOverride = await confirmEncodingIfNeeded(localPath);
+      if (encodingOverride === null) return; // user cancelled
       const job = await startContinuationImport({
         projectId: currentProject.id,
-        localPath: copy.localUri.replace(/^file:\/\//, ''),
+        localPath,
         originalFileName: selected.name || 'original.txt',
+        ...(encodingOverride ? { encodingOverride } : {}),
       });
       const preview = await previewParsedSource(job.id);
       Alert.alert(
@@ -130,6 +252,31 @@ export const ContinuationSourceChaptersScreen: React.FC<{
   return (
     <Screen>
       <Header title="原著章节" subtitle={currentProject.name} action={<Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />} />
+      {interruptedJob ? (
+        <View style={styles.interruptedWrap}>
+          <Card>
+            <Text style={[styles.interruptedTitle, { color: theme.colors.textPrimary }]}>
+              上次导入未完成
+            </Text>
+            <Text style={[styles.interruptedDesc, { color: theme.colors.textSecondary }]}>
+              原著解析在上次进行中被中断（{interruptedJob.stage ?? '未知阶段'}）。你可以从私有副本继续解析，或取消并重新导入。
+            </Text>
+            <View style={styles.interruptedActions}>
+              <Button
+                label="继续导入"
+                onPress={() => handleResume().catch(() => {})}
+                disabled={importing}
+              />
+              <Button
+                label="取消"
+                variant="ghost"
+                onPress={handleCancelJob}
+                disabled={importing}
+              />
+            </View>
+          </Card>
+        </View>
+      ) : null}
       {!source ? (
         <View style={styles.empty}>
           <EmptyState
@@ -183,6 +330,10 @@ export const ContinuationSourceChaptersScreen: React.FC<{
 };
 
 const styles = StyleSheet.create({
+  interruptedWrap: { padding: spacing.lg, paddingBottom: 0 },
+  interruptedTitle: { fontSize: 16, fontWeight: '700', marginBottom: spacing.xs },
+  interruptedDesc: { fontSize: 13, lineHeight: 20, marginBottom: spacing.md },
+  interruptedActions: { flexDirection: 'row', gap: spacing.sm },
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: spacing.lg },
   importBtn: {
     flexDirection: 'row',

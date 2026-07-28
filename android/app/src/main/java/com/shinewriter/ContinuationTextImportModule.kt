@@ -81,9 +81,19 @@ class ContinuationTextImportModule(reactContext: ReactApplicationContext) :
   fun readFileMeta(path: String, promise: Promise) {
     try {
       val file = File(path)
+      val exists = file.exists()
+      val length = if (exists) file.length() else 0L
       val map: WritableMap = Arguments.createMap()
-      map.putDouble("fileSizeBytes", if (file.exists()) file.length().toDouble() else 0.0)
-      map.putBoolean("canRead", file.exists() && file.canRead())
+      map.putDouble("fileSizeBytes", length.toDouble())
+      // canRead is false for missing files AND for oversized files. Checking
+      // the limit here (matching detectEncoding) lets the JS entry reject a
+      // too-large file BEFORE copying it into the private import dir, avoiding
+      // wasted disk/IO. The JS side also enforces the same ceiling as a guard.
+      val tooLarge = exists && length > MAX_FILE_BYTES
+      map.putBoolean("canRead", exists && file.canRead() && !tooLarge)
+      if (tooLarge) {
+        map.putString("errorCode", "file_too_large")
+      }
       promise.resolve(map)
     } catch (e: Exception) {
       promise.reject("unsupported_file", "读取文件信息失败：${e.message}", e)
