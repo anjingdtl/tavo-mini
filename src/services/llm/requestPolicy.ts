@@ -17,6 +17,9 @@ export const LLM_TIMEOUTS = {
   connectionMs: 20_000,
   normalMs: 60_000,
   chapterDraftMs: 180_000,
+  // Canon extraction sends chapter context and asks for evidence-rich JSON.
+  // Cloud providers can legitimately queue this longer than an ordinary chat.
+  canonAnalysisMs: 180_000,
   localIdleMs: 45_000,
 } as const;
 
@@ -41,6 +44,9 @@ export function resolveLLMTimeoutPolicy(
   }
   if (providerType === 'llama_cpp') {
     return { idleTimeoutMs: LLM_TIMEOUTS.localIdleMs };
+  }
+  if (scenario === 'continuation_canon_analysis') {
+    return { totalTimeoutMs: LLM_TIMEOUTS.canonAnalysisMs };
   }
   if (
     scenario === 'chapter_draft' ||
