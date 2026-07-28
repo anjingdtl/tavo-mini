@@ -1479,8 +1479,20 @@ export async function extractMaterialWithLlm(
         }, bodyEnd=${c.range.end})\n${c.content.slice(0, 6000)}`,
     ),
   ].join('\n');
+  // Baseline output budgets were too tight for the 8-array Canon JSON under a
+  // 3-chapter input (S1): reasoning-capable models routinely burned 5000 tokens
+  // on chain-of-thought and returned an empty content body. Raising the floor
+  // removes the most common deterministic-empty failure before it happens.
+  const baselineMaxTokens = profile === 'deep' ? 16384 : 8192;
+  let currentMaxTokens = baselineMaxTokens;
+  // Cap the adaptive doubling so a length loop cannot request more tokens than
+  // the model can realistically return; 32768 covers every mainstream online
+  // model's output limit while still being a real retry (2× the deep baseline).
+  const maxTokenCeiling = 32768;
   let lastOutputError: Error | null = null;
   let lastDroppedStats: ExtractionStats | null = null;
+  let lastDiagnostic: { finishReason?: string | null; preview?: string } | null =
+    null;
   for (
     let attempt = 1;
     attempt <= CANON_ANALYSIS_RETRY_POLICY.maxAttempts;
@@ -1493,7 +1505,7 @@ export async function extractMaterialWithLlm(
           : '';
       const response = await callLLMResult(
         [{ role: 'user', content: `${prompt}${retryInstruction}` }],
-        profile === 'deep' ? 8000 : 5000,
+        currentMaxTokens,
         {
           responseFormat: 'json_object',
           temperature: 0.1,
@@ -1506,7 +1518,25 @@ export async function extractMaterialWithLlm(
         signal,
       );
       if (!response?.text?.trim()) {
-        throw canonOutputError('LLM 未返回分析结果');
+        // S1: classify the empty response so the retry / error path can act on
+        // the real cause instead of a generic "no output".
+        const emptyReason = (response as { emptyReason?: string })
+          ?.emptyReason;
+        const finishReason = (response as { finishReason?: string | null })
+          ?.finishReason;
+        const reasoning = (response as { reasoningText?: string | null })
+          ?.reasoningText;
+        lastDiagnostic = {
+          finishReason: finishReason ?? null,
+          preview: (reasoning ?? '').slice(0, 200),
+        };
+        // Adaptive retry: when the budget was the bottleneck (length or
+        // reasoning_only), doubling max_tokens is a genuinely different
+        // request and may succeed where an identical retry cannot.
+        if (emptyReason === 'length' || emptyReason === 'reasoning_only') {
+          currentMaxTokens = Math.min(currentMaxTokens * 2, maxTokenCeiling);
+        }
+        throw canonOutputError(emptyResponseMessage(emptyReason));
       }
       let parsed: ChapterExtractionResult;
       let stats: ExtractionStats;
@@ -1518,6 +1548,11 @@ export async function extractMaterialWithLlm(
           parseRecoveredExtractionObject(response.text),
         ));
       } catch (error) {
+        lastDiagnostic = {
+          finishReason: (response as { finishReason?: string | null })
+            ?.finishReason,
+          preview: response.text.slice(0, 200),
+        };
         throw canonOutputError(
           error instanceof Error ? error.message : '提取结果不是合法 JSON',
         );
@@ -1563,10 +1598,71 @@ export async function extractMaterialWithLlm(
   }
   if (lastOutputError) {
     throw new Error(
-      `${ANALYSIS_MATERIAL_LABELS[materialType]}的模型输出连续 ${CANON_ANALYSIS_RETRY_POLICY.maxAttempts} 次无效：${lastOutputError.message}。请检查模型是否支持 JSON 输出后重试。`,
+      buildFinalFailureMessage(
+        ANALYSIS_MATERIAL_LABELS[materialType],
+        CANON_ANALYSIS_RETRY_POLICY.maxAttempts,
+        lastOutputError,
+        lastDiagnostic,
+        baselineMaxTokens,
+        currentMaxTokens,
+      ),
     );
   }
   throw new Error('LLM 未返回分析结果。');
+}
+
+/**
+ * Map an empty-response classification onto a specific, actionable Chinese
+ * message (Spec §1 / S1). `no_choices` is normally already raised as a real
+ * provider error by `openAICompatibleProvider`; we keep a defensive branch
+ * here for providers that return a 200 with empty choices and no error body.
+ */
+function emptyResponseMessage(emptyReason?: string): string {
+  switch (emptyReason) {
+    case 'length':
+      return '模型输出被 max_tokens 截断（finish_reason=length），未产生完整正文';
+    case 'reasoning_only':
+      return '推理模型的 reasoning 占满输出预算，未产生正文';
+    case 'content_filter':
+      return '模型输出被内容过滤拦截';
+    case 'no_choices':
+      return '网关返回了空响应（无 choices），请检查模型服务状态';
+    default:
+      return 'LLM 返回了空响应';
+  }
+}
+
+/**
+ * Build the final failure message with a diagnostic footer (Spec §1). Only the
+ * response fragment is attached — never the prompt, never the API key. The
+ * finish reason and the doubled-budget trail tell the operator whether this
+ * was a budget problem (retry with a larger model) or a schema problem.
+ */
+function buildFinalFailureMessage(
+  label: string,
+  maxAttempts: number,
+  lastError: Error,
+  diagnostic: { finishReason?: string | null; preview?: string } | null,
+  baselineMaxTokens: number,
+  finalMaxTokens: number,
+): string {
+  const head = `${label}的模型输出连续 ${maxAttempts} 次无效：${lastError.message}`;
+  const footerParts: string[] = [];
+  if (diagnostic?.finishReason) {
+    footerParts.push(`finishReason=${diagnostic.finishReason}`);
+  }
+  if (finalMaxTokens > baselineMaxTokens) {
+    footerParts.push(
+      `max_tokens ${baselineMaxTokens}→${finalMaxTokens} 仍不足`,
+    );
+  }
+  if (diagnostic?.preview) {
+    footerParts.push(`响应前 200 字符：${diagnostic.preview}`);
+  }
+  const footer = footerParts.length ? `[${footerParts.join('，')}]` : '';
+  const tail =
+    '请检查模型是否支持 JSON 输出、上下文窗口与输出预算是否充足后重试。';
+  return footer ? `${head} ${footer}。${tail}` : `${head}。${tail}`;
 }
 
 /**
