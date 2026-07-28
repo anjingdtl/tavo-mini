@@ -1,8 +1,9 @@
-export type SqlFaultDomain = 'migration' | 'restore';
+export type SqlFaultDomain = 'migration' | 'restore' | 'continuation';
 
 const SQL_STATEMENT_ENV: Record<SqlFaultDomain, string> = {
   migration: 'FAIL_MIGRATION_AT_STATEMENT',
   restore: 'FAIL_RESTORE_AT_STATEMENT',
+  continuation: 'FAIL_CONTINUATION_AT_STATEMENT',
 };
 
 /**
