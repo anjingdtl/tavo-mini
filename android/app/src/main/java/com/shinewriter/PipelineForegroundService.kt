@@ -202,19 +202,19 @@ class PipelineForegroundService : Service() {
         // 运行中常驻通知：低重要性，无声
         val ongoing = NotificationChannel(
           CHANNEL_ONGOING,
-          "写作运行状态",
+          "后台任务状态",
           NotificationManager.IMPORTANCE_LOW
         ).apply {
-          description = "显示当前流水线写作进度"
+          description = "显示当前写作或原著分析任务的进度"
           setShowBadge(false)
         }
         // 完成通知：默认重要性，可响
         val done = NotificationChannel(
           CHANNEL_DONE,
-          "写作完成通知",
+          "后台任务完成通知",
           NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
-          description = "流水线完成、失败或取消时通知"
+          description = "写作或原著分析完成、失败或取消时通知"
         }
         nm.createNotificationChannels(listOf(ongoing, done))
       }

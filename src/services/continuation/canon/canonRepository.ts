@@ -17,6 +17,8 @@ import {
   emptyCapabilities,
   emptyCoverage,
   type AnalysisBatch,
+  type AnalysisMaterialType,
+  type AnalysisWorkItem,
   type AnalysisProfile,
   type AnalysisRun,
   type AnalysisRunState,
@@ -147,6 +149,22 @@ export function mapBatch(row: Row): AnalysisBatch {
     endPosition: asSourcePosition(row.end_position),
     inputHash: row.input_hash,
     idempotencyKey: row.idempotency_key,
+    state: row.state,
+    attemptCount: row.attempt_count,
+    resultJson: row.result_json ?? null,
+    errorCode: row.error_code ?? null,
+    errorMessage: row.error_message ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at ?? null,
+  };
+}
+
+function mapWorkItem(row: Row): AnalysisWorkItem {
+  return {
+    runId: row.run_id,
+    batchIndex: row.batch_index,
+    materialType: row.material_type as AnalysisMaterialType,
     state: row.state,
     attemptCount: row.attempt_count,
     resultJson: row.result_json ?? null,
@@ -462,6 +480,27 @@ export async function insertBatches(
   await executeTransaction(db, statements);
 }
 
+export async function insertWorkItems(
+  db: SQLite.SQLiteDatabase,
+  items: Array<{
+    runId: string;
+    batchIndex: number;
+    materialType: AnalysisMaterialType;
+  }>,
+): Promise<void> {
+  const ts = now();
+  await executeTransaction(
+    db,
+    items.map(item => ({
+      sql: `INSERT INTO continuation_analysis_work_items (
+        run_id, batch_index, material_type, state, attempt_count, result_json,
+        error_code, error_message, created_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, 'queued', 0, NULL, NULL, NULL, ?, ?, NULL)`,
+      params: [item.runId, item.batchIndex, item.materialType, ts, ts],
+    })),
+  );
+}
+
 export async function getSnapshotById(
   snapshotId: string,
 ): Promise<CanonSnapshot | null> {
@@ -523,6 +562,46 @@ export async function listBatches(runId: string): Promise<AnalysisBatch[]> {
     [runId],
   );
   return rows.map(mapBatch);
+}
+
+export async function listWorkItems(runId: string): Promise<AnalysisWorkItem[]> {
+  const rows = await all<Row>(
+    `SELECT * FROM continuation_analysis_work_items
+      WHERE run_id = ? ORDER BY batch_index ASC, material_type ASC`,
+    [runId],
+  );
+  return rows.map(mapWorkItem);
+}
+
+export async function updateWorkItem(
+  db: SQLite.SQLiteDatabase,
+  input: {
+    runId: string;
+    batchIndex: number;
+    materialType: AnalysisMaterialType;
+    state?: AnalysisWorkItem['state'];
+    incrementAttempt?: boolean;
+    resultJson?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    completedAt?: string | null;
+  },
+): Promise<void> {
+  const fields: string[] = ['updated_at = ?'];
+  const params: unknown[] = [now()];
+  if (input.state !== undefined) { fields.push('state = ?'); params.push(input.state); }
+  if (input.incrementAttempt) fields.push('attempt_count = attempt_count + 1');
+  if (input.resultJson !== undefined) { fields.push('result_json = ?'); params.push(input.resultJson); }
+  if (input.errorCode !== undefined) { fields.push('error_code = ?'); params.push(input.errorCode); }
+  if (input.errorMessage !== undefined) { fields.push('error_message = ?'); params.push(input.errorMessage); }
+  if (input.completedAt !== undefined) { fields.push('completed_at = ?'); params.push(input.completedAt); }
+  params.push(input.runId, input.batchIndex, input.materialType);
+  await execute(
+    db,
+    `UPDATE continuation_analysis_work_items SET ${fields.join(', ')}
+      WHERE run_id = ? AND batch_index = ? AND material_type = ?`,
+    params,
+  );
 }
 
 export async function updateRunState(

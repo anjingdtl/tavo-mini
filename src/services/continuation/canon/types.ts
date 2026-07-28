@@ -362,6 +362,37 @@ export interface AnalysisBatch {
   completedAt: string | null;
 }
 
+/** The five user-facing Canon material families extracted per source batch. */
+export const ANALYSIS_MATERIAL_TYPES = [
+  'world_rules',
+  'characters',
+  'relationships',
+  'plot_threads',
+  'experiences',
+] as const;
+
+export type AnalysisMaterialType = (typeof ANALYSIS_MATERIAL_TYPES)[number];
+export type AnalysisWorkItemState =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface AnalysisWorkItem {
+  runId: string;
+  batchIndex: number;
+  materialType: AnalysisMaterialType;
+  state: AnalysisWorkItemState;
+  attemptCount: number;
+  resultJson: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
 export class CanonSnapshotOutdatedError extends Error {
   readonly code = CANON_SNAPSHOT_OUTDATED;
   constructor(message = 'Canon 快照已过期或与 active pointer 不一致。') {
