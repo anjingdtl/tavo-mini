@@ -179,6 +179,9 @@ describe('Canon LLM analysis', () => {
       characters: [expect.objectContaining({ canonicalName: '林凡' })],
     });
     expect(callLLMResult).toHaveBeenCalledTimes(3);
+    expect(
+      (callLLMResult as jest.Mock).mock.calls[1][0][0].content,
+    ).toContain('上一轮输出无法解析或不符合 schema');
     jest.useRealTimers();
   });
 });
