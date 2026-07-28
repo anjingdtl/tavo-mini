@@ -12,7 +12,7 @@
 export * from './types';
 export { CanonQueryService } from './canonQueryService';
 export {
-  defaultExtractorModeForProfile,
+  ANALYSIS_MODE_PRESETS,
   ANALYSIS_MATERIAL_LABELS,
   extractWithLlm,
   startAnalysis,
@@ -30,7 +30,6 @@ export {
 } from './canonAnalysisService';
 export type {
   StartAnalysisInput,
-  AnalysisExtractorMode,
   AnalysisProgressUpdate,
   ProcessAnalysisOptions,
 } from './canonAnalysisService';
@@ -58,7 +57,6 @@ export {
   stripModelJson,
   EXTRACTION_RESULT_SCHEMA_VERSION,
 } from './canonJsonValidators';
-export { extractChapterDeterministic } from './deterministicExtractor';
 export {
   validateEvidenceRange,
   listEvidenceForOwner,

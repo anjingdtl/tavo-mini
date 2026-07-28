@@ -129,8 +129,12 @@ jest.mock('../src/data/connection/openDatabase', () => ({
         length: items.length,
         item: (i: number) => items[i],
       });
-      if (/SELECT active_canon_snapshot_id FROM continuation_settings/i.test(n)) {
-        return [{ rows: rows([{ active_canon_snapshot_id: mockState.activeId }]) }];
+      if (
+        /SELECT active_canon_snapshot_id FROM continuation_settings/i.test(n)
+      ) {
+        return [
+          { rows: rows([{ active_canon_snapshot_id: mockState.activeId }]) },
+        ];
       }
       if (/SELECT \* FROM continuation_canon_snapshots WHERE id/i.test(n)) {
         const snap = mockState.snapshots[params[0]];
@@ -140,14 +144,22 @@ jest.mock('../src/data/connection/openDatabase', () => ({
         const statuses: string[] = [];
         // statuses are params after snapshot id
         const snapId = params[0];
-        let filtered = mockState.worldRules.filter(r => r.snapshot_id === snapId);
+        let filtered = mockState.worldRules.filter(
+          r => r.snapshot_id === snapId,
+        );
         // rough: if query includes review_status IN
         if (/review_status IN/i.test(n)) {
           // collect string params that look like statuses
           for (const p of params) {
             if (
               typeof p === 'string' &&
-              ['pending', 'confirmed', 'locked', 'ignored', 'superseded'].includes(p)
+              [
+                'pending',
+                'confirmed',
+                'locked',
+                'ignored',
+                'superseded',
+              ].includes(p)
             ) {
               statuses.push(p);
             }
@@ -156,7 +168,9 @@ jest.mock('../src/data/connection/openDatabase', () => ({
             filtered = filtered.filter(r => statuses.includes(r.review_status));
           }
         }
-        filtered = filtered.filter(r => r.valid_from_position <= (params[params.length - 3] ?? 0));
+        filtered = filtered.filter(
+          r => r.valid_from_position <= (params[params.length - 3] ?? 0),
+        );
         return [{ rows: rows(filtered) }];
       }
       return [{ rows: rows([]) }];
@@ -170,6 +184,7 @@ import { asSourcePosition } from '../src/services/continuation/continuationSourc
 describe('CanonQueryService (Spec §13)', () => {
   beforeEach(() => {
     mockState.activeId = 'snap-ready';
+    mockState.snapshots['snap-ready'].profile = 'standard';
   });
 
   it('getActiveSnapshot returns ready active only', async () => {
@@ -181,6 +196,13 @@ describe('CanonQueryService (Spec §13)', () => {
 
   it('throws when no active pointer', async () => {
     mockState.activeId = null;
+    await expect(CanonQueryService.getActiveSnapshot(1)).rejects.toBeInstanceOf(
+      CanonSnapshotOutdatedError,
+    );
+  });
+
+  it('does not expose a legacy Quick snapshot to Phase 3', async () => {
+    mockState.snapshots['snap-ready'].profile = 'quick';
     await expect(CanonQueryService.getActiveSnapshot(1)).rejects.toBeInstanceOf(
       CanonSnapshotOutdatedError,
     );
