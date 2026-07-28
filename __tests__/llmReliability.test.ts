@@ -89,7 +89,7 @@ describe('LLM request reliability policy', () => {
     expect(peak).toBe(1);
   });
 
-  test('starts all five Canon material requests in the dedicated analysis queue', async () => {
+  test('limits Canon material requests to two concurrent long-context calls', async () => {
     const gates = Array.from({ length: 5 }, () => deferred());
     let active = 0;
     let peak = 0;
@@ -106,7 +106,7 @@ describe('LLM request reliability policy', () => {
       ),
     );
     await Promise.resolve();
-    expect(peak).toBe(5);
+    expect(peak).toBe(2);
     gates.forEach(gate => gate.resolve());
     await expect(Promise.all(jobs)).resolves.toEqual([0, 1, 2, 3, 4]);
   });
@@ -151,6 +151,12 @@ describe('LLM request reliability policy', () => {
     expect(
       resolveLLMTimeoutPolicy('story_memory_patch_repair', 'openai_compatible'),
     ).toEqual({ totalTimeoutMs: LLM_TIMEOUTS.chapterDraftMs });
+    expect(
+      resolveLLMTimeoutPolicy(
+        'continuation_canon_analysis',
+        'openai_compatible',
+      ),
+    ).toEqual({ totalTimeoutMs: LLM_TIMEOUTS.canonAnalysisMs });
   });
 
   test('records timing metrics and gives user cancellation priority', () => {
