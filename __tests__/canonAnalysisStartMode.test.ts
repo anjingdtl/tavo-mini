@@ -144,6 +144,23 @@ describe('Canon analysis start modes', () => {
     expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(24);
   });
 
+  it('uses multiple quality-sized passes instead of collapsing a full book into one online-context batch', async () => {
+    mockResolveConfig.mockResolvedValueOnce({
+      id: 42,
+      provider_type: 'openai_compatible',
+      context_window: 1_000_000,
+      max_output_tokens: 200_000,
+    });
+
+    await startAnalysis({ projectId: 9, mode: 'full_canon' });
+
+    const batches = mockInsertBatches.mock.calls[0][1];
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toMatchObject({ startPosition: 0, endPosition: 20 });
+    expect(batches[1]).toMatchObject({ startPosition: 20, endPosition: 35 });
+    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(4);
+  });
+
   it('refuses to start when a 4096-window local model cannot fit 3×6000-char chapters (S1)', async () => {
     // Local llama_cpp model with a 4096 context window.
     mockResolveConfig.mockResolvedValueOnce({

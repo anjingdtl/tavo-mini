@@ -40,6 +40,8 @@ export interface LLMGenerateOptions {
   top_p?: number;
   max_tokens?: number;
   responseFormat?: 'json_object';
+  /** Optional OpenAI-compatible extension; omitted for existing callers. */
+  thinking?: { type: 'enabled' | 'disabled' };
   scenario?: string;
   projectId?: number;
   taskId?: string;

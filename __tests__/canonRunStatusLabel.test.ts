@@ -77,10 +77,10 @@ describe('runStatusLabel (S2 fix)', () => {
     ).toBe('正在汇总结果');
   });
 
-  it('returns 分析完成，等待审核激活 for awaiting_review', () => {
+  it('returns a same-page activation prompt for awaiting_review', () => {
     expect(
       runStatusLabel(makeRun('awaiting_review'), allCompleted),
-    ).toBe('分析完成，等待审核激活');
+    ).toBe('分析完成，可在此审核并激活');
   });
 
   it('returns 已暂停，可继续 for paused', () => {

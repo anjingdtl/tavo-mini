@@ -7,16 +7,60 @@ import { execute } from '../../../data/connection/execute';
 import { executeTransaction } from '../../../data/connection/transaction';
 import { now } from '../../../data/repositories/shared';
 import { v4 } from '../../uuidBridge';
-import { callLLMResult, resolveLLMRequestConfigById } from '../../llm';
+import {
+  callLLMResult,
+  resolveLLMRequestConfig,
+  resolveLLMRequestConfigById,
+} from '../../llm';
+import type { LLMRequestConfig } from '../../llm/types';
 import { continuationSourceReader } from '../continuationSourceReader';
 import type { BoundedSourceChapter } from '../types';
 import { CanonQueryService } from './canonQueryService';
 import type { HistoricalChapterCandidate, HistoricalDigest } from './types';
 
-const MIN_GROUP_SIZE = 20;
-const MAX_GROUP_SIZE = 50;
-const MAX_INPUT_CHARS = 18_000;
+const LEGACY_HISTORY_INPUT_CHAR_BUDGET = 18_000;
+const HISTORY_PROMPT_OVERHEAD_TOKENS = 1_200;
+const HISTORY_MAX_OUTPUT_RESERVE_TOKENS = 65_536;
 type Row = Record<string, any>;
+
+export interface HistoricalDigestCoverage {
+  readyDigestCount: number;
+  readyChapterCount: number;
+  ranges: Array<{ startPosition: number; endPosition: number }>;
+}
+
+/** Merge ready digest ranges so overlapping retry/legacy rows never inflate UI coverage. */
+export function summarizeHistoricalDigestCoverage(
+  digests: Array<
+    Pick<HistoricalDigest, 'status' | 'startPosition' | 'endPosition'>
+  >,
+): HistoricalDigestCoverage {
+  const ready = digests
+    .filter(digest => digest.status === 'ready')
+    .map(digest => ({
+      startPosition: Number(digest.startPosition),
+      endPosition: Number(digest.endPosition),
+    }))
+    .filter(range => range.endPosition > range.startPosition)
+    .sort((a, b) => a.startPosition - b.startPosition);
+  const ranges: HistoricalDigestCoverage['ranges'] = [];
+  for (const range of ready) {
+    const previous = ranges[ranges.length - 1];
+    if (previous && range.startPosition <= previous.endPosition) {
+      previous.endPosition = Math.max(previous.endPosition, range.endPosition);
+    } else {
+      ranges.push({ ...range });
+    }
+  }
+  return {
+    readyDigestCount: ready.length,
+    readyChapterCount: ranges.reduce(
+      (total, range) => total + range.endPosition - range.startPosition,
+      0,
+    ),
+    ranges,
+  };
+}
 
 function mapDigest(row: Row): HistoricalDigest {
   let keywords: string[] = [];
@@ -56,11 +100,66 @@ function chapterTerms(chapter: BoundedSourceChapter): Array<{ display: string; n
   return Array.from(result.values()).slice(0, 24);
 }
 
-function prompt(chapters: BoundedSourceChapter[]): string {
+export function resolveHistoricalDigestInputCharBudget(
+  contextWindow: number | null | undefined,
+  maxOutputTokens: number | null | undefined,
+): number {
+  if (!Number.isFinite(contextWindow) || (contextWindow ?? 0) <= 0) {
+    return LEGACY_HISTORY_INPUT_CHAR_BUDGET;
+  }
+  const outputReserve = Math.min(
+    Math.max(16_384, maxOutputTokens ?? 16_384),
+    HISTORY_MAX_OUTPUT_RESERVE_TOKENS,
+  );
+  return Math.max(
+    LEGACY_HISTORY_INPUT_CHAR_BUDGET,
+    Math.floor(
+      ((contextWindow as number) -
+        outputReserve -
+        HISTORY_PROMPT_OVERHEAD_TOKENS) *
+        1.5,
+    ),
+  );
+}
+
+export function resolveHistoricalDigestMaxTokens(
+  maxOutputTokens: number | null | undefined,
+): number {
+  return Math.min(
+    Math.max(8192, maxOutputTokens ?? 8192),
+    HISTORY_MAX_OUTPUT_RESERVE_TOKENS,
+  );
+}
+
+function splitHistoricalDigestChapters(
+  chapters: BoundedSourceChapter[],
+  inputCharBudget: number,
+): BoundedSourceChapter[][] {
+  const groups: BoundedSourceChapter[][] = [];
+  let group: BoundedSourceChapter[] = [];
+  let used = 0;
+  for (const chapter of chapters) {
+    const cost = chapter.title.length + chapter.content.length + 32;
+    if (group.length > 0 && used + cost > inputCharBudget) {
+      groups.push(group);
+      group = [];
+      used = 0;
+    }
+    group.push(chapter);
+    used += cost;
+  }
+  if (group.length > 0) groups.push(group);
+  return groups;
+}
+
+function prompt(
+  chapters: BoundedSourceChapter[],
+  inputCharBudget: number,
+): string {
   let used = 0;
   const source: string[] = [];
   for (const chapter of chapters) {
-    const excerpt = chapter.content.slice(0, Math.min(900, Math.max(0, MAX_INPUT_CHARS - used)));
+    const excerpt = chapter.content.slice(0, Math.max(0, inputCharBudget - used));
     if (!excerpt) break;
     used += excerpt.length;
     source.push(`【${chapter.position}｜${chapter.title}】\n${excerpt}`);
@@ -70,6 +169,27 @@ function prompt(chapters: BoundedSourceChapter[]): string {
     '概括事件、人物变化、世界规则、未解线索，并保留章节 position。不得杜撰；这是历史概览，不是 Canon 事实或原文证据。',
     source.join('\n\n'),
   ].join('\n\n');
+}
+
+/**
+ * Historical digests are structured summaries, not reasoning tasks. DeepSeek
+ * V4 thinking remains enabled. The caller uses bounded chapter groups and a
+ * completion budget large enough for thinking plus the final JSON body.
+ */
+export function buildHistoricalDigestRequestOptions(
+  projectId: number,
+  digestId: string,
+  requestConfig?: LLMRequestConfig,
+) {
+  return {
+    queueClass: 'pipeline' as const,
+    queuePriority: 'normal' as const,
+    projectId,
+    taskId: digestId,
+    scenario: 'continuation_historical_digest',
+    responseFormat: 'json_object' as const,
+    requestConfig,
+  };
 }
 
 function parse(raw: string): { summary: string; keywords: string[] } {
@@ -109,13 +229,28 @@ export async function queueHistoricalDigests(input: {
   const chapters = (await continuationSourceReader.listBoundedSourceChapters(source))
     .filter(chapter => !ranges.some(range => chapter.position >= range.startPosition && chapter.position < range.endPosition));
   if (!chapters.length) return { digestIds: [], indexedChapterCount: 0 };
-  const size = Math.max(MIN_GROUP_SIZE, Math.min(MAX_GROUP_SIZE, input.groupSize ?? 30));
+  const requestConfig = input.modelConfigId
+    ? await resolveLLMRequestConfigById(input.modelConfigId)
+    : await resolveLLMRequestConfig();
+  const inputCharBudget = resolveHistoricalDigestInputCharBudget(
+    requestConfig.context_window,
+    requestConfig.max_output_tokens,
+  );
+  const groups = input.groupSize
+    ? Array.from(
+        { length: Math.ceil(chapters.length / input.groupSize) },
+        (_, index) =>
+          chapters.slice(
+            index * input.groupSize!,
+            (index + 1) * input.groupSize!,
+          ),
+      )
+    : splitHistoricalDigestChapters(chapters, inputCharBudget);
   const db = await openDatabase();
   const timestamp = now();
   const ids: string[] = [];
   const statements: Array<{ sql: string; params?: any[] }> = [];
-  for (let offset = 0; offset < chapters.length; offset += size) {
-    const group = chapters.slice(offset, offset + size);
+  for (const group of groups) {
     const start = group[0].position as number;
     const end = (group[group.length - 1].position as number) + 1;
     const [existing] = await db.executeSql(
@@ -134,7 +269,7 @@ export async function queueHistoricalDigests(input: {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', '[]', ?, ?, ?)`,
       params: [id, input.projectId, source.sourceId, source.sourceVersion, source.normalizedSha256,
         source.parserVersion, source.normalizationVersion, source.boundary.chapterId, source.boundary.chapterPosition,
-        source.boundary.charOffsetExclusive, start, end, input.modelConfigId ?? null, timestamp, timestamp],
+        source.boundary.charOffsetExclusive, start, end, requestConfig.id, timestamp, timestamp],
     });
     for (const chapter of group) {
       statements.push({ sql: 'INSERT INTO continuation_historical_digest_chapters (digest_id, chapter_id, chapter_position, chapter_title) VALUES (?, ?, ?, ?)', params: [id, chapter.id, chapter.position, chapter.title] });
@@ -168,11 +303,29 @@ export async function processHistoricalDigest(digestId: string): Promise<Histori
   if (!chapters.length) throw new Error('历史摘要没有可读取的边界内章节');
   await execute(db, "UPDATE continuation_historical_digests SET status = 'running', error_code = NULL, error_message = NULL, updated_at = ? WHERE id = ?", [now(), digestId]);
   try {
-    const requestConfig = digest.modelConfigId ? await resolveLLMRequestConfigById(digest.modelConfigId) : undefined;
-    const response = await callLLMResult([{ role: 'user', content: prompt(chapters) }], 1600, {
-      queueClass: 'pipeline', queuePriority: 'normal', projectId: digest.projectId,
-      taskId: digestId, scenario: 'continuation_historical_digest', responseFormat: 'json_object', requestConfig,
-    });
+    const requestConfig = digest.modelConfigId
+      ? await resolveLLMRequestConfigById(digest.modelConfigId)
+      : await resolveLLMRequestConfig();
+    const response = await callLLMResult(
+      [
+        {
+          role: 'user',
+          content: prompt(
+            chapters,
+            resolveHistoricalDigestInputCharBudget(
+              requestConfig.context_window,
+              requestConfig.max_output_tokens,
+            ),
+          ),
+        },
+      ],
+      resolveHistoricalDigestMaxTokens(requestConfig.max_output_tokens),
+      buildHistoricalDigestRequestOptions(
+        digest.projectId,
+        digestId,
+        requestConfig,
+      ),
+    );
     const value = parse(response.text ?? '');
     const refs = await digestChapters(digestId);
     const statements: Array<{ sql: string; params?: any[] }> = [{
@@ -207,6 +360,32 @@ export async function listHistoricalDigestReferences(input: { projectId: number;
       source.boundary.chapterId, source.boundary.charOffsetExclusive, ...wanted, input.limit ?? 3],
   );
   return Array.from({ length: result.rows.length }, (_, index) => mapDigest(result.rows.item(index)));
+}
+
+/** Read-only coverage summary for the active source/boundary shown in the overview UI. */
+export async function getHistoricalDigestCoverage(
+  projectId: number,
+): Promise<HistoricalDigestCoverage> {
+  const source = await continuationSourceReader.getSnapshot(projectId);
+  const db = await openDatabase();
+  const [result] = await db.executeSql(
+    `SELECT * FROM continuation_historical_digests WHERE project_id = ? AND source_id = ?
+      AND source_version = ? AND source_sha256 = ? AND boundary_chapter_id = ?
+      AND boundary_char_offset_exclusive = ? AND status = 'ready'`,
+    [
+      projectId,
+      source.sourceId,
+      source.sourceVersion,
+      source.normalizedSha256,
+      source.boundary.chapterId,
+      source.boundary.charOffsetExclusive,
+    ],
+  );
+  return summarizeHistoricalDigestCoverage(
+    Array.from({ length: result.rows.length }, (_, index) =>
+      mapDigest(result.rows.item(index)),
+    ),
+  );
 }
 
 /** Local-only candidates. The caller must ask the user before any backfill. */
