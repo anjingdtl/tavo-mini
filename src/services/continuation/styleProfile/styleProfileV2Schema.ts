@@ -135,10 +135,6 @@ function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function isStringArrayOfStrings(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(v => typeof v === 'string');
-}
-
 /**
  * Require a string field on `obj`. Empty/whitespace-only strings are rejected
  * because operational instructions must carry actual guidance (Spec §5.5).
@@ -163,7 +159,7 @@ function requireStringArray(
   errors: string[],
 ): string[] | null {
   const v = obj[key];
-  if (!isStringArrayOfStrings(v)) {
+  if (!isStringArray(v)) {
     errors.push(`字段 ${path} 必须是字符串数组`);
     return null;
   }

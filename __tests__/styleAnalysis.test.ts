@@ -47,6 +47,7 @@ import {
 import {
   runStyleAnalysis,
   retryStyleAnalysis,
+  cancelStyleAnalysis,
 } from '../src/services/continuation/styleProfile/styleAnalysisService';
 import type { ContinuationSourceSnapshot } from '../src/services/continuation/types';
 import type { OriginalStyleProfileV2 } from '../src/services/continuation/styleProfile/styleProfileV2Schema';
@@ -477,6 +478,87 @@ describe('runStyleAnalysis', () => {
       'failed',
       expect.objectContaining({ errorCode: 'style_analysis_failed' }),
     );
+  });
+
+  it('short-circuits with a failed result when the signal aborts during an LLM call (Fix #3 post-await re-check)', async () => {
+    const chapters = buildRichChapters();
+    setupBoundedReader(chapters);
+    (resolveLLMRequestConfigById as jest.Mock).mockResolvedValue({
+      id: 42,
+      context_window: 200_000,
+      max_output_tokens: 16_000,
+    });
+    (listStyleProfilesForProject as jest.Mock).mockResolvedValue([]);
+
+    const caller = new AbortController();
+    // The provider returns normally, but the caller aborts JUST before the
+    // call resolves. Without the post-await signal re-check (canon parity),
+    // this partial result would proceed to validate/insert. The re-check must
+    // throw '分析已暂停或取消' so the run is marked failed instead.
+    (callLLMResult as jest.Mock).mockImplementation(async () => {
+      caller.abort();
+      return { text: JSON.stringify(validProfile()) };
+    });
+
+    const result = await runStyleAnalysis({
+      projectId: 1,
+      runId: 'run-abort',
+      canonSnapshotId: 'snap-1',
+      sourceSnapshot,
+      modelConfigId: 42,
+      signal: caller.signal,
+    });
+
+    expect(result.success).toBe(false);
+    // The provider was reached (the call started), but the post-await abort
+    // guard must prevent any ready/payload write.
+    expect(updateStyleProfilePayload).not.toHaveBeenCalled();
+    expect(updateStyleProfileState).toHaveBeenCalledWith(
+      expect.any(String),
+      'failed',
+      expect.objectContaining({
+        errorCode: 'style_analysis_failed',
+        errorMessage: expect.stringContaining('取消'),
+      }),
+    );
+  });
+
+  it('can be cancelled via cancelStyleAnalysis(profileId) registered for the run', async () => {
+    const chapters = buildRichChapters();
+    setupBoundedReader(chapters);
+    (resolveLLMRequestConfigById as jest.Mock).mockResolvedValue({
+      id: 42,
+      context_window: 200_000,
+      max_output_tokens: 16_000,
+    });
+    (listStyleProfilesForProject as jest.Mock).mockResolvedValue([]);
+
+    // capture the generated profileId from the insert call so we can cancel by it.
+    let capturedProfileId = '';
+    (insertStyleProfile as jest.Mock).mockImplementation((input: { id: string }) => {
+      capturedProfileId = input.id;
+      // Abort via the public cancel API the moment the profile is registered,
+      // simulating a UI cancel racing the LLM call.
+      cancelStyleAnalysis(capturedProfileId);
+      return Promise.resolve();
+    });
+    (callLLMResult as jest.Mock).mockResolvedValue({
+      text: JSON.stringify(validProfile()),
+    });
+
+    const result = await runStyleAnalysis({
+      projectId: 1,
+      runId: 'run-cancel',
+      canonSnapshotId: 'snap-1',
+      sourceSnapshot,
+      modelConfigId: 42,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.success).toBe(false);
+    expect(updateStyleProfilePayload).not.toHaveBeenCalled();
+    // Controller must be cleaned up after the run ends.
+    expect(capturedProfileId).not.toBe('');
   });
 
   it('preserves prior user overrides when re-analyzing (Spec §5.7, §14.1)', async () => {

@@ -118,7 +118,7 @@ export function isResumableAnalysisState(state: AnalysisRun['state']): boolean {
   return state === 'paused' || state === 'failed' || state === 'cancelled';
 }
 
-function isTransientCanonAnalysisError(error: unknown): boolean {
+export function isTransientCanonAnalysisError(error: unknown): boolean {
   const candidate = error as {
     code?: unknown;
     status?: unknown;
@@ -257,7 +257,7 @@ function failureDiagnosticJson(error: unknown): string | undefined {
   return JSON.stringify(diagnostic);
 }
 
-function waitForCanonRetry(
+export function waitForCanonRetry(
   signal: AbortSignal,
   delayMs: number,
 ): Promise<void> {
