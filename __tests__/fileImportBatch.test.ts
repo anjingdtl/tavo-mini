@@ -2,6 +2,7 @@ import { pickLocalFiles, importCharacters, importCharactersAsCollection, importW
 import * as picker from '@react-native-documents/picker';
 import * as db from '../src/services/database';
 import RNFS from 'react-native-fs';
+import { readTextFileWithAutoEncoding } from '../src/services/textFileReader';
 
 jest.mock('@react-native-documents/picker', () => ({
   pick: jest.fn(),
@@ -36,6 +37,10 @@ jest.mock('react-native-fs', () => ({
 
 jest.mock('../src/native/PngMetadataModule', () => ({
   PngMetadata: null,
+}));
+
+jest.mock('../src/services/textFileReader', () => ({
+  readTextFileWithAutoEncoding: jest.fn(async () => '第一段\n\n第二段\n\n第三段'),
 }));
 
 describe('pickLocalFiles', () => {
@@ -207,7 +212,7 @@ describe('importNotes', () => {
       firstId += 3;
       return ret;
     });
-    (RNFS.readFile as jest.Mock).mockResolvedValue('第一段\n\n第二段\n\n第三段');
+    (readTextFileWithAutoEncoding as jest.Mock).mockResolvedValue('第一段\n\n第二段\n\n第三段');
 
     const files = [
       { localPath: '/c/a.txt', name: 'a.txt', mimeType: 'text/plain' },
