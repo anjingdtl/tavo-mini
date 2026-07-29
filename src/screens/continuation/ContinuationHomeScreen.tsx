@@ -251,24 +251,32 @@ export const ContinuationHomeBody: React.FC<{
 
           <View style={styles.actions}>
             <Button
-              label="查看章节"
-              variant="ghost"
-              onPress={home.handleViewChapters}
-            />
-            <Button
-              label="设置续写起点"
-              variant="ghost"
-              onPress={home.handleBoundary}
-            />
-            <Button
               label="原著分析"
               onPress={home.handleAnalysis}
+              flex
             />
-            <Button
-              label="状态审核"
-              variant="ghost"
-              onPress={home.handleStateReview}
-            />
+            <View style={styles.secondaryActions}>
+              <Button
+                label="查看章节"
+                variant="ghost"
+                onPress={home.handleViewChapters}
+                flex
+              />
+              <Button
+                label="设置续写起点"
+                variant="ghost"
+                onPress={home.handleBoundary}
+                flex
+              />
+            </View>
+            <View style={styles.secondaryActions}>
+              <Button
+                label="状态审核"
+                variant="ghost"
+                onPress={home.handleStateReview}
+                flex
+              />
+            </View>
           </View>
           <TouchableOpacity
             accessibilityLabel="删除原著"
@@ -331,7 +339,10 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', justifyContent: 'space-between' },
   metaLabel: { fontSize: 13 },
   metaValue: { fontSize: 13, fontWeight: '500' },
-  actions: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+  // A fixed-width, vertical action group prevents long primary labels from
+  // overflowing the source card on narrow Android screens.
+  actions: { gap: spacing.sm, marginBottom: spacing.md },
+  secondaryActions: { flexDirection: 'row', gap: spacing.sm },
   deleteRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: spacing.xs },
   deleteText: { fontSize: 14 },
 });
