@@ -34,6 +34,12 @@ export type {
   ProcessAnalysisOptions,
 } from './canonAnalysisService';
 export {
+  activateSnapshotAndStyleProfile,
+} from './activateSnapshotAndStyleProfile';
+export type {
+  ActivateSnapshotAndStyleProfileInput,
+} from './activateSnapshotAndStyleProfile';
+export {
   setReviewStatus,
   unlockRecord,
   reviseWorldRule,
