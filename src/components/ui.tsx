@@ -220,23 +220,26 @@ export function SegmentedControl<T extends string | number>({
   value,
   options,
   onChange,
+  size = 'default',
 }: {
   value: T;
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
+  /** Use only where choosing a mode is the primary action on the screen. */
+  size?: 'default' | 'prominent';
 }) {
   const { theme } = useThemeStore();
   return (
-    <View style={[styles.segmented, { backgroundColor: theme.colors.accentSoft }]}>
+    <View style={[styles.segmented, { backgroundColor: theme.colors.accentSoft }, size === 'prominent' && styles.segmentedProminent]}>
       {options.map((option) => {
         const active = option.value === value;
         return (
           <TouchableOpacity
             key={option.value}
             onPress={() => onChange(option.value)}
-            style={[styles.segment, active && { backgroundColor: theme.colors.card }]}
+            style={[styles.segment, size === 'prominent' && styles.segmentProminent, active && { backgroundColor: theme.colors.card }]}
           >
-            <Text style={[styles.segmentText, { color: active ? theme.colors.accent : theme.colors.textSecondary }]}>{option.label}</Text>
+            <Text style={[styles.segmentText, size === 'prominent' && styles.segmentTextProminent, { color: active ? theme.colors.accent : theme.colors.textSecondary }]}>{option.label}</Text>
           </TouchableOpacity>
         );
       })}
@@ -335,6 +338,9 @@ const styles = StyleSheet.create({
   segmented: { flexDirection: 'row', padding: 4, borderRadius: 7, gap: 4 },
   segment: { flex: 1, minHeight: 38, borderRadius: 5, alignItems: 'center', justifyContent: 'center' },
   segmentText: { fontSize: 13, fontWeight: '700', letterSpacing: 0.2 },
+  segmentedProminent: { padding: 5, borderRadius: 9, gap: 5 },
+  segmentProminent: { minHeight: 50, borderRadius: 7 },
+  segmentTextProminent: { fontSize: 17, letterSpacing: 0.25 },
   empty: { flex: 1, minHeight: 180, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   emptyTitle: { fontSize: 17, fontWeight: '700', textAlign: 'center' },
   emptyDesc: { fontSize: 14, lineHeight: 20, textAlign: 'center', marginTop: spacing.sm },
