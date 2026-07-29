@@ -4,6 +4,7 @@ import { inflate } from 'pako';
 import * as db from './database';
 import { PngMetadata } from '../native/PngMetadataModule';
 import { localFileUriToPath } from '../utils/localFileUri';
+import { readTextFileWithAutoEncoding } from './textFileReader';
 
 /* eslint-disable no-bitwise */
 
@@ -454,7 +455,7 @@ export async function pickCharacterPngImageReplacement(): Promise<string | null>
 export async function importSelectedNoteText(projectId: number): Promise<{ firstId: number; createdCount: number } | null> {
   const file = await pickLocalFile([types.plainText, types.allFiles]);
   if (!file) return null;
-  const content = await RNFS.readFile(file.localPath, 'utf8');
+  const content = await readTextFileWithAutoEncoding(file.localPath);
   const title = file.name.replace(/\.[^.]+$/, '').trim() || '导入的 TXT 笔记';
   return db.createNotesFromTextChunks(projectId, title, content);
 }
@@ -618,7 +619,7 @@ export async function importNotes(
   const failed: Array<{ fileName: string; error: string }> = [];
   for (const file of files) {
     try {
-      const content = await RNFS.readFile(file.localPath, 'utf8');
+      const content = await readTextFileWithAutoEncoding(file.localPath);
       const title = file.name.replace(/\.[^.]+$/, '').trim() || '导入的 TXT 笔记';
       const ret = await db.createNotesFromTextChunks(projectId, title, content);
       success.push({ fileName: file.name, id: ret });
