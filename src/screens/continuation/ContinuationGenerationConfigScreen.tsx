@@ -34,6 +34,79 @@ const STRICTNESS_OPTIONS = [
   { value: 'strict', label: '严格' },
 ] as const;
 
+const STYLE_LEVEL_OPTIONS = [
+  { value: 'off', label: '关闭' },
+  { value: 'balanced', label: '平衡' },
+  { value: 'strict', label: '严格' },
+] as const;
+
+const CHECK_LEVEL_OPTIONS = [
+  { value: 'off', label: '关闭' },
+  { value: 'balanced', label: '平衡' },
+  { value: 'strict', label: '严格' },
+] as const;
+
+/**
+ * 校验严格度预设展开为各子项。文风 styleLevel 可随后单独修改，
+ * 避免「严格」预设看起来管了文风、实际未写入 styleLevel（Spec §10.2）。
+ */
+type StrictnessPresetKey = 'loose' | 'balanced' | 'strict';
+
+const STRICTNESS_PRESET: Record<
+  StrictnessPresetKey,
+  Pick<
+    ContinuationGenerationSettings,
+    | 'worldRuleLevel'
+    | 'characterLevel'
+    | 'relationshipLevel'
+    | 'plotLevel'
+    | 'experienceLevel'
+    | 'knowledgeLevel'
+    | 'styleLevel'
+  >
+> = {
+  loose: {
+    worldRuleLevel: 'balanced',
+    characterLevel: 'balanced',
+    relationshipLevel: 'balanced',
+    plotLevel: 'balanced',
+    experienceLevel: 'balanced',
+    knowledgeLevel: 'balanced',
+    styleLevel: 'balanced',
+  },
+  balanced: {
+    worldRuleLevel: 'strict',
+    characterLevel: 'strict',
+    relationshipLevel: 'strict',
+    plotLevel: 'balanced',
+    experienceLevel: 'strict',
+    knowledgeLevel: 'strict',
+    styleLevel: 'balanced',
+  },
+  strict: {
+    worldRuleLevel: 'strict',
+    characterLevel: 'strict',
+    relationshipLevel: 'strict',
+    plotLevel: 'strict',
+    experienceLevel: 'strict',
+    knowledgeLevel: 'strict',
+    styleLevel: 'strict',
+  },
+};
+
+const SUB_LEVEL_FIELDS: Array<{
+  key: keyof (typeof STRICTNESS_PRESET)['balanced'];
+  label: string;
+}> = [
+  { key: 'worldRuleLevel', label: '世界规则' },
+  { key: 'characterLevel', label: '人物设定' },
+  { key: 'relationshipLevel', label: '人物关系' },
+  { key: 'plotLevel', label: '剧情主线' },
+  { key: 'experienceLevel', label: '人物经历' },
+  { key: 'knowledgeLevel', label: '知识边界' },
+  { key: 'styleLevel', label: '文风约束' },
+];
+
 const CONFIRMATION_OPTIONS = [
   { value: 'never', label: '不确认' },
   { value: 'risk_only', label: '风险时确认' },
@@ -144,13 +217,42 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             Canon、接缝和状态事件生成；此处不会修改大纲创作的四阶段流水线。
           </Text>
           <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
-            校验严格度
+            校验严格度（预设）
           </Text>
           <SegmentedControl
             value={settings.strictnessProfile}
             options={[...STRICTNESS_OPTIONS]}
-            onChange={strictnessProfile => patch({ strictnessProfile })}
+            onChange={strictnessProfile => {
+              const preset =
+                STRICTNESS_PRESET[strictnessProfile as StrictnessPresetKey];
+              patch(
+                preset
+                  ? { strictnessProfile, ...preset }
+                  : { strictnessProfile },
+              );
+            }}
           />
+          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+            切换预设会展开下列子项；之后仍可单独改「文风约束」而不被全局预设误导。
+          </Text>
+          {SUB_LEVEL_FIELDS.map(field => (
+            <View key={field.key} style={styles.subLevelBlock}>
+              <Text
+                style={[styles.label, { color: theme.colors.textSecondary }]}
+              >
+                {field.label}
+              </Text>
+              <SegmentedControl
+                value={settings[field.key]}
+                options={[
+                  ...(field.key === 'styleLevel'
+                    ? STYLE_LEVEL_OPTIONS
+                    : CHECK_LEVEL_OPTIONS),
+                ]}
+                onChange={value => patch({ [field.key]: value })}
+              />
+            </View>
+          ))}
           <View style={styles.switchRow}>
             <View style={styles.switchText}>
               <Text
@@ -290,4 +392,5 @@ const styles = StyleSheet.create({
   stageRow: { marginTop: spacing.md },
   stageLabel: { fontSize: 14, fontWeight: '800', marginBottom: spacing.xs },
   modelChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  subLevelBlock: { marginTop: spacing.xs },
 });

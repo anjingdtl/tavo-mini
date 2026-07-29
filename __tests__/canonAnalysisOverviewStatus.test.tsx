@@ -95,6 +95,21 @@ jest.mock('../src/services/continuation/continuationSettingsService', () => ({
   isBoundaryReady: jest.fn(async () => overviewState.boundaryReady),
 }));
 
+jest.mock(
+  '../src/services/continuation/styleProfile/styleProfileRepository',
+  () => ({
+    listStyleProfilesForProject: jest.fn(async () => []),
+    updateStyleProfileReviewStatus: jest.fn(async () => undefined),
+  }),
+);
+
+jest.mock(
+  '../src/services/continuation/styleProfile/styleAnalysisService',
+  () => ({
+    retryStyleAnalysis: jest.fn(async () => undefined),
+  }),
+);
+
 jest.mock('../src/native/PipelineForegroundModule', () => ({
   PipelineForeground: {
     start: jest.fn(),
