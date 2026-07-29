@@ -235,6 +235,11 @@ export function planStoryMemoryCoverage(input: {
 export function buildPendingBridgeText(
   plan: StoryMemoryCoveragePlan,
   chaptersById: Map<number, Chapter>,
+  /**
+   * Optional display-number mapper (Spec §11.3). Continuation callers pass
+   * numbering.getDisplayNumber so bridge headers continue from the boundary.
+   */
+  getDisplayNumber: (position: number) => number = position => position + 1,
 ): string {
   const sections: string[] = [];
   const ordered = [...plan.pendingChapters].sort(
@@ -242,14 +247,15 @@ export function buildPendingBridgeText(
   );
   for (const chapter of ordered) {
     const live = chaptersById.get(chapter.id) || chapter;
-    const title = live.title || `第 ${live.position + 1} 章`;
+    const displayNum = getDisplayNumber(live.position);
+    const title = live.title || `第 ${displayNum} 章`;
     if (plan.rawChapterIds.includes(live.id)) {
-      sections.push(`【第 ${live.position + 1} 章｜${title}】\n${live.content}`);
+      sections.push(`【第 ${displayNum} 章｜${title}】\n${live.content}`);
       continue;
     }
     if (plan.episodicFallbackChapterIds.includes(live.id)) {
       sections.push(
-        `【第 ${live.position + 1} 章事件摘要｜${title}】\n${
+        `【第 ${displayNum} 章事件摘要｜${title}】\n${
           live.memory_summary || ''
         }`,
       );

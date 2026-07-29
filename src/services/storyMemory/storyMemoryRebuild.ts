@@ -337,11 +337,21 @@ export async function rebuildStoryMemoryUnlocked(
           batchChapters[0]?.position ?? replayStart,
           message,
         );
+        let fromLabel = `第 ${(batchChapters[0]?.position ?? 0) + 1} 章`;
+        try {
+          const { getContinuationChapterNumbering } = await import(
+            '../continuation/chapterNumbering/continuationChapterNumbering'
+          );
+          const numbering = await getContinuationChapterNumbering(projectId);
+          fromLabel = numbering.getDefaultTitle(
+            (batchChapters[0]?.position ?? 0) as any,
+          );
+        } catch {
+          // outline / no boundary → keep position+1 label
+        }
         throw new StoryMemoryError(
           'MEMORY_REBUILD_FAILED',
-          `第 ${
-            (batchChapters[0]?.position ?? 0) + 1
-          } 章起检查点重建失败：${message}`,
+          `${fromLabel}起检查点重建失败：${message}`,
         );
       }
     }
@@ -450,9 +460,19 @@ export async function rebuildStoryMemoryUnlocked(
           chapter.position,
           message,
         );
+        let chapterLabel = `第 ${chapter.position + 1} 章`;
+        try {
+          const { getContinuationChapterNumbering } = await import(
+            '../continuation/chapterNumbering/continuationChapterNumbering'
+          );
+          const numbering = await getContinuationChapterNumbering(projectId);
+          chapterLabel = numbering.getDefaultTitle(chapter.position as any);
+        } catch {
+          // outline / no boundary → keep position+1 label
+        }
         throw new StoryMemoryError(
           'MEMORY_REBUILD_FAILED',
-          `第 ${chapter.position + 1} 章故事记忆重建失败：${message}`,
+          `${chapterLabel}故事记忆重建失败：${message}`,
         );
       }
     }

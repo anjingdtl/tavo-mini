@@ -23,6 +23,13 @@ export interface RenderStoryMemoryOptions {
   budgetTokens: number;
   /** User writing instruction for this generation turn (optional). */
   retrievalUserPrompt?: string;
+  /**
+   * Map internal chapter position → user-visible number (Spec §11.3).
+   * Default is position+1. Continuation callers should pass
+   * numbering.getDisplayNumber so long-term memory text continues from the
+   * source boundary (e.g. position 0 → 第 21 章).
+   */
+  getDisplayNumber?: (position: number) => number;
 }
 
 const list = (values: string[]) => values.filter(Boolean).join('、') || '无';
@@ -95,10 +102,13 @@ export function resolveRelevantCharacterIds(
   return new Set(active.activeCharacterIds || []);
 }
 
-function buildPrefix(state: StoryMemoryState): string {
+function buildPrefix(
+  state: StoryMemoryState,
+  getDisplayNumber: (position: number) => number = p => p + 1,
+): string {
   const throughLabel =
     state.throughChapterPosition >= 0
-      ? `第 ${state.throughChapterPosition + 1} 章`
+      ? `第 ${getDisplayNumber(state.throughChapterPosition)} 章`
       : '开篇前';
   return `以下是截至${throughLabel}整理并验证的长期故事状态。\n${throughLabel}之后的近期正文可能包含更新；若两者冲突，以章节位置更晚的近期正文为准。\n除非近期正文或当前写作要求明确改变，否则不得违背该长期状态。\n\n【故事全局状态｜截至${throughLabel}】`;
 }
@@ -313,7 +323,8 @@ export function renderStoryMemoryForContext(
     options.retrievalUserPrompt,
   );
   const relevantIds = resolveRelevantCharacterIds(state, scan);
-  const prefix = buildPrefix(state);
+  const getDisplayNumber = options.getDisplayNumber ?? ((p: number) => p + 1);
+  const prefix = buildPrefix(state, getDisplayNumber);
 
   // If even the prefix cannot fit, return a safe truncated prefix (or empty).
   if (estimateTokens(prefix) > budgetTokens) {

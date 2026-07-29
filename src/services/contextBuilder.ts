@@ -1334,7 +1334,12 @@ export function buildMemoryContextWithIdf(
   if (docs.length === 0 || topK <= 0 || budgetTokens <= 0) return '';
 
   if (!idf || idf.size === 0) {
-    return assembleRecentSummariesWithinBudget(docs, topK, budgetTokens);
+    return assembleRecentSummariesWithinBudget(
+      docs,
+      topK,
+      budgetTokens,
+      options?.getDisplayNumber,
+    );
   }
 
   return assembleMemoryContextFromIdf(
@@ -1355,6 +1360,7 @@ function assembleRecentSummariesWithinBudget(
   docs: Array<{ chapter: Chapter; text: string }>,
   topK: number,
   budgetTokens: number,
+  getDisplayNumber: (position: number) => number = position => position + 1,
 ): string {
   const recentPriority = [...docs]
     .sort((a, b) => {
@@ -1379,9 +1385,10 @@ function assembleRecentSummariesWithinBudget(
   const budgeted = selectCandidatesWithinTokenBudget(
     recentPriority,
     budgetTokens,
+    getDisplayNumber,
   );
   return orderCandidatesForDisplay(budgeted)
-    .map(item => formatMemoryCandidateLine(item))
+    .map(item => formatMemoryCandidateLine(item, getDisplayNumber))
     .join('\n');
 }
 
@@ -1495,12 +1502,15 @@ function assembleMemoryContextFromIdf(
     priorityCandidates = selectMemoryCandidates(scored, active, topK);
   }
 
+  const getDisplayNumber =
+    options?.getDisplayNumber ?? ((position: number) => position + 1);
   const budgeted = selectCandidatesWithinTokenBudget(
     priorityCandidates,
     budgetTokens,
+    getDisplayNumber,
   );
   return orderCandidatesForDisplay(budgeted)
-    .map(item => formatMemoryCandidateLine(item))
+    .map(item => formatMemoryCandidateLine(item, getDisplayNumber))
     .join('\n');
 }
 

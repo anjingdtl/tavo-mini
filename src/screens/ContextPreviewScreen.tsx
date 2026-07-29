@@ -29,6 +29,7 @@ import {
   compilePlannerMessages,
   ensureGenerationSettings,
 } from '../services/continuation/generation';
+import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type { ContextTraceItem, ContextSourceKind } from '../types/contextTrace';
 import type { ChatMessage } from '../services/llm';
 
@@ -101,7 +102,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           settings.targetChapterChars * 2,
           writerConfig.max_output_tokens || Number.MAX_SAFE_INTEGER,
         );
-        const instruction = chapter.synopsis?.trim() || `续写第 ${chapter.position + 1} 章，保持与前文一致。`;
+        const continuationNumbering = await getContinuationChapterNumbering(chapter.project_id);
+        const instruction = chapter.synopsis?.trim() || `续写${continuationNumbering.getDefaultTitle(chapter.position as any)}，保持与前文一致。`;
         const result = await buildContinuationContext({
           projectId: chapter.project_id,
           targetChapterId: chapter.id,
