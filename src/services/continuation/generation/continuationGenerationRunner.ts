@@ -58,7 +58,8 @@ import { executeTransaction } from '../../database/transaction';
 import { v4 } from '../../uuidBridge';
 import { processContinuationOutbox } from './continuationStateOutboxWorker';
 import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
-
+import { planStageCapacity } from './continuationContextBudget';
+import type { ContinuationStageBudgets } from './continuationContextBudget';
 
 export type StageLlmCaller = (input: {
   stage: string;
@@ -208,18 +209,86 @@ export async function startContinuationRun(
       ? (configuredWriterOutput as number)
       : Number.MAX_SAFE_INTEGER,
   );
-  // A frozen snapshot is shared by Planner and Writer, therefore it must fit
-  // the smaller actual stage window rather than whichever model is active now.
-  const stageLimits = [plannerCfg?.context_window, writerCfg?.context_window]
-    .filter(
-      (value): value is number =>
-        typeof value === 'number' && Number.isFinite(value) && value > 0,
-    );
-  const modelLimit = input.modelContextLimit ??
-    (stageLimits.length > 0 ? Math.min(...stageLimits) : activeCfg?.context_window ?? 8192);
-  const maxOut = input.maxOutputTokens ?? Math.max(256, writerStageOutput);
 
-  // Context stage (no LLM for SM)
+  // Resolve each stage from its actual LLM config. Do NOT take min(windows)
+  // as a universal budget (Spec §7.1) — Planner may use a larger window than
+  // Writer and vice versa. The frozen snapshot layout uses Writer capacity.
+  const positive = (value: unknown, fallback: number) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0
+      ? value
+      : fallback;
+  const defaultWindow = positive(activeCfg?.context_window, 8192);
+  const plannerWindow = positive(plannerCfg?.context_window, defaultWindow);
+  const writerWindow = positive(writerCfg?.context_window, defaultWindow);
+  const plannerOut = positive(
+    plannerCfg?.max_output_tokens,
+    Math.min(2048, writerStageOutput),
+  );
+  const writerOut = input.maxOutputTokens ?? Math.max(256, writerStageOutput);
+
+  const [checkerCfg, repairCfg] = await Promise.all([
+    generationSettings.checkerEnabled
+      ? resolveStageConfig(generationSettings.checkerLlmConfigId)
+      : Promise.resolve(null),
+    generationSettings.checkerEnabled
+      ? resolveStageConfig(generationSettings.repairLlmConfigId)
+      : Promise.resolve(null),
+  ]);
+
+  const fallbackConfigId = activeId || 1;
+  const plannerId =
+    generationSettings.plannerLlmConfigId ?? fallbackConfigId;
+  const writerId =
+    generationSettings.writerLlmConfigId ?? fallbackConfigId;
+  const checkerId = generationSettings.checkerEnabled
+    ? (generationSettings.checkerLlmConfigId ?? fallbackConfigId)
+    : null;
+  const repairId = generationSettings.checkerEnabled
+    ? (generationSettings.repairLlmConfigId ?? fallbackConfigId)
+    : null;
+
+  // Per-stage capacity from each stage's real window. input.modelContextLimit
+  // only overrides Writer layout (shared snapshot packing), not Planner/Checker.
+  const stageBudgets: ContinuationStageBudgets = {
+    planner: planStageCapacity({
+      llmConfigId: plannerId,
+      contextWindow: plannerWindow,
+      maxOutputTokens: plannerOut,
+    }),
+    writer: planStageCapacity({
+      llmConfigId: writerId,
+      contextWindow: input.modelContextLimit ?? writerWindow,
+      maxOutputTokens: writerOut,
+    }),
+    checker:
+      checkerId != null
+        ? planStageCapacity({
+            llmConfigId: checkerId,
+            contextWindow: positive(checkerCfg?.context_window, defaultWindow),
+            maxOutputTokens: positive(
+              checkerCfg?.max_output_tokens,
+              Math.min(2048, writerOut),
+            ),
+          })
+        : null,
+    repair:
+      repairId != null
+        ? planStageCapacity({
+            llmConfigId: repairId,
+            contextWindow: positive(repairCfg?.context_window, defaultWindow),
+            maxOutputTokens: positive(
+              repairCfg?.max_output_tokens,
+              Math.min(2048, writerOut),
+            ),
+          })
+        : null,
+  };
+
+  // Layout budget follows Writer (primary consumer of full style + continuity).
+  const modelLimit = stageBudgets.writer.contextWindow;
+  const maxOut = stageBudgets.writer.maxOutputTokens;
+
+  // Context stage (no LLM for SM / no style analysis)
   const { snapshot, trace } = await buildContinuationContext({
     projectId: input.projectId,
     targetChapterId: input.chapterId,
@@ -229,6 +298,7 @@ export async function startContinuationRun(
     modelContextLimit: modelLimit,
     maxOutputTokens: maxOut,
     activeLlmConfigId: activeId || 1,
+    stageBudgets,
   });
 
   const runId = newContinuationRunId();

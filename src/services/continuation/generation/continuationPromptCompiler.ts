@@ -1,6 +1,7 @@
 /**
- * Stage-specific prompt compiler (Spec §8.3).
+ * Stage-specific prompt compiler (Spec §8.3 / §8 style injection).
  * Never rebuilds live Canon/Story Memory — only uses frozen snapshot.
+ * Style text is rendered from snapshot.style (frozen V2); never re-reads DB.
  */
 import type { ChatMessage } from '../../llm/types';
 import type {
@@ -9,15 +10,23 @@ import type {
   ContinuationCheckResult,
 } from './types';
 import { makeContinuationChapterNumbering } from '../chapterNumbering/continuationChapterNumbering';
+import {
+  renderStyleProfile,
+  type StyleRenderLevel,
+} from '../styleProfile/styleProfileRenderer';
 
 /**
  * User-visible chapter title for the frozen target position (Spec §11.3).
  * Continues from the source boundary; never exposes bare internal position as
- * if it were the display chapter number.
+ * if it were the display chapter number. Falls back to position+1 when the
+ * frozen source snapshot lacks a boundary (legacy / partial fixtures).
  */
 function displayTargetTitle(s: ContinuationContextSnapshot): string {
+  const boundaryPos = s.source?.boundary?.chapterPosition;
   const boundaryChapterNumber =
-    Number(s.source.boundary.chapterPosition) + 1;
+    boundaryPos != null && Number.isFinite(Number(boundaryPos))
+      ? Number(boundaryPos) + 1
+      : null;
   return makeContinuationChapterNumbering(boundaryChapterNumber).getDefaultTitle(
     s.targetPosition,
   );
@@ -155,10 +164,74 @@ function historicalDigestBlock(s: ContinuationContextSnapshot): string {
     : '【历史概览（非 Canon）】（无匹配卡片）';
 }
 
-function styleBlock(s: ContinuationContextSnapshot): string {
+/**
+ * Stage-aware style injection from the frozen snapshot profile (Spec §8).
+ * Falls back to legacy thin metrics when only bundles.style is present.
+ */
+function styleBlock(
+  s: ContinuationContextSnapshot,
+  stage: 'planner' | 'writer' | 'checker' | 'repair',
+  options?: {
+    plan?: ContinuationPlan;
+    openChecks?: ContinuationCheckResult[];
+  },
+): string {
+  if (s.settingsSnapshot.values.styleLevel === 'off') {
+    return '【文风】（关闭）';
+  }
+
+  const frozen = s.style;
+  if (frozen?.frozenProfile) {
+    const level: StyleRenderLevel =
+      frozen.renderLevel === 'compact' ||
+      frozen.renderLevel === 'standard' ||
+      frozen.renderLevel === 'detailed'
+        ? frozen.renderLevel
+        : 'standard';
+
+    const violatedDimensions =
+      stage === 'repair' && options?.openChecks
+        ? options.openChecks
+            .filter(
+              c =>
+                c.category === 'style' &&
+                (c.severity === 'error' ||
+                  c.severity === 'blocking' ||
+                  c.severity === 'warning'),
+            )
+            .map(c => c.subtype)
+        : undefined;
+
+    const participating =
+      stage === 'writer' && options?.plan
+        ? options.plan.participatingCharacterIds
+        : undefined;
+
+    const planSceneHints =
+      stage === 'writer' && options?.plan
+        ? [
+            options.plan.chapterGoal,
+            options.plan.centralConflict,
+            ...options.plan.beats.map(b => b.summary),
+          ].filter(Boolean)
+        : undefined;
+
+    const rendered = renderStyleProfile(frozen.frozenProfile, level, {
+      stage,
+      participatingCharacterIds: participating,
+      violatedDimensions,
+      userOverrides: frozen.userOverrides,
+      planSceneHints,
+    });
+    return rendered.text;
+  }
+
+  // Legacy thin metrics (pre-V2 snapshots)
   const st = s.bundles.style;
-  if (!st || s.settingsSnapshot.values.styleLevel === 'off') {
-    return '【文风】（关闭或不存在）';
+  if (!st) {
+    return frozen?.omitReason
+      ? `【文风】（未注入：${frozen.omitReason}）`
+      : '【文风】（关闭或不存在）';
   }
   return `【文风特征】人称=${st.narrativePerson} 时态=${st.tense} 均句长=${st.averageSentenceLength} 对话比=${st.dialogueRatio}\n${st.pacingNotes}\n${st.lexicalNotes}`;
 }
@@ -187,6 +260,7 @@ export function compilePlannerMessages(
     memoryBlock(snapshot),
     episodicBlock(snapshot),
     historicalDigestBlock(snapshot),
+    styleBlock(snapshot, 'planner'),
     supplementsBlock(snapshot),
   ].join('\n\n');
   return [
@@ -205,6 +279,7 @@ export function compileWriterMessages(
   const system = [
     '你是长篇小说续写写手。只输出本章正文，不要分析说明、不要标题行。',
     '遵守人物知识边界；不复制大段原著原文；不引入被策略禁止的死亡/复活/新体系。',
+    '模仿抽象文风特征，禁止复制原著原句。用户本章明确要求优先于自动风格画像。',
     lockedBlock(snapshot),
     `【规划（已确认版本）】\n目标：${plan.chapterGoal}\n冲突：${plan.centralConflict}\n节拍：${plan.beats.map(b => b.summary).join(' / ')}`,
     stateBlock(snapshot),
@@ -213,7 +288,7 @@ export function compileWriterMessages(
     memoryBlock(snapshot),
     episodicBlock(snapshot),
     historicalDigestBlock(snapshot),
-    styleBlock(snapshot),
+    styleBlock(snapshot, 'writer', { plan }),
     supplementsBlock(snapshot),
   ].join('\n\n');
   return [
@@ -238,6 +313,7 @@ export function compileCheckerMessages(
     canonHardBlock(snapshot),
     canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
+    styleBlock(snapshot, 'checker'),
     `【可引用证据 id】${JSON.stringify(snapshot.bundles.canon.evidenceRefs.slice(0, 50))}`,
     supplementsBlock(snapshot),
   ].join('\n\n');
@@ -264,9 +340,11 @@ export function compileRepairMessages(
     .join('\n');
   const system = [
     '你是续写局部修复助手。只修改冲突片段，保留无问题段落。只输出修复后的完整正文。',
+    '不要因单一风格问题重写无关段落；不要修改已通过的 Canon 事实。',
     lockedBlock(snapshot),
     canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
+    styleBlock(snapshot, 'repair', { openChecks }),
     `【待修复问题】\n${issues || '（无 blocking/error）'}`,
   ].join('\n\n');
   return [

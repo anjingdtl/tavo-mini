@@ -140,25 +140,258 @@ export function runDeterministicChecks(
     }
   }
 
-  // Style: first-person mixed with third if style profile says third
+  // Style drift heuristics from frozen thin metrics / V2 narrative hints.
+  // Skip gracefully when metrics are missing (Spec §8.3 deterministic subset).
+  if (!levelOff(settings, 'style')) {
+    issues.push(...runStyleDriftChecks(artifactText, snapshot));
+  }
+
+  return issues;
+}
+
+/** Rough sentence split for CJK + ASCII terminals (UTF-16 length aware). */
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[。！？!?…])\s*/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function splitParagraphs(text: string): string[] {
+  return text
+    .split(/\n\s*\n|\r\n\s*\r\n/)
+    .map(p => p.trim())
+    .filter(Boolean);
+}
+
+function dialogueCharRatio(text: string): number {
+  if (!text) return 0;
+  // Count chars inside Chinese or ASCII quotation marks.
+  let inQuote = false;
+  let dialogueChars = 0;
+  for (const ch of text) {
+    if (ch === '“' || ch === '「' || ch === '"') {
+      inQuote = !inQuote;
+      continue;
+    }
+    if (ch === '”' || ch === '」') {
+      inQuote = false;
+      continue;
+    }
+    if (inQuote) dialogueChars += 1;
+  }
+  return dialogueChars / Math.max(1, text.length);
+}
+
+/** Common AI-ish template openers / transitions in Chinese web-novel output. */
+const AI_TEMPLATE_PHRASES = [
+  '不禁心中一动',
+  '与此同时',
+  '值得一提的是',
+  '总而言之',
+  '综上所述',
+  '他深吸一口气',
+  '她深吸一口气',
+  '就在这时',
+  '话音刚落',
+  '令人意外的是',
+  '不可否认',
+  '毫无疑问',
+];
+
+function longestCommonSubstringLength(a: string, b: string, cap = 80): number {
+  // Bounded DP for short excerpts only — avoid O(n*m) blowups.
+  const s = a.length > 400 ? a.slice(-400) : a;
+  const t = b.length > 400 ? b.slice(0, 400) : b;
+  if (!s || !t) return 0;
+  let best = 0;
+  let prev = new Array(t.length + 1).fill(0);
+  let cur = new Array(t.length + 1).fill(0);
+  for (let i = 1; i <= s.length; i++) {
+    for (let j = 1; j <= t.length; j++) {
+      if (s[i - 1] === t[j - 1]) {
+        cur[j] = prev[j - 1] + 1;
+        if (cur[j] > best) best = cur[j];
+        if (best >= cap) return best;
+      } else {
+        cur[j] = 0;
+      }
+    }
+    const tmp = prev;
+    prev = cur;
+    cur = tmp;
+    cur.fill(0);
+  }
+  return best;
+}
+
+function runStyleDriftChecks(
+  artifactText: string,
+  snapshot: ContinuationContextSnapshot,
+): RawCheckIssue[] {
+  const issues: RawCheckIssue[] = [];
   const style = snapshot.bundles.style;
-  if (style && !levelOff(settings, 'style')) {
-    if (
-      style.narrativePerson.includes('三') &&
-      /[我](?:觉得|心想|看到)/.test(artifactText) &&
-      /他|她|其/.test(artifactText)
-    ) {
+  const frozenPerson =
+    typeof (snapshot.style?.frozenProfile as any)?.global?.narrative?.person ===
+    'string'
+      ? String((snapshot.style!.frozenProfile as any).global.narrative.person)
+      : '';
+  const narrativePerson = style?.narrativePerson || frozenPerson;
+
+  if (
+    narrativePerson.includes('三') &&
+    /我(?:觉得|心想|看到|听见)/.test(artifactText) &&
+    /他|她|其/.test(artifactText)
+  ) {
+    issues.push({
+      category: 'style',
+      subtype: 'pov_shift',
+      severity: 'warning',
+      confidence: 0.5,
+      generatedStart: null,
+      generatedEnd: null,
+      generatedExcerpt: '',
+      description: '疑似视角在第一人称与第三人称之间切换（推测，无强证据）',
+      evidenceIds: [],
+      suggestedFix: '统一叙事人称',
+    });
+  }
+
+  // Tense drift: sudden dense present-tense first person if profile leans past narrative.
+  const frozenTense =
+    typeof (snapshot.style?.frozenProfile as any)?.global?.narrative
+      ?.tenseAndTimeHandling === 'string'
+      ? String(
+          (snapshot.style!.frozenProfile as any).global.narrative
+            .tenseAndTimeHandling,
+        )
+      : style?.tense || '';
+  if (
+    /过去|叙述|回顾/.test(frozenTense) &&
+    (artifactText.match(/着$/gm) || []).length === 0 &&
+    /现在|此刻|正在/.test(artifactText) &&
+    (artifactText.match(/正在/g) || []).length >= 3
+  ) {
+    issues.push({
+      category: 'style',
+      subtype: 'tense_drift',
+      severity: 'info',
+      confidence: 0.4,
+      generatedStart: null,
+      generatedEnd: null,
+      generatedExcerpt: '',
+      description: '正文出现较密集的“正在/此刻”表述，可能与原著时态处理偏移',
+      evidenceIds: [],
+      suggestedFix: '检查时态与时间处理是否贴近原著',
+    });
+  }
+
+  // Sentence / paragraph length rough offset vs frozen metrics.
+  if (style && style.averageSentenceLength > 0) {
+    const sentences = splitSentences(artifactText);
+    if (sentences.length >= 4) {
+      const avg =
+        sentences.reduce((s, x) => s + x.length, 0) / sentences.length;
+      const target = style.averageSentenceLength;
+      if (target > 0 && (avg > target * 2.2 || avg < target * 0.35)) {
+        issues.push({
+          category: 'style',
+          subtype: 'sentence_length',
+          severity: 'warning',
+          confidence: 0.45,
+          generatedStart: null,
+          generatedEnd: null,
+          generatedExcerpt: '',
+          description: `均句长约 ${avg.toFixed(1)}，与原著参考 ${target.toFixed(1)} 明显偏移`,
+          evidenceIds: [],
+          suggestedFix: '调整句长分布以贴近原著节奏',
+        });
+      }
+    }
+  }
+
+  if (style && style.averageParagraphLength > 0) {
+    const paragraphs = splitParagraphs(artifactText);
+    if (paragraphs.length >= 2) {
+      const avg =
+        paragraphs.reduce((s, x) => s + x.length, 0) / paragraphs.length;
+      const target = style.averageParagraphLength;
+      if (target > 0 && (avg > target * 2.5 || avg < target * 0.3)) {
+        issues.push({
+          category: 'style',
+          subtype: 'paragraph_length',
+          severity: 'info',
+          confidence: 0.4,
+          generatedStart: null,
+          generatedEnd: null,
+          generatedExcerpt: '',
+          description: `均段长约 ${avg.toFixed(1)}，与原著参考 ${target.toFixed(1)} 明显偏移`,
+          evidenceIds: [],
+          suggestedFix: '调整段落切分以贴近原著',
+        });
+      }
+    }
+  }
+
+  if (style && style.dialogueRatio > 0) {
+    const ratio = dialogueCharRatio(artifactText);
+    const target = style.dialogueRatio;
+    if (Math.abs(ratio - target) > 0.35 && artifactText.length > 200) {
       issues.push({
         category: 'style',
-        subtype: 'pov_shift',
-        severity: 'warning',
-        confidence: 0.5,
+        subtype: 'dialogue_ratio',
+        severity: 'info',
+        confidence: 0.4,
         generatedStart: null,
         generatedEnd: null,
         generatedExcerpt: '',
-        description: '疑似视角在第一人称与第三人称之间切换（推测，无强证据）',
+        description: `对话占比约 ${(ratio * 100).toFixed(0)}%，原著参考约 ${(target * 100).toFixed(0)}%`,
         evidenceIds: [],
-        suggestedFix: '统一叙事人称',
+        suggestedFix: '调整对白与叙述比例',
+      });
+    }
+  }
+
+  // AI-ish template phrases.
+  for (const phrase of AI_TEMPLATE_PHRASES) {
+    const idx = artifactText.indexOf(phrase);
+    if (idx >= 0) {
+      issues.push({
+        category: 'style',
+        subtype: 'ai_template',
+        severity: 'warning',
+        confidence: 0.55,
+        generatedStart: idx,
+        generatedEnd: idx + phrase.length,
+        generatedExcerpt: phrase,
+        description: `疑似模板化 AI 腔表述：「${phrase}」`,
+        evidenceIds: [],
+        suggestedFix: '改写为更贴合原著克制/具体的叙述',
+      });
+      break; // one is enough for deterministic pass
+    }
+  }
+
+  // Long consecutive overlap with seam excerpt.
+  const seam = snapshot.bundles.seam?.excerpt || '';
+  if (seam.length >= 24 && artifactText.length >= 24) {
+    const overlap = longestCommonSubstringLength(seam, artifactText, 80);
+    if (overlap >= 24) {
+      const idx = artifactText.indexOf(seam.slice(0, Math.min(12, seam.length)));
+      issues.push({
+        category: 'style',
+        subtype: 'source_overlap',
+        severity: overlap >= 40 ? 'error' : 'warning',
+        confidence: 0.7,
+        generatedStart: idx >= 0 ? idx : null,
+        generatedEnd: idx >= 0 ? idx + Math.min(overlap, 40) : null,
+        generatedExcerpt:
+          idx >= 0
+            ? artifactText.slice(idx, idx + Math.min(overlap, 40))
+            : '',
+        description: `与原著接缝存在约 ${overlap} 字连续重合，疑似复制原文`,
+        evidenceIds: [],
+        suggestedFix: '删除或改写与原著连续重合的片段',
       });
     }
   }
