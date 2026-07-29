@@ -31,9 +31,7 @@ import {
 import { ConstructionSlider } from '../components/ConstructionSlider';
 import { useSettingsStore } from '../store/settingsStore';
 import { useProjectStore } from '../store/projectStore';
-import {
-  navigateToLLMSettings,
-} from '../navigation/navigationRef';
+import { navigateToLLMSettings } from '../navigation/navigationRef';
 import {
   DEFAULT_ENTRY_COUNT,
   DEFAULT_RESERVE_PERCENT,
@@ -56,7 +54,10 @@ import {
   importConstructionArtifactToLibrary,
   saveConstructionArtifact,
 } from '../services/constructionFileService';
-import type { ConstructionArtifact, ConstructionInput } from '../services/constructionAiGenerator';
+import type {
+  ConstructionArtifact,
+  ConstructionInput,
+} from '../services/constructionAiGenerator';
 import {
   parseCharacterCardJSON,
   parseCharacterCardPNG,
@@ -65,10 +66,11 @@ import {
 } from '../services/fileImport';
 import {
   buildTextSourceSnapshot,
-  decodeTextSourceBase64,
   parseConstructionTextSource,
   type TextSourceSection,
+  type TextSourceEncoding,
 } from '../services/construction/textSourceParser';
+import { readTextFileWithAutoEncodingResult } from '../services/textFileReader';
 import {
   DEFAULT_DETAIL_LEVEL,
   getDetailConstraints,
@@ -90,7 +92,7 @@ interface SourceState {
   tokens: number;
   sections?: TextSourceSection[];
   selectedSectionIds?: string[];
-  encoding?: string;
+  encoding?: TextSourceEncoding;
 }
 
 const MODE_OPTIONS: { value: BuildMode; label: string }[] = [
@@ -181,7 +183,8 @@ export const BuildScreen: React.FC = () => {
     if (!isOnline) {
       return {
         ready: false,
-        reason: '当前激活的是本地 llama.cpp 模型，构建首版仅支持在线 OpenAI 兼容模型。',
+        reason:
+          '当前激活的是本地 llama.cpp 模型，构建首版仅支持在线 OpenAI 兼容模型。',
       };
     }
     if (!complete) {
@@ -221,10 +224,14 @@ export const BuildScreen: React.FC = () => {
   }, [autoBudgetSignature, budget.minReservePercent, budget.reservePercent]);
 
   // ---------- 组装 ConstructionInput ----------
-  const independentCharFilled =
-    [charName, charTheme, charRole, charPersonality, charAtmosphere, extra].some(
-      v => v.trim().length > 0,
-    );
+  const independentCharFilled = [
+    charName,
+    charTheme,
+    charRole,
+    charPersonality,
+    charAtmosphere,
+    extra,
+  ].some(v => v.trim().length > 0);
 
   const input: ConstructionInput | null = useMemo(() => {
     if (mode === 'independent') {
@@ -315,7 +322,9 @@ export const BuildScreen: React.FC = () => {
 
   const inputTokens = input ? estimateConstructionInputTokens(input) : 0;
   const sourceOverBudget =
-    llmCheck.ready && budget.sourceBudget > 0 && inputTokens > budget.sourceBudget;
+    llmCheck.ready &&
+    budget.sourceBudget > 0 &&
+    inputTokens > budget.sourceBudget;
 
   const canGenerate =
     llmCheck.ready &&
@@ -326,16 +335,23 @@ export const BuildScreen: React.FC = () => {
     status !== 'queued';
 
   // ---------- 切换模式 / 目标时恢复默认并清空产物（SPEC §6.2） ----------
-  const resetToDefaults = (nextMode: BuildMode, nextTarget: IndependentTarget) => {
+  const resetToDefaults = (
+    nextMode: BuildMode,
+    nextTarget: IndependentTarget,
+  ) => {
     setReservePercent(DEFAULT_RESERVE_PERCENT);
     setArtifact(null);
     setStatus('idle');
     setSource(null);
     if (nextMode === 'independent' && nextTarget === 'worldbook') {
-      setEntryCount(getDetailConstraints(detailLevel).worldbook.defaultEntryCount);
+      setEntryCount(
+        getDetailConstraints(detailLevel).worldbook.defaultEntryCount,
+      );
     }
     if (nextMode !== 'independent') {
-      setEntryCount(getDetailConstraints(detailLevel).worldbook.defaultEntryCount);
+      setEntryCount(
+        getDetailConstraints(detailLevel).worldbook.defaultEntryCount,
+      );
     }
   };
 
@@ -460,11 +476,13 @@ export const BuildScreen: React.FC = () => {
       const file = await pickSourceFile([types.plainText, types.allFiles]);
       if (!file) return;
       copiedPath = file.localPath;
-      const isText = /\.txt$/i.test(file.name) || file.mimeType === 'text/plain';
+      const isText =
+        /\.txt$/i.test(file.name) || file.mimeType === 'text/plain';
       if (!isText) throw new Error('请选择扩展名为 .txt 的文本文件。');
-      const decoded = decodeTextSourceBase64(
-        await RNFS.readFile(file.localPath, 'base64'),
-      );
+      // Keep TXT sources on the same native, chunked decoder as note and
+      // continuation imports. RNFS' utf8/base64 path rejects common Windows
+      // GBK/GB18030 text with “Invalid UTF-8 detected”.
+      const decoded = await readTextFileWithAutoEncodingResult(file.localPath);
       const parsed = parseConstructionTextSource(
         decoded.text,
         file.name,
@@ -499,7 +517,9 @@ export const BuildScreen: React.FC = () => {
       Toast.show({
         type: 'success',
         text1: '已读取 TXT 素材',
-        text2: `${parsed.sections.length} 个可选片段 · ${parsed.encoding.toUpperCase()}`,
+        text2: `${
+          parsed.sections.length
+        } 个可选片段 · ${parsed.encoding.toUpperCase()}`,
       });
     } catch (error: any) {
       Toast.show({
@@ -514,7 +534,8 @@ export const BuildScreen: React.FC = () => {
 
   const toggleTextSection = (sectionId: string) => {
     setSource(previous => {
-      if (!previous || previous.kind !== 'text' || !previous.sections) return previous;
+      if (!previous || previous.kind !== 'text' || !previous.sections)
+        return previous;
       const selected = new Set(previous.selectedSectionIds || []);
       if (selected.has(sectionId)) selected.delete(sectionId);
       else selected.add(sectionId);
@@ -527,7 +548,7 @@ export const BuildScreen: React.FC = () => {
       }
       const parsed = {
         name: previous.name,
-        encoding: (previous.encoding || 'utf-8') as 'utf-8' | 'utf-16le' | 'utf-16be',
+        encoding: previous.encoding || 'utf-8',
         sections: previous.sections,
       };
       const snapshot = buildTextSourceSnapshot(parsed, selectedSectionIds);
@@ -708,10 +729,16 @@ export const BuildScreen: React.FC = () => {
 
         {/* 模式选择 */}
         <View style={styles.section}>
-          <SegmentedControl value={mode} options={MODE_OPTIONS} onChange={handleModeChange} />
+          <SegmentedControl
+            value={mode}
+            options={MODE_OPTIONS}
+            onChange={handleModeChange}
+          />
           {mode === 'independent' || mode === 'fromText' ? (
             <View style={styles.subTarget}>
-              <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
+              <Text
+                style={[styles.label, { color: theme.colors.textSecondary }]}
+              >
                 目标类型
               </Text>
               <SegmentedControl
@@ -722,7 +749,9 @@ export const BuildScreen: React.FC = () => {
             </View>
           ) : null}
           <View style={styles.subTarget}>
-            <Text style={[styles.label, { color: theme.colors.textSecondary }]}>内容丰满度</Text>
+            <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
+              内容丰满度
+            </Text>
             <SegmentedControl
               value={detailLevel}
               options={DETAIL_OPTIONS}
@@ -781,7 +810,9 @@ export const BuildScreen: React.FC = () => {
                 <SourcePicker
                   label="角色卡来源文件"
                   hint="作为一次性参考快照，不会保存路径或联动资料库。"
-                  buttonLabel={source ? '重新选择角色卡' : '选择角色卡 JSON / PNG'}
+                  buttonLabel={
+                    source ? '重新选择角色卡' : '选择角色卡 JSON / PNG'
+                  }
                   onPick={pickCharacterSource}
                   source={source}
                 />
@@ -841,7 +872,12 @@ export const BuildScreen: React.FC = () => {
           <View style={styles.actions}>
             {generating ? (
               <>
-                <Text style={[styles.statusText, { color: theme.colors.textPrimary }]}>
+                <Text
+                  style={[
+                    styles.statusText,
+                    { color: theme.colors.textPrimary },
+                  ]}
+                >
                   {queueLabel || '生成中…'}
                 </Text>
                 <Button
@@ -874,22 +910,33 @@ export const BuildScreen: React.FC = () => {
                   disabled={!canGenerate}
                 />
                 {!budget.generatable ? (
-                  <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+                  <Text
+                    style={[styles.hint, { color: theme.colors.textSecondary }]}
+                  >
                     {budget.reason}
                   </Text>
                 ) : null}
                 {sourceOverBudget ? (
                   <Text style={[styles.hint, { color: theme.colors.danger }]}>
-                    来源内容（约 {inputTokens.toLocaleString('en-US')} Token）超过可用预算（{budget.sourceBudget.toLocaleString('en-US')} Token）。TXT 可取消勾选片段；其他来源请选择更小文件，或使用上下文更大的在线模型。
+                    来源内容（约 {inputTokens.toLocaleString('en-US')}{' '}
+                    Token）超过可用预算（
+                    {budget.sourceBudget.toLocaleString('en-US')} Token）。TXT
+                    可取消勾选片段；其他来源请选择更小文件，或使用上下文更大的在线模型。
                   </Text>
                 ) : null}
-                {mode === 'independent' && target === 'character' && !independentCharFilled ? (
-                  <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+                {mode === 'independent' &&
+                target === 'character' &&
+                !independentCharFilled ? (
+                  <Text
+                    style={[styles.hint, { color: theme.colors.textSecondary }]}
+                  >
                     请至少填写一个有效的角色设定字段。
                   </Text>
                 ) : null}
                 {mode !== 'independent' && !source ? (
-                  <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+                  <Text
+                    style={[styles.hint, { color: theme.colors.textSecondary }]}
+                  >
                     请先选择来源文件。
                   </Text>
                 ) : null}
@@ -901,10 +948,17 @@ export const BuildScreen: React.FC = () => {
                       { borderColor: theme.colors.danger },
                     ]}
                   >
-                    <Text style={[styles.generationErrorTitle, { color: theme.colors.danger }]}>
+                    <Text
+                      style={[
+                        styles.generationErrorTitle,
+                        { color: theme.colors.danger },
+                      ]}
+                    >
                       生成失败
                     </Text>
-                    <Text style={[styles.hint, { color: theme.colors.textPrimary }]}>
+                    <Text
+                      style={[styles.hint, { color: theme.colors.textPrimary }]}
+                    >
                       {generationError}
                     </Text>
                     <View style={styles.generationErrorActions}>
@@ -941,13 +995,30 @@ export const BuildScreen: React.FC = () => {
             style={StyleSheet.absoluteFill}
             onPress={() => setShowJson(false)}
           />
-          <View style={[styles.jsonModal, { backgroundColor: theme.colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>
+          <View
+            style={[
+              styles.jsonModal,
+              { backgroundColor: theme.colors.surface },
+            ]}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
               产物 JSON
             </Text>
             <ScrollView style={styles.jsonScroll}>
-              <Text style={[styles.jsonText, { color: theme.colors.textSecondary }]}>
-                {artifact ? JSON.stringify(artifact.kind === 'character' ? artifact.card : artifact.lorebook, null, 2) : ''}
+              <Text
+                style={[styles.jsonText, { color: theme.colors.textSecondary }]}
+              >
+                {artifact
+                  ? JSON.stringify(
+                      artifact.kind === 'character'
+                        ? artifact.card
+                        : artifact.lorebook,
+                      null,
+                      2,
+                    )
+                  : ''}
               </Text>
             </ScrollView>
             <View style={styles.modalActions}>
@@ -967,48 +1038,166 @@ export const BuildScreen: React.FC = () => {
 // ---------- 子组件 ----------
 
 const IndependentCharacterForm: React.FC<{
-  name: string; setName: (v: string) => void;
-  themeText: string; setThemeText: (v: string) => void;
-  role: string; setRole: (v: string) => void;
-  personality: string; setPersonality: (v: string) => void;
-  atmosphere: string; setAtmosphere: (v: string) => void;
-}> = ({ name, setName, themeText, setThemeText, role, setRole, personality, setPersonality, atmosphere, setAtmosphere }) => (
+  name: string;
+  setName: (v: string) => void;
+  themeText: string;
+  setThemeText: (v: string) => void;
+  role: string;
+  setRole: (v: string) => void;
+  personality: string;
+  setPersonality: (v: string) => void;
+  atmosphere: string;
+  setAtmosphere: (v: string) => void;
+}> = ({
+  name,
+  setName,
+  themeText,
+  setThemeText,
+  role,
+  setRole,
+  personality,
+  setPersonality,
+  atmosphere,
+  setAtmosphere,
+}) => (
   <>
-    <Field testID="build-char-name" label="角色名称（可选）" value={name} onChangeText={setName} placeholder="例如：沈砚" />
-    <Field testID="build-char-theme" label="题材 / 时代" value={themeText} onChangeText={setThemeText} placeholder="例如：蒸汽雾港" />
-    <Field testID="build-char-role" label="角色定位" value={role} onChangeText={setRole} placeholder="例如：反派机关师" />
-    <Field testID="build-char-personality" label="核心性格 / 矛盾" value={personality} onChangeText={setPersonality} multiline inputStyle={styles.largeInput} placeholder="例如：表面温和、记仇" />
-    <Field testID="build-char-atmosphere" label="叙事氛围" value={atmosphere} onChangeText={setAtmosphere} placeholder="例如：阴郁、悬念" />
+    <Field
+      testID="build-char-name"
+      label="角色名称（可选）"
+      value={name}
+      onChangeText={setName}
+      placeholder="例如：沈砚"
+    />
+    <Field
+      testID="build-char-theme"
+      label="题材 / 时代"
+      value={themeText}
+      onChangeText={setThemeText}
+      placeholder="例如：蒸汽雾港"
+    />
+    <Field
+      testID="build-char-role"
+      label="角色定位"
+      value={role}
+      onChangeText={setRole}
+      placeholder="例如：反派机关师"
+    />
+    <Field
+      testID="build-char-personality"
+      label="核心性格 / 矛盾"
+      value={personality}
+      onChangeText={setPersonality}
+      multiline
+      inputStyle={styles.largeInput}
+      placeholder="例如：表面温和、记仇"
+    />
+    <Field
+      testID="build-char-atmosphere"
+      label="叙事氛围"
+      value={atmosphere}
+      onChangeText={setAtmosphere}
+      placeholder="例如：阴郁、悬念"
+    />
   </>
 );
 
 const IndependentWorldbookForm: React.FC<{
-  name: string; setName: (v: string) => void;
-  themeText: string; setThemeText: (v: string) => void;
-  worldview: string; setWorldview: (v: string) => void;
-  categories: string; setCategories: (v: string) => void;
-  usage: string; setUsage: (v: string) => void;
-  entryCount: number; onEntryStep: (delta: number) => void;
-}> = ({ name, setName, themeText, setThemeText, worldview, setWorldview, categories, setCategories, usage, setUsage, entryCount, onEntryStep }) => (
+  name: string;
+  setName: (v: string) => void;
+  themeText: string;
+  setThemeText: (v: string) => void;
+  worldview: string;
+  setWorldview: (v: string) => void;
+  categories: string;
+  setCategories: (v: string) => void;
+  usage: string;
+  setUsage: (v: string) => void;
+  entryCount: number;
+  onEntryStep: (delta: number) => void;
+}> = ({
+  name,
+  setName,
+  themeText,
+  setThemeText,
+  worldview,
+  setWorldview,
+  categories,
+  setCategories,
+  usage,
+  setUsage,
+  entryCount,
+  onEntryStep,
+}) => (
   <>
-    <Field testID="build-wb-name" label="世界书名称（可选）" value={name} onChangeText={setName} placeholder="例如：雾港纪事" />
-    <Field testID="build-wb-theme" label="题材 / 时代" value={themeText} onChangeText={setThemeText} placeholder="例如：蒸汽雾港" />
-    <Field testID="build-wb-worldview" label="核心世界观" value={worldview} onChangeText={setWorldview} multiline inputStyle={styles.largeInput} placeholder="例如：海雾笼罩的港口城邦" />
-    <Field testID="build-wb-categories" label="希望覆盖的类别" value={categories} onChangeText={setCategories} placeholder="例如：地点、组织、世界铁律" />
-    <Field testID="build-wb-usage" label="叙事用途" value={usage} onChangeText={setUsage} placeholder="例如：悬疑群像" />
+    <Field
+      testID="build-wb-name"
+      label="世界书名称（可选）"
+      value={name}
+      onChangeText={setName}
+      placeholder="例如：雾港纪事"
+    />
+    <Field
+      testID="build-wb-theme"
+      label="题材 / 时代"
+      value={themeText}
+      onChangeText={setThemeText}
+      placeholder="例如：蒸汽雾港"
+    />
+    <Field
+      testID="build-wb-worldview"
+      label="核心世界观"
+      value={worldview}
+      onChangeText={setWorldview}
+      multiline
+      inputStyle={styles.largeInput}
+      placeholder="例如：海雾笼罩的港口城邦"
+    />
+    <Field
+      testID="build-wb-categories"
+      label="希望覆盖的类别"
+      value={categories}
+      onChangeText={setCategories}
+      placeholder="例如：地点、组织、世界铁律"
+    />
+    <Field
+      testID="build-wb-usage"
+      label="叙事用途"
+      value={usage}
+      onChangeText={setUsage}
+      placeholder="例如：悬疑群像"
+    />
     <EntryCountStepper entryCount={entryCount} onStep={onEntryStep} />
   </>
 );
 
-const EntryCountStepper: React.FC<{ entryCount: number; onStep: (delta: number) => void }> = ({ entryCount, onStep }) => {
+const EntryCountStepper: React.FC<{
+  entryCount: number;
+  onStep: (delta: number) => void;
+}> = ({ entryCount, onStep }) => {
   const { theme } = useThemeStore();
   return (
     <View style={styles.stepperRow}>
-      <Text style={[styles.stepperLabel, { color: theme.colors.textPrimary }]}>世界书条目数量</Text>
+      <Text style={[styles.stepperLabel, { color: theme.colors.textPrimary }]}>
+        世界书条目数量
+      </Text>
       <View style={styles.stepperControls}>
-        <Button label="−" compact onPress={() => onStep(-1)} disabled={entryCount <= WORLDBOOK_ENTRY_MIN} />
-        <Text style={[styles.stepperValue, { color: theme.colors.textPrimary }]}>{entryCount}</Text>
-        <Button label="+" compact onPress={() => onStep(1)} disabled={entryCount >= WORLDBOOK_ENTRY_MAX} />
+        <Button
+          label="−"
+          compact
+          onPress={() => onStep(-1)}
+          disabled={entryCount <= WORLDBOOK_ENTRY_MIN}
+        />
+        <Text
+          style={[styles.stepperValue, { color: theme.colors.textPrimary }]}
+        >
+          {entryCount}
+        </Text>
+        <Button
+          label="+"
+          compact
+          onPress={() => onStep(1)}
+          disabled={entryCount >= WORLDBOOK_ENTRY_MAX}
+        />
       </View>
     </View>
   );
@@ -1024,18 +1213,35 @@ const SourcePicker: React.FC<{
   const { theme } = useThemeStore();
   return (
     <View style={styles.sourceBlock}>
-      <Text style={[styles.label, { color: theme.colors.textSecondary }]}>{label}</Text>
-      <Text style={[styles.hint, { color: theme.colors.textMuted }]}>{hint}</Text>
-      <Button label={buttonLabel} icon={Download} variant="secondary" onPress={onPick} />
+      <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
+        {label}
+      </Text>
+      <Text style={[styles.hint, { color: theme.colors.textMuted }]}>
+        {hint}
+      </Text>
+      <Button
+        label={buttonLabel}
+        icon={Download}
+        variant="secondary"
+        onPress={onPick}
+      />
       {source ? (
         <View style={styles.sourceSummary}>
-          <Text style={[styles.sourceName, { color: theme.colors.textPrimary }]}>{source.name}</Text>
-          <Text style={[styles.sourceMeta, { color: theme.colors.textSecondary }]}>
+          <Text
+            style={[styles.sourceName, { color: theme.colors.textPrimary }]}
+          >
+            {source.name}
+          </Text>
+          <Text
+            style={[styles.sourceMeta, { color: theme.colors.textSecondary }]}
+          >
             {source.kind === 'worldbook'
               ? `${source.entryCount ?? 0} 条条目 · `
               : source.kind === 'text'
-                ? `${source.selectedSectionIds?.length ?? 0}/${source.sections?.length ?? 0} 个片段 · ${source.encoding?.toUpperCase() || 'TXT'} · `
-                : '角色卡 · '}
+              ? `${source.selectedSectionIds?.length ?? 0}/${
+                  source.sections?.length ?? 0
+                } 个片段 · ${source.encoding?.toUpperCase() || 'TXT'} · `
+              : '角色卡 · '}
             预计输入 {source.tokens.toLocaleString('en-US')} Token
           </Text>
         </View>
@@ -1053,7 +1259,9 @@ const TextSourceSections: React.FC<{
   const selected = new Set(selectedIds);
   return (
     <View style={styles.textSections}>
-      <Text style={[styles.label, { color: theme.colors.textSecondary }]}>用于生成的 TXT 片段</Text>
+      <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
+        用于生成的 TXT 片段
+      </Text>
       {sections.map(section => {
         const active = selected.has(section.id);
         return (
@@ -1063,13 +1271,25 @@ const TextSourceSections: React.FC<{
             onPress={() => onToggle(section.id)}
             style={[
               styles.textSection,
-              { borderColor: active ? theme.colors.accent : theme.colors.border },
+              {
+                borderColor: active ? theme.colors.accent : theme.colors.border,
+              },
             ]}
           >
-            <Text style={[styles.textSectionTitle, { color: theme.colors.textPrimary }]}>
+            <Text
+              style={[
+                styles.textSectionTitle,
+                { color: theme.colors.textPrimary },
+              ]}
+            >
               {active ? '☑' : '☐'} {section.title}
             </Text>
-            <Text style={[styles.textSectionMeta, { color: theme.colors.textSecondary }]}>
+            <Text
+              style={[
+                styles.textSectionMeta,
+                { color: theme.colors.textSecondary },
+              ]}
+            >
               {section.estimatedTokens.toLocaleString('en-US')} Token
             </Text>
           </Pressable>
@@ -1085,11 +1305,19 @@ const BudgetPanel: React.FC<{
   onChangeReserve: (v: number) => void;
   inputTokens: number;
   sourceOverBudget: boolean;
-}> = ({ budget, reservePercent, onChangeReserve, inputTokens, sourceOverBudget }) => {
+}> = ({
+  budget,
+  reservePercent,
+  onChangeReserve,
+  inputTokens,
+  sourceOverBudget,
+}) => {
   const { theme } = useThemeStore();
   return (
     <View style={styles.budgetBlock}>
-      <Text style={[styles.budgetTitle, { color: theme.colors.textSecondary }]}>输出预留</Text>
+      <Text style={[styles.budgetTitle, { color: theme.colors.textSecondary }]}>
+        输出预留
+      </Text>
       <ConstructionSlider
         testID="build-reserve-slider"
         min={RESERVE_PERCENT_MIN}
@@ -1101,28 +1329,67 @@ const BudgetPanel: React.FC<{
         {formatReserveLabel(budget.reservePercent, budget.outputReserve)}
       </Text>
       <View style={styles.budgetGrid}>
-        <BudgetCell label="上下文容量" value={budget.contextWindow.toLocaleString('en-US')} />
-        <BudgetCell label={`${getDetailConstraints(budget.detailLevel).label}档生成目标`} value={budget.requiredMinOutput.toLocaleString('en-US')} />
-        <BudgetCell label="输出预留" value={budget.outputReserve.toLocaleString('en-US')} />
-        <BudgetCell label="来源预算" value={budget.sourceBudget.toLocaleString('en-US')} />
-        <BudgetCell label="预计输入" value={inputTokens.toLocaleString('en-US')} danger={sourceOverBudget} />
+        <BudgetCell
+          label="上下文容量"
+          value={budget.contextWindow.toLocaleString('en-US')}
+        />
+        <BudgetCell
+          label={`${getDetailConstraints(budget.detailLevel).label}档生成目标`}
+          value={budget.requiredMinOutput.toLocaleString('en-US')}
+        />
+        <BudgetCell
+          label="输出预留"
+          value={budget.outputReserve.toLocaleString('en-US')}
+        />
+        <BudgetCell
+          label="来源预算"
+          value={budget.sourceBudget.toLocaleString('en-US')}
+        />
+        <BudgetCell
+          label="预计输入"
+          value={inputTokens.toLocaleString('en-US')}
+          danger={sourceOverBudget}
+        />
       </View>
       {budget.cappedByMaxOutput ? (
-        <Text style={[styles.budgetNote, { color: theme.colors.textSecondary }]}>已受当前 LLM 最大输出 Token 限制。</Text>
+        <Text
+          style={[styles.budgetNote, { color: theme.colors.textSecondary }]}
+        >
+          已受当前 LLM 最大输出 Token 限制。
+        </Text>
       ) : null}
       {!budget.generatable ? (
-        <Text style={[styles.budgetNote, { color: theme.colors.danger }]}>{budget.reason}</Text>
+        <Text style={[styles.budgetNote, { color: theme.colors.danger }]}>
+          {budget.reason}
+        </Text>
       ) : null}
     </View>
   );
 };
 
-const BudgetCell: React.FC<{ label: string; value: string; danger?: boolean }> = ({ label, value, danger }) => {
+const BudgetCell: React.FC<{
+  label: string;
+  value: string;
+  danger?: boolean;
+}> = ({ label, value, danger }) => {
   const { theme } = useThemeStore();
   return (
     <View style={[styles.budgetCell, { borderColor: theme.colors.border }]}>
-      <Text style={[styles.budgetCellLabel, { color: theme.colors.textSecondary }]}>{label}</Text>
-      <Text style={[styles.budgetCellValue, danger ? { color: theme.colors.danger } : { color: theme.colors.textPrimary }]}>{value}</Text>
+      <Text
+        style={[styles.budgetCellLabel, { color: theme.colors.textSecondary }]}
+      >
+        {label}
+      </Text>
+      <Text
+        style={[
+          styles.budgetCellValue,
+          danger
+            ? { color: theme.colors.danger }
+            : { color: theme.colors.textPrimary },
+        ]}
+      >
+        {value}
+      </Text>
     </View>
   );
 };
@@ -1156,17 +1423,32 @@ const PreviewPanel: React.FC<{
           testID="build-quality-warning"
           style={[styles.qualityWarning, { borderColor: theme.colors.warning }]}
         >
-          <Text style={[styles.qualityWarningTitle, { color: theme.colors.warning }]}>
+          <Text
+            style={[
+              styles.qualityWarningTitle,
+              { color: theme.colors.warning },
+            ]}
+          >
             未完全达到“{qualityLabel}”目标，已保留本次结果
           </Text>
           <Text style={[styles.hint, { color: theme.colors.textPrimary }]}>
-            实际约 {qualityReport.actualOutputTokens.toLocaleString('en-US')} / 目标{' '}
-            {qualityReport.requiredMinOutput.toLocaleString('en-US')} Token。仍可预览、保存或导入；如需更丰富内容，可重新生成。
+            实际约 {qualityReport.actualOutputTokens.toLocaleString('en-US')} /
+            目标 {qualityReport.requiredMinOutput.toLocaleString('en-US')}{' '}
+            Token。仍可预览、保存或导入；如需更丰富内容，可重新生成。
           </Text>
           {qualityReport.failures.length > 0 ? (
-            <Text style={[styles.hint, { color: theme.colors.textSecondary }]} numberOfLines={3}>
-              建议补强：{qualityReport.failures.slice(0, 2).map(item => item.message).join('；')}
-              {qualityReport.failures.length > 2 ? `；另有 ${qualityReport.failures.length - 2} 项` : ''}
+            <Text
+              style={[styles.hint, { color: theme.colors.textSecondary }]}
+              numberOfLines={3}
+            >
+              建议补强：
+              {qualityReport.failures
+                .slice(0, 2)
+                .map(item => item.message)
+                .join('；')}
+              {qualityReport.failures.length > 2
+                ? `；另有 ${qualityReport.failures.length - 2} 项`
+                : ''}
             </Text>
           ) : null}
         </View>
@@ -1177,9 +1459,19 @@ const PreviewPanel: React.FC<{
         <WorldbookPreview artifact={artifact} />
       )}
       <View style={styles.previewActions}>
-        <Button label="重新生成" icon={RefreshCw} variant="secondary" onPress={onRegenerate} />
+        <Button
+          label="重新生成"
+          icon={RefreshCw}
+          variant="secondary"
+          onPress={onRegenerate}
+        />
         <Button label="返回修改" variant="ghost" onPress={onBackToEdit} />
-        <Button label="查看 JSON" icon={Eye} variant="ghost" onPress={onViewJson} />
+        <Button
+          label="查看 JSON"
+          icon={Eye}
+          variant="ghost"
+          onPress={onViewJson}
+        />
         <Button
           testID="build-import-library"
           label={importingToLibrary ? '导入中…' : '导入资料库'}
@@ -1200,51 +1492,104 @@ const PreviewPanel: React.FC<{
   );
 };
 
-const CharacterPreview: React.FC<{ artifact: Extract<ConstructionArtifact, { kind: 'character' }> }> = ({ artifact }) => {
+const CharacterPreview: React.FC<{
+  artifact: Extract<ConstructionArtifact, { kind: 'character' }>;
+}> = ({ artifact }) => {
   const { theme } = useThemeStore();
   return (
     <View>
-      <Text style={[styles.previewTitle, { color: theme.colors.textPrimary }]}>{artifact.card.data.name}</Text>
+      <Text style={[styles.previewTitle, { color: theme.colors.textPrimary }]}>
+        {artifact.card.data.name}
+      </Text>
       {artifact.card.data.description ? (
-        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>简介：{artifact.card.data.description}</Text>
+        <Text
+          style={[styles.previewText, { color: theme.colors.textSecondary }]}
+        >
+          简介：{artifact.card.data.description}
+        </Text>
       ) : null}
       {artifact.card.data.personality ? (
-        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>性格：{artifact.card.data.personality}</Text>
+        <Text
+          style={[styles.previewText, { color: theme.colors.textSecondary }]}
+        >
+          性格：{artifact.card.data.personality}
+        </Text>
       ) : null}
       {artifact.card.data.tags.length > 0 ? (
-        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>标签：{artifact.card.data.tags.join('、')}</Text>
+        <Text
+          style={[styles.previewText, { color: theme.colors.textSecondary }]}
+        >
+          标签：{artifact.card.data.tags.join('、')}
+        </Text>
       ) : null}
       {artifact.card.data.first_mes ? (
-        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]} numberOfLines={4}>开场白：{artifact.card.data.first_mes}</Text>
+        <Text
+          style={[styles.previewText, { color: theme.colors.textSecondary }]}
+          numberOfLines={4}
+        >
+          开场白：{artifact.card.data.first_mes}
+        </Text>
       ) : null}
       {artifact.qualityReport?.character ? (
-        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>
-          质量：约 {artifact.qualityReport.actualOutputTokens.toLocaleString('en-US')} Token · 描述 {artifact.qualityReport.character.fieldLengths.description} 字 · {artifact.qualityReport.character.dialogueTurns} 轮对话
+        <Text
+          style={[styles.previewText, { color: theme.colors.textSecondary }]}
+        >
+          质量：约{' '}
+          {artifact.qualityReport.actualOutputTokens.toLocaleString('en-US')}{' '}
+          Token · 描述{' '}
+          {artifact.qualityReport.character.fieldLengths.description} 字 ·{' '}
+          {artifact.qualityReport.character.dialogueTurns} 轮对话
         </Text>
       ) : null}
     </View>
   );
 };
 
-const WorldbookPreview: React.FC<{ artifact: Extract<ConstructionArtifact, { kind: 'worldbook' }> }> = ({ artifact }) => {
+const WorldbookPreview: React.FC<{
+  artifact: Extract<ConstructionArtifact, { kind: 'worldbook' }>;
+}> = ({ artifact }) => {
   const { theme } = useThemeStore();
   return (
     <View>
       <Text style={[styles.previewTitle, { color: theme.colors.textPrimary }]}>
-        {artifact.lorebook.data.name} · {artifact.lorebook.data.entries.length} 条
+        {artifact.lorebook.data.name} · {artifact.lorebook.data.entries.length}{' '}
+        条
       </Text>
       {artifact.lorebook.data.entries.map((entry, idx) => (
-        <View key={`${entry.insertion_order}-${idx}`} style={[styles.entryRow, { borderBottomColor: theme.colors.border }]}>
-          <Text style={[styles.entryKeys, { color: theme.colors.textPrimary }]}>触发词：{entry.keys.join('、')}</Text>
+        <View
+          key={`${entry.insertion_order}-${idx}`}
+          style={[styles.entryRow, { borderBottomColor: theme.colors.border }]}
+        >
+          <Text style={[styles.entryKeys, { color: theme.colors.textPrimary }]}>
+            触发词：{entry.keys.join('、')}
+          </Text>
           {entry.comment ? (
-            <Text style={[styles.entryComment, { color: theme.colors.textSecondary }]}>说明：{entry.comment}</Text>
+            <Text
+              style={[
+                styles.entryComment,
+                { color: theme.colors.textSecondary },
+              ]}
+            >
+              说明：{entry.comment}
+            </Text>
           ) : null}
-          <Text style={[styles.entryContent, { color: theme.colors.textSecondary }]} numberOfLines={3}>{entry.content}</Text>
+          <Text
+            style={[styles.entryContent, { color: theme.colors.textSecondary }]}
+            numberOfLines={3}
+          >
+            {entry.content}
+          </Text>
         </View>
       ))}
       {artifact.qualityReport?.worldbook ? (
-        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>
-          全部常驻 · 估算常驻内容 {artifact.qualityReport.worldbook.totalEstimatedPersistentTokens.toLocaleString('en-US')} Token
+        <Text
+          style={[styles.previewText, { color: theme.colors.textSecondary }]}
+        >
+          全部常驻 · 估算常驻内容{' '}
+          {artifact.qualityReport.worldbook.totalEstimatedPersistentTokens.toLocaleString(
+            'en-US',
+          )}{' '}
+          Token
         </Text>
       ) : null}
     </View>
@@ -1255,49 +1600,118 @@ const styles = StyleSheet.create({
   scrollContent: { padding: spacing.lg, paddingBottom: 120, gap: spacing.md },
   section: { gap: spacing.sm },
   subTarget: { gap: spacing.xs, marginTop: spacing.sm },
-  row: { flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start', marginBottom: spacing.md, flex: 1 },
+  row: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    alignItems: 'flex-start',
+    marginBottom: spacing.md,
+    flex: 1,
+  },
   bodyText: { fontSize: 14, lineHeight: 21, flex: 1 },
   label: { fontSize: 12, fontWeight: '700', marginBottom: spacing.xs },
   hint: { fontSize: 12, lineHeight: 18, marginTop: spacing.xs },
   largeInput: { minHeight: 96, textAlignVertical: 'top' },
   actions: { gap: spacing.sm },
   statusText: { fontSize: 15, fontWeight: '700' },
-  generationError: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, gap: spacing.xs },
+  generationError: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    padding: spacing.md,
+    gap: spacing.xs,
+  },
   generationErrorTitle: { fontSize: 14, fontWeight: '800' },
-  generationErrorActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.xs },
-  qualityWarning: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: spacing.md, gap: spacing.xs, marginBottom: spacing.md },
+  generationErrorActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  qualityWarning: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    padding: spacing.md,
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
   qualityWarningTitle: { fontSize: 14, fontWeight: '800' },
-  stepperRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: spacing.sm },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: spacing.sm,
+  },
   stepperLabel: { fontSize: 13, fontWeight: '700' },
-  stepperControls: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  stepperValue: { fontSize: 15, fontWeight: '800', minWidth: 24, textAlign: 'center' },
+  stepperControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  stepperValue: {
+    fontSize: 15,
+    fontWeight: '800',
+    minWidth: 24,
+    textAlign: 'center',
+  },
   sourceBlock: { gap: spacing.xs, marginBottom: spacing.md },
   sourceSummary: { marginTop: spacing.xs },
   sourceName: { fontSize: 15, fontWeight: '800' },
   sourceMeta: { fontSize: 12, marginTop: 2 },
   textSections: { gap: spacing.xs, marginBottom: spacing.md },
-  textSection: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: spacing.sm },
+  textSection: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 6,
+    padding: spacing.sm,
+  },
   textSectionTitle: { fontSize: 13, fontWeight: '700' },
   textSectionMeta: { fontSize: 11, marginTop: 2 },
   budgetBlock: { marginTop: spacing.md, gap: spacing.xs },
   budgetTitle: { fontSize: 13, fontWeight: '700' },
   budgetValue: { fontSize: 13, fontWeight: '700', textAlign: 'right' },
-  budgetGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.xs },
-  budgetCell: { flexBasis: '47%', flexGrow: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: spacing.sm },
+  budgetGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  budgetCell: {
+    flexBasis: '47%',
+    flexGrow: 1,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 6,
+    padding: spacing.sm,
+  },
   budgetCellLabel: { fontSize: 11, fontWeight: '700' },
   budgetCellValue: { fontSize: 14, fontWeight: '800', marginTop: 2 },
   budgetNote: { fontSize: 12, lineHeight: 18, marginTop: spacing.xs },
-  previewActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md, justifyContent: 'flex-end' },
+  previewActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    justifyContent: 'flex-end',
+  },
   previewTitle: { fontSize: 17, fontWeight: '800', marginBottom: spacing.xs },
   previewText: { fontSize: 13, lineHeight: 20, marginBottom: 4 },
-  entryRow: { paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth },
+  entryRow: {
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   entryKeys: { fontSize: 13, fontWeight: '700' },
   entryComment: { fontSize: 12, marginTop: 2 },
   entryContent: { fontSize: 13, lineHeight: 19, marginTop: 2 },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', padding: spacing.lg },
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
   jsonModal: { maxHeight: '84%', borderRadius: 12, padding: spacing.lg },
   modalTitle: { fontSize: 18, fontWeight: '800', marginBottom: spacing.md },
   jsonScroll: { maxHeight: 420 },
   jsonText: { fontSize: 12, lineHeight: 18, fontFamily: 'serif' },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: spacing.md },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: spacing.md,
+  },
 });
