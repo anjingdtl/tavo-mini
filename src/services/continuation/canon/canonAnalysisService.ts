@@ -41,6 +41,7 @@ import {
   getActiveSnapshot,
   getDb,
   getRunById,
+  getRunForSnapshot,
   getSnapshotById,
   insertBatches,
   insertWorkItems,
@@ -1864,20 +1865,10 @@ async function processAnalysisRunInner(
   });
   await activateSnapshotAndStyleProfile({
     projectId: run.projectId,
+    analysisRunId: runId,
     canonSnapshotId: run.canonSnapshotId,
     styleProfileId: styleOutcome.profileId,
     allowStyleSkip: false,
-  });
-
-  const activatedWorkItems = await listWorkItems(runId);
-  await updateRunState(db, runId, {
-    state: 'completed',
-    stage: 'style_validation',
-    progressCurrent: activatedWorkItems.filter(
-      item => item.state === 'completed',
-    ).length,
-    progressTotal: activatedWorkItems.length,
-    completedAt: now(),
   });
 
   return (await getRunById(runId))!;
@@ -2581,6 +2572,7 @@ export async function activateSnapshot(
 ): Promise<CanonSnapshot> {
   await activateSnapshotAndStyleProfile({
     projectId,
+    analysisRunId: (await getRunForSnapshot(snapshotId))?.id ?? '',
     canonSnapshotId: snapshotId,
     styleProfileId: null,
     allowStyleSkip: true,

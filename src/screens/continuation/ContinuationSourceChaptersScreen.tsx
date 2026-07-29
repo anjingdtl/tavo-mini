@@ -35,6 +35,7 @@ import type { ImportJob } from '../../services/continuation/continuationImportSe
 import {
   getChaptersBySource,
 } from '../../services/continuation/continuationSourceRepository';
+import { getSourceChapterDisplayNumber } from '../../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type { ContinuationSource, ContinuationSourceChapter } from '../../services/continuation/types';
 import { requireContinuationTextImport } from '../../native/ContinuationTextImportModule';
 import { localFileUriToPath } from '../../utils/localFileUri';
@@ -304,7 +305,7 @@ export const ContinuationSourceChaptersScreen: React.FC<{
             <Card>
               <View style={styles.row}>
                 <Text style={[styles.position, { color: theme.colors.textMuted }]}>
-                  第 {item.position + 1} 章
+                  第 {getSourceChapterDisplayNumber(item.position)} 章
                 </Text>
                 {item.isExcluded ? (
                   <Text style={[styles.excluded, { color: theme.colors.danger }]}>已排除</Text>

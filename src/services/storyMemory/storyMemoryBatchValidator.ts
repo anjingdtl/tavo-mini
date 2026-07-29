@@ -11,6 +11,7 @@ import {
   validateEvidenceQuote,
 } from './storyMemoryValidator';
 import { batchPatchToChapterDraft } from './storyMemoryMerger';
+import { makeContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -85,6 +86,7 @@ export function validateStoryMemoryBatchPatch(
   options: {
     recoverEvidence?: boolean;
     requireMainlineAssessment?: boolean;
+    getDisplayNumber?: (position: number) => number;
   } = {},
 ): StoryMemoryBatchPatchDraft {
   if (!isRecord(raw)) {
@@ -112,6 +114,9 @@ export function validateStoryMemoryBatchPatch(
   const contentByChapterId = new Map(
     ordered.map(chapter => [chapter.id, chapter.content || '']),
   );
+  const getDisplayNumber =
+    options.getDisplayNumber ||
+    makeContinuationChapterNumbering(null).getDisplayNumber;
 
   const rangeRefRaw = isRecord(raw.rangeRef) ? raw.rangeRef : {};
   const rangeRef = {
@@ -160,7 +165,7 @@ export function validateStoryMemoryBatchPatch(
     if (!brief.trim()) {
       throw new StoryMemoryError(
         'MEMORY_CHECKPOINT_SCHEMA_INVALID',
-        `第 ${chapter.position + 1} 章摘要 brief 不能为空。`,
+        `第 ${getDisplayNumber(chapter.position as any)} 章摘要 brief 不能为空。`,
       );
     }
     return {

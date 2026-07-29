@@ -26,6 +26,11 @@ import type { Chapter } from '../../../types/novel';
  */
 export const AUTO_TITLE_REGEX = /^第\s*(\d+)\s*章$/;
 
+/** Canonical display number for an original-source chapter (0-based). */
+export function getSourceChapterDisplayNumber(position: number): number {
+  return Number(position) + 1;
+}
+
 export function isAutoChapterTitle(title: string): boolean {
   return AUTO_TITLE_REGEX.test(title.trim());
 }
@@ -95,7 +100,9 @@ export async function getContinuationChapterNumbering(
     // chapter number is position + 1. New continuation chapters start at the
     // next chapter number regardless of a custom char offset inside the
     // boundary chapter (Spec §11.6).
-    boundaryChapterNumber = Number(snapshot.boundary.chapterPosition) + 1;
+    boundaryChapterNumber = getSourceChapterDisplayNumber(
+      snapshot.boundary.chapterPosition,
+    );
   } catch {
     // No active source/boundary: Phase 1 offline hand-written continuation
     // falls back to position + 1.

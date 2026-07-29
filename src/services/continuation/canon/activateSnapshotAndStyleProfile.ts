@@ -29,11 +29,18 @@ import {
   getSnapshotById,
   countFutureEvidence,
   countOrphanEvidence,
+  getRunById,
 } from './canonRepository';
 import { buildDefaultCanonAdoptionStatements } from './canonAnalysisService';
+import {
+  getStyleProfileById,
+  type ContinuationStyleProfileRow,
+} from '../styleProfile/styleProfileRepository';
+import { computeStyleProfileHash } from '../styleProfile/styleProfileHash';
 
 export interface ActivateSnapshotAndStyleProfileInput {
   projectId: number;
+  analysisRunId: string;
   canonSnapshotId: string;
   /** The style profile to activate alongside Canon, or null to skip style. */
   styleProfileId: string | null;
@@ -70,6 +77,16 @@ export async function activateSnapshotAndStyleProfile(
     throw new Error(`快照状态 ${snap.status} 不可激活`);
   }
 
+  const analysisRun = await getRunById(input.analysisRunId);
+  if (
+    !analysisRun ||
+    analysisRun.projectId !== input.projectId ||
+    analysisRun.canonSnapshotId !== input.canonSnapshotId ||
+    !['running', 'awaiting_review'].includes(analysisRun.state)
+  ) {
+    throw new Error('分析任务不存在、已变更或当前状态不可激活');
+  }
+
   // Re-verify Phase 1 source binding (must match the live active source).
   const live = await continuationSourceReader.getSnapshot(input.projectId);
   if (
@@ -100,6 +117,40 @@ export async function activateSnapshotAndStyleProfile(
     throw new Error(`存在 ${orphans} 条孤儿证据，禁止激活`);
   }
 
+  let styleProfile: ContinuationStyleProfileRow | null = null;
+  if (input.styleProfileId) {
+    styleProfile = await getStyleProfileById(input.styleProfileId);
+    if (!styleProfile) throw new Error('风格画像不存在');
+    if (
+      styleProfile.projectId !== input.projectId ||
+      styleProfile.canonSnapshotId !== input.canonSnapshotId ||
+      styleProfile.analysisRunId !== input.analysisRunId ||
+      styleProfile.state !== 'ready' ||
+      styleProfile.reviewStatus === 'ignored' ||
+      styleProfile.sourceId !== live.sourceId ||
+      styleProfile.sourceVersion !== live.sourceVersion ||
+      styleProfile.sourceSha256 !== live.normalizedSha256 ||
+      styleProfile.parserVersion !== live.parserVersion ||
+      styleProfile.normalizationVersion !== live.normalizationVersion ||
+      styleProfile.boundaryChapterId !== live.boundary.chapterId ||
+      styleProfile.boundaryPosition !== live.boundary.chapterPosition ||
+      styleProfile.boundaryCharOffsetExclusive !== live.boundary.charOffsetExclusive
+    ) {
+      throw new Error('风格画像与本次 Canon 分析的 source/boundary 不匹配');
+    }
+    const recalculatedHash = computeStyleProfileHash({
+      profile: styleProfile.profileJson,
+      metrics: styleProfile.metricsJson,
+      sampleRefs: styleProfile.sampleRefsJson,
+      profileSchemaVersion: styleProfile.profileSchemaVersion,
+      analyzerVersion: styleProfile.analyzerVersion,
+      userOverrides: styleProfile.userOverridesJson,
+    });
+    if (recalculatedHash !== styleProfile.profileHash) {
+      throw new Error('风格画像哈希校验失败，请重新运行风格分析');
+    }
+  }
+
   const ts = now();
   const statements: SqlStatement[] = [
     // 1. Default Canon adoption: confirm pending AI records for this snapshot.
@@ -111,7 +162,7 @@ export async function activateSnapshotAndStyleProfile(
         WHERE project_id = ? AND status = 'ready' AND id != ?`,
       params: [ts, input.projectId, input.canonSnapshotId],
     },
-    // 3. New Canon snapshot → ready.
+  // 3. New Canon snapshot → ready.
     {
       sql: `UPDATE continuation_canon_snapshots
         SET status = 'ready', activated_at = ?, updated_at = ?
@@ -189,11 +240,12 @@ export async function activateSnapshotAndStyleProfile(
     ],
   });
 
-  // 6. Complete the analysis run bound to this snapshot.
+  // 6. Complete the explicitly supplied analysis run bound to this snapshot.
   statements.push({
     sql: `UPDATE continuation_analysis_runs SET state = 'completed', updated_at = ?
-      WHERE canon_snapshot_id = ? AND state = 'awaiting_review'`,
-    params: [ts, input.canonSnapshotId],
+      WHERE id = ? AND project_id = ? AND canon_snapshot_id = ?
+        AND state IN ('running', 'awaiting_review')`,
+    params: [ts, input.analysisRunId, input.projectId, input.canonSnapshotId],
   });
 
   // 7. In-progress generation runs compiled against the previous Canon → outdated.
@@ -207,7 +259,24 @@ export async function activateSnapshotAndStyleProfile(
   });
 
   // executeTransaction is atomic: either all statements commit or none do.
-  await executeTransaction(db, statements);
+  const criticalStatementIndexes = new Set<number>();
+  statements.forEach((statement, index) => {
+    if (
+      /SET status = 'ready'/.test(statement.sql) ||
+      /SET state = 'ready'/.test(statement.sql) ||
+      /UPDATE continuation_settings SET/.test(statement.sql) ||
+      /UPDATE continuation_analysis_runs SET state = 'completed'/.test(statement.sql)
+    ) {
+      criticalStatementIndexes.add(index + 1);
+    }
+  });
+  await executeTransaction(db, statements, {
+    onStatementComplete: (oneBasedIndex, rowsAffected) => {
+      if (criticalStatementIndexes.has(oneBasedIndex) && rowsAffected !== 1) {
+        throw new Error(`激活事务关键更新未命中 1 行：statement ${oneBasedIndex}`);
+      }
+    },
+  });
 
   // Post-commit invariant check: the snapshot really is ready now.
   const activated = await getSnapshotById(input.canonSnapshotId);

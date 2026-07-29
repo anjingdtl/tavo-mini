@@ -13,6 +13,7 @@ import { ContinuationCapabilityBlockedError } from '../src/services/continuation
 import {
   makeContinuationChapterNumbering,
 } from '../src/services/continuation/chapterNumbering/continuationChapterNumbering';
+import { computeStyleProfileHash } from '../src/services/continuation/styleProfile/styleProfileHash';
 
 jest.mock('../src/services/continuation/styleProfile/styleProfileRepository', () => ({
   getInjectableStyleProfile: jest.fn(),
@@ -224,6 +225,16 @@ const baseSettings = {
 };
 
 function injectableRow(profile: OriginalStyleProfileV2 = validProfile()) {
+  const metrics = {
+    schemaVersion: 2,
+    sentenceLength: { mean: 14 },
+    paragraphLength: { mean: 70 },
+    dialogue: { ratio: 0.22 },
+    person: { firstPersonRatio: 0.1 },
+    functionalRatios: { environment: 0.2 },
+  };
+  const sampleRefs: unknown[] = [];
+  const userOverrides = { note: '保持克制' };
   return {
     id: 'sp-ready-1',
     projectId: 1,
@@ -241,17 +252,17 @@ function injectableRow(profile: OriginalStyleProfileV2 = validProfile()) {
     profileSchemaVersion: 2,
     analyzerVersion: 'style-v2-1',
     profileJson: profile,
-    metricsJson: {
-      schemaVersion: 2,
-      sentenceLength: { mean: 14 },
-      paragraphLength: { mean: 70 },
-      dialogue: { ratio: 0.22 },
-      person: { firstPersonRatio: 0.1 },
-      functionalRatios: { environment: 0.2 },
-    },
-    sampleRefsJson: [],
-    userOverridesJson: { note: '保持克制' },
-    profileHash: 'b'.repeat(64),
+    metricsJson: metrics,
+    sampleRefsJson: sampleRefs,
+    userOverridesJson: userOverrides,
+    profileHash: computeStyleProfileHash({
+      profile,
+      metrics,
+      sampleRefs,
+      profileSchemaVersion: 2,
+      analyzerVersion: 'style-v2-1',
+      userOverrides,
+    }),
     confidence: 0.82,
     state: 'ready',
     reviewStatus: 'confirmed',

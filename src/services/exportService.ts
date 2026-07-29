@@ -3,6 +3,7 @@ import { saveDocuments } from '@react-native-documents/picker';
 import * as db from './database';
 import {
   getContinuationChapterNumbering,
+  makeContinuationChapterNumbering,
 } from './continuation/chapterNumbering/continuationChapterNumbering';
 
 function safeFileName(name: string): string {
@@ -25,7 +26,7 @@ function resolveChapterTitle(
     const resolved = numbering.getDisplayTitle(chapter);
     if (resolved) return resolved;
   }
-  return chapter.title || `第 ${chapter.position + 1} 章`;
+  return chapter.title || makeContinuationChapterNumbering(null).getDefaultTitle(chapter.position as any);
 }
 
 async function loadExportNumbering(
