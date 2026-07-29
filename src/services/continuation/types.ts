@@ -119,6 +119,8 @@ export interface ContinuationSettings {
   analysisStatus: ContinuationAnalysisStatus;
   /** Phase 2: only ready snapshot id; Phase 3 reads Canon only via this pointer. */
   activeCanonSnapshotId: string | null;
+  /** Phase 3 style profile published with the active Canon snapshot. */
+  activeStyleProfileId: string | null;
   createdAt: string;
   updatedAt: string;
 }

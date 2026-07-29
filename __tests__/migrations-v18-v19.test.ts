@@ -72,7 +72,8 @@ describe('schema 19 continuation foundation migration', () => {
       expect.objectContaining({ backup: true, restoreOrder: 230 }),
     );
     expect(SCHEMA_MANIFEST.find(t => t.name === 'continuation_settings')).toEqual(
-      expect.objectContaining({ backup: true, restoreOrder: 240 }),
+      // Settings pointers are restored in phase 2 after Canon/Style parents.
+      expect.objectContaining({ backup: true, restoreOrder: 520 }),
     );
     expect(SCHEMA_MANIFEST.find(t => t.name === 'continuation_import_jobs')).toEqual(
       expect.objectContaining({ backup: false, restoreOrder: 250 }),
