@@ -29,6 +29,7 @@ import {
   selectStyleRenderLevel,
   type StyleRenderLevel,
 } from '../styleProfile/styleProfileRenderer';
+import { computeStyleProfileHash } from '../styleProfile/styleProfileHash';
 import type { StyleMetrics } from '../styleProfile/styleStatistics';
 import { getEffectiveContinuationState } from './continuationStateService';
 import { buildContinuationSupplementContext } from './continuationSupplementContextBuilder';
@@ -136,16 +137,21 @@ function sourceFingerprintKey(fp: StyleProfileFingerprint): string {
   ].join('|');
 }
 
-/**
- * Lightweight integrity gate beyond repository filters: require a non-empty
- * profile hash and a non-empty profile payload before injection.
- */
+/** Recompute the persisted payload hash before any style content is injected. */
 function isProfileHashAcceptable(row: ContinuationStyleProfileRow): boolean {
   const hash = String(row.profileHash || '').trim();
   if (!/^[a-f0-9]{16,}$/i.test(hash)) return false;
   const profile = row.profileJson;
   if (!profile || typeof profile !== 'object') return false;
-  return Object.keys(profile).length > 0;
+  if (Object.keys(profile).length === 0) return false;
+  return hash.toLowerCase() === computeStyleProfileHash({
+    profile,
+    metrics: row.metricsJson,
+    sampleRefs: row.sampleRefsJson,
+    profileSchemaVersion: row.profileSchemaVersion,
+    analyzerVersion: row.analyzerVersion,
+    userOverrides: row.userOverridesJson,
+  });
 }
 
 function legacyStyleFromRow(

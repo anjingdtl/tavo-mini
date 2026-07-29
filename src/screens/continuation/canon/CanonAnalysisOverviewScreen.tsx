@@ -494,6 +494,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     try {
       await activateSnapshotAndStyleProfile({
         projectId: currentProject.id,
+        analysisRunId: latestRun.id,
         canonSnapshotId: latestRun.canonSnapshotId,
         styleProfileId,
         allowStyleSkip: !styleProfileId,

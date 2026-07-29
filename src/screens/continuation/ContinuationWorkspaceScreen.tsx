@@ -10,6 +10,7 @@ import type { Chapter } from '../../types/novel';
 import {
   getContinuationChapterNumbering,
   getNextContinuationChapterPosition,
+  makeContinuationChapterNumbering,
 } from '../../services/continuation/chapterNumbering/continuationChapterNumbering';
 
 /** Mode-specific root: continuation never enters the ordinary outline workbench. */
@@ -87,7 +88,9 @@ const ContinuationChapterList: React.FC<{
     }, []),
   );
   const titleOf = (item: Chapter) =>
-    (numbering?.getDisplayTitle(item)) || item.title || `第 ${item.position + 1} 章`;
+    numbering?.getDisplayTitle(item) ||
+    item.title ||
+    makeContinuationChapterNumbering(null).getDefaultTitle(item.position as any);
   return <FlatList data={chapters} keyExtractor={item => String(item.id)} contentContainerStyle={styles.list} renderItem={({item}) => <Card><TouchableOpacity onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })} accessibilityRole="button" accessibilityLabel={`编辑${titleOf(item)}`}><Text style={[styles.title,{color:theme.colors.textPrimary}]}>{titleOf(item)}</Text><Text style={[styles.meta,{color:theme.colors.textSecondary}]} numberOfLines={2}>{item.synopsis || '未填写续写要求'}</Text></TouchableOpacity><View style={styles.contextAction}><Button label="查看实际上下文" icon={FileSearch} variant="secondary" compact onPress={() => navigation.navigate('ContextPreview', { chapterId: item.id })} /></View></Card>} />;
 };
 
