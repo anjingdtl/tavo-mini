@@ -23,6 +23,11 @@ import { useThemeStore } from '../store/themeStore';
 import Toast from 'react-native-toast-message';
 import * as db from '../services/database';
 import { buildContext } from '../services/contextBuilder';
+import { resolveLLMRequestConfig } from '../services/llm';
+import {
+  buildContinuationContext,
+  compilePlannerMessages,
+} from '../services/continuation/generation';
 import type { ContextTraceItem, ContextSourceKind } from '../types/contextTrace';
 import type { ChatMessage } from '../services/llm';
 
@@ -72,6 +77,37 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
         return;
       }
       setNotFound(false);
+      const project = typeof (db as any).getProjectById === 'function'
+        ? await (db as any).getProjectById(chapter.project_id)
+        : null;
+      if (project?.mode === 'continuation') {
+        const requestConfig = await resolveLLMRequestConfig();
+        const instruction = chapter.synopsis?.trim() || `续写第 ${chapter.position + 1} 章，保持与前文一致。`;
+        const result = await buildContinuationContext({
+          projectId: chapter.project_id,
+          targetChapterId: chapter.id,
+          targetPosition: chapter.position as any,
+          currentChapterContent: chapter.content || '',
+          userInstruction: instruction,
+          modelContextLimit: requestConfig.context_window || 8192,
+          maxOutputTokens: requestConfig.max_output_tokens || 2048,
+          outputReservePercent: 15,
+          activeLlmConfigId: requestConfig.id || 1,
+        });
+        setTrace(result.trace.categories.map(category => ({
+          kind: 'instruction' as const,
+          sourceId: null,
+          title: category.name,
+          reason: `候选 ${category.candidates} · 已选 ${category.selected}`,
+          estimatedTokens: category.tokens,
+          included: category.selected > 0,
+          clipped: Object.keys(category.omittedReasonCounts).length > 0,
+          preview: Object.entries(category.omittedReasonCounts).map(([reason, count]) => `${reason} × ${count}`).join('\n'),
+        })));
+        setEstimatedInputTokens(result.trace.totalInputTokens);
+        setMessages(compilePlannerMessages(result.snapshot));
+        return;
+      }
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(chapter.project_id);
       const result = await buildContext(

@@ -269,6 +269,7 @@ export async function updateCharacterTokenBudget(
 export async function deleteCharacter(id: number): Promise<void> {
   const existing = await getCharacterById(id);
   await deleteProjectResourceLinks('character', id);
+  await execute(await openDatabase(), 'DELETE FROM continuation_resource_bindings WHERE resource_kind = ? AND resource_id = ?', ['character', id]);
   await execute(await openDatabase(), 'DELETE FROM characters WHERE id = ?', [
     id,
   ]);

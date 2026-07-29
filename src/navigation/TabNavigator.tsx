@@ -28,6 +28,7 @@ import { PipelineConfigScreen } from '../screens/PipelineConfigScreen';
 import { PipelineTaskScreen } from '../screens/PipelineTaskScreen';
 import { PipelineResultScreen } from '../screens/PipelineResultScreen';
 import { ContinuationResultScreen } from '../screens/continuation/ContinuationResultScreen';
+import { ContinuationWorkspaceScreen } from '../screens/continuation/ContinuationWorkspaceScreen';
 import { ContinuationStateReviewScreen } from '../screens/continuation/ContinuationStateReviewScreen';
 import { RevisionHistoryScreen } from '../screens/RevisionHistoryScreen';
 import { BackupCenterScreen } from '../screens/BackupCenterScreen';
@@ -109,6 +110,7 @@ const ProjectStackScreen = () => (
 const EditorMainScreen = () => {
   const { currentProject } = useProjectStore();
   if (!currentProject) return <OutlineEditor />;
+  if (currentProject.mode === 'continuation') return <ContinuationWorkspaceScreen />;
   return currentProject.mode === 'freeform' ? <FreeformEditor /> : <OutlineEditor />;
 };
 
@@ -222,7 +224,9 @@ const ResourceStackScreen = () => (
 
 export const TabNavigator: React.FC = () => {
   const { theme } = useThemeStore();
+  const { currentProject } = useProjectStore();
   const insets = useSafeAreaInsets();
+  const isContinuation = currentProject?.mode === 'continuation';
 
   const tabBarIcon = ({ route, color, size }: { route: any; color: string; size: number }) => {
     const props = { color, size: size || 20 };
@@ -255,9 +259,9 @@ export const TabNavigator: React.FC = () => {
       })}
     >
       <Tab.Screen name="Projects" component={ProjectStackScreen} options={{ tabBarLabel: '项目' }} />
-      <Tab.Screen name="Editor" component={EditorStackScreen} options={{ tabBarLabel: '写作' }} />
-      <Tab.Screen name="Build" component={BuildScreen} options={{ tabBarLabel: '构建' }} />
-      <Tab.Screen name="Resources" component={ResourceStackScreen} options={{ tabBarLabel: '资料' }} />
+      <Tab.Screen name="Editor" component={EditorStackScreen} options={{ tabBarLabel: isContinuation ? '续写' : '写作' }} />
+      <Tab.Screen name="Build" component={BuildScreen} options={{ tabBarLabel: isContinuation ? '补充' : '构建' }} />
+      <Tab.Screen name="Resources" component={ResourceStackScreen} options={{ tabBarLabel: isContinuation ? '续写资料' : '资料' }} />
       <Tab.Screen name="Settings" component={SettingsStackScreen} options={{ tabBarLabel: '设置' }} />
     </Tab.Navigator>
   );

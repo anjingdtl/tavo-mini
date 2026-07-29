@@ -126,6 +126,15 @@ function styleBlock(s: ContinuationContextSnapshot): string {
   return `【文风特征】人称=${st.narrativePerson} 时态=${st.tense} 均句长=${st.averageSentenceLength} 对话比=${st.dialogueRatio}\n${st.pacingNotes}\n${st.lexicalNotes}`;
 }
 
+function supplementsBlock(s: ContinuationContextSnapshot): string {
+  const supplements = s.bundles.supplements;
+  if (!supplements) return '【原著之外的外部补充资料】（无）';
+  const parts = [supplements.presetText, supplements.characterText, supplements.worldbookText, supplements.noteText].filter(Boolean);
+  return parts.length
+    ? `【原著之外的外部补充资料】\n以下仅补充创作；与 Canon、已确认续写状态或锁定规则冲突时，以上述内容为准。\n${parts.join('\n\n')}`
+    : '【原著之外的外部补充资料】（无）';
+}
+
 export function compilePlannerMessages(
   snapshot: ContinuationContextSnapshot,
 ): ChatMessage[] {
@@ -140,6 +149,7 @@ export function compilePlannerMessages(
     recentBlock(snapshot),
     memoryBlock(snapshot),
     historicalDigestBlock(snapshot),
+    supplementsBlock(snapshot),
   ].join('\n\n');
   return [
     { role: 'system', content: system },
@@ -164,6 +174,7 @@ export function compileWriterMessages(
     recentBlock(snapshot),
     historicalDigestBlock(snapshot),
     styleBlock(snapshot),
+    supplementsBlock(snapshot),
   ].join('\n\n');
   return [
     { role: 'system', content: system },
@@ -188,6 +199,7 @@ export function compileCheckerMessages(
     canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
     `【可引用证据 id】${JSON.stringify(snapshot.bundles.canon.evidenceRefs.slice(0, 50))}`,
+    supplementsBlock(snapshot),
   ].join('\n\n');
   return [
     { role: 'system', content: system },
