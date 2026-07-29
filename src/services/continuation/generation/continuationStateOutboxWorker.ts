@@ -12,6 +12,7 @@ import {
   contentRevisionHash,
   insertProposals,
   ensureGenerationSettings,
+  getOutboxByDedupe,
   listPendingOutbox,
   markRunsInterruptedOnColdStart,
   MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
@@ -47,6 +48,19 @@ export async function processContinuationOutbox(options?: {
     // must not be auto-claimed again. Leave it `failed` for manual retry.
     if (item.attemptCount >= MAX_OUTBOX_AUTO_RETRY_ATTEMPTS) {
       continue;
+    }
+    // A finalized chapter's Story Memory rebuild must wait until its state
+    // extraction reached a durable terminal success. The dependency lives in
+    // payload JSON to keep old outbox rows and backup schema compatible.
+    try {
+      const dependency = JSON.parse(item.payloadJson)?.dependsOnDedupeKey;
+      if (typeof dependency === 'string' && dependency) {
+        const upstream = await getOutboxByDedupe(dependency);
+        if (!upstream || upstream.state !== 'completed') continue;
+      }
+    } catch {
+      // Malformed optional payload remains processable for backward
+      // compatibility; the operation itself will surface any real error.
     }
     const claimed = await casOutboxState(
       item.id,

@@ -82,7 +82,19 @@ function stateBlock(s: ContinuationContextSnapshot): string {
     .slice(0, 10)
     .map(p => `- ${p.title} (${p.status}): ${p.summary}`)
     .join('\n');
-  return `【目标位置有效续写状态 position=${s.targetPosition}】\n人物状态:\n${chars || '（无）'}\n剧情:\n${plots || '（无）'}`;
+  const relationships = (st.relationships ?? [])
+    .slice(0, 20)
+    .map(r => `- ${JSON.stringify(r.source)} → ${JSON.stringify(r.target)}: ${r.summary}`)
+    .join('\n');
+  const knowledge = (st.knowledge ?? [])
+    .slice(0, 20)
+    .map(k => `- ${JSON.stringify(k.ref)} ${k.factKey}: ${k.factSummary}（${k.knowledgeState}）`)
+    .join('\n');
+  const experiences = (st.experiences ?? [])
+    .slice(0, 20)
+    .map(e => `- ${JSON.stringify(e.ref)}: ${e.title}；${e.summary}`)
+    .join('\n');
+  return `【目标位置有效续写状态 position=${s.targetPosition}】\n人物状态:\n${chars || '（无）'}\n人物关系:\n${relationships || '（无）'}\n知识边界:\n${knowledge || '（无）'}\n人物经历:\n${experiences || '（无）'}\n剧情:\n${plots || '（无）'}`;
 }
 
 function seamBlock(s: ContinuationContextSnapshot): string {
@@ -103,7 +115,18 @@ function recentBlock(s: ContinuationContextSnapshot): string {
 }
 
 function memoryBlock(s: ContinuationContextSnapshot): string {
-  return `【Story Memory 摘要 status=${s.storyMemory.status}】\n${s.bundles.storyMemory.summary || '（无）'}`;
+  const memory = s.bundles.storyMemory;
+  return `【Story Memory 长期状态 status=${s.storyMemory.status} eligibility=${memory.eligibilityReason ?? 'legacy'}】\n${memory.summary || '（当前无可安全注入的长期记忆）'}`;
+}
+
+function episodicBlock(s: ContinuationContextSnapshot): string {
+  const text = (s.bundles.episodic ?? [])
+    .map(item => item.summary)
+    .filter(Boolean)
+    .join('\n');
+  return text
+    ? `【相关续写章节事件记忆】\n${text}`
+    : '【相关续写章节事件记忆】（无）';
 }
 
 function historicalDigestBlock(s: ContinuationContextSnapshot): string {
@@ -148,6 +171,7 @@ export function compilePlannerMessages(
     seamBlock(snapshot),
     recentBlock(snapshot),
     memoryBlock(snapshot),
+    episodicBlock(snapshot),
     historicalDigestBlock(snapshot),
     supplementsBlock(snapshot),
   ].join('\n\n');
@@ -172,6 +196,8 @@ export function compileWriterMessages(
     stateBlock(snapshot),
     seamBlock(snapshot),
     recentBlock(snapshot),
+    memoryBlock(snapshot),
+    episodicBlock(snapshot),
     historicalDigestBlock(snapshot),
     styleBlock(snapshot),
     supplementsBlock(snapshot),
