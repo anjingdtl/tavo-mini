@@ -49,6 +49,7 @@ import { LocalModelManagerScreen } from '../screens/LocalModelManagerScreen';
 import { ContextAutoConfigScreen } from '../screens/ContextAutoConfigScreen';
 import { StoryMemoryScreen } from '../screens/StoryMemoryScreen';
 import { ContinuationGenerationConfigScreen } from '../screens/continuation/ContinuationGenerationConfigScreen';
+import { StyleProfileDetailScreen } from '../screens/continuation/StyleProfileDetailScreen';
 
 export type EditorStackParamList = {
   EditorMain: undefined;
@@ -109,6 +110,7 @@ export type ResourceStackParamList = {
   CanonPlotThreads: undefined;
   CanonExperiences: undefined;
   CanonAnalysisTasks: undefined;
+  StyleProfileDetail: { profileId: string };
   ResourceLibrary: {
     initialTab?:
       | 'continuation'
@@ -314,6 +316,10 @@ const ResourceStackScreen = () => (
     <ResourceStack.Screen
       name="CanonAnalysisOverview"
       component={CanonAnalysisOverviewScreen}
+    />
+    <ResourceStack.Screen
+      name="StyleProfileDetail"
+      component={StyleProfileDetailScreen}
     />
     <ResourceStack.Screen name="CanonWorldRules">
       {props => <CanonCategoryListScreen {...props} category="world" />}

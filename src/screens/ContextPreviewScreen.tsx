@@ -51,6 +51,66 @@ const KIND_ICON: Record<ContextSourceKind, React.ComponentType<{ size: number; c
   instruction: MessageSquare,
 };
 
+/** 续写 context category 内部名 → 中文展示（Spec §10.3） */
+const CONTINUATION_CATEGORY_LABELS: Record<string, string> = {
+  originalStyle: '原著风格画像',
+  supplements: '外部补充',
+  historicalDigests: '历史概览',
+  canon: '原著 Canon',
+  effectiveState: '当前状态',
+  seam: '原著接缝',
+  recentChapters: '最近续写',
+  storyMemory: '长期故事记忆',
+  episodic: '章节事件摘要',
+};
+
+const STYLE_OMIT_REASON_LABELS: Record<string, string> = {
+  style_level_off: '文风约束已关闭',
+  no_injectable_profile: '无可注入风格画像',
+  invalid_profile_hash: '画像哈希无效',
+  repository_error: '读取画像失败',
+  omitted_budget: '预算不足已省略',
+  degraded_to_standard: '已降为标准级',
+  degraded_to_compact: '已降为精简级',
+  strict_soft_trim_for_style: '严格模式已优先压缩软资料',
+  insufficient_tokens: 'token 不足',
+  insufficient_tokens_for_compact: '连精简级都放不下',
+};
+
+function styleTraceReason(
+  omitted: Record<string, number>,
+  tokens: number,
+  selected: number,
+): string {
+  const levelKey = Object.keys(omitted).find(k => k.startsWith('level_'));
+  const level = levelKey ? levelKey.replace('level_', '') : null;
+  const levelLabel =
+    level === 'detailed'
+      ? '详细'
+      : level === 'standard'
+      ? '标准'
+      : level === 'compact'
+      ? '精简'
+      : null;
+  const degradeKeys = Object.keys(omitted).filter(
+    k =>
+      !k.startsWith('level_') &&
+      !k.startsWith('profile_') &&
+      !k.startsWith('hash_') &&
+      omitted[k] > 0,
+  );
+  const degradeText = degradeKeys
+    .map(k => STYLE_OMIT_REASON_LABELS[k] || k)
+    .join('；');
+  const parts = [
+    selected > 0 ? '已注入' : '未注入',
+    levelLabel ? `级别 ${levelLabel}` : null,
+    `${tokens} tokens`,
+    degradeText || null,
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
 function statusBadge(item: ContextTraceItem) {
   if (item.included && !item.clipped) {
     return <Text style={styles.badgeIncluded}>已包含</Text>;
@@ -122,16 +182,42 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           maxOutputTokens: writerOutput,
           activeLlmConfigId: requestConfig.id || 1,
         });
-        setTrace(result.trace.categories.map(category => ({
-          kind: 'instruction' as const,
-          sourceId: null,
-          title: category.name,
-          reason: `候选 ${category.candidates} · 已选 ${category.selected}`,
-          estimatedTokens: category.tokens,
-          included: category.selected > 0,
-          clipped: Object.keys(category.omittedReasonCounts).length > 0,
-          preview: Object.entries(category.omittedReasonCounts).map(([reason, count]) => `${reason} × ${count}`).join('\n'),
-        })));
+        setTrace(
+          result.trace.categories.map(category => {
+            const title =
+              CONTINUATION_CATEGORY_LABELS[category.name] || category.name;
+            const isStyle = category.name === 'originalStyle';
+            const reason = isStyle
+              ? styleTraceReason(
+                  category.omittedReasonCounts,
+                  category.tokens,
+                  category.selected,
+                )
+              : `候选 ${category.candidates} · 已选 ${category.selected}`;
+            const omitPreview = Object.entries(category.omittedReasonCounts)
+              .map(([reasonKey, count]) => {
+                const label = STYLE_OMIT_REASON_LABELS[reasonKey] || reasonKey;
+                return `${label} × ${count}`;
+              })
+              .join('\n');
+            return {
+              kind: 'instruction' as const,
+              sourceId: null,
+              title: isStyle ? `★ ${title}` : title,
+              reason,
+              estimatedTokens: category.tokens,
+              included: category.selected > 0,
+              clipped:
+                isStyle && category.selected > 0
+                  ? Object.keys(category.omittedReasonCounts).some(k =>
+                      k.startsWith('degraded'),
+                    )
+                  : Object.keys(category.omittedReasonCounts).length > 0 &&
+                    category.selected === 0,
+              preview: omitPreview,
+            };
+          }),
+        );
         setEstimatedInputTokens(result.trace.totalInputTokens);
         // Spec §9 / §10.3: preview must surface Writer style injection, not only Planner.
         const plannerMsgs = compilePlannerMessages(result.snapshot);
@@ -150,11 +236,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
         setMessages([
           ...plannerMsgs.map(m => ({
             ...m,
-            content: `【Planner】\n${m.content}`,
+            content: `【规划 Planner】\n${m.content}`,
           })),
           ...writerMsgs.map(m => ({
             ...m,
-            content: `【Writer】\n${m.content}`,
+            content: `【正文 Writer】\n${m.content}`,
           })),
         ]);
         return;
@@ -263,7 +349,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
     <Screen>
       <Header
         title="上下文预览"
-        subtitle={`${continuationPreview ? '续写规划阶段 · ' : ''}预估 ${estimatedInputTokens.toLocaleString()} tokens`}
+        subtitle={`${continuationPreview ? '续写 Planner+Writer · ' : ''}预估 ${estimatedInputTokens.toLocaleString()} tokens`}
         action={<Button label="关闭" variant="ghost" icon={X} onPress={onClose} compact />}
       />
       <View style={[styles.toggleRow, { borderBottomColor: theme.colors.border }]}>

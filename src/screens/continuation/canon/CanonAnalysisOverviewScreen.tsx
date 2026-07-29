@@ -16,7 +16,7 @@ import { Button, Card, Header, Screen, spacing } from '../../../components/ui';
 import { useProjectStore } from '../../../store/projectStore';
 import { useThemeStore } from '../../../store/themeStore';
 import {
-  activateSnapshot,
+  activateSnapshotAndStyleProfile,
   getAnalysisOverview,
   getAnalysisWorkItems,
   ANALYSIS_MATERIAL_LABELS,
@@ -34,9 +34,87 @@ import {
   type ContinuationAnalysisMode,
 } from '../../../services/continuation/canon';
 import { isBoundaryReady } from '../../../services/continuation/continuationSettingsService';
+import {
+  listStyleProfilesForProject,
+  updateStyleProfileReviewStatus,
+  type ContinuationStyleProfileRow,
+} from '../../../services/continuation/styleProfile/styleProfileRepository';
+import { retryStyleAnalysis } from '../../../services/continuation/styleProfile/styleAnalysisService';
+import type { OriginalStyleProfileV2 } from '../../../services/continuation/styleProfile/styleProfileV2Schema';
 import { runStatusLabel } from './runStatusLabel';
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
+
+type StyleUiState =
+  | 'none'
+  | 'analyzing'
+  | 'failed'
+  | 'ready'
+  | 'outdated'
+  | 'ignored';
+
+const STYLE_UI_LABELS: Record<StyleUiState, string> = {
+  none: '未分析',
+  analyzing: '分析中',
+  failed: '失败',
+  ready: '就绪',
+  outdated: '过期',
+  ignored: '已忽略',
+};
+
+function pickStyleProfile(
+  profiles: ContinuationStyleProfileRow[],
+  latestRun: AnalysisRun | null,
+  activeSnapshotId: string | null,
+): ContinuationStyleProfileRow | null {
+  if (!profiles.length) return null;
+  if (latestRun?.canonSnapshotId) {
+    const match = profiles.find(p => p.canonSnapshotId === latestRun.canonSnapshotId);
+    if (match) return match;
+  }
+  if (activeSnapshotId) {
+    const match = profiles.find(p => p.canonSnapshotId === activeSnapshotId);
+    if (match) return match;
+  }
+  return profiles[0] ?? null;
+}
+
+function resolveStyleUiState(
+  row: ContinuationStyleProfileRow | null,
+  latestRun: AnalysisRun | null,
+): StyleUiState {
+  if (row?.reviewStatus === 'ignored') return 'ignored';
+  if (row) {
+    if (row.state === 'queued' || row.state === 'running') return 'analyzing';
+    if (row.state === 'failed' || row.state === 'interrupted' || row.state === 'cancelled') {
+      return 'failed';
+    }
+    if (row.state === 'outdated') return 'outdated';
+    if (row.state === 'ready') return 'ready';
+  }
+  if (
+    latestRun &&
+    ['queued', 'running'].includes(latestRun.state) &&
+    (latestRun.stage === 'style_analysis' || latestRun.stage === 'style_validation')
+  ) {
+    return 'analyzing';
+  }
+  if (
+    latestRun?.state === 'failed' &&
+    (latestRun.stage === 'style_analysis' || latestRun.stage === 'style_validation')
+  ) {
+    return 'failed';
+  }
+  return 'none';
+}
+
+function asV2Profile(
+  json: Record<string, unknown> | null | undefined,
+): OriginalStyleProfileV2 | null {
+  if (!json || typeof json !== 'object') return null;
+  if ((json as { schemaVersion?: number }).schemaVersion !== 2) return null;
+  return json as unknown as OriginalStyleProfileV2;
+}
 
 const RUN_STATE_LABELS: Record<AnalysisRun['state'], string> = {
   queued: '排队中',
@@ -96,6 +174,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     current: number;
     total: number;
   } | null>(null);
+  const [styleProfile, setStyleProfile] =
+    useState<ContinuationStyleProfileRow | null>(null);
 
   const reload = useCallback(async () => {
     if (!currentProject) {
@@ -103,11 +183,13 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       return;
     }
     try {
-      const [overview, ready, historyCoverage] = await Promise.all([
-        getAnalysisOverview(currentProject.id),
-        isBoundaryReady(currentProject.id),
-        getHistoricalDigestCoverage(currentProject.id),
-      ]);
+      const [overview, ready, historyCoverage, styleProfiles] =
+        await Promise.all([
+          getAnalysisOverview(currentProject.id),
+          isBoundaryReady(currentProject.id),
+          getHistoricalDigestCoverage(currentProject.id),
+          listStyleProfilesForProject(currentProject.id).catch(() => []),
+        ]);
       setActive(overview.activeSnapshot);
       const items = overview.latestRun
         ? await getAnalysisWorkItems(overview.latestRun.id)
@@ -117,14 +199,20 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       const completedCount = items.filter(
         item => item.state === 'completed',
       ).length;
-      setLatestRun(
-        overview.latestRun
-          ? { ...overview.latestRun, progressCurrent: completedCount }
-          : null,
-      );
+      const run = overview.latestRun
+        ? { ...overview.latestRun, progressCurrent: completedCount }
+        : null;
+      setLatestRun(run);
       setWorkItems(items);
       setBoundaryOk(ready);
       setHistoricalCoverage(historyCoverage);
+      setStyleProfile(
+        pickStyleProfile(
+          styleProfiles,
+          run,
+          overview.activeSnapshot?.id ?? null,
+        ),
+      );
     } catch (e: any) {
       Toast.show({
         type: 'error',
@@ -366,17 +454,112 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     }
   };
 
-  const handleActivate = async () => {
+  const styleUiState = resolveStyleUiState(styleProfile, latestRun);
+  const styleV2 = asV2Profile(styleProfile?.profileJson);
+  const injectableStyleId =
+    styleProfile &&
+    styleProfile.state === 'ready' &&
+    styleProfile.reviewStatus !== 'ignored'
+      ? styleProfile.id
+      : null;
+
+  const handleActivate = async (opts?: {
+    allowStyleSkip?: boolean;
+    styleProfileId?: string | null;
+  }) => {
     if (!currentProject || !latestRun) return;
+    const allowStyleSkip = opts?.allowStyleSkip === true;
+    const styleProfileId =
+      opts?.styleProfileId !== undefined
+        ? opts.styleProfileId
+        : injectableStyleId;
+    if (!styleProfileId && !allowStyleSkip) {
+      Alert.alert(
+        '风格画像未就绪',
+        '当前没有可激活的原著风格画像。可单独重试风格分析，或显式跳过风格后仅启用 Canon。',
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '跳过风格并启用',
+            style: 'destructive',
+            onPress: () => {
+              void handleActivate({ allowStyleSkip: true, styleProfileId: null });
+            },
+          },
+        ],
+      );
+      return;
+    }
     setBusy(true);
     try {
-      await activateSnapshot(currentProject.id, latestRun.canonSnapshotId);
-      Toast.show({ type: 'success', text1: '原著资料已启用' });
+      await activateSnapshotAndStyleProfile({
+        projectId: currentProject.id,
+        canonSnapshotId: latestRun.canonSnapshotId,
+        styleProfileId,
+        allowStyleSkip: !styleProfileId,
+      });
+      Toast.show({
+        type: 'success',
+        text1: styleProfileId ? '原著资料与风格已启用' : '原著资料已启用（已跳过风格）',
+      });
       await reload();
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '激活失败', text2: e?.message });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleRetryStyle = () => {
+    if (!currentProject) return;
+    Alert.alert(
+      '单独重试风格分析',
+      '将基于当前原著边界重新分析写作风格，并保留你已保存的用户修正。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '开始',
+          onPress: async () => {
+            setBusy(true);
+            try {
+              await retryStyleAnalysis(currentProject.id);
+              Toast.show({ type: 'success', text1: '风格分析已完成' });
+              await reload();
+            } catch (e: any) {
+              Toast.show({
+                type: 'error',
+                text1: '风格分析失败',
+                text2: e?.message,
+              });
+              await reload();
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleIgnoreStyle = async () => {
+    if (!styleProfile) return;
+    try {
+      await updateStyleProfileReviewStatus(styleProfile.id, 'ignored');
+      Toast.show({ type: 'info', text1: '已忽略风格画像' });
+      await reload();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
+    }
+  };
+
+  const handleRestoreStyle = async () => {
+    if (!styleProfile) return;
+    try {
+      await updateStyleProfileReviewStatus(styleProfile.id, 'confirmed');
+      Toast.show({ type: 'success', text1: '已恢复使用风格画像' });
+      await reload();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
     }
   };
 
@@ -640,7 +823,9 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   {needsActivation && (
                     <Button
                       label="审核并启用原著资料"
-                      onPress={handleActivate}
+                      onPress={() => {
+                        void handleActivate();
+                      }}
                       disabled={busy}
                     />
                   )}
@@ -778,6 +963,142 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   onPress={() => runAnalysis('full_canon')}
                   disabled={busy || !boundaryOk}
                 />
+              </View>
+            </Card>
+
+            <Card style={styles.card}>
+              <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
+                原著写作风格
+              </Text>
+              <Text style={{ color: theme.colors.textSecondary }}>
+                状态：{STYLE_UI_LABELS[styleUiState]}
+              </Text>
+              {styleProfile ? (
+                <>
+                  <Text style={{ color: theme.colors.textSecondary }}>
+                    分析范围：第 1–{styleProfile.boundaryPosition + 1} 章（边界内）
+                  </Text>
+                  {styleV2?.coverage?.sampledChapterCount != null ? (
+                    <Text style={{ color: theme.colors.textSecondary }}>
+                      抽样章节：{styleV2.coverage.sampledChapterCount}
+                      {styleV2.coverage.sourceChapterCount
+                        ? ` / ${styleV2.coverage.sourceChapterCount}`
+                        : ''}
+                      章
+                    </Text>
+                  ) : null}
+                  <Text style={{ color: theme.colors.textSecondary }}>
+                    置信度 {Math.round((styleProfile.confidence || 0) * 100)}%
+                  </Text>
+                  {styleV2?.summary ? (
+                    <Text
+                      style={{ color: theme.colors.textPrimary, lineHeight: 20 }}
+                      numberOfLines={3}
+                    >
+                      {styleV2.summary}
+                    </Text>
+                  ) : null}
+                  {styleV2?.boundaryLocalDelta ? (
+                    <Text style={{ color: theme.colors.textSecondary }}>
+                      边界附近：
+                      {[
+                        styleV2.boundaryLocalDelta.tone,
+                        styleV2.boundaryLocalDelta.pacing,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || '无显著增量'}
+                    </Text>
+                  ) : null}
+                  {styleV2?.characterVoices?.length ? (
+                    <Text style={{ color: theme.colors.textSecondary }}>
+                      人物口吻：{styleV2.characterVoices.length} 个
+                    </Text>
+                  ) : null}
+                  <Text style={{ color: theme.colors.textSecondary }}>
+                    分析器 {styleProfile.analyzerVersion}
+                    {styleProfile.completedAt || styleProfile.updatedAt
+                      ? ` · ${styleProfile.completedAt || styleProfile.updatedAt}`
+                      : ''}
+                  </Text>
+                  {styleProfile.errorMessage ? (
+                    <Text style={{ color: theme.colors.danger }}>
+                      {styleProfile.errorMessage}
+                    </Text>
+                  ) : null}
+                </>
+              ) : (
+                <Text style={{ color: theme.colors.textSecondary }}>
+                  {styleUiState === 'analyzing'
+                    ? '正在分析原著写作风格…'
+                    : '尚未生成风格画像。Canon 分析完成后会自动运行；也可单独重试。'}
+                </Text>
+              )}
+              <View style={styles.row}>
+                {styleProfile ? (
+                  <Button
+                    label="查看详情"
+                    variant="ghost"
+                    onPress={() =>
+                      navigation.navigate('StyleProfileDetail', {
+                        profileId: styleProfile.id,
+                      })
+                    }
+                  />
+                ) : null}
+                {styleProfile ? (
+                  <Button
+                    label="编辑修正"
+                    variant="ghost"
+                    onPress={() =>
+                      navigation.navigate('StyleProfileDetail', {
+                        profileId: styleProfile.id,
+                      })
+                    }
+                  />
+                ) : null}
+                {(styleUiState === 'failed' ||
+                  styleUiState === 'none' ||
+                  styleUiState === 'outdated') && (
+                  <Button
+                    label="单独重试"
+                    variant="ghost"
+                    onPress={handleRetryStyle}
+                    disabled={busy}
+                  />
+                )}
+                {styleUiState === 'ready' && (
+                  <Button
+                    label="忽略"
+                    variant="ghost"
+                    onPress={() => {
+                      void handleIgnoreStyle();
+                    }}
+                    disabled={busy}
+                  />
+                )}
+                {styleUiState === 'ignored' && (
+                  <Button
+                    label="恢复"
+                    variant="ghost"
+                    onPress={() => {
+                      void handleRestoreStyle();
+                    }}
+                    disabled={busy}
+                  />
+                )}
+                {needsActivation && !injectableStyleId && (
+                  <Button
+                    label="跳过风格并激活"
+                    variant="ghost"
+                    onPress={() => {
+                      void handleActivate({
+                        allowStyleSkip: true,
+                        styleProfileId: null,
+                      });
+                    }}
+                    disabled={busy}
+                  />
+                )}
               </View>
             </Card>
 
