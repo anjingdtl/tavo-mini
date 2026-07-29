@@ -4,6 +4,19 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.10.6] - 2026-07-29
+
+### Added
+
+- **续写模式边界**：作品库按「大纲创作 / 原著续写」分组，续写项目进入独立工作台；底部入口随当前项目切换为「续写 / 补充 / 续写资料」，避免误把普通大纲流程当作续写流程。
+- **Schema 25 外部补充绑定**：新增 `continuation_resource_bindings`。角色卡、世界书、笔记和预设默认不进入续写，只有项目已关联且明确标为 `external_supplement` 的资料才可注入；原著镜像与不参与资料被明确排除。
+- **真实续写上下文预览**：章节编辑的上下文页会按续写生成器的真实 Canon、状态、历史与外部补充预算组装，并显示各组已选、裁剪和排除情况。
+
+### Changed
+
+- **资料库提示与交互**：续写项目下的角色卡、世界书、笔记、预设均提示「原著信息已由 Canon 自动调度」，并可为每项资料设置续写用途，避免对原著重复引用，同时仍支持补充原著之外的信息。
+- **续写提示词优先级**：外部补充被明确标为低于锁定 Canon 事实、边界与当前状态的受控信息源，不能覆盖原著约束。
+
 ## [2.10.5] - 2026-07-29
 
 ### Fixed

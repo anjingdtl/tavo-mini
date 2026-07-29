@@ -185,6 +185,7 @@ export const ResourceLibrary: React.FC<{
     failed: Array<{ fileName: string; error: string }>;
   } | null>(null);
   const [styleProfileText, setStyleProfileText] = useState('');
+  const [continuationBindings, setContinuationBindings] = useState<any[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const loadGenerationRef = useRef(0);
   const projectId = currentProject?.id || 0;
@@ -214,6 +215,7 @@ export const ResourceLibrary: React.FC<{
       worldbookCollections,
       noteCollectionRows,
       noteConfig,
+      bindings,
     ] = await Promise.all([
       db.getAllCharacters(projectId),
       db.getAllWorldbookEntries(projectId),
@@ -223,6 +225,11 @@ export const ResourceLibrary: React.FC<{
       db.getWorldbookCollections(projectId),
       db.getNoteCollections(projectId),
       db.getProjectNoteConfig(projectId),
+      // Keep older test doubles and pre-migration databases readable while the
+      // v25 repository facade is unavailable.
+      typeof (db as any).listContinuationResourceBindings === 'function'
+        ? (db as any).listContinuationResourceBindings(projectId)
+        : Promise.resolve([]),
     ]);
     // Project changes can start a second load before the first Promise.all
     // settles. Never let the old project overwrite the newer screen state.
@@ -231,6 +238,7 @@ export const ResourceLibrary: React.FC<{
     setCharacterCollections(characterCollectionRows);
     setCollections(worldbookCollections);
     setNoteCollections(noteCollectionRows);
+    setContinuationBindings(bindings);
     if (noteConfig) {
       // 防御性归一化：DB 异常返回 null/undefined 时回退默认，避免渲染时 .length 报错
       setNoteMode(noteConfig.mode || 'none');
@@ -297,6 +305,30 @@ export const ResourceLibrary: React.FC<{
       loadData();
     }, [loadData]),
   );
+
+  const continuationUsageFor = useCallback((tab: ContentTab, id: number) => {
+    const kind = RESOURCE_TYPE[tab];
+    return continuationBindings.find(item => item.resource_kind === kind && item.resource_id === id)?.continuation_usage || 'unclassified';
+  }, [continuationBindings]);
+
+  const chooseContinuationUsage = useCallback((tab: ContentTab, item: any) => {
+    if (currentProject?.mode !== 'continuation') return;
+    const kind = RESOURCE_TYPE[tab];
+    const save = async (usage: 'external_supplement' | 'original_mirror' | 'excluded') => {
+      try {
+        await db.setContinuationResourceUsage({ projectId, resourceKind: kind, resourceId: item.id, usage });
+        await loadData();
+      } catch (error: any) {
+        Toast.show({ type: 'error', text1: '设置失败', text2: error?.message });
+      }
+    };
+    Alert.alert('续写用途', `“${titleFor(tab, item)}”只有标为“外部补充”才进入 AI 续写；原著信息由 Canon 自动调度。`, [
+      { text: '取消', style: 'cancel' },
+      { text: '外部补充', onPress: () => { save('external_supplement'); } },
+      { text: '原著镜像', onPress: () => { save('original_mirror'); } },
+      { text: '不参与', onPress: () => { save('excluded'); } },
+    ]);
+  }, [currentProject?.mode, loadData, projectId]);
 
   const subtitle = currentProject
     ? `全局资料库 · 当前项目：${currentProject.name}`
@@ -1033,6 +1065,14 @@ export const ResourceLibrary: React.FC<{
           }}
         />
       </View>
+      {currentProject?.mode === 'continuation' && tab !== 'continuation' ? (
+        <View style={styles.continuationHint}>
+          <Text style={[styles.continuationHintTitle, { color: theme.colors.textPrimary }]}>原著信息已由 Canon 自动调度</Text>
+          <Text style={[styles.continuationHintText, { color: theme.colors.textSecondary }]}>
+            {tab === 'characters' ? '原著角色无需重复录入；仅补充新增、跨作品或额外定义的角色。' : tab === 'worldbook' ? '原著世界观无需重复导入；仅补充原著之外的地点、组织和规则。' : tab === 'notes' ? '原著仿写与资料已自动调度；可在此加入创作要求、外部资料或额外仿写样本。' : '续写已有专用提示词；预设仅用于补充要求，不能覆盖 Canon 事实。'}
+          </Text>
+        </View>
+      ) : null}
       {tab === 'continuation' ? (
         <ContinuationHomeBody navigation={navigation} />
       ) : (
@@ -1685,6 +1725,11 @@ export const ResourceLibrary: React.FC<{
                             {noteMode === 'style' ? '仿写' : '资料库'}
                           </Text>
                         ) : null}
+                        {currentProject?.mode === 'continuation' ? (
+                          <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>
+                            {continuationUsageFor(tab, item.id) === 'external_supplement' ? '续写补充' : continuationUsageFor(tab, item.id) === 'original_mirror' ? '原著镜像' : continuationUsageFor(tab, item.id) === 'excluded' ? '不参与' : '待确认'}
+                          </Text>
+                        ) : null}
                       </View>
                       <Text
                         style={[
@@ -1741,6 +1786,9 @@ export const ResourceLibrary: React.FC<{
                       variant="secondary"
                       onPress={() => openEditor(tab, item)}
                     />
+                    {currentProject?.mode === 'continuation' ? (
+                      <Button label="续写用途" variant="secondary" onPress={() => chooseContinuationUsage(tab, item)} />
+                    ) : null}
                     {tab === 'characters' && (
                       <Button
                         label="导出"
@@ -2468,6 +2516,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
+  continuationHint: { marginHorizontal: spacing.lg, marginTop: spacing.sm, padding: spacing.md, borderRadius: 8, backgroundColor: 'rgba(67,158,166,0.12)' },
+  continuationHintTitle: { fontSize: 13, fontWeight: '800', marginBottom: 3 },
+  continuationHintText: { fontSize: 12, lineHeight: 18 },
   notePickerList: { maxHeight: 400 },
   notePickerItem: {
     flexDirection: 'row',

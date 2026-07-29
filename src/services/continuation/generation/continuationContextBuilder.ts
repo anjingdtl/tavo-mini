@@ -13,6 +13,7 @@ import { continuationSourceReader } from '../continuationSourceReader';
 import { CanonQueryService } from '../canon/canonQueryService';
 import { listHistoricalDigestReferences } from '../canon/historicalDigestService';
 import { getEffectiveContinuationState } from './continuationStateService';
+import { buildContinuationSupplementContext } from './continuationSupplementContextBuilder';
 import {
   contentRevisionHash,
   ensureGenerationSettings,
@@ -134,6 +135,10 @@ export async function buildContinuationContext(
   );
 
   const reviewPolicy = reviewPolicyFor(profile);
+  const supplements = await buildContinuationSupplementContext({
+    projectId: input.projectId,
+    tokenBudget: Math.max(0, Math.floor(inputBudget * 0.2)),
+  });
   const canonBundle = await CanonQueryService.getContextBundle({
     projectId: input.projectId,
     snapshotId: snap.id,
@@ -320,12 +325,23 @@ export async function buildContinuationContext(
       storyMemory: { summary: smSummary, estimatedTokens: smTokens },
       episodic: [],
       style,
+      supplements,
       userInstruction: input.userInstruction,
     },
     createdAt: new Date().toISOString(),
   };
 
   const categories = [
+    {
+      name: 'supplements',
+      candidates: supplements.selected.length + supplements.excluded.length,
+      selected: supplements.selected.length,
+      tokens: estimateTokens([supplements.characterText, supplements.worldbookText, supplements.noteText, supplements.presetText].join('\n')),
+      omittedReasonCounts: supplements.excluded.reduce((counts, item) => {
+        counts[item.reason] = (counts[item.reason] || 0) + 1;
+        return counts;
+      }, {} as Record<string, number>),
+    },
     {
       name: 'lockedRules',
       candidates: lockedRules.length,
