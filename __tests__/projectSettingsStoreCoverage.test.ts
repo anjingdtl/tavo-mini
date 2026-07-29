@@ -26,7 +26,8 @@ jest.mock('../src/services/database', () => ({
   getProjectById: (...args: any[]) => mockGetProjectById(...args),
   deleteProject: (...args: any[]) => mockDeleteProject(...args),
   updateProject: (...args: any[]) => mockUpdateProject(...args),
-  getBackgroundPipelineEnabled: (...args: any[]) => mockGetBackgroundPipelineEnabled(...args),
+  getBackgroundPipelineEnabled: (...args: any[]) =>
+    mockGetBackgroundPipelineEnabled(...args),
   getLLMConfigs: (...args: any[]) => mockGetLLMConfigs(...args),
   getContextConfig: (...args: any[]) => mockGetContextConfig(...args),
   getLocalModelById: (...args: any[]) => mockGetLocalModelById(...args),
@@ -35,15 +36,35 @@ jest.mock('../src/services/database', () => ({
   setActiveLLMConfig: (...args: any[]) => mockSetActiveLLMConfig(...args),
   deleteLLMConfig: (...args: any[]) => mockDeleteLLMConfig(...args),
   setContextConfig: (...args: any[]) => mockSetContextConfig(...args),
-  setBackgroundPipelineEnabled: (...args: any[]) => mockSetBackgroundPipelineEnabled(...args),
+  setBackgroundPipelineEnabled: (...args: any[]) =>
+    mockSetBackgroundPipelineEnabled(...args),
 }));
 
 import { useProjectStore } from '../src/store/projectStore';
 import { useSettingsStore } from '../src/store/settingsStore';
 import { PipelineForeground } from '../src/native/PipelineForegroundModule';
 
-const projectOne = { id: 1, name: '项目一', mode: 'outline', created_at: '', updated_at: '' } as any;
-const projectTwo = { id: 2, name: '项目二', mode: 'freeform', created_at: '', updated_at: '' } as any;
+const projectOne = {
+  id: 1,
+  name: '项目一',
+  mode: 'outline',
+  created_at: '',
+  updated_at: '',
+} as any;
+const projectTwo = {
+  id: 2,
+  name: '项目二',
+  mode: 'freeform',
+  created_at: '',
+  updated_at: '',
+} as any;
+const continuationProject = {
+  id: 3,
+  name: '续写项目',
+  mode: 'continuation',
+  created_at: '',
+  updated_at: '',
+} as any;
 const onlineConfig = {
   id: 1,
   name: '在线',
@@ -62,7 +83,12 @@ describe('project and settings stores', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.spyOn(console, 'warn').mockImplementation(() => {});
-    useProjectStore.setState({ projects: [], currentProject: null, loading: false });
+    useProjectStore.setState({
+      projects: [],
+      currentProject: null,
+      workspaceMode: 'outline',
+      loading: false,
+    });
     useSettingsStore.setState({
       llmConfig: onlineConfig,
       llmConfigs: [onlineConfig],
@@ -107,10 +133,15 @@ describe('project and settings stores', () => {
 
     mockGetProjectById.mockResolvedValueOnce(projectTwo);
     mockGetAllProjects.mockResolvedValueOnce([projectTwo]);
-    await expect(useProjectStore.getState().createProject('项目二', 'freeform')).resolves.toBe(2);
+    await expect(
+      useProjectStore.getState().createProject('项目二', 'freeform'),
+    ).resolves.toBe(2);
     expect(useProjectStore.getState().currentProject).toEqual(projectTwo);
 
-    useProjectStore.setState({ projects: [projectOne], currentProject: projectOne });
+    useProjectStore.setState({
+      projects: [projectOne],
+      currentProject: projectOne,
+    });
     await useProjectStore.getState().renameProject(1, '改名');
     await useProjectStore.getState().deleteProject(1);
     expect(mockUpdateProject).toHaveBeenCalledWith(1, '改名');
@@ -125,11 +156,48 @@ describe('project and settings stores', () => {
     expect(useProjectStore.getState().loading).toBe(false);
   });
 
+  test('switches workspace mode and selects that mode first project, including an empty mode', async () => {
+    useProjectStore.setState({
+      projects: [projectOne, continuationProject],
+      currentProject: projectOne,
+      workspaceMode: 'outline',
+    });
+
+    await useProjectStore.getState().selectWorkspaceMode('outline');
+    expect(useProjectStore.getState().currentProject).toEqual(projectOne);
+
+    await useProjectStore.getState().selectWorkspaceMode('continuation');
+    expect(useProjectStore.getState().workspaceMode).toBe('continuation');
+    expect(useProjectStore.getState().currentProject).toEqual(
+      continuationProject,
+    );
+    expect(mockSetSetting).toHaveBeenLastCalledWith('current_project_id', '3');
+
+    useProjectStore.setState({ projects: [projectTwo], currentProject: projectTwo });
+    await useProjectStore.getState().selectWorkspaceMode('outline');
+    expect(useProjectStore.getState().currentProject).toBeNull();
+
+    useProjectStore.setState({ projects: [projectOne], currentProject: projectOne });
+    await useProjectStore.getState().selectWorkspaceMode('continuation');
+    expect(useProjectStore.getState().workspaceMode).toBe('continuation');
+    expect(useProjectStore.getState().currentProject).toBeNull();
+    expect(mockSetSetting).toHaveBeenLastCalledWith('current_project_id', '');
+  });
+
   test('loads usable LLM configuration, self-heals inactive state, and updates settings', async () => {
-    const localConfig = { ...onlineConfig, id: 2, provider_type: 'llama_cpp', local_model_id: 'local-1', is_active: 1 };
+    const localConfig = {
+      ...onlineConfig,
+      id: 2,
+      provider_type: 'llama_cpp',
+      local_model_id: 'local-1',
+      is_active: 1,
+    };
     mockGetLLMConfigs
       .mockResolvedValueOnce([{ ...onlineConfig, is_active: 0 }, localConfig])
-      .mockResolvedValueOnce([{ ...onlineConfig, is_active: 1 }, { ...localConfig, is_active: 0 }]);
+      .mockResolvedValueOnce([
+        { ...onlineConfig, is_active: 1 },
+        { ...localConfig, is_active: 0 },
+      ]);
     mockGetLocalModelById.mockResolvedValueOnce({ status: 'missing' });
     const bridgeSpy = jest.spyOn(PipelineForeground, 'setEnabled');
 
@@ -138,11 +206,17 @@ describe('project and settings stores', () => {
     expect(useSettingsStore.getState().llmConfig.id).toBe(1);
     expect(bridgeSpy).toHaveBeenCalledWith(true);
 
-    await useSettingsStore.getState().setLLMConfig('https://new.example', 'key', 'new-model');
-    await expect(useSettingsStore.getState().saveLLMConfig({ name: '保存' })).resolves.toBe(2);
+    await useSettingsStore
+      .getState()
+      .setLLMConfig('https://new.example', 'key', 'new-model');
+    await expect(
+      useSettingsStore.getState().saveLLMConfig({ name: '保存' }),
+    ).resolves.toBe(2);
     await useSettingsStore.getState().setActiveLLMConfig(1);
     await useSettingsStore.getState().deleteLLMConfig(1);
-    await useSettingsStore.getState().setContextConfig({ strategy: 'full' } as any);
+    await useSettingsStore
+      .getState()
+      .setContextConfig({ strategy: 'full' } as any);
     await useSettingsStore.getState().setBackgroundPipelineEnabled(false);
     expect(mockSetContextConfig).toHaveBeenCalled();
     expect(mockSetBackgroundPipelineEnabled).toHaveBeenCalledWith(false);
@@ -150,7 +224,9 @@ describe('project and settings stores', () => {
   });
 
   test('keeps background bridge alive when unrelated settings fail', async () => {
-    mockGetBackgroundPipelineEnabled.mockRejectedValueOnce(new Error('开关读取失败'));
+    mockGetBackgroundPipelineEnabled.mockRejectedValueOnce(
+      new Error('开关读取失败'),
+    );
     mockGetLLMConfigs.mockRejectedValueOnce(new Error('LLM 读取失败'));
     const bridgeSpy = jest.spyOn(PipelineForeground, 'setEnabled');
     await useSettingsStore.getState().loadSettings();

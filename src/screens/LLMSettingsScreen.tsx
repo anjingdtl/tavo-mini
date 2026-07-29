@@ -21,6 +21,7 @@ import {
   spacing,
 } from '../components/ui';
 import { LocalModelSelector } from '../components/LocalModelSelector';
+import { Gauge } from 'lucide-react-native';
 import { useSettingsStore } from '../store/settingsStore';
 import { useThemeStore } from '../store/themeStore';
 import { testLLMConnection } from '../services/llm';
@@ -173,9 +174,7 @@ export const LLMSettingsScreen: React.FC = () => {
           text: '同步',
           onPress: async () => {
             try {
-              const tokens = await syncPipelineMaxTokensFromContextWindow(
-                next,
-              );
+              const tokens = await syncPipelineMaxTokensFromContextWindow(next);
               Toast.show({
                 type: 'success',
                 text1: '流水线 max_tokens 已同步',
@@ -498,6 +497,43 @@ export const LLMSettingsScreen: React.FC = () => {
           placeholder="4096"
           keyboardType="numeric"
         />
+        {draft.provider_type === 'openai_compatible' ? (
+          <View
+            style={[
+              styles.contextAutomation,
+              {
+                backgroundColor: theme.colors.card,
+                borderColor: theme.colors.border,
+              },
+            ]}
+          >
+            <View style={styles.contextAutomationText}>
+              <Text
+                style={[
+                  styles.networkPolicyTitle,
+                  { color: theme.colors.textPrimary },
+                ]}
+              >
+                上下文自动化配置
+              </Text>
+              <Text
+                style={[
+                  styles.networkPolicyDescription,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
+                按模型上下文长度自动分配滑动窗口、流水线和资料 Token 预算。
+              </Text>
+            </View>
+            <Button
+              label="配置"
+              icon={Gauge}
+              variant="secondary"
+              compact
+              onPress={() => navigation.navigate('ContextAutoConfig')}
+            />
+          </View>
+        ) : null}
         <Field
           testID="llm-max-output-tokens"
           label="最大输出 Token"
@@ -591,4 +627,14 @@ const styles = StyleSheet.create({
   networkPolicyText: { flex: 1, gap: spacing.xs },
   networkPolicyTitle: { fontSize: 14, fontWeight: '800' },
   networkPolicyDescription: { fontSize: 12, lineHeight: 18 },
+  contextAutomation: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  contextAutomationText: { flex: 1, gap: spacing.xs },
 });

@@ -1,12 +1,37 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  Alert,
+  FlatList,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { Download, Plus, Trash2, Upload, X } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
-import { Button, Card, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import {
+  Button,
+  Card,
+  EmptyState,
+  Field,
+  Header,
+  Screen,
+  SegmentedControl,
+  spacing,
+} from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
-import { exportShineWriterNovelJSON, exportToMarkdown, exportToText } from '../services/exportService';
-import { pickAndPreviewProjectPackage, importProjectPackage } from '../services/projectImport';
+import {
+  exportShineWriterNovelJSON,
+  exportToMarkdown,
+  exportToText,
+} from '../services/exportService';
+import {
+  pickAndPreviewProjectPackage,
+  importProjectPackage,
+} from '../services/projectImport';
 import {
   NEW_PROJECT_MODE_OPTIONS,
   PROJECT_MODE_LABELS,
@@ -16,7 +41,16 @@ import type { Project, ProjectMode } from '../types/novel';
 
 export const ProjectListScreen: React.FC = () => {
   const { theme } = useThemeStore();
-  const { projects, currentProject, loadProjects, createProject, deleteProject, setCurrentProject } = useProjectStore();
+  const {
+    projects,
+    currentProject,
+    loadProjects,
+    createProject,
+    deleteProject,
+    setCurrentProject,
+    workspaceMode,
+    selectWorkspaceMode,
+  } = useProjectStore();
   const [showNewModal, setShowNewModal] = useState(false);
   const [newName, setNewName] = useState('');
   const [newMode, setNewMode] = useState<ProjectMode>('outline');
@@ -24,16 +58,37 @@ export const ProjectListScreen: React.FC = () => {
   const [importing, setImporting] = useState(false);
   const [exportingId, setExportingId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [modeFilter, setModeFilter] = useState<'outline' | 'continuation'>('outline');
+  const [modeFilter, setModeFilter] = useState<'outline' | 'continuation'>(
+    workspaceMode,
+  );
 
-  const filteredProjects = projects.filter(project =>
-    project.mode === modeFilter &&
-    (!searchQuery.trim() || project.name.toLowerCase().includes(searchQuery.trim().toLowerCase())),
+  const filteredProjects = projects.filter(
+    project =>
+      project.mode === modeFilter &&
+      (!searchQuery.trim() ||
+        project.name.toLowerCase().includes(searchQuery.trim().toLowerCase())),
   );
 
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
+
+  useEffect(() => {
+    setModeFilter(workspaceMode);
+  }, [workspaceMode]);
+
+  const selectMode = (mode: 'outline' | 'continuation') => {
+    setModeFilter(mode);
+    selectWorkspaceMode(mode).catch(error => {
+      Toast.show({
+        type: 'error',
+        text1: '切换项目模式失败',
+        text2: error?.message,
+      });
+    });
+    // The workspace mode changes immediately, including when this mode has no
+    // project, so the bottom navigation no longer waits for a card tap.
+  };
 
   const handleCreate = async () => {
     const name = newName.trim();
@@ -45,7 +100,10 @@ export const ProjectListScreen: React.FC = () => {
       setNewMode('outline');
       setShowNewModal(false);
     } catch (error: any) {
-      Alert.alert('创建项目失败', error?.message || '数据库写入失败，请重启应用后再试。');
+      Alert.alert(
+        '创建项目失败',
+        error?.message || '数据库写入失败，请重启应用后再试。',
+      );
     } finally {
       setCreating(false);
     }
@@ -69,7 +127,10 @@ export const ProjectListScreen: React.FC = () => {
     ]);
   };
 
-  const exportProject = async (project: Project, type: 'md' | 'txt' | 'json') => {
+  const exportProject = async (
+    project: Project,
+    type: 'md' | 'txt' | 'json',
+  ) => {
     // 防重复点击：同一项目导出进行中时拒绝再次触发
     if (exportingId === project.id) return;
     setExportingId(project.id);
@@ -78,8 +139,8 @@ export const ProjectListScreen: React.FC = () => {
         type === 'md'
           ? await exportToMarkdown(project.id)
           : type === 'txt'
-            ? await exportToText(project.id)
-            : await exportShineWriterNovelJSON(project.id);
+          ? await exportToText(project.id)
+          : await exportShineWriterNovelJSON(project.id);
       Alert.alert('导出成功', path);
     } catch (error: any) {
       Alert.alert('导出失败', error.message);
@@ -107,8 +168,12 @@ export const ProjectListScreen: React.FC = () => {
       Alert.alert(
         '导入项目',
         `项目名：${preview.name}\n模式：${
-          isValidProjectMode(preview.mode) ? PROJECT_MODE_LABELS[preview.mode] : preview.mode
-        }\n章节：${preview.chapterCount}\n资料：${preview.resourceCount}\n\n将作为新项目导入。`,
+          isValidProjectMode(preview.mode)
+            ? PROJECT_MODE_LABELS[preview.mode]
+            : preview.mode
+        }\n章节：${preview.chapterCount}\n资料：${
+          preview.resourceCount
+        }\n\n将作为新项目导入。`,
         [
           { text: '取消', style: 'cancel' },
           {
@@ -117,7 +182,9 @@ export const ProjectListScreen: React.FC = () => {
               try {
                 const newId = await importProjectPackage(pkg);
                 await loadProjects();
-                const newProject = useProjectStore.getState().projects.find(p => p.id === newId);
+                const newProject = useProjectStore
+                  .getState()
+                  .projects.find(p => p.id === newId);
                 if (newProject) setCurrentProject(newProject);
                 Alert.alert('导入成功', `项目「${preview.name}」已导入。`);
               } catch (error: any) {
@@ -137,23 +204,54 @@ export const ProjectListScreen: React.FC = () => {
   const renderProject = ({ item }: { item: Project }) => {
     const active = currentProject?.id === item.id;
     return (
-      <TouchableOpacity onPress={() => setCurrentProject(item)} activeOpacity={0.75}>
-        <Card style={active ? [styles.activeCard, { borderColor: theme.colors.accent }] : undefined}>
+      <TouchableOpacity
+        onPress={() => setCurrentProject(item)}
+        activeOpacity={0.75}
+      >
+        <Card
+          style={
+            active
+              ? [styles.activeCard, { borderColor: theme.colors.accent }]
+              : undefined
+          }
+        >
           <View style={styles.cardHeader}>
             <View style={styles.cardText}>
-              <Text style={[styles.projectName, { color: theme.colors.textPrimary }]}>{item.name}</Text>
-              <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-                {PROJECT_MODE_LABELS[item.mode] ?? item.mode} · 更新于 {new Date(item.updated_at).toLocaleDateString('zh-CN')}
+              <Text
+                style={[
+                  styles.projectName,
+                  { color: theme.colors.textPrimary },
+                ]}
+              >
+                {item.name}
+              </Text>
+              <Text
+                style={[styles.meta, { color: theme.colors.textSecondary }]}
+              >
+                {PROJECT_MODE_LABELS[item.mode] ?? item.mode} · 更新于{' '}
+                {new Date(item.updated_at).toLocaleDateString('zh-CN')}
               </Text>
             </View>
-            <TouchableOpacity accessibilityLabel="导出项目" onPress={() => showExportOptions(item)} style={styles.iconButton}>
+            <TouchableOpacity
+              accessibilityLabel="导出项目"
+              onPress={() => showExportOptions(item)}
+              style={styles.iconButton}
+            >
               <Download size={18} color={theme.colors.accent} />
             </TouchableOpacity>
-            <TouchableOpacity accessibilityLabel="删除项目" onPress={() => confirmDelete(item)} style={styles.iconButton}>
+            <TouchableOpacity
+              accessibilityLabel="删除项目"
+              onPress={() => confirmDelete(item)}
+              style={styles.iconButton}
+            >
               <Trash2 size={18} color={theme.colors.danger} />
             </TouchableOpacity>
           </View>
-          {active ? <Text style={[styles.activeText, { color: theme.colors.accent }]}>当前工作项目</Text> : null}
+          {active ? (
+            <Text style={[styles.activeText, { color: theme.colors.accent }]}>
+              当前工作项目
+            </Text>
+          ) : null}
         </Card>
       </TouchableOpacity>
     );
@@ -161,28 +259,79 @@ export const ProjectListScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="作品库" subtitle={modeFilter === 'continuation' ? '原著接入、Canon 与续写工作流' : '从大纲、章节和自有资料开始创作'} action={
-        <View style={styles.headerActions}>
-          <Button label="导入" icon={Upload} variant="ghost" onPress={handleImport} disabled={importing} compact />
-          <Button label="新建" icon={Plus} onPress={() => setShowNewModal(true)} compact />
-        </View>
-      } />
+      <Header
+        title="作品库"
+        subtitle={
+          modeFilter === 'continuation'
+            ? '原著接入、Canon 与续写工作流'
+            : '从大纲、章节和自有资料开始创作'
+        }
+        action={
+          <View style={styles.headerActions}>
+            <Button
+              label="导入"
+              icon={Upload}
+              variant="ghost"
+              onPress={handleImport}
+              disabled={importing}
+              compact
+            />
+            <Button
+              label="新建"
+              icon={Plus}
+              onPress={() => setShowNewModal(true)}
+              compact
+            />
+          </View>
+        }
+      />
       <View style={styles.modeTabs}>
         <SegmentedControl
           value={modeFilter}
-          onChange={value => setModeFilter(value as 'outline' | 'continuation')}
+          onChange={value => selectMode(value as 'outline' | 'continuation')}
           size="prominent"
           options={[
-            { value: 'outline', label: `大纲创作（${projects.filter(p => p.mode === 'outline').length}）` },
-            { value: 'continuation', label: `原著续写（${projects.filter(p => p.mode === 'continuation').length}）` },
+            {
+              value: 'outline',
+              label: `大纲创作（${
+                projects.filter(p => p.mode === 'outline').length
+              }）`,
+            },
+            {
+              value: 'continuation',
+              label: `原著续写（${
+                projects.filter(p => p.mode === 'continuation').length
+              }）`,
+            },
           ]}
         />
       </View>
       {filteredProjects.length === 0 && !searchQuery.trim() ? (
         <EmptyState
-          title={modeFilter === 'continuation' ? '还没有原著续写项目' : '还没有大纲创作作品'}
-          description={modeFilter === 'continuation' ? '创建后先导入原著、设置边界并完成 Canon 分析。' : '创建后即可编写章节、整理资料并调用 AI 流水线。'}
-          action={<Button label={modeFilter === 'continuation' ? '新建原著续写项目' : '新建大纲作品'} icon={Plus} onPress={() => { setNewMode(modeFilter); setShowNewModal(true); }} />}
+          title={
+            modeFilter === 'continuation'
+              ? '还没有原著续写项目'
+              : '还没有大纲创作作品'
+          }
+          description={
+            modeFilter === 'continuation'
+              ? '创建后先导入原著、设置边界并完成 Canon 分析。'
+              : '创建后即可编写章节、整理资料并调用 AI 流水线。'
+          }
+          action={
+            <Button
+              label={
+                modeFilter === 'continuation'
+                  ? '新建原著续写项目'
+                  : '新建大纲作品'
+              }
+              icon={Plus}
+              onPress={() => {
+                setNewMode(modeFilter);
+                setShowNewModal(true);
+              }}
+            />
+          }
         />
       ) : (
         <>
@@ -208,17 +357,40 @@ export const ProjectListScreen: React.FC = () => {
             </View>
           </View>
           {filteredProjects.length === 0 ? (
-            <EmptyState title="无匹配项目" description="没有找到匹配的项目，试试其他关键词。" />
+            <EmptyState
+              title="无匹配项目"
+              description="没有找到匹配的项目，试试其他关键词。"
+            />
           ) : (
-            <FlatList data={filteredProjects} keyExtractor={(item) => String(item.id)} renderItem={renderProject} contentContainerStyle={styles.list} />
+            <FlatList
+              data={filteredProjects}
+              keyExtractor={item => String(item.id)}
+              renderItem={renderProject}
+              contentContainerStyle={styles.list}
+            />
           )}
         </>
       )}
 
-      <Modal visible={showNewModal} transparent animationType="fade" onRequestClose={() => setShowNewModal(false)}>
-        <Pressable style={styles.overlay} onPress={() => setShowNewModal(false)}>
-          <Pressable style={[styles.modal, { backgroundColor: theme.colors.surface }]} onPress={(event) => event.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>新建{newMode === 'continuation' ? '原著续写项目' : '大纲作品'}</Text>
+      <Modal
+        visible={showNewModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowNewModal(false)}
+      >
+        <Pressable
+          style={styles.overlay}
+          onPress={() => setShowNewModal(false)}
+        >
+          <Pressable
+            style={[styles.modal, { backgroundColor: theme.colors.surface }]}
+            onPress={event => event.stopPropagation()}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
+              新建{newMode === 'continuation' ? '原著续写项目' : '大纲作品'}
+            </Text>
             <Field
               testID="new-project-name"
               label="项目名称"
@@ -233,8 +405,16 @@ export const ProjectListScreen: React.FC = () => {
               options={NEW_PROJECT_MODE_OPTIONS.map(o => ({ ...o }))}
             />
             <View style={styles.modalActions}>
-              <Button label="取消" variant="ghost" onPress={() => setShowNewModal(false)} />
-              <Button label={creating ? '创建中...' : '创建'} onPress={handleCreate} disabled={!newName.trim() || creating} />
+              <Button
+                label="取消"
+                variant="ghost"
+                onPress={() => setShowNewModal(false)}
+              />
+              <Button
+                label={creating ? '创建中...' : '创建'}
+                onPress={handleCreate}
+                disabled={!newName.trim() || creating}
+              />
             </View>
           </Pressable>
         </Pressable>
@@ -260,14 +440,45 @@ const styles = StyleSheet.create({
   },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   cardText: { flex: 1 },
-  projectName: { fontSize: 19, fontFamily: 'serif', fontWeight: '700', marginBottom: 5 },
+  projectName: {
+    fontSize: 19,
+    fontFamily: 'serif',
+    fontWeight: '700',
+    marginBottom: 5,
+  },
   meta: { fontSize: 12, lineHeight: 18 },
-  activeText: { marginTop: spacing.sm, fontSize: 12, fontFamily: 'serif', fontWeight: '700', letterSpacing: 0.3 },
-  iconButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', padding: spacing.xl },
+  activeText: {
+    marginTop: spacing.sm,
+    fontSize: 12,
+    fontFamily: 'serif',
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  iconButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    padding: spacing.xl,
+  },
   modal: { borderRadius: 10, padding: spacing.lg },
-  modalTitle: { fontSize: 20, fontFamily: 'serif', fontWeight: '700', marginBottom: spacing.md },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md, marginTop: spacing.lg },
+  modalTitle: {
+    fontSize: 20,
+    fontFamily: 'serif',
+    fontWeight: '700',
+    marginBottom: spacing.md,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.md,
+    marginTop: spacing.lg,
+  },
   activeCard: { borderLeftWidth: 4 },
   headerActions: { flexDirection: 'row', gap: spacing.xs },
 });

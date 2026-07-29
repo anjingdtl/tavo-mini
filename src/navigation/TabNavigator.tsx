@@ -1,7 +1,16 @@
 import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { createNativeStackNavigator, NativeStackScreenProps } from '@react-navigation/native-stack';
-import { BookOpen, Boxes, FolderKanban, Hammer, Settings } from 'lucide-react-native';
+import {
+  createNativeStackNavigator,
+  NativeStackScreenProps,
+} from '@react-navigation/native-stack';
+import {
+  BookOpen,
+  Boxes,
+  FolderKanban,
+  Hammer,
+  Settings,
+} from 'lucide-react-native';
 import { Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useThemeStore } from '../store/themeStore';
@@ -39,6 +48,7 @@ import { VoiceSettingsScreen } from '../screens/VoiceSettingsScreen';
 import { LocalModelManagerScreen } from '../screens/LocalModelManagerScreen';
 import { ContextAutoConfigScreen } from '../screens/ContextAutoConfigScreen';
 import { StoryMemoryScreen } from '../screens/StoryMemoryScreen';
+import { ContinuationGenerationConfigScreen } from '../screens/continuation/ContinuationGenerationConfigScreen';
 
 export type EditorStackParamList = {
   EditorMain: undefined;
@@ -50,9 +60,17 @@ export type EditorStackParamList = {
   ContextConfig: undefined;
   PipelineResult: { taskId: string };
   ContinuationResult: { runId: string };
-  RevisionHistory: { targetType: 'chapter' | 'freeform'; targetId: number; projectId: number };
+  RevisionHistory: {
+    targetType: 'chapter' | 'freeform';
+    targetId: number;
+    projectId: number;
+  };
   ContextPreview: { chapterId: number };
-  DraftPreview: { targetType: 'chapter' | 'freeform'; targetId: number; projectId: number };
+  DraftPreview: {
+    targetType: 'chapter' | 'freeform';
+    targetId: number;
+    projectId: number;
+  };
 };
 
 export type SettingsStackParamList = {
@@ -67,6 +85,7 @@ export type SettingsStackParamList = {
   UsageStats: undefined;
   LocalModelManager: undefined;
   ContextAutoConfig: undefined;
+  ContinuationGenerationConfig: undefined;
 };
 
 /**
@@ -91,7 +110,12 @@ export type ResourceStackParamList = {
   CanonExperiences: undefined;
   CanonAnalysisTasks: undefined;
   ResourceLibrary: {
-    initialTab?: 'continuation' | 'characters' | 'worldbook' | 'notes' | 'presets';
+    initialTab?:
+      | 'continuation'
+      | 'characters'
+      | 'worldbook'
+      | 'notes'
+      | 'presets';
   };
 };
 
@@ -110,28 +134,68 @@ const ProjectStackScreen = () => (
 const EditorMainScreen = () => {
   const { currentProject } = useProjectStore();
   if (!currentProject) return <OutlineEditor />;
-  if (currentProject.mode === 'continuation') return <ContinuationWorkspaceScreen />;
-  return currentProject.mode === 'freeform' ? <FreeformEditor /> : <OutlineEditor />;
+  if (currentProject.mode === 'continuation')
+    return <ContinuationWorkspaceScreen />;
+  return currentProject.mode === 'freeform' ? (
+    <FreeformEditor />
+  ) : (
+    <OutlineEditor />
+  );
 };
 
-const ChapterEditorRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'ChapterEditor'>) => (
-  <ChapterEditor key={route.params.chapterId} chapterId={route.params.chapterId} onClose={() => navigation.goBack()} />
+const ChapterEditorRoute = ({
+  route,
+  navigation,
+}: NativeStackScreenProps<EditorStackParamList, 'ChapterEditor'>) => (
+  <ChapterEditor
+    key={route.params.chapterId}
+    chapterId={route.params.chapterId}
+    onClose={() => navigation.goBack()}
+  />
 );
 
-const ChapterSummaryRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'ChapterSummary'>) => (
-  <ChapterSummaryScreen chapterId={route.params.chapterId} onClose={() => navigation.goBack()} />
+const ChapterSummaryRoute = ({
+  route,
+  navigation,
+}: NativeStackScreenProps<EditorStackParamList, 'ChapterSummary'>) => (
+  <ChapterSummaryScreen
+    chapterId={route.params.chapterId}
+    onClose={() => navigation.goBack()}
+  />
 );
 
-const RevisionHistoryRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'RevisionHistory'>) => (
-  <RevisionHistoryScreen targetType={route.params.targetType} targetId={route.params.targetId} projectId={route.params.projectId} onClose={() => navigation.goBack()} />
+const RevisionHistoryRoute = ({
+  route,
+  navigation,
+}: NativeStackScreenProps<EditorStackParamList, 'RevisionHistory'>) => (
+  <RevisionHistoryScreen
+    targetType={route.params.targetType}
+    targetId={route.params.targetId}
+    projectId={route.params.projectId}
+    onClose={() => navigation.goBack()}
+  />
 );
 
-const ContextPreviewRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'ContextPreview'>) => (
-  <ContextPreviewScreen chapterId={route.params.chapterId} onClose={() => navigation.goBack()} />
+const ContextPreviewRoute = ({
+  route,
+  navigation,
+}: NativeStackScreenProps<EditorStackParamList, 'ContextPreview'>) => (
+  <ContextPreviewScreen
+    chapterId={route.params.chapterId}
+    onClose={() => navigation.goBack()}
+  />
 );
 
-const DraftPreviewRoute = ({ route, navigation }: NativeStackScreenProps<EditorStackParamList, 'DraftPreview'>) => (
-  <DraftPreviewScreen targetType={route.params.targetType} targetId={route.params.targetId} projectId={route.params.projectId} onClose={() => navigation.goBack()} />
+const DraftPreviewRoute = ({
+  route,
+  navigation,
+}: NativeStackScreenProps<EditorStackParamList, 'DraftPreview'>) => (
+  <DraftPreviewScreen
+    targetType={route.params.targetType}
+    targetId={route.params.targetId}
+    projectId={route.params.projectId}
+    onClose={() => navigation.goBack()}
+  />
 );
 
 const ContinuationResultRoute = ({
@@ -154,7 +218,9 @@ const SettingsContinuationResultRoute = ({
   />
 );
 
-const StoryMemoryRoute = ({ navigation }: NativeStackScreenProps<EditorStackParamList, 'StoryMemory'>) => (
+const StoryMemoryRoute = ({
+  navigation,
+}: NativeStackScreenProps<EditorStackParamList, 'StoryMemory'>) => (
   <StoryMemoryScreen onClose={() => navigation.goBack()} />
 );
 
@@ -167,9 +233,18 @@ const EditorStackScreen = () => (
     <EditorStack.Screen name="StoryOverview" component={StoryOverview} />
     <EditorStack.Screen name="StoryMemory" component={StoryMemoryRoute} />
     <EditorStack.Screen name="ContextConfig" component={ContextConfigScreen} />
-    <EditorStack.Screen name="PipelineResult" component={PipelineResultScreen} />
-    <EditorStack.Screen name="ContinuationResult" component={ContinuationResultRoute} />
-    <EditorStack.Screen name="RevisionHistory" component={RevisionHistoryRoute} />
+    <EditorStack.Screen
+      name="PipelineResult"
+      component={PipelineResultScreen}
+    />
+    <EditorStack.Screen
+      name="ContinuationResult"
+      component={ContinuationResultRoute}
+    />
+    <EditorStack.Screen
+      name="RevisionHistory"
+      component={RevisionHistoryRoute}
+    />
     <EditorStack.Screen name="ContextPreview" component={ContextPreviewRoute} />
     <EditorStack.Screen name="DraftPreview" component={DraftPreviewRoute} />
   </EditorStack.Navigator>
@@ -177,32 +252,69 @@ const EditorStackScreen = () => (
 
 const SettingsStackScreen = () => (
   <SettingsStack.Navigator screenOptions={{ headerShown: false }}>
-      <SettingsStack.Screen name="SettingsMain" component={SettingsScreen} />
-      <SettingsStack.Screen name="LLMSettings" component={LLMSettingsScreen} />
-      <SettingsStack.Screen name="VoiceSettings" component={VoiceSettingsScreen} />
-      <SettingsStack.Screen name="PipelineConfig" component={PipelineConfigScreen} />
-      <SettingsStack.Screen name="PipelineTask" component={PipelineTaskScreen} />
-      <SettingsStack.Screen name="PipelineResult" component={PipelineResultScreen} />
-      <SettingsStack.Screen name="ContinuationResult" component={SettingsContinuationResultRoute} />
-      <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
-      <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
-      <SettingsStack.Screen name="LocalModelManager" component={LocalModelManagerScreen} />
-      <SettingsStack.Screen name="ContextAutoConfig" component={ContextAutoConfigScreen} />
-    </SettingsStack.Navigator>
+    <SettingsStack.Screen name="SettingsMain" component={SettingsScreen} />
+    <SettingsStack.Screen name="LLMSettings" component={LLMSettingsScreen} />
+    <SettingsStack.Screen
+      name="VoiceSettings"
+      component={VoiceSettingsScreen}
+    />
+    <SettingsStack.Screen
+      name="PipelineConfig"
+      component={PipelineConfigScreen}
+    />
+    <SettingsStack.Screen name="PipelineTask" component={PipelineTaskScreen} />
+    <SettingsStack.Screen
+      name="PipelineResult"
+      component={PipelineResultScreen}
+    />
+    <SettingsStack.Screen
+      name="ContinuationResult"
+      component={SettingsContinuationResultRoute}
+    />
+    <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
+    <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
+    <SettingsStack.Screen
+      name="LocalModelManager"
+      component={LocalModelManagerScreen}
+    />
+    <SettingsStack.Screen
+      name="ContextAutoConfig"
+      component={ContextAutoConfigScreen}
+    />
+    <SettingsStack.Screen
+      name="ContinuationGenerationConfig"
+      component={ContinuationGenerationConfigScreen}
+    />
+  </SettingsStack.Navigator>
 );
 
 const ResourceStackScreen = () => (
-  <ResourceStack.Navigator screenOptions={{ headerShown: false }} initialRouteName="ResourceLibrary">
+  <ResourceStack.Navigator
+    screenOptions={{ headerShown: false }}
+    initialRouteName="ResourceLibrary"
+  >
     <ResourceStack.Screen name="ResourceLibrary" component={ResourceLibrary} />
-    <ResourceStack.Screen name="ContinuationHome" component={ContinuationHomeScreen} />
-    <ResourceStack.Screen name="ContinuationSourceChapters" component={ContinuationSourceChaptersScreen} />
-    <ResourceStack.Screen name="ContinuationBoundary" component={ContinuationBoundaryScreen} />
+    <ResourceStack.Screen
+      name="ContinuationHome"
+      component={ContinuationHomeScreen}
+    />
+    <ResourceStack.Screen
+      name="ContinuationSourceChapters"
+      component={ContinuationSourceChaptersScreen}
+    />
+    <ResourceStack.Screen
+      name="ContinuationBoundary"
+      component={ContinuationBoundaryScreen}
+    />
     <ResourceStack.Screen name="ContinuationStateReview">
       {({ navigation }) => (
         <ContinuationStateReviewScreen onClose={() => navigation.goBack()} />
       )}
     </ResourceStack.Screen>
-    <ResourceStack.Screen name="CanonAnalysisOverview" component={CanonAnalysisOverviewScreen} />
+    <ResourceStack.Screen
+      name="CanonAnalysisOverview"
+      component={CanonAnalysisOverviewScreen}
+    />
     <ResourceStack.Screen name="CanonWorldRules">
       {props => <CanonCategoryListScreen {...props} category="world" />}
     </ResourceStack.Screen>
@@ -218,17 +330,28 @@ const ResourceStackScreen = () => (
     <ResourceStack.Screen name="CanonExperiences">
       {props => <CanonCategoryListScreen {...props} category="experiences" />}
     </ResourceStack.Screen>
-    <ResourceStack.Screen name="CanonAnalysisTasks" component={CanonAnalysisTasksScreen} />
+    <ResourceStack.Screen
+      name="CanonAnalysisTasks"
+      component={CanonAnalysisTasksScreen}
+    />
   </ResourceStack.Navigator>
 );
 
 export const TabNavigator: React.FC = () => {
   const { theme } = useThemeStore();
-  const { currentProject } = useProjectStore();
+  const { workspaceMode } = useProjectStore();
   const insets = useSafeAreaInsets();
-  const isContinuation = currentProject?.mode === 'continuation';
+  const isContinuation = workspaceMode === 'continuation';
 
-  const tabBarIcon = ({ route, color, size }: { route: any; color: string; size: number }) => {
+  const tabBarIcon = ({
+    route,
+    color,
+    size,
+  }: {
+    route: any;
+    color: string;
+    size: number;
+  }) => {
     const props = { color, size: size || 20 };
     if (route.name === 'Projects') return <FolderKanban {...props} />;
     if (route.name === 'Editor') return <BookOpen {...props} />;
@@ -254,15 +377,41 @@ export const TabNavigator: React.FC = () => {
           elevation: 0,
         },
         tabBarItemStyle: { paddingHorizontal: 2 },
-        tabBarLabelStyle: { fontSize: 12, fontFamily: 'serif', fontWeight: '700', letterSpacing: 0.3 },
-        tabBarIcon: ({ color, size }) => tabBarIcon({ route, color, size: size || 20 }),
+        tabBarLabelStyle: {
+          fontSize: 12,
+          fontFamily: 'serif',
+          fontWeight: '700',
+          letterSpacing: 0.3,
+        },
+        tabBarIcon: ({ color, size }) =>
+          tabBarIcon({ route, color, size: size || 20 }),
       })}
     >
-      <Tab.Screen name="Projects" component={ProjectStackScreen} options={{ tabBarLabel: '项目' }} />
-      <Tab.Screen name="Editor" component={EditorStackScreen} options={{ tabBarLabel: isContinuation ? '续写' : '写作' }} />
-      <Tab.Screen name="Build" component={BuildScreen} options={{ tabBarLabel: '构建' }} />
-      <Tab.Screen name="Resources" component={ResourceStackScreen} options={{ tabBarLabel: isContinuation ? '续写资料' : '资料' }} />
-      <Tab.Screen name="Settings" component={SettingsStackScreen} options={{ tabBarLabel: '设置' }} />
+      <Tab.Screen
+        name="Projects"
+        component={ProjectStackScreen}
+        options={{ tabBarLabel: '项目' }}
+      />
+      <Tab.Screen
+        name="Editor"
+        component={EditorStackScreen}
+        options={{ tabBarLabel: isContinuation ? '续写' : '写作' }}
+      />
+      <Tab.Screen
+        name="Build"
+        component={BuildScreen}
+        options={{ tabBarLabel: '构建' }}
+      />
+      <Tab.Screen
+        name="Resources"
+        component={ResourceStackScreen}
+        options={{ tabBarLabel: isContinuation ? '续写资料' : '资料' }}
+      />
+      <Tab.Screen
+        name="Settings"
+        component={SettingsStackScreen}
+        options={{ tabBarLabel: '设置' }}
+      />
     </Tab.Navigator>
   );
 };
