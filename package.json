@@ -69,6 +69,18 @@
   "engines": {
     "node": ">=24.3.0"
   },
+  "overrides": {
+    "body-parser": "2.3.0",
+    "joi": "17.13.4",
+    "js-yaml": "4.3.0",
+    "launch-editor": "2.14.1",
+    "shell-quote": "1.10.0",
+    "brace-expansion": "1.1.17",
+    "minimatch@^10": {
+      "brace-expansion": "5.0.8"
+    }
+  },
+  "//overrides": "Security patches for dev-only transitive deps (ESLint/Jest/Metro/RN CLI); none ship in the APK. `npm audit` still reports ~34 high afterward because npm's audit model does not credit overrides that patch minimatch@3's brace-expansion sub-dependency — the vulnerable code path is in fact resolved at runtime (brace-expansion -> 1.1.17/5.0.8, both patched). The only way to zero the count is a breaking Jest/ESLint major upgrade, intentionally not done. Re-evaluate when upgrading @react-native/* toolchain.",
   "codegenConfig": {
     "name": "ShineWriterSpec",
     "type": "modules",
