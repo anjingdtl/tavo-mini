@@ -2,6 +2,12 @@ import { requireContinuationTextImport } from '../native/ContinuationTextImportM
 
 const DECODE_CHUNK_BYTES = 192 * 1024;
 
+export interface DecodedTextFile {
+  text: string;
+  /** Native detector result, retained for UI feedback such as “GB18030”. */
+  encoding: string;
+}
+
 /**
  * Read a user-selected TXT file with Android's native charset detector.
  *
@@ -10,7 +16,9 @@ const DECODE_CHUNK_BYTES = 192 * 1024;
  * chunked across the native bridge so large notes do not require a base64
  * copy in JavaScript.
  */
-export async function readTextFileWithAutoEncoding(path: string): Promise<string> {
+export async function readTextFileWithAutoEncodingResult(
+  path: string,
+): Promise<DecodedTextFile> {
   const decoder = requireContinuationTextImport();
   const detected = await decoder.detectEncoding(path);
   const fileSizeBytes = Number(detected.fileSizeBytes);
@@ -18,7 +26,9 @@ export async function readTextFileWithAutoEncoding(path: string): Promise<string
   if (!Number.isFinite(fileSizeBytes) || fileSizeBytes < 0) {
     throw new Error('无法读取 TXT 文件大小，请重新选择文件。');
   }
-  if (fileSizeBytes === 0) return '';
+  if (fileSizeBytes === 0) {
+    return { text: '', encoding: detected.encoding };
+  }
 
   const parts: string[] = [];
   let byteOffset = 0;
@@ -52,5 +62,17 @@ export async function readTextFileWithAutoEncoding(path: string): Promise<string
 
   // Java's UTF decoders preserve BOM as U+FEFF; it is metadata rather than
   // user-authored note content and should not enter the database.
-  return parts.join('').replace(/^\uFEFF/, '');
+  return {
+    text: parts.join('').replace(/^\uFEFF/, ''),
+    encoding: detected.encoding,
+  };
+}
+
+/**
+ * Backwards-compatible text-only reader for existing note-import callers.
+ */
+export async function readTextFileWithAutoEncoding(
+  path: string,
+): Promise<string> {
+  return (await readTextFileWithAutoEncodingResult(path)).text;
 }

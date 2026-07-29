@@ -11,9 +11,17 @@ export interface TextSourceSection {
 
 export interface ParsedTextSource {
   name: string;
-  encoding: 'utf-8' | 'utf-16le' | 'utf-16be';
+  encoding: TextSourceEncoding;
   sections: TextSourceSection[];
 }
+
+/** Encodings accepted by the shared Android TXT decoder. */
+export type TextSourceEncoding =
+  | 'utf-8'
+  | 'utf-16le'
+  | 'utf-16be'
+  | 'gbk'
+  | 'gb18030';
 
 function decodeBase64(base64: string): Uint8Array {
   const atobFn = (globalThis as any).atob;
@@ -21,7 +29,8 @@ function decodeBase64(base64: string): Uint8Array {
     typeof atobFn === 'function'
       ? atobFn(base64.replace(/\s/g, ''))
       : (() => {
-          const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+          const alphabet =
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
           let output = '';
           let buffer = 0;
           let bits = 0;
@@ -38,13 +47,16 @@ function decodeBase64(base64: string): Uint8Array {
           }
           return output;
         })();
-  return Uint8Array.from(binary as string, (char: string) => char.charCodeAt(0));
+  return Uint8Array.from(binary as string, (char: string) =>
+    char.charCodeAt(0),
+  );
 }
 
 function decodeUtf8(bytes: Uint8Array): string {
   try {
     let escaped = '';
-    for (const byte of bytes) escaped += `%${byte.toString(16).padStart(2, '0')}`;
+    for (const byte of bytes)
+      escaped += `%${byte.toString(16).padStart(2, '0')}`;
     return decodeURIComponent(escaped);
   } catch {
     throw new Error('TXT 不是有效的 UTF-8 编码，请另存为 UTF-8 后重试。');
@@ -77,21 +89,32 @@ export function decodeTextSourceBase64(base64: string): {
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     return { text: decodeUtf16(bytes.slice(2), false), encoding: 'utf-16be' };
   }
-  const utf8 = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
-    ? bytes.slice(3)
-    : bytes;
+  const utf8 =
+    bytes.length >= 3 &&
+    bytes[0] === 0xef &&
+    bytes[1] === 0xbb &&
+    bytes[2] === 0xbf
+      ? bytes.slice(3)
+      : bytes;
   return { text: decodeUtf8(utf8), encoding: 'utf-8' };
 }
 
 function normalizeText(text: string): string {
-  return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim();
+  return text
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .trim();
 }
 
 function sectionId(index: number): string {
   return `section-${index + 1}`;
 }
 
-function makeSection(index: number, title: string, content: string): TextSourceSection | null {
+function makeSection(
+  index: number,
+  title: string,
+  content: string,
+): TextSourceSection | null {
   const trimmed = content.trim();
   if (!trimmed) return null;
   return {
@@ -103,23 +126,37 @@ function makeSection(index: number, title: string, content: string): TextSourceS
 }
 
 function isHeading(line: string): boolean {
-  return /^#{1,6}\s+\S/.test(line) || /^\s*第[0-9一二三四五六七八九十百千万两]+[章节回]\S*/.test(line);
+  return (
+    /^#{1,6}\s+\S/.test(line) ||
+    /^\s*第[0-9一二三四五六七八九十百千万两]+[章节回]\S*/.test(line)
+  );
 }
 
 function splitUntitledParagraphs(text: string): TextSourceSection[] {
-  const paragraphs = text.split(/\n\s*\n/).map(item => item.trim()).filter(Boolean);
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map(item => item.trim())
+    .filter(Boolean);
   const sections: TextSourceSection[] = [];
   let buffer = '';
   for (const paragraph of paragraphs) {
     if (buffer && visibleLength(buffer) + visibleLength(paragraph) > 2400) {
-      const section = makeSection(sections.length, `片段 ${sections.length + 1}`, buffer);
+      const section = makeSection(
+        sections.length,
+        `片段 ${sections.length + 1}`,
+        buffer,
+      );
       if (section) sections.push(section);
       buffer = paragraph;
     } else {
       buffer = buffer ? `${buffer}\n\n${paragraph}` : paragraph;
     }
   }
-  const last = makeSection(sections.length, `片段 ${sections.length + 1}`, buffer);
+  const last = makeSection(
+    sections.length,
+    `片段 ${sections.length + 1}`,
+    buffer,
+  );
   if (last) sections.push(last);
   return sections;
 }
@@ -132,7 +169,7 @@ function visibleLength(value: string): number {
 export function parseConstructionTextSource(
   text: string,
   fileName = '导入的 TXT',
-  encoding: ParsedTextSource['encoding'] = 'utf-8',
+  encoding: TextSourceEncoding | string = 'utf-8',
 ): ParsedTextSource {
   const normalized = normalizeText(text);
   if (!normalized) throw new Error('TXT 内容为空。');
@@ -145,7 +182,11 @@ export function parseConstructionTextSource(
     let title = '';
     let body: string[] = [];
     const flush = () => {
-      const section = makeSection(sections.length, title || `片段 ${sections.length + 1}`, body.join('\n'));
+      const section = makeSection(
+        sections.length,
+        title || `片段 ${sections.length + 1}`,
+        body.join('\n'),
+      );
       if (section) sections.push(section);
     };
     for (const line of lines) {
@@ -159,12 +200,40 @@ export function parseConstructionTextSource(
     }
     flush();
   }
-  if (sections.length === 0) throw new Error('TXT 中没有可用于构建的有效段落。');
+  if (sections.length === 0)
+    throw new Error('TXT 中没有可用于构建的有效段落。');
   return {
     name: fileName.replace(/\.[^.]+$/, '').trim() || '导入的 TXT',
-    encoding,
+    encoding: normalizeEncoding(encoding),
     sections,
   };
+}
+
+function normalizeEncoding(encoding: string): TextSourceEncoding {
+  const normalized = encoding.toLowerCase().replace(/_/g, '-');
+  switch (normalized) {
+    case 'utf8':
+    case 'utf-8':
+      return 'utf-8';
+    case 'utf16le':
+    case 'utf-16le':
+    case 'utf-16-le':
+      return 'utf-16le';
+    case 'utf16be':
+    case 'utf-16be':
+    case 'utf-16-be':
+      return 'utf-16be';
+    case 'gbk':
+    case 'gb2312':
+      return 'gbk';
+    case 'gb18030':
+      return 'gb18030';
+    default:
+      // The native reader will reject unknown encodings before this parser is
+      // reached. Preserve a safe display value if a future native build adds
+      // a new alias.
+      return 'utf-8';
+  }
 }
 
 export function buildTextSourceSnapshot(
@@ -176,6 +245,9 @@ export function buildTextSourceSnapshot(
   if (sections.length === 0) throw new Error('请至少选择一个 TXT 片段。');
   return [
     `【TXT 来源：${source.name}】已选择 ${sections.length} 段`,
-    ...sections.map((section, index) => `【${index + 1}. ${section.title}】\n${section.content}`),
+    ...sections.map(
+      (section, index) =>
+        `【${index + 1}. ${section.title}】\n${section.content}`,
+    ),
   ].join('\n\n');
 }
