@@ -100,6 +100,19 @@ export async function updateContinuationBoundary(
     charOffsetGlobal: asUtf16Offset(charOffset),
     mode: input.mode,
   });
+
+  // Boundary change renumbers auto-titled continuation chapters to continue
+  // from the new boundary (Spec §11.5, §12). User-custom titles are preserved;
+  // internal positions, state events, Story Memory and generation runs are not
+  // touched. Best-effort: a renumber failure must not roll back the boundary.
+  try {
+    const { renumberContinuationChapterTitles } = await import(
+      './chapterNumbering/continuationChapterNumbering'
+    );
+    await renumberContinuationChapterTitles(projectId);
+  } catch {
+    // Non-fatal: the boundary is already committed; titles re-sync on next load.
+  }
 }
 
 /** Mark Phase 2 analysis outdated without changing the boundary (Spec §5.9). */

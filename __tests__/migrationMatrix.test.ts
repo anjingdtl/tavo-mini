@@ -5,6 +5,10 @@ import { buildV4toV5Statements } from '../src/services/migrations/v4-to-v5';
 import { createMigrationDb } from './migrationTestUtils';
 
 describe('migration schema matrix', () => {
+  // Upgrade every prior schema version that, once migrated, must contain the
+  // full Phase 3 continuation table set. Starting versions 21+ already carry
+  // those tables (created by an earlier 20→21 migration on their own upgrade
+  // path), so the Phase 3 assertions below only hold for fromVersion <= 20.
   test.each(Array.from({ length: 18 }, (_, index) => index + 3))(
     'upgrades schema %i to the current schema',
     async fromVersion => {
@@ -43,6 +47,19 @@ describe('migration schema matrix', () => {
       expect(mock.schemas.has('continuation_state_proposals')).toBe(true);
       expect(mock.schemas.has('continuation_state_events')).toBe(true);
       expect(mock.schemas.has('continuation_state_sync_outbox')).toBe(true);
+      // Schema 26 versioned style profile table exists after every upgrade
+      // path (the v25→v26 migration rebuilds the legacy table).
+      if (fromVersion <= 25) {
+        expect(mock.schemas.has('continuation_style_profiles')).toBe(true);
+        expect(
+          mock.schemas.get('continuation_style_profiles')?.has('profile_hash'),
+        ).toBe(true);
+        expect(
+          mock.schemas
+            .get('continuation_settings')
+            ?.has('active_style_profile_id'),
+        ).toBe(true);
+      }
     },
   );
 
@@ -90,6 +107,9 @@ describe('migration schema matrix', () => {
       'idx_continuation_proposals_project_status',
       'idx_continuation_events_project_position',
       'idx_continuation_outbox_state',
+      // Schema 26 versioned style profile indexes.
+      'idx_continuation_style_profiles_project_state',
+      'idx_continuation_style_profiles_fingerprint',
     ];
     for (const name of required) {
       expect(mock.indexes.has(name)).toBe(true);
@@ -105,5 +125,37 @@ describe('migration schema matrix', () => {
     await runMigrations(mock.database as any, 4);
 
     expect(mock.getCollectionRows()).toBe(1);
+  });
+
+  test('upgrades schema 25 to 26 rebuilding the style profile table', async () => {
+    // Schema 25 already carries the Phase 3 tables; only the 25→26 step runs.
+    const mock = createMigrationDb({ schemaVersion: 25 });
+
+    const result = await runMigrations(mock.database as any, 25);
+
+    expect(result).toMatchObject({ fromVersion: 25, toVersion: SCHEMA_VERSION });
+    expect(mock.settings.get('schema_version')).toBe(String(SCHEMA_VERSION));
+    // Versioned style profile table rebuilt with the new shape.
+    expect(mock.schemas.has('continuation_style_profiles')).toBe(true);
+    expect(
+      mock.schemas.get('continuation_style_profiles')?.has('profile_hash'),
+    ).toBe(true);
+    expect(
+      mock.schemas.get('continuation_style_profiles')?.has('canon_revision'),
+    ).toBe(false);
+    // settings gained the active style pointer.
+    expect(
+      mock.schemas.get('continuation_settings')?.has('active_style_profile_id'),
+    ).toBe(true);
+    // New indexes registered.
+    expect(
+      mock.indexes.has('idx_continuation_style_profiles_project_state'),
+    ).toBe(true);
+    expect(
+      mock.indexes.has('idx_continuation_style_profiles_fingerprint'),
+    ).toBe(true);
+    // analysis_runs rebuilt with the widened stage CHECK, original index kept.
+    expect(mock.schemas.has('continuation_analysis_runs')).toBe(true);
+    expect(mock.indexes.has('idx_analysis_runs_project_state')).toBe(true);
   });
 });

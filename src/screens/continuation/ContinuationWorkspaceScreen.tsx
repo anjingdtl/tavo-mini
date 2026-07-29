@@ -7,6 +7,10 @@ import { useProjectStore } from '../../store/projectStore';
 import * as db from '../../services/database';
 import { useThemeStore } from '../../store/themeStore';
 import type { Chapter } from '../../types/novel';
+import {
+  getContinuationChapterNumbering,
+  getNextContinuationChapterPosition,
+} from '../../services/continuation/chapterNumbering/continuationChapterNumbering';
 
 /** Mode-specific root: continuation never enters the ordinary outline workbench. */
 export const ContinuationWorkspaceScreen: React.FC = () => {
@@ -14,15 +18,31 @@ export const ContinuationWorkspaceScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const navigation = useNavigation<any>();
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [adding, setAdding] = useState(false);
   const load = useCallback(async () => {
     if (!currentProject) return setChapters([]);
     setChapters(await db.getChaptersByProject(currentProject.id));
   }, [currentProject]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
   const add = async () => {
-    if (!currentProject) return;
-    const id = await db.createChapter(currentProject.id, chapters.length);
-    navigation.navigate('ChapterEditor', { chapterId: id });
+    if (!currentProject || adding) return;
+    setAdding(true);
+    try {
+      // New continuation chapter position = max(existing) + 1, never chapters.length
+      // (Spec §11.4: deletions/imports/non-contiguous positions must not duplicate).
+      const position = await getNextContinuationChapterPosition(currentProject.id);
+      // Default title continues from the boundary source chapter (Spec §11.2/§11.6):
+      // a boundary at the end of source chapter 20 → first continuation is 第21章.
+      const numbering = await getContinuationChapterNumbering(currentProject.id);
+      const id = await db.createChapter(
+        currentProject.id,
+        Number(position),
+        numbering.getDefaultTitle(position),
+      );
+      navigation.navigate('ChapterEditor', { chapterId: id });
+    } finally {
+      setAdding(false);
+    }
   };
   if (!currentProject) return <Screen><Header title="原著续写" /><EmptyState title="请先选择续写项目" description="在作品库中创建或选择一个原著续写项目。" /></Screen>;
   return <Screen>
@@ -40,8 +60,35 @@ export const ContinuationWorkspaceScreen: React.FC = () => {
       </Card>
     </View>
     <View style={styles.section}><Text style={[styles.title, { color: theme.colors.textPrimary }]}>续写章节</Text><Text style={[styles.meta, { color: theme.colors.textSecondary }]}>{chapters.length} 章</Text></View>
-    {chapters.length === 0 ? <EmptyState title="还没有续写章节" description="请先在资料页完成原著接入与 Canon 分析，再开始 AI 续写。" action={<Button label="新建续写章节" icon={BookOpen} onPress={() => add().catch(() => {})} />} /> : <FlatList data={chapters} keyExtractor={item => String(item.id)} contentContainerStyle={styles.list} renderItem={({item}) => <Card><TouchableOpacity onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })} accessibilityRole="button" accessibilityLabel={`编辑${item.title || `第 ${item.position + 1} 章`}`}><Text style={[styles.title,{color:theme.colors.textPrimary}]}>{item.title || `第 ${item.position + 1} 章`}</Text><Text style={[styles.meta,{color:theme.colors.textSecondary}]} numberOfLines={2}>{item.synopsis || '未填写续写要求'}</Text></TouchableOpacity><View style={styles.contextAction}><Button label="查看实际上下文" icon={FileSearch} variant="secondary" compact onPress={() => navigation.navigate('ContextPreview', { chapterId: item.id })} /></View></Card>} />}
+    {chapters.length === 0 ? <EmptyState title="还没有续写章节" description="请先在资料页完成原著接入与 Canon 分析，再开始 AI 续写。" action={<Button label="新建续写章节" icon={BookOpen} onPress={() => add().catch(() => {})} />} /> : <ContinuationChapterList chapters={chapters} navigation={navigation} />}
   </Screen>;
+};
+
+/**
+ * Renders continuation chapters with boundary-aware display titles (Spec §11.2).
+ * Internal position stays 0-based ContinuationChapterPosition; the visible number
+ * continues from the source boundary. User-custom titles are never overwritten.
+ */
+const ContinuationChapterList: React.FC<{
+  chapters: Chapter[];
+  navigation: ReturnType<typeof useNavigation<any>>;
+}> = ({ chapters, navigation }) => {
+  const { theme } = useThemeStore();
+  const [numbering, setNumbering] = useState<{ getDisplayTitle: (c: { title: string; position: number }) => string } | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      const { currentProject } = useProjectStore.getState();
+      if (!currentProject) return;
+      getContinuationChapterNumbering(currentProject.id)
+        .then(n => { if (!cancelled) setNumbering(n); })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }, []),
+  );
+  const titleOf = (item: Chapter) =>
+    (numbering?.getDisplayTitle(item)) || item.title || `第 ${item.position + 1} 章`;
+  return <FlatList data={chapters} keyExtractor={item => String(item.id)} contentContainerStyle={styles.list} renderItem={({item}) => <Card><TouchableOpacity onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })} accessibilityRole="button" accessibilityLabel={`编辑${titleOf(item)}`}><Text style={[styles.title,{color:theme.colors.textPrimary}]}>{titleOf(item)}</Text><Text style={[styles.meta,{color:theme.colors.textSecondary}]} numberOfLines={2}>{item.synopsis || '未填写续写要求'}</Text></TouchableOpacity><View style={styles.contextAction}><Button label="查看实际上下文" icon={FileSearch} variant="secondary" compact onPress={() => navigation.navigate('ContextPreview', { chapterId: item.id })} /></View></Card>} />;
 };
 
 const styles = StyleSheet.create({ summary:{padding:spacing.lg},summaryCard:{paddingVertical:0},summaryItem:{minHeight:52,paddingHorizontal:spacing.md,flexDirection:'row',alignItems:'center',gap:spacing.sm},summaryItemSecondary:{borderTopWidth:StyleSheet.hairlineWidth},summaryText:{flex:1},summaryTitle:{fontSize:14,fontWeight:'800'},summaryMeta:{fontSize:11,lineHeight:16,marginTop:1},title:{fontSize:16,fontWeight:'800'},meta:{fontSize:13,lineHeight:19,marginTop:4},section:{paddingHorizontal:spacing.lg,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},list:{padding:spacing.lg,gap:spacing.sm,paddingBottom:96},contextAction:{marginTop:spacing.md,alignItems:'flex-start'} });

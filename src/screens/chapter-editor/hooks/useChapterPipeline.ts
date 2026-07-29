@@ -17,6 +17,7 @@ import {
   cancelContinuationRun,
   startContinuationRun,
 } from '../../../services/continuation/generation';
+import { getContinuationChapterNumbering } from '../../../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type { Chapter } from '../../../types/novel';
 import type {
   PipelineStageName,
@@ -232,9 +233,10 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     setQueued(false);
     try {
       await requestNotificationPermission();
+      const numbering = await getContinuationChapterNumbering(project.id);
       const instruction =
         chapter.synopsis?.trim() ||
-        `续写第 ${chapter.position + 1} 章，保持与前文一致。`;
+        `续写${numbering.getDefaultTitle(chapter.position as any)}，保持与前文一致。`;
       const run = await startContinuationRun({
         projectId: project.id,
         chapterId: chapter.id,

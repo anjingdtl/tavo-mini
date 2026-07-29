@@ -1,6 +1,9 @@
 import RNFS from 'react-native-fs';
 import { saveDocuments } from '@react-native-documents/picker';
 import * as db from './database';
+import {
+  getContinuationChapterNumbering,
+} from './continuation/chapterNumbering/continuationChapterNumbering';
 
 function safeFileName(name: string): string {
   // eslint-disable-next-line no-control-regex
@@ -8,14 +11,46 @@ function safeFileName(name: string): string {
   return cleaned.length > 128 ? cleaned.slice(0, 128) : cleaned;
 }
 
+/**
+ * Resolve the display title for a chapter. Continuation projects continue the
+ * visible number from the source boundary (Spec §11.2); user-custom titles are
+ * preserved. Outline projects keep the legacy position+1 fallback.
+ */
+function resolveChapterTitle(
+  project: { mode?: string } | null,
+  chapter: { title: string; position: number },
+  numbering: Awaited<ReturnType<typeof getContinuationChapterNumbering>> | null,
+): string {
+  if (project?.mode === 'continuation' && numbering) {
+    const resolved = numbering.getDisplayTitle(chapter);
+    if (resolved) return resolved;
+  }
+  return chapter.title || `第 ${chapter.position + 1} 章`;
+}
+
+async function loadExportNumbering(
+  project: { mode?: string } | null,
+  projectId: number,
+): Promise<Awaited<ReturnType<typeof getContinuationChapterNumbering>> | null> {
+  if (project?.mode !== 'continuation') return null;
+  try {
+    return await getContinuationChapterNumbering(projectId);
+  } catch {
+    return null;
+  }
+}
+
 export async function exportToMarkdown(projectId: number): Promise<string> {
   const project = await db.getProjectById(projectId);
   const chapters = await db.getChaptersByProject(projectId);
   const projectName = safeFileName(project?.name || 'novel-project');
+  // Load numbering once per export (Spec §11.3) — avoid N snapshot reads.
+  const numbering = await loadExportNumbering(project, projectId);
 
   let markdown = `# ${project?.name || projectName}\n\n`;
   for (const chapter of chapters) {
-    markdown += `## ${chapter.title || `第 ${chapter.position + 1} 章`}\n\n`;
+    const title = resolveChapterTitle(project, chapter, numbering);
+    markdown += `## ${title}\n\n`;
     if (chapter.synopsis) markdown += `> ${chapter.synopsis}\n\n`;
     if (chapter.summary_json?.brief) markdown += `> 摘要：${chapter.summary_json.brief}\n\n`;
     markdown += `${chapter.content || ''}\n\n---\n\n`;
@@ -28,8 +63,12 @@ export async function exportToText(projectId: number): Promise<string> {
   const project = await db.getProjectById(projectId);
   const chapters = await db.getChaptersByProject(projectId);
   const projectName = safeFileName(project?.name || 'novel-project');
+  const numbering = await loadExportNumbering(project, projectId);
   const text = chapters
-    .map((chapter) => `${chapter.title || `第 ${chapter.position + 1} 章`}\n\n${chapter.content || ''}`)
+    .map(chapter => {
+      const title = resolveChapterTitle(project, chapter, numbering);
+      return `${title}\n\n${chapter.content || ''}`;
+    })
     .join('\n\n');
   return saveTextDocument(`${projectName}.txt`, `﻿${text}`, 'text/plain');
 }

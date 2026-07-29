@@ -40,6 +40,8 @@ import type {
 } from '../services/storyMemory/storyMemoryTypes';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
+import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
+import type { ContinuationChapterPosition } from '../types/novel';
 
 const STATUS_LABEL: Record<string, string> = {
   empty: '尚未初始化',
@@ -48,6 +50,15 @@ const STATUS_LABEL: Record<string, string> = {
   rebuilding: '整理中',
   failed: '整理失败',
 };
+
+/** User-visible chapter label; continues from source boundary for continuation (Spec §11.3). */
+function chapterLabel(
+  getDisplayNumber: ((position: number) => number) | null,
+  position: number,
+): string {
+  const n = getDisplayNumber ? getDisplayNumber(position) : position + 1;
+  return `第 ${n} 章`;
+}
 
 const MODE_OPTIONS: Array<{ mode: StoryMemoryUpdateMode; label: string }> = [
   { mode: 'smart', label: '智能更新（推荐）' },
@@ -89,12 +100,16 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
   );
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [intervalText, setIntervalText] = useState('3');
+  const [displayOf, setDisplayOf] = useState<
+    ((position: number) => number) | null
+  >(null);
   const controllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     if (!currentProject) {
       setState(null);
       setPolicy(null);
+      setDisplayOf(null);
       setLoading(false);
       return;
     }
@@ -109,6 +124,16 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
       chapters.filter(chapter => Boolean(chapter.content?.trim())),
       record.state.throughChapterPosition,
     );
+    // Spec §11.3: user-visible chapter numbers continue from the source boundary.
+    let nextDisplayOf: ((position: number) => number) | null = null;
+    try {
+      const numbering = await getContinuationChapterNumbering(currentProject.id);
+      nextDisplayOf = position =>
+        numbering.getDisplayNumber(position as ContinuationChapterPosition);
+    } catch {
+      nextDisplayOf = position => position + 1;
+    }
+    setDisplayOf(() => nextDisplayOf);
     setState(record.state);
     setPolicy(nextPolicy);
     setIntervalText(String(nextPolicy.intervalChapters));
@@ -116,12 +141,15 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
     if (pending.length === 0) {
       setPendingRange('无');
     } else {
-      const from = pending[0].position + 1;
-      const to = pending[pending.length - 1].position + 1;
+      const fromLabel = chapterLabel(nextDisplayOf, pending[0].position);
+      const toLabel = chapterLabel(
+        nextDisplayOf,
+        pending[pending.length - 1].position,
+      );
       setPendingRange(
-        from === to
-          ? `第 ${from} 章（1章）`
-          : `第 ${from}～${to} 章（${pending.length}章）`,
+        fromLabel === toLabel
+          ? `${fromLabel}（1章）`
+          : `${fromLabel}～${toLabel}（${pending.length}章）`,
       );
     }
     setLoading(false);
@@ -147,8 +175,14 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
       state.throughChapterPosition,
       pendingCount,
     );
-    return next == null ? '—' : `第 ${next} 章定稿后`;
-  }, [policy, state, pendingCount]);
+    // predictNextCheckpointPosition returns a display-ish 1-based schedule mark
+    // based on internal position math; map via numbering when available.
+    if (next == null) return '—';
+    // next is already a 1-based "after chapter N finalize" using internal+1 semantics.
+    // Convert back to 0-based position then re-label for continuation boundary.
+    const internalPos = next - 1;
+    return `${chapterLabel(displayOf, internalPos)}定稿后`;
+  }, [policy, state, pendingCount, displayOf]);
 
   const savePolicy = useCallback(
     async (patch: Partial<StoryMemoryPolicy>) => {
@@ -213,9 +247,10 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
         setState(rebuilt.state);
         Toast.show({
           type: 'success',
-          text1: `长期记忆已从变更位置重建到第 ${
-            rebuilt.state.throughChapterPosition + 1
-          } 章`,
+          text1: `长期记忆已从变更位置重建到${chapterLabel(
+            displayOf,
+            rebuilt.state.throughChapterPosition,
+          )}`,
         });
         await load();
         return;
@@ -237,7 +272,10 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
         type: 'success',
         text1:
           result.batchesApplied > 0
-            ? `长期记忆已整理到第 ${result.state.throughChapterPosition + 1} 章`
+            ? `长期记忆已整理到${chapterLabel(
+                displayOf,
+                result.state.throughChapterPosition,
+              )}`
             : '没有待整理章节',
       });
       await load();
@@ -254,7 +292,7 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
       controllerRef.current = null;
       setProgress(null);
     }
-  }, [currentProject, load]);
+  }, [currentProject, load, displayOf]);
 
   if (loading) {
     return (
@@ -329,7 +367,7 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
           <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
             已整理到：
             {state.throughChapterPosition >= 0
-              ? `第 ${state.throughChapterPosition + 1} 章`
+              ? chapterLabel(displayOf, state.throughChapterPosition)
               : '无'}
           </Text>
           <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
@@ -353,7 +391,7 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
             需要重新整理的位置：
             {state.metadata.dirtyFromPosition == null
               ? '无'
-              : `第 ${state.metadata.dirtyFromPosition + 1} 章`}
+              : chapterLabel(displayOf, state.metadata.dirtyFromPosition)}
           </Text>
           <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
             整理来源：

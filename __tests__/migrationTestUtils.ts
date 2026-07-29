@@ -136,6 +136,7 @@ export function createMigrationDb(
         'boundary_mode',
         'import_completed',
         'analysis_status',
+        ...(schemaVersion >= 20 ? ['active_canon_snapshot_id'] : []),
         'created_at',
         'updated_at',
       ]),
@@ -143,6 +144,38 @@ export function createMigrationDb(
     baseSchemas.set(
       'continuation_import_jobs',
       new Set(['id', 'project_id', 'state']),
+    );
+  }
+  if (schemaVersion >= 20) {
+    baseSchemas.set(
+      'continuation_canon_snapshots',
+      new Set(['id', 'project_id', 'source_id', 'status']),
+    );
+    baseSchemas.set(
+      'continuation_analysis_runs',
+      new Set([
+        'id',
+        'project_id',
+        'source_id',
+        'canon_snapshot_id',
+        'state',
+        'stage',
+      ]),
+    );
+  }
+  if (schemaVersion >= 21 && schemaVersion < 26) {
+    // Legacy single-row style profile shape (pre Schema 26 rebuild).
+    baseSchemas.set(
+      'continuation_style_profiles',
+      new Set([
+        'project_id',
+        'source_id',
+        'canon_snapshot_id',
+        'canon_revision',
+        'review_status',
+        'created_at',
+        'updated_at',
+      ]),
     );
   }
   if (schemaVersion >= 22) {

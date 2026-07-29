@@ -48,7 +48,9 @@ export type AnalysisStage =
   | 'global_synthesis'
   | 'evidence_validation'
   | 'indexing'
-  | 'finalizing';
+  | 'finalizing'
+  | 'style_analysis'
+  | 'style_validation';
 
 export type CanonReviewStatus =
   | 'pending'

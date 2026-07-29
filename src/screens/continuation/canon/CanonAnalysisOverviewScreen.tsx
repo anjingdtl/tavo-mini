@@ -58,6 +58,8 @@ const RUN_STAGE_LABELS: Record<AnalysisRun['stage'], string> = {
   evidence_validation: '证据校验',
   indexing: '建立索引',
   finalizing: '结果整理',
+  style_analysis: '原著风格分析',
+  style_validation: '风格校验',
 };
 
 const ANALYSIS_PROFILE_LABELS: Record<AnalysisRun['profile'], string> = {
