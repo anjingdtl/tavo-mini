@@ -58,6 +58,12 @@ export interface EpisodicRetrievalQueryInput {
 export interface MemoryRetrievalOptions {
   queryText?: string;
   storyState?: StoryMemoryState | null;
+  /**
+   * Map internal chapter position → user-visible number (Spec §11.3).
+   * Continuation callers pass numbering.getDisplayNumber so episodic prefixes
+   * continue from the source boundary. Default is position + 1.
+   */
+  getDisplayNumber?: (position: number) => number;
 }
 
 /** Unified ownership for canonical names + aliases (shared normalized namespace). */
@@ -805,18 +811,33 @@ export function orderCandidatesForDisplay(
   });
 }
 
+function resolveDisplayNumberFn(
+  getDisplayNumber?: ((position: number) => number) | unknown,
+): (position: number) => number {
+  // Guard `.map(formatMemoryCandidateLine)` which passes the array index as
+  // the second argument — only real functions are treated as mappers.
+  return typeof getDisplayNumber === 'function'
+    ? (getDisplayNumber as (position: number) => number)
+    : position => position + 1;
+}
+
 /** Chapter prefix counted in the token budget (must stay complete in output). */
 export function formatMemoryCandidatePrefix(
   chapter: Pick<Chapter, 'position' | 'title'>,
+  getDisplayNumber?: ((position: number) => number) | unknown,
 ): string {
-  return `第 ${chapter.position + 1} 章「${chapter.title}」摘要：`;
+  const map = resolveDisplayNumberFn(getDisplayNumber);
+  return `第 ${map(chapter.position)} 章「${chapter.title}」摘要：`;
 }
 
 /** Full memory line used for token accounting and final injection. */
 export function formatMemoryCandidateLine(
   candidate: Pick<ScoredMemoryCandidate, 'chapter' | 'text'>,
+  getDisplayNumber?: ((position: number) => number) | unknown,
 ): string {
-  return `${formatMemoryCandidatePrefix(candidate.chapter)}${candidate.text}`;
+  return `${formatMemoryCandidatePrefix(candidate.chapter, getDisplayNumber)}${
+    candidate.text
+  }`;
 }
 
 /**
@@ -836,15 +857,17 @@ export function formatMemoryCandidateLine(
 export function selectCandidatesWithinTokenBudget(
   selectedByPriority: ScoredMemoryCandidate[],
   budgetTokens: number,
+  getDisplayNumber?: (position: number) => number,
 ): ScoredMemoryCandidate[] {
   if (budgetTokens <= 0 || selectedByPriority.length === 0) return [];
+  const map = resolveDisplayNumberFn(getDisplayNumber);
 
   const kept: ScoredMemoryCandidate[] = [];
   let remaining = budgetTokens;
 
   for (const candidate of selectedByPriority) {
     if (remaining <= 0) break;
-    const line = formatMemoryCandidateLine(candidate);
+    const line = formatMemoryCandidateLine(candidate, map);
     const cost = estimateTokens(line);
     if (cost <= remaining) {
       kept.push(candidate);
@@ -853,7 +876,7 @@ export function selectCandidatesWithinTokenBudget(
     }
     // Overflow: if nothing selected yet, truncate body after a full prefix.
     if (kept.length === 0) {
-      const prefix = formatMemoryCandidatePrefix(candidate.chapter);
+      const prefix = formatMemoryCandidatePrefix(candidate.chapter, map);
       const prefixCost = estimateTokens(prefix);
       // Cannot emit a valid line without the complete prefix.
       if (prefixCost > remaining) {

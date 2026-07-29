@@ -187,7 +187,7 @@ export function buildV19toV20Statements(): SqlStatement[] {
         CHECK(stage IN (
           'snapshot', 'chapter_extraction', 'entity_resolution',
           'temporal_merge', 'global_synthesis', 'evidence_validation',
-          'indexing', 'finalizing'
+          'indexing', 'finalizing', 'style_analysis', 'style_validation'
         )),
         CHECK(progress_current >= 0),
         CHECK(progress_total >= 0),

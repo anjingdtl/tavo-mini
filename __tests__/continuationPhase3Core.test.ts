@@ -350,6 +350,45 @@ describe('continuation Phase 3 core', () => {
     }
   });
 
+  test('planner/writer user messages use boundary-aware display chapter numbers (§11.3)', () => {
+    // boundary source position 19 → display source 20; targetPosition 0 → 第 21 章
+    const snapshot = miniSnapshot({
+      targetPosition: 0 as any,
+      source: {
+        projectId: 1,
+        sourceId: 1,
+        sourceVersion: 1,
+        normalizedSha256: 'abc',
+        parserVersion: 'v1',
+        normalizationVersion: 'v1',
+        boundary: {
+          chapterId: 5,
+          chapterPosition: 19 as any,
+          charOffsetExclusive: 1000 as any,
+        },
+      },
+    });
+    const plan = {
+      schemaVersion: 1 as const,
+      chapterGoal: '推进',
+      centralConflict: '冲突',
+      beats: [],
+      participatingCharacterIds: [],
+      characterActions: [],
+      plotAdvances: [],
+      foreshadowingActions: [],
+      proposedStateChanges: [],
+      risks: [],
+    };
+    const plannerUser = compilePlannerMessages(snapshot)[1].content;
+    const writerUser = compileWriterMessages(snapshot, plan)[1].content;
+    expect(plannerUser).toContain('第 21 章');
+    expect(writerUser).toContain('第 21 章');
+    // Must not expose bare internal position as the chapter number.
+    expect(plannerUser).not.toMatch(/第\s*position=/);
+    expect(writerUser).not.toMatch(/position=\d+\s*章/);
+  });
+
   test('summarizeTrace is compact and free of full prompts', () => {
     const trace: ContinuationContextTrace = {
       sourceId: 1,
