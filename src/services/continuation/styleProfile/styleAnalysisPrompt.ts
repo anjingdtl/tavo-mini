@@ -40,7 +40,7 @@ export const STYLE_PROFILE_JSON_SKELETON = `JSON 结构（schemaVersion 必须�
     "informationReveal": { "setupMethod": "", "foreshadowingMethod": "", "suspenseMethod": "" }
   },
   "boundaryLocalDelta": { "tone": "", "pacing": "", "sentenceAndParagraphShift": "", "activeNarrativePatterns": [] },
-  "sceneVariants": [ { "sceneType": "action|dialogue|emotion|description|transition", "instructions": [], "avoid": [], "confidence": 0.0 } ],
+  "sceneVariants": [ { "sceneType": "action", "instructions": ["以短促动词链推进，少用长篇静态描写"], "avoid": ["感叹句堆叠"], "confidence": 0.0 } ],
   "characterVoices": [ { "canonCharacterId": null, "sourceName": "", "speechRegister": "", "sentenceHabits": [], "interactionHabits": [], "avoid": [], "confidence": 0.0 } ],
   "globalAvoid": [],
   "confidence": 0.0,
