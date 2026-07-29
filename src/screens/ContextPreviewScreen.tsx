@@ -152,7 +152,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           id == null
             ? requestConfig
             : resolveLLMRequestConfigById(id).catch(() => requestConfig);
-        const [plannerConfig, writerConfig] = await Promise.all([
+        // Layout follows Writer window (Spec §7.1); Planner config is reserved
+        // for future dual-budget preview labels.
+        const [, writerConfig] = await Promise.all([
           resolveStage(settings.plannerLlmConfigId),
           resolveStage(settings.writerLlmConfigId),
         ]);

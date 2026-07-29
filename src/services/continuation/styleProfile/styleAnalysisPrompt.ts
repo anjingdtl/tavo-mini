@@ -15,8 +15,6 @@
  *  - No long original passages are stored; samples are passed in only as
  *    short, bounded reference spans.
  */
-import type { StyleMetrics } from './styleStatistics';
-
 /** Analyzer version. Bumped when the prompt or schema materially changes so
  * cached profiles can be invalidated against the new analyzer. */
 export const STYLE_ANALYZER_VERSION = 'style-v2-1';

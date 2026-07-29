@@ -176,7 +176,7 @@ function styleBlock(
     openChecks?: ContinuationCheckResult[];
   },
 ): string {
-  if (s.settingsSnapshot.values.styleLevel === 'off') {
+  if (s.settingsSnapshot?.values?.styleLevel === 'off') {
     return '【文风】（关闭）';
   }
 
