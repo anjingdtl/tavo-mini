@@ -111,6 +111,7 @@ function mapSettings(row: Row): ContinuationSettings {
     importCompleted: Number(row.import_completed) === 1,
     analysisStatus: row.analysis_status,
     activeCanonSnapshotId: row.active_canon_snapshot_id ?? null,
+    activeStyleProfileId: row.active_style_profile_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -297,6 +298,24 @@ export function buildActivateSourceBoundaryStatements(input: {
       params: [ts, ts, newSourceId, projectId],
     },
     {
+      sql: `UPDATE continuation_canon_snapshots
+        SET status = 'outdated', updated_at = ?
+        WHERE project_id = ? AND status IN ('staging', 'awaiting_review', 'ready')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_analysis_runs
+        SET state = 'outdated', updated_at = ?
+        WHERE project_id = ? AND state IN ('queued', 'running', 'paused', 'awaiting_review')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_style_profiles
+        SET state = 'outdated', updated_at = ?
+        WHERE project_id = ? AND state NOT IN ('outdated', 'cancelled')`,
+      params: [ts, projectId],
+    },
+    {
       sql: `UPDATE continuation_settings SET
         active_source_id = ?,
         boundary_source_id = ?,
@@ -304,8 +323,10 @@ export function buildActivateSourceBoundaryStatements(input: {
         boundary_char_offset_global = ?,
         boundary_mode = ?,
         import_completed = 1,
-        analysis_status = 'not_started',
-        updated_at = ?
+         analysis_status = 'not_started',
+         active_canon_snapshot_id = NULL,
+         active_style_profile_id = NULL,
+         updated_at = ?
         WHERE project_id = ?`,
       params: [
         newSourceId,
@@ -661,7 +682,13 @@ export async function updateBoundaryInTx(
     {
       sql: `UPDATE continuation_canon_snapshots
         SET status = 'outdated', updated_at = ?
-        WHERE project_id = ? AND status IN ('staging', 'awaiting_review', 'ready')`,
+      WHERE project_id = ? AND status IN ('staging', 'awaiting_review', 'ready')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_style_profiles
+        SET state = 'outdated', updated_at = ?
+        WHERE project_id = ? AND state NOT IN ('outdated', 'cancelled')`,
       params: [ts, projectId],
     },
     {
@@ -683,9 +710,10 @@ export async function updateBoundaryInTx(
           boundary_chapter_id = ?,
           boundary_char_offset_global = ?,
           boundary_mode = ?,
-          analysis_status = 'outdated',
-          active_canon_snapshot_id = NULL,
-          updated_at = ?
+           analysis_status = 'outdated',
+           active_canon_snapshot_id = NULL,
+           active_style_profile_id = NULL,
+           updated_at = ?
         WHERE project_id = ?`,
       params: [
         boundary.sourceId,
@@ -714,6 +742,12 @@ export async function markAnalysisOutdated(
       params: [ts, projectId],
     },
     {
+      sql: `UPDATE continuation_style_profiles
+        SET state = 'outdated', updated_at = ?
+        WHERE project_id = ? AND state NOT IN ('outdated', 'cancelled')`,
+      params: [ts, projectId],
+    },
+    {
       sql: `UPDATE continuation_analysis_runs
         SET state = 'outdated', updated_at = ?
         WHERE project_id = ? AND state IN ('queued', 'running', 'paused', 'awaiting_review')`,
@@ -729,6 +763,7 @@ export async function markAnalysisOutdated(
       sql: `UPDATE continuation_settings SET
           analysis_status = 'outdated',
           active_canon_snapshot_id = NULL,
+          active_style_profile_id = NULL,
           updated_at = ?
         WHERE project_id = ?`,
       params: [ts, projectId],
@@ -751,9 +786,10 @@ export async function clearActiveSourceAndDelete(
           boundary_chapter_id = NULL,
           boundary_char_offset_global = NULL,
           import_completed = 0,
-          analysis_status = 'not_started',
-          active_canon_snapshot_id = NULL,
-          updated_at = ?
+           analysis_status = 'not_started',
+           active_canon_snapshot_id = NULL,
+           active_style_profile_id = NULL,
+           updated_at = ?
         WHERE project_id = ?`,
       params: [ts, projectId],
     },

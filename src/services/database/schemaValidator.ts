@@ -8,6 +8,9 @@ export type SchemaIssueCode =
   | 'MISSING_INDEX'
   | 'SCHEMA_VERSION_MISMATCH'
   | 'FOREIGN_KEYS_DISABLED'
+  | 'FOREIGN_KEY_VIOLATION'
+  | 'FOREIGN_KEY_TARGET_MISMATCH'
+  | 'ACTIVE_POINTER_INVALID'
   | 'INVALID_ACTIVE_LLM'
   | 'ORPHAN_REFERENCE'
   | 'QUERY_FAILED';
@@ -226,6 +229,58 @@ export async function validateSchema(
       });
     }
 
+    const foreignKeyViolations = await rows<Record<string, unknown>>(
+      database,
+      'PRAGMA foreign_key_check',
+    );
+    if (foreignKeyViolations.length > 0) {
+      issues.push({
+        code: 'FOREIGN_KEY_VIOLATION',
+        message: `发现 ${foreignKeyViolations.length} 条 SQLite 外键孤儿记录。`,
+      });
+    }
+
+    const foreignKeyTargetChecks: Array<{
+      table: string;
+      fromColumns: string[];
+      expectedTarget: string;
+    }> = [
+      {
+        table: 'continuation_analysis_batches',
+        fromColumns: ['run_id'],
+        expectedTarget: 'continuation_analysis_runs',
+      },
+      {
+        table: 'continuation_analysis_work_items',
+        fromColumns: ['run_id', 'batch_index'],
+        expectedTarget: 'continuation_analysis_batches',
+      },
+      {
+        table: 'canon_evidence',
+        fromColumns: ['analysis_run_id'],
+        expectedTarget: 'continuation_analysis_runs',
+      },
+    ];
+    for (const check of foreignKeyTargetChecks) {
+      if (!tableNames.has(check.table)) continue;
+      const foreignKeyRows = await rows<{
+        table: string;
+        from: string;
+      }>(database, `PRAGMA foreign_key_list(${check.table})`);
+      for (const foreignKey of foreignKeyRows) {
+        if (
+          check.fromColumns.includes(foreignKey.from) &&
+          foreignKey.table !== check.expectedTarget
+        ) {
+          issues.push({
+            code: 'FOREIGN_KEY_TARGET_MISMATCH',
+            message: `${check.table}.${foreignKey.from} 的外键目标异常：${foreignKey.table}。`,
+            table: check.table,
+          });
+        }
+      }
+    }
+
     if (tableNames.has('settings')) {
       const schemaRows = await rows<{ value: string }>(
         database,
@@ -292,6 +347,79 @@ export async function validateSchema(
             });
           }
         }
+      }
+    }
+
+    if (
+      tableNames.has('continuation_settings') &&
+      tableNames.has('continuation_canon_snapshots')
+    ) {
+      const orphanCanonPointers = await rows<Record<string, unknown>>(
+        database,
+        `SELECT st.project_id
+         FROM continuation_settings st
+         LEFT JOIN continuation_canon_snapshots snap
+           ON snap.id = st.active_canon_snapshot_id
+         WHERE st.active_canon_snapshot_id IS NOT NULL
+           AND (
+             snap.id IS NULL OR snap.project_id <> st.project_id
+             OR snap.source_id <> st.active_source_id
+             OR snap.boundary_chapter_id <> st.boundary_chapter_id
+             OR snap.boundary_char_offset_exclusive <> st.boundary_char_offset_global
+           )
+         LIMIT 1`,
+      );
+      if (orphanCanonPointers.length > 0) {
+        issues.push({
+          code: 'ACTIVE_POINTER_INVALID',
+          message: 'continuation_settings 的 active Canon 指针不是同项目/同 source/boundary 的有效快照。',
+          table: 'continuation_settings',
+          column: 'active_canon_snapshot_id',
+        });
+      }
+    }
+
+    if (
+      tableNames.has('continuation_settings') &&
+      tableNames.has('continuation_style_profiles') &&
+      tableNames.has('continuation_sources') &&
+      tableNames.has('continuation_source_chapters')
+    ) {
+      const orphanStylePointers = await rows<Record<string, unknown>>(
+        database,
+        `SELECT st.project_id
+         FROM continuation_settings st
+         LEFT JOIN continuation_style_profiles style
+           ON style.id = st.active_style_profile_id
+         LEFT JOIN continuation_sources src ON src.id = style.source_id
+         LEFT JOIN continuation_source_chapters ch
+           ON ch.id = style.boundary_chapter_id
+         WHERE st.active_style_profile_id IS NOT NULL
+           AND (
+             style.id IS NULL OR style.project_id <> st.project_id
+             OR style.state <> 'ready' OR style.review_status = 'ignored'
+             OR style.source_id <> st.active_source_id
+             OR src.version <> style.source_version
+             OR src.normalized_sha256 <> style.source_sha256
+             OR src.parser_version <> style.parser_version
+             OR src.normalization_version <> style.normalization_version
+             OR ch.position <> style.boundary_position
+             OR style.boundary_chapter_id <> st.boundary_chapter_id
+             OR style.boundary_char_offset_exclusive <> st.boundary_char_offset_global
+             OR (
+               st.active_canon_snapshot_id IS NOT NULL
+               AND style.canon_snapshot_id <> st.active_canon_snapshot_id
+             )
+           )
+         LIMIT 1`,
+      );
+      if (orphanStylePointers.length > 0) {
+        issues.push({
+          code: 'ACTIVE_POINTER_INVALID',
+          message: 'continuation_settings 的 active Style 指针不是同项目/同 source/boundary 的可用画像。',
+          table: 'continuation_settings',
+          column: 'active_style_profile_id',
+        });
       }
     }
 
