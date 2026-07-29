@@ -73,6 +73,10 @@ jest.mock('../src/services/fileImport', () => ({
   parseCharacterCardPNG: jest.fn(),
 }));
 
+jest.mock('../src/services/textFileReader', () => ({
+  readTextFileWithAutoEncodingResult: jest.fn(),
+}));
+
 import { navigateToLLMSettings } from '../src/navigation/navigationRef';
 import { generateConstruction } from '../src/services/constructionAiGenerator';
 import {
@@ -84,6 +88,7 @@ import {
   parseWorldBookJSON,
   pickSourceFile,
 } from '../src/services/fileImport';
+import { readTextFileWithAutoEncodingResult } from '../src/services/textFileReader';
 import { BuildScreen } from '../src/screens/BuildScreen';
 
 const characterArtifact = {
@@ -119,8 +124,24 @@ const worldbookArtifact = {
     data: {
       name: '雾港纪事',
       entries: [
-        { keys: ['雾港'], secondary_keys: [], content: '海雾港口。', comment: '地点', enabled: true, constant: false, insertion_order: 0 },
-        { keys: ['机关行会'], secondary_keys: [], content: '机关术行会。', comment: '组织', enabled: true, constant: false, insertion_order: 1 },
+        {
+          keys: ['雾港'],
+          secondary_keys: [],
+          content: '海雾港口。',
+          comment: '地点',
+          enabled: true,
+          constant: false,
+          insertion_order: 0,
+        },
+        {
+          keys: ['机关行会'],
+          secondary_keys: [],
+          content: '机关术行会。',
+          comment: '组织',
+          enabled: true,
+          constant: false,
+          insertion_order: 1,
+        },
       ],
     },
   },
@@ -173,7 +194,9 @@ describe('BuildScreen', () => {
 
   it('generates an independent character card and shows the preview', async () => {
     (generateConstruction as jest.Mock).mockResolvedValue(characterArtifact);
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
     fireEvent.changeText(
       getByPlaceholderText('例如：反派机关师'),
       '反派机关师',
@@ -207,11 +230,18 @@ describe('BuildScreen', () => {
         },
       },
     });
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
-    fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派机关师');
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
+    fireEvent.changeText(
+      getByPlaceholderText('例如：反派机关师'),
+      '反派机关师',
+    );
     fireEvent.press(getByTestId('build-generate'));
 
-    expect(await findByText('未完全达到“丰满”目标，已保留本次结果')).toBeTruthy();
+    expect(
+      await findByText('未完全达到“丰满”目标，已保留本次结果'),
+    ).toBeTruthy();
     expect(getByTestId('build-quality-warning')).toBeTruthy();
     expect(await findByText('导入资料库')).toBeTruthy();
     expect(await findByText('保存到手机')).toBeTruthy();
@@ -242,7 +272,9 @@ describe('BuildScreen', () => {
         });
       },
     );
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
     fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
     fireEvent.press(getByTestId('build-generate'));
     const cancelBtn = await findByText('取消生成');
@@ -260,7 +292,9 @@ describe('BuildScreen', () => {
     (generateConstruction as jest.Mock).mockRejectedValue(
       new Error('模型没有返回有效 JSON。'),
     );
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
     fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
     fireEvent.press(getByTestId('build-generate'));
     await waitFor(() => {
@@ -280,9 +314,13 @@ describe('BuildScreen', () => {
 
   it('turns API authentication errors into an actionable LLM-settings recovery card', async () => {
     (generateConstruction as jest.Mock).mockRejectedValue(
-      new Error('API 请求失败 (401, invalid_request_error): Authentication Fails'),
+      new Error(
+        'API 请求失败 (401, invalid_request_error): Authentication Fails',
+      ),
     );
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
     fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
     fireEvent.press(getByTestId('build-generate'));
     expect(await findByText(/API 认证失败/)).toBeTruthy();
@@ -338,7 +376,9 @@ describe('BuildScreen', () => {
       saved: false,
       reason: 'cancelled',
     });
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
     fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
     fireEvent.press(getByTestId('build-generate'));
     const saveBtn = await findByText('保存到手机');
@@ -347,9 +387,7 @@ describe('BuildScreen', () => {
       expect(saveConstructionArtifact).toHaveBeenCalled();
     });
     const calls = (Toast.show as jest.Mock).mock.calls;
-    expect(
-      calls.some(c => c[0]?.text1 === '已保存到手机'),
-    ).toBe(false);
+    expect(calls.some(c => c[0]?.text1 === '已保存到手机')).toBe(false);
   });
 
   it('shows a success toast on save success', async () => {
@@ -359,7 +397,9 @@ describe('BuildScreen', () => {
       uri: 'content://x',
       fileName: '沈砚-角色卡.json',
     });
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
     fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
     fireEvent.press(getByTestId('build-generate'));
     fireEvent.press(await findByText('保存到手机'));
@@ -381,7 +421,9 @@ describe('BuildScreen', () => {
       id: 99,
       name: '沈砚',
     });
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
     fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
     fireEvent.press(getByTestId('build-generate'));
     fireEvent.press(await findByText('导入资料库'));
@@ -403,7 +445,9 @@ describe('BuildScreen', () => {
   it('blocks library import when no project is selected', async () => {
     mockCurrentProject = null;
     (generateConstruction as jest.Mock).mockResolvedValue(characterArtifact);
-    const { getByTestId, getByPlaceholderText, findByText } = render(<BuildScreen />);
+    const { getByTestId, getByPlaceholderText, findByText } = render(
+      <BuildScreen />,
+    );
     fireEvent.changeText(getByPlaceholderText('例如：反派机关师'), '反派');
     fireEvent.press(getByTestId('build-generate'));
     fireEvent.press(await findByText('导入资料库'));
@@ -434,5 +478,31 @@ describe('BuildScreen', () => {
     expect(getByText('TXT 素材来源')).toBeTruthy();
     expect(getByText('选择 TXT')).toBeTruthy();
     expect(getByText('目标类型')).toBeTruthy();
+  });
+
+  it('reads GB18030 TXT sources through the shared native decoder', async () => {
+    (pickSourceFile as jest.Mock).mockResolvedValue({
+      localPath: '/tmp/gb18030-source.txt',
+      name: '旧版素材.txt',
+      mimeType: 'text/plain',
+    });
+    (readTextFileWithAutoEncodingResult as jest.Mock).mockResolvedValue({
+      text: '# 人物\n沈砚是机关师。',
+      encoding: 'gb18030',
+    });
+
+    const { getByText, findByText } = render(<BuildScreen />);
+    fireEvent.press(getByText('由 TXT'));
+    fireEvent.press(await findByText('选择 TXT'));
+
+    expect(await findByText(/GB18030/)).toBeTruthy();
+    expect(readTextFileWithAutoEncodingResult).toHaveBeenCalledWith(
+      '/tmp/gb18030-source.txt',
+    );
+    expect(RNFS.readFile).not.toHaveBeenCalledWith(
+      '/tmp/gb18030-source.txt',
+      'base64',
+    );
+    expect(RNFS.unlink).toHaveBeenCalledWith('/tmp/gb18030-source.txt');
   });
 });
