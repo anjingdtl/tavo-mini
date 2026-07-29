@@ -1,7 +1,10 @@
 /* eslint-env jest */
 
 import { requireContinuationTextImport } from '../src/native/ContinuationTextImportModule';
-import { readTextFileWithAutoEncoding } from '../src/services/textFileReader';
+import {
+  readTextFileWithAutoEncoding,
+  readTextFileWithAutoEncodingResult,
+} from '../src/services/textFileReader';
 
 describe('readTextFileWithAutoEncoding', () => {
   const decoder = requireContinuationTextImport();
@@ -33,9 +36,9 @@ describe('readTextFileWithAutoEncoding', () => {
         atEof: true,
       });
 
-    await expect(readTextFileWithAutoEncoding('/tmp/gbk-note.txt')).resolves.toBe(
-      '第一章\n正文',
-    );
+    await expect(
+      readTextFileWithAutoEncoding('/tmp/gbk-note.txt'),
+    ).resolves.toBe('第一章\n正文');
     expect(decoder.decodeChunk).toHaveBeenNthCalledWith(
       1,
       '/tmp/gbk-note.txt',
@@ -69,9 +72,32 @@ describe('readTextFileWithAutoEncoding', () => {
       atEof: true,
     });
 
-    await expect(readTextFileWithAutoEncoding('/tmp/utf16-note.txt')).resolves.toBe(
-      '你好',
-    );
+    await expect(
+      readTextFileWithAutoEncoding('/tmp/utf16-note.txt'),
+    ).resolves.toBe('你好');
+  });
+
+  test('returns the detected encoding for callers that need to display it', async () => {
+    (decoder.detectEncoding as jest.Mock).mockResolvedValue({
+      encoding: 'gb18030',
+      confidence: 0.6,
+      hasBom: false,
+      fileSizeBytes: 4,
+    });
+    (decoder.decodeChunk as jest.Mock).mockResolvedValue({
+      text: '正文',
+      nextByteOffset: 4,
+      decodedChars: 2,
+      bytesConsumed: 4,
+      atEof: true,
+    });
+
+    await expect(
+      readTextFileWithAutoEncodingResult('/tmp/gbk-source.txt'),
+    ).resolves.toEqual({
+      text: '正文',
+      encoding: 'gb18030',
+    });
   });
 
   test('rejects a decoder that stops making progress', async () => {
@@ -89,8 +115,8 @@ describe('readTextFileWithAutoEncoding', () => {
       atEof: false,
     });
 
-    await expect(readTextFileWithAutoEncoding('/tmp/broken.txt')).rejects.toThrow(
-      'TXT 解码无进展',
-    );
+    await expect(
+      readTextFileWithAutoEncoding('/tmp/broken.txt'),
+    ).rejects.toThrow('TXT 解码无进展');
   });
 });
