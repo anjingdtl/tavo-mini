@@ -37,6 +37,7 @@ import {
   updateStyleProfileState,
   updateStyleProfilePayload,
   getInjectableStyleProfile,
+  listStyleProfilesForProject,
 } from '../src/services/continuation/styleProfile/styleProfileRepository';
 import { continuationSourceReader } from '../src/services/continuation/continuationSourceReader';
 import {
@@ -475,6 +476,82 @@ describe('runStyleAnalysis', () => {
       expect.any(String),
       'failed',
       expect.objectContaining({ errorCode: 'style_analysis_failed' }),
+    );
+  });
+
+  it('preserves prior user overrides when re-analyzing (Spec §5.7, §14.1)', async () => {
+    const chapters = buildRichChapters();
+    setupBoundedReader(chapters);
+    (resolveLLMRequestConfigById as jest.Mock).mockResolvedValue({
+      id: 42,
+      context_window: 200_000,
+      max_output_tokens: 16_000,
+    });
+    (callLLMResult as jest.Mock).mockResolvedValue({
+      text: JSON.stringify(validProfile()),
+    });
+    // Simulate a prior profile row carrying non-empty user overrides from a
+    // previous user edit. The auto profile will be replaced; overrides survive.
+    const priorOverrides = {
+      tone: { baseline: '更冷峻' },
+      globalAvoid: ['禁止任何感叹句'],
+    };
+    (listStyleProfilesForProject as jest.Mock).mockResolvedValue([
+      {
+        id: 'prior-profile',
+        projectId: 1,
+        userOverridesJson: priorOverrides,
+        state: 'outdated',
+        updatedAt: '2026-01-01T00:00:00Z',
+      },
+    ]);
+
+    const result = await runStyleAnalysis({
+      projectId: 1,
+      runId: 'run-reanalyze',
+      canonSnapshotId: 'snap-1',
+      sourceSnapshot,
+      modelConfigId: 42,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.success).toBe(true);
+    // The new profile row is inserted carrying the prior user overrides, so
+    // re-analysis never loses the user's manual corrections.
+    expect(insertStyleProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userOverridesJson: priorOverrides,
+      }),
+    );
+  });
+
+  it('starts with empty overrides when no prior profile has user edits', async () => {
+    const chapters = buildRichChapters();
+    setupBoundedReader(chapters);
+    (resolveLLMRequestConfigById as jest.Mock).mockResolvedValue({
+      id: 42,
+      context_window: 200_000,
+      max_output_tokens: 16_000,
+    });
+    (callLLMResult as jest.Mock).mockResolvedValue({
+      text: JSON.stringify(validProfile()),
+    });
+    // No prior overrides anywhere.
+    (listStyleProfilesForProject as jest.Mock).mockResolvedValue([
+      { id: 'prior', userOverridesJson: {}, state: 'outdated' },
+    ]);
+
+    await runStyleAnalysis({
+      projectId: 1,
+      runId: 'run-fresh',
+      canonSnapshotId: 'snap-1',
+      sourceSnapshot,
+      modelConfigId: 42,
+      signal: new AbortController().signal,
+    });
+
+    expect(insertStyleProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ userOverridesJson: {} }),
     );
   });
 
