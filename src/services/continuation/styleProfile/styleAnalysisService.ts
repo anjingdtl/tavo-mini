@@ -63,6 +63,7 @@ import {
   buildStyleRepairInstruction,
 } from './styleAnalysisPrompt';
 import { sha256Hex } from '../hashUtils';
+import { computeStyleProfileHash } from './styleProfileHash';
 
 const PROFILE_SCHEMA_VERSION = 2;
 /** Safety margin subtracted from the input budget (Spec §7.1). */
@@ -242,12 +243,16 @@ export async function runStyleAnalysis(
       return fail('style_analysis_failed', outcome.errorMessage ?? '风格分析失败');
     }
 
-    // Compute the canonical profile hash over profile + metrics + sampleRefs.
-    const profileHash = computeProfileHash(
-      outcome.profile,
+    // Hash the complete persisted payload, including nested fields, analyzer
+    // version and carried-forward user overrides.
+    const profileHash = computeStyleProfileHash({
+      profile: outcome.profile,
       metrics,
       sampleRefs,
-    );
+      profileSchemaVersion: PROFILE_SCHEMA_VERSION,
+      analyzerVersion: STYLE_ANALYZER_VERSION,
+      userOverrides: priorOverrides,
+    });
 
     await updateStyleProfilePayload(
       profileId,
@@ -806,36 +811,6 @@ function parseJson(text: string): unknown {
   } catch {
     return null;
   }
-}
-
-/** Canonical, stable JSON used for the profile hash (sorted keys). */
-function computeProfileHash(
-  profile: OriginalStyleProfileV2,
-  metrics: StyleMetrics,
-  sampleRefs: StyleSampleRef[],
-): string {
-  const canonical = JSON.stringify(
-    {
-      profile,
-      metrics,
-      sampleRefs: sampleRefs
-        .slice()
-        .sort((a, b) =>
-          a.contentHash < b.contentHash ? -1 : a.contentHash > b.contentHash ? 1 : 0,
-        )
-        .map(r => ({
-          k: r.sampleKind,
-          c: r.sourceChapterId,
-          s: r.charStart,
-          e: r.charEnd,
-          h: r.contentHash,
-        })),
-    },
-    // Explicit sorted key replacer so the hash is stable regardless of the
-    // property insertion order the analyzer happened to use.
-    ['metrics', 'profile', 'sampleRefs'],
-  );
-  return sha256Hex(canonical);
 }
 
 /** Translate a raw error message into a user-facing retry hint. */

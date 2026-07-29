@@ -14,8 +14,13 @@ jest.mock('../src/services/continuation/continuationSourceReader', () => ({
 
 jest.mock('../src/services/continuation/canon/canonRepository', () => ({
   getSnapshotById: jest.fn(),
+  getRunById: jest.fn(),
   countFutureEvidence: jest.fn(),
   countOrphanEvidence: jest.fn(),
+}));
+
+jest.mock('../src/services/continuation/styleProfile/styleProfileRepository', () => ({
+  getStyleProfileById: jest.fn(),
 }));
 
 jest.mock('../src/services/continuation/canon/canonAnalysisService', () => ({
@@ -27,10 +32,13 @@ import { executeTransaction } from '../src/data/connection/transaction';
 import { continuationSourceReader } from '../src/services/continuation/continuationSourceReader';
 import {
   getSnapshotById,
+  getRunById,
   countFutureEvidence,
   countOrphanEvidence,
 } from '../src/services/continuation/canon/canonRepository';
 import { buildDefaultCanonAdoptionStatements } from '../src/services/continuation/canon/canonAnalysisService';
+import { getStyleProfileById } from '../src/services/continuation/styleProfile/styleProfileRepository';
+import { computeStyleProfileHash } from '../src/services/continuation/styleProfile/styleProfileHash';
 import { activateSnapshotAndStyleProfile } from '../src/services/continuation/canon/activateSnapshotAndStyleProfile';
 import { ContinuationSnapshotOutdatedError } from '../src/services/continuation/types';
 import {
@@ -39,7 +47,7 @@ import {
 } from '../src/services/continuation/continuationSourceRepository';
 
 const liveSnapshot = {
-  projectId: 1,
+       projectId: 1,
   sourceId: 10,
   sourceVersion: 3,
   normalizedSha256: 'abc',
@@ -75,6 +83,45 @@ describe('activateSnapshotAndStyleProfile', () => {
       liveSnapshot,
     );
     (getSnapshotById as jest.Mock).mockResolvedValue(awaitingSnap);
+    (getRunById as jest.Mock).mockResolvedValue({
+      id: 'run-1',
+      projectId: 1,
+      canonSnapshotId: 'snap-1',
+      state: 'awaiting_review',
+    });
+    const profile = {
+      id: 'style-1',
+      projectId: 1,
+      sourceId: 10,
+      sourceVersion: 3,
+      sourceSha256: 'abc',
+      parserVersion: 'p1',
+      normalizationVersion: 'n1',
+      boundaryChapterId: 99,
+      boundaryPosition: 5,
+      boundaryCharOffsetExclusive: 5000,
+      analysisRunId: 'run-1',
+      canonSnapshotId: 'snap-1',
+      profileSchemaVersion: 2,
+      analyzerVersion: 'a1',
+      profileJson: { summary: 'style' },
+      metricsJson: { count: 1 },
+      sampleRefsJson: [],
+      userOverridesJson: {},
+      profileHash: '',
+      confidence: 1,
+      state: 'ready',
+      reviewStatus: 'confirmed',
+    };
+    profile.profileHash = computeStyleProfileHash({
+      profile: profile.profileJson,
+      metrics: profile.metricsJson,
+      sampleRefs: profile.sampleRefsJson,
+      profileSchemaVersion: profile.profileSchemaVersion,
+      analyzerVersion: profile.analyzerVersion,
+      userOverrides: profile.userOverridesJson,
+    });
+    (getStyleProfileById as jest.Mock).mockResolvedValue(profile);
     (countFutureEvidence as jest.Mock).mockResolvedValue(0);
     (countOrphanEvidence as jest.Mock).mockResolvedValue(0);
     (buildDefaultCanonAdoptionStatements as jest.Mock).mockReturnValue([
@@ -92,6 +139,7 @@ describe('activateSnapshotAndStyleProfile', () => {
   it('activates Canon + style together in a single transaction', async () => {
     await activateSnapshotAndStyleProfile({
       projectId: 1,
+      analysisRunId: 'run-1',
       canonSnapshotId: 'snap-1',
       styleProfileId: 'style-1',
       allowStyleSkip: false,
@@ -146,6 +194,7 @@ describe('activateSnapshotAndStyleProfile', () => {
   it('skip-style activation sets active_style_profile_id = NULL', async () => {
     await activateSnapshotAndStyleProfile({
       projectId: 1,
+      analysisRunId: 'run-1',
       canonSnapshotId: 'snap-1',
       styleProfileId: null,
       allowStyleSkip: true,
@@ -176,6 +225,7 @@ describe('activateSnapshotAndStyleProfile', () => {
     await expect(
       activateSnapshotAndStyleProfile({
         projectId: 1,
+        analysisRunId: 'run-1',
         canonSnapshotId: 'snap-1',
         styleProfileId: null,
         allowStyleSkip: false,
@@ -195,6 +245,7 @@ describe('activateSnapshotAndStyleProfile', () => {
     await expect(
       activateSnapshotAndStyleProfile({
         projectId: 1,
+        analysisRunId: 'run-1',
         canonSnapshotId: 'snap-1',
         styleProfileId: 'style-1',
         allowStyleSkip: false,
@@ -216,6 +267,7 @@ describe('activateSnapshotAndStyleProfile', () => {
   it('marks old style profiles outdated on fingerprint mismatch within the same transaction', async () => {
     await activateSnapshotAndStyleProfile({
       projectId: 1,
+      analysisRunId: 'run-1',
       canonSnapshotId: 'snap-1',
       styleProfileId: 'style-1',
       allowStyleSkip: false,
@@ -244,6 +296,7 @@ describe('activateSnapshotAndStyleProfile', () => {
     await expect(
       activateSnapshotAndStyleProfile({
         projectId: 1,
+        analysisRunId: 'run-1',
         canonSnapshotId: 'snap-1',
         styleProfileId: 'style-1',
         allowStyleSkip: false,
@@ -259,6 +312,7 @@ describe('activateSnapshotAndStyleProfile', () => {
     await expect(
       activateSnapshotAndStyleProfile({
         projectId: 1,
+        analysisRunId: 'run-1',
         canonSnapshotId: 'snap-1',
         styleProfileId: 'style-1',
         allowStyleSkip: false,

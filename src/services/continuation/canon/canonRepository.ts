@@ -544,6 +544,19 @@ export async function getRunById(runId: string): Promise<AnalysisRun | null> {
   return row ? mapRun(row) : null;
 }
 
+export async function getRunForSnapshot(
+  snapshotId: string,
+): Promise<AnalysisRun | null> {
+  const row = await one<Row>(
+    `SELECT * FROM continuation_analysis_runs
+      WHERE canon_snapshot_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [snapshotId],
+  );
+  return row ? mapRun(row) : null;
+}
+
 export async function listRunsForProject(
   projectId: number,
 ): Promise<AnalysisRun[]> {

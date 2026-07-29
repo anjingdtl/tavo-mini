@@ -18,6 +18,7 @@ import {
 } from './storyMemoryService';
 import type { StoryMemoryState } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
+import { makeContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
 
 export interface StoryMemoryRebuildProgress {
   projectId: number;
@@ -337,7 +338,9 @@ export async function rebuildStoryMemoryUnlocked(
           batchChapters[0]?.position ?? replayStart,
           message,
         );
-        let fromLabel = `第 ${(batchChapters[0]?.position ?? 0) + 1} 章`;
+        let fromLabel = makeContinuationChapterNumbering(null).getDefaultTitle(
+          (batchChapters[0]?.position ?? 0) as any,
+        );
         try {
           const { getContinuationChapterNumbering } = await import(
             '../continuation/chapterNumbering/continuationChapterNumbering'
@@ -460,7 +463,9 @@ export async function rebuildStoryMemoryUnlocked(
           chapter.position,
           message,
         );
-        let chapterLabel = `第 ${chapter.position + 1} 章`;
+        let chapterLabel = makeContinuationChapterNumbering(null).getDefaultTitle(
+          chapter.position as any,
+        );
         try {
           const { getContinuationChapterNumbering } = await import(
             '../continuation/chapterNumbering/continuationChapterNumbering'
