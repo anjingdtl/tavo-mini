@@ -2562,91 +2562,30 @@ export async function extractWithLlm(
 }
 
 /**
- * Atomically activate a snapshot as the project's active Canon (Spec §6.1, §4.7).
+ * Atomically activate a snapshot as the project's active Canon (Spec §6.1, §4.7,
+ * §6.3).
+ *
+ * This is now a THIN DELEGATE to the unified {@link activateSnapshotAndStyleProfile}
+ * API so every activation path — automatic pipeline, manual UI activation, and
+ * retry — commits Canon + the active style pointer in the SAME atomic
+ * transaction. Legacy callers keep their `(projectId, snapshotId)` signature and
+ * `CanonSnapshot` return value; behaviour is preserved because
+ * `activateSnapshotAndStyleProfile` performs every guard this function used to
+ * (snapshot/project match, quick-profile rejection, status check, source/
+ * boundary drift, future- and orphan-evidence checks). Passing
+ * `styleProfileId: null` + `allowStyleSkip: true` means a manual activation
+ * clears the active style pointer atomically rather than leaving a stale one.
  */
 export async function activateSnapshot(
   projectId: number,
   snapshotId: string,
 ): Promise<CanonSnapshot> {
-  const db = await openDatabase();
-  const snap = await getSnapshotById(snapshotId);
-  if (!snap || snap.projectId !== projectId) {
-    throw new Error('快照不存在');
-  }
-  if (snap.profile === 'quick') {
-    throw new Error('旧版 Quick 离线预览不能激活，请重新发起 LLM 原著分析。');
-  }
-  if (snap.status !== 'awaiting_review' && snap.status !== 'ready') {
-    throw new Error(`快照状态 ${snap.status} 不可激活`);
-  }
-
-  // Re-verify Phase 1 source binding.
-  const live = await continuationSourceReader.getSnapshot(projectId);
-  if (
-    live.sourceId !== snap.sourceId ||
-    live.sourceVersion !== snap.sourceVersion ||
-    live.normalizedSha256 !== snap.sourceSha256 ||
-    live.parserVersion !== snap.parserVersion ||
-    live.normalizationVersion !== snap.normalizationVersion ||
-    live.boundary.chapterId !== snap.boundaryChapterId ||
-    live.boundary.charOffsetExclusive !== snap.boundaryCharOffsetExclusive
-  ) {
-    await updateSnapshotMeta(db, snapshotId, { status: 'outdated' });
-    throw new ContinuationSnapshotOutdatedError('源或边界已变化，无法激活。');
-  }
-
-  const future = await countFutureEvidence(
-    snapshotId,
-    snap.boundaryCharOffsetExclusive,
-  );
-  if (future > 0) {
-    throw new Error(`存在 ${future} 条未来证据，禁止激活`);
-  }
-  const orphans = await countOrphanEvidence(snapshotId);
-  if (orphans > 0) {
-    throw new Error(`存在 ${orphans} 条孤儿证据，禁止激活`);
-  }
-
-  const ts = now();
-  await executeTransaction(db, [
-    ...buildDefaultCanonAdoptionStatements(snapshotId, ts),
-    {
-      sql: `UPDATE continuation_canon_snapshots
-        SET status = 'outdated', updated_at = ?
-        WHERE project_id = ? AND status = 'ready' AND id != ?`,
-      params: [ts, projectId, snapshotId],
-    },
-    {
-      sql: `UPDATE continuation_canon_snapshots
-        SET status = 'ready', activated_at = ?, updated_at = ?
-        WHERE id = ?`,
-      params: [ts, ts, snapshotId],
-    },
-    {
-      sql: `UPDATE continuation_settings SET
-        active_canon_snapshot_id = ?,
-        analysis_status = 'ready',
-        updated_at = ?
-        WHERE project_id = ?`,
-      params: [snapshotId, ts, projectId],
-    },
-    {
-      sql: `UPDATE continuation_analysis_runs SET state = 'completed', updated_at = ?
-        WHERE canon_snapshot_id = ? AND state = 'awaiting_review'`,
-      params: [ts, snapshotId],
-    },
-    {
-      // Any existing generation was compiled against another Canon revision.
-      // Stop it at the activation boundary instead of merely rejecting it at
-      // final adoption, which can otherwise consume unnecessary model calls.
-      sql: `UPDATE continuation_generation_runs
-        SET state = 'outdated', error_code = 'outdated',
-            error_message = ?, updated_at = ?
-        WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
-      params: ['active_canon_changed', ts, projectId],
-    },
-  ]);
-
+  await activateSnapshotAndStyleProfile({
+    projectId,
+    canonSnapshotId: snapshotId,
+    styleProfileId: null,
+    allowStyleSkip: true,
+  });
   const activated = await getSnapshotById(snapshotId);
   if (!activated || activated.status !== 'ready') {
     throw new Error('激活失败');

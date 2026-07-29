@@ -32,6 +32,7 @@ import { v4 } from '../../uuidBridge';
 import { now } from '../../../data/repositories/shared';
 import {
   insertStyleProfile,
+  listStyleProfilesForProject,
   updateStyleProfilePayload,
   updateStyleProfileState,
   type StyleProfileFingerprint,
@@ -52,20 +53,6 @@ import {
   buildStyleRepairInstruction,
 } from './styleAnalysisPrompt';
 import { sha256Hex } from '../hashUtils';
-
-/** Persisted alongside the profile for trace + retry decisions (Spec §5.6). */
-export interface StyleAnalysisRunRecord {
-  profileId: string;
-  success: boolean;
-  analyzerVersion: string;
-  contextWindow: number | null;
-  maxOutputTokens: number | null;
-  promptTokens: number;
-  completionTokens: number;
-  llmCallCount: number;
-  errorCode?: string;
-  errorMessage?: string;
-}
 
 const PROFILE_SCHEMA_VERSION = 2;
 /** Safety margin subtracted from the input budget (Spec §7.1). */
@@ -106,6 +93,13 @@ export async function runStyleAnalysis(
     boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
   };
 
+  // Carry forward prior user overrides so re-analysis never loses the user's
+  // manual corrections (Spec §5.7). The auto profile_json will be replaced by
+  // the new analyzer output; only the overrides survive. We read the project's
+  // existing profiles and pick the most recent non-empty overrides set. A
+  // read failure must not block analysis — fall back to no overrides.
+  const priorOverrides = await readPriorUserOverrides(projectId);
+
   // Insert a queued placeholder so the UI/tracer can observe the attempt even
   // before the first LLM call. state moves to running once chapters are read.
   await insertStyleProfile({
@@ -119,6 +113,7 @@ export async function runStyleAnalysis(
     profileHash: '',
     confidence: 0,
     state: 'queued',
+    userOverridesJson: priorOverrides,
   });
   await updateStyleProfileState(profileId, 'running');
 
@@ -286,6 +281,36 @@ export async function retryStyleAnalysis(projectId: number): Promise<void> {
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/**
+ * Read the project's most recent non-empty user overrides so re-analysis can
+ * carry them forward (Spec §5.7: 重新分析原著时自动画像可以替换，用户修正不得丢失).
+ * Returns an empty object when there are no prior overrides. A read failure is
+ * swallowed (returns {}) so a transient DB error cannot block analysis; the
+ * worst case is the user re-applies their overrides, never data loss in the
+ * auto profile.
+ */
+async function readPriorUserOverrides(
+  projectId: number,
+): Promise<Record<string, unknown>> {
+  try {
+    const profiles = await listStyleProfilesForProject(projectId);
+    // listStyleProfilesForProject orders by updated_at DESC, so the first
+    // non-empty overrides set is the most recent user correction.
+    for (const p of profiles) {
+      if (
+        p.userOverridesJson &&
+        typeof p.userOverridesJson === 'object' &&
+        Object.keys(p.userOverridesJson).length > 0
+      ) {
+        return p.userOverridesJson;
+      }
+    }
+  } catch {
+    // Fall through to empty overrides.
+  }
+  return {};
+}
 
 /**
  * Verify the supplied snapshot still matches the live active source. Throws
