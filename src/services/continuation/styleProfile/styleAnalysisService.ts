@@ -26,8 +26,18 @@ import {
   listRunsForProject,
 } from '../canon/canonRepository';
 import { callLLMResult, resolveLLMRequestConfigById } from '../../llm';
-import type { ChatMessage, LLMRequestConfig } from '../../llm';
+import type {
+  ChatMessage,
+  LLMCallConfig,
+  LLMRequestConfig,
+  LLMResult,
+} from '../../llm';
 import { estimateMessagesTokens, estimateTokens } from '../../../utils/tokenEstimator';
+import {
+  CANON_ANALYSIS_RETRY_POLICY,
+  isTransientCanonAnalysisError,
+  waitForCanonRetry,
+} from '../canon/canonAnalysisService';
 import { v4 } from '../../uuidBridge';
 import { now } from '../../../data/repositories/shared';
 import {
@@ -60,6 +70,27 @@ const INPUT_BUDGET_SAFETY_FRACTION = 0.1;
 /** Minimum tokens reserved for the system prompt + framework overhead. */
 const PROMPT_FRAMEWORK_RESERVE_TOKENS = 2048;
 
+/**
+ * In-flight style-analysis abort controllers, mirroring canon's
+ * `analysisControllers` map (canonAnalysisService.ts:296). Keyed by the style
+ * profile id so the UI / pause-cancel path can abort a running or retried
+ * analysis. `retryStyleAnalysis` registers a fresh controller here so its
+ * otherwise-uncancellable signal becomes cancellable.
+ */
+const styleAnalysisControllers = new Map<string, AbortController>();
+
+/**
+ * Cancel a running style analysis by profile id. Aborts the in-flight LLM call
+ * chain and removes the controller. Safe to call when no analysis is running.
+ */
+export function cancelStyleAnalysis(profileId: string): void {
+  const controller = styleAnalysisControllers.get(profileId);
+  if (controller) {
+    controller.abort();
+    styleAnalysisControllers.delete(profileId);
+  }
+}
+
 export interface RunStyleAnalysisInput {
   projectId: number;
   runId: string;
@@ -78,9 +109,27 @@ export interface RunStyleAnalysisInput {
 export async function runStyleAnalysis(
   input: RunStyleAnalysisInput,
 ): Promise<{ profileId: string; success: boolean }> {
-  const { projectId, runId, canonSnapshotId, sourceSnapshot, signal } = input;
+  const { projectId, runId, canonSnapshotId, sourceSnapshot } = input;
   const modelConfigId = input.modelConfigId;
   const profileId = v4();
+
+  // Register an abort controller under the profile id so cancelStyleAnalysis
+  // can abort this run regardless of whether it was driven by the Canon
+  // pipeline (caller-supplied signal) or by retryStyleAnalysis (our own
+  // controller). The controller mirrors the caller's signal: when the caller
+  // aborts, this one aborts too, and vice-versa via cancelStyleAnalysis.
+  const controller = new AbortController();
+  styleAnalysisControllers.set(profileId, controller);
+  if (input.signal.aborted) {
+    controller.abort();
+  } else {
+    input.signal.addEventListener(
+      'abort',
+      () => controller.abort(),
+      { once: true },
+    );
+  }
+  const signal = controller.signal;
 
   const fingerprint: StyleProfileFingerprint = {
     sourceId: sourceSnapshot.sourceId,
@@ -227,6 +276,10 @@ export async function runStyleAnalysis(
       return { profileId, success: false };
     }
     return fail('style_analysis_failed', friendlyFailure(message));
+  } finally {
+    // Always release the controller so a stale entry can't abort a future
+    // analysis that reuses this profile id slot.
+    styleAnalysisControllers.delete(profileId);
   }
 }
 
@@ -243,7 +296,7 @@ export async function retryStyleAnalysis(projectId: number): Promise<void> {
   // skip, otherwise the most recent awaiting_review snapshot's run).
   let canonSnapshotId: string | null = snap?.id ?? null;
   let modelConfigId: number | null = null;
-  let runId: string | null = null;
+  let runId: string;
 
   if (!canonSnapshotId) {
     const runs = await listRunsForProject(projectId);
@@ -262,8 +315,11 @@ export async function retryStyleAnalysis(projectId: number): Promise<void> {
     runId = match?.id ?? `retry-${canonSnapshotId}`;
   }
 
-  if (!runId) runId = `retry-${canonSnapshotId}`;
-
+  // Create + register a cancellable controller. runStyleAnalysis mirrors this
+  // signal into its own per-profile controller (and cleans both up), so a UI
+  // cancelStyleAnalysis(profileId) can abort the retry. Previously this used a
+  // bare untracked controller, making retries uncancellable.
+  const controller = new AbortController();
   const sourceSnapshot = await continuationSourceReader.getSnapshot(projectId);
   const result = await runStyleAnalysis({
     projectId,
@@ -271,7 +327,7 @@ export async function retryStyleAnalysis(projectId: number): Promise<void> {
     canonSnapshotId: canonSnapshotId!,
     sourceSnapshot,
     modelConfigId,
-    signal: new AbortController().signal,
+    signal: controller.signal,
   });
   if (!result.success) {
     throw new Error('风格分析重试失败，请稍后再试或显式跳过文风。');
@@ -381,6 +437,61 @@ async function readSampleSpans(
 interface AnalyzeOutcome {
   profile: OriginalStyleProfileV2 | null;
   errorMessage?: string;
+}
+
+/**
+ * Call the provider with transient-error retry, mirroring the Canon pipeline
+ * (canonAnalysisService.ts extractMaterialWithLlm). A 429 / 5xx / network_error
+ * is retried up to `CANON_ANALYSIS_RETRY_POLICY.maxAttempts` with exponential
+ * backoff (signal-aware via `waitForCanonRetry`); a non-transient error throws
+ * immediately. This is SEPARATE from the ONE schema-repair retry in
+ * {@link runValidatedCall}: transient transport errors retry the identical
+ * request, schema errors get one structural-repair call.
+ *
+ * Also re-checks `signal.aborted` AFTER the await (canon parity, Spec §5.1) so
+ * a provider that ignores the abort signal cannot let a partial result proceed.
+ */
+async function callWithTransientRetry(
+  messages: ChatMessage[],
+  maxTokens: number,
+  config: LLMCallConfig & { requestConfig: LLMRequestConfig },
+  signal: AbortSignal,
+): Promise<LLMResult> {
+  for (
+    let attempt = 1;
+    attempt <= CANON_ANALYSIS_RETRY_POLICY.maxAttempts;
+    attempt += 1
+  ) {
+    if (signal.aborted) throw new Error('分析已暂停或取消');
+    let response: LLMResult;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      response = await callLLMResult(messages, maxTokens, config, signal);
+    } catch (error) {
+      // Transient transport errors (429 / 5xx / network) retry with backoff;
+      // any other error throws immediately. The signal is re-checked at the
+      // top of the next iteration and inside waitForCanonRetry.
+      const canRetry =
+        attempt < CANON_ANALYSIS_RETRY_POLICY.maxAttempts &&
+        !signal.aborted &&
+        isTransientCanonAnalysisError(error);
+      if (!canRetry) throw error;
+      // eslint-disable-next-line no-await-in-loop
+      await waitForCanonRetry(
+        signal,
+        CANON_ANALYSIS_RETRY_POLICY.baseDelayMs * 2 ** (attempt - 1),
+      );
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+    // Post-await re-check (canon parity): a provider that swallowed the abort
+    // must not be allowed to proceed with a partial map/validate result.
+    if (signal.aborted) throw new Error('分析已暂停或取消');
+    return response;
+  }
+  // Unreachable: the loop either returns or throws on every iteration, but TS
+  // needs a terminal throw to satisfy the LLMResult return type.
+  throw new Error('风格分析调用失败：已用尽重试次数。');
 }
 
 /**
@@ -550,13 +661,13 @@ async function mapReduceCall(args: {
 
   const partials: string[] = [];
   for (const [i, batch] of batches.entries()) {
-    if (signal.aborted) throw new Error('cancelled');
+    if (signal.aborted) throw new Error('分析已暂停或取消');
     const userPrompt = buildStyleAnalysisUserPrompt({
       metricsJson: metricsBlock,
       sampleBlocks: renderSampleBlocks(batch),
       coverage,
     });
-    const response = await callLLMResult(
+    const response = await callWithTransientRetry(
       [
         { role: 'system', content: mapSystem },
         { role: 'user', content: userPrompt },
@@ -614,8 +725,8 @@ async function runValidatedCall(
   const callOnce = async (
     extraMessages: ChatMessage[],
   ): Promise<{ text: string | null; error: string | null }> => {
-    if (signal.aborted) throw new Error('cancelled');
-    const response = await callLLMResult(
+    if (signal.aborted) throw new Error('分析已暂停或取消');
+    const response = await callWithTransientRetry(
       [...messages, ...extraMessages],
       maxOutputTokens,
       {
@@ -720,7 +831,9 @@ function computeProfileHash(
           h: r.contentHash,
         })),
     },
-    Object.keys({ profile: 0, metrics: 0, sampleRefs: 0 }).sort(),
+    // Explicit sorted key replacer so the hash is stable regardless of the
+    // property insertion order the analyzer happened to use.
+    ['metrics', 'profile', 'sampleRefs'],
   );
   return sha256Hex(canonical);
 }
