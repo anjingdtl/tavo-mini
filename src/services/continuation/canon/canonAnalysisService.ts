@@ -77,7 +77,6 @@ import {
   buildExtractionRetryInstruction,
 } from './extractionPromptSpec';
 import { insertEvidenceAndLink } from './canonEvidenceService';
-import { executeTransaction } from '../../../data/connection/transaction';
 import type { SqlStatement } from '../../../data/connection/transaction';
 import { runStyleAnalysis } from '../styleProfile/styleAnalysisService';
 import { activateSnapshotAndStyleProfile } from './activateSnapshotAndStyleProfile';
