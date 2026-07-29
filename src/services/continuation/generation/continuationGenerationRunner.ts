@@ -39,6 +39,7 @@ import {
   markRunsOutdatedForProject,
   newContinuationRunId,
   savePlan,
+  ensureGenerationSettings,
 } from './generationRepository';
 import type {
   ContinuationArtifact,
@@ -56,6 +57,7 @@ import { openDatabase } from '../../../data/connection/openDatabase';
 import { executeTransaction } from '../../database/transaction';
 import { v4 } from '../../uuidBridge';
 import { processContinuationOutbox } from './continuationStateOutboxWorker';
+import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
 
 
 export type StageLlmCaller = (input: {
@@ -74,7 +76,6 @@ export interface StartContinuationRunInput {
   currentChapterContent: string;
   modelContextLimit?: number;
   maxOutputTokens?: number;
-  outputReservePercent?: number;
   /** Test injector — skips real LLM. */
   callStage?: StageLlmCaller;
   /** Skip checker LLM (deterministic only). */
@@ -146,6 +147,19 @@ async function defaultStageCaller(input: {
   const requestConfig = input.configId
     ? await resolveLLMRequestConfigById(input.configId)
     : await resolveLLMRequestConfig();
+  const contextWindow = requestConfig.context_window;
+  if (
+    typeof contextWindow === 'number' &&
+    Number.isFinite(contextWindow) &&
+    contextWindow > 0
+  ) {
+    const required = estimateMessagesTokens(input.messages) + input.maxTokens + 64;
+    if (required > contextWindow) {
+      throw new ContinuationCapabilityBlockedError(
+        `阶段 ${input.stage} 上下文不足：请求约 ${required} token，模型窗口 ${contextWindow}。请降低上下文深度或选择更大模型。`,
+      );
+    }
+  }
   const result = await callLLMResult(
     input.messages,
     input.maxTokens,
@@ -175,8 +189,35 @@ export async function startContinuationRun(
 ): Promise<ContinuationGenerationRun> {
   const activeCfg = await resolveLLMRequestConfig().catch(() => null);
   const activeId = (activeCfg as any)?.id ?? 0;
-  const modelLimit = input.modelContextLimit ?? activeCfg?.context_window ?? 8192;
-  const maxOut = input.maxOutputTokens ?? 2048;
+  const generationSettings = await ensureGenerationSettings(input.projectId);
+  const resolveStageConfig = async (configId: number | null) => {
+    if (configId != null) {
+      return resolveLLMRequestConfigById(configId).catch(() => activeCfg);
+    }
+    return activeCfg;
+  };
+  const [plannerCfg, writerCfg] = await Promise.all([
+    resolveStageConfig(generationSettings.plannerLlmConfigId),
+    resolveStageConfig(generationSettings.writerLlmConfigId),
+  ]);
+  const configuredWriterOutput = writerCfg?.max_output_tokens;
+  const writerStageOutput = Math.min(
+    4096,
+    generationSettings.targetChapterChars * 2,
+    Number.isFinite(configuredWriterOutput) && (configuredWriterOutput ?? 0) > 0
+      ? (configuredWriterOutput as number)
+      : Number.MAX_SAFE_INTEGER,
+  );
+  // A frozen snapshot is shared by Planner and Writer, therefore it must fit
+  // the smaller actual stage window rather than whichever model is active now.
+  const stageLimits = [plannerCfg?.context_window, writerCfg?.context_window]
+    .filter(
+      (value): value is number =>
+        typeof value === 'number' && Number.isFinite(value) && value > 0,
+    );
+  const modelLimit = input.modelContextLimit ??
+    (stageLimits.length > 0 ? Math.min(...stageLimits) : activeCfg?.context_window ?? 8192);
+  const maxOut = input.maxOutputTokens ?? Math.max(256, writerStageOutput);
 
   // Context stage (no LLM for SM)
   const { snapshot, trace } = await buildContinuationContext({
@@ -187,7 +228,6 @@ export async function startContinuationRun(
     userInstruction: input.userInstruction,
     modelContextLimit: modelLimit,
     maxOutputTokens: maxOut,
-    outputReservePercent: 15,
     activeLlmConfigId: activeId || 1,
   });
 
@@ -521,7 +561,8 @@ async function continueFromWriter(
     body = await opts.call(
       'writer',
       writerMsgs,
-      Math.min(4096, snapshot.settingsSnapshot.values.targetChapterChars * 2),
+      snapshot.contextBudget?.writerMaxOutputTokens ??
+        Math.min(4096, snapshot.settingsSnapshot.values.targetChapterChars * 2),
       snapshot.settingsSnapshot.resolvedModelConfigIds.writer,
       'text',
     );
@@ -935,7 +976,9 @@ export async function finalizeContinuationChapter(input: {
   }
 
   const dedupeKey = `extract_state:${input.chapterId}:${revisionHash}`;
+  const rebuildDedupeKey = `rebuild_story_memory:auto:${input.projectId}:${position}:${revisionHash}`;
   const outboxId = `co_${v4().replace(/-/g, '')}`;
+  const rebuildOutboxId = `co_${v4().replace(/-/g, '')}`;
 
   const statements: Array<{ sql: string; params?: any[] }> = [
     {
@@ -991,6 +1034,22 @@ export async function finalizeContinuationChapter(input: {
       dedupeKey,
       ts,
     }),
+    // Chapter summaries and Story Memory describe finalized text, not proposal
+    // decisions. Queue their rebuild now, but make it depend on durable state
+    // extraction so a crash/retry cannot run the two jobs out of order.
+    buildOutboxInsertStatement({
+      id: rebuildOutboxId,
+      projectId: input.projectId,
+      chapterId: input.chapterId,
+      operation: 'rebuild_story_memory',
+      payload: {
+        fromPosition: position,
+        reason: 'finalized_chapter_memory',
+        dependsOnDedupeKey: dedupeKey,
+      },
+      dedupeKey: rebuildDedupeKey,
+      ts,
+    }),
   );
 
   await executeTransaction(db, statements);
@@ -998,7 +1057,10 @@ export async function finalizeContinuationChapter(input: {
   // Best-effort acceleration only. Reliable delivery is the outbox + cold
   // start path (markRunsInterruptedOnColdStart + processContinuationOutbox),
   // never this fire-and-forget trigger.
-  processContinuationOutbox({ limit: 1 }).catch(() => {});
+  // The dependent Story Memory rebuild is inserted beside the extraction
+  // event. Process both in creation order when the app remains alive; cold
+  // start processing still makes the chain recoverable after interruption.
+  processContinuationOutbox({ limit: 2 }).catch(() => {});
 
   return { revisionHash, outboxDedupeKey: dedupeKey };
 }

@@ -208,7 +208,13 @@ export interface ContinuationContextBundles {
     revisionHash: string;
     excerpt: string;
   }>;
-  storyMemory: { summary: string; estimatedTokens: number };
+  storyMemory: {
+    summary: string;
+    estimatedTokens: number;
+    /** Eligibility is persisted for diagnostics without exposing unusable state. */
+    eligibilityReason?: string;
+    throughPosition?: ContinuationChapterPosition | -1;
+  };
   episodic: Array<{ chapterId: number; summary: string }>;
   style: ContinuationStyleProfile | null;
   /** Schema 2 snapshots persist this; optional for safely reading Schema 1 runs. */
@@ -254,6 +260,13 @@ export interface ContinuationContextSnapshot {
     status: string;
   };
   inputRevisionHash: string;
+  /** Frozen request budget; optional for runs created before adaptive planning. */
+  contextBudget?: {
+    modelContextLimit: number;
+    inputBudget: number;
+    reservedOutputTokens: number;
+    writerMaxOutputTokens: number;
+  };
   settingsSnapshot: ContinuationGenerationSettingsSnapshot;
   bundles: ContinuationContextBundles;
   createdAt: string;
@@ -281,6 +294,9 @@ export interface ContinuationContextTrace {
   }>;
   totalInputTokens: number;
   reservedOutputTokens: number;
+  /** Optional for Schema 1 run snapshots created before adaptive planning. */
+  inputBudget?: number;
+  modelContextLimit?: number;
   omittedCapabilities: string[];
 }
 

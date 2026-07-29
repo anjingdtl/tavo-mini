@@ -50,3 +50,23 @@ export function clipTextToTokenBudget(text: string, budget: number): string {
 
   return output;
 }
+
+/**
+ * Retain the most recent part of text within a token budget.
+ *
+ * Continuation seams must end at the source boundary: keeping the prefix of a
+ * previous chapter drops the event that the next chapter is meant to inherit.
+ * Iterate backwards and slice once so long Chinese chapters remain O(n).
+ */
+export function clipTextTailToTokenBudget(text: string, budget: number): string {
+  if (budget <= 0 || !text) return '';
+  let used = 0;
+  let start = text.length;
+  for (let index = text.length - 1; index >= 0; index -= 1) {
+    const cost = estimateTokens(text[index]);
+    if (used + cost > budget) break;
+    used += cost;
+    start = index;
+  }
+  return text.slice(start).trimStart();
+}
