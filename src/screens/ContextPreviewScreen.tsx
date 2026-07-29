@@ -27,6 +27,7 @@ import { resolveLLMRequestConfig, resolveLLMRequestConfigById } from '../service
 import {
   buildContinuationContext,
   compilePlannerMessages,
+  compileWriterMessages,
   ensureGenerationSettings,
 } from '../services/continuation/generation';
 import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
@@ -95,8 +96,15 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           resolveStage(settings.plannerLlmConfigId),
           resolveStage(settings.writerLlmConfigId),
         ]);
-        const windows = [plannerConfig.context_window, writerConfig.context_window]
-          .filter((value): value is number => typeof value === 'number' && value > 0);
+        // Layout budget follows Writer window (Spec §7.1) — never Math.min across
+        // stages, which would under-allocate style relative to the real run.
+        const writerWindow =
+          (typeof writerConfig.context_window === 'number' &&
+          writerConfig.context_window > 0
+            ? writerConfig.context_window
+            : null) ||
+          requestConfig.context_window ||
+          8192;
         const writerOutput = Math.min(
           4096,
           settings.targetChapterChars * 2,
@@ -110,7 +118,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           targetPosition: chapter.position as any,
           currentChapterContent: chapter.content || '',
           userInstruction: instruction,
-          modelContextLimit: windows.length ? Math.min(...windows) : requestConfig.context_window || 8192,
+          modelContextLimit: writerWindow,
           maxOutputTokens: writerOutput,
           activeLlmConfigId: requestConfig.id || 1,
         });
@@ -125,7 +133,30 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           preview: Object.entries(category.omittedReasonCounts).map(([reason, count]) => `${reason} × ${count}`).join('\n'),
         })));
         setEstimatedInputTokens(result.trace.totalInputTokens);
-        setMessages(compilePlannerMessages(result.snapshot));
+        // Spec §9 / §10.3: preview must surface Writer style injection, not only Planner.
+        const plannerMsgs = compilePlannerMessages(result.snapshot);
+        const writerMsgs = compileWriterMessages(result.snapshot, {
+          schemaVersion: 1,
+          chapterGoal: '（预览用占位规划）',
+          centralConflict: '',
+          beats: [],
+          participatingCharacterIds: [],
+          characterActions: [],
+          plotAdvances: [],
+          foreshadowingActions: [],
+          proposedStateChanges: [],
+          risks: [],
+        });
+        setMessages([
+          ...plannerMsgs.map(m => ({
+            ...m,
+            content: `【Planner】\n${m.content}`,
+          })),
+          ...writerMsgs.map(m => ({
+            ...m,
+            content: `【Writer】\n${m.content}`,
+          })),
+        ]);
         return;
       }
       setContinuationPreview(false);

@@ -9,6 +9,11 @@ import type {
   HistoricalDigest,
 } from '../canon/types';
 import type { ContinuationSourceSnapshot } from '../types';
+import type {
+  ContinuationStageBudgets,
+} from './continuationContextBudget';
+import type { StyleRenderLevel } from '../styleProfile/styleProfileRenderer';
+import type { OriginalStyleProfileV2 } from '../styleProfile/styleProfileV2Schema';
 
 export type ContinuationStageName =
   | 'context'
@@ -134,6 +139,11 @@ export interface ContinuationGenerationSettingsSnapshot {
   };
 }
 
+/**
+ * Legacy thin metrics shape (pre-V2). Still used by deterministic checker
+ * heuristics and older run snapshots. Prefer `ContinuationContextSnapshot.style`
+ * (frozen V2 profile) for prompt injection.
+ */
 export interface ContinuationStyleProfile {
   projectId: number;
   sourceId: number;
@@ -149,6 +159,29 @@ export interface ContinuationStyleProfile {
   lexicalNotes: string;
   sampleEvidenceIds: number[];
   reviewStatus: 'pending' | 'confirmed' | 'ignored';
+}
+
+/**
+ * Frozen original-style injection payload for a generation run (Spec §9).
+ * Context Builder fills this from the injectable repository path only —
+ * never via bare SQL, and never by triggering Style Analysis LLM.
+ */
+export interface ContinuationFrozenStyle {
+  profileId: string;
+  profileHash: string;
+  profileSchemaVersion: number;
+  analyzerVersion: string;
+  rendererVersion: string;
+  sourceFingerprint: string;
+  boundaryCharOffsetExclusive: number;
+  frozenProfile: OriginalStyleProfileV2 | Record<string, unknown>;
+  userOverrides: Record<string, unknown>;
+  /** Selected multi-level render tier for Writer; null when omitted. */
+  renderLevel?: StyleRenderLevel | null;
+  /** Token budget allocated to style for this snapshot. */
+  styleTokens?: number;
+  /** Why style was omitted or degraded (trace-friendly). */
+  omitReason?: string | null;
 }
 
 export interface EffectiveContinuationState {
@@ -216,6 +249,10 @@ export interface ContinuationContextBundles {
     throughPosition?: ContinuationChapterPosition | -1;
   };
   episodic: Array<{ chapterId: number; summary: string }>;
+  /**
+   * Compact injectable metrics summary for checker heuristics / legacy readers.
+   * Full frozen V2 profile lives on `ContinuationContextSnapshot.style`.
+   */
   style: ContinuationStyleProfile | null;
   /** Schema 2 snapshots persist this; optional for safely reading Schema 1 runs. */
   supplements?: ContinuationSupplementBundle;
@@ -266,7 +303,19 @@ export interface ContinuationContextSnapshot {
     inputBudget: number;
     reservedOutputTokens: number;
     writerMaxOutputTokens: number;
+    /** Style share of the planned input layout (WP3). */
+    styleTokens?: number;
   };
+  /**
+   * Per-stage capacity frozen at run creation (Spec §7.1). Resume reuses these
+   * rather than re-reading live model windows.
+   */
+  stageBudgets?: ContinuationStageBudgets;
+  /**
+   * Frozen injectable original-style profile (Spec §9). Null when styleLevel is
+   * off, missing (balanced degrade), or not injectable.
+   */
+  style?: ContinuationFrozenStyle | null;
   settingsSnapshot: ContinuationGenerationSettingsSnapshot;
   bundles: ContinuationContextBundles;
   createdAt: string;
