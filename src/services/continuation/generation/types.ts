@@ -211,7 +211,28 @@ export interface ContinuationContextBundles {
   storyMemory: { summary: string; estimatedTokens: number };
   episodic: Array<{ chapterId: number; summary: string }>;
   style: ContinuationStyleProfile | null;
+  /** Schema 2 snapshots persist this; optional for safely reading Schema 1 runs. */
+  supplements?: ContinuationSupplementBundle;
   userInstruction: string;
+}
+
+export interface ContinuationSupplementBundle {
+  characterText: string;
+  worldbookText: string;
+  noteText: string;
+  presetText: string;
+  selected: Array<{
+    resourceKind: 'character' | 'worldbook' | 'note' | 'preset';
+    resourceId: number;
+    title: string;
+    estimatedTokens: number;
+  }>;
+  excluded: Array<{
+    resourceKind: 'character' | 'worldbook' | 'note' | 'preset';
+    resourceId: number;
+    title: string;
+    reason: string;
+  }>;
 }
 
 export interface ContinuationContextSnapshot {

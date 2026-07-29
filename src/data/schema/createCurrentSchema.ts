@@ -4,6 +4,7 @@ import { buildSchema20PostSettingsStatements } from '../../services/migrations/v
 import { buildSchema21CreateSqls } from '../../services/migrations/v20-to-v21';
 import { buildSchema23CreateSqls } from '../../services/migrations/v22-to-v23';
 import { buildSchema24CreateSqls } from '../../services/migrations/v23-to-v24';
+import { buildSchema25CreateSqls } from '../../services/migrations/v24-to-v25';
 
 export async function createCurrentSchema(
   database: SQLite.SQLiteDatabase,
@@ -632,6 +633,8 @@ export async function createCurrentSchema(
     ...buildSchema23CreateSqls(),
     // Schema 24 historical summaries / local candidate index.
     ...buildSchema24CreateSqls(),
+    // Schema 25 explicit continuation-only ordinary-resource bindings.
+    ...buildSchema25CreateSqls(),
   ];
   for (const statement of statements) {
     await execute(database, statement);

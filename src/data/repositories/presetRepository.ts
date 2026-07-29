@@ -141,6 +141,10 @@ export async function deletePreset(id: number): Promise<void> {
       sql: 'DELETE FROM project_resources WHERE resource_type = ? AND resource_id = ?',
       params: ['preset', id],
     },
+    {
+      sql: 'DELETE FROM continuation_resource_bindings WHERE resource_kind = ? AND resource_id = ?',
+      params: ['preset', id],
+    },
     { sql: 'DELETE FROM presets WHERE id = ?', params: [id] },
     {
       sql: 'UPDATE presets SET is_default = 1 WHERE NOT EXISTS(SELECT 1 FROM presets WHERE is_default = 1) AND id = (SELECT id FROM presets ORDER BY id ASC LIMIT 1)',

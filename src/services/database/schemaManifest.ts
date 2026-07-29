@@ -1333,4 +1333,24 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     backup: true,
     restoreOrder: 510,
   },
+  {
+    name: 'continuation_resource_bindings',
+    columns: [
+      'id',
+      'project_id',
+      'resource_kind',
+      'resource_id',
+      'continuation_usage',
+      'enabled_for_continuation',
+      'sort_order',
+      'created_at',
+      'updated_at',
+    ],
+    indexes: [
+      'idx_continuation_resource_bindings_project_usage',
+      'idx_continuation_resource_bindings_one_preset',
+    ],
+    backup: true,
+    restoreOrder: 515,
+  },
 ];
