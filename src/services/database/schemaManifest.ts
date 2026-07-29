@@ -489,7 +489,10 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'updated_at',
     ],
     backup: true,
-    restoreOrder: 240,
+    // Active Canon/style pointers are restored in a second phase after all
+    // parent rows exist. Keep settings after the style table so delete order
+    // clears this pointer-bearing row before deleting its parents.
+    restoreOrder: 520,
   },
   {
     name: 'continuation_import_jobs',
