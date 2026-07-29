@@ -7,7 +7,7 @@
  * and ContinuationHome still gates non-continuation projects correctly.
  */
 import React from 'react';
-import { render, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 // Mock the navigation object passed to screens.
 const mockNavigate = jest.fn();
@@ -27,7 +27,7 @@ jest.mock('../src/store/projectStore', () => ({
 
 // Mock the import service so ContinuationHome doesn't hit the DB.
 jest.mock('../src/services/continuation/continuationImportService', () => ({
-  getActiveContinuationSource: jest.fn(async () => null),
+  getActiveContinuationSource: jest.fn(),
   deleteContinuationSource: jest.fn(async () => undefined),
 }));
 
@@ -68,6 +68,10 @@ import { ContinuationHomeScreen } from '../src/screens/continuation/Continuation
 describe('ResourceLibrary 续写 tab (Spec §8.3 flattened)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    const importService = jest.requireMock(
+      '../src/services/continuation/continuationImportService',
+    ) as { getActiveContinuationSource: jest.Mock };
+    importService.getActiveContinuationSource.mockResolvedValue(null);
   });
 
   it('renders all five tabs in the SegmentedControl', () => {
@@ -94,6 +98,36 @@ describe('ResourceLibrary 续写 tab (Spec §8.3 flattened)', () => {
       expect(getAllByText('导入 TXT 原著').length).toBeGreaterThan(0);
     });
     expect(getByText(/原著仅保存在本设备/)).toBeTruthy();
+  });
+
+  it('keeps the primary analysis action inside the imported-source card', async () => {
+    const importService = jest.requireMock(
+      '../src/services/continuation/continuationImportService',
+    ) as { getActiveContinuationSource: jest.Mock };
+    importService.getActiveContinuationSource.mockResolvedValue({
+      id: 'source-1',
+      projectId: 1,
+      displayName: '白后传',
+      originalFileName: '白后传.txt',
+      fileSizeBytes: 1024,
+      normalizedCharCount: 1000,
+      chapterCount: 5,
+      detectedEncoding: 'utf-8',
+      createdAt: '2026-07-29T00:00:00.000Z',
+      activatedAt: '2026-07-29T00:00:00.000Z',
+    });
+    projectState.currentProject = { id: 1, name: '续写项目', mode: 'continuation' };
+    const { getByText } = render(
+      <ContinuationHomeScreen
+        navigation={{ navigate: mockNavigate } as any}
+      />,
+    );
+
+    await waitFor(() => expect(getByText('原著分析')).toBeTruthy());
+    expect(getByText('查看章节')).toBeTruthy();
+    expect(getByText('设置续写起点')).toBeTruthy();
+    fireEvent.press(getByText('原著分析'));
+    expect(mockNavigate).toHaveBeenCalledWith('CanonAnalysisOverview', {});
   });
 
   it('shows the not-continuation gate on the 续写 tab for an outline project', () => {
