@@ -388,17 +388,17 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     // awaiting_user with an adoptable artifact (original path)
     if (run.state === 'awaiting_user') {
       return (
-        <View style={styles.actions}>
-          <Button
-            label={busy ? '处理中…' : '采纳为草稿'}
-            onPress={() => doAdopt(false)}
-            disabled={busy || !body}
-          />
+        <View style={styles.decisionActions}>
           <Button
             label="放弃"
-            variant="secondary"
+            variant="ghost"
             onPress={doAbandon}
             disabled={busy}
+          />
+          <Button
+            label={busy ? '采纳中…' : '采纳'}
+            onPress={() => doAdopt(false)}
+            disabled={busy || !body}
           />
         </View>
       );
@@ -472,4 +472,12 @@ const styles = StyleSheet.create({
   block: { marginBottom: 16 },
   h: { fontSize: 16, fontWeight: '600', marginBottom: 8 },
   actions: { gap: 12, marginTop: 8 },
+  // Keep the final decision in the same left-to-right order and visual weight
+  // as the outline pipeline result screen: discard first, adopt second.
+  decisionActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.md,
+    marginTop: spacing.lg,
+  },
 });
