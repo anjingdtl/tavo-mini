@@ -171,6 +171,7 @@ export const ProjectListScreen: React.FC = () => {
         <SegmentedControl
           value={modeFilter}
           onChange={value => setModeFilter(value as 'outline' | 'continuation')}
+          size="prominent"
           options={[
             { value: 'outline', label: `大纲创作（${projects.filter(p => p.mode === 'outline').length}）` },
             { value: 'continuation', label: `原著续写（${projects.filter(p => p.mode === 'continuation').length}）` },
