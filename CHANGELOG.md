@@ -4,6 +4,26 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+> 计划纳入下一正式版本（建议 2.11.0）。当前 `package.json` 仍为 2.10.7，发版前再 bump。
+
+### Added
+
+- **原著写作风格（Schema 26）**：Canon 章节分析成功后、激活快照前增加独立 `style_analysis` 阶段，产出可版本化、可审核的 V2 风格画像；支持查看详情、用户修正、忽略/恢复、单独重试，以及显式跳过风格并激活 Canon。
+- **文风约束配置**：续写生成配置提供「关闭 / 平衡 / 严格」独立 `styleLevel`；校验严格度预设会展开各子项，文风可再单独修改。
+- **动态风格注入**：Context 只读缓存画像，不隐式触发风格 LLM；按阶段窗口动态预算，Planner/Writer/Checker/Repair 分级注入；上下文预览展示「原著风格画像」级别、token 与降级原因，并区分 Planner / Writer 请求。
+- **续写章节显示编号**：用户可见章节号接续原著边界（边界第 20 章 → 首篇续写「第 21 章」）；内部 `ContinuationChapterPosition` 不变。
+
+### Changed
+
+- 分析概览增加「原著写作风格」卡片（未分析 / 分析中 / 失败 / 就绪 / 过期 / 已忽略）。
+- 激活 Canon 与风格画像改为原子路径（`activateSnapshotAndStyleProfile`），UI 显式传递 `styleProfileId` / `allowStyleSkip`。
+
+### Tests
+
+- 风格统计/抽样/V2 schema、分析服务、原子激活、动态注入、章节编号与 `continuationStyleIntegration` 集成测试；轻量 Maestro `12-continuation-style-overview.yaml`。
+
 ## [2.10.7] - 2026-07-29
 
 ### Changed
