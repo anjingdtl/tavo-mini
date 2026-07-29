@@ -1,5 +1,17 @@
 # ShineWriter 发布清单
 
+## V2.10.7 续写长上下文与持续记忆
+
+- [x] 升级 `package.json` / `package-lock.json` 至 `2.10.7`，`npm run prebuild` 生成 `V2.10.7` / `2100700`
+- [x] README 改写为面向普通创作者的使用说明，并同步原著续写、隐私、常见问题与正式 APK 信息
+- [x] `npm run verify` 通过（ESLint 0 error；保留仓库既有 60 条 warning）
+- [x] `npm run test:coverage` 通过；全局覆盖率 lines 71.66%、functions 75.75%、branches 57.87%
+- [x] Android Debug 构建并安装到 Android 模拟器；新建原著续写项目、续写工作台与上下文预览均可进入，未导入原著时显示安全阻断提示，无崩溃
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.10.7-release.apk`
+- [x] `scripts/verify-release-apk.ps1` 验收单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.10.7` / `2100700`
+
+证据：Release APK 38,261,447 bytes，SHA-256 `61F312B5B122DC0CEB6D8E86723DCD81F6832E3B34545A540765F039E3F12ED7`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。模拟器截图：`test-logs/continuation-context-v2107-20260729/`。
+
 ## V2.10.4 历史摘要与近端 Canon 加速
 
 - [x] 升级 `package.json` / `package-lock.json` 至 `2.10.4`，`npm run prebuild` 生成 `V2.10.4` / `2100400`

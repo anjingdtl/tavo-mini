@@ -7,8 +7,14 @@ import type { ContinuationChapterPosition } from '../../../types/novel';
 import { openDatabase } from '../../../data/connection/openDatabase';
 import {
   clipTextToTokenBudget,
+  clipTextTailToTokenBudget,
   estimateTokens,
 } from '../../../utils/tokenEstimator';
+import type { Chapter } from '../../../types/novel';
+import * as database from '../../database';
+import { buildMemoryContext } from '../../contextBuilder';
+import { renderStoryMemoryForContext } from '../../storyMemory/storyMemoryRenderer';
+import { resolveUsableCheckpointForTarget } from '../../storyMemory/storyMemoryCheckpointEligibility';
 import { continuationSourceReader } from '../continuationSourceReader';
 import { CanonQueryService } from '../canon/canonQueryService';
 import { listHistoricalDigestReferences } from '../canon/historicalDigestService';
@@ -27,6 +33,7 @@ import type {
   StrictnessProfile,
 } from './types';
 import { ContinuationCapabilityBlockedError } from './types';
+import { planContinuationContextBudget } from './continuationContextBudget';
 
 export interface BuildContinuationContextInput {
   projectId: number;
@@ -36,7 +43,6 @@ export interface BuildContinuationContextInput {
   userInstruction: string;
   modelContextLimit: number;
   maxOutputTokens: number;
-  outputReservePercent: number;
   /** Resolved active LLM config id used when stage ids are null. */
   activeLlmConfigId: number;
   settingsOverride?: Partial<ContinuationGenerationSettings>;
@@ -123,21 +129,16 @@ export async function buildContinuationContext(
     );
   }
 
-  const reservedOutputTokens = Math.max(
-    input.maxOutputTokens,
-    Math.floor(
-      (input.modelContextLimit * (input.outputReservePercent || 15)) / 100,
-    ),
-  );
-  const inputBudget = Math.max(
-    256,
-    input.modelContextLimit - reservedOutputTokens - 64,
-  );
+  const contextBudget = planContinuationContextBudget({
+    modelContextLimit: input.modelContextLimit,
+    writerMaxOutputTokens: input.maxOutputTokens,
+  });
+  const inputBudget = contextBudget.inputBudget;
 
   const reviewPolicy = reviewPolicyFor(profile);
   const supplements = await buildContinuationSupplementContext({
     projectId: input.projectId,
-    tokenBudget: Math.max(0, Math.floor(inputBudget * 0.2)),
+    tokenBudget: contextBudget.supplementTokens,
   });
   const canonBundle = await CanonQueryService.getContextBundle({
     projectId: input.projectId,
@@ -146,7 +147,7 @@ export async function buildContinuationContext(
     atSourcePosition: snap.boundaryPosition,
     queryText: input.userInstruction,
     characterIds: [],
-    tokenBudget: Math.floor(inputBudget * 0.4),
+    tokenBudget: contextBudget.canonTokens,
     reviewPolicy,
   });
   const partiallyCovered =
@@ -158,14 +159,18 @@ export async function buildContinuationContext(
         limit: 3,
       })
         .then(items =>
-          items.map(item => ({
-            ...item,
-            // Historical cards are the first soft context to be dropped.
-            summary: clipTextToTokenBudget(
-              item.summary,
-              Math.max(100, Math.floor(inputBudget * 0.08)),
-            ),
-          })),
+          {
+            // Historical cards are the first soft context to be dropped. They
+            // share one category budget rather than each consuming 5%.
+            const perCard = Math.max(
+              1,
+              Math.floor((inputBudget * 0.05) / Math.max(1, items.length)),
+            );
+            return items.map(item => ({
+              ...item,
+              summary: clipTextToTokenBudget(item.summary, perCard),
+            }));
+          },
         )
         .catch(() => [])
     : [];
@@ -178,59 +183,105 @@ export async function buildContinuationContext(
   if (chapters.length > 0) {
     const last = chapters[chapters.length - 1];
     seamSummary = `原著末章「${last.title}」(position=${last.position})`;
-    seamExcerpt = clipTextToTokenBudget(last.content || last.title, 400);
+    // The source boundary is the continuation seam. Keep its tail, not the
+    // chapter opening, so the next paragraph inherits the last real event.
+    seamExcerpt = clipTextTailToTokenBudget(
+      last.content || last.title,
+      contextBudget.sourceSeamTokens,
+    );
   }
 
-  // Recent continuation chapters (project chapters with position < target).
-  // Never read future continuation chapters.
-  const db = await openDatabase();
-  const [recentRes] = await db.executeSql(
-    `SELECT id, position, content, title FROM chapters
-     WHERE project_id = ? AND position < ?
-     ORDER BY position DESC LIMIT 5`,
-    [input.projectId, input.targetPosition],
-  );
+  // Recent continuation chapters are a distinct short-term bridge. Allocate
+  // from newest to oldest: the immediately previous chapter is retained whole
+  // when possible, older chapters progressively contribute their tails.
+  const projectChapters = await database.getChaptersByProject(input.projectId);
+  const priorChapters = projectChapters
+    .filter(
+      chapter =>
+        chapter.position < input.targetPosition && Boolean(chapter.content?.trim()),
+    )
+    .sort((a, b) => b.position - a.position);
   const recentChapters: ContinuationContextSnapshot['bundles']['recentChapters'] =
     [];
-  for (let i = 0; i < recentRes.rows.length; i++) {
-    const row = recentRes.rows.item(i);
-    const content = String(row.content ?? '');
+  let recentRemaining = contextBudget.recentBridgeTokens;
+  for (const chapter of priorChapters) {
+    if (recentRemaining <= 0) break;
+    const content = String(chapter.content ?? '');
+    const excerpt = clipTextTailToTokenBudget(content, recentRemaining);
+    const excerptTokens = estimateTokens(excerpt);
+    if (!excerpt) continue;
     recentChapters.push({
-      chapterId: row.id,
-      position: row.position,
+      chapterId: chapter.id,
+      position: chapter.position as ContinuationChapterPosition,
       revisionHash: contentRevisionHash(content),
-      excerpt: clipTextToTokenBudget(content, 500),
+      excerpt,
     });
+    recentRemaining -= excerptTokens;
   }
   // Chronological order for prompts
   recentChapters.reverse();
 
-  // Story memory: read checkpoint only — no LLM.
+  // Long-term Story Memory: only a clean checkpoint strictly before target may
+  // be rendered. This mirrors outline mode and prevents dirty/future state from
+  // silently contaminating a balanced continuation run.
+  const targetChapter = {
+    id: input.targetChapterId,
+    project_id: input.projectId,
+    position: input.targetPosition,
+    title: '',
+    synopsis: input.userInstruction,
+    content: input.currentChapterContent,
+    status: 'draft',
+    summary_json: null,
+    created_at: '',
+    updated_at: '',
+  } as Chapter;
   let smSummary = '';
   let smTokens = 0;
   let smFingerprint = 'none';
   let smThrough: ContinuationChapterPosition | -1 = -1;
   let smStatus = 'missing';
+  let smEligibilityReason = 'missing';
   try {
-    const [sm] = await db.executeSql(
-      `SELECT memory_json, estimated_tokens, state_fingerprint,
-              through_chapter_position, status
-       FROM project_story_memory WHERE project_id = ?`,
-      [input.projectId],
+    const record = await database.getProjectStoryMemory(input.projectId);
+    const eligibility = resolveUsableCheckpointForTarget(
+      record,
+      input.targetPosition,
     );
-    if (sm.rows.length > 0) {
-      const r = sm.rows.item(0);
-      smStatus = r.status;
-      smFingerprint = r.state_fingerprint ?? 'none';
-      smThrough = r.through_chapter_position ?? -1;
-      smTokens = r.estimated_tokens ?? 0;
-      const raw = String(r.memory_json ?? '');
-      smSummary = clipTextToTokenBudget(raw, Math.min(800, Math.floor(inputBudget * 0.15)));
-      smTokens = estimateTokens(smSummary);
+    smEligibilityReason = eligibility.reason;
+    if (record) smStatus = record.status;
+    if (eligibility.usable) {
+      smThrough = eligibility.checkpoint.state.throughChapterPosition as ContinuationChapterPosition;
+      smFingerprint = eligibility.checkpoint.state.metadata.stateFingerprint ?? 'none';
+      const rendered = renderStoryMemoryForContext(eligibility.checkpoint.state, {
+        currentChapter: targetChapter,
+        budgetTokens: contextBudget.storyMemoryTokens,
+        retrievalUserPrompt: input.userInstruction,
+      });
+      smSummary = rendered.text;
+      smTokens = rendered.estimatedTokens;
     }
   } catch {
-    // table may be empty
+    // Memory is optional in loose/balanced mode. The trace exposes omission.
   }
+
+  // Episodic chapter memories complement the checkpoint with task-relevant
+  // settled events. Do not repeat raw bridge chapters in both categories.
+  const bridgeIds = new Set(recentChapters.map(chapter => chapter.chapterId));
+  const episodicText = buildMemoryContext(
+    priorChapters
+      .filter(chapter => !bridgeIds.has(chapter.id))
+      .sort((a, b) => a.position - b.position),
+    targetChapter,
+    10,
+    contextBudget.episodicTokens,
+    { queryText: input.userInstruction },
+  );
+  const episodic = episodicText
+    ? [{ chapterId: -1, summary: episodicText }]
+    : [];
+
+  const db = await openDatabase();
 
   // Style profile (optional)
   let style: ContinuationStyleProfile | null = null;
@@ -314,6 +365,12 @@ export async function buildContinuationContext(
       status: smStatus,
     },
     inputRevisionHash: contentRevisionHash(input.currentChapterContent),
+    contextBudget: {
+      modelContextLimit: contextBudget.modelContextLimit,
+      inputBudget: contextBudget.inputBudget,
+      reservedOutputTokens: contextBudget.reservedOutputTokens,
+      writerMaxOutputTokens: input.maxOutputTokens,
+    },
     settingsSnapshot,
     bundles: {
       lockedRules,
@@ -322,8 +379,13 @@ export async function buildContinuationContext(
       effectiveState,
       seam: { summary: seamSummary, excerpt: seamExcerpt },
       recentChapters,
-      storyMemory: { summary: smSummary, estimatedTokens: smTokens },
-      episodic: [],
+      storyMemory: {
+        summary: smSummary,
+        estimatedTokens: smTokens,
+        eligibilityReason: smEligibilityReason,
+        throughPosition: smThrough,
+      },
+      episodic,
       style,
       supplements,
       userInstruction: input.userInstruction,
@@ -379,7 +441,7 @@ export async function buildContinuationContext(
     },
     {
       name: 'recentChapters',
-      candidates: recentRes.rows.length,
+      candidates: priorChapters.length,
       selected: recentChapters.length,
       tokens: estimateTokens(recentChapters.map(c => c.excerpt).join('\n')),
       omittedReasonCounts: {},
@@ -389,7 +451,14 @@ export async function buildContinuationContext(
       candidates: smStatus === 'missing' ? 0 : 1,
       selected: smSummary ? 1 : 0,
       tokens: smTokens,
-      omittedReasonCounts: {},
+      omittedReasonCounts: smSummary ? {} : { [smEligibilityReason]: 1 },
+    },
+    {
+      name: 'episodic',
+      candidates: priorChapters.filter(chapter => Boolean(chapter.memory_summary?.trim())).length,
+      selected: episodic.length,
+      tokens: estimateTokens(episodicText),
+      omittedReasonCounts: episodicText ? {} : { no_match_or_summary: 1 },
     },
   ];
 
@@ -405,6 +474,9 @@ export async function buildContinuationContext(
         `上下文预算不足：硬规则约 ${hardTokens} token，可用 ${inputBudget}。请换更大上下文模型或降低输出预留。`,
       );
     }
+    throw new ContinuationCapabilityBlockedError(
+      `上下文预算不足：已组装约 ${totalInputTokens} token，可用 ${inputBudget}。请换更大上下文模型或降低输出预留。`,
+    );
   }
 
   const trace: ContinuationContextTrace = {
@@ -424,7 +496,9 @@ export async function buildContinuationContext(
     },
     categories,
     totalInputTokens,
-    reservedOutputTokens,
+    reservedOutputTokens: contextBudget.reservedOutputTokens,
+    inputBudget: contextBudget.inputBudget,
+    modelContextLimit: contextBudget.modelContextLimit,
     omittedCapabilities: gaps,
   };
 

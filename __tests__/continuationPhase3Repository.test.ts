@@ -1191,6 +1191,59 @@ describe('continuation Phase 3 repository coverage', () => {
     await coldStartNormalizeContinuation();
   });
 
+  test('dependent memory rebuild waits for extraction, then runs in order', async () => {
+    store.chapters[0].content = '有状态的定稿正文';
+    const hash = contentRevisionHash(store.chapters[0].content);
+    store.outbox.push(
+      {
+        id: 'co_dep_extract',
+        project_id: 1,
+        chapter_id: 10,
+        operation: 'extract_state',
+        payload_json: JSON.stringify({
+          projectId: 1,
+          chapterId: 10,
+          chapterRevisionHash: hash,
+        }),
+        dedupe_key: `extract_state:10:${hash}`,
+        state: 'pending',
+        attempt_count: 0,
+        last_error: null,
+        created_at: 't1',
+        updated_at: 't1',
+        completed_at: null,
+      },
+      {
+        id: 'co_dep_rebuild',
+        project_id: 1,
+        chapter_id: 10,
+        operation: 'rebuild_story_memory',
+        payload_json: JSON.stringify({
+          fromPosition: 21,
+          dependsOnDedupeKey: `extract_state:10:${hash}`,
+        }),
+        dedupe_key: `rebuild_story_memory:1:21:${hash}`,
+        state: 'pending',
+        attempt_count: 0,
+        last_error: null,
+        created_at: 't2',
+        updated_at: 't2',
+        completed_at: null,
+      },
+    );
+    const rebuilt: number[] = [];
+    const result = await processContinuationOutbox({
+      limit: 2,
+      callExtract: async () => JSON.stringify({ proposals: [] }),
+      rebuildStoryMemory: async (_projectId, fromPosition) => {
+        rebuilt.push(fromPosition);
+      },
+    });
+    expect(result).toEqual({ processed: 2, failed: 0 });
+    expect(rebuilt).toEqual([21]);
+    expect((await getOutboxById('co_dep_rebuild'))!.state).toBe('completed');
+  });
+
   // ---- P1-A: finalize atomicity / idempotency / frozen config (fix-plan §2, §5.1) ----
   describe('finalize atomic transaction + outbox idempotency', () => {
     const frozenRun = (overrides: Partial<any> = {}) => ({
@@ -1244,6 +1297,15 @@ describe('continuation Phase 3 repository coverage', () => {
       // Fix-plan §5.1: frozen stateExtraction config id captured from the
       // resolvedModelConfigIds snapshot, not the legacy resolvedLlmConfigIds.
       expect(payload.llmConfigId).toBe(77);
+      // Story Memory reflects finalized prose and therefore is not held back
+      // by Canon proposal review; it runs only after extraction completes.
+      const rebuildRows = store.outbox.filter(
+        o => o.operation === 'rebuild_story_memory',
+      );
+      expect(rebuildRows).toHaveLength(1);
+      expect(JSON.parse(rebuildRows[0].payload_json).dependsOnDedupeKey).toBe(
+        fin.outboxDedupeKey,
+      );
     });
 
     test('re-finalizing the same chapter content is idempotent (one outbox)', async () => {

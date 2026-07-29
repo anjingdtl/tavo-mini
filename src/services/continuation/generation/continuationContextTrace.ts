@@ -16,7 +16,7 @@ export function summarizeTrace(trace: ContinuationContextTrace): string {
   return [
     `Canon ${trace.canonSnapshotId.slice(0, 8)}@r${trace.canonRevision}`,
     `pos=${trace.targetPosition}`,
-    `in=${trace.totalInputTokens} outReserve=${trace.reservedOutputTokens}`,
+    `window=${trace.modelContextLimit ?? 'legacy'} budget=${trace.inputBudget ?? 'legacy'} in=${trace.totalInputTokens} outReserve=${trace.reservedOutputTokens}`,
     cats,
     freshness,
     trace.omittedCapabilities.length

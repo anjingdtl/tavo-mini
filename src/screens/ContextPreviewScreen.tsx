@@ -23,10 +23,11 @@ import { useThemeStore } from '../store/themeStore';
 import Toast from 'react-native-toast-message';
 import * as db from '../services/database';
 import { buildContext } from '../services/contextBuilder';
-import { resolveLLMRequestConfig } from '../services/llm';
+import { resolveLLMRequestConfig, resolveLLMRequestConfigById } from '../services/llm';
 import {
   buildContinuationContext,
   compilePlannerMessages,
+  ensureGenerationSettings,
 } from '../services/continuation/generation';
 import type { ContextTraceItem, ContextSourceKind } from '../types/contextTrace';
 import type { ChatMessage } from '../services/llm';
@@ -67,6 +68,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
   const [showMessages, setShowMessages] = useState(false);
   const [expandedMsg, setExpandedMsg] = useState<number | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [continuationPreview, setContinuationPreview] = useState(false);
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -81,7 +83,24 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
         ? await (db as any).getProjectById(chapter.project_id)
         : null;
       if (project?.mode === 'continuation') {
+        setContinuationPreview(true);
         const requestConfig = await resolveLLMRequestConfig();
+        const settings = await ensureGenerationSettings(chapter.project_id);
+        const resolveStage = async (id: number | null) =>
+          id == null
+            ? requestConfig
+            : resolveLLMRequestConfigById(id).catch(() => requestConfig);
+        const [plannerConfig, writerConfig] = await Promise.all([
+          resolveStage(settings.plannerLlmConfigId),
+          resolveStage(settings.writerLlmConfigId),
+        ]);
+        const windows = [plannerConfig.context_window, writerConfig.context_window]
+          .filter((value): value is number => typeof value === 'number' && value > 0);
+        const writerOutput = Math.min(
+          4096,
+          settings.targetChapterChars * 2,
+          writerConfig.max_output_tokens || Number.MAX_SAFE_INTEGER,
+        );
         const instruction = chapter.synopsis?.trim() || `续写第 ${chapter.position + 1} 章，保持与前文一致。`;
         const result = await buildContinuationContext({
           projectId: chapter.project_id,
@@ -89,9 +108,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           targetPosition: chapter.position as any,
           currentChapterContent: chapter.content || '',
           userInstruction: instruction,
-          modelContextLimit: requestConfig.context_window || 8192,
-          maxOutputTokens: requestConfig.max_output_tokens || 2048,
-          outputReservePercent: 15,
+          modelContextLimit: windows.length ? Math.min(...windows) : requestConfig.context_window || 8192,
+          maxOutputTokens: writerOutput,
           activeLlmConfigId: requestConfig.id || 1,
         });
         setTrace(result.trace.categories.map(category => ({
@@ -108,6 +126,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
         setMessages(compilePlannerMessages(result.snapshot));
         return;
       }
+      setContinuationPreview(false);
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(chapter.project_id);
       const result = await buildContext(
@@ -211,12 +230,12 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
     <Screen>
       <Header
         title="上下文预览"
-        subtitle={`预估 ${estimatedInputTokens.toLocaleString()} tokens`}
+        subtitle={`${continuationPreview ? '续写规划阶段 · ' : ''}预估 ${estimatedInputTokens.toLocaleString()} tokens`}
         action={<Button label="关闭" variant="ghost" icon={X} onPress={onClose} compact />}
       />
       <View style={[styles.toggleRow, { borderBottomColor: theme.colors.border }]}>
         <Button
-          label={showMessages ? '查看追踪' : '查看消息'}
+          label={showMessages ? '查看资料分配' : '查看实际请求'}
           variant="secondary"
           compact
           onPress={() => {
@@ -226,8 +245,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
         />
         <Text style={[styles.tokenSummary, { color: theme.colors.textSecondary }]}>
           {showMessages
-            ? `${messages.length} 条消息`
-            : `${trace.length} 项追踪`}
+            ? `${messages.length} 条实际发送消息`
+            : `${trace.length} 项资料分配`}
         </Text>
       </View>
       {showMessages ? (
