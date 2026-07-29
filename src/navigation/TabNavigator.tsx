@@ -260,7 +260,7 @@ export const TabNavigator: React.FC = () => {
     >
       <Tab.Screen name="Projects" component={ProjectStackScreen} options={{ tabBarLabel: '项目' }} />
       <Tab.Screen name="Editor" component={EditorStackScreen} options={{ tabBarLabel: isContinuation ? '续写' : '写作' }} />
-      <Tab.Screen name="Build" component={BuildScreen} options={{ tabBarLabel: isContinuation ? '补充' : '构建' }} />
+      <Tab.Screen name="Build" component={BuildScreen} options={{ tabBarLabel: '构建' }} />
       <Tab.Screen name="Resources" component={ResourceStackScreen} options={{ tabBarLabel: isContinuation ? '续写资料' : '资料' }} />
       <Tab.Screen name="Settings" component={SettingsStackScreen} options={{ tabBarLabel: '设置' }} />
     </Tab.Navigator>
