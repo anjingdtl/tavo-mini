@@ -16,6 +16,7 @@ import {
   getChaptersBySource,
 } from '../../services/continuation/continuationSourceRepository';
 import { updateContinuationBoundary } from '../../services/continuation/continuationSettingsService';
+import { getSourceChapterDisplayNumber } from '../../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type {
   ContinuationSource,
   ContinuationSourceChapter,
@@ -58,7 +59,7 @@ export const ContinuationBoundaryScreen: React.FC<{
     if (!currentProject) return;
     Alert.alert(
       '设置续写起点',
-      `确定将续写起点设为「第 ${position + 1} 章」末尾？\n此章之后的原文将默认不进入分析和生成，Phase 2 分析状态会被标记为过期。`,
+      `确定将续写起点设为「第 ${getSourceChapterDisplayNumber(position)} 章」末尾？\n此章之后的原文将默认不进入分析和生成，Phase 2 分析状态会被标记为过期。`,
       [
         { text: '取消', style: 'cancel' },
         {
@@ -117,7 +118,7 @@ export const ContinuationBoundaryScreen: React.FC<{
           renderItem={({ item }) => (
             <Card>
               <Text style={[styles.chapterTitle, { color: theme.colors.textPrimary }]}>
-                第 {item.position + 1} 章 · {item.title}
+                第 {getSourceChapterDisplayNumber(item.position)} 章 · {item.title}
               </Text>
               <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
                 {item.charCount.toLocaleString('zh-CN')} 字

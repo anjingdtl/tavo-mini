@@ -68,7 +68,7 @@ describe('planContinuationContextBudget styleTokens', () => {
     expect(plan.styleTokens).toBeLessThanOrEqual(
       Math.floor(plan.inputBudget * 0.1),
     );
-    expect(plan.styleTokens).toBeLessThanOrEqual(16_000);
+    expect(plan.styleTokens).toBe(Math.floor(plan.inputBudget * 0.1));
   });
 
   it('keeps all category shares (incl. style) inside inputBudget', () => {
@@ -89,7 +89,7 @@ describe('planContinuationContextBudget styleTokens', () => {
     }
   });
 
-  it('grows style budget with larger windows but stays capped', () => {
+  it('grows style budget with larger windows without a fixed absolute cap', () => {
     const small = planContinuationContextBudget({
       modelContextLimit: 8_192,
       writerMaxOutputTokens: 2_048,
@@ -99,6 +99,7 @@ describe('planContinuationContextBudget styleTokens', () => {
       writerMaxOutputTokens: 4_096,
     });
     expect(large.styleTokens).toBeGreaterThan(small.styleTokens);
-    expect(large.styleTokens).toBe(16_000);
+    expect(large.styleTokens).toBe(Math.floor(large.inputBudget * 0.1));
+    expect(large.styleTokens).toBeGreaterThan(16_000);
   });
 });

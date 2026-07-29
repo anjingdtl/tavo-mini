@@ -132,6 +132,9 @@ export function planContinuationContextBudget(input: {
     recentBridgeTokens: cappedShare(inputBudget, 0.15, 96_000),
     storyMemoryTokens: cappedShare(inputBudget, 0.1, 32_000),
     episodicTokens: cappedShare(inputBudget, 0.07, 24_000),
-    styleTokens: cappedShare(inputBudget, 0.1, 16_000),
+    // Style is governed by the centralized input budget and the selected
+    // render level. It must not have a fixed absolute ceiling (1M-context
+    // models should be able to receive a detailed profile).
+    styleTokens: Math.max(0, Math.floor(inputBudget * 0.1)),
   };
 }

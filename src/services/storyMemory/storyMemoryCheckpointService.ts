@@ -23,6 +23,7 @@ import type {
   StoredStoryMemoryBatch,
 } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
+import { getContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
 
 function renderBatchEpisodicText(
   summary: EpisodicSummary,
@@ -146,7 +147,10 @@ export function parseAndValidateBatchPatch(
   output: string,
   previousState: StoryMemoryState,
   chapters: Chapter[],
-  options: { recoverEvidence?: boolean } = {},
+  options: {
+    recoverEvidence?: boolean;
+    getDisplayNumber?: (position: number) => number;
+  } = {},
 ): StoryMemoryBatchPatchDraft {
   const json = extractJSON(output);
   if (!json) {
@@ -201,6 +205,13 @@ export async function generateValidatedCheckpointBatch(input: {
     input.chapters.length,
   );
   const projectId = input.chapters[0].project_id;
+  let getDisplayNumber: ((position: number) => number) | undefined;
+  try {
+    const numbering = await getContinuationChapterNumbering(projectId);
+    getDisplayNumber = position => numbering.getDisplayNumber(position as any);
+  } catch {
+    getDisplayNumber = undefined;
+  }
   const firstResult = await requestCheckpoint(
     messages,
     firstBudget,
@@ -213,6 +224,7 @@ export async function generateValidatedCheckpointBatch(input: {
       firstResult.text || '',
       input.previousState,
       input.chapters,
+      { getDisplayNumber },
     );
   } catch (firstError) {
     if (input.signal?.aborted) {
@@ -242,6 +254,7 @@ export async function generateValidatedCheckpointBatch(input: {
         repairedResult.text || '',
         input.previousState,
         input.chapters,
+        { getDisplayNumber },
       );
     } catch (repairError) {
       if (input.signal?.aborted) {
@@ -272,6 +285,7 @@ export async function generateValidatedCheckpointBatch(input: {
           finalResult.text || '',
           input.previousState,
           input.chapters,
+          { getDisplayNumber },
         );
       } catch (finalError) {
         if (
@@ -283,7 +297,7 @@ export async function generateValidatedCheckpointBatch(input: {
               finalResult.text || '',
               input.previousState,
               input.chapters,
-              { recoverEvidence: true },
+              { recoverEvidence: true, getDisplayNumber },
             );
           } catch {
             // keep precise error
