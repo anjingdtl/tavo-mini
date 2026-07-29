@@ -64,7 +64,16 @@ export function executeTransaction(
             const deliver = (result: SQLite.ResultSet | { rowsAffected?: number }) => {
               if (delivered) return;
               delivered = true;
-              onStmt(index + 1, (result as any).rowsAffected ?? 0);
+              try {
+                onStmt(index + 1, (result as any).rowsAffected ?? 0);
+              } catch (error) {
+                // A rows-affected assertion is part of the transaction
+                // contract. Reject and rethrow from the native callback so
+                // react-native-sqlite-storage aborts the transaction instead
+                // of committing a partial activation.
+                rejectOnce(error);
+                throw error;
+              }
             };
             const r = tx.executeSql(
               statement.sql,

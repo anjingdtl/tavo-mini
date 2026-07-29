@@ -130,6 +130,10 @@ describe('migration schema matrix', () => {
   test('upgrades schema 25 to 26 rebuilding the style profile table', async () => {
     // Schema 25 already carries the Phase 3 tables; only the 25→26 step runs.
     const mock = createMigrationDb({ schemaVersion: 25 });
+    // This index belongs to the existing Canon run table. The repair must
+    // leave it in place rather than rebuilding the parent and risking child
+    // rows through immediate foreign keys.
+    mock.indexes.add('idx_analysis_runs_project_state');
 
     const result = await runMigrations(mock.database as any, 25);
 

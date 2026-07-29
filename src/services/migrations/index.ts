@@ -23,7 +23,7 @@ import { buildV21toV22Statements } from './v21-to-v22';
 import { buildV22toV23Statements } from './v22-to-v23';
 import { buildV23toV24Statements } from './v23-to-v24';
 import { buildV24toV25Statements } from './v24-to-v25';
-import { buildV25toV26Statements } from './v25-to-v26';
+import { buildV25toV26Statements, migrateV25ToV26 } from './v25-to-v26';
 
 export const SCHEMA_VERSION = 26;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
@@ -71,12 +71,18 @@ export async function runMigrations(
   }
 
   for (const migration of needed) {
-    const statements = await migration.buildStatements(db);
-    statements.push({
-      sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-      params: ['schema_version', String(migration.to)],
-    });
-    await executeTransaction(db, statements, { faultDomain: 'migration' });
+    if (migration.from === 25 && migration.to === 26) {
+      await migrateV25ToV26(db);
+    } else {
+      const statements = await migration.buildStatements(db);
+      await executeTransaction(db, statements, { faultDomain: 'migration' });
+    }
+    await executeTransaction(db, [
+      {
+        sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+        params: ['schema_version', String(migration.to)],
+      },
+    ], { faultDomain: 'migration' });
   }
 
   return {
