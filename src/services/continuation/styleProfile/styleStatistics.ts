@@ -156,7 +156,6 @@ const PSYCHOLOGICAL_CUES = [
   '暗想',
   '觉得',
   '感到',
-  '心想',
   '知道',
   '明白',
   '担心',
@@ -251,16 +250,6 @@ function computeDistribution(samples: number[]): Distribution {
     p25: pick(0.25),
     p75: pick(0.75),
   };
-}
-
-function quantile(sortedAsc: number[], q: number): number {
-  if (sortedAsc.length === 0) return 0;
-  if (sortedAsc.length === 1) return sortedAsc[0];
-  const idx = Math.min(
-    sortedAsc.length - 1,
-    Math.max(0, Math.floor(q * (sortedAsc.length - 1))),
-  );
-  return sortedAsc[idx];
 }
 
 /**
@@ -571,6 +560,3 @@ export function computeStyleMetrics(
 function ratioOrZero(numer: number, denom: number): number {
   return denom === 0 ? 0 : numer / denom;
 }
-
-// Re-export quantile for potential checker use; keeps the API surface explicit.
-export { quantile };
