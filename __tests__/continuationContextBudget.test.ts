@@ -33,8 +33,10 @@ describe('continuation long-context budget', () => {
           plan.sourceSeamTokens +
           plan.recentBridgeTokens +
           plan.storyMemoryTokens +
-          plan.episodicTokens,
+          plan.episodicTokens +
+          plan.styleTokens,
       ).toBeLessThanOrEqual(plan.inputBudget);
+      expect(plan.styleTokens).toBeGreaterThan(0);
     },
   );
 
