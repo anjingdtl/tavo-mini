@@ -90,7 +90,6 @@ export function createSeededRng(seed: string): () => number {
 
 /** Quote characters used to detect dialogue spans (must match styleStatistics). */
 const QUOTE_OPEN = new Set(['“', '「', '『', '"']);
-const QUOTE_CLOSE = new Set(['”', '」', '』', '"']);
 
 // Lexical cues for kind detection (kept local to the sampler; the statistics
 // module uses its own broader lists).

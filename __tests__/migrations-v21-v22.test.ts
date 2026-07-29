@@ -2,6 +2,7 @@ import { createCurrentSchema } from '../src/data/schema/createCurrentSchema';
 import { SCHEMA_MANIFEST } from '../src/services/database/schemaManifest';
 import { SCHEMA_VERSION } from '../src/services/migrations';
 import {
+  buildSchema22CreateSqls,
   buildV21toV22Statements,
   migrateV21ToV22,
 } from '../src/services/migrations/v21-to-v22';
@@ -19,6 +20,10 @@ describe('schema 22 Canon material work-item migration', () => {
     expect(sql).toContain("'world_rules'");
     expect(sql).toContain("'experiences'");
     expect(sql).toContain('idx_continuation_analysis_work_items_state');
+    // Cover the createCurrentSchema mirror helper (coverage gate).
+    expect(buildSchema22CreateSqls().join('\n')).toContain(
+      'continuation_analysis_work_items',
+    );
   });
 
   it('applies cleanly from schema 21', async () => {
