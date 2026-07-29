@@ -17,7 +17,11 @@ import { SCHEMA_VERSION } from '../src/services/migrations';
 
 type TableRows = Record<string, any>[];
 
-const ALL_TABLES = SCHEMA_MANIFEST.filter(table => table.backup).map(table => table.name);
+const ALL_TABLES = SCHEMA_MANIFEST
+  .filter(table => table.backup)
+  .slice()
+  .sort((a, b) => a.restoreOrder - b.restoreOrder)
+  .map(table => table.name);
 const CORE_TABLES = [
   'projects',
   'chapters',
@@ -367,6 +371,122 @@ describe('backupService', () => {
 
     await expect(restoreFromBackup(mockDb, '/fake/path/backup.json', { createPreRestoreBackup: false })).rejects.toThrow('injected insert failure');
     expect(mockDb.snapshot()).toEqual(before);
+  });
+
+  test('restores an active Canon/style pointer cycle only after parent rows exist', async () => {
+    const backup = await makeV3Backup({
+      projects: [{ id: 2, name: '含激活指针的项目' }],
+      continuation_sources: [{
+        id: 10,
+        project_id: 2,
+        version: 1,
+        normalized_sha256: 'source-sha',
+        parser_version: 'parser-1',
+        normalization_version: 'normalizer-1',
+      }],
+      continuation_source_chapters: [{
+        id: 100,
+        source_id: 10,
+        position: 4,
+      }],
+      continuation_canon_snapshots: [{
+        id: 'canon-1',
+        project_id: 2,
+        source_id: 10,
+        boundary_chapter_id: 100,
+        boundary_char_offset_exclusive: 42,
+        status: 'ready',
+      }],
+      continuation_style_profiles: [{
+        id: 'style-1',
+        project_id: 2,
+        source_id: 10,
+        source_version: 1,
+        source_sha256: 'source-sha',
+        parser_version: 'parser-1',
+        normalization_version: 'normalizer-1',
+        boundary_chapter_id: 100,
+        boundary_position: 4,
+        boundary_char_offset_exclusive: 42,
+        canon_snapshot_id: 'canon-1',
+        state: 'ready',
+        review_status: 'confirmed',
+      }],
+      continuation_settings: [{
+        project_id: 2,
+        active_source_id: 10,
+        boundary_chapter_id: 100,
+        boundary_char_offset_global: 42,
+        active_canon_snapshot_id: 'canon-1',
+        active_style_profile_id: 'style-1',
+      }],
+    });
+    writeBackup(backup);
+    const mockDb = createMockDb(makeFullTables());
+
+    await expect(
+      restoreFromBackup(mockDb, '/fake/path/active.json', {
+        createPreRestoreBackup: false,
+      }),
+    ).resolves.toMatchObject({
+      missingLocalModels: [],
+    });
+
+    const updates = mockDb.executeSql.mock.calls
+      .map((call: any[]) => String(call[0]).replace(/\s+/g, ' ').trim())
+      .filter((sql: string) => sql.startsWith('UPDATE continuation_settings'));
+    expect(updates.length).toBeGreaterThanOrEqual(2);
+    expect(updates.some((sql: string) => sql.includes('active_canon_snapshot_id = ?'))).toBe(true);
+  });
+
+  test('rejects an active style whose source or boundary disagrees with settings', async () => {
+    const backup = await makeV3Backup({
+      projects: [{ id: 2, name: '指针不一致' }],
+      continuation_sources: [{
+        id: 10,
+        project_id: 2,
+        version: 1,
+        normalized_sha256: 'source-sha',
+        parser_version: 'parser-1',
+        normalization_version: 'normalizer-1',
+      }],
+      continuation_source_chapters: [{ id: 100, source_id: 10, position: 4 }],
+      continuation_canon_snapshots: [{
+        id: 'canon-1',
+        project_id: 2,
+        source_id: 10,
+        boundary_chapter_id: 100,
+        boundary_char_offset_exclusive: 42,
+      }],
+      continuation_style_profiles: [{
+        id: 'style-1',
+        project_id: 2,
+        source_id: 10,
+        source_version: 1,
+        source_sha256: 'different-sha',
+        parser_version: 'parser-1',
+        normalization_version: 'normalizer-1',
+        boundary_chapter_id: 100,
+        boundary_position: 4,
+        boundary_char_offset_exclusive: 42,
+        canon_snapshot_id: 'canon-1',
+      }],
+      continuation_settings: [{
+        project_id: 2,
+        active_source_id: 10,
+        boundary_chapter_id: 100,
+        boundary_char_offset_global: 42,
+        active_canon_snapshot_id: 'canon-1',
+        active_style_profile_id: 'style-1',
+      }],
+    });
+    writeBackup(backup);
+
+    await expect(
+      restoreFromBackup(createMockDb(makeFullTables()), '/fake/path/invalid.json', {
+        createPreRestoreBackup: false,
+      }),
+    ).rejects.toThrow('备份 active Style 与项目 2 的 source/boundary 不一致');
   });
 
   test('restore statement injection preserves the original database and pre-restore backup', async () => {

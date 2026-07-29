@@ -100,6 +100,40 @@ export async function migrateV25ToV26(
   database: SQLite.SQLiteDatabase,
 ): Promise<void> {
   await applyMigration(database, buildV25toV26Statements());
+
+  // Schema 25 already accepts style_analysis/style_validation stages (the
+  // stages were introduced by the v19 Canon schema). Do not rebuild
+  // continuation_analysis_runs: its child tables have immediate
+  // ON DELETE CASCADE foreign keys, and SQLite rewrites those references when
+  // a parent is renamed. Verify the live SQLite connection after migration.
+  const [foreignKeyCheck] = await database.executeSql(
+    'PRAGMA foreign_key_check',
+  );
+  if (foreignKeyCheck.rows.length > 0) {
+    throw new Error(
+      `Schema 26 迁移后发现 ${foreignKeyCheck.rows.length} 条外键孤儿记录`,
+    );
+  }
+
+  const childTables = [
+    'continuation_analysis_batches',
+    'continuation_analysis_work_items',
+    'canon_evidence',
+    'canon_evidence_links',
+  ];
+  for (const table of childTables) {
+    const [foreignKeys] = await database.executeSql(
+      `PRAGMA foreign_key_list(${table})`,
+    );
+    for (let index = 0; index < foreignKeys.rows.length; index += 1) {
+      const row = foreignKeys.rows.item(index);
+      if (String(row.table).endsWith('_v25')) {
+        throw new Error(
+          `Schema 26 迁移后 ${table} 仍引用已删除的 ${String(row.table)}`,
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -113,6 +147,10 @@ export async function migrateV25ToV26(
  * 4. Drop the renamed legacy table.
  * 5. Add `active_style_profile_id` to continuation_settings (no legacy profile
  *    is auto-activated; the pointer starts NULL).
+ *
+ * Important: continuation_analysis_runs is intentionally not rebuilt here.
+ * Its Schema 25 definition already accepts both style stages, so a parent
+ * rename would be unnecessary and could cascade-delete Canon descendants.
  */
 export function buildV25toV26Statements(): SqlStatement[] {
   const [createTableSql, createProjectStateIndexSql, createFingerprintIndexSql] =
@@ -166,87 +204,6 @@ export function buildV25toV26Statements(): SqlStatement[] {
     { sql: 'DROP TABLE continuation_style_profiles_v25' },
     { sql: createProjectStateIndexSql },
     { sql: createFingerprintIndexSql },
-    {
-      // continuation_analysis_runs has a CHECK(stage IN (...)) that does not
-      // allow the new style_analysis / style_validation stages. SQLite cannot
-      // ALTER a CHECK in place, so rebuild the table (RENAME → recreate with
-      // the widened CHECK → copy → DROP), mirroring the v22→v23 work_items
-      // rebuild. Column set is unchanged.
-      sql: `ALTER TABLE continuation_analysis_runs
-        RENAME TO continuation_analysis_runs_v25`,
-    },
-    {
-      sql: `CREATE TABLE IF NOT EXISTS continuation_analysis_runs (
-        id TEXT PRIMARY KEY,
-        project_id INTEGER NOT NULL,
-        source_id INTEGER NOT NULL,
-        source_version INTEGER NOT NULL,
-        source_sha256 TEXT NOT NULL,
-        parser_version TEXT NOT NULL,
-        normalization_version TEXT NOT NULL,
-        boundary_chapter_id INTEGER NOT NULL,
-        boundary_position INTEGER NOT NULL,
-        boundary_char_offset_exclusive INTEGER NOT NULL,
-        canon_snapshot_id TEXT NOT NULL,
-        profile TEXT NOT NULL,
-        model_config_id INTEGER,
-        state TEXT NOT NULL,
-        stage TEXT NOT NULL,
-        progress_current INTEGER NOT NULL DEFAULT 0,
-        progress_total INTEGER NOT NULL DEFAULT 0,
-        extraction_version TEXT NOT NULL,
-        checkpoint_json TEXT,
-        error_code TEXT,
-        error_message TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        completed_at TEXT,
-        CHECK(source_version >= 1),
-        CHECK(boundary_position >= 0),
-        CHECK(boundary_char_offset_exclusive >= 0),
-        CHECK(profile IN ('quick', 'standard', 'deep')),
-        CHECK(state IN (
-          'queued', 'running', 'paused', 'awaiting_review',
-          'completed', 'failed', 'cancelled', 'outdated'
-        )),
-        CHECK(stage IN (
-          'snapshot', 'chapter_extraction', 'entity_resolution',
-          'temporal_merge', 'global_synthesis', 'evidence_validation',
-          'indexing', 'finalizing', 'style_analysis', 'style_validation'
-        )),
-        CHECK(progress_current >= 0),
-        CHECK(progress_total >= 0),
-        CHECK(progress_total = 0 OR progress_current <= progress_total),
-        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
-        FOREIGN KEY(source_id) REFERENCES continuation_sources(id) ON DELETE CASCADE,
-        FOREIGN KEY(model_config_id) REFERENCES llm_config(id) ON DELETE SET NULL,
-        FOREIGN KEY(canon_snapshot_id)
-          REFERENCES continuation_canon_snapshots(id) ON DELETE CASCADE
-      )`,
-    },
-    {
-      sql: `INSERT INTO continuation_analysis_runs (
-        id, project_id, source_id, source_version, source_sha256,
-        parser_version, normalization_version,
-        boundary_chapter_id, boundary_position, boundary_char_offset_exclusive,
-        canon_snapshot_id, profile, model_config_id, state, stage,
-        progress_current, progress_total, extraction_version, checkpoint_json,
-        error_code, error_message, created_at, updated_at, completed_at
-      ) SELECT
-        id, project_id, source_id, source_version, source_sha256,
-        parser_version, normalization_version,
-        boundary_chapter_id, boundary_position, boundary_char_offset_exclusive,
-        canon_snapshot_id, profile, model_config_id, state, stage,
-        progress_current, progress_total, extraction_version, checkpoint_json,
-        error_code, error_message, created_at, updated_at, completed_at
-      FROM continuation_analysis_runs_v25`,
-    },
-    {
-      // Recreate the original index (the RENAME/DROP removed it).
-      sql: `CREATE INDEX IF NOT EXISTS idx_analysis_runs_project_state
-        ON continuation_analysis_runs(project_id, state)`,
-    },
-    { sql: 'DROP TABLE continuation_analysis_runs_v25' },
     {
       // SQLite ADD COLUMN cannot add a true FK at the table level in older
       // versions; column + app-level integrity is sufficient. REFERENCES is

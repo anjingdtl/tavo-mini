@@ -727,12 +727,100 @@ function buildInsertStatement(
   };
 }
 
+function rowValue(row: Record<string, any>, key: string): string | null {
+  const value = row[key];
+  return value === undefined || value === null || value === ''
+    ? null
+    : String(value);
+}
+
+/**
+ * Validate the active-pointer graph before opening the restore transaction.
+ * The settings row is restored with both pointers NULL first, then the final
+ * UPDATEs are appended after all parent rows have been inserted.
+ */
+function validateRestoreActivePointers(
+  sourceTables: Record<string, Record<string, any>[]>,
+): void {
+  const sources = new Map(
+    (sourceTables.continuation_sources || []).map(row => [Number(row.id), row]),
+  );
+  const chapters = new Map(
+    (sourceTables.continuation_source_chapters || []).map(row => [Number(row.id), row]),
+  );
+  const snapshots = new Map(
+    (sourceTables.continuation_canon_snapshots || []).map(row => [String(row.id), row]),
+  );
+  const styles = new Map(
+    (sourceTables.continuation_style_profiles || []).map(row => [String(row.id), row]),
+  );
+
+  for (const settings of sourceTables.continuation_settings || []) {
+    const projectId = Number(settings.project_id);
+    const canonId = rowValue(settings, 'active_canon_snapshot_id');
+    const styleId = rowValue(settings, 'active_style_profile_id');
+    const canon = canonId ? snapshots.get(canonId) : null;
+    if (canonId && (!canon || Number(canon.project_id) !== projectId)) {
+      throw new Error(`备份 active Canon 不属于项目 ${projectId}`);
+    }
+    if (canonId && canon) {
+      if (
+        Number(canon.source_id) !== Number(settings.active_source_id) ||
+        Number(canon.boundary_chapter_id) !== Number(settings.boundary_chapter_id) ||
+        Number(canon.boundary_char_offset_exclusive) !==
+          Number(settings.boundary_char_offset_global)
+      ) {
+        throw new Error(`备份 active Canon 与项目 ${projectId} 的 source/boundary 不一致`);
+      }
+    }
+
+    const style = styleId ? styles.get(styleId) : null;
+    if (!styleId || !style) continue;
+    const source = sources.get(Number(style.source_id));
+    const boundaryChapter = chapters.get(Number(style.boundary_chapter_id));
+    if (
+      Number(style.project_id) !== projectId ||
+      !source ||
+      !boundaryChapter ||
+      Number(settings.active_source_id) !== Number(style.source_id) ||
+      Number(source.version) !== Number(style.source_version) ||
+      String(source.normalized_sha256) !== String(style.source_sha256) ||
+      String(source.parser_version) !== String(style.parser_version) ||
+      String(source.normalization_version) !== String(style.normalization_version) ||
+      Number(settings.boundary_chapter_id) !== Number(style.boundary_chapter_id) ||
+      Number(boundaryChapter.position) !== Number(style.boundary_position) ||
+      Number(settings.boundary_char_offset_global) !==
+        Number(style.boundary_char_offset_exclusive) ||
+      (canonId && String(style.canon_snapshot_id) !== canonId)
+    ) {
+      throw new Error(`备份 active Style 与项目 ${projectId} 的 source/boundary 不一致`);
+    }
+  }
+}
+
 function buildRestoreStatements(
   sourceTables: Record<string, Record<string, any>[]>,
   options: RestoreTableOptions,
 ): SqlStatement[] {
   const presentTables = new Set(Object.keys(sourceTables));
   const statements: SqlStatement[] = [];
+
+  if (
+    presentTables.has('continuation_settings') ||
+    presentTables.has('continuation_canon_snapshots') ||
+    presentTables.has('continuation_style_profiles')
+  ) {
+    // Clear immediate FK pointers before deleting any parent rows. This is
+    // also used by the rollback restore, so it cannot leave the old database
+    // pointing at rows that the rollback is about to replace.
+    statements.push({
+      sql: `UPDATE continuation_settings SET
+        active_canon_snapshot_id = NULL,
+        active_style_profile_id = NULL`,
+    });
+  }
+
+  validateRestoreActivePointers(sourceTables);
 
   for (const table of DELETE_ORDER) {
     if (presentTables.has(table)) statements.push({ sql: `DELETE FROM ${table}` });
@@ -743,7 +831,16 @@ function buildRestoreStatements(
     const table = TABLE_BY_NAME.get(tableName);
     if (!table) continue;
     for (const row of sourceTables[tableName] || []) {
-      statements.push(buildInsertStatement(table, row, options.redactCredentials));
+      const restoreRow = tableName === 'continuation_settings'
+        ? {
+            ...row,
+            // The pointer cycle is completed only after every parent table has
+            // been restored (see the second phase below).
+            active_canon_snapshot_id: null,
+            active_style_profile_id: null,
+          }
+        : row;
+      statements.push(buildInsertStatement(table, restoreRow, options.redactCredentials));
     }
     if (tableName === 'settings') {
       // An old backup's metadata must never downgrade the current database.
@@ -752,6 +849,24 @@ function buildRestoreStatements(
         params: ['schema_version', String(SCHEMA_VERSION)],
       });
     }
+  }
+
+  // Phase 2: reattach active Canon/style only after all source, snapshot and
+  // profile rows exist. Older backups simply yield NULL for the new style key.
+  for (const row of sourceTables.continuation_settings || []) {
+    statements.push({
+      sql: `UPDATE continuation_settings SET
+        active_canon_snapshot_id = ?,
+        active_style_profile_id = ?,
+        updated_at = COALESCE(updated_at, ?)
+        WHERE project_id = ?`,
+      params: [
+        rowValue(row, 'active_canon_snapshot_id'),
+        rowValue(row, 'active_style_profile_id'),
+        new Date().toISOString(),
+        row.project_id,
+      ],
+    });
   }
 
   return statements;
