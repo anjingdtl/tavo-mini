@@ -18,6 +18,10 @@ import {
 import { deterministicExtractFromText } from '../src/services/continuation/generation/continuationStateOutboxWorker';
 import { isContinuationRunId } from '../src/services/continuation/generation/continuationGenerationRunner';
 import { summarizeTrace } from '../src/services/continuation/generation/continuationContextTrace';
+import {
+  compilePlannerMessages,
+  compileWriterMessages,
+} from '../src/services/continuation/generation/continuationPromptCompiler';
 import type {
   ContinuationCheckResult,
   ContinuationContextSnapshot,
@@ -302,6 +306,47 @@ describe('continuation Phase 3 core', () => {
     for (const p of proposals) {
       expect(p.evidenceEnd).toBeGreaterThan(p.evidenceStart);
       expect(p.evidenceEnd).toBeLessThanOrEqual(text.length);
+    }
+  });
+
+  test('planner and writer receive continuation relationship, knowledge, experience and episodic memory', () => {
+    const snapshot = miniSnapshot();
+    (snapshot.bundles.effectiveState as any).relationships = [
+      {
+        source: { refType: 'canon_character', id: 1 },
+        target: { refType: 'canon_character', id: 2 },
+        summary: '互相试探',
+      },
+    ];
+    (snapshot.bundles.effectiveState as any).experiences = [
+      {
+        ref: { refType: 'canon_character', id: 1 },
+        title: '雨夜遇袭',
+        summary: '留下旧伤',
+      },
+    ];
+    snapshot.bundles.episodic = [
+      { chapterId: 9, summary: '上一章：主角在渡口失去线索。' },
+    ];
+    const plan = {
+      schemaVersion: 1 as const,
+      chapterGoal: '推进',
+      centralConflict: '冲突',
+      beats: [],
+      participatingCharacterIds: [],
+      characterActions: [],
+      plotAdvances: [],
+      foreshadowingActions: [],
+      proposedStateChanges: [],
+      risks: [],
+    };
+    const planner = compilePlannerMessages(snapshot)[0].content;
+    const writer = compileWriterMessages(snapshot, plan)[0].content;
+    for (const message of [planner, writer]) {
+      expect(message).toContain('互相试探');
+      expect(message).toContain('皇位继承秘密');
+      expect(message).toContain('雨夜遇袭');
+      expect(message).toContain('主角在渡口失去线索');
     }
   });
 

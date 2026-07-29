@@ -4,6 +4,19 @@ All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).
 
+## [2.10.7] - 2026-07-29
+
+### Changed
+
+- **续写长上下文预算**：续写快照改为按实际 Planner / Writer 模型窗口的较小值分配输入，输出预留按 Writer 上限和受限比例计算；原著接缝、Canon、最近续写桥接、长期 Story Memory、章节事件摘要和外部补充分别受控预算与上限，不再沿用固定 400 token 接缝与 5×500 token 前文。
+- **前文承接与长期记忆**：原著接缝、最近续写正文均从章末优先裁取；后续章节同时使用目标位置之前的 clean Story Memory、与本章相关的章节事件摘要和最近正文桥接。dirty、failed、同章或未来检查点不注入。
+- **续写定稿闭环**：定稿事务除状态提取外同步排队依赖型 Story Memory 重建；即使状态提取没有 proposal，已定稿正文也会进入章节摘要与长期记忆。proposal 审核仍独立维护权威续写状态，确认后会触发再次重建。
+- **提示与预览可读性**：Planner/Writer 补齐关系、知识边界与人物经历状态；上下文预览标明“实际请求”与“资料分配”，避免把 system/user 提示误解为额外原文上下文。
+
+### Tests
+
+- 新增 1M 窗口预算增长、章末裁取、依赖 outbox 顺序和 Planner/Writer 续写记忆注入的回归覆盖。
+
 ## [2.10.6] - 2026-07-29
 
 ### Added
