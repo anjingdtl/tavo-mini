@@ -32,6 +32,17 @@ function displayTargetTitle(s: ContinuationContextSnapshot): string {
   );
 }
 
+function displayNumberFor(s: ContinuationContextSnapshot, position: number): number {
+  const boundaryPos = s.source?.boundary?.chapterPosition;
+  const boundaryChapterNumber =
+    boundaryPos != null && Number.isFinite(Number(boundaryPos))
+      ? Number(boundaryPos) + 1
+      : null;
+  return makeContinuationChapterNumbering(boundaryChapterNumber).getDisplayNumber(
+    position as any,
+  );
+}
+
 function lockedBlock(s: ContinuationContextSnapshot): string {
   return s.bundles.lockedRules.length
     ? `【用户锁定/硬规则】\n${s.bundles.lockedRules.join('\n')}`
@@ -117,7 +128,7 @@ function stateBlock(s: ContinuationContextSnapshot): string {
     .slice(0, 20)
     .map(e => `- ${JSON.stringify(e.ref)}: ${e.title}；${e.summary}`)
     .join('\n');
-  return `【目标位置有效续写状态 position=${s.targetPosition}】\n人物状态:\n${chars || '（无）'}\n人物关系:\n${relationships || '（无）'}\n知识边界:\n${knowledge || '（无）'}\n人物经历:\n${experiences || '（无）'}\n剧情:\n${plots || '（无）'}`;
+  return `【第 ${displayNumberFor(s, s.targetPosition)} 章目标位置有效续写状态】\n人物状态:\n${chars || '（无）'}\n人物关系:\n${relationships || '（无）'}\n知识边界:\n${knowledge || '（无）'}\n人物经历:\n${experiences || '（无）'}\n剧情:\n${plots || '（无）'}`;
 }
 
 function seamBlock(s: ContinuationContextSnapshot): string {
@@ -131,7 +142,7 @@ function recentBlock(s: ContinuationContextSnapshot): string {
     s.bundles.recentChapters
       .map(
         c =>
-          `--- 章 position=${c.position} (hash=${c.revisionHash.slice(0, 8)}) ---\n${c.excerpt}`,
+          `--- 第 ${displayNumberFor(s, c.position)} 章 (hash=${c.revisionHash.slice(0, 8)}) ---\n${c.excerpt}`,
       )
       .join('\n')
   );

@@ -11,10 +11,14 @@ jest.mock('../src/services/continuation/canon/activateSnapshotAndStyleProfile', 
 
 jest.mock('../src/services/continuation/canon/canonRepository', () => ({
   getSnapshotById: jest.fn(),
+  getRunForSnapshot: jest.fn(),
 }));
 
 import { activateSnapshotAndStyleProfile } from '../src/services/continuation/canon/activateSnapshotAndStyleProfile';
-import { getSnapshotById } from '../src/services/continuation/canon/canonRepository';
+import {
+  getSnapshotById,
+  getRunForSnapshot,
+} from '../src/services/continuation/canon/canonRepository';
 import { activateSnapshot } from '../src/services/continuation/canon/canonAnalysisService';
 
 describe('activateSnapshot delegate (Spec §6.3 unified activation)', () => {
@@ -28,6 +32,7 @@ describe('activateSnapshot delegate (Spec §6.3 unified activation)', () => {
       projectId: 1,
       status: 'ready',
     });
+    (getRunForSnapshot as jest.Mock).mockResolvedValue({ id: 'run-1' });
   });
 
   it('delegates to activateSnapshotAndStyleProfile with skip-style (null profile, allowStyleSkip)', async () => {
@@ -36,6 +41,7 @@ describe('activateSnapshot delegate (Spec §6.3 unified activation)', () => {
     expect(activateSnapshotAndStyleProfile).toHaveBeenCalledTimes(1);
     expect(activateSnapshotAndStyleProfile).toHaveBeenCalledWith({
       projectId: 1,
+      analysisRunId: 'run-1',
       canonSnapshotId: 'snap-1',
       // Legacy/manual callers have no style profile in scope, so they clear the
       // active style pointer atomically (allowStyleSkip=true) instead of
