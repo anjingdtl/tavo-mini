@@ -248,9 +248,10 @@ export function sampleForStyleAnalysis(
   const seenHashes = new Set<string>();
   const n = chapters.length;
 
-  // Helper: deterministic index pick within [0, length).
+  // Helper: deterministic index pick within [0, length). rng() is in [0,1), so
+  // Math.floor(rng() * length) already lands in [0, length); no modulo needed.
   const pickIndex = (length: number): number =>
-    length === 0 ? 0 : Math.floor(rng() * length) % length;
+    length === 0 ? 0 : Math.floor(rng() * length);
 
   /**
    * Build a positional-stratum ref from a deterministic character window inside
@@ -268,7 +269,8 @@ export function sampleForStyleAnalysis(
     const len = Math.min(SAMPLE_TARGET_CHARS, contentLen);
     const maxStart = contentLen - len;
     // Deterministic start offset within [0, maxStart].
-    const localStart = maxStart <= 0 ? 0 : Math.floor(rng() * (maxStart + 1)) % (maxStart + 1);
+    const localStart =
+      maxStart <= 0 ? 0 : Math.floor(rng() * (maxStart + 1));
     const passage = chapter.content.slice(localStart, localStart + len);
     if (passage.trim().length === 0) return null;
     const bookStart = chapter.range.start + localStart;
@@ -380,7 +382,3 @@ export function sampleForStyleAnalysis(
 
   return refs;
 }
-
-/** Re-export the sha helper so the analysis service can recompute per-sample
- * hashes without a second import path. */
-export { sha256Hex };
