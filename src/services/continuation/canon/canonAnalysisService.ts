@@ -79,6 +79,8 @@ import {
 import { insertEvidenceAndLink } from './canonEvidenceService';
 import { executeTransaction } from '../../../data/connection/transaction';
 import type { SqlStatement } from '../../../data/connection/transaction';
+import { runStyleAnalysis } from '../styleProfile/styleAnalysisService';
+import { activateSnapshotAndStyleProfile } from './activateSnapshotAndStyleProfile';
 import {
   callLLM,
   callLLMResult,
@@ -1819,11 +1821,59 @@ async function processAnalysisRunInner(
     [now(), run.projectId],
   );
 
-  await activateSnapshot(run.projectId, run.canonSnapshotId);
+  // ---- style_analysis stage (Spec §5.1) ----
+  // Must run BEFORE the Canon snapshot is activated: otherwise the first
+  // continuation could see a ready Canon but no style profile. On failure the
+  // snapshot stays awaiting_review (NOT activated) and the run becomes failed;
+  // the user can retry style alone or explicitly skip it.
+  await updateRunState(db, runId, {
+    state: 'running',
+    stage: 'style_analysis',
+  });
+  const styleOutcome = await runStyleAnalysis({
+    projectId: run.projectId,
+    runId,
+    canonSnapshotId: run.canonSnapshotId,
+    sourceSnapshot,
+    modelConfigId: run.modelConfigId,
+    signal,
+  });
+
+  if (!styleOutcome.success) {
+    // Canon remains awaiting_review; do NOT activate. Surface a retryable
+    // failure so the user can retry style analysis or explicitly skip style.
+    await updateRunState(db, runId, {
+      state: 'failed',
+      stage: 'style_analysis',
+      errorCode: 'style_analysis_failed',
+      errorMessage: '原著风格分析失败，可单独重试',
+      completedAt: now(),
+    });
+    await execute(
+      db,
+      `UPDATE continuation_settings SET analysis_status = 'failed', updated_at = ?
+        WHERE project_id = ?`,
+      [now(), run.projectId],
+    );
+    return (await getRunById(runId))!;
+  }
+
+  // ---- style_validation + atomic activation (Spec §5.1, §6.3) ----
+  await updateRunState(db, runId, {
+    state: 'running',
+    stage: 'style_validation',
+  });
+  await activateSnapshotAndStyleProfile({
+    projectId: run.projectId,
+    canonSnapshotId: run.canonSnapshotId,
+    styleProfileId: styleOutcome.profileId,
+    allowStyleSkip: false,
+  });
+
   const activatedWorkItems = await listWorkItems(runId);
   await updateRunState(db, runId, {
     state: 'completed',
-    stage: 'finalizing',
+    stage: 'style_validation',
     progressCurrent: activatedWorkItems.filter(
       item => item.state === 'completed',
     ).length,
