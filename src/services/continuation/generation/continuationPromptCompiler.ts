@@ -8,6 +8,20 @@ import type {
   ContinuationPlan,
   ContinuationCheckResult,
 } from './types';
+import { makeContinuationChapterNumbering } from '../chapterNumbering/continuationChapterNumbering';
+
+/**
+ * User-visible chapter title for the frozen target position (Spec §11.3).
+ * Continues from the source boundary; never exposes bare internal position as
+ * if it were the display chapter number.
+ */
+function displayTargetTitle(s: ContinuationContextSnapshot): string {
+  const boundaryChapterNumber =
+    Number(s.source.boundary.chapterPosition) + 1;
+  return makeContinuationChapterNumbering(boundaryChapterNumber).getDefaultTitle(
+    s.targetPosition,
+  );
+}
 
 function lockedBlock(s: ContinuationContextSnapshot): string {
   return s.bundles.lockedRules.length
@@ -179,7 +193,7 @@ export function compilePlannerMessages(
     { role: 'system', content: system },
     {
       role: 'user',
-      content: `请为第 position=${snapshot.targetPosition} 章规划续写。用户要求：\n${snapshot.bundles.userInstruction}\n目标字数约 ${snapshot.settingsSnapshot.values.targetChapterChars}。`,
+      content: `请为${displayTargetTitle(snapshot)}规划续写。用户要求：\n${snapshot.bundles.userInstruction}\n目标字数约 ${snapshot.settingsSnapshot.values.targetChapterChars}。`,
     },
   ];
 }
@@ -206,7 +220,7 @@ export function compileWriterMessages(
     { role: 'system', content: system },
     {
       role: 'user',
-      content: `写 position=${snapshot.targetPosition} 章正文，约 ${snapshot.settingsSnapshot.values.targetChapterChars} 字。用户要求：\n${snapshot.bundles.userInstruction}`,
+      content: `写${displayTargetTitle(snapshot)}正文，约 ${snapshot.settingsSnapshot.values.targetChapterChars} 字。用户要求：\n${snapshot.bundles.userInstruction}`,
     },
   ];
 }

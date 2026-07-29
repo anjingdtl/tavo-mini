@@ -5,6 +5,7 @@ import { buildSchema21CreateSqls } from '../../services/migrations/v20-to-v21';
 import { buildSchema23CreateSqls } from '../../services/migrations/v22-to-v23';
 import { buildSchema24CreateSqls } from '../../services/migrations/v23-to-v24';
 import { buildSchema25CreateSqls } from '../../services/migrations/v24-to-v25';
+import { buildSchema26CreateSqls } from '../../services/migrations/v25-to-v26';
 
 export async function createCurrentSchema(
   database: SQLite.SQLiteDatabase,
@@ -565,6 +566,7 @@ export async function createCurrentSchema(
         import_completed INTEGER NOT NULL DEFAULT 0,
         analysis_status TEXT NOT NULL DEFAULT 'not_started',
         active_canon_snapshot_id TEXT,
+        active_style_profile_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -574,6 +576,8 @@ export async function createCurrentSchema(
           REFERENCES continuation_source_chapters(source_id, id),
         FOREIGN KEY(active_canon_snapshot_id)
           REFERENCES continuation_canon_snapshots(id),
+        FOREIGN KEY(active_style_profile_id)
+          REFERENCES continuation_style_profiles(id),
         CHECK(boundary_mode IN ('end_of_source', 'end_of_chapter', 'custom_offset')),
         CHECK(import_completed IN (0, 1)),
         CHECK(analysis_status IN ('not_started', 'running', 'ready', 'outdated', 'failed')),
@@ -626,8 +630,13 @@ export async function createCurrentSchema(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_continuation_import_one_active ON continuation_import_jobs(project_id) WHERE state IN ('queued', 'running', 'paused', 'awaiting_review', 'interrupted')`,
     // Schema 20 Canon / analysis tables (after settings + snapshots exist).
     ...buildSchema20PostSettingsStatements().map(item => item.sql),
-    // Schema 21 Phase 3 generation / state tables.
-    ...buildSchema21CreateSqls(),
+    // Schema 21 Phase 3 generation / state tables. The legacy single-row
+    // continuation_style_profiles definition is filtered out here because Schema
+    // 26 rebuilds it as a versioned table; the v20→v21 migration still creates
+    // the legacy shape so the v25→v26 RENAME has something to upgrade.
+    ...buildSchema21CreateSqls().filter(
+      sql => !sql.includes('CREATE TABLE IF NOT EXISTS continuation_style_profiles'),
+    ),
     // Schema 23 Canon request-group work items. This supersedes the Schema 22
     // five-family table on fresh installs.
     ...buildSchema23CreateSqls(),
@@ -635,6 +644,9 @@ export async function createCurrentSchema(
     ...buildSchema24CreateSqls(),
     // Schema 25 explicit continuation-only ordinary-resource bindings.
     ...buildSchema25CreateSqls(),
+    // Schema 26 versioned continuation style profiles (fresh installs build the
+    // new shape directly; the active_style_profile_id column is inlined above).
+    ...buildSchema26CreateSqls(),
   ];
   for (const statement of statements) {
     await execute(database, statement);

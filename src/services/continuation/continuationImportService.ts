@@ -707,6 +707,18 @@ export async function confirmContinuationSource(
   });
   await executeTransaction(db, statements, { faultDomain: 'continuation' });
 
+  // Source activation renumbers auto-titled continuation chapters to continue
+  // from the new boundary (Spec §11.5, §12). User-custom titles are preserved.
+  // Best-effort: the activation transaction is already committed.
+  try {
+    const { renumberContinuationChapterTitles } = await import(
+      './chapterNumbering/continuationChapterNumbering'
+    );
+    await renumberContinuationChapterTitles(job.projectId);
+  } catch {
+    // Non-fatal: titles re-sync on next load.
+  }
+
   // Clean up the private import copy on success (Spec §14.1 step 8). Best-effort
   // only, never inside the transaction.
   if (job.inputCopyRelativePath) {

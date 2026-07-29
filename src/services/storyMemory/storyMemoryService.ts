@@ -1,4 +1,5 @@
 import type { Chapter } from '../../types/novel';
+import type { ContinuationChapterPosition } from '../../types/novel';
 import { extractJSON } from '../../utils/jsonExtractor';
 import { invalidateIdf } from '../../utils/idfCache';
 import { estimateTokens } from '../../utils/tokenEstimator';
@@ -18,6 +19,33 @@ import type {
 } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
 import { validateChapterMemoryPatch } from './storyMemoryValidator';
+
+/**
+ * Resolve a display-number mapper for user-visible Story Memory text (Spec §11.3).
+ * Uses the continuation numbering service when a boundary exists; otherwise
+ * falls back to position+1 (outline / offline hand-written continuation).
+ */
+async function loadDisplayNumberFn(
+  projectId: number,
+): Promise<(position: number) => number> {
+  try {
+    const { getContinuationChapterNumbering } = await import(
+      '../continuation/chapterNumbering/continuationChapterNumbering'
+    );
+    const numbering = await getContinuationChapterNumbering(projectId);
+    return position =>
+      numbering.getDisplayNumber(position as ContinuationChapterPosition);
+  } catch {
+    return position => position + 1;
+  }
+}
+
+function chapterLabel(
+  getDisplayNumber: (position: number) => number,
+  position: number,
+): string {
+  return `第 ${getDisplayNumber(position)} 章`;
+}
 
 export interface FinalizeChapterMemoryResult {
   state: StoryMemoryState;
@@ -326,9 +354,10 @@ async function previousStateForChapter(
     record.dirtyFromPosition != null &&
     record.dirtyFromPosition < chapter.position
   ) {
+    const displayOf = await loadDisplayNumberFn(chapter.project_id);
     throw new StoryMemoryError(
       'MEMORY_DIRTY',
-      `故事记忆从第 ${record.dirtyFromPosition + 1} 章起已过期，请先重建。`,
+      `故事记忆从${chapterLabel(displayOf, record.dirtyFromPosition)}起已过期，请先重建。`,
     );
   }
   if (
@@ -362,6 +391,7 @@ async function finalizeChapterMemoryLegacyPerChapter(
     existing.patch.sourceFingerprint === sourceFingerprint &&
     currentRecord.state.metadata.lastAppliedPatchId === existing.patch.patchId
   ) {
+    const displayOf = await loadDisplayNumberFn(freshChapter.project_id);
     const episodicMemoryText = renderEpisodicMemoryText(
       existing.patch.episodicSummary,
       freshChapter,
@@ -385,9 +415,10 @@ async function finalizeChapterMemoryLegacyPerChapter(
       checkpointAttempted: false,
       checkpointUpdated: false,
       pendingCount: 0,
-      statusMessage: `故事记忆已更新到第 ${
-        currentRecord.state.throughChapterPosition + 1
-      } 章。`,
+      statusMessage: `故事记忆已更新到${chapterLabel(
+        displayOf,
+        currentRecord.state.throughChapterPosition,
+      )}。`,
     };
   }
 
@@ -420,6 +451,7 @@ async function finalizeChapterMemoryLegacyPerChapter(
       createSnapshot: options.createSnapshot,
     });
     invalidateIdf(freshChapter.project_id);
+    const displayOf = await loadDisplayNumberFn(freshChapter.project_id);
     return {
       state: applied.state,
       patchId: applied.resolvedPatch.patchId,
@@ -429,9 +461,10 @@ async function finalizeChapterMemoryLegacyPerChapter(
       checkpointAttempted: true,
       checkpointUpdated: true,
       pendingCount: 0,
-      statusMessage: `长期记忆已整理到第 ${
-        applied.state.throughChapterPosition + 1
-      } 章。`,
+      statusMessage: `长期记忆已整理到${chapterLabel(
+        displayOf,
+        applied.state.throughChapterPosition,
+      )}。`,
     };
   } catch (error) {
     // Legacy path marked dirty on failure; chapter may already be final.
@@ -579,6 +612,7 @@ export async function finalizeChapterMemory(
         record.state.throughChapterPosition,
         pending.length,
       );
+      const displayOf = await loadDisplayNumberFn(freshChapter.project_id);
       return {
         state: record.state,
         patchId: record.state.metadata.lastAppliedPatchId || '',
@@ -591,7 +625,10 @@ export async function finalizeChapterMemory(
         statusMessage:
           pending.length > 0
             ? `长期记忆待整理 ${pending.length} 章${
-                nextPos != null ? `，将在第 ${nextPos} 章后更新` : ''
+                nextPos != null
+                  ? // nextPos is 1-based under position+1 semantics; map via internal pos.
+                    `，将在${chapterLabel(displayOf, nextPos - 1)}后更新`
+                  : ''
               }。`
             : '章节已定稿。',
       };
@@ -618,6 +655,7 @@ export async function finalizeChapterMemory(
             (item.status === 'final' || item.finalized_at != null) &&
             item.position > rebuilt.state.throughChapterPosition,
         ).length;
+        const displayOf = await loadDisplayNumberFn(freshChapter.project_id);
         return {
           state: rebuilt.state,
           patchId: rebuilt.state.metadata.lastAppliedPatchId || '',
@@ -627,9 +665,10 @@ export async function finalizeChapterMemory(
           checkpointAttempted: true,
           checkpointUpdated: rebuilt.completedChapters > 0,
           pendingCount: pendingRemaining,
-          statusMessage: `长期记忆已从变更位置重建到第 ${
-            rebuilt.state.throughChapterPosition + 1
-          } 章。`,
+          statusMessage: `长期记忆已从变更位置重建到${chapterLabel(
+            displayOf,
+            rebuilt.state.throughChapterPosition,
+          )}。`,
         };
       }
       const advanced = await advanceStoryMemoryCheckpointsUnlocked({
@@ -637,6 +676,7 @@ export async function finalizeChapterMemory(
         throughPosition,
         signal: options.signal,
       });
+      const displayOf = await loadDisplayNumberFn(freshChapter.project_id);
       return {
         state: advanced.state,
         patchId: advanced.state.metadata.lastAppliedPatchId || '',
@@ -646,9 +686,10 @@ export async function finalizeChapterMemory(
         checkpointAttempted: true,
         checkpointUpdated: advanced.batchesApplied > 0,
         pendingCount: advanced.pendingRemaining,
-        statusMessage: `长期记忆已整理到第 ${
-          advanced.state.throughChapterPosition + 1
-        } 章。`,
+        statusMessage: `长期记忆已整理到${chapterLabel(
+          displayOf,
+          advanced.state.throughChapterPosition,
+        )}。`,
       };
     } catch (error) {
       // Chapter stays final; old checkpoint preserved.
