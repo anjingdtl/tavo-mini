@@ -782,9 +782,27 @@ async function runChapterPipelineInner(
       .sort((a, b) => b.position - a.position)[0];
     const prevEnding = prevChapter?.content?.slice(-800) || '';
 
+    // Display title continues from source boundary for continuation projects
+    // (Spec §11.3). Outline projects keep the legacy position+1 fallback.
+    let chapterTitle = chapter.title || `第 ${chapter.position + 1} 章`;
+    try {
+      const project = await db.getProjectById(chapter.project_id);
+      if (project?.mode === 'continuation') {
+        const { getContinuationChapterNumbering } = await import(
+          './continuation/chapterNumbering/continuationChapterNumbering'
+        );
+        const numbering = await getContinuationChapterNumbering(
+          chapter.project_id,
+        );
+        chapterTitle = numbering.getDisplayTitle(chapter) || chapterTitle;
+      }
+    } catch {
+      // Non-fatal: fall back to stored title / position+1.
+    }
+
     const draftMessages = buildDraftMessages(
       baseContext,
-      chapter.title || `第 ${chapter.position + 1} 章`,
+      chapterTitle,
       chapter.content || '',
       request.userPrompt,
       prevEnding,

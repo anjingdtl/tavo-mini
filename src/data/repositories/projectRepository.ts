@@ -250,7 +250,7 @@ export async function getChaptersByProject(
   projectId: number,
 ): Promise<Chapter[]> {
   const rows = await all<Row>(
-    'SELECT * FROM chapters WHERE project_id = ? ORDER BY position ASC',
+    'SELECT * FROM chapters WHERE project_id = ? ORDER BY position ASC, id ASC',
     [projectId],
   );
   return rows.map(parseChapter);

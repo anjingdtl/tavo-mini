@@ -236,6 +236,20 @@ export async function buildContinuationContext(
     created_at: '',
     updated_at: '',
   } as Chapter;
+  // Display numbers continue from the source boundary (Spec §11.3) so Story
+  // Memory text, episodic prefixes, and Planner/Writer targets stay aligned.
+  let getDisplayNumber: ((position: number) => number) | undefined;
+  try {
+    const { getContinuationChapterNumbering } = await import(
+      '../chapterNumbering/continuationChapterNumbering'
+    );
+    const numbering = await getContinuationChapterNumbering(input.projectId);
+    getDisplayNumber = position =>
+      numbering.getDisplayNumber(position as ContinuationChapterPosition);
+  } catch {
+    // Fall back to position+1 inside formatters / renderer.
+  }
+
   let smSummary = '';
   let smTokens = 0;
   let smFingerprint = 'none';
@@ -257,6 +271,7 @@ export async function buildContinuationContext(
         currentChapter: targetChapter,
         budgetTokens: contextBudget.storyMemoryTokens,
         retrievalUserPrompt: input.userInstruction,
+        getDisplayNumber,
       });
       smSummary = rendered.text;
       smTokens = rendered.estimatedTokens;
@@ -275,7 +290,7 @@ export async function buildContinuationContext(
     targetChapter,
     10,
     contextBudget.episodicTokens,
-    { queryText: input.userInstruction },
+    { queryText: input.userInstruction, getDisplayNumber },
   );
   const episodic = episodicText
     ? [{ chapterId: -1, summary: episodicText }]
