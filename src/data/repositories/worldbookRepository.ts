@@ -280,6 +280,7 @@ export async function updateWorldbookEntry(
 export async function deleteWorldbookEntry(id: number): Promise<void> {
   const entry = await getWorldbookEntryById(id);
   await deleteProjectResourceLinks('worldbook', id);
+  await execute(await openDatabase(), 'DELETE FROM continuation_resource_bindings WHERE resource_kind = ? AND resource_id = ?', ['worldbook', id]);
   await execute(
     await openDatabase(),
     'DELETE FROM worldbook_entries WHERE id = ?',

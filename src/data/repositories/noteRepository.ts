@@ -390,6 +390,7 @@ export async function deleteNote(id: number): Promise<void> {
     [id],
   );
   await deleteProjectResourceLinks('note', id);
+  await execute(await openDatabase(), 'DELETE FROM continuation_resource_bindings WHERE resource_kind = ? AND resource_id = ?', ['note', id]);
   await execute(await openDatabase(), 'DELETE FROM notes WHERE id = ?', [id]);
   if (note?.collection_id) {
     await updateNoteCollectionTokenEstimate(Number(note.collection_id));

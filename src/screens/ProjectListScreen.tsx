@@ -24,10 +24,12 @@ export const ProjectListScreen: React.FC = () => {
   const [importing, setImporting] = useState(false);
   const [exportingId, setExportingId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [modeFilter, setModeFilter] = useState<'outline' | 'continuation'>('outline');
 
-  const filteredProjects = searchQuery.trim()
-    ? projects.filter(p => p.name.toLowerCase().includes(searchQuery.trim().toLowerCase()))
-    : projects;
+  const filteredProjects = projects.filter(project =>
+    project.mode === modeFilter &&
+    (!searchQuery.trim() || project.name.toLowerCase().includes(searchQuery.trim().toLowerCase())),
+  );
 
   useEffect(() => {
     loadProjects();
@@ -159,14 +161,28 @@ export const ProjectListScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="小说项目" subtitle="选择一个项目后进入写作、资料和导出流程" action={
+      <Header title="作品库" subtitle={modeFilter === 'continuation' ? '原著接入、Canon 与续写工作流' : '从大纲、章节和自有资料开始创作'} action={
         <View style={styles.headerActions}>
           <Button label="导入" icon={Upload} variant="ghost" onPress={handleImport} disabled={importing} compact />
           <Button label="新建" icon={Plus} onPress={() => setShowNewModal(true)} compact />
         </View>
       } />
-      {projects.length === 0 ? (
-        <EmptyState title="还没有小说项目" description="新建一个项目后，可以创建章节、整理资料并调用 AI 续写。" action={<Button label="新建项目" icon={Plus} onPress={() => setShowNewModal(true)} />} />
+      <View style={styles.modeTabs}>
+        <SegmentedControl
+          value={modeFilter}
+          onChange={value => setModeFilter(value as 'outline' | 'continuation')}
+          options={[
+            { value: 'outline', label: `大纲创作（${projects.filter(p => p.mode === 'outline').length}）` },
+            { value: 'continuation', label: `原著续写（${projects.filter(p => p.mode === 'continuation').length}）` },
+          ]}
+        />
+      </View>
+      {filteredProjects.length === 0 && !searchQuery.trim() ? (
+        <EmptyState
+          title={modeFilter === 'continuation' ? '还没有原著续写项目' : '还没有大纲创作作品'}
+          description={modeFilter === 'continuation' ? '创建后先导入原著、设置边界并完成 Canon 分析。' : '创建后即可编写章节、整理资料并调用 AI 流水线。'}
+          action={<Button label={modeFilter === 'continuation' ? '新建原著续写项目' : '新建大纲作品'} icon={Plus} onPress={() => { setNewMode(modeFilter); setShowNewModal(true); }} />}
+        />
       ) : (
         <>
           <View style={styles.searchBar}>
@@ -201,7 +217,7 @@ export const ProjectListScreen: React.FC = () => {
       <Modal visible={showNewModal} transparent animationType="fade" onRequestClose={() => setShowNewModal(false)}>
         <Pressable style={styles.overlay} onPress={() => setShowNewModal(false)}>
           <Pressable style={[styles.modal, { backgroundColor: theme.colors.surface }]} onPress={(event) => event.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>新建小说项目</Text>
+            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>新建{newMode === 'continuation' ? '原著续写项目' : '大纲作品'}</Text>
             <Field
               testID="new-project-name"
               label="项目名称"
@@ -228,6 +244,7 @@ export const ProjectListScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   list: { padding: spacing.lg, paddingBottom: 96 },
+  modeTabs: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
   searchBar: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
   searchInputWrap: { position: 'relative', justifyContent: 'center' },
   searchInput: { paddingRight: 36 },
