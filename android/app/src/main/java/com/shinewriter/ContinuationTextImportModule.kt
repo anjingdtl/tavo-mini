@@ -41,6 +41,9 @@ class ContinuationTextImportModule(reactContext: ReactApplicationContext) :
     private const val MAX_FILE_BYTES = 200L * 1024L * 1024L
     // Default chunk size targets the 64–256 KiB UTF-8 band (Spec §9.3, §10.2).
     private const val DEFAULT_CHUNK_BYTES = 192 * 1024
+    // A four-byte prefix is often ASCII even when the rest of a Windows TXT
+    // is GBK. Sample enough content to distinguish it reliably.
+    private const val ENCODING_SNIFF_BYTES = 64 * 1024
   }
 
   override fun getName(): String = "ContinuationTextImport"
@@ -58,11 +61,16 @@ class ContinuationTextImportModule(reactContext: ReactApplicationContext) :
         promise.reject("file_too_large", "文件过大，暂不支持：${file.length()} 字节")
         return
       }
-      val header = ByteArray(4)
+      val sampleSize = minOf(file.length(), ENCODING_SNIFF_BYTES.toLong()).toInt()
+      val header = ByteArray(sampleSize)
       val read = RandomAccessFile(file, "r").use { raf ->
-        raf.seek(0)
-        raf.readFully(header)
-        raf.filePointer.toInt()
+        if (sampleSize == 0) {
+          0
+        } else {
+          raf.seek(0)
+          raf.readFully(header)
+          sampleSize
+        }
       }
       val (encoding, hasBom, confidence) = sniffEncoding(header, read)
 
@@ -221,7 +229,7 @@ class ContinuationTextImportModule(reactContext: ReactApplicationContext) :
     if (read >= 2 && header[0] == 0xFE.toByte() && header[1] == 0xFF.toByte()) {
       return Triple("utf-16be", true, 1.0)
     }
-    // No BOM: heuristic. If the first 1 KB looks like valid UTF-8, assume UTF-8.
+    // No BOM: heuristic. If the first 64 KiB looks like valid UTF-8, assume UTF-8.
     val looksUtf8 = looksLikeValidUtf8(header, read)
     if (looksUtf8) return Triple("utf-8", false, 0.85)
     // Otherwise assume GBK/GB18030 for Chinese TXTs (very common case).
@@ -229,9 +237,7 @@ class ContinuationTextImportModule(reactContext: ReactApplicationContext) :
   }
 
   private fun looksLikeValidUtf8(bytes: ByteArray, len: Int): Boolean {
-    // Quick validity scan of the sniff header (4 bytes is small, but combined
-    // with the caller's confidence this is enough to bias the decision). A
-    // full-scan variant is invoked by the JS normalizer on the first chunk.
+    // Quick validity scan of the sampled prefix.
     if (len == 0) return true
     var i = 0
     var multiByteOk = true
@@ -240,7 +246,12 @@ class ContinuationTextImportModule(reactContext: ReactApplicationContext) :
       when {
         b < 0x80 -> i += 1
         b in 0xC2..0xDF -> {
-          if (i + 1 >= len || (bytes[i + 1].toInt() and 0xC0) != 0x80) {
+          if (i + 1 >= len) {
+            // The fixed-size sample may end inside an otherwise valid
+            // multi-byte character. The chunk decoder handles that boundary.
+            break
+          }
+          if ((bytes[i + 1].toInt() and 0xC0) != 0x80) {
             multiByteOk = false
           }
           i += 2
