@@ -450,6 +450,15 @@ export function planAnalysisTokenBudget(input: {
 }): AnalysisTokenBudgetPlan {
   // Online model (or unknown provider): no client-side budget enforcement.
   if (input.providerType !== 'llama_cpp') {
+    // deep 档需要约 65536 Token 输出预算；若在线模型未配置 context_window，
+    // 运行时可能被 provider 自动 clamp 并触发 finish_reason=length 截断。
+    // 此处仅给出诊断提示，不拒绝（在线模型窗口由 provider 兜底）。
+    if (input.profile === 'deep' && input.contextWindow == null) {
+      console.warn(
+        '[canon] deep 档需约 65536 Token 输出预算，当前在线模型未配置 context_window，' +
+          '若模型 max_output 不足将在运行时被截断（finish_reason=length）。',
+      );
+    }
     return {
       ok: true,
       downgraded: false,
