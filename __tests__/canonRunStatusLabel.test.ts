@@ -71,11 +71,24 @@ describe('runStatusLabel (S2 fix)', () => {
     ).toBe('正在校验原文证据');
   });
 
+  it('returns 正在分析原著写作风格 for running + style_analysis', () => {
+    expect(
+      runStatusLabel(makeRun('running', 'style_analysis'), allCompleted),
+    ).toBe('正在分析原著写作风格');
+  });
+
+  it('returns 正在校验风格画像 for running + style_validation', () => {
+    expect(
+      runStatusLabel(makeRun('running', 'style_validation'), allCompleted),
+    ).toBe('正在校验风格画像');
+  });
+
   it('returns 正在汇总结果 for running + finalizing', () => {
     expect(
       runStatusLabel(makeRun('running', 'finalizing'), allCompleted),
     ).toBe('正在汇总结果');
   });
+
 
   it('returns a same-page activation prompt for awaiting_review', () => {
     expect(
