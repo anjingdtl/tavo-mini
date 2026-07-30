@@ -53,6 +53,10 @@ import {
   type ContinuationStageBudgets,
   type ResolvedStageCapacity,
 } from './continuationContextBudget';
+import {
+  selectContinuationAnchor,
+  type ContinuationAnchorChapter,
+} from './continuationAnchor';
 
 export interface BuildContinuationContextInput {
   projectId: number;
@@ -298,36 +302,60 @@ export async function buildContinuationContext(
         .catch(() => [])
     : [];
 
-  // Seam: last bounded source chapter excerpt via SourceReader only.
-  const chapters =
-    await continuationSourceReader.listBoundedSourceChapters(source);
-  let seamSummary = '';
-  let seamExcerpt = '';
-  if (chapters.length > 0) {
-    const last = chapters[chapters.length - 1];
-    seamSummary = `原著末章「${last.title}」(position=${last.position})`;
-    // The source boundary is the continuation seam. Keep its tail, not the
-    // chapter opening, so the next paragraph inherits the last real event.
-    seamExcerpt = clipTextTailToTokenBudget(
-      last.content || last.title,
-      contextBudget.sourceSeamTokens,
-    );
-  }
-
-  // Recent continuation chapters are a distinct short-term bridge. Allocate
-  // from newest to oldest: the immediately previous chapter is retained whole
-  // when possible, older chapters progressively contribute their tails.
+  // Read prior continuation chapters before touching bounded source正文. The
+  // selected primary anchor is the only正文 seam for this frozen run.
   const projectChapters = await database.getChaptersByProject(input.projectId);
   const priorChapters = projectChapters
     .filter(
       chapter =>
-        chapter.position < input.targetPosition && Boolean(chapter.content?.trim()),
+        chapter.position < input.targetPosition &&
+        Boolean(chapter.content?.trim()),
     )
-    .sort((a, b) => b.position - a.position);
+    .sort((a, b) => b.position - a.position || b.id - a.id);
+
+  let chapters: Awaited<
+    ReturnType<typeof continuationSourceReader.listBoundedSourceChapters>
+  > = [];
+  let seamSummary = '';
+  let seamExcerpt = '';
+  if (priorChapters.length === 0) {
+    chapters = await continuationSourceReader.listBoundedSourceChapters(source);
+    if (chapters.length > 0) {
+      const last = chapters[chapters.length - 1];
+      seamSummary = `原著末章「${last.title}」(position=${last.position})`;
+      // The source boundary is the continuation seam. Keep its tail, not the
+      // chapter opening, so the next paragraph inherits the last real event.
+      seamExcerpt = clipTextTailToTokenBudget(
+        last.content || last.title,
+        contextBudget.sourceSeamTokens,
+      );
+    }
+  }
+
+  const primaryAnchor = selectContinuationAnchor({
+    targetPosition: input.targetPosition,
+    priorChapters: priorChapters.map(
+      chapter =>
+        ({
+          id: chapter.id,
+          position: chapter.position as ContinuationChapterPosition,
+          content: chapter.content,
+          title: chapter.title,
+        }) satisfies ContinuationAnchorChapter,
+    ),
+    sourceSeam: { summary: seamSummary, excerpt: seamExcerpt },
+  });
+
+  // Recent continuation chapters are a distinct short-term bridge. Allocate
+  // from newest to oldest: the immediately previous chapter is retained whole
+  // when possible, older chapters progressively contribute their tails.
   const recentChapters: ContinuationContextSnapshot['bundles']['recentChapters'] =
     [];
   let recentRemaining = contextBudget.recentBridgeTokens;
   for (const chapter of priorChapters) {
+    // The primary anchor is rendered once in its dedicated block. Do not
+    // spend bridge budget repeating the same正文 in recentChapters.
+    if (chapter.id === primaryAnchor.chapterId) continue;
     if (recentRemaining <= 0) break;
     const content = String(chapter.content ?? '');
     const excerpt = clipTextTailToTokenBudget(content, recentRemaining);
@@ -602,7 +630,7 @@ export async function buildContinuationContext(
     } satisfies ContinuationStageBudgets);
 
   const snapshot: ContinuationContextSnapshot = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectId: input.projectId,
     targetChapterId: input.targetChapterId,
     targetPosition: input.targetPosition,
@@ -631,13 +659,33 @@ export async function buildContinuationContext(
     },
     stageBudgets,
     style: frozenStyle,
+    primaryAnchor: {
+      ...primaryAnchor,
+      excerpt:
+        primaryAnchor.kind === 'continuation_chapter'
+          ? clipTextTailToTokenBudget(
+              primaryAnchor.excerpt,
+              contextBudget.sourceSeamTokens,
+            )
+          : primaryAnchor.excerpt,
+    },
     settingsSnapshot,
     bundles: {
       lockedRules,
       canon: canonBundle,
       historicalDigests,
       effectiveState,
-      seam: { summary: seamSummary, excerpt: seamExcerpt },
+      // Keep the legacy field readable for Schema 1 consumers. New runs use
+      // primaryAnchor as the only injected正文 seam; continuation anchors do
+      // not carry the original tail here.
+      seam: {
+        summary:
+          primaryAnchor.kind === 'source_seam'
+            ? primaryAnchor.summary
+            : '（已由最近续写正文接缝替代）',
+        excerpt:
+          primaryAnchor.kind === 'source_seam' ? primaryAnchor.excerpt : '',
+      },
       recentChapters,
       storyMemory: {
         summary: smSummary,
@@ -792,6 +840,9 @@ export async function buildContinuationContext(
     inputBudget: contextBudget.inputBudget,
     modelContextLimit: contextBudget.modelContextLimit,
     omittedCapabilities: gaps,
+    primaryAnchorKind: primaryAnchor.kind,
+    primaryAnchorChapterId: primaryAnchor.chapterId,
+    primaryAnchorPosition: primaryAnchor.position,
   };
 
   return { snapshot, trace };

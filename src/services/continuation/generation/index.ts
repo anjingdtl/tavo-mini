@@ -6,6 +6,7 @@ export {
   ensureGenerationSettings,
   updateGenerationSettings,
   getRunById,
+  findLatestAdoptedRunForChapter,
   listRunsForProject,
   listRunningRuns,
   getLatestArtifact,
@@ -31,6 +32,12 @@ export {
 } from './generationRepository';
 export { buildContinuationContext } from './continuationContextBuilder';
 export type { BuildContinuationContextInput } from './continuationContextBuilder';
+export {
+  selectContinuationAnchor,
+  type ContinuationAnchor,
+  type ContinuationAnchorChapter,
+  type ContinuationSourceSeam,
+} from './continuationAnchor';
 export {
   compilePlannerMessages,
   compileWriterMessages,
