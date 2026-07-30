@@ -1,5 +1,16 @@
 # ShineWriter 发布清单
 
+## V2.11.6 迁移彻底移除本地配置 + 上下文默认 1M
+
+- [x] 升级 `package.json` / `package-lock.json` 至 `2.11.6`，`npm run prebuild` 生成 `V2.11.6` / `2110600`
+- [x] `CHANGELOG.md` 与 `README.md` 同步 v26→v27 仅保留在线配置、本地配置丢弃、上下文自动化默认 1M tokens
+- [x] `npm run verify` 通过：ESLint 0 error；typecheck / verify:version 通过；Jest 191 suites / 1569 tests 通过（1 suite / 3 tests 既有 skip）
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.11.6-release.apk`
+- [x] 签名、单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.11.6` / `2110600` 验收通过
+- [ ] 本轮未执行新的真机或模拟器 UI 回归；保留自动化与 APK 签名/元数据验收
+
+证据：Release APK 34,909,334 bytes，SHA-256 `DA104248FD36A9E2BDBDF1B7DA575B6EE46111B6D6A696BAF8384CDD35814ED6`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，单 signer，APK Signature Scheme v2，16 KB zipalign 验证成功，`aapt` `package: name='com.shinewriter' versionCode='2110600' versionName='V2.11.6'`。
+
 ## V2.11.2 完整原著分析自动衔接风格分析
 
 - [x] 升级 `package.json` / `package-lock.json` 至 `2.11.2`，`npm run prebuild` 生成 `V2.11.2` / `2110200`
