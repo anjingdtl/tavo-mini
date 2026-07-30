@@ -711,6 +711,18 @@ function buildBatchNote(
 }
 
 /**
+ * 计算世界书条目的去重键。优先用主触发词 keys[0]；为空时回退到全部
+ * 触发词拼接；仍为空时用正文前 30 字符，避免空主键条目完全跳过去重。
+ */
+function entryDedupeKey(entry: LorebookEntry): string {
+  const primary = entry.keys[0]?.trim();
+  if (primary) return primary;
+  const allKeys = entry.keys.map(k => k.trim()).filter(Boolean).join('|');
+  if (allKeys) return allKeys;
+  return `__content:${entry.content.slice(0, 30)}`;
+}
+
+/**
  * 世界书分批生成：按 plan.batchSizes 切分条目数，每批独立 LLM 调用，
  * 最后合并去重并重新编号。任一批失败即抛错（已生成的批次不保留）。
  * 每批在 user message 末尾追加「第 X/Y 批」+ 已生成条目主触发词列表，
@@ -738,18 +750,22 @@ async function generateWorldbookInBatches(
     const batchInput = { ...input, entryCount: batchSize } as WorldbookInput;
     const { messages } = buildConstructionMessages(batchInput);
 
-    // 追加批次说明和去重提示到 user message 末尾。
+    // 追加批次说明和去重提示到最后一条 user message 末尾。
+    // 用倒序查找而非 messages[1] 硬编码，兼容未来 system/user 结构变更。
     const batchNote = buildBatchNote(
       batchIndex,
       plan.batchCount,
       batchSize,
       collectedPrimaryKeys,
     );
-    if (messages.length >= 2 && messages[1].role === 'user') {
-      messages[1] = {
-        ...messages[1],
-        content: `${messages[1].content}\n\n${batchNote}`,
-      };
+    for (let mi = messages.length - 1; mi >= 0; mi -= 1) {
+      if (messages[mi].role === 'user') {
+        messages[mi] = {
+          ...messages[mi],
+          content: `${messages[mi].content}\n\n${batchNote}`,
+        };
+        break;
+      }
     }
 
     const result = await callLLMResult(
@@ -797,14 +813,15 @@ async function generateWorldbookInBatches(
   }
 
   // 跨批去重：不同批可能偶发产生相同主触发词，保留先出现的。
-  const seenPrimary = new Set<string>();
+  // 对空主键条目用 fallback 键（全部触发词或正文前缀），避免完全跳过去重。
+  const seenKeys = new Set<string>();
   const dedupedEntries: LorebookEntry[] = [];
   for (const entry of collectedEntries) {
-    const primary = entry.keys[0];
-    if (primary && seenPrimary.has(primary)) {
+    const dedupeKey = entryDedupeKey(entry);
+    if (seenKeys.has(dedupeKey)) {
       continue;
     }
-    if (primary) seenPrimary.add(primary);
+    seenKeys.add(dedupeKey);
     dedupedEntries.push(entry);
   }
 
