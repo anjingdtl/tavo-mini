@@ -19,9 +19,12 @@ jest.mock('../src/services/continuation/canon/canonRepository', () => ({
   countOrphanEvidence: jest.fn(),
 }));
 
-jest.mock('../src/services/continuation/styleProfile/styleProfileRepository', () => ({
-  getStyleProfileById: jest.fn(),
-}));
+jest.mock(
+  '../src/services/continuation/styleProfile/styleProfileRepository',
+  () => ({
+    getStyleProfileById: jest.fn(),
+  }),
+);
 
 jest.mock('../src/services/continuation/canon/canonAnalysisService', () => ({
   buildDefaultCanonAdoptionStatements: jest.fn(),
@@ -47,7 +50,7 @@ import {
 } from '../src/services/continuation/continuationSourceRepository';
 
 const liveSnapshot = {
-       projectId: 1,
+  projectId: 1,
   sourceId: 10,
   sourceVersion: 3,
   normalizedSha256: 'abc',
@@ -183,54 +186,31 @@ describe('activateSnapshotAndStyleProfile', () => {
     ).toBe(true);
     // Run completion.
     expect(
-      sqls.some(s => s.includes("state = 'completed'") && s.includes('canon_snapshot_id')),
+      sqls.some(
+        s =>
+          s.includes("state = 'completed'") && s.includes('canon_snapshot_id'),
+      ),
     ).toBe(true);
     // Generation runs → outdated.
     expect(
-      sqls.some(s => s.includes('continuation_generation_runs') && s.includes("state = 'outdated'")),
+      sqls.some(
+        s =>
+          s.includes('continuation_generation_runs') &&
+          s.includes("state = 'outdated'"),
+      ),
     ).toBe(true);
   });
 
-  it('skip-style activation sets active_style_profile_id = NULL', async () => {
-    await activateSnapshotAndStyleProfile({
-      projectId: 1,
-      analysisRunId: 'run-1',
-      canonSnapshotId: 'snap-1',
-      styleProfileId: null,
-      allowStyleSkip: true,
-    });
-
-    const [, statements] = (executeTransaction as jest.Mock).mock.calls[0];
-    const settingsStmt = statements.find(
-      (s: { sql: string }) =>
-        s.sql.includes('active_canon_snapshot_id') &&
-        s.sql.includes('active_style_profile_id'),
-    );
-    expect(settingsStmt.params).toEqual([
-      'snap-1',
-      null, // explicit skip
-      expect.any(String),
-      1,
-    ]);
-    // No statement sets a style profile to 'ready' when skipping.
-    const styleReadyStmts = statements.filter(
-      (s: { sql: string }) =>
-        s.sql.includes('continuation_style_profiles') &&
-        s.sql.includes("SET state = 'ready'"),
-    );
-    expect(styleReadyStmts).toHaveLength(0);
-  });
-
-  it('throws when styleProfileId is null but allowStyleSkip is false (no implicit skip)', async () => {
+  it('rejects null styleProfileId even when a legacy caller requests a skip', async () => {
     await expect(
       activateSnapshotAndStyleProfile({
         projectId: 1,
         analysisRunId: 'run-1',
         canonSnapshotId: 'snap-1',
         styleProfileId: null,
-        allowStyleSkip: false,
+        allowStyleSkip: true,
       }),
-    ).rejects.toThrow('跳过文风');
+    ).rejects.toThrow('原著风格画像');
 
     // No transaction should have been attempted.
     expect(executeTransaction).not.toHaveBeenCalled();
@@ -259,7 +239,9 @@ describe('activateSnapshotAndStyleProfile', () => {
     const activationCall = txCalls.find(
       ([, stmts]: [unknown, { sql: string }[]]) =>
         Array.isArray(stmts) &&
-        stmts.some(s => typeof s?.sql === 'string' && s.sql.includes('activated_at')),
+        stmts.some(
+          s => typeof s?.sql === 'string' && s.sql.includes('activated_at'),
+        ),
     );
     expect(activationCall).toBeUndefined();
   });

@@ -222,7 +222,8 @@ export function defaultGenerationSettings(
     plotLevel: 'balanced',
     experienceLevel: 'strict',
     knowledgeLevel: 'strict',
-    styleLevel: 'balanced',
+    // 原著续写必须严格遵循已启用的原著画风画像，不能降级为可选项。
+    styleLevel: 'strict',
     allowNewCharacters: true,
     allowNewLocations: true,
     allowNewOrganizations: true,
@@ -254,7 +255,18 @@ export async function ensureGenerationSettings(
     [projectId],
   );
   if (res.rows.length > 0) {
-    return rowSettings(res.rows.item(0));
+    const existing = rowSettings(res.rows.item(0));
+    // 旧项目可能保存了 off/balanced。读取时一次性收敛，避免旧配置绕过
+    // 续写必需的原著画风注入。
+    if (existing.styleLevel !== 'strict') {
+      const updatedAt = nowIso();
+      await db.executeSql(
+        'UPDATE continuation_generation_settings SET style_level = ?, updated_at = ? WHERE project_id = ?',
+        ['strict', updatedAt, projectId],
+      );
+      return { ...existing, styleLevel: 'strict', updatedAt };
+    }
+    return existing;
   }
   const s = defaultGenerationSettings(projectId);
   await db.executeSql(
@@ -305,6 +317,8 @@ export async function updateGenerationSettings(
     ...current,
     ...patch,
     projectId,
+    // 即便是遗留调用方传入 off/balanced，也不得关闭原著画风约束。
+    styleLevel: 'strict',
     updatedAt: nowIso(),
   };
   const db = await openDatabase();
@@ -358,7 +372,10 @@ export function newContinuationRunId(): string {
 }
 
 export async function insertRun(
-  run: Omit<ContinuationGenerationRun, 'createdAt' | 'updatedAt' | 'completedAt'> & {
+  run: Omit<
+    ContinuationGenerationRun,
+    'createdAt' | 'updatedAt' | 'completedAt'
+  > & {
     createdAt?: string;
     updatedAt?: string;
   },
@@ -677,9 +694,7 @@ export async function savePlan(
   return { planHash };
 }
 
-export async function getPlan(
-  runId: string,
-): Promise<{
+export async function getPlan(runId: string): Promise<{
   plan: ContinuationPlan;
   planHash: string;
   confirmationStatus: string;
@@ -764,7 +779,8 @@ export async function listChecksForArtifact(
     [runId, artifactId],
   );
   const out: ContinuationCheckResult[] = [];
-  for (let i = 0; i < res.rows.length; i++) out.push(rowCheck(res.rows.item(i)));
+  for (let i = 0; i < res.rows.length; i++)
+    out.push(rowCheck(res.rows.item(i)));
   return out;
 }
 
@@ -895,7 +911,8 @@ export async function insertProposals(
            AND proposal_fingerprint = ?`,
         [r.projectId, r.chapterId, r.chapterRevisionHash, fp],
       );
-      if (existing.rows.length > 0) out.push(rowProposal(existing.rows.item(0)));
+      if (existing.rows.length > 0)
+        out.push(rowProposal(existing.rows.item(0)));
     }
   }
   return out;
@@ -918,7 +935,8 @@ export async function listProposals(
         [projectId],
       );
   const out: ContinuationStateProposal[] = [];
-  for (let i = 0; i < res.rows.length; i++) out.push(rowProposal(res.rows.item(i)));
+  for (let i = 0; i < res.rows.length; i++)
+    out.push(rowProposal(res.rows.item(i)));
   return out;
 }
 
@@ -1016,7 +1034,8 @@ export async function listValidEventsBefore(
     [projectId, targetPosition],
   );
   const out: ContinuationStateEvent[] = [];
-  for (let i = 0; i < res.rows.length; i++) out.push(rowEvent(res.rows.item(i)));
+  for (let i = 0; i < res.rows.length; i++)
+    out.push(rowEvent(res.rows.item(i)));
   return out;
 }
 
@@ -1205,7 +1224,8 @@ export async function listPendingOutbox(
     [limit],
   );
   const out: ContinuationOutboxItem[] = [];
-  for (let i = 0; i < res.rows.length; i++) out.push(rowOutbox(res.rows.item(i)));
+  for (let i = 0; i < res.rows.length; i++)
+    out.push(rowOutbox(res.rows.item(i)));
   return out;
 }
 
@@ -1326,9 +1346,7 @@ export async function retryFailedContinuationOutbox(
  * can show a retry button without exposing the prompt, chapter body or any
  * credentials (last_error is the worker's short message only).
  */
-export async function getOutboxSummary(
-  projectId: number,
-): Promise<{
+export async function getOutboxSummary(projectId: number): Promise<{
   pendingCount: number;
   failedCount: number;
   lastError: string | null;
@@ -1402,7 +1420,8 @@ export async function listOutboxForProject(
         [projectId],
       );
   const out: ContinuationOutboxItem[] = [];
-  for (let i = 0; i < res.rows.length; i++) out.push(rowOutbox(res.rows.item(i)));
+  for (let i = 0; i < res.rows.length; i++)
+    out.push(rowOutbox(res.rows.item(i)));
   return out;
 }
 

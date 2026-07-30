@@ -34,12 +34,6 @@ const STRICTNESS_OPTIONS = [
   { value: 'strict', label: '严格' },
 ] as const;
 
-const STYLE_LEVEL_OPTIONS = [
-  { value: 'off', label: '关闭' },
-  { value: 'balanced', label: '平衡' },
-  { value: 'strict', label: '严格' },
-] as const;
-
 const CHECK_LEVEL_OPTIONS = [
   { value: 'off', label: '关闭' },
   { value: 'balanced', label: '平衡' },
@@ -47,8 +41,8 @@ const CHECK_LEVEL_OPTIONS = [
 ] as const;
 
 /**
- * 校验严格度预设展开为各子项。文风 styleLevel 可随后单独修改，
- * 避免「严格」预设看起来管了文风、实际未写入 styleLevel（Spec §10.2）。
+ * 校验严格度预设展开为各子项；原著文风始终严格遵循已启用的画风画像，
+ * 因而不属于用户可调节项。
  */
 type StrictnessPresetKey = 'loose' | 'balanced' | 'strict';
 
@@ -62,7 +56,6 @@ const STRICTNESS_PRESET: Record<
     | 'plotLevel'
     | 'experienceLevel'
     | 'knowledgeLevel'
-    | 'styleLevel'
   >
 > = {
   loose: {
@@ -72,7 +65,6 @@ const STRICTNESS_PRESET: Record<
     plotLevel: 'balanced',
     experienceLevel: 'balanced',
     knowledgeLevel: 'balanced',
-    styleLevel: 'balanced',
   },
   balanced: {
     worldRuleLevel: 'strict',
@@ -81,7 +73,6 @@ const STRICTNESS_PRESET: Record<
     plotLevel: 'balanced',
     experienceLevel: 'strict',
     knowledgeLevel: 'strict',
-    styleLevel: 'balanced',
   },
   strict: {
     worldRuleLevel: 'strict',
@@ -90,7 +81,6 @@ const STRICTNESS_PRESET: Record<
     plotLevel: 'strict',
     experienceLevel: 'strict',
     knowledgeLevel: 'strict',
-    styleLevel: 'strict',
   },
 };
 
@@ -104,7 +94,6 @@ const SUB_LEVEL_FIELDS: Array<{
   { key: 'plotLevel', label: '剧情主线' },
   { key: 'experienceLevel', label: '人物经历' },
   { key: 'knowledgeLevel', label: '知识边界' },
-  { key: 'styleLevel', label: '文风约束' },
 ];
 
 const CONFIRMATION_OPTIONS = [
@@ -233,7 +222,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             }}
           />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            切换预设会展开下列子项；之后仍可单独改「文风约束」而不被全局预设误导。
+            切换预设会展开下列事实校验项；原著文风始终严格遵循已启用的画风画像。
           </Text>
           {SUB_LEVEL_FIELDS.map(field => (
             <View key={field.key} style={styles.subLevelBlock}>
@@ -244,15 +233,19 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
               </Text>
               <SegmentedControl
                 value={settings[field.key]}
-                options={[
-                  ...(field.key === 'styleLevel'
-                    ? STYLE_LEVEL_OPTIONS
-                    : CHECK_LEVEL_OPTIONS),
-                ]}
+                options={[...CHECK_LEVEL_OPTIONS]}
                 onChange={value => patch({ [field.key]: value })}
               />
             </View>
           ))}
+          <View style={styles.subLevelBlock}>
+            <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
+              原著文风
+            </Text>
+            <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+              始终严格遵循原著画风画像；未完成或未启用画像时，续写将被阻断。
+            </Text>
+          </View>
           <View style={styles.switchRow}>
             <View style={styles.switchText}>
               <Text
