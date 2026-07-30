@@ -55,10 +55,12 @@ const KIND_ICON: Record<ContextSourceKind, React.ComponentType<{ size: number; c
 const CONTINUATION_CATEGORY_LABELS: Record<string, string> = {
   originalStyle: '原著风格画像',
   supplements: '外部补充',
+  lockedRules: '用户锁定规则',
   historicalDigests: '历史概览',
-  canon: '原著 Canon',
+  canon: '原著设定',
   effectiveState: '当前状态',
   seam: '原著接缝',
+  primaryAnchor: '续写接缝（紧接上一章）',
   recentChapters: '最近续写',
   storyMemory: '长期故事记忆',
   episodic: '章节事件摘要',
@@ -73,8 +75,8 @@ const STYLE_OMIT_REASON_LABELS: Record<string, string> = {
   degraded_to_standard: '已降为标准级',
   degraded_to_compact: '已降为精简级',
   strict_soft_trim_for_style: '严格模式已优先压缩软资料',
-  insufficient_tokens: 'token 不足',
-  insufficient_tokens_for_compact: '连精简级都放不下',
+  insufficient_tokens: '上下文额度不足',
+  insufficient_tokens_for_compact: '精简级也无法放入上下文',
 };
 
 function styleTraceReason(
@@ -105,7 +107,7 @@ function styleTraceReason(
   const parts = [
     selected > 0 ? '已注入' : '未注入',
     levelLabel ? `级别 ${levelLabel}` : null,
-    `${tokens} tokens`,
+    `${tokens} 词元`,
     degradeText || null,
   ].filter(Boolean);
   return parts.join(' · ');
@@ -238,11 +240,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
         setMessages([
           ...plannerMsgs.map(m => ({
             ...m,
-            content: `【规划 Planner】\n${m.content}`,
+            content: `【规划阶段】\n${m.content}`,
           })),
           ...writerMsgs.map(m => ({
             ...m,
-            content: `【正文 Writer】\n${m.content}`,
+            content: `【正文生成阶段】\n${m.content}`,
           })),
         ]);
         return;
@@ -307,7 +309,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           </View>
           <View style={styles.traceMeta}>
             <Text style={[styles.traceTokens, { color: theme.colors.textSecondary }]}>
-              {item.estimatedTokens} tok
+              {item.estimatedTokens} 词元
             </Text>
             {statusBadge(item)}
           </View>
@@ -351,7 +353,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
     <Screen>
       <Header
         title="上下文预览"
-        subtitle={`${continuationPreview ? '续写 Planner+Writer · ' : ''}预估 ${estimatedInputTokens.toLocaleString()} tokens`}
+        subtitle={`${continuationPreview ? '续写规划与正文 · ' : ''}预估 ${estimatedInputTokens.toLocaleString()} 词元`}
         action={<Button label="关闭" variant="ghost" icon={X} onPress={onClose} compact />}
       />
       <View style={[styles.toggleRow, { borderBottomColor: theme.colors.border }]}>

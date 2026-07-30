@@ -31,7 +31,6 @@ import {
   getRunById,
   listChecksForArtifact,
   resumeInterruptedRun,
-  summarizeTrace,
   type ContinuationCheckResult,
   type ContinuationGenerationRun,
   type ContinuationPlan,
@@ -57,9 +56,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [plan, setPlan] = useState<ContinuationPlan | null>(null);
   const [planConfirmationStatus, setPlanConfirmationStatus] = useState<string | null>(null);
   const [body, setBody] = useState('');
+  const [repairRound, setRepairRound] = useState(0);
   const [checks, setChecks] = useState<ContinuationCheckResult[]>([]);
-  const [traceSummary, setTraceSummary] = useState('');
   const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -72,17 +72,11 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       setPlanConfirmationStatus(p?.confirmationStatus ?? null);
       const art = await getLatestArtifact(runId);
       setBody(art?.content ?? '');
+      setRepairRound(art?.stage === 'repair' ? art.repairRound : 0);
       if (art) {
         setChecks(await listChecksForArtifact(runId, art.id));
       } else {
         setChecks([]);
-      }
-      if (r.contextTraceJson) {
-        try {
-          setTraceSummary(summarizeTrace(JSON.parse(r.contextTraceJson)));
-        } catch {
-          setTraceSummary('');
-        }
       }
     } finally {
       setLoading(false);
@@ -177,7 +171,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   if (loading) {
     return (
       <Screen>
-        <Header title="AI 续写结果" action={headerAction} />
+        <Header title="流水线结果" action={headerAction} />
         <ActivityIndicator color={colors.accent} style={{ marginTop: 40 }} />
       </Screen>
     );
@@ -186,7 +180,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   if (!run) {
     return (
       <Screen>
-        <Header title="AI 续写结果" action={headerAction} />
+        <Header title="流水线结果" action={headerAction} />
         <Text style={{ color: colors.textPrimary, padding: spacing.md }}>
           找不到续写任务 {runId}
         </Text>
@@ -210,6 +204,15 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       (c.subtype === 'source_overlap' ||
         c.subtype === 'continuation_anchor_overlap'),
   );
+
+  const toggleExpanded = (section: string) => {
+    setExpanded(current => {
+      const next = new Set(current);
+      if (next.has(section)) next.delete(section);
+      else next.add(section);
+      return next;
+    });
+  };
 
   const renderPlan = () => {
     if (!plan) return null;
@@ -274,6 +277,89 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       </Text>
     </View>
   );
+
+  const renderCompletedResult = () => {
+    const planText = plan
+      ? [
+          plan.chapterGoal,
+          `冲突：${plan.centralConflict}`,
+          plan.beats.length > 0
+            ? `节拍：${plan.beats.map(beat => beat.summary).join(' / ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '本次未生成独立规划。';
+    const checkText = checks.length
+      ? checks
+          .map(
+            check =>
+              `[${check.severity}/${check.category}] ${check.description}`,
+          )
+          .join('\n')
+      : '一致性检查通过，无待处理问题。';
+    const resultSections = [
+      {
+        id: 'plan',
+        label: `规划 · 成功 (${plan ? '已生成' : '已跳过'})`,
+        text: planText,
+        meta: plan ? '已根据 Canon 与续写状态生成本章规划' : '未启用独立规划阶段',
+      },
+      {
+        id: 'writer',
+        label: `正文 · 成功 (${body.length} 字)`,
+        text: body,
+        meta: '已生成续写正文',
+      },
+      {
+        id: 'checker',
+        label: `一致性检查 · 成功 (${checks.length} 项)`,
+        text: checkText,
+        meta: `blocking ${blocking} · error ${errors} · warning ${warnings}`,
+      },
+    ];
+    if (repairRound > 0) {
+      resultSections.splice(2, 0, {
+        id: 'repair',
+        label: `一致性修复 · 成功 (${repairRound} 轮)`,
+        text: '已根据 blocking / error 检查项生成修复版候选正文；采纳将写入此版本。',
+        meta: '只修复冲突片段，已保留通过检查的内容',
+      });
+    }
+
+    return (
+      <>
+        <Text style={[styles.summary, { color: colors.textSecondary }]}>
+          已完成 · Canon r{run.canonRevision}
+          {repairRound > 0 ? ` · 已自动修复 ${repairRound} 轮` : ''}
+          {` · 正文 ${body.length} 字`}
+        </Text>
+        {resultSections.map(section => (
+          <View
+            key={section.id}
+            style={[styles.resultCard, { backgroundColor: colors.card }]}
+          >
+            <Button
+              label={section.label}
+              variant="ghost"
+              onPress={() => toggleExpanded(section.id)}
+            />
+            <Text style={[styles.stageMeta, { color: colors.accent }]}>
+              {section.meta}
+            </Text>
+            {expanded.has(section.id) && (
+              <Text
+                selectable
+                style={[styles.stageText, { color: colors.textPrimary }]}
+              >
+                {section.text}
+              </Text>
+            )}
+          </View>
+        ))}
+      </>
+    );
+  };
 
   // ---- state-driven branches (fix-plan §4.1) ----
   const renderStateBranch = () => {
@@ -433,34 +519,27 @@ export const ContinuationResultScreen: React.FC<Props> = ({
 
   return (
     <Screen>
-      <Header title="AI 续写结果" action={headerAction} />
+      <Header title="流水线结果" action={headerAction} />
       <ScrollView contentContainerStyle={styles.pad}>
-        <Text style={[styles.meta, { color: colors.textSecondary }]}>
-          run={run.id} · state={run.state} · stage={run.stage}
-        </Text>
-        <Text style={[styles.meta, { color: colors.textSecondary }]}>
-          Canon {run.canonSnapshotId?.slice(0, 10)} @r{run.canonRevision}
-        </Text>
-        {!!traceSummary && (
-          <Text style={[styles.trace, { color: colors.textSecondary }]}>
-            Context: {traceSummary}
-          </Text>
-        )}
-        {/* Plan/checks/body shown for branches that produced them; hidden for
-            failed/outdated/interrupted-before-writer to avoid stale display. */}
-        {run.state !== 'outdated' &&
+        {run.state === 'awaiting_user' &&
+        planConfirmationStatus !== 'pending' &&
+        !overlapBlocked
+          ? renderCompletedResult()
+          : null}
+        {/* Non-final branches keep their workflow-specific guidance. */}
+        {run.state !== 'awaiting_user' &&
+          run.state !== 'outdated' &&
           run.state !== 'failed' &&
           !(run.state === 'interrupted' && !body) &&
-          !(run.state === 'awaiting_user' &&
-            run.stage === 'awaiting_user' &&
-            planConfirmationStatus === 'pending') &&
           renderPlan()}
-        {run.state !== 'outdated' &&
+        {run.state !== 'awaiting_user' &&
+          run.state !== 'outdated' &&
           run.state !== 'failed' &&
           !(run.state === 'interrupted' && !body) &&
           body.length > 0 &&
           renderChecks()}
-        {run.state !== 'outdated' &&
+        {run.state !== 'awaiting_user' &&
+          run.state !== 'outdated' &&
           run.state !== 'failed' &&
           !(run.state === 'interrupted' && !body) &&
           renderBodyPreview()}
@@ -491,8 +570,10 @@ function stageLabel(stage: string): string {
 
 const styles = StyleSheet.create({
   pad: { padding: spacing.md, paddingBottom: 48 },
-  meta: { fontSize: 12, marginBottom: 4 },
-  trace: { fontSize: 11, marginBottom: 12 },
+  summary: { fontSize: 13, fontWeight: '700', marginBottom: spacing.md },
+  resultCard: { borderRadius: 8, padding: spacing.md, gap: spacing.sm, marginBottom: spacing.md },
+  stageMeta: { fontSize: 12, fontWeight: '700' },
+  stageText: { fontSize: 14, lineHeight: 22, marginTop: spacing.sm },
   block: { marginBottom: 16 },
   h: { fontSize: 16, fontWeight: '600', marginBottom: 8 },
   actions: { gap: 12, marginTop: 8 },

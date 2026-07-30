@@ -1,5 +1,17 @@
 # ShineWriter 发布清单
 
+## V2.11.0 续写交付修复与结果可读性
+
+- [x] 升级 `package.json` / `package-lock.json` 至 `2.11.0`，`npm run prebuild` 生成 `V2.11.0` / `2110000`
+- [x] `npm run verify` 通过：203 个测试套件通过，1 个既有跳过；1605 项测试通过，3 项既有跳过；ESLint 0 error（保留仓库既有 warning）
+- [x] Android Debug APK 安装到 Android 模拟器，1M 上下文自动分配回写 LLM 设置页验证通过；续写结果页、自动修复提示和上下文预览中文化验证通过
+- [x] Android 模拟器通过真实 LLM 连续生成并采纳第 4、5、6 章（3174 / 3669 / 3791 字）；第 6 章仅 `warning/style`，按策略不自动改写
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.11.0-release.apk`
+- [x] 签名、单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.11.0` / `2110000` 验收通过
+- [ ] Release APK 未在此模拟器覆盖安装：当前保留 Debug 签名及 API/三章测试数据，Android 正确拒绝不同签名覆盖；未卸载以避免清除用户数据
+
+证据：Release APK 38,418,423 bytes，SHA-256 `19F5D830BBCCC10328A979CC5BCFB8DB45A9D3F2DA16DE2861323BC34F4162D5`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。模拟器 UI 证据位于 `test-logs/`（未纳入版本控制）。
+
 ## V2.10.7 续写长上下文与持续记忆
 
 - [x] 升级 `package.json` / `package-lock.json` 至 `2.10.7`，`npm run prebuild` 生成 `V2.10.7` / `2100700`
