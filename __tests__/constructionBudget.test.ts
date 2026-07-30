@@ -13,6 +13,7 @@ import {
   computeSafetyMargin,
   findMinReservePercent,
   formatReserveLabel,
+  planWorldbookBatches,
   requiredMinOutput,
 } from '../src/services/construction/budget';
 
@@ -187,5 +188,142 @@ describe('construction budget', () => {
   it('formatReserveLabel renders percent with localized token count', () => {
     expect(formatReserveLabel(5, 1638)).toBe('5% · 1,638 Token');
     expect(formatReserveLabel(RESERVE_PERCENT_MAX, 0)).toBe('15% · 0 Token');
+  });
+
+  describe('planWorldbookBatches', () => {
+    // full 档单条 650 token，overhead 200。
+    // 单次目标（含 15% 余量）= ceil((200 + N*650) * 1.15)
+    // 不分批阈值：outputReserve >= requiredMin（= 200 + N*650，不含余量）
+
+    it('不分批：outputReserve ≥ 验收下限时走单次路径', () => {
+      // 6 条 full：requiredMin = 200 + 6*650 = 4100
+      const plan = planWorldbookBatches({
+        entryCount: 6,
+        detailLevel: 'full',
+        outputReserve: 8192,
+      });
+      expect(plan.batched).toBe(false);
+      expect(plan.batchCount).toBe(1);
+      expect(plan.batchSizes).toEqual([6]);
+      expect(plan.perBatchMaxTokens).toBe(8192);
+      expect(plan.feasible).toBe(true);
+    });
+
+    it('不分批：outputReserve 刚好等于验收下限', () => {
+      // 4 条 full：requiredMin = 200 + 4*650 = 2800
+      const plan = planWorldbookBatches({
+        entryCount: 4,
+        detailLevel: 'full',
+        outputReserve: 2800,
+      });
+      expect(plan.batched).toBe(false);
+      expect(plan.batchSizes).toEqual([4]);
+      expect(plan.feasible).toBe(true);
+    });
+
+    it('分批：10 条 deep + 8192 token 自动拆分', () => {
+      // 10 条 deep：requiredMin = 200 + 10*900 = 9200 > 8192 → 分批
+      // 单批目标含余量 = ceil((200 + N*900) * 1.15)
+      // threshold=0.8 → ceiling = floor(8192*0.8) = 6553
+      // N=6: ceil((200+5400)*1.15) = ceil(6440) = 6440 ≤ 6553 ✓
+      // N=7: ceil((200+6300)*1.15) = ceil(7475) = 7475 > 6553 ✗
+      // 所以 batchSize=6，10 条拆成 [6, 4] → 均匀化 → [5, 5]
+      const plan = planWorldbookBatches({
+        entryCount: 10,
+        detailLevel: 'deep',
+        outputReserve: 8192,
+      });
+      expect(plan.batched).toBe(true);
+      expect(plan.feasible).toBe(true);
+      expect(plan.batchCount).toBe(2);
+      expect(plan.batchSizes.reduce((a, b) => a + b, 0)).toBe(10);
+      // 均匀化：[6,4] → [5,5]
+      expect(plan.batchSizes).toEqual([5, 5]);
+      // 每批 max_tokens 能容纳 5 条 deep
+      expect(plan.perBatchMaxTokens).toBe(
+        Math.ceil((200 + 5 * 900) * 1.15),
+      );
+    });
+
+    it('分批：6 条 full + 4096 token（刚好不够单次）', () => {
+      // requiredMin = 4100 > 4096 → 分批
+      // ceiling = floor(4096*0.8) = 3276
+      // N=4: ceil((200+2600)*1.15) = ceil(3220) = 3220 ≤ 3276 ✓
+      // N=5: ceil((200+3250)*1.15) = ceil(3968) = 3968 > 3276 ✗
+      // batchSize=4，6 条拆成 [4, 2] → 均匀化 → [3, 3]
+      const plan = planWorldbookBatches({
+        entryCount: 6,
+        detailLevel: 'full',
+        outputReserve: 4096,
+      });
+      expect(plan.batched).toBe(true);
+      expect(plan.batchSizes).toEqual([3, 3]);
+      expect(plan.batchCount).toBe(2);
+    });
+
+    it('不可行：outputReserve 太小连单批最少 2 条都装不下', () => {
+      // 2 条 compact：单批目标 = ceil((200+800)*1.15) = ceil(1150) = 1150
+      // threshold=0.8，outputReserve=1000 → ceiling=800 < 1150 → 不可行
+      const plan = planWorldbookBatches({
+        entryCount: 4,
+        detailLevel: 'compact',
+        outputReserve: 1000,
+      });
+      expect(plan.feasible).toBe(false);
+      expect(plan.batched).toBe(false);
+      expect(plan.batchCount).toBe(0);
+      expect(plan.batchSizes).toEqual([]);
+      expect(plan.reason).toContain('不足以容纳');
+    });
+
+    it('不可行：outputReserve 为 0', () => {
+      const plan = planWorldbookBatches({
+        entryCount: 6,
+        detailLevel: 'full',
+        outputReserve: 0,
+      });
+      expect(plan.feasible).toBe(false);
+      expect(plan.reason).toContain('输出预留为 0');
+    });
+
+    it('均匀分配：10 条按每批 4 → [4, 3, 3] 而非 [4, 4, 2]', () => {
+      // 10 条 compact：requiredMin = 200 + 10*400 = 4200
+      // outputReserve=3000 → 分批
+      // ceiling = floor(3000*0.8) = 2400
+      // N=4: ceil((200+1600)*1.15) = ceil(2070) = 2070 ≤ 2400 ✓
+      // N=5: ceil((200+2000)*1.15) = ceil(2530) = 2530 > 2400 ✗
+      // batchSize=4，10 条 → [4, 4, 2] → 均匀化 → [4, 3, 3]
+      const plan = planWorldbookBatches({
+        entryCount: 10,
+        detailLevel: 'compact',
+        outputReserve: 3000,
+      });
+      expect(plan.batched).toBe(true);
+      expect(plan.batchSizes).toEqual([4, 3, 3]);
+      expect(plan.batchCount).toBe(3);
+    });
+
+    it('尊重 maxBatchSize 限制', () => {
+      // 12 条 compact + 大 outputReserve：不分批（12 条 requiredMin=5000 ≤ 20000）
+      const plan = planWorldbookBatches({
+        entryCount: 12,
+        detailLevel: 'compact',
+        outputReserve: 20000,
+        maxBatchSize: 6,
+      });
+      // requiredMin = 200 + 12*400 = 5000 ≤ 20000 → 不分批
+      expect(plan.batched).toBe(false);
+      expect(plan.batchSizes).toEqual([12]);
+    });
+
+    it('分批时 perBatchMaxTokens 不超过 outputReserve', () => {
+      const plan = planWorldbookBatches({
+        entryCount: 10,
+        detailLevel: 'deep',
+        outputReserve: 8192,
+      });
+      expect(plan.feasible).toBe(true);
+      expect(plan.perBatchMaxTokens).toBeLessThanOrEqual(8192);
+    });
   });
 });

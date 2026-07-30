@@ -165,6 +165,11 @@ export const BuildScreen: React.FC = () => {
   const [showJson, setShowJson] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const lastAutoBudgetSignature = useRef<string | null>(null);
+  // 分批生成时跟踪当前批次，供 onQueueState 拼接「第 X/Y 批」前缀。
+  const batchProgressRef = useRef<{
+    current: number;
+    total: number;
+  } | null>(null);
 
   const target: IndependentTarget = useMemo(() => {
     if (mode === 'fromWorldbook') return 'character';
@@ -585,18 +590,31 @@ export const BuildScreen: React.FC = () => {
     setQueueLabel('排队中…');
     setArtifact(null);
     setGenerationError(null);
+    batchProgressRef.current = null;
     try {
       const result = await generateConstruction(input, {
         maxTokens: budget.outputReserve,
         signal: controller.signal,
         onQueueState: state => {
+          const batch = batchProgressRef.current;
+          const prefix = batch
+            ? `第 ${batch.current}/${batch.total} 批 · `
+            : '';
           if (state === 'queued') {
-            setQueueLabel('排队中…');
+            setQueueLabel(`${prefix}排队中…`);
             setStatus('queued');
           } else if (state === 'running') {
-            setQueueLabel('生成中…');
+            setQueueLabel(`${prefix}生成中…`);
             setStatus('running');
           }
+        },
+        onBatchProgress: progress => {
+          batchProgressRef.current = {
+            current: progress.current,
+            total: progress.total,
+          };
+          setQueueLabel(`第 ${progress.current}/${progress.total} 批 · 生成中…`);
+          setStatus('running');
         },
       });
       setArtifact(result);
@@ -619,6 +637,7 @@ export const BuildScreen: React.FC = () => {
     } finally {
       abortRef.current = null;
       setQueueLabel('');
+      batchProgressRef.current = null;
     }
   };
 

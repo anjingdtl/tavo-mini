@@ -99,6 +99,7 @@ export const ANALYSIS_MATERIAL_LABELS: Record<AnalysisWorkItemType, string> = {
   experiences: '人物经历',
   character_state: '人物与状态',
   world_plot: '世界观与剧情',
+  full_extraction: '原著全维度分析',
 };
 
 /**
@@ -342,10 +343,15 @@ export const FULL_CANON_QUALITY_CHAPTERS_PER_BATCH = 20;
  * Output baseline per profile — kept in sync with extractMaterialWithLlm.
  * The planner refuses when the window cannot reserve this much output.
  */
+/**
+ * Output baseline per profile. `full_extraction` covers all 8 categories in a
+ * single call (formerly 2 calls at these budgets), so budgets are doubled to
+ * give each category its fair share of the completion window.
+ */
 const CANON_OUTPUT_BASELINE_TOKENS: Record<AnalysisProfile, number> = {
   quick: 4096,
-  standard: 16384,
-  deep: 32768,
+  standard: 32768,
+  deep: 65536,
 };
 
 /**
@@ -1431,7 +1437,7 @@ export async function startAnalysis(
       schemaVersion: 3,
       mode: input.mode,
       extractorMode: 'llm',
-      workItemProtocol: 'request_groups_v2',
+      workItemProtocol: 'request_groups_v3',
       scope: plan.effectiveScope,
       plannedChapterIds: plan.nearChapters.map(chapter => chapter.id),
       plannedRanges: plan.analyzedRanges,
@@ -2147,6 +2153,16 @@ const MATERIAL_CATEGORY_OWNERSHIP: Record<
     'states',
   ],
   world_plot: ['worldRules', 'plotThreads', 'timelineEvents'],
+  full_extraction: [
+    'worldRules',
+    'characters',
+    'relationships',
+    'plotThreads',
+    'experiences',
+    'knowledge',
+    'states',
+    'timelineEvents',
+  ],
 };
 
 function pickMaterialFields(
@@ -2196,6 +2212,8 @@ const MATERIAL_PROMPTS: Record<AnalysisWorkItemType, string> = {
     '只填写 characters、relationships、experiences、knowledge、states；其他数组必须为空。人物之间的关系、当前状态和知识边界不得省略。',
   world_plot:
     '只填写 worldRules、plotThreads、timelineEvents；其他数组必须为空。剧情必须区分已发生事实、当前状态与未收束线索。',
+  full_extraction:
+    '填写所有八个数组。characters、relationships、experiences、knowledge、states 记录人物维度的全部事实；worldRules、plotThreads、timelineEvents 记录世界观与剧情维度的全部事实。',
 };
 
 export interface ExtractMaterialOutcome {

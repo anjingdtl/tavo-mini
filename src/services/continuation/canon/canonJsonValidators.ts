@@ -223,7 +223,7 @@ function findBalancedJsonValues(text: string): string[] {
   return values;
 }
 
-function modelJsonCandidates(text: string): string[] {
+export function modelJsonCandidates(text: string): string[] {
   const trimmed = text.trim();
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const fenced = fence?.[1]?.trim();
