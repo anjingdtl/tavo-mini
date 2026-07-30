@@ -6,6 +6,18 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.11.2] - 2026-07-30
+
+### Fixed
+
+- **完整原著分析自动衔接风格分析**：移除 `processAnalysisRunInner` 在 Canon 批次收尾后的过早 `state='awaiting_review'` 终态提交。批量校验与 evidence_validation 之后、风格分析尚未启动时，run 继续保留 `state='running'`，避免 `awaiting_review` 与错误的 `completedAt` 提前使 `pauseInterruptedRuns` 漏救、`isResumableAnalysisState` 拒绝继续以及概览页误显“审核并启用”按钮。
+- **概览状态文案覆盖风格分析阶段**：`runStatusLabel` 补齐 `state='running'` 下的 `style_analysis`（“正在分析原著写作风格”）与 `style_validation`（“正在校验风格画像”），避免 S2 之后再次出现“分析中但显示正在汇总结果”。
+
+### Tests
+
+- 新增 `__tests__/canonAnalysisStylePipeline.test.ts`：在 `processAnalysisRun` 编排下断言 `runStyleAnalysis` → `activateSnapshotAndStyleProfile` 的调用顺序、最终由原子激活写入 `state='completed'`，并锁定不应再出现 `state='awaiting_review'` 写入或 `completedAt` 提前设定。
+- 扩展 `__tests__/canonRunStatusLabel.test.ts` 与 `__tests__/canonAnalysisOverviewStatus.test.tsx`，新增 `style_analysis` / `style_validation` 文案用例并保留 `finalizing` 既有断言。
+
 ## [2.11.1] - 2026-07-30
 
 ### Changed

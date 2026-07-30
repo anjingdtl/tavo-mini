@@ -29,6 +29,12 @@ export function runStatusLabel(
       if (run.stage === 'evidence_validation') {
         return '正在校验原文证据';
       }
+      if (run.stage === 'style_analysis') {
+        return '正在分析原著写作风格';
+      }
+      if (run.stage === 'style_validation') {
+        return '正在校验风格画像';
+      }
       // finalizing and any non-canon stage (snapshot/entity_resolution/etc.)
       // share the neutral "summarising" label.
       return '正在汇总结果';
