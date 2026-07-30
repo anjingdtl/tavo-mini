@@ -203,7 +203,7 @@ function createLifecycleDb(
       state.settings.set(params[0], params[1]);
       return [{ rows: createRows([]), rowsAffected: 1, insertId: 0 }];
     }
-    if (/^SELECT id, provider_type, local_model_id/i.test(normalized)) {
+    if (/^SELECT id, provider_type, base_url, model_name/i.test(normalized)) {
       return [
         { rows: createRows(state.activeConfigs), rowsAffected: 0, insertId: 0 },
       ];

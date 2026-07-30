@@ -56,38 +56,8 @@ export interface LLMConnectionOptions {
   onQueueState?: (state: LLMQueueState) => void;
 }
 
-async function repairLegacyLocalConfigSelection(
-  config: Awaited<ReturnType<typeof db.getLLMConfig>>,
-) {
-  const providerType = config.provider_type || 'openai_compatible';
-  const isBlankOnlineConfig =
-    providerType === 'openai_compatible' &&
-    !config.base_url.trim() &&
-    !config.api_key.trim() &&
-    !config.model_name.trim();
-
-  if (!isBlankOnlineConfig) return config;
-
-  const configs = await db.getLLMConfigs();
-  const localConfigs = configs.filter(
-    item => item.provider_type === 'llama_cpp' && item.local_model_id,
-  );
-  for (const localConfig of localConfigs) {
-    const model = await db.getLocalModelById(localConfig.local_model_id!);
-    if (model?.status !== 'ready') continue;
-
-    await db.setActiveLLMConfig(localConfig.id);
-    return { ...localConfig, is_active: 1 };
-  }
-
-  return config;
-}
-
 export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
-  const currentConfig = await db.getLLMConfig();
-  // Older builds created a local config without activating it. Repair that
-  // persisted state only when the selected online config is entirely blank.
-  const config = await repairLegacyLocalConfigSelection(currentConfig);
+  const config = await db.getLLMConfig();
   const raw = config as unknown as LLMRequestConfig & { base_url?: string };
   const providerType = raw.provider_type || 'openai_compatible';
   const allowInsecureLanHttp =
@@ -98,11 +68,9 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
     id: config.id,
     name: config.name,
     provider_type: providerType,
-    api_key: providerType === 'openai_compatible' ? config.api_key : '',
+    api_key: config.api_key,
     model_name: config.model_name,
     url: normalizeChatCompletionUrl(config.base_url),
-    local_model_id: raw.local_model_id,
-    local_backend: raw.local_backend,
     context_window: raw.context_window,
     max_output_tokens: raw.max_output_tokens,
     allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
@@ -125,11 +93,9 @@ export async function resolveLLMRequestConfigById(
     id: config.id,
     name: config.name,
     provider_type: providerType,
-    api_key: providerType === 'openai_compatible' ? config.api_key : '',
+    api_key: config.api_key,
     model_name: config.model_name,
     url: normalizeChatCompletionUrl(config.base_url),
-    local_model_id: config.local_model_id ?? undefined,
-    local_backend: config.local_backend ?? undefined,
     context_window: config.context_window,
     max_output_tokens: config.max_output_tokens,
     allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
@@ -140,23 +106,21 @@ export async function testLLMConnection(
   baseUrl: string,
   apiKey: string,
   modelName: string,
-  providerType: LLMProviderType = 'openai_compatible',
-  localModelId?: string,
+  _providerType: LLMProviderType = 'openai_compatible',
+  _localModelId?: string,
   options: boolean | LLMConnectionOptions = false,
 ): Promise<string> {
   const connectionOptions: LLMConnectionOptions =
     typeof options === 'boolean' ? { allowInsecureLanHttp: options } : options;
-  const provider = getProvider(providerType);
-  const queueClass = providerType === 'llama_cpp' ? 'local' : 'connection';
+  const provider = getProvider('openai_compatible');
   return scheduleLLMRequest(
     signal =>
       provider.test(
         {
-          provider_type: providerType,
+          provider_type: 'openai_compatible',
           api_key: apiKey,
           model_name: modelName,
           url: normalizeChatCompletionUrl(baseUrl),
-          local_model_id: localModelId,
           allow_insecure_lan_http:
             connectionOptions.allowInsecureLanHttp === true,
         },
@@ -164,7 +128,7 @@ export async function testLLMConnection(
       ),
     {
       taskId: connectionOptions.taskId,
-      queueClass,
+      queueClass: 'connection',
       queuePriority: 'manual',
       externalSignal: connectionOptions.externalSignal,
       onQueueState: connectionOptions.onQueueState,

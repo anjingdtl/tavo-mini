@@ -25,9 +25,8 @@ function createValidatorDb() {
   const settings = new Map([['schema_version', String(SCHEMA_VERSION)]]);
   let foreignKeys = 1;
   let activeConfigs: Record<string, any>[] = [
-    { id: 1, provider_type: 'openai_compatible', local_model_id: null },
+    { id: 1, provider_type: 'openai_compatible', base_url: 'https://example.com', model_name: 'demo' },
   ];
-  const localModelIds = new Set<string>();
   let orphanRows: Record<string, any>[] = [];
 
   const executeSql = jest.fn(async (sql: string, params: any[] = []) => {
@@ -65,17 +64,8 @@ function createValidatorDb() {
       const value = settings.get(params[0]);
       return [{ rows: createRows(value === undefined ? [] : [{ value }]) }];
     }
-    if (/^SELECT id, provider_type, local_model_id/i.test(normalized)) {
+    if (/^SELECT id, provider_type, base_url, model_name FROM llm_config/i.test(normalized)) {
       return [{ rows: createRows(activeConfigs) }];
-    }
-    if (/^SELECT id FROM local_llm_models/i.test(normalized)) {
-      return [
-        {
-          rows: createRows(
-            localModelIds.has(params[0]) ? [{ id: params[0] }] : [],
-          ),
-        },
-      ];
     }
     if (/^SELECT .*LEFT JOIN/i.test(normalized)) {
       return [{ rows: createRows(orphanRows) }];
@@ -95,7 +85,6 @@ function createValidatorDb() {
     setActiveConfigs: (value: Record<string, any>[]) => {
       activeConfigs = value;
     },
-    localModelIds,
     setOrphanRows: (value: Record<string, any>[]) => {
       orphanRows = value;
     },
@@ -155,22 +144,19 @@ describe('runtime schema validator', () => {
     );
   });
 
-  test('reports an active local configuration with a missing model', async () => {
+  test('reports when there is no active LLM configuration', async () => {
     const mock = createValidatorDb();
-    mock.setActiveConfigs([
-      { id: 2, provider_type: 'llama_cpp', local_model_id: 'missing-model' },
-    ]);
+    mock.setActiveConfigs([]);
 
     const result = await validateSchema(mock.database as any);
 
-    expect(result.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: 'INVALID_ACTIVE_LLM',
-          column: 'local_model_id',
-        }),
-      ]),
-    );
+    expect(result.valid).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: 'INVALID_ACTIVE_LLM',
+        table: 'llm_config',
+      }),
+    ]);
   });
 
   test('reports orphan references', async () => {

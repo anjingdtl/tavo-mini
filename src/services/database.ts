@@ -23,7 +23,6 @@ export * from '../data/repositories/worldbookRepository';
 export * from '../data/repositories/noteRepository';
 export * from '../data/repositories/presetRepository';
 export * from '../data/repositories/llmConfigRepository';
-export * from '../data/repositories/localModelRepository';
 export * from '../data/repositories/settingsRepository';
 export * from '../data/repositories/usageRepository';
 export * from '../data/repositories/contentRepository';

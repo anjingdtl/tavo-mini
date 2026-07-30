@@ -49,10 +49,5 @@
         android:name=".TtsForegroundService"
         android:exported="false"
         android:foregroundServiceType="dataSync|mediaPlayback" />
-      <service
-        android:name=".llamacpp.LlamaCppForegroundService"
-        android:exported="false"
-        android:foregroundServiceType="dataSync" />
-
     </application>
 </manifest>

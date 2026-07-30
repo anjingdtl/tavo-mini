@@ -179,7 +179,7 @@ describe('createProject SQLite transaction safety (V2.2.2)', () => {
             },
           ];
         }
-        if (/^SELECT id, provider_type, local_model_id/i.test(normalized)) {
+        if (/^SELECT id, provider_type, base_url, model_name/i.test(normalized)) {
           const rows = [
             {
               id: 1,
