@@ -345,6 +345,14 @@ export async function buildContinuationContext(
     ),
     sourceSeam: { summary: seamSummary, excerpt: seamExcerpt },
   });
+  // The selected primary anchor is rendered in every Writer prompt, so its
+  // final clipped form must be the same text counted by the context budget.
+  // This is especially important after the first continuation chapter: the
+  // anchor then comes from the previous continuation正文 rather than source.
+  const primaryAnchorExcerpt = clipTextTailToTokenBudget(
+    primaryAnchor.excerpt,
+    contextBudget.sourceSeamTokens,
+  );
 
   // Recent continuation chapters are a distinct short-term bridge. Allocate
   // from newest to oldest: the immediately previous chapter is retained whole
@@ -661,13 +669,7 @@ export async function buildContinuationContext(
     style: frozenStyle,
     primaryAnchor: {
       ...primaryAnchor,
-      excerpt:
-        primaryAnchor.kind === 'continuation_chapter'
-          ? clipTextTailToTokenBudget(
-              primaryAnchor.excerpt,
-              contextBudget.sourceSeamTokens,
-            )
-          : primaryAnchor.excerpt,
+      excerpt: primaryAnchorExcerpt,
     },
     settingsSnapshot,
     bundles: {
@@ -684,7 +686,7 @@ export async function buildContinuationContext(
             ? primaryAnchor.summary
             : '（已由最近续写正文接缝替代）',
         excerpt:
-          primaryAnchor.kind === 'source_seam' ? primaryAnchor.excerpt : '',
+          primaryAnchor.kind === 'source_seam' ? primaryAnchorExcerpt : '',
       },
       recentChapters,
       storyMemory: {
@@ -770,10 +772,10 @@ export async function buildContinuationContext(
       omittedReasonCounts: {},
     },
     {
-      name: 'seam',
-      candidates: chapters.length > 0 ? 1 : 0,
-      selected: chapters.length > 0 ? 1 : 0,
-      tokens: estimateTokens(seamExcerpt),
+      name: 'primaryAnchor',
+      candidates: primaryAnchor.excerpt ? 1 : 0,
+      selected: primaryAnchorExcerpt ? 1 : 0,
+      tokens: estimateTokens(primaryAnchorExcerpt),
       omittedReasonCounts: {},
     },
     {
