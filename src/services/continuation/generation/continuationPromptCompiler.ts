@@ -27,20 +27,23 @@ function displayTargetTitle(s: ContinuationContextSnapshot): string {
     boundaryPos != null && Number.isFinite(Number(boundaryPos))
       ? Number(boundaryPos) + 1
       : null;
-  return makeContinuationChapterNumbering(boundaryChapterNumber).getDefaultTitle(
-    s.targetPosition,
-  );
+  return makeContinuationChapterNumbering(
+    boundaryChapterNumber,
+  ).getDefaultTitle(s.targetPosition);
 }
 
-function displayNumberFor(s: ContinuationContextSnapshot, position: number): number {
+function displayNumberFor(
+  s: ContinuationContextSnapshot,
+  position: number,
+): number {
   const boundaryPos = s.source?.boundary?.chapterPosition;
   const boundaryChapterNumber =
     boundaryPos != null && Number.isFinite(Number(boundaryPos))
       ? Number(boundaryPos) + 1
       : null;
-  return makeContinuationChapterNumbering(boundaryChapterNumber).getDisplayNumber(
-    position as any,
-  );
+  return makeContinuationChapterNumbering(
+    boundaryChapterNumber,
+  ).getDisplayNumber(position as any);
 }
 
 function lockedBlock(s: ContinuationContextSnapshot): string {
@@ -49,28 +52,15 @@ function lockedBlock(s: ContinuationContextSnapshot): string {
     : '【用户锁定/硬规则】（无）';
 }
 
-function canonHardBlock(s: ContinuationContextSnapshot): string {
-  const rules = s.bundles.canon.worldRules
-    .slice(0, 20)
-    .map(r => `- [${r.constraintLevel}] ${r.title}: ${r.description}`)
-    .join('\n');
-  const chars = s.bundles.canon.characters
-    .slice(0, 15)
-    .map(c => `- ${c.canonicalName}: ${c.description.slice(0, 200)}`)
-    .join('\n');
-  return `【原著 Canon】\n世界观:\n${rules || '（无）'}\n人物:\n${chars || '（无）'}`;
-}
-
 function evidenceLabel(
   s: ContinuationContextSnapshot,
   ownerType: string,
   ownerId: number,
 ): string {
-  const ids = s.bundles.canon.evidenceRefsByOwner?.[
-    ownerType as keyof NonNullable<
-      typeof s.bundles.canon.evidenceRefsByOwner
-    >
-  ]?.[ownerId];
+  const ids =
+    s.bundles.canon.evidenceRefsByOwner?.[
+      ownerType as keyof NonNullable<typeof s.bundles.canon.evidenceRefsByOwner>
+    ]?.[ownerId];
   return ids?.length ? `（证据:${ids.join(',')}）` : '';
 }
 
@@ -82,53 +72,185 @@ function evidenceLabel(
  */
 function canonFactCheckBlock(s: ContinuationContextSnapshot): string {
   const canon = s.bundles.canon;
+  const plotFactKeys = new Set(
+    (canon.plotThreads ?? []).map(
+      plot => `${plot.title.trim()}:${plot.description.trim()}`,
+    ),
+  );
   const names = new Map(
-    (canon.characters ?? []).map(character => [character.id, character.canonicalName]),
+    (canon.characters ?? []).map(character => [
+      character.id,
+      character.canonicalName,
+    ]),
   );
   const nameOf = (id: number) => names.get(id) ?? `人物#${id}`;
   const line = (body: string, ownerType: string, id: number) =>
     `- ${body}${evidenceLabel(s, ownerType, id)}`;
 
   const sections = [
-    ['世界规则', (canon.worldRules ?? []).map(r => line(`${r.title}: ${r.description}`, 'world_rule', r.id))],
-    ['人物资料', (canon.characters ?? []).map(c => line(`${c.canonicalName}: ${c.description}`, 'character', c.id))],
-    ['人物状态', (canon.characterStates ?? []).map(state => line(`${nameOf(state.characterId)}：${state.summary || `状态=${state.aliveState}`}`, 'character_state', state.id))],
-    ['人物关系', (canon.relationships ?? []).map(rel => line(`${nameOf(rel.sourceCharacterId)}→${nameOf(rel.targetCharacterId)}（${rel.relationType}/${rel.attitude}）：${rel.description}`, 'relationship', rel.id))],
-    ['人物经历', (canon.experiences ?? []).map(exp => line(`${nameOf(exp.characterId)}：${exp.title}；${exp.description}`, 'experience', exp.id))],
-    ['知识边界', (canon.knowledge ?? []).map(item => line(`${nameOf(item.characterId)}对“${item.factKey}”=${item.knowledgeState}；${item.factSummary}`, 'knowledge', item.id))],
-    ['剧情线索', (canon.plotThreads ?? []).map(plot => line(`${plot.title}（${plot.status}）：${plot.description}`, 'plot_thread', plot.id))],
-    ['时间线', (canon.timelineEvents ?? []).map(event => line(`${event.title}：${event.summary}`, 'timeline_event', event.id))],
+    [
+      '世界规则',
+      (canon.worldRules ?? []).map(r =>
+        line(`${r.title}: ${r.description}`, 'world_rule', r.id),
+      ),
+    ],
+    [
+      '人物资料',
+      (canon.characters ?? []).map(c =>
+        line(`${c.canonicalName}: ${c.description}`, 'character', c.id),
+      ),
+    ],
+    [
+      '人物状态',
+      (canon.characterStates ?? []).map(state =>
+        line(
+          `${nameOf(state.characterId)}：${
+            state.summary || `状态=${state.aliveState}`
+          }`,
+          'character_state',
+          state.id,
+        ),
+      ),
+    ],
+    [
+      '人物关系',
+      (canon.relationships ?? []).map(rel =>
+        line(
+          `${nameOf(rel.sourceCharacterId)}→${nameOf(rel.targetCharacterId)}（${
+            rel.relationType
+          }/${rel.attitude}）：${rel.description}`,
+          'relationship',
+          rel.id,
+        ),
+      ),
+    ],
+    [
+      '人物经历',
+      (canon.experiences ?? []).map(exp =>
+        line(
+          `${nameOf(exp.characterId)}：${exp.title}；${exp.description}`,
+          'experience',
+          exp.id,
+        ),
+      ),
+    ],
+    [
+      '知识边界',
+      (canon.knowledge ?? []).map(item =>
+        line(
+          `${nameOf(item.characterId)}对“${item.factKey}”=${
+            item.knowledgeState
+          }；${item.factSummary}`,
+          'knowledge',
+          item.id,
+        ),
+      ),
+    ],
+    [
+      '剧情线索',
+      (canon.plotThreads ?? []).map(plot =>
+        line(
+          `${plot.title}（${plot.status}）：${plot.description}`,
+          'plot_thread',
+          plot.id,
+        ),
+      ),
+    ],
+    [
+      '时间线',
+      (canon.timelineEvents ?? [])
+        // A timeline item can materialize the exact same fact as a plot
+        // thread. Keep the plot (it has the continuation status) and avoid
+        // sending the same fact twice to the planner/writer.
+        .filter(
+          event =>
+            !plotFactKeys.has(`${event.title.trim()}:${event.summary.trim()}`),
+        )
+        .map(event =>
+          line(`${event.title}：${event.summary}`, 'timeline_event', event.id),
+        ),
+    ],
   ] as Array<[string, string[]]>;
   const rendered = sections
     .filter(([, lines]) => lines.length > 0)
     .map(([title, lines]) => `${title}:\n${lines.join('\n')}`)
     .join('\n');
-  return `【原著事实复核依据】\n${rendered || '（当前快照未检索到与本章相关的原著事实）'}`;
+  return `【原著事实复核依据】\n${
+    rendered || '（当前快照未检索到与本章相关的原著事实）'
+  }`;
 }
 
 function stateBlock(s: ContinuationContextSnapshot): string {
   const st = s.bundles.effectiveState;
+  // Baseline Canon facts have their own complete block. This block contains
+  // only post-boundary continuation deltas, avoiding duplicate injection.
   const chars = st.characterStates
+    .filter(c => c.source !== 'canon')
     .slice(0, 20)
     .map(c => `- ${JSON.stringify(c.ref)}: ${c.summary}`)
     .join('\n');
   const plots = st.plotThreads
+    .filter(p => p.sourceLayer !== 'canon')
     .slice(0, 10)
     .map(p => `- ${p.title} (${p.status}): ${p.summary}`)
     .join('\n');
   const relationships = (st.relationships ?? [])
+    .filter(r => r.sourceLayer !== 'canon')
     .slice(0, 20)
-    .map(r => `- ${JSON.stringify(r.source)} → ${JSON.stringify(r.target)}: ${r.summary}`)
+    .map(
+      r =>
+        `- ${JSON.stringify(r.source)} → ${JSON.stringify(r.target)}: ${
+          r.summary
+        }`,
+    )
     .join('\n');
+  const canonKnowledge = new Set(
+    (s.bundles.canon.knowledge ?? []).map(
+      item => `${item.characterId}:${item.factKey}:${item.factSummary}`,
+    ),
+  );
   const knowledge = (st.knowledge ?? [])
+    .filter(
+      k =>
+        !canonKnowledge.has(
+          `${k.ref.refType === 'canon_character' ? k.ref.id : ''}:${
+            k.factKey
+          }:${k.factSummary}`,
+        ),
+    )
     .slice(0, 20)
-    .map(k => `- ${JSON.stringify(k.ref)} ${k.factKey}: ${k.factSummary}（${k.knowledgeState}）`)
+    .map(
+      k =>
+        `- ${JSON.stringify(k.ref)} ${k.factKey}: ${k.factSummary}（${
+          k.knowledgeState
+        }）`,
+    )
     .join('\n');
+  const canonExperiences = new Set(
+    (s.bundles.canon.experiences ?? []).map(
+      item => `${item.characterId}:${item.title}:${item.description}`,
+    ),
+  );
   const experiences = (st.experiences ?? [])
+    .filter(
+      e =>
+        !canonExperiences.has(
+          `${e.ref.refType === 'canon_character' ? e.ref.id : ''}:${e.title}:${
+            e.summary
+          }`,
+        ),
+    )
     .slice(0, 20)
     .map(e => `- ${JSON.stringify(e.ref)}: ${e.title}；${e.summary}`)
     .join('\n');
-  return `【第 ${displayNumberFor(s, s.targetPosition)} 章目标位置有效续写状态】\n人物状态:\n${chars || '（无）'}\n人物关系:\n${relationships || '（无）'}\n知识边界:\n${knowledge || '（无）'}\n人物经历:\n${experiences || '（无）'}\n剧情:\n${plots || '（无）'}`;
+  return `【第 ${displayNumberFor(
+    s,
+    s.targetPosition,
+  )} 章已确认续写增量状态】\n人物状态:\n${chars || '（无新增）'}\n人物关系:\n${
+    relationships || '（无新增）'
+  }\n知识边界:\n${knowledge || '（无）'}\n人物经历:\n${
+    experiences || '（无新增）'
+  }\n剧情:\n${plots || '（无新增）'}`;
 }
 
 function primaryAnchorBlock(s: ContinuationContextSnapshot): string {
@@ -160,7 +282,10 @@ function recentBlock(s: ContinuationContextSnapshot): string {
     s.bundles.recentChapters
       .map(
         c =>
-          `--- 第 ${displayNumberFor(s, c.position)} 章 (hash=${c.revisionHash.slice(0, 8)}) ---\n${c.excerpt}`,
+          `--- 第 ${displayNumberFor(
+            s,
+            c.position,
+          )} 章 (hash=${c.revisionHash.slice(0, 8)}) ---\n${c.excerpt}`,
       )
       .join('\n')
   );
@@ -168,7 +293,9 @@ function recentBlock(s: ContinuationContextSnapshot): string {
 
 function memoryBlock(s: ContinuationContextSnapshot): string {
   const memory = s.bundles.storyMemory;
-  return `【Story Memory 长期状态 status=${s.storyMemory.status} eligibility=${memory.eligibilityReason ?? 'legacy'}】\n${memory.summary || '（当前无可安全注入的长期记忆）'}`;
+  return `【Story Memory 长期状态 status=${s.storyMemory.status} eligibility=${
+    memory.eligibilityReason ?? 'legacy'
+  }】\n${memory.summary || '（当前无可安全注入的长期记忆）'}`;
 }
 
 function episodicBlock(s: ContinuationContextSnapshot): string {
@@ -185,7 +312,9 @@ function historicalDigestBlock(s: ContinuationContextSnapshot): string {
   const cards = (s.bundles.historicalDigests ?? [])
     .map(
       digest =>
-        `- position ${digest.startPosition}-${digest.endPosition - 1}: ${digest.summary}`,
+        `- position ${digest.startPosition}-${digest.endPosition - 1}: ${
+          digest.summary
+        }`,
     )
     .join('\n');
   return cards
@@ -205,10 +334,6 @@ function styleBlock(
     openChecks?: ContinuationCheckResult[];
   },
 ): string {
-  if (s.settingsSnapshot?.values?.styleLevel === 'off') {
-    return '【文风】（关闭）';
-  }
-
   const frozen = s.style;
   if (frozen?.frozenProfile) {
     const level: StyleRenderLevel =
@@ -260,7 +385,7 @@ function styleBlock(
   if (!st) {
     return frozen?.omitReason
       ? `【文风】（未注入：${frozen.omitReason}）`
-      : '【文风】（关闭或不存在）';
+      : '【文风】（缺少可用原著画风画像）';
   }
   return `【文风特征】人称=${st.narrativePerson} 时态=${st.tense} 均句长=${st.averageSentenceLength} 对话比=${st.dialogueRatio}\n${st.pacingNotes}\n${st.lexicalNotes}`;
 }
@@ -268,9 +393,16 @@ function styleBlock(
 function supplementsBlock(s: ContinuationContextSnapshot): string {
   const supplements = s.bundles.supplements;
   if (!supplements) return '【原著之外的外部补充资料】（无）';
-  const parts = [supplements.presetText, supplements.characterText, supplements.worldbookText, supplements.noteText].filter(Boolean);
+  const parts = [
+    supplements.presetText,
+    supplements.characterText,
+    supplements.worldbookText,
+    supplements.noteText,
+  ].filter(Boolean);
   return parts.length
-    ? `【原著之外的外部补充资料】\n以下仅补充创作；与 Canon、已确认续写状态或锁定规则冲突时，以上述内容为准。\n${parts.join('\n\n')}`
+    ? `【原著之外的外部补充资料】\n以下仅补充创作；与 Canon、已确认续写状态或锁定规则冲突时，以上述内容为准。\n${parts.join(
+        '\n\n',
+      )}`
     : '【原著之外的外部补充资料】（无）';
 }
 
@@ -283,7 +415,7 @@ export function compilePlannerMessages(
     '不得违反用户锁定规则与原著 hard Canon。不得读取或编造 boundary 之后的原著情节。',
     primaryAnchorRule(snapshot),
     lockedBlock(snapshot),
-    canonHardBlock(snapshot),
+    canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
     primaryAnchorBlock(snapshot),
     recentBlock(snapshot),
@@ -297,7 +429,9 @@ export function compilePlannerMessages(
     { role: 'system', content: system },
     {
       role: 'user',
-      content: `请为${displayTargetTitle(snapshot)}规划续写。用户要求：\n${snapshot.bundles.userInstruction}\n目标字数约 ${snapshot.settingsSnapshot.values.targetChapterChars}。`,
+      content: `请为${displayTargetTitle(snapshot)}规划续写。用户要求：\n${
+        snapshot.bundles.userInstruction
+      }\n目标字数约 ${snapshot.settingsSnapshot.values.targetChapterChars}。`,
     },
   ];
 }
@@ -312,7 +446,10 @@ export function compileWriterMessages(
     primaryAnchorRule(snapshot),
     '模仿抽象文风特征，禁止复制原著原句。用户本章明确要求优先于自动风格画像。',
     lockedBlock(snapshot),
-    `【规划（已确认版本）】\n目标：${plan.chapterGoal}\n冲突：${plan.centralConflict}\n节拍：${plan.beats.map(b => b.summary).join(' / ')}`,
+    canonFactCheckBlock(snapshot),
+    `【规划（已确认版本）】\n目标：${plan.chapterGoal}\n冲突：${
+      plan.centralConflict
+    }\n节拍：${plan.beats.map(b => b.summary).join(' / ')}`,
     stateBlock(snapshot),
     primaryAnchorBlock(snapshot),
     recentBlock(snapshot),
@@ -326,7 +463,9 @@ export function compileWriterMessages(
     { role: 'system', content: system },
     {
       role: 'user',
-      content: `写${displayTargetTitle(snapshot)}正文，约 ${snapshot.settingsSnapshot.values.targetChapterChars} 字。用户要求：\n${snapshot.bundles.userInstruction}`,
+      content: `写${displayTargetTitle(snapshot)}正文，约 ${
+        snapshot.settingsSnapshot.values.targetChapterChars
+      } 字。用户要求：\n${snapshot.bundles.userInstruction}`,
     },
   ];
 }
@@ -341,11 +480,12 @@ export function compileCheckerMessages(
     '没有证据时只能 warning 并说明是推测。位置使用 UTF-16 半开区间。',
     '若原著事实与正文冲突，必须输出问题；能对应行内证据编号时写入 evidenceIds。不得把缺少资料当作原著不存在。',
     lockedBlock(snapshot),
-    canonHardBlock(snapshot),
     canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
     styleBlock(snapshot, 'checker'),
-    `【可引用证据 id】${JSON.stringify(snapshot.bundles.canon.evidenceRefs.slice(0, 50))}`,
+    `【可引用证据 id】${JSON.stringify(
+      snapshot.bundles.canon.evidenceRefs.slice(0, 50),
+    )}`,
     supplementsBlock(snapshot),
   ].join('\n\n');
   return [
@@ -366,7 +506,9 @@ export function compileRepairMessages(
     .filter(c => c.severity === 'error' || c.severity === 'blocking')
     .map(
       c =>
-        `- [${c.severity}/${c.category}] ${c.description} @${c.generatedStart}-${c.generatedEnd} 建议:${c.suggestedFix ?? ''}`,
+        `- [${c.severity}/${c.category}] ${c.description} @${
+          c.generatedStart
+        }-${c.generatedEnd} 建议:${c.suggestedFix ?? ''}`,
     )
     .join('\n');
   const system = [

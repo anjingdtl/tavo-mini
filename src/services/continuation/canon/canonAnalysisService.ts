@@ -41,7 +41,6 @@ import {
   getActiveSnapshot,
   getDb,
   getRunById,
-  getRunForSnapshot,
   getSnapshotById,
   insertBatches,
   insertWorkItems,
@@ -210,9 +209,10 @@ function extractionAttemptDiagnostic(
 ): CanonExtractionFailureDiagnostic['attempts'][number] {
   const categories: CanonExtractionFailureDiagnostic['attempts'][number]['categories'] =
     {};
-  const source = raw && typeof raw === 'object' && !Array.isArray(raw)
-    ? (raw as Record<string, unknown>)
-    : {};
+  const source =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
   const categoryNames: Array<keyof ExtractionStats> = [
     'worldRules',
     'characters',
@@ -380,7 +380,10 @@ export function resolveContextDrivenChaptersPerBatch(input: {
       CANON_PROMPT_OVERHEAD_TOKENS,
   );
   const each = Math.max(1, input.largestChapterInputTokens);
-  return Math.max(1, Math.min(input.chapterCount, Math.floor(inputBudget / each)));
+  return Math.max(
+    1,
+    Math.min(input.chapterCount, Math.floor(inputBudget / each)),
+  );
 }
 
 export function resolveQualityFirstChaptersPerBatch(input: {
@@ -388,10 +391,7 @@ export function resolveQualityFirstChaptersPerBatch(input: {
   contextCapacity: number;
 }): number {
   if (input.mode !== 'full_canon') return input.contextCapacity;
-  return Math.min(
-    input.contextCapacity,
-    FULL_CANON_QUALITY_CHAPTERS_PER_BATCH,
-  );
+  return Math.min(input.contextCapacity, FULL_CANON_QUALITY_CHAPTERS_PER_BATCH);
 }
 
 /**
@@ -529,8 +529,7 @@ export function planAnalysisTokenBudget(input: {
   if (probe.ok) {
     return {
       ok: true,
-      downgraded:
-        perBatch < input.perBatch || sliceCharBudget < 6000,
+      downgraded: perBatch < input.perBatch || sliceCharBudget < 6000,
       perBatch,
       sliceCharBudget,
       inputEstimate: probe.inputEstimate,
@@ -647,7 +646,10 @@ export async function materializeBatchResult(
   const characterNameEntries: Array<{ characterId: number; name: string }> = [];
   for (let i = 0; i < charRows.rows.length; i++) {
     const row = charRows.rows.item(i);
-    characterNameEntries.push({ characterId: row.id, name: row.canonical_name });
+    characterNameEntries.push({
+      characterId: row.id,
+      name: row.canonical_name,
+    });
   }
   const [aliasRows] = await db.executeSql(
     `SELECT character_id, alias FROM canon_character_aliases
@@ -656,7 +658,10 @@ export async function materializeBatchResult(
   );
   for (let i = 0; i < aliasRows.rows.length; i++) {
     const row = aliasRows.rows.item(i);
-    characterNameEntries.push({ characterId: row.character_id, name: row.alias });
+    characterNameEntries.push({
+      characterId: row.character_id,
+      name: row.alias,
+    });
   }
   let nameToId = buildUniqueCharacterNameIndex(characterNameEntries);
   const registerCharacterName = (characterId: number, name: string) => {
@@ -1293,10 +1298,11 @@ export async function startAnalysis(
     contextWindow: requestConfig.context_window,
   });
   const largestChapterInputTokens = Math.max(
-    ...plan.nearChapters.map(chapter =>
-      estimateTokens(chapter.title) +
-      estimateTokens(chapter.content.slice(0, chapterTextLimit)) +
-      64,
+    ...plan.nearChapters.map(
+      chapter =>
+        estimateTokens(chapter.title) +
+        estimateTokens(chapter.content.slice(0, chapterTextLimit)) +
+        64,
     ),
   );
   const contextDrivenPerBatch = resolveContextDrivenChaptersPerBatch({
@@ -1326,7 +1332,9 @@ export async function startAnalysis(
     contextWindow: requestConfig.context_window,
   });
   if (!tokenBudget.ok) {
-    throw new Error(tokenBudget.reason ?? '本地模型上下文不足以执行 Canon 分析');
+    throw new Error(
+      tokenBudget.reason ?? '本地模型上下文不足以执行 Canon 分析',
+    );
   }
   const perBatch = tokenBudget.perBatch;
   const sliceCharBudget = tokenBudget.sliceCharBudget;
@@ -1825,7 +1833,7 @@ async function processAnalysisRunInner(
   // Must run BEFORE the Canon snapshot is activated: otherwise the first
   // continuation could see a ready Canon but no style profile. On failure the
   // snapshot stays awaiting_review (NOT activated) and the run becomes failed;
-  // the user can retry style alone or explicitly skip it.
+  // the user can retry style analysis alone.
   await updateRunState(db, runId, {
     state: 'running',
     stage: 'style_analysis',
@@ -1841,7 +1849,7 @@ async function processAnalysisRunInner(
 
   if (!styleOutcome.success) {
     // Canon remains awaiting_review; do NOT activate. Surface a retryable
-    // failure so the user can retry style analysis or explicitly skip style.
+    // failure so the user can retry style analysis.
     await updateRunState(db, runId, {
       state: 'failed',
       stage: 'style_analysis',
@@ -1923,7 +1931,10 @@ function lcsLength(left: string, right: string): number {
   return previous[right.length];
 }
 
-function sourceSentenceExcerpt(content: string, anchor: number): {
+function sourceSentenceExcerpt(
+  content: string,
+  anchor: number,
+): {
   start: number;
   preview: string;
 } {
@@ -1970,7 +1981,10 @@ function findCloseParaphraseMatch(
       if (!best || score > best.score) {
         best = { ...excerpt, score };
       }
-      index = chapter.content.indexOf(anchor, index + Math.max(1, anchor.length));
+      index = chapter.content.indexOf(
+        anchor,
+        index + Math.max(1, anchor.length),
+      );
     }
   }
   // The model's paraphrase must retain most of its meaningful characters;
@@ -2012,7 +2026,10 @@ export function resolveExtractionEvidenceAgainstChapters(
       let index = chapter.content.indexOf(quote);
       while (index >= 0) {
         matches.push({ chapter, index });
-        index = chapter.content.indexOf(quote, index + Math.max(1, quote.length));
+        index = chapter.content.indexOf(
+          quote,
+          index + Math.max(1, quote.length),
+        );
       }
     }
     if (!matches.length) {
@@ -2022,7 +2039,10 @@ export function resolveExtractionEvidenceAgainstChapters(
           chapter.position === evidence.chapterPosition,
       );
       const paraphrase = statedChapters
-        .map(chapter => ({ chapter, match: findCloseParaphraseMatch(chapter, quote) }))
+        .map(chapter => ({
+          chapter,
+          match: findCloseParaphraseMatch(chapter, quote),
+        }))
         .find(
           (
             value,
@@ -2032,7 +2052,8 @@ export function resolveExtractionEvidenceAgainstChapters(
           } => value.match !== null,
         );
       if (paraphrase) {
-        const charStart = Number(paraphrase.chapter.range.start) + paraphrase.match.start;
+        const charStart =
+          Number(paraphrase.chapter.range.start) + paraphrase.match.start;
         stats.resolved += 1;
         return {
           chapterId: paraphrase.chapter.id,
@@ -2068,7 +2089,9 @@ export function resolveExtractionEvidenceAgainstChapters(
     };
   };
 
-  const resolveEntries = <T extends { evidence: ExtractionEvidenceCandidate[] }>(
+  const resolveEntries = <
+    T extends { evidence: ExtractionEvidenceCandidate[] },
+  >(
     entries: T[],
   ): T[] =>
     entries
@@ -2077,7 +2100,8 @@ export function resolveExtractionEvidenceAgainstChapters(
         evidence: entry.evidence
           .map(resolveEvidence)
           .filter(
-            (evidence): evidence is ExtractionEvidenceCandidate => evidence !== null,
+            (evidence): evidence is ExtractionEvidenceCandidate =>
+              evidence !== null,
           ),
       }))
       .filter(entry => entry.evidence.length > 0) as T[];
@@ -2218,8 +2242,10 @@ export async function extractMaterialWithLlm(
   // Preserve thinking for models that support it, but reserve a meaningful
   // completion budget for both reasoning and the final eight-array JSON.
   const profileBaseline =
-    CANON_OUTPUT_BASELINE_TOKENS[profile] ?? CANON_OUTPUT_BASELINE_TOKENS.standard;
-  const configuredOutputTokens = requestConfig.max_output_tokens ?? profileBaseline;
+    CANON_OUTPUT_BASELINE_TOKENS[profile] ??
+    CANON_OUTPUT_BASELINE_TOKENS.standard;
+  const configuredOutputTokens =
+    requestConfig.max_output_tokens ?? profileBaseline;
   const baselineMaxTokens = Math.min(
     Math.max(profileBaseline, configuredOutputTokens),
     CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS,
@@ -2227,10 +2253,7 @@ export async function extractMaterialWithLlm(
   let currentMaxTokens = baselineMaxTokens;
   const maxTokenCeiling = Math.max(
     baselineMaxTokens,
-    Math.min(
-      Math.max(configuredOutputTokens, baselineMaxTokens * 4),
-      131_072,
-    ),
+    Math.min(Math.max(configuredOutputTokens, baselineMaxTokens * 4), 131_072),
   );
   let lastOutputError: Error | null = null;
   let lastDroppedStats: ExtractionStats | null = null;
@@ -2263,8 +2286,7 @@ export async function extractMaterialWithLlm(
       if (!response?.text?.trim()) {
         // S1: classify the empty response so the retry / error path can act on
         // the real cause instead of a generic "no output".
-        const emptyReason = (response as { emptyReason?: string })
-          ?.emptyReason;
+        const emptyReason = (response as { emptyReason?: string })?.emptyReason;
         const finishReason = (response as { finishReason?: string | null })
           ?.finishReason;
         lastDiagnostic = {
@@ -2344,13 +2366,12 @@ export async function extractMaterialWithLlm(
         ownedCategories,
       );
       const evidenceWarning = evidenceResolution.stats.rejected
-        ? `${ANALYSIS_MATERIAL_LABELS[materialType]} 有 ${
-            evidenceResolution.stats.rejected
-          } 条无法在原文逐字定位的引用，相关资料未采纳`
+        ? `${ANALYSIS_MATERIAL_LABELS[materialType]} 有 ${evidenceResolution.stats.rejected} 条无法在原文逐字定位的引用，相关资料未采纳`
         : null;
-      const warning = [validatorWarning, evidenceWarning]
-        .filter((value): value is string => !!value)
-        .join('；') || null;
+      const warning =
+        [validatorWarning, evidenceWarning]
+          .filter((value): value is string => !!value)
+          .join('；') || null;
       return { result: filtered, warning };
     } catch (error) {
       const canRetry =
@@ -2555,33 +2576,20 @@ export async function extractWithLlm(
  * Atomically activate a snapshot as the project's active Canon (Spec §6.1, §4.7,
  * §6.3).
  *
- * This is now a THIN DELEGATE to the unified {@link activateSnapshotAndStyleProfile}
- * API so every activation path — automatic pipeline, manual UI activation, and
- * retry — commits Canon + the active style pointer in the SAME atomic
- * transaction. Legacy callers keep their `(projectId, snapshotId)` signature and
- * `CanonSnapshot` return value; behaviour is preserved because
- * `activateSnapshotAndStyleProfile` performs every guard this function used to
- * (snapshot/project match, quick-profile rejection, status check, source/
- * boundary drift, future- and orphan-evidence checks). Passing
- * `styleProfileId: null` + `allowStyleSkip: true` means a manual activation
- * clears the active style pointer atomically rather than leaving a stale one.
+ * This legacy signature cannot safely activate a Canon snapshot: it lacks the
+ * required, validated original-style profile. New callers must use
+ * {@link activateSnapshotAndStyleProfile}, which activates Canon and style in
+ * one transaction.
  */
 export async function activateSnapshot(
   projectId: number,
   snapshotId: string,
 ): Promise<CanonSnapshot> {
-  await activateSnapshotAndStyleProfile({
-    projectId,
-    analysisRunId: (await getRunForSnapshot(snapshotId))?.id ?? '',
-    canonSnapshotId: snapshotId,
-    styleProfileId: null,
-    allowStyleSkip: true,
-  });
-  const activated = await getSnapshotById(snapshotId);
-  if (!activated || activated.status !== 'ready') {
-    throw new Error('激活失败');
-  }
-  return activated;
+  void projectId;
+  void snapshotId;
+  throw new Error(
+    '激活原著资料必须同时提供已完成的原著风格画像，请使用 activateSnapshotAndStyleProfile。',
+  );
 }
 
 export async function pauseAnalysis(runId: string): Promise<void> {

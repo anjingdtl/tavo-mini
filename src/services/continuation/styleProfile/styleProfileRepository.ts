@@ -11,6 +11,7 @@ import { openDatabase } from '../../../data/connection/openDatabase';
 import { all, one } from '../../../data/connection/query';
 import { execute } from '../../../data/connection/execute';
 import { now, type Row } from '../../../data/repositories/shared';
+import { STYLE_ANALYZER_VERSION } from './styleAnalysisPrompt';
 
 export type StyleProfileState =
   | 'queued'
@@ -336,6 +337,14 @@ export async function getInjectableStyleProfile(
   fingerprint: StyleProfileFingerprint,
 ): Promise<ContinuationStyleProfileRow | null> {
   const db = await openDatabase();
+  await db.executeSql(
+    `UPDATE continuation_style_profiles
+       SET state = 'outdated', updated_at = ?
+     WHERE project_id = ?
+       AND state = 'ready'
+       AND analyzer_version != ?`,
+    [now(), projectId, STYLE_ANALYZER_VERSION],
+  );
   const [res] = await db.executeSql(
     `SELECT s.* FROM continuation_style_profiles s
       JOIN continuation_settings st ON st.project_id = s.project_id
@@ -343,6 +352,7 @@ export async function getInjectableStyleProfile(
         AND st.active_style_profile_id = s.id
         AND s.state = 'ready'
         AND s.review_status != 'ignored'
+        AND s.analyzer_version = ?
         AND s.source_id = ? AND s.source_version = ? AND s.source_sha256 = ?
         AND s.parser_version = ? AND s.normalization_version = ?
         AND s.boundary_chapter_id = ? AND s.boundary_position = ?
@@ -350,6 +360,7 @@ export async function getInjectableStyleProfile(
       LIMIT 1`,
     [
       projectId,
+      STYLE_ANALYZER_VERSION,
       fingerprint.sourceId,
       fingerprint.sourceVersion,
       fingerprint.sourceSha256,

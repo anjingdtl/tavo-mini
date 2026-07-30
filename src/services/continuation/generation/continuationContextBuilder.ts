@@ -30,6 +30,7 @@ import {
   type StyleRenderLevel,
 } from '../styleProfile/styleProfileRenderer';
 import { computeStyleProfileHash } from '../styleProfile/styleProfileHash';
+import { STYLE_ANALYZER_VERSION } from '../styleProfile/styleAnalysisPrompt';
 import type { StyleMetrics } from '../styleProfile/styleStatistics';
 import { getEffectiveContinuationState } from './continuationStateService';
 import { buildContinuationSupplementContext } from './continuationSupplementContextBuilder';
@@ -148,14 +149,17 @@ function isProfileHashAcceptable(row: ContinuationStyleProfileRow): boolean {
   const profile = row.profileJson;
   if (!profile || typeof profile !== 'object') return false;
   if (Object.keys(profile).length === 0) return false;
-  return hash.toLowerCase() === computeStyleProfileHash({
-    profile,
-    metrics: row.metricsJson,
-    sampleRefs: row.sampleRefsJson,
-    profileSchemaVersion: row.profileSchemaVersion,
-    analyzerVersion: row.analyzerVersion,
-    userOverrides: row.userOverridesJson,
-  });
+  return (
+    hash.toLowerCase() ===
+    computeStyleProfileHash({
+      profile,
+      metrics: row.metricsJson,
+      sampleRefs: row.sampleRefsJson,
+      profileSchemaVersion: row.profileSchemaVersion,
+      analyzerVersion: row.analyzerVersion,
+      userOverrides: row.userOverridesJson,
+    })
+  );
 }
 
 function legacyStyleFromRow(
@@ -193,9 +197,7 @@ function legacyStyleFromRow(
         (profile as any)?.boundaryLocalDelta?.pacing ??
         '',
     ),
-    lexicalNotes: String(
-      (profile as any)?.global?.diction?.register ?? '',
-    ),
+    lexicalNotes: String((profile as any)?.global?.diction?.register ?? ''),
     sampleEvidenceIds: [],
     reviewStatus: row.reviewStatus,
   };
@@ -253,10 +255,8 @@ export async function buildContinuationContext(
   // Prefer Writer stage capacity for layout when frozen stage budgets exist.
   const writerCapacity: ResolvedStageCapacity | null =
     input.stageBudgets?.writer ?? null;
-  const layoutLimit =
-    writerCapacity?.contextWindow ?? input.modelContextLimit;
-  const layoutMaxOut =
-    writerCapacity?.maxOutputTokens ?? input.maxOutputTokens;
+  const layoutLimit = writerCapacity?.contextWindow ?? input.modelContextLimit;
+  const layoutMaxOut = writerCapacity?.maxOutputTokens ?? input.maxOutputTokens;
 
   const contextBudget = planContinuationContextBudget({
     modelContextLimit: layoutLimit,
@@ -341,7 +341,7 @@ export async function buildContinuationContext(
           position: chapter.position as ContinuationChapterPosition,
           content: chapter.content,
           title: chapter.title,
-        }) satisfies ContinuationAnchorChapter,
+        } satisfies ContinuationAnchorChapter),
     ),
     sourceSeam: { summary: seamSummary, excerpt: seamExcerpt },
   });
@@ -379,6 +379,15 @@ export async function buildContinuationContext(
   }
   // Chronological order for prompts
   recentChapters.reverse();
+  const recentCoveredByPrimaryAnchor =
+    primaryAnchor.kind === 'continuation_chapter' &&
+    primaryAnchor.chapterId != null
+      ? 1
+      : 0;
+  const recentBridgeBudgetOmitted = Math.max(
+    0,
+    priorChapters.length - recentCoveredByPrimaryAnchor - recentChapters.length,
+  );
 
   // Long-term Story Memory: only a clean checkpoint strictly before target may
   // be rendered. This mirrors outline mode and prevents dirty/future state from
@@ -424,14 +433,19 @@ export async function buildContinuationContext(
     smEligibilityReason = eligibility.reason;
     if (record) smStatus = record.status;
     if (eligibility.usable) {
-      smThrough = eligibility.checkpoint.state.throughChapterPosition as ContinuationChapterPosition;
-      smFingerprint = eligibility.checkpoint.state.metadata.stateFingerprint ?? 'none';
-      const rendered = renderStoryMemoryForContext(eligibility.checkpoint.state, {
-        currentChapter: targetChapter,
-        budgetTokens: contextBudget.storyMemoryTokens,
-        retrievalUserPrompt: input.userInstruction,
-        getDisplayNumber,
-      });
+      smThrough = eligibility.checkpoint.state
+        .throughChapterPosition as ContinuationChapterPosition;
+      smFingerprint =
+        eligibility.checkpoint.state.metadata.stateFingerprint ?? 'none';
+      const rendered = renderStoryMemoryForContext(
+        eligibility.checkpoint.state,
+        {
+          currentChapter: targetChapter,
+          budgetTokens: contextBudget.storyMemoryTokens,
+          retrievalUserPrompt: input.userInstruction,
+          getDisplayNumber,
+        },
+      );
       smSummary = rendered.text;
       smTokens = rendered.estimatedTokens;
     }
@@ -442,6 +456,14 @@ export async function buildContinuationContext(
   // Episodic chapter memories complement the checkpoint with task-relevant
   // settled events. Do not repeat raw bridge chapters in both categories.
   const bridgeIds = new Set(recentChapters.map(chapter => chapter.chapterId));
+  // The primary anchor is the immediate continuation正文; do not repeat its
+  // event memory beside the full anchor excerpt.
+  if (
+    primaryAnchor.kind === 'continuation_chapter' &&
+    primaryAnchor.chapterId
+  ) {
+    bridgeIds.add(primaryAnchor.chapterId);
+  }
   const episodicText = buildMemoryContext(
     priorChapters
       .filter(chapter => !bridgeIds.has(chapter.id))
@@ -456,7 +478,9 @@ export async function buildContinuationContext(
     : [];
 
   // ---------- Original style (cached injectable only; never analyse here) ----
-  const styleLevel = settings.styleLevel;
+  // 原著续写始终以严格文风注入运行。不能只信任持久化设置：旧快照或
+  // 外部调用仍可能携带 off/balanced，必须在最终上下文边界再次收紧。
+  const styleLevel = 'strict' as const;
   const fp = fingerprintFromSource(source);
   let frozenStyle: ContinuationFrozenStyle | null = null;
   let legacyStyle: ContinuationStyleProfile | null = null;
@@ -467,109 +491,105 @@ export async function buildContinuationContext(
   let styleRenderLevel: StyleRenderLevel | null = null;
   let styleDegradeReason: string | null = null;
 
-  if (styleLevel === 'off') {
-    styleOmitReasons.style_level_off = 1;
-  } else {
-    styleTraceCandidates = 1;
-    let row: ContinuationStyleProfileRow | null = null;
-    try {
-      row = await getInjectableStyleProfile(input.projectId, fp);
-    } catch {
-      row = null;
-      styleOmitReasons.repository_error = 1;
-    }
+  styleTraceCandidates = 1;
+  let row: ContinuationStyleProfileRow | null = null;
+  try {
+    row = await getInjectableStyleProfile(input.projectId, fp);
+  } catch {
+    row = null;
+    styleOmitReasons.repository_error = 1;
+  }
 
-    if (!row) {
-      styleOmitReasons.no_injectable_profile = 1;
-      if (styleLevel === 'strict') {
-        throw new ContinuationCapabilityBlockedError(
-          'strict 文风模式需要可用的原著风格画像，但当前没有可注入的画像（未分析、已忽略、过期或与当前原著指纹/边界不匹配）。请完成风格分析并激活，或将文风约束改为「平衡/关闭」。',
-        );
-      }
-    } else if (!isProfileHashAcceptable(row)) {
-      styleOmitReasons.invalid_profile_hash = 1;
-      if (styleLevel === 'strict') {
-        throw new ContinuationCapabilityBlockedError(
-          'strict 文风模式：风格画像哈希或内容无效，无法安全注入。请重新运行风格分析。',
-        );
-      }
-    } else {
-      // Prefer full voices for level selection so Writer with participants
-      // cannot silently exceed the style token share (code-quality #1).
-      let styleBudget = contextBudget.styleTokens;
-      let selection = selectStyleRenderLevel(
+  if (!row) {
+    styleOmitReasons.no_injectable_profile = 1;
+    throw new ContinuationCapabilityBlockedError(
+      '续写需要可用的原著风格画像，但当前没有可注入的画像（未分析、已忽略、过期或与当前原著指纹/边界不匹配）。请完成风格分析并启用原著资料后再续写。',
+    );
+  } else if (row.analyzerVersion !== STYLE_ANALYZER_VERSION) {
+    styleOmitReasons.outdated_analyzer_version = 1;
+    throw new ContinuationCapabilityBlockedError(
+      `原著风格画像版本过期（当前 ${row.analyzerVersion}，需要 ${STYLE_ANALYZER_VERSION}）。请重新分析原著风格后再续写。`,
+    );
+  } else if (!isProfileHashAcceptable(row)) {
+    styleOmitReasons.invalid_profile_hash = 1;
+    throw new ContinuationCapabilityBlockedError(
+      '原著风格画像哈希或内容无效，无法安全注入。请重新运行风格分析并启用原著资料。',
+    );
+  } else {
+    // Prefer full voices for level selection so Writer with participants
+    // cannot silently exceed the style token share (code-quality #1).
+    let styleBudget = contextBudget.styleTokens;
+    let selection = selectStyleRenderLevel(
+      row.profileJson,
+      styleBudget,
+      'strict',
+      { stage: 'writer', userOverrides: row.userOverridesJson },
+    );
+
+    // Spec §7.3 strict: before blocking compact, steal budget from soft
+    // categories (historical digests + supplements) and retry once.
+    if (selection.blocked) {
+      const softPool =
+        contextBudget.supplementTokens +
+        Math.floor(contextBudget.inputBudget * 0.04);
+      styleBudget = Math.min(contextBudget.inputBudget, styleBudget + softPool);
+      selection = selectStyleRenderLevel(
         row.profileJson,
         styleBudget,
-        styleLevel === 'strict' ? 'strict' : 'balanced',
+        'strict',
         { stage: 'writer', userOverrides: row.userOverridesJson },
       );
-
-      // Spec §7.3 strict: before blocking compact, steal budget from soft
-      // categories (historical digests + supplements) and retry once.
-      if (selection.blocked && styleLevel === 'strict') {
-        const softPool =
-          contextBudget.supplementTokens +
-          Math.floor(contextBudget.inputBudget * 0.04);
-        styleBudget = Math.min(
-          contextBudget.inputBudget,
-          styleBudget + softPool,
-        );
-        selection = selectStyleRenderLevel(
-          row.profileJson,
-          styleBudget,
-          'strict',
-          { stage: 'writer', userOverrides: row.userOverridesJson },
-        );
-        if (selection.level) {
-          styleOmitReasons.strict_soft_trim_for_style = 1;
-          styleDegradeReason = 'strict_soft_trim_for_style';
-        }
+      if (selection.level) {
+        styleOmitReasons.strict_soft_trim_for_style = 1;
+        styleDegradeReason = 'strict_soft_trim_for_style';
       }
+    }
 
-      if (selection.blocked) {
-        throw new ContinuationCapabilityBlockedError(
-          `strict 文风模式：上下文预算不足以容纳精简风格画像（${selection.reason ?? 'insufficient_tokens'}）。请换更大上下文模型，或将文风约束改为「平衡/关闭」。`,
-        );
-      }
+    if (selection.blocked) {
+      throw new ContinuationCapabilityBlockedError(
+        `原著风格画像无法装入当前上下文预算（${
+          selection.reason ?? 'insufficient_tokens'
+        }）。请换更大上下文模型，或提高上下文长度后再续写。`,
+      );
+    }
 
-      // Always keep legacy metrics for checker heuristics when a row is injectable.
-      legacyStyle = legacyStyleFromRow(row);
+    // Always keep legacy metrics for checker heuristics when a row is injectable.
+    legacyStyle = legacyStyleFromRow(row);
 
-      if (!selection.level) {
-        styleOmitReasons[selection.reason ?? 'omitted_budget'] =
-          (styleOmitReasons[selection.reason ?? 'omitted_budget'] || 0) + 1;
-        styleDegradeReason = selection.reason ?? 'omitted_budget';
-        // Balanced: no frozen V2 text, but metrics remain for deterministic checks.
-        frozenStyle = null;
-      } else {
-        styleRenderLevel = selection.level;
-        styleDegradeReason =
-          selection.reason && selection.reason.startsWith('degraded')
-            ? selection.reason
-            : styleDegradeReason;
-        styleTraceSelected = 1;
-        // Estimate tokens at the selected level for the trace category.
-        const rendered = renderStyleProfile(row.profileJson, selection.level, {
-          stage: 'writer',
-          userOverrides: row.userOverridesJson,
-        });
-        styleTraceTokens = rendered.estimatedTokens;
+    if (!selection.level) {
+      styleOmitReasons[selection.reason ?? 'omitted_budget'] =
+        (styleOmitReasons[selection.reason ?? 'omitted_budget'] || 0) + 1;
+      styleDegradeReason = selection.reason ?? 'omitted_budget';
+      // Balanced: no frozen V2 text, but metrics remain for deterministic checks.
+      frozenStyle = null;
+    } else {
+      styleRenderLevel = selection.level;
+      styleDegradeReason =
+        selection.reason && selection.reason.startsWith('degraded')
+          ? selection.reason
+          : styleDegradeReason;
+      styleTraceSelected = 1;
+      // Estimate tokens at the selected level for the trace category.
+      const rendered = renderStyleProfile(row.profileJson, selection.level, {
+        stage: 'writer',
+        userOverrides: row.userOverridesJson,
+      });
+      styleTraceTokens = rendered.estimatedTokens;
 
-        frozenStyle = {
-          profileId: row.id,
-          profileHash: row.profileHash,
-          profileSchemaVersion: row.profileSchemaVersion,
-          analyzerVersion: row.analyzerVersion,
-          rendererVersion: STYLE_RENDERER_VERSION,
-          sourceFingerprint: sourceFingerprintKey(fp),
-          boundaryCharOffsetExclusive: row.boundaryCharOffsetExclusive,
-          frozenProfile: row.profileJson,
-          userOverrides: row.userOverridesJson ?? {},
-          renderLevel: selection.level,
-          styleTokens: styleBudget,
-          omitReason: styleDegradeReason,
-        };
-      }
+      frozenStyle = {
+        profileId: row.id,
+        profileHash: row.profileHash,
+        profileSchemaVersion: row.profileSchemaVersion,
+        analyzerVersion: row.analyzerVersion,
+        rendererVersion: STYLE_RENDERER_VERSION,
+        sourceFingerprint: sourceFingerprintKey(fp),
+        boundaryCharOffsetExclusive: row.boundaryCharOffsetExclusive,
+        frozenProfile: row.profileJson,
+        userOverrides: row.userOverridesJson ?? {},
+        renderLevel: selection.level,
+        styleTokens: styleBudget,
+        omitReason: styleDegradeReason,
+      };
     }
   }
 
@@ -580,24 +600,23 @@ export async function buildContinuationContext(
   } catch {
     lockedRules = [];
   }
-  // Hard locked world rules always first
-  for (const rule of canonBundle.worldRules) {
-    if (rule.constraintLevel === 'hard' || rule.reviewStatus === 'locked') {
-      lockedRules.push(`[locked] ${rule.title}: ${rule.description}`);
-    }
-  }
+  // Canon facts are rendered in their own complete block. Keep this list for
+  // explicit user rules only, otherwise hard world rules would be duplicated
+  // in both prompt sections and inflate the context trace.
 
   const settingsSnapshot: ContinuationGenerationSettingsSnapshot = {
     schemaVersion: 1,
-    values: settings,
+    // Persist the effective policy into the immutable run snapshot as well;
+    // downstream prompt/checker stages must never see a stale off/balanced value.
+    values: { ...settings, styleLevel },
     resolvedModelConfigIds: {
       planner: settings.plannerLlmConfigId ?? input.activeLlmConfigId,
       writer: settings.writerLlmConfigId ?? input.activeLlmConfigId,
       checker: settings.checkerEnabled
-        ? (settings.checkerLlmConfigId ?? input.activeLlmConfigId)
+        ? settings.checkerLlmConfigId ?? input.activeLlmConfigId
         : null,
       repair: settings.checkerEnabled
-        ? (settings.repairLlmConfigId ?? input.activeLlmConfigId)
+        ? settings.repairLlmConfigId ?? input.activeLlmConfigId
         : null,
       stateExtraction:
         settings.stateExtractionLlmConfigId ?? input.activeLlmConfigId,
@@ -710,9 +729,7 @@ export async function buildContinuationContext(
     tokens: styleTraceTokens,
     omittedReasonCounts: {
       ...styleOmitReasons,
-      ...(styleRenderLevel
-        ? { [`level_${styleRenderLevel}`]: 1 }
-        : {}),
+      ...(styleRenderLevel ? { [`level_${styleRenderLevel}`]: 1 } : {}),
       ...(styleDegradeReason ? { [styleDegradeReason]: 1 } : {}),
       ...(frozenStyle
         ? {
@@ -722,6 +739,16 @@ export async function buildContinuationContext(
         : {}),
     },
   };
+  const canonFactCount = [
+    canonBundle.worldRules,
+    canonBundle.characters,
+    canonBundle.characterStates,
+    canonBundle.relationships,
+    canonBundle.experiences,
+    canonBundle.knowledge,
+    canonBundle.plotThreads,
+    canonBundle.timelineEvents,
+  ].reduce((total, items) => total + items.length, 0);
 
   const categories = [
     {
@@ -750,8 +777,8 @@ export async function buildContinuationContext(
     },
     {
       name: 'canon',
-      candidates: canonBundle.worldRules.length + canonBundle.characters.length,
-      selected: canonBundle.worldRules.length + canonBundle.characters.length,
+      candidates: canonFactCount,
+      selected: canonFactCount,
       tokens: canonBundle.estimatedTokens,
       omittedReasonCounts: canonBundle.omittedReasonCounts,
     },
@@ -782,8 +809,16 @@ export async function buildContinuationContext(
       name: 'recentChapters',
       candidates: priorChapters.length,
       selected: recentChapters.length,
+      coveredByPrimaryAnchor: recentCoveredByPrimaryAnchor,
       tokens: estimateTokens(recentChapters.map(c => c.excerpt).join('\n')),
-      omittedReasonCounts: {},
+      omittedReasonCounts: {
+        ...(recentCoveredByPrimaryAnchor > 0
+          ? { already_covered_by_primary_anchor: recentCoveredByPrimaryAnchor }
+          : {}),
+        ...(recentBridgeBudgetOmitted > 0
+          ? { recent_bridge_budget_exhausted: recentBridgeBudgetOmitted }
+          : {}),
+      },
     },
     {
       name: 'storyMemory',

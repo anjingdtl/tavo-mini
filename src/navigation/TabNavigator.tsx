@@ -1,4 +1,5 @@
 import React from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import {
   createNativeStackNavigator,
@@ -11,7 +12,6 @@ import {
   Hammer,
   Settings,
 } from 'lucide-react-native';
-import { Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
@@ -348,6 +348,7 @@ export const TabNavigator: React.FC = () => {
   const { workspaceMode } = useProjectStore();
   const insets = useSafeAreaInsets();
   const isContinuation = workspaceMode === 'continuation';
+  const workflowArrowColor = { color: theme.colors.textMuted };
 
   const tabBarIcon = ({
     route,
@@ -389,6 +390,28 @@ export const TabNavigator: React.FC = () => {
           fontWeight: '700',
           letterSpacing: 0.3,
         },
+        tabBarBackground: () => (
+          <View pointerEvents="none" style={styles.workflowArrows}>
+            <Text
+              style={[
+                styles.workflowArrow,
+                styles.workflowArrowOne,
+                workflowArrowColor,
+              ]}
+            >
+              →
+            </Text>
+            <Text
+              style={[
+                styles.workflowArrow,
+                styles.workflowArrowTwo,
+                workflowArrowColor,
+              ]}
+            >
+              →
+            </Text>
+          </View>
+        ),
         tabBarIcon: ({ color, size }) =>
           tabBarIcon({ route, color, size: size || 20 }),
       })}
@@ -396,22 +419,22 @@ export const TabNavigator: React.FC = () => {
       <Tab.Screen
         name="Projects"
         component={ProjectStackScreen}
-        options={{ tabBarLabel: '项目' }}
+        options={{ tabBarLabel: '1 项目' }}
+      />
+      <Tab.Screen
+        name="Resources"
+        component={ResourceStackScreen}
+        options={{ tabBarLabel: isContinuation ? '2 续写资料' : '2 资料' }}
       />
       <Tab.Screen
         name="Editor"
         component={EditorStackScreen}
-        options={{ tabBarLabel: isContinuation ? '续写' : '写作' }}
+        options={{ tabBarLabel: isContinuation ? '3 续写' : '3 写作' }}
       />
       <Tab.Screen
         name="Build"
         component={BuildScreen}
         options={{ tabBarLabel: '构建' }}
-      />
-      <Tab.Screen
-        name="Resources"
-        component={ResourceStackScreen}
-        options={{ tabBarLabel: isContinuation ? '续写资料' : '资料' }}
       />
       <Tab.Screen
         name="Settings"
@@ -421,3 +444,18 @@ export const TabNavigator: React.FC = () => {
     </Tab.Navigator>
   );
 };
+
+const styles = StyleSheet.create({
+  workflowArrows: {
+    ...StyleSheet.absoluteFill,
+  },
+  workflowArrow: {
+    position: 'absolute',
+    top: 28,
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 22,
+  },
+  workflowArrowOne: { left: '18.2%' },
+  workflowArrowTwo: { left: '38.2%' },
+});

@@ -18,12 +18,23 @@ import {
   Users,
   X,
 } from 'lucide-react-native';
-import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from '../components/ui';
+import {
+  Button,
+  Card,
+  EmptyState,
+  Header,
+  LoadingState,
+  Screen,
+  spacing,
+} from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import Toast from 'react-native-toast-message';
 import * as db from '../services/database';
 import { buildContext } from '../services/contextBuilder';
-import { resolveLLMRequestConfig, resolveLLMRequestConfigById } from '../services/llm';
+import {
+  resolveLLMRequestConfig,
+  resolveLLMRequestConfigById,
+} from '../services/llm';
 import {
   buildContinuationContext,
   compilePlannerMessages,
@@ -31,7 +42,10 @@ import {
   ensureGenerationSettings,
 } from '../services/continuation/generation';
 import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
-import type { ContextTraceItem, ContextSourceKind } from '../types/contextTrace';
+import type {
+  ContextTraceItem,
+  ContextSourceKind,
+} from '../types/contextTrace';
 import type { ChatMessage } from '../services/llm';
 
 interface Props {
@@ -39,7 +53,10 @@ interface Props {
   onClose: () => void;
 }
 
-const KIND_ICON: Record<ContextSourceKind, React.ComponentType<{ size: number; color: string }>> = {
+const KIND_ICON: Record<
+  ContextSourceKind,
+  React.ComponentType<{ size: number; color: string }>
+> = {
   preset: Bot,
   chapter: BookOpen,
   memory: Brain,
@@ -57,7 +74,7 @@ const CONTINUATION_CATEGORY_LABELS: Record<string, string> = {
   supplements: '外部补充',
   lockedRules: '用户锁定规则',
   historicalDigests: '历史概览',
-  canon: '原著设定',
+  canon: '原著设定与事实',
   effectiveState: '当前状态',
   seam: '原著接缝',
   primaryAnchor: '续写接缝（紧接上一章）',
@@ -77,6 +94,8 @@ const STYLE_OMIT_REASON_LABELS: Record<string, string> = {
   strict_soft_trim_for_style: '严格模式已优先压缩软资料',
   insufficient_tokens: '上下文额度不足',
   insufficient_tokens_for_compact: '精简级也无法放入上下文',
+  already_covered_by_primary_anchor: '已由续写接缝完整覆盖',
+  recent_bridge_budget_exhausted: '最近续写额度已用完',
 };
 
 function styleTraceReason(
@@ -105,8 +124,8 @@ function styleTraceReason(
     .map(k => STYLE_OMIT_REASON_LABELS[k] || k)
     .join('；');
   const parts = [
-    selected > 0 ? '已注入' : '未注入',
-    levelLabel ? `级别 ${levelLabel}` : null,
+    selected > 0 ? '已按原著严格遵循' : '未注入',
+    levelLabel ? `${levelLabel}画像` : null,
     `${tokens} 词元`,
     degradeText || null,
   ].filter(Boolean);
@@ -114,6 +133,9 @@ function styleTraceReason(
 }
 
 function statusBadge(item: ContextTraceItem) {
+  if (item.empty) {
+    return <Text style={styles.badgeEmpty}>暂无内容</Text>;
+  }
   if (item.included && !item.clipped) {
     return <Text style={styles.badgeIncluded}>已包含</Text>;
   }
@@ -123,7 +145,10 @@ function statusBadge(item: ContextTraceItem) {
   return <Text style={styles.badgeExcluded}>未包含</Text>;
 }
 
-export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) => {
+export const ContextPreviewScreen: React.FC<Props> = ({
+  chapterId,
+  onClose,
+}) => {
   const { theme } = useThemeStore();
   const [loading, setLoading] = useState(true);
   const [trace, setTrace] = useState<ContextTraceItem[]>([]);
@@ -143,9 +168,10 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
         return;
       }
       setNotFound(false);
-      const project = typeof (db as any).getProjectById === 'function'
-        ? await (db as any).getProjectById(chapter.project_id)
-        : null;
+      const project =
+        typeof (db as any).getProjectById === 'function'
+          ? await (db as any).getProjectById(chapter.project_id)
+          : null;
       if (project?.mode === 'continuation') {
         setContinuationPreview(true);
         const requestConfig = await resolveLLMRequestConfig();
@@ -174,8 +200,14 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           settings.targetChapterChars * 2,
           writerConfig.max_output_tokens || Number.MAX_SAFE_INTEGER,
         );
-        const continuationNumbering = await getContinuationChapterNumbering(chapter.project_id);
-        const instruction = chapter.synopsis?.trim() || `续写${continuationNumbering.getDefaultTitle(chapter.position as any)}，保持与前文一致。`;
+        const continuationNumbering = await getContinuationChapterNumbering(
+          chapter.project_id,
+        );
+        const instruction =
+          chapter.synopsis?.trim() ||
+          `续写${continuationNumbering.getDefaultTitle(
+            chapter.position as any,
+          )}，保持与前文一致。`;
         const result = await buildContinuationContext({
           projectId: chapter.project_id,
           targetChapterId: chapter.id,
@@ -191,12 +223,18 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
             const title =
               CONTINUATION_CATEGORY_LABELS[category.name] || category.name;
             const isStyle = category.name === 'originalStyle';
-            const reason = isStyle
+            const coveredByPrimaryAnchor = category.coveredByPrimaryAnchor ?? 0;
+            const empty = category.candidates === 0;
+            const reason = empty
+              ? '暂无可用资料'
+              : isStyle
               ? styleTraceReason(
                   category.omittedReasonCounts,
                   category.tokens,
                   category.selected,
                 )
+              : coveredByPrimaryAnchor > 0
+              ? `候选 ${category.candidates} · 最近续写 ${category.selected} · 接缝覆盖 ${coveredByPrimaryAnchor}`
               : `候选 ${category.candidates} · 已选 ${category.selected}`;
             const omitPreview = Object.entries(category.omittedReasonCounts)
               .map(([reasonKey, count]) => {
@@ -210,14 +248,17 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
               title: isStyle ? `★ ${title}` : title,
               reason,
               estimatedTokens: category.tokens,
-              included: category.selected > 0,
+              included: category.selected + coveredByPrimaryAnchor > 0,
+              empty,
               clipped:
-                isStyle && category.selected > 0
-                  ? Object.keys(category.omittedReasonCounts).some(k =>
+                !empty &&
+                (isStyle
+                  ? category.selected > 0 &&
+                    Object.keys(category.omittedReasonCounts).some(k =>
                       k.startsWith('degraded'),
                     )
-                  : Object.keys(category.omittedReasonCounts).length > 0 &&
-                    category.selected === 0,
+                  : category.selected + coveredByPrimaryAnchor <
+                    category.candidates),
               preview: omitPreview,
             };
           }),
@@ -276,7 +317,10 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
   if (loading) {
     return (
       <Screen>
-        <Header title="上下文预览" action={<Button label="关闭" variant="ghost" onPress={onClose} />} />
+        <Header
+          title="上下文预览"
+          action={<Button label="关闭" variant="ghost" onPress={onClose} />}
+        />
         <LoadingState label="正在构建上下文..." />
       </Screen>
     );
@@ -285,7 +329,10 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
   if (notFound) {
     return (
       <Screen>
-        <Header title="上下文预览" action={<Button label="关闭" variant="ghost" onPress={onClose} />} />
+        <Header
+          title="上下文预览"
+          action={<Button label="关闭" variant="ghost" onPress={onClose} />}
+        />
         <EmptyState title="章节不存在或已被删除" />
       </Screen>
     );
@@ -296,19 +343,38 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
     return (
       <Card style={styles.traceCard}>
         <View style={styles.traceRow}>
-          <View style={[styles.traceIconWrap, { backgroundColor: theme.colors.accentSoft }]}>
+          <View
+            style={[
+              styles.traceIconWrap,
+              { backgroundColor: theme.colors.accentSoft },
+            ]}
+          >
             <Icon size={16} color={theme.colors.accent} />
           </View>
           <View style={styles.traceInfo}>
-            <Text style={[styles.traceTitle, { color: theme.colors.textPrimary }]} numberOfLines={1}>
+            <Text
+              style={[styles.traceTitle, { color: theme.colors.textPrimary }]}
+              numberOfLines={1}
+            >
               {item.title}
             </Text>
-            <Text style={[styles.traceReason, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+            <Text
+              style={[
+                styles.traceReason,
+                { color: theme.colors.textSecondary },
+              ]}
+              numberOfLines={1}
+            >
               {item.reason}
             </Text>
           </View>
           <View style={styles.traceMeta}>
-            <Text style={[styles.traceTokens, { color: theme.colors.textSecondary }]}>
+            <Text
+              style={[
+                styles.traceTokens,
+                { color: theme.colors.textSecondary },
+              ]}
+            >
               {item.estimatedTokens} 词元
             </Text>
             {statusBadge(item)}
@@ -318,10 +384,22 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
     );
   };
 
-  const renderMessageItem = ({ item, index }: { item: ChatMessage; index: number }) => {
+  const renderMessageItem = ({
+    item,
+    index,
+  }: {
+    item: ChatMessage;
+    index: number;
+  }) => {
     const expanded = expandedMsg === index;
-    const roleLabel = item.role === 'system' ? '系统' : item.role === 'user' ? '用户' : '助手';
-    const roleColor = item.role === 'system' ? '#8b5cf6' : item.role === 'user' ? theme.colors.accent : '#f59e0b';
+    const roleLabel =
+      item.role === 'system' ? '系统' : item.role === 'user' ? '用户' : '助手';
+    const roleColor =
+      item.role === 'system'
+        ? '#8b5cf6'
+        : item.role === 'user'
+        ? theme.colors.accent
+        : '#f59e0b';
 
     return (
       <Card style={styles.msgCard}>
@@ -335,13 +413,26 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
           ) : (
             <ChevronRight size={16} color={theme.colors.textSecondary} />
           )}
-          <Text style={[styles.msgRole, { color: roleColor }]}>{roleLabel}</Text>
-          <Text style={[styles.msgPreview, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          <Text style={[styles.msgRole, { color: roleColor }]}>
+            {roleLabel}
+          </Text>
+          <Text
+            style={[styles.msgPreview, { color: theme.colors.textSecondary }]}
+            numberOfLines={1}
+          >
             {item.content.slice(0, 80)}
           </Text>
         </TouchableOpacity>
         {expanded ? (
-          <Text style={[styles.msgContent, { color: theme.colors.textPrimary, borderColor: theme.colors.border }]}>
+          <Text
+            style={[
+              styles.msgContent,
+              {
+                color: theme.colors.textPrimary,
+                borderColor: theme.colors.border,
+              },
+            ]}
+          >
             {item.content}
           </Text>
         ) : null}
@@ -353,10 +444,22 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
     <Screen>
       <Header
         title="上下文预览"
-        subtitle={`${continuationPreview ? '续写规划与正文 · ' : ''}预估 ${estimatedInputTokens.toLocaleString()} 词元`}
-        action={<Button label="关闭" variant="ghost" icon={X} onPress={onClose} compact />}
+        subtitle={`${
+          continuationPreview ? '续写规划与正文 · ' : ''
+        }预估 ${estimatedInputTokens.toLocaleString()} 词元`}
+        action={
+          <Button
+            label="关闭"
+            variant="ghost"
+            icon={X}
+            onPress={onClose}
+            compact
+          />
+        }
       />
-      <View style={[styles.toggleRow, { borderBottomColor: theme.colors.border }]}>
+      <View
+        style={[styles.toggleRow, { borderBottomColor: theme.colors.border }]}
+      >
         <Button
           label={showMessages ? '查看资料分配' : '查看实际请求'}
           variant="secondary"
@@ -366,7 +469,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
             setExpandedMsg(null);
           }}
         />
-        <Text style={[styles.tokenSummary, { color: theme.colors.textSecondary }]}>
+        <Text
+          style={[styles.tokenSummary, { color: theme.colors.textSecondary }]}
+        >
           {showMessages
             ? `${messages.length} 条实际发送消息`
             : `${trace.length} 项资料分配`}
@@ -384,7 +489,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({ chapterId, onClose }) =>
         <FlatList
           data={trace}
           // 11.15 修复：ContextTraceItem 有 sourceId，用 kind+sourceId+title 组合稳定 key
-          keyExtractor={(item) => `${item.kind}-${item.sourceId ?? 'none'}-${item.title}`}
+          keyExtractor={item =>
+            `${item.kind}-${item.sourceId ?? 'none'}-${item.title}`
+          }
           renderItem={renderTraceItem}
           contentContainerStyle={styles.listContent}
         />
@@ -473,6 +580,16 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#ef444420',
     color: '#dc2626',
+  },
+  badgeEmpty: {
+    fontSize: 11,
+    fontWeight: '700',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: '#64748b18',
+    color: '#64748b',
   },
   msgCard: {
     marginBottom: spacing.sm,
