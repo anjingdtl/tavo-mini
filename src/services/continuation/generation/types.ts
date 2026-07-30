@@ -279,7 +279,7 @@ export interface ContinuationSupplementBundle {
 }
 
 export interface ContinuationContextSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   projectId: number;
   targetChapterId: number;
   targetPosition: ContinuationChapterPosition;
@@ -316,6 +316,8 @@ export interface ContinuationContextSnapshot {
    * off, missing (balanced degrade), or not injectable.
    */
   style?: ContinuationFrozenStyle | null;
+  /** Frozen正文接缝. Optional so Schema 1 runs remain readable. */
+  primaryAnchor?: import('./continuationAnchor').ContinuationAnchor;
   settingsSnapshot: ContinuationGenerationSettingsSnapshot;
   bundles: ContinuationContextBundles;
   createdAt: string;
@@ -347,6 +349,10 @@ export interface ContinuationContextTrace {
   inputBudget?: number;
   modelContextLimit?: number;
   omittedCapabilities: string[];
+  /** Added in Context Snapshot schema 2; absent on legacy traces. */
+  primaryAnchorKind?: 'source_seam' | 'continuation_chapter';
+  primaryAnchorChapterId?: number | null;
+  primaryAnchorPosition?: ContinuationChapterPosition | null;
 }
 
 export interface StoryBeat {

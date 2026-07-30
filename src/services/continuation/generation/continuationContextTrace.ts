@@ -19,6 +19,11 @@ export function summarizeTrace(trace: ContinuationContextTrace): string {
     `window=${trace.modelContextLimit ?? 'legacy'} budget=${trace.inputBudget ?? 'legacy'} in=${trace.totalInputTokens} outReserve=${trace.reservedOutputTokens}`,
     cats,
     freshness,
+    trace.primaryAnchorKind === 'source_seam'
+      ? '本章接缝：原著边界'
+      : trace.primaryAnchorKind === 'continuation_chapter'
+        ? `本章接缝：续写第 ${(trace.primaryAnchorPosition ?? 0) + 1} 章`
+        : '本章接缝：legacy 原著接缝',
     trace.omittedCapabilities.length
       ? `omittedCaps=${trace.omittedCapabilities.join(',')}`
       : 'caps=ok',

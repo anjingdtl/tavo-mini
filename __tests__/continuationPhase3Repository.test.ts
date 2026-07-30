@@ -134,6 +134,23 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
   if (/SELECT \* FROM continuation_generation_runs WHERE id/i.test(n)) {
     return res(store.runs.filter(r => r.id === params[0]));
   }
+  if (/SELECT \* FROM continuation_generation_runs WHERE project_id = \? AND chapter_id = \?/i.test(n)) {
+    return res(
+      store.runs
+        .filter(
+          r =>
+            r.project_id === params[0] &&
+            r.chapter_id === params[1] &&
+            r.state === 'completed' &&
+            r.completion_reason === 'adopted',
+        )
+        .sort((a, b) =>
+          String(b.completed_at ?? '').localeCompare(String(a.completed_at ?? '')) ||
+          String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')),
+        )
+        .slice(0, 1),
+    );
+  }
   if (/SELECT \* FROM continuation_generation_runs WHERE project_id/i.test(n)) {
     return res(store.runs.filter(r => r.project_id === params[0]));
   }
@@ -1396,6 +1413,79 @@ describe('continuation Phase 3 repository coverage', () => {
       // Audit reason present, but never the prompt or chapter body.
       expect(payload.configNote).toBeTruthy();
       expect(JSON.stringify(payload)).not.toContain('定稿正文E');
+    });
+
+    test('adopt then finalize without sourceRunId recovers frozen run/config', async () => {
+      const run = frozenRun({
+        state: 'awaiting_user',
+        settings_snapshot_json: JSON.stringify({
+          resolvedModelConfigIds: { stateExtraction: 88 },
+        }),
+        completed_at: null,
+      });
+      store.runs.push(run);
+      store.chapters[0].content = '';
+      store.chapters[0].updated_at = 't0';
+      const content = '采纳后作者补充的定稿正文';
+      store.artifacts.push({
+        id: 'artifact-auto-link',
+        run_id: run.id,
+        stage: 'writer',
+        repair_round: 0,
+        parent_artifact_id: null,
+        content,
+        content_hash: contentRevisionHash(content),
+        created_at: 't1',
+      });
+
+      await adoptArtifactAsDraft({ runId: run.id });
+      store.chapters[0].content = `${content}（人工编辑）`;
+      store.chapters[0].updated_at = 't2';
+      const finalized = `${content}（人工编辑）`;
+      await finalizeContinuationChapter({
+        projectId: 1,
+        chapterId: 10,
+        content: finalized,
+      });
+
+      const row = store.outbox.find(o => o.operation === 'extract_state')!;
+      const payload = JSON.parse(row.payload_json);
+      expect(payload.sourceRunId).toBe(run.id);
+      expect(payload.llmConfigId).toBe(88);
+      expect(payload.configNote).toBeNull();
+      expect(run.finalized_revision_hash).toBe(contentRevisionHash(finalized));
+    });
+
+    test('manual finalize uses explicit safe fallback payload', async () => {
+      store.chapters[0].content = '手写章节';
+      await finalizeContinuationChapter({
+        projectId: 1,
+        chapterId: 10,
+        content: '手写章节',
+      });
+      const row = store.outbox.find(o => o.operation === 'extract_state')!;
+      const payload = JSON.parse(row.payload_json);
+      expect(payload.sourceRunId).toBeNull();
+      expect(payload.llmConfigId).toBeNull();
+      expect(payload.configNote).toBe('manual_or_unknown_source_run');
+    });
+
+    test('explicit sourceRunId from another project/chapter is rejected before writes', async () => {
+      store.runs.push(
+        frozenRun({ id: 'ct_foreign', project_id: 99, chapter_id: 999 }),
+      );
+      store.chapters[0].content = '保持不变';
+      await expect(
+        finalizeContinuationChapter({
+          projectId: 1,
+          chapterId: 10,
+          content: '不应写入',
+          sourceRunId: 'ct_foreign',
+        }),
+      ).rejects.toThrow('不属于当前项目或章节');
+      expect(store.chapters[0].status).toBe('planned');
+      expect(store.outbox).toHaveLength(0);
+      expect(store.storyMemory[0].status).toBe('ready');
     });
   });
 
