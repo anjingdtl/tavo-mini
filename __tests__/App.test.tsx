@@ -28,9 +28,9 @@ test('renders the real ShineWriter workspace tabs', async () => {
   const screen = render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByText('项目')).toBeTruthy();
-    expect(screen.getByText('写作')).toBeTruthy();
-    expect(screen.getByText('资料')).toBeTruthy();
+    expect(screen.getByText('1 项目')).toBeTruthy();
+    expect(screen.getByText('2 资料')).toBeTruthy();
+    expect(screen.getByText('3 写作')).toBeTruthy();
     expect(screen.getByText('设置')).toBeTruthy();
   }, { timeout: 2500 });
 });

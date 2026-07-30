@@ -9,9 +9,7 @@ import type {
   HistoricalDigest,
 } from '../canon/types';
 import type { ContinuationSourceSnapshot } from '../types';
-import type {
-  ContinuationStageBudgets,
-} from './continuationContextBudget';
+import type { ContinuationStageBudgets } from './continuationContextBudget';
 import type { StyleRenderLevel } from '../styleProfile/styleProfileRenderer';
 import type { OriginalStyleProfileV2 } from '../styleProfile/styleProfileV2Schema';
 
@@ -312,8 +310,8 @@ export interface ContinuationContextSnapshot {
    */
   stageBudgets?: ContinuationStageBudgets;
   /**
-   * Frozen injectable original-style profile (Spec §9). Null when styleLevel is
-   * off, missing (balanced degrade), or not injectable.
+   * Frozen injectable original-style profile (Spec §9). New continuation runs
+   * always require it; null is only possible in legacy persisted snapshots.
    */
   style?: ContinuationFrozenStyle | null;
   /** Frozen正文接缝. Optional so Schema 1 runs remain readable. */
@@ -340,6 +338,8 @@ export interface ContinuationContextTrace {
     name: string;
     candidates: number;
     selected: number;
+    /** Candidates supplied by the dedicated primary-anchor block, not duplicated here. */
+    coveredByPrimaryAnchor?: number;
     tokens: number;
     omittedReasonCounts: Record<string, number>;
   }>;

@@ -1,5 +1,5 @@
 /**
- * WP5 integration: injectable style freeze, balanced degrade / strict block,
+ * WP5 integration: injectable style freeze and required-style blocking,
  * chapter numbering consistency with style boundary (Spec §14.5).
  */
 import type { OriginalStyleProfileV2 } from '../src/services/continuation/styleProfile/styleProfileV2Schema';
@@ -10,14 +10,15 @@ import {
 import { compileWriterMessages } from '../src/services/continuation/generation/continuationPromptCompiler';
 import type { ContinuationPlan } from '../src/services/continuation/generation/types';
 import { ContinuationCapabilityBlockedError } from '../src/services/continuation/generation/types';
-import {
-  makeContinuationChapterNumbering,
-} from '../src/services/continuation/chapterNumbering/continuationChapterNumbering';
+import { makeContinuationChapterNumbering } from '../src/services/continuation/chapterNumbering/continuationChapterNumbering';
 import { computeStyleProfileHash } from '../src/services/continuation/styleProfile/styleProfileHash';
 
-jest.mock('../src/services/continuation/styleProfile/styleProfileRepository', () => ({
-  getInjectableStyleProfile: jest.fn(),
-}));
+jest.mock(
+  '../src/services/continuation/styleProfile/styleProfileRepository',
+  () => ({
+    getInjectableStyleProfile: jest.fn(),
+  }),
+);
 
 jest.mock('../src/services/continuation/continuationSourceReader', () => ({
   continuationSourceReader: {
@@ -37,9 +38,12 @@ jest.mock('../src/services/continuation/canon/historicalDigestService', () => ({
   listHistoricalDigestReferences: jest.fn().mockResolvedValue([]),
 }));
 
-jest.mock('../src/services/continuation/generation/continuationStateService', () => ({
-  getEffectiveContinuationState: jest.fn(),
-}));
+jest.mock(
+  '../src/services/continuation/generation/continuationStateService',
+  () => ({
+    getEffectiveContinuationState: jest.fn(),
+  }),
+);
 
 jest.mock(
   '../src/services/continuation/generation/continuationSupplementContextBuilder',
@@ -55,10 +59,13 @@ jest.mock(
   }),
 );
 
-jest.mock('../src/services/continuation/generation/generationRepository', () => ({
-  contentRevisionHash: (t: string) => `hash:${t.length}`,
-  ensureGenerationSettings: jest.fn(),
-}));
+jest.mock(
+  '../src/services/continuation/generation/generationRepository',
+  () => ({
+    contentRevisionHash: (t: string) => `hash:${t.length}`,
+    ensureGenerationSettings: jest.fn(),
+  }),
+);
 
 jest.mock('../src/services/database', () => ({
   getChaptersByProject: jest.fn().mockResolvedValue([]),
@@ -73,12 +80,15 @@ jest.mock('../src/services/storyMemory/storyMemoryRenderer', () => ({
   renderStoryMemoryForContext: jest.fn(),
 }));
 
-jest.mock('../src/services/storyMemory/storyMemoryCheckpointEligibility', () => ({
-  resolveUsableCheckpointForTarget: jest.fn().mockReturnValue({
-    usable: false,
-    reason: 'missing',
+jest.mock(
+  '../src/services/storyMemory/storyMemoryCheckpointEligibility',
+  () => ({
+    resolveUsableCheckpointForTarget: jest.fn().mockReturnValue({
+      usable: false,
+      reason: 'missing',
+    }),
   }),
-}));
+);
 
 jest.mock('../src/data/connection/openDatabase', () => ({
   openDatabase: jest.fn().mockRejectedValue(new Error('no bare SQL')),
@@ -250,7 +260,7 @@ function injectableRow(profile: OriginalStyleProfileV2 = validProfile()) {
     analysisRunId: 'run-1',
     canonSnapshotId: 'canon-1',
     profileSchemaVersion: 2,
-    analyzerVersion: 'style-v2-1',
+    analyzerVersion: 'style-v2-2',
     profileJson: profile,
     metricsJson: metrics,
     sampleRefsJson: sampleRefs,
@@ -260,7 +270,7 @@ function injectableRow(profile: OriginalStyleProfileV2 = validProfile()) {
       metrics,
       sampleRefs,
       profileSchemaVersion: 2,
-      analyzerVersion: 'style-v2-1',
+      analyzerVersion: 'style-v2-2',
       userOverrides,
     }),
     confidence: 0.82,
@@ -383,24 +393,21 @@ describe('continuationStyleIntegration (WP5)', () => {
     expect(writer).toContain('保持克制');
   });
 
-  it('balanced degrades when profile missing and records omit reason', async () => {
+  it('blocks when profile is missing, including legacy balanced settings', async () => {
     (getInjectableStyleProfile as jest.Mock).mockResolvedValue(null);
 
-    const { snapshot, trace } = await buildContinuationContext({
-      projectId: 1,
-      targetChapterId: 10,
-      targetPosition: 0 as any,
-      currentChapterContent: '',
-      userInstruction: '推进',
-      modelContextLimit: 32_768,
-      maxOutputTokens: 2048,
-      activeLlmConfigId: 1,
-    });
-
-    expect(snapshot.style).toBeNull();
-    const styleCat = trace.categories.find(c => c.name === 'originalStyle');
-    expect(styleCat?.selected).toBe(0);
-    expect(styleCat?.omittedReasonCounts.no_injectable_profile).toBe(1);
+    await expect(
+      buildContinuationContext({
+        projectId: 1,
+        targetChapterId: 10,
+        targetPosition: 0 as any,
+        currentChapterContent: '',
+        userInstruction: '推进',
+        modelContextLimit: 32_768,
+        maxOutputTokens: 2048,
+        activeLlmConfigId: 1,
+      }),
+    ).rejects.toBeInstanceOf(ContinuationCapabilityBlockedError);
   });
 
   it('strict blocks generation when no injectable profile', async () => {

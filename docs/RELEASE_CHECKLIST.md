@@ -1,5 +1,15 @@
 # ShineWriter 发布清单
 
+## V2.11.1 原著高仿续写与三步创作导航
+
+- [x] 升级 `package.json` / `package-lock.json` 至 `2.11.1`，`npm run prebuild` 生成 `V2.11.1` / `2110100`
+- [x] `npm run verify` 通过：204 个测试套件通过，1 个既有跳过；1603 项测试通过，3 项既有跳过；ESLint 0 error（保留 113 条既有 warning）
+- [x] Android Debug APK 模拟器验收：旧 `style-v2-1` 自动标为过期并阻断注入；真实 LLM 重试生成、自动启用 `style-v2-2`，第 6 章上下文显示严格遵循的 1419 词元画像；连续章节接缝与最近续写去重、完整 Canon 注入、1/2/3 底栏顺序及箭头正确
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.11.1-release.apk`
+- [x] 签名、单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.11.1` / `2110100` 验收通过
+
+证据：Release APK 38,421,111 bytes，SHA-256 `D2F89024A9A3DF6B182CF73195A5037458E7F507A267402A8B09B4FFEB5100FB`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。模拟器验收记录位于 `test-logs/`（未纳入版本控制）。
+
 ## V2.11.0 续写交付修复与结果可读性
 
 - [x] 升级 `package.json` / `package-lock.json` 至 `2.11.0`，`npm run prebuild` 生成 `V2.11.0` / `2110000`

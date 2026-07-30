@@ -5,11 +5,11 @@
 把灵感、资料和章节放在一台手机里，安心写完你的长篇故事。
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#开始使用)
-[![Version](https://img.shields.io/badge/Version-V2.11.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.11.1-blue.svg)](CHANGELOG.md)
 
 </div>
 
-当前版本：**V2.11.0** · 支持 Android 7.0 及以上设备
+当前版本：**V2.11.1** · 支持 Android 7.0 及以上设备
 
 ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮助你管理作品、写章节、整理人物和世界观，也可以按你的设置调用 AI 辅助创作。作品数据默认保存在手机本地；是否使用在线模型，始终由你决定。
 
@@ -28,7 +28,7 @@ ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮�
 原著续写模式会把原著事实、续写前文、已确认的角色状态和故事记忆分开处理：
 
 - 原著规则、人物和剧情由 Canon 提供依据；
-- Canon 分析成功后会继续运行**原著写作风格分析**，生成可查看、修正、忽略与单独重试的风格画像，并按「关闭 / 平衡 / 严格」文风约束注入生成；
+- Canon 分析成功后会继续运行**原著写作风格分析**，生成最高强度、可执行的画风画像；原著续写始终严格遵循该画像，未完成或未启用画像时会先阻断续写；
 - 续写章节的用户可见编号会接续原著边界（例如边界在第 20 章时，首篇续写显示为第 21 章），内部 position 仍从 0 起，不打乱状态与记忆；
 - 上一段原著和最近续写章节会优先保留章末，保证情节自然承接；
 - 已定稿章节会逐步沉淀为长期故事记忆，后续章节能继续参考；
@@ -86,9 +86,9 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 ## 获取正式安装包
 
-正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.0-release.apk`
+正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.1-release.apk`
 
-构建标识：`versionName=V2.11.0`，`versionCode=2110000`。
+构建标识：`versionName=V2.11.1`，`versionCode=2110100`。
 
 ## 开发者参考
 
@@ -98,4 +98,4 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 - [发布验收清单](docs/RELEASE_CHECKLIST.md)
 - [完整版本变更](CHANGELOG.md)
 
-The current version is **V2.11.0**. ShineWriter is an Android-first, local-first writing workspace. It supports outline writing, Canon-driven continuation, optional online or local AI, backups, and text-to-speech.
+The current version is **V2.11.1**. ShineWriter is an Android-first, local-first writing workspace. It supports outline writing, Canon-driven continuation, optional online or local AI, backups, and text-to-speech.

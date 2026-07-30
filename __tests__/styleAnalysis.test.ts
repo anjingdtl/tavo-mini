@@ -3,19 +3,22 @@ jest.mock('../src/services/llm', () => ({
   resolveLLMRequestConfigById: jest.fn(),
 }));
 
-jest.mock('../src/services/continuation/styleProfile/styleProfileRepository', () => ({
-  insertStyleProfile: jest.fn(),
-  updateStyleProfileState: jest.fn(),
-  updateStyleProfilePayload: jest.fn(),
-  updateStyleProfileReviewStatus: jest.fn(),
-  saveStyleProfileUserOverrides: jest.fn(),
-  invalidateStyleProfilesForProject: jest.fn(),
-  setActiveStyleProfileId: jest.fn(),
-  getInjectableStyleProfile: jest.fn(),
-  getStyleProfileById: jest.fn(),
-  listStyleProfilesForProject: jest.fn(),
-  getActiveStyleProfileId: jest.fn(),
-}));
+jest.mock(
+  '../src/services/continuation/styleProfile/styleProfileRepository',
+  () => ({
+    insertStyleProfile: jest.fn(),
+    updateStyleProfileState: jest.fn(),
+    updateStyleProfilePayload: jest.fn(),
+    updateStyleProfileReviewStatus: jest.fn(),
+    saveStyleProfileUserOverrides: jest.fn(),
+    invalidateStyleProfilesForProject: jest.fn(),
+    setActiveStyleProfileId: jest.fn(),
+    getInjectableStyleProfile: jest.fn(),
+    getStyleProfileById: jest.fn(),
+    listStyleProfilesForProject: jest.fn(),
+    getActiveStyleProfileId: jest.fn(),
+  }),
+);
 
 jest.mock('../src/services/continuation/continuationSourceReader', () => ({
   continuationSourceReader: {
@@ -31,7 +34,15 @@ jest.mock('../src/services/continuation/canon/canonRepository', () => ({
   getRunById: jest.fn(),
 }));
 
-import { callLLMResult, resolveLLMRequestConfigById } from '../src/services/llm';
+jest.mock(
+  '../src/services/continuation/canon/activateSnapshotAndStyleProfile',
+  () => ({ activateSnapshotAndStyleProfile: jest.fn() }),
+);
+
+import {
+  callLLMResult,
+  resolveLLMRequestConfigById,
+} from '../src/services/llm';
 import {
   insertStyleProfile,
   updateStyleProfileState,
@@ -44,6 +55,7 @@ import {
   getActiveSnapshot,
   listRunsForProject,
 } from '../src/services/continuation/canon/canonRepository';
+import { activateSnapshotAndStyleProfile } from '../src/services/continuation/canon/activateSnapshotAndStyleProfile';
 import {
   runStyleAnalysis,
   retryStyleAnalysis,
@@ -179,20 +191,19 @@ function setupBoundedReader(chapters: ReturnType<typeof boundedChapter>[]) {
   (continuationSourceReader.getSnapshot as jest.Mock).mockResolvedValue(
     sourceSnapshot,
   );
-  (continuationSourceReader.listBoundedSourceChapters as jest.Mock).mockResolvedValue(
-    chapters,
-  );
+  (
+    continuationSourceReader.listBoundedSourceChapters as jest.Mock
+  ).mockResolvedValue(chapters);
   // readBoundedEvidenceRange returns the slice of the relevant chapter so the
   // hash re-verification inside the service passes.
-  (continuationSourceReader.readBoundedEvidenceRange as jest.Mock).mockImplementation(
+  (
+    continuationSourceReader.readBoundedEvidenceRange as jest.Mock
+  ).mockImplementation(
     async ({ start, end }: { start: number; end: number }) => {
       // Reconstruct from whichever chapter contains this range.
       for (const ch of chapters) {
         if (start >= ch.range.start && end <= ch.range.end) {
-          return ch.content.slice(
-            start - ch.range.start,
-            end - ch.range.start,
-          );
+          return ch.content.slice(start - ch.range.start, end - ch.range.start);
         }
       }
       return '';
@@ -225,6 +236,7 @@ describe('runStyleAnalysis', () => {
     (insertStyleProfile as jest.Mock).mockResolvedValue(undefined);
     (updateStyleProfileState as jest.Mock).mockResolvedValue(undefined);
     (updateStyleProfilePayload as jest.Mock).mockResolvedValue(undefined);
+    (activateSnapshotAndStyleProfile as jest.Mock).mockResolvedValue(undefined);
   });
 
   it('uses a single structured call when the sampled material fits the context window', async () => {
@@ -369,7 +381,8 @@ describe('runStyleAnalysis', () => {
       signal: new AbortController().signal,
     });
 
-    const payloadArg = (updateStyleProfilePayload as jest.Mock).mock.calls[0][1];
+    const payloadArg = (updateStyleProfilePayload as jest.Mock).mock
+      .calls[0][1];
     expect(payloadArg.profileHash).toMatch(/^[0-9a-f]{64}$/);
     // Each stored sample ref carries a recomputable content hash.
     for (const ref of payloadArg.sampleRefsJson) {
@@ -404,7 +417,8 @@ describe('runStyleAnalysis', () => {
       signal: new AbortController().signal,
     });
 
-    const payloadArg = (updateStyleProfilePayload as jest.Mock).mock.calls[0][1];
+    const payloadArg = (updateStyleProfilePayload as jest.Mock).mock
+      .calls[0][1];
     for (const ref of payloadArg.sampleRefsJson) {
       expect(ref).not.toHaveProperty('text');
       expect(ref).not.toHaveProperty('content');
@@ -419,9 +433,9 @@ describe('runStyleAnalysis', () => {
       // Drift: different source version than the snapshot captured.
       sourceVersion: 999,
     });
-    (continuationSourceReader.listBoundedSourceChapters as jest.Mock).mockResolvedValue(
-      chapters,
-    );
+    (
+      continuationSourceReader.listBoundedSourceChapters as jest.Mock
+    ).mockResolvedValue(chapters);
     (resolveLLMRequestConfigById as jest.Mock).mockResolvedValue({
       id: 42,
       context_window: 200_000,
@@ -450,9 +464,9 @@ describe('runStyleAnalysis', () => {
     const chapters = buildRichChapters();
     setupBoundedReader(chapters);
     // Tamper: return different text than the sampler hashed.
-    (continuationSourceReader.readBoundedEvidenceRange as jest.Mock).mockResolvedValue(
-      'tampered text that does not match any hash',
-    );
+    (
+      continuationSourceReader.readBoundedEvidenceRange as jest.Mock
+    ).mockResolvedValue('tampered text that does not match any hash');
     (resolveLLMRequestConfigById as jest.Mock).mockResolvedValue({
       id: 42,
       context_window: 200_000,
@@ -535,13 +549,15 @@ describe('runStyleAnalysis', () => {
 
     // capture the generated profileId from the insert call so we can cancel by it.
     let capturedProfileId = '';
-    (insertStyleProfile as jest.Mock).mockImplementation((input: { id: string }) => {
-      capturedProfileId = input.id;
-      // Abort via the public cancel API the moment the profile is registered,
-      // simulating a UI cancel racing the LLM call.
-      cancelStyleAnalysis(capturedProfileId);
-      return Promise.resolve();
-    });
+    (insertStyleProfile as jest.Mock).mockImplementation(
+      (input: { id: string }) => {
+        capturedProfileId = input.id;
+        // Abort via the public cancel API the moment the profile is registered,
+        // simulating a UI cancel racing the LLM call.
+        cancelStyleAnalysis(capturedProfileId);
+        return Promise.resolve();
+      },
+    );
     (callLLMResult as jest.Mock).mockResolvedValue({
       text: JSON.stringify(validProfile()),
     });
@@ -686,5 +702,12 @@ describe('retryStyleAnalysis', () => {
 
     await expect(retryStyleAnalysis(1)).resolves.not.toThrow();
     expect(callLLMResult).toHaveBeenCalled();
+    expect(activateSnapshotAndStyleProfile).toHaveBeenCalledWith({
+      projectId: 1,
+      analysisRunId: 'run-latest',
+      canonSnapshotId: 'snap-latest',
+      styleProfileId: expect.any(String),
+      allowStyleSkip: false,
+    });
   });
 });

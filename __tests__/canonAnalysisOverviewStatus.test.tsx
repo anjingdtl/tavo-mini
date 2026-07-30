@@ -88,7 +88,9 @@ jest.mock('../src/services/continuation/canon', () => ({
     indexedChapterCount: 60,
   })),
   processHistoricalDigest: jest.fn(async () => ({})),
-  getHistoricalDigestCoverage: jest.fn(async () => overviewState.historicalCoverage),
+  getHistoricalDigestCoverage: jest.fn(
+    async () => overviewState.historicalCoverage,
+  ),
 }));
 
 jest.mock('../src/services/continuation/continuationSettingsService', () => ({
@@ -98,6 +100,7 @@ jest.mock('../src/services/continuation/continuationSettingsService', () => ({
 jest.mock(
   '../src/services/continuation/styleProfile/styleProfileRepository',
   () => ({
+    getActiveStyleProfileId: jest.fn(async () => null),
     listStyleProfilesForProject: jest.fn(async () => []),
     updateStyleProfileReviewStatus: jest.fn(async () => undefined),
   }),
@@ -208,9 +211,13 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
     overviewState.latestRun = makeRun('awaiting_review', 'finalizing');
     overviewState.workItems = completedWorkItems();
     const { queryByText, getByText } = render(
-      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
     );
-    await waitFor(() => expect(getByText(/分析完成，可在此审核并激活/)).toBeTruthy());
+    await waitFor(() =>
+      expect(getByText(/分析完成，可在此审核并激活/)).toBeTruthy(),
+    );
     expect(getByText('审核并启用原著资料')).toBeTruthy();
     expect(queryByText(/正在汇总结果/)).toBeNull();
   });
@@ -224,7 +231,9 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
       ranges: [],
     };
     const { getByText } = render(
-      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
     );
     await waitFor(() => expect(getByText('审核并启用原著资料')).toBeTruthy());
   });
@@ -251,7 +260,9 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
       ranges: [{ startPosition: 0, endPosition: 1 }],
     };
     const { getByText, queryByText } = render(
-      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
     );
     await waitFor(() =>
       expect(getByText(/分析完成，已启用为当前原著资料/)).toBeTruthy(),
@@ -280,12 +291,16 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
     };
     overviewState.latestRun = null;
     overviewState.workItems = [];
-    jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, actions) => {
-      const start = actions?.find(action => action.text === '开始生成');
-      start?.onPress?.();
-    });
+    jest
+      .spyOn(Alert, 'alert')
+      .mockImplementation((_title, _message, actions) => {
+        const start = actions?.find(action => action.text === '开始生成');
+        start?.onPress?.();
+      });
     const { getByText } = render(
-      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
     );
     await waitFor(() => expect(getByText('生成历史概览')).toBeTruthy());
     fireEvent.press(getByText('生成历史概览'));
@@ -295,7 +310,9 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
       expect.any(Array),
     );
     await waitFor(() => {
-      const { PipelineForeground } = require('../src/native/PipelineForegroundModule');
+      const {
+        PipelineForeground,
+      } = require('../src/native/PipelineForegroundModule');
       expect(PipelineForeground.start).toHaveBeenCalledWith(
         expect.stringMatching(/^history:1:/),
         '历史概览生成中',
@@ -316,7 +333,9 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
     overviewState.latestRun.errorMessage = '模型不可用';
     overviewState.workItems = completedWorkItems();
     const { getByText } = render(
-      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
     );
     await waitFor(() => expect(getByText(/分析失败/)).toBeTruthy());
   });
@@ -325,7 +344,9 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
     overviewState.latestRun = makeRun('paused', 'chapter_extraction');
     overviewState.workItems = completedWorkItems();
     const { getByText } = render(
-      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
     );
     await waitFor(() => expect(getByText(/已暂停，可继续/)).toBeTruthy());
   });
@@ -334,7 +355,9 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
     overviewState.latestRun = makeRun('running', 'finalizing');
     overviewState.workItems = completedWorkItems();
     const { getByText } = render(
-      <CanonAnalysisOverviewScreen navigation={{ navigate: jest.fn(), goBack: jest.fn() }} />,
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
     );
     await waitFor(() => expect(getByText(/正在汇总结果/)).toBeTruthy());
   });

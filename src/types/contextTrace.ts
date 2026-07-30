@@ -17,5 +17,7 @@ export interface ContextTraceItem {
   estimatedTokens: number;
   included: boolean;
   clipped: boolean;
+  /** No eligible source exists for this category (not a context-budget trim). */
+  empty?: boolean;
   preview: string;
 }
