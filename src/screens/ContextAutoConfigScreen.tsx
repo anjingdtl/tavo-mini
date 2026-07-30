@@ -12,6 +12,7 @@ import { RotateCcw, Sparkles } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
+import { useSettingsStore } from '../store/settingsStore';
 import {
   allocateContextBudget,
   applyContextAutoAllocation,
@@ -65,6 +66,7 @@ const PreviewRow: React.FC<{
 
 export const ContextAutoConfigScreen: React.FC = () => {
   const { theme } = useThemeStore();
+  const loadSettings = useSettingsStore(state => state.loadSettings);
   const [inputText, setInputText] = useState<string>(String(DEFAULT_INPUT_VALUE));
   const [resourceCounts, setResourceCounts] = useState<ResourceCounts>({
     characters: 0,
@@ -139,6 +141,11 @@ export const ContextAutoConfigScreen: React.FC = () => {
             try {
               await setContextAutoInput(numericInput);
               const record = await applyContextAutoAllocation(numericInput);
+              // The allocation updates llm_config directly inside SQLite. Keep
+              // the long-lived LLM Settings screen in sync immediately rather
+              // than leaving its Zustand snapshot (and form fields) stale
+              // until an app restart.
+              await loadSettings();
               setLastApplied(record);
               Toast.show({
                 type: 'success',
