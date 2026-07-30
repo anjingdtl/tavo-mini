@@ -12,6 +12,12 @@ interface Props {
   focusMode: boolean;
   saveLabel: string;
   toolbar?: React.ReactNode;
+  /**
+   * 可选：在"回到顶部"按钮下方渲染的"下一章"主操作按钮。
+   * 由 ChapterEditorScreen 在章节正文非空时注入；
+   * 不传则不渲染（兼容旧调用）。
+   */
+  nextChapterButton?: React.ReactNode;
   onScrollToTop: () => void;
 }
 
@@ -22,6 +28,7 @@ export function ChapterFields({
   focusMode,
   saveLabel,
   toolbar,
+  nextChapterButton,
   onScrollToTop,
 }: Props) {
   const { theme } = useThemeStore();
@@ -93,6 +100,7 @@ export function ChapterFields({
         variant="secondary"
         onPress={onScrollToTop}
       />
+      {nextChapterButton}
     </>
   );
 }

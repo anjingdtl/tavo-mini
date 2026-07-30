@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
-import { Focus } from 'lucide-react-native';
+import { ChevronRight, Focus } from 'lucide-react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Toast from 'react-native-toast-message';
@@ -9,6 +9,7 @@ import * as db from '../../services/database';
 import { createRevision } from '../../services/revisionService';
 import { finalizeChapterMemory } from '../../services/storyMemory/storyMemoryService';
 import { finalizeContinuationChapter } from '../../services/continuation/generation';
+import { findOrCreateNextChapter } from '../../services/chapterNavigation';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { EditorStackParamList } from '../../navigation/TabNavigator';
 import type { Chapter } from '../../types/novel';
@@ -38,7 +39,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const { chapter, loadChapter, setChapter } = useChapterDocument(chapterId);
   const { autoSaveRef, changeField, saveStatus, setSaveStatus } =
     useChapterAutoSave(chapter, setChapter);
-  const { flushAndClose } = useUnsavedChangesGuard({
+  const { bypassNextRemove, flushAndClose } = useUnsavedChangesGuard({
     autoSaveRef,
     navigation,
     onClose,
@@ -218,6 +219,39 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     }
   }, [chapter]);
 
+  /**
+   * "下一章"按钮处理：
+   * 1) 当前章节正文为空 → 弹 Alert 拒绝（避免创建空章节）
+   * 2) flush 自动保存（与 finalizeChapter 同模式）
+   * 3) 找下一章或创建新章节（按项目模式分流，续写用边界接续标题）
+   * 4) bypass + replace 跳转：按返回键回章节列表而非上一章
+   */
+  const onCreateNextChapter = useCallback(async () => {
+    const currentChapter = latestChapterRef.current;
+    if (!currentChapter) return;
+    if (currentChapter.content.trim().length === 0) {
+      Alert.alert(
+        '当前章节还没有正文',
+        '请先生成内容或手动填写正文后再开下一章。',
+      );
+      return;
+    }
+    try {
+      await autoSaveRef.current.flush();
+      const project = useProjectStore.getState().currentProject;
+      const mode = project?.mode ?? 'outline';
+      const nextChapterId = await findOrCreateNextChapter(
+        currentChapter.project_id,
+        currentChapter.id,
+        mode,
+      );
+      bypassNextRemove();
+      navigation.replace('ChapterEditor', { chapterId: nextChapterId });
+    } catch (error: any) {
+      Alert.alert('跳转下一章失败', error?.message || '未知错误');
+    }
+  }, [autoSaveRef, bypassNextRemove, navigation]);
+
   const saveLabel =
     saveStatus === 'saved'
       ? '已保存'
@@ -280,6 +314,21 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     />
   );
 
+  // 正文非空时才在编辑区底部显示"下一章"主操作按钮。
+  // 空章节守卫在 onCreateNextChapter 内部也兜了一次（防 prop 误传）。
+  const showNextChapterButton = chapter.content.trim().length > 0;
+  const nextChapterButton = showNextChapterButton ? (
+    <View style={styles.nextChapterButton}>
+      <Button
+        testID="next-chapter-button"
+        label="下一章"
+        icon={ChevronRight}
+        variant="primary"
+        onPress={() => onCreateNextChapter().catch(() => {})}
+      />
+    </View>
+  ) : null;
+
   return (
     <Screen>
       <Header
@@ -318,6 +367,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           focusMode={focusMode}
           saveLabel={saveLabel}
           toolbar={toolbar}
+          nextChapterButton={nextChapterButton}
           onScrollToTop={() =>
             scrollRef.current?.scrollTo({ y: 0, animated: true })
           }
@@ -335,4 +385,5 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 120 },
   headerActions: { flexDirection: 'row', gap: spacing.xs },
+  nextChapterButton: { marginTop: spacing.lg },
 });
