@@ -92,5 +92,15 @@ export function useUnsavedChangesGuard({
     await saveBeforeExit(onClose, onClose);
   }, [onClose, saveBeforeExit]);
 
-  return { flushAndClose };
+  /**
+   * 放行下一次 navigation 移除/替换事件，绕过 beforeRemove 的保存提示拦截。
+   * 调用方必须在调用此方法后立即 dispatch navigation action（push/replace/...）。
+   * 用于"已知未保存内容已 flush 或无需拦截"的明确导航场景，例如
+   * 章节编辑器底部"下一章"按钮的 replace 跳转。
+   */
+  const bypassNextRemove = useCallback(() => {
+    allowNextRemovalRef.current = true;
+  }, []);
+
+  return { bypassNextRemove, flushAndClose };
 }

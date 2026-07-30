@@ -6,6 +6,12 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.11.3] - 2026-07-30
+
+### Added
+
+- **章节编辑器底部"下一章"按钮**：大纲模式与原著续写模式共用 `ChapterEditor`，底部正文区下方新增主操作按钮 `下一章`（仅在当前章节正文非空时显示）。已有下一章（按 `position ASC, id ASC` 排序的下一条）时直接进入下一章编辑器；没有下一章时按项目模式创建新章节并进入——大纲沿用 `chapters.length`，续写用 `MAX(position)+1` 并接续原著边界标题（Spec §11.4）。导航用 `replace` 配合 `useUnsavedChangesGuard.bypassNextRemove`，Android 返回键直接回到章节列表而不污染章节编辑器栈。新增 `src/services/chapterNavigation.ts` 与 `__tests__/chapterNavigation.test.ts`（8 个用例覆盖大纲/freeform/续写三种模式）。
+
 ## [2.11.2] - 2026-07-30
 
 ### Fixed
