@@ -13,7 +13,6 @@ const LIMITS: Record<LLMQueueClass, number> = {
   // visible as queued work items and are resumed from their persisted state.
   canon_analysis: 2,
   connection: 1,
-  local: 1,
 };
 
 const PRIORITY: Record<LLMQueuePriority, number> = {

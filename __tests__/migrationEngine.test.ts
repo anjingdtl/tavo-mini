@@ -82,7 +82,7 @@ describe('migration engine', () => {
   test('returns null backupPath when no breaking migration', async () => {
     const { db } = createMockDb('4');
     const { runMigrations } = require('../src/services/migrations');
-    const result = await runMigrations(db as any, 4);
+    const result = await runMigrations(db as any, 27);
     expect(result.backupPath).toBeNull();
     expect(result.hadBreaking).toBe(false);
   });

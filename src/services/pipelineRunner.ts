@@ -640,19 +640,6 @@ async function runChapterPipelineInner(
     presets = await db.getPresetsByProject(chapter.project_id);
     requestConfig = await resolveLLMRequestConfig();
 
-    // 本地模型 CPU 推理能力有限，自动收紧上下文预算，避免 prefill 阶段耗时数分钟。
-    if (requestConfig.provider_type === 'llama_cpp') {
-      contextConfig = {
-        ...contextConfig,
-        slidingWindowSize: Math.min(contextConfig.slidingWindowSize, 1024),
-        summaryBudgetTokens: Math.min(
-          contextConfig.summaryBudgetTokens ?? 20000,
-          1024,
-        ),
-        resourceBudget: Math.min(contextConfig.resourceBudget, 512),
-        worldbookScanDepth: Math.min(contextConfig.worldbookScanDepth ?? 4, 1),
-      };
-    }
   } catch (error: any) {
     store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
     await PipelineForeground.notifyFailed(

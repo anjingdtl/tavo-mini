@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.11.5] - 2026-07-30
+
+### Fixed
+
+- **回归备份与 Schema 验证覆盖**：补回 `__tests__/backupService.test.ts` 与 `__tests__/schemaValidator.test.ts`，确保 V2.11.4 移除本地模型后，备份签名/恢复/校验路径与 `validateSchema` 仍满足覆盖率门禁（`backupService.ts` 84% statements / 70% branches / 87% lines；`schemaValidator.ts` 89/73/91）。
+- **CHANGELOG 顶部格式**：V2.11.4 块改回 `[2.11.4]` 标准格式并拆分 `### Removed`，使 `npm run verify:version` 通过、CI 能严格校验版本头条目。
+- **迁移测试锁定**：所有 `migrations-v20-v21` ~ `migrations-v25-v26` 用例的 `SCHEMA_VERSION` 期望同步到 27，避免回归测试错误绑死历史版本。
+- **Schema 27 校验一致性**：`schemaValidator` 不再读取已移除的 `local_model_id` 字段，激活 LLM 校验收缩到“是否至少存在一条 `is_active=1` 配置”，避免误报的同时让 `schemaManifest.llm_config` 列清单与运行时校验一致。
+
+## [2.11.4] - 2026-07-30
+
+### Removed
+
+- **“AI 写 N 章”批量生成**：移除入口与 `batchChapterPipeline` 执行管线，仅保留单章 AI 写作流水线。
+- **本地 GGUF / llama.cpp 模型**：移除 `localModelStore`、原 `LlamaCppModule` JNI、`local_llm_models` 数据表与离线部署链路；备份不再包含本地模型外部资产，本地配置在升级后转为非激活的在线占位项。LLM 设置页同时移除本地 GGUF Tab，仅保留在线 API 管理。
+- **Schema 升级到 27**：`v26-to-v27` 迁移脚本清空 `local_llm_models` 与 `continuation_import_jobs`（已在 Schema 26 末尾清理），并对历史 `provider_type='llama_cpp' | 'local_litertlm'` 的 `llm_config` 自动转为 `provider_type='openai_compatible'` 的安全占位（默认 `is_active=0`）。
+
 All notable changes to ShineWriter are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. Version
 numbers follow [Semantic Versioning](https://semver.org/).

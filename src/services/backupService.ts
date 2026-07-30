@@ -84,6 +84,7 @@ export interface BackupExternalAsset {
 
 export interface RestoreResult {
   preRestoreBackupPath: string;
+  /** Kept for compatibility with old callers; new backups never include local models. */
   missingLocalModels: LocalModelReference[];
   restoredTableCount: number;
   restoredRowCount: number;
@@ -128,10 +129,7 @@ interface ReadValidationResult {
   validation: BackupValidation;
 }
 
-interface RestoreTableOptions {
-  markLocalModelsMissing: boolean;
-  redactCredentials: boolean;
-}
+interface RestoreTableOptions { redactCredentials: boolean; }
 
 function isPlainRecord(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -188,15 +186,6 @@ function countRows(tables: Record<string, any[]>): number {
   return BACKUP_TABLE_NAMES.reduce((total, table) => total + (tables[table]?.length || 0), 0);
 }
 
-function createLocalModelReferences(rows: Record<string, any>[]): LocalModelReference[] {
-  return rows.map(row => ({
-    id: String(row.id || ''),
-    filename: String(row.original_filename || row.relative_path || ''),
-    sha256: String(row.sha256 || ''),
-    file_size: Number.isFinite(Number(row.file_size)) ? Number(row.file_size) : 0,
-    included: false,
-  }));
-}
 
 function checksumPayload(backup: {
   format: 'shinewriter-backup';
@@ -601,8 +590,7 @@ export async function createBackup(
       .filter((row): row is Record<string, any> => row !== null);
   }
 
-  const externalAssets = createLocalModelReferences(tables.local_llm_models || [])
-    .map(local_model_reference => ({ local_model_reference }));
+  const externalAssets: BackupExternalAsset[] = [];
   const meta: BackupMetaV3 = {
     app_version: appVersion,
     schema_version: Number(schemaVersion),
@@ -676,37 +664,11 @@ function tableRowsForRestore(
         Object.keys(next).forEach(key => delete next[key]);
         Object.assign(next, clean || {});
       }
-      if (options.markLocalModelsMissing && table.name === 'local_llm_models') {
-        next.status = 'missing';
-        next.validated_backend = null;
-        next.load_time_ms = null;
-        next.first_token_ms = null;
-        next.tokens_per_second = null;
-        next.last_validated_at = null;
-        next.actual_backend = null;
-        next.error_code = 'MODEL_FILE_MISSING';
-        next.error_message = '模型文件未随普通备份导出，请重新导入对应 GGUF 文件。';
-      }
       return next;
     });
   }
 
-  const missingLocalModels = options.markLocalModelsMissing
-    ? createLocalModelReferences(tables.local_llm_models || [])
-    : [];
-
-  if (tables.llm_config && options.markLocalModelsMissing && Object.prototype.hasOwnProperty.call(tables, 'local_llm_models')) {
-    const missingIds = new Set(missingLocalModels.map(asset => asset.id));
-    tables.llm_config = tables.llm_config.map(row => {
-      const isLocal = row.provider_type === 'llama_cpp' || row.provider_type === 'local_litertlm';
-      if (isLocal && (!row.local_model_id || missingIds.has(String(row.local_model_id)))) {
-        return { ...row, is_active: 0 };
-      }
-      return row;
-    });
-  }
-
-  return { tables, missingLocalModels };
+  return { tables, missingLocalModels: [] };
 }
 
 function buildInsertStatement(
@@ -909,11 +871,9 @@ export async function restoreFromBackup(
   // integrity verification finds a problem.
   const currentTables = await readBackupTables(db);
   const { tables: restoreTables, missingLocalModels } = tableRowsForRestore(parsed, {
-    markLocalModelsMissing: Object.prototype.hasOwnProperty.call(parsed.tables, 'local_llm_models'),
     redactCredentials: true,
   });
   const statements = buildRestoreStatements(restoreTables, {
-    markLocalModelsMissing: false,
     redactCredentials: true,
   });
 
@@ -923,7 +883,6 @@ export async function restoreFromBackup(
       await assertRestoredSchema(db);
     } catch (verificationError) {
       const rollbackStatements = buildRestoreStatements(currentTables, {
-        markLocalModelsMissing: false,
         redactCredentials: false,
       });
       try {

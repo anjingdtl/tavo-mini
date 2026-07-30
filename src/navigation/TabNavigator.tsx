@@ -45,7 +45,6 @@ import { ContextPreviewScreen } from '../screens/ContextPreviewScreen';
 import { DraftPreviewScreen } from '../screens/DraftPreviewScreen';
 import { UsageStatsScreen } from '../screens/UsageStatsScreen';
 import { VoiceSettingsScreen } from '../screens/VoiceSettingsScreen';
-import { LocalModelManagerScreen } from '../screens/LocalModelManagerScreen';
 import { ContextAutoConfigScreen } from '../screens/ContextAutoConfigScreen';
 import { StoryMemoryScreen } from '../screens/StoryMemoryScreen';
 import { ContinuationGenerationConfigScreen } from '../screens/continuation/ContinuationGenerationConfigScreen';
@@ -84,7 +83,6 @@ export type SettingsStackParamList = {
   ContinuationResult: { runId: string };
   BackupCenter: undefined;
   UsageStats: undefined;
-  LocalModelManager: undefined;
   ContextAutoConfig: undefined;
   ContinuationGenerationConfig: undefined;
 };
@@ -275,10 +273,6 @@ const SettingsStackScreen = () => (
     />
     <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
     <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
-    <SettingsStack.Screen
-      name="LocalModelManager"
-      component={LocalModelManagerScreen}
-    />
     <SettingsStack.Screen
       name="ContextAutoConfig"
       component={ContextAutoConfigScreen}

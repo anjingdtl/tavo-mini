@@ -57,8 +57,7 @@ export type LLMQueueClass =
   | 'pipeline'
   | 'background'
   | 'canon_analysis'
-  | 'connection'
-  | 'local';
+  | 'connection';
 export type LLMQueuePriority = 'manual' | 'normal' | 'background';
 export type LLMQueueState = 'queued' | 'running' | 'cancelled';
 
@@ -69,7 +68,7 @@ export interface LLMRequestMetrics {
   lastProgressAt: number;
 }
 
-export type LLMProviderType = 'openai_compatible' | 'llama_cpp';
+export type LLMProviderType = 'openai_compatible';
 
 export interface LLMRequestConfig {
   id?: number;
@@ -78,9 +77,6 @@ export interface LLMRequestConfig {
   api_key: string;
   model_name: string;
   url: string;
-  local_model_id?: string;
-  local_model_path?: string;
-  local_backend?: 'auto' | 'gpu' | 'cpu';
   context_window?: number;
   max_output_tokens?: number;
   allow_insecure_lan_http?: boolean;
