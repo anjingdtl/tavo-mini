@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.11.6] - 2026-07-30
+
+### Fixed
+
+- **v26→v27 迁移彻底移除本地模型配置**：`llm_config` 仅保留 `provider_type='openai_compatible'` 的在线配置（id/base_url/api_key/model_name/is_active 等字段原样拷贝，确保 Keystore 中按 config id 存储的 API Key 仍可寻址）；历史 `llama_cpp` / `local_litertlm` 配置直接丢弃，不再转成空白占位。若升级后没有任何在线配置，自动种子一条激活的“默认配置”。配套 `__tests__/migrations/v26-to-v27.test.ts` 锁定 SQL 语义。
+- **上下文自动化默认 1M tokens**：`ContextAutoConfigScreen` 默认输入与占位提示由 `200000` 调整为 `1000000`，与 1M 快捷预设一致，减少用户每次手动改大窗口。
+
+### Tests
+
+- 全量回归 `npm run verify`：ESLint 0 error、typecheck 通过、version 一致；Jest 191 suites / 1569 tests 通过（1 suite / 3 tests 既有 skip）。
+
 ## [2.11.5] - 2026-07-30
 
 ### Fixed
