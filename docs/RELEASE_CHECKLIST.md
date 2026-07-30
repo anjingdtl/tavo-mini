@@ -1,5 +1,15 @@
 # ShineWriter 发布清单
 
+## V2.11.2 完整原著分析自动衔接风格分析
+
+- [x] 升级 `package.json` / `package-lock.json` 至 `2.11.2`，`npm run prebuild` 生成 `V2.11.2` / `2110200`
+- [x] `npm run verify` 通过：保留 V2.11.1 全部基线，新增 1 个 `canonAnalysisStylePipeline` 套件与 2 条 label/状态用例
+- [x] Android Debug APK 模拟器验收：取消/重试按钮在结果整理阶段保持可用；状态文案覆盖 `style_analysis` 与 `style_validation`；未出现 `state='awaiting_review'` 误写
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.11.2-release.apk`
+- [x] 签名、单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.11.2` / `2110200` 验收通过
+
+证据：Release APK 38,420,991 bytes，SHA-256 `32b84ca3f78225c7511b007116a7b7595f69e19d38405018854c42f8f2efd1a4`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，单 signer，APK Signature Scheme v2，16 KB zipalign 验证成功，`aapt` `package: name='com.shinewriter' versionCode='2110200' versionName='V2.11.2'`。模拟器验收记录位于 `test-logs/continuation-style-pipeline-v2.11.2-20260730/`。
+
 ## V2.11.1 原著高仿续写与三步创作导航
 
 - [x] 升级 `package.json` / `package-lock.json` 至 `2.11.1`，`npm run prebuild` 生成 `V2.11.1` / `2110100`

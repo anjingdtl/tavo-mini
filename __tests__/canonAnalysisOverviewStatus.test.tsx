@@ -351,6 +351,34 @@ describe('CanonAnalysisOverviewScreen status label (S2)', () => {
     await waitFor(() => expect(getByText(/已暂停，可继续/)).toBeTruthy());
   });
 
+  it('shows 正在分析原著写作风格 for running + style_analysis', async () => {
+    overviewState.latestRun = makeRun('running', 'style_analysis');
+    overviewState.workItems = completedWorkItems();
+    const { getAllByText } = render(
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        getAllByText(/正在分析原著写作风格/).length,
+      ).toBeGreaterThan(0),
+    );
+  });
+
+  it('shows 正在校验风格画像 for running + style_validation', async () => {
+    overviewState.latestRun = makeRun('running', 'style_validation');
+    overviewState.workItems = completedWorkItems();
+    const { getAllByText } = render(
+      <CanonAnalysisOverviewScreen
+        navigation={{ navigate: jest.fn(), goBack: jest.fn() }}
+      />,
+    );
+    await waitFor(() =>
+      expect(getAllByText(/正在校验风格画像/).length).toBeGreaterThan(0),
+    );
+  });
+
   it('shows 正在汇总结果 for running + finalizing only', async () => {
     overviewState.latestRun = makeRun('running', 'finalizing');
     overviewState.workItems = completedWorkItems();
