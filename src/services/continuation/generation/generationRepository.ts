@@ -1209,6 +1209,24 @@ export async function listPendingOutbox(
   return out;
 }
 
+/** The latest adopted continuation run is the authoritative source for a
+ * later finalize when the editor no longer carries navigation state. */
+export async function findLatestAdoptedRunForChapter(
+  projectId: number,
+  chapterId: number,
+): Promise<ContinuationGenerationRun | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_generation_runs
+     WHERE project_id = ? AND chapter_id = ?
+       AND state = 'completed' AND completion_reason = 'adopted'
+     ORDER BY completed_at DESC, created_at DESC LIMIT 1`,
+    [projectId, chapterId],
+  );
+  if (res.rows.length === 0) return null;
+  return rowRun(res.rows.item(0));
+}
+
 export async function casOutboxState(
   id: string,
   expected: string[],
