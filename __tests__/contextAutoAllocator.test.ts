@@ -338,12 +338,12 @@ describe('applyContextAutoAllocation', () => {
     expect(sqls.some((s: string) => s.includes('UPDATE presets'))).toBe(true);
   });
 
-  test('llm_config UPDATE 排除 llama_cpp', async () => {
+  test('llm_config UPDATE applies to every online configuration', async () => {
     await applyContextAutoAllocation(200000);
     const [, statements] = mockedExecuteTransaction.mock.calls[0];
     const llmStmt = statements.find((s: any) => s.sql.includes('UPDATE llm_config'));
     expect(llmStmt).toBeDefined();
-    expect(llmStmt.sql).toContain("provider_type IS NOT 'llama_cpp'");
+    expect(llmStmt.sql).not.toContain('provider_type');
     expect(llmStmt.params).toEqual([200000, 40000]);
   });
 

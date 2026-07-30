@@ -26,7 +26,7 @@ describe('migration schema matrix', () => {
       expect(mock.schemas.has('project_note_config')).toBe(true);
       expect(mock.schemas.has('note_style_profiles')).toBe(true);
       expect(mock.schemas.has('character_collections')).toBe(true);
-      expect(mock.schemas.has('local_llm_models')).toBe(true);
+      expect(mock.schemas.has('local_llm_models')).toBe(false);
       // Schema 19 continuation tables must exist after every upgrade path.
       expect(mock.schemas.has('continuation_sources')).toBe(true);
       expect(mock.schemas.has('continuation_source_text_chunks')).toBe(true);

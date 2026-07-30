@@ -95,11 +95,11 @@ describe('migration statement coverage', () => {
     });
     expect(onBackup).toHaveBeenCalledTimes(1);
 
-    const fromSupported = await runMigrations(database, 3);
+    const fromSupported = await runMigrations(database, 27);
     expect(fromSupported.hadBreaking).toBe(false);
     expect(fromSupported.backupPath).toBeNull();
     expect(hasBreakingMigration(2)).toBe(true);
-    expect(hasBreakingMigration(3)).toBe(false);
+    expect(hasBreakingMigration(27)).toBe(false);
     expect(isIncompatibleUpgrade(2)).toBe(true);
     expect(isIncompatibleUpgrade(3)).toBe(false);
   });

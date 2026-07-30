@@ -13,7 +13,6 @@ import {
 import type { BackupSummary } from '../services/backupService';
 import { openDatabase } from '../services/database';
 import { SCHEMA_VERSION } from '../services/migrations';
-import { useLocalModelStore } from '../store/localModelStore';
 import { useSettingsStore } from '../store/settingsStore';
 
 const appVersion = require('../constants/version.json').versionName.replace(/^V/, '');
@@ -102,21 +101,12 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
             setOperating(true);
             try {
               const db = await openDatabase();
-              const result = await restoreFromBackup(db, item.path, {
+              await restoreFromBackup(db, item.path, {
                 appVersion,
                 schemaVersion: Number(schemaVersion),
               });
-              await Promise.all([
-                useSettingsStore.getState().loadSettings(),
-                useLocalModelStore.getState().refreshModels(),
-              ]);
-              const missingModels = result.missingLocalModels
-                .map(model => model.filename || model.id)
-                .join('、');
-              const message = missingModels
-                ? `数据已恢复。以下本地模型文件未随普通备份导出，请重新导入：${missingModels}`
-                : '数据已从备份恢复，设置和列表已重新加载。';
-              Alert.alert('恢复成功', message);
+              await useSettingsStore.getState().loadSettings();
+              Alert.alert('恢复成功', '数据已从备份恢复，设置和列表已重新加载。');
               await load();
             } catch (e: any) {
               Alert.alert('恢复失败', e?.message || '未知错误');

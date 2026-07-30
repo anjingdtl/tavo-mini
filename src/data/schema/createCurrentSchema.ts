@@ -175,39 +175,10 @@ export async function createCurrentSchema(
         model_name TEXT NOT NULL DEFAULT '',
         is_active INTEGER NOT NULL DEFAULT 0,
         provider_type TEXT NOT NULL DEFAULT 'openai_compatible',
-        local_model_id TEXT,
-        local_backend TEXT,
         context_window INTEGER NOT NULL DEFAULT 4096,
         max_output_tokens INTEGER NOT NULL DEFAULT 4000
       )
     `,
-    `
-      CREATE TABLE IF NOT EXISTS local_llm_models (
-        id TEXT PRIMARY KEY,
-        display_name TEXT NOT NULL,
-        original_filename TEXT NOT NULL,
-        relative_path TEXT NOT NULL UNIQUE,
-        file_size INTEGER NOT NULL DEFAULT 0,
-        sha256 TEXT NOT NULL UNIQUE,
-        status TEXT NOT NULL DEFAULT 'importing',
-        backend_preference TEXT NOT NULL DEFAULT 'auto',
-        validated_backend TEXT,
-        context_length INTEGER,
-        max_output_tokens INTEGER,
-        load_time_ms INTEGER,
-        first_token_ms INTEGER,
-        tokens_per_second REAL,
-        imported_at TEXT NOT NULL,
-        last_used_at TEXT,
-        last_validated_at TEXT,
-        error_code TEXT,
-        error_message TEXT,
-        prompt_template TEXT NOT NULL DEFAULT 'chatml',
-        actual_backend TEXT
-      )
-    `,
-    `CREATE INDEX IF NOT EXISTS idx_local_llm_models_status ON local_llm_models(status)`,
-    `CREATE INDEX IF NOT EXISTS idx_local_llm_models_last_used ON local_llm_models(last_used_at)`,
     `
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,

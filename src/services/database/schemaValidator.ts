@@ -306,12 +306,11 @@ export async function validateSchema(
       const activeConfigs = await rows<{
         id: number;
         provider_type?: string;
-        local_model_id?: string | null;
         base_url?: string;
         model_name?: string;
       }>(
         database,
-        'SELECT id, provider_type, local_model_id, base_url, model_name FROM llm_config WHERE is_active = 1',
+        'SELECT id, provider_type, base_url, model_name FROM llm_config WHERE is_active = 1',
       );
       if (requireActiveLlmConfig && activeConfigs.length === 0) {
         issues.push({
@@ -319,34 +318,6 @@ export async function validateSchema(
           message: '没有可用的激活 LLM 配置。',
           table: 'llm_config',
         });
-      }
-      for (const config of activeConfigs) {
-        const isLocal =
-          config.provider_type === 'llama_cpp' ||
-          config.provider_type === 'local_litertlm';
-        if (isLocal && !config.local_model_id) {
-          issues.push({
-            code: 'INVALID_ACTIVE_LLM',
-            message: `激活的本地 LLM 配置 ${config.id} 未引用模型。`,
-            table: 'llm_config',
-          });
-          continue;
-        }
-        if (isLocal && tableNames.has('local_llm_models')) {
-          const modelRows = await rows<{ id: string }>(
-            database,
-            'SELECT id FROM local_llm_models WHERE id = ?',
-            [config.local_model_id],
-          );
-          if (modelRows.length === 0) {
-            issues.push({
-              code: 'INVALID_ACTIVE_LLM',
-              message: `激活的 LLM 配置 ${config.id} 引用了不存在的本地模型：${config.local_model_id}。`,
-              table: 'llm_config',
-              column: 'local_model_id',
-            });
-          }
-        }
       }
     }
 

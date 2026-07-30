@@ -130,7 +130,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
         '• 所有预设的 max_tokens\n' +
         '• 当前项目的上下文与流水线配置\n' +
         '• 所有项目的角色、笔记、世界书 max_tokens\n\n' +
-        '本地 GGUF 模型的配置不会被修改。此操作不可撤销。',
+        '此操作不可撤销。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -453,8 +453,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
         </View>
 
         <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-          本地 GGUF 模型的 context_window 不会被修改（由模型文件元数据决定）。
-          {'\n'}默认输出 token 上限：{DEFAULT_MAX_TOKENS}。
+          默认输出 token 上限：{DEFAULT_MAX_TOKENS}。
         </Text>
       </ScrollView>
     </Screen>

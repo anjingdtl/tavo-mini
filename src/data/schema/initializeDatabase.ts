@@ -128,37 +128,19 @@ async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
     database,
     `INSERT OR IGNORE INTO llm_config (
       id, name, provider_type, base_url, api_key, model_name, is_active,
-      local_model_id, local_backend, context_window, max_output_tokens
-    ) VALUES (1, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
-    ['默认配置', 'openai_compatible', '', '', '', null, null, 4096, 4000],
+      context_window, max_output_tokens
+    ) VALUES (1, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    ['默认配置', 'openai_compatible', '', '', '', 4096, 4000],
   );
   await execute(
     database,
     "UPDATE llm_config SET name = '默认配置' WHERE id = 1 AND name = ''",
   );
-  const active = await execute(
-    database,
-    `SELECT c.id
-     FROM llm_config c
-     LEFT JOIN local_llm_models m ON m.id = c.local_model_id
-     WHERE c.is_active = 1
-       AND (
-         COALESCE(c.provider_type, 'openai_compatible') NOT IN ('llama_cpp', 'local_litertlm')
-         OR (c.local_model_id IS NOT NULL AND m.status = 'ready')
-       )
-     ORDER BY c.id ASC
-     LIMIT 1`,
-  );
+  const active = await execute(database, 'SELECT id FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
   if (active.rows.length === 0) {
     const usable = await execute(
       database,
-      `SELECT c.id
-       FROM llm_config c
-       LEFT JOIN local_llm_models m ON m.id = c.local_model_id
-       WHERE COALESCE(c.provider_type, 'openai_compatible') NOT IN ('llama_cpp', 'local_litertlm')
-          OR (c.local_model_id IS NOT NULL AND m.status = 'ready')
-       ORDER BY c.id ASC
-       LIMIT 1`,
+      'SELECT id FROM llm_config ORDER BY id ASC LIMIT 1',
     );
     if (usable.rows.length > 0) {
       await execute(
@@ -167,16 +149,12 @@ async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
         [usable.rows.item(0).id],
       );
     } else {
-      // A restore may contain only a local configuration whose GGUF file is
-      // absent. Keep that configuration inactive and seed a blank online
-      // fallback so the next startup remains usable and can prompt for
-      // re-import instead of activating a broken local model.
       await execute(
         database,
         `INSERT INTO llm_config (
           name, provider_type, base_url, api_key, model_name, is_active,
-          local_model_id, local_backend, context_window, max_output_tokens
-        ) VALUES (?, 'openai_compatible', '', '', '', 1, NULL, NULL, 4096, 4000)`,
+          context_window, max_output_tokens
+        ) VALUES (?, 'openai_compatible', '', '', '', 1, 4096, 4000)`,
         ['默认配置'],
       );
     }

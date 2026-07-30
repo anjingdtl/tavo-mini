@@ -17,10 +17,8 @@ import {
   Field,
   Header,
   Screen,
-  SegmentedControl,
   spacing,
 } from '../components/ui';
-import { LocalModelSelector } from '../components/LocalModelSelector';
 import { Gauge } from 'lucide-react-native';
 import { useSettingsStore } from '../store/settingsStore';
 import { useThemeStore } from '../store/themeStore';
@@ -29,7 +27,6 @@ import type { LLMQueueState } from '../services/llm';
 import { syncPipelineMaxTokensFromContextWindow } from '../services/contextAutoAllocator';
 import type { LLMConfig } from '../types/novel';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
-import { LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS } from '../constants/llmDefaults';
 
 const emptyDraft: LLMConfig = {
   id: 0,
@@ -39,16 +36,13 @@ const emptyDraft: LLMConfig = {
   model_name: '',
   is_active: 0,
   provider_type: 'openai_compatible',
-  local_model_id: null,
-  local_backend: null,
   context_window: 4096,
   max_output_tokens: 4000,
 };
 
 export const LLMSettingsScreen: React.FC = () => {
   const { theme } = useThemeStore();
-  const navigation =
-    useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
+  const navigation = useNavigation<NativeStackNavigationProp<SettingsStackParamList>>();
   const {
     llmConfig,
     llmConfigs,
@@ -68,12 +62,6 @@ export const LLMSettingsScreen: React.FC = () => {
   >('idle');
   // 10.6: 编辑态 ref，用户主动编辑后 store 变化不再覆盖本地 draft
   const isEditingRef = useRef(false);
-  // Tab 过滤：把在线 API 与本地 GGUF 配置分开管理和删除。
-  // activeTab 与 draft.provider_type 解耦——编辑区切换类型只改 draft，
-  // 不回写 activeTab，避免未保存草稿反向跳变列表。
-  const [activeTab, setActiveTab] = useState<LLMConfig['provider_type']>(
-    'openai_compatible',
-  );
 
   useEffect(() => {
     loadSettings();
@@ -98,28 +86,13 @@ export const LLMSettingsScreen: React.FC = () => {
     () => llmConfigs.find(config => config.is_active === 1)?.name || '未选择',
     [llmConfigs],
   );
-  const activeProvider = useMemo(
-    () =>
-      llmConfigs.find(config => config.is_active === 1)?.provider_type ||
-      'openai_compatible',
-    [llmConfigs],
-  );
-  // 当前 Tab 下的配置（用于列表渲染与删除计数）。
-  const visibleConfigs = useMemo(
-    () => llmConfigs.filter(config => config.provider_type === activeTab),
-    [llmConfigs, activeTab],
-  );
 
   const validate = () => {
     const missing: string[] = [];
     if (!draft.name.trim()) missing.push('配置名称');
-    if (draft.provider_type === 'openai_compatible') {
-      if (!draft.base_url.trim()) missing.push('API 地址');
-      if (!draft.api_key.trim()) missing.push('API Key');
-      if (!draft.model_name.trim()) missing.push('模型名称');
-    } else {
-      if (!draft.local_model_id) missing.push('已导入且可用的本地模型');
-    }
+    if (!draft.base_url.trim()) missing.push('API 地址');
+    if (!draft.api_key.trim()) missing.push('API Key');
+    if (!draft.model_name.trim()) missing.push('模型名称');
     if (missing.length > 0) {
       Alert.alert(
         '配置不完整',
@@ -137,21 +110,9 @@ export const LLMSettingsScreen: React.FC = () => {
 
   const startNewConfig = () => {
     setSelectedId(0);
-    // 新增配置预填当前 Tab 类型，避免用户在本地 Tab 新增后还要手动切类型。
-    // 切到 llama_cpp 时锁定 cpu 后端并把上下文改小，与编辑区 SegmentedControl 一致。
-    const isLocal = activeTab === 'llama_cpp';
     setDraft({
       ...emptyDraft,
       name: `配置 ${llmConfigs.length + 1}`,
-      provider_type: activeTab,
-      local_backend: isLocal ? 'cpu' : null,
-      context_window: isLocal ? 2048 : emptyDraft.context_window,
-      max_output_tokens: isLocal
-        ? Math.min(
-            emptyDraft.max_output_tokens,
-            LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
-          )
-        : emptyDraft.max_output_tokens,
     });
   };
 
@@ -230,8 +191,8 @@ export const LLMSettingsScreen: React.FC = () => {
         draft.base_url,
         draft.api_key,
         draft.model_name,
-        draft.provider_type,
-        draft.local_model_id || undefined,
+        undefined,
+        undefined,
         {
           allowInsecureLanHttp,
           onQueueState: setConnectionQueueState,
@@ -240,10 +201,7 @@ export const LLMSettingsScreen: React.FC = () => {
       // V2.2.2 修复：原代码 title="连接成功" + message="连接成功" 重复显示。
       // 现在 title 改为"测试通过"，message 显示真实 LLM 回复（最多 120 字符），
       // 并附带模型名称，让用户看到是哪个模型测试的。
-      const modelLabel =
-        draft.provider_type === 'llama_cpp'
-          ? draft.name || '本地模型'
-          : draft.model_name || '当前模型';
+      const modelLabel = draft.model_name || '当前模型';
       const reply =
         message && message.length > 0
           ? message.slice(0, 120)
@@ -310,13 +268,8 @@ export const LLMSettingsScreen: React.FC = () => {
       startNewConfig();
       return;
     }
-    // 删除限制按当前 Tab 同类配置计数，保证每类至少保留一个，
-    // 避免某类被清空后 Tab 显示空白。
-    const sameTypeCount = visibleConfigs.length;
-    if (sameTypeCount <= 1) {
-      const typeLabel =
-        activeTab === 'llama_cpp' ? '本地 GGUF' : '在线 API';
-      Alert.alert('无法删除', `至少需要保留一个${typeLabel}配置。`);
+    if (llmConfigs.length <= 1) {
+      Alert.alert('无法删除', '至少需要保留一个 LLM 配置。');
       return;
     }
     Alert.alert('删除配置', `确定删除「${draft.name}」？`, [
@@ -339,36 +292,10 @@ export const LLMSettingsScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header
-        title="LLM 设置"
-        subtitle={`${
-          activeProvider === 'llama_cpp'
-            ? '本地 GGUF 离线模型'
-            : 'OpenAI 兼容 API'
-        } · 当前：${activeName}`}
-      />
+      <Header title="LLM 设置" subtitle={`OpenAI 兼容 API · 当前：${activeName}`} />
       <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.tabBar}>
-          <SegmentedControl
-            value={activeTab}
-            options={[
-              { value: 'openai_compatible', label: '在线 API' },
-              { value: 'llama_cpp', label: '本地 GGUF' },
-            ]}
-            onChange={tab => {
-              setActiveTab(tab);
-              // 切 Tab 时若当前选中配置不属于新 Tab，清空选中态，
-              // 让 useEffect 从新 Tab 里挑一个合理配置（active 优先）。
-              const currentBelongs = draft.provider_type === tab;
-              if (!currentBelongs) {
-                isEditingRef.current = false;
-                setSelectedId(null);
-              }
-            }}
-          />
-        </View>
         <View style={styles.configList}>
-          {visibleConfigs.map(config => {
+          {llmConfigs.map(config => {
             const selected = config.id === draft.id;
             const active = config.is_active === 1;
             return (
@@ -414,49 +341,14 @@ export const LLMSettingsScreen: React.FC = () => {
           />
         </View>
 
-        <View style={styles.section}>
-          <Text
-            style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}
-          >
-            模型来源
-          </Text>
-          <SegmentedControl
-            value={draft.provider_type}
-            options={[
-              { value: 'openai_compatible', label: '在线 API' },
-              { value: 'llama_cpp', label: '本地 GGUF' },
-            ]}
-            onChange={provider_type =>
-              updateDraft({
-                provider_type,
-                // 切到 llama_cpp 时锁定 cpu 后端；切回在线 API 时清空
-                local_backend: provider_type === 'llama_cpp' ? 'cpu' : null,
-                // 本地模型 CPU prefill 慢，默认上下文改小更友好
-                context_window:
-                  provider_type === 'llama_cpp' ? 2048 : draft.context_window,
-                max_output_tokens:
-                  provider_type === 'llama_cpp'
-                    ? Math.min(
-                        draft.max_output_tokens ||
-                          LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
-                        LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
-                      )
-                    : draft.max_output_tokens,
-              })
-            }
-          />
-        </View>
-
         <Field
           testID="llm-config-name"
           label="配置名称"
           value={draft.name}
           onChangeText={name => updateDraft({ name })}
-          placeholder="例如：OpenAI / 本地模型 / DeepSeek"
+          placeholder="例如：OpenAI / DeepSeek"
         />
 
-        {draft.provider_type === 'openai_compatible' ? (
-          <>
             <Field
               testID="llm-base-url"
               label="Base URL"
@@ -519,20 +411,6 @@ export const LLMSettingsScreen: React.FC = () => {
                 onValueChange={toggleInsecureLanHttp}
               />
             </View>
-          </>
-        ) : (
-          <>
-            <LocalModelSelector
-              selectedId={draft.local_model_id}
-              onSelect={local_model_id => updateDraft({ local_model_id })}
-            />
-            <Button
-              label="管理本地模型"
-              variant="secondary"
-              onPress={() => navigation.navigate('LocalModelManager')}
-            />
-          </>
-        )}
 
         <Field
           testID="llm-context-window"
@@ -547,8 +425,7 @@ export const LLMSettingsScreen: React.FC = () => {
           placeholder="4096"
           keyboardType="numeric"
         />
-        {draft.provider_type === 'openai_compatible' ? (
-          <View
+        <View
             style={[
               styles.contextAutomation,
               {
@@ -583,7 +460,6 @@ export const LLMSettingsScreen: React.FC = () => {
               onPress={() => navigation.navigate('ContextAutoConfig')}
             />
           </View>
-        ) : null}
         <Field
           testID="llm-max-output-tokens"
           label="最大输出 Token"
@@ -594,7 +470,7 @@ export const LLMSettingsScreen: React.FC = () => {
               max_output_tokens: Number.isFinite(value) ? value : 0,
             });
           }}
-          placeholder={String(LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS)}
+          placeholder="4000"
           keyboardType="numeric"
         />
 
@@ -645,7 +521,6 @@ export const LLMSettingsScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 96 },
-  tabBar: { marginBottom: spacing.md },
   configList: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -663,8 +538,6 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   configName: { fontSize: 13, fontWeight: '800' },
-  section: { marginBottom: spacing.md },
-  sectionTitle: { fontSize: 12, fontWeight: '700', marginBottom: spacing.sm },
   actionRow: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
   networkPolicy: {
     flexDirection: 'row',

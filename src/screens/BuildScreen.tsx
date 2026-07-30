@@ -179,19 +179,10 @@ export const BuildScreen: React.FC = () => {
 
   // ---------- 在线 LLM 前置校验（SPEC §6.1） ----------
   const llmCheck = useMemo(() => {
-    const providerType = llmConfig.provider_type || 'openai_compatible';
-    const isOnline = providerType === 'openai_compatible';
     const complete =
       !!llmConfig.base_url.trim() &&
       !!llmConfig.api_key.trim() &&
       !!llmConfig.model_name.trim();
-    if (!isOnline) {
-      return {
-        ready: false,
-        reason:
-          '当前激活的是本地 llama.cpp 模型，构建首版仅支持在线 OpenAI 兼容模型。',
-      };
-    }
     if (!complete) {
       return {
         ready: false,
