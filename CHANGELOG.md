@@ -11,6 +11,28 @@ numbers follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **章节编辑器底部"下一章"按钮**：大纲模式与原著续写模式共用 `ChapterEditor`，底部正文区下方新增主操作按钮 `下一章`（仅在当前章节正文非空时显示）。已有下一章（按 `position ASC, id ASC` 排序的下一条）时直接进入下一章编辑器；没有下一章时按项目模式创建新章节并进入——大纲沿用 `chapters.length`，续写用 `MAX(position)+1` 并接续原著边界标题（Spec §11.4）。导航用 `replace` 配合 `useUnsavedChangesGuard.bypassNextRemove`，Android 返回键直接回到章节列表而不污染章节编辑器栈。新增 `src/services/chapterNavigation.ts` 与 `__tests__/chapterNavigation.test.ts`（8 个用例覆盖大纲/freeform/续写三种模式）。
+- **LLM 设置页按 Tab 分管配置**：在 `LLMSettingsScreen` 顶部新增 Tab 切换条（`在线 API` / `本地 GGUF`），把两类配置分开显示与管理：列表按当前 Tab 的 `provider_type` 过滤；新增配置预填当前 Tab 类型（本地 Tab 锁定 `cpu` 后端与 2048 上下文）；删除限制从全局"至少 1 个"改为"每类至少 1 个"，提示按类型区分；Header 仍显示全局 active 配置名，跨 Tab 可见。新增 `__tests__/llmSettingsScreen.test.tsx`（7 个用例覆盖默认 Tab、切 Tab 过滤、跨 Tab active、新增预填、删除限制等场景）。
+- **世界书批量生成（BuildScreen）**：当世界书条目数 × 细节度所需 token 超过单次输出预留时，`planWorldbookBatches` 自动把世界书切分为多批，每批独立发起 LLM 调用并跨批主键去重。BuildScreen 通过 `onBatchProgress` 回调显示「第 X/Y 批 · 生成中…」进度，并统一每批 `max_tokens` 保证批次间能力一致；不可行时（输出预留过小）阻断生成而不是发一个必败的请求。新增 `src/services/construction/budget.ts` `WorldbookBatchPlan` 与 `__tests__/constructionBudget.test.ts`（138 行）。
+- **Canon 分析输出预算翻倍**：完整原著分析 single-call profile 的输出基线翻倍——`standard` 16 384 → 32 768，`deep` 32 768 → 65 536 token，避免长输出被截断后重试浪费预算。
+- **画风分析器 `style-v2-3`**：最高强度 V2 仿写规格延续，提示词与统计侧小幅增强；旧版 `style-v2-2` 仍然可注入。
+
+### Changed
+
+- **构造请求长超时**：`llm/requestPolicy` 新增 `constructionMs = 180s` 超时（默认 60s），避免长生成任务在慢模型上被误判超时。
+
+### Fixed
+
+- **世界书跨批去重空主键条目完全跳过**：`constructionAiGenerator` 新增 `entryDedupeKey` fallback——主触发词为空时回退到全部触发词拼接，再为空回退正文前 30 字符前缀，避免空主键条目在跨批去重阶段被完全跳过导致重复条目被采纳。
+- **世界书分批说明注入不再硬编码 `messages[1]`**：`constructionAiGenerator` 改为倒序查找最后一条 `user` message，兼容未来 system/user 结构变更（例如多 system 提示或插入 user 澄清轮次）。
+- **Canon deep 档在线模型诊断**：`canonAnalysisService.planAnalysisTokenBudget` 在在线模型未配置 `context_window` 时输出 `console.warn`（不拒绝，运行时由 provider clamp + `finish_reason=length` 兜底），便于诊断"成功但被截断"的根因。
+- **AGP 9.x 构建失败**：`android/app/build.gradle` 在 `extractNativeLibs="true"` 下补 `packagingOptions { jniLibs { useLegacyPackaging = true } }`，避免 `:app:packageDebug` 失败。保留 `extractNativeLibs=true` 是为 TurboModule + llama.cpp JNI 减少安装期 .so 抽压 IO。
+
+### Tests
+
+- 新增 `__tests__/constructionBudget.test.ts`：覆盖 `planWorldbookBatches` 的边界（不需要分批 / 阈值触发 / 不可行 / 均匀分配 / 每批 max_tokens 取最大批的目标）。
+- 新增 `__tests__/constructionAiGenerator.test.ts` 161 行，覆盖 `generateWorldbookInBatches` 的单/批路径、跨批去重（含 fallback）、分批进度回调、批说明注入位置倒序查找。
+- 新增 `__tests__/continuationStateOutboxWorker.test.ts` 514 行，强化续写 outbox 排空逻辑。
+- 同步 `__tests__/canonLlmAnalysis.test.ts` / `__tests__/canonAnalysisTokenBudget.test.ts` / `__tests__/styleAnalysisPrompt.test.ts` 与新的 baseline / `style-v2-3`。
 
 ## [2.11.2] - 2026-07-30
 
