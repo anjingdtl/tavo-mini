@@ -130,7 +130,7 @@ describe('Canon LLM analysis', () => {
     expect(outcome.result.worldRules).toEqual([]);
     expect(callLLMResult).toHaveBeenCalledWith(
       expect.any(Array),
-      16384,
+      32768,
       expect.objectContaining({
         queueClass: 'canon_analysis',
         taskId: 'run-1',
@@ -509,11 +509,11 @@ describe('Canon LLM analysis', () => {
 
       expect(outcome.result.characters[0].canonicalName).toBe('林凡');
       expect(callLLMResult).toHaveBeenCalledTimes(2);
-      // Thinking remains enabled, so Canon reserves a larger completion floor.
+      // Standard profile baseline is 32768; retry doubles it on length truncation.
       const firstMaxTokens = (callLLMResult as jest.Mock).mock.calls[0][1];
       const secondMaxTokens = (callLLMResult as jest.Mock).mock.calls[1][1];
-      expect(firstMaxTokens).toBe(16384);
-      expect(secondMaxTokens).toBe(16384 * 2);
+      expect(firstMaxTokens).toBe(32768);
+      expect(secondMaxTokens).toBe(32768 * 2);
       jest.useRealTimers();
     });
 
@@ -542,12 +542,12 @@ describe('Canon LLM analysis', () => {
       expect(outcome.result.characters[0].canonicalName).toBe('林凡');
       const firstMaxTokens = (callLLMResult as jest.Mock).mock.calls[0][1];
       const secondMaxTokens = (callLLMResult as jest.Mock).mock.calls[1][1];
-      expect(firstMaxTokens).toBe(16384);
-      expect(secondMaxTokens).toBe(16384 * 2);
+      expect(firstMaxTokens).toBe(32768);
+      expect(secondMaxTokens).toBe(32768 * 2);
       jest.useRealTimers();
     });
 
-    it('uses a 32768 baseline for the deep profile and doubles on length retry', async () => {
+    it('uses a 65536 baseline for the deep profile and doubles on length retry', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock)
         .mockResolvedValueOnce({
@@ -568,8 +568,8 @@ describe('Canon LLM analysis', () => {
       await jest.runAllTimersAsync();
       await pending;
 
-      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(32768);
-      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(32768 * 2);
+      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(65536);
+      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(65536 * 2);
       jest.useRealTimers();
     });
 

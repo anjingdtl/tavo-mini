@@ -20,6 +20,9 @@ export const LLM_TIMEOUTS = {
   // Canon extraction sends chapter context and asks for evidence-rich JSON.
   // Cloud providers can legitimately queue this longer than an ordinary chat.
   canonAnalysisMs: 180_000,
+  // 构建场景（世界书/角色卡）在「深度」档或条目较多时输出可达 10k+ Token，
+  // 云端模型长输出常见 60-120 秒延迟，沿用章节草稿的 180 秒长超时。
+  constructionMs: 180_000,
   localIdleMs: 45_000,
 } as const;
 
@@ -47,6 +50,10 @@ export function resolveLLMTimeoutPolicy(
   }
   if (scenario === 'continuation_canon_analysis') {
     return { totalTimeoutMs: LLM_TIMEOUTS.canonAnalysisMs };
+  }
+  // 构建场景（construction_*）输出体量大、JSON 严格，单次/分批均走 180 秒。
+  if (scenario.startsWith('construction_')) {
+    return { totalTimeoutMs: LLM_TIMEOUTS.constructionMs };
   }
   if (
     scenario === 'chapter_draft' ||

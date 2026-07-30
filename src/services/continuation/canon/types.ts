@@ -442,17 +442,30 @@ export const ANALYSIS_MATERIAL_TYPES = [
 export type AnalysisMaterialType = (typeof ANALYSIS_MATERIAL_TYPES)[number];
 
 /**
- * Schema 23 request protocol. New runs make two semantically complete LLM
- * requests per batch; the legacy five-family values above remain readable so
- * an interrupted Schema 22 run can resume without losing its completed work.
+ * Schema 23 request protocol (v3: single `full_extraction` call per batch,
+ * replacing the v2 two-call `character_state` / `world_plot` split to halve
+ * input-token duplication).
+ *
+ * Legacy group values remain readable so an interrupted v2 run can resume
+ * without losing its completed work items.
  */
 export const ANALYSIS_REQUEST_GROUPS = [
-  'character_state',
-  'world_plot',
+  'full_extraction',
 ] as const;
 
 export type AnalysisRequestGroup = (typeof ANALYSIS_REQUEST_GROUPS)[number];
-export type AnalysisWorkItemType = AnalysisMaterialType | AnalysisRequestGroup;
+
+/**
+ * Legacy v2 group types (`character_state` / `world_plot`). Kept in the
+ * type union so interrupted v2 runs can resume without a type error on
+ * the persisted `materialType` column.
+ */
+type LegacyAnalysisRequestGroup = 'character_state' | 'world_plot';
+
+export type AnalysisWorkItemType =
+  | AnalysisMaterialType
+  | AnalysisRequestGroup
+  | LegacyAnalysisRequestGroup;
 export type AnalysisWorkItemState =
   | 'queued'
   | 'running'

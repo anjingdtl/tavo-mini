@@ -560,3 +560,52 @@ export function computeStyleMetrics(
 function ratioOrZero(numer: number, denom: number): number {
   return denom === 0 ? 0 : numer / denom;
 }
+
+/** Return the top-K entries from a histogram as "key×count" pairs. */
+function topKHistogram(h: Histogram, k: number): string {
+  return Object.entries(h)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, k)
+    .map(([key, count]) => `${key}×${count}`)
+    .join('、');
+}
+
+function pct(v: number): string {
+  return `${(v * 100).toFixed(0)}%`;
+}
+
+/**
+ * Produce a compact, actionable textual summary of the full {@link StyleMetrics}
+ * for injection into the style-analysis LLM prompt.
+ *
+ * The full metrics JSON can be tens of KB (sentence-length histograms,
+ * per-chapter signals, word-frequency tables). Sending only the key statistical
+ * anchors — medians, quartiles, top frequencies, and functional ratios —
+ * preserves the objective signals the model needs while cutting prompt tokens
+ * by 60 %–95 %.
+ */
+export function summarizeStyleMetrics(metrics: StyleMetrics): string {
+  const sl = metrics.sentenceLength;
+  const pl = metrics.paragraphLength;
+  const punct = metrics.punctuation;
+  const fr = metrics.functionalRatios;
+
+  return [
+    `全书 ${metrics.chapterCount} 章，共 ${metrics.totalChars} 字符（UTF-16）。`,
+    sl.count > 0
+      ? `句长：中位 ${sl.median} 字，典型范围 ${sl.p25}–${sl.p75} 字（${sl.count} 句）。`
+      : '句长：无可用数据。',
+    pl.count > 0
+      ? `段长：中位 ${pl.median} 字（${pl.count} 段）。`
+      : '段长：无可用数据。',
+    `对话占比 ${pct(metrics.dialogue.ratio)}，共 ${metrics.dialogue.turnCount} 轮。`,
+    `高频标点：${topKHistogram(punct.frequent, 10)}。`,
+    `情感标点占比（！？在句末标点中）：${pct(punct.emotionalTerminalRatio)}。`,
+    metrics.person.firstPersonRatio > 0.6
+      ? '人称：第一人称主导。'
+      : metrics.person.firstPersonRatio > 0.1
+        ? `人称：第三人称为主（第一人称信号 ${pct(metrics.person.firstPersonRatio)}）。`
+        : '人称：第三人称。',
+    `功能段落比重：动作 ${pct(fr.action)} | 心理 ${pct(fr.psychological)} | 环境 ${pct(fr.environment)} | 说明 ${pct(fr.expository)}。`,
+  ].join('\n');
+}

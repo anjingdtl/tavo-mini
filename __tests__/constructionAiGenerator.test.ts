@@ -87,7 +87,7 @@ describe('constructionAiGenerator', () => {
       (callLLMResult as jest.Mock).mockResolvedValue({ text: WORLDBOOK_JSON });
       const artifact = await generateConstruction(
         { mode: 'worldbook_independent', name: '雾港纪事', entryCount: 6 },
-        { maxTokens: 4096 },
+        { maxTokens: 8192 },
       );
       expect(artifact.kind).toBe('worldbook');
       if (artifact.kind !== 'worldbook') return;
@@ -106,11 +106,11 @@ describe('constructionAiGenerator', () => {
       (callLLMResult as jest.Mock).mockResolvedValue({ text: WORLDBOOK_JSON });
       await generateConstruction(
         { mode: 'worldbook_independent', entryCount: 6 },
-        { maxTokens: 4096 },
+        { maxTokens: 8192 },
       );
       expect(callLLMResult).toHaveBeenCalledWith(
         expect.any(Array),
-        4096,
+        8192,
         expect.objectContaining({ scenario: 'construction_worldbook_independent' }),
         undefined,
       );
@@ -296,7 +296,7 @@ describe('constructionAiGenerator', () => {
       await expect(
         generateConstruction(
           { mode: 'worldbook_independent', entryCount: 6 },
-          { maxTokens: 4096 },
+          { maxTokens: 8192 },
         ),
       ).rejects.toThrow('条目数（2）与要求的 6 条不一致');
     });
@@ -379,6 +379,159 @@ describe('constructionAiGenerator', () => {
       });
       expect(big).toBeGreaterThan(small);
       expect(big).toBeGreaterThan(0);
+    });
+  });
+
+  describe('batched worldbook generation', () => {
+    // 6 条 full + maxTokens=4096：requiredMin=4100 > 4096 → 分批 [3, 3]
+    const makeBatch = (keys: string[], prefix: string) =>
+      JSON.stringify({
+        name: '雾港纪事',
+        entries: keys.map((key, i) => ({
+          keys: [key],
+          content: `${prefix}设定 ${i}。`.repeat(180),
+          comment: `${prefix}-${key}`,
+          constant: true,
+        })),
+      });
+
+    it('splits into batches when outputReserve < requiredMin and merges entries', async () => {
+      const batch1 = makeBatch(['雾港', '行会', '月蚀'], '批一');
+      const batch2 = makeBatch(['盐税', '暗礁', '灰鳞鱼'], '批二');
+      (callLLMResult as jest.Mock)
+        .mockResolvedValueOnce({ text: batch1 })
+        .mockResolvedValueOnce({ text: batch2 });
+
+      const progress: Array<{
+        current: number;
+        total: number;
+        batchSize: number;
+      }> = [];
+      const artifact = await generateConstruction(
+        {
+          mode: 'worldbook_independent',
+          name: '雾港纪事',
+          entryCount: 6,
+          detailLevel: 'full',
+        },
+        {
+          maxTokens: 4096,
+          onBatchProgress: p => progress.push(p),
+        },
+      );
+
+      expect(artifact.kind).toBe('worldbook');
+      if (artifact.kind !== 'worldbook') return;
+      expect(artifact.lorebook.data.entries).toHaveLength(6);
+      expect(callLLMResult).toHaveBeenCalledTimes(2);
+      expect(progress).toEqual([
+        { current: 1, total: 2, batchSize: 3 },
+        { current: 2, total: 2, batchSize: 3 },
+      ]);
+      // insertion_order 重新编号
+      const orders = artifact.lorebook.data.entries.map(e => e.insertion_order);
+      expect(orders).toEqual([0, 1, 2, 3, 4, 5]);
+      // 全部常驻
+      expect(
+        artifact.lorebook.data.entries.every(e => e.constant === true),
+      ).toBe(true);
+    });
+
+    it('includes batch note and dedup hint in user message for batch 2+', async () => {
+      const batch1 = makeBatch(['雾港', '行会', '月蚀'], '批一');
+      const batch2 = makeBatch(['盐税', '暗礁', '灰鳞鱼'], '批二');
+      (callLLMResult as jest.Mock)
+        .mockResolvedValueOnce({ text: batch1 })
+        .mockResolvedValueOnce({ text: batch2 });
+
+      await generateConstruction(
+        {
+          mode: 'worldbook_independent',
+          name: '雾港',
+          entryCount: 6,
+          detailLevel: 'full',
+        },
+        { maxTokens: 4096 },
+      );
+
+      expect(callLLMResult).toHaveBeenCalledTimes(2);
+      // 第二次调用的 messages 应包含批次说明和去重提示
+      const secondCallMessages = (callLLMResult as jest.Mock).mock.calls[1][0] as Array<{
+        role: string;
+        content: string;
+      }>;
+      const userMsg = secondCallMessages.find(m => m.role === 'user')!.content;
+      expect(userMsg).toContain('第 2/2 批');
+      expect(userMsg).toContain('雾港、行会、月蚀');
+      expect(userMsg).toContain('避免与已生成条目');
+      // 第一批不应有去重提示
+      const firstCallMessages = (callLLMResult as jest.Mock).mock.calls[0][0] as Array<{
+        role: string;
+        content: string;
+      }>;
+      const firstUserMsg = firstCallMessages.find(m => m.role === 'user')!.content;
+      expect(firstUserMsg).toContain('第 1/2 批');
+      expect(firstUserMsg).not.toContain('避免与已生成条目');
+    });
+
+    it('rejects cross-batch duplicate primary keys after merge', async () => {
+      // 两批都包含主触发词「雾港」→ 去重后 5 条 ≠ 6 → 抛错
+      const batch1 = makeBatch(['雾港', '行会', '月蚀'], '批一');
+      const batch2 = makeBatch(['雾港', '暗礁', '灰鳞鱼'], '批二');
+      (callLLMResult as jest.Mock)
+        .mockResolvedValueOnce({ text: batch1 })
+        .mockResolvedValueOnce({ text: batch2 });
+
+      await expect(
+        generateConstruction(
+          {
+            mode: 'worldbook_independent',
+            name: '雾港',
+            entryCount: 6,
+            detailLevel: 'full',
+          },
+          { maxTokens: 4096 },
+        ),
+      ).rejects.toThrow('分批合并后条目数');
+    });
+
+    it('propagates batch truncation with batch index in error message', async () => {
+      const batch1 = makeBatch(['雾港', '行会', '月蚀'], '批一');
+      (callLLMResult as jest.Mock)
+        .mockResolvedValueOnce({ text: batch1 })
+        .mockResolvedValueOnce({ text: '', finishReason: 'length' });
+
+      await expect(
+        generateConstruction(
+          {
+            mode: 'worldbook_independent',
+            name: '雾港',
+            entryCount: 6,
+            detailLevel: 'full',
+          },
+          { maxTokens: 4096 },
+        ),
+      ).rejects.toThrow('第 2/2 批');
+    });
+
+    it('does not batch when outputReserve is sufficient', async () => {
+      // 6 条 full + 8192：requiredMin=4100 ≤ 8192 → 不分批
+      (callLLMResult as jest.Mock).mockResolvedValue({ text: WORLDBOOK_JSON });
+      const progress: unknown[] = [];
+      await generateConstruction(
+        {
+          mode: 'worldbook_independent',
+          name: '雾港纪事',
+          entryCount: 6,
+          detailLevel: 'full',
+        },
+        {
+          maxTokens: 8192,
+          onBatchProgress: p => progress.push(p),
+        },
+      );
+      expect(callLLMResult).toHaveBeenCalledTimes(1);
+      expect(progress).toHaveLength(0);
     });
   });
 });
