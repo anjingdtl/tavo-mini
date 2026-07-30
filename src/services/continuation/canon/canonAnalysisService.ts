@@ -1805,9 +1805,11 @@ async function processAnalysisRunInner(
     return (await getRunById(runId))!;
   }
 
-  // Publish a successful run immediately. Every pending record is adopted by
-  // default inside activateSnapshot; users only need to remove or revise facts
-  // they do not want, rather than manually approving a whole snapshot.
+  // Keep the Canon snapshot available as a reviewable candidate while the
+  // required style analysis is still in flight. The analysis run itself must
+  // remain running until atomic Canon + style activation completes; marking it
+  // awaiting_review here would stop polling and make an interrupted run
+  // impossible to resume before style analysis.
   await updateSnapshotMeta(db, run.canonSnapshotId, {
     status: 'awaiting_review',
     capabilities,
@@ -1815,12 +1817,13 @@ async function processAnalysisRunInner(
   });
   const finalWorkItems = await listWorkItems(runId);
   await updateRunState(db, runId, {
-    state: 'awaiting_review',
+    state: 'running',
     stage: 'finalizing',
     progressCurrent: finalWorkItems.filter(item => item.state === 'completed')
       .length,
     progressTotal: finalWorkItems.length,
-    completedAt: now(),
+    // Only activateSnapshotAndStyleProfile may mark the run completed.
+    completedAt: null,
   });
   await execute(
     db,
