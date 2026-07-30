@@ -239,19 +239,12 @@ describe('backupService', () => {
     delete process.env.FAIL_RESTORE_AT_STATEMENT;
   });
 
-  test('createBackup exports the manifest tables with v3 SHA-256 and external model references', async () => {
+  test('createBackup exports the manifest tables with v3 SHA-256 and no external assets', async () => {
     const mockDb = createMockDb({
       projects: [{ id: 1, name: '测试项目' }],
       chapters: [{ id: 1, project_id: 1, title: '第1章' }],
       llm_config: [{ id: 1, name: '云端', api_key: 'sk-test-only', is_active: 1 }],
       settings: [{ key: 'webdav_password', value: 'not-a-real-secret' }],
-      local_llm_models: [{
-        id: 'model-1',
-        original_filename: 'qwen.gguf',
-        relative_path: 'model-1/model.gguf',
-        sha256: 'abc123',
-        file_size: 42,
-      }],
     });
 
     await createBackup(mockDb, '1.2.0', 6);
@@ -262,15 +255,7 @@ describe('backupService', () => {
     expect(written.meta.checksum_algorithm).toBe('sha256');
     expect(written.meta.checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(Object.keys(written.tables)).toEqual(ALL_TABLES);
-    expect(written.external_assets).toEqual([{
-      local_model_reference: {
-        id: 'model-1',
-        filename: 'qwen.gguf',
-        sha256: 'abc123',
-        file_size: 42,
-        included: false,
-      },
-    }]);
+    expect(written.external_assets).toEqual([]);
     expect(written.tables.llm_config[0]).not.toHaveProperty('api_key');
     expect((RNFS.writeFile as jest.Mock).mock.calls[0][1]).not.toMatch(/sk-|Bearer |"api_key"\s*:\s*"[^"\n]+"|password|token/i);
   });
@@ -533,44 +518,26 @@ describe('backupService', () => {
   test('missing optional tables remain compatible with older backups', async () => {
     const backup = await makeV3Backup({ projects: [{ id: 2, name: '旧格式恢复' }] });
     delete backup.tables.character_collections;
-    delete backup.tables.local_llm_models;
     backup.meta.checksum = await computeBackupChecksum(backup);
     writeBackup(backup);
     const mockDb = createMockDb(makeFullTables({
       character_collections: [{ id: 99, project_id: 1, name: '保留集合' }],
-      local_llm_models: [{ id: 'keep-model', status: 'ready' }],
     }));
 
     await restoreFromBackup(mockDb, '/fake/path/backup.json', { createPreRestoreBackup: false });
     expect(mockDb.tableData.character_collections).toEqual([{ id: 99, project_id: 1, name: '保留集合' }]);
-    expect(mockDb.tableData.local_llm_models).toEqual([{ id: 'keep-model', status: 'ready' }]);
   });
 
-  test('missing local model files do not block restore and deactivate local configs', async () => {
-    const model = {
-      id: 'missing-model',
-      display_name: 'Qwen',
-      original_filename: 'qwen.gguf',
-      relative_path: 'missing-model/qwen.gguf',
-      file_size: 1024,
-      sha256: 'sha-qwen',
-      status: 'ready',
-    };
+  test('restoreFromBackup reports empty missingLocalModels (local models are no longer in backups)', async () => {
     const backup = await makeV3Backup({
-      local_llm_models: [model],
-      llm_config: [{ id: 9, provider_type: 'llama_cpp', local_model_id: 'missing-model', is_active: 1 }],
+      projects: [{ id: 1, name: 'p1' }],
+      llm_config: [{ id: 1, provider_type: 'openai_compatible', is_active: 1, base_url: 'https://x', model_name: 'm' }],
     });
     writeBackup(backup);
     const mockDb = createMockDb(makeFullTables());
 
     const result = await restoreFromBackup(mockDb, '/fake/path/backup.json', { createPreRestoreBackup: false });
-    expect(result.missingLocalModels[0]).toMatchObject({ id: 'missing-model', included: false });
-    expect(mockDb.tableData.local_llm_models[0]).toMatchObject({
-      id: 'missing-model',
-      status: 'missing',
-      error_code: 'MODEL_FILE_MISSING',
-    });
-    expect(mockDb.tableData.llm_config[0]).toMatchObject({ id: 9, is_active: 0 });
+    expect(result.missingLocalModels).toEqual([]);
   });
 
   test('restore rejects invalid backups before opening a transaction', async () => {

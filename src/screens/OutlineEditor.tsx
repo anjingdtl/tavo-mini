@@ -1,13 +1,12 @@
 import React, { useCallback, useState } from 'react';
-import { Alert, FlatList, Modal, Pressable, StyleSheet, Text, ToastAndroid, TouchableOpacity, View } from 'react-native';
-import { BarChart3, Bot, FileText, Plus, Settings2, Trash2, ArrowUp, ArrowDown } from 'lucide-react-native';
+import { Alert, FlatList, StyleSheet, Text, ToastAndroid, TouchableOpacity, View } from 'react-native';
+import { BarChart3, FileText, Plus, Settings2, Trash2, ArrowUp, ArrowDown } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { Button, Card, EmptyState, Field, Header, Screen, spacing } from '../components/ui';
+import { Button, Card, EmptyState, Header, Screen, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import * as db from '../services/database';
-import { runBatchChapterPipeline } from '../services/batchChapterPipeline';
 import type { EditorStackParamList } from '../navigation/TabNavigator';
 import type { Chapter } from '../types/novel';
 
@@ -18,13 +17,6 @@ export const OutlineEditor: React.FC = () => {
   const { currentProject } = useProjectStore();
   const navigation = useNavigation<Navigation>();
   const [chapters, setChapters] = useState<Chapter[]>([]);
-  const [showBatch, setShowBatch] = useState(false);
-  const [batchCount, setBatchCount] = useState('3');
-  const [batchOutline, setBatchOutline] = useState('');
-  const [batchRunning, setBatchRunning] = useState(false);
-  const [batchProgress, setBatchProgress] = useState('');
-  const [batchProgressCurrent, setBatchProgressCurrent] = useState(0);
-  const [batchProgressTotal, setBatchProgressTotal] = useState(0);
 
   const loadChapters = useCallback(async () => {
     if (!currentProject) {
@@ -90,40 +82,6 @@ export const OutlineEditor: React.FC = () => {
     }
   }, [currentProject, loadChapters]);
 
-  const runBatchGenerate = async () => {
-    if (!currentProject || batchRunning) return;
-    const count = Math.max(1, Number(batchCount) || 1);
-    setBatchRunning(true);
-    try {
-      const outlineLines = batchOutline
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean);
-
-      const result = await runBatchChapterPipeline({
-        projectId: currentProject.id,
-        count,
-        outlineLines,
-        onProgress: setBatchProgress,
-        onProgressNumeric: (current, total) => {
-          setBatchProgressCurrent(current);
-          setBatchProgressTotal(total);
-        },
-      });
-
-      setShowBatch(false);
-      setBatchProgress('');
-      setBatchProgressCurrent(0);
-      setBatchProgressTotal(0);
-      await loadChapters();
-      Alert.alert('批量生成完成', `已完成 ${result.completed} 章，失败 ${result.failed} 章。`);
-    } catch (error: any) {
-      Alert.alert('批量生成失败', error?.message || '请检查 API 配置。');
-    } finally {
-      setBatchRunning(false);
-    }
-  };
-
   const renderChapter = useCallback(({ item, index }: { item: Chapter; index: number }) => (
     <TouchableOpacity activeOpacity={0.78} onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })}>
       <Card style={[styles.chapterCard, { borderLeftColor: theme.colors.accent }]}>
@@ -163,7 +121,6 @@ export const OutlineEditor: React.FC = () => {
     <Screen>
       <Header title={currentProject.name} subtitle="章节 · 大纲 · 摘要 · 上下文" action={<Button label="章节" icon={Plus} variant="ghost" onPress={addChapter} compact />} />
       <View style={styles.quickActions}>
-        <Button label="AI 写 N 章" icon={Bot} variant="ghost" onPress={() => setShowBatch(true)} compact flex />
         <Button label="故事概览" icon={BarChart3} variant="secondary" onPress={() => navigation.navigate('StoryOverview')} compact flex />
         <Button label="上下文" icon={Settings2} variant="secondary" onPress={() => navigation.navigate('ContextConfig')} compact flex />
       </View>
@@ -176,50 +133,6 @@ export const OutlineEditor: React.FC = () => {
       ) : (
         <FlatList data={chapters} keyExtractor={(item) => String(item.id)} renderItem={renderChapter} contentContainerStyle={styles.list} />
       )}
-      <Modal visible={showBatch} transparent animationType="slide" onRequestClose={() => setShowBatch(false)}>
-        <Pressable style={styles.overlay} onPress={() => (batchRunning ? undefined : setShowBatch(false))}>
-          <Pressable style={[styles.modal, { backgroundColor: theme.colors.surface }]} onPress={(event) => event.stopPropagation()}>
-            <Text style={[styles.modalTitle, { color: theme.colors.textPrimary }]}>AI 一键写 N 章</Text>
-            <Field label="生成章数" value={batchCount} onChangeText={setBatchCount} keyboardType="number-pad" />
-            <Field
-              label="整体大纲（可选；每行一章，不足章节时用于补齐）"
-              value={batchOutline}
-              onChangeText={setBatchOutline}
-              multiline
-              inputStyle={styles.outlineInput}
-            />
-            {batchProgress || batchRunning ? (
-              <View style={styles.progressContainer}>
-                <View style={styles.progressInfoRow}>
-                  <Text style={[styles.progressLabel, { color: theme.colors.textPrimary }]} numberOfLines={1}>
-                    {batchProgress || '准备中...'}
-                  </Text>
-                  <Text style={[styles.progressPercent, { color: theme.colors.accent }]}>
-                    {batchProgressTotal > 0 ? `${Math.round((batchProgressCurrent / batchProgressTotal) * 100)}%` : ''}
-                  </Text>
-                </View>
-                {batchProgressTotal > 0 ? (
-                  <View style={[styles.progressTrack, { backgroundColor: theme.colors.border }]}>
-                    <View
-                      style={[
-                        styles.progressFill,
-                        {
-                          backgroundColor: theme.colors.accent,
-                          width: `${Math.round((batchProgressCurrent / batchProgressTotal) * 100)}%`,
-                        },
-                      ]}
-                    />
-                  </View>
-                ) : null}
-              </View>
-            ) : null}
-            <View style={styles.modalActions}>
-              <Button label="取消" variant="ghost" onPress={() => setShowBatch(false)} disabled={batchRunning} />
-              <Button label={batchRunning ? '生成中...' : '开始生成'} onPress={runBatchGenerate} disabled={batchRunning} />
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </Screen>
   );
 };
@@ -246,15 +159,4 @@ const styles = StyleSheet.create({
   chapterMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: spacing.lg, marginTop: spacing.md, paddingBottom: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth },
   chapterMetaTitle: { fontSize: 14, fontFamily: 'serif', fontWeight: '700', letterSpacing: 0.5 },
   chapterMetaCount: { fontSize: 12 },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
-  modal: { borderTopLeftRadius: 8, borderTopRightRadius: 8, padding: spacing.lg, gap: spacing.md },
-  modalTitle: { fontSize: 18, fontWeight: '800' },
-  outlineInput: { minHeight: 140, textAlignVertical: 'top' },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md },
-  progressContainer: { gap: spacing.sm },
-  progressInfoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  progressLabel: { fontSize: 13, fontWeight: '700', flex: 1 },
-  progressPercent: { fontSize: 14, fontWeight: '800' },
-  progressTrack: { height: 8, borderRadius: 4, overflow: 'hidden' },
-  progressFill: { height: '100%', borderRadius: 4 },
 });

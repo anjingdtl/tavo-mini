@@ -9,7 +9,6 @@ import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
 import { executeTransaction } from '../connection/transaction';
-import { getLocalModelById } from './localModelRepository';
 
 function normalizeLLMConfig(row?: Partial<LLMConfig> | null): LLMConfig {
   return {
@@ -20,8 +19,6 @@ function normalizeLLMConfig(row?: Partial<LLMConfig> | null): LLMConfig {
     api_key: row?.api_key || '',
     model_name: row?.model_name || '',
     is_active: Number(row?.is_active ?? 1),
-    local_model_id: row?.local_model_id ?? null,
-    local_backend: row?.local_backend ?? null,
     context_window: Number(row?.context_window ?? 4096),
     max_output_tokens: Number(row?.max_output_tokens ?? 4000),
   };
@@ -55,9 +52,9 @@ export async function getLLMConfigs(): Promise<LLMConfig[]> {
       await openDatabase(),
       `INSERT INTO llm_config (
         name, provider_type, base_url, api_key, model_name, is_active,
-        local_model_id, local_backend, context_window, max_output_tokens
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
-      ['默认配置', 'openai_compatible', '', '', '', null, null, 4096, 4000],
+        context_window, max_output_tokens
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      ['默认配置', 'openai_compatible', '', '', '', 4096, 4000],
     );
     return getLLMConfigs();
   }
@@ -70,45 +67,12 @@ export async function getActiveLLMConfig(): Promise<LLMConfig> {
   let config = await one<LLMConfig>(
     'SELECT * FROM llm_config WHERE is_active = 1 ORDER BY id ASC LIMIT 1',
   );
-  if (config) {
-    const providerType = String(config.provider_type || '');
-    const isLocal =
-      providerType === 'llama_cpp' || providerType === 'local_litertlm';
-    if (isLocal) {
-      const model = config.local_model_id
-        ? await getLocalModelById(config.local_model_id)
-        : null;
-      if (model?.status !== 'ready') {
-        await execute(
-          await openDatabase(),
-          'UPDATE llm_config SET is_active = 0 WHERE id = ?',
-          [config.id],
-        );
-        config = null;
-      }
-    }
-  }
   if (!config) {
     const candidates = await all<LLMConfig>(
       'SELECT * FROM llm_config ORDER BY id ASC',
     );
     let fallback: LLMConfig | null = null;
-    for (const candidate of candidates) {
-      const providerType = String(candidate.provider_type || '');
-      const isLocal =
-        providerType === 'llama_cpp' || providerType === 'local_litertlm';
-      if (!isLocal) {
-        fallback = candidate;
-        break;
-      }
-      if (candidate.local_model_id) {
-        const model = await getLocalModelById(candidate.local_model_id);
-        if (model?.status === 'ready') {
-          fallback = candidate;
-          break;
-        }
-      }
-    }
+    fallback = candidates[0] || null;
     if (!fallback) {
       const id = await saveLLMConfig({
         name: '默认配置',
@@ -137,8 +101,6 @@ export async function saveLLMConfig(
   const providerType = config.provider_type || 'openai_compatible';
   const baseUrl = (config.base_url || '').trim();
   const modelName = (config.model_name || '').trim();
-  const localModelId = config.local_model_id ?? null;
-  const localBackend = config.local_backend ?? null;
   const contextWindow = Number(config.context_window ?? 4096);
   const maxOutputTokens = Number(config.max_output_tokens ?? 4000);
   const database = await openDatabase();
@@ -153,7 +115,7 @@ export async function saveLLMConfig(
       database,
       `UPDATE llm_config SET
         name = ?, provider_type = ?, base_url = ?, api_key = ?, model_name = ?,
-        local_model_id = ?, local_backend = ?, context_window = ?, max_output_tokens = ?
+        context_window = ?, max_output_tokens = ?
       WHERE id = ?`,
       [
         name,
@@ -161,8 +123,6 @@ export async function saveLLMConfig(
         baseUrl,
         '',
         modelName,
-        localModelId,
-        localBackend,
         contextWindow,
         maxOutputTokens,
         id,
@@ -173,8 +133,8 @@ export async function saveLLMConfig(
       database,
       `INSERT INTO llm_config (
         name, provider_type, base_url, api_key, model_name, is_active,
-        local_model_id, local_backend, context_window, max_output_tokens
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        context_window, max_output_tokens
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name,
         providerType,
@@ -182,8 +142,6 @@ export async function saveLLMConfig(
         '',
         modelName,
         shouldActivate ? 1 : 0,
-        localModelId,
-        localBackend,
         contextWindow,
         maxOutputTokens,
       ],

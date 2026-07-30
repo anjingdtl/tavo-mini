@@ -278,15 +278,17 @@ export async function countAllResources(): Promise<ResourceCounts> {
 }
 
 /**
- * 查询非本地 LLM 配置数（context_window/max_output_tokens 会被覆写）。
- * 本地 llama_cpp 配置不覆写。
+ * 查询 LLM 配置数。
  */
-export async function countNonLocalLlmConfigs(): Promise<number> {
+export async function countLlmConfigs(): Promise<number> {
   const rows = await all<{ c: number }>(
-    `SELECT COUNT(*) AS c FROM llm_config WHERE provider_type IS NOT 'llama_cpp' OR provider_type IS NULL`,
+    'SELECT COUNT(*) AS c FROM llm_config',
   );
   return Number(rows[0]?.c ?? 0);
 }
+
+/** @deprecated Kept as an alias for callers compiled against the previous API. */
+export const countNonLocalLlmConfigs = countLlmConfigs;
 
 /**
  * 查询 preset 总数。
@@ -301,7 +303,7 @@ export async function countAllPresets(): Promise<number> {
  *
  * 单一 executeTransaction 原子写入所有目标字段。任一步失败 → 整体回滚。
  *
- * 1. 读资源数量 + 非本地 LLM 配置数 + preset 数
+ * 1. 读资源数量 + LLM 配置数 + preset 数
  * 2. 计算 AllocationResult
  * 3. 构建 SqlStatement[] 一次性执行
  * 4. 写 last_applied 记录（单独调用，主事务已成功后写）
@@ -314,7 +316,7 @@ export async function applyContextAutoAllocation(
   // 阶段 1：读 + 算
   const [resourceCounts, llmCount, presetCount] = await Promise.all([
     countAllResources(),
-    countNonLocalLlmConfigs(),
+    countLlmConfigs(),
     countAllPresets(),
   ]);
 
@@ -382,10 +384,9 @@ export async function applyContextAutoAllocation(
         String(allocation.proofMaxTokens),
       ],
     },
-    // llm_config：仅非本地配置
+    // llm_config
     {
-      sql: `UPDATE llm_config SET context_window = ?, max_output_tokens = ?
-            WHERE provider_type IS NOT 'llama_cpp' OR provider_type IS NULL`,
+      sql: 'UPDATE llm_config SET context_window = ?, max_output_tokens = ?',
       params: [allocation.llmContextWindow, allocation.llmMaxOutputTokens],
     },
     // presets：全部

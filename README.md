@@ -5,11 +5,11 @@
 把灵感、资料和章节放在一台手机里，安心写完你的长篇故事。
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#开始使用)
-[![Version](https://img.shields.io/badge/Version-V2.11.3-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.11.5-blue.svg)](CHANGELOG.md)
 
 </div>
 
-当前版本：**V2.11.3** · 支持 Android 7.0 及以上设备
+当前版本：**V2.11.5** · 支持 Android 7.0 及以上设备
 
 ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮助你管理作品、写章节、整理人物和世界观，也可以按你的设置调用 AI 辅助创作。作品数据默认保存在手机本地；是否使用在线模型，始终由你决定。
 
@@ -19,11 +19,11 @@ ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮�
 
 新建作品后就能建立章节、填写梗概、记录人物和伏笔。编辑器会自动保存，章节还可以保留多个修订版本，方便比较和回退。
 
-如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 26**。
+如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 27**。
 
 ### 让 AI 帮你，而不是替你失控
 
-你可以配置自己信任的 OpenAI 兼容模型服务，或使用本地 GGUF 模型。AI 能用于续写、润色、生成大纲、构建角色卡和世界书等工作。
+你可以配置自己信任的 OpenAI 兼容模型服务。AI 能用于续写、润色、生成大纲、构建角色卡和世界书等工作。
 
 原著续写模式会把原著事实、续写前文、已确认的角色状态和故事记忆分开处理：
 
@@ -54,7 +54,7 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 1. 在“项目”页点击“新建”，选择“大纲创作”或“原著续写”。
 2. 大纲创作可以直接新建章节开始写；原著续写先进入“原著与 Canon 资料”导入文本并设置边界。
-3. 在“设置”页配置在线模型，或导入本地 GGUF 模型。没有配置模型也可以正常写作和管理资料。
+3. 在“设置”页配置在线模型。没有配置模型也可以正常写作和管理资料。
 4. 在章节编辑页使用 AI 功能前，先通过“上下文预览”检查引用内容是否符合你的预期。
 5. 对满意的续写章节执行定稿，让章节状态与长期故事记忆持续更新。
 
@@ -78,7 +78,7 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 ### 没有网络还能使用吗？
 
-可以。写作、资料管理、备份、本地导入导出和系统朗读都可以离线使用。只有在线 AI 或在线语音功能需要网络。若使用本地 GGUF 模型，AI 生成也可以不联网。
+可以。写作、资料管理、备份、本地导入导出和系统朗读都可以离线使用。在线 AI 或在线语音功能需要网络。
 
 ### 续写内容会自动覆盖我的正文吗？
 
@@ -86,9 +86,9 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 ## 获取正式安装包
 
-正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.3-release.apk`
+正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.5-release.apk`
 
-构建标识：`versionName=V2.11.3`，`versionCode=2110300`。
+构建标识：`versionName=V2.11.5`，`versionCode=2110500`。
 
 ## 开发者参考
 
@@ -98,4 +98,4 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 - [发布验收清单](docs/RELEASE_CHECKLIST.md)
 - [完整版本变更](CHANGELOG.md)
 
-The current version is **V2.11.3**. ShineWriter is an Android-first, local-first writing workspace. It supports outline writing, Canon-driven continuation, optional online or local AI, backups, and text-to-speech.
+The current version is **V2.11.5**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, and text-to-speech.

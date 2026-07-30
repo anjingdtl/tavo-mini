@@ -23,7 +23,6 @@ export const LLM_TIMEOUTS = {
   // 构建场景（世界书/角色卡）在「深度」档或条目较多时输出可达 10k+ Token，
   // 云端模型长输出常见 60-120 秒延迟，沿用章节草稿的 180 秒长超时。
   constructionMs: 180_000,
-  localIdleMs: 45_000,
 } as const;
 
 export class LLMRequestError extends Error {
@@ -40,13 +39,10 @@ export class LLMRequestError extends Error {
 
 export function resolveLLMTimeoutPolicy(
   scenario = 'chat',
-  providerType: LLMProviderType = 'openai_compatible',
+  _providerType: LLMProviderType = 'openai_compatible',
 ): LLMTimeoutPolicy {
   if (scenario === 'connection_test') {
     return { totalTimeoutMs: LLM_TIMEOUTS.connectionMs };
-  }
-  if (providerType === 'llama_cpp') {
-    return { idleTimeoutMs: LLM_TIMEOUTS.localIdleMs };
   }
   if (scenario === 'continuation_canon_analysis') {
     return { totalTimeoutMs: LLM_TIMEOUTS.canonAnalysisMs };

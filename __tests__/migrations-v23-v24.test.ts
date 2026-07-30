@@ -9,7 +9,7 @@ import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 24 historical digest migration', () => {
   it('creates separate weak-memory tables rather than Canon evidence tables', () => {
-    expect(SCHEMA_VERSION).toBe(26);
+    expect(SCHEMA_VERSION).toBe(27);
     const sql = buildV23toV24Statements().map(item => item.sql).join('\n');
     expect(sql).toContain('continuation_historical_digests');
     expect(sql).toContain('continuation_historical_digest_chapters');

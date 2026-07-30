@@ -119,7 +119,7 @@ export interface Preset {
   enabled_for_project?: number;
 }
 
-export type LLMProviderType = 'openai_compatible' | 'llama_cpp';
+export type LLMProviderType = 'openai_compatible';
 
 export interface LLMConfig {
   id: number;
@@ -129,8 +129,6 @@ export interface LLMConfig {
   api_key: string;
   model_name: string;
   is_active: number;
-  local_model_id: string | null;
-  local_backend: 'auto' | 'gpu' | 'cpu' | null;
   context_window: number;
   max_output_tokens: number;
 }
