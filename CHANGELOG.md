@@ -6,7 +6,7 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-> 计划纳入下一正式版本（建议 2.11.0）。当前 `package.json` 仍为 2.10.7，发版前再 bump。
+## [2.11.0] - 2026-07-30
 
 ### Added
 
@@ -19,10 +19,18 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 - 分析概览增加「原著写作风格」卡片（未分析 / 分析中 / 失败 / 就绪 / 过期 / 已忽略）。
 - 激活 Canon 与风格画像改为原子路径（`activateSnapshotAndStyleProfile`），UI 显式传递 `styleProfileId` / `allowStyleSkip`。
+- **续写结果体验统一**：续写完成页改为与普通流水线一致的折叠阶段卡片与“放弃 / 采纳”操作；正文不再在结果页直接铺满。触发严重一致性问题后的自动修复会明确标注轮次和“采纳将写入修复稿”。
+- **上下文预览中文化**：续写资料分配将内部字段和计量单位转换为中文业务名称，例如“用户锁定规则”“续写接缝（紧接上一章）”和“词元”。
+
+### Fixed
+
+- **1M 上下文同步**：在上下文自动化配置应用方案后立即刷新 LLM 设置状态，LLM 设置页会显示新的上下文长度与最大输出 token。
+- **顺序续写接缝**：续写下一章时优先使用已采纳续写章节的章末作为接缝锚点，不再把原著最后一章错误拼接到后续每一章。
 
 ### Tests
 
 - 风格统计/抽样/V2 schema、分析服务、原子激活、动态注入、章节编号与 `continuationStyleIntegration` 集成测试；轻量 Maestro `12-continuation-style-overview.yaml`。
+- 续写结果页折叠/采纳、自动修复提示、顺序接缝与 1M 上下文同步回归；Android 模拟器连续生成并采纳第 4、5、6 章。
 
 ## [2.10.7] - 2026-07-29
 
