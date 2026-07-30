@@ -73,7 +73,9 @@ describe('ContinuationGenerationConfigScreen', () => {
     await waitFor(() => expect(getByText('生成与一致性')).toBeTruthy());
     expect(getByText('阶段模型')).toBeTruthy();
     expect(getByText('规划与风险确认')).toBeTruthy();
-    expect(getByText('文风约束')).toBeTruthy();
+    expect(getByText('原著文风')).toBeTruthy();
+    expect(getByText(/始终严格遵循原著画风画像/)).toBeTruthy();
+    expect(queryByText('文风约束')).toBeNull();
     expect(getByText('校验严格度（预设）')).toBeTruthy();
     expect(queryByText('初稿作者')).toBeNull();
   });
