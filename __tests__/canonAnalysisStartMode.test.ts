@@ -100,7 +100,7 @@ describe('Canon analysis start modes', () => {
       expect.objectContaining({
         profile: 'standard',
         modelConfigId: 42,
-        progressTotal: 20,
+        progressTotal: 10,
       }),
     );
     const batches = mockInsertBatches.mock.calls[0][1];
@@ -120,11 +120,10 @@ describe('Canon analysis start modes', () => {
     expect(mockInsertWorkItems).toHaveBeenCalledWith(
       expect.anything(),
       expect.arrayContaining([
-        expect.objectContaining({ materialType: 'character_state' }),
-        expect.objectContaining({ materialType: 'world_plot' }),
+        expect.objectContaining({ materialType: 'full_extraction' }),
       ]),
     );
-    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(20);
+    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(10);
   });
 
   it('uses all chapters and the deep LLM preset for complete Canon analysis', async () => {
@@ -132,7 +131,7 @@ describe('Canon analysis start modes', () => {
 
     expect(mockInsertRun).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ profile: 'deep', progressTotal: 24 }),
+      expect.objectContaining({ profile: 'deep', progressTotal: 12 }),
     );
     const batches = mockInsertBatches.mock.calls[0][1];
     expect(batches).toHaveLength(12);
@@ -141,7 +140,7 @@ describe('Canon analysis start modes', () => {
       startPosition: 33,
       endPosition: 35,
     });
-    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(24);
+    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(12);
   });
 
   it('uses multiple quality-sized passes instead of collapsing a full book into one online-context batch', async () => {
@@ -158,7 +157,7 @@ describe('Canon analysis start modes', () => {
     expect(batches).toHaveLength(2);
     expect(batches[0]).toMatchObject({ startPosition: 0, endPosition: 20 });
     expect(batches[1]).toMatchObject({ startPosition: 20, endPosition: 35 });
-    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(4);
+    expect(mockInsertWorkItems.mock.calls[0][1]).toHaveLength(2);
   });
 
   it('refuses to start when a 4096-window local model cannot fit 3×6000-char chapters (S1)', async () => {

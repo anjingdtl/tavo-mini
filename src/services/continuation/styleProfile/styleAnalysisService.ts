@@ -51,7 +51,7 @@ import {
   updateStyleProfileState,
   type StyleProfileFingerprint,
 } from './styleProfileRepository';
-import { computeStyleMetrics, type StyleMetrics } from './styleStatistics';
+import { computeStyleMetrics, summarizeStyleMetrics } from './styleStatistics';
 import { sampleForStyleAnalysis, type StyleSampleRef } from './styleSampler';
 import {
   validateStyleProfileV2,
@@ -200,8 +200,11 @@ export async function runStyleAnalysis(
 
     if (signal.aborted) throw new Error('cancelled');
 
-    // Whole-book local statistics (no LLM).
+    // Whole-book local statistics (no LLM). Keep full metrics for persistence
+    // and the profile hash; pass a compact summary (~1 KB) to the LLM instead
+    // of the full JSON (which may be tens of KB).
     const metrics = computeStyleMetrics(chapters);
+    const metricsSummary = summarizeStyleMetrics(metrics);
 
     // Deterministic stratified sampling, seeded by the source fingerprint.
     const seed = buildSeed(sourceSnapshot);
@@ -223,7 +226,7 @@ export async function runStyleAnalysis(
     const sampleSpans = await readSampleSpans(sourceSnapshot, sampleRefs);
 
     const outcome = await analyzeWithLlm({
-      metrics,
+      metricsSummary,
       sampleSpans,
       requestConfig,
       contextWindow,
@@ -513,7 +516,7 @@ async function callWithTransientRetry(
  * Allows at most ONE structural-repair retry; never retries infinitely.
  */
 async function analyzeWithLlm(args: {
-  metrics: StyleMetrics;
+  metricsSummary: string;
   sampleSpans: Array<{ ref: StyleSampleRef; text: string }>;
   requestConfig: LLMRequestConfig;
   contextWindow: number;
@@ -522,7 +525,7 @@ async function analyzeWithLlm(args: {
   signal: AbortSignal;
 }): Promise<AnalyzeOutcome> {
   const {
-    metrics,
+    metricsSummary,
     sampleSpans,
     requestConfig,
     contextWindow,
@@ -546,10 +549,9 @@ async function analyzeWithLlm(args: {
     Math.floor(afterFramework * (1 - INPUT_BUDGET_SAFETY_FRACTION)),
   );
 
-  const metricsBlock = JSON.stringify(metrics);
   const sampleBlocks = renderSampleBlocks(sampleSpans);
   const userPrompt = buildStyleAnalysisUserPrompt({
-    metricsJson: metricsBlock,
+    metricsSummary,
     sampleBlocks,
     coverage,
   });
@@ -569,7 +571,7 @@ async function analyzeWithLlm(args: {
   }
   return mapReduceCall({
     systemPrompt,
-    metricsBlock,
+    metricsSummary,
     sampleSpans,
     coverage,
     requestConfig,
@@ -627,7 +629,7 @@ async function singleCall(args: {
  */
 async function mapReduceCall(args: {
   systemPrompt: string;
-  metricsBlock: string;
+  metricsSummary: string;
   sampleSpans: Array<{ ref: StyleSampleRef; text: string }>;
   coverage: { sourceChapterCount: number; sampledChapterCount: number };
   requestConfig: LLMRequestConfig;
@@ -638,7 +640,7 @@ async function mapReduceCall(args: {
 }): Promise<AnalyzeOutcome> {
   const {
     systemPrompt,
-    metricsBlock,
+    metricsSummary,
     sampleSpans,
     coverage,
     requestConfig,
@@ -683,7 +685,7 @@ async function mapReduceCall(args: {
   for (const [i, batch] of batches.entries()) {
     if (signal.aborted) throw new Error('分析已暂停或取消');
     const userPrompt = buildStyleAnalysisUserPrompt({
-      metricsJson: metricsBlock,
+      metricsSummary,
       sampleBlocks: renderSampleBlocks(batch),
       coverage,
     });
@@ -711,7 +713,7 @@ async function mapReduceCall(args: {
 
   // Reduce: merge partials + global metrics into the final V2 profile.
   const reduceUserPrompt = buildStyleAnalysisUserPrompt({
-    metricsJson: metricsBlock,
+    metricsSummary,
     sampleBlocks: partials.join('\n\n'),
     coverage,
   });

@@ -224,3 +224,167 @@ export function computeConstructionBudget(input: BudgetInput): BudgetResult {
 export function formatReserveLabel(percent: number, tokens: number): string {
   return `${percent}% · ${Math.max(0, Math.round(tokens)).toLocaleString('en-US')} Token`;
 }
+
+// ---------- 世界书分批计划（SPEC §6.3 扩展：超预算自动多轮） ----------
+
+/**
+ * 当世界书条目数 × 深度档所需 Token 超过单次 outputReserve 时，自动切分为多批。
+ * 每批独立发起一次 LLM 调用，最后合并条目；UI 显示「第 X/Y 批」进度。
+ *
+ * 设计要点：
+ * - 阈值缓冲：单批目标 ≤ outputReserve × threshold（默认 0.8），给截断留余量；
+ * - 单批上限 maxBatchSize：避免单批过大重新触发超时；
+ * - 均匀分配：10 条按每批 4 → [4, 3, 3] 而非 [4, 4, 2]；
+ * - 不可行时返回 feasible=false，让 UI 阻断而不是发一个必败的请求。
+ */
+export interface WorldbookBatchPlan {
+  /** 是否需要分批（batchCount > 1）。feasible=false 时为 false。 */
+  batched: boolean;
+  /** 批次数（≥1；feasible=false 时为 0）。 */
+  batchCount: number;
+  /** 每批的条目数，例如 [4, 3, 3]；总和等于 entryCount。feasible=false 时为空。 */
+  batchSizes: number[];
+  /** 每批分配的 max_tokens（统一值，保证所有批都能装下）。 */
+  perBatchMaxTokens: number;
+  /** 在当前 outputReserve 下能否完成分批。 */
+  feasible: boolean;
+  /** 说明（用于 UI 展示或错误提示）。 */
+  reason: string;
+}
+
+export interface WorldbookBatchInput {
+  /** 世界书条目数量（会先被 clampEntryCount 归一化到 2–12）。 */
+  entryCount: number;
+  /** 内容丰满度。 */
+  detailLevel?: ConstructionDetailLevel;
+  /** 实际可用于输出的 Token（预算模块的 outputReserve）。 */
+  outputReserve: number;
+  /** 单批目标 / outputReserve 的阈值，超过则必须分批。默认 0.8。 */
+  batchThreshold?: number;
+  /** 单批最少条目数（防止切太碎）。默认 2。 */
+  minBatchSize?: number;
+  /** 单批最多条目数（避免单批过大重新触发超时）。默认 6。 */
+  maxBatchSize?: number;
+}
+
+/** 单批（batchSize 条）目标输出 Token，含 15% 余量（与 worldbookSystemPrompt 对齐）。 */
+function worldbookBatchTargetOutput(
+  batchSize: number,
+  detailLevel: ConstructionDetailLevel,
+): number {
+  return Math.ceil(
+    requiredConstructionOutput('worldbook', batchSize, detailLevel) * 1.15,
+  );
+}
+
+/** 把 total 按 maxPerBatch 切分成尽量均匀的批次。例如 (10, 4) → [4, 3, 3]。 */
+function distributeBatchSizes(total: number, maxPerBatch: number): number[] {
+  if (total <= maxPerBatch) return [total];
+  const batches: number[] = [];
+  let remaining = total;
+  while (remaining > 0) {
+    const size = Math.min(maxPerBatch, remaining);
+    batches.push(size);
+    remaining -= size;
+  }
+  // 若最后一批明显小于首批，从较大的批每次挪 1 条到末尾，缩小批间差距。
+  // 用 >= 让多个相同最大值时取最后一个，结果更接近降序（如 [4,4,2] → [4,3,3]）。
+  while (batches.length >= 2 && batches[batches.length - 1] < batches[0] - 1) {
+    let maxIdx = 0;
+    for (let i = 1; i < batches.length; i += 1) {
+      if (batches[i] >= batches[maxIdx]) maxIdx = i;
+    }
+    batches[maxIdx] -= 1;
+    batches[batches.length - 1] += 1;
+  }
+  return batches;
+}
+
+/**
+ * 根据当前 outputReserve 自动计算世界书是否需要分批、如何分批。
+ * 纯函数，不触碰 LLM 或网络，方便单元测试。
+ */
+export function planWorldbookBatches(
+  input: WorldbookBatchInput,
+): WorldbookBatchPlan {
+  const entryCount = clampEntryCount(input.entryCount);
+  const detailLevel = normalizeDetailLevel(input.detailLevel);
+  const outputReserve = Math.max(0, Math.floor(input.outputReserve || 0));
+  const threshold =
+    typeof input.batchThreshold === 'number' && input.batchThreshold > 0
+      ? Math.min(1, input.batchThreshold)
+      : 0.8;
+  const minBatchSize = Math.max(1, Math.floor(input.minBatchSize ?? 2));
+  const maxBatchSize = Math.max(
+    minBatchSize,
+    Math.floor(input.maxBatchSize ?? 6),
+  );
+
+  const requiredMin = requiredConstructionOutput(
+    'worldbook',
+    entryCount,
+    detailLevel,
+  );
+
+  if (outputReserve <= 0) {
+    return {
+      batched: false,
+      batchCount: 0,
+      batchSizes: [],
+      perBatchMaxTokens: 0,
+      feasible: false,
+      reason: '当前输出预留为 0，请先在 LLM 设置中填写上下文容量与最大输出。',
+    };
+  }
+  // 不分批条件：outputReserve ≥ 验收下限（requiredConstructionOutput，不含 15% 余量）。
+  // 此时虽可能贴线（prompt 的 15% 余量是软建议），但模型在 max_tokens = outputReserve
+  // 内仍有较大概率完成；分批只用于「完全装不下」的场景，避免对刚够的请求过度切分。
+  if (outputReserve >= requiredMin) {
+    return {
+      batched: false,
+      batchCount: 1,
+      batchSizes: [entryCount],
+      perBatchMaxTokens: outputReserve,
+      feasible: true,
+      reason: '单次调用即可容纳。',
+    };
+  }
+
+  // 需要分批：找最大的 batchSize 使得单批目标 ≤ outputReserve × threshold。
+  const perBatchTokenCeiling = Math.floor(outputReserve * threshold);
+  let batchSize = Math.min(maxBatchSize, entryCount);
+  while (
+    batchSize > minBatchSize &&
+    worldbookBatchTargetOutput(batchSize, detailLevel) > perBatchTokenCeiling
+  ) {
+    batchSize -= 1;
+  }
+
+  const minBatchTarget = worldbookBatchTargetOutput(minBatchSize, detailLevel);
+  if (minBatchTarget > perBatchTokenCeiling) {
+    return {
+      batched: false,
+      batchCount: 0,
+      batchSizes: [],
+      perBatchMaxTokens: 0,
+      feasible: false,
+      reason: `输出预留（${outputReserve.toLocaleString('en-US')} Token）不足以容纳单批最少 ${minBatchSize} 条世界书（每批约 ${minBatchTarget.toLocaleString('en-US')} Token）。请提高输出预留、减少条目数，或使用上下文更大的在线模型。`,
+    };
+  }
+
+  const batchSizes = distributeBatchSizes(entryCount, batchSize);
+  // 每批统一用最大批的目标作为 max_tokens，保证所有批都能装下。
+  const perBatchMaxTokens = worldbookBatchTargetOutput(
+    Math.max(...batchSizes),
+    detailLevel,
+  );
+
+  return {
+    batched: batchSizes.length > 1,
+    batchCount: batchSizes.length,
+    batchSizes,
+    perBatchMaxTokens,
+    feasible: true,
+    reason: `已自动拆分为 ${batchSizes.length} 批（${batchSizes.join(' + ')} 条），每批约 ${perBatchMaxTokens.toLocaleString('en-US')} Token。`,
+  };
+}
