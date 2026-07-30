@@ -9,12 +9,9 @@
  * the active style pointer is unchanged (Spec §4, §6.3).
  *
  * Contract:
- *  - `styleProfileId` provided  → that profile becomes ready and active.
- *  - `styleProfileId` null + `allowStyleSkip: true` → Canon activates with
- *    active_style_profile_id = NULL (explicit user skip; trace must show the
- *    degradation).
- *  - `styleProfileId` null + `allowStyleSkip: false` → throw (cannot activate
- *    without style unless the user explicitly skips).
+ *  - `styleProfileId` is required → that profile becomes ready and active.
+ *  - `allowStyleSkip` is retained only to deserialize legacy callers; skipping
+ *    original style is no longer permitted.
  *  - Old active style profiles whose source/boundary no longer match are
  *    marked outdated IN THE SAME transaction.
  */
@@ -42,9 +39,9 @@ export interface ActivateSnapshotAndStyleProfileInput {
   projectId: number;
   analysisRunId: string;
   canonSnapshotId: string;
-  /** The style profile to activate alongside Canon, or null to skip style. */
+  /** The style profile to activate alongside Canon. */
   styleProfileId: string | null;
-  /** Must be true when `styleProfileId` is null (explicit user skip). */
+  /** @deprecated Legacy field; a missing style profile is always rejected. */
   allowStyleSkip: boolean;
 }
 
@@ -59,9 +56,9 @@ export interface ActivateSnapshotAndStyleProfileInput {
 export async function activateSnapshotAndStyleProfile(
   input: ActivateSnapshotAndStyleProfileInput,
 ): Promise<void> {
-  if (!input.styleProfileId && !input.allowStyleSkip) {
+  if (!input.styleProfileId) {
     throw new Error(
-      '缺少风格画像且未显式允许跳过文风，无法激活。请先完成或显式跳过原著风格分析。',
+      '缺少可用的原著风格画像，无法激活。请先完成或重试原著风格分析。',
     );
   }
 
@@ -82,7 +79,13 @@ export async function activateSnapshotAndStyleProfile(
     !analysisRun ||
     analysisRun.projectId !== input.projectId ||
     analysisRun.canonSnapshotId !== input.canonSnapshotId ||
-    !['running', 'awaiting_review'].includes(analysisRun.state)
+    // A retry may add the missing style profile after an older Canon run was
+    // already completed (or failed at style analysis). Re-applying this same
+    // source-bound snapshot is safe and atomically refreshes the active style
+    // pointer; every other identity/source guard below still applies.
+    !['running', 'awaiting_review', 'completed', 'failed'].includes(
+      analysisRun.state,
+    )
   ) {
     throw new Error('分析任务不存在、已变更或当前状态不可激活');
   }
@@ -134,7 +137,8 @@ export async function activateSnapshotAndStyleProfile(
       styleProfile.normalizationVersion !== live.normalizationVersion ||
       styleProfile.boundaryChapterId !== live.boundary.chapterId ||
       styleProfile.boundaryPosition !== live.boundary.chapterPosition ||
-      styleProfile.boundaryCharOffsetExclusive !== live.boundary.charOffsetExclusive
+      styleProfile.boundaryCharOffsetExclusive !==
+        live.boundary.charOffsetExclusive
     ) {
       throw new Error('风格画像与本次 Canon 分析的 source/boundary 不匹配');
     }
@@ -162,7 +166,7 @@ export async function activateSnapshotAndStyleProfile(
         WHERE project_id = ? AND status = 'ready' AND id != ?`,
       params: [ts, input.projectId, input.canonSnapshotId],
     },
-  // 3. New Canon snapshot → ready.
+    // 3. New Canon snapshot → ready.
     {
       sql: `UPDATE continuation_canon_snapshots
         SET status = 'ready', activated_at = ?, updated_at = ?
@@ -232,19 +236,14 @@ export async function activateSnapshotAndStyleProfile(
         analysis_status = 'ready',
         updated_at = ?
       WHERE project_id = ?`,
-    params: [
-      input.canonSnapshotId,
-      input.styleProfileId,
-      ts,
-      input.projectId,
-    ],
+    params: [input.canonSnapshotId, input.styleProfileId, ts, input.projectId],
   });
 
   // 6. Complete the explicitly supplied analysis run bound to this snapshot.
   statements.push({
     sql: `UPDATE continuation_analysis_runs SET state = 'completed', updated_at = ?
       WHERE id = ? AND project_id = ? AND canon_snapshot_id = ?
-        AND state IN ('running', 'awaiting_review')`,
+        AND state IN ('running', 'awaiting_review', 'completed', 'failed')`,
     params: [ts, input.analysisRunId, input.projectId, input.canonSnapshotId],
   });
 
@@ -265,7 +264,9 @@ export async function activateSnapshotAndStyleProfile(
       /SET status = 'ready'/.test(statement.sql) ||
       /SET state = 'ready'/.test(statement.sql) ||
       /UPDATE continuation_settings SET/.test(statement.sql) ||
-      /UPDATE continuation_analysis_runs SET state = 'completed'/.test(statement.sql)
+      /UPDATE continuation_analysis_runs SET state = 'completed'/.test(
+        statement.sql,
+      )
     ) {
       criticalStatementIndexes.add(index + 1);
     }
@@ -273,7 +274,9 @@ export async function activateSnapshotAndStyleProfile(
   await executeTransaction(db, statements, {
     onStatementComplete: (oneBasedIndex, rowsAffected) => {
       if (criticalStatementIndexes.has(oneBasedIndex) && rowsAffected !== 1) {
-        throw new Error(`激活事务关键更新未命中 1 行：statement ${oneBasedIndex}`);
+        throw new Error(
+          `激活事务关键更新未命中 1 行：statement ${oneBasedIndex}`,
+        );
       }
     },
   });

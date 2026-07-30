@@ -25,6 +25,7 @@ import {
   getActiveSnapshot,
   listRunsForProject,
 } from '../canon/canonRepository';
+import { activateSnapshotAndStyleProfile } from '../canon/activateSnapshotAndStyleProfile';
 import { callLLMResult, resolveLLMRequestConfigById } from '../../llm';
 import type {
   ChatMessage,
@@ -32,7 +33,10 @@ import type {
   LLMRequestConfig,
   LLMResult,
 } from '../../llm';
-import { estimateMessagesTokens, estimateTokens } from '../../../utils/tokenEstimator';
+import {
+  estimateMessagesTokens,
+  estimateTokens,
+} from '../../../utils/tokenEstimator';
 import {
   CANON_ANALYSIS_RETRY_POLICY,
   isTransientCanonAnalysisError,
@@ -48,10 +52,7 @@ import {
   type StyleProfileFingerprint,
 } from './styleProfileRepository';
 import { computeStyleMetrics, type StyleMetrics } from './styleStatistics';
-import {
-  sampleForStyleAnalysis,
-  type StyleSampleRef,
-} from './styleSampler';
+import { sampleForStyleAnalysis, type StyleSampleRef } from './styleSampler';
 import {
   validateStyleProfileV2,
   type OriginalStyleProfileV2,
@@ -124,11 +125,9 @@ export async function runStyleAnalysis(
   if (input.signal.aborted) {
     controller.abort();
   } else {
-    input.signal.addEventListener(
-      'abort',
-      () => controller.abort(),
-      { once: true },
-    );
+    input.signal.addEventListener('abort', () => controller.abort(), {
+      once: true,
+    });
   }
   const signal = controller.signal;
 
@@ -196,10 +195,7 @@ export async function runStyleAnalysis(
       sourceSnapshot,
     );
     if (chapters.length === 0) {
-      return fail(
-        'style_analysis_failed',
-        '续写边界内没有可分析的章节。',
-      );
+      return fail('style_analysis_failed', '续写边界内没有可分析的章节。');
     }
 
     if (signal.aborted) throw new Error('cancelled');
@@ -234,13 +230,17 @@ export async function runStyleAnalysis(
       maxOutputTokens,
       coverage: {
         sourceChapterCount: chapters.length,
-        sampledChapterCount: new Set(sampleRefs.map(r => r.sourceChapterId)).size,
+        sampledChapterCount: new Set(sampleRefs.map(r => r.sourceChapterId))
+          .size,
       },
       signal,
     });
 
     if (!outcome.profile) {
-      return fail('style_analysis_failed', outcome.errorMessage ?? '风格分析失败');
+      return fail(
+        'style_analysis_failed',
+        outcome.errorMessage ?? '风格分析失败',
+      );
     }
 
     // Hash the complete persisted payload, including nested fields, analyzer
@@ -291,7 +291,9 @@ export async function runStyleAnalysis(
 /**
  * Re-run style analysis for the project's latest canon snapshot (Spec §10.1:
  * "单独重试风格分析"). Reuses the same source snapshot + model config that the
- * originating Canon run captured.
+ * originating Canon run captured. A successful retry also atomically makes
+ * that image the active profile, so it is actually injected on the next
+ * continuation instead of merely appearing as an analysed record.
  */
 export async function retryStyleAnalysis(projectId: number): Promise<void> {
   // Static imports: canonRepository depends only on types/db helpers, so there
@@ -335,8 +337,15 @@ export async function retryStyleAnalysis(projectId: number): Promise<void> {
     signal: controller.signal,
   });
   if (!result.success) {
-    throw new Error('风格分析重试失败，请稍后再试或显式跳过文风。');
+    throw new Error('风格分析重试失败，请稍后再试。');
   }
+  await activateSnapshotAndStyleProfile({
+    projectId,
+    analysisRunId: runId,
+    canonSnapshotId: canonSnapshotId!,
+    styleProfileId: result.profileId,
+    allowStyleSkip: false,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +398,7 @@ async function assertSourceStillValid(
     live.parserVersion !== snapshot.parserVersion ||
     live.normalizationVersion !== snapshot.normalizationVersion ||
     live.boundary.chapterId !== snapshot.boundary.chapterId ||
-    live.boundary.charOffsetExclusive !==
-      snapshot.boundary.charOffsetExclusive
+    live.boundary.charOffsetExclusive !== snapshot.boundary.charOffsetExclusive
   ) {
     throw new ContinuationSnapshotOutdatedError();
   }
@@ -529,7 +537,10 @@ async function analyzeWithLlm(args: {
   // Input budget = context window minus output reservation, minus prompt
   // framework overhead, minus a proportional safety margin (Spec §7.1).
   const afterOutput = Math.max(0, contextWindow - maxOutputTokens);
-  const afterFramework = Math.max(0, afterOutput - PROMPT_FRAMEWORK_RESERVE_TOKENS);
+  const afterFramework = Math.max(
+    0,
+    afterOutput - PROMPT_FRAMEWORK_RESERVE_TOKENS,
+  );
   const inputBudget = Math.max(
     0,
     Math.floor(afterFramework * (1 - INPUT_BUDGET_SAFETY_FRACTION)),
@@ -573,12 +584,14 @@ async function analyzeWithLlm(args: {
 function renderSampleBlocks(
   spans: Array<{ ref: StyleSampleRef; text: string }>,
 ): string {
-  if (spans.length === 0) return '（本次抽样未产生可用样本，请仅依据统计输出保守画像。）';
+  if (spans.length === 0)
+    return '（本次抽样未产生可用样本，请仅依据统计输出保守画像。）';
   return spans
     .map(
       (s, i) =>
-        `### 样本${i + 1} [${s.ref.sampleKind}] chapter=${s.ref.sourceChapterId}\n` +
-        s.text,
+        `### 样本${i + 1} [${s.ref.sampleKind}] chapter=${
+          s.ref.sourceChapterId
+        }\n` + s.text,
     )
     .join('\n\n');
 }
@@ -597,7 +610,12 @@ async function singleCall(args: {
     { role: 'system', content: args.systemPrompt },
     { role: 'user', content: args.userPrompt },
   ];
-  return runValidatedCall(messages, args.requestConfig, args.maxOutputTokens, args.signal);
+  return runValidatedCall(
+    messages,
+    args.requestConfig,
+    args.maxOutputTokens,
+    args.signal,
+  );
 }
 
 /**
@@ -632,10 +650,7 @@ async function mapReduceCall(args: {
 
   // Per-map budget for sample text = inputBudget minus the system prompt and a
   // small per-batch framework cost.
-  const perMapTextBudget = Math.max(
-    512,
-    inputBudget - systemTokens - 512,
-  );
+  const perMapTextBudget = Math.max(512, inputBudget - systemTokens - 512);
 
   // Greedily pack spans into batches whose estimated token cost fits the budget.
   const batches: Array<Array<{ ref: StyleSampleRef; text: string }>> = [];

@@ -35,11 +35,13 @@ import {
 } from '../../../services/continuation/canon';
 import { isBoundaryReady } from '../../../services/continuation/continuationSettingsService';
 import {
+  getActiveStyleProfileId,
   listStyleProfilesForProject,
   updateStyleProfileReviewStatus,
   type ContinuationStyleProfileRow,
 } from '../../../services/continuation/styleProfile/styleProfileRepository';
 import { retryStyleAnalysis } from '../../../services/continuation/styleProfile/styleAnalysisService';
+import { STYLE_ANALYZER_VERSION } from '../../../services/continuation/styleProfile/styleAnalysisPrompt';
 import type { OriginalStyleProfileV2 } from '../../../services/continuation/styleProfile/styleProfileV2Schema';
 import { runStatusLabel } from './runStatusLabel';
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
@@ -69,7 +71,9 @@ function pickStyleProfile(
 ): ContinuationStyleProfileRow | null {
   if (!profiles.length) return null;
   if (latestRun?.canonSnapshotId) {
-    const match = profiles.find(p => p.canonSnapshotId === latestRun.canonSnapshotId);
+    const match = profiles.find(
+      p => p.canonSnapshotId === latestRun.canonSnapshotId,
+    );
     if (match) return match;
   }
   if (activeSnapshotId) {
@@ -86,22 +90,33 @@ function resolveStyleUiState(
   if (row?.reviewStatus === 'ignored') return 'ignored';
   if (row) {
     if (row.state === 'queued' || row.state === 'running') return 'analyzing';
-    if (row.state === 'failed' || row.state === 'interrupted' || row.state === 'cancelled') {
+    if (
+      row.state === 'failed' ||
+      row.state === 'interrupted' ||
+      row.state === 'cancelled'
+    ) {
       return 'failed';
     }
-    if (row.state === 'outdated') return 'outdated';
+    if (
+      row.state === 'outdated' ||
+      row.analyzerVersion !== STYLE_ANALYZER_VERSION
+    ) {
+      return 'outdated';
+    }
     if (row.state === 'ready') return 'ready';
   }
   if (
     latestRun &&
     ['queued', 'running'].includes(latestRun.state) &&
-    (latestRun.stage === 'style_analysis' || latestRun.stage === 'style_validation')
+    (latestRun.stage === 'style_analysis' ||
+      latestRun.stage === 'style_validation')
   ) {
     return 'analyzing';
   }
   if (
     latestRun?.state === 'failed' &&
-    (latestRun.stage === 'style_analysis' || latestRun.stage === 'style_validation')
+    (latestRun.stage === 'style_analysis' ||
+      latestRun.stage === 'style_validation')
   ) {
     return 'failed';
   }
@@ -176,6 +191,9 @@ export const CanonAnalysisOverviewScreen: React.FC<{
   } | null>(null);
   const [styleProfile, setStyleProfile] =
     useState<ContinuationStyleProfileRow | null>(null);
+  const [activeStyleProfileId, setActiveStyleProfileId] = useState<
+    string | null
+  >(null);
 
   const reload = useCallback(async () => {
     if (!currentProject) {
@@ -183,12 +201,13 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       return;
     }
     try {
-      const [overview, ready, historyCoverage, styleProfiles] =
+      const [overview, ready, historyCoverage, styleProfiles, activeStyleId] =
         await Promise.all([
           getAnalysisOverview(currentProject.id),
           isBoundaryReady(currentProject.id),
           getHistoricalDigestCoverage(currentProject.id),
           listStyleProfilesForProject(currentProject.id).catch(() => []),
+          getActiveStyleProfileId(currentProject.id).catch(() => null),
         ]);
       setActive(overview.activeSnapshot);
       const items = overview.latestRun
@@ -206,6 +225,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       setWorkItems(items);
       setBoundaryOk(ready);
       setHistoricalCoverage(historyCoverage);
+      setActiveStyleProfileId(activeStyleId);
       setStyleProfile(
         pickStyleProfile(
           styleProfiles,
@@ -297,7 +317,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 },
               });
               await PipelineForeground.stop(runId);
-                  if (run.state !== 'completed') {
+              if (run.state !== 'completed') {
                 await PipelineForeground.notifyFailed(
                   `ca:${runId}`,
                   '原著分析未完成',
@@ -308,14 +328,14 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 );
               }
               await PipelineForeground.notifyComplete(
-                    `ca:${runId}`,
-                    '原著分析完成',
-                    '原著资料已自动启用，可按需删除或调整个别资料。',
+                `ca:${runId}`,
+                '原著分析完成',
+                '原著资料已自动启用，可按需删除或调整个别资料。',
               );
               Toast.show({
-                    type: 'success',
-                    text1: '分析完成',
-                    text2: '原著资料已自动启用',
+                type: 'success',
+                text1: '分析完成',
+                text2: '原著资料已自动启用',
               });
               void snapshotId;
               await reload();
@@ -356,7 +376,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
   const historicalTargetChapterCount = active
     ? Math.max(
         0,
-        active.coverage.sourceChapterCount - active.coverage.analyzedChapterCount,
+        active.coverage.sourceChapterCount -
+          active.coverage.analyzedChapterCount,
       )
     : 0;
   const historicalCoverageComplete =
@@ -440,11 +461,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         },
       });
       await PipelineForeground.stop(latestRun.id);
-          if (run.state === 'completed') {
-            await PipelineForeground.notifyComplete(
-              `ca:${latestRun.id}`,
-              '原著分析完成',
-              '原著资料已自动启用。',
+      if (run.state === 'completed') {
+        await PipelineForeground.notifyComplete(
+          `ca:${latestRun.id}`,
+          '原著分析完成',
+          '原著资料已自动启用。',
         );
       }
       await reload();
@@ -463,30 +484,13 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       ? styleProfile.id
       : null;
 
-  const handleActivate = async (opts?: {
-    allowStyleSkip?: boolean;
-    styleProfileId?: string | null;
-  }) => {
+  const handleActivate = async () => {
     if (!currentProject || !latestRun) return;
-    const allowStyleSkip = opts?.allowStyleSkip === true;
-    const styleProfileId =
-      opts?.styleProfileId !== undefined
-        ? opts.styleProfileId
-        : injectableStyleId;
-    if (!styleProfileId && !allowStyleSkip) {
+    const styleProfileId = injectableStyleId;
+    if (!styleProfileId) {
       Alert.alert(
         '风格画像未就绪',
-        '当前没有可激活的原著风格画像。可单独重试风格分析，或显式跳过风格后仅启用 Canon。',
-        [
-          { text: '取消', style: 'cancel' },
-          {
-            text: '跳过风格并启用',
-            style: 'destructive',
-            onPress: () => {
-              void handleActivate({ allowStyleSkip: true, styleProfileId: null });
-            },
-          },
-        ],
+        '原著续写必须启用有效的原著风格画像。请先完成或单独重试风格分析，再启用原著资料。',
       );
       return;
     }
@@ -497,11 +501,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         analysisRunId: latestRun.id,
         canonSnapshotId: latestRun.canonSnapshotId,
         styleProfileId,
-        allowStyleSkip: !styleProfileId,
+        allowStyleSkip: false,
       });
       Toast.show({
         type: 'success',
-        text1: styleProfileId ? '原著资料与风格已启用' : '原著资料已启用（已跳过风格）',
+        text1: '原著资料与风格已启用',
       });
       await reload();
     } catch (e: any) {
@@ -540,17 +544,6 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         },
       ],
     );
-  };
-
-  const handleIgnoreStyle = async () => {
-    if (!styleProfile) return;
-    try {
-      await updateStyleProfileReviewStatus(styleProfile.id, 'ignored');
-      Toast.show({ type: 'info', text1: '已忽略风格画像' });
-      await reload();
-    } catch (e: any) {
-      Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
-    }
   };
 
   const handleRestoreStyle = async () => {
@@ -718,17 +711,17 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   )}
                   {historicalTargetChapterCount > 0 &&
                     !historicalCoverageComplete && (
-                    <Button
-                      label={
-                        historicalCoverage.readyChapterCount > 0
-                          ? '补生成历史概览'
-                          : '生成历史概览'
-                      }
-                      variant="ghost"
-                      onPress={buildHistoricalDigests}
-                      disabled={busy}
-                    />
-                  )}
+                      <Button
+                        label={
+                          historicalCoverage.readyChapterCount > 0
+                            ? '补生成历史概览'
+                            : '生成历史概览'
+                        }
+                        variant="ghost"
+                        onPress={buildHistoricalDigests}
+                        disabled={busy}
+                      />
+                    )}
                   {historicalProgress && (
                     <View style={styles.historicalProgress}>
                       <Text style={{ color: theme.colors.textSecondary }}>
@@ -764,13 +757,15 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   )}
                   {active.coverage.incompleteReasons.length > 0 &&
                     !historicalCoverageComplete && (
-                    <Text style={{ color: theme.colors.warning || '#b45309' }}>
-                      覆盖说明：
-                      {active.coverage.incompleteReasons
-                        .map(coverageReasonLabel)
-                        .join('；')}
-                    </Text>
-                  )}
+                      <Text
+                        style={{ color: theme.colors.warning || '#b45309' }}
+                      >
+                        覆盖说明：
+                        {active.coverage.incompleteReasons
+                          .map(coverageReasonLabel)
+                          .join('；')}
+                      </Text>
+                    )}
                 </>
               ) : (
                 <Text style={{ color: theme.colors.textSecondary }}>
@@ -950,8 +945,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 style={[styles.hint, { color: theme.colors.textSecondary }]}
               >
                 两种模式都会调用当前模型，并产出带原文证据、可审核的原著资料。
-                快速续写只精读最后 30 章；完整原著分析覆盖全部
-                边界内原著。
+                快速续写只精读最后 30 章；完整原著分析覆盖全部 边界内原著。
               </Text>
               <View style={styles.row}>
                 <Button
@@ -977,7 +971,8 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               {styleProfile ? (
                 <>
                   <Text style={{ color: theme.colors.textSecondary }}>
-                    分析范围：第 1–{styleProfile.boundaryPosition + 1} 章（边界内）
+                    分析范围：第 1–{styleProfile.boundaryPosition + 1}{' '}
+                    章（边界内）
                   </Text>
                   {styleV2?.coverage?.sampledChapterCount != null ? (
                     <Text style={{ color: theme.colors.textSecondary }}>
@@ -993,7 +988,10 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   </Text>
                   {styleV2?.summary ? (
                     <Text
-                      style={{ color: theme.colors.textPrimary, lineHeight: 20 }}
+                      style={{
+                        color: theme.colors.textPrimary,
+                        lineHeight: 20,
+                      }}
                       numberOfLines={3}
                     >
                       {styleV2.summary}
@@ -1018,7 +1016,9 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   <Text style={{ color: theme.colors.textSecondary }}>
                     分析器 {styleProfile.analyzerVersion}
                     {styleProfile.completedAt || styleProfile.updatedAt
-                      ? ` · ${styleProfile.completedAt || styleProfile.updatedAt}`
+                      ? ` · ${
+                          styleProfile.completedAt || styleProfile.updatedAt
+                        }`
                       : ''}
                   </Text>
                   {styleProfile.errorMessage ? (
@@ -1067,35 +1067,23 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                     disabled={busy}
                   />
                 )}
-                {styleUiState === 'ready' && (
-                  <Button
-                    label="忽略"
-                    variant="ghost"
-                    onPress={() => {
-                      void handleIgnoreStyle();
-                    }}
-                    disabled={busy}
-                  />
-                )}
+                {styleUiState === 'ready' &&
+                  injectableStyleId !== activeStyleProfileId && (
+                    <Button
+                      label="启用原著风格"
+                      variant="ghost"
+                      onPress={() => {
+                        void handleActivate();
+                      }}
+                      disabled={busy}
+                    />
+                  )}
                 {styleUiState === 'ignored' && (
                   <Button
                     label="恢复"
                     variant="ghost"
                     onPress={() => {
                       void handleRestoreStyle();
-                    }}
-                    disabled={busy}
-                  />
-                )}
-                {needsActivation && !injectableStyleId && (
-                  <Button
-                    label="跳过风格并激活"
-                    variant="ghost"
-                    onPress={() => {
-                      void handleActivate({
-                        allowStyleSkip: true,
-                        styleProfileId: null,
-                      });
                     }}
                     disabled={busy}
                   />

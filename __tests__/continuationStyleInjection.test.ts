@@ -22,9 +22,12 @@ import { ContinuationCapabilityBlockedError } from '../src/services/continuation
 import { computeStyleProfileHash } from '../src/services/continuation/styleProfile/styleProfileHash';
 
 // ---- mocks for builder path ----
-jest.mock('../src/services/continuation/styleProfile/styleProfileRepository', () => ({
-  getInjectableStyleProfile: jest.fn(),
-}));
+jest.mock(
+  '../src/services/continuation/styleProfile/styleProfileRepository',
+  () => ({
+    getInjectableStyleProfile: jest.fn(),
+  }),
+);
 
 jest.mock('../src/services/continuation/continuationSourceReader', () => ({
   continuationSourceReader: {
@@ -44,9 +47,12 @@ jest.mock('../src/services/continuation/canon/historicalDigestService', () => ({
   listHistoricalDigestReferences: jest.fn().mockResolvedValue([]),
 }));
 
-jest.mock('../src/services/continuation/generation/continuationStateService', () => ({
-  getEffectiveContinuationState: jest.fn(),
-}));
+jest.mock(
+  '../src/services/continuation/generation/continuationStateService',
+  () => ({
+    getEffectiveContinuationState: jest.fn(),
+  }),
+);
 
 jest.mock(
   '../src/services/continuation/generation/continuationSupplementContextBuilder',
@@ -62,10 +68,13 @@ jest.mock(
   }),
 );
 
-jest.mock('../src/services/continuation/generation/generationRepository', () => ({
-  contentRevisionHash: (t: string) => `hash:${t.length}`,
-  ensureGenerationSettings: jest.fn(),
-}));
+jest.mock(
+  '../src/services/continuation/generation/generationRepository',
+  () => ({
+    contentRevisionHash: (t: string) => `hash:${t.length}`,
+    ensureGenerationSettings: jest.fn(),
+  }),
+);
 
 jest.mock('../src/services/database', () => ({
   getChaptersByProject: jest.fn().mockResolvedValue([]),
@@ -251,7 +260,7 @@ function miniSnapshot(
       profileId: 'sp-1',
       profileHash: 'a'.repeat(64),
       profileSchemaVersion: 2,
-      analyzerVersion: 'style-v2-1',
+      analyzerVersion: 'style-v2-2',
       rendererVersion: STYLE_RENDERER_VERSION,
       sourceFingerprint: '1|1|abc|v1|v1|5|19|1000',
       boundaryCharOffsetExclusive: 1000,
@@ -436,12 +445,12 @@ describe('selectStyleRenderLevel', () => {
     expect(selectStyleRenderLevel(profile, full + 10, 'balanced').level).toBe(
       'detailed',
     );
-    expect(
-      selectStyleRenderLevel(profile, std + 5, 'balanced').level,
-    ).toBe('standard');
-    expect(
-      selectStyleRenderLevel(profile, compact + 5, 'balanced').level,
-    ).toBe('compact');
+    expect(selectStyleRenderLevel(profile, std + 5, 'balanced').level).toBe(
+      'standard',
+    );
+    expect(selectStyleRenderLevel(profile, compact + 5, 'balanced').level).toBe(
+      'compact',
+    );
     expect(
       selectStyleRenderLevel(profile, Math.max(1, compact - 1), 'balanced')
         .level,
@@ -450,7 +459,11 @@ describe('selectStyleRenderLevel', () => {
 
   it('strict blocks when even compact does not fit', () => {
     const compact = renderStyleProfile(profile, 'compact').estimatedTokens;
-    const r = selectStyleRenderLevel(profile, Math.max(0, compact - 1), 'strict');
+    const r = selectStyleRenderLevel(
+      profile,
+      Math.max(0, compact - 1),
+      'strict',
+    );
     expect(r.level).toBeNull();
     expect(r.blocked).toBe(true);
     expect(r.reason).toMatch(/insufficient/);
@@ -504,12 +517,12 @@ describe('prompt compiler style injection', () => {
     expect(repair).toMatch(/修复|风格/);
   });
 
-  it('styleLevel off suppresses style content', () => {
+  it('does not let a stale off snapshot suppress original style content', () => {
     const snap = miniSnapshot();
     snap.settingsSnapshot.values.styleLevel = 'off';
     const writer = compileWriterMessages(snap, emptyPlan)[0].content;
-    expect(writer).toContain('关闭');
-    expect(writer).not.toContain('林凡');
+    expect(writer).toContain('【原著风格');
+    expect(writer).toContain('第三人称');
   });
 });
 
@@ -651,7 +664,7 @@ describe('buildContinuationContext style path', () => {
       analysisRunId: 'run-1',
       canonSnapshotId: 'canon-1',
       profileSchemaVersion: 2,
-      analyzerVersion: 'style-v2-1',
+      analyzerVersion: 'style-v2-2',
       profileJson: profile,
       metricsJson: metrics,
       sampleRefsJson: sampleRefs,
@@ -661,7 +674,7 @@ describe('buildContinuationContext style path', () => {
         metrics,
         sampleRefs,
         profileSchemaVersion: 2,
-        analyzerVersion: 'style-v2-1',
+        analyzerVersion: 'style-v2-2',
         userOverrides,
       }),
       confidence: 0.8,
@@ -717,7 +730,7 @@ describe('buildContinuationContext style path', () => {
   });
 
   it('counts the latest continuation anchor in the writer context budget', async () => {
-    (getInjectableStyleProfile as jest.Mock).mockResolvedValue(null);
+    (getInjectableStyleProfile as jest.Mock).mockResolvedValue(injectableRow());
     const continuationTail =
       '续写上一章的结尾：雨停之后，沈舟握紧钥匙，决定连夜去旧码头。';
     (database.getChaptersByProject as jest.Mock).mockResolvedValue([
@@ -741,7 +754,9 @@ describe('buildContinuationContext style path', () => {
       activeLlmConfigId: 1,
     });
 
-    expect(continuationSourceReader.listBoundedSourceChapters).not.toHaveBeenCalled();
+    expect(
+      continuationSourceReader.listBoundedSourceChapters,
+    ).not.toHaveBeenCalled();
     expect(snapshot.primaryAnchor).toMatchObject({
       kind: 'continuation_chapter',
       chapterId: 21,
@@ -758,6 +773,19 @@ describe('buildContinuationContext style path', () => {
     expect(anchorCategory?.tokens).toBe(
       estimateTokens(snapshot.primaryAnchor!.excerpt),
     );
+    const recentCategory = trace.categories.find(
+      category => category.name === 'recentChapters',
+    );
+    // The immediately previous continuation chapter is fully supplied by the
+    // primary-anchor block. It must not be reported as a bridge-budget trim.
+    expect(recentCategory).toMatchObject({
+      candidates: 1,
+      selected: 0,
+      coveredByPrimaryAnchor: 1,
+    });
+    expect(recentCategory?.omittedReasonCounts).toEqual({
+      already_covered_by_primary_anchor: 1,
+    });
     expect(trace.totalInputTokens).toBe(
       trace.categories.reduce((sum, category) => sum + category.tokens, 0),
     );
@@ -784,46 +812,42 @@ describe('buildContinuationContext style path', () => {
     ).rejects.toBeInstanceOf(ContinuationCapabilityBlockedError);
   });
 
-  it('balanced degrades when profile missing and records omit reason in trace', async () => {
+  it('blocks generation when profile is missing, even under a legacy balanced setting', async () => {
     (getInjectableStyleProfile as jest.Mock).mockResolvedValue(null);
 
-    const { snapshot, trace } = await buildContinuationContext({
-      projectId: 1,
-      targetChapterId: 10,
-      targetPosition: 0 as any,
-      currentChapterContent: '',
-      userInstruction: '推进',
-      modelContextLimit: 32_768,
-      maxOutputTokens: 2048,
-      activeLlmConfigId: 1,
-    });
-
-    expect(snapshot.style).toBeNull();
-    const styleCat = trace.categories.find(c => c.name === 'originalStyle');
-    expect(styleCat?.selected).toBe(0);
-    expect(styleCat?.omittedReasonCounts.no_injectable_profile).toBe(1);
+    await expect(
+      buildContinuationContext({
+        projectId: 1,
+        targetChapterId: 10,
+        targetPosition: 0 as any,
+        currentChapterContent: '',
+        userInstruction: '推进',
+        modelContextLimit: 32_768,
+        maxOutputTokens: 2048,
+        activeLlmConfigId: 1,
+      }),
+    ).rejects.toBeInstanceOf(ContinuationCapabilityBlockedError);
   });
 
-  it('styleLevel off skips injection without calling repository failure path hard', async () => {
+  it('does not let a legacy off setting bypass required style injection', async () => {
     (ensureGenerationSettings as jest.Mock).mockResolvedValue({
       ...baseSettings,
       styleLevel: 'off',
     });
 
-    const { snapshot, trace } = await buildContinuationContext({
-      projectId: 1,
-      targetChapterId: 10,
-      targetPosition: 0 as any,
-      currentChapterContent: '',
-      userInstruction: '推进',
-      modelContextLimit: 32_768,
-      maxOutputTokens: 2048,
-      activeLlmConfigId: 1,
-    });
-
-    expect(getInjectableStyleProfile).not.toHaveBeenCalled();
-    expect(snapshot.style).toBeNull();
-    const styleCat = trace.categories.find(c => c.name === 'originalStyle');
-    expect(styleCat?.omittedReasonCounts.style_level_off).toBe(1);
+    (getInjectableStyleProfile as jest.Mock).mockResolvedValue(null);
+    await expect(
+      buildContinuationContext({
+        projectId: 1,
+        targetChapterId: 10,
+        targetPosition: 0 as any,
+        currentChapterContent: '',
+        userInstruction: '推进',
+        modelContextLimit: 32_768,
+        maxOutputTokens: 2048,
+        activeLlmConfigId: 1,
+      }),
+    ).rejects.toBeInstanceOf(ContinuationCapabilityBlockedError);
+    expect(getInjectableStyleProfile).toHaveBeenCalledTimes(1);
   });
 });
