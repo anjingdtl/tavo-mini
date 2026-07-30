@@ -82,6 +82,7 @@ jest.mock('../src/services/continuation/canon', () => ({
     experiences: '人物经历',
     character_state: '人物与状态',
     world_plot: '世界观与剧情',
+    full_extraction: '原著全维度分析',
   },
   queueHistoricalDigests: jest.fn(async () => ({
     digestIds: ['digest-1', 'digest-2'],

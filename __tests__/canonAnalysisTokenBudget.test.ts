@@ -58,7 +58,7 @@ describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
   });
 
   it('downgrades perBatch and shrinks the slice when input is the bottleneck', () => {
-    // 20000 effective window, standard output 8192: a 3×6000 batch (~18000
+    // 40000 effective window, standard output 32768: a 3×6000 batch (~18000
     // input tokens) overflows, but perBatch=1 with a shrunken slice fits.
     const plan = planAnalysisTokenBudget({
       chapters: [chapter(0), chapter(1), chapter(2)],
@@ -69,8 +69,8 @@ describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
       // when the provider reports one (some local backends configure n_ctx
       // above 4096). The planner uses min(contextWindow, 4096) only as a
       // conservative default ceiling; here we pass an explicit ceiling.
-      contextWindow: 20000,
-      contextWindowCeiling: 20000,
+      contextWindow: 40000,
+      contextWindowCeiling: 40000,
     });
     expect(plan.ok).toBe(true);
     expect(plan.downgraded).toBe(true);
@@ -93,7 +93,7 @@ describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
     expect(plan.reason).toMatch(/\d+/);
   });
 
-  it('reserves the deep-profile output baseline (16384) before judging fit', () => {
+  it('reserves the deep-profile output baseline (65536) before judging fit', () => {
     const plan = planAnalysisTokenBudget({
       chapters: [chapter(0, 100)],
       profile: 'deep',
@@ -101,7 +101,7 @@ describe('planAnalysisTokenBudget (S1 local-model preflight)', () => {
       providerType: 'llama_cpp',
       contextWindow: 4096,
     });
-    // Deep needs 16384 output tokens; a 4096 window cannot reserve that.
+    // Deep needs 65536 output tokens; a 4096 window cannot reserve that.
     expect(plan.ok).toBe(false);
   });
 

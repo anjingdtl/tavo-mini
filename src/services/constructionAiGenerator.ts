@@ -14,6 +14,10 @@ import {
   type ConstructionDetailLevel,
 } from './construction/quality';
 import {
+  planWorldbookBatches,
+  type WorldbookBatchPlan,
+} from './construction/budget';
+import {
   modeScenario,
   modeTarget,
   type CharacterArtifact,
@@ -35,6 +39,16 @@ import {
  * 不读写资料库，不写入角色 / 世界书 / 合集；产物仅返回给调用方（BuildScreen）。
  */
 
+/** 分批生成时的批次进度回调（驱动 UI 显示「第 X/Y 批」）。 */
+export interface BatchProgress {
+  /** 当前批次，从 1 开始。 */
+  current: number;
+  /** 总批数。 */
+  total: number;
+  /** 当前批待生成的条目数。 */
+  batchSize: number;
+}
+
 export interface GenerateOptions {
   /** 实际可用于输出的 Token（预算模块的 outputReserve）。 */
   maxTokens: number;
@@ -42,6 +56,8 @@ export interface GenerateOptions {
   signal?: AbortSignal;
   /** 排队状态回调（驱动 UI 的「排队中 / 生成中」）。 */
   onQueueState?: (state: LLMQueueState) => void;
+  /** 分批生成时的批次进度回调；不分批时不触发。 */
+  onBatchProgress?: (progress: BatchProgress) => void;
 }
 
 const CHARACTER_STRING_FIELDS = [
@@ -561,15 +577,53 @@ function parseWorldbookResponse(
 
 // ---------- 对外入口 ----------
 
+/** 世界书模式的输入类型（三种 worldbook 模式都有必填 entryCount）。 */
+type WorldbookInput = Extract<ConstructionInput, { entryCount: number }>;
+
+function isWorldbookInput(
+  input: ConstructionInput,
+): input is WorldbookInput {
+  return modeTarget(input.mode) === 'worldbook';
+}
+
 /**
  * 执行一次构建请求。复用现有在线 LLM 的调度 / 网络策略 / 取消 / 用量日志。
  * 失败、取消、超时、截断、无效 JSON 或不可导入结构均抛出。
  * 可回读产物若只是不足质量目标，仍返回并在 qualityReport 中标记差距。
+ *
+ * 世界书在 outputReserve 不足以单次容纳时自动切分为多批，每批独立 LLM 调用，
+ * 最后合并条目；UI 通过 onBatchProgress 收到「第 X/Y 批」进度。
  */
 export async function generateConstruction(
   input: ConstructionInput,
   options: GenerateOptions,
 ): Promise<CharacterArtifact | WorldbookArtifact> {
+  // 角色卡：保持单次调用
+  if (!isWorldbookInput(input)) {
+    return generateCharacterSingle(input, options);
+  }
+
+  // 世界书：根据预算决定单次 or 分批
+  const plan = planWorldbookBatches({
+    entryCount: input.entryCount,
+    detailLevel: input.detailLevel,
+    outputReserve: options.maxTokens,
+  });
+
+  if (!plan.feasible) {
+    throw new Error(plan.reason);
+  }
+  if (!plan.batched) {
+    return generateWorldbookSingle(input, options, plan.perBatchMaxTokens);
+  }
+  return generateWorldbookInBatches(input, options, plan);
+}
+
+/** 角色卡单次生成（原 generateConstruction 的角色卡分支）。 */
+async function generateCharacterSingle(
+  input: ConstructionInput,
+  options: GenerateOptions,
+): Promise<CharacterArtifact> {
   const { messages } = buildConstructionMessages(input);
   const result = await callLLMResult(
     messages,
@@ -593,27 +647,213 @@ export async function generateConstruction(
   if (!result.text || !result.text.trim()) {
     throw new Error('模型未返回生成内容。');
   }
-
-  const target: ConstructionTarget = modeTarget(input.mode);
-  if (target === 'character') {
-    return parseCharacterResponse(
-      result.text,
-      input.detailLevel,
-      result.outputTokens,
-    );
-  }
-  const expectedCount =
-    input.mode === 'worldbook_independent' ||
-    input.mode === 'worldbook_from_character' ||
-    input.mode === 'worldbook_from_text'
-      ? input.entryCount
-      : 0;
-  return parseWorldbookResponse(
+  return parseCharacterResponse(
     result.text,
-    expectedCount,
     input.detailLevel,
     result.outputTokens,
   );
+}
+
+/** 世界书单次生成（outputReserve 足够时的原路径）。 */
+async function generateWorldbookSingle(
+  input: WorldbookInput,
+  options: GenerateOptions,
+  maxTokens: number,
+): Promise<WorldbookArtifact> {
+  const { messages } = buildConstructionMessages(input);
+  const result = await callLLMResult(
+    messages,
+    Math.max(1, Math.floor(maxTokens)),
+    {
+      scenario: modeScenario(input.mode),
+      temperature: 0.7,
+      queueClass: 'normal',
+      queuePriority: 'manual',
+      onQueueState: options.onQueueState,
+    },
+    options.signal,
+  );
+
+  if (options.signal?.aborted) {
+    throw new Error('已取消生成。');
+  }
+  if (result.finishReason === 'length') {
+    throw new Error('模型输出因长度限制被截断，请提高输出预留后重试。');
+  }
+  if (!result.text || !result.text.trim()) {
+    throw new Error('模型未返回生成内容。');
+  }
+  return parseWorldbookResponse(
+    result.text,
+    input.entryCount,
+    input.detailLevel,
+    result.outputTokens,
+  );
+}
+
+/** 构造分批生成时的批次说明（追加到 user message 末尾）。 */
+function buildBatchNote(
+  batchIndex: number,
+  batchCount: number,
+  batchSize: number,
+  existingPrimaryKeys: string[],
+): string {
+  const lines: string[] = [
+    `【分批生成】这是第 ${batchIndex}/${batchCount} 批，请生成 ${batchSize} 条全新条目。`,
+  ];
+  if (existingPrimaryKeys.length > 0) {
+    lines.push(
+      `请避免与已生成条目的主触发词重复：${existingPrimaryKeys.join('、')}。`,
+    );
+    lines.push('如需覆盖相近主题，请从不同角度展开或换用更细的子主题。');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 世界书分批生成：按 plan.batchSizes 切分条目数，每批独立 LLM 调用，
+ * 最后合并去重并重新编号。任一批失败即抛错（已生成的批次不保留）。
+ * 每批在 user message 末尾追加「第 X/Y 批」+ 已生成条目主触发词列表，
+ * 引导模型避开重复主题。
+ */
+async function generateWorldbookInBatches(
+  input: WorldbookInput,
+  options: GenerateOptions,
+  plan: WorldbookBatchPlan,
+): Promise<WorldbookArtifact> {
+  const collectedEntries: LorebookEntry[] = [];
+  const collectedPrimaryKeys: string[] = [];
+  let worldbookName = '';
+
+  for (let i = 0; i < plan.batchSizes.length; i += 1) {
+    const batchSize = plan.batchSizes[i];
+    const batchIndex = i + 1;
+    options.onBatchProgress?.({
+      current: batchIndex,
+      total: plan.batchCount,
+      batchSize,
+    });
+
+    // 构造本批 input：把 entryCount 改成本批大小，其余字段不变。
+    const batchInput = { ...input, entryCount: batchSize } as WorldbookInput;
+    const { messages } = buildConstructionMessages(batchInput);
+
+    // 追加批次说明和去重提示到 user message 末尾。
+    const batchNote = buildBatchNote(
+      batchIndex,
+      plan.batchCount,
+      batchSize,
+      collectedPrimaryKeys,
+    );
+    if (messages.length >= 2 && messages[1].role === 'user') {
+      messages[1] = {
+        ...messages[1],
+        content: `${messages[1].content}\n\n${batchNote}`,
+      };
+    }
+
+    const result = await callLLMResult(
+      messages,
+      Math.max(1, Math.floor(plan.perBatchMaxTokens)),
+      {
+        scenario: modeScenario(input.mode),
+        temperature: 0.7,
+        queueClass: 'normal',
+        queuePriority: 'manual',
+        onQueueState: options.onQueueState,
+      },
+      options.signal,
+    );
+
+    if (options.signal?.aborted) {
+      throw new Error('已取消生成。');
+    }
+    if (result.finishReason === 'length') {
+      throw new Error(
+        `第 ${batchIndex}/${plan.batchCount} 批模型输出因长度限制被截断，请提高输出预留后重试。`,
+      );
+    }
+    if (!result.text || !result.text.trim()) {
+      throw new Error(
+        `第 ${batchIndex}/${plan.batchCount} 批模型未返回生成内容。`,
+      );
+    }
+
+    // 解析本批产物（结构校验 + 批内重复检查 + 回读校验）。
+    const batchArtifact = parseWorldbookResponse(
+      result.text,
+      batchSize,
+      input.detailLevel,
+      result.outputTokens,
+    );
+
+    if (!worldbookName) {
+      worldbookName = batchArtifact.lorebook.data.name;
+    }
+    for (const entry of batchArtifact.lorebook.data.entries) {
+      collectedEntries.push(entry);
+      if (entry.keys[0]) collectedPrimaryKeys.push(entry.keys[0]);
+    }
+  }
+
+  // 跨批去重：不同批可能偶发产生相同主触发词，保留先出现的。
+  const seenPrimary = new Set<string>();
+  const dedupedEntries: LorebookEntry[] = [];
+  for (const entry of collectedEntries) {
+    const primary = entry.keys[0];
+    if (primary && seenPrimary.has(primary)) {
+      continue;
+    }
+    if (primary) seenPrimary.add(primary);
+    dedupedEntries.push(entry);
+  }
+
+  // 重新编号 insertion_order。
+  dedupedEntries.forEach((entry, idx) => {
+    entry.insertion_order = idx;
+  });
+
+  if (dedupedEntries.length !== input.entryCount) {
+    throw new Error(
+      `分批合并后条目数（${dedupedEntries.length}）与要求的 ${input.entryCount} 条不一致，可能有跨批重复主触发词被去重。请重试，或在补充需求中指定更细的类别。`,
+    );
+  }
+
+  const lorebook: LorebookV3 = {
+    spec: 'lorebook_v3',
+    spec_version: '1.0',
+    data: {
+      name: worldbookName || '未命名世界书',
+      entries: dedupedEntries,
+    },
+  };
+
+  // 最终回读校验：用资料库世界书导入解析器验证合并产物可导入。
+  try {
+    const readBack = parseWorldBookJSON(
+      JSON.stringify(lorebook),
+      `${lorebook.data.name}.json`,
+    );
+    if (readBack.entries.length !== input.entryCount) {
+      throw new Error('条目数不一致');
+    }
+  } catch (error) {
+    throw new Error(
+      `世界书回读校验失败：${error instanceof Error ? error.message : '格式不正确'}。`,
+    );
+  }
+
+  const artifact: WorldbookArtifact = {
+    kind: 'worldbook',
+    name: lorebook.data.name,
+    entryCount: input.entryCount,
+    lorebook,
+  };
+  const qualityReport = assessConstructionArtifact(
+    artifact,
+    input.detailLevel,
+  );
+  return { ...artifact, qualityReport };
 }
 
 export type {

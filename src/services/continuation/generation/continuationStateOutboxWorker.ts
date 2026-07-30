@@ -5,7 +5,7 @@
 import { openDatabase } from '../../../data/connection/openDatabase';
 import { callLLMResult, resolveLLMRequestConfigById } from '../../llm';
 import { rebuildStoryMemory } from '../../storyMemory/storyMemoryRebuild';
-import { stripModelJson } from '../canon/canonJsonValidators';
+import { modelJsonCandidates } from '../canon/canonJsonValidators';
 import { compileStateExtractionMessages } from './continuationPromptCompiler';
 import {
   casOutboxState,
@@ -34,8 +34,17 @@ export async function coldStartNormalizeContinuation(): Promise<number> {
  */
 export async function processContinuationOutbox(options?: {
   limit?: number;
-  /** Injected LLM for tests; when set, skips resolveLLM. */
-  callExtract?: (messages: any[]) => Promise<string>;
+  /**
+   * Injected LLM for tests; when set, skips resolveLLM. Accepts either a bare
+   * string (backward compatible with existing tests) or an object carrying
+   * finishReason/emptyReason so truncation and empty-response paths can be
+   * exercised without a real provider.
+   */
+  callExtract?: (
+    messages: any[],
+  ) => Promise<
+    string | { text: string; finishReason?: string | null; emptyReason?: string }
+  >;
   /** Injected story memory rebuild for tests. */
   rebuildStoryMemory?: (projectId: number, fromPosition: number) => Promise<void>;
 }): Promise<{ processed: number; failed: number }> {
@@ -110,7 +119,11 @@ export async function processContinuationOutbox(options?: {
 
 async function handleExtractState(
   payloadJson: string,
-  callExtract?: (messages: any[]) => Promise<string>,
+  callExtract?: (
+    messages: any[],
+  ) => Promise<
+    string | { text: string; finishReason?: string | null; emptyReason?: string }
+  >,
 ): Promise<void> {
   const payload = JSON.parse(payloadJson) as {
     projectId: number;
@@ -136,8 +149,17 @@ async function handleExtractState(
 
   const messages = compileStateExtractionMessages(content, '[]');
   let raw: string;
+  let finishReason: string | null | undefined = undefined;
+  let emptyReason: string | undefined = undefined;
   if (callExtract) {
-    raw = await callExtract(messages);
+    const out = await callExtract(messages);
+    if (typeof out === 'string') {
+      raw = out;
+    } else {
+      raw = out.text ?? '';
+      finishReason = out.finishReason;
+      emptyReason = out.emptyReason;
+    }
   } else {
     const settings = await ensureGenerationSettings(payload.projectId);
     const configId =
@@ -155,9 +177,14 @@ async function handleExtractState(
       requestConfig,
     });
     raw = result.text ?? '';
+    finishReason = result.finishReason;
+    emptyReason = result.emptyReason;
   }
 
-  const proposals = parseExtraction(raw, content.length);
+  const proposals = parseExtraction(raw, content.length, {
+    finishReason: finishReason ?? null,
+    emptyReason: emptyReason ?? null,
+  });
   await insertProposals(
     proposals.map(p => ({
       projectId: payload.projectId,
@@ -175,9 +202,27 @@ async function handleExtractState(
   );
 }
 
-function parseExtraction(
+/** Diagnostic metadata for parseExtraction error messages. */
+export interface ExtractionParseMeta {
+  finishReason: string | null;
+  emptyReason: string | null;
+}
+
+/**
+ * Parse the LLM's state-extraction response into validated proposals.
+ *
+ * Multi-candidate JSON recovery (mirrors `parseExtractionResultJson`): tries
+ * every balanced JSON value found in the raw text, so markdown fences, leading
+ * prose ("Here is the JSON:"), and trailing usage notes no longer cause a hard
+ * failure. When every candidate fails, the error message records the response
+ * length, finish_reason and empty_reason so the outbox `last_error` column can
+ * distinguish truncation (`finish_reason=length`) from a genuine format error
+ * without ever storing the response preview (Spec §6.16 / failure-repair-plan).
+ */
+export function parseExtraction(
   raw: string,
   textLen: number,
+  meta?: ExtractionParseMeta,
 ): Array<{
   proposalType: ProposalType;
   subjectRefType: string | null;
@@ -186,12 +231,58 @@ function parseExtraction(
   evidenceStart: number;
   evidenceEnd: number;
 }> {
-  const stripped = stripModelJson(raw);
+  const rawLength = raw.length;
+  const finishReason = meta?.finishReason ?? null;
+  const emptyReason = meta?.emptyReason ?? null;
+
+  // Empty response — surface a distinct, actionable reason so the UI retry
+  // hint can point at the model/provider rather than the parser.
+  if (rawLength === 0) {
+    const parts = [
+      'State extraction LLM 返回空响应',
+      `finishReason=${finishReason ?? 'unknown'}`,
+    ];
+    if (emptyReason) parts.push(`emptyReason=${emptyReason}`);
+    // reasoning_only is the most actionable signal: the model burned its
+    // entire output budget on chain-of-thought and produced no business text.
+    // Surface it ahead of the generic length hint.
+    if (emptyReason === 'reasoning_only') {
+      parts.push('— 模型只输出了思维链，未产生正文，请换模型或提高 max_tokens');
+    } else if (finishReason === 'length') {
+      parts.push('— 输出预算被截断，请提高 max_tokens 或缩短章节');
+    }
+    throw new Error(parts.join(' '));
+  }
+
+  // Truncation fast-path: finish_reason=length almost always means the JSON is
+  // syntactically incomplete. Skip the candidate scan (which will still fail)
+  // and give the user the real root cause.
+  if (finishReason === 'length') {
+    throw new Error(
+      `State extraction 输出被 max_tokens 截断 (rawLength=${rawLength}, finishReason=length) — 请提高 max_tokens 或缩短章节`,
+    );
+  }
+
+  // Multi-candidate recovery: try the whole trimmed text first, then every
+  // balanced JSON value. This is the same strategy used by
+  // parseExtractionResultJson for Canon extraction.
   let parsed: any;
-  try {
-    parsed = JSON.parse(stripped);
-  } catch {
-    throw new Error('State extraction JSON 解析失败');
+  let parseFailed = true;
+  for (const candidate of modelJsonCandidates(raw)) {
+    try {
+      parsed = JSON.parse(candidate);
+      parseFailed = false;
+      break;
+    } catch {
+      // try next candidate
+    }
+  }
+  if (parseFailed) {
+    throw new Error(
+      `State extraction JSON 解析失败 (rawLength=${rawLength}, finishReason=${
+        finishReason ?? 'unknown'
+      }) — 所有 JSON 候选均不可解析`,
+    );
   }
   const list = Array.isArray(parsed?.proposals)
     ? parsed.proposals
@@ -231,8 +322,11 @@ function parseExtraction(
     const es = Number(item.evidenceStart);
     const ee = Number(item.evidenceEnd);
     if (!(es >= 0 && ee > es && ee <= textLen)) {
-      // Spec: invalid offset → reject whole batch
-      throw new Error('State extraction evidence offset 越界，整批拒绝');
+      // Spec: invalid offset → reject whole batch. Include the count so the
+      // user knows how much was dropped.
+      throw new Error(
+        `State extraction evidence offset 越界，整批拒绝 (rawLength=${rawLength}, proposals=${list.length})`,
+      );
     }
     out.push({
       proposalType: item.proposalType,
