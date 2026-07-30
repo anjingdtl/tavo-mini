@@ -203,6 +203,13 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const warnings = checks.filter(
     c => c.severity === 'warning' && c.resolutionStatus === 'open',
   ).length;
+  const overlapBlocked = checks.some(
+    c =>
+      c.resolutionStatus === 'open' &&
+      c.severity === 'error' &&
+      (c.subtype === 'source_overlap' ||
+        c.subtype === 'continuation_anchor_overlap'),
+  );
 
   const renderPlan = () => {
     if (!plan) return null;
@@ -387,6 +394,29 @@ export const ContinuationResultScreen: React.FC<Props> = ({
 
     // awaiting_user with an adoptable artifact (original path)
     if (run.state === 'awaiting_user') {
+      if (overlapBlocked) {
+        return (
+          <Card>
+            <Text style={[styles.h, { color: colors.danger }]}>检测到接缝大段重复</Text>
+            <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+              正文与正文接缝存在大段连续重合，不能直接采纳。请重新生成或放弃本次结果。
+            </Text>
+            <View style={styles.actions}>
+              <Button
+                label="重新生成"
+                onPress={doAbandon}
+                disabled={busy}
+              />
+              <Button
+                label="放弃"
+                variant="secondary"
+                onPress={doAbandon}
+                disabled={busy}
+              />
+            </View>
+          </Card>
+        );
+      }
       return (
         <View style={styles.decisionActions}>
           <Button

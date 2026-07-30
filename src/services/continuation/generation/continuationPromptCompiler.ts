@@ -131,8 +131,26 @@ function stateBlock(s: ContinuationContextSnapshot): string {
   return `【第 ${displayNumberFor(s, s.targetPosition)} 章目标位置有效续写状态】\n人物状态:\n${chars || '（无）'}\n人物关系:\n${relationships || '（无）'}\n知识边界:\n${knowledge || '（无）'}\n人物经历:\n${experiences || '（无）'}\n剧情:\n${plots || '（无）'}`;
 }
 
-function seamBlock(s: ContinuationContextSnapshot): string {
-  return `【原著接缝】${s.bundles.seam.summary}\n${s.bundles.seam.excerpt}`;
+function primaryAnchorBlock(s: ContinuationContextSnapshot): string {
+  const anchor = s.primaryAnchor;
+  if (!anchor) {
+    // Schema 1 compatibility: historical runs only have bundles.seam.
+    return `【原著接缝】${s.bundles.seam.summary}\n${s.bundles.seam.excerpt}`;
+  }
+  if (anchor.kind === 'continuation_chapter') {
+    return `【当前正文接缝：最近续写第 ${displayNumberFor(
+      s,
+      anchor.position ?? 0,
+    )} 章】${anchor.summary}\n${anchor.excerpt}`;
+  }
+  return `【当前正文接缝：原著边界】${anchor.summary}\n${anchor.excerpt}`;
+}
+
+function primaryAnchorRule(s: ContinuationContextSnapshot): string {
+  if (s.primaryAnchor?.kind === 'continuation_chapter') {
+    return '存在“当前正文接缝：最近续写”时，必须从该续写章结尾继续推进。原著内容仅用于 Canon/背景核验；不得从原著末章重新起笔、复述或连续复制原著正文。';
+  }
+  return '仅在没有任何前序续写正文时，从当前正文接缝继续；不得复制原著原句。';
 }
 
 function recentBlock(s: ContinuationContextSnapshot): string {
@@ -263,10 +281,11 @@ export function compilePlannerMessages(
     '你是长篇小说续写规划助手。只输出 JSON，不要写完整正文。',
     'schemaVersion 必须为 1。字段：chapterGoal, centralConflict, beats[], participatingCharacterIds[], characterActions[], plotAdvances[], foreshadowingActions[], proposedStateChanges[], risks[]。',
     '不得违反用户锁定规则与原著 hard Canon。不得读取或编造 boundary 之后的原著情节。',
+    primaryAnchorRule(snapshot),
     lockedBlock(snapshot),
     canonHardBlock(snapshot),
     stateBlock(snapshot),
-    seamBlock(snapshot),
+    primaryAnchorBlock(snapshot),
     recentBlock(snapshot),
     memoryBlock(snapshot),
     episodicBlock(snapshot),
@@ -290,11 +309,12 @@ export function compileWriterMessages(
   const system = [
     '你是长篇小说续写写手。只输出本章正文，不要分析说明、不要标题行。',
     '遵守人物知识边界；不复制大段原著原文；不引入被策略禁止的死亡/复活/新体系。',
+    primaryAnchorRule(snapshot),
     '模仿抽象文风特征，禁止复制原著原句。用户本章明确要求优先于自动风格画像。',
     lockedBlock(snapshot),
     `【规划（已确认版本）】\n目标：${plan.chapterGoal}\n冲突：${plan.centralConflict}\n节拍：${plan.beats.map(b => b.summary).join(' / ')}`,
     stateBlock(snapshot),
-    seamBlock(snapshot),
+    primaryAnchorBlock(snapshot),
     recentBlock(snapshot),
     memoryBlock(snapshot),
     episodicBlock(snapshot),

@@ -31,6 +31,7 @@ import {
   getLatestArtifact,
   getPlan,
   getRunById,
+  findLatestAdoptedRunForChapter,
   insertArtifact,
   insertCheckResults,
   insertRun,
@@ -1019,11 +1020,28 @@ export async function finalizeContinuationChapter(input: {
   // `resolvedModelConfigIds` (built by continuationContextBuilder). The legacy
   // `resolvedLlmConfigIds` key was never written, so it silently read as null
   // and State Extraction fell back to the live active config on every run.
+  let resolvedSourceRunId: string | null = input.sourceRunId ?? null;
+  let sourceRun: ContinuationGenerationRun | null = null;
+  if (input.sourceRunId) {
+    sourceRun = await getRunById(input.sourceRunId);
+    if (
+      !sourceRun ||
+      sourceRun.projectId !== input.projectId ||
+      sourceRun.chapterId !== input.chapterId
+    ) {
+      throw new Error('sourceRunId 不属于当前项目或章节，无法定稿');
+    }
+  } else {
+    sourceRun = await findLatestAdoptedRunForChapter(
+      input.projectId,
+      input.chapterId,
+    );
+    resolvedSourceRunId = sourceRun?.id ?? null;
+  }
+
   let frozenStateExtractionConfigId: number | null = null;
   let missingFrozenConfigReason: string | null = null;
-  if (input.sourceRunId) {
-    const sourceRun = await getRunById(input.sourceRunId);
-    if (sourceRun) {
+  if (sourceRun) {
       try {
         const snapshot = JSON.parse(sourceRun.settingsSnapshotJson);
         const resolved = snapshot?.resolvedModelConfigIds?.stateExtraction;
@@ -1042,7 +1060,8 @@ export async function finalizeContinuationChapter(input: {
         frozenStateExtractionConfigId = null;
         missingFrozenConfigReason = 'settings_snapshot_json_unparseable';
       }
-    }
+  } else {
+    missingFrozenConfigReason = 'manual_or_unknown_source_run';
   }
 
   const dedupeKey = `extract_state:${input.chapterId}:${revisionHash}`;
@@ -1075,12 +1094,12 @@ export async function finalizeContinuationChapter(input: {
 
   // Link the finalized hash onto the source run inside the same tx so the
   // chapter and its run linkage commit or roll back together.
-  if (input.sourceRunId) {
+  if (resolvedSourceRunId) {
     statements.push({
       sql: `UPDATE continuation_generation_runs
         SET finalized_revision_hash = ?, updated_at = ?
         WHERE id = ? AND state IN ('completed', 'awaiting_user', 'interrupted')`,
-      params: [revisionHash, ts, input.sourceRunId],
+      params: [revisionHash, ts, resolvedSourceRunId],
     });
   }
 
@@ -1096,7 +1115,7 @@ export async function finalizeContinuationChapter(input: {
         projectId: input.projectId,
         chapterId: input.chapterId,
         chapterRevisionHash: revisionHash,
-        sourceRunId: input.sourceRunId ?? null,
+        sourceRunId: resolvedSourceRunId,
         llmConfigId: frozenStateExtractionConfigId,
         // Visible audit hint only — never the prompt or chapter body.
         configNote: missingFrozenConfigReason,

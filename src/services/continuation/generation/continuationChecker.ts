@@ -146,6 +146,8 @@ export function runDeterministicChecks(
     issues.push(...runStyleDriftChecks(artifactText, snapshot));
   }
 
+  issues.push(...runAnchorOverlapChecks(artifactText, snapshot));
+
   return issues;
 }
 
@@ -372,15 +374,38 @@ function runStyleDriftChecks(
     }
   }
 
-  // Long consecutive overlap with seam excerpt.
-  const seam = snapshot.bundles.seam?.excerpt || '';
+  return issues;
+}
+
+/**
+ * Anchor-copy detection is a safety gate, not a style preference. It must run
+ * even when the user turns ordinary style checks off.
+ */
+function runAnchorOverlapChecks(
+  artifactText: string,
+  snapshot: ContinuationContextSnapshot,
+): RawCheckIssue[] {
+  const issues: RawCheckIssue[] = [];
+  // Schema 1 runs use the legacy seam; Schema 2 continuation runs never
+  // compare against the original tail because their primary anchor is the
+  // prior continuation.
+  const anchor = snapshot.primaryAnchor;
+  const seam = anchor?.excerpt || snapshot.bundles.seam?.excerpt || '';
   if (seam.length >= 24 && artifactText.length >= 24) {
     const overlap = longestCommonSubstringLength(seam, artifactText, 80);
+    const subtype =
+      anchor?.kind === 'continuation_chapter'
+        ? 'continuation_anchor_overlap'
+        : 'source_overlap';
+    const sourceLabel =
+      subtype === 'source_overlap' ? '原著接缝' : '最近续写接缝';
     if (overlap >= 24) {
-      const idx = artifactText.indexOf(seam.slice(0, Math.min(12, seam.length)));
+      const idx = artifactText.indexOf(
+        seam.slice(0, Math.min(12, seam.length)),
+      );
       issues.push({
         category: 'style',
-        subtype: 'source_overlap',
+        subtype,
         severity: overlap >= 40 ? 'error' : 'warning',
         confidence: 0.7,
         generatedStart: idx >= 0 ? idx : null,
@@ -389,7 +414,7 @@ function runStyleDriftChecks(
           idx >= 0
             ? artifactText.slice(idx, idx + Math.min(overlap, 40))
             : '',
-        description: `与原著接缝存在约 ${overlap} 字连续重合，疑似复制原文`,
+        description: `与${sourceLabel}存在约 ${overlap} 字连续重合，疑似复制接缝正文`,
         evidenceIds: [],
         suggestedFix: '删除或改写与原著连续重合的片段',
       });
