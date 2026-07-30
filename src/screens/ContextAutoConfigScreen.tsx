@@ -39,7 +39,7 @@ const QUICK_PRESETS: { label: string; value: number }[] = [
   { label: '1M', value: 1000000 },
 ];
 
-const DEFAULT_INPUT_VALUE = 200000;
+const DEFAULT_INPUT_VALUE = 1000000;
 const WARNING_THRESHOLD = 8000;
 
 // 数字格式化：1000 → "1,000"
@@ -293,7 +293,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
               value={inputText}
               onChangeText={setInputText}
               keyboardType="number-pad"
-              placeholder="例：200000"
+              placeholder="例：1000000"
               placeholderTextColor={theme.colors.textMuted}
               style={[styles.input, { color: theme.colors.textPrimary }]}
             />
