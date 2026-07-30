@@ -68,6 +68,12 @@ export const LLMSettingsScreen: React.FC = () => {
   >('idle');
   // 10.6: 编辑态 ref，用户主动编辑后 store 变化不再覆盖本地 draft
   const isEditingRef = useRef(false);
+  // Tab 过滤：把在线 API 与本地 GGUF 配置分开管理和删除。
+  // activeTab 与 draft.provider_type 解耦——编辑区切换类型只改 draft，
+  // 不回写 activeTab，避免未保存草稿反向跳变列表。
+  const [activeTab, setActiveTab] = useState<LLMConfig['provider_type']>(
+    'openai_compatible',
+  );
 
   useEffect(() => {
     loadSettings();
@@ -98,6 +104,11 @@ export const LLMSettingsScreen: React.FC = () => {
       'openai_compatible',
     [llmConfigs],
   );
+  // 当前 Tab 下的配置（用于列表渲染与删除计数）。
+  const visibleConfigs = useMemo(
+    () => llmConfigs.filter(config => config.provider_type === activeTab),
+    [llmConfigs, activeTab],
+  );
 
   const validate = () => {
     const missing: string[] = [];
@@ -126,7 +137,22 @@ export const LLMSettingsScreen: React.FC = () => {
 
   const startNewConfig = () => {
     setSelectedId(0);
-    setDraft({ ...emptyDraft, name: `配置 ${llmConfigs.length + 1}` });
+    // 新增配置预填当前 Tab 类型，避免用户在本地 Tab 新增后还要手动切类型。
+    // 切到 llama_cpp 时锁定 cpu 后端并把上下文改小，与编辑区 SegmentedControl 一致。
+    const isLocal = activeTab === 'llama_cpp';
+    setDraft({
+      ...emptyDraft,
+      name: `配置 ${llmConfigs.length + 1}`,
+      provider_type: activeTab,
+      local_backend: isLocal ? 'cpu' : null,
+      context_window: isLocal ? 2048 : emptyDraft.context_window,
+      max_output_tokens: isLocal
+        ? Math.min(
+            emptyDraft.max_output_tokens,
+            LOCAL_LLM_DEFAULT_MAX_OUTPUT_TOKENS,
+          )
+        : emptyDraft.max_output_tokens,
+    });
   };
 
   const save = async () => {
@@ -284,8 +310,13 @@ export const LLMSettingsScreen: React.FC = () => {
       startNewConfig();
       return;
     }
-    if (llmConfigs.length <= 1) {
-      Alert.alert('无法删除', '至少需要保留一个 LLM 配置。');
+    // 删除限制按当前 Tab 同类配置计数，保证每类至少保留一个，
+    // 避免某类被清空后 Tab 显示空白。
+    const sameTypeCount = visibleConfigs.length;
+    if (sameTypeCount <= 1) {
+      const typeLabel =
+        activeTab === 'llama_cpp' ? '本地 GGUF' : '在线 API';
+      Alert.alert('无法删除', `至少需要保留一个${typeLabel}配置。`);
       return;
     }
     Alert.alert('删除配置', `确定删除「${draft.name}」？`, [
@@ -317,8 +348,27 @@ export const LLMSettingsScreen: React.FC = () => {
         } · 当前：${activeName}`}
       />
       <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.tabBar}>
+          <SegmentedControl
+            value={activeTab}
+            options={[
+              { value: 'openai_compatible', label: '在线 API' },
+              { value: 'llama_cpp', label: '本地 GGUF' },
+            ]}
+            onChange={tab => {
+              setActiveTab(tab);
+              // 切 Tab 时若当前选中配置不属于新 Tab，清空选中态，
+              // 让 useEffect 从新 Tab 里挑一个合理配置（active 优先）。
+              const currentBelongs = draft.provider_type === tab;
+              if (!currentBelongs) {
+                isEditingRef.current = false;
+                setSelectedId(null);
+              }
+            }}
+          />
+        </View>
         <View style={styles.configList}>
-          {llmConfigs.map(config => {
+          {visibleConfigs.map(config => {
             const selected = config.id === draft.id;
             const active = config.is_active === 1;
             return (
@@ -595,6 +645,7 @@ export const LLMSettingsScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: 96 },
+  tabBar: { marginBottom: spacing.md },
   configList: {
     flexDirection: 'row',
     flexWrap: 'wrap',
