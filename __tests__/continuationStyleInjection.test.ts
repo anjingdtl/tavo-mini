@@ -102,6 +102,8 @@ import { CanonQueryService } from '../src/services/continuation/canon/canonQuery
 import { getEffectiveContinuationState } from '../src/services/continuation/generation/continuationStateService';
 import { ensureGenerationSettings } from '../src/services/continuation/generation/generationRepository';
 import { buildContinuationContext } from '../src/services/continuation/generation/continuationContextBuilder';
+import * as database from '../src/services/database';
+import { estimateTokens } from '../src/utils/tokenEstimator';
 
 function validProfile(): OriginalStyleProfileV2 {
   return {
@@ -712,6 +714,53 @@ describe('buildContinuationContext style path', () => {
     const writer = compileWriterMessages(snapshot, emptyPlan)[0].content;
     expect(writer).toContain('第三人称');
     expect(writer).toContain('保持克制');
+  });
+
+  it('counts the latest continuation anchor in the writer context budget', async () => {
+    (getInjectableStyleProfile as jest.Mock).mockResolvedValue(null);
+    const continuationTail =
+      '续写上一章的结尾：雨停之后，沈舟握紧钥匙，决定连夜去旧码头。';
+    (database.getChaptersByProject as jest.Mock).mockResolvedValue([
+      {
+        id: 21,
+        project_id: 1,
+        position: 0,
+        title: '续写第一章',
+        content: continuationTail,
+      },
+    ]);
+
+    const { snapshot, trace } = await buildContinuationContext({
+      projectId: 1,
+      targetChapterId: 22,
+      targetPosition: 1 as any,
+      currentChapterContent: '',
+      userInstruction: '承接上一章推进',
+      modelContextLimit: 32_768,
+      maxOutputTokens: 2048,
+      activeLlmConfigId: 1,
+    });
+
+    expect(continuationSourceReader.listBoundedSourceChapters).not.toHaveBeenCalled();
+    expect(snapshot.primaryAnchor).toMatchObject({
+      kind: 'continuation_chapter',
+      chapterId: 21,
+      excerpt: continuationTail,
+    });
+    expect(compileWriterMessages(snapshot, emptyPlan)[0].content).toContain(
+      continuationTail,
+    );
+
+    const anchorCategory = trace.categories.find(
+      category => category.name === 'primaryAnchor',
+    );
+    expect(anchorCategory).toMatchObject({ candidates: 1, selected: 1 });
+    expect(anchorCategory?.tokens).toBe(
+      estimateTokens(snapshot.primaryAnchor!.excerpt),
+    );
+    expect(trace.totalInputTokens).toBe(
+      trace.categories.reduce((sum, category) => sum + category.tokens, 0),
+    );
   });
 
   it('strict blocks generation when no injectable profile', async () => {

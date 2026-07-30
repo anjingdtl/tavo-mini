@@ -77,8 +77,8 @@ describe('ContinuationResultScreen adoption decision', () => {
     );
 
     await waitFor(() => expect(getByText('检测到接缝大段重复')).toBeTruthy());
-    expect(getByText('重新生成')).toBeTruthy();
-    expect(getByText('放弃')).toBeTruthy();
+    expect(getByText('放弃并返回')).toBeTruthy();
+    expect(queryByText('重新生成')).toBeNull();
     expect(queryByText('采纳')).toBeNull();
   });
 });

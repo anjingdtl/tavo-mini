@@ -399,17 +399,11 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           <Card>
             <Text style={[styles.h, { color: colors.danger }]}>检测到接缝大段重复</Text>
             <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
-              正文与正文接缝存在大段连续重合，不能直接采纳。请重新生成或放弃本次结果。
+              正文与正文接缝存在大段连续重合，不能直接采纳。请放弃本次结果，返回编辑器后重新生成。
             </Text>
             <View style={styles.actions}>
               <Button
-                label="重新生成"
-                onPress={doAbandon}
-                disabled={busy}
-              />
-              <Button
-                label="放弃"
-                variant="secondary"
+                label="放弃并返回"
                 onPress={doAbandon}
                 disabled={busy}
               />
