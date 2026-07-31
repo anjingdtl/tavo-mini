@@ -167,6 +167,9 @@ export interface InsertSourceInput {
   chapterCount: number;
   parserVersion: string;
   normalizationVersion: string;
+  sourceFilesJson?: string | null;
+  isMultiFile?: boolean;
+  fileCount?: number;
   errorCode?: string | null;
   errorMessage?: string | null;
 }
@@ -182,9 +185,11 @@ export async function insertSource(
       project_id, version, status, display_name, original_file_name, mime_type,
       detected_encoding, file_size_bytes, raw_sha256, normalized_sha256,
       normalized_char_count, normalized_byte_count, chapter_count,
-      parser_version, normalization_version, error_code, error_message,
+      parser_version, normalization_version,
+      source_files_json, is_multi_file, file_count,
+      error_code, error_message,
       created_at, updated_at, activated_at
-    ) VALUES (?, ?, ?, ?, ?, 'text/plain', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    ) VALUES (?, ?, ?, ?, ?, 'text/plain', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     [
       input.projectId,
       input.version,
@@ -200,6 +205,9 @@ export async function insertSource(
       input.chapterCount,
       input.parserVersion,
       input.normalizationVersion,
+      input.sourceFilesJson ?? null,
+      input.isMultiFile ? 1 : 0,
+      input.fileCount ?? 1,
       input.errorCode ?? null,
       input.errorMessage ?? null,
       ts,
@@ -433,6 +441,7 @@ export interface ChunkInput {
   charEndOffset: Utf16Offset;
   content: string;
   contentSha256: string;
+  fileIndex: number;
 }
 
 /** Insert a batch of chunks within one transaction (Spec §9.3, §10.2). */
@@ -444,8 +453,8 @@ export async function insertChunks(
   if (chunks.length === 0) return;
   const statements: SqlStatement[] = chunks.map(c => ({
     sql: `INSERT INTO continuation_source_text_chunks (
-        source_id, chunk_index, char_start_offset, char_end_offset, content, content_sha256
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
+        source_id, chunk_index, char_start_offset, char_end_offset, content, content_sha256, file_index
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     params: [
       sourceId,
       c.chunkIndex,
@@ -453,6 +462,7 @@ export async function insertChunks(
       c.charEndOffset,
       c.content,
       c.contentSha256,
+      c.fileIndex,
     ],
   }));
   await executeTransaction(db, statements);
@@ -547,6 +557,7 @@ export interface InsertChapterInput {
   sourceEndOffset: Utf16Offset;
   isExcluded?: boolean;
   exclusionReason?: string | null;
+  fileIndex: number;
 }
 
 /** Insert a batch of chapter rows within one transaction (Spec §9.4). */
@@ -561,8 +572,8 @@ export async function insertChapters(
     sql: `INSERT INTO continuation_source_chapters (
         source_id, position, volume_title, detected_title, title, content_sha256,
         char_count, paragraph_count, source_start_offset, content_start_offset,
-        source_end_offset, is_excluded, exclusion_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        source_end_offset, is_excluded, exclusion_reason, file_index, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     params: [
       sourceId,
       c.position,
@@ -577,6 +588,7 @@ export async function insertChapters(
       c.sourceEndOffset,
       c.isExcluded ? 1 : 0,
       c.exclusionReason ?? null,
+      c.fileIndex,
       ts,
       ts,
     ],
@@ -876,5 +888,32 @@ export async function touchProject(projectId: number): Promise<void> {
     await openDatabase(),
     'UPDATE projects SET updated_at = ? WHERE id = ?',
     [now(), projectId],
+  );
+}
+
+/**
+ * Update multi-file metadata on a source. Called at the end of
+ * runPipelineToReview to record per-file provenance.
+ */
+export async function updateSourceMultiFileMeta(
+  db: SQLite.SQLiteDatabase,
+  sourceId: number,
+  patch: {
+    sourceFilesJson: string | null;
+    isMultiFile: boolean;
+    fileCount: number;
+  },
+): Promise<void> {
+  await db.executeSql(
+    `UPDATE continuation_sources
+      SET source_files_json = ?, is_multi_file = ?, file_count = ?, updated_at = ?
+      WHERE id = ?`,
+    [
+      patch.sourceFilesJson,
+      patch.isMultiFile ? 1 : 0,
+      patch.fileCount,
+      now(),
+      sourceId,
+    ],
   );
 }
