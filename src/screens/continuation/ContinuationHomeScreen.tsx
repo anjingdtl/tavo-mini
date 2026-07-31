@@ -89,29 +89,56 @@ export function useContinuationHome(navigation: ContinuationHomeNavigation) {
 
   const handleDelete = useCallback(() => {
     if (!activeSource || !currentProject) return;
-    Alert.alert(
-      '删除原著',
-      `确定删除「${activeSource.displayName}」的原著数据？\n\n此操作会清除原著源、章节和续写起点，但不会影响你的续写章节。Phase 2 分析状态将被标记为过期。`,
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '删除',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const { deleteContinuationSource } = await import(
-                '../../services/continuation/continuationImportService'
-              );
-              await deleteContinuationSource(currentProject.id);
-              await reload();
-              Toast.show({ type: 'success', text1: '原著已删除' });
-            } catch (e: any) {
-              Toast.show({ type: 'error', text1: '删除失败', text2: e?.message });
-            }
+    const projectId = currentProject.id;
+    const displayName = activeSource.displayName;
+    // Pre-count so the confirm dialog can promise an exact chapter number.
+    // Failure to count is non-fatal; we fall back to a generic preserve message.
+    void (async () => {
+      let preservedChapterCount = 0;
+      let outdatedRunCount = 0;
+      try {
+        const { previewDeleteContinuationSource } = await import(
+          '../../services/continuation/continuationImportService'
+        );
+        const preview = await previewDeleteContinuationSource(projectId);
+        preservedChapterCount = preview.preservedChapterCount;
+        outdatedRunCount = preview.outdatedRunCount;
+      } catch {
+        // keep defaults
+      }
+
+      const runWarn =
+        outdatedRunCount > 0
+          ? `\n\n注意：有 ${outdatedRunCount} 个未完成/未采纳的 AI 续写结果将失效，请先到续写结果页采纳后再删。`
+          : '';
+      Alert.alert(
+        '删除原著',
+        `确定删除「${displayName}」的原著数据？\n\n只会清除：原著正文、原著分章、续写起点、Canon/文风分析。\n\n将保留本项目 ${preservedChapterCount} 篇续写章节（「续写」Tab 里的内容不受影响）。分析状态会过期，需重新导入原著后再分析。${runWarn}`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '删除',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const { deleteContinuationSource } = await import(
+                  '../../services/continuation/continuationImportService'
+                );
+                const result = await deleteContinuationSource(projectId);
+                await reload();
+                Toast.show({
+                  type: 'success',
+                  text1: '原著已删除',
+                  text2: `已保留 ${result.preservedChapterCount} 篇续写章节，请到「续写」Tab 核对`,
+                });
+              } catch (e: any) {
+                Toast.show({ type: 'error', text1: '删除失败', text2: e?.message });
+              }
+            },
           },
-        },
-      ],
-    );
+        ],
+      );
+    })();
   }, [activeSource, currentProject, reload]);
 
   return {
@@ -257,7 +284,7 @@ export const ContinuationHomeBody: React.FC<{
             />
             <View style={styles.secondaryActions}>
               <Button
-                label="查看章节"
+                label="查看原著章节"
                 variant="ghost"
                 onPress={home.handleViewChapters}
                 flex
