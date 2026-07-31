@@ -258,14 +258,25 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     const ch = mockStore.chapters.find(c => c.id === chapterId);
     return mockRes(ch ? [ch] : []);
   }
-  // INSERT proposals
-  if (s.startsWith('INSERT INTO CONTINUATION_STATE_PROPOSALS')) {
+  // INSERT proposals (H8-Generation: INSERT OR IGNORE, params 顺序变化)
+  if (s.startsWith('INSERT') && s.includes('CONTINUATION_STATE_PROPOSALS')) {
     mockStore.proposals.push({
-      proposalType: params[4],
-      evidenceStart: params[8],
-      evidenceEnd: params[9],
+      proposalType: params[6],
+      evidenceStart: params[11],
+      evidenceEnd: params[12],
     });
     return mockRes([]);
+  }
+  // SELECT proposals after insert (insertProposals 末尾统一查询)
+  if (s.startsWith('SELECT') && s.includes('FROM CONTINUATION_STATE_PROPOSALS')) {
+    return mockRes(
+      mockStore.proposals.map(p => ({
+        proposal_type: p.proposalType,
+        evidence_start: p.evidenceStart,
+        evidence_end: p.evidenceEnd,
+        status: 'pending',
+      })),
+    );
   }
   // Outbox: list pending
   if (s.startsWith('SELECT * FROM CONTINUATION_STATE_SYNC_OUTBOX')) {
@@ -317,8 +328,12 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
 jest.mock('../src/data/connection/openDatabase', () => ({
   openDatabase: jest.fn(async () => ({
     executeSql: mockExecuteSql,
+    // H8-Generation: insertProposals 改用 executeTransaction 批量插入，
+    // 走 db.transaction(scope) → tx.executeSql。让 tx.executeSql 复用
+    // mockExecuteSql，使 INSERT INTO continuation_state_proposals 仍能
+    // 被 mock 捕获并 push 到 mockStore.proposals。
     transaction: jest.fn(async (fn: any) =>
-      fn({ executeSql: jest.fn(async () => mockRes([])) }),
+      fn({ executeSql: mockExecuteSql }),
     ),
   })),
 }));

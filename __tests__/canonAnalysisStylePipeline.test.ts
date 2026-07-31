@@ -8,6 +8,8 @@ const mockUpdateSnapshotMeta = jest.fn();
 const mockCountFutureEvidence = jest.fn();
 const mockCountOrphanEvidence = jest.fn();
 const mockListBoundedSourceChapters = jest.fn();
+const mockListBoundedSourceChaptersForRange = jest.fn();
+const mockListBoundedSourceChapterMetas = jest.fn();
 const mockGetSnapshot = jest.fn();
 const mockRunStyleAnalysis = jest.fn();
 const mockActivateSnapshotAndStyleProfile = jest.fn();
@@ -26,6 +28,10 @@ jest.mock('../src/services/continuation/continuationSourceReader', () => ({
     getSnapshot: (...args: any[]) => mockGetSnapshot(...args),
     listBoundedSourceChapters: (...args: any[]) =>
       mockListBoundedSourceChapters(...args),
+    listBoundedSourceChaptersForRange: (...args: any[]) =>
+      mockListBoundedSourceChaptersForRange(...args),
+    listBoundedSourceChapterMetas: (...args: any[]) =>
+      mockListBoundedSourceChapterMetas(...args),
   },
 }));
 jest.mock('../src/services/llm', () => ({
@@ -176,6 +182,30 @@ describe('complete Canon analysis style stage', () => {
         position: 0,
         title: '第一章',
         content: '正文',
+        range: { start: 0, end: 80 },
+        clippedByBoundary: false,
+      },
+    ]);
+    // H1: canonAnalysisService 改用按区间流式读取，mock 需返回同一章节
+    mockListBoundedSourceChaptersForRange.mockResolvedValue([
+      {
+        id: 1,
+        sourceId: sourceSnapshot.sourceId,
+        position: 0,
+        title: '第一章',
+        content: '正文',
+        range: { start: 0, end: 80 },
+        clippedByBoundary: false,
+      },
+    ]);
+    // H1: finalize 阶段轻量元数据（不含 content），用于计算 analyzedChapters
+    mockListBoundedSourceChapterMetas.mockResolvedValue([
+      {
+        id: 1,
+        sourceId: sourceSnapshot.sourceId,
+        position: 0,
+        title: '第一章',
+        contentLength: 80,
         range: { start: 0, end: 80 },
         clippedByBoundary: false,
       },
