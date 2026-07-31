@@ -10,8 +10,10 @@ function runFixtureValidator(): SpawnSyncReturns<string> {
     'scripts',
     'generate-migration-fixtures.py',
   );
+  // win32 上 `python` 可能是 Microsoft Store 的应用执行别名 stub
+  // （spawn 成功但 exit 9009，不抛 ENOENT），因此优先试 `py`。
   const candidates =
-    process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python'];
+    process.platform === 'win32' ? ['py', 'python'] : ['python3', 'python'];
   for (const command of candidates) {
     const result = spawnSync(command, [script, '--check'], {
       cwd: path.resolve(__dirname, '..'),

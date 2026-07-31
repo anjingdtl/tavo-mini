@@ -114,6 +114,7 @@ export const ContinuationSourceOrderingScreen: React.FC<{
     let cancelled = false;
     (async () => {
       try {
+        let samplingFailedCount = 0;
         const sampled = await Promise.all(
           rawFiles.map(async f => {
             const { headSample, tailSample } = await sampleFile(
@@ -121,10 +122,19 @@ export const ContinuationSourceOrderingScreen: React.FC<{
               f.fileSizeBytes,
               f.detectedEncoding,
             );
+            if (!headSample && !tailSample) samplingFailedCount += 1;
             return { ...f, headSample, tailSample };
           }),
         );
         if (cancelled) return;
+        if (samplingFailedCount > 0) {
+          // 2026-08-01 修复：采样失败不再完全静默，提示用户将仅按文件名排序。
+          Toast.show({
+            type: 'info',
+            text1: '部分文件预览失败',
+            text2: '将仅按文件名排序',
+          });
+        }
         setFiles(sampled);
 
         const llmConfig = settings.llmConfig;

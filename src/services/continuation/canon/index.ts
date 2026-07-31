@@ -34,6 +34,17 @@ export type {
   ProcessAnalysisOptions,
 } from './canonAnalysisService';
 export {
+  planAdaptiveBatching,
+  precheckCanonAnalysis,
+  resolveExtractionMaxTokens,
+  resolveChapterTextLimitFromBudget,
+} from './canonAnalysisService';
+export type {
+  AdaptiveBatch,
+  AdaptiveBatchPlan,
+  CanonAnalysisPrecheck,
+} from './canonAnalysisService';
+export {
   activateSnapshotAndStyleProfile,
 } from './activateSnapshotAndStyleProfile';
 export type {
