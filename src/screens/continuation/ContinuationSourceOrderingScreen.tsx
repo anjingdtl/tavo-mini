@@ -34,6 +34,7 @@ import {
   previewParsedSource,
   startContinuationImport,
 } from '../../services/continuation/continuationImportService';
+import { unlinkPickerTempCopies } from '../../services/continuation/continuationPickerTempLifecycle';
 import { requireContinuationTextImport } from '../../native/ContinuationTextImportModule';
 
 interface RouteFile {
@@ -195,12 +196,31 @@ export const ContinuationSourceOrderingScreen: React.FC<{
   }, []);
 
   const removeFile = useCallback((index: number) => {
-    setFiles(prev => prev.filter((_, i) => i !== index));
+    setFiles(prev => {
+      const removed = prev[index];
+      if (removed?.localPath) {
+        void unlinkPickerTempCopies([removed.localPath]);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
   }, []);
+
+  // Picker cache copies are owned by this screen after multi-file handoff.
+  // Clean after durable jobDir copy, on remove, or when user presses 返回.
+  // (No unmount-effect cleanup: React Strict Mode remount would delete too early.)
+  const cleanupPickerCopies = useCallback((paths: string[]) => {
+    void unlinkPickerTempCopies(paths.filter(Boolean));
+  }, []);
+
+  const handleBack = useCallback(() => {
+    cleanupPickerCopies(files.map(f => f.localPath));
+    navigation.goBack();
+  }, [files, navigation, cleanupPickerCopies]);
 
   const handleConfirm = useCallback(async () => {
     if (files.length === 0) return;
     setImporting(true);
+    const pickerPaths = files.map(f => f.localPath);
     try {
       const job = await startContinuationImport({
         projectId,
@@ -210,6 +230,8 @@ export const ContinuationSourceOrderingScreen: React.FC<{
           ...(f.encodingOverride ? { encodingOverride: f.encodingOverride } : {}),
         })),
       });
+      // Durable copies now live under continuation-imports/<jobId>/; drop caches.
+      cleanupPickerCopies(pickerPaths);
       const preview = await previewParsedSource(job.id);
       Alert.alert(
         '解析完成',
@@ -235,7 +257,7 @@ export const ContinuationSourceOrderingScreen: React.FC<{
     } finally {
       setImporting(false);
     }
-  }, [files, projectId, navigation]);
+  }, [files, projectId, navigation, cleanupPickerCopies]);
 
   const renderItem = useCallback(
     ({ item, index }: { item: FileItem; index: number }) => {
@@ -317,7 +339,7 @@ export const ContinuationSourceOrderingScreen: React.FC<{
         <Header
           title="排序原著文件"
           action={
-            <Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />
+            <Button label="返回" variant="ghost" onPress={handleBack} />
           }
         />
         <View style={styles.loadingWrap}>
@@ -336,13 +358,13 @@ export const ContinuationSourceOrderingScreen: React.FC<{
         title="排序原著文件"
         subtitle={`共 ${files.length} 个文件`}
         action={
-          <Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />
+          <Button label="返回" variant="ghost" onPress={handleBack} />
         }
       />
       <FlatList
         data={files}
         renderItem={renderItem}
-        keyExtractor={item => item.localPath}
+        keyExtractor={(item, index) => `${item.originalFileName}-${index}`}
         contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xl }}
         ListHeaderComponent={
           ordering ? (
