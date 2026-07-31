@@ -287,6 +287,7 @@ export const ContinuationSourceChaptersScreen: React.FC<{
             originalFileName: f.originalFileName,
             detectedEncoding: f.detectedEncoding,
             fileSizeBytes: f.fileSizeBytes,
+            ...(f.encodingOverride ? { encodingOverride: f.encodingOverride } : {}),
           })),
         });
       }

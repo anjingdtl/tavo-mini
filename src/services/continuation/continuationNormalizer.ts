@@ -128,7 +128,6 @@ export interface StreamingNormalizer {
 }
 
 export function createStreamingNormalizer(): StreamingNormalizer {
-  let seenFirstChunk = false;
   let removedBom = false;
   let pendingCR = false; // previous chunk ended with a lone \r awaiting resolution
   // If a chunk ends with a lone high surrogate (the first half of an emoji),
@@ -152,13 +151,14 @@ export function createStreamingNormalizer(): StreamingNormalizer {
       }
     }
 
-    // BOM strip — only on the very first chunk, mirroring stripBom().
-    if (!seenFirstChunk) {
-      seenFirstChunk = true;
-      if (text.charCodeAt(0) === 0xfeff) {
-        text = text.slice(1);
-        removedBom = true;
-      }
+    // BOM strip — strip U+FEFF from the start of any chunk. 多文件导入时每个
+    // 文件的第一个 chunk 可能带 BOM（native decodeChunk 不 strip），原逻辑
+    // 只在首个 chunk strip 一次，后续文件 BOM 残留进 normalized text 污染
+    // hash/offset。U+FEFF 在正常文本中不会出现（ZWNBS 已废弃），每次检测到
+    // 就 strip 是安全的。
+    if (text.charCodeAt(0) === 0xfeff) {
+      text = text.slice(1);
+      removedBom = true;
     }
 
     // Control-char strip is stateless and per-character (keeps \t \n \r). Doing
@@ -198,20 +198,13 @@ export function createStreamingNormalizer(): StreamingNormalizer {
   };
 
   const finalize = (): StreamingNormalizerResult => {
-    // Flush a deferred high surrogate: an orphaned high surrogate is not valid
-    // UTF-8, but utf8Encode encodes it as 3 bytes (matching the one-shot path
-    // if the source ended mid-pair — which is a malformed source anyway).
-    if (pendingHighSurrogate) {
-      const carried = pendingHighSurrogate;
-      pendingHighSurrogate = '';
-      // Re-run only the byte/hash accounting for the carried char; control-char
-      // strip and BOM already handled on prior chunks. \r is impossible here.
-      charCount += carried.length;
-      byteCount += utf8ByteLength(carried);
-      hasher.updateString(carried);
-    }
-    // A dangling pendingCR (chunk ended with \r and no more input) is a lone \r
-    // → \n, matching the one-shot /\r/g replacement at EOF.
+    // 丢弃 deferred 高代理字符：文件以孤立高代理结尾是 malformed source，
+    // 原逻辑把它计入 charCount/hash 但 push 返回值不含它，导致
+    // validateChunkContiguity 校验必然失败（charEndOffset 总和 ≠
+    // normalizedCharCount）。丢弃它保证 charCount = push 返回值长度之和。
+    pendingHighSurrogate = '';
+    // pendingCR（文件以 \r 结尾）是合法的老式 Mac 格式，保留 '\n' 的
+    // charCount/hash 计算（与 one-shot 路径等价）。
     if (pendingCR) {
       const tail = '\n';
       charCount += tail.length;

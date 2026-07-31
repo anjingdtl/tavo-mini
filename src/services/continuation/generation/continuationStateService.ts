@@ -56,22 +56,38 @@ export async function getEffectiveContinuationState(input: {
     input.targetPosition,
   );
 
-  // Drop events whose chapter revision no longer matches stored chapter content.
+  // 批量查询章节存在性，避免 N+1（原逐条 SELECT content 只为查存在性，
+  // 却把整章正文拉到内存再扔掉，大章节 + 多事件时主线程长时间卡在 SQLite）。
   const db = await openDatabase();
   const applied: typeof events = [];
   const omittedReasons: string[] = [];
-  for (const ev of events) {
-    const [ch] = await db.executeSql(
-      'SELECT content FROM chapters WHERE id = ?',
-      [ev.chapterId],
-    );
-    if (ch.rows.length === 0) {
-      omittedReasons.push(`event ${ev.id}: chapter missing`);
-      continue;
+  if (events.length > 0) {
+    const chapterIds = [...new Set(
+      events.map(e => e.chapterId).filter((id): id is number => id != null),
+    )];
+    const existingIds = new Set<number>();
+    // SQLite 参数上限 999，分批查询。
+    const BATCH = 500;
+    for (let i = 0; i < chapterIds.length; i += BATCH) {
+      const batch = chapterIds.slice(i, i + BATCH);
+      const placeholders = batch.map(() => '?').join(',');
+      const [result] = await db.executeSql(
+        `SELECT id FROM chapters WHERE id IN (${placeholders})`,
+        batch,
+      );
+      for (let j = 0; j < result.rows.length; j += 1) {
+        existingIds.add(result.rows.item(j).id);
+      }
     }
-    // revision hash check is done by caller invalidation; here we trust
-    // non-invalidated events. If chapter deleted, skip.
-    applied.push(ev);
+    for (const ev of events) {
+      if (!existingIds.has(ev.chapterId)) {
+        omittedReasons.push(`event ${ev.id}: chapter missing`);
+        continue;
+      }
+      // revision hash check is done by caller invalidation; here we trust
+      // non-invalidated events. If chapter deleted, skip.
+      applied.push(ev);
+    }
   }
 
   const characterStates: EffectiveContinuationState['characterStates'] = [];
