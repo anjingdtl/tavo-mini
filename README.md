@@ -9,7 +9,7 @@
 
 </div>
 
-当前版本：**V2.11.7** · 支持 Android 7.0 及以上设备
+当前版本：**V2.11.8** · 支持 Android 7.0 及以上设备
 
 ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮助你管理作品、写章节、整理人物和世界观，也可以按你的设置调用 AI 辅助创作。作品数据默认保存在手机本地；是否使用在线模型，始终由你决定。
 
@@ -86,9 +86,9 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 ## 获取正式安装包
 
-正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.7-release.apk`
+正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.8-release.apk`
 
-构建标识：`versionName=V2.11.7`，`versionCode=2110700`。
+构建标识：`versionName=V2.11.8`，`versionCode=2110800`。
 
 ## 开发者参考
 
@@ -98,4 +98,4 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 - [发布验收清单](docs/RELEASE_CHECKLIST.md)
 - [完整版本变更](CHANGELOG.md)
 
-The current version is **V2.11.7**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, and text-to-speech.
+The current version is **V2.11.8**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, and text-to-speech.
