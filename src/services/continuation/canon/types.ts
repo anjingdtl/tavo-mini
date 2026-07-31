@@ -442,25 +442,35 @@ export const ANALYSIS_MATERIAL_TYPES = [
 export type AnalysisMaterialType = (typeof ANALYSIS_MATERIAL_TYPES)[number];
 
 /**
- * Schema 23 request protocol (v3: single `full_extraction` call per batch,
- * replacing the v2 two-call `character_state` / `world_plot` split to halve
- * input-token duplication).
+ * Schema 23 request protocol. v3 originally merged the v2 two-call
+ * `character_state` / `world_plot` split into a single `full_extraction` call
+ * to halve input-token duplication, but that single call demands a 65536-token
+ * output budget that stalls large-source analysis (500KB+ TXT) for minutes
+ * with no progress feedback. v3.1 reverts to the two-call split: each call
+ * outputs fewer categories (5 / 3) at a 32768-token budget, halves the
+ * per-call timeout risk, and doubles the progress granularity.
  *
- * Legacy group values remain readable so an interrupted v2 run can resume
- * without losing its completed work items.
+ * Legacy `full_extraction` remains readable so an interrupted v3 run can
+ * resume without losing its completed work items.
  */
 export const ANALYSIS_REQUEST_GROUPS = [
-  'full_extraction',
+  'character_state',
+  'world_plot',
 ] as const;
 
 export type AnalysisRequestGroup = (typeof ANALYSIS_REQUEST_GROUPS)[number];
 
 /**
- * Legacy v2 group types (`character_state` / `world_plot`). Kept in the
- * type union so interrupted v2 runs can resume without a type error on
- * the persisted `materialType` column.
+ * Legacy group types (`character_state` / `world_plot` / `full_extraction`).
+ * `full_extraction` was the v3 single-call protocol; v3.1 reverts to the
+ * two-call split. All three remain in the type union so interrupted runs
+ * from any protocol version can resume without a type error on the
+ * persisted `materialType` column.
  */
-type LegacyAnalysisRequestGroup = 'character_state' | 'world_plot';
+type LegacyAnalysisRequestGroup =
+  | 'character_state'
+  | 'world_plot'
+  | 'full_extraction';
 
 export type AnalysisWorkItemType =
   | AnalysisMaterialType

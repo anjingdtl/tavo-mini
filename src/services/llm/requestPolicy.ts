@@ -44,7 +44,10 @@ export function resolveLLMTimeoutPolicy(
   if (scenario === 'connection_test') {
     return { totalTimeoutMs: LLM_TIMEOUTS.connectionMs };
   }
-  if (scenario === 'continuation_canon_analysis') {
+  if (
+    scenario === 'continuation_canon_analysis' ||
+    scenario === 'continuation_style_analysis'
+  ) {
     return { totalTimeoutMs: LLM_TIMEOUTS.canonAnalysisMs };
   }
   // 构建场景（construction_*）输出体量大、JSON 严格，单次/分批均走 180 秒。
