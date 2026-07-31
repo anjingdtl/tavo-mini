@@ -30,11 +30,17 @@ interface LlmOrderResponse {
 /**
  * Order multiple TXT files by analyzing head/tail samples with an LLM.
  * Falls back to filename sort on any LLM failure or invalid response.
+ *
+ * `modelConfigId` is currently used only for logging/future telemetry; the
+ * active LLM config is read from settings via `callLLMResult`. Kept on the
+ * signature so callers (UI) can pass it without a future breaking change
+ * when per-call config selection lands.
  */
 export async function orderSourceFiles(
   files: OrderingInputFile[],
   modelConfigId: number,
 ): Promise<OrderingResult> {
+  void modelConfigId; // reserved for future per-call config selection
   if (files.length <= 1) {
     return {
       orderedFileIndexes: files.map(f => f.index),
