@@ -19,7 +19,6 @@ import {
   types,
 } from '@react-native-documents/picker';
 import Toast from 'react-native-toast-message';
-import RNFS from 'react-native-fs';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../../components/ui';
 import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
@@ -45,6 +44,10 @@ import {
   mapImportErrorToUserMessage,
   formatFailedFilesList,
 } from '../../services/continuation/errorMessaging';
+import {
+  decidePickerTempCleanup,
+  unlinkPickerTempCopies,
+} from '../../services/continuation/continuationPickerTempLifecycle';
 
 /**
  * If encoding detection confidence is low (< 0.7, e.g. a BOM-less file that
@@ -198,7 +201,8 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       Alert.alert('无法导入', '只有原著续写项目可以导入原著。');
       return;
     }
-    // H2：声明在 try 外，finally 才能访问到用于清理 cachesDirectory 临时副本。
+    // 声明在 try 外：finally 决定是否清理 cachesDirectory 临时副本。
+    // 多文件会把路径交给排序页，此时必须保留副本（IMP-003 回归）。
     const fileInfos: Array<{
       localPath: string;
       originalFileName: string;
@@ -206,6 +210,9 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       detectedEncoding: string;
       fileSizeBytes: number;
     }> = [];
+    let handedOffToOrdering = false;
+    // 部分失败弹窗把所有权推迟到用户点「继续/取消」，期间不可 finally 删除。
+    let deferredPartialDecision = false;
     try {
       const selected = await pick({
         mode: 'import',
@@ -235,10 +242,10 @@ export const ContinuationSourceChaptersScreen: React.FC<{
           detectedEncoding: string;
           fileSizeBytes: number;
         }>,
-      ) => {
-        if (!currentProject || files.length === 0) return;
+      ): Promise<'ordering' | 'single' | 'none'> => {
+        if (!currentProject || files.length === 0) return 'none';
         if (files.length === 1) {
-          // 单文件：走原路径
+          // 单文件：走原路径（durable copy 在 startContinuationImport 内完成）
           const info = files[0];
           const job = await startContinuationImport({
             projectId: currentProject.id,
@@ -278,21 +285,22 @@ export const ContinuationSourceChaptersScreen: React.FC<{
               },
             ],
           );
-        } else {
-          // 多文件：跳转排序预览页
-          navigation.navigate('ContinuationSourceOrdering', {
-            projectId: currentProject.id,
-            files: files.map(f => ({
-              localPath: f.localPath,
-              originalFileName: f.originalFileName,
-              detectedEncoding: f.detectedEncoding,
-              fileSizeBytes: f.fileSizeBytes,
-              ...(f.encodingOverride
-                ? { encodingOverride: f.encodingOverride }
-                : {}),
-            })),
-          });
+          return 'single';
         }
+        // 多文件：跳转排序预览页；caller 必须保留 picker 副本。
+        navigation.navigate('ContinuationSourceOrdering', {
+          projectId: currentProject.id,
+          files: files.map(f => ({
+            localPath: f.localPath,
+            originalFileName: f.originalFileName,
+            detectedEncoding: f.detectedEncoding,
+            fileSizeBytes: f.fileSizeBytes,
+            ...(f.encodingOverride
+              ? { encodingOverride: f.encodingOverride }
+              : {}),
+          })),
+        });
+        return 'ordering';
       };
 
       const mod = requireContinuationTextImport();
@@ -315,7 +323,7 @@ export const ContinuationSourceChaptersScreen: React.FC<{
             throw new Error(copy.copyError || `复制文件 ${f.name} 失败。`);
           }
           const localPath = localFileUriToPath(copy.localUri);
-          // 立即登记副本路径（占位数据），finally 才会清理它
+          // 立即登记副本路径（占位数据），finally / 排序页负责清理
           const info: {
             localPath: string;
             originalFileName: string;
@@ -375,34 +383,72 @@ export const ContinuationSourceChaptersScreen: React.FC<{
           Alert.alert('导入失败', formatFailedFilesList(failedFiles));
           return;
         }
+        // 部分失败：用户决策前必须保留成功文件的 picker 副本。
+        deferredPartialDecision = true;
+        const successPaths = successFiles.map(f => f.localPath);
+        const failedOnlyPaths = fileInfos
+          .map(f => f.localPath)
+          .filter(p => !successPaths.includes(p));
+        // 失败文件的副本可立即清理
+        void unlinkPickerTempCopies(failedOnlyPaths);
         Alert.alert(
           '部分文件导入失败',
           `成功 ${successFiles.length} 个，失败 ${failedFiles.length} 个：\n${formatFailedFilesList(failedFiles)}`,
           [
-            { text: '取消', style: 'cancel' },
+            {
+              text: '取消',
+              style: 'cancel',
+              onPress: () => {
+                void unlinkPickerTempCopies(successPaths);
+              },
+            },
             {
               text: '继续导入成功文件',
               onPress: () => {
-                void proceedWithFiles(successFiles);
+                void (async () => {
+                  try {
+                    const outcome = await proceedWithFiles(successFiles);
+                    if (outcome === 'ordering') {
+                      // 排序页接管清理
+                      return;
+                    }
+                    // 单文件：durable 已复制，清理 picker 副本
+                    await unlinkPickerTempCopies(successPaths);
+                  } catch (e: any) {
+                    await unlinkPickerTempCopies(successPaths);
+                    Toast.show({
+                      type: 'error',
+                      text1: '导入失败',
+                      text2: e?.message || '请重试',
+                    });
+                  }
+                })();
               },
             },
           ],
         );
         return;
       }
-      await proceedWithFiles(successFiles);
+      const outcome = await proceedWithFiles(successFiles);
+      if (outcome === 'ordering') {
+        handedOffToOrdering = true;
+      }
     } catch (e: any) {
       if (isErrorWithCode(e) && e.code === errorCodes.OPERATION_CANCELED) return;
       Toast.show({ type: 'error', text1: '导入失败', text2: e?.message || '请重试' });
     } finally {
       setImporting(false);
-      // H2 修复：清理 keepLocalCopy 复制到 cachesDirectory 的临时副本。
-      // startContinuationImport 会再把文件复制到 jobDir，cachesDirectory 副本
-      // 不再需要；原逻辑从不清理，每次导入 N 个文件就堆 N 个副本。
-      for (const f of fileInfos) {
-        RNFS.unlink(f.localPath).catch(() => {
-          // best-effort；文件可能已被系统清理或路径无效
-        });
+      // 多文件排序页仍依赖 caches 副本；部分失败弹窗等待用户决策。
+      // 除此之外立即清理 picker 临时副本（单文件 durable 已拷贝 / 取消 / 失败）。
+      if (deferredPartialDecision) {
+        return;
+      }
+      const decision = decidePickerTempCleanup({
+        handedOffToOrdering,
+        localPaths: fileInfos.map(f => f.localPath),
+      });
+      if (decision.action === 'unlink_now') {
+        void unlinkPickerTempCopies(decision.paths);
       }
     }
   };
