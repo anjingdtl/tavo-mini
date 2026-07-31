@@ -19,6 +19,7 @@ import {
   types,
 } from '@react-native-documents/picker';
 import Toast from 'react-native-toast-message';
+import RNFS from 'react-native-fs';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../../components/ui';
 import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
@@ -184,6 +185,14 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       Alert.alert('无法导入', '只有原著续写项目可以导入原著。');
       return;
     }
+    // H2：声明在 try 外，finally 才能访问到用于清理 cachesDirectory 临时副本。
+    const fileInfos: Array<{
+      localPath: string;
+      originalFileName: string;
+      encodingOverride?: string;
+      detectedEncoding: string;
+      fileSizeBytes: number;
+    }> = [];
     try {
       const selected = await pick({
         mode: 'import',
@@ -203,13 +212,6 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       setImporting(true);
 
       // 逐个 keepLocalCopy → 逐个 detectEncoding，低置信单独弹窗
-      const fileInfos: Array<{
-        localPath: string;
-        originalFileName: string;
-        encodingOverride?: string;
-        detectedEncoding: string;
-        fileSizeBytes: number;
-      }> = [];
       const mod = requireContinuationTextImport();
       for (const f of selected) {
         const [copy] = await keepLocalCopy({
@@ -296,6 +298,14 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       Toast.show({ type: 'error', text1: '导入失败', text2: e?.message || '请重试' });
     } finally {
       setImporting(false);
+      // H2 修复：清理 keepLocalCopy 复制到 cachesDirectory 的临时副本。
+      // startContinuationImport 会再把文件复制到 jobDir，cachesDirectory 副本
+      // 不再需要；原逻辑从不清理，每次导入 N 个文件就堆 N 个副本。
+      for (const f of fileInfos) {
+        RNFS.unlink(f.localPath).catch(() => {
+          // best-effort；文件可能已被系统清理或路径无效
+        });
+      }
     }
   };
 

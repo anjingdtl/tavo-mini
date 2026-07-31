@@ -314,7 +314,9 @@ export async function startContinuationImport(
   }));
   const isMultiFile = input.files.length > 1;
 
-  // Create staging source + job in one transaction.
+  // Create staging source + job. H1 修复：insertSource 成功但 insertJob
+  // 失败（如 awaiting_review 残留撞唯一索引）会留下孤儿 staging source，
+  // 永远不会被任何清理路径触及。包 try/catch，insertJob 失败时回滚 source。
   const sourceVersion = await nextSourceVersionInTx(db, input.projectId);
   const displayName = isMultiFile
     ? `${stripExtension(fileMetas[0].originalFileName)} 等 ${fileMetas.length} 个文件`
@@ -338,17 +340,25 @@ export async function startContinuationImport(
     isMultiFile,
     fileCount: fileMetas.length,
   });
-  await insertJob(db, {
-    id: jobId,
-    projectId: input.projectId,
-    sourceId,
-    sourceVersion,
-    state: 'running',
-    stage: 'reading',
-    parserVersion: PARSER_VERSION,
-    normalizationVersion: NORMALIZATION_VERSION,
-    inputCopyRelativePath,
-  });
+  try {
+    await insertJob(db, {
+      id: jobId,
+      projectId: input.projectId,
+      sourceId,
+      sourceVersion,
+      state: 'running',
+      stage: 'reading',
+      parserVersion: PARSER_VERSION,
+      normalizationVersion: NORMALIZATION_VERSION,
+      inputCopyRelativePath,
+    });
+  } catch (jobErr) {
+    // 回滚孤儿 source，避免 staging source 堆积污染 version 序列。
+    await deleteSourceCascade(db, sourceId).catch(() => {
+      // best-effort；原错误更重要
+    });
+    throw jobErr;
+  }
 
   try {
     await runPipelineToReview(db, jobId, sourceId, fileMetas, totalSize);

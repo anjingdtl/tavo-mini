@@ -367,8 +367,7 @@ async function runStages(
     projectId: number;
   },
 ): Promise<void> {
-  const tokenUsage: Record<string, { prompt?: number; completion?: number }> =
-    {};
+  const tokenUsage: Record<string, any> = {};
   const call = async (
     stage: string,
     messages: ChatMessage[],
@@ -422,8 +421,17 @@ async function runStages(
       'json_object',
     );
     plan = parsePlan(raw, snapshot.bundles.userInstruction);
-  } catch {
+  } catch (err) {
+    // H7 修复：原 catch 完全吞错，planner 超时/解析失败用户无感知，writer
+    // 拿空洞 defaultPlan 生成既浪费 token 又质量差。CapabilityBlocked 错误
+    // 直接抛（不降级）；其他错误降级但记录 warning 到 tokenUsage 供 UI/trace。
+    if (err instanceof ContinuationCapabilityBlockedError) throw err;
     plan = defaultPlan(snapshot.bundles.userInstruction);
+    tokenUsage.planner = {
+      ...(tokenUsage.planner ?? {}),
+      warning: 'planner_downgraded',
+      warningMessage: err instanceof Error ? err.message : String(err),
+    };
   }
 
   const needsConfirm =
