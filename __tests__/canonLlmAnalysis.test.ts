@@ -547,7 +547,7 @@ describe('Canon LLM analysis', () => {
       jest.useRealTimers();
     });
 
-    it('uses a 65536 baseline for the deep profile and doubles on length retry', async () => {
+    it('uses a 32768 baseline for the deep profile and doubles on length retry', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock)
         .mockResolvedValueOnce({
@@ -568,8 +568,8 @@ describe('Canon LLM analysis', () => {
       await jest.runAllTimersAsync();
       await pending;
 
-      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(65536);
-      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(65536 * 2);
+      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(32768);
+      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(32768 * 2);
       jest.useRealTimers();
     });
 

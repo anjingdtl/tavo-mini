@@ -86,6 +86,7 @@ import {
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
 } from '../../llm';
+import type { LLMRequestMetrics } from '../../llm/types';
 import {
   estimateMessagesTokens,
   estimateTokens,
@@ -126,8 +127,11 @@ export function isTransientCanonAnalysisError(error: unknown): boolean {
   };
   const status = Number(candidate?.cause?.status ?? candidate?.status ?? 0);
   const code = String(candidate?.code ?? '');
+  // total_timeout is intentionally NOT retried: for large-source Canon
+  // analysis a timeout usually means the input is too large or the output
+  // budget too high, so an identical retry just burns another 180s at 0%.
   return (
-    ['total_timeout', 'idle_timeout', 'network_error'].includes(code) ||
+    ['idle_timeout', 'network_error'].includes(code) ||
     status === 429 ||
     status >= 500
   );
@@ -288,6 +292,12 @@ export interface AnalysisProgressUpdate {
   materialType?: AnalysisWorkItemType;
   batchIndex?: number;
   state?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  /**
+   * Heartbeat / first-token signal: the LLM call for this work item is still
+   * in flight. The UI uses this to append a "正在生成…" suffix so the user
+   * can tell the app is alive during a long non-streaming request.
+   */
+  llmActive?: boolean;
 }
 
 export interface ProcessAnalysisOptions {
@@ -329,7 +339,7 @@ export const CANON_LOCAL_MODEL_MIN_CONTEXT_WINDOW = 4096;
  * does not have to build a full prompt just to estimate.
  */
 const CANON_PROMPT_OVERHEAD_TOKENS = 600;
-const CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS = 65_536;
+const CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS = 32_768;
 
 /**
  * A context window is a capacity limit, not a desired prompt size. Full-book
@@ -340,18 +350,17 @@ const CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS = 65_536;
 export const FULL_CANON_QUALITY_CHAPTERS_PER_BATCH = 20;
 
 /**
- * Output baseline per profile — kept in sync with extractMaterialWithLlm.
- * The planner refuses when the window cannot reserve this much output.
- */
-/**
- * Output baseline per profile. `full_extraction` covers all 8 categories in a
- * single call (formerly 2 calls at these budgets), so budgets are doubled to
- * give each category its fair share of the completion window.
+ * Output baseline per profile. v3.1 reverts to the two-call split
+ * (`character_state` 5 categories / `world_plot` 3 categories), so the deep
+ * baseline is lowered from 65536 to 32768 — enough for 5 categories per call
+ * while halving the single-call generation time and timeout risk for
+ * large-source analysis. The planner refuses when the window cannot reserve
+ * this much output.
  */
 const CANON_OUTPUT_BASELINE_TOKENS: Record<AnalysisProfile, number> = {
   quick: 4096,
   standard: 32768,
-  deep: 65536,
+  deep: 32768,
 };
 
 /**
@@ -401,12 +410,15 @@ export function resolveQualityFirstChaptersPerBatch(input: {
 }
 
 /**
- * Online providers that explicitly declare their context window can receive
- * the complete chapter text. The batch planner uses the same rule when it
- * estimates capacity, preventing a large configured window from silently
- * degrading into a fixed 6,000-character excerpt. Local and unbounded
- * providers retain the conservative excerpt for predictable memory use.
+ * Per-chapter text budget. Online providers that explicitly declare a context
+ * window get a generous 24,000-character cap (≈ 12K tokens) — 4x the local
+ * excerpt — so normal-sized chapters pass through untouched while a single
+ * pathological 100KB+ chapter can no longer monopolise the prompt and stall
+ * generation. Local and unbounded providers retain the conservative 6,000
+ * excerpt for predictable memory use.
  */
+const CANON_ONLINE_CHAPTER_TEXT_LIMIT = 24_000;
+
 export function resolveCanonChapterTextLimit(input: {
   providerType?: string | null;
   contextWindow?: number | null;
@@ -414,7 +426,7 @@ export function resolveCanonChapterTextLimit(input: {
   return input.providerType !== 'llama_cpp' &&
     Number.isFinite(input.contextWindow) &&
     (input.contextWindow ?? 0) > 0
-    ? Number.MAX_SAFE_INTEGER
+    ? CANON_ONLINE_CHAPTER_TEXT_LIMIT
     : 6000;
 }
 
@@ -1446,7 +1458,7 @@ export async function startAnalysis(
       schemaVersion: 3,
       mode: input.mode,
       extractorMode: 'llm',
-      workItemProtocol: 'request_groups_v3',
+      workItemProtocol: 'request_groups_v3_1_split',
       scope: plan.effectiveScope,
       plannedChapterIds: plan.nearChapters.map(chapter => chapter.id),
       plannedRanges: plan.analyzedRanges,
@@ -1559,7 +1571,7 @@ async function processAnalysisRunInner(
     materialType: AnalysisWorkItemType,
     batchIndex: number,
     state: AnalysisProgressUpdate['state'],
-  ) => {
+  ): Promise<{ current: number; total: number }> => {
     const items = await listWorkItems(runId);
     const completed = items.filter(item => item.state === 'completed').length;
     await updateRunState(db, runId, {
@@ -1576,6 +1588,7 @@ async function processAnalysisRunInner(
       batchIndex,
       state,
     });
+    return { current: completed, total: items.length };
   };
 
   for (const batch of batches) {
@@ -1620,7 +1633,28 @@ async function processAnalysisRunInner(
           errorCode: null,
           errorMessage: null,
         });
-        await reportWorkItem(materialType, batch.batchIndex, 'running');
+        let lastProgress = await reportWorkItem(
+          materialType,
+          batch.batchIndex,
+          'running',
+        );
+        // Heartbeat: non-streaming Canon requests can pend for minutes with no
+        // signal. A 5s interval proves the JS thread is alive and lets the UI
+        // show "正在生成…" instead of a frozen 0%.
+        let firstTokenReported = false;
+        const heartbeat = setInterval(() => {
+          if (signal.aborted) return;
+          options.onProgress?.({
+            runId,
+            stage: 'chapter_extraction',
+            progressCurrent: lastProgress.current,
+            progressTotal: lastProgress.total,
+            materialType,
+            batchIndex: batch.batchIndex,
+            state: 'running',
+            llmActive: true,
+          });
+        }, 5_000);
         try {
           const outcome = await extractMaterialWithLlm(
             slice,
@@ -1629,6 +1663,24 @@ async function processAnalysisRunInner(
             materialType,
             runId,
             signal,
+            metrics => {
+              // For providers that report first-token/progress (e.g. future
+              // streaming), surface it once so the UI can switch from
+              // "queued" to "generating" immediately.
+              if (!firstTokenReported && metrics.firstTokenAt !== undefined) {
+                firstTokenReported = true;
+                options.onProgress?.({
+                  runId,
+                  stage: 'chapter_extraction',
+                  progressCurrent: lastProgress.current,
+                  progressTotal: lastProgress.total,
+                  materialType,
+                  batchIndex: batch.batchIndex,
+                  state: 'running',
+                  llmActive: true,
+                });
+              }
+            },
           );
           if (signal.aborted) throw new Error('分析已暂停或取消');
           // Warnings (partial drops) are surfaced via the error_message column
@@ -1672,6 +1724,8 @@ async function processAnalysisRunInner(
             signal.aborted ? 'cancelled' : 'failed',
           );
           throw error;
+        } finally {
+          clearInterval(heartbeat);
         }
       };
       const settled = await Promise.allSettled(
@@ -2241,6 +2295,7 @@ export async function extractMaterialWithLlm(
   materialType: AnalysisWorkItemType,
   runId: string,
   signal: AbortSignal,
+  onProgress?: (metrics: LLMRequestMetrics) => void,
 ): Promise<ExtractMaterialOutcome> {
   if (!modelConfigId) {
     throw new Error(
@@ -2310,6 +2365,7 @@ export async function extractMaterialWithLlm(
           scenario: 'continuation_canon_analysis',
           taskId: runId,
           requestConfig,
+          onProgress,
         },
         signal,
       );
