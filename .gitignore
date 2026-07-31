@@ -166,3 +166,12 @@ scripts/zswebdav-put.ps1
 
 # llama.cpp 源码（构建时外部克隆，不入库）
 /android/app/jni/llama.cpp/
+
+# 本地 LLM 测试 API key / 凭据（仅本地穿测用，绝不入库）
+# 任何形如 LLMTesti.* / *.api-key / *-apikey.txt / secrets/ 的文件默认忽略。
+/docs/LLMTesti.txt
+/docs/LLMTesti.*
+/docs/*api-key*
+/docs/*apikey*
+/secrets/
+*.local.env
