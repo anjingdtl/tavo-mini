@@ -335,33 +335,24 @@ export async function startContinuationRun(
   const controller = new AbortController();
   activeControllers.set(runId, controller);
 
-  // Fire-and-forget stage pipeline
-  void runStages(runId, snapshot, {
-    callStage: input.callStage,
-    deterministicOnly: input.deterministicOnly,
-    signal: controller.signal,
-    projectId: input.projectId,
-  }).catch(async err => {
-    if (controller.signal.aborted) {
-      await casUpdateRunState(runId, ['running', 'awaiting_user'], {
-        state: 'cancelled',
-        errorCode: 'cancelled',
-        errorMessage: '用户取消',
-        completedAt: new Date().toISOString(),
+  // Fire-and-forget stage pipeline. Fix-plan §5.2: 必须用 try/catch/finally
+  // 包裹，catch 里调 finalizeRunOnError（内部有 try/catch 不会抛），finally
+  // 保证 activeControllers.delete 总是执行。原 .catch() 写法在
+  // casUpdateRunState 抛错时 controller 泄漏，run 卡 running 且无法 cancel。
+  void (async () => {
+    try {
+      await runStages(runId, snapshot, {
+        callStage: input.callStage,
+        deterministicOnly: input.deterministicOnly,
+        signal: controller.signal,
+        projectId: input.projectId,
       });
-    } else {
-      await casUpdateRunState(runId, ['running', 'awaiting_user', 'queued'], {
-        state: 'failed',
-        errorCode:
-          err instanceof ContinuationCapabilityBlockedError
-            ? err.code
-            : 'stage_failed',
-        errorMessage: err?.message ?? String(err),
-        completedAt: new Date().toISOString(),
-      });
+    } catch (err) {
+      await finalizeRunOnError(runId, controller, err);
+    } finally {
+      activeControllers.delete(runId);
     }
-    activeControllers.delete(runId);
-  });
+  })();
 
   return run;
 }

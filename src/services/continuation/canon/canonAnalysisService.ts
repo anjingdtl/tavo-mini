@@ -9,6 +9,7 @@
 import type SQLite from 'react-native-sqlite-storage';
 import { openDatabase } from '../../../data/connection/openDatabase';
 import { execute } from '../../../data/connection/execute';
+import { executeTransaction } from '../../../services/database/transaction';
 import { now } from '../../../data/repositories/shared';
 import { v4 } from '../../uuidBridge';
 import { sha256Hex } from '../hashUtils';
@@ -664,6 +665,23 @@ export async function materializeBatchResult(
       : (0 as ReturnType<typeof asSourcePosition>);
   const ts = now();
 
+  // 清理该 batch 的旧 canon 数据，防止 resume 重跑时重复 INSERT。
+  // characters 跨 batch 共享（ensureCharacter 通过 nameToId 去重），不删；
+  // evidence CASCADE 删 links；其余子表按 valid_from_position = fromPos 清理。
+  // 原逻辑无此清理，中途失败后 resume 重跑会重复插入 alias/evidence/
+  // relationship/plot_thread/experience/knowledge/state/timeline，导致孤儿
+  // 证据，countOrphanEvidence > 0，activateSnapshotAndStyleProfile 永久拒绝激活。
+  await executeTransaction(db, [
+    { sql: 'DELETE FROM canon_evidence WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+    { sql: 'DELETE FROM canon_timeline_events WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+    { sql: 'DELETE FROM canon_plot_threads WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+    { sql: 'DELETE FROM canon_relationships WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+    { sql: 'DELETE FROM canon_character_state_snapshots WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+    { sql: 'DELETE FROM canon_character_experiences WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+    { sql: 'DELETE FROM canon_character_knowledge WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+    { sql: 'DELETE FROM canon_character_aliases WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+  ]);
+
   // Load existing characters for this snapshot.
   const [charRows] = await db.executeSql(
     `SELECT id, canonical_name FROM canon_characters
@@ -907,11 +925,14 @@ export async function materializeBatchResult(
   }
 
   for (const plot of result.plotThreads) {
-    const participantIds = await Promise.all(
-      plot.characterNames.map(name =>
-        ensureCharacter(name, 'supporting', '', plot.confidence),
-      ),
-    );
+    // 串行 ensureCharacter 避免 Promise.all 并行竞态（同姓名并发 INSERT
+    // 创建重复角色行，角色库越跑越脏）。
+    const participantIds: number[] = [];
+    for (const name of plot.characterNames) {
+      participantIds.push(
+        await ensureCharacter(name, 'supporting', '', plot.confidence),
+      );
+    }
     const establishedFacts = JSON.stringify([
       {
         time: plot.timeDescription,
@@ -1152,11 +1173,13 @@ export async function materializeBatchResult(
     }
 
     for (const ev of result.timelineEvents) {
-      const participantIds = await Promise.all(
-        ev.characterNames.map(name =>
-          ensureCharacter(name, 'supporting', '', ev.confidence),
-        ),
-      );
+      // 串行 ensureCharacter 避免 Promise.all 并行竞态。
+      const participantIds: number[] = [];
+      for (const name of ev.characterNames) {
+        participantIds.push(
+          await ensureCharacter(name, 'supporting', '', ev.confidence),
+        );
+      }
       await execute(
         db,
         `INSERT INTO canon_timeline_events (
