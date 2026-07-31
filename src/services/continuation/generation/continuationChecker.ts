@@ -85,33 +85,42 @@ export function runDeterministicChecks(
     }
   }
 
+  // H6 修复：resurrection 检查原嵌在 worldRules 循环里，若项目无任何
+  // hard/locked 规则，即使 resurrectionPolicy='forbid' 也永远不会执行。
+  // 抽出来独立检查；worldRules 只用于附上相关规则名到 description。
+  if (
+    !levelOff(settings, 'world') &&
+    settings.resurrectionPolicy === 'forbid' &&
+    /复活|起死回生|死而复生/.test(artifactText)
+  ) {
+    const m = artifactText.match(/复活|起死回生|死而复生/);
+    const idx = m?.index ?? 0;
+    // 找一条相关的 hard/locked 规则名用于描述，没有就用通用文案。
+    const relatedRule = snapshot.bundles.canon.worldRules.find(
+      r => r.constraintLevel === 'hard' || r.reviewStatus === 'locked',
+    );
+    issues.push({
+      category: 'world',
+      subtype: 'resurrection_forbidden',
+      severity: 'blocking',
+      confidence: 0.9,
+      generatedStart: idx,
+      generatedEnd: idx + (m?.[0].length ?? 2),
+      generatedExcerpt: m?.[0] ?? '复活',
+      description: relatedRule
+        ? `复活被项目策略禁止；相关硬规则：${relatedRule.title}`
+        : '复活被项目策略禁止',
+      evidenceIds: [],
+      suggestedFix: '移除复活情节',
+    });
+  }
+
   // Hard world rules: if locked rule keywords are violated by negation patterns.
   for (const rule of snapshot.bundles.canon.worldRules) {
     if (rule.constraintLevel !== 'hard' && rule.reviewStatus !== 'locked') {
       continue;
     }
     if (levelOff(settings, 'world')) continue;
-    // If text claims resurrection while policy forbids.
-    if (
-      settings.resurrectionPolicy === 'forbid' &&
-      /复活|起死回生|死而复生/.test(artifactText)
-    ) {
-      const m = artifactText.match(/复活|起死回生|死而复生/);
-      const idx = m?.index ?? 0;
-      issues.push({
-        category: 'world',
-        subtype: 'resurrection_forbidden',
-        severity: 'blocking',
-        confidence: 0.9,
-        generatedStart: idx,
-        generatedEnd: idx + (m?.[0].length ?? 2),
-        generatedExcerpt: m?.[0] ?? '复活',
-        description: `复活被项目策略禁止；相关硬规则：${rule.title}`,
-        evidenceIds: [],
-        suggestedFix: '移除复活情节',
-      });
-      break;
-    }
   }
 
   // Knowledge boundary: if text has character knowing FUTURE secrets list
