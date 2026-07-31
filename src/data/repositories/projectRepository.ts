@@ -261,6 +261,29 @@ export async function getChapterById(id: number): Promise<Chapter | null> {
   return row ? parseChapter(row) : null;
 }
 
+/**
+ * H1-Generation 修复：续写上下文构建只需 target 之前最近若干章（anchor +
+ * recent bridge），原 getChaptersByProject 全表 SELECT * 把 100+ 章正文
+ * 全拉进内存再 filter，大项目直接 OOM。此方法按 position 降序取最近 limit
+ * 章，只读必要的正文，避免无谓内存占用。
+ */
+export async function getRecentChaptersBeforePosition(
+  projectId: number,
+  beforePosition: number,
+  limit: number,
+): Promise<Chapter[]> {
+  const safeLimit = Math.max(1, Math.floor(limit));
+  const rows = await all<Row>(
+    `SELECT * FROM chapters
+      WHERE project_id = ? AND position < ?
+      ORDER BY position DESC, id DESC
+      LIMIT ?`,
+    [projectId, beforePosition, safeLimit],
+  );
+  // 还原为 position ASC 顺序，与 getChaptersByProject 语义一致
+  return rows.reverse().map(parseChapter);
+}
+
 export type ChapterReadingRange = 'current' | 'fromCurrent' | 'all';
 
 export async function buildChapterReadingText(

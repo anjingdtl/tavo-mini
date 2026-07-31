@@ -846,7 +846,11 @@ export async function insertProposals(
   const db = await openDatabase();
   const out: ContinuationStateProposal[] = [];
   const ts = nowIso();
-  for (const r of rows) {
+  // H8-Generation 修复：原逐条 INSERT try/catch UNIQUE 冲突，N 条 proposals
+  // 就是 N 次独立事务（sqlite-storage 自动提交），中途崩溃会留下部分插入。
+  // 改单事务批量插入：INSERT OR IGNORE 跳过冲突，事务结束后统一查询填充 out。
+  // 注意：executeTransaction 同步构建 statements，所以预先计算所有 id/fp。
+  const preparedRows = rows.map(r => {
     const id = `cp_${v4().replace(/-/g, '')}`;
     const fp = proposalFingerprint({
       proposalType: r.proposalType,
@@ -856,64 +860,47 @@ export async function insertProposals(
       evidenceStart: r.evidenceStart,
       evidenceEnd: r.evidenceEnd,
     });
-    try {
-      await db.executeSql(
-        `INSERT INTO continuation_state_proposals (
+    return { id, fp, r };
+  });
+  await executeTransaction(
+    db,
+    preparedRows.map(({ id, fp, r }) => ({
+      sql: `INSERT OR IGNORE INTO continuation_state_proposals (
           id, project_id, chapter_id, source_run_id, extraction_content_hash,
           chapter_revision_hash, proposal_type, subject_ref_type, subject_ref_id,
           payload_json, proposal_fingerprint, evidence_start, evidence_end,
           status, created_at, updated_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [
-          id,
-          r.projectId,
-          r.chapterId,
-          r.sourceRunId,
-          r.extractionContentHash,
-          r.chapterRevisionHash,
-          r.proposalType,
-          r.subjectRefType ?? null,
-          r.subjectRefId ?? null,
-          r.payloadJson,
-          fp,
-          r.evidenceStart,
-          r.evidenceEnd,
-          'pending',
-          ts,
-          ts,
-        ],
-      );
-      out.push({
+      params: [
         id,
-        projectId: r.projectId,
-        chapterId: r.chapterId,
-        sourceRunId: r.sourceRunId,
-        extractionContentHash: r.extractionContentHash,
-        chapterRevisionHash: r.chapterRevisionHash,
-        proposalType: r.proposalType,
-        subjectRefType: r.subjectRefType ?? null,
-        subjectRefId: r.subjectRefId ?? null,
-        payloadJson: r.payloadJson,
-        proposalFingerprint: fp,
-        evidenceStart: r.evidenceStart,
-        evidenceEnd: r.evidenceEnd,
-        status: 'pending',
-        decisionNote: null,
-        decidedAt: null,
-        createdAt: ts,
-        updatedAt: ts,
-      });
-    } catch {
-      // UNIQUE conflict — already exists for this revision fingerprint
-      const [existing] = await db.executeSql(
-        `SELECT * FROM continuation_state_proposals
-         WHERE project_id = ? AND chapter_id = ? AND chapter_revision_hash = ?
-           AND proposal_fingerprint = ?`,
-        [r.projectId, r.chapterId, r.chapterRevisionHash, fp],
-      );
-      if (existing.rows.length > 0)
-        out.push(rowProposal(existing.rows.item(0)));
-    }
+        r.projectId,
+        r.chapterId,
+        r.sourceRunId,
+        r.extractionContentHash,
+        r.chapterRevisionHash,
+        r.proposalType,
+        r.subjectRefType ?? null,
+        r.subjectRefId ?? null,
+        r.payloadJson,
+        fp,
+        r.evidenceStart,
+        r.evidenceEnd,
+        'pending',
+        ts,
+        ts,
+      ],
+    })),
+  );
+  // 事务提交后，统一查询每行对应的记录（新插入或已存在的冲突行）。
+  for (const { fp, r } of preparedRows) {
+    const [existing] = await db.executeSql(
+      `SELECT * FROM continuation_state_proposals
+       WHERE project_id = ? AND chapter_id = ? AND chapter_revision_hash = ?
+         AND proposal_fingerprint = ?`,
+      [r.projectId, r.chapterId, r.chapterRevisionHash, fp],
+    );
+    if (existing.rows.length > 0)
+      out.push(rowProposal(existing.rows.item(0)));
   }
   return out;
 }

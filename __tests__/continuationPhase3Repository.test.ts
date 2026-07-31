@@ -341,7 +341,8 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     if (c) c.resolution_status = params[0];
     return res([]);
   }
-  if (/INSERT INTO continuation_state_proposals/i.test(n)) {
+  // H8-Generation: INSERT OR IGNORE INTO continuation_state_proposals
+  if (/INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_proposals/i.test(n)) {
     const row = {
       id: params[0],
       project_id: params[1],
@@ -371,7 +372,8 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
           p.proposal_fingerprint === row.proposal_fingerprint,
       )
     ) {
-      throw new Error('UNIQUE');
+      // INSERT OR IGNORE: UNIQUE 冲突时静默跳过，不抛错。
+      return res([]);
     }
     store.proposals.push(row);
     return res([]);

@@ -171,11 +171,43 @@ export interface ContinuationSourceReader {
   listBoundedSourceChapters(
     snapshot: ContinuationSourceSnapshot,
   ): Promise<BoundedSourceChapter[]>;
+  /**
+   * H1 修复：按 position 区间流式读取章节正文，避免 2000+ 章长篇网文
+   * 全量加载导致 OOM。half-open `[startPosition, endPosition)`，与 batch
+   * range 语义一致；boundary 仍然强制裁剪。
+   */
+  listBoundedSourceChaptersForRange(
+    snapshot: ContinuationSourceSnapshot,
+    startPosition: SourceChapterPosition,
+    endPosition: SourceChapterPosition,
+  ): Promise<BoundedSourceChapter[]>;
+  /**
+   * H1 修复：轻量级章节元数据查询，不加载 content 正文。用于 startAnalysis
+   * 阶段 planAnalysisScope 和 token 估算（只需 position/length），避免
+   * 全量加载正文到内存。
+   */
+  listBoundedSourceChapterMetas(
+    snapshot: ContinuationSourceSnapshot,
+  ): Promise<BoundedSourceChapterMeta[]>;
   readBoundedEvidenceRange(input: {
     snapshot: ContinuationSourceSnapshot;
     start: Utf16Offset;
     end: Utf16Offset;
   }): Promise<string>;
+}
+
+/**
+ * H1 修复：章节轻量元数据，不含 content 正文。用于 plan 阶段避免 OOM。
+ */
+export interface BoundedSourceChapterMeta {
+  id: number;
+  sourceId: number;
+  position: SourceChapterPosition;
+  title: string;
+  /** Full content length in UTF-16 units (before boundary clipping). */
+  contentLength: number;
+  range: { start: Utf16Offset; end: Utf16Offset };
+  clippedByBoundary: boolean;
 }
 
 /** Error codes surfaced to the UI (Spec §19). */

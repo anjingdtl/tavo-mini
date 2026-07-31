@@ -78,6 +78,7 @@ jest.mock(
 
 jest.mock('../src/services/database', () => ({
   getChaptersByProject: jest.fn().mockResolvedValue([]),
+  getRecentChaptersBeforePosition: jest.fn().mockResolvedValue([]),
   getProjectStoryMemory: jest.fn().mockResolvedValue(null),
 }));
 
@@ -733,7 +734,9 @@ describe('buildContinuationContext style path', () => {
     (getInjectableStyleProfile as jest.Mock).mockResolvedValue(injectableRow());
     const continuationTail =
       '续写上一章的结尾：雨停之后，沈舟握紧钥匙，决定连夜去旧码头。';
-    (database.getChaptersByProject as jest.Mock).mockResolvedValue([
+    // H1-Generation: buildContinuationContext 改用 getRecentChaptersBeforePosition
+    // 按 position 降序取最近章节，不再全表加载 getChaptersByProject。
+    (database.getRecentChaptersBeforePosition as jest.Mock).mockResolvedValue([
       {
         id: 21,
         project_id: 1,
