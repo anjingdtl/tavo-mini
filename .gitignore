@@ -163,3 +163,6 @@ scripts/zswebdav-put.ps1
 
 # 端到端穿测截图（界面含配置文本，不入库）
 /docs/e2e-screenshots/
+
+# llama.cpp 源码（构建时外部克隆，不入库）
+/android/app/jni/llama.cpp/
