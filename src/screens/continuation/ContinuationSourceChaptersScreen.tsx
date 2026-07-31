@@ -27,6 +27,7 @@ import {
   confirmContinuationSource,
   getActiveContinuationSource,
   getActiveImportJob,
+  isAwaitingReviewJob,
   MAX_IMPORT_FILE_BYTES,
   previewParsedSource,
   resumeContinuationImport,
@@ -105,9 +106,10 @@ export const ContinuationSourceChaptersScreen: React.FC<{
   const [source, setSource] = useState<ContinuationSource | null>(null);
   const [chapters, setChapters] = useState<ContinuationSourceChapter[]>([]);
   const [importing, setImporting] = useState(false);
-  // A job left interrupted (app killed mid-import) that the user can resume or
-  // cancel. Surfaced as a card above the chapter list / import entry.
-  const [interruptedJob, setInterruptedJob] = useState<ImportJob | null>(null);
+  // Active import job the user must resolve: interrupted (resume/cancel) or
+  // awaiting_review (confirm/abandon). IMP-006: cancelling the parse-complete
+  // Alert left awaiting_review with no UI entry — surface it here.
+  const [pendingJob, setPendingJob] = useState<ImportJob | null>(null);
 
   const reload = async () => {
     if (!currentProject) return;
@@ -117,7 +119,14 @@ export const ContinuationSourceChaptersScreen: React.FC<{
         getActiveImportJob(currentProject.id),
       ]);
       setSource(src);
-      setInterruptedJob(job && job.state === 'interrupted' ? job : null);
+      const pending =
+        job &&
+        (job.state === 'interrupted' ||
+          job.state === 'awaiting_review' ||
+          isAwaitingReviewJob(job))
+          ? job
+          : null;
+      setPendingJob(pending);
       if (src) {
         const list = await getChaptersBySource(src.id);
         setChapters(list);
@@ -139,31 +148,48 @@ export const ContinuationSourceChaptersScreen: React.FC<{
   }, [currentProject?.id]);
   useFocusEffect(reloadOnFocus);
 
+  const showAwaitingReviewAlert = async (jobId: string) => {
+    const preview = await previewParsedSource(jobId);
+    Alert.alert(
+      '解析完成',
+      `已识别 ${preview.chapterCount} 章、${preview.detectedEncoding} 编码。\n将以原著末尾作为默认续写起点；之后可在“续写起点”中调整。`,
+      [
+        {
+          text: '取消',
+          style: 'cancel',
+          // Keep awaiting_review but refresh so the pending card is visible.
+          onPress: () => {
+            void reload();
+          },
+        },
+        {
+          text: '确认导入',
+          onPress: async () => {
+            try {
+              await confirmContinuationSource(jobId, { mode: 'end_of_source' });
+              await reload();
+              Toast.show({ type: 'success', text1: '原著导入完成' });
+            } catch (e: any) {
+              Toast.show({
+                type: 'error',
+                text1: '确认导入失败',
+                text2: e?.message,
+              });
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleResume = async () => {
-    if (!interruptedJob) return;
+    // Mid-pipeline interrupt only — awaiting_review uses confirm path below.
+    if (!pendingJob || pendingJob.state !== 'interrupted') return;
+    if (isAwaitingReviewJob(pendingJob)) return;
     setImporting(true);
     try {
-      const job = await resumeContinuationImport(interruptedJob.id);
-      const preview = await previewParsedSource(job.id);
-      Alert.alert(
-        '解析完成',
-        `已识别 ${preview.chapterCount} 章、${preview.detectedEncoding} 编码。\n将以原著末尾作为默认续写起点；之后可在“续写起点”中调整。`,
-        [
-          { text: '取消', style: 'cancel' },
-          {
-            text: '确认导入',
-            onPress: async () => {
-              try {
-                await confirmContinuationSource(job.id, { mode: 'end_of_source' });
-                await reload();
-                Toast.show({ type: 'success', text1: '原著导入完成' });
-              } catch (e: any) {
-                Toast.show({ type: 'error', text1: '确认导入失败', text2: e?.message });
-              }
-            },
-          },
-        ],
-      );
+      const job = await resumeContinuationImport(pendingJob.id);
+      await showAwaitingReviewAlert(job.id);
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '恢复导入失败', text2: e?.message });
     } finally {
@@ -171,8 +197,22 @@ export const ContinuationSourceChaptersScreen: React.FC<{
     }
   };
 
+  const handleConfirmPendingReview = async () => {
+    if (!pendingJob || !isAwaitingReviewJob(pendingJob)) return;
+    setImporting(true);
+    try {
+      // Works for true awaiting_review and for legacy cold-start rows where
+      // state was wrongly flipped to interrupted while stage stayed awaiting_review.
+      await showAwaitingReviewAlert(pendingJob.id);
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '加载解析结果失败', text2: e?.message });
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleCancelJob = () => {
-    if (!interruptedJob) return;
+    if (!pendingJob) return;
     Alert.alert(
       '取消未完成的导入',
       '将清除上次未完成的原著解析数据。已导入的原著不受影响。',
@@ -183,7 +223,7 @@ export const ContinuationSourceChaptersScreen: React.FC<{
           style: 'destructive',
           onPress: async () => {
             try {
-              await cancelContinuationImport(interruptedJob.id);
+              await cancelContinuationImport(pendingJob.id);
               await reload();
               Toast.show({ type: 'success', text1: '已取消未完成的导入' });
             } catch (e: any) {
@@ -259,32 +299,7 @@ export const ContinuationSourceChaptersScreen: React.FC<{
               },
             ],
           });
-          const preview = await previewParsedSource(job.id);
-          Alert.alert(
-            '解析完成',
-            `已识别 ${preview.chapterCount} 章、${preview.detectedEncoding} 编码。\n将以原著末尾作为默认续写起点；之后可在“续写起点”中调整。`,
-            [
-              { text: '取消', style: 'cancel' },
-              {
-                text: '确认导入',
-                onPress: async () => {
-                  try {
-                    await confirmContinuationSource(job.id, {
-                      mode: 'end_of_source',
-                    });
-                    await reload();
-                    Toast.show({ type: 'success', text1: '原著导入完成' });
-                  } catch (e: any) {
-                    Toast.show({
-                      type: 'error',
-                      text1: '确认导入失败',
-                      text2: e?.message,
-                    });
-                  }
-                },
-              },
-            ],
-          );
+          await showAwaitingReviewAlert(job.id);
           return 'single';
         }
         // 多文件：跳转排序预览页；caller 必须保留 picker 副本。
@@ -465,14 +480,39 @@ export const ContinuationSourceChaptersScreen: React.FC<{
   return (
     <Screen>
       <Header title="原著章节" subtitle={currentProject.name} action={<Button label="返回" variant="ghost" onPress={() => navigation.goBack()} />} />
-      {interruptedJob ? (
+      {pendingJob && isAwaitingReviewJob(pendingJob) ? (
+        <View style={styles.interruptedWrap}>
+          <Card>
+            <Text style={[styles.interruptedTitle, { color: theme.colors.textPrimary }]}>
+              原著已解析，待确认
+            </Text>
+            <Text style={[styles.interruptedDesc, { color: theme.colors.textSecondary }]}>
+              上次解析已完成但尚未确认导入。可确认设为当前原著，或放弃后重新选择文件。
+            </Text>
+            <View style={styles.interruptedActions}>
+              <Button
+                label="确认导入"
+                onPress={() => handleConfirmPendingReview().catch(() => {})}
+                disabled={importing}
+              />
+              <Button
+                label="放弃"
+                variant="ghost"
+                onPress={handleCancelJob}
+                disabled={importing}
+              />
+            </View>
+          </Card>
+        </View>
+      ) : null}
+      {pendingJob?.state === 'interrupted' && !isAwaitingReviewJob(pendingJob) ? (
         <View style={styles.interruptedWrap}>
           <Card>
             <Text style={[styles.interruptedTitle, { color: theme.colors.textPrimary }]}>
               上次导入未完成
             </Text>
             <Text style={[styles.interruptedDesc, { color: theme.colors.textSecondary }]}>
-              原著解析在上次进行中被中断（{interruptedJob.stage ?? '未知阶段'}）。你可以从私有副本继续解析，或取消并重新导入。
+              原著解析在上次进行中被中断（{pendingJob.stage ?? '未知阶段'}）。你可以从私有副本继续解析，或取消并重新导入。
             </Text>
             <View style={styles.interruptedActions}>
               <Button

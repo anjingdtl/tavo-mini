@@ -237,7 +237,14 @@ export const ContinuationSourceOrderingScreen: React.FC<{
         '解析完成',
         `已识别 ${preview.chapterCount} 章、共 ${files.length} 个文件。\n将以原著末尾作为默认续写起点。`,
         [
-          { text: '取消', style: 'cancel' },
+          {
+            text: '取消',
+            style: 'cancel',
+            // Job stays awaiting_review; chapters screen shows confirm/abandon card.
+            onPress: () => {
+              navigation.navigate('ContinuationSourceChapters', {});
+            },
+          },
           {
             text: '确认导入',
             onPress: async () => {
