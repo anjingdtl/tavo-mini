@@ -771,43 +771,98 @@ export async function markAnalysisOutdated(
   ]);
 }
 
-/** Clear the active source pointer, then physical-delete the source row (Spec §6). */
-export async function clearActiveSourceAndDelete(
-  db: SQLite.SQLiteDatabase,
-  projectId: number,
-  sourceId: number,
-): Promise<void> {
-  const ts = now();
-  await executeTransaction(db, [
+/**
+ * Statement batch for deleting the active source (Spec §6, §9.2, §14.3, WP-C).
+ *
+ * Order is intentional:
+ *  1) Outdate Canon / analysis / style / digests while the source still exists
+ *     (so status transitions are visible before CASCADE removes the rows).
+ *  2) Null every settings pointer that would block the FK cascade.
+ *  3) Outdate in-flight generation runs (they keep chapter_id; only context dies).
+ *  4) Physical-delete the source row; chunks / source chapters / import jobs /
+ *     snapshots CASCADE.
+ *
+ * NEVER includes any write against the project `chapters` table — user
+ * continuation chapters are a separate namespace (Spec §12 / §14.3).
+ */
+export function buildClearActiveSourceAndDeleteStatements(input: {
+  projectId: number;
+  sourceId: number;
+  ts: string;
+}): SqlStatement[] {
+  const { projectId, sourceId, ts } = input;
+  return [
     {
+      sql: `UPDATE continuation_canon_snapshots
+        SET status = 'outdated', updated_at = ?
+        WHERE project_id = ? AND status IN ('staging', 'awaiting_review', 'ready')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_analysis_runs
+        SET state = 'outdated', updated_at = ?
+        WHERE project_id = ? AND state IN ('queued', 'running', 'paused', 'awaiting_review')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_style_profiles
+        SET state = 'outdated', updated_at = ?
+        WHERE project_id = ? AND state NOT IN ('outdated', 'cancelled')`,
+      params: [ts, projectId],
+    },
+    {
+      sql: `UPDATE continuation_historical_digests
+        SET status = 'outdated', updated_at = ?
+        WHERE project_id = ? AND status IN ('queued', 'running', 'ready', 'failed')`,
+      params: [ts, projectId],
+    },
+    {
+      // Must run before DELETE source: composite FKs on settings have no ON DELETE
+      // action and would otherwise reject the cascade.
       sql: `UPDATE continuation_settings SET
           active_source_id = NULL,
           boundary_source_id = NULL,
           boundary_chapter_id = NULL,
           boundary_char_offset_global = NULL,
           import_completed = 0,
-           analysis_status = 'not_started',
-           active_canon_snapshot_id = NULL,
-           active_style_profile_id = NULL,
-           updated_at = ?
+          analysis_status = 'not_started',
+          active_canon_snapshot_id = NULL,
+          active_style_profile_id = NULL,
+          updated_at = ?
         WHERE project_id = ?`,
       params: [ts, projectId],
     },
     {
-      sql: 'DELETE FROM continuation_sources WHERE id = ?',
-      params: [sourceId],
-    },
-    {
-      // Fix-plan §6.1: deleting the active source invalidates in-flight runs so
-      // their frozen source snapshot can never be adopted against the now-empty
-      // active source.
+      // Fix-plan §6.1: in-flight runs cannot be adopted against a deleted source.
+      // Does NOT touch chapters — only freezes generation state.
       sql: `UPDATE continuation_generation_runs
         SET state = 'outdated', error_code = 'outdated',
             error_message = ?, updated_at = ?
         WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
       params: ['source_deleted', ts, projectId],
     },
-  ]);
+    {
+      sql: 'DELETE FROM continuation_sources WHERE id = ?',
+      params: [sourceId],
+    },
+  ];
+}
+
+/**
+ * Clear the active source pointer, then physical-delete the source row
+ * (Spec §6, §14.3). User continuation chapters in `chapters` are never written.
+ */
+export async function clearActiveSourceAndDelete(
+  db: SQLite.SQLiteDatabase,
+  projectId: number,
+  sourceId: number,
+): Promise<void> {
+  const ts = now();
+  await executeTransaction(
+    db,
+    buildClearActiveSourceAndDeleteStatements({ projectId, sourceId, ts }),
+    { faultDomain: 'continuation' },
+  );
 }
 
 /** Convenience: open the shared DB handle for non-transactional callers. */
