@@ -21,6 +21,7 @@ import { LLMSettingsScreen } from '../screens/LLMSettingsScreen';
 import { ResourceLibrary } from '../screens/ResourceLibrary';
 import { ContinuationHomeScreen } from '../screens/continuation/ContinuationHomeScreen';
 import { ContinuationSourceChaptersScreen } from '../screens/continuation/ContinuationSourceChaptersScreen';
+import { ContinuationSourceOrderingScreen } from '../screens/continuation/ContinuationSourceOrderingScreen';
 import { ContinuationBoundaryScreen } from '../screens/continuation/ContinuationBoundaryScreen';
 import { CanonAnalysisOverviewScreen } from '../screens/continuation/canon/CanonAnalysisOverviewScreen';
 import { CanonCategoryListScreen } from '../screens/continuation/canon/CanonCategoryListScreen';
@@ -99,6 +100,15 @@ export type SettingsStackParamList = {
 export type ResourceStackParamList = {
   ContinuationHome: undefined;
   ContinuationSourceChapters: undefined;
+  ContinuationSourceOrdering: {
+    projectId: number;
+    files: Array<{
+      localPath: string;
+      originalFileName: string;
+      detectedEncoding: string;
+      fileSizeBytes: number;
+    }>;
+  };
   ContinuationBoundary: undefined;
   ContinuationStateReview: undefined;
   CanonAnalysisOverview: undefined;
@@ -297,6 +307,10 @@ const ResourceStackScreen = () => (
     <ResourceStack.Screen
       name="ContinuationSourceChapters"
       component={ContinuationSourceChaptersScreen}
+    />
+    <ResourceStack.Screen
+      name="ContinuationSourceOrdering"
+      component={ContinuationSourceOrderingScreen}
     />
     <ResourceStack.Screen
       name="ContinuationBoundary"
