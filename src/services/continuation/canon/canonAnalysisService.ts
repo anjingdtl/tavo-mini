@@ -1347,14 +1347,17 @@ export async function startAnalysis(
     providerType: requestConfig.provider_type,
     contextWindow: requestConfig.context_window,
   });
-  const largestChapterInputTokens = Math.max(
-    ...plan.nearChapters.map(
-      chapter =>
-        estimateTokens(chapter.title) +
-        estimateTokens(chapter.content.slice(0, chapterTextLimit)) +
-        64,
-    ),
-  );
+  // H4 修复：原 Math.max(...spread) 在 2000+ 章长篇网文上有爆栈风险
+  //（参数上限 + 栈深度），且对每章做 24000 字 token 估算会同步处理
+  // 4800 万字符。改 for 循环累加，栈深度 O(1)。
+  let largestChapterInputTokens = 0;
+  for (const chapter of plan.nearChapters) {
+    const tokens =
+      estimateTokens(chapter.title) +
+      estimateTokens(chapter.content.slice(0, chapterTextLimit)) +
+      64;
+    if (tokens > largestChapterInputTokens) largestChapterInputTokens = tokens;
+  }
   const contextDrivenPerBatch = resolveContextDrivenChaptersPerBatch({
     providerType: requestConfig.provider_type,
     contextWindow: requestConfig.context_window,
