@@ -308,12 +308,18 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                   const material = update.materialType
                     ? ANALYSIS_MATERIAL_LABELS[update.materialType]
                     : '原著分析';
+                  const suffix = update.llmActive ? ' · 正在生成…' : '';
                   void PipelineForeground.updateProgress(
                     runId,
-                    `第 ${(update.batchIndex ?? 0) + 1} 批 · ${material}`,
+                    `第 ${(update.batchIndex ?? 0) + 1} 批 · ${material}${suffix}`,
                     percent,
                   );
-                  void reload();
+                  // Heartbeat updates carry no new DB state — skip the reload
+                  // so the 1s polling timer stays the only source of truth for
+                  // progress numbers.
+                  if (!update.llmActive) {
+                    void reload();
+                  }
                 },
               });
               await PipelineForeground.stop(runId);
