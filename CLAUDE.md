@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # shinewriter
 
-基于 tavo-maker 小说家工作台的 **Android-only** React Native 应用（不支持 iOS 构建）。核心能力：多章节长篇写作、多阶段 AI 生成管线、角色卡/世界书注入、可选的本地 llama.cpp 离线推理、TTS 朗读、增量故事记忆（Checkpoint 架构）、以及基于 Canon/原著画风的"原著续写"工作流。
+基于 tavo-maker 小说家工作台的 **Android-only** React Native 应用（不支持 iOS 构建）。核心能力：多章节长篇写作、多阶段 AI 生成管线、角色卡/世界书注入、TTS 朗读、增量故事记忆（Checkpoint 架构），以及基于 Canon/原著画风的“原著续写”工作流。
 
-当前版本以 `package.json` / `README.md` 为准（**V2.11.1**）；数据库 **Schema 26**（`src/services/migrations/index.ts` 的 `SCHEMA_VERSION`，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。
+当前工作树版本为 **V2.11.8**（以 `package.json` 与 `src/constants/version.json` 为准）；数据库 **Schema 29**（以 `src/services/migrations/index.ts` 的 `SCHEMA_VERSION` 为准，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。
 
 > Agent 跑命令、构建、测试陷阱等操作细节见 `AGENTS.md`；本文件专注代码事实与架构，不要重复。
 
@@ -33,8 +33,9 @@ npm run verify:version    # 校验 package.json / version.json / 构建产物版
 npm test                  # 全部
 npm run test:ci           # --runInBand --ci（CI 用）
 npm run test:coverage     # 带覆盖率（见 jest.config.js 的 coverageThreshold）
-npx jest __tests__/llm.test.ts          # 单文件
+npx jest __tests__/chapterNavigation.test.ts          # 单文件
 npx jest __tests__/migrations-v15-v16   # 按文件名前缀跑相关用例
+npx jest <relative-test-path> -t "测试名称"          # 按名称筛选
 
 # WebDAV 同步（坚果云 zspace，可选）
 npm run zspace:probe      # 探测连接
@@ -59,7 +60,7 @@ npm run zspace:put        # 上传
 
 ## 架构
 
-React Native CLI + TypeScript。Zustand 状态管理（**6 个 store**），SQLite 本地持久化（**schema version 26**，约 28+ 张表）。底部 **5 Tab** 导航（项目/资料/写作/构建/设置），三色主题系统，多阶段 AI 管线 + 前台服务保活。
+React Native CLI + TypeScript。Zustand 状态管理（**5 个 store**），SQLite 本地持久化（**schema version 29**）。底部 **5 Tab** 导航（项目/资料/写作/构建/设置），三色主题系统，多阶段 AI 管线 + 前台服务保活。
 
 入口：`index.js` → `src/main/index.tsx`（ThemeProvider + NavigationContainer）→ `src/navigation/TabNavigator.tsx`。Tab 顺序为 `1 项目 → 2 资料/续写资料 → 3 写作/续写 → 构建 → 设置`；原著续写模式下"资料"和"写作"两个 Tab 文案切换为"续写资料"/"续写"，前 3 步之间显示箭头提示。
 
@@ -68,18 +69,17 @@ React Native CLI + TypeScript。Zustand 状态管理（**6 个 store**），SQLi
 数据访问的**唯一对外入口是 `src/services/database.ts`**，它是一个 barrel —— 真正实现在 `src/data/` 分层中：
 
 - `src/data/connection/` — 底层连接：`openDatabase.ts`（单例 + Promise 去重）、`execute.ts`、`query.ts`（`all`/`one`）、`transaction.ts`（`executeTransaction` 批量事务）
-- `src/data/repositories/` — 按领域拆分的 Repository（project / character / worldbook / note / preset / llmConfig / localModel / settings / usage / content / pipelineTask / noteConfig / contextAuto / storyMemory / **continuationResourceBinding**）+ `shared.ts`（`Row`/`now`/`touchProject` 等公共工具）
+- `src/data/repositories/` — 按领域拆分的 Repository（project / character / worldbook / note / preset / llmConfig / settings / usage / content / pipelineTask / noteConfig / contextAuto / storyMemory / **continuationResourceBinding**）+ `shared.ts`（`Row`/`now`/`touchProject` 等公共工具）
 - `src/data/schema/` — `createCurrentSchema.ts`（**全新安装**的建表语句）、`initializeDatabase.ts`（安装类型检测 + 破坏性迁移检测 + 已知缺陷修复）、`schemaManifest.ts`、`schemaValidator.ts`
-- `src/data/migrations/` — 仅 re-export `src/services/migrations/`（迁移逻辑的真身在后者）
 - `src/services/database/` — 迁移/事务辅助与 schema 校验相关实现（`transaction.ts` 等），由 migrations 与 database 层共用
 
 **页面绝不直接写 SQL**，一律调 `services/database.ts` 导出的 Repository 函数。
 
-主要表：projects、chapters、fragments、plotlines、project_plotlines、characters、character_collections、worldbook_collections、worldbook_entries、note_collections、notes、project_note_config、note_style_profiles、presets、llm_config、local_llm_models、settings、project_resources、llm_usage_logs、pipeline_tasks、freeform_documents、content_revisions、generation_drafts、project_story_memory、chapter_memory_patches、story_memory_snapshots、project_story_memory_policy、story_memory_batches，以及续写域 12 张表（见下文）。
+主要表：projects、chapters、fragments、plotlines、project_plotlines、characters、character_collections、worldbook_collections、worldbook_entries、note_collections、notes、project_note_config、note_style_profiles、presets、llm_config、settings、project_resources、llm_usage_logs、pipeline_tasks、freeform_documents、content_revisions、generation_drafts、project_story_memory、chapter_memory_patches、story_memory_snapshots、project_story_memory_policy、story_memory_batches，以及续写域的导入、Canon、风格画像、状态和生成表（见下文）。
 
-#### 数据库迁移（schema 3 → 26）
+#### 数据库迁移（schema 3 → 29）
 
-增量迁移引擎在 `src/services/migrations/`：`index.ts` 定义 `SCHEMA_VERSION = 26` 与 `MIN_COMPATIBLE_SCHEMA_VERSION = 3`，`MIGRATIONS` 数组串联 `v3-to-v4.ts` … `v25-to-v26.ts`。`runMigrations()` 只跑 `from >= 当前版本` 的迁移；标 `breaking: true` 的迁移会先触发备份（`backupService.ts`，存 `{ExternalDirectoryPath}/backups/`，最多保留 3 份）。v25→v26 因逻辑非纯 SQL，单独走 `migrateV25ToV26(db)`。
+增量迁移引擎在 `src/services/migrations/`：`index.ts` 定义 `SCHEMA_VERSION = 29` 与 `MIN_COMPATIBLE_SCHEMA_VERSION = 3`，`MIGRATIONS` 数组串联 `v3-to-v4.ts` … `v28-to-v29.ts`。`runMigrations()` 只跑 `from >= 当前版本` 的迁移；标 `breaking: true` 的迁移会先触发备份（`backupService.ts`，存 `{ExternalDirectoryPath}/backups/`，最多保留 3 份）。v25→v26 因逻辑非纯 SQL，单独走 `migrateV25ToV26(db)`；v26→v27 是移除本地模型相关数据的破坏性迁移。
 
 **新增表或字段时必须两处都改**（极易遗漏）：
 1. 写一个新的 `vN-to-vN+1.ts` 并注册进 `MIGRATIONS`，同时把 `SCHEMA_VERSION` +1；
@@ -89,27 +89,25 @@ React Native CLI + TypeScript。Zustand 状态管理（**6 个 store**），SQLi
 
 ### 启动流程
 
-`src/main/index.tsx` 的 `App` 启动序列：splash（≥1.2s）→ `openDatabase()` → `loadSettings()`（必须在写作入口前同步后台开关，否则前台服务桥接保持 false）→ `pipelineTaskStore.loadFromDB()` 并**立即把所有 active 任务标记为 failed**（冷启动时任何 active 都是上次中断的残留，不等 10 分钟 stale 窗口）→ 安装类型检测 → 若 `upgrade` 且 `hasBreakingMigration(schemaVersion)` 为真则展示 `UpgradeScreen`（备份+迁移+状态机）→ 进入主界面。回前台时（`AppState` → `active`）跑 `markStaleTasksAsFailed()`：updatedAt 在 10 分钟内不判死，超时才标 failed（静默自愈）。
+`src/main/index.tsx` 的 `App` 启动序列：splash（≥1.2s）→ `openDatabase()` → `loadSettings()`（必须在写作入口前同步后台开关）→ `pipelineTaskStore.loadFromDB()` 并立即把 active 流水线任务标记为 interrupted/failed → 恢复中断的续写 TXT 导入任务 → 规范化续写 generation/outbox 状态并异步排空 outbox → 暂停中断的 Canon 分析 → 安装类型检测。若 `upgrade` 且 `hasBreakingMigration(schemaVersion)` 为真则展示 `UpgradeScreen`（备份+迁移+状态机），否则进入主界面。回前台时（`AppState` → `active`）跑 `markStaleTasksAsFailed()`：updatedAt 在 10 分钟内不判死，超时才标 failed（静默自愈）。
 
-### 状态管理（6 个 Zustand store）
+### 状态管理（5 个 Zustand store）
 
 - `projectStore` — 项目列表、当前项目、CRUD
 - `settingsStore` — LLM 配置、**后台流水线开关**（驱动前台服务）
 - `themeStore` — 主题模式（亮色/暗色/护眼）
 - `pipelineTaskStore` — 多阶段生成任务状态（草稿→审查→事实核查→校对），含 `markActiveTasksAsInterrupted` / `markStaleTasksAsFailed` / `batchResolved` 语义
-- `localModelStore` — 本地 GGUF 模型导入/校验/状态
 - `voiceStore` — TTS 语音与朗读状态
 
-### LLM 集成（双 provider + 调度器）
+### LLM 集成（OpenAI 兼容 provider + 调度器）
 
 `src/services/llm.ts` 是对外入口，实现在 `src/services/llm/`：
 
-- `providerRegistry.ts` — 按 `provider_type` 分发：`openai_compatible`（OpenAI 兼容 API，流式 + 非流式，流式中断回退非流式）或 `llama_cpp`（**本地离线**推理，经原生 `LlamaCppModule`）
-- `openAICompatibleProvider.ts` / `llamaCppProvider.ts` + `promptAdapter.ts` / `llamaCppPromptAdapter.ts`
-- `requestScheduler.ts` — 请求队列，分 `queueClass`（`normal` / `pipeline` / `background` / `connection` / `local`）与 `queuePriority`（`manual` / `normal` / `background`），避免并发冲撞与限流
+- `providerRegistry.ts` — 当前仅注册 `openai_compatible`；`openAICompatibleProvider.ts` 支持流式与非流式请求，流式中断可回退非流式
+- `requestScheduler.ts` — 请求队列，分 `queueClass`（`normal` / `pipeline` / `background` / `canon_analysis` / `connection`）与 `queuePriority`（`manual` / `normal` / `background`），并限制各类并发与同项目流水线冲撞
 - `requestPolicy.ts` / `networkPolicy.ts` — 请求策略与网络安全（HTTPS 默认；局域网 HTTP 限 `127.0.0.1`/`10/8`/`172.16/12`/`192.168/16`，须显式 `allow_insecure_lan_http`；公网 HTTP 永远拒绝）
 
-`llm_config` 表存 provider 配置（含 `provider_type`、`local_model_id`、`context_window` 等）；API Key 经 Android Keystore 按 config id 安全存储（`secureStorage.ts`），表中不落密钥。
+`llm_config` 表存在线 provider 配置（含 `provider_type`、`context_window`、`max_output_tokens` 等）；API Key 经 Android Keystore 按 config id 安全存储（`secureStorage.ts`），表中不落密钥。
 
 上下文构建：`contextBuilder.ts`（滑动窗口/完整/自定义三策略）+ `contextAutoAllocator.ts`（按 token 预算自动分配资源配额）+ `noteRetriever.ts`（笔记双模式检索）+ `episodicMemoryRetriever.ts` + `macroReplace.ts`（`{{char}}`/`{{user}}`/`{{chapter}}`/`{{synopsis}}`）。续写域有独立的 `services/continuation/generation/continuationContextBuilder.ts` 与 `continuationContextBudget.ts` / `continuationAnchor.ts` / `continuationContextTrace.ts` / `continuationSupplementContextBuilder.ts`。
 
@@ -123,7 +121,7 @@ React Native CLI + TypeScript。Zustand 状态管理（**6 个 store**），SQLi
 
 生成前默认智能更新、目标约每 3 章一次批量整理；最近正文负责短期连续性。Episodic 检索含中文 n-gram、实体/人物组合加权、混合 Top-K。相关验收与硬化报告在 `docs/V2.5.*-STORY-MEMORY-*.md` 与 `docs/optimization/`（其中带 TEST-REPORT 字样的报告已被 `.gitignore` 移出仓库）。
 
-### 原著续写域（Canon + 画风画像 + Generation，schema 19 → 26）
+### 原著续写域（Canon + 画风画像 + Generation，schema 19 → 29）
 
 独立子域，**自顶向下三层**：
 
@@ -134,9 +132,9 @@ React Native CLI + TypeScript。Zustand 状态管理（**6 个 store**），SQLi
 
 UI 在 `src/screens/continuation/`：项目 Tab 下的 `ContinuationHomeScreen` / `ContinuationSourceChaptersScreen` / `ContinuationBoundaryScreen` / `ContinuationWorkspaceScreen` / `ContinuationResultScreen` / `ContinuationStateReviewScreen` / `ContinuationGenerationConfigScreen` / `StyleProfileDetailScreen`，Canon 子目录 `canon/CanonAnalysisOverviewScreen.tsx` / `CanonCategoryListScreen.tsx` / `CanonAnalysisTasksScreen.tsx`。
 
-### 构建模块（Build / 构建，schema 0）
+### 构建模块（Build / 构建）
 
-第五个底部 Tab，独立 AI 构建流程：基于在线 OpenAI 兼容 LLM 生成可移植角色卡 / 世界书文件，写入手机存储的 JSON；用户需到"资料"模块手动导入才能进入项目。**不**写入资料库/项目表，**不**与写作上下文共享 token 预算，**不**支持本地 llama.cpp / GGUF。详见 `SPEC.MD` 与 `src/screens/BuildScreen.tsx`、服务在 `src/services/construction/`（`budget.ts` / `quality.ts` / `targets.ts` / `textSourceParser.ts` + `constructionAiGenerator.ts` + `constructionFileService.ts` + `chapterGeneration.ts`）。
+第五个底部 Tab，独立 AI 构建流程：基于在线 OpenAI 兼容 LLM 生成可移植角色卡 / 世界书文件，写入手机存储的 JSON；用户需到"资料"模块手动导入才能进入项目。**不**写入资料库/项目表，**不**与写作上下文共享 token 预算。详见 `SPEC.MD` 与 `src/screens/BuildScreen.tsx`、服务在 `src/services/construction/`（`budget.ts` / `quality.ts` / `targets.ts` / `textSourceParser.ts` + `constructionAiGenerator.ts` + `constructionFileService.ts` + `chapterGeneration.ts`）。
 
 ### 草稿与版本
 
@@ -148,14 +146,13 @@ UI 在 `src/screens/continuation/`：项目 Tab 下的 `ContinuationHomeScreen` 
 
 ### 文件导入导出
 
-导入：JSON 角色卡（CCv1/v2/v3）+ 世界书（lorebook_v3）；PNG 角色卡经原生 `PngMetadataModule` 解析 tEXt 块；GGUF 本地模型导入（`localModels.ts` + `localModelStore`）；原著文本经 `ContinuationTextImportModule`（新增的第五个原生模块）。导出：Markdown、纯文本（UTF-8 BOM）、`.tavo-novel.json`（兼容 tavo-maker）。
+导入：JSON 角色卡（CCv1/v2/v3）+ 世界书（lorebook_v3）；PNG 角色卡经原生 `PngMetadataModule` 解析 tEXt 块；原著文本经 `ContinuationTextImportModule`（支持 URI 解析与大文件流式读取）。导出：Markdown、纯文本（UTF-8 BOM）、`.tavo-novel.json`（兼容 tavo-maker）。
 
-### 原生模块（5 个）
+### 原生模块（4 个）
 
-TS 桥接在 `src/native/`，Android 实现在 `android/app/src/main/java/com/shinewriter/`，Codegen spec 在 `src/native/specs/`（`ShineWriterSpec`）：
+TS 桥接在 `src/native/`，Android 实现在 `android/app/src/main/java/com/shinewriter/`，Codegen spec 在 `src/native/specs/`（`ShineWriterSpec`，`package.json` 的 `codegenConfig` 指定 `com.shinewriter.specs` 包名，Gradle 插件自动生成）：
 
 - `PngMetadataModule` — PNG tEXt 块解析（角色卡）
-- `LlamaCppModule` — 本地 llama.cpp 推理（GGUF；JNI 在 `android/app/src/main/java/com/shinewriter/llamacpp/`，源码树 `android/app/jni/llama.cpp/`）
 - `PipelineForegroundModule` + `PipelineForegroundService` — 管线前台服务保活 + 通知 deep-link
 - `TtsAudioModule` + `TtsForegroundService` + `TtsTextChunker` — TTS 朗读与后台保活
 - `ContinuationTextImportModule` — 原著文本导入（URI 解析 + 大文件流式读取）
@@ -187,12 +184,12 @@ TS 桥接在 `src/native/`，Android 实现在 `android/app/src/main/java/com/sh
 - `jest.setup.js` 已 mock 原生模块（sqlite-storage、fs、document picker、keychain、toast、safe-area、lucide 等）。**新增原生依赖时优先在 `jest.setup.js` 补 mock**
 - **`transformIgnorePatterns` 陷阱**：新增 RN 原生模块依赖时，还需把包名加入 `jest.config.js` 的白名单，否则 ESM 转换失败（当前白名单：`react-native`、`@react-native`、`@react-navigation`、`react-native-screens`、`react-native-safe-area-context`、`lucide-react-native`、`react-native-svg`、`react-native-keychain`、`@react-native-documents/picker`）
 - 覆盖率门禁：全局 branches 55 / functions 65 / lines 65 / statements 65；`database.ts`、`database/**`、`schema/**`、`migrations/**`、`backupService.ts` 为 branches 70 / lines 80
-- E2E：`e2e/maestro/`（首启/写作生命周期/资料库/备份恢复/LLM 配置/管线取消 / 续写画风概览）；`e2e/fault-injection/` 与 `docs/FAULT_INJECTION_MATRIX.md`
+- E2E：`e2e/maestro/`（12 个 YAML 覆盖首启、写作生命周期、资料库、备份恢复、LLM 配置、管线取消，以及续写导入/Canon 分析/生成采纳/检查修复/状态重建/画风概览）；`e2e/fault-injection/` 与 `docs/FAULT_INJECTION_MATRIX.md`（配套 `scripts/testing/hanging-http-server.js` 提供网络断连场景）
 
 ## 安全
 
-- API Key 通过 Android Keystore 按 LLM 配置 id 安全存储（`secureStorage.ts` + `react-native-keychain`），SQLite `llm_config` 表仅存 name、base_url、model_name、provider_type、context_window 等非密钥字段
-- 本地模型默认走 GPU/CPU 推理，不联网；局域网 HTTP 需显式 `allow_insecure_lan_http` 开关
+- API Key 通过 Android Keystore 按 LLM 配置 id 安全存储（`secureStorage.ts` + `react-native-keychain`），SQLite `llm_config` 表仅存 name、base_url、model_name、provider_type、context_window、max_output_tokens 等非密钥字段
+- 局域网 HTTP 需显式 `allow_insecure_lan_http` 开关；公网 HTTP 永远拒绝
 - 备份不含 API Key；无 WebView、无远程代码执行
 
 ## 改动敏感区域前先读
