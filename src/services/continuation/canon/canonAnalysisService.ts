@@ -91,6 +91,30 @@ import {
   estimateMessagesTokens,
   estimateTokens,
 } from '../../../utils/tokenEstimator';
+import {
+  planAdaptiveBatching,
+  precheckCanonAnalysis,
+  resolveExtractionMaxTokens,
+  resolveChapterTextLimitFromBudget,
+  FULL_CANON_QUALITY_CHAPTERS_PER_BATCH,
+  MIN_INPUT_BUDGET_TOKENS,
+  type AdaptiveBatch,
+  type AdaptiveBatchPlan,
+  type CanonAnalysisPrecheck,
+} from './adaptiveBatchPlanner';
+export type {
+  AdaptiveBatch,
+  AdaptiveBatchPlan,
+  CanonAnalysisPrecheck,
+};
+export {
+  planAdaptiveBatching,
+  precheckCanonAnalysis,
+  resolveExtractionMaxTokens,
+  resolveChapterTextLimitFromBudget,
+  FULL_CANON_QUALITY_CHAPTERS_PER_BATCH as ADAPTIVE_BATCH_QUALITY_CAP,
+  MIN_INPUT_BUDGET_TOKENS,
+};
 
 export const ANALYSIS_MATERIAL_LABELS: Record<AnalysisWorkItemType, string> = {
   world_rules: '世界观',
@@ -343,14 +367,6 @@ const CANON_PROMPT_OVERHEAD_TOKENS = 600;
 // 输出时 baselineMaxTokens 仍被压到 32K，deep 模式 5 类别 JSON 易触发
 // finish_reason=length 截断。提升到 65536 让 deep 模式有完整输出空间。
 const CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS = 65_536;
-
-/**
- * A context window is a capacity limit, not a desired prompt size. Full-book
- * analysis intentionally revisits the source in many focused passes so each
- * request can extract secondary characters, short-lived relationships and
- * local foreshadowing instead of returning only a coarse book summary.
- */
-export const FULL_CANON_QUALITY_CHAPTERS_PER_BATCH = 20;
 
 /**
  * Output baseline per profile. v3.1 reverts to the two-call split
@@ -1363,65 +1379,24 @@ export async function startAnalysis(
 
   const snapshotId = v4();
   const runId = v4();
-  const chapterTextLimit = resolveCanonChapterTextLimit({
-    providerType: requestConfig.provider_type,
-    contextWindow: requestConfig.context_window,
-  });
-  // H4 + H2 修复：原 Math.max(...spread) 爆栈已改 for 循环（H4）；但循环内
-  // 每章 estimateTokens 同步处理 24000 字符 × 2000 章 = 4800 万字符仍会
-  // 阻塞主线程数秒。改两步：
-  //   1) 只对 title + content 长度做粗估（content 实际 token ≈ 字符数/1.5
-  //      for CJK，但 estimateTokens 内部也是字符数近似），避免对每章做
-  //      完整 slice + estimateTokens；
-  //   2) 每 100 章 await Promise.resolve() 让出事件循环，避免 ANR。
-  //      largestChapterInputTokens 只用于 resolveContextDrivenChaptersPerBatch
-  //      计算 perBatch，精度要求不高。
-  let largestChapterInputTokens = 0;
-  for (let i = 0; i < plan.nearChapters.length; i++) {
-    const chapter = plan.nearChapters[i];
-    const cappedLen = Math.min(chapter.content.length, chapterTextLimit);
-    // estimateTokens 对 CJK 文本约为 字符数 × 0.6，标题 + 64 token overhead。
-    // 直接用长度近似避免每章同步走完整 estimateTokens 正则/分词路径。
-    const tokens =
-      Math.ceil(chapter.title.length * 0.6) +
-      Math.ceil(cappedLen * 0.6) +
-      64;
-    if (tokens > largestChapterInputTokens) largestChapterInputTokens = tokens;
-    if (i % 100 === 99) await Promise.resolve();
-  }
-  const contextDrivenPerBatch = resolveContextDrivenChaptersPerBatch({
+  // 2026-08-01 修复：替换原 planAnalysisTokenBudget（写死 32768 outputBaseline）
+  // 为 planAdaptiveBatching。新 planner 完全从用户 LLM 配置派生 effectiveInputBudget，
+  // 不再硬编码任何上下文窗口阈值；超大章节自动切成 chunk batches 而非拒绝。
+  const adaptivePlan = planAdaptiveBatching({
+    chapters: plan.nearChapters,
+    profile,
     providerType: requestConfig.provider_type,
     contextWindow: requestConfig.context_window,
     maxOutputTokens: requestConfig.max_output_tokens,
-    chapterCount: plan.nearChapters.length,
-    largestChapterInputTokens,
+    materialType: 'character_state',
   });
-  const requestedPerBatch = Math.max(
-    1,
-    resolveQualityFirstChaptersPerBatch({
-      mode: input.mode,
-      contextCapacity: input.chaptersPerBatch ?? contextDrivenPerBatch,
-    }),
-  );
-  // S1 preflight: estimate whether the local model's context window can absorb
-  // a Canon batch. Online models skip the check; local models that cannot
-  // reserve the output baseline are refused up front instead of burning three
-  // identical retries. When the input is the bottleneck we downgrade
-  // chaptersPerBatch (and remember the slice budget for extraction).
-  const tokenBudget = planAnalysisTokenBudget({
-    chapters: plan.nearChapters,
-    profile,
-    perBatch: requestedPerBatch,
-    providerType: requestConfig.provider_type,
-    contextWindow: requestConfig.context_window,
-  });
-  if (!tokenBudget.ok) {
+  if (!adaptivePlan.ok) {
     throw new Error(
-      tokenBudget.reason ?? '本地模型上下文不足以执行 Canon 分析',
+      adaptivePlan.reason ?? '当前 LLM 配置无法完成 Canon 分析，请调整 context_window 或 max_output_tokens。',
     );
   }
-  const perBatch = tokenBudget.perBatch;
-  const sliceCharBudget = tokenBudget.sliceCharBudget;
+  // 将 AdaptiveBatch[] 转换为 batches 表行：normal batch 用章节区间，
+  // chunk batch 用单章区间 + chunkIndex 编码到 idempotencyKey。
   const batches: Array<{
     runId: string;
     canonSnapshotId: string;
@@ -1431,24 +1406,46 @@ export async function startAnalysis(
     inputHash: string;
     idempotencyKey: string;
   }> = [];
-
-  for (let i = 0; i < plan.nearChapters.length; i += perBatch) {
-    const slice = plan.nearChapters.slice(i, i + perBatch);
-    const start = slice[0].position;
-    const end = slice[slice.length - 1].position + 1; // half-open
-    const inputHash = sha256Hex(
-      slice
+  // chunk 元数据按 batchIndex 存储，processAnalysisRunInner 读取后做字符切片。
+  const batchChunkMeta: Record<number, {
+    chapterId: number;
+    chunkIndex: number;
+    chunkCount: number;
+    chunkStartChar: number;
+    chunkEndChar: number;
+  }> = {};
+  for (let i = 0; i < adaptivePlan.batches.length; i++) {
+    const batch = adaptivePlan.batches[i];
+    let startPosition: number;
+    let endPosition: number;
+    let inputHashSource: string;
+    if (batch.type === 'normal') {
+      startPosition = batch.chapters[0].position;
+      endPosition = batch.chapters[batch.chapters.length - 1].position + 1;
+      inputHashSource = batch.chapters
         .map(c => `${c.id}:${c.content.length}:${c.range.start}-${c.range.end}`)
-        .join('|'),
-    );
+        .join('|');
+    } else {
+      startPosition = batch.chapter.position;
+      endPosition = batch.chapter.position + 1;
+      inputHashSource = `${batch.chapter.id}:chunk${batch.chunkIndex}/${batch.chunkCount}:${batch.chunkStartChar}-${batch.chunkEndChar}`;
+      batchChunkMeta[i] = {
+        chapterId: batch.chapter.id,
+        chunkIndex: batch.chunkIndex,
+        chunkCount: batch.chunkCount,
+        chunkStartChar: batch.chunkStartChar,
+        chunkEndChar: batch.chunkEndChar,
+      };
+    }
+    const inputHash = sha256Hex(inputHashSource);
     batches.push({
       runId,
       canonSnapshotId: snapshotId,
-      batchIndex: batches.length,
-      startPosition: start,
-      endPosition: end,
+      batchIndex: i,
+      startPosition,
+      endPosition,
       inputHash,
-      idempotencyKey: `${runId}:${batches.length}:${inputHash}`,
+      idempotencyKey: `${runId}:${i}:${inputHash}`,
     });
   }
 
@@ -1543,22 +1540,22 @@ export async function startAnalysis(
   // The complete plan is persisted so resume cannot silently widen a tail run.
   await updateRunState(db, runId, {
     checkpointJson: JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       mode: input.mode,
       extractorMode: 'llm',
       workItemProtocol: 'request_groups_v3_1_split',
       scope: plan.effectiveScope,
       plannedChapterIds: plan.nearChapters.map(chapter => chapter.id),
       plannedRanges: plan.analyzedRanges,
-      // S1: remember the budget planner's verdict so extraction/resume reuse
-      // the same downgraded chaptersPerBatch and slice budget instead of
-      // recomputing (and possibly widening) on resume.
-      tokenBudget: {
-        perBatch,
-        sliceCharBudget,
-        downgraded: tokenBudget.downgraded,
-        effectiveWindow: tokenBudget.effectiveWindow,
+      // 2026-08-01 修复：持久化 adaptiveBatchPlan + batchChunkMeta，让
+      // processAnalysisRunInner / resume 知道每个 batch 是 normal 还是 chunk。
+      adaptiveBatchPlan: {
+        effectiveInputBudget: adaptivePlan.effectiveInputBudget,
+        outputReserve: adaptivePlan.outputReserve,
+        promptOverhead: adaptivePlan.promptOverhead,
+        estimatedBatchCount: adaptivePlan.estimatedBatchCount,
       },
+      batchChunkMeta,
     }),
   });
 
@@ -1633,6 +1630,19 @@ async function processAnalysisRunInner(
     extractorMode?: 'llm' | 'deterministic';
     scope?: AnalysisScope;
     workItemProtocol?: string;
+    adaptiveBatchPlan?: {
+      effectiveInputBudget: number;
+      outputReserve: number;
+      promptOverhead: number;
+      estimatedBatchCount: number;
+    };
+    batchChunkMeta?: Record<number, {
+      chapterId: number;
+      chunkIndex: number;
+      chunkCount: number;
+      chunkStartChar: number;
+      chunkEndChar: number;
+    }>;
   } = {};
   try {
     checkpoint = run.checkpointJson ? JSON.parse(run.checkpointJson) : {};
@@ -1645,6 +1655,10 @@ async function processAnalysisRunInner(
     throw new Error('旧版 Quick 离线预览已退役，请重新发起 LLM 原著分析。');
   }
   const scope = normalizeAnalysisScope(checkpoint.scope);
+  // 2026-08-01 修复：读取 adaptiveBatchPlan 与 batchChunkMeta，让 chunk batch
+  // 在 extractMaterialWithLlm 调用时做字符切片并附带 chunk 说明。
+  const adaptivePlanFromCheckpoint = checkpoint.adaptiveBatchPlan;
+  const batchChunkMeta = checkpoint.batchChunkMeta ?? {};
 
   await updateRunState(db, runId, {
     state: 'running',
@@ -1730,6 +1744,29 @@ async function processAnalysisRunInner(
           throw new Error('批次章节越过边界');
         }
       }
+      // 2026-08-01 修复：若是 chunk batch，对 slice[0] 做字符切片，让 LLM
+      // 只看到该 chunk 区间的正文。chapterId / range / position 保留原值，
+      // 这样 evidence 的 charStart/charEnd 仍按全书偏移填写。
+      const chunkMeta = batchChunkMeta[batch.batchIndex];
+      let effectiveSlice: typeof slice = slice;
+      let chunkMetadata: { chunkIndex: number; chunkCount: number } | undefined;
+      if (chunkMeta && slice.length === 1) {
+        const chapter = slice[0];
+        const chunkedContent = chapter.content.slice(
+          chunkMeta.chunkStartChar,
+          chunkMeta.chunkEndChar,
+        );
+        effectiveSlice = [
+          {
+            ...chapter,
+            content: chunkedContent,
+          },
+        ];
+        chunkMetadata = {
+          chunkIndex: chunkMeta.chunkIndex,
+          chunkCount: chunkMeta.chunkCount,
+        };
+      }
 
       // H4: 从预加载的 itemsByBatch Map 取，O(1) 查找替代全表扫描
       const batchItems = itemsByBatch.get(batch.batchIndex) ?? [];
@@ -1774,7 +1811,7 @@ async function processAnalysisRunInner(
         }, 5_000);
         try {
           const outcome = await extractMaterialWithLlm(
-            slice,
+            effectiveSlice,
             run.profile,
             run.modelConfigId,
             materialType,
@@ -1798,6 +1835,9 @@ async function processAnalysisRunInner(
                 });
               }
             },
+            // 2026-08-01 修复：传入 chunkMetadata 与 adaptive plan 派生值
+            chunkMetadata,
+            adaptivePlanFromCheckpoint,
           );
           if (signal.aborted) throw new Error('分析已暂停或取消');
           // Warnings (partial drops) are surfaced via the error_message column
@@ -2440,6 +2480,14 @@ export async function extractMaterialWithLlm(
   runId: string,
   signal: AbortSignal,
   onProgress?: (metrics: LLMRequestMetrics) => void,
+  // 2026-08-01 修复：新增 chunk 元数据与 adaptive plan 派生值参数
+  chunkMetadata?: { chunkIndex: number; chunkCount: number },
+  adaptivePlan?: {
+    effectiveInputBudget: number;
+    outputReserve: number;
+    promptOverhead: number;
+    estimatedBatchCount: number;
+  },
 ): Promise<ExtractMaterialOutcome> {
   if (!modelConfigId) {
     throw new Error(
@@ -2447,10 +2495,18 @@ export async function extractMaterialWithLlm(
     );
   }
   const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
-  const chapterTextLimit = resolveCanonChapterTextLimit({
-    providerType: requestConfig.provider_type,
-    contextWindow: requestConfig.context_window,
-  });
+  // 2026-08-01 修复：优先使用 adaptive plan 派生的 chapterTextLimit 与
+  // max_tokens，避免与 planAnalysisTokenBudget 校验值不一致。当 adaptive
+  // plan 不存在（旧 run resume）时回退到旧逻辑。
+  const chapterTextLimit = adaptivePlan
+    ? resolveChapterTextLimitFromBudget(adaptivePlan.effectiveInputBudget)
+    : resolveCanonChapterTextLimit({
+        providerType: requestConfig.provider_type,
+        contextWindow: requestConfig.context_window,
+      });
+  const chunkNotice = chunkMetadata
+    ? `\n注意：本章由于篇幅过大，已按字符区间切分为 ${chunkMetadata.chunkCount} 个片段。当前为第 ${chunkMetadata.chunkIndex + 1} 个片段。请仅基于本片段内容提取 evidence；跨片段的关联（如人物关系、伏笔）由后续合并阶段处理。bodyStart/bodyEnd 仍按全书 UTF-16 绝对偏移填写。`
+    : '';
   const prompt = [
     '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
     '必须只返回一个完整、可 JSON.parse 的 JSON 对象，不要 Markdown、思考过程、解释或任何前后缀。schemaVersion 必须为 1，八个数组字段都必须出现，不能返回 null 或空白。',
@@ -2467,6 +2523,7 @@ export async function extractMaterialWithLlm(
           c.range.start
         }, bodyEnd=${c.range.end})\n${c.content.slice(0, chapterTextLimit)}`,
     ),
+    chunkNotice,
   ].join('\n');
   // Preserve thinking for models that support it, but reserve a meaningful
   // completion budget for both reasoning and the final eight-array JSON.
@@ -2475,10 +2532,18 @@ export async function extractMaterialWithLlm(
     CANON_OUTPUT_BASELINE_TOKENS.standard;
   const configuredOutputTokens =
     requestConfig.max_output_tokens ?? profileBaseline;
-  const baselineMaxTokens = Math.min(
-    Math.max(profileBaseline, configuredOutputTokens),
-    CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS,
-  );
+  // 2026-08-01 修复：当 adaptive plan 存在时，用 resolveExtractionMaxTokens
+  // 保证 max_tokens 与 planAnalysisTokenBudget 校验值一致。
+  const baselineMaxTokens = adaptivePlan
+    ? resolveExtractionMaxTokens({
+        profile,
+        maxOutputTokens: requestConfig.max_output_tokens,
+        effectiveInputBudget: adaptivePlan.effectiveInputBudget,
+      })
+    : Math.min(
+        Math.max(profileBaseline, configuredOutputTokens),
+        CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS,
+      );
   let currentMaxTokens = baselineMaxTokens;
   const maxTokenCeiling = Math.max(
     baselineMaxTokens,
