@@ -43,6 +43,7 @@ import {
   validateChunkContiguity,
   type InsertChapterInput,
 } from './continuationSourceRepository';
+import { renumberContinuationChapterTitles } from './chapterNumbering/continuationChapterNumbering';
 import type {
   ContinuationSource,
   ImportJobStage,
@@ -748,12 +749,114 @@ export async function cancelContinuationImport(jobId: string): Promise<void> {
   }
 }
 
-/** Delete the active source for a project (Spec §9.2, §14.3). */
-export async function deleteContinuationSource(projectId: number): Promise<void> {
+/** Result of deleting the active source (Spec §9.2, §14.3). */
+export interface DeleteContinuationSourceResult {
+  /** True when an active source existed and was removed. */
+  deleted: boolean;
+  /** Count of user continuation chapters left in `chapters` (never deleted). */
+  preservedChapterCount: number;
+  /** In-flight generation runs marked outdated (unadopted body can no longer be adopted). */
+  outdatedRunCount: number;
+}
+
+/** Pre-delete stats for the confirm dialog (does not mutate). */
+export async function previewDeleteContinuationSource(
+  projectId: number,
+): Promise<{ preservedChapterCount: number; outdatedRunCount: number }> {
   const db = await getDb();
+  const [chapterCountRes] = await db.executeSql(
+    'SELECT COUNT(*) AS c FROM chapters WHERE project_id = ?',
+    [projectId],
+  );
+  const [runCountRes] = await db.executeSql(
+    `SELECT COUNT(*) AS c FROM continuation_generation_runs
+     WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
+    [projectId],
+  );
+  return {
+    preservedChapterCount: Number(chapterCountRes.rows.item(0).c ?? 0),
+    outdatedRunCount: Number(runCountRes.rows.item(0).c ?? 0),
+  };
+}
+
+/**
+ * Delete the active source for a project (Spec §9.2, §14.3).
+ *
+ * Removes original-work text/chapters/Canon/Style and clears the boundary.
+ * User continuation chapters in the project `chapters` table are never deleted
+ * or rewritten except for a best-effort freeze of auto titles so display
+ * numbers do not collapse to position+1 after the boundary disappears.
+ */
+export async function deleteContinuationSource(
+  projectId: number,
+): Promise<DeleteContinuationSourceResult> {
+  const db = await getDb();
+  const [chapterCountRes] = await db.executeSql(
+    'SELECT COUNT(*) AS c FROM chapters WHERE project_id = ?',
+    [projectId],
+  );
+  const preservedChapterCount = Number(chapterCountRes.rows.item(0).c ?? 0);
+
   const active = await getActiveSource(projectId);
-  if (!active) return;
+  if (!active) {
+    return { deleted: false, preservedChapterCount, outdatedRunCount: 0 };
+  }
+
+  const [runCountRes] = await db.executeSql(
+    `SELECT COUNT(*) AS c FROM continuation_generation_runs
+     WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
+    [projectId],
+  );
+  const outdatedRunCount = Number(runCountRes.rows.item(0).c ?? 0);
+
+  // Collect private import copies before the source (and its jobs) CASCADE away.
+  const [jobRes] = await db.executeSql(
+    `SELECT input_copy_relative_path FROM continuation_import_jobs
+     WHERE project_id = ? AND source_id = ? AND input_copy_relative_path IS NOT NULL`,
+    [projectId, active.id],
+  );
+  const privateCopies: string[] = [];
+  for (let i = 0; i < jobRes.rows.length; i++) {
+    const rel = jobRes.rows.item(i).input_copy_relative_path;
+    if (rel) privateCopies.push(String(rel));
+  }
+
+  // Freeze auto titles against the current boundary so after deletion the
+  // visible numbers stay as 第 N 章 rather than collapsing to position+1.
+  try {
+    await renumberContinuationChapterTitles(projectId);
+  } catch {
+    // Non-fatal: titles re-sync on next boundary activation.
+  }
+
   await clearActiveSourceAndDelete(db, projectId, active.id);
+
+  // Best-effort private file cleanup (Spec §16) — outside the DB transaction.
+  for (const rel of privateCopies) {
+    try {
+      await RNFS.unlink(`${RNFS.DocumentDirectoryPath}/${rel}`);
+    } catch {
+      // ignore orphans; next recover pass may clean them
+    }
+  }
+
+  // Post-condition guard: user chapters must still be present (Spec §14.3).
+  const [afterRes] = await db.executeSql(
+    'SELECT COUNT(*) AS c FROM chapters WHERE project_id = ?',
+    [projectId],
+  );
+  const afterCount = Number(afterRes.rows.item(0).c ?? 0);
+  if (afterCount !== preservedChapterCount) {
+    throw new Error(
+      `删除原著后续写章节数量异常（期望 ${preservedChapterCount}，实际 ${afterCount}）。请从备份中心恢复，并联系支持。`,
+    );
+  }
+
+  return {
+    deleted: true,
+    preservedChapterCount: afterCount,
+    outdatedRunCount,
+  };
 }
 
 /** Replace the active source by starting a new import (Spec §14.3). */
