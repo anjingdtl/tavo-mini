@@ -1,5 +1,16 @@
 # ShineWriter 发布清单
 
+## V2.11.7 多 TXT 原著导入 + 备份卡死修复
+
+- [x] 升级 `package.json` 至 `2.11.7`，`npm run prebuild` 生成 `V2.11.7` / `2110700`
+- [x] `CHANGELOG.md` 与 `README.md` 同步多 TXT 导入、Schema 29、备份卡死修复、单文件 SQL 列数修复
+- [x] `npm run verify` 通过：ESLint 0 error；typecheck / verify:version 通过；Jest 全量通过
+- [x] Android Debug APK 模拟器覆盖安装验证：Schema 28 → 29 升级安装无问题，LLM 配置保留完整；多 TXT 导入（3 文件 LLM 排序）实测通过；备份中心"创建备份"按钮点击后成功生成 6.8 KB 备份文件，软件未卡死
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.11.7-release.apk`
+- [x] 签名、单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.11.7` / `2110700` 验收通过
+
+证据：Release APK 34,966,254 bytes，SHA-256 `99D437C9F9D8239AC0D50E005A8879EECC4D4DFEA960E485F2BAE39F381656C1`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，单 signer，APK Signature Scheme v2，16 KB zipalign 验证成功，`aapt` `package: name='com.shinewriter' versionCode='2110700' versionName='V2.11.7'`。模拟器覆盖升级与多 TXT 导入、备份功能实测记录位于 `test-logs/`（未纳入版本控制）。
+
 ## V2.11.6 迁移彻底移除本地配置 + 上下文默认 1M
 
 - [x] 升级 `package.json` / `package-lock.json` 至 `2.11.6`，`npm run prebuild` 生成 `V2.11.6` / `2110600`

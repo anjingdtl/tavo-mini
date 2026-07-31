@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.11.7] - 2026-07-31
+
+### Added
+
+- **续写模式支持多 TXT 原著导入**：一次可选择多个 TXT 文件，合并为单一虚拟 source。多文件场景跳转 `ContinuationSourceOrderingScreen` 排序预览页，先采样每个文件头尾约 1500 字供 LLM 分析先后顺序；LLM 排序失败或未配置 LLM 时回退文件名排序；用户可在预览页上移/下移/移除文件后再导入。导入过程跨文件共享 normalizer/parser/hasher 状态，`chunkIndex` / `char_offset` / `position` 跨文件累加，章节 `position` 全局递增、`detected_title` 保留原文。
+- **Schema 升级到 29**：`continuation_sources` 新增 `source_files_json` / `is_multi_file` / `file_count` 三列；`continuation_source_text_chunks` 与 `continuation_source_chapters` 新增 `file_index` 列仅作来源标记。`v28-to-v29` 迁移与 `createCurrentSchema` 镜像建表已同步，`schemaManifest` 列清单同步更新。
+
+### Fixed
+
+- **备份中心"一按备份就卡死"**：根因是 `listBackups` 对每个备份文件都跑一次完整 SHA-256 校验，叠加手写 SHA-256 让出事件循环频率过低（每 32KB 才让出一次）与低效的 `utf8Encode`（`number[]` 逐字节 push 动态扩容），导致 JS 线程长时间阻塞 UI。改为：`listBackups` 仅做轻量结构校验，SHA-256 校验延迟到 `restoreFromBackup`；SHA-256 让出频率提高到每 1KB；`utf8Encode` 预分配 `Uint8Array` 两遍扫描写入。同时修复 `readAndValidateBackup` 三元表达式两边相同的笔误（`parsed : parsed` → `parsed : null`）。
+- **单文件原著导入 SQL 列数不匹配**：`continuationSourceRepository.insertSource` 的 `INSERT INTO continuation_sources` 语句 VALUES 占位符比列表少一个，导致 "22 values for 23 columns" 错误。补回缺失的 `?` 占位符，单文件导入恢复正常。
+
+### Tests
+
+- 新增 `__tests__/migrations-v28-v29.test.ts`：验证 v28→v29 五条 ALTER TABLE 语句与新列默认值/CHECK 约束。
+- 新增 `__tests__/continuationOrderingService.test.ts`：覆盖 LLM 排序成功、LLM 调用失败回退文件名、LLM 返回不可解析回退文件名等场景。
+
 ## [2.11.6] - 2026-07-30
 
 ### Fixed
