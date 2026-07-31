@@ -155,23 +155,24 @@ function stateToHex(state: typeof INITIAL_STATE): string {
     .join('');
 }
 
-/** Synchronous SHA-256 lowercase hex of a string's UTF-8 bytes (Spec §6). */
+/**
+ * Synchronous SHA-256 lowercase hex of a string's UTF-8 bytes (Spec §6).
+ *
+ * 实现委托给 {@link Sha256Stream} 分块处理（每块 64K 字符），避免一次性
+ * `utf8Encode` 整个字符串导致的 OOM。签名保持同步不变，所有调用点
+ *（generation / import / canon）自动受益。digest 与原 one-shot 实现等价
+ *（已由 __tests__/continuationHashStream.test.ts 覆盖等价性）。
+ */
 export function sha256Hex(value: string): string {
-  const source = utf8Encode(value);
-  const paddedLength = Math.ceil((source.length + 9) / 64) * 64;
-  const bytes = new Uint8Array(paddedLength);
-  bytes.set(source);
-  bytes[source.length] = 0x80;
-  const bitLength = source.length * 8;
-  for (let offset = 0; offset < 8; offset += 1) {
-    bytes[paddedLength - 1 - offset] = (bitLength / 2 ** (offset * 8)) & 0xff;
+  const stream = new Sha256Stream();
+  const CHUNK_SIZE = 65536;
+  let pos = 0;
+  while (pos < value.length) {
+    const end = pos + CHUNK_SIZE < value.length ? pos + CHUNK_SIZE : value.length;
+    stream.updateString(value.substring(pos, end));
+    pos = end;
   }
-
-  const state = { ...INITIAL_STATE };
-  for (let block = 0; block < paddedLength; block += 64) {
-    compressBlock(bytes.subarray(block, block + 64), state);
-  }
-  return stateToHex(state);
+  return stream.digest();
 }
 
 /**
