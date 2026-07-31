@@ -6,6 +6,7 @@ import { SCHEMA_VERSION } from './migrations';
 import { SCHEMA_MANIFEST, type TableManifest } from './database/schemaManifest';
 import { formatSchemaIssues, validateSchema } from './database/schemaValidator';
 import { executeTransaction, type SqlStatement } from './database/transaction';
+import { Sha256Stream } from './continuation/hashUtils';
 
 const BACKUP_DIR = `${RNFS.ExternalDirectoryPath}/backups`;
 const MAX_AUTOMATIC_BACKUPS = 3;
@@ -96,6 +97,18 @@ export interface RestoreOptions {
   appVersion?: string;
   schemaVersion?: number;
 }
+
+/**
+ * 备份创建过程中的进度通知。`percent` 为 0..100 的整数，`stage` 为人类可读的
+ * 当前阶段描述。service 层会做整数节流（只有 percent 变化时才回调），UI 层
+ * 可直接 setState 无需额外防抖。
+ */
+export interface BackupProgress {
+  percent: number;
+  stage: string;
+}
+
+export type BackupProgressCallback = (progress: BackupProgress) => void;
 
 interface BackupMetaV3 {
   app_version: string;
@@ -204,164 +217,57 @@ function checksumPayload(backup: {
   });
 }
 
-/* eslint-disable no-bitwise */
-function utf8Encode(value: string): Uint8Array {
-  // 预分配 Uint8Array，避免 number[] 逐字节 push 的动态扩容开销。
-  let len = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    const c = value.charCodeAt(i);
-    if (c < 0x80) len += 1;
-    else if (c < 0x800) len += 2;
-    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < value.length) {
-      len += 4;
-      i += 1;
-    } else len += 3;
-  }
-  const bytes = new Uint8Array(len);
+/**
+ * 流式 SHA-256 over UTF-8 字节，复用 {@link Sha256Stream} 的 O(1) 内存实现。
+ *
+ * 历史 one-shot 版本会先 `utf8Encode` 整个 JSON 字符串为 Uint8Array，再分配
+ * 一份 padded 副本，对 multi-MB 备份（多 TXT 原著 + 全量正文）峰值 4 份大内
+ * 存副本，且纯 JS SHA-256 计算即使每 1KB 让出一次事件循环，仍持续占用主线程
+ * 数秒到数十秒，是「点击新增备份就卡死」的根因。
+ *
+ * 流式版本只保留 <64 字节 pending 缓冲 + 8-word hash state，每 ~64KB 让出一次
+ * 事件循环（setTimeout 0），UI 始终可响应。digest 与原 one-shot 等价（已由
+ * __tests__/continuationHashStream.test.ts 覆盖等价性）。
+ */
+async function sha256(
+  value: string,
+  onProgress?: (fraction: number) => void,
+): Promise<string> {
+  const stream = new Sha256Stream();
+  const CHUNK_CHAR_SIZE = 65536; // 64K chars per chunk ≈ 64-256KB UTF-8
+  const total = value.length;
   let pos = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    let codePoint = value.charCodeAt(index);
-    if (codePoint >= 0xd800 && codePoint <= 0xdbff && index + 1 < value.length) {
-      const next = value.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + (next - 0xdc00);
-        index += 1;
-      }
-    }
-
-    if (codePoint <= 0x7f) {
-      bytes[pos++] = codePoint;
-    } else if (codePoint <= 0x7ff) {
-      bytes[pos++] = 0xc0 | (codePoint >> 6);
-      bytes[pos++] = 0x80 | (codePoint & 0x3f);
-    } else if (codePoint <= 0xffff) {
-      bytes[pos++] = 0xe0 | (codePoint >> 12);
-      bytes[pos++] = 0x80 | ((codePoint >> 6) & 0x3f);
-      bytes[pos++] = 0x80 | (codePoint & 0x3f);
-    } else {
-      bytes[pos++] = 0xf0 | (codePoint >> 18);
-      bytes[pos++] = 0x80 | ((codePoint >> 12) & 0x3f);
-      bytes[pos++] = 0x80 | ((codePoint >> 6) & 0x3f);
-      bytes[pos++] = 0x80 | (codePoint & 0x3f);
+  let chunkIndex = 0;
+  while (pos < total) {
+    const end = Math.min(pos + CHUNK_CHAR_SIZE, total);
+    stream.updateString(value.substring(pos, end));
+    pos = end;
+    chunkIndex += 1;
+    // 每 4 个 chunk（~256KB chars）让出一次事件循环。过低（如每 1KB）会让
+    // setTimeout 调度开销主导；过高（如每 32KB+）会让单次让出之间累积太多
+    // 主线程工作。~256KB 是经验上 UI 流畅与吞吐的折中点。
+    if (chunkIndex % 4 === 0) {
+      await yieldToEventLoop();
+      onProgress?.(total === 0 ? 1 : pos / total);
     }
   }
-  return bytes;
+  onProgress?.(1);
+  return stream.digest();
 }
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-const SHA256_K = [
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b,
-  0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
-  0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7,
-  0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152,
-  0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
-  0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-  0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
-  0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08,
-  0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f,
-  0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-];
-
-function rotateRight(value: number, bits: number): number {
-  return (value >>> bits) | (value << (32 - bits));
-}
-
-async function sha256(value: string): Promise<string> {
-  const source = utf8Encode(value);
-  const paddedLength = Math.ceil((source.length + 9) / 64) * 64;
-  const bytes = new Uint8Array(paddedLength);
-  bytes.set(source);
-  bytes[source.length] = 0x80;
-  const bitLength = source.length * 8;
-  for (let offset = 0; offset < 8; offset += 1) {
-    bytes[paddedLength - 1 - offset] = (bitLength / 2 ** (offset * 8)) & 0xff;
-  }
-
-  let h0 = 0x6a09e667;
-  let h1 = 0xbb67ae85;
-  let h2 = 0x3c6ef372;
-  let h3 = 0xa54ff53a;
-  let h4 = 0x510e527f;
-  let h5 = 0x9b05688c;
-  let h6 = 0x1f83d9ab;
-  let h7 = 0x5be0cd19;
-  const words = new Uint32Array(64);
-
-  for (let block = 0; block < paddedLength; block += 64) {
-    for (let index = 0; index < 16; index += 1) {
-      const offset = block + index * 4;
-      words[index] = (
-        (bytes[offset] << 24)
-        | (bytes[offset + 1] << 16)
-        | (bytes[offset + 2] << 8)
-        | bytes[offset + 3]
-      ) >>> 0;
-    }
-    for (let index = 16; index < 64; index += 1) {
-      const s0 = rotateRight(words[index - 15], 7)
-        ^ rotateRight(words[index - 15], 18)
-        ^ (words[index - 15] >>> 3);
-      const s1 = rotateRight(words[index - 2], 17)
-        ^ rotateRight(words[index - 2], 19)
-        ^ (words[index - 2] >>> 10);
-      words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
-    }
-
-    let a = h0;
-    let b = h1;
-    let c = h2;
-    let d = h3;
-    let e = h4;
-    let f = h5;
-    let g = h6;
-    let h = h7;
-
-    for (let index = 0; index < 64; index += 1) {
-      const s1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
-      const choose = (e & f) ^ (~e & g);
-      const temp1 = (h + s1 + choose + SHA256_K[index] + words[index]) >>> 0;
-      const s0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
-      const majority = (a & b) ^ (a & c) ^ (b & c);
-      const temp2 = (s0 + majority) >>> 0;
-      h = g;
-      g = f;
-      f = e;
-      e = (d + temp1) >>> 0;
-      d = c;
-      c = b;
-      b = a;
-      a = (temp1 + temp2) >>> 0;
-    }
-
-    h0 = (h0 + a) >>> 0;
-    h1 = (h1 + b) >>> 0;
-    h2 = (h2 + c) >>> 0;
-    h3 = (h3 + d) >>> 0;
-    h4 = (h4 + e) >>> 0;
-    h5 = (h5 + f) >>> 0;
-    h6 = (h6 + g) >>> 0;
-    h7 = (h7 + h) >>> 0;
-
-    // 每 1KB（16 个 64 字节块）让出一次事件循环，避免 JS 线程长时间阻塞 UI。
-    // 原为每 32KB 才让出（% 512），在大备份时会导致 UI 完全冻结。
-    if ((block / 64) % 16 === 15) await yieldToEventLoop();
-  }
-
-  return [h0, h1, h2, h3, h4, h5, h6, h7]
-    .map(word => word.toString(16).padStart(8, '0'))
-    .join('');
-}
-/* eslint-enable no-bitwise */
-
-/** Exported for deterministic format-v3 tests and tooling. */
-export async function computeBackupChecksum(backup: BackupV3): Promise<string> {
-  return sha256(checksumPayload(backup));
+/**
+ * Exported for deterministic format-v3 tests and tooling.
+ * `onProgress` 报告 0..1 的 fraction，供 createBackup 映射成阶段百分比。
+ */
+export async function computeBackupChecksum(
+  backup: BackupV3,
+  onProgress?: (fraction: number) => void,
+): Promise<string> {
+  return sha256(checksumPayload(backup), onProgress);
 }
 
 /** Legacy v2 fingerprint; retained only so old files remain readable. */
@@ -589,15 +495,30 @@ export async function createBackup(
   appVersion: string,
   schemaVersion: number,
   kind: BackupKind = 'automatic',
+  onProgress?: BackupProgressCallback,
 ): Promise<string> {
+  // 节流：只在整数 percent 变化时才回调，避免 UI 层 re-render 风暴。
+  let lastPercent = -1;
+  const report = (percent: number, stage: string) => {
+    const rounded = Math.max(0, Math.min(100, Math.round(percent)));
+    if (rounded === lastPercent) return;
+    lastPercent = rounded;
+    onProgress?.({ percent: rounded, stage });
+  };
+
+  report(0, '准备中');
   await RNFS.mkdir(BACKUP_DIR);
 
+  // 阶段 1：读取数据表（0% → 50%）。按表数加权，sanitize 开销已包含在内。
   const tables: Record<string, Record<string, any>[]> = {};
-  for (const table of BACKUP_MANIFEST) {
+  const totalTables = BACKUP_MANIFEST.length;
+  for (let i = 0; i < totalTables; i += 1) {
+    const table = BACKUP_MANIFEST[i];
     const rows = await allRows(db, table.name);
     tables[table.name] = rows
       .map(row => sanitizeBackupRow(table.name, row))
       .filter((row): row is Record<string, any> => row !== null);
+    report(((i + 1) / totalTables) * 50, `读取数据表 (${i + 1}/${totalTables})`);
   }
 
   const externalAssets: BackupExternalAsset[] = [];
@@ -616,13 +537,21 @@ export async function createBackup(
     tables,
     external_assets: externalAssets,
   };
-  meta.checksum = await computeBackupChecksum(draft);
 
+  // 阶段 2：计算 SHA-256 校验和（50% → 95%）。这是历史卡死的根因阶段，
+  // 流式实现 + fraction 回调让 UI 能实时反映进度。
+  report(50, '计算校验和');
+  meta.checksum = await computeBackupChecksum(draft, fraction => {
+    report(50 + fraction * 45, '计算校验和');
+  });
+
+  // 阶段 3：写入文件（95% → 99%）。
   const timestamp = Date.now();
   const kindPrefix = kind === 'manual' ? 'manual' : kind === 'pre_restore' ? 'prerestore' : 'backup';
   const fileName = `${kindPrefix}_v${appVersion}_${timestamp}.json`;
   const filePath = `${BACKUP_DIR}/${fileName}`;
   const stagingPath = `${filePath}.tmp`;
+  report(95, '写入文件');
   try {
     await RNFS.writeFile(stagingPath, JSON.stringify(draft), 'utf8');
     await RNFS.moveFile(stagingPath, filePath);
@@ -635,7 +564,11 @@ export async function createBackup(
     }
     throw error;
   }
+
+  // 阶段 4：清理旧备份（99% → 100%）。
+  report(99, '清理旧备份');
   await cleanupOldBackups();
+  report(100, '完成');
   return filePath;
 }
 
@@ -643,16 +576,18 @@ export async function createManualBackup(
   db: SQLite.SQLiteDatabase,
   appVersion: string,
   schemaVersion: number,
+  onProgress?: BackupProgressCallback,
 ): Promise<string> {
-  return createBackup(db, appVersion, schemaVersion, 'manual');
+  return createBackup(db, appVersion, schemaVersion, 'manual', onProgress);
 }
 
 export async function createPreRestoreBackup(
   db: SQLite.SQLiteDatabase,
   appVersion: string,
   schemaVersion: number,
+  onProgress?: BackupProgressCallback,
 ): Promise<string> {
-  return createBackup(db, appVersion, schemaVersion, 'pre_restore');
+  return createBackup(db, appVersion, schemaVersion, 'pre_restore', onProgress);
 }
 
 export async function validateBackup(path: string): Promise<BackupValidation> {
