@@ -28,11 +28,14 @@ import {
   queueHistoricalDigests,
   processHistoricalDigest,
   startAnalysis,
+  precheckCanonAnalysis,
   type AnalysisRun,
   type CanonSnapshot,
   type AnalysisWorkItem,
   type ContinuationAnalysisMode,
 } from '../../../services/continuation/canon';
+import { continuationSourceReader } from '../../../services/continuation/continuationSourceReader';
+import { resolveLLMRequestConfig } from '../../../services/llm';
 import { isBoundaryReady } from '../../../services/continuation/continuationSettingsService';
 import {
   getActiveStyleProfileId,
@@ -259,6 +262,89 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     return () => clearInterval(timer);
   }, [latestRun, reload]);
 
+  const runStartAnalysis = async (
+    mode: ContinuationAnalysisMode,
+    fast: boolean,
+  ) => {
+    if (!currentProject) return;
+    setBusy(true);
+    try {
+      const { runId, snapshotId } = await startAnalysis({
+        projectId: currentProject.id,
+        mode,
+      });
+      Toast.show({
+        type: 'info',
+        text1: '分析已启动',
+        text2: `批次处理中…`,
+      });
+      // 先把刚创建的 run 写回页面状态，再开始等待长耗时的分析。
+      // 否则 processAnalysisRun 尚未返回时 latestRun 仍为空，轮询与
+      // 可视进度条都不会启动，用户只能看到一组禁用按钮。
+      await reload();
+      await requestNotificationPermission().catch(() => false);
+      await PipelineForeground.start(
+        runId,
+        '原著分析进行中',
+        fast ? '正在准备最近章节资料…' : '正在准备全书资料…',
+        0,
+      );
+      const run = await processAnalysisRun(runId, {
+        onProgress: update => {
+          const percent = update.progressTotal
+            ? Math.round((update.progressCurrent / update.progressTotal) * 100)
+            : 0;
+          const material = update.materialType
+            ? ANALYSIS_MATERIAL_LABELS[update.materialType]
+            : '原著分析';
+          const suffix = update.llmActive ? ' · 正在生成…' : '';
+          void PipelineForeground.updateProgress(
+            runId,
+            `第 ${(update.batchIndex ?? 0) + 1} 批 · ${material}${suffix}`,
+            percent,
+          );
+          // Heartbeat updates carry no new DB state — skip the reload
+          // so the 1s polling timer stays the only source of truth for
+          // progress numbers.
+          if (!update.llmActive) {
+            void reload();
+          }
+        },
+      });
+      await PipelineForeground.stop(runId);
+      if (run.state !== 'completed') {
+        await PipelineForeground.notifyFailed(
+          `ca:${runId}`,
+          '原著分析未完成',
+          run.errorMessage || '可在分析任务中继续或重试。',
+        );
+        throw new Error(
+          run.errorMessage ?? '分析未完成，请检查模型配置后重试。',
+        );
+      }
+      await PipelineForeground.notifyComplete(
+        `ca:${runId}`,
+        '原著分析完成',
+        '原著资料已自动启用，可按需删除或调整个别资料。',
+      );
+      Toast.show({
+        type: 'success',
+        text1: '分析完成',
+        text2: '原著资料已自动启用',
+      });
+      void snapshotId;
+      await reload();
+    } catch (e: any) {
+      Toast.show({
+        type: 'error',
+        text1: '分析失败',
+        text2: e?.message,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runAnalysis = (mode: ContinuationAnalysisMode) => {
     if (!currentProject) return;
     if (!boundaryOk) {
@@ -276,83 +362,58 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         {
           text: '开始',
           onPress: async () => {
+            // 2026-08-01 修复：发起长耗时分析前先做上下文预检，按当前 LLM
+            // 配置派生预计的 batch 数与调用次数；配置不足时给出明确建议值。
             setBusy(true);
             try {
-              const { runId, snapshotId } = await startAnalysis({
-                projectId: currentProject.id,
-                mode,
-              });
-              Toast.show({
-                type: 'info',
-                text1: '分析已启动',
-                text2: `批次处理中…`,
-              });
-              // 先把刚创建的 run 写回页面状态，再开始等待长耗时的分析。
-              // 否则 processAnalysisRun 尚未返回时 latestRun 仍为空，轮询与
-              // 可视进度条都不会启动，用户只能看到一组禁用按钮。
-              await reload();
-              await requestNotificationPermission().catch(() => false);
-              await PipelineForeground.start(
-                runId,
-                '原著分析进行中',
-                fast ? '正在准备最近章节资料…' : '正在准备全书资料…',
-                0,
-              );
-              const run = await processAnalysisRun(runId, {
-                onProgress: update => {
-                  const percent = update.progressTotal
-                    ? Math.round(
-                        (update.progressCurrent / update.progressTotal) * 100,
-                      )
-                    : 0;
-                  const material = update.materialType
-                    ? ANALYSIS_MATERIAL_LABELS[update.materialType]
-                    : '原著分析';
-                  const suffix = update.llmActive ? ' · 正在生成…' : '';
-                  void PipelineForeground.updateProgress(
-                    runId,
-                    `第 ${(update.batchIndex ?? 0) + 1} 批 · ${material}${suffix}`,
-                    percent,
-                  );
-                  // Heartbeat updates carry no new DB state — skip the reload
-                  // so the 1s polling timer stays the only source of truth for
-                  // progress numbers.
-                  if (!update.llmActive) {
-                    void reload();
-                  }
-                },
-              });
-              await PipelineForeground.stop(runId);
-              if (run.state !== 'completed') {
-                await PipelineForeground.notifyFailed(
-                  `ca:${runId}`,
-                  '原著分析未完成',
-                  run.errorMessage || '可在分析任务中继续或重试。',
+              const snapshot =
+                await continuationSourceReader.getSnapshot(currentProject.id);
+              const chapters =
+                await continuationSourceReader.listBoundedSourceChapters(
+                  snapshot,
                 );
-                throw new Error(
-                  run.errorMessage ?? '分析未完成，请检查模型配置后重试。',
-                );
-              }
-              await PipelineForeground.notifyComplete(
-                `ca:${runId}`,
-                '原著分析完成',
-                '原著资料已自动启用，可按需删除或调整个别资料。',
-              );
-              Toast.show({
-                type: 'success',
-                text1: '分析完成',
-                text2: '原著资料已自动启用',
+              const requestConfig = await resolveLLMRequestConfig();
+              const precheck = precheckCanonAnalysis({
+                chapters,
+                profile: fast ? 'standard' : 'deep',
+                providerType: requestConfig.provider_type,
+                contextWindow: requestConfig.context_window,
+                maxOutputTokens: requestConfig.max_output_tokens,
               });
-              void snapshotId;
-              await reload();
-            } catch (e: any) {
-              Toast.show({
-                type: 'error',
-                text1: '分析失败',
-                text2: e?.message,
-              });
-            } finally {
               setBusy(false);
+              if (!precheck.ok) {
+                Alert.alert(
+                  '当前模型配置无法完成 Canon 分析',
+                  `当前 LLM 配置：\n  context_window: ${precheck.contextWindow}\n  max_output_tokens: ${precheck.maxOutputTokens}\n\n错误原因：${precheck.reason ?? ''}\n\n建议：\n  • 降低 max_output_tokens 至 ≤ ${precheck.suggestedMaxOutputTokens ?? '—'}\n  • 或增大 context_window 至 ≥ ${precheck.suggestedContextWindow ?? '—'}`,
+                  [
+                    { text: '取消', style: 'cancel' },
+                    {
+                      text: '仍然尝试',
+                      onPress: () => {
+                        void runStartAnalysis(mode, fast);
+                      },
+                    },
+                  ],
+                );
+                return;
+              }
+              Alert.alert(
+                fast ? '即将开始快速续写分析' : '即将开始完整原著分析',
+                `当前 LLM 配置：\n  context_window: ${precheck.contextWindow}\n  max_output_tokens: ${precheck.maxOutputTokens}\n\n派生计算：\n  单 batch 输入预算: ${precheck.effectiveInputBudget} tokens\n  预计 batch 数: ${precheck.estimatedBatchCount}\n  预计 LLM 调用次数: ${precheck.estimatedWorkItemCount}\n  预计耗时: 约 ${precheck.estimatedDurationMinutes} 分钟\n\n分析过程可暂停或取消。`,
+                [
+                  { text: '取消', style: 'cancel' },
+                  {
+                    text: '开始分析',
+                    onPress: () => {
+                      void runStartAnalysis(mode, fast);
+                    },
+                  },
+                ],
+              );
+            } catch {
+              // 预检失败（如章节为空）回退到原流程，让 startAnalysis 报错。
+              setBusy(false);
+              await runStartAnalysis(mode, fast);
             }
           },
         },
