@@ -189,7 +189,7 @@ export async function insertSource(
       source_files_json, is_multi_file, file_count,
       error_code, error_message,
       created_at, updated_at, activated_at
-    ) VALUES (?, ?, ?, ?, ?, 'text/plain', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    ) VALUES (?, ?, ?, ?, ?, 'text/plain', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     [
       input.projectId,
       input.version,

@@ -206,7 +206,19 @@ function checksumPayload(backup: {
 
 /* eslint-disable no-bitwise */
 function utf8Encode(value: string): Uint8Array {
-  const bytes: number[] = [];
+  // 预分配 Uint8Array，避免 number[] 逐字节 push 的动态扩容开销。
+  let len = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value.charCodeAt(i);
+    if (c < 0x80) len += 1;
+    else if (c < 0x800) len += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < value.length) {
+      len += 4;
+      i += 1;
+    } else len += 3;
+  }
+  const bytes = new Uint8Array(len);
+  let pos = 0;
   for (let index = 0; index < value.length; index += 1) {
     let codePoint = value.charCodeAt(index);
     if (codePoint >= 0xd800 && codePoint <= 0xdbff && index + 1 < value.length) {
@@ -218,25 +230,22 @@ function utf8Encode(value: string): Uint8Array {
     }
 
     if (codePoint <= 0x7f) {
-      bytes.push(codePoint);
+      bytes[pos++] = codePoint;
     } else if (codePoint <= 0x7ff) {
-      bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
+      bytes[pos++] = 0xc0 | (codePoint >> 6);
+      bytes[pos++] = 0x80 | (codePoint & 0x3f);
     } else if (codePoint <= 0xffff) {
-      bytes.push(
-        0xe0 | (codePoint >> 12),
-        0x80 | ((codePoint >> 6) & 0x3f),
-        0x80 | (codePoint & 0x3f),
-      );
+      bytes[pos++] = 0xe0 | (codePoint >> 12);
+      bytes[pos++] = 0x80 | ((codePoint >> 6) & 0x3f);
+      bytes[pos++] = 0x80 | (codePoint & 0x3f);
     } else {
-      bytes.push(
-        0xf0 | (codePoint >> 18),
-        0x80 | ((codePoint >> 12) & 0x3f),
-        0x80 | ((codePoint >> 6) & 0x3f),
-        0x80 | (codePoint & 0x3f),
-      );
+      bytes[pos++] = 0xf0 | (codePoint >> 18);
+      bytes[pos++] = 0x80 | ((codePoint >> 12) & 0x3f);
+      bytes[pos++] = 0x80 | ((codePoint >> 6) & 0x3f);
+      bytes[pos++] = 0x80 | (codePoint & 0x3f);
     }
   }
-  return Uint8Array.from(bytes);
+  return bytes;
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -339,8 +348,9 @@ async function sha256(value: string): Promise<string> {
     h6 = (h6 + g) >>> 0;
     h7 = (h7 + h) >>> 0;
 
-    // Hashing is intentionally cooperative for large novel backups.
-    if ((block / 64) % 512 === 511) await yieldToEventLoop();
+    // 每 1KB（16 个 64 字节块）让出一次事件循环，避免 JS 线程长时间阻塞 UI。
+    // 原为每 32KB 才让出（% 512），在大备份时会导致 UI 完全冻结。
+    if ((block / 64) % 16 === 15) await yieldToEventLoop();
   }
 
   return [h0, h1, h2, h3, h4, h5, h6, h7]
@@ -562,7 +572,7 @@ async function readAndValidateBackup(path: string): Promise<ReadValidationResult
     }
 
     validation.valid = validation.errors.length === 0;
-    return { parsed: validation.valid ? parsed : parsed, validation };
+    return { parsed: validation.valid ? parsed : null, validation };
   } catch (error: any) {
     return {
       parsed: null,
@@ -952,7 +962,13 @@ export async function listBackups(): Promise<BackupSummary[]> {
           createdAt = backup.meta?.backup_date || '';
         }
 
-        const validation = await validateBackup(file.path);
+        // 列表只做轻量结构校验，SHA-256 校验延迟到恢复时（restoreFromBackup）。
+        // 原 listBackups 对每个备份都跑一次完整 SHA-256，是"一按备份就卡死"的根因。
+        const structValid = !!(
+          backup.format === 'shinewriter-backup'
+          && backup.format_version
+          && backup.meta
+        );
         summaries.push({
           path: file.path,
           kind,
@@ -960,7 +976,7 @@ export async function listBackups(): Promise<BackupSummary[]> {
           schemaVersion,
           createdAt: createdAt || new Date(file.mtime || 0).toISOString(),
           size: file.size,
-          valid: validation.valid,
+          valid: structValid,
         });
       } catch {
         summaries.push({
