@@ -26,8 +26,9 @@ import { buildV24toV25Statements } from './v24-to-v25';
 import { buildV25toV26Statements, migrateV25ToV26 } from './v25-to-v26';
 import { buildV26toV27Statements } from './v26-to-v27';
 import { buildV27toV28Statements } from './v27-to-v28';
+import { buildV28toV29Statements } from './v28-to-v29';
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -57,6 +58,7 @@ const MIGRATIONS: Migration[] = [
   { from: 25, to: 26, breaking: false, buildStatements: async () => buildV25toV26Statements() },
   { from: 26, to: 27, breaking: true, buildStatements: async () => buildV26toV27Statements() },
   { from: 27, to: 28, breaking: false, buildStatements: async () => buildV27toV28Statements() },
+  { from: 28, to: 29, breaking: false, buildStatements: async () => buildV28toV29Statements() },
 ];
 
 export async function runMigrations(
