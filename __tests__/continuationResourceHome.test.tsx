@@ -124,7 +124,7 @@ describe('ResourceLibrary 续写 tab (Spec §8.3 flattened)', () => {
     );
 
     await waitFor(() => expect(getByText('原著分析')).toBeTruthy());
-    expect(getByText('查看章节')).toBeTruthy();
+    expect(getByText('查看原著章节')).toBeTruthy();
     expect(getByText('设置续写起点')).toBeTruthy();
     fireEvent.press(getByText('原著分析'));
     expect(mockNavigate).toHaveBeenCalledWith('CanonAnalysisOverview', {});

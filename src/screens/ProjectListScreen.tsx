@@ -9,7 +9,14 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Download, Plus, Trash2, Upload, X } from 'lucide-react-native';
+import {
+  Download,
+  History,
+  Plus,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import {
   Button,
@@ -37,6 +44,10 @@ import {
   PROJECT_MODE_LABELS,
   isValidProjectMode,
 } from '../services/continuation/projectMode';
+import {
+  createRecoveryProject,
+  diagnoseChapterRecovery,
+} from '../services/continuation/continuationChapterRecoveryService';
 import type { Project, ProjectMode } from '../types/novel';
 
 export const ProjectListScreen: React.FC = () => {
@@ -125,6 +136,97 @@ export const ProjectListScreen: React.FC = () => {
         },
       },
     ]);
+  };
+
+  /**
+   * Accident recovery: never splice into the live timeline. Creates a separate
+   * 「…（找回）」continuation project from revisions/artifacts, leaving the
+   * source project (e.g. the post-accident 10+ chapters) untouched.
+   */
+  const handleRecoverChapters = async (project: Project) => {
+    if (project.mode !== 'continuation') {
+      Alert.alert('无法找回', '找回章节仅支持原著续写项目。');
+      return;
+    }
+    try {
+      const diagnosis = await diagnoseChapterRecovery(project.id);
+      if (diagnosis.recoverableCount === 0) {
+        Alert.alert(
+          '没有可找回的正文',
+          `当前项目「${project.name}」在修订记录/生成产物里没有找到足够长的章节正文。\n\n请优先到「设置 → 备份中心」用事故前备份，或导入曾导出的项目 JSON / Markdown 作为新项目。\n\n现有 ${diagnosis.liveChapterCount} 篇续写章节不会被改动。`,
+        );
+        return;
+      }
+
+      const runCreate = async (orphansAndArtifactsOnly: boolean) => {
+        try {
+          const result = await createRecoveryProject({
+            sourceProjectId: project.id,
+            orphansAndArtifactsOnly,
+          });
+          await loadProjects();
+          const created = useProjectStore
+            .getState()
+            .projects.find(p => p.id === result.projectId);
+          if (created) await setCurrentProject(created);
+          Alert.alert(
+            '找回项目已创建',
+            [
+              `项目：「${result.name}」`,
+              `写入 ${result.chapterCount} 篇找回章节`,
+              `来源：孤儿修订 ${result.sources.orphan} / 其它修订 ${result.sources.revision} / 生成物 ${result.sources.artifact}`,
+              '',
+              '源项目未改动。旧线只在找回项目查看/导出；新线继续在原项目写，两线不要硬拼 position。',
+            ].join('\n'),
+          );
+        } catch (e: any) {
+          Alert.alert('找回失败', e?.message || '未知错误');
+        }
+      };
+
+      const buttons: Array<{
+        text: string;
+        style?: 'cancel' | 'destructive' | 'default';
+        onPress?: () => void;
+      }> = [{ text: '取消', style: 'cancel' }];
+
+      if (diagnosis.orphanRevisionTargets > 0 || diagnosis.artifactBodies > 0) {
+        buttons.push({
+          text: '只找回已删除章（推荐）',
+          onPress: () => {
+            runCreate(true).catch(() => {});
+          },
+        });
+      }
+      // Secondary: full revision archive when user has no orphans but still has history
+      buttons.push({
+        text:
+          diagnosis.orphanRevisionTargets > 0
+            ? '含全部修订快照'
+            : '从全部修订创建找回项目',
+        onPress: () => {
+          runCreate(false).catch(() => {});
+        },
+      });
+
+      Alert.alert(
+        '找回旧章节到新项目',
+        [
+          `源项目：「${project.name}」`,
+          `当前仍在的续写章：${diagnosis.liveChapterCount} 篇（有正文 ${diagnosis.liveChaptersWithContent} 篇）—— 一律不动。`,
+          `扫描到可找回正文：约 ${diagnosis.recoverableCount} 篇`,
+          `  · 已删除章节的修订（孤儿）：${diagnosis.orphanRevisionTargets}`,
+          `  · 仍存在章节的修订快照：${Math.max(0, diagnosis.revisionTargets - diagnosis.orphanRevisionTargets)}`,
+          `  · AI 生成产物：${diagnosis.artifactBodies}`,
+          '',
+          '推荐「只找回已删除章」：新建「…（找回）」项目，与你事故后另写的十多章彻底分离。',
+          '若孤儿为 0，说明旧章修订可能已被清理——请改用备份中心或导出包。',
+        ].join('\n'),
+        buttons,
+      );
+    } catch (e: any) {
+      Alert.alert('诊断失败', e?.message || '无法扫描可找回章节。');
+    }
   };
 
   const exportProject = async (
@@ -232,6 +334,15 @@ export const ProjectListScreen: React.FC = () => {
                 {new Date(item.updated_at).toLocaleDateString('zh-CN')}
               </Text>
             </View>
+            {item.mode === 'continuation' ? (
+              <TouchableOpacity
+                accessibilityLabel="找回旧章节到新项目"
+                onPress={() => handleRecoverChapters(item)}
+                style={styles.iconButton}
+              >
+                <History size={18} color={theme.colors.accent} />
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
               accessibilityLabel="导出项目"
               onPress={() => showExportOptions(item)}
