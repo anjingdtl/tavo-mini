@@ -37,7 +37,7 @@ describe('continuationChapterRecoveryService', () => {
 
   function makeDb() {
     return {
-      executeSql: jest.fn(async (sql: string, params: any[] = []) => {
+      executeSql: jest.fn(async (sql: string, _params: any[] = []) => {
         const n = sql.replace(/\s+/g, ' ');
         if (/FROM content_revisions/i.test(n)) {
           return [

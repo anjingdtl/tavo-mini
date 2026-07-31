@@ -210,9 +210,13 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       if (encodingOverride === null) return; // user cancelled
       const job = await startContinuationImport({
         projectId: currentProject.id,
-        localPath,
-        originalFileName: selected.name || 'original.txt',
-        ...(encodingOverride ? { encodingOverride } : {}),
+        files: [
+          {
+            localPath,
+            originalFileName: selected.name || 'original.txt',
+            ...(encodingOverride ? { encodingOverride } : {}),
+          },
+        ],
       });
       const preview = await previewParsedSource(job.id);
       Alert.alert(
