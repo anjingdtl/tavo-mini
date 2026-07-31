@@ -27,6 +27,7 @@ import {
   confirmContinuationSource,
   getActiveContinuationSource,
   getActiveImportJob,
+  MAX_IMPORT_FILE_BYTES,
   previewParsedSource,
   resumeContinuationImport,
   startContinuationImport,
@@ -184,60 +185,111 @@ export const ContinuationSourceChaptersScreen: React.FC<{
       return;
     }
     try {
-      const [selected] = await pick({
+      const selected = await pick({
         mode: 'import',
         type: [types.plainText, types.allFiles],
-        allowMultiSelection: false,
+        allowMultiSelection: true,
       });
-      if (!selected) return;
-      if (selected.name && !selected.name.toLowerCase().endsWith('.txt')) {
-        Alert.alert('无法导入', '请选择 .txt 格式的原著文件。');
+      if (!selected || selected.length === 0) return;
+
+      // 全部必须是 .txt
+      for (const f of selected) {
+        if (f.name && !f.name.toLowerCase().endsWith('.txt')) {
+          Alert.alert('无法导入', `文件 ${f.name} 不是 .txt 格式，请只选择 TXT 文件。`);
+          return;
+        }
+      }
+
+      setImporting(true);
+
+      // 逐个 keepLocalCopy → 逐个 detectEncoding，低置信单独弹窗
+      const fileInfos: Array<{
+        localPath: string;
+        originalFileName: string;
+        encodingOverride?: string;
+        detectedEncoding: string;
+        fileSizeBytes: number;
+      }> = [];
+      const mod = requireContinuationTextImport();
+      for (const f of selected) {
+        const [copy] = await keepLocalCopy({
+          files: [{ uri: f.uri, fileName: f.name || 'original.txt' }],
+          destination: 'cachesDirectory',
+        });
+        if (copy.status === 'error') {
+          throw new Error(copy.copyError || `复制文件 ${f.name} 失败。`);
+        }
+        const localPath = localFileUriToPath(copy.localUri);
+        // If encoding detection is low-confidence (no BOM + ambiguous bytes),
+        // ask the user to confirm before parsing — a wrong guess yields garbled
+        // text or a decode_failed error. Spec §10.1 sets the threshold at 0.7.
+        const encodingOverride = await confirmEncodingIfNeeded(localPath);
+        if (encodingOverride === null) return; // user cancelled
+        const detected = await mod.detectEncoding(localPath);
+        const detectedEncoding = encodingOverride ?? detected.encoding;
+        const meta = await mod.readFileMeta(localPath);
+        fileInfos.push({
+          localPath,
+          originalFileName: f.name || 'original.txt',
+          ...(encodingOverride ? { encodingOverride } : {}),
+          detectedEncoding,
+          fileSizeBytes: meta.fileSizeBytes,
+        });
+      }
+
+      // 总大小预检
+      const totalSize = fileInfos.reduce((s, f) => s + f.fileSizeBytes, 0);
+      if (totalSize > MAX_IMPORT_FILE_BYTES) {
+        const mb = (MAX_IMPORT_FILE_BYTES / (1024 * 1024)).toFixed(0);
+        Alert.alert('无法导入', `原著总大小超过 ${mb} MB 限制。`);
         return;
       }
-      setImporting(true);
-      const [copy] = await keepLocalCopy({
-        files: [{ uri: selected.uri, fileName: selected.name || 'original.txt' }],
-        destination: 'cachesDirectory',
-      });
-      if (copy.status === 'error') {
-        throw new Error(copy.copyError || '复制导入文件失败。');
-      }
-      const localPath = localFileUriToPath(copy.localUri);
-      // If encoding detection is low-confidence (no BOM + ambiguous bytes),
-      // ask the user to confirm before parsing — a wrong guess yields garbled
-      // text or a decode_failed error. Spec §10.1 sets the threshold at 0.7.
-      const encodingOverride = await confirmEncodingIfNeeded(localPath);
-      if (encodingOverride === null) return; // user cancelled
-      const job = await startContinuationImport({
-        projectId: currentProject.id,
-        files: [
-          {
-            localPath,
-            originalFileName: selected.name || 'original.txt',
-            ...(encodingOverride ? { encodingOverride } : {}),
-          },
-        ],
-      });
-      const preview = await previewParsedSource(job.id);
-      Alert.alert(
-        '解析完成',
-        `已识别 ${preview.chapterCount} 章、${preview.detectedEncoding} 编码。\n将以原著末尾作为默认续写起点；之后可在“续写起点”中调整。`,
-        [
-          { text: '取消', style: 'cancel' },
-          {
-            text: '确认导入',
-            onPress: async () => {
-              try {
-                await confirmContinuationSource(job.id, { mode: 'end_of_source' });
-                await reload();
-                Toast.show({ type: 'success', text1: '原著导入完成' });
-              } catch (e: any) {
-                Toast.show({ type: 'error', text1: '确认导入失败', text2: e?.message });
-              }
+
+      if (fileInfos.length === 1) {
+        // 单文件：走原路径
+        const info = fileInfos[0];
+        const job = await startContinuationImport({
+          projectId: currentProject.id,
+          files: [
+            {
+              localPath: info.localPath,
+              originalFileName: info.originalFileName,
+              ...(info.encodingOverride ? { encodingOverride: info.encodingOverride } : {}),
             },
-          },
-        ],
-      );
+          ],
+        });
+        const preview = await previewParsedSource(job.id);
+        Alert.alert(
+          '解析完成',
+          `已识别 ${preview.chapterCount} 章、${preview.detectedEncoding} 编码。\n将以原著末尾作为默认续写起点；之后可在“续写起点”中调整。`,
+          [
+            { text: '取消', style: 'cancel' },
+            {
+              text: '确认导入',
+              onPress: async () => {
+                try {
+                  await confirmContinuationSource(job.id, { mode: 'end_of_source' });
+                  await reload();
+                  Toast.show({ type: 'success', text1: '原著导入完成' });
+                } catch (e: any) {
+                  Toast.show({ type: 'error', text1: '确认导入失败', text2: e?.message });
+                }
+              },
+            },
+          ],
+        );
+      } else {
+        // 多文件：跳转排序预览页
+        navigation.navigate('ContinuationSourceOrdering', {
+          projectId: currentProject.id,
+          files: fileInfos.map(f => ({
+            localPath: f.localPath,
+            originalFileName: f.originalFileName,
+            detectedEncoding: f.detectedEncoding,
+            fileSizeBytes: f.fileSizeBytes,
+          })),
+        });
+      }
     } catch (e: any) {
       if (isErrorWithCode(e) && e.code === errorCodes.OPERATION_CANCELED) return;
       Toast.show({ type: 'error', text1: '导入失败', text2: e?.message || '请重试' });
