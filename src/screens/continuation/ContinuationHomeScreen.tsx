@@ -230,6 +230,7 @@ export const ContinuationHomeBody: React.FC<{
           </Text>
           <Text style={[styles.privacy, { color: theme.colors.textMuted }]}>
             · 支持UTF-8、GBK、GB18030、UTF-16 编码{'\n'}
+            · 支持一次导入多个 TXT，由 LLM 智能排序{'\n'}
             · 原著仅保存在本设备，Phase 1 不会上传{'\n'}
             · 请确认你拥有该原著的合法使用权
           </Text>
