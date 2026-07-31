@@ -5,7 +5,7 @@
 把灵感、资料和章节放在一台手机里，安心写完你的长篇故事。
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#开始使用)
-[![Version](https://img.shields.io/badge/Version-V2.11.7-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.11.8-blue.svg)](CHANGELOG.md)
 
 </div>
 

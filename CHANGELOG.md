@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.11.8] - 2026-08-01
+
+### Fixed
+
+- **多 TXT 导入失败无提示**：批量导入循环由"任一文件失败即整批中止"改为逐文件 try/catch，失败文件收集到清单，弹窗告知成功/失败数量与每个失败文件的具体原因（编码不支持/超大/解码失败/解析失败等），并提供"继续导入成功文件"选项；全部失败时阻止导入。编码探测失败不再静默吞，改为 Toast 提示将按 UTF-8 兜底。临时副本清理覆盖所有已复制文件（含后续步骤失败的路径）。
+- **Canon 分析"模型上下文不足"**：根因是 `planAnalysisTokenBudget` 写死 32768 输出基线且无 chunk 降级。新增 `adaptiveBatchPlanner` 完全从用户 LLM 配置（`context_window` / `max_output_tokens`）派生每 batch 输入预算：小上下文模型自动切更多批次、超大章节自动按字符区间切成 chunk batches 逐段分析（绝不跳过章节），用 LLM 调用次数弥补上下文限制；`extractMaterialWithLlm` 的 `max_tokens` 与预算校验值统一。分析前新增预检对话框，展示当前配置、预计 batch 数/LLM 调用次数/耗时；配置不足时给出具体的 `max_output_tokens` 与 `context_window` 建议值。
+- **多文件排序页采样失败静默**：采样失败时提示"部分文件预览失败，将仅按文件名排序"。
+- **迁移夹具测试在 Windows 的环境兼容**：`migrationFixtures.test.ts` 的 Python 候选顺序改为 win32 下 `py` 优先，规避 Microsoft Store 的 `python` 应用执行别名 stub（exit 9009）导致的误失败。
+
+### Tests
+
+- 新增 `__tests__/adaptiveBatchPlanner.test.ts`：覆盖小书打包、大窗口少批次/小窗口多批次、超大章节 chunk 切分（不丢内容）、20 章质量上限、chunk 字符数动态派生、配置不足友好报错带建议值、precheck 结构化估算。
+- 新增 `__tests__/continuationImportErrorHandling.test.ts`：覆盖 errorCode 到用户文案映射与失败清单格式化。
+- 全量回归 `npm run verify`：ESLint 0 error、typecheck 通过；Jest 199 suites / 1639 tests 通过（1 suite / 3 tests 既有 skip）。
+
 ## [2.11.7] - 2026-07-31
 
 ### Added
