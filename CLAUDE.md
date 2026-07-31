@@ -206,3 +206,5 @@ TS 桥接在 `src/native/`，Android 实现在 `android/app/src/main/java/com/sh
 ## 工作目录卫生
 
 仓库根目录有大量历史调试产物（`*.png`、`*.b64`、`shine_writer*.db`、`ui_*.xml`、`window_dump*.xml`、`logcat_*.log`、`emulator_*` 等），这些不是源码，不要误删或纳入提交。新增产物写到 `test-logs/` 等已有临时目录，不要污染根目录。
+
+**API key / 凭据文件**：本地 LLM 穿测用的 key（`docs/LLMTesti.txt` 等）已加入 `.gitignore`，切勿 `git add -f` 强制提交。`llm_config` 表本身不存 API Key（走 Android Keystore），但任何把 key 落到仓库的工作流都属于事故。
