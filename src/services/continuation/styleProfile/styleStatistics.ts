@@ -319,7 +319,14 @@ function sumCueOccurrences(text: string, cues: readonly string[]): number {
  * between them. We approximate "inside quotation marks" by scanning for paired
  * open/close quote characters (UTF-16 aware).
  */
-function computeDialogue(text: string): {
+/**
+ * 流式 dialogue 计算，逐章节处理避免 join 全书构造 fullText 副本。
+ *
+ * `inQuote` / `currentRun` 跨章节保持，等价于在 join 后的 fullText 上做
+ * 单遍扫描（章节边界天然是段落边界，不影响 turn-run 检测）。totalChars
+ * 加上 chapters.length - 1 个 '\n' 以保持与原 join 版本的 ratio 等价。
+ */
+function computeDialogueFromChapters(chapters: BoundedSourceChapter[]): {
   ratio: number;
   turnCount: number;
   turnRunDistribution: Distribution;
@@ -327,44 +334,49 @@ function computeDialogue(text: string): {
   let inQuote = false;
   let quotedChars = 0;
   let turnCount = 0;
-  let openIdx = -1;
-  // First pass: count quoted chars + turns.
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (QUOTE_OPEN.has(ch) && !inQuote) {
-      inQuote = true;
-      openIdx = i;
-    } else if (QUOTE_CLOSE.has(ch) && inQuote) {
-      inQuote = false;
-      if (openIdx >= 0) {
-        quotedChars += i - openIdx + 1;
-        turnCount += 1;
-      }
-      openIdx = -1;
-    }
-  }
-  const totalChars = text.length;
-  const ratio = totalChars === 0 ? 0 : quotedChars / totalChars;
-
-  // Turn-run distribution: scan paragraphs, count consecutive dialogue
-  // paragraphs, then reset when a non-dialogue paragraph appears.
+  let totalChars = 0;
   const runs: number[] = [];
   let currentRun = 0;
-  for (const para of splitParagraphs(text)) {
-    const hasQuote =
-      [...QUOTE_OPEN].some(q => para.includes(q)) ||
-      [...QUOTE_CLOSE].some(q => para.includes(q));
-    if (hasQuote) {
-      currentRun += 1;
-    } else {
-      if (currentRun > 0) runs.push(currentRun);
-      currentRun = 0;
+
+  for (const ch of chapters) {
+    const text = ch.content;
+    totalChars += text.length;
+
+    let openIdx = -1;
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text[i];
+      if (QUOTE_OPEN.has(c) && !inQuote) {
+        inQuote = true;
+        openIdx = i;
+      } else if (QUOTE_CLOSE.has(c) && inQuote) {
+        inQuote = false;
+        if (openIdx >= 0) {
+          quotedChars += i - openIdx + 1;
+          turnCount += 1;
+        }
+        openIdx = -1;
+      }
+    }
+
+    for (const para of splitParagraphs(text)) {
+      const hasQuote =
+        [...QUOTE_OPEN].some(q => para.includes(q)) ||
+        [...QUOTE_CLOSE].some(q => para.includes(q));
+      if (hasQuote) {
+        currentRun += 1;
+      } else {
+        if (currentRun > 0) runs.push(currentRun);
+        currentRun = 0;
+      }
     }
   }
   if (currentRun > 0) runs.push(currentRun);
 
+  // 加上 join 时会有的 \n 数量，保持与原 fullText 版本的 ratio 等价。
+  if (chapters.length > 1) totalChars += chapters.length - 1;
+
   return {
-    ratio,
+    ratio: totalChars === 0 ? 0 : quotedChars / totalChars,
     turnCount,
     turnRunDistribution: computeDistribution(runs),
   };
@@ -506,13 +518,12 @@ export function computeStyleMetrics(
     expositoryHits += sumCueOccurrences(content, EXPOSITORY_CUES);
   }
 
-  // Dialogue is computed on the whole text to keep turn-run detection global.
+  // Dialogue: 流式逐章节计算，避免 join 全书构造 fullText 副本导致 OOM。
   let dialogueRatio = 0;
   let turnCount = 0;
   let turnRunDistribution: Distribution = EMPTY_DISTRIBUTION;
   if (totalChars > 0) {
-    const fullText = chapters.map(c => c.content).join('\n');
-    const d = computeDialogue(fullText);
+    const d = computeDialogueFromChapters(chapters);
     dialogueRatio = d.ratio;
     turnCount = d.turnCount;
     turnRunDistribution = d.turnRunDistribution;

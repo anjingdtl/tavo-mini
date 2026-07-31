@@ -246,7 +246,10 @@ export async function startContinuationImport(
   // index and a new insertJob would throw UNIQUE constraint failed. Clear any
   // such leftover interrupted job (and its staging source) before proceeding.
   const leftover = await getActiveImportJob(input.projectId);
-  if (leftover && leftover.state === 'interrupted') {
+  // 清理所有活跃状态的残留 job（包括 awaiting_review），而不是只清理
+  // interrupted。原逻辑只清 interrupted，awaiting_review 残留会撞唯一索引
+  // 导致用户再次导入失败，且 UI 无取消入口，只能清数据重装。
+  if (leftover && ACTIVE_JOB_STATES.includes(leftover.state)) {
     await cancelContinuationImport(leftover.id);
   }
 

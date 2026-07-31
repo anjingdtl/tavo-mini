@@ -41,6 +41,7 @@ interface RouteFile {
   originalFileName: string;
   detectedEncoding: string;
   fileSizeBytes: number;
+  encodingOverride?: string;
 }
 
 interface FileItem extends RouteFile {
@@ -196,6 +197,7 @@ export const ContinuationSourceOrderingScreen: React.FC<{
         files: files.map(f => ({
           localPath: f.localPath,
           originalFileName: f.originalFileName,
+          ...(f.encodingOverride ? { encodingOverride: f.encodingOverride } : {}),
         })),
       });
       const preview = await previewParsedSource(job.id);
