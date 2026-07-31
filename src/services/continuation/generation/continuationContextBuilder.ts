@@ -304,13 +304,16 @@ export async function buildContinuationContext(
 
   // Read prior continuation chapters before touching bounded source正文. The
   // selected primary anchor is the only正文 seam for this frozen run.
-  const projectChapters = await database.getChaptersByProject(input.projectId);
-  const priorChapters = projectChapters
-    .filter(
-      chapter =>
-        chapter.position < input.targetPosition &&
-        Boolean(chapter.content?.trim()),
-    )
+  // H1-Generation 修复：原 getChaptersByProject 全表 SELECT * 拉 100+ 章正文
+  // 再 filter，大项目 OOM。selectContinuationAnchor 只取最近 1 章，recent
+  // bridge 受 recentBridgeTokens 限制也只取最近几章，所以只需查最近 20 章。
+  const recentProjectChapters = await database.getRecentChaptersBeforePosition(
+    input.projectId,
+    input.targetPosition,
+    20,
+  );
+  const priorChapters = recentProjectChapters
+    .filter(chapter => Boolean(chapter.content?.trim()))
     .sort((a, b) => b.position - a.position || b.id - a.id);
 
   let chapters: Awaited<

@@ -65,7 +65,21 @@ export async function processContinuationOutbox(options?: {
       const dependency = JSON.parse(item.payloadJson)?.dependsOnDedupeKey;
       if (typeof dependency === 'string' && dependency) {
         const upstream = await getOutboxByDedupe(dependency);
-        if (!upstream || upstream.state !== 'completed') continue;
+        if (!upstream) continue;
+        // H2 修复：原仅认 upstream.state === 'completed' 才继续，上游
+        // extract_state 耗尽 5 次重试进入 'failed' 终态后，依赖它的
+        // rebuild_story_memory 永远 continue 跳过，状态停在 pending 既不
+        // failed 也不 completed，outbox 持续堆积且 UI 无提示。Story Memory
+        // 重建从 finalized 章节正文重建，不强依赖 proposals 提取成功，
+        // 依赖关系设得过强。改为：上游 failed 时直接放行（rebuild 容忍
+        // 缺少新 proposals），让 rebuild 跑完进 completed；上游 pending/
+        // running/interrupted 时仍 continue 等待。
+        if (
+          upstream.state !== 'completed' &&
+          upstream.state !== 'failed'
+        ) {
+          continue;
+        }
       }
     } catch {
       // Malformed optional payload remains processable for backward
