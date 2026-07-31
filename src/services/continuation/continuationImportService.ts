@@ -317,6 +317,8 @@ function parsedChapterToInput(c: ParsedChapter): InsertChapterInput {
     sourceEndOffset: c.sourceEndOffset,
     isExcluded: c.isExcluded,
     exclusionReason: c.exclusionReason,
+    // Task 2 占位：Task 4 会改成动态 fileIndex
+    fileIndex: 0,
   };
 }
 
@@ -428,6 +430,8 @@ async function runPipelineToReview(
           charEndOffset: asUtf16Offset(end),
           content: slice,
           contentSha256: sha256Hex(slice),
+          // Task 2 占位：Task 4 会改成动态 fileIndex
+          fileIndex: 0,
         },
       ]);
       chunkIndex += 1;
@@ -469,6 +473,8 @@ async function runPipelineToReview(
         charEndOffset: asUtf16Offset(end),
         content: chunkBand,
         contentSha256: sha256Hex(chunkBand),
+        // Task 2 占位：Task 4 会改成动态 fileIndex
+        fileIndex: 0,
       },
     ]);
     chunkIndex += 1;
