@@ -45,6 +45,7 @@ import {
 import type {
   ContinuationArtifact,
   ContinuationContextSnapshot,
+  ContinuationContextTrace,
   ContinuationGenerationRun,
   ContinuationPlan,
   ContinuationRunState,
@@ -321,7 +322,11 @@ export async function startContinuationRun(
     userInstruction: input.userInstruction,
     settingsSnapshotJson: JSON.stringify(snapshot.settingsSnapshot),
     contextSnapshotJson: JSON.stringify(snapshot),
-    contextTraceJson: JSON.stringify(trace),
+    // H6 修复：contextTraceJson 延迟到 run 结束才写。原 insertRun 时三连
+    // JSON.stringify(source/settings/snapshot/trace) 产生 300KB-1MB+ 字符串，
+    // 1M 上下文下峰值 2× snapshot 体积，低内存 Android 易 OOM。trace 仅调试
+    // 用，resume 不需要，run 结束时再 update 写入。
+    contextTraceJson: null,
     tokenUsageJson: JSON.stringify({ stages: {} }),
     state: 'running',
     stage: 'planner',
@@ -346,6 +351,7 @@ export async function startContinuationRun(
         deterministicOnly: input.deterministicOnly,
         signal: controller.signal,
         projectId: input.projectId,
+        trace,
       });
     } catch (err) {
       await finalizeRunOnError(runId, controller, err);
@@ -365,6 +371,7 @@ async function runStages(
     deterministicOnly?: boolean;
     signal: AbortSignal;
     projectId: number;
+    trace?: ContinuationContextTrace | null;
   },
 ): Promise<void> {
   const tokenUsage: Record<string, any> = {};
@@ -413,10 +420,13 @@ async function runStages(
   const plannerMsgs = compilePlannerMessages(snapshot);
   let plan: ContinuationPlan;
   try {
+    // H5 修复：原硬编码 1024，用户配 max_output_tokens=2048 也无效，复杂 plan
+    // JSON 超 1024 token 被截断 → parsePlan 回落 defaultPlan。改用 stageBudgets
+    // 已根据 LLM config 计算好的 maxOutputTokens（planStageCapacity 输出）。
     const raw = await call(
       'planner',
       plannerMsgs,
-      1024,
+      snapshot.stageBudgets?.planner.maxOutputTokens ?? 1024,
       snapshot.settingsSnapshot.resolvedModelConfigIds.planner,
       'json_object',
     );
@@ -450,6 +460,8 @@ async function runStages(
       state: 'awaiting_user',
       stage: 'awaiting_user',
       tokenUsageJson: JSON.stringify({ stages: tokenUsage }),
+      // H6: 延迟写入 trace，减少 insertRun 时内存峰值
+      contextTraceJson: opts.trace ? JSON.stringify(opts.trace) : null,
     });
     return;
   }
@@ -461,6 +473,15 @@ async function runStages(
     deterministicOnly: opts.deterministicOnly,
     signal: opts.signal,
   });
+  // H6: continueFromWriter 已把 run 设为 awaiting_user，此处补写 trace
+  //（仅调试用，CAS 失败说明 run 已被 cancel/outdated，trace 丢失可接受）
+  if (opts.trace) {
+    await casUpdateRunState(runId, ['awaiting_user'], {
+      contextTraceJson: JSON.stringify(opts.trace),
+    }).catch(() => {
+      // best-effort；run 已离开 awaiting_user 则不强制写 trace
+    });
+  }
 }
 
 /**
@@ -658,16 +679,32 @@ async function continueFromWriter(
     let issues = runDeterministicChecks(artifact.content, snapshot);
     if (!opts.deterministicOnly) {
       try {
+        // H5 修复：原硬编码 1500，复杂 artifact 多 issue 超 1500 token 被截断
+        // → parseCheckerLlmJson 抛错 → 触发下方 catch 静默吞错。改用
+        // stageBudgets.checker 已根据 LLM config 计算的 maxOutputTokens。
+        const checkerMaxTokens =
+          snapshot.stageBudgets?.checker?.maxOutputTokens ?? 1500;
         const raw = await opts.call(
           'checker',
           compileCheckerMessages(snapshot, artifact.content),
-          1500,
+          checkerMaxTokens,
           snapshot.settingsSnapshot.resolvedModelConfigIds.checker,
           'json_object',
         );
         issues = issues.concat(parseCheckerLlmJson(raw));
-      } catch {
-        // keep deterministic only
+      } catch (checkerErr) {
+        // H3 修复：原 catch 完全吞错，与 planner 的 H7 修复不对称。LLM 返回
+        // 截断 JSON 或网络超时时，真正的 continuity 冲突被无声丢弃。改为
+        // 记录 warning 到 tokenUsage.checker 供 trace/UI 展示「LLM 检查器
+        // 降级，仅确定性检查」，确定性检查结果仍然保留。
+        opts.tokenUsage.checker = {
+          ...(opts.tokenUsage.checker ?? {}),
+          warning: 'checker_failed',
+          warningMessage:
+            checkerErr instanceof Error
+              ? checkerErr.message
+              : String(checkerErr),
+        };
       }
     }
     const allowed = new Set(snapshot.bundles.canon.evidenceRefs);
@@ -694,13 +731,31 @@ async function continueFromWriter(
     repairRound += 1;
     let repaired = tryDeterministicRepair(artifact.content, openChecks);
     if (!repaired && !opts.deterministicOnly) {
-      repaired = await opts.call(
-        'repair',
-        compileRepairMessages(snapshot, artifact.content, openChecks),
-        Math.min(4096, artifact.content.length + 500),
-        snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
-        'text',
-      );
+      // H4 修复：原 repair 调用无 try/catch，一次网络抖动/超时/JSON 解析异常
+      // 会沿 runStages → finalizeRunOnError 把 run 标 failed，但 writer 产出
+      // 的 artifact 已 insertArtifact 落库，adoptArtifactAsDraft 只接受
+      // awaiting_user/interrupted，用户既不能采纳也不能恢复，整次生成（含
+      // 已花的 planner+writer token）作废。改 try/catch：失败时记录 warning
+      // 并 break 跳出 repair 循环，保留当前 artifact 走末尾 awaiting_user。
+      try {
+        repaired = await opts.call(
+          'repair',
+          compileRepairMessages(snapshot, artifact.content, openChecks),
+          Math.min(4096, artifact.content.length + 500),
+          snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
+          'text',
+        );
+      } catch (repairErr) {
+        opts.tokenUsage.repair = {
+          ...(opts.tokenUsage.repair ?? {}),
+          warning: 'repair_failed',
+          warningMessage:
+            repairErr instanceof Error
+              ? repairErr.message
+              : String(repairErr),
+        };
+        break;
+      }
     }
     if (!repaired || repaired === artifact.content) break;
 

@@ -32,6 +32,7 @@ import {
 import {
   ContinuationSnapshotOutdatedError,
   type BoundedSourceChapter,
+  type BoundedSourceChapterMeta,
   type ContinuationSourceReader,
   type ContinuationSourceSnapshot,
 } from './types';
@@ -115,47 +116,53 @@ export const continuationSourceReader: ContinuationSourceReader = {
   ): Promise<BoundedSourceChapter[]> {
     const db = await openDatabase();
     await assertSnapshotMatches(db, snapshot);
+    const chapters = await getChaptersBySourceInTx(db, snapshot.sourceId);
+    return readBoundedChaptersFromRows(db, snapshot, chapters, null, null);
+  },
 
+  async listBoundedSourceChaptersForRange(
+    snapshot: ContinuationSourceSnapshot,
+    startPosition: SourceChapterPosition,
+    endPosition: SourceChapterPosition,
+  ): Promise<BoundedSourceChapter[]> {
+    const db = await openDatabase();
+    await assertSnapshotMatches(db, snapshot);
+    const chapters = await getChaptersBySourceInTx(db, snapshot.sourceId);
+    return readBoundedChaptersFromRows(
+      db,
+      snapshot,
+      chapters,
+      startPosition,
+      endPosition,
+    );
+  },
+
+  async listBoundedSourceChapterMetas(
+    snapshot: ContinuationSourceSnapshot,
+  ): Promise<BoundedSourceChapterMeta[]> {
+    const db = await openDatabase();
+    await assertSnapshotMatches(db, snapshot);
     const chapters = await getChaptersBySourceInTx(db, snapshot.sourceId);
     const boundary = snapshot.boundary.charOffsetExclusive;
-
-    const out: BoundedSourceChapter[] = [];
+    const out: BoundedSourceChapterMeta[] = [];
     for (const ch of chapters) {
       if (ch.isExcluded) continue;
-      // Entirely past the boundary → future source, excluded (Spec §5.3, §12.3).
-      if (ch.sourceStartOffset >= boundary) continue;
-
-      // Determine the clipped end for this chapter.
-      const rawEnd = ch.sourceEndOffset;
-      const clippedEnd =
-        rawEnd > boundary ? boundary : rawEnd;
+      if (Number(ch.sourceStartOffset) >= boundary) continue;
+      const rawEnd = Number(ch.sourceEndOffset);
+      const clippedEnd = rawEnd > boundary ? boundary : rawEnd;
       const clippedByBoundary = rawEnd > boundary;
-
-      // Read the chapter body text from chunks: from content_start to clippedEnd.
-      const text = await readTextRange(
-        db,
-        snapshot.sourceId,
-        ch.contentStartOffset,
-        asUtf16Offset(clippedEnd),
-      );
-
       out.push({
         id: ch.id,
         sourceId: ch.sourceId,
         position: ch.position,
         title: ch.title,
-        content: text,
+        contentLength: Math.max(0, clippedEnd - Number(ch.contentStartOffset)),
         range: {
-          // `content` deliberately excludes the chapter heading, therefore
-          // evidence offsets must begin at the body start as well. Using the
-          // source start here shifted every Canon quote by the title length.
           start: ch.contentStartOffset,
           end: asUtf16Offset(clippedEnd),
         },
         clippedByBoundary,
       });
-
-      // Once we've passed/clipped the boundary chapter, stop — no future source.
       if (clippedByBoundary) break;
     }
     return out;
@@ -180,6 +187,59 @@ export const continuationSourceReader: ContinuationSourceReader = {
     );
   },
 };
+
+/**
+ * H1 修复：共享的章节正文读取核心。`startPosition`/`endPosition` 为 null
+ * 时读取全部边界内章节（兼容 listBoundedSourceChapters）；非 null 时只读
+ * position ∈ [startPosition, endPosition) 的章节（listBoundedSourceChaptersForRange
+ * 按 batch 流式读取，避免 2000+ 章全量加载 OOM）。
+ */
+async function readBoundedChaptersFromRows(
+  db: SQLite.SQLiteDatabase,
+  snapshot: ContinuationSourceSnapshot,
+  chapters: Awaited<ReturnType<typeof getChaptersBySourceInTx>>,
+  startPosition: SourceChapterPosition | null,
+  endPosition: SourceChapterPosition | null,
+): Promise<BoundedSourceChapter[]> {
+  const boundary = snapshot.boundary.charOffsetExclusive;
+  const out: BoundedSourceChapter[] = [];
+  for (const ch of chapters) {
+    if (ch.isExcluded) continue;
+    if (Number(ch.sourceStartOffset) >= boundary) continue;
+    // H1: 按 position 区间过滤，跳过 batch 范围外的章节
+    if (startPosition != null && endPosition != null) {
+      const pos = Number(ch.position);
+      if (pos < Number(startPosition) || pos >= Number(endPosition)) continue;
+    }
+
+    const rawEnd = Number(ch.sourceEndOffset);
+    const clippedEnd = rawEnd > boundary ? boundary : rawEnd;
+    const clippedByBoundary = rawEnd > boundary;
+
+    const text = await readTextRange(
+      db,
+      snapshot.sourceId,
+      ch.contentStartOffset,
+      asUtf16Offset(clippedEnd),
+    );
+
+    out.push({
+      id: ch.id,
+      sourceId: ch.sourceId,
+      position: ch.position,
+      title: ch.title,
+      content: text,
+      range: {
+        start: ch.contentStartOffset,
+        end: asUtf16Offset(clippedEnd),
+      },
+      clippedByBoundary,
+    });
+
+    if (clippedByBoundary) break;
+  }
+  return out;
+}
 
 /**
  * Slice chunk contents to a UTF-16 sub-range `[start, end)` (Spec §9.3, §12.3).

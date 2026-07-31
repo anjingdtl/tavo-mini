@@ -295,14 +295,23 @@ export async function startContinuationImport(
   const jobDirAbs = `${importDir}/${jobDirName}`;
   await RNFS.mkdir(jobDirAbs);
   const inputCopyRelativePath = `continuation-imports/${jobDirName}`;
-  for (let i = 0; i < fileMetas.length; i++) {
-    const fm = fileMetas[i];
-    const safeName = sanitizeFileNameForPath(fm.originalFileName);
-    const destName = `${i}_${safeName}`;
-    await RNFS.copyFile(fm.localPath, `${jobDirAbs}/${destName}`);
-    // localPath is updated to the private copy so runPipelineToReview reads
-    // the durable copy (the picker's cache may vanish mid-import).
-    fileMetas[i] = { ...fm, localPath: `${jobDirAbs}/${destName}` };
+  try {
+    for (let i = 0; i < fileMetas.length; i++) {
+      const fm = fileMetas[i];
+      const safeName = sanitizeFileNameForPath(fm.originalFileName);
+      const destName = `${i}_${safeName}`;
+      await RNFS.copyFile(fm.localPath, `${jobDirAbs}/${destName}`);
+      // localPath is updated to the private copy so runPipelineToReview reads
+      // the durable copy (the picker's cache may vanish mid-import).
+      fileMetas[i] = { ...fm, localPath: `${jobDirAbs}/${destName}` };
+    }
+  } catch (copyErr) {
+    // H6-Import 修复：copyFile 失败（如源文件被删/磁盘满）会留下半空 jobDir
+    // 和 staging source，下次 resume 又会撞到。清理 jobDir + source cascade。
+    await RNFS.unlink(jobDirAbs).catch(() => {
+      // best-effort
+    });
+    throw copyErr;
   }
 
   // Build source_files_json metadata for provenance queries (UI/audit).
@@ -1137,9 +1146,37 @@ export async function resumeContinuationImport(jobId: string): Promise<ImportJob
   const totalSize = files.reduce((s, f) => s + f.fileSizeBytes, 0);
 
   // Reset staging data before re-running.
-  await db.executeSql('DELETE FROM continuation_source_text_chunks WHERE source_id = ?', [job.sourceId]);
-  await db.executeSql('DELETE FROM continuation_source_chapters WHERE source_id = ?', [job.sourceId]);
-  await updateJob(db, jobId, { state: 'running', stage: 'reading', errorCode: null, errorMessage: null });
+  // H8-Import 修复：原两条 DELETE 非事务，中间崩溃会留下 chunks 已删但
+  // chapters 还在的不一致状态，导致 parser 在 finalized_chapters 阶段
+  // contiguity 校验失败。包 executeTransaction 保证原子性。
+  await executeTransaction(db, [
+    {
+      sql: 'DELETE FROM continuation_source_text_chunks WHERE source_id = ?',
+      params: [job.sourceId],
+    },
+    {
+      sql: 'DELETE FROM continuation_source_chapters WHERE source_id = ?',
+      params: [job.sourceId],
+    },
+  ]);
+
+  // H1-Import-resume 修复：原 `updateJob(state='running')` 是无条件 UPDATE，
+  // 两次并发 resume（用户切屏回来再点恢复 / useFocusEffect 重新触发）都能
+  // 通过 1048 行的 state 检查，然后两条流同时从 chunkIndex=0 跑 insertChunks
+  // 撞 UNIQUE(source_id, chunk_index)，最终 job 状态被两条流互相覆盖。
+  // 改为条件 UPDATE + rowsAffected 断言：只有从 interrupted/failed 抢占成功
+  // 才能继续，第二条并发调用直接抛错退出，不会污染 staging 数据。
+  const ts = now();
+  const [claimRes] = await db.executeSql(
+    `UPDATE continuation_import_jobs
+       SET state = 'running', stage = 'reading',
+           error_code = NULL, error_message = NULL, updated_at = ?
+     WHERE id = ? AND state IN ('interrupted', 'failed')`,
+    [ts, jobId],
+  );
+  if (claimRes.rowsAffected !== 1) {
+    throw new Error('任务已被另一处恢复抢占，请刷新列表后重试。');
+  }
 
   try {
     await runPipelineToReview(db, jobId, job.sourceId, files, totalSize);
@@ -1147,6 +1184,14 @@ export async function resumeContinuationImport(jobId: string): Promise<ImportJob
   } catch (e: any) {
     await updateJob(db, jobId, {
       state: 'failed',
+      errorCode: classifyError(e),
+      errorMessage: sanitizeError(e?.message),
+    });
+    // H2-Import-resume 修复：原 catch 只 updateJob 不 updateSourceStatus，
+    // 对比 startContinuationImport 的 catch（381 行）遗漏了 source 状态。
+    // 后果：source 卡在 needs_review/staging，getActiveContinuationSource
+    // 返回 null，UI 既无恢复按钮也无清理入口，孤儿 source 永久占用磁盘。
+    await updateSourceStatus(db, job.sourceId, 'failed', {
       errorCode: classifyError(e),
       errorMessage: sanitizeError(e?.message),
     });

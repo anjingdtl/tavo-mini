@@ -69,6 +69,7 @@ jest.mock(
 
 jest.mock('../src/services/database', () => ({
   getChaptersByProject: jest.fn().mockResolvedValue([]),
+  getRecentChaptersBeforePosition: jest.fn().mockResolvedValue([]),
   getProjectStoryMemory: jest.fn().mockResolvedValue(null),
 }));
 
