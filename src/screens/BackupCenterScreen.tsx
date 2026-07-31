@@ -10,7 +10,7 @@ import {
   restoreFromBackup,
   deleteBackup,
 } from '../services/backupService';
-import type { BackupSummary } from '../services/backupService';
+import type { BackupSummary, BackupProgress } from '../services/backupService';
 import { openDatabase } from '../services/database';
 import { SCHEMA_VERSION } from '../services/migrations';
 import { useSettingsStore } from '../store/settingsStore';
@@ -48,6 +48,7 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
   const [backups, setBackups] = useState<BackupSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [operating, setOperating] = useState(false);
+  const [progress, setProgress] = useState<BackupProgress | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -68,13 +69,16 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
 
   const handleCreate = async () => {
     setOperating(true);
+    setProgress({ percent: 0, stage: '准备中' });
     try {
       const db = await openDatabase();
-      await createManualBackup(db, appVersion, Number(schemaVersion));
+      await createManualBackup(db, appVersion, Number(schemaVersion), setProgress);
+      setProgress(null);
       await load();
     } catch (e: any) {
       Alert.alert('创建失败', e?.message || '未知错误');
     } finally {
+      setProgress(null);
       setOperating(false);
     }
   };
@@ -194,11 +198,23 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
       />
       <View style={[styles.createRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}>
         <Button
-          label="创建备份"
+          label={operating ? '创建中...' : '创建备份'}
           onPress={handleCreate}
           disabled={operating}
           flex
         />
+        {operating && progress ? (
+          <View style={styles.progressWrap}>
+            <View style={[styles.progressTrack, { backgroundColor: theme.colors.accentSoft }]}>
+              <View
+                style={[styles.progressFill, { width: `${progress.percent}%`, backgroundColor: theme.colors.accent }]}
+              />
+            </View>
+            <Text style={[styles.progressLabel, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+              {progress.percent}% · {progress.stage}
+            </Text>
+          </View>
+        ) : null}
       </View>
       <View style={[styles.privacyNotice, { backgroundColor: theme.colors.surface }]}>
         <Text style={[styles.privacyText, { color: theme.colors.textSecondary }]}>备份文件包含小说正文、人物、世界观和笔记等内容。请勿将未加密备份上传到不可信位置。</Text>
@@ -230,6 +246,22 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     elevation: 2,
     zIndex: 2,
+  },
+  progressWrap: {
+    marginTop: spacing.sm,
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: 6,
+    borderRadius: 3,
+  },
+  progressLabel: {
+    fontSize: 12,
+    marginTop: spacing.xs,
   },
   privacyNotice: {
     paddingHorizontal: spacing.lg,
