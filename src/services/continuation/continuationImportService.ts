@@ -202,8 +202,12 @@ export async function getActiveImportJob(
 
 // --- public API (Spec §13) --------------------------------------------------
 
-export interface StartImportInput {
-  projectId: number;
+/**
+ * One file in a multi-file import batch. The caller (picker) copies each
+ * selected file into a private cache path and passes that path here; the
+ * service re-copies each one into a per-job directory for resume durability.
+ */
+export interface ImportInputFile {
   /** App-private absolute path of the file copy (caller copies via picker). */
   localPath: string;
   originalFileName: string;
@@ -211,15 +215,30 @@ export interface StartImportInput {
   encodingOverride?: string;
 }
 
+export interface StartImportInput {
+  projectId: number;
+  /** One or more files to import. Single-file callers pass a 1-element array. */
+  files: ImportInputFile[];
+}
+
 /**
  * Begin an import: copy file to private dir, create staging source + job,
  * then run the decode/normalize/parse pipeline to awaiting_review (Spec §14.1).
+ *
+ * Multi-file variant: each input file is copied into a per-job directory
+ * `${importDir}/${jobId}/` so resume can re-read all original files. The
+ * `inputCopyRelativePath` stored on the job points at that directory (relative
+ * to DocumentDirectoryPath). `file_index` on chunks/chapters marks provenance.
  */
 export async function startContinuationImport(
   input: StartImportInput,
 ): Promise<ImportJob> {
   const db = await getDb();
   await ensureSettingsRow(db, input.projectId);
+
+  if (input.files.length === 0) {
+    throw new Error('未选择任何文件。');
+  }
 
   // Guard against the partial unique index idx_continuation_import_one_active:
   // if a previous import on this project was interrupted (e.g. the app was
@@ -232,39 +251,79 @@ export async function startContinuationImport(
   }
 
   const mod = requireContinuationTextImport();
-  const meta = await mod.readFileMeta(input.localPath);
-  // Reject oversized files BEFORE copying into the private import dir (Spec §16,
-  // native MAX_FILE_BYTES). The native readFileMeta already marks these
-  // canRead=false + errorCode, but we double-check the byte count in JS too so
-  // the friendly error fires regardless of the native contract.
-  if (meta.errorCode === 'file_too_large' || meta.fileSizeBytes > MAX_IMPORT_FILE_BYTES) {
-    const mb = (MAX_IMPORT_FILE_BYTES / (1024 * 1024)).toFixed(0);
-    throw new Error(`文件过大（上限 ${mb} MB），请选择更小的原著文件或按章节拆分后导入。`);
-  }
-  if (!meta.canRead) {
-    throw new Error('无法读取所选文件，请重新选择。');
-  }
-  const detected = await mod.detectEncoding(input.localPath);
-  const encoding = input.encodingOverride ?? detected.encoding;
 
-  // Copy the picked file into our private import dir (Spec §14.1 step 1, §16).
+  // Pre-flight each file: read meta, detect encoding, sum total size.
+  // Per-file size + cumulative size both checked against MAX_IMPORT_FILE_BYTES.
+  const fileMetas: PipelineFileMeta[] = [];
+  let totalSize = 0;
+  for (let i = 0; i < input.files.length; i++) {
+    const f = input.files[i];
+    const meta = await mod.readFileMeta(f.localPath);
+    if (meta.errorCode === 'file_too_large' || meta.fileSizeBytes > MAX_IMPORT_FILE_BYTES) {
+      const mb = (MAX_IMPORT_FILE_BYTES / (1024 * 1024)).toFixed(0);
+      throw new Error(`文件 ${f.originalFileName} 过大（上限 ${mb} MB），请选择更小的原著文件或按章节拆分后导入。`);
+    }
+    if (totalSize + meta.fileSizeBytes > MAX_IMPORT_FILE_BYTES) {
+      const mb = (MAX_IMPORT_FILE_BYTES / (1024 * 1024)).toFixed(0);
+      throw new Error(`原著总大小超过 ${mb} MB 限制，请减少文件数量或按章节拆分后导入。`);
+    }
+    if (!meta.canRead) {
+      throw new Error(`无法读取文件 ${f.originalFileName}，请重新选择。`);
+    }
+    const detected = await mod.detectEncoding(f.localPath);
+    const encoding = f.encodingOverride ?? detected.encoding;
+    fileMetas.push({
+      localPath: f.localPath,
+      originalFileName: f.originalFileName,
+      encoding,
+      fileSizeBytes: meta.fileSizeBytes,
+    });
+    totalSize += meta.fileSizeBytes;
+  }
+
+  // Copy each input file into our private per-job import directory so resume
+  // can re-read the originals even after the picker's cache is cleared.
+  // Files are named `${fileIndex}_${sanitizedOriginal}` to preserve ordering
+  // and human-readability while staying filesystem-safe.
   const importDir = `${RNFS.DocumentDirectoryPath}/continuation-imports`;
   await RNFS.mkdir(importDir);
   const jobId = uuidv4();
-  const inputCopyRelativePath = `continuation-imports/${jobId}.txt`;
-  const copyAbs = `${RNFS.DocumentDirectoryPath}/${inputCopyRelativePath}`;
-  await RNFS.copyFile(input.localPath, copyAbs);
+  const jobDirName = jobId;
+  const jobDirAbs = `${importDir}/${jobDirName}`;
+  await RNFS.mkdir(jobDirAbs);
+  const inputCopyRelativePath = `continuation-imports/${jobDirName}`;
+  for (let i = 0; i < fileMetas.length; i++) {
+    const fm = fileMetas[i];
+    const safeName = sanitizeFileNameForPath(fm.originalFileName);
+    const destName = `${i}_${safeName}`;
+    await RNFS.copyFile(fm.localPath, `${jobDirAbs}/${destName}`);
+    // localPath is updated to the private copy so runPipelineToReview reads
+    // the durable copy (the picker's cache may vanish mid-import).
+    fileMetas[i] = { ...fm, localPath: `${jobDirAbs}/${destName}` };
+  }
+
+  // Build source_files_json metadata for provenance queries (UI/audit).
+  const sourceFilesMeta = fileMetas.map((fm, idx) => ({
+    fileIndex: idx,
+    originalFileName: fm.originalFileName,
+    fileSizeBytes: fm.fileSizeBytes,
+    detectedEncoding: fm.encoding,
+  }));
+  const isMultiFile = input.files.length > 1;
 
   // Create staging source + job in one transaction.
   const sourceVersion = await nextSourceVersionInTx(db, input.projectId);
+  const displayName = isMultiFile
+    ? `${stripExtension(fileMetas[0].originalFileName)} 等 ${fileMetas.length} 个文件`
+    : stripExtension(fileMetas[0].originalFileName);
   const sourceId = await insertSource(db, {
     projectId: input.projectId,
     version: sourceVersion,
     status: 'staging',
-    displayName: stripExtension(input.originalFileName),
-    originalFileName: input.originalFileName,
-    detectedEncoding: encoding,
-    fileSizeBytes: meta.fileSizeBytes,
+    displayName,
+    originalFileName: fileMetas[0].originalFileName,
+    detectedEncoding: fileMetas[0].encoding,
+    fileSizeBytes: totalSize,
     rawSha256: 'pending', // filled after full read
     normalizedSha256: 'pending',
     normalizedCharCount: 0,
@@ -272,6 +331,9 @@ export async function startContinuationImport(
     chapterCount: 0,
     parserVersion: PARSER_VERSION,
     normalizationVersion: NORMALIZATION_VERSION,
+    sourceFilesJson: JSON.stringify(sourceFilesMeta),
+    isMultiFile,
+    fileCount: fileMetas.length,
   });
   await insertJob(db, {
     id: jobId,
@@ -286,7 +348,7 @@ export async function startContinuationImport(
   });
 
   try {
-    await runPipelineToReview(db, jobId, sourceId, copyAbs, encoding, meta.fileSizeBytes);
+    await runPipelineToReview(db, jobId, sourceId, fileMetas, totalSize);
     return (await getJob(db, jobId))!;
   } catch (e: any) {
     await updateJob(db, jobId, {
@@ -300,6 +362,20 @@ export async function startContinuationImport(
     });
     throw e;
   }
+}
+
+/**
+ * A file ready for the streaming pipeline: an app-private absolute path,
+ * the encoding to decode with, byte size, and original name for provenance.
+ *
+ * `localPath` points at the durable private copy inside the per-job import
+ * directory, NOT the picker's cache uri (which may vanish mid-import).
+ */
+export interface PipelineFileMeta {
+  localPath: string;
+  originalFileName: string;
+  encoding: string;
+  fileSizeBytes: number;
 }
 
 /** Convert a finished ParsedChapter to a chapter row input. */
@@ -332,34 +408,45 @@ function parsedChapterToInput(c: ParsedChapter): InsertChapterInput {
  * multi-MB novels. Output (chunks/chapters/hashes) is byte-for-byte identical
  * to the original pipeline — the streaming normalizer/parser are equivalence-
  * tested against the one-shot variants.
+ *
+ * Multi-file streaming variant: each file is decoded independently with its
+ * own encoding, but the normalizer/parser/hashers are shared across files so
+ * the merged output is byte-for-byte identical to a single-file import of the
+ * concatenated text. `file_index` on chunks/chapters marks provenance. Chunk
+ * bands may span file boundaries (fileIndex = the file that completed the
+ * band); chapter boundaries are flushed at each file end so partial lines
+ * never merge across files.
  */
 async function runPipelineToReview(
   db: any,
   jobId: string,
   sourceId: number,
-  absPath: string,
-  encoding: string,
-  fileSizeBytes: number,
+  files: PipelineFileMeta[],
+  totalSizeBytes: number,
 ): Promise<void> {
+  if (files.length === 0) {
+    throw new Error('未选择任何文件。');
+  }
   const mod = requireContinuationTextImport();
   const CHUNK_BYTES = 192 * 1024;
   // Chunk the normalized text into ~192 KiB UTF-8 bands (Spec §9.3). 3 bytes
   // per CJK char is the rough average used by the original pipeline.
   const CHUNK_CHAR_TARGET = Math.floor((192 * 1024) / 3);
 
+  // Cross-file shared streaming state. These MUST outlive the per-file loop so
+  // the merged output is identical to a single-file import of the concat.
   const rawHasher = new Sha256Stream(); // SHA-256 over the raw decoded text
   const fallbackHasher = new Sha256Stream(); // SHA-256 over the full normalized text (fallback chapter)
   const normalizer = createStreamingNormalizer();
   const parser = createStreamingChapterParser();
 
-  let byteCursor = 0;
-  let normalizedCharCursor = 0; // running UTF-16 length of normalized output
-  let chunkBand = ''; // current normalized-text band being filled toward CHUNK_CHAR_TARGET
-  let chunkBandStart = 0; // UTF-16 offset where chunkBand begins
-  let chunkIndex = 0;
-  let chapterCount = 0;
-  // Pending partial line carried across decoded chunks (the decoder may split a
-  // line at any byte boundary; chapters are detected per complete line).
+  let normalizedCharCursor = 0; // running UTF-16 length of normalized output (cross-file)
+  let chunkBand = ''; // current normalized-text band being filled toward CHUNK_CHAR_TARGET (cross-file)
+  let chunkBandStart = 0; // UTF-16 offset where chunkBand begins (cross-file)
+  let chunkIndex = 0; // global chunk index (cross-file)
+  let chapterCount = 0; // global chapter count (cross-file)
+  // Pending partial line carried across decoded chunks within a single file.
+  // Flushed at each file's end so partial lines never merge across files.
   let pendingLine = '';
   let pendingLineStartOffset = 0;
   // Whole-text paragraph count over the normalized output (used only if the
@@ -367,102 +454,140 @@ async function runPipelineToReview(
   // complete normalized line arrives.
   let globalParagraphCount = 0;
 
-  const progressTotal = Math.max(1, Math.ceil(fileSizeBytes / CHUNK_BYTES));
+  const progressTotal = Math.max(1, Math.ceil(totalSizeBytes / CHUNK_BYTES));
   await updateJob(db, jobId, { stage: 'decoding', progressTotal });
 
-  const flushChapterBatch = async (chapters: ParsedChapter[]) => {
+  // flushChapterBatch takes a fileIndex so every chapter row records which
+  // file it originated from. parsedChapterToInput returns fileIndex: 0 as a
+  // placeholder; the spread here overrides it with the correct value.
+  const flushChapterBatch = async (chapters: ParsedChapter[], fileIndex: number) => {
     if (chapters.length === 0) return;
     await insertChapters(
       db,
       sourceId,
-      chapters.map(parsedChapterToInput),
+      chapters.map(c => ({ ...parsedChapterToInput(c), fileIndex })),
     );
     chapterCount += chapters.length;
   };
 
-  while (byteCursor < fileSizeBytes) {
-    const decoded = await mod.decodeChunk(absPath, encoding, byteCursor, CHUNK_BYTES, null);
-    if (decoded.bytesConsumed === 0 && !decoded.atEof) {
-      throw new Error('解码无进展，疑似编码不匹配，请确认文件编码。');
-    }
-    // Raw hash is over the decoded text before normalization (matches the
-    // original raw_sha256 = sha256Hex(rawDecoded)).
-    rawHasher.updateString(decoded.text);
+  // Per-file byte offsets (for progress + checkpoint). Reset to 0 each file.
+  let byteCursor = 0;
 
-    // Normalize this byte-block incrementally; push() returns the normalized
-    // text produced from just this block.
-    const normalizedBlock = normalizer.push(decoded.text);
-    fallbackHasher.updateString(normalizedBlock);
+  for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+    const file = files[fileIndex];
+    byteCursor = 0;
 
-    // Split the normalized block into complete lines and feed the streaming
-    // chapter parser. A trailing partial line (no '\n') is held until the next
-    // block completes it. Line offsets are UTF-16 offsets into the normalized
-    // text, tracked via normalizedCharCursor.
-    let blockRest = normalizedBlock;
-    while (true) {
-      const nlIdx = blockRest.indexOf('\n');
-      if (nlIdx < 0) {
-        // No more complete lines in this block; carry the remainder.
-        pendingLine += blockRest;
-        break;
-      }
-      const completeLine = pendingLine + blockRest.slice(0, nlIdx);
-      const flushed = parser.pushLine(completeLine, pendingLineStartOffset);
-      await flushChapterBatch(flushed);
-      if (completeLine.trim().length > 0) globalParagraphCount += 1;
-      // Advance past the line content + the '\n'.
-      pendingLineStartOffset = pendingLineStartOffset + completeLine.length + 1;
-      pendingLine = '';
-      blockRest = blockRest.slice(nlIdx + 1);
-    }
-
-    // Accumulate the normalized block into chunk bands. When a band reaches
-    // CHUNK_CHAR_TARGET, flush it as a text chunk row.
-    chunkBand += normalizedBlock;
-    while (chunkBand.length >= CHUNK_CHAR_TARGET) {
-      const slice = chunkBand.slice(0, CHUNK_CHAR_TARGET);
-      const start = chunkBandStart;
-      const end = start + slice.length;
-      await insertChunks(db, sourceId, [
-        {
-          chunkIndex,
-          charStartOffset: asUtf16Offset(start),
-          charEndOffset: asUtf16Offset(end),
-          content: slice,
-          contentSha256: sha256Hex(slice),
-          // Task 2 占位：Task 4 会改成动态 fileIndex
-          fileIndex: 0,
-        },
-      ]);
-      chunkIndex += 1;
-      chunkBandStart = end;
-      chunkBand = chunkBand.slice(CHUNK_CHAR_TARGET);
-    }
-    normalizedCharCursor += normalizedBlock.length;
-
-    byteCursor = decoded.nextByteOffset;
-    await updateJob(db, jobId, {
-      progressCurrent: Math.min(progressTotal, Math.ceil(byteCursor / CHUNK_BYTES)),
-      // checkpoint carries only cursor + small state, never full text (§9.6).
-      checkpointJson: JSON.stringify({
+    while (byteCursor < file.fileSizeBytes) {
+      const decoded = await mod.decodeChunk(
+        file.localPath,
+        file.encoding,
         byteCursor,
-        normalizedCharCursor,
-        chunkIndex,
-        chapterCount,
-      }),
-    });
-    if (decoded.atEof) break;
+        CHUNK_BYTES,
+        null,
+      );
+      if (decoded.bytesConsumed === 0 && !decoded.atEof) {
+        throw new Error(
+          `解码 ${file.originalFileName} 无进展，疑似编码不匹配，请确认文件编码。`,
+        );
+      }
+      // Raw hash is over the decoded text before normalization (matches the
+      // original raw_sha256 = sha256Hex(rawDecoded)). Cross-file accumulation.
+      rawHasher.updateString(decoded.text);
+
+      // Normalize this byte-block incrementally; push() returns the normalized
+      // text produced from just this block.
+      const normalizedBlock = normalizer.push(decoded.text);
+      fallbackHasher.updateString(normalizedBlock);
+
+      // Split the normalized block into complete lines and feed the streaming
+      // chapter parser. A trailing partial line (no '\n') is held until the next
+      // block completes it. Line offsets are UTF-16 offsets into the normalized
+      // text, tracked via pendingLineStartOffset (cross-file accumulation).
+      let blockRest = normalizedBlock;
+      while (true) {
+        const nlIdx = blockRest.indexOf('\n');
+        if (nlIdx < 0) {
+          // No more complete lines in this block; carry the remainder.
+          pendingLine += blockRest;
+          break;
+        }
+        const completeLine = pendingLine + blockRest.slice(0, nlIdx);
+        const flushed = parser.pushLine(completeLine, pendingLineStartOffset);
+        await flushChapterBatch(flushed, fileIndex);
+        if (completeLine.trim().length > 0) globalParagraphCount += 1;
+        // Advance past the line content + the '\n'.
+        pendingLineStartOffset = pendingLineStartOffset + completeLine.length + 1;
+        pendingLine = '';
+        blockRest = blockRest.slice(nlIdx + 1);
+      }
+
+      // Accumulate the normalized block into chunk bands. When a band reaches
+      // CHUNK_CHAR_TARGET, flush it as a text chunk row. The band may span
+      // file boundaries; fileIndex here marks the file that completed the band
+      // (i.e. the file currently being decoded), which is acceptable since
+      // file_index is a provenance hint, not an offset participant (Spec §9.3).
+      chunkBand += normalizedBlock;
+      while (chunkBand.length >= CHUNK_CHAR_TARGET) {
+        const slice = chunkBand.slice(0, CHUNK_CHAR_TARGET);
+        const start = chunkBandStart;
+        const end = start + slice.length;
+        await insertChunks(db, sourceId, [
+          {
+            chunkIndex,
+            charStartOffset: asUtf16Offset(start),
+            charEndOffset: asUtf16Offset(end),
+            content: slice,
+            contentSha256: sha256Hex(slice),
+            fileIndex,
+          },
+        ]);
+        chunkIndex += 1;
+        chunkBandStart = end;
+        chunkBand = chunkBand.slice(CHUNK_CHAR_TARGET);
+      }
+      normalizedCharCursor += normalizedBlock.length;
+
+      byteCursor = decoded.nextByteOffset;
+      // Global processed bytes across all files (for progress + checkpoint).
+      const globalProcessedBytes =
+        files
+          .slice(0, fileIndex)
+          .reduce((s, f) => s + f.fileSizeBytes, 0) + byteCursor;
+      await updateJob(db, jobId, {
+        progressCurrent: Math.min(
+          progressTotal,
+          Math.ceil(globalProcessedBytes / CHUNK_BYTES),
+        ),
+        // checkpoint carries only cursor + small state, never full text (§9.6).
+        checkpointJson: JSON.stringify({
+          fileIndex,
+          byteCursor,
+          normalizedCharCursor,
+          chunkIndex,
+          chapterCount,
+        }),
+      });
+      if (decoded.atEof) break;
+    }
+
+    // Flush the trailing partial line at the end of each file so partial lines
+    // never merge across file boundaries (a file without a trailing newline
+    // would otherwise concatenate with the next file's first line). The offset
+    // advances by the pending line length only (no +1, because there is no
+    // '\n' at the boundary); this keeps pendingLineStartOffset in sync with
+    // normalizedCharCursor so the next file's first line starts at the right
+    // UTF-16 offset.
+    if (pendingLine.length > 0) {
+      const flushed = parser.pushLine(pendingLine, pendingLineStartOffset);
+      await flushChapterBatch(flushed, fileIndex);
+      pendingLineStartOffset += pendingLine.length;
+      pendingLine = '';
+    }
   }
 
-  // Flush the trailing partial line (if any) so the parser sees the last line.
-  if (pendingLine.length > 0) {
-    const flushed = parser.pushLine(pendingLine, pendingLineStartOffset);
-    await flushChapterBatch(flushed);
-    pendingLine = '';
-  }
-
-  // Flush the final partial chunk band.
+  // Flush the final partial chunk band (fileIndex = last file).
   await updateJob(db, jobId, { stage: 'persisting' });
+  const lastFileIndex = files.length - 1;
   if (chunkBand.length > 0) {
     const start = chunkBandStart;
     const end = start + chunkBand.length;
@@ -473,8 +598,7 @@ async function runPipelineToReview(
         charEndOffset: asUtf16Offset(end),
         content: chunkBand,
         contentSha256: sha256Hex(chunkBand),
-        // Task 2 占位：Task 4 会改成动态 fileIndex
-        fileIndex: 0,
+        fileIndex: lastFileIndex,
       },
     ]);
     chunkIndex += 1;
@@ -492,7 +616,7 @@ async function runPipelineToReview(
     fallbackParagraphCount: globalParagraphCount,
     totalCharCount: normMeta.normalizedCharCount,
   });
-  await flushChapterBatch(parsedFinal.chapters);
+  await flushChapterBatch(parsedFinal.chapters, lastFileIndex);
 
   // --- validate chunk contiguity (DB-side, unchanged) ---
   await updateJob(db, jobId, { stage: 'validating' });
@@ -502,6 +626,8 @@ async function runPipelineToReview(
   }
 
   // --- finalize source metadata + job ---
+  // Multi-file: detectedEncoding records the primary (first) file's encoding
+  // for display; per-file encodings live in source_files_json.
   const rawSha = rawHasher.digest();
   await db.executeSql(
     `UPDATE continuation_sources SET
@@ -515,7 +641,7 @@ async function runPipelineToReview(
       normMeta.normalizedCharCount,
       normMeta.normalizedByteCount,
       chapterCount,
-      encoding,
+      files[0].encoding,
       now(),
       sourceId,
     ],
@@ -729,11 +855,7 @@ export async function confirmContinuationSource(
   // Clean up the private import copy on success (Spec §14.1 step 8). Best-effort
   // only, never inside the transaction.
   if (job.inputCopyRelativePath) {
-    try {
-      await RNFS.unlink(`${RNFS.DocumentDirectoryPath}/${job.inputCopyRelativePath}`);
-    } catch {
-      // best-effort; orphan cleanup runs on next recover.
-    }
+    await cleanupImportPath(job.inputCopyRelativePath);
   }
   return (await getSourceByIdInTx(db, job.sourceId))!;
 }
@@ -747,11 +869,7 @@ export async function cancelContinuationImport(jobId: string): Promise<void> {
   // Physical-delete the staging source + chunks + chapters (cascade).
   await deleteSourceCascade(db, job.sourceId);
   if (job.inputCopyRelativePath) {
-    try {
-      await RNFS.unlink(`${RNFS.DocumentDirectoryPath}/${job.inputCopyRelativePath}`);
-    } catch {
-      // ignore
-    }
+    await cleanupImportPath(job.inputCopyRelativePath);
   }
 }
 
@@ -839,11 +957,7 @@ export async function deleteContinuationSource(
 
   // Best-effort private file cleanup (Spec §16) — outside the DB transaction.
   for (const rel of privateCopies) {
-    try {
-      await RNFS.unlink(`${RNFS.DocumentDirectoryPath}/${rel}`);
-    } catch {
-      // ignore orphans; next recover pass may clean them
-    }
+    await cleanupImportPath(rel);
   }
 
   // Post-condition guard: user chapters must still be present (Spec §14.3).
@@ -915,11 +1029,16 @@ export async function resumeContinuationImport(jobId: string): Promise<ImportJob
   const source = await getSourceByIdInTx(db, job.sourceId);
   if (!source) throw new Error('原著源记录不存在。');
 
-  // If we have a private copy, re-run the pipeline; else ask user to re-pick.
-  const absPath = job.inputCopyRelativePath
+  // The per-job import directory holds the durable copies of every input
+  // file (named `${fileIndex}_${sanitizedOriginal}`). If the directory is
+  // missing, the user must re-pick the files. Read the directory, sort by
+  // fileIndex, and rebuild the PipelineFileMeta[] for runPipelineToReview.
+  // Per-file encoding is read from source_files_json when available; if not
+  // (older single-file imports), all files fall back to source.detectedEncoding.
+  const jobDirAbs = job.inputCopyRelativePath
     ? `${RNFS.DocumentDirectoryPath}/${job.inputCopyRelativePath}`
     : null;
-  if (!absPath) {
+  if (!jobDirAbs) {
     await updateJob(db, jobId, {
       state: 'failed',
       errorCode: 'source_changed',
@@ -927,14 +1046,90 @@ export async function resumeContinuationImport(jobId: string): Promise<ImportJob
     });
     throw new Error('导入临时文件已清理，请重新选择原著文件。');
   }
+
+  // Pull source_files_json from the DB row (Task 1 added the column but the
+  // TS type may not surface it; read the row directly so resume works even
+  // when the source was created before the type update).
+  const [srcRow] = await db.executeSql(
+    'SELECT source_files_json FROM continuation_sources WHERE id = ?',
+    [job.sourceId],
+  );
+  const sourceFilesJsonRaw =
+    srcRow.rows.length > 0 ? srcRow.rows.item(0).source_files_json : null;
+  let sourceFilesMeta: Array<{
+    fileIndex: number;
+    originalFileName: string;
+    fileSizeBytes: number;
+    detectedEncoding: string;
+  }> = [];
+  if (sourceFilesJsonRaw) {
+    try {
+      sourceFilesMeta = JSON.parse(sourceFilesJsonRaw);
+    } catch {
+      sourceFilesMeta = [];
+    }
+  }
+
+  // Read the directory, filter to files matching `${i}_` prefix, sort by i.
+  let dirItems: { name: string; path: string; size: number }[];
+  try {
+    const items = await RNFS.readDir(jobDirAbs);
+    dirItems = items
+      .filter(it => it.isFile())
+      .map(it => ({ name: it.name, path: it.path, size: Number(it.size ?? 0) }));
+  } catch {
+    await updateJob(db, jobId, {
+      state: 'failed',
+      errorCode: 'source_changed',
+      errorMessage: '导入临时文件目录已损坏，请重新选择原著文件。',
+    });
+    throw new Error('导入临时文件目录已损坏，请重新选择原著文件。');
+  }
+
+  // Sort by the leading fileIndex prefix; entries without a numeric prefix
+  // (defensive: stray files) sort to the end in lexicographic order.
+  const withSortKey = dirItems.map(it => {
+    const m = it.name.match(/^(\d+)_/);
+    return { it, key: m ? Number(m[1]) : Number.MAX_SAFE_INTEGER };
+  });
+  withSortKey.sort((a, b) => a.key - b.key || a.it.name.localeCompare(b.it.name));
+  const sortedItems = withSortKey.map(x => x.it);
+
+  if (sortedItems.length === 0) {
+    await updateJob(db, jobId, {
+      state: 'failed',
+      errorCode: 'source_changed',
+      errorMessage: '导入临时文件目录为空，请重新选择原著文件。',
+    });
+    throw new Error('导入临时文件目录为空，请重新选择原著文件。');
+  }
+
+  // Build PipelineFileMeta[]: per-file encoding from source_files_json if
+  // present, else fall back to source.detectedEncoding. Original file name
+  // is read from source_files_json if present; else from the file's own name
+  // with the `${i}_` prefix stripped.
+  const files: PipelineFileMeta[] = sortedItems.map((it, idx) => {
+    const meta = sourceFilesMeta[idx];
+    const originalFileName =
+      meta?.originalFileName ?? it.name.replace(/^\d+_/, '');
+    const encoding = meta?.detectedEncoding ?? source.detectedEncoding;
+    return {
+      localPath: it.path,
+      originalFileName,
+      encoding,
+      fileSizeBytes: it.size,
+    };
+  });
+
+  const totalSize = files.reduce((s, f) => s + f.fileSizeBytes, 0);
+
   // Reset staging data before re-running.
   await db.executeSql('DELETE FROM continuation_source_text_chunks WHERE source_id = ?', [job.sourceId]);
   await db.executeSql('DELETE FROM continuation_source_chapters WHERE source_id = ?', [job.sourceId]);
   await updateJob(db, jobId, { state: 'running', stage: 'reading', errorCode: null, errorMessage: null });
 
   try {
-    const meta = await requireContinuationTextImport().readFileMeta(absPath);
-    await runPipelineToReview(db, jobId, job.sourceId, absPath, source.detectedEncoding, meta.fileSizeBytes);
+    await runPipelineToReview(db, jobId, job.sourceId, files, totalSize);
     return (await getJob(db, jobId))!;
   } catch (e: any) {
     await updateJob(db, jobId, {
@@ -951,6 +1146,60 @@ export async function resumeContinuationImport(jobId: string): Promise<ImportJob
 export function stripExtension(name: string): string {
   const i = name.lastIndexOf('.');
   return i > 0 ? name.slice(0, i) : name;
+}
+
+/**
+ * Make an original file name safe to embed in an Android file path segment.
+ * Replaces path separators and other unsafe chars with `_`, collapses
+ * consecutive underscores, trims leading/trailing underscores, and caps the
+ * length at 128 chars. Used when naming per-file copies inside the per-job
+ * import directory so ordering is preserved (fileIndex prefix) and the
+ * original name stays human-readable for debugging.
+ */
+export function sanitizeFileNameForPath(name: string): string {
+  // Strip directory components if any, then replace unsafe chars.
+  const base = name.split(/[\\/]/).pop() ?? name;
+  const sanitized = base
+    .replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_')
+    .replace(/_+/g, '_') // collapse consecutive _
+    .replace(/^_|_$/g, '') // trim leading/trailing _
+    .slice(0, 128);
+  return sanitized || 'file';
+}
+
+/**
+ * Best-effort cleanup of the per-job import copy. Handles both the new
+ * multi-file directory layout (`continuation-imports/${jobId}/`) and the
+ * legacy single-file layout (`continuation-imports/${jobId}.txt`) so resume
+ * of older interrupted jobs (pre-Task 4) still cleans up correctly.
+ *
+ * For a directory, deletes every file inside first, then the directory itself.
+ * Never throws — cleanup is best-effort, orphans get swept on next recover.
+ */
+export async function cleanupImportPath(relativePath: string): Promise<void> {
+  if (!relativePath) return;
+  const abs = `${RNFS.DocumentDirectoryPath}/${relativePath}`;
+  // Try as a directory first (new layout): readDir + unlink each + unlink dir.
+  try {
+    const items = await RNFS.readDir(abs);
+    for (const it of items) {
+      try {
+        await RNFS.unlink(it.path);
+      } catch {
+        // ignore individual file errors
+      }
+    }
+    await RNFS.unlink(abs);
+    return;
+  } catch {
+    // Not a directory (or doesn't exist): fall through to file-mode unlink.
+  }
+  // Legacy single-file layout (or stale directory entry): try direct unlink.
+  try {
+    await RNFS.unlink(abs);
+  } catch {
+    // best-effort; orphan cleanup runs on next recover.
+  }
 }
 
 export function classifyError(e: any): string {
