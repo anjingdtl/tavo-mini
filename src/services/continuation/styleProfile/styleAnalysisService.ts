@@ -49,6 +49,7 @@ import {
   listStyleProfilesForProject,
   updateStyleProfilePayload,
   updateStyleProfileState,
+  deleteStyleProfileByFingerprint,
   type StyleProfileFingerprint,
 } from './styleProfileRepository';
 import { computeStyleMetrics, summarizeStyleMetrics } from './styleStatistics';
@@ -331,6 +332,25 @@ export async function retryStyleAnalysis(projectId: number): Promise<void> {
   // bare untracked controller, making retries uncancellable.
   const controller = new AbortController();
   const sourceSnapshot = await continuationSourceReader.getSnapshot(projectId);
+
+  // BUG-007: clear any prior failed/interrupted/cancelled/outdated row under
+  // the same fingerprint before runStyleAnalysis INSERTs a fresh profileId.
+  // The continuation_style_profiles table has a UNIQUE index on
+  // (project_id, source_id, source_version, source_sha256,
+  // boundary_char_offset_exclusive, analyzer_version); without this DELETE
+  // the new INSERT would be rejected and the retry would silently fail.
+  // Ready profiles are NEVER touched by deleteStyleProfileByFingerprint.
+  await deleteStyleProfileByFingerprint(projectId, {
+    sourceId: sourceSnapshot.sourceId,
+    sourceVersion: sourceSnapshot.sourceVersion,
+    sourceSha256: sourceSnapshot.normalizedSha256,
+    parserVersion: sourceSnapshot.parserVersion,
+    normalizationVersion: sourceSnapshot.normalizationVersion,
+    boundaryChapterId: sourceSnapshot.boundary.chapterId,
+    boundaryPosition: sourceSnapshot.boundary.chapterPosition,
+    boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
+  });
+
   const result = await runStyleAnalysis({
     projectId,
     runId,
