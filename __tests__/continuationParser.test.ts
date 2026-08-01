@@ -255,4 +255,30 @@ describe('streaming chapter parser equivalence (Spec §11 streaming)', () => {
     expect(finalChapters.chapters).toHaveLength(1); // ch2 closed at EOF
     expect(finalChapters.chapters[0].title).toBe('第二章 终');
   });
+
+  it('hashes a very long body line without joining its chunks', () => {
+    const longBody = '正文'.repeat(35_000);
+    const text = `第一章 标题\n\n${longBody}`;
+    const oneShot = parseSourceChapters(text);
+    const sp = createStreamingChapterParser();
+    const streamed = [
+      ...sp.pushLine('第一章 标题', 0),
+      ...sp.pushLine('', '第一章 标题\n'.length),
+      ...sp.pushBodyLineChunks(
+        [longBody.slice(0, 20_000), longBody.slice(20_000)],
+        '第一章 标题\n\n'.length,
+        longBody.length,
+      ),
+    ];
+    const finalResult = sp.finalize({
+      fallbackSha256: sha256Hex(text),
+      fallbackParagraphCount: 1,
+      totalCharCount: text.length,
+    });
+    const all = [...streamed, ...finalResult.chapters];
+    expect(all).toHaveLength(1);
+    expect(all[0].contentSha256).toBe(oneShot.chapters[0].contentSha256);
+    expect(all[0].sourceEndOffset).toBe(text.length);
+    expect(all[0].charCount).toBe(oneShot.chapters[0].charCount);
+  });
 });

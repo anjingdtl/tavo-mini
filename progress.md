@@ -1,9 +1,9 @@
 # ShineWriter 进度交接
 
 > 最后更新：2026-08-01（接手续写模块 Android 模拟器长测与修复）
-> 状态：**长测进行中**。分支 `agent/continuation-import-canon-emulator-qa` 已落地 9 个 commit + 1 个修复测试；BUG-007（retryStyle UNIQUE 冲突）已修复并通过模拟器复测；CAN-101 完整分析剩余 style 重试卡在模拟器 LLM 出向请求超时，需排查网络或切本地 mock。
+> 状态：**长测与真实 LLM 验收完成，待 Release 构建、提交和推送**。CAN-005、CAN-105、CAN-201、PERF-001 与最终 DeepSeek 验收均已通过；BUG-009/010 已修复。
 
-## 续写模块长测（agent 分支 `agent/continuation-import-canon-emulator-qa`）
+## 续写模块长测（`main`）
 
 > 触发人：用户在 Grok Build 中途断电，请求接手 `docs/tavo-mini_续写模块_Android模拟器自动测试与修复长程执行计划.md` 的长测工作。基线 commit `04e4dd7`（V2.11.8 schema 29）。
 
@@ -12,7 +12,7 @@
 - **Phase A（工具链 + 基线）**：`npm ci`、`npm run verify`（lint + typecheck + 1654 tests / 202 suites）、`npm run apk:debug` 全部通过。
 - **IMP-001/003/004/006（导入主路径）**：模拟器 emulator-5554 (API 36, V2.11.8, buildCode 2110800) 上 PASS；产物落在 `artifacts/qa/20260801-emulator-qa-1/IMP-001…006/`。
 - **CAN-001（LLM 配置接入）**：PASS，验证 deepseek API base + model 配置正确生效。
-- **CAN-101（Canon 完整分析 happy path）**：分析运行跑通、人物/状态、世界观/剧情 100% 完成；唯一失败 = 风格分析 schema 校验（已修复）。
+- **CAN-101（Canon 完整分析 happy path）**：分析运行跑通、人物/状态、世界观/剧情 100% 完成；风格 schema 校验、单独重试、重试未完成项以及冷启动恢复均已在模拟器通过。最终 DB 为 `analysis_status=ready`，Canon/style profile 均为 ready。
 - **BUG-001 picker lifecycle**：fix（commit `8a9c2db`）。
 - **BUG-002 awaiting_review 显示**：fix（commit `ead5bf6`）。
 - **BUG-003 failed picker copy orphans**：fix（commit `073e708` + `3d8ebbb`）。
@@ -25,34 +25,48 @@
   - 修复：新增 `deleteStyleProfileByFingerprint(projectId, fingerprint)`；`retryStyleAnalysis` 在 `runStyleAnalysis` 之前调用，仅删 state ∈ {failed, interrupted, cancelled, outdated} 的行，**不动 ready 行**。
   - 验证：单元测试 `__tests__/styleProfileRetryCleanup.test.ts` 2 个用例 PASS；模拟器点击「单独重试」后 DB 创建了新的 `b0d4303f-…` profile（不再冲突）。
   - **遗留**：`__tests__/styleAnalysis.test.ts` 用 jest.mock 替换了 `styleProfileRepository` 整个模块，需在 mock 对象里加 `deleteStyleProfileByFingerprint: jest.fn()` 才能跑通 `npm run verify`（否则 1 fail：`(0 , _styleProfileRepository.deleteStyleProfileByFingerprint) is not a function`）。
+- **BUG-008 resume/cold-start style UNIQUE**：`e777ec1 fix(continuation): clean stale style profiles before resume`。
+  - 复现：Canon 风格分析请求过程中强停 App，冷启动后点击“继续”；旧 profile 仍为 `running`，第二次 `runStyleAnalysis` 插入撞 `UNIQUE constraint`。
+  - 根因：公共 Canon resume 路径此前没有清理旧 fingerprint；清理函数也未覆盖进程死亡/暂停遗留的 `running` profile。
+  - 修复：Canon 风格阶段调用前统一清理同 fingerprint 的非 ready profile；清理状态扩展为 `running/failed/interrupted/cancelled/outdated`，ready profile 保留；新增 resume pipeline 和 running orphan 回归测试。
+  - 验证：模拟器两次恢复均未再出现 UNIQUE；真实 DeepSeek 请求最终完成，冷启动后 `continuation_settings.analysis_status=ready`，run=`completed/style_validation`，style profile=`ready`；无 crash。
 
-### 未完成 / 阻塞
+- **BUG-009 ready 风格画像复用**：匹配的 ready profile 不再因重复分析 INSERT 新行而触发 fingerprint UNIQUE；新 LLM 运行期间保留旧 ready 画像，成功后原位刷新 run/snapshot 关联，失败不污染旧画像。单元测试与模拟器 malformed-JSON 回归通过。
+- **BUG-010 超长无换行 TXT 导入 OOM**：根因是导入流把单个超长逻辑行反复拼接成 JS 字符串，触发约 100 MiB 分配并导致 Android 进程 OOM。改为分片累计、流式更新正文 hash/长度/段落统计，仅对短行 join；70K 回归测试通过。
 
-- **CAN-101 收尾**：风格 retry 后日志显示 `请求超时，请检查网络或模型服务`（error_message 入 DB 已记录）。模拟器 ping `api.deepseek.com` → 10.0.0.1 (NAT 网关) 510ms；无 curl 工具，无法验证 HTTPS 真实连通。下一步要么排查代理/DNS，要么切换到本地 mock LLM (`scripts/qa/mock-openai-server.mjs` 还没建)。
-- **CAN-002（context=2000/output=2000 预检拒绝）**：需要切到一份 context_window=2000/max_output_tokens=2000 的 QA LLM 配置；`qa/fixtures/continuation/llm-qa-can-002-tiny.json.example` 已写好模板，未实际 push 到模拟器外置目录执行。
-- **CAN-005（100K 单章 chunk）**：FX-012 fixture 已存在；待集成到测试。
-- **CAN-105（非法 JSON mock）**、**CAN-201（分析中强停恢复）**：依赖 mock-openai-server.mjs；服务脚本未建。
-- **PERF-001（50MB 导入压力）**：未跑。
-- **`npm run verify` 当前状态**：1654 pass / 3 skipped / **1 fail**（上述 styleAnalysis.test.ts mock 缺失 `deleteStyleProfileByFingerprint`）。
+### 后续长测结果
+
+- **CAN-005（100K 单章 chunk）**：真实 DeepSeek 配置下完成 4 个连续批次：`[0,28187)`、`[28187,56374)`、`[56374,84561)`、`[84561,100002)`；最终 Canon/style 均 ready，无断档。
+- **CAN-105（非法 JSON）**：mock LLM 返回 malformed JSON；修复后的 ready profile 槽位被安全复用，分析最终完成，无 `UNIQUE`/崩溃。
+- **CAN-201（强停恢复）**：分析请求进行中 `force-stop`；冷启动后 DB 从 `running` 恢复为 `paused`，批次/工作项重新排队，继续后 run 完成，重试次数由 1 变为 2。
+- **PERF-001（50 MiB 导入）**：首次测试复现 OOM；修复后继续导入完成，单章 `52,428,780` 字，生成 800 个连续 chunk，`gap_count=0`；无 OOM/ANR，冷启动后 PSS 从约 310 MiB 回落至约 207 MiB。
+- **最终真实 DeepSeek 验收**：先以 128K 配置完成 run `cedee736-7c98-4367-9b4d-ac8710dff139`；按 V4 Flash 实际能力将配置提升到 `1,000,000` 后补测 run `edb55345-e18d-43cc-89b0-099430891b2c`，预检显示单 batch 输入预算 `991419`、预计 2 次调用，最终完成 `style_validation`、progress `2/2`；Canon snapshot `8242ca6d…` 与 style profile 均 ready；最终日志无 FATAL/OOM/ANR/SQLite UNIQUE。
+
+### CAN-002（tiny-model precheck）
+
+- 模拟器临时将当前配置改为 `context_window=2000` / `max_output_tokens=2000`，点击“完整原著分析”。
+- UI 明确拒绝：剩余输入预算为 0（低于最低 1024），建议 `max_output_tokens ≤ 1024` 或 `context_window ≥ 4629`。
+- DB 验证：项目 3 的分析 run 数仍为 1，最新 run 仍为 `completed/style_validation`；没有创建新分析任务。
+- 测试结束后已恢复 `context_window=128000` / `max_output_tokens=8000`。
+
+### 待完成
+
+- 正式 Release APK 已构建并完成签名/zipalign/版本验收：`dist/apk/release/ShineWriter-V2.11.8-release.apk`，SHA-256 `003E6911A96A52C1241DC120C8E4448B62C7C035A615E9B30E4BEAECF7D15810`。
+- `npm run verify` 已通过；待提交本次代码修复并推送 `main`。不提交真实 LLM 配置、API key、数据库和 QA 运行产物。
 
 ### 仓库 / 分支当前状态
 
-- 工作分支：`agent/continuation-import-canon-emulator-qa`
-- 本地领先 `origin/agent/continuation-import-canon-emulator-qa` 9 个 commit（包含 BUG-001…007 与 QA LLM config 导入 + version 对齐 + lockfile）。
-- 最新本地 commit：`0b81dbb fix(style): clear stale fingerprint rows before retryStyleAnalysis (BUG-007)`。
-- 模拟器上 APK：`dist/apk/debug/ShineWriter-V2.11.8-debug.apk`（含 0b81dbb 修复，11:11 → 12:15 重建），已 install 到 `emulator-5554`。
-- 模拟器当前工作项目：`current_project_id=3`（QA-IMP-006，含现成 canon_snapshot + failed style profile，可立即继续 retry 验证）。
+- 工作分支：`main`
+- 最新本地 commit：`e777ec1 fix(continuation): clean stale style profiles before resume`；本次长测修复尚未提交。
+- 模拟器上 APK：`dist/apk/debug/ShineWriter-V2.11.8-debug.apk`（V2.11.8，已安装到 `emulator-5554`）。
+- 模拟器最近验收项目：`QA－参－005`（project 7）；50 MiB 压力项目为 `PERF-001-50MB`（project 8）。
 - 长测状态文件：`.agent/continuation-qa-state.md`（最近一次更新同步了 BUG-007 fixed + 当前阻塞）。
 
 ### 交接清单（下一个 agent 起手精确步骤）
 
-1. **先修测试 mock**（2 行代码，避免 CI 红）：
-   - 文件 `__tests__/styleAnalysis.test.ts` line 6-21，`jest.mock('../src/...styleProfileRepository', ...)` 对象里加 `deleteStyleProfileByFingerprint: jest.fn(),`；必要时 line 42-52 import 也加上同名 import（仅用于类型/引用，无副作用）。
-   - 跑 `npx jest __tests__/styleAnalysis.test.ts` 确认 1 fail → 全绿；再 `npm run verify`。
-2. **CAN-101 收尾**：模拟器「分析概览」页 → 「单独重试」（bounds=[537,1004][752,1114]） → 「开始」bounds=[810,1316][978,1458] 中心 (894,1387)；观察 DB `continuation_style_profiles` 是否新增 ready profile。如果仍超时，改走 mock LLM（`scripts/qa/mock-openai-server.mjs` 新建）。
-3. **CAN-002**：`qa/fixtures/continuation/llm-qa-can-002-tiny.json.example` 复制成 `shinewriter-llm-qa.json`，把 `LLMTesti.txt` 的 key 填入；push 到 `Android/data/com.shinewriter/files/shinewriter-llm-qa.json`（UI 已有「导入QA配置」按钮 `a87dcca` commit 加的）。
-4. **CAN-005 / CAN-105 / CAN-201**：等 mock LLM 服务就位再跑。
-5. **PERF-001**：50MB 文本运行时生成，脚本待写。
+1. **门禁**：运行 `npm run verify` 和 `git diff --check`。
+2. **Release**：已按发布指南完成 `npm run apk:release`，验收签名、16KB zipalign、版本元数据和 SHA-256。
+3. **交付**：只提交源码、测试、mock 服务、CHANGELOG 和进度文档，提交并推送 `main`。
 6. **每次会话结束前**：
    - 更新 `.agent/continuation-qa-state.md`。
    - 更新本 `progress.md`（最新版本段）。
@@ -63,6 +77,7 @@
 
 - `scripts/qa/ui-list-nodes.mjs` — 用 fast-xml-parser 解析 uiautomator dump，按关键词过滤节点 + bounds（替代 PowerShell 笨重的 SelectNodes）。
 - `scripts/qa/dump_continuation.py` — Python sqlite3 dump continuation 模块关键表（项目 / sources / settings / analysis_runs / style_profiles / snapshots / import_jobs）；CLI 友好。
+- `scripts/qa/mock-openai-server.mjs` — 本地异常/慢响应/重试场景 mock OpenAI 兼容服务，日志自动脱敏。
 - `scripts/qa/capture-android-evidence.sh` 等旧脚本继承自上一阶段。
 
 ## 版本进度
