@@ -39,9 +39,17 @@ export interface ContinuationContextBudgetPlan {
   styleTokens: number;
 }
 
+export interface ContinuationWriterOutputBudget {
+  /** First Writer request: sized for the requested chapter length. */
+  initialOutputTokens: number;
+  /** Context layout reserves this ceiling so a safe retry can ask for more. */
+  retryOutputTokens: number;
+}
+
 const MIN_CONTEXT = 1024;
 const FIXED_SAFETY_TOKENS = 512;
 const DEFAULT_PROMPT_SKELETON_TOKENS = 768;
+const WRITER_MAX_OUTPUT_SHARE = 0.35;
 
 function integer(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
@@ -83,12 +91,58 @@ export function planStageCapacity(input: {
     contextWindow - maxOutputTokens - safetyTokens - promptSkeletonTokens,
   );
   return {
-    llmConfigId: Number.isFinite(input.llmConfigId) ? Math.floor(input.llmConfigId) : 0,
+    llmConfigId: Number.isFinite(input.llmConfigId)
+      ? Math.floor(input.llmConfigId)
+      : 0,
     contextWindow,
     maxOutputTokens,
     promptSkeletonTokens,
     safetyTokens,
     inputBudget,
+  };
+}
+
+/**
+ * Resolve the continuation Writer's output budget from its actual frozen model
+ * configuration.  `max_output_tokens` remains an explicit user/model ceiling;
+ * the context window supplies an additional guard so output can never crowd
+ * out all of the continuity context.  This deliberately replaces the former
+ * hidden 4096-token ceiling.
+ */
+export function resolveContinuationWriterOutputBudget(input: {
+  contextWindow: number;
+  targetChapterChars: number;
+  configuredMaxOutputTokens?: number | null;
+  requestedMaxOutputTokens?: number;
+}): ContinuationWriterOutputBudget {
+  const contextWindow = Math.max(
+    MIN_CONTEXT,
+    integer(input.contextWindow, 8192),
+  );
+  const contextCeiling = Math.max(
+    256,
+    Math.floor(contextWindow * WRITER_MAX_OUTPUT_SHARE),
+  );
+  const configuredCeiling =
+    typeof input.configuredMaxOutputTokens === 'number' &&
+    Number.isFinite(input.configuredMaxOutputTokens) &&
+    input.configuredMaxOutputTokens > 0
+      ? Math.floor(input.configuredMaxOutputTokens)
+      : contextCeiling;
+  const retryOutputTokens = Math.max(
+    1,
+    Math.min(contextCeiling, configuredCeiling),
+  );
+  // Chinese prose may be compactly tokenized, but reasoning-capable models can
+  // consume part of the same completion budget before emitting the manuscript.
+  // Three times the requested characters is a demand estimate, not a cap.
+  const requested = Math.max(
+    256,
+    Math.floor(input.requestedMaxOutputTokens ?? input.targetChapterChars * 3),
+  );
+  return {
+    initialOutputTokens: Math.min(requested, retryOutputTokens),
+    retryOutputTokens,
   };
 }
 
@@ -112,7 +166,10 @@ export function planContinuationContextBudget(input: {
     integer(input.modelContextLimit, 8192),
   );
   const writerMaxOutputTokens = integer(input.writerMaxOutputTokens, 2048);
-  const percentageGuard = Math.min(16_384, Math.floor(modelContextLimit * 0.08));
+  const percentageGuard = Math.min(
+    16_384,
+    Math.floor(modelContextLimit * 0.08),
+  );
   const reservedOutputTokens = Math.max(writerMaxOutputTokens, percentageGuard);
   const inputBudget = Math.max(
     256,

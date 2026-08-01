@@ -1,5 +1,15 @@
 # ShineWriter 发布清单
 
+## V2.11.12 续写动态预算、边界读取与真实 AI 穿测
+
+- [x] `npm run verify` 通过：206 个测试套件通过，1 个既有跳过；1678 项测试通过，3 项既有跳过；新增续写超时策略回归
+- [x] Android 模拟器真实 DeepSeek 配置保持 `context_window=1000000`，使用约 6.2MB 原著完成原著分析 → 续写：规划成功、正文成功 3633 字、一致性检查 blocking 0
+- [x] 大纲模式真实 AI 流程完成：初稿 1803 字、终稿 1946 字，结果页显示成功
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.11.12-release.apk`
+- [x] 签名、单 signer、v2、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.11.12` / `2111200` 验收通过
+
+证据：Release APK 35,008,134 bytes，SHA-256 `C4D344E0B5E8DA1E3588C70DFD6046B3ADD9E472A0CB848463C0DBD26103150A`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，单 signer，APK Signature Scheme v2，16 KB zipalign 验证成功，`aapt` `package: name='com.shinewriter' versionCode='2111200' versionName='V2.11.12'`。模拟器记录位于 `test-logs/continuation-budget-fix-20260801/`（未纳入版本控制）。
+
 ## V2.11.7 多 TXT 原著导入 + 备份卡死修复
 
 - [x] 升级 `package.json` 至 `2.11.7`，`npm run prebuild` 生成 `V2.11.7` / `2110700`

@@ -41,6 +41,7 @@ import {
   compileWriterMessages,
   ensureGenerationSettings,
 } from '../services/continuation/generation';
+import { resolveContinuationWriterOutputBudget } from '../services/continuation/generation/continuationContextBudget';
 import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type {
   ContextTraceItem,
@@ -195,11 +196,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({
             : null) ||
           requestConfig.context_window ||
           8192;
-        const writerOutput = Math.min(
-          4096,
-          settings.targetChapterChars * 2,
-          writerConfig.max_output_tokens || Number.MAX_SAFE_INTEGER,
-        );
+        const writerOutputBudget = resolveContinuationWriterOutputBudget({
+          contextWindow: writerWindow,
+          targetChapterChars: settings.targetChapterChars,
+          configuredMaxOutputTokens: writerConfig.max_output_tokens,
+        });
         const continuationNumbering = await getContinuationChapterNumbering(
           chapter.project_id,
         );
@@ -215,7 +216,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           currentChapterContent: chapter.content || '',
           userInstruction: instruction,
           modelContextLimit: writerWindow,
-          maxOutputTokens: writerOutput,
+          // Match the run: reserve the retry ceiling in the preview layout.
+          maxOutputTokens: writerOutputBudget.retryOutputTokens,
+          initialWriterOutputTokens: writerOutputBudget.initialOutputTokens,
           activeLlmConfigId: requestConfig.id || 1,
         });
         setTrace(

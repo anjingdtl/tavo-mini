@@ -4,6 +4,7 @@
 import {
   planContinuationContextBudget,
   planStageCapacity,
+  resolveContinuationWriterOutputBudget,
 } from '../src/services/continuation/generation/continuationContextBudget';
 
 describe('planStageCapacity', () => {
@@ -19,9 +20,7 @@ describe('planStageCapacity', () => {
     expect(cap.maxOutputTokens).toBe(2048);
     expect(cap.promptSkeletonTokens).toBe(768);
     expect(cap.safetyTokens).toBeGreaterThanOrEqual(512);
-    expect(cap.inputBudget).toBe(
-      8192 - 2048 - cap.safetyTokens - 768,
-    );
+    expect(cap.inputBudget).toBe(8192 - 2048 - cap.safetyTokens - 768);
     expect(cap.inputBudget).toBeGreaterThan(256);
   });
 
@@ -101,5 +100,27 @@ describe('planContinuationContextBudget styleTokens', () => {
     expect(large.styleTokens).toBeGreaterThan(small.styleTokens);
     expect(large.styleTokens).toBe(Math.floor(large.inputBudget * 0.1));
     expect(large.styleTokens).toBeGreaterThan(16_000);
+  });
+});
+
+describe('resolveContinuationWriterOutputBudget', () => {
+  it('uses the Writer model ceiling instead of a hidden 4096-token cap', () => {
+    const budget = resolveContinuationWriterOutputBudget({
+      contextWindow: 131_072,
+      targetChapterChars: 5_000,
+      configuredMaxOutputTokens: 32_768,
+    });
+    expect(budget.initialOutputTokens).toBe(15_000);
+    expect(budget.retryOutputTokens).toBe(32_768);
+  });
+
+  it('keeps a retry ceiling inside a small model window', () => {
+    const budget = resolveContinuationWriterOutputBudget({
+      contextWindow: 8_192,
+      targetChapterChars: 3_000,
+      configuredMaxOutputTokens: 16_384,
+    });
+    expect(budget.initialOutputTokens).toBe(Math.floor(8_192 * 0.35));
+    expect(budget.retryOutputTokens).toBe(Math.floor(8_192 * 0.35));
   });
 });
