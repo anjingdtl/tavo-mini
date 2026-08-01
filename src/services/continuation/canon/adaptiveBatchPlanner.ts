@@ -9,35 +9,24 @@
  *
  * The new planner is **fully derived from the user's LLM configuration**:
  *   - `effectiveInputBudget = context_window - max_output_tokens - promptOverhead`
- *   - chapters are greedily packed into batches until 80% of the budget is used
+ *   - original text is greedily packed to a context-aware operational target
  *   - single chapters larger than the budget are split into chunk batches
  *   - no chapter is ever skipped (the user requires complete Canon coverage)
  *
- * The planner never hardcodes any context-window threshold. The only constants
- * kept are quality caps (`FULL_CANON_QUALITY_CHAPTERS_PER_BATCH`) and a defensive
- * lower bound (`MIN_INPUT_BUDGET_TOKENS`) to prevent infinite loops when the
- * configured `max_output_tokens` exceeds `context_window`.
+ * Chapter boundaries are preserved for evidence provenance, but never impose a
+ * second batch-size ceiling: an advertised 1M context must be used according to
+ * the source's actual token volume, not its chapter formatting. The only
+ * defensive lower bound (`MIN_INPUT_BUDGET_TOKENS`) prevents infinite loops when
+ * the configured `max_output_tokens` exceeds `context_window`.
  */
 import type { BoundedSourceChapter } from '../types';
-import type {
-  AnalysisProfile,
-  AnalysisWorkItemType,
-} from './types';
-import {
-  estimateTokens,
-} from '../../../utils/tokenEstimator';
+import type { AnalysisProfile, AnalysisWorkItemType } from './types';
+import { estimateTokens } from '../../../utils/tokenEstimator';
 import {
   EXTRACTION_FIELD_SPEC,
   EVIDENCE_FIELD_SPEC,
   EXTRACTION_JSON_SKELETON,
 } from './extractionPromptSpec';
-
-/**
- * Quality cap: a single normal batch never exceeds 20 chapters regardless of
- * the token budget. Larger batches hurt LLM attention distribution even when
- * the token count fits, so we cap explicitly. Unrelated to context window.
- */
-export const FULL_CANON_QUALITY_CHAPTERS_PER_BATCH = 20;
 
 /**
  * Defensive lower bound. When `effectiveInputBudget` falls at or below this
@@ -48,10 +37,26 @@ export const FULL_CANON_QUALITY_CHAPTERS_PER_BATCH = 20;
 export const MIN_INPUT_BUDGET_TOKENS = 1024;
 
 /**
- * Fill ratio for the greedy packer. 80% leaves 20% headroom for the per-chapter
- * title line and the `### ` separator in the prompt.
+ * Fill ratio for normal contexts. This is intentionally separate from the
+ * hard `CANON_ANALYSIS_CONTEXT_UTILIZATION` safety ceiling: it controls tail
+ * latency, not request validity.
  */
-const BATCH_FILL_RATIO = 0.8;
+const NORMAL_CONTEXT_BATCH_FILL_RATIO = 0.8;
+
+/**
+ * Very large advertised contexts can accept a request but still have a steep
+ * KV-cache latency curve. A live 1M-context acceptance run showed this long
+ * tail clearly. Keep a second operational margin there while preserving the
+ * 80% hard safety ceiling and parallel Canon lanes.
+ */
+export const LARGE_CONTEXT_BATCH_FILL_RATIO = 0.6;
+export const LARGE_CONTEXT_WINDOW_THRESHOLD = 512_000;
+
+export function resolveCanonBatchFillRatio(declaredWindow: number): number {
+  return declaredWindow >= LARGE_CONTEXT_WINDOW_THRESHOLD
+    ? LARGE_CONTEXT_BATCH_FILL_RATIO
+    : NORMAL_CONTEXT_BATCH_FILL_RATIO;
+}
 
 /**
  * Minimum chunk char size. When a chapter must be split into chunks, each chunk
@@ -78,6 +83,24 @@ const DEFAULT_OUTPUT_BASELINE_BY_PROFILE: Record<AnalysisProfile, number> = {
  */
 const DEFAULT_CONTEXT_WINDOW_MULTIPLIER = 8;
 const DEFAULT_CONTEXT_WINDOW_FLOOR = 32_768;
+
+/**
+ * A configured context window is an upper protocol limit, not a safe request
+ * size. Sending an almost-full 128K/1M request makes many OpenAI-compatible
+ * backends allocate an enormous KV cache, which turns a long original into an
+ * avoidable server OOM or a request timeout. Reserve 20% headroom and derive
+ * the batch size from the remaining safe budget; complete coverage is
+ * preserved by creating more resumable batches.
+ */
+export const CANON_ANALYSIS_CONTEXT_UTILIZATION = 0.8;
+const CANON_ANALYSIS_MAX_OUTPUT_SHARE = 0.25;
+/**
+ * Reasoning-capable models occasionally spend their configured completion
+ * budget before emitting the JSON body. This retry-only ceiling is deliberately
+ * modest: it gives the model 8K → 16K → 32K recovery room without turning a
+ * normal extraction into a huge 200K-output request.
+ */
+export const CANON_REASONING_RETRY_OUTPUT_CEILING = 65_536;
 
 /** Material-type prompt prefixes used by the extractor. */
 const MATERIAL_PROMPTS: Record<AnalysisWorkItemType, string> = {
@@ -112,8 +135,12 @@ export interface AdaptiveBatchPlan {
   batches: AdaptiveBatch[];
   /** Per-batch input token budget derived from the LLM config. */
   effectiveInputBudget: number;
+  /** Operational input target used for packing/chunking, never above the hard budget. */
+  targetInputBudget: number;
   /** Output token reserve (== configured max_output_tokens). */
   outputReserve: number;
+  /** Retry-only completion ceiling for reasoning-only/length responses. */
+  retryOutputCeiling: number;
   /** Estimated prompt skeleton overhead in tokens. */
   promptOverhead: number;
   /** Total batch count (normal + chunk). */
@@ -217,7 +244,7 @@ export function planAdaptiveBatching(
 ): AdaptiveBatchPlan {
   const profileBaseline =
     DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
-  const outputReserve =
+  const configuredOutputTokens =
     input.maxOutputTokens && input.maxOutputTokens > 0
       ? input.maxOutputTokens
       : profileBaseline;
@@ -225,16 +252,35 @@ export function planAdaptiveBatching(
     input.contextWindow && input.contextWindow > 0
       ? input.contextWindow
       : Math.max(
-          outputReserve * DEFAULT_CONTEXT_WINDOW_MULTIPLIER,
+          configuredOutputTokens * DEFAULT_CONTEXT_WINDOW_MULTIPLIER,
           DEFAULT_CONTEXT_WINDOW_FLOOR,
         );
+  const safeRequestBudget = Math.floor(
+    declaredWindow * CANON_ANALYSIS_CONTEXT_UTILIZATION,
+  );
+  // Keep no more than a quarter of the safe request budget for generation,
+  // including thinking tokens. With a 1M-context model this permits a useful
+  // 200K output reserve while still leaving ~600K for the original and a 20%
+  // context-window margin.
+  const outputReserve = Math.min(
+    configuredOutputTokens,
+    Math.floor(safeRequestBudget * CANON_ANALYSIS_MAX_OUTPUT_SHARE),
+  );
   const promptOverhead = estimatePromptOverhead({
     profile: input.profile,
     materialType: input.materialType,
   });
-  const effectiveInputBudget = Math.max(
+  const unconstrainedInputBudget = Math.max(
     0,
-    declaredWindow - outputReserve - promptOverhead,
+    safeRequestBudget - outputReserve - promptOverhead,
+  );
+  const effectiveInputBudget = unconstrainedInputBudget;
+  const targetInputBudget = Math.floor(
+    effectiveInputBudget * resolveCanonBatchFillRatio(declaredWindow),
+  );
+  const retryOutputCeiling = Math.min(
+    Math.floor(safeRequestBudget * CANON_ANALYSIS_MAX_OUTPUT_SHARE),
+    Math.max(outputReserve, CANON_REASONING_RETRY_OUTPUT_CEILING),
   );
 
   // Refuse when the user's max_output_tokens leaves no room for input.
@@ -251,7 +297,9 @@ export function planAdaptiveBatching(
       ok: false,
       batches: [],
       effectiveInputBudget,
+      targetInputBudget,
       outputReserve,
+      retryOutputCeiling,
       promptOverhead,
       estimatedBatchCount: 0,
       reason:
@@ -268,8 +316,10 @@ export function planAdaptiveBatching(
   // Pre-compute per-chapter token estimates. For very long books (2000+ chapters)
   // this loop is the only O(n) work in the planner; we keep it synchronous
   // because callers already handle the chapter list load upfront.
-  const chapterTokens: Array<{ chapter: BoundedSourceChapter; tokens: number }> =
-    [];
+  const chapterTokens: Array<{
+    chapter: BoundedSourceChapter;
+    tokens: number;
+  }> = [];
   for (let i = 0; i < input.chapters.length; i++) {
     const chapter = input.chapters[i];
     chapterTokens.push({
@@ -281,11 +331,11 @@ export function planAdaptiveBatching(
   const batches: AdaptiveBatch[] = [];
   let currentBatch: BoundedSourceChapter[] = [];
   let currentTokens = 0;
-  const fillTarget = effectiveInputBudget * BATCH_FILL_RATIO;
+  const fillTarget = targetInputBudget;
 
   for (const { chapter, tokens } of chapterTokens) {
-    if (tokens > effectiveInputBudget) {
-      // Flush the in-progress batch first (respecting the quality cap).
+    if (tokens > targetInputBudget) {
+      // Flush the in-progress text batch first.
       if (currentBatch.length > 0) {
         flushNormalBatch(batches, currentBatch);
         currentBatch = [];
@@ -295,7 +345,7 @@ export function planAdaptiveBatching(
       const tokensPerChar = estimateTokensPerCharForChapter(chapter);
       const chunkCharSize = Math.max(
         MIN_CHUNK_CHAR_SIZE,
-        Math.floor(effectiveInputBudget / Math.max(tokensPerChar, 0.1)),
+        Math.floor(targetInputBudget / Math.max(tokensPerChar, 0.1)),
       );
       const totalChars = chapter.content.length;
       const chunkCount = Math.max(1, Math.ceil(totalChars / chunkCharSize));
@@ -322,12 +372,6 @@ export function planAdaptiveBatching(
       currentBatch.push(chapter);
       currentTokens += tokens;
     }
-    // Quality cap: never let a normal batch exceed 20 chapters.
-    if (currentBatch.length >= FULL_CANON_QUALITY_CHAPTERS_PER_BATCH) {
-      flushNormalBatch(batches, currentBatch);
-      currentBatch = [];
-      currentTokens = 0;
-    }
   }
   if (currentBatch.length > 0) {
     flushNormalBatch(batches, currentBatch);
@@ -337,23 +381,20 @@ export function planAdaptiveBatching(
     ok: true,
     batches,
     effectiveInputBudget,
+    targetInputBudget,
     outputReserve,
+    retryOutputCeiling,
     promptOverhead,
     estimatedBatchCount: batches.length,
   };
 }
 
-/** Helper: push a normal batch honouring the quality cap (defensive). */
+/** Helper: push one contiguous text-budgeted batch. */
 function flushNormalBatch(
   batches: AdaptiveBatch[],
   chapters: BoundedSourceChapter[],
 ): void {
-  for (let i = 0; i < chapters.length; i += FULL_CANON_QUALITY_CHAPTERS_PER_BATCH) {
-    batches.push({
-      type: 'normal',
-      chapters: chapters.slice(i, i + FULL_CANON_QUALITY_CHAPTERS_PER_BATCH),
-    });
-  }
+  batches.push({ type: 'normal', chapters: [...chapters] });
 }
 
 /**
@@ -369,6 +410,8 @@ export interface CanonAnalysisPrecheck {
   maxOutputTokens: number;
   /** Derived values. */
   effectiveInputBudget: number;
+  /** Actual per-request packing target, below the hard safety budget. */
+  targetInputBudget: number;
   estimatedBatchCount: number;
   estimatedWorkItemCount: number;
   estimatedDurationMinutes: number;
@@ -413,6 +456,7 @@ export function precheckCanonAnalysis(input: {
       contextWindow: input.contextWindow ?? 0,
       maxOutputTokens: input.maxOutputTokens ?? 0,
       effectiveInputBudget: plan.effectiveInputBudget,
+      targetInputBudget: plan.targetInputBudget,
       estimatedBatchCount: 0,
       estimatedWorkItemCount: 0,
       estimatedDurationMinutes: 0,
@@ -425,6 +469,7 @@ export function precheckCanonAnalysis(input: {
     contextWindow: input.contextWindow ?? 0,
     maxOutputTokens: input.maxOutputTokens ?? 0,
     effectiveInputBudget: plan.effectiveInputBudget,
+    targetInputBudget: plan.targetInputBudget,
     estimatedBatchCount: plan.estimatedBatchCount,
     estimatedWorkItemCount,
     estimatedDurationMinutes,
@@ -444,15 +489,21 @@ export function resolveExtractionMaxTokens(input: {
   profile: AnalysisProfile;
   maxOutputTokens: number | null | undefined;
   effectiveInputBudget: number;
+  /** Adaptive plan's reserved completion budget, when analysing a new run. */
+  outputReserve?: number;
 }): number {
   const profileBaseline =
     DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
   const configured = input.maxOutputTokens ?? profileBaseline;
-  // Cap at the effective input budget's 4x to prevent the output reserve
-  // from monopolising the window on tiny models. The retry path can still
-  // scale higher if the model reports `finish_reason=length`.
+  // Keep the actual request aligned with the planner's 80%-window reservation.
+  // Retry may use the reserved completion headroom but cannot consume the
+  // 20% context safety margin.
   const ceiling = Math.max(profileBaseline, input.effectiveInputBudget * 4);
-  return Math.min(Math.max(profileBaseline, configured), ceiling);
+  return Math.min(
+    configured,
+    ceiling,
+    input.outputReserve ?? Number.POSITIVE_INFINITY,
+  );
 }
 
 /**
