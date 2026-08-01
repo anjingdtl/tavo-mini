@@ -26,39 +26,166 @@ import { buildV24toV25Statements } from './v24-to-v25';
 import { buildV25toV26Statements, migrateV25ToV26 } from './v25-to-v26';
 import { buildV26toV27Statements } from './v26-to-v27';
 import { buildV27toV28Statements } from './v27-to-v28';
-import { buildV28toV29Statements } from './v28-to-v29';
+import { buildV28toV29Statements, migrateV28ToV29 } from './v28-to-v29';
+import { buildV29toV30Statements } from './v29-to-v30';
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
   { from: 2, to: 3, breaking: true, buildStatements: async () => [] },
-  { from: 3, to: 4, breaking: false, buildStatements: async () => buildV3toV4Statements() },
-  { from: 4, to: 5, breaking: false, buildStatements: async () => buildV4toV5Statements() },
-  { from: 5, to: 6, breaking: false, buildStatements: async () => buildV5toV6Statements() },
-  { from: 6, to: 7, breaking: false, buildStatements: async () => buildV6toV7Statements() },
+  {
+    from: 3,
+    to: 4,
+    breaking: false,
+    buildStatements: async () => buildV3toV4Statements(),
+  },
+  {
+    from: 4,
+    to: 5,
+    breaking: false,
+    buildStatements: async () => buildV4toV5Statements(),
+  },
+  {
+    from: 5,
+    to: 6,
+    breaking: false,
+    buildStatements: async () => buildV5toV6Statements(),
+  },
+  {
+    from: 6,
+    to: 7,
+    breaking: false,
+    buildStatements: async () => buildV6toV7Statements(),
+  },
   { from: 7, to: 8, breaking: false, buildStatements: buildV7toV8Statements },
-  { from: 8, to: 9, breaking: false, buildStatements: async () => buildV8toV9Statements() },
+  {
+    from: 8,
+    to: 9,
+    breaking: false,
+    buildStatements: async () => buildV8toV9Statements(),
+  },
   { from: 9, to: 10, breaking: false, buildStatements: buildV9toV10Statements },
-  { from: 10, to: 11, breaking: false, buildStatements: buildV10toV11Statements },
-  { from: 11, to: 12, breaking: false, buildStatements: buildV11toV12Statements },
-  { from: 12, to: 13, breaking: false, buildStatements: buildV12toV13Statements },
-  { from: 13, to: 14, breaking: false, buildStatements: buildV13toV14Statements },
-  { from: 14, to: 15, breaking: false, buildStatements: async () => buildV14toV15Statements() },
-  { from: 15, to: 16, breaking: false, buildStatements: async () => buildV15toV16Statements() },
-  { from: 16, to: 17, breaking: false, buildStatements: async () => buildV16toV17Statements() },
-  { from: 17, to: 18, breaking: false, buildStatements: async () => buildV17toV18Statements() },
-  { from: 18, to: 19, breaking: false, buildStatements: async () => buildV18toV19Statements() },
-  { from: 19, to: 20, breaking: false, buildStatements: async () => buildV19toV20Statements() },
-  { from: 20, to: 21, breaking: false, buildStatements: async () => buildV20toV21Statements() },
-  { from: 21, to: 22, breaking: false, buildStatements: async () => buildV21toV22Statements() },
-  { from: 22, to: 23, breaking: false, buildStatements: async () => buildV22toV23Statements() },
-  { from: 23, to: 24, breaking: false, buildStatements: async () => buildV23toV24Statements() },
-  { from: 24, to: 25, breaking: false, buildStatements: async () => buildV24toV25Statements() },
-  { from: 25, to: 26, breaking: false, buildStatements: async () => buildV25toV26Statements() },
-  { from: 26, to: 27, breaking: true, buildStatements: async () => buildV26toV27Statements() },
-  { from: 27, to: 28, breaking: false, buildStatements: async () => buildV27toV28Statements() },
-  { from: 28, to: 29, breaking: false, buildStatements: async () => buildV28toV29Statements() },
+  {
+    from: 10,
+    to: 11,
+    breaking: false,
+    buildStatements: buildV10toV11Statements,
+  },
+  {
+    from: 11,
+    to: 12,
+    breaking: false,
+    buildStatements: buildV11toV12Statements,
+  },
+  {
+    from: 12,
+    to: 13,
+    breaking: false,
+    buildStatements: buildV12toV13Statements,
+  },
+  {
+    from: 13,
+    to: 14,
+    breaking: false,
+    buildStatements: buildV13toV14Statements,
+  },
+  {
+    from: 14,
+    to: 15,
+    breaking: false,
+    buildStatements: async () => buildV14toV15Statements(),
+  },
+  {
+    from: 15,
+    to: 16,
+    breaking: false,
+    buildStatements: async () => buildV15toV16Statements(),
+  },
+  {
+    from: 16,
+    to: 17,
+    breaking: false,
+    buildStatements: async () => buildV16toV17Statements(),
+  },
+  {
+    from: 17,
+    to: 18,
+    breaking: false,
+    buildStatements: async () => buildV17toV18Statements(),
+  },
+  {
+    from: 18,
+    to: 19,
+    breaking: false,
+    buildStatements: async () => buildV18toV19Statements(),
+  },
+  {
+    from: 19,
+    to: 20,
+    breaking: false,
+    buildStatements: async () => buildV19toV20Statements(),
+  },
+  {
+    from: 20,
+    to: 21,
+    breaking: false,
+    buildStatements: async () => buildV20toV21Statements(),
+  },
+  {
+    from: 21,
+    to: 22,
+    breaking: false,
+    buildStatements: async () => buildV21toV22Statements(),
+  },
+  {
+    from: 22,
+    to: 23,
+    breaking: false,
+    buildStatements: async () => buildV22toV23Statements(),
+  },
+  {
+    from: 23,
+    to: 24,
+    breaking: false,
+    buildStatements: async () => buildV23toV24Statements(),
+  },
+  {
+    from: 24,
+    to: 25,
+    breaking: false,
+    buildStatements: async () => buildV24toV25Statements(),
+  },
+  {
+    from: 25,
+    to: 26,
+    breaking: false,
+    buildStatements: async () => buildV25toV26Statements(),
+  },
+  {
+    from: 26,
+    to: 27,
+    breaking: true,
+    buildStatements: async () => buildV26toV27Statements(),
+  },
+  {
+    from: 27,
+    to: 28,
+    breaking: false,
+    buildStatements: async () => buildV27toV28Statements(),
+  },
+  {
+    from: 28,
+    to: 29,
+    breaking: false,
+    buildStatements: async () => buildV28toV29Statements(),
+  },
+  {
+    from: 29,
+    to: 30,
+    breaking: false,
+    buildStatements: async () => buildV29toV30Statements(),
+  },
 ];
 
 export async function runMigrations(
@@ -79,16 +206,22 @@ export async function runMigrations(
   for (const migration of needed) {
     if (migration.from === 25 && migration.to === 26) {
       await migrateV25ToV26(db);
+    } else if (migration.from === 28 && migration.to === 29) {
+      await migrateV28ToV29(db);
     } else {
       const statements = await migration.buildStatements(db);
       await executeTransaction(db, statements, { faultDomain: 'migration' });
     }
-    await executeTransaction(db, [
-      {
-        sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-        params: ['schema_version', String(migration.to)],
-      },
-    ], { faultDomain: 'migration' });
+    await executeTransaction(
+      db,
+      [
+        {
+          sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+          params: ['schema_version', String(migration.to)],
+        },
+      ],
+      { faultDomain: 'migration' },
+    );
   }
 
   return {
