@@ -14,6 +14,9 @@ import {
   estimateTokensPerCharForChapter,
   resolveExtractionMaxTokens,
   resolveChapterTextLimitFromBudget,
+  CANON_ANALYSIS_CONTEXT_UTILIZATION,
+  LARGE_CONTEXT_BATCH_FILL_RATIO,
+  CANON_REASONING_RETRY_OUTPUT_CEILING,
 } from '../src/services/continuation/canon/adaptiveBatchPlanner';
 import type { BoundedSourceChapter } from '../src/services/continuation/types';
 
@@ -47,7 +50,11 @@ function cjkChapter(id: number, charCount: number): BoundedSourceChapter {
 function asciiChapter(id: number, charCount: number): BoundedSourceChapter {
   const unit = 'hello world this is a test chapter body. '; // ~40 chars
   const repeats = Math.max(1, Math.ceil(charCount / unit.length));
-  return makeChapter(id, `Chapter ${id}`, unit.repeat(repeats).slice(0, charCount));
+  return makeChapter(
+    id,
+    `Chapter ${id}`,
+    unit.repeat(repeats).slice(0, charCount),
+  );
 }
 
 describe('planAdaptiveBatching', () => {
@@ -63,11 +70,11 @@ describe('planAdaptiveBatching', () => {
       maxOutputTokens: 8_000,
     });
     expect(plan.ok).toBe(true);
-    // 10 chapters × ~800 chars ≈ 500–800 tokens each; 120K input budget should
-    // absorb them all into 1 batch, subject to the 20-chapter quality cap.
+    // 10 chapters × ~800 chars ≈ 500–800 tokens each; the derived input budget
+    // should absorb them all into one text-budgeted batch.
     expect(plan.estimatedBatchCount).toBeGreaterThanOrEqual(1);
     expect(plan.estimatedBatchCount).toBeLessThanOrEqual(10);
-    expect(plan.effectiveInputBudget).toBeGreaterThan(100_000);
+    expect(plan.effectiveInputBudget).toBeGreaterThan(80_000);
     const normals = plan.batches.filter(b => b.type === 'normal');
     expect(normals.length).toBe(plan.estimatedBatchCount);
   });
@@ -118,8 +125,8 @@ describe('planAdaptiveBatching', () => {
     expect(ids.size).toBe(23);
   });
 
-  it('never exceeds the 20-chapter quality cap per normal batch', () => {
-    const chapters = Array.from({ length: 100 }, (_, i) =>
+  it('does not create batches solely because a source has many short chapters', () => {
+    const chapters = Array.from({ length: 1_000 }, (_, i) =>
       cjkChapter(i + 1, 200),
     );
     const plan = planAdaptiveBatching({
@@ -130,13 +137,13 @@ describe('planAdaptiveBatching', () => {
       maxOutputTokens: 8_000,
     });
     expect(plan.ok).toBe(true);
-    for (const batch of plan.batches) {
-      if (batch.type === 'normal') {
-        expect(batch.chapters.length).toBeLessThanOrEqual(20);
-      }
+    // ~200K CJK tokens fit under the ~790K derived input budget. Chapter
+    // boundaries remain in the batch for provenance but cannot force 50 calls.
+    expect(plan.estimatedBatchCount).toBe(1);
+    expect(plan.batches[0]).toMatchObject({ type: 'normal' });
+    if (plan.batches[0]?.type === 'normal') {
+      expect(plan.batches[0].chapters).toHaveLength(1_000);
     }
-    // 100 chapters / 20 per batch = exactly 5 normal batches.
-    expect(plan.estimatedBatchCount).toBe(5);
   });
 
   it('splits a single oversized 100K-char chapter into chunk batches instead of refusing', () => {
@@ -153,10 +160,13 @@ describe('planAdaptiveBatching', () => {
     const chunkBatches = plan.batches.filter(b => b.type === 'chunk');
     expect(chunkBatches.length).toBe(plan.batches.length);
     // Chunks must tile the whole chapter without gaps.
-    const chunk = chunkBatches[0] as Extract<typeof chunkBatches[number], { type: 'chunk' }>;
+    const chunk = chunkBatches[0] as Extract<
+      (typeof chunkBatches)[number],
+      { type: 'chunk' }
+    >;
     expect(chunk.chunkStartChar).toBe(0);
     const lastChunk = chunkBatches[chunkBatches.length - 1] as Extract<
-      typeof chunkBatches[number],
+      (typeof chunkBatches)[number],
       { type: 'chunk' }
     >;
     expect(lastChunk.chunkEndChar).toBe(100_000);
@@ -187,7 +197,7 @@ describe('planAdaptiveBatching', () => {
     expect(plan.suggestedContextWindow).toBeDefined();
   });
 
-  it('uses the configured max_output_tokens as the output reserve verbatim', () => {
+  it('bounds the configured output reserve to a safe extraction request', () => {
     const chapters = [cjkChapter(1, 200)];
     const plan = planAdaptiveBatching({
       chapters,
@@ -197,10 +207,73 @@ describe('planAdaptiveBatching', () => {
       maxOutputTokens: 12_345,
     });
     expect(plan.ok).toBe(true);
-    expect(plan.outputReserve).toBe(12_345);
+    const safeBudget = Math.floor(32_000 * CANON_ANALYSIS_CONTEXT_UTILIZATION);
+    expect(plan.outputReserve).toBe(Math.floor(safeBudget * 0.25));
     expect(plan.effectiveInputBudget).toBe(
-      Math.max(0, 32_000 - 12_345 - plan.promptOverhead),
+      Math.max(0, safeBudget - plan.outputReserve - plan.promptOverhead),
     );
+  });
+
+  it('uses at most 80% of a huge advertised model context window', () => {
+    const chapters = Array.from({ length: 4 }, (_, i) =>
+      cjkChapter(i + 1, 300_000),
+    );
+    const plan = planAdaptiveBatching({
+      chapters,
+      profile: 'deep',
+      providerType: 'openai_compatible',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 200_000,
+    });
+
+    expect(plan.ok).toBe(true);
+    const safeBudget = Math.floor(
+      1_000_000 * CANON_ANALYSIS_CONTEXT_UTILIZATION,
+    );
+    expect(plan.outputReserve).toBe(200_000);
+    expect(plan.effectiveInputBudget).toBe(
+      safeBudget - plan.outputReserve - plan.promptOverhead,
+    );
+    expect(
+      plan.effectiveInputBudget + plan.outputReserve + plan.promptOverhead,
+    ).toBeLessThanOrEqual(safeBudget);
+    // 1M contexts retain the 80% hard ceiling but pack only 60% of the
+    // remaining input headroom to avoid KV-cache long-tail timeouts.
+    expect(plan.targetInputBudget).toBe(
+      Math.floor(plan.effectiveInputBudget * LARGE_CONTEXT_BATCH_FILL_RATIO),
+    );
+    expect(plan.retryOutputCeiling).toBe(plan.outputReserve);
+  });
+
+  it('keeps a bounded 64K recovery ceiling when a 1M reasoning model is configured for 8K output', () => {
+    const plan = planAdaptiveBatching({
+      chapters: [cjkChapter(1, 1_000)],
+      profile: 'deep',
+      providerType: 'openai_compatible',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 8_000,
+    });
+    expect(plan.ok).toBe(true);
+    expect(plan.retryOutputCeiling).toBe(CANON_REASONING_RETRY_OUTPUT_CEILING);
+  });
+
+  it('uses the operational target for oversized chapter chunks', () => {
+    const plan = planAdaptiveBatching({
+      chapters: [cjkChapter(1, 700_000)],
+      profile: 'deep',
+      providerType: 'openai_compatible',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 8_000,
+    });
+    expect(plan.ok).toBe(true);
+    expect(plan.batches.every(batch => batch.type === 'chunk')).toBe(true);
+    const chunk = plan.batches[0] as Extract<
+      (typeof plan.batches)[number],
+      { type: 'chunk' }
+    >;
+    // Dense CJK must be sliced below the actual request target, not merely
+    // below the larger hard safety ceiling.
+    expect(chunk.chunkEndChar).toBeLessThan(600_000);
   });
 
   it('falls back to a derived default window when context_window is not declared', () => {
@@ -255,6 +328,17 @@ describe('resolveExtractionMaxTokens', () => {
     // Ceiling = max(profileBaseline, budget*4) = max(8192, 4096) = 8192
     expect(maxTokens).toBe(8_192);
   });
+
+  it('keeps output within the adaptive plan reserve', () => {
+    const maxTokens = resolveExtractionMaxTokens({
+      profile: 'deep',
+      maxOutputTokens: 200_000,
+      effectiveInputBudget: 600_000,
+      outputReserve: 200_000,
+    });
+
+    expect(maxTokens).toBe(200_000);
+  });
 });
 
 describe('precheckCanonAnalysis', () => {
@@ -272,6 +356,9 @@ describe('precheckCanonAnalysis', () => {
     expect(precheck.ok).toBe(true);
     expect(precheck.contextWindow).toBe(128_000);
     expect(precheck.maxOutputTokens).toBe(8_000);
+    expect(precheck.targetInputBudget).toBeLessThanOrEqual(
+      precheck.effectiveInputBudget,
+    );
     expect(precheck.estimatedBatchCount).toBeGreaterThan(0);
     // Each batch produces 2 work items (character_state + world_plot).
     expect(precheck.estimatedWorkItemCount).toBe(

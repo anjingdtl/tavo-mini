@@ -6,9 +6,19 @@ import {
 // Mock callLLMResult
 jest.mock('../src/services/llm', () => ({
   callLLMResult: jest.fn(),
+  resolveLLMRequestConfigById: jest.fn(async (id: number) => ({
+    id,
+    provider_type: 'openai_compatible',
+    api_key: 'test',
+    model_name: 'test-model',
+    url: 'https://example.com/v1/chat/completions',
+  })),
 }));
 
-import { callLLMResult } from '../src/services/llm';
+import {
+  callLLMResult,
+  resolveLLMRequestConfigById,
+} from '../src/services/llm';
 
 const mockCallLLMResult = callLLMResult as jest.MockedFunction<typeof callLLMResult>;
 
@@ -41,6 +51,14 @@ describe('orderSourceFiles', () => {
     expect(result.orderedFileIndexes).toEqual([1, 0, 2]);
     expect(result.confidence).toBe(0.9);
     expect(result.reasoning).toContain('第一卷');
+    expect(resolveLLMRequestConfigById).toHaveBeenCalledWith(1);
+    expect(mockCallLLMResult).toHaveBeenCalledWith(
+      expect.any(Array),
+      1024,
+      expect.objectContaining({
+        requestConfig: expect.objectContaining({ id: 1 }),
+      }),
+    );
   });
 
   it('falls back to filename sort when LLM throws', async () => {
@@ -103,5 +121,32 @@ describe('orderSourceFiles', () => {
     const result = await orderSourceFiles(baseFiles, 1);
 
     expect(result.method).toBe('fallback_filename');
+  });
+
+  it.each([
+    [
+      'markdown-fenced JSON with omitted optional metadata',
+      '说明：\n```json\n{"order":[1,0,2]}\n```',
+    ],
+    [
+      'double-encoded JSON content',
+      JSON.stringify(JSON.stringify({ order: ['1', '0', '2'], confidence: 0.8 })),
+    ],
+    [
+      'provider result-name alias inside prose',
+      '排序如下： {"orderedFileIndexes":[1,0,2],"reasoning":"卷号顺序"}',
+    ],
+  ])('accepts %s', async (_label, text) => {
+    mockCallLLMResult.mockResolvedValueOnce({
+      text,
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+    });
+
+    const result = await orderSourceFiles(baseFiles, 1);
+
+    expect(result.method).toBe('llm');
+    expect(result.orderedFileIndexes).toEqual([1, 0, 2]);
   });
 });

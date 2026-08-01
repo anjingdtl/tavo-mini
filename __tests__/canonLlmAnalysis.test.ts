@@ -138,7 +138,9 @@ describe('Canon LLM analysis', () => {
       }),
       expect.any(AbortSignal),
     );
-    expect((callLLMResult as jest.Mock).mock.calls[0][2].thinking).toBeUndefined();
+    expect(
+      (callLLMResult as jest.Mock).mock.calls[0][2].thinking,
+    ).toBeUndefined();
   });
 
   it('uses complete chapter text when the selected online model declares a large context window', async () => {
@@ -177,18 +179,40 @@ describe('Canon LLM analysis', () => {
       worldRules: [],
       characters: [
         {
-          canonicalName: '林凡', aliases: [], description: '主角。',
-          importance: 'primary' as const, confidence: 0.9,
+          canonicalName: '林凡',
+          aliases: [],
+          description: '主角。',
+          importance: 'primary' as const,
+          confidence: 0.9,
           evidence: [
-            { chapterId: 999, chapterPosition: 9, charStart: 1, charEnd: 2, quotePreview: '林凡' },
-            { chapterId: 7, chapterPosition: 0, charStart: 12, charEnd: 14, quotePreview: '不存在的引文' },
+            {
+              chapterId: 999,
+              chapterPosition: 9,
+              charStart: 1,
+              charEnd: 2,
+              quotePreview: '林凡',
+            },
+            {
+              chapterId: 7,
+              chapterPosition: 0,
+              charStart: 12,
+              charEnd: 14,
+              quotePreview: '不存在的引文',
+            },
           ],
         },
       ],
-      relationships: [], plotThreads: [], experiences: [], knowledge: [], states: [], timelineEvents: [],
+      relationships: [],
+      plotThreads: [],
+      experiences: [],
+      knowledge: [],
+      states: [],
+      timelineEvents: [],
     };
 
-    const resolved = resolveExtractionEvidenceAgainstChapters(result, [chapter]);
+    const resolved = resolveExtractionEvidenceAgainstChapters(result, [
+      chapter,
+    ]);
 
     expect(resolved.stats).toEqual({ received: 2, resolved: 1, rejected: 1 });
     expect(resolved.result.characters[0].evidence).toEqual([
@@ -212,15 +236,33 @@ describe('Canon LLM analysis', () => {
       worldRules: [],
       characters: [
         {
-          canonicalName: '林凡', aliases: [], description: '有旅行经历。',
-          importance: 'primary' as const, confidence: 0.8,
-          evidence: [{ chapterId: 7, chapterPosition: 0, charStart: 12, charEnd: 19, quotePreview: '我和你去过丽江' }],
+          canonicalName: '林凡',
+          aliases: [],
+          description: '有旅行经历。',
+          importance: 'primary' as const,
+          confidence: 0.8,
+          evidence: [
+            {
+              chapterId: 7,
+              chapterPosition: 0,
+              charStart: 12,
+              charEnd: 19,
+              quotePreview: '我和你去过丽江',
+            },
+          ],
         },
       ],
-      relationships: [], plotThreads: [], experiences: [], knowledge: [], states: [], timelineEvents: [],
+      relationships: [],
+      plotThreads: [],
+      experiences: [],
+      knowledge: [],
+      states: [],
+      timelineEvents: [],
     };
 
-    const resolved = resolveExtractionEvidenceAgainstChapters(result, [sourceChapter]);
+    const resolved = resolveExtractionEvidenceAgainstChapters(result, [
+      sourceChapter,
+    ]);
 
     expect(resolved.result.characters[0].evidence).toEqual([
       expect.objectContaining({
@@ -478,9 +520,7 @@ describe('Canon LLM analysis', () => {
 
     expect(outcome.result.characters).toHaveLength(1);
     expect(outcome.result.characters[0].canonicalName).toBe('林凡');
-    expect(outcome.warning).toEqual(
-      expect.stringContaining('characters'),
-    );
+    expect(outcome.warning).toEqual(expect.stringContaining('characters'));
     expect(outcome.warning).toMatch(/dropped|丢弃/);
     expect(callLLMResult).toHaveBeenCalledTimes(1);
   });
@@ -547,6 +587,48 @@ describe('Canon LLM analysis', () => {
       jest.useRealTimers();
     });
 
+    it('lets an adaptive 1M-context run recover from 8K reasoning-only output without widening its input budget', async () => {
+      jest.useFakeTimers();
+      (callLLMResult as jest.Mock)
+        .mockResolvedValueOnce({
+          text: null,
+          emptyReason: 'reasoning_only',
+          finishReason: 'length',
+        })
+        .mockResolvedValueOnce({
+          text: null,
+          emptyReason: 'reasoning_only',
+          finishReason: 'length',
+        })
+        .mockResolvedValueOnce({ text: validResult });
+
+      const pending = extractMaterialWithLlm(
+        [chapter],
+        'deep',
+        42,
+        'characters',
+        'run-adaptive-reasoning',
+        new AbortController().signal,
+        undefined,
+        undefined,
+        {
+          effectiveInputBudget: 791_419,
+          targetInputBudget: 474_851,
+          outputReserve: 8_000,
+          retryOutputCeiling: 65_536,
+          promptOverhead: 581,
+          estimatedBatchCount: 5,
+        },
+      );
+      await jest.runAllTimersAsync();
+      await pending;
+
+      expect(
+        (callLLMResult as jest.Mock).mock.calls.map(call => call[1]),
+      ).toEqual([8_000, 32_768, 65_536]);
+      jest.useRealTimers();
+    });
+
     it('uses a 32768 baseline for the deep profile and doubles on length retry', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock)
@@ -575,7 +657,9 @@ describe('Canon LLM analysis', () => {
 
     it('surfaces the real gateway error (no empty-reason spin) when the provider throws', async () => {
       const gatewayError = Object.assign(
-        new Error('API 请求失败 (200, unsupported_parameter): response_format 不被支持'),
+        new Error(
+          'API 请求失败 (200, unsupported_parameter): response_format 不被支持',
+        ),
         { code: 'unsupported_parameter', status: 200 },
       );
       (callLLMResult as jest.Mock).mockRejectedValue(gatewayError);

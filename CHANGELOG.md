@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.11.11] - 2026-08-01
+
+### Fixed
+
+- 原著章节解析兼容常见 TXT 标题空格写法（如“第 1 章”“第　十二　回”），不再将这种多章原著错误退化为单一“无标题章节”。解析规则版本已更新；历史上受此格式影响的原著需重新导入一次，以重建正确的章节边界。
+- 原著写作风格的置信度改为证据置信度：基于实际有界原著字数、抽样材料量、场景分层和章节覆盖计算，并保留模型评分中较高的可信值。模型不会再因“仅识别到一章”而把已有大样本分析错误显示为 20%。分析覆盖统计由客户端按实际样本回写，不再信任模型生成的计数。
+- 原著风格分析进入独立单并发队列，Canon 正文批次全部完成后才自动入队；风格任务遵循 80% 安全上下文预算（先预留输出，再留 20% 余量），不抢占 Canon 的两路长上下文槽位，也不会按 1M 窗口满载发送。
+
+### Validation
+
+- 回归覆盖中英文/全角空格章节标题的一次性与流式等价解析；覆盖 210 万字符、三文件、八类分层样本在模型自报 20% 时仍获得至少 80% 的证据置信度，以及短小样本不会被虚高。
+
+## [2.11.10] - 2026-08-01
+
+### Fixed
+
+- Canon 完整分析改为仅按实际文本 token 预算连续打包；章节只保留证据边界，不再以每批 20 章人为拆分。1M 上下文在 80% 安全预算下可将约 6 MiB 原著按约 791K 输入 tokens 分为少量可恢复批次。
+- “结果整理”阶段新增数据库心跳和界面活动说明：模型请求完成后的本地证据/覆盖范围合并不再只是无解释的 100%，会显示最近活动时间。
+
+### Validation
+
+- 使用 `docs/LLMTesti.txt` 的 DeepSeek V4 Flash 配置真实导入三份约 2 MiB TXT：多选无编码弹窗、LLM 首次排序正确；完整 Canon 3 批 / 6 调用均首试成功，原著写作风格首轮成功并自动启用。
+
+## [2.11.9] - 2026-08-01
+
+### Fixed
+
+- **多 TXT 导入反复要求选择编码**：多文件导入改为全自动按每个文件的原生检测结果解码，不再向用户展示编码选择；单文件的低置信度恢复选项保持不变。
+- **多 TXT 的 LLM 排序误回退**：排序结果解析改用与 Canon 相同的稳健 JSON 提取逻辑，兼容 Markdown 包裹、前后说明、双重 JSON 编码、字符串索引和常见字段别名；缺少置信度或理由时使用安全默认值。排序请求同时固定使用排序页当前选择的 LLM 配置。
+- **大原著 Canon 分析请求超时/OOM**：每个 Canon 请求现在最多使用声明上下文的 80%，其中输出最多占这份安全预算的 25%；保留两路并发，原著会按这一安全预算拆成可恢复批次。客户端 Canon 请求总超时同步提高到 9 分 30 秒，避免在模型服务仍正常排队或生成时过早中断。
+
+### Tests
+
+- 新增多文件编码确认分支回归测试；扩展排序测试，覆盖 Markdown、双重 JSON 编码、字符串索引、字段别名及指定 LLM 配置传递；补充 1M 上下文 80% 安全预算的 Canon 分批回归。
+
 ## [2.11.8] - 2026-08-01
 
 ### Fixed
@@ -321,7 +356,7 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 - **项目模式扩展**：新增 `continuation`（原著续写）模式，新建项目可选择「大纲创作」或「原著续写」；历史 `freeform` 项目保持兼容，可继续打开。`normalizeProjectMode()` 在写入边界统一校验，未知模式被阻断。
 - **Schema 19**：新增 5 张续写表（`continuation_sources`、`continuation_source_text_chunks`、`continuation_source_chapters`、`continuation_settings`、`continuation_import_jobs`），含 partial unique index（每项目最多一个 ready source / 一个活跃导入任务）、composite foreign key 与完整 CHECK 约束。
-- **TXT 原著导入**：Android 原生 `ContinuationTextImportModule` 分块解码 UTF-8/UTF-8 BOM/GBK/GB18030/UTF-16 LE/BE，处理多字节跨块边界；规范化层去除 BOM/NUL/控制字符、统一换行，记录 `normalization_version`；解析器识别中文章节（第N章/节/回、卷）、英文 Chapter、`正文 第一章` 前缀，拒绝正文误识别，无标题时回退整篇。
+- **TXT 原著导入**：Android 原生 `ContinuationTextImportModule` 分块解码 UTF-8/UTF-8 BOM/GBK/GB18030/UTF-16 LE/BE，处理多字节跨块边界；规范化层去除 BOM/NUL/控制字符、统一换行，记录 `normalization_version`；解析器识别中文章节（第 N 章/节/回、卷）、英文 Chapter、`正文 第一章` 前缀，拒绝正文误识别，无标题时回退整篇。
 - **可恢复导入任务**：导入任务支持 queued/running/paused/awaiting_review/completed/failed/cancelled/interrupted 状态机；App 重启后 `recoverInterruptedJobs` 将遗留活跃任务转为 interrupted，用户可继续/重来/取消。
 - **续写边界与未来原文防护**：`ContinuationSourceReader` 提供 bounded API（`listBoundedSourceChapters` / `readBoundedEvidenceRange`），每次调用在同一事务校验 snapshot（source id/version/hash/parser/normalizer/boundary），过期抛 `continuation_source_snapshot_outdated`；自定义边界落在章节中间时末章被物理裁剪。`ContinuationSourceBrowserService` 作为 UI-only 的未来原文浏览出口，禁止 canon/generation 模块导入。
 - **资料模块重构**：底部「资料」改为 `ResourceStack`（续写/角色/世界书/笔记/预设），不再新增底部主 Tab。
@@ -569,7 +604,7 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 - 升版 **V2.5.17** / `versionCode` **2051700**；Schema / 备份 / API 次数 / 默认预算均不变；无 Embedding、向量库、第二模型、新远程 API、新 Schema、多历史 Checkpoint。
 - 未修改 Story Memory Schema / Checkpoint / Dirty Rebuild / Episodic Summary 格式；未变更章节与草稿存储模型。`noReview` 仍只调用初稿。`full` 远程调用次数仍为 4（初稿 + 评估 + 核查 + 终审），初稿后二次召回不增加远程调用。
-- LLM 设置保存后弹窗同步流水线 max_tokens 是**可选的**：用户点「取消」则保留 PipelineConfigScreen 手动值；用户点「同步」则按 `RATIO_OUTPUT(0.2)` × `50/15/15/20` 覆盖 4 个 `pipeline_*_max_tokens` settings key。
+- LLM 设置保存后弹窗同步流水线 max*tokens 是**可选的**：用户点「取消」则保留 PipelineConfigScreen 手动值；用户点「同步」则按 `RATIO_OUTPUT(0.2)` × `50/15/15/20` 覆盖 4 个 `pipeline*\*\_max_tokens` settings key。
 - 已知非代码问题：部分推理模型在 full 模式下会把推理过程计入输出 token 配额，可能导致 review/factCheck 的正式 JSON 被截断。本次新增的弹窗同步功能让用户能一键把 max_tokens 提到合理值，解决此问题。
 
 ## [2.5.16] - 2026-07-21
@@ -738,7 +773,7 @@ numbers follow [Semantic Versioning](https://semver.org/).
 - 中文章节记忆检索新增单字、双字、三字联合 Token，保留英文/数字完整 Token 与停用词。
 - 基于现有 Story Memory 的人物姓名、别名、持有物、开放线索与伏笔做轻量实体加权；两名及以上当前相关人物共现时增加人物组合奖励。
 - Top-K 改为相关度 + 当前人物历史 + 最近章节的混合选择，注入上下文时按章节位置升序展示。
-- Story Memory 关系渲染改为「人物姓名[内部ID]」，并优先展示当前章节相关人物关系。
+- Story Memory 关系渲染改为「人物姓名[内部 ID]」，并优先展示当前章节相关人物关系。
 - 新增纯函数模块 `src/services/episodicMemoryRetriever.ts`（可回退 `EPISODIC_RETRIEVAL_V2_ENABLED`）。
 
 ### Improved
@@ -1077,7 +1112,7 @@ numbers follow [Semantic Versioning](https://semver.org/).
 
 ### Compatibility and upgrade risk
 
-- Upgrading from 2.3.x runs the Schema 12鈫?3 migration. Legacy local-model records may require re-import when their source file or runtime is no longer available.
+- Upgrading from 2.3.x runs the Schema 12 鈫?3 migration. Legacy local-model records may require re-import when their source file or runtime is no longer available.
 
 ### Local model and API compatibility
 

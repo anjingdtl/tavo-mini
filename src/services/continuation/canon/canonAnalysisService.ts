@@ -14,9 +14,7 @@ import { now } from '../../../data/repositories/shared';
 import { v4 } from '../../uuidBridge';
 import { sha256Hex } from '../hashUtils';
 import { continuationSourceReader } from '../continuationSourceReader';
-import {
-  normalizeAlias,
-} from './canonEntityResolver';
+import { normalizeAlias } from './canonEntityResolver';
 import {
   ContinuationSnapshotOutdatedError,
   type BoundedSourceChapter,
@@ -97,7 +95,6 @@ import {
   precheckCanonAnalysis,
   resolveExtractionMaxTokens,
   resolveChapterTextLimitFromBudget,
-  FULL_CANON_QUALITY_CHAPTERS_PER_BATCH,
   MIN_INPUT_BUDGET_TOKENS,
   type AdaptiveBatch,
   type AdaptiveBatchPlan,
@@ -115,7 +112,11 @@ export function formatUnknownError(err: unknown): string {
   }
   if (typeof err === 'string') return err;
   if (err && typeof err === 'object') {
-    const o = err as { message?: unknown; code?: unknown; sqlMessage?: unknown };
+    const o = err as {
+      message?: unknown;
+      code?: unknown;
+      sqlMessage?: unknown;
+    };
     const msg =
       (typeof o.message === 'string' && o.message) ||
       (typeof o.sqlMessage === 'string' && o.sqlMessage) ||
@@ -134,17 +135,12 @@ export function formatUnknownError(err: unknown): string {
   return String(err);
 }
 
-export type {
-  AdaptiveBatch,
-  AdaptiveBatchPlan,
-  CanonAnalysisPrecheck,
-};
+export type { AdaptiveBatch, AdaptiveBatchPlan, CanonAnalysisPrecheck };
 export {
   planAdaptiveBatching,
   precheckCanonAnalysis,
   resolveExtractionMaxTokens,
   resolveChapterTextLimitFromBudget,
-  FULL_CANON_QUALITY_CHAPTERS_PER_BATCH as ADAPTIVE_BATCH_QUALITY_CAP,
   MIN_INPUT_BUDGET_TOKENS,
 };
 
@@ -456,8 +452,10 @@ export function resolveQualityFirstChaptersPerBatch(input: {
   mode: ContinuationAnalysisMode;
   contextCapacity: number;
 }): number {
-  if (input.mode !== 'full_canon') return input.contextCapacity;
-  return Math.min(input.contextCapacity, FULL_CANON_QUALITY_CHAPTERS_PER_BATCH);
+  // Kept for compatibility with old callers. New adaptive batching is always
+  // text-token driven, including full_canon; chapter count only supplies
+  // provenance boundaries and must not create needless LLM calls.
+  return input.contextCapacity;
 }
 
 /**
@@ -534,7 +532,9 @@ export function planAnalysisTokenBudget(input: {
   const outputBaseline = CANON_OUTPUT_BASELINE_TOKENS[input.profile] ?? 8192;
   const overhead = CANON_PROMPT_OVERHEAD_TOKENS + 256; // prompt + misc safety
   // 在线模型用 24000 字符 slice（与 extractMaterialWithLlm 一致），本地模型用 6000
-  const initialSliceCharBudget = isLocal ? 6000 : CANON_ONLINE_CHAPTER_TEXT_LIMIT;
+  const initialSliceCharBudget = isLocal
+    ? 6000
+    : CANON_ONLINE_CHAPTER_TEXT_LIMIT;
 
   const fitsWindow = (
     perBatch: number,
@@ -1451,7 +1451,8 @@ export async function startAnalysis(
   });
   if (!adaptivePlan.ok) {
     throw new Error(
-      adaptivePlan.reason ?? '当前 LLM 配置无法完成 Canon 分析，请调整 context_window 或 max_output_tokens。',
+      adaptivePlan.reason ??
+        '当前 LLM 配置无法完成 Canon 分析，请调整 context_window 或 max_output_tokens。',
     );
   }
   // 将 AdaptiveBatch[] 转换为 batches 表行：normal batch 用章节区间，
@@ -1466,13 +1467,16 @@ export async function startAnalysis(
     idempotencyKey: string;
   }> = [];
   // chunk 元数据按 batchIndex 存储，processAnalysisRunInner 读取后做字符切片。
-  const batchChunkMeta: Record<number, {
-    chapterId: number;
-    chunkIndex: number;
-    chunkCount: number;
-    chunkStartChar: number;
-    chunkEndChar: number;
-  }> = {};
+  const batchChunkMeta: Record<
+    number,
+    {
+      chapterId: number;
+      chunkIndex: number;
+      chunkCount: number;
+      chunkStartChar: number;
+      chunkEndChar: number;
+    }
+  > = {};
   for (let i = 0; i < adaptivePlan.batches.length; i++) {
     const batch = adaptivePlan.batches[i];
     let startPosition: number;
@@ -1610,7 +1614,9 @@ export async function startAnalysis(
       // processAnalysisRunInner / resume 知道每个 batch 是 normal 还是 chunk。
       adaptiveBatchPlan: {
         effectiveInputBudget: adaptivePlan.effectiveInputBudget,
+        targetInputBudget: adaptivePlan.targetInputBudget,
         outputReserve: adaptivePlan.outputReserve,
+        retryOutputCeiling: adaptivePlan.retryOutputCeiling,
         promptOverhead: adaptivePlan.promptOverhead,
         estimatedBatchCount: adaptivePlan.estimatedBatchCount,
       },
@@ -1691,17 +1697,22 @@ async function processAnalysisRunInner(
     workItemProtocol?: string;
     adaptiveBatchPlan?: {
       effectiveInputBudget: number;
+      targetInputBudget?: number;
       outputReserve: number;
+      retryOutputCeiling?: number;
       promptOverhead: number;
       estimatedBatchCount: number;
     };
-    batchChunkMeta?: Record<number, {
-      chapterId: number;
-      chunkIndex: number;
-      chunkCount: number;
-      chunkStartChar: number;
-      chunkEndChar: number;
-    }>;
+    batchChunkMeta?: Record<
+      number,
+      {
+        chapterId: number;
+        chunkIndex: number;
+        chunkCount: number;
+        chunkStartChar: number;
+        chunkEndChar: number;
+      }
+    >;
   } = {};
   try {
     checkpoint = run.checkpointJson ? JSON.parse(run.checkpointJson) : {};
@@ -1732,7 +1743,10 @@ async function processAnalysisRunInner(
   // H4 修复：原 batch 循环内每次 `(await listWorkItems(runId)).filter(...)` 全表
   // 扫描 + JS filter，N 个 batch = N 次 SELECT。改循环外一次预加载 + 按
   // batchIndex 分组成 Map，循环内 O(1) 取。
-  const itemsByBatch = new Map<number, Awaited<ReturnType<typeof listWorkItems>>>();
+  const itemsByBatch = new Map<
+    number,
+    Awaited<ReturnType<typeof listWorkItems>>
+  >();
   {
     const allItems = await listWorkItems(runId);
     for (const item of allItems) {
@@ -1792,11 +1806,12 @@ async function processAnalysisRunInner(
 
     try {
       // H1 + H3: 按 batch 区间流式读取章节正文，避免全量 allChapters 常驻内存
-      const slice = await continuationSourceReader.listBoundedSourceChaptersForRange(
-        sourceSnapshot,
-        batch.startPosition,
-        batch.endPosition,
-      );
+      const slice =
+        await continuationSourceReader.listBoundedSourceChaptersForRange(
+          sourceSnapshot,
+          batch.startPosition,
+          batch.endPosition,
+        );
       // Future leakage guard: only chapters already bounded by SourceReader.
       for (const ch of slice) {
         if (ch.range.end > sourceSnapshot.boundary.charOffsetExclusive) {
@@ -2037,6 +2052,11 @@ async function processAnalysisRunInner(
   );
 
   await updateRunState(db, runId, { stage: 'finalizing' });
+  // Work items can all be complete before the local evidence/coverage merge is
+  // finished. Keep a light database heartbeat during this potentially long
+  // phase so the overview can distinguish active result consolidation from a
+  // stale 100% screen. The guarded UPDATE never changes a later stage.
+  const stopFinalizingHeartbeat = startFinalizingHeartbeat(db, runId);
   const analyzedRanges = completedBatches.map(batch => ({
     startPosition: asSourcePosition(batch.startPosition),
     endPosition: asSourcePosition(batch.endPosition),
@@ -2044,9 +2064,10 @@ async function processAnalysisRunInner(
   // H1: finalize 阶段用轻量 metas（不含正文）计算 analyzedChapters / total，
   // 避免 allChapters 全量正文常驻。completedBatches 的 position 区间是
   // half-open [start, end)，章节数 = 区间内 metas 计数。
-  const finalMetas = await continuationSourceReader.listBoundedSourceChapterMetas(
-    sourceSnapshot,
-  );
+  const finalMetas =
+    await continuationSourceReader.listBoundedSourceChapterMetas(
+      sourceSnapshot,
+    );
   let analyzedChapters = 0;
   for (const meta of finalMetas) {
     const pos = Number(meta.position);
@@ -2074,6 +2095,7 @@ async function processAnalysisRunInner(
   );
 
   if (failedBatches.length > 0) {
+    stopFinalizingHeartbeat();
     await updateRunState(db, runId, {
       state: 'failed',
       stage: 'chapter_extraction',
@@ -2125,6 +2147,8 @@ async function processAnalysisRunInner(
       WHERE project_id = ?`,
     [now(), run.projectId],
   );
+
+  stopFinalizingHeartbeat();
 
   // ---- style_analysis stage (Spec §5.1) ----
   // Must run BEFORE the Canon snapshot is activated: otherwise the first
@@ -2191,6 +2215,33 @@ async function processAnalysisRunInner(
   });
 
   return (await getRunById(runId))!;
+}
+
+/**
+ * Touch only the run heartbeat while local finalization is active. This keeps
+ * `updated_at` fresh for UI polling without racing a transition to style
+ * analysis or changing progress/state fields.
+ */
+function startFinalizingHeartbeat(
+  db: SQLite.SQLiteDatabase,
+  runId: string,
+): () => void {
+  let stopped = false;
+  const pulse = () => {
+    if (stopped) return;
+    void execute(
+      db,
+      `UPDATE continuation_analysis_runs SET updated_at = ?
+        WHERE id = ? AND state = 'running' AND stage = 'finalizing'`,
+      [now(), runId],
+    ).catch(() => undefined);
+  };
+  pulse();
+  const timer = setInterval(pulse, 10_000);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 function emptyExtractionResult(): ChapterExtractionResult {
@@ -2556,7 +2607,10 @@ export async function extractMaterialWithLlm(
   chunkMetadata?: { chunkIndex: number; chunkCount: number },
   adaptivePlan?: {
     effectiveInputBudget: number;
+    /** Old interrupted runs do not have this field; retain hard-cap fallback. */
+    targetInputBudget?: number;
     outputReserve: number;
+    retryOutputCeiling?: number;
     promptOverhead: number;
     estimatedBatchCount: number;
   },
@@ -2571,13 +2625,19 @@ export async function extractMaterialWithLlm(
   // max_tokens，避免与 planAnalysisTokenBudget 校验值不一致。当 adaptive
   // plan 不存在（旧 run resume）时回退到旧逻辑。
   const chapterTextLimit = adaptivePlan
-    ? resolveChapterTextLimitFromBudget(adaptivePlan.effectiveInputBudget)
+    ? resolveChapterTextLimitFromBudget(
+        adaptivePlan.targetInputBudget ?? adaptivePlan.effectiveInputBudget,
+      )
     : resolveCanonChapterTextLimit({
         providerType: requestConfig.provider_type,
         contextWindow: requestConfig.context_window,
       });
   const chunkNotice = chunkMetadata
-    ? `\n注意：本章由于篇幅过大，已按字符区间切分为 ${chunkMetadata.chunkCount} 个片段。当前为第 ${chunkMetadata.chunkIndex + 1} 个片段。请仅基于本片段内容提取 evidence；跨片段的关联（如人物关系、伏笔）由后续合并阶段处理。bodyStart/bodyEnd 仍按全书 UTF-16 绝对偏移填写。`
+    ? `\n注意：本章由于篇幅过大，已按字符区间切分为 ${
+        chunkMetadata.chunkCount
+      } 个片段。当前为第 ${
+        chunkMetadata.chunkIndex + 1
+      } 个片段。请仅基于本片段内容提取 evidence；跨片段的关联（如人物关系、伏笔）由后续合并阶段处理。bodyStart/bodyEnd 仍按全书 UTF-16 绝对偏移填写。`
     : '';
   const prompt = [
     '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
@@ -2611,6 +2671,7 @@ export async function extractMaterialWithLlm(
         profile,
         maxOutputTokens: requestConfig.max_output_tokens,
         effectiveInputBudget: adaptivePlan.effectiveInputBudget,
+        outputReserve: adaptivePlan.outputReserve,
       })
     : Math.min(
         Math.max(profileBaseline, configuredOutputTokens),
@@ -2619,7 +2680,24 @@ export async function extractMaterialWithLlm(
   let currentMaxTokens = baselineMaxTokens;
   const maxTokenCeiling = Math.max(
     baselineMaxTokens,
-    Math.min(Math.max(configuredOutputTokens, baselineMaxTokens * 4), 131_072),
+    adaptivePlan
+      ? adaptivePlan.retryOutputCeiling ??
+          // Compatible with interrupted runs created before retryOutputCeiling
+          // was persisted. The hard safe request budget is exactly these three
+          // stored values, so the fallback cannot breach it.
+          Math.min(
+            Math.floor(
+              (adaptivePlan.effectiveInputBudget +
+                adaptivePlan.outputReserve +
+                adaptivePlan.promptOverhead) *
+                0.25,
+            ),
+            Math.max(adaptivePlan.outputReserve, 32_768),
+          )
+      : Math.min(
+          Math.max(configuredOutputTokens, baselineMaxTokens * 4),
+          131_072,
+        ),
   );
   let lastOutputError: Error | null = null;
   let lastDroppedStats: ExtractionStats | null = null;
@@ -2663,7 +2741,10 @@ export async function extractMaterialWithLlm(
         // reasoning_only), doubling max_tokens is a genuinely different
         // request and may succeed where an identical retry cannot.
         if (emptyReason === 'length' || emptyReason === 'reasoning_only') {
-          currentMaxTokens = Math.min(currentMaxTokens * 2, maxTokenCeiling);
+          currentMaxTokens = Math.min(
+            Math.max(currentMaxTokens * 2, 32_768),
+            maxTokenCeiling,
+          );
         }
         throw canonOutputError(emptyResponseMessage(emptyReason));
       }
@@ -2691,6 +2772,12 @@ export async function extractMaterialWithLlm(
           finishReason: (response as { finishReason?: string | null })
             ?.finishReason,
         };
+        if (lastDiagnostic.finishReason === 'length') {
+          currentMaxTokens = Math.min(
+            Math.max(currentMaxTokens * 2, 32_768),
+            maxTokenCeiling,
+          );
+        }
         throw canonOutputError(
           formatUnknownError(error) || '提取结果不是合法 JSON',
         );

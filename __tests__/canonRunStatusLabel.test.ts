@@ -3,7 +3,10 @@
  * permanently showed "正在汇总结果" once a run reached awaiting_review. The
  * label is now derived from run.state × run.stage via a pure function.
  */
-import { runStatusLabel } from '../src/screens/continuation/canon/runStatusLabel';
+import {
+  runActivityDetail,
+  runStatusLabel,
+} from '../src/screens/continuation/canon/runStatusLabel';
 import type { AnalysisRun, AnalysisWorkItem } from '../src/services/continuation/canon';
 
 function makeRun(
@@ -87,6 +90,17 @@ describe('runStatusLabel (S2 fix)', () => {
     expect(
       runStatusLabel(makeRun('running', 'finalizing'), allCompleted),
     ).toBe('正在汇总结果');
+  });
+
+  it('makes finalizing activity observable even when work-item progress is 100%', () => {
+    const run = makeRun('running', 'finalizing');
+    run.updatedAt = '2026-08-01T10:00:00.000Z';
+    expect(runActivityDetail(run, Date.parse('2026-08-01T10:00:03.000Z'))).toContain(
+      '模型请求已完成',
+    );
+    expect(runActivityDetail(run, Date.parse('2026-08-01T10:00:03.000Z'))).toContain(
+      '最近活动：刚刚',
+    );
   });
 
 

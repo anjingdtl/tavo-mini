@@ -46,7 +46,7 @@ import {
 import { retryStyleAnalysis } from '../../../services/continuation/styleProfile/styleAnalysisService';
 import { STYLE_ANALYZER_VERSION } from '../../../services/continuation/styleProfile/styleAnalysisPrompt';
 import type { OriginalStyleProfileV2 } from '../../../services/continuation/styleProfile/styleProfileV2Schema';
-import { runStatusLabel } from './runStatusLabel';
+import { runActivityDetail, runStatusLabel } from './runStatusLabel';
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
 
@@ -366,8 +366,9 @@ export const CanonAnalysisOverviewScreen: React.FC<{
             // 配置派生预计的 batch 数与调用次数；配置不足时给出明确建议值。
             setBusy(true);
             try {
-              const snapshot =
-                await continuationSourceReader.getSnapshot(currentProject.id);
+              const snapshot = await continuationSourceReader.getSnapshot(
+                currentProject.id,
+              );
               const chapters =
                 await continuationSourceReader.listBoundedSourceChapters(
                   snapshot,
@@ -384,7 +385,17 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               if (!precheck.ok) {
                 Alert.alert(
                   '当前模型配置无法完成 Canon 分析',
-                  `当前 LLM 配置：\n  context_window: ${precheck.contextWindow}\n  max_output_tokens: ${precheck.maxOutputTokens}\n\n错误原因：${precheck.reason ?? ''}\n\n建议：\n  • 降低 max_output_tokens 至 ≤ ${precheck.suggestedMaxOutputTokens ?? '—'}\n  • 或增大 context_window 至 ≥ ${precheck.suggestedContextWindow ?? '—'}`,
+                  `当前 LLM 配置：\n  context_window: ${
+                    precheck.contextWindow
+                  }\n  max_output_tokens: ${
+                    precheck.maxOutputTokens
+                  }\n\n错误原因：${
+                    precheck.reason ?? ''
+                  }\n\n建议：\n  • 降低 max_output_tokens 至 ≤ ${
+                    precheck.suggestedMaxOutputTokens ?? '—'
+                  }\n  • 或增大 context_window 至 ≥ ${
+                    precheck.suggestedContextWindow ?? '—'
+                  }`,
                   [
                     { text: '取消', style: 'cancel' },
                     {
@@ -399,7 +410,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               }
               Alert.alert(
                 fast ? '即将开始快速续写分析' : '即将开始完整原著分析',
-                `当前 LLM 配置：\n  context_window: ${precheck.contextWindow}\n  max_output_tokens: ${precheck.maxOutputTokens}\n\n派生计算：\n  单 batch 输入预算: ${precheck.effectiveInputBudget} tokens\n  预计 batch 数: ${precheck.estimatedBatchCount}\n  预计 LLM 调用次数: ${precheck.estimatedWorkItemCount}\n  预计耗时: 约 ${precheck.estimatedDurationMinutes} 分钟\n\n分析过程可暂停或取消。`,
+                `当前 LLM 配置：\n  context_window: ${precheck.contextWindow}\n  max_output_tokens: ${precheck.maxOutputTokens}\n\n派生计算：\n  单 batch 实际输入目标: ${precheck.targetInputBudget} tokens\n  单 batch 硬性安全上限: ${precheck.effectiveInputBudget} tokens\n  预计 batch 数: ${precheck.estimatedBatchCount}\n  预计 LLM 调用次数: ${precheck.estimatedWorkItemCount}\n  预计耗时: 约 ${precheck.estimatedDurationMinutes} 分钟\n\n分析过程可暂停或取消。`,
                 [
                   { text: '取消', style: 'cancel' },
                   {
@@ -440,6 +451,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       : latestRun
       ? runStatusLabel(latestRun, workItems)
       : '';
+  const displayedRunActivity = latestRun ? runActivityDetail(latestRun) : null;
   const historicalTargetChapterCount = active
     ? Math.max(
         0,
@@ -881,6 +893,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                       >
                         {progressPercent}% · {displayedRunStatus}
                       </Text>
+                      {displayedRunActivity ? (
+                        <Text style={{ color: theme.colors.textSecondary }}>
+                          {displayedRunActivity}
+                        </Text>
+                      ) : null}
                     </>
                   )}
                   {needsActivation && (

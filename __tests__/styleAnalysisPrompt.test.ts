@@ -7,7 +7,7 @@ import {
 describe('high-fidelity continuation style analysis prompt', () => {
   it('requires concrete highest-strength imitation constraints', () => {
     const prompt = buildStyleAnalysisSystemPrompt();
-    expect(STYLE_ANALYZER_VERSION).toBe('style-v2-3');
+    expect(STYLE_ANALYZER_VERSION).toBe('style-v2-4');
     expect(prompt).toContain('可操作风格契约');
     expect(prompt).toContain('频率/范围');
     expect(prompt).toContain('句长/段长/标点组合');

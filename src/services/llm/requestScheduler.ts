@@ -12,6 +12,10 @@ const LIMITS: Record<LLMQueueClass, number> = {
   // five requests competing for a provider's worker slots. The remainder stay
   // visible as queued work items and are resumed from their persisted state.
   canon_analysis: 2,
+  // Original-style extraction is a follow-up task, never a Canon batch. Keep
+  // it in an independent single-flight lane so it cannot consume Canon's two
+  // long-context slots or create an avoidable request burst.
+  continuation_style_analysis: 1,
   connection: 1,
 };
 
