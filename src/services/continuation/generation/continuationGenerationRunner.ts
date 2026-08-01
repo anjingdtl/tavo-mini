@@ -22,7 +22,10 @@ import {
   compileRepairMessages,
   compileWriterMessages,
 } from './continuationPromptCompiler';
-import { shouldRunRepair, tryDeterministicRepair } from './continuationRepairService';
+import {
+  shouldRunRepair,
+  tryDeterministicRepair,
+} from './continuationRepairService';
 import {
   buildOutboxInsertStatement,
   casUpdateRunState,
@@ -61,7 +64,22 @@ import { v4 } from '../../uuidBridge';
 import { processContinuationOutbox } from './continuationStateOutboxWorker';
 import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
 import { planStageCapacity } from './continuationContextBudget';
-import type { ContinuationStageBudgets } from './continuationContextBudget';
+import {
+  resolveContinuationWriterOutputBudget,
+  type ContinuationStageBudgets,
+} from './continuationContextBudget';
+
+export interface StageLlmCallResult {
+  text: string;
+  usage?: { prompt?: number; completion?: number };
+  finishReason?: string | null;
+  emptyReason?:
+    | 'length'
+    | 'content_filter'
+    | 'reasoning_only'
+    | 'no_choices'
+    | 'empty';
+}
 
 export type StageLlmCaller = (input: {
   stage: string;
@@ -69,7 +87,7 @@ export type StageLlmCaller = (input: {
   maxTokens: number;
   configId: number | null;
   responseFormat?: 'json_object' | 'text';
-}) => Promise<{ text: string; usage?: { prompt?: number; completion?: number } }>;
+}) => Promise<StageLlmCallResult>;
 
 export interface StartContinuationRunInput {
   projectId: number;
@@ -115,13 +133,17 @@ function parsePlan(raw: string, fallbackInstruction: string): ContinuationPlan {
         chapterGoal: String(parsed.chapterGoal),
         centralConflict: String(parsed.centralConflict ?? ''),
         beats: Array.isArray(parsed.beats) ? parsed.beats : [],
-        participatingCharacterIds: Array.isArray(parsed.participatingCharacterIds)
+        participatingCharacterIds: Array.isArray(
+          parsed.participatingCharacterIds,
+        )
           ? parsed.participatingCharacterIds
           : [],
         characterActions: Array.isArray(parsed.characterActions)
           ? parsed.characterActions
           : [],
-        plotAdvances: Array.isArray(parsed.plotAdvances) ? parsed.plotAdvances : [],
+        plotAdvances: Array.isArray(parsed.plotAdvances)
+          ? parsed.plotAdvances
+          : [],
         foreshadowingActions: Array.isArray(parsed.foreshadowingActions)
           ? parsed.foreshadowingActions
           : [],
@@ -146,7 +168,7 @@ async function defaultStageCaller(input: {
   signal?: AbortSignal;
   projectId: number;
   runId: string;
-}): Promise<{ text: string; usage?: { prompt?: number; completion?: number } }> {
+}): Promise<StageLlmCallResult> {
   const requestConfig = input.configId
     ? await resolveLLMRequestConfigById(input.configId)
     : await resolveLLMRequestConfig();
@@ -156,7 +178,8 @@ async function defaultStageCaller(input: {
     Number.isFinite(contextWindow) &&
     contextWindow > 0
   ) {
-    const required = estimateMessagesTokens(input.messages) + input.maxTokens + 64;
+    const required =
+      estimateMessagesTokens(input.messages) + input.maxTokens + 64;
     if (required > contextWindow) {
       throw new ContinuationCapabilityBlockedError(
         `阶段 ${input.stage} 上下文不足：请求约 ${required} token，模型窗口 ${contextWindow}。请降低上下文深度或选择更大模型。`,
@@ -181,10 +204,31 @@ async function defaultStageCaller(input: {
   return {
     text: result.text ?? '',
     usage: {
-      prompt: (result as any).usage?.prompt_tokens,
-      completion: (result as any).usage?.completion_tokens,
+      prompt: result.rawUsage?.prompt_tokens,
+      completion: result.rawUsage?.completion_tokens,
     },
+    finishReason: result.finishReason,
+    emptyReason: result.emptyReason,
   };
+}
+
+function writerEmptyResponseError(result: StageLlmCallResult): Error {
+  switch (result.emptyReason) {
+    case 'reasoning_only':
+      return new Error(
+        'Writer 仅返回推理内容，未产生正文。请提高该模型的最大输出 token 或改用非推理模型。',
+      );
+    case 'length':
+      return new Error(
+        'Writer 输出被 max_tokens 截断，未产生正文。请提高该模型的最大输出 token。',
+      );
+    case 'content_filter':
+      return new Error('Writer 输出被内容过滤拦截，请调整本章要求后重试。');
+    case 'no_choices':
+      return new Error('Writer 收到空响应（无 choices），请检查模型服务状态。');
+    default:
+      return new Error('Writer 未返回正文，请检查模型服务后重试。');
+  }
 }
 
 export async function startContinuationRun(
@@ -203,15 +247,6 @@ export async function startContinuationRun(
     resolveStageConfig(generationSettings.plannerLlmConfigId),
     resolveStageConfig(generationSettings.writerLlmConfigId),
   ]);
-  const configuredWriterOutput = writerCfg?.max_output_tokens;
-  const writerStageOutput = Math.min(
-    4096,
-    generationSettings.targetChapterChars * 2,
-    Number.isFinite(configuredWriterOutput) && (configuredWriterOutput ?? 0) > 0
-      ? (configuredWriterOutput as number)
-      : Number.MAX_SAFE_INTEGER,
-  );
-
   // Resolve each stage from its actual LLM config. Do NOT take min(windows)
   // as a universal budget (Spec §7.1) — Planner may use a larger window than
   // Writer and vice versa. The frozen snapshot layout uses Writer capacity.
@@ -222,11 +257,20 @@ export async function startContinuationRun(
   const defaultWindow = positive(activeCfg?.context_window, 8192);
   const plannerWindow = positive(plannerCfg?.context_window, defaultWindow);
   const writerWindow = positive(writerCfg?.context_window, defaultWindow);
+  const writerOutputBudget = resolveContinuationWriterOutputBudget({
+    contextWindow: input.modelContextLimit ?? writerWindow,
+    targetChapterChars: generationSettings.targetChapterChars,
+    configuredMaxOutputTokens: writerCfg?.max_output_tokens,
+    requestedMaxOutputTokens: input.maxOutputTokens,
+  });
   const plannerOut = positive(
     plannerCfg?.max_output_tokens,
-    Math.min(2048, writerStageOutput),
+    Math.min(2048, writerOutputBudget.initialOutputTokens),
   );
-  const writerOut = input.maxOutputTokens ?? Math.max(256, writerStageOutput);
+  // The frozen layout reserves the retry ceiling. The first call below uses
+  // the smaller initial amount, leaving a safe expansion path for reasoning
+  // models that spend their first completion entirely on hidden reasoning.
+  const writerOut = writerOutputBudget.retryOutputTokens;
 
   const [checkerCfg, repairCfg] = await Promise.all([
     generationSettings.checkerEnabled
@@ -238,15 +282,13 @@ export async function startContinuationRun(
   ]);
 
   const fallbackConfigId = activeId || 1;
-  const plannerId =
-    generationSettings.plannerLlmConfigId ?? fallbackConfigId;
-  const writerId =
-    generationSettings.writerLlmConfigId ?? fallbackConfigId;
+  const plannerId = generationSettings.plannerLlmConfigId ?? fallbackConfigId;
+  const writerId = generationSettings.writerLlmConfigId ?? fallbackConfigId;
   const checkerId = generationSettings.checkerEnabled
-    ? (generationSettings.checkerLlmConfigId ?? fallbackConfigId)
+    ? generationSettings.checkerLlmConfigId ?? fallbackConfigId
     : null;
   const repairId = generationSettings.checkerEnabled
-    ? (generationSettings.repairLlmConfigId ?? fallbackConfigId)
+    ? generationSettings.repairLlmConfigId ?? fallbackConfigId
     : null;
 
   // Per-stage capacity from each stage's real window. input.modelContextLimit
@@ -299,6 +341,7 @@ export async function startContinuationRun(
     userInstruction: input.userInstruction,
     modelContextLimit: modelLimit,
     maxOutputTokens: maxOut,
+    initialWriterOutputTokens: writerOutputBudget.initialOutputTokens,
     activeLlmConfigId: activeId || 1,
     stageBudgets,
   });
@@ -391,8 +434,12 @@ async function runStages(
         configId,
         responseFormat,
       });
-      tokenUsage[stage] = r.usage ?? {};
-      return r.text;
+      tokenUsage[stage] = {
+        ...(r.usage ?? {}),
+        finishReason: r.finishReason ?? null,
+        emptyReason: r.emptyReason ?? null,
+      };
+      return r;
     }
     const r = await defaultStageCaller({
       stage,
@@ -404,8 +451,12 @@ async function runStages(
       projectId: opts.projectId,
       runId,
     });
-    tokenUsage[stage] = r.usage ?? {};
-    return r.text;
+    tokenUsage[stage] = {
+      ...(r.usage ?? {}),
+      finishReason: r.finishReason ?? null,
+      emptyReason: r.emptyReason ?? null,
+    };
+    return r;
   };
 
   const persistUsage = async (stage: string) => {
@@ -423,14 +474,14 @@ async function runStages(
     // H5 修复：原硬编码 1024，用户配 max_output_tokens=2048 也无效，复杂 plan
     // JSON 超 1024 token 被截断 → parsePlan 回落 defaultPlan。改用 stageBudgets
     // 已根据 LLM config 计算好的 maxOutputTokens（planStageCapacity 输出）。
-    const raw = await call(
+    const plannerResult = await call(
       'planner',
       plannerMsgs,
       snapshot.stageBudgets?.planner.maxOutputTokens ?? 1024,
       snapshot.settingsSnapshot.resolvedModelConfigIds.planner,
       'json_object',
     );
-    plan = parsePlan(raw, snapshot.bundles.userInstruction);
+    plan = parsePlan(plannerResult.text, snapshot.bundles.userInstruction);
   } catch (err) {
     // H7 修复：原 catch 完全吞错，planner 超时/解析失败用户无感知，writer
     // 拿空洞 defaultPlan 生成既浪费 token 又质量差。CapabilityBlocked 错误
@@ -446,14 +497,13 @@ async function runStages(
 
   const needsConfirm =
     snapshot.settingsSnapshot.values.plannerConfirmationPolicy === 'always' ||
-    (snapshot.settingsSnapshot.values.plannerConfirmationPolicy === 'risk_only' &&
-      plan.risks.some(r => r.severity === 'blocking' || r.severity === 'error'));
+    (snapshot.settingsSnapshot.values.plannerConfirmationPolicy ===
+      'risk_only' &&
+      plan.risks.some(
+        r => r.severity === 'blocking' || r.severity === 'error',
+      ));
 
-  await savePlan(
-    runId,
-    plan,
-    needsConfirm ? 'pending' : 'not_required',
-  );
+  await savePlan(runId, plan, needsConfirm ? 'pending' : 'not_required');
 
   if (needsConfirm) {
     await casUpdateRunState(runId, ['running'], {
@@ -503,7 +553,7 @@ function buildStageCaller(
     maxTokens: number,
     configId: number | null,
     responseFormat?: 'json_object' | 'text',
-  ): Promise<string> => {
+  ): Promise<StageLlmCallResult> => {
     if (callStage) {
       const r = await callStage({
         stage,
@@ -512,8 +562,12 @@ function buildStageCaller(
         configId,
         responseFormat,
       });
-      tokenUsage[stage] = r.usage ?? {};
-      return r.text;
+      tokenUsage[stage] = {
+        ...(r.usage ?? {}),
+        finishReason: r.finishReason ?? null,
+        emptyReason: r.emptyReason ?? null,
+      };
+      return r;
     }
     const r = await defaultStageCaller({
       stage,
@@ -525,8 +579,12 @@ function buildStageCaller(
       projectId,
       runId,
     });
-    tokenUsage[stage] = r.usage ?? {};
-    return r.text;
+    tokenUsage[stage] = {
+      ...(r.usage ?? {}),
+      finishReason: r.finishReason ?? null,
+      emptyReason: r.emptyReason ?? null,
+    };
+    return r;
   };
 }
 
@@ -591,7 +649,13 @@ export async function confirmPlanAndContinue(
   });
 
   const tokenUsage: Record<string, any> = {};
-  const call = buildStageCaller(callStage, controller, run.projectId, runId, tokenUsage);
+  const call = buildStageCaller(
+    callStage,
+    controller,
+    run.projectId,
+    runId,
+    tokenUsage,
+  );
 
   // Fix-plan §5.2: wrap the stage execution in the same try/catch/finally as
   // startContinuationRun so an exception cannot leave the controller dangling
@@ -629,7 +693,7 @@ async function continueFromWriter(
       maxTokens: number,
       configId: number | null,
       responseFormat?: 'json_object' | 'text',
-    ) => Promise<string>;
+    ) => Promise<StageLlmCallResult>;
     persistUsage: (stage: string) => Promise<void>;
     tokenUsage: Record<string, any>;
     deterministicOnly?: boolean;
@@ -649,16 +713,51 @@ async function continueFromWriter(
   } else {
     await opts.persistUsage('writer');
     const writerMsgs = compileWriterMessages(snapshot, plan);
-    body = await opts.call(
+    const initialWriterOutput = await opts.call(
       'writer',
       writerMsgs,
-      snapshot.contextBudget?.writerMaxOutputTokens ??
-        Math.min(4096, snapshot.settingsSnapshot.values.targetChapterChars * 2),
+      snapshot.contextBudget?.writerInitialOutputTokens ??
+        snapshot.contextBudget?.writerMaxOutputTokens ??
+        Math.max(256, snapshot.settingsSnapshot.values.targetChapterChars * 3),
       snapshot.settingsSnapshot.resolvedModelConfigIds.writer,
       'text',
     );
+    body = initialWriterOutput.text;
     if (!body.trim()) {
-      throw new Error('Writer 未返回正文');
+      const retryMaxTokens = snapshot.contextBudget?.writerMaxOutputTokens;
+      const shouldRetry =
+        (initialWriterOutput.emptyReason === 'length' ||
+          initialWriterOutput.emptyReason === 'reasoning_only') &&
+        typeof retryMaxTokens === 'number' &&
+        retryMaxTokens >
+          (snapshot.contextBudget?.writerInitialOutputTokens ?? 0);
+      if (shouldRetry) {
+        const retry = await opts.call(
+          'writer',
+          [
+            ...writerMsgs,
+            {
+              role: 'user',
+              content: '请直接开始输出本章正文；不要输出分析、思考过程或标题。',
+            },
+          ],
+          retryMaxTokens,
+          snapshot.settingsSnapshot.resolvedModelConfigIds.writer,
+          'text',
+        );
+        body = retry.text;
+        if (body.trim()) {
+          // The second call is intentionally the authoritative Writer trace.
+          opts.tokenUsage.writer = {
+            ...(opts.tokenUsage.writer ?? {}),
+            retriedAfterEmpty: initialWriterOutput.emptyReason,
+          };
+        } else {
+          throw writerEmptyResponseError(retry);
+        }
+      } else {
+        throw writerEmptyResponseError(initialWriterOutput);
+      }
     }
     artifact = await insertArtifact({
       runId,
@@ -691,7 +790,7 @@ async function continueFromWriter(
           snapshot.settingsSnapshot.resolvedModelConfigIds.checker,
           'json_object',
         );
-        issues = issues.concat(parseCheckerLlmJson(raw));
+        issues = issues.concat(parseCheckerLlmJson(raw.text));
       } catch (checkerErr) {
         // H3 修复：原 catch 完全吞错，与 planner 的 H7 修复不对称。LLM 返回
         // 截断 JSON 或网络超时时，真正的 continuity 冲突被无声丢弃。改为
@@ -738,21 +837,21 @@ async function continueFromWriter(
       // 已花的 planner+writer token）作废。改 try/catch：失败时记录 warning
       // 并 break 跳出 repair 循环，保留当前 artifact 走末尾 awaiting_user。
       try {
-        repaired = await opts.call(
-          'repair',
-          compileRepairMessages(snapshot, artifact.content, openChecks),
-          Math.min(4096, artifact.content.length + 500),
-          snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
-          'text',
-        );
+        repaired = (
+          await opts.call(
+            'repair',
+            compileRepairMessages(snapshot, artifact.content, openChecks),
+            Math.min(4096, artifact.content.length + 500),
+            snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
+            'text',
+          )
+        ).text;
       } catch (repairErr) {
         opts.tokenUsage.repair = {
           ...(opts.tokenUsage.repair ?? {}),
           warning: 'repair_failed',
           warningMessage:
-            repairErr instanceof Error
-              ? repairErr.message
-              : String(repairErr),
+            repairErr instanceof Error ? repairErr.message : String(repairErr),
         };
         break;
       }
@@ -824,10 +923,7 @@ async function assertContextFreshOrMarkOutdated(
   const settings = settingsRes.rows.item(0);
   const activeSourceId = settings.active_source_id;
   // Source mismatch (run frozen a source that is no longer active).
-  if (
-    run.sourceId != null &&
-    Number(activeSourceId) !== Number(run.sourceId)
-  ) {
+  if (run.sourceId != null && Number(activeSourceId) !== Number(run.sourceId)) {
     await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
       state: 'outdated',
       errorCode: 'outdated',
@@ -1096,24 +1192,24 @@ export async function finalizeContinuationChapter(input: {
   let frozenStateExtractionConfigId: number | null = null;
   let missingFrozenConfigReason: string | null = null;
   if (sourceRun) {
-      try {
-        const snapshot = JSON.parse(sourceRun.settingsSnapshotJson);
-        const resolved = snapshot?.resolvedModelConfigIds?.stateExtraction;
-        if (typeof resolved === 'number') {
-          frozenStateExtractionConfigId = resolved;
-        } else {
-          // Old / corrupt snapshot: stay safe (null) but record the reason in
-          // the outbox payload so the worker and UI can surface it without
-          // logging the prompt or chapter body.
-          missingFrozenConfigReason =
-            snapshot?.resolvedModelConfigIds == null
-              ? 'snapshot_missing_resolved_model_config_ids'
-              : 'snapshot_state_extraction_not_number';
-        }
-      } catch {
-        frozenStateExtractionConfigId = null;
-        missingFrozenConfigReason = 'settings_snapshot_json_unparseable';
+    try {
+      const snapshot = JSON.parse(sourceRun.settingsSnapshotJson);
+      const resolved = snapshot?.resolvedModelConfigIds?.stateExtraction;
+      if (typeof resolved === 'number') {
+        frozenStateExtractionConfigId = resolved;
+      } else {
+        // Old / corrupt snapshot: stay safe (null) but record the reason in
+        // the outbox payload so the worker and UI can surface it without
+        // logging the prompt or chapter body.
+        missingFrozenConfigReason =
+          snapshot?.resolvedModelConfigIds == null
+            ? 'snapshot_missing_resolved_model_config_ids'
+            : 'snapshot_state_extraction_not_number';
       }
+    } catch {
+      frozenStateExtractionConfigId = null;
+      missingFrozenConfigReason = 'settings_snapshot_json_unparseable';
+    }
   } else {
     missingFrozenConfigReason = 'manual_or_unknown_source_run';
   }
@@ -1295,7 +1391,13 @@ export async function resumeInterruptedRun(
     const controller = new AbortController();
     activeControllers.set(runId, controller);
     const tokenUsage: Record<string, any> = {};
-    const call = buildStageCaller(callStage, controller, run.projectId, runId, tokenUsage);
+    const call = buildStageCaller(
+      callStage,
+      controller,
+      run.projectId,
+      runId,
+      tokenUsage,
+    );
     try {
       await continueFromWriter(runId, snapshot, planRowCr.plan, {
         call,
@@ -1342,7 +1444,13 @@ export async function resumeInterruptedRun(
   const controller = new AbortController();
   activeControllers.set(runId, controller);
   const tokenUsage: Record<string, any> = {};
-  const call = buildStageCaller(callStage, controller, run.projectId, runId, tokenUsage);
+  const call = buildStageCaller(
+    callStage,
+    controller,
+    run.projectId,
+    runId,
+    tokenUsage,
+  );
   try {
     await continueFromWriter(runId, snapshot, planRow.plan, {
       call,
