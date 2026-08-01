@@ -17,6 +17,7 @@ jest.mock(
     getStyleProfileById: jest.fn(),
     listStyleProfilesForProject: jest.fn(),
     getActiveStyleProfileId: jest.fn(),
+    deleteStyleProfileByFingerprint: jest.fn(),
   }),
 );
 
