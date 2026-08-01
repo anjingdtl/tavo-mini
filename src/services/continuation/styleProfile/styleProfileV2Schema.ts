@@ -127,6 +127,37 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(v => typeof v === 'string');
 }
 
+/**
+ * LLM outputs often return a single string or mixed array where a string[] is
+ * required (CAN-101 style failure: imageryHabits as string). Coerce leniently
+ * before hard-failing validation.
+ */
+function coerceStringArray(value: unknown): string[] | null {
+  if (isStringArray(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (Array.isArray(value)) {
+    const out: string[] = [];
+    for (const item of value) {
+      if (typeof item === 'string') {
+        if (item.trim()) out.push(item);
+        continue;
+      }
+      if (item == null) continue;
+      if (typeof item === 'number' || typeof item === 'boolean') {
+        out.push(String(item));
+        continue;
+      }
+      // objects / nested arrays: not coercible
+      return null;
+    }
+    return out;
+  }
+  return null;
+}
+
 function isString(value: unknown): value is string {
   return typeof value === 'string';
 }
@@ -158,12 +189,14 @@ function requireStringArray(
   path: string,
   errors: string[],
 ): string[] | null {
-  const v = obj[key];
-  if (!isStringArray(v)) {
+  const coerced = coerceStringArray(obj[key]);
+  if (coerced == null) {
     errors.push(`字段 ${path} 必须是字符串数组`);
     return null;
   }
-  return v;
+  // Write back so the built profile uses the coerced value.
+  obj[key] = coerced;
+  return coerced;
 }
 
 function requireObject(
