@@ -66,10 +66,16 @@ import {
 } from './styleAnalysisPrompt';
 import { sha256Hex } from '../hashUtils';
 import { computeStyleProfileHash } from './styleProfileHash';
+import { resolveStyleEvidenceConfidence } from './styleEvidenceConfidence';
 
 const PROFILE_SCHEMA_VERSION = 2;
-/** Safety margin subtracted from the input budget (Spec §7.1). */
-const INPUT_BUDGET_SAFETY_FRACTION = 0.1;
+/**
+ * Style analysis follows Canon's 80% safe-context policy. This leaves a full
+ * 20% input-side margin after reserving the configured output tokens, so a
+ * provider-side tokenizer discrepancy cannot make this auxiliary task crowd
+ * out the original-text analysis budget.
+ */
+const INPUT_BUDGET_SAFETY_FRACTION = 0.2;
 /** Minimum tokens reserved for the system prompt + framework overhead. */
 const PROMPT_FRAMEWORK_RESERVE_TOKENS = 2048;
 
@@ -274,10 +280,30 @@ export async function runStyleAnalysis(
       );
     }
 
+    // The displayed confidence is evidence-based rather than the model's
+    // self-assessment alone. A chapter-heading formatting quirk must not turn
+    // millions of bounded source characters into a misleadingly low score.
+    // The exact observed coverage is also persisted instead of trusting a
+    // model-generated count in the JSON response.
+    const profile = {
+      ...outcome.profile,
+      confidence: resolveStyleEvidenceConfidence({
+        modelConfidence: outcome.profile.confidence,
+        chapters,
+        sampleRefs,
+      }),
+      coverage: {
+        sourceChapterCount: chapters.length,
+        sampledChapterCount: new Set(sampleRefs.map(ref => ref.sourceChapterId))
+          .size,
+        sampledKinds: [...new Set(sampleRefs.map(ref => ref.sampleKind))],
+      },
+    };
+
     // Hash the complete persisted payload, including nested fields, analyzer
     // version and carried-forward user overrides.
     const profileHash = computeStyleProfileHash({
-      profile: outcome.profile,
+      profile,
       metrics,
       sampleRefs,
       profileSchemaVersion: PROFILE_SCHEMA_VERSION,
@@ -288,11 +314,11 @@ export async function runStyleAnalysis(
     await updateStyleProfilePayload(
       profileId,
       {
-        profileJson: outcome.profile as unknown as Record<string, unknown>,
+        profileJson: profile as unknown as Record<string, unknown>,
         metricsJson: metrics as unknown as Record<string, unknown>,
         sampleRefsJson: sampleRefs,
         profileHash,
-        confidence: outcome.profile.confidence,
+        confidence: profile.confidence,
       },
       {
         state: 'ready',
@@ -750,7 +776,7 @@ async function mapReduceCall(args: {
       {
         responseFormat: 'json_object',
         temperature: 0.1,
-        queueClass: 'canon_analysis',
+        queueClass: 'continuation_style_analysis',
         queuePriority: 'background',
         scenario: 'continuation_style_analysis',
         requestConfig,
@@ -806,7 +832,7 @@ async function runValidatedCall(
       {
         responseFormat: 'json_object',
         temperature: 0.1,
-        queueClass: 'canon_analysis',
+        queueClass: 'continuation_style_analysis',
         queuePriority: 'background',
         scenario: 'continuation_style_analysis',
         requestConfig,

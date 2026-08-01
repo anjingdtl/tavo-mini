@@ -16,14 +16,11 @@
  * A marker only counts as a heading when it begins a line; mid-line mentions
  * like "第一章内容如下" in body text are rejected (Spec §11.1).
  */
-import type {
-  SourceChapterPosition,
-  Utf16Offset,
-} from '../../types/novel';
+import type { SourceChapterPosition, Utf16Offset } from '../../types/novel';
 import { Sha256Stream, sha256Hex } from './hashUtils';
 
 /** Bumped when detection rules change (Spec §11.1). */
-export const PARSER_VERSION = 'v1';
+export const PARSER_VERSION = 'v2';
 
 export interface ParsedChapter {
   position: SourceChapterPosition;
@@ -54,8 +51,19 @@ export interface ParsedSource {
 
 // CJK numeral → int map for the leading run of a 第... marker.
 const CJK_DIGITS: Record<string, number> = {
-  零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5,
-  六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+  零: 0,
+  〇: 0,
+  一: 1,
+  二: 2,
+  两: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+  十: 10,
 };
 
 /** Parse a run of CJK numerals (一..九十九...) into an int. Returns NaN if invalid. */
@@ -96,12 +104,16 @@ interface HeadingMatch {
   number: number;
 }
 
-// 第N章/节/回 — N is CJK or arabic. Optional "正文 " prefix.
-const CHAPTER_RE = /^(?:正文\s*)?第([0-9一二三四五六七八九十百千两零〇]+)[章节回](.*)$/;
+// 第N章/节/回 — N is CJK or arabic. Optional whitespace is deliberately
+// accepted around the number and marker: many TXT exports format headings as
+// “第 12 章”. Optional "正文 " prefix is also tolerated.
+const CHAPTER_RE =
+  /^(?:正文\s*)?第\s*([0-9一二三四五六七八九十百千两零〇]+)\s*[章节回](.*)$/;
 // Chapter N / CHAPTER N (English).
 const ENGLISH_CHAPTER_RE = /^Chapter\s+(\d+)\b(.*)$/i;
 // Volume markers: 第N卷 / 卷N / 第N部.
-const VOLUME_RE = /^(?:第([0-9一二三四五六七八九十百千两零〇]+)卷|卷([0-9一二三四五六七八九十百千两零〇]+))(?:.*)$/;
+const VOLUME_RE =
+  /^(?:第([0-9一二三四五六七八九十百千两零〇]+)卷|卷([0-9一二三四五六七八九十百千两零〇]+))(?:.*)$/;
 
 function matchHeading(line: string): HeadingMatch | null {
   const trimmed = line.trim();
@@ -157,7 +169,9 @@ function buildFallback(text: string): ParsedSource {
     chapters: [chapter],
     parserVersion: PARSER_VERSION,
     fallbackUsed: true,
-    warnings: ['未检测到章节标题，整篇作为单一章节。可手动拆分或选择按字数切分。'],
+    warnings: [
+      '未检测到章节标题，整篇作为单一章节。可手动拆分或选择按字数切分。',
+    ],
   };
 }
 
@@ -201,7 +215,7 @@ export function parseSourceChapters(text: string): ParsedSource {
     const contentStartOffset =
       contentStartLineIdx < lines.length
         ? lines[contentStartLineIdx].startOffset
-        : (startLine.startOffset + headingText.length + 1);
+        : startLine.startOffset + headingText.length + 1;
     // source_end_offset = start offset of endLineIdxExclusive (i.e. the next
     // heading), or text.length for the final chapter.
     const sourceEndOffset =
@@ -342,7 +356,8 @@ export function createStreamingChapterParser(): StreamingChapterParser {
     // it when the first body line arrives (see pushLine); fall back to just
     // after the heading if the chapter has no body.
     const contentStartOffset =
-      openContentStartOffset ?? sourceStartOffset + openStart.headingLine.length + 1;
+      openContentStartOffset ??
+      sourceStartOffset + openStart.headingLine.length + 1;
     const sourceEndOffset = endOffset;
     const charCount = sourceEndOffset - sourceStartOffset;
     const chapter: ParsedChapter = {
@@ -444,7 +459,7 @@ export function createStreamingChapterParser(): StreamingChapterParser {
       for (const part of parts) {
         bodyHasher.updateString(part);
       }
-      pendingBodyLine = {contentEndOffset: lineStartOffset + lineLength};
+      pendingBodyLine = { contentEndOffset: lineStartOffset + lineLength };
       if (parts.some(part => part.trim().length > 0)) {
         bodyParagraphCount += 1;
       }
@@ -456,7 +471,11 @@ export function createStreamingChapterParser(): StreamingChapterParser {
     fallbackSha256: string;
     fallbackParagraphCount: number;
     totalCharCount: number;
-  }): { chapters: ParsedChapter[]; fallbackUsed: boolean; warnings: string[] } => {
+  }): {
+    chapters: ParsedChapter[];
+    fallbackUsed: boolean;
+    warnings: string[];
+  } => {
     if (!sawAnyHeading) {
       // No headings anywhere → whole-text fallback (Spec §11.3).
       const title = '整篇（无标题）';
@@ -475,7 +494,9 @@ export function createStreamingChapterParser(): StreamingChapterParser {
       return {
         chapters: [fallback],
         fallbackUsed: true,
-        warnings: ['未检测到章节标题，整篇作为单一章节。可手动拆分或选择按字数切分。'],
+        warnings: [
+          '未检测到章节标题，整篇作为单一章节。可手动拆分或选择按字数切分。',
+        ],
       };
     }
     // Close the trailing chapter at end-of-text, if any is still open. The

@@ -17,7 +17,7 @@
  */
 /** Analyzer version. Bumped when the prompt or schema materially changes so
  * cached profiles can be invalidated against the new analyzer. */
-export const STYLE_ANALYZER_VERSION = 'style-v2-3';
+export const STYLE_ANALYZER_VERSION = 'style-v2-4';
 
 /**
  * The JSON skeleton the model must fill. Field names MUST stay in lockstep

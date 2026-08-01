@@ -57,6 +57,7 @@ export type LLMQueueClass =
   | 'pipeline'
   | 'background'
   | 'canon_analysis'
+  | 'continuation_style_analysis'
   | 'connection';
 export type LLMQueuePriority = 'manual' | 'normal' | 'background';
 export type LLMQueueState = 'queued' | 'running' | 'cancelled';

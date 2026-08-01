@@ -18,7 +18,8 @@ import { sha256Hex } from '../src/services/continuation/hashUtils';
 
 describe('continuation chapter parser (Spec §11.1)', () => {
   it('detects Chinese numeric chapter markers (第一章, 第十二回)', () => {
-    const text = '第一章 起点\n正文一\n第二章 风起\n正文二\n第十二回 终章\n正文三';
+    const text =
+      '第一章 起点\n正文一\n第二章 风起\n正文二\n第十二回 终章\n正文三';
     const result = parseSourceChapters(text);
     expect(result.chapters).toHaveLength(3);
     expect(result.chapters[0].title).toBe('第一章 起点');
@@ -35,7 +36,8 @@ describe('continuation chapter parser (Spec §11.1)', () => {
   });
 
   it('detects English Chapter / CHAPTER markers', () => {
-    const text = 'Chapter 1 The Beginning\nbody one\nCHAPTER 2 The End\nbody two';
+    const text =
+      'Chapter 1 The Beginning\nbody one\nCHAPTER 2 The End\nbody two';
     const result = parseSourceChapters(text);
     expect(result.chapters).toHaveLength(2);
     expect(result.chapters[0].title).toBe('Chapter 1 The Beginning');
@@ -61,7 +63,8 @@ describe('continuation chapter parser (Spec §11.1)', () => {
 
   it('does NOT misidentify "第一章内容如下" in body text as a title', () => {
     // The marker must sit at the start of a line to count as a heading.
-    const text = '第一章 标题\n这一段提到第一章内容如下，不应被识别为新章节。\n正文继续';
+    const text =
+      '第一章 标题\n这一段提到第一章内容如下，不应被识别为新章节。\n正文继续';
     const result = parseSourceChapters(text);
     expect(result.chapters).toHaveLength(1);
     expect(result.chapters[0].title).toBe('第一章 标题');
@@ -187,14 +190,18 @@ describe('streaming chapter parser equivalence (Spec §11 streaming)', () => {
   };
 
   it('matches one-shot for multi-chapter CJK text', () => {
-    const text = '序言\n这是开篇。\n第一章 起点\n正文一\n第二章 风起\n正文二\n第二段。';
-    const { oneShot, streamedChapters, finalResult } = streamParseAndCompare(text);
+    const text =
+      '序言\n这是开篇。\n第一章 起点\n正文一\n第二章 风起\n正文二\n第二段。';
+    const { oneShot, streamedChapters, finalResult } =
+      streamParseAndCompare(text);
     expectChaptersEqual(streamedChapters, finalResult, oneShot);
   });
 
   it('matches one-shot for text with volume markers', () => {
-    const text = '第一卷 春\n第一章 开端\n正文\n第二章 发展\n正文\n第二卷 秋\n第三章 转折\n正文';
-    const { oneShot, streamedChapters, finalResult } = streamParseAndCompare(text);
+    const text =
+      '第一卷 春\n第一章 开端\n正文\n第二章 发展\n正文\n第二卷 秋\n第三章 转折\n正文';
+    const { oneShot, streamedChapters, finalResult } =
+      streamParseAndCompare(text);
     expectChaptersEqual(streamedChapters, finalResult, oneShot);
     // Volume title should propagate to chapters under it.
     const all = [...streamedChapters, ...finalResult.chapters];
@@ -204,20 +211,23 @@ describe('streaming chapter parser equivalence (Spec §11 streaming)', () => {
 
   it('matches one-shot for English Chapter markers', () => {
     const text = 'Chapter 1 Begin\nBody one\nChapter 2 End\nBody two';
-    const { oneShot, streamedChapters, finalResult } = streamParseAndCompare(text);
+    const { oneShot, streamedChapters, finalResult } =
+      streamParseAndCompare(text);
     expectChaptersEqual(streamedChapters, finalResult, oneShot);
   });
 
   it('matches one-shot fallback when no headings exist', () => {
     const text = '这是一段没有章节标题的纯正文。\n第二段。\n\n第三段。';
-    const { oneShot, streamedChapters, finalResult } = streamParseAndCompare(text);
+    const { oneShot, streamedChapters, finalResult } =
+      streamParseAndCompare(text);
     expectChaptersEqual(streamedChapters, finalResult, oneShot);
     expect(finalResult.fallbackUsed).toBe(true);
   });
 
   it('matches one-shot for empty/blank chapters (heading with no body)', () => {
     const text = '第一章\n第二章\n实际内容';
-    const { oneShot, streamedChapters, finalResult } = streamParseAndCompare(text);
+    const { oneShot, streamedChapters, finalResult } =
+      streamParseAndCompare(text);
     expectChaptersEqual(streamedChapters, finalResult, oneShot);
   });
 
@@ -231,7 +241,8 @@ describe('streaming chapter parser equivalence (Spec §11 streaming)', () => {
       lines.push('');
     }
     const text = lines.join('\n');
-    const { oneShot, streamedChapters, finalResult } = streamParseAndCompare(text);
+    const { oneShot, streamedChapters, finalResult } =
+      streamParseAndCompare(text);
     expectChaptersEqual(streamedChapters, finalResult, oneShot);
     expect(oneShot.chapters).toHaveLength(30);
     const all = [...streamedChapters, ...finalResult.chapters];
@@ -254,6 +265,14 @@ describe('streaming chapter parser equivalence (Spec §11 streaming)', () => {
     });
     expect(finalChapters.chapters).toHaveLength(1); // ch2 closed at EOF
     expect(finalChapters.chapters[0].title).toBe('第二章 终');
+  });
+
+  it('detects whitespace-formatted chapter markers used by common TXT exports', () => {
+    const text = '第 1 章 开端\nA\n第　十二　回 终章\nB';
+    const result = parseSourceChapters(text);
+    expect(result.chapters).toHaveLength(2);
+    expect(result.chapters[0].title).toBe('第 1 章 开端');
+    expect(result.chapters[1].title).toBe('第　十二　回 终章');
   });
 
   it('hashes a very long body line without joining its chunks', () => {
