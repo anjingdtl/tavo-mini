@@ -11,7 +11,7 @@ import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 26 versioned continuation style profiles', () => {
   it('targets the current schema version', () => {
-    expect(SCHEMA_VERSION).toBe(29);
+    expect(SCHEMA_VERSION).toBe(30);
     expect(buildSchema26PostStyleStatements()).toEqual([]);
   });
 
@@ -56,9 +56,9 @@ describe('schema 26 versioned continuation style profiles', () => {
     expect(cols?.has('state')).toBe(true);
     // Legacy column dropped during rebuild.
     expect(cols?.has('canon_revision')).toBe(false);
-    expect(mock.indexes.has('idx_continuation_style_profiles_project_state')).toBe(
-      true,
-    );
+    expect(
+      mock.indexes.has('idx_continuation_style_profiles_project_state'),
+    ).toBe(true);
     expect(
       mock.indexes.has('idx_continuation_style_profiles_fingerprint'),
     ).toBe(true);
@@ -76,15 +76,19 @@ describe('schema 26 versioned continuation style profiles', () => {
       if (sql === 'PRAGMA foreign_key_check') {
         return [{ rows: { length: 0, item: () => null } }] as any;
       }
-      return [{
-        rows: {
-          length: 1,
-          item: () => ({ table: 'continuation_analysis_runs' }),
+      return [
+        {
+          rows: {
+            length: 1,
+            item: () => ({ table: 'continuation_analysis_runs' }),
+          },
         },
-      }] as any;
+      ] as any;
     });
 
-    await expect(migrateV25ToV26(mock.database as any)).resolves.toBeUndefined();
+    await expect(
+      migrateV25ToV26(mock.database as any),
+    ).resolves.toBeUndefined();
     expect(mock.database.executeSql).toHaveBeenCalledWith(
       'PRAGMA foreign_key_check',
     );
@@ -110,12 +114,14 @@ describe('schema 26 versioned continuation style profiles', () => {
       if (sql === 'PRAGMA foreign_key_check') {
         return [{ rows: { length: 0, item: () => null } }] as any;
       }
-      return [{
-        rows: {
-          length: 1,
-          item: () => ({ table: 'continuation_analysis_runs_v25' }),
+      return [
+        {
+          rows: {
+            length: 1,
+            item: () => ({ table: 'continuation_analysis_runs_v25' }),
+          },
         },
-      }] as any;
+      ] as any;
     });
 
     await expect(migrateV25ToV26(mock.database as any)).rejects.toThrow(

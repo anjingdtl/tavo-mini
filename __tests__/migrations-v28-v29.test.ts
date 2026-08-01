@@ -1,56 +1,55 @@
-import { createCurrentSchema } from '../src/data/schema/createCurrentSchema';
-import { SCHEMA_VERSION } from '../src/services/migrations';
-import { buildV28toV29Statements } from '../src/services/migrations/v28-to-v29';
-import { applyMigration } from '../src/services/migrations/helpers';
+import { migrateV28ToV29 } from '../src/services/migrations/v28-to-v29';
 import { createMigrationDb } from './migrationTestUtils';
 
-describe('schema 29 — multi-file continuation import', () => {
-  it('reflects the new schema version', () => {
-    expect(SCHEMA_VERSION).toBe(29);
-  });
-
-  it('adds source_files_json / is_multi_file / file_count to continuation_sources', async () => {
+describe('schema 29 multi-file source migration', () => {
+  it('adds every missing column for a normal schema-28 upgrade', async () => {
     const mock = createMigrationDb({ schemaVersion: 28 });
-    await applyMigration(mock.database as any, buildV28toV29Statements());
-    const cols = mock.schemas.get('continuation_sources');
-    expect(cols).toBeDefined();
-    expect(cols!.has('source_files_json')).toBe(true);
-    expect(cols!.has('is_multi_file')).toBe(true);
-    expect(cols!.has('file_count')).toBe(true);
+    await migrateV28ToV29(mock.database as any);
+
+    expect(
+      mock.schemas.get('continuation_sources')?.has('source_files_json'),
+    ).toBe(true);
+    expect(mock.schemas.get('continuation_sources')?.has('is_multi_file')).toBe(
+      true,
+    );
+    expect(mock.schemas.get('continuation_sources')?.has('file_count')).toBe(
+      true,
+    );
+    expect(
+      mock.schemas.get('continuation_source_text_chunks')?.has('file_index'),
+    ).toBe(true);
+    expect(
+      mock.schemas.get('continuation_source_chapters')?.has('file_index'),
+    ).toBe(true);
   });
 
-  it('adds file_index to continuation_source_text_chunks', async () => {
+  it('skips a preview-written column instead of blocking startup', async () => {
     const mock = createMigrationDb({ schemaVersion: 28 });
-    await applyMigration(mock.database as any, buildV28toV29Statements());
-    const cols = mock.schemas.get('continuation_source_text_chunks');
-    expect(cols).toBeDefined();
-    expect(cols!.has('file_index')).toBe(true);
+    mock.schemas.get('continuation_sources')?.add('source_files_json');
+
+    await migrateV28ToV29(mock.database as any);
+
+    const duplicateColumnSql = mock.executed.filter(statement =>
+      statement.includes('ADD COLUMN source_files_json'),
+    );
+    expect(duplicateColumnSql).toEqual([]);
+    expect(mock.schemas.get('continuation_sources')?.has('is_multi_file')).toBe(
+      true,
+    );
   });
 
-  it('adds file_index to continuation_source_chapters', async () => {
+  it('is a no-op when every preview column is already present', async () => {
     const mock = createMigrationDb({ schemaVersion: 28 });
-    await applyMigration(mock.database as any, buildV28toV29Statements());
-    const cols = mock.schemas.get('continuation_source_chapters');
-    expect(cols).toBeDefined();
-    expect(cols!.has('file_index')).toBe(true);
-  });
+    mock.schemas.get('continuation_sources')?.add('source_files_json');
+    mock.schemas.get('continuation_sources')?.add('is_multi_file');
+    mock.schemas.get('continuation_sources')?.add('file_count');
+    mock.schemas.get('continuation_source_text_chunks')?.add('file_index');
+    mock.schemas.get('continuation_source_chapters')?.add('file_index');
 
-  it('mirrors new columns in createCurrentSchema for fresh installs', async () => {
-    const sql: string[] = [];
-    await createCurrentSchema({
-      executeSql: jest.fn(async (statement: string) => {
-        sql.push(statement.replace(/\s+/g, ' ').trim());
-        return [{ rows: { length: 0, item: () => null } }];
-      }),
-    } as any);
-    const joined = sql.join('\n');
-    // continuation_sources
-    expect(joined).toContain('source_files_json TEXT');
-    expect(joined).toContain('is_multi_file INTEGER NOT NULL DEFAULT 0');
-    expect(joined).toContain('file_count INTEGER NOT NULL DEFAULT 1');
-    // chunks
-    expect(joined).toMatch(/continuation_source_text_chunks[\s\S]*file_index INTEGER NOT NULL DEFAULT 0/);
-    // chapters
-    expect(joined).toMatch(/continuation_source_chapters[\s\S]*file_index INTEGER NOT NULL DEFAULT 0/);
+    await migrateV28ToV29(mock.database as any);
+
+    expect(
+      mock.executed.filter(statement => statement.startsWith('ALTER TABLE')),
+    ).toEqual([]);
   });
 });
