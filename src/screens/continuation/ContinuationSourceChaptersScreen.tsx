@@ -338,8 +338,12 @@ export const ContinuationSourceChaptersScreen: React.FC<{
           if (copy.status === 'error') {
             // IMP-004: keepLocalCopy may leave Caches/<uuid>/<name> even on
             // error (and sometimes without localUri). Always best-effort clean.
+            const errLocalUri =
+              'localUri' in copy
+                ? (copy as { localUri?: string | null }).localUri
+                : null;
             await cleanupFailedPickerCopy({
-              localUri: copy.localUri,
+              localUri: errLocalUri,
               originalFileName: f.name || 'original.txt',
             });
             const rawMsg = copy.copyError || `复制文件 ${f.name} 失败。`;
