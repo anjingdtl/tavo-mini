@@ -6,12 +6,16 @@
  * finally-unlinked cachesDirectory copies before the ordering screen confirmed.
  */
 import {
+  cleanupFailedPickerCopy,
   decidePickerTempCleanup,
   unlinkPickerTempCopies,
 } from '../src/services/continuation/continuationPickerTempLifecycle';
 
 jest.mock('react-native-fs', () => ({
   unlink: jest.fn(() => Promise.resolve()),
+  readDir: jest.fn(() => Promise.resolve([])),
+  exists: jest.fn(() => Promise.resolve(false)),
+  CachesDirectoryPath: '/data/cache',
 }));
 
 import RNFS from 'react-native-fs';
@@ -19,6 +23,8 @@ import RNFS from 'react-native-fs';
 describe('continuationPickerTempLifecycle', () => {
   beforeEach(() => {
     (RNFS.unlink as jest.Mock).mockClear();
+    (RNFS.readDir as jest.Mock).mockReset().mockResolvedValue([]);
+    (RNFS.exists as jest.Mock).mockReset().mockResolvedValue(false);
   });
 
   it('retains picker copies when multi-file flow hands off to ordering', () => {
@@ -59,5 +65,26 @@ describe('continuationPickerTempLifecycle', () => {
       unlinkPickerTempCopies(['/a', '/missing']),
     ).resolves.toBeUndefined();
     expect(RNFS.unlink).toHaveBeenCalledTimes(2);
+  });
+
+  it('cleanupFailedPickerCopy unlinks localUri and scans cache for orphan name', async () => {
+    (RNFS.readDir as jest.Mock).mockResolvedValue([
+      {
+        isDirectory: () => true,
+        path: '/data/cache/uuid-1',
+        name: 'uuid-1',
+      },
+    ]);
+    (RNFS.exists as jest.Mock).mockResolvedValue(true);
+    await cleanupFailedPickerCopy({
+      localUri: 'file:///data/cache/uuid-0/bad_empty.txt',
+      originalFileName: 'bad_empty.txt',
+    });
+    expect(RNFS.unlink).toHaveBeenCalledWith(
+      '/data/cache/uuid-0/bad_empty.txt',
+    );
+    expect(RNFS.unlink).toHaveBeenCalledWith(
+      '/data/cache/uuid-1/bad_empty.txt',
+    );
   });
 });
