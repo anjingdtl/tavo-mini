@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.11.13] - 2026-08-01
+
+### Fixed
+
+- Schema 28→29 多文件原著迁移改为逐列幂等检查，修复预览版已写入列但版本号未更新时的 `duplicate column name: source_files_json` 启动失败。
+- 新增 Schema 29→30：重建遗留 Canon 分析任务的 `stage` 约束并完整保留任务、批次和工作项，允许已完成正文提取的任务进入 `style_analysis` / `style_validation`，不再卡在“正在汇总结果”。
+
 ## [2.11.12] - 2026-08-01
 
 ### Fixed

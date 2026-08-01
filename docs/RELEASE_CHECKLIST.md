@@ -1,5 +1,18 @@
 # ShineWriter 发布清单
 
+## V2.11.13 原著分析升级迁移修复
+
+- [x] `package.json` / `package-lock.json` 升级至 `2.11.13`，`npm run prebuild` 生成 `V2.11.13` / `2111300`
+- [x] Schema 30：对已升级到 Schema 29 的历史库重建原著分析任务表的 `stage` 约束，允许 `style_analysis` / `style_validation`，并保留已有任务、批次和工作项
+- [x] Schema 29 迁移改为按实际列存在性补列，修复历史预览版本已写入 `source_files_json` 时重复加列导致的升级失败
+- [x] Android 模拟器以保留的约 76 MB 历史数据库启动，确认 Schema 29 → 30 迁移后正常进入应用；迁移日志无重复列或任务阶段约束错误
+- [x] `npm run verify` 通过：207 个测试套件通过、1 个既有跳过；1,680 项测试通过、3 项既有跳过；ESLint 0 error、typecheck / version 校验通过
+- [x] `npm run test:coverage` 通过：语句 67.85%、分支 56.42%、函数 69.53%、行 69.87%
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.11.13-release.apk`
+- [x] 单 signer、v2 签名、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.11.13` / `2111300` 验收通过
+
+证据：Release APK 35,017,090 bytes，SHA-256 `3ADB1B1480D1D148332BDED3995923221CFF8D4B28FBADFF470681FCBE97119D`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，单 signer，APK Signature Scheme v2，16 KB zipalign 验证成功，`aapt` `package: name='com.shinewriter' versionCode='2111300' versionName='V2.11.13'`。模拟器和构建日志位于 `test-logs/`（未纳入版本控制）。
+
 ## V2.11.12 续写动态预算、边界读取与真实 AI 穿测
 
 - [x] `npm run verify` 通过：206 个测试套件通过，1 个既有跳过；1678 项测试通过，3 项既有跳过；新增续写超时策略回归

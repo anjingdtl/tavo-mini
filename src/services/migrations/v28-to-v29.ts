@@ -1,3 +1,5 @@
+import type SQLite from 'react-native-sqlite-storage';
+import { applyMigration, tableColumns } from './helpers';
 import type { SqlStatement } from '../database/transaction';
 
 /**
@@ -35,4 +37,45 @@ export function buildV28toV29Statements(): SqlStatement[] {
         CHECK(file_index >= 0)`,
     },
   ];
+}
+
+/**
+ * Some V2.11.2 preview builds wrote one or more multi-file columns before
+ * persisting schema_version=29. A later stable upgrade must therefore treat
+ * every ADD COLUMN independently: SQLite has no IF NOT EXISTS for columns and
+ * an unconditional statement blocks the whole app at startup.
+ */
+export async function migrateV28ToV29(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  const sourceColumns = await tableColumns(database, 'continuation_sources');
+  const chunkColumns = await tableColumns(
+    database,
+    'continuation_source_text_chunks',
+  );
+  const chapterColumns = await tableColumns(
+    database,
+    'continuation_source_chapters',
+  );
+  const statements = buildV28toV29Statements().filter(statement => {
+    if (statement.sql.includes('continuation_sources')) {
+      if (statement.sql.includes('source_files_json')) {
+        return !sourceColumns.has('source_files_json');
+      }
+      if (statement.sql.includes('is_multi_file')) {
+        return !sourceColumns.has('is_multi_file');
+      }
+      if (statement.sql.includes('file_count')) {
+        return !sourceColumns.has('file_count');
+      }
+    }
+    if (statement.sql.includes('continuation_source_text_chunks')) {
+      return !chunkColumns.has('file_index');
+    }
+    if (statement.sql.includes('continuation_source_chapters')) {
+      return !chapterColumns.has('file_index');
+    }
+    return true;
+  });
+  await applyMigration(database, statements);
 }
