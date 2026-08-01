@@ -102,6 +102,37 @@ import {
   type AdaptiveBatchPlan,
   type CanonAnalysisPrecheck,
 } from './adaptiveBatchPlanner';
+
+/**
+ * react-native-sqlite-storage and some native bridges reject with plain
+ * objects `{ message, code }` rather than Error. String(err) becomes
+ * "[object Object]" and hides the real failure (CAN-101 emulator).
+ */
+export function formatUnknownError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message || err.name || 'Unknown Error';
+  }
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    const o = err as { message?: unknown; code?: unknown; sqlMessage?: unknown };
+    const msg =
+      (typeof o.message === 'string' && o.message) ||
+      (typeof o.sqlMessage === 'string' && o.sqlMessage) ||
+      null;
+    if (msg) {
+      return o.code != null && o.code !== ''
+        ? `${msg} (code=${String(o.code)})`
+        : msg;
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return Object.prototype.toString.call(err);
+    }
+  }
+  return String(err);
+}
+
 export type {
   AdaptiveBatch,
   AdaptiveBatchPlan,
@@ -674,19 +705,46 @@ export async function materializeBatchResult(
 
   // 清理该 batch 的旧 canon 数据，防止 resume 重跑时重复 INSERT。
   // characters 跨 batch 共享（ensureCharacter 通过 nameToId 去重），不删；
-  // evidence CASCADE 删 links；其余子表按 valid_from_position = fromPos 清理。
+  // evidence 表没有 valid_from_position，按 chapter_position 区间清理（CAN-101）；
+  // 其余子表按 valid_from_position = fromPos 清理。
   // 原逻辑无此清理，中途失败后 resume 重跑会重复插入 alias/evidence/
   // relationship/plot_thread/experience/knowledge/state/timeline，导致孤儿
   // 证据，countOrphanEvidence > 0，activateSnapshotAndStyleProfile 永久拒绝激活。
   await executeTransaction(db, [
-    { sql: 'DELETE FROM canon_evidence WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
-    { sql: 'DELETE FROM canon_timeline_events WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
-    { sql: 'DELETE FROM canon_plot_threads WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
-    { sql: 'DELETE FROM canon_relationships WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
-    { sql: 'DELETE FROM canon_character_state_snapshots WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
-    { sql: 'DELETE FROM canon_character_experiences WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
-    { sql: 'DELETE FROM canon_character_knowledge WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
-    { sql: 'DELETE FROM canon_character_aliases WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?', params: [ctx.snapshotId, ctx.runId, fromPos] },
+    {
+      sql: `DELETE FROM canon_evidence
+        WHERE snapshot_id = ? AND analysis_run_id = ?
+          AND chapter_position >= ? AND chapter_position <= ?`,
+      params: [ctx.snapshotId, ctx.runId, fromPos, pos],
+    },
+    {
+      sql: 'DELETE FROM canon_timeline_events WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+      params: [ctx.snapshotId, ctx.runId, fromPos],
+    },
+    {
+      sql: 'DELETE FROM canon_plot_threads WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+      params: [ctx.snapshotId, ctx.runId, fromPos],
+    },
+    {
+      sql: 'DELETE FROM canon_relationships WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+      params: [ctx.snapshotId, ctx.runId, fromPos],
+    },
+    {
+      sql: 'DELETE FROM canon_character_state_snapshots WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+      params: [ctx.snapshotId, ctx.runId, fromPos],
+    },
+    {
+      sql: 'DELETE FROM canon_character_experiences WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+      params: [ctx.snapshotId, ctx.runId, fromPos],
+    },
+    {
+      sql: 'DELETE FROM canon_character_knowledge WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+      params: [ctx.snapshotId, ctx.runId, fromPos],
+    },
+    {
+      sql: 'DELETE FROM canon_character_aliases WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+      params: [ctx.snapshotId, ctx.runId, fromPos],
+    },
   ]);
 
   // Load existing characters for this snapshot.
@@ -1582,7 +1640,7 @@ async function assertSourceStillValid(
   } catch (e) {
     if (e instanceof ContinuationSnapshotOutdatedError) throw e;
     throw new ContinuationSnapshotOutdatedError(
-      e instanceof Error ? e.message : '源快照校验失败',
+      formatUnknownError(e) || '源快照校验失败',
     );
   }
 }
@@ -1614,7 +1672,7 @@ async function processAnalysisRunInner(
     await updateRunState(db, runId, {
       state: 'outdated',
       errorCode: 'source_snapshot_changed',
-      errorMessage: e instanceof Error ? e.message : '源已变化',
+      errorMessage: formatUnknownError(e) || '源已变化',
     });
     await updateSnapshotMeta(db, run.canonSnapshotId, { status: 'outdated' });
     await execute(
@@ -1862,8 +1920,7 @@ async function processAnalysisRunInner(
           await reportWorkItem(materialType, batch.batchIndex, 'completed');
           return outcome.result;
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
+          const message = formatUnknownError(error);
           await updateWorkItem(db, {
             runId,
             batchIndex: batch.batchIndex,
@@ -1935,7 +1992,7 @@ async function processAnalysisRunInner(
         );
         return (await getRunById(runId)) ?? run;
       }
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatUnknownError(err);
       await execute(
         db,
         `UPDATE continuation_analysis_batches SET
@@ -2620,7 +2677,7 @@ export async function extractMaterialWithLlm(
             ?.finishReason,
         };
         throw canonOutputError(
-          error instanceof Error ? error.message : '提取结果不是合法 JSON',
+          formatUnknownError(error) || '提取结果不是合法 JSON',
         );
       }
       const evidenceResolution = resolveExtractionEvidenceAgainstChapters(

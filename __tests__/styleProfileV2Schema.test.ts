@@ -101,6 +101,16 @@ describe('validateStyleProfileV2', () => {
     expect(result.profile?.global.narrative.person).toBe('第三人称');
   });
 
+  it('coerces imageryHabits string to string array (LLM variance)', () => {
+    const p = validProfile() as any;
+    p.global.description.imageryHabits = '白描与留白';
+    const result = validateStyleProfileV2(p);
+    expect(result.ok).toBe(true);
+    expect(result.profile?.global.description.imageryHabits).toEqual([
+      '白描与留白',
+    ]);
+  });
+
   it('rejects a non-object top level', () => {
     const result = validateStyleProfileV2('not an object');
     expect(result.ok).toBe(false);

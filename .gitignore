@@ -164,6 +164,10 @@ scripts/zswebdav-put.ps1
 # 端到端穿测截图（界面含配置文本，不入库）
 /docs/e2e-screenshots/
 
+# 续写模块长测证据（80MB+：模拟器 UI/日志/数据库快照，不入库）
+# 参见 docs/tavo-mini_续写模块_Android模拟器自动测试与修复长程执行计划.md
+/artifacts/
+
 # llama.cpp 源码（构建时外部克隆，不入库）
 /android/app/jni/llama.cpp/
 
