@@ -54,3 +54,27 @@ export function runStatusLabel(
       return '正在汇总结果';
   }
 }
+
+/**
+ * Extra context for long-running stages. Finalization has no remaining model
+ * work-item count to increment, so surface a fresh heartbeat instead of
+ * leaving users with an unexplained 100% bar.
+ */
+export function runActivityDetail(
+  run: Pick<AnalysisRun, 'state' | 'stage' | 'updatedAt'>,
+  currentTimeMs = Date.now(),
+): string | null {
+  if (run.state !== 'running' || run.stage !== 'finalizing') return null;
+  const lastActivityMs = Date.parse(run.updatedAt);
+  if (!Number.isFinite(lastActivityMs)) {
+    return '模型请求已完成，正在本地整理证据与覆盖范围。';
+  }
+  const elapsedSeconds = Math.max(0, Math.floor((currentTimeMs - lastActivityMs) / 1000));
+  const activityLabel =
+    elapsedSeconds < 5
+      ? '刚刚'
+      : elapsedSeconds < 60
+      ? `${elapsedSeconds} 秒前`
+      : `${Math.floor(elapsedSeconds / 60)} 分钟前`;
+  return `模型请求已完成，正在本地整理证据与覆盖范围 · 最近活动：${activityLabel}`;
+}

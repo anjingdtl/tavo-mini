@@ -1,4 +1,8 @@
-import { callLLMResult } from '../llm';
+import {
+  callLLMResult,
+  resolveLLMRequestConfigById,
+} from '../llm';
+import { modelJsonCandidates } from './canon/canonJsonValidators';
 
 /**
  * Input file for ordering. `index` is the original selection order (0-based).
@@ -31,16 +35,15 @@ interface LlmOrderResponse {
  * Order multiple TXT files by analyzing head/tail samples with an LLM.
  * Falls back to filename sort on any LLM failure or invalid response.
  *
- * `modelConfigId` is currently used only for logging/future telemetry; the
- * active LLM config is read from settings via `callLLMResult`. Kept on the
- * signature so callers (UI) can pass it without a future breaking change
- * when per-call config selection lands.
+ * Use the configuration selected by the caller. This matters while the
+ * settings store is refreshing: silently resolving a different active config
+ * can make the ordering request fail even though the screen showed one as
+ * configured.
  */
 export async function orderSourceFiles(
   files: OrderingInputFile[],
   modelConfigId: number,
 ): Promise<OrderingResult> {
-  void modelConfigId; // reserved for future per-call config selection
   if (files.length <= 1) {
     return {
       orderedFileIndexes: files.map(f => f.index),
@@ -52,6 +55,7 @@ export async function orderSourceFiles(
 
   try {
     const prompt = buildOrderingPrompt(files);
+    const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
     const response = await callLLMResult(
       [{ role: 'user', content: prompt }],
       1024,
@@ -61,6 +65,7 @@ export async function orderSourceFiles(
         queueClass: 'normal',
         queuePriority: 'normal',
         scenario: 'continuation_source_ordering',
+        requestConfig,
       },
     );
 
@@ -116,51 +121,68 @@ ${fileDescriptions}
 - 只输出 JSON，不要其他文字`;
 }
 
-function parseOrderResponse(
+export function parseOrderResponse(
   text: string | null,
   expectedCount: number,
 ): LlmOrderResponse | null {
   if (!text) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    // 尝试从 markdown fence 或 prose 中剥离
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
+  // Reuse the Canon parser's production-hardened candidate extraction. A
+  // number of OpenAI-compatible gateways add prose / fences or serialize the
+  // JSON content as a JSON string a second time. The previous greedy regexp
+  // rejected all of those otherwise valid ordering responses.
+  for (const candidate of modelJsonCandidates(text)) {
     try {
-      parsed = JSON.parse(match[0]);
+      let parsed: unknown = JSON.parse(candidate);
+      for (let depth = 0; typeof parsed === 'string' && depth < 2; depth += 1) {
+        parsed = JSON.parse(parsed.trim());
+      }
+      const valid = validateOrderResponse(parsed, expectedCount);
+      if (valid) return valid;
     } catch {
-      return null;
+      // Try the next balanced JSON candidate, if any.
     }
   }
+  return null;
+}
 
-  if (typeof parsed !== 'object' || parsed === null) return null;
-  const obj = parsed as Record<string, unknown>;
-
-  const order = obj.order;
-  const confidence = obj.confidence;
-  const reasoning = obj.reasoning;
-
-  if (!Array.isArray(order)) return null;
-  if (typeof confidence !== 'number' || confidence < 0 || confidence > 1) return null;
-  if (typeof reasoning !== 'string') return null;
-
-  // 校验索引完整性
-  if (order.length !== expectedCount) return null;
-  const sorted = [...order].sort((a, b) => a - b);
-  for (let i = 0; i < expectedCount; i++) {
-    if (sorted[i] !== i) return null;
+function validateOrderResponse(
+  parsed: unknown,
+  expectedCount: number,
+): LlmOrderResponse | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return null;
   }
-  // 校验无重复
-  const unique = new Set(order);
-  if (unique.size !== expectedCount) return null;
+  const obj = parsed as Record<string, unknown>;
+  // `orderedFileIndexes` is accepted for models that mirror the TypeScript
+  // result name instead of the prompt's shorter `order` field.
+  const rawOrder = obj.order ?? obj.orderedFileIndexes;
+  if (!Array.isArray(rawOrder) || rawOrder.length !== expectedCount) return null;
 
-  return {
-    order: order.map(n => Math.floor(n)),
-    confidence,
-    reasoning,
-  };
+  const order = rawOrder.map(value => {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+      return Number(value);
+    }
+    return Number.NaN;
+  });
+  if (order.some(index => !Number.isInteger(index))) return null;
+  const sorted = [...order].sort((a, b) => a - b);
+  if (sorted.some((index, expected) => index !== expected)) return null;
+
+  const rawConfidence = obj.confidence;
+  const confidence =
+    typeof rawConfidence === 'number' &&
+    Number.isFinite(rawConfidence) &&
+    rawConfidence >= 0 &&
+    rawConfidence <= 1
+      ? rawConfidence
+      : 0.5;
+  const reasoning =
+    typeof obj.reasoning === 'string' && obj.reasoning.trim()
+      ? obj.reasoning.trim()
+      : '已根据文件名和原著片段分析排序';
+
+  return { order, confidence, reasoning };
 }
 
 function filenameFallback(

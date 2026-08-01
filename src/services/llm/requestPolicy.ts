@@ -19,7 +19,10 @@ export const LLM_TIMEOUTS = {
   chapterDraftMs: 180_000,
   // Canon extraction sends chapter context and asks for evidence-rich JSON.
   // Cloud providers can legitimately queue this longer than an ordinary chat.
-  canonAnalysisMs: 180_000,
+  // DeepSeek keeps an accepted request connected for up to ten minutes before
+  // inference starts. Canon batches may legitimately be large (up to 80% of
+  // a configured 1M context), so let the client wait just below that window.
+  canonAnalysisMs: 570_000,
   // 构建场景（世界书/角色卡）在「深度」档或条目较多时输出可达 10k+ Token，
   // 云端模型长输出常见 60-120 秒延迟，沿用章节草稿的 180 秒长超时。
   constructionMs: 180_000,

@@ -265,6 +265,12 @@ describe('runStyleAnalysis', () => {
     expect(result.success).toBe(true);
     // Exactly one LLM call (single-call path) — no map/reduce.
     expect(callLLMResult).toHaveBeenCalledTimes(1);
+    expect((callLLMResult as jest.Mock).mock.calls[0][2]).toEqual(
+      expect.objectContaining({
+        queueClass: 'continuation_style_analysis',
+        queuePriority: 'background',
+      }),
+    );
     expect(updateStyleProfilePayload).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
@@ -676,8 +682,9 @@ describe('runStyleAnalysis', () => {
         normalizationVersion: sourceSnapshot.normalizationVersion,
         boundaryChapterId: sourceSnapshot.boundary.chapterId,
         boundaryPosition: sourceSnapshot.boundary.chapterPosition,
-        boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
-        analyzerVersion: 'style-v2-3',
+        boundaryCharOffsetExclusive:
+          sourceSnapshot.boundary.charOffsetExclusive,
+        analyzerVersion: 'style-v2-4',
         state: 'ready',
         userOverridesJson: {},
       },
@@ -692,7 +699,10 @@ describe('runStyleAnalysis', () => {
       signal: new AbortController().signal,
     });
 
-    expect(result).toEqual({ profileId: 'active-ready-profile', success: true });
+    expect(result).toEqual({
+      profileId: 'active-ready-profile',
+      success: true,
+    });
     expect(insertStyleProfile).not.toHaveBeenCalled();
     expect(updateStyleProfilePayload).toHaveBeenCalledWith(
       'active-ready-profile',

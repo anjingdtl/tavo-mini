@@ -99,6 +99,15 @@ function confirmEncodingIfNeeded(localPath: string): Promise<string | undefined 
     });
 }
 
+/**
+ * Multiple files must not turn an implementation detail (text encoding) into
+ * a sequence of decisions for users. The native decoder auto-detects each
+ * file independently; manual recovery remains available for a single file.
+ */
+export function shouldConfirmEncoding(selectedFileCount: number): boolean {
+  return selectedFileCount === 1;
+}
+
 export const ContinuationSourceChaptersScreen: React.FC<{
   navigation: { navigate: (screen: string, params?: any) => void; goBack: () => void };
 }> = ({ navigation }) => {
@@ -368,10 +377,13 @@ export const ContinuationSourceChaptersScreen: React.FC<{
             fileSizeBytes: 0,
           };
           fileInfos.push(info);
-          // If encoding detection is low-confidence (no BOM + ambiguous bytes),
-          // ask the user to confirm before parsing — a wrong guess yields garbled
-          // text or a decode_failed error. Spec §10.1 sets the threshold at 0.7.
-          const encodingOverride = await confirmEncodingIfNeeded(localPath);
+          // A multi-file import is fully automatic: each source is decoded with
+          // its own detected encoding, without surfacing encoding jargon or one
+          // confirmation dialog per file. Single-file import keeps the manual
+          // recovery path for a genuinely ambiguous file.
+          const encodingOverride = shouldConfirmEncoding(selected.length)
+            ? await confirmEncodingIfNeeded(localPath)
+            : undefined;
           if (encodingOverride === null) {
             userCancelled = true; // 用户取消整个导入
             break;
