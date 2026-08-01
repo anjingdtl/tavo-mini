@@ -1019,14 +1019,23 @@ export async function getActiveContinuationSource(
 // --- interrupted recovery (Spec §14.2) --------------------------------------
 
 /**
- * On cold start, convert any leftover active jobs to `interrupted` so the UI
+ * On cold start, convert leftover mid-pipeline jobs to `interrupted` so the UI
  * can offer resume/retry/cancel (Spec §14.2). Idempotent.
+ *
+ * IMP-006: do NOT convert `awaiting_review` — that state means decode/parse
+ * already finished and the user only needs to confirm or abandon. Marking it
+ * interrupted hid the confirm path and forced a full re-parse on resume.
  */
+const COLD_START_INTERRUPTIBLE_JOB_STATES: ImportJobState[] = [
+  'queued',
+  'running',
+  'paused',
+];
+
 export async function recoverInterruptedJobs(): Promise<{ recovered: number }> {
   const db = await openDatabase();
   let recovered = 0;
-  for (const state of ACTIVE_JOB_STATES) {
-    if (state === 'interrupted') continue;
+  for (const state of COLD_START_INTERRUPTIBLE_JOB_STATES) {
     const [res] = await db.executeSql(
       `SELECT id FROM continuation_import_jobs WHERE state = ?`,
       [state],
@@ -1038,6 +1047,19 @@ export async function recoverInterruptedJobs(): Promise<{ recovered: number }> {
     }
   }
   return { recovered };
+}
+
+/**
+ * True when the job is waiting for the user to confirm a finished parse
+ * (including legacy rows wrongly cold-start-marked interrupted while still
+ * at stage awaiting_review).
+ */
+export function isAwaitingReviewJob(job: {
+  state: string;
+  stage?: string | null;
+}): boolean {
+  if (job.state === 'awaiting_review') return true;
+  return job.state === 'interrupted' && job.stage === 'awaiting_review';
 }
 
 /** Resume an interrupted job by restarting the pipeline from the staging source. */
