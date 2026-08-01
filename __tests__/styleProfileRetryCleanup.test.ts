@@ -7,7 +7,7 @@
 // 时 INSERT 新 profileId 直接被 SQLite UNIQUE 拒掉，整个 retry 静默失败。
 //
 // 修复：retryStyleAnalysis 进入 runStyleAnalysis 前，先 DELETE 同 fingerprint
-// 且 state ∈ {failed, interrupted, cancelled, outdated} 的旧行（不动 ready）
+// 且 state ∈ {running, failed, interrupted, cancelled, outdated} 的旧行（不动 ready）
 // —— 不删除 active 引用、ready 行；只让 retry 能 INSERT 一个新的失败尝试记录。
 //
 // 这个测试直接调 retryStyleAnalysis，记录 executeSql 的 SQL 顺序，断言：
@@ -87,6 +87,7 @@ describe('BUG-007 retryStyleAnalysis must clean stale fingerprint rows', () => {
       let removed = 0;
       for (const [id, row] of Array.from(styleRowsById.entries())) {
         if (
+          row.state === 'running' ||
           row.state === 'failed' ||
           row.state === 'interrupted' ||
           row.state === 'cancelled' ||
@@ -246,5 +247,22 @@ describe('BUG-007 retryStyleAnalysis must clean stale fingerprint rows', () => {
       r => r.id === 'ready-id',
     );
     expect(stillReady).toBe(true);
+  });
+
+  it('cleans a running profile left by a killed or paused request', async () => {
+    styleRowsById.set('orphaned-running-id', {
+      id: 'orphaned-running-id',
+      project_id: 3,
+      source_id: 9,
+      source_version: 1,
+      source_sha256: 'sha-source-1',
+      boundary_char_offset_exclusive: 1000,
+      analyzer_version: STYLE_ANALYZER_VERSION,
+      state: 'running',
+    });
+
+    await expect(retryStyleAnalysis(3)).rejects.toBeDefined();
+
+    expect(styleRowsById.has('orphaned-running-id')).toBe(false);
   });
 });
