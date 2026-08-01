@@ -46,6 +46,7 @@ import {
   formatFailedFilesList,
 } from '../../services/continuation/errorMessaging';
 import {
+  cleanupFailedPickerCopy,
   decidePickerTempCleanup,
   unlinkPickerTempCopies,
 } from '../../services/continuation/continuationPickerTempLifecycle';
@@ -335,7 +336,18 @@ export const ContinuationSourceChaptersScreen: React.FC<{
             destination: 'cachesDirectory',
           });
           if (copy.status === 'error') {
-            throw new Error(copy.copyError || `复制文件 ${f.name} 失败。`);
+            // IMP-004: keepLocalCopy may leave Caches/<uuid>/<name> even on
+            // error (and sometimes without localUri). Always best-effort clean.
+            await cleanupFailedPickerCopy({
+              localUri: copy.localUri,
+              originalFileName: f.name || 'original.txt',
+            });
+            const rawMsg = copy.copyError || `复制文件 ${f.name} 失败。`;
+            // Normalize picker English message for empty files
+            if (/no data was copied/i.test(rawMsg)) {
+              throw new Error('文件为空或无法读取，请选择包含正文的 TXT。');
+            }
+            throw new Error(rawMsg);
           }
           const localPath = localFileUriToPath(copy.localUri);
           // 立即登记副本路径（占位数据），finally / 排序页负责清理
