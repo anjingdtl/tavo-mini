@@ -79,6 +79,7 @@ import {
 import { insertEvidenceAndLink } from './canonEvidenceService';
 import type { SqlStatement } from '../../../data/connection/transaction';
 import { runStyleAnalysis } from '../styleProfile/styleAnalysisService';
+import { deleteStyleProfileByFingerprint } from '../styleProfile/styleProfileRepository';
 import { activateSnapshotAndStyleProfile } from './activateSnapshotAndStyleProfile';
 import {
   callLLM,
@@ -2133,6 +2134,20 @@ async function processAnalysisRunInner(
   await updateRunState(db, runId, {
     state: 'running',
     stage: 'style_analysis',
+  });
+  // A failed style attempt occupies the UNIQUE fingerprint slot.  This path
+  // is also reached by resumeAnalysis (the "重试未完成项" UI action), not only
+  // by retryStyleAnalysis, so cleanup must happen at the shared pipeline
+  // boundary immediately before inserting the next profile attempt.
+  await deleteStyleProfileByFingerprint(run.projectId, {
+    sourceId: sourceSnapshot.sourceId,
+    sourceVersion: sourceSnapshot.sourceVersion,
+    sourceSha256: sourceSnapshot.normalizedSha256,
+    parserVersion: sourceSnapshot.parserVersion,
+    normalizationVersion: sourceSnapshot.normalizationVersion,
+    boundaryChapterId: sourceSnapshot.boundary.chapterId,
+    boundaryPosition: sourceSnapshot.boundary.chapterPosition,
+    boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
   });
   const styleOutcome = await runStyleAnalysis({
     projectId: run.projectId,

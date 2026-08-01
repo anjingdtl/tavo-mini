@@ -12,6 +12,7 @@ const mockListBoundedSourceChaptersForRange = jest.fn();
 const mockListBoundedSourceChapterMetas = jest.fn();
 const mockGetSnapshot = jest.fn();
 const mockRunStyleAnalysis = jest.fn();
+const mockDeleteStyleProfileByFingerprint = jest.fn();
 const mockActivateSnapshotAndStyleProfile = jest.fn();
 
 jest.mock('../src/data/connection/openDatabase', () => ({
@@ -42,6 +43,10 @@ jest.mock('../src/services/llm', () => ({
 }));
 jest.mock('../src/services/continuation/styleProfile/styleAnalysisService', () => ({
   runStyleAnalysis: (...args: any[]) => mockRunStyleAnalysis(...args),
+}));
+jest.mock('../src/services/continuation/styleProfile/styleProfileRepository', () => ({
+  deleteStyleProfileByFingerprint: (...args: any[]) =>
+    mockDeleteStyleProfileByFingerprint(...args),
 }));
 jest.mock('../src/services/continuation/canon/activateSnapshotAndStyleProfile', () => ({
   activateSnapshotAndStyleProfile: (...args: any[]) =>
@@ -233,6 +238,7 @@ describe('complete Canon analysis style stage', () => {
       );
       return { profileId: 'style-1', success: true };
     });
+    mockDeleteStyleProfileByFingerprint.mockResolvedValue(1);
     mockActivateSnapshotAndStyleProfile.mockImplementation(async input => {
       events.push('style_validation');
       expect(input).toEqual({
@@ -255,6 +261,16 @@ describe('complete Canon analysis style stage', () => {
     const result = await processAnalysisRun('run-1');
 
     expect(mockRunStyleAnalysis).toHaveBeenCalledTimes(1);
+    expect(mockDeleteStyleProfileByFingerprint).toHaveBeenCalledWith(9, {
+      sourceId: 7,
+      sourceVersion: 3,
+      sourceSha256: 'source-hash',
+      parserVersion: 'parser-1',
+      normalizationVersion: 'normalizer-1',
+      boundaryChapterId: 1,
+      boundaryPosition: 0,
+      boundaryCharOffsetExclusive: 100,
+    });
     expect(mockActivateSnapshotAndStyleProfile).toHaveBeenCalledTimes(1);
     expect(result.state).toBe('completed');
     expect(events.indexOf('style_analysis')).toBeGreaterThan(
