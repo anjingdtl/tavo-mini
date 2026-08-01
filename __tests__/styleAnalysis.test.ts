@@ -654,6 +654,57 @@ describe('runStyleAnalysis', () => {
     );
   });
 
+  it('reuses a matching ready profile slot until a new run succeeds', async () => {
+    const chapters = buildRichChapters();
+    setupBoundedReader(chapters);
+    (resolveLLMRequestConfigById as jest.Mock).mockResolvedValue({
+      id: 42,
+      context_window: 200_000,
+      max_output_tokens: 16_000,
+    });
+    (callLLMResult as jest.Mock).mockResolvedValue({
+      text: JSON.stringify(validProfile()),
+    });
+    (listStyleProfilesForProject as jest.Mock).mockResolvedValue([
+      {
+        id: 'active-ready-profile',
+        projectId: sourceSnapshot.projectId,
+        sourceId: sourceSnapshot.sourceId,
+        sourceVersion: sourceSnapshot.sourceVersion,
+        sourceSha256: sourceSnapshot.normalizedSha256,
+        parserVersion: sourceSnapshot.parserVersion,
+        normalizationVersion: sourceSnapshot.normalizationVersion,
+        boundaryChapterId: sourceSnapshot.boundary.chapterId,
+        boundaryPosition: sourceSnapshot.boundary.chapterPosition,
+        boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
+        analyzerVersion: 'style-v2-3',
+        state: 'ready',
+        userOverridesJson: {},
+      },
+    ]);
+
+    const result = await runStyleAnalysis({
+      projectId: sourceSnapshot.projectId,
+      runId: 'run-replace-ready',
+      canonSnapshotId: 'snap-replace-ready',
+      sourceSnapshot,
+      modelConfigId: 42,
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toEqual({ profileId: 'active-ready-profile', success: true });
+    expect(insertStyleProfile).not.toHaveBeenCalled();
+    expect(updateStyleProfilePayload).toHaveBeenCalledWith(
+      'active-ready-profile',
+      expect.any(Object),
+      expect.objectContaining({
+        state: 'ready',
+        analysisRunId: 'run-replace-ready',
+        canonSnapshotId: 'snap-replace-ready',
+      }),
+    );
+  });
+
   describe('ignored profile is not injected (repository contract)', () => {
     it('getInjectableStyleProfile returns null for an ignored profile', async () => {
       // The repository is mocked; re-mock to emulate the ignored-row case.
