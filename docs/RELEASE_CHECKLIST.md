@@ -1,5 +1,16 @@
 # ShineWriter 发布清单
 
+## V2.11.14 原著删除外键修复
+
+- [x] `package.json` / `package-lock.json` 升级至 `2.11.14`，`npm run prebuild` 生成 `V2.11.14` / `2111400`
+- [x] Schema 30→31：重建错误仍指向 `continuation_analysis_runs_v29` 的 Canon 外键关系；升级后可删除原著，现有原著、续写章节和可保留的 Canon 记录均不被删除。
+- [x] Schema 29→30 同步重建全部 Canon 关联表，避免从更旧版本直接升级时写入临时表外键。
+- [x] 迁移专项通过：24 个测试套件、104 项测试；完整 `npm run verify` 通过：208 个测试套件通过、1 个既有跳过；1,682 项测试通过、3 项既有跳过；ESLint 0 error、typecheck / version 校验通过。
+- [x] `npm run apk:release` 使用正式签名构建，产物为 `dist/apk/release/ShineWriter-V2.11.14-release.apk`。
+- [x] 单 signer、v2 签名、固定证书 SHA-256、16 KB zipalign、`com.shinewriter`、`V2.11.14` / `2111400` 验收通过。
+
+证据：Release APK 35,021,598 bytes，SHA-256 `1C27E5FF016A8E6C98559BAFF9A4F7FDF62F716321C17320D02E85EDB33096C8`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，单 signer，APK Signature Scheme v2，16 KB zipalign 验证成功，`aapt` `package: name='com.shinewriter' versionCode='2111400' versionName='V2.11.14'`。构建日志位于 `test-logs/release-v2.11.14-20260802/`（未纳入版本控制）。
+
 ## V2.11.13 原著分析升级迁移修复
 
 - [x] `package.json` / `package-lock.json` 升级至 `2.11.13`，`npm run prebuild` 生成 `V2.11.13` / `2111300`
