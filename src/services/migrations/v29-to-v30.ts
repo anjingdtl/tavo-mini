@@ -2,6 +2,13 @@ import type SQLite from 'react-native-sqlite-storage';
 import { applyMigration } from './helpers';
 import { buildSchema23CreateSqls } from './v22-to-v23';
 import type { SqlStatement } from '../database/transaction';
+import {
+  buildCanonTableCopyStatements,
+  buildCanonTableCreateStatements,
+  buildCanonTableDropStatements,
+  buildCanonTableIndexStatements,
+  buildCanonTableRenameStatements,
+} from './canonAnalysisForeignKeyRepair';
 
 /**
  * Schema 29 → 30: widen the persisted Canon-run stage constraint.
@@ -13,10 +20,10 @@ import type { SqlStatement } from '../database/transaction';
  * Canon work items, then failed exactly when transitioning from `finalizing`
  * to `style_analysis`.
  *
- * Rebuild the run table and its direct child tables together. Rebuilding only
- * the parent is unsafe: SQLite rewrites the children to reference the renamed
- * parent, and dropping it can cascade-delete a user's resumable work. The
- * order below preserves every row and restores the original FK graph.
+ * Rebuild the run table and every Canon descendant together. SQLite rewrites
+ * all foreign keys that point to a renamed parent, including Canon fact tables
+ * which are not direct task children. The order below preserves every row and
+ * restores the original FK graph.
  */
 
 function buildAnalysisRunsCreateSql(): string {
@@ -101,8 +108,9 @@ function buildAnalysisBatchesCreateSql(): string {
 export function buildV29toV30Statements(): SqlStatement[] {
   const [workItemsCreateSql, workItemsIndexSql] = buildSchema23CreateSqls();
   return [
-    // Rename children first, so every historical FK is isolated from the
-    // replacement tables while data is copied.
+    // Rename all descendants before the parent. This includes Canon fact
+    // tables whose analysis_run_id FK would otherwise be rewritten to _v29.
+    ...buildCanonTableRenameStatements('v29'),
     {
       sql: 'ALTER TABLE continuation_analysis_work_items RENAME TO continuation_analysis_work_items_v29',
     },
@@ -115,6 +123,7 @@ export function buildV29toV30Statements(): SqlStatement[] {
     { sql: buildAnalysisRunsCreateSql() },
     { sql: buildAnalysisBatchesCreateSql() },
     { sql: workItemsCreateSql },
+    ...buildCanonTableCreateStatements(),
     {
       sql: `INSERT INTO continuation_analysis_runs (
         id, project_id, source_id, source_version, source_sha256,
@@ -152,8 +161,10 @@ export function buildV29toV30Statements(): SqlStatement[] {
         error_code, error_message, created_at, updated_at, completed_at
       FROM continuation_analysis_work_items_v29`,
     },
+    ...buildCanonTableCopyStatements('v29'),
     // Drop the old dependency chain leaf-to-root. This avoids an ON DELETE
-    // cascade deleting the copied, resumable task records.
+    // cascade deleting copied Canon facts or resumable task records.
+    ...buildCanonTableDropStatements('v29'),
     { sql: 'DROP TABLE continuation_analysis_work_items_v29' },
     { sql: 'DROP TABLE continuation_analysis_batches_v29' },
     { sql: 'DROP TABLE continuation_analysis_runs_v29' },
@@ -166,6 +177,7 @@ export function buildV29toV30Statements(): SqlStatement[] {
         ON continuation_analysis_batches(run_id, state, batch_index)`,
     },
     { sql: workItemsIndexSql },
+    ...buildCanonTableIndexStatements(),
   ];
 }
 

@@ -6,8 +6,8 @@ import {
 import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 30 Canon style-stage constraint repair', () => {
-  it('is the current schema version', () => {
-    expect(SCHEMA_VERSION).toBe(30);
+  it('remains a historical migration after Schema 31', () => {
+    expect(SCHEMA_VERSION).toBe(31);
   });
 
   it('rebuilds run and dependent task tables without losing resumable rows', () => {
@@ -23,12 +23,20 @@ describe('schema 30 Canon style-stage constraint repair', () => {
     expect(sql).toContain('FROM continuation_analysis_runs_v29');
     expect(sql).toContain('FROM continuation_analysis_batches_v29');
     expect(sql).toContain('FROM continuation_analysis_work_items_v29');
+    expect(sql).toContain('canon_characters_v29');
+    expect(sql).toContain('canon_timeline_events_v29');
 
     // The old chain is deleted only after the new tables have received copies.
     expect(
       sql.indexOf('FROM continuation_analysis_work_items_v29'),
     ).toBeLessThan(
       sql.indexOf('DROP TABLE continuation_analysis_work_items_v29'),
+    );
+    expect(sql.indexOf('ALTER TABLE canon_characters RENAME')).toBeLessThan(
+      sql.indexOf('ALTER TABLE continuation_analysis_runs RENAME'),
+    );
+    expect(sql.indexOf('FROM canon_characters_v29')).toBeLessThan(
+      sql.indexOf('DROP TABLE canon_characters_v29'),
     );
     expect(sql.indexOf('FROM continuation_analysis_batches_v29')).toBeLessThan(
       sql.indexOf('DROP TABLE continuation_analysis_batches_v29'),
