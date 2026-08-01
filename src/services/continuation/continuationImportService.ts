@@ -451,6 +451,10 @@ async function runPipelineToReview(
   }
   const mod = requireContinuationTextImport();
   const CHUNK_BYTES = 192 * 1024;
+  // Joining an unbounded line (for example, a 50 MiB minified/plain-text
+  // export) creates a second giant JS string and can exceed Android's heap.
+  // Short lines still use the normal heading-aware parser path.
+  const MAX_JOINED_LINE_CHARS = 16 * 1024;
   // Chunk the normalized text into ~192 KiB UTF-8 bands (Spec §9.3). 3 bytes
   // per CJK char is the rough average used by the original pipeline.
   const CHUNK_CHAR_TARGET = Math.floor((192 * 1024) / 3);
@@ -469,7 +473,8 @@ async function runPipelineToReview(
   let chapterCount = 0; // global chapter count (cross-file)
   // Pending partial line carried across decoded chunks within a single file.
   // Flushed at each file's end so partial lines never merge across files.
-  let pendingLine = '';
+  let pendingLineParts: string[] = [];
+  let pendingLineLength = 0;
   let pendingLineStartOffset = 0;
   // Whole-text paragraph count over the normalized output (used only if the
   // parser falls back to a single whole-text chapter). Counted online as each
@@ -525,21 +530,40 @@ async function runPipelineToReview(
       // chapter parser. A trailing partial line (no '\n') is held until the next
       // block completes it. Line offsets are UTF-16 offsets into the normalized
       // text, tracked via pendingLineStartOffset (cross-file accumulation).
+      const flushLine = (parts: string[], lineLength: number) => {
+        if (lineLength <= MAX_JOINED_LINE_CHARS) {
+          const line = parts.length === 1 ? parts[0] : parts.join('');
+          return parser.pushLine(line, pendingLineStartOffset);
+        }
+        return parser.pushBodyLineChunks(parts, pendingLineStartOffset, lineLength);
+      };
+
       let blockRest = normalizedBlock;
       while (true) {
         const nlIdx = blockRest.indexOf('\n');
         if (nlIdx < 0) {
-          // No more complete lines in this block; carry the remainder.
-          pendingLine += blockRest;
+          // No more complete lines in this block; carry string pieces rather
+          // than repeatedly concatenating a potentially unbounded line.
+          if (blockRest.length > 0) {
+            pendingLineParts.push(blockRest);
+            pendingLineLength += blockRest.length;
+          }
           break;
         }
-        const completeLine = pendingLine + blockRest.slice(0, nlIdx);
-        const flushed = parser.pushLine(completeLine, pendingLineStartOffset);
+        const segment = blockRest.slice(0, nlIdx);
+        const lineParts = pendingLineParts.length > 0
+          ? [...pendingLineParts, segment]
+          : [segment];
+        const completeLineLength = pendingLineLength + segment.length;
+        const flushed = flushLine(lineParts, completeLineLength);
         await flushChapterBatch(flushed, fileIndex);
-        if (completeLine.trim().length > 0) globalParagraphCount += 1;
+        if (lineParts.some(part => part.trim().length > 0)) {
+          globalParagraphCount += 1;
+        }
         // Advance past the line content + the '\n'.
-        pendingLineStartOffset = pendingLineStartOffset + completeLine.length + 1;
-        pendingLine = '';
+        pendingLineStartOffset = pendingLineStartOffset + completeLineLength + 1;
+        pendingLineParts = [];
+        pendingLineLength = 0;
         blockRest = blockRest.slice(nlIdx + 1);
       }
 
@@ -599,11 +623,21 @@ async function runPipelineToReview(
     // '\n' at the boundary); this keeps pendingLineStartOffset in sync with
     // normalizedCharCursor so the next file's first line starts at the right
     // UTF-16 offset.
-    if (pendingLine.length > 0) {
-      const flushed = parser.pushLine(pendingLine, pendingLineStartOffset);
+    if (pendingLineLength > 0) {
+      const flushed = pendingLineLength <= MAX_JOINED_LINE_CHARS
+        ? parser.pushLine(
+          pendingLineParts.length === 1 ? pendingLineParts[0] : pendingLineParts.join(''),
+          pendingLineStartOffset,
+        )
+        : parser.pushBodyLineChunks(
+          pendingLineParts,
+          pendingLineStartOffset,
+          pendingLineLength,
+        );
       await flushChapterBatch(flushed, fileIndex);
-      pendingLineStartOffset += pendingLine.length;
-      pendingLine = '';
+      pendingLineStartOffset += pendingLineLength;
+      pendingLineParts = [];
+      pendingLineLength = 0;
     }
   }
 

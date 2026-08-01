@@ -114,7 +114,41 @@ export async function runStyleAnalysis(
 ): Promise<{ profileId: string; success: boolean }> {
   const { projectId, runId, canonSnapshotId, sourceSnapshot } = input;
   const modelConfigId = input.modelConfigId;
-  const profileId = v4();
+
+  const fingerprint: StyleProfileFingerprint = {
+    sourceId: sourceSnapshot.sourceId,
+    sourceVersion: sourceSnapshot.sourceVersion,
+    sourceSha256: sourceSnapshot.normalizedSha256,
+    parserVersion: sourceSnapshot.parserVersion,
+    normalizationVersion: sourceSnapshot.normalizationVersion,
+    boundaryChapterId: sourceSnapshot.boundary.chapterId,
+    boundaryPosition: sourceSnapshot.boundary.chapterPosition,
+    boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
+  };
+
+  // A new Canon run can have the same source fingerprint as the currently
+  // active style profile. The fingerprint is intentionally unique, so an
+  // eager INSERT would fail before the new analysis has a chance to finish.
+  // Keep that ready profile as the active fallback while the new request is
+  // running; only replace its payload after the new profile validates.
+  const existingReadyProfile = (
+    (await listStyleProfilesForProject(projectId)) ?? []
+  ).find(
+    profile =>
+      profile.state === 'ready' &&
+      profile.analyzerVersion === STYLE_ANALYZER_VERSION &&
+      profile.sourceId === fingerprint.sourceId &&
+      profile.sourceVersion === fingerprint.sourceVersion &&
+      profile.sourceSha256 === fingerprint.sourceSha256 &&
+      profile.parserVersion === fingerprint.parserVersion &&
+      profile.normalizationVersion === fingerprint.normalizationVersion &&
+      profile.boundaryChapterId === fingerprint.boundaryChapterId &&
+      profile.boundaryPosition === fingerprint.boundaryPosition &&
+      profile.boundaryCharOffsetExclusive ===
+        fingerprint.boundaryCharOffsetExclusive,
+  );
+  const profileId = existingReadyProfile?.id ?? v4();
+  const reusingReadyProfile = Boolean(existingReadyProfile);
 
   // Register an abort controller under the profile id so cancelStyleAnalysis
   // can abort this run regardless of whether it was driven by the Canon
@@ -132,17 +166,6 @@ export async function runStyleAnalysis(
   }
   const signal = controller.signal;
 
-  const fingerprint: StyleProfileFingerprint = {
-    sourceId: sourceSnapshot.sourceId,
-    sourceVersion: sourceSnapshot.sourceVersion,
-    sourceSha256: sourceSnapshot.normalizedSha256,
-    parserVersion: sourceSnapshot.parserVersion,
-    normalizationVersion: sourceSnapshot.normalizationVersion,
-    boundaryChapterId: sourceSnapshot.boundary.chapterId,
-    boundaryPosition: sourceSnapshot.boundary.chapterPosition,
-    boundaryCharOffsetExclusive: sourceSnapshot.boundary.charOffsetExclusive,
-  };
-
   // Carry forward prior user overrides so re-analysis never loses the user's
   // manual corrections (Spec §5.7). The auto profile_json will be replaced by
   // the new analyzer output; only the overrides survive. We read the project's
@@ -152,30 +175,34 @@ export async function runStyleAnalysis(
 
   // Insert a queued placeholder so the UI/tracer can observe the attempt even
   // before the first LLM call. state moves to running once chapters are read.
-  await insertStyleProfile({
-    id: profileId,
-    projectId,
-    fingerprint,
-    analysisRunId: runId,
-    canonSnapshotId,
-    profileSchemaVersion: PROFILE_SCHEMA_VERSION,
-    analyzerVersion: STYLE_ANALYZER_VERSION,
-    profileHash: '',
-    confidence: 0,
-    state: 'queued',
-    userOverridesJson: priorOverrides,
-  });
-  await updateStyleProfileState(profileId, 'running');
+  if (!reusingReadyProfile) {
+    await insertStyleProfile({
+      id: profileId,
+      projectId,
+      fingerprint,
+      analysisRunId: runId,
+      canonSnapshotId,
+      profileSchemaVersion: PROFILE_SCHEMA_VERSION,
+      analyzerVersion: STYLE_ANALYZER_VERSION,
+      profileHash: '',
+      confidence: 0,
+      state: 'queued',
+      userOverridesJson: priorOverrides,
+    });
+    await updateStyleProfileState(profileId, 'running');
+  }
 
   const fail = async (
     errorCode: string,
     errorMessage: string,
   ): Promise<{ profileId: string; success: boolean }> => {
-    await updateStyleProfileState(profileId, 'failed', {
-      errorCode,
-      errorMessage,
-      completedAt: now(),
-    });
+    if (!reusingReadyProfile) {
+      await updateStyleProfileState(profileId, 'failed', {
+        errorCode,
+        errorMessage,
+        completedAt: now(),
+      });
+    }
     return { profileId, success: false };
   };
 
@@ -267,7 +294,12 @@ export async function runStyleAnalysis(
         profileHash,
         confidence: outcome.profile.confidence,
       },
-      { state: 'ready', completedAt: now() },
+      {
+        state: 'ready',
+        completedAt: now(),
+        analysisRunId: runId,
+        canonSnapshotId,
+      },
     );
 
     return { profileId, success: true };

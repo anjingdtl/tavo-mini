@@ -206,7 +206,12 @@ export interface UpdateStyleProfilePayloadInput {
 export async function updateStyleProfilePayload(
   id: string,
   payload: UpdateStyleProfilePayloadInput,
-  patch: { state?: StyleProfileState; completedAt?: string | null } = {},
+  patch: {
+    state?: StyleProfileState;
+    completedAt?: string | null;
+    analysisRunId?: string;
+    canonSnapshotId?: string;
+  } = {},
 ): Promise<void> {
   const ts = now();
   const db = await openDatabase();
@@ -214,6 +219,8 @@ export async function updateStyleProfilePayload(
     `UPDATE continuation_style_profiles SET
       profile_json = ?, metrics_json = ?, sample_refs_json = ?,
       profile_hash = ?, confidence = ?,
+      ${patch.analysisRunId ? 'analysis_run_id = ?, ' : ''}
+      ${patch.canonSnapshotId ? 'canon_snapshot_id = ?, ' : ''}
       ${patch.state ? 'state = ?, ' : ''}
       completed_at = ?, updated_at = ?
       WHERE id = ?`,
@@ -223,6 +230,8 @@ export async function updateStyleProfilePayload(
       JSON.stringify(payload.sampleRefsJson),
       payload.profileHash,
       payload.confidence,
+      ...(patch.analysisRunId ? [patch.analysisRunId] : []),
+      ...(patch.canonSnapshotId ? [patch.canonSnapshotId] : []),
       ...(patch.state ? [patch.state] : []),
       patch.completedAt ?? null,
       ts,

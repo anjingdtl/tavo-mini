@@ -281,6 +281,15 @@ export interface StreamingChapterParser {
    */
   pushLine(line: string, lineStartOffset: number): ParsedChapter[];
   /**
+   * Feed a body line without joining its pieces into one giant JS string.
+   * Import uses this for pathological files containing a very long line.
+   */
+  pushBodyLineChunks(
+    parts: readonly string[],
+    lineStartOffset: number,
+    lineLength: number,
+  ): ParsedChapter[];
+  /**
    * Finalize the parse. Closes the trailing chapter and, if no headings were
    * ever found, builds a fallback chapter from the caller-supplied whole-text
    * hash and paragraph count.
@@ -312,14 +321,13 @@ export function createStreamingChapterParser(): StreamingChapterParser {
   // '\n' falls before the chapter's sourceEndOffset (one-shot slice is exclusive
   // of sourceEnd). We buffer one line and resolve its separator against the
   // chapter end offset when the next line or finalize arrives.
-  let pendingBodyLine: { text: string; contentEndOffset: number } | null = null;
+  let pendingBodyLine: { contentEndOffset: number } | null = null;
 
   // Flush the buffered line. `chapterEndOffset` is the sourceEndOffset of the
   // chapter being closed; the line's trailing '\n' is included iff it sits at
   // contentEndOffset < chapterEndOffset (i.e. inside the body slice).
   const flushPendingBodyLine = (chapterEndOffset: number) => {
     if (pendingBodyLine === null || bodyHasher === null) return;
-    bodyHasher.updateString(pendingBodyLine.text);
     if (pendingBodyLine.contentEndOffset < chapterEndOffset) {
       bodyHasher.updateString('\n');
     }
@@ -373,8 +381,8 @@ export function createStreamingChapterParser(): StreamingChapterParser {
             openContentStartOffset = lineStartOffset;
           }
           flushPendingBodyLine(lineStartOffset);
+          bodyHasher.updateString(line);
           pendingBodyLine = {
-            text: line,
             contentEndOffset: lineStartOffset + line.length,
           };
           // one-shot countParagraphs = body.split(/\n+/).filter(non-empty).length,
@@ -410,12 +418,36 @@ export function createStreamingChapterParser(): StreamingChapterParser {
       // which is strictly past the buffered line's contentEndOffset, so its '\n'
       // separator is inside the body and must be hashed.
       flushPendingBodyLine(lineStartOffset);
+      bodyHasher.updateString(line);
       pendingBodyLine = {
-        text: line,
         contentEndOffset: lineStartOffset + line.length,
       };
       // Each non-blank line is one paragraph (see note in the volume branch).
       if (line.trim().length > 0) bodyParagraphCount += 1;
+    }
+    return [];
+  };
+
+  const pushBodyLineChunks = (
+    parts: readonly string[],
+    lineStartOffset: number,
+    lineLength: number,
+  ): ParsedChapter[] => {
+    // A line this large cannot be a useful chapter marker under the parser's
+    // line-oriented rules. Hash its pieces as they arrive instead of forcing
+    // the import pipeline to allocate one contiguous string for the line.
+    if (openStart && bodyHasher) {
+      if (openContentStartOffset === null) {
+        openContentStartOffset = lineStartOffset;
+      }
+      flushPendingBodyLine(lineStartOffset);
+      for (const part of parts) {
+        bodyHasher.updateString(part);
+      }
+      pendingBodyLine = {contentEndOffset: lineStartOffset + lineLength};
+      if (parts.some(part => part.trim().length > 0)) {
+        bodyParagraphCount += 1;
+      }
     }
     return [];
   };
@@ -462,5 +494,5 @@ export function createStreamingChapterParser(): StreamingChapterParser {
     };
   };
 
-  return { pushLine, finalize };
+  return { pushLine, pushBodyLineChunks, finalize };
 }
