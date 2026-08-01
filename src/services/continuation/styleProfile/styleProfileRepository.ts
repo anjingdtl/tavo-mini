@@ -284,6 +284,54 @@ export async function saveStyleProfileUserOverrides(
 }
 
 /**
+ * Remove a style profile row that matches the given fingerprint but is in a
+ * non-ready terminal state (failed / interrupted / cancelled / outdated).
+ *
+ * Used by retryStyleAnalysis to free the UNIQUE fingerprint slot before
+ * runStyleAnalysis INSERTs a fresh profile row. Without this, retrying a
+ * failed style analysis hits SQLite UNIQUE constraint
+ * (idx_continuation_style_profiles_fingerprint) and silently fails — see
+ * BUG-007.
+ *
+ * Ready and active profiles are NEVER touched here; only retry attempts are.
+ *
+ * Returns the number of rows removed.
+ */
+export async function deleteStyleProfileByFingerprint(
+  projectId: number,
+  fingerprint: StyleProfileFingerprint,
+): Promise<number> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `DELETE FROM continuation_style_profiles
+       WHERE project_id = ?
+         AND source_id = ?
+         AND source_version = ?
+         AND source_sha256 = ?
+         AND parser_version = ?
+         AND normalization_version = ?
+         AND boundary_chapter_id = ?
+         AND boundary_position = ?
+         AND boundary_char_offset_exclusive = ?
+         AND analyzer_version = ?
+         AND state IN ('failed', 'interrupted', 'cancelled', 'outdated')`,
+    [
+      projectId,
+      fingerprint.sourceId,
+      fingerprint.sourceVersion,
+      fingerprint.sourceSha256,
+      fingerprint.parserVersion,
+      fingerprint.normalizationVersion,
+      fingerprint.boundaryChapterId,
+      fingerprint.boundaryPosition,
+      fingerprint.boundaryCharOffsetExclusive,
+      STYLE_ANALYZER_VERSION,
+    ],
+  );
+  return res.rowsAffected ?? 0;
+}
+
+/**
  * Mark profiles whose fingerprint no longer matches the live source/boundary as
  * outdated. Used by the invalidation chain when source or boundary changes
  * (Spec §12). Returns the count of invalidated profiles.

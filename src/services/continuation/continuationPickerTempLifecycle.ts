@@ -39,3 +39,48 @@ export async function unlinkPickerTempCopies(paths: string[]): Promise<void> {
     ),
   );
 }
+
+/**
+ * Clean a failed keepLocalCopy result. The picker may create
+ * `CachesDirectoryPath/<uuid>/<fileName>` even when status is `error` and
+ * sometimes omits `localUri` — scan cache for the original name as fallback.
+ */
+export async function cleanupFailedPickerCopy(input: {
+  localUri?: string | null;
+  originalFileName: string;
+}): Promise<void> {
+  const paths: string[] = [];
+  if (input.localUri) {
+    const path = input.localUri.replace(/^file:\/\//i, '');
+    try {
+      paths.push(decodeURIComponent(path));
+    } catch {
+      paths.push(path);
+    }
+  }
+  await unlinkPickerTempCopies(paths);
+
+  const name = input.originalFileName;
+  if (!name) return;
+  try {
+    const root = RNFS.CachesDirectoryPath;
+    if (!root) return;
+    const entries = await RNFS.readDir(root);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = `${entry.path}/${name}`;
+      // eslint-disable-next-line no-await-in-loop
+      const exists = await RNFS.exists(candidate);
+      if (!exists) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await unlinkPickerTempCopies([candidate]);
+      // Drop empty uuid dir when possible
+      // eslint-disable-next-line no-await-in-loop
+      await RNFS.unlink(entry.path).catch(() => {
+        // not empty or not removable — ignore
+      });
+    }
+  } catch {
+    // best-effort
+  }
+}
