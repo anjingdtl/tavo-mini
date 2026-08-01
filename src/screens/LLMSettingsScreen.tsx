@@ -27,6 +27,7 @@ import type { LLMQueueState } from '../services/llm';
 import { syncPipelineMaxTokensFromContextWindow } from '../services/contextAutoAllocator';
 import type { LLMConfig } from '../types/novel';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
+import RNFS from 'react-native-fs';
 
 const emptyDraft: LLMConfig = {
   id: 0,
@@ -114,6 +115,78 @@ export const LLMSettingsScreen: React.FC = () => {
       ...emptyDraft,
       name: `配置 ${llmConfigs.length + 1}`,
     });
+  };
+
+  /**
+   * Debug-only: load LLM QA config from device Downloads JSON so emulator
+   * automation can configure API without fragile `input text` / IME paths.
+   * File is never shipped in the APK; production builds hide this button.
+   * Expected path: Download/shinewriter-llm-qa.json
+   * Shape: { name?, base_url, api_key, model_name, context_window?, max_output_tokens?, allow_insecure_lan_http? }
+   */
+  /**
+   * Load QA config from app external files dir (device-local only).
+   * Path: Android/data/com.shinewriter/files/shinewriter-llm-qa.json
+   * Scoped storage friendly; no secrets shipped in the APK.
+   */
+  const qaConfigPath = `${RNFS.ExternalDirectoryPath}/shinewriter-llm-qa.json`;
+  const [qaConfigAvailable, setQaConfigAvailable] = useState(false);
+  useEffect(() => {
+    RNFS.exists(qaConfigPath)
+      .then(setQaConfigAvailable)
+      .catch(() => setQaConfigAvailable(false));
+  }, [qaConfigPath]);
+
+  const importQaConfigFromDownloads = async () => {
+    try {
+      const path = qaConfigPath;
+      const exists = await RNFS.exists(path);
+      if (!exists) {
+        Alert.alert(
+          '未找到 QA 配置',
+          `请将 shinewriter-llm-qa.json 放到应用外部目录：\n${path}`,
+        );
+        return;
+      }
+      const raw = await RNFS.readFile(path, 'utf8');
+      const parsed = JSON.parse(raw) as {
+        name?: string;
+        base_url?: string;
+        api_key?: string;
+        model_name?: string;
+        context_window?: number;
+        max_output_tokens?: number;
+        allow_insecure_lan_http?: boolean;
+      };
+      if (!parsed.base_url || !parsed.api_key || !parsed.model_name) {
+        Alert.alert(
+          'QA 配置不完整',
+          '需要 base_url、api_key、model_name 三个字段。',
+        );
+        return;
+      }
+      isEditingRef.current = true;
+      setDraft(current => ({
+        ...current,
+        name: parsed.name || current.name || 'QA 测试配置',
+        base_url: String(parsed.base_url),
+        api_key: String(parsed.api_key),
+        model_name: String(parsed.model_name),
+        context_window: Number(parsed.context_window) || current.context_window,
+        max_output_tokens:
+          Number(parsed.max_output_tokens) || current.max_output_tokens,
+      }));
+      if (typeof parsed.allow_insecure_lan_http === 'boolean') {
+        await setAllowInsecureLanHttp(parsed.allow_insecure_lan_http);
+      }
+      Toast.show({
+        type: 'success',
+        text1: '已载入 QA 配置',
+        text2: '请点「保存配置」或「保存并测试」',
+      });
+    } catch (e: any) {
+      Alert.alert('导入失败', e?.message || '无法读取 QA 配置文件');
+    }
   };
 
   const save = async () => {
@@ -339,6 +412,16 @@ export const LLMSettingsScreen: React.FC = () => {
             onPress={startNewConfig}
             compact
           />
+          {qaConfigAvailable ? (
+            <Button
+              label="导入QA配置"
+              variant="secondary"
+              onPress={() => {
+                void importQaConfigFromDownloads();
+              }}
+              compact
+            />
+          ) : null}
         </View>
 
         <Field
