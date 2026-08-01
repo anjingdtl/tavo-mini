@@ -1,0 +1,9 @@
+{
+  "name": "QA tiny model (CAN-002)",
+  "base_url": "https://api.deepseek.com",
+  "api_key": "REPLACE_FROM_LLMTesti.txt",
+  "model_name": "deepseek-v4-flash",
+  "context_window": 2000,
+  "max_output_tokens": 2000,
+  "allow_insecure_lan_http": false
+}

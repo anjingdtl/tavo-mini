@@ -1,0 +1,141 @@
+{
+  "generatedAt": "2026-07-31T18:19:24.139Z",
+  "includeLarge": false,
+  "files": [
+    {
+      "rel": "single_utf8_3_chapters.txt",
+      "bytes": 291,
+      "sha256": "e895c5f728f84e91004b30e7cdd2b3dca88aa98766390f40bfecf0aec700c0f9"
+    },
+    {
+      "rel": "single_utf8_no_final_newline.txt",
+      "bytes": 72,
+      "sha256": "c6f2a19c37f98d148ed1737657cdca507d84c465d5d42b3fb2198ef34c67a63b"
+    },
+    {
+      "rel": "single_utf8_crlf.txt",
+      "bytes": 120,
+      "sha256": "8895bb9df66c05704a8dd8381487436de92cfe33c54b1ad1a565c8bb36c6d918"
+    },
+    {
+      "rel": "single_utf8_bom.txt",
+      "bytes": 87,
+      "sha256": "c151e6e6ad778bb581f3a5be75fd679347610c73d4c5896342ae77be48ff4549"
+    },
+    {
+      "rel": "single_gb18030.txt",
+      "bytes": 43,
+      "sha256": "2eb7230f233ca71b25508e731f05921b54a9243871c30915a99ecd57b37cd38e"
+    },
+    {
+      "rel": "single_empty.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "rel": "single_whitespace.txt",
+      "bytes": 9,
+      "sha256": "d3fc4500327202de9fd3571f7d1ac8c62570d53903d87aba481e6b95f1ef3444"
+    },
+    {
+      "rel": "single_no_chapter_titles.txt",
+      "bytes": 95,
+      "sha256": "581b886ea61b1c1c343714cadd6557034a8a3c2e5fe9fbd8223c2baa2389d69a"
+    },
+    {
+      "rel": "single_duplicate_titles.txt",
+      "bytes": 114,
+      "sha256": "d91c76d51f5f9e4106111f58cd448cc4b4b13c58054d610d68863aa91957ad17"
+    },
+    {
+      "rel": "single_long_title.txt",
+      "bytes": 1022,
+      "sha256": "da0dbd6dcbe7e075c3e34ab447c16c6b05d408a005ae00976bcb3beae175626a"
+    },
+    {
+      "rel": "single_malformed_bytes.bin.txt",
+      "bytes": 10,
+      "sha256": "2b7a528606ea43d40f79f751c016479e8ba3eda8b810b53b85e3985086fd56be"
+    },
+    {
+      "rel": "single_100k_one_chapter.txt",
+      "bytes": 300026,
+      "sha256": "3456054a787a8b046b7f554ae72a8a86aa2f423fa470701f9167164dabd2dc90"
+    },
+    {
+      "rel": "multi/m01/part_01.txt",
+      "bytes": 72,
+      "sha256": "acf9a980ea7e7f8a0c00464fba0c24fed50ffce659b6ae91a0eee4fd87599c54"
+    },
+    {
+      "rel": "multi/m01/part_02.txt",
+      "bytes": 72,
+      "sha256": "d89b4f58e96214e8435d7dee26ba6908f43fe0aa19513e0a17084c354c129cab"
+    },
+    {
+      "rel": "multi/m01/part_03.txt",
+      "bytes": 72,
+      "sha256": "2af82553e5cf4c3e97fe11d716cf01d8e8ce97081f1b34beca0fa4fafb9993f7"
+    },
+    {
+      "rel": "multi/m02/volume_10.txt",
+      "bytes": 72,
+      "sha256": "c62425fffed0b009dc330ec7cad843e544b0946f4c5c9deab7c4f211c2e83737"
+    },
+    {
+      "rel": "multi/m02/volume_2.txt",
+      "bytes": 69,
+      "sha256": "4905a1462b81245a8ea383783b0071f1b5e5e285ec29621b8208b66fa4a4f275"
+    },
+    {
+      "rel": "multi/m02/volume_1.txt",
+      "bytes": 69,
+      "sha256": "4db7d6f9ac571c4a040ca1134630f83d9acf4f42dd65e5a582d3fccf9eb09095"
+    },
+    {
+      "rel": "multi/m04/ok_a.txt",
+      "bytes": 36,
+      "sha256": "133777721305d0996422423df5c7e2ee028745eabaa1915e18895d33a0fa0097"
+    },
+    {
+      "rel": "multi/m04/ok_b.txt",
+      "bytes": 36,
+      "sha256": "1a733dd2c9593b34ec99c3986961a36bcb6e537eaba6c103c2cdd0745f1d7382"
+    },
+    {
+      "rel": "multi/m04/bad_empty.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "rel": "multi/m05/empty1.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "rel": "multi/m05/empty2.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "rel": "multi/m06/part_a.txt",
+      "bytes": 30,
+      "sha256": "fe9c3ccc767c3ded11e2881becef3b3a61a3573c8fdb631368c6fc3f283060c8"
+    },
+    {
+      "rel": "multi/m06/part_b.txt",
+      "bytes": 22,
+      "sha256": "b8d4585442f663aa80a09adb0929dde4229992fa692e071ceff4e61b5390b309"
+    },
+    {
+      "rel": "multi/m08/文件 名（特殊）.txt",
+      "bytes": 46,
+      "sha256": "b0b7c3ea262d05c26d7d837a2cf13df4f3450438f336e7c4c8ce7cb6db1f4f5b"
+    },
+    {
+      "rel": "multi/m08/part#2 [copy].txt",
+      "bytes": 43,
+      "sha256": "328fccb96ead32c5e8a4dadbdfe5ed17493ce338b8082414446afbd9b9ae7f8e"
+    }
+  ]
+}
