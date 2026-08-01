@@ -60,6 +60,11 @@ export function resolveLLMTimeoutPolicy(
   if (
     scenario === 'chapter_draft' ||
     scenario === 'chapter_revision' ||
+    // Continuation planner/writer/checker prompts can carry a large frozen
+    // Canon/style bundle. They need the same long-running budget as chapter
+    // drafting; otherwise `continuation_writer` falls through to the 60s
+    // normal timeout even when the model is still processing a valid request.
+    scenario.startsWith('continuation_') ||
     scenario.startsWith('story_memory_') ||
     scenario === 'pipeline_draft' ||
     scenario === 'pipeline_review' ||

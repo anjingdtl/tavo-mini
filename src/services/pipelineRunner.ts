@@ -157,6 +157,27 @@ function getErrorMessage(error: any, fallback: string): string {
   return error?.message ? String(error.message) : fallback;
 }
 
+/** Never allow an HTTP-success response without manuscript content to advance
+ * the outline pipeline. `reasoning_content` is intentionally not a draft. */
+function draftEmptyResponseError(result: LLMResult): Error {
+  switch (result.emptyReason) {
+    case 'reasoning_only':
+      return new Error(
+        '初稿仅返回推理内容，未产生正文。请提高模型最大输出 token 或改用非推理模型。',
+      );
+    case 'length':
+      return new Error(
+        '初稿输出被 max_tokens 截断，未产生正文。请提高初稿或模型最大输出 token。',
+      );
+    case 'content_filter':
+      return new Error('初稿输出被内容过滤拦截，请调整写作要求后重试。');
+    case 'no_choices':
+      return new Error('初稿收到空响应（无 choices），请检查模型服务状态。');
+    default:
+      return new Error('初稿未返回正文，请检查模型服务后重试。');
+  }
+}
+
 function markSkipped(
   taskId: string,
   stage: PipelineStageName,
@@ -639,7 +660,6 @@ async function runChapterPipelineInner(
     contextConfig = await db.getContextConfig();
     presets = await db.getPresetsByProject(chapter.project_id);
     requestConfig = await resolveLLMRequestConfig();
-
   } catch (error: any) {
     store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
     await PipelineForeground.notifyFailed(
@@ -753,14 +773,17 @@ async function runChapterPipelineInner(
   const draftStart = Date.now();
   try {
     const request = createChapterGenerationRequest(chapter);
-    const { messages: baseContext, chapters: allChapters, pipelineContext: ctx } =
-      await buildContext(
-        chapter,
-        contextConfig,
-        chapter.project_id,
-        draftPreset || undefined,
-        { retrievalUserPrompt: request.userPrompt },
-      );
+    const {
+      messages: baseContext,
+      chapters: allChapters,
+      pipelineContext: ctx,
+    } = await buildContext(
+      chapter,
+      contextConfig,
+      chapter.project_id,
+      draftPreset || undefined,
+      { retrievalUserPrompt: request.userPrompt },
+    );
     pipelineContext = ctx;
 
     // Extract previous chapter ending from already-fetched chapters.
@@ -796,7 +819,7 @@ async function runChapterPipelineInner(
       chapter.synopsis,
     );
 
-    const draftResult = await callLLMResult(
+    const firstDraftResult = await callLLMResult(
       draftMessages,
       config.draftMaxTokens,
       buildCallConfig(
@@ -810,17 +833,57 @@ async function runChapterPipelineInner(
       abortSignal,
     );
     throwIfCancelled(taskId, abortSignal);
+    let draftResult = firstDraftResult;
+    let draftTokens = {
+      input: firstDraftResult.inputTokens,
+      output: firstDraftResult.outputTokens,
+      total: firstDraftResult.totalTokens,
+    };
     draftText = draftResult.text || '';
+    if (
+      !draftText.trim() &&
+      (draftResult.emptyReason === 'reasoning_only' ||
+        draftResult.emptyReason === 'length')
+    ) {
+      // Outline contexts are already packed from the persisted pipeline budget,
+      // so increasing max_tokens here could exceed the model window. Retry once
+      // at the same safe budget with an explicit no-reasoning instruction.
+      draftResult = await callLLMResult(
+        [
+          ...draftMessages,
+          {
+            role: 'user',
+            content: '请直接输出章节正文；不要输出分析、思考过程或标题。',
+          },
+        ],
+        config.draftMaxTokens,
+        buildCallConfig(
+          draftPreset,
+          config.draftMaxTokens,
+          'pipeline_draft',
+          chapter.project_id,
+          requestConfig,
+          taskId,
+        ),
+        abortSignal,
+      );
+      throwIfCancelled(taskId, abortSignal);
+      draftTokens = {
+        input: draftTokens.input + draftResult.inputTokens,
+        output: draftTokens.output + draftResult.outputTokens,
+        total: draftTokens.total + draftResult.totalTokens,
+      };
+      draftText = draftResult.text || '';
+    }
+    if (!draftText.trim()) {
+      throw draftEmptyResponseError(draftResult);
+    }
 
     store.updateTaskStage(taskId, {
       stage: 'draft',
       text: draftText,
       status: 'success',
-      tokens: {
-        input: draftResult.inputTokens,
-        output: draftResult.outputTokens,
-        total: draftResult.totalTokens,
-      },
+      tokens: draftTokens,
       durationMs: Date.now() - draftStart,
     });
   } catch (error: any) {
@@ -928,10 +991,7 @@ async function runChapterPipelineInner(
     if (!reviewText.trim()) {
       // SPEC §13.2: review failed → no proof, fallback to draft.
       markSkipped(taskId, 'proof', '文学评估失败，未执行终审');
-      store.failTask(
-        taskId,
-        '文学评估失败，已保留初稿，未生成终审稿。',
-      );
+      store.failTask(taskId, '文学评估失败，已保留初稿，未生成终审稿。');
       await PipelineForeground.notifyFailed(
         taskId,
         chapter.title || '流水线',
@@ -1014,10 +1074,7 @@ async function runChapterPipelineInner(
     if (!factCheckText.trim()) {
       // SPEC §13.3: factCheck failed → no proof, fallback to draft.
       markSkipped(taskId, 'proof', '事实核查失败，未执行终审');
-      store.failTask(
-        taskId,
-        '事实核查失败，已保留初稿，未生成终审稿。',
-      );
+      store.failTask(taskId, '事实核查失败，已保留初稿，未生成终审稿。');
       await PipelineForeground.notifyFailed(
         taskId,
         chapter.title || '流水线',
@@ -1132,7 +1189,9 @@ async function runChapterPipelineInner(
   }
 
   console.log(
-    `[pipeline] review=${reviewText.trim() ? 'success' : 'failed'} factcheck=${factCheckText.trim() ? 'success' : 'failed'}`,
+    `[pipeline] review=${reviewText.trim() ? 'success' : 'failed'} factcheck=${
+      factCheckText.trim() ? 'success' : 'failed'
+    }`,
   );
 
   // SPEC §13.4: both failed → no proof, fallback to draft.
@@ -1152,7 +1211,9 @@ async function runChapterPipelineInner(
   }
 
   console.log(
-    `[pipeline] proof started with review=${Boolean(reviewText.trim())} factcheck=${Boolean(factCheckText.trim())}`,
+    `[pipeline] proof started with review=${Boolean(
+      reviewText.trim(),
+    )} factcheck=${Boolean(factCheckText.trim())}`,
   );
   onStageUpdate?.({
     stage: 'proof',
@@ -1615,7 +1676,8 @@ async function resumePipelineInner(
       await PipelineForeground.stop(taskId);
       return;
     }
-    reviewText = reviewSettled.status === 'fulfilled' ? reviewSettled.value : '';
+    reviewText =
+      reviewSettled.status === 'fulfilled' ? reviewSettled.value : '';
     factCheckText =
       factCheckSettled.status === 'fulfilled' ? factCheckSettled.value : '';
   } else {

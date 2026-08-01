@@ -72,6 +72,8 @@ export interface BuildContinuationContextInput {
    */
   modelContextLimit: number;
   maxOutputTokens: number;
+  /** First Writer request when the layout reserves a larger retry ceiling. */
+  initialWriterOutputTokens?: number;
   /** Resolved active LLM config id used when stage ids are null. */
   activeLlmConfigId: number;
   settingsOverride?: Partial<ContinuationGenerationSettings>;
@@ -322,7 +324,27 @@ export async function buildContinuationContext(
   let seamSummary = '';
   let seamExcerpt = '';
   if (priorChapters.length === 0) {
-    chapters = await continuationSourceReader.listBoundedSourceChapters(source);
+    // The Writer only needs the source seam when no continuation正文 exists
+    // yet. Calling listBoundedSourceChapters here would read every source
+    // chapter body before selecting the last one; a 2M novel may contain
+    // 10,000+ chapters and turn a tiny Writer context build into minutes of
+    // SQLite reads. Use the range reader to fetch only the boundary chapter.
+    const boundaryPosition = Number(source.boundary.chapterPosition);
+    const rangeReader =
+      continuationSourceReader.listBoundedSourceChaptersForRange;
+    if (typeof rangeReader === 'function' && Number.isFinite(boundaryPosition)) {
+      chapters = await rangeReader(
+        source,
+        source.boundary.chapterPosition,
+        (boundaryPosition + 1) as any,
+      );
+    } else {
+      // Compatibility fallback for older injected readers used by migrations
+      // and tests that do not expose the range method yet.
+      chapters = await continuationSourceReader.listBoundedSourceChapters(
+        source,
+      );
+    }
     if (chapters.length > 0) {
       const last = chapters[chapters.length - 1];
       seamSummary = `原著末章「${last.title}」(position=${last.position})`;
@@ -685,6 +707,7 @@ export async function buildContinuationContext(
       inputBudget: contextBudget.inputBudget,
       reservedOutputTokens: contextBudget.reservedOutputTokens,
       writerMaxOutputTokens: layoutMaxOut,
+      writerInitialOutputTokens: input.initialWriterOutputTokens,
       styleTokens: contextBudget.styleTokens,
     },
     stageBudgets,

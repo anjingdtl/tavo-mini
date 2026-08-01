@@ -301,6 +301,8 @@ export interface ContinuationContextSnapshot {
     inputBudget: number;
     reservedOutputTokens: number;
     writerMaxOutputTokens: number;
+    /** First Writer call; max output stays reserved for a possible retry. */
+    writerInitialOutputTokens?: number;
     /** Style share of the planned input layout (WP3). */
     styleTokens?: number;
   };
