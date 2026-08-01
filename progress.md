@@ -1,7 +1,7 @@
 # ShineWriter 进度交接
 
 > 最后更新：2026-08-01（接手续写模块 Android 模拟器长测与修复）
-> 状态：**长测与真实 LLM 验收完成，待 Release 构建、提交和推送**。CAN-005、CAN-105、CAN-201、PERF-001 与最终 DeepSeek 验收均已通过；BUG-009/010 已修复。
+> 状态：**长测、真实 LLM 验收、Release 构建与代码交付全部完成**。CAN-005、CAN-105、CAN-201、PERF-001 与 1M 上下文 DeepSeek 验收均已通过；BUG-009/010 已修复。
 
 ## 续写模块长测（`main`）
 
@@ -49,24 +49,24 @@
 - DB 验证：项目 3 的分析 run 数仍为 1，最新 run 仍为 `completed/style_validation`；没有创建新分析任务。
 - 测试结束后已恢复 `context_window=128000` / `max_output_tokens=8000`。
 
-### 待完成
+### 已交付
 
 - 正式 Release APK 已构建并完成签名/zipalign/版本验收：`dist/apk/release/ShineWriter-V2.11.8-release.apk`，SHA-256 `003E6911A96A52C1241DC120C8E4448B62C7C035A615E9B30E4BEAECF7D15810`。
-- `npm run verify` 已通过；待提交本次代码修复并推送 `main`。不提交真实 LLM 配置、API key、数据库和 QA 运行产物。
+- `npm run verify` 已通过；提交 `a9dd320` 已推送到 `origin/main`。真实 LLM 配置、API key、数据库和 QA 运行产物均未提交。
 
 ### 仓库 / 分支当前状态
 
 - 工作分支：`main`
-- 最新本地 commit：`e777ec1 fix(continuation): clean stale style profiles before resume`；本次长测修复尚未提交。
+- 最新本地 commit：`a9dd320 fix(continuation): complete emulator long-test fixes`，已推送到 `origin/main`。
 - 模拟器上 APK：`dist/apk/debug/ShineWriter-V2.11.8-debug.apk`（V2.11.8，已安装到 `emulator-5554`）。
 - 模拟器最近验收项目：`QA－参－005`（project 7）；50 MiB 压力项目为 `PERF-001-50MB`（project 8）。
 - 长测状态文件：`.agent/continuation-qa-state.md`（最近一次更新同步了 BUG-007 fixed + 当前阻塞）。
 
 ### 交接清单（下一个 agent 起手精确步骤）
 
-1. **门禁**：运行 `npm run verify` 和 `git diff --check`。
+1. **门禁**：已完成 `npm run verify` 和 `git diff --check`。
 2. **Release**：已按发布指南完成 `npm run apk:release`，验收签名、16KB zipalign、版本元数据和 SHA-256。
-3. **交付**：只提交源码、测试、mock 服务、CHANGELOG 和进度文档，提交并推送 `main`。
+3. **交付**：提交 `a9dd320` 已推送 `main`；后续可直接从该提交继续。
 6. **每次会话结束前**：
    - 更新 `.agent/continuation-qa-state.md`。
    - 更新本 `progress.md`（最新版本段）。

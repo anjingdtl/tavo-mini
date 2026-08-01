@@ -10,13 +10,13 @@
 - App version: V2.11.8 / versionCode 2110800
 - Package: com.shinewriter
 - Current phase: E (Canon) and F (performance); CAN-001/002/005/101/105/201 and PERF-001 PASS
-- Active test case: completed; awaiting commit and push
+- Active test case: completed; commit `a9dd320` pushed to `origin/main`
 - Last successful command: 1M-context real DeepSeek run completed with Canon snapshot/style profile ready; no FATAL/OOM/ANR/SQLite UNIQUE
 - Last failure: 50 MiB single-line import reproduced Android OOM; fixed with streaming line/chunk accounting and passed rerun
 - Evidence directory: artifacts/qa/20260801-emulator-qa-2/FINAL-REAL-1M/
 - Open bug IDs: none for the tested continuation scope
 - Fixed: BUG-001 picker lifecycle; BUG-002 awaiting_review; BUG-003 failed copy orphans; BUG-004 evidence cleanup SQL; BUG-005 QA LLM config import; BUG-006 style JSON coercion; BUG-007 style retry UNIQUE; BUG-008 resume/cold-start style UNIQUE; BUG-009 ready style profile reuse; BUG-010 long-line import OOM
-- Next exact command: review the staged diff, commit the continuation fixes, and push main
+- Next exact command: none for this QA scope; future work can start from `a9dd320`
 - Note: current branch is `main`; do not push secrets
 
 ## LLM test config (desensitized)
@@ -46,7 +46,7 @@
 
 ## Notes
 
-- Plan baseline commit was 19d8679…; current HEAD is e777ec1
+- Plan baseline commit was 19d8679…; current HEAD is a9dd320
 - Run-id: 20260801-emulator-qa-2
 - CAN-101 evidence: stale failed and running profiles were cleaned before retry; analysis completed after cold start; no UNIQUE/FATAL/ReactNativeJS errors in final log
 - CAN-002 evidence: `artifacts/qa/20260801-emulator-qa-2/CAN-002/`; run count stayed 1 and LLM config was restored after the test
