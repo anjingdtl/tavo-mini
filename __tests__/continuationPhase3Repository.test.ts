@@ -53,7 +53,9 @@ function res(rows: any[]) {
 const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
   const n = sql.replace(/\s+/g, ' ').trim();
 
-  if (/SELECT \* FROM continuation_generation_settings WHERE project_id/i.test(n)) {
+  if (
+    /SELECT \* FROM continuation_generation_settings WHERE project_id/i.test(n)
+  ) {
     return res(store.settings.filter(s => s.project_id === params[0]));
   }
   if (/INSERT INTO continuation_generation_settings/i.test(n)) {
@@ -134,7 +136,11 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
   if (/SELECT \* FROM continuation_generation_runs WHERE id/i.test(n)) {
     return res(store.runs.filter(r => r.id === params[0]));
   }
-  if (/SELECT \* FROM continuation_generation_runs WHERE project_id = \? AND chapter_id = \?/i.test(n)) {
+  if (
+    /SELECT \* FROM continuation_generation_runs WHERE project_id = \? AND chapter_id = \?/i.test(
+      n,
+    )
+  ) {
     return res(
       store.runs
         .filter(
@@ -144,9 +150,14 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
             r.state === 'completed' &&
             r.completion_reason === 'adopted',
         )
-        .sort((a, b) =>
-          String(b.completed_at ?? '').localeCompare(String(a.completed_at ?? '')) ||
-          String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')),
+        .sort(
+          (a, b) =>
+            String(b.completed_at ?? '').localeCompare(
+              String(a.completed_at ?? ''),
+            ) ||
+            String(b.created_at ?? '').localeCompare(
+              String(a.created_at ?? ''),
+            ),
         )
         .slice(0, 1),
     );
@@ -172,7 +183,9 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       for (const r of store.runs) {
         if (
           r.project_id === params[2] &&
-          ['queued', 'running', 'awaiting_user', 'interrupted'].includes(r.state)
+          ['queued', 'running', 'awaiting_user', 'interrupted'].includes(
+            r.state,
+          )
         ) {
           r.state = 'outdated';
         }
@@ -203,16 +216,35 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
             if (am[2] === '?') paramIdx += 1;
             if (val === undefined) continue;
             switch (col) {
-              case 'updated_at': r.updated_at = val; break;
-              case 'state': if (typeof val === 'string') r.state = val; break;
-              case 'stage': if (typeof val === 'string') r.stage = val; break;
-              case 'error_code': r.error_code = val; break;
-              case 'error_message': r.error_message = val; break;
-              case 'completion_reason': r.completion_reason = val; break;
-              case 'completed_at': r.completed_at = val; break;
-              case 'finalized_revision_hash': r.finalized_revision_hash = val; break;
-              case 'adopted_revision_hash': r.adopted_revision_hash = val; break;
-              default: break;
+              case 'updated_at':
+                r.updated_at = val;
+                break;
+              case 'state':
+                if (typeof val === 'string') r.state = val;
+                break;
+              case 'stage':
+                if (typeof val === 'string') r.stage = val;
+                break;
+              case 'error_code':
+                r.error_code = val;
+                break;
+              case 'error_message':
+                r.error_message = val;
+                break;
+              case 'completion_reason':
+                r.completion_reason = val;
+                break;
+              case 'completed_at':
+                r.completed_at = val;
+                break;
+              case 'finalized_revision_hash':
+                r.finalized_revision_hash = val;
+                break;
+              case 'adopted_revision_hash':
+                r.adopted_revision_hash = val;
+                break;
+              default:
+                break;
             }
           }
         } else {
@@ -272,7 +304,11 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     return res(rows.slice(0, 1));
   }
   // P2: getArtifactForRun matches BOTH id AND run_id (ownership check)
-  if (/SELECT \* FROM continuation_generation_artifacts WHERE id = \? AND run_id = \?/i.test(n)) {
+  if (
+    /SELECT \* FROM continuation_generation_artifacts WHERE id = \? AND run_id = \?/i.test(
+      n,
+    )
+  ) {
     return res(
       store.artifacts.filter(a => a.id === params[0] && a.run_id === params[1]),
     );
@@ -328,7 +364,11 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       ),
     );
   }
-  if (/UPDATE continuation_check_results SET resolution_status = 'obsolete'/i.test(n)) {
+  if (
+    /UPDATE continuation_check_results SET resolution_status = 'obsolete'/i.test(
+      n,
+    )
+  ) {
     for (const c of store.checks) {
       if (c.run_id === params[1] && c.artifact_id === params[2]) {
         c.resolution_status = 'obsolete';
@@ -342,7 +382,9 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     return res([]);
   }
   // H8-Generation: INSERT OR IGNORE INTO continuation_state_proposals
-  if (/INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_proposals/i.test(n)) {
+  if (
+    /INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_proposals/i.test(n)
+  ) {
     const row = {
       id: params[0],
       project_id: params[1],
@@ -404,7 +446,11 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       ),
     );
   }
-  if (/SELECT \* FROM continuation_state_proposals WHERE project_id = \? ORDER/i.test(n)) {
+  if (
+    /SELECT \* FROM continuation_state_proposals WHERE project_id = \? ORDER/i.test(
+      n,
+    )
+  ) {
     return res(store.proposals.filter(p => p.project_id === params[0]));
   }
   if (/SELECT \* FROM continuation_state_proposals WHERE id/i.test(n)) {
@@ -419,7 +465,11 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       },
     ]);
   }
-  if (/SELECT COUNT\(\*\) AS c.*FROM continuation_state_sync_outbox WHERE project_id/i.test(n)) {
+  if (
+    /SELECT COUNT\(\*\) AS c.*FROM continuation_state_sync_outbox WHERE project_id/i.test(
+      n,
+    )
+  ) {
     // getOutboxSummary: pending/failed counts plus latest failure timestamp.
     let rows = store.outbox.filter(o => o.project_id === params[0]);
     if (/state IN/i.test(n)) {
@@ -430,7 +480,10 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     } else if (/state = 'failed'/.test(n)) {
       rows = rows.filter(o => o.state === 'failed');
     }
-    const latest = rows.length ? rows.slice().sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0].updated_at : null;
+    const latest = rows.length
+      ? rows.slice().sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0]
+          .updated_at
+      : null;
     return res([{ c: rows.length, latest }]);
   }
   if (/SELECT COUNT\(\*\) AS c FROM continuation_state_sync_outbox/i.test(n)) {
@@ -448,7 +501,10 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
   if (/UPDATE continuation_state_proposals SET status/i.test(n)) {
     if (/chapter_id = \?/.test(n)) {
       for (const p of store.proposals) {
-        if (p.chapter_id === params[3] && ['pending', 'accepted'].includes(p.status)) {
+        if (
+          p.chapter_id === params[3] &&
+          ['pending', 'accepted'].includes(p.status)
+        ) {
           p.status = 'invalidated';
         }
       }
@@ -514,13 +570,17 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     });
     return res([]);
   }
-  if (/INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_sync_outbox/i.test(n)) {
+  if (
+    /INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_sync_outbox/i.test(n)
+  ) {
     // INSERT OR IGNORE emulates the real UNIQUE(dedupe_key) constraint: a
     // second enqueue with the same dedupe key is a no-op (rowsAffected 0)
     // rather than a throw, so the repository's dedupe path returns the
     // existing row. A genuine insert reports rowsAffected 1.
     if (store.outbox.some(o => o.dedupe_key === params[5])) {
-      return [{ rows: { length: 0, item: () => null }, rowsAffected: 0, insertId: 0 }];
+      return [
+        { rows: { length: 0, item: () => null }, rowsAffected: 0, insertId: 0 },
+      ];
     }
     store.outbox.push({
       id: params[0],
@@ -536,32 +596,50 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       updated_at: params[7],
       completed_at: null,
     });
-    return [{ rows: { length: 0, item: () => null }, rowsAffected: 1, insertId: 1 }];
+    return [
+      { rows: { length: 0, item: () => null }, rowsAffected: 1, insertId: 1 },
+    ];
   }
-  if (/SELECT \* FROM continuation_state_sync_outbox WHERE dedupe_key/i.test(n)) {
+  if (
+    /SELECT \* FROM continuation_state_sync_outbox WHERE dedupe_key/i.test(n)
+  ) {
     return res(store.outbox.filter(o => o.dedupe_key === params[0]));
   }
   if (/SELECT \* FROM continuation_state_sync_outbox WHERE id = \?/i.test(n)) {
     return res(store.outbox.filter(o => o.id === params[0]));
   }
-  if (/SELECT \* FROM continuation_state_sync_outbox WHERE project_id/i.test(n)) {
+  if (
+    /SELECT \* FROM continuation_state_sync_outbox WHERE project_id/i.test(n)
+  ) {
     let rows = store.outbox.filter(o => o.project_id === params[0]);
     if (/state = \?/i.test(n)) {
       rows = rows.filter(o => o.state === params[1]);
     }
     return res(rows);
   }
-  if (/SELECT last_error, dedupe_key FROM continuation_state_sync_outbox/i.test(n)) {
+  if (
+    /SELECT last_error, dedupe_key FROM continuation_state_sync_outbox/i.test(n)
+  ) {
     const rows = store.outbox
-      .filter(o => o.project_id === params[0] && o.state === 'failed' && o.updated_at === params[1])
+      .filter(
+        o =>
+          o.project_id === params[0] &&
+          o.state === 'failed' &&
+          o.updated_at === params[1],
+      )
       .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     return res(rows);
   }
-  if (/UPDATE continuation_state_sync_outbox\s+SET state = 'pending', (attempt_count = 0, )?last_error = NULL/i.test(n)) {
+  if (
+    /UPDATE continuation_state_sync_outbox\s+SET state = 'pending', (attempt_count = 0, )?last_error = NULL/i.test(
+      n,
+    )
+  ) {
     // retryContinuationOutbox / retryFailedContinuationOutbox
     let affected = 0;
     for (const o of store.outbox) {
-      const matchesProject = o.project_id === params[1] || String(params).includes(o.id);
+      const matchesProject =
+        o.project_id === params[1] || String(params).includes(o.id);
       const eligible = ['failed', 'interrupted'].includes(o.state);
       if (matchesProject && eligible) {
         o.state = 'pending';
@@ -577,7 +655,9 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       store.outbox.filter(o => ['pending', 'interrupted'].includes(o.state)),
     );
   }
-  if (/UPDATE continuation_state_sync_outbox SET state = 'interrupted'/i.test(n)) {
+  if (
+    /UPDATE continuation_state_sync_outbox SET state = 'interrupted'/i.test(n)
+  ) {
     let c = 0;
     for (const o of store.outbox) {
       if (o.state === 'running') {
@@ -590,7 +670,10 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
   if (/UPDATE continuation_state_sync_outbox SET state = \?/i.test(n)) {
     const o = store.outbox.find(x => x.id === params[4]);
     if (o && (params.slice(5).includes(o.state) || true)) {
-      if (params.includes(o.state) || ['pending', 'interrupted', 'running'].includes(o.state)) {
+      if (
+        params.includes(o.state) ||
+        ['pending', 'interrupted', 'running'].includes(o.state)
+      ) {
         o.state = params[0];
         o.last_error = params[1];
         o.completed_at = params[3];
@@ -599,7 +682,9 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       }
     }
     // try by id at end
-    const id = params.find(p => typeof p === 'string' && String(p).startsWith('co_'));
+    const id = params.find(
+      p => typeof p === 'string' && String(p).startsWith('co_'),
+    );
     const item = store.outbox.find(x => x.id === id);
     if (item) {
       item.state = params[0];
@@ -620,14 +705,20 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     return res(store.chapters.filter(c => c.id === params[0]));
   }
   // P2: adopt reads content + title + status + updated_at for optimistic locking
-  if (/SELECT content, title, status, updated_at FROM chapters WHERE id/i.test(n)) {
+  if (
+    /SELECT content, title, status, updated_at FROM chapters WHERE id/i.test(n)
+  ) {
     return res(store.chapters.filter(c => c.id === params[0]));
   }
   if (/SELECT content, position FROM chapters WHERE id/i.test(n)) {
     return res(store.chapters.filter(c => c.id === params[0]));
   }
   // P1-E: continuation_settings (active source / canon) for context-freshness checks
-  if (/SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id/i.test(n)) {
+  if (
+    /SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id/i.test(
+      n,
+    )
+  ) {
     return res(store.ctSettings.filter(s => s.project_id === params[0]));
   }
   // P1-E: continuation_canon_snapshots revision lookup
@@ -666,7 +757,9 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
         rowsAffected = 1;
       }
       // mismatch → 0 rows affected (concurrent edit)
-      return [{ rows: { length: 0, item: () => null }, rowsAffected, insertId: 0 }];
+      return [
+        { rows: { length: 0, item: () => null }, rowsAffected, insertId: 0 },
+      ];
     }
     ch = store.chapters.find(c => c.id === params[params.length - 1]);
     if (ch) {
@@ -691,7 +784,9 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     return res(store.storyMemory.filter(s => s.project_id === params[0]));
   }
   if (/UPDATE project_story_memory SET status = 'dirty'/i.test(n)) {
-    const sm = store.storyMemory.find(s => s.project_id === params[params.length - 1]);
+    const sm = store.storyMemory.find(
+      s => s.project_id === params[params.length - 1],
+    );
     if (sm) {
       sm.status = 'dirty';
       sm.dirty_from_position = params[0];
@@ -748,21 +843,23 @@ jest.mock('../src/services/database/transaction', () => ({
   // fix-plan §2 rollback assertion observe true all-or-nothing semantics.
   // Supports the onStatementComplete callback for optimistic-concurrency
   // rows-affected accounting (fix-plan §7).
-  executeTransaction: jest.fn(async (_db: any, statements: any[], options: any = {}) => {
-    const snapshot = JSON.parse(JSON.stringify(store));
-    try {
-      for (let i = 0; i < statements.length; i++) {
-        const s = statements[i];
-        const result: any = await mockExecuteSql(s.sql, s.params || []);
-        if (options.onStatementComplete && result && result[0]) {
-          options.onStatementComplete(i + 1, result[0].rowsAffected ?? 0);
+  executeTransaction: jest.fn(
+    async (_db: any, statements: any[], options: any = {}) => {
+      const snapshot = JSON.parse(JSON.stringify(store));
+      try {
+        for (let i = 0; i < statements.length; i++) {
+          const s = statements[i];
+          const result: any = await mockExecuteSql(s.sql, s.params || []);
+          if (options.onStatementComplete && result && result[0]) {
+            options.onStatementComplete(i + 1, result[0].rowsAffected ?? 0);
+          }
         }
+      } catch (e) {
+        Object.assign(store, JSON.parse(JSON.stringify(snapshot)));
+        throw e;
       }
-    } catch (e) {
-      Object.assign(store, JSON.parse(JSON.stringify(snapshot)));
-      throw e;
-    }
-  }),
+    },
+  ),
 }));
 
 jest.mock('../src/data/repositories/storyMemoryRepository', () => ({
@@ -776,7 +873,10 @@ jest.mock('../src/data/repositories/storyMemoryRepository', () => ({
 // until the worker OOMs. Mock the LLM entry points so the background worker
 // resolves with an empty (legal) extraction instead of hitting the network.
 jest.mock('../src/services/llm', () => ({
-  callLLMResult: jest.fn(async () => ({ text: '{"proposals":[]}', usage: null })),
+  callLLMResult: jest.fn(async () => ({
+    text: '{"proposals":[]}',
+    usage: null,
+  })),
   resolveLLMRequestConfigById: jest.fn(async () => undefined),
 }));
 
@@ -1193,7 +1293,9 @@ describe('continuation Phase 3 repository coverage', () => {
       updated_at: 't',
       completed_at: null,
     });
-    const { proposals } = deterministicExtractFromText(store.chapters[0].content);
+    const { proposals } = deterministicExtractFromText(
+      store.chapters[0].content,
+    );
     const result = await processContinuationOutbox({
       callExtract: async () =>
         JSON.stringify({
@@ -1309,7 +1411,9 @@ describe('continuation Phase 3 repository coverage', () => {
       expect(store.storyMemory[0].status).toBe('dirty');
       expect(store.storyMemory[0].dirty_from_position).toBe(21);
       // Exactly one extract_state outbox row, keyed by the new hash
-      const extractRows = store.outbox.filter(o => o.operation === 'extract_state');
+      const extractRows = store.outbox.filter(
+        o => o.operation === 'extract_state',
+      );
       expect(extractRows).toHaveLength(1);
       expect(extractRows[0].dedupe_key).toBe(fin.outboxDedupeKey);
       const payload = JSON.parse(extractRows[0].payload_json);
@@ -1342,7 +1446,9 @@ describe('continuation Phase 3 repository coverage', () => {
         content: '定稿正文B',
         sourceRunId: 'ct_fin1',
       });
-      const extractRows = store.outbox.filter(o => o.operation === 'extract_state');
+      const extractRows = store.outbox.filter(
+        o => o.operation === 'extract_state',
+      );
       expect(extractRows).toHaveLength(1);
     });
 
@@ -1355,12 +1461,18 @@ describe('continuation Phase 3 repository coverage', () => {
 
       // Inject a failure when the transaction tries to INSERT the outbox row.
       const original = mockExecuteSql.getMockImplementation();
-      mockExecuteSql.mockImplementation(async (sql: string, params: any[] = []) => {
-        if (/INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_sync_outbox/i.test(sql)) {
-          throw new Error('FAULT_INJECTION: outbox insert');
-        }
-        return original!(sql, params);
-      });
+      mockExecuteSql.mockImplementation(
+        async (sql: string, params: any[] = []) => {
+          if (
+            /INSERT(?:\s+OR\s+IGNORE)?\s+INTO continuation_state_sync_outbox/i.test(
+              sql,
+            )
+          ) {
+            throw new Error('FAULT_INJECTION: outbox insert');
+          }
+          return original!(sql, params);
+        },
+      );
 
       await expect(
         finalizeContinuationChapter({
@@ -1378,7 +1490,9 @@ describe('continuation Phase 3 repository coverage', () => {
       expect(store.chapters[0].status).toBe('draft');
       expect(store.storyMemory[0].status).toBe('ready');
       expect(store.storyMemory[0].dirty_from_position).toBeNull();
-      expect(store.outbox.filter(o => o.operation === 'extract_state')).toHaveLength(0);
+      expect(
+        store.outbox.filter(o => o.operation === 'extract_state'),
+      ).toHaveLength(0);
       // run linkage not advanced
       expect(store.runs[0].finalized_revision_hash).toBeNull();
     });
@@ -1395,7 +1509,9 @@ describe('continuation Phase 3 repository coverage', () => {
       // A pending extract_state outbox row must exist so cold-start processing
       // can pick it up even if the app was killed right after the commit.
       const pending = store.outbox.filter(
-        o => o.operation === 'extract_state' && (o.state === 'pending' || o.state === 'interrupted'),
+        o =>
+          o.operation === 'extract_state' &&
+          (o.state === 'pending' || o.state === 'interrupted'),
       );
       expect(pending.length).toBeGreaterThanOrEqual(1);
     });
@@ -1529,9 +1645,27 @@ describe('continuation Phase 3 repository coverage', () => {
 
     test('retryFailedContinuationOutbox resets only failed rows for the project', async () => {
       store.outbox.push(seedOutbox({ id: 'co_a' }));
-      store.outbox.push(seedOutbox({ id: 'co_b', dedupe_key: 'extract_state:10:h2', state: 'failed' }));
-      store.outbox.push(seedOutbox({ id: 'co_c', dedupe_key: 'extract_state:10:h3', state: 'pending' }));
-      store.outbox.push(seedOutbox({ id: 'co_other', project_id: 2, dedupe_key: 'extract_state:11:h' }));
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_b',
+          dedupe_key: 'extract_state:10:h2',
+          state: 'failed',
+        }),
+      );
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_c',
+          dedupe_key: 'extract_state:10:h3',
+          state: 'pending',
+        }),
+      );
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_other',
+          project_id: 2,
+          dedupe_key: 'extract_state:11:h',
+        }),
+      );
       const n = await retryFailedContinuationOutbox(1);
       expect(n).toBe(2);
       expect((await getOutboxById('co_a'))!.state).toBe('pending');
@@ -1543,8 +1677,12 @@ describe('continuation Phase 3 repository coverage', () => {
     });
 
     test('getOutboxSummary reports pending/failed counts and last error without body', async () => {
-      store.outbox.push(seedOutbox({ id: 'co_p', state: 'pending', last_error: null }));
-      store.outbox.push(seedOutbox({ id: 'co_f1', last_error: '网络错误', updated_at: 't2' }));
+      store.outbox.push(
+        seedOutbox({ id: 'co_p', state: 'pending', last_error: null }),
+      );
+      store.outbox.push(
+        seedOutbox({ id: 'co_f1', last_error: '网络错误', updated_at: 't2' }),
+      );
       store.outbox.push(
         seedOutbox({
           id: 'co_f2',
@@ -1585,18 +1723,28 @@ describe('continuation Phase 3 repository coverage', () => {
       store.chapters[0].content = '人工恢复正文';
       store.chapters[0].position = 21;
       const hash = contentRevisionHash('人工恢复正文');
-      store.outbox.push(seedOutbox({
-        id: 'co_manual_exhausted',
-        dedupe_key: `extract_state:10:${hash}`,
-        payload_json: JSON.stringify({ projectId: 1, chapterId: 10, chapterRevisionHash: hash }),
-        attempt_count: MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
-      }));
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_manual_exhausted',
+          dedupe_key: `extract_state:10:${hash}`,
+          payload_json: JSON.stringify({
+            projectId: 1,
+            chapterId: 10,
+            chapterRevisionHash: hash,
+          }),
+          attempt_count: MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
+        }),
+      );
       await retryContinuationOutbox('co_manual_exhausted');
-      expect((await getOutboxById('co_manual_exhausted'))!.attemptCount).toBe(0);
-      await expect(processContinuationOutbox({
-        limit: 5,
-        callExtract: async () => JSON.stringify({ proposals: [] }),
-      })).resolves.toMatchObject({ processed: 1, failed: 0 });
+      expect((await getOutboxById('co_manual_exhausted'))!.attemptCount).toBe(
+        0,
+      );
+      await expect(
+        processContinuationOutbox({
+          limit: 5,
+          callExtract: async () => JSON.stringify({ proposals: [] }),
+        }),
+      ).resolves.toMatchObject({ processed: 1, failed: 0 });
     });
 
     test('failed extract_state can recover to completed after manual retry', async () => {
@@ -1607,7 +1755,11 @@ describe('continuation Phase 3 repository coverage', () => {
         seedOutbox({
           id: 'co_recover',
           dedupe_key: `extract_state:10:${hash}`,
-          payload_json: JSON.stringify({ projectId: 1, chapterId: 10, chapterRevisionHash: hash }),
+          payload_json: JSON.stringify({
+            projectId: 1,
+            chapterId: 10,
+            chapterRevisionHash: hash,
+          }),
           state: 'failed',
           attempt_count: 1,
           last_error: '网络错误',
@@ -1626,8 +1778,20 @@ describe('continuation Phase 3 repository coverage', () => {
 
     test('listOutboxForProject filters by state for the sync card', async () => {
       store.outbox.push(seedOutbox({ id: 'co_l1', state: 'failed' }));
-      store.outbox.push(seedOutbox({ id: 'co_l2', dedupe_key: 'extract_state:10:h2', state: 'pending' }));
-      store.outbox.push(seedOutbox({ id: 'co_l3', project_id: 2, dedupe_key: 'extract_state:11:h' }));
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_l2',
+          dedupe_key: 'extract_state:10:h2',
+          state: 'pending',
+        }),
+      );
+      store.outbox.push(
+        seedOutbox({
+          id: 'co_l3',
+          project_id: 2,
+          dedupe_key: 'extract_state:11:h',
+        }),
+      );
       const failed = await listOutboxForProject(1, 'failed');
       expect(failed.map(o => o.id)).toEqual(['co_l1']);
       const all = await listOutboxForProject(1);
@@ -1643,8 +1807,17 @@ describe('continuation Phase 3 repository coverage', () => {
       targetChapterId: 10,
       targetPosition: 21,
       source: { sourceId: 1 },
-      canon: { snapshotId: 'snap1', revision: 1, boundaryGlobalCharOffset: 100, capabilities: {} },
-      storyMemory: { stateFingerprint: 'fp', throughPosition: -1, status: 'ready' },
+      canon: {
+        snapshotId: 'snap1',
+        revision: 1,
+        boundaryGlobalCharOffset: 100,
+        capabilities: {},
+      },
+      storyMemory: {
+        stateFingerprint: 'fp',
+        throughPosition: -1,
+        status: 'ready',
+      },
       inputRevisionHash: 'h',
       // Fix-plan §5.1: frozen config ids used by every stage
       settingsSnapshot: {
@@ -1665,8 +1838,17 @@ describe('continuation Phase 3 repository coverage', () => {
       },
       bundles: {
         lockedRules: [],
-        canon: { worldRules: [], characters: [], evidenceRefs: [], plotThreads: [] },
-        effectiveState: { characterStates: [], plotThreads: [], targetPosition: 21 },
+        canon: {
+          worldRules: [],
+          characters: [],
+          evidenceRefs: [],
+          plotThreads: [],
+        },
+        effectiveState: {
+          characterStates: [],
+          plotThreads: [],
+          targetPosition: 21,
+        },
         seam: { summary: 's', excerpt: 'e' },
         recentChapters: [],
         storyMemory: { summary: 'm' },
@@ -1733,7 +1915,8 @@ describe('continuation Phase 3 repository coverage', () => {
       store.runs.push(seedRun());
       seedPlan('ct_resume1', 'pending');
       const callStage = jest.fn(async (input: any) => {
-        if (input.stage === 'writer') return { text: '生成的正文内容', usage: {} };
+        if (input.stage === 'writer')
+          return { text: '生成的正文内容', usage: {} };
         return { text: '', usage: {} };
       });
       await confirmPlanAndContinue('ct_resume1', callStage as any, true);
@@ -1745,6 +1928,47 @@ describe('continuation Phase 3 repository coverage', () => {
       expect(run.state).toBe('awaiting_user');
       // plan marked confirmed
       expect(store.plans[0].confirmation_status).toBe('confirmed');
+    });
+
+    test('Writer retries once with its frozen retry budget after reasoning-only output', async () => {
+      const snapshot = {
+        ...baseSnapshot,
+        contextBudget: {
+          modelContextLimit: 32_768,
+          inputBudget: 20_000,
+          reservedOutputTokens: 8_000,
+          writerInitialOutputTokens: 4_000,
+          writerMaxOutputTokens: 8_000,
+        },
+      };
+      store.runs.push(
+        seedRun({ context_snapshot_json: JSON.stringify(snapshot) }),
+      );
+      seedPlan('ct_resume1', 'pending');
+      const callStage = jest.fn(async (input: any) => {
+        if (input.stage !== 'writer') return { text: '', usage: {} };
+        if (input.maxTokens === 4_000) {
+          return {
+            text: '',
+            emptyReason: 'reasoning_only',
+            finishReason: 'length',
+            usage: {},
+          };
+        }
+        return { text: '重试后的正文', usage: {} };
+      });
+
+      await confirmPlanAndContinue('ct_resume1', callStage as any, true);
+
+      const writerCalls = callStage.mock.calls
+        .map(([input]) => input)
+        .filter((input: any) => input.stage === 'writer');
+      expect(writerCalls.map((input: any) => input.maxTokens)).toEqual([
+        4_000, 8_000,
+      ]);
+      expect(store.runs.find(r => r.id === 'ct_resume1')!.state).toBe(
+        'awaiting_user',
+      );
     });
 
     test('confirmPlanAndContinue terminalizes to failed when Writer throws', async () => {
@@ -1763,7 +1987,9 @@ describe('continuation Phase 3 repository coverage', () => {
     });
 
     test('resume from planner re-runs the pipeline and reaches awaiting_user', async () => {
-      store.runs.push(seedRun({ id: 'ct_r_planner', state: 'interrupted', stage: 'planner' }));
+      store.runs.push(
+        seedRun({ id: 'ct_r_planner', state: 'interrupted', stage: 'planner' }),
+      );
       seedPlan('ct_r_planner', 'not_required');
       const callStage = jest.fn(async (input: any) => {
         if (input.stage === 'planner') {
@@ -1783,7 +2009,8 @@ describe('continuation Phase 3 repository coverage', () => {
             usage: {},
           };
         }
-        if (input.stage === 'writer') return { text: '恢复后的正文', usage: {} };
+        if (input.stage === 'writer')
+          return { text: '恢复后的正文', usage: {} };
         return { text: '', usage: {} };
       });
       await resumeInterruptedRun('ct_r_planner', callStage as any, true);
@@ -1794,7 +2021,9 @@ describe('continuation Phase 3 repository coverage', () => {
     test('resume from writer (no artifact) continues directly from Writer', async () => {
       // Fix-plan §5.2: the old code called confirmPlanAndContinue which only
       // accepts awaiting_user and always threw here. We now resume the Writer.
-      store.runs.push(seedRun({ id: 'ct_r_writer', state: 'interrupted', stage: 'writer' }));
+      store.runs.push(
+        seedRun({ id: 'ct_r_writer', state: 'interrupted', stage: 'writer' }),
+      );
       seedPlan('ct_r_writer', 'confirmed');
       const callStage = jest.fn(async (input: any) => {
         if (input.stage === 'writer') return { text: '恢复正文', usage: {} };
@@ -1809,7 +2038,9 @@ describe('continuation Phase 3 repository coverage', () => {
     });
 
     test('resume from checker with artifact re-checks without regenerating', async () => {
-      store.runs.push(seedRun({ id: 'ct_r_checker', state: 'interrupted', stage: 'checker' }));
+      store.runs.push(
+        seedRun({ id: 'ct_r_checker', state: 'interrupted', stage: 'checker' }),
+      );
       seedPlan('ct_r_checker', 'confirmed');
       store.artifacts.push({
         id: 'ca_existing',
@@ -1835,7 +2066,13 @@ describe('continuation Phase 3 repository coverage', () => {
     });
 
     test('resume from awaiting_user with artifact hands back without model', async () => {
-      store.runs.push(seedRun({ id: 'ct_r_au', state: 'interrupted', stage: 'awaiting_user' }));
+      store.runs.push(
+        seedRun({
+          id: 'ct_r_au',
+          state: 'interrupted',
+          stage: 'awaiting_user',
+        }),
+      );
       store.artifacts.push({
         id: 'ca_au',
         run_id: 'ct_r_au',
@@ -1855,7 +2092,9 @@ describe('continuation Phase 3 repository coverage', () => {
     });
 
     test('resume that throws terminalizes to failed, not stuck running', async () => {
-      store.runs.push(seedRun({ id: 'ct_r_fail', state: 'interrupted', stage: 'writer' }));
+      store.runs.push(
+        seedRun({ id: 'ct_r_fail', state: 'interrupted', stage: 'writer' }),
+      );
       seedPlan('ct_r_fail', 'confirmed');
       const callStage = jest.fn(async () => {
         throw new Error('恢复时网络断开');
@@ -1915,7 +2154,11 @@ describe('continuation Phase 3 repository coverage', () => {
     test('adopts when source + canon snapshot + revision all match', async () => {
       store.runs.push(seedAdoptRun());
       seedArtifact();
-      store.ctSettings.push({ project_id: 1, active_source_id: 5, active_canon_snapshot_id: 'snap1' });
+      store.ctSettings.push({
+        project_id: 1,
+        active_source_id: 5,
+        active_canon_snapshot_id: 'snap1',
+      });
       store.canonSnapshots.push({ id: 'snap1', revision: 3 });
       const result = await adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' });
       expect(result.contentHash).toBe(contentRevisionHash('采纳正文'));
@@ -1927,9 +2170,15 @@ describe('continuation Phase 3 repository coverage', () => {
       store.runs.push(seedAdoptRun());
       seedArtifact();
       // active source is now 9, run froze source 5
-      store.ctSettings.push({ project_id: 1, active_source_id: 9, active_canon_snapshot_id: 'snap1' });
+      store.ctSettings.push({
+        project_id: 1,
+        active_source_id: 9,
+        active_canon_snapshot_id: 'snap1',
+      });
       store.canonSnapshots.push({ id: 'snap1', revision: 3 });
-      await expect(adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' })).rejects.toThrow();
+      await expect(
+        adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' }),
+      ).rejects.toThrow();
       const run = store.runs.find(r => r.id === 'ct_adopt_fresh')!;
       expect(run.state).toBe('outdated');
       expect(run.error_code).toBe('outdated');
@@ -1938,7 +2187,11 @@ describe('continuation Phase 3 repository coverage', () => {
     test('rejects adopt when canon snapshot id changed', async () => {
       store.runs.push(seedAdoptRun());
       seedArtifact();
-      store.ctSettings.push({ project_id: 1, active_source_id: 5, active_canon_snapshot_id: 'snap2' });
+      store.ctSettings.push({
+        project_id: 1,
+        active_source_id: 5,
+        active_canon_snapshot_id: 'snap2',
+      });
       store.canonSnapshots.push({ id: 'snap2', revision: 3 });
       await expect(
         adoptArtifactAsDraft({ runId: 'ct_adopt_fresh' }),
@@ -1950,7 +2203,11 @@ describe('continuation Phase 3 repository coverage', () => {
     test('rejects adopt when canon revision bumped (review edit)', async () => {
       store.runs.push(seedAdoptRun());
       seedArtifact();
-      store.ctSettings.push({ project_id: 1, active_source_id: 5, active_canon_snapshot_id: 'snap1' });
+      store.ctSettings.push({
+        project_id: 1,
+        active_source_id: 5,
+        active_canon_snapshot_id: 'snap1',
+      });
       // same snapshot id but revision bumped from 3 to 4
       store.canonSnapshots.push({ id: 'snap1', revision: 4 });
       await expect(
@@ -2045,7 +2302,7 @@ describe('continuation Phase 3 repository coverage', () => {
       expect(own!.runId).toBe('ct_own1');
     });
 
-    test('adopt with another run\'s artifactId is refused (ownership never relaxed)', async () => {
+    test("adopt with another run's artifactId is refused (ownership never relaxed)", async () => {
       seedTwoRuns();
       await expect(
         adoptArtifactAsDraft({ runId: 'ct_own1', artifactId: 'ca_own2' }),
@@ -2079,13 +2336,19 @@ describe('continuation Phase 3 repository coverage', () => {
       // to return 't0' but keep the stored value as 't1'.
       store.chapters[0].updated_at = 't1';
       const original = mockExecuteSql.getMockImplementation();
-      mockExecuteSql.mockImplementation(async (sql: string, params: any[] = []) => {
-        if (/SELECT content, title, status, updated_at FROM chapters WHERE id/i.test(sql)) {
-          // Return a stale updated_at so the optimistic lock misses
-          return res([{ ...store.chapters[0], updated_at: 't0' }]);
-        }
-        return original!(sql, params);
-      });
+      mockExecuteSql.mockImplementation(
+        async (sql: string, params: any[] = []) => {
+          if (
+            /SELECT content, title, status, updated_at FROM chapters WHERE id/i.test(
+              sql,
+            )
+          ) {
+            // Return a stale updated_at so the optimistic lock misses
+            return res([{ ...store.chapters[0], updated_at: 't0' }]);
+          }
+          return original!(sql, params);
+        },
+      );
       await expect(
         adoptArtifactAsDraft({ runId: 'ct_own1', artifactId: 'ca_own1' }),
       ).rejects.toThrow('并发编辑');

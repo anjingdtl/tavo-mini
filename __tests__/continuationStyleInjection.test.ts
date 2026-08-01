@@ -853,4 +853,44 @@ describe('buildContinuationContext style path', () => {
     ).rejects.toBeInstanceOf(ContinuationCapabilityBlockedError);
     expect(getInjectableStyleProfile).toHaveBeenCalledTimes(1);
   });
+
+  it('reads only the boundary chapter when no continuation正文 exists', async () => {
+    (getInjectableStyleProfile as jest.Mock).mockResolvedValue(injectableRow());
+    (database.getRecentChaptersBeforePosition as jest.Mock).mockResolvedValue(
+      [],
+    );
+    const rangeReader = jest.fn().mockResolvedValue([
+      {
+        id: 99,
+        position: 5,
+        title: '末章',
+        content: '原著结尾事件。',
+      },
+    ]);
+    (continuationSourceReader as any).listBoundedSourceChaptersForRange =
+      rangeReader;
+
+    await buildContinuationContext({
+      projectId: 1,
+      targetChapterId: 10,
+      targetPosition: 0 as any,
+      currentChapterContent: '',
+      userInstruction: '推进',
+      modelContextLimit: 32_768,
+      maxOutputTokens: 2048,
+      activeLlmConfigId: 1,
+    });
+
+    expect(rangeReader).toHaveBeenCalledWith(
+      expect.objectContaining({
+        boundary: expect.objectContaining({ chapterPosition: 5 }),
+      }),
+      5,
+      6,
+    );
+    expect(
+      continuationSourceReader.listBoundedSourceChapters,
+    ).not.toHaveBeenCalled();
+    delete (continuationSourceReader as any).listBoundedSourceChaptersForRange;
+  });
 });
