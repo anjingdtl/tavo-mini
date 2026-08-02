@@ -624,6 +624,189 @@ export function compileRepairMessages(
   ];
 }
 
+// ---------------------------------------------------------------------------
+// V3 quality-first workflow prompts (Implementation plan §8).
+// Separate from the V2 compile* functions so V1/V2 prompts never change.
+// All V3 prompts receive the frozen dynamic length contract; no hardcoded 3000.
+// ---------------------------------------------------------------------------
+
+export interface ContinuationV3PlanEcho {
+  targetHanCharacters: number;
+  chapterGoal: string;
+  centralConflict: string;
+  beats: Array<{ order: number; summary: string; targetHanCharacters: number }>;
+}
+
+/**
+ * V3 Writer prompt (plan §8.1). Emits schemaVersion=2 JSON with a plan that
+ * echoes the frozen dynamic target, then full chapter prose in `content`.
+ */
+export function compileV3WriterMessages(
+  snapshot: ContinuationContextSnapshot,
+): ChatMessage[] {
+  const lengthContract = resolveContinuationLengthContract(
+    snapshot.settingsSnapshot.values.targetChapterChars,
+  );
+  const lengthRule = [
+    `【正文长度硬约束】本次冻结目标为 ${lengthContract.targetHanCharacters} 个汉字；合法区间 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字（含边界）。`,
+    '汉字数只统计 Unicode CJK 汉字（含扩展区），不包含标点、空格、换行、数字和英文字母。少于下限或多于上限均视为未完成。',
+    `plan.targetHanCharacters 必须严格等于 ${lengthContract.targetHanCharacters}；每个 beat 必须给出正整数 targetHanCharacters，且各 beat 目标之和应接近 ${lengthContract.targetHanCharacters}。`,
+    '覆盖全部节拍不等于完成；正文还必须达到本次动态长度契约。请为每个 beat 分配足够的场景、对话、动作和情绪推进，避免把节拍压缩成摘要。',
+    '不得通过摘要、提纲、剧情概述、重复句或无意义水文凑长度；必须保留完整场景、人物互动、因果推进、结果余波和自然章末收束。',
+    '禁止复制原著原句或大段原文；禁止复述接缝已发生的事件；从接缝之后的新事件继续推进。',
+  ].join('\n');
+  const system = [
+    '你是长篇小说原著续写写手。只输出一个 JSON object，不要 Markdown、代码围栏、解释文字或标题。',
+    'JSON 顶层严格为 {"schemaVersion":2,"plan":{...},"content":"..."}。',
+    'plan 必须包含 schemaVersion=2、targetHanCharacters（等于本次冻结目标）、chapterGoal、centralConflict、beats[]（每项含正整数 order、非空 summary、正整数 targetHanCharacters）、participatingCharacterIds[]；characterActions、plotAdvances、foreshadowingActions、proposedStateChanges、risks 若无内容可输出空数组。',
+    'content 只包含本章正文，不含标题、JSON 包装、Markdown 或解释；不得在 content 中再次嵌套 plan 或 JSON。',
+    '先在 plan 中收束目标、冲突、节拍与参与人物（按本次动态目标分配 beat 字数），再按 plan 写 content；不得先独立调用规划，也不得把 plan 写入 content。',
+    lengthRule,
+    '遵守人物知识边界与冻结状态；不引入被策略禁止的死亡/复活/新体系；不引入未被原著或前文支持的新设定。',
+    primaryAnchorRule(snapshot),
+    '模仿冻结文风画像，禁止逐字复制原著；用户本章明确要求优先于自动风格画像。',
+    lockedBlock(snapshot),
+    canonFactCheckBlock(snapshot),
+    stateBlock(snapshot),
+    primaryAnchorBlock(snapshot),
+    recentBlock(snapshot),
+    memoryBlock(snapshot),
+    episodicBlock(snapshot),
+    historicalDigestBlock(snapshot),
+    styleBlock(snapshot, 'writer'),
+    supplementsBlock(snapshot),
+  ].join('\n\n');
+  return [
+    { role: 'system', content: system },
+    {
+      role: 'user',
+      content: `生成${displayTargetTitle(snapshot)}。本次目标 ${
+        lengthContract.targetHanCharacters
+      } 个汉字，合法区间 ${lengthContract.minHanCharacters}–${
+        lengthContract.maxHanCharacters
+      } 个汉字。用户要求：\n${snapshot.bundles.userInstruction}`,
+    },
+  ];
+}
+
+/**
+ * Phase-aware V3 Checker prompt (plan §8.2). Initial and Final share a common
+ * compiler but receive an explicit phase so the check record is distinguishable
+ * in telemetry/UI. Length, duplication and seam overlap remain local-authority;
+ * the Checker focuses on Canon/state/character semantic conflicts.
+ */
+export function compileV3CheckerMessages(
+  snapshot: ContinuationContextSnapshot,
+  artifactText: string,
+  phase: 'initial' | 'final',
+): ChatMessage[] {
+  const phaseLine =
+    phase === 'initial'
+      ? '本次是初检（Initial Checker）：你的检查结果将作为 Integrated Reviser 的修订输入，不是最终判决。'
+      : '本次是终检（Final Checker）：检查的是修订后的最终候选正文，你的结论将决定本次续写能否进入用户采纳。';
+  const system = [
+    '你是续写一致性检查器。先逐段核对正文，再只输出 JSON 对象 {"issues":[]}；禁止 Markdown、解释、思维过程和正文复述。每项含 category, subtype, severity, confidence, generatedStart, generatedEnd, generatedExcerpt, description, evidenceIds, suggestedFix。',
+    phaseLine,
+    'category ∈ world|character|relationship|plot|experience|knowledge|timeline|style；severity ∈ info|warning|error|blocking。',
+    '没有 Canon 证据且不属于本地硬门禁时只能 warning，并说明是推测；主观文风偏好不得使用 error/blocking。位置使用 UTF-16 半开区间，generatedExcerpt 必须是正文中的原文片段。',
+    '若原著事实与正文冲突，只有明确违反 hard/locked 规则、冻结状态/知识边界，或有可追溯 Canon 证据的事实冲突，才使用 error/blocking；能对应行内证据编号时必须写入 evidenceIds。不得把缺少资料当作原著不存在。error/blocking 必须同时给出可定位的正文片段、具体事实、证据 id 和可执行 suggestedFix；任一项无法提供就降为 warning。',
+    '目标字数、整章自重复、接缝连续重合和 future leakage 由本地确定性门禁权威判定；不要把目标长度或自重复当作 error/blocking，也不要用模糊的重复问题制造第二个严重问题。若本地硬门禁已经能识别接缝重合或 future leakage，不得重复报告同一问题；把 LLM 检查预算用于 Canon、状态和人物关系的语义冲突。',
+    '按根因合并重复问题：同一事实冲突只输出一项，最多补充必要的关联问题。先区分“正文明确写错”与“正文没有交代”，后者不能判错。',
+    '若正文只是合理推进、补写未确定细节或与 Canon 没有明确冲突，返回 {"issues":[]} 或 warning，不要要求用户人工确认。',
+    lockedBlock(snapshot),
+    canonFactCheckBlock(snapshot),
+    stateBlock(snapshot),
+    styleBlock(snapshot, 'checker'),
+    `【可引用证据 id】${JSON.stringify(snapshot.bundles.canon.evidenceRefs)}`,
+    supplementsBlock(snapshot),
+  ].join('\n\n');
+  return [
+    { role: 'system', content: system },
+    {
+      role: 'user',
+      content: `检查以下正文：\n---\n${artifactText}\n---`,
+    },
+  ];
+}
+
+/**
+ * V3 Integrated Reviser prompt (plan §8.3). Returns the FULL revised chapter
+ * (never an offset patch). Priority order is explicit and matches plan §2.1.
+ */
+export function compileIntegratedReviserMessages(
+  snapshot: ContinuationContextSnapshot,
+  writerContent: string,
+  initialOpenChecks: ContinuationCheckResult[],
+  localGateSummary: {
+    lengthStatus: 'within' | 'under' | 'over';
+    actualHanCharacters: number;
+    duplicateStatus: 'within' | 'suspicious' | 'blocking';
+    hardBlockingSubtypes: string[];
+  },
+): ChatMessage[] {
+  const lengthContract = resolveContinuationLengthContract(
+    snapshot.settingsSnapshot.values.targetChapterChars,
+  );
+  const writerHan = countHanCharacters(writerContent);
+  const gap =
+    lengthContract.targetHanCharacters - writerHan;
+  const gapDesc =
+    gap > 0
+      ? `当前正文 ${writerHan} 个汉字，距目标 ${lengthContract.targetHanCharacters} 仍缺 ${gap} 个汉字，距下限 ${lengthContract.minHanCharacters} 缺 ${Math.max(0, lengthContract.minHanCharacters - writerHan)} 个汉字。`
+      : gap < 0
+      ? `当前正文 ${writerHan} 个汉字，超出目标 ${Math.abs(gap)} 个汉字，超出上限 ${Math.max(0, writerHan - lengthContract.maxHanCharacters)} 个汉字。`
+      : `当前正文 ${writerHan} 个汉字，恰好等于目标 ${lengthContract.targetHanCharacters}。`;
+  const issues = initialOpenChecks
+    .filter(c => c.severity === 'error' || c.severity === 'blocking')
+    .map(c => {
+      const chapterLevel = isContinuationLengthIssueSubtype(c.subtype);
+      const location = chapterLevel
+        ? '章节级问题（无局部 offset）'
+        : `@${c.generatedStart}-${c.generatedEnd} 命中片段:${c.generatedExcerpt || '（无定位片段）'}`;
+      return `- [${c.severity}/${c.category}/${c.subtype}] ${c.description} ${location} 建议:${c.suggestedFix ?? ''}`;
+    })
+    .join('\n');
+  const localGateDesc = [
+    `本地门禁：长度=${localGateSummary.lengthStatus}（${localGateSummary.actualHanCharacters} 汉字）；自重复=${localGateSummary.duplicateStatus}；硬阻断子类型=${JSON.stringify(localGateSummary.hardBlockingSubtypes)}。`,
+  ].join('\n');
+
+  const system = [
+    '你是续写终稿综合修订助手。先在内部逐项执行修订清单，再只输出严格 JSON：{"schemaVersion":1,"content":"完整修订章节正文"}。不得输出思维过程、审查说明、Markdown 标题、offset 补丁或“已修复”等套话。',
+    '修订优先级（严格字典序，不允许用低优先补偿高优先）：',
+    '1. 不破坏 Canon、冻结状态、人物动机、接缝与完整事件链；',
+    '2. 修复全部 error/blocking 语义问题；',
+    `3. 达到本次冻结动态汉字区间 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters}（目标 ${lengthContract.targetHanCharacters}）；`,
+    '4. 保持原著文风和自然叙事；',
+    '5. 只输出严格 JSON 中的完整修订正文。',
+    `本次必须输出完整修订章节正文，不是 offset 补丁、摘要、提纲、问题说明或局部重写。content 从修订后章节第一句开始，到自然章末结束；不得加入前言、计数、标签或解释。`,
+    `修订后正文必须包含 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字，并尽量接近 ${lengthContract.targetHanCharacters}。${gapDesc}`,
+    '长度不足时应补充具体动作、对话、因果、人物反应、冲突推进或结果余波；长度超出时优先压缩重复描写、重复心理和不推进剧情的对话。不得用摘要、提纲、概括句、重复同一句、无意义水文或大段删除来规避长度要求。',
+    '不得复制原著原句或复述接缝已发生的事件；不得复制 Writer 原文形成 writer+writer 自重复；必须保留并改善 Writer 的事件链、人物互动、因果、情绪转折和自然收束。',
+    '模型声明“已修复”不具证据效力；是否通过只看最终本地门禁和 Final Checker。',
+    lockedBlock(snapshot),
+    canonFactCheckBlock(snapshot),
+    stateBlock(snapshot),
+    styleBlock(snapshot, 'repair', { openChecks: initialOpenChecks }),
+    localGateDesc,
+    `【待修复问题】\n${issues || '（无 error/blocking，但仍需按本地门禁调整长度/重复）'}`,
+  ].join('\n\n');
+  return [
+    { role: 'system', content: system },
+    {
+      role: 'user',
+      content: [
+        '【Integrated Reviser 交付契约：优先级最高】',
+        '只输出严格 JSON：{"schemaVersion":1,"content":"完整修订章节正文"}。',
+        `content 必须包含 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字，并尽量接近 ${lengthContract.targetHanCharacters}。`,
+        '【Writer 原文开始】',
+        writerContent,
+        '【Writer 原文结束】',
+        '现在只输出 JSON 对象。',
+      ].join('\n\n'),
+    },
+  ];
+}
+
 export function compileStateExtractionMessages(
   finalizedText: string,
   entityIndex: string,

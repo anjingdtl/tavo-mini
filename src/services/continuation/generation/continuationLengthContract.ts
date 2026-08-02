@@ -34,10 +34,44 @@ const LENGTH_ISSUE_SUBTYPES = new Set([
   'chapter_length_over_target',
 ]);
 
+/**
+ * Count Han characters across the full Unicode Han range (Implementation plan
+ * §6.1). Covers:
+ *  - BMP CJK Unified Ideographs (U+4E00–U+9FFF)
+ *  - CJK Extension A (U+3400–U+4DBF)
+ *  - CJK Compatibility Ideographs (U+F900–U+FAFF)
+ *  - CJK Extension B–F and Compatibility Supplement (U+20000–U+2FA1F, SMP)
+ *  - IDEOGRAPHIC NUMBER ZERO 〇 (U+3007) — explicitly included per plan §6.1
+ *
+ * Implementation note: we iterate by code point (not UTF-16 code unit) so
+ * supplementary-plane characters (astral Han) are counted once each. The older
+ * BMP-only regex matched astral Han zero times and 〇 zero times. Do NOT confuse
+ * this Unicode Han count with UTF-16 patch offsets, which are code-unit based.
+ */
 export function countHanCharacters(text: string): number {
-  return (
-    text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) ?? []
-  ).length;
+  let count = 0;
+  for (let i = 0; i < text.length; ) {
+    const code = text.codePointAt(i) ?? 0;
+    if (isHanCodePoint(code)) count += 1;
+    // Advance by 2 code units when inside the supplementary plane, else 1.
+    i += code > 0xffff ? 2 : 1;
+  }
+  return count;
+}
+
+function isHanCodePoint(code: number): boolean {
+  // BMP CJK Unified Ideographs
+  if (code >= 0x4e00 && code <= 0x9fff) return true;
+  // CJK Extension A
+  if (code >= 0x3400 && code <= 0x4dbf) return true;
+  // CJK Compatibility Ideographs
+  if (code >= 0xf900 && code <= 0xfaff) return true;
+  // CJK Extension B–F (supplementary plane, U+20000–U+2FA1F covers Ext B/C/D/E/F
+  // and the CJK Compatibility Ideographs Supplement).
+  if (code >= 0x20000 && code <= 0x2fa1f) return true;
+  // IDEOGRAPHIC NUMBER ZERO 〇
+  if (code === 0x3007) return true;
+  return false;
 }
 
 export function resolveContinuationLengthContract(
