@@ -186,17 +186,14 @@ function stateBlock(s: ContinuationContextSnapshot): string {
   // only post-boundary continuation deltas, avoiding duplicate injection.
   const chars = st.characterStates
     .filter(c => c.source !== 'canon')
-    .slice(0, 20)
     .map(c => `- ${JSON.stringify(c.ref)}: ${c.summary}`)
     .join('\n');
   const plots = st.plotThreads
     .filter(p => p.sourceLayer !== 'canon')
-    .slice(0, 10)
     .map(p => `- ${p.title} (${p.status}): ${p.summary}`)
     .join('\n');
   const relationships = (st.relationships ?? [])
     .filter(r => r.sourceLayer !== 'canon')
-    .slice(0, 20)
     .map(
       r =>
         `- ${JSON.stringify(r.source)} → ${JSON.stringify(r.target)}: ${
@@ -218,7 +215,6 @@ function stateBlock(s: ContinuationContextSnapshot): string {
           }:${k.factSummary}`,
         ),
     )
-    .slice(0, 20)
     .map(
       k =>
         `- ${JSON.stringify(k.ref)} ${k.factKey}: ${k.factSummary}（${
@@ -240,7 +236,6 @@ function stateBlock(s: ContinuationContextSnapshot): string {
           }`,
         ),
     )
-    .slice(0, 20)
     .map(e => `- ${JSON.stringify(e.ref)}: ${e.title}；${e.summary}`)
     .join('\n');
   return `【第 ${displayNumberFor(
@@ -438,34 +433,51 @@ export function compilePlannerMessages(
 
 export function compileWriterMessages(
   snapshot: ContinuationContextSnapshot,
-  plan: ContinuationPlan,
+  plan?: ContinuationPlan,
 ): ChatMessage[] {
+  const standardWorkflow = !plan;
   const system = [
-    '你是长篇小说续写写手。只输出本章正文，不要分析说明、不要标题行。',
+    standardWorkflow
+      ? '你是长篇小说续写写手。只输出一个 JSON object，不要 Markdown、代码围栏、解释文字或推理内容。'
+      : '你是长篇小说续写写手。只输出本章正文，不要分析说明、不要标题行。',
+    ...(standardWorkflow
+      ? [
+          'JSON 顶层必须严格为 {"schemaVersion":1,"plan":{...},"content":"..."}。plan 必须包含 chapterGoal、centralConflict、beats、participatingCharacterIds；characterActions、plotAdvances、foreshadowingActions、proposedStateChanges、risks 若无内容可输出空数组或省略，content 只包含本章正文，不含标题、JSON 包装或解释。',
+          '先在同一次 completion 的 plan 中收束章节目标、核心冲突、节拍和参与人物，再按该 plan 写 content；不得先独立调用规划，也不得把 plan 写入 content。',
+        ]
+      : []),
     '遵守人物知识边界；不复制大段原著原文；不引入被策略禁止的死亡/复活/新体系。',
     primaryAnchorRule(snapshot),
     '模仿抽象文风特征，禁止复制原著原句。用户本章明确要求优先于自动风格画像。',
     lockedBlock(snapshot),
     canonFactCheckBlock(snapshot),
-    `【规划（已确认版本）】\n目标：${plan.chapterGoal}\n冲突：${
-      plan.centralConflict
-    }\n节拍：${plan.beats.map(b => b.summary).join(' / ')}`,
+    ...(plan
+      ? [
+          `【规划（已确认版本）】\n目标：${plan.chapterGoal}\n冲突：${
+            plan.centralConflict
+          }\n节拍：${plan.beats.map(b => b.summary).join(' / ')}`,
+        ]
+      : []),
     stateBlock(snapshot),
     primaryAnchorBlock(snapshot),
     recentBlock(snapshot),
     memoryBlock(snapshot),
     episodicBlock(snapshot),
     historicalDigestBlock(snapshot),
-    styleBlock(snapshot, 'writer', { plan }),
+    styleBlock(snapshot, 'writer', plan ? { plan } : undefined),
     supplementsBlock(snapshot),
   ].join('\n\n');
   return [
     { role: 'system', content: system },
     {
       role: 'user',
-      content: `写${displayTargetTitle(snapshot)}正文，约 ${
-        snapshot.settingsSnapshot.values.targetChapterChars
-      } 字。用户要求：\n${snapshot.bundles.userInstruction}`,
+      content: standardWorkflow
+        ? `生成${displayTargetTitle(snapshot)}。目标正文约 ${
+            snapshot.settingsSnapshot.values.targetChapterChars
+          } 字。用户要求：\n${snapshot.bundles.userInstruction}`
+        : `写${displayTargetTitle(snapshot)}正文，约 ${
+            snapshot.settingsSnapshot.values.targetChapterChars
+          } 字。用户要求：\n${snapshot.bundles.userInstruction}`,
     },
   ];
 }
@@ -475,16 +487,19 @@ export function compileCheckerMessages(
   artifactText: string,
 ): ChatMessage[] {
   const system = [
-    '你是续写一致性检查器。只输出 JSON 数组 issues[]，每项含 category, subtype, severity, confidence, generatedStart, generatedEnd, generatedExcerpt, description, evidenceIds, suggestedFix。',
+    '你是续写一致性检查器。先逐段核对正文，再只输出 JSON 对象 {"issues":[]}；禁止 Markdown、解释、思维过程和正文复述。每项含 category, subtype, severity, confidence, generatedStart, generatedEnd, generatedExcerpt, description, evidenceIds, suggestedFix。',
     'category ∈ world|character|relationship|plot|experience|knowledge|timeline|style；severity ∈ info|warning|error|blocking。',
-    '没有证据时只能 warning 并说明是推测。位置使用 UTF-16 半开区间。',
-    '若原著事实与正文冲突，必须输出问题；能对应行内证据编号时写入 evidenceIds。不得把缺少资料当作原著不存在。',
+    '没有 Canon 证据且不属于本地硬门禁时只能 warning，并说明是推测；主观文风偏好不得使用 error/blocking。位置使用 UTF-16 半开区间，generatedExcerpt 必须是正文中的原文片段。',
+    '若原著事实与正文冲突，只有明确违反 hard/locked 规则、冻结状态/知识边界，或有可追溯 Canon 证据的事实冲突，才使用 error/blocking；能对应行内证据编号时必须写入 evidenceIds。不得把缺少资料当作原著不存在。error/blocking 必须同时给出可定位的正文片段、具体事实、证据 id 和可执行 suggestedFix；任一项无法提供就降为 warning。',
+    '目标字数、接缝连续重合和 future leakage 由本地确定性复核负责；不要把目标长度当作 error/blocking，也不要用模糊的重复问题制造第二个严重问题。若本地硬门禁已经能识别接缝重合或 future leakage，不得重复报告同一问题；把 LLM 检查预算用于 Canon、状态和人物关系的语义冲突。',
+    '按根因合并重复问题：同一事实冲突只输出一项，最多补充必要的关联问题。先区分“正文明确写错”与“正文没有交代”，后者不能判错。',
+    '若正文只是合理推进、补写未确定细节或与 Canon 没有明确冲突，返回 {"issues":[]} 或 warning，不要要求用户人工确认。',
     lockedBlock(snapshot),
     canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
     styleBlock(snapshot, 'checker'),
     `【可引用证据 id】${JSON.stringify(
-      snapshot.bundles.canon.evidenceRefs.slice(0, 50),
+      snapshot.bundles.canon.evidenceRefs,
     )}`,
     supplementsBlock(snapshot),
   ].join('\n\n');
@@ -502,18 +517,40 @@ export function compileRepairMessages(
   artifactText: string,
   openChecks: ContinuationCheckResult[],
 ): ChatMessage[] {
+  const originalHanCharacters = (
+    artifactText.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || []
+  ).length;
   const issues = openChecks
     .filter(c => c.severity === 'error' || c.severity === 'blocking')
     .map(
       c =>
         `- [${c.severity}/${c.category}] ${c.description} @${
           c.generatedStart
-        }-${c.generatedEnd} 建议:${c.suggestedFix ?? ''}`,
+        }-${c.generatedEnd} 命中片段:${c.generatedExcerpt || '（无定位片段）'} 建议:${c.suggestedFix ?? ''}`,
     )
     .join('\n');
+  const anchorExcerpt =
+    snapshot.primaryAnchor?.excerpt || snapshot.bundles.seam?.excerpt || '';
+  const overlapInstructions = openChecks.some(
+    c =>
+      c.subtype === 'source_overlap' ||
+      c.subtype === 'continuation_anchor_overlap',
+  )
+    ? [
+        '本次修复的输出就是最终候选正文，不是修改建议、解释、审查报告、JSON 或局部补丁。',
+        '接缝重合是硬错误：必须重写命中段落的叙事动作、信息组织和措辞，让正文从接缝之后的新事件继续推进；不能只删标点、替换几个词、压缩句子或把同一段原文换位置。',
+        '修复后正文不得再次复制接缝或命中片段中的连续原文，也不得用“刚才/此前发生的事情”重新复述同一段；若无法保留原句，优先保证章节目标、冲突和节拍继续成立。',
+        anchorExcerpt
+          ? `【仅用于消除接缝重合的参考接缝】\n${anchorExcerpt}`
+          : '【接缝参考】（快照未提供可展示片段，仍须依据检查命中片段改写）',
+      ].join('\n')
+    : '本次修复的输出就是最终候选正文，只输出修复后的完整正文；不要输出问题清单、解释、JSON 或局部补丁。';
   const system = [
-    '你是续写局部修复助手。只修改冲突片段，保留无问题段落。只输出修复后的完整正文。',
-    '不要因单一风格问题重写无关段落；不要修改已通过的 Canon 事实。',
+    '你是续写终稿修复助手。先在内部逐项执行修复清单，再只输出修复后的完整正文。不得输出思维过程、审查说明、JSON、Markdown 标题或“已修复”等套话。',
+    overlapInstructions,
+    '对每一项 error/blocking 都必须完成可验证的修改；输出前重新检查：硬规则/Canon 证据、冻结状态与知识边界、人物关系、章节目标与冲突、接缝不重复。不要因单一风格问题重写无关段落，也不要修改已通过的 Canon 事实。',
+    '保留原正文中未命中的有效段落和叙事声音，但如果局部修复会继续触发接缝重合，应改写整个相关段落，而不是保留危险原句。正文要自然收束，不要以修复说明或半截句结束。',
+    `原正文约含 ${originalHanCharacters} 个汉字；除非修复确实要求删除内容，否则保留原有事件链、人物互动、细节和收束，不得把整章压缩成摘要或几百字的提纲。Repair 的完整终稿优先保持约 2500–4000 个汉字（当前目标约 ${snapshot.settingsSnapshot.values.targetChapterChars} 个汉字），这是质量方向，不是额外重试或 API token 硬上限。`,
     lockedBlock(snapshot),
     canonFactCheckBlock(snapshot),
     stateBlock(snapshot),

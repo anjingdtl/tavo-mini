@@ -2,7 +2,7 @@
  * Independent continuation generation runner (Spec §5, §9).
  * Does not reuse freeform PipelineStageName or pipeline_tasks as authority.
  */
-import type { ChatMessage } from '../../llm/types';
+import type { ChatMessage, LLMRequestConfig } from '../../llm/types';
 import {
   callLLMResult,
   resolveLLMRequestConfig,
@@ -27,6 +27,7 @@ import {
   tryDeterministicRepair,
 } from './continuationRepairService';
 import {
+  buildAcceptOpenChecksStatement,
   buildOutboxInsertStatement,
   casUpdateRunState,
   contentRevisionHash,
@@ -39,6 +40,7 @@ import {
   insertCheckResults,
   insertRun,
   listChecksForArtifact,
+  markChecksAutoRepaired,
   markChecksObsolete,
   markRunsOutdatedForProject,
   newContinuationRunId,
@@ -52,6 +54,7 @@ import type {
   ContinuationGenerationRun,
   ContinuationPlan,
   ContinuationRunState,
+  FrozenContinuationModelConfig,
 } from './types';
 import {
   ContinuationCapabilityBlockedError,
@@ -63,9 +66,13 @@ import { executeTransaction } from '../../database/transaction';
 import { v4 } from '../../uuidBridge';
 import { processContinuationOutbox } from './continuationStateOutboxWorker';
 import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
-import { planStageCapacity } from './continuationContextBudget';
 import {
+  CONTINUATION_BUDGET_POLICY,
+  planStageCapacity,
   resolveContinuationWriterOutputBudget,
+  type ResolvedStageCapacity,
+} from './continuationContextBudget';
+import {
   type ContinuationStageBudgets,
 } from './continuationContextBudget';
 
@@ -104,6 +111,39 @@ export interface StartContinuationRunInput {
 }
 
 const activeControllers = new Map<string, AbortController>();
+
+function countHanCharacters(text: string): number {
+  return (text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || [])
+    .length;
+}
+
+/**
+ * A Repair response must not silently collapse a complete Writer chapter into
+ * a short summary. This is a local candidate-preservation check, not a target
+ * length gate: the Writer artifact remains available and the user can decide
+ * what to do when a Repair response is unusably contracted.
+ */
+function isRepairCandidateUsable(
+  original: string,
+  candidate: string,
+  targetChapterChars: number,
+): boolean {
+  const originalHan = countHanCharacters(original) || original.length;
+  const candidateHan = countHanCharacters(candidate) || candidate.length;
+  if (originalHan === 0 || candidateHan === 0) return false;
+  const sourceIsInPreferredBand = originalHan >= 2500 && originalHan <= 4000;
+  if (
+    sourceIsInPreferredBand &&
+    (candidateHan < 2500 || candidateHan > 4000)
+  ) {
+    return false;
+  }
+  const preservationFloor = Math.max(
+    Math.floor(originalHan * 0.25),
+    Math.floor(Math.min(originalHan, targetChapterChars) * 0.15),
+  );
+  return candidateHan >= preservationFloor;
+}
 
 function defaultPlan(instruction: string): ContinuationPlan {
   return {
@@ -159,6 +199,115 @@ function parsePlan(raw: string, fallbackInstruction: string): ContinuationPlan {
   return defaultPlan(fallbackInstruction);
 }
 
+function freezeModelConfig(
+  configId: number,
+  config: LLMRequestConfig | null | undefined,
+): FrozenContinuationModelConfig | null {
+  if (!config) return null;
+  return {
+    configId,
+    name: String(config.name ?? `LLM 配置 #${configId}`),
+    providerType: config.provider_type,
+    url: config.url,
+    modelName: config.model_name,
+    contextWindow: Math.max(1, Math.floor(Number(config.context_window) || 8192)),
+    maxOutputTokens: Math.max(
+      1,
+      Math.floor(Number(config.max_output_tokens) || 4000),
+    ),
+  };
+}
+
+export interface ParsedContinuationWriterResult {
+  plan: ContinuationPlan;
+  content: string;
+}
+
+/**
+ * Strict standard-workflow Writer contract. The legacy parser above remains
+ * intentionally permissive because old runs may still be resumed.
+ */
+export function parseWriterResult(raw: string): ParsedContinuationWriterResult {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(stripModelJson(raw));
+  } catch {
+    throw new Error(
+      'Writer 返回的不是合法 JSON。请关闭推理输出或改用支持 JSON 输出的模型后重试。',
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Writer JSON 顶层必须是 object，不能把解释文字写入正文。');
+  }
+  if (parsed.schemaVersion !== 1 || !parsed.plan || typeof parsed.plan !== 'object') {
+    throw new Error(
+      'Writer JSON 缺少 schemaVersion=1 或 plan。请改用支持 JSON 输出的模型后重试。',
+    );
+  }
+  if (typeof parsed.content !== 'string' || !parsed.content.trim()) {
+    throw new Error(
+      'Writer JSON 缺少非空 content。模型可能只返回了 reasoning 或被 max_tokens 截断，请提高输出上限或改用非推理模型。',
+    );
+  }
+  try {
+    const nested = JSON.parse(parsed.content.trim());
+    if (nested && typeof nested === 'object' && (nested.plan || nested.content)) {
+      throw new Error('正文 content 不能再次包含计划或 JSON 包装。');
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('不能再次包含')) {
+      throw error;
+    }
+    // Normal prose is not JSON and is valid content.
+  }
+  const p = parsed.plan;
+  // Only the four fields needed to preserve the chapter intent are required
+  // from the model. The remaining plan arrays are additive and may be omitted
+  // by a valid JSON-output model when there is nothing to report.
+  const requiredArrayFields = ['beats', 'participatingCharacterIds'];
+  if (
+    typeof p.chapterGoal !== 'string' ||
+    typeof p.centralConflict !== 'string' ||
+    requiredArrayFields.some(field => !Array.isArray(p[field]))
+  ) {
+    throw new Error(
+      'Writer JSON 的 plan 字段不完整。需要目标、冲突、节拍、参与人物和风险数组。',
+    );
+  }
+  const beats = p.beats.map((beat: any, index: number) => {
+    if (typeof beat === 'string') {
+      return { order: index + 1, summary: beat };
+    }
+    if (!beat || typeof beat.summary !== 'string') {
+      throw new Error(`Writer JSON 的 plan.beats[${index}] 无有效 summary。`);
+    }
+    return {
+      order: Number.isFinite(Number(beat.order)) ? Number(beat.order) : index + 1,
+      summary: beat.summary,
+      ...(typeof beat.conflict === 'string' ? { conflict: beat.conflict } : {}),
+    };
+  });
+  const plan: ContinuationPlan = {
+    schemaVersion: 1,
+    chapterGoal: p.chapterGoal,
+    centralConflict: p.centralConflict,
+    beats,
+    participatingCharacterIds: p.participatingCharacterIds.filter(
+      (id: any) => Number.isFinite(Number(id)),
+    ).map((id: any) => Number(id)),
+    characterActions: Array.isArray(p.characterActions) ? p.characterActions : [],
+    plotAdvances: Array.isArray(p.plotAdvances) ? p.plotAdvances : [],
+    foreshadowingActions: Array.isArray(p.foreshadowingActions)
+      ? p.foreshadowingActions
+      : [],
+    proposedStateChanges: Array.isArray(p.proposedStateChanges)
+      ? p.proposedStateChanges
+      : [],
+    risks: Array.isArray(p.risks) ? p.risks : [],
+  };
+  return { plan, content: parsed.content };
+}
+
 async function defaultStageCaller(input: {
   stage: string;
   messages: ChatMessage[];
@@ -168,10 +317,26 @@ async function defaultStageCaller(input: {
   signal?: AbortSignal;
   projectId: number;
   runId: string;
+  frozenModelConfig?: FrozenContinuationModelConfig | null;
 }): Promise<StageLlmCallResult> {
-  const requestConfig = input.configId
+  const liveRequestConfig = input.configId
     ? await resolveLLMRequestConfigById(input.configId)
     : await resolveLLMRequestConfig();
+  // Freeze endpoint/model/window fields at run creation. The API key is still
+  // resolved from the config's Android Keystore entry and is never serialized
+  // into the run snapshot or backup payload.
+  const requestConfig = input.frozenModelConfig
+    ? {
+        ...liveRequestConfig,
+        id: input.frozenModelConfig.configId,
+        name: input.frozenModelConfig.name,
+        provider_type: input.frozenModelConfig.providerType,
+        url: input.frozenModelConfig.url,
+        model_name: input.frozenModelConfig.modelName,
+        context_window: input.frozenModelConfig.contextWindow,
+        max_output_tokens: input.frozenModelConfig.maxOutputTokens,
+      }
+    : liveRequestConfig;
   const contextWindow = requestConfig.context_window;
   if (
     typeof contextWindow === 'number' &&
@@ -197,6 +362,15 @@ async function defaultStageCaller(input: {
       scenario: `continuation_${input.stage}`,
       responseFormat:
         input.responseFormat === 'json_object' ? 'json_object' : undefined,
+      // DeepSeek V4 defaults to thinking mode. Standard continuation has a
+      // strict no-retry Writer contract, so reserve completion capacity for
+      // business JSON/text. This only applies to frozen standard-run configs;
+      // legacy runs and other model families keep their current behavior.
+      thinking:
+        input.frozenModelConfig &&
+        /^deepseek-v4-(flash|pro)$/i.test(input.frozenModelConfig.modelName)
+          ? { type: 'disabled' }
+          : undefined,
       requestConfig,
     },
     input.signal,
@@ -243,9 +417,17 @@ export async function startContinuationRun(
     }
     return activeCfg;
   };
-  const [plannerCfg, writerCfg] = await Promise.all([
+  const [plannerCfg, writerCfg, checkerCfg, repairCfg, stateExtractionCfg] =
+    await Promise.all([
     resolveStageConfig(generationSettings.plannerLlmConfigId),
     resolveStageConfig(generationSettings.writerLlmConfigId),
+    generationSettings.checkerEnabled
+      ? resolveStageConfig(generationSettings.checkerLlmConfigId)
+      : Promise.resolve(null),
+    generationSettings.checkerEnabled
+      ? resolveStageConfig(generationSettings.repairLlmConfigId)
+      : Promise.resolve(null),
+    resolveStageConfig(generationSettings.stateExtractionLlmConfigId),
   ]);
   // Resolve each stage from its actual LLM config. Do NOT take min(windows)
   // as a universal budget (Spec §7.1) — Planner may use a larger window than
@@ -258,28 +440,21 @@ export async function startContinuationRun(
   const plannerWindow = positive(plannerCfg?.context_window, defaultWindow);
   const writerWindow = positive(writerCfg?.context_window, defaultWindow);
   const writerOutputBudget = resolveContinuationWriterOutputBudget({
-    contextWindow: input.modelContextLimit ?? writerWindow,
+    // A run is frozen from the selected Writer config. The optional input
+    // override remains a test/preview compatibility field and never changes
+    // the production run's model window.
+    contextWindow: writerWindow,
     targetChapterChars: generationSettings.targetChapterChars,
     configuredMaxOutputTokens: writerCfg?.max_output_tokens,
     requestedMaxOutputTokens: input.maxOutputTokens,
   });
   const plannerOut = positive(
     plannerCfg?.max_output_tokens,
-    Math.min(2048, writerOutputBudget.initialOutputTokens),
+    writerOutputBudget.initialOutputTokens,
   );
-  // The frozen layout reserves the retry ceiling. The first call below uses
-  // the smaller initial amount, leaving a safe expansion path for reasoning
-  // models that spend their first completion entirely on hidden reasoning.
-  const writerOut = writerOutputBudget.retryOutputTokens;
-
-  const [checkerCfg, repairCfg] = await Promise.all([
-    generationSettings.checkerEnabled
-      ? resolveStageConfig(generationSettings.checkerLlmConfigId)
-      : Promise.resolve(null),
-    generationSettings.checkerEnabled
-      ? resolveStageConfig(generationSettings.repairLlmConfigId)
-      : Promise.resolve(null),
-  ]);
+  // Keep the legacy Planner capacity in the immutable snapshot for old-run
+  // compatibility. Workflow v2 never calls Planner or retries Writer.
+  const writerOut = Math.max(1, writerOutputBudget.requestedMaxTokens);
 
   const fallbackConfigId = activeId || 1;
   const plannerId = generationSettings.plannerLlmConfigId ?? fallbackConfigId;
@@ -291,6 +466,25 @@ export async function startContinuationRun(
     ? generationSettings.repairLlmConfigId ?? fallbackConfigId
     : null;
 
+  const frozenModelConfigs = {
+    planner: freezeModelConfig(plannerId, plannerCfg ?? activeCfg),
+    writer: freezeModelConfig(writerId, writerCfg ?? activeCfg),
+    checker:
+      checkerId != null
+        ? freezeModelConfig(checkerId, checkerCfg ?? activeCfg)
+        : null,
+    repair:
+      repairId != null
+        ? freezeModelConfig(repairId, repairCfg ?? activeCfg)
+        : null,
+    stateExtraction: freezeModelConfig(
+      generationSettings.stateExtractionLlmConfigId ?? fallbackConfigId,
+      stateExtractionCfg ?? activeCfg,
+    ),
+  } satisfies NonNullable<
+    import('./types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs']
+  >;
+
   // Per-stage capacity from each stage's real window. input.modelContextLimit
   // only overrides Writer layout (shared snapshot packing), not Planner/Checker.
   const stageBudgets: ContinuationStageBudgets = {
@@ -301,7 +495,7 @@ export async function startContinuationRun(
     }),
     writer: planStageCapacity({
       llmConfigId: writerId,
-      contextWindow: input.modelContextLimit ?? writerWindow,
+      contextWindow: writerWindow,
       maxOutputTokens: writerOut,
     }),
     checker:
@@ -309,10 +503,7 @@ export async function startContinuationRun(
         ? planStageCapacity({
             llmConfigId: checkerId,
             contextWindow: positive(checkerCfg?.context_window, defaultWindow),
-            maxOutputTokens: positive(
-              checkerCfg?.max_output_tokens,
-              Math.min(2048, writerOut),
-            ),
+            maxOutputTokens: checkerCfg?.max_output_tokens,
           })
         : null,
     repair:
@@ -320,10 +511,7 @@ export async function startContinuationRun(
         ? planStageCapacity({
             llmConfigId: repairId,
             contextWindow: positive(repairCfg?.context_window, defaultWindow),
-            maxOutputTokens: positive(
-              repairCfg?.max_output_tokens,
-              Math.min(2048, writerOut),
-            ),
+            maxOutputTokens: repairCfg?.max_output_tokens,
           })
         : null,
   };
@@ -341,9 +529,10 @@ export async function startContinuationRun(
     userInstruction: input.userInstruction,
     modelContextLimit: modelLimit,
     maxOutputTokens: maxOut,
-    initialWriterOutputTokens: writerOutputBudget.initialOutputTokens,
+    initialWriterOutputTokens: writerOutputBudget.requestedMaxTokens,
     activeLlmConfigId: activeId || 1,
     stageBudgets,
+    frozenModelConfigs,
   });
 
   const runId = newContinuationRunId();
@@ -372,7 +561,7 @@ export async function startContinuationRun(
     contextTraceJson: null,
     tokenUsageJson: JSON.stringify({ stages: {} }),
     state: 'running',
-    stage: 'planner',
+    stage: 'writer',
     completionReason: null,
     adoptedRevisionHash: null,
     finalizedRevisionHash: null,
@@ -406,7 +595,670 @@ export async function startContinuationRun(
   return run;
 }
 
+interface StandardStagePreflight {
+  promptTokens: number;
+  requestedMaxTokens: number;
+  effectiveWindow: number;
+}
+
+function capacityForStage(
+  snapshot: ContinuationContextSnapshot,
+  stage: 'writer' | 'checker' | 'repair',
+): ResolvedStageCapacity | null {
+  const capacity = snapshot.stageBudgets?.[stage];
+  return capacity ?? null;
+}
+
+function preflightStandardStage(input: {
+  snapshot: ContinuationContextSnapshot;
+  stage: 'writer' | 'checker' | 'repair';
+  messages: ChatMessage[];
+  maxTokens: number;
+  minimumOutput?: number;
+}): StandardStagePreflight {
+  const capacity = capacityForStage(input.snapshot, input.stage);
+  if (!capacity) {
+    throw new ContinuationCapabilityBlockedError(
+      `阶段 ${input.stage} 没有冻结的 LLM 配置，无法安全请求。请重新发起续写。`,
+    );
+  }
+  const promptTokens = estimateMessagesTokens(input.messages);
+  const effectiveWindow =
+    capacity.effectiveWindow ||
+    Math.floor(capacity.contextWindow * CONTINUATION_BUDGET_POLICY.contextUtilizationRatio);
+  const outputShareCap = Math.floor(
+    capacity.contextWindow * CONTINUATION_BUDGET_POLICY.maxOutputRatio,
+  );
+  const remainingCapacity = effectiveWindow - promptTokens;
+  const requestedMaxTokens = Math.max(
+    0,
+    Math.min(
+      input.maxTokens,
+      capacity.maxOutputTokens,
+      outputShareCap,
+      remainingCapacity,
+    ),
+  );
+  if (requestedMaxTokens <= 0 || promptTokens + requestedMaxTokens > effectiveWindow) {
+    throw new ContinuationCapabilityBlockedError(
+      `阶段 ${input.stage} 上下文不足：prompt 约 ${promptTokens} token，当前有效窗口 ${effectiveWindow}，无法保留有效输出。请降低资料量或选择更大模型。`,
+    );
+  }
+  if (
+    input.minimumOutput != null &&
+    requestedMaxTokens < input.minimumOutput
+  ) {
+    throw new ContinuationCapabilityBlockedError(
+      `Writer 输出预算不足：当前最多 ${requestedMaxTokens} token，但按目标章节与计划仍至少需要 ${input.minimumOutput} token；请降低目标字数或选择更大的 context_window / max_output_tokens。`,
+    );
+  }
+  return { promptTokens, requestedMaxTokens, effectiveWindow };
+}
+
+function previousStandardCallCount(tokenUsage: Record<string, any>): number {
+  return (['writer', 'checker', 'repair'] as const).reduce(
+    (total, stage) => total + Number(tokenUsage[stage]?.requestCount ?? 0),
+    0,
+  );
+}
+
+function standardWorkflow(snapshot: ContinuationContextSnapshot): boolean {
+  return snapshot.workflowVersion === 2;
+}
+
+function frozenModelConfigForStage(
+  snapshot: ContinuationContextSnapshot,
+  stage: 'writer' | 'checker' | 'repair',
+): FrozenContinuationModelConfig | null {
+  return snapshot.settingsSnapshot.frozenModelConfigs?.[stage] ?? null;
+}
+
+async function runStandardStages(
+  runId: string,
+  snapshot: ContinuationContextSnapshot,
+  opts: {
+    callStage?: StageLlmCaller;
+    deterministicOnly?: boolean;
+    signal: AbortSignal;
+    projectId: number;
+    trace?: ContinuationContextTrace | null;
+    existingArtifact?: ContinuationArtifact | null;
+    initialTokenUsage?: Record<string, any>;
+  },
+): Promise<void> {
+  const tokenUsage: Record<string, any> = {
+    ...(opts.initialTokenUsage ?? {}),
+  };
+  let llmCallCount = previousStandardCallCount(tokenUsage);
+
+  const persistUsage = async (stage: string) => {
+    await casUpdateRunState(runId, ['running'], {
+      stage: stage as any,
+      tokenUsageJson: JSON.stringify({
+        workflowVersion: 2,
+        stages: tokenUsage,
+      }),
+    });
+  };
+
+  const call = async (
+    stage: 'writer' | 'checker' | 'repair',
+    messages: ChatMessage[],
+    maxTokens: number,
+    configId: number | null,
+    responseFormat: 'json_object' | 'text',
+    minimumOutput?: number,
+  ): Promise<StageLlmCallResult> => {
+    if (opts.signal.aborted) throw new Error('cancelled');
+    if (llmCallCount >= 3) {
+      throw new ContinuationCapabilityBlockedError(
+        '本次标准续写已达到 3 次在线 LLM 调用上限，不能再次请求。',
+      );
+    }
+    const preflight = preflightStandardStage({
+      snapshot,
+      stage,
+      messages,
+      maxTokens,
+      minimumOutput,
+    });
+    llmCallCount += 1;
+    const startedAt = new Date();
+    const startedAtIso = startedAt.toISOString();
+    const prior = tokenUsage[stage] ?? {};
+    tokenUsage[stage] = {
+      ...prior,
+      requestCount: Number(prior.requestCount ?? 0) + 1,
+      startedAt: startedAtIso,
+      estimatedPromptTokens: preflight.promptTokens,
+      requestedMaxTokens: preflight.requestedMaxTokens,
+      effectiveWindow: preflight.effectiveWindow,
+    };
+    await persistUsage(stage);
+
+    let result: StageLlmCallResult;
+    try {
+      result = opts.callStage
+        ? await opts.callStage({
+            stage,
+            messages,
+            maxTokens: preflight.requestedMaxTokens,
+            configId,
+            responseFormat,
+          })
+        : await defaultStageCaller({
+            stage,
+            messages,
+            maxTokens: preflight.requestedMaxTokens,
+            configId,
+            responseFormat,
+            signal: opts.signal,
+            projectId: opts.projectId,
+            runId,
+            frozenModelConfig: frozenModelConfigForStage(snapshot, stage),
+          });
+    } catch (error) {
+      const finishedAt = new Date();
+      tokenUsage[stage] = {
+        ...tokenUsage[stage],
+        finishedAt: finishedAt.toISOString(),
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+        warning: 'request_failed',
+        warningMessage: error instanceof Error ? error.message : String(error),
+      };
+      await persistUsage(stage).catch(() => {});
+      throw error;
+    }
+
+    const finishedAt = new Date();
+    const actualPrompt = result.usage?.prompt;
+    const actualCompletion = result.usage?.completion;
+    tokenUsage[stage] = {
+      ...tokenUsage[stage],
+      finishedAt: finishedAt.toISOString(),
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      prompt: actualPrompt,
+      completion: actualCompletion,
+      finishReason: result.finishReason ?? null,
+      emptyReason: result.emptyReason ?? null,
+    };
+    if (
+      typeof actualPrompt === 'number' &&
+      typeof actualCompletion === 'number' &&
+      actualPrompt + actualCompletion > preflight.effectiveWindow
+    ) {
+      tokenUsage[stage].warning = 'usage_exceeded_effective_window';
+      await persistUsage(stage).catch(() => {});
+      throw new ContinuationCapabilityBlockedError(
+        `阶段 ${stage} 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，本次 run 不会重试。`,
+      );
+    }
+    await persistUsage(stage);
+    return result;
+  };
+
+  let artifact = opts.existingArtifact ?? null;
+  if (!artifact) {
+    if (Number(tokenUsage.writer?.requestCount ?? 0) > 0) {
+      throw new Error(
+        'Writer 已经发起过请求但尚未保存 artifact；标准链路不会自动重发 Writer，请检查模型服务后重新发起。',
+      );
+    }
+    await persistUsage('writer');
+    const writerMessages = compileWriterMessages(snapshot);
+    const writerBudget = resolveContinuationWriterOutputBudget({
+      contextWindow: snapshot.stageBudgets?.writer.contextWindow ?? 8192,
+      targetChapterChars: snapshot.settingsSnapshot.values.targetChapterChars,
+      configuredMaxOutputTokens:
+        snapshot.stageBudgets?.writer.declaredOutputTokens,
+    });
+    if (writerBudget.blockedReason) {
+      throw new ContinuationCapabilityBlockedError(writerBudget.blockedReason);
+    }
+    const writerResult = await call(
+      'writer',
+      writerMessages,
+      writerBudget.requestedMaxTokens,
+      snapshot.settingsSnapshot.resolvedModelConfigIds.writer,
+      'json_object',
+      writerBudget.minimumOutput,
+    );
+    if (!writerResult.text.trim()) {
+      throw writerEmptyResponseError(writerResult);
+    }
+    let parsed: ParsedContinuationWriterResult;
+    try {
+      parsed = parseWriterResult(writerResult.text);
+    } catch (error) {
+      if (writerResult.finishReason === 'length') {
+        throw new Error(
+          'Writer JSON 被 max_tokens 截断，未保存正文。请提高 Writer 的 max_output_tokens 或降低目标章节长度；标准链路不会自动重试。',
+        );
+      }
+      throw error;
+    }
+    await savePlan(runId, parsed.plan, 'not_required');
+    artifact = await insertArtifact({
+      runId,
+      stage: 'writer',
+      content: parsed.content,
+    });
+  }
+
+  const settings = snapshot.settingsSnapshot.values;
+  const existingChecks = await listChecksForArtifact(runId, artifact.id);
+  let checks = existingChecks;
+  if (checks.length === 0) {
+    let issues = runDeterministicChecks(artifact.content, snapshot);
+    const checkerAlreadyAttempted =
+      Number(tokenUsage.checker?.requestCount ?? 0) > 0;
+    if (!opts.deterministicOnly && !checkerAlreadyAttempted) {
+      try {
+        const checkerCapacity = capacityForStage(snapshot, 'checker');
+        if (!checkerCapacity) throw new Error('缺少 Checker 冻结配置');
+        const checkerResult = await call(
+          'checker',
+          compileCheckerMessages(snapshot, artifact.content),
+          checkerCapacity.maxOutputTokens,
+          snapshot.settingsSnapshot.resolvedModelConfigIds.checker,
+          'json_object',
+        );
+        issues = issues.concat(parseCheckerLlmJson(checkerResult.text));
+      } catch (checkerError) {
+        tokenUsage.checker = {
+          ...(tokenUsage.checker ?? {}),
+          warning: 'deterministic_only_fallback',
+          warningMessage:
+            checkerError instanceof Error
+              ? checkerError.message
+              : String(checkerError),
+        };
+        await persistUsage('checker').catch(() => {});
+      }
+    } else if (checkerAlreadyAttempted) {
+      tokenUsage.checker = {
+        ...(tokenUsage.checker ?? {}),
+        warning: 'checker_already_attempted_deterministic_only',
+      };
+      await persistUsage('checker').catch(() => {});
+    }
+    const allowed = new Set(snapshot.bundles.canon.evidenceRefs);
+    const bound = filterBySettings(
+      bindIssuesToArtifact(issues, artifact.content, allowed),
+      settings,
+    );
+    await insertCheckResults(
+      bound.map(i => ({
+        runId,
+        chapterId: snapshot.targetChapterId,
+        artifactId: artifact!.id,
+        artifactHash: artifact!.contentHash,
+        ...i,
+      })),
+    );
+    checks = await listChecksForArtifact(runId, artifact.id);
+  }
+
+  const openChecks = checks.filter(c => c.resolutionStatus === 'open');
+  const severeChecks = openChecks.filter(
+    c => c.severity === 'error' || c.severity === 'blocking',
+  );
+  if (severeChecks.length > 0) {
+    let repaired = tryDeterministicRepair(artifact.content, severeChecks);
+    let repairUsedLlm = false;
+    const repairAlreadyAttempted =
+      Number(tokenUsage.repair?.requestCount ?? 0) > 0;
+    if (!repaired && !opts.deterministicOnly && !repairAlreadyAttempted) {
+      const repairCapacity = capacityForStage(snapshot, 'repair');
+      if (!repairCapacity) {
+        tokenUsage.repair = {
+          ...(tokenUsage.repair ?? {}),
+          requestCount: 0,
+          skippedReason: 'missing_frozen_config',
+        };
+      } else {
+        try {
+          const repairResult = await call(
+            'repair',
+            compileRepairMessages(snapshot, artifact.content, severeChecks),
+            repairCapacity.maxOutputTokens,
+            snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
+            'text',
+          );
+          repaired = repairResult.text.trim();
+          repairUsedLlm = Boolean(repaired);
+        } catch (repairError) {
+          tokenUsage.repair = {
+            ...(tokenUsage.repair ?? {}),
+            warning: 'repair_failed_writer_artifact_retained',
+            warningMessage:
+              repairError instanceof Error
+                ? repairError.message
+                : String(repairError),
+          };
+          await persistUsage('repair').catch(() => {});
+        }
+      }
+    } else if (repaired) {
+      tokenUsage.repair = {
+        ...(tokenUsage.repair ?? {}),
+        requestCount: 0,
+        skippedReason: 'deterministic_repair',
+      };
+    } else if (repairAlreadyAttempted) {
+      tokenUsage.repair = {
+        ...(tokenUsage.repair ?? {}),
+        skippedReason: 'repair_already_attempted_writer_artifact_retained',
+      };
+    }
+
+    if (
+      repaired &&
+      repaired !== artifact.content &&
+      !isRepairCandidateUsable(
+        artifact.content,
+        repaired,
+        settings.targetChapterChars,
+      )
+    ) {
+      tokenUsage.repair = {
+        ...(tokenUsage.repair ?? {}),
+        warning: 'repair_candidate_rejected_as_over_contracted',
+        warningMessage:
+          'Repair 候选相对 Writer 正文过度缩短或偏离 2500–4000 汉字质量带，已保留 Writer artifact；本次不重试，也不再次调用 Checker。',
+      };
+      repaired = null;
+      repairUsedLlm = false;
+      await persistUsage('repair').catch(() => {});
+    }
+
+    if (repaired && repaired !== artifact.content) {
+      await markChecksAutoRepaired(runId, artifact.id, severeChecks.map(c => c.id));
+      const parent = artifact;
+      artifact = await insertArtifact({
+        runId,
+        stage: 'repair',
+        content: repaired,
+        repairRound: 1,
+        parentArtifactId: parent.id,
+      });
+      // A Repair artifact is checked locally only. In particular, this branch
+      // must never call the LLM Checker after either deterministic or LLM repair.
+      const repairedIssues = filterBySettings(
+        bindIssuesToArtifact(
+          runDeterministicChecks(artifact.content, snapshot),
+          artifact.content,
+          new Set(snapshot.bundles.canon.evidenceRefs),
+        ),
+        settings,
+      );
+      await insertCheckResults(
+        repairedIssues.map(i => ({
+          runId,
+          chapterId: snapshot.targetChapterId,
+          artifactId: artifact!.id,
+          artifactHash: artifact!.contentHash,
+          ...i,
+        })),
+      );
+      tokenUsage.localVerify = {
+        requestCount: 0,
+        status: 'completed',
+        note: repairUsedLlm
+          ? 'Repair 后本地复核，未进行第二次 LLM 复检'
+          : '确定性修复后本地复核，未进行 LLM 复检',
+      };
+    }
+  }
+
+  await casUpdateRunState(runId, ['running'], {
+    state: 'awaiting_user',
+    stage: 'awaiting_user',
+    tokenUsageJson: JSON.stringify({
+      workflowVersion: 2,
+      stages: tokenUsage,
+    }),
+  });
+  activeControllers.delete(runId);
+}
+
+/**
+ * User-confirmed last-resort repair for a standard run whose Repair artifact
+ * still has an open local error/blocking check. The normal path remains
+ * Writer → Checker → Repair (at most three calls). This action is deliberately
+ * explicit, is available once, never calls Checker again, and keeps the prior
+ * artifact if the extra request fails.
+ */
+export async function repairContinuationArtifactOnce(
+  runId: string,
+  callStage?: StageLlmCaller,
+): Promise<void> {
+  const run = await getRunById(runId);
+  if (!run) throw new Error('run 不存在');
+  if (run.workflowVersion !== 2) {
+    throw new Error('历史续写不支持额外修正，请继续使用历史恢复流程');
+  }
+  if (run.state !== 'awaiting_user' || run.stage !== 'awaiting_user') {
+    throw new Error('当前续写不在等待用户决策状态');
+  }
+
+  const snapshot = JSON.parse(
+    run.contextSnapshotJson ?? '{}',
+  ) as ContinuationContextSnapshot;
+  const artifact = await getLatestArtifact(runId);
+  if (!artifact) throw new Error('没有可修正的正文候选');
+  const checks = await listChecksForArtifact(runId, artifact.id);
+  const severeChecks = checks.filter(
+    c =>
+      c.resolutionStatus === 'open' &&
+      (c.severity === 'error' || c.severity === 'blocking'),
+  );
+  if (severeChecks.length === 0) {
+    throw new Error('当前候选没有待修复的 error / blocking 问题');
+  }
+
+  let saved: { stages?: Record<string, any> } = {};
+  try {
+    saved = JSON.parse(run.tokenUsageJson || '{}');
+  } catch {
+    saved = {};
+  }
+  const tokenUsage: Record<string, any> = { ...(saved.stages ?? {}) };
+  const priorCalls = previousStandardCallCount(tokenUsage);
+  if (priorCalls >= 4 || Number(tokenUsage.repair?.additionalRequestCount ?? 0) > 0) {
+    throw new Error('额外修正已经使用过，本次不再重复调用');
+  }
+  const firstRepairAttempted = Number(tokenUsage.repair?.requestCount ?? 0) > 0;
+  if (artifact.stage !== 'repair' && !firstRepairAttempted) {
+    throw new Error('只有第一次 Repair 已尝试且本地复核仍失败时，才能请求额外修正');
+  }
+
+  const repairCapacity = capacityForStage(snapshot, 'repair');
+  if (!repairCapacity) throw new Error('缺少 Repair 冻结配置，无法安全请求');
+  const messages = compileRepairMessages(snapshot, artifact.content, severeChecks);
+  const preflight = preflightStandardStage({
+    snapshot,
+    stage: 'repair',
+    messages,
+    maxTokens: repairCapacity.maxOutputTokens,
+  });
+  const controller = new AbortController();
+  activeControllers.set(runId, controller);
+  const startedAt = new Date();
+  tokenUsage.repair = {
+    ...(tokenUsage.repair ?? {}),
+    requestCount: Number(tokenUsage.repair?.requestCount ?? 0) + 1,
+    additionalRequestCount: 1,
+    additionalReason: 'user_confirmed_after_local_verification_failure',
+    startedAt: startedAt.toISOString(),
+    estimatedPromptTokens: preflight.promptTokens,
+    requestedMaxTokens: preflight.requestedMaxTokens,
+    effectiveWindow: preflight.effectiveWindow,
+  };
+
+  try {
+    const claimed = await casUpdateRunState(runId, ['awaiting_user'], {
+      state: 'running',
+      stage: 'repair',
+      tokenUsageJson: JSON.stringify({ workflowVersion: 2, stages: tokenUsage }),
+    });
+    if (!claimed) throw new Error('续写状态已变更，无法请求额外修正');
+
+    const result = callStage
+      ? await callStage({
+          stage: 'repair',
+          messages,
+          maxTokens: preflight.requestedMaxTokens,
+          configId: snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
+          responseFormat: 'text',
+        })
+      : await defaultStageCaller({
+          stage: 'repair',
+          messages,
+          maxTokens: preflight.requestedMaxTokens,
+          configId: snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
+          responseFormat: 'text',
+          signal: controller.signal,
+          projectId: run.projectId,
+          runId,
+          frozenModelConfig: frozenModelConfigForStage(snapshot, 'repair'),
+        });
+    const finishedAt = new Date();
+    const previousRepair = tokenUsage.repair ?? {};
+    const previousPromptTotal = Number(
+      previousRepair.promptTotal ?? previousRepair.prompt ?? 0,
+    );
+    const previousCompletionTotal = Number(
+      previousRepair.completionTotal ?? previousRepair.completion ?? 0,
+    );
+    const previousDurationTotal = Number(
+      previousRepair.totalDurationMs ?? previousRepair.durationMs ?? 0,
+    );
+    tokenUsage.repair = {
+      ...tokenUsage.repair,
+      finishedAt: finishedAt.toISOString(),
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      totalDurationMs:
+        previousDurationTotal + finishedAt.getTime() - startedAt.getTime(),
+      prompt: result.usage?.prompt,
+      completion: result.usage?.completion,
+      promptTotal: previousPromptTotal + Number(result.usage?.prompt ?? 0),
+      completionTotal:
+        previousCompletionTotal + Number(result.usage?.completion ?? 0),
+      finishReason: result.finishReason ?? null,
+      emptyReason: result.emptyReason ?? null,
+    };
+    if (
+      typeof result.usage?.prompt === 'number' &&
+      typeof result.usage?.completion === 'number' &&
+      result.usage.prompt + result.usage.completion > preflight.effectiveWindow
+    ) {
+      throw new ContinuationCapabilityBlockedError(
+        `额外 Repair 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，候选正文保持不变。`,
+      );
+    }
+    const repaired = result.text.trim();
+    if (!repaired) throw new Error('额外 Repair 未返回正文，候选正文保持不变');
+    if (repaired === artifact.content) {
+      throw new Error('额外 Repair 未改变正文，候选正文保持不变');
+    }
+    if (
+      !isRepairCandidateUsable(
+        artifact.content,
+        repaired,
+        snapshot.settingsSnapshot.values.targetChapterChars,
+      )
+    ) {
+      throw new Error(
+        '额外 Repair 候选相对当前正文过度缩短，已保留原候选；本次不再重试，也不会调用 LLM Checker。',
+      );
+    }
+
+    await markChecksAutoRepaired(
+      runId,
+      artifact.id,
+      severeChecks.map(c => c.id),
+    );
+    const repairedArtifact = await insertArtifact({
+      runId,
+      stage: 'repair',
+      content: repaired,
+      repairRound: artifact.repairRound + 1,
+      parentArtifactId: artifact.id,
+    });
+    const repairedIssues = filterBySettings(
+      bindIssuesToArtifact(
+        runDeterministicChecks(repairedArtifact.content, snapshot),
+        repairedArtifact.content,
+        new Set(snapshot.bundles.canon.evidenceRefs),
+      ),
+      snapshot.settingsSnapshot.values,
+    );
+    await insertCheckResults(
+      repairedIssues.map(i => ({
+        runId,
+        chapterId: snapshot.targetChapterId,
+        artifactId: repairedArtifact.id,
+        artifactHash: repairedArtifact.contentHash,
+        ...i,
+      })),
+    );
+    tokenUsage.localVerify = {
+      requestCount: 0,
+      status: 'completed',
+      note: '额外 Repair 后本地复核，未进行第二次 LLM Checker',
+    };
+    await casUpdateRunState(runId, ['running'], {
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      tokenUsageJson: JSON.stringify({ workflowVersion: 2, stages: tokenUsage }),
+    });
+  } catch (error) {
+    const finishedAt = new Date();
+    tokenUsage.repair = {
+      ...tokenUsage.repair,
+      finishedAt: finishedAt.toISOString(),
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      warning: 'additional_repair_failed_writer_or_repair_artifact_retained',
+      warningMessage: error instanceof Error ? error.message : String(error),
+    };
+    await casUpdateRunState(runId, ['running'], {
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      tokenUsageJson: JSON.stringify({ workflowVersion: 2, stages: tokenUsage }),
+    }).catch(() => {});
+    throw error;
+  } finally {
+    activeControllers.delete(runId);
+  }
+}
+
 async function runStages(
+  runId: string,
+  snapshot: ContinuationContextSnapshot,
+  opts: {
+    callStage?: StageLlmCaller;
+    deterministicOnly?: boolean;
+    signal: AbortSignal;
+    projectId: number;
+    trace?: ContinuationContextTrace | null;
+    existingArtifact?: ContinuationArtifact | null;
+    initialTokenUsage?: Record<string, any>;
+  },
+): Promise<void> {
+  if (standardWorkflow(snapshot)) {
+    await runStandardStages(runId, snapshot, opts);
+    if (opts.trace) {
+      await casUpdateRunState(runId, ['awaiting_user'], {
+        contextTraceJson: JSON.stringify(opts.trace),
+      }).catch(() => {});
+    }
+    return;
+  }
+  await runLegacyStages(runId, snapshot, opts);
+}
+
+async function runLegacyStages(
   runId: string,
   snapshot: ContinuationContextSnapshot,
   opts: {
@@ -546,6 +1398,7 @@ function buildStageCaller(
   projectId: number,
   runId: string,
   tokenUsage: Record<string, any>,
+  frozenModelConfigs?: import('./types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs'],
 ) {
   return async (
     stage: string,
@@ -578,6 +1431,10 @@ function buildStageCaller(
       signal: controller.signal,
       projectId,
       runId,
+      frozenModelConfig:
+        stage === 'writer' || stage === 'checker' || stage === 'repair'
+          ? frozenModelConfigs?.[stage] ?? null
+          : null,
     });
     tokenUsage[stage] = {
       ...(r.usage ?? {}),
@@ -984,6 +1841,8 @@ export async function adoptArtifactAsDraft(input: {
   artifactId?: string;
   /** Force overwrite when chapter content hash differs from input_revision_hash. */
   forceOverwrite?: boolean;
+  /** Explicit user opt-in to adopt an artifact with open severe local checks. */
+  allowOpenChecks?: boolean;
 }): Promise<{ contentHash: string }> {
   const run = await getRunById(input.runId);
   if (!run) throw new Error('run 不存在');
@@ -1090,6 +1949,17 @@ export async function adoptArtifactAsDraft(input: {
       params: [artifact.content, ts, run.chapterId, currentUpdatedAt],
     },
   ];
+  if (input.allowOpenChecks) {
+    const acceptChecks = buildAcceptOpenChecksStatement({
+      runId: run.id,
+      artifactId: artifact.id,
+      ts,
+    });
+    statements.push({
+      sql: acceptChecks.sql,
+      params: acceptChecks.params as any[],
+    });
+  }
   await executeTransaction(db, statements, {
     onStatementComplete: (idx, rowsAffected) => {
       // Statement 2 (1-based) is the chapter UPDATE with the optimistic lock.
@@ -1338,6 +2208,51 @@ export async function resumeInterruptedRun(
     run.contextSnapshotJson,
   ) as ContinuationContextSnapshot;
 
+  // Standard workflow resume is deliberately separate from the historical
+  // Planner/confirm loop. A persisted Writer artifact is never regenerated;
+  // persisted checks are reused and Repair can consume at most the remaining
+  // single call within the three-call guard.
+  if (standardWorkflow(snapshot)) {
+    const artifact = await getLatestArtifact(runId);
+    if (artifact && run.stage === 'awaiting_user') {
+      await casUpdateRunState(runId, ['interrupted'], {
+        state: 'awaiting_user',
+        stage: 'awaiting_user',
+      });
+      return;
+    }
+    const ok = await casUpdateRunState(runId, ['interrupted'], {
+      state: 'running',
+      stage: artifact ? run.stage : 'writer',
+    });
+    if (!ok) return;
+    const controller = new AbortController();
+    activeControllers.set(runId, controller);
+    let initialTokenUsage: Record<string, any> = {};
+    try {
+      const parsed = JSON.parse(run.tokenUsageJson || '{}');
+      initialTokenUsage = parsed.stages ?? {};
+    } catch {
+      initialTokenUsage = {};
+    }
+    try {
+      await runStages(runId, snapshot, {
+        callStage,
+        deterministicOnly,
+        signal: controller.signal,
+        projectId: run.projectId,
+        existingArtifact: artifact,
+        initialTokenUsage,
+      });
+    } catch (err) {
+      await finalizeRunOnError(runId, controller, err);
+      throw err;
+    } finally {
+      activeControllers.delete(runId);
+    }
+    return;
+  }
+
   // Branch: context / planner → re-run the whole stage pipeline from planner.
   if (run.stage === 'planner' || run.stage === 'context') {
     const ok = await casUpdateRunState(runId, ['interrupted'], {
@@ -1397,6 +2312,7 @@ export async function resumeInterruptedRun(
       run.projectId,
       runId,
       tokenUsage,
+      snapshot.settingsSnapshot.frozenModelConfigs,
     );
     try {
       await continueFromWriter(runId, snapshot, planRowCr.plan, {
@@ -1450,6 +2366,7 @@ export async function resumeInterruptedRun(
     run.projectId,
     runId,
     tokenUsage,
+    snapshot.settingsSnapshot.frozenModelConfigs,
   );
   try {
     await continueFromWriter(runId, snapshot, planRow.plan, {

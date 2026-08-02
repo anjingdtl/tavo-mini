@@ -24,6 +24,11 @@ import type {
   PipelineTask,
   PipelineTaskStatus,
 } from '../../../types/pipeline';
+import {
+  CONTINUATION_STAGE_LABELS,
+  CONTINUATION_STAGE_PROGRESS,
+  type ContinuationPipelineStage,
+} from '../../../components/PipelineProgress';
 
 type ChapterNavigation = NativeStackNavigationProp<
   EditorStackParamList,
@@ -63,6 +68,20 @@ function isRunningPipelineStatus(
   return RUNNING_PIPELINE_STATUSES.includes(status as RunningPipelineStatus);
 }
 
+function continuationStageFromRunStage(
+  stage: string | null | undefined,
+): ContinuationPipelineStage | null {
+  if (
+    stage === 'context' ||
+    stage === 'writer' ||
+    stage === 'checker' ||
+    stage === 'repair'
+  ) {
+    return stage;
+  }
+  return null;
+}
+
 interface Params {
   chapter: Chapter | null;
   chapterId: number;
@@ -77,8 +96,11 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
   const [progressStartedAt, setProgressStartedAt] = useState(Date.now());
   const [progressVisible, setProgressVisible] = useState(false);
   const [queued, setQueued] = useState(false);
+  const [continuationStage, setContinuationStage] =
+    useState<ContinuationPipelineStage | null>(null);
   const resultTaskIdRef = useRef<string | null>(null);
   const seenTerminalRef = useRef<Set<string>>(new Set());
+  const continuationStageRef = useRef<ContinuationPipelineStage | null>(null);
 
   const openPipelineResult = useCallback(
     (taskId: string) => {
@@ -87,6 +109,8 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       setProgressVisible(false);
       setGenerating(false);
       setQueued(false);
+      setContinuationStage(null);
+      continuationStageRef.current = null;
       navigation.navigate('PipelineResult', { taskId });
     },
     [navigation],
@@ -231,6 +255,8 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     setProgressStartedAt(Date.now());
     setCurrentStage('draft');
     setQueued(false);
+    setContinuationStage('context');
+    continuationStageRef.current = 'context';
     try {
       await requestNotificationPermission();
       const numbering = await getContinuationChapterNumbering(project.id);
@@ -245,12 +271,29 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         currentChapterContent: chapter.content ?? '',
       });
       continuationRunIdRef.current = run.id;
+      const updateContinuationStage = (stage: string | null | undefined) => {
+        const next = continuationStageFromRunStage(stage);
+        if (!next || continuationStageRef.current === next) return;
+        continuationStageRef.current = next;
+        setContinuationStage(next);
+        setProgressStartedAt(Date.now());
+        void PipelineForeground.updateProgress(
+          run.id,
+          CONTINUATION_STAGE_LABELS[next],
+          CONTINUATION_STAGE_PROGRESS[next],
+        );
+      };
+      updateContinuationStage(run.stage);
       try {
         await PipelineForeground.start(
           run.id,
           'AI 续写进行中',
-          '正在规划/生成…',
-          0,
+          CONTINUATION_STAGE_LABELS[
+            continuationStageFromRunStage(run.stage) ?? 'context'
+          ],
+          CONTINUATION_STAGE_PROGRESS[
+            continuationStageFromRunStage(run.stage) ?? 'context'
+          ],
         );
       } catch {
         // foreground optional
@@ -263,6 +306,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         );
         const latest = await getRunById(run.id);
         if (!latest) break;
+        updateContinuationStage(latest.stage);
         if (
           latest.state === 'awaiting_user' ||
           latest.state === 'completed' ||
@@ -277,6 +321,8 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           }
           setProgressVisible(false);
           setGenerating(false);
+          setContinuationStage(null);
+          continuationStageRef.current = null;
           if (latest.state === 'failed') {
             Alert.alert('续写失败', latest.errorMessage || '未知错误');
           } else if (latest.state === 'cancelled') {
@@ -290,9 +336,13 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       }
       setProgressVisible(false);
       setGenerating(false);
+      setContinuationStage(null);
+      continuationStageRef.current = null;
     } catch (error: any) {
       setProgressVisible(false);
       setGenerating(false);
+      setContinuationStage(null);
+      continuationStageRef.current = null;
       Alert.alert('续写异常', error?.message || '请检查 Canon/API 配置。');
     }
   }, [chapter, navigation]);
@@ -338,6 +388,8 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     setGenerating(false);
     setProgressVisible(false);
     setQueued(false);
+    setContinuationStage(null);
+    continuationStageRef.current = null;
     if (continuationRunIdRef.current) {
       const rid = continuationRunIdRef.current;
       cancelContinuationRun(rid).catch(() => {});
@@ -363,6 +415,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     progressStartedAt,
     progressVisible,
     queued,
+    continuationStage,
     runPipeline,
     stopPipeline,
   };
