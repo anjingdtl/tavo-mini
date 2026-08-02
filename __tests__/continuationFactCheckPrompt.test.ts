@@ -158,20 +158,26 @@ describe('续写原著事实复核提示词', () => {
     expect(repairSystem).toContain('【原著事实复核依据】');
     expect(repairSystem).toContain('沈青是陆川的师父');
     expect(repairSystem).toContain('不得输出思维过程');
-    expect(repairSystem).toContain('每一项 error/blocking 都必须完成可验证的修改');
+    expect(repairSystem).toContain(
+      '每一项 error/blocking 都必须完成可验证的修改',
+    );
 
-    const overlapRepair = compileRepairMessages(snapshot, '边界尾句之后的正文。', [
-      {
-        severity: 'error',
-        category: 'style',
-        subtype: 'continuation_anchor_overlap',
-        description: '与接缝连续重合',
-        generatedStart: 0,
-        generatedEnd: 4,
-        generatedExcerpt: '边界尾句',
-        suggestedFix: '删除或改写重合片段',
-      } as any,
-    ])[0].content;
+    const overlapRepair = compileRepairMessages(
+      snapshot,
+      '边界尾句之后的正文。',
+      [
+        {
+          severity: 'error',
+          category: 'style',
+          subtype: 'continuation_anchor_overlap',
+          description: '与接缝连续重合',
+          generatedStart: 0,
+          generatedEnd: 4,
+          generatedExcerpt: '边界尾句',
+          suggestedFix: '删除或改写重合片段',
+        } as any,
+      ],
+    )[0].content;
     expect(overlapRepair).toContain('接缝重合是硬错误');
     expect(overlapRepair).toContain('不能只删标点、替换几个词');
     expect(overlapRepair).toContain('边界尾句');
@@ -195,5 +201,23 @@ describe('续写原著事实复核提示词', () => {
     expect(fullChapterRepair).toContain('原正文约含 3000 个汉字');
     expect(fullChapterRepair).toContain('不得把整章压缩成摘要');
     expect(fullChapterRepair).toContain('约 2500–4000 个汉字');
+    expect(fullChapterRepair).toContain('逐项完成 Checker 指出的实质修正');
+    expect(fullChapterRepair).toContain('Repair 不是原文复述');
+    expect(fullChapterRepair).toContain('不能为了避开问题而删掉大段正文');
+    expect(fullChapterRepair).toContain(
+      '最终输出的完整正文不得低于 2500 个汉字',
+    );
+    expect(fullChapterRepair).toContain('输出前在内部做一次汉字数量自检');
+    expect(fullChapterRepair).toContain(
+      '原文不是参考摘要，而是必须覆盖的完整修订底稿',
+    );
+
+    const repairUser = compileRepairMessages(snapshot, '甲'.repeat(3000), [])[1]
+      .content;
+    expect(repairUser).toContain('【最终交付契约：优先级最高】');
+    expect(repairUser).toContain('完整修订章节');
+    expect(repairUser).toContain('最终正文不得低于 2500 个汉字');
+    expect(repairUser).toContain('【完整原文开始】');
+    expect(repairUser).toContain('现在仅输出完整修订章节。');
   });
 });
