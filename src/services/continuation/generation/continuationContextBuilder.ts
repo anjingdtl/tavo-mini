@@ -32,6 +32,7 @@ import {
 import { computeStyleProfileHash } from '../styleProfile/styleProfileHash';
 import { STYLE_ANALYZER_VERSION } from '../styleProfile/styleAnalysisPrompt';
 import type { StyleMetrics } from '../styleProfile/styleStatistics';
+import { CONTINUATION_BUDGET_POLICY } from './continuationContextBudget';
 import { getEffectiveContinuationState } from './continuationStateService';
 import { buildContinuationSupplementContext } from './continuationSupplementContextBuilder';
 import {
@@ -45,6 +46,7 @@ import type {
   ContinuationGenerationSettings,
   ContinuationGenerationSettingsSnapshot,
   ContinuationStyleProfile,
+  FrozenContinuationModelConfig,
   StrictnessProfile,
 } from './types';
 import { ContinuationCapabilityBlockedError } from './types';
@@ -82,6 +84,14 @@ export interface BuildContinuationContextInput {
    * frozen onto the snapshot and used as the Writer layout budget when present.
    */
   stageBudgets?: ContinuationStageBudgets;
+  /** Non-secret routing fields frozen from each selected stage config. */
+  frozenModelConfigs?: {
+    planner: FrozenContinuationModelConfig | null;
+    writer: FrozenContinuationModelConfig | null;
+    checker: FrozenContinuationModelConfig | null;
+    repair: FrozenContinuationModelConfig | null;
+    stateExtraction: FrozenContinuationModelConfig | null;
+  };
 }
 
 function reviewPolicyFor(
@@ -260,49 +270,22 @@ export async function buildContinuationContext(
   const layoutLimit = writerCapacity?.contextWindow ?? input.modelContextLimit;
   const layoutMaxOut = writerCapacity?.maxOutputTokens ?? input.maxOutputTokens;
 
-  const contextBudget = planContinuationContextBudget({
+  let contextBudget = planContinuationContextBudget({
     modelContextLimit: layoutLimit,
     writerMaxOutputTokens: layoutMaxOut,
+    targetChapterChars: settings.targetChapterChars,
   });
-  const inputBudget = contextBudget.inputBudget;
+  let lockedRules: string[] = [];
+  try {
+    lockedRules = JSON.parse(settings.customRulesJson || '[]');
+    if (!Array.isArray(lockedRules)) lockedRules = [];
+  } catch {
+    lockedRules = [];
+  }
+
+  const lockedRuleTokens = estimateTokens(lockedRules.join('\n'));
 
   const reviewPolicy = reviewPolicyFor(profile);
-  const supplements = await buildContinuationSupplementContext({
-    projectId: input.projectId,
-    tokenBudget: contextBudget.supplementTokens,
-  });
-  const canonBundle = await CanonQueryService.getContextBundle({
-    projectId: input.projectId,
-    snapshotId: snap.id,
-    snapshotRevision: snap.revision,
-    atSourcePosition: snap.boundaryPosition,
-    queryText: input.userInstruction,
-    characterIds: [],
-    tokenBudget: contextBudget.canonTokens,
-    reviewPolicy,
-  });
-  const partiallyCovered =
-    snap.coverage.analyzedChapterCount < snap.coverage.sourceChapterCount;
-  const historicalDigests = partiallyCovered
-    ? await listHistoricalDigestReferences({
-        projectId: input.projectId,
-        queryText: input.userInstruction,
-        limit: 3,
-      })
-        .then(items => {
-          // Historical cards are the first soft context to be dropped. They
-          // share one category budget rather than each consuming 5%.
-          const perCard = Math.max(
-            1,
-            Math.floor((inputBudget * 0.05) / Math.max(1, items.length)),
-          );
-          return items.map(item => ({
-            ...item,
-            summary: clipTextToTokenBudget(item.summary, perCard),
-          }));
-        })
-        .catch(() => [])
-    : [];
 
   // Read prior continuation chapters before touching bounded source正文. The
   // selected primary anchor is the only正文 seam for this frozen run.
@@ -374,10 +357,96 @@ export async function buildContinuationContext(
   // final clipped form must be the same text counted by the context budget.
   // This is especially important after the first continuation chapter: the
   // anchor then comes from the previous continuation正文 rather than source.
-  const primaryAnchorExcerpt = clipTextTailToTokenBudget(
+  let primaryAnchorExcerpt = clipTextTailToTokenBudget(
     primaryAnchor.excerpt,
     contextBudget.sourceSeamTokens,
   );
+
+  // Canon retrieval is relevance-driven: instruction + current seam + the
+  // target chapter synopsis are the query. The Writer plan is deliberately
+  // not available yet and can never become a hidden pre-call.
+  const canonQuery = [
+    `用户要求：${input.userInstruction}`,
+    `当前正文接缝：${primaryAnchorExcerpt}`,
+    `当前章 synopsis：${input.userInstruction}`,
+  ].join('\n');
+  let canonBundle = await CanonQueryService.getContextBundle({
+    projectId: input.projectId,
+    snapshotId: snap.id,
+    snapshotRevision: snap.revision,
+    atSourcePosition: snap.boundaryPosition,
+    queryText: canonQuery,
+    characterIds: [],
+    tokenBudget: contextBudget.canonTokens,
+    hardTokenBudget: Math.max(
+      0,
+      contextBudget.inputBudget - lockedRuleTokens,
+    ),
+    reviewPolicy,
+  });
+
+  const hardCanonText = canonBundle.worldRules
+    .filter(rule => rule.constraintLevel === 'hard')
+    .map(rule => `${rule.title}: ${rule.description}`)
+    .join('\n');
+  const hardContextTokens =
+    lockedRuleTokens + estimateTokens(hardCanonText);
+  if (hardContextTokens > contextBudget.inputBudget) {
+    throw new ContinuationCapabilityBlockedError(
+      `上下文预算不足：用户锁定规则与 hard Canon 约 ${hardContextTokens} token，可用 ${contextBudget.inputBudget}。请换更大上下文模型或降低目标章节长度。`,
+    );
+  }
+  contextBudget = planContinuationContextBudget({
+    modelContextLimit: layoutLimit,
+    writerMaxOutputTokens: layoutMaxOut,
+    targetChapterChars: settings.targetChapterChars,
+    hardContextTokens,
+    hasPrimaryAnchor: Boolean(primaryAnchorExcerpt),
+  });
+  primaryAnchorExcerpt = clipTextTailToTokenBudget(
+    primaryAnchor.excerpt,
+    contextBudget.sourceSeamTokens,
+  );
+  canonBundle = await CanonQueryService.getContextBundle({
+    projectId: input.projectId,
+    snapshotId: snap.id,
+    snapshotRevision: snap.revision,
+    atSourcePosition: snap.boundaryPosition,
+    queryText: canonQuery,
+    characterIds: [],
+    tokenBudget: contextBudget.canonTokens,
+    hardTokenBudget: contextBudget.residualContextBudget,
+    reviewPolicy,
+  });
+  if (canonBundle.omittedReasonCounts.hard_world_rules_over_budget) {
+    throw new ContinuationCapabilityBlockedError(
+      `上下文预算不足：hard Canon 无法完整装入有效窗口 ${contextBudget.residualContextBudget} token。请换更大上下文模型或降低目标章节长度。`,
+    );
+  }
+
+  const supplements = await buildContinuationSupplementContext({
+    projectId: input.projectId,
+    tokenBudget: contextBudget.supplementTokens,
+  });
+  const partiallyCovered =
+    snap.coverage.analyzedChapterCount < snap.coverage.sourceChapterCount;
+  const historicalDigests = partiallyCovered
+    ? await listHistoricalDigestReferences({
+        projectId: input.projectId,
+        queryText: canonQuery,
+        limit: 3,
+      })
+        .then(items => {
+          const perCard = Math.floor(
+            contextBudget.episodicTokens / Math.max(1, items.length),
+          );
+          return items.map(item => ({
+            ...item,
+            summary: clipTextToTokenBudget(item.summary, perCard),
+          }));
+        })
+        .catch(() => [])
+    : [];
 
   // Recent continuation chapters are a distinct short-term bridge. Allocate
   // from newest to oldest: the immediately previous chapter is retained whole
@@ -555,8 +624,7 @@ export async function buildContinuationContext(
     // categories (historical digests + supplements) and retry once.
     if (selection.blocked) {
       const softPool =
-        contextBudget.supplementTokens +
-        Math.floor(contextBudget.inputBudget * 0.04);
+        contextBudget.supplementTokens + contextBudget.episodicTokens;
       styleBudget = Math.min(contextBudget.inputBudget, styleBudget + softPool);
       selection = selectStyleRenderLevel(
         row.profileJson,
@@ -618,19 +686,13 @@ export async function buildContinuationContext(
     }
   }
 
-  let lockedRules: string[] = [];
-  try {
-    lockedRules = JSON.parse(settings.customRulesJson || '[]');
-    if (!Array.isArray(lockedRules)) lockedRules = [];
-  } catch {
-    lockedRules = [];
-  }
   // Canon facts are rendered in their own complete block. Keep this list for
   // explicit user rules only, otherwise hard world rules would be duplicated
   // in both prompt sections and inflate the context trace.
 
   const settingsSnapshot: ContinuationGenerationSettingsSnapshot = {
     schemaVersion: 1,
+    workflowVersion: 2,
     // Persist the effective policy into the immutable run snapshot as well;
     // downstream prompt/checker stages must never see a stale off/balanced value.
     values: { ...settings, styleLevel },
@@ -646,6 +708,7 @@ export async function buildContinuationContext(
       stateExtraction:
         settings.stateExtractionLlmConfigId ?? input.activeLlmConfigId,
     },
+    frozenModelConfigs: input.frozenModelConfigs,
   };
 
   // Freeze stage budgets: prefer caller-provided; otherwise derive a writer-only
@@ -668,7 +731,7 @@ export async function buildContinuationContext(
           ? planStageCapacity({
               llmConfigId: settingsSnapshot.resolvedModelConfigIds.checker,
               contextWindow: layoutLimit,
-              maxOutputTokens: Math.min(2048, layoutMaxOut),
+              maxOutputTokens: layoutMaxOut,
             })
           : null,
       repair:
@@ -676,13 +739,14 @@ export async function buildContinuationContext(
           ? planStageCapacity({
               llmConfigId: settingsSnapshot.resolvedModelConfigIds.repair,
               contextWindow: layoutLimit,
-              maxOutputTokens: Math.min(2048, layoutMaxOut),
+              maxOutputTokens: layoutMaxOut,
             })
           : null,
     } satisfies ContinuationStageBudgets);
 
   const snapshot: ContinuationContextSnapshot = {
     schemaVersion: 2,
+    workflowVersion: 2,
     projectId: input.projectId,
     targetChapterId: input.targetChapterId,
     targetPosition: input.targetPosition,
@@ -866,19 +930,19 @@ export async function buildContinuationContext(
   ];
 
   const totalInputTokens = categories.reduce((s, c) => s + c.tokens, 0);
-  if (totalInputTokens > inputBudget) {
+  if (totalInputTokens > contextBudget.inputBudget) {
     // Explicit block rather than silent hard-rule truncation.
     // Soft trim recent + style already clipped; if still over, block.
     const hardTokens = categories
       .filter(c => c.name === 'lockedRules' || c.name === 'canon')
       .reduce((s, c) => s + c.tokens, 0);
-    if (hardTokens > inputBudget) {
+    if (hardTokens > contextBudget.inputBudget) {
       throw new ContinuationCapabilityBlockedError(
-        `上下文预算不足：硬规则约 ${hardTokens} token，可用 ${inputBudget}。请换更大上下文模型或降低输出预留。`,
+        `上下文预算不足：硬规则约 ${hardTokens} token，可用 ${contextBudget.inputBudget}。请换更大上下文模型或降低目标章节长度。`,
       );
     }
     throw new ContinuationCapabilityBlockedError(
-      `上下文预算不足：已组装约 ${totalInputTokens} token，可用 ${inputBudget}。请换更大上下文模型或降低输出预留。`,
+      `上下文预算不足：已组装约 ${totalInputTokens} token，可用 ${contextBudget.inputBudget}。请换更大上下文模型或降低目标章节长度。`,
     );
   }
 
@@ -906,6 +970,20 @@ export async function buildContinuationContext(
     primaryAnchorKind: primaryAnchor.kind,
     primaryAnchorChapterId: primaryAnchor.chapterId,
     primaryAnchorPosition: primaryAnchor.position,
+    effectiveWindow: contextBudget.effectiveWindow,
+    contextUtilizationRatio:
+      CONTINUATION_BUDGET_POLICY.contextUtilizationRatio,
+    maxOutputRatio: CONTINUATION_BUDGET_POLICY.maxOutputRatio,
+    declaredOutput: contextBudget.declaredOutput,
+    chapterDemand: contextBudget.chapterDemand,
+    pressure: contextBudget.pressure,
+    planShare: contextBudget.planShare,
+    hardContextTokens,
+    desiredOutput: contextBudget.desiredOutput,
+    requestedMaxTokens: contextBudget.requestedMaxTokens,
+    effectiveInputBudget: contextBudget.inputBudget,
+    minimumOutput: contextBudget.minimumOutput,
+    budgetRestrictedReason: null,
   };
 
   return { snapshot, trace };

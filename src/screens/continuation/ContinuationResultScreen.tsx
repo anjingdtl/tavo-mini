@@ -30,6 +30,7 @@ import {
   getPlan,
   getRunById,
   listChecksForArtifact,
+  repairContinuationArtifactOnce,
   resumeInterruptedRun,
   type ContinuationCheckResult,
   type ContinuationGenerationRun,
@@ -58,6 +59,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [body, setBody] = useState('');
   const [repairRound, setRepairRound] = useState(0);
   const [checks, setChecks] = useState<ContinuationCheckResult[]>([]);
+  const [stageTelemetry, setStageTelemetry] = useState<Record<string, any>>({});
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -67,6 +69,12 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       const r = await getRunById(runId);
       setRun(r);
       if (!r) return;
+      try {
+        const usage = JSON.parse(r.tokenUsageJson || '{}');
+        setStageTelemetry(usage.stages ?? {});
+      } catch {
+        setStageTelemetry({});
+      }
       const p = await getPlan(runId);
       setPlan(p?.plan ?? null);
       setPlanConfirmationStatus(p?.confirmationStatus ?? null);
@@ -87,11 +95,22 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     reload().catch(() => setLoading(false));
   }, [reload]);
 
-  const doAdopt = async (force = false) => {
+  const doAdopt = async (
+    options: { forceOverwrite?: boolean; allowOpenChecks?: boolean } = {},
+  ) => {
     setBusy(true);
     try {
-      await adoptArtifactAsDraft({ runId, forceOverwrite: force });
-      Toast.show({ type: 'success', text1: '已采纳为章节草稿' });
+      await adoptArtifactAsDraft({
+        runId,
+        forceOverwrite: options.forceOverwrite,
+        allowOpenChecks: options.allowOpenChecks,
+      });
+      Toast.show({
+        type: 'success',
+        text1: options.allowOpenChecks
+          ? '已按用户选择采纳风险候选'
+          : '已采纳为章节草稿',
+      });
       onClose();
     } catch (e: any) {
       if (e instanceof ContinuationConflictError) {
@@ -101,7 +120,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
             text: '仍要覆盖',
             style: 'destructive',
             onPress: () => {
-              doAdopt(true).catch(() => {});
+              doAdopt({
+                forceOverwrite: true,
+                allowOpenChecks: options.allowOpenChecks,
+              }).catch(() => {});
             },
           },
         ]);
@@ -204,6 +226,19 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       (c.subtype === 'source_overlap' ||
         c.subtype === 'continuation_anchor_overlap'),
   );
+  const reviewBlocked = blocking + errors > 0;
+  const additionalRepairUsed =
+    Number(stageTelemetry.repair?.additionalRequestCount ?? 0) > 0;
+  const firstRepairAttempted =
+    Number(stageTelemetry.repair?.requestCount ?? 0) > 0;
+  const additionalRepairAvailable =
+    run.workflowVersion === 2 &&
+    reviewBlocked &&
+    (repairRound > 0 || firstRepairAttempted) &&
+    !additionalRepairUsed;
+  const repairCandidateRejected =
+    stageTelemetry.repair?.warning ===
+    'repair_candidate_rejected_as_over_contracted';
 
   const toggleExpanded = (section: string) => {
     setExpanded(current => {
@@ -218,7 +253,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     if (!plan) return null;
     return (
       <View style={styles.block}>
-        <Text style={[styles.h, { color: colors.textPrimary }]}>规划</Text>
+        <Text style={[styles.h, { color: colors.textPrimary }]}>
+          {run.workflowVersion === 2 ? 'Writer 同次生成的章节计划' : '规划'}
+        </Text>
         <Text style={{ color: colors.textPrimary }}>{plan.chapterGoal}</Text>
         <Text style={{ color: colors.textSecondary }}>
           冲突：{plan.centralConflict}
@@ -242,6 +279,11 @@ export const ContinuationResultScreen: React.FC<Props> = ({
               </Text>
             ))}
           </View>
+        )}
+        {plan.participatingCharacterIds.length > 0 && (
+          <Text style={{ color: colors.textSecondary, marginTop: 4 }}>
+            参与人物：{plan.participatingCharacterIds.join('、')}
+          </Text>
         )}
       </View>
     );
@@ -289,7 +331,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         ]
           .filter(Boolean)
           .join('\n')
-      : '本次未生成独立规划。';
+      : '本次没有可展示的章节计划。';
     const checkText = checks.length
       ? checks
           .map(
@@ -301,9 +343,15 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     const resultSections = [
       {
         id: 'plan',
-        label: `规划 · 成功 (${plan ? '已生成' : '已跳过'})`,
+        label: `${run.workflowVersion === 2 ? 'Writer 同次计划' : '规划'} · ${
+          plan ? '成功' : '未生成'
+        }`,
         text: planText,
-        meta: plan ? '已根据 Canon 与续写状态生成本章规划' : '未启用独立规划阶段',
+        meta: plan
+          ? run.workflowVersion === 2
+            ? '与正文由同一次 Writer JSON completion 共同生成；没有独立 Planner 或确认步骤'
+            : '已根据 Canon 与续写状态生成本章规划'
+          : '没有可展示的章节计划',
       },
       {
         id: 'writer',
@@ -322,8 +370,8 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       resultSections.splice(2, 0, {
         id: 'repair',
         label: `一致性修复 · 成功 (${repairRound} 轮)`,
-        text: '已根据 blocking / error 检查项生成修复版候选正文；采纳将写入此版本。',
-        meta: '只修复冲突片段，已保留通过检查的内容',
+        text: '已根据 blocking / error 检查项生成修复版候选正文；已完成本地复核，未进行第二次 LLM 复检；采纳将写入此版本。',
+        meta: '只修复冲突片段，已本地复核，未进行第二次 LLM 复检',
       });
     }
 
@@ -359,6 +407,20 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         ))}
       </>
     );
+  };
+
+  const doAdditionalRepair = async () => {
+    setBusy(true);
+    try {
+      await repairContinuationArtifactOnce(runId);
+      Toast.show({ type: 'success', text1: '额外修正完成，已进行本地复核' });
+      await reload();
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '额外修正失败', text2: e?.message });
+      await reload();
+    } finally {
+      setBusy(false);
+    }
   };
 
   // ---- state-driven branches (fix-plan §4.1) ----
@@ -480,21 +542,42 @@ export const ContinuationResultScreen: React.FC<Props> = ({
 
     // awaiting_user with an adoptable artifact (original path)
     if (run.state === 'awaiting_user') {
-      if (overlapBlocked) {
+      if (reviewBlocked) {
         return (
-          <Card>
-            <Text style={[styles.h, { color: colors.danger }]}>检测到接缝大段重复</Text>
-            <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
-              正文与正文接缝存在大段连续重合，不能直接采纳。请放弃本次结果，返回编辑器后重新生成。
-            </Text>
-            <View style={styles.actions}>
-              <Button
-                label="放弃并返回"
-                onPress={doAbandon}
-                disabled={busy}
-              />
-            </View>
-          </Card>
+          <>
+            <Card>
+              <Text style={[styles.h, { color: colors.danger }]}>本地复核仍有待处理问题</Text>
+              <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+                {overlapBlocked
+                  ? 'Repair 后本地复核仍发现正文与接缝存在连续重合。你可以承担风险采纳当前候选，或确认再进行一次额外 Repair；额外 Repair 后只做本地复核，不会再次调用 LLM Checker。'
+                  : repairCandidateRejected
+                  ? 'Repair 返回的终稿篇幅明显坍缩，已保留完整的 Writer 正文；原检查问题仍待处理。你可以承担风险采纳当前候选，或确认再进行一次额外 Repair；额外 Repair 后只做本地复核，不会再次调用 LLM Checker。'
+                  : 'Repair 后本地复核仍发现 error / blocking。你可以承担风险采纳当前候选，或确认再进行一次额外 Repair；额外 Repair 后只做本地复核，不会再次调用 LLM Checker。'}
+              </Text>
+              <View style={styles.actions}>
+                <Button
+                  label="采纳错误候选（风险自负）"
+                  variant="secondary"
+                  onPress={() => doAdopt({ allowOpenChecks: true })}
+                  disabled={busy}
+                />
+                {additionalRepairAvailable && (
+                  <Button
+                    label="额外修正一次（增加 1 次 LLM）"
+                    onPress={doAdditionalRepair}
+                    disabled={busy}
+                  />
+                )}
+                <Button
+                  label="放弃并返回"
+                  variant="ghost"
+                  onPress={doAbandon}
+                  disabled={busy}
+                />
+              </View>
+            </Card>
+            {renderChecks()}
+          </>
         );
       }
       return (
@@ -507,7 +590,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           />
           <Button
             label={busy ? '采纳中…' : '采纳'}
-            onPress={() => doAdopt(false)}
+            onPress={() => doAdopt()}
             disabled={busy || !body}
           />
         </View>
@@ -523,7 +606,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       <ScrollView contentContainerStyle={styles.pad}>
         {run.state === 'awaiting_user' &&
         planConfirmationStatus !== 'pending' &&
-        !overlapBlocked
+        !reviewBlocked
           ? renderCompletedResult()
           : null}
         {/* Non-final branches keep their workflow-specific guidance. */}

@@ -213,6 +213,11 @@ const CANON_AUTO_ADOPT_TABLES = [
   'canon_timeline_events',
 ] as const;
 
+const canonMaterializationRepairs = new Map<
+  string,
+  Promise<boolean>
+>();
+
 /**
  * Canon is useful only when its extracted facts participate in continuation
  * context. Activation therefore adopts every still-pending AI record by
@@ -230,6 +235,89 @@ export function buildDefaultCanonAdoptionStatements(
       WHERE snapshot_id = ? AND review_status = 'pending'`,
     params: [timestamp, snapshotId],
   }));
+}
+
+/**
+ * Rebuild a Canon snapshot whose extraction batches and evidence survived a
+ * historical table-rebuild migration but whose fact rows did not. This is a
+ * local, deterministic repair: it never calls an LLM and it only consumes the
+ * completed batch JSON already frozen to the same source/run.
+ *
+ * The repair is intentionally exposed by the Canon analysis module and called
+ * lazily by CanonQueryService. Phase 3 still has no direct access to analysis
+ * tables or Canon tables; it only asks the bounded Canon read boundary to
+ * heal a known, verifiable historical invariant before reading.
+ */
+export async function repairMissingCanonMaterialization(input: {
+  projectId: number;
+  snapshotId: string;
+}): Promise<boolean> {
+  const key = `${input.projectId}:${input.snapshotId}`;
+  const existing = canonMaterializationRepairs.get(key);
+  if (existing) return existing;
+  const repair = repairMissingCanonMaterializationInner(input).finally(() => {
+    canonMaterializationRepairs.delete(key);
+  });
+  canonMaterializationRepairs.set(key, repair);
+  return repair;
+}
+
+async function repairMissingCanonMaterializationInner(input: {
+  projectId: number;
+  snapshotId: string;
+}): Promise<boolean> {
+  const db = await openDatabase();
+  const counts: number[] = [];
+  for (const table of CANON_AUTO_ADOPT_TABLES) {
+    const [result] = await db.executeSql(
+      `SELECT COUNT(*) AS c FROM ${table} WHERE snapshot_id = ?`,
+      [input.snapshotId],
+    );
+    counts.push(Number(result.rows.item(0).c ?? 0));
+  }
+  if (counts.some(count => count > 0)) return false;
+
+  const snapshot = await getSnapshotById(input.snapshotId);
+  if (!snapshot || snapshot.projectId !== input.projectId) return false;
+  if (!snapshot.analysisRunId) return false;
+  const run = await getRunById(snapshot.analysisRunId);
+  if (!run || run.projectId !== input.projectId) return false;
+
+  const batches = (await listBatches(run.id)).filter(
+    batch => batch.state === 'completed' && Boolean(batch.resultJson),
+  );
+  if (batches.length === 0) return false;
+  const sourceSnapshot = await continuationSourceReader.getSnapshot(
+    input.projectId,
+  );
+
+  let restored = false;
+  for (const batch of batches) {
+    const batchResultJson = batch.resultJson;
+    if (!batchResultJson) continue;
+    const chapters =
+      await continuationSourceReader.listBoundedSourceChaptersForRange(
+        sourceSnapshot,
+        batch.startPosition,
+        batch.endPosition,
+      );
+    const result = parseExtractionResultJson(batchResultJson);
+    await materializeBatchResult(
+      db,
+      {
+        projectId: run.projectId,
+        sourceId: run.sourceId,
+        snapshotId: run.canonSnapshotId,
+        runId: run.id,
+        boundaryExclusive: run.boundaryCharOffsetExclusive,
+        profile: run.profile,
+      },
+      result,
+      chapters,
+    );
+    restored = true;
+  }
+  return restored;
 }
 
 type CanonExtractionFailureDiagnostic = {

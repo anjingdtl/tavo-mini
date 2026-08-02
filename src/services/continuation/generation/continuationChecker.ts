@@ -36,6 +36,17 @@ const CATEGORIES: CheckCategory[] = [
   'style',
 ];
 
+// The product's preferred chapter size is a quality signal, not a safety
+// gate. A model may legitimately stop earlier or write longer prose; either
+// case must remain reviewable without another LLM call or a retry.
+const IDEAL_HAN_CHARACTER_MIN = 2_000;
+const IDEAL_HAN_CHARACTER_MAX = 4_000;
+
+function countHanCharacters(text: string): number {
+  return (text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || [])
+    .length;
+}
+
 function levelOff(
   settings: ContinuationGenerationSettings,
   cat: CheckCategory,
@@ -60,6 +71,25 @@ export function runDeterministicChecks(
 ): RawCheckIssue[] {
   const issues: RawCheckIssue[] = [];
   const settings = snapshot.settingsSnapshot.values;
+
+  const hanCharacters = countHanCharacters(artifactText);
+  if (
+    hanCharacters < IDEAL_HAN_CHARACTER_MIN ||
+    hanCharacters > IDEAL_HAN_CHARACTER_MAX
+  ) {
+    issues.push({
+      category: 'style',
+      subtype: 'target_length',
+      severity: 'warning',
+      confidence: 1,
+      generatedStart: null,
+      generatedEnd: null,
+      generatedExcerpt: '',
+      description: `正文含汉字 ${hanCharacters} 个，建议保持在 ${IDEAL_HAN_CHARACTER_MIN}–${IDEAL_HAN_CHARACTER_MAX} 个；这是质量提示，不会阻断采纳或触发重试`,
+      evidenceIds: [],
+      suggestedFix: `下一次生成时可按当前目标章节长度（${settings.targetChapterChars}）调整，或按需要保留当前正文`,
+    });
+  }
 
   // Future leakage markers in generated text (test fixture convention).
   const futureMarkers = [
@@ -415,7 +445,9 @@ function runAnchorOverlapChecks(
       issues.push({
         category: 'style',
         subtype,
-        severity: overlap >= 40 ? 'error' : 'warning',
+        // Any confirmed continuous copy is a safety failure. Keep this local
+        // gate independent from the ordinary style level.
+        severity: 'error',
         confidence: 0.7,
         generatedStart: idx >= 0 ? idx : null,
         generatedEnd: idx >= 0 ? idx + Math.min(overlap, 40) : null,
@@ -472,9 +504,22 @@ export function parseCheckerLlmJson(raw: string): RawCheckIssue[] {
     const evidenceIds = Array.isArray(item.evidenceIds)
       ? item.evidenceIds.filter((x: any) => typeof x === 'number')
       : [];
-    // No evidence → force warning at most
+    const description = String(item.description ?? '').trim();
+    const suggestedFix =
+      item.suggestedFix != null ? String(item.suggestedFix).trim() : '';
+    const generatedExcerpt = String(item.generatedExcerpt ?? '').trim();
+    // A severe issue must be actionable in the single Repair call: evidence,
+    // a location/excerpt, a concrete description, and a suggested fix. If the
+    // Checker cannot supply that complete contract, keep it visible as a
+    // warning instead of spending the only Repair call on an ambiguous task.
     let sev = severity as RawCheckIssue['severity'];
-    if (evidenceIds.length === 0 && (sev === 'error' || sev === 'blocking')) {
+    if (
+      (sev === 'error' || sev === 'blocking') &&
+      (evidenceIds.length === 0 ||
+        (!generatedExcerpt && (start == null || end == null)) ||
+        !description ||
+        !suggestedFix)
+    ) {
       sev = 'warning';
     }
     out.push({
@@ -484,13 +529,13 @@ export function parseCheckerLlmJson(raw: string): RawCheckIssue[] {
       confidence,
       generatedStart: start,
       generatedEnd: end,
-      generatedExcerpt: String(item.generatedExcerpt ?? ''),
-      description: String(item.description ?? ''),
+      generatedExcerpt,
+      description,
       entityRefType: item.entityRefType ?? null,
       entityRefId:
         item.entityRefId != null ? String(item.entityRefId) : null,
       evidenceIds,
-      suggestedFix: item.suggestedFix != null ? String(item.suggestedFix) : null,
+      suggestedFix: suggestedFix || null,
     });
   }
   return out;
@@ -512,15 +557,38 @@ export function bindIssuesToArtifact(
       ) {
         generatedStart = null;
         generatedEnd = null;
-      } else if (!generatedExcerpt) {
+      } else {
+        // The range is authoritative for Repair. Replace a hallucinated
+        // excerpt with the exact UTF-16 slice that the user can inspect.
         generatedExcerpt = artifactText.slice(generatedStart, generatedEnd);
+      }
+    } else if (generatedExcerpt) {
+      const located = artifactText.indexOf(generatedExcerpt);
+      if (located >= 0) {
+        generatedStart = located;
+        generatedEnd = located + generatedExcerpt.length;
       }
     }
     const filtered = (evidenceIds ?? []).filter(id => allowedEvidenceIds.has(id));
     let severity = issue.severity;
+    const localOverlapGate =
+      issue.subtype === 'source_overlap' ||
+      issue.subtype === 'continuation_anchor_overlap';
     if (
       filtered.length === 0 &&
+      !localOverlapGate &&
       (severity === 'error' || severity === 'blocking')
+    ) {
+      severity = 'warning';
+    }
+    if (
+      !localOverlapGate &&
+      (severity === 'error' || severity === 'blocking') &&
+      (!generatedExcerpt ||
+        generatedStart == null ||
+        generatedEnd == null ||
+        !issue.description.trim() ||
+        !issue.suggestedFix?.trim())
     ) {
       severity = 'warning';
     }

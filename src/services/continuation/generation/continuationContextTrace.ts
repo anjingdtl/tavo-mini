@@ -16,7 +16,10 @@ export function summarizeTrace(trace: ContinuationContextTrace): string {
   return [
     `Canon ${trace.canonSnapshotId.slice(0, 8)}@r${trace.canonRevision}`,
     `pos=${trace.targetPosition}`,
-    `window=${trace.modelContextLimit ?? 'legacy'} budget=${trace.inputBudget ?? 'legacy'} in=${trace.totalInputTokens} outReserve=${trace.reservedOutputTokens}`,
+    `window=${trace.modelContextLimit ?? 'legacy'} effective=${trace.effectiveWindow ?? 'legacy'} budget=${trace.inputBudget ?? 'legacy'} in=${trace.totalInputTokens} outReserve=${trace.reservedOutputTokens} outputRatio=${trace.maxOutputRatio ?? 'legacy'}`,
+    trace.budgetRestrictedReason
+      ? `budgetReason=${trace.budgetRestrictedReason}`
+      : '',
     cats,
     freshness,
     trace.primaryAnchorKind === 'source_seam'

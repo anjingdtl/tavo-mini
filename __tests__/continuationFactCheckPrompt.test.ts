@@ -125,6 +125,8 @@ describe('续写原著事实复核提示词', () => {
     expect(system).toContain('证据:12');
     expect(system).toContain('证据:13');
     expect(system).toContain('原著事实与正文冲突');
+    expect(system).toContain('不得重复报告同一问题');
+    expect(system).toContain('generatedExcerpt 必须是正文中的原文片段');
 
     const plan: any = {
       chapterGoal: '承接雁门之战',
@@ -155,5 +157,43 @@ describe('续写原著事实复核提示词', () => {
     ])[0].content;
     expect(repairSystem).toContain('【原著事实复核依据】');
     expect(repairSystem).toContain('沈青是陆川的师父');
+    expect(repairSystem).toContain('不得输出思维过程');
+    expect(repairSystem).toContain('每一项 error/blocking 都必须完成可验证的修改');
+
+    const overlapRepair = compileRepairMessages(snapshot, '边界尾句之后的正文。', [
+      {
+        severity: 'error',
+        category: 'style',
+        subtype: 'continuation_anchor_overlap',
+        description: '与接缝连续重合',
+        generatedStart: 0,
+        generatedEnd: 4,
+        generatedExcerpt: '边界尾句',
+        suggestedFix: '删除或改写重合片段',
+      } as any,
+    ])[0].content;
+    expect(overlapRepair).toContain('接缝重合是硬错误');
+    expect(overlapRepair).toContain('不能只删标点、替换几个词');
+    expect(overlapRepair).toContain('边界尾句');
+
+    const fullChapterRepair = compileRepairMessages(
+      snapshot,
+      '甲'.repeat(3000),
+      [
+        {
+          severity: 'error',
+          category: 'plot',
+          subtype: 'future_leakage',
+          description: '需修复',
+          generatedStart: 0,
+          generatedEnd: 1,
+          generatedExcerpt: '甲',
+          suggestedFix: '删除未来信息',
+        } as any,
+      ],
+    )[0].content;
+    expect(fullChapterRepair).toContain('原正文约含 3000 个汉字');
+    expect(fullChapterRepair).toContain('不得把整章压缩成摘要');
+    expect(fullChapterRepair).toContain('约 2500–4000 个汉字');
   });
 });

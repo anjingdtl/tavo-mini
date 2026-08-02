@@ -15,9 +15,12 @@ describe('continuation long-context budget', () => {
     expect(large.sourceSeamTokens).toBeGreaterThan(small.sourceSeamTokens);
     expect(large.recentBridgeTokens).toBeGreaterThan(small.recentBridgeTokens);
     expect(large.storyMemoryTokens).toBeGreaterThan(small.storyMemoryTokens);
-    expect(large.sourceSeamTokens).toBeLessThanOrEqual(96_000);
-    expect(large.reservedOutputTokens).toBeLessThanOrEqual(16_384);
-    expect(large.inputBudget).toBeGreaterThan(900_000);
+    expect(large.sourceSeamTokens).toBeLessThanOrEqual(large.inputBudget);
+    expect(large.reservedOutputTokens).toBeLessThanOrEqual(
+      Math.floor(1_000_000 * 0.2),
+    );
+    expect(large.effectiveWindow).toBe(Math.floor(1_000_000 * 0.8));
+    expect(large.inputBudget).toBeLessThan(large.effectiveWindow);
   });
 
   it.each([8_192, 32_768, 131_072, 1_000_000])(
