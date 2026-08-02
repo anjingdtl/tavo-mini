@@ -264,6 +264,27 @@ describe('continuation Phase 3 core', () => {
     expect(bound[0].evidenceIds).toEqual([11]);
   });
 
+  test('demotes an un-actionable severe Checker issue before the single Repair call', () => {
+    const issues = parseCheckerLlmJson(
+      JSON.stringify({
+        issues: [
+          {
+            category: 'world',
+            subtype: 'ambiguous',
+            severity: 'blocking',
+            confidence: 1,
+            generatedStart: null,
+            generatedEnd: null,
+            generatedExcerpt: '',
+            description: '可能与设定不符',
+            evidenceIds: [11],
+          },
+        ],
+      }),
+    );
+    expect(issues[0].severity).toBe('warning');
+  });
+
   test('repair removes future leakage and shouldRunRepair respects rounds', () => {
     const text = '正常。【未来揭示】泄露';
     const snap = miniSnapshot();

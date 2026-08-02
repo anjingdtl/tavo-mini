@@ -10,7 +10,34 @@ export interface PipelineProgressProps {
   visible: boolean;
   taskId?: string;
   queued?: boolean;
+  continuationStage?: ContinuationPipelineStage;
 }
+
+export type ContinuationPipelineStage =
+  | 'context'
+  | 'writer'
+  | 'checker'
+  | 'repair';
+
+export const CONTINUATION_STAGE_LABELS: Record<
+  ContinuationPipelineStage,
+  string
+> = {
+  context: '正在准备续写上下文…',
+  writer: '正在生成章节草稿…',
+  checker: '正在进行一致性检查…',
+  repair: '正在修复冲突并生成终稿…',
+};
+
+export const CONTINUATION_STAGE_PROGRESS: Record<
+  ContinuationPipelineStage,
+  number
+> = {
+  context: 10,
+  writer: 30,
+  checker: 60,
+  repair: 85,
+};
 
 const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
   idle: '准备中...',
@@ -25,6 +52,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   startedAt,
   visible,
   queued = false,
+  continuationStage,
 }) => {
   const { theme } = useThemeStore();
   const [elapsed, setElapsed] = useState(0);
@@ -55,6 +83,8 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
         <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
           {queued
             ? '排队中，等待可用的模型请求槽位...'
+            : continuationStage
+              ? CONTINUATION_STAGE_LABELS[continuationStage]
             : STAGE_LABELS[stage] || stage}
         </Text>
         <Text style={[styles.timer, { color: theme.colors.textMuted }]}>

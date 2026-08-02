@@ -375,8 +375,7 @@ export const CanonQueryService = {
           AND valid_from_position <= ?
           AND (valid_to_position IS NULL OR valid_to_position > ?)
           AND (source_character_id IN (${ph}) OR target_character_id IN (${ph}))
-        ORDER BY confidence DESC, id ASC
-        LIMIT 200`,
+        ORDER BY confidence DESC, id ASC`,
       [
         input.snapshotId,
         input.atSourcePosition,
@@ -404,8 +403,7 @@ export const CanonQueryService = {
               AND review_status NOT IN ('ignored', 'superseded')
               AND valid_from_position <= ?
               AND (valid_to_position IS NULL OR valid_to_position > ?)
-              AND (source_character_id IN (${ph2}) OR target_character_id IN (${ph2}))
-            LIMIT 200`,
+            AND (source_character_id IN (${ph2}) OR target_character_id IN (${ph2}))`,
           [input.snapshotId, input.atSourcePosition, input.atSourcePosition, ...ids, ...ids],
         );
         const seen = new Set(out.map(x => x.id));
@@ -425,7 +423,7 @@ export const CanonQueryService = {
     characterIds: number[];
     atSourcePosition: SourceChapterPosition;
     query?: string;
-    limit: number;
+    limit?: number;
   }): Promise<CharacterExperience[]> {
     const snap = await assertActiveSnapshot(
       input.projectId,
@@ -443,8 +441,15 @@ export const CanonQueryService = {
           AND chapter_position <= ?
           AND review_status NOT IN ('ignored', 'superseded')
         ORDER BY chapter_position DESC, importance DESC, id DESC
-        LIMIT ?`,
-      [input.snapshotId, ...input.characterIds, input.atSourcePosition, input.limit],
+        ${input.limit == null ? '' : 'LIMIT ?'}`,
+      input.limit == null
+        ? [input.snapshotId, ...input.characterIds, input.atSourcePosition]
+        : [
+            input.snapshotId,
+            ...input.characterIds,
+            input.atSourcePosition,
+            input.limit,
+          ],
     );
     let out: CharacterExperience[] = [];
     for (let i = 0; i < result.rows.length; i++) {
@@ -506,7 +511,7 @@ export const CanonQueryService = {
     atSourcePosition: SourceChapterPosition;
     characterIds?: number[];
     statuses?: PlotThreadStatus[];
-    limit: number;
+    limit?: number;
   }): Promise<PlotThread[]> {
     const snap = await assertActiveSnapshot(
       input.projectId,
@@ -521,8 +526,10 @@ export const CanonQueryService = {
           AND start_position <= ?
           AND review_status NOT IN ('ignored', 'superseded')
         ORDER BY importance DESC, last_advanced_position DESC, id ASC
-        LIMIT ?`,
-      [input.snapshotId, input.atSourcePosition, input.limit],
+        ${input.limit == null ? '' : 'LIMIT ?'}`,
+      input.limit == null
+        ? [input.snapshotId, input.atSourcePosition]
+        : [input.snapshotId, input.atSourcePosition, input.limit],
     );
     let out: PlotThread[] = [];
     for (let i = 0; i < result.rows.length; i++) {
@@ -559,7 +566,7 @@ export const CanonQueryService = {
     snapshotRevision: number;
     atSourcePosition: SourceChapterPosition;
     characterIds?: number[];
-    limit: number;
+    limit?: number;
   }): Promise<CanonTimelineEvent[]> {
     const snap = await assertActiveSnapshot(
       input.projectId,
@@ -574,8 +581,10 @@ export const CanonQueryService = {
           AND chapter_position <= ?
           AND review_status NOT IN ('ignored', 'superseded')
         ORDER BY chapter_position DESC, importance DESC, id DESC
-        LIMIT ?`,
-      [input.snapshotId, input.atSourcePosition, input.limit],
+        ${input.limit == null ? '' : 'LIMIT ?'}`,
+      input.limit == null
+        ? [input.snapshotId, input.atSourcePosition]
+        : [input.snapshotId, input.atSourcePosition, input.limit],
     );
     let out: CanonTimelineEvent[] = [];
     for (let i = 0; i < result.rows.length; i++) {
@@ -632,6 +641,8 @@ export const CanonQueryService = {
     queryText: string;
     characterIds: number[];
     tokenBudget: number;
+    /** Total residual allowance that hard world rules may borrow from. */
+    hardTokenBudget?: number;
     reviewPolicy: ReviewPolicy;
   }): Promise<CanonContextBundle> {
     const snap = await assertActiveSnapshot(
@@ -641,6 +652,40 @@ export const CanonQueryService = {
     );
     assertPositionInBoundary(snap, input.atSourcePosition);
     const db = await openDatabase();
+    // Some Schema 30/31 upgrades preserved completed analysis batches and
+    // evidence links but lost the Canon fact rows. Repair that historical
+    // invariant through the Canon boundary before packing context. This is a
+    // local replay of frozen batch JSON; it never calls the LLM or reads full
+    // project prose outside the bounded SourceReader.
+    const [materialized] = await db.executeSql(
+      `SELECT (
+        (SELECT COUNT(*) FROM canon_world_rules WHERE snapshot_id = ?) +
+        (SELECT COUNT(*) FROM canon_characters WHERE snapshot_id = ?) +
+        (SELECT COUNT(*) FROM canon_character_state_snapshots WHERE snapshot_id = ?) +
+        (SELECT COUNT(*) FROM canon_relationships WHERE snapshot_id = ?) +
+        (SELECT COUNT(*) FROM canon_plot_threads WHERE snapshot_id = ?) +
+        (SELECT COUNT(*) FROM canon_character_experiences WHERE snapshot_id = ?) +
+        (SELECT COUNT(*) FROM canon_character_knowledge WHERE snapshot_id = ?) +
+        (SELECT COUNT(*) FROM canon_timeline_events WHERE snapshot_id = ?)
+      ) AS c`,
+      Array(8).fill(input.snapshotId),
+    );
+    // Test doubles and a few older SQLite adapters may return no aggregate row;
+    // treat that as "unknown" rather than claiming the snapshot is empty and
+    // starting a materialization replay. Real SQLite always returns one row.
+    const materializedCount =
+      materialized?.rows?.length > 0
+        ? Number(materialized.rows.item(0)?.c ?? 0)
+        : null;
+    if (materializedCount === 0) {
+      const { repairMissingCanonMaterialization } = await import(
+        './canonAnalysisService'
+      );
+      await repairMissingCanonMaterialization({
+        projectId: input.projectId,
+        snapshotId: input.snapshotId,
+      });
+    }
     const statuses = statusesForPolicy(input.reviewPolicy);
     const omitted: Record<string, number> = {};
 
@@ -650,7 +695,7 @@ export const CanonQueryService = {
       snapshotRevision: input.snapshotRevision,
       atSourcePosition: input.atSourcePosition,
       reviewStatuses: statuses.filter(s => s !== 'pending') as CanonReviewStatus[],
-      limit: 20,
+      limit: Number.MAX_SAFE_INTEGER,
     });
 
     // balanced: also allow high-confidence pending as weak refs
@@ -663,7 +708,7 @@ export const CanonQueryService = {
           snapshotRevision: input.snapshotRevision,
           atSourcePosition: input.atSourcePosition,
           reviewStatuses: ['pending'],
-          limit: 10,
+          limit: Number.MAX_SAFE_INTEGER,
         })
       ).filter(r => r.confidence >= 0.75);
     }
@@ -680,8 +725,9 @@ export const CanonQueryService = {
       if (m.characterId) resolvedIds.add(m.characterId);
     }
     // A writing instruction often describes a scene without naming anyone.
-    // Keep a compact cast baseline so the planner/checker still remembers the
-    // original work's principal characters and their active constraints.
+    // Candidate ids are ordered by Canon importance, but they are only packed
+    // after explicit mentions and only while the residual Canon budget lasts.
+    // There is intentionally no fixed cast/person count here.
     const confirmedStatuses = statuses.filter(
       status => status !== 'pending',
     );
@@ -694,15 +740,18 @@ export const CanonQueryService = {
          WHEN 'major' THEN 1
          WHEN 'supporting' THEN 2
          ELSE 3 END,
-         confidence DESC, id ASC
-       LIMIT 30`,
+         confidence DESC, id ASC`,
       [input.snapshotId, ...confirmedStatuses],
     );
+    const prominentIds: number[] = [];
     for (let i = 0; i < prominentRows.rows.length; i++) {
       const id = Number(prominentRows.rows.item(i).id);
-      if (Number.isFinite(id)) resolvedIds.add(id);
+      if (Number.isFinite(id)) prominentIds.push(id);
     }
-    const characterIds = Array.from(resolvedIds);
+    const characterIds = [
+      ...Array.from(resolvedIds),
+      ...prominentIds.filter(id => !resolvedIds.has(id)),
+    ];
 
     const characters = await this.getCharacterProfiles({
       projectId: input.projectId,
@@ -710,6 +759,12 @@ export const CanonQueryService = {
       snapshotRevision: input.snapshotRevision,
       characterIds,
     });
+    const characterOrder = new Map(characterIds.map((id, index) => [id, index]));
+    characters.sort(
+      (a, b) =>
+        (characterOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+        (characterOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+    );
     const characterStates = await this.getCharacterStates({
       projectId: input.projectId,
       snapshotId: input.snapshotId,
@@ -731,7 +786,6 @@ export const CanonQueryService = {
       snapshotRevision: input.snapshotRevision,
       characterIds,
       atSourcePosition: input.atSourcePosition,
-      limit: 20,
     });
     const knowledge = await this.getCharacterKnowledge({
       projectId: input.projectId,
@@ -745,7 +799,6 @@ export const CanonQueryService = {
       snapshotId: input.snapshotId,
       snapshotRevision: input.snapshotRevision,
       atSourcePosition: input.atSourcePosition,
-      limit: 15,
     });
     // Timeline blocking only confirmed/locked in strict (Spec §6.14).
     const timelineStatuses =
@@ -757,7 +810,6 @@ export const CanonQueryService = {
       snapshotId: input.snapshotId,
       snapshotRevision: input.snapshotRevision,
       atSourcePosition: input.atSourcePosition,
-      limit: 20,
     });
     timelineEvents = timelineEvents.filter(e =>
       timelineStatuses.includes(e.reviewStatus),
@@ -766,56 +818,105 @@ export const CanonQueryService = {
     const allRules = [...worldRules, ...pendingRules];
     // Token budget trim (rough CJK estimate: 1 token ≈ 1.5 chars).
     const estimate = (s: string) => Math.ceil(s.length / 1.5);
-    let used = 0;
+    const hardTokenBudget = Math.max(
+      0,
+      Math.floor(input.hardTokenBudget ?? input.tokenBudget),
+    );
+    const softTokenBudget = Math.max(0, Math.floor(input.tokenBudget));
+    let hardUsed = 0;
+    let softUsed = 0;
     const pack = <T extends { id: number }>(
       items: T[],
       serialize: (t: T) => string,
       key: string,
+      budget: number,
+      bucket: 'hard' | 'soft' = 'soft',
     ): T[] => {
       const kept: T[] = [];
       for (const item of items) {
         const cost = estimate(serialize(item));
-        if (used + cost > input.tokenBudget) {
+        const used = bucket === 'hard' ? hardUsed : softUsed;
+        if (used + cost > budget) {
           omitted[key] = (omitted[key] ?? 0) + 1;
           continue;
         }
-        used += cost;
+        if (bucket === 'hard') hardUsed += cost;
+        else softUsed += cost;
         kept.push(item);
       }
       return kept;
     };
 
-    const selectedWorldRules = pack(
-      allRules,
+    const hardWorldRules = allRules.filter(r => r.constraintLevel === 'hard');
+    const softWorldRules = allRules.filter(r => r.constraintLevel !== 'hard');
+    const selectedHardWorldRules = pack(
+      hardWorldRules,
+      r => r.title + r.description,
+      'hardWorldRules',
+      hardTokenBudget,
+      'hard',
+    );
+    if (selectedHardWorldRules.length < hardWorldRules.length) {
+      omitted.hard_world_rules_over_budget =
+        hardWorldRules.length - selectedHardWorldRules.length;
+    }
+    const remainingSoftBudget = Math.max(
+      0,
+      Math.min(softTokenBudget, hardTokenBudget - hardUsed),
+    );
+    const selectedSoftWorldRules = pack(
+      softWorldRules,
       r => r.title + r.description,
       'worldRules',
+      remainingSoftBudget,
     );
+    const selectedWorldRules = [
+      ...selectedHardWorldRules,
+      ...selectedSoftWorldRules,
+    ];
+    // The hard rules may borrow from the soft Canon share. All other facts
+    // share the residual so hard Canon can never be crowded out.
     const selectedCharacters = pack(
       characters,
       c => c.canonicalName + c.description,
       'characters',
+      remainingSoftBudget,
     );
-    const selectedStates = pack(characterStates, s => s.summary, 'characterStates');
+    const selectedStates = pack(
+      characterStates,
+      s => s.summary,
+      'characterStates',
+      remainingSoftBudget,
+    );
     const selectedRelationships = pack(
       relationships,
       r => r.description + r.relationType,
       'relationships',
+      remainingSoftBudget,
     );
     const selectedExperiences = pack(
       experiences,
       e => e.title + e.description,
       'experiences',
+      remainingSoftBudget,
     );
-    const selectedKnowledge = pack(knowledge, k => k.factSummary, 'knowledge');
+    const selectedKnowledge = pack(
+      knowledge,
+      k => k.factSummary,
+      'knowledge',
+      remainingSoftBudget,
+    );
     const selectedPlots = pack(
       plotThreads,
       p => p.title + p.description,
       'plotThreads',
+      remainingSoftBudget,
     );
     const selectedTimeline = pack(
       timelineEvents,
       t => t.title + t.summary,
       'timelineEvents',
+      remainingSoftBudget,
     );
     const evidence = await listEvidenceRefsForOwners(db, input.snapshotId, [
       { type: 'world_rule', ids: selectedWorldRules.map(item => item.id) },
@@ -840,7 +941,7 @@ export const CanonQueryService = {
       timelineEvents: selectedTimeline,
       evidenceRefs: evidence.refs,
       evidenceRefsByOwner: evidence.byOwner,
-      estimatedTokens: used,
+      estimatedTokens: hardUsed + softUsed,
       omittedReasonCounts: omitted,
     };
     return bundle;

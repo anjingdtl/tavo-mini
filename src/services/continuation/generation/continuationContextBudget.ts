@@ -1,16 +1,37 @@
 /**
- * Continuation context planning is deliberately independent from the outline
- * pipeline allocator. Its first-class inputs are source seam and continuation
- * memory, not freeform resources.
- *
- * WP3: each generation stage (Planner/Writer/Checker/Repair) may use a different
- * LLM config, so capacity is resolved per stage rather than sharing Writer's
- * budget or taking min(context_window) as a universal limit (Spec §7.1).
+ * Continuation budgets are derived from the frozen model configuration and
+ * the current chapter demand.  The ratios below are product policy, not token
+ * ceilings: no category gets an absolute token cap.
  */
+
+export const CONTINUATION_BUDGET_POLICY = {
+  contextUtilizationRatio: 0.8,
+  maxOutputRatio: 0.2,
+  safetyRatio: 0.0625,
+  promptSkeletonRatio: 0.04,
+  minPlanShare: 0.12,
+  maxPlanShare: 0.24,
+  minProseCompletionShare: 0.72,
+  maxProseCompletionShare: 0.86,
+  categoryWeights: {
+    canon: 0.3,
+    primaryAnchor: 0.25,
+    storyMemory: 0.15,
+    recentBridge: 0.1,
+    originalStyle: 0.1,
+    episodic: 0.07,
+    supplements: 0.03,
+  },
+} as const;
+
+export type ContinuationContextCategory = keyof typeof CONTINUATION_BUDGET_POLICY.categoryWeights;
 
 export interface ResolvedStageCapacity {
   llmConfigId: number;
   contextWindow: number;
+  effectiveWindow: number;
+  /** The configured ceiling after the product's output-share guard. */
+  declaredOutputTokens: number;
   maxOutputTokens: number;
   promptSkeletonTokens: number;
   safetyTokens: number;
@@ -18,6 +39,7 @@ export interface ResolvedStageCapacity {
 }
 
 export interface ContinuationStageBudgets {
+  /** Kept for legacy snapshots; workflowVersion 2 never calls Planner. */
   planner: ResolvedStageCapacity;
   writer: ResolvedStageCapacity;
   checker: ResolvedStageCapacity | null;
@@ -26,75 +48,141 @@ export interface ContinuationStageBudgets {
 
 export interface ContinuationContextBudgetPlan {
   modelContextLimit: number;
+  effectiveWindow: number;
   reservedOutputTokens: number;
   safetyTokens: number;
+  promptSkeletonTokens: number;
   inputBudget: number;
+  residualContextBudget: number;
   canonTokens: number;
   supplementTokens: number;
   sourceSeamTokens: number;
   recentBridgeTokens: number;
   storyMemoryTokens: number;
   episodicTokens: number;
-  /** Share of inputBudget reserved for original-style profile injection. */
   styleTokens: number;
+  hardContextTokens: number;
+  pressure: number;
+  declaredOutputRatio: number;
+  hasPrimaryAnchor: boolean;
+  categoryShares: Record<ContinuationContextCategory, number>;
+  chapterDemand: number;
+  planShare: number;
+  minimumProseShare: number;
+  desiredOutput: number;
+  minimumOutput: number;
+  requestedMaxTokens: number;
+  declaredOutput: number;
 }
 
 export interface ContinuationWriterOutputBudget {
-  /** First Writer request: sized for the requested chapter length. */
+  contextWindow: number;
+  effectiveWindow: number;
+  declaredOutput: number;
+  outputShareCap: number;
+  chapterDemand: number;
+  pressure: number;
+  planShare: number;
+  minimumProseShare: number;
+  desiredOutput: number;
+  minimumOutput: number;
+  windowOutputCapacity: number;
+  requestedMaxTokens: number;
+  blockedReason?: string;
+  /** Backward-readable aliases. New workflow never retries Writer. */
   initialOutputTokens: number;
-  /** Context layout reserves this ceiling so a safe retry can ask for more. */
   retryOutputTokens: number;
 }
 
-const MIN_CONTEXT = 1024;
-const FIXED_SAFETY_TOKENS = 512;
-const DEFAULT_PROMPT_SKELETON_TOKENS = 768;
-const WRITER_MAX_OUTPUT_SHARE = 0.35;
+const FALLBACK_CONTEXT_WINDOW = 8192;
 
-function integer(value: number, fallback: number): number {
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+function positive(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
 }
 
-function cappedShare(input: number, ratio: number, cap: number): number {
-  return Math.max(0, Math.min(cap, Math.floor(input * ratio)));
+function ratio(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function interpolate(min: number, max: number, pressure: number): number {
+  return min + (max - min) * ratio(pressure);
+}
+
+export function estimateTargetChapterTokens(targetChapterChars: number): number {
+  // This is a demand estimate, not a transport ceiling. A Chinese-character
+  // target is not a token target: JSON plan fields, punctuation and the model's
+  // tokenizer all consume additional completion tokens. Use an elastic 3x
+  // demand signal so 3,000 Han characters do not masquerade as 3,000 tokens.
+  return Math.max(1, Math.floor(positive(targetChapterChars, 1) * 3));
+}
+
+export function resolveContinuationCategoryShares(input: {
+  pressure: number;
+  declaredOutputRatio: number;
+  hasPrimaryAnchor: boolean;
+}): Record<ContinuationContextCategory, number> {
+  const p = ratio(input.pressure);
+  const outputPressure = ratio(input.declaredOutputRatio);
+  const weights = CONTINUATION_BUDGET_POLICY.categoryWeights;
+  const dynamic: Record<ContinuationContextCategory, number> = {
+    canon: weights.canon * (1 + p * 0.75 + outputPressure * 0.25),
+    primaryAnchor:
+      weights.primaryAnchor *
+      (1 + p * 0.75 + (input.hasPrimaryAnchor ? 0.15 : 0)),
+    storyMemory: weights.storyMemory * (1 + (1 - p) * 0.5),
+    recentBridge: weights.recentBridge * (1 + (1 - p) * 0.3),
+    originalStyle: weights.originalStyle * (1 + p * 0.35),
+    episodic: weights.episodic * (1 + (1 - p) * 0.25),
+    supplements: weights.supplements * (1 - p * 0.7),
+  };
+  const total = Object.values(dynamic).reduce((sum, value) => sum + value, 0);
+  return Object.fromEntries(
+    Object.entries(dynamic).map(([key, value]) => [key, value / total]),
+  ) as Record<ContinuationContextCategory, number>;
 }
 
 /**
- * Resolve a single stage's usable input budget from its actual LLM config.
- * Does not share Writer budget across stages and does not take min of all models.
- *
- * stageInputBudget = context_window - max_output - safety - promptSkeleton
+ * Resolve a stage's safe request envelope from its own frozen model config.
+ * It intentionally does not take the minimum window across stages.
  */
 export function planStageCapacity(input: {
   llmConfigId: number;
   contextWindow: number;
-  maxOutputTokens: number;
+  maxOutputTokens?: number | null;
   promptSkeletonTokens?: number;
 }): ResolvedStageCapacity {
-  const contextWindow = Math.max(
-    MIN_CONTEXT,
-    integer(input.contextWindow, 8192),
+  const contextWindow = positive(input.contextWindow, FALLBACK_CONTEXT_WINDOW);
+  const effectiveWindow = Math.floor(
+    contextWindow * CONTINUATION_BUDGET_POLICY.contextUtilizationRatio,
   );
-  const maxOutputTokens = integer(input.maxOutputTokens, 2048);
-  const promptSkeletonTokens = integer(
-    input.promptSkeletonTokens ?? DEFAULT_PROMPT_SKELETON_TOKENS,
-    DEFAULT_PROMPT_SKELETON_TOKENS,
+  const declaredOutputTokens = positive(input.maxOutputTokens, contextWindow);
+  const outputShareCap = Math.floor(
+    contextWindow * CONTINUATION_BUDGET_POLICY.maxOutputRatio,
   );
-  // Safety scales mildly with window so 1M models keep estimator headroom,
-  // without eating the whole budget on small 8K models.
-  const safetyTokens = Math.max(
-    FIXED_SAFETY_TOKENS,
-    Math.min(2048, Math.floor(contextWindow * 0.02)),
+  const maxOutputTokens = Math.min(declaredOutputTokens, outputShareCap);
+  const promptSkeletonTokens = Math.max(
+    0,
+    Math.floor(
+      input.promptSkeletonTokens ??
+        effectiveWindow * CONTINUATION_BUDGET_POLICY.promptSkeletonRatio,
+    ),
+  );
+  const safetyTokens = Math.floor(
+    effectiveWindow * CONTINUATION_BUDGET_POLICY.safetyRatio,
   );
   const inputBudget = Math.max(
-    256,
-    contextWindow - maxOutputTokens - safetyTokens - promptSkeletonTokens,
+    0,
+    effectiveWindow - maxOutputTokens - safetyTokens - promptSkeletonTokens,
   );
   return {
     llmConfigId: Number.isFinite(input.llmConfigId)
       ? Math.floor(input.llmConfigId)
       : 0,
     contextWindow,
+    effectiveWindow,
+    declaredOutputTokens,
     maxOutputTokens,
     promptSkeletonTokens,
     safetyTokens,
@@ -102,96 +190,164 @@ export function planStageCapacity(input: {
   };
 }
 
-/**
- * Resolve the continuation Writer's output budget from its actual frozen model
- * configuration.  `max_output_tokens` remains an explicit user/model ceiling;
- * the context window supplies an additional guard so output can never crowd
- * out all of the continuity context.  This deliberately replaces the former
- * hidden 4096-token ceiling.
- */
 export function resolveContinuationWriterOutputBudget(input: {
   contextWindow: number;
   targetChapterChars: number;
   configuredMaxOutputTokens?: number | null;
   requestedMaxOutputTokens?: number;
+  hardContextTokens?: number;
 }): ContinuationWriterOutputBudget {
-  const contextWindow = Math.max(
-    MIN_CONTEXT,
-    integer(input.contextWindow, 8192),
+  const contextWindow = positive(input.contextWindow, FALLBACK_CONTEXT_WINDOW);
+  const effectiveWindow = Math.floor(
+    contextWindow * CONTINUATION_BUDGET_POLICY.contextUtilizationRatio,
   );
-  const contextCeiling = Math.max(
-    256,
-    Math.floor(contextWindow * WRITER_MAX_OUTPUT_SHARE),
+  const declaredOutput = positive(
+    input.requestedMaxOutputTokens ?? input.configuredMaxOutputTokens,
+    contextWindow,
   );
-  const configuredCeiling =
-    typeof input.configuredMaxOutputTokens === 'number' &&
-    Number.isFinite(input.configuredMaxOutputTokens) &&
-    input.configuredMaxOutputTokens > 0
-      ? Math.floor(input.configuredMaxOutputTokens)
-      : contextCeiling;
-  const retryOutputTokens = Math.max(
-    1,
-    Math.min(contextCeiling, configuredCeiling),
+  const outputShareCap = Math.floor(
+    contextWindow * CONTINUATION_BUDGET_POLICY.maxOutputRatio,
   );
-  // Chinese prose may be compactly tokenized, but reasoning-capable models can
-  // consume part of the same completion budget before emitting the manuscript.
-  // Three times the requested characters is a demand estimate, not a cap.
-  const requested = Math.max(
-    256,
-    Math.floor(input.requestedMaxOutputTokens ?? input.targetChapterChars * 3),
+  const chapterDemand = estimateTargetChapterTokens(input.targetChapterChars);
+  const pressure = ratio(chapterDemand / contextWindow);
+  const planShare = interpolate(
+    CONTINUATION_BUDGET_POLICY.minPlanShare,
+    CONTINUATION_BUDGET_POLICY.maxPlanShare,
+    pressure,
   );
+  const minimumProseShare = interpolate(
+    CONTINUATION_BUDGET_POLICY.minProseCompletionShare,
+    CONTINUATION_BUDGET_POLICY.maxProseCompletionShare,
+    pressure,
+  );
+  const desiredOutput = Math.ceil(chapterDemand / (1 - planShare));
+  const minimumOutput = Math.ceil(
+    (chapterDemand * minimumProseShare) / (1 - planShare),
+  );
+  const safetyTokens = Math.floor(
+    effectiveWindow * CONTINUATION_BUDGET_POLICY.safetyRatio,
+  );
+  const skeletonTokens = Math.floor(
+    effectiveWindow * CONTINUATION_BUDGET_POLICY.promptSkeletonRatio,
+  );
+  const hardContextTokens = Math.max(
+    0,
+    Math.floor(input.hardContextTokens ?? 0),
+  );
+  const windowOutputCapacity = Math.max(
+    0,
+    effectiveWindow - safetyTokens - skeletonTokens - hardContextTokens,
+  );
+  // `desiredOutput` is a demand signal for pressure/minimum-output checks. It
+  // must not become the transport ceiling: after the plan was merged into the
+  // Writer response, a chapter-length estimate of one token per character can
+  // leave too little room for the required JSON plan plus prose (especially
+  // for Chinese text). The actual request envelope is elastic and is tightened
+  // again by stage preflight using the compiled prompt's real token estimate.
+  // This keeps the only hard ceilings at the frozen config, the 20% window
+  // share, and the effective window's remaining capacity.
+  const requestedMaxTokens = Math.max(
+    0,
+    Math.min(declaredOutput, outputShareCap, windowOutputCapacity),
+  );
+  const blockedReason =
+    requestedMaxTokens < minimumOutput
+      ? `Writer 输出预算不足：当前最多 ${requestedMaxTokens} token，但按目标章节与计划仍至少需要 ${minimumOutput} token；请降低目标字数或选择更大的 context_window / max_output_tokens。`
+      : undefined;
   return {
-    initialOutputTokens: Math.min(requested, retryOutputTokens),
-    retryOutputTokens,
+    contextWindow,
+    effectiveWindow,
+    declaredOutput,
+    outputShareCap,
+    chapterDemand,
+    pressure,
+    planShare,
+    minimumProseShare,
+    desiredOutput,
+    minimumOutput,
+    windowOutputCapacity,
+    requestedMaxTokens,
+    blockedReason,
+    initialOutputTokens: requestedMaxTokens,
+    retryOutputTokens: requestedMaxTokens,
   };
 }
 
 /**
- * Plan a bounded input layout for the frozen context snapshot (typically driven
- * by the Writer stage window, since Writer is the primary consumer of full
- * style + continuity packs). Output reservation follows the actual writer
- * output limit with a capped percentage guard; a 1M context should not lose
- * 150K tokens merely because an old fixed 15% rule was applied.
- *
- * Category ratios leave ~15–18% for stage prompt skeleton, framing, and
- * estimator variance. Style gets a dedicated share (~10%, capped) so it is not
- * silently crowded out by soft supplements.
+ * Build the context layout from the Writer envelope. The hard Canon/locked
+ * rule size is supplied when known and is removed before soft categories are
+ * normalized. All category budgets therefore remain proportional.
  */
 export function planContinuationContextBudget(input: {
   modelContextLimit: number;
   writerMaxOutputTokens: number;
+  targetChapterChars?: number;
+  hardContextTokens?: number;
+  hasPrimaryAnchor?: boolean;
 }): ContinuationContextBudgetPlan {
-  const modelContextLimit = Math.max(
-    MIN_CONTEXT,
-    integer(input.modelContextLimit, 8192),
+  const writer = planStageCapacity({
+    llmConfigId: 0,
+    contextWindow: input.modelContextLimit,
+    maxOutputTokens: input.writerMaxOutputTokens,
+  });
+  const chapterDemand = estimateTargetChapterTokens(input.targetChapterChars ?? 1);
+  const pressure = ratio(chapterDemand / writer.contextWindow);
+  const planShare = interpolate(
+    CONTINUATION_BUDGET_POLICY.minPlanShare,
+    CONTINUATION_BUDGET_POLICY.maxPlanShare,
+    pressure,
   );
-  const writerMaxOutputTokens = integer(input.writerMaxOutputTokens, 2048);
-  const percentageGuard = Math.min(
-    16_384,
-    Math.floor(modelContextLimit * 0.08),
+  const minimumProseShare = interpolate(
+    CONTINUATION_BUDGET_POLICY.minProseCompletionShare,
+    CONTINUATION_BUDGET_POLICY.maxProseCompletionShare,
+    pressure,
   );
-  const reservedOutputTokens = Math.max(writerMaxOutputTokens, percentageGuard);
-  const inputBudget = Math.max(
-    256,
-    modelContextLimit - reservedOutputTokens - FIXED_SAFETY_TOKENS,
+  const desiredOutput = Math.ceil(chapterDemand / (1 - planShare));
+  const minimumOutput = Math.ceil(
+    (chapterDemand * minimumProseShare) / (1 - planShare),
   );
-
-  // Ratios sum to ~0.84 so skeleton/framing/variance still have headroom.
-  // Caps prevent an advertised 1M window from becoming an unbounded request.
+  const declaredOutputRatio = ratio(
+    writer.declaredOutputTokens / writer.contextWindow,
+  );
+  const hasPrimaryAnchor = input.hasPrimaryAnchor === true;
+  const shares = resolveContinuationCategoryShares({
+    pressure,
+    declaredOutputRatio,
+    hasPrimaryAnchor,
+  });
+  const hardContextTokens = Math.max(0, Math.floor(input.hardContextTokens ?? 0));
+  const residualContextBudget = Math.max(
+    0,
+    writer.inputBudget - hardContextTokens,
+  );
+  const allocate = (category: ContinuationContextCategory) =>
+    Math.floor(residualContextBudget * shares[category]);
   return {
-    modelContextLimit,
-    reservedOutputTokens,
-    safetyTokens: FIXED_SAFETY_TOKENS,
-    inputBudget,
-    canonTokens: cappedShare(inputBudget, 0.2, 128_000),
-    supplementTokens: cappedShare(inputBudget, 0.05, 48_000),
-    sourceSeamTokens: cappedShare(inputBudget, 0.15, 96_000),
-    recentBridgeTokens: cappedShare(inputBudget, 0.15, 96_000),
-    storyMemoryTokens: cappedShare(inputBudget, 0.1, 32_000),
-    episodicTokens: cappedShare(inputBudget, 0.07, 24_000),
-    // Style is governed by the centralized input budget and the selected
-    // render level. It must not have a fixed absolute ceiling (1M-context
-    // models should be able to receive a detailed profile).
-    styleTokens: Math.max(0, Math.floor(inputBudget * 0.1)),
+    modelContextLimit: writer.contextWindow,
+    effectiveWindow: writer.effectiveWindow,
+    reservedOutputTokens: writer.maxOutputTokens,
+    safetyTokens: writer.safetyTokens,
+    promptSkeletonTokens: writer.promptSkeletonTokens,
+    inputBudget: writer.inputBudget,
+    residualContextBudget,
+    canonTokens: allocate('canon'),
+    supplementTokens: allocate('supplements'),
+    sourceSeamTokens: allocate('primaryAnchor'),
+    recentBridgeTokens: allocate('recentBridge'),
+    storyMemoryTokens: allocate('storyMemory'),
+    episodicTokens: allocate('episodic'),
+    styleTokens: allocate('originalStyle'),
+    hardContextTokens,
+    pressure,
+    declaredOutputRatio,
+    hasPrimaryAnchor,
+    categoryShares: shares,
+    chapterDemand,
+    planShare,
+    minimumProseShare,
+    desiredOutput,
+    minimumOutput,
+    requestedMaxTokens: writer.maxOutputTokens,
+    declaredOutput: writer.declaredOutputTokens,
   };
 }

@@ -51,6 +51,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     progressStartedAt,
     progressVisible,
     queued,
+    continuationStage,
     runPipeline,
     stopPipeline,
   } = useChapterPipeline({ chapter, chapterId, navigation });
@@ -357,6 +358,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         progressStartedAt={progressStartedAt}
         progressVisible={progressVisible}
         queued={queued}
+        continuationStage={continuationStage}
         focusMode={focusMode}
       />
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
