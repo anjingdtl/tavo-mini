@@ -448,7 +448,11 @@ function runAnchorOverlapChecks(
         // Any confirmed continuous copy is a safety failure. Keep this local
         // gate independent from the ordinary style level.
         severity: 'error',
-        confidence: 0.7,
+        // This is a deterministic local copy detector, not an LLM semantic
+        // judgement. A confirmed continuous match is recorded as certainty
+        // for the narrow claim "the candidate repeats the frozen seam";
+        // Canon/plot/style quality still requires Checker evidence.
+        confidence: 1,
         generatedStart: idx >= 0 ? idx : null,
         generatedEnd: idx >= 0 ? idx + Math.min(overlap, 40) : null,
         generatedExcerpt:

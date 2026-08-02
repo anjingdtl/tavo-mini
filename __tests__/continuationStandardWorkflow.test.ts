@@ -1,6 +1,4 @@
-import {
-  planStageCapacity,
-} from '../src/services/continuation/generation/continuationContextBudget';
+import { planStageCapacity } from '../src/services/continuation/generation/continuationContextBudget';
 import {
   bindIssuesToArtifact,
   runDeterministicChecks,
@@ -14,17 +12,22 @@ const mockState: {
 } = { run: null, artifacts: [], plans: [], checks: [] };
 
 const mockGetRunById = jest.fn(async (..._args: any[]) => mockState.run);
-const mockCasUpdateRunState = jest.fn(async (_id: string, expected: string[], patch: any) => {
-  if (!mockState.run || !expected.includes(mockState.run.state)) return false;
-  if (patch.state) mockState.run.state = patch.state;
-  if (patch.stage) mockState.run.stage = patch.stage;
-  if (patch.tokenUsageJson) mockState.run.tokenUsageJson = patch.tokenUsageJson;
-  if (patch.errorCode !== undefined) mockState.run.errorCode = patch.errorCode;
-  if (patch.errorMessage !== undefined) mockState.run.errorMessage = patch.errorMessage;
-  return true;
-});
-const mockGetLatestArtifact = jest.fn(async (..._args: any[]) =>
-  mockState.artifacts.at(-1) ?? null,
+const mockCasUpdateRunState = jest.fn(
+  async (_id: string, expected: string[], patch: any) => {
+    if (!mockState.run || !expected.includes(mockState.run.state)) return false;
+    if (patch.state) mockState.run.state = patch.state;
+    if (patch.stage) mockState.run.stage = patch.stage;
+    if (patch.tokenUsageJson)
+      mockState.run.tokenUsageJson = patch.tokenUsageJson;
+    if (patch.errorCode !== undefined)
+      mockState.run.errorCode = patch.errorCode;
+    if (patch.errorMessage !== undefined)
+      mockState.run.errorMessage = patch.errorMessage;
+    return true;
+  },
+);
+const mockGetLatestArtifact = jest.fn(
+  async (..._args: any[]) => mockState.artifacts.at(-1) ?? null,
 );
 const mockInsertArtifact = jest.fn(async (input: any) => {
   const artifact = {
@@ -40,10 +43,12 @@ const mockInsertArtifact = jest.fn(async (input: any) => {
   mockState.artifacts.push(artifact);
   return artifact;
 });
-const mockSavePlan = jest.fn(async (_runId: string, plan: any, ..._args: any[]) => {
-  mockState.plans.push(plan);
-  return { planHash: 'plan-hash' };
-});
+const mockSavePlan = jest.fn(
+  async (_runId: string, plan: any, ..._args: any[]) => {
+    mockState.plans.push(plan);
+    return { planHash: 'plan-hash' };
+  },
+);
 const mockInsertCheckResults = jest.fn(async (rows: any[], ..._args: any[]) => {
   rows.forEach(row => {
     mockState.checks.push({
@@ -53,37 +58,52 @@ const mockInsertCheckResults = jest.fn(async (rows: any[], ..._args: any[]) => {
     });
   });
 });
-const mockListChecksForArtifact = jest.fn(async (_runId: string, artifactId: string, ..._args: any[]) =>
-  mockState.checks.filter(row => row.artifactId === artifactId),
+const mockListChecksForArtifact = jest.fn(
+  async (_runId: string, artifactId: string, ..._args: any[]) =>
+    mockState.checks.filter(row => row.artifactId === artifactId),
 );
-const mockMarkChecksAutoRepaired = jest.fn(async (_runId: string, artifactId: string, ..._args: any[]) => {
-  mockState.checks
-    .filter(row => row.artifactId === artifactId && row.resolutionStatus === 'open')
-    .forEach(row => {
-      row.resolutionStatus = 'auto_repaired';
-    });
-});
+const mockMarkChecksAutoRepaired = jest.fn(
+  async (_runId: string, artifactId: string, ..._args: any[]) => {
+    mockState.checks
+      .filter(
+        row => row.artifactId === artifactId && row.resolutionStatus === 'open',
+      )
+      .forEach(row => {
+        row.resolutionStatus = 'auto_repaired';
+      });
+  },
+);
 
-jest.mock('../src/services/continuation/generation/generationRepository', () => {
-  const actual = jest.requireActual(
-    '../src/services/continuation/generation/generationRepository',
-  );
-  return {
-    ...actual,
-    getRunById: (...args: any[]) => (mockGetRunById as any)(...args),
-    casUpdateRunState: (...args: any[]) => (mockCasUpdateRunState as any)(...args),
-    getLatestArtifact: (...args: any[]) => (mockGetLatestArtifact as any)(...args),
-    insertArtifact: (...args: any[]) => (mockInsertArtifact as any)(...args),
-    savePlan: (...args: any[]) => (mockSavePlan as any)(...args),
-    insertCheckResults: (...args: any[]) => (mockInsertCheckResults as any)(...args),
-    listChecksForArtifact: (...args: any[]) => (mockListChecksForArtifact as any)(...args),
-    markChecksAutoRepaired: (...args: any[]) => (mockMarkChecksAutoRepaired as any)(...args),
-  };
-});
+jest.mock(
+  '../src/services/continuation/generation/generationRepository',
+  () => {
+    const actual = jest.requireActual(
+      '../src/services/continuation/generation/generationRepository',
+    );
+    return {
+      ...actual,
+      getRunById: (...args: any[]) => (mockGetRunById as any)(...args),
+      casUpdateRunState: (...args: any[]) =>
+        (mockCasUpdateRunState as any)(...args),
+      getLatestArtifact: (...args: any[]) =>
+        (mockGetLatestArtifact as any)(...args),
+      insertArtifact: (...args: any[]) => (mockInsertArtifact as any)(...args),
+      savePlan: (...args: any[]) => (mockSavePlan as any)(...args),
+      insertCheckResults: (...args: any[]) =>
+        (mockInsertCheckResults as any)(...args),
+      listChecksForArtifact: (...args: any[]) =>
+        (mockListChecksForArtifact as any)(...args),
+      markChecksAutoRepaired: (...args: any[]) =>
+        (mockMarkChecksAutoRepaired as any)(...args),
+    };
+  },
+);
 
 import {
+  applyRepairPatches,
   repairContinuationArtifactOnce,
   resumeInterruptedRun,
+  isWriterTransientRequestError,
 } from '../src/services/continuation/generation/continuationGenerationRunner';
 
 function snapshot(workflowVersion?: 2): any {
@@ -125,7 +145,11 @@ function snapshot(workflowVersion?: 2): any {
       boundaryGlobalCharOffset: 10,
       capabilities: {},
     },
-    storyMemory: { stateFingerprint: 'memory', throughPosition: 1, status: 'ready' },
+    storyMemory: {
+      stateFingerprint: 'memory',
+      throughPosition: 1,
+      status: 'ready',
+    },
     inputRevisionHash: 'input',
     settingsSnapshot: {
       schemaVersion: 1,
@@ -202,7 +226,10 @@ function seedRun(options: { workflowVersion?: 2; stage?: string } = {}) {
     state: 'interrupted',
     stage: options.stage ?? 'writer',
     contextSnapshotJson: JSON.stringify(snap),
-    tokenUsageJson: JSON.stringify({ workflowVersion: options.workflowVersion, stages: {} }),
+    tokenUsageJson: JSON.stringify({
+      workflowVersion: options.workflowVersion,
+      stages: {},
+    }),
   };
   mockState.artifacts = [];
   mockState.plans = [];
@@ -215,7 +242,10 @@ const writerJson = (content: string) =>
     plan: {
       chapterGoal: '推进目标',
       centralConflict: '核心冲突',
-      beats: [{ order: 1, summary: '升级' }, { order: 2, summary: '钩子' }],
+      beats: [
+        { order: 1, summary: '升级' },
+        { order: 2, summary: '钩子' },
+      ],
       participatingCharacterIds: [12, 18],
       characterActions: [],
       plotAdvances: [],
@@ -235,13 +265,140 @@ beforeEach(() => {
 });
 
 describe('continuation standard three-call workflow', () => {
+  it('retries Writer once for a transient network failure and records the retry separately', async () => {
+    seedRun({ workflowVersion: 2 });
+    let writerAttempts = 0;
+    const calls: any[] = [];
+    const callStage = jest.fn(async (input: any) => {
+      calls.push(input);
+      if (input.stage === 'writer') {
+        writerAttempts += 1;
+        if (writerAttempts === 1) {
+          throw Object.assign(new Error('network temporarily unavailable'), {
+            code: 'network_error',
+          });
+        }
+        return { text: writerJson('重试后正文') };
+      }
+      return { text: JSON.stringify({ issues: [] }) };
+    });
+
+    await resumeInterruptedRun('ct_standard', callStage as any);
+
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'writer',
+      'checker',
+    ]);
+    const usage = JSON.parse(mockState.run.tokenUsageJson).stages;
+    expect(usage.writer.requestCount).toBe(2);
+    expect(usage.writer.retryCount).toBe(1);
+    expect(usage.writer.retryReason).toBe('transient_network_or_server_busy');
+    expect(mockState.run.state).toBe('awaiting_user');
+  });
+
+  it('does not count the transient Writer retry toward the three logical stages', async () => {
+    seedRun({ workflowVersion: 2 });
+    let writerAttempts = 0;
+    const calls: any[] = [];
+    const callStage = jest.fn(async (input: any) => {
+      calls.push(input);
+      if (input.stage === 'writer') {
+        writerAttempts += 1;
+        if (writerAttempts === 1) {
+          throw Object.assign(new Error('rate limited'), {
+            status: 429,
+            code: 'rate_limit_exceeded',
+          });
+        }
+        return { text: writerJson('重试后的原始正文') };
+      }
+      if (input.stage === 'checker') {
+        return {
+          text: JSON.stringify({
+            issues: [
+              {
+                category: 'world',
+                subtype: 'manual_block',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: 0,
+                generatedEnd: 2,
+                generatedExcerpt: '重试',
+                description: '必须修复',
+                evidenceIds: [42],
+                suggestedFix: '改写命中片段',
+              },
+            ],
+          }),
+        };
+      }
+      return { text: '修正后的完整终稿' };
+    });
+
+    await resumeInterruptedRun('ct_standard', callStage as any);
+
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'writer',
+      'checker',
+      'repair',
+    ]);
+    const usage = JSON.parse(mockState.run.tokenUsageJson).stages;
+    expect(usage.writer.requestCount).toBe(2);
+    expect(usage.writer.retryCount).toBe(1);
+    expect(usage.repair.requestCount).toBe(1);
+    expect(mockState.artifacts.at(-1).stage).toBe('repair');
+  });
+
+  it('retries only network or busy-server errors, not configuration errors', async () => {
+    expect(
+      isWriterTransientRequestError(
+        Object.assign(new Error('too many requests'), { status: 429 }),
+      ),
+    ).toBe(true);
+    expect(
+      isWriterTransientRequestError(
+        Object.assign(new Error('invalid api key'), {
+          status: 401,
+          code: 'invalid_api_key',
+        }),
+      ),
+    ).toBe(false);
+
+    seedRun({ workflowVersion: 2 });
+    const callStage = jest.fn(async () => {
+      throw Object.assign(new Error('invalid api key'), {
+        status: 401,
+        code: 'invalid_api_key',
+      });
+    });
+
+    await expect(
+      resumeInterruptedRun('ct_standard', callStage as any),
+    ).rejects.toThrow('invalid api key');
+    expect(callStage).toHaveBeenCalledTimes(1);
+  });
+
+  it('recognizes provider total_timeout as the one allowed Writer transport retry', () => {
+    expect(
+      isWriterTransientRequestError({
+        code: 'total_timeout',
+        message: '请求超时，请检查网络或模型服务。',
+      }),
+    ).toBe(true);
+  });
+
   it('calls Writer and Checker exactly once and stores plan separately from content', async () => {
     seedRun({ workflowVersion: 2 });
     const calls: any[] = [];
     const callStage = jest.fn(async (input: any) => {
       calls.push(input);
       if (input.stage === 'writer') return { text: writerJson('纯正文') };
-      return { text: JSON.stringify({ issues: [] }), usage: { prompt: 40, completion: 8 } };
+      return {
+        text: JSON.stringify({ issues: [] }),
+        usage: { prompt: 40, completion: 8 },
+      };
     });
 
     await resumeInterruptedRun('ct_standard', callStage as any);
@@ -262,18 +419,20 @@ describe('continuation standard three-call workflow', () => {
       if (input.stage === 'checker') {
         return {
           text: JSON.stringify({
-            issues: [{
-              category: 'world',
-              subtype: 'manual_block',
-              severity: 'blocking',
-              confidence: 1,
-              generatedStart: 0,
-              generatedEnd: 2,
-              generatedExcerpt: '待修',
-              description: '需要修复',
-              evidenceIds: [42],
-              suggestedFix: '改写命中片段',
-            }],
+            issues: [
+              {
+                category: 'world',
+                subtype: 'manual_block',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: 0,
+                generatedEnd: 2,
+                generatedExcerpt: '待修',
+                description: '需要修复',
+                evidenceIds: [42],
+                suggestedFix: '改写命中片段',
+              },
+            ],
           }),
         };
       }
@@ -282,13 +441,88 @@ describe('continuation standard three-call workflow', () => {
 
     await resumeInterruptedRun('ct_standard', callStage as any);
 
-    expect(calls.map(call => call.stage)).toEqual(['writer', 'checker', 'repair']);
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'checker',
+      'repair',
+    ]);
     expect(calls.filter(call => call.stage === 'checker')).toHaveLength(1);
-    expect(mockState.artifacts.map(artifact => artifact.stage)).toEqual(['writer', 'repair']);
+    expect(mockState.artifacts.map(artifact => artifact.stage)).toEqual([
+      'writer',
+      'repair',
+    ]);
     expect(mockState.artifacts.at(-1).content).toBe('修复后正文');
-    expect(JSON.parse(mockState.run.tokenUsageJson).stages.localVerify.note).toContain(
-      '未进行第二次 LLM 复检',
-    );
+    expect(
+      JSON.parse(mockState.run.tokenUsageJson).stages.localVerify.note,
+    ).toContain('未进行第二次 LLM 复检');
+  });
+
+  it('applies a bounded Repair patch to the complete Writer artifact instead of accepting a short patch as the chapter', async () => {
+    seedRun({ workflowVersion: 2 });
+    const writerContent = '甲'.repeat(3000);
+    const calls: any[] = [];
+    const callStage = jest.fn(async (input: any) => {
+      calls.push(input);
+      if (input.stage === 'writer') return { text: writerJson(writerContent) };
+      if (input.stage === 'checker') {
+        return {
+          text: JSON.stringify({
+            issues: [
+              {
+                category: 'plot',
+                subtype: 'manual_block',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: 0,
+                generatedEnd: 1,
+                generatedExcerpt: '甲',
+                description: '必须修复',
+                evidenceIds: [42],
+                suggestedFix: '改写命中片段',
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        text: JSON.stringify({
+          patches: [{ start: 0, end: 1, replacement: '乙' }],
+        }),
+      };
+    });
+
+    await resumeInterruptedRun('ct_standard', callStage as any);
+
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'checker',
+      'repair',
+    ]);
+    expect(calls.at(-1).responseFormat).toBe('json_object');
+    expect(mockState.artifacts.map(artifact => artifact.stage)).toEqual([
+      'writer',
+      'repair',
+    ]);
+    expect(mockState.artifacts.at(-1).content).toHaveLength(3000);
+    expect(mockState.artifacts.at(-1).content.startsWith('乙')).toBe(true);
+    expect(
+      JSON.parse(mockState.run.tokenUsageJson).stages.localVerify.note,
+    ).toContain('未进行第二次 LLM 复检');
+  });
+
+  it('rejects malformed or overlapping Repair patches', () => {
+    expect(
+      applyRepairPatches(
+        'abcdef',
+        '{"patches":[{"start":0,"end":2,"replacement":"甲"},{"start":1,"end":3,"replacement":"乙"}]}',
+      ),
+    ).toBeNull();
+    expect(
+      applyRepairPatches(
+        'abcdef',
+        '{"patches":[{"start":0,"end":2,"replacement":"甲"}]}',
+      ),
+    ).toBe('甲cdef');
   });
 
   it('uses the single Repair call for a local seam failure and verifies the rewritten final candidate locally', async () => {
@@ -310,14 +544,25 @@ describe('continuation standard three-call workflow', () => {
 
     await resumeInterruptedRun('ct_standard', callStage as any);
 
-    expect(calls.map(call => call.stage)).toEqual(['writer', 'checker', 'repair']);
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'checker',
+      'repair',
+    ]);
     expect(calls.filter(call => call.stage === 'checker')).toHaveLength(1);
-    expect(mockState.artifacts.map(artifact => artifact.stage)).toEqual(['writer', 'repair']);
+    expect(mockState.artifacts.map(artifact => artifact.stage)).toEqual([
+      'writer',
+      'repair',
+    ]);
     expect(mockState.artifacts.at(-1).content).toContain('改写后的安全终稿');
-    expect(mockState.checks.some(check => check.subtype === 'continuation_anchor_overlap')).toBe(true);
-    expect(JSON.parse(mockState.run.tokenUsageJson).stages.localVerify.note).toContain(
-      '未进行第二次 LLM 复检',
-    );
+    expect(
+      mockState.checks.some(
+        check => check.subtype === 'continuation_anchor_overlap',
+      ),
+    ).toBe(true);
+    expect(
+      JSON.parse(mockState.run.tokenUsageJson).stages.localVerify.note,
+    ).toContain('未进行第二次 LLM 复检');
   });
 
   it('allows one user-confirmed extra Repair after failed local verification without a second Checker', async () => {
@@ -330,18 +575,25 @@ describe('continuation standard three-call workflow', () => {
     const callStage = jest.fn(async (input: any) => {
       calls.push(input);
       if (input.stage === 'writer') return { text: writerJson('新的正文') };
-      if (input.stage === 'checker') return { text: JSON.stringify({ issues: [{
-        category: 'world',
-        subtype: 'manual_block',
-        severity: 'blocking',
-        confidence: 1,
-        generatedStart: 0,
-        generatedEnd: 2,
-        generatedExcerpt: '新的',
-        description: '需要修复',
-        evidenceIds: [42],
-        suggestedFix: '改写命中片段',
-      }] }) };
+      if (input.stage === 'checker')
+        return {
+          text: JSON.stringify({
+            issues: [
+              {
+                category: 'world',
+                subtype: 'manual_block',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: 0,
+                generatedEnd: 2,
+                generatedExcerpt: '新的',
+                description: '需要修复',
+                evidenceIds: [42],
+                suggestedFix: '改写命中片段',
+              },
+            ],
+          }),
+        };
       repairCalls += 1;
       return {
         text:
@@ -353,7 +605,9 @@ describe('continuation standard three-call workflow', () => {
 
     await resumeInterruptedRun('ct_standard', callStage as any);
     expect(mockState.artifacts.at(-1).stage).toBe('repair');
-    expect(mockState.checks.some(c => c.subtype === 'continuation_anchor_overlap')).toBe(true);
+    expect(
+      mockState.checks.some(c => c.subtype === 'continuation_anchor_overlap'),
+    ).toBe(true);
 
     await repairContinuationArtifactOnce('ct_standard', callStage as any);
 
@@ -364,7 +618,9 @@ describe('continuation standard three-call workflow', () => {
       'repair',
     ]);
     expect(calls.filter(call => call.stage === 'checker')).toHaveLength(1);
-    expect(mockState.artifacts.at(-1).content).toBe('完全改写后的终稿'.repeat(10));
+    expect(mockState.artifacts.at(-1).content).toBe(
+      '完全改写后的终稿'.repeat(10),
+    );
     const usage = JSON.parse(mockState.run.tokenUsageJson).stages;
     expect(usage.repair.requestCount).toBe(2);
     expect(usage.repair.additionalRequestCount).toBe(1);
@@ -378,9 +634,9 @@ describe('continuation standard three-call workflow', () => {
       emptyReason: 'reasoning_only',
     }));
 
-    await expect(resumeInterruptedRun('ct_standard', callStage as any)).rejects.toThrow(
-      '仅返回推理内容',
-    );
+    await expect(
+      resumeInterruptedRun('ct_standard', callStage as any),
+    ).rejects.toThrow('仅返回推理内容');
     expect(callStage).toHaveBeenCalledTimes(1);
     expect(mockState.run.state).toBe('failed');
     expect(mockState.artifacts).toHaveLength(0);
@@ -394,18 +650,20 @@ describe('continuation standard three-call workflow', () => {
       if (input.stage === 'checker') {
         return {
           text: JSON.stringify({
-            issues: [{
-              category: 'world',
-              subtype: 'manual_block',
-              severity: 'blocking',
-              confidence: 1,
-              generatedStart: 0,
-              generatedEnd: 2,
-              generatedExcerpt: '原始',
-              description: '必须修复',
-              evidenceIds: [42],
-              suggestedFix: '改写命中片段',
-            }],
+            issues: [
+              {
+                category: 'world',
+                subtype: 'manual_block',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: 0,
+                generatedEnd: 2,
+                generatedExcerpt: '原始',
+                description: '必须修复',
+                evidenceIds: [42],
+                suggestedFix: '改写命中片段',
+              },
+            ],
           }),
         };
       }
@@ -435,18 +693,20 @@ describe('continuation standard three-call workflow', () => {
       if (input.stage === 'checker') {
         return {
           text: JSON.stringify({
-            issues: [{
-              category: 'plot',
-              subtype: 'manual_block',
-              severity: 'blocking',
-              confidence: 1,
-              generatedStart: 0,
-              generatedEnd: 1,
-              generatedExcerpt: '甲',
-              description: '必须修复',
-              evidenceIds: [42],
-              suggestedFix: '改写命中片段',
-            }],
+            issues: [
+              {
+                category: 'plot',
+                subtype: 'manual_block',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: 0,
+                generatedEnd: 1,
+                generatedExcerpt: '甲',
+                description: '必须修复',
+                evidenceIds: [42],
+                suggestedFix: '改写命中片段',
+              },
+            ],
           }),
         };
       }
@@ -455,10 +715,58 @@ describe('continuation standard three-call workflow', () => {
 
     await resumeInterruptedRun('ct_standard', callStage as any);
 
-    expect(calls.map(call => call.stage)).toEqual(['writer', 'checker', 'repair']);
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'checker',
+      'repair',
+    ]);
     expect(mockState.artifacts).toHaveLength(1);
     expect(mockState.artifacts[0].stage).toBe('writer');
     expect(mockState.artifacts[0].content).toHaveLength(3000);
+    expect(JSON.parse(mockState.run.tokenUsageJson).stages.repair.warning).toBe(
+      'repair_candidate_rejected_as_over_contracted',
+    );
+  });
+
+  it('keeps the 2500 Han-character Repair floor when the Writer draft is longer than 4000', async () => {
+    seedRun({ workflowVersion: 2 });
+    const writerContent = '甲'.repeat(5000);
+    const calls: any[] = [];
+    const callStage = jest.fn(async (input: any) => {
+      calls.push(input);
+      if (input.stage === 'writer') return { text: writerJson(writerContent) };
+      if (input.stage === 'checker') {
+        return {
+          text: JSON.stringify({
+            issues: [
+              {
+                category: 'plot',
+                subtype: 'manual_block',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: 0,
+                generatedEnd: 1,
+                generatedExcerpt: '甲',
+                description: '必须修复',
+                evidenceIds: [42],
+                suggestedFix: '改写命中片段',
+              },
+            ],
+          }),
+        };
+      }
+      return { text: '乙'.repeat(2400) };
+    });
+
+    await resumeInterruptedRun('ct_standard', callStage as any);
+
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'checker',
+      'repair',
+    ]);
+    expect(mockState.artifacts).toHaveLength(1);
+    expect(mockState.artifacts[0].content).toHaveLength(5000);
     expect(JSON.parse(mockState.run.tokenUsageJson).stages.repair.warning).toBe(
       'repair_candidate_rejected_as_over_contracted',
     );
@@ -470,20 +778,27 @@ describe('continuation standard three-call workflow', () => {
     const calls: any[] = [];
     const callStage = jest.fn(async (input: any) => {
       calls.push(input);
-      if (input.stage === 'writer') return { text: writerJson('保留的 Writer 正文') };
+      if (input.stage === 'writer')
+        return { text: writerJson('保留的 Writer 正文') };
       if (input.stage === 'checker') {
-        return { text: JSON.stringify({ issues: [{
-          category: 'world',
-          subtype: 'manual_block',
-          severity: 'blocking',
-          confidence: 1,
-          generatedStart: 0,
-          generatedEnd: 2,
-          generatedExcerpt: '保留',
-          description: '必须修复',
-          evidenceIds: [42],
-          suggestedFix: '改写命中片段',
-        }] }) };
+        return {
+          text: JSON.stringify({
+            issues: [
+              {
+                category: 'world',
+                subtype: 'manual_block',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: 0,
+                generatedEnd: 2,
+                generatedExcerpt: '保留',
+                description: '必须修复',
+                evidenceIds: [42],
+                suggestedFix: '改写命中片段',
+              },
+            ],
+          }),
+        };
       }
       repairAttempts += 1;
       if (repairAttempts === 1) throw new Error('Repair 网络错误');
@@ -493,7 +808,9 @@ describe('continuation standard three-call workflow', () => {
     await resumeInterruptedRun('ct_standard', callStage as any);
     expect(mockState.artifacts).toHaveLength(1);
     expect(mockState.artifacts[0].stage).toBe('writer');
-    expect(JSON.parse(mockState.run.tokenUsageJson).stages.repair.requestCount).toBe(1);
+    expect(
+      JSON.parse(mockState.run.tokenUsageJson).stages.repair.requestCount,
+    ).toBe(1);
 
     await repairContinuationArtifactOnce('ct_standard', callStage as any);
 
@@ -541,7 +858,12 @@ describe('continuation standard three-call workflow', () => {
     const lengthIssue = issues.find(issue => issue.subtype === 'target_length');
 
     expect(lengthIssue?.severity).toBe('warning');
-    expect(issues.some(issue => issue.subtype === 'target_length' && issue.severity !== 'warning')).toBe(false);
+    expect(
+      issues.some(
+        issue =>
+          issue.subtype === 'target_length' && issue.severity !== 'warning',
+      ),
+    ).toBe(false);
   });
 
   it('keeps local source and continuation overlap as a hard gate without Canon evidence', () => {
@@ -557,6 +879,8 @@ describe('continuation standard three-call workflow', () => {
       evidenceIds: [],
     };
 
-    expect(bindIssuesToArtifact([issue], '接缝重合正文', new Set()).at(0)?.severity).toBe('error');
+    expect(
+      bindIssuesToArtifact([issue], '接缝重合正文', new Set()).at(0)?.severity,
+    ).toBe('error');
   });
 });

@@ -72,9 +72,7 @@ import {
   resolveContinuationWriterOutputBudget,
   type ResolvedStageCapacity,
 } from './continuationContextBudget';
-import {
-  type ContinuationStageBudgets,
-} from './continuationContextBudget';
+import { type ContinuationStageBudgets } from './continuationContextBudget';
 
 export interface StageLlmCallResult {
   text: string;
@@ -131,11 +129,12 @@ function isRepairCandidateUsable(
   const originalHan = countHanCharacters(original) || original.length;
   const candidateHan = countHanCharacters(candidate) || candidate.length;
   if (originalHan === 0 || candidateHan === 0) return false;
+  const sourceIsAtLeastRepairMinimum = originalHan >= 2500;
   const sourceIsInPreferredBand = originalHan >= 2500 && originalHan <= 4000;
-  if (
-    sourceIsInPreferredBand &&
-    (candidateHan < 2500 || candidateHan > 4000)
-  ) {
+  if (sourceIsAtLeastRepairMinimum && candidateHan < 2500) {
+    return false;
+  }
+  if (sourceIsInPreferredBand && candidateHan > 4000) {
     return false;
   }
   const preservationFloor = Math.max(
@@ -210,7 +209,10 @@ function freezeModelConfig(
     providerType: config.provider_type,
     url: config.url,
     modelName: config.model_name,
-    contextWindow: Math.max(1, Math.floor(Number(config.context_window) || 8192)),
+    contextWindow: Math.max(
+      1,
+      Math.floor(Number(config.context_window) || 8192),
+    ),
     maxOutputTokens: Math.max(
       1,
       Math.floor(Number(config.max_output_tokens) || 4000),
@@ -221,6 +223,71 @@ function freezeModelConfig(
 export interface ParsedContinuationWriterResult {
   plan: ContinuationPlan;
   content: string;
+}
+
+interface RepairPatch {
+  start: number;
+  end: number;
+  replacement: string;
+}
+
+/**
+ * Standard Repair is deliberately patch-based.  A model that only emits the
+ * changed paragraph must not be able to replace a complete Writer chapter
+ * with that paragraph.  Offsets are UTF-16 indices in the supplied Writer
+ * artifact, which is also what Checker evidence uses.
+ */
+export function applyRepairPatches(
+  original: string,
+  raw: string,
+): string | null {
+  let parsed: { patches?: unknown };
+  try {
+    parsed = JSON.parse(stripModelJson(raw));
+  } catch {
+    return null;
+  }
+  if (!parsed || !Array.isArray(parsed.patches) || !parsed.patches.length) {
+    return null;
+  }
+  const patches: RepairPatch[] = [];
+  for (const value of parsed.patches) {
+    if (!value || typeof value !== 'object') return null;
+    const patch = value as Record<string, unknown>;
+    const start = Number(patch.start);
+    const end = Number(patch.end);
+    const replacement = patch.replacement;
+    if (
+      !Number.isInteger(start) ||
+      !Number.isInteger(end) ||
+      start < 0 ||
+      end <= start ||
+      end > original.length ||
+      typeof replacement !== 'string' ||
+      !replacement.trim()
+    ) {
+      return null;
+    }
+    patches.push({ start, end, replacement: replacement.trim() });
+  }
+  patches.sort((a, b) => a.start - b.start);
+  if (
+    patches.some(
+      (patch, index) => index > 0 && patch.start < patches[index - 1].end,
+    )
+  ) {
+    return null;
+  }
+  return patches
+    .slice()
+    .sort((a, b) => b.start - a.start)
+    .reduce(
+      (content, patch) =>
+        `${content.slice(0, patch.start)}${patch.replacement}${content.slice(
+          patch.end,
+        )}`,
+      original,
+    );
 }
 
 /**
@@ -239,7 +306,11 @@ export function parseWriterResult(raw: string): ParsedContinuationWriterResult {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Writer JSON 顶层必须是 object，不能把解释文字写入正文。');
   }
-  if (parsed.schemaVersion !== 1 || !parsed.plan || typeof parsed.plan !== 'object') {
+  if (
+    parsed.schemaVersion !== 1 ||
+    !parsed.plan ||
+    typeof parsed.plan !== 'object'
+  ) {
     throw new Error(
       'Writer JSON 缺少 schemaVersion=1 或 plan。请改用支持 JSON 输出的模型后重试。',
     );
@@ -251,7 +322,11 @@ export function parseWriterResult(raw: string): ParsedContinuationWriterResult {
   }
   try {
     const nested = JSON.parse(parsed.content.trim());
-    if (nested && typeof nested === 'object' && (nested.plan || nested.content)) {
+    if (
+      nested &&
+      typeof nested === 'object' &&
+      (nested.plan || nested.content)
+    ) {
       throw new Error('正文 content 不能再次包含计划或 JSON 包装。');
     }
   } catch (error) {
@@ -282,7 +357,9 @@ export function parseWriterResult(raw: string): ParsedContinuationWriterResult {
       throw new Error(`Writer JSON 的 plan.beats[${index}] 无有效 summary。`);
     }
     return {
-      order: Number.isFinite(Number(beat.order)) ? Number(beat.order) : index + 1,
+      order: Number.isFinite(Number(beat.order))
+        ? Number(beat.order)
+        : index + 1,
       summary: beat.summary,
       ...(typeof beat.conflict === 'string' ? { conflict: beat.conflict } : {}),
     };
@@ -292,10 +369,12 @@ export function parseWriterResult(raw: string): ParsedContinuationWriterResult {
     chapterGoal: p.chapterGoal,
     centralConflict: p.centralConflict,
     beats,
-    participatingCharacterIds: p.participatingCharacterIds.filter(
-      (id: any) => Number.isFinite(Number(id)),
-    ).map((id: any) => Number(id)),
-    characterActions: Array.isArray(p.characterActions) ? p.characterActions : [],
+    participatingCharacterIds: p.participatingCharacterIds
+      .filter((id: any) => Number.isFinite(Number(id)))
+      .map((id: any) => Number(id)),
+    characterActions: Array.isArray(p.characterActions)
+      ? p.characterActions
+      : [],
     plotAdvances: Array.isArray(p.plotAdvances) ? p.plotAdvances : [],
     foreshadowingActions: Array.isArray(p.foreshadowingActions)
       ? p.foreshadowingActions
@@ -419,16 +498,16 @@ export async function startContinuationRun(
   };
   const [plannerCfg, writerCfg, checkerCfg, repairCfg, stateExtractionCfg] =
     await Promise.all([
-    resolveStageConfig(generationSettings.plannerLlmConfigId),
-    resolveStageConfig(generationSettings.writerLlmConfigId),
-    generationSettings.checkerEnabled
-      ? resolveStageConfig(generationSettings.checkerLlmConfigId)
-      : Promise.resolve(null),
-    generationSettings.checkerEnabled
-      ? resolveStageConfig(generationSettings.repairLlmConfigId)
-      : Promise.resolve(null),
-    resolveStageConfig(generationSettings.stateExtractionLlmConfigId),
-  ]);
+      resolveStageConfig(generationSettings.plannerLlmConfigId),
+      resolveStageConfig(generationSettings.writerLlmConfigId),
+      generationSettings.checkerEnabled
+        ? resolveStageConfig(generationSettings.checkerLlmConfigId)
+        : Promise.resolve(null),
+      generationSettings.checkerEnabled
+        ? resolveStageConfig(generationSettings.repairLlmConfigId)
+        : Promise.resolve(null),
+      resolveStageConfig(generationSettings.stateExtractionLlmConfigId),
+    ]);
   // Resolve each stage from its actual LLM config. Do NOT take min(windows)
   // as a universal budget (Spec §7.1) — Planner may use a larger window than
   // Writer and vice versa. The frozen snapshot layout uses Writer capacity.
@@ -625,7 +704,10 @@ function preflightStandardStage(input: {
   const promptTokens = estimateMessagesTokens(input.messages);
   const effectiveWindow =
     capacity.effectiveWindow ||
-    Math.floor(capacity.contextWindow * CONTINUATION_BUDGET_POLICY.contextUtilizationRatio);
+    Math.floor(
+      capacity.contextWindow *
+        CONTINUATION_BUDGET_POLICY.contextUtilizationRatio,
+    );
   const outputShareCap = Math.floor(
     capacity.contextWindow * CONTINUATION_BUDGET_POLICY.maxOutputRatio,
   );
@@ -639,15 +721,15 @@ function preflightStandardStage(input: {
       remainingCapacity,
     ),
   );
-  if (requestedMaxTokens <= 0 || promptTokens + requestedMaxTokens > effectiveWindow) {
+  if (
+    requestedMaxTokens <= 0 ||
+    promptTokens + requestedMaxTokens > effectiveWindow
+  ) {
     throw new ContinuationCapabilityBlockedError(
       `阶段 ${input.stage} 上下文不足：prompt 约 ${promptTokens} token，当前有效窗口 ${effectiveWindow}，无法保留有效输出。请降低资料量或选择更大模型。`,
     );
   }
-  if (
-    input.minimumOutput != null &&
-    requestedMaxTokens < input.minimumOutput
-  ) {
+  if (input.minimumOutput != null && requestedMaxTokens < input.minimumOutput) {
     throw new ContinuationCapabilityBlockedError(
       `Writer 输出预算不足：当前最多 ${requestedMaxTokens} token，但按目标章节与计划仍至少需要 ${input.minimumOutput} token；请降低目标字数或选择更大的 context_window / max_output_tokens。`,
     );
@@ -656,10 +738,15 @@ function preflightStandardStage(input: {
 }
 
 function previousStandardCallCount(tokenUsage: Record<string, any>): number {
-  return (['writer', 'checker', 'repair'] as const).reduce(
-    (total, stage) => total + Number(tokenUsage[stage]?.requestCount ?? 0),
-    0,
-  );
+  return (['writer', 'checker', 'repair'] as const).reduce((total, stage) => {
+    const physicalRequests = Number(tokenUsage[stage]?.requestCount ?? 0);
+    const transientRetries = Number(tokenUsage[stage]?.retryCount ?? 0);
+    // Writer transport retries are real requests and remain visible in
+    // telemetry, but they do not consume one of the three logical workflow
+    // stage slots. This keeps resume/extra-repair decisions consistent with
+    // the in-memory call guard.
+    return total + Math.max(0, physicalRequests - transientRetries);
+  }, 0);
 }
 
 function standardWorkflow(snapshot: ContinuationContextSnapshot): boolean {
@@ -709,92 +796,119 @@ async function runStandardStages(
     responseFormat: 'json_object' | 'text',
     minimumOutput?: number,
   ): Promise<StageLlmCallResult> => {
-    if (opts.signal.aborted) throw new Error('cancelled');
-    if (llmCallCount >= 3) {
-      throw new ContinuationCapabilityBlockedError(
-        '本次标准续写已达到 3 次在线 LLM 调用上限，不能再次请求。',
-      );
-    }
-    const preflight = preflightStandardStage({
-      snapshot,
-      stage,
-      messages,
-      maxTokens,
-      minimumOutput,
-    });
-    llmCallCount += 1;
-    const startedAt = new Date();
-    const startedAtIso = startedAt.toISOString();
-    const prior = tokenUsage[stage] ?? {};
-    tokenUsage[stage] = {
-      ...prior,
-      requestCount: Number(prior.requestCount ?? 0) + 1,
-      startedAt: startedAtIso,
-      estimatedPromptTokens: preflight.promptTokens,
-      requestedMaxTokens: preflight.requestedMaxTokens,
-      effectiveWindow: preflight.effectiveWindow,
-    };
-    await persistUsage(stage);
+    let transientRetryUsed = false;
+    let workflowSlotConsumed = false;
+    while (true) {
+      if (opts.signal.aborted) throw new Error('cancelled');
+      if (!workflowSlotConsumed && llmCallCount >= 3) {
+        throw new ContinuationCapabilityBlockedError(
+          '本次标准续写已达到 Writer / Checker / Repair 三个阶段调用上限，不能再次请求；Writer 的一次传输重试不占用该上限。',
+        );
+      }
+      const preflight = preflightStandardStage({
+        snapshot,
+        stage,
+        messages,
+        maxTokens,
+        minimumOutput,
+      });
+      if (!workflowSlotConsumed) {
+        llmCallCount += 1;
+        workflowSlotConsumed = true;
+      }
+      const startedAt = new Date();
+      const startedAtIso = startedAt.toISOString();
+      const prior = tokenUsage[stage] ?? {};
+      tokenUsage[stage] = {
+        ...prior,
+        requestCount: Number(prior.requestCount ?? 0) + 1,
+        startedAt: startedAtIso,
+        estimatedPromptTokens: preflight.promptTokens,
+        requestedMaxTokens: preflight.requestedMaxTokens,
+        effectiveWindow: preflight.effectiveWindow,
+      };
+      await persistUsage(stage);
 
-    let result: StageLlmCallResult;
-    try {
-      result = opts.callStage
-        ? await opts.callStage({
-            stage,
-            messages,
-            maxTokens: preflight.requestedMaxTokens,
-            configId,
-            responseFormat,
-          })
-        : await defaultStageCaller({
-            stage,
-            messages,
-            maxTokens: preflight.requestedMaxTokens,
-            configId,
-            responseFormat,
-            signal: opts.signal,
-            projectId: opts.projectId,
-            runId,
-            frozenModelConfig: frozenModelConfigForStage(snapshot, stage),
-          });
-    } catch (error) {
+      let result: StageLlmCallResult;
+      try {
+        result = opts.callStage
+          ? await opts.callStage({
+              stage,
+              messages,
+              maxTokens: preflight.requestedMaxTokens,
+              configId,
+              responseFormat,
+            })
+          : await defaultStageCaller({
+              stage,
+              messages,
+              maxTokens: preflight.requestedMaxTokens,
+              configId,
+              responseFormat,
+              signal: opts.signal,
+              projectId: opts.projectId,
+              runId,
+              frozenModelConfig: frozenModelConfigForStage(snapshot, stage),
+            });
+      } catch (error) {
+        const finishedAt = new Date();
+        tokenUsage[stage] = {
+          ...tokenUsage[stage],
+          finishedAt: finishedAt.toISOString(),
+          durationMs: finishedAt.getTime() - startedAt.getTime(),
+          warning: 'request_failed',
+          warningMessage:
+            error instanceof Error ? error.message : String(error),
+        };
+        await persistUsage(stage).catch(() => {});
+
+        // A failed transport request is retained in physical request
+        // telemetry, but the single Writer retry is not a fourth logical
+        // workflow stage. It therefore does not consume the Writer/Checker/
+        // Repair three-stage budget.
+        if (
+          stage === 'writer' &&
+          !transientRetryUsed &&
+          isWriterTransientRequestError(error)
+        ) {
+          transientRetryUsed = true;
+          tokenUsage[stage] = {
+            ...tokenUsage[stage],
+            retryCount: 1,
+            retryReason: 'transient_network_or_server_busy',
+          };
+          await persistUsage(stage).catch(() => {});
+          continue;
+        }
+        throw error;
+      }
+
       const finishedAt = new Date();
+      const actualPrompt = result.usage?.prompt;
+      const actualCompletion = result.usage?.completion;
       tokenUsage[stage] = {
         ...tokenUsage[stage],
         finishedAt: finishedAt.toISOString(),
         durationMs: finishedAt.getTime() - startedAt.getTime(),
-        warning: 'request_failed',
-        warningMessage: error instanceof Error ? error.message : String(error),
+        prompt: actualPrompt,
+        completion: actualCompletion,
+        finishReason: result.finishReason ?? null,
+        emptyReason: result.emptyReason ?? null,
       };
-      await persistUsage(stage).catch(() => {});
-      throw error;
+      if (
+        typeof actualPrompt === 'number' &&
+        typeof actualCompletion === 'number' &&
+        actualPrompt + actualCompletion > preflight.effectiveWindow
+      ) {
+        tokenUsage[stage].warning = 'usage_exceeded_effective_window';
+        await persistUsage(stage).catch(() => {});
+        throw new ContinuationCapabilityBlockedError(
+          `阶段 ${stage} 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，本次 run 不会重试。`,
+        );
+      }
+      await persistUsage(stage);
+      return result;
     }
-
-    const finishedAt = new Date();
-    const actualPrompt = result.usage?.prompt;
-    const actualCompletion = result.usage?.completion;
-    tokenUsage[stage] = {
-      ...tokenUsage[stage],
-      finishedAt: finishedAt.toISOString(),
-      durationMs: finishedAt.getTime() - startedAt.getTime(),
-      prompt: actualPrompt,
-      completion: actualCompletion,
-      finishReason: result.finishReason ?? null,
-      emptyReason: result.emptyReason ?? null,
-    };
-    if (
-      typeof actualPrompt === 'number' &&
-      typeof actualCompletion === 'number' &&
-      actualPrompt + actualCompletion > preflight.effectiveWindow
-    ) {
-      tokenUsage[stage].warning = 'usage_exceeded_effective_window';
-      await persistUsage(stage).catch(() => {});
-      throw new ContinuationCapabilityBlockedError(
-        `阶段 ${stage} 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，本次 run 不会重试。`,
-      );
-    }
-    await persistUsage(stage);
-    return result;
   };
 
   let artifact = opts.existingArtifact ?? null;
@@ -849,21 +963,28 @@ async function runStandardStages(
   const existingChecks = await listChecksForArtifact(runId, artifact.id);
   let checks = existingChecks;
   if (checks.length === 0) {
-    let issues = runDeterministicChecks(artifact.content, snapshot);
+    // Start the deterministic seam/Canon guard and the LLM Checker together.
+    // The local branch is intentionally narrow and synchronous, while the
+    // Checker is network-bound; awaiting both before Repair lets Repair see a
+    // single merged issue set without changing the three logical LLM slots.
+    const localChecksPromise = Promise.resolve().then(() =>
+      runDeterministicChecks(artifact!.content, snapshot),
+    );
     const checkerAlreadyAttempted =
       Number(tokenUsage.checker?.requestCount ?? 0) > 0;
-    if (!opts.deterministicOnly && !checkerAlreadyAttempted) {
+    const checkerPromise = (async () => {
+      if (opts.deterministicOnly || checkerAlreadyAttempted) return null;
       try {
         const checkerCapacity = capacityForStage(snapshot, 'checker');
         if (!checkerCapacity) throw new Error('缺少 Checker 冻结配置');
         const checkerResult = await call(
           'checker',
-          compileCheckerMessages(snapshot, artifact.content),
+          compileCheckerMessages(snapshot, artifact!.content),
           checkerCapacity.maxOutputTokens,
           snapshot.settingsSnapshot.resolvedModelConfigIds.checker,
           'json_object',
         );
-        issues = issues.concat(parseCheckerLlmJson(checkerResult.text));
+        return parseCheckerLlmJson(checkerResult.text);
       } catch (checkerError) {
         tokenUsage.checker = {
           ...(tokenUsage.checker ?? {}),
@@ -874,8 +995,16 @@ async function runStandardStages(
               : String(checkerError),
         };
         await persistUsage('checker').catch(() => {});
+        return null;
       }
-    } else if (checkerAlreadyAttempted) {
+    })();
+    const [localIssues, checkerIssues] = await Promise.all([
+      localChecksPromise,
+      checkerPromise,
+    ]);
+    let issues = localIssues;
+    if (checkerIssues) issues = issues.concat(checkerIssues);
+    if (checkerAlreadyAttempted) {
       tokenUsage.checker = {
         ...(tokenUsage.checker ?? {}),
         warning: 'checker_already_attempted_deterministic_only',
@@ -920,12 +1049,19 @@ async function runStandardStages(
         try {
           const repairResult = await call(
             'repair',
-            compileRepairMessages(snapshot, artifact.content, severeChecks),
+            compileRepairMessages(
+              snapshot,
+              artifact.content,
+              severeChecks,
+              'patch',
+            ),
             repairCapacity.maxOutputTokens,
             snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
-            'text',
+            'json_object',
           );
-          repaired = repairResult.text.trim();
+          repaired =
+            applyRepairPatches(artifact.content, repairResult.text) ??
+            repairResult.text.trim();
           repairUsedLlm = Boolean(repaired);
         } catch (repairError) {
           tokenUsage.repair = {
@@ -973,7 +1109,11 @@ async function runStandardStages(
     }
 
     if (repaired && repaired !== artifact.content) {
-      await markChecksAutoRepaired(runId, artifact.id, severeChecks.map(c => c.id));
+      await markChecksAutoRepaired(
+        runId,
+        artifact.id,
+        severeChecks.map(c => c.id),
+      );
       const parent = artifact;
       artifact = await insertArtifact({
         runId,
@@ -1065,17 +1205,27 @@ export async function repairContinuationArtifactOnce(
   }
   const tokenUsage: Record<string, any> = { ...(saved.stages ?? {}) };
   const priorCalls = previousStandardCallCount(tokenUsage);
-  if (priorCalls >= 4 || Number(tokenUsage.repair?.additionalRequestCount ?? 0) > 0) {
+  if (
+    priorCalls >= 4 ||
+    Number(tokenUsage.repair?.additionalRequestCount ?? 0) > 0
+  ) {
     throw new Error('额外修正已经使用过，本次不再重复调用');
   }
   const firstRepairAttempted = Number(tokenUsage.repair?.requestCount ?? 0) > 0;
   if (artifact.stage !== 'repair' && !firstRepairAttempted) {
-    throw new Error('只有第一次 Repair 已尝试且本地复核仍失败时，才能请求额外修正');
+    throw new Error(
+      '只有第一次 Repair 已尝试且本地复核仍失败时，才能请求额外修正',
+    );
   }
 
   const repairCapacity = capacityForStage(snapshot, 'repair');
   if (!repairCapacity) throw new Error('缺少 Repair 冻结配置，无法安全请求');
-  const messages = compileRepairMessages(snapshot, artifact.content, severeChecks);
+  const messages = compileRepairMessages(
+    snapshot,
+    artifact.content,
+    severeChecks,
+    'patch',
+  );
   const preflight = preflightStandardStage({
     snapshot,
     stage: 'repair',
@@ -1100,7 +1250,10 @@ export async function repairContinuationArtifactOnce(
     const claimed = await casUpdateRunState(runId, ['awaiting_user'], {
       state: 'running',
       stage: 'repair',
-      tokenUsageJson: JSON.stringify({ workflowVersion: 2, stages: tokenUsage }),
+      tokenUsageJson: JSON.stringify({
+        workflowVersion: 2,
+        stages: tokenUsage,
+      }),
     });
     if (!claimed) throw new Error('续写状态已变更，无法请求额外修正');
 
@@ -1110,14 +1263,14 @@ export async function repairContinuationArtifactOnce(
           messages,
           maxTokens: preflight.requestedMaxTokens,
           configId: snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
-          responseFormat: 'text',
+          responseFormat: 'json_object',
         })
       : await defaultStageCaller({
           stage: 'repair',
           messages,
           maxTokens: preflight.requestedMaxTokens,
           configId: snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
-          responseFormat: 'text',
+          responseFormat: 'json_object',
           signal: controller.signal,
           projectId: run.projectId,
           runId,
@@ -1157,7 +1310,8 @@ export async function repairContinuationArtifactOnce(
         `额外 Repair 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，候选正文保持不变。`,
       );
     }
-    const repaired = result.text.trim();
+    const repaired =
+      applyRepairPatches(artifact.content, result.text) ?? result.text.trim();
     if (!repaired) throw new Error('额外 Repair 未返回正文，候选正文保持不变');
     if (repaired === artifact.content) {
       throw new Error('额外 Repair 未改变正文，候选正文保持不变');
@@ -1211,7 +1365,10 @@ export async function repairContinuationArtifactOnce(
     await casUpdateRunState(runId, ['running'], {
       state: 'awaiting_user',
       stage: 'awaiting_user',
-      tokenUsageJson: JSON.stringify({ workflowVersion: 2, stages: tokenUsage }),
+      tokenUsageJson: JSON.stringify({
+        workflowVersion: 2,
+        stages: tokenUsage,
+      }),
     });
   } catch (error) {
     const finishedAt = new Date();
@@ -1225,12 +1382,69 @@ export async function repairContinuationArtifactOnce(
     await casUpdateRunState(runId, ['running'], {
       state: 'awaiting_user',
       stage: 'awaiting_user',
-      tokenUsageJson: JSON.stringify({ workflowVersion: 2, stages: tokenUsage }),
+      tokenUsageJson: JSON.stringify({
+        workflowVersion: 2,
+        stages: tokenUsage,
+      }),
     }).catch(() => {});
     throw error;
   } finally {
     activeControllers.delete(runId);
   }
+}
+
+/**
+ * Only transport/server-busy failures are safe to retry automatically for a
+ * new standard-workflow Writer request. Output-contract failures (reasoning
+ * only, empty, length, malformed JSON) and configuration/auth failures must
+ * remain visible to the user and must never consume another Writer call.
+ *
+ * Keep this classification local to the standard workflow. Historical runs
+ * retain their original Planner/Writer resume semantics.
+ */
+export function isWriterTransientRequestError(error: unknown): boolean {
+  const candidates: any[] = [];
+  let current: any = error;
+  for (let depth = 0; current && depth < 3; depth += 1) {
+    candidates.push(current);
+    current = current.cause;
+  }
+
+  for (const candidate of candidates) {
+    const status = Number(
+      candidate?.status ?? candidate?.response?.status ?? 0,
+    );
+    const code = String(candidate?.code ?? '').toLowerCase();
+    const message = String(candidate?.message ?? '').toLowerCase();
+
+    if (status === 429 || /(?:^|[^0-9])429(?:[^0-9]|$)/.test(code)) {
+      return true;
+    }
+    if (status >= 500 && status <= 599) return true;
+    if (
+      [
+        'network_error',
+        'connect_timeout',
+        'idle_timeout',
+        'total_timeout',
+        'rate_limit_exceeded',
+        'too_many_requests',
+        'server_busy',
+        'service_unavailable',
+        'overloaded',
+      ].some(value => code.includes(value))
+    ) {
+      return true;
+    }
+    if (
+      /network|fetch failed|connection reset|connection refused|timed out|timeout|temporarily unavailable|too many requests|rate limit|server busy|overloaded|service unavailable/.test(
+        message,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function runStages(
