@@ -175,6 +175,7 @@ scripts/zswebdav-put.ps1
 # 任何形如 LLMTesti.* / *.api-key / *-apikey.txt / secrets/ 的文件默认忽略。
 /docs/LLMTesti.txt
 /docs/LLMTesti.*
+/docs/deepseek.txt
 /docs/*api-key*
 /docs/*apikey*
 /secrets/
