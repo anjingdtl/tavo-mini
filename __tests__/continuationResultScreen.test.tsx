@@ -124,6 +124,8 @@ describe('ContinuationResultScreen adoption decision', () => {
     expect(getByText('放弃并返回')).toBeTruthy();
     expect(getByText('采纳错误候选（风险自负）')).toBeTruthy();
     expect(getByText('额外修正一次（增加 1 次 LLM）')).toBeTruthy();
+    expect(getByText(/本地确定性命中（连续原文）/)).toBeTruthy();
+    expect(queryByText('无证据(推测)')).toBeNull();
     expect(queryByText('接缝重复候选')).toBeNull();
     expect(queryByText('重新生成')).toBeNull();
 
