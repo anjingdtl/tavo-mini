@@ -830,15 +830,14 @@ export async function markChecksObsolete(
 export async function markChecksAutoRepaired(
   runId: string,
   artifactId: string,
-  checkIds?: number[],
+  checkIds: number[],
 ): Promise<void> {
+  if (checkIds.length === 0) return;
   const db = await openDatabase();
   const params: any[] = [nowIso(), runId, artifactId];
   let suffix = '';
-  if (checkIds?.length) {
-    suffix = ` AND id IN (${checkIds.map(() => '?').join(',')})`;
-    params.push(...checkIds);
-  }
+  suffix = ` AND id IN (${checkIds.map(() => '?').join(',')})`;
+  params.push(...checkIds);
   await db.executeSql(
     `UPDATE continuation_check_results
      SET resolution_status = 'auto_repaired', updated_at = ?
