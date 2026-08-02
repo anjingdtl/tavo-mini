@@ -73,6 +73,15 @@ import {
   type ResolvedStageCapacity,
 } from './continuationContextBudget';
 import { type ContinuationStageBudgets } from './continuationContextBudget';
+import { resolveContinuationLengthContract } from './continuationLengthContract';
+import {
+  applyRepairPatches,
+  isRepairCandidateUsable,
+} from './continuationRepairPatch';
+export {
+  applyRepairPatches,
+  isRepairCandidateUsable,
+} from './continuationRepairPatch';
 
 export interface StageLlmCallResult {
   text: string;
@@ -109,40 +118,6 @@ export interface StartContinuationRunInput {
 }
 
 const activeControllers = new Map<string, AbortController>();
-
-function countHanCharacters(text: string): number {
-  return (text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || [])
-    .length;
-}
-
-/**
- * A Repair response must not silently collapse a complete Writer chapter into
- * a short summary. This is a local candidate-preservation check, not a target
- * length gate: the Writer artifact remains available and the user can decide
- * what to do when a Repair response is unusably contracted.
- */
-function isRepairCandidateUsable(
-  original: string,
-  candidate: string,
-  targetChapterChars: number,
-): boolean {
-  const originalHan = countHanCharacters(original) || original.length;
-  const candidateHan = countHanCharacters(candidate) || candidate.length;
-  if (originalHan === 0 || candidateHan === 0) return false;
-  const sourceIsAtLeastRepairMinimum = originalHan >= 2500;
-  const sourceIsInPreferredBand = originalHan >= 2500 && originalHan <= 4000;
-  if (sourceIsAtLeastRepairMinimum && candidateHan < 2500) {
-    return false;
-  }
-  if (sourceIsInPreferredBand && candidateHan > 4000) {
-    return false;
-  }
-  const preservationFloor = Math.max(
-    Math.floor(originalHan * 0.25),
-    Math.floor(Math.min(originalHan, targetChapterChars) * 0.15),
-  );
-  return candidateHan >= preservationFloor;
-}
 
 function defaultPlan(instruction: string): ContinuationPlan {
   return {
@@ -223,71 +198,6 @@ function freezeModelConfig(
 export interface ParsedContinuationWriterResult {
   plan: ContinuationPlan;
   content: string;
-}
-
-interface RepairPatch {
-  start: number;
-  end: number;
-  replacement: string;
-}
-
-/**
- * Standard Repair is deliberately patch-based.  A model that only emits the
- * changed paragraph must not be able to replace a complete Writer chapter
- * with that paragraph.  Offsets are UTF-16 indices in the supplied Writer
- * artifact, which is also what Checker evidence uses.
- */
-export function applyRepairPatches(
-  original: string,
-  raw: string,
-): string | null {
-  let parsed: { patches?: unknown };
-  try {
-    parsed = JSON.parse(stripModelJson(raw));
-  } catch {
-    return null;
-  }
-  if (!parsed || !Array.isArray(parsed.patches) || !parsed.patches.length) {
-    return null;
-  }
-  const patches: RepairPatch[] = [];
-  for (const value of parsed.patches) {
-    if (!value || typeof value !== 'object') return null;
-    const patch = value as Record<string, unknown>;
-    const start = Number(patch.start);
-    const end = Number(patch.end);
-    const replacement = patch.replacement;
-    if (
-      !Number.isInteger(start) ||
-      !Number.isInteger(end) ||
-      start < 0 ||
-      end <= start ||
-      end > original.length ||
-      typeof replacement !== 'string' ||
-      !replacement.trim()
-    ) {
-      return null;
-    }
-    patches.push({ start, end, replacement: replacement.trim() });
-  }
-  patches.sort((a, b) => a.start - b.start);
-  if (
-    patches.some(
-      (patch, index) => index > 0 && patch.start < patches[index - 1].end,
-    )
-  ) {
-    return null;
-  }
-  return patches
-    .slice()
-    .sort((a, b) => b.start - a.start)
-    .reduce(
-      (content, patch) =>
-        `${content.slice(0, patch.start)}${patch.replacement}${content.slice(
-          patch.end,
-        )}`,
-      original,
-    );
 }
 
 /**
@@ -523,7 +433,9 @@ export async function startContinuationRun(
     // override remains a test/preview compatibility field and never changes
     // the production run's model window.
     contextWindow: writerWindow,
-    targetChapterChars: generationSettings.targetChapterChars,
+    targetChapterChars: resolveContinuationLengthContract(
+      generationSettings.targetChapterChars,
+    ).maxHanCharacters,
     configuredMaxOutputTokens: writerCfg?.max_output_tokens,
     requestedMaxOutputTokens: input.maxOutputTokens,
   });
@@ -922,7 +834,9 @@ async function runStandardStages(
     const writerMessages = compileWriterMessages(snapshot);
     const writerBudget = resolveContinuationWriterOutputBudget({
       contextWindow: snapshot.stageBudgets?.writer.contextWindow ?? 8192,
-      targetChapterChars: snapshot.settingsSnapshot.values.targetChapterChars,
+      targetChapterChars: resolveContinuationLengthContract(
+        snapshot.settingsSnapshot.values.targetChapterChars,
+      ).maxHanCharacters,
       configuredMaxOutputTokens:
         snapshot.stageBudgets?.writer.declaredOutputTokens,
     });
@@ -1059,10 +973,19 @@ async function runStandardStages(
             snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
             'json_object',
           );
-          repaired =
-            applyRepairPatches(artifact.content, repairResult.text) ??
-            repairResult.text.trim();
-          repairUsedLlm = Boolean(repaired);
+          repaired = applyRepairPatches(
+            artifact.content,
+            repairResult.text,
+          );
+          repairUsedLlm = repaired !== null;
+          if (!repaired) {
+            tokenUsage.repair = {
+              ...(tokenUsage.repair ?? {}),
+              warning: 'invalid_patch_writer_artifact_retained',
+              warningMessage:
+                'Repair 未返回可应用的 JSON 补丁，已保留修复前正文。',
+            };
+          }
         } catch (repairError) {
           tokenUsage.repair = {
             ...(tokenUsage.repair ?? {}),
@@ -1101,7 +1024,7 @@ async function runStandardStages(
         ...(tokenUsage.repair ?? {}),
         warning: 'repair_candidate_rejected_as_over_contracted',
         warningMessage:
-          'Repair 候选相对 Writer 正文过度缩短或偏离 2500–4000 汉字质量带，已保留 Writer artifact；本次不重试，也不再次调用 Checker。',
+          'Repair 候选破坏本次动态长度契约、发生过度缩短或明显远离目标，已保留修复前 artifact；本次不重试，也不再次调用 Checker。',
       };
       repaired = null;
       repairUsedLlm = false;
@@ -1310,9 +1233,12 @@ export async function repairContinuationArtifactOnce(
         `额外 Repair 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，候选正文保持不变。`,
       );
     }
-    const repaired =
-      applyRepairPatches(artifact.content, result.text) ?? result.text.trim();
-    if (!repaired) throw new Error('额外 Repair 未返回正文，候选正文保持不变');
+    const repaired = applyRepairPatches(artifact.content, result.text);
+    if (!repaired) {
+      throw new Error(
+        '额外 Repair 未返回可应用的 JSON 补丁，候选正文保持不变',
+      );
+    }
     if (repaired === artifact.content) {
       throw new Error('额外 Repair 未改变正文，候选正文保持不变');
     }
@@ -1324,7 +1250,7 @@ export async function repairContinuationArtifactOnce(
       )
     ) {
       throw new Error(
-        '额外 Repair 候选相对当前正文过度缩短，已保留原候选；本次不再重试，也不会调用 LLM Checker。',
+        '额外 Repair 候选破坏动态长度契约、过度缩短或明显远离目标，已保留原候选；本次不再重试，也不会调用 LLM Checker。',
       );
     }
 

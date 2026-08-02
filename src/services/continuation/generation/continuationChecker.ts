@@ -9,6 +9,11 @@ import type {
   ContinuationContextSnapshot,
   ContinuationGenerationSettings,
 } from './types';
+import {
+  evaluateContinuationLength,
+  isContinuationLengthIssueSubtype,
+  resolveContinuationLengthContract,
+} from './continuationLengthContract';
 
 export interface RawCheckIssue {
   category: CheckCategory;
@@ -36,16 +41,6 @@ const CATEGORIES: CheckCategory[] = [
   'style',
 ];
 
-// The product's preferred chapter size is a quality signal, not a safety
-// gate. A model may legitimately stop earlier or write longer prose; either
-// case must remain reviewable without another LLM call or a retry.
-const IDEAL_HAN_CHARACTER_MIN = 2_000;
-const IDEAL_HAN_CHARACTER_MAX = 4_000;
-
-function countHanCharacters(text: string): number {
-  return (text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || [])
-    .length;
-}
 
 function levelOff(
   settings: ContinuationGenerationSettings,
@@ -72,22 +67,40 @@ export function runDeterministicChecks(
   const issues: RawCheckIssue[] = [];
   const settings = snapshot.settingsSnapshot.values;
 
-  const hanCharacters = countHanCharacters(artifactText);
-  if (
-    hanCharacters < IDEAL_HAN_CHARACTER_MIN ||
-    hanCharacters > IDEAL_HAN_CHARACTER_MAX
-  ) {
+  const lengthContract = resolveContinuationLengthContract(
+    settings.targetChapterChars,
+  );
+  const lengthEvaluation = evaluateContinuationLength(
+    artifactText,
+    lengthContract,
+  );
+  if (lengthEvaluation.status !== 'within') {
+    const under = lengthEvaluation.status === 'under';
     issues.push({
       category: 'style',
-      subtype: 'target_length',
-      severity: 'warning',
+      subtype: under
+        ? 'chapter_length_under_target'
+        : 'chapter_length_over_target',
+      severity: 'error',
       confidence: 1,
       generatedStart: null,
       generatedEnd: null,
       generatedExcerpt: '',
-      description: `正文含汉字 ${hanCharacters} 个，建议保持在 ${IDEAL_HAN_CHARACTER_MIN}–${IDEAL_HAN_CHARACTER_MAX} 个；这是质量提示，不会阻断采纳或触发重试`,
+      description: under
+        ? `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，低于本次允许下限 ${lengthContract.minHanCharacters}；目标为 ${lengthContract.targetHanCharacters}。`
+        : `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，高于本次允许上限 ${lengthContract.maxHanCharacters}；目标为 ${lengthContract.targetHanCharacters}。`,
       evidenceIds: [],
-      suggestedFix: `下一次生成时可按当前目标章节长度（${settings.targetChapterChars}）调整，或按需要保留当前正文`,
+      suggestedFix: under
+        ? `在保留完整事件链的基础上自然扩写约 ${Math.max(
+            1,
+            lengthContract.targetHanCharacters -
+              lengthEvaluation.actualHanCharacters,
+          )} 个汉字，最终保持在 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字。`
+        : `优先压缩重复描写、重复心理和不推进剧情的对话，减少约 ${Math.max(
+            1,
+            lengthEvaluation.actualHanCharacters -
+              lengthContract.targetHanCharacters,
+          )} 个汉字，最终保持在 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字。`,
     });
   }
 
@@ -575,18 +588,19 @@ export function bindIssuesToArtifact(
     }
     const filtered = (evidenceIds ?? []).filter(id => allowedEvidenceIds.has(id));
     let severity = issue.severity;
-    const localOverlapGate =
+    const localDeterministicGate =
       issue.subtype === 'source_overlap' ||
-      issue.subtype === 'continuation_anchor_overlap';
+      issue.subtype === 'continuation_anchor_overlap' ||
+      isContinuationLengthIssueSubtype(issue.subtype);
     if (
       filtered.length === 0 &&
-      !localOverlapGate &&
+      !localDeterministicGate &&
       (severity === 'error' || severity === 'blocking')
     ) {
       severity = 'warning';
     }
     if (
-      !localOverlapGate &&
+      !localDeterministicGate &&
       (severity === 'error' || severity === 'blocking') &&
       (!generatedExcerpt ||
         generatedStart == null ||
@@ -611,7 +625,11 @@ export function filterBySettings(
   issues: RawCheckIssue[],
   settings: ContinuationGenerationSettings,
 ): RawCheckIssue[] {
-  return issues.filter(i => !levelOff(settings, i.category));
+  return issues.filter(
+    i =>
+      isContinuationLengthIssueSubtype(i.subtype) ||
+      !levelOff(settings, i.category),
+  );
 }
 
 export function uncheckedCategories(
