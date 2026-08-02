@@ -591,6 +591,8 @@ export function bindIssuesToArtifact(
     const localDeterministicGate =
       issue.subtype === 'source_overlap' ||
       issue.subtype === 'continuation_anchor_overlap' ||
+      issue.subtype === 'future_leakage' ||
+      issue.subtype === 'resurrection_forbidden' ||
       isContinuationLengthIssueSubtype(issue.subtype);
     if (
       filtered.length === 0 &&

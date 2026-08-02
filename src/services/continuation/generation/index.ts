@@ -54,7 +54,26 @@ export {
   filterBySettings,
   uncheckedCategories,
 } from './continuationChecker';
-export { tryDeterministicRepair, shouldRunRepair } from './continuationRepairService';
+export {
+  tryDeterministicRepair,
+  tryDeterministicRepairWithReport,
+  shouldRunRepair,
+} from './continuationRepairService';
+export {
+  applyRepairPatches,
+  applyParsedRepairPatches,
+  parseRepairPatches,
+  validateRepairPatches,
+  validateRepairPatchCoverage,
+  isRepairCandidateUsable,
+} from './continuationRepairPatch';
+export type { DeterministicRepairResult } from './continuationRepairService';
+export type {
+  RepairPatch,
+  RepairPatchCoverage,
+  RepairCandidateMode,
+  RepairCoverageIssue,
+} from './continuationRepairPatch';
 export {
   getEffectiveContinuationState,
   confirmProposal,
