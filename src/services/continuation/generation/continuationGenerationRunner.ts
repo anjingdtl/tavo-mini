@@ -16,6 +16,7 @@ import {
   parseCheckerLlmJson,
   runDeterministicChecks,
 } from './continuationChecker';
+import type { RawCheckIssue } from './continuationChecker';
 import {
   compileCheckerMessages,
   compilePlannerMessages,
@@ -25,6 +26,7 @@ import {
 import {
   shouldRunRepair,
   tryDeterministicRepair,
+  tryDeterministicRepairWithReport,
 } from './continuationRepairService';
 import {
   buildAcceptOpenChecksStatement,
@@ -49,6 +51,7 @@ import {
 } from './generationRepository';
 import type {
   ContinuationArtifact,
+  ContinuationCheckResult,
   ContinuationContextSnapshot,
   ContinuationContextTrace,
   ContinuationGenerationRun,
@@ -73,10 +76,17 @@ import {
   type ResolvedStageCapacity,
 } from './continuationContextBudget';
 import { type ContinuationStageBudgets } from './continuationContextBudget';
-import { resolveContinuationLengthContract } from './continuationLengthContract';
 import {
-  applyRepairPatches,
+  evaluateContinuationLength,
+  isContinuationLengthIssueSubtype,
+  resolveContinuationLengthContract,
+} from './continuationLengthContract';
+import {
+  applyParsedRepairPatches,
   isRepairCandidateUsable,
+  parseRepairPatches,
+  validateRepairPatchCoverage,
+  validateRepairPatches,
 } from './continuationRepairPatch';
 export {
   applyRepairPatches,
@@ -665,6 +675,87 @@ function standardWorkflow(snapshot: ContinuationContextSnapshot): boolean {
   return snapshot.workflowVersion === 2;
 }
 
+function isSevereCheck(check: ContinuationCheckResult): boolean {
+  return check.severity === 'error' || check.severity === 'blocking';
+}
+
+function isLocalDeterministicSubtype(subtype: string): boolean {
+  return (
+    isContinuationLengthIssueSubtype(subtype) ||
+    subtype === 'future_leakage' ||
+    subtype === 'resurrection_forbidden' ||
+    subtype === 'source_overlap' ||
+    subtype === 'continuation_anchor_overlap'
+  );
+}
+
+function rebindCheckToContent(
+  check: ContinuationCheckResult,
+  content: string,
+): ContinuationCheckResult {
+  if (!check.generatedExcerpt) {
+    return {
+      ...check,
+      generatedStart: null,
+      generatedEnd: null,
+    };
+  }
+  if (
+    check.generatedStart != null &&
+    check.generatedEnd != null &&
+    check.generatedStart >= 0 &&
+    check.generatedEnd <= content.length &&
+    content.slice(check.generatedStart, check.generatedEnd) ===
+      check.generatedExcerpt
+  ) {
+    return { ...check };
+  }
+  const start = content.indexOf(check.generatedExcerpt);
+  if (start < 0) {
+    return {
+      ...check,
+      generatedStart: null,
+      generatedEnd: null,
+    };
+  }
+  return {
+    ...check,
+    generatedStart: start,
+    generatedEnd: start + check.generatedExcerpt.length,
+  };
+}
+
+function recheckedIssueToCheck(
+  issue: RawCheckIssue,
+  template: ContinuationCheckResult | undefined,
+  runId: string,
+  chapterId: number,
+  artifact: ContinuationArtifact,
+): ContinuationCheckResult {
+  return {
+    id: template?.id ?? 0,
+    runId: template?.runId ?? runId,
+    chapterId: template?.chapterId ?? chapterId,
+    artifactId: artifact.id,
+    artifactHash: artifact.contentHash,
+    category: issue.category,
+    subtype: issue.subtype,
+    severity: issue.severity,
+    confidence: issue.confidence,
+    generatedStart: issue.generatedStart,
+    generatedEnd: issue.generatedEnd,
+    generatedExcerpt: issue.generatedExcerpt,
+    description: issue.description,
+    entityRefType: issue.entityRefType ?? null,
+    entityRefId: issue.entityRefId ?? null,
+    evidenceIds: issue.evidenceIds ?? [],
+    suggestedFix: issue.suggestedFix ?? null,
+    resolutionStatus: 'open',
+    createdAt: template?.createdAt ?? '',
+    updatedAt: template?.updatedAt ?? '',
+  };
+}
+
 function frozenModelConfigForStage(
   snapshot: ContinuationContextSnapshot,
   stage: 'writer' | 'checker' | 'repair',
@@ -947,11 +1038,89 @@ async function runStandardStages(
     c => c.severity === 'error' || c.severity === 'blocking',
   );
   if (severeChecks.length > 0) {
-    let repaired = tryDeterministicRepair(artifact.content, severeChecks);
-    let repairUsedLlm = false;
+    const originalArtifact = artifact;
     const repairAlreadyAttempted =
       Number(tokenUsage.repair?.requestCount ?? 0) > 0;
-    if (!repaired && !opts.deterministicOnly && !repairAlreadyAttempted) {
+    let deterministicCandidate = originalArtifact.content;
+    let deterministicHandledIds = new Set<number>();
+    const deterministicResult = tryDeterministicRepairWithReport(
+      originalArtifact.content,
+      severeChecks,
+    );
+    if (deterministicResult) {
+      deterministicCandidate = deterministicResult.content;
+      deterministicHandledIds = new Set(deterministicResult.repairedIssueIds);
+      if (
+        !isRepairCandidateUsable(
+          originalArtifact.content,
+          deterministicCandidate,
+          settings.targetChapterChars,
+          'standard',
+        )
+      ) {
+        deterministicCandidate = originalArtifact.content;
+        deterministicHandledIds = new Set<number>();
+      }
+    }
+
+    const allowedEvidence = new Set(snapshot.bundles.canon.evidenceRefs);
+    const localCandidateIssues = filterBySettings(
+      bindIssuesToArtifact(
+        runDeterministicChecks(deterministicCandidate, snapshot),
+        deterministicCandidate,
+        allowedEvidence,
+      ),
+      settings,
+    );
+    const localTemplateChecks = checks.filter(c =>
+      isLocalDeterministicSubtype(c.subtype),
+    );
+    const localCandidateChecks = localCandidateIssues.map(issue =>
+      recheckedIssueToCheck(
+        issue,
+        localTemplateChecks.find(
+          template =>
+            template.category === issue.category &&
+            template.subtype === issue.subtype,
+        ),
+        runId,
+        snapshot.targetChapterId,
+        originalArtifact,
+      ),
+    );
+    const localCandidateSevereChecks =
+      localCandidateChecks.filter(isSevereCheck);
+    const localOriginalIds = new Set(
+      checks.filter(c => isLocalDeterministicSubtype(c.subtype)).map(c => c.id),
+    );
+    const unresolvedLlmChecks = severeChecks
+      .filter(
+        check =>
+          !localOriginalIds.has(check.id) &&
+          !deterministicHandledIds.has(check.id),
+      )
+      .map(check => rebindCheckToContent(check, deterministicCandidate));
+    const repairChecks: ContinuationCheckResult[] = [];
+    const seenRepairIds = new Set<number>();
+    for (const check of [
+      ...localCandidateSevereChecks,
+      ...unresolvedLlmChecks,
+    ]) {
+      if (check.id !== 0 && seenRepairIds.has(check.id)) continue;
+      if (check.id !== 0) seenRepairIds.add(check.id);
+      repairChecks.push(check);
+    }
+
+    let repaired = deterministicCandidate;
+    let repairUsedLlm = false;
+    let repairRequestAttempted = false;
+    let repairCoverage: ReturnType<typeof validateRepairPatchCoverage> | null =
+      null;
+    if (
+      !opts.deterministicOnly &&
+      !repairAlreadyAttempted &&
+      repairChecks.length
+    ) {
       const repairCapacity = capacityForStage(snapshot, 'repair');
       if (!repairCapacity) {
         tokenUsage.repair = {
@@ -961,30 +1130,74 @@ async function runStandardStages(
         };
       } else {
         try {
+          repairRequestAttempted = true;
           const repairResult = await call(
             'repair',
             compileRepairMessages(
               snapshot,
-              artifact.content,
-              severeChecks,
+              deterministicCandidate,
+              repairChecks,
               'patch',
             ),
             repairCapacity.maxOutputTokens,
             snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
             'json_object',
           );
-          repaired = applyRepairPatches(
-            artifact.content,
-            repairResult.text,
-          );
-          repairUsedLlm = repaired !== null;
-          if (!repaired) {
+          const patches = parseRepairPatches(repairResult.text);
+          const patchesValid =
+            patches !== null &&
+            validateRepairPatches(deterministicCandidate, patches);
+          if (!patches || !patchesValid) {
             tokenUsage.repair = {
               ...(tokenUsage.repair ?? {}),
               warning: 'invalid_patch_writer_artifact_retained',
               warningMessage:
-                'Repair 未返回可应用的 JSON 补丁，已保留修复前正文。',
+                'Repair 未返回通过 JSON、offset 和插入边界校验的补丁，已保留调用前正文。',
             };
+          } else {
+            repairCoverage = validateRepairPatchCoverage({
+              patches,
+              issues: repairChecks,
+            });
+            const patched = applyParsedRepairPatches(
+              deterministicCandidate,
+              patches,
+            );
+            const patchedLength = evaluateContinuationLength(
+              patched,
+              settings.targetChapterChars,
+            );
+            const lengthResolved =
+              repairCoverage.chapterLengthIssues.length > 0 &&
+              patchedLength.status === 'within';
+            const hasIssueCoverage = repairCoverage.coveredIssues.length > 0;
+            const candidateUsable = isRepairCandidateUsable(
+              deterministicCandidate,
+              patched,
+              settings.targetChapterChars,
+              'standard',
+            );
+            if (
+              patched === deterministicCandidate ||
+              (!hasIssueCoverage && !lengthResolved) ||
+              !candidateUsable
+            ) {
+              tokenUsage.repair = {
+                ...(tokenUsage.repair ?? {}),
+                warning: !candidateUsable
+                  ? 'repair_candidate_rejected_as_over_contracted'
+                  : hasIssueCoverage
+                  ? 'repair_candidate_rejected_as_unsafe'
+                  : 'repair_patch_coverage_failed_writer_artifact_retained',
+                warningMessage: hasIssueCoverage
+                  ? 'Repair 补丁虽有局部命中，但候选破坏动态长度契约、过度缩短或异常膨胀，已保留调用前正文。'
+                  : 'Repair 补丁没有覆盖任何普通严重问题，且未将章节长度带入合法范围，已保留调用前正文。',
+              };
+              repairCoverage = null;
+            } else {
+              repaired = patched;
+              repairUsedLlm = true;
+            }
           }
         } catch (repairError) {
           tokenUsage.repair = {
@@ -998,11 +1211,15 @@ async function runStandardStages(
           await persistUsage('repair').catch(() => {});
         }
       }
-    } else if (repaired) {
+    } else if (deterministicCandidate !== originalArtifact.content) {
       tokenUsage.repair = {
         ...(tokenUsage.repair ?? {}),
-        requestCount: 0,
-        skippedReason: 'deterministic_repair',
+        requestCount: Number(tokenUsage.repair?.requestCount ?? 0),
+        skippedReason: opts.deterministicOnly
+          ? 'deterministic_only'
+          : repairAlreadyAttempted
+          ? 'repair_already_attempted_deterministic_candidate_retained'
+          : 'deterministic_repair',
       };
     } else if (repairAlreadyAttempted) {
       tokenUsage.repair = {
@@ -1011,33 +1228,66 @@ async function runStandardStages(
       };
     }
 
-    if (
-      repaired &&
-      repaired !== artifact.content &&
-      !isRepairCandidateUsable(
-        artifact.content,
+    if (repaired !== originalArtifact.content) {
+      const finalLocalIssues = filterBySettings(
+        bindIssuesToArtifact(
+          runDeterministicChecks(repaired, snapshot),
+          repaired,
+          allowedEvidence,
+        ),
+        settings,
+      );
+      const finalLocalChecks = finalLocalIssues.map(issue =>
+        recheckedIssueToCheck(
+          issue,
+          localTemplateChecks.find(
+            template =>
+              template.category === issue.category &&
+              template.subtype === issue.subtype,
+          ),
+          runId,
+          snapshot.targetChapterId,
+          originalArtifact,
+        ),
+      );
+      const finalLength = evaluateContinuationLength(
         repaired,
         settings.targetChapterChars,
-      )
-    ) {
-      tokenUsage.repair = {
-        ...(tokenUsage.repair ?? {}),
-        warning: 'repair_candidate_rejected_as_over_contracted',
-        warningMessage:
-          'Repair 候选破坏本次动态长度契约、发生过度缩短或明显远离目标，已保留修复前 artifact；本次不重试，也不再次调用 Checker。',
-      };
-      repaired = null;
-      repairUsedLlm = false;
-      await persistUsage('repair').catch(() => {});
-    }
-
-    if (repaired && repaired !== artifact.content) {
-      await markChecksAutoRepaired(
-        runId,
-        artifact.id,
-        severeChecks.map(c => c.id),
       );
-      const parent = artifact;
+      const checksToMark = new Set<number>();
+      for (const check of severeChecks) {
+        if (check.id <= 0) continue;
+        if (deterministicHandledIds.has(check.id)) {
+          const resolved = isContinuationLengthIssueSubtype(check.subtype)
+            ? finalLength.status === 'within'
+            : !finalLocalChecks.some(
+                finalCheck =>
+                  finalCheck.subtype === check.subtype &&
+                  (!check.generatedExcerpt ||
+                    finalCheck.generatedExcerpt === check.generatedExcerpt),
+              );
+          if (resolved) checksToMark.add(check.id);
+        }
+      }
+      if (repairCoverage) {
+        for (const issue of repairCoverage.coveredIssues) {
+          if (issue.id > 0) checksToMark.add(issue.id);
+        }
+        if (finalLength.status === 'within') {
+          for (const issue of repairCoverage.chapterLengthIssues) {
+            if (issue.id > 0) checksToMark.add(issue.id);
+          }
+        }
+      }
+
+      if (checksToMark.size > 0) {
+        await markChecksAutoRepaired(
+          runId,
+          originalArtifact.id,
+          Array.from(checksToMark),
+        );
+      }
+      const parent = originalArtifact;
       artifact = await insertArtifact({
         runId,
         stage: 'repair',
@@ -1047,29 +1297,26 @@ async function runStandardStages(
       });
       // A Repair artifact is checked locally only. In particular, this branch
       // must never call the LLM Checker after either deterministic or LLM repair.
-      const repairedIssues = filterBySettings(
-        bindIssuesToArtifact(
-          runDeterministicChecks(artifact.content, snapshot),
-          artifact.content,
-          new Set(snapshot.bundles.canon.evidenceRefs),
-        ),
-        settings,
-      );
+      const unresolvedLlmIssues = severeChecks
+        .filter(check => !localOriginalIds.has(check.id))
+        .filter(check => !checksToMark.has(check.id))
+        .map(check => rebindCheckToContent(check, artifact!.content));
       await insertCheckResults(
-        repairedIssues.map(i => ({
+        [...finalLocalIssues, ...unresolvedLlmIssues].map(i => ({
+          ...i,
           runId,
           chapterId: snapshot.targetChapterId,
           artifactId: artifact!.id,
           artifactHash: artifact!.contentHash,
-          ...i,
         })),
       );
       tokenUsage.localVerify = {
         requestCount: 0,
         status: 'completed',
-        note: repairUsedLlm
-          ? 'Repair 后本地复核，未进行第二次 LLM 复检'
-          : '确定性修复后本地复核，未进行 LLM 复检',
+        note:
+          repairUsedLlm || repairRequestAttempted
+            ? 'Repair 后本地复核，未进行第二次 LLM 复检'
+            : '确定性修复后本地复核，未进行 LLM 复检',
       };
     }
   }
@@ -1233,20 +1480,46 @@ export async function repairContinuationArtifactOnce(
         `额外 Repair 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，候选正文保持不变。`,
       );
     }
-    const repaired = applyRepairPatches(artifact.content, result.text);
-    if (!repaired) {
+    const patches = parseRepairPatches(result.text);
+    if (!patches || !validateRepairPatches(artifact.content, patches)) {
       throw new Error(
-        '额外 Repair 未返回可应用的 JSON 补丁，候选正文保持不变',
+        '额外 Repair 未返回通过 JSON、offset 和插入边界校验的补丁，候选正文保持不变',
       );
     }
+    const coverage = validateRepairPatchCoverage({
+      patches,
+      issues: severeChecks,
+    });
+    const repaired = applyParsedRepairPatches(artifact.content, patches);
     if (repaired === artifact.content) {
       throw new Error('额外 Repair 未改变正文，候选正文保持不变');
+    }
+    const repairedLocalIssues = filterBySettings(
+      bindIssuesToArtifact(
+        runDeterministicChecks(repaired, snapshot),
+        repaired,
+        new Set(snapshot.bundles.canon.evidenceRefs),
+      ),
+      snapshot.settingsSnapshot.values,
+    );
+    const repairedLength = evaluateContinuationLength(
+      repaired,
+      snapshot.settingsSnapshot.values.targetChapterChars,
+    );
+    const lengthResolved =
+      coverage.chapterLengthIssues.length > 0 &&
+      repairedLength.status === 'within';
+    if (coverage.coveredIssues.length === 0 && !lengthResolved) {
+      throw new Error(
+        '额外 Repair 补丁没有覆盖任何待修复的普通严重问题，候选正文保持不变',
+      );
     }
     if (
       !isRepairCandidateUsable(
         artifact.content,
         repaired,
         snapshot.settingsSnapshot.values.targetChapterChars,
+        'additional',
       )
     ) {
       throw new Error(
@@ -1254,11 +1527,34 @@ export async function repairContinuationArtifactOnce(
       );
     }
 
-    await markChecksAutoRepaired(
-      runId,
-      artifact.id,
-      severeChecks.map(c => c.id),
-    );
+    const checksToMark = new Set<number>();
+    for (const issue of coverage.coveredIssues) {
+      if (issue.id <= 0) continue;
+      if (isLocalDeterministicSubtype(issue.subtype)) {
+        const remains = repairedLocalIssues.some(
+          localIssue =>
+            localIssue.subtype === issue.subtype &&
+            (issue.generatedStart == null ||
+              localIssue.generatedStart === issue.generatedStart) &&
+            (issue.generatedEnd == null ||
+              localIssue.generatedEnd === issue.generatedEnd),
+        );
+        if (remains) continue;
+      }
+      checksToMark.add(issue.id);
+    }
+    if (lengthResolved) {
+      for (const issue of coverage.chapterLengthIssues) {
+        if (issue.id > 0) checksToMark.add(issue.id);
+      }
+    }
+    if (checksToMark.size > 0) {
+      await markChecksAutoRepaired(
+        runId,
+        artifact.id,
+        Array.from(checksToMark),
+      );
+    }
     const repairedArtifact = await insertArtifact({
       runId,
       stage: 'repair',
@@ -1266,21 +1562,17 @@ export async function repairContinuationArtifactOnce(
       repairRound: artifact.repairRound + 1,
       parentArtifactId: artifact.id,
     });
-    const repairedIssues = filterBySettings(
-      bindIssuesToArtifact(
-        runDeterministicChecks(repairedArtifact.content, snapshot),
-        repairedArtifact.content,
-        new Set(snapshot.bundles.canon.evidenceRefs),
-      ),
-      snapshot.settingsSnapshot.values,
-    );
+    const unresolvedCheckerIssues = severeChecks
+      .filter(check => !isLocalDeterministicSubtype(check.subtype))
+      .filter(check => !checksToMark.has(check.id))
+      .map(check => rebindCheckToContent(check, repairedArtifact.content));
     await insertCheckResults(
-      repairedIssues.map(i => ({
+      [...repairedLocalIssues, ...unresolvedCheckerIssues].map(i => ({
+        ...i,
         runId,
         chapterId: snapshot.targetChapterId,
         artifactId: repairedArtifact.id,
         artifactHash: repairedArtifact.contentHash,
-        ...i,
       })),
     );
     tokenUsage.localVerify = {

@@ -1,9 +1,0 @@
-{
-  "name": "tavo-mini-continuation-length-repair-patch",
-  "private": true,
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "build": "tsc",
-    "test": "npm run build && node --test tests/continuationLengthRepair.test.cjs"
-  }
-}

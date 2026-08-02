@@ -5,6 +5,9 @@ import {
 } from '../src/services/continuation/generation/continuationLengthContract';
 import {
   applyRepairPatches,
+  parseRepairPatches,
+  validateRepairPatchCoverage,
+  validateRepairPatches,
   isRepairCandidateUsable,
 } from '../src/services/continuation/generation/continuationRepairPatch';
 import {
@@ -110,6 +113,64 @@ describe('continuation repair patch safety', () => {
     ).toBeNull();
   });
 
+  it('separates patch parsing, safety validation, and issue coverage', () => {
+    const original = '甲甲乙乙丙丙';
+    const patches = parseRepairPatches(
+      JSON.stringify({
+        patches: [{ start: 0, end: 2, replacement: '改写' }],
+      }),
+    );
+    expect(patches).not.toBeNull();
+    expect(validateRepairPatches(original, patches!)).toBe(true);
+
+    const coverage = validateRepairPatchCoverage({
+      patches: patches!,
+      issues: [
+        {
+          id: 1,
+          severity: 'blocking',
+          subtype: 'knowledge_violation',
+          generatedStart: 0,
+          generatedEnd: 2,
+        },
+        {
+          id: 2,
+          severity: 'blocking',
+          subtype: 'world_conflict',
+          generatedStart: 4,
+          generatedEnd: 6,
+        },
+        {
+          id: 3,
+          severity: 'error',
+          subtype: 'chapter_length_under_target',
+          generatedStart: null,
+          generatedEnd: null,
+        },
+        {
+          id: 4,
+          severity: 'blocking',
+          subtype: 'global_rule',
+          generatedStart: null,
+          generatedEnd: null,
+        },
+      ],
+    });
+
+    expect(coverage.coveredIssues.map(issue => issue.id)).toEqual([1]);
+    expect(coverage.uncoveredIssues.map(issue => issue.id)).toEqual([2, 4]);
+    expect(coverage.chapterLengthIssues.map(issue => issue.id)).toEqual([3]);
+  });
+
+  it('rejects pure insertion away from a paragraph boundary', () => {
+    const patches = parseRepairPatches(
+      JSON.stringify({
+        patches: [{ start: 2, end: 2, replacement: '插入' }],
+      }),
+    );
+    expect(validateRepairPatches('甲乙丙丁', patches!)).toBe(false);
+  });
+
   it('rejects collapse and preserves a previously valid length band', () => {
     expect(isRepairCandidateUsable(han(3000), han(600), 3000)).toBe(false);
     expect(isRepairCandidateUsable(han(3000), han(2400), 3000)).toBe(false);
@@ -120,5 +181,14 @@ describe('continuation repair patch safety', () => {
     expect(isRepairCandidateUsable(han(2100), han(2400), 3000)).toBe(true);
     expect(isRepairCandidateUsable(han(2100), han(1200), 3000)).toBe(false);
     expect(isRepairCandidateUsable(han(2100), han(1800), 3000)).toBe(false);
+  });
+
+  it('does not accept an additional Repair that moves farther from target', () => {
+    expect(
+      isRepairCandidateUsable(han(2600), han(2550), 3000, 'additional'),
+    ).toBe(false);
+    expect(
+      isRepairCandidateUsable(han(2400), han(2600), 3000, 'additional'),
+    ).toBe(true);
   });
 });
