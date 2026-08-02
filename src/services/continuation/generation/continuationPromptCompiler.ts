@@ -14,6 +14,11 @@ import {
   renderStyleProfile,
   type StyleRenderLevel,
 } from '../styleProfile/styleProfileRenderer';
+import {
+  countHanCharacters,
+  isContinuationLengthIssueSubtype,
+  resolveContinuationLengthContract,
+} from './continuationLengthContract';
 
 /**
  * User-visible chapter title for the frozen target position (Spec §11.3).
@@ -436,6 +441,14 @@ export function compileWriterMessages(
   plan?: ContinuationPlan,
 ): ChatMessage[] {
   const standardWorkflow = !plan;
+  const lengthContract = resolveContinuationLengthContract(
+    snapshot.settingsSnapshot.values.targetChapterChars,
+  );
+  const lengthRule = [
+    `【正文长度硬约束】目标 ${lengthContract.targetHanCharacters} 个汉字；允许范围 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字。`,
+    '汉字数只统计 CJK 汉字，不包含标点、空格、换行、数字和英文字母。少于下限或多于上限均视为未完成。',
+    '不得通过摘要、提纲、剧情概述、重复句或无意义水文控制长度；必须保留完整场景、人物互动、因果推进和自然章末。',
+  ].join('\n');
   const system = [
     standardWorkflow
       ? '你是长篇小说续写写手。只输出一个 JSON object，不要 Markdown、代码围栏、解释文字或推理内容。'
@@ -446,6 +459,7 @@ export function compileWriterMessages(
           '先在同一次 completion 的 plan 中收束章节目标、核心冲突、节拍和参与人物，再按该 plan 写 content；不得先独立调用规划，也不得把 plan 写入 content。',
         ]
       : []),
+    lengthRule,
     '遵守人物知识边界；不复制大段原著原文；不引入被策略禁止的死亡/复活/新体系。',
     primaryAnchorRule(snapshot),
     '模仿抽象文风特征，禁止复制原著原句。用户本章明确要求优先于自动风格画像。',
@@ -471,13 +485,11 @@ export function compileWriterMessages(
     { role: 'system', content: system },
     {
       role: 'user',
-      content: standardWorkflow
-        ? `生成${displayTargetTitle(snapshot)}。目标正文约 ${
-            snapshot.settingsSnapshot.values.targetChapterChars
-          } 字。用户要求：\n${snapshot.bundles.userInstruction}`
-        : `写${displayTargetTitle(snapshot)}正文，约 ${
-            snapshot.settingsSnapshot.values.targetChapterChars
-          } 字。用户要求：\n${snapshot.bundles.userInstruction}`,
+      content: `生成${displayTargetTitle(snapshot)}。正文目标 ${
+        lengthContract.targetHanCharacters
+      } 个汉字，必须保持在 ${lengthContract.minHanCharacters}–${
+        lengthContract.maxHanCharacters
+      } 个汉字。用户要求：\n${snapshot.bundles.userInstruction}`,
     },
   ];
 }
@@ -517,44 +529,31 @@ export function compileRepairMessages(
   delivery: 'full' | 'patch' = 'full',
 ): ChatMessage[] {
   const patchDelivery = delivery === 'patch';
-  const originalHanCharacters = (
-    artifactText.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) || []
-  ).length;
+  const lengthContract = resolveContinuationLengthContract(
+    snapshot.settingsSnapshot.values.targetChapterChars,
+  );
+  const originalHanCharacters = countHanCharacters(artifactText);
   const issues = openChecks
     .filter(c => c.severity === 'error' || c.severity === 'blocking')
-    .map(
-      c =>
-        `- [${c.severity}/${c.category}] ${c.description} @${
-          c.generatedStart
-        }-${c.generatedEnd} 命中片段:${
-          c.generatedExcerpt || '（无定位片段）'
-        } 建议:${c.suggestedFix ?? ''}`,
-    )
+    .map(c => {
+      const chapterLevel = isContinuationLengthIssueSubtype(c.subtype);
+      const location = chapterLevel
+        ? '章节级长度问题（无局部 offset）'
+        : `@${c.generatedStart}-${c.generatedEnd} 命中片段:${
+            c.generatedExcerpt || '（无定位片段）'
+          }`;
+      return `- [${c.severity}/${c.category}/${c.subtype}] ${
+        c.description
+      } ${location} 建议:${c.suggestedFix ?? ''}`;
+    })
     .join('\n');
   const anchorExcerpt =
     snapshot.primaryAnchor?.excerpt || snapshot.bundles.seam?.excerpt || '';
-  // Repair needs a concrete delivery target derived from the actual Writer
-  // artifact. This is a character-quality instruction, not an API token cap:
-  // stage capacity remains solely governed by the frozen model window.
-  const repairTargetHanCharacters = Math.max(
-    2500,
-    Math.min(
-      4000,
-      originalHanCharacters ||
-        snapshot.settingsSnapshot.values.targetChapterChars,
-    ),
-  );
-  const repairLengthContract =
-    originalHanCharacters >= 2500
-      ? [
-          `【Repair 长度硬性验收】原文底稿约 ${originalHanCharacters} 个汉字；最终输出的完整正文不得低于 2500 个汉字，质量目标约 2500–4000 个汉字。这个要求不是“摘要建议”，低于 2500 就是未完成的 Repair。`,
-          '输出前在内部做一次汉字数量自检：如果不足 2500，回到原文逐段恢复被省略的动作、对话、因果、人物互动、环境细节和收束，不要停止在问题段落的局部改写。',
-          '不得用省略号、概括句、章节提纲、重复同一句或无意义水文来凑长度；应优先保留原文完整事件链，再把 Checker 命中的段落改写到正确。不能为了避开问题而删掉大段正文。',
-        ].join('\n')
-      : [
-          `【Repair 长度验收】原文底稿约 ${originalHanCharacters} 个汉字；最终输出必须是完整终稿，不能比原文明显坍缩成摘要。优先保留原文全部有效段落、事件链、人物互动和收束，再完成 Checker 修正。`,
-          '输出前在内部检查是否遗漏原文段落；如果过短，恢复被省略的具体动作、对话、因果、人物互动、环境细节和收束，而不是停止在局部修订。',
-        ].join('\n');
+  const repairLengthContract = [
+    `【Repair 长度硬性验收】当前完整正文含 ${originalHanCharacters} 个汉字；本次目标 ${lengthContract.targetHanCharacters} 个汉字，应用全部补丁后的完整正文必须保持在 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字。`,
+    '汉字数只统计 CJK 汉字，不包含标点、空格、换行、数字和英文字母。长度不足时应补充具体动作、对话、因果、人物反应、冲突推进或结果余波；长度超出时优先压缩重复描写、重复心理和不推进剧情的对话。',
+    '不得用摘要、提纲、概括句、重复同一句、无意义水文或大段删除来规避长度要求；必须保留完整事件链、人物互动和自然收束。',
+  ].join('\n');
   const overlapInstructions = openChecks.some(
     c =>
       c.subtype === 'source_overlap' ||
@@ -580,19 +579,16 @@ export function compileRepairMessages(
     overlapInstructions,
     '对每一项 error/blocking 都必须完成可验证的修改；输出前重新检查：硬规则/Canon 证据、冻结状态与知识边界、人物关系、章节目标与冲突、接缝不重复。不要因单一风格问题重写无关段落，也不要修改已通过的 Canon 事实。',
     patchDelivery
-      ? `原文约含 ${originalHanCharacters} 个汉字。你返回的是替换原文局部的补丁，而非局部正文：客户端会把补丁应用到完整原文，未命中的有效段落、事件链、人物互动和收束会保留。每个 error/blocking 都必须由覆盖其 @start-@end 区间的补丁实质修正；不得用删空、摘要或只改标点规避问题。`
-      : '原文不是参考摘要，而是必须覆盖的完整修订底稿。先保留原文每个有效段落、事件节点、人物互动、情绪转折和结尾收束，再逐项完成 Checker 指出的实质修正；Repair 不是原文复述、机械删句、只改命中句或只返回局部补丁。命中的错误必须真正改写到不再触发同一问题；如果局部修改会破坏衔接，就重写相关段落并补足因修改而缺失的动作、因果和情绪。正文要自然收束，不要以修复说明或半截句结束。 ',
+      ? `你返回的是应用到完整原文的局部补丁。普通问题必须由覆盖其 @start-@end 区间的补丁实质修正；章节级长度问题没有局部 offset，可以在自然段边界使用 start=end 的纯插入补丁，或用较大区间的精简替换补丁。客户端会保留所有未命中的有效正文。`
+      : '原文不是参考摘要，而是必须覆盖的完整修订底稿。先保留原文每个有效段落、事件节点、人物互动、情绪转折和结尾收束，再逐项完成 Checker 指出的实质修正；Repair 不是原文复述、机械删句、只改命中句或只返回局部补丁。',
     ...(patchDelivery
       ? [
-          '定向修订原则：逐条处理有效问题；事实与 Canon 优先；不引入未被原文或 Canon 支持的新人物、新地点、新物品、新能力或规则；不得擅自改变章节目标；不得删除不存在问题的重要情节；尽量最小必要修改，并保留原文的创意与叙事风格。',
+          '定向修订原则：事实与 Canon 优先；不引入未被原文或 Canon 支持的新人物、新地点、新物品、新能力或规则；不得擅自改变章节目标；不得删除不存在问题的重要情节；尽量最小必要修改，并保留原文创意与叙事风格。',
         ]
-      : []),
-    ...(patchDelivery
-      ? []
       : [
-          `原正文约含 ${originalHanCharacters} 个汉字。除非 Checker 明确要求删除，修正后必须在原有完整事件链、人物互动、细节和收束的基础上输出完整终稿；不得把整章压缩成摘要、提纲、几百字的短候选或“修改建议”。当前目标约 ${snapshot.settingsSnapshot.values.targetChapterChars} 个汉字。`,
-          repairLengthContract,
+          `除非 Checker 明确要求删除，修正后必须在原有完整事件链、人物互动、细节和收束的基础上输出完整终稿；不得把整章压缩成摘要、提纲、几百字短候选或“修改建议”。`,
         ]),
+    repairLengthContract,
     lockedBlock(snapshot),
     canonFactCheckBlock(snapshot),
     stateBlock(snapshot),
@@ -606,8 +602,9 @@ export function compileRepairMessages(
       content: patchDelivery
         ? [
             '【Repair 补丁交付契约：优先级最高】',
-            '只输出严格 JSON：{"patches":[{"start":0,"end":12,"replacement":"替换后的连续正文"}]}。start/end 必须是下方原文的 UTF-16 位置，start 包含、end 不包含；patches 按 start 升序、不得重叠。replacement 必须是可直接替换该区间的自然小说正文，不能为空。',
-            '必须为每个 error/blocking 的 @start-@end 命中区间给出覆盖该区间的实质修订；如需保持衔接，可以扩大该补丁区间。不要返回完整章节、摘要、问题说明、Markdown 或 JSON 之外的文字。客户端会将补丁应用到完整原文，因此未命中段落不会丢失，最终章节会保留完整体量。',
+            '只输出严格 JSON：{"patches":[{"start":0,"end":12,"replacement":"替换后的连续正文"}]}。start/end 必须是下方原文的 UTF-16 半开位置，start 包含、end 不包含；允许 start=end 表示纯插入。patches 按 start 升序、不得重叠，也不得在同一位置重复插入。replacement 必须是可直接应用的自然小说正文，不能为空。',
+            '普通 error/blocking 必须由覆盖其 @start-@end 的补丁实质修正；章节级长度问题不要求覆盖局部区间。扩写时优先在自然段边界插入完整段落，压缩时用更短但叙事完整的段落替换冗余区间。',
+            `应用补丁后的完整正文必须包含 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字，并尽量接近 ${lengthContract.targetHanCharacters}。不要返回完整章节、摘要、问题说明、Markdown 或 JSON 之外的文字。`,
             '【完整原文开始】',
             artifactText,
             '【完整原文结束】',
@@ -615,9 +612,9 @@ export function compileRepairMessages(
           ].join('\n\n')
         : [
             '【最终交付契约：优先级最高】',
-            '交付物必须是可直接替换下方原文的“完整修订章节”，不是修改说明、摘要、提纲、局部重写或只包含命中段落的补丁。输出从修订后章节的第一句开始，到自然章末结束；不得加入前言、计数、标签或解释。',
-            `下方原文约 ${originalHanCharacters} 个汉字。本次 Repair 的完整章节目标约 ${repairTargetHanCharacters} 个汉字；若原文不少于 2500 个汉字，最终正文不得低于 2500 个汉字。`,
-            '先在内部以原文的每个有效段落、事件节点、人物互动、因果、情绪转折和结尾为覆盖清单；修正问题时改写对应段落，但不得遗漏其余有效内容。若写到局部修复后仍未达到完整章节体量，继续恢复原文中未覆盖的具体叙事内容，而不是结束回答或概括剩余情节。',
+            '交付物必须是可直接替换下方原文的完整修订章节，不是修改说明、摘要、提纲、局部重写或只包含命中段落的补丁。输出从修订后章节第一句开始，到自然章末结束；不得加入前言、计数、标签或解释。',
+            `最终正文必须包含 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字，并尽量接近 ${lengthContract.targetHanCharacters}。`,
+            '先在内部以原文的每个有效段落、事件节点、人物互动、因果、情绪转折和结尾为覆盖清单；修正问题时改写对应段落，但不得遗漏其余有效内容。',
             '【完整原文开始】',
             artifactText,
             '【完整原文结束】',
