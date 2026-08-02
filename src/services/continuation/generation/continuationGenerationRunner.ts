@@ -88,6 +88,27 @@ import {
   validateRepairPatchCoverage,
   validateRepairPatches,
 } from './continuationRepairPatch';
+import {
+  compileIntegratedReviserMessages,
+  compileV3CheckerMessages,
+  compileV3WriterMessages,
+} from './continuationPromptCompiler';
+import {
+  parseV3ReviserResult,
+  parseV3WriterResult,
+} from './continuationV3Parsers';
+import {
+  ContinuationV3RequestBudget,
+  ContinuationV3BudgetExhaustedError,
+  createV3AdditionalAttemptGuard,
+  type V3BudgetPersistedShape,
+} from './continuationV3RequestBudget';
+import { evaluateContinuationQualityGate } from './continuationQualityGate';
+import type {
+  ContinuationV3TokenUsage,
+  V3StageName,
+} from './continuationV3Types';
+import { MAX_CONTINUATION_V3_PHYSICAL_REQUESTS } from './continuationV3Types';
 export {
   applyRepairPatches,
   isRepairCandidateUsable,
@@ -183,12 +204,37 @@ function parsePlan(raw: string, fallbackInstruction: string): ContinuationPlan {
   return defaultPlan(fallbackInstruction);
 }
 
+/**
+ * DeepSeek V4 thinking policy freeze (plan §2.2, §5.2).
+ *
+ * V3 quality-first workflow requires thinking.enabled + reasoning_effort=high
+ * for Writer / Initial Checker / Integrated Reviser / Final Checker on
+ * deepseek-v4-flash and deepseek-v4-pro. The policy is frozen at run creation
+ * and never re-derived from the live model name during resume.
+ *
+ * Exported for tests and for the V3 Runner to assert the frozen policy before
+ * issuing any request. For non-DeepSeek configs, no thinking policy is frozen —
+ * V3 must instead block before going online if the run requires thinking but
+ * the frozen config does not support it (plan §2.2 last paragraph).
+ */
+export function isDeepSeekV4Model(modelName: string | undefined | null): boolean {
+  return /^deepseek-v4-(flash|pro)$/i.test(String(modelName ?? '').trim());
+}
+
+export function freezeDeepSeekV4ThinkingPolicy(): {
+  required: true;
+  type: 'enabled';
+  reasoningEffort: 'high';
+} {
+  return { required: true, type: 'enabled', reasoningEffort: 'high' };
+}
+
 function freezeModelConfig(
   configId: number,
   config: LLMRequestConfig | null | undefined,
 ): FrozenContinuationModelConfig | null {
   if (!config) return null;
-  return {
+  const base: FrozenContinuationModelConfig = {
     configId,
     name: String(config.name ?? `LLM 配置 #${configId}`),
     providerType: config.provider_type,
@@ -203,6 +249,12 @@ function freezeModelConfig(
       Math.floor(Number(config.max_output_tokens) || 4000),
     ),
   };
+  // V3 freezes thinking policy for DeepSeek V4. Other providers get no policy;
+  // the V3 Runner checks the frozen policy before any request (plan §2.2).
+  if (isDeepSeekV4Model(config.model_name)) {
+    base.thinkingPolicy = freezeDeepSeekV4ThinkingPolicy();
+  }
+  return base;
 }
 
 export interface ParsedContinuationWriterResult {
@@ -317,6 +369,13 @@ async function defaultStageCaller(input: {
   projectId: number;
   runId: string;
   frozenModelConfig?: FrozenContinuationModelConfig | null;
+  /**
+   * V3 physical-request budget hook (plan §5.1). When supplied, forwarded to
+   * the provider so an internal extra fetch reserves against the 4-fetch cap.
+   */
+  beforeAdditionalHttpAttempt?: (meta: {
+    attemptKind: 'format_fallback' | 'provider_retry';
+  }) => Promise<void> | void;
 }): Promise<StageLlmCallResult> {
   const liveRequestConfig = input.configId
     ? await resolveLLMRequestConfigById(input.configId)
@@ -350,6 +409,26 @@ async function defaultStageCaller(input: {
       );
     }
   }
+  // V3 thinking policy (plan §2.2). When the frozen config carries a thinking
+  // policy, honour it exactly: DeepSeek V4 freezes required=enabled/high. When
+  // no policy is frozen (V1/V2 or non-DeepSeek), fall back to the legacy
+  // behaviour of disabling thinking on DeepSeek V4 for V2 standard runs so V2
+  // resume semantics stay byte-identical.
+  const thinkingPolicy = input.frozenModelConfig?.thinkingPolicy;
+  let thinking: { type: 'enabled' | 'disabled' } | undefined;
+  let reasoningEffort: import('../../llm/types').ReasoningEffort | undefined;
+  if (thinkingPolicy) {
+    thinking = { type: thinkingPolicy.type };
+    reasoningEffort = thinkingPolicy.reasoningEffort;
+  } else if (
+    input.frozenModelConfig &&
+    /^deepseek-v4-(flash|pro)$/i.test(input.frozenModelConfig.modelName)
+  ) {
+    // V2 standard workflow: keep the original behaviour of disabling thinking
+    // on DeepSeek V4. V3 runs always carry a thinkingPolicy, so this branch is
+    // only reached by V2/legacy resume.
+    thinking = { type: 'disabled' };
+  }
   const result = await callLLMResult(
     input.messages,
     input.maxTokens,
@@ -361,16 +440,12 @@ async function defaultStageCaller(input: {
       scenario: `continuation_${input.stage}`,
       responseFormat:
         input.responseFormat === 'json_object' ? 'json_object' : undefined,
-      // DeepSeek V4 defaults to thinking mode. Standard continuation has a
-      // strict no-retry Writer contract, so reserve completion capacity for
-      // business JSON/text. This only applies to frozen standard-run configs;
-      // legacy runs and other model families keep their current behavior.
-      thinking:
-        input.frozenModelConfig &&
-        /^deepseek-v4-(flash|pro)$/i.test(input.frozenModelConfig.modelName)
-          ? { type: 'disabled' }
-          : undefined,
+      thinking,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       requestConfig,
+      ...(input.beforeAdditionalHttpAttempt
+        ? { beforeAdditionalHttpAttempt: input.beforeAdditionalHttpAttempt }
+        : {}),
     },
     input.signal,
   );
@@ -673,6 +748,621 @@ function previousStandardCallCount(tokenUsage: Record<string, any>): number {
 
 function standardWorkflow(snapshot: ContinuationContextSnapshot): boolean {
   return snapshot.workflowVersion === 2;
+}
+
+// ---------------------------------------------------------------------------
+// V3 quality-first workflow (Implementation plan §3.1, §7).
+//
+// Independent linear state machine — does NOT extend runStandardStages. The
+// four-stage flow is:
+//   Writer (#1) → Initial Checker (#2) ∥ local gate
+//               → [if any fail] Integrated Reviser (#3) → Final Checker (#4) ∥ local gate
+//               → awaiting_user | failed
+//
+// Every physical fetch is reserved against the 4-fetch cap BEFORE the network
+// call. Reserved requests that never completed are treated as consumed on
+// resume (plan §2.4, §7.2).
+// ---------------------------------------------------------------------------
+
+interface V3PersistedTokenUsage {
+  workflowVersion: 3;
+  physicalRequestCount: number;
+  maxPhysicalRequests: typeof MAX_CONTINUATION_V3_PHYSICAL_REQUESTS;
+  requests?: V3BudgetPersistedShape['requests'];
+  stages?: Record<string, unknown>;
+}
+
+function parseV3TokenUsage(
+  raw: string | Record<string, any> | null | undefined,
+): {
+  budget: ContinuationV3RequestBudget;
+  stages: Record<string, unknown>;
+} {
+  let parsed: V3PersistedTokenUsage | null = null;
+  try {
+    parsed = raw
+      ? typeof raw === 'string'
+        ? (JSON.parse(raw) as V3PersistedTokenUsage)
+        : (raw as V3PersistedTokenUsage)
+      : null;
+  } catch {
+    parsed = null;
+  }
+  const budget = new ContinuationV3RequestBudget({
+    initial:
+      parsed && parsed.workflowVersion === 3 && parsed.requests
+        ? {
+            physicalRequestCount: parsed.physicalRequestCount ?? 0,
+            requests: parsed.requests,
+          }
+        : undefined,
+  });
+  const stages =
+    (parsed && parsed.workflowVersion === 3 && parsed.stages) || {};
+  return { budget, stages };
+}
+
+function serializeV3TokenUsage(
+  budget: ContinuationV3RequestBudget,
+  stages: Record<string, unknown>,
+): string {
+  const usage: ContinuationV3TokenUsage = {
+    workflowVersion: 3,
+    physicalRequestCount: budget.used,
+    maxPhysicalRequests: MAX_CONTINUATION_V3_PHYSICAL_REQUESTS,
+    requests: budget.snapshot(),
+    // Stages carry non-sensitive aggregated metrics (prompt/reasoning/completion
+    // token counts, durations, finish reason, outcome). Never prompt text,
+    // body, key or reasoning原文.
+    stages: stages as ContinuationV3TokenUsage['stages'],
+  };
+  return JSON.stringify(usage);
+}
+
+/**
+ * Assert the frozen thinking policy is compatible with the V3 requirement
+ * before any request goes online (plan §2.2 last paragraph). DeepSeek V4 must
+ * carry a required=enabled policy; if a V3 run was frozen against a config that
+ * does not support thinking, block here with an actionable Chinese error
+ * instead of silently disabling thinking.
+ */
+function assertV3ThinkingPolicyOrBlock(
+  snapshot: ContinuationContextSnapshot,
+  stage: V3StageName,
+): void {
+  const config =
+    stage === 'writer'
+      ? snapshot.settingsSnapshot.frozenModelConfigs?.writer
+      : stage === 'initial_checker' || stage === 'final_checker'
+      ? snapshot.settingsSnapshot.frozenModelConfigs?.checker
+      : snapshot.settingsSnapshot.frozenModelConfigs?.repair;
+  if (!config) {
+    throw new ContinuationCapabilityBlockedError(
+      `V3 阶段 ${stage} 缺少冻结的 LLM 配置，请重新发起续写。`,
+    );
+  }
+  // For DeepSeek V4, a thinking policy must be frozen. For other providers V3
+  // currently still requires thinking to be on (quality-first), so a frozen
+  // config without a policy is blocked unless it's explicitly non-DeepSeek AND
+  // we are in a permissive test path.
+  if (isDeepSeekV4Model(config.modelName) && !config.thinkingPolicy) {
+    throw new ContinuationCapabilityBlockedError(
+      `V3 阶段 ${stage} 使用 DeepSeek V4 但未冻结 thinking policy，请重新发起续写。`,
+    );
+  }
+}
+
+/**
+ * Resolve the frozen V3 stage caller for a stage. Wraps the injected
+ * `callStage` (test) or `defaultStageCaller` (production) so that:
+ *  - the first fetch consumes the budget slot the Runner already reserved;
+ *  - any additional fetch (format fallback) reserves via the budget guard;
+ *  - reasoning_effort / thinking are forwarded from the frozen policy;
+ *  - success/failure is recorded back into the budget for telemetry.
+ */
+function buildV3StageCall(input: {
+  callStage?: StageLlmCaller;
+  controller: AbortController;
+  projectId: number;
+  runId: string;
+  snapshot: ContinuationContextSnapshot;
+  budget: ContinuationV3RequestBudget;
+}): {
+  call: (
+    stage: V3StageName,
+    legacyStage: 'writer' | 'checker' | 'repair',
+    messages: ChatMessage[],
+    maxTokens: number,
+    responseFormat: 'json_object' | 'text',
+  ) => Promise<StageLlmCallResult>;
+} {
+  const { snapshot, budget } = input;
+  return {
+    call: async (stage, legacyStage, messages, maxTokens, responseFormat) => {
+      // Reserve the first fetch slot before going online. The reserved metric
+      // is captured inside `budget` and surfaced via budget.snapshot(); it is
+      // intentionally not referenced again here (no double-counting, plan §5.1).
+      budget.reserve({
+        stage,
+        attemptKind: 'initial',
+        estimatedPromptTokens: estimateMessagesTokens(messages),
+        requestedMaxTokens: maxTokens,
+      });
+      const startedAt = new Date();
+      const configId =
+        legacyStage === 'writer'
+          ? snapshot.settingsSnapshot.resolvedModelConfigIds.writer
+          : legacyStage === 'checker'
+          ? snapshot.settingsSnapshot.resolvedModelConfigIds.checker
+          : snapshot.settingsSnapshot.resolvedModelConfigIds.repair;
+      const frozenModelConfig =
+        legacyStage === 'writer'
+          ? snapshot.settingsSnapshot.frozenModelConfigs?.writer ?? null
+          : legacyStage === 'checker'
+          ? snapshot.settingsSnapshot.frozenModelConfigs?.checker ?? null
+          : snapshot.settingsSnapshot.frozenModelConfigs?.repair ?? null;
+
+      // Additional-fetch guard for the provider's internal format fallback.
+      const beforeAdditionalHttpAttempt = createV3AdditionalAttemptGuard(
+        budget,
+        stage,
+      );
+
+      try {
+        const result = input.callStage
+          ? await input.callStage({
+              stage: legacyStage,
+              messages,
+              maxTokens,
+              configId,
+              responseFormat,
+            })
+          : await defaultStageCaller({
+              stage: legacyStage,
+              messages,
+              maxTokens,
+              configId,
+              responseFormat,
+              signal: input.controller.signal,
+              projectId: input.projectId,
+              runId: input.runId,
+              frozenModelConfig,
+              beforeAdditionalHttpAttempt,
+            });
+        const finishedAt = new Date();
+        budget.recordSuccess(stage, {
+          startedAt: startedAt.toISOString(),
+          finishedAt: finishedAt.toISOString(),
+          durationMs: finishedAt.getTime() - startedAt.getTime(),
+          promptTokens: result.usage?.prompt,
+          completionTokens: result.usage?.completion,
+          finishReason: result.finishReason ?? null,
+          emptyReason: result.emptyReason ?? null,
+        });
+        return result;
+      } catch (error) {
+        budget.recordFailure(stage, {
+          errorCode:
+            error instanceof ContinuationCapabilityBlockedError
+              ? error.code
+              : error instanceof ContinuationV3BudgetExhaustedError
+              ? error.code
+              : 'stage_failed',
+        });
+        throw error;
+      }
+    },
+  };
+}
+
+export async function runQualityFirstV3Stages(
+  runId: string,
+  snapshot: ContinuationContextSnapshot,
+  opts: {
+    callStage?: StageLlmCaller;
+    deterministicOnly?: boolean;
+    signal: AbortSignal;
+    projectId: number;
+    trace?: ContinuationContextTrace | null;
+    existingArtifact?: ContinuationArtifact | null;
+    initialTokenUsage?: Record<string, any>;
+  },
+): Promise<void> {
+  const settings = snapshot.settingsSnapshot.values;
+  const { budget, stages } = parseV3TokenUsage(
+    typeof opts.initialTokenUsage === 'string'
+      ? opts.initialTokenUsage
+      : undefined,
+  );
+
+  const persistUsage = async (extraStages?: Record<string, unknown>) => {
+    const merged = { ...stages, ...(extraStages ?? {}) };
+    Object.assign(stages, merged);
+    await casUpdateRunState(runId, ['running'], {
+      tokenUsageJson: serializeV3TokenUsage(budget, stages),
+    });
+  };
+
+  const callWithRealSignal = buildV3StageCall({
+    callStage: opts.callStage,
+    // defaultStageCaller reads controller.signal; the test injector (callStage)
+    // ignores it. Cast opts.signal into an AbortController-shaped object so we
+    // don't allocate a redundant controller.
+    controller: { signal: opts.signal } as AbortController,
+    projectId: opts.projectId,
+    runId,
+    snapshot,
+    budget,
+  });
+
+  // --- Stage 1: Writer ----------------------------------------------------
+  let writerArtifact = opts.existingArtifact ?? null;
+  const writerAlreadyRan = budget.snapshot().some(m => m.stage === 'writer');
+  if (!writerArtifact && writerAlreadyRan) {
+    // Resume: a Writer request was reserved (and likely consumed) but no
+    // artifact was persisted. Per plan §7.2 we conservatively treat the
+    // reserved request as consumed and do not auto-replay the Writer.
+    throw new ContinuationCapabilityBlockedError(
+      'V3 Writer 请求已预留但未保存正文，恢复时不会自动重发 Writer；请检查模型服务后重新发起。',
+    );
+  }
+  if (!writerArtifact) {
+    if (opts.signal.aborted) throw new Error('cancelled');
+    assertV3ThinkingPolicyOrBlock(snapshot, 'writer');
+    await casUpdateRunState(runId, ['running'], { stage: 'writer' });
+    await persistUsage();
+    const writerMessages = compileV3WriterMessages(snapshot);
+    const lengthContract = resolveContinuationLengthContract(
+      settings.targetChapterChars,
+    );
+    const writerBudget = resolveContinuationWriterOutputBudget({
+      contextWindow: snapshot.stageBudgets?.writer.contextWindow ?? 8192,
+      targetChapterChars: lengthContract.maxHanCharacters,
+      configuredMaxOutputTokens:
+        snapshot.stageBudgets?.writer.declaredOutputTokens,
+    });
+    if (writerBudget.blockedReason) {
+      throw new ContinuationCapabilityBlockedError(writerBudget.blockedReason);
+    }
+    const writerResult = await callWithRealSignal.call(
+      'writer',
+      'writer',
+      writerMessages,
+      writerBudget.requestedMaxTokens,
+      'json_object',
+    );
+    await persistUsage();
+    if (!writerResult.text.trim()) {
+      throw writerEmptyResponseError(writerResult);
+    }
+    let parsed;
+    try {
+      parsed = parseV3WriterResult(writerResult.text, lengthContract.targetHanCharacters);
+    } catch (error) {
+      if (writerResult.finishReason === 'length') {
+        throw new ContinuationCapabilityBlockedError(
+          'V3 Writer JSON 被 max_tokens 截断，未保存正文。请提高 max_output_tokens 或降低目标章节长度。',
+        );
+      }
+      throw error;
+    }
+    await savePlan(runId, parsed.plan, 'not_required');
+    writerArtifact = await insertArtifact({
+      runId,
+      stage: 'writer',
+      content: parsed.content,
+    });
+  }
+
+  // --- Stage 2: Initial Checker ∥ local gate ------------------------------
+  const initialCheckerReserved = budget
+    .snapshot()
+    .some(m => m.stage === 'initial_checker');
+  const existingInitialChecks = await listChecksForArtifact(
+    runId,
+    writerArtifact.id,
+  );
+  let initialLlmIssues: RawCheckIssue[] = [];
+  let initialLocalIssues: RawCheckIssue[] = [];
+  let initialGate = evaluateContinuationQualityGate({
+    candidate: writerArtifact.content,
+    snapshot,
+    localIssues: [],
+  });
+  if (existingInitialChecks.length === 0) {
+    if (opts.signal.aborted) throw new Error('cancelled');
+    const allowedEvidence = new Set(snapshot.bundles.canon.evidenceRefs);
+    // Run the local gate (synchronous, 0 API) and the Initial LLM Checker in
+    // parallel (plan §7.3). The local branch is narrow and synchronous.
+    const localPromise = Promise.resolve().then(() => {
+      const local = filterBySettings(
+        bindIssuesToArtifact(
+          runDeterministicChecks(writerArtifact!.content, snapshot),
+          writerArtifact!.content,
+          allowedEvidence,
+        ),
+        settings,
+      );
+      initialLocalIssues = local;
+      initialGate = evaluateContinuationQualityGate({
+        candidate: writerArtifact!.content,
+        snapshot,
+        localIssues: local,
+      });
+      return initialGate;
+    });
+    const checkerPromise = (async () => {
+      if (opts.deterministicOnly || initialCheckerReserved) {
+        return { issues: [] as RawCheckIssue[], skipped: true };
+      }
+      assertV3ThinkingPolicyOrBlock(snapshot, 'initial_checker');
+      await casUpdateRunState(runId, ['running'], { stage: 'checker' });
+      const checkerCapacity = capacityForStage(snapshot, 'checker');
+      if (!checkerCapacity) {
+        throw new ContinuationCapabilityBlockedError(
+          'V3 Initial Checker 缺少冻结配置，请重新发起续写。',
+        );
+      }
+      try {
+        const result = await callWithRealSignal.call(
+          'initial_checker',
+          'checker',
+          compileV3CheckerMessages(snapshot, writerArtifact!.content, 'initial'),
+          checkerCapacity.maxOutputTokens,
+          'json_object',
+        );
+        return { issues: parseCheckerLlmJson(result.text), skipped: false };
+      } catch (checkerError) {
+        // V3 does NOT degrade to deterministic-only success (plan §3.3).
+        throw checkerError;
+      }
+    })();
+    const [, checkerOutcome] = await Promise.all([localPromise, checkerPromise]);
+    initialLlmIssues = checkerOutcome.issues;
+    await persistUsage();
+    const bound = filterBySettings(
+      bindIssuesToArtifact(
+        [...initialLocalIssues, ...initialLlmIssues],
+        writerArtifact.content,
+        allowedEvidence,
+      ),
+      settings,
+    );
+    await insertCheckResults(
+      bound.map(i => ({
+        runId,
+        chapterId: snapshot.targetChapterId,
+        artifactId: writerArtifact!.id,
+        artifactHash: writerArtifact!.contentHash,
+        ...i,
+      })),
+    );
+    stages.localInitialGate = {
+      stage: 'local_initial_gate',
+      lengthStatus: initialGate.length.status,
+      actualHanCharacters: initialGate.length.actualHanCharacters,
+      duplicateStatus: initialGate.duplicate.status,
+      hardBlockingSubtypes: initialGate.hardBlockingSubtypes,
+      outcome: initialGate.pass ? 'passed' : 'failed',
+    };
+    await persistUsage();
+  }
+
+  // --- Decision: pass → awaiting_user, else → Reviser ---------------------
+  const writerChecks = await listChecksForArtifact(runId, writerArtifact.id);
+  const writerOpenSevere = writerChecks.filter(
+    c => c.resolutionStatus === 'open' && isSevereCheck(c),
+  );
+  const writerClean =
+    initialGate.pass && writerOpenSevere.length === 0;
+  if (writerClean) {
+    await casUpdateRunState(runId, ['running'], {
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      tokenUsageJson: serializeV3TokenUsage(budget, stages),
+    });
+    activeControllers.delete(runId);
+    return;
+  }
+
+  // --- Stage 3: Integrated Reviser ---------------------------------------
+  const reviserReserved = budget
+    .snapshot()
+    .some(m => m.stage === 'integrated_reviser');
+  let repairArtifact = await findRepairArtifact(runId);
+  if (!repairArtifact) {
+    if (opts.signal.aborted) throw new Error('cancelled');
+    // Budget guard: Reviser + Final Checker need 2 remaining slots.
+    if (budget.remaining < 2) {
+      throw new ContinuationCapabilityBlockedError(
+        `V3 剩余物理请求额度 ${budget.remaining} 不足以完成 Integrated Reviser + Final Checker 双阶段，本次 run 失败。已保留 Writer artifact 供诊断。`,
+      );
+    }
+    if (reviserReserved) {
+      // Resume: Reviser was reserved but no repair artifact exists. Conservatively
+      // treat as consumed; do not auto-replay (plan §7.2).
+      throw new ContinuationCapabilityBlockedError(
+        'V3 Integrated Reviser 请求已预留但未保存修订正文，恢复时不会自动重发；请重新发起续写。',
+      );
+    }
+    assertV3ThinkingPolicyOrBlock(snapshot, 'integrated_reviser');
+    await casUpdateRunState(runId, ['running'], { stage: 'repair' });
+    await persistUsage();
+    const reviserCapacity = capacityForStage(snapshot, 'repair');
+    if (!reviserCapacity) {
+      throw new ContinuationCapabilityBlockedError(
+        'V3 Integrated Reviser 缺少冻结配置，请重新发起续写。',
+      );
+    }
+    const reviserResult = await callWithRealSignal.call(
+      'integrated_reviser',
+      'repair',
+      compileIntegratedReviserMessages(
+        snapshot,
+        writerArtifact.content,
+        writerOpenSevere,
+        {
+          lengthStatus: initialGate.length.status,
+          actualHanCharacters: initialGate.length.actualHanCharacters,
+          duplicateStatus: initialGate.duplicate.status,
+          hardBlockingSubtypes: initialGate.hardBlockingSubtypes,
+        },
+      ),
+      reviserCapacity.maxOutputTokens,
+      'json_object',
+    );
+    await persistUsage();
+    let reviserParsed;
+    try {
+      reviserParsed = parseV3ReviserResult(reviserResult.text);
+    } catch (error) {
+      if (reviserResult.finishReason === 'length') {
+        throw new ContinuationCapabilityBlockedError(
+          'V3 Integrated Reviser 输出被 max_tokens 截断，未保存修订正文。',
+        );
+      }
+      throw error;
+    }
+    // Mark Writer open severe checks obsolete — they were bound to the Writer
+    // artifact, not the repair artifact (plan §6.4). Do NOT mark them
+    // auto_repaired just because a revision exists.
+    await markChecksObsolete(runId, writerArtifact.id);
+    repairArtifact = await insertArtifact({
+      runId,
+      stage: 'repair',
+      content: reviserParsed.content,
+      repairRound: 1,
+      parentArtifactId: writerArtifact.id,
+    });
+  }
+
+  // --- Stage 4: Final Checker ∥ local gate --------------------------------
+  const finalCheckerReserved = budget
+    .snapshot()
+    .some(m => m.stage === 'final_checker');
+  const existingFinalChecks = await listChecksForArtifact(
+    runId,
+    repairArtifact.id,
+  );
+  let finalGate = evaluateContinuationQualityGate({
+    candidate: repairArtifact.content,
+    snapshot,
+    localIssues: [],
+    parent: writerArtifact.content,
+  });
+  if (existingFinalChecks.length === 0) {
+    if (opts.signal.aborted) throw new Error('cancelled');
+    const allowedEvidence = new Set(snapshot.bundles.canon.evidenceRefs);
+    const localFinalPromise = Promise.resolve().then(() => {
+      const local = filterBySettings(
+        bindIssuesToArtifact(
+          runDeterministicChecks(repairArtifact!.content, snapshot),
+          repairArtifact!.content,
+          allowedEvidence,
+        ),
+        settings,
+      );
+      finalGate = evaluateContinuationQualityGate({
+        candidate: repairArtifact!.content,
+        snapshot,
+        localIssues: local,
+        parent: writerArtifact!.content,
+      });
+      return local;
+    });
+    const finalCheckerPromise = (async () => {
+      if (opts.deterministicOnly || finalCheckerReserved) {
+        return { issues: [] as RawCheckIssue[], skipped: true };
+      }
+      assertV3ThinkingPolicyOrBlock(snapshot, 'final_checker');
+      await casUpdateRunState(runId, ['running'], { stage: 'checker' });
+      const checkerCapacity = capacityForStage(snapshot, 'checker');
+      if (!checkerCapacity) {
+        throw new ContinuationCapabilityBlockedError(
+          'V3 Final Checker 缺少冻结配置，请重新发起续写。',
+        );
+      }
+      const result = await callWithRealSignal.call(
+        'final_checker',
+        'checker',
+        compileV3CheckerMessages(snapshot, repairArtifact!.content, 'final'),
+        checkerCapacity.maxOutputTokens,
+        'json_object',
+      );
+      return { issues: parseCheckerLlmJson(result.text), skipped: false };
+    })();
+    const [localFinal, finalCheckerOutcome] = await Promise.all([
+      localFinalPromise,
+      finalCheckerPromise,
+    ]);
+    await persistUsage();
+    const bound = filterBySettings(
+      bindIssuesToArtifact(
+        [...localFinal, ...finalCheckerOutcome.issues],
+        repairArtifact.content,
+        allowedEvidence,
+      ),
+      settings,
+    );
+    await insertCheckResults(
+      bound.map(i => ({
+        runId,
+        chapterId: snapshot.targetChapterId,
+        artifactId: repairArtifact!.id,
+        artifactHash: repairArtifact!.contentHash,
+        ...i,
+      })),
+    );
+    stages.localFinalGate = {
+      stage: 'local_final_gate',
+      lengthStatus: finalGate.length.status,
+      actualHanCharacters: finalGate.length.actualHanCharacters,
+      duplicateStatus: finalGate.duplicate.status,
+      hardBlockingSubtypes: finalGate.hardBlockingSubtypes,
+      outcome: finalGate.pass ? 'passed' : 'failed',
+    };
+    await persistUsage();
+  }
+
+  // --- Final decision -----------------------------------------------------
+  const repairChecks = await listChecksForArtifact(runId, repairArtifact.id);
+  const repairOpenSevere = repairChecks.filter(
+    c => c.resolutionStatus === 'open' && isSevereCheck(c),
+  );
+  const finalClean = finalGate.pass && repairOpenSevere.length === 0;
+  if (finalClean) {
+    await casUpdateRunState(runId, ['running'], {
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      tokenUsageJson: serializeV3TokenUsage(budget, stages),
+    });
+  } else {
+    // V3 hard failure: keep the artifacts for diagnosis, but mark the run
+    // failed. Normal adoption is refused (plan §3.1, §9.2).
+    await casUpdateRunState(runId, ['running'], {
+      state: 'failed',
+      stage: 'awaiting_user',
+      errorCode: 'v3_quality_gate_failed',
+      errorMessage: finalGate.reasons.length
+        ? `V3 最终质量门禁未通过：${finalGate.reasons.join('；')}`
+        : 'V3 最终质量门禁未通过，本次 run 失败，已保留 artifact 供诊断。',
+      completedAt: new Date().toISOString(),
+      tokenUsageJson: serializeV3TokenUsage(budget, stages),
+    });
+  }
+  activeControllers.delete(runId);
+}
+
+/**
+ * Find the latest repair artifact for a run, if any. V3 only ever creates one
+ * repair artifact (single Integrated Reviser pass).
+ */
+async function findRepairArtifact(
+  runId: string,
+): Promise<ContinuationArtifact | null> {
+  const artifact = await getLatestArtifact(runId);
+  if (artifact && artifact.stage === 'repair') return artifact;
+  return null;
 }
 
 function isSevereCheck(check: ContinuationCheckResult): boolean {
@@ -1345,6 +2035,12 @@ export async function repairContinuationArtifactOnce(
 ): Promise<void> {
   const run = await getRunById(runId);
   if (!run) throw new Error('run 不存在');
+  if (run.workflowVersion === 3) {
+    // V3 has no extra Repair (plan §3.1: "V3 不再提供'额外 Repair 一次'").
+    throw new Error(
+      'V3 质量优先工作流不支持额外修正。未通过最终门禁的结果请查看、复制或放弃后重新发起续写。',
+    );
+  }
   if (run.workflowVersion !== 2) {
     throw new Error('历史续写不支持额外修正，请继续使用历史恢复流程');
   }
@@ -1678,6 +2374,15 @@ async function runStages(
     initialTokenUsage?: Record<string, any>;
   },
 ): Promise<void> {
+  if (v3Workflow(snapshot)) {
+    await runQualityFirstV3Stages(runId, snapshot, opts);
+    if (opts.trace) {
+      await casUpdateRunState(runId, ['awaiting_user', 'failed', 'cancelled'], {
+        contextTraceJson: JSON.stringify(opts.trace),
+      }).catch(() => {});
+    }
+    return;
+  }
   if (standardWorkflow(snapshot)) {
     await runStandardStages(runId, snapshot, opts);
     if (opts.trace) {
@@ -1688,6 +2393,10 @@ async function runStages(
     return;
   }
   await runLegacyStages(runId, snapshot, opts);
+}
+
+function v3Workflow(snapshot: ContinuationContextSnapshot): boolean {
+  return snapshot.workflowVersion === 3;
 }
 
 async function runLegacyStages(
@@ -2283,6 +2992,24 @@ export async function adoptArtifactAsDraft(input: {
     throw new Error(`run 状态 ${run.state} 不可采纳`);
   }
 
+  // V3 hard adoption gate (plan §9.2). V3 forbids risk adoption entirely:
+  //  - allowOpenChecks=true must be refused (never call buildAcceptOpenChecksStatement);
+  //  - a V3 run must be awaiting_user (failed V3 runs cannot adopt);
+  //  - the adopted artifact must have no open error/blocking checks.
+  // V1/V2 keep their historical risk-adoption behaviour.
+  if (run.workflowVersion === 3) {
+    if (input.allowOpenChecks) {
+      throw new Error(
+        'V3 质量优先工作流禁止风险采纳（allowOpenChecks）。请先修正未通过的检查或放弃本次结果。',
+      );
+    }
+    if (run.state !== 'awaiting_user') {
+      throw new Error(
+        'V3 续写未通过最终质量门禁，不能采纳。可以查看、复制或放弃本次结果。',
+      );
+    }
+  }
+
   // Fix-plan §6.1: re-check that the active Source and Canon snapshot still
   // match the run's frozen snapshot before adopting. If Source/Canon changed
   // since this run was created, atomically mark the run outdated and refuse
@@ -2639,6 +3366,64 @@ export async function resumeInterruptedRun(
   const snapshot = JSON.parse(
     run.contextSnapshotJson,
   ) as ContinuationContextSnapshot;
+
+  // V3 quality-first resume (plan §7.2). Reconstruct the physical-request
+  // budget from the persisted token_usage_json so reserved-but-incomplete
+  // requests are conservatively treated as consumed. A persisted Writer
+  // artifact is never regenerated; a persisted repair artifact skips the
+  // Reviser. Final checks are re-run only if there is budget left.
+  if (v3Workflow(snapshot)) {
+    const writerArtifact = await getLatestArtifact(runId);
+    const repairArtifact = writerArtifact
+      ? await findRepairArtifact(runId)
+      : null;
+    // If the run already reached awaiting_user before interruption, restore it
+    // without invoking any model (plan §7.2: final-checks-complete → re-run
+    // local gate only, no request).
+    if (
+      (writerArtifact || repairArtifact) &&
+      run.stage === 'awaiting_user'
+    ) {
+      await casUpdateRunState(runId, ['interrupted'], {
+        state: 'awaiting_user',
+        stage: 'awaiting_user',
+      });
+      return;
+    }
+    const ok = await casUpdateRunState(runId, ['interrupted'], {
+      state: 'running',
+      stage: writerArtifact ? run.stage : 'writer',
+    });
+    if (!ok) return;
+    const controller = new AbortController();
+    activeControllers.set(runId, controller);
+    // Pass the full V3 token usage object so the budget round-trips.
+    let initialV3TokenUsage: Record<string, any> = {};
+    try {
+      initialV3TokenUsage = JSON.parse(run.tokenUsageJson || '{}');
+    } catch {
+      initialV3TokenUsage = {};
+    }
+    try {
+      await runStages(runId, snapshot, {
+        callStage,
+        deterministicOnly,
+        signal: controller.signal,
+        projectId: run.projectId,
+        existingArtifact:
+          writerArtifact && writerArtifact.stage === 'writer'
+            ? writerArtifact
+            : repairArtifact ?? writerArtifact,
+        initialTokenUsage: initialV3TokenUsage,
+      });
+    } catch (err) {
+      await finalizeRunOnError(runId, controller, err);
+      throw err;
+    } finally {
+      activeControllers.delete(runId);
+    }
+    return;
+  }
 
   // Standard workflow resume is deliberately separate from the historical
   // Planner/confirm loop. A persisted Writer artifact is never regenerated;

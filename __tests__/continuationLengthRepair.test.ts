@@ -192,3 +192,42 @@ describe('continuation repair patch safety', () => {
     ).toBe(true);
   });
 });
+
+describe('countHanCharacters full Unicode Han coverage (plan §6.1)', () => {
+  it('counts BMP CJK Unified Ideographs', () => {
+    expect(countHanCharacters('汉字')).toBe(2);
+  });
+
+  it('counts CJK Extension A characters', () => {
+    // U+349D is in Extension A
+    expect(countHanCharacters('\u{349D}')).toBe(1);
+  });
+
+  it('counts CJK Compatibility Ideographs', () => {
+    // U+FA10 is a Compatibility Ideograph
+    expect(countHanCharacters('\u{FA10}')).toBe(1);
+  });
+
+  it('counts CJK Extension B (supplementary plane, astral)', () => {
+    // U+20000 is the first code point of Extension B
+    expect(countHanCharacters('\u{20000}')).toBe(1);
+    // A mix of BMP and astral Han
+    expect(countHanCharacters('甲\u{20000}乙\u{2A6D6}')).toBe(4);
+  });
+
+  it('counts IDEOGRAPHIC NUMBER ZERO 〇', () => {
+    expect(countHanCharacters('二〇二六年')).toBe(5);
+    expect(countHanCharacters('〇')).toBe(1);
+  });
+
+  it('does not count punctuation, ASCII digits, kana, or hangul', () => {
+    expect(
+      countHanCharacters('，。！？\nABC123あいうえ안녕하세요'),
+    ).toBe(0);
+  });
+
+  it('counts the real-world mixed string correctly', () => {
+    expect(countHanCharacters('甲，乙。\nABC 123！')).toBe(2);
+  });
+});
+

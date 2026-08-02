@@ -142,3 +142,86 @@ describe('ContinuationResultScreen adoption decision', () => {
     );
   });
 });
+
+describe('ContinuationResultScreen V3 quality-first (plan §9.1, §9.2)', () => {
+  const mockGetRunById = require('../src/services/continuation/generation')
+    .getRunById as jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetLatestArtifact.mockResolvedValue({
+      id: 'artifact-v3',
+      content: '续写正文',
+    });
+    mockListChecksForArtifact.mockResolvedValue([]);
+    mockGetRunById.mockResolvedValue({
+      id: 'run-v3',
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      workflowVersion: 3,
+      canonSnapshotId: 'snap',
+      canonRevision: 1,
+      contextTraceJson: null,
+      tokenUsageJson: JSON.stringify({
+        workflowVersion: 3,
+        physicalRequestCount: 2,
+        maxPhysicalRequests: 4,
+        requests: [
+          { ordinal: 1, stage: 'writer', attemptKind: 'initial', outcome: 'succeeded', promptTokens: 100, completionTokens: 200 },
+          { ordinal: 2, stage: 'initial_checker', attemptKind: 'initial', outcome: 'succeeded', promptTokens: 50, completionTokens: 10 },
+        ],
+        stages: {
+          localInitialGate: {
+            stage: 'local_initial_gate',
+            lengthStatus: 'within',
+            actualHanCharacters: 3000,
+            duplicateStatus: 'within',
+            hardBlockingSubtypes: [],
+            outcome: 'passed',
+          },
+        },
+      }),
+    });
+  });
+
+  it('renders V3 physical-request telemetry and DeepSeek Thinking label', async () => {
+    const { getByText } = render(
+      <ContinuationResultScreen runId="run-v3" onClose={jest.fn()} />,
+    );
+    await waitFor(() =>
+      expect(getByText(/V3 质量优先 · 物理请求 2\/4/)).toBeTruthy(),
+    );
+    expect(getByText(/DeepSeek V4 Thinking\/high 四阶段/)).toBeTruthy();
+  });
+
+  it('does NOT show the V2 risk-adoption button for a clean V3 run', async () => {
+    const { queryByText, getByText } = render(
+      <ContinuationResultScreen runId="run-v3" onClose={jest.fn()} />,
+    );
+    await waitFor(() => expect(getByText('采纳')).toBeTruthy());
+    expect(queryByText('采纳错误候选（风险自负）')).toBeNull();
+    expect(queryByText('额外修正一次（增加 1 次 LLM）')).toBeNull();
+  });
+
+  it('shows V3 quality-gate-failed guidance for a failed V3 run', async () => {
+    mockGetRunById.mockResolvedValue({
+      id: 'run-v3-fail',
+      state: 'failed',
+      stage: 'awaiting_user',
+      workflowVersion: 3,
+      errorCode: 'v3_quality_gate_failed',
+      errorMessage: 'V3 最终质量门禁未通过',
+      canonSnapshotId: 'snap',
+      canonRevision: 1,
+      contextTraceJson: null,
+      tokenUsageJson: JSON.stringify({ workflowVersion: 3, physicalRequestCount: 4, stages: {} }),
+    });
+    const { getByText } = render(
+      <ContinuationResultScreen runId="run-v3-fail" onClose={jest.fn()} />,
+    );
+    await waitFor(() => expect(getByText('生成失败')).toBeTruthy());
+    expect(
+      getByText(/V3 质量优先工作流未通过最终质量门禁/),
+    ).toBeTruthy();
+  });
+});

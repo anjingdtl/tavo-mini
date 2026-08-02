@@ -46,6 +46,9 @@ export {
   compileCheckerMessages,
   compileRepairMessages,
   compileStateExtractionMessages,
+  compileV3WriterMessages,
+  compileV3CheckerMessages,
+  compileIntegratedReviserMessages,
 } from './continuationPromptCompiler';
 export {
   runDeterministicChecks,

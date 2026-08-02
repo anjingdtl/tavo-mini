@@ -10,6 +10,7 @@ import type {
   LLMQueuePriority,
   LLMQueueState,
   LLMRequestMetrics,
+  ReasoningEffort,
 } from './llm/types';
 import { scheduleLLMRequest } from './llm/requestScheduler';
 
@@ -23,6 +24,7 @@ export type {
   LLMQueuePriority,
   LLMQueueState,
   LLMRequestMetrics,
+  ReasoningEffort,
 } from './llm/types';
 
 export {
@@ -39,6 +41,8 @@ export interface LLMCallConfig {
   responseFormat?: 'json_object';
   /** Optional OpenAI-compatible extension; omitted for existing callers. */
   thinking?: { type: 'enabled' | 'disabled' };
+  /** DeepSeek V4 reasoning effort (plan §5.1); only sent when thinking enabled. */
+  reasoning_effort?: ReasoningEffort;
   scenario?: string;
   projectId?: number;
   taskId?: string;
@@ -47,6 +51,13 @@ export interface LLMCallConfig {
   onQueueState?: (state: LLMQueueState) => void;
   onProgress?: (metrics: LLMRequestMetrics) => void;
   requestConfig?: LLMRequestConfig;
+  /**
+   * V3 physical-request budget hook (plan §5.1). Called by the Provider before
+   * any additional fetch inside the same call (format fallback / retry).
+   */
+  beforeAdditionalHttpAttempt?: (meta: {
+    attemptKind: 'format_fallback' | 'provider_retry';
+  }) => Promise<void> | void;
 }
 
 export interface LLMConnectionOptions {
@@ -162,6 +173,7 @@ export async function callLLMResult(
       max_tokens: maxTokens ?? config?.max_tokens,
       responseFormat: config?.responseFormat,
       thinking: config?.thinking,
+      reasoning_effort: config?.reasoning_effort,
       scenario: config?.scenario,
       projectId: config?.projectId,
       taskId: config?.taskId,
@@ -170,6 +182,7 @@ export async function callLLMResult(
       onQueueState: config?.onQueueState,
       onProgress: config?.onProgress,
       requestConfig,
+      beforeAdditionalHttpAttempt: config?.beforeAdditionalHttpAttempt,
     },
     externalSignal,
   );

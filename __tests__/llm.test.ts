@@ -433,3 +433,139 @@ test('marks a no-choices 200 response (without error body) as emptyReason=no_cho
   expect(result.text).toBeNull();
   expect(result.emptyReason).toBe('no_choices');
 });
+
+// --- V3: reasoning_effort + beforeAdditionalHttpAttempt (plan §5.1) --------
+
+test('sends reasoning_effort when thinking is enabled', async () => {
+  const fetchMock = jest.fn<any, any[]>(async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '正文' }, finish_reason: 'stop' }],
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  await openAICompatibleProvider.generate(
+    [{ role: 'user', content: '写一段' }],
+    {
+      thinking: { type: 'enabled' },
+      reasoning_effort: 'high',
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+  expect(body.thinking).toEqual({ type: 'enabled' });
+  expect(body.reasoning_effort).toBe('high');
+});
+
+test('does not send reasoning_effort when thinking is disabled', async () => {
+  const fetchMock = jest.fn<any, any[]>(async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '正文' }, finish_reason: 'stop' }],
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  await openAICompatibleProvider.generate(
+    [{ role: 'user', content: '写一段' }],
+    {
+      thinking: { type: 'disabled' },
+      reasoning_effort: 'high',
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+  expect(body.thinking).toEqual({ type: 'disabled' });
+  expect(body.reasoning_effort).toBeUndefined();
+});
+
+test('calls beforeAdditionalHttpAttempt before the format-fallback fetch', async () => {
+  const fetchMock = jest
+    .fn<any, any[]>()
+    .mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => 'unknown response_format json_object',
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '{"ok":true}' }, finish_reason: 'stop' }],
+      }),
+    });
+  globalThis.fetch = fetchMock as any;
+
+  const hook = jest.fn(async () => {});
+
+  await openAICompatibleProvider.generate(
+    [{ role: 'user', content: 'Return JSON.' }],
+    {
+      responseFormat: 'json_object',
+      beforeAdditionalHttpAttempt: hook,
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(hook).toHaveBeenCalledTimes(1);
+  expect(hook).toHaveBeenCalledWith({ attemptKind: 'format_fallback' });
+});
+
+test('abort the format-fallback fetch when beforeAdditionalHttpAttempt throws', async () => {
+  const fetchMock = jest
+    .fn<any, any[]>()
+    .mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => 'unknown response_format json_object',
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: 'should not reach' }, finish_reason: 'stop' }],
+      }),
+    });
+  globalThis.fetch = fetchMock as any;
+
+  const hook = jest.fn(async () => {
+    throw new Error('budget exhausted');
+  });
+
+  await expect(
+    openAICompatibleProvider.generate(
+      [{ role: 'user', content: 'Return JSON.' }],
+      {
+        responseFormat: 'json_object',
+        beforeAdditionalHttpAttempt: hook,
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'k',
+          model_name: 'm',
+          url: 'https://api.example.com/v1/chat/completions',
+        },
+      },
+    ),
+  ).rejects.toThrow('budget exhausted');
+
+  // The second fetch must never happen — the hook threw before it.
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(hook).toHaveBeenCalledTimes(1);
+});

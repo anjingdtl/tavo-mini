@@ -261,7 +261,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             }
           />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            建议正文保持约 2000–4000 个汉字（默认 3000）；范围外只提示，不拦截、不自动重试。
+            目标章节汉字数（默认 3000）。实际验收区间为目标 ±500 个汉字；DeepSeek V4 Thinking 将保持启用，正常 2 次真实请求、需要综合修订时 4 次（网络/格式重试也占额度）。
           </Text>
         </Card>
 
