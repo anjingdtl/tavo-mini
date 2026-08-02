@@ -302,6 +302,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           [{c.severity}/{c.category}] {c.description}
           {c.evidenceIds.length
             ? ` · 证据#${c.evidenceIds.join(',')}`
+            : c.subtype === 'source_overlap' ||
+                c.subtype === 'continuation_anchor_overlap'
+              ? ' · 本地确定性命中（连续原文）'
             : ' · 无证据(推测)'}
         </Text>
       ))}
