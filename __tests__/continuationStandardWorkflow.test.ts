@@ -333,7 +333,11 @@ describe('continuation standard three-call workflow', () => {
           }),
         };
       }
-      return { text: '修正后的完整终稿' };
+      return {
+        text: JSON.stringify({
+          patches: [{ start: 0, end: 2, replacement: '修正' }],
+        }),
+      };
     });
 
     await resumeInterruptedRun('ct_standard', callStage as any);
@@ -436,7 +440,11 @@ describe('continuation standard three-call workflow', () => {
           }),
         };
       }
-      return { text: '修复后正文' };
+      return {
+        text: JSON.stringify({
+          patches: [{ start: 0, end: 4, replacement: '修复后正文' }],
+        }),
+      };
     });
 
     await resumeInterruptedRun('ct_standard', callStage as any);
@@ -539,7 +547,18 @@ describe('continuation standard three-call workflow', () => {
       if (input.stage === 'checker') {
         return { text: JSON.stringify({ issues: [] }) };
       }
-      return { text: '改写后的安全终稿，继续推进新的事件。' };
+      return {
+        text: JSON.stringify({
+          patches: [
+            {
+              start: 0,
+              end: snap.primaryAnchor.excerpt.length + '继续正文'.length,
+              replacement:
+                '改写后的安全终稿，继续推进新的事件。' + '甲'.repeat(40),
+            },
+          ],
+        }),
+      };
     });
 
     await resumeInterruptedRun('ct_standard', callStage as any);
@@ -595,11 +614,29 @@ describe('continuation standard three-call workflow', () => {
           }),
         };
       repairCalls += 1;
+      if (repairCalls === 1) {
+        return {
+          text: JSON.stringify({
+            patches: [
+              {
+                start: 0,
+                end: 4,
+                replacement: `${snap.primaryAnchor.excerpt}修复候选`,
+              },
+            ],
+          }),
+        };
+      }
       return {
-        text:
-          repairCalls === 1
-            ? `${snap.primaryAnchor.excerpt}修复候选`
-            : '完全改写后的终稿'.repeat(10),
+        text: JSON.stringify({
+          patches: [
+            {
+              start: 0,
+              end: 44,
+              replacement: '完全改写后的终稿'.repeat(10),
+            },
+          ],
+        }),
       };
     });
 
@@ -710,7 +747,13 @@ describe('continuation standard three-call workflow', () => {
           }),
         };
       }
-      return { text: '修复后的摘要'.repeat(20) };
+      return {
+        text: JSON.stringify({
+          patches: [
+            { start: 0, end: 3000, replacement: '修复后的摘要'.repeat(20) },
+          ],
+        }),
+      };
     });
 
     await resumeInterruptedRun('ct_standard', callStage as any);
@@ -728,7 +771,7 @@ describe('continuation standard three-call workflow', () => {
     );
   });
 
-  it('keeps the 2500 Han-character Repair floor when the Writer draft is longer than 4000', async () => {
+  it('rejects an over-contracted Repair candidate when the Writer draft is over the dynamic length band', async () => {
     seedRun({ workflowVersion: 2 });
     const writerContent = '甲'.repeat(5000);
     const calls: any[] = [];
@@ -755,7 +798,13 @@ describe('continuation standard three-call workflow', () => {
           }),
         };
       }
-      return { text: '乙'.repeat(2400) };
+      return {
+        text: JSON.stringify({
+          patches: [
+            { start: 0, end: 5000, replacement: '乙'.repeat(2400) },
+          ],
+        }),
+      };
     });
 
     await resumeInterruptedRun('ct_standard', callStage as any);
@@ -802,7 +851,13 @@ describe('continuation standard three-call workflow', () => {
       }
       repairAttempts += 1;
       if (repairAttempts === 1) throw new Error('Repair 网络错误');
-      return { text: '额外修正后的终稿' };
+      return {
+        text: JSON.stringify({
+          patches: [
+            { start: 0, end: 13, replacement: '额外修正后的终稿' },
+          ],
+        }),
+      };
     });
 
     await resumeInterruptedRun('ct_standard', callStage as any);
@@ -853,17 +908,16 @@ describe('continuation standard three-call workflow', () => {
     expect(mockState.run.state).toBe('awaiting_user');
   });
 
-  it('reports an out-of-range Han character count as a warning without blocking or retrying', () => {
-    const issues = runDeterministicChecks('短正文', snapshot(2));
-    const lengthIssue = issues.find(issue => issue.subtype === 'target_length');
+  it('reports an under-range Han character count as a deterministic length error', () => {
+    const issues = runDeterministicChecks('abc 123', snapshot(2));
+    const lengthIssue = issues.find(
+      issue => issue.subtype === 'chapter_length_under_target',
+    );
 
-    expect(lengthIssue?.severity).toBe('warning');
-    expect(
-      issues.some(
-        issue =>
-          issue.subtype === 'target_length' && issue.severity !== 'warning',
-      ),
-    ).toBe(false);
+    expect(lengthIssue?.severity).toBe('error');
+    expect(issues.some(issue => issue.subtype === 'target_length')).toBe(
+      false,
+    );
   });
 
   it('keeps local source and continuation overlap as a hard gate without Canon evidence', () => {
