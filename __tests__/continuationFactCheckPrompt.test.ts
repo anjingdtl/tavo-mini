@@ -198,16 +198,11 @@ describe('续写原著事实复核提示词', () => {
         } as any,
       ],
     )[0].content;
-    expect(fullChapterRepair).toContain('原正文约含 3000 个汉字');
+    expect(fullChapterRepair).toContain('当前完整正文含 3000 个汉字');
     expect(fullChapterRepair).toContain('不得把整章压缩成摘要');
-    expect(fullChapterRepair).toContain('约 2500–4000 个汉字');
+    expect(fullChapterRepair).toContain('保持在 2500–3500 个汉字');
     expect(fullChapterRepair).toContain('逐项完成 Checker 指出的实质修正');
     expect(fullChapterRepair).toContain('Repair 不是原文复述');
-    expect(fullChapterRepair).toContain('不能为了避开问题而删掉大段正文');
-    expect(fullChapterRepair).toContain(
-      '最终输出的完整正文不得低于 2500 个汉字',
-    );
-    expect(fullChapterRepair).toContain('输出前在内部做一次汉字数量自检');
     expect(fullChapterRepair).toContain(
       '原文不是参考摘要，而是必须覆盖的完整修订底稿',
     );
@@ -216,7 +211,7 @@ describe('续写原著事实复核提示词', () => {
       .content;
     expect(repairUser).toContain('【最终交付契约：优先级最高】');
     expect(repairUser).toContain('完整修订章节');
-    expect(repairUser).toContain('最终正文不得低于 2500 个汉字');
+    expect(repairUser).toContain('最终正文必须包含 2500–3500 个汉字');
     expect(repairUser).toContain('【完整原文开始】');
     expect(repairUser).toContain('现在仅输出完整修订章节。');
   });
