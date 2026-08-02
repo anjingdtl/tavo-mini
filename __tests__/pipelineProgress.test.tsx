@@ -58,4 +58,34 @@ describe('PipelineProgress', () => {
     );
     expect(getByText('打磨中...')).toBeTruthy();
   });
+
+  it('shows distinct Writer, Checker, and Repair messages for continuation runs', () => {
+    const { getByText, rerender } = render(
+      <PipelineProgress
+        stage="draft"
+        continuationStage="writer"
+        startedAt={Date.now()}
+        visible={true}
+      />,
+    );
+    expect(getByText('正在生成章节草稿…')).toBeTruthy();
+    rerender(
+      <PipelineProgress
+        stage="draft"
+        continuationStage="checker"
+        startedAt={Date.now()}
+        visible={true}
+      />,
+    );
+    expect(getByText('正在进行一致性检查…')).toBeTruthy();
+    rerender(
+      <PipelineProgress
+        stage="draft"
+        continuationStage="repair"
+        startedAt={Date.now()}
+        visible={true}
+      />,
+    );
+    expect(getByText('正在修复冲突并生成终稿…')).toBeTruthy();
+  });
 });

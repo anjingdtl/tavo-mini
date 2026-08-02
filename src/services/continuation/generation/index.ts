@@ -14,6 +14,7 @@ export {
   getArtifactForRun,
   getPlan,
   listChecksForArtifact,
+  listChecksForRun,
   listProposals,
   getProposalById,
   countPendingMajorProposals,
@@ -28,6 +29,7 @@ export {
   markRunsInterruptedOnColdStart,
   contentRevisionHash,
   resolveCheck,
+  markChecksAutoRepaired,
   newContinuationRunId,
 } from './generationRepository';
 export { buildContinuationContext } from './continuationContextBuilder';
@@ -67,6 +69,7 @@ export {
 } from './continuationStateOutboxWorker';
 export {
   startContinuationRun,
+  repairContinuationArtifactOnce,
   confirmPlanAndContinue,
   cancelContinuationRun,
   adoptArtifactAsDraft,
@@ -75,6 +78,7 @@ export {
   resumeInterruptedRun,
   isContinuationRunId,
   outdatedRunsOnSourceOrCanonChange,
+  parseWriterResult,
 } from './continuationGenerationRunner';
 export type { StartContinuationRunInput, StageLlmCaller } from './continuationGenerationRunner';
 export { summarizeTrace, parseTraceJson } from './continuationContextTrace';

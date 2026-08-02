@@ -2,13 +2,15 @@
  * WP3: per-stage capacity + styleTokens budget planning (Spec §7.1).
  */
 import {
+  estimateTargetChapterTokens,
+  resolveContinuationCategoryShares,
   planContinuationContextBudget,
   planStageCapacity,
   resolveContinuationWriterOutputBudget,
 } from '../src/services/continuation/generation/continuationContextBudget';
 
 describe('planStageCapacity', () => {
-  it('computes inputBudget = window - maxOut - safety - skeleton', () => {
+  it('computes an 80% effective window and 20% output guard', () => {
     const cap = planStageCapacity({
       llmConfigId: 3,
       contextWindow: 8192,
@@ -17,10 +19,13 @@ describe('planStageCapacity', () => {
     });
     expect(cap.llmConfigId).toBe(3);
     expect(cap.contextWindow).toBe(8192);
-    expect(cap.maxOutputTokens).toBe(2048);
+    expect(cap.maxOutputTokens).toBe(Math.floor(8192 * 0.2));
     expect(cap.promptSkeletonTokens).toBe(768);
-    expect(cap.safetyTokens).toBeGreaterThanOrEqual(512);
-    expect(cap.inputBudget).toBe(8192 - 2048 - cap.safetyTokens - 768);
+    expect(cap.safetyTokens).toBeGreaterThan(0);
+    expect(cap.effectiveWindow).toBe(Math.floor(8192 * 0.8));
+    expect(cap.inputBudget).toBe(
+      cap.effectiveWindow - cap.maxOutputTokens - cap.safetyTokens - 768,
+    );
     expect(cap.inputBudget).toBeGreaterThan(256);
   });
 
@@ -64,10 +69,7 @@ describe('planContinuationContextBudget styleTokens', () => {
       writerMaxOutputTokens: 2048,
     });
     expect(plan.styleTokens).toBeGreaterThan(0);
-    expect(plan.styleTokens).toBeLessThanOrEqual(
-      Math.floor(plan.inputBudget * 0.1),
-    );
-    expect(plan.styleTokens).toBe(Math.floor(plan.inputBudget * 0.1));
+    expect(plan.styleTokens).toBeLessThan(plan.inputBudget);
   });
 
   it('keeps all category shares (incl. style) inside inputBudget', () => {
@@ -98,29 +100,115 @@ describe('planContinuationContextBudget styleTokens', () => {
       writerMaxOutputTokens: 4_096,
     });
     expect(large.styleTokens).toBeGreaterThan(small.styleTokens);
-    expect(large.styleTokens).toBe(Math.floor(large.inputBudget * 0.1));
-    expect(large.styleTokens).toBeGreaterThan(16_000);
+    expect(large.styleTokens).toBeLessThan(large.inputBudget);
   });
 });
 
 describe('resolveContinuationWriterOutputBudget', () => {
-  it('uses the Writer model ceiling instead of a hidden 4096-token cap', () => {
+  it('converts Han-character demand into an elastic token demand signal', () => {
+    expect(estimateTargetChapterTokens(3_000)).toBe(9_000);
+  });
+
+  it('derives Writer output from demand, configured ceiling, and 20% window cap', () => {
     const budget = resolveContinuationWriterOutputBudget({
       contextWindow: 131_072,
       targetChapterChars: 5_000,
       configuredMaxOutputTokens: 32_768,
     });
-    expect(budget.initialOutputTokens).toBe(15_000);
-    expect(budget.retryOutputTokens).toBe(32_768);
+    expect(budget.initialOutputTokens).toBe(budget.requestedMaxTokens);
+    expect(budget.retryOutputTokens).toBe(budget.requestedMaxTokens);
+    expect(budget.requestedMaxTokens).toBeLessThanOrEqual(
+      Math.floor(131_072 * 0.2),
+    );
   });
 
-  it('keeps a retry ceiling inside a small model window', () => {
+  it('does not create a larger Writer retry request on a small window', () => {
     const budget = resolveContinuationWriterOutputBudget({
       contextWindow: 8_192,
       targetChapterChars: 3_000,
       configuredMaxOutputTokens: 16_384,
     });
-    expect(budget.initialOutputTokens).toBe(Math.floor(8_192 * 0.35));
-    expect(budget.retryOutputTokens).toBe(Math.floor(8_192 * 0.35));
+    expect(budget.initialOutputTokens).toBe(budget.requestedMaxTokens);
+    expect(budget.retryOutputTokens).toBe(budget.requestedMaxTokens);
+    expect(budget.requestedMaxTokens).toBeLessThanOrEqual(
+      Math.floor(8_192 * 0.2),
+    );
+  });
+
+  it('keeps target demand as a minimum/pressure signal while using an elastic request ceiling', () => {
+    const budget = resolveContinuationWriterOutputBudget({
+      contextWindow: 1_000_000,
+      targetChapterChars: 1_000,
+      configuredMaxOutputTokens: 8_000,
+    });
+
+    expect(budget.desiredOutput).toBeLessThan(budget.requestedMaxTokens);
+    expect(budget.requestedMaxTokens).toBe(8_000);
+    expect(budget.requestedMaxTokens).toBeLessThanOrEqual(
+      Math.floor(1_000_000 * 0.2),
+    );
+    expect(budget.minimumOutput).toBeLessThan(budget.requestedMaxTokens);
+  });
+});
+
+describe('standard stage envelopes', () => {
+  it.each([8_192, 32_768, 131_072, 1_000_000])(
+    'keeps every stage inside 80%% effective and 20%% output limits at %i',
+    contextWindow => {
+      for (const configured of [null, 2_048, 32_768]) {
+        const stage = planStageCapacity({
+          llmConfigId: 1,
+          contextWindow,
+          maxOutputTokens: configured,
+        });
+        expect(stage.effectiveWindow).toBe(
+          Math.floor(contextWindow * 0.8),
+        );
+        expect(stage.maxOutputTokens).toBeLessThanOrEqual(
+          Math.floor(contextWindow * 0.2),
+        );
+        expect(stage.inputBudget + stage.maxOutputTokens + stage.safetyTokens + stage.promptSkeletonTokens).toBeLessThanOrEqual(
+          stage.effectiveWindow,
+        );
+      }
+    },
+  );
+});
+
+describe('dynamic continuation proportions', () => {
+  it('normalizes category shares and prioritizes seam/Canon under pressure', () => {
+    const low = resolveContinuationCategoryShares({
+      pressure: 0.05,
+      declaredOutputRatio: 0.05,
+      hasPrimaryAnchor: false,
+    });
+    const high = resolveContinuationCategoryShares({
+      pressure: 0.9,
+      declaredOutputRatio: 0.2,
+      hasPrimaryAnchor: true,
+    });
+    expect(Object.values(low).reduce((a, b) => a + b, 0)).toBeCloseTo(1);
+    expect(Object.values(high).reduce((a, b) => a + b, 0)).toBeCloseTo(1);
+    expect(high.canon).toBeGreaterThan(low.canon);
+    expect(high.primaryAnchor).toBeGreaterThan(low.primaryAnchor);
+    expect(high.supplements).toBeLessThan(low.supplements);
+  });
+
+  it('deducts hard context before allocating soft categories', () => {
+    const base = planContinuationContextBudget({
+      modelContextLimit: 32_768,
+      writerMaxOutputTokens: 2_048,
+      targetChapterChars: 3_000,
+    });
+    const constrained = planContinuationContextBudget({
+      modelContextLimit: 32_768,
+      writerMaxOutputTokens: 2_048,
+      targetChapterChars: 3_000,
+      hardContextTokens: Math.floor(base.inputBudget * 0.2),
+    });
+    expect(constrained.residualContextBudget).toBeLessThan(
+      base.residualContextBudget,
+    );
+    expect(constrained.canonTokens).toBeLessThan(base.canonTokens);
   });
 });

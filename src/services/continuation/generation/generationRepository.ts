@@ -70,8 +70,18 @@ function rowSettings(r: any): ContinuationGenerationSettings {
 }
 
 function rowRun(r: any): ContinuationGenerationRun {
+  let workflowVersion: 2 | undefined;
+  try {
+    workflowVersion =
+      JSON.parse(r.context_snapshot_json || '{}')?.workflowVersion === 2
+        ? 2
+        : undefined;
+  } catch {
+    workflowVersion = undefined;
+  }
   return {
     id: r.id,
+    workflowVersion,
     projectId: r.project_id,
     chapterId: r.chapter_id,
     targetPosition: r.target_position,
@@ -784,6 +794,21 @@ export async function listChecksForArtifact(
   return out;
 }
 
+/** Read every check history row for result/repair telemetry. */
+export async function listChecksForRun(
+  runId: string,
+): Promise<ContinuationCheckResult[]> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_check_results
+     WHERE run_id = ? ORDER BY id`,
+    [runId],
+  );
+  const out: ContinuationCheckResult[] = [];
+  for (let i = 0; i < res.rows.length; i++) out.push(rowCheck(res.rows.item(i)));
+  return out;
+}
+
 export async function markChecksObsolete(
   runId: string,
   artifactId: string,
@@ -795,6 +820,53 @@ export async function markChecksObsolete(
      WHERE run_id = ? AND artifact_id = ? AND resolution_status = 'open'`,
     [nowIso(), runId, artifactId],
   );
+}
+
+/**
+ * Keep the initial check rows attached to the parent artifact while marking
+ * the issues that the deterministic/Repair pass addressed. The final
+ * artifact gets a new set of checks, so artifact hash binding is never lost.
+ */
+export async function markChecksAutoRepaired(
+  runId: string,
+  artifactId: string,
+  checkIds?: number[],
+): Promise<void> {
+  const db = await openDatabase();
+  const params: any[] = [nowIso(), runId, artifactId];
+  let suffix = '';
+  if (checkIds?.length) {
+    suffix = ` AND id IN (${checkIds.map(() => '?').join(',')})`;
+    params.push(...checkIds);
+  }
+  await db.executeSql(
+    `UPDATE continuation_check_results
+     SET resolution_status = 'auto_repaired', updated_at = ?
+     WHERE run_id = ? AND artifact_id = ?
+       AND resolution_status = 'open'
+       AND severity IN ('error', 'blocking')${suffix}`,
+    params,
+  );
+}
+
+/**
+ * Explicitly accept open severe checks for the currently selected artifact.
+ * Normal adoption never calls this; it is only for the user's risk-acceptance
+ * action after local repair verification still fails.
+ */
+export function buildAcceptOpenChecksStatement(input: {
+  runId: string;
+  artifactId: string;
+  ts?: string;
+}): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE continuation_check_results
+      SET resolution_status = 'accepted_by_user', updated_at = ?
+      WHERE run_id = ? AND artifact_id = ?
+        AND resolution_status = 'open'
+        AND severity IN ('error', 'blocking')`,
+    params: [input.ts ?? nowIso(), input.runId, input.artifactId],
+  };
 }
 
 export async function resolveCheck(

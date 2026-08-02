@@ -3,7 +3,6 @@ import {
   Alert,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from 'react-native';
@@ -96,21 +95,13 @@ const SUB_LEVEL_FIELDS: Array<{
   { key: 'knowledgeLevel', label: '知识边界' },
 ];
 
-const CONFIRMATION_OPTIONS = [
-  { value: 'never', label: '不确认' },
-  { value: 'risk_only', label: '风险时确认' },
-  { value: 'always', label: '始终确认' },
-] as const;
-
 type ModelStage =
-  | 'plannerLlmConfigId'
   | 'writerLlmConfigId'
   | 'checkerLlmConfigId'
   | 'repairLlmConfigId'
   | 'stateExtractionLlmConfigId';
 
 const MODEL_STAGES: Array<{ key: ModelStage; label: string }> = [
-  { key: 'plannerLlmConfigId', label: '规划' },
   { key: 'writerLlmConfigId', label: '正文生成' },
   { key: 'checkerLlmConfigId', label: '一致性检查' },
   { key: 'repairLlmConfigId', label: '自动修复' },
@@ -159,7 +150,14 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
     if (!currentProject || !settings || saving) return;
     setSaving(true);
     try {
-      const saved = await updateGenerationSettings(currentProject.id, settings);
+      const saved = await updateGenerationSettings(currentProject.id, {
+        ...settings,
+        // New runs always use the standard checker and one possible Repair.
+        // The legacy columns remain in the row for old snapshots/backups.
+        checkerEnabled: true,
+        maxRepairRounds: 1,
+        plannerConfirmationPolicy: 'never',
+      });
       setSettings(saved);
       Alert.alert('保存成功', '续写生成流水线配置已更新。');
     } catch (error: any) {
@@ -204,6 +202,8 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
             续写会基于
             Canon、接缝和状态事件生成；此处不会修改大纲创作的四阶段流水线。
+            新续写默认最多 3 次在线调用：Writer → Checker，只有 error/blocking 才追加一次 Repair。
+            若 Repair 后本地复核仍失败，用户可显式追加 1 次 Repair（最多 4 次），仍不会再次调用 Checker。
           </Text>
           <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
             校验严格度（预设）
@@ -246,27 +246,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
               始终严格遵循原著画风画像；未完成或未启用画像时，续写将被阻断。
             </Text>
           </View>
-          <View style={styles.switchRow}>
-            <View style={styles.switchText}>
-              <Text
-                style={[
-                  styles.switchTitle,
-                  { color: theme.colors.textPrimary },
-                ]}
-              >
-                启用一致性检查
-              </Text>
-              <Text
-                style={[styles.hint, { color: theme.colors.textSecondary }]}
-              >
-                生成后检查世界规则、人物状态、剧情与文风，并按需自动修复。
-              </Text>
-            </View>
-            <Switch
-              value={settings.checkerEnabled}
-              onValueChange={checkerEnabled => patch({ checkerEnabled })}
-            />
-          </View>
+          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>生成后固定执行一次一致性检查；Repair 最多一次，Repair 后只做本地确定性复核。</Text>
           <Field
             label="目标章节字数"
             value={String(settings.targetChapterChars)}
@@ -280,37 +260,8 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
               })
             }
           />
-          <Field
-            label="最大自动修复轮次"
-            value={String(settings.maxRepairRounds)}
-            keyboardType="numeric"
-            onChangeText={text =>
-              patch({
-                maxRepairRounds: Math.min(
-                  3,
-                  Math.max(0, Number(text.replace(/\D/g, '')) || 0),
-                ),
-              })
-            }
-          />
-        </Card>
-
-        <Card>
-          <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
-            规划与风险确认
-          </Text>
-          <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
-            章节规划确认方式
-          </Text>
-          <SegmentedControl
-            value={settings.plannerConfirmationPolicy}
-            options={[...CONFIRMATION_OPTIONS]}
-            onChange={plannerConfirmationPolicy =>
-              patch({ plannerConfirmationPolicy })
-            }
-          />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            “风险时确认”会在重大关系、能力、死亡或复活变化前等待你的决定。
+            建议正文保持约 2000–4000 个汉字（默认 3000）；范围外只提示，不拦截、不自动重试。
           </Text>
         </Card>
 

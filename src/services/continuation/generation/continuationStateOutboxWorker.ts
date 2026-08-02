@@ -19,6 +19,25 @@ import {
 } from './generationRepository';
 import type { ProposalType } from './types';
 
+/**
+ * DeepSeek V4 models enable thinking by default. Background continuation
+ * extraction has a JSON-only contract and a deliberately bounded completion
+ * budget, so leaving thinking enabled can consume the whole budget without a
+ * JSON body. Keep this scoped to the continuation outbox; freeform pipelines
+ * retain their existing provider semantics.
+ */
+function withContinuationJsonThinkingDisabled(
+  config: Awaited<ReturnType<typeof resolveLLMRequestConfigById>>,
+) {
+  if (!config || !/^deepseek-v4-(flash|pro)$/i.test(config.model_name)) {
+    return config;
+  }
+  return {
+    ...config,
+    thinking: { type: 'disabled' as const },
+  };
+}
+
 export async function coldStartNormalizeContinuation(): Promise<number> {
   return markRunsInterruptedOnColdStart();
 }
@@ -181,6 +200,9 @@ async function handleExtractState(
     const requestConfig = configId
       ? await resolveLLMRequestConfigById(configId)
       : undefined;
+    const continuationRequestConfig = requestConfig
+      ? withContinuationJsonThinkingDisabled(requestConfig)
+      : requestConfig;
     const result = await callLLMResult(messages, 2048, {
       queueClass: 'background',
       queuePriority: 'background',
@@ -188,7 +210,7 @@ async function handleExtractState(
       taskId: `extract_${payload.chapterId}`,
       scenario: 'continuation_state_extraction',
       responseFormat: 'json_object',
-      requestConfig,
+      requestConfig: continuationRequestConfig,
     });
     raw = result.text ?? '';
     finishReason = result.finishReason;

@@ -127,6 +127,8 @@ export interface ContinuationGenerationSettings {
 
 export interface ContinuationGenerationSettingsSnapshot {
   schemaVersion: 1;
+  /** Versioned generation protocol. Missing means legacy Planner semantics. */
+  workflowVersion?: 2;
   values: ContinuationGenerationSettings;
   resolvedModelConfigIds: {
     planner: number;
@@ -135,6 +137,27 @@ export interface ContinuationGenerationSettingsSnapshot {
     repair: number | null;
     stateExtraction: number;
   };
+  /**
+   * Non-secret routing fields frozen at run creation. API keys remain in
+   * Android Keystore and are never serialized into a run snapshot.
+   */
+  frozenModelConfigs?: {
+    planner: FrozenContinuationModelConfig | null;
+    writer: FrozenContinuationModelConfig | null;
+    checker: FrozenContinuationModelConfig | null;
+    repair: FrozenContinuationModelConfig | null;
+    stateExtraction: FrozenContinuationModelConfig | null;
+  };
+}
+
+export interface FrozenContinuationModelConfig {
+  configId: number;
+  name: string;
+  providerType: 'openai_compatible';
+  url: string;
+  modelName: string;
+  contextWindow: number;
+  maxOutputTokens: number;
 }
 
 /**
@@ -278,6 +301,8 @@ export interface ContinuationSupplementBundle {
 
 export interface ContinuationContextSnapshot {
   schemaVersion: 1 | 2;
+  /** New standard workflow marker; absent on historical snapshots. */
+  workflowVersion?: 2;
   projectId: number;
   targetChapterId: number;
   targetPosition: ContinuationChapterPosition;
@@ -355,6 +380,20 @@ export interface ContinuationContextTrace {
   primaryAnchorKind?: 'source_seam' | 'continuation_chapter';
   primaryAnchorChapterId?: number | null;
   primaryAnchorPosition?: ContinuationChapterPosition | null;
+  /** Standard workflow budget trace. Optional for legacy snapshots. */
+  effectiveWindow?: number;
+  contextUtilizationRatio?: number;
+  maxOutputRatio?: number;
+  declaredOutput?: number;
+  chapterDemand?: number;
+  pressure?: number;
+  planShare?: number;
+  hardContextTokens?: number;
+  desiredOutput?: number;
+  requestedMaxTokens?: number;
+  effectiveInputBudget?: number;
+  minimumOutput?: number;
+  budgetRestrictedReason?: string | null;
 }
 
 export interface StoryBeat {
@@ -407,6 +446,8 @@ export interface ContinuationPlan {
 
 export interface ContinuationGenerationRun {
   id: string;
+  /** Derived from the frozen context snapshot; absent on legacy rows. */
+  workflowVersion?: 2;
   projectId: number;
   chapterId: number;
   targetPosition: ContinuationChapterPosition;

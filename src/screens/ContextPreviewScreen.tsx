@@ -37,7 +37,6 @@ import {
 } from '../services/llm';
 import {
   buildContinuationContext,
-  compilePlannerMessages,
   compileWriterMessages,
   ensureGenerationSettings,
 } from '../services/continuation/generation';
@@ -159,6 +158,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   const [expandedMsg, setExpandedMsg] = useState<number | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [continuationPreview, setContinuationPreview] = useState(false);
+  const [continuationBudgetSummary, setContinuationBudgetSummary] =
+    useState('');
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -181,12 +182,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           id == null
             ? requestConfig
             : resolveLLMRequestConfigById(id).catch(() => requestConfig);
-        // Layout follows Writer window (Spec §7.1); Planner config is reserved
-        // for future dual-budget preview labels.
-        const [, writerConfig] = await Promise.all([
-          resolveStage(settings.plannerLlmConfigId),
-          resolveStage(settings.writerLlmConfigId),
-        ]);
+        // New previews show the actual Writer request. Planner is only a
+        // compatibility path for historical runs.
+        const writerConfig = await resolveStage(settings.writerLlmConfigId);
         // Layout budget follows Writer window (Spec §7.1) — never Math.min across
         // stages, which would under-allocate style relative to the real run.
         const writerWindow =
@@ -216,9 +214,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           currentChapterContent: chapter.content || '',
           userInstruction: instruction,
           modelContextLimit: writerWindow,
-          // Match the run: reserve the retry ceiling in the preview layout.
-          maxOutputTokens: writerOutputBudget.retryOutputTokens,
-          initialWriterOutputTokens: writerOutputBudget.initialOutputTokens,
+          maxOutputTokens: writerOutputBudget.requestedMaxTokens,
+          initialWriterOutputTokens: writerOutputBudget.requestedMaxTokens,
           activeLlmConfigId: requestConfig.id || 1,
         });
         setTrace(
@@ -267,33 +264,20 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           }),
         );
         setEstimatedInputTokens(result.trace.totalInputTokens);
-        // Spec §9 / §10.3: preview must surface Writer style injection, not only Planner.
-        const plannerMsgs = compilePlannerMessages(result.snapshot);
-        const writerMsgs = compileWriterMessages(result.snapshot, {
-          schemaVersion: 1,
-          chapterGoal: '（预览用占位规划）',
-          centralConflict: '',
-          beats: [],
-          participatingCharacterIds: [],
-          characterActions: [],
-          plotAdvances: [],
-          foreshadowingActions: [],
-          proposedStateChanges: [],
-          risks: [],
-        });
-        setMessages([
-          ...plannerMsgs.map(m => ({
+        setContinuationBudgetSummary(
+          `有效窗口 ${result.trace.effectiveWindow ?? '—'}（标称窗口的 80%） · 输出上限 ${result.trace.requestedMaxTokens ?? '—'}（标称窗口的 20%） · 计划份额 ${Math.round((result.trace.planShare ?? 0) * 100)}%`,
+        );
+        const writerMsgs = compileWriterMessages(result.snapshot);
+        setMessages(
+          writerMsgs.map(m => ({
             ...m,
-            content: `【规划阶段】\n${m.content}`,
+            content: `【Writer：同次返回 plan + content】\n${m.content}`,
           })),
-          ...writerMsgs.map(m => ({
-            ...m,
-            content: `【正文生成阶段】\n${m.content}`,
-          })),
-        ]);
+        );
         return;
       }
       setContinuationPreview(false);
+      setContinuationBudgetSummary('');
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(chapter.project_id);
       const result = await buildContext(
@@ -448,7 +432,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       <Header
         title="上下文预览"
         subtitle={`${
-          continuationPreview ? '续写规划与正文 · ' : ''
+          continuationPreview
+            ? `续写 Writer（plan + content）· ${continuationBudgetSummary} · `
+            : ''
         }预估 ${estimatedInputTokens.toLocaleString()} 词元`}
         action={
           <Button
