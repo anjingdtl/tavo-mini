@@ -128,7 +128,7 @@ export interface ContinuationGenerationSettings {
 export interface ContinuationGenerationSettingsSnapshot {
   schemaVersion: 1;
   /** Versioned generation protocol. Missing means legacy Planner semantics. */
-  workflowVersion?: 2;
+  workflowVersion?: 2 | 3;
   values: ContinuationGenerationSettings;
   resolvedModelConfigIds: {
     planner: number;
@@ -158,6 +158,16 @@ export interface FrozenContinuationModelConfig {
   modelName: string;
   contextWindow: number;
   maxOutputTokens: number;
+  /**
+   * V3 frozen thinking policy (plan §5.2). DeepSeek V4 new runs freeze
+   * required=true / reasoningEffort='high'. Resume never re-derives this from
+   * the live model name. Optional so V1/V2 snapshots remain readable.
+   */
+  thinkingPolicy?: {
+    required: boolean;
+    type: 'enabled';
+    reasoningEffort: 'high';
+  };
 }
 
 /**
@@ -302,7 +312,7 @@ export interface ContinuationSupplementBundle {
 export interface ContinuationContextSnapshot {
   schemaVersion: 1 | 2;
   /** New standard workflow marker; absent on historical snapshots. */
-  workflowVersion?: 2;
+  workflowVersion?: 2 | 3;
   projectId: number;
   targetChapterId: number;
   targetPosition: ContinuationChapterPosition;
@@ -447,7 +457,7 @@ export interface ContinuationPlan {
 export interface ContinuationGenerationRun {
   id: string;
   /** Derived from the frozen context snapshot; absent on legacy rows. */
-  workflowVersion?: 2;
+  workflowVersion?: 2 | 3;
   projectId: number;
   chapterId: number;
   targetPosition: ContinuationChapterPosition;

@@ -70,12 +70,12 @@ function rowSettings(r: any): ContinuationGenerationSettings {
 }
 
 function rowRun(r: any): ContinuationGenerationRun {
-  let workflowVersion: 2 | undefined;
+  let workflowVersion: 2 | 3 | undefined;
   try {
-    workflowVersion =
-      JSON.parse(r.context_snapshot_json || '{}')?.workflowVersion === 2
-        ? 2
-        : undefined;
+    const wf = JSON.parse(r.context_snapshot_json || '{}')?.workflowVersion;
+    if (wf === 2) workflowVersion = 2;
+    else if (wf === 3) workflowVersion = 3;
+    else workflowVersion = undefined;
   } catch {
     workflowVersion = undefined;
   }
