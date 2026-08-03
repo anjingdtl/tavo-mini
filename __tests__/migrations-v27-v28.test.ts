@@ -6,7 +6,7 @@ import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 28 continuation_analysis_work_items CHECK fix', () => {
   it('reflects the new schema version', () => {
-    expect(SCHEMA_VERSION).toBe(32);
+    expect(SCHEMA_VERSION).toBe(33);
   });
 
   it('rebuilds the work-items table with full_extraction in CHECK', async () => {

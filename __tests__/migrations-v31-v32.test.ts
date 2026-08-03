@@ -65,7 +65,7 @@ describe('Schema 31 → 32 continuation persistence', () => {
       .map(statement => statement.sql)
       .join('\n');
 
-    expect(SCHEMA_VERSION).toBe(32);
+    expect(SCHEMA_VERSION).toBe(33);
     expect(runSql).toContain("'auditing'");
     expect(runSql).toContain("'local_verify'");
     expect(runSql).toContain("'planner'");
@@ -84,8 +84,8 @@ describe('Schema 31 → 32 continuation persistence', () => {
 
     const result = await runMigrations(mock.database as any, 31);
 
-    expect(result).toMatchObject({ fromVersion: 31, toVersion: 32 });
-    expect(mock.settings.get('schema_version')).toBe('32');
+    expect(result).toMatchObject({ fromVersion: 31, toVersion: SCHEMA_VERSION });
+    expect(mock.settings.get('schema_version')).toBe(String(SCHEMA_VERSION));
     expect(
       mock.schemas.get('continuation_generation_settings')?.has(
         'control_llm_config_id',

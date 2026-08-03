@@ -63,21 +63,22 @@ export interface FiveDimensionGateResult {
 }
 
 /**
- * Map a required dimension to its Canon table and the review-status filter
- * used by the five-dimension UI / continuation read path.
+ * Map a required dimension to its Canon table, the evidence owner_type that
+ * backs its facts, and the review-status filter used by the five-dimension UI /
+ * continuation read path.
  *
  * Counts exclude superseded / ignored rows exactly like the UI browse pages,
  * so the gate number matches what the user actually sees.
  */
 const DIMENSION_TABLE: Record<
   RequiredCanonDimension,
-  { table: string }
+  { table: string; ownerType: string }
 > = {
-  characters: { table: 'canon_characters' },
-  worldRules: { table: 'canon_world_rules' },
-  relationships: { table: 'canon_relationships' },
-  plotThreads: { table: 'canon_plot_threads' },
-  experiences: { table: 'canon_character_experiences' },
+  characters: { table: 'canon_characters', ownerType: 'character' },
+  worldRules: { table: 'canon_world_rules', ownerType: 'world_rule' },
+  relationships: { table: 'canon_relationships', ownerType: 'relationship' },
+  plotThreads: { table: 'canon_plot_threads', ownerType: 'plot_thread' },
+  experiences: { table: 'canon_character_experiences', ownerType: 'experience' },
 };
 
 /**
@@ -85,7 +86,12 @@ const DIMENSION_TABLE: Record<
  * snapshot. Rows are excluded when:
  *   - they belong to a different snapshot or analysis run;
  *   - review_status is superseded (no longer effective) or ignored
- *     (user-discarded), matching the UI browse filter.
+ *     (user-discarded), matching the UI browse filter;
+ *   - **they have no valid evidence link** (2026-08-04 修复：extra-check #4).
+ *     A fact must be backed by at least one evidence row in the same snapshot
+ *     + run with a matching owner_type, otherwise it is not counted. This
+ *     prevents orphan facts (e.g. materialized but evidence-resolution-dropped)
+ *     from inflating the gate count.
  *
  * This is the single source of truth for the five-dimension gate.
  */
@@ -94,22 +100,31 @@ export async function countValidCanonRowsForGate(
   snapshotId: string,
   runId: string,
 ): Promise<FiveDimensionCounts> {
-  const count = async (table: string) => {
+  const count = async (table: string, ownerType: string) => {
     const [r] = await db.executeSql(
-      `SELECT COUNT(*) AS c FROM ${table}
-        WHERE snapshot_id = ?
-          AND analysis_run_id = ?
-          AND review_status NOT IN ('superseded', 'ignored')`,
-      [snapshotId, runId],
+      `SELECT COUNT(*) AS c FROM ${table} f
+        WHERE f.snapshot_id = ?
+          AND f.analysis_run_id = ?
+          AND f.review_status NOT IN ('superseded', 'ignored')
+          AND EXISTS (
+            SELECT 1 FROM canon_evidence_links l
+            JOIN canon_evidence e ON e.id = l.evidence_id
+            WHERE l.snapshot_id = f.snapshot_id
+              AND l.owner_type = ?
+              AND l.owner_id = f.id
+              AND e.snapshot_id = f.snapshot_id
+              AND e.analysis_run_id = f.analysis_run_id
+          )`,
+      [snapshotId, runId, ownerType],
     );
     return r.rows.item(0).c as number;
   };
   return {
-    characters: await count(DIMENSION_TABLE.characters.table),
-    worldRules: await count(DIMENSION_TABLE.worldRules.table),
-    relationships: await count(DIMENSION_TABLE.relationships.table),
-    plotThreads: await count(DIMENSION_TABLE.plotThreads.table),
-    experiences: await count(DIMENSION_TABLE.experiences.table),
+    characters: await count(DIMENSION_TABLE.characters.table, DIMENSION_TABLE.characters.ownerType),
+    worldRules: await count(DIMENSION_TABLE.worldRules.table, DIMENSION_TABLE.worldRules.ownerType),
+    relationships: await count(DIMENSION_TABLE.relationships.table, DIMENSION_TABLE.relationships.ownerType),
+    plotThreads: await count(DIMENSION_TABLE.plotThreads.table, DIMENSION_TABLE.plotThreads.ownerType),
+    experiences: await count(DIMENSION_TABLE.experiences.table, DIMENSION_TABLE.experiences.ownerType),
   };
 }
 

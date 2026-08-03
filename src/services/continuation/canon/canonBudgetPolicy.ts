@@ -34,6 +34,13 @@
 export const SOURCE_CHUNK_RATIO_NORMAL = 0.3;
 
 /**
+ * 2026-08-04 修复（问题4）：定向补扫的 source-chunk 目标比例 = context_window
+ * 的 15%。比正常 30% 更小，让补扫聚焦于缺失维度的精读，同时保留完整
+ * max_output_tokens 与 thinking。只缩正文，不缩模型能力。
+ */
+export const SOURCE_CHUNK_RATIO_RESCAN = 0.15;
+
+/**
  * Retry ladder for recoverable output failures (Spec §6.5). Each step shrinks
  * ONLY the source chunk for the failing batch; the model's max output and
  * thinking mode stay at their configured values.
