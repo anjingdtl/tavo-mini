@@ -1,6 +1,7 @@
 import type { ChatMessage } from '../../llm/types';
 import { estimateTokens } from '../../../utils/tokenEstimator';
 import { resolveContinuationLengthContract } from './continuationLengthContract';
+import { requiredControlProgressHan } from './continuationControl';
 import type {
   ContinuationCheckResult,
   ContinuationControlReport,
@@ -190,7 +191,8 @@ export function compileContinuationV4CheckerMessages(input: {
       role: 'system',
       content: [
         '你是原著续写 V4 Checker。只输出 JSON，不要 Markdown、解释、思考过程或复述正文。',
-        '顶层必须为 {"schemaVersion":1,"writerArtifactHash":"","issues":[],"warnings":[]}。issue 必须包含 issueId、category、severity、confidence、draftQuote、description、evidenceIds、suggestedAction。',
+        '顶层必须为 {"schemaVersion":1,"writerArtifactHash":"","issues":[],"warnings":[]}。writerArtifactHash 必须原样回显客户端给出的值。issue 必须包含 issueId、category、subtype、severity、confidence、generatedStart、generatedEnd、generatedExcerpt、description、evidenceIds、suggestedFix。',
+        '旧字段 draftQuote/draftStart/draftEnd/suggestedAction 仍会被兼容，但请优先使用 generatedExcerpt/generatedStart/generatedEnd/suggestedFix 标准字段。',
         '只报告有冻结 Canon、状态、知识边界、关系或用户硬规则依据的语义问题；不要报告 chapter_length、source_overlap、future_leakage 或本地重复问题。没有证据只能是 warning。',
         lockedBlock(view.lockedRules),
         canonGuardBlock(view),
@@ -244,12 +246,48 @@ function renderCheck(check: ContinuationCheckResult): string {
   return JSON.stringify({
     issueId: String(check.id),
     category: check.category,
+    subtype: check.subtype,
     severity: check.severity,
-    excerpt: check.generatedExcerpt,
+    generatedStart: check.generatedStart,
+    generatedEnd: check.generatedEnd,
+    generatedExcerpt: check.generatedExcerpt,
     description: check.description,
     evidenceIds: check.evidenceIds,
     suggestedFix: check.suggestedFix,
   });
+}
+
+/** Build the Repair-side explanation of Control's minimum substantial progress
+ * requirement. Uses the centralized helper so the prompt and the local
+ * compliance check share one definition of "progress". */
+function controlProgressDirective(report: ContinuationControlReport): string {
+  const forced = report.suggestions.filter(s =>
+    s.suggestionId === 'ctrl_local_expand' ||
+    s.suggestionId === 'ctrl_local_compress',
+  );
+  if (report.action === 'keep' && forced.length === 0) {
+    return '【Control 最低实质进度】Control action=keep，无强制扩写或收束要求；终稿仍须落实 Checker 强制任务并真正改变原稿。';
+  }
+  const requiredDeltaHan =
+    report.action === 'expand'
+      ? Math.max(0, report.allowedMinHan - report.currentHan)
+      : report.action === 'compress'
+        ? Math.max(0, report.currentHan - report.allowedMaxHan)
+        : 0;
+  const requiredProgress = requiredControlProgressHan(requiredDeltaHan);
+  const direction =
+    report.action === 'expand' ? '扩写' : report.action === 'compress' ? '收束' : '保持';
+  return [
+    '【Control 最低实质进度】',
+    `Control action=${report.action}。终稿必须朝${direction}方向产生实质性变化：只改标点、空白或少量字符、只回填 ID 不算完成。`,
+    `当前汉字 ${report.currentHan}，合法区间 ${report.allowedMinHan}–${report.allowedMaxHan}。`,
+    report.action === 'expand'
+      ? `若终稿未达到 ${report.allowedMinHan}，则至少需要净增加 ${requiredProgress} 个汉字（最低实质进度），否则会被拒绝。`
+      : report.action === 'compress'
+        ? `若终稿未低于 ${report.allowedMaxHan}，则至少需要净减少 ${requiredProgress} 个汉字（最低实质进度），否则会被拒绝。`
+        : '终稿仍须落实 Checker 强制任务并真正改变原稿。',
+    '最终篇幅未完全进入合法区间时，本地 Final Gate 只记录 warning，不直接拒绝；但没有达到最低实质进度一定会被拒绝。',
+  ].join('\n');
 }
 
 export function compileContinuationV4RepairMessages(input: {
@@ -262,6 +300,10 @@ export function compileContinuationV4RepairMessages(input: {
   const { view } = input;
   const contract = resolveContinuationLengthContract(view.targetChapterChars);
   const checks = input.checkerReport?.issues ?? [];
+  const forcedCheckerCount = checks.filter(
+    issue => issue.severity === 'error' || issue.severity === 'blocking',
+  ).length;
+  const forcedControlCount = input.controlReport.suggestions.length;
   return [
     {
       role: 'system',
@@ -272,7 +314,12 @@ export function compileContinuationV4RepairMessages(input: {
         'content 的值必须是完整、连续、可直接作为章节正文的纯文本，覆盖完整原稿的有效事件链、人物互动、情绪转折和自然章末；content 不能是 JSON、Markdown、说明文字或只包含新增段落。不得输出 patches、offset、replacement 等局部修改字段。',
         `完整终稿汉字数必须在 ${contract.minHanCharacters}–${contract.maxHanCharacters} 范围内；本地 Final Gate 会重新计数。`,
         '修订优先级：用户锁定规则 / Canon hard facts / 已确认状态 > Checker 有证据的 error > Control 硬长度区间 > 章节目标与 Writer plan > 原著风格 > 外部补充。',
-        '对每个 Checker severity=error 或 blocking 的 issue，必须把报告中原样给出的 issueId 填入 appliedCheckerIssueIds；对 Control 报告中的每条 suggestion，必须把原样 suggestionId 填入 appliedControlSuggestionIds；合格终稿的 unappliedItems 必须为空。只填写 id 不代表完成修订，客户端还会检查终稿是否真正改变并满足 Control 的方向。',
+        '【本次必须完成的审计任务】',
+        `- 必须落实所有 severity=error/blocking 的 Checker / 本地安全 issue，并回填其 issueId（共 ${forcedCheckerCount} 项强制任务）。`,
+        `- 必须落实所有 Control suggestion，并回填其 suggestionId（共 ${forcedControlCount} 项强制建议）。`,
+        '- Control 要求 expand/compress 时，不能只做标点、措辞或少量字符变化；终稿必须达到客户端给出的最低实质进度。',
+        '- 最终篇幅未完全进入合法区间时仍可能作为 warning 保留，但没有达到最低实质进度会被直接拒绝。',
+        '对每个 Checker severity=error 或 blocking 的 issue，必须把报告中原样给出的 issueId 填入 appliedCheckerIssueIds；对 Control 报告中的每条 suggestion，必须把原样 suggestionId 填入 appliedControlSuggestionIds；合格终稿的 unappliedItems 必须为空。只填写 id 不代表完成修订，客户端还会检查终稿是否真正改变、问题原句是否仍完整保留、Control 方向和最低实质进度是否满足。',
         lockedBlock(view.lockedRules),
         canonGuardBlock(view),
         stateBlock(view),
@@ -280,9 +327,10 @@ export function compileContinuationV4RepairMessages(input: {
         `【Recent Bridge 防重复摘要】\n${view.recentBridgeSummary || '（无）'}`,
         styleBlock(view),
         supplementBlock(view),
-        `【Checker 报告】\n${checks.map(renderCheck).join('\n') || '（无可操作语义问题）'}`,
+        `【Checker / 本地安全审查报告】\n${checks.map(renderCheck).join('\n') || '（无可操作语义问题）'}`,
         `【Control 报告】\n${json(input.controlReport)}`,
         repairLengthDirective(input.controlReport),
+        controlProgressDirective(input.controlReport),
         planBlock(input.plan),
         refsBlock(view),
         outputBudgetBlock(view),
