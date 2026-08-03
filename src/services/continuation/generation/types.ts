@@ -18,8 +18,29 @@ export type ContinuationStageName =
   | 'planner'
   | 'writer'
   | 'checker'
+  | 'auditing'
   | 'repair'
+  | 'local_verify'
   | 'awaiting_user';
+
+/** Physical V4 nodes. `auditing` is the persisted run-level stage for the
+ * parallel Checker/Control pair; their individual rows use these names. */
+export type ContinuationV4StageName =
+  | 'writer'
+  | 'checker'
+  | 'control'
+  | 'repair'
+  | 'local_verify';
+
+export type ContinuationStageResultStatus =
+  | 'queued'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'interrupted'
+  | 'skipped';
+
+export type ContinuationArtifactEligibility = 'eligible' | 'rejected';
 
 export type ContinuationRunState =
   | 'queued'
@@ -116,6 +137,7 @@ export interface ContinuationGenerationSettings {
   checkerLlmConfigId: number | null;
   repairLlmConfigId: number | null;
   stateExtractionLlmConfigId: number | null;
+  controlLlmConfigId: number | null;
   plannerConfirmationPolicy: PlannerConfirmationPolicy;
   checkerEnabled: boolean;
   maxRepairRounds: number;
@@ -128,7 +150,7 @@ export interface ContinuationGenerationSettings {
 export interface ContinuationGenerationSettingsSnapshot {
   schemaVersion: 1;
   /** Versioned generation protocol. Missing means legacy Planner semantics. */
-  workflowVersion?: 2;
+  workflowVersion?: 2 | 4;
   values: ContinuationGenerationSettings;
   resolvedModelConfigIds: {
     planner: number;
@@ -136,6 +158,7 @@ export interface ContinuationGenerationSettingsSnapshot {
     checker: number | null;
     repair: number | null;
     stateExtraction: number;
+    control?: number | null;
   };
   /**
    * Non-secret routing fields frozen at run creation. API keys remain in
@@ -147,6 +170,7 @@ export interface ContinuationGenerationSettingsSnapshot {
     checker: FrozenContinuationModelConfig | null;
     repair: FrozenContinuationModelConfig | null;
     stateExtraction: FrozenContinuationModelConfig | null;
+    control?: FrozenContinuationModelConfig | null;
   };
 }
 
@@ -302,7 +326,7 @@ export interface ContinuationSupplementBundle {
 export interface ContinuationContextSnapshot {
   schemaVersion: 1 | 2;
   /** New standard workflow marker; absent on historical snapshots. */
-  workflowVersion?: 2;
+  workflowVersion?: 2 | 4;
   projectId: number;
   targetChapterId: number;
   targetPosition: ContinuationChapterPosition;
@@ -447,7 +471,7 @@ export interface ContinuationPlan {
 export interface ContinuationGenerationRun {
   id: string;
   /** Derived from the frozen context snapshot; absent on legacy rows. */
-  workflowVersion?: 2;
+  workflowVersion?: 2 | 4;
   projectId: number;
   chapterId: number;
   targetPosition: ContinuationChapterPosition;
@@ -483,7 +507,34 @@ export interface ContinuationArtifact {
   parentArtifactId: string | null;
   content: string;
   contentHash: string;
+  /** Explicit adoption semantics added in Schema 32; absent on old in-memory
+   * fixtures/readers until the row is reloaded from the current database. */
+  eligibilityStatus?: ContinuationArtifactEligibility;
+  rejectionCode?: string | null;
   createdAt: string;
+}
+
+export interface ContinuationGenerationStageResult {
+  id: string;
+  runId: string;
+  stage: ContinuationV4StageName;
+  status: ContinuationStageResultStatus;
+  requestReserved: boolean;
+  requestCount: number;
+  modelConfigId: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  minOutputTokens: number | null;
+  maxOutputTokens: number | null;
+  /** Structured reports only; never a prompt, credential, URL or reasoning. */
+  outputJson: string | null;
+  artifactId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ContinuationCheckResult {
