@@ -35,6 +35,21 @@ export {
 export { buildContinuationContext } from './continuationContextBuilder';
 export type { BuildContinuationContextInput } from './continuationContextBuilder';
 export {
+  assertContinuationStageBudget,
+  preflightContinuationStageBudget,
+  resolveContinuationStageBudget,
+  resolveContinuationV4BudgetPreview,
+} from './continuationV4Budget';
+export type {
+  ContinuationStageBudgetPreflight,
+  ContinuationV4BudgetPreview,
+  ContinuationV4BudgetPreviewInput,
+  ContinuationV4Stage,
+  ContinuationV4StageBudget,
+  FrozenContinuationStageModel,
+  ResolveContinuationStageBudgetInput,
+} from './continuationV4Budget';
+export {
   selectContinuationAnchor,
   type ContinuationAnchor,
   type ContinuationAnchorChapter,

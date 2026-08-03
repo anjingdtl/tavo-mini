@@ -17,6 +17,7 @@ import {
   allocateContextBudget,
   applyContextAutoAllocation,
   countAllResources,
+  ensureContextAutomationPolicy,
   type AllocationResult,
   type ResourceCounts,
 } from '../services/contextAutoAllocator';
@@ -24,8 +25,18 @@ import {
   getContextAutoInput,
   getContextAutoLastApplied,
   setContextAutoInput,
+  setContextAutomationPolicy,
   type ContextAutoAppliedRecord,
 } from '../data/repositories/contextAutoRepository';
+import {
+  resolveContinuationV4BudgetPreview,
+  type ContinuationV4BudgetPreview,
+  type FrozenContinuationStageModel,
+} from '../services/continuation/generation/continuationV4Budget';
+import {
+  cloneDefaultContextAutomationPolicy,
+  type ContextAutomationPolicyV2,
+} from '../services/contextAutomationPolicy';
 import {
   DEFAULT_CONTEXT_CONFIG,
   DEFAULT_MAX_TOKENS,
@@ -41,6 +52,13 @@ const QUICK_PRESETS: { label: string; value: number }[] = [
 
 const DEFAULT_INPUT_VALUE = 1000000;
 const WARNING_THRESHOLD = 8000;
+
+const CONTINUATION_STAGE_LABELS = {
+  writer: 'Writer 正文生成',
+  checker: 'Checker 一致性审查',
+  control: 'Control 篇幅控制',
+  repair: 'Repair 综合修订',
+} as const;
 
 // 数字格式化：1000 → "1,000"
 function formatNumber(n: number): string {
@@ -77,6 +95,10 @@ export const ContextAutoConfigScreen: React.FC = () => {
   const [lastApplied, setLastApplied] = useState<ContextAutoAppliedRecord | null>(
     null,
   );
+  const [policy, setPolicy] = useState<ContextAutomationPolicyV2>(
+    cloneDefaultContextAutomationPolicy(),
+  );
+  const [llmConfigs, setLlmConfigs] = useState<any[]>([]);
   const [applying, setApplying] = useState(false);
   const [restoring, setRestoring] = useState(false);
 
@@ -89,9 +111,15 @@ export const ContextAutoConfigScreen: React.FC = () => {
           countAllResources(),
           getContextAutoLastApplied(),
         ]);
+        const [loadedPolicy, configs] = await Promise.all([
+          ensureContextAutomationPolicy(),
+          db.getLLMConfigs(),
+        ]);
         if (savedInput != null) setInputText(String(savedInput));
         setResourceCounts(counts);
         setLastApplied(applied);
+        setPolicy(loadedPolicy);
+        setLlmConfigs(configs);
       } catch (e: any) {
         Toast.show({ type: 'error', text1: '加载失败', text2: e?.message });
       }
@@ -106,11 +134,36 @@ export const ContextAutoConfigScreen: React.FC = () => {
   const preview: AllocationResult | null = useMemo(() => {
     if (numericInput <= 0) return null;
     try {
-      return allocateContextBudget(numericInput, resourceCounts);
+      return allocateContextBudget(numericInput, resourceCounts, policy);
     } catch {
       return null;
     }
-  }, [numericInput, resourceCounts]);
+  }, [numericInput, policy, resourceCounts]);
+
+  const continuationBudgetPreview: ContinuationV4BudgetPreview | null =
+    useMemo(() => {
+      const active =
+        llmConfigs.find(config => config?.is_active === 1) || llmConfigs[0];
+      if (!active || numericInput <= 0) return null;
+      const model: FrozenContinuationStageModel = {
+        configId: Number(active.id) || 0,
+        contextWindow: numericInput,
+        maxOutputTokens: numericInput,
+      };
+      try {
+        return resolveContinuationV4BudgetPreview({
+          frozenPolicy: policy,
+          stages: {
+            writer: model,
+            checker: model,
+            control: model,
+            repair: model,
+          },
+        });
+      } catch {
+        return null;
+      }
+    }, [llmConfigs, numericInput, policy]);
 
   const isWarning = numericInput > 0 && numericInput < WARNING_THRESHOLD;
 
@@ -139,7 +192,6 @@ export const ContextAutoConfigScreen: React.FC = () => {
           onPress: async () => {
             setApplying(true);
             try {
-              await setContextAutoInput(numericInput);
               const record = await applyContextAutoAllocation(numericInput);
               // The allocation updates llm_config directly inside SQLite. Keep
               // the long-lived LLM Settings screen in sync immediately rather
@@ -147,6 +199,8 @@ export const ContextAutoConfigScreen: React.FC = () => {
               // until an app restart.
               await loadSettings();
               setLastApplied(record);
+              if (record.policy) setPolicy(record.policy);
+              setLlmConfigs(await db.getLLMConfigs());
               Toast.show({
                 type: 'success',
                 text1: `已应用 ${formatNumber(numericInput)} tokens 的分配方案`,
@@ -180,6 +234,9 @@ export const ContextAutoConfigScreen: React.FC = () => {
             setRestoring(true);
             try {
               const pipelineConfig = await db.getPipelineConfig();
+              const defaultPolicy = cloneDefaultContextAutomationPolicy();
+              await setContextAutomationPolicy(defaultPolicy);
+              await setContextAutoInput(DEFAULT_INPUT_VALUE);
               await db.setContextConfig({
                 ...DEFAULT_CONTEXT_CONFIG,
               });
@@ -191,6 +248,8 @@ export const ContextAutoConfigScreen: React.FC = () => {
                 proofMaxTokens: DEFAULT_MAX_TOKENS,
               });
               Toast.show({ type: 'success', text1: '已恢复默认配置' });
+              setInputText(String(DEFAULT_INPUT_VALUE));
+              setPolicy(defaultPolicy);
               setLastApplied(null);
             } catch (e: any) {
               Toast.show({
@@ -236,8 +295,84 @@ export const ContextAutoConfigScreen: React.FC = () => {
                 lastApplied.affectedCounts.worldbookCollections}{' '}
               个资源
             </Text>
+            {lastApplied.policyVersion ? (
+              <Text
+                style={[styles.metaText, { color: theme.colors.textSecondary }]}
+              >
+                续写预算策略：{lastApplied.policyVersion} · hash{' '}
+                {(lastApplied.policyHash || '').slice(0, 12)}
+              </Text>
+            ) : null}
           </Card>
         ) : null}
+
+        <Card>
+          <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>
+            原著续写 V4 四节点预算模拟
+          </Text>
+          <Text
+            style={[styles.cardMeta, { color: theme.colors.textSecondary }]}
+          >
+            这里使用同一个 V4 resolver 做窗口级模拟；实际 run
+            创建后还会根据目标汉字数、真实
+            Prompt、初稿和段落数重新冻结上下限。当前模拟不发送请求，也不把模拟值写入阶段配置。
+          </Text>
+          {continuationBudgetPreview ? (
+            (
+              Object.keys(CONTINUATION_STAGE_LABELS) as Array<
+                keyof typeof CONTINUATION_STAGE_LABELS
+              >
+            ).map(stage => {
+              const budget = continuationBudgetPreview.stages[stage];
+              return (
+                <View
+                  key={stage}
+                  style={[
+                    styles.stagePreviewRow,
+                    { borderBottomColor: theme.colors.border },
+                  ]}
+                >
+                  <View style={styles.stagePreviewLabel}>
+                    <Text
+                      style={[
+                        styles.stageTitle,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
+                      {CONTINUATION_STAGE_LABELS[stage]}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.metaText,
+                        { color: theme.colors.textSecondary },
+                      ]}
+                    >
+                      有效窗口 {formatNumber(budget.effectiveWindow)} · 输出比例{' '}
+                      {Math.round(budget.maxOutputRatio * 100)}%
+                    </Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.stagePreviewValue,
+                      { color: theme.colors.accent },
+                    ]}
+                  >
+                    {formatNumber(budget.maximumOutputTokens)} max
+                  </Text>
+                </View>
+              );
+            })
+          ) : (
+            <Text style={[styles.metaText, { color: theme.colors.textMuted }]}>
+              暂无可用在线 LLM 配置，运行时会在配置完成后按各阶段模型能力解析。
+            </Text>
+          )}
+          <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
+            Policy：{policy.allocatorVersion} · 有效窗口{' '}
+            {Math.round(policy.utilization.effectiveWindowRatio * 100)}% ·
+            安全余量 {Math.round(policy.utilization.safetyReserveRatio * 100)}%
+          </Text>
+        </Card>
 
         {/* 输入最大上下文 */}
         <Card>
@@ -501,6 +636,16 @@ const styles = StyleSheet.create({
   },
   buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   footnote: { fontSize: 11, lineHeight: 17, marginTop: spacing.sm },
+  stagePreviewRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  stagePreviewLabel: { flex: 1, marginRight: spacing.sm },
+  stageTitle: { fontSize: 13, fontWeight: '700' },
+  stagePreviewValue: { fontSize: 13, fontWeight: '800' },
 });
 
 const previewStyles = StyleSheet.create({

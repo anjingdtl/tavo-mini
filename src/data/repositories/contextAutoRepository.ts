@@ -8,15 +8,32 @@
  */
 
 import type { AllocationResult } from '../../services/contextAutoAllocator';
+import {
+  buildContinuationPolicyPreview,
+  cloneDefaultContextAutomationPolicy,
+  hashContextAutomationPolicy,
+  isContextAutomationPolicyV2,
+  serializeContextAutomationPolicy,
+  type ContextAutomationPolicyV2,
+  type ContinuationPolicyPreview,
+} from '../../services/contextAutomationPolicy';
 import { getSetting, setSetting } from './settingsRepository';
 
 const KEY_INPUT = 'context_auto_input';
 const KEY_LAST_APPLIED = 'context_auto_last_applied';
+const KEY_POLICY = 'context_auto_policy_v2';
 
 export interface ContextAutoAppliedRecord {
+  /** Schema 1 records predate the versioned Continuation policy. */
+  schemaVersion?: 1 | 2;
   maxContextTokens: number;
   appliedAt: number; // Unix 毫秒
   allocation: AllocationResult;
+  policySchemaVersion?: number;
+  policyVersion?: string;
+  policyHash?: string;
+  policy?: ContextAutomationPolicyV2;
+  continuationPreview?: ContinuationPolicyPreview;
   affectedCounts: {
     llmConfigs: number;
     presets: number;
@@ -39,6 +56,26 @@ export async function setContextAutoInput(value: number): Promise<void> {
     throw new Error(`setContextAutoInput: value 必须为正数，收到 ${value}`);
   }
   await setSetting(KEY_INPUT, String(Math.round(value)));
+}
+
+export async function getContextAutomationPolicy(): Promise<ContextAutomationPolicyV2 | null> {
+  const raw = await getSetting(KEY_POLICY);
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isContextAutomationPolicyV2(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setContextAutomationPolicy(
+  policy: ContextAutomationPolicyV2,
+): Promise<void> {
+  if (!isContextAutomationPolicyV2(policy)) {
+    throw new Error('setContextAutomationPolicy: policy schema 无效');
+  }
+  await setSetting(KEY_POLICY, serializeContextAutomationPolicy(policy));
 }
 
 export async function getContextAutoLastApplied(): Promise<ContextAutoAppliedRecord | null> {
@@ -65,11 +102,19 @@ export function buildAppliedRecord(
   maxContextTokens: number,
   allocation: AllocationResult,
   affectedCounts: ContextAutoAppliedRecord['affectedCounts'],
+  policy: ContextAutomationPolicyV2 = cloneDefaultContextAutomationPolicy(),
 ): ContextAutoAppliedRecord {
+  const policyHash = hashContextAutomationPolicy(policy);
   return {
+    schemaVersion: 2,
     maxContextTokens,
     appliedAt: Date.now(),
     allocation,
+    policySchemaVersion: policy.schemaVersion,
+    policyVersion: policy.allocatorVersion,
+    policyHash,
+    policy,
+    continuationPreview: buildContinuationPolicyPreview(policy),
     affectedCounts,
   };
 }
