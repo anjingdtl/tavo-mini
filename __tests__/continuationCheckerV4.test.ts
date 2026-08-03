@@ -1,10 +1,41 @@
 import {
   bindIssuesToArtifact,
+  isRepairableCheckerIssue,
   parseCheckerLlmEnvelope,
   parseCheckerLlmJson,
 } from '../src/services/continuation/generation/continuationChecker';
 
 describe('Continuation V4 Checker parser', () => {
+  test('只有带定位和具体动作的非 info issue 才能进入 Repair 修订单', () => {
+    expect(
+      isRepairableCheckerIssue({
+        severity: 'warning',
+        generatedStart: 0,
+        generatedEnd: 4,
+        generatedExcerpt: '问题原句',
+        suggestedFix: '改写问题原句',
+      }),
+    ).toBe(true);
+    expect(
+      isRepairableCheckerIssue({
+        severity: 'warning',
+        generatedStart: null,
+        generatedEnd: null,
+        generatedExcerpt: '',
+        suggestedFix: '注意一致性',
+      }),
+    ).toBe(false);
+    expect(
+      isRepairableCheckerIssue({
+        severity: 'info',
+        generatedStart: 0,
+        generatedEnd: 4,
+        generatedExcerpt: '观察片段',
+        suggestedFix: '可考虑改写',
+      }),
+    ).toBe(false);
+  });
+
   describe('field protocol unification', () => {
     test('reads standard fields directly', () => {
       const raw = JSON.stringify({

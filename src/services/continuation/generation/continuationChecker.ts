@@ -30,6 +30,32 @@ export interface RawCheckIssue {
   suggestedFix?: string | null;
 }
 
+/**
+ * A Checker issue is repair-ready only when Repair can locate the affected
+ * text and has a concrete action to perform. Severity alone is not enough:
+ * an abstract warning must remain an audit note instead of becoming a fake
+ * "applied" checkbox in the single Repair call.
+ */
+export function isRepairableCheckerIssue(
+  issue: Pick<
+    RawCheckIssue,
+    | 'severity'
+    | 'generatedStart'
+    | 'generatedEnd'
+    | 'generatedExcerpt'
+    | 'suggestedFix'
+  >,
+): boolean {
+  if (issue.severity === 'info') return false;
+  const hasRange =
+    typeof issue.generatedStart === 'number' &&
+    typeof issue.generatedEnd === 'number' &&
+    issue.generatedStart >= 0 &&
+    issue.generatedEnd > issue.generatedStart;
+  const hasExcerpt = (issue.generatedExcerpt ?? '').trim().length >= 4;
+  return Boolean(issue.suggestedFix?.trim()) && (hasRange || hasExcerpt);
+}
+
 const CATEGORIES: CheckCategory[] = [
   'world',
   'character',

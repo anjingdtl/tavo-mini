@@ -35,8 +35,8 @@ ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮�
 - 模型上下文会按实际可用窗口自动分配，窗口更大时会获得更多有价值的前文，而不是机械截断；
 - 每次续写前都可以查看“实际请求”和“资料分配”（含原著风格画像的级别 / token / 降级原因，并区分 Planner 与 Writer），知道模型读到了什么。
 - 原著续写 V4 FULL-Control 会先生成完整 Writer 初稿，再并行运行 Checker 一致性审查与 Control 篇幅控制；只有 Checker 存在有证据的 error/blocking，或 Control action 不是 keep / 存在修订建议时才进入一次 Repair，Repair 输出完整终稿并接受本地 Final Gate；全程最多四次物理请求。
-- Writer 的动态汉字目标会在提示词头部和输出前最后检查处重复注入；Control 的汉字数由客户端本地统计，不能被模型自报数覆盖。Checker 的质量问题不会因为篇幅合格而被跳过，只有无可修复语义问题且 Control 为 keep 时才安全短路 Repair。
-- Local Final Gate 会继续硬拦截空正文、未实际修订、协议泄漏、重复退化和不符合 Control 修订方向的候选；篇幅区间只作为 warning，不会单独否决质量更好的 Repair。
+- Writer 的动态汉字目标会在提示词头部和输出前最后检查处重复注入；Control 的汉字数由客户端本地统计，不能被模型自报数覆盖。Checker 专注 Canon、状态、知识、关系和锁定规则的一致性，并且每条进入 Repair 的 issue 必须带精确原文片段/范围、证据和直接修订动作；无法定位的 warning 只作审计记录。Control 专注篇幅、重复退化、段落结构、Beat 覆盖、对话/场景节奏与结尾推进，并以结构化 findings 交给 Repair。
+- Local Final Gate 会继续硬拦截空正文、未实际修订、协议泄漏、重复退化和不符合 Control 修订方向的候选；篇幅区间只作为 warning，不会单独否决质量更好的 Repair，只有正文坍缩到 1000 个汉字以内才触发长度硬拦截。Repair 请求只注入 Writer 原文、可执行 Checker 修订单和 Control 报告，并通过 issueId / suggestionId / findingId 回填审计结果，避免重复上下文分散修订注意力。Repair 回执数组缺失时按空数组解析，再由本地合规检查报告未回填项，不会在正文检查前直接丢弃终稿。
 
 AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及人物关系、世界事实等重要变化，应用会保留可审核的状态建议，不会悄悄把猜测当作既定事实。
 

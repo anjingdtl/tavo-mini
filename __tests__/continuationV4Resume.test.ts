@@ -523,7 +523,7 @@ describe('Continuation V4 runner', () => {
     activeRun.stage = 'auditing';
     activeRun.contextSnapshotJson = JSON.stringify(context.snapshot);
     activeRun.contextTraceJson = JSON.stringify(context.trace);
-    const writerText = '这是已经落库的完整 Writer 初稿。'.repeat(40);
+    const writerText = '这是已经落库的完整 Writer 初稿。'.repeat(100);
     const repairText = `${writerText}终稿`;
     const writerArtifact = {
       id: 'writer-artifact-resume',

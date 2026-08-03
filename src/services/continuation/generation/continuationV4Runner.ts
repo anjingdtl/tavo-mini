@@ -17,6 +17,7 @@ import { stripModelJson } from '../canon/canonJsonValidators';
 import {
   bindIssuesToArtifact,
   filterBySettings,
+  isRepairableCheckerIssue,
   parseCheckerLlmEnvelope,
   runDeterministicChecks,
 } from './continuationChecker';
@@ -570,10 +571,7 @@ export function parseContinuationV4RepairEnvelope(raw: string): ContinuationV4Re
     Array.isArray(parsed) ||
     parsed.schemaVersion !== 1 ||
     typeof parsed.content !== 'string' ||
-    !parsed.content.trim() ||
-    !Array.isArray(parsed.appliedCheckerIssueIds) ||
-    !Array.isArray(parsed.appliedControlSuggestionIds) ||
-    !Array.isArray(parsed.unappliedItems)
+    !parsed.content.trim()
   ) {
     const topLevelKeys = Object.keys(parsed || {})
       .sort()
@@ -587,6 +585,37 @@ export function parseContinuationV4RepairEnvelope(raw: string): ContinuationV4Re
   if (Object.prototype.hasOwnProperty.call(parsed, forbiddenField)) {
     throw new Error('V4 Repair 不接受局部修改字段，必须返回完整终稿。');
   }
+  // Content is the repair payload; acknowledgement arrays are metadata.
+  // Models occasionally omit empty arrays even after following the envelope
+  // instruction. Normalize omissions to [] so the client can inspect the
+  // repaired text and let compliance report missing acknowledgements instead
+  // of rejecting before Local Final Gate.
+  const normalizeStringArray = (value: unknown, field: string): string[] => {
+    if (value == null) return [];
+    if (!Array.isArray(value)) {
+      throw new Error(`V4 Repair ${field} 必须是字符串数组。`);
+    }
+    return value
+      .filter((item: unknown) => typeof item === 'string')
+      .map((item: string) => item.trim())
+      .filter(Boolean);
+  };
+  const appliedCheckerIssueIds = normalizeStringArray(
+    parsed.appliedCheckerIssueIds,
+    'appliedCheckerIssueIds',
+  );
+  const appliedControlSuggestionIds = normalizeStringArray(
+    parsed.appliedControlSuggestionIds,
+    'appliedControlSuggestionIds',
+  );
+  const appliedControlFindingIds = normalizeStringArray(
+    parsed.appliedControlFindingIds,
+    'appliedControlFindingIds',
+  );
+  const unappliedItems = normalizeStringArray(
+    parsed.unappliedItems,
+    'unappliedItems',
+  );
   const content = parsed.content.trim();
   try {
     const nested = JSON.parse(content);
@@ -601,18 +630,10 @@ export function parseContinuationV4RepairEnvelope(raw: string): ContinuationV4Re
   return {
     schemaVersion: 1,
     content,
-    appliedCheckerIssueIds: parsed.appliedCheckerIssueIds
-      .filter((value: unknown) => typeof value === 'string')
-      .map((value: string) => value.trim())
-      .filter(Boolean),
-    appliedControlSuggestionIds: parsed.appliedControlSuggestionIds
-      .filter((value: unknown) => typeof value === 'string')
-      .map((value: string) => value.trim())
-      .filter(Boolean),
-    unappliedItems: parsed.unappliedItems
-      .filter((value: unknown) => typeof value === 'string')
-      .map((value: string) => value.trim())
-      .filter(Boolean),
+    appliedCheckerIssueIds,
+    appliedControlSuggestionIds,
+    appliedControlFindingIds,
+    unappliedItems,
   };
 }
 
@@ -635,7 +656,17 @@ function isCheckerForbiddenSubtype(subtype: string): boolean {
     subtype === 'source_overlap' ||
     subtype === 'continuation_anchor_overlap' ||
     subtype === 'future_leakage' ||
-    subtype === 'self_duplicate'
+    subtype === 'self_duplicate' ||
+    // Structural style ownership belongs to Control. Keeping these model
+    // observations out of Checker prevents vague style warnings from being
+    // presented to Repair as semantic tasks without a concrete target/fix.
+    subtype === 'dialogue_density' ||
+    subtype === 'paragraph_length' ||
+    subtype === 'paragraph_length_imbalance' ||
+    subtype === 'dialogue_narrative_ratio_drift' ||
+    subtype === 'scene_pacing_drift' ||
+    subtype === 'ending_hook_abrupt' ||
+    subtype === 'ending_hook_abruptness'
   );
 }
 
@@ -652,6 +683,7 @@ function normalizedRepairComparisonText(text: string): string {
 function repairComplianceIssue(input: {
   subtype: string;
   category: RawCheckIssue['category'];
+  severity?: RawCheckIssue['severity'];
   description: string;
   suggestedFix: string;
   evidenceIds?: number[];
@@ -659,7 +691,7 @@ function repairComplianceIssue(input: {
   return {
     category: input.category,
     subtype: input.subtype,
-    severity: 'blocking',
+    severity: input.severity ?? 'blocking',
     confidence: 1,
     generatedStart: null,
     generatedEnd: null,
@@ -698,8 +730,8 @@ export function validateContinuationV4RepairCompliance(input: {
       return [id, `chk_${id}`];
     }),
   );
-  const actionableCheckerIssues = input.checkerIssues.filter(issue =>
-    hasActionableIssue([issue]),
+  const actionableCheckerIssues = input.checkerIssues.filter(
+    issue => hasActionableIssue([issue]) || isRepairableCheckerIssue(issue),
   );
 
   for (const issue of actionableCheckerIssues) {
@@ -772,8 +804,17 @@ export function validateContinuationV4RepairCompliance(input: {
         repairComplianceIssue({
           category: 'style',
           subtype: 'repair_control_suggestion_unapplied',
+          severity:
+            suggestion.suggestionId === 'ctrl_local_expand' ||
+            suggestion.suggestionId === 'ctrl_local_compress'
+              ? 'warning'
+              : undefined,
           description: `Repair 未在 appliedControlSuggestionIds 中落实 Control 建议 ${suggestion.suggestionId}：${suggestion.instruction}`,
-          suggestedFix: `必须在完整终稿中落实 Control 建议 ${suggestion.suggestionId}，并保留其要求保护的事件节拍。`,
+          suggestedFix:
+            suggestion.suggestionId === 'ctrl_local_expand' ||
+            suggestion.suggestionId === 'ctrl_local_compress'
+              ? `建议在完整终稿中落实 Control 建议 ${suggestion.suggestionId}；篇幅要求只作 warning，仍需保留完整事件链。`
+              : `必须在完整终稿中落实 Control 建议 ${suggestion.suggestionId}，并保留其要求保护的事件节拍。`,
         }),
       );
     }
@@ -786,6 +827,36 @@ export function validateContinuationV4RepairCompliance(input: {
           subtype: 'repair_unknown_control_suggestion_id',
           description: `Repair 声明落实了当前 Control 报告不存在的 suggestion ${appliedId}。`,
           suggestedFix: '只填写本次冻结 Control 报告中实际存在的 suggestionId。',
+        }),
+      );
+    }
+  }
+
+  const controlFindingIds = new Set(
+    input.controlReport.findings.map(finding => finding.findingId),
+  );
+  const appliedControlFindingIds = input.envelope.appliedControlFindingIds ?? [];
+  for (const finding of input.controlReport.findings) {
+    if (!appliedControlFindingIds.includes(finding.findingId)) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_control_finding_unapplied',
+          severity: 'warning',
+          description: `Repair 未在 appliedControlFindingIds 中回填 Control finding ${finding.findingId}：${finding.description}`,
+          suggestedFix: `建议处理结构问题并回填 findingId ${finding.findingId}；结构 finding 只作 warning，不单独拒绝终稿。`,
+        }),
+      );
+    }
+  }
+  for (const appliedId of appliedControlFindingIds) {
+    if (!controlFindingIds.has(appliedId)) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_unknown_control_finding_id',
+          description: `Repair 声明落实了当前 Control 报告不存在的 finding ${appliedId}。`,
+          suggestedFix: '只填写本次冻结 Control 报告中实际存在的 findingId。',
         }),
       );
     }
@@ -813,8 +884,9 @@ export function validateContinuationV4RepairCompliance(input: {
         repairComplianceIssue({
           category: 'style',
           subtype: 'repair_control_insufficient_progress',
+          severity: 'warning',
           description: `Control 要求扩写，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 增加 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法下限 ${input.controlReport.allowedMinHan}）。`,
-          suggestedFix: `必须围绕当前事件链、人物反应和章末推进自然扩写，至少再净增加汉字直至达到最低实质进度 ${requiredProgress} 或合法下限 ${input.controlReport.allowedMinHan}。`,
+          suggestedFix: `建议围绕当前事件链、人物反应和章末推进自然扩写；篇幅进度只作 warning。若正文不超过 1000 个汉字，仍会按长度坍缩硬拦截。`,
         }),
       );
     }
@@ -831,8 +903,9 @@ export function validateContinuationV4RepairCompliance(input: {
         repairComplianceIssue({
           category: 'style',
           subtype: 'repair_control_insufficient_progress',
+          severity: 'warning',
           description: `Control 要求收束，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 减少 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法上限 ${input.controlReport.allowedMaxHan}）。`,
-          suggestedFix: `必须在保留完整事件链和章末钩子的前提下实际压缩重复或不推进内容，至少再净减少汉字直至达到最低实质进度 ${requiredProgress} 或合法上限 ${input.controlReport.allowedMaxHan}。`,
+          suggestedFix: `建议在保留完整事件链和章末钩子的前提下压缩重复或不推进内容；篇幅进度只作 warning。若正文不超过 1000 个汉字，仍会按长度坍缩硬拦截。`,
         }),
       );
     }
@@ -881,18 +954,24 @@ function localGateExtraIssues(
       suggestedFix: '必须根据 Checker/Control 报告输出真正修订后的完整终稿。',
     });
   }
-  if (writerHan > 0 && candidateHan * 2 < writerHan) {
+  const relativeCollapse = writerHan > 0 && candidateHan * 2 < writerHan;
+  const absoluteCollapse = candidateHan <= 1000;
+  if (absoluteCollapse || relativeCollapse) {
     issues.push({
       category: 'style',
       subtype: 'repair_candidate_collapsed',
-      severity: 'blocking',
+      severity: absoluteCollapse ? 'blocking' : 'warning',
       confidence: 1,
       generatedStart: null,
       generatedEnd: null,
       generatedExcerpt: '',
-      description: 'Repair 终稿相对 Writer 初稿明显坍缩，疑似摘要化或丢失事件链。',
+      description: absoluteCollapse
+        ? `Repair 终稿仅含 ${candidateHan} 个汉字，已坍缩至 1000 字以内，疑似摘要化或丢失事件链。`
+        : `Repair 终稿相对 Writer 初稿明显缩短（${writerHan} → ${candidateHan} 个汉字），但正文仍超过 1000 字；该篇幅风险只作 warning。`,
       evidenceIds: [],
-      suggestedFix: '保留 Writer 的完整事件链、人物互动和章末推进后重新输出完整终稿。',
+      suggestedFix: absoluteCollapse
+        ? '必须保留 Writer 的完整事件链、人物互动和章末推进，重新输出超过 1000 个汉字的完整终稿。'
+        : '建议保留 Writer 的完整事件链、人物互动和章末推进；篇幅本身不阻断 Repair 采纳。',
     });
   }
   const trimmed = candidateText.trim();
@@ -996,7 +1075,9 @@ export function runContinuationV4LocalFinalGate(input: {
  * Repair trigger, but it is advisory at this final adoption point: a Repair
  * that fixes Checker/Control issues can be better than the Writer even when
  * the frozen length interval is not fully reached. Safety, non-empty output,
- * actual revision, and Control direction remain hard requirements.
+ * actual revision, and Control direction remain hard requirements. A relative
+ * contraction above 1000 Han is advisory; only an absolute collapse to 1000
+ * Han or fewer remains a hard safety block.
  */
 function softenFinalGateLengthChecks(checks: RawCheckIssue[]): RawCheckIssue[] {
   return checks.map(check => {
@@ -1630,6 +1711,10 @@ async function runCheckerNode(input: {
         checkerArtifactsBound: hashMatches,
         checkerArtifactErrorCode: hashErrorCode,
         issues: bound,
+        repairReadyIssueCount: bound.filter(isRepairableCheckerIssue).length,
+        auditWarningCount: bound.filter(
+          issue => issue.severity === 'warning' && !isRepairableCheckerIssue(issue),
+        ).length,
       }),
       artifactId: artifact.id,
       outputTokens: result.usage?.completion ?? null,
@@ -1922,7 +2007,10 @@ async function runRepairNode(input: {
       envelope,
     });
     const localChecks = [...gate.checks, ...complianceChecks];
-    const repairPassed = gate.passed && complianceChecks.length === 0;
+    const blockingComplianceChecks = complianceChecks.filter(
+      check => check.severity === 'error' || check.severity === 'blocking',
+    );
+    const repairPassed = gate.passed && blockingComplianceChecks.length === 0;
     const candidateHash = contentRevisionHash(envelope.content);
     const noMeaningfulChange =
       normalizedRepairComparisonText(envelope.content) ===
@@ -1931,14 +2019,17 @@ async function runRepairNode(input: {
     // CLAIMED to apply, plus the Control progress numbers. Stored in the
     // existing outputJson columns; no DB migration. The UI reads these to show
     // "注入 N 项，Repair 声明应用 M 项" instead of only the applied count.
-    const injectedCheckerIssueCount = checkerIssues.filter(issue =>
-      hasActionableIssue([issue]),
+    const injectedCheckerIssueCount = checkerIssues.filter(
+      issue => hasActionableIssue([issue]) || isRepairableCheckerIssue(issue),
     ).length;
     const appliedCheckerIssueCount = envelope.appliedCheckerIssueIds.length;
     const injectedControlSuggestionCount =
       control.report.suggestions.length;
     const appliedControlSuggestionCount =
       envelope.appliedControlSuggestionIds.length;
+    const injectedControlFindingCount = control.report.findings.length;
+    const appliedControlFindingCount =
+      envelope.appliedControlFindingIds?.length ?? 0;
     const writerHan = countHanCharacters(writerArtifact.content);
     const candidateHan = countHanCharacters(envelope.content);
     const controlRequiredDelta =
@@ -1961,6 +2052,9 @@ async function runRepairNode(input: {
       appliedCheckerIssueCount,
       injectedControlSuggestionCount,
       appliedControlSuggestionCount,
+      injectedControlFindingCount,
+      appliedControlFindingCount,
+      controlFindingSubtypes: control.report.findings.map(finding => finding.subtype),
       writerHan,
       candidateHan,
       actualDeltaHan,
@@ -1984,6 +2078,7 @@ async function runRepairNode(input: {
           schemaVersion: 1,
           appliedCheckerIssueIds: envelope.appliedCheckerIssueIds,
           appliedControlSuggestionIds: envelope.appliedControlSuggestionIds,
+          appliedControlFindingIds: envelope.appliedControlFindingIds ?? [],
           unappliedItems: envelope.unappliedItems,
           parentArtifactId: writerArtifact.id,
           contentHash: candidateHash,
@@ -2000,7 +2095,7 @@ async function runRepairNode(input: {
           checkSubtypes: localChecks.map(check => check.subtype),
           checkerSemanticReview: checkerIssues.length > 0 ? 'available' : 'none_or_degraded',
           controlDegraded: control.degraded,
-          repairCompliancePassed: false,
+          repairCompliancePassed: blockingComplianceChecks.length === 0,
           complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
           rejectionCode,
           ...repairTelemetry,
@@ -2019,7 +2114,7 @@ async function runRepairNode(input: {
        eligibilityStatus: repairPassed ? 'eligible' : 'rejected',
        rejectionCode: repairPassed
          ? null
-         : complianceChecks.length > 0
+         : blockingComplianceChecks.length > 0
            ? 'repair_compliance_failed'
            : 'local_final_gate_failed',
       localChecks,
@@ -2031,13 +2126,14 @@ async function runRepairNode(input: {
         schemaVersion: 1,
         appliedCheckerIssueIds: envelope.appliedCheckerIssueIds,
         appliedControlSuggestionIds: envelope.appliedControlSuggestionIds,
+        appliedControlFindingIds: envelope.appliedControlFindingIds ?? [],
         unappliedItems: envelope.unappliedItems,
          parentArtifactId: writerArtifact.id,
          contentHash: candidateHash,
          complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
          rejectionCode: repairPassed
            ? null
-           : complianceChecks.length > 0
+           : blockingComplianceChecks.length > 0
              ? 'repair_compliance_failed'
              : 'local_final_gate_failed',
         ...repairTelemetry,
@@ -2051,7 +2147,7 @@ async function runRepairNode(input: {
         checkSubtypes: localChecks.map(check => check.subtype),
          checkerSemanticReview: checkerIssues.length > 0 ? 'available' : 'none_or_degraded',
          controlDegraded: control.degraded,
-         repairCompliancePassed: complianceChecks.length === 0,
+         repairCompliancePassed: blockingComplianceChecks.length === 0,
          complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
          ...repairTelemetry,
        }),
