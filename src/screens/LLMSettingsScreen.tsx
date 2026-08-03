@@ -192,7 +192,7 @@ export const LLMSettingsScreen: React.FC = () => {
   const save = async () => {
     if (!validate()) return;
     setSaving(true);
-    // 记录保存前的 context_window，用于检测是否需要弹窗同步流水线 max_tokens
+    // 记录保存前的 context_window，用于检测是否需要弹窗同步大纲流水线 max_tokens
     const prevContextWindow =
       draft.id > 0
         ? llmConfigs.find(c => c.id === draft.id)?.context_window ?? null
@@ -207,7 +207,9 @@ export const LLMSettingsScreen: React.FC = () => {
       // （包括 setActiveLLMConfig 后变化的 is_active 字段），避免 draft.is_active 过时
       isEditingRef.current = false;
       Toast.show({ type: 'success', text1: 'LLM 配置已保存' });
-      // 上下文长度变化时弹窗确认同步流水线 max_tokens
+      // 上下文长度变化时，仅为大纲流水线提供可选的兼容同步提示。
+      // 原著续写 V4 不消费这些 pipeline_* 固定值，而是按已持久化
+      // ContextAutomationPolicy 与各阶段冻结模型能力动态解析。
       if (
         prevContextWindow !== null &&
         prevContextWindow !== draft.context_window &&
@@ -222,12 +224,12 @@ export const LLMSettingsScreen: React.FC = () => {
     }
   };
 
-  // 上下文长度变化后弹窗确认是否同步流水线 4 阶段 max_tokens
-  // 复用 contextAutoAllocator 的 50/15/15/20 比例算法
+  // 上下文长度变化后弹窗确认是否同步大纲流水线 4 阶段 max_tokens。
+  // 该兼容入口不参与 Continuation V4 的阶段预算。
   const maybePromptSyncPipeline = (prev: number, next: number) => {
     Alert.alert(
       '上下文长度已更新',
-      `检测到上下文长度从 ${prev} 改为 ${next}。\n\n是否自动调整流水线各阶段的 Max Tokens？\n\n按 50/15/15/20 比例分配输出预算（context_window × 20%），将覆盖流水线配置页里的现有值。`,
+      `检测到上下文长度从 ${prev} 改为 ${next}。\n\n是否自动调整大纲流水线各阶段的 Max Tokens？\n\n按兼容比例分配输出预算，将覆盖大纲流水线配置页里的现有值。原著续写 V4 会在每次 run 中按 Context Automation Policy 和各阶段模型能力动态计算。`,
       [
         { text: '取消', style: 'cancel' },
         {
