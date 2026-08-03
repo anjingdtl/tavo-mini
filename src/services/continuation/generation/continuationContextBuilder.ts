@@ -92,12 +92,6 @@ export interface BuildContinuationContextInput {
     repair: FrozenContinuationModelConfig | null;
     stateExtraction: FrozenContinuationModelConfig | null;
   };
-  /**
-   * V3 workflow version override (plan §4.1). New production runs default to 3
-   * (quality-first). Tests and explicit V2 callers may pass 2 to preserve the
-   * historical Writer→Checker→patch-Repair behaviour. Absent → 3.
-   */
-  workflowVersionOverride?: 2 | 3;
 }
 
 function reviewPolicyFor(
@@ -696,10 +690,9 @@ export async function buildContinuationContext(
   // explicit user rules only, otherwise hard world rules would be duplicated
   // in both prompt sections and inflate the context trace.
 
-  const workflowVersion: 2 | 3 = input.workflowVersionOverride ?? 3;
   const settingsSnapshot: ContinuationGenerationSettingsSnapshot = {
     schemaVersion: 1,
-    workflowVersion,
+    workflowVersion: 2,
     // Persist the effective policy into the immutable run snapshot as well;
     // downstream prompt/checker stages must never see a stale off/balanced value.
     values: { ...settings, styleLevel },
@@ -753,7 +746,7 @@ export async function buildContinuationContext(
 
   const snapshot: ContinuationContextSnapshot = {
     schemaVersion: 2,
-    workflowVersion,
+    workflowVersion: 2,
     projectId: input.projectId,
     targetChapterId: input.targetChapterId,
     targetPosition: input.targetPosition,

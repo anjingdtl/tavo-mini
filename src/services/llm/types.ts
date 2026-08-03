@@ -35,8 +35,6 @@ export interface LLMResult {
   };
 }
 
-export type ReasoningEffort = 'low' | 'high' | 'max';
-
 export interface LLMGenerateOptions {
   temperature?: number;
   top_p?: number;
@@ -44,12 +42,6 @@ export interface LLMGenerateOptions {
   responseFormat?: 'json_object';
   /** Optional OpenAI-compatible extension; omitted for existing callers. */
   thinking?: { type: 'enabled' | 'disabled' };
-  /**
-   * DeepSeek V4 reasoning effort (plan §5.1). Only sent when `thinking` is
-   * enabled. Non-DeepSeek providers must ignore this via the frozen model
-   * capability policy, not by blindly forwarding it.
-   */
-  reasoning_effort?: ReasoningEffort;
   scenario?: string;
   projectId?: number;
   taskId?: string;
@@ -58,17 +50,6 @@ export interface LLMGenerateOptions {
   onQueueState?: (state: LLMQueueState) => void;
   onProgress?: (metrics: LLMRequestMetrics) => void;
   requestConfig?: LLMRequestConfig;
-  /**
-   * V3 physical-request budget hook (plan §5.1). The Provider's FIRST fetch in a
-   * call consumes the request slot the Runner already reserved. Before any
-   * ADDITIONAL fetch inside the same call (response_format fallback, provider
-   * retry), the Provider MUST `await beforeAdditionalHttpAttempt(...)` so the
-   * Runner can reserve another slot against the four-fetch V3 cap. Throwing
-   * inside the hook aborts the call before the extra fetch happens.
-   */
-  beforeAdditionalHttpAttempt?: (meta: {
-    attemptKind: 'format_fallback' | 'provider_retry';
-  }) => Promise<void> | void;
 }
 
 export type LLMQueueClass =
