@@ -153,12 +153,6 @@ android {
         versionName versionMeta.versionName as String
     }
     signingConfigs {
-        debug {
-            storeFile file('debug.keystore')
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
-        }
         release {
             if (releaseBuildRequested) {
                 storeFile file(releaseSigningValues["SHINE_WRITER_RELEASE_STORE_FILE"])
