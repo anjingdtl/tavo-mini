@@ -31,6 +31,7 @@ import type {
   StrictnessProfile,
   TypedEntityRef,
 } from './types';
+import type { ContinuationV4StageBudget } from './continuationV4Budget';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -706,6 +707,22 @@ export async function getLatestEligibleArtifact(
   return rowArtifact(res.rows.item(0));
 }
 
+/** Read the newest artifact for one V4-producing stage without confusing a
+ * later rejected Repair with the persisted Writer draft. */
+export async function getLatestArtifactForStage(
+  runId: string,
+  stage: Extract<ContinuationArtifact['stage'], 'writer' | 'repair'>,
+): Promise<ContinuationArtifact | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_generation_artifacts
+     WHERE run_id = ? AND stage = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [runId, stage],
+  );
+  if (res.rows.length === 0) return null;
+  return rowArtifact(res.rows.item(0));
+}
+
 export async function getArtifactById(
   id: string,
 ): Promise<ContinuationArtifact | null> {
@@ -791,6 +808,62 @@ export async function listStageResults(
   return out;
 }
 
+/**
+ * Create the complete V4 stage ledger before the first physical request.
+ * Physical stages remain queued until reserveContinuationStage claims them;
+ * local_verify is explicitly zero-request and is therefore queued with
+ * request_reserved=0/request_count=0 from the start. INSERT OR IGNORE makes
+ * cold-start/resume initialization idempotent.
+ */
+export async function ensureContinuationV4StageResults(input: {
+  runId: string;
+  stages: Record<
+    Exclude<ContinuationV4StageName, 'local_verify'>,
+    Pick<
+      ContinuationV4StageBudget,
+      'configId' | 'compiledPromptTokens' | 'minimumOutputTokens' | 'maximumOutputTokens'
+    >
+  >;
+}): Promise<ContinuationGenerationStageResult[]> {
+  const db = await openDatabase();
+  const ts = nowIso();
+  const physicalStages: Array<
+    Exclude<ContinuationV4StageName, 'local_verify'>
+  > = ['writer', 'checker', 'control', 'repair'];
+  const statements = physicalStages.map(stage => {
+    const budget = input.stages[stage];
+    return {
+      sql: `INSERT OR IGNORE INTO continuation_generation_stage_results (
+        id, run_id, stage, status, request_reserved, request_count,
+        model_config_id, input_tokens, min_output_tokens, max_output_tokens,
+        output_json, artifact_id, error_code, error_message,
+        started_at, completed_at, created_at, updated_at
+      ) VALUES (?, ?, ?, 'queued', 0, 0, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      params: [
+        newContinuationStageResultId(),
+        input.runId,
+        stage,
+        budget.configId,
+        budget.minimumOutputTokens,
+        budget.maximumOutputTokens,
+        ts,
+        ts,
+      ],
+    };
+  });
+  statements.push({
+    sql: `INSERT OR IGNORE INTO continuation_generation_stage_results (
+      id, run_id, stage, status, request_reserved, request_count,
+      model_config_id, input_tokens, min_output_tokens, max_output_tokens,
+      output_json, artifact_id, error_code, error_message,
+      started_at, completed_at, created_at, updated_at
+    ) VALUES (?, ?, 'local_verify', 'queued', 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+    params: [newContinuationStageResultId(), input.runId, ts, ts],
+  });
+  await executeTransaction(db, statements);
+  return listStageResults(input.runId);
+}
+
 export interface ContinuationStageReservation {
   runId: string;
   stage: ContinuationV4StageName;
@@ -813,7 +886,45 @@ export async function reserveContinuationStage(
 }> {
   const db = await openDatabase();
   const existing = await getStageResult(input.runId, input.stage);
-  if (existing) return { reserved: false, result: existing };
+  if (existing) {
+    // V4 initializes physical rows as queued. Claim that placeholder exactly
+    // once; any already-reserved/failed/interrupted row is authoritative and
+    // must never be retried on resume.
+    if (
+      existing.status !== 'queued' ||
+      existing.requestReserved ||
+      existing.requestCount !== 0
+    ) {
+      return { reserved: false, result: existing };
+    }
+    const ts = nowIso();
+    const [claim] = await db.executeSql(
+      `UPDATE continuation_generation_stage_results SET
+        status = 'running', request_reserved = 1, request_count = 1,
+        model_config_id = ?, input_tokens = ?, min_output_tokens = ?,
+        max_output_tokens = ?, started_at = ?, updated_at = ?
+       WHERE run_id = ? AND stage = ? AND status = 'queued'
+         AND request_reserved = 0 AND request_count = 0`,
+      [
+        input.modelConfigId,
+        input.inputTokens,
+        input.minOutputTokens,
+        input.maxOutputTokens,
+        ts,
+        ts,
+        input.runId,
+        input.stage,
+      ],
+    );
+    if ((claim.rowsAffected ?? 0) === 1) {
+      const claimed = await getStageResult(input.runId, input.stage);
+      if (!claimed) throw new Error('续写阶段 queued reservation 写入后无法读取');
+      return { reserved: true, result: claimed };
+    }
+    const winner = await getStageResult(input.runId, input.stage);
+    if (winner) return { reserved: false, result: winner };
+    throw new Error('续写阶段 queued reservation 竞争后无法读取结果');
+  }
 
   const id = newContinuationStageResultId();
   const ts = nowIso();
@@ -1004,6 +1115,7 @@ export async function finalizeContinuationV4Repair(
   }
 
   const localVerifyStatus = input.localVerifyStatus ?? 'success';
+  const repairStageUpdateIndex = statements.length + 1;
   statements.push({
     sql: `UPDATE continuation_generation_stage_results SET
         status = 'success', output_json = ?, artifact_id = ?,
@@ -1019,6 +1131,7 @@ export async function finalizeContinuationV4Repair(
       input.runId,
     ],
   });
+  const localVerifyUpdateIndex = statements.length + 1;
   statements.push({
     sql: `UPDATE continuation_generation_stage_results SET
         status = ?, output_json = ?, artifact_id = ?,
@@ -1047,6 +1160,13 @@ export async function finalizeContinuationV4Repair(
   const finalUpdateIndex = statements.length;
   await executeTransaction(db, statements, {
     onStatementComplete: (oneBasedIndex, rowsAffected) => {
+      if (
+        (oneBasedIndex === repairStageUpdateIndex ||
+          oneBasedIndex === localVerifyUpdateIndex) &&
+        rowsAffected !== 1
+      ) {
+        throw new Error('续写 V4 finalize 缺少有效 stage result，事务回滚');
+      }
       if (oneBasedIndex === finalUpdateIndex && rowsAffected !== 1) {
         throw new Error('续写 V4 finalize 发现 run 状态已变化，事务回滚');
       }
@@ -1063,6 +1183,139 @@ export async function finalizeContinuationV4Repair(
     throw new Error('续写 V4 finalize 提交后读取结果失败');
   }
   return { artifact, repairStageResult, localVerifyStageResult };
+}
+
+export interface ContinuationV4LocalGateInput {
+  runId: string;
+  repairArtifactId: string;
+  localVerifyStageResultId: string;
+  writerArtifactId: string;
+  eligibilityStatus: ContinuationArtifactEligibility;
+  rejectionCode?: string | null;
+  localChecks?: ContinuationV4LocalCheckInput[];
+  markWriterChecksObsolete: boolean;
+  localVerifyOutputJson?: string | null;
+  localVerifyStatus?: Extract<ContinuationStageResultStatus, 'success' | 'failed'>;
+  tokenUsageJson: string;
+  expectedRunStates?: ContinuationRunState[];
+  ts?: string;
+}
+
+/**
+ * Resume boundary for a Repair artifact that was persisted before the app was
+ * stopped. No LLM or Canon read occurs here: only the local gate result,
+ * eligibility, checks and run CAS are committed atomically.
+ */
+export async function finalizeContinuationV4LocalGate(
+  input: ContinuationV4LocalGateInput,
+): Promise<{
+  artifact: ContinuationArtifact;
+  localVerifyStageResult: ContinuationGenerationStageResult;
+}> {
+  const db = await openDatabase();
+  const ts = input.ts ?? nowIso();
+  const expectedStates = input.expectedRunStates ?? ['running'];
+  const statePlaceholders = expectedStates.map(() => '?').join(', ');
+  const statements: Array<{ sql: string; params?: any[] }> = [
+    {
+      sql: `UPDATE continuation_generation_artifacts SET
+        eligibility_status = ?, rejection_code = ?
+        WHERE id = ? AND run_id = ? AND stage = 'repair'`,
+      params: [
+        input.eligibilityStatus,
+        input.rejectionCode ?? null,
+        input.repairArtifactId,
+        input.runId,
+      ],
+    },
+  ];
+  for (const check of input.localChecks ?? []) {
+    statements.push({
+      sql: `INSERT INTO continuation_check_results (
+        run_id, chapter_id, artifact_id, artifact_hash, category, subtype,
+        severity, confidence, generated_start, generated_end,
+        generated_excerpt, description, entity_ref_type, entity_ref_id,
+        evidence_ids_json, suggested_fix, resolution_status, created_at,
+        updated_at
+      ) SELECT ?, r.chapter_id, a.id, a.content_hash, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        'open', ?, ?
+      FROM continuation_generation_runs r
+      JOIN continuation_generation_artifacts a ON a.id = ? AND a.run_id = r.id
+      WHERE r.id = ?`,
+      params: [
+        input.runId,
+        check.category,
+        check.subtype,
+        check.severity,
+        check.confidence,
+        check.generatedStart,
+        check.generatedEnd,
+        check.generatedExcerpt,
+        check.description,
+        check.entityRefType ?? null,
+        check.entityRefId ?? null,
+        JSON.stringify(check.evidenceIds ?? []),
+        check.suggestedFix ?? null,
+        ts,
+        ts,
+        input.repairArtifactId,
+        input.runId,
+      ],
+    });
+  }
+  if (input.markWriterChecksObsolete) {
+    statements.push({
+      sql: `UPDATE continuation_check_results SET
+        resolution_status = 'obsolete', updated_at = ?
+        WHERE run_id = ? AND artifact_id = ? AND resolution_status = 'open'`,
+      params: [ts, input.runId, input.writerArtifactId],
+    });
+  }
+  const localVerifyStatus = input.localVerifyStatus ?? 'success';
+  const localVerifyUpdateIndex = statements.length + 1;
+  statements.push({
+    sql: `UPDATE continuation_generation_stage_results SET
+      status = ?, output_json = ?, artifact_id = ?,
+      completed_at = ?, updated_at = ?
+      WHERE id = ? AND run_id = ? AND stage = 'local_verify'
+        AND request_reserved = 0 AND request_count = 0`,
+    params: [
+      localVerifyStatus,
+      input.localVerifyOutputJson ?? null,
+      input.repairArtifactId,
+      ts,
+      ts,
+      input.localVerifyStageResultId,
+      input.runId,
+    ],
+  });
+  statements.push({
+    sql: `UPDATE continuation_generation_runs SET
+      state = 'awaiting_user', stage = 'awaiting_user',
+      token_usage_json = ?, updated_at = ?
+      WHERE id = ? AND state IN (${statePlaceholders})`,
+    params: [input.tokenUsageJson, ts, input.runId, ...expectedStates],
+  });
+  const finalUpdateIndex = statements.length;
+  await executeTransaction(db, statements, {
+    onStatementComplete: (oneBasedIndex, rowsAffected) => {
+      if (oneBasedIndex === 1 && rowsAffected !== 1) {
+        throw new Error('续写 V4 local gate 找不到 Repair artifact，事务回滚');
+      }
+      if (oneBasedIndex === localVerifyUpdateIndex && rowsAffected !== 1) {
+        throw new Error('续写 V4 local gate 缺少 queued local_verify，事务回滚');
+      }
+      if (oneBasedIndex === finalUpdateIndex && rowsAffected !== 1) {
+        throw new Error('续写 V4 local gate 发现 run 状态已变化，事务回滚');
+      }
+    },
+  });
+  const artifact = await getArtifactById(input.repairArtifactId);
+  const localVerifyStageResult = await getStageResult(input.runId, 'local_verify');
+  if (!artifact || !localVerifyStageResult) {
+    throw new Error('续写 V4 local gate 提交后读取结果失败');
+  }
+  return { artifact, localVerifyStageResult };
 }
 
 export async function savePlan(
