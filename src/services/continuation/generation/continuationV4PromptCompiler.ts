@@ -289,11 +289,11 @@ function controlProgressDirective(report: ContinuationControlReport): string {
     `Control action=${report.action}。终稿必须朝${direction}方向产生实质性变化：只改标点、空白或少量字符、只回填 ID 不算完成。`,
     `当前汉字 ${report.currentHan}，合法区间 ${report.allowedMinHan}–${report.allowedMaxHan}。`,
     report.action === 'expand'
-      ? `建议至少净增加 ${requiredProgress} 个汉字并朝 ${report.allowedMinHan} 靠近；未完全达到该进度只记录 warning，不单独拒绝。`
+      ? `必须至少净增加 ${requiredProgress} 个汉字（或达到合法下限 ${report.allowedMinHan}）；未达到该最低实质进度的终稿将被本地合规直接拒绝。`
       : report.action === 'compress'
-        ? `建议至少净减少 ${requiredProgress} 个汉字并朝 ${report.allowedMaxHan} 靠近；未完全达到该进度只记录 warning，不单独拒绝。`
+        ? `必须至少净减少 ${requiredProgress} 个汉字（或达到合法上限 ${report.allowedMaxHan}）；未达到该最低实质进度的终稿将被本地合规直接拒绝。`
         : '终稿仍须落实 Checker 强制任务并真正改变原稿。',
-    '最终篇幅未完全进入合法区间或未达到建议进度时，本地 Final Gate 只记录 warning，不直接拒绝；只有正文坍缩到 1000 个汉字以内才硬拦截。',
+    '达到最低实质进度、但最终字数仍未完全进入合法区间时，只记录长度 warning，不单独拒绝；只有正文坍缩到 1000 个汉字以内才硬拦截。',
   ].join('\n');
 }
 
@@ -328,7 +328,7 @@ export function compileContinuationV4RepairMessages(input: {
         `- Checker 中另有 ${repairableCheckerIssues.length} 项 repairReady=true 的可执行修订单；无论其严重度是 warning 还是 error，都必须对对应原文产生真实改写，不能只回填 issueId。`,
         `- 必须落实所有 Control suggestion，并回填其 suggestionId（共 ${forcedControlCount} 项强制建议）。`,
         `- 必须处理 Control findings，并回填其 findingId（共 ${controlFindings.length} 项结构诊断；findings 未完全处理只记录 warning，不单独拒绝）。`,
-        '- Control 要求 expand/compress 时，应直接按照报告修订原文并尽量朝目标方向优化；未完全达到长度或建议进度时只保留 warning，不单独拒绝。',
+        '- Control 要求 expand/compress 时，必须按报告做实质修订并满足最低实质进度（净增/净减达到客户端给出的 requiredProgress，或进入合法区间）；未达到该进度的终稿会被本地合规直接拒绝。达到进度但最终字数仍未完全进入合法区间时，只保留长度 warning。',
         '- 正文不得坍缩成 1000 个汉字以内；必须保留完整事件链、人物互动和章末推进。',
         '对每个 repairReady=true 的 Checker issue，必须把报告中原样的 issueId 填入 appliedCheckerIssueIds，并改写其 generatedExcerpt；repairReady=false 的 warning 仅作审计记录，不要声称已完成。对 Control 报告中的每条 suggestion，必须把原样 suggestionId 填入 appliedControlSuggestionIds；对每条 Control finding，若已处理则把原样 findingId 填入 appliedControlFindingIds；合格终稿的 unappliedItems 必须为空。只填写 id 不代表完成修订，客户端还会检查终稿是否真正改变、问题原句是否仍完整保留以及 Control 修订方向是否满足。',
         `【Checker 可执行修订单】\n${repairableCheckerIssues.map(renderCheck).join('\n') || '（无可定位的 Checker 修订单）'}`,

@@ -270,14 +270,17 @@ export function buildContinuationControlFallback(
 }
 
 /**
- * Recommended substantial progress for a Repair candidate in the Control
- * direction. This is not a hard length gate: a candidate that falls short of
- * this progress or `allowedMinHan` can still pass when the content remains
- * above the absolute 1000-Han collapse floor; the Local Final Gate records a
- * warning. The absolute collapse rule is enforced by the V4 runner.
+ * The minimum substantial progress a Repair candidate must make in Control's
+ * direction. This is a HARD compliance requirement, not the final-length soft
+ * gate: a candidate that falls short of this progress (and also does not reach
+ * the legal band) is rejected by `validateContinuationV4RepairCompliance` with
+ * `repair_control_insufficient_progress` (blocking). A candidate that meets
+ * this floor but still falls short of allowedMin/allowedMax passes Control
+ * compliance; the remaining pure length gap stays a `chapter_length_*` warning
+ * in the Local Final Gate and does not reject.
  *
  * Defined here (single source of truth) so the Repair prompt, the compliance
- * check and the result UI never diverge on what "recommended progress" means.
+ * check and the result UI never diverge on what "minimum progress" means.
  */
 export const CONTROL_PROGRESS_RATIO = 0.35;
 export const CONTROL_PROGRESS_FLOOR_HAN = 80;

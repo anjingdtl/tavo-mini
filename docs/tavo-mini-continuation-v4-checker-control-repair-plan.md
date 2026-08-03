@@ -517,6 +517,20 @@ repair_control_insufficient_progress
 
 语义质量仍由用户审阅和现有软门禁策略承担。
 
+### 5.8 实施修订记录（2026-08-04 落地）
+
+> 本节为最终落地策略，澄清「实质修订方向」与「最终字数」两类验收的边界。以下条款优先于上文若有冲突的表述。
+
+最终落地策略明确区分两类验收，互不混淆：
+
+1. **A. 实质修订方向/进度（硬验收）**：Control action 为 expand/compress 时，Repair 必须满足最低实质进度——即净增/净减汉字达到 `requiredControlProgressHan`，或已进入合法区间。未满足时产生 `repair_control_insufficient_progress`，severity 为 **`blocking`**，候选被拒绝。这是 Control 合规硬要求。
+2. **B. 最终字数软门禁（保留 warning）**：达到 A 的最低进度、但最终字数仍未完全进入 `allowedMinHan`–`allowedMaxHan` 区间时，仅由 Local Final Gate 产生 `chapter_length_*` 的 **`warning`**，不单独拒绝。
+3. **本地强制 suggestion ID 缺失（在进度达标时仅 warning）**：当 Repair 已满足 A 的实质进度、但未在 `appliedControlSuggestionIds` 中回填 `ctrl_local_expand`/`ctrl_local_compress` 时，只产生 `repair_control_suggestion_unapplied` 的 **`warning`**，候选不被这一条拒绝。强制力统一交给 A（字数进度），不依赖 ID 回填。若同时进度也不达标，候选仍会被 A 的 blocking 拒绝。
+4. **不随之软化**：上文 §5.5 中「缺失时产生 `repair_control_suggestion_unapplied` 并拒绝 Repair candidate」、§10.3「Repair 只增加极少字符，candidate 被拒绝」的验收目标，在本策略下分别由第 3 条（ID 缺失在进度达标时只 warning）与第 1 条（进度不足 blocking 拒绝）覆盖；§9.2-8「Writer 2133 → Repair 2134 被判定为进度不足」由第 1 条实现为 blocking 拒绝。
+5. **公式不变**：`CONTROL_PROGRESS_RATIO = 0.35`、`CONTROL_PROGRESS_FLOOR_HAN = 80`、`requiredControlProgressHan = min(abs(delta), max(80, ⌈abs(delta)*0.35⌉))` 保持原样。
+
+UI 层无需改动：`repairEligible`/默认候选回退已基于 `eligibilityStatus`/`rejectionCode`，A 变 blocking 后会自动把默认候选切回 Writer 并显示「Repair 被本地门禁拒绝」。
+
 ---
 
 ## 6. Repair Prompt 调整
