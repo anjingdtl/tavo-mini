@@ -35,7 +35,9 @@ const LENGTH_ISSUE_SUBTYPES = new Set([
 ]);
 
 /**
- * Count Han characters across the complete Unicode Han ranges. Iterate by
+ * Count Han characters in the implementation's supported ranges: BMP Unified
+ * Ideographs, Extension A, Compatibility Ideographs, U+20000–U+2FA1F, and 〇.
+ * This intentionally does not claim complete Unicode Han coverage. Iterate by
  * code point so supplementary-plane Han characters count once, while Repair
  * offsets remain UTF-16 code-unit offsets elsewhere in the workflow.
  */

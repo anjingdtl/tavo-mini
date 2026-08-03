@@ -171,6 +171,22 @@ describe('continuation repair patch safety', () => {
     expect(validateRepairPatches('甲乙丙丁', patches!)).toBe(false);
   });
 
+  it('accepts the project single-newline paragraph boundary without allowing sentence-middle insertion', () => {
+    const paragraphBoundary = parseRepairPatches(
+      JSON.stringify({
+        patches: [{ start: 2, end: 2, replacement: '新增段落' }],
+      }),
+    );
+    expect(validateRepairPatches('甲乙\n丙丁', paragraphBoundary!)).toBe(true);
+
+    const betweenCrLf = parseRepairPatches(
+      JSON.stringify({
+        patches: [{ start: 2, end: 2, replacement: '新增段落' }],
+      }),
+    );
+    expect(validateRepairPatches('甲\r\n乙', betweenCrLf!)).toBe(false);
+  });
+
   it('rejects collapse and preserves a previously valid length band', () => {
     expect(isRepairCandidateUsable(han(3000), han(600), 3000)).toBe(false);
     expect(isRepairCandidateUsable(han(3000), han(2400), 3000)).toBe(false);
@@ -200,7 +216,7 @@ describe('continuation repair patch safety', () => {
   });
 });
 
-describe('countHanCharacters full Unicode Han coverage', () => {
+describe('countHanCharacters supported Unicode Han ranges', () => {
   it('counts BMP CJK Unified Ideographs', () => {
     expect(countHanCharacters('汉字')).toBe(2);
   });
