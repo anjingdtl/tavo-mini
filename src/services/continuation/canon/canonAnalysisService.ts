@@ -14,6 +14,7 @@ import { now } from '../../../data/repositories/shared';
 import { v4 } from '../../uuidBridge';
 import { sha256Hex } from '../hashUtils';
 import { continuationSourceReader } from '../continuationSourceReader';
+import { asUtf16Offset } from '../continuationSourceRepository';
 import { normalizeAlias } from './canonEntityResolver';
 import {
   ContinuationSnapshotOutdatedError,
@@ -34,6 +35,7 @@ import {
   type CanonCoverage,
   type CanonSnapshot,
   type ContinuationAnalysisMode,
+  type EvidenceOwnerType,
 } from './types';
 import {
   getActiveSnapshot,
@@ -51,7 +53,6 @@ import {
   updateWorkItem,
   updateSnapshotMeta,
   countFutureEvidence,
-  countOrphanEvidence,
   asSourcePosition,
 } from './canonRepository';
 import {
@@ -95,11 +96,16 @@ import {
   precheckCanonAnalysis,
   resolveExtractionMaxTokens,
   resolveChapterTextLimitFromBudget,
+  estimatePromptOverhead,
   MIN_INPUT_BUDGET_TOKENS,
   type AdaptiveBatch,
   type AdaptiveBatchPlan,
   type CanonAnalysisPrecheck,
 } from './adaptiveBatchPlanner';
+import {
+  resolveCanonBudget,
+  SOURCE_CHUNK_RATIO_RESCAN,
+} from './canonBudgetPolicy';
 import {
   countValidCanonRowsForGate,
   evaluateFiveDimensionGate,
@@ -778,6 +784,23 @@ export async function materializeBatchResult(
     runId: string;
     boundaryExclusive: number;
     profile: AnalysisProfile;
+    /**
+     * 2026-08-04 修复（问题1）：落库前回读校验闭包。当提供时，每条 evidence
+     * 在 INSERT 前会按 [charStart, charEnd) 回读原文并与 quotePreview 比对，
+     * 不一致则拒绝落库。由调用方（processAnalysisRunInner）从 Phase 1
+     * SourceReader 构造；为 undefined 时退化为仅边界检查（兼容旧调用方）。
+     */
+    readBackVerifier?: (charStart: number, charEnd: number) => Promise<string>;
+    /** Schema 33 evidence provenance — defaults to 'batch'. */
+    sourceOrigin?: 'batch' | 'rescan';
+    rescanOperationId?: string;
+    /**
+     * 2026-08-04 修复（问题2）：当为 true 时跳过开头的"清空该 batch 范围全部
+     * 证据/事实"逻辑。定向补扫（materializeRescanResult）会先做自己的分类级
+     * 删除，然后以 skipStandardDelete=true 调用本函数复用 INSERT 逻辑，避免
+     * 误删其他 request group 的证据。
+     */
+    skipStandardDelete?: boolean;
   },
   result: ChapterExtractionResult,
   chapters: BoundedSourceChapter[],
@@ -791,50 +814,73 @@ export async function materializeBatchResult(
       ? chapters[0].position
       : (0 as ReturnType<typeof asSourcePosition>);
   const ts = now();
+  // 2026-08-04 修复（问题1）：构造 evidence 输入时统一带上 readBackVerifier
+  // 与来源标识，避免每个调用点重复拼写。
+  const evInput = (
+    candidate: ExtractionEvidenceCandidate,
+  ): Parameters<typeof insertEvidenceAndLink>[1] => ({
+    projectId: ctx.projectId,
+    sourceId: ctx.sourceId,
+    snapshotId: ctx.snapshotId,
+    analysisRunId: ctx.runId,
+    boundaryExclusive: ctx.boundaryExclusive,
+    candidate,
+    readBackVerifier: ctx.readBackVerifier,
+    sourceOrigin: ctx.sourceOrigin,
+    rescanOperationId: ctx.rescanOperationId,
+  });
 
   // 清理该 batch 的旧 canon 数据，防止 resume 重跑时重复 INSERT。
   // characters 跨 batch 共享（ensureCharacter 通过 nameToId 去重），不删；
   // evidence 表没有 valid_from_position，按 chapter_position 区间清理（CAN-101）；
   // 其余子表按 valid_from_position = fromPos 清理。
-  // 原逻辑无此清理，中途失败后 resume 重跑会重复插入 alias/evidence/
-  // relationship/plot_thread/experience/knowledge/state/timeline，导致孤儿
-  // 证据，countOrphanEvidence > 0，activateSnapshotAndStyleProfile 永久拒绝激活。
-  await executeTransaction(db, [
-    {
-      sql: `DELETE FROM canon_evidence
-        WHERE snapshot_id = ? AND analysis_run_id = ?
-          AND chapter_position >= ? AND chapter_position <= ?`,
-      params: [ctx.snapshotId, ctx.runId, fromPos, pos],
-    },
-    {
-      sql: 'DELETE FROM canon_timeline_events WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-      params: [ctx.snapshotId, ctx.runId, fromPos],
-    },
-    {
-      sql: 'DELETE FROM canon_plot_threads WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-      params: [ctx.snapshotId, ctx.runId, fromPos],
-    },
-    {
-      sql: 'DELETE FROM canon_relationships WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-      params: [ctx.snapshotId, ctx.runId, fromPos],
-    },
-    {
-      sql: 'DELETE FROM canon_character_state_snapshots WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-      params: [ctx.snapshotId, ctx.runId, fromPos],
-    },
-    {
-      sql: 'DELETE FROM canon_character_experiences WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-      params: [ctx.snapshotId, ctx.runId, fromPos],
-    },
-    {
-      sql: 'DELETE FROM canon_character_knowledge WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-      params: [ctx.snapshotId, ctx.runId, fromPos],
-    },
-    {
-      sql: 'DELETE FROM canon_character_aliases WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-      params: [ctx.snapshotId, ctx.runId, fromPos],
-    },
-  ]);
+  // 2026-08-04 修复（问题2）：canon_world_rules 原本没有删除语句，补扫/resume
+  // 重跑会累积重复行——这里补上按 valid_from_position 的删除，与其他子表一致。
+  // 定向补扫走 skipStandardDelete=true，由 materializeRescanResult 自行做分类级
+  // 删除，避免误删其他 request group 的证据。
+  if (!ctx.skipStandardDelete) {
+    await executeTransaction(db, [
+      {
+        sql: `DELETE FROM canon_evidence
+          WHERE snapshot_id = ? AND analysis_run_id = ?
+            AND source_origin = 'batch'
+            AND chapter_position >= ? AND chapter_position <= ?`,
+        params: [ctx.snapshotId, ctx.runId, fromPos, pos],
+      },
+      {
+        sql: 'DELETE FROM canon_world_rules WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+        params: [ctx.snapshotId, ctx.runId, fromPos],
+      },
+      {
+        sql: 'DELETE FROM canon_timeline_events WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+        params: [ctx.snapshotId, ctx.runId, fromPos],
+      },
+      {
+        sql: 'DELETE FROM canon_plot_threads WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+        params: [ctx.snapshotId, ctx.runId, fromPos],
+      },
+      {
+        sql: 'DELETE FROM canon_relationships WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+        params: [ctx.snapshotId, ctx.runId, fromPos],
+      },
+      {
+        sql: 'DELETE FROM canon_character_state_snapshots WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+        params: [ctx.snapshotId, ctx.runId, fromPos],
+      },
+      {
+        sql: 'DELETE FROM canon_character_experiences WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+        params: [ctx.snapshotId, ctx.runId, fromPos],
+      },
+      {
+        sql: 'DELETE FROM canon_character_knowledge WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+        params: [ctx.snapshotId, ctx.runId, fromPos],
+      },
+      {
+        sql: 'DELETE FROM canon_character_aliases WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
+        params: [ctx.snapshotId, ctx.runId, fromPos],
+      },
+    ]);
+  }
 
   // Load existing characters for this snapshot.
   const [charRows] = await db.executeSql(
@@ -952,14 +998,7 @@ export async function materializeBatchResult(
     for (const ev of ch.evidence) {
       await insertEvidenceAndLink(
         db,
-        {
-          projectId: ctx.projectId,
-          sourceId: ctx.sourceId,
-          snapshotId: ctx.snapshotId,
-          analysisRunId: ctx.runId,
-          boundaryExclusive: ctx.boundaryExclusive,
-          candidate: ev,
-        },
+        evInput(ev),
         'character',
         id,
       );
@@ -1029,14 +1068,7 @@ export async function materializeBatchResult(
     for (const ev of rule.evidence) {
       await insertEvidenceAndLink(
         db,
-        {
-          projectId: ctx.projectId,
-          sourceId: ctx.sourceId,
-          snapshotId: ctx.snapshotId,
-          analysisRunId: ctx.runId,
-          boundaryExclusive: ctx.boundaryExclusive,
-          candidate: ev,
-        },
+        evInput(ev),
         'world_rule',
         ruleId,
       );
@@ -1170,14 +1202,7 @@ export async function materializeBatchResult(
     for (const ev of plot.evidence) {
       await insertEvidenceAndLink(
         db,
-        {
-          projectId: ctx.projectId,
-          sourceId: ctx.sourceId,
-          snapshotId: ctx.snapshotId,
-          analysisRunId: ctx.runId,
-          boundaryExclusive: ctx.boundaryExclusive,
-          candidate: ev,
-        },
+        evInput(ev),
         'plot_thread',
         plotId,
       );
@@ -1227,14 +1252,7 @@ export async function materializeBatchResult(
     for (const ev of exp.evidence) {
       await insertEvidenceAndLink(
         db,
-        {
-          projectId: ctx.projectId,
-          sourceId: ctx.sourceId,
-          snapshotId: ctx.snapshotId,
-          analysisRunId: ctx.runId,
-          boundaryExclusive: ctx.boundaryExclusive,
-          candidate: ev,
-        },
+        evInput(ev),
         'experience',
         expId,
       );
@@ -1420,7 +1438,133 @@ export async function materializeBatchResult(
   }
 }
 
-async function buildCoverage(
+/**
+ * 2026-08-04 修复（问题2）：定向补扫专用物化入口。
+ *
+ * 与普通 batch 的 {@link materializeBatchResult} 不同，定向补扫只补某个
+ * request group（character_state 或 world_plot），但原实现复用了普通 batch 的
+ * "清空该 batch 范围全部证据"删除块——这会误删其他 request group 已有证据，
+ * 导致补 character_state 时 world_plot 的证据全没，反之亦然。
+ *
+ * 本函数的删除语义严格按 request group 拥有的 owner_type 限定，且只删
+ * `source_origin='rescan'` 且 `rescan_operation_id` 匹配本轮的证据，绝不触碰
+ * 其他批次（source_origin='batch'）或其他分类的证据和事实。事实表通过
+ * Schema 33 的业务唯一索引（ON CONFLICT DO UPDATE）做增量 upsert，避免重复行。
+ *
+ * 实现策略：先做本轮分类级 + operation 级的精确定位删除，然后以
+ * `skipStandardDelete=true` 调用 materializeBatchResult 复用全部 INSERT 逻辑，
+ * 传入 sourceOrigin='rescan' + rescanOperationId 让新证据带上本轮来源标识。
+ */
+export async function materializeRescanResult(
+  db: SQLite.SQLiteDatabase,
+  ctx: {
+    projectId: number;
+    sourceId: number;
+    snapshotId: string;
+    runId: string;
+    boundaryExclusive: number;
+    profile: AnalysisProfile;
+    /** The request group being rescanned — scopes deletes to its owner types. */
+    requestGroup: AnalysisWorkItemType;
+    /** Unique id for this rescan operation — scopes evidence deletes to this round. */
+    rescanOperationId: string;
+    readBackVerifier?: (charStart: number, charEnd: number) => Promise<string>;
+  },
+  result: ChapterExtractionResult,
+  chapters: BoundedSourceChapter[],
+): Promise<void> {
+  const ownerTypes = REQUEST_GROUP_OWNER_TYPES[ctx.requestGroup] ?? [];
+  // 1. 删除本轮（同一 rescanOperationId）写入的、属于本 request group owner
+  //    type 的旧证据 + 其 links。只删 source_origin='rescan' 的证据，绝不碰
+  //    source_origin='batch' 的证据。SQLite DELETE 不支持表别名，用
+  //    `id IN (SELECT id FROM ... WHERE EXISTS(...))` 实现按 owner_type 过滤。
+  const ownerPlaceholders = ownerTypes.map(() => '?').join(',');
+  await executeTransaction(db, [
+    {
+      // 先删本轮该 group 的 evidence_links（仅 link 到本轮证据的）。
+      sql: `DELETE FROM canon_evidence_links
+        WHERE snapshot_id = ?
+          AND owner_type IN (${ownerPlaceholders})
+          AND evidence_id IN (
+            SELECT id FROM canon_evidence
+            WHERE snapshot_id = ? AND analysis_run_id = ?
+              AND source_origin = 'rescan'
+              AND rescan_operation_id = ?
+          )`,
+      params: [
+        ctx.snapshotId,
+        ...ownerTypes,
+        ctx.snapshotId,
+        ctx.runId,
+        ctx.rescanOperationId,
+      ],
+    },
+    {
+      // 再删本轮该 group owner type 的证据行（用子查询避免 DELETE 表别名）。
+      sql: `DELETE FROM canon_evidence
+        WHERE id IN (
+          SELECT id FROM canon_evidence
+          WHERE snapshot_id = ? AND analysis_run_id = ?
+            AND source_origin = 'rescan'
+            AND rescan_operation_id = ?
+            AND EXISTS (
+              SELECT 1 FROM canon_evidence_links l
+              WHERE l.evidence_id = canon_evidence.id
+                AND l.owner_type IN (${ownerPlaceholders})
+            )
+        )`,
+      params: [
+        ctx.snapshotId,
+        ctx.runId,
+        ctx.rescanOperationId,
+        ...ownerTypes,
+      ],
+    },
+  ]);
+  // 2. 复用 materializeBatchResult 的 INSERT 逻辑，跳过它的范围级删除，
+  //    带上 rescan 来源标识。事实表由 Schema 33 唯一索引保证 upsert 语义
+  //    （新事实与已有业务键冲突时，由 ensureCharacter / 名称去重处理；
+  //    world_rules/plot_threads 等通过唯一索引 + 后续 dedup 兜底）。
+  await materializeBatchResult(
+    db,
+    {
+      projectId: ctx.projectId,
+      sourceId: ctx.sourceId,
+      snapshotId: ctx.snapshotId,
+      runId: ctx.runId,
+      boundaryExclusive: ctx.boundaryExclusive,
+      profile: ctx.profile,
+      readBackVerifier: ctx.readBackVerifier,
+      sourceOrigin: 'rescan',
+      rescanOperationId: ctx.rescanOperationId,
+      skipStandardDelete: true,
+    },
+    result,
+    chapters,
+  );
+}
+
+/**
+ * Map a request group to the evidence owner_types it produces. Used by
+ * {@link materializeRescanResult} to scope deletes to exactly the facts/evidence
+ * the rescanned group owns, never touching other groups' data.
+ */
+const REQUEST_GROUP_OWNER_TYPES: Record<
+  AnalysisWorkItemType,
+  EvidenceOwnerType[]
+> = {
+  character_state: ['character', 'relationship', 'experience', 'character_state', 'knowledge', 'alias'],
+  world_plot: ['world_rule', 'plot_thread', 'timeline_event'],
+  // Legacy single-family groups (not used by v3.1 split, retained for safety).
+  world_rules: ['world_rule'],
+  characters: ['character', 'alias'],
+  relationships: ['relationship'],
+  plot_threads: ['plot_thread'],
+  experiences: ['experience'],
+  full_extraction: ['world_rule', 'character', 'relationship', 'plot_thread', 'experience', 'timeline_event', 'character_state', 'knowledge', 'alias'],
+};
+
+export async function buildCoverage(
   db: SQLite.SQLiteDatabase,
   snapshotId: string,
   profile: AnalysisProfile,
@@ -1438,21 +1582,52 @@ async function buildCoverage(
     );
     return r.rows.item(0).c as number;
   };
-  const worldRules = await count('canon_world_rules');
-  const characters = await count('canon_characters');
+  // 2026-08-04 修复（问题5）：五维 categoryCounts 必须与五维 Gate 一致——只计
+  // 至少有一条有效 evidence link 的事实。否则补扫后 coverage 仍宣称"有效完成"
+  // 而 Gate 却因孤儿事实不计数，造成两者不一致。辅助表（states/knowledge/
+  // timeline）不参与五维硬验收，保留简单计数（capabilities 只需 >0）。
+  const countWithEvidence = async (table: string, ownerType: string) => {
+    const [r] = await db.executeSql(
+      `SELECT COUNT(*) AS c FROM ${table} f
+        WHERE f.snapshot_id = ?
+          AND f.review_status NOT IN ('superseded', 'ignored')
+          AND EXISTS (
+            SELECT 1 FROM canon_evidence_links l
+            JOIN canon_evidence e ON e.id = l.evidence_id
+            WHERE l.snapshot_id = f.snapshot_id
+              AND l.owner_type = ?
+              AND l.owner_id = f.id
+              AND e.snapshot_id = f.snapshot_id
+          )`,
+      [snapshotId, ownerType],
+    );
+    return r.rows.item(0).c as number;
+  };
+  const worldRules = await countWithEvidence('canon_world_rules', 'world_rule');
+  const characters = await countWithEvidence('canon_characters', 'character');
   const states = await count('canon_character_state_snapshots');
-  const relationships = await count('canon_relationships');
-  const plotThreads = await count('canon_plot_threads');
-  const experiences = await count('canon_character_experiences');
+  const relationships = await countWithEvidence('canon_relationships', 'relationship');
+  const plotThreads = await countWithEvidence('canon_plot_threads', 'plot_thread');
+  const experiences = await countWithEvidence('canon_character_experiences', 'experience');
   const knowledge = await count('canon_character_knowledge');
   const timeline = await count('canon_timeline_events');
-  const orphans = await countOrphanEvidence(snapshotId);
-  const future = await countFutureEvidence(
-    snapshotId,
-    // boundary checked separately; use large default here only for count of bad rows
-    Number.MAX_SAFE_INTEGER,
+  // 2026-08-04 修复（问题5）：orphan/future 计数用传入的 db 而非全局 openDatabase，
+  // 让 buildCoverage 可在测试内存库上运行，且不依赖连接单例状态。
+  const [orphansRow] = await db.executeSql(
+    `SELECT COUNT(*) AS c FROM canon_evidence e
+      WHERE e.snapshot_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM canon_evidence_links l WHERE l.evidence_id = e.id
+        )`,
+    [snapshotId],
   );
-  void future;
+  const orphans = orphansRow.rows.item(0).c as number;
+  const [futureRow] = await db.executeSql(
+    `SELECT COUNT(*) AS c FROM canon_evidence
+      WHERE snapshot_id = ? AND char_end > ?`,
+    [snapshotId, Number.MAX_SAFE_INTEGER],
+  );
+  void futureRow; // future count tracked separately; not surfaced in coverage yet.
 
   const caps = emptyCapabilities(profile);
   caps.worldRules = worldRules > 0;
@@ -1881,6 +2056,17 @@ async function processAnalysisRunInner(
     });
     return { current, total };
   };
+  // 2026-08-04 修复（问题3）：记录缩块重试导致的 partial-coverage 批次，供
+  // batch 完成判定时把未覆盖尾部重新规划成持久化子批次。
+  const partialCoverageByBatch = new Map<
+    number,
+    {
+      materialType: AnalysisWorkItemType;
+      analyzedCharEnds: number[];
+      effectiveSlice: BoundedSourceChapter[];
+      chunkMeta?: { chapterId: number; chunkIndex: number; chunkCount: number; chunkStartChar: number; chunkEndChar: number };
+    }
+  >();
 
   for (const batch of batches) {
     if (batch.state === 'completed') continue;
@@ -1918,10 +2104,15 @@ async function processAnalysisRunInner(
           chunkMeta.chunkStartChar,
           chunkMeta.chunkEndChar,
         );
+        // 2026-08-04 修复（问题1）：把 chunkStartChar/chunkEndChar 附加到片段
+        // 章节对象，让 resolveExtractionEvidenceAgainstChapters 计算绝对偏移时
+        // 加回 chunkStartChar。range.start / id / position 保持原值不变。
         effectiveSlice = [
           {
             ...chapter,
             content: chunkedContent,
+            chunkStartChar: chunkMeta.chunkStartChar,
+            chunkEndChar: chunkMeta.chunkEndChar,
           },
         ];
         chunkMetadata = {
@@ -2011,17 +2202,40 @@ async function processAnalysisRunInner(
               `[canon] ${materialType} batch ${batch.batchIndex} warning: ${outcome.warning}`,
             );
           }
+          // 2026-08-04 修复（问题3）：如果本次结果在缩块重试后取得（partialCoverage），
+          // 章节正文尾部未被分析。标记 work item 为 partial_coverage（仍 completed，
+          // 已分析的部分有效），后续 batch 完成判定会据此把未覆盖尾部重新规划成
+          // 持久化子批次，禁止把截断结果当作 batch 完整覆盖。
+          const partialCoverage = outcome.partialCoverage === true;
+          const partialWarning =
+            outcome.warning && partialCoverage
+              ? `${outcome.warning}；正文尾部因缩块重试未分析，将自动拆分补扫`
+              : outcome.warning;
           await updateWorkItem(db, {
             runId,
             batchIndex: batch.batchIndex,
             materialType,
             state: 'completed',
             resultJson: JSON.stringify(outcome.result),
-            errorCode: outcome.warning ? 'partial_drop' : null,
-            errorMessage: outcome.warning,
+            errorCode: partialCoverage
+              ? 'partial_coverage'
+              : outcome.warning
+                ? 'partial_drop'
+                : null,
+            errorMessage: partialWarning,
             completedAt: now(),
           });
           await reportWorkItem(materialType, batch.batchIndex, 'completed');
+          // Stash the partial-coverage ranges for the batch-completion step so
+          // it can re-plan uncovered tails into follow-up sub-batches.
+          if (partialCoverage && outcome.analyzedCharEnds) {
+            partialCoverageByBatch.set(batch.batchIndex, {
+              materialType,
+              analyzedCharEnds: outcome.analyzedCharEnds,
+              effectiveSlice,
+              chunkMeta,
+            });
+          }
           return outcome.result;
         } catch (error) {
           const message = formatUnknownError(error);
@@ -2073,19 +2287,104 @@ async function processAnalysisRunInner(
           runId,
           boundaryExclusive: run.boundaryCharOffsetExclusive,
           profile: run.profile,
+          // 2026-08-04 修复（问题1）：落库前用 SourceReader 回读校验，确保
+          // chunk 偏移错误/越界证据无法落库。
+          readBackVerifier: async (cs, ce) =>
+            continuationSourceReader.readBoundedEvidenceRange({
+              snapshot: sourceSnapshot,
+              start: asUtf16Offset(cs),
+              end: asUtf16Offset(ce),
+            }),
         },
         extraction,
         slice,
       );
 
-      await execute(
-        db,
-        `UPDATE continuation_analysis_batches SET
-          state = 'completed', result_json = ?, error_code = NULL, error_message = NULL,
-          updated_at = ?, completed_at = ?
-          WHERE run_id = ? AND batch_index = ?`,
-        [JSON.stringify(extraction), now(), now(), runId, batch.batchIndex],
+      // 2026-08-04 修复（问题3）：如果本 batch 的某个 material 在缩块重试后
+      // 取得 partial 结果（正文尾部未分析），把未覆盖区间重新规划成持久化子
+      // 批次插入 batches 表，并把原 batch 标记为 'partial'（而非 completed），
+      // 这样 listBatches 的下一轮会继续处理子批次，直到所有字符被覆盖。
+      const partialEntries = [...partialCoverageByBatch.entries()].filter(
+        ([idx]) => idx === batch.batchIndex,
       );
+      if (partialEntries.length > 0) {
+        let nextSubBatchIndex = (await listBatches(runId)).length;
+        for (const [, info] of partialEntries) {
+          for (let ci = 0; ci < info.effectiveSlice.length; ci++) {
+            const ch = info.effectiveSlice[ci];
+            const analyzedEnd = info.analyzedCharEnds[ci] ?? ch.content.length;
+            if (analyzedEnd >= ch.content.length) continue; // fully covered
+            // Uncovered tail [analyzedEnd, content.length). For chunk batches,
+            // this is a sub-slice of the chunk window; for normal batches a
+            // sub-slice of the chapter. Build a follow-up chunk sub-batch.
+            const baseStart = ch.chunkStartChar ?? 0;
+            const tailStart = baseStart + analyzedEnd;
+            const tailEnd = baseStart + ch.content.length;
+            if (tailEnd <= tailStart) continue;
+            const subHashSource = `${ch.id}:sub:${tailStart}-${tailEnd}`;
+            const subHash = sha256Hex(subHashSource);
+            const subBatchIndex = nextSubBatchIndex++;
+            await execute(
+              db,
+              `INSERT INTO continuation_analysis_batches
+                (run_id, canon_snapshot_id, batch_index, start_position, end_position,
+                 input_hash, idempotency_key, state)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')`,
+              [
+                runId,
+                run.canonSnapshotId,
+                subBatchIndex,
+                batch.startPosition,
+                batch.endPosition,
+                subHash,
+                `${runId}:${subBatchIndex}:${subHash}`,
+              ],
+            );
+            await insertWorkItems(db, [
+              { runId, batchIndex: subBatchIndex, materialType: info.materialType },
+            ]);
+            // Persist the sub-batch chunk meta so the next loop iteration slices
+            // the uncovered tail. This mutates batchChunkMeta in-place; the next
+            // listBatches call will include the new sub-batch row.
+            batchChunkMeta[subBatchIndex] = {
+              chapterId: ch.id,
+              chunkIndex: info.chunkMeta ? info.chunkMeta.chunkIndex + 1000 + ci : 0,
+              chunkCount: 1,
+              chunkStartChar: tailStart,
+              chunkEndChar: tailEnd,
+            };
+          }
+        }
+        await execute(
+          db,
+          `UPDATE continuation_analysis_batches SET
+            state = 'partial', result_json = ?, error_code = 'partial_coverage',
+            error_message = '缩块重试未覆盖全部正文，已拆分为子批次继续补扫',
+            updated_at = ?, completed_at = NULL
+            WHERE run_id = ? AND batch_index = ?`,
+          [JSON.stringify(extraction), now(), runId, batch.batchIndex],
+        );
+        // Reload batches so the loop processes the newly-inserted sub-batches.
+        // (batches is a const snapshot; we re-fetch via listBatches and append.)
+        const fresh = await listBatches(runId);
+        // Append any sub-batches not yet iterated. The for-of continues over the
+        // original array; newly appended entries are picked up only if we mutate
+        // the array reference. Use the underlying array push.
+        for (const fb of fresh) {
+          if (!batches.some(b => b.batchIndex === fb.batchIndex)) {
+            batches.push(fb);
+          }
+        }
+      } else {
+        await execute(
+          db,
+          `UPDATE continuation_analysis_batches SET
+            state = 'completed', result_json = ?, error_code = NULL, error_message = NULL,
+            updated_at = ?, completed_at = ?
+            WHERE run_id = ? AND batch_index = ?`,
+          [JSON.stringify(extraction), now(), now(), runId, batch.batchIndex],
+        );
+      }
     } catch (err) {
       if (signal.aborted) {
         await execute(
@@ -2303,6 +2602,20 @@ async function processAnalysisRunInner(
     return (await getRunById(runId))!;
   }
 
+  // 2026-08-04 修复（问题5）：补扫通过后，coverage / capabilities 必须从数据库
+  // 重新计算。原逻辑在补扫之前就 buildCoverage 一次，补扫新增的事实不会反映到
+  // 快照的 capabilities / categoryCounts / analyzedChapters 里，导致 UI 和
+  // CanonQueryService 读到与数据库不一致的旧 coverage。
+  const recomputed = await buildCoverage(
+    db,
+    run.canonSnapshotId,
+    run.profile,
+    analyzedChapters,
+    finalMetas.length,
+    analyzedThroughPosition,
+    scope,
+    analyzedRanges,
+  );
   // Keep the Canon snapshot available as a reviewable candidate while the
   // required style analysis is still in flight. The analysis run itself must
   // remain running until atomic Canon + style activation completes; marking it
@@ -2310,8 +2623,8 @@ async function processAnalysisRunInner(
   // impossible to resume before style analysis.
   await updateSnapshotMeta(db, run.canonSnapshotId, {
     status: 'awaiting_review',
-    capabilities,
-    coverage,
+    capabilities: recomputed.capabilities,
+    coverage: recomputed.coverage,
   });
   const finalWorkItems = await listWorkItems(runId);
   await updateRunState(db, runId, {
@@ -2582,6 +2895,16 @@ export function resolveExtractionEvidenceAgainstChapters(
       stats.rejected += 1;
       return null;
     }
+    // 2026-08-04 修复（问题1）：当 chapter 是超长章节被切片后的片段时，
+    // `chapter.content` 已经是 `originalContent.slice(chunkStartChar,
+    // chunkEndChar)`，`indexOf` 得到的是片段内局部偏移。全书绝对偏移必须加回
+    // chunkStartChar，否则第 2 个及之后的 chunk 的 evidence 会整体向前偏移
+    // chunkStartChar 个字符。chunkStartChar 对整章对象为 0，行为不变。
+    const absoluteOffset = (
+      chapter: BoundedSourceChapter,
+      localIndex: number,
+    ): number =>
+      Number(chapter.range.start) + (chapter.chunkStartChar ?? 0) + localIndex;
     const matches: Array<{ chapter: BoundedSourceChapter; index: number }> = [];
     for (const chapter of chapters) {
       let index = chapter.content.indexOf(quote);
@@ -2613,8 +2936,10 @@ export function resolveExtractionEvidenceAgainstChapters(
           } => value.match !== null,
         );
       if (paraphrase) {
-        const charStart =
-          Number(paraphrase.chapter.range.start) + paraphrase.match.start;
+        const charStart = absoluteOffset(
+          paraphrase.chapter,
+          paraphrase.match.start,
+        );
         stats.resolved += 1;
         return {
           chapterId: paraphrase.chapter.id,
@@ -2635,11 +2960,11 @@ export function resolveExtractionEvidenceAgainstChapters(
     const candidates = sameChapter.length ? sameChapter : matches;
     candidates.sort(
       (a, b) =>
-        Math.abs(Number(a.chapter.range.start) + a.index - evidence.charStart) -
-        Math.abs(Number(b.chapter.range.start) + b.index - evidence.charStart),
+        Math.abs(absoluteOffset(a.chapter, a.index) - evidence.charStart) -
+        Math.abs(absoluteOffset(b.chapter, b.index) - evidence.charStart),
     );
     const selected = candidates[0];
-    const charStart = Number(selected.chapter.range.start) + selected.index;
+    const charStart = absoluteOffset(selected.chapter, selected.index);
     stats.resolved += 1;
     return {
       chapterId: selected.chapter.id,
@@ -2775,6 +3100,18 @@ export interface ExtractMaterialOutcome {
    * (state stays `completed`). `null` when nothing was dropped.
    */
   warning: string | null;
+  /**
+   * 2026-08-04 修复（问题3）：当本次成功结果是在缩块重试后取得的（即原 batch
+   * 正文尾部被截断、未被模型分析），partialCoverage=true。调用方必须据此把未
+   * 覆盖的尾部重新规划成持久化子批次，禁止把截断结果当作 batch 完整覆盖。
+   */
+  partialCoverage?: boolean;
+  /**
+   * 每个输入章节实际被分析的正文字符终点（相对于该章节 content 的 UTF-16 偏移）。
+   * 当 partialCoverage=true 时，该值 < chapter.content.length；调用方据此计算
+   * 未覆盖区间 [analyzedCharEnds[i], content.length) 并重新切分子批次。
+   */
+  analyzedCharEnds?: number[];
 }
 
 export async function extractMaterialWithLlm(
@@ -3020,7 +3357,20 @@ export async function extractMaterialWithLlm(
         [validatorWarning, evidenceWarning]
           .filter((value): value is string => !!value)
           .join('；') || null;
-      return { result: filtered, warning };
+      // 2026-08-04 修复（问题3）：如果本次成功是在缩块重试后取得的（attemptShrinkStep>0），
+      // 原章节正文尾部 [currentChapterTextLimit, content.length) 从未被模型分析。
+      // 必须在 outcome 里标记 partialCoverage 并报告 analyzedCharEnds，让调用方
+      // 把未覆盖尾部重新规划成持久化子批次，禁止把截断结果当作 batch 完整覆盖。
+      const shrank = attemptShrinkStep > 0;
+      const analyzedCharEnds = shrank
+        ? chapters.map(c => Math.min(c.content.length, currentChapterTextLimit))
+        : chapters.map(c => c.content.length);
+      return {
+        result: filtered,
+        warning,
+        partialCoverage: shrank,
+        analyzedCharEnds,
+      };
     } catch (error) {
       const canRetry =
         attempt < CANON_ANALYSIS_RETRY_POLICY.maxAttempts &&
@@ -3193,6 +3543,34 @@ async function runTargetedRescanForMissingDimensions(input: {
     );
     return evaluateFiveDimensionGate(counts);
   }
+  // 2026-08-04 修复（问题4）：从真实 LLM context_window 派生 15% source chunk
+  // 预算，而不是传 undefined 退回硬编码上限。max_output_tokens 保持用户完整配置，
+  // thinking 保持模型默认。prompt overhead 正确计入。协议要求 input+output<=context
+  // 时只缩正文（resolveCanonBudget 内部处理）。
+  const rescanRequestConfig = run.modelConfigId
+    ? await resolveLLMRequestConfigById(run.modelConfigId)
+    : null;
+  const rescanPromptOverhead = estimatePromptOverhead({
+    profile: run.profile,
+    materialType: 'character_state',
+  });
+  const rescanBudget = resolveCanonBudget({
+    profile: run.profile,
+    declaredContextWindow: rescanRequestConfig?.context_window,
+    configuredMaxOutputTokens: rescanRequestConfig?.max_output_tokens,
+    promptOverhead: rescanPromptOverhead,
+    chunkRatio: SOURCE_CHUNK_RATIO_RESCAN,
+  });
+  const rescanAdaptivePlan = rescanBudget.ok
+    ? {
+        effectiveInputBudget: rescanBudget.sourceChunkTargetTokens,
+        targetInputBudget: rescanBudget.sourceChunkTargetTokens,
+        outputReserve: rescanBudget.configuredMaxOutputTokens,
+        retryOutputCeiling: rescanBudget.configuredMaxOutputTokens,
+        promptOverhead: rescanBudget.promptOverhead,
+        estimatedBatchCount: 1,
+      }
+    : undefined;
   // Group missing dimensions by their producing request group so each rescan
   // call covers exactly the dimensions that need more data.
   const groupsToRescan = new Set(
@@ -3201,6 +3579,17 @@ async function runTargetedRescanForMissingDimensions(input: {
   for (let round = 1; round <= MAX_TARGETED_RESCAN_ROUNDS; round += 1) {
     if (signal.aborted) break;
     let addedAny = false;
+    // 2026-08-04 修复（问题4）：每轮使用不同且可追踪的章节区间。第 1 轮取
+    // 范围的后半（更接近续写边界、状态更新），第 2 轮取前半或更早范围。
+    // full 模式可轮换到更早章节；fast_continuation 只能用最后 10 章（不能
+    // 读倒数第 11 章之前）。两轮 source range 不得完全重复。
+    const half = Math.ceil(rescanChapters.length / 2);
+    const roundChapters =
+      round === 1
+        ? rescanChapters.slice(-half) // 后半（更接近边界）
+        : rescanChapters.slice(0, rescanChapters.length - half > 0 ? rescanChapters.length - half : half).length > 0
+          ? rescanChapters.slice(0, Math.max(half, 1))
+          : rescanChapters;
     for (const requestGroup of groupsToRescan) {
       if (signal.aborted) break;
       // Re-check current counts so we skip groups whose dimensions are already
@@ -3216,13 +3605,11 @@ async function runTargetedRescanForMissingDimensions(input: {
       );
       if (stillMissingForGroup.length === 0) continue;
       try {
-        // Smaller source chunk (15% of window) for focused re-extraction. The
-        // model's max output and thinking are untouched (extractMaterialWithLlm
-        // already preserves them). Send only the first chunk of chapters so the
-        // rescan stays bounded; if still insufficient, the next round packs a
-        // different slice.
+        // 15% source chunk budget (derived above). The model's max output and
+        // thinking are untouched — extractMaterialWithLlm only shrinks the
+        // source chunk via resolveChapterTextLimitFromBudget.
         const outcome = await extractMaterialWithLlm(
-          rescanChapters,
+          roundChapters,
           run.profile,
           run.modelConfigId,
           requestGroup,
@@ -3230,12 +3617,9 @@ async function runTargetedRescanForMissingDimensions(input: {
           signal,
           undefined,
           undefined,
-          // Pass an adaptive plan whose target budget is 15% of the window so
-          // extractMaterialWithLlm shrinks the source chunk accordingly. The
-          // outputReserve / promptOverhead are recomputed from the config.
-          undefined,
+          rescanAdaptivePlan,
         );
-        await materializeBatchResult(
+        await materializeRescanResult(
           db,
           {
             projectId: run.projectId,
@@ -3244,6 +3628,14 @@ async function runTargetedRescanForMissingDimensions(input: {
             runId: run.id,
             boundaryExclusive: run.boundaryCharOffsetExclusive,
             profile: run.profile,
+            requestGroup,
+            rescanOperationId: `${run.id}:rescan:r${round}:${requestGroup}`,
+            readBackVerifier: async (cs, ce) =>
+              continuationSourceReader.readBoundedEvidenceRange({
+                snapshot: sourceSnapshot,
+                start: asUtf16Offset(cs),
+                end: asUtf16Offset(ce),
+              }),
           },
           outcome.result,
           rescanChapters,

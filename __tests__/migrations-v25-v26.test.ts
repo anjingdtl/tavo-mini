@@ -11,7 +11,7 @@ import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 26 versioned continuation style profiles', () => {
   it('targets the current schema version', () => {
-    expect(SCHEMA_VERSION).toBe(32);
+    expect(SCHEMA_VERSION).toBe(33);
     expect(buildSchema26PostStyleStatements()).toEqual([]);
   });
 

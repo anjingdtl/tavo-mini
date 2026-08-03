@@ -5,6 +5,7 @@ module.exports = {
     '/node_modules/',
     '/android/app/jni/llama.cpp/',
     '/__tests__/migrationTestUtils.ts$',
+    '/__tests__/helpers/',
   ],
   collectCoverageFrom: [
     'src/data/**/*.ts',

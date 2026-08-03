@@ -25,8 +25,8 @@ from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "__tests__" / "fixtures" / "databases"
-VERSIONS = range(3, 32)
-CURRENT_SCHEMA = 32
+VERSIONS = range(3, 33)
+CURRENT_SCHEMA = 33
 NOW = "2026-07-15T00:00:00.000Z"
 LONG_TEXT = ("这是一段用于迁移验证的超长正文。Long migration content. " * 900).strip()
 SPECIAL_TEXT = '特殊字符：中文 / English — emoji 😀 <tag> & quote "quoted"'

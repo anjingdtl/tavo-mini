@@ -249,6 +249,8 @@ export function buildV19toV20Statements(): SqlStatement[] {
         quote_preview TEXT NOT NULL,
         quote_sha256 TEXT NOT NULL,
         analysis_run_id TEXT NOT NULL,
+        source_origin TEXT NOT NULL DEFAULT 'batch',
+        rescan_operation_id TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
         FOREIGN KEY(source_id) REFERENCES continuation_sources(id) ON DELETE CASCADE,

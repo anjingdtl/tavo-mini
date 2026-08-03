@@ -39,6 +39,20 @@ export interface CreateEvidenceInput {
   candidate: ExtractionEvidenceCandidate;
   /** Full quote text already bounded; used for hash when provided. */
   quoteText?: string;
+  /**
+   * 2026-08-04 修复（问题1）：落库前回读校验。当提供时，insertEvidence 会
+   * 用该函数按 [charStart, charEnd) 回读原文，与最终 quotePreview 比对，
+   * 不一致拒绝该 evidence（返回 null）。生产代码传入绑定到 Phase 1
+   * SourceReader 的闭包；测试可注入针对内存库的回读实现。
+   */
+  readBackVerifier?: (charStart: number, charEnd: number) => Promise<string>;
+  /**
+   * 2026-08-04（Schema 33）：证据来源标识。`'batch'`（默认）= 正常分析批次；
+   * `'rescan'` = 定向补扫。配合 rescanOperationId 让补扫的删除只作用于
+   * 本轮补扫的证据，不影响其他批次的证据。
+   */
+  sourceOrigin?: 'batch' | 'rescan';
+  rescanOperationId?: string;
 }
 
 /**
@@ -69,17 +83,38 @@ export async function insertEvidence(
   if (!check.ok) return null;
 
   const preview = clipPreview(input.candidate.quotePreview || input.quoteText || '');
+
+  // 2026-08-04 修复（问题1）：落库前用 SourceReader 按 charStart/charEnd 回读，
+  // 确认回读文本与最终 quotePreview 一致。不一致（偏移错误/越界/被裁剪）则
+  // 拒绝该 evidence，不允许仅依赖边界检查就让错误偏移的证据落库。
+  if (input.readBackVerifier) {
+    let readBack: string;
+    try {
+      readBack = await input.readBackVerifier(
+        input.candidate.charStart,
+        input.candidate.charEnd,
+      );
+    } catch {
+      // SourceReader itself rejected the range — treat as unverifiable.
+      return null;
+    }
+    if (readBack !== preview) {
+      return null;
+    }
+  }
+
   const hashSource = input.quoteText ?? preview;
   const quoteSha = sha256Hex(hashSource);
   const ts = now();
+  const sourceOrigin = input.sourceOrigin ?? 'batch';
 
   await execute(
     db,
     `INSERT INTO canon_evidence (
       project_id, source_id, snapshot_id, chapter_id, chapter_position,
       paragraph_start, paragraph_end, char_start, char_end, quote_preview,
-      quote_sha256, analysis_run_id, created_at
-    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
+      quote_sha256, analysis_run_id, source_origin, rescan_operation_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.projectId,
       input.sourceId,
@@ -91,6 +126,8 @@ export async function insertEvidence(
       preview,
       quoteSha,
       input.analysisRunId,
+      sourceOrigin,
+      input.rescanOperationId ?? null,
       ts,
     ],
   );
