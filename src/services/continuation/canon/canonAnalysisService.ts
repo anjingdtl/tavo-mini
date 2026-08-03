@@ -100,6 +100,16 @@ import {
   type AdaptiveBatchPlan,
   type CanonAnalysisPrecheck,
 } from './adaptiveBatchPlanner';
+import {
+  countValidCanonRowsForGate,
+  evaluateFiveDimensionGate,
+  describeGateResult,
+  DIMENSION_TO_REQUEST_GROUP,
+  REQUIRED_MIN_COUNT,
+  MAX_TARGETED_RESCAN_ROUNDS,
+  type FiveDimensionGateResult,
+  type RequiredCanonDimension,
+} from './canonFiveDimensionGate';
 
 /**
  * react-native-sqlite-storage and some native bridges reject with plain
@@ -479,31 +489,18 @@ export const CANON_LOCAL_MODEL_MIN_CONTEXT_WINDOW = 4096;
  * does not have to build a full prompt just to estimate.
  */
 const CANON_PROMPT_OVERHEAD_TOKENS = 600;
-// H7 修复：原 cap 32768 与 deep 档 baseline 32768 相同，导致用户配 100K
-// 输出时 baselineMaxTokens 仍被压到 32K，deep 模式 5 类别 JSON 易触发
-// finish_reason=length 截断。提升到 65536 让 deep 模式有完整输出空间。
-const CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS = 65_536;
-
-/**
- * Output baseline per profile. v3.1 reverts to the two-call split
- * (`character_state` 5 categories / `world_plot` 3 categories), so the deep
- * baseline is lowered from 65536 to 32768 — enough for 5 categories per call
- * while halving the single-call generation time and timeout risk for
- * large-source analysis. The planner refuses when the window cannot reserve
- * this much output.
- */
-const CANON_OUTPUT_BASELINE_TOKENS: Record<AnalysisProfile, number> = {
-  quick: 4096,
-  standard: 32768,
-  deep: 32768,
-};
 
 /**
  * Online models may expose a much larger context than local llama.cpp. Use the
  * configured window to group consecutive chapters aggressively while reserving
- * enough completion space for thinking plus the final JSON. If the provider
- * does not declare a window, retain the conservative legacy three-chapter
- * grouping instead of guessing.
+ * the FULL configured output budget (never compressed). If the provider does
+ * not declare a window, retain the conservative legacy three-chapter grouping
+ * instead of guessing.
+ *
+ * NOTE: the canonical batch planner is now `planAdaptiveBatching` in
+ * adaptiveBatchPlanner.ts (30% source-chunk target). This function is retained
+ * only for legacy tests / callers and now honours the same "no output ceiling"
+ * rule: it subtracts the full configured `max_output_tokens`, never a 65K cap.
  */
 export function resolveContextDrivenChaptersPerBatch(input: {
   providerType?: string | null;
@@ -519,10 +516,8 @@ export function resolveContextDrivenChaptersPerBatch(input: {
   ) {
     return 3;
   }
-  const outputReserve = Math.min(
-    Math.max(16_384, input.maxOutputTokens ?? 16_384),
-    CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS,
-  );
+  // Full configured max output, never compressed by an internal cap.
+  const outputReserve = Math.max(16_384, input.maxOutputTokens ?? 16_384);
   const inputBudget = Math.max(
     1,
     (input.contextWindow as number) -
@@ -547,12 +542,11 @@ export function resolveQualityFirstChaptersPerBatch(input: {
 }
 
 /**
- * Per-chapter text budget. Online providers that explicitly declare a context
- * window get a generous 24,000-character cap (≈ 12K tokens) — 4x the local
- * excerpt — so normal-sized chapters pass through untouched while a single
- * pathological 100KB+ chapter can no longer monopolise the prompt and stall
- * generation. Local and unbounded providers retain the conservative 6,000
- * excerpt for predictable memory use.
+ * Per-chapter text budget used by the legacy `extractMaterialWithLlm` fallback
+ * path (when an old interrupted run resumes without a persisted adaptive plan).
+ * The canonical path uses `resolveChapterTextLimitFromBudget`. This online
+ * fallback cap is generous so normal chapters pass untouched; it does NOT
+ * affect max output or thinking.
  */
 const CANON_ONLINE_CHAPTER_TEXT_LIMIT = 24_000;
 
@@ -579,16 +573,10 @@ export interface AnalysisTokenBudgetPlan {
 }
 
 /**
- * Estimate whether a model's context window can absorb a Canon analysis
- * batch, downgrading chaptersPerBatch and the per-chapter slice before
- * refusing (Spec §1, change 3).
- *
- * H6 修复：原仅对 llama_cpp 强制校验，在线模型直接 return ok 跳过。但
- * resolveContextDrivenChaptersPerBatch 已经按 contextWindow 算了 perBatch，
- * 实际 extractMaterialWithLlm 用 24000 字符 slice + 32K 输出，很容易超
- * 128K 窗口被 provider 400 context_length_exceeded 拒绝。改为：在线模型
- * 若配置了 context_window 也走校验；未配置时用保守 32K 默认窗口校验，
- * 超窗口时降级 perBatch 而非等 provider 拒绝。
+ * Legacy per-batch window-fit estimator. The canonical path is now
+ * `planAdaptiveBatching`. This legacy function is retained for any caller that
+ * still references it; it honours the full configured output baseline (no
+ * 65K/32K internal cap) when downgrading.
  */
 export function planAnalysisTokenBudget(input: {
   chapters: BoundedSourceChapter[];
@@ -596,10 +584,12 @@ export function planAnalysisTokenBudget(input: {
   perBatch: number;
   providerType?: string | null;
   contextWindow: number | null | undefined;
+  /** Full configured max_output_tokens, used as the output reserve. */
+  maxOutputTokens?: number | null;
   contextWindowCeiling?: number;
 }): AnalysisTokenBudgetPlan {
   const isLocal = input.providerType === 'llama_cpp';
-  // 在线模型未配置 context_window 时用 32K 保守默认（与 deep baseline 对齐）
+  // 在线模型未配置 context_window 时用 32K 保守默认
   const fallbackOnlineWindow = 32_768;
   const declaredWindow =
     input.contextWindow ?? (isLocal ? null : fallbackOnlineWindow);
@@ -617,7 +607,17 @@ export function planAnalysisTokenBudget(input: {
   const ceiling =
     input.contextWindowCeiling ?? CANON_LOCAL_MODEL_MIN_CONTEXT_WINDOW;
   const effectiveWindow = Math.min(declaredWindow, ceiling);
-  const outputBaseline = CANON_OUTPUT_BASELINE_TOKENS[input.profile] ?? 8192;
+  // Full configured output (or a per-profile baseline when unconfigured). Never
+  // a Canon-specific 32K/65K ceiling.
+  const profileOutputBaseline: Record<AnalysisProfile, number> = {
+    quick: 4096,
+    standard: 8192,
+    deep: 8192,
+  };
+  const outputBaseline =
+    (input.maxOutputTokens && input.maxOutputTokens > 0
+      ? input.maxOutputTokens
+      : profileOutputBaseline[input.profile]) ?? 8192;
   const overhead = CANON_PROMPT_OVERHEAD_TOKENS + 256; // prompt + misc safety
   // 在线模型用 24000 字符 slice（与 extractMaterialWithLlm 一致），本地模型用 6000
   const initialSliceCharBudget = isLocal
@@ -2209,6 +2209,100 @@ async function processAnalysisRunInner(
     return (await getRunById(runId))!;
   }
 
+  // ── Materialisation re-read verification (quality spec §6 / §11) ───────
+  // `result_json` being non-empty does NOT mean analysis succeeded. Verify
+  // that the five-dimension Canon tables actually contain rows for THIS run +
+  // snapshot. A JSON-with-data-but-tables-empty state (partial transaction
+  // failure, wrong snapshot id, etc.) must fail the run, not silently
+  // activate an empty snapshot.
+  const materializedCounts = await countValidCanonRowsForGate(
+    db,
+    run.canonSnapshotId,
+    runId,
+  );
+  const materializedTotal =
+    materializedCounts.characters +
+    materializedCounts.worldRules +
+    materializedCounts.relationships +
+    materializedCounts.plotThreads +
+    materializedCounts.experiences;
+  if (materializedTotal === 0) {
+    stopFinalizingHeartbeat();
+    const msg =
+      '原著分析 JSON 已保存，但五维 Canon 表物化后为空（写入失败或事务未提交）。' +
+      '本次运行未激活，原有成功产物保持不变。';
+    await updateRunState(db, runId, {
+      state: 'failed',
+      stage: 'finalizing',
+      errorCode: 'analysis_materialization_empty',
+      errorMessage: msg,
+      completedAt: now(),
+    });
+    await updateSnapshotMeta(db, run.canonSnapshotId, {
+      status: 'failed',
+      capabilities,
+      coverage,
+    });
+    await execute(
+      db,
+      `UPDATE continuation_settings SET analysis_status = 'failed', updated_at = ?
+        WHERE project_id = ?`,
+      [now(), run.projectId],
+    );
+    return (await getRunById(runId))!;
+  }
+
+  // ── Five-dimension hard gate + targeted rescan (quality spec §7 / §12) ─
+  // Each mode must independently pass: characters / world_rules /
+  // relationships / plot_threads / experiences each >= 3, counted from the
+  // current run + snapshot after the full pipeline. Missing dimensions
+  // trigger a bounded targeted rescan focused on those dimensions only.
+  await updateRunState(db, runId, {
+    state: 'running',
+    stage: 'style_validation',
+  });
+  let gateResult: FiveDimensionGateResult = evaluateFiveDimensionGate(
+    materializedCounts,
+  );
+  if (!gateResult.passed) {
+    gateResult = await runTargetedRescanForMissingDimensions({
+      db,
+      run,
+      sourceSnapshot,
+      scope,
+      missingDimensions: gateResult.missingDimensions,
+      signal,
+      onProgress: options.onProgress,
+    });
+  }
+  if (!gateResult.passed) {
+    stopFinalizingHeartbeat();
+    const summary = describeGateResult(gateResult);
+    const msg =
+      `${summary}。系统已完成定向补扫（最多 ${MAX_TARGETED_RESCAN_ROUNDS} 轮），` +
+      `但仍未达到每维至少 ${REQUIRED_MIN_COUNT} 条的标准。本次结果未激活，` +
+      '原有成功分析产物保持不变。';
+    await updateRunState(db, runId, {
+      state: 'failed',
+      stage: 'style_validation',
+      errorCode: 'analysis_minimum_coverage_not_met',
+      errorMessage: msg,
+      completedAt: now(),
+    });
+    await updateSnapshotMeta(db, run.canonSnapshotId, {
+      status: 'failed',
+      capabilities,
+      coverage,
+    });
+    await execute(
+      db,
+      `UPDATE continuation_settings SET analysis_status = 'failed', updated_at = ?
+        WHERE project_id = ?`,
+      [now(), run.projectId],
+    );
+    return (await getRunById(runId))!;
+  }
+
   // Keep the Canon snapshot available as a reviewable candidate while the
   // required style analysis is still in flight. The analysis run itself must
   // remain running until atomic Canon + style activation completes; marking it
@@ -2709,10 +2803,22 @@ export async function extractMaterialWithLlm(
     );
   }
   const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
-  // 2026-08-01 修复：优先使用 adaptive plan 派生的 chapterTextLimit 与
-  // max_tokens，避免与 planAnalysisTokenBudget 校验值不一致。当 adaptive
-  // plan 不存在（旧 run resume）时回退到旧逻辑。
-  const chapterTextLimit = adaptivePlan
+  // ── Model capability: keep it intact ──────────────────────────────────
+  // The request sends the FULL configured max_output_tokens on every attempt.
+  // There is no Canon-specific output ceiling (no 65K / 32K / 131072). Thinking
+  // mode is preserved: we never emit `thinking: { type: 'disabled' }`. The
+  // only thing this function shrinks on failure is the SOURCE CHUNK.
+  const requestMaxTokens = resolveExtractionMaxTokens({
+    profile,
+    maxOutputTokens: requestConfig.max_output_tokens,
+    effectiveInputBudget: adaptivePlan?.effectiveInputBudget ?? 0,
+    outputReserve: adaptivePlan?.outputReserve,
+  });
+  // ── Source-chunk sizing ───────────────────────────────────────────────
+  // Normal target = 30% of declared context window (or the adaptive plan's
+  // derived budget). On recoverable output failures we shrink the chunk along
+  // the retry ladder [0.30, 0.20, 0.12], never the output.
+  const baseChapterTextLimit = adaptivePlan
     ? resolveChapterTextLimitFromBudget(
         adaptivePlan.targetInputBudget ?? adaptivePlan.effectiveInputBudget,
       )
@@ -2727,70 +2833,36 @@ export async function extractMaterialWithLlm(
         chunkMetadata.chunkIndex + 1
       } 个片段。请仅基于本片段内容提取 evidence；跨片段的关联（如人物关系、伏笔）由后续合并阶段处理。bodyStart/bodyEnd 仍按全书 UTF-16 绝对偏移填写。`
     : '';
-  const prompt = [
-    '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
-    '必须只返回一个完整、可 JSON.parse 的 JSON 对象，不要 Markdown、思考过程、解释或任何前后缀。schemaVersion 必须为 1，八个数组字段都必须出现，不能返回 null 或空白。',
-    `分析档位：${profile}。${MATERIAL_PROMPTS[materialType]}`,
-    '每一个数组条目都必须至少有一条 evidence。evidence 必须引用本批章节中连续、逐字一致的原文片段作为 quotePreview（不超过 160 字）。',
-    '每章 metadata 给出 bodyStart 和 bodyEnd：charStart/charEnd 是全书 UTF-16 绝对偏移；请使用 quotePreview 在该章正文中定位后填写，不能猜测。',
-    EXTRACTION_FIELD_SPEC,
-    EVIDENCE_FIELD_SPEC,
-    EXTRACTION_JSON_SKELETON,
-    '章节正文：',
-    ...chapters.map(
-      c =>
-        `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${
-          c.range.start
-        }, bodyEnd=${c.range.end})\n${c.content.slice(0, chapterTextLimit)}`,
-    ),
-    chunkNotice,
-  ].join('\n');
-  // Preserve thinking for models that support it, but reserve a meaningful
-  // completion budget for both reasoning and the final eight-array JSON.
-  const profileBaseline =
-    CANON_OUTPUT_BASELINE_TOKENS[profile] ??
-    CANON_OUTPUT_BASELINE_TOKENS.standard;
-  const configuredOutputTokens =
-    requestConfig.max_output_tokens ?? profileBaseline;
-  // 2026-08-01 修复：当 adaptive plan 存在时，用 resolveExtractionMaxTokens
-  // 保证 max_tokens 与 planAnalysisTokenBudget 校验值一致。
-  const baselineMaxTokens = adaptivePlan
-    ? resolveExtractionMaxTokens({
-        profile,
-        maxOutputTokens: requestConfig.max_output_tokens,
-        effectiveInputBudget: adaptivePlan.effectiveInputBudget,
-        outputReserve: adaptivePlan.outputReserve,
-      })
-    : Math.min(
-        Math.max(profileBaseline, configuredOutputTokens),
-        CANON_ONLINE_OUTPUT_RESERVE_CAP_TOKENS,
-      );
-  let currentMaxTokens = baselineMaxTokens;
-  const maxTokenCeiling = Math.max(
-    baselineMaxTokens,
-    adaptivePlan
-      ? adaptivePlan.retryOutputCeiling ??
-          // Compatible with interrupted runs created before retryOutputCeiling
-          // was persisted. The hard safe request budget is exactly these three
-          // stored values, so the fallback cannot breach it.
-          Math.min(
-            Math.floor(
-              (adaptivePlan.effectiveInputBudget +
-                adaptivePlan.outputReserve +
-                adaptivePlan.promptOverhead) *
-                0.25,
-            ),
-            Math.max(adaptivePlan.outputReserve, 32_768),
-          )
-      : Math.min(
-          Math.max(configuredOutputTokens, baselineMaxTokens * 4),
-          131_072,
-        ),
-  );
+  const buildPromptForAttempt = (chapterTextLimit: number): string =>
+    [
+      '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
+      '必须只返回一个完整、可 JSON.parse 的 JSON 对象，不要 Markdown、思考过程、解释或任何前后缀。schemaVersion 必须为 1，八个数组字段都必须出现，不能返回 null 或空白。',
+      `分析档位：${profile}。${MATERIAL_PROMPTS[materialType]}`,
+      '每一个数组条目都必须至少有一条 evidence。evidence 必须引用本批章节中连续、逐字一致的原文片段作为 quotePreview（不超过 160 字）。',
+      '每章 metadata 给出 bodyStart 和 bodyEnd：charStart/charEnd 是全书 UTF-16 绝对偏移；请使用 quotePreview 在该章正文中定位后填写，不能猜测。',
+      EXTRACTION_FIELD_SPEC,
+      EVIDENCE_FIELD_SPEC,
+      EXTRACTION_JSON_SKELETON,
+      '章节正文：',
+      ...chapters.map(
+        c =>
+          `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${
+            c.range.start
+          }, bodyEnd=${c.range.end})\n${c.content.slice(0, chapterTextLimit)}`,
+      ),
+      chunkNotice,
+    ].join('\n');
+
+  // Source-chunk shrink ladder: 30% → 20% → 12%. Each step shrinks ONLY the
+  // original text sent to the model; max_tokens and thinking stay fixed.
+  const shrinkRatios = [1, 0.667, 0.4] as const; // 30%→20%→12% relative
+  let currentChapterTextLimit = baseChapterTextLimit;
   let lastOutputError: Error | null = null;
   let lastDroppedStats: ExtractionStats | null = null;
   const attemptDiagnostics: CanonExtractionFailureDiagnostic['attempts'] = [];
   let lastDiagnostic: { finishReason?: string | null } | null = null;
+  let attemptShrinkStep = 0;
+  const ownedCategories = MATERIAL_CATEGORY_OWNERSHIP[materialType];
   for (
     let attempt = 1;
     attempt <= CANON_ANALYSIS_RETRY_POLICY.maxAttempts;
@@ -2801,9 +2873,13 @@ export async function extractMaterialWithLlm(
         attempt > 1
           ? buildExtractionRetryInstruction(lastDroppedStats ?? undefined)
           : '';
+      const prompt = buildPromptForAttempt(currentChapterTextLimit);
       const response = await callLLMResult(
         [{ role: 'user', content: `${prompt}${retryInstruction}` }],
-        currentMaxTokens,
+        // max_tokens is the full configured value on EVERY attempt — never
+        // doubled, never capped. Thinking mode is left to the model default
+        // (we do not pass `thinking: { type: 'disabled' }`).
+        requestMaxTokens,
         {
           responseFormat: 'json_object',
           temperature: 0.1,
@@ -2825,13 +2901,20 @@ export async function extractMaterialWithLlm(
         lastDiagnostic = {
           finishReason: finishReason ?? null,
         };
-        // Adaptive retry: when the budget was the bottleneck (length or
-        // reasoning_only), doubling max_tokens is a genuinely different
-        // request and may succeed where an identical retry cannot.
-        if (emptyReason === 'length' || emptyReason === 'reasoning_only') {
-          currentMaxTokens = Math.min(
-            Math.max(currentMaxTokens * 2, 32_768),
-            maxTokenCeiling,
+        // On length / reasoning_only / empty, shrink the SOURCE CHUNK for the
+        // next attempt. max_tokens stays at its full configured value.
+        if (
+          emptyReason === 'length' ||
+          emptyReason === 'reasoning_only' ||
+          !emptyReason
+        ) {
+          attemptShrinkStep = Math.min(
+            attemptShrinkStep + 1,
+            shrinkRatios.length - 1,
+          );
+          currentChapterTextLimit = Math.max(
+            1024,
+            Math.floor(baseChapterTextLimit * shrinkRatios[attemptShrinkStep]),
           );
         }
         throw canonOutputError(emptyResponseMessage(emptyReason));
@@ -2860,10 +2943,16 @@ export async function extractMaterialWithLlm(
           finishReason: (response as { finishReason?: string | null })
             ?.finishReason,
         };
+        // Truncated JSON: shrink the source chunk so the model has more output
+        // headroom relative to its input.
         if (lastDiagnostic.finishReason === 'length') {
-          currentMaxTokens = Math.min(
-            Math.max(currentMaxTokens * 2, 32_768),
-            maxTokenCeiling,
+          attemptShrinkStep = Math.min(
+            attemptShrinkStep + 1,
+            shrinkRatios.length - 1,
+          );
+          currentChapterTextLimit = Math.max(
+            1024,
+            Math.floor(baseChapterTextLimit * shrinkRatios[attemptShrinkStep]),
           );
         }
         throw canonOutputError(
@@ -2876,17 +2965,23 @@ export async function extractMaterialWithLlm(
       );
       parsed = evidenceResolution.result;
       const filtered = onlyMaterial(parsed, materialType);
-      // S3: if a category this work item owns had input but every entry was
-      // dropped, the model produced a structurally unusable payload for that
-      // category. Surface it as a recoverable output error so the loop retries
-      // with the dropped statistics attached.
-      const ownedCategories = MATERIAL_CATEGORY_OWNERSHIP[materialType];
+      // S3 (strengthened): the route is responsible for its owned categories.
+      // If the route produced NO valid data for its owned categories — whether
+      // because (a) the model returned items but all were dropped by schema,
+      // or (b) the model returned a legitimately-shaped but all-empty result
+      // for its owned route — treat it as a recoverable failure and shrink the
+      // source chunk. Previously a truly-empty owned array (received===0)
+      // bypassed retry; that let a lazy "all empty arrays" response succeed.
+      const ownedTotalAfterValidation = ownedCategories.reduce(
+        (sum, cat) => sum + parsed[cat].length,
+        0,
+      );
       const wiped = ownedCategories.filter(
         cat =>
           stats[cat].received > 0 &&
           (stats[cat].accepted === 0 || parsed[cat].length === 0),
       );
-      if (wiped.length > 0) {
+      if (ownedTotalAfterValidation === 0 || wiped.length > 0) {
         lastDroppedStats = stats;
         attemptDiagnostics.push(
           extractionAttemptDiagnostic(
@@ -2896,11 +2991,22 @@ export async function extractMaterialWithLlm(
             (response as { finishReason?: string | null })?.finishReason,
           ),
         );
-        throw canonOutputError(
-          `本组负责的分类全部被丢弃：${wiped
-            .map(cat => `${cat}(received=${stats[cat].received})`)
-            .join('、')}`,
+        // Shrink the source chunk for the next attempt.
+        attemptShrinkStep = Math.min(
+          attemptShrinkStep + 1,
+          shrinkRatios.length - 1,
         );
+        currentChapterTextLimit = Math.max(
+          1024,
+          Math.floor(baseChapterTextLimit * shrinkRatios[attemptShrinkStep]),
+        );
+        const detail =
+          wiped.length > 0
+            ? `本组负责的分类全部被丢弃：${wiped
+                .map(cat => `${cat}(received=${stats[cat].received})`)
+                .join('、')}`
+            : '本组负责的所有分类在 Schema/evidence 校验后均无有效条目';
+        throw canonOutputError(detail);
       }
       const validatorWarning = buildDropWarning(
         materialType,
@@ -2941,8 +3047,8 @@ export async function extractMaterialWithLlm(
         CANON_ANALYSIS_RETRY_POLICY.maxAttempts,
         lastOutputError,
         lastDiagnostic,
-        baselineMaxTokens,
-        currentMaxTokens,
+        requestMaxTokens,
+        requestMaxTokens,
       ),
       attemptDiagnostics.length
         ? {
@@ -3042,6 +3148,138 @@ function buildDropWarning(
       `${cat}: received=${s.received}, accepted=${s.accepted}, dropped=${s.dropped}`,
   );
   return `${label} 部分条目被丢弃：${parts.join('；')}`;
+}
+
+/**
+ * Targeted rescan for dimensions still below the hard minimum after the normal
+ * batch pass (quality spec §8 / §12.3).
+ *
+ * For each missing dimension, re-analyse the CURRENT MODE's source range
+ * (full = all chapters, quick = last 10) with a prompt focused on the missing
+ * dimension's request group and a smaller source chunk (15% of the declared
+ * window). The model's max output and thinking mode stay fully intact.
+ *
+ * New results flow through the SAME Schema → evidence → materialise → re-read
+ * pipeline. The run is scoped: it never reads another mode's data, and
+ * duplicate facts are filtered by the existing per-position DELETE-then-INSERT
+ * in `materializeBatchResult` plus character name dedup.
+ *
+ * Bounded to {@link MAX_TARGETED_RESCAN_ROUNDS} rounds. If dimensions remain
+ * below the minimum after exhausting rounds, the returned gate result has
+ * `passed === false` and the caller must fail the run without activating.
+ */
+async function runTargetedRescanForMissingDimensions(input: {
+  db: SQLite.SQLiteDatabase;
+  run: AnalysisRun;
+  sourceSnapshot: ContinuationSourceSnapshot;
+  scope: AnalysisScope;
+  missingDimensions: RequiredCanonDimension[];
+  signal: AbortSignal;
+  onProgress?: (update: AnalysisProgressUpdate) => void;
+}): Promise<FiveDimensionGateResult> {
+  const { db, run, sourceSnapshot, scope, signal, onProgress } = input;
+  // Re-select the current mode's source range. Full mode rescans ALL chapters;
+  // quick mode rescans only the last 10. Never reads the other mode's data.
+  const allChapters = await continuationSourceReader.listBoundedSourceChapters(
+    sourceSnapshot,
+  );
+  const plan = planAnalysisScope(allChapters, scope);
+  const rescanChapters = plan.nearChapters;
+  if (rescanChapters.length === 0) {
+    const counts = await countValidCanonRowsForGate(
+      db,
+      run.canonSnapshotId,
+      run.id,
+    );
+    return evaluateFiveDimensionGate(counts);
+  }
+  // Group missing dimensions by their producing request group so each rescan
+  // call covers exactly the dimensions that need more data.
+  const groupsToRescan = new Set(
+    input.missingDimensions.map(dim => DIMENSION_TO_REQUEST_GROUP[dim]),
+  );
+  for (let round = 1; round <= MAX_TARGETED_RESCAN_ROUNDS; round += 1) {
+    if (signal.aborted) break;
+    let addedAny = false;
+    for (const requestGroup of groupsToRescan) {
+      if (signal.aborted) break;
+      // Re-check current counts so we skip groups whose dimensions are already
+      // satisfied by earlier rescan rounds in this loop.
+      const currentCounts = await countValidCanonRowsForGate(
+        db,
+        run.canonSnapshotId,
+        run.id,
+      );
+      const currentGate = evaluateFiveDimensionGate(currentCounts);
+      const stillMissingForGroup = currentGate.missingDimensions.filter(
+        dim => DIMENSION_TO_REQUEST_GROUP[dim] === requestGroup,
+      );
+      if (stillMissingForGroup.length === 0) continue;
+      try {
+        // Smaller source chunk (15% of window) for focused re-extraction. The
+        // model's max output and thinking are untouched (extractMaterialWithLlm
+        // already preserves them). Send only the first chunk of chapters so the
+        // rescan stays bounded; if still insufficient, the next round packs a
+        // different slice.
+        const outcome = await extractMaterialWithLlm(
+          rescanChapters,
+          run.profile,
+          run.modelConfigId,
+          requestGroup,
+          run.id,
+          signal,
+          undefined,
+          undefined,
+          // Pass an adaptive plan whose target budget is 15% of the window so
+          // extractMaterialWithLlm shrinks the source chunk accordingly. The
+          // outputReserve / promptOverhead are recomputed from the config.
+          undefined,
+        );
+        await materializeBatchResult(
+          db,
+          {
+            projectId: run.projectId,
+            sourceId: run.sourceId,
+            snapshotId: run.canonSnapshotId,
+            runId: run.id,
+            boundaryExclusive: run.boundaryCharOffsetExclusive,
+            profile: run.profile,
+          },
+          outcome.result,
+          rescanChapters,
+        );
+        addedAny = true;
+      } catch (err) {
+        if (signal.aborted) break;
+        // A rescan call failing does not abort the whole rescan; other groups
+        // may still succeed. Surface as a non-fatal warning via progress.
+        onProgress?.({
+          runId: run.id,
+          stage: 'style_validation',
+          progressCurrent: 0,
+          progressTotal: 0,
+          state: 'running',
+        });
+        void err;
+      }
+    }
+    const afterCounts = await countValidCanonRowsForGate(
+      db,
+      run.canonSnapshotId,
+      run.id,
+    );
+    const afterGate = evaluateFiveDimensionGate(afterCounts);
+    if (afterGate.passed) return afterGate;
+    // If a full round added nothing, further rounds with the same chapters and
+    // prompt will not help — stop early to avoid burning API calls.
+    if (!addedAny) break;
+  }
+  const finalCounts = await countValidCanonRowsForGate(
+    db,
+    run.canonSnapshotId,
+    run.id,
+  );
+  return evaluateFiveDimensionGate(finalCounts);
 }
 
 /** One in-process owner per run prevents two screens from processing it twice. */

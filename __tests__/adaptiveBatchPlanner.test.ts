@@ -14,10 +14,11 @@ import {
   estimateTokensPerCharForChapter,
   resolveExtractionMaxTokens,
   resolveChapterTextLimitFromBudget,
-  CANON_ANALYSIS_CONTEXT_UTILIZATION,
-  LARGE_CONTEXT_BATCH_FILL_RATIO,
   CANON_REASONING_RETRY_OUTPUT_CEILING,
 } from '../src/services/continuation/canon/adaptiveBatchPlanner';
+import {
+  SOURCE_CHUNK_RATIO_NORMAL,
+} from '../src/services/continuation/canon/canonBudgetPolicy';
 import type { BoundedSourceChapter } from '../src/services/continuation/types';
 
 function makeChapter(
@@ -70,11 +71,11 @@ describe('planAdaptiveBatching', () => {
       maxOutputTokens: 8_000,
     });
     expect(plan.ok).toBe(true);
-    // 10 chapters × ~800 chars ≈ 500–800 tokens each; the derived input budget
-    // should absorb them all into one text-budgeted batch.
+    // 10 chapters × ~800 chars ≈ 500–800 tokens each; the 30% source-chunk
+    // target (~38K tokens for a 128K window) absorbs them all into one batch.
     expect(plan.estimatedBatchCount).toBeGreaterThanOrEqual(1);
     expect(plan.estimatedBatchCount).toBeLessThanOrEqual(10);
-    expect(plan.effectiveInputBudget).toBeGreaterThan(80_000);
+    expect(plan.effectiveInputBudget).toBeGreaterThan(30_000);
     const normals = plan.batches.filter(b => b.type === 'normal');
     expect(normals.length).toBe(plan.estimatedBatchCount);
   });
@@ -197,7 +198,7 @@ describe('planAdaptiveBatching', () => {
     expect(plan.suggestedContextWindow).toBeDefined();
   });
 
-  it('bounds the configured output reserve to a safe extraction request', () => {
+  it('keeps the full configured max_output_tokens as the output reserve (no 25% share)', () => {
     const chapters = [cjkChapter(1, 200)];
     const plan = planAdaptiveBatching({
       chapters,
@@ -207,14 +208,20 @@ describe('planAdaptiveBatching', () => {
       maxOutputTokens: 12_345,
     });
     expect(plan.ok).toBe(true);
-    const safeBudget = Math.floor(32_000 * CANON_ANALYSIS_CONTEXT_UTILIZATION);
-    expect(plan.outputReserve).toBe(Math.floor(safeBudget * 0.25));
-    expect(plan.effectiveInputBudget).toBe(
-      Math.max(0, safeBudget - plan.outputReserve - plan.promptOverhead),
+    // Output reserve == full configured max_output_tokens; never a 25% share.
+    expect(plan.outputReserve).toBe(12_345);
+    // Source-chunk target = 30% of the declared window, bounded by protocol
+    // compat (window - output - overhead).
+    const rawTarget = Math.floor(32_000 * SOURCE_CHUNK_RATIO_NORMAL);
+    const protocolLimit = Math.max(
+      0,
+      32_000 - 12_345 - plan.promptOverhead,
     );
+    expect(plan.targetInputBudget).toBe(Math.min(rawTarget, protocolLimit));
+    expect(plan.effectiveInputBudget).toBe(plan.targetInputBudget);
   });
 
-  it('uses at most 80% of a huge advertised model context window', () => {
+  it('uses a 30% source-chunk target of a huge advertised model context window and keeps full output', () => {
     const chapters = Array.from({ length: 4 }, (_, i) =>
       cjkChapter(i + 1, 300_000),
     );
@@ -227,25 +234,17 @@ describe('planAdaptiveBatching', () => {
     });
 
     expect(plan.ok).toBe(true);
-    const safeBudget = Math.floor(
-      1_000_000 * CANON_ANALYSIS_CONTEXT_UTILIZATION,
-    );
+    // Full configured output preserved — never compressed to 25% of anything.
     expect(plan.outputReserve).toBe(200_000);
-    expect(plan.effectiveInputBudget).toBe(
-      safeBudget - plan.outputReserve - plan.promptOverhead,
-    );
-    expect(
-      plan.effectiveInputBudget + plan.outputReserve + plan.promptOverhead,
-    ).toBeLessThanOrEqual(safeBudget);
-    // 1M contexts retain the 80% hard ceiling but pack only 60% of the
-    // remaining input headroom to avoid KV-cache long-tail timeouts.
-    expect(plan.targetInputBudget).toBe(
-      Math.floor(plan.effectiveInputBudget * LARGE_CONTEXT_BATCH_FILL_RATIO),
-    );
+    // Source-chunk target = 30% of the declared window. No 80% utilization,
+    // no 60% large-context fill ratio.
+    const expectedTarget = Math.floor(1_000_000 * SOURCE_CHUNK_RATIO_NORMAL);
+    expect(plan.targetInputBudget).toBe(expectedTarget);
+    expect(plan.effectiveInputBudget).toBe(expectedTarget);
     expect(plan.retryOutputCeiling).toBe(plan.outputReserve);
   });
 
-  it('keeps a bounded 64K recovery ceiling when a 1M reasoning model is configured for 8K output', () => {
+  it('keeps the full configured output as the retry ceiling (no 64K Canon cap)', () => {
     const plan = planAdaptiveBatching({
       chapters: [cjkChapter(1, 1_000)],
       profile: 'deep',
@@ -254,10 +253,15 @@ describe('planAdaptiveBatching', () => {
       maxOutputTokens: 8_000,
     });
     expect(plan.ok).toBe(true);
-    expect(plan.retryOutputCeiling).toBe(CANON_REASONING_RETRY_OUTPUT_CEILING);
+    // retryOutputCeiling equals the full configured output; there is no
+    // Canon-specific 64K ceiling anymore.
+    expect(plan.retryOutputCeiling).toBe(8_000);
+    // The exported constant is now Infinity (a no-op sentinel), confirming no
+    // internal output cap is applied.
+    expect(CANON_REASONING_RETRY_OUTPUT_CEILING).toBe(Number.POSITIVE_INFINITY);
   });
 
-  it('uses the operational target for oversized chapter chunks', () => {
+  it('uses the 30% source-chunk target for oversized chapter chunks', () => {
     const plan = planAdaptiveBatching({
       chapters: [cjkChapter(1, 700_000)],
       profile: 'deep',
@@ -271,8 +275,8 @@ describe('planAdaptiveBatching', () => {
       (typeof plan.batches)[number],
       { type: 'chunk' }
     >;
-    // Dense CJK must be sliced below the actual request target, not merely
-    // below the larger hard safety ceiling.
+    // Dense CJK must be sliced below the 30% source-chunk target (~300K tokens
+    // → well under 600K chars at the CJK token ratio).
     expect(chunk.chunkEndChar).toBeLessThan(600_000);
   });
 
@@ -319,14 +323,16 @@ describe('resolveExtractionMaxTokens', () => {
     expect(maxTokens).toBe(10_000);
   });
 
-  it('caps the output reserve on tiny budgets so input still fits', () => {
+  it('keeps the full configured max_output_tokens even on tiny input budgets', () => {
     const maxTokens = resolveExtractionMaxTokens({
       profile: 'deep',
       maxOutputTokens: 16_000,
       effectiveInputBudget: 1_024,
     });
-    // Ceiling = max(profileBaseline, budget*4) = max(8192, 4096) = 8192
-    expect(maxTokens).toBe(8_192);
+    // The model's configured output is sent in full; there is no 4× input
+    // ceiling. The request budget / protocol compat is handled by the planner,
+    // not by compressing the output.
+    expect(maxTokens).toBe(16_000);
   });
 
   it('keeps output within the adaptive plan reserve', () => {

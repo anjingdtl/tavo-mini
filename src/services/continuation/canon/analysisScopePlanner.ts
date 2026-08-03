@@ -1,7 +1,14 @@
 import type { BoundedSourceChapter } from '../types';
 import type { AnalysisScope, AnalyzedChapterRange } from './types';
 
-export const FAST_CONTINUATION_TAIL_CHAPTER_COUNT = 30;
+/**
+ * Quick-continuation analysis ("快速续写分析") reads only the last N chapters
+ * of the imported TXT, not the whole source. This changed from 30 to 10 per the
+ * original-analysis quality spec (2026-08-03): 30 chapters diluted the model's
+ * attention away from the recent state that actually matters for next-chapter
+ * continuation. 10 chapters gives a focused "精读" window.
+ */
+export const FAST_CONTINUATION_TAIL_CHAPTER_COUNT = 10;
 const MIN_TAIL_CHAPTER_COUNT = 1;
 const MAX_TAIL_CHAPTER_COUNT = 120;
 
