@@ -191,6 +191,13 @@ describe('continuation repair patch safety', () => {
       isRepairCandidateUsable(han(2400), han(2600), 3000, 'additional'),
     ).toBe(true);
   });
+
+  it('rejects unchanged candidates in both Repair modes', () => {
+    expect(isRepairCandidateUsable(han(3000), han(3000), 3000)).toBe(false);
+    expect(
+      isRepairCandidateUsable(han(3000), han(3000), 3000, 'additional'),
+    ).toBe(false);
+  });
 });
 
 describe('countHanCharacters full Unicode Han coverage', () => {

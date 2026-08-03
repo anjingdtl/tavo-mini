@@ -717,6 +717,7 @@ describe('buildContinuationContext style path', () => {
     expect(snapshot.style?.profileId).toBe('sp-ready-1');
     expect(snapshot.style?.rendererVersion).toBe(STYLE_RENDERER_VERSION);
     expect(snapshot.style?.renderLevel).toMatch(/compact|standard|detailed/);
+    expect(snapshot.workflowVersion).toBe(2);
     expect(snapshot.bundles.style?.narrativePerson).toContain('三');
     expect(snapshot.contextBudget?.styleTokens).toBeGreaterThan(0);
 
