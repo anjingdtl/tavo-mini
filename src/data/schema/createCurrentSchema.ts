@@ -7,11 +7,17 @@ import { buildSchema24CreateSqls } from '../../services/migrations/v23-to-v24';
 import { buildSchema25CreateSqls } from '../../services/migrations/v24-to-v25';
 import { buildSchema26CreateSqls } from '../../services/migrations/v25-to-v26';
 import { buildSchema32CreateSqls } from '../../services/migrations/v31-to-v32';
+import { buildSchema33CreateSqls } from '../../services/migrations/v32-to-v33';
 
-export async function createCurrentSchema(
-  database: SQLite.SQLiteDatabase,
-): Promise<void> {
-  const statements = [
+/**
+ * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
+ * install runs, in dependency order. Extracted from {@link createCurrentSchema}
+ * so test harnesses can replay the same DDL against an in-memory real SQLite
+ * (sql.js) without a react-native-sqlite-storage connection. Production code
+ * does not call this directly; it goes through {@link createCurrentSchema}.
+ */
+export function createCurrentSchemaStatements(): string[] {
+  return [
     `
       CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -628,7 +634,18 @@ export async function createCurrentSchema(
     // legacy Schema 21 table definitions created above so fresh and upgraded
     // databases expose the same stage CHECK and artifact columns.
     ...buildSchema32CreateSqls(),
+    // Schema 33 Canon fact business-key UNIQUE indexes (deduplication guard)
+    // + canon_evidence rescan provenance index. The canon_evidence
+    // source_origin / rescan_operation_id columns are declared inline in the
+    // v19-to-v20 CREATE TABLE above so a fresh database has them from the start.
+    ...buildSchema33CreateSqls(),
   ];
+}
+
+export async function createCurrentSchema(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  const statements = createCurrentSchemaStatements();
   for (const statement of statements) {
     await execute(database, statement);
   }

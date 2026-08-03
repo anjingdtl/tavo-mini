@@ -158,6 +158,19 @@ export interface BoundedSourceChapter {
   range: { start: Utf16Offset; end: Utf16Offset };
   /** True when this chapter extends past the boundary and was clipped. */
   clippedByBoundary: boolean;
+  /**
+   * When this chapter object is a *slice* of a larger chapter (i.e. its
+   * `content` was produced via `originalContent.slice(chunkStartChar,
+   * chunkEndChar)`), these fields record the slice window within the original
+   * chapter content. They default to undefined / 0 for whole-chapter objects.
+   *
+   * Evidence resolution must compute absolute book offsets as
+   * `range.start + chunkStartChar + localMatchIndex`, NOT just
+   * `range.start + localMatchIndex` — otherwise evidence in the 2nd+ chunk of
+   * an oversized chapter is offset by exactly `chunkStartChar` too low.
+   */
+  chunkStartChar?: number;
+  chunkEndChar?: number;
 }
 
 /**

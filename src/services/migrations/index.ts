@@ -33,8 +33,9 @@ import {
   buildV31toV32Statements,
   migrateV31ToV32,
 } from './v31-to-v32';
+import { buildV32toV33Statements } from './v32-to-v33';
 
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 33;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -202,6 +203,12 @@ const MIGRATIONS: Migration[] = [
     to: 32,
     breaking: false,
     buildStatements: async () => buildV31toV32Statements(),
+  },
+  {
+    from: 32,
+    to: 33,
+    breaking: false,
+    buildStatements: async () => buildV32toV33Statements(),
   },
 ];
 
