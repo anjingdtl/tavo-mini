@@ -21,7 +21,9 @@ jest.mock('../src/services/continuation/generation', () => ({
   abandonRun: jest.fn(async () => undefined),
   adoptArtifactAsDraft: jest.fn(async () => ({ contentHash: 'hash' })),
   confirmPlanAndContinue: jest.fn(),
+  getArtifactForRun: jest.fn(async () => null),
   getLatestArtifact: jest.fn(async () => ({ id: 'artifact-1', content: '续写正文' })),
+  getLatestEligibleArtifact: jest.fn(async () => ({ id: 'artifact-1', stage: 'writer', content: '续写正文' })),
   getPlan: jest.fn(async () => null),
   getRunById: jest.fn(async () => ({
     id: 'run-1',
@@ -37,6 +39,7 @@ jest.mock('../src/services/continuation/generation', () => ({
     }),
   })),
   listChecksForArtifact: jest.fn(async () => [] as any[]),
+  listStageResults: jest.fn(async () => [] as any[]),
   repairContinuationArtifactOnce: jest.fn(async () => undefined),
   resumeInterruptedRun: jest.fn(),
   summarizeTrace: jest.fn(),
@@ -45,21 +48,45 @@ jest.mock('../src/services/continuation/generation', () => ({
 import { ContinuationResultScreen } from '../src/screens/continuation/ContinuationResultScreen';
 import {
   adoptArtifactAsDraft,
+  getArtifactForRun,
   getLatestArtifact,
+  getLatestEligibleArtifact,
+  getRunById,
   listChecksForArtifact,
+  listStageResults,
   repairContinuationArtifactOnce,
 } from '../src/services/continuation/generation';
 
 const mockListChecksForArtifact = listChecksForArtifact as jest.Mock;
 const mockGetLatestArtifact = getLatestArtifact as jest.Mock;
+const mockGetArtifactForRun = getArtifactForRun as jest.Mock;
+const mockGetLatestEligibleArtifact = getLatestEligibleArtifact as jest.Mock;
+const mockGetRunById = getRunById as jest.Mock;
 const mockAdoptArtifactAsDraft = adoptArtifactAsDraft as jest.Mock;
 const mockRepairContinuationArtifactOnce = repairContinuationArtifactOnce as jest.Mock;
+const mockListStageResults = listStageResults as jest.Mock;
 
 describe('ContinuationResultScreen adoption decision', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetRunById.mockResolvedValue({
+      id: 'run-1',
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      workflowVersion: 2,
+      canonSnapshotId: 'snapshot-1234567890',
+      canonRevision: 1,
+      contextTraceJson: null,
+      tokenUsageJson: JSON.stringify({
+        workflowVersion: 2,
+        stages: { repair: { requestCount: 1 } },
+      }),
+    });
     mockGetLatestArtifact.mockResolvedValue({ id: 'artifact-1', content: '续写正文' });
+    mockGetLatestEligibleArtifact.mockResolvedValue({ id: 'artifact-1', stage: 'writer', content: '续写正文' });
+    mockGetArtifactForRun.mockResolvedValue(null);
     mockListChecksForArtifact.mockResolvedValue([]);
+    mockListStageResults.mockResolvedValue([]);
   });
 
   it('makes an automatic repair explicit and states that adoption uses the repaired artifact', async () => {
@@ -140,5 +167,75 @@ describe('ContinuationResultScreen adoption decision', () => {
         allowOpenChecks: true,
       }),
     );
+  });
+
+  it('shows a rejected V4 Repair candidate for read-only audit without making it adoptable', async () => {
+    mockGetRunById.mockResolvedValue({
+      id: 'run-1',
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      workflowVersion: 4,
+      canonSnapshotId: 'snapshot-1234567890',
+      canonRevision: 1,
+      contextTraceJson: null,
+      tokenUsageJson: JSON.stringify({ workflowVersion: 4, stages: {} }),
+    });
+    mockGetLatestEligibleArtifact.mockResolvedValue({
+      id: 'writer-1',
+      stage: 'writer',
+      content: 'Writer 可采纳正文',
+    });
+    mockGetArtifactForRun.mockResolvedValue({
+      id: 'repair-1',
+      stage: 'repair',
+      eligibilityStatus: 'rejected',
+      rejectionCode: 'local_final_gate_failed',
+      content: 'Repair 候选正文',
+    });
+    const stage = (input: Record<string, unknown>) => ({
+      requestCount: 1,
+      inputTokens: 10,
+      outputTokens: 10,
+      startedAt: null,
+      completedAt: null,
+      errorCode: null,
+      errorMessage: null,
+      artifactId: null,
+      outputJson: null,
+      ...input,
+    });
+    mockListStageResults.mockResolvedValue([
+      stage({ stage: 'writer', status: 'success', artifactId: 'writer-1' }),
+      stage({ stage: 'checker', status: 'success', artifactId: 'writer-1' }),
+      stage({ stage: 'control', status: 'success', artifactId: 'writer-1' }),
+      stage({
+        stage: 'repair',
+        status: 'success',
+        artifactId: 'repair-1',
+        outputJson: JSON.stringify({
+          appliedCheckerIssueIds: [],
+          appliedControlSuggestionIds: [],
+        }),
+      }),
+      stage({
+        stage: 'local_verify',
+        status: 'failed',
+        outputJson: JSON.stringify({
+          passed: false,
+          checkSubtypes: ['chapter_length_over_target'],
+        }),
+      }),
+    ]);
+
+    const { getByText, queryByText } = render(
+      <ContinuationResultScreen runId="run-1" onClose={jest.fn()} />,
+    );
+
+    await waitFor(() => expect(getByText('Repair 被本地门禁拒绝')).toBeTruthy());
+    expect(getByText('查看被拒 Repair 候选')).toBeTruthy();
+    expect(getByText('采纳当前 eligible 候选（风险自负）')).toBeTruthy();
+    expect(queryByText('Repair 候选正文')).toBeNull();
+    fireEvent.press(getByText('查看被拒 Repair 候选'));
+    expect(getByText('Repair 候选正文')).toBeTruthy();
   });
 });

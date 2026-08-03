@@ -1,9 +1,13 @@
 import { SCHEMA_VERSION } from '../src/services/migrations';
-import { buildV30toV31Statements } from '../src/services/migrations/v30-to-v31';
+import {
+  buildV30toV31Statements,
+  migrateV30ToV31,
+} from '../src/services/migrations/v30-to-v31';
+import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 31 Canon foreign-key repair', () => {
   it('is the current schema version', () => {
-    expect(SCHEMA_VERSION).toBe(31);
+    expect(SCHEMA_VERSION).toBe(32);
   });
 
   it('rebuilds Canon tables that Schema 30 could leave pointing at _v29', () => {
@@ -33,5 +37,27 @@ describe('schema 31 Canon foreign-key repair', () => {
     );
     expect(sql).toContain('REFERENCES continuation_analysis_runs(id)');
     expect(sql).not.toContain('continuation_analysis_runs_v29');
+  });
+
+  it('completes when the repaired schema has no foreign-key orphans', async () => {
+    const mock = createMigrationDb({ schemaVersion: 30 });
+
+    await expect(migrateV30ToV31(mock.database as any)).resolves.toBeUndefined();
+    expect(mock.schemas.has('canon_characters')).toBe(true);
+    expect(mock.schemas.has('canon_characters_v30')).toBe(false);
+  });
+
+  it('fails closed when the repaired schema still has foreign-key orphans', async () => {
+    const mock = createMigrationDb({ schemaVersion: 30 });
+    mock.database.executeSql.mockImplementation(async (sql: string) => {
+      if (sql === 'PRAGMA foreign_key_check') {
+        return [{ rows: { length: 1, item: () => null } }] as any;
+      }
+      return [{ rows: { length: 0, item: () => null } }] as any;
+    });
+
+    await expect(migrateV30ToV31(mock.database as any)).rejects.toThrow(
+      '发现 1 条外键孤儿记录',
+    );
   });
 });

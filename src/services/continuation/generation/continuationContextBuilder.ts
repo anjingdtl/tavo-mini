@@ -9,6 +9,7 @@ import {
   clipTextToTokenBudget,
   clipTextTailToTokenBudget,
   estimateTokens,
+  estimateMessagesTokens,
 } from '../../../utils/tokenEstimator';
 import type { Chapter } from '../../../types/novel';
 import * as database from '../../database';
@@ -33,6 +34,10 @@ import { computeStyleProfileHash } from '../styleProfile/styleProfileHash';
 import { STYLE_ANALYZER_VERSION } from '../styleProfile/styleAnalysisPrompt';
 import type { StyleMetrics } from '../styleProfile/styleStatistics';
 import { CONTINUATION_BUDGET_POLICY } from './continuationContextBudget';
+import {
+  hashContextAutomationPolicy,
+  type ContextAutomationPolicyV2,
+} from '../../contextAutomationPolicy';
 import { getEffectiveContinuationState } from './continuationStateService';
 import { buildContinuationSupplementContext } from './continuationSupplementContextBuilder';
 import {
@@ -43,10 +48,13 @@ import type {
   ContinuationContextSnapshot,
   ContinuationContextTrace,
   ContinuationFrozenStyle,
+  ContinuationContextSnapshotV3,
   ContinuationGenerationSettings,
   ContinuationGenerationSettingsSnapshot,
+  ContinuationPlan,
   ContinuationStyleProfile,
   FrozenContinuationModelConfig,
+  ContinuationV4ContextStage,
   StrictnessProfile,
 } from './types';
 import { ContinuationCapabilityBlockedError } from './types';
@@ -60,6 +68,25 @@ import {
   selectContinuationAnchor,
   type ContinuationAnchorChapter,
 } from './continuationAnchor';
+import {
+  planContinuationV4ContextBudget,
+  resolveContinuationV4BudgetPreview,
+} from './continuationV4Budget';
+import {
+  buildContinuationV4StageViews,
+  hashContinuationV4StageView,
+} from './continuationV4ContextViews';
+import {
+  compileContinuationV4CheckerMessages,
+  compileContinuationV4ControlMessages,
+  compileContinuationV4RepairMessages,
+  compileContinuationV4WriterMessages,
+  continuationV4ProtocolSkeletonTokens,
+} from './continuationV4PromptCompiler';
+import {
+  buildContinuationControlFallback,
+  buildContinuationControlMetrics,
+} from './continuationControl';
 
 export interface BuildContinuationContextInput {
   projectId: number;
@@ -84,6 +111,13 @@ export interface BuildContinuationContextInput {
    * frozen onto the snapshot and used as the Writer layout budget when present.
    */
   stageBudgets?: ContinuationStageBudgets;
+  /** V4 context layout source; absent means historical V2 budget policy. */
+  contextAutomationPolicy?: ContextAutomationPolicyV2;
+  writerStageModel?: {
+    configId: number;
+    contextWindow: number;
+    maxOutputTokens: number;
+  };
   /** Non-secret routing fields frozen from each selected stage config. */
   frozenModelConfigs?: {
     planner: FrozenContinuationModelConfig | null;
@@ -91,6 +125,7 @@ export interface BuildContinuationContextInput {
     checker: FrozenContinuationModelConfig | null;
     repair: FrozenContinuationModelConfig | null;
     stateExtraction: FrozenContinuationModelConfig | null;
+    control?: FrozenContinuationModelConfig | null;
   };
 }
 
@@ -267,14 +302,32 @@ export async function buildContinuationContext(
   // Prefer Writer stage capacity for layout when frozen stage budgets exist.
   const writerCapacity: ResolvedStageCapacity | null =
     input.stageBudgets?.writer ?? null;
-  const layoutLimit = writerCapacity?.contextWindow ?? input.modelContextLimit;
-  const layoutMaxOut = writerCapacity?.maxOutputTokens ?? input.maxOutputTokens;
+  const layoutLimit =
+    input.writerStageModel?.contextWindow ??
+    writerCapacity?.contextWindow ??
+    input.modelContextLimit;
+  const layoutMaxOut =
+    input.writerStageModel?.maxOutputTokens ??
+    writerCapacity?.maxOutputTokens ??
+    input.maxOutputTokens;
+  const planLayout = (hardContextTokens = 0, hasPrimaryAnchor = false) =>
+    input.contextAutomationPolicy && input.writerStageModel
+      ? planContinuationV4ContextBudget({
+          frozenPolicy: input.contextAutomationPolicy,
+          frozenModelConfig: input.writerStageModel,
+          targetChapterChars: settings.targetChapterChars,
+          hardContextTokens,
+          hasPrimaryAnchor,
+        })
+      : planContinuationContextBudget({
+          modelContextLimit: layoutLimit,
+          writerMaxOutputTokens: layoutMaxOut,
+          targetChapterChars: settings.targetChapterChars,
+          hardContextTokens,
+          hasPrimaryAnchor,
+        });
 
-  let contextBudget = planContinuationContextBudget({
-    modelContextLimit: layoutLimit,
-    writerMaxOutputTokens: layoutMaxOut,
-    targetChapterChars: settings.targetChapterChars,
-  });
+  let contextBudget = planLayout();
   let lockedRules: string[] = [];
   try {
     lockedRules = JSON.parse(settings.customRulesJson || '[]');
@@ -396,13 +449,7 @@ export async function buildContinuationContext(
       `上下文预算不足：用户锁定规则与 hard Canon 约 ${hardContextTokens} token，可用 ${contextBudget.inputBudget}。请换更大上下文模型或降低目标章节长度。`,
     );
   }
-  contextBudget = planContinuationContextBudget({
-    modelContextLimit: layoutLimit,
-    writerMaxOutputTokens: layoutMaxOut,
-    targetChapterChars: settings.targetChapterChars,
-    hardContextTokens,
-    hasPrimaryAnchor: Boolean(primaryAnchorExcerpt),
-  });
+  contextBudget = planLayout(hardContextTokens, Boolean(primaryAnchorExcerpt));
   primaryAnchorExcerpt = clipTextTailToTokenBudget(
     primaryAnchor.excerpt,
     contextBudget.sourceSeamTokens,
@@ -707,6 +754,10 @@ export async function buildContinuationContext(
         : null,
       stateExtraction:
         settings.stateExtractionLlmConfigId ?? input.activeLlmConfigId,
+      control:
+        settings.controlLlmConfigId ??
+        settings.checkerLlmConfigId ??
+        input.activeLlmConfigId,
     },
     frozenModelConfigs: input.frozenModelConfigs,
   };
@@ -986,5 +1037,233 @@ export async function buildContinuationContext(
     budgetRestrictedReason: null,
   };
 
+  return { snapshot, trace };
+}
+
+export interface BuildContinuationV4ContextInput
+  extends Omit<
+    BuildContinuationContextInput,
+    | 'modelContextLimit'
+    | 'maxOutputTokens'
+    | 'initialWriterOutputTokens'
+    | 'stageBudgets'
+  > {
+  policy: ContextAutomationPolicyV2;
+  stageModels: Record<
+    ContinuationV4ContextStage,
+    { configId: number; contextWindow: number; maxOutputTokens: number }
+  >;
+}
+
+function simulatedContinuationPlan(): ContinuationPlan {
+  return {
+    schemaVersion: 1,
+    chapterGoal: '',
+    centralConflict: '',
+    beats: [],
+    participatingCharacterIds: [],
+    characterActions: [],
+    plotAdvances: [],
+    foreshadowingActions: [],
+    proposedStateChanges: [],
+    risks: [],
+  };
+}
+
+function v4PromptEstimates(input: {
+  views: ReturnType<typeof buildContinuationV4StageViews>;
+  artifactText: string;
+  plan: ContinuationPlan;
+  metrics: ReturnType<typeof buildContinuationControlMetrics>;
+  controlReport: ReturnType<typeof buildContinuationControlFallback>;
+}): Record<ContinuationV4ContextStage, number> {
+  return {
+    writer: estimateMessagesTokens(
+      compileContinuationV4WriterMessages(input.views.writer),
+    ),
+    checker: estimateMessagesTokens(
+      compileContinuationV4CheckerMessages({
+        view: input.views.checker,
+        artifactText: input.artifactText,
+        writerArtifactHash: contentRevisionHash(input.artifactText),
+        plan: input.plan,
+      }),
+    ),
+    control: estimateMessagesTokens(
+      compileContinuationV4ControlMessages({
+        view: input.views.control,
+        artifactText: input.artifactText,
+        metrics: input.metrics,
+        plan: input.plan,
+      }),
+    ),
+    repair: estimateMessagesTokens(
+      compileContinuationV4RepairMessages({
+        view: input.views.repair,
+        artifactText: input.artifactText,
+        plan: input.plan,
+        checkerReport: { issues: [] },
+        controlReport: input.controlReport,
+      }),
+    ),
+  };
+}
+
+function v4ProtocolSkeletons(): Record<ContinuationV4ContextStage, number> {
+  return {
+    writer: continuationV4ProtocolSkeletonTokens('writer'),
+    checker: continuationV4ProtocolSkeletonTokens('checker'),
+    control: continuationV4ProtocolSkeletonTokens('control'),
+    repair: continuationV4ProtocolSkeletonTokens('repair'),
+  };
+}
+
+/**
+ * Build the V4 snapshot by reusing the one-shot frozen source/Canon/state
+ * selection and then deriving stage views synchronously from that snapshot.
+ * The base builder remains the historical V2 entrypoint; this wrapper is the
+ * only new-run V4 entrypoint and freezes policy/model capabilities before it
+ * returns.
+ */
+export async function buildContinuationV4Context(
+  input: BuildContinuationV4ContextInput,
+): Promise<{
+  snapshot: ContinuationContextSnapshotV3;
+  trace: ContinuationContextTrace;
+}> {
+  const writerModel = input.stageModels.writer;
+  const base = await buildContinuationContext({
+    ...input,
+    modelContextLimit: writerModel.contextWindow,
+    maxOutputTokens: writerModel.maxOutputTokens,
+    initialWriterOutputTokens: writerModel.maxOutputTokens,
+    contextAutomationPolicy: input.policy,
+    writerStageModel: writerModel,
+  });
+  const policyHash = hashContextAutomationPolicy(input.policy);
+  const frozenPolicy = {
+    schemaVersion: input.policy.schemaVersion,
+    allocatorVersion: input.policy.allocatorVersion,
+    policyHash,
+    policy: JSON.parse(JSON.stringify(input.policy)) as ContextAutomationPolicyV2,
+    appliedAt: new Date().toISOString(),
+  };
+  const plan = simulatedContinuationPlan();
+  const artifactText = '';
+  const metrics = buildContinuationControlMetrics({
+    text: artifactText,
+    target: input.targetPosition == null
+      ? input.settingsOverride?.targetChapterChars ?? 1
+      : input.settingsOverride?.targetChapterChars ??
+        (base.snapshot.settingsSnapshot.values.targetChapterChars ?? 1),
+    plan,
+  });
+  const controlReport = buildContinuationControlFallback(metrics);
+  const protocolSkeletonTokens = v4ProtocolSkeletons();
+  const provisionalBudgets = resolveContinuationV4BudgetPreview({
+    frozenPolicy: input.policy,
+    stages: input.stageModels,
+    targetChapterChars: base.snapshot.settingsSnapshot.values.targetChapterChars,
+    writerDraftTokens: estimateTokens(artifactText),
+    paragraphCount: 0,
+    compiledPromptTokens: 0,
+    protocolSkeletonTokens,
+    hardContextTokens: 0,
+  }).stages;
+  const provisionalViews = buildContinuationV4StageViews({
+    snapshot: base.snapshot,
+    stageBudgets: provisionalBudgets,
+  });
+  const firstPromptTokens = v4PromptEstimates({
+    views: provisionalViews,
+    artifactText,
+    plan,
+    metrics,
+    controlReport,
+  });
+  const resolvedBudgets = resolveContinuationV4BudgetPreview({
+    frozenPolicy: input.policy,
+    stages: input.stageModels,
+    targetChapterChars: base.snapshot.settingsSnapshot.values.targetChapterChars,
+    writerDraftTokens: estimateTokens(artifactText),
+    paragraphCount: 0,
+    compiledPromptTokens: firstPromptTokens,
+    protocolSkeletonTokens,
+    hardContextTokens: {
+      writer: base.trace.hardContextTokens ?? 0,
+      checker: 0,
+      control: 0,
+      repair: 0,
+    },
+  }).stages;
+  const stageViews = buildContinuationV4StageViews({
+    snapshot: base.snapshot,
+    stageBudgets: resolvedBudgets,
+  });
+  const finalPromptTokens = v4PromptEstimates({
+    views: stageViews,
+    artifactText,
+    plan,
+    metrics,
+    controlReport,
+  });
+  const frozenStageBudgets = resolveContinuationV4BudgetPreview({
+    frozenPolicy: input.policy,
+    stages: input.stageModels,
+    targetChapterChars: base.snapshot.settingsSnapshot.values.targetChapterChars,
+    writerDraftTokens: estimateTokens(artifactText),
+    paragraphCount: 0,
+    compiledPromptTokens: finalPromptTokens,
+    protocolSkeletonTokens,
+    hardContextTokens: {
+      writer: base.trace.hardContextTokens ?? 0,
+      checker: 0,
+      control: 0,
+      repair: 0,
+    },
+  }).stages;
+  const frozenViews = buildContinuationV4StageViews({
+    snapshot: base.snapshot,
+    stageBudgets: frozenStageBudgets,
+  });
+  const settingsSnapshot: ContinuationGenerationSettingsSnapshot = {
+    ...base.snapshot.settingsSnapshot,
+    workflowVersion: 4,
+    values: {
+      ...base.snapshot.settingsSnapshot.values,
+      checkerEnabled: true,
+      writerLlmConfigId: input.stageModels.writer.configId,
+      checkerLlmConfigId: input.stageModels.checker.configId,
+      controlLlmConfigId: input.stageModels.control.configId,
+      repairLlmConfigId: input.stageModels.repair.configId,
+    },
+    resolvedModelConfigIds: {
+      ...base.snapshot.settingsSnapshot.resolvedModelConfigIds,
+      writer: input.stageModels.writer.configId,
+      checker: input.stageModels.checker.configId,
+      control: input.stageModels.control.configId,
+      repair: input.stageModels.repair.configId,
+    },
+    frozenModelConfigs: input.frozenModelConfigs,
+  };
+  const snapshot: ContinuationContextSnapshotV3 = {
+    ...base.snapshot,
+    schemaVersion: 3,
+    workflowVersion: 4,
+    budgetPolicy: frozenPolicy,
+    stageBudgets: frozenStageBudgets,
+    stageViews: frozenViews,
+    settingsSnapshot,
+  };
+  const trace: ContinuationContextTrace = {
+    ...base.trace,
+    v4StageBudgets: frozenStageBudgets,
+    v4StageViewHashes: {
+      writer: hashContinuationV4StageView(frozenViews.writer),
+      checker: hashContinuationV4StageView(frozenViews.checker),
+      control: hashContinuationV4StageView(frozenViews.control),
+      repair: hashContinuationV4StageView(frozenViews.repair),
+    },
+  };
   return { snapshot, trace };
 }

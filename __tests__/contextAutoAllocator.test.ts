@@ -197,6 +197,8 @@ jest.mock('../src/data/repositories/contextAutoRepository', () => ({
       affectedCounts,
     }),
   ),
+  getContextAutomationPolicy: jest.fn().mockResolvedValue(null),
+  setContextAutomationPolicy: jest.fn(),
   setContextAutoLastApplied: jest.fn(),
 }));
 
@@ -205,15 +207,24 @@ import { all } from '../src/data/connection/query';
 import { executeTransaction } from '../src/services/database/transaction';
 import { setContextAutoLastApplied } from '../src/data/repositories/contextAutoRepository';
 import {
+  getContextAutomationPolicy,
+  setContextAutomationPolicy,
+} from '../src/data/repositories/contextAutoRepository';
+import {
   applyContextAutoAllocation,
   countAllResources,
   countNonLocalLlmConfigs,
   countAllPresets,
+  ensureContextAutomationPolicy,
 } from '../src/services/contextAutoAllocator';
 
 const mockedOpenDatabase = openDatabase as jest.Mock;
 const mockedAll = all as jest.Mock;
 const mockedExecuteTransaction = executeTransaction as jest.Mock;
+const mockedGetContextAutomationPolicy =
+  getContextAutomationPolicy as jest.Mock;
+const mockedSetContextAutomationPolicy =
+  setContextAutomationPolicy as jest.Mock;
 const mockedSetContextAutoLastApplied = setContextAutoLastApplied as jest.Mock;
 
 describe('countAllResources', () => {
@@ -265,11 +276,41 @@ describe('countAllPresets', () => {
   });
 });
 
+describe('ensureContextAutomationPolicy', () => {
+  beforeEach(() => {
+    mockedGetContextAutomationPolicy.mockReset();
+    mockedSetContextAutomationPolicy.mockReset();
+  });
+
+  test('已有持久化策略时原样返回且不重复写入', async () => {
+    const persisted = {
+      schemaVersion: 2,
+      allocatorVersion: 'persisted-policy',
+    } as any;
+    mockedGetContextAutomationPolicy.mockResolvedValue(persisted);
+
+    await expect(ensureContextAutomationPolicy()).resolves.toBe(persisted);
+    expect(mockedSetContextAutomationPolicy).not.toHaveBeenCalled();
+  });
+
+  test('缺少策略时写入版本化默认策略', async () => {
+    mockedGetContextAutomationPolicy.mockResolvedValue(null);
+
+    const policy = await ensureContextAutomationPolicy();
+    expect(policy.schemaVersion).toBe(2);
+    expect(policy.allocatorVersion).toBe('context-automation-v2');
+    expect(mockedSetContextAutomationPolicy).toHaveBeenCalledWith(policy);
+  });
+});
+
 describe('applyContextAutoAllocation', () => {
   beforeEach(() => {
     mockedAll.mockReset();
     mockedExecuteTransaction.mockReset();
     mockedSetContextAutoLastApplied.mockReset();
+    mockedGetContextAutomationPolicy.mockReset();
+    mockedGetContextAutomationPolicy.mockResolvedValue(null);
+    mockedSetContextAutomationPolicy.mockReset();
     mockedOpenDatabase.mockReset();
     mockedOpenDatabase.mockResolvedValue({});
 
@@ -283,8 +324,8 @@ describe('applyContextAutoAllocation', () => {
     expect(mockedExecuteTransaction).toHaveBeenCalledTimes(1);
     const [dbArg, statements] = mockedExecuteTransaction.mock.calls[0];
     expect(dbArg).toEqual({});
-    // 10 个 settings + llm_config + presets + 4 个资源表（count=1>0）= 16 个
-    expect(statements.length).toBe(16);
+    // 12 个 settings（含 input + policy）+ llm_config + presets + 4 个资源表 = 18 个
+    expect(statements.length).toBe(18);
     // 检测参数（SQL 用 VALUES(?,?)，key 在 params[0]）
     const settingsStmts = statements.filter(
       (s: any) => typeof s.params[0] === 'string' && !s.sql.includes('UPDATE'),
@@ -300,6 +341,8 @@ describe('applyContextAutoAllocation', () => {
     expect(settingsKeys).toContain('pipeline_review_max_tokens');
     expect(settingsKeys).toContain('pipeline_factcheck_max_tokens');
     expect(settingsKeys).toContain('pipeline_proof_max_tokens');
+    expect(settingsKeys).toContain('context_auto_input');
+    expect(settingsKeys).toContain('context_auto_policy_v2');
     // UPDATE 语句
     const sqls = statements.map((s: any) => s.sql);
     expect(sqls.some((s: string) => s.includes('UPDATE llm_config'))).toBe(true);
@@ -371,11 +414,11 @@ describe('applyContextAutoAllocation', () => {
   test('ContextConfig/PipelineConfig 其他字段不被覆写（INSERT OR REPLACE 单 key）', async () => {
     await applyContextAutoAllocation(200000);
     const [, statements] = mockedExecuteTransaction.mock.calls[0];
-    // 10 个 settings INSERT OR REPLACE（6 ContextConfig + 4 PipelineConfig）
+    // 12 个 settings INSERT OR REPLACE（含 policy/input + 6 ContextConfig + 4 PipelineConfig）
     const settingsStmts = statements.filter((s: any) =>
       s.sql.includes('INSERT OR REPLACE INTO settings'),
     );
-    expect(settingsStmts.length).toBe(10);
+    expect(settingsStmts.length).toBe(12);
     // 不应包含 strategy / pipelineMode / presetId 等 key
     const settingsKeys = settingsStmts.map((s: any) => s.params[0]);
     expect(settingsKeys).not.toContain('context_strategy');

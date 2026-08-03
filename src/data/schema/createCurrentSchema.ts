@@ -6,6 +6,7 @@ import { buildSchema23CreateSqls } from '../../services/migrations/v22-to-v23';
 import { buildSchema24CreateSqls } from '../../services/migrations/v23-to-v24';
 import { buildSchema25CreateSqls } from '../../services/migrations/v24-to-v25';
 import { buildSchema26CreateSqls } from '../../services/migrations/v25-to-v26';
+import { buildSchema32CreateSqls } from '../../services/migrations/v31-to-v32';
 
 export async function createCurrentSchema(
   database: SQLite.SQLiteDatabase,
@@ -623,6 +624,10 @@ export async function createCurrentSchema(
     // Schema 26 versioned continuation style profiles (fresh installs build the
     // new shape directly; the active_style_profile_id column is inlined above).
     ...buildSchema26CreateSqls(),
+    // Schema 32 V4 generation persistence. The helper also upgrades the
+    // legacy Schema 21 table definitions created above so fresh and upgraded
+    // databases expose the same stage CHECK and artifact columns.
+    ...buildSchema32CreateSqls(),
   ];
   for (const statement of statements) {
     await execute(database, statement);

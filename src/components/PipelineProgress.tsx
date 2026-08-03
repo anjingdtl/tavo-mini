@@ -16,6 +16,7 @@ export interface PipelineProgressProps {
 export type ContinuationPipelineStage =
   | 'context'
   | 'writer'
+  | 'auditing'
   | 'checker'
   | 'repair';
 
@@ -25,6 +26,7 @@ export const CONTINUATION_STAGE_LABELS: Record<
 > = {
   context: '正在准备续写上下文…',
   writer: '正在生成章节草稿…',
+  auditing: '正在并行进行一致性审查与篇幅控制…',
   checker: '正在进行一致性检查…',
   repair: '正在修复冲突并生成终稿…',
 };
@@ -35,6 +37,7 @@ export const CONTINUATION_STAGE_PROGRESS: Record<
 > = {
   context: 10,
   writer: 30,
+  auditing: 60,
   checker: 60,
   repair: 85,
 };
