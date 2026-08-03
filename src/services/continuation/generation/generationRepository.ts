@@ -14,11 +14,15 @@ import type {
   ContinuationArtifact,
   ContinuationCheckResult,
   ContinuationGenerationRun,
+  ContinuationGenerationStageResult,
   ContinuationGenerationSettings,
+  ContinuationArtifactEligibility,
   ContinuationOutboxItem,
   ContinuationPlan,
   ContinuationRunState,
   ContinuationStageName,
+  ContinuationStageResultStatus,
+  ContinuationV4StageName,
   ContinuationStateEvent,
   ContinuationStateProposal,
   OutboxOperation,
@@ -59,6 +63,7 @@ function rowSettings(r: any): ContinuationGenerationSettings {
     checkerLlmConfigId: r.checker_llm_config_id ?? null,
     repairLlmConfigId: r.repair_llm_config_id ?? null,
     stateExtractionLlmConfigId: r.state_extraction_llm_config_id ?? null,
+    controlLlmConfigId: r.control_llm_config_id ?? null,
     plannerConfirmationPolicy: r.planner_confirmation_policy,
     checkerEnabled: asBool(r.checker_enabled),
     maxRepairRounds: r.max_repair_rounds,
@@ -70,12 +75,10 @@ function rowSettings(r: any): ContinuationGenerationSettings {
 }
 
 function rowRun(r: any): ContinuationGenerationRun {
-  let workflowVersion: 2 | undefined;
+  let workflowVersion: 2 | 4 | undefined;
   try {
-    workflowVersion =
-      JSON.parse(r.context_snapshot_json || '{}')?.workflowVersion === 2
-        ? 2
-        : undefined;
+    const value = JSON.parse(r.context_snapshot_json || '{}')?.workflowVersion;
+    workflowVersion = value === 2 || value === 4 ? value : undefined;
   } catch {
     workflowVersion = undefined;
   }
@@ -119,7 +122,33 @@ function rowArtifact(r: any): ContinuationArtifact {
     parentArtifactId: r.parent_artifact_id ?? null,
     content: r.content,
     contentHash: r.content_hash,
+    eligibilityStatus: r.eligibility_status ?? 'eligible',
+    rejectionCode: r.rejection_code ?? null,
     createdAt: r.created_at,
+  };
+}
+
+function rowStageResult(r: any): ContinuationGenerationStageResult {
+  return {
+    id: r.id,
+    runId: r.run_id,
+    stage: r.stage,
+    status: r.status,
+    requestReserved: asBool(r.request_reserved),
+    requestCount: Number(r.request_count ?? 0),
+    modelConfigId: r.model_config_id ?? null,
+    inputTokens: r.input_tokens ?? null,
+    outputTokens: r.output_tokens ?? null,
+    minOutputTokens: r.min_output_tokens ?? null,
+    maxOutputTokens: r.max_output_tokens ?? null,
+    outputJson: r.output_json ?? null,
+    artifactId: r.artifact_id ?? null,
+    errorCode: r.error_code ?? null,
+    errorMessage: r.error_message ?? null,
+    startedAt: r.started_at ?? null,
+    completedAt: r.completed_at ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 
@@ -246,6 +275,7 @@ export function defaultGenerationSettings(
     checkerLlmConfigId: null,
     repairLlmConfigId: null,
     stateExtractionLlmConfigId: null,
+    controlLlmConfigId: null,
     plannerConfirmationPolicy: 'risk_only',
     checkerEnabled: true,
     maxRepairRounds: 1,
@@ -341,6 +371,7 @@ export async function updateGenerationSettings(
       major_power_change_policy=?, character_death_policy=?, resurrection_policy=?,
       planner_llm_config_id=?, writer_llm_config_id=?, checker_llm_config_id=?,
       repair_llm_config_id=?, state_extraction_llm_config_id=?,
+      control_llm_config_id=?,
       planner_confirmation_policy=?, checker_enabled=?, max_repair_rounds=?,
       target_chapter_chars=?, custom_rules_json=?, updated_at=?
     WHERE project_id=?`,
@@ -365,6 +396,7 @@ export async function updateGenerationSettings(
       next.checkerLlmConfigId,
       next.repairLlmConfigId,
       next.stateExtractionLlmConfigId,
+      next.controlLlmConfigId,
       next.plannerConfirmationPolicy,
       next.checkerEnabled ? 1 : 0,
       next.maxRepairRounds,
@@ -592,6 +624,8 @@ export async function insertArtifact(input: {
   content: string;
   repairRound?: number;
   parentArtifactId?: string | null;
+  eligibilityStatus?: ContinuationArtifactEligibility;
+  rejectionCode?: string | null;
 }): Promise<ContinuationArtifact> {
   const id = `ca_${v4().replace(/-/g, '')}`;
   const contentHash = sha256Hex(input.content);
@@ -600,8 +634,9 @@ export async function insertArtifact(input: {
   try {
     await db.executeSql(
       `INSERT INTO continuation_generation_artifacts (
-        id, run_id, stage, repair_round, parent_artifact_id, content, content_hash, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, run_id, stage, repair_round, parent_artifact_id, content, content_hash,
+        eligibility_status, rejection_code, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.runId,
@@ -610,6 +645,8 @@ export async function insertArtifact(input: {
         input.parentArtifactId ?? null,
         input.content,
         contentHash,
+        input.eligibilityStatus ?? 'eligible',
+        input.rejectionCode ?? null,
         createdAt,
       ],
     );
@@ -631,6 +668,8 @@ export async function insertArtifact(input: {
     parentArtifactId: input.parentArtifactId ?? null,
     content: input.content,
     contentHash,
+    eligibilityStatus: input.eligibilityStatus ?? 'eligible',
+    rejectionCode: input.rejectionCode ?? null,
     createdAt,
   };
 }
@@ -642,6 +681,25 @@ export async function getLatestArtifact(
   const [res] = await db.executeSql(
     `SELECT * FROM continuation_generation_artifacts
      WHERE run_id = ? ORDER BY created_at DESC LIMIT 1`,
+    [runId],
+  );
+  if (res.rows.length === 0) return null;
+  return rowArtifact(res.rows.item(0));
+}
+
+/**
+ * The only repository query intended for an adoption candidate. V4 must never
+ * infer eligibility from the newest created_at artifact because a rejected
+ * Repair artifact is intentionally retained for audit/recovery.
+ */
+export async function getLatestEligibleArtifact(
+  runId: string,
+): Promise<ContinuationArtifact | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_generation_artifacts
+     WHERE run_id = ? AND eligibility_status = 'eligible'
+     ORDER BY created_at DESC, id DESC LIMIT 1`,
     [runId],
   );
   if (res.rows.length === 0) return null;
@@ -677,6 +735,334 @@ export async function getArtifactForRun(
   );
   if (res.rows.length === 0) return null;
   return rowArtifact(res.rows.item(0));
+}
+
+export async function getEligibleArtifactForRun(
+  runId: string,
+  artifactId: string,
+): Promise<ContinuationArtifact | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_generation_artifacts
+     WHERE id = ? AND run_id = ? AND eligibility_status = 'eligible'`,
+    [artifactId, runId],
+  );
+  if (res.rows.length === 0) return null;
+  return rowArtifact(res.rows.item(0));
+}
+
+export function newContinuationStageResultId(): string {
+  return `csr_${v4().replace(/-/g, '')}`;
+}
+
+export async function getStageResult(
+  runId: string,
+  stage: ContinuationV4StageName,
+): Promise<ContinuationGenerationStageResult | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_generation_stage_results
+     WHERE run_id = ? AND stage = ?`,
+    [runId, stage],
+  );
+  if (res.rows.length === 0) return null;
+  return rowStageResult(res.rows.item(0));
+}
+
+export async function listStageResults(
+  runId: string,
+): Promise<ContinuationGenerationStageResult[]> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_generation_stage_results
+     WHERE run_id = ?
+     ORDER BY CASE stage
+       WHEN 'writer' THEN 1
+       WHEN 'checker' THEN 2
+       WHEN 'control' THEN 3
+       WHEN 'repair' THEN 4
+       ELSE 5
+     END`,
+    [runId],
+  );
+  const out: ContinuationGenerationStageResult[] = [];
+  for (let i = 0; i < res.rows.length; i += 1)
+    out.push(rowStageResult(res.rows.item(i)));
+  return out;
+}
+
+export interface ContinuationStageReservation {
+  runId: string;
+  stage: ContinuationV4StageName;
+  modelConfigId: number | null;
+  inputTokens: number | null;
+  minOutputTokens: number | null;
+  maxOutputTokens: number | null;
+}
+
+/**
+ * Reserve exactly one physical request for a V4 stage. A persisted row is
+ * authoritative on resume: a reservation with request_count=1 is never
+ * silently replaced by another request.
+ */
+export async function reserveContinuationStage(
+  input: ContinuationStageReservation,
+): Promise<{
+  reserved: boolean;
+  result: ContinuationGenerationStageResult;
+}> {
+  const db = await openDatabase();
+  const existing = await getStageResult(input.runId, input.stage);
+  if (existing) return { reserved: false, result: existing };
+
+  const id = newContinuationStageResultId();
+  const ts = nowIso();
+  try {
+    await db.executeSql(
+      `INSERT INTO continuation_generation_stage_results (
+        id, run_id, stage, status, request_reserved, request_count,
+        model_config_id, input_tokens, min_output_tokens, max_output_tokens,
+        started_at, created_at, updated_at
+      ) VALUES (?, ?, ?, 'running', 1, 1, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.runId,
+        input.stage,
+        input.modelConfigId,
+        input.inputTokens,
+        input.minOutputTokens,
+        input.maxOutputTokens,
+        ts,
+        ts,
+        ts,
+      ],
+    );
+  } catch (error) {
+    // UNIQUE(run_id, stage): another resume won the reservation race.
+    const winner = await getStageResult(input.runId, input.stage);
+    if (winner) return { reserved: false, result: winner };
+    throw error;
+  }
+  const result = await getStageResult(input.runId, input.stage);
+  if (!result) throw new Error('续写阶段 reservation 写入后无法读取');
+  return { reserved: true, result };
+}
+
+export interface ContinuationStageResultPatch {
+  runId: string;
+  stage: ContinuationV4StageName;
+  status: ContinuationStageResultStatus;
+  outputJson?: string | null;
+  artifactId?: string | null;
+  outputTokens?: number | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  completedAt?: string | null;
+}
+
+export async function updateStageResult(
+  input: ContinuationStageResultPatch,
+): Promise<ContinuationGenerationStageResult | null> {
+  const db = await openDatabase();
+  const completedAt = input.completedAt ?? nowIso();
+  await db.executeSql(
+    `UPDATE continuation_generation_stage_results SET
+       status = ?, output_json = ?, artifact_id = ?, output_tokens = ?,
+       error_code = ?, error_message = ?, completed_at = ?, updated_at = ?
+     WHERE run_id = ? AND stage = ? AND request_count BETWEEN 0 AND 1`,
+    [
+      input.status,
+      input.outputJson ?? null,
+      input.artifactId ?? null,
+      input.outputTokens ?? null,
+      input.errorCode ?? null,
+      input.errorMessage ?? null,
+      completedAt,
+      nowIso(),
+      input.runId,
+      input.stage,
+    ],
+  );
+  return getStageResult(input.runId, input.stage);
+}
+
+export interface ContinuationV4LocalCheckInput {
+  category: CheckCategory;
+  subtype: string;
+  severity: CheckSeverity;
+  confidence: number;
+  generatedStart: number | null;
+  generatedEnd: number | null;
+  generatedExcerpt: string;
+  description: string;
+  entityRefType?: string | null;
+  entityRefId?: string | null;
+  evidenceIds?: number[];
+  suggestedFix?: string | null;
+}
+
+export interface ContinuationV4FinalizeInput {
+  runId: string;
+  expectedRunStates?: ContinuationRunState[];
+  repairStageResultId: string;
+  localVerifyStageResultId: string;
+  parentArtifactId: string;
+  content: string;
+  repairRound?: number;
+  eligibilityStatus: ContinuationArtifactEligibility;
+  rejectionCode?: string | null;
+  localChecks?: ContinuationV4LocalCheckInput[];
+  writerArtifactId: string;
+  markWriterChecksObsolete: boolean;
+  tokenUsageJson: string;
+  repairOutputJson?: string | null;
+  localVerifyOutputJson?: string | null;
+  localVerifyStatus?: Extract<ContinuationStageResultStatus, 'success' | 'failed'>;
+  ts?: string;
+}
+
+/**
+ * Atomically persist a completed Repair + Local Final Gate boundary.
+ * Everything that could have failed before this call (LLM, parsing and local
+ * calculations) is intentionally passed in as data. The transaction itself
+ * performs no network, file, Canon or asynchronous selection work.
+ */
+export async function finalizeContinuationV4Repair(
+  input: ContinuationV4FinalizeInput,
+): Promise<{
+  artifact: ContinuationArtifact;
+  repairStageResult: ContinuationGenerationStageResult;
+  localVerifyStageResult: ContinuationGenerationStageResult;
+}> {
+  const db = await openDatabase();
+  const ts = input.ts ?? nowIso();
+  const artifactId = `ca_${v4().replace(/-/g, '')}`;
+  const contentHash = sha256Hex(input.content);
+  const expectedStates = input.expectedRunStates ?? ['running'];
+  const statePlaceholders = expectedStates.map(() => '?').join(', ');
+  const statements: Array<{ sql: string; params?: any[] }> = [
+    {
+      sql: `INSERT INTO continuation_generation_artifacts (
+        id, run_id, stage, repair_round, parent_artifact_id, content,
+        content_hash, eligibility_status, rejection_code, created_at
+      ) VALUES (?, ?, 'repair', ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        artifactId,
+        input.runId,
+        input.repairRound ?? 0,
+        input.parentArtifactId,
+        input.content,
+        contentHash,
+        input.eligibilityStatus,
+        input.rejectionCode ?? null,
+        ts,
+      ],
+    },
+  ];
+
+  for (const check of input.localChecks ?? []) {
+    statements.push({
+      sql: `INSERT INTO continuation_check_results (
+        run_id, chapter_id, artifact_id, artifact_hash, category, subtype,
+        severity, confidence, generated_start, generated_end,
+        generated_excerpt, description, entity_ref_type, entity_ref_id,
+        evidence_ids_json, suggested_fix, resolution_status, created_at,
+        updated_at
+      ) SELECT ?, r.chapter_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        'open', ?, ?
+      FROM continuation_generation_runs r WHERE r.id = ?`,
+      params: [
+        input.runId,
+        artifactId,
+        contentHash,
+        check.category,
+        check.subtype,
+        check.severity,
+        check.confidence,
+        check.generatedStart,
+        check.generatedEnd,
+        check.generatedExcerpt,
+        check.description,
+        check.entityRefType ?? null,
+        check.entityRefId ?? null,
+        JSON.stringify(check.evidenceIds ?? []),
+        check.suggestedFix ?? null,
+        ts,
+        ts,
+        input.runId,
+      ],
+    });
+  }
+
+  if (input.markWriterChecksObsolete) {
+    statements.push({
+      sql: `UPDATE continuation_check_results
+        SET resolution_status = 'obsolete', updated_at = ?
+        WHERE run_id = ? AND artifact_id = ? AND resolution_status = 'open'`,
+      params: [ts, input.runId, input.writerArtifactId],
+    });
+  }
+
+  const localVerifyStatus = input.localVerifyStatus ?? 'success';
+  statements.push({
+    sql: `UPDATE continuation_generation_stage_results SET
+        status = 'success', output_json = ?, artifact_id = ?,
+        completed_at = ?, updated_at = ?
+      WHERE id = ? AND run_id = ? AND stage = 'repair'
+        AND request_reserved = 1 AND request_count = 1`,
+    params: [
+      input.repairOutputJson ?? null,
+      artifactId,
+      ts,
+      ts,
+      input.repairStageResultId,
+      input.runId,
+    ],
+  });
+  statements.push({
+    sql: `UPDATE continuation_generation_stage_results SET
+        status = ?, output_json = ?, artifact_id = ?,
+        completed_at = ?, updated_at = ?
+      WHERE id = ? AND run_id = ? AND stage = 'local_verify'
+        AND request_reserved = 0 AND request_count = 0`,
+    params: [
+      localVerifyStatus,
+      input.localVerifyOutputJson ?? null,
+      artifactId,
+      ts,
+      ts,
+      input.localVerifyStageResultId,
+      input.runId,
+    ],
+  });
+
+  statements.push({
+    sql: `UPDATE continuation_generation_runs SET
+        state = 'awaiting_user', stage = 'awaiting_user',
+        token_usage_json = ?, updated_at = ?
+      WHERE id = ? AND state IN (${statePlaceholders})`,
+    params: [input.tokenUsageJson, ts, input.runId, ...expectedStates],
+  });
+
+  const finalUpdateIndex = statements.length;
+  await executeTransaction(db, statements, {
+    onStatementComplete: (oneBasedIndex, rowsAffected) => {
+      if (oneBasedIndex === finalUpdateIndex && rowsAffected !== 1) {
+        throw new Error('续写 V4 finalize 发现 run 状态已变化，事务回滚');
+      }
+    },
+  });
+
+  const artifact = await getArtifactById(artifactId);
+  const repairStageResult = await getStageResult(input.runId, 'repair');
+  const localVerifyStageResult = await getStageResult(
+    input.runId,
+    'local_verify',
+  );
+  if (!artifact || !repairStageResult || !localVerifyStageResult) {
+    throw new Error('续写 V4 finalize 提交后读取结果失败');
+  }
+  return { artifact, repairStageResult, localVerifyStageResult };
 }
 
 export async function savePlan(
