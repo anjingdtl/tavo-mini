@@ -220,6 +220,9 @@ export function isRepairCandidateUsable(
   targetChapterChars: number,
   mode: RepairCandidateMode = 'standard',
 ): boolean {
+  if (mode !== 'standard' && mode !== 'additional') return false;
+  if (candidate === original) return false;
+
   const contract = resolveContinuationLengthContract(targetChapterChars);
   const originalHan = countHanCharacters(original);
   const candidateHan = countHanCharacters(candidate);
@@ -243,8 +246,10 @@ export function isRepairCandidateUsable(
     originalLength.status !== 'within' &&
     candidateDistance >= originalDistance
   ) {
-    // Standard Repair is allowed to stop before the band only when it makes
-    // strict progress. Equality is not progress and regression is forbidden.
+    // An invalid candidate must make strict progress so a Repair cannot
+    // preserve or worsen the length failure. A valid standard candidate only
+    // needs to remain in the legal band; the additional user Repair is stricter
+    // below and must not move farther from the target.
     return false;
   }
 
