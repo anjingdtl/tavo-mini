@@ -96,7 +96,7 @@ export function createMigrationDb(
     baseSchemas.set('character_collections', new Set(['id', 'project_id']));
     baseSchemas.get('characters')?.add('collection_id');
   }
-  if (schemaVersion >= 12) {
+  if (schemaVersion >= 12 && schemaVersion < 27) {
     baseSchemas.set('local_llm_models', new Set(['id', 'status']));
     for (const column of [
       'provider_type',
@@ -137,6 +137,7 @@ export function createMigrationDb(
         'import_completed',
         'analysis_status',
         ...(schemaVersion >= 20 ? ['active_canon_snapshot_id'] : []),
+        ...(schemaVersion >= 26 ? ['active_style_profile_id'] : []),
         'created_at',
         'updated_at',
       ]),
@@ -161,6 +162,96 @@ export function createMigrationDb(
         'state',
         'stage',
       ]),
+    );
+    for (const table of [
+      'canon_evidence',
+      'canon_evidence_links',
+      'canon_world_rules',
+      'canon_characters',
+      'canon_character_aliases',
+      'canon_character_state_snapshots',
+      'canon_relationships',
+      'canon_plot_threads',
+      'canon_plot_thread_characters',
+      'canon_character_experiences',
+      'canon_character_knowledge',
+      'canon_timeline_events',
+    ]) {
+      baseSchemas.set(table, new Set(['id']));
+    }
+  }
+
+  if (schemaVersion >= 21) {
+    baseSchemas.set(
+      'continuation_generation_settings',
+      new Set([
+        'project_id',
+        'checker_enabled',
+        'max_repair_rounds',
+        'target_chapter_chars',
+      ]),
+    );
+    baseSchemas.set(
+      'continuation_generation_runs',
+      new Set([
+        'id',
+        'project_id',
+        'chapter_id',
+        'target_position',
+        'source_id',
+        'source_snapshot_json',
+        'canon_snapshot_id',
+        'canon_revision',
+        'story_memory_fingerprint',
+        'story_memory_through_position',
+        'input_revision_hash',
+        'user_instruction',
+        'settings_snapshot_json',
+        'context_snapshot_json',
+        'context_trace_json',
+        'token_usage_json',
+        'state',
+        'stage',
+        'completion_reason',
+        'adopted_revision_hash',
+        'finalized_revision_hash',
+        'error_code',
+        'error_message',
+        'created_at',
+        'updated_at',
+        'completed_at',
+      ]),
+    );
+    baseSchemas.set(
+      'continuation_generation_artifacts',
+      new Set([
+        'id',
+        'run_id',
+        'stage',
+        'repair_round',
+        'parent_artifact_id',
+        'content',
+        'content_hash',
+        'created_at',
+      ]),
+    );
+    for (const [table, columns] of [
+      ['continuation_plans', ['run_id']],
+      ['continuation_check_results', ['id', 'run_id', 'artifact_id']],
+      ['continuation_state_proposals', ['id', 'source_run_id']],
+      ['continuation_state_events', ['id', 'proposal_id']],
+      ['continuation_entities', ['id', 'created_from_proposal_id']],
+      ['continuation_entity_aliases', ['entity_id']],
+      ['continuation_state_sync_outbox', ['id']],
+    ] as const) {
+      baseSchemas.set(table, new Set(columns));
+    }
+  }
+
+  if (schemaVersion >= 26) {
+    baseSchemas.set(
+      'continuation_style_profiles',
+      new Set(['id', 'project_id', 'profile_hash', 'state']),
     );
   }
   if (schemaVersion >= 21 && schemaVersion < 26) {
@@ -205,6 +296,24 @@ export function createMigrationDb(
     ]),
     collectionRows: 0,
   };
+  if (schemaVersion >= 21) {
+    for (const index of [
+      'idx_continuation_runs_project_created',
+      'idx_continuation_runs_chapter_created',
+      'idx_continuation_runs_state',
+      'idx_continuation_artifacts_run_created',
+      'idx_continuation_checks_run_artifact',
+      'idx_continuation_proposals_project_status',
+      'idx_continuation_events_project_position',
+      'idx_continuation_outbox_state',
+    ]) {
+      state.indexes.add(index);
+    }
+  }
+  if (schemaVersion >= 26) {
+    state.indexes.add('idx_continuation_style_profiles_project_state');
+    state.indexes.add('idx_continuation_style_profiles_fingerprint');
+  }
   const executed: string[] = [];
 
   const applyStatement = (

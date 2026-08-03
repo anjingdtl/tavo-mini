@@ -295,6 +295,7 @@ function miniSnapshot(
         checkerLlmConfigId: null,
         repairLlmConfigId: null,
         stateExtractionLlmConfigId: null,
+        controlLlmConfigId: null,
         plannerConfirmationPolicy: 'risk_only',
         checkerEnabled: true,
         maxRepairRounds: 1,
