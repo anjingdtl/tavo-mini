@@ -117,11 +117,18 @@ const controlReport = {
 
 describe('Continuation V4 Prompt contracts', () => {
   test('Writer 使用完整初稿 envelope 与动态长度契约', () => {
-    const system = compileContinuationV4WriterMessages(writerView)[0].content;
+    const messages = compileContinuationV4WriterMessages(writerView);
+    const system = messages[0].content;
     expect(system).toContain('schemaVersion');
+    expect(system).toContain('Writer 本次汉字产出硬目标');
+    expect(system).toContain('在 content 未达到最低合格线 2500 前不得结束章节');
+    expect(system).toContain('而不是约 3000 个 token');
     expect(system).toContain('2500–3500');
     expect(system).toContain('外部资料包装');
     expect(system).toContain('minimumOutputTokens');
+    expect(messages[1].content).toContain('Writer 输出前最后检查');
+    expect(messages[1].content).toContain('必须落在 2500–3500');
+    expect(messages[1].content).toContain('不要把 plan 或 content 提升到顶层');
   });
 
   test('Checker 绑定 Writer hash 并排除本地硬门禁重复问题', () => {
@@ -159,6 +166,11 @@ describe('Continuation V4 Prompt contracts', () => {
     });
     expect(messages[0].content).toContain('完整终稿 envelope');
     expect(messages[0].content).toContain('2500–3500');
+    expect(messages[0].content).toContain('五个顶层字段一个都不能省略');
+    expect(messages[0].content).toContain('finalText、final_content、text、draft、result');
+    expect(messages[0].content).toContain('当前 2000 个汉字');
+    expect(messages[0].content).toContain('至少还缺 500 个汉字');
+    expect(messages[1].content).toContain('appliedControlSuggestionIds');
     expect(messages[0].content).not.toContain('"patches"');
     expect(messages[1].content).toContain('完整 Writer 初稿开始');
   });

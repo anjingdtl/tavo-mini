@@ -157,6 +157,7 @@ export {
   resumeContinuationV4Run,
   markContinuationV4StagesCancelled,
   runContinuationV4LocalFinalGate,
+  validateContinuationV4RepairCompliance,
   parseContinuationV4WriterEnvelope,
   parseContinuationV4RepairEnvelope,
 } from './continuationV4Runner';
