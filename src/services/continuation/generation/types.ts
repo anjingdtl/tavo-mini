@@ -538,6 +538,9 @@ export interface ContinuationControlReport {
   suggestions: ContinuationControlSuggestion[];
   preserve: string[];
   metricEchoMismatch?: boolean;
+  /** True when the model's action echo disagreed with the authoritative local
+   * action. Diagnostic only; local action always wins. */
+  actionEchoMismatch?: boolean;
 }
 
 export interface ContinuationV4WriterEnvelope {

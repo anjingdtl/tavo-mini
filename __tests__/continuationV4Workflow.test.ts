@@ -244,7 +244,7 @@ describe('Continuation V4 workflow contracts', () => {
     expect(failed.map(check => check.subtype)).toEqual(
       expect.arrayContaining([
         'repair_checker_issue_unchanged',
-        'repair_control_no_progress',
+        'repair_control_insufficient_progress',
       ]),
     );
 
@@ -298,5 +298,156 @@ describe('Continuation V4 workflow contracts', () => {
       },
     });
     expect(checks.map(check => check.subtype)).toContain('repair_unapplied_item');
+  });
+
+  test('Repair 只增加 1 个汉字时 Control 合规判定进度不足', () => {
+    const writerText = '这是完整正文。'.repeat(100); // ~600 han
+    // 候选只比 Writer 多 1 个汉字
+    const candidateText = `${writerText}啊`;
+    const controlReport = {
+      schemaVersion: 1 as const,
+      action: 'expand' as const,
+      currentHan: 600,
+      targetHan: 900,
+      allowedMinHan: 800,
+      allowedMaxHan: 1000,
+      suggestions: [
+        {
+          suggestionId: 'ctrl_local_expand',
+          type: 'expand_scene',
+          location: 'paragraph_1_after',
+          expectedDeltaHan: 200,
+          instruction: '扩写',
+          preserveBeatIds: [],
+        },
+      ],
+      preserve: [],
+    };
+    const checks = validateContinuationV4RepairCompliance({
+      writerText,
+      candidateText,
+      checkerIssues: [],
+      controlReport,
+      envelope: {
+        schemaVersion: 1,
+        content: candidateText,
+        appliedCheckerIssueIds: [],
+        appliedControlSuggestionIds: ['ctrl_local_expand'],
+        unappliedItems: [],
+      } satisfies ContinuationV4RepairEnvelope,
+    });
+    expect(checks.map(check => check.subtype)).toContain(
+      'repair_control_insufficient_progress',
+    );
+  });
+
+  test('达到最低实质进度但仍低于 allowedMinHan 时 Control 合规通过，Final Gate 仅长度 warning', () => {
+    // Writer 600, allowedMin 800, allowedMax 1000 -> missingToMinimum=200
+    // requiredProgress = min(200, max(80, ceil(200*0.35))) = min(200, 80) = 80
+    // 候选增加 100 han (>= 80) 但仍低于 800 -> Control 合规通过
+    const writerText = '这是完整正文。'.repeat(100); // ~600 han
+    const candidateText = `${'新增的扩写内容。'.repeat(15)}`; // 增加 ~100+ han
+    const controlReport = {
+      schemaVersion: 1 as const,
+      action: 'expand' as const,
+      currentHan: 600,
+      targetHan: 900,
+      allowedMinHan: 800,
+      allowedMaxHan: 1000,
+      suggestions: [
+        {
+          suggestionId: 'ctrl_local_expand',
+          type: 'expand_scene',
+          location: 'paragraph_1_after',
+          expectedDeltaHan: 200,
+          instruction: '扩写',
+          preserveBeatIds: [],
+        },
+      ],
+      preserve: [],
+    };
+    const complianceChecks = validateContinuationV4RepairCompliance({
+      writerText,
+      candidateText: `${writerText}${candidateText}`,
+      checkerIssues: [],
+      controlReport,
+      envelope: {
+        schemaVersion: 1,
+        content: `${writerText}${candidateText}`,
+        appliedCheckerIssueIds: [],
+        appliedControlSuggestionIds: ['ctrl_local_expand'],
+        unappliedItems: [],
+      } satisfies ContinuationV4RepairEnvelope,
+    });
+    // Control 合规通过：没有 insufficient_progress
+    expect(complianceChecks.map(check => check.subtype)).not.toContain(
+      'repair_control_insufficient_progress',
+    );
+
+    // Local Final Gate：chapter_length 仍只是 warning，不阻断
+    const gateSnapshot = snapshot();
+    gateSnapshot.settingsSnapshot = {
+      ...gateSnapshot.settingsSnapshot,
+      values: {
+        ...gateSnapshot.settingsSnapshot.values,
+        targetChapterChars: 900,
+      },
+    } as any;
+    const gate = runContinuationV4LocalFinalGate({
+      writerText,
+      candidateText: `${writerText}${candidateText}`,
+      snapshot: gateSnapshot,
+      controlMetrics: controlReport as any,
+    });
+    const lengthCheck = gate.checks.find(check =>
+      check.subtype.startsWith('chapter_length_'),
+    );
+    // 章节篇幅若有，必须是 warning 不是 error/blocking
+    if (lengthCheck) {
+      expect(lengthCheck.severity).toBe('warning');
+    }
+    // 软门禁：长度不阻断 gate（其他本地安全问题除外，此处不应有）
+    expect(gate.passed).toBe(true);
+  });
+
+  test('Repair 未回填本地 Control suggestion ID 时被拒绝', () => {
+    const writerText = '这是完整正文。'.repeat(100);
+    const candidateText = `${writerText}${'扩展内容。'.repeat(30)}`;
+    const controlReport = {
+      schemaVersion: 1 as const,
+      action: 'expand' as const,
+      currentHan: 600,
+      targetHan: 900,
+      allowedMinHan: 800,
+      allowedMaxHan: 1000,
+      suggestions: [
+        {
+          suggestionId: 'ctrl_local_expand',
+          type: 'expand_scene',
+          location: 'paragraph_1_after',
+          expectedDeltaHan: 200,
+          instruction: '扩写',
+          preserveBeatIds: [],
+        },
+      ],
+      preserve: [],
+    };
+    const checks = validateContinuationV4RepairCompliance({
+      writerText,
+      candidateText,
+      checkerIssues: [],
+      controlReport,
+      envelope: {
+        schemaVersion: 1,
+        content: candidateText,
+        appliedCheckerIssueIds: [],
+        // 缺少 ctrl_local_expand
+        appliedControlSuggestionIds: [],
+        unappliedItems: [],
+      } satisfies ContinuationV4RepairEnvelope,
+    });
+    expect(checks.map(check => check.subtype)).toContain(
+      'repair_control_suggestion_unapplied',
+    );
   });
 });

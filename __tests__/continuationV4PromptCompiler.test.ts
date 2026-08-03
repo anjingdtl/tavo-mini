@@ -141,6 +141,11 @@ describe('Continuation V4 Prompt contracts', () => {
     expect(messages[0].content).toContain('writerArtifactHash');
     expect(messages[0].content).toContain('source_overlap');
     expect(messages[1].content).toContain('writer_hash');
+    // 标准字段协议（非旧字段 draftQuote/suggestedAction 为主字段）
+    expect(messages[0].content).toContain('generatedExcerpt');
+    expect(messages[0].content).toContain('suggestedFix');
+    expect(messages[0].content).toContain('generatedStart');
+    expect(messages[0].content).toContain('generatedEnd');
   });
 
   test('Control 只看到本地指标和量化风格，不看到 Canon/原始补充', () => {
@@ -173,6 +178,51 @@ describe('Continuation V4 Prompt contracts', () => {
     expect(messages[1].content).toContain('appliedControlSuggestionIds');
     expect(messages[0].content).not.toContain('"patches"');
     expect(messages[1].content).toContain('完整 Writer 初稿开始');
+  });
+
+  test('Repair Prompt 含强制任务审计段与最低实质进度说明', () => {
+    const messages = compileContinuationV4RepairMessages({
+      view: repairView,
+      artifactText: '完整 Writer 正文',
+      plan,
+      checkerReport: {
+        issues: [
+          {
+            id: 9,
+            generatedExcerpt: '冲突片段',
+            description: '冻结冲突',
+            evidenceIds: [3],
+            category: 'plot',
+            severity: 'error',
+          } as any,
+        ],
+      },
+      controlReport: {
+        ...controlReport,
+        suggestions: [
+          {
+            suggestionId: 'ctrl_local_expand',
+            type: 'expand_scene',
+            location: 'paragraph_1_after',
+            expectedDeltaHan: 500,
+            instruction: '至少朝最低线进行实质扩写',
+            preserveBeatIds: [],
+          },
+        ],
+      } as any,
+    });
+    const system = messages[0].content;
+    // 强制任务审计段
+    expect(system).toContain('本次必须完成的审计任务');
+    expect(system).toContain('强制任务');
+    expect(system).toContain('强制建议');
+    // 最低实质进度说明
+    expect(system).toContain('最低实质进度');
+    expect(system).toContain('没有达到最低实质进度会被直接拒绝');
+    // 软门禁仍可保留
+    expect(system).toContain('warning');
+    // Checker 报告标题已改为含本地安全的统一标题
+    expect(system).toContain('Checker / 本地安全审查报告');
   });
 
   test('protocol skeleton demand is measured, not a stage token constant', () => {
