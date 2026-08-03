@@ -2,7 +2,6 @@ import {
   bindIssuesToArtifact,
   parseCheckerLlmEnvelope,
   parseCheckerLlmJson,
-  type RawCheckIssue,
 } from '../src/services/continuation/generation/continuationChecker';
 
 describe('Continuation V4 Checker parser', () => {

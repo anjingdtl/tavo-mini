@@ -17,7 +17,7 @@ import { stripModelJson } from '../canon/canonJsonValidators';
 import {
   bindIssuesToArtifact,
   filterBySettings,
-  parseCheckerLlmJson,
+  parseCheckerLlmEnvelope,
   runDeterministicChecks,
 } from './continuationChecker';
 import type { RawCheckIssue } from './continuationChecker';
@@ -28,6 +28,7 @@ import {
 import {
   buildContinuationControlFallback,
   buildContinuationControlMetrics,
+  requiredControlProgressHan,
   resolveContinuationControlReport,
 } from './continuationControl';
 import {
@@ -790,33 +791,51 @@ export function validateContinuationV4RepairCompliance(input: {
     }
   }
 
+  // Minimum substantial progress (Control compliance, NOT the final length
+  // gate). The old check ("candidateHan > writerHan" for expand) let a Repair
+  // that added a single character pass. The new rule requires either reaching
+  // the legal band, or closing at least `requiredControlProgressHan` Han of the
+  // gap. A candidate that meets this floor but still falls short of the legal
+  // minimum still passes Control compliance; the remaining length gap stays a
+  // soft warning in the Local Final Gate.
   const writerHan = countHanCharacters(input.writerText);
   const candidateHan = countHanCharacters(input.candidateText);
-  if (
-    input.controlReport.action === 'expand' &&
-    candidateHan <= writerHan
-  ) {
-    checks.push(
-      repairComplianceIssue({
-        category: 'style',
-        subtype: 'repair_control_no_progress',
-        description: `Control 要求扩写，但 Repair 终稿汉字数 ${candidateHan} 未超过 Writer 初稿 ${writerHan}。`,
-        suggestedFix: '必须围绕当前事件链、人物反应和章末推进自然扩写，并实际增加汉字。',
-      }),
+  if (input.controlReport.action === 'expand') {
+    const reachedMin = candidateHan >= input.controlReport.allowedMinHan;
+    const requiredDelta = Math.max(
+      0,
+      input.controlReport.allowedMinHan - writerHan,
     );
-  }
-  if (
-    input.controlReport.action === 'compress' &&
-    candidateHan >= writerHan
-  ) {
-    checks.push(
-      repairComplianceIssue({
-        category: 'style',
-        subtype: 'repair_control_no_progress',
-        description: `Control 要求收束，但 Repair 终稿汉字数 ${candidateHan} 未低于 Writer 初稿 ${writerHan}。`,
-        suggestedFix: '必须在保留完整事件链和章末钩子的前提下实际压缩重复或不推进内容。',
-      }),
+    const requiredProgress = requiredControlProgressHan(requiredDelta);
+    const actualProgress = Math.max(0, candidateHan - writerHan);
+    if (!reachedMin && actualProgress < requiredProgress) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_control_insufficient_progress',
+          description: `Control 要求扩写，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 增加 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法下限 ${input.controlReport.allowedMinHan}）。`,
+          suggestedFix: `必须围绕当前事件链、人物反应和章末推进自然扩写，至少再净增加汉字直至达到最低实质进度 ${requiredProgress} 或合法下限 ${input.controlReport.allowedMinHan}。`,
+        }),
+      );
+    }
+  } else if (input.controlReport.action === 'compress') {
+    const reachedMax = candidateHan <= input.controlReport.allowedMaxHan;
+    const requiredDelta = Math.max(
+      0,
+      writerHan - input.controlReport.allowedMaxHan,
     );
+    const requiredProgress = requiredControlProgressHan(requiredDelta);
+    const actualProgress = Math.max(0, writerHan - candidateHan);
+    if (!reachedMax && actualProgress < requiredProgress) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_control_insufficient_progress',
+          description: `Control 要求收束，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 减少 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法上限 ${input.controlReport.allowedMaxHan}）。`,
+          suggestedFix: `必须在保留完整事件链和章末钩子的前提下实际压缩重复或不推进内容，至少再净减少汉字直至达到最低实质进度 ${requiredProgress} 或合法上限 ${input.controlReport.allowedMaxHan}。`,
+        }),
+      );
+    }
   }
 
   return checks;
@@ -1448,20 +1467,63 @@ async function runWriterNode(
   }
 }
 
+/**
+ * Stable fingerprint for matching a parsed Checker issue back to its persisted
+ * check row. The historical matcher only used subtype+description+excerpt,
+ * which both over-matched unrelated rows sharing the same subtype and
+ * under-matched when the model trimmed the excerpt. This fingerprint adds
+ * category, severity, range, sorted evidence and suggestedFix so a persisted
+ * check row is reliably attributable to the LLM issue that produced it (and so
+ * Repair receives a stable persisted check id).
+ */
+function checkerIssueFingerprint(issue: {
+  category: string;
+  subtype: string;
+  severity: string;
+  generatedStart: number | null;
+  generatedEnd: number | null;
+  generatedExcerpt: string;
+  description: string;
+  evidenceIds?: number[] | null;
+  suggestedFix?: string | null;
+}): string {
+  const evidence = Array.isArray(issue.evidenceIds)
+    ? [...issue.evidenceIds].sort((a, b) => a - b).join(',')
+    : '';
+  return [
+    issue.category,
+    issue.subtype,
+    issue.severity,
+    issue.generatedStart == null ? '' : String(issue.generatedStart),
+    issue.generatedEnd == null ? '' : String(issue.generatedEnd),
+    issue.generatedExcerpt.trim(),
+    issue.description.trim(),
+    evidence,
+    (issue.suggestedFix ?? '').trim(),
+  ].join('|');
+}
+
 function persistedCheckerIssues(
   checks: ContinuationCheckResult[],
   issues: RawCheckIssue[],
 ): ContinuationCheckResult[] {
-  const keys = new Set(
-    issues.map(issue =>
-      [issue.subtype, issue.description, issue.generatedExcerpt].join('|'),
-    ),
-  );
-  return checks.filter(check =>
-    keys.has(
-      [check.subtype, check.description, check.generatedExcerpt].join('|'),
-    ),
-  );
+  const keys = new Set(issues.map(issue => checkerIssueFingerprint(issue)));
+  return checks.filter(check => keys.has(checkerIssueFingerprint(check)));
+}
+
+/** Dedupe persisted check rows by id so Checker issues and local safety issues
+ * that resolved to the same row are not tracked twice by Repair compliance. */
+function dedupeRepairIssues(
+  issues: ContinuationCheckResult[],
+): ContinuationCheckResult[] {
+  const seen = new Set<number>();
+  const out: ContinuationCheckResult[] = [];
+  for (const issue of issues) {
+    if (seen.has(issue.id)) continue;
+    seen.add(issue.id);
+    out.push(issue);
+  }
+  return out;
 }
 
 async function runCheckerNode(input: {
@@ -1519,23 +1581,44 @@ async function runCheckerNode(input: {
       frozenModelConfig: frozen,
     });
     assertNotAborted(options.signal);
-    const parsed = parseCheckerLlmJson(result.text).filter(
-      issue => !isCheckerForbiddenSubtype(issue.subtype),
-    );
-    const bound = bindIssuesToArtifact(
-      parsed,
-      artifact.content,
-      new Set(snapshot.bundles.canon.evidenceRefs),
-    );
-    await insertCheckResults(
-      bound.map(issue => ({
-        runId: run.id,
-        chapterId: run.chapterId,
-        artifactId: artifact.id,
-        artifactHash: artifact.contentHash,
-        ...issue,
-      })),
-    );
+    const envelope = parseCheckerLlmEnvelope(result.text);
+    const echoedHash = envelope.writerArtifactHash;
+    // Artifact hash binding: the Checker's issues are only attributable to the
+    // current Writer artifact when the model echoes the exact contentHash we
+    // asked it to review. A missing or mismatched hash means the LLM issues
+    // cannot be reliably bound — they may reference a stale or hallucinated
+    // draft. Drop them, record a precise error code, but never retry: Control
+    // and the local safety checks can still drive Repair.
+    const hashMatches = echoedHash === artifact.contentHash;
+    let hashErrorCode: string | null = null;
+    if (echoedHash == null) {
+      hashErrorCode = 'checker_artifact_hash_missing';
+    } else if (!hashMatches) {
+      hashErrorCode = 'checker_artifact_hash_mismatch';
+    }
+    const parsed = hashMatches
+      ? envelope.issues.filter(
+          issue => !isCheckerForbiddenSubtype(issue.subtype),
+        )
+      : [];
+    const bound = hashMatches
+      ? bindIssuesToArtifact(
+          parsed,
+          artifact.content,
+          new Set(snapshot.bundles.canon.evidenceRefs),
+        )
+      : [];
+    if (bound.length > 0) {
+      await insertCheckResults(
+        bound.map(issue => ({
+          runId: run.id,
+          chapterId: run.chapterId,
+          artifactId: artifact.id,
+          artifactHash: artifact.contentHash,
+          ...issue,
+        })),
+      );
+    }
     await updateStageResult({
       runId: run.id,
       stage: 'checker',
@@ -1543,10 +1626,17 @@ async function runCheckerNode(input: {
       outputJson: JSON.stringify({
         schemaVersion: 1,
         writerArtifactHash: artifact.contentHash,
+        echoedWriterArtifactHash: echoedHash,
+        checkerArtifactsBound: hashMatches,
+        checkerArtifactErrorCode: hashErrorCode,
         issues: bound,
       }),
       artifactId: artifact.id,
       outputTokens: result.usage?.completion ?? null,
+      errorCode: hashErrorCode,
+      errorMessage: hashErrorCode
+        ? `Checker 回显的 writerArtifactHash 与当前 Writer artifact 不一致（${echoedHash == null ? '缺失' : '不匹配'}），已丢弃本次 LLM issues；本地安全检查与 Control 仍可驱动 Repair。`
+        : null,
     });
     const checks = await listChecksForArtifact(run.id, artifact.id);
     return {
@@ -1837,6 +1927,46 @@ async function runRepairNode(input: {
     const noMeaningfulChange =
       normalizedRepairComparisonText(envelope.content) ===
       normalizedRepairComparisonText(writerArtifact.content);
+    // Telemetry: distinguish how many tasks were INJECTED vs how many Repair
+    // CLAIMED to apply, plus the Control progress numbers. Stored in the
+    // existing outputJson columns; no DB migration. The UI reads these to show
+    // "注入 N 项，Repair 声明应用 M 项" instead of only the applied count.
+    const injectedCheckerIssueCount = checkerIssues.filter(issue =>
+      hasActionableIssue([issue]),
+    ).length;
+    const appliedCheckerIssueCount = envelope.appliedCheckerIssueIds.length;
+    const injectedControlSuggestionCount =
+      control.report.suggestions.length;
+    const appliedControlSuggestionCount =
+      envelope.appliedControlSuggestionIds.length;
+    const writerHan = countHanCharacters(writerArtifact.content);
+    const candidateHan = countHanCharacters(envelope.content);
+    const controlRequiredDelta =
+      control.report.action === 'expand'
+        ? Math.max(0, control.report.allowedMinHan - writerHan)
+        : control.report.action === 'compress'
+          ? Math.max(0, writerHan - control.report.allowedMaxHan)
+          : 0;
+    const requiredProgressHan = requiredControlProgressHan(controlRequiredDelta);
+    const actualDeltaHan = candidateHan - writerHan;
+    const controlProgressPassed =
+      control.report.action === 'keep' ||
+      (control.report.action === 'expand'
+        ? candidateHan >= control.report.allowedMinHan ||
+          Math.max(0, candidateHan - writerHan) >= requiredProgressHan
+        : candidateHan <= control.report.allowedMaxHan ||
+          Math.max(0, writerHan - candidateHan) >= requiredProgressHan);
+    const repairTelemetry = {
+      injectedCheckerIssueCount,
+      appliedCheckerIssueCount,
+      injectedControlSuggestionCount,
+      appliedControlSuggestionCount,
+      writerHan,
+      candidateHan,
+      actualDeltaHan,
+      requiredProgressHan,
+      controlProgressPassed,
+    };
     if (noMeaningfulChange) {
       const rejectionCode = 'repair_candidate_unchanged';
       await finalizeContinuationV4RepairRejection({
@@ -1859,6 +1989,7 @@ async function runRepairNode(input: {
           contentHash: candidateHash,
           rejectionCode,
           complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
+          ...repairTelemetry,
         }),
         localVerifyOutputJson: JSON.stringify({
           schemaVersion: 1,
@@ -1872,6 +2003,7 @@ async function runRepairNode(input: {
           repairCompliancePassed: false,
           complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
           rejectionCode,
+          ...repairTelemetry,
         }),
       });
       await updateTelemetry(run.id);
@@ -1908,6 +2040,7 @@ async function runRepairNode(input: {
            : complianceChecks.length > 0
              ? 'repair_compliance_failed'
              : 'local_final_gate_failed',
+        ...repairTelemetry,
       }),
       localVerifyOutputJson: JSON.stringify({
         schemaVersion: 1,
@@ -1920,6 +2053,7 @@ async function runRepairNode(input: {
          controlDegraded: control.degraded,
          repairCompliancePassed: complianceChecks.length === 0,
          complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
+         ...repairTelemetry,
        }),
        localVerifyStatus: repairPassed ? 'success' : 'failed',
     });
@@ -2139,10 +2273,23 @@ async function runV4Pipeline(
     return;
   }
   const controlReport = control?.report || buildContinuationControlFallback(metrics);
-  const checkerIssues = checker?.persistedIssues ?? [];
+  const checkerPersisted = checker?.persistedIssues ?? [];
+  // Local safety issues that should drive Repair as explicit tasks. Length is
+  // excluded: chapter_length_* is owned by Control's local suggestion, so
+  // injecting it here would duplicate the same task under two ids.
   const localSafetyIssues = writerChecks.filter(
-    check => isLocalGateSubtype(check.subtype) && hasActionableIssue([check]),
+    check =>
+      isLocalGateSubtype(check.subtype) &&
+      !check.subtype.startsWith('chapter_length_') &&
+      hasActionableIssue([check]),
   );
+  // Repair receives the union of Checker-persisted issues and non-length local
+  // safety issues, deduped by persisted check id so the same row is not tracked
+  // twice under two ids.
+  const repairIssues = dedupeRepairIssues([
+    ...checkerPersisted,
+    ...localSafetyIssues,
+  ]);
   const actionable =
     hasActionableIssue(checker?.issues ?? []) ||
     hasActionableIssue(localSafetyIssues) ||
@@ -2177,7 +2324,7 @@ async function runV4Pipeline(
     snapshot: actual.snapshot,
     plan: writer.plan,
     writerArtifact: writer.artifact,
-    checkerIssues,
+    checkerIssues: repairIssues,
     control: control || {
       metrics,
       report: controlReport,

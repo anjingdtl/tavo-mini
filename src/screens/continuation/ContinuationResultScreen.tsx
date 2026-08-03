@@ -399,7 +399,11 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         const metrics = parsed
           ? `本地汉字数 ${parsed.currentHan ?? '—'} · 合法区间 ${parsed.allowedMinHan ?? '—'}–${parsed.allowedMaxHan ?? '—'}`
           : '本地指标已由客户端计算。';
-        const mode = result.status === 'failed' ? 'Control LLM 降级，使用本地 fallback' : `Control action：${parsed?.action || '—'}`;
+        const injected = Array.isArray(parsed?.suggestions) ? parsed.suggestions.length : 0;
+        const mismatch = parsed?.metricEchoMismatch || parsed?.actionEchoMismatch;
+        const mode = result.status === 'failed'
+          ? 'Control LLM 降级，使用本地 fallback'
+          : `Control action：${parsed?.action || '—'}；注入 ${injected} 项强制建议${mismatch ? '（模型回显与本地不一致，已以本地为准）' : ''}`;
         return `${metrics}\n${mode}`;
       } catch {
         return result.errorMessage || 'Control 结果不可解析。';
@@ -411,9 +415,40 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       }
       try {
         const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
-        return parsed
-          ? `完整终稿已持久化。应用 Checker issue ${parsed.appliedCheckerIssueIds?.length || 0} 项、Control suggestion ${parsed.appliedControlSuggestionIds?.length || 0} 项。`
-          : 'Repair 已完成。';
+        if (!parsed) return 'Repair 已完成。';
+        const injectedChecker = parsed.injectedCheckerIssueCount ?? null;
+        const appliedChecker = parsed.appliedCheckerIssueIds?.length ?? 0;
+        const injectedControl = parsed.injectedControlSuggestionCount ?? null;
+        const appliedControl = parsed.appliedControlSuggestionIds?.length ?? 0;
+        const writerHan = parsed.writerHan ?? null;
+        const candidateHan = parsed.candidateHan ?? null;
+        const requiredProgress = parsed.requiredProgressHan ?? null;
+        const progressPassed = parsed.controlProgressPassed;
+        const parts: string[] = ['完整终稿已持久化。'];
+        // 区分「注入」与「声明应用」，避免把 0 项误读为上游没注入任务
+        parts.push(
+          injectedChecker != null
+            ? `Checker：注入 ${injectedChecker} 项强制任务，Repair 声明应用 ${appliedChecker} 项。`
+            : `Repair 声明应用 Checker issue ${appliedChecker} 项。`,
+        );
+        parts.push(
+          injectedControl != null
+            ? `Control：注入 ${injectedControl} 项强制建议，Repair 声明应用 ${appliedControl} 项。`
+            : `Repair 声明应用 Control suggestion ${appliedControl} 项。`,
+        );
+        if (writerHan != null && candidateHan != null) {
+          const delta = candidateHan - writerHan;
+          const sign = delta >= 0 ? '+' : '';
+          let line = `字数变化：${writerHan} → ${candidateHan}（${sign}${delta}）`;
+          if (requiredProgress != null) {
+            line += `；最低实质进度 ${requiredProgress}`;
+          }
+          if (progressPassed != null) {
+            line += progressPassed ? '，Control 进度通过' : '，Control 进度未通过';
+          }
+          parts.push(line + '。');
+        }
+        return parts.join('\n');
       } catch {
         return result.errorMessage || 'Repair 结果不可解析。';
       }
