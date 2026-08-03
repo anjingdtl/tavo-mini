@@ -302,7 +302,7 @@ describe('Continuation V4 workflow contracts', () => {
       failed.find(
         check => check.subtype === 'repair_control_insufficient_progress',
       )?.severity,
-    ).toBe('warning');
+    ).toBe('blocking');
 
     const passed = validateContinuationV4RepairCompliance({
       writerText,
@@ -359,7 +359,7 @@ describe('Continuation V4 workflow contracts', () => {
     expect(checks.map(check => check.subtype)).toContain('repair_unapplied_item');
   });
 
-  test('Repair 只增加 1 个汉字时 Control 进度只记录 warning', () => {
+  test('Repair 只增加 1 个汉字时 Control 进度不足被判定为 blocking', () => {
     const writerText = '这是完整正文。'.repeat(200); // ~1200 han
     // 候选只比 Writer 多 1 个汉字
     const candidateText = `${writerText}啊`;
@@ -404,7 +404,7 @@ describe('Continuation V4 workflow contracts', () => {
       checks.find(
         check => check.subtype === 'repair_control_insufficient_progress',
       )?.severity,
-    ).toBe('warning');
+    ).toBe('blocking');
   });
 
   test('达到最低实质进度但仍低于 allowedMinHan 时 Control 合规通过，Final Gate 仅长度 warning', () => {
@@ -483,7 +483,11 @@ describe('Continuation V4 workflow contracts', () => {
     expect(gate.passed).toBe(true);
   });
 
-  test('Repair 未回填本地 Control suggestion ID 时被拒绝', () => {
+  test('Repair 未回填本地 Control suggestion ID 但进度达标时仅产生 warning', () => {
+    // Writer 约 600 汉字，allowedMin 800，requiredDelta 300，requiredProgress 105。
+    // 候选追加约 120 汉字 → actualProgress 120 ≥ 105，Control 实质进度通过；
+    // 唯一未满足的是本地强制 suggestion ID 未回填，按当前契约只产生 warning，
+    // 不构成 error/blocking，候选在合规层面不被这一条拒绝。
     const writerText = '这是完整正文。'.repeat(100);
     const candidateText = `${writerText}${'扩展内容。'.repeat(30)}`;
     const controlReport = {
@@ -524,6 +528,21 @@ describe('Continuation V4 workflow contracts', () => {
     expect(checks.map(check => check.subtype)).toContain(
       'repair_control_suggestion_unapplied',
     );
+    expect(
+      checks.find(
+        check => check.subtype === 'repair_control_suggestion_unapplied',
+      )?.severity,
+    ).toBe('warning');
+    // 进度达标：不应再产生 insufficient_progress
+    expect(checks.map(check => check.subtype)).not.toContain(
+      'repair_control_insufficient_progress',
+    );
+    // 合规层面无 error/blocking → 候选不会被这条规则拒绝
+    expect(
+      checks.filter(
+        check => check.severity === 'error' || check.severity === 'blocking',
+      ),
+    ).toEqual([]);
   });
 
   test('Control finding 未回填只产生 warning，未知 finding ID 仍属于协议错误', () => {
