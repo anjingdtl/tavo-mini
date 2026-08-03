@@ -482,45 +482,77 @@ function runAnchorOverlapChecks(
   return issues;
 }
 
-export function parseCheckerLlmJson(raw: string): RawCheckIssue[] {
-  const stripped = stripModelJson(raw);
-  let parsed: any;
-  try {
-    parsed = JSON.parse(stripped);
-  } catch {
-    // one more try: wrap
-    try {
-      parsed = JSON.parse(`{"issues":${stripped}}`);
-    } catch {
-      throw new Error('Checker JSON 解析失败');
-    }
-  }
-  const issueList = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray(parsed?.issues)
-      ? parsed.issues
-      : null;
-  if (!issueList) throw new Error('Checker JSON 缺少 issues 数组');
-  const warningList = Array.isArray(parsed)
-    ? []
-    : Array.isArray(parsed?.warnings)
-      ? parsed.warnings
-      : [];
-  // The V4 contract keeps warnings separate from repair-worthy issues. They
-  // still need to reach persistence/UI instead of being silently discarded.
-  // Force their severity to warning so a model cannot smuggle a warning into
-  // the single Repair reservation as an unsupported severe issue.
-  const list = [
-    ...issueList,
-    ...warningList.map((item: unknown) =>
-      item && typeof item === 'object'
-        ? { ...(item as Record<string, unknown>), severity: 'warning' }
-        : item,
-    ),
-  ];
+export interface CheckerLlmEnvelope {
+  schemaVersion: number | null;
+  /** Model-echoed Writer artifact hash; null when absent. The V4 Runner is the
+   * authority that compares this against the actual artifact contentHash and
+   * decides whether to adopt the issues. */
+  writerArtifactHash: string | null;
+  issues: RawCheckIssue[];
+}
 
+/**
+ * Standardize a raw model issue object to the internal field names BEFORE any
+ * severity/evidence downgrade logic runs. This is the only place where legacy
+ * field aliases (`draftQuote`/`suggestedAction`/`draftStart`/`draftEnd`/`quote`/
+ * `fix`) are tolerated; downstream code only ever sees the standard fields.
+ *
+ * The legacy Prompt asked models to emit `draftQuote`/`suggestedAction`, while
+ * the Parser read `generatedExcerpt`/`suggestedFix`. Without this normalization
+ * a model that correctly followed the old Prompt would have its fields dropped,
+ * the complete-contract check below would downgrade a legitimate error to a
+ * warning, and Repair would never receive the task.
+ */
+function normalizeRawCheckIssueFields(item: any): any {
+  if (!item || typeof item !== 'object') return item;
+  const normalized: Record<string, unknown> = { ...item };
+  if (
+    normalized.generatedExcerpt == null &&
+    typeof (normalized as any).draftQuote === 'string'
+  ) {
+    normalized.generatedExcerpt = (normalized as any).draftQuote;
+  }
+  if (
+    normalized.generatedExcerpt == null &&
+    typeof (normalized as any).quote === 'string'
+  ) {
+    normalized.generatedExcerpt = (normalized as any).quote;
+  }
+  if (
+    normalized.suggestedFix == null &&
+    typeof (normalized as any).suggestedAction === 'string'
+  ) {
+    normalized.suggestedFix = (normalized as any).suggestedAction;
+  }
+  if (
+    normalized.suggestedFix == null &&
+    typeof (normalized as any).fix === 'string'
+  ) {
+    normalized.suggestedFix = (normalized as any).fix;
+  }
+  if (
+    normalized.generatedStart == null &&
+    typeof (normalized as any).draftStart === 'number'
+  ) {
+    normalized.generatedStart = (normalized as any).draftStart;
+  }
+  if (
+    normalized.generatedEnd == null &&
+    typeof (normalized as any).draftEnd === 'number'
+  ) {
+    normalized.generatedEnd = (normalized as any).draftEnd;
+  }
+  return normalized;
+}
+
+function coerceRawIssuesToList(list: any[]): RawCheckIssue[] {
   const out: RawCheckIssue[] = [];
-  for (const item of list) {
+  for (const rawItem of list) {
+    // Standardize aliases first, so severity/evidence validation operates on a
+    // unified field surface and never downgrades a legitimate error merely
+    // because the model followed the legacy Prompt field names.
+    const item = normalizeRawCheckIssueFields(rawItem);
+    if (!item || typeof item !== 'object') continue;
     if (!CATEGORIES.includes(item.category)) continue;
     const severity = item.severity;
     if (!['info', 'warning', 'error', 'blocking'].includes(severity)) continue;
@@ -573,6 +605,66 @@ export function parseCheckerLlmJson(raw: string): RawCheckIssue[] {
     });
   }
   return out;
+}
+
+/**
+ * Parse the full V4 Checker envelope, including the `writerArtifactHash` echo.
+ * The Runner validates the hash against the actual Writer artifact contentHash
+ * and drops the issues when they disagree (see `runCheckerNode`).
+ */
+export function parseCheckerLlmEnvelope(raw: string): CheckerLlmEnvelope {
+  const stripped = stripModelJson(raw);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch {
+    // one more try: wrap
+    try {
+      parsed = JSON.parse(`{"issues":${stripped}}`);
+    } catch {
+      throw new Error('Checker JSON 解析失败');
+    }
+  }
+  const isBareArray = Array.isArray(parsed);
+  const issueList = isBareArray
+    ? parsed
+    : Array.isArray(parsed?.issues)
+      ? parsed.issues
+      : null;
+  if (!issueList) throw new Error('Checker JSON 缺少 issues 数组');
+  const warningList = isBareArray
+    ? []
+    : Array.isArray(parsed?.warnings)
+      ? parsed.warnings
+      : [];
+  // The V4 contract keeps warnings separate from repair-worthy issues. They
+  // still need to reach persistence/UI instead of being silently discarded.
+  // Force their severity to warning so a model cannot smuggle a warning into
+  // the single Repair reservation as an unsupported severe issue.
+  const list = [
+    ...issueList,
+    ...warningList.map((item: unknown) =>
+      item && typeof item === 'object'
+        ? { ...(item as Record<string, unknown>), severity: 'warning' }
+        : item,
+    ),
+  ];
+  const issues = coerceRawIssuesToList(list);
+  const hash = !isBareArray && typeof parsed?.writerArtifactHash === 'string'
+    ? parsed.writerArtifactHash.trim() || null
+    : null;
+  const schemaVersion =
+    !isBareArray && typeof parsed?.schemaVersion === 'number'
+      ? parsed.schemaVersion
+      : null;
+  return { schemaVersion, writerArtifactHash: hash, issues };
+}
+
+/** Backward-compatible wrapper returning only the issues. V1/V2 callers
+ * (`continuationGenerationRunner.ts`) keep using this; the alias normalization
+ * is a pure improvement for them and does not change the return shape. */
+export function parseCheckerLlmJson(raw: string): RawCheckIssue[] {
+  return parseCheckerLlmEnvelope(raw).issues;
 }
 
 /** Validate UTF-16 ranges against artifact and evidence ids against snapshot. */

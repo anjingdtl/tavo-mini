@@ -202,6 +202,96 @@ export function buildContinuationControlFallback(
   };
 }
 
+/**
+ * Minimum substantial progress that a Repair candidate must demonstrate in the
+ * Control direction before it can be accepted. This is a Control compliance
+ * check, NOT the final hard length gate: a candidate that reaches this progress
+ * but still falls short of `allowedMinHan` passes Control compliance and the
+ * final length gap remains a soft warning in the Local Final Gate.
+ *
+ * Defined here (single source of truth) so the Repair prompt, the compliance
+ * check and the result UI never diverge on what "progress" means.
+ */
+export const CONTROL_PROGRESS_RATIO = 0.35;
+export const CONTROL_PROGRESS_FLOOR_HAN = 80;
+
+export function requiredControlProgressHan(requiredDeltaHan: number): number {
+  const delta = Math.abs(requiredDeltaHan);
+  if (!Number.isFinite(delta) || delta === 0) return 0;
+  return Math.min(
+    delta,
+    Math.max(
+      CONTROL_PROGRESS_FLOOR_HAN,
+      Math.ceil(delta * CONTROL_PROGRESS_RATIO),
+    ),
+  );
+}
+
+const LOCAL_EXPAND_SUGGESTION_ID = 'ctrl_local_expand';
+const LOCAL_COMPRESS_SUGGESTION_ID = 'ctrl_local_compress';
+
+function dedupeSuggestionsById(
+  suggestions: ContinuationControlSuggestion[],
+): ContinuationControlSuggestion[] {
+  const seen = new Set<string>();
+  const out: ContinuationControlSuggestion[] = [];
+  for (const suggestion of suggestions) {
+    const id = suggestion.suggestionId.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(suggestion);
+  }
+  return out;
+}
+
+/**
+ * A model suggestion is only accepted when it is non-empty, internally unique,
+ * carries a finite expected delta, points in the local action's direction, and
+ * does not collide with the local forced suggestion id. Suggestions that fail
+ * any of these are dropped rather than re-purposed.
+ */
+function filterModelSuggestions(input: {
+  suggestions: ContinuationControlSuggestion[];
+  localAction: ContinuationControlAction;
+  seenIds: Set<string>;
+}): { accepted: ContinuationControlSuggestion[]; droppedCount: number } {
+  const accepted: ContinuationControlSuggestion[] = [];
+  let droppedCount = 0;
+  for (const suggestion of input.suggestions) {
+    const id = suggestion.suggestionId.trim();
+    if (!id || input.seenIds.has(id)) {
+      droppedCount += 1;
+      continue;
+    }
+    if (!suggestion.instruction.trim()) {
+      droppedCount += 1;
+      continue;
+    }
+    const delta = suggestion.expectedDeltaHan;
+    if (!Number.isFinite(delta)) {
+      droppedCount += 1;
+      continue;
+    }
+    if (input.localAction === 'expand' && !(delta > 0)) {
+      droppedCount += 1;
+      continue;
+    }
+    if (input.localAction === 'compress' && !(delta < 0)) {
+      droppedCount += 1;
+      continue;
+    }
+    // keep is also accepted only when the model echoes keep-consistent advice;
+    // a non-zero delta under keep has no enforceable direction and is dropped.
+    if (input.localAction === 'keep' && delta !== 0) {
+      droppedCount += 1;
+      continue;
+    }
+    input.seenIds.add(id);
+    accepted.push(suggestion);
+  }
+  return { accepted, droppedCount };
+}
+
 function stripJsonFence(raw: string): string {
   const trimmed = raw.trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -222,6 +312,14 @@ export interface ContinuationControlParseResult {
   report: ContinuationControlReport | null;
   metricEchoMismatch: boolean;
   errorCode: string | null;
+  /** True when the model's action echo disagrees with the authoritative local
+   * action. The local action always wins; this flag is diagnostic only. */
+  actionEchoMismatch?: boolean;
+  /** True when the local forced suggestion was injected because the model did
+   * not supply a direction-consistent one. */
+  localSuggestionInjected?: boolean;
+  /** Count of model suggestions dropped by the validity/direction filter. */
+  droppedSuggestionCount?: number;
 }
 
 /**
