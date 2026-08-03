@@ -14,6 +14,8 @@ import {
   compileCheckerMessages,
   compileRepairMessages,
 } from '../src/services/continuation/generation/continuationPromptCompiler';
+import { buildContinuationV4Context } from '../src/services/continuation/generation/continuationContextBuilder';
+import { cloneDefaultContextAutomationPolicy } from '../src/services/contextAutomationPolicy';
 import type {
   ContinuationContextSnapshot,
   ContinuationPlan,
@@ -730,6 +732,34 @@ describe('buildContinuationContext style path', () => {
     const writer = compileWriterMessages(snapshot, emptyPlan)[0].content;
     expect(writer).toContain('第三人称');
     expect(writer).toContain('保持克制');
+  });
+
+  it('V4 freezes one Canon read into schema 3 stage views and policy trace', async () => {
+    (getInjectableStyleProfile as jest.Mock).mockResolvedValue(injectableRow());
+    const { snapshot, trace } = await buildContinuationV4Context({
+      projectId: 1,
+      targetChapterId: 10,
+      targetPosition: 0 as any,
+      currentChapterContent: '',
+      userInstruction: '推进',
+      activeLlmConfigId: 1,
+      policy: cloneDefaultContextAutomationPolicy(),
+      stageModels: {
+        writer: { configId: 1, contextWindow: 32768, maxOutputTokens: 8192 },
+        checker: { configId: 2, contextWindow: 32768, maxOutputTokens: 8192 },
+        control: { configId: 3, contextWindow: 32768, maxOutputTokens: 8192 },
+        repair: { configId: 4, contextWindow: 32768, maxOutputTokens: 8192 },
+      },
+    });
+    expect(snapshot.schemaVersion).toBe(3);
+    expect(snapshot.workflowVersion).toBe(4);
+    expect(snapshot.budgetPolicy.policyHash).toHaveLength(64);
+    expect(snapshot.stageViews.writer.stage).toBe('writer');
+    expect(snapshot.stageViews.checker.stage).toBe('checker');
+    expect(snapshot.stageViews.control).not.toHaveProperty('canon');
+    expect(snapshot.stageViews.repair.stage).toBe('repair');
+    expect(trace.v4StageViewHashes?.writer).toHaveLength(64);
+    expect(CanonQueryService.getActiveSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('counts the latest continuation anchor in the writer context budget', async () => {
