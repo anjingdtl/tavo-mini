@@ -173,8 +173,11 @@ describe('complete Canon analysis style stage', () => {
     events.length = 0;
     run = makeRun();
     db = {
+      // The five-dimension materialisation re-read + gate query Canon table
+      // counts via db.executeSql. Return >= 3 per dimension so the gate passes
+      // and the run proceeds to style analysis.
       executeSql: jest.fn().mockResolvedValue([
-        { rows: { item: () => ({ c: 0 }) } },
+        { rows: { item: () => ({ c: 5 }) } },
       ]),
     };
     mockOpenDatabase.mockResolvedValue(db);

@@ -355,7 +355,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     Alert.alert(
       fast ? '开始快速续写分析' : '开始完整原著分析',
       fast
-        ? '将调用当前模型精读续写起点前最后 30 章，生成带原文证据的结构化原著资料。每个章节批次会生成「人物与状态」及「世界观与剧情」两组资料；更早章节可由历史概览补充。\n\n分析过程可暂停或取消。'
+        ? '将调用当前模型精读续写起点前最后 10 章，独立重建一套可用于续写的完整五维原著资料（人物、世界观、关系、剧情、经历）。每个章节批次会生成「人物与状态」及「世界观与剧情」两组资料。\n\n分析过程可暂停或取消。'
         : '将调用当前模型分析续写起点之前的全部原著章节，生成带原文证据的结构化原著资料。完整分析耗时与用量更高。\n\n分析过程可暂停或取消。',
       [
         { text: '取消', style: 'cancel' },
@@ -1029,7 +1029,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 style={[styles.hint, { color: theme.colors.textSecondary }]}
               >
                 两种模式都会调用当前模型，并产出带原文证据、可审核的原著资料。
-                快速续写只精读最后 30 章；完整原著分析覆盖全部 边界内原著。
+                快速续写只精读最后 10 章；完整原著分析覆盖全部 边界内原著。
               </Text>
               <View style={styles.row}>
                 <Button

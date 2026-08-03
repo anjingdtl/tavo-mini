@@ -78,7 +78,7 @@ describe('Canon LLM analysis', () => {
     ]);
     expect(ANALYSIS_MODE_PRESETS.fast_continuation).toMatchObject({
       profile: 'standard',
-      scope: { kind: 'tail', tailChapterCount: 30 },
+      scope: { kind: 'tail', tailChapterCount: 10 },
     });
     expect(ANALYSIS_MODE_PRESETS.full_canon).toMatchObject({
       profile: 'deep',
@@ -130,7 +130,10 @@ describe('Canon LLM analysis', () => {
     expect(outcome.result.worldRules).toEqual([]);
     expect(callLLMResult).toHaveBeenCalledWith(
       expect.any(Array),
-      32768,
+      // No Canon-specific output ceiling: the request sends the full configured
+      // max_output_tokens, falling back to the standard-profile baseline (8192)
+      // when the config does not declare one. Thinking is left untouched.
+      8192,
       expect.objectContaining({
         queueClass: 'canon_analysis',
         taskId: 'run-1',
@@ -352,7 +355,38 @@ describe('Canon LLM analysis', () => {
   });
 
   it('exposes element-level field names in the prompt for grouped requests', async () => {
-    (callLLMResult as jest.Mock).mockResolvedValue({ text: validResult });
+    // world_plot route owns worldRules/plotThreads/timelineEvents, so the
+    // fixture must carry at least one valid entry in that route (the route
+    // being entirely empty is now a recoverable failure, not a silent pass).
+    const worldPlotResult = JSON.stringify({
+      schemaVersion: 1,
+      worldRules: [
+        {
+          category: '世界',
+          title: '青云镇有修仙门派',
+          description: '镇上有修仙门派。',
+          constraintLevel: 'reference',
+          confidence: 0.8,
+          evidence: [
+            {
+              chapterId: 7,
+              chapterPosition: 0,
+              charStart: 14,
+              charEnd: 16,
+              quotePreview: '青云镇',
+            },
+          ],
+        },
+      ],
+      characters: [],
+      relationships: [],
+      plotThreads: [],
+      experiences: [],
+      knowledge: [],
+      states: [],
+      timelineEvents: [],
+    });
+    (callLLMResult as jest.Mock).mockResolvedValue({ text: worldPlotResult });
 
     await extractMaterialWithLlm(
       [chapter],
@@ -417,6 +451,44 @@ describe('Canon LLM analysis', () => {
     expect(retryPrompt).toContain('accepted');
     expect(retryPrompt).toContain('characters(canonicalName,aliases');
     expect(retryPrompt).not.toContain('详见下方规范');
+    jest.useRealTimers();
+  });
+
+  it('retries (does not silently succeed) when the route returns a legitimately all-empty result', async () => {
+    // Quality spec §5 / §8.3: a route that is entirely empty for its OWNED
+    // categories — even a well-formed "all empty arrays" response — must not
+    // count as success. Previously `received===0` bypassed retry; that let a
+    // lazy all-empty response through. Now the route-owned total being 0
+    // triggers a shrink-chunk retry.
+    jest.useFakeTimers();
+    const allEmpty = JSON.stringify({
+      schemaVersion: 1,
+      worldRules: [],
+      characters: [],
+      relationships: [],
+      plotThreads: [],
+      experiences: [],
+      knowledge: [],
+      states: [],
+      timelineEvents: [],
+    });
+    (callLLMResult as jest.Mock)
+      .mockResolvedValueOnce({ text: allEmpty })
+      .mockResolvedValueOnce({ text: validResult });
+
+    const pending = extractMaterialWithLlm(
+      [chapter],
+      'standard',
+      42,
+      'characters',
+      'run-empty-route-retry',
+      new AbortController().signal,
+    );
+    await jest.runAllTimersAsync();
+
+    const outcome = await pending;
+    expect(outcome.result.characters[0].canonicalName).toBe('林凡');
+    expect(callLLMResult).toHaveBeenCalledTimes(2);
     jest.useRealTimers();
   });
 
@@ -526,7 +598,7 @@ describe('Canon LLM analysis', () => {
   });
 
   describe('S1: empty-response classification and adaptive retry', () => {
-    it('raises a length-specific message and doubles max_tokens on retry when finish_reason=length', async () => {
+    it('raises a length-specific message and shrinks the source chunk (never the output) on retry when finish_reason=length', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock)
         .mockResolvedValueOnce({
@@ -549,15 +621,17 @@ describe('Canon LLM analysis', () => {
 
       expect(outcome.result.characters[0].canonicalName).toBe('林凡');
       expect(callLLMResult).toHaveBeenCalledTimes(2);
-      // Standard profile baseline is 32768; retry doubles it on length truncation.
+      // Per the quality spec: max_tokens stays at the full configured value
+      // (standard baseline 8192 when unconfigured) on BOTH attempts. Only the
+      // source chunk shrinks; the model's output budget is never compressed.
       const firstMaxTokens = (callLLMResult as jest.Mock).mock.calls[0][1];
       const secondMaxTokens = (callLLMResult as jest.Mock).mock.calls[1][1];
-      expect(firstMaxTokens).toBe(32768);
-      expect(secondMaxTokens).toBe(32768 * 2);
+      expect(firstMaxTokens).toBe(8192);
+      expect(secondMaxTokens).toBe(8192);
       jest.useRealTimers();
     });
 
-    it('raises a reasoning-only message and doubles max_tokens when reasoning_content filled the budget', async () => {
+    it('raises a reasoning-only message and shrinks the source chunk (never the output) when reasoning_content filled the budget', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock)
         .mockResolvedValueOnce({
@@ -582,12 +656,12 @@ describe('Canon LLM analysis', () => {
       expect(outcome.result.characters[0].canonicalName).toBe('林凡');
       const firstMaxTokens = (callLLMResult as jest.Mock).mock.calls[0][1];
       const secondMaxTokens = (callLLMResult as jest.Mock).mock.calls[1][1];
-      expect(firstMaxTokens).toBe(32768);
-      expect(secondMaxTokens).toBe(32768 * 2);
+      expect(firstMaxTokens).toBe(8192);
+      expect(secondMaxTokens).toBe(8192);
       jest.useRealTimers();
     });
 
-    it('lets an adaptive 1M-context run recover from 8K reasoning-only output without widening its input budget', async () => {
+    it('keeps max_tokens at the configured value across retries and shrinks only the source chunk', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock)
         .mockResolvedValueOnce({
@@ -623,13 +697,18 @@ describe('Canon LLM analysis', () => {
       await jest.runAllTimersAsync();
       await pending;
 
+      // The model's configured output budget is preserved across all three
+      // attempts; only the source chunk shrinks along 30% → 20% → 12%. The
+      // request uses the deep-profile baseline (8192) since the mock config
+      // does not declare max_output_tokens; the plan's stored outputReserve is
+      // never allowed to compress a real configured value.
       expect(
         (callLLMResult as jest.Mock).mock.calls.map(call => call[1]),
-      ).toEqual([8_000, 32_768, 65_536]);
+      ).toEqual([8192, 8192, 8192]);
       jest.useRealTimers();
     });
 
-    it('uses a 32768 baseline for the deep profile and doubles on length retry', async () => {
+    it('uses the deep-profile baseline (8192) and keeps it fixed on length retry', async () => {
       jest.useFakeTimers();
       (callLLMResult as jest.Mock)
         .mockResolvedValueOnce({
@@ -650,8 +729,8 @@ describe('Canon LLM analysis', () => {
       await jest.runAllTimersAsync();
       await pending;
 
-      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(32768);
-      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(32768 * 2);
+      expect((callLLMResult as jest.Mock).mock.calls[0][1]).toBe(8192);
+      expect((callLLMResult as jest.Mock).mock.calls[1][1]).toBe(8192);
       jest.useRealTimers();
     });
 

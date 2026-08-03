@@ -81,7 +81,13 @@ const awaitingSnap = {
 describe('activateSnapshotAndStyleProfile', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (openDatabase as jest.Mock).mockResolvedValue({});
+    (openDatabase as jest.Mock).mockResolvedValue({
+      // The five-dimension activation gate re-reads Canon table counts via
+      // db.executeSql. Return >= 3 per dimension so the gate passes.
+      executeSql: jest.fn().mockResolvedValue([
+        { rows: { item: () => ({ c: 5 }) } },
+      ]),
+    });
     (continuationSourceReader.getSnapshot as jest.Mock).mockResolvedValue(
       liveSnapshot,
     );
@@ -214,6 +220,42 @@ describe('activateSnapshotAndStyleProfile', () => {
 
     // No transaction should have been attempted.
     expect(executeTransaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses to activate when any five-dimension count is below the minimum', async () => {
+    // characters = 2 (< 3) → gate fails. Activation must be the final step
+    // and must not fire for a snapshot that has not independently passed the
+    // five-dimension hard gate.
+    let callIndex = 0;
+    const counts = [2, 5, 5, 5, 5, 5, 5, 5]; // first query (characters) returns 2
+    (openDatabase as jest.Mock).mockResolvedValue({
+      executeSql: jest.fn().mockImplementation(async () => {
+        const c = counts[callIndex % counts.length];
+        callIndex += 1;
+        return [{ rows: { item: () => ({ c }) } }];
+      }),
+    });
+
+    await expect(
+      activateSnapshotAndStyleProfile({
+        projectId: 1,
+        analysisRunId: 'run-1',
+        canonSnapshotId: 'snap-1',
+        styleProfileId: 'style-1',
+        allowStyleSkip: false,
+      }),
+    ).rejects.toThrow(/五维验收|至少 3 条方可激活/);
+
+    // The main activation transaction must NOT have committed.
+    const txCalls = (executeTransaction as jest.Mock).mock.calls;
+    const activationCall = txCalls.find(
+      ([, stmts]: [unknown, { sql: string }[]]) =>
+        Array.isArray(stmts) &&
+        stmts.some(
+          s => typeof s?.sql === 'string' && s.sql.includes('activated_at'),
+        ),
+    );
+    expect(activationCall).toBeUndefined();
   });
 
   it('leaves no half-state when source/boundary has drifted (throws before transaction)', async () => {

@@ -30,6 +30,12 @@ import {
 } from './canonRepository';
 import { buildDefaultCanonAdoptionStatements } from './canonAnalysisService';
 import {
+  countValidCanonRowsForGate,
+  evaluateFiveDimensionGate,
+  describeGateResult,
+  REQUIRED_MIN_COUNT,
+} from './canonFiveDimensionGate';
+import {
   getStyleProfileById,
   type ContinuationStyleProfileRow,
 } from '../styleProfile/styleProfileRepository';
@@ -118,6 +124,26 @@ export async function activateSnapshotAndStyleProfile(
   const orphans = await countOrphanEvidence(input.canonSnapshotId);
   if (orphans > 0) {
     throw new Error(`存在 ${orphans} 条孤儿证据，禁止激活`);
+  }
+
+  // Five-dimension hard gate (quality spec §7 / §13.2). Activation is the
+  // final, atomic step; a snapshot that does not independently meet the
+  // per-dimension minimum (each >= 3, counted from THIS run + snapshot after
+  // the full pipeline) must never become the active Canon. This is the
+  // authoritative guard — the main pipeline also checks, but activation is the
+  // last line of defence against any bypass path.
+  if (analysisRun) {
+    const gateCounts = await countValidCanonRowsForGate(
+      db,
+      input.canonSnapshotId,
+      analysisRun.id,
+    );
+    const gate = evaluateFiveDimensionGate(gateCounts);
+    if (!gate.passed) {
+      throw new Error(
+        `${describeGateResult(gate)}。每维至少 ${REQUIRED_MIN_COUNT} 条方可激活。`,
+      );
+    }
   }
 
   let styleProfile: ContinuationStyleProfileRow | null = null;

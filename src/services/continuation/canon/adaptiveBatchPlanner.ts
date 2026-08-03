@@ -1,23 +1,24 @@
 /**
- * Adaptive batch planner for Canon analysis (Spec §1 / 2026-08-01 fix).
+ * Adaptive batch planner for Canon analysis (original-analysis quality spec
+ * 2026-08-03, §6).
  *
- * Replaces the legacy `planAnalysisTokenBudget` which hardcoded
- * `CANON_OUTPUT_BASELINE_TOKENS = { deep: 32768 }` and refused when the
- * model's context window could not reserve that much output. That made
- * many reasonable LLM configurations (e.g. context_window=8K, max_output_tokens=4K)
- * fail outright even for small source books.
+ * The planner packs original-text chapters into batches sized at 30% of the
+ * declared context window (`sourceChunkTargetTokens`). The model's real
+ * capabilities — `context_window`, `max_output_tokens`, thinking mode — are
+ * NEVER compressed or written back. See `canonBudgetPolicy.ts` for the policy.
  *
- * The new planner is **fully derived from the user's LLM configuration**:
- *   - `effectiveInputBudget = context_window - max_output_tokens - promptOverhead`
- *   - original text is greedily packed to a context-aware operational target
- *   - single chapters larger than the budget are split into chunk batches
- *   - no chapter is ever skipped (the user requires complete Canon coverage)
- *
- * Chapter boundaries are preserved for evidence provenance, but never impose a
- * second batch-size ceiling: an advertised 1M context must be used according to
- * the source's actual token volume, not its chapter formatting. The only
- * defensive lower bound (`MIN_INPUT_BUDGET_TOKENS`) prevents infinite loops when
- * the configured `max_output_tokens` exceeds `context_window`.
+ * Rules:
+ *   - `sourceChunkTargetTokens = floor(declaredContextWindow * 0.30)`.
+ *   - 30% controls ONLY the source chunk size per batch, not the request
+ *     context ceiling, not max output, not thinking.
+ *   - The full configured `max_output_tokens` is sent on every request.
+ *   - Protocol compatibility (`input + output <= window`) shrinks the chunk,
+ *     never the output.
+ *   - Single chapters larger than the target are split into chunk batches;
+ *     no chapter is ever skipped (complete coverage).
+ *   - On recoverable output failures (length / reasoning-only / truncated
+ *     JSON / route-owned categories all empty) the retry ladder shrinks the
+ *     chunk to 20% then 12%, never the output. Retry happens at the extractor.
  */
 import type { BoundedSourceChapter } from '../types';
 import type { AnalysisProfile, AnalysisWorkItemType } from './types';
@@ -27,6 +28,13 @@ import {
   EVIDENCE_FIELD_SPEC,
   EXTRACTION_JSON_SKELETON,
 } from './extractionPromptSpec';
+import {
+  resolveCanonBudget,
+  SOURCE_CHUNK_RATIO_NORMAL,
+  DEFAULT_OUTPUT_BASELINE_BY_PROFILE,
+  MIN_SOURCE_CHUNK_TOKENS,
+  MIN_CHUNK_CHAR_SIZE,
+} from './canonBudgetPolicy';
 
 /**
  * Defensive lower bound. When `effectiveInputBudget` falls at or below this
@@ -34,73 +42,13 @@ import {
  * NOT a hardcoded context window threshold; it only kicks in when the user's
  * configured `max_output_tokens` leaves almost no room for input.
  */
-export const MIN_INPUT_BUDGET_TOKENS = 1024;
+export const MIN_INPUT_BUDGET_TOKENS = MIN_SOURCE_CHUNK_TOKENS;
 
-/**
- * Fill ratio for normal contexts. This is intentionally separate from the
- * hard `CANON_ANALYSIS_CONTEXT_UTILIZATION` safety ceiling: it controls tail
- * latency, not request validity.
- */
-const NORMAL_CONTEXT_BATCH_FILL_RATIO = 0.8;
-
-/**
- * Very large advertised contexts can accept a request but still have a steep
- * KV-cache latency curve. A live 1M-context acceptance run showed this long
- * tail clearly. Keep a second operational margin there while preserving the
- * 80% hard safety ceiling and parallel Canon lanes.
- */
-export const LARGE_CONTEXT_BATCH_FILL_RATIO = 0.6;
-export const LARGE_CONTEXT_WINDOW_THRESHOLD = 512_000;
-
-export function resolveCanonBatchFillRatio(declaredWindow: number): number {
-  return declaredWindow >= LARGE_CONTEXT_WINDOW_THRESHOLD
-    ? LARGE_CONTEXT_BATCH_FILL_RATIO
-    : NORMAL_CONTEXT_BATCH_FILL_RATIO;
-}
-
-/**
- * Minimum chunk char size. When a chapter must be split into chunks, each chunk
- * is at least this many characters. Anything smaller would generate excessive
- * LLM calls for marginal benefit.
- */
-const MIN_CHUNK_CHAR_SIZE = 512;
-
-/**
- * Fallback output baseline per profile, used only when the LLM config does not
- * declare `max_output_tokens`. Mirrors the historical defaults so behaviour is
- * preserved when the user has not customised the output token setting.
- */
-const DEFAULT_OUTPUT_BASELINE_BY_PROFILE: Record<AnalysisProfile, number> = {
-  quick: 4096,
-  standard: 8192,
-  deep: 8192,
-};
-
-/**
- * Fallback context window when the LLM config does not declare one. Derived
- * from the configured output baseline (8x) so the input budget remains usable.
- * This is NOT a hardcoded threshold — it scales with the user's `max_output_tokens`.
- */
-const DEFAULT_CONTEXT_WINDOW_MULTIPLIER = 8;
-const DEFAULT_CONTEXT_WINDOW_FLOOR = 32_768;
-
-/**
- * A configured context window is an upper protocol limit, not a safe request
- * size. Sending an almost-full 128K/1M request makes many OpenAI-compatible
- * backends allocate an enormous KV cache, which turns a long original into an
- * avoidable server OOM or a request timeout. Reserve 20% headroom and derive
- * the batch size from the remaining safe budget; complete coverage is
- * preserved by creating more resumable batches.
- */
-export const CANON_ANALYSIS_CONTEXT_UTILIZATION = 0.8;
-const CANON_ANALYSIS_MAX_OUTPUT_SHARE = 0.25;
-/**
- * Reasoning-capable models occasionally spend their configured completion
- * budget before emitting the JSON body. This retry-only ceiling is deliberately
- * modest: it gives the model 8K → 16K → 32K recovery room without turning a
- * normal extraction into a huge 200K-output request.
- */
-export const CANON_REASONING_RETRY_OUTPUT_CEILING = 65_536;
+// Re-exported for backward compatibility with imports that referenced these
+// from this module. They no longer cap the model's output; the planner itself
+// never reduces max_output_tokens.
+export const CANON_ANALYSIS_CONTEXT_UTILIZATION = 1;
+export const CANON_REASONING_RETRY_OUTPUT_CEILING = Number.POSITIVE_INFINITY;
 
 /** Material-type prompt prefixes used by the extractor. */
 const MATERIAL_PROMPTS: Record<AnalysisWorkItemType, string> = {
@@ -242,76 +190,39 @@ export function estimateTokensPerCharForChapter(
 export function planAdaptiveBatching(
   input: AdaptiveBatchPlanInput,
 ): AdaptiveBatchPlan {
-  const profileBaseline =
-    DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
-  const configuredOutputTokens =
-    input.maxOutputTokens && input.maxOutputTokens > 0
-      ? input.maxOutputTokens
-      : profileBaseline;
-  const declaredWindow =
-    input.contextWindow && input.contextWindow > 0
-      ? input.contextWindow
-      : Math.max(
-          configuredOutputTokens * DEFAULT_CONTEXT_WINDOW_MULTIPLIER,
-          DEFAULT_CONTEXT_WINDOW_FLOOR,
-        );
-  const safeRequestBudget = Math.floor(
-    declaredWindow * CANON_ANALYSIS_CONTEXT_UTILIZATION,
-  );
-  // Keep no more than a quarter of the safe request budget for generation,
-  // including thinking tokens. With a 1M-context model this permits a useful
-  // 200K output reserve while still leaving ~600K for the original and a 20%
-  // context-window margin.
-  const outputReserve = Math.min(
-    configuredOutputTokens,
-    Math.floor(safeRequestBudget * CANON_ANALYSIS_MAX_OUTPUT_SHARE),
-  );
   const promptOverhead = estimatePromptOverhead({
     profile: input.profile,
     materialType: input.materialType,
   });
-  const unconstrainedInputBudget = Math.max(
-    0,
-    safeRequestBudget - outputReserve - promptOverhead,
-  );
-  const effectiveInputBudget = unconstrainedInputBudget;
-  const targetInputBudget = Math.floor(
-    effectiveInputBudget * resolveCanonBatchFillRatio(declaredWindow),
-  );
-  const retryOutputCeiling = Math.min(
-    Math.floor(safeRequestBudget * CANON_ANALYSIS_MAX_OUTPUT_SHARE),
-    Math.max(outputReserve, CANON_REASONING_RETRY_OUTPUT_CEILING),
-  );
-
-  // Refuse when the user's max_output_tokens leaves no room for input.
-  if (effectiveInputBudget <= MIN_INPUT_BUDGET_TOKENS) {
-    const suggestedMaxOutputTokens = Math.max(
-      1024,
-      Math.floor(declaredWindow * 0.25),
-    );
-    const suggestedContextWindow = Math.max(
-      declaredWindow,
-      outputReserve + promptOverhead + MIN_INPUT_BUDGET_TOKENS + 1024,
-    );
+  const budget = resolveCanonBudget({
+    profile: input.profile,
+    declaredContextWindow: input.contextWindow,
+    configuredMaxOutputTokens: input.maxOutputTokens,
+    promptOverhead,
+    chunkRatio: SOURCE_CHUNK_RATIO_NORMAL,
+  });
+  if (!budget.ok) {
     return {
       ok: false,
       batches: [],
-      effectiveInputBudget,
-      targetInputBudget,
-      outputReserve,
-      retryOutputCeiling,
-      promptOverhead,
+      // The hard input budget (after protocol-compat shrink) is the chunk target.
+      effectiveInputBudget: budget.sourceChunkTargetTokens,
+      targetInputBudget: budget.sourceChunkTargetTokens,
+      // The full configured max output is preserved; never compressed.
+      outputReserve: budget.configuredMaxOutputTokens,
+      retryOutputCeiling: budget.configuredMaxOutputTokens,
+      promptOverhead: budget.promptOverhead,
       estimatedBatchCount: 0,
-      reason:
-        `当前 LLM 配置的 context_window=${declaredWindow}、max_output_tokens=${outputReserve}，` +
-        `扣除输出与 prompt 骨架后剩余输入预算仅 ${effectiveInputBudget} tokens` +
-        `（低于最低 ${MIN_INPUT_BUDGET_TOKENS}）。` +
-        `请在「设置 → LLM 配置」降低 max_output_tokens 至 ≤ ${suggestedMaxOutputTokens}，` +
-        `或增大 context_window 至 ≥ ${suggestedContextWindow}。`,
-      suggestedContextWindow,
-      suggestedMaxOutputTokens,
+      reason: budget.reason,
+      suggestedContextWindow: budget.suggestedContextWindow,
+      suggestedMaxOutputTokens: budget.suggestedMaxOutputTokens,
     };
   }
+  // 30% of the declared context window, further bounded by protocol compat.
+  const targetInputBudget = budget.sourceChunkTargetTokens;
+  const effectiveInputBudget = targetInputBudget;
+  // The model's real configured max output — sent in full on every request.
+  const outputReserve = budget.configuredMaxOutputTokens;
 
   // Pre-compute per-chapter token estimates. For very long books (2000+ chapters)
   // this loop is the only O(n) work in the planner; we keep it synchronous
@@ -362,7 +273,7 @@ export function planAdaptiveBatching(
         });
       }
     } else if (currentTokens + tokens > fillTarget) {
-      // Reached the fill target — close this batch and start a new one.
+      // Reached the 30% fill target — close this batch and start a new one.
       if (currentBatch.length > 0) {
         flushNormalBatch(batches, currentBatch);
       }
@@ -382,8 +293,11 @@ export function planAdaptiveBatching(
     batches,
     effectiveInputBudget,
     targetInputBudget,
+    // Full configured max output; never an internal ceiling. Kept on the plan
+    // so persisted checkpoints (which store this value) keep working, and the
+    // extractor sends exactly this value as max_tokens.
     outputReserve,
-    retryOutputCeiling,
+    retryOutputCeiling: outputReserve,
     promptOverhead,
     estimatedBatchCount: batches.length,
   };
@@ -477,13 +391,15 @@ export function precheckCanonAnalysis(input: {
 }
 
 /**
- * Estimate the actual `max_tokens` to send to the LLM for a single extraction
- * call. Mirrors the planner's `outputReserve` so the request and the budget
- * check stay consistent.
+ * Estimate the `max_tokens` to send to the LLM for a single extraction call.
  *
- * When `max_output_tokens` is configured we use it directly; otherwise we fall
- * back to the per-profile default. The retry path can scale this value up to
- * the model's hard cap (kept by the caller for backward compatibility).
+ * Per the original-analysis quality spec (§6.2 / §7.1) the model's real
+ * `max_output_tokens` is sent in FULL on every request. There is no
+ * Canon-specific output ceiling, no 4× input scaling, no 25% share. The
+ * fallback per-profile baseline is used ONLY when the config does not declare
+ * a value. The `outputReserve` argument (the planner's stored value) is kept
+ * for signature compatibility but is honoured only when it equals the
+ * configured output — it never compresses a configured value.
  */
 export function resolveExtractionMaxTokens(input: {
   profile: AnalysisProfile;
@@ -494,16 +410,17 @@ export function resolveExtractionMaxTokens(input: {
 }): number {
   const profileBaseline =
     DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
-  const configured = input.maxOutputTokens ?? profileBaseline;
-  // Keep the actual request aligned with the planner's 80%-window reservation.
-  // Retry may use the reserved completion headroom but cannot consume the
-  // 20% context safety margin.
-  const ceiling = Math.max(profileBaseline, input.effectiveInputBudget * 4);
-  return Math.min(
-    configured,
-    ceiling,
-    input.outputReserve ?? Number.POSITIVE_INFINITY,
-  );
+  const configured =
+    input.maxOutputTokens && input.maxOutputTokens > 0
+      ? input.maxOutputTokens
+      : profileBaseline;
+  // Honour the planner's stored outputReserve when it carries the configured
+  // value (new runs). It is the full configured max_output_tokens and is
+  // returned as-is; never compressed.
+  if (input.outputReserve && input.outputReserve > 0) {
+    return Math.max(configured, input.outputReserve);
+  }
+  return configured;
 }
 
 /**
