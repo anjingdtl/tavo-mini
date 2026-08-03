@@ -495,12 +495,29 @@ export function parseCheckerLlmJson(raw: string): RawCheckIssue[] {
       throw new Error('Checker JSON 解析失败');
     }
   }
-  const list = Array.isArray(parsed)
+  const issueList = Array.isArray(parsed)
     ? parsed
     : Array.isArray(parsed?.issues)
       ? parsed.issues
       : null;
-  if (!list) throw new Error('Checker JSON 缺少 issues 数组');
+  if (!issueList) throw new Error('Checker JSON 缺少 issues 数组');
+  const warningList = Array.isArray(parsed)
+    ? []
+    : Array.isArray(parsed?.warnings)
+      ? parsed.warnings
+      : [];
+  // The V4 contract keeps warnings separate from repair-worthy issues. They
+  // still need to reach persistence/UI instead of being silently discarded.
+  // Force their severity to warning so a model cannot smuggle a warning into
+  // the single Repair reservation as an unsupported severe issue.
+  const list = [
+    ...issueList,
+    ...warningList.map((item: unknown) =>
+      item && typeof item === 'object'
+        ? { ...(item as Record<string, unknown>), severity: 'warning' }
+        : item,
+    ),
+  ];
 
   const out: RawCheckIssue[] = [];
   for (const item of list) {

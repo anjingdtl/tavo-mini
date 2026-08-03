@@ -66,6 +66,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [stageTelemetry, setStageTelemetry] = useState<Record<string, any>>({});
   const [stageResults, setStageResults] = useState<ContinuationGenerationStageResult[]>([]);
   const [rejectedRepair, setRejectedRepair] = useState<{ content: string; rejectionCode?: string | null } | null>(null);
+  const [showRejectedRepair, setShowRejectedRepair] = useState(false);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -419,9 +420,19 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     }
     try {
       const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
-      return parsed?.passed === false
-        ? `本地门禁未通过：${(parsed.checkSubtypes || []).join('、') || '存在硬门禁问题'}`
-        : '已完成本地 Final Gate；未进行第二次 LLM 语义复核。';
+      const checkSubtypes = Array.isArray(parsed?.checkSubtypes)
+        ? parsed.checkSubtypes
+        : [];
+      const lengthWarnings = checkSubtypes.filter((subtype: unknown) =>
+        typeof subtype === 'string' && subtype.startsWith('chapter_length_'),
+      );
+      if (parsed?.passed === false) {
+        return `本地门禁未通过：${checkSubtypes.join('、') || '存在硬门禁问题'}`;
+      }
+      if (lengthWarnings.length > 0) {
+        return `已完成本地 Final Gate；篇幅仅作提示（${lengthWarnings.join('、')}），不阻断 Repair 采纳；未进行第二次 LLM 语义复核。`;
+      }
+      return '已完成本地 Final Gate；未进行第二次 LLM 语义复核。';
     } catch {
       return result.errorMessage || 'Local Final Gate 尚无结果。';
     }
@@ -441,7 +452,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       { id: 'checker', label: 'Checker', meta: '冻结 Canon/状态语义审查；不负责本地篇幅计数' },
       { id: 'control', label: 'Control', meta: '本地汉字数为真值，LLM 只提供增减建议' },
       { id: 'repair', label: 'Repair', meta: '一次请求输出完整终稿，不接受 Patch' },
-      { id: 'local_verify', label: 'Local Final Gate', meta: '零请求硬门禁；不等同于第二次语义复核' },
+      { id: 'local_verify', label: 'Local Final Gate', meta: '零请求安全门禁；篇幅仅作提示，不等同于第二次语义复核' },
     ];
     return (
       <>
@@ -511,11 +522,25 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         <Text style={[styles.h, { color: risk ? colors.danger : colors.textPrimary }]}>
           {rejectedRepair ? 'Repair 被本地门禁拒绝' : risk ? '默认候选仍有待人工确认问题' : 'V4 终稿已待采纳'}
         </Text>
-        <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
-          {rejectedRepair
-            ? '已保留 rejected Repair 供审计；默认可采纳 artifact 仍为 Writer。'
-            : '已根据一致性审查与篇幅控制完成综合修订；已执行本地硬门禁，未进行第二次 LLM 语义复核，请在采纳前人工审阅。'}
-        </Text>
+          <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+            {rejectedRepair
+            ? '已保留 rejected Repair 供审计；默认可采纳 artifact 仍为 Writer。可以查看候选正文，但不能绕过 Local Final Gate 直接采纳。'
+            : '已根据一致性审查与篇幅控制完成综合修订；已执行本地安全门禁，未进行第二次 LLM 语义复核，请在采纳前人工审阅。'}
+          </Text>
+        {rejectedRepair && (
+          <View style={[styles.resultCard, { backgroundColor: colors.background }]}>
+            <Button
+              label={showRejectedRepair ? '收起被拒 Repair 候选' : '查看被拒 Repair 候选'}
+              variant="secondary"
+              onPress={() => setShowRejectedRepair(value => !value)}
+            />
+            {showRejectedRepair && (
+              <Text selectable style={[styles.stageText, { color: colors.textPrimary }]}>
+                {rejectedRepair.content}
+              </Text>
+            )}
+          </View>
+        )}
         <View style={styles.actions}>
           <Button
             label={risk ? '采纳当前 eligible 候选（风险自负）' : busy ? '采纳中…' : '采纳'}

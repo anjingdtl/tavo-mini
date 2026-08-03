@@ -49,6 +49,7 @@ import {
   ensureContinuationV4StageResults,
   ensureGenerationSettings,
   finalizeContinuationV4LocalGate,
+  finalizeContinuationV4RepairRejection,
   finalizeContinuationV4Repair,
   getLatestArtifactForStage,
   getPlan,
@@ -73,6 +74,7 @@ import type {
   ContinuationGenerationStageResult,
   ContinuationGenerationSettings,
   ContinuationPlan,
+  ContinuationControlReport,
   ContinuationV4Metrics,
   ContinuationV4RepairEnvelope,
   ContinuationV4StageBudgets,
@@ -312,7 +314,111 @@ function assertNotAborted(signal: AbortSignal): void {
   if (signal.aborted) throw new Error('续写已取消');
 }
 
-export function parseContinuationV4WriterEnvelope(raw: string): {
+function parseWriterObjectValue(value: unknown): Record<string, any> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, any>;
+  }
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function firstWriterString(
+  values: Array<unknown>,
+  fallback: string,
+): string {
+  const value = values.find(
+    candidate => typeof candidate === 'string' && candidate.trim(),
+  );
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function extractWriterContent(value: unknown, depth = 0): string {
+  if (depth > 3) return '';
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map(item => extractWriterContent(item, depth + 1))
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  if (!value || typeof value !== 'object') return '';
+  const object = value as Record<string, unknown>;
+  for (const key of [
+    'content',
+    'chapterContent',
+    'chapter_content',
+    'finalText',
+    'final_content',
+    'text',
+    'body',
+    'draft',
+    'draftText',
+    'chapterText',
+    'storyText',
+    'novelText',
+    'article',
+    'story',
+    'output',
+    'answer',
+    'response',
+    '正文',
+    '章节正文',
+    'paragraphs',
+    'result',
+    'data',
+  ]) {
+    const extracted = extractWriterContent(object[key], depth + 1);
+    if (extracted) return extracted;
+  }
+  return '';
+}
+
+function normalizeWriterBeats(
+  values: unknown,
+  fallbackSummary: string,
+): Array<{ order: number; summary: string; conflict?: string }> {
+  if (!Array.isArray(values)) {
+    return [{ order: 1, summary: fallbackSummary }];
+  }
+  const beats = values
+    .map((beat: any, index) => {
+      if (typeof beat === 'string' && beat.trim()) {
+        return { order: index + 1, summary: beat.trim() };
+      }
+      if (!beat || typeof beat.summary !== 'string' || !beat.summary.trim()) {
+        return null;
+      }
+      return {
+        order: index + 1,
+        summary: beat.summary.trim(),
+        ...(typeof beat.id === 'string' && beat.id.trim()
+          ? { conflict: beat.id.trim() }
+          : {}),
+      };
+    })
+    .filter(
+      (beat): beat is { order: number; summary: string; conflict?: string } =>
+        beat !== null,
+    );
+  return beats.length > 0
+    ? beats
+    : [{ order: 1, summary: fallbackSummary }];
+}
+
+export function parseContinuationV4WriterEnvelope(
+  raw: string,
+  fallbackPlan: {
+    chapterGoal?: string;
+    centralConflict?: string;
+  } = {},
+): {
   envelope: ContinuationV4WriterEnvelope;
   plan: ContinuationPlan;
   content: string;
@@ -320,21 +426,24 @@ export function parseContinuationV4WriterEnvelope(raw: string): {
   let parsed: any;
   try {
     parsed = JSON.parse(stripModelJson(raw));
+    for (let depth = 0; typeof parsed === 'string' && depth < 2; depth += 1) {
+      parsed = JSON.parse(parsed.trim());
+    }
   } catch {
     throw new Error('V4 Writer 返回的不是合法 JSON。');
   }
   if (
     !parsed ||
     typeof parsed !== 'object' ||
-    Array.isArray(parsed) ||
-    parsed.schemaVersion !== 1 ||
-    !parsed.plan ||
-    typeof parsed.plan !== 'object' ||
-    typeof parsed.content !== 'string' ||
-    !parsed.content.trim() ||
-    !Array.isArray(parsed.plan.beats)
+    Array.isArray(parsed)
   ) {
-    throw new Error('V4 Writer JSON 缺少完整 plan/content envelope。');
+    throw new Error('V4 Writer JSON 顶层必须是 object。');
+  }
+  if (
+    parsed.schemaVersion !== undefined &&
+    Number(parsed.schemaVersion) !== 1
+  ) {
+    throw new Error('V4 Writer JSON schemaVersion 只能是 1。');
   }
   const forbiddenField = ['pat', 'ches'].join('');
   if (
@@ -343,7 +452,37 @@ export function parseContinuationV4WriterEnvelope(raw: string): {
   ) {
     throw new Error('V4 Writer 不允许输出局部修改字段或 offset。');
   }
-  const content = parsed.content.trim();
+  const content = extractWriterContent(
+    [
+      parsed.content,
+      parsed.chapterContent,
+      parsed.chapter_content,
+      parsed.finalText,
+      parsed.final_content,
+      parsed.text,
+      parsed.draft,
+      parsed.draftText,
+      parsed.chapterText,
+      parsed.storyText,
+      parsed.novelText,
+      parsed.article,
+      parsed.story,
+      parsed.output,
+      parsed.answer,
+      parsed.response,
+      parsed['正文'],
+      parsed['章节正文'],
+      parsed.result,
+      parsed.body,
+      parsed.paragraphs,
+    ],
+  );
+  if (!content) {
+    const topLevelKeys = Object.keys(parsed).sort().slice(0, 20).join(', ');
+    throw new Error(
+      `V4 Writer JSON 缺少可用正文 content（顶层字段：${topLevelKeys || '（无）'}）。`,
+    );
+  }
   try {
     const nested = JSON.parse(content);
     if (nested && typeof nested === 'object') {
@@ -354,28 +493,43 @@ export function parseContinuationV4WriterEnvelope(raw: string): {
       throw error;
     }
   }
-  if (
-    typeof parsed.plan.chapterGoal !== 'string' ||
-    typeof parsed.plan.centralConflict !== 'string'
-  ) {
-    throw new Error('V4 Writer plan 缺少 chapterGoal 或 centralConflict。');
-  }
-  const beats = parsed.plan.beats.map((beat: any, index: number) => {
-    if (!beat || typeof beat.summary !== 'string' || !beat.summary.trim()) {
-      throw new Error(`V4 Writer plan.beats[${index}] 无有效 summary。`);
-    }
-    return {
-      order: index + 1,
-      summary: beat.summary.trim(),
-      ...(typeof beat.id === 'string' && beat.id.trim()
-        ? { conflict: beat.id.trim() }
-        : {}),
-    };
-  });
+  const planCandidate =
+    parseWriterObjectValue(parsed.plan) ||
+    parseWriterObjectValue(parsed.outline) ||
+    parseWriterObjectValue(parsed.storyPlan) ||
+    parseWriterObjectValue(parsed.writingPlan) ||
+    parsed;
+  const fallbackConflict = '围绕本章要求推进当前冲突并自然收束。';
+  const fallbackBeat = '承接前文，推进当前冲突并形成自然章末。';
+  const chapterGoal = firstWriterString(
+    [
+      planCandidate.chapterGoal,
+      planCandidate.chapter_goal,
+      parsed.chapterGoal,
+      parsed.chapter_goal,
+      parsed.goal,
+      fallbackPlan.chapterGoal,
+    ],
+    '完成本章续写推进。',
+  );
+  const centralConflict = firstWriterString(
+    [
+      planCandidate.centralConflict,
+      planCandidate.central_conflict,
+      parsed.centralConflict,
+      parsed.central_conflict,
+      fallbackPlan.centralConflict,
+    ],
+    fallbackConflict,
+  );
+  const beats = normalizeWriterBeats(
+    planCandidate.beats ?? parsed.beats,
+    fallbackBeat,
+  );
   const plan: ContinuationPlan = {
     schemaVersion: 1,
-    chapterGoal: parsed.plan.chapterGoal.trim(),
-    centralConflict: parsed.plan.centralConflict.trim(),
+    chapterGoal,
+    centralConflict,
     beats,
     participatingCharacterIds: [],
     characterActions: [],
@@ -420,7 +574,13 @@ export function parseContinuationV4RepairEnvelope(raw: string): ContinuationV4Re
     !Array.isArray(parsed.appliedControlSuggestionIds) ||
     !Array.isArray(parsed.unappliedItems)
   ) {
-    throw new Error('V4 Repair JSON 缺少完整终稿 envelope。');
+    const topLevelKeys = Object.keys(parsed || {})
+      .sort()
+      .slice(0, 24)
+      .join(', ');
+    throw new Error(
+      `V4 Repair JSON 缺少完整终稿 envelope（顶层字段：${topLevelKeys || '（无）'}）。`,
+    );
   }
   const forbiddenField = ['pat', 'ches'].join('');
   if (Object.prototype.hasOwnProperty.call(parsed, forbiddenField)) {
@@ -484,6 +644,184 @@ function hasActionableIssue(issues: Array<Pick<RawCheckIssue, 'severity'>>): boo
   );
 }
 
+function normalizedRepairComparisonText(text: string): string {
+  return text.trim().replace(/\s+/g, '');
+}
+
+function repairComplianceIssue(input: {
+  subtype: string;
+  category: RawCheckIssue['category'];
+  description: string;
+  suggestedFix: string;
+  evidenceIds?: number[];
+}): RawCheckIssue {
+  return {
+    category: input.category,
+    subtype: input.subtype,
+    severity: 'blocking',
+    confidence: 1,
+    generatedStart: null,
+    generatedEnd: null,
+    generatedExcerpt: '',
+    description: input.description,
+    evidenceIds: input.evidenceIds ?? [],
+    suggestedFix: input.suggestedFix,
+  };
+}
+
+function hasCheckerAuditId(values: string[], issueId: string): boolean {
+  // The plan's example uses chk_1 while the frozen Repair view renders the
+  // persisted numeric id. Accept both spellings, but never accept an id that
+  // is not present in this run's Checker report.
+  return values.includes(issueId) || values.includes(`chk_${issueId}`);
+}
+
+/**
+ * Deterministically verify that a successful Repair response actually claims
+ * every actionable requirement and moves the text in Control's requested
+ * direction. This is deliberately a conservative contract check, not a
+ * second semantic Checker: the UI must still disclose that semantic quality
+ * was not re-verified after Repair.
+ */
+export function validateContinuationV4RepairCompliance(input: {
+  writerText: string;
+  candidateText: string;
+  checkerIssues: ContinuationCheckResult[];
+  controlReport: ContinuationControlReport;
+  envelope: ContinuationV4RepairEnvelope;
+}): RawCheckIssue[] {
+  const checks: RawCheckIssue[] = [];
+  const allCheckerIds = new Set(
+    input.checkerIssues.flatMap(issue => {
+      const id = String(issue.id);
+      return [id, `chk_${id}`];
+    }),
+  );
+  const actionableCheckerIssues = input.checkerIssues.filter(issue =>
+    hasActionableIssue([issue]),
+  );
+
+  for (const issue of actionableCheckerIssues) {
+    const issueId = String(issue.id);
+    if (!hasCheckerAuditId(input.envelope.appliedCheckerIssueIds, issueId)) {
+      checks.push(
+        repairComplianceIssue({
+          category: issue.category,
+          subtype: 'repair_checker_issue_unapplied',
+          description: `Repair 未在 appliedCheckerIssueIds 中落实 Checker issue ${issueId}：${issue.description}`,
+          suggestedFix: `必须修订完整终稿以处理 Checker issue ${issueId}，并保留完整事件链。`,
+          evidenceIds: issue.evidenceIds,
+        }),
+      );
+      continue;
+    }
+
+    // An evidence-backed issue must not be satisfied by merely echoing its
+    // id. When the Checker supplied a sufficiently specific draft excerpt,
+    // retaining that exact problematic excerpt is a deterministic indication
+    // that the source text was not actually revised.
+    const excerpt = issue.generatedExcerpt.trim();
+    if (
+      excerpt.length >= 4 &&
+      input.writerText.includes(excerpt) &&
+      input.candidateText.includes(excerpt)
+    ) {
+      checks.push(
+        repairComplianceIssue({
+          category: issue.category,
+          subtype: 'repair_checker_issue_unchanged',
+          description: `Repair 声称已落实 Checker issue ${issueId}，但问题原句仍完整存在于终稿：${excerpt.slice(0, 80)}`,
+          suggestedFix: `不能只填写 issue ${issueId} 的审计 id；必须改写该问题原句并保持事实、状态和事件链一致。`,
+          evidenceIds: issue.evidenceIds,
+        }),
+      );
+    }
+  }
+
+  for (const appliedId of input.envelope.appliedCheckerIssueIds) {
+    if (!allCheckerIds.has(appliedId)) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'plot',
+          subtype: 'repair_unknown_checker_issue_id',
+          description: `Repair 声明落实了当前 Checker 报告不存在的 issue ${appliedId}。`,
+          suggestedFix: '只填写本次冻结 Checker 报告中实际存在的 issueId。',
+        }),
+      );
+    }
+  }
+
+  for (const item of input.envelope.unappliedItems) {
+    checks.push(
+      repairComplianceIssue({
+        category: 'plot',
+        subtype: 'repair_unapplied_item',
+        description: `Repair 明确声明未落实一项要求：${item.slice(0, 240)}`,
+        suggestedFix: '本次 Repair 必须完成 Checker 与 Control 的可执行要求；不能把未落实项交给用户或下一轮自动修复。',
+      }),
+    );
+  }
+
+  const suggestionIds = new Set(
+    input.controlReport.suggestions.map(suggestion => suggestion.suggestionId),
+  );
+  for (const suggestion of input.controlReport.suggestions) {
+    if (!input.envelope.appliedControlSuggestionIds.includes(suggestion.suggestionId)) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_control_suggestion_unapplied',
+          description: `Repair 未在 appliedControlSuggestionIds 中落实 Control 建议 ${suggestion.suggestionId}：${suggestion.instruction}`,
+          suggestedFix: `必须在完整终稿中落实 Control 建议 ${suggestion.suggestionId}，并保留其要求保护的事件节拍。`,
+        }),
+      );
+    }
+  }
+  for (const appliedId of input.envelope.appliedControlSuggestionIds) {
+    if (!suggestionIds.has(appliedId)) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_unknown_control_suggestion_id',
+          description: `Repair 声明落实了当前 Control 报告不存在的 suggestion ${appliedId}。`,
+          suggestedFix: '只填写本次冻结 Control 报告中实际存在的 suggestionId。',
+        }),
+      );
+    }
+  }
+
+  const writerHan = countHanCharacters(input.writerText);
+  const candidateHan = countHanCharacters(input.candidateText);
+  if (
+    input.controlReport.action === 'expand' &&
+    candidateHan <= writerHan
+  ) {
+    checks.push(
+      repairComplianceIssue({
+        category: 'style',
+        subtype: 'repair_control_no_progress',
+        description: `Control 要求扩写，但 Repair 终稿汉字数 ${candidateHan} 未超过 Writer 初稿 ${writerHan}。`,
+        suggestedFix: '必须围绕当前事件链、人物反应和章末推进自然扩写，并实际增加汉字。',
+      }),
+    );
+  }
+  if (
+    input.controlReport.action === 'compress' &&
+    candidateHan >= writerHan
+  ) {
+    checks.push(
+      repairComplianceIssue({
+        category: 'style',
+        subtype: 'repair_control_no_progress',
+        description: `Control 要求收束，但 Repair 终稿汉字数 ${candidateHan} 未低于 Writer 初稿 ${writerHan}。`,
+        suggestedFix: '必须在保留完整事件链和章末钩子的前提下实际压缩重复或不推进内容。',
+      }),
+    );
+  }
+
+  return checks;
+}
+
 function localGateExtraIssues(
   writerText: string,
   candidateText: string,
@@ -504,6 +842,24 @@ function localGateExtraIssues(
       description: 'Repair 终稿没有可采纳的汉字正文。',
       evidenceIds: [],
       suggestedFix: '返回覆盖完整事件链的非空终稿。',
+    });
+  }
+  if (
+    writerHan > 0 &&
+    normalizedRepairComparisonText(candidateText) ===
+      normalizedRepairComparisonText(writerText)
+  ) {
+    issues.push({
+      category: 'style',
+      subtype: 'repair_candidate_unchanged',
+      severity: 'blocking',
+      confidence: 1,
+      generatedStart: null,
+      generatedEnd: null,
+      generatedExcerpt: '',
+      description: 'Repair 终稿与 Writer 初稿完全相同，没有执行任何综合修订。',
+      evidenceIds: [],
+      suggestedFix: '必须根据 Checker/Control 报告输出真正修订后的完整终稿。',
     });
   }
   if (writerHan > 0 && candidateHan * 2 < writerHan) {
@@ -595,14 +951,14 @@ export function runContinuationV4LocalFinalGate(input: {
     ),
     input.snapshot.settingsSnapshot.values,
   );
-  const checks = [
+  const checks = softenFinalGateLengthChecks([
     ...base,
     ...localGateExtraIssues(
       input.writerText,
       input.candidateText,
       input.snapshot,
     ),
-  ];
+  ]);
   return {
     passed: !checks.some(
       issue => issue.severity === 'error' || issue.severity === 'blocking',
@@ -613,6 +969,25 @@ export function runContinuationV4LocalFinalGate(input: {
       target: input.snapshot.settingsSnapshot.values.targetChapterChars,
     }),
   };
+}
+
+/**
+ * The Local Final Gate is the zero-request safety gate for the selected
+ * Repair candidate. Chapter length is still evaluated locally and remains a
+ * Repair trigger, but it is advisory at this final adoption point: a Repair
+ * that fixes Checker/Control issues can be better than the Writer even when
+ * the frozen length interval is not fully reached. Safety, non-empty output,
+ * actual revision, and Control direction remain hard requirements.
+ */
+function softenFinalGateLengthChecks(checks: RawCheckIssue[]): RawCheckIssue[] {
+  return checks.map(check => {
+    if (!check.subtype.startsWith('chapter_length_')) return check;
+    return {
+      ...check,
+      severity: 'warning',
+      suggestedFix: `${check.suggestedFix} 篇幅仅作提示，不阻断 Repair 采纳；仍需满足 Control 的修订方向和本地安全检查。`,
+    };
+  });
 }
 
 function stageBudget(
@@ -1031,7 +1406,10 @@ async function runWriterNode(
       frozenModelConfig: frozen,
     });
     assertNotAborted(options.signal);
-    const parsed = parseContinuationV4WriterEnvelope(result.text);
+    const parsed = parseContinuationV4WriterEnvelope(result.text, {
+      chapterGoal: snapshot.stageViews.writer.userInstruction,
+      centralConflict: '围绕本章要求推进当前冲突并自然收束。',
+    });
     const planHash = await savePlan(run.id, parsed.plan, 'not_required');
     const artifact = await insertArtifact({
       runId: run.id,
@@ -1446,7 +1824,59 @@ async function runRepairNode(input: {
       snapshot,
       controlMetrics: control.metrics,
     });
-    const localChecks = gate.checks;
+    const complianceChecks = validateContinuationV4RepairCompliance({
+      writerText: writerArtifact.content,
+      candidateText: envelope.content,
+      checkerIssues,
+      controlReport: control.report,
+      envelope,
+    });
+    const localChecks = [...gate.checks, ...complianceChecks];
+    const repairPassed = gate.passed && complianceChecks.length === 0;
+    const candidateHash = contentRevisionHash(envelope.content);
+    const noMeaningfulChange =
+      normalizedRepairComparisonText(envelope.content) ===
+      normalizedRepairComparisonText(writerArtifact.content);
+    if (noMeaningfulChange) {
+      const rejectionCode = 'repair_candidate_unchanged';
+      await finalizeContinuationV4RepairRejection({
+        runId: run.id,
+        repairStageResultId: reserved.id,
+        localVerifyStageResultId: localVerifyStage.id,
+        writerArtifactId: writerArtifact.id,
+        writerArtifactHash: writerArtifact.contentHash,
+        rejectionCode,
+        rejectionMessage: 'Repair 未产生有意义的原文修订，已拒绝并保留 Writer 初稿。',
+        localChecks,
+        tokenUsageJson: JSON.stringify({ workflowVersion: 4 }),
+        outputTokens: result.usage?.completion ?? null,
+        repairOutputJson: JSON.stringify({
+          schemaVersion: 1,
+          appliedCheckerIssueIds: envelope.appliedCheckerIssueIds,
+          appliedControlSuggestionIds: envelope.appliedControlSuggestionIds,
+          unappliedItems: envelope.unappliedItems,
+          parentArtifactId: writerArtifact.id,
+          contentHash: candidateHash,
+          rejectionCode,
+          complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
+        }),
+        localVerifyOutputJson: JSON.stringify({
+          schemaVersion: 1,
+          passed: false,
+          actualHanCharacters: gate.candidateMetrics.actualHanCharacters,
+          minHanCharacters: gate.candidateMetrics.minHanCharacters,
+          maxHanCharacters: gate.candidateMetrics.maxHanCharacters,
+          checkSubtypes: localChecks.map(check => check.subtype),
+          checkerSemanticReview: checkerIssues.length > 0 ? 'available' : 'none_or_degraded',
+          controlDegraded: control.degraded,
+          repairCompliancePassed: false,
+          complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
+          rejectionCode,
+        }),
+      });
+      await updateTelemetry(run.id);
+      return { artifact: null, completed: false };
+    }
     const final = await finalizeContinuationV4Repair({
       runId: run.id,
       repairStageResultId: reserved.id,
@@ -1454,30 +1884,44 @@ async function runRepairNode(input: {
       parentArtifactId: writerArtifact.id,
       content: envelope.content,
       repairRound: 1,
-      eligibilityStatus: gate.passed ? 'eligible' : 'rejected',
-      rejectionCode: gate.passed ? null : 'local_final_gate_failed',
+       eligibilityStatus: repairPassed ? 'eligible' : 'rejected',
+       rejectionCode: repairPassed
+         ? null
+         : complianceChecks.length > 0
+           ? 'repair_compliance_failed'
+           : 'local_final_gate_failed',
       localChecks,
       writerArtifactId: writerArtifact.id,
-      markWriterChecksObsolete: gate.passed,
-      tokenUsageJson: JSON.stringify({ workflowVersion: 4 }),
-      repairOutputJson: JSON.stringify({
+       markWriterChecksObsolete: repairPassed,
+       tokenUsageJson: JSON.stringify({ workflowVersion: 4 }),
+       outputTokens: result.usage?.completion ?? null,
+       repairOutputJson: JSON.stringify({
         schemaVersion: 1,
         appliedCheckerIssueIds: envelope.appliedCheckerIssueIds,
         appliedControlSuggestionIds: envelope.appliedControlSuggestionIds,
         unappliedItems: envelope.unappliedItems,
-        parentArtifactId: writerArtifact.id,
+         parentArtifactId: writerArtifact.id,
+         contentHash: candidateHash,
+         complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
+         rejectionCode: repairPassed
+           ? null
+           : complianceChecks.length > 0
+             ? 'repair_compliance_failed'
+             : 'local_final_gate_failed',
       }),
       localVerifyOutputJson: JSON.stringify({
         schemaVersion: 1,
-        passed: gate.passed,
+         passed: repairPassed,
         actualHanCharacters: gate.candidateMetrics.actualHanCharacters,
         minHanCharacters: gate.candidateMetrics.minHanCharacters,
         maxHanCharacters: gate.candidateMetrics.maxHanCharacters,
         checkSubtypes: localChecks.map(check => check.subtype),
-        checkerSemanticReview: checkerIssues.length > 0 ? 'available' : 'none_or_degraded',
-        controlDegraded: control.degraded,
-      }),
-      localVerifyStatus: gate.passed ? 'success' : 'failed',
+         checkerSemanticReview: checkerIssues.length > 0 ? 'available' : 'none_or_degraded',
+         controlDegraded: control.degraded,
+         repairCompliancePassed: complianceChecks.length === 0,
+         complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
+       }),
+       localVerifyStatus: repairPassed ? 'success' : 'failed',
     });
     await updateTelemetry(run.id);
     return { artifact: final.artifact, completed: true };
