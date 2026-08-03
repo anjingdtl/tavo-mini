@@ -689,6 +689,53 @@ function isLocalDeterministicSubtype(subtype: string): boolean {
   );
 }
 
+const REPAIR_REBIND_SEARCH_RADIUS = 4096;
+
+function findNearestUniqueExcerptMatch(input: {
+  content: string;
+  excerpt: string;
+  originalStart: number;
+}): { start: number; end: number } | null {
+  const { content, excerpt, originalStart } = input;
+  if (
+    !excerpt ||
+    !Number.isInteger(originalStart) ||
+    originalStart < 0 ||
+    originalStart > content.length
+  ) {
+    return null;
+  }
+
+  const latestStart = content.length - excerpt.length;
+  const searchStart = Math.max(
+    0,
+    originalStart - REPAIR_REBIND_SEARCH_RADIUS,
+  );
+  const searchEnd = Math.min(
+    latestStart,
+    originalStart + REPAIR_REBIND_SEARCH_RADIUS,
+  );
+  if (searchEnd < searchStart) return null;
+
+  const matches: Array<{ start: number; end: number }> = [];
+  let cursor = searchStart;
+  while (cursor <= searchEnd) {
+    const start = content.indexOf(excerpt, cursor);
+    if (start < 0 || start > searchEnd) break;
+    matches.push({ start, end: start + excerpt.length });
+    cursor = start + 1;
+  }
+  if (matches.length === 0) return null;
+
+  const nearestDistance = Math.min(
+    ...matches.map(match => Math.abs(match.start - originalStart)),
+  );
+  const nearest = matches.filter(
+    match => Math.abs(match.start - originalStart) === nearestDistance,
+  );
+  return nearest.length === 1 ? nearest[0] : null;
+}
+
 function rebindCheckToContent(
   check: ContinuationCheckResult,
   content: string,
@@ -704,14 +751,22 @@ function rebindCheckToContent(
     check.generatedStart != null &&
     check.generatedEnd != null &&
     check.generatedStart >= 0 &&
+    check.generatedEnd >= check.generatedStart &&
     check.generatedEnd <= content.length &&
     content.slice(check.generatedStart, check.generatedEnd) ===
       check.generatedExcerpt
   ) {
     return { ...check };
   }
-  const start = content.indexOf(check.generatedExcerpt);
-  if (start < 0) {
+  const match =
+    check.generatedStart == null
+      ? null
+      : findNearestUniqueExcerptMatch({
+          content,
+          excerpt: check.generatedExcerpt,
+          originalStart: check.generatedStart,
+        });
+  if (!match) {
     return {
       ...check,
       generatedStart: null,
@@ -720,8 +775,8 @@ function rebindCheckToContent(
   }
   return {
     ...check,
-    generatedStart: start,
-    generatedEnd: start + check.generatedExcerpt.length,
+    generatedStart: match.start,
+    generatedEnd: match.end,
   };
 }
 
@@ -1170,26 +1225,37 @@ async function runStandardStages(
             const lengthResolved =
               repairCoverage.chapterLengthIssues.length > 0 &&
               patchedLength.status === 'within';
-            const hasIssueCoverage = repairCoverage.coveredIssues.length > 0;
+            const hasCoveredOrdinaryIssue =
+              repairCoverage.coveredIssues.length > 0;
+            const hasLengthIssue =
+              repairCoverage.chapterLengthIssues.length > 0;
             const candidateUsable = isRepairCandidateUsable(
               deterministicCandidate,
               patched,
               settings.targetChapterChars,
               'standard',
             );
+            const lengthSafelyImproved =
+              hasLengthIssue &&
+              patchedLength.status !== 'within' &&
+              candidateUsable;
+            const hasRepairProgress =
+              hasCoveredOrdinaryIssue ||
+              lengthResolved ||
+              lengthSafelyImproved;
             if (
               patched === deterministicCandidate ||
-              (!hasIssueCoverage && !lengthResolved) ||
+              !hasRepairProgress ||
               !candidateUsable
             ) {
               tokenUsage.repair = {
                 ...(tokenUsage.repair ?? {}),
                 warning: !candidateUsable
                   ? 'repair_candidate_rejected_as_over_contracted'
-                  : hasIssueCoverage
+                  : hasCoveredOrdinaryIssue
                   ? 'repair_candidate_rejected_as_unsafe'
                   : 'repair_patch_coverage_failed_writer_artifact_retained',
-                warningMessage: hasIssueCoverage
+                warningMessage: hasCoveredOrdinaryIssue
                   ? 'Repair 补丁虽有局部命中，但候选破坏动态长度契约、过度缩短或异常膨胀，已保留调用前正文。'
                   : 'Repair 补丁没有覆盖任何普通严重问题，且未将章节长度带入合法范围，已保留调用前正文。',
               };
@@ -1509,19 +1575,24 @@ export async function repairContinuationArtifactOnce(
     const lengthResolved =
       coverage.chapterLengthIssues.length > 0 &&
       repairedLength.status === 'within';
-    if (coverage.coveredIssues.length === 0 && !lengthResolved) {
+    const hasCoveredOrdinaryIssue = coverage.coveredIssues.length > 0;
+    const hasLengthIssue = coverage.chapterLengthIssues.length > 0;
+    const candidateUsable = isRepairCandidateUsable(
+      artifact.content,
+      repaired,
+      snapshot.settingsSnapshot.values.targetChapterChars,
+      'additional',
+    );
+    const lengthSafelyImproved =
+      hasLengthIssue && repairedLength.status !== 'within' && candidateUsable;
+    const hasRepairProgress =
+      hasCoveredOrdinaryIssue || lengthResolved || lengthSafelyImproved;
+    if (!hasRepairProgress) {
       throw new Error(
         '额外 Repair 补丁没有覆盖任何待修复的普通严重问题，候选正文保持不变',
       );
     }
-    if (
-      !isRepairCandidateUsable(
-        artifact.content,
-        repaired,
-        snapshot.settingsSnapshot.values.targetChapterChars,
-        'additional',
-      )
-    ) {
+    if (!candidateUsable) {
       throw new Error(
         '额外 Repair 候选破坏动态长度契约、过度缩短或明显远离目标，已保留原候选；本次不再重试，也不会调用 LLM Checker。',
       );
