@@ -98,14 +98,16 @@ const SUB_LEVEL_FIELDS: Array<{
 type ModelStage =
   | 'writerLlmConfigId'
   | 'checkerLlmConfigId'
+  | 'controlLlmConfigId'
   | 'repairLlmConfigId'
   | 'stateExtractionLlmConfigId';
 
 const MODEL_STAGES: Array<{ key: ModelStage; label: string }> = [
   { key: 'writerLlmConfigId', label: '正文生成' },
   { key: 'checkerLlmConfigId', label: '一致性检查' },
+  { key: 'controlLlmConfigId', label: '篇幅与结构控制' },
   { key: 'repairLlmConfigId', label: '自动修复' },
-  { key: 'stateExtractionLlmConfigId', label: '状态提取' },
+  { key: 'stateExtractionLlmConfigId', label: '采纳后状态提取（不计入四请求）' },
 ];
 
 /** Dedicated configuration for the independent continuation runner. */
@@ -202,8 +204,8 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
             续写会基于
             Canon、接缝和状态事件生成；此处不会修改大纲创作的四阶段流水线。
-            新续写默认最多 3 次在线调用：Writer → Checker，只有 error/blocking 才追加一次 Repair。
-            若 Repair 后本地复核仍失败，用户可显式追加 1 次 Repair（最多 4 次），仍不会再次调用 Checker。
+            V4 固定最多 4 次物理请求：Writer →（Checker 与 Control 并行）→ Repair，最后只做本地 Final Gate。
+            不自动重试，不提供额外 Repair；每个阶段按照上下文自动化策略、所选模型能力和本次正文实测需求动态计算预算。
           </Text>
           <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
             校验严格度（预设）
@@ -246,7 +248,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
               始终严格遵循原著画风画像；未完成或未启用画像时，续写将被阻断。
             </Text>
           </View>
-          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>生成后固定执行一次一致性检查；Repair 最多一次，Repair 后只做本地确定性复核。</Text>
+          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>Control 的汉字数和段落指标由本地计算；Repair 输出完整终稿，之后不再调用第二次 LLM Checker。</Text>
           <Field
             label="目标章节字数"
             value={String(settings.targetChapterChars)}
@@ -261,7 +263,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             }
           />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            建议正文保持约 2000–4000 个汉字（默认 3000）；范围外只提示，不拦截、不自动重试。
+            目标和合法区间会进入 Writer/Control/Repair 的冻结上下文；最终是否可采纳由本地 Final Gate 决定，不会偷偷重试。
           </Text>
         </Card>
 
@@ -270,7 +272,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             阶段模型
           </Text>
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            未指定时使用当前启用模型。可为耗时的检查或状态提取单独指定模型。
+            未指定时使用当前启用模型。Writer、Checker、Control、Repair 分别冻结自己的 context window/max output；预览页会展示模拟预算。
           </Text>
           {MODEL_STAGES.map(stage => (
             <View key={stage.key} style={styles.stageRow}>
@@ -300,6 +302,24 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
                   />
                 ))}
               </View>
+              {(() => {
+                const selected =
+                  settings[stage.key] == null
+                    ? models.find(model => model.is_active || model.isActive)
+                    : models.find(model => model.id === settings[stage.key]);
+                const contextWindow = Number(selected?.context_window);
+                const maxOutput = Number(selected?.max_output_tokens);
+                return Number.isFinite(contextWindow) && contextWindow > 0
+                  ? (
+                      <Text style={[styles.capability, { color: theme.colors.textMuted }]}>
+                        冻结能力：context {contextWindow.toLocaleString('zh-CN')} · max output{' '}
+                        {Number.isFinite(maxOutput) && maxOutput > 0
+                          ? maxOutput.toLocaleString('zh-CN')
+                          : '由配置提供'}
+                      </Text>
+                    )
+                  : null;
+              })()}
             </View>
           ))}
         </Card>
@@ -336,5 +356,6 @@ const styles = StyleSheet.create({
   stageRow: { marginTop: spacing.md },
   stageLabel: { fontSize: 14, fontWeight: '800', marginBottom: spacing.xs },
   modelChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  capability: { fontSize: 11, lineHeight: 16, marginTop: spacing.xs },
   subLevelBlock: { marginTop: spacing.xs },
 });

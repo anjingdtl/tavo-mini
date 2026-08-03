@@ -74,6 +74,7 @@ function continuationStageFromRunStage(
   if (
     stage === 'context' ||
     stage === 'writer' ||
+    stage === 'auditing' ||
     stage === 'checker' ||
     stage === 'repair'
   ) {

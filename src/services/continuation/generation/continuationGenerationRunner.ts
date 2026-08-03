@@ -33,8 +33,10 @@ import {
   buildOutboxInsertStatement,
   casUpdateRunState,
   contentRevisionHash,
+  getEligibleArtifactForRun,
   getArtifactForRun,
   getLatestArtifact,
+  getLatestEligibleArtifact,
   getPlan,
   getRunById,
   findLatestAdoptedRunForChapter,
@@ -69,6 +71,14 @@ import { executeTransaction } from '../../database/transaction';
 import { v4 } from '../../uuidBridge';
 import { processContinuationOutbox } from './continuationStateOutboxWorker';
 import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
+import { activeContinuationControllers as activeControllers } from './continuationRunControllers';
+import {
+  markContinuationV4StagesCancelled,
+  resumeContinuationV4Run,
+  startContinuationV4Run,
+} from './continuationV4Runner';
+import { CanonQueryService } from '../canon/canonQueryService';
+import { continuationSourceReader } from '../continuationSourceReader';
 import {
   CONTINUATION_BUDGET_POLICY,
   planStageCapacity,
@@ -125,9 +135,9 @@ export interface StartContinuationRunInput {
   callStage?: StageLlmCaller;
   /** Skip checker LLM (deterministic only). */
   deterministicOnly?: boolean;
+  /** Test/compatibility escape hatch for historical V2 fixtures. */
+  workflowVersion?: 2 | 4;
 }
-
-const activeControllers = new Map<string, AbortController>();
 
 function defaultPlan(instruction: string): ContinuationPlan {
   return {
@@ -405,6 +415,15 @@ function writerEmptyResponseError(result: StageLlmCallResult): Error {
 }
 
 export async function startContinuationRun(
+  input: StartContinuationRunInput,
+): Promise<ContinuationGenerationRun> {
+  if (input.workflowVersion === 2) {
+    return startContinuationRunLegacy(input);
+  }
+  return startContinuationV4Run(input);
+}
+
+async function startContinuationRunLegacy(
   input: StartContinuationRunInput,
 ): Promise<ContinuationGenerationRun> {
   const activeCfg = await resolveLLMRequestConfig().catch(() => null);
@@ -1991,6 +2010,9 @@ export async function confirmPlanAndContinue(
 ): Promise<void> {
   const run = await getRunById(runId);
   if (!run) throw new Error('run 不存在');
+  if (run.workflowVersion === 4) {
+    throw new Error('V4 不使用 Planner 确认步骤。');
+  }
   if (run.state === 'outdated') throw new ContinuationOutdatedError();
   if (run.state !== 'awaiting_user' || run.stage !== 'awaiting_user') {
     throw new Error('当前不在等待 Planner 确认状态');
@@ -2238,15 +2260,19 @@ async function continueFromWriter(
 }
 
 export async function cancelContinuationRun(runId: string): Promise<void> {
+  const run = await getRunById(runId);
   const c = activeControllers.get(runId);
   c?.abort();
   activeControllers.delete(runId);
-  await casUpdateRunState(runId, ['queued', 'running', 'awaiting_user'], {
+  const changed = await casUpdateRunState(runId, ['queued', 'running', 'awaiting_user'], {
     state: 'cancelled',
     errorCode: 'cancelled',
     errorMessage: '用户取消',
     completedAt: new Date().toISOString(),
   });
+  if (changed && run?.workflowVersion === 4) {
+    await markContinuationV4StagesCancelled(runId);
+  }
 }
 
 /**
@@ -2265,13 +2291,83 @@ async function assertContextFreshOrMarkOutdated(
   // test fixture) and should not be blocked here.
   if (run.sourceId == null && !run.canonSnapshotId) return;
 
-  const db = await openDatabase();
-  const [settingsRes] = await db.executeSql(
-    'SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id = ?',
-    [run.projectId],
-  );
-  if (settingsRes.rows.length === 0) {
-    // No settings row means the source was deleted; mark outdated.
+  // Historical V2 fixtures/runs retain their original freshness reader for
+  // backward compatibility. New V4 runs take the CanonQueryService branch
+  // below; no V4 caller can reach this legacy SQL path.
+  if (run.workflowVersion !== 4) {
+    const db = await openDatabase();
+    const [settingsRes] = await db.executeSql(
+      'SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id = ?',
+      [run.projectId],
+    );
+    if (settingsRes.rows.length === 0) {
+      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+        state: 'outdated',
+        errorCode: 'outdated',
+        errorMessage: 'source_missing',
+        completedAt: new Date().toISOString(),
+      });
+      throw new ContinuationOutdatedError();
+    }
+    const settings = settingsRes.rows.item(0);
+    if (run.sourceId != null && Number(settings.active_source_id) !== Number(run.sourceId)) {
+      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+        state: 'outdated',
+        errorCode: 'outdated',
+        errorMessage: 'source_changed',
+        completedAt: new Date().toISOString(),
+      });
+      throw new ContinuationOutdatedError();
+    }
+    const activeCanonId = settings.active_canon_snapshot_id;
+    if (run.canonSnapshotId || activeCanonId) {
+      if (
+        !activeCanonId ||
+        !run.canonSnapshotId ||
+        String(activeCanonId) !== String(run.canonSnapshotId)
+      ) {
+        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+          state: 'outdated',
+          errorCode: 'outdated',
+          errorMessage: 'canon_snapshot_changed',
+          completedAt: new Date().toISOString(),
+        });
+        throw new ContinuationOutdatedError();
+      }
+      const [snapRes] = await db.executeSql(
+        'SELECT revision FROM continuation_canon_snapshots WHERE id = ?',
+        [activeCanonId],
+      );
+      if (snapRes.rows.length === 0) {
+        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+          state: 'outdated',
+          errorCode: 'outdated',
+          errorMessage: 'canon_snapshot_deleted',
+          completedAt: new Date().toISOString(),
+        });
+        throw new ContinuationOutdatedError();
+      }
+      if (Number(snapRes.rows.item(0).revision) !== Number(run.canonRevision)) {
+        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+          state: 'outdated',
+          errorCode: 'outdated',
+          errorMessage: 'canon_revision_changed',
+          completedAt: new Date().toISOString(),
+        });
+        throw new ContinuationOutdatedError();
+      }
+    }
+    return;
+  }
+
+  let activeSource: Awaited<
+    ReturnType<typeof continuationSourceReader.getSnapshot>
+  >;
+  try {
+    activeSource = await continuationSourceReader.getSnapshot(run.projectId);
+  } catch {
+    // A missing active Source is observable through the bounded reader; V4
+    // adoption must not bypass CanonQueryService/reader boundaries with SQL.
     await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
       state: 'outdated',
       errorCode: 'outdated',
@@ -2280,10 +2376,8 @@ async function assertContextFreshOrMarkOutdated(
     });
     throw new ContinuationOutdatedError();
   }
-  const settings = settingsRes.rows.item(0);
-  const activeSourceId = settings.active_source_id;
   // Source mismatch (run frozen a source that is no longer active).
-  if (run.sourceId != null && Number(activeSourceId) !== Number(run.sourceId)) {
+  if (run.sourceId != null && Number(activeSource.sourceId) !== Number(run.sourceId)) {
     await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
       state: 'outdated',
       errorCode: 'outdated',
@@ -2293,7 +2387,19 @@ async function assertContextFreshOrMarkOutdated(
     throw new ContinuationOutdatedError();
   }
   // Canon snapshot mismatch: compare active snapshot id + revision.
-  const activeCanonId = settings.active_canon_snapshot_id;
+  let activeCanon: Awaited<ReturnType<typeof CanonQueryService.getActiveSnapshot>>;
+  try {
+    activeCanon = await CanonQueryService.getActiveSnapshot(run.projectId);
+  } catch {
+    await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+      state: 'outdated',
+      errorCode: 'outdated',
+      errorMessage: 'canon_snapshot_deleted',
+      completedAt: new Date().toISOString(),
+    });
+    throw new ContinuationOutdatedError();
+  }
+  const activeCanonId = activeCanon.id;
   if (run.canonSnapshotId || activeCanonId) {
     if (
       !activeCanonId ||
@@ -2308,22 +2414,9 @@ async function assertContextFreshOrMarkOutdated(
       });
       throw new ContinuationOutdatedError();
     }
-    // Same snapshot id — verify its revision hasn't been bumped since the run.
-    const [snapRes] = await db.executeSql(
-      'SELECT revision FROM continuation_canon_snapshots WHERE id = ?',
-      [activeCanonId],
-    );
-    if (snapRes.rows.length === 0) {
-      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-        state: 'outdated',
-        errorCode: 'outdated',
-        errorMessage: 'canon_snapshot_deleted',
-        completedAt: new Date().toISOString(),
-      });
-      throw new ContinuationOutdatedError();
-    }
-    const currentRevision = Number(snapRes.rows.item(0).revision);
-    if (currentRevision !== Number(run.canonRevision)) {
+    // CanonQueryService returns the active revision; no V4 caller is allowed
+    // to inspect continuation_canon_snapshots directly.
+    if (Number(activeCanon.revision) !== Number(run.canonRevision)) {
       await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
         state: 'outdated',
         errorCode: 'outdated',
@@ -2368,8 +2461,12 @@ export async function adoptArtifactAsDraft(input: {
   // never relaxed by forceOverwrite.
   const artifact =
     (input.artifactId
-      ? await getArtifactForRun(run.id, input.artifactId)
-      : await getLatestArtifact(run.id)) ?? null;
+      ? run.workflowVersion === 4
+        ? await getEligibleArtifactForRun(run.id, input.artifactId)
+        : await getArtifactForRun(run.id, input.artifactId)
+      : run.workflowVersion === 4
+        ? await getLatestEligibleArtifact(run.id)
+        : await getLatestArtifact(run.id)) ?? null;
   if (!artifact) {
     throw new Error(
       input.artifactId
@@ -2702,6 +2799,9 @@ export async function resumeInterruptedRun(
 ): Promise<void> {
   const run = await getRunById(runId);
   if (!run) throw new Error('run 不存在');
+  if (run.workflowVersion === 4) {
+    return resumeContinuationV4Run(runId, callStage, deterministicOnly);
+  }
   if (run.state === 'outdated') throw new ContinuationOutdatedError();
   if (run.state !== 'interrupted') throw new Error('仅 interrupted 可恢复');
   if (!run.contextSnapshotJson) {

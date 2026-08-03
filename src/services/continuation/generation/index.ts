@@ -11,15 +11,18 @@ export {
   listRunningRuns,
   insertArtifact,
   getLatestArtifact,
+  getLatestArtifactForStage,
   getLatestEligibleArtifact,
   getArtifactById,
   getArtifactForRun,
   getEligibleArtifactForRun,
   getStageResult,
   listStageResults,
+  ensureContinuationV4StageResults,
   reserveContinuationStage,
   updateStageResult,
   finalizeContinuationV4Repair,
+  finalizeContinuationV4LocalGate,
   newContinuationStageResultId,
   getPlan,
   listChecksForArtifact,
@@ -148,6 +151,15 @@ export {
   parseWriterResult,
 } from './continuationGenerationRunner';
 export type { StartContinuationRunInput, StageLlmCaller } from './continuationGenerationRunner';
+export type { ContinuationV4LocalGateInput } from './generationRepository';
+export {
+  startContinuationV4Run,
+  resumeContinuationV4Run,
+  markContinuationV4StagesCancelled,
+  runContinuationV4LocalFinalGate,
+  parseContinuationV4WriterEnvelope,
+  parseContinuationV4RepairEnvelope,
+} from './continuationV4Runner';
 export { summarizeTrace, parseTraceJson } from './continuationContextTrace';
 export {
   extractAndSaveStyleProfile,
