@@ -862,13 +862,17 @@ export function validateContinuationV4RepairCompliance(input: {
     }
   }
 
-  // Minimum substantial progress (Control compliance, NOT the final length
-  // gate). The old check ("candidateHan > writerHan" for expand) let a Repair
-  // that added a single character pass. The new rule requires either reaching
-  // the legal band, or closing at least `requiredControlProgressHan` Han of the
-  // gap. A candidate that meets this floor but still falls short of the legal
-  // minimum still passes Control compliance; the remaining length gap stays a
-  // soft warning in the Local Final Gate.
+  // Minimum substantial progress — the HARD gate for whether Repair actually
+  // moved the text in Control's direction. The old check ("candidateHan >
+  // writerHan" for expand) let a Repair that added a single character pass. The
+  // rule now requires either reaching the legal band, or closing at least
+  // `requiredControlProgressHan` Han of the gap. Falling short is a blocking
+  // compliance failure and the candidate is rejected.
+  //
+  // This is intentionally distinct from the final-length SOFT gate: a candidate
+  // that meets this floor but still falls short of allowedMin/allowedMax passes
+  // Control compliance; the remaining pure length gap is recorded only as a
+  // `chapter_length_*` warning in the Local Final Gate and does not reject.
   const writerHan = countHanCharacters(input.writerText);
   const candidateHan = countHanCharacters(input.candidateText);
   if (input.controlReport.action === 'expand') {
@@ -884,9 +888,9 @@ export function validateContinuationV4RepairCompliance(input: {
         repairComplianceIssue({
           category: 'style',
           subtype: 'repair_control_insufficient_progress',
-          severity: 'warning',
-          description: `Control 要求扩写，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 增加 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法下限 ${input.controlReport.allowedMinHan}）。`,
-          suggestedFix: `建议围绕当前事件链、人物反应和章末推进自然扩写；篇幅进度只作 warning。若正文不超过 1000 个汉字，仍会按长度坍缩硬拦截。`,
+          severity: 'blocking',
+          description: `Control 要求扩写，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 增加 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法下限 ${input.controlReport.allowedMinHan}），视为未按 Control 要求进行实质修订。`,
+          suggestedFix: `必须围绕当前事件链、人物反应和章末推进自然扩写，使净增汉字达到 ${requiredProgress} 或进入合法区间 ${input.controlReport.allowedMinHan}–${input.controlReport.allowedMaxHan}；否则终稿将被拒绝。最终仍未完全达到下限时，长度只记录 warning。`,
         }),
       );
     }
@@ -903,9 +907,9 @@ export function validateContinuationV4RepairCompliance(input: {
         repairComplianceIssue({
           category: 'style',
           subtype: 'repair_control_insufficient_progress',
-          severity: 'warning',
-          description: `Control 要求收束，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 减少 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法上限 ${input.controlReport.allowedMaxHan}）。`,
-          suggestedFix: `建议在保留完整事件链和章末钩子的前提下压缩重复或不推进内容；篇幅进度只作 warning。若正文不超过 1000 个汉字，仍会按长度坍缩硬拦截。`,
+          severity: 'blocking',
+          description: `Control 要求收束，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 减少 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法上限 ${input.controlReport.allowedMaxHan}），视为未按 Control 要求进行实质修订。`,
+          suggestedFix: `必须在保留完整事件链和章末钩子的前提下压缩重复或不推进内容，使净减汉字达到 ${requiredProgress} 或进入合法区间 ${input.controlReport.allowedMinHan}–${input.controlReport.allowedMaxHan}；否则终稿将被拒绝。最终仍未完全达到上限时，长度只记录 warning。`,
         }),
       );
     }
