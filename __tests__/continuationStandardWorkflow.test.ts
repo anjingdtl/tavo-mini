@@ -768,41 +768,151 @@ describe('continuation standard three-call workflow', () => {
     ).toBe(false);
   });
 
-  it('keeps a length issue open when expansion or compression remains outside the band', async () => {
-    const runCase = async (writerContent: string, repairText: string) => {
+  it.each([
+    ['2100 to 2400 keeps under-target open', 2100, 2400, true, false],
+    ['4000 to 3900 keeps over-target open', 4000, 3900, true, false],
+    ['2100 to 2100 rejects unchanged length', 2100, 2100, false, false],
+    ['2100 to 1900 rejects farther under-target length', 2100, 1900, false, false],
+    ['2100 to 2600 closes the under-target issue', 2100, 2600, true, true],
+  ])(
+    '%s',
+    async (
+      _name: string,
+      writerLength: number,
+      candidateLength: number,
+      savesRepair: boolean,
+      closesLength: boolean,
+    ) => {
       seedRun({ workflowVersion: 2, targetChapterChars: 3000 });
+      const writerContent = '甲'.repeat(writerLength);
+      const delta = candidateLength - writerLength;
+      const patch =
+        delta > 0
+          ? {
+              start: writerContent.length,
+              end: writerContent.length,
+              replacement: '乙'.repeat(delta),
+            }
+          : delta === 0
+          ? { start: 0, end: 1, replacement: '乙' }
+          : {
+              start: 0,
+              end: Math.abs(delta) + 1,
+              replacement: '乙',
+            };
+      const calls: any[] = [];
       const callStage = jest.fn(async (input: any) => {
-        if (input.stage === 'writer')
-          return { text: writerJson(writerContent) };
+        calls.push(input);
+        if (input.stage === 'writer') return { text: writerJson(writerContent) };
         if (input.stage === 'checker') {
           return { text: JSON.stringify({ issues: [] }) };
         }
-        return { text: repairText };
+        return { text: JSON.stringify({ patches: [patch] }) };
       });
-      await resumeInterruptedRun('ct_standard', callStage as any);
-      expect(mockState.artifacts).toHaveLength(1);
-      expect(
-        mockState.checks.some(
-          check =>
-            check.artifactId === mockState.artifacts[0].id &&
-            check.subtype.startsWith('chapter_length_') &&
-            check.resolutionStatus === 'open',
-        ),
-      ).toBe(true);
-    };
 
-    await runCase(
-      '甲'.repeat(2000),
-      JSON.stringify({
-        patches: [{ start: 2000, end: 2000, replacement: '乙'.repeat(100) }],
-      }),
-    );
-    await runCase(
-      '甲'.repeat(4000),
-      JSON.stringify({
-        patches: [{ start: 0, end: 100, replacement: '乙' }],
-      }),
-    );
+      await resumeInterruptedRun('ct_standard', callStage as any);
+
+      expect(calls.filter(call => call.stage === 'checker')).toHaveLength(1);
+      expect(calls.map(call => call.stage)).toEqual([
+        'writer',
+        'checker',
+        'repair',
+      ]);
+      expect(mockState.run.state).toBe('awaiting_user');
+      expect(mockState.artifacts).toHaveLength(savesRepair ? 2 : 1);
+
+      const writerLengthCheck = mockState.checks.find(
+        check =>
+          check.artifactId === mockState.artifacts[0].id &&
+          check.subtype.startsWith('chapter_length_'),
+      );
+      expect(writerLengthCheck?.resolutionStatus).toBe(
+        closesLength ? 'auto_repaired' : 'open',
+      );
+
+      if (savesRepair) {
+        const finalArtifact = mockState.artifacts.at(-1);
+        expect(finalArtifact.stage).toBe('repair');
+        const finalLengthCheck = mockState.checks.find(
+          check =>
+            check.artifactId === finalArtifact.id &&
+            check.subtype.startsWith('chapter_length_'),
+        );
+        expect(finalLengthCheck?.resolutionStatus).toBe(
+          closesLength ? undefined : 'open',
+        );
+      }
+    },
+  );
+
+  it('allows one extra Repair for a safe partial length improvement and never calls Checker or Repair a third time', async () => {
+    seedRun({ workflowVersion: 2, targetChapterChars: 3000 });
+    const writerContent = '甲'.repeat(2100);
+    const calls: any[] = [];
+    let repairCalls = 0;
+    const callStage = jest.fn(async (input: any) => {
+      calls.push(input);
+      if (input.stage === 'writer') return { text: writerJson(writerContent) };
+      if (input.stage === 'checker') {
+        return { text: JSON.stringify({ issues: [] }) };
+      }
+      repairCalls += 1;
+      const currentContent = mockState.artifacts.at(-1)?.content ?? writerContent;
+      const expansion = repairCalls === 1 ? 300 : 200;
+      return {
+        text: JSON.stringify({
+          patches: [
+            {
+              start: currentContent.length,
+              end: currentContent.length,
+              replacement: '乙'.repeat(expansion),
+            },
+          ],
+        }),
+      };
+    });
+
+    await resumeInterruptedRun('ct_standard', callStage as any);
+    expect(mockState.artifacts).toHaveLength(2);
+    expect(
+      mockState.checks.find(
+        check =>
+          check.artifactId === mockState.artifacts.at(-1).id &&
+          check.subtype === 'chapter_length_under_target',
+      )?.resolutionStatus,
+    ).toBe('open');
+
+    await repairContinuationArtifactOnce('ct_standard', callStage as any);
+
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'checker',
+      'repair',
+      'repair',
+    ]);
+    expect(calls.filter(call => call.stage === 'checker')).toHaveLength(1);
+    expect(repairCalls).toBe(2);
+    expect(mockState.artifacts).toHaveLength(3);
+    expect(
+      mockState.checks.find(
+        check =>
+          check.artifactId === mockState.artifacts[1].id &&
+          check.subtype === 'chapter_length_under_target',
+      )?.resolutionStatus,
+    ).toBe('auto_repaired');
+    expect(
+      mockState.checks.some(
+        check =>
+          check.artifactId === mockState.artifacts.at(-1).id &&
+          check.subtype.startsWith('chapter_length_'),
+      ),
+    ).toBe(false);
+
+    await expect(
+      repairContinuationArtifactOnce('ct_standard', callStage as any),
+    ).rejects.toThrow();
+    expect(repairCalls).toBe(2);
+    expect(calls.filter(call => call.stage === 'checker')).toHaveLength(1);
   });
 
   it('applies a bounded Repair patch to the complete Writer artifact instead of accepting a short patch as the chapter', async () => {
@@ -856,6 +966,168 @@ describe('continuation standard three-call workflow', () => {
     expect(
       JSON.parse(mockState.run.tokenUsageJson).stages.localVerify.note,
     ).toContain('未进行第二次 LLM 复检');
+  });
+
+  it('rebinds a shifted duplicate excerpt to the nearest unique occurrence', async () => {
+    seedRun({ workflowVersion: 2, targetChapterChars: 3000 });
+    const excerpt = '重复片段';
+    const futureMarker = '【未来揭示】';
+    const writerContent =
+      '甲'.repeat(500) +
+      excerpt +
+      '乙'.repeat(500) +
+      futureMarker +
+      excerpt +
+      '丙'.repeat(1980);
+    const originalSecondStart = writerContent.lastIndexOf(excerpt);
+    const deterministicCandidate = writerContent.replace(
+      futureMarker,
+      '（已删除不当揭示）',
+    );
+    const repairStart = deterministicCandidate.lastIndexOf(excerpt);
+    const calls: any[] = [];
+    const callStage = jest.fn(async (input: any) => {
+      calls.push(input);
+      if (input.stage === 'writer') return { text: writerJson(writerContent) };
+      if (input.stage === 'checker') {
+        return {
+          text: JSON.stringify({
+            issues: [
+              {
+                category: 'world',
+                subtype: 'duplicate_excerpt_target',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: originalSecondStart,
+                generatedEnd: originalSecondStart + excerpt.length,
+                generatedExcerpt: excerpt,
+                description: '必须修复第二处重复片段',
+                evidenceIds: [42],
+                suggestedFix: '改写第二处片段',
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        text: JSON.stringify({
+          patches: [
+            {
+              start: repairStart,
+              end: repairStart + excerpt.length,
+              replacement: '修复片段',
+            },
+          ],
+        }),
+      };
+    });
+
+    await resumeInterruptedRun('ct_standard', callStage as any);
+
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'checker',
+      'repair',
+    ]);
+    expect(calls.filter(call => call.stage === 'checker')).toHaveLength(1);
+    expect(mockState.artifacts.map(artifact => artifact.stage)).toEqual([
+      'writer',
+      'repair',
+    ]);
+    const finalContent = mockState.artifacts.at(-1).content;
+    expect(finalContent.slice(500, 500 + excerpt.length)).toBe(excerpt);
+    expect(finalContent).toContain('修复片段');
+    expect(finalContent).not.toContain(futureMarker);
+  });
+
+  it('clears offsets when duplicate excerpt rebinding is tied and keeps the issue open', async () => {
+    seedRun({ workflowVersion: 2, targetChapterChars: 3000 });
+    const excerpt = '重复片段';
+    const filler = '待修改文本'.repeat(2);
+    const prefix = '甲'.repeat(100);
+    const patchStart = prefix.length + excerpt.length;
+    const patchEnd = patchStart + filler.length;
+    const originalTargetStart = patchEnd;
+    const writerContent =
+      prefix +
+      excerpt +
+      filler +
+      excerpt +
+      '乙'.repeat(3000 - prefix.length - excerpt.length * 2 - filler.length);
+    const calls: any[] = [];
+    const callStage = jest.fn(async (input: any) => {
+      calls.push(input);
+      if (input.stage === 'writer') return { text: writerJson(writerContent) };
+      if (input.stage === 'checker') {
+        return {
+          text: JSON.stringify({
+            issues: [
+              {
+                category: 'plot',
+                subtype: 'ambiguous_duplicate_target',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: originalTargetStart,
+                generatedEnd: originalTargetStart + excerpt.length,
+                generatedExcerpt: excerpt,
+                description: '重复片段无法唯一定位',
+                evidenceIds: [42],
+                suggestedFix: '只修复能够唯一定位的局部问题',
+              },
+              {
+                category: 'world',
+                subtype: 'covered_patch_target',
+                severity: 'blocking',
+                confidence: 1,
+                generatedStart: patchStart,
+                generatedEnd: patchEnd,
+                generatedExcerpt: filler,
+                description: '必须覆盖的局部问题',
+                evidenceIds: [42],
+                suggestedFix: '替换局部片段',
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        text: JSON.stringify({
+          patches: [
+            {
+              start: patchStart,
+              end: patchEnd,
+              replacement: '修复内容'.repeat(6),
+            },
+          ],
+        }),
+      };
+    });
+
+    await resumeInterruptedRun('ct_standard', callStage as any);
+
+    expect(calls.map(call => call.stage)).toEqual([
+      'writer',
+      'checker',
+      'repair',
+    ]);
+    expect(calls.filter(call => call.stage === 'checker')).toHaveLength(1);
+    expect(mockState.artifacts.map(artifact => artifact.stage)).toEqual([
+      'writer',
+      'repair',
+    ]);
+    const finalArtifact = mockState.artifacts.at(-1);
+    const unresolved = mockState.checks.find(
+      check =>
+        check.artifactId === finalArtifact.id &&
+        check.subtype === 'ambiguous_duplicate_target',
+    );
+    expect(unresolved).toEqual(
+      expect.objectContaining({
+        generatedStart: null,
+        generatedEnd: null,
+        resolutionStatus: 'open',
+      }),
+    );
   });
 
   it('rejects malformed or overlapping Repair patches', () => {

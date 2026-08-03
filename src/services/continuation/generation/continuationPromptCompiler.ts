@@ -446,7 +446,7 @@ export function compileWriterMessages(
   );
   const lengthRule = [
     `【正文长度硬约束】目标 ${lengthContract.targetHanCharacters} 个汉字；允许范围 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字。`,
-    '汉字数只统计完整 Unicode Han：CJK Unified Ideographs、Extension A–F、Compatibility Ideographs 和 〇；不包含标点、空格、换行、数字、拉丁字母、假名和韩文。少于下限或多于上限均视为未完成。',
+    '汉字数按当前实现统计支持的范围：CJK Unified Ideographs、Extension A、Compatibility Ideographs、U+20000–U+2FA1F 补充范围和 〇；不包含标点、空格、换行、数字、拉丁字母、假名和韩文，也不宣称覆盖全部 Unicode Han。少于下限或多于上限均视为未完成。',
     '不得通过摘要、提纲、剧情概述、重复句或无意义水文控制长度；必须保留完整场景、人物互动、因果推进和自然章末。',
   ].join('\n');
   const system = [
@@ -551,7 +551,7 @@ export function compileRepairMessages(
     snapshot.primaryAnchor?.excerpt || snapshot.bundles.seam?.excerpt || '';
   const repairLengthContract = [
     `【Repair 长度硬性验收】当前完整正文含 ${originalHanCharacters} 个汉字；本次目标 ${lengthContract.targetHanCharacters} 个汉字，应用全部补丁后的完整正文必须保持在 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字。`,
-    '汉字数只统计完整 Unicode Han：CJK Unified Ideographs、Extension A–F、Compatibility Ideographs 和 〇；不包含标点、空格、换行、数字、拉丁字母、假名和韩文。长度不足时应补充具体动作、对话、因果、人物反应、冲突推进或结果余波；长度超出时优先压缩重复描写、重复心理和不推进剧情的对话。',
+    '汉字数按当前实现统计支持的范围：CJK Unified Ideographs、Extension A、Compatibility Ideographs、U+20000–U+2FA1F 补充范围和 〇；不包含标点、空格、换行、数字、拉丁字母、假名和韩文，也不宣称覆盖全部 Unicode Han。长度不足时应补充具体动作、对话、因果、人物反应、冲突推进或结果余波；长度超出时优先压缩重复描写、重复心理和不推进剧情的对话。',
     '不得用摘要、提纲、概括句、重复同一句、无意义水文或大段删除来规避长度要求；必须保留完整事件链、人物互动和自然收束。',
   ].join('\n');
   const overlapInstructions = openChecks.some(

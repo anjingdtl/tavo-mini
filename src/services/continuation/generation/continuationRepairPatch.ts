@@ -30,14 +30,18 @@ function isSevere(issue: RepairCoverageIssue): boolean {
   return issue.severity === 'error' || issue.severity === 'blocking';
 }
 
-function isNaturalParagraphBoundary(
+export function isAllowedRepairInsertionBoundary(
   original: string,
   position: number,
 ): boolean {
   if (position === 0 || position === original.length) return true;
-  const before = original.slice(0, position);
-  const after = original.slice(position);
-  return /(?:\r?\n){2}$/.test(before) || /^(?:\r?\n){2}/.test(after);
+  const before = original[position - 1];
+  const after = original[position];
+  return (
+    before === '\n' ||
+    (after === '\n' && before !== '\r') ||
+    (after === '\r' && original[position + 1] === '\n')
+  );
 }
 
 /** Parse the model response once, without accepting full-text fallbacks. */
@@ -103,7 +107,7 @@ export function validateRepairPatches(
     }
     if (
       patch.start === patch.end &&
-      !isNaturalParagraphBoundary(original, patch.start)
+      !isAllowedRepairInsertionBoundary(original, patch.start)
     ) {
       return false;
     }
