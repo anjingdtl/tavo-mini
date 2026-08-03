@@ -1,18 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
-### Added
-
-- 原著续写 Workflow V3（质量优先）：新发起的续写默认走 V3 四阶段状态机——Thinking Writer → Initial Checker + 本地质量门禁 → Integrated Reviser（必要时）→ Final Checker + 最终本地门禁。DeepSeek V4 四阶段均启用 thinking/high；目标汉字数唯一来自冻结 `targetChapterChars`，200～30000 动态契约；每次 run 最多 4 次真实 HTTP 请求（正常 2 次、需要综合修订 4 次，网络/格式重试也占额度），第 5 次请求在网络前被阻断。
-- V3 本地质量门禁：新增整章自重复 / 大段连续重复 / 修订稿与 Writer 原文异常重合检测；新增完整 Unicode Han 计数（覆盖 CJK 扩展区与 〇）。`writer + writer`、接缝复制、字数达标但质量失败的候选均不可正常采纳。
-- V3 失败语义：未通过最终门禁的 run 标记为 failed，保留 artifact 供诊断，禁止风险采纳与额外 Repair；V1/V2 历史 run 行为与可恢复语义不变。
-
-### Changed
-
-- 续写目标章节字数配置文案改为“目标章节汉字数”，说明实际验收区间与 DeepSeek Thinking 调用上限。
-- 续写结果页新增 V3 阶段展示（物理请求计数、本地门禁、非敏感 token 指标），V3 隐藏风险采纳与额外修正按钮。
-
 ## [2.11.14] - 2026-08-02
 
 ### Fixed
