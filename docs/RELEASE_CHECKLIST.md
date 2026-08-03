@@ -5,13 +5,13 @@
 - [x] `npm ci` 完成；`npm run verify` 通过：220 个测试套件通过、1,798 项测试通过、3 项既有跳过；ESLint 0 error、typecheck / version 校验通过。
 - [x] `npm run test:coverage` 通过：statements 68.70%、branches 57.65%、functions 70.72%、lines 70.72%。
 - [x] Schema 31→32、fresh schema、stage result、artifact eligibility、原子 finalize 与迁移覆盖通过。
-- [x] `npm run apk:debug` 成功并安装到 Android 模拟器，产物为 `dist/apk/debug/ShineWriter-V2.11.14-debug.apk`（功能验收基于该构建；正式发版 APK 使用 V2.11.15）。
+- [x] `npm run apk:debug` 成功并安装到 Android 模拟器，产物为 `dist/apk/debug/ShineWriter-V2.11.15-debug.apk`；功能验收基于该构建。
 - [x] 真实 LLM 验收：Canon / Style ready 后执行 V4 FULL-Control；Writer 2,133 汉字，Control 本地判定 expand，Repair 修订到 2,429 汉字并成为默认 eligible；Checker 成功且无有证据 error/blocking，Local Final Gate 成功并将篇幅不足保留为 warning，物理请求 4/4；未因字数单独跳过质量检查。
 - [x] Checker `error/blocking + Control keep` 的自动化反例通过：仍调用唯一 Repair，保持最多四次请求；Repair envelope、完整终稿约束、顶层 warnings 保留与 rejected artifact 审计均有回归覆盖。
-- [x] 版本元数据已提升至 `2.11.15` / `V2.11.15` / `2111500`；按本次发版指示不重新打包 APK，既有 Debug 功能验收证据保持有效。
-- [ ] 本轮仅完成 Debug APK 模拟器验收，未执行正式签名 Release APK；模拟器显示 16 KB 原生库兼容性提示，不能据此宣称真机或 16 KB 全量兼容。
+- [x] 版本元数据为 `2.11.15` / `V2.11.15` / `2111500`，正式签名 Release APK 已按标准流程构建并完成验收。
+- [x] Release APK 已通过单 signer、固定正式证书、APK Signature Scheme v2、16 KB zipalign、包名与版本元数据验收；模拟器显示的 16 KB 原生库兼容性提示仍不代表真机或 16 KB 全量兼容。
 
-证据：Debug APK 56,202,274 bytes，SHA-256 `A35C2F4FB323B2739FAB350BB162A692F583B80E9D16F080A2C7798BD7F8267A`。真实运行的脱敏说明、校准运行及最终数据库指标见 `docs/optimization/continuation-full-control-v4-validation-report.md`；原始数据库与 UI 记录保存在本地 `test-logs/continuation-full-control-v4-20260803/`，未纳入版本控制。
+证据：Debug APK 56,202,274 bytes，SHA-256 `A35C2F4FB323B2739FAB350BB162A692F583B80E9D16F080A2C7798BD7F8267A`；Release APK 35,279,550 bytes，SHA-256 `6AF7D882288E7E705D93E5F3EAD7711C8A2781273A90CA83F7618523F5088554`，证书 SHA-256 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，`aapt` `package: name='com.shinewriter' versionCode='2111500' versionName='V2.11.15'`。真实运行的脱敏说明、校准运行及最终数据库指标见 `docs/optimization/continuation-full-control-v4-validation-report.md`；原始数据库与 UI 记录保存在本地 `test-logs/continuation-full-control-v4-20260803/`，未纳入版本控制。
 
 ## V2.11.14 原著删除外键修复
 

@@ -528,6 +528,20 @@ export interface ContinuationControlSuggestion {
   preserveBeatIds: string[];
 }
 
+export type ContinuationControlFindingSeverity = 'info' | 'warning';
+
+/** Advisory, structured diagnosis that Repair can apply and acknowledge. */
+export interface ContinuationControlFinding {
+  findingId: string;
+  subtype: string;
+  severity: ContinuationControlFindingSeverity;
+  location: string;
+  generatedStart: number | null;
+  generatedEnd: number | null;
+  description: string;
+  suggestedFix: string;
+}
+
 export interface ContinuationControlReport {
   schemaVersion: 1;
   action: ContinuationControlAction;
@@ -536,6 +550,7 @@ export interface ContinuationControlReport {
   allowedMinHan: number;
   allowedMaxHan: number;
   suggestions: ContinuationControlSuggestion[];
+  findings: ContinuationControlFinding[];
   preserve: string[];
   metricEchoMismatch?: boolean;
   /** True when the model's action echo disagreed with the authoritative local
@@ -558,6 +573,8 @@ export interface ContinuationV4RepairEnvelope {
   content: string;
   appliedCheckerIssueIds: string[];
   appliedControlSuggestionIds: string[];
+  /** Optional for backward compatibility with historical Repair envelopes. */
+  appliedControlFindingIds?: string[];
   unappliedItems: string[];
 }
 

@@ -57,3 +57,36 @@
 - FINAL-REAL evidence: `artifacts/qa/20260801-emulator-qa-2/FINAL-REAL/`; real DeepSeek run completed with ready Canon/style records.
 - FINAL-REAL-1M evidence: `artifacts/qa/20260801-emulator-qa-2/FINAL-REAL-1M/`; `context_window=1000000` preflight and real DeepSeek run completed with ready Canon/style records.
 - Release evidence: `dist/apk/release/ShineWriter-V2.11.8-release.apk`; signature fingerprint and 16KB zipalign verified, SHA-256 `003E6911A96A52C1241DC120C8E4448B62C7C035A615E9B30E4BEAECF7D15810`.
+
+## Continuation soft-gate follow-up (2026-08-03)
+
+- Evidence directory: `test-logs/continuation-qa-20260803`
+- Post-change run: `ct_5d44d0d5f3594e5bb5b7ccb2f21da7aa`
+- Writer / Checker / Control / Repair all completed; Repair became the default eligible candidate.
+- Length and Control progress remained warnings; Local Final Gate succeeded and the run reached `awaiting_user`.
+- Repair prompt was reduced to Writer body + Checker report + Control report + protocol/budget instructions; Canon/state/style/supplement/anchor/plan blocks are excluded.
+
+## Checker / Control split emulator run (2026-08-03)
+
+- APK: `dist/apk/debug/ShineWriter-V2.11.15-debug.apk`; installed on `emulator-5554` (`com.shinewriter`).
+- Evidence directory: `test-logs/continuation-qa-20260803`
+- Run-id: `ct_c83a5fdc0bd3459289a916c07a993b71`; chapter 9; physical requests 4/4.
+- Writer: success, 1 request, `21256 -> 4317` tokens.
+- Checker: success, 1 request, `8038 -> 66` tokens; `issues=[]`.
+- Control: success, 1 request, `12293 -> 8443` tokens; one compression suggestion plus seven structured findings (local Beat-gap findings included).
+- Repair: one request, `7493 -> 4223` tokens; echoed all seven `appliedControlFindingIds` and the Control suggestion ID, but returned content unchanged from Writer.
+- Local Final Gate: safely rejected the unchanged Repair candidate with `repair_candidate_unchanged`; the length/progress check remained a warning and did not cause the rejection.
+- UI evidence: `chapter9-result.png` shows `V4 FULL-Control`, `物理请求 4/4`, `默认可采纳：Writer`, successful Writer/Checker/Control, and safe Repair fallback.
+- DB evidence: `db-chapter9-poll2.sqlite` contains the stage JSON, structured findings, Repair acknowledgement IDs, and the `repair_candidate_unchanged` gate result. No API key is included.
+
+## Checker repair-ready contract emulator run (2026-08-03)
+
+- Latest APK: `dist/apk/debug/ShineWriter-V2.11.15-debug.apk`; installed on `emulator-5554`.
+- Run-id: `ct_e4df87a131f54bafa3b3930ee68dbf09`; chapter 12; physical requests 4/4; state `awaiting_user`.
+- Checker: success, 1 request; `repairReadyIssueCount=0`, no audit warnings after filtering Control-owned structural subtypes.
+- Control: success, 1 request; produced the structural plan and findings.
+- Repair: success, 1 request; `8498 -> 3932` tokens; Writer `4397` Han → Repair `4357` Han; `actualDeltaHan=-40`; all Control suggestion/finding IDs were acknowledged.
+- Local Final Gate: success; default candidate `Repair`. A remaining insufficient compression-progress note stayed warning-only.
+- UI evidence: `repair-compat-final.png` shows `V4 FULL-Control · 物理请求 4/4 · 默认可采纳：Repair`, all four stages successful, and Local Final Gate success.
+- DB evidence: `db-repair-compat-final.sqlite` contains the Checker repair-ready/audit counts and Repair telemetry. No API key is included.
+- Intermediate compatibility finding: run `ct_5a9ee99a60c5466893eb4a5882fc56c6` showed Repair omitting acknowledgement arrays; the parser compatibility fix was then unit-tested and included in the latest APK.

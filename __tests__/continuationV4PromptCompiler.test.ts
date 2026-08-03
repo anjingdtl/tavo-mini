@@ -112,6 +112,7 @@ const controlReport = {
   allowedMinHan: 2500,
   allowedMaxHan: 3500,
   suggestions: [],
+  findings: [],
   preserve: ['章末钩子'],
 } as any;
 
@@ -146,6 +147,8 @@ describe('Continuation V4 Prompt contracts', () => {
     expect(messages[0].content).toContain('suggestedFix');
     expect(messages[0].content).toContain('generatedStart');
     expect(messages[0].content).toContain('generatedEnd');
+    expect(messages[0].content).toContain('Repair 修订单');
+    expect(messages[0].content).toContain('精确 generatedExcerpt');
   });
 
   test('Control 只看到本地指标和量化风格，不看到 Canon/原始补充', () => {
@@ -171,13 +174,21 @@ describe('Continuation V4 Prompt contracts', () => {
     });
     expect(messages[0].content).toContain('完整终稿 envelope');
     expect(messages[0].content).toContain('2500–3500');
-    expect(messages[0].content).toContain('五个顶层字段一个都不能省略');
+    expect(messages[0].content).toContain('六个顶层字段一个都不能省略');
     expect(messages[0].content).toContain('finalText、final_content、text、draft、result');
     expect(messages[0].content).toContain('当前 2000 个汉字');
     expect(messages[0].content).toContain('至少还缺 500 个汉字');
+    expect(messages[0].content).toContain('只根据 Writer 完整原文、Checker 报告和 Control 报告');
+    expect(messages[0].content).toContain('软性目标区间');
+    expect(messages[0].content).toContain('1000 个汉字以内');
     expect(messages[1].content).toContain('appliedControlSuggestionIds');
+    expect(messages[1].content).toContain('appliedControlFindingIds');
     expect(messages[0].content).not.toContain('"patches"');
     expect(messages[1].content).toContain('完整 Writer 初稿开始');
+    expect(messages[0].content).not.toContain('冻结 Canon 审查依据');
+    expect(messages[0].content).not.toContain('Primary Anchor 防重复摘要');
+    expect(messages[0].content).not.toContain('外部资料包装');
+    expect(messages[0].content).not.toContain('Writer plan');
   });
 
   test('Repair Prompt 含强制任务审计段与最低实质进度说明', () => {
@@ -209,6 +220,18 @@ describe('Continuation V4 Prompt contracts', () => {
             preserveBeatIds: [],
           },
         ],
+        findings: [
+          {
+            findingId: 'ctrl_local_paragraph_imbalance',
+            subtype: 'paragraph_imbalance',
+            severity: 'warning',
+            location: 'paragraph_1',
+            generatedStart: 0,
+            generatedEnd: 10,
+            description: '段落失衡',
+            suggestedFix: '拆分过长段落',
+          },
+        ],
       } as any,
     });
     const system = messages[0].content;
@@ -217,12 +240,14 @@ describe('Continuation V4 Prompt contracts', () => {
     expect(system).toContain('强制任务');
     expect(system).toContain('强制建议');
     // 最低实质进度说明
-    expect(system).toContain('最低实质进度');
-    expect(system).toContain('没有达到最低实质进度会被直接拒绝');
+    expect(system).toContain('Control 修订方向');
+    expect(system).toContain('1000 个汉字以内才硬拦截');
     // 软门禁仍可保留
     expect(system).toContain('warning');
     // Checker 报告标题已改为含本地安全的统一标题
     expect(system).toContain('Checker / 本地安全审查报告');
+    expect(system).toContain('repairReady');
+    expect(system).toContain('Checker 可执行修订单');
   });
 
   test('protocol skeleton demand is measured, not a stage token constant', () => {

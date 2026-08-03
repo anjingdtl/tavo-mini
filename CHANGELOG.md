@@ -5,8 +5,10 @@
 ### Added
 
 - 新增原著续写 V4 FULL-Control 独立流水线：Writer 初稿 → Checker / Control 并行 → Repair 完整终稿 → Local Final Gate，最多四次物理 LLM 请求；Checker 的有证据 `error/blocking` 会强制进入 Repair，不能因篇幅合格而短路。
+- 明确 Checker / Control 分工：Checker 负责 Canon、状态、知识、关系与锁定规则事实一致性；Control 输出重复退化、段落结构、Beat 覆盖、对话/场景节奏和结尾推进等结构化 advisory findings，Repair 通过 `appliedControlFindingIds` 回填，未回填只记 warning。
+- 强化 Repair 可执行契约：Checker issue 只有具备精确原文定位、证据和直接修订动作时才作为 repair-ready 任务注入；Control 负责结构类观察，Checker 不再把无定位的结构 warning 伪装成语义修订单。Repair 漏掉回执数组时按空数组兼容解析，正文仍交给 Local Final Gate 与合规校验。
 - Schema 升级到 32：新增四阶段结果、请求 reservation、artifact eligibility / rejection 与原子终稿落库；Canon 仍只经 `CanonQueryService` 读取，外部资料只接收冻结的 `external_supplement` binding。
-- Writer 动态汉字目标同时注入提示词头部和输出前检查；Control 使用客户端本地汉字计数，Repair 只接受完整终稿 envelope，不接受 offset Patch；Local Final Gate 的篇幅区间只作 warning，不阻断已完成质量修订且通过本地安全检查的 Repair。
+- Writer 动态汉字目标同时注入提示词头部和输出前检查；Control 使用客户端本地汉字计数，Repair 只接受完整终稿 envelope，不接受 offset Patch；Local Final Gate 的篇幅区间只作 warning，不阻断已完成质量修订且通过本地安全检查的 Repair，只有正文坍缩到 1000 个汉字以内才硬拦截。Repair 上下文收敛为 Writer 原文、Checker 报告和 Control 报告，避免重复 Canon / 状态 / 风格上下文分散修订注意力。
 
 ### Validation
 

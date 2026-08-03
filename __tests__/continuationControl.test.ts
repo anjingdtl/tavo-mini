@@ -39,6 +39,50 @@ describe('Continuation V4 local Control', () => {
     expect(over.excessOverMaximum).toBeGreaterThan(0);
   });
 
+  test('fallback 输出结构化 findings：重复、Beat 缺口和段落失衡', () => {
+    const duplicateMetrics = buildContinuationControlMetrics({
+      text: '重复段落内容很长很长很长。\n重复段落内容很长很长很长。',
+      target: 40,
+    });
+    expect(buildContinuationControlFallback(duplicateMetrics).findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ subtype: 'duplicate_window' }),
+      ]),
+    );
+
+    const beatMetrics = buildContinuationControlMetrics({
+      text: '正文只覆盖已有内容。',
+      target: 20,
+      plan: {
+        schemaVersion: 1,
+        chapterGoal: '推进',
+        centralConflict: '冲突',
+        beats: [{ order: 1, summary: '完全不存在的节拍关键词' }],
+        participatingCharacterIds: [],
+        characterActions: [],
+        plotAdvances: [],
+        foreshadowingActions: [],
+        proposedStateChanges: [],
+        risks: [],
+      },
+    });
+    expect(buildContinuationControlFallback(beatMetrics).findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ subtype: 'beat_gap', location: 'beat_1' }),
+      ]),
+    );
+
+    const imbalanceMetrics = buildContinuationControlMetrics({
+      text: `${'短'.repeat(10)}\n${'中'.repeat(10)}\n${'长'.repeat(300)}`,
+      target: 320,
+    });
+    expect(buildContinuationControlFallback(imbalanceMetrics).findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ subtype: 'paragraph_imbalance' }),
+      ]),
+    );
+  });
+
   test('模型 currentHan 回显不一致时保留本地真值并记录 mismatch', () => {
     const metrics = buildContinuationControlMetrics({ text: '你好世界', target: 4 });
     const parsed = parseContinuationControlReport({
@@ -228,6 +272,51 @@ describe('Continuation V4 Control local suggestion injection', () => {
     expect(ids).toContain('ctrl_model_extra');
     // 不重复
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  test('模型 findings 与本地 findings 合并，非法 finding 被丢弃且 severity 不升格', () => {
+    const metrics = buildContinuationControlMetrics({
+      text: '你好世界',
+      target: 4,
+    });
+    const resolved = resolveContinuationControlReport({
+      metrics,
+      raw: JSON.stringify({
+        schemaVersion: 1,
+        action: 'keep',
+        currentHan: metrics.actualHanCharacters,
+        targetHan: metrics.targetHanCharacters,
+        allowedMinHan: metrics.minHanCharacters,
+        allowedMaxHan: metrics.maxHanCharacters,
+        suggestions: [],
+        findings: [
+          {
+            findingId: 'ctrl_model_dialogue_ratio',
+            subtype: 'dialogue_ratio_drift',
+            severity: 'error',
+            location: 'paragraph_1',
+            generatedStart: 0,
+            generatedEnd: 4,
+            description: '对话比例偏离量化风格。',
+            suggestedFix: '调整对白与叙述的比例。',
+          },
+          {
+            findingId: 'invalid_without_fix',
+            subtype: 'ending_hook',
+            location: 'chapter_end',
+            description: '缺少修订建议。',
+          },
+        ],
+        preserve: [],
+      }),
+    });
+    const finding = resolved.report.findings.find(
+      item => item.findingId === 'ctrl_model_dialogue_ratio',
+    );
+    expect(finding?.severity).toBe('warning');
+    expect(resolved.report.findings.map(item => item.findingId)).not.toContain(
+      'invalid_without_fix',
+    );
   });
 
   test('requiredControlProgressHan 满足 floor 与 ratio', () => {

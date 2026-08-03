@@ -5,6 +5,7 @@ import {
 } from './continuationLengthContract';
 import type {
   ContinuationControlAction,
+  ContinuationControlFinding,
   ContinuationControlReport,
   ContinuationControlSuggestion,
   ContinuationPlan,
@@ -156,6 +157,70 @@ function reportAction(metrics: ContinuationV4Metrics): ContinuationControlReport
   return 'keep';
 }
 
+function localStructuralFindings(
+  metrics: ContinuationV4Metrics,
+): ContinuationControlFinding[] {
+  const findings: ContinuationControlFinding[] = [];
+
+  metrics.duplicateWindows.forEach((window, index) => {
+    findings.push({
+      findingId: `ctrl_local_duplicate_${index + 1}`,
+      subtype: 'duplicate_window',
+      severity: 'warning',
+      location: `utf16:${window.start}-${window.end}`,
+      generatedStart: window.start,
+      generatedEnd: window.end,
+      description: `检测到同一自然段或高度相似段落重复出现 ${window.count} 次，可能造成叙事退化。`,
+      suggestedFix: '合并或改写重复段落，保留一次有效表达，并补充新的动作、反应或因果推进。',
+    });
+  });
+
+  metrics.beatCoverage.forEach(beat => {
+    if (beat.paragraphIds.length > 0) return;
+    findings.push({
+      findingId: `ctrl_local_beat_gap_${beat.beatId}`,
+      subtype: 'beat_gap',
+      severity: 'warning',
+      location: beat.beatId,
+      generatedStart: null,
+      generatedEnd: null,
+      description: `计划节拍 ${beat.beatId} 未能在正文段落中找到可识别的覆盖内容。`,
+      suggestedFix: `在不破坏现有事件链的前提下补足 ${beat.beatId} 的动作、冲突或结果，并让它自然推动章末。`,
+    });
+  });
+
+  const distribution = metrics.paragraphLengthDistribution;
+  if (metrics.paragraphs.length >= 3 && distribution.median > 0) {
+    const longest = metrics.paragraphs.find(
+      paragraph => paragraph.hanCharacters === distribution.max,
+    );
+    const shortest = metrics.paragraphs.find(
+      paragraph => paragraph.hanCharacters === distribution.min,
+    );
+    const upperImbalance =
+      distribution.max >= distribution.median * 2 &&
+      distribution.max - distribution.median >= 160;
+    const lowerImbalance =
+      distribution.min <= distribution.median * 0.4 &&
+      distribution.median - distribution.min >= 120;
+    if (upperImbalance || lowerImbalance) {
+      const focus = upperImbalance ? longest : shortest;
+      findings.push({
+        findingId: 'ctrl_local_paragraph_imbalance',
+        subtype: 'paragraph_imbalance',
+        severity: 'warning',
+        location: focus?.id ?? 'paragraph_structure',
+        generatedStart: focus?.start ?? null,
+        generatedEnd: focus?.end ?? null,
+        description: `段落长度分布不均：最短 ${distribution.min}、中位数 ${distribution.median}、最长 ${distribution.max} 个汉字，局部节奏可能失衡。`,
+        suggestedFix: '将过长段落拆成有动作推进的自然段，或扩充过短段落的即时反应与因果衔接，避免只做机械分段。',
+      });
+    }
+  }
+
+  return findings;
+}
+
 function fallbackSuggestion(
   metrics: ContinuationV4Metrics,
 ): ContinuationControlSuggestion[] {
@@ -199,19 +264,20 @@ export function buildContinuationControlFallback(
     allowedMinHan: metrics.minHanCharacters,
     allowedMaxHan: metrics.maxHanCharacters,
     suggestions: fallbackSuggestion(metrics),
+    findings: localStructuralFindings(metrics),
     preserve: ['人物关系', '章末钩子'],
   };
 }
 
 /**
- * Minimum substantial progress that a Repair candidate must demonstrate in the
- * Control direction before it can be accepted. This is a Control compliance
- * check, NOT the final hard length gate: a candidate that reaches this progress
- * but still falls short of `allowedMinHan` passes Control compliance and the
- * final length gap remains a soft warning in the Local Final Gate.
+ * Recommended substantial progress for a Repair candidate in the Control
+ * direction. This is not a hard length gate: a candidate that falls short of
+ * this progress or `allowedMinHan` can still pass when the content remains
+ * above the absolute 1000-Han collapse floor; the Local Final Gate records a
+ * warning. The absolute collapse rule is enforced by the V4 runner.
  *
  * Defined here (single source of truth) so the Repair prompt, the compliance
- * check and the result UI never diverge on what "progress" means.
+ * check and the result UI never diverge on what "recommended progress" means.
  */
 export const CONTROL_PROGRESS_RATIO = 0.35;
 export const CONTROL_PROGRESS_FLOOR_HAN = 80;
@@ -241,6 +307,20 @@ function dedupeSuggestionsById(
     if (!id || seen.has(id)) continue;
     seen.add(id);
     out.push(suggestion);
+  }
+  return out;
+}
+
+function dedupeFindingsById(
+  findings: ContinuationControlFinding[],
+): ContinuationControlFinding[] {
+  const seen = new Set<string>();
+  const out: ContinuationControlFinding[] = [];
+  for (const finding of findings) {
+    const id = finding.findingId.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(finding);
   }
   return out;
 }
@@ -307,6 +387,45 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter(item => typeof item === 'string').map(item => item.trim()).filter(Boolean)
     : [];
+}
+
+function parseModelFindings(value: unknown): ContinuationControlFinding[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object'),
+    )
+    .map((item, index) => {
+      const description =
+        typeof item.description === 'string' ? item.description.trim() : '';
+      const suggestedFix =
+        typeof item.suggestedFix === 'string' ? item.suggestedFix.trim() : '';
+      const subtype =
+        typeof item.subtype === 'string' ? item.subtype.trim() : '';
+      const location =
+        typeof item.location === 'string' ? item.location.trim() : '';
+      if (!description || !suggestedFix || !subtype || !location) return null;
+      const rawId =
+        typeof item.findingId === 'string' ? item.findingId.trim() : '';
+      const start = asFiniteNumber(item.generatedStart);
+      const end = asFiniteNumber(item.generatedEnd);
+      return {
+        findingId: rawId || `ctrl_model_finding_${index + 1}`,
+        subtype,
+        // Findings are advisory by contract; unknown model severities are
+        // downgraded rather than becoming new hard gates.
+        severity: item.severity === 'info' ? 'info' : 'warning',
+        location,
+        generatedStart: start != null && start >= 0 ? start : null,
+        generatedEnd: end != null && end >= 0 ? end : null,
+        description,
+        suggestedFix,
+      } satisfies ContinuationControlFinding;
+    })
+    .filter(
+      (finding): finding is ContinuationControlFinding => finding !== null,
+    );
 }
 
 export interface ContinuationControlParseResult {
@@ -420,6 +539,11 @@ export function parseContinuationControlReport(input: {
   ]);
   const localSuggestionInjected = localForced.length > 0;
 
+  const findings = dedupeFindingsById([
+    ...localFallback.findings,
+    ...parseModelFindings(parsed.findings),
+  ]);
+
   // Preserve local defaults plus the model's preserve list (union, deduped).
   const preserveSet = new Set<string>([
     ...localFallback.preserve,
@@ -435,6 +559,7 @@ export function parseContinuationControlReport(input: {
       allowedMinHan: metrics.minHanCharacters,
       allowedMaxHan: metrics.maxHanCharacters,
       suggestions,
+      findings,
       preserve: Array.from(preserveSet),
       ...(metricEchoMismatch ? { metricEchoMismatch: true } : {}),
       ...(actionEchoMismatch ? { actionEchoMismatch: true } : {}),
