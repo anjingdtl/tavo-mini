@@ -28,10 +28,10 @@ function runFixtureValidator(): SpawnSyncReturns<string> {
   );
 }
 
-test('upgrades every committed historical SQLite fixture to Schema 14', () => {
+test('upgrades every committed historical SQLite fixture to Schema 32', () => {
   const result = runFixtureValidator();
   const output = `${result.stdout || ''}\n${result.stderr || ''}`;
 
   expect(result.status).toBe(0);
-  expect(output).toContain('validated 11 migration fixtures to Schema 14');
+  expect(output).toContain('validated 29 migration fixtures to Schema 32');
 });

@@ -104,6 +104,9 @@ describe('runtime schema validator', () => {
     const mock = createValidatorDb();
     mock.tables.delete('notes');
     mock.columns.get('projects')?.delete('updated_at');
+    mock.columns
+      .get('continuation_generation_stage_results')
+      ?.delete('request_count');
     mock.indexes.get('llm_usage_logs')?.delete('idx_llm_usage_logs_month');
 
     const result = await validateSchema(mock.database as any, {
@@ -122,6 +125,11 @@ describe('runtime schema validator', () => {
         expect.objectContaining({
           code: 'MISSING_INDEX',
           index: 'idx_llm_usage_logs_month',
+        }),
+        expect.objectContaining({
+          code: 'MISSING_COLUMN',
+          table: 'continuation_generation_stage_results',
+          column: 'request_count',
         }),
       ]),
     );
