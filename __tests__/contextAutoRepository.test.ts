@@ -8,9 +8,15 @@ jest.mock('../src/data/repositories/settingsRepository', () => ({
 }));
 
 import {
+  cloneDefaultContextAutomationPolicy,
+  hashContextAutomationPolicy,
+} from '../src/services/contextAutomationPolicy';
+import {
+  getContextAutomationPolicy,
   getContextAutoInput,
   setContextAutoInput,
   getContextAutoLastApplied,
+  setContextAutomationPolicy,
   setContextAutoLastApplied,
   buildAppliedRecord,
 } from '../src/data/repositories/contextAutoRepository';
@@ -109,6 +115,32 @@ describe('contextAutoRepository', () => {
     });
   });
 
+  describe('ContextAutomationPolicyV2', () => {
+    test('缺失 policy 时返回 null', async () => {
+      mockedGetSetting.mockResolvedValue(null);
+      await expect(getContextAutomationPolicy()).resolves.toBeNull();
+    });
+
+    test('合法 policy round-trip 使用稳定 JSON', async () => {
+      const policy = cloneDefaultContextAutomationPolicy();
+      mockedGetSetting.mockResolvedValue(JSON.stringify(policy));
+      await expect(getContextAutomationPolicy()).resolves.toEqual(policy);
+
+      await setContextAutomationPolicy(policy);
+      const [key, serialized] = mockedSetSetting.mock.calls[0];
+      expect(key).toBe('context_auto_policy_v2');
+      expect(JSON.parse(serialized)).toEqual(policy);
+      expect(hashContextAutomationPolicy(policy)).toHaveLength(64);
+    });
+
+    test('schema 不匹配或 JSON 损坏时返回 null', async () => {
+      mockedGetSetting.mockResolvedValue(JSON.stringify({ schemaVersion: 1 }));
+      await expect(getContextAutomationPolicy()).resolves.toBeNull();
+      mockedGetSetting.mockResolvedValue('{bad');
+      await expect(getContextAutomationPolicy()).resolves.toBeNull();
+    });
+  });
+
   describe('setContextAutoLastApplied', () => {
     test('写入 JSON 字符串', async () => {
       const record = buildAppliedRecord(
@@ -149,6 +181,9 @@ describe('contextAutoRepository', () => {
         },
       );
       expect(record.maxContextTokens).toBe(100000);
+      expect(record.schemaVersion).toBe(2);
+      expect(record.policyVersion).toBe('context-automation-v2');
+      expect(record.policyHash).toHaveLength(64);
       expect(record.appliedAt).toBeGreaterThan(0);
       expect(record.allocation.slidingWindowSize).toBe(52000);
       expect(record.affectedCounts).toEqual({
