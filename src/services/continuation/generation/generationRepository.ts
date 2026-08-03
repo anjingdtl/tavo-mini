@@ -1026,6 +1026,7 @@ export interface ContinuationV4FinalizeInput {
   writerArtifactId: string;
   markWriterChecksObsolete: boolean;
   tokenUsageJson: string;
+  outputTokens?: number | null;
   repairOutputJson?: string | null;
   localVerifyOutputJson?: string | null;
   localVerifyStatus?: Extract<ContinuationStageResultStatus, 'success' | 'failed'>;
@@ -1118,13 +1119,14 @@ export async function finalizeContinuationV4Repair(
   const repairStageUpdateIndex = statements.length + 1;
   statements.push({
     sql: `UPDATE continuation_generation_stage_results SET
-        status = 'success', output_json = ?, artifact_id = ?,
+        status = 'success', output_json = ?, artifact_id = ?, output_tokens = ?,
         completed_at = ?, updated_at = ?
       WHERE id = ? AND run_id = ? AND stage = 'repair'
         AND request_reserved = 1 AND request_count = 1`,
     params: [
       input.repairOutputJson ?? null,
       artifactId,
+      input.outputTokens ?? null,
       ts,
       ts,
       input.repairStageResultId,
@@ -1183,6 +1185,159 @@ export async function finalizeContinuationV4Repair(
     throw new Error('续写 V4 finalize 提交后读取结果失败');
   }
   return { artifact, repairStageResult, localVerifyStageResult };
+}
+
+export interface ContinuationV4RepairRejectionInput {
+  runId: string;
+  expectedRunStates?: ContinuationRunState[];
+  repairStageResultId: string;
+  localVerifyStageResultId: string;
+  writerArtifactId: string;
+  writerArtifactHash: string;
+  rejectionCode: string;
+  rejectionMessage: string;
+  localChecks?: ContinuationV4LocalCheckInput[];
+  tokenUsageJson: string;
+  outputTokens?: number | null;
+  repairOutputJson?: string | null;
+  localVerifyOutputJson?: string | null;
+  ts?: string;
+}
+
+/**
+ * Atomically settle a Repair response that cannot become a second artifact.
+ *
+ * The artifact table deliberately de-duplicates identical content within a
+ * run. If Repair returns the Writer content unchanged, inserting a second
+ * row would violate that invariant. Persist the rejection and local checks on
+ * the existing Writer artifact instead, so the consumed request is auditable
+ * and the Writer remains the only eligible candidate.
+ */
+export async function finalizeContinuationV4RepairRejection(
+  input: ContinuationV4RepairRejectionInput,
+): Promise<{
+  repairStageResult: ContinuationGenerationStageResult;
+  localVerifyStageResult: ContinuationGenerationStageResult;
+}> {
+  const db = await openDatabase();
+  const ts = input.ts ?? nowIso();
+  const expectedStates = input.expectedRunStates ?? ['running'];
+  const statePlaceholders = expectedStates.map(() => '?').join(', ');
+  const statements: Array<{ sql: string; params?: any[] }> = [];
+
+  for (const check of input.localChecks ?? []) {
+    statements.push({
+      sql: `INSERT INTO continuation_check_results (
+        run_id, chapter_id, artifact_id, artifact_hash, category, subtype,
+        severity, confidence, generated_start, generated_end,
+        generated_excerpt, description, entity_ref_type, entity_ref_id,
+        evidence_ids_json, suggested_fix, resolution_status, created_at,
+        updated_at
+      ) SELECT ?, r.chapter_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        'open', ?, ?
+      FROM continuation_generation_runs r
+      WHERE r.id = ?`,
+      params: [
+        input.runId,
+        input.writerArtifactId,
+        input.writerArtifactHash,
+        check.category,
+        check.subtype,
+        check.severity,
+        check.confidence,
+        check.generatedStart,
+        check.generatedEnd,
+        check.generatedExcerpt,
+        check.description,
+        check.entityRefType ?? null,
+        check.entityRefId ?? null,
+        JSON.stringify(check.evidenceIds ?? []),
+        check.suggestedFix ?? null,
+        ts,
+        ts,
+        input.runId,
+      ],
+    });
+  }
+
+  const repairStageUpdateIndex = statements.length + 1;
+  statements.push({
+    sql: `UPDATE continuation_generation_stage_results SET
+        status = 'failed', output_json = ?, artifact_id = NULL, output_tokens = ?,
+        error_code = ?, error_message = ?, completed_at = ?, updated_at = ?
+      WHERE id = ? AND run_id = ? AND stage = 'repair'
+        AND request_reserved = 1 AND request_count = 1`,
+    params: [
+      input.repairOutputJson ?? null,
+      input.outputTokens ?? null,
+      input.rejectionCode,
+      input.rejectionMessage,
+      ts,
+      ts,
+      input.repairStageResultId,
+      input.runId,
+    ],
+  });
+
+  const localVerifyUpdateIndex = statements.length + 1;
+  statements.push({
+    sql: `UPDATE continuation_generation_stage_results SET
+        status = 'failed', output_json = ?, artifact_id = ?,
+        error_code = ?, error_message = ?, completed_at = ?, updated_at = ?
+      WHERE id = ? AND run_id = ? AND stage = 'local_verify'
+        AND request_reserved = 0 AND request_count = 0`,
+    params: [
+      input.localVerifyOutputJson ?? null,
+      input.writerArtifactId,
+      input.rejectionCode,
+      input.rejectionMessage,
+      ts,
+      ts,
+      input.localVerifyStageResultId,
+      input.runId,
+    ],
+  });
+
+  statements.push({
+    sql: `UPDATE continuation_generation_runs SET
+        state = 'awaiting_user', stage = 'awaiting_user',
+        token_usage_json = ?, error_code = ?, error_message = ?, updated_at = ?
+      WHERE id = ? AND state IN (${statePlaceholders})`,
+    params: [
+      input.tokenUsageJson,
+      input.rejectionCode,
+      input.rejectionMessage,
+      ts,
+      input.runId,
+      ...expectedStates,
+    ],
+  });
+  const finalUpdateIndex = statements.length;
+
+  await executeTransaction(db, statements, {
+    onStatementComplete: (oneBasedIndex, rowsAffected) => {
+      if (
+        (oneBasedIndex === repairStageUpdateIndex ||
+          oneBasedIndex === localVerifyUpdateIndex) &&
+        rowsAffected !== 1
+      ) {
+        throw new Error('续写 V4 Repair rejection 缺少有效 stage result，事务回滚');
+      }
+      if (oneBasedIndex === finalUpdateIndex && rowsAffected !== 1) {
+        throw new Error('续写 V4 Repair rejection 发现 run 状态已变化，事务回滚');
+      }
+    },
+  });
+
+  const repairStageResult = await getStageResult(input.runId, 'repair');
+  const localVerifyStageResult = await getStageResult(
+    input.runId,
+    'local_verify',
+  );
+  if (!repairStageResult || !localVerifyStageResult) {
+    throw new Error('续写 V4 Repair rejection 提交后读取结果失败');
+  }
+  return { repairStageResult, localVerifyStageResult };
 }
 
 export interface ContinuationV4LocalGateInput {

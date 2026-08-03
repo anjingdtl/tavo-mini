@@ -265,6 +265,29 @@ describe('continuation Phase 3 core', () => {
     expect(bound[0].evidenceIds).toEqual([11]);
   });
 
+  test('retains top-level Checker warnings without making them Repair-actionable', () => {
+    const issues = parseCheckerLlmJson(
+      JSON.stringify({
+        issues: [],
+        warnings: [
+          {
+            category: 'style',
+            subtype: 'tone_drift',
+            severity: 'error',
+            confidence: 0.7,
+            generatedExcerpt: '语气略显急促',
+            description: '与冻结风格画像存在轻微偏差',
+            evidenceIds: [],
+            suggestedFix: '人工审阅语气',
+          },
+        ],
+      }),
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].subtype).toBe('tone_drift');
+  });
+
   test('demotes an un-actionable severe Checker issue before the single Repair call', () => {
     const issues = parseCheckerLlmJson(
       JSON.stringify({

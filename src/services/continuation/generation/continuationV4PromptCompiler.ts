@@ -21,9 +21,42 @@ function writerLengthContract(view: {
 }): string {
   const contract = resolveContinuationLengthContract(view.targetChapterChars);
   return [
-    `目标汉字数：${contract.targetHanCharacters}；合法范围：${contract.minHanCharacters}–${contract.maxHanCharacters}。`,
-    '汉字数由客户端本地统计，不能以模型自报数值覆盖。不得用摘要、提纲、重复句或无意义水文填充长度。',
+    `【Writer 本次汉字产出硬目标】目标：${contract.targetHanCharacters}；最低合格线：${contract.minHanCharacters}；合法范围：${contract.minHanCharacters}–${contract.maxHanCharacters}。`,
+    `content 必须写到约 ${contract.targetHanCharacters} 个中文汉字，而不是约 ${contract.targetHanCharacters} 个 token；在 content 未达到最低合格线 ${contract.minHanCharacters} 前不得结束章节。必须先把完整事件链、人物互动、情绪转折和自然章末展开到目标区间，再收束正文。`,
+    '如果故事已经接近章末但本地目标仍未满足，继续展开当前冲突的动作后果、人物反应、环境细节和章末钩子，不得突然收尾。不得用摘要、提纲、重复句或无意义水文填充长度。',
+    '汉字数由客户端本地统计，不能以模型自报数值覆盖。content 只能放可直接作为章节正文的完整纯文本，不能只返回短梗概、片段或待补写提纲。',
   ].join('\n');
+}
+
+function writerLengthTailReminder(view: {
+  targetChapterChars: number;
+}): string {
+  const contract = resolveContinuationLengthContract(view.targetChapterChars);
+  return [
+    '【Writer 输出前最后检查】',
+    `content 的客户端本地 Han 计数目标为 ${contract.targetHanCharacters}，必须落在 ${contract.minHanCharacters}–${contract.maxHanCharacters}；低于 ${contract.minHanCharacters} 不得结束。`,
+    '确认顶层 schemaVersion 是数字 1；优先按 system 规定的嵌套 plan（chapterGoal、centralConflict、beats）和 content 字段输出；content 必须是完整章节正文，不是摘要、提纲、片段或短结尾；确认达到动态最低汉字线后再输出 JSON。',
+    '只输出一个顶层 JSON object，不要把 plan 或 content 提升到顶层，也不要在正文之外输出解释。若无法可靠补全 plan，至少保留完整正文；客户端会补齐最小 plan，但不会接受空正文。',
+  ].join('\n');
+}
+
+function repairLengthDirective(report: ContinuationControlReport): string {
+  const deficit = Math.max(0, report.allowedMinHan - report.currentHan);
+  if (deficit > 0) {
+    return [
+      '【Repair 本地扩写硬指令】',
+      `Control 已由客户端本地计数：当前 ${report.currentHan} 个汉字，目标 ${report.targetHan} 个，最低合格线 ${report.allowedMinHan} 个；至少还缺 ${deficit} 个汉字。`,
+      '当前 Writer 正文不合格，Repair 必须真正扩写完整终稿，不能原样返回、只润色几句、只追加摘要或把缺口交给用户。扩写必须服务于当前事件链、人物互动和章末钩子，并在本地最低线以上再结束。',
+    ].join('\n');
+  }
+  if (report.currentHan > report.allowedMaxHan) {
+    return [
+      '【Repair 本地收束硬指令】',
+      `Control 已由客户端本地计数：当前 ${report.currentHan} 个汉字，合法上限 ${report.allowedMaxHan} 个。`,
+      'Repair 必须在保留完整事件链和章末钩子的前提下收束完整终稿，不能仅返回裁剪说明或局部修改。',
+    ].join('\n');
+  }
+  return `【Repair 本地长度确认】Control 已由客户端本地计数：当前 ${report.currentHan} 个汉字，处于 ${report.allowedMinHan}–${report.allowedMaxHan} 合法区间；仍必须输出完整终稿。`;
 }
 
 function refsBlock(view: {
@@ -118,8 +151,8 @@ export function compileContinuationV4WriterMessages(
       role: 'system',
       content: [
         '你是原著续写 V4 Writer。只输出一个 JSON object，不要 Markdown、代码围栏、解释、思考过程或标题。',
-        '顶层必须严格为 {"schemaVersion":1,"plan":{"chapterGoal":"","centralConflict":"","beats":[{"id":"","summary":""}]},"content":""}。content 必须是完整初稿正文。',
         writerLengthContract(view),
+        '顶层必须严格为 {"schemaVersion":1,"plan":{"chapterGoal":"","centralConflict":"","beats":[{"id":"","summary":""}]},"content":""}。content 必须是完整初稿正文。',
         lockedBlock(view.lockedRules),
         `【用户本章要求】\n${view.userInstruction}`,
         `【冻结 Canon】\n${json(canon)}`,
@@ -136,7 +169,11 @@ export function compileContinuationV4WriterMessages(
     },
     {
       role: 'user',
-      content: `生成完整初稿。不得输出任何 JSON 外壳之外的文字；正文不能是摘要或提纲。\n\n${view.userInstruction}`,
+      content: [
+        '生成完整初稿。不得输出任何 JSON 外壳之外的文字；正文不能是摘要或提纲。',
+        view.userInstruction,
+        writerLengthTailReminder(view),
+      ].join('\n\n'),
     },
   ];
 }
@@ -230,9 +267,12 @@ export function compileContinuationV4RepairMessages(input: {
       role: 'system',
       content: [
         '你是原著续写 V4 Repair。输出完整终稿 envelope，不输出局部修订、不输出偏移、不输出补丁、不输出摘要、解释、Markdown 或思考过程。',
-        '顶层必须为 {"schemaVersion":1,"content":"完整终稿","appliedCheckerIssueIds":[],"appliedControlSuggestionIds":[],"unappliedItems":[]}。content 必须覆盖完整原稿的有效事件链、人物互动、情绪转折和自然章末。',
+        '这是严格结构协议，不是建议：schemaVersion、content、appliedCheckerIssueIds、appliedControlSuggestionIds、unappliedItems 五个顶层字段一个都不能省略；三个数组即使为空也必须保留。',
+        '唯一合格的顶层结构是 {"schemaVersion":1,"content":"完整终稿","appliedCheckerIssueIds":[],"appliedControlSuggestionIds":[],"unappliedItems":[]}。只允许使用 content 保存正文；finalText、final_content、text、draft、result 等别名均不合格。',
+        'content 的值必须是完整、连续、可直接作为章节正文的纯文本，覆盖完整原稿的有效事件链、人物互动、情绪转折和自然章末；content 不能是 JSON、Markdown、说明文字或只包含新增段落。不得输出 patches、offset、replacement 等局部修改字段。',
         `完整终稿汉字数必须在 ${contract.minHanCharacters}–${contract.maxHanCharacters} 范围内；本地 Final Gate 会重新计数。`,
         '修订优先级：用户锁定规则 / Canon hard facts / 已确认状态 > Checker 有证据的 error > Control 硬长度区间 > 章节目标与 Writer plan > 原著风格 > 外部补充。',
+        '对每个 Checker severity=error 或 blocking 的 issue，必须把报告中原样给出的 issueId 填入 appliedCheckerIssueIds；对 Control 报告中的每条 suggestion，必须把原样 suggestionId 填入 appliedControlSuggestionIds；合格终稿的 unappliedItems 必须为空。只填写 id 不代表完成修订，客户端还会检查终稿是否真正改变并满足 Control 的方向。',
         lockedBlock(view.lockedRules),
         canonGuardBlock(view),
         stateBlock(view),
@@ -242,6 +282,7 @@ export function compileContinuationV4RepairMessages(input: {
         supplementBlock(view),
         `【Checker 报告】\n${checks.map(renderCheck).join('\n') || '（无可操作语义问题）'}`,
         `【Control 报告】\n${json(input.controlReport)}`,
+        repairLengthDirective(input.controlReport),
         planBlock(input.plan),
         refsBlock(view),
         outputBudgetBlock(view),
@@ -253,7 +294,8 @@ export function compileContinuationV4RepairMessages(input: {
         '【完整 Writer 初稿开始】',
         input.artifactText,
         '【完整 Writer 初稿结束】',
-        '现在只输出完整终稿 JSON envelope。',
+        '现在只输出完整终稿 JSON envelope。输出前逐项检查五个顶层字段均存在，数组字段即使为空也存在；逐项落实 Checker/Control 要求，将 unappliedItems 保持为空，并将占位内容替换为完整终稿正文：',
+        '{"schemaVersion":1,"content":"在此放完整终稿纯文本","appliedCheckerIssueIds":[],"appliedControlSuggestionIds":[],"unappliedItems":[]}',
       ].join('\n\n'),
     },
   ];

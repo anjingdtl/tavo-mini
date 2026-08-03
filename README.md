@@ -5,11 +5,11 @@
 把灵感、资料和章节放在一台手机里，安心写完你的长篇故事。
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#开始使用)
-[![Version](https://img.shields.io/badge/Version-V2.11.14-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.11.15-blue.svg)](CHANGELOG.md)
 
 </div>
 
-当前版本：**V2.11.14** · 支持 Android 7.0 及以上设备
+当前版本：**V2.11.15** · 支持 Android 7.0 及以上设备
 
 ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮助你管理作品、写章节、整理人物和世界观，也可以按你的设置调用 AI 辅助创作。作品数据默认保存在手机本地；是否使用在线模型，始终由你决定。
 
@@ -19,7 +19,7 @@ ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮�
 
 新建作品后就能建立章节、填写梗概、记录人物和伏笔。编辑器会自动保存，章节还可以保留多个修订版本，方便比较和回退。
 
-如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 31**。
+如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 32**。
 
 ### 让 AI 帮你，而不是替你失控
 
@@ -34,6 +34,9 @@ ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮�
 - 已定稿章节会逐步沉淀为长期故事记忆，后续章节能继续参考；
 - 模型上下文会按实际可用窗口自动分配，窗口更大时会获得更多有价值的前文，而不是机械截断；
 - 每次续写前都可以查看“实际请求”和“资料分配”（含原著风格画像的级别 / token / 降级原因，并区分 Planner 与 Writer），知道模型读到了什么。
+- 原著续写 V4 FULL-Control 会先生成完整 Writer 初稿，再并行运行 Checker 一致性审查与 Control 篇幅控制；只有 Checker 存在有证据的 error/blocking，或 Control action 不是 keep / 存在修订建议时才进入一次 Repair，Repair 输出完整终稿并接受本地 Final Gate；全程最多四次物理请求。
+- Writer 的动态汉字目标会在提示词头部和输出前最后检查处重复注入；Control 的汉字数由客户端本地统计，不能被模型自报数覆盖。Checker 的质量问题不会因为篇幅合格而被跳过，只有无可修复语义问题且 Control 为 keep 时才安全短路 Repair。
+- Local Final Gate 会继续硬拦截空正文、未实际修订、协议泄漏、重复退化和不符合 Control 修订方向的候选；篇幅区间只作为 warning，不会单独否决质量更好的 Repair。
 
 AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及人物关系、世界事实等重要变化，应用会保留可审核的状态建议，不会悄悄把猜测当作既定事实。
 
@@ -86,9 +89,9 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 ## 获取正式安装包
 
-正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.14-release.apk`
+正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.15-release.apk`
 
-构建标识：`versionName=V2.11.14`，`versionCode=2111400`。
+构建标识：`versionName=V2.11.15`，`versionCode=2111500`。
 
 ## 开发者参考
 
@@ -96,6 +99,7 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 - [发布 APK 构建指南](docs/RELEASE_APK_BUILD.md)
 - [发布验收清单](docs/RELEASE_CHECKLIST.md)
+- [V4 FULL-Control 验收报告](docs/optimization/continuation-full-control-v4-validation-report.md)
 - [完整版本变更](CHANGELOG.md)
 
-The current version is **V2.11.14**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, and text-to-speech.
+The current version is **V2.11.15**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, and text-to-speech.
