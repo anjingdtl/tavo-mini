@@ -291,14 +291,6 @@ export const openAICompatibleProvider: LLMProvider = {
             if (options.thinking) {
               requestBody.thinking = options.thinking;
             }
-            // DeepSeek V4 reasoning effort (plan §5.1). Only forward when the
-            // caller explicitly enabled thinking AND supplied an effort. The V3
-            // Runner freezes this for DeepSeek V4 and omits it for other
-            // providers via the capability policy, so the provider never has to
-            // guess whether the endpoint supports it.
-            if (options.thinking?.type === 'enabled' && options.reasoning_effort) {
-              requestBody.reasoning_effort = options.reasoning_effort;
-            }
             const sendRequest = () =>
               fetch(config.url, {
                 method: 'POST',
@@ -321,17 +313,6 @@ export const openAICompatibleProvider: LLMProvider = {
                 );
               if (!responseFormatUnsupported) {
                 throw formatLLMError(response.status, text);
-              }
-              // V3 physical-request budget (plan §5.1): the first fetch already
-              // consumed the slot the Runner reserved. Before issuing this
-              // additional fetch to retry without response_format, give the
-              // Runner a chance to reserve another slot against the 4-fetch cap.
-              // If the hook throws, the extra fetch is aborted — the 5th
-              // physical request never happens.
-              if (options.beforeAdditionalHttpAttempt) {
-                await options.beforeAdditionalHttpAttempt({
-                  attemptKind: 'format_fallback',
-                });
               }
               delete requestBody.response_format;
               response = await sendRequest();

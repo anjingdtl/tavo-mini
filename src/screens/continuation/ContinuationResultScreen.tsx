@@ -60,11 +60,6 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [repairRound, setRepairRound] = useState(0);
   const [checks, setChecks] = useState<ContinuationCheckResult[]>([]);
   const [stageTelemetry, setStageTelemetry] = useState<Record<string, any>>({});
-  const [v3TokenUsage, setV3TokenUsage] = useState<{
-    physicalRequestCount?: number;
-    maxPhysicalRequests?: number;
-    requests?: any[];
-  }>({});
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -77,19 +72,8 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       try {
         const usage = JSON.parse(r.tokenUsageJson || '{}');
         setStageTelemetry(usage.stages ?? {});
-        // V3 captures physical request accounting at the top level.
-        if (usage.workflowVersion === 3) {
-          setV3TokenUsage({
-            physicalRequestCount: usage.physicalRequestCount,
-            maxPhysicalRequests: usage.maxPhysicalRequests,
-            requests: usage.requests,
-          });
-        } else {
-          setV3TokenUsage({});
-        }
       } catch {
         setStageTelemetry({});
-        setV3TokenUsage({});
       }
       const p = await getPlan(runId);
       setPlan(p?.plan ?? null);
@@ -339,77 +323,6 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     </View>
   );
 
-  const renderV3StageTelemetry = () => {
-    if (run?.workflowVersion !== 3) return null;
-    const physicalCount = v3TokenUsage.physicalRequestCount ?? 0;
-    const maxPhysical = v3TokenUsage.maxPhysicalRequests ?? 4;
-    const requests = v3TokenUsage.requests ?? [];
-    const stageRows = requests.map(req => {
-      const stageLabel =
-        req.stage === 'writer'
-          ? 'Thinking Writer'
-          : req.stage === 'initial_checker'
-          ? 'Initial Checker'
-          : req.stage === 'integrated_reviser'
-          ? 'Integrated Reviser'
-          : req.stage === 'final_checker'
-          ? 'Final Checker'
-          : req.stage;
-      const tokens = [
-        typeof req.promptTokens === 'number'
-          ? `prompt ${req.promptTokens}`
-          : null,
-        typeof req.reasoningTokens === 'number'
-          ? `reasoning ${req.reasoningTokens}`
-          : null,
-        typeof req.completionTokens === 'number'
-          ? `completion ${req.completionTokens}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join(' · ');
-      return `- #${req.ordinal} ${stageLabel} (${req.attemptKind}) ${req.outcome}${tokens ? ' · ' + tokens : ''}${req.finishReason ? ' · finish=' + req.finishReason : ''}`;
-    });
-    const localInitial = stageTelemetry.localInitialGate as any;
-    const localFinal = stageTelemetry.localFinalGate as any;
-    const localRows: string[] = [];
-    if (localInitial) {
-      localRows.push(
-        `Initial 本地门禁：长度=${localInitial.lengthStatus}（${localInitial.actualHanCharacters} 汉字）；自重复=${localInitial.duplicateStatus}；${localInitial.outcome}`,
-      );
-    }
-    if (localFinal) {
-      localRows.push(
-        `Final 本地门禁：长度=${localFinal.lengthStatus}（${localFinal.actualHanCharacters} 汉字）；自重复=${localFinal.duplicateStatus}；${localFinal.outcome}`,
-      );
-    }
-    const text = [
-      `物理请求 ${physicalCount}/${maxPhysical}（正常 2 次、需要综合修订时 4 次）`,
-      ...stageRows,
-      ...localRows,
-    ].join('\n');
-    return (
-      <View style={[styles.resultCard, { backgroundColor: colors.card }]}>
-        <Button
-          label={`V3 质量优先 · 物理请求 ${physicalCount}/${maxPhysical}`}
-          variant="ghost"
-          onPress={() => toggleExpanded('v3_telemetry')}
-        />
-        <Text style={[styles.stageMeta, { color: colors.accent }]}>
-          DeepSeek V4 Thinking/high 四阶段；只展示非敏感指标
-        </Text>
-        {expanded.has('v3_telemetry') && (
-          <Text
-            selectable
-            style={[styles.stageText, { color: colors.textPrimary }]}
-          >
-            {text}
-          </Text>
-        )}
-      </View>
-    );
-  };
-
   const renderCompletedResult = () => {
     const planText = plan
       ? [
@@ -472,7 +385,6 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           {repairRound > 0 ? ` · 已自动修复 ${repairRound} 轮` : ''}
           {` · 正文 ${body.length} 字`}
         </Text>
-        {renderV3StageTelemetry()}
         {resultSections.map(section => (
           <View
             key={section.id}
@@ -533,9 +445,6 @@ export const ContinuationResultScreen: React.FC<Props> = ({
 
     if (run.state === 'failed') {
       // Show only the short service message; never prompt/body/credentials.
-      const isV3QualityFailure =
-        run.workflowVersion === 3 &&
-        run.errorCode === 'v3_quality_gate_failed';
       return (
         <Card>
           <Text style={[styles.h, { color: colors.danger }]}>生成失败</Text>
@@ -547,11 +456,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
               Canon 快照不一致或未就绪，请重新分析原著后再发起。
             </Text>
           )}
-          {isV3QualityFailure ? (
-            <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
-              V3 质量优先工作流未通过最终质量门禁（长度、自重复或语义检查）。本次结果已保留供诊断；你可以查看、复制正文或放弃后重新发起续写，但不能作为合格候选采纳。
-            </Text>
-          ) : run.errorCode === 'cold_start' ? (
+          {run.errorCode === 'cold_start' ? (
             <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
               应用重启中断了生成，可从此前阶段恢复。
             </Text>
@@ -640,28 +545,6 @@ export const ContinuationResultScreen: React.FC<Props> = ({
 
     // awaiting_user with an adoptable artifact (original path)
     if (run.state === 'awaiting_user') {
-      // V3 quality-first: forbid risk adoption and extra Repair. A V3 run that
-      // reaches awaiting_user is already quality-gate clean; a failed V3 run
-      // never reaches awaiting_user (it goes to state=failed, handled below).
-      // If somehow a V3 run is awaiting_user but has open severe checks, show
-      // the diagnostics but never the risk-adopt button.
-      if (run.workflowVersion === 3) {
-        return (
-          <View style={styles.decisionActions}>
-            <Button
-              label="放弃"
-              variant="ghost"
-              onPress={doAbandon}
-              disabled={busy}
-            />
-            <Button
-              label={busy ? '采纳中…' : '采纳'}
-              onPress={() => doAdopt()}
-              disabled={busy || !body || reviewBlocked}
-            />
-          </View>
-        );
-      }
       if (reviewBlocked) {
         return (
           <>

@@ -38,7 +38,6 @@ import {
 import {
   buildContinuationContext,
   compileWriterMessages,
-  compileV3WriterMessages,
   ensureGenerationSettings,
 } from '../services/continuation/generation';
 import { resolveContinuationWriterOutputBudget } from '../services/continuation/generation/continuationContextBudget';
@@ -268,16 +267,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         setContinuationBudgetSummary(
           `有效窗口 ${result.trace.effectiveWindow ?? '—'}（标称窗口的 80%） · 输出上限 ${result.trace.requestedMaxTokens ?? '—'}（标称窗口的 20%） · 计划份额 ${Math.round((result.trace.planShare ?? 0) * 100)}%`,
         );
-        // V3 runs use the V3 Writer prompt (schemaVersion=2, dynamic target).
-        // V1/V2 previews keep their original Writer compiler.
-        const isV3Preview = result.snapshot.workflowVersion === 3;
-        const writerMsgs = isV3Preview
-          ? compileV3WriterMessages(result.snapshot)
-          : compileWriterMessages(result.snapshot);
+        const writerMsgs = compileWriterMessages(result.snapshot);
         setMessages(
           writerMsgs.map(m => ({
             ...m,
-            content: `${isV3Preview ? '【V3 Thinking Writer：同次返回 plan + content】' : '【Writer：同次返回 plan + content】'}\n${m.content}`,
+            content: `【Writer：同次返回 plan + content】\n${m.content}`,
           })),
         );
         return;
