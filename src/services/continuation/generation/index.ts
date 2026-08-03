@@ -9,9 +9,21 @@ export {
   findLatestAdoptedRunForChapter,
   listRunsForProject,
   listRunningRuns,
+  insertArtifact,
   getLatestArtifact,
+  getLatestArtifactForStage,
+  getLatestEligibleArtifact,
   getArtifactById,
   getArtifactForRun,
+  getEligibleArtifactForRun,
+  getStageResult,
+  listStageResults,
+  ensureContinuationV4StageResults,
+  reserveContinuationStage,
+  updateStageResult,
+  finalizeContinuationV4Repair,
+  finalizeContinuationV4LocalGate,
+  newContinuationStageResultId,
   getPlan,
   listChecksForArtifact,
   listChecksForRun,
@@ -32,8 +44,42 @@ export {
   markChecksAutoRepaired,
   newContinuationRunId,
 } from './generationRepository';
-export { buildContinuationContext } from './continuationContextBuilder';
-export type { BuildContinuationContextInput } from './continuationContextBuilder';
+export {
+  buildContinuationContext,
+  buildContinuationV4Context,
+} from './continuationContextBuilder';
+export type {
+  BuildContinuationContextInput,
+  BuildContinuationV4ContextInput,
+} from './continuationContextBuilder';
+export {
+  assertContinuationStageBudget,
+  preflightContinuationStageBudget,
+  resolveContinuationStageBudget,
+  planContinuationV4ContextBudget,
+  resolveContinuationV4BudgetPreview,
+} from './continuationV4Budget';
+export type {
+  ContinuationStageBudgetPreflight,
+  ContinuationV4BudgetPreview,
+  ContinuationV4BudgetPreviewInput,
+  ContinuationV4Stage,
+  ContinuationV4StageBudget,
+  FrozenContinuationStageModel,
+  ResolveContinuationStageBudgetInput,
+} from './continuationV4Budget';
+export {
+  buildContinuationV4StageViews,
+  hashContinuationV4StageView,
+  EXTERNAL_SUPPLEMENT_WRAPPER,
+} from './continuationV4ContextViews';
+export {
+  buildContinuationControlMetrics,
+  buildContinuationControlFallback,
+  parseContinuationControlReport,
+  resolveContinuationControlReport,
+} from './continuationControl';
+export type { ContinuationControlParseResult } from './continuationControl';
 export {
   selectContinuationAnchor,
   type ContinuationAnchor,
@@ -46,6 +92,11 @@ export {
   compileCheckerMessages,
   compileRepairMessages,
   compileStateExtractionMessages,
+  compileContinuationV4WriterMessages,
+  compileContinuationV4CheckerMessages,
+  compileContinuationV4ControlMessages,
+  compileContinuationV4RepairMessages,
+  continuationV4ProtocolSkeletonTokens,
 } from './continuationPromptCompiler';
 export {
   runDeterministicChecks,
@@ -54,7 +105,26 @@ export {
   filterBySettings,
   uncheckedCategories,
 } from './continuationChecker';
-export { tryDeterministicRepair, shouldRunRepair } from './continuationRepairService';
+export {
+  tryDeterministicRepair,
+  tryDeterministicRepairWithReport,
+  shouldRunRepair,
+} from './continuationRepairService';
+export {
+  applyRepairPatches,
+  applyParsedRepairPatches,
+  parseRepairPatches,
+  validateRepairPatches,
+  validateRepairPatchCoverage,
+  isRepairCandidateUsable,
+} from './continuationRepairPatch';
+export type { DeterministicRepairResult } from './continuationRepairService';
+export type {
+  RepairPatch,
+  RepairPatchCoverage,
+  RepairCandidateMode,
+  RepairCoverageIssue,
+} from './continuationRepairPatch';
 export {
   getEffectiveContinuationState,
   confirmProposal,
@@ -81,6 +151,16 @@ export {
   parseWriterResult,
 } from './continuationGenerationRunner';
 export type { StartContinuationRunInput, StageLlmCaller } from './continuationGenerationRunner';
+export type { ContinuationV4LocalGateInput } from './generationRepository';
+export {
+  startContinuationV4Run,
+  resumeContinuationV4Run,
+  markContinuationV4StagesCancelled,
+  runContinuationV4LocalFinalGate,
+  validateContinuationV4RepairCompliance,
+  parseContinuationV4WriterEnvelope,
+  parseContinuationV4RepairEnvelope,
+} from './continuationV4Runner';
 export { summarizeTrace, parseTraceJson } from './continuationContextTrace';
 export {
   extractAndSaveStyleProfile,

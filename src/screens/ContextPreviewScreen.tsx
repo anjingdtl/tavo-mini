@@ -36,11 +36,16 @@ import {
   resolveLLMRequestConfigById,
 } from '../services/llm';
 import {
-  buildContinuationContext,
-  compileWriterMessages,
+  buildContinuationV4Context,
+  compileContinuationV4WriterMessages,
   ensureGenerationSettings,
 } from '../services/continuation/generation';
-import { resolveContinuationWriterOutputBudget } from '../services/continuation/generation/continuationContextBudget';
+import {
+  type ContinuationV4BudgetPreview,
+  type ContinuationV4StageBudget,
+  type FrozenContinuationStageModel,
+} from '../services/continuation/generation/continuationV4Budget';
+import { ensureContextAutomationPolicy } from '../services/contextAutoAllocator';
 import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type {
   ContextTraceItem,
@@ -160,6 +165,18 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   const [continuationPreview, setContinuationPreview] = useState(false);
   const [continuationBudgetSummary, setContinuationBudgetSummary] =
     useState('');
+  const [continuationStageBudgets, setContinuationStageBudgets] =
+    useState<ContinuationV4BudgetPreview | null>(null);
+  const [continuationFreezeSummary, setContinuationFreezeSummary] = useState<{
+    policyHash: string;
+    canonSnapshotId: string;
+    canonRevision: number;
+    styleProfileHash: string | null;
+    supplementHashes: string[];
+  } | null>(null);
+  const [selectedContinuationStage, setSelectedContinuationStage] = useState<
+    'writer' | 'checker' | 'control' | 'repair'
+  >('writer');
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -178,27 +195,19 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         setContinuationPreview(true);
         const requestConfig = await resolveLLMRequestConfig();
         const settings = await ensureGenerationSettings(chapter.project_id);
+        const policy = await ensureContextAutomationPolicy();
         const resolveStage = async (id: number | null) =>
           id == null
             ? requestConfig
             : resolveLLMRequestConfigById(id).catch(() => requestConfig);
-        // New previews show the actual Writer request. Planner is only a
-        // compatibility path for historical runs.
         const writerConfig = await resolveStage(settings.writerLlmConfigId);
-        // Layout budget follows Writer window (Spec §7.1) — never Math.min across
-        // stages, which would under-allocate style relative to the real run.
-        const writerWindow =
-          (typeof writerConfig.context_window === 'number' &&
-          writerConfig.context_window > 0
-            ? writerConfig.context_window
-            : null) ||
-          requestConfig.context_window ||
-          8192;
-        const writerOutputBudget = resolveContinuationWriterOutputBudget({
-          contextWindow: writerWindow,
-          targetChapterChars: settings.targetChapterChars,
-          configuredMaxOutputTokens: writerConfig.max_output_tokens,
-        });
+        const writerWindow = Number(writerConfig.context_window);
+        const writerMaxOutputTokens = Number(writerConfig.max_output_tokens);
+        if (!(writerWindow > 0) || !(writerMaxOutputTokens > 0)) {
+          throw new Error(
+            'Writer 模型缺少有效的 context_window 或 max_output_tokens，请先完善 LLM 配置。',
+          );
+        }
         const continuationNumbering = await getContinuationChapterNumbering(
           chapter.project_id,
         );
@@ -207,16 +216,64 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           `续写${continuationNumbering.getDefaultTitle(
             chapter.position as any,
           )}，保持与前文一致。`;
-        const result = await buildContinuationContext({
+        const stageConfig = async (
+          id: number | null,
+          fallback: typeof writerConfig,
+        ): Promise<FrozenContinuationStageModel> => {
+          const config = await resolveStage(id);
+          const contextWindow = Number(config.context_window);
+          const maxOutputTokens = Number(config.max_output_tokens);
+          if (!(contextWindow > 0) || !(maxOutputTokens > 0)) {
+            throw new Error(
+              'V4 阶段模型缺少有效的 context_window 或 max_output_tokens，请先完善 LLM 配置。',
+            );
+          }
+          return {
+            configId: Number(config.id || fallback.id || 0),
+            contextWindow,
+            maxOutputTokens,
+          };
+        };
+        const [checkerModel, controlModel, repairModel] = await Promise.all([
+          stageConfig(settings.checkerLlmConfigId, writerConfig),
+          stageConfig(settings.controlLlmConfigId ?? settings.checkerLlmConfigId, writerConfig),
+          stageConfig(settings.repairLlmConfigId, writerConfig),
+        ]);
+        const result = await buildContinuationV4Context({
           projectId: chapter.project_id,
           targetChapterId: chapter.id,
           targetPosition: chapter.position as any,
           currentChapterContent: chapter.content || '',
           userInstruction: instruction,
-          modelContextLimit: writerWindow,
-          maxOutputTokens: writerOutputBudget.requestedMaxTokens,
-          initialWriterOutputTokens: writerOutputBudget.requestedMaxTokens,
           activeLlmConfigId: requestConfig.id || 1,
+          policy,
+          stageModels: {
+            writer: {
+              configId: Number(writerConfig.id || 0),
+              contextWindow: writerWindow,
+              maxOutputTokens: writerMaxOutputTokens,
+            },
+            checker: checkerModel,
+            control: controlModel,
+            repair: repairModel,
+          },
+        });
+        const writerMessages = compileContinuationV4WriterMessages(
+          result.snapshot.stageViews.writer,
+        );
+        setContinuationStageBudgets({ stages: result.snapshot.stageBudgets });
+        setContinuationFreezeSummary({
+          policyHash: result.snapshot.budgetPolicy.policyHash,
+          canonSnapshotId: result.snapshot.canon.snapshotId,
+          canonRevision: result.snapshot.canon.revision,
+          styleProfileHash: result.snapshot.style?.profileHash ?? null,
+          supplementHashes: Array.from(
+            new Set(
+              Object.values(result.snapshot.stageViews).flatMap(view =>
+                'supplements' in view ? view.supplements.contentHashes : [],
+              ),
+            ),
+          ),
         });
         setTrace(
           result.trace.categories.map(category => {
@@ -264,12 +321,14 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           }),
         );
         setEstimatedInputTokens(result.trace.totalInputTokens);
+        const writerBudget = result.snapshot.stageBudgets.writer;
         setContinuationBudgetSummary(
-          `有效窗口 ${result.trace.effectiveWindow ?? '—'}（标称窗口的 80%） · 输出上限 ${result.trace.requestedMaxTokens ?? '—'}（标称窗口的 20%） · 计划份额 ${Math.round((result.trace.planShare ?? 0) * 100)}%`,
+          `V4 policy ${policy.allocatorVersion} · Writer 有效窗口 ${
+            writerBudget.effectiveWindow
+          } · Writer 动态输出 min/max ${writerBudget.minimumOutputTokens}/${writerBudget.maximumOutputTokens}`,
         );
-        const writerMsgs = compileWriterMessages(result.snapshot);
         setMessages(
-          writerMsgs.map(m => ({
+          writerMessages.map(m => ({
             ...m,
             content: `【Writer：同次返回 plan + content】\n${m.content}`,
           })),
@@ -278,6 +337,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       }
       setContinuationPreview(false);
       setContinuationBudgetSummary('');
+      setContinuationStageBudgets(null);
+      setContinuationFreezeSummary(null);
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(chapter.project_id);
       const result = await buildContext(
@@ -427,6 +488,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({
     );
   };
 
+  const selectedBudget: ContinuationV4StageBudget | null =
+    continuationStageBudgets
+      ? continuationStageBudgets.stages[selectedContinuationStage]
+      : null;
+
   return (
     <Screen>
       <Header
@@ -466,6 +532,115 @@ export const ContextPreviewScreen: React.FC<Props> = ({
             : `${trace.length} 项资料分配`}
         </Text>
       </View>
+      {continuationPreview && continuationStageBudgets ? (
+        <Card style={styles.stageBudgetCard}>
+          <Text
+            style={[
+              styles.stageBudgetTitle,
+              { color: theme.colors.textPrimary },
+            ]}
+          >
+            V4 四节点预算（模拟 / 实际 Writer 已测）
+          </Text>
+          <View style={styles.stageTabRow}>
+            {(['writer', 'checker', 'control', 'repair'] as const).map(
+              stage => (
+                <TouchableOpacity
+                  key={stage}
+                  onPress={() => setSelectedContinuationStage(stage)}
+                  style={[
+                    styles.stageTab,
+                    {
+                      borderColor:
+                        selectedContinuationStage === stage
+                          ? theme.colors.accent
+                          : theme.colors.border,
+                      backgroundColor:
+                        selectedContinuationStage === stage
+                          ? theme.colors.accentSoft
+                          : theme.colors.card,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.stageTabText,
+                      {
+                        color:
+                          selectedContinuationStage === stage
+                            ? theme.colors.accent
+                            : theme.colors.textSecondary,
+                      },
+                    ]}
+                  >
+                    {stage.toUpperCase()}
+                  </Text>
+                </TouchableOpacity>
+              ),
+            )}
+          </View>
+          {selectedBudget ? (
+            <View style={styles.stageBudgetDetails}>
+              <Text
+                style={[
+                  styles.stageBudgetLine,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
+                context_window {selectedBudget.contextWindow.toLocaleString()} ·
+                有效窗口 {selectedBudget.effectiveWindow.toLocaleString()}
+              </Text>
+              <Text
+                style={[
+                  styles.stageBudgetLine,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
+                实测 Prompt{' '}
+                {selectedBudget.compiledPromptTokens.toLocaleString()} · 动态
+                min/max {selectedBudget.minimumOutputTokens.toLocaleString()} /{' '}
+                {selectedBudget.maximumOutputTokens.toLocaleString()}
+              </Text>
+              {selectedBudget.blockedReason ? (
+                <Text
+                  style={[
+                    styles.stageBudgetLine,
+                    { color: theme.colors.warning },
+                  ]}
+                >
+                  {selectedBudget.blockedReason}
+                </Text>
+              ) : null}
+              {continuationFreezeSummary ? (
+                <Text
+                  style={[
+                    styles.stageBudgetLine,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
+                  policy {continuationFreezeSummary.policyHash.slice(0, 12)} ·
+                  Canon {continuationFreezeSummary.canonSnapshotId.slice(0, 12)}@
+                  {continuationFreezeSummary.canonRevision} · Style{' '}
+                  {continuationFreezeSummary.styleProfileHash?.slice(0, 12) ||
+                    'none'}
+                </Text>
+              ) : null}
+              {continuationFreezeSummary ? (
+                <Text
+                  style={[
+                    styles.stageBudgetLine,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
+                  Supplement hashes{' '}
+                  {continuationFreezeSummary.supplementHashes.length || 0} ·
+                  预览不发送请求、不创建 run
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+        </Card>
+      ) : null}
       {showMessages ? (
         <FlatList
           data={messages}
@@ -603,4 +778,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
   },
+  stageBudgetCard: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+  },
+  stageBudgetTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: spacing.xs,
+  },
+  stageTabRow: { flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap' },
+  stageTab: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  stageTabText: { fontSize: 12, fontWeight: '700' },
+  stageBudgetDetails: { marginTop: spacing.sm, gap: 3 },
+  stageBudgetLine: { fontSize: 12, lineHeight: 18 },
 });

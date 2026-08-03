@@ -29,8 +29,12 @@ import { buildV27toV28Statements } from './v27-to-v28';
 import { buildV28toV29Statements, migrateV28ToV29 } from './v28-to-v29';
 import { buildV29toV30Statements } from './v29-to-v30';
 import { buildV30toV31Statements } from './v30-to-v31';
+import {
+  buildV31toV32Statements,
+  migrateV31ToV32,
+} from './v31-to-v32';
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -193,6 +197,12 @@ const MIGRATIONS: Migration[] = [
     breaking: false,
     buildStatements: async () => buildV30toV31Statements(),
   },
+  {
+    from: 31,
+    to: 32,
+    breaking: false,
+    buildStatements: async () => buildV31toV32Statements(),
+  },
 ];
 
 export async function runMigrations(
@@ -215,6 +225,8 @@ export async function runMigrations(
       await migrateV25ToV26(db);
     } else if (migration.from === 28 && migration.to === 29) {
       await migrateV28ToV29(db);
+    } else if (migration.from === 31 && migration.to === 32) {
+      await migrateV31ToV32(db);
     } else {
       const statements = await migration.buildStatements(db);
       await executeTransaction(db, statements, { faultDomain: 'migration' });

@@ -34,10 +34,29 @@ const LENGTH_ISSUE_SUBTYPES = new Set([
   'chapter_length_over_target',
 ]);
 
+/**
+ * Count Han characters in the implementation's supported ranges: BMP Unified
+ * Ideographs, Extension A, Compatibility Ideographs, U+20000–U+2FA1F, and 〇.
+ * This intentionally does not claim complete Unicode Han coverage. Iterate by
+ * code point so supplementary-plane Han characters count once, while Repair
+ * offsets remain UTF-16 code-unit offsets elsewhere in the workflow.
+ */
 export function countHanCharacters(text: string): number {
-  return (
-    text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g) ?? []
-  ).length;
+  let count = 0;
+  for (let i = 0; i < text.length; ) {
+    const code = text.codePointAt(i) ?? 0;
+    if (isHanCodePoint(code)) count += 1;
+    i += code > 0xffff ? 2 : 1;
+  }
+  return count;
+}
+
+function isHanCodePoint(code: number): boolean {
+  if (code >= 0x4e00 && code <= 0x9fff) return true;
+  if (code >= 0x3400 && code <= 0x4dbf) return true;
+  if (code >= 0xf900 && code <= 0xfaff) return true;
+  if (code >= 0x20000 && code <= 0x2fa1f) return true;
+  return code === 0x3007;
 }
 
 export function resolveContinuationLengthContract(

@@ -9,7 +9,7 @@ describe('migration schema matrix', () => {
   // full Phase 3 continuation table set. Starting versions 21+ already carry
   // those tables (created by an earlier 20→21 migration on their own upgrade
   // path), so the Phase 3 assertions below only hold for fromVersion <= 20.
-  test.each(Array.from({ length: 18 }, (_, index) => index + 3))(
+  test.each(Array.from({ length: 29 }, (_, index) => index + 3))(
     'upgrades schema %i to the current schema',
     async fromVersion => {
       const mock = createMigrationDb({ schemaVersion: fromVersion });
@@ -47,19 +47,36 @@ describe('migration schema matrix', () => {
       expect(mock.schemas.has('continuation_state_proposals')).toBe(true);
       expect(mock.schemas.has('continuation_state_events')).toBe(true);
       expect(mock.schemas.has('continuation_state_sync_outbox')).toBe(true);
+      // Schema 32 V4 persistence primitives are present on every path.
+      expect(
+        mock.schemas.get('continuation_generation_settings')?.has(
+          'control_llm_config_id',
+        ),
+      ).toBe(true);
+      expect(mock.schemas.has('continuation_generation_stage_results')).toBe(
+        true,
+      );
+      expect(
+        mock.schemas.get('continuation_generation_artifacts')?.has(
+          'eligibility_status',
+        ),
+      ).toBe(true);
+      expect(
+        mock.schemas.get('continuation_generation_artifacts')?.has(
+          'rejection_code',
+        ),
+      ).toBe(true);
       // Schema 26 versioned style profile table exists after every upgrade
       // path (the v25→v26 migration rebuilds the legacy table).
-      if (fromVersion <= 25) {
-        expect(mock.schemas.has('continuation_style_profiles')).toBe(true);
-        expect(
-          mock.schemas.get('continuation_style_profiles')?.has('profile_hash'),
-        ).toBe(true);
-        expect(
-          mock.schemas
-            .get('continuation_settings')
-            ?.has('active_style_profile_id'),
-        ).toBe(true);
-      }
+      expect(mock.schemas.has('continuation_style_profiles')).toBe(true);
+      expect(
+        mock.schemas.get('continuation_style_profiles')?.has('profile_hash'),
+      ).toBe(true);
+      expect(
+        mock.schemas
+          .get('continuation_settings')
+          ?.has('active_style_profile_id'),
+      ).toBe(true);
     },
   );
 
@@ -103,6 +120,7 @@ describe('migration schema matrix', () => {
       'idx_continuation_runs_project_created',
       'idx_continuation_runs_state',
       'idx_continuation_artifacts_run_created',
+      'idx_continuation_stage_results_run_state',
       'idx_continuation_checks_run_artifact',
       'idx_continuation_proposals_project_status',
       'idx_continuation_events_project_position',

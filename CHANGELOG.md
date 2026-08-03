@@ -1,6 +1,16 @@
 # Changelog
 
-## [2.11.14] - 2026-08-02
+## [2.11.15] - 2026-08-03
+
+### Added
+
+- 新增原著续写 V4 FULL-Control 独立流水线：Writer 初稿 → Checker / Control 并行 → Repair 完整终稿 → Local Final Gate，最多四次物理 LLM 请求；Checker 的有证据 `error/blocking` 会强制进入 Repair，不能因篇幅合格而短路。
+- Schema 升级到 32：新增四阶段结果、请求 reservation、artifact eligibility / rejection 与原子终稿落库；Canon 仍只经 `CanonQueryService` 读取，外部资料只接收冻结的 `external_supplement` binding。
+- Writer 动态汉字目标同时注入提示词头部和输出前检查；Control 使用客户端本地汉字计数，Repair 只接受完整终稿 envelope，不接受 offset Patch；Local Final Gate 的篇幅区间只作 warning，不阻断已完成质量修订且通过本地安全检查的 Repair。
+
+### Validation
+
+- `npm run verify`、`npm run test:coverage`、Android Debug 构建通过；真实 DeepSeek V4 配置在 Android 模拟器完成 Canon ready → V4 FULL-Control，Writer 本地 2,133 汉字触发 Control `expand`，Repair 修订到 2,429 汉字并成为默认 eligible 候选；Local Final Gate 将篇幅不足保留为 warning，物理请求 4/4。完整脱敏证据见 `docs/optimization/continuation-full-control-v4-validation-report.md`。
 
 ### Fixed
 

@@ -1,4 +1,4 @@
-"""Generate and validate data-rich SQLite fixtures for Schema 3..13.
+"""Generate and validate data-rich SQLite fixtures for Schema 3..31.
 
 The app's Jest migration matrix already covers creation of missing tables with
 mocked react-native-sqlite-storage. These fixtures add a second, file-backed
@@ -15,18 +15,36 @@ data-preservation testing without replacing the focused missing-table tests.
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "__tests__" / "fixtures" / "databases"
-VERSIONS = range(3, 14)
-CURRENT_SCHEMA = 14
+VERSIONS = range(3, 32)
+CURRENT_SCHEMA = 32
 NOW = "2026-07-15T00:00:00.000Z"
 LONG_TEXT = ("这是一段用于迁移验证的超长正文。Long migration content. " * 900).strip()
 SPECIAL_TEXT = '特殊字符：中文 / English — emoji 😀 <tag> & quote "quoted"'
+
+
+def migration_statements() -> dict[int, list[dict[str, object]]]:
+    """Load the real TS migration builders once for fixture generation/checks."""
+    emitter = ROOT / "scripts" / "emit-migration-fixture-sql.js"
+    result = subprocess.run(
+        ["node", str(emitter)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    return {int(item["from"]): item["statements"] for item in payload}
 
 
 BASE_TABLES: dict[str, str] = {
@@ -458,57 +476,40 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, definition: str)
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
 
 
-def apply_migrations(conn: sqlite3.Connection, from_version: int) -> None:
-    for version in range(from_version, CURRENT_SCHEMA):
-        with conn:
-            if version == 3:
-                conn.execute("INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'character', id, 1 FROM characters WHERE project_id > 0")
-                conn.execute("INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'worldbook', id, enabled FROM worldbook_entries WHERE project_id > 0")
-                conn.execute("INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'note', id, 1 FROM notes WHERE project_id > 0")
-                conn.execute("INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled) SELECT project_id, 'preset', id, 1 FROM presets WHERE project_id > 0")
-            elif version == 4:
-                conn.execute("INSERT INTO worldbook_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) SELECT 0, '未分组/手动条目', 1, 50000, 0, ? WHERE NOT EXISTS (SELECT 1 FROM worldbook_collections)", (NOW,))
-                conn.execute("UPDATE worldbook_entries SET collection_id = (SELECT id FROM worldbook_collections ORDER BY id ASC LIMIT 1) WHERE collection_id = 0")
-            elif version == 5:
-                conn.execute("CREATE TABLE IF NOT EXISTS content_revisions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, target_type TEXT NOT NULL, target_id INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, source_ref TEXT, created_at TEXT NOT NULL, FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_content_revisions_target ON content_revisions(target_type, target_id, created_at DESC)")
-            elif version == 6:
-                conn.execute("CREATE TABLE IF NOT EXISTS generation_drafts (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, target_type TEXT NOT NULL, target_id INTEGER NOT NULL, content TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, pipeline_task_id TEXT, token_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_generation_drafts_target ON generation_drafts(target_type, target_id, created_at DESC)")
-            elif version == 7:
-                add_column_if_missing(conn, "llm_usage_logs", "model_name TEXT NOT NULL DEFAULT ''")
-                add_column_if_missing(conn, "llm_usage_logs", "project_id INTEGER NOT NULL DEFAULT 0")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_month ON llm_usage_logs(project_id, created_at)")
-            elif version == 8:
-                conn.execute("CREATE TABLE IF NOT EXISTS project_note_config (project_id INTEGER PRIMARY KEY, mode TEXT NOT NULL DEFAULT 'none', style_weights TEXT NOT NULL DEFAULT '{}', retrieval_top_k INTEGER NOT NULL DEFAULT 5, retrieval_fragment_chars INTEGER NOT NULL DEFAULT 1000, enabled_note_ids TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL, FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE)")
-                conn.execute("CREATE TABLE IF NOT EXISTS note_style_profiles (note_id INTEGER PRIMARY KEY, profile_text TEXT NOT NULL DEFAULT '', profile_json TEXT NOT NULL DEFAULT '{}', analyzed_at TEXT NOT NULL, source_hash TEXT NOT NULL DEFAULT '', FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE)")
-            elif version == 9:
-                add_column_if_missing(conn, "llm_usage_logs", "llm_config_id INTEGER NOT NULL DEFAULT 0")
-                add_column_if_missing(conn, "llm_usage_logs", "llm_config_name TEXT NOT NULL DEFAULT ''")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_logs_config ON llm_usage_logs(llm_config_id, created_at)")
-            elif version == 10:
-                conn.execute("CREATE TABLE IF NOT EXISTS character_collections (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, max_tokens INTEGER NOT NULL DEFAULT 50000, estimated_tokens INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE)")
-                add_column_if_missing(conn, "characters", "collection_id INTEGER NOT NULL DEFAULT 0")
-                conn.execute("INSERT INTO character_collections (project_id, name, enabled, max_tokens, estimated_tokens, created_at) SELECT 0, '全部人物卡', 1, 50000, COALESCE((SELECT SUM(estimated_tokens) FROM characters), 0), ? WHERE NOT EXISTS (SELECT 1 FROM character_collections LIMIT 1)", (NOW,))
-                conn.execute("UPDATE characters SET collection_id = (SELECT id FROM character_collections ORDER BY id ASC LIMIT 1) WHERE collection_id = 0")
-            elif version == 11:
-                conn.execute("CREATE TABLE IF NOT EXISTS local_llm_models (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, original_filename TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE, file_size INTEGER NOT NULL DEFAULT 0, sha256 TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'importing', backend_preference TEXT NOT NULL DEFAULT 'auto', validated_backend TEXT, context_length INTEGER, max_output_tokens INTEGER, load_time_ms INTEGER, first_token_ms INTEGER, tokens_per_second REAL, imported_at TEXT NOT NULL, last_used_at TEXT, last_validated_at TEXT, error_code TEXT, error_message TEXT)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_local_llm_models_status ON local_llm_models(status)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_local_llm_models_last_used ON local_llm_models(last_used_at)")
-                add_column_if_missing(conn, "llm_config", "provider_type TEXT NOT NULL DEFAULT 'openai_compatible'")
-                add_column_if_missing(conn, "llm_config", "local_model_id TEXT")
-                add_column_if_missing(conn, "llm_config", "local_backend TEXT")
-                add_column_if_missing(conn, "llm_config", "context_window INTEGER NOT NULL DEFAULT 4096")
-                add_column_if_missing(conn, "llm_config", "max_output_tokens INTEGER NOT NULL DEFAULT 4000")
-            elif version == 12:
-                add_column_if_missing(conn, "local_llm_models", "prompt_template TEXT DEFAULT 'chatml'")
-                add_column_if_missing(conn, "local_llm_models", "actual_backend TEXT DEFAULT NULL")
-                conn.execute("UPDATE local_llm_models SET status = 'unavailable', error_message = 'LiteRT-LM 引擎已移除，请重新导入 GGUF 模型' WHERE status != 'unavailable'")
-                conn.execute("UPDATE llm_config SET provider_type = 'llama_cpp' WHERE provider_type = 'local_litertlm'")
-                conn.execute("UPDATE llm_config SET local_backend = 'cpu' WHERE provider_type = 'llama_cpp'")
-            elif version == 13:
-                add_column_if_missing(conn, "project_note_config", "retrieval_fragment_chars INTEGER NOT NULL DEFAULT 1000")
-            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', ?)", (str(version + 1),))
+def apply_migrations(
+    conn: sqlite3.Connection,
+    from_version: int,
+    to_version: int = CURRENT_SCHEMA,
+    migrations: dict[int, list[dict[str, object]]] | None = None,
+) -> None:
+    migrations = migrations or migration_statements()
+
+    def execute_statement(statement: dict[str, object]) -> None:
+        sql = str(statement["sql"])
+        normalized = " ".join(sql.split())
+        alter = re.match(r"ALTER TABLE (\w+) ADD COLUMN (\w+)", normalized, re.IGNORECASE)
+        if alter and alter.group(2) in columns(conn, alter.group(1)):
+            return
+        conn.execute(sql, tuple(statement.get("params", [])))
+
+    for version in range(from_version, to_version):
+        statements = migrations[version]
+        needs_parent_rebuild_flags = version == 31
+        if needs_parent_rebuild_flags:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("PRAGMA legacy_alter_table = ON")
+        try:
+            with conn:
+                for statement in statements:
+                    execute_statement(statement)
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', ?)",
+                    (str(version + 1),),
+                )
+        finally:
+            if needs_parent_rebuild_flags:
+                conn.execute("PRAGMA legacy_alter_table = OFF")
+                conn.execute("PRAGMA foreign_keys = ON")
 
 
 def assert_no_duplicates(conn: sqlite3.Connection, table: str) -> None:
@@ -518,7 +519,10 @@ def assert_no_duplicates(conn: sqlite3.Connection, table: str) -> None:
         assert total == distinct, f"duplicate primary keys in {table}"
 
 
-def validate_fixture(path: Path) -> None:
+def validate_fixture(
+    path: Path,
+    migrations: dict[int, list[dict[str, object]]],
+) -> None:
     version = int(path.stem.split("-")[1])
     source = sqlite3.connect(path)
     conn = sqlite3.connect(":memory:")
@@ -526,7 +530,7 @@ def validate_fixture(path: Path) -> None:
     source.close()
     conn.execute("PRAGMA foreign_keys = ON")
     try:
-        apply_migrations(conn, version)
+        apply_migrations(conn, version, CURRENT_SCHEMA, migrations)
     except Exception as error:
         raise RuntimeError(f"migration failed for {path.name}") from error
     assert conn.execute("SELECT value FROM settings WHERE key = 'schema_version'").fetchone()[0] == str(CURRENT_SCHEMA)
@@ -539,7 +543,6 @@ def validate_fixture(path: Path) -> None:
         "worldbook_entries": 4,
         "notes": 4,
         "llm_config": 2,
-        "local_llm_models": 1,
         "content_revisions": 2,
         "generation_drafts": 2,
         "pipeline_tasks": 2,
@@ -548,6 +551,9 @@ def validate_fixture(path: Path) -> None:
         actual = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         assert actual == expected, f"{path.name}: {table} expected {expected}, got {actual}"
         assert_no_duplicates(conn, table)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'local_llm_models'"
+    ).fetchone()[0] == 0
     assert conn.execute("SELECT value FROM settings WHERE key = 'current_project_id'").fetchone()[0] == "2"
     assert conn.execute("SELECT COUNT(*) FROM chapters WHERE length(content) > 10000").fetchone()[0] >= 1
     assert conn.execute("SELECT COUNT(*) FROM chapters WHERE content = '' OR synopsis = ''").fetchone()[0] >= 1
@@ -559,8 +565,7 @@ def validate_fixture(path: Path) -> None:
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     required_columns = {
         "project_note_config": {"retrieval_fragment_chars"},
-        "local_llm_models": {"prompt_template", "actual_backend"},
-        "llm_config": {"provider_type", "local_model_id", "local_backend", "context_window", "max_output_tokens"},
+        "llm_config": {"provider_type", "context_window", "max_output_tokens"},
         "llm_usage_logs": {"model_name", "project_id", "llm_config_id", "llm_config_name"},
     }
     for table, required in required_columns.items():
@@ -570,20 +575,23 @@ def validate_fixture(path: Path) -> None:
 
 def generate() -> None:
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    migrations = migration_statements()
     for version in VERSIONS:
         path = FIXTURE_DIR / f"schema-{version}.db"
         if path.exists():
             path.unlink()
         conn = sqlite3.connect(path)
-        seed_fixture(conn, version)
+        seed_fixture(conn, 3)
+        apply_migrations(conn, 3, version, migrations)
         conn.close()
 
 
-def check() -> None:
+def check(migrations: dict[int, list[dict[str, object]]] | None = None) -> None:
+    migrations = migrations or migration_statements()
     missing = [str(FIXTURE_DIR / f"schema-{version}.db") for version in VERSIONS if not (FIXTURE_DIR / f"schema-{version}.db").exists()]
     assert not missing, "missing fixtures: " + ", ".join(missing)
     for version in VERSIONS:
-        validate_fixture(FIXTURE_DIR / f"schema-{version}.db")
+        validate_fixture(FIXTURE_DIR / f"schema-{version}.db", migrations)
     print(f"validated {len(list(VERSIONS))} migration fixtures to Schema {CURRENT_SCHEMA}")
 
 

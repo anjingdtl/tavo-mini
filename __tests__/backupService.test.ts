@@ -260,6 +260,81 @@ describe('backupService', () => {
     expect((RNFS.writeFile as jest.Mock).mock.calls[0][1]).not.toMatch(/sk-|Bearer |"api_key"\s*:\s*"[^"\n]+"|password|token/i);
   });
 
+  test('backup and restore preserve V4 policy, stage results, and rejected eligibility', async () => {
+    const backup = await makeV3Backup({
+      settings: [
+        { key: 'context_auto_policy_v2', value: '{"schemaVersion":2}' },
+      ],
+      continuation_generation_runs: [
+        {
+          id: 'ct_backup_v4',
+          project_id: 1,
+          chapter_id: 1,
+          state: 'awaiting_user',
+          stage: 'awaiting_user',
+        },
+      ],
+      continuation_generation_artifacts: [
+        {
+          id: 'ca_rejected',
+          run_id: 'ct_backup_v4',
+          stage: 'repair',
+          repair_round: 0,
+          parent_artifact_id: null,
+          content: '拒绝终稿',
+          content_hash: 'rejected-hash',
+          eligibility_status: 'rejected',
+          rejection_code: 'length_out_of_range',
+          created_at: '2026-08-03T00:00:00.000Z',
+        },
+      ],
+      continuation_generation_stage_results: [
+        {
+          id: 'csr_repair',
+          run_id: 'ct_backup_v4',
+          stage: 'repair',
+          status: 'success',
+          request_reserved: 1,
+          request_count: 1,
+          model_config_id: 2,
+          input_tokens: 100,
+          output_tokens: 200,
+          min_output_tokens: 80,
+          max_output_tokens: 220,
+          output_json: '{"kind":"full_final"}',
+          artifact_id: 'ca_rejected',
+          error_code: null,
+          error_message: null,
+          started_at: '2026-08-03T00:00:00.000Z',
+          completed_at: '2026-08-03T00:00:02.000Z',
+          created_at: '2026-08-03T00:00:00.000Z',
+          updated_at: '2026-08-03T00:00:02.000Z',
+        },
+      ],
+    });
+    writeBackup(backup);
+    const mockDb = createMockDb(makeFullTables());
+
+    await restoreFromBackup(mockDb, '/fake/path/v4.json', {
+      createPreRestoreBackup: false,
+    });
+
+    expect(mockDb.tableData.settings).toContainEqual({
+      key: 'context_auto_policy_v2',
+      value: '{"schemaVersion":2}',
+    });
+    expect(mockDb.tableData.continuation_generation_stage_results).toContainEqual(
+      expect.objectContaining({ id: 'csr_repair', artifact_id: 'ca_rejected' }),
+    );
+    expect(mockDb.tableData.continuation_generation_artifacts).toContainEqual(
+      expect.objectContaining({
+        id: 'ca_rejected',
+        eligibility_status: 'rejected',
+        rejection_code: 'length_out_of_range',
+      }),
+    );
+  });
+
   test('createBackup uses kind-specific prefixes', async () => {
     const mockDb = createMockDb({});
     await createBackup(mockDb, '1.2.0', 6, 'automatic');

@@ -16,6 +16,7 @@ import {
   parseCheckerLlmJson,
   runDeterministicChecks,
 } from './continuationChecker';
+import type { RawCheckIssue } from './continuationChecker';
 import {
   compileCheckerMessages,
   compilePlannerMessages,
@@ -25,14 +26,17 @@ import {
 import {
   shouldRunRepair,
   tryDeterministicRepair,
+  tryDeterministicRepairWithReport,
 } from './continuationRepairService';
 import {
   buildAcceptOpenChecksStatement,
   buildOutboxInsertStatement,
   casUpdateRunState,
   contentRevisionHash,
+  getEligibleArtifactForRun,
   getArtifactForRun,
   getLatestArtifact,
+  getLatestEligibleArtifact,
   getPlan,
   getRunById,
   findLatestAdoptedRunForChapter,
@@ -49,6 +53,7 @@ import {
 } from './generationRepository';
 import type {
   ContinuationArtifact,
+  ContinuationCheckResult,
   ContinuationContextSnapshot,
   ContinuationContextTrace,
   ContinuationGenerationRun,
@@ -66,6 +71,14 @@ import { executeTransaction } from '../../database/transaction';
 import { v4 } from '../../uuidBridge';
 import { processContinuationOutbox } from './continuationStateOutboxWorker';
 import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
+import { activeContinuationControllers as activeControllers } from './continuationRunControllers';
+import {
+  markContinuationV4StagesCancelled,
+  resumeContinuationV4Run,
+  startContinuationV4Run,
+} from './continuationV4Runner';
+import { CanonQueryService } from '../canon/canonQueryService';
+import { continuationSourceReader } from '../continuationSourceReader';
 import {
   CONTINUATION_BUDGET_POLICY,
   planStageCapacity,
@@ -73,10 +86,17 @@ import {
   type ResolvedStageCapacity,
 } from './continuationContextBudget';
 import { type ContinuationStageBudgets } from './continuationContextBudget';
-import { resolveContinuationLengthContract } from './continuationLengthContract';
 import {
-  applyRepairPatches,
+  evaluateContinuationLength,
+  isContinuationLengthIssueSubtype,
+  resolveContinuationLengthContract,
+} from './continuationLengthContract';
+import {
+  applyParsedRepairPatches,
   isRepairCandidateUsable,
+  parseRepairPatches,
+  validateRepairPatchCoverage,
+  validateRepairPatches,
 } from './continuationRepairPatch';
 export {
   applyRepairPatches,
@@ -115,9 +135,9 @@ export interface StartContinuationRunInput {
   callStage?: StageLlmCaller;
   /** Skip checker LLM (deterministic only). */
   deterministicOnly?: boolean;
+  /** Test/compatibility escape hatch for historical V2 fixtures. */
+  workflowVersion?: 2 | 4;
 }
-
-const activeControllers = new Map<string, AbortController>();
 
 function defaultPlan(instruction: string): ContinuationPlan {
   return {
@@ -397,6 +417,15 @@ function writerEmptyResponseError(result: StageLlmCallResult): Error {
 export async function startContinuationRun(
   input: StartContinuationRunInput,
 ): Promise<ContinuationGenerationRun> {
+  if (input.workflowVersion === 2) {
+    return startContinuationRunLegacy(input);
+  }
+  return startContinuationV4Run(input);
+}
+
+async function startContinuationRunLegacy(
+  input: StartContinuationRunInput,
+): Promise<ContinuationGenerationRun> {
   const activeCfg = await resolveLLMRequestConfig().catch(() => null);
   const activeId = (activeCfg as any)?.id ?? 0;
   const generationSettings = await ensureGenerationSettings(input.projectId);
@@ -663,6 +692,142 @@ function previousStandardCallCount(tokenUsage: Record<string, any>): number {
 
 function standardWorkflow(snapshot: ContinuationContextSnapshot): boolean {
   return snapshot.workflowVersion === 2;
+}
+
+function isSevereCheck(check: ContinuationCheckResult): boolean {
+  return check.severity === 'error' || check.severity === 'blocking';
+}
+
+function isLocalDeterministicSubtype(subtype: string): boolean {
+  return (
+    isContinuationLengthIssueSubtype(subtype) ||
+    subtype === 'future_leakage' ||
+    subtype === 'resurrection_forbidden' ||
+    subtype === 'source_overlap' ||
+    subtype === 'continuation_anchor_overlap'
+  );
+}
+
+const REPAIR_REBIND_SEARCH_RADIUS = 4096;
+
+function findNearestUniqueExcerptMatch(input: {
+  content: string;
+  excerpt: string;
+  originalStart: number;
+}): { start: number; end: number } | null {
+  const { content, excerpt, originalStart } = input;
+  if (
+    !excerpt ||
+    !Number.isInteger(originalStart) ||
+    originalStart < 0 ||
+    originalStart > content.length
+  ) {
+    return null;
+  }
+
+  const latestStart = content.length - excerpt.length;
+  const searchStart = Math.max(
+    0,
+    originalStart - REPAIR_REBIND_SEARCH_RADIUS,
+  );
+  const searchEnd = Math.min(
+    latestStart,
+    originalStart + REPAIR_REBIND_SEARCH_RADIUS,
+  );
+  if (searchEnd < searchStart) return null;
+
+  const matches: Array<{ start: number; end: number }> = [];
+  let cursor = searchStart;
+  while (cursor <= searchEnd) {
+    const start = content.indexOf(excerpt, cursor);
+    if (start < 0 || start > searchEnd) break;
+    matches.push({ start, end: start + excerpt.length });
+    cursor = start + 1;
+  }
+  if (matches.length === 0) return null;
+
+  const nearestDistance = Math.min(
+    ...matches.map(match => Math.abs(match.start - originalStart)),
+  );
+  const nearest = matches.filter(
+    match => Math.abs(match.start - originalStart) === nearestDistance,
+  );
+  return nearest.length === 1 ? nearest[0] : null;
+}
+
+function rebindCheckToContent(
+  check: ContinuationCheckResult,
+  content: string,
+): ContinuationCheckResult {
+  if (!check.generatedExcerpt) {
+    return {
+      ...check,
+      generatedStart: null,
+      generatedEnd: null,
+    };
+  }
+  if (
+    check.generatedStart != null &&
+    check.generatedEnd != null &&
+    check.generatedStart >= 0 &&
+    check.generatedEnd >= check.generatedStart &&
+    check.generatedEnd <= content.length &&
+    content.slice(check.generatedStart, check.generatedEnd) ===
+      check.generatedExcerpt
+  ) {
+    return { ...check };
+  }
+  const match =
+    check.generatedStart == null
+      ? null
+      : findNearestUniqueExcerptMatch({
+          content,
+          excerpt: check.generatedExcerpt,
+          originalStart: check.generatedStart,
+        });
+  if (!match) {
+    return {
+      ...check,
+      generatedStart: null,
+      generatedEnd: null,
+    };
+  }
+  return {
+    ...check,
+    generatedStart: match.start,
+    generatedEnd: match.end,
+  };
+}
+
+function recheckedIssueToCheck(
+  issue: RawCheckIssue,
+  template: ContinuationCheckResult | undefined,
+  runId: string,
+  chapterId: number,
+  artifact: ContinuationArtifact,
+): ContinuationCheckResult {
+  return {
+    id: template?.id ?? 0,
+    runId: template?.runId ?? runId,
+    chapterId: template?.chapterId ?? chapterId,
+    artifactId: artifact.id,
+    artifactHash: artifact.contentHash,
+    category: issue.category,
+    subtype: issue.subtype,
+    severity: issue.severity,
+    confidence: issue.confidence,
+    generatedStart: issue.generatedStart,
+    generatedEnd: issue.generatedEnd,
+    generatedExcerpt: issue.generatedExcerpt,
+    description: issue.description,
+    entityRefType: issue.entityRefType ?? null,
+    entityRefId: issue.entityRefId ?? null,
+    evidenceIds: issue.evidenceIds ?? [],
+    suggestedFix: issue.suggestedFix ?? null,
+    resolutionStatus: 'open',
+    createdAt: template?.createdAt ?? '',
+    updatedAt: template?.updatedAt ?? '',
+  };
 }
 
 function frozenModelConfigForStage(
@@ -947,11 +1112,89 @@ async function runStandardStages(
     c => c.severity === 'error' || c.severity === 'blocking',
   );
   if (severeChecks.length > 0) {
-    let repaired = tryDeterministicRepair(artifact.content, severeChecks);
-    let repairUsedLlm = false;
+    const originalArtifact = artifact;
     const repairAlreadyAttempted =
       Number(tokenUsage.repair?.requestCount ?? 0) > 0;
-    if (!repaired && !opts.deterministicOnly && !repairAlreadyAttempted) {
+    let deterministicCandidate = originalArtifact.content;
+    let deterministicHandledIds = new Set<number>();
+    const deterministicResult = tryDeterministicRepairWithReport(
+      originalArtifact.content,
+      severeChecks,
+    );
+    if (deterministicResult) {
+      deterministicCandidate = deterministicResult.content;
+      deterministicHandledIds = new Set(deterministicResult.repairedIssueIds);
+      if (
+        !isRepairCandidateUsable(
+          originalArtifact.content,
+          deterministicCandidate,
+          settings.targetChapterChars,
+          'standard',
+        )
+      ) {
+        deterministicCandidate = originalArtifact.content;
+        deterministicHandledIds = new Set<number>();
+      }
+    }
+
+    const allowedEvidence = new Set(snapshot.bundles.canon.evidenceRefs);
+    const localCandidateIssues = filterBySettings(
+      bindIssuesToArtifact(
+        runDeterministicChecks(deterministicCandidate, snapshot),
+        deterministicCandidate,
+        allowedEvidence,
+      ),
+      settings,
+    );
+    const localTemplateChecks = checks.filter(c =>
+      isLocalDeterministicSubtype(c.subtype),
+    );
+    const localCandidateChecks = localCandidateIssues.map(issue =>
+      recheckedIssueToCheck(
+        issue,
+        localTemplateChecks.find(
+          template =>
+            template.category === issue.category &&
+            template.subtype === issue.subtype,
+        ),
+        runId,
+        snapshot.targetChapterId,
+        originalArtifact,
+      ),
+    );
+    const localCandidateSevereChecks =
+      localCandidateChecks.filter(isSevereCheck);
+    const localOriginalIds = new Set(
+      checks.filter(c => isLocalDeterministicSubtype(c.subtype)).map(c => c.id),
+    );
+    const unresolvedLlmChecks = severeChecks
+      .filter(
+        check =>
+          !localOriginalIds.has(check.id) &&
+          !deterministicHandledIds.has(check.id),
+      )
+      .map(check => rebindCheckToContent(check, deterministicCandidate));
+    const repairChecks: ContinuationCheckResult[] = [];
+    const seenRepairIds = new Set<number>();
+    for (const check of [
+      ...localCandidateSevereChecks,
+      ...unresolvedLlmChecks,
+    ]) {
+      if (check.id !== 0 && seenRepairIds.has(check.id)) continue;
+      if (check.id !== 0) seenRepairIds.add(check.id);
+      repairChecks.push(check);
+    }
+
+    let repaired = deterministicCandidate;
+    let repairUsedLlm = false;
+    let repairRequestAttempted = false;
+    let repairCoverage: ReturnType<typeof validateRepairPatchCoverage> | null =
+      null;
+    if (
+      !opts.deterministicOnly &&
+      !repairAlreadyAttempted &&
+      repairChecks.length
+    ) {
       const repairCapacity = capacityForStage(snapshot, 'repair');
       if (!repairCapacity) {
         tokenUsage.repair = {
@@ -961,30 +1204,85 @@ async function runStandardStages(
         };
       } else {
         try {
+          repairRequestAttempted = true;
           const repairResult = await call(
             'repair',
             compileRepairMessages(
               snapshot,
-              artifact.content,
-              severeChecks,
+              deterministicCandidate,
+              repairChecks,
               'patch',
             ),
             repairCapacity.maxOutputTokens,
             snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
             'json_object',
           );
-          repaired = applyRepairPatches(
-            artifact.content,
-            repairResult.text,
-          );
-          repairUsedLlm = repaired !== null;
-          if (!repaired) {
+          const patches = parseRepairPatches(repairResult.text);
+          const patchesValid =
+            patches !== null &&
+            validateRepairPatches(deterministicCandidate, patches);
+          if (!patches || !patchesValid) {
             tokenUsage.repair = {
               ...(tokenUsage.repair ?? {}),
               warning: 'invalid_patch_writer_artifact_retained',
               warningMessage:
-                'Repair 未返回可应用的 JSON 补丁，已保留修复前正文。',
+                'Repair 未返回通过 JSON、offset 和插入边界校验的补丁，已保留调用前正文。',
             };
+          } else {
+            repairCoverage = validateRepairPatchCoverage({
+              patches,
+              issues: repairChecks,
+            });
+            const patched = applyParsedRepairPatches(
+              deterministicCandidate,
+              patches,
+            );
+            const patchedLength = evaluateContinuationLength(
+              patched,
+              settings.targetChapterChars,
+            );
+            const lengthResolved =
+              repairCoverage.chapterLengthIssues.length > 0 &&
+              patchedLength.status === 'within';
+            const hasCoveredOrdinaryIssue =
+              repairCoverage.coveredIssues.length > 0;
+            const hasLengthIssue =
+              repairCoverage.chapterLengthIssues.length > 0;
+            const candidateUsable = isRepairCandidateUsable(
+              deterministicCandidate,
+              patched,
+              settings.targetChapterChars,
+              'standard',
+            );
+            const lengthSafelyImproved =
+              hasLengthIssue &&
+              patchedLength.status !== 'within' &&
+              candidateUsable;
+            const hasRepairProgress =
+              hasCoveredOrdinaryIssue ||
+              lengthResolved ||
+              lengthSafelyImproved;
+            if (
+              patched === deterministicCandidate ||
+              !hasRepairProgress ||
+              !candidateUsable
+            ) {
+              tokenUsage.repair = {
+                ...(tokenUsage.repair ?? {}),
+                warning: !candidateUsable
+                  ? 'repair_candidate_rejected_as_over_contracted'
+                  : hasCoveredOrdinaryIssue
+                  ? 'repair_candidate_rejected_as_unsafe'
+                  : 'repair_patch_coverage_failed_writer_artifact_retained',
+                warningMessage: hasCoveredOrdinaryIssue
+                  ? 'Repair 补丁虽有局部命中，但候选破坏动态长度契约、过度缩短或异常膨胀，已保留调用前正文。'
+                  : 'Repair 补丁没有覆盖任何普通严重问题，且未将章节长度带入合法范围，已保留调用前正文。',
+              };
+              repairCoverage = null;
+            } else {
+              repaired = patched;
+              repairUsedLlm = true;
+            }
           }
         } catch (repairError) {
           tokenUsage.repair = {
@@ -998,11 +1296,15 @@ async function runStandardStages(
           await persistUsage('repair').catch(() => {});
         }
       }
-    } else if (repaired) {
+    } else if (deterministicCandidate !== originalArtifact.content) {
       tokenUsage.repair = {
         ...(tokenUsage.repair ?? {}),
-        requestCount: 0,
-        skippedReason: 'deterministic_repair',
+        requestCount: Number(tokenUsage.repair?.requestCount ?? 0),
+        skippedReason: opts.deterministicOnly
+          ? 'deterministic_only'
+          : repairAlreadyAttempted
+          ? 'repair_already_attempted_deterministic_candidate_retained'
+          : 'deterministic_repair',
       };
     } else if (repairAlreadyAttempted) {
       tokenUsage.repair = {
@@ -1011,33 +1313,66 @@ async function runStandardStages(
       };
     }
 
-    if (
-      repaired &&
-      repaired !== artifact.content &&
-      !isRepairCandidateUsable(
-        artifact.content,
+    if (repaired !== originalArtifact.content) {
+      const finalLocalIssues = filterBySettings(
+        bindIssuesToArtifact(
+          runDeterministicChecks(repaired, snapshot),
+          repaired,
+          allowedEvidence,
+        ),
+        settings,
+      );
+      const finalLocalChecks = finalLocalIssues.map(issue =>
+        recheckedIssueToCheck(
+          issue,
+          localTemplateChecks.find(
+            template =>
+              template.category === issue.category &&
+              template.subtype === issue.subtype,
+          ),
+          runId,
+          snapshot.targetChapterId,
+          originalArtifact,
+        ),
+      );
+      const finalLength = evaluateContinuationLength(
         repaired,
         settings.targetChapterChars,
-      )
-    ) {
-      tokenUsage.repair = {
-        ...(tokenUsage.repair ?? {}),
-        warning: 'repair_candidate_rejected_as_over_contracted',
-        warningMessage:
-          'Repair 候选破坏本次动态长度契约、发生过度缩短或明显远离目标，已保留修复前 artifact；本次不重试，也不再次调用 Checker。',
-      };
-      repaired = null;
-      repairUsedLlm = false;
-      await persistUsage('repair').catch(() => {});
-    }
-
-    if (repaired && repaired !== artifact.content) {
-      await markChecksAutoRepaired(
-        runId,
-        artifact.id,
-        severeChecks.map(c => c.id),
       );
-      const parent = artifact;
+      const checksToMark = new Set<number>();
+      for (const check of severeChecks) {
+        if (check.id <= 0) continue;
+        if (deterministicHandledIds.has(check.id)) {
+          const resolved = isContinuationLengthIssueSubtype(check.subtype)
+            ? finalLength.status === 'within'
+            : !finalLocalChecks.some(
+                finalCheck =>
+                  finalCheck.subtype === check.subtype &&
+                  (!check.generatedExcerpt ||
+                    finalCheck.generatedExcerpt === check.generatedExcerpt),
+              );
+          if (resolved) checksToMark.add(check.id);
+        }
+      }
+      if (repairCoverage) {
+        for (const issue of repairCoverage.coveredIssues) {
+          if (issue.id > 0) checksToMark.add(issue.id);
+        }
+        if (finalLength.status === 'within') {
+          for (const issue of repairCoverage.chapterLengthIssues) {
+            if (issue.id > 0) checksToMark.add(issue.id);
+          }
+        }
+      }
+
+      if (checksToMark.size > 0) {
+        await markChecksAutoRepaired(
+          runId,
+          originalArtifact.id,
+          Array.from(checksToMark),
+        );
+      }
+      const parent = originalArtifact;
       artifact = await insertArtifact({
         runId,
         stage: 'repair',
@@ -1047,29 +1382,26 @@ async function runStandardStages(
       });
       // A Repair artifact is checked locally only. In particular, this branch
       // must never call the LLM Checker after either deterministic or LLM repair.
-      const repairedIssues = filterBySettings(
-        bindIssuesToArtifact(
-          runDeterministicChecks(artifact.content, snapshot),
-          artifact.content,
-          new Set(snapshot.bundles.canon.evidenceRefs),
-        ),
-        settings,
-      );
+      const unresolvedLlmIssues = severeChecks
+        .filter(check => !localOriginalIds.has(check.id))
+        .filter(check => !checksToMark.has(check.id))
+        .map(check => rebindCheckToContent(check, artifact!.content));
       await insertCheckResults(
-        repairedIssues.map(i => ({
+        [...finalLocalIssues, ...unresolvedLlmIssues].map(i => ({
+          ...i,
           runId,
           chapterId: snapshot.targetChapterId,
           artifactId: artifact!.id,
           artifactHash: artifact!.contentHash,
-          ...i,
         })),
       );
       tokenUsage.localVerify = {
         requestCount: 0,
         status: 'completed',
-        note: repairUsedLlm
-          ? 'Repair 后本地复核，未进行第二次 LLM 复检'
-          : '确定性修复后本地复核，未进行 LLM 复检',
+        note:
+          repairUsedLlm || repairRequestAttempted
+            ? 'Repair 后本地复核，未进行第二次 LLM 复检'
+            : '确定性修复后本地复核，未进行 LLM 复检',
       };
     }
   }
@@ -1233,32 +1565,86 @@ export async function repairContinuationArtifactOnce(
         `额外 Repair 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，候选正文保持不变。`,
       );
     }
-    const repaired = applyRepairPatches(artifact.content, result.text);
-    if (!repaired) {
+    const patches = parseRepairPatches(result.text);
+    if (!patches || !validateRepairPatches(artifact.content, patches)) {
       throw new Error(
-        '额外 Repair 未返回可应用的 JSON 补丁，候选正文保持不变',
+        '额外 Repair 未返回通过 JSON、offset 和插入边界校验的补丁，候选正文保持不变',
       );
     }
+    const coverage = validateRepairPatchCoverage({
+      patches,
+      issues: severeChecks,
+    });
+    const repaired = applyParsedRepairPatches(artifact.content, patches);
     if (repaired === artifact.content) {
       throw new Error('额外 Repair 未改变正文，候选正文保持不变');
     }
-    if (
-      !isRepairCandidateUsable(
-        artifact.content,
+    const repairedLocalIssues = filterBySettings(
+      bindIssuesToArtifact(
+        runDeterministicChecks(repaired, snapshot),
         repaired,
-        snapshot.settingsSnapshot.values.targetChapterChars,
-      )
-    ) {
+        new Set(snapshot.bundles.canon.evidenceRefs),
+      ),
+      snapshot.settingsSnapshot.values,
+    );
+    const repairedLength = evaluateContinuationLength(
+      repaired,
+      snapshot.settingsSnapshot.values.targetChapterChars,
+    );
+    const lengthResolved =
+      coverage.chapterLengthIssues.length > 0 &&
+      repairedLength.status === 'within';
+    const hasCoveredOrdinaryIssue = coverage.coveredIssues.length > 0;
+    const hasLengthIssue = coverage.chapterLengthIssues.length > 0;
+    const candidateUsable = isRepairCandidateUsable(
+      artifact.content,
+      repaired,
+      snapshot.settingsSnapshot.values.targetChapterChars,
+      'additional',
+    );
+    const lengthSafelyImproved =
+      hasLengthIssue && repairedLength.status !== 'within' && candidateUsable;
+    const hasRepairProgress =
+      hasCoveredOrdinaryIssue || lengthResolved || lengthSafelyImproved;
+    if (!hasRepairProgress) {
+      throw new Error(
+        '额外 Repair 补丁没有覆盖任何待修复的普通严重问题，候选正文保持不变',
+      );
+    }
+    if (!candidateUsable) {
       throw new Error(
         '额外 Repair 候选破坏动态长度契约、过度缩短或明显远离目标，已保留原候选；本次不再重试，也不会调用 LLM Checker。',
       );
     }
 
-    await markChecksAutoRepaired(
-      runId,
-      artifact.id,
-      severeChecks.map(c => c.id),
-    );
+    const checksToMark = new Set<number>();
+    for (const issue of coverage.coveredIssues) {
+      if (issue.id <= 0) continue;
+      if (isLocalDeterministicSubtype(issue.subtype)) {
+        const remains = repairedLocalIssues.some(
+          localIssue =>
+            localIssue.subtype === issue.subtype &&
+            (issue.generatedStart == null ||
+              localIssue.generatedStart === issue.generatedStart) &&
+            (issue.generatedEnd == null ||
+              localIssue.generatedEnd === issue.generatedEnd),
+        );
+        if (remains) continue;
+      }
+      checksToMark.add(issue.id);
+    }
+    if (lengthResolved) {
+      for (const issue of coverage.chapterLengthIssues) {
+        if (issue.id > 0) checksToMark.add(issue.id);
+      }
+    }
+    if (checksToMark.size > 0) {
+      await markChecksAutoRepaired(
+        runId,
+        artifact.id,
+        Array.from(checksToMark),
+      );
+    }
     const repairedArtifact = await insertArtifact({
       runId,
       stage: 'repair',
@@ -1266,21 +1652,17 @@ export async function repairContinuationArtifactOnce(
       repairRound: artifact.repairRound + 1,
       parentArtifactId: artifact.id,
     });
-    const repairedIssues = filterBySettings(
-      bindIssuesToArtifact(
-        runDeterministicChecks(repairedArtifact.content, snapshot),
-        repairedArtifact.content,
-        new Set(snapshot.bundles.canon.evidenceRefs),
-      ),
-      snapshot.settingsSnapshot.values,
-    );
+    const unresolvedCheckerIssues = severeChecks
+      .filter(check => !isLocalDeterministicSubtype(check.subtype))
+      .filter(check => !checksToMark.has(check.id))
+      .map(check => rebindCheckToContent(check, repairedArtifact.content));
     await insertCheckResults(
-      repairedIssues.map(i => ({
+      [...repairedLocalIssues, ...unresolvedCheckerIssues].map(i => ({
+        ...i,
         runId,
         chapterId: snapshot.targetChapterId,
         artifactId: repairedArtifact.id,
         artifactHash: repairedArtifact.contentHash,
-        ...i,
       })),
     );
     tokenUsage.localVerify = {
@@ -1628,6 +2010,9 @@ export async function confirmPlanAndContinue(
 ): Promise<void> {
   const run = await getRunById(runId);
   if (!run) throw new Error('run 不存在');
+  if (run.workflowVersion === 4) {
+    throw new Error('V4 不使用 Planner 确认步骤。');
+  }
   if (run.state === 'outdated') throw new ContinuationOutdatedError();
   if (run.state !== 'awaiting_user' || run.stage !== 'awaiting_user') {
     throw new Error('当前不在等待 Planner 确认状态');
@@ -1875,15 +2260,19 @@ async function continueFromWriter(
 }
 
 export async function cancelContinuationRun(runId: string): Promise<void> {
+  const run = await getRunById(runId);
   const c = activeControllers.get(runId);
   c?.abort();
   activeControllers.delete(runId);
-  await casUpdateRunState(runId, ['queued', 'running', 'awaiting_user'], {
+  const changed = await casUpdateRunState(runId, ['queued', 'running', 'awaiting_user'], {
     state: 'cancelled',
     errorCode: 'cancelled',
     errorMessage: '用户取消',
     completedAt: new Date().toISOString(),
   });
+  if (changed && run?.workflowVersion === 4) {
+    await markContinuationV4StagesCancelled(runId);
+  }
 }
 
 /**
@@ -1902,13 +2291,83 @@ async function assertContextFreshOrMarkOutdated(
   // test fixture) and should not be blocked here.
   if (run.sourceId == null && !run.canonSnapshotId) return;
 
-  const db = await openDatabase();
-  const [settingsRes] = await db.executeSql(
-    'SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id = ?',
-    [run.projectId],
-  );
-  if (settingsRes.rows.length === 0) {
-    // No settings row means the source was deleted; mark outdated.
+  // Historical V2 fixtures/runs retain their original freshness reader for
+  // backward compatibility. New V4 runs take the CanonQueryService branch
+  // below; no V4 caller can reach this legacy SQL path.
+  if (run.workflowVersion !== 4) {
+    const db = await openDatabase();
+    const [settingsRes] = await db.executeSql(
+      'SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id = ?',
+      [run.projectId],
+    );
+    if (settingsRes.rows.length === 0) {
+      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+        state: 'outdated',
+        errorCode: 'outdated',
+        errorMessage: 'source_missing',
+        completedAt: new Date().toISOString(),
+      });
+      throw new ContinuationOutdatedError();
+    }
+    const settings = settingsRes.rows.item(0);
+    if (run.sourceId != null && Number(settings.active_source_id) !== Number(run.sourceId)) {
+      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+        state: 'outdated',
+        errorCode: 'outdated',
+        errorMessage: 'source_changed',
+        completedAt: new Date().toISOString(),
+      });
+      throw new ContinuationOutdatedError();
+    }
+    const activeCanonId = settings.active_canon_snapshot_id;
+    if (run.canonSnapshotId || activeCanonId) {
+      if (
+        !activeCanonId ||
+        !run.canonSnapshotId ||
+        String(activeCanonId) !== String(run.canonSnapshotId)
+      ) {
+        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+          state: 'outdated',
+          errorCode: 'outdated',
+          errorMessage: 'canon_snapshot_changed',
+          completedAt: new Date().toISOString(),
+        });
+        throw new ContinuationOutdatedError();
+      }
+      const [snapRes] = await db.executeSql(
+        'SELECT revision FROM continuation_canon_snapshots WHERE id = ?',
+        [activeCanonId],
+      );
+      if (snapRes.rows.length === 0) {
+        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+          state: 'outdated',
+          errorCode: 'outdated',
+          errorMessage: 'canon_snapshot_deleted',
+          completedAt: new Date().toISOString(),
+        });
+        throw new ContinuationOutdatedError();
+      }
+      if (Number(snapRes.rows.item(0).revision) !== Number(run.canonRevision)) {
+        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+          state: 'outdated',
+          errorCode: 'outdated',
+          errorMessage: 'canon_revision_changed',
+          completedAt: new Date().toISOString(),
+        });
+        throw new ContinuationOutdatedError();
+      }
+    }
+    return;
+  }
+
+  let activeSource: Awaited<
+    ReturnType<typeof continuationSourceReader.getSnapshot>
+  >;
+  try {
+    activeSource = await continuationSourceReader.getSnapshot(run.projectId);
+  } catch {
+    // A missing active Source is observable through the bounded reader; V4
+    // adoption must not bypass CanonQueryService/reader boundaries with SQL.
     await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
       state: 'outdated',
       errorCode: 'outdated',
@@ -1917,10 +2376,8 @@ async function assertContextFreshOrMarkOutdated(
     });
     throw new ContinuationOutdatedError();
   }
-  const settings = settingsRes.rows.item(0);
-  const activeSourceId = settings.active_source_id;
   // Source mismatch (run frozen a source that is no longer active).
-  if (run.sourceId != null && Number(activeSourceId) !== Number(run.sourceId)) {
+  if (run.sourceId != null && Number(activeSource.sourceId) !== Number(run.sourceId)) {
     await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
       state: 'outdated',
       errorCode: 'outdated',
@@ -1930,7 +2387,19 @@ async function assertContextFreshOrMarkOutdated(
     throw new ContinuationOutdatedError();
   }
   // Canon snapshot mismatch: compare active snapshot id + revision.
-  const activeCanonId = settings.active_canon_snapshot_id;
+  let activeCanon: Awaited<ReturnType<typeof CanonQueryService.getActiveSnapshot>>;
+  try {
+    activeCanon = await CanonQueryService.getActiveSnapshot(run.projectId);
+  } catch {
+    await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
+      state: 'outdated',
+      errorCode: 'outdated',
+      errorMessage: 'canon_snapshot_deleted',
+      completedAt: new Date().toISOString(),
+    });
+    throw new ContinuationOutdatedError();
+  }
+  const activeCanonId = activeCanon.id;
   if (run.canonSnapshotId || activeCanonId) {
     if (
       !activeCanonId ||
@@ -1945,22 +2414,9 @@ async function assertContextFreshOrMarkOutdated(
       });
       throw new ContinuationOutdatedError();
     }
-    // Same snapshot id — verify its revision hasn't been bumped since the run.
-    const [snapRes] = await db.executeSql(
-      'SELECT revision FROM continuation_canon_snapshots WHERE id = ?',
-      [activeCanonId],
-    );
-    if (snapRes.rows.length === 0) {
-      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-        state: 'outdated',
-        errorCode: 'outdated',
-        errorMessage: 'canon_snapshot_deleted',
-        completedAt: new Date().toISOString(),
-      });
-      throw new ContinuationOutdatedError();
-    }
-    const currentRevision = Number(snapRes.rows.item(0).revision);
-    if (currentRevision !== Number(run.canonRevision)) {
+    // CanonQueryService returns the active revision; no V4 caller is allowed
+    // to inspect continuation_canon_snapshots directly.
+    if (Number(activeCanon.revision) !== Number(run.canonRevision)) {
       await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
         state: 'outdated',
         errorCode: 'outdated',
@@ -2005,8 +2461,12 @@ export async function adoptArtifactAsDraft(input: {
   // never relaxed by forceOverwrite.
   const artifact =
     (input.artifactId
-      ? await getArtifactForRun(run.id, input.artifactId)
-      : await getLatestArtifact(run.id)) ?? null;
+      ? run.workflowVersion === 4
+        ? await getEligibleArtifactForRun(run.id, input.artifactId)
+        : await getArtifactForRun(run.id, input.artifactId)
+      : run.workflowVersion === 4
+        ? await getLatestEligibleArtifact(run.id)
+        : await getLatestArtifact(run.id)) ?? null;
   if (!artifact) {
     throw new Error(
       input.artifactId
@@ -2339,6 +2799,9 @@ export async function resumeInterruptedRun(
 ): Promise<void> {
   const run = await getRunById(runId);
   if (!run) throw new Error('run 不存在');
+  if (run.workflowVersion === 4) {
+    return resumeContinuationV4Run(runId, callStage, deterministicOnly);
+  }
   if (run.state === 'outdated') throw new ContinuationOutdatedError();
   if (run.state !== 'interrupted') throw new Error('仅 interrupted 可恢复');
   if (!run.contextSnapshotJson) {
