@@ -645,3 +645,13 @@ export function compileStateExtractionMessages(
     },
   ];
 }
+
+// V4 keeps the full-control contracts isolated from the historical Planner /
+// Patch compiler while preserving this module as the public prompt entrypoint.
+export {
+  compileContinuationV4WriterMessages,
+  compileContinuationV4CheckerMessages,
+  compileContinuationV4ControlMessages,
+  compileContinuationV4RepairMessages,
+  continuationV4ProtocolSkeletonTokens,
+} from './continuationV4PromptCompiler';

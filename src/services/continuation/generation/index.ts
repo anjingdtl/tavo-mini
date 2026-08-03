@@ -41,12 +41,19 @@ export {
   markChecksAutoRepaired,
   newContinuationRunId,
 } from './generationRepository';
-export { buildContinuationContext } from './continuationContextBuilder';
-export type { BuildContinuationContextInput } from './continuationContextBuilder';
+export {
+  buildContinuationContext,
+  buildContinuationV4Context,
+} from './continuationContextBuilder';
+export type {
+  BuildContinuationContextInput,
+  BuildContinuationV4ContextInput,
+} from './continuationContextBuilder';
 export {
   assertContinuationStageBudget,
   preflightContinuationStageBudget,
   resolveContinuationStageBudget,
+  planContinuationV4ContextBudget,
   resolveContinuationV4BudgetPreview,
 } from './continuationV4Budget';
 export type {
@@ -59,6 +66,18 @@ export type {
   ResolveContinuationStageBudgetInput,
 } from './continuationV4Budget';
 export {
+  buildContinuationV4StageViews,
+  hashContinuationV4StageView,
+  EXTERNAL_SUPPLEMENT_WRAPPER,
+} from './continuationV4ContextViews';
+export {
+  buildContinuationControlMetrics,
+  buildContinuationControlFallback,
+  parseContinuationControlReport,
+  resolveContinuationControlReport,
+} from './continuationControl';
+export type { ContinuationControlParseResult } from './continuationControl';
+export {
   selectContinuationAnchor,
   type ContinuationAnchor,
   type ContinuationAnchorChapter,
@@ -70,6 +89,11 @@ export {
   compileCheckerMessages,
   compileRepairMessages,
   compileStateExtractionMessages,
+  compileContinuationV4WriterMessages,
+  compileContinuationV4CheckerMessages,
+  compileContinuationV4ControlMessages,
+  compileContinuationV4RepairMessages,
+  continuationV4ProtocolSkeletonTokens,
 } from './continuationPromptCompiler';
 export {
   runDeterministicChecks,

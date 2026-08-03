@@ -3,6 +3,7 @@ import type {
   ContinuationV4Stage,
   RatioCurve,
 } from '../../contextAutomationPolicy';
+import type { ContinuationContextBudgetPlan } from './continuationContextBudget';
 
 export type { ContinuationV4Stage } from '../../contextAutomationPolicy';
 
@@ -104,6 +105,38 @@ function clamp01(value: number): number {
 
 function interpolate(curve: RatioCurve, pressure: number): number {
   return curve.min + (curve.max - curve.min) * clamp01(pressure);
+}
+
+function resolveV4CategoryShares(input: {
+  policy: ContextAutomationPolicyV2;
+  pressure: number;
+  hasPrimaryAnchor: boolean;
+}): Record<
+  'canon' |
+    'primaryAnchor' |
+    'storyMemory' |
+    'recentBridge' |
+    'originalStyle' |
+    'episodic' |
+    'supplements',
+  number
+> {
+  const curves = input.policy.continuation.contextCategoryCurves;
+  const anchorBoost = input.hasPrimaryAnchor ? 1 : 0;
+  const values = {
+    canon: interpolate(curves.canon, input.pressure),
+    primaryAnchor:
+      interpolate(curves.primaryAnchor, input.pressure) * (1 + anchorBoost * 0.1),
+    storyMemory: interpolate(curves.storyMemory, 1 - input.pressure),
+    recentBridge: interpolate(curves.recentBridge, 1 - input.pressure),
+    originalStyle: interpolate(curves.originalStyle, input.pressure),
+    episodic: interpolate(curves.episodic, 1 - input.pressure),
+    supplements: interpolate(curves.supplements, 1 - input.pressure),
+  };
+  const total = Object.values(values).reduce((sum, value) => sum + value, 0);
+  return Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [key, total > 0 ? value / total : 0]),
+  ) as ReturnType<typeof resolveV4CategoryShares>;
 }
 
 function resolveDemand(input: {
@@ -286,6 +319,72 @@ export function resolveContinuationStageBudget(
     pressure: demand.pressure,
     reportDensity: demand.reportDensity,
     blockedReason,
+  };
+}
+
+/**
+ * V4 input layout derived from the same policy and Writer model used by the
+ * stage resolver. The historical planner budget remains available to V1/V2;
+ * V4 callers must use this function so category allocation does not introduce
+ * a second ratio policy.
+ */
+export function planContinuationV4ContextBudget(input: {
+  frozenPolicy: ContextAutomationPolicyV2;
+  frozenModelConfig: FrozenContinuationStageModel;
+  targetChapterChars?: number;
+  hardContextTokens?: number;
+  hasPrimaryAnchor?: boolean;
+}): ContinuationContextBudgetPlan {
+  const stage = resolveContinuationStageBudget({
+    stage: 'writer',
+    frozenModelConfig: input.frozenModelConfig,
+    frozenPolicy: input.frozenPolicy,
+    compiledPromptTokens: 0,
+    protocolSkeletonTokens: 0,
+    targetChapterChars: input.targetChapterChars ?? 0,
+    hardContextTokens: input.hardContextTokens ?? 0,
+  });
+  const hardContextTokens = Math.max(0, Math.floor(input.hardContextTokens ?? 0));
+  const residualContextBudget = Math.max(
+    0,
+    stage.inputBudget - hardContextTokens,
+  );
+  const shares = resolveV4CategoryShares({
+    policy: input.frozenPolicy,
+    pressure: stage.pressure,
+    hasPrimaryAnchor: input.hasPrimaryAnchor === true,
+  });
+  const allocate = (category: keyof typeof shares) =>
+    Math.floor(residualContextBudget * shares[category]);
+  return {
+    modelContextLimit: stage.contextWindow,
+    effectiveWindow: stage.effectiveWindow,
+    reservedOutputTokens: stage.maximumOutputTokens,
+    safetyTokens: stage.safetyReserveTokens,
+    promptSkeletonTokens: stage.promptReserveTokens,
+    inputBudget: stage.inputBudget,
+    residualContextBudget,
+    canonTokens: allocate('canon'),
+    supplementTokens: allocate('supplements'),
+    sourceSeamTokens: allocate('primaryAnchor'),
+    recentBridgeTokens: allocate('recentBridge'),
+    storyMemoryTokens: allocate('storyMemory'),
+    episodicTokens: allocate('episodic'),
+    styleTokens: allocate('originalStyle'),
+    hardContextTokens,
+    pressure: stage.pressure,
+    declaredOutputRatio:
+      stage.declaredMaxOutputTokens / Math.max(1, stage.contextWindow),
+    hasPrimaryAnchor: input.hasPrimaryAnchor === true,
+    categoryShares: shares,
+    chapterDemand: stage.demandTokens,
+    planShare: 0,
+    minimumProseShare:
+      input.frozenPolicy.continuation.hanDemand.minimumCompletionCoverageRatio,
+    desiredOutput: stage.demandTokens,
+    minimumOutput: stage.minimumOutputTokens,
+    requestedMaxTokens: stage.maximumOutputTokens,
+    declaredOutput: stage.declaredMaxOutputTokens,
   };
 }
 

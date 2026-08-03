@@ -36,25 +36,22 @@ import {
   resolveLLMRequestConfigById,
 } from '../services/llm';
 import {
-  buildContinuationContext,
-  compileWriterMessages,
+  buildContinuationV4Context,
+  compileContinuationV4WriterMessages,
   ensureGenerationSettings,
 } from '../services/continuation/generation';
 import {
-  resolveContinuationV4BudgetPreview,
   type ContinuationV4BudgetPreview,
   type ContinuationV4StageBudget,
   type FrozenContinuationStageModel,
 } from '../services/continuation/generation/continuationV4Budget';
 import { ensureContextAutomationPolicy } from '../services/contextAutoAllocator';
-import { resolveContinuationWriterOutputBudget } from '../services/continuation/generation/continuationContextBudget';
 import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type {
   ContextTraceItem,
   ContextSourceKind,
 } from '../types/contextTrace';
 import type { ChatMessage } from '../services/llm';
-import { estimateMessagesTokens } from '../utils/tokenEstimator';
 
 interface Props {
   chapterId: number;
@@ -170,6 +167,13 @@ export const ContextPreviewScreen: React.FC<Props> = ({
     useState('');
   const [continuationStageBudgets, setContinuationStageBudgets] =
     useState<ContinuationV4BudgetPreview | null>(null);
+  const [continuationFreezeSummary, setContinuationFreezeSummary] = useState<{
+    policyHash: string;
+    canonSnapshotId: string;
+    canonRevision: number;
+    styleProfileHash: string | null;
+    supplementHashes: string[];
+  } | null>(null);
   const [selectedContinuationStage, setSelectedContinuationStage] = useState<
     'writer' | 'checker' | 'control' | 'repair'
   >('writer');
@@ -196,23 +200,14 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           id == null
             ? requestConfig
             : resolveLLMRequestConfigById(id).catch(() => requestConfig);
-        // New previews show the actual Writer request. Planner is only a
-        // compatibility path for historical runs.
         const writerConfig = await resolveStage(settings.writerLlmConfigId);
-        // Layout budget follows Writer window (Spec §7.1) — never Math.min across
-        // stages, which would under-allocate style relative to the real run.
-        const writerWindow =
-          (typeof writerConfig.context_window === 'number' &&
-          writerConfig.context_window > 0
-            ? writerConfig.context_window
-            : null) ||
-          requestConfig.context_window ||
-          8192;
-        const writerOutputBudget = resolveContinuationWriterOutputBudget({
-          contextWindow: writerWindow,
-          targetChapterChars: settings.targetChapterChars,
-          configuredMaxOutputTokens: writerConfig.max_output_tokens,
-        });
+        const writerWindow = Number(writerConfig.context_window);
+        const writerMaxOutputTokens = Number(writerConfig.max_output_tokens);
+        if (!(writerWindow > 0) || !(writerMaxOutputTokens > 0)) {
+          throw new Error(
+            'Writer 模型缺少有效的 context_window 或 max_output_tokens，请先完善 LLM 配置。',
+          );
+        }
         const continuationNumbering = await getContinuationChapterNumbering(
           chapter.project_id,
         );
@@ -221,61 +216,65 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           `续写${continuationNumbering.getDefaultTitle(
             chapter.position as any,
           )}，保持与前文一致。`;
-        const result = await buildContinuationContext({
-          projectId: chapter.project_id,
-          targetChapterId: chapter.id,
-          targetPosition: chapter.position as any,
-          currentChapterContent: chapter.content || '',
-          userInstruction: instruction,
-          modelContextLimit: writerWindow,
-          maxOutputTokens: writerOutputBudget.requestedMaxTokens,
-          initialWriterOutputTokens: writerOutputBudget.requestedMaxTokens,
-          activeLlmConfigId: requestConfig.id || 1,
-        });
         const stageConfig = async (
           id: number | null,
           fallback: typeof writerConfig,
         ): Promise<FrozenContinuationStageModel> => {
           const config = await resolveStage(id);
+          const contextWindow = Number(config.context_window);
+          const maxOutputTokens = Number(config.max_output_tokens);
+          if (!(contextWindow > 0) || !(maxOutputTokens > 0)) {
+            throw new Error(
+              'V4 阶段模型缺少有效的 context_window 或 max_output_tokens，请先完善 LLM 配置。',
+            );
+          }
           return {
             configId: Number(config.id || fallback.id || 0),
-            contextWindow: Number(config.context_window),
-            maxOutputTokens: Number(config.max_output_tokens),
+            contextWindow,
+            maxOutputTokens,
           };
         };
-        const [checkerModel, repairModel] = await Promise.all([
+        const [checkerModel, controlModel, repairModel] = await Promise.all([
           stageConfig(settings.checkerLlmConfigId, writerConfig),
+          stageConfig(settings.controlLlmConfigId ?? settings.checkerLlmConfigId, writerConfig),
           stageConfig(settings.repairLlmConfigId, writerConfig),
         ]);
-        const writerMessages = compileWriterMessages(result.snapshot);
-        const simulatedBudget = resolveContinuationV4BudgetPreview({
-          frozenPolicy: policy,
-          stages: {
+        const result = await buildContinuationV4Context({
+          projectId: chapter.project_id,
+          targetChapterId: chapter.id,
+          targetPosition: chapter.position as any,
+          currentChapterContent: chapter.content || '',
+          userInstruction: instruction,
+          activeLlmConfigId: requestConfig.id || 1,
+          policy,
+          stageModels: {
             writer: {
               configId: Number(writerConfig.id || 0),
               contextWindow: writerWindow,
-              maxOutputTokens: Number(writerConfig.max_output_tokens),
+              maxOutputTokens: writerMaxOutputTokens,
             },
             checker: checkerModel,
-            // Schema 32 adds a dedicated Control model. Until that setting is
-            // persisted, preview uses the checker-compatible fallback model.
-            control: checkerModel,
+            control: controlModel,
             repair: repairModel,
           },
-          targetChapterChars: settings.targetChapterChars,
-          // Writer 尚未生成时，Checker/Control 使用 policy 派生的章节需求
-          // 作为 draft token simulation；真实 run 会在 Writer artifact 落库后重算。
-          writerDraftTokens: Math.ceil(
-            settings.targetChapterChars *
-              policy.continuation.hanDemand.estimatedTokensPerHan,
-          ),
-          paragraphCount: 0,
-          compiledPromptTokens: {
-            writer: estimateMessagesTokens(writerMessages),
-          },
-          hardContextTokens: result.trace.hardContextTokens ?? 0,
         });
-        setContinuationStageBudgets(simulatedBudget);
+        const writerMessages = compileContinuationV4WriterMessages(
+          result.snapshot.stageViews.writer,
+        );
+        setContinuationStageBudgets({ stages: result.snapshot.stageBudgets });
+        setContinuationFreezeSummary({
+          policyHash: result.snapshot.budgetPolicy.policyHash,
+          canonSnapshotId: result.snapshot.canon.snapshotId,
+          canonRevision: result.snapshot.canon.revision,
+          styleProfileHash: result.snapshot.style?.profileHash ?? null,
+          supplementHashes: Array.from(
+            new Set(
+              Object.values(result.snapshot.stageViews).flatMap(view =>
+                'supplements' in view ? view.supplements.contentHashes : [],
+              ),
+            ),
+          ),
+        });
         setTrace(
           result.trace.categories.map(category => {
             const title =
@@ -322,10 +321,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           }),
         );
         setEstimatedInputTokens(result.trace.totalInputTokens);
+        const writerBudget = result.snapshot.stageBudgets.writer;
         setContinuationBudgetSummary(
           `V4 policy ${policy.allocatorVersion} · Writer 有效窗口 ${
-            result.trace.effectiveWindow ?? '—'
-          } · 实际 Writer 输出上限 ${result.trace.requestedMaxTokens ?? '—'}`,
+            writerBudget.effectiveWindow
+          } · Writer 动态输出 min/max ${writerBudget.minimumOutputTokens}/${writerBudget.maximumOutputTokens}`,
         );
         setMessages(
           writerMessages.map(m => ({
@@ -338,6 +338,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       setContinuationPreview(false);
       setContinuationBudgetSummary('');
       setContinuationStageBudgets(null);
+      setContinuationFreezeSummary(null);
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(chapter.project_id);
       const result = await buildContext(
@@ -608,6 +609,32 @@ export const ContextPreviewScreen: React.FC<Props> = ({
                   ]}
                 >
                   {selectedBudget.blockedReason}
+                </Text>
+              ) : null}
+              {continuationFreezeSummary ? (
+                <Text
+                  style={[
+                    styles.stageBudgetLine,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
+                  policy {continuationFreezeSummary.policyHash.slice(0, 12)} ·
+                  Canon {continuationFreezeSummary.canonSnapshotId.slice(0, 12)}@
+                  {continuationFreezeSummary.canonRevision} · Style{' '}
+                  {continuationFreezeSummary.styleProfileHash?.slice(0, 12) ||
+                    'none'}
+                </Text>
+              ) : null}
+              {continuationFreezeSummary ? (
+                <Text
+                  style={[
+                    styles.stageBudgetLine,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
+                  Supplement hashes{' '}
+                  {continuationFreezeSummary.supplementHashes.length || 0} ·
+                  预览不发送请求、不创建 run
                 </Text>
               ) : null}
             </View>

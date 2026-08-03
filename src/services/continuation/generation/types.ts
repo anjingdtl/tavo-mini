@@ -3,6 +3,7 @@
  * Independent of freeform PipelineStageName.
  */
 import type { ContinuationChapterPosition } from '../../../types/novel';
+import type { ContextAutomationPolicyV2 } from '../../contextAutomationPolicy';
 import type {
   CanonCapabilities,
   CanonContextBundle,
@@ -10,6 +11,7 @@ import type {
 } from '../canon/types';
 import type { ContinuationSourceSnapshot } from '../types';
 import type { ContinuationStageBudgets } from './continuationContextBudget';
+import type { ContinuationV4StageBudget } from './continuationV4Budget';
 import type { StyleRenderLevel } from '../styleProfile/styleProfileRenderer';
 import type { OriginalStyleProfileV2 } from '../styleProfile/styleProfileV2Schema';
 
@@ -31,6 +33,11 @@ export type ContinuationV4StageName =
   | 'control'
   | 'repair'
   | 'local_verify';
+
+export type ContinuationV4ContextStage = Exclude<
+  ContinuationV4StageName,
+  'local_verify'
+>;
 
 export type ContinuationStageResultStatus =
   | 'queued'
@@ -314,6 +321,10 @@ export interface ContinuationSupplementBundle {
     resourceId: number;
     title: string;
     estimatedTokens: number;
+    contentHash?: string;
+    constraintKind?: 'creative' | 'factual' | 'stylistic' | 'instruction';
+    stageEligibility?: ContinuationV4ContextStage[];
+    selectionReason?: string;
   }>;
   excluded: Array<{
     resourceKind: 'character' | 'worldbook' | 'note' | 'preset';
@@ -321,6 +332,230 @@ export interface ContinuationSupplementBundle {
     title: string;
     reason: string;
   }>;
+}
+
+export interface FrozenContinuationBudgetPolicy {
+  schemaVersion: ContextAutomationPolicyV2['schemaVersion'];
+  allocatorVersion: string;
+  policyHash: string;
+  policy: ContextAutomationPolicyV2;
+  appliedAt?: string;
+}
+
+export type ContinuationV4StageBudgets = Record<
+  ContinuationV4ContextStage,
+  ContinuationV4StageBudget
+>;
+
+export interface FrozenContinuationStyleStageView {
+  profileId: string | null;
+  profileHash: string | null;
+  rendererVersion: string | null;
+  renderLevel: StyleRenderLevel | null;
+  text: string;
+  quantitative: {
+    averageSentenceLength: number;
+    averageParagraphLength: number;
+    dialogueRatio: number;
+    descriptionRatio: number;
+    narrativePerson: string;
+    tense: string;
+  };
+  omittedReason: string | null;
+}
+
+export interface FrozenContinuationSupplementStageView {
+  text: string;
+  selected: ContinuationSupplementBundle['selected'];
+  omitted: ContinuationSupplementBundle['excluded'];
+  contentHashes: string[];
+  wrapper: string;
+}
+
+export interface FrozenContinuationCanonGuardView {
+  hardFacts: Array<{
+    ownerType: string;
+    ownerId: number;
+    text: string;
+    evidenceIds: number[];
+  }>;
+  softFacts: Array<{
+    ownerType: string;
+    ownerId: number;
+    text: string;
+    evidenceIds: number[];
+  }>;
+  evidenceIds: number[];
+}
+
+export interface FrozenContinuationCheckerContextView {
+  stage: 'checker';
+  projectId: number;
+  targetChapterId: number;
+  targetPosition: ContinuationChapterPosition;
+  targetChapterChars: number;
+  userInstruction: string;
+  lockedRules: string[];
+  canon: FrozenContinuationCanonGuardView;
+  effectiveState: Pick<
+    EffectiveContinuationState,
+    | 'characterStates'
+    | 'relationships'
+    | 'plotThreads'
+    | 'knowledge'
+    | 'experiences'
+  >;
+  seam: { summary: string; excerpt: string };
+  style: FrozenContinuationStyleStageView;
+  supplements: FrozenContinuationSupplementStageView;
+  budget: ContinuationV4StageBudget;
+  snapshotRefs: {
+    canonSnapshotId: string;
+    canonRevision: number;
+    inputRevisionHash: string;
+    styleProfileHash: string | null;
+  };
+}
+
+export interface FrozenContinuationWriterContextView {
+  stage: 'writer';
+  projectId: number;
+  targetChapterId: number;
+  targetPosition: ContinuationChapterPosition;
+  targetChapterChars: number;
+  userInstruction: string;
+  lockedRules: string[];
+  canon: CanonContextBundle;
+  effectiveState: EffectiveContinuationState;
+  primaryAnchor: ContinuationContextSnapshot['primaryAnchor'];
+  recentChapters: ContinuationContextBundles['recentChapters'];
+  storyMemory: ContinuationContextBundles['storyMemory'];
+  episodic: ContinuationContextBundles['episodic'];
+  historicalDigests: HistoricalDigest[];
+  style: FrozenContinuationStyleStageView;
+  supplements: FrozenContinuationSupplementStageView;
+  budget: ContinuationV4StageBudget;
+  snapshotRefs: {
+    canonSnapshotId: string;
+    canonRevision: number;
+    inputRevisionHash: string;
+    styleProfileHash: string | null;
+  };
+}
+
+export interface FrozenContinuationControlContextView {
+  stage: 'control';
+  projectId: number;
+  targetChapterId: number;
+  targetPosition: ContinuationChapterPosition;
+  targetChapterChars: number;
+  userInstruction: string;
+  lockedRuleSummary: string[];
+  style: FrozenContinuationStyleStageView;
+  budget: ContinuationV4StageBudget;
+  snapshotRefs: {
+    canonSnapshotId: string;
+    canonRevision: number;
+    inputRevisionHash: string;
+    styleProfileHash: string | null;
+  };
+}
+
+export interface FrozenContinuationRepairContextView {
+  stage: 'repair';
+  projectId: number;
+  targetChapterId: number;
+  targetPosition: ContinuationChapterPosition;
+  targetChapterChars: number;
+  userInstruction: string;
+  lockedRules: string[];
+  canon: FrozenContinuationCanonGuardView;
+  effectiveState: FrozenContinuationCheckerContextView['effectiveState'];
+  primaryAnchorSummary: string;
+  recentBridgeSummary: string;
+  style: FrozenContinuationStyleStageView;
+  supplements: FrozenContinuationSupplementStageView;
+  budget: ContinuationV4StageBudget;
+  snapshotRefs: {
+    canonSnapshotId: string;
+    canonRevision: number;
+    inputRevisionHash: string;
+    styleProfileHash: string | null;
+  };
+}
+
+export interface ContinuationV4StageViews {
+  writer: FrozenContinuationWriterContextView;
+  checker: FrozenContinuationCheckerContextView;
+  control: FrozenContinuationControlContextView;
+  repair: FrozenContinuationRepairContextView;
+}
+
+export interface ContinuationV4Metrics {
+  actualHanCharacters: number;
+  targetHanCharacters: number;
+  minHanCharacters: number;
+  maxHanCharacters: number;
+  missingToMinimum: number;
+  excessOverMaximum: number;
+  deltaToTarget: number;
+  paragraphs: Array<{
+    id: string;
+    start: number;
+    end: number;
+    hanCharacters: number;
+  }>;
+  dialogueHanRatio: number;
+  paragraphLengthDistribution: {
+    min: number;
+    max: number;
+    mean: number;
+    median: number;
+  };
+  duplicateWindows: Array<{ start: number; end: number; count: number }>;
+  beatCoverage: Array<{ beatId: string; paragraphIds: string[] }>;
+  insertionBoundaries: number[];
+}
+
+export type ContinuationControlAction = 'keep' | 'expand' | 'compress';
+
+export interface ContinuationControlSuggestion {
+  suggestionId: string;
+  type: string;
+  location: string;
+  expectedDeltaHan: number;
+  instruction: string;
+  preserveBeatIds: string[];
+}
+
+export interface ContinuationControlReport {
+  schemaVersion: 1;
+  action: ContinuationControlAction;
+  currentHan: number;
+  targetHan: number;
+  allowedMinHan: number;
+  allowedMaxHan: number;
+  suggestions: ContinuationControlSuggestion[];
+  preserve: string[];
+  metricEchoMismatch?: boolean;
+}
+
+export interface ContinuationV4WriterEnvelope {
+  schemaVersion: 1;
+  plan: {
+    chapterGoal: string;
+    centralConflict: string;
+    beats: Array<{ id: string; summary: string }>;
+  };
+  content: string;
+}
+
+export interface ContinuationV4RepairEnvelope {
+  schemaVersion: 1;
+  content: string;
+  appliedCheckerIssueIds: string[];
+  appliedControlSuggestionIds: string[];
+  unappliedItems: string[];
 }
 
 export interface ContinuationContextSnapshot {
@@ -372,6 +607,23 @@ export interface ContinuationContextSnapshot {
   createdAt: string;
 }
 
+/**
+ * V4 snapshot. It is deliberately a separate type so historical V1/V2
+ * callers can keep consuming the legacy stageBudgets shape without guessing
+ * whether `stageBudgets` contains a V4 resolver result.
+ */
+export interface ContinuationContextSnapshotV3
+  extends Omit<
+    ContinuationContextSnapshot,
+    'schemaVersion' | 'workflowVersion' | 'stageBudgets'
+  > {
+  schemaVersion: 3;
+  workflowVersion: 4;
+  budgetPolicy: FrozenContinuationBudgetPolicy;
+  stageBudgets: ContinuationV4StageBudgets;
+  stageViews: ContinuationV4StageViews;
+}
+
 export interface ContinuationContextTrace {
   sourceId: number;
   canonSnapshotId: string;
@@ -418,6 +670,8 @@ export interface ContinuationContextTrace {
   effectiveInputBudget?: number;
   minimumOutput?: number;
   budgetRestrictedReason?: string | null;
+  v4StageBudgets?: ContinuationV4StageBudgets;
+  v4StageViewHashes?: Partial<Record<ContinuationV4ContextStage, string>>;
 }
 
 export interface StoryBeat {
