@@ -113,6 +113,9 @@ export const UsageStatsScreen: React.FC<Props> = ({ onClose }) => {
             <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>合计 Token</Text>
           </View>
         </View>
+        <Text style={[styles.v4Hint, { color: theme.colors.textSecondary }]}>
+          原著续写 V4：Writer、Checker、Control、Repair 最多各占 1 次物理请求；Control 的本地汉字计数不产生请求，采纳后的 State Extraction 也不计入四请求上限。
+        </Text>
       </Card>
       {byConfig.length > 0 ? (
         <Card style={styles.byConfigCard}>
@@ -219,6 +222,11 @@ const styles = StyleSheet.create({
   summaryLabel: {
     fontSize: 11,
     marginTop: 2,
+  },
+  v4Hint: {
+    fontSize: 11,
+    lineHeight: 17,
+    marginTop: spacing.sm,
   },
   list: {
     padding: spacing.lg,
