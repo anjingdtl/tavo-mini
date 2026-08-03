@@ -10,6 +10,10 @@ import { buildV9toV10Statements, migrateV9toV10 } from '../src/services/migratio
 import { buildV10toV11Statements, migrateV10toV11 } from '../src/services/migrations/v10-to-v11';
 import { buildV13toV14Statements, migrateV13ToV14 } from '../src/services/migrations/v13-to-v14';
 import {
+  buildV31toV32Statements,
+  migrateV31ToV32,
+} from '../src/services/migrations/v31-to-v32';
+import {
   hasBreakingMigration,
   isIncompatibleUpgrade,
   runMigrations,
@@ -81,6 +85,16 @@ describe('migration statement coverage', () => {
       'COALESCE((SELECT SUM(estimated_tokens) FROM characters), 0)',
     );
     expect(collectionInsert?.sql).not.toMatch(/FROM characters\s+WHERE NOT EXISTS/i);
+  });
+
+  test('covers Schema 31→32 builder, idempotent column filtering, and post-check', async () => {
+    const database = fakeDatabase([
+      'control_llm_config_id',
+      'eligibility_status',
+      'rejection_code',
+    ]);
+    expect(buildV31toV32Statements().length).toBeGreaterThan(0);
+    await migrateV31ToV32(database);
   });
 
   test('runs the migration engine with and without the breaking backup path', async () => {

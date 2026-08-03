@@ -270,7 +270,9 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       parent_artifact_id: params[4],
       content: params[5],
       content_hash: params[6],
-      created_at: params[7],
+      eligibility_status: params[7],
+      rejection_code: params[8],
+      created_at: params[9],
     };
     if (
       store.artifacts.some(
