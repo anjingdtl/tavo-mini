@@ -9,6 +9,30 @@
  * 资源级单项上限按实际数量动态分摊（R1 算法）。
  */
 
+import {
+  cloneDefaultContextAutomationPolicy,
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2,
+  serializeContextAutomationPolicy,
+  type ContextAutomationPolicyV2,
+} from './contextAutomationPolicy';
+
+export {
+  buildContinuationPolicyPreview,
+  cloneDefaultContextAutomationPolicy,
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2,
+  hashContextAutomationPolicy,
+  isContextAutomationPolicyV2,
+  serializeContextAutomationPolicy,
+} from './contextAutomationPolicy';
+export type {
+  ContextAutomationPolicyV2,
+  ContinuationContextCategory,
+  ContinuationPolicyPreview,
+  ContinuationV4Stage,
+  RatioCurve,
+  StageRatioRule,
+} from './contextAutomationPolicy';
+
 export interface ResourceCounts {
   characters: number;
   notes: number;
@@ -44,28 +68,45 @@ export interface AllocationResult {
   resourceCounts: ResourceCounts;
 }
 
-// 写死比例
-export const RATIO_INPUT = 0.8;
-export const RATIO_OUTPUT = 0.2;
+// Legacy outline ratios are sourced from the versioned policy preset.
+export const RATIO_INPUT =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.inputRatio;
+export const RATIO_OUTPUT =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.outputRatio;
 
 // 输入侧内部比例（占 inputBudget）
-export const RATIO_SLIDING_WINDOW = 0.45;
-export const RATIO_RESOURCE_BUDGET = 0.2;
-export const RATIO_STORY_STATE_BUDGET = 0.25;
-export const RATIO_EPISODIC_MEMORY_BUDGET = 0.1;
+export const RATIO_SLIDING_WINDOW =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.slidingWindowRatio;
+export const RATIO_RESOURCE_BUDGET =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.resourceBudgetRatio;
+export const RATIO_STORY_STATE_BUDGET =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility
+    .storyStateBudgetRatio;
+export const RATIO_EPISODIC_MEMORY_BUDGET =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility
+    .episodicMemoryBudgetRatio;
 export const RATIO_SUMMARY_BUDGET =
   RATIO_STORY_STATE_BUDGET + RATIO_EPISODIC_MEMORY_BUDGET;
 
 // 输出侧内部比例（占 outputBudget）
-export const RATIO_DRAFT = 0.5;
-export const RATIO_REVIEW = 0.15;
-export const RATIO_FACT_CHECK = 0.15;
-export const RATIO_PROOF = 0.2;
+export const RATIO_DRAFT =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.draftRatio;
+export const RATIO_REVIEW =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.reviewRatio;
+export const RATIO_FACT_CHECK =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.factCheckRatio;
+export const RATIO_PROOF =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.proofRatio;
 
 // 资料预算内部子比例（contextBuilder.ts 现有约定）
-export const RATIO_RESOURCE_CHARACTER = 0.35;
-export const RATIO_RESOURCE_NOTE = 0.2;
-export const RATIO_RESOURCE_WORLDBOOK = 0.45;
+export const RATIO_RESOURCE_CHARACTER =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility
+    .resourceCharacterRatio;
+export const RATIO_RESOURCE_NOTE =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.resourceNoteRatio;
+export const RATIO_RESOURCE_WORLDBOOK =
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility
+    .resourceWorldbookRatio;
 
 // 数值下限（兜底）
 export const MIN_CONTEXT_TOKENS = 1;
@@ -99,6 +140,7 @@ const clamp = (value: number, min: number, max: number): number =>
 export function allocateContextBudget(
   maxContextTokens: number,
   resourceCounts: ResourceCounts,
+  policy: ContextAutomationPolicyV2 = DEFAULT_CONTEXT_AUTOMATION_POLICY_V2,
 ): AllocationResult {
   if (!Number.isFinite(maxContextTokens) || maxContextTokens <= 0) {
     throw new Error(
@@ -106,8 +148,9 @@ export function allocateContextBudget(
     );
   }
 
-  const inputBudget = Math.round(maxContextTokens * RATIO_INPUT);
-  const outputBudget = Math.round(maxContextTokens * RATIO_OUTPUT);
+  const outline = policy.outlineCompatibility;
+  const inputBudget = Math.round(maxContextTokens * outline.inputRatio);
+  const outputBudget = Math.round(maxContextTokens * outline.outputRatio);
 
   // 输入侧：极小预算只按比例分配，禁止固定 floor 反向撑爆总预算。
   let resourceBudget: number;
@@ -115,14 +158,14 @@ export function allocateContextBudget(
   let episodicMemoryBudgetTokens: number;
   let slidingWindowSize: number;
   if (inputBudget < 5000) {
-    resourceBudget = Math.max(1, Math.round(inputBudget * RATIO_RESOURCE_BUDGET));
+    resourceBudget = Math.max(1, Math.round(inputBudget * outline.resourceBudgetRatio));
     storyStateBudgetTokens = Math.max(
       1,
-      Math.round(inputBudget * RATIO_STORY_STATE_BUDGET),
+      Math.round(inputBudget * outline.storyStateBudgetRatio),
     );
     episodicMemoryBudgetTokens = Math.max(
       1,
-      Math.round(inputBudget * RATIO_EPISODIC_MEMORY_BUDGET),
+      Math.round(inputBudget * outline.episodicMemoryBudgetRatio),
     );
     slidingWindowSize = Math.max(
       1,
@@ -130,16 +173,16 @@ export function allocateContextBudget(
     );
   } else {
     resourceBudget = floor(
-      inputBudget * RATIO_RESOURCE_BUDGET,
+      inputBudget * outline.resourceBudgetRatio,
       MIN_RESOURCE_BUDGET,
     );
     storyStateBudgetTokens = clamp(
-      inputBudget * RATIO_STORY_STATE_BUDGET,
+      inputBudget * outline.storyStateBudgetRatio,
       MIN_STORY_STATE_BUDGET,
       MAX_STORY_STATE_BUDGET,
     );
     episodicMemoryBudgetTokens = clamp(
-      inputBudget * RATIO_EPISODIC_MEMORY_BUDGET,
+      inputBudget * outline.episodicMemoryBudgetRatio,
       MIN_EPISODIC_MEMORY_BUDGET,
       MAX_EPISODIC_MEMORY_BUDGET,
     );
@@ -178,24 +221,24 @@ export function allocateContextBudget(
   );
 
   // 输出侧
-  const draftMaxTokens = floor(outputBudget * RATIO_DRAFT, MIN_PIPELINE_TOKENS);
+  const draftMaxTokens = floor(outputBudget * outline.draftRatio, MIN_PIPELINE_TOKENS);
   const reviewMaxTokens = floor(
-    outputBudget * RATIO_REVIEW,
+    outputBudget * outline.reviewRatio,
     MIN_PIPELINE_TOKENS,
   );
   const factCheckMaxTokens = floor(
-    outputBudget * RATIO_FACT_CHECK,
+    outputBudget * outline.factCheckRatio,
     MIN_PIPELINE_TOKENS,
   );
   const proofMaxTokens = floor(
-    outputBudget * RATIO_PROOF,
+    outputBudget * outline.proofRatio,
     MIN_PIPELINE_TOKENS,
   );
 
   // 资料预算内部子分配（角色 35% / 笔记 20% / 世界书 45%）
-  const characterTotal = resourceBudget * RATIO_RESOURCE_CHARACTER;
-  const noteTotal = resourceBudget * RATIO_RESOURCE_NOTE;
-  const worldbookTotal = resourceBudget * RATIO_RESOURCE_WORLDBOOK;
+  const characterTotal = resourceBudget * outline.resourceCharacterRatio;
+  const noteTotal = resourceBudget * outline.resourceNoteRatio;
+  const worldbookTotal = resourceBudget * outline.resourceWorldbookRatio;
 
   // 单项 = 子总额 / MAX(数量, 1)，避免除零；count=0 时单项仍计算但不写入（由应用函数处理）
   const safeCount = (n: number): number => Math.max(n, 1);
@@ -249,7 +292,9 @@ import { executeTransaction, type SqlStatement } from './database/transaction';
 import { all } from '../data/connection/query';
 import {
   buildAppliedRecord,
+  getContextAutomationPolicy,
   setContextAutoLastApplied,
+  setContextAutomationPolicy,
   type ContextAutoAppliedRecord,
 } from '../data/repositories/contextAutoRepository';
 import { setSetting } from '../data/repositories/settingsRepository';
@@ -299,6 +344,18 @@ export async function countAllPresets(): Promise<number> {
 }
 
 /**
+ * Load the persisted policy or create the single versioned default preset for
+ * installations that predate ContextAutomationPolicyV2.
+ */
+export async function ensureContextAutomationPolicy(): Promise<ContextAutomationPolicyV2> {
+  const persisted = await getContextAutomationPolicy();
+  if (persisted) return persisted;
+  const policy = cloneDefaultContextAutomationPolicy();
+  await setContextAutomationPolicy(policy);
+  return policy;
+}
+
+/**
  * 应用上下文自动化分配方案。
  *
  * 单一 executeTransaction 原子写入所有目标字段。任一步失败 → 整体回滚。
@@ -314,19 +371,35 @@ export async function applyContextAutoAllocation(
   maxContextTokens: number,
 ): Promise<ContextAutoAppliedRecord> {
   // 阶段 1：读 + 算
-  const [resourceCounts, llmCount, presetCount] = await Promise.all([
-    countAllResources(),
-    countLlmConfigs(),
-    countAllPresets(),
-  ]);
+  const [resourceCounts, llmCount, presetCount, persistedPolicy] =
+    await Promise.all([
+      countAllResources(),
+      countLlmConfigs(),
+      countAllPresets(),
+      getContextAutomationPolicy(),
+    ]);
 
-  const allocation = allocateContextBudget(maxContextTokens, resourceCounts);
+  const policy = persistedPolicy || cloneDefaultContextAutomationPolicy();
+  const allocation = allocateContextBudget(
+    maxContextTokens,
+    resourceCounts,
+    policy,
+  );
+  const serializedPolicy = serializeContextAutomationPolicy(policy);
 
   // 构建语句列表。settings 表用 INSERT OR REPLACE，其他表用 UPDATE。
   // 注意：INSERT OR REPLACE 只覆写单个 key，不会影响其他 settings 字段，
   // 因此 ContextConfig 的 strategy/recentChapterCount 等保留不动，
   // PipelineConfig 的 pipelineMode 与 *PresetId 保留不动。
   const statements: SqlStatement[] = [
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['context_auto_input', String(Math.round(maxContextTokens))],
+    },
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['context_auto_policy_v2', serializedPolicy],
+    },
     // ContextConfig 字段
     {
       sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
@@ -434,7 +507,7 @@ export async function applyContextAutoAllocation(
     notes: resourceCounts.notes,
     worldbookEntries: resourceCounts.worldbookEntries,
     worldbookCollections: resourceCounts.worldbookCollections,
-  });
+  }, policy);
   await setContextAutoLastApplied(record);
 
   return record;

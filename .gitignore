@@ -176,6 +176,7 @@ scripts/zswebdav-put.ps1
 /docs/TEST-KEY*
 /docs/LLMTesti.txt
 /docs/LLMTesti.*
+/docs/deepseek.txt
 /docs/*api-key*
 /docs/*apikey*
 /secrets/

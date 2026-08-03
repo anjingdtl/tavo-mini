@@ -26,14 +26,18 @@ import {
   abandonRun,
   adoptArtifactAsDraft,
   confirmPlanAndContinue,
+  getArtifactForRun,
   getLatestArtifact,
+  getLatestEligibleArtifact,
   getPlan,
   getRunById,
+  listStageResults,
   listChecksForArtifact,
   repairContinuationArtifactOnce,
   resumeInterruptedRun,
   type ContinuationCheckResult,
   type ContinuationGenerationRun,
+  type ContinuationGenerationStageResult,
   type ContinuationPlan,
 } from '../../services/continuation/generation';
 import {
@@ -60,6 +64,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [repairRound, setRepairRound] = useState(0);
   const [checks, setChecks] = useState<ContinuationCheckResult[]>([]);
   const [stageTelemetry, setStageTelemetry] = useState<Record<string, any>>({});
+  const [stageResults, setStageResults] = useState<ContinuationGenerationStageResult[]>([]);
+  const [rejectedRepair, setRejectedRepair] = useState<{ content: string; rejectionCode?: string | null } | null>(null);
+  const [showRejectedRepair, setShowRejectedRepair] = useState(false);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -78,13 +85,37 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       const p = await getPlan(runId);
       setPlan(p?.plan ?? null);
       setPlanConfirmationStatus(p?.confirmationStatus ?? null);
-      const art = await getLatestArtifact(runId);
+      const isV4 = r.workflowVersion === 4;
+      const art = isV4
+        ? await getLatestEligibleArtifact(runId)
+        : await getLatestArtifact(runId);
       setBody(art?.content ?? '');
       setRepairRound(art?.stage === 'repair' ? art.repairRound : 0);
       if (art) {
         setChecks(await listChecksForArtifact(runId, art.id));
       } else {
         setChecks([]);
+      }
+      if (isV4) {
+        const results = await listStageResults(runId);
+        setStageResults(results);
+        const repair = results.find(result => result.stage === 'repair');
+        if (repair?.artifactId) {
+          const candidate = await getArtifactForRun(runId, repair.artifactId);
+          setRejectedRepair(
+            candidate?.eligibilityStatus === 'rejected'
+              ? {
+                  content: candidate.content,
+                  rejectionCode: candidate.rejectionCode,
+                }
+              : null,
+          );
+        } else {
+          setRejectedRepair(null);
+        }
+      } else {
+        setStageResults([]);
+        setRejectedRepair(null);
       }
     } finally {
       setLoading(false);
@@ -322,6 +353,205 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       </Text>
     </View>
   );
+
+  const v4Stage = (stage: ContinuationGenerationStageResult['stage']) =>
+    stageResults.find(result => result.stage === stage) ?? null;
+
+  const v4StageStatus = (stage: ContinuationGenerationStageResult['stage']) => {
+    const result = v4Stage(stage);
+    if (!result) return '未开始';
+    switch (result.status) {
+      case 'success':
+        return '成功';
+      case 'failed':
+        return '降级/失败';
+      case 'interrupted':
+        return '已中断';
+      case 'skipped':
+        return '已短路';
+      case 'running':
+        return '进行中';
+      default:
+        return '排队中';
+    }
+  };
+
+  const v4StageText = (stage: ContinuationGenerationStageResult['stage']) => {
+    const result = v4Stage(stage);
+    if (!result) return '暂无持久化结果。';
+    if (stage === 'writer') {
+      return body || 'Writer 尚未落库完整正文。';
+    }
+    if (stage === 'checker') {
+      try {
+        const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
+        const issues = Array.isArray(parsed?.issues) ? parsed.issues : [];
+        return issues.length
+          ? issues.map((issue: any) => `[${issue.severity || 'warning'}] ${issue.description || '语义问题'}`).join('\n')
+          : '未发现可操作的冻结 Canon/状态语义问题。';
+      } catch {
+        return result.errorMessage || 'Checker 结果不可解析。';
+      }
+    }
+    if (stage === 'control') {
+      try {
+        const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
+        const metrics = parsed
+          ? `本地汉字数 ${parsed.currentHan ?? '—'} · 合法区间 ${parsed.allowedMinHan ?? '—'}–${parsed.allowedMaxHan ?? '—'}`
+          : '本地指标已由客户端计算。';
+        const mode = result.status === 'failed' ? 'Control LLM 降级，使用本地 fallback' : `Control action：${parsed?.action || '—'}`;
+        return `${metrics}\n${mode}`;
+      } catch {
+        return result.errorMessage || 'Control 结果不可解析。';
+      }
+    }
+    if (stage === 'repair') {
+      if (rejectedRepair) {
+        return `Repair 已输出完整终稿，但被 Local Final Gate 拒绝：${rejectedRepair.rejectionCode || 'local_final_gate_failed'}。默认可采纳 artifact 仍为 Writer。`;
+      }
+      try {
+        const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
+        return parsed
+          ? `完整终稿已持久化。应用 Checker issue ${parsed.appliedCheckerIssueIds?.length || 0} 项、Control suggestion ${parsed.appliedControlSuggestionIds?.length || 0} 项。`
+          : 'Repair 已完成。';
+      } catch {
+        return result.errorMessage || 'Repair 结果不可解析。';
+      }
+    }
+    try {
+      const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
+      const checkSubtypes = Array.isArray(parsed?.checkSubtypes)
+        ? parsed.checkSubtypes
+        : [];
+      const lengthWarnings = checkSubtypes.filter((subtype: unknown) =>
+        typeof subtype === 'string' && subtype.startsWith('chapter_length_'),
+      );
+      if (parsed?.passed === false) {
+        return `本地门禁未通过：${checkSubtypes.join('、') || '存在硬门禁问题'}`;
+      }
+      if (lengthWarnings.length > 0) {
+        return `已完成本地 Final Gate；篇幅仅作提示（${lengthWarnings.join('、')}），不阻断 Repair 采纳；未进行第二次 LLM 语义复核。`;
+      }
+      return '已完成本地 Final Gate；未进行第二次 LLM 语义复核。';
+    } catch {
+      return result.errorMessage || 'Local Final Gate 尚无结果。';
+    }
+  };
+
+  const renderV4StageCards = () => {
+    const repairEligible =
+      !rejectedRepair &&
+      v4Stage('repair')?.status === 'success' &&
+      v4Stage('local_verify')?.status === 'success';
+    const stageDefinitions: Array<{
+      id: ContinuationGenerationStageResult['stage'];
+      label: string;
+      meta: string;
+    }> = [
+      { id: 'writer', label: 'Writer', meta: '完整初稿；默认 eligible 候选' },
+      { id: 'checker', label: 'Checker', meta: '冻结 Canon/状态语义审查；不负责本地篇幅计数' },
+      { id: 'control', label: 'Control', meta: '本地汉字数为真值，LLM 只提供增减建议' },
+      { id: 'repair', label: 'Repair', meta: '一次请求输出完整终稿，不接受 Patch' },
+      { id: 'local_verify', label: 'Local Final Gate', meta: '零请求安全门禁；篇幅仅作提示，不等同于第二次语义复核' },
+    ];
+    return (
+      <>
+        <Text style={[styles.summary, { color: colors.textSecondary }]}>
+          V4 FULL-Control · 物理请求 {stageResults.reduce((sum, item) => sum + item.requestCount, 0)}/4 · 默认可采纳：{rejectedRepair ? 'Writer' : repairEligible ? 'Repair' : body ? 'Writer' : '—'}
+        </Text>
+        {stageDefinitions.map(stage => {
+          const result = v4Stage(stage.id);
+          const requestText = result?.requestCount
+            ? ` · ${result.requestCount} 次请求`
+            : '';
+          const tokenText = result &&
+              (result.inputTokens != null || result.outputTokens != null)
+            ? ` · token ${result.inputTokens ?? '—'}→${result.outputTokens ?? '—'}`
+            : '';
+          const durationText = result
+            ? ` · ${formatStageDuration(result.startedAt, result.completedAt)}`
+            : '';
+          const label = `${stage.label} · ${v4StageStatus(stage.id)}${requestText}${tokenText}${durationText}`;
+          return (
+            <View
+              key={stage.id}
+              style={[styles.resultCard, { backgroundColor: colors.card }]}
+            >
+              <Button
+                label={label}
+                variant="ghost"
+                onPress={() => toggleExpanded(`v4_${stage.id}`)}
+              />
+              <Text style={[styles.stageMeta, { color: colors.accent }]}>
+                {stage.meta}
+                {result?.errorCode ? ` · ${result.errorCode}` : ''}
+              </Text>
+              {expanded.has(`v4_${stage.id}`) && (
+                <Text selectable style={[styles.stageText, { color: colors.textPrimary }]}>
+                  {v4StageText(stage.id)}
+                </Text>
+              )}
+            </View>
+          );
+        })}
+      </>
+    );
+  };
+
+  const renderV4StateBranch = () => {
+    if (run.state === 'failed' || run.state === 'interrupted') {
+      return (
+        <Card>
+          <Text style={[styles.h, { color: run.state === 'failed' ? colors.danger : colors.textPrimary }]}>
+            {run.state === 'failed' ? 'V4 生成未完成' : 'V4 生成已中断'}
+          </Text>
+          <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+            {run.errorMessage || `当前阶段：${stageLabel(run.stage)}。已 reservation 的节点不会自动重发。`}
+          </Text>
+          <View style={styles.actions}>
+            <Button label={busy ? '处理中…' : '从已持久化阶段继续'} onPress={doResume} disabled={busy} />
+            <Button label="放弃" variant="secondary" onPress={doAbandon} disabled={busy} />
+          </View>
+        </Card>
+      );
+    }
+    if (run.state !== 'awaiting_user') return null;
+    const risk = reviewBlocked || Boolean(rejectedRepair);
+    return (
+      <Card>
+        <Text style={[styles.h, { color: risk ? colors.danger : colors.textPrimary }]}>
+          {rejectedRepair ? 'Repair 被本地门禁拒绝' : risk ? '默认候选仍有待人工确认问题' : 'V4 终稿已待采纳'}
+        </Text>
+          <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+            {rejectedRepair
+            ? '已保留 rejected Repair 供审计；默认可采纳 artifact 仍为 Writer。可以查看候选正文，但不能绕过 Local Final Gate 直接采纳。'
+            : '已根据一致性审查与篇幅控制完成综合修订；已执行本地安全门禁，未进行第二次 LLM 语义复核，请在采纳前人工审阅。'}
+          </Text>
+        {rejectedRepair && (
+          <View style={[styles.resultCard, { backgroundColor: colors.background }]}>
+            <Button
+              label={showRejectedRepair ? '收起被拒 Repair 候选' : '查看被拒 Repair 候选'}
+              variant="secondary"
+              onPress={() => setShowRejectedRepair(value => !value)}
+            />
+            {showRejectedRepair && (
+              <Text selectable style={[styles.stageText, { color: colors.textPrimary }]}>
+                {rejectedRepair.content}
+              </Text>
+            )}
+          </View>
+        )}
+        <View style={styles.actions}>
+          <Button
+            label={risk ? '采纳当前 eligible 候选（风险自负）' : busy ? '采纳中…' : '采纳'}
+            onPress={() => doAdopt({ allowOpenChecks: risk })}
+            disabled={busy || !body}
+          />
+          <Button label="放弃并返回" variant="ghost" onPress={doAbandon} disabled={busy} />
+        </View>
+      </Card>
+    );
+  };
 
   const renderCompletedResult = () => {
     const planText = plan
@@ -607,29 +837,38 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     <Screen>
       <Header title="流水线结果" action={headerAction} />
       <ScrollView contentContainerStyle={styles.pad}>
-        {run.state === 'awaiting_user' &&
-        planConfirmationStatus !== 'pending' &&
-        !reviewBlocked
-          ? renderCompletedResult()
-          : null}
-        {/* Non-final branches keep their workflow-specific guidance. */}
-        {run.state !== 'awaiting_user' &&
-          run.state !== 'outdated' &&
-          run.state !== 'failed' &&
-          !(run.state === 'interrupted' && !body) &&
-          renderPlan()}
-        {run.state !== 'awaiting_user' &&
-          run.state !== 'outdated' &&
-          run.state !== 'failed' &&
-          !(run.state === 'interrupted' && !body) &&
-          body.length > 0 &&
-          renderChecks()}
-        {run.state !== 'awaiting_user' &&
-          run.state !== 'outdated' &&
-          run.state !== 'failed' &&
-          !(run.state === 'interrupted' && !body) &&
-          renderBodyPreview()}
-        {renderStateBranch()}
+        {run.workflowVersion === 4 ? (
+          <>
+            {renderV4StageCards()}
+            {renderV4StateBranch()}
+          </>
+        ) : (
+          <>
+            {run.state === 'awaiting_user' &&
+            planConfirmationStatus !== 'pending' &&
+            !reviewBlocked
+              ? renderCompletedResult()
+              : null}
+            {/* Non-final branches keep their workflow-specific guidance. */}
+            {run.state !== 'awaiting_user' &&
+              run.state !== 'outdated' &&
+              run.state !== 'failed' &&
+              !(run.state === 'interrupted' && !body) &&
+              renderPlan()}
+            {run.state !== 'awaiting_user' &&
+              run.state !== 'outdated' &&
+              run.state !== 'failed' &&
+              !(run.state === 'interrupted' && !body) &&
+              body.length > 0 &&
+              renderChecks()}
+            {run.state !== 'awaiting_user' &&
+              run.state !== 'outdated' &&
+              run.state !== 'failed' &&
+              !(run.state === 'interrupted' && !body) &&
+              renderBodyPreview()}
+            {renderStateBranch()}
+          </>
+        )}
       </ScrollView>
     </Screen>
   );
@@ -643,15 +882,34 @@ function stageLabel(stage: string): string {
       return '规划';
     case 'writer':
       return '正文生成';
+    case 'auditing':
+      return 'Checker/Control 并行审查';
     case 'checker':
       return '一致性检查';
+    case 'control':
+      return '篇幅与结构控制';
     case 'repair':
       return '修复';
+    case 'local_verify':
+      return '本地 Final Gate';
     case 'awaiting_user':
       return '等待确认';
     default:
       return stage;
   }
+}
+
+function formatStageDuration(
+  startedAt: string | null,
+  completedAt: string | null,
+): string {
+  if (!startedAt) return '耗时—';
+  const start = Date.parse(startedAt);
+  const end = completedAt ? Date.parse(completedAt) : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return '耗时—';
+  }
+  return `耗时 ${Math.max(0, end - start)}ms`;
 }
 
 const styles = StyleSheet.create({

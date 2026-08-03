@@ -147,6 +147,28 @@ const ORPHAN_CHECKS: Array<{
     tables: ['project_plotlines', 'plotlines'],
     sql: 'SELECT pp.plotline_id FROM project_plotlines pp LEFT JOIN plotlines p ON p.id = pp.plotline_id WHERE p.id IS NULL LIMIT 1',
   },
+  {
+    label: 'continuation_generation_stage_results.run_id',
+    tables: ['continuation_generation_stage_results', 'continuation_generation_runs'],
+    sql: `SELECT sr.id
+      FROM continuation_generation_stage_results sr
+      LEFT JOIN continuation_generation_runs r ON r.id = sr.run_id
+      WHERE r.id IS NULL LIMIT 1`,
+  },
+  {
+    label: 'continuation_generation_stage_results.artifact_id',
+    tables: ['continuation_generation_stage_results', 'continuation_generation_artifacts'],
+    sql: `SELECT sr.id
+      FROM continuation_generation_stage_results sr
+      LEFT JOIN continuation_generation_artifacts a ON a.id = sr.artifact_id
+      WHERE sr.artifact_id IS NOT NULL AND a.id IS NULL LIMIT 1`,
+  },
+  {
+    label: 'continuation_generation_artifacts.eligibility_status',
+    tables: ['continuation_generation_artifacts'],
+    sql: `SELECT id FROM continuation_generation_artifacts
+      WHERE eligibility_status NOT IN ('eligible', 'rejected') LIMIT 1`,
+  },
 ];
 
 export async function validateSchema(
@@ -259,6 +281,16 @@ export async function validateSchema(
         table: 'canon_evidence',
         fromColumns: ['analysis_run_id'],
         expectedTarget: 'continuation_analysis_runs',
+      },
+      {
+        table: 'continuation_generation_stage_results',
+        fromColumns: ['run_id'],
+        expectedTarget: 'continuation_generation_runs',
+      },
+      {
+        table: 'continuation_generation_stage_results',
+        fromColumns: ['artifact_id'],
+        expectedTarget: 'continuation_generation_artifacts',
       },
     ];
     for (const check of foreignKeyTargetChecks) {
