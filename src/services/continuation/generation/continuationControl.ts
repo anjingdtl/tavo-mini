@@ -4,6 +4,7 @@ import {
   type ContinuationLengthContract,
 } from './continuationLengthContract';
 import type {
+  ContinuationControlAction,
   ContinuationControlReport,
   ContinuationControlSuggestion,
   ContinuationPlan,
@@ -323,8 +324,12 @@ export interface ContinuationControlParseResult {
 }
 
 /**
- * Parse only the Control report. Local metrics remain authoritative for every
- * numeric field, including a model's `currentHan` echo.
+ * Parse the Control report and reconcile it against the authoritative local
+ * metrics. The local `action` and every numeric field always win; the model's
+ * `action` is only a diagnostic echo. When the local action is expand/compress,
+ * a forced local suggestion (`ctrl_local_expand`/`ctrl_local_compress`) is
+ * always present in the final suggestions, even if the model returned an empty
+ * array or a direction-inconsistent one.
  */
 export function parseContinuationControlReport(input: {
   raw: string;
@@ -347,18 +352,29 @@ export function parseContinuationControlReport(input: {
       errorCode: 'control_invalid_shape',
     };
   }
-  const action = parsed.action;
-  if (action !== 'keep' && action !== 'expand' && action !== 'compress') {
+  const modelAction = parsed.action;
+  if (
+    modelAction !== 'keep' &&
+    modelAction !== 'expand' &&
+    modelAction !== 'compress'
+  ) {
     return {
       report: null,
       metricEchoMismatch: false,
       errorCode: 'control_invalid_action',
     };
   }
+  const metrics = input.metrics;
+  // Local action is the single source of truth for direction.
+  const localAction: ContinuationControlAction = reportAction(metrics);
+  const actionEchoMismatch = modelAction !== localAction;
   const modelCurrent = asFiniteNumber(parsed.currentHan);
   const metricEchoMismatch =
-    modelCurrent != null && modelCurrent !== input.metrics.actualHanCharacters;
-  const suggestions = Array.isArray(parsed.suggestions)
+    modelCurrent != null && modelCurrent !== metrics.actualHanCharacters;
+
+  const rawModelSuggestions: ContinuationControlSuggestion[] = Array.isArray(
+    parsed.suggestions,
+  )
     ? parsed.suggestions
         .filter((item: any) => item && typeof item === 'object')
         .map((item: any, index: number) => ({
@@ -371,29 +387,63 @@ export function parseContinuationControlReport(input: {
             typeof item.location === 'string' ? item.location : 'paragraph_boundary',
           expectedDeltaHan:
             asFiniteNumber(item.expectedDeltaHan) ??
-            (input.metrics.missingToMinimum > 0
-              ? input.metrics.missingToMinimum
-              : -input.metrics.excessOverMaximum),
+            (metrics.missingToMinimum > 0
+              ? metrics.missingToMinimum
+              : -metrics.excessOverMaximum),
           instruction:
             typeof item.instruction === 'string' ? item.instruction : '',
           preserveBeatIds: asStringArray(item.preserveBeatIds),
         }))
-        .filter((item: ContinuationControlSuggestion) => Boolean(item.instruction))
     : [];
+
+  // The local forced suggestion is always seeded first so the model cannot
+  // remove it by returning an empty array or a contradictory id.
+  const localFallback = buildContinuationControlFallback(metrics);
+  const localForced = localFallback.suggestions.filter(
+    s =>
+      s.suggestionId === LOCAL_EXPAND_SUGGESTION_ID ||
+      s.suggestionId === LOCAL_COMPRESS_SUGGESTION_ID,
+  );
+  const seenIds = new Set<string>(localForced.map(s => s.suggestionId));
+  // Under action mismatch, the model's suggestions point the wrong way and are
+  // dropped wholesale; otherwise they are filtered individually.
+  const candidatesForFilter = actionEchoMismatch ? [] : rawModelSuggestions;
+  const { accepted: acceptedModel, droppedCount } = filterModelSuggestions({
+    suggestions: candidatesForFilter,
+    localAction,
+    seenIds,
+  });
+
+  const suggestions = dedupeSuggestionsById([
+    ...localForced,
+    ...acceptedModel,
+  ]);
+  const localSuggestionInjected = localForced.length > 0;
+
+  // Preserve local defaults plus the model's preserve list (union, deduped).
+  const preserveSet = new Set<string>([
+    ...localFallback.preserve,
+    ...asStringArray(parsed.preserve),
+  ]);
+
   return {
     report: {
       schemaVersion: 1,
-      action,
-      currentHan: input.metrics.actualHanCharacters,
-      targetHan: input.metrics.targetHanCharacters,
-      allowedMinHan: input.metrics.minHanCharacters,
-      allowedMaxHan: input.metrics.maxHanCharacters,
+      action: localAction,
+      currentHan: metrics.actualHanCharacters,
+      targetHan: metrics.targetHanCharacters,
+      allowedMinHan: metrics.minHanCharacters,
+      allowedMaxHan: metrics.maxHanCharacters,
       suggestions,
-      preserve: asStringArray(parsed.preserve),
+      preserve: Array.from(preserveSet),
       ...(metricEchoMismatch ? { metricEchoMismatch: true } : {}),
+      ...(actionEchoMismatch ? { actionEchoMismatch: true } : {}),
     },
     metricEchoMismatch,
     errorCode: null,
+    actionEchoMismatch,
+    localSuggestionInjected,
+    droppedSuggestionCount: droppedCount + (actionEchoMismatch ? rawModelSuggestions.length : 0),
   };
 }
 
@@ -402,10 +452,15 @@ export function resolveContinuationControlReport(input: {
   raw?: string;
 }): ContinuationControlParseResult & { report: ContinuationControlReport } {
   if (!input.raw) {
+    // No LLM at all: the local fallback is already authoritative and carries
+    // the local forced suggestion.
     return {
       report: buildContinuationControlFallback(input.metrics),
       metricEchoMismatch: false,
       errorCode: 'control_llm_unavailable',
+      actionEchoMismatch: false,
+      localSuggestionInjected: buildContinuationControlFallback(input.metrics).suggestions.length > 0,
+      droppedSuggestionCount: 0,
     };
   }
   const parsed = parseContinuationControlReport({
@@ -413,9 +468,14 @@ export function resolveContinuationControlReport(input: {
     metrics: input.metrics,
   });
   if (parsed.report) return parsed as ContinuationControlParseResult & { report: ContinuationControlReport };
+  // Parse failed: fall back to the local deterministic report but preserve the
+  // parse error code for telemetry/UI.
   return {
     report: buildContinuationControlFallback(input.metrics),
     metricEchoMismatch: parsed.metricEchoMismatch,
     errorCode: parsed.errorCode,
+    actionEchoMismatch: false,
+    localSuggestionInjected: buildContinuationControlFallback(input.metrics).suggestions.length > 0,
+    droppedSuggestionCount: 0,
   };
 }

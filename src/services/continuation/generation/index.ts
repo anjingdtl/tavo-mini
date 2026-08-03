@@ -78,6 +78,9 @@ export {
   buildContinuationControlFallback,
   parseContinuationControlReport,
   resolveContinuationControlReport,
+  requiredControlProgressHan,
+  CONTROL_PROGRESS_RATIO,
+  CONTROL_PROGRESS_FLOOR_HAN,
 } from './continuationControl';
 export type { ContinuationControlParseResult } from './continuationControl';
 export {
@@ -101,10 +104,12 @@ export {
 export {
   runDeterministicChecks,
   parseCheckerLlmJson,
+  parseCheckerLlmEnvelope,
   bindIssuesToArtifact,
   filterBySettings,
   uncheckedCategories,
 } from './continuationChecker';
+export type { CheckerLlmEnvelope } from './continuationChecker';
 export {
   tryDeterministicRepair,
   tryDeterministicRepairWithReport,
