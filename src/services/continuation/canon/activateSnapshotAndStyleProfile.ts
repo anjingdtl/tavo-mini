@@ -128,7 +128,7 @@ export async function activateSnapshotAndStyleProfile(
 
   // Five-dimension hard gate (quality spec §7 / §13.2). Activation is the
   // final, atomic step; a snapshot that does not independently meet the
-  // per-dimension minimum (each >= 3, counted from THIS run + snapshot after
+  // per-dimension minimum (each >= REQUIRED_MIN_COUNT, counted from THIS run + snapshot after
   // the full pipeline) must never become the active Canon. This is the
   // authoritative guard — the main pipeline also checks, but activation is the
   // last line of defence against any bypass path.

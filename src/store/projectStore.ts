@@ -60,6 +60,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   createProject: async (name, mode) => {
     const id = await db.createProject(name, mode);
+    // Continuation projects need continuation_settings before import UI works.
+    if (mode === 'continuation') {
+      const { openDatabase } = await import('../data/connection/openDatabase');
+      const { ensureSettingsRow } = await import(
+        '../services/continuation/continuationSourceRepository'
+      );
+      await ensureSettingsRow(await openDatabase(), id);
+    }
     const project = await db.getProjectById(id);
     if (project) await get().setCurrentProject(project);
     await get().loadProjects();

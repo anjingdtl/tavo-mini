@@ -412,6 +412,21 @@ export interface AnalysisRun {
   completedAt: string | null;
 }
 
+/** Schema 34 batch coverage kinds for normal / chunk / tail / rescan work. */
+export type AnalysisBatchCoverageKind =
+  | 'full'
+  | 'chunk'
+  | 'retry_tail'
+  | 'rescan';
+
+export type AnalysisBatchState =
+  | 'queued'
+  | 'running'
+  | 'partial'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
 export interface AnalysisBatch {
   runId: string;
   canonSnapshotId: string;
@@ -420,11 +435,23 @@ export interface AnalysisBatch {
   endPosition: SourceChapterPosition;
   inputHash: string;
   idempotencyKey: string;
-  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  state: AnalysisBatchState;
   attemptCount: number;
   resultJson: string | null;
   errorCode: string | null;
   errorMessage: string | null;
+  /** Parent batch index when this is a dynamic tail / rescan sub-batch. */
+  parentBatchIndex: number | null;
+  /** Route-exclusive sub-batch material type (null for normal dual-route batches). */
+  materialType: AnalysisWorkItemType | null;
+  /** Single-chapter segment batches pin the chapter id. */
+  chapterId: number | null;
+  /** Inclusive UTF-16 start within the chapter body (null = whole chapter range). */
+  sourceCharStart: number | null;
+  /** Exclusive UTF-16 end within the chapter body. */
+  sourceCharEnd: number | null;
+  coverageKind: AnalysisBatchCoverageKind;
+  hadPartialCoverage: boolean;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;

@@ -101,6 +101,14 @@ export const ProjectListScreen: React.FC = () => {
     // project, so the bottom navigation no longer waits for a card tap.
   };
 
+  const openNewProjectModal = (mode: ProjectMode = modeFilter) => {
+    // Header / empty-state 新建必须跟随当前作品库模式，避免在「原著续写」
+    // 页签下点右上角新建却落到大纲创作。
+    setNewMode(mode === 'continuation' ? 'continuation' : 'outline');
+    setNewName('');
+    setShowNewModal(true);
+  };
+
   const handleCreate = async () => {
     const name = newName.trim();
     if (!name) return;
@@ -108,7 +116,9 @@ export const ProjectListScreen: React.FC = () => {
     try {
       await createProject(name, newMode);
       setNewName('');
-      setNewMode('outline');
+      // Keep the library tab and next-create default on the mode just used.
+      setModeFilter(newMode === 'continuation' ? 'continuation' : 'outline');
+      setNewMode(newMode === 'continuation' ? 'continuation' : 'outline');
       setShowNewModal(false);
     } catch (error: any) {
       Alert.alert(
@@ -390,8 +400,9 @@ export const ProjectListScreen: React.FC = () => {
             <Button
               label="新建"
               icon={Plus}
-              onPress={() => setShowNewModal(true)}
+              onPress={() => openNewProjectModal(modeFilter)}
               compact
+              testID="new-project-button"
             />
           </View>
         }
@@ -437,10 +448,7 @@ export const ProjectListScreen: React.FC = () => {
                   : '新建大纲作品'
               }
               icon={Plus}
-              onPress={() => {
-                setNewMode(modeFilter);
-                setShowNewModal(true);
-              }}
+              onPress={() => openNewProjectModal(modeFilter)}
             />
           }
         />

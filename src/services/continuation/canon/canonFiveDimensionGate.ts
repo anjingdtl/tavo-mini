@@ -5,11 +5,11 @@
  * The two analysis modes (full / quick) must each independently pass a hard
  * five-dimension gate before their snapshot may be activated:
  *
- *   characters    >= 3
- *   world_rules   >= 3
- *   relationships >= 3
- *   plot_threads  >= 3
- *   experiences   >= 3
+ *   characters    >= 1
+ *   world_rules   >= 1
+ *   relationships >= 1
+ *   plot_threads  >= 1
+ *   experiences   >= 1
  *
  * Counts MUST come from the CURRENT run + CURRENT snapshot, after Schema
  * validation, evidence resolution, dedup, materialisation and a fresh DB
@@ -38,8 +38,11 @@ export type RequiredCanonDimension = (typeof REQUIRED_CANON_DIMENSIONS)[number];
 /**
  * Minimum valid rows per dimension after the full pipeline (Schema + evidence
  * + dedup + materialise + re-read).
+ *
+ * Kept at 1 so short novels with a single protagonist (or sparse world rules)
+ * can still pass; zero remains a hard fail so empty dimensions never activate.
  */
-export const REQUIRED_MIN_COUNT = 3;
+export const REQUIRED_MIN_COUNT = 1;
 
 /**
  * Maximum number of targeted-rescan rounds per missing dimension. Spec §12.3

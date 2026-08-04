@@ -25,8 +25,8 @@ from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "__tests__" / "fixtures" / "databases"
-VERSIONS = range(3, 33)
-CURRENT_SCHEMA = 33
+VERSIONS = range(3, 35)
+CURRENT_SCHEMA = 35
 NOW = "2026-07-15T00:00:00.000Z"
 LONG_TEXT = ("这是一段用于迁移验证的超长正文。Long migration content. " * 900).strip()
 SPECIAL_TEXT = '特殊字符：中文 / English — emoji 😀 <tag> & quote "quoted"'
@@ -494,7 +494,10 @@ def apply_migrations(
 
     for version in range(from_version, to_version):
         statements = migrations[version]
-        needs_parent_rebuild_flags = version == 31
+        # Schema 32 (v31→v32), Schema 34 V5 (v33→v34), Schema 35 Canon batches
+        # (v34→v35) all rebuild tables under active FK graphs and need the same
+        # SQLite rename-safe PRAGMA pair used by the app migrators.
+        needs_parent_rebuild_flags = version in (31, 33, 34)
         if needs_parent_rebuild_flags:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute("PRAGMA legacy_alter_table = ON")

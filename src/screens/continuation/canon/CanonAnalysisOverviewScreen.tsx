@@ -216,15 +216,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       const items = overview.latestRun
         ? await getAnalysisWorkItems(overview.latestRun.id)
         : [];
-      // 同批请求组会几乎同时回写；以工作项实际终态数渲染进度，
-      // 避免 run 表最后一次异步写入暂时落后于屏幕上的“已完成”明细。
-      const completedCount = items.filter(
-        item => item.state === 'completed',
-      ).length;
-      const run = overview.latestRun
-        ? { ...overview.latestRun, progressCurrent: completedCount }
-        : null;
-      setLatestRun(run);
+      // Overall progress is owned by the run row (extraction work items +
+      // post-extraction stages). Do NOT collapse it to work-item counts alone
+      // — that made 风格校验 look like 2/2 100% complete.
+      const latest = overview.latestRun;
+      setLatestRun(latest);
       setWorkItems(items);
       setBoundaryOk(ready);
       setHistoricalCoverage(historyCoverage);
@@ -232,7 +228,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
       setStyleProfile(
         pickStyleProfile(
           styleProfiles,
-          run,
+          latest,
           overview.activeSnapshot?.id ?? null,
         ),
       );
@@ -436,10 +432,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     () => workItems.filter(item => item.state === 'completed').length,
     [workItems],
   );
-  const displayedProgressCurrent =
-    workItems.length > 0 ? completedWorkItems : latestRun?.progressCurrent ?? 0;
-  const progressPercent = latestRun?.progressTotal
-    ? Math.round((displayedProgressCurrent / latestRun.progressTotal) * 100)
+  // Prefer persisted overall progress (includes evidence/style stages).
+  const displayedProgressCurrent = latestRun?.progressCurrent ?? 0;
+  const displayedProgressTotal = latestRun?.progressTotal ?? 0;
+  const progressPercent = displayedProgressTotal
+    ? Math.round((displayedProgressCurrent / displayedProgressTotal) * 100)
     : 0;
   const needsActivation =
     !!latestRun &&
@@ -864,10 +861,13 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                     {RUN_STAGE_LABELS[latestRun.stage]}
                   </Text>
                   <Text style={{ color: theme.colors.textSecondary }}>
-                    进度 {displayedProgressCurrent}/{latestRun.progressTotal} ·{' '}
-                    {ANALYSIS_PROFILE_LABELS[latestRun.profile]}
+                    总进度 {displayedProgressCurrent}/{displayedProgressTotal}
+                    {workItems.length > 0
+                      ? `（提取 ${completedWorkItems}/${workItems.length}）`
+                      : ''}{' '}
+                    · {ANALYSIS_PROFILE_LABELS[latestRun.profile]}
                   </Text>
-                  {latestRun.progressTotal > 0 && (
+                  {displayedProgressTotal > 0 && (
                     <>
                       <View
                         style={[

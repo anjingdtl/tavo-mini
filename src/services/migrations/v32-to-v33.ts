@@ -55,45 +55,45 @@ export function buildV32toV33Statements(): SqlStatement[] {
   });
 
   // ── 2. Duplicate-row cleanup before UNIQUE indexes ────────────────────
-  // For each fact table, delete older duplicate rows (keep the newest id per
-  // business key among non-superseded rows). This makes the subsequent UNIQUE
-  // index creation succeed on legacy databases that already contain duplicates
-  // from the app-level dedup gap. Superseded rows are exempt (a superseded row
-  // is intentionally retained as history and excluded by the partial index).
-  statements.push({
-    sql: dedupKeepNewestByBusinessKey('canon_world_rules', [
+  // Rebind evidence links from older duplicates onto the newest (MAX id)
+  // keeper BEFORE deleting the older facts. Schema 33 originally deleted
+  // without rebinding, which left dangling polymorphic owner links. Round-2
+  // repair requires rebind-then-delete so five-dimension Gate counts do not
+  // drop across upgrade.
+  statements.push(
+    ...rebindLinksThenDedup('canon_world_rules', 'world_rule', [
       'snapshot_id',
       'title',
     ]),
-  });
-  statements.push({
-    sql: dedupKeepNewestByBusinessKey('canon_characters', [
+  );
+  statements.push(
+    ...rebindLinksThenDedup('canon_characters', 'character', [
       'snapshot_id',
       'canonical_name',
     ]),
-  });
-  statements.push({
-    sql: dedupKeepNewestByBusinessKey('canon_plot_threads', [
+  );
+  statements.push(
+    ...rebindLinksThenDedup('canon_plot_threads', 'plot_thread', [
       'snapshot_id',
       'title',
     ]),
-  });
-  statements.push({
-    sql: dedupKeepNewestByBusinessKey('canon_relationships', [
+  );
+  statements.push(
+    ...rebindLinksThenDedup('canon_relationships', 'relationship', [
       'snapshot_id',
       'source_character_id',
       'target_character_id',
       'relation_type',
     ]),
-  });
-  statements.push({
-    sql: dedupKeepNewestByBusinessKey('canon_character_experiences', [
+  );
+  statements.push(
+    ...rebindLinksThenDedup('canon_character_experiences', 'experience', [
       'snapshot_id',
       'character_id',
       'event_type',
       'title',
     ]),
-  });
+  );
 
   // ── 3. Partial UNIQUE indexes on business keys ────────────────────────
   // Partial (WHERE review_status != 'superseded') so a superseded revision can
@@ -165,30 +165,65 @@ export function buildSchema33CreateSqls(): string[] {
 }
 
 /**
- * Build a DELETE statement that collapses duplicate rows of `table` on the
- * given business `keyColumns`, keeping only the newest (highest id) row per key
- * among non-superseded rows.
- *
- * Uses a self-join on rowid (stable for INTEGER PRIMARY KEY tables) to delete
- * every non-newest duplicate. Idempotent: after the first run there are no
- * duplicates, so subsequent runs delete zero rows.
+ * Rebind evidence links from non-keeper duplicates onto MAX(id) keeper, collapse
+ * duplicate links, then delete non-keeper facts. Idempotent when no dups remain.
  */
-function dedupKeepNewestByBusinessKey(
+function rebindLinksThenDedup(
   table: string,
+  ownerType: string,
   keyColumns: string[],
-): string {
-  const keyTuple = `(${keyColumns.join(', ')})`;
-  return `DELETE FROM ${table}
-    WHERE rowid NOT IN (
-      SELECT MAX(rowid) FROM ${table}
-      WHERE review_status != 'superseded'
-      GROUP BY ${keyColumns.join(', ')}
-    )
-    AND review_status != 'superseded'
-    AND ${keyTuple} IN (
-      SELECT ${keyColumns.join(', ')} FROM ${table}
-      WHERE review_status != 'superseded'
-      GROUP BY ${keyColumns.join(', ')}
-      HAVING COUNT(*) > 1
-    )`;
+): SqlStatement[] {
+  const keyList = keyColumns.join(', ');
+  const keyEq = keyColumns.map(c => `d.${c} = k.${c}`).join(' AND ');
+  return [
+    {
+      sql: `UPDATE canon_evidence_links
+        SET owner_id = (
+          SELECT MAX(k.id) FROM ${table} k
+          INNER JOIN ${table} d ON ${keyEq}
+          WHERE d.id = canon_evidence_links.owner_id
+            AND k.review_status != 'superseded'
+            AND d.review_status != 'superseded'
+        )
+        WHERE owner_type = ?
+          AND owner_id IN (
+            SELECT d.id FROM ${table} d
+            WHERE d.review_status != 'superseded'
+              AND d.id NOT IN (
+                SELECT MAX(id) FROM ${table}
+                WHERE review_status != 'superseded'
+                GROUP BY ${keyList}
+              )
+              AND (${keyList}) IN (
+                SELECT ${keyList} FROM ${table}
+                WHERE review_status != 'superseded'
+                GROUP BY ${keyList}
+                HAVING COUNT(*) > 1
+              )
+          )`,
+      params: [ownerType],
+    },
+    {
+      sql: `DELETE FROM canon_evidence_links
+        WHERE rowid NOT IN (
+          SELECT MIN(rowid) FROM canon_evidence_links
+          GROUP BY evidence_id, snapshot_id, owner_type, owner_id
+        )`,
+    },
+    {
+      sql: `DELETE FROM ${table}
+        WHERE review_status != 'superseded'
+          AND id NOT IN (
+            SELECT MAX(id) FROM ${table}
+            WHERE review_status != 'superseded'
+            GROUP BY ${keyList}
+          )
+          AND (${keyList}) IN (
+            SELECT ${keyList} FROM ${table}
+            WHERE review_status != 'superseded'
+            GROUP BY ${keyList}
+            HAVING COUNT(*) > 1
+          )`,
+    },
+  ];
 }
