@@ -164,6 +164,75 @@ export async function insertEvidenceAndLink(
   return id;
 }
 
+/**
+ * Unified evidence builder — every owner type must go through this so
+ * readBackVerifier / sourceOrigin / rescanOperationId / run / snapshot are never
+ * omitted by hand-assembled parameter bags.
+ */
+export function buildEvidenceInsertInput(
+  ctx: {
+    projectId: number;
+    sourceId: number;
+    snapshotId: string;
+    analysisRunId: string;
+    boundaryExclusive: number;
+    readBackVerifier?: (charStart: number, charEnd: number) => Promise<string>;
+    sourceOrigin?: 'batch' | 'rescan';
+    rescanOperationId?: string;
+  },
+  candidate: ExtractionEvidenceCandidate,
+): CreateEvidenceInput {
+  return {
+    projectId: ctx.projectId,
+    sourceId: ctx.sourceId,
+    snapshotId: ctx.snapshotId,
+    analysisRunId: ctx.analysisRunId,
+    boundaryExclusive: ctx.boundaryExclusive,
+    candidate,
+    readBackVerifier: ctx.readBackVerifier,
+    sourceOrigin: ctx.sourceOrigin,
+    rescanOperationId: ctx.rescanOperationId,
+  };
+}
+
+export interface VerifiedEvidence {
+  candidate: ExtractionEvidenceCandidate;
+  quoteSha256: string;
+  quoteText: string;
+}
+
+/**
+ * Pre-transaction evidence verification: range check → optional SourceReader
+ * read-back → hash. Failures return null and must not enter materialization.
+ */
+export async function verifyEvidenceBeforeWrite(
+  input: CreateEvidenceInput,
+): Promise<VerifiedEvidence | null> {
+  const check = validateEvidenceRange(input.candidate, input.boundaryExclusive);
+  if (!check.ok) return null;
+  const preview = clipPreview(
+    input.candidate.quotePreview || input.quoteText || '',
+  );
+  if (input.readBackVerifier) {
+    let readBack: string;
+    try {
+      readBack = await input.readBackVerifier(
+        input.candidate.charStart,
+        input.candidate.charEnd,
+      );
+    } catch {
+      return null;
+    }
+    if (readBack !== preview) return null;
+  }
+  const quoteText = input.quoteText ?? preview;
+  return {
+    candidate: input.candidate,
+    quoteSha256: sha256Hex(quoteText),
+    quoteText,
+  };
+}
+
 /** Read full quote via Phase 1 bounded reader (Spec §6.4). */
 export async function readEvidenceView(
   projectId: number,

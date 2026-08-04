@@ -70,6 +70,10 @@ jest.mock('../src/services/continuation/canon/canonRepository', () => ({
   countFutureEvidence: (...args: any[]) => mockCountFutureEvidence(...args),
   countOrphanEvidence: (...args: any[]) => mockCountOrphanEvidence(...args),
   asSourcePosition: (value: number) => value,
+  // DB-driven scheduler: no queued batches remain in the style-pipeline fixture.
+  findNextQueuedBatch: jest.fn().mockResolvedValue(null),
+  insertSubBatchIfAbsent: jest.fn(),
+  allocateNextBatchIndex: jest.fn().mockResolvedValue(0),
 }));
 
 import { processAnalysisRun } from '../src/services/continuation/canon/canonAnalysisService';

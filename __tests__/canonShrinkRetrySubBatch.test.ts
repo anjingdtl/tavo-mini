@@ -112,12 +112,12 @@ describe('Bug #3: shrink-retry reports partial coverage', () => {
   });
 
   it('a shrunk-retry success reports PARTIAL coverage (tail not analysed)', async () => {
-    // Content must exceed the 1024-char shrink floor so the shrunk limit
-    // actually truncates. Use 2000 chars with a marker near the front.
-    const content = 'A'.repeat(40) + '头部规则' + 'B'.repeat(1500) + '尾部未分析内容';
+    // Round-2: partialCoverage is driven by the TOTAL-budget slicer, not by
+    // "did a retry happen". Use enough CJK body that even the normal 30%
+    // budget cannot cover the chapter, and a shrink makes the covered range
+    // strictly smaller.
+    const content = '甲'.repeat(40) + '头部规则' + '乙'.repeat(4000) + '尾部未分析内容';
     const chapter = makeChapter(content, 0);
-    // Attempt 1: length/truncated (recoverable) → triggers shrink.
-    // Attempt 2: success but only on the shrunk (front) slice.
     (callLLMResult as jest.Mock)
       .mockResolvedValueOnce({ text: '', emptyReason: 'length' })
       .mockResolvedValueOnce({ text: validWorldRule('头部规则', 40) });
@@ -131,17 +131,18 @@ describe('Bug #3: shrink-retry reports partial coverage', () => {
       new AbortController().signal,
       undefined,
       undefined,
-      // effectiveInputBudget=200 → baseChapterTextLimit ≈ 250; after one shrink
-      // step the floor max(1024, floor(250*0.667)) = 1024 < content.length(1556).
-      { effectiveInputBudget: 200, outputReserve: 8000, promptOverhead: 600, estimatedBatchCount: 1 },
+      // ~800 total source tokens cannot cover 4000+ CJK chars (≈1 token/char).
+      {
+        effectiveInputBudget: 800,
+        targetInputBudget: 800,
+        outputReserve: 8000,
+        promptOverhead: 600,
+        estimatedBatchCount: 1,
+      },
     );
-    // The shrink happened → outcome must flag partial coverage and report the
-    // analysed character end so the caller can re-plan the tail.
     expect(outcome.partialCoverage).toBe(true);
     expect(outcome.analyzedCharEnds?.[0]).toBeLessThan(chapter.content.length);
     expect(outcome.analyzedCharEnds?.[0]).toBeGreaterThan(0);
-    // The tail beyond the analysed end was never sent to the model.
-    expect(outcome.analyzedCharEnds?.[0]).toBeLessThanOrEqual(1024);
   });
 
   it('partial coverage outcome carries the analysed range for re-planning', async () => {

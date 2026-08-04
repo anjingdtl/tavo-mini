@@ -154,6 +154,16 @@ export function mapBatch(row: Row): AnalysisBatch {
     resultJson: row.result_json ?? null,
     errorCode: row.error_code ?? null,
     errorMessage: row.error_message ?? null,
+    parentBatchIndex:
+      row.parent_batch_index == null ? null : Number(row.parent_batch_index),
+    materialType: (row.material_type as AnalysisBatch['materialType']) ?? null,
+    chapterId: row.chapter_id == null ? null : Number(row.chapter_id),
+    sourceCharStart:
+      row.source_char_start == null ? null : Number(row.source_char_start),
+    sourceCharEnd:
+      row.source_char_end == null ? null : Number(row.source_char_end),
+    coverageKind: (row.coverage_kind as AnalysisBatch['coverageKind']) ?? 'full',
+    hadPartialCoverage: Number(row.had_partial_coverage ?? 0) === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at ?? null,
@@ -456,6 +466,14 @@ export async function insertBatches(
     endPosition: number;
     inputHash: string;
     idempotencyKey: string;
+    parentBatchIndex?: number | null;
+    materialType?: string | null;
+    chapterId?: number | null;
+    sourceCharStart?: number | null;
+    sourceCharEnd?: number | null;
+    coverageKind?: string;
+    hadPartialCoverage?: boolean;
+    state?: string;
   }>,
 ): Promise<void> {
   const ts = now();
@@ -463,8 +481,11 @@ export async function insertBatches(
     sql: `INSERT INTO continuation_analysis_batches (
       run_id, canon_snapshot_id, batch_index, start_position, end_position,
       input_hash, idempotency_key, state, attempt_count, result_json,
-      error_code, error_message, created_at, updated_at, completed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, NULL, NULL, NULL, ?, ?, NULL)`,
+      error_code, error_message,
+      parent_batch_index, material_type, chapter_id,
+      source_char_start, source_char_end, coverage_kind, had_partial_coverage,
+      created_at, updated_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     params: [
       b.runId,
       b.canonSnapshotId,
@@ -473,11 +494,81 @@ export async function insertBatches(
       b.endPosition,
       b.inputHash,
       b.idempotencyKey,
+      b.state ?? 'queued',
+      b.parentBatchIndex ?? null,
+      b.materialType ?? null,
+      b.chapterId ?? null,
+      b.sourceCharStart ?? null,
+      b.sourceCharEnd ?? null,
+      b.coverageKind ?? 'full',
+      b.hadPartialCoverage ? 1 : 0,
       ts,
       ts,
     ],
   }));
   await executeTransaction(db, statements);
+}
+
+/** Next queued batch for DB-driven scheduling (lowest batch_index first). */
+export async function findNextQueuedBatch(
+  db: SQLite.SQLiteDatabase,
+  runId: string,
+): Promise<AnalysisBatch | null> {
+  const [result] = await db.executeSql(
+    `SELECT * FROM continuation_analysis_batches
+      WHERE run_id = ? AND state = 'queued'
+      ORDER BY batch_index ASC
+      LIMIT 1`,
+    [runId],
+  );
+  if (result.rows.length === 0) return null;
+  return mapBatch(result.rows.item(0));
+}
+
+/** Insert a single sub-batch idempotently (same idempotency_key is a no-op). */
+export async function insertSubBatchIfAbsent(
+  db: SQLite.SQLiteDatabase,
+  batch: {
+    runId: string;
+    canonSnapshotId: string;
+    batchIndex: number;
+    startPosition: number;
+    endPosition: number;
+    inputHash: string;
+    idempotencyKey: string;
+    parentBatchIndex: number;
+    materialType: string;
+    chapterId: number;
+    sourceCharStart: number;
+    sourceCharEnd: number;
+    coverageKind: string;
+  },
+): Promise<{ inserted: boolean; batchIndex: number }> {
+  const [existingResult] = await db.executeSql(
+    `SELECT batch_index FROM continuation_analysis_batches
+      WHERE idempotency_key = ?`,
+    [batch.idempotencyKey],
+  );
+  if (existingResult.rows.length > 0) {
+    return {
+      inserted: false,
+      batchIndex: existingResult.rows.item(0).batch_index as number,
+    };
+  }
+  await insertBatches(db, [batch]);
+  return { inserted: true, batchIndex: batch.batchIndex };
+}
+
+export async function allocateNextBatchIndex(
+  db: SQLite.SQLiteDatabase,
+  runId: string,
+): Promise<number> {
+  const [result] = await db.executeSql(
+    `SELECT COALESCE(MAX(batch_index), -1) + 1 AS next_index
+      FROM continuation_analysis_batches WHERE run_id = ?`,
+    [runId],
+  );
+  return result.rows.item(0).next_index as number;
 }
 
 export async function insertWorkItems(

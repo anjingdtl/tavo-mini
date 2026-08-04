@@ -2,8 +2,8 @@
  * Five-dimension hard acceptance gate unit tests (quality spec §7 / §12).
  *
  * Verifies the gate logic independently of the DB layer:
- *   - any dimension at 0/1/2 fails
- *   - all dimensions at 3 passes
+ *   - any dimension at 0 fails
+ *   - all dimensions at >= 1 passes
  *   - counts come from the current run + snapshot only (mocked)
  *   - missing dimensions are reported in declared order
  */
@@ -25,39 +25,48 @@ function mockDbWithCounts(count: number) {
 }
 
 describe('evaluateFiveDimensionGate', () => {
-  it('passes when every dimension has at least 3', () => {
+  it('passes when every dimension has at least 1', () => {
     const result = evaluateFiveDimensionGate({
-      characters: 3,
-      worldRules: 3,
-      relationships: 3,
-      plotThreads: 3,
-      experiences: 3,
+      characters: 1,
+      worldRules: 1,
+      relationships: 1,
+      plotThreads: 1,
+      experiences: 1,
     });
     expect(result.passed).toBe(true);
     expect(result.missingDimensions).toEqual([]);
   });
 
-  it('fails when any dimension is 0, 1, or 2', () => {
-    const cases = [0, 1, 2];
-    for (const low of cases) {
-      const result = evaluateFiveDimensionGate({
-        characters: low,
-        worldRules: 5,
-        relationships: 5,
-        plotThreads: 5,
-        experiences: 5,
-      });
-      expect(result.passed).toBe(false);
-      expect(result.missingDimensions).toContain('characters');
-    }
+  it('fails when any dimension is 0', () => {
+    const result = evaluateFiveDimensionGate({
+      characters: 0,
+      worldRules: 5,
+      relationships: 5,
+      plotThreads: 5,
+      experiences: 5,
+    });
+    expect(result.passed).toBe(false);
+    expect(result.missingDimensions).toContain('characters');
+  });
+
+  it('passes when a dimension is exactly 1 (single-protagonist novels)', () => {
+    const result = evaluateFiveDimensionGate({
+      characters: 1,
+      worldRules: 5,
+      relationships: 5,
+      plotThreads: 5,
+      experiences: 5,
+    });
+    expect(result.passed).toBe(true);
+    expect(result.missingDimensions).toEqual([]);
   });
 
   it('reports all missing dimensions, not just the first', () => {
     const result = evaluateFiveDimensionGate({
       characters: 5,
-      worldRules: 2,
+      worldRules: 0,
       relationships: 5,
-      plotThreads: 1,
+      plotThreads: 0,
       experiences: 5,
     });
     expect(result.passed).toBe(false);
@@ -71,17 +80,6 @@ describe('evaluateFiveDimensionGate', () => {
       relationships: 20,
       plotThreads: 15,
       experiences: 40,
-    });
-    expect(result.passed).toBe(true);
-  });
-
-  it('treats exactly 3 as the boundary (passes)', () => {
-    const result = evaluateFiveDimensionGate({
-      characters: 3,
-      worldRules: 3,
-      relationships: 3,
-      plotThreads: 3,
-      experiences: 3,
     });
     expect(result.passed).toBe(true);
   });
@@ -115,23 +113,23 @@ describe('describeGateResult', () => {
   it('produces a Chinese summary naming each dimension and its count', () => {
     const result = evaluateFiveDimensionGate({
       characters: 5,
-      worldRules: 2,
+      worldRules: 0,
       relationships: 5,
       plotThreads: 5,
       experiences: 5,
     });
     const text = describeGateResult(result);
-    expect(text).toContain('世界观规则 2 条');
+    expect(text).toContain('世界观规则 0 条');
     expect(text).toContain('不足维度');
   });
 
   it('reports pass when the gate is satisfied', () => {
     const result = evaluateFiveDimensionGate({
-      characters: 3,
-      worldRules: 3,
-      relationships: 3,
-      plotThreads: 3,
-      experiences: 3,
+      characters: 1,
+      worldRules: 1,
+      relationships: 1,
+      plotThreads: 1,
+      experiences: 1,
     });
     expect(describeGateResult(result)).toContain('通过');
   });
@@ -168,7 +166,7 @@ describe('constants', () => {
     ]);
   });
 
-  it('sets the minimum count to 3', () => {
-    expect(REQUIRED_MIN_COUNT).toBe(3);
+  it('sets the minimum count to 1', () => {
+    expect(REQUIRED_MIN_COUNT).toBe(1);
   });
 });

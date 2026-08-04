@@ -103,6 +103,19 @@ describe('runStatusLabel (S2 fix)', () => {
     );
   });
 
+  it('surfaces style stages so 2/2 extraction is not mistaken for finished work', () => {
+    const styleRun = makeRun('running', 'style_analysis');
+    styleRun.updatedAt = '2026-08-01T10:00:00.000Z';
+    expect(
+      runActivityDetail(styleRun, Date.parse('2026-08-01T10:00:03.000Z')),
+    ).toContain('正在分析原著写作风格');
+    const validateRun = makeRun('running', 'style_validation');
+    validateRun.updatedAt = '2026-08-01T10:00:00.000Z';
+    expect(
+      runActivityDetail(validateRun, Date.parse('2026-08-01T10:00:03.000Z')),
+    ).toContain('正在校验并激活');
+  });
+
 
   it('returns a same-page activation prompt for awaiting_review', () => {
     expect(

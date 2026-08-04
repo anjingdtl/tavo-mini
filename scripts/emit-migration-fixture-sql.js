@@ -96,6 +96,8 @@ const migrationSpecs = [
   [30, 'v30-to-v31', 'buildV30toV31Statements'],
   [31, 'v31-to-v32', 'buildV31toV32Statements'],
   [32, 'v32-to-v33', 'buildV32toV33Statements'],
+  [33, 'v33-to-v34', 'buildV33toV34Statements'],
+  [34, 'v34-to-v35', 'buildV34toV35Statements'],
 ];
 
 const emptyDatabase = {

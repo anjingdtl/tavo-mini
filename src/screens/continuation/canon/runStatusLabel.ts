@@ -64,17 +64,33 @@ export function runActivityDetail(
   run: Pick<AnalysisRun, 'state' | 'stage' | 'updatedAt'>,
   currentTimeMs = Date.now(),
 ): string | null {
-  if (run.state !== 'running' || run.stage !== 'finalizing') return null;
-  const lastActivityMs = Date.parse(run.updatedAt);
-  if (!Number.isFinite(lastActivityMs)) {
-    return '模型请求已完成，正在本地整理证据与覆盖范围。';
+  if (run.state !== 'running') return null;
+  if (
+    run.stage !== 'finalizing' &&
+    run.stage !== 'evidence_validation' &&
+    run.stage !== 'style_analysis' &&
+    run.stage !== 'style_validation'
+  ) {
+    return null;
   }
-  const elapsedSeconds = Math.max(0, Math.floor((currentTimeMs - lastActivityMs) / 1000));
+  const lastActivityMs = Date.parse(run.updatedAt);
+  const elapsedSeconds = Number.isFinite(lastActivityMs)
+    ? Math.max(0, Math.floor((currentTimeMs - lastActivityMs) / 1000))
+    : 0;
   const activityLabel =
     elapsedSeconds < 5
       ? '刚刚'
       : elapsedSeconds < 60
       ? `${elapsedSeconds} 秒前`
       : `${Math.floor(elapsedSeconds / 60)} 分钟前`;
-  return `模型请求已完成，正在本地整理证据与覆盖范围 · 最近活动：${activityLabel}`;
+  if (run.stage === 'style_analysis') {
+    return `章节提取已完成，正在分析原著写作风格 · 最近活动：${activityLabel}`;
+  }
+  if (run.stage === 'style_validation') {
+    return `风格画像已生成，正在校验并激活 · 最近活动：${activityLabel}`;
+  }
+  if (run.stage === 'evidence_validation') {
+    return `正在校验原文证据 · 最近活动：${activityLabel}`;
+  }
+  return `模型请求已完成，正在本地整理证据、五维验收与覆盖范围 · 最近活动：${activityLabel}`;
 }

@@ -223,11 +223,11 @@ describe('activateSnapshotAndStyleProfile', () => {
   });
 
   it('refuses to activate when any five-dimension count is below the minimum', async () => {
-    // characters = 2 (< 3) → gate fails. Activation must be the final step
+    // characters = 0 (< 1) → gate fails. Activation must be the final step
     // and must not fire for a snapshot that has not independently passed the
     // five-dimension hard gate.
     let callIndex = 0;
-    const counts = [2, 5, 5, 5, 5, 5, 5, 5]; // first query (characters) returns 2
+    const counts = [0, 5, 5, 5, 5, 5, 5, 5]; // first query (characters) returns 0
     (openDatabase as jest.Mock).mockResolvedValue({
       executeSql: jest.fn().mockImplementation(async () => {
         const c = counts[callIndex % counts.length];
@@ -244,7 +244,7 @@ describe('activateSnapshotAndStyleProfile', () => {
         styleProfileId: 'style-1',
         allowStyleSkip: false,
       }),
-    ).rejects.toThrow(/五维验收|至少 3 条方可激活/);
+    ).rejects.toThrow(/五维验收|至少 1 条方可激活/);
 
     // The main activation transaction must NOT have committed.
     const txCalls = (executeTransaction as jest.Mock).mock.calls;
