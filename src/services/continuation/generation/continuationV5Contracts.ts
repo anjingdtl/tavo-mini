@@ -13,6 +13,7 @@ import type {
   ContinuationV5DraftEnvelope,
   ContinuationV5FinalEnvelope,
   ContinuationV5LengthPolicy,
+  ContinuationV5RevisionAnchor,
   ContinuationV5RevisionEnvelope,
   ContinuationV5SceneUnit,
 } from './types';
@@ -77,7 +78,9 @@ export function hashArchitectureEnvelope(
   return sha256Hex(canonicalJson(envelope));
 }
 
-export function hashAuditEnvelope(envelope: ContinuationV5AuditEnvelope): string {
+export function hashAuditEnvelope(
+  envelope: ContinuationV5AuditEnvelope,
+): string {
   return sha256Hex(canonicalJson(envelope));
 }
 
@@ -281,7 +284,8 @@ export function parseContinuationV5DraftEnvelope(
             asString(beat?.summary) ||
             (typeof beat === 'string' ? beat.trim() : '') ||
             '推进当前冲突',
-          stateChange: asString(beat?.stateChange) || asString(beat?.state_change) || '',
+          stateChange:
+            asString(beat?.stateChange) || asString(beat?.state_change) || '',
         }))
       : [
           {
@@ -297,9 +301,13 @@ export function parseContinuationV5DraftEnvelope(
   };
 }
 
-function parseSceneUnit(raw: any, index: number): ContinuationV5SceneUnit | null {
+function parseSceneUnit(
+  raw: any,
+  index: number,
+): ContinuationV5SceneUnit | null {
   if (!raw || typeof raw !== 'object') return null;
-  const sceneId = asString(raw.sceneId) || asString(raw.id) || `scene_${index + 1}`;
+  const sceneId =
+    asString(raw.sceneId) || asString(raw.id) || `scene_${index + 1}`;
   const characterAction = asString(raw.characterAction) || asString(raw.action);
   const resistance = asString(raw.resistance) || asString(raw.obstacle);
   const turningPoint = asString(raw.turningPoint) || asString(raw.choice);
@@ -331,8 +339,8 @@ export function parseContinuationV5ArchitectureEnvelope(
   const unitsRaw = Array.isArray(parsed.sceneUnits)
     ? parsed.sceneUnits
     : Array.isArray(parsed.scenes)
-      ? parsed.scenes
-      : [];
+    ? parsed.scenes
+    : [];
   const sceneUnits = unitsRaw
     .map((unit: any, index: number) => parseSceneUnit(unit, index))
     .filter((unit): unit is ContinuationV5SceneUnit => unit != null);
@@ -392,7 +400,10 @@ export function buildFallbackArchitecture(input: {
     informationChange: null,
     riskChange: null,
     canonEvidenceIds: [],
-    requiredContinuity: ['不得新增核心事实', ...(input.lockedRules ?? []).slice(0, 3)],
+    requiredContinuity: [
+      '不得新增核心事实',
+      ...(input.lockedRules ?? []).slice(0, 3),
+    ],
     forbiddenInventions: ['新增核心人物', '新增重大能力', '未来剧透'],
   }));
   return {
@@ -498,12 +509,15 @@ export function parseContinuationV5AuditEnvelope(
   raw: string,
   expected: {
     draftArtifactHash: string;
+    revisionArtifactHash?: string;
     architectureHash: string;
     canonSnapshotId: string;
     canonRevision: number;
     inputRevisionHash: string;
     styleProfileHash: string | null;
     styleRendererVersion: string | null;
+    /** Present for current V2-driven C2 calls; omitted for persisted legacy C2. */
+    revisionAnchors?: ContinuationV5RevisionAnchor[];
   },
   softWarnings: V5SoftWarning[] = [],
 ): ContinuationV5AuditEnvelope {
@@ -519,10 +533,31 @@ export function parseContinuationV5AuditEnvelope(
     : (() => {
         const reported = asString(parsed.draftArtifactHash);
         if (!reported || reported !== expected.draftArtifactHash) {
-          throw new Error('adversarial_audit_binding_failed: draftArtifactHash');
+          throw new Error(
+            'adversarial_audit_binding_failed: draftArtifactHash',
+          );
         }
         return reported;
       })();
+  const revisionArtifactHash = expected.revisionArtifactHash
+    ? CONTINUATION_V5_SOFT_GATES
+      ? softBindHash(
+          asString(parsed.revisionArtifactHash),
+          expected.revisionArtifactHash,
+          'adversarial_audit_binding',
+          'revisionArtifactHash',
+          softWarnings,
+        )
+      : (() => {
+          const reported = asString(parsed.revisionArtifactHash);
+          if (!reported || reported !== expected.revisionArtifactHash) {
+            throw new Error(
+              'adversarial_audit_binding_failed: revisionArtifactHash',
+            );
+          }
+          return reported;
+        })()
+    : draftArtifactHash;
   const architectureHash = CONTINUATION_V5_SOFT_GATES
     ? softBindHash(
         asString(parsed.architectureHash),
@@ -540,14 +575,20 @@ export function parseContinuationV5AuditEnvelope(
       })();
   if (asString(parsed.canonSnapshotId) !== expected.canonSnapshotId) {
     if (CONTINUATION_V5_SOFT_GATES) {
-      noteSoft(softWarnings, 'adversarial_audit_binding_mismatch: canonSnapshotId');
+      noteSoft(
+        softWarnings,
+        'adversarial_audit_binding_mismatch: canonSnapshotId',
+      );
     } else {
       throw new Error('adversarial_audit_binding_failed: canonSnapshotId');
     }
   }
   if (Number(parsed.canonRevision) !== expected.canonRevision) {
     if (CONTINUATION_V5_SOFT_GATES) {
-      noteSoft(softWarnings, 'adversarial_audit_binding_mismatch: canonRevision');
+      noteSoft(
+        softWarnings,
+        'adversarial_audit_binding_mismatch: canonRevision',
+      );
     } else {
       throw new Error('adversarial_audit_binding_failed: canonRevision');
     }
@@ -564,9 +605,15 @@ export function parseContinuationV5AuditEnvelope(
   }
   const styleHash =
     parsed.styleProfileHash == null ? null : asString(parsed.styleProfileHash);
-  if (styleHash !== (expected.styleProfileHash ?? null) && expected.styleProfileHash) {
+  if (
+    styleHash !== (expected.styleProfileHash ?? null) &&
+    expected.styleProfileHash
+  ) {
     if (CONTINUATION_V5_SOFT_GATES) {
-      noteSoft(softWarnings, 'adversarial_audit_binding_mismatch: styleProfileHash');
+      noteSoft(
+        softWarnings,
+        'adversarial_audit_binding_mismatch: styleProfileHash',
+      );
     } else {
       throw new Error('adversarial_audit_binding_failed: styleProfileHash');
     }
@@ -605,6 +652,7 @@ export function parseContinuationV5AuditEnvelope(
   return {
     schemaVersion: 1,
     draftArtifactHash,
+    revisionArtifactHash,
     architectureHash,
     canonSnapshotId: expected.canonSnapshotId,
     canonRevision: expected.canonRevision,
@@ -617,7 +665,8 @@ export function parseContinuationV5AuditEnvelope(
         .map((item: any, index: number) => {
           const evidenceIds = asNumberArray(item.evidenceIds);
           const confidence =
-            typeof item.confidence === 'number' && Number.isFinite(item.confidence)
+            typeof item.confidence === 'number' &&
+            Number.isFinite(item.confidence)
               ? item.confidence
               : 0;
           let severity: 'warning' | 'error' | 'blocking' =
@@ -637,7 +686,9 @@ export function parseContinuationV5AuditEnvelope(
             severity,
             confidence,
             generatedStart:
-              typeof item.generatedStart === 'number' ? item.generatedStart : null,
+              typeof item.generatedStart === 'number'
+                ? item.generatedStart
+                : null,
             generatedEnd:
               typeof item.generatedEnd === 'number' ? item.generatedEnd : null,
             generatedExcerpt: asString(item.generatedExcerpt),
@@ -653,34 +704,62 @@ export function parseContinuationV5AuditEnvelope(
     styleAudit: {
       requiredCorrections: styleCorrections
         .filter((item: any) => item && typeof item === 'object')
-        .map((item: any, index: number) => ({
-          requirementId:
-            asString(item.requirementId) || `style_req_${index + 1}`,
-          dimension: STYLE_DIMENSIONS.has(item.dimension)
-            ? item.dimension
-            : 'narrative_voice',
-          severity: item.severity === 'error' ? 'error' : 'warning',
-          confidence:
-            typeof item.confidence === 'number' && Number.isFinite(item.confidence)
-              ? item.confidence
-              : 0,
-          generatedStart:
-            typeof item.generatedStart === 'number' ? item.generatedStart : null,
-          generatedEnd:
-            typeof item.generatedEnd === 'number' ? item.generatedEnd : null,
-          generatedExcerpt: asString(item.generatedExcerpt),
-          description: asString(item.description) || '文风纠正项',
-          styleEvidenceIds: asStringArray(item.styleEvidenceIds),
-          rewriteGoal: asString(item.rewriteGoal),
-          preserveMeaning: asStringArray(item.preserveMeaning),
-        })),
+        .map((item: any, index: number) => {
+          const anchorId = asString(item.anchorId);
+          const anchor = expected.revisionAnchors?.find(
+            candidate => candidate.anchorId === anchorId,
+          );
+          // Current C2 must select a client-derived V2 id. This normalizes
+          // its task input; it does not reject or gate the later V3 result.
+          if (expected.revisionAnchors && !anchor) {
+            noteSoft(
+              softWarnings,
+              `adversarial_audit_anchor_unresolved: ${
+                anchorId || `style_${index + 1}`
+              }`,
+            );
+            return null;
+          }
+          return {
+            requirementId:
+              asString(item.requirementId) || `style_req_${index + 1}`,
+            anchorId: anchor?.anchorId ?? null,
+            dimension: STYLE_DIMENSIONS.has(item.dimension)
+              ? item.dimension
+              : 'narrative_voice',
+            severity: item.severity === 'error' ? 'error' : 'warning',
+            confidence:
+              typeof item.confidence === 'number' &&
+              Number.isFinite(item.confidence)
+                ? item.confidence
+                : 0,
+            generatedStart:
+              anchor?.start ??
+              (typeof item.generatedStart === 'number'
+                ? item.generatedStart
+                : null),
+            generatedEnd:
+              anchor?.end ??
+              (typeof item.generatedEnd === 'number'
+                ? item.generatedEnd
+                : null),
+            generatedExcerpt: anchor?.text ?? asString(item.generatedExcerpt),
+            description: asString(item.description) || '文风纠正项',
+            styleEvidenceIds: asStringArray(item.styleEvidenceIds),
+            rewriteGoal: asString(item.rewriteGoal),
+            preserveMeaning: asStringArray(item.preserveMeaning),
+          };
+        })
+        .filter((item: any) => item !== null),
       protectedPassages: Array.isArray(parsed.styleAudit?.protectedPassages)
         ? parsed.styleAudit.protectedPassages
             .filter((item: any) => item && typeof item === 'object')
             .map((item: any, index: number) => ({
               passageId: asString(item.passageId) || `pass_${index + 1}`,
               generatedStart:
-                typeof item.generatedStart === 'number' ? item.generatedStart : 0,
+                typeof item.generatedStart === 'number'
+                  ? item.generatedStart
+                  : 0,
               generatedEnd:
                 typeof item.generatedEnd === 'number' ? item.generatedEnd : 0,
               generatedExcerpt: asString(item.generatedExcerpt),
@@ -728,6 +807,7 @@ export function parseContinuationV5AuditEnvelope(
 
 export function buildFallbackAuditContract(input: {
   draftArtifactHash: string;
+  revisionArtifactHash?: string;
   architectureHash: string;
   canonSnapshotId: string;
   canonRevision: number;
@@ -774,6 +854,7 @@ export function buildFallbackAuditContract(input: {
   return {
     schemaVersion: 1,
     draftArtifactHash: input.draftArtifactHash,
+    revisionArtifactHash: input.revisionArtifactHash ?? input.draftArtifactHash,
     architectureHash: input.architectureHash,
     canonSnapshotId: input.canonSnapshotId,
     canonRevision: input.canonRevision,
@@ -875,8 +956,12 @@ export function parseContinuationV5FinalEnvelope(
     auditContractHash,
     content,
     appliedObligationIds: asStringArray(parsed.appliedObligationIds),
-    appliedCanonRequirementIds: asStringArray(parsed.appliedCanonRequirementIds),
-    appliedStyleRequirementIds: asStringArray(parsed.appliedStyleRequirementIds),
+    appliedCanonRequirementIds: asStringArray(
+      parsed.appliedCanonRequirementIds,
+    ),
+    appliedStyleRequirementIds: asStringArray(
+      parsed.appliedStyleRequirementIds,
+    ),
     usedArchitectSceneIds: asStringArray(parsed.usedArchitectSceneIds),
     restoredProtectedPassageIds: asStringArray(
       parsed.restoredProtectedPassageIds,

@@ -16,20 +16,19 @@ import {
   parseContinuationV5FinalEnvelope,
 } from '../src/services/continuation/generation/continuationV5Contracts';
 describe('Continuation V5 workflow structure', () => {
-  test('rounds are 2+2+1 physical nodes', () => {
+  test('rounds are 2+1+1+1 physical nodes so C2 reviews actual V2', () => {
     expect(CONTINUATION_V5_ROUNDS.round1).toEqual([
       'draft_writer',
       'narrative_architect',
     ]);
-    expect(CONTINUATION_V5_ROUNDS.round2).toEqual([
-      'revision_writer',
-      'adversarial_auditor',
-    ]);
-    expect(CONTINUATION_V5_ROUNDS.round3).toEqual(['final_reviser']);
+    expect(CONTINUATION_V5_ROUNDS.round2).toEqual(['revision_writer']);
+    expect(CONTINUATION_V5_ROUNDS.round3).toEqual(['adversarial_auditor']);
+    expect(CONTINUATION_V5_ROUNDS.round4).toEqual(['final_reviser']);
     const physical = [
       ...CONTINUATION_V5_ROUNDS.round1,
       ...CONTINUATION_V5_ROUNDS.round2,
       ...CONTINUATION_V5_ROUNDS.round3,
+      ...CONTINUATION_V5_ROUNDS.round4,
     ];
     expect(physical).toHaveLength(CONTINUATION_V5_MAX_PHYSICAL_REQUESTS);
     expect(new Set(physical).size).toBe(5);

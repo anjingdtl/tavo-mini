@@ -32,7 +32,8 @@ export type ContinuationStageName =
   | 'final_validate'
   | 'round1'
   | 'round2'
-  | 'round3';
+  | 'round3'
+  | 'round4';
 
 /** Physical V4 nodes. `auditing` is the persisted run-level stage for the
  * parallel Checker/Control pair; their individual rows use these names. */
@@ -72,8 +73,12 @@ export type ContinuationV5ContextStage = ContinuationV5PhysicalNode;
 
 export const CONTINUATION_V5_ROUNDS = {
   round1: ['draft_writer', 'narrative_architect'],
-  round2: ['revision_writer', 'adversarial_auditor'],
-  round3: ['final_reviser'],
+  // C2 must review the actual V2, so the final three nodes are deliberately
+  // serial. This preserves the five-request budget while making V3's edit
+  // instructions grounded in the prose it is about to revise.
+  round2: ['revision_writer'],
+  round3: ['adversarial_auditor'],
+  round4: ['final_reviser'],
 } as const;
 
 export const CONTINUATION_V5_MAX_PHYSICAL_REQUESTS = 5;
@@ -857,9 +862,23 @@ export type ContinuationV5RejectedSceneReason =
   | 'duplicate_function'
   | 'unsupported_core_fact';
 
+/**
+ * A client-derived, immutable slice of the actual V2 artifact. C2 chooses
+ * these ids rather than generating approximate quotations from memory.
+ */
+export interface ContinuationV5RevisionAnchor {
+  anchorId: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
 export interface ContinuationV5AuditEnvelope {
   schemaVersion: 1;
+  /** V1 provenance retained for the Draft → V2 → C2 audit trail. */
   draftArtifactHash: string;
+  /** The actual V2 text reviewed by C2 and supplied to Final Reviser. */
+  revisionArtifactHash: string;
   architectureHash: string;
   canonSnapshotId: string;
   canonRevision: number;
@@ -886,6 +905,8 @@ export interface ContinuationV5AuditEnvelope {
   styleAudit: {
     requiredCorrections: Array<{
       requirementId: string;
+      /** Stable V2 segment selected by C2; null only for legacy contracts. */
+      anchorId: string | null;
       dimension: ContinuationV5StyleDimension;
       severity: 'warning' | 'error';
       confidence: number;
@@ -1389,12 +1410,12 @@ export class ContinuationStageOutputTruncatedError extends Error {
       stage === 'writer' || stage === 'draft_writer'
         ? 'Writer 输出被模型最大输出限制截断，未形成完整初稿。'
         : stage === 'repair'
-          ? 'Repair 输出被模型最大输出限制截断，未形成完整终稿，系统已保留 Writer 初稿。'
-          : stage === 'revision_writer'
-            ? 'Revision Writer 输出被模型最大输出限制截断，未形成 V2。'
-            : stage === 'final_reviser'
-              ? 'Final Reviser 输出被模型最大输出限制截断，未形成 V3。'
-              : `${stage} 输出被模型最大输出限制截断。`,
+        ? 'Repair 输出被模型最大输出限制截断，未形成完整终稿，系统已保留 Writer 初稿。'
+        : stage === 'revision_writer'
+        ? 'Revision Writer 输出被模型最大输出限制截断，未形成 V2。'
+        : stage === 'final_reviser'
+        ? 'Final Reviser 输出被模型最大输出限制截断，未形成 V3。'
+        : `${stage} 输出被模型最大输出限制截断。`,
     );
     this.name = 'ContinuationStageOutputTruncatedError';
     this.stage = stage;

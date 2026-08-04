@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.11.18] - 2026-08-04
+
+### Changed
+
+- 续写 V5 的 C2 改用客户端从真实 V2 提取的稳定段落锚点（`v2-p-xxx`）：Auditor 只能选择锚点 ID，客户端回填原文、偏移和范围给 C2 合同与 V3，杜绝模型转述/拼接出的伪锚点。
+- V3 改为按 C2 的真实锚点逐段整体改写，明确禁止仅删词、改标点或少量近义词替换来完成润色；不增加 LLM 调用、不引入 V2/V3 差异硬门槛。
+
+### Validation
+
+- 补充 V2 锚点构建、C2 锚点解析回填与 V3 定向润色提示词回归；全量 `npm run verify`、Android Debug 构建和模拟器安装见本次构建记录。
+
+## [2.11.17] - 2026-08-04
+
+### Changed
+
+- 续写 V5 的 C2 改为由真实 V2 驱动：原本并行的 Revision Writer 与 Adversarial Auditor 改为 `V1/A1 并行 → V2 → C2(V2) → V3`。保持五次物理 LLM 请求上限，但 C2 现在审阅实际 V2，而不是只能基于 V1/A1 推测。
+- Auditor Prompt 要求即使无 Canon 错误也针对 V2 给出 3–6 条带原句锚点、rewriteGoal 与 preserveMeaning 的可执行文风润色项；Final Reviser 将这些任务作为逐项改写驱动，而非空泛参考。C2 新增 `revisionArtifactHash`，将其审阅对象绑定到 V2。
+
+### Validation
+
+- V5 合同、Prompt 角色与工作流定向回归通过；全量 `npm run verify`、Android Debug 构建与模拟器安装见本次构建记录。
+
 ## [2.11.16] - 2026-08-04
 
 ### Added
