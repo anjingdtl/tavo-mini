@@ -7,7 +7,7 @@ import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 31 Canon foreign-key repair', () => {
   it('is the current schema version', () => {
-    expect(SCHEMA_VERSION).toBe(34);
+    expect(SCHEMA_VERSION).toBe(35);
   });
 
   it('rebuilds Canon tables that Schema 30 could leave pointing at _v29', () => {
