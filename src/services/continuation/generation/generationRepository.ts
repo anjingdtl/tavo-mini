@@ -625,6 +625,37 @@ export async function markRunsOutdatedForProject(
   );
 }
 
+/**
+ * UNIQUE(run_id, content_hash) forbids identical bodies. Soft-promote / V3 that
+ * matches V2 must get a distinct storage body while keeping readable prose.
+ */
+export function withDistinctArtifactBody(
+  content: string,
+  salt: string,
+): string {
+  const stripped = content.replace(/\u200b+$/g, '').replace(/\n+$/g, '');
+  return `${stripped}\n\u200b${salt}`;
+}
+
+export async function ensureUniqueArtifactContent(
+  runId: string,
+  content: string,
+): Promise<string> {
+  const db = await openDatabase();
+  let candidate = content;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const hash = sha256Hex(candidate);
+    const [res] = await db.executeSql(
+      `SELECT id FROM continuation_generation_artifacts
+       WHERE run_id = ? AND content_hash = ? LIMIT 1`,
+      [runId, hash],
+    );
+    if (res.rows.length === 0) return candidate;
+    candidate = withDistinctArtifactBody(content, `${attempt + 1}_${Date.now()}`);
+  }
+  return withDistinctArtifactBody(content, v4().replace(/-/g, ''));
+}
+
 export async function insertArtifact(input: {
   runId: string;
   stage: ContinuationArtifactStage;
@@ -633,52 +664,73 @@ export async function insertArtifact(input: {
   parentArtifactId?: string | null;
   eligibilityStatus?: ContinuationArtifactEligibility;
   rejectionCode?: string | null;
+  /** When true, never reuse another stage's row on hash collision — uniquify instead. */
+  requireStageMatch?: boolean;
 }): Promise<ContinuationArtifact> {
-  const id = `ca_${v4().replace(/-/g, '')}`;
-  const contentHash = sha256Hex(input.content);
   const createdAt = nowIso();
   const db = await openDatabase();
-  try {
-    await db.executeSql(
-      `INSERT INTO continuation_generation_artifacts (
-        id, run_id, stage, repair_round, parent_artifact_id, content, content_hash,
-        eligibility_status, rejection_code, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+  let content = input.content;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const id = `ca_${v4().replace(/-/g, '')}`;
+    const contentHash = sha256Hex(content);
+    try {
+      await db.executeSql(
+        `INSERT INTO continuation_generation_artifacts (
+          id, run_id, stage, repair_round, parent_artifact_id, content, content_hash,
+          eligibility_status, rejection_code, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          input.runId,
+          input.stage,
+          input.repairRound ?? 0,
+          input.parentArtifactId ?? null,
+          content,
+          contentHash,
+          input.eligibilityStatus ?? 'eligible',
+          input.rejectionCode ?? null,
+          createdAt,
+        ],
+      );
+      return {
         id,
-        input.runId,
-        input.stage,
-        input.repairRound ?? 0,
-        input.parentArtifactId ?? null,
-        input.content,
+        runId: input.runId,
+        stage: input.stage,
+        repairRound: input.repairRound ?? 0,
+        parentArtifactId: input.parentArtifactId ?? null,
+        content,
         contentHash,
-        input.eligibilityStatus ?? 'eligible',
-        input.rejectionCode ?? null,
+        eligibilityStatus: input.eligibilityStatus ?? 'eligible',
+        rejectionCode: input.rejectionCode ?? null,
         createdAt,
-      ],
-    );
-  } catch (e: any) {
-    // UNIQUE(run_id, content_hash) — return existing
-    const [res] = await db.executeSql(
-      `SELECT * FROM continuation_generation_artifacts
-       WHERE run_id = ? AND content_hash = ?`,
-      [input.runId, contentHash],
-    );
-    if (res.rows.length > 0) return rowArtifact(res.rows.item(0));
-    throw e;
+      };
+    } catch (e: any) {
+      // UNIQUE(run_id, content_hash) — optionally reuse existing, else uniquify.
+      const [res] = await db.executeSql(
+        `SELECT * FROM continuation_generation_artifacts
+         WHERE run_id = ? AND content_hash = ?`,
+        [input.runId, contentHash],
+      );
+      if (res.rows.length > 0) {
+        const existing = rowArtifact(res.rows.item(0));
+        if (
+          !input.requireStageMatch ||
+          existing.stage === input.stage
+        ) {
+          return existing;
+        }
+        content = withDistinctArtifactBody(
+          input.content,
+          `${input.stage}_${attempt + 1}_${Date.now()}`,
+        );
+        continue;
+      }
+      throw e;
+    }
   }
-  return {
-    id,
-    runId: input.runId,
-    stage: input.stage,
-    repairRound: input.repairRound ?? 0,
-    parentArtifactId: input.parentArtifactId ?? null,
-    content: input.content,
-    contentHash,
-    eligibilityStatus: input.eligibilityStatus ?? 'eligible',
-    rejectionCode: input.rejectionCode ?? null,
-    createdAt,
-  };
+  throw new Error(
+    `insertArtifact 无法为 stage=${input.stage} 写入唯一 content_hash`,
+  );
 }
 
 export async function getLatestArtifact(
@@ -1092,7 +1144,12 @@ export async function finalizeContinuationV5Final(input: {
   const db = await openDatabase();
   const ts = input.ts ?? nowIso();
   const artifactId = `ca_${v4().replace(/-/g, '')}`;
-  const contentHash = sha256Hex(input.content);
+  // V3 body may equal V2; UNIQUE(run_id, content_hash) requires a distinct body.
+  const uniqueContent = await ensureUniqueArtifactContent(
+    input.runId,
+    input.content,
+  );
+  const contentHash = sha256Hex(uniqueContent);
   const expectedStates = input.expectedRunStates ?? ['running'];
   const statePlaceholders = expectedStates.map(() => '?').join(', ');
   const runState = input.runState ?? 'awaiting_user';
@@ -1106,7 +1163,7 @@ export async function finalizeContinuationV5Final(input: {
         artifactId,
         input.runId,
         input.parentArtifactId,
-        input.content,
+        uniqueContent,
         contentHash,
         input.eligibilityStatus,
         input.rejectionCode ?? null,

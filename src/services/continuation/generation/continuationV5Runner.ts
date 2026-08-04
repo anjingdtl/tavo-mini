@@ -7,7 +7,12 @@
  * Local: Final Artifact Validator (zero request)
  *
  * Hard caps: 5 physical requests total; each node reserves at most once;
- * no automatic LLM retries; V3 failure never falls back to V1/V2.
+ * no automatic LLM retries.
+ *
+ * Soft-gate mode (CONTINUATION_V5_SOFT_GATES): hash binding / most final
+ * technical checks / stage parse failures degrade with warnings and continue
+ * (Revision may fall back to V1 body; Final may promote V2) so a full run
+ * can finish for user review. Re-harden gates gradually later.
  */
 import type { ChatMessage, LLMRequestConfig } from '../../llm/types';
 import {
@@ -22,6 +27,7 @@ import {
 } from './continuationContextBuilder';
 import {
   CONTINUATION_V5_LENGTH_POLICY,
+  CONTINUATION_V5_SOFT_GATES,
   buildFallbackArchitecture,
   buildFallbackAuditContract,
   diagnoseLengthTelemetry,
@@ -34,6 +40,7 @@ import {
   parseContinuationV5FinalEnvelope,
   parseContinuationV5RevisionEnvelope,
 } from './continuationV5Contracts';
+import type { V5SoftWarning } from './continuationV5Contracts';
 import {
   compileContinuationV5ArchitectMessages,
   compileContinuationV5AuditorMessages,
@@ -46,6 +53,7 @@ import {
   casUpdateRunState,
   ensureContinuationV5StageResults,
   ensureGenerationSettings,
+  ensureUniqueArtifactContent,
   finalizeContinuationV5Final,
   finalizeContinuationV5ValidatorOnly,
   getLatestArtifactForStage,
@@ -58,6 +66,10 @@ import {
   reserveContinuationStage,
   updateStageResult,
 } from './generationRepository';
+import {
+  formatUnknownError,
+  formatUnknownErrorCode,
+} from './errorFormat';
 import type {
   ContinuationArtifact,
   ContinuationContextSnapshotV5,
@@ -569,15 +581,75 @@ async function runRound1(
           options,
           promptTokens: draftCompiled.promptTokens,
         });
-        if (result.finishReason === 'length' || result.emptyReason === 'length') {
+        const softWarnings: V5SoftWarning[] = [];
+        const truncated =
+          result.finishReason === 'length' || result.emptyReason === 'length';
+        if (truncated) {
+          softWarnings.push('draft_writer_output_truncated_soft');
+        }
+        let envelope;
+        try {
+          envelope = parseContinuationV5DraftEnvelope(
+            result.text,
+            {
+              chapterGoal: snapshot.bundles.userInstruction.slice(0, 200),
+            },
+            softWarnings,
+          );
+        } catch (parseError: any) {
+          if (!CONTINUATION_V5_SOFT_GATES || !truncated) {
+            const diag = {
+              schemaVersion: 1,
+              error: truncated
+                ? 'draft_writer_output_truncated'
+                : parseError?.message || 'draft_writer_parse_failed',
+              finishReason: result.finishReason,
+              promptTokens: result.usage?.prompt ?? draftCompiled.promptTokens,
+              completionTokens: result.usage?.completion ?? null,
+              maximumOutputTokens: budget.maximumOutputTokens,
+              declaredMaxOutputTokens: budget.declaredMaxOutputTokens,
+            };
+            await markStageFailed({
+              runId: run.id,
+              stage: 'draft_writer',
+              errorCode: truncated
+                ? 'draft_writer_output_truncated'
+                : 'draft_writer_parse_failed',
+              errorMessage: truncated
+                ? 'Draft Writer 输出被截断，不解析、不落 V1。'
+                : parseError?.message || 'Draft Writer 解析失败',
+              outputJson: JSON.stringify(diag),
+            });
+            if (truncated) {
+              throw new ContinuationStageOutputTruncatedError('draft_writer', diag);
+            }
+            throw parseError;
+          }
+          // Soft: truncation + unparseable still cannot invent V1 body.
           const diag = {
             schemaVersion: 1,
             error: 'draft_writer_output_truncated',
             finishReason: result.finishReason,
-            promptTokens: result.usage?.prompt ?? draftCompiled.promptTokens,
-            completionTokens: result.usage?.completion ?? null,
-            maximumOutputTokens: budget.maximumOutputTokens,
-            declaredMaxOutputTokens: budget.declaredMaxOutputTokens,
+            parseError: parseError?.message || String(parseError),
+            softWarnings,
+          };
+          await markStageFailed({
+            runId: run.id,
+            stage: 'draft_writer',
+            errorCode: 'draft_writer_output_truncated',
+            errorMessage: 'Draft Writer 截断且无法软解析，不落 V1。',
+            outputJson: JSON.stringify(diag),
+          });
+          throw new ContinuationStageOutputTruncatedError('draft_writer', diag);
+        }
+        if (truncated && CONTINUATION_V5_SOFT_GATES) {
+          // Soft: accept truncated but parseable V1 and continue.
+          softWarnings.push('draft_writer_truncated_accepted');
+        } else if (truncated && !CONTINUATION_V5_SOFT_GATES) {
+          const diag = {
+            schemaVersion: 1,
+            error: 'draft_writer_output_truncated',
+            finishReason: result.finishReason,
           };
           await markStageFailed({
             runId: run.id,
@@ -588,9 +660,6 @@ async function runRound1(
           });
           throw new ContinuationStageOutputTruncatedError('draft_writer', diag);
         }
-        const envelope = parseContinuationV5DraftEnvelope(result.text, {
-          chapterGoal: snapshot.bundles.userInstruction.slice(0, 200),
-        });
         const lengthDiag = diagnoseLengthTelemetry({
           content: envelope.content,
           targetHan: snapshot.settingsSnapshot.values.targetChapterChars,
@@ -602,6 +671,9 @@ async function runRound1(
           minimumOutputTokens: budget.minimumOutputTokens,
           effectiveMaxOutputTokens: budget.maximumOutputTokens,
         });
+        if (lengthDiag.severeUnderTarget) {
+          softWarnings.push('draft_severe_under_target');
+        }
         const artifact = await insertArtifact({
           runId: run.id,
           stage: 'draft',
@@ -622,9 +694,9 @@ async function runRound1(
             plan: envelope.plan,
             contentHash: artifact.contentHash,
             length: lengthDiag,
-            warnings: lengthDiag.severeUnderTarget
-              ? ['draft_severe_under_target']
-              : [],
+            softGates: CONTINUATION_V5_SOFT_GATES,
+            softWarnings,
+            warnings: softWarnings,
           }),
         });
         draftArtifact = artifact;
@@ -875,6 +947,7 @@ async function runRound2(
     tasks.push(
       (async () => {
         const budget = snapshot.stageBudgets.revision_writer;
+        const softWarnings: V5SoftWarning[] = [];
         const { result } = await callNode({
           run,
           snapshot,
@@ -884,7 +957,12 @@ async function runRound2(
           options,
           promptTokens: revisionCompiled.promptTokens,
         });
-        if (result.finishReason === 'length' || result.emptyReason === 'length') {
+        const truncated =
+          result.finishReason === 'length' || result.emptyReason === 'length';
+        if (truncated) {
+          softWarnings.push('revision_writer_output_truncated_soft');
+        }
+        if (truncated && !CONTINUATION_V5_SOFT_GATES) {
           await markStageFailed({
             runId: run.id,
             stage: 'revision_writer',
@@ -900,10 +978,47 @@ async function runRound2(
             code: 'revision_writer_output_truncated',
           });
         }
-        const envelope = parseContinuationV5RevisionEnvelope(result.text, {
-          draftArtifactHash: draftArtifact.contentHash,
-          architectureHash,
-        });
+        let envelope;
+        try {
+          envelope = parseContinuationV5RevisionEnvelope(
+            result.text,
+            {
+              draftArtifactHash: draftArtifact.contentHash,
+              architectureHash,
+            },
+            softWarnings,
+          );
+        } catch (parseError: any) {
+          if (!CONTINUATION_V5_SOFT_GATES) {
+            await markStageFailed({
+              runId: run.id,
+              stage: 'revision_writer',
+              errorCode: truncated
+                ? 'revision_writer_output_truncated'
+                : 'revision_writer_parse_failed',
+              errorMessage: parseError?.message || 'Revision Writer 解析失败',
+              outputJson: JSON.stringify({
+                schemaVersion: 1,
+                error: parseError?.message || String(parseError),
+                finishReason: result.finishReason,
+              }),
+            });
+            throw parseError;
+          }
+          // Soft: unusable V2 model output → promote V1 body as intermediate V2.
+          softWarnings.push(
+            `revision_writer_soft_fallback_to_v1:${parseError?.message || 'parse_failed'}`,
+          );
+          envelope = {
+            schemaVersion: 1 as const,
+            draftArtifactHash: draftArtifact.contentHash,
+            architectureHash,
+            content: softStageDistinctContent(draftArtifact.content, 1),
+            usedArchitectSceneIds: [] as string[],
+            omittedArchitectSceneIds: [] as string[],
+            declaredNewCoreFacts: [] as string[],
+          };
+        }
         const lengthDiag = diagnoseLengthTelemetry({
           content: envelope.content,
           targetHan: snapshot.settingsSnapshot.values.targetChapterChars,
@@ -915,6 +1030,16 @@ async function runRound2(
           minimumOutputTokens: budget.minimumOutputTokens,
           effectiveMaxOutputTokens: budget.maximumOutputTokens,
         });
+        const preferredMin =
+          snapshot.stageViews.revision_writer.preferredMinHan;
+        if (lengthDiag.actualHan < preferredMin) {
+          softWarnings.push(
+            `revision_under_preferred_min:${lengthDiag.actualHan}<${preferredMin}`,
+          );
+        }
+        if (lengthDiag.severeUnderTarget) {
+          softWarnings.push('revision_severe_under_target');
+        }
         const artifact = await insertArtifact({
           runId: run.id,
           stage: 'revision_1',
@@ -939,7 +1064,21 @@ async function runRound2(
             omittedArchitectSceneIds: envelope.omittedArchitectSceneIds,
             declaredNewCoreFacts: envelope.declaredNewCoreFacts,
             length: lengthDiag,
+            softGates: CONTINUATION_V5_SOFT_GATES,
+            softWarnings,
+            degraded: softWarnings.some(w => w.includes('fallback_to_v1')),
+            role: 'primary_length_expansion',
           }),
+          errorCode: softWarnings.some(w => w.includes('fallback_to_v1'))
+            ? 'revision_writer_soft_fallback_to_v1'
+            : softWarnings.some(w => w.includes('hash_mismatch') || w.includes('hash_missing'))
+              ? 'revision_writer_hash_soft'
+              : softWarnings.some(w => w.includes('under_preferred_min'))
+                ? 'revision_under_preferred_min'
+                : null,
+          errorMessage: softWarnings.length
+            ? `软门禁：${softWarnings.slice(0, 4).join('; ')}`
+            : null,
         });
         revisionArtifact = artifact;
       })(),
@@ -951,6 +1090,7 @@ async function runRound2(
       (async () => {
         const budget = snapshot.stageBudgets.adversarial_auditor;
         try {
+          const softWarnings: V5SoftWarning[] = [];
           const { result } = await callNode({
             run,
             snapshot,
@@ -961,18 +1101,28 @@ async function runRound2(
             promptTokens: auditorCompiled.promptTokens,
           });
           if (result.finishReason === 'length' || result.emptyReason === 'length') {
-            throw new Error('adversarial_auditor_output_truncated');
+            if (!CONTINUATION_V5_SOFT_GATES) {
+              throw new Error('adversarial_auditor_output_truncated');
+            }
+            softWarnings.push('adversarial_auditor_output_truncated_soft');
           }
-          const envelope = parseContinuationV5AuditEnvelope(result.text, {
-            draftArtifactHash: draftArtifact.contentHash,
-            architectureHash,
-            canonSnapshotId: snapshot.canon.snapshotId,
-            canonRevision: snapshot.canon.revision,
-            inputRevisionHash: snapshot.inputRevisionHash,
-            styleProfileHash: snapshot.style?.profileHash ?? null,
-            styleRendererVersion: snapshot.style?.rendererVersion ?? null,
-          });
+          const envelope = parseContinuationV5AuditEnvelope(
+            result.text,
+            {
+              draftArtifactHash: draftArtifact.contentHash,
+              architectureHash,
+              canonSnapshotId: snapshot.canon.snapshotId,
+              canonRevision: snapshot.canon.revision,
+              inputRevisionHash: snapshot.inputRevisionHash,
+              styleProfileHash: snapshot.style?.profileHash ?? null,
+              styleRendererVersion: snapshot.style?.rendererVersion ?? null,
+            },
+            softWarnings,
+          );
           const hash = hashAuditEnvelope(envelope);
+          const softBinding = softWarnings.some(w =>
+            w.includes('adversarial_audit_binding'),
+          );
           await updateStageResult({
             runId: run.id,
             stage: 'adversarial_auditor',
@@ -980,15 +1130,21 @@ async function runRound2(
             outputTokens: result.usage?.completion ?? null,
             outputJson: JSON.stringify({
               schemaVersion: 1,
-              degraded: false,
+              degraded: softBinding || softWarnings.length > 0,
               auditContractHash: hash,
               envelope,
               finishReason: result.finishReason,
+              softGates: CONTINUATION_V5_SOFT_GATES,
+              softWarnings,
             }),
+            errorCode: softBinding ? 'adversarial_audit_binding_soft' : null,
+            errorMessage: softWarnings.length
+              ? `软门禁：${softWarnings.slice(0, 4).join('; ')}`
+              : null,
           });
           audit = envelope;
           auditContractHash = hash;
-          auditorDegraded = false;
+          auditorDegraded = softBinding || softWarnings.length > 0;
         } catch (error: any) {
           if (options.signal.aborted) throw error;
           const fallback = buildFallbackAuditContract({
@@ -1016,9 +1172,10 @@ async function runRound2(
               error: error?.message || String(error),
               auditContractHash: hash,
               envelope: fallback,
+              softGates: CONTINUATION_V5_SOFT_GATES,
             }),
             errorCode:
-              String(error?.message || '').includes('binding_failed')
+              String(error?.message || '').includes('binding')
                 ? 'adversarial_audit_binding_failed'
                 : 'adversarial_auditor_degraded',
             errorMessage: 'Auditor 失败或绑定失败，使用本地 fallback C2。',
@@ -1032,13 +1189,50 @@ async function runRound2(
   }
 
   if (tasks.length > 0) {
-    await Promise.all(tasks);
+    // Soft: do not let revision failure cancel a successful auditor task.
+    const settled = await Promise.allSettled(tasks);
+    if (!CONTINUATION_V5_SOFT_GATES) {
+      const rejected = settled.find(item => item.status === 'rejected') as
+        | PromiseRejectedResult
+        | undefined;
+      if (rejected) throw rejected.reason;
+    }
   }
 
   if (!revisionArtifact) {
-    throw Object.assign(new Error('Round 2 缺少 V2 修订稿'), {
-      code: 'revision_writer_failed',
+    if (!CONTINUATION_V5_SOFT_GATES) {
+      throw Object.assign(new Error('Round 2 缺少 V2 修订稿'), {
+        code: 'revision_writer_failed',
+      });
+    }
+    // Soft: last-resort V2 = V1 so Round 3 can still run.
+    const artifact = await insertArtifact({
+      runId: run.id,
+      stage: 'revision_1',
+      content: softStageDistinctContent(draftArtifact.content, 1),
+      repairRound: 1,
+      parentArtifactId: draftArtifact.id,
+      eligibilityStatus: 'intermediate',
+      rejectionCode: null,
     });
+    await updateStageResult({
+      runId: run.id,
+      stage: 'revision_writer',
+      status: 'success',
+      artifactId: artifact.id,
+      outputJson: JSON.stringify({
+        schemaVersion: 1,
+        degraded: true,
+        softGates: true,
+        softWarnings: ['revision_writer_soft_fallback_to_v1:missing_artifact'],
+        contentHash: artifact.contentHash,
+        draftArtifactHash: draftArtifact.contentHash,
+        architectureHash,
+      }),
+      errorCode: 'revision_writer_soft_fallback_to_v1',
+      errorMessage: '软门禁：Revision 缺失，使用 V1 正文作为 V2 中间稿。',
+    });
+    revisionArtifact = artifact;
   }
   if (!audit) {
     audit = buildFallbackAuditContract({
@@ -1062,6 +1256,246 @@ async function runRound2(
     auditContractHash,
     auditorDegraded,
   };
+}
+
+/**
+ * UNIQUE(run_id, content_hash) forbids identical bodies across stages.
+ * Soft-promote copies append invisible zero-width spaces so storage can
+ * keep a separate row without changing readable Han prose.
+ */
+function softStageDistinctContent(content: string, generation: 1 | 2): string {
+  const stripped = content.replace(/\u200b+$/g, '').replace(/\n+$/g, '');
+  return `${stripped}\n${'\u200b'.repeat(generation)}`;
+}
+
+async function softDeliverRevisionAsFinal(input: {
+  run: ContinuationGenerationRun;
+  snapshot: ContinuationContextSnapshotV5;
+  revisionArtifact: ContinuationArtifact;
+  architecture: ContinuationV5ArchitectureEnvelope;
+  architectureHash: string;
+  audit: ContinuationV5AuditEnvelope;
+  auditContractHash: string;
+  architectureDegraded: boolean;
+  auditorDegraded: boolean;
+  validateStageId: string;
+  softWarnings: V5SoftWarning[];
+  finalReviserStageResultId?: string | null;
+  reasonCode: string;
+  reasonMessage: string;
+}): Promise<void> {
+  const reasonCode = String(input.reasonCode || 'final_reviser_soft_promote_v2');
+  const softWarnings: V5SoftWarning[] = [...input.softWarnings];
+  try {
+    const reviserStage =
+      (input.finalReviserStageResultId
+        ? { id: input.finalReviserStageResultId }
+        : null) || (await getStageResult(input.run.id, 'final_reviser'));
+    const reviserId =
+      input.finalReviserStageResultId || reviserStage?.id || null;
+
+    let promoteContent = softStageDistinctContent(
+      input.revisionArtifact.content,
+      2,
+    );
+    promoteContent = await ensureUniqueArtifactContent(
+      input.run.id,
+      promoteContent,
+    );
+
+    const envelope = {
+      schemaVersion: 1 as const,
+      revisionArtifactHash: input.revisionArtifact.contentHash,
+      architectureHash: input.architectureHash,
+      auditContractHash: input.auditContractHash,
+      content: promoteContent,
+      appliedObligationIds: input.audit.finalObligations.map(
+        o => o.obligationId,
+      ),
+      appliedCanonRequirementIds: [] as string[],
+      appliedStyleRequirementIds: [] as string[],
+      usedArchitectSceneIds: [] as string[],
+      restoredProtectedPassageIds: [] as string[],
+      declaredNewCoreFacts: [] as string[],
+      unappliedItems: [] as string[],
+    };
+    const validation = validateFinalArtifact({
+      envelope,
+      snapshot: input.snapshot,
+      architecture: input.architecture,
+      architectureHash: input.architectureHash,
+      audit: input.audit,
+      auditContractHash: input.auditContractHash,
+      revisionArtifactHash: input.revisionArtifact.contentHash,
+    });
+    const deliverable =
+      CONTINUATION_V5_SOFT_GATES && Boolean(envelope.content.trim());
+    const passed = deliverable ? true : validation.passed;
+    softWarnings.push(...(validation.warnings || []));
+    if (passed && !validation.passed) {
+      softWarnings.push('final_soft_promoted_despite_validator');
+    }
+    const lengthDiag = diagnoseLengthTelemetry({
+      content: envelope.content,
+      targetHan: input.snapshot.settingsSnapshot.values.targetChapterChars,
+    });
+    const tokenUsageJson = await buildTelemetry(input.run.id, input.snapshot, {
+      architectureDegraded: input.architectureDegraded,
+      auditorDegraded: input.auditorDegraded,
+      finalValidationPassed: passed,
+      finalValidationCodes: [...validation.codes, ...softWarnings],
+      finalLength: lengthDiag,
+    });
+
+    const reviserRow = await getStageResult(input.run.id, 'final_reviser');
+    const canFinalize =
+      Boolean(reviserId) &&
+      reviserRow?.requestReserved === true &&
+      reviserRow.requestCount === 1;
+
+    if (canFinalize && reviserId) {
+      try {
+        await finalizeContinuationV5Final({
+          runId: input.run.id,
+          finalReviserStageResultId: reviserId,
+          finalValidateStageResultId: input.validateStageId,
+          parentArtifactId: input.revisionArtifact.id,
+          content: envelope.content,
+          eligibilityStatus: passed ? 'eligible' : 'rejected',
+          rejectionCode: passed
+            ? null
+            : validation.blockingCodes[0] ?? reasonCode,
+          tokenUsageJson,
+          outputTokens: null,
+          finalReviserOutputJson: JSON.stringify({
+            schemaVersion: 1,
+            degraded: true,
+            softGates: CONTINUATION_V5_SOFT_GATES,
+            softWarnings,
+            reason: reasonCode,
+            // Keep envelope metadata only; body is on the artifact row.
+            envelope: { ...envelope, content: undefined },
+            contentHash: hashContent(envelope.content),
+            length: lengthDiag,
+            promotedFrom: 'revision_1',
+          }),
+          finalValidateOutputJson: JSON.stringify({
+            schemaVersion: 1,
+            ...validation,
+            softGates: CONTINUATION_V5_SOFT_GATES,
+            softWarnings,
+            softPromoted: deliverable,
+          }),
+          finalValidateStatus: passed ? 'success' : 'failed',
+          runState: passed ? 'awaiting_user' : 'awaiting_regeneration',
+          errorCode: passed
+            ? reasonCode
+            : validation.blockingCodes[0] ?? reasonCode,
+          errorMessage: passed
+            ? `软门禁：${input.reasonMessage}`
+            : input.reasonMessage,
+        });
+        return;
+      } catch (finalizeError) {
+        softWarnings.push(
+          `final_soft_promote_finalize_failed:${formatUnknownError(finalizeError)}`,
+        );
+        // fall through to manual path
+      }
+    }
+
+    const finalArtifact = await insertArtifact({
+      runId: input.run.id,
+      stage: 'final',
+      content: envelope.content,
+      repairRound: 2,
+      parentArtifactId: input.revisionArtifact.id,
+      eligibilityStatus: passed ? 'eligible' : 'rejected',
+      rejectionCode: passed
+        ? null
+        : validation.blockingCodes[0] ?? reasonCode,
+      requireStageMatch: true,
+    });
+    await updateStageResult({
+      runId: input.run.id,
+      stage: 'final_reviser',
+      status: passed ? 'success' : 'failed',
+      artifactId: finalArtifact.id,
+      outputJson: JSON.stringify({
+        schemaVersion: 1,
+        degraded: true,
+        softGates: CONTINUATION_V5_SOFT_GATES,
+        softWarnings,
+        reason: reasonCode,
+        contentHash: finalArtifact.contentHash,
+        promotedFrom: 'revision_1',
+      }),
+      errorCode: reasonCode,
+      errorMessage: input.reasonMessage,
+    });
+    await updateStageResult({
+      runId: input.run.id,
+      stage: 'final_validate',
+      status: passed ? 'success' : 'failed',
+      artifactId: finalArtifact.id,
+      outputJson: JSON.stringify({
+        schemaVersion: 1,
+        ...validation,
+        softGates: CONTINUATION_V5_SOFT_GATES,
+        softWarnings,
+        softPromoted: deliverable,
+      }),
+      errorCode: passed ? null : validation.blockingCodes[0] ?? reasonCode,
+      errorMessage: passed ? null : input.reasonMessage,
+    });
+    await casUpdateRunState(
+      input.run.id,
+      ['running', 'awaiting_regeneration', 'failed'],
+      {
+        state: passed ? 'awaiting_user' : 'awaiting_regeneration',
+        stage: 'awaiting_user',
+        errorCode: passed
+          ? reasonCode
+          : validation.blockingCodes[0] ?? reasonCode,
+        errorMessage: passed
+          ? `软门禁：${input.reasonMessage}`
+          : input.reasonMessage,
+        tokenUsageJson,
+        completedAt: null,
+      },
+    );
+  } catch (error) {
+    // Never surface raw native objects as "[object Object]".
+    const message = formatUnknownError(error);
+    softWarnings.push(`final_soft_promote_failed:${message}`);
+    try {
+      await updateStageResult({
+        runId: input.run.id,
+        stage: 'final_reviser',
+        status: 'failed',
+        errorCode: 'final_soft_promote_failed',
+        errorMessage: message,
+        outputJson: JSON.stringify({
+          schemaVersion: 1,
+          softGates: true,
+          softWarnings,
+        }),
+      });
+      await updateStageResult({
+        runId: input.run.id,
+        stage: 'final_validate',
+        status: 'failed',
+        errorCode: 'final_soft_promote_failed',
+        errorMessage: message,
+      });
+    } catch {
+      // best-effort stage marks
+    }
+    throw Object.assign(new Error(`软提升 V2→V3 失败：${message}`), {
+      code: 'final_soft_promote_failed',
+      softWarnings,
+    });
+  }
 }
 
 async function runRound3AndValidate(
@@ -1131,6 +1565,7 @@ async function runRound3AndValidate(
         : validation.blockingCodes[0] ?? 'final_invalid_envelope',
       finalValidateOutputJson: JSON.stringify({
         schemaVersion: 1,
+        softGates: CONTINUATION_V5_SOFT_GATES,
         ...validation,
       }),
       tokenUsageJson,
@@ -1145,8 +1580,28 @@ async function runRound3AndValidate(
     return;
   }
 
-  // Resume: Final already reserved without artifact → do not re-send.
+  // Resume: Final already reserved without artifact → soft-promote V2 when enabled.
   if (finalStage?.requestReserved && finalStage.requestCount === 1) {
+    if (CONTINUATION_V5_SOFT_GATES) {
+      await softDeliverRevisionAsFinal({
+        run,
+        snapshot,
+        revisionArtifact,
+        architecture,
+        architectureHash,
+        audit,
+        auditContractHash,
+        architectureDegraded,
+        auditorDegraded,
+        validateStageId: validateStage.id,
+        finalReviserStageResultId: finalStage.id,
+        softWarnings: ['final_reviser_soft_promote_v2:reserved_without_artifact'],
+        reasonCode: 'final_reviser_soft_promote_v2',
+        reasonMessage:
+          'Final Reviser 已 reservation 但缺少 V3；软门禁下以 V2 作为可交付终稿。',
+      });
+      return;
+    }
     await markStageFailed({
       runId: run.id,
       stage: 'final_reviser',
@@ -1189,6 +1644,28 @@ async function runRound3AndValidate(
     maximumOutputTokens: budget.maximumOutputTokens,
   });
   if (!compiled.ok) {
+    if (CONTINUATION_V5_SOFT_GATES) {
+      await softDeliverRevisionAsFinal({
+        run,
+        snapshot,
+        revisionArtifact,
+        architecture,
+        architectureHash,
+        audit,
+        auditContractHash,
+        architectureDegraded,
+        auditorDegraded,
+        validateStageId: validateStage.id,
+        softWarnings: [
+          'final_reviser_soft_promote_v2:prompt_budget_exceeded',
+          `promptTokens=${compiled.promptTokens}`,
+        ],
+        reasonCode: 'final_reviser_prompt_budget_exceeded_soft',
+        reasonMessage:
+          'Final Reviser Prompt 超预算未发请求；软门禁下以 V2 作为可交付终稿。',
+      });
+      return;
+    }
     await updateStageResult({
       runId: run.id,
       stage: 'final_reviser',
@@ -1241,11 +1718,33 @@ async function runRound3AndValidate(
     result = call.result;
   } catch (error: any) {
     if (options.signal.aborted) throw error;
+    if (CONTINUATION_V5_SOFT_GATES) {
+      const reservedRow = await getStageResult(run.id, 'final_reviser');
+      await softDeliverRevisionAsFinal({
+        run,
+        snapshot,
+        revisionArtifact,
+        architecture,
+        architectureHash,
+        audit,
+        auditContractHash,
+        architectureDegraded,
+        auditorDegraded,
+        validateStageId: validateStage.id,
+        finalReviserStageResultId: reservedRow?.id ?? null,
+        softWarnings: [
+          `final_reviser_soft_promote_v2:call_failed:${formatUnknownError(error)}`,
+        ],
+        reasonCode: formatUnknownErrorCode(error, 'final_reviser_failed_soft'),
+        reasonMessage: `Final Reviser 调用失败；软门禁下以 V2 作为可交付终稿。`,
+      });
+      return;
+    }
     await markStageFailed({
       runId: run.id,
       stage: 'final_reviser',
-      errorCode: error?.code || 'final_reviser_failed',
-      errorMessage: error?.message || 'Final Reviser 失败',
+      errorCode: formatUnknownErrorCode(error, 'final_reviser_failed'),
+      errorMessage: formatUnknownError(error) || 'Final Reviser 失败',
     });
     await updateStageResult({
       runId: run.id,
@@ -1268,7 +1767,13 @@ async function runRound3AndValidate(
     return;
   }
 
-  if (result.finishReason === 'length' || result.emptyReason === 'length') {
+  const softWarnings: V5SoftWarning[] = [];
+  const truncated =
+    result.finishReason === 'length' || result.emptyReason === 'length';
+  if (truncated) {
+    softWarnings.push('final_output_truncated_soft');
+  }
+  if (truncated && !CONTINUATION_V5_SOFT_GATES) {
     await markStageFailed({
       runId: run.id,
       stage: 'final_reviser',
@@ -1306,12 +1811,39 @@ async function runRound3AndValidate(
 
   let envelope;
   try {
-    envelope = parseContinuationV5FinalEnvelope(result.text, {
-      revisionArtifactHash: revisionArtifact.contentHash,
-      architectureHash,
-      auditContractHash,
-    });
+    envelope = parseContinuationV5FinalEnvelope(
+      result.text,
+      {
+        revisionArtifactHash: revisionArtifact.contentHash,
+        architectureHash,
+        auditContractHash,
+      },
+      softWarnings,
+    );
   } catch (error: any) {
+    if (CONTINUATION_V5_SOFT_GATES) {
+      await softDeliverRevisionAsFinal({
+        run,
+        snapshot,
+        revisionArtifact,
+        architecture,
+        architectureHash,
+        audit,
+        auditContractHash,
+        architectureDegraded,
+        auditorDegraded,
+        validateStageId: validateStage.id,
+        finalReviserStageResultId: reserved.id,
+        softWarnings: [
+          ...softWarnings,
+          `final_reviser_soft_promote_v2:parse_failed:${error?.message || 'invalid'}`,
+        ],
+        reasonCode: 'final_invalid_envelope_soft',
+        reasonMessage:
+          'Final envelope 非法或截断无法解析；软门禁下以 V2 作为可交付终稿。',
+      });
+      return;
+    }
     await markStageFailed({
       runId: run.id,
       stage: 'final_reviser',
@@ -1379,10 +1911,15 @@ async function runRound3AndValidate(
     auditStyleRequirementCount: audit.styleAudit.requiredCorrections.length,
     finalAppliedObligationCount: envelope.appliedObligationIds.length,
     finalValidationPassed: validation.passed,
-    finalValidationCodes: validation.codes,
+    finalValidationCodes: [...validation.codes, ...softWarnings],
     finalLength: lengthDiag,
     finalCompressionLevel: compiled.compressionLevel,
   });
+
+  const softNote =
+    softWarnings.length > 0
+      ? `软门禁警告：${softWarnings.slice(0, 4).join('; ')}`
+      : null;
 
   await finalizeContinuationV5Final({
     runId: run.id,
@@ -1403,18 +1940,24 @@ async function runRound3AndValidate(
       length: lengthDiag,
       compressionLevel: compiled.compressionLevel,
       finishReason: result.finishReason,
+      softGates: CONTINUATION_V5_SOFT_GATES,
+      softWarnings,
     }),
     finalValidateOutputJson: JSON.stringify({
       schemaVersion: 1,
+      softGates: CONTINUATION_V5_SOFT_GATES,
+      softWarnings,
       ...validation,
     }),
     finalValidateStatus: validation.passed ? 'success' : 'failed',
     runState: validation.passed ? 'awaiting_user' : 'awaiting_regeneration',
     errorCode: validation.passed
-      ? null
+      ? softWarnings.length
+        ? 'final_soft_warnings'
+        : null
       : validation.blockingCodes[0] ?? 'final_invalid_envelope',
     errorMessage: validation.passed
-      ? null
+      ? softNote
       : '最终稿未通过技术完整性验证。本次没有可交付终稿，请重新生成。本次不会自动回退到初稿或第一次修订稿。',
   });
 }
@@ -1504,25 +2047,23 @@ async function runV5Pipeline(
 
 async function finalizeV5OnError(runId: string, error: unknown): Promise<void> {
   try {
-    const message =
-      error instanceof Error ? error.message : String(error ?? 'unknown');
+    const message = formatUnknownError(error);
     const code =
-      error && typeof error === 'object' && 'code' in error
-        ? String((error as any).code)
-        : error instanceof ContinuationStageOutputTruncatedError
-          ? 'draft_writer_output_truncated'
-          : error instanceof ContinuationCapabilityBlockedError
-            ? error.code
-            : 'stage_failed';
+      error instanceof ContinuationStageOutputTruncatedError
+        ? 'draft_writer_output_truncated'
+        : error instanceof ContinuationCapabilityBlockedError
+          ? error.code
+          : formatUnknownErrorCode(error, 'stage_failed');
     const isRegenerate =
       code.startsWith('revision_') ||
       code.startsWith('final_') ||
       code === 'revision_writer_failed' ||
       code === 'revision_writer_output_truncated' ||
-      code === 'revision_writer_reserved_without_artifact';
+      code === 'revision_writer_reserved_without_artifact' ||
+      code === 'final_soft_promote_failed';
     await casUpdateRunState(
       runId,
-      ['running', 'queued', 'awaiting_user', 'awaiting_regeneration'],
+      ['running', 'queued', 'awaiting_user', 'awaiting_regeneration', 'failed'],
       {
         state: isRegenerate ? 'awaiting_regeneration' : 'failed',
         stage: 'awaiting_user',

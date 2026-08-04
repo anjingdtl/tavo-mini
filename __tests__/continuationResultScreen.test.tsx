@@ -23,6 +23,7 @@ jest.mock('../src/services/continuation/generation', () => ({
   confirmPlanAndContinue: jest.fn(),
   getArtifactForRun: jest.fn(async () => null),
   getLatestArtifact: jest.fn(async () => ({ id: 'artifact-1', content: '续写正文' })),
+  getLatestArtifactForStage: jest.fn(async () => null),
   getLatestEligibleArtifact: jest.fn(async () => ({ id: 'artifact-1', stage: 'writer', content: '续写正文' })),
   getPlan: jest.fn(async () => null),
   getRunById: jest.fn(async () => ({
@@ -50,6 +51,7 @@ import {
   adoptArtifactAsDraft,
   getArtifactForRun,
   getLatestArtifact,
+  getLatestArtifactForStage,
   getLatestEligibleArtifact,
   getRunById,
   listChecksForArtifact,
@@ -60,6 +62,7 @@ import {
 const mockListChecksForArtifact = listChecksForArtifact as jest.Mock;
 const mockGetLatestArtifact = getLatestArtifact as jest.Mock;
 const mockGetArtifactForRun = getArtifactForRun as jest.Mock;
+const mockGetLatestArtifactForStage = getLatestArtifactForStage as jest.Mock;
 const mockGetLatestEligibleArtifact = getLatestEligibleArtifact as jest.Mock;
 const mockGetRunById = getRunById as jest.Mock;
 const mockAdoptArtifactAsDraft = adoptArtifactAsDraft as jest.Mock;
@@ -343,5 +346,106 @@ describe('ContinuationResultScreen adoption decision', () => {
     expect(queryByText('默认候选仍有待人工确认问题')).toBeNull();
     fireEvent.press(getByText(/Control · 成功/));
     expect(getByText(/篇幅偏差仅供参考，未因此触发自动 Repair。/)).toBeTruthy();
+  });
+
+  it('collapses V5 results into V1/V2/V3 rows with tokens and Han count in titles', async () => {
+    mockGetRunById.mockResolvedValue({
+      id: 'run-v5',
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      workflowVersion: 5,
+      canonSnapshotId: 'snapshot-1234567890',
+      canonRevision: 1,
+      contextTraceJson: null,
+      settingsSnapshotJson: JSON.stringify({
+        values: { targetChapterChars: 3000 },
+      }),
+      tokenUsageJson: JSON.stringify({
+        workflowVersion: 5,
+        physicalRequestCount: 5,
+      }),
+    });
+    const draftBody = '初稿正文若干汉字在此展示。';
+    const revisionBody = '修订稿正文比初稿更长一些的汉字内容。';
+    const finalBody = '最终稿正文用于采纳的完整汉字内容在此。';
+    mockGetLatestEligibleArtifact.mockResolvedValue({
+      id: 'final-1',
+      stage: 'final',
+      content: finalBody,
+      eligibilityStatus: 'eligible',
+    });
+    mockGetLatestArtifactForStage.mockImplementation(async (_runId, stage) => {
+      if (stage === 'draft') {
+        return { id: 'draft-1', stage: 'draft', content: draftBody };
+      }
+      if (stage === 'revision_1') {
+        return { id: 'rev-1', stage: 'revision_1', content: revisionBody };
+      }
+      if (stage === 'final') {
+        return {
+          id: 'final-1',
+          stage: 'final',
+          content: finalBody,
+          eligibilityStatus: 'eligible',
+        };
+      }
+      return null;
+    });
+    mockListStageResults.mockResolvedValue([
+      {
+        stage: 'draft_writer',
+        status: 'success',
+        requestCount: 1,
+        inputTokens: 100,
+        outputTokens: 200,
+        outputJson: null,
+        errorCode: null,
+        errorMessage: null,
+      },
+      {
+        stage: 'revision_writer',
+        status: 'success',
+        requestCount: 1,
+        inputTokens: 300,
+        outputTokens: 400,
+        outputJson: null,
+        errorCode: null,
+        errorMessage: null,
+      },
+      {
+        stage: 'final_reviser',
+        status: 'success',
+        requestCount: 1,
+        inputTokens: 500,
+        outputTokens: 600,
+        outputJson: null,
+        errorCode: null,
+        errorMessage: null,
+      },
+    ] as any);
+
+    const { getByText, queryByText } = render(
+      <ContinuationResultScreen runId="run-v5" onClose={jest.fn()} />,
+    );
+
+    await waitFor(() =>
+      expect(getByText(/V1 · 生成 Tokens 200 · 汉字/)).toBeTruthy(),
+    );
+    expect(getByText(/V2 · 生成 Tokens 400 · 汉字/)).toBeTruthy();
+    expect(getByText(/V3 · 生成 Tokens 600 · 汉字/)).toBeTruthy();
+    // Bodies collapsed by default
+    expect(queryByText(draftBody)).toBeNull();
+    expect(queryByText(revisionBody)).toBeNull();
+    expect(queryByText(finalBody)).toBeNull();
+    // No old multi-stage audit rows
+    expect(queryByText(/Narrative Architect/)).toBeNull();
+    expect(queryByText(/Adversarial Auditor/)).toBeNull();
+    expect(queryByText(/Final Artifact Validator/)).toBeNull();
+    // Expand V3 only
+    fireEvent.press(getByText(/V3 · 生成 Tokens 600 · 汉字/));
+    expect(getByText(finalBody)).toBeTruthy();
+    expect(queryByText(draftBody)).toBeNull();
+    expect(getByText('采纳')).toBeTruthy();
+    expect(getByText('放弃')).toBeTruthy();
   });
 });

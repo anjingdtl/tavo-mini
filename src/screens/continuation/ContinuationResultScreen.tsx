@@ -28,6 +28,7 @@ import {
   confirmPlanAndContinue,
   getArtifactForRun,
   getLatestArtifact,
+  getLatestArtifactForStage,
   getLatestEligibleArtifact,
   getPlan,
   getRunById,
@@ -35,6 +36,7 @@ import {
   listChecksForArtifact,
   repairContinuationArtifactOnce,
   resumeInterruptedRun,
+  type ContinuationArtifact,
   type ContinuationCheckResult,
   type ContinuationGenerationRun,
   type ContinuationGenerationStageResult,
@@ -44,6 +46,7 @@ import {
   ContinuationConflictError,
   ContinuationOutdatedError,
 } from '../../services/continuation/generation/types';
+import { countHanCharacters } from '../../services/continuation/generation/continuationLengthContract';
 
 interface Props {
   runId: string;
@@ -83,6 +86,12 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [checks, setChecks] = useState<ContinuationCheckResult[]>([]);
   const [stageTelemetry, setStageTelemetry] = useState<Record<string, any>>({});
   const [stageResults, setStageResults] = useState<ContinuationGenerationStageResult[]>([]);
+  const [v5DraftArtifact, setV5DraftArtifact] =
+    useState<ContinuationArtifact | null>(null);
+  const [v5RevisionArtifact, setV5RevisionArtifact] =
+    useState<ContinuationArtifact | null>(null);
+  const [v5FinalArtifact, setV5FinalArtifact] =
+    useState<ContinuationArtifact | null>(null);
   const [rejectedRepair, setRejectedRepair] = useState<RejectedRepairAudit | null>(null);
   const [showRejectedRepair, setShowRejectedRepair] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -121,7 +130,23 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       if (isV4 || isV5) {
         const results = await listStageResults(runId);
         setStageResults(results);
-        if (isV4) {
+        if (isV5) {
+          const [draftArt, revisionArt, finalArt] = await Promise.all([
+            getLatestArtifactForStage(runId, 'draft'),
+            getLatestArtifactForStage(runId, 'revision_1'),
+            getLatestArtifactForStage(runId, 'final'),
+          ]);
+          setV5DraftArtifact(draftArt);
+          setV5RevisionArtifact(revisionArt);
+          // Prefer eligible final for display body; fall back to any final row.
+          setV5FinalArtifact(
+            art?.stage === 'final' ? art : finalArt ?? art ?? null,
+          );
+          setRejectedRepair(null);
+        } else if (isV4) {
+          setV5DraftArtifact(null);
+          setV5RevisionArtifact(null);
+          setV5FinalArtifact(null);
           const repair = results.find(result => result.stage === 'repair');
           const localVerify = results.find(
             result => result.stage === 'local_verify',
@@ -141,11 +166,12 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           } else {
             setRejectedRepair(null);
           }
-        } else {
-          setRejectedRepair(null);
         }
       } else {
         setStageResults([]);
+        setV5DraftArtifact(null);
+        setV5RevisionArtifact(null);
+        setV5FinalArtifact(null);
         setRejectedRepair(null);
       }
     } finally {
@@ -1055,144 +1081,117 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           return null;
         }
       })();
-    const draftHan = usage.draftHan ?? null;
-    const revisionHan = usage.revisionHan ?? null;
-    const finalHan = usage.finalHan ?? null;
-    const stageDefinitions: Array<{
-      id: ContinuationGenerationStageResult['stage'];
-      label: string;
-      meta: string;
-    }> = [
-      { id: 'draft_writer', label: 'Draft Writer', meta: '完整初稿 V1' },
-      {
-        id: 'narrative_architect',
-        label: 'Narrative Architect',
-        meta: '叙事架构 A1（不写正文）',
-      },
-      {
-        id: 'revision_writer',
-        label: 'Revision Writer',
-        meta: '第一次修订稿 V2',
-      },
-      {
-        id: 'adversarial_auditor',
-        label: 'Adversarial Auditor',
-        meta: '最终修订合同 C2',
-      },
-      { id: 'final_reviser', label: 'Final Reviser', meta: '唯一最终稿 V3' },
-      {
-        id: 'final_validate',
-        label: 'Final Artifact Validator',
-        meta: '零请求技术完整性验证',
-      },
-    ];
+
     const v5Stage = (id: ContinuationGenerationStageResult['stage']) =>
       stageResults.find(item => item.stage === id) ?? null;
-    const v5Status = (id: ContinuationGenerationStageResult['stage']) => {
-      const row = v5Stage(id);
-      if (!row) return '未开始';
-      switch (row.status) {
-        case 'success':
-          return row.errorCode?.includes('degraded') ? '降级成功' : '成功';
-        case 'failed':
-          return '失败';
-        case 'running':
-          return '进行中';
-        case 'interrupted':
-          return '已中断';
-        case 'skipped':
-          return '跳过';
-        default:
-          return row.status;
-      }
-    };
+
+    const rows: Array<{
+      key: 'v1' | 'v2' | 'v3';
+      title: string;
+      stageId: ContinuationGenerationStageResult['stage'];
+      artifact: ContinuationArtifact | null;
+      adoptable: boolean;
+    }> = [
+      {
+        key: 'v1',
+        title: 'V1',
+        stageId: 'draft_writer',
+        artifact: v5DraftArtifact,
+        adoptable: false,
+      },
+      {
+        key: 'v2',
+        title: 'V2',
+        stageId: 'revision_writer',
+        artifact: v5RevisionArtifact,
+        adoptable: false,
+      },
+      {
+        key: 'v3',
+        title: 'V3',
+        stageId: 'final_reviser',
+        artifact: v5FinalArtifact,
+        adoptable: true,
+      },
+    ];
+
     return (
       <>
         <Text style={[styles.summary, { color: colors.textSecondary }]}>
-          V5 三轮三稿 · 物理请求 {physical}/5 · workflowVersion 5
-          {targetHan != null ? ` · 目标 ${targetHan} 汉字` : ''}
+          V5 · 三稿
+          {physical > 0 ? ` · 请求 ${physical}/5` : ''}
+          {targetHan != null ? ` · 目标 ${targetHan} 字` : ''}
         </Text>
-        <Text style={[styles.summary, { color: colors.textSecondary }]}>
-          V1：{draftHan ?? '—'} · V2：{revisionHan ?? '—'} · V3：{finalHan ?? '—'}
-          {usage.architectureDegraded ? ' · Architect 降级' : ''}
-          {usage.auditorDegraded ? ' · Auditor 降级' : ''}
-        </Text>
-        {stageDefinitions.map(stage => {
-          const result = v5Stage(stage.id);
-          const requestText = result?.requestCount
-            ? ` · ${result.requestCount} 次请求`
-            : stage.id === 'final_validate'
-              ? ' · 0 次请求'
-              : '';
-          const tokenText =
-            result &&
-            (result.inputTokens != null || result.outputTokens != null)
-              ? ` · token ${result.inputTokens ?? '—'}→${result.outputTokens ?? '—'}`
-              : '';
-          let finishReason = '';
-          try {
-            const parsed = result?.outputJson
-              ? JSON.parse(result.outputJson)
-              : null;
-            if (parsed?.finishReason || parsed?.length?.finishReason) {
-              finishReason = ` · finishReason=${
-                parsed.finishReason || parsed.length.finishReason
-              }`;
-            }
-            if (parsed?.length?.maximumOutputTokens != null) {
-              finishReason += ` · maxOut=${parsed.length.maximumOutputTokens}`;
-            }
-          } catch {
-            // ignore
-          }
-          const label = `${stage.label} · ${v5Status(stage.id)}${requestText}${tokenText}${finishReason}`;
+        {rows.map(row => {
+          const result = v5Stage(row.stageId);
+          const content = row.artifact?.content ?? '';
+          const han =
+            content.length > 0
+              ? countHanCharacters(content)
+              : (() => {
+                  // Prefer length telemetry when artifact body is not available.
+                  const fromJson = parseStageJson(result?.outputJson);
+                  const actual = fromJson?.length?.actualHan;
+                  return typeof actual === 'number' ? actual : null;
+                })();
+          const tokens =
+            result?.outputTokens != null
+              ? result.outputTokens
+              : (() => {
+                  const fromJson = parseStageJson(result?.outputJson);
+                  const t = fromJson?.length?.completionTokens;
+                  return typeof t === 'number' ? t : null;
+                })();
+          const label = `${row.title} · 生成 Tokens ${
+            tokens != null ? tokens : '—'
+          } · 汉字 ${han != null ? han : '—'}`;
+          const expandKey = `v5_${row.key}`;
+          const isOpen = expanded.has(expandKey);
           return (
             <View
-              key={stage.id}
+              key={row.key}
               style={[styles.resultCard, { backgroundColor: colors.card }]}
             >
               <Button
-                label={label}
+                label={isOpen ? `▼ ${label}` : `▶ ${label}`}
                 variant="ghost"
-                onPress={() => toggleExpanded(`v5_${stage.id}`)}
+                onPress={() => toggleExpanded(expandKey)}
               />
-              <Text style={[styles.stageMeta, { color: colors.accent }]}>
-                {stage.meta}
-                {result?.errorCode ? ` · ${result.errorCode}` : ''}
-              </Text>
-              {expanded.has(`v5_${stage.id}`) && (
-                <Text
-                  selectable
-                  style={[styles.stageText, { color: colors.textPrimary }]}
-                >
-                  {result?.errorMessage ||
-                    result?.outputJson ||
-                    '尚无结果。'}
-                </Text>
+              {isOpen && (
+                <View style={{ marginTop: spacing.sm }}>
+                  {!row.adoptable && (
+                    <Text
+                      style={[styles.stageMeta, { color: colors.textMuted }]}
+                    >
+                      过程稿 · 仅供对照，不可采纳
+                    </Text>
+                  )}
+                  {row.adoptable && row.artifact?.eligibilityStatus === 'eligible' && (
+                    <Text style={[styles.stageMeta, { color: colors.accent }]}>
+                      可交付终稿
+                    </Text>
+                  )}
+                  {content ? (
+                    <Text
+                      selectable
+                      style={[styles.stageText, { color: colors.textPrimary }]}
+                    >
+                      {content}
+                    </Text>
+                  ) : (
+                    <Text
+                      style={[styles.stageText, { color: colors.textSecondary }]}
+                    >
+                      {result?.status === 'running'
+                        ? '生成中…'
+                        : result?.errorMessage || '尚无正文。'}
+                    </Text>
+                  )}
+                </View>
               )}
             </View>
           );
         })}
-        <View style={[styles.block, { marginTop: spacing.sm }]}>
-          <Button
-            label={
-              expanded.has('v5_audit')
-                ? '收起生成过程审计（V1/V2）'
-                : '展开生成过程审计（V1/V2，不可采纳）'
-            }
-            variant="ghost"
-            onPress={() => toggleExpanded('v5_audit')}
-          />
-          {expanded.has('v5_audit') && (
-            <Text style={{ color: colors.textSecondary, marginTop: 6 }}>
-              V1/V2 仅用于审计与恢复，不提供采纳按钮。默认只展示可交付的
-              V3。
-              {`\n目标：${targetHan ?? '—'} · V1：${draftHan ?? '—'} · V2：${
-                revisionHan ?? '—'
-              } · V3：${finalHan ?? '—'}`}
-            </Text>
-          )}
-        </View>
       </>
     );
   };
@@ -1202,11 +1201,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       return (
         <Card>
           <Text style={[styles.h, { color: colors.textPrimary }]}>
-            V5 生成进行中
+            生成进行中
           </Text>
           <Text style={{ color: colors.textSecondary }}>
-            当前阶段：{stageLabel(run.stage)}。Round 1/2 各最多两个并行请求，Round
-            3 仅 Final Reviser。
+            当前：{stageLabel(run.stage)}。完成后将展示 V1 / V2 / V3 三稿。
           </Text>
         </Card>
       );
@@ -1223,17 +1221,17 @@ export const ContinuationResultScreen: React.FC<Props> = ({
               },
             ]}
           >
-            {run.state === 'failed' ? 'V5 生成未完成' : 'V5 生成已中断'}
+            {run.state === 'failed' ? '生成未完成' : '生成已中断'}
           </Text>
           <Text
             style={{ color: colors.textSecondary, marginBottom: spacing.md }}
           >
             {run.errorMessage ||
-              `当前阶段：${stageLabel(run.stage)}。已 reservation 的节点不会自动重发。`}
+              `当前阶段：${stageLabel(run.stage)}。可从已保存进度继续，或放弃。`}
           </Text>
           <View style={styles.actions}>
             <Button
-              label={busy ? '处理中…' : '从已持久化阶段继续'}
+              label={busy ? '处理中…' : '从已保存进度继续'}
               onPress={doResume}
               disabled={busy}
             />
@@ -1251,13 +1249,13 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       return (
         <Card>
           <Text style={[styles.h, { color: colors.danger }]}>
-            最终稿未形成可交付结果
+            未形成可交付终稿
           </Text>
           <Text
             style={{ color: colors.textSecondary, marginBottom: spacing.md }}
           >
             {run.errorMessage ||
-              '本次不会自动回退到初稿或第一次修订稿。请重新生成，或放弃本次结果。'}
+              '请重新生成，或放弃本次结果。上方可展开已有过程稿对照。'}
           </Text>
           <View style={styles.actions}>
             <Button
@@ -1277,42 +1275,19 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     }
     if (run.state === 'awaiting_user') {
       return (
-        <Card>
-          <Text style={[styles.h, { color: colors.textPrimary }]}>
-            V5 最终稿已待采纳
-          </Text>
-          <Text
-            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
-          >
-            仅 V3（stage=final, eligible）可采纳。V1/V2 为 intermediate，不可选择。
-          </Text>
-          {body ? (
-            <Text
-              selectable
-              style={[styles.stageText, { color: colors.textPrimary }]}
-            >
-              {body.slice(0, 1200)}
-              {body.length > 1200 ? '…' : ''}
-            </Text>
-          ) : (
-            <Text style={{ color: colors.danger }}>
-              未找到可采纳的最终稿。
-            </Text>
-          )}
-          <View style={[styles.actions, { marginTop: spacing.md }]}>
-            <Button
-              label="放弃"
-              variant="secondary"
-              onPress={doAbandon}
-              disabled={busy}
-            />
-            <Button
-              label={busy ? '采纳中…' : '采纳最终稿'}
-              onPress={() => doAdopt()}
-              disabled={busy || !body}
-            />
-          </View>
-        </Card>
+        <View style={styles.decisionActions}>
+          <Button
+            label="放弃"
+            variant="ghost"
+            onPress={doAbandon}
+            disabled={busy}
+          />
+          <Button
+            label={busy ? '采纳中…' : '采纳'}
+            onPress={() => doAdopt()}
+            disabled={busy || !body}
+          />
+        </View>
       );
     }
     return null;
