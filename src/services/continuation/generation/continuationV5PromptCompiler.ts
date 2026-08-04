@@ -8,16 +8,29 @@ import type {
   ContinuationV5AuditEnvelope,
   ContinuationV5RevisionAnchor,
   ContinuationV5StageViews,
+  ContinuationV5StyleDimension,
 } from './types';
 
 /**
  * Build the C2 selector list from V2 itself. The model sees the text only
  * once, tagged with stable ids, and later stages receive the selected text
  * from this client-owned source rather than from a model quotation.
+ *
+ * The input is normalized to LF (`\n`) first so that recorded UTF-16 offsets
+ * stay consistent with the persisted V2 artifact body (always LF after JSON
+ * parse). This is a defensive guard: the V5 runner already passes the same LF
+ * string to both the anchor builder and the DB insert, so under normal
+ * operation no `\r\n` ever reaches here. The normalization only matters if a
+ * future caller accidentally feeds CRLF text — without it every preceding
+ * `\r\n` would silently inflate every later anchor offset by one per line.
  */
 export function buildContinuationV5RevisionAnchors(
   revisionContent: string,
 ): ContinuationV5RevisionAnchor[] {
+  const content =
+    revisionContent.indexOf('\r') >= 0
+      ? revisionContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      : revisionContent;
   const anchors: ContinuationV5RevisionAnchor[] = [];
   const separator = /\r?\n\s*\r?\n/g;
   let blockStart = 0;
@@ -33,14 +46,14 @@ export function buildContinuationV5RevisionAnchors(
       text,
     });
   };
-  for (const match of revisionContent.matchAll(separator)) {
-    append(revisionContent.slice(blockStart, match.index), blockStart);
+  for (const match of content.matchAll(separator)) {
+    append(content.slice(blockStart, match.index), blockStart);
     blockStart = (match.index ?? 0) + match[0].length;
   }
-  append(revisionContent.slice(blockStart), blockStart);
-  if (anchors.length === 0 && revisionContent.trim()) {
-    const text = revisionContent.trim();
-    const start = revisionContent.indexOf(text);
+  append(content.slice(blockStart), blockStart);
+  if (anchors.length === 0 && content.trim()) {
+    const text = content.trim();
+    const start = content.indexOf(text);
     anchors.push({
       anchorId: 'v2-p-001',
       start,
@@ -58,6 +71,139 @@ function revisionAnchorBlock(anchors: ContinuationV5RevisionAnchor[]): string {
         `[${anchor.anchorId} @${anchor.start}-${anchor.end}]\n${anchor.text}`,
     )
     .join('\n\n');
+}
+
+// ── V3 edit work packet ────────────────────────────────────────────────
+//
+// The packet is a prompt-only derivation from the already-parsed
+// ContinuationV5AuditEnvelope. C2 only selects real V2 anchor ids; the
+// client backfills the exact excerpt, range and offsets. We surface each
+// anchored style task as an explicit, ordered "edit work item" so V3's
+// attention lands on per-segment rewrites before the full V2 baseline.
+
+/**
+ * A single client-derived edit task for V3. `sourceText` is always the
+ * resolved V2 excerpt from the audit contract, never a model quotation.
+ */
+export interface ContinuationV5EditWorkItem {
+  requirementId: string;
+  anchorId: string;
+  /** Resolved V2 excerpt (parsed contract's generatedExcerpt). */
+  sourceText: string;
+  /** UTF-16 offsets of sourceText inside V2; -1 when unknown. */
+  sourceStart: number;
+  sourceEnd: number;
+  dimension: ContinuationV5StyleDimension;
+  description: string;
+  rewriteGoal: string;
+  preserveMeaning: string[];
+  /** Related finalObligation ids (matched by description overlap), else []. */
+  obligationIds: string[];
+}
+
+/**
+ * Build the V3 edit work packet from a parsed audit envelope.
+ *
+ * Rules (per `continuation-v5-v3-edit-work-packet-redesign.md`):
+ * - Only style corrections whose `anchorId` is non-null AND whose resolved
+ *   `generatedExcerpt` is non-empty enter the packet. Legacy anchorId=null
+ *   contracts remain parseable; such tasks are simply skipped here and still
+ *   flow through the existing JSON task block for resumed runs.
+ * - C2's original order is preserved; the packet is capped at 6 items.
+ * - No similarity, replacement or any post-hoc V3 judgement is performed.
+ */
+export function buildContinuationV5EditWorkPacket(
+  audit: ContinuationV5AuditEnvelope,
+): ContinuationV5EditWorkItem[] {
+  const obligations = audit.finalObligations;
+  const items = audit.styleAudit.requiredCorrections
+    .filter(
+      correction =>
+        typeof correction.anchorId === 'string' &&
+        correction.anchorId.length > 0 &&
+        typeof correction.generatedExcerpt === 'string' &&
+        correction.generatedExcerpt.length > 0,
+    )
+    .map(correction => ({
+      requirementId: correction.requirementId,
+      anchorId: correction.anchorId as string,
+      sourceText: correction.generatedExcerpt,
+      sourceStart:
+        typeof correction.generatedStart === 'number'
+          ? correction.generatedStart
+          : -1,
+      sourceEnd:
+        typeof correction.generatedEnd === 'number'
+          ? correction.generatedEnd
+          : -1,
+      dimension: correction.dimension,
+      description: correction.description,
+      rewriteGoal: correction.rewriteGoal,
+      preserveMeaning: correction.preserveMeaning,
+      obligationIds: matchObligationIds(obligations, correction),
+    }));
+  return items.slice(0, 6);
+}
+
+function matchObligationIds(
+  obligations: ContinuationV5AuditEnvelope['finalObligations'],
+  correction: {
+    requirementId: string;
+    description: string;
+    rewriteGoal: string;
+  },
+): string[] {
+  const hay = `${correction.description}\n${correction.rewriteGoal}`;
+  return obligations
+    .filter(obligation => {
+      const keywords = splitKeywords(obligation.description);
+      return keywords.some(keyword => keyword.length >= 3 && hay.includes(keyword));
+    })
+    .map(obligation => obligation.obligationId);
+}
+
+function splitKeywords(text: string): string[] {
+  return text
+    .split(/[\s,，。；;:：、（）()【】"'“”‘’！？!?\.]+/)
+    .map(token => token.trim())
+    .filter(Boolean);
+}
+
+/** Render the edit work packet as the V3-facing instructional block. */
+export function formatContinuationV5EditWorkPacket(
+  packet: ContinuationV5EditWorkItem[],
+): string {
+  if (packet.length === 0) {
+    return '【V3 必须先完成的定点编辑工作包】\n（本合同无可定位的真实 V2 锚点任务；请按 C2 的 finalObligations 与 canon 纠正项正常润色。）';
+  }
+  const blocks = packet.map((item, index) => {
+    const preserve = item.preserveMeaning.length
+      ? item.preserveMeaning.map(entry => `  - ${entry}`).join('\n')
+      : '  - （本段无额外硬保留约束，但仍不得改变已成立的事件、人物选择、因果与情绪落点）';
+    const range =
+      item.sourceStart >= 0 && item.sourceEnd >= 0
+        ? `（V2 偏移 ${item.sourceStart}–${item.sourceEnd}）`
+        : '';
+    const obligations =
+      item.obligationIds.length > 0
+        ? `\n关联义务：${item.obligationIds.join(', ')}`
+        : '';
+    return [
+      `任务 ${index + 1} / ${item.requirementId} / ${item.anchorId}（${item.dimension}）${range}`,
+      `【真实 V2 原段】\n${item.sourceText}`,
+      `【诊断】\n${item.description}`,
+      `【本段改写目标】\n${item.rewriteGoal || '（未给出具体改写目标，请按维度整体提升表达）'}`,
+      `【必须保留】\n${preserve}`,
+      `【执行动作】将整段重新组织为新的叙述表达：用新的句式、节奏、对白或留白实现上述改写目标；必须保留事件、人物选择、因果与情绪落点；禁止以删词、改标点或只替换一两个近义词的方式完成本任务。${obligations}`,
+    ].join('\n');
+  });
+  return [
+    '【V3 必须先完成的定点编辑工作包】',
+    '下方每一项的“真实 V2 原段”均由客户端按 anchorId 从 V2 回填，是本次必须整体重写的源段。',
+    '请先按编号依次完成全部工作包，再把这些改写无缝合成为完整 V3；不得先全文复述、最后只在少数地方微调。',
+    '',
+    blocks.join('\n\n'),
+  ].join('\n');
 }
 
 export function continuationV5ProtocolSkeletonTokens(
@@ -344,13 +490,19 @@ export function compileContinuationV5FinalReviserMessages(input: {
   const v2InBand =
     input.revisionHan >= view.preferredMinHan &&
     input.revisionHan <= view.preferredMaxHan;
+  const editWorkPacket = buildContinuationV5EditWorkPacket(input.audit);
+  const editWorkPacketBlock = formatContinuationV5EditWorkPacket(editWorkPacket);
   const system = [
     '你是 Continuation V5 Final Reviser。',
     '你要生成本次唯一的完整最终稿 V3。',
     '【分工】V2 已是主扩写稿；V3 默认做润色与 C2 合同履约，不要把 V3 当成主要加长环节。',
     'V2 是当前正文基线，但不是不可修改的模板。C2 是最终修订合同。',
-    'C2 中的 styleAudit 是针对真实 V2 的客户端锚定编辑任务。每项 generatedExcerpt 都由程序按 anchorId 回填，绝不是模型转述；先逐项整体改写这些片段，再重读全文统一语气、节奏和衔接；不得把任务单仅当作参考。',
-    '不要原样复述 V2；本次调用的工作就是把 C2 指出的 V2 片段改成更贴合原著风格、更自然有效的表达。不得只删词、改标点或替换一两个近义词来宣称完成任务。',
+    '你先执行下方按编号给出的真实 V2 编辑工作包，再合成完整 V3。',
+    '每个工作包的“真实 V2 原段”均由客户端按 anchorId 从 V2 回填，是本次必须整体重写的源段；绝不是模型转述。',
+    '对每一项，必须保留其 preserveMeaning 列出的事件、人物选择、因果和情绪落点，但必须以新的句式、节奏、叙述组织或对白/留白实现 rewriteGoal。',
+    '完成所有工作包后，再通读全文，只对未被选中的片段做必要的衔接调整，统一语气、节奏与章末收束。',
+    '不得把工作包当作可选参考；不得先全文复述、最后只在少数地方微调。',
+    '禁止以删词、改标点或只替换一两个近义词来完成某项工作包。',
     '必须完成 C2 中全部 blocking/error 义务。',
     '不得使用 C2 明确拒绝的 Architect scene。',
     '不得自行创造新的核心人物、能力、组织、关系状态、世界规则或后续剧情事实。',
@@ -378,10 +530,13 @@ export function compileContinuationV5FinalReviserMessages(input: {
       .join('\n') || '- （无）',
     level < 4 ? `【软 Canon 摘要】\n${softCanon.join('\n') || '（无）'}` : '',
     styleBlock(view.style.text),
-    `【完整 V2】\n${input.revisionContent}`,
+    // V3 must first act on the per-segment edit work packet; it precedes the
+    // full V2 baseline so attention lands on real rewrites, not global echo.
+    editWorkPacketBlock,
+    `【完整 V2（合成 V3 的章节连续性基线；未被工作包选中的片段保持稳定，仅做必要衔接）】\n${input.revisionContent}`,
     `【C2 finalObligations】\n${JSON.stringify(blockingObligations)}`,
     `【C2 canon requiredCorrections】\n${JSON.stringify(canonCorrections)}`,
-    `【C2 真实片段改写清单】\n${JSON.stringify(styleCorrections)}`,
+    `【C2 真实片段改写清单（原始合同 JSON，与上方工作包一一对应）】\n${JSON.stringify(styleCorrections)}`,
     `【允许使用的 A1 scenes】\n${JSON.stringify(scenes)}`,
     `【V1 protected passages】\n${JSON.stringify(protectedPassages)}`,
     `【C2 rejected scenes】\n${JSON.stringify(

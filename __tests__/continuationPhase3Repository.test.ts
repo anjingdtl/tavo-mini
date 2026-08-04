@@ -1073,6 +1073,29 @@ describe('continuation Phase 3 repository coverage', () => {
     expect((await getLatestArtifact(runId))?.id).toBe(a.id);
     expect((await getArtifactById(a.id))?.content).toBe('正文一');
 
+    // Regression: revision_1 must get its own artifact even when V2 content
+    // hashes collide with the draft. Without requireStageMatch the insert
+    // silently returns the draft row, collapsing V1→V2→C2→V3 into V1-only.
+    const draftArtifact = await insertArtifact({
+      runId,
+      stage: 'draft',
+      content: '完全相同的 V2 正文。',
+    });
+    const revisionArtifact = await insertArtifact({
+      runId,
+      stage: 'revision_1',
+      content: '完全相同的 V2 正文。',
+      requireStageMatch: true,
+    });
+    expect(revisionArtifact.id).not.toBe(draftArtifact.id);
+    expect(revisionArtifact.stage).toBe('revision_1');
+    expect(revisionArtifact.contentHash).not.toBe(draftArtifact.contentHash);
+    // The revision_1 row must be independently retrievable by id, with the
+    // correct stage and a distinct body from the draft.
+    const fetched = await getArtifactById(revisionArtifact.id);
+    expect(fetched?.stage).toBe('revision_1');
+    expect(fetched?.id).toBe(revisionArtifact.id);
+
     await savePlan(
       runId,
       {

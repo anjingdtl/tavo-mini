@@ -71,6 +71,58 @@ function parseStageJson(value: string | null | undefined): any | null {
   }
 }
 
+/**
+ * Han-character-level change ratio between V2 and V3, via longest common
+ * subsequence. Returns a fraction in [0, 1] where 0 = identical and 1 = no
+ * shared Han characters. A small per-segment rewrite still produces a low
+ * ratio because most of the chapter is preserved verbatim by V3; this is the
+ * intended V5 behavior (定点润色, not full rewrite).
+ */
+function computeV3ChangeRatio(v2Content: string, v3Content: string): number {
+  const v2 = countHanCharacters(v2Content);
+  const v3 = countHanCharacters(v3Content);
+  if (v2 === 0 && v3 === 0) return 0;
+  // Extract Han-character sequences once for both sides.
+  const left = hanSequence(v2Content);
+  const right = hanSequence(v3Content);
+  const common = lcsLength(left, right);
+  return 1 - common / Math.max(left.length, right.length);
+}
+
+function hanSequence(text: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < text.length; ) {
+    const code = text.codePointAt(i) ?? 0;
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0x20000 && code <= 0x2fa1f) ||
+      code === 0x3007
+    ) {
+      out.push(code);
+    }
+    i += code > 0xffff ? 2 : 1;
+  }
+  return out;
+}
+
+function lcsLength(left: number[], right: number[]): number {
+  if (left.length === 0 || right.length === 0) return 0;
+  let previous = new Array<number>(right.length + 1).fill(0);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = new Array<number>(right.length + 1).fill(0);
+    for (let j = 1; j <= right.length; j += 1) {
+      current[j] =
+        left[i - 1] === right[j - 1]
+          ? previous[j - 1] + 1
+          : Math.max(previous[j], current[j - 1]);
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
 export const ContinuationResultScreen: React.FC<Props> = ({
   runId,
   onClose,
@@ -1122,6 +1174,28 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           {physical > 0 ? ` · 请求 ${physical}/5` : ''}
           {targetHan != null ? ` · 目标 ${targetHan} 字` : ''}
         </Text>
+        {(() => {
+          const v2Content = v5RevisionArtifact?.content ?? '';
+          const v3Content = v5FinalArtifact?.content ?? '';
+          if (!v2Content || !v3Content) return null;
+          const sameHash =
+            v5RevisionArtifact?.contentHash === v5FinalArtifact?.contentHash;
+          const ratio = sameHash ? 0 : computeV3ChangeRatio(v2Content, v3Content);
+          const percent = (ratio * 100).toFixed(1);
+          const hint = sameHash
+            ? 'V3 与 V2 正文一致，未做润色'
+            : '基于汉字序列 LCS，反映定点润色幅度';
+          return (
+            <Text
+              style={[
+                styles.summary,
+                { color: colors.textMuted, fontWeight: '400' },
+              ]}
+            >
+              V3 改动占比：约 {percent}%（{hint}）
+            </Text>
+          );
+        })()}
         {rows.map(row => {
           const result = v5Stage(row.stageId);
           const content = row.artifact?.content ?? '';
@@ -1360,23 +1434,23 @@ function stageLabel(stage: string): string {
     case 'awaiting_user':
       return '等待确认';
     case 'round1':
-      return 'Round 1 Draft+Architect';
+      return 'V1 初稿与 A1 架构';
     case 'round2':
-      return 'Round 2 Revision+Auditor';
+      return 'V2 修订与 C2 审阅';
     case 'round3':
-      return 'Round 3 Final Reviser';
+      return 'V3 终稿润色';
     case 'draft_writer':
-      return 'Draft Writer';
+      return '生成初稿 V1';
     case 'narrative_architect':
-      return 'Narrative Architect';
+      return '规划叙事架构 A1';
     case 'revision_writer':
-      return 'Revision Writer';
+      return '扩写修订 V2';
     case 'adversarial_auditor':
-      return 'Adversarial Auditor';
+      return '审阅 V2 并生成润色任务';
     case 'final_reviser':
-      return 'Final Reviser';
+      return '润色终稿 V3';
     case 'final_validate':
-      return 'Final Artifact Validator';
+      return '校验终稿';
     default:
       return stage;
   }
