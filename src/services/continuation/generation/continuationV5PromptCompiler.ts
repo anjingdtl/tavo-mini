@@ -142,14 +142,17 @@ export function compileContinuationV5RevisionWriterMessages(input: {
   const system = [
     '你是 Continuation V5 Revision Writer。',
     '你要生成完整的第一次修订稿 V2。',
+    '【分工】V2 是本流水线的主扩写稿：目标字数必须在此阶段基本达成。后续 V3 只做润色与合同履约，默认不再大幅加长。',
     'V1 是文学表达基线。A1 是叙事材料，不是必须机械执行的清单。',
     '保留 V1 中自然、有原著气息的人物对白、叙述、动作和留白；',
     '同时从 A1 中选择符合 Canon、人物状态和用户要求的有效内容，修复 V1 中过早收束、只作概述或事件链不足的部分。',
     '通过真实行动、阻力、选择、转折和后果扩充章节。',
     '不得重复心理、堆叠环境、重复反应、扩展无信息对白或添加总结解释。',
     '不得凭空创造重大人物、能力、组织、规则或后续事实。',
-    `用户目标约为 ${view.targetChapterChars} 个汉字。V1 当前为 ${input.draftHan} 个汉字。`,
-    '优先完成尚未充分展开的核心场景，而不是机械补足差额。',
+    `【篇幅硬目标】本章目标 ${view.targetChapterChars} 个汉字；V2 正文汉字数必须落在 ${view.preferredMinHan}–${view.preferredMaxHan} 之间。`,
+    `V1 当前为 ${input.draftHan} 个汉字。若 V1 偏短，你必须用有效情节（行动、阻力、人物选择、信息/关系变化、后果）把 V2 扩到至少 ${view.preferredMinHan} 个汉字。`,
+    `未达到 ${view.preferredMinHan} 个汉字视为 V2 未完成，不得提前收束。`,
+    '禁止用重复句、空转对白、堆叠环境或总结解释凑字；必须靠尚未充分展开的核心场景推进叙事。',
     '只输出完整章节 JSON envelope，禁止 Patch。',
   ].join('\n');
   const user = [
@@ -160,6 +163,7 @@ export function compileContinuationV5RevisionWriterMessages(input: {
     `【A1 architectureHash】${input.architectureHash}`,
     `【完整 V1】\n${input.draftContent}`,
     `【A1 叙事架构】\n${JSON.stringify(input.architecture)}`,
+    `【篇幅自检】输出前确认 content 汉字数 ≥ ${view.preferredMinHan} 且 ≤ ${view.preferredMaxHan}。目标 ${view.targetChapterChars}。`,
     '【输出契约】\n{"schemaVersion":1,"draftArtifactHash":"...","architectureHash":"...","content":"完整V2正文","usedArchitectSceneIds":[],"omittedArchitectSceneIds":[],"declaredNewCoreFacts":[]}',
   ].join('\n\n');
   const messages: ChatMessage[] = [
@@ -267,17 +271,23 @@ export function compileContinuationV5FinalReviserMessages(input: {
       ? view.canon.softFacts.slice(0, 4).map(item => item.text)
       : view.canon.softFacts.slice(0, 16).map(item => item.text);
 
+  const v2InBand =
+    input.revisionHan >= view.preferredMinHan &&
+    input.revisionHan <= view.preferredMaxHan;
   const system = [
     '你是 Continuation V5 Final Reviser。',
     '你要生成本次唯一的完整最终稿 V3。',
+    '【分工】V2 已是主扩写稿；V3 默认做润色与 C2 合同履约，不要把 V3 当成主要加长环节。',
     'V2 是当前正文基线，但不是不可修改的模板。C2 是最终修订合同。',
     '必须完成 C2 中全部 blocking/error 义务。',
     '不得使用 C2 明确拒绝的 Architect scene。',
     '不得自行创造新的核心人物、能力、组织、关系状态、世界规则或后续剧情事实。',
     '保留 V2 中已经成立的行动、转折、人物选择和后果。',
     '如果 V2 磨掉了 C2 标记的 V1 优质对白、动作或留白，可以恢复或重构。',
-    `用户参考目标约为 ${view.targetChapterChars} 个汉字。V2 当前为 ${input.revisionHan} 个汉字。`,
-    '若仍明显偏短，应继续完成尚未充分展开的核心场景：行动、阻力、人物选择、信息变化、关系变化、实际后果。',
+    `V2 当前为 ${input.revisionHan} 个汉字；本章目标 ${view.targetChapterChars}（首选 ${view.preferredMinHan}–${view.preferredMaxHan}）。`,
+    v2InBand
+      ? `V2 已在目标区间内：V3 保持同量级篇幅（相对 V2 约 ±10%），以润色、履约、去泄漏为主，禁止为凑字注水。`
+      : `V2 仍低于首选下限 ${view.preferredMinHan}：你可兜底补写尚未充分展开的核心场景（行动、阻力、人物选择、信息/关系变化、后果），尽量将 V3 提升到 ${view.preferredMinHan} 以上；仍禁止重复心理/环境/空转对白。`,
     '不得追加无关描写，不得重复心理、反应、对白或解释。',
     '只输出从章节开头到自然结尾的完整最终章节 JSON。',
   ].join('\n');
