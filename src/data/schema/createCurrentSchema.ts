@@ -9,6 +9,10 @@ import { buildSchema26CreateSqls } from '../../services/migrations/v25-to-v26';
 import { buildSchema32CreateSqls } from '../../services/migrations/v31-to-v32';
 import { buildSchema33CreateSqls } from '../../services/migrations/v32-to-v33';
 import { buildSchema34CreateSqls } from '../../services/migrations/v33-to-v34';
+import {
+  buildAnalysisBatchesCreateSqlV35,
+  buildSchema35CreateSqls,
+} from '../../services/migrations/v34-to-v35';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -613,7 +617,16 @@ export function createCurrentSchemaStatements(): string[] {
     `,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_continuation_import_one_active ON continuation_import_jobs(project_id) WHERE state IN ('queued', 'running', 'paused', 'awaiting_review', 'interrupted')`,
     // Schema 20 Canon / analysis tables (after settings + snapshots exist).
-    ...buildSchema20PostSettingsStatements().map(item => item.sql),
+    // Fresh installs skip the legacy batches DDL and create the Schema 35 shape
+    // (partial state + segment columns) directly.
+    ...buildSchema20PostSettingsStatements()
+      .map(item => item.sql)
+      .filter(
+        sql =>
+          !sql.includes('CREATE TABLE IF NOT EXISTS continuation_analysis_batches') &&
+          !sql.includes('idx_continuation_analysis_batches_state'),
+      ),
+    buildAnalysisBatchesCreateSqlV35(),
     // Schema 21 Phase 3 generation / state tables. The legacy single-row
     // continuation_style_profiles definition is filtered out here because Schema
     // 26 rebuilds it as a versioned table; the v20→v21 migration still creates
@@ -642,6 +655,8 @@ export function createCurrentSchemaStatements(): string[] {
     ...buildSchema33CreateSqls(),
     // Schema 34 Continuation V5 stage/eligibility CHECK expansion.
     ...buildSchema34CreateSqls(),
+    // Schema 35 Canon analysis batch partial/segment indexes (table created above).
+    ...buildSchema35CreateSqls(),
   ];
 }
 

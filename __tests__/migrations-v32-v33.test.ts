@@ -1,24 +1,24 @@
 /**
- * Schema 32 → 33 migration: Canon fact business-key UNIQUE indexes + evidence
+ * Schema 32 鈫?33 migration: Canon fact business-key UNIQUE indexes + evidence
  * provenance columns.
  */
 import { buildV32toV33Statements, buildSchema33CreateSqls } from '../src/services/migrations/v32-to-v33';
 import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import { SCHEMA_VERSION } from '../src/services/migrations';
 
-describe('Schema 32 → 33 Canon dedup infrastructure', () => {
+describe('Schema 32 鈫?33 Canon dedup infrastructure', () => {
   it('is superseded by a later current SCHEMA_VERSION', () => {
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(33);
-    expect(SCHEMA_VERSION).toBe(34);
   });
 
-  it('emits provenance columns + 5 dedup deletes + 6 indexes', () => {
+  it('emits provenance columns + rebind-then-dedup + 6 indexes', () => {
     const statements = buildV32toV33Statements();
     const sqls = statements.map(s => s.sql);
     expect(sqls.filter(s => /ADD COLUMN source_origin/.test(s))).toHaveLength(1);
     expect(sqls.filter(s => /ADD COLUMN rescan_operation_id/.test(s))).toHaveLength(1);
-    // 5 dedup deletes (world_rules, characters, plot_threads, relationships, experiences)
-    expect(sqls.filter(s => /^DELETE FROM canon_/.test(s))).toHaveLength(5);
+    // Each of 5 fact tables: rebind UPDATE + link dedup DELETE + fact DELETE
+    expect(sqls.filter(s => /UPDATE canon_evidence_links/.test(s)).length).toBeGreaterThanOrEqual(5);
+    expect(sqls.filter(s => /^DELETE FROM canon_/.test(s)).length).toBeGreaterThanOrEqual(5);
     // 5 UNIQUE business indexes + 1 rescan-op index
     expect(sqls.filter(s => /CREATE UNIQUE INDEX.*_business/.test(s))).toHaveLength(5);
     expect(sqls.filter(s => /CREATE INDEX.*idx_canon_evidence_rescan_op/.test(s))).toHaveLength(1);
@@ -87,15 +87,15 @@ describe('Schema 32 → 33 Canon dedup infrastructure', () => {
           `INSERT INTO canon_world_rules (project_id,source_id,snapshot_id,analysis_run_id,valid_from_position,first_observed_position,last_observed_position,confidence,review_status,origin,extraction_version,revision,created_at,updated_at,category,title,description,constraint_level) VALUES (1,1,'snap-1','run-1',0,0,0,0.9,'pending','ai','v1',1,'t','t','other',?,?,'reference')`,
           [title, title],
         );
-      await insertRule('灵气复苏');
+      await insertRule('鐏垫皵澶嶈嫃');
       // Second active (non-superseded) rule with the same title+snapshot must fail.
-      await expect(insertRule('灵气复苏')).rejects.toThrow(/UNIQUE constraint failed/);
+      await expect(insertRule('鐏垫皵澶嶈嫃')).rejects.toThrow(/UNIQUE constraint failed/);
       // A superseded row with the same title is allowed (partial index exempts it).
       await db.executeSql(
-        `INSERT INTO canon_world_rules (project_id,source_id,snapshot_id,analysis_run_id,valid_from_position,first_observed_position,last_observed_position,confidence,review_status,origin,extraction_version,revision,created_at,updated_at,category,title,description,constraint_level) VALUES (1,1,'snap-1','run-1',0,0,0,0.9,'superseded','ai','v1',1,'t','t','other','灵气复苏','灵气复苏','reference')`,
+        `INSERT INTO canon_world_rules (project_id,source_id,snapshot_id,analysis_run_id,valid_from_position,first_observed_position,last_observed_position,confidence,review_status,origin,extraction_version,revision,created_at,updated_at,category,title,description,constraint_level) VALUES (1,1,'snap-1','run-1',0,0,0,0.9,'superseded','ai','v1',1,'t','t','other','鐏垫皵澶嶈嫃','鐏垫皵澶嶈嫃','reference')`,
       );
       // A different title succeeds.
-      await expect(insertRule('另一规则')).resolves.toBeDefined();
+      await expect(insertRule('鍙︿竴瑙勫垯')).resolves.toBeDefined();
       void base;
     } finally {
       db.close();

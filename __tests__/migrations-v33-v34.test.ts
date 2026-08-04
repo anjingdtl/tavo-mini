@@ -7,8 +7,8 @@ import {
 } from '../src/services/migrations/v33-to-v34';
 
 describe('Schema 33 → 34 Continuation V5 CHECK expansion', () => {
-  it('reports SCHEMA_VERSION as 34', () => {
-    expect(SCHEMA_VERSION).toBe(34);
+  it('is superseded by a later current SCHEMA_VERSION', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(34);
   });
 
   it('widens run state/stage, stage_results stage, artifact stage/eligibility', () => {

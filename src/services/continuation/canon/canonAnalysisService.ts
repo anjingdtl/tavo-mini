@@ -54,7 +54,33 @@ import {
   updateSnapshotMeta,
   countFutureEvidence,
   asSourcePosition,
+  findNextQueuedBatch,
+  insertSubBatchIfAbsent,
+  allocateNextBatchIndex,
 } from './canonRepository';
+import {
+  planSourceSlice,
+  segmentsToBoundedChapters,
+  remainingTailFromAnalyzedEnds,
+  applyRetryTailWindow,
+} from './canonSourceSlicePlanner';
+import {
+  upsertWorldRule,
+  upsertCharacter,
+  upsertRelationship,
+  upsertPlotThread,
+  upsertExperience,
+} from './canonFactUpsert';
+import {
+  resolveCanonBudget,
+  RETRY_CHUNK_RATIOS,
+  SOURCE_CHUNK_RATIO_NORMAL,
+  SOURCE_CHUNK_RATIO_RESCAN,
+} from './canonBudgetPolicy';
+import {
+  computeCanonOverallProgress,
+  computeCanonProgressTotal,
+} from './canonProgress';
 import {
   FAST_CONTINUATION_SCOPE,
   FULL_ANALYSIS_SCOPE,
@@ -75,7 +101,10 @@ import {
   EXTRACTION_JSON_SKELETON,
   buildExtractionRetryInstruction,
 } from './extractionPromptSpec';
-import { insertEvidenceAndLink } from './canonEvidenceService';
+import {
+  insertEvidenceAndLink,
+  buildEvidenceInsertInput,
+} from './canonEvidenceService';
 import type { SqlStatement } from '../../../data/connection/transaction';
 import { runStyleAnalysis } from '../styleProfile/styleAnalysisService';
 import { deleteStyleProfileByFingerprint } from '../styleProfile/styleProfileRepository';
@@ -102,10 +131,6 @@ import {
   type AdaptiveBatchPlan,
   type CanonAnalysisPrecheck,
 } from './adaptiveBatchPlanner';
-import {
-  resolveCanonBudget,
-  SOURCE_CHUNK_RATIO_RESCAN,
-} from './canonBudgetPolicy';
 import {
   countValidCanonRowsForGate,
   evaluateFiveDimensionGate,
@@ -814,21 +839,71 @@ export async function materializeBatchResult(
       ? chapters[0].position
       : (0 as ReturnType<typeof asSourcePosition>);
   const ts = now();
-  // 2026-08-04 修复（问题1）：构造 evidence 输入时统一带上 readBackVerifier
-  // 与来源标识，避免每个调用点重复拼写。
-  const evInput = (
-    candidate: ExtractionEvidenceCandidate,
-  ): Parameters<typeof insertEvidenceAndLink>[1] => ({
+  // 统一 evidence 入口：所有 owner type 都必须走 buildEvidenceInsertInput，
+  // 禁止业务循环手工拼装（会漏 readBackVerifier / sourceOrigin / rescanOperationId）。
+  const evCtx = {
     projectId: ctx.projectId,
     sourceId: ctx.sourceId,
     snapshotId: ctx.snapshotId,
     analysisRunId: ctx.runId,
     boundaryExclusive: ctx.boundaryExclusive,
-    candidate,
     readBackVerifier: ctx.readBackVerifier,
     sourceOrigin: ctx.sourceOrigin,
     rescanOperationId: ctx.rescanOperationId,
-  });
+  };
+  const evInput = (candidate: ExtractionEvidenceCandidate) =>
+    buildEvidenceInsertInput(evCtx, candidate);
+
+  // Atomic materialization: BEGIN … COMMIT/ROLLBACK so any failure leaves no
+  // half-written facts/evidence/links for this batch.
+  await execute(db, 'BEGIN IMMEDIATE');
+  try {
+    await materializeBatchResultBody(db, ctx, result, chapters, {
+      fromPos,
+      pos,
+      ts,
+      evInput,
+    });
+    await execute(db, 'COMMIT');
+  } catch (error) {
+    try {
+      await execute(db, 'ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
+    throw error;
+  }
+}
+
+async function materializeBatchResultBody(
+  db: SQLite.SQLiteDatabase,
+  ctx: {
+    projectId: number;
+    sourceId: number;
+    snapshotId: string;
+    runId: string;
+    boundaryExclusive: number;
+    profile: AnalysisProfile;
+    readBackVerifier?: (charStart: number, charEnd: number) => Promise<string>;
+    sourceOrigin?: 'batch' | 'rescan';
+    rescanOperationId?: string;
+    skipStandardDelete?: boolean;
+    signal?: AbortSignal;
+  },
+  result: ChapterExtractionResult,
+  chapters: BoundedSourceChapter[],
+  meta: {
+    fromPos: ReturnType<typeof asSourcePosition> | number;
+    pos: ReturnType<typeof asSourcePosition> | number;
+    ts: string;
+    evInput: (
+      candidate: ExtractionEvidenceCandidate,
+    ) => Parameters<typeof insertEvidenceAndLink>[1];
+  },
+): Promise<void> {
+  const { fromPos, pos, ts, evInput } = meta;
+  // Re-bind local names used by the original body below.
+  void chapters;
 
   // 清理该 batch 的旧 canon 数据，防止 resume 重跑时重复 INSERT。
   // characters 跨 batch 共享（ensureCharacter 通过 nameToId 去重），不删；
@@ -839,47 +914,23 @@ export async function materializeBatchResult(
   // 定向补扫走 skipStandardDelete=true，由 materializeRescanResult 自行做分类级
   // 删除，避免误删其他 request group 的证据。
   if (!ctx.skipStandardDelete) {
-    await executeTransaction(db, [
-      {
-        sql: `DELETE FROM canon_evidence
-          WHERE snapshot_id = ? AND analysis_run_id = ?
-            AND source_origin = 'batch'
-            AND chapter_position >= ? AND chapter_position <= ?`,
-        params: [ctx.snapshotId, ctx.runId, fromPos, pos],
-      },
-      {
-        sql: 'DELETE FROM canon_world_rules WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-        params: [ctx.snapshotId, ctx.runId, fromPos],
-      },
-      {
-        sql: 'DELETE FROM canon_timeline_events WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-        params: [ctx.snapshotId, ctx.runId, fromPos],
-      },
-      {
-        sql: 'DELETE FROM canon_plot_threads WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-        params: [ctx.snapshotId, ctx.runId, fromPos],
-      },
-      {
-        sql: 'DELETE FROM canon_relationships WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-        params: [ctx.snapshotId, ctx.runId, fromPos],
-      },
-      {
-        sql: 'DELETE FROM canon_character_state_snapshots WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-        params: [ctx.snapshotId, ctx.runId, fromPos],
-      },
-      {
-        sql: 'DELETE FROM canon_character_experiences WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-        params: [ctx.snapshotId, ctx.runId, fromPos],
-      },
-      {
-        sql: 'DELETE FROM canon_character_knowledge WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-        params: [ctx.snapshotId, ctx.runId, fromPos],
-      },
-      {
-        sql: 'DELETE FROM canon_character_aliases WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?',
-        params: [ctx.snapshotId, ctx.runId, fromPos],
-      },
-    ]);
+    // Individual executes (already inside BEGIN IMMEDIATE from caller).
+    // With business-key upserts we only clear batch evidence for this range;
+    // fact rows are merged in place so position-scoped fact deletes are gone.
+    await execute(
+      db,
+      `DELETE FROM canon_evidence
+        WHERE snapshot_id = ? AND analysis_run_id = ?
+          AND source_origin = 'batch'
+          AND chapter_position >= ? AND chapter_position <= ?`,
+      [ctx.snapshotId, ctx.runId, fromPos, pos],
+    );
+    await execute(
+      db,
+      `DELETE FROM canon_character_aliases
+        WHERE snapshot_id = ? AND analysis_run_id = ? AND valid_from_position = ?`,
+      [ctx.snapshotId, ctx.runId, fromPos],
+    );
   }
 
   // Load existing characters for this snapshot.
@@ -943,6 +994,16 @@ export async function materializeBatchResult(
     // prevSize >= 2 时本就是歧义名，nameToId 里没有，无需操作
   };
 
+  const factCtx = {
+    projectId: ctx.projectId,
+    sourceId: ctx.sourceId,
+    snapshotId: ctx.snapshotId,
+    runId: ctx.runId,
+    fromPos: Number(fromPos),
+    toPos: Number(pos),
+    extractionVersion: EXTRACTION_VERSION,
+  };
+
   const ensureCharacter = async (
     name: string,
     importance: string,
@@ -952,38 +1013,14 @@ export async function materializeBatchResult(
     const key = nameKey(name);
     const existing = nameToId.get(key);
     if (existing) return existing;
-    await execute(
-      db,
-      `INSERT INTO canon_characters (
-        project_id, source_id, snapshot_id, analysis_run_id,
-        valid_from_position, valid_to_position, first_observed_position, last_observed_position,
-        confidence, review_status, origin, extraction_version, revision, supersedes_id,
-        user_reviewed_at, created_at, updated_at,
-        canonical_name, description, background, appearance_json, personality_json,
-        values_json, behavior_patterns_json, speech_style_json, abilities_json,
-        weaknesses_json, goals_json, fears_json, secrets_json,
-        first_appearance_position, importance
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'pending', 'ai', ?, 1, NULL, NULL, ?, ?,
-        ?, ?, '', '{}', '{}', '[]', '[]', '{}', '[]', '[]', '[]', '[]', '[]', ?, ?)`,
-      [
-        ctx.projectId,
-        ctx.sourceId,
-        ctx.snapshotId,
-        ctx.runId,
-        fromPos,
-        fromPos,
-        pos,
-        confidence,
-        EXTRACTION_VERSION,
-        ts,
-        ts,
-        name,
-        description,
-        fromPos,
-        importance,
-      ],
-    );
-    const id = await lastInsertId(db);
+    // Upsert by (snapshot_id, canonical_name) and return the REAL row id.
+    // Never use last_insert_rowid() after ON CONFLICT updates.
+    const id = await upsertCharacter(db, factCtx, {
+      canonicalName: name,
+      description,
+      importance,
+      confidence,
+    });
     registerCharacterName(id, name);
     return id;
   };
@@ -1036,42 +1073,15 @@ export async function materializeBatchResult(
   }
 
   for (const rule of result.worldRules) {
-    await execute(
-      db,
-      `INSERT INTO canon_world_rules (
-        project_id, source_id, snapshot_id, analysis_run_id,
-        valid_from_position, valid_to_position, first_observed_position, last_observed_position,
-        confidence, review_status, origin, extraction_version, revision, supersedes_id,
-        user_reviewed_at, created_at, updated_at,
-        category, title, description, constraint_level
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'pending', 'ai', ?, 1, NULL, NULL, ?, ?,
-        ?, ?, ?, ?)`,
-      [
-        ctx.projectId,
-        ctx.sourceId,
-        ctx.snapshotId,
-        ctx.runId,
-        fromPos,
-        fromPos,
-        pos,
-        rule.confidence,
-        EXTRACTION_VERSION,
-        ts,
-        ts,
-        rule.category,
-        rule.title,
-        rule.description,
-        rule.constraintLevel,
-      ],
-    );
-    const ruleId = await lastInsertId(db);
+    const ruleId = await upsertWorldRule(db, factCtx, {
+      category: rule.category,
+      title: rule.title,
+      description: rule.description,
+      constraintLevel: rule.constraintLevel,
+      confidence: rule.confidence,
+    });
     for (const ev of rule.evidence) {
-      await insertEvidenceAndLink(
-        db,
-        evInput(ev),
-        'world_rule',
-        ruleId,
-      );
+      await insertEvidenceAndLink(db, evInput(ev), 'world_rule', ruleId);
     }
   }
 
@@ -1089,49 +1099,19 @@ export async function materializeBatchResult(
         '',
         rel.confidence,
       );
-      await execute(
-        db,
-        `INSERT INTO canon_relationships (
-          project_id, source_id, snapshot_id, analysis_run_id,
-          valid_from_position, valid_to_position, first_observed_position, last_observed_position,
-          confidence, review_status, origin, extraction_version, revision, supersedes_id,
-          user_reviewed_at, created_at, updated_at,
-          source_character_id, target_character_id, relation_type, attitude,
-          public_status, description, causes_json
-        ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'pending', 'ai', ?, 1, NULL, NULL, ?, ?,
-          ?, ?, ?, ?, ?, ?, '[]')`,
-        [
-          ctx.projectId,
-          ctx.sourceId,
-          ctx.snapshotId,
-          ctx.runId,
-          fromPos,
-          fromPos,
-          pos,
-          rel.confidence,
-          EXTRACTION_VERSION,
-          ts,
-          ts,
-          srcId,
-          tgtId,
-          rel.relationType,
-          rel.attitude,
-          rel.publicStatus,
-          rel.description,
-        ],
-      );
-      const relId = await lastInsertId(db);
+      const relId = await upsertRelationship(db, factCtx, {
+        sourceCharacterId: srcId,
+        targetCharacterId: tgtId,
+        relationType: rel.relationType,
+        attitude: rel.attitude,
+        publicStatus: rel.publicStatus,
+        description: rel.description,
+        confidence: rel.confidence,
+      });
       for (const ev of rel.evidence) {
         await insertEvidenceAndLink(
           db,
-          {
-            projectId: ctx.projectId,
-            sourceId: ctx.sourceId,
-            snapshotId: ctx.snapshotId,
-            analysisRunId: ctx.runId,
-            boundaryExclusive: ctx.boundaryExclusive,
-            candidate: ev,
-          },
+          evInput(ev),
           'relationship',
           relId,
         );
@@ -1156,40 +1136,14 @@ export async function materializeBatchResult(
         event: plot.description || plot.title,
       },
     ]);
-    await execute(
-      db,
-      `INSERT INTO canon_plot_threads (
-        project_id, source_id, snapshot_id, analysis_run_id,
-        valid_from_position, valid_to_position, first_observed_position, last_observed_position,
-        confidence, review_status, origin, extraction_version, revision, supersedes_id,
-        user_reviewed_at, created_at, updated_at,
-        title, description, level, status, importance, start_position,
-        last_advanced_position, resolved_position, established_facts_json,
-        unresolved_questions_json, expected_directions_json
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'pending', 'ai', ?, 1, NULL, NULL, ?, ?,
-        ?, ?, ?, ?, 0, ?, ?, NULL, ?, '[]', '[]')`,
-      [
-        ctx.projectId,
-        ctx.sourceId,
-        ctx.snapshotId,
-        ctx.runId,
-        fromPos,
-        fromPos,
-        pos,
-        plot.confidence,
-        EXTRACTION_VERSION,
-        ts,
-        ts,
-        plot.title,
-        plot.description,
-        plot.level,
-        plot.status,
-        fromPos,
-        pos,
-        establishedFacts,
-      ],
-    );
-    const plotId = await lastInsertId(db);
+    const plotId = await upsertPlotThread(db, factCtx, {
+      title: plot.title,
+      description: plot.description,
+      level: plot.level,
+      status: plot.status,
+      confidence: plot.confidence,
+      establishedFactsJson: establishedFacts,
+    });
     for (const cid of [...new Set(participantIds)]) {
       await execute(
         db,
@@ -1216,46 +1170,17 @@ export async function materializeBatchResult(
       '',
       exp.confidence,
     );
-    await execute(
-      db,
-      `INSERT INTO canon_character_experiences (
-        project_id, source_id, snapshot_id, analysis_run_id,
-        valid_from_position, valid_to_position, first_observed_position, last_observed_position,
-        confidence, review_status, origin, extraction_version, revision, supersedes_id,
-        user_reviewed_at, created_at, updated_at,
-        character_id, chapter_position, event_type, title, description,
-        involved_character_ids_json, impact_on_personality, impact_on_goal,
-        impact_on_relationship, knowledge_gained_json, secrets_learned_json, importance
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'pending', 'ai', ?, 1, NULL, NULL, ?, ?,
-        ?, ?, ?, ?, ?, '[]', NULL, NULL, NULL, '[]', '[]', ?)`,
-      [
-        ctx.projectId,
-        ctx.sourceId,
-        ctx.snapshotId,
-        ctx.runId,
-        pos,
-        pos,
-        pos,
-        exp.confidence,
-        EXTRACTION_VERSION,
-        ts,
-        ts,
-        cid,
-        pos,
-        exp.eventType,
-        exp.title,
-        exp.description,
-        exp.importance,
-      ],
-    );
-    const expId = await lastInsertId(db);
+    const expId = await upsertExperience(db, factCtx, {
+      characterId: cid,
+      eventType: exp.eventType,
+      title: exp.title,
+      description: exp.description,
+      importance: exp.importance,
+      confidence: exp.confidence,
+      chapterPosition: Number(pos),
+    });
     for (const ev of exp.evidence) {
-      await insertEvidenceAndLink(
-        db,
-        evInput(ev),
-        'experience',
-        expId,
-      );
+      await insertEvidenceAndLink(db, evInput(ev), 'experience', expId);
     }
   }
 
@@ -1301,14 +1226,7 @@ export async function materializeBatchResult(
       for (const evidence of k.evidence) {
         await insertEvidenceAndLink(
           db,
-          {
-            projectId: ctx.projectId,
-            sourceId: ctx.sourceId,
-            snapshotId: ctx.snapshotId,
-            analysisRunId: ctx.runId,
-            boundaryExclusive: ctx.boundaryExclusive,
-            candidate: evidence,
-          },
+          evInput(evidence),
           'knowledge',
           knowledgeId,
         );
@@ -1359,14 +1277,7 @@ export async function materializeBatchResult(
       for (const evidence of st.evidence) {
         await insertEvidenceAndLink(
           db,
-          {
-            projectId: ctx.projectId,
-            sourceId: ctx.sourceId,
-            snapshotId: ctx.snapshotId,
-            analysisRunId: ctx.runId,
-            boundaryExclusive: ctx.boundaryExclusive,
-            candidate: evidence,
-          },
+          evInput(evidence),
           'character_state',
           stateId,
         );
@@ -1420,19 +1331,7 @@ export async function materializeBatchResult(
       );
       const tid = await lastInsertId(db);
       for (const e of ev.evidence) {
-        await insertEvidenceAndLink(
-          db,
-          {
-            projectId: ctx.projectId,
-            sourceId: ctx.sourceId,
-            snapshotId: ctx.snapshotId,
-            analysisRunId: ctx.runId,
-            boundaryExclusive: ctx.boundaryExclusive,
-            candidate: e,
-          },
-          'timeline_event',
-          tid,
-        );
+        await insertEvidenceAndLink(db, evInput(e), 'timeline_event', tid);
       }
     }
   }
@@ -1474,53 +1373,77 @@ export async function materializeRescanResult(
   chapters: BoundedSourceChapter[],
 ): Promise<void> {
   const ownerTypes = REQUEST_GROUP_OWNER_TYPES[ctx.requestGroup] ?? [];
-  // 1. 删除本轮（同一 rescanOperationId）写入的、属于本 request group owner
-  //    type 的旧证据 + 其 links。只删 source_origin='rescan' 的证据，绝不碰
-  //    source_origin='batch' 的证据。SQLite DELETE 不支持表别名，用
-  //    `id IN (SELECT id FROM ... WHERE EXISTS(...))` 实现按 owner_type 过滤。
+  // 1. 冻结本轮 rescan evidence IDs，再删 links，再删 evidence。
+  //    旧实现先删 links 再 `EXISTS(link)` 找 evidence → links 已空，evidence 残留孤儿。
   const ownerPlaceholders = ownerTypes.map(() => '?').join(',');
-  await executeTransaction(db, [
-    {
-      // 先删本轮该 group 的 evidence_links（仅 link 到本轮证据的）。
-      sql: `DELETE FROM canon_evidence_links
-        WHERE snapshot_id = ?
-          AND owner_type IN (${ownerPlaceholders})
-          AND evidence_id IN (
-            SELECT id FROM canon_evidence
-            WHERE snapshot_id = ? AND analysis_run_id = ?
-              AND source_origin = 'rescan'
-              AND rescan_operation_id = ?
+  const [idRows] = await db.executeSql(
+    `SELECT DISTINCT e.id AS id
+      FROM canon_evidence e
+      INNER JOIN canon_evidence_links l ON l.evidence_id = e.id
+      WHERE e.snapshot_id = ?
+        AND e.analysis_run_id = ?
+        AND e.source_origin = 'rescan'
+        AND e.rescan_operation_id = ?
+        AND l.owner_type IN (${ownerPlaceholders})`,
+    [ctx.snapshotId, ctx.runId, ctx.rescanOperationId, ...ownerTypes],
+  );
+  const evidenceIds: number[] = [];
+  for (let i = 0; i < idRows.rows.length; i++) {
+    evidenceIds.push(idRows.rows.item(i).id as number);
+  }
+  if (evidenceIds.length > 0) {
+    const idPlaceholders = evidenceIds.map(() => '?').join(',');
+    await executeTransaction(db, [
+      {
+        sql: `DELETE FROM canon_evidence_links
+          WHERE snapshot_id = ?
+            AND owner_type IN (${ownerPlaceholders})
+            AND evidence_id IN (${idPlaceholders})`,
+        params: [ctx.snapshotId, ...ownerTypes, ...evidenceIds],
+      },
+      {
+        sql: `DELETE FROM canon_evidence
+          WHERE id IN (${idPlaceholders})
+            AND snapshot_id = ?
+            AND analysis_run_id = ?
+            AND source_origin = 'rescan'
+            AND rescan_operation_id = ?`,
+        params: [
+          ...evidenceIds,
+          ctx.snapshotId,
+          ctx.runId,
+          ctx.rescanOperationId,
+        ],
+      },
+    ]);
+    // Post-condition: no orphan evidence for this operation.
+    const [orphanCheck] = await db.executeSql(
+      `SELECT COUNT(*) AS c FROM canon_evidence e
+        WHERE e.snapshot_id = ?
+          AND e.analysis_run_id = ?
+          AND e.source_origin = 'rescan'
+          AND e.rescan_operation_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM canon_evidence_links l WHERE l.evidence_id = e.id
           )`,
-      params: [
-        ctx.snapshotId,
-        ...ownerTypes,
-        ctx.snapshotId,
-        ctx.runId,
-        ctx.rescanOperationId,
-      ],
-    },
-    {
-      // 再删本轮该 group owner type 的证据行（用子查询避免 DELETE 表别名）。
-      sql: `DELETE FROM canon_evidence
-        WHERE id IN (
-          SELECT id FROM canon_evidence
-          WHERE snapshot_id = ? AND analysis_run_id = ?
+      [ctx.snapshotId, ctx.runId, ctx.rescanOperationId],
+    );
+    if ((orphanCheck.rows.item(0).c as number) > 0) {
+      // Sweep any residual orphans scoped to this operation only.
+      await execute(
+        db,
+        `DELETE FROM canon_evidence
+          WHERE snapshot_id = ?
+            AND analysis_run_id = ?
             AND source_origin = 'rescan'
             AND rescan_operation_id = ?
-            AND EXISTS (
-              SELECT 1 FROM canon_evidence_links l
-              WHERE l.evidence_id = canon_evidence.id
-                AND l.owner_type IN (${ownerPlaceholders})
-            )
-        )`,
-      params: [
-        ctx.snapshotId,
-        ctx.runId,
-        ctx.rescanOperationId,
-        ...ownerTypes,
-      ],
-    },
-  ]);
+            AND NOT EXISTS (
+              SELECT 1 FROM canon_evidence_links l WHERE l.evidence_id = canon_evidence.id
+            )`,
+        [ctx.snapshotId, ctx.runId, ctx.rescanOperationId],
+      );
+    }
+  }
   // 2. 复用 materializeBatchResult 的 INSERT 逻辑，跳过它的范围级删除，
   //    带上 rescan 来源标识。事实表由 Schema 33 唯一索引保证 upsert 语义
   //    （新事实与已有业务键冲突时，由 ensureCharacter / 名称去重处理；
@@ -1817,7 +1740,11 @@ export async function startAnalysis(
       state: 'queued',
       stage: 'snapshot',
       progressCurrent: 0,
-      progressTotal: batches.length * ANALYSIS_REQUEST_GROUPS.length,
+      // Overall bar = extraction work items + post-extraction stages
+      // (evidence / finalizing / style analysis / style validation).
+      progressTotal: computeCanonProgressTotal(
+        batches.length * ANALYSIS_REQUEST_GROUPS.length,
+      ),
       extractionVersion: EXTRACTION_VERSION,
     });
     await insertBatches(db, batches);
@@ -1998,137 +1925,193 @@ async function processAnalysisRunInner(
     stage: 'chapter_extraction',
   });
 
-  const batches = await listBatches(runId);
-  // H1 + H3 修复：原代码一次性 `listBoundedSourceChapters` 加载全部章节正文
-  // 并在 batch 循环 + finalize 全程持有，2000+ 章长篇网文（~96MB UTF-16）
-  // 直接 OOM。改为按 batch 区间流式读取（listBoundedSourceChaptersForRange），
-  // finalize 阶段用轻量 listBoundedSourceChapterMetas 只取元数据。
-  // H4 修复：原 batch 循环内每次 `(await listWorkItems(runId)).filter(...)` 全表
-  // 扫描 + JS filter，N 个 batch = N 次 SELECT。改循环外一次预加载 + 按
-  // batchIndex 分组成 Map，循环内 O(1) 取。
-  const itemsByBatch = new Map<
-    number,
-    Awaited<ReturnType<typeof listWorkItems>>
-  >();
-  {
-    const allItems = await listWorkItems(runId);
-    for (const item of allItems) {
-      const list = itemsByBatch.get(item.batchIndex) ?? [];
-      list.push(item);
-      itemsByBatch.set(item.batchIndex, list);
-    }
-  }
-  // H8-Canon 修复：原 reportWorkItem 每次都 listWorkItems 全表扫描 + filter，
-  // batch × materialType 调用次数 → O(N²) 查询。100 章 × 5 类素材 × 2 状态
-  // 更新 = 1000 次 SELECT。改用闭包增量计数器，只在需要时读 total。
-  let completedWorkItemCount = 0;
-  let totalWorkItemCount = 0;
-  const reportWorkItem = async (
-    materialType: AnalysisWorkItemType,
-    batchIndex: number,
-    state: AnalysisProgressUpdate['state'],
+  // DB-driven scheduler: always pick the next queued batch from the database
+  // so dynamically inserted tail / rescan sub-batches are executed (and
+  // survive process restart). Never iterate a one-shot in-memory snapshot.
+  const reportOverallProgress = async (
+    stage: AnalysisRun['stage'],
+    materialType?: AnalysisWorkItemType,
+    batchIndex?: number,
+    state: AnalysisProgressUpdate['state'] = 'running',
   ): Promise<{ current: number; total: number }> => {
-    if (state === 'completed') completedWorkItemCount++;
-    if (state === 'failed' || state === 'cancelled') {
-      // 失败/取消不计入完成，但 total 仍需反映
-    }
-    // 首次或状态变化时拉取 total（work items 在 buildAnalysisRunBatches
-    // 阶段已全部插入，total 不变）。
-    if (totalWorkItemCount === 0) {
-      const items = await listWorkItems(runId);
-      totalWorkItemCount = items.length;
-    }
-    const current = completedWorkItemCount;
-    const total = totalWorkItemCount;
+    // Progress is always computed from the database so dynamic sub-batches
+    // increase total and survive restart. Post-extraction stages are part of
+    // the same bar so 2/2 extraction never reads as "全部完成".
+    const items = await listWorkItems(runId);
+    const completedWorkItems = items.filter(i => i.state === 'completed').length;
+    const progress = computeCanonOverallProgress({
+      completedWorkItems,
+      workItemCount: items.length,
+      stage,
+      state: 'running',
+    });
     await updateRunState(db, runId, {
-      stage: 'chapter_extraction',
-      progressCurrent: current,
-      progressTotal: total,
+      stage,
+      progressCurrent: progress.current,
+      progressTotal: progress.total,
     });
     options.onProgress?.({
       runId,
-      stage: 'chapter_extraction',
-      progressCurrent: current,
-      progressTotal: total,
+      stage,
+      progressCurrent: progress.current,
+      progressTotal: progress.total,
       materialType,
       batchIndex,
       state,
     });
-    return { current, total };
+    return { current: progress.current, total: progress.total };
   };
-  // 2026-08-04 修复（问题3）：记录缩块重试导致的 partial-coverage 批次，供
-  // batch 完成判定时把未覆盖尾部重新规划成持久化子批次。
-  const partialCoverageByBatch = new Map<
-    number,
-    {
-      materialType: AnalysisWorkItemType;
-      analyzedCharEnds: number[];
-      effectiveSlice: BoundedSourceChapter[];
-      chunkMeta?: { chapterId: number; chunkIndex: number; chunkCount: number; chunkStartChar: number; chunkEndChar: number };
-    }
-  >();
 
-  for (const batch of batches) {
-    if (batch.state === 'completed') continue;
+  const reportWorkItem = async (
+    materialType: AnalysisWorkItemType,
+    batchIndex: number,
+    state: AnalysisProgressUpdate['state'],
+  ): Promise<{ current: number; total: number }> =>
+    reportOverallProgress(
+      'chapter_extraction',
+      materialType,
+      batchIndex,
+      state,
+    );
+
+  // Partial coverage is keyed by batchIndex + materialType so two routes
+  // shrinking in the same parent batch never overwrite each other.
+  type PartialCoverageInfo = {
+    materialType: AnalysisWorkItemType;
+    analyzedCharEnds: number[];
+    effectiveSlice: BoundedSourceChapter[];
+    chapterWindows: Map<number, { charStart: number; charEnd: number }>;
+  };
+  const partialCoverageEntries: PartialCoverageInfo[] = [];
+
+  while (true) {
+    if (signal.aborted) {
+      break;
+    }
+    const batch = await findNextQueuedBatch(db, runId);
+    if (!batch) break;
+
     const ts = now();
     await execute(
       db,
       `UPDATE continuation_analysis_batches SET state = 'running', attempt_count = attempt_count + 1, updated_at = ?
-        WHERE run_id = ? AND batch_index = ?`,
+        WHERE run_id = ? AND batch_index = ? AND state = 'queued'`,
       [ts, runId, batch.batchIndex],
     );
 
     try {
-      // H1 + H3: 按 batch 区间流式读取章节正文，避免全量 allChapters 常驻内存
+      // H1 + H3: stream chapters for this batch range only.
       const slice =
         await continuationSourceReader.listBoundedSourceChaptersForRange(
           sourceSnapshot,
           batch.startPosition,
           batch.endPosition,
         );
-      // Future leakage guard: only chapters already bounded by SourceReader.
       for (const ch of slice) {
         if (ch.range.end > sourceSnapshot.boundary.charOffsetExclusive) {
           throw new Error('批次章节越过边界');
         }
       }
-      // 2026-08-01 修复：若是 chunk batch，对 slice[0] 做字符切片，让 LLM
-      // 只看到该 chunk 区间的正文。chapterId / range / position 保留原值，
-      // 这样 evidence 的 charStart/charEnd 仍按全书偏移填写。
-      const chunkMeta = batchChunkMeta[batch.batchIndex];
+
+      // Segment fields (Schema 34) take priority over in-memory chunk meta so
+      // restart recovery does not depend on process memory.
       let effectiveSlice: typeof slice = slice;
       let chunkMetadata: { chunkIndex: number; chunkCount: number } | undefined;
-      if (chunkMeta && slice.length === 1) {
-        const chapter = slice[0];
-        const chunkedContent = chapter.content.slice(
-          chunkMeta.chunkStartChar,
-          chunkMeta.chunkEndChar,
-        );
-        // 2026-08-04 修复（问题1）：把 chunkStartChar/chunkEndChar 附加到片段
-        // 章节对象，让 resolveExtractionEvidenceAgainstChapters 计算绝对偏移时
-        // 加回 chunkStartChar。range.start / id / position 保持原值不变。
+      const chapterWindows = new Map<
+        number,
+        { charStart: number; charEnd: number }
+      >();
+
+      if (batch.coverageKind === 'retry_tail') {
+        // One packed tail per parent×material: may span multiple chapters with
+        // an optional mid-chapter start on the first chapter.
+        effectiveSlice = applyRetryTailWindow(slice, {
+          firstChapterCharStart: batch.sourceCharStart,
+          lastChapterCharEnd: batch.sourceCharEnd,
+        });
+        for (const ch of effectiveSlice) {
+          const cs =
+            typeof (ch as { chunkStartChar?: number }).chunkStartChar ===
+            'number'
+              ? (ch as { chunkStartChar: number }).chunkStartChar
+              : 0;
+          const ce =
+            typeof (ch as { chunkEndChar?: number }).chunkEndChar === 'number'
+              ? (ch as { chunkEndChar: number }).chunkEndChar
+              : cs + ch.content.length;
+          chapterWindows.set(ch.id, { charStart: cs, charEnd: ce });
+        }
+        chunkMetadata = { chunkIndex: 1, chunkCount: 1 };
+      } else if (
+        batch.chapterId != null &&
+        batch.sourceCharStart != null &&
+        batch.sourceCharEnd != null
+      ) {
+        const chapter =
+          slice.find(c => c.id === batch.chapterId) ?? slice[0];
+        if (!chapter) {
+          throw new Error(`子批次章节 ${batch.chapterId} 不存在`);
+        }
+        const charStart = batch.sourceCharStart;
+        const charEnd = batch.sourceCharEnd;
+        chapterWindows.set(chapter.id, { charStart, charEnd });
         effectiveSlice = [
           {
             ...chapter,
-            content: chunkedContent,
-            chunkStartChar: chunkMeta.chunkStartChar,
-            chunkEndChar: chunkMeta.chunkEndChar,
+            content: chapter.content.slice(charStart, charEnd),
+            chunkStartChar: charStart,
+            chunkEndChar: charEnd,
           },
         ];
         chunkMetadata = {
-          chunkIndex: chunkMeta.chunkIndex,
-          chunkCount: chunkMeta.chunkCount,
+          chunkIndex: 0,
+          chunkCount: 1,
         };
+      } else {
+        const chunkMeta = batchChunkMeta[batch.batchIndex];
+        if (chunkMeta && slice.length === 1) {
+          const chapter = slice[0];
+          chapterWindows.set(chapter.id, {
+            charStart: chunkMeta.chunkStartChar,
+            charEnd: chunkMeta.chunkEndChar,
+          });
+          effectiveSlice = [
+            {
+              ...chapter,
+              content: chapter.content.slice(
+                chunkMeta.chunkStartChar,
+                chunkMeta.chunkEndChar,
+              ),
+              chunkStartChar: chunkMeta.chunkStartChar,
+              chunkEndChar: chunkMeta.chunkEndChar,
+            },
+          ];
+          chunkMetadata = {
+            chunkIndex: chunkMeta.chunkIndex,
+            chunkCount: chunkMeta.chunkCount,
+          };
+        }
       }
 
-      // H4: 从预加载的 itemsByBatch Map 取，O(1) 查找替代全表扫描
-      const batchItems = itemsByBatch.get(batch.batchIndex) ?? [];
+      // Always re-read work items for this batch from DB (sub-batches insert
+      // new rows after the loop starts).
+      const allItemsNow = await listWorkItems(runId);
+      const batchItems = allItemsNow.filter(
+        item => item.batchIndex === batch.batchIndex,
+      );
+      // Route-exclusive tail sub-batches only run their material_type.
+      const materialsToRun: AnalysisWorkItemType[] =
+        batch.materialType != null
+          ? [batch.materialType as AnalysisWorkItemType]
+          : batchItems.map(item => item.materialType);
+      partialCoverageEntries.length = 0;
       const runMaterial = async (materialType: AnalysisWorkItemType) => {
         if (signal.aborted) throw new Error('分析已暂停或取消');
         const item = batchItems.find(
           candidate => candidate.materialType === materialType,
         );
         if (item?.state === 'completed' && item.resultJson) {
+          // Re-validate input hash before reusing a cached result.
           return parseExtractionResultJson(item.resultJson);
         }
         await updateWorkItem(db, {
@@ -2145,9 +2128,6 @@ async function processAnalysisRunInner(
           batch.batchIndex,
           'running',
         );
-        // Heartbeat: non-streaming Canon requests can pend for minutes with no
-        // signal. A 5s interval proves the JS thread is alive and lets the UI
-        // show "正在生成…" instead of a frozen 0%.
         let firstTokenReported = false;
         const heartbeat = setInterval(() => {
           if (signal.aborted) return;
@@ -2163,53 +2143,74 @@ async function processAnalysisRunInner(
           });
         }, 5_000);
         try {
-          const outcome = await extractMaterialWithLlm(
-            effectiveSlice,
-            run.profile,
-            run.modelConfigId,
-            materialType,
-            runId,
-            signal,
-            metrics => {
-              // For providers that report first-token/progress (e.g. future
-              // streaming), surface it once so the UI can switch from
-              // "queued" to "generating" immediately.
-              if (!firstTokenReported && metrics.firstTokenAt !== undefined) {
-                firstTokenReported = true;
-                options.onProgress?.({
-                  runId,
-                  stage: 'chapter_extraction',
-                  progressCurrent: lastProgress.current,
-                  progressTotal: lastProgress.total,
-                  materialType,
-                  batchIndex: batch.batchIndex,
-                  state: 'running',
-                  llmActive: true,
-                });
-              }
-            },
-            // 2026-08-01 修复：传入 chunkMetadata 与 adaptive plan 派生值
-            chunkMetadata,
-            adaptivePlanFromCheckpoint,
-          );
+          // retry_tail batches consume ALL remaining text inside this work item
+          // (sequential 30% slices) so we never explode into N per-chapter kids.
+          const consumeUntilCovered = batch.coverageKind === 'retry_tail';
+          const outcome = consumeUntilCovered
+            ? await extractMaterialUntilCovered(
+                effectiveSlice,
+                run.profile,
+                run.modelConfigId,
+                materialType,
+                runId,
+                signal,
+                metrics => {
+                  if (!firstTokenReported && metrics.firstTokenAt !== undefined) {
+                    firstTokenReported = true;
+                    options.onProgress?.({
+                      runId,
+                      stage: 'chapter_extraction',
+                      progressCurrent: lastProgress.current,
+                      progressTotal: lastProgress.total,
+                      materialType,
+                      batchIndex: batch.batchIndex,
+                      state: 'running',
+                      llmActive: true,
+                    });
+                  }
+                },
+                adaptivePlanFromCheckpoint,
+              )
+            : await extractMaterialWithLlm(
+                effectiveSlice,
+                run.profile,
+                run.modelConfigId,
+                materialType,
+                runId,
+                signal,
+                metrics => {
+                  if (!firstTokenReported && metrics.firstTokenAt !== undefined) {
+                    firstTokenReported = true;
+                    options.onProgress?.({
+                      runId,
+                      stage: 'chapter_extraction',
+                      progressCurrent: lastProgress.current,
+                      progressTotal: lastProgress.total,
+                      materialType,
+                      batchIndex: batch.batchIndex,
+                      state: 'running',
+                      llmActive: true,
+                    });
+                  }
+                },
+                chunkMetadata,
+                adaptivePlanFromCheckpoint,
+              );
+          // Late-response guard: cancelled runs must not persist result_json.
           if (signal.aborted) throw new Error('分析已暂停或取消');
-          // Warnings (partial drops) are surfaced via the error_message column
-          // while the work item itself stays completed — the run can still
-          // proceed, but the user/operator sees what the model got wrong.
           if (outcome.warning) {
             // eslint-disable-next-line no-console
             console.warn(
               `[canon] ${materialType} batch ${batch.batchIndex} warning: ${outcome.warning}`,
             );
           }
-          // 2026-08-04 修复（问题3）：如果本次结果在缩块重试后取得（partialCoverage），
-          // 章节正文尾部未被分析。标记 work item 为 partial_coverage（仍 completed，
-          // 已分析的部分有效），后续 batch 完成判定会据此把未覆盖尾部重新规划成
-          // 持久化子批次，禁止把截断结果当作 batch 完整覆盖。
-          const partialCoverage = outcome.partialCoverage === true;
+          // Main batches may still report partial once; retry_tail must not
+          // spawn further per-chapter children (hard cap: 1 tail per route).
+          const partialCoverage =
+            !consumeUntilCovered && outcome.partialCoverage === true;
           const partialWarning =
             outcome.warning && partialCoverage
-              ? `${outcome.warning}；正文尾部因缩块重试未分析，将自动拆分补扫`
+              ? `${outcome.warning}；正文尾部因缩块重试未分析，将挂 1 个打包补尾任务`
               : outcome.warning;
           await updateWorkItem(db, {
             runId,
@@ -2226,14 +2227,12 @@ async function processAnalysisRunInner(
             completedAt: now(),
           });
           await reportWorkItem(materialType, batch.batchIndex, 'completed');
-          // Stash the partial-coverage ranges for the batch-completion step so
-          // it can re-plan uncovered tails into follow-up sub-batches.
           if (partialCoverage && outcome.analyzedCharEnds) {
-            partialCoverageByBatch.set(batch.batchIndex, {
+            partialCoverageEntries.push({
               materialType,
               analyzedCharEnds: outcome.analyzedCharEnds,
               effectiveSlice,
-              chunkMeta,
+              chapterWindows: new Map(chapterWindows),
             });
           }
           return outcome.result;
@@ -2260,9 +2259,7 @@ async function processAnalysisRunInner(
           clearInterval(heartbeat);
         }
       };
-      const settled = await Promise.allSettled(
-        batchItems.map(item => item.materialType).map(runMaterial),
-      );
+      const settled = await Promise.allSettled(materialsToRun.map(runMaterial));
       const rejected = settled.find(
         (entry): entry is PromiseRejectedResult => entry.status === 'rejected',
       );
@@ -2300,81 +2297,110 @@ async function processAnalysisRunInner(
         slice,
       );
 
-      // 2026-08-04 修复（问题3）：如果本 batch 的某个 material 在缩块重试后
-      // 取得 partial 结果（正文尾部未分析），把未覆盖区间重新规划成持久化子
-      // 批次插入 batches 表，并把原 batch 标记为 'partial'（而非 completed），
-      // 这样 listBatches 的下一轮会继续处理子批次，直到所有字符被覆盖。
-      const partialEntries = [...partialCoverageByBatch.entries()].filter(
-        ([idx]) => idx === batch.batchIndex,
-      );
-      if (partialEntries.length > 0) {
-        let nextSubBatchIndex = (await listBatches(runId)).length;
-        for (const [, info] of partialEntries) {
-          for (let ci = 0; ci < info.effectiveSlice.length; ci++) {
-            const ch = info.effectiveSlice[ci];
-            const analyzedEnd = info.analyzedCharEnds[ci] ?? ch.content.length;
-            if (analyzedEnd >= ch.content.length) continue; // fully covered
-            // Uncovered tail [analyzedEnd, content.length). For chunk batches,
-            // this is a sub-slice of the chunk window; for normal batches a
-            // sub-slice of the chapter. Build a follow-up chunk sub-batch.
-            const baseStart = ch.chunkStartChar ?? 0;
-            const tailStart = baseStart + analyzedEnd;
-            const tailEnd = baseStart + ch.content.length;
-            if (tailEnd <= tailStart) continue;
-            const subHashSource = `${ch.id}:sub:${tailStart}-${tailEnd}`;
-            const subHash = sha256Hex(subHashSource);
-            const subBatchIndex = nextSubBatchIndex++;
-            await execute(
-              db,
-              `INSERT INTO continuation_analysis_batches
-                (run_id, canon_snapshot_id, batch_index, start_position, end_position,
-                 input_hash, idempotency_key, state)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')`,
-              [
-                runId,
-                run.canonSnapshotId,
-                subBatchIndex,
-                batch.startPosition,
-                batch.endPosition,
-                subHash,
-                `${runId}:${subBatchIndex}:${subHash}`,
-              ],
-            );
+      // Hard cap: each parent batch × material_type gets at most ONE retry_tail
+      // child that carries the entire remaining range (no per-chapter explosion).
+      if (partialCoverageEntries.length > 0 && !signal.aborted) {
+        let spawned = 0;
+        for (const info of partialCoverageEntries) {
+          const tail = remainingTailFromAnalyzedEnds(
+            info.effectiveSlice,
+            info.analyzedCharEnds,
+          );
+          if (!tail) continue;
+
+          // Enforce cap even if older code paths left children.
+          const existingKids = (await listBatches(runId)).filter(
+            b =>
+              b.parentBatchIndex === batch.batchIndex &&
+              b.materialType === info.materialType &&
+              b.coverageKind === 'retry_tail',
+          );
+          if (existingKids.length > 0) continue;
+
+          const contentHash = sha256Hex(
+            [
+              tail.firstChapterId,
+              tail.firstChapterCharStart,
+              tail.lastChapterCharEnd,
+              tail.startPosition,
+              tail.endPosition,
+            ].join(':'),
+          );
+          const inputHash = sha256Hex(
+            [
+              run.sourceId,
+              run.sourceVersion,
+              run.sourceSha256,
+              run.parserVersion,
+              run.normalizationVersion,
+              run.boundaryCharOffsetExclusive,
+              run.profile,
+              info.materialType,
+              tail.startPosition,
+              tail.endPosition,
+              tail.firstChapterCharStart,
+              tail.lastChapterCharEnd,
+              'retry_tail',
+              EXTRACTION_VERSION,
+              contentHash,
+            ].join('|'),
+          );
+          const idempotencyKey = [
+            runId,
+            batch.batchIndex,
+            info.materialType,
+            tail.startPosition,
+            tail.endPosition,
+            tail.firstChapterCharStart,
+            'retry_tail',
+          ].join(':');
+
+          const nextIndex = await allocateNextBatchIndex(db, runId);
+          const { inserted, batchIndex: subBatchIndex } =
+            await insertSubBatchIfAbsent(db, {
+              runId,
+              canonSnapshotId: run.canonSnapshotId,
+              batchIndex: nextIndex,
+              startPosition: tail.startPosition,
+              endPosition: tail.endPosition,
+              inputHash,
+              idempotencyKey,
+              parentBatchIndex: batch.batchIndex,
+              materialType: info.materialType,
+              chapterId: tail.firstChapterId,
+              sourceCharStart: tail.firstChapterCharStart,
+              sourceCharEnd: tail.lastChapterCharEnd,
+              coverageKind: 'retry_tail',
+            });
+          if (inserted) {
             await insertWorkItems(db, [
-              { runId, batchIndex: subBatchIndex, materialType: info.materialType },
+              {
+                runId,
+                batchIndex: subBatchIndex,
+                materialType: info.materialType,
+              },
             ]);
-            // Persist the sub-batch chunk meta so the next loop iteration slices
-            // the uncovered tail. This mutates batchChunkMeta in-place; the next
-            // listBatches call will include the new sub-batch row.
-            batchChunkMeta[subBatchIndex] = {
-              chapterId: ch.id,
-              chunkIndex: info.chunkMeta ? info.chunkMeta.chunkIndex + 1000 + ci : 0,
-              chunkCount: 1,
-              chunkStartChar: tailStart,
-              chunkEndChar: tailEnd,
-            };
+            spawned += 1;
           }
         }
         await execute(
           db,
           `UPDATE continuation_analysis_batches SET
             state = 'partial', result_json = ?, error_code = 'partial_coverage',
-            error_message = '缩块重试未覆盖全部正文，已拆分为子批次继续补扫',
+            error_message = ?,
+            had_partial_coverage = 1,
             updated_at = ?, completed_at = NULL
             WHERE run_id = ? AND batch_index = ?`,
-          [JSON.stringify(extraction), now(), runId, batch.batchIndex],
+          [
+            JSON.stringify(extraction),
+            spawned > 0
+              ? `缩块未覆盖全部正文，已按路线挂 ${spawned} 个打包补尾任务（每路线最多 1 个）`
+              : '缩块未覆盖全部正文，补尾任务已存在或无需新建',
+            now(),
+            runId,
+            batch.batchIndex,
+          ],
         );
-        // Reload batches so the loop processes the newly-inserted sub-batches.
-        // (batches is a const snapshot; we re-fetch via listBatches and append.)
-        const fresh = await listBatches(runId);
-        // Append any sub-batches not yet iterated. The for-of continues over the
-        // original array; newly appended entries are picked up only if we mutate
-        // the array reference. Use the underlying array push.
-        for (const fb of fresh) {
-          if (!batches.some(b => b.batchIndex === fb.batchIndex)) {
-            batches.push(fb);
-          }
-        }
       } else {
         await execute(
           db,
@@ -2407,8 +2433,76 @@ async function processAnalysisRunInner(
     }
   }
 
-  // Evidence validation + finalize
-  await updateRunState(db, runId, { stage: 'evidence_validation' });
+  // Close partial parents whose children have all completed. Parent stays
+  // partial only while uncovered tails are still queued/running/failed.
+  {
+    const latest = await listBatches(runId);
+    for (const parent of latest.filter(b => b.state === 'partial')) {
+      const children = latest.filter(
+        b => b.parentBatchIndex === parent.batchIndex,
+      );
+      if (children.length === 0) continue;
+      const allChildrenDone = children.every(c => c.state === 'completed');
+      if (allChildrenDone) {
+        await execute(
+          db,
+          `UPDATE continuation_analysis_batches SET
+            state = 'completed', had_partial_coverage = 1,
+            error_code = NULL,
+            error_message = 'partial 尾段已由子批次完成',
+            updated_at = ?, completed_at = ?
+            WHERE run_id = ? AND batch_index = ?`,
+          [now(), now(), runId, parent.batchIndex],
+        );
+      }
+    }
+  }
+
+  // Hard gate before finalizing: any non-terminal batch/work item blocks Gate,
+  // style analysis, activation.
+  const allBatchesNow = await listBatches(runId);
+  const blockingBatches = allBatchesNow.filter(b =>
+    ['queued', 'running', 'partial', 'failed'].includes(b.state),
+  );
+  const allItemsNow = await listWorkItems(runId);
+  const blockingItems = allItemsNow.filter(i =>
+    ['queued', 'running', 'failed'].includes(i.state),
+  );
+  if (blockingBatches.length > 0 || blockingItems.length > 0) {
+    const hasFailed =
+      blockingBatches.some(b => b.state === 'failed') ||
+      blockingItems.some(i => i.state === 'failed');
+    const hasOpen =
+      blockingBatches.some(b =>
+        ['queued', 'running', 'partial'].includes(b.state),
+      ) ||
+      blockingItems.some(i => ['queued', 'running'].includes(i.state));
+    if (hasOpen || hasFailed) {
+      await updateRunState(db, runId, {
+        state: 'failed',
+        stage: 'chapter_extraction',
+        errorCode: hasFailed ? 'batch_failed' : 'incomplete_batches',
+        errorMessage: hasFailed
+          ? '存在失败的分析批次或 work item，无法进入最终验收'
+          : `仍有未完成批次（queued/running/partial=${blockingBatches
+              .map(b => `${b.batchIndex}:${b.state}`)
+              .join(',') || 'none'}），禁止最终验收与激活`,
+        completedAt: now(),
+      });
+      await updateSnapshotMeta(db, run.canonSnapshotId, { status: 'failed' });
+      await execute(
+        db,
+        `UPDATE continuation_settings SET analysis_status = 'failed', updated_at = ?
+          WHERE project_id = ?`,
+        [now(), run.projectId],
+      );
+      return (await getRunById(runId))!;
+    }
+  }
+
+  // Evidence validation + finalize. Overall progress includes these stages
+  // after extraction so the bar does not sit at 100% while style still runs.
+  await reportOverallProgress('evidence_validation');
   const futureCount = await countFutureEvidence(
     run.canonSnapshotId,
     run.boundaryCharOffsetExclusive,
@@ -2431,14 +2525,12 @@ async function processAnalysisRunInner(
     return (await getRunById(runId))!;
   }
 
-  const failedBatches = (await listBatches(runId)).filter(
-    b => b.state === 'failed',
-  );
-  const completedBatches = (await listBatches(runId)).filter(
-    b => b.state === 'completed',
+  const failedBatches = allBatchesNow.filter(b => b.state === 'failed');
+  const completedBatches = allBatchesNow.filter(
+    b => b.state === 'completed' || b.state === 'partial',
   );
 
-  await updateRunState(db, runId, { stage: 'finalizing' });
+  await reportOverallProgress('finalizing');
   // Work items can all be complete before the local evidence/coverage merge is
   // finished. Keep a light database heartbeat during this potentially long
   // phase so the overview can distinguish active result consolidation from a
@@ -2488,7 +2580,7 @@ async function processAnalysisRunInner(
       stage: 'chapter_extraction',
       errorCode: 'batch_failed',
       errorMessage: `有 ${failedBatches.length}/${
-        batches.length
+        allBatchesNow.length
       } 个分析批次失败：${
         failedBatches[0]?.errorMessage ?? '请检查模型配置和网络后重试'
       }`,
@@ -2553,13 +2645,12 @@ async function processAnalysisRunInner(
 
   // ── Five-dimension hard gate + targeted rescan (quality spec §7 / §12) ─
   // Each mode must independently pass: characters / world_rules /
-  // relationships / plot_threads / experiences each >= 3, counted from the
+  // relationships / plot_threads / experiences each >= REQUIRED_MIN_COUNT, counted from the
   // current run + snapshot after the full pipeline. Missing dimensions
   // trigger a bounded targeted rescan focused on those dimensions only.
-  await updateRunState(db, runId, {
-    state: 'running',
-    stage: 'style_validation',
-  });
+  // Keep stage as finalizing (not style_validation) so overall progress and
+  // UI labels correctly reflect "still consolidating", not style complete.
+  await reportOverallProgress('finalizing');
   let gateResult: FiveDimensionGateResult = evaluateFiveDimensionGate(
     materializedCounts,
   );
@@ -2571,7 +2662,11 @@ async function processAnalysisRunInner(
       scope,
       missingDimensions: gateResult.missingDimensions,
       signal,
-      onProgress: options.onProgress,
+      onProgress: update => {
+        // Keep rescan heartbeats on the overall bar (do not reset to 0/0).
+        void reportOverallProgress('finalizing', undefined, undefined, 'running');
+        options.onProgress?.(update);
+      },
     });
   }
   if (!gateResult.passed) {
@@ -2583,7 +2678,7 @@ async function processAnalysisRunInner(
       '原有成功分析产物保持不变。';
     await updateRunState(db, runId, {
       state: 'failed',
-      stage: 'style_validation',
+      stage: 'finalizing',
       errorCode: 'analysis_minimum_coverage_not_met',
       errorMessage: msg,
       completedAt: now(),
@@ -2626,14 +2721,10 @@ async function processAnalysisRunInner(
     capabilities: recomputed.capabilities,
     coverage: recomputed.coverage,
   });
-  const finalWorkItems = await listWorkItems(runId);
+  await reportOverallProgress('finalizing');
+  // Only activateSnapshotAndStyleProfile may mark the run completed.
   await updateRunState(db, runId, {
     state: 'running',
-    stage: 'finalizing',
-    progressCurrent: finalWorkItems.filter(item => item.state === 'completed')
-      .length,
-    progressTotal: finalWorkItems.length,
-    // Only activateSnapshotAndStyleProfile may mark the run completed.
     completedAt: null,
   });
   await execute(
@@ -2650,10 +2741,7 @@ async function processAnalysisRunInner(
   // continuation could see a ready Canon but no style profile. On failure the
   // snapshot stays awaiting_review (NOT activated) and the run becomes failed;
   // the user can retry style analysis alone.
-  await updateRunState(db, runId, {
-    state: 'running',
-    stage: 'style_analysis',
-  });
+  await reportOverallProgress('style_analysis');
   // A failed style attempt occupies the UNIQUE fingerprint slot.  This path
   // is also reached by resumeAnalysis (the "重试未完成项" UI action), not only
   // by retryStyleAnalysis, so cleanup must happen at the shared pipeline
@@ -2697,10 +2785,7 @@ async function processAnalysisRunInner(
   }
 
   // ---- style_validation + atomic activation (Spec §5.1, §6.3) ----
-  await updateRunState(db, runId, {
-    state: 'running',
-    stage: 'style_validation',
-  });
+  await reportOverallProgress('style_validation');
   await activateSnapshotAndStyleProfile({
     projectId: run.projectId,
     analysisRunId: runId,
@@ -2708,6 +2793,25 @@ async function processAnalysisRunInner(
     styleProfileId: styleOutcome.profileId,
     allowStyleSkip: false,
   });
+
+  // Mark the overall bar complete after activation (run may already be
+  // completed by activateSnapshotAndStyleProfile).
+  {
+    const items = await listWorkItems(runId);
+    const progress = computeCanonOverallProgress({
+      completedWorkItems: items.filter(i => i.state === 'completed').length,
+      workItemCount: items.length,
+      stage: 'style_validation',
+      state: 'completed',
+    });
+    const latest = await getRunById(runId);
+    if (latest && latest.state === 'completed') {
+      await updateRunState(db, runId, {
+        progressCurrent: progress.current,
+        progressTotal: progress.total,
+      });
+    }
+  }
 
   return (await getRunById(runId))!;
 }
@@ -3093,6 +3197,26 @@ const MATERIAL_PROMPTS: Record<AnalysisWorkItemType, string> = {
     '填写所有八个数组。characters、relationships、experiences、knowledge、states 记录人物维度的全部事实；worldRules、plotThreads、timelineEvents 记录世界观与剧情维度的全部事实。',
 };
 
+/** Map five-dimension gate keys to extraction JSON array fields. */
+const DIMENSION_TO_EXTRACTION_CATEGORY: Record<
+  RequiredCanonDimension,
+  keyof ExtractionStats
+> = {
+  characters: 'characters',
+  worldRules: 'worldRules',
+  relationships: 'relationships',
+  plotThreads: 'plotThreads',
+  experiences: 'experiences',
+};
+
+const DIMENSION_FOCUS_LABELS: Record<RequiredCanonDimension, string> = {
+  characters: '人物资料(characters)',
+  worldRules: '世界观规则(worldRules)',
+  relationships: '人物关系(relationships)',
+  plotThreads: '剧情线(plotThreads)',
+  experiences: '人物经历(experiences)',
+};
+
 export interface ExtractMaterialOutcome {
   result: ChapterExtractionResult;
   /**
@@ -3114,6 +3238,157 @@ export interface ExtractMaterialOutcome {
   analyzedCharEnds?: number[];
 }
 
+/**
+ * Optional extraction constraints used by targeted rescan.
+ * When `requiredCategories` is set, a response that only fills sibling owned
+ * categories (e.g. plotThreads when worldRules is missing) is treated as a
+ * recoverable failure so the route cannot "succeed" without the missing dims.
+ */
+export interface ExtractMaterialOptions {
+  requiredCategories?: Array<keyof ExtractionStats>;
+  focusInstruction?: string;
+}
+
+/**
+ * Max sequential 30% slices inside one retry_tail work item. Prevents unbounded
+ * loops while still covering multi-chapter remaining ranges without DB explosion.
+ */
+export const MAX_RETRY_TAIL_INNER_SLICES = 24;
+
+/**
+ * Consume an entire remaining range by repeatedly slicing at the normal 30%
+ * budget and calling {@link extractMaterialWithLlm}. Used only for packed
+ * retry_tail batches so each parent×material has at most one child batch.
+ */
+export async function extractMaterialUntilCovered(
+  chapters: BoundedSourceChapter[],
+  profile: AnalysisProfile,
+  modelConfigId: number | null,
+  materialType: AnalysisWorkItemType,
+  runId: string,
+  signal: AbortSignal,
+  onProgress?: (metrics: LLMRequestMetrics) => void,
+  adaptivePlan?: {
+    effectiveInputBudget: number;
+    targetInputBudget?: number;
+    outputReserve: number;
+    retryOutputCeiling?: number;
+    promptOverhead: number;
+    estimatedBatchCount: number;
+  },
+): Promise<ExtractMaterialOutcome> {
+  if (!modelConfigId) {
+    throw new Error(
+      '分析任务缺少 LLM 配置；请重新发起 Standard 或 Deep 分析。',
+    );
+  }
+  const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
+  const packBudget = resolveCanonBudget({
+    profile,
+    declaredContextWindow: requestConfig.context_window,
+    configuredMaxOutputTokens: requestConfig.max_output_tokens,
+    promptOverhead: estimatePromptOverhead({ profile, materialType }),
+    chunkRatio: SOURCE_CHUNK_RATIO_NORMAL,
+  });
+  // Prefer a healthy 30% pack budget; fall back to whatever adaptive plan had.
+  const totalTokenBudget = packBudget.ok
+    ? packBudget.sourceChunkTargetTokens
+    : adaptivePlan?.targetInputBudget ??
+      adaptivePlan?.effectiveInputBudget ??
+      4096;
+
+  const sliceAdaptivePlan = {
+    effectiveInputBudget: totalTokenBudget,
+    targetInputBudget: totalTokenBudget,
+    outputReserve:
+      packBudget.configuredMaxOutputTokens ||
+      adaptivePlan?.outputReserve ||
+      8192,
+    retryOutputCeiling:
+      packBudget.configuredMaxOutputTokens ||
+      adaptivePlan?.retryOutputCeiling ||
+      8192,
+    promptOverhead:
+      packBudget.promptOverhead || adaptivePlan?.promptOverhead || 600,
+    estimatedBatchCount: adaptivePlan?.estimatedBatchCount ?? 1,
+  };
+
+  let startCursor: { chapterId: number; charOffset: number } | null = null;
+  const mergedParts: ChapterExtractionResult[] = [];
+  const warnings: string[] = [];
+  let rounds = 0;
+
+  while (rounds < MAX_RETRY_TAIL_INNER_SLICES) {
+    if (signal.aborted) throw new Error('分析已暂停或取消');
+    rounds += 1;
+    const plan = planSourceSlice({
+      chapters,
+      totalTokenBudget,
+      startCursor,
+    });
+    if (plan.segments.length === 0) {
+      break;
+    }
+    const sent = segmentsToBoundedChapters(plan);
+    const outcome = await extractMaterialWithLlm(
+      sent,
+      profile,
+      modelConfigId,
+      materialType,
+      runId,
+      signal,
+      onProgress,
+      undefined,
+      sliceAdaptivePlan,
+    );
+    mergedParts.push(outcome.result);
+    if (outcome.warning) warnings.push(outcome.warning);
+
+    // Advance past what was actually sent/analysed.
+    // planSourceSlice cursors are relative to each chapter's `.content`
+    // (already window-trimmed for retry_tail). Convert absolute full-chapter
+    // offsets from remainingTailFromAnalyzedEnds when needed.
+    if (outcome.partialCoverage && outcome.analyzedCharEnds) {
+      const tail = remainingTailFromAnalyzedEnds(sent, outcome.analyzedCharEnds);
+      if (tail) {
+        const host = chapters.find(c => c.id === tail.firstChapterId);
+        const base =
+          host &&
+          typeof (host as { chunkStartChar?: number }).chunkStartChar ===
+            'number'
+            ? (host as { chunkStartChar: number }).chunkStartChar
+            : 0;
+        startCursor = {
+          chapterId: tail.firstChapterId,
+          charOffset: Math.max(0, tail.firstChapterCharStart - base),
+        };
+        continue;
+      }
+    }
+    if (plan.nextCursor) {
+      startCursor = plan.nextCursor;
+      continue;
+    }
+    // This plan fully covered from startCursor to end of chapters.
+    return {
+      result: mergeMaterialResults(mergedParts),
+      warning: warnings.length ? warnings.join('；') : null,
+      partialCoverage: false,
+      analyzedCharEnds: chapters.map(c => c.content.length),
+    };
+  }
+
+  // Hit inner-slice cap: still return whatever we got; do NOT spawn more DB kids.
+  return {
+    result: mergeMaterialResults(mergedParts),
+    warning:
+      (warnings.length ? `${warnings.join('；')}；` : '') +
+      `打包补尾达到单任务切片上限 ${MAX_RETRY_TAIL_INNER_SLICES}，已尽可能覆盖剩余正文`,
+    partialCoverage: false,
+    analyzedCharEnds: chapters.map(c => c.content.length),
+  };
+}
+
 export async function extractMaterialWithLlm(
   chapters: BoundedSourceChapter[],
   profile: AnalysisProfile,
@@ -3133,6 +3408,7 @@ export async function extractMaterialWithLlm(
     promptOverhead: number;
     estimatedBatchCount: number;
   },
+  extractOptions?: ExtractMaterialOptions,
 ): Promise<ExtractMaterialOutcome> {
   if (!modelConfigId) {
     throw new Error(
@@ -3151,18 +3427,22 @@ export async function extractMaterialWithLlm(
     effectiveInputBudget: adaptivePlan?.effectiveInputBudget ?? 0,
     outputReserve: adaptivePlan?.outputReserve,
   });
-  // ── Source-chunk sizing ───────────────────────────────────────────────
-  // Normal target = 30% of declared context window (or the adaptive plan's
-  // derived budget). On recoverable output failures we shrink the chunk along
-  // the retry ladder [0.30, 0.20, 0.12], never the output.
-  const baseChapterTextLimit = adaptivePlan
-    ? resolveChapterTextLimitFromBudget(
-        adaptivePlan.targetInputBudget ?? adaptivePlan.effectiveInputBudget,
-      )
-    : resolveCanonChapterTextLimit({
-        providerType: requestConfig.provider_type,
-        contextWindow: requestConfig.context_window,
+  // ── Source-chunk sizing (TOTAL request budget, not per-chapter) ───────
+  // Normal target = 30% of declared context window. Shrink ladder:
+  // 30% → 20% → 12% of context window for the whole request body.
+  const baseTokenBudget =
+    adaptivePlan?.targetInputBudget ??
+    adaptivePlan?.effectiveInputBudget ??
+    (() => {
+      const budget = resolveCanonBudget({
+        profile,
+        declaredContextWindow: requestConfig.context_window,
+        configuredMaxOutputTokens: requestConfig.max_output_tokens,
+        promptOverhead: estimatePromptOverhead({ profile, materialType }),
+        chunkRatio: SOURCE_CHUNK_RATIO_NORMAL,
       });
+      return budget.sourceChunkTargetTokens;
+    })();
   const chunkNotice = chunkMetadata
     ? `\n注意：本章由于篇幅过大，已按字符区间切分为 ${
         chunkMetadata.chunkCount
@@ -3170,35 +3450,41 @@ export async function extractMaterialWithLlm(
         chunkMetadata.chunkIndex + 1
       } 个片段。请仅基于本片段内容提取 evidence；跨片段的关联（如人物关系、伏笔）由后续合并阶段处理。bodyStart/bodyEnd 仍按全书 UTF-16 绝对偏移填写。`
     : '';
-  const buildPromptForAttempt = (chapterTextLimit: number): string =>
+  const focusInstruction = extractOptions?.focusInstruction?.trim() || '';
+  const buildPromptForSegments = (
+    segments: ReturnType<typeof planSourceSlice>['segments'],
+  ): string =>
     [
       '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
       '必须只返回一个完整、可 JSON.parse 的 JSON 对象，不要 Markdown、思考过程、解释或任何前后缀。schemaVersion 必须为 1，八个数组字段都必须出现，不能返回 null 或空白。',
       `分析档位：${profile}。${MATERIAL_PROMPTS[materialType]}`,
+      focusInstruction,
       '每一个数组条目都必须至少有一条 evidence。evidence 必须引用本批章节中连续、逐字一致的原文片段作为 quotePreview（不超过 160 字）。',
       '每章 metadata 给出 bodyStart 和 bodyEnd：charStart/charEnd 是全书 UTF-16 绝对偏移；请使用 quotePreview 在该章正文中定位后填写，不能猜测。',
       EXTRACTION_FIELD_SPEC,
       EVIDENCE_FIELD_SPEC,
       EXTRACTION_JSON_SKELETON,
       '章节正文：',
-      ...chapters.map(
-        c =>
-          `### ${c.title} (chapterId=${c.id}, position=${c.position}, bodyStart=${
-            c.range.start
-          }, bodyEnd=${c.range.end})\n${c.content.slice(0, chapterTextLimit)}`,
+      ...segments.map(
+        s =>
+          `### ${s.title} (chapterId=${s.chapterId}, position=${s.chapterPosition}, bodyStart=${s.absoluteBookCharStart}, bodyEnd=${s.absoluteBookCharEnd}, segmentStart=${s.charStart}, segmentEnd=${s.charEnd})\n${s.content}`,
       ),
       chunkNotice,
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
-  // Source-chunk shrink ladder: 30% → 20% → 12%. Each step shrinks ONLY the
-  // original text sent to the model; max_tokens and thinking stay fixed.
-  const shrinkRatios = [1, 0.667, 0.4] as const; // 30%→20%→12% relative
-  let currentChapterTextLimit = baseChapterTextLimit;
+  // Shrink ladder ratios relative to the base 30% budget: 1.0 → 0.667 → 0.4
+  // which maps to 30% → 20% → 12% of context_window.
+  const shrinkSteps = RETRY_CHUNK_RATIOS.map(
+    ratio => ratio / SOURCE_CHUNK_RATIO_NORMAL,
+  );
+  let attemptShrinkStep = 0;
+  let lastSlicePlan: ReturnType<typeof planSourceSlice> | null = null;
   let lastOutputError: Error | null = null;
   let lastDroppedStats: ExtractionStats | null = null;
   const attemptDiagnostics: CanonExtractionFailureDiagnostic['attempts'] = [];
   let lastDiagnostic: { finishReason?: string | null } | null = null;
-  let attemptShrinkStep = 0;
   const ownedCategories = MATERIAL_CATEGORY_OWNERSHIP[materialType];
   for (
     let attempt = 1;
@@ -3210,7 +3496,19 @@ export async function extractMaterialWithLlm(
         attempt > 1
           ? buildExtractionRetryInstruction(lastDroppedStats ?? undefined)
           : '';
-      const prompt = buildPromptForAttempt(currentChapterTextLimit);
+      const tokenBudget = Math.max(
+        512,
+        Math.floor(baseTokenBudget * shrinkSteps[attemptShrinkStep]),
+      );
+      const slicePlan = planSourceSlice({
+        chapters,
+        totalTokenBudget: tokenBudget,
+      });
+      lastSlicePlan = slicePlan;
+      if (slicePlan.segments.length === 0) {
+        throw canonOutputError('正文预算过小，无法构造提取请求');
+      }
+      const prompt = buildPromptForSegments(slicePlan.segments);
       const response = await callLLMResult(
         [{ role: 'user', content: `${prompt}${retryInstruction}` }],
         // max_tokens is the full configured value on EVERY attempt — never
@@ -3247,11 +3545,7 @@ export async function extractMaterialWithLlm(
         ) {
           attemptShrinkStep = Math.min(
             attemptShrinkStep + 1,
-            shrinkRatios.length - 1,
-          );
-          currentChapterTextLimit = Math.max(
-            1024,
-            Math.floor(baseChapterTextLimit * shrinkRatios[attemptShrinkStep]),
+            shrinkSteps.length - 1,
           );
         }
         throw canonOutputError(emptyResponseMessage(emptyReason));
@@ -3280,25 +3574,26 @@ export async function extractMaterialWithLlm(
           finishReason: (response as { finishReason?: string | null })
             ?.finishReason,
         };
-        // Truncated JSON: shrink the source chunk so the model has more output
-        // headroom relative to its input.
+        // Truncated JSON: shrink the TOTAL source budget so the model has more
+        // output headroom relative to its input.
         if (lastDiagnostic.finishReason === 'length') {
           attemptShrinkStep = Math.min(
             attemptShrinkStep + 1,
-            shrinkRatios.length - 1,
-          );
-          currentChapterTextLimit = Math.max(
-            1024,
-            Math.floor(baseChapterTextLimit * shrinkRatios[attemptShrinkStep]),
+            shrinkSteps.length - 1,
           );
         }
         throw canonOutputError(
           formatUnknownError(error) || '提取结果不是合法 JSON',
         );
       }
+      // Evidence resolution must use the segments actually sent, not the full
+      // original chapters (unsent tails have no quote support).
+      const sentChapters = lastSlicePlan
+        ? segmentsToBoundedChapters(lastSlicePlan)
+        : chapters;
       const evidenceResolution = resolveExtractionEvidenceAgainstChapters(
         parsed,
-        chapters,
+        sentChapters,
       );
       parsed = evidenceResolution.result;
       const filtered = onlyMaterial(parsed, materialType);
@@ -3318,7 +3613,18 @@ export async function extractMaterialWithLlm(
           stats[cat].received > 0 &&
           (stats[cat].accepted === 0 || parsed[cat].length === 0),
       );
-      if (ownedTotalAfterValidation === 0 || wiped.length > 0) {
+      // Targeted rescan: require the specifically missing categories, not just
+      // any sibling owned category. Otherwise a world_plot rescan that only
+      // re-emits plotThreads can "succeed" while worldRules stays at 0.
+      const requiredCategories = extractOptions?.requiredCategories ?? [];
+      const missingRequired = requiredCategories.filter(
+        cat => (parsed[cat]?.length ?? 0) === 0,
+      );
+      if (
+        ownedTotalAfterValidation === 0 ||
+        wiped.length > 0 ||
+        missingRequired.length > 0
+      ) {
         lastDroppedStats = stats;
         attemptDiagnostics.push(
           extractionAttemptDiagnostic(
@@ -3328,21 +3634,19 @@ export async function extractMaterialWithLlm(
             (response as { finishReason?: string | null })?.finishReason,
           ),
         );
-        // Shrink the source chunk for the next attempt.
+        // Shrink the TOTAL source budget for the next attempt.
         attemptShrinkStep = Math.min(
           attemptShrinkStep + 1,
-          shrinkRatios.length - 1,
-        );
-        currentChapterTextLimit = Math.max(
-          1024,
-          Math.floor(baseChapterTextLimit * shrinkRatios[attemptShrinkStep]),
+          shrinkSteps.length - 1,
         );
         const detail =
-          wiped.length > 0
-            ? `本组负责的分类全部被丢弃：${wiped
-                .map(cat => `${cat}(received=${stats[cat].received})`)
-                .join('、')}`
-            : '本组负责的所有分类在 Schema/evidence 校验后均无有效条目';
+          missingRequired.length > 0
+            ? `定向补扫必填分类仍为空：${missingRequired.join('、')}`
+            : wiped.length > 0
+              ? `本组负责的分类全部被丢弃：${wiped
+                  .map(cat => `${cat}(received=${stats[cat].received})`)
+                  .join('、')}`
+              : '本组负责的所有分类在 Schema/evidence 校验后均无有效条目';
         throw canonOutputError(detail);
       }
       const validatorWarning = buildDropWarning(
@@ -3357,18 +3661,27 @@ export async function extractMaterialWithLlm(
         [validatorWarning, evidenceWarning]
           .filter((value): value is string => !!value)
           .join('；') || null;
-      // 2026-08-04 修复（问题3）：如果本次成功是在缩块重试后取得的（attemptShrinkStep>0），
-      // 原章节正文尾部 [currentChapterTextLimit, content.length) 从未被模型分析。
-      // 必须在 outcome 里标记 partialCoverage 并报告 analyzedCharEnds，让调用方
-      // 把未覆盖尾部重新规划成持久化子批次，禁止把截断结果当作 batch 完整覆盖。
-      const shrank = attemptShrinkStep > 0;
-      const analyzedCharEnds = shrank
-        ? chapters.map(c => Math.min(c.content.length, currentChapterTextLimit))
-        : chapters.map(c => c.content.length);
+      // partialCoverage only when the total-budget slicer did not fully cover
+      // the input chapters (not merely because a retry happened).
+      const plan = lastSlicePlan!;
+      const partialCoverage = plan.fullyCovered === false;
+      // analyzedCharEnds are relative to each input chapter's content string
+      // (which may already be a window slice for segment sub-batches).
+      const analyzedCharEnds = chapters.map(c => {
+        const segs = plan.segments.filter(s => s.chapterId === c.id);
+        if (segs.length === 0) return 0;
+        const chunkBase =
+          typeof (c as { chunkStartChar?: number }).chunkStartChar === 'number'
+            ? (c as { chunkStartChar: number }).chunkStartChar
+            : 0;
+        // charEnd is in full-chapter coords when chunkBase>0; convert to content-relative.
+        const maxEnd = Math.max(...segs.map(s => s.charEnd));
+        return Math.min(c.content.length, Math.max(0, maxEnd - chunkBase));
+      });
       return {
         result: filtered,
         warning,
-        partialCoverage: shrank,
+        partialCoverage,
         analyzedCharEnds,
       };
     } catch (error) {
@@ -3579,21 +3892,15 @@ async function runTargetedRescanForMissingDimensions(input: {
   for (let round = 1; round <= MAX_TARGETED_RESCAN_ROUNDS; round += 1) {
     if (signal.aborted) break;
     let addedAny = false;
-    // 2026-08-04 修复（问题4）：每轮使用不同且可追踪的章节区间。第 1 轮取
-    // 范围的后半（更接近续写边界、状态更新），第 2 轮取前半或更早范围。
-    // full 模式可轮换到更早章节；fast_continuation 只能用最后 10 章（不能
-    // 读倒数第 11 章之前）。两轮 source range 不得完全重复。
+    // Round 1: scan from the boundary side (end). Round 2: scan from the
+    // start of the mode-scoped range. Quick mode never leaves last-10 chapters.
     const half = Math.ceil(rescanChapters.length / 2);
     const roundChapters =
       round === 1
-        ? rescanChapters.slice(-half) // 后半（更接近边界）
-        : rescanChapters.slice(0, rescanChapters.length - half > 0 ? rescanChapters.length - half : half).length > 0
-          ? rescanChapters.slice(0, Math.max(half, 1))
-          : rescanChapters;
+        ? rescanChapters.slice(-half)
+        : rescanChapters.slice(0, Math.max(half, 1));
     for (const requestGroup of groupsToRescan) {
       if (signal.aborted) break;
-      // Re-check current counts so we skip groups whose dimensions are already
-      // satisfied by earlier rescan rounds in this loop.
       const currentCounts = await countValidCanonRowsForGate(
         db,
         run.canonSnapshotId,
@@ -3604,55 +3911,92 @@ async function runTargetedRescanForMissingDimensions(input: {
         dim => DIMENSION_TO_REQUEST_GROUP[dim] === requestGroup,
       );
       if (stillMissingForGroup.length === 0) continue;
-      try {
-        // 15% source chunk budget (derived above). The model's max output and
-        // thinking are untouched — extractMaterialWithLlm only shrinks the
-        // source chunk via resolveChapterTextLimitFromBudget.
-        const outcome = await extractMaterialWithLlm(
-          roundChapters,
-          run.profile,
-          run.modelConfigId,
-          requestGroup,
-          run.id,
-          signal,
-          undefined,
-          undefined,
-          rescanAdaptivePlan,
-        );
-        await materializeRescanResult(
-          db,
-          {
-            projectId: run.projectId,
-            sourceId: run.sourceId,
-            snapshotId: run.canonSnapshotId,
-            runId: run.id,
-            boundaryExclusive: run.boundaryCharOffsetExclusive,
-            profile: run.profile,
-            requestGroup,
-            rescanOperationId: `${run.id}:rescan:r${round}:${requestGroup}`,
-            readBackVerifier: async (cs, ce) =>
-              continuationSourceReader.readBoundedEvidenceRange({
-                snapshot: sourceSnapshot,
-                start: asUtf16Offset(cs),
-                end: asUtf16Offset(ce),
-              }),
-          },
-          outcome.result,
-          rescanChapters,
-        );
-        addedAny = true;
-      } catch (err) {
+
+      const requiredCategories = stillMissingForGroup.map(
+        dim => DIMENSION_TO_EXTRACTION_CATEGORY[dim],
+      );
+      const focusLabels = stillMissingForGroup
+        .map(dim => DIMENSION_FOCUS_LABELS[dim])
+        .join('、');
+      const focusInstruction =
+        `【定向补扫】当前五维硬验收不足：${focusLabels}。` +
+        `本请求必须优先并尽量多地补充这些不足维度（每维尽量产出多条带原文 evidence 的有效条目），` +
+        `已充足维度可少写或不写。禁止只重复已充足维度来敷衍。` +
+        `禁止编造原文没有的事实。`;
+
+      // Slice the mode-scoped chapters under a 15% TOTAL token budget. One
+      // rescan round may produce multiple 15% requests; never dump half the
+      // book into a single extractor call.
+      let cursor: { chapterId: number; charOffset: number } | null = null;
+      let sliceGuard = 0;
+      const maxSlicesPerRound = Math.max(1, roundChapters.length * 4);
+      while (sliceGuard < maxSlicesPerRound) {
+        sliceGuard += 1;
         if (signal.aborted) break;
-        // A rescan call failing does not abort the whole rescan; other groups
-        // may still succeed. Surface as a non-fatal warning via progress.
-        onProgress?.({
-          runId: run.id,
-          stage: 'style_validation',
-          progressCurrent: 0,
-          progressTotal: 0,
-          state: 'running',
+        const tokenBudget =
+          rescanAdaptivePlan?.targetInputBudget ??
+          rescanAdaptivePlan?.effectiveInputBudget ??
+          4096;
+        const slicePlan = planSourceSlice({
+          chapters: roundChapters,
+          totalTokenBudget: tokenBudget,
+          startCursor: cursor,
         });
-        void err;
+        if (slicePlan.segments.length === 0) break;
+        const sentChapters = segmentsToBoundedChapters(slicePlan);
+        try {
+          const outcome = await extractMaterialWithLlm(
+            sentChapters,
+            run.profile,
+            run.modelConfigId,
+            requestGroup,
+            run.id,
+            signal,
+            undefined,
+            undefined,
+            rescanAdaptivePlan,
+            {
+              requiredCategories,
+              focusInstruction,
+            },
+          );
+          if (signal.aborted) break;
+          // Materialize ONLY the segments that were actually sent.
+          await materializeRescanResult(
+            db,
+            {
+              projectId: run.projectId,
+              sourceId: run.sourceId,
+              snapshotId: run.canonSnapshotId,
+              runId: run.id,
+              boundaryExclusive: run.boundaryCharOffsetExclusive,
+              profile: run.profile,
+              requestGroup,
+              rescanOperationId: `${run.id}:rescan:r${round}:${requestGroup}:s${sliceGuard}`,
+              readBackVerifier: async (cs, ce) =>
+                continuationSourceReader.readBoundedEvidenceRange({
+                  snapshot: sourceSnapshot,
+                  start: asUtf16Offset(cs),
+                  end: asUtf16Offset(ce),
+                }),
+            },
+            outcome.result,
+            sentChapters,
+          );
+          addedAny = true;
+        } catch (err) {
+          if (signal.aborted) break;
+          onProgress?.({
+            runId: run.id,
+            stage: 'finalizing',
+            progressCurrent: 0,
+            progressTotal: 0,
+            state: 'running',
+          });
+          void err;
+        }
+        if (slicePlan.fullyCovered || !slicePlan.nextCursor) break;
+        cursor = slicePlan.nextCursor;
       }
     }
     const afterCounts = await countValidCanonRowsForGate(
@@ -3662,8 +4006,6 @@ async function runTargetedRescanForMissingDimensions(input: {
     );
     const afterGate = evaluateFiveDimensionGate(afterCounts);
     if (afterGate.passed) return afterGate;
-    // If a full round added nothing, further rounds with the same chapters and
-    // prompt will not help — stop early to avoid burning API calls.
     if (!addedAny) break;
   }
   const finalCounts = await countValidCanonRowsForGate(
@@ -3766,7 +4108,8 @@ export async function activateSnapshot(
 
 export async function pauseAnalysis(runId: string): Promise<void> {
   const db = await openDatabase();
-  analysisControllers.get(runId)?.abort();
+  // Persist terminal/paused state BEFORE aborting network so late responses
+  // observe the durable state and refuse to write.
   await updateRunState(db, runId, { state: 'paused' });
   await execute(
     db,
@@ -3774,13 +4117,20 @@ export async function pauseAnalysis(runId: string): Promise<void> {
       WHERE run_id = ? AND state IN ('running', 'cancelled')`,
     [now(), runId],
   );
+  await execute(
+    db,
+    `UPDATE continuation_analysis_batches SET state = 'queued', updated_at = ?
+      WHERE run_id = ? AND state = 'running'`,
+    [now(), runId],
+  );
+  analysisControllers.get(runId)?.abort();
 }
 
 export async function cancelAnalysis(runId: string): Promise<void> {
   const db = await openDatabase();
   const run = await getRunById(runId);
   if (!run) return;
-  analysisControllers.get(runId)?.abort();
+  // 1) Persist cancelled state first
   await updateRunState(db, runId, {
     state: 'cancelled',
     // Cancelled analysis is intentionally resumable. `completed_at` is kept
@@ -3794,6 +4144,14 @@ export async function cancelAnalysis(runId: string): Promise<void> {
       WHERE run_id = ? AND state IN ('queued', 'running', 'failed')`,
     [now(), runId],
   );
+  await execute(
+    db,
+    `UPDATE continuation_analysis_batches SET state = 'cancelled', updated_at = ?
+      WHERE run_id = ? AND state IN ('queued', 'running', 'partial', 'failed')`,
+    [now(), runId],
+  );
+  // 2) Then abort in-flight network / queue work
+  analysisControllers.get(runId)?.abort();
 }
 
 async function resetInterruptedAnalysisWork(
@@ -3818,6 +4176,7 @@ async function resetInterruptedAnalysisWork(
       WHERE run_id = ? AND state IN ('running', 'failed', 'cancelled')`,
     [ts, runId],
   );
+  // partial parents stay partial; their queued children remain executable.
 }
 
 export async function resumeAnalysis(
