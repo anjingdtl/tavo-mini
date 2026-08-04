@@ -50,6 +50,24 @@ interface Props {
   onClose: () => void;
 }
 
+const V4_LENGTH_ADVISORY_TEXT = '篇幅偏差仅供参考，未因此触发自动 Repair。';
+
+type RejectedRepairAudit = {
+  content: string;
+  rejectionCode?: string | null;
+  repairOutputJson?: string | null;
+  localVerifyOutputJson?: string | null;
+};
+
+function parseStageJson(value: string | null | undefined): any | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 export const ContinuationResultScreen: React.FC<Props> = ({
   runId,
   onClose,
@@ -65,7 +83,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [checks, setChecks] = useState<ContinuationCheckResult[]>([]);
   const [stageTelemetry, setStageTelemetry] = useState<Record<string, any>>({});
   const [stageResults, setStageResults] = useState<ContinuationGenerationStageResult[]>([]);
-  const [rejectedRepair, setRejectedRepair] = useState<{ content: string; rejectionCode?: string | null } | null>(null);
+  const [rejectedRepair, setRejectedRepair] = useState<RejectedRepairAudit | null>(null);
   const [showRejectedRepair, setShowRejectedRepair] = useState(false);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -100,6 +118,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         const results = await listStageResults(runId);
         setStageResults(results);
         const repair = results.find(result => result.stage === 'repair');
+        const localVerify = results.find(result => result.stage === 'local_verify');
         if (repair?.artifactId) {
           const candidate = await getArtifactForRun(runId, repair.artifactId);
           setRejectedRepair(
@@ -107,6 +126,8 @@ export const ContinuationResultScreen: React.FC<Props> = ({
               ? {
                   content: candidate.content,
                   rejectionCode: candidate.rejectionCode,
+                  repairOutputJson: repair.outputJson,
+                  localVerifyOutputJson: localVerify?.outputJson ?? null,
                 }
               : null,
           );
@@ -241,14 +262,20 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     );
   }
 
+  const isV4LengthAdvisoryCheck = (check: ContinuationCheckResult) =>
+    run.workflowVersion === 4 &&
+    (String(check.subtype).startsWith('chapter_length_') ||
+      String(check.subtype).startsWith('repair_length_'));
+  const displaySeverity = (check: ContinuationCheckResult) =>
+    isV4LengthAdvisoryCheck(check) ? 'warning' : check.severity;
   const blocking = checks.filter(
-    c => c.severity === 'blocking' && c.resolutionStatus === 'open',
+    c => displaySeverity(c) === 'blocking' && c.resolutionStatus === 'open',
   ).length;
   const errors = checks.filter(
-    c => c.severity === 'error' && c.resolutionStatus === 'open',
+    c => displaySeverity(c) === 'error' && c.resolutionStatus === 'open',
   ).length;
   const warnings = checks.filter(
-    c => c.severity === 'warning' && c.resolutionStatus === 'open',
+    c => displaySeverity(c) === 'warning' && c.resolutionStatus === 'open',
   ).length;
   const overlapBlocked = checks.some(
     c =>
@@ -330,7 +357,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           key={c.id}
           style={{ color: colors.textPrimary, marginBottom: 6, fontSize: 13 }}
         >
-          [{c.severity}/{c.category}] {c.description}
+          [{displaySeverity(c)}/{c.category}] {c.description}
           {c.evidenceIds.length
             ? ` · 证据#${c.evidenceIds.join(',')}`
             : c.subtype === 'source_overlap' ||
@@ -400,8 +427,8 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           parsed?.targetHan ?? parsed?.referenceTargetHan ?? '—';
         const actualHan = parsed?.currentHan ?? parsed?.actualWriterHan ?? '—';
         const metrics = parsed
-          ? `用户参考篇幅：${referenceTarget}\n实际汉字：${actualHan}\n篇幅仅作提示，不影响候选资格`
-          : '本地篇幅诊断已由客户端计算；篇幅仅作提示。';
+          ? `用户参考篇幅：${referenceTarget}\n实际汉字：${actualHan}\n${V4_LENGTH_ADVISORY_TEXT}`
+          : `本地篇幅诊断已由客户端计算；${V4_LENGTH_ADVISORY_TEXT}`;
 
         // Prefer explicit styleIssues / styleWarnings; fall back to findings.
         const readyList: any[] = Array.isArray(parsed?.styleIssues)
@@ -427,9 +454,19 @@ export const ContinuationResultScreen: React.FC<Props> = ({
             item?.repairReady === true
               ? ' → 进入 Repair'
               : ' → 仅审计，不进入 Repair';
+          const evidence = Array.isArray(item?.styleEvidenceIds)
+            ? `；证据=${item.styleEvidenceIds.join(',') || 'none'}`
+            : '';
+          const confidence =
+            typeof item?.confidence === 'number'
+              ? `；confidence=${item.confidence}`
+              : '；confidence=missing';
+          const binding = item?.bindingStatus
+            ? `；绑定=${item.bindingStatus}`
+            : '';
           return `[${tag}/${dim}] ${desc}${excerpt}${
             goal ? `\n  改写目标：${goal}` : ''
-          }${ready}`;
+          }${evidence}${confidence}${binding}${ready}`;
         };
 
         const detailLines = [
@@ -456,15 +493,60 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       }
     }
     if (stage === 'repair') {
+      if (
+        result.errorCode === 'repair_output_truncated' ||
+        parseStageJson(result.outputJson)?.reason === 'repair_output_truncated'
+      ) {
+        return 'Repair 输出被模型最大输出限制截断，未形成完整终稿，系统已保留 Writer 初稿。';
+      }
+      if (
+        result.errorCode === 'repair_prompt_budget_exceeded' ||
+        parseStageJson(result.outputJson)?.reason === 'repair_prompt_budget_exceeded'
+      ) {
+        return 'Repair 未发出请求：真实 Repair Prompt 超出冻结上下文窗口，系统已保留 Writer 初稿；当前默认可采纳的是 Writer 初稿。';
+      }
       if (rejectedRepair) {
         const code = rejectedRepair.rejectionCode || 'local_final_gate_failed';
-        const reasonHint =
-          code.includes('partial') || code.includes('collapsed') || code.includes('summary')
-            ? 'Repair 只返回了局部内容或摘要，或丢失了大量未修改正文。'
-            : code.includes('compliance')
-              ? 'Repair 仍保留明确问题，或未通过协议回填检查。'
-              : 'Repair 未通过完整性或安全检查。';
-        return `Repair 已返回候选正文，但未通过完整性或安全检查。\n${reasonHint}\n当前默认可采纳候选为 Writer 初稿。拒绝码：${code}`;
+        const repairOutput = parseStageJson(rejectedRepair.repairOutputJson);
+        const localVerifyOutput = parseStageJson(rejectedRepair.localVerifyOutputJson);
+        const diagnostics = repairOutput?.failureDiagnostics ?? {};
+        const taskDetails = Array.isArray(diagnostics.unappliedIssueDetails)
+          ? diagnostics.unappliedIssueDetails.map((item: any) => {
+              const source = item.source || item.kind || 'unknown';
+              const excerpt = item.generatedExcerpt
+                ? `；摘录：「${String(item.generatedExcerpt).slice(0, 64)}」`
+                : '';
+              return `${item.id || '—'}（${source}/${item.subtype || 'unknown'}）：${item.description || '未提供描述'}${excerpt}`;
+            })
+          : [];
+        const qualityDetails = [
+          ...(Array.isArray(diagnostics.qualityGateFailures)
+            ? diagnostics.qualityGateFailures
+            : []),
+          ...(Array.isArray(diagnostics.complianceFailures)
+            ? diagnostics.complianceFailures
+            : []),
+        ].map(
+          (item: any) =>
+            `${item.subtype || 'unknown'} [${item.severity || 'error'}]：${item.description || '未提供描述'}`,
+        );
+        const currentSource =
+          diagnostics.currentCandidateSource ||
+          localVerifyOutput?.currentCandidateSource ||
+          'Writer';
+        const status = diagnostics.repairStatus?.rejected
+          ? 'returned_rejected'
+          : 'rejected';
+        return [
+          'Repair 已返回候选正文，但未通过完整性、协议或安全检查。当前展示和默认可采纳的是 Writer 初稿。被拒 Repair 仅供审计。',
+          `候选来源：${currentSource}；Repair 状态：${status}；拒绝代码：${code}。`,
+          taskDetails.length
+            ? `未落实任务：${taskDetails.join('；')}`
+            : '未落实任务：无结构化记录。',
+          qualityDetails.length
+            ? `质量/合规门禁：${qualityDetails.join('；')}`
+            : '质量/合规门禁：未提供结构化明细。',
+        ].join('\n');
       }
       try {
         const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
@@ -519,13 +601,21 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         ? parsed.checkSubtypes
         : [];
       const lengthWarnings = checkSubtypes.filter((subtype: unknown) =>
-        typeof subtype === 'string' && subtype.startsWith('chapter_length_'),
+        typeof subtype === 'string' &&
+        (subtype.startsWith('chapter_length_') ||
+          subtype.startsWith('repair_length_')),
       );
-      if (parsed?.passed === false) {
+      const hardSubtypes = checkSubtypes.filter(
+        (subtype: unknown) =>
+          typeof subtype !== 'string' ||
+          (!subtype.startsWith('chapter_length_') &&
+            !subtype.startsWith('repair_length_')),
+      );
+      if (parsed?.passed === false && hardSubtypes.length > 0) {
         return `完整性与确定性安全检查未通过：${checkSubtypes.join('、') || '存在硬门禁问题'}。当前默认候选为 Writer。`;
       }
       if (lengthWarnings.length > 0) {
-        return `已完成完整性与确定性安全检查；篇幅仅作提示（${lengthWarnings.join('、')}），不影响候选资格；未进行第二次 LLM 语义复核。`;
+        return `已完成完整性与确定性安全检查；${V4_LENGTH_ADVISORY_TEXT}（${lengthWarnings.join('、')}）未影响候选资格；未进行第二次 LLM 语义复核。`;
       }
       return '已完成完整性与确定性安全检查；未进行第二次 LLM 语义复核。';
     } catch {
@@ -623,7 +713,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         </Text>
           <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
             {rejectedRepair
-            ? 'Repair 未通过完整性或安全检查，当前默认候选为 Writer。已保留 rejected Repair 供审计；不能绕过 Local Final Gate 直接采纳。'
+            ? 'Repair 已返回候选正文，但未通过完整性、协议或安全检查。当前展示和默认可采纳的是 Writer 初稿。被拒 Repair 仅供审计。'
             : repairEligible
               ? 'Repair 已完成精准修订，并通过完整章节与本地安全检查。未进行第二次 LLM 语义复核，请在采纳前人工审阅。'
               : '未发现需要自动修订的五维资料或文风问题，或仅有篇幅/audit 提示；当前默认候选为 Writer 原稿。'}

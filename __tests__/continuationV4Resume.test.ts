@@ -606,7 +606,9 @@ describe('Continuation V4 runner', () => {
 
     expect(callStage).not.toHaveBeenCalled();
     expect(activeRun.state).toBe('awaiting_user');
-    expect(rows.find(row => row.stage === 'local_verify')?.status).toBe('success');
+    expect(rows.find(row => row.stage === 'local_verify')?.status).toBe('failed');
+    expect(repairArtifact.eligibilityStatus).toBe('rejected');
+    expect(repairArtifact.rejectionCode).toBe('repair_resume_compliance_unavailable');
     expect(rows.reduce((sum, row) => sum + row.requestCount, 0)).toBe(4);
     expect(mockRepository.finalizeContinuationV4LocalGate).toHaveBeenCalledTimes(1);
   });

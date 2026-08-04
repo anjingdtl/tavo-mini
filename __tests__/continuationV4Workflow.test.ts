@@ -4,7 +4,6 @@ import {
   runContinuationV4LocalFinalGate,
   validateContinuationV4RepairCompliance,
 } from '../src/services/continuation/generation';
-import { isLengthExpansionIssue } from '../src/services/continuation/generation/continuationLengthContract';
 import type {
   ContinuationContextSnapshotV3,
   ContinuationV4RepairEnvelope,
@@ -478,6 +477,8 @@ describe('Continuation V4 workflow contracts', () => {
           rewriteGoal: '改为动作',
           preserveMeaning: ['悲伤'],
           styleEvidenceIds: ['s1'],
+          confidence: 0.9,
+          bindingStatus: 'bound_by_range' as const,
           repairReady: true,
         },
         {
@@ -552,6 +553,57 @@ describe('Continuation V4 workflow contracts', () => {
       unknown.find(check => check.subtype === 'repair_unknown_control_finding_id')
         ?.severity,
     ).toBe('blocking');
+  });
+
+  test('sentence_rhythm 的实际分句变化不被 surface unchanged 拦截', () => {
+    const writerText = '他说此事。他转身。';
+    const candidateText = '他说此事\n他转身。';
+    const controlReport = {
+      schemaVersion: 2 as const,
+      action: 'keep' as const,
+      currentHan: 9,
+      targetHan: 9,
+      allowedMinHan: 1,
+      allowedMaxHan: 100,
+      suggestions: [],
+      findings: [
+        {
+          findingId: 'rhythm_1',
+          subtype: 'sentence_rhythm',
+          severity: 'error' as const,
+          location: 'utf16:0-6',
+          generatedStart: 0,
+          generatedEnd: 6,
+          generatedExcerpt: '他说此事。',
+          description: '句子分割需要更贴近原著节奏',
+          suggestedFix: '调整分句',
+          rewriteGoal: '调整分句',
+          preserveMeaning: ['事件不变'],
+          styleEvidenceIds: ['rhythm-e1'],
+          confidence: 0.9,
+          bindingStatus: 'bound_by_range' as const,
+          repairReady: true,
+        },
+      ],
+      preserve: [],
+    };
+    const checks = validateContinuationV4RepairCompliance({
+      writerText,
+      candidateText,
+      checkerIssues: [],
+      controlReport,
+      envelope: {
+        schemaVersion: 1,
+        content: candidateText,
+        appliedCheckerIssueIds: [],
+        appliedControlSuggestionIds: [],
+        appliedControlFindingIds: ['rhythm_1'],
+        unappliedItems: [],
+      },
+    });
+    expect(checks.map(check => check.subtype)).not.toContain(
+      'repair_control_style_surface_unchanged',
+    );
   });
 
   test('Repair 片段/摘要/丢锚点被完整性门禁拒绝', () => {
@@ -635,7 +687,7 @@ describe('Continuation V4 workflow contracts', () => {
     expect(gate.checks.map(c => c.subtype)).toContain('repair_non_minimal_rewrite');
   });
 
-  test('篇幅扩写合规：必须净增且进入 target×0.7 以上', () => {
+  test('篇幅偏差不会生成 Repair 合规硬门禁', () => {
     const writerText = '甲'.repeat(1000);
     const stillShort = '乙'.repeat(1200); // grew but still < 2100 for target 3000
     const enough = '丙'.repeat(2200);
@@ -651,8 +703,6 @@ describe('Continuation V4 workflow contracts', () => {
       generatedExcerpt: '',
       evidenceIds: [],
     } as any;
-    expect(isLengthExpansionIssue(lengthIssue)).toBe(true);
-
     const controlReport = {
       schemaVersion: 2 as const,
       action: 'expand' as const,
@@ -679,9 +729,7 @@ describe('Continuation V4 workflow contracts', () => {
         unappliedItems: [],
       },
     });
-    expect(noGrowth.map(c => c.subtype)).toContain(
-      'repair_length_expansion_no_growth',
-    );
+    expect(noGrowth.some(c => c.subtype.startsWith('repair_length_expansion_'))).toBe(false);
 
     const belowFloor = validateContinuationV4RepairCompliance({
       writerText,
@@ -697,9 +745,7 @@ describe('Continuation V4 workflow contracts', () => {
         unappliedItems: [],
       },
     });
-    expect(belowFloor.map(c => c.subtype)).toContain(
-      'repair_length_expansion_below_floor',
-    );
+    expect(belowFloor.some(c => c.subtype.startsWith('repair_length_expansion_'))).toBe(false);
 
     const ok = validateContinuationV4RepairCompliance({
       writerText,
@@ -715,9 +761,7 @@ describe('Continuation V4 workflow contracts', () => {
         unappliedItems: [],
       },
     });
-    expect(
-      ok.some(c => c.subtype.startsWith('repair_length_expansion_')),
-    ).toBe(false);
+    expect(ok.some(c => c.subtype.startsWith('repair_length_expansion_'))).toBe(false);
   });
 
   test('锚点残留被 Local Final Gate 拦截为 blocking', () => {
@@ -756,8 +800,8 @@ describe('Continuation V4 workflow contracts', () => {
   test('各类 run 物理请求规划总数 ≤ 4（无问题/仅长度/仅 Checker/混合）', () => {
     /**
      * V4 stages: Writer always + Checker + Control in parallel (2 physical) +
-     * optional single Repair. Length expansion reuses that same Repair slot —
-     * never a 5th physical request. maxPhysicalRequests telemetry stays 4.
+   * optional single Repair. Length-only advisory never creates that Repair
+   * slot; maxPhysicalRequests telemetry stays 4.
      */
     const planPhysicalRequests = (flags: {
       lengthExpansion: boolean;
@@ -767,7 +811,6 @@ describe('Continuation V4 workflow contracts', () => {
     }) => {
       const stages = ['writer', 'checker', 'control'] as string[];
       const needsRepair =
-        flags.lengthExpansion ||
         flags.checkerIssues ||
         flags.styleIssues ||
         flags.localSafety;
@@ -827,7 +870,7 @@ describe('Continuation V4 workflow contracts', () => {
         localSafety: true,
       }),
     ).toBe(4);
-    // Length alone must not invent a second repair stage.
+    // Length alone must not invent a Repair stage.
     expect(
       planPhysicalRequests({
         lengthExpansion: true,
@@ -835,6 +878,6 @@ describe('Continuation V4 workflow contracts', () => {
         styleIssues: false,
         localSafety: false,
       }),
-    ).toBe(4);
+    ).toBe(3);
   });
 });

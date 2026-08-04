@@ -8,7 +8,7 @@
  */
 import {
   countHanCharacters,
-  resolveContinuationLengthContract,
+  resolveContinuationV4ReferenceLengthBand,
   type ContinuationLengthContract,
 } from './continuationLengthContract';
 import type {
@@ -18,6 +18,7 @@ import type {
   ContinuationPlan,
   ContinuationStyleDimension,
   ContinuationStyleIssue,
+  ContinuationStyleIssueBindingStatus,
   ContinuationV4Metrics,
 } from './types';
 
@@ -95,20 +96,30 @@ function normalizedParagraph(value: string): string {
 function duplicateWindows(
   ranges: Array<{ start: number; end: number; value: string }>,
 ): ContinuationV4Metrics['duplicateWindows'] {
-  const groups = new Map<string, Array<{ start: number; end: number }>>();
-  for (const range of ranges) {
+  const groups = new Map<
+    string,
+    Array<{ start: number; end: number; paragraphId: string }>
+  >();
+  for (const [index, range] of ranges.entries()) {
     const key = normalizedParagraph(range.value);
     if (key.length < 8) continue;
     const group = groups.get(key) ?? [];
-    group.push({ start: range.start, end: range.end });
+    group.push({
+      start: range.start,
+      end: range.end,
+      paragraphId: `p_${index + 1}`,
+    });
     groups.set(key, group);
   }
   return Array.from(groups.values())
     .filter(group => group.length > 1)
     .map(group => ({
       start: group[0].start,
-      end: group[group.length - 1].end,
+      // Keep the compatibility range tight to the first real occurrence.
+      // The precise `occurrences` list is authoritative for UI/diagnostics.
+      end: group[0].end,
       count: group.length,
+      occurrences: group,
     }));
 }
 
@@ -136,7 +147,7 @@ export function buildContinuationControlMetrics(input: {
 }): ContinuationV4Metrics {
   const contract =
     typeof input.target === 'number'
-      ? resolveContinuationLengthContract(input.target)
+      ? resolveContinuationV4ReferenceLengthBand(input.target)
       : input.target;
   const ranges = paragraphRanges(input.text);
   const paragraphValues = ranges.map(range => countHanCharacters(range.value));
@@ -233,6 +244,7 @@ export function isStyleIssueRepairReady(
     | 'rewriteGoal'
     | 'preserveMeaning'
     | 'description'
+    | 'bindingStatus'
   >,
 ): boolean {
   if (issue.severity !== 'error') return false;
@@ -254,6 +266,12 @@ export function isStyleIssueRepairReady(
   if (!rewriteGoal) return false;
   if (!issue.preserveMeaning?.length) return false;
   if (!issue.description?.trim()) return false;
+  if (
+    issue.bindingStatus !== 'bound_by_range' &&
+    issue.bindingStatus !== 'bound_by_unique_excerpt'
+  ) {
+    return false;
+  }
   // Reject whole-chapter / new-fact demands — audit only.
   if (
     /整章|全文重构|全部重写|重新创作|新增事实|补写剧情|重构整章/.test(
@@ -279,6 +297,7 @@ function styleIssueToFinding(
     generatedStart: issue.generatedStart,
     generatedEnd: issue.generatedEnd,
     generatedExcerpt: issue.generatedExcerpt,
+    confidence: issue.confidence,
     description: issue.description,
     suggestedFix: issue.rewriteGoal || issue.description,
     repairReady: issue.repairReady,
@@ -286,45 +305,82 @@ function styleIssueToFinding(
     preserveMeaning: issue.preserveMeaning,
     styleEvidenceIds: issue.styleEvidenceIds,
     styleDimension: issue.styleDimension,
+    bindingStatus: issue.bindingStatus,
   };
 }
 
-function bindStyleIssueToArtifact(
+export function bindStyleIssueToArtifact(
   issue: ContinuationStyleIssue,
   artifactText: string,
 ): ContinuationStyleIssue {
-  let { generatedStart, generatedEnd, generatedExcerpt } = issue;
-  const excerpt = (generatedExcerpt ?? '').trim();
-  if (
-    generatedStart != null &&
-    generatedEnd != null &&
-    generatedStart >= 0 &&
-    generatedEnd > generatedStart &&
-    generatedEnd <= artifactText.length
-  ) {
-    generatedExcerpt = artifactText.slice(generatedStart, generatedEnd);
-  } else if (excerpt.length >= 4) {
-    const located = artifactText.indexOf(excerpt);
-    if (located >= 0) {
-      generatedStart = located;
-      generatedEnd = located + excerpt.length;
-      generatedExcerpt = excerpt;
+  let generatedStart: number | null = null;
+  let generatedEnd: number | null = null;
+  let generatedExcerpt = (issue.generatedExcerpt ?? '').trim();
+  let bindingStatus: ContinuationStyleIssueBindingStatus = 'invalid_location';
+  const hasSuppliedRange =
+    issue.generatedStart != null || issue.generatedEnd != null;
+  const validRange =
+    typeof issue.generatedStart === 'number' &&
+    typeof issue.generatedEnd === 'number' &&
+    issue.generatedStart >= 0 &&
+    issue.generatedEnd > issue.generatedStart &&
+    issue.generatedEnd <= artifactText.length;
+
+  const findUniqueExcerpt = (excerpt: string) => {
+    if (excerpt.length < 4) return null;
+    const first = artifactText.indexOf(excerpt);
+    const second =
+      first >= 0
+        ? artifactText.indexOf(excerpt, first + excerpt.length)
+        : -1;
+    if (first < 0) return { status: 'excerpt_not_found' as const };
+    if (second >= 0) return { status: 'excerpt_not_unique' as const };
+    return {
+      status: 'bound_by_unique_excerpt' as const,
+      start: first,
+      end: first + excerpt.length,
+    };
+  };
+
+  if (validRange) {
+    const slice = artifactText.slice(
+      issue.generatedStart as number,
+      issue.generatedEnd as number,
+    );
+    if (!generatedExcerpt) {
+      generatedStart = issue.generatedStart as number;
+      generatedEnd = issue.generatedEnd as number;
+      generatedExcerpt = slice;
+      bindingStatus = 'bound_by_range';
+    } else if (slice === generatedExcerpt) {
+      generatedStart = issue.generatedStart as number;
+      generatedEnd = issue.generatedEnd as number;
+      bindingStatus = 'bound_by_range';
     } else {
-      // Non-unique or missing excerpt → cannot repair.
-      generatedStart = null;
-      generatedEnd = null;
-      generatedExcerpt = excerpt;
+      // A valid range is an explicit model binding. If its excerpt disagrees
+      // with the current Writer slice, do not silently relocate the finding
+      // to another occurrence: the model's range and text have diverged.
+      bindingStatus = 'range_excerpt_mismatch';
+    }
+  } else if (generatedExcerpt) {
+    const recovered = findUniqueExcerpt(generatedExcerpt);
+    if (recovered?.status === 'bound_by_unique_excerpt') {
+      generatedStart = recovered.start;
+      generatedEnd = recovered.end;
+      bindingStatus = recovered.status;
+    } else {
+      bindingStatus = recovered?.status ?? 'excerpt_not_found';
     }
   } else {
-    generatedStart = null;
-    generatedEnd = null;
-    generatedExcerpt = excerpt;
+    bindingStatus = hasSuppliedRange ? 'invalid_location' : 'invalid_location';
   }
+
   const bound: ContinuationStyleIssue = {
     ...issue,
     generatedStart,
     generatedEnd,
-    generatedExcerpt: generatedExcerpt ?? '',
+    generatedExcerpt,
+    bindingStatus,
   };
   return {
     ...bound,
@@ -425,7 +481,18 @@ function dedupeStyleIssues(
  */
 export function buildContinuationControlFallback(
   metrics: ContinuationV4Metrics,
-  options?: { writerArtifactHash?: string | null; styleProfileRevision?: number | null },
+  options?: {
+    writerArtifactHash?: string | null;
+    styleProfileRevision?: number | null;
+    styleProfileHash?: string | null;
+    styleRendererVersion?: string | null;
+    echoedWriterArtifactHash?: string | null;
+    echoedStyleProfileHash?: string | null;
+    echoedStyleRendererVersion?: string | null;
+    controlBindingErrorCodes?: string[];
+    legacyFindingDowngradeCount?: number;
+    telemetryEvents?: string[];
+  },
 ): ContinuationControlReport {
   return {
     schemaVersion: 2,
@@ -441,6 +508,18 @@ export function buildContinuationControlFallback(
     styleWarnings: [],
     styleProfileRevision: options?.styleProfileRevision ?? null,
     writerArtifactHash: options?.writerArtifactHash ?? null,
+    styleProfileHash: options?.styleProfileHash ?? null,
+    styleRendererVersion: options?.styleRendererVersion ?? null,
+    echoedWriterArtifactHash: options?.echoedWriterArtifactHash ?? null,
+    echoedStyleProfileHash: options?.echoedStyleProfileHash ?? null,
+    echoedStyleRendererVersion: options?.echoedStyleRendererVersion ?? null,
+    controlBindingErrorCodes: options?.controlBindingErrorCodes ?? [],
+    legacyFindingDowngradeCount: options?.legacyFindingDowngradeCount ?? 0,
+    telemetryEvents:
+      options?.telemetryEvents ??
+      ((options?.legacyFindingDowngradeCount ?? 0) > 0
+        ? ['control_legacy_finding_downgraded']
+        : []),
   };
 }
 
@@ -451,6 +530,8 @@ export interface ContinuationControlParseResult {
   actionEchoMismatch?: boolean;
   localSuggestionInjected?: boolean;
   droppedSuggestionCount?: number;
+  bindingErrorCodes?: string[];
+  legacyFindingDowngradeCount?: number;
 }
 
 /**
@@ -464,6 +545,8 @@ export function parseContinuationControlReport(input: {
   artifactText?: string;
   writerArtifactHash?: string | null;
   styleProfileRevision?: number | null;
+  styleProfileHash?: string | null;
+  styleRendererVersion?: string | null;
 }): ContinuationControlParseResult {
   let parsed: any;
   try {
@@ -490,15 +573,22 @@ export function parseContinuationControlReport(input: {
     modelCurrent != null && modelCurrent !== metrics.actualHanCharacters;
 
   const artifactText = input.artifactText ?? '';
+  const hasNativeStyleArrays =
+    Array.isArray(parsed.issues) || Array.isArray(parsed.styleIssues);
   const rawIssues: unknown[] = Array.isArray(parsed.issues)
     ? parsed.issues
-    : [];
-  const rawWarnings: unknown[] = Array.isArray(parsed.warnings)
-    ? parsed.warnings
-    : [];
+    : Array.isArray(parsed.styleIssues)
+      ? parsed.styleIssues
+      : [];
+  const rawWarnings: unknown[] = [
+    ...(Array.isArray(parsed.warnings) ? parsed.warnings : []),
+    ...(Array.isArray(parsed.styleWarnings) ? parsed.styleWarnings : []),
+  ];
   // Legacy v1 findings → treat as style candidates only when they look style-like.
   const legacyFindings: unknown[] = Array.isArray(parsed.findings)
-    ? parsed.findings
+    ? hasNativeStyleArrays
+      ? []
+      : parsed.findings
     : [];
 
   const parsedIssues: ContinuationStyleIssue[] = [];
@@ -536,9 +626,12 @@ export function parseContinuationControlReport(input: {
             : 'ai_template',
         severity: 'warning',
         rewriteGoal: row.suggestedFix ?? row.rewriteGoal,
-        styleEvidenceIds: row.styleEvidenceIds ?? ['legacy_finding'],
-        preserveMeaning: row.preserveMeaning ?? ['保留原事件与结果'],
-        confidence: row.confidence ?? 0.4,
+        styleEvidenceIds: [],
+        preserveMeaning: [],
+        confidence:
+          typeof row.confidence === 'number' && Number.isFinite(row.confidence)
+            ? row.confidence
+            : 0,
       },
       index,
       true,
@@ -553,7 +646,10 @@ export function parseContinuationControlReport(input: {
         ? bindStyleIssueToArtifact(issue, artifactText)
         : {
             ...issue,
-            repairReady: isStyleIssueRepairReady(issue),
+            generatedStart: null,
+            generatedEnd: null,
+            bindingStatus: 'invalid_location' as const,
+            repairReady: false,
           },
     ),
   );
@@ -574,6 +670,46 @@ export function parseContinuationControlReport(input: {
     modelAction === 'compress'
       ? modelAction !== localLengthAction
       : false;
+
+  const echoedWriterArtifactHash =
+    typeof parsed.writerArtifactHash === 'string'
+      ? parsed.writerArtifactHash.trim() || null
+      : null;
+  const echoedStyleProfileHash =
+    typeof parsed.styleProfileHash === 'string'
+      ? parsed.styleProfileHash.trim() || null
+      : null;
+  const echoedStyleRendererVersion =
+    typeof parsed.styleRendererVersion === 'string'
+      ? parsed.styleRendererVersion.trim() || null
+      : null;
+  const bindingErrorCodes: string[] = [];
+  // Binding validation is enforced when the V4 Runner supplies the expected
+  // values. Older direct parser callers may omit them for compatibility.
+  if (input.writerArtifactHash !== undefined) {
+    if (!echoedWriterArtifactHash) {
+      bindingErrorCodes.push('control_artifact_hash_missing');
+    } else if (echoedWriterArtifactHash !== input.writerArtifactHash) {
+      bindingErrorCodes.push('control_artifact_hash_mismatch');
+    }
+  }
+  if (input.styleProfileHash !== undefined) {
+    if (!input.styleProfileHash || !echoedStyleProfileHash) {
+      bindingErrorCodes.push('control_style_profile_hash_missing');
+    } else if (echoedStyleProfileHash !== input.styleProfileHash) {
+      bindingErrorCodes.push('control_style_profile_hash_mismatch');
+    }
+  }
+  if (input.styleRendererVersion !== undefined) {
+    if (
+      !input.styleRendererVersion ||
+      !echoedStyleRendererVersion ||
+      echoedStyleRendererVersion !== input.styleRendererVersion
+    ) {
+      bindingErrorCodes.push('control_style_renderer_version_mismatch');
+    }
+  }
+  const legacyFindingDowngradeCount = legacyFindings.length;
 
   return {
     report: {
@@ -596,10 +732,19 @@ export function parseContinuationControlReport(input: {
       styleIssues,
       styleWarnings,
       styleProfileRevision: input.styleProfileRevision ?? null,
-      writerArtifactHash:
-        typeof parsed.writerArtifactHash === 'string'
-          ? parsed.writerArtifactHash
-          : input.writerArtifactHash ?? null,
+      writerArtifactHash: input.writerArtifactHash ?? echoedWriterArtifactHash,
+      styleProfileHash: input.styleProfileHash ?? echoedStyleProfileHash,
+      styleRendererVersion:
+        input.styleRendererVersion ?? echoedStyleRendererVersion,
+      echoedWriterArtifactHash,
+      echoedStyleProfileHash,
+      echoedStyleRendererVersion,
+      controlBindingErrorCodes: bindingErrorCodes,
+      legacyFindingDowngradeCount,
+      telemetryEvents:
+        legacyFindingDowngradeCount > 0
+          ? ['control_legacy_finding_downgraded']
+          : [],
       ...(metricEchoMismatch ? { metricEchoMismatch: true } : {}),
       ...(actionEchoMismatch ? { actionEchoMismatch: true } : {}),
     },
@@ -608,6 +753,8 @@ export function parseContinuationControlReport(input: {
     actionEchoMismatch,
     localSuggestionInjected: false,
     droppedSuggestionCount,
+    bindingErrorCodes,
+    legacyFindingDowngradeCount,
   };
 }
 
@@ -617,18 +764,24 @@ export function resolveContinuationControlReport(input: {
   artifactText?: string;
   writerArtifactHash?: string | null;
   styleProfileRevision?: number | null;
+  styleProfileHash?: string | null;
+  styleRendererVersion?: string | null;
 }): ContinuationControlParseResult & { report: ContinuationControlReport } {
   if (!input.raw) {
     return {
       report: buildContinuationControlFallback(input.metrics, {
         writerArtifactHash: input.writerArtifactHash,
         styleProfileRevision: input.styleProfileRevision,
+        styleProfileHash: input.styleProfileHash,
+        styleRendererVersion: input.styleRendererVersion,
       }),
       metricEchoMismatch: false,
       errorCode: 'control_llm_unavailable',
       actionEchoMismatch: false,
       localSuggestionInjected: false,
       droppedSuggestionCount: 0,
+      bindingErrorCodes: [],
+      legacyFindingDowngradeCount: 0,
     };
   }
   const parsed = parseContinuationControlReport({
@@ -637,33 +790,78 @@ export function resolveContinuationControlReport(input: {
     artifactText: input.artifactText,
     writerArtifactHash: input.writerArtifactHash,
     styleProfileRevision: input.styleProfileRevision,
+    styleProfileHash: input.styleProfileHash,
+    styleRendererVersion: input.styleRendererVersion,
   });
-  if (parsed.report) {
+  if (parsed.report && !(parsed.bindingErrorCodes?.length ?? 0)) {
     return parsed as ContinuationControlParseResult & {
       report: ContinuationControlReport;
     };
   }
+  const bindingErrorCodes = parsed.bindingErrorCodes ?? [];
+  const errorCode = bindingErrorCodes[0] ?? parsed.errorCode;
   return {
     report: buildContinuationControlFallback(input.metrics, {
       writerArtifactHash: input.writerArtifactHash,
       styleProfileRevision: input.styleProfileRevision,
+      styleProfileHash: input.styleProfileHash,
+      styleRendererVersion: input.styleRendererVersion,
+      echoedWriterArtifactHash: parsed.report?.echoedWriterArtifactHash,
+      echoedStyleProfileHash: parsed.report?.echoedStyleProfileHash,
+      echoedStyleRendererVersion: parsed.report?.echoedStyleRendererVersion,
+      controlBindingErrorCodes: bindingErrorCodes,
+      legacyFindingDowngradeCount: parsed.legacyFindingDowngradeCount,
+      telemetryEvents: parsed.report?.telemetryEvents,
     }),
     metricEchoMismatch: parsed.metricEchoMismatch,
-    errorCode: parsed.errorCode,
+    errorCode,
     actionEchoMismatch: false,
     localSuggestionInjected: false,
     droppedSuggestionCount: 0,
+    bindingErrorCodes,
+    legacyFindingDowngradeCount: parsed.legacyFindingDowngradeCount ?? 0,
   };
 }
 
 /** Actionable style findings that may enter Repair. */
+function trustedFindingForRepair(finding: ContinuationControlFinding): boolean {
+  if (finding.repairReady !== true) return false;
+  if (
+    typeof finding.confidence !== 'number' ||
+    !Number.isFinite(finding.confidence) ||
+    finding.confidence < STYLE_REPAIR_CONFIDENCE_MIN
+  ) {
+    return false;
+  }
+  if (!finding.styleEvidenceIds?.length) return false;
+  if (!finding.preserveMeaning?.length) return false;
+  if (!finding.rewriteGoal?.trim()) return false;
+  const hasLocation =
+    (typeof finding.generatedStart === 'number' &&
+      typeof finding.generatedEnd === 'number' &&
+      finding.generatedEnd > finding.generatedStart) ||
+    (finding.generatedExcerpt?.trim().length ?? 0) >= 4;
+  if (!hasLocation) return false;
+  if (
+    finding.bindingStatus !== 'bound_by_range' &&
+    finding.bindingStatus !== 'bound_by_unique_excerpt'
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function getRepairReadyStyleFindings(
   report: ContinuationControlReport,
 ): ContinuationControlFinding[] {
-  if (report.findings?.some(f => f.repairReady)) {
-    return report.findings.filter(f => f.repairReady);
+  const byId = new Map<string, ContinuationControlFinding>();
+  for (const finding of report.findings ?? []) {
+    if (trustedFindingForRepair(finding)) byId.set(finding.findingId, finding);
   }
-  return (report.styleIssues ?? [])
-    .filter(issue => issue.repairReady)
-    .map(styleIssueToFinding);
+  for (const issue of report.styleIssues ?? []) {
+    if (!issue.repairReady || !isStyleIssueRepairReady(issue)) continue;
+    const finding = styleIssueToFinding(issue);
+    if (!byId.has(finding.findingId)) byId.set(finding.findingId, finding);
+  }
+  return Array.from(byId.values());
 }

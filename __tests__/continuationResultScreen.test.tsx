@@ -215,6 +215,27 @@ describe('ContinuationResultScreen adoption decision', () => {
         outputJson: JSON.stringify({
           appliedCheckerIssueIds: [],
           appliedControlSuggestionIds: [],
+          failureDiagnostics: {
+            currentCandidateSource: 'Writer',
+            repairStatus: { attempted: true, returned: true, rejected: true },
+            primaryRejectionCode: 'repair_control_finding_unapplied',
+            unappliedIssueDetails: [
+              {
+                source: 'style_control',
+                id: 'style_1',
+                subtype: 'padding',
+                description: '注水句未改写',
+                generatedExcerpt: '模板化原句',
+              },
+            ],
+            complianceFailures: [
+              {
+                subtype: 'repair_control_finding_unapplied',
+                severity: 'blocking',
+                description: '未回填 Control finding',
+              },
+            ],
+          },
         }),
       }),
       stage({
@@ -222,12 +243,13 @@ describe('ContinuationResultScreen adoption decision', () => {
         status: 'failed',
         outputJson: JSON.stringify({
           passed: false,
-          checkSubtypes: ['chapter_length_over_target'],
+          checkSubtypes: ['repair_control_finding_unapplied'],
+          currentCandidateSource: 'Writer',
         }),
       }),
     ]);
 
-    const { getByText, queryByText } = render(
+    const { getAllByText, getByText, queryByText } = render(
       <ContinuationResultScreen runId="run-1" onClose={jest.fn()} />,
     );
 
@@ -235,7 +257,91 @@ describe('ContinuationResultScreen adoption decision', () => {
     expect(getByText('查看被拒 Repair 候选')).toBeTruthy();
     expect(getByText('采纳当前 eligible 候选（风险自负）')).toBeTruthy();
     expect(queryByText('Repair 候选正文')).toBeNull();
+    fireEvent.press(getByText(/Repair · 成功/));
+    expect(
+      getAllByText(/Repair 已返回候选正文，但未通过完整性、协议或安全检查。当前展示和默认可采纳的是 Writer 初稿。被拒 Repair 仅供审计。/).length,
+    ).toBeGreaterThan(0);
+    expect(getByText(/style_1（style_control\/padding）/)).toBeTruthy();
+    expect(getByText(/repair_control_finding_unapplied \[blocking\]/)).toBeTruthy();
     fireEvent.press(getByText('查看被拒 Repair 候选'));
     expect(getByText('Repair 候选正文')).toBeTruthy();
+  });
+
+  it('does not block adoption for a V4 chapter length warning', async () => {
+    mockGetRunById.mockResolvedValue({
+      id: 'run-1',
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      workflowVersion: 4,
+      canonSnapshotId: 'snapshot-1234567890',
+      canonRevision: 1,
+      contextTraceJson: null,
+      tokenUsageJson: JSON.stringify({ workflowVersion: 4, stages: {} }),
+    });
+    mockGetLatestEligibleArtifact.mockResolvedValue({
+      id: 'writer-1',
+      stage: 'writer',
+      content: 'Writer 正文',
+    });
+    mockListChecksForArtifact.mockResolvedValue([
+      {
+        id: 1,
+        severity: 'error',
+        category: 'style',
+        subtype: 'chapter_length_under_target',
+        resolutionStatus: 'open',
+        description: '篇幅偏短',
+        evidenceIds: [],
+      },
+    ] as any);
+    const stage = (input: Record<string, unknown>) => ({
+      requestCount: 0,
+      inputTokens: null,
+      outputTokens: null,
+      startedAt: null,
+      completedAt: null,
+      errorCode: null,
+      errorMessage: null,
+      artifactId: 'writer-1',
+      outputJson: null,
+      ...input,
+    });
+    mockListStageResults.mockResolvedValue([
+      stage({ stage: 'writer', status: 'success' }),
+      stage({
+        stage: 'checker',
+        status: 'success',
+        outputJson: JSON.stringify({ issues: [] }),
+      }),
+      stage({
+        stage: 'control',
+        status: 'success',
+        outputJson: JSON.stringify({
+          currentHan: 10,
+          targetHan: 3000,
+          styleIssues: [],
+          styleWarnings: [],
+        }),
+      }),
+      stage({ stage: 'repair', status: 'skipped', errorCode: 'skipped_no_actionable_revision' }),
+      stage({
+        stage: 'local_verify',
+        status: 'success',
+        outputJson: JSON.stringify({
+          passed: true,
+          checkSubtypes: [
+            'chapter_length_under_target',
+            'repair_length_expansion_below_floor',
+          ],
+        }),
+      }),
+    ]);
+    const { getByText, queryByText } = render(
+      <ContinuationResultScreen runId="run-1" onClose={jest.fn()} />,
+    );
+    await waitFor(() => expect(getByText('V4 终稿已待采纳')).toBeTruthy());
+    expect(queryByText('默认候选仍有待人工确认问题')).toBeNull();
+    fireEvent.press(getByText(/Control · 成功/));
+    expect(getByText(/篇幅偏差仅供参考，未因此触发自动 Repair。/)).toBeTruthy();
   });
 });

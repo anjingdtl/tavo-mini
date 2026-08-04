@@ -227,32 +227,25 @@ function detectSummaryPhrases(text: string): string[] {
 /**
  * Evaluate whether a Repair candidate is a complete chapter relative to Writer.
  * Summary phrases alone never block; they only support multi-signal collapse.
- *
- * lengthExpansionMode: directed deepen/expand Repair may rewrite many paragraphs
- * while adding detail. Mark all Writer paragraphs as targeted so newly expanded
- * passages are not mis-flagged as repair_non_minimal_rewrite. Collapse / ratio
- * floors (minCandidateToWriterHanRatio etc.) stay unchanged.
+ * Every Repair uses the same targeted-span/minimal-intervention policy;
+ * chapter length never grants a whole-document exemption.
  */
 export function evaluateRepairCompleteness(input: {
   writerText: string;
   candidateText: string;
   targetedSpans?: TargetedRepairSpan[];
   policy?: RepairCompletenessPolicy;
-  /** When true, treat every Writer paragraph as targeted (length expansion). */
-  lengthExpansionMode?: boolean;
 }): RepairCompletenessResult {
   const policy = input.policy ?? DEFAULT_REPAIR_COMPLETENESS_POLICY;
   const writerText = input.writerText ?? '';
   const candidateText = input.candidateText ?? '';
   const writerParagraphs = splitNaturalParagraphs(writerText);
   const candidateParagraphs = splitNaturalParagraphs(candidateText);
-  const targeted = input.lengthExpansionMode
-    ? new Set(writerParagraphs.map(p => p.index))
-    : markTargetedWriterParagraphs(
-        writerParagraphs,
-        input.targetedSpans ?? [],
-        writerText,
-      );
+  const targeted = markTargetedWriterParagraphs(
+    writerParagraphs,
+    input.targetedSpans ?? [],
+    writerText,
+  );
   const candidateNormalized = new Set(
     candidateParagraphs.map(p => p.normalized).filter(n => n.length >= 6),
   );
