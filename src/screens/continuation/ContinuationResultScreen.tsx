@@ -1233,49 +1233,35 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           const label = `${row.title} · 生成 Tokens ${
             tokens != null ? tokens : '—'
           } · 汉字 ${han != null ? han : '—'}`;
-          const expandKey = `v5_${row.key}`;
-          const isOpen = expanded.has(expandKey);
           return (
             <View
               key={row.key}
               style={[styles.resultCard, { backgroundColor: colors.card }]}
             >
-              <Button
-                label={isOpen ? `▼ ${label}` : `▶ ${label}`}
-                variant="ghost"
-                onPress={() => toggleExpanded(expandKey)}
-              />
-              {isOpen && (
-                <View style={{ marginTop: spacing.sm }}>
-                  {!row.adoptable && (
-                    <Text
-                      style={[styles.stageMeta, { color: colors.textMuted }]}
-                    >
-                      过程稿 · 仅供对照，不可采纳
-                    </Text>
-                  )}
-                  {row.adoptable && row.artifact?.eligibilityStatus === 'eligible' && (
-                    <Text style={[styles.stageMeta, { color: colors.accent }]}>
-                      可交付终稿
-                    </Text>
-                  )}
-                  {content ? (
-                    <Text
-                      selectable
-                      style={[styles.stageText, { color: colors.textPrimary }]}
-                    >
-                      {content}
-                    </Text>
-                  ) : (
-                    <Text
-                      style={[styles.stageText, { color: colors.textSecondary }]}
-                    >
-                      {result?.status === 'running'
-                        ? '生成中…'
-                        : result?.errorMessage || '尚无正文。'}
-                    </Text>
-                  )}
-                </View>
+              <Text
+                style={[styles.stageMeta, { color: colors.textPrimary }]}
+              >
+                {label}
+              </Text>
+              {!row.adoptable && (
+                <Text
+                  style={[
+                    styles.stageMeta,
+                    { color: colors.textMuted, marginTop: spacing.xs },
+                  ]}
+                >
+                  过程稿 · 不可采纳
+                </Text>
+              )}
+              {row.adoptable && row.artifact?.eligibilityStatus === 'eligible' && (
+                <Text
+                  style={[
+                    styles.stageMeta,
+                    { color: colors.accent, marginTop: spacing.xs },
+                  ]}
+                >
+                  可交付终稿
+                </Text>
               )}
             </View>
           );

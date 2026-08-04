@@ -348,7 +348,7 @@ describe('ContinuationResultScreen adoption decision', () => {
     expect(getByText(/篇幅偏差仅供参考，未因此触发自动 Repair。/)).toBeTruthy();
   });
 
-  it('collapses V5 results into V1/V2/V3 rows with tokens and Han count in titles', async () => {
+  it('shows V5 V1/V2/V3 row titles with tokens and Han count, without bodies', async () => {
     mockGetRunById.mockResolvedValue({
       id: 'run-v5',
       state: 'awaiting_user',
@@ -433,7 +433,8 @@ describe('ContinuationResultScreen adoption decision', () => {
     );
     expect(getByText(/V2 · 生成 Tokens 400 · 汉字/)).toBeTruthy();
     expect(getByText(/V3 · 生成 Tokens 600 · 汉字/)).toBeTruthy();
-    // Bodies collapsed by default
+    // Bodies are intentionally not shown on the result screen — they add no
+    // value for the user and rendering 3000+ chars x3 caused scroll jank.
     expect(queryByText(draftBody)).toBeNull();
     expect(queryByText(revisionBody)).toBeNull();
     expect(queryByText(finalBody)).toBeNull();
@@ -441,10 +442,7 @@ describe('ContinuationResultScreen adoption decision', () => {
     expect(queryByText(/Narrative Architect/)).toBeNull();
     expect(queryByText(/Adversarial Auditor/)).toBeNull();
     expect(queryByText(/Final Artifact Validator/)).toBeNull();
-    // Expand V3 only
-    fireEvent.press(getByText(/V3 · 生成 Tokens 600 · 汉字/));
-    expect(getByText(finalBody)).toBeTruthy();
-    expect(queryByText(draftBody)).toBeNull();
+    // Adoption controls remain available
     expect(getByText('采纳')).toBeTruthy();
     expect(getByText('放弃')).toBeTruthy();
   });
