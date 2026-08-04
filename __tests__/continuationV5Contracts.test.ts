@@ -28,7 +28,7 @@ describe('Continuation V5 contracts', () => {
     expect(t.severeUnderHan).toBe(1950);
   });
 
-  test('Draft envelope requires complete content, rejects patches', () => {
+  test('Draft envelope requires complete content; patch fields are soft-ignored', () => {
     const draft = parseContinuationV5DraftEnvelope(
       JSON.stringify({
         schemaVersion: 1,
@@ -44,15 +44,18 @@ describe('Continuation V5 contracts', () => {
     );
     expect(draft.content).toContain('完整的 V1');
     expect(draft.plan.beats[0].stateChange).toBe('局面初变');
-    expect(() =>
-      parseContinuationV5DraftEnvelope(
-        JSON.stringify({
-          schemaVersion: 1,
-          content: '局部',
-          patches: [{ start: 0, end: 1, replacement: 'x' }],
-        }),
-      ),
-    ).toThrow(/局部修改/);
+    const softWarnings: string[] = [];
+    const soft = parseContinuationV5DraftEnvelope(
+      JSON.stringify({
+        schemaVersion: 1,
+        content: '完整的 V1 初稿正文，包含行动与后果，不是局部补丁。',
+        patches: [{ start: 0, end: 1, replacement: 'x' }],
+      }),
+      {},
+      softWarnings,
+    );
+    expect(soft.content).toContain('完整的 V1');
+    expect(softWarnings.some(w => w.includes('patch_field'))).toBe(true);
   });
 
   test('Architecture scene units and client hash', () => {
@@ -81,7 +84,7 @@ describe('Continuation V5 contracts', () => {
     expect(hashArchitectureEnvelope(arch)).toBe(hash);
   });
 
-  test('Revision hash binding and Final hash binding', () => {
+  test('Revision/Final hash binding soft-forces expected hashes', () => {
     const draftHash = 'a'.repeat(64);
     const archHash = 'b'.repeat(64);
     const rev = parseContinuationV5RevisionEnvelope(
@@ -97,17 +100,19 @@ describe('Continuation V5 contracts', () => {
       { draftArtifactHash: draftHash, architectureHash: archHash },
     );
     expect(rev.content).toContain('V2');
-    expect(() =>
-      parseContinuationV5RevisionEnvelope(
-        JSON.stringify({
-          schemaVersion: 1,
-          draftArtifactHash: 'wrong',
-          architectureHash: archHash,
-          content: 'x'.repeat(20),
-        }),
-        { draftArtifactHash: draftHash, architectureHash: archHash },
-      ),
-    ).toThrow(/hash_mismatch/);
+    const softWarnings: string[] = [];
+    const softRev = parseContinuationV5RevisionEnvelope(
+      JSON.stringify({
+        schemaVersion: 1,
+        draftArtifactHash: 'wrong',
+        architectureHash: archHash,
+        content: '完整 V2 正文，hash 错误也不阻断，只记软警告。',
+      }),
+      { draftArtifactHash: draftHash, architectureHash: archHash },
+      softWarnings,
+    );
+    expect(softRev.draftArtifactHash).toBe(draftHash);
+    expect(softWarnings.some(w => w.includes('draftArtifactHash'))).toBe(true);
 
     const auditHash = 'c'.repeat(64);
     const finalEnv = parseContinuationV5FinalEnvelope(
@@ -132,9 +137,29 @@ describe('Continuation V5 contracts', () => {
       },
     );
     expect(finalEnv.content).toContain('V3');
+    const finalWarnings: string[] = [];
+    const softFinal = parseContinuationV5FinalEnvelope(
+      JSON.stringify({
+        schemaVersion: 1,
+        revisionArtifactHash: 'nope',
+        architectureHash: 'nope',
+        auditContractHash: 'nope',
+        content: '完整 V3 最终章节正文，绑定错误仅软警告。',
+      }),
+      {
+        revisionArtifactHash: draftHash,
+        architectureHash: archHash,
+        auditContractHash: auditHash,
+      },
+      finalWarnings,
+    );
+    expect(softFinal.revisionArtifactHash).toBe(draftHash);
+    expect(softFinal.architectureHash).toBe(archHash);
+    expect(softFinal.auditContractHash).toBe(auditHash);
+    expect(finalWarnings.length).toBeGreaterThan(0);
   });
 
-  test('Auditor binding failure and fallback contract', () => {
+  test('Auditor binding soft-forces expected ids; fallback still available', () => {
     const expected = {
       draftArtifactHash: 'd'.repeat(64),
       architectureHash: 'e'.repeat(64),
@@ -144,29 +169,31 @@ describe('Continuation V5 contracts', () => {
       styleProfileHash: 'sp_1',
       styleRendererVersion: '1.0',
     };
-    expect(() =>
-      parseContinuationV5AuditEnvelope(
-        JSON.stringify({
-          schemaVersion: 1,
-          draftArtifactHash: 'wrong',
-          architectureHash: expected.architectureHash,
-          canonSnapshotId: expected.canonSnapshotId,
-          canonRevision: expected.canonRevision,
-          inputRevisionHash: expected.inputRevisionHash,
-          styleProfileHash: expected.styleProfileHash,
-          styleRendererVersion: expected.styleRendererVersion,
-          canonAudit: { requiredCorrections: [], protectedFacts: [], forbiddenFacts: [] },
-          styleAudit: {
-            requiredCorrections: [],
-            protectedPassages: [],
-            forbiddenExpansionPatterns: [],
-          },
-          architectureAudit: { safeSceneIds: [], rejectedScenes: [] },
-          finalObligations: [],
-        }),
-        expected,
-      ),
-    ).toThrow(/binding_failed/);
+    const softWarnings: string[] = [];
+    const softAudit = parseContinuationV5AuditEnvelope(
+      JSON.stringify({
+        schemaVersion: 1,
+        draftArtifactHash: 'wrong',
+        architectureHash: expected.architectureHash,
+        canonSnapshotId: expected.canonSnapshotId,
+        canonRevision: expected.canonRevision,
+        inputRevisionHash: expected.inputRevisionHash,
+        styleProfileHash: expected.styleProfileHash,
+        styleRendererVersion: expected.styleRendererVersion,
+        canonAudit: { requiredCorrections: [], protectedFacts: [], forbiddenFacts: [] },
+        styleAudit: {
+          requiredCorrections: [],
+          protectedPassages: [],
+          forbiddenExpansionPatterns: [],
+        },
+        architectureAudit: { safeSceneIds: [], rejectedScenes: [] },
+        finalObligations: [],
+      }),
+      expected,
+      softWarnings,
+    );
+    expect(softAudit.draftArtifactHash).toBe(expected.draftArtifactHash);
+    expect(softWarnings.some(w => w.includes('draftArtifactHash'))).toBe(true);
 
     const fallback = buildFallbackAuditContract({
       ...expected,
@@ -325,7 +352,7 @@ describe('Final Artifact Validator', () => {
     expect(result.codes.join(',')).not.toMatch(/repair_candidate_unchanged|minimal|retention/);
   });
 
-  test('rejects summary, patch markers, unapplied items, new core facts, rejected scenes', () => {
+  test('soft gates: quality issues become warnings; non-empty body still passes', () => {
     const base = {
       schemaVersion: 1 as const,
       revisionArtifactHash: 'r'.repeat(64),
@@ -351,7 +378,12 @@ describe('Final Artifact Validator', () => {
       auditContractHash: auditHash,
       revisionArtifactHash: 'r'.repeat(64),
     });
-    expect(summary.passed).toBe(false);
+    // Soft: still deliverable if body non-empty.
+    expect(summary.passed).toBe(true);
+    expect(summary.warnings).toEqual(
+      expect.arrayContaining(['final_summary_output']),
+    );
+    expect(summary.blockingCodes).toEqual([]);
 
     const facts = validateFinalArtifact({
       envelope: {
@@ -384,7 +416,9 @@ describe('Final Artifact Validator', () => {
       auditContractHash: auditHash,
       revisionArtifactHash: 'r'.repeat(64),
     });
-    expect(facts.blockingCodes).toEqual(
+    expect(facts.passed).toBe(true);
+    expect(facts.blockingCodes).toEqual([]);
+    expect(facts.warnings).toEqual(
       expect.arrayContaining([
         'final_declared_new_core_fact',
         'final_unapplied_items',
@@ -393,7 +427,7 @@ describe('Final Artifact Validator', () => {
     );
   });
 
-  test('truncated finishReason fails without comparing old drafts', () => {
+  test('null envelope still fails; truncated alone without body is non-deliverable', () => {
     const result = validateFinalArtifact({
       envelope: null,
       finishReason: 'length',

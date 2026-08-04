@@ -219,6 +219,7 @@ export type {
 } from './finalArtifactValidator';
 export {
   CONTINUATION_V5_LENGTH_POLICY,
+  CONTINUATION_V5_SOFT_GATES,
   buildFallbackArchitecture,
   buildFallbackAuditContract,
   diagnoseLengthTelemetry,

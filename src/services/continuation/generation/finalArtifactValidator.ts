@@ -3,11 +3,16 @@
  *
  * Zero-request technical delivery check only. No Writer-relative retention,
  * no minimal-intervention gate, no length-based rejection.
+ *
+ * Soft-gate mode (CONTINUATION_V5_SOFT_GATES): only empty / missing content
+ * blocks eligibility; all other findings are warnings so the pipeline can
+ * still deliver a reviewable final draft.
  */
 import { runDeterministicChecks } from './continuationChecker';
 import { countHanCharacters } from './continuationLengthContract';
 import {
   CONTINUATION_V5_LENGTH_POLICY,
+  CONTINUATION_V5_SOFT_GATES,
   diagnoseLengthTelemetry,
   resolveV5LengthTargets,
 } from './continuationV5Contracts';
@@ -156,6 +161,7 @@ export function validateFinalArtifact(input: {
     if (!codes.includes('final_invalid_envelope') && !input.parseErrorCode) {
       codes.push('final_invalid_envelope');
     }
+    // Soft: truncated-without-envelope is still non-deliverable (no body).
     return {
       passed: false,
       codes: Array.from(new Set(codes)),
@@ -277,16 +283,38 @@ export function validateFinalArtifact(input: {
     );
   }
 
-  // Length never blocks eligibility.
+  // Soft-gate mode: only empty content is blocking; everything else is a warning.
+  // Hard mode (legacy): all codes except length severity block.
   const uniqueCodes = Array.from(new Set(codes));
-  const blockingCodes = uniqueCodes.filter(
+  const hardBlocking: FinalArtifactValidationCode[] = uniqueCodes.filter(
     code => code !== 'final_severe_under_target',
   );
+  const softBlockingOnly: FinalArtifactValidationCode[] = uniqueCodes.filter(
+    code => code === 'final_empty_content',
+  );
+  const blockingCodes: FinalArtifactValidationCode[] = CONTINUATION_V5_SOFT_GATES
+    ? softBlockingOnly
+    : hardBlocking;
+  const blockingSet = new Set(blockingCodes);
+
+  // Move non-blocking findings into warnings when soft gates are on.
+  const warningSet = new Set<FinalArtifactValidationCode>(warnings);
+  if (CONTINUATION_V5_SOFT_GATES) {
+    for (const code of uniqueCodes) {
+      if (!blockingSet.has(code)) {
+        warningSet.add(code);
+      }
+    }
+  }
+  const mergedWarnings = Array.from(warningSet);
 
   return {
-    passed: blockingCodes.length === 0,
-    codes: [...uniqueCodes, ...warnings.filter(code => !uniqueCodes.includes(code))],
-    warnings,
+    passed: blockingCodes.length === 0 && Boolean(content.trim()),
+    codes: [
+      ...uniqueCodes,
+      ...mergedWarnings.filter(code => !uniqueCodes.includes(code)),
+    ],
+    warnings: mergedWarnings,
     blockingCodes,
     actualHan,
     targetHan: targets.targetHan,

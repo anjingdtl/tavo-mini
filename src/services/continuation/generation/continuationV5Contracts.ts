@@ -1,6 +1,8 @@
 /**
  * Continuation V5 envelopes, hashes, length policy, and parsers.
- * Client-computed hashes are authoritative; model-reported hashes are ignored.
+ * Client-computed hashes are authoritative; model-reported hashes are soft-checked
+ * (mismatch/missing → warning + force expected). Temporary soft-gate mode: prefer
+ * degrade-and-continue so the pipeline can finish; harden gates later.
  */
 import { stripModelJson } from '../canon/canonJsonValidators';
 import { sha256Hex } from '../hashUtils';
@@ -15,12 +17,24 @@ import type {
   ContinuationV5SceneUnit,
 } from './types';
 
+/** Temporary global soft-gate switch for V5 technical gates. */
+export const CONTINUATION_V5_SOFT_GATES = true;
+
 export const CONTINUATION_V5_LENGTH_POLICY: ContinuationV5LengthPolicy = {
   preferredMinRatio: 0.9,
   preferredMaxRatio: 1.1,
   severeUnderRatio: 0.65,
   outputHeadroomRatio: 1.2,
 };
+
+export type V5SoftWarning = string;
+
+function noteSoft(
+  softWarnings: V5SoftWarning[] | undefined,
+  code: string,
+): void {
+  if (softWarnings) softWarnings.push(code);
+}
 
 export function resolveV5LengthTargets(
   targetHan: number,
@@ -117,35 +131,72 @@ function extractChapterContent(value: unknown, depth = 0): string {
   return '';
 }
 
-function assertNoPatchFields(parsed: Record<string, unknown>, label: string): void {
+function assertNoPatchFields(
+  parsed: Record<string, unknown>,
+  label: string,
+  softWarnings?: V5SoftWarning[],
+): void {
   const forbidden = ['patches', 'offset', 'diff', 'delta'];
   for (const key of forbidden) {
     if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+      if (CONTINUATION_V5_SOFT_GATES) {
+        noteSoft(softWarnings, `${label}_soft_ignored_patch_field:${key}`);
+        delete parsed[key];
+        continue;
+      }
       throw new Error(`${label} 不允许输出局部修改字段 ${key}。`);
     }
   }
 }
 
-function assertPlainChapterContent(content: string, label: string): void {
-  if (!content.trim()) {
+function sanitizeChapterContent(
+  content: string,
+  label: string,
+  softWarnings?: V5SoftWarning[],
+): string {
+  let text = content.trim();
+  if (!text) {
     throw new Error(`${label} content 不能为空。`);
   }
   try {
-    const nested = JSON.parse(content);
+    const nested = JSON.parse(text);
     if (nested && typeof nested === 'object') {
-      throw new Error(`${label} content 不能再次包含 JSON 外壳。`);
+      const extracted = extractChapterContent(nested);
+      if (extracted && CONTINUATION_V5_SOFT_GATES) {
+        noteSoft(softWarnings, `${label}_soft_unwrapped_nested_json_content`);
+        text = extracted;
+      } else {
+        throw new Error(`${label} content 不能再次包含 JSON 外壳。`);
+      }
     }
   } catch (error) {
     if (error instanceof Error && error.message.includes('不能再次包含')) {
       throw error;
     }
   }
-  if (/```/.test(content) || /<\/?think>/i.test(content)) {
-    throw new Error(`${label} content 含协议泄漏标记。`);
+  if (/```/.test(text) || /<\/?think>/i.test(text)) {
+    if (CONTINUATION_V5_SOFT_GATES) {
+      noteSoft(softWarnings, `${label}_soft_stripped_protocol_leakage`);
+      text = text
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/```/g, '')
+        .replace(/<\/?think>/gi, '')
+        .trim();
+      if (!text) {
+        throw new Error(`${label} content 不能为空。`);
+      }
+    } else {
+      throw new Error(`${label} content 含协议泄漏标记。`);
+    }
   }
+  return text;
 }
 
-function parseTopObject(raw: string, label: string): Record<string, any> {
+function parseTopObject(
+  raw: string,
+  label: string,
+  softWarnings?: V5SoftWarning[],
+): Record<string, any> {
   let parsed: any;
   try {
     parsed = JSON.parse(stripModelJson(raw));
@@ -162,21 +213,55 @@ function parseTopObject(raw: string, label: string): Record<string, any> {
     parsed.schemaVersion !== undefined &&
     Number(parsed.schemaVersion) !== 1
   ) {
-    throw new Error(`${label} schemaVersion 只能是 1。`);
+    if (CONTINUATION_V5_SOFT_GATES) {
+      noteSoft(
+        softWarnings,
+        `${label}_soft_schema_version:${String(parsed.schemaVersion)}`,
+      );
+      parsed.schemaVersion = 1;
+    } else {
+      throw new Error(`${label} schemaVersion 只能是 1。`);
+    }
   }
   return parsed as Record<string, any>;
+}
+
+/**
+ * Soft hash binding: model-reported value is advisory only.
+ * Always return expected; push a warning when missing or mismatched.
+ */
+function softBindHash(
+  reported: string,
+  expected: string,
+  codePrefix: string,
+  field: string,
+  softWarnings?: V5SoftWarning[],
+): string {
+  if (!reported) {
+    noteSoft(softWarnings, `${codePrefix}_missing: ${field}`);
+    return expected;
+  }
+  if (reported !== expected) {
+    noteSoft(softWarnings, `${codePrefix}_mismatch: ${field}`);
+    return expected;
+  }
+  return expected;
 }
 
 export function parseContinuationV5DraftEnvelope(
   raw: string,
   fallback: { chapterGoal?: string; centralConflict?: string } = {},
+  softWarnings: V5SoftWarning[] = [],
 ): ContinuationV5DraftEnvelope {
-  const parsed = parseTopObject(raw, 'V5 Draft Writer');
-  assertNoPatchFields(parsed, 'V5 Draft Writer');
-  const content = extractChapterContent(
-    parsed.content ?? parsed.text ?? parsed.draft ?? parsed.body,
+  const parsed = parseTopObject(raw, 'V5 Draft Writer', softWarnings);
+  assertNoPatchFields(parsed, 'V5 Draft Writer', softWarnings);
+  const content = sanitizeChapterContent(
+    extractChapterContent(
+      parsed.content ?? parsed.text ?? parsed.draft ?? parsed.body,
+    ),
+    'V5 Draft Writer',
+    softWarnings,
   );
-  assertPlainChapterContent(content, 'V5 Draft Writer');
   const planObj =
     parsed.plan && typeof parsed.plan === 'object' ? parsed.plan : parsed;
   const chapterGoal =
@@ -240,8 +325,9 @@ function parseSceneUnit(raw: any, index: number): ContinuationV5SceneUnit | null
 
 export function parseContinuationV5ArchitectureEnvelope(
   raw: string,
+  softWarnings: V5SoftWarning[] = [],
 ): ContinuationV5ArchitectureEnvelope {
-  const parsed = parseTopObject(raw, 'V5 Narrative Architect');
+  const parsed = parseTopObject(raw, 'V5 Narrative Architect', softWarnings);
   const unitsRaw = Array.isArray(parsed.sceneUnits)
     ? parsed.sceneUnits
     : Array.isArray(parsed.scenes)
@@ -251,6 +337,8 @@ export function parseContinuationV5ArchitectureEnvelope(
     .map((unit: any, index: number) => parseSceneUnit(unit, index))
     .filter((unit): unit is ContinuationV5SceneUnit => unit != null);
   if (sceneUnits.length === 0) {
+    // Soft: runner already has buildFallbackArchitecture; still throw so that
+    // path is used (degraded success). Soft gate lives in runner catch.
     throw new Error('V5 Narrative Architect 缺少合法 sceneUnits。');
   }
   return {
@@ -325,25 +413,51 @@ export function buildFallbackArchitecture(input: {
 export function parseContinuationV5RevisionEnvelope(
   raw: string,
   expected: { draftArtifactHash: string; architectureHash: string },
+  softWarnings: V5SoftWarning[] = [],
 ): ContinuationV5RevisionEnvelope {
-  const parsed = parseTopObject(raw, 'V5 Revision Writer');
-  assertNoPatchFields(parsed, 'V5 Revision Writer');
-  const content = extractChapterContent(parsed.content ?? parsed.text);
-  assertPlainChapterContent(content, 'V5 Revision Writer');
-  const draftArtifactHash = asString(parsed.draftArtifactHash);
-  const architectureHash = asString(parsed.architectureHash);
-  if (!draftArtifactHash) {
-    throw new Error('revision_writer_hash_missing: draftArtifactHash');
-  }
-  if (!architectureHash) {
-    throw new Error('revision_writer_hash_missing: architectureHash');
-  }
-  if (draftArtifactHash !== expected.draftArtifactHash) {
-    throw new Error('revision_writer_hash_mismatch: draftArtifactHash');
-  }
-  if (architectureHash !== expected.architectureHash) {
-    throw new Error('revision_writer_hash_mismatch: architectureHash');
-  }
+  const parsed = parseTopObject(raw, 'V5 Revision Writer', softWarnings);
+  assertNoPatchFields(parsed, 'V5 Revision Writer', softWarnings);
+  const content = sanitizeChapterContent(
+    extractChapterContent(parsed.content ?? parsed.text),
+    'V5 Revision Writer',
+    softWarnings,
+  );
+  const draftArtifactHash = CONTINUATION_V5_SOFT_GATES
+    ? softBindHash(
+        asString(parsed.draftArtifactHash),
+        expected.draftArtifactHash,
+        'revision_writer_hash',
+        'draftArtifactHash',
+        softWarnings,
+      )
+    : (() => {
+        const reported = asString(parsed.draftArtifactHash);
+        if (!reported) {
+          throw new Error('revision_writer_hash_missing: draftArtifactHash');
+        }
+        if (reported !== expected.draftArtifactHash) {
+          throw new Error('revision_writer_hash_mismatch: draftArtifactHash');
+        }
+        return reported;
+      })();
+  const architectureHash = CONTINUATION_V5_SOFT_GATES
+    ? softBindHash(
+        asString(parsed.architectureHash),
+        expected.architectureHash,
+        'revision_writer_hash',
+        'architectureHash',
+        softWarnings,
+      )
+    : (() => {
+        const reported = asString(parsed.architectureHash);
+        if (!reported) {
+          throw new Error('revision_writer_hash_missing: architectureHash');
+        }
+        if (reported !== expected.architectureHash) {
+          throw new Error('revision_writer_hash_mismatch: architectureHash');
+        }
+        return reported;
+      })();
   return {
     schemaVersion: 1,
     draftArtifactHash,
@@ -391,29 +505,71 @@ export function parseContinuationV5AuditEnvelope(
     styleProfileHash: string | null;
     styleRendererVersion: string | null;
   },
+  softWarnings: V5SoftWarning[] = [],
 ): ContinuationV5AuditEnvelope {
-  const parsed = parseTopObject(raw, 'V5 Adversarial Auditor');
-  const draftArtifactHash = asString(parsed.draftArtifactHash);
-  const architectureHash = asString(parsed.architectureHash);
-  if (!draftArtifactHash || draftArtifactHash !== expected.draftArtifactHash) {
-    throw new Error('adversarial_audit_binding_failed: draftArtifactHash');
-  }
-  if (!architectureHash || architectureHash !== expected.architectureHash) {
-    throw new Error('adversarial_audit_binding_failed: architectureHash');
-  }
+  const parsed = parseTopObject(raw, 'V5 Adversarial Auditor', softWarnings);
+  const draftArtifactHash = CONTINUATION_V5_SOFT_GATES
+    ? softBindHash(
+        asString(parsed.draftArtifactHash),
+        expected.draftArtifactHash,
+        'adversarial_audit_binding',
+        'draftArtifactHash',
+        softWarnings,
+      )
+    : (() => {
+        const reported = asString(parsed.draftArtifactHash);
+        if (!reported || reported !== expected.draftArtifactHash) {
+          throw new Error('adversarial_audit_binding_failed: draftArtifactHash');
+        }
+        return reported;
+      })();
+  const architectureHash = CONTINUATION_V5_SOFT_GATES
+    ? softBindHash(
+        asString(parsed.architectureHash),
+        expected.architectureHash,
+        'adversarial_audit_binding',
+        'architectureHash',
+        softWarnings,
+      )
+    : (() => {
+        const reported = asString(parsed.architectureHash);
+        if (!reported || reported !== expected.architectureHash) {
+          throw new Error('adversarial_audit_binding_failed: architectureHash');
+        }
+        return reported;
+      })();
   if (asString(parsed.canonSnapshotId) !== expected.canonSnapshotId) {
-    throw new Error('adversarial_audit_binding_failed: canonSnapshotId');
+    if (CONTINUATION_V5_SOFT_GATES) {
+      noteSoft(softWarnings, 'adversarial_audit_binding_mismatch: canonSnapshotId');
+    } else {
+      throw new Error('adversarial_audit_binding_failed: canonSnapshotId');
+    }
   }
   if (Number(parsed.canonRevision) !== expected.canonRevision) {
-    throw new Error('adversarial_audit_binding_failed: canonRevision');
+    if (CONTINUATION_V5_SOFT_GATES) {
+      noteSoft(softWarnings, 'adversarial_audit_binding_mismatch: canonRevision');
+    } else {
+      throw new Error('adversarial_audit_binding_failed: canonRevision');
+    }
   }
   if (asString(parsed.inputRevisionHash) !== expected.inputRevisionHash) {
-    throw new Error('adversarial_audit_binding_failed: inputRevisionHash');
+    if (CONTINUATION_V5_SOFT_GATES) {
+      noteSoft(
+        softWarnings,
+        'adversarial_audit_binding_mismatch: inputRevisionHash',
+      );
+    } else {
+      throw new Error('adversarial_audit_binding_failed: inputRevisionHash');
+    }
   }
   const styleHash =
     parsed.styleProfileHash == null ? null : asString(parsed.styleProfileHash);
   if (styleHash !== (expected.styleProfileHash ?? null) && expected.styleProfileHash) {
-    throw new Error('adversarial_audit_binding_failed: styleProfileHash');
+    if (CONTINUATION_V5_SOFT_GATES) {
+      noteSoft(softWarnings, 'adversarial_audit_binding_mismatch: styleProfileHash');
+    } else {
+      throw new Error('adversarial_audit_binding_failed: styleProfileHash');
+    }
   }
   const styleRenderer =
     parsed.styleRendererVersion == null
@@ -423,7 +579,14 @@ export function parseContinuationV5AuditEnvelope(
     styleRenderer !== (expected.styleRendererVersion ?? null) &&
     expected.styleRendererVersion
   ) {
-    throw new Error('adversarial_audit_binding_failed: styleRendererVersion');
+    if (CONTINUATION_V5_SOFT_GATES) {
+      noteSoft(
+        softWarnings,
+        'adversarial_audit_binding_mismatch: styleRendererVersion',
+      );
+    } else {
+      throw new Error('adversarial_audit_binding_failed: styleRendererVersion');
+    }
   }
 
   const canonCorrections = Array.isArray(parsed.canonAudit?.requiredCorrections)
@@ -648,32 +811,63 @@ export function parseContinuationV5FinalEnvelope(
     architectureHash: string;
     auditContractHash: string;
   },
+  softWarnings: V5SoftWarning[] = [],
 ): ContinuationV5FinalEnvelope {
-  const parsed = parseTopObject(raw, 'V5 Final Reviser');
-  assertNoPatchFields(parsed, 'V5 Final Reviser');
-  const content = extractChapterContent(parsed.content ?? parsed.text);
-  assertPlainChapterContent(content, 'V5 Final Reviser');
-  const revisionArtifactHash = asString(parsed.revisionArtifactHash);
-  const architectureHash = asString(parsed.architectureHash);
-  const auditContractHash = asString(parsed.auditContractHash);
-  if (!revisionArtifactHash) {
-    throw new Error('final_revision_hash_missing');
-  }
-  if (revisionArtifactHash !== expected.revisionArtifactHash) {
-    throw new Error('final_revision_hash_mismatch');
-  }
-  if (!architectureHash) {
-    throw new Error('final_architecture_hash_missing');
-  }
-  if (architectureHash !== expected.architectureHash) {
-    throw new Error('final_architecture_hash_mismatch');
-  }
-  if (!auditContractHash) {
-    throw new Error('final_audit_hash_missing');
-  }
-  if (auditContractHash !== expected.auditContractHash) {
-    throw new Error('final_audit_hash_mismatch');
-  }
+  const parsed = parseTopObject(raw, 'V5 Final Reviser', softWarnings);
+  assertNoPatchFields(parsed, 'V5 Final Reviser', softWarnings);
+  const content = sanitizeChapterContent(
+    extractChapterContent(parsed.content ?? parsed.text),
+    'V5 Final Reviser',
+    softWarnings,
+  );
+  const revisionArtifactHash = CONTINUATION_V5_SOFT_GATES
+    ? softBindHash(
+        asString(parsed.revisionArtifactHash),
+        expected.revisionArtifactHash,
+        'final_revision_hash',
+        'revisionArtifactHash',
+        softWarnings,
+      )
+    : (() => {
+        const reported = asString(parsed.revisionArtifactHash);
+        if (!reported) throw new Error('final_revision_hash_missing');
+        if (reported !== expected.revisionArtifactHash) {
+          throw new Error('final_revision_hash_mismatch');
+        }
+        return reported;
+      })();
+  const architectureHash = CONTINUATION_V5_SOFT_GATES
+    ? softBindHash(
+        asString(parsed.architectureHash),
+        expected.architectureHash,
+        'final_architecture_hash',
+        'architectureHash',
+        softWarnings,
+      )
+    : (() => {
+        const reported = asString(parsed.architectureHash);
+        if (!reported) throw new Error('final_architecture_hash_missing');
+        if (reported !== expected.architectureHash) {
+          throw new Error('final_architecture_hash_mismatch');
+        }
+        return reported;
+      })();
+  const auditContractHash = CONTINUATION_V5_SOFT_GATES
+    ? softBindHash(
+        asString(parsed.auditContractHash),
+        expected.auditContractHash,
+        'final_audit_hash',
+        'auditContractHash',
+        softWarnings,
+      )
+    : (() => {
+        const reported = asString(parsed.auditContractHash);
+        if (!reported) throw new Error('final_audit_hash_missing');
+        if (reported !== expected.auditContractHash) {
+          throw new Error('final_audit_hash_mismatch');
+        }
+        return reported;
+      })();
   return {
     schemaVersion: 1,
     revisionArtifactHash,
