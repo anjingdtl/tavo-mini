@@ -1,5 +1,6 @@
 import {
   compileContinuationV5AuditorMessages,
+  compileContinuationV5DraftWriterMessages,
   compileContinuationV5FinalReviserMessages,
   compileContinuationV5RevisionWriterMessages,
   buildContinuationV5RevisionAnchors,
@@ -38,6 +39,7 @@ function baseView(overrides: Record<string, unknown> = {}) {
       experiences: [],
     },
     primaryAnchorSummary: '',
+    primaryAnchorSeamText: '',
     recentBridgeSummary: '',
     style: {
       profileId: null,
@@ -407,3 +409,156 @@ describe('V5 edit work packet drives V3 polish', () => {
     expect(system).toMatch(/完成所有工作包后.*通读全文/);
   });
 });
+
+describe('V5 chapter linkage: previous-chapter seam is injected into every stage', () => {
+  const PREV_CHAPTER_TAIL = '他推开门，雨水顺着衣角滴落，廊下的灯笼在风里摇。';
+
+  function draftWriterView(seamText: string) {
+    return {
+      ...baseView({ stage: 'draft_writer' }),
+      budget: {
+        ...baseView().budget,
+        stage: 'draft_writer' as const,
+      },
+      primaryAnchor: {
+        kind: 'continuation_chapter' as const,
+        summary: '续写章节「第二章」',
+        excerpt: PREV_CHAPTER_TAIL,
+        chapterId: 42,
+        position: 1,
+      },
+      recentChapters: [],
+      storyMemory: {
+        summary: '',
+        estimatedTokens: 0,
+        eligibilityReason: '',
+        throughPosition: 0,
+      },
+      episodic: [],
+      historicalDigests: [],
+      fullCanon: {
+        worldRules: [],
+        characters: [],
+        characterStates: [],
+        relationships: [],
+        experiences: [],
+        knowledge: [],
+        plotThreads: [],
+        timelineEvents: [],
+      },
+      primaryAnchorSeamText: seamText,
+    } as any;
+  }
+
+  test('Draft Writer receives the real previous-chapter excerpt, not the placeholder label', () => {
+    const seamText = `续写章节「第二章」\n${PREV_CHAPTER_TAIL}`;
+    const compiled = compileContinuationV5DraftWriterMessages({
+      view: draftWriterView(seamText),
+    });
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+
+    // Regression: previously the prompt emitted "（已由最近续写正文接缝替代）"
+    // (a placeholder) and never the real previous-chapter prose. Now the real
+    // tail must be present so the model can connect chapter N+1 to chapter N.
+    expect(user).toContain(PREV_CHAPTER_TAIL);
+    expect(user).not.toMatch(/已由最近续写正文接缝替代/);
+    expect(user).toMatch(/上一章正文接缝/);
+  });
+
+  test('Revision Writer receives the previous-chapter seam to preserve linkage', () => {
+    const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
+    const architectureHash = hashArchitectureEnvelope(architecture);
+    const seamText = `续写章节「第二章」\n${PREV_CHAPTER_TAIL}`;
+    const compiled = compileContinuationV5RevisionWriterMessages({
+      view: {
+        ...baseView({ stage: 'revision_writer' }),
+        primaryAnchorSeamText: seamText,
+      } as any,
+      draftContent: '初稿正文。',
+      draftHan: 1800,
+      draftArtifactHash: 'a'.repeat(64),
+      architecture,
+      architectureHash,
+    });
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    expect(user).toContain(PREV_CHAPTER_TAIL);
+    expect(user).toMatch(/上一章正文接缝/);
+  });
+
+  test('Auditor receives the seam and a linkage-check mandate', () => {
+    const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
+    const architectureHash = hashArchitectureEnvelope(architecture);
+    const seamText = `续写章节「第二章」\n${PREV_CHAPTER_TAIL}`;
+    const compiled = compileContinuationV5AuditorMessages({
+      view: {
+        ...baseView({ stage: 'adversarial_auditor' }),
+        primaryAnchorSeamText: seamText,
+      } as any,
+      draftContent: 'V1 原始表达。',
+      draftArtifactHash: 'd'.repeat(64),
+      revisionContent: 'V2 待润色表达。',
+      revisionArtifactHash: 'r'.repeat(64),
+      revisionAnchors: buildContinuationV5RevisionAnchors('V2 待润色表达。'),
+      architecture,
+      architectureHash,
+    });
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
+    expect(user).toContain(PREV_CHAPTER_TAIL);
+    expect(system).toMatch(/衔接检查/);
+  });
+
+  test('Final Reviser receives the seam and a linkage-preservation hint', () => {
+    const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
+    const architectureHash = hashArchitectureEnvelope(architecture);
+    const audit = buildFallbackAuditContract({
+      draftArtifactHash: 'd'.repeat(64),
+      revisionArtifactHash: 'r'.repeat(64),
+      architectureHash,
+      canonSnapshotId: 'cs',
+      canonRevision: 1,
+      inputRevisionHash: 'ir',
+      styleProfileHash: null,
+      styleRendererVersion: null,
+      lockedRules: [],
+      hardCanonFacts: [],
+    });
+    const seamText = `续写章节「第二章」\n${PREV_CHAPTER_TAIL}`;
+    const compiled = compileContinuationV5FinalReviserMessages({
+      view: {
+        ...baseView({ stage: 'final_reviser' }),
+        budget: {
+          ...baseView().budget,
+          stage: 'final_reviser' as const,
+        },
+        primaryAnchorSeamText: seamText,
+      } as any,
+      revisionContent: '完整 V2。',
+      revisionHan: 4800,
+      revisionArtifactHash: 'r'.repeat(64),
+      architecture,
+      architectureHash,
+      audit,
+      auditContractHash: hashAuditEnvelope(audit),
+    });
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
+    expect(user).toContain(PREV_CHAPTER_TAIL);
+    expect(system).toMatch(/上一章正文接缝.*自然衔接/);
+  });
+
+  test('Empty seam (opening chapter) renders a graceful placeholder, not the bug string', () => {
+    const compiled = compileContinuationV5DraftWriterMessages({
+      view: draftWriterView(''),
+    });
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    // No real previous chapter (e.g. first continuation from source opening):
+    // the channel is present but explicit, and must never fall back to the
+    // legacy broken label.
+    expect(user).toMatch(/上一章正文接缝/);
+    expect(user).not.toMatch(/已由最近续写正文接缝替代/);
+  });
+});
+

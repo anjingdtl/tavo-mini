@@ -229,6 +229,21 @@ function supplementView(
   };
 }
 
+/**
+ * Compact previous-chapter seam text rendered into every full-text V5 prompt.
+ * Emits the anchor summary followed by its already-token-budgeted excerpt tail.
+ * Returns empty string only when no anchor is present (no prior chapter and no
+ * source seam), which is a degenerate case that should never occur in practice.
+ */
+function primaryAnchorSeamText(snapshot: SnapshotLike): string {
+  const anchor = snapshot.primaryAnchor;
+  if (!anchor) return '';
+  const summary = anchor.summary?.trim() ?? '';
+  const excerpt = anchor.excerpt?.trim() ?? '';
+  if (!summary && !excerpt) return '';
+  return [summary, excerpt].filter(Boolean).join('\n');
+}
+
 function baseShared(
   snapshot: SnapshotLike,
   stageBudgets: ContinuationV5StageBudgets,
@@ -263,6 +278,12 @@ function baseShared(
       experiences: snapshot.bundles.effectiveState.experiences,
     },
     primaryAnchorSummary: snapshot.bundles.seam?.summary ?? '',
+    // Inject the real previous-chapter seam (summary + clipped excerpt tail)
+    // into every full-text V5 stage so revision/audit/polish can verify and
+    // preserve chapter-to-chapter linkage. snapshot.primaryAnchor.excerpt is
+    // already tail-clipped to the context budget at snapshot build time, so
+    // no further truncation is needed here.
+    primaryAnchorSeamText: primaryAnchorSeamText(snapshot),
     recentBridgeSummary: (snapshot.bundles.recentChapters ?? [])
       .slice(0, 2)
       .map(chapter => chapter.excerpt)
