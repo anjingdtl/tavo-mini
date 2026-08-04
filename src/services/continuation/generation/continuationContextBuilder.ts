@@ -49,12 +49,15 @@ import type {
   ContinuationContextTrace,
   ContinuationFrozenStyle,
   ContinuationContextSnapshotV3,
+  ContinuationContextSnapshotV5,
   ContinuationGenerationSettings,
   ContinuationGenerationSettingsSnapshot,
   ContinuationPlan,
   ContinuationStyleProfile,
   FrozenContinuationModelConfig,
   ContinuationV4ContextStage,
+  ContinuationV5PhysicalNode,
+  ContinuationV5LengthPolicy,
   StrictnessProfile,
 } from './types';
 import { ContinuationCapabilityBlockedError } from './types';
@@ -87,6 +90,20 @@ import {
   buildContinuationControlFallback,
   buildContinuationControlMetrics,
 } from './continuationControl';
+import { CONTINUATION_V5_LENGTH_POLICY } from './continuationV5Contracts';
+import {
+  frozenModelToV5Stage,
+  resolveContinuationV5BudgetPreview,
+} from './continuationV5Budget';
+import {
+  buildContinuationV5StageViews,
+  hashContinuationV5StageView,
+} from './continuationV5ContextViews';
+import {
+  compileContinuationV5ArchitectMessages,
+  compileContinuationV5DraftWriterMessages,
+  continuationV5ProtocolSkeletonTokens,
+} from './continuationV5PromptCompiler';
 
 export interface BuildContinuationContextInput {
   projectId: number;
@@ -1263,6 +1280,173 @@ export async function buildContinuationV4Context(
       checker: hashContinuationV4StageView(frozenViews.checker),
       control: hashContinuationV4StageView(frozenViews.control),
       repair: hashContinuationV4StageView(frozenViews.repair),
+    },
+  };
+  return { snapshot, trace };
+}
+
+export interface BuildContinuationV5ContextInput
+  extends Omit<
+    BuildContinuationContextInput,
+    | 'modelContextLimit'
+    | 'maxOutputTokens'
+    | 'initialWriterOutputTokens'
+    | 'stageBudgets'
+  > {
+  policy: ContextAutomationPolicyV2;
+  stageModels: Record<
+    ContinuationV5PhysicalNode,
+    { configId: number; contextWindow: number; maxOutputTokens: number }
+  >;
+  frozenModelConfigs: NonNullable<
+    ContinuationGenerationSettingsSnapshot['frozenModelConfigs']
+  >;
+  lengthPolicy?: ContinuationV5LengthPolicy;
+}
+
+/**
+ * Build the V5 snapshot: reuse the one-shot frozen source/Canon/state selection,
+ * then freeze V5 stage budgets and stage views.
+ */
+export async function buildContinuationV5Context(
+  input: BuildContinuationV5ContextInput,
+): Promise<{
+  snapshot: ContinuationContextSnapshotV5;
+  trace: ContinuationContextTrace;
+}> {
+  const draftModel = input.stageModels.draft_writer;
+  const base = await buildContinuationContext({
+    ...input,
+    modelContextLimit: draftModel.contextWindow,
+    maxOutputTokens: draftModel.maxOutputTokens,
+    initialWriterOutputTokens: draftModel.maxOutputTokens,
+    contextAutomationPolicy: input.policy,
+    writerStageModel: draftModel,
+  });
+  const policyHash = hashContextAutomationPolicy(input.policy);
+  const frozenPolicy = {
+    schemaVersion: input.policy.schemaVersion,
+    allocatorVersion: input.policy.allocatorVersion,
+    policyHash,
+    policy: JSON.parse(JSON.stringify(input.policy)) as ContextAutomationPolicyV2,
+    appliedAt: new Date().toISOString(),
+  };
+  const lengthPolicy = input.lengthPolicy ?? CONTINUATION_V5_LENGTH_POLICY;
+  const frozen = input.frozenModelConfigs;
+  const stages = {
+    draft_writer: frozenModelToV5Stage(frozen.draftWriter ?? frozen.writer!),
+    narrative_architect: frozenModelToV5Stage(
+      frozen.narrativeArchitect ?? frozen.planner ?? frozen.writer!,
+    ),
+    revision_writer: frozenModelToV5Stage(
+      frozen.revisionWriter ?? frozen.repair ?? frozen.writer!,
+    ),
+    adversarial_auditor: frozenModelToV5Stage(
+      frozen.adversarialAuditor ??
+        frozen.checker ??
+        frozen.control ??
+        frozen.writer!,
+    ),
+    final_reviser: frozenModelToV5Stage(
+      frozen.finalReviser ?? frozen.repair ?? frozen.writer!,
+    ),
+  };
+  const protocolSkeletonTokens = {
+    draft_writer: continuationV5ProtocolSkeletonTokens('draft_writer'),
+    narrative_architect: continuationV5ProtocolSkeletonTokens(
+      'narrative_architect',
+    ),
+    revision_writer: continuationV5ProtocolSkeletonTokens('revision_writer'),
+    adversarial_auditor: continuationV5ProtocolSkeletonTokens(
+      'adversarial_auditor',
+    ),
+    final_reviser: continuationV5ProtocolSkeletonTokens('final_reviser'),
+  };
+  const firstBudgets = resolveContinuationV5BudgetPreview({
+    frozenPolicy: input.policy,
+    stages,
+    targetChapterChars: base.snapshot.settingsSnapshot.values.targetChapterChars,
+    compiledPromptTokens: 900,
+    protocolSkeletonTokens,
+    hardContextTokens: base.trace.hardContextTokens ?? 0,
+    lengthPolicy,
+  });
+  const firstViews = buildContinuationV5StageViews({
+    snapshot: base.snapshot,
+    stageBudgets: firstBudgets,
+  });
+  const draftPrompt = compileContinuationV5DraftWriterMessages({
+    view: firstViews.draft_writer,
+  }).promptTokens;
+  const architectPrompt = compileContinuationV5ArchitectMessages({
+    view: firstViews.narrative_architect,
+  }).promptTokens;
+  const frozenStageBudgets = resolveContinuationV5BudgetPreview({
+    frozenPolicy: input.policy,
+    stages,
+    targetChapterChars: base.snapshot.settingsSnapshot.values.targetChapterChars,
+    compiledPromptTokens: {
+      draft_writer: draftPrompt,
+      narrative_architect: architectPrompt,
+      revision_writer: draftPrompt + 400,
+      adversarial_auditor: draftPrompt + 500,
+      final_reviser: draftPrompt + 600,
+    },
+    protocolSkeletonTokens,
+    hardContextTokens: base.trace.hardContextTokens ?? 0,
+    lengthPolicy,
+  });
+  const frozenViews = buildContinuationV5StageViews({
+    snapshot: base.snapshot,
+    stageBudgets: frozenStageBudgets,
+  });
+  const settingsSnapshot: ContinuationGenerationSettingsSnapshot = {
+    ...base.snapshot.settingsSnapshot,
+    workflowVersion: 5,
+    values: {
+      ...base.snapshot.settingsSnapshot.values,
+      writerLlmConfigId: stages.draft_writer.configId,
+      plannerLlmConfigId: stages.narrative_architect.configId,
+      checkerLlmConfigId: stages.adversarial_auditor.configId,
+      repairLlmConfigId: stages.revision_writer.configId,
+    },
+    resolvedModelConfigIds: {
+      ...base.snapshot.settingsSnapshot.resolvedModelConfigIds,
+      writer: stages.draft_writer.configId,
+      planner: stages.narrative_architect.configId,
+      checker: stages.adversarial_auditor.configId,
+      repair: stages.revision_writer.configId,
+      draftWriter: stages.draft_writer.configId,
+      narrativeArchitect: stages.narrative_architect.configId,
+      revisionWriter: stages.revision_writer.configId,
+      adversarialAuditor: stages.adversarial_auditor.configId,
+      finalReviser: stages.final_reviser.configId,
+    },
+    frozenModelConfigs: input.frozenModelConfigs,
+  };
+  const snapshot: ContinuationContextSnapshotV5 = {
+    ...base.snapshot,
+    schemaVersion: 4,
+    workflowVersion: 5,
+    budgetPolicy: frozenPolicy,
+    stageBudgets: frozenStageBudgets,
+    stageViews: frozenViews,
+    lengthPolicy,
+    settingsSnapshot,
+  };
+  const trace: ContinuationContextTrace = {
+    ...base.trace,
+    v5StageBudgets: frozenStageBudgets,
+    v5StageViewHashes: {
+      draft_writer: hashContinuationV5StageView(frozenViews.draft_writer),
+      narrative_architect: hashContinuationV5StageView(
+        frozenViews.narrative_architect,
+      ),
+      revision_writer: hashContinuationV5StageView(frozenViews.revision_writer),
+      adversarial_auditor: hashContinuationV5StageView(
+        frozenViews.adversarial_auditor,
+      ),
+      final_reviser: hashContinuationV5StageView(frozenViews.final_reviser),
     },
   };
   return { snapshot, trace };

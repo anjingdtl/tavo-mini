@@ -77,6 +77,11 @@ import {
   resumeContinuationV4Run,
   startContinuationV4Run,
 } from './continuationV4Runner';
+import {
+  markContinuationV5StagesCancelled,
+  resumeContinuationV5Run,
+  startContinuationV5Run,
+} from './continuationV5Runner';
 import { CanonQueryService } from '../canon/canonQueryService';
 import { continuationSourceReader } from '../continuationSourceReader';
 import {
@@ -136,7 +141,7 @@ export interface StartContinuationRunInput {
   /** Skip checker LLM (deterministic only). */
   deterministicOnly?: boolean;
   /** Test/compatibility escape hatch for historical V2 fixtures. */
-  workflowVersion?: 2 | 4;
+  workflowVersion?: 2 | 4 | 5;
 }
 
 function defaultPlan(instruction: string): ContinuationPlan {
@@ -420,7 +425,12 @@ export async function startContinuationRun(
   if (input.workflowVersion === 2) {
     return startContinuationRunLegacy(input);
   }
-  return startContinuationV4Run(input);
+  if (input.workflowVersion === 4) {
+    return startContinuationV4Run(input);
+  }
+  // Default new runs use V5 (three rounds / five calls). Historical V2/V4
+  // resumes keep their frozen workflowVersion routing.
+  return startContinuationV5Run(input);
 }
 
 async function startContinuationRunLegacy(
@@ -2287,6 +2297,8 @@ export async function cancelContinuationRun(runId: string): Promise<void> {
       // Already terminal; still try to settle any V4 stage rows left mid-flight.
       if (run.workflowVersion === 4) {
         await markContinuationV4StagesCancelled(runId).catch(() => {});
+      } else if (run.workflowVersion === 5) {
+        await markContinuationV5StagesCancelled(runId).catch(() => {});
       }
       return;
     }
@@ -2295,7 +2307,13 @@ export async function cancelContinuationRun(runId: string): Promise<void> {
     // still be forced to the cancelled terminal (user intent wins).
     await casUpdateRunState(
       runId,
-      ['queued', 'running', 'awaiting_user', 'interrupted'],
+      [
+        'queued',
+        'running',
+        'awaiting_user',
+        'awaiting_regeneration',
+        'interrupted',
+      ],
       {
         state: 'cancelled',
         errorCode: 'cancelled',
@@ -2304,10 +2322,12 @@ export async function cancelContinuationRun(runId: string): Promise<void> {
       },
     ).catch(() => false);
 
-    // 4) V4 stage rows: never let a single stage update take down the app.
+    // 4) V4/V5 stage rows: never let a single stage update take down the app.
     if (run?.workflowVersion === 4 || run == null) {
-      // When run is null we still attempt V4 cleanup — no-op if no stage rows.
       await markContinuationV4StagesCancelled(runId).catch(() => {});
+    }
+    if (run?.workflowVersion === 5 || run == null) {
+      await markContinuationV5StagesCancelled(runId).catch(() => {});
     }
   } catch (error) {
     // Absolute last resort: cancel is a user safety action and must not crash.
@@ -2334,7 +2354,8 @@ async function assertContextFreshOrMarkOutdated(
   // Historical V2 fixtures/runs retain their original freshness reader for
   // backward compatibility. New V4 runs take the CanonQueryService branch
   // below; no V4 caller can reach this legacy SQL path.
-  if (run.workflowVersion !== 4) {
+  // V2 freshness path. V4/V5 use CanonQueryService branch below.
+  if (run.workflowVersion !== 4 && run.workflowVersion !== 5) {
     const db = await openDatabase();
     const [settingsRes] = await db.executeSql(
       'SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id = ?',
@@ -2483,6 +2504,9 @@ export async function adoptArtifactAsDraft(input: {
   const run = await getRunById(input.runId);
   if (!run) throw new Error('run 不存在');
   if (run.state === 'outdated') throw new ContinuationOutdatedError();
+  if (run.state === 'awaiting_regeneration') {
+    throw new Error('最终稿未形成可交付结果，请重新生成或放弃');
+  }
   if (run.state !== 'awaiting_user' && run.state !== 'interrupted') {
     throw new Error(`run 状态 ${run.state} 不可采纳`);
   }
@@ -2499,12 +2523,14 @@ export async function adoptArtifactAsDraft(input: {
   // belong to this run. getArtifactForRun matches both id AND run_id, so a
   // swapped or foreign artifact id is rejected at the data layer. Ownership is
   // never relaxed by forceOverwrite.
+  const useEligibleOnly =
+    run.workflowVersion === 4 || run.workflowVersion === 5;
   const artifact =
     (input.artifactId
-      ? run.workflowVersion === 4
+      ? useEligibleOnly
         ? await getEligibleArtifactForRun(run.id, input.artifactId)
         : await getArtifactForRun(run.id, input.artifactId)
-      : run.workflowVersion === 4
+      : useEligibleOnly
         ? await getLatestEligibleArtifact(run.id)
         : await getLatestArtifact(run.id)) ?? null;
   if (!artifact) {
@@ -2546,6 +2572,20 @@ export async function adoptArtifactAsDraft(input: {
   // cancelled/abandoned/outdated (no longer awaiting_user/interrupted), the CAS
   // fails and we refuse to write the chapter — the adopt cannot succeed against
   // a run that is no longer adoptable.
+  // V5: only stage=final + eligible may be adopted.
+  if (
+    run.workflowVersion === 5 &&
+    artifact.stage !== 'final'
+  ) {
+    throw new Error('只有最终稿 V3 可被采纳');
+  }
+  if (
+    (run.workflowVersion === 4 || run.workflowVersion === 5) &&
+    artifact.eligibilityStatus !== 'eligible'
+  ) {
+    throw new Error('当前正文不可采纳');
+  }
+
   const claimed = await casUpdateRunState(
     run.id,
     ['awaiting_user', 'interrupted'],
@@ -2629,7 +2669,13 @@ export async function adoptArtifactAsDraft(input: {
 export async function abandonRun(runId: string): Promise<void> {
   const ok = await casUpdateRunState(
     runId,
-    ['awaiting_user', 'interrupted', 'running', 'queued'],
+    [
+      'awaiting_user',
+      'awaiting_regeneration',
+      'interrupted',
+      'running',
+      'queued',
+    ],
     {
       state: 'completed',
       completionReason: 'abandoned',
@@ -2841,6 +2887,9 @@ export async function resumeInterruptedRun(
   if (!run) throw new Error('run 不存在');
   if (run.workflowVersion === 4) {
     return resumeContinuationV4Run(runId, callStage, deterministicOnly);
+  }
+  if (run.workflowVersion === 5) {
+    return resumeContinuationV5Run(runId, callStage, deterministicOnly);
   }
   if (run.state === 'outdated') throw new ContinuationOutdatedError();
   if (run.state !== 'interrupted') throw new Error('仅 interrupted 可恢复');

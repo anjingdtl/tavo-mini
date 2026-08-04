@@ -27,8 +27,14 @@ function makeDb(rows: RunRow[]) {
         const projectId = params[0];
         filtered = filtered.filter(r => r.project_id === projectId);
       }
-      if (sql.includes("state = 'awaiting_user'")) {
-        filtered = filtered.filter(r => r.state === 'awaiting_user');
+      if (
+        sql.includes("state = 'awaiting_user'") ||
+        sql.includes("state IN ('awaiting_user', 'awaiting_regeneration')")
+      ) {
+        filtered = filtered.filter(
+          r =>
+            r.state === 'awaiting_user' || r.state === 'awaiting_regeneration',
+        );
       }
       if (sql.includes("state = 'completed'")) {
         filtered = filtered.filter(r => r.state === 'completed');

@@ -65,10 +65,16 @@ function createTaskId(): string {
     .slice(2, 8)}`;
 }
 
+/** Same-project pipeline concurrency. V5 Round 1/2 need two true parallel
+ * physical requests (Draft||Architect, Revision||Auditor). Cap stays below
+ * the global pipeline limit to avoid saturating a single project. */
+const PIPELINE_PER_PROJECT_LIMIT = 2;
+
 class LLMRequestScheduler {
   private queue: QueueEntry[] = [];
   private active = new Map<LLMQueueClass, number>();
-  private activePipelineProjects = new Set<string>();
+  /** Count of in-flight pipeline requests per project key. */
+  private activePipelineProjects = new Map<string, number>();
   private sequence = 0;
   private lowMemory = false;
   private taskDefaults = new Map<string, LLMTaskQueueDefaults>();
@@ -180,7 +186,8 @@ class LLMRequestScheduler {
 
     if (queueClass === 'pipeline') {
       const projectKey = String(entry.projectId ?? 'global');
-      if (this.activePipelineProjects.has(projectKey)) return false;
+      const projectActive = this.activePipelineProjects.get(projectKey) || 0;
+      if (projectActive >= PIPELINE_PER_PROJECT_LIMIT) return false;
       const activeOnline =
         this.activeCount('normal') + this.activeCount('pipeline');
       if (activeOnline >= LIMITS.normal) return false;
@@ -203,7 +210,11 @@ class LLMRequestScheduler {
     entry.started = true;
     this.active.set(entry.queueClass, this.activeCount(entry.queueClass) + 1);
     if (entry.queueClass === 'pipeline') {
-      this.activePipelineProjects.add(String(entry.projectId ?? 'global'));
+      const projectKey = String(entry.projectId ?? 'global');
+      this.activePipelineProjects.set(
+        projectKey,
+        (this.activePipelineProjects.get(projectKey) || 0) + 1,
+      );
     }
     entry.onQueueState?.('running');
 
@@ -224,7 +235,13 @@ class LLMRequestScheduler {
       Math.max(0, this.activeCount(entry.queueClass) - 1),
     );
     if (entry.queueClass === 'pipeline') {
-      this.activePipelineProjects.delete(String(entry.projectId ?? 'global'));
+      const projectKey = String(entry.projectId ?? 'global');
+      const next = Math.max(
+        0,
+        (this.activePipelineProjects.get(projectKey) || 0) - 1,
+      );
+      if (next === 0) this.activePipelineProjects.delete(projectKey);
+      else this.activePipelineProjects.set(projectKey, next);
     }
     if (error === undefined) entry.resolve(value);
     else entry.reject(error);

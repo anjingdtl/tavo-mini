@@ -167,7 +167,7 @@ const ORPHAN_CHECKS: Array<{
     label: 'continuation_generation_artifacts.eligibility_status',
     tables: ['continuation_generation_artifacts'],
     sql: `SELECT id FROM continuation_generation_artifacts
-      WHERE eligibility_status NOT IN ('eligible', 'rejected') LIMIT 1`,
+      WHERE eligibility_status NOT IN ('eligible', 'rejected', 'intermediate') LIMIT 1`,
   },
 ];
 

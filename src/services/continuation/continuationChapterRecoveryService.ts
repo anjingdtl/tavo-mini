@@ -113,7 +113,7 @@ export async function collectRecoverableChapterBodies(
        FROM continuation_generation_artifacts a
        JOIN continuation_generation_runs r ON r.id = a.run_id
        WHERE r.project_id = ?
-         AND a.stage IN ('writer', 'repair', 'user_edit')
+         AND a.stage IN ('writer', 'repair', 'user_edit', 'final')
          AND a.eligibility_status = 'eligible'
          AND length(trim(a.content)) >= ?
        ORDER BY r.target_position ASC, a.created_at DESC, a.id DESC`,

@@ -9,7 +9,7 @@ import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 23 Canon request-group migration', () => {
   it('expands work-item values while preserving legacy values', () => {
-    expect(SCHEMA_VERSION).toBe(33);
+    expect(SCHEMA_VERSION).toBe(34);
     const sql = buildV22toV23Statements()
       .map(item => item.sql)
       .join('\n');

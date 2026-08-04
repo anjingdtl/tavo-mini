@@ -34,8 +34,12 @@ import {
   migrateV31ToV32,
 } from './v31-to-v32';
 import { buildV32toV33Statements } from './v32-to-v33';
+import {
+  buildV33toV34Statements,
+  migrateV33ToV34,
+} from './v33-to-v34';
 
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -210,6 +214,12 @@ const MIGRATIONS: Migration[] = [
     breaking: false,
     buildStatements: async () => buildV32toV33Statements(),
   },
+  {
+    from: 33,
+    to: 34,
+    breaking: false,
+    buildStatements: async () => buildV33toV34Statements(),
+  },
 ];
 
 export async function runMigrations(
@@ -234,6 +244,8 @@ export async function runMigrations(
       await migrateV28ToV29(db);
     } else if (migration.from === 31 && migration.to === 32) {
       await migrateV31ToV32(db);
+    } else if (migration.from === 33 && migration.to === 34) {
+      await migrateV33ToV34(db);
     } else {
       const statements = await migration.buildStatements(db);
       await executeTransaction(db, statements, { faultDomain: 'migration' });
