@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 基于 tavo-maker 小说家工作台的 **Android-only** React Native 应用（不支持 iOS 构建）。核心能力：多章节长篇写作、多阶段 AI 生成管线、角色卡/世界书注入、TTS 朗读、增量故事记忆（Checkpoint 架构），以及基于 Canon/原著画风的“原著续写”工作流。
 
-当前工作树版本为 **V2.11.8**（以 `package.json` 与 `src/constants/version.json` 为准）；数据库 **Schema 29**（以 `src/services/migrations/index.ts` 的 `SCHEMA_VERSION` 为准，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。
+当前工作树版本为 **V2.11.16**（以 `package.json` 与 `src/constants/version.json` 为准）；数据库 **Schema 33**（以 `src/services/migrations/index.ts` 的 `SCHEMA_VERSION` 为准，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。
 
 > Agent 跑命令、构建、测试陷阱等操作细节见 `AGENTS.md`；本文件专注代码事实与架构，不要重复。
 
@@ -60,7 +60,7 @@ npm run zspace:put        # 上传
 
 ## 架构
 
-React Native CLI + TypeScript。Zustand 状态管理（**5 个 store**），SQLite 本地持久化（**schema version 29**）。底部 **5 Tab** 导航（项目/资料/写作/构建/设置），三色主题系统，多阶段 AI 管线 + 前台服务保活。
+React Native CLI + TypeScript。Zustand 状态管理（**5 个 store**），SQLite 本地持久化（**schema version 33**）。底部 **5 Tab** 导航（项目/资料/写作/构建/设置），三色主题系统，多阶段 AI 管线 + 前台服务保活。
 
 入口：`index.js` → `src/main/index.tsx`（ThemeProvider + NavigationContainer）→ `src/navigation/TabNavigator.tsx`。Tab 顺序为 `1 项目 → 2 资料/续写资料 → 3 写作/续写 → 构建 → 设置`；原著续写模式下"资料"和"写作"两个 Tab 文案切换为"续写资料"/"续写"，前 3 步之间显示箭头提示。
 
@@ -77,9 +77,9 @@ React Native CLI + TypeScript。Zustand 状态管理（**5 个 store**），SQLi
 
 主要表：projects、chapters、fragments、plotlines、project_plotlines、characters、character_collections、worldbook_collections、worldbook_entries、note_collections、notes、project_note_config、note_style_profiles、presets、llm_config、settings、project_resources、llm_usage_logs、pipeline_tasks、freeform_documents、content_revisions、generation_drafts、project_story_memory、chapter_memory_patches、story_memory_snapshots、project_story_memory_policy、story_memory_batches，以及续写域的导入、Canon、风格画像、状态和生成表（见下文）。
 
-#### 数据库迁移（schema 3 → 29）
+#### 数据库迁移（schema 3 → 33）
 
-增量迁移引擎在 `src/services/migrations/`：`index.ts` 定义 `SCHEMA_VERSION = 29` 与 `MIN_COMPATIBLE_SCHEMA_VERSION = 3`，`MIGRATIONS` 数组串联 `v3-to-v4.ts` … `v28-to-v29.ts`。`runMigrations()` 只跑 `from >= 当前版本` 的迁移；标 `breaking: true` 的迁移会先触发备份（`backupService.ts`，存 `{ExternalDirectoryPath}/backups/`，最多保留 3 份）。v25→v26 因逻辑非纯 SQL，单独走 `migrateV25ToV26(db)`；v26→v27 是移除本地模型相关数据的破坏性迁移。
+增量迁移引擎在 `src/services/migrations/`：`index.ts` 定义 `SCHEMA_VERSION = 33` 与 `MIN_COMPATIBLE_SCHEMA_VERSION = 3`，`MIGRATIONS` 数组串联 `v3-to-v4.ts` … `v32-to-v33.ts`。`runMigrations()` 只跑 `from >= 当前版本` 的迁移；标 `breaking: true` 的迁移会先触发备份（`backupService.ts`，存 `{ExternalDirectoryPath}/backups/`，最多保留 3 份）。v25→v26 因逻辑非纯 SQL，单独走 `migrateV25ToV26(db)`；v26→v27 是移除本地模型相关数据的破坏性迁移；v32→v33 给 Canon evidence 加 `source_origin` / `rescan_operation_id` 列 + 五个业务唯一索引，并在迁移中按 `review_status != superseded` 去重清理。
 
 **新增表或字段时必须两处都改**（极易遗漏）：
 1. 写一个新的 `vN-to-vN+1.ts` 并注册进 `MIGRATIONS`，同时把 `SCHEMA_VERSION` +1；
@@ -121,14 +121,14 @@ React Native CLI + TypeScript。Zustand 状态管理（**5 个 store**），SQLi
 
 生成前默认智能更新、目标约每 3 章一次批量整理；最近正文负责短期连续性。Episodic 检索含中文 n-gram、实体/人物组合加权、混合 Top-K。相关验收与硬化报告在 `docs/V2.5.*-STORY-MEMORY-*.md` 与 `docs/optimization/`（其中带 TEST-REPORT 字样的报告已被 `.gitignore` 移出仓库）。
 
-### 原著续写域（Canon + 画风画像 + Generation，schema 19 → 29）
+### 原著续写域（Canon + 画风画像 + Generation，schema 19 → 33）
 
 独立子域，**自顶向下三层**：
 
 - **导入与项目**：`services/continuation/continuationImportService.ts` / `continuationParser.ts` / `continuationNormalizer.ts` / `continuationSourceReader.ts` / `continuationSourceRepository.ts` / `continuationProjectService.ts` / `continuationSettingsService.ts` / `continuationSourceBrowserService.ts` / `continuationEditLog.ts` / `projectMode.ts` / `chapterNumbering/`。Schema 19 引入 5 张表（`continuation_sources` / `continuation_source_text_chunks` / `continuation_source_chapters` / `continuation_settings` / `continuation_import_jobs`），其中 `continuation_import_jobs` 是首张 `backup:false` 表。
-- **Canon 分析（schema 20）**：`services/continuation/canon/`：`canonAnalysisService` 编排、`canonRepository` 落库、`canonQueryService` 只读访问（**Phase 3 唯一合法 Canon 入口**，UI/生成代码禁止直查 Canon 表）、`canonEvidenceService` / `canonEntityResolver` / `canonInvalidationService` / `canonReviewService` / `canonJsonValidators` / `analysisScopePlanner` / `deterministicExtractor` / `extractionPromptSpec` / `historicalDigestService` / `activateSnapshotAndStyleProfile`。Schema 20 新增 Canon snapshot / analysis run-batch / evidence / 五类 Canon 与时间线表。
+- **Canon 分析（schema 20）**：`services/continuation/canon/`：`canonAnalysisService` 编排、`canonRepository` 落库、`canonQueryService` 只读访问（**Phase 3 唯一合法 Canon 入口**，UI/生成代码禁止直查 Canon 表）、`canonEvidenceService` / `canonEntityResolver` / `canonInvalidationService` / `canonReviewService` / `canonJsonValidators` / `analysisScopePlanner` / `adaptiveBatchPlanner` / `deterministicExtractor` / `extractionPromptSpec` / `historicalDigestService` / `canonBudgetPolicy`（30% 切块 / 缩块阶梯 / max_tokens 与 thinking 不被压缩）/`canonFiveDimensionGate`（五维硬验收 + 缺失维度定向补扫）/`activateSnapshotAndStyleProfile`。Schema 20 新增 Canon snapshot / analysis run-batch / evidence / 五类 Canon 与时间线表；Schema 33 给 Canon evidence 加 `source_origin` / `rescan_operation_id` 列与五个业务唯一索引（world_rules / characters / plot_threads / relationships / experiences），迁移中按 `review_status != superseded` 去重清理。
 - **原著写作风格（schema 26）**：`services/continuation/styleProfile/`：`styleAnalysisService`（最高强度 V2 仿写规格；旧版画像自动过期）、`styleProfileRenderer`（按阶段窗口动态预算，Planner/Writer/Checker/Repair 分级注入）、`styleProfileRepository` / `styleProfileHash` / `styleProfileV2Schema` / `styleStatistics` / `styleSampler` / `styleAnalysisPrompt`。画风**强制严格遵循**，无启用画像会阻断续写；单独重试风格分析成功后原子成为当前注入画像。
-- **续写 Generation**：`services/continuation/generation/`：`continuationGenerationRunner`（独立 runner）+ `continuationPromptCompiler` / `continuationContextBuilder` / `continuationContextBudget` / `continuationAnchor` / `continuationContextTrace` / `continuationSupplementContextBuilder` / `continuationChecker` / `continuationRepairService` / `continuationStyleService` / `continuationStateService` / `continuationStateOutboxWorker` / `generationRepository`。用户可见章节号接续原著边界（边界第 20 章 → 首篇续写"第 21 章"）；内部 `ContinuationChapterPosition` 仍从 0 起。
+- **续写 Generation**：`services/continuation/generation/`：`continuationGenerationRunner`（独立 runner，legacy 路径） + `continuationV4Runner`（V4 FULL-Control：Writer 初稿 → Checker / Control 并行 → Repair 完整终稿 → Local Final Gate，最多 4 次物理请求）+ `continuationV4PromptCompiler` / `continuationV4ContextViews` / `continuationContextBuilder` / `continuationContextBudget` / `continuationAnchor` / `continuationContextTrace` / `continuationSupplementContextBuilder` / `continuationChecker`（含 `writerArtifactHash` 校验 + 稳定 fingerprint 匹配）/ `continuationControl`（本地决策权威 + 实质进展门）/ `continuationLengthContract`（±30% 长度契约，V4 / legacy 共用）/ `repairCompletenessPolicy` / `continuationRepairService` / `continuationStyleService` / `continuationStateService` / `continuationStateOutboxWorker` / `generationRepository`。用户可见章节号接续原著边界（边界第 20 章 → 首篇续写"第 21 章"）；内部 `ContinuationChapterPosition` 仍从 0 起。
 
 UI 在 `src/screens/continuation/`：项目 Tab 下的 `ContinuationHomeScreen` / `ContinuationSourceChaptersScreen` / `ContinuationBoundaryScreen` / `ContinuationWorkspaceScreen` / `ContinuationResultScreen` / `ContinuationStateReviewScreen` / `ContinuationGenerationConfigScreen` / `StyleProfileDetailScreen`，Canon 子目录 `canon/CanonAnalysisOverviewScreen.tsx` / `CanonCategoryListScreen.tsx` / `CanonAnalysisTasksScreen.tsx`。
 
@@ -197,7 +197,6 @@ TS 桥接在 `src/native/`，Android 实现在 `android/app/src/main/java/com/sh
 - `README.md` — 当前版本、Schema、平台/隐私基线（事实来源）
 - `CHANGELOG.md` — 版本变更，发版前对齐
 - `SPEC.MD` — 构建模块规格说明
-- `docs/RELEASE_APK_BUILD.md` / `docs/RELEASE_CHECKLIST.md` — 正式 APK
 - `docs/FAULT_INJECTION_MATRIX.md` — 故障注入场景
 - `docs/optimization/`、`docs/pipeline-perf/` — 管线与故事记忆调优记录
 - `docs/superpowers/specs/` — 优化路线与施工方案
