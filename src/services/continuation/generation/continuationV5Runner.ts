@@ -66,7 +66,12 @@ import {
   reserveContinuationStage,
   updateStageResult,
 } from './generationRepository';
-import { formatUnknownError, formatUnknownErrorCode } from './errorFormat';
+import {
+  buildV5DraftWriterDiagnostics,
+  formatUnknownError,
+  formatUnknownErrorCode,
+  mapV5DraftWriterEmptyContentError,
+} from './errorFormat';
 import type {
   ContinuationArtifact,
   ContinuationContextSnapshotV5,
@@ -291,6 +296,15 @@ async function defaultV5StageCaller(input: {
       projectId: input.projectId,
       taskId: input.runId,
       scenario: `continuation_v5_${input.stage}`,
+      // The upper callNode() already requests responseFormat: 'json_object'
+      // for every V5 stage (envelopes are JSON). Without this passthrough the
+      // provider never receives response_format on the wire, so some models
+      // occasionally return an empty/plan-only body and fail with
+      // "V5 Draft Writer content 不能为空". The OpenAI-compatible provider
+      // already downgrades (deletes response_format + retries once) for
+      // gateways that reject it, so this is safe to forward.
+      responseFormat:
+        input.responseFormat === 'json_object' ? 'json_object' : undefined,
       thinking: /^deepseek-v4-(flash|pro)$/i.test(
         input.frozenModelConfig.modelName,
       )
@@ -618,26 +632,39 @@ async function runRound1(
           );
         } catch (parseError: any) {
           if (!CONTINUATION_V5_SOFT_GATES || !truncated) {
+            const baseDiag = buildV5DraftWriterDiagnostics({
+              rawText: result.text,
+              result: {
+                finishReason: result.finishReason,
+                emptyReason: result.emptyReason,
+                completionTokens: result.usage?.completion ?? null,
+              },
+              jsonOutputRequested: true,
+            });
             const diag = {
-              schemaVersion: 1,
+              ...baseDiag,
               error: truncated
                 ? 'draft_writer_output_truncated'
                 : parseError?.message || 'draft_writer_parse_failed',
-              finishReason: result.finishReason,
               promptTokens: result.usage?.prompt ?? draftCompiled.promptTokens,
-              completionTokens: result.usage?.completion ?? null,
               maximumOutputTokens: budget.maximumOutputTokens,
               declaredMaxOutputTokens: budget.declaredMaxOutputTokens,
             };
+            // Preserve the more specific truncated/network reason when present;
+            // only the generic "content 不能为空" branch is remapped to an
+            // actionable user-facing hint.
+            const userMessage = truncated
+              ? 'Draft Writer 输出被截断，不解析、不落 V1。'
+              : mapV5DraftWriterEmptyContentError(
+                  parseError?.message || 'Draft Writer 解析失败',
+                );
             await markStageFailed({
               runId: run.id,
               stage: 'draft_writer',
               errorCode: truncated
                 ? 'draft_writer_output_truncated'
                 : 'draft_writer_parse_failed',
-              errorMessage: truncated
-                ? 'Draft Writer 输出被截断，不解析、不落 V1。'
-                : parseError?.message || 'Draft Writer 解析失败',
+              errorMessage: userMessage,
               outputJson: JSON.stringify(diag),
             });
             if (truncated) {
@@ -646,7 +673,12 @@ async function runRound1(
                 diag,
               );
             }
-            throw parseError;
+            throw Object.assign(
+              new Error(userMessage),
+              parseError instanceof Error
+                ? { cause: parseError, code: 'draft_writer_parse_failed' }
+                : { code: 'draft_writer_parse_failed' },
+            );
           }
           // Soft: truncation + unparseable still cannot invent V1 body.
           const diag = {
@@ -2330,3 +2362,9 @@ export {
   hashAuditEnvelope,
   CONTINUATION_V5_LENGTH_POLICY,
 };
+
+/**
+ * Exported for targeted unit tests of the responseFormat passthrough (V5 empty
+ * content regression). Production callers go through callNode()/startContinuationV5Run.
+ */
+export const __test__ = { defaultV5StageCaller };

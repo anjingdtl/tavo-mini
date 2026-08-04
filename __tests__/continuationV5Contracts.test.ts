@@ -288,6 +288,59 @@ describe('Continuation V5 contracts', () => {
     expect(fb.sceneUnits[0].forbiddenInventions.length).toBeGreaterThan(0);
     expect(fb.sceneUnits[0].sceneId.startsWith('fallback_')).toBe(true);
   });
+
+  test('Draft envelope with empty content throws (no artifact should be created)', () => {
+    // Regression: a parseable JSON with an empty body must NOT produce content.
+    // The runner relies on this throw to avoid persisting a V1 artifact.
+    const emptyContentJson = JSON.stringify({
+      schemaVersion: 1,
+      plan: {
+        chapterGoal: '推进冲突',
+        centralConflict: '门外有追兵',
+        beats: [{ id: 'b1', summary: '承接', stateChange: '局面初变' }],
+      },
+      content: '',
+    });
+    expect(() =>
+      parseContinuationV5DraftEnvelope(emptyContentJson),
+    ).toThrow(/content 不能为空/);
+    // whitespace-only content is equally invalid
+    const whitespaceContentJson = JSON.stringify({
+      schemaVersion: 1,
+      content: '   \n\t  ',
+    });
+    expect(() =>
+      parseContinuationV5DraftEnvelope(whitespaceContentJson),
+    ).toThrow(/content 不能为空/);
+    // plan-only body (no content key at all) is also rejected
+    const planOnlyJson = JSON.stringify({
+      schemaVersion: 1,
+      plan: {
+        chapterGoal: '推进冲突',
+        centralConflict: '冲突',
+        beats: [{ id: 'b1', summary: '承接' }],
+      },
+    });
+    expect(() => parseContinuationV5DraftEnvelope(planOnlyJson)).toThrow(
+      /content 不能为空/,
+    );
+  });
+
+  test('Draft envelope with valid content still parses normally', () => {
+    const validJson = JSON.stringify({
+      schemaVersion: 1,
+      plan: {
+        chapterGoal: '推进',
+        centralConflict: '冲突',
+        beats: [{ id: 'b1', summary: '行动', stateChange: '变化' }],
+      },
+      content: '这是完整的正文，包含实际推进的事件与后果，足够长度。',
+    });
+    const draft = parseContinuationV5DraftEnvelope(validJson);
+    expect(draft.content).toContain('完整的正文');
+    expect(draft.plan.chapterGoal).toBe('推进');
+    expect(draft.plan.beats).toHaveLength(1);
+  });
 });
 
 describe('Final Artifact Validator', () => {
