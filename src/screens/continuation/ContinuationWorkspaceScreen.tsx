@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { BookOpen, FileSearch, FilePlus2, Network, Sparkles, Trash2 } from 'lucide-react-native';
+import { BookOpen, FileSearch, FilePlus2, Inbox, Network, Sparkles, Trash2 } from 'lucide-react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../../components/ui';
 import { useProjectStore } from '../../store/projectStore';
@@ -12,6 +12,7 @@ import {
   getNextContinuationChapterPosition,
   makeContinuationChapterNumbering,
 } from '../../services/continuation/chapterNumbering/continuationChapterNumbering';
+import { listPendingReviewRunsForProject } from '../../services/continuation/generation';
 
 /** Mode-specific root: continuation never enters the ordinary outline workbench. */
 export const ContinuationWorkspaceScreen: React.FC = () => {
@@ -19,10 +20,27 @@ export const ContinuationWorkspaceScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const navigation = useNavigation<any>();
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [pendingRunByChapter, setPendingRunByChapter] = useState<
+    Record<number, string>
+  >({});
   const [adding, setAdding] = useState(false);
   const load = useCallback(async () => {
-    if (!currentProject) return setChapters([]);
-    setChapters(await db.getChaptersByProject(currentProject.id));
+    if (!currentProject) {
+      setChapters([]);
+      setPendingRunByChapter({});
+      return;
+    }
+    const [chapterRows, pendingRuns] = await Promise.all([
+      db.getChaptersByProject(currentProject.id),
+      listPendingReviewRunsForProject(currentProject.id).catch(() => []),
+    ]);
+    setChapters(chapterRows);
+    // Keep only the newest awaiting_user run per chapter (query is DESC).
+    const map: Record<number, string> = {};
+    for (const run of pendingRuns) {
+      if (map[run.chapterId] == null) map[run.chapterId] = run.id;
+    }
+    setPendingRunByChapter(map);
   }, [currentProject]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
   const add = async () => {
@@ -61,7 +79,7 @@ export const ContinuationWorkspaceScreen: React.FC = () => {
       </Card>
     </View>
     <View style={styles.section}><Text style={[styles.title, { color: theme.colors.textPrimary }]}>续写章节</Text><Text style={[styles.meta, { color: theme.colors.textSecondary }]}>{chapters.length} 章</Text></View>
-    {chapters.length === 0 ? <EmptyState title="还没有续写章节" description="请先在资料页完成原著接入与 Canon 分析，再开始 AI 续写。" action={<Button label="新建续写章节" icon={BookOpen} onPress={() => add().catch(() => {})} />} /> : <ContinuationChapterList chapters={chapters} navigation={navigation} onDeleted={load} />}
+    {chapters.length === 0 ? <EmptyState title="还没有续写章节" description="请先在资料页完成原著接入与 Canon 分析，再开始 AI 续写。" action={<Button label="新建续写章节" icon={BookOpen} onPress={() => add().catch(() => {})} />} /> : <ContinuationChapterList chapters={chapters} pendingRunByChapter={pendingRunByChapter} navigation={navigation} onDeleted={load} />}
   </Screen>;
 };
 
@@ -72,9 +90,10 @@ export const ContinuationWorkspaceScreen: React.FC = () => {
  */
 const ContinuationChapterList: React.FC<{
   chapters: Chapter[];
+  pendingRunByChapter: Record<number, string>;
   navigation: ReturnType<typeof useNavigation<any>>;
   onDeleted: () => void;
-}> = ({ chapters, navigation, onDeleted }) => {
+}> = ({ chapters, pendingRunByChapter, navigation, onDeleted }) => {
   const { theme } = useThemeStore();
   const [numbering, setNumbering] = useState<{ getDisplayTitle: (c: { title: string; position: number }) => string } | null>(null);
   useFocusEffect(
@@ -109,7 +128,140 @@ const ContinuationChapterList: React.FC<{
       },
     ]);
   };
-  return <FlatList data={chapters} keyExtractor={item => String(item.id)} contentContainerStyle={styles.list} renderItem={({item}) => <Card><TouchableOpacity onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })} accessibilityRole="button" accessibilityLabel={`编辑${titleOf(item)}`}><Text style={[styles.title,{color:theme.colors.textPrimary}]}>{titleOf(item)}</Text><Text style={[styles.meta,{color:theme.colors.textSecondary}]} numberOfLines={2}>{item.synopsis || '未填写续写要求'}</Text></TouchableOpacity><View style={styles.contextAction}><Button label="查看实际上下文" icon={FileSearch} variant="secondary" compact onPress={() => navigation.navigate('ContextPreview', { chapterId: item.id })} /><TouchableOpacity accessibilityLabel="删除章节" onPress={() => deleteChapter(item)} style={styles.iconCell}><Trash2 size={17} color={theme.colors.danger} /></TouchableOpacity></View></Card>} />;
+  return (
+    <FlatList
+      data={chapters}
+      keyExtractor={item => String(item.id)}
+      contentContainerStyle={styles.list}
+      renderItem={({ item }) => {
+        const pendingRunId = pendingRunByChapter[item.id];
+        return (
+          <Card>
+            <TouchableOpacity
+              onPress={() =>
+                navigation.navigate('ChapterEditor', { chapterId: item.id })
+              }
+              accessibilityRole="button"
+              accessibilityLabel={`编辑${titleOf(item)}`}
+            >
+              <Text style={[styles.title, { color: theme.colors.textPrimary }]}>
+                {titleOf(item)}
+              </Text>
+              <Text
+                style={[styles.meta, { color: theme.colors.textSecondary }]}
+                numberOfLines={2}
+              >
+                {item.synopsis || '未填写续写要求'}
+              </Text>
+              {pendingRunId ? (
+                <Text
+                  style={[styles.pendingBadge, { color: theme.colors.accent }]}
+                >
+                  有待采纳的续写结果
+                </Text>
+              ) : null}
+            </TouchableOpacity>
+            <View style={styles.contextAction}>
+              {pendingRunId ? (
+                <Button
+                  testID={`open-pending-continuation-${item.id}`}
+                  label="查看续写结果"
+                  icon={Inbox}
+                  variant="secondary"
+                  compact
+                  onPress={() =>
+                    navigation.navigate('ContinuationResult', {
+                      runId: pendingRunId,
+                    })
+                  }
+                />
+              ) : (
+                <Button
+                  label="查看实际上下文"
+                  icon={FileSearch}
+                  variant="secondary"
+                  compact
+                  onPress={() =>
+                    navigation.navigate('ContextPreview', {
+                      chapterId: item.id,
+                    })
+                  }
+                />
+              )}
+              <View style={styles.actionRowEnd}>
+                {pendingRunId ? (
+                  <Button
+                    label="上下文"
+                    icon={FileSearch}
+                    variant="ghost"
+                    compact
+                    onPress={() =>
+                      navigation.navigate('ContextPreview', {
+                        chapterId: item.id,
+                      })
+                    }
+                  />
+                ) : null}
+                <TouchableOpacity
+                  accessibilityLabel="删除章节"
+                  onPress={() => deleteChapter(item)}
+                  style={styles.iconCell}
+                >
+                  <Trash2 size={17} color={theme.colors.danger} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Card>
+        );
+      }}
+    />
+  );
 };
 
-const styles = StyleSheet.create({ summary:{padding:spacing.lg},summaryCard:{paddingVertical:0},summaryItem:{minHeight:52,paddingHorizontal:spacing.md,flexDirection:'row',alignItems:'center',gap:spacing.sm},summaryItemSecondary:{borderTopWidth:StyleSheet.hairlineWidth},summaryText:{flex:1},summaryTitle:{fontSize:14,fontWeight:'800'},summaryMeta:{fontSize:11,lineHeight:16,marginTop:1},title:{fontSize:16,fontWeight:'800'},meta:{fontSize:13,lineHeight:19,marginTop:4},section:{paddingHorizontal:spacing.lg,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},list:{padding:spacing.lg,gap:spacing.sm,paddingBottom:96},contextAction:{marginTop:spacing.md,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},iconCell:{width:34,height:34,alignItems:'center',justifyContent:'center'} });
+const styles = StyleSheet.create({
+  summary: { padding: spacing.lg },
+  summaryCard: { paddingVertical: 0 },
+  summaryItem: {
+    minHeight: 52,
+    paddingHorizontal: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  summaryItemSecondary: { borderTopWidth: StyleSheet.hairlineWidth },
+  summaryText: { flex: 1 },
+  summaryTitle: { fontSize: 14, fontWeight: '800' },
+  summaryMeta: { fontSize: 11, lineHeight: 16, marginTop: 1 },
+  title: { fontSize: 16, fontWeight: '800' },
+  meta: { fontSize: 13, lineHeight: 19, marginTop: 4 },
+  pendingBadge: { fontSize: 12, fontWeight: '700', marginTop: 6 },
+  section: {
+    paddingHorizontal: spacing.lg,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  list: {
+    padding: spacing.lg,
+    gap: spacing.sm,
+    paddingBottom: 96,
+  },
+  contextAction: {
+    marginTop: spacing.md,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  actionRowEnd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  iconCell: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});

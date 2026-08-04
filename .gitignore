@@ -181,3 +181,6 @@ scripts/zswebdav-put.ps1
 /docs/*apikey*
 /secrets/
 *.local.env
+
+# Local LLM probe keys (never commit)
+/docs/TEST-MINI*

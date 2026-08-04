@@ -244,7 +244,13 @@ class LLMRequestScheduler {
       if (rejectPromise) entry.reject(new LLMQueueError());
       return;
     }
-    entry.controller.abort();
+    // In-flight: abort the provider fetch. Settlement happens when the
+    // operation promise rejects; never throw from the abort event path.
+    try {
+      entry.controller.abort();
+    } catch {
+      // ignore host AbortController quirks
+    }
   }
 }
 

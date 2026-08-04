@@ -6,32 +6,55 @@ import {
 } from '../src/services/continuation/generation/continuationChecker';
 
 describe('Continuation V4 Checker parser', () => {
-  test('只有带定位和具体动作的非 info issue 才能进入 Repair 修订单', () => {
+  test('只有 error/blocking 且可定位、有具体动作的五维 issue 才能 repairReady', () => {
     expect(
       isRepairableCheckerIssue({
-        severity: 'warning',
+        severity: 'error',
+        category: 'relationship',
+        subtype: 'relation_conflict',
+        description: '人物此前已见过',
         generatedStart: 0,
         generatedEnd: 4,
         generatedExcerpt: '问题原句',
         suggestedFix: '改写问题原句',
       }),
     ).toBe(true);
+    // ordinary warning never enters Repair
     expect(
       isRepairableCheckerIssue({
         severity: 'warning',
+        category: 'plot',
+        subtype: 'soft',
+        description: '观察',
+        generatedStart: 0,
+        generatedEnd: 4,
+        generatedExcerpt: '问题原句',
+        suggestedFix: '改写问题原句',
+      }),
+    ).toBe(false);
+    expect(
+      isRepairableCheckerIssue({
+        severity: 'error',
+        category: 'plot',
+        subtype: 'abstract',
+        description: '问题',
         generatedStart: null,
         generatedEnd: null,
         generatedExcerpt: '',
         suggestedFix: '注意一致性',
       }),
     ).toBe(false);
+    // length never repair-ready
     expect(
       isRepairableCheckerIssue({
-        severity: 'info',
+        severity: 'error',
+        category: 'style',
+        subtype: 'chapter_length_under_target',
+        description: '偏短',
         generatedStart: 0,
         generatedEnd: 4,
-        generatedExcerpt: '观察片段',
-        suggestedFix: '可考虑改写',
+        generatedExcerpt: '问题原句',
+        suggestedFix: '扩写',
       }),
     ).toBe(false);
   });

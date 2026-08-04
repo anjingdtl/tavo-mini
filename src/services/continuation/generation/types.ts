@@ -517,6 +517,10 @@ export interface ContinuationV4Metrics {
   insertionBoundaries: number[];
 }
 
+/**
+ * Length-direction echo retained for telemetry/UI only.
+ * V4 creative loosening: expand/compress never alone triggers Repair.
+ */
 export type ContinuationControlAction = 'keep' | 'expand' | 'compress';
 
 export interface ContinuationControlSuggestion {
@@ -528,9 +532,44 @@ export interface ContinuationControlSuggestion {
   preserveBeatIds: string[];
 }
 
-export type ContinuationControlFindingSeverity = 'info' | 'warning';
+export type ContinuationControlFindingSeverity = 'info' | 'warning' | 'error';
 
-/** Advisory, structured diagnosis that Repair can apply and acknowledge. */
+/**
+ * Style dimensions reviewed by Control (original-style consistency).
+ * Not Beat coverage / length / dialogue-ratio hard metrics.
+ */
+export type ContinuationStyleDimension =
+  | 'narrative_voice'
+  | 'pov'
+  | 'sentence_rhythm'
+  | 'dialogue_voice'
+  | 'emotional_expression'
+  | 'description_density'
+  | 'subtext'
+  | 'scene_transition'
+  | 'ai_template'
+  | 'padding';
+
+/**
+ * Actionable or audit-only original-style finding from Control.
+ * Only repairReady=true items may enter the single Repair request.
+ */
+export interface ContinuationStyleIssue {
+  findingId: string;
+  styleDimension: ContinuationStyleDimension;
+  severity: 'warning' | 'error';
+  confidence: number;
+  generatedStart: number | null;
+  generatedEnd: number | null;
+  generatedExcerpt: string;
+  description: string;
+  styleEvidenceIds: string[];
+  rewriteGoal: string;
+  preserveMeaning: string[];
+  repairReady: boolean;
+}
+
+/** Advisory/actionable finding used by Repair audit ids (findingId). */
 export interface ContinuationControlFinding {
   findingId: string;
   subtype: string;
@@ -540,21 +579,42 @@ export interface ContinuationControlFinding {
   generatedEnd: number | null;
   description: string;
   suggestedFix: string;
+  /** When true, Repair must rewrite the targeted span and echo findingId. */
+  repairReady?: boolean;
+  rewriteGoal?: string;
+  preserveMeaning?: string[];
+  styleEvidenceIds?: string[];
+  styleDimension?: ContinuationStyleDimension;
 }
 
+/**
+ * Control report after creative loosening:
+ * - numeric length fields remain for UI soft hints only
+ * - action/suggestions no longer drive Repair eligibility
+ * - styleIssues (repairReady) + styleWarnings (audit) are the new contract
+ * - findings mirrors repairReady style issues for appliedControlFindingIds
+ */
 export interface ContinuationControlReport {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
+  /** Diagnostic length direction only; never a Repair hard requirement. */
   action: ContinuationControlAction;
   currentHan: number;
   targetHan: number;
   allowedMinHan: number;
   allowedMaxHan: number;
+  /** Legacy field; V4 style-control leaves this empty (no expand/compress force). */
   suggestions: ContinuationControlSuggestion[];
+  /** repairReady style issues projected for Repair audit. */
   findings: ContinuationControlFinding[];
   preserve: string[];
+  /** Full style review set (actionable + already-filtered audit). */
+  styleIssues?: ContinuationStyleIssue[];
+  /** Explicit audit-only style observations (no Repair). */
+  styleWarnings?: ContinuationStyleIssue[];
+  styleProfileRevision?: number | null;
+  writerArtifactHash?: string | null;
   metricEchoMismatch?: boolean;
-  /** True when the model's action echo disagreed with the authoritative local
-   * action. Diagnostic only; local action always wins. */
+  /** Legacy diagnostic; length-action echo is no longer authoritative. */
   actionEchoMismatch?: boolean;
 }
 

@@ -327,8 +327,13 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           if (latest.state === 'failed') {
             Alert.alert('续写失败', latest.errorMessage || '未知错误');
           } else if (latest.state === 'cancelled') {
+            // stopPipeline may already have toasted; keep a single soft notice.
             Toast.show({ type: 'info', text1: '已取消续写' });
-          } else {
+          } else if (
+            latest.state === 'awaiting_user' ||
+            latest.state === 'completed'
+          ) {
+            // Never navigate after user cancel / outdated.
             navigation.navigate('ContinuationResult', { runId: run.id });
           }
           return;
@@ -386,28 +391,52 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
   }, [chapter, executeRunPipeline, runContinuation]);
 
   const stopPipeline = useCallback(() => {
-    setGenerating(false);
-    setProgressVisible(false);
-    setQueued(false);
-    setContinuationStage(null);
-    continuationStageRef.current = null;
-    if (continuationRunIdRef.current) {
-      const rid = continuationRunIdRef.current;
-      cancelContinuationRun(rid).catch(() => {});
-      continuationRunIdRef.current = null;
-      PipelineForeground.stop(rid).catch(() => {});
-      return;
+    // Stop must never throw into the toolbar onPress — an uncaught exception
+    // here has been observed to tear down the whole RN activity on Android.
+    try {
+      setGenerating(false);
+      setProgressVisible(false);
+      setQueued(false);
+      setContinuationStage(null);
+      continuationStageRef.current = null;
+      if (continuationRunIdRef.current) {
+        const rid = continuationRunIdRef.current;
+        continuationRunIdRef.current = null;
+        void (async () => {
+          try {
+            await cancelContinuationRun(rid);
+          } catch (error) {
+            console.warn('[continuation] stop cancelContinuationRun:', error);
+          } finally {
+            try {
+              await PipelineForeground.stop(rid);
+            } catch {
+              // optional foreground service
+            }
+          }
+        })();
+        Toast.show({ type: 'info', text1: '正在停止续写…' });
+        return;
+      }
+      const runningTask = usePipelineTaskStore
+        .getState()
+        .tasks.find(
+          task =>
+            task.targetType === 'chapter' &&
+            task.targetId === chapterId &&
+            isRunningPipelineStatus(task.status) &&
+            task.resolvedAt === null,
+        );
+      if (runningTask) {
+        try {
+          cancelPipeline(runningTask.id);
+        } catch (error) {
+          console.warn('[pipeline] stop cancelPipeline:', error);
+        }
+      }
+    } catch (error) {
+      console.warn('[pipeline] stopPipeline failed:', error);
     }
-    const runningTask = usePipelineTaskStore
-      .getState()
-      .tasks.find(
-        task =>
-          task.targetType === 'chapter' &&
-          task.targetId === chapterId &&
-          isRunningPipelineStatus(task.status) &&
-          task.resolvedAt === null,
-      );
-    if (runningTask) cancelPipeline(runningTask.id);
   }, [chapterId]);
 
   return {

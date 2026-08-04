@@ -59,7 +59,7 @@ describe('continuation target Han length contract', () => {
     expect(evaluateContinuationLength(han(3501), 3000).status).toBe('over');
   });
 
-  it('keeps local length errors severe even without evidence and with style checks off', () => {
+  it('keeps deterministic length severity for V1/V2; V4 excludes it from repairReady', () => {
     const snap = snapshot();
     const local = runDeterministicChecks(han(2499), snap);
     const bound = bindIssuesToArtifact(local, han(2499), new Set());
@@ -72,6 +72,11 @@ describe('continuation target Han length contract', () => {
         }),
       ]),
     );
+    const lengthIssue = filtered.find(
+      i => i.subtype === 'chapter_length_under_target',
+    )!;
+    const { isRepairableCheckerIssue } = require('../src/services/continuation/generation/continuationChecker');
+    expect(isRepairableCheckerIssue(lengthIssue)).toBe(false);
   });
 });
 

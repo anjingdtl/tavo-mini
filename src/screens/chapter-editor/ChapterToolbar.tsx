@@ -21,12 +21,15 @@ interface Props {
   isSynthesizing: boolean;
   /** continuation projects use 续写 wording (Spec §10.1). */
   isContinuation?: boolean;
+  /** Pending awaiting_user continuation run — re-open result after leaving. */
+  hasPendingContinuationResult?: boolean;
   onClear: () => void;
   onContext: () => void;
   onDraft: () => void;
   onFinalize: () => void;
   onHistory: () => void;
   onManualCheckpoint: () => void;
+  onOpenContinuationResult?: () => void;
   onRunPipeline: () => void;
   onStopPipeline: () => void;
   onToggleTts: () => void;
@@ -41,12 +44,14 @@ export function ChapterToolbar({
   isPlaying,
   isSynthesizing,
   isContinuation = false,
+  hasPendingContinuationResult = false,
   onClear,
   onContext,
   onDraft,
   onFinalize,
   onHistory,
   onManualCheckpoint,
+  onOpenContinuationResult,
   onRunPipeline,
   onStopPipeline,
   onToggleTts,
@@ -81,6 +86,18 @@ export function ChapterToolbar({
             onPress={onStopPipeline}
             compact
             minWidth={72}
+          />
+        ) : null}
+        {isContinuation && hasPendingContinuationResult && onOpenContinuationResult ? (
+          <Button
+            testID="open-continuation-result"
+            label="续写结果"
+            icon={Inbox}
+            variant="secondary"
+            onPress={onOpenContinuationResult}
+            disabled={generating}
+            compact
+            minWidth={92}
           />
         ) : null}
         <Button

@@ -47,14 +47,22 @@ const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
 
 export function cancelPipeline(taskId: string): void {
-  cancelledTasks.add(taskId);
-  // 不等待网络或原生回调：用户明确停止时必须先把终态写入 SQLite，
-  // 否则进程在 prefill 中被关闭后，冷启动会把旧任务错误地显示为仍在运行。
-  usePipelineTaskStore.getState().cancelTask(taskId);
-  PipelineForeground.stop(taskId).catch(() => {});
-  const controller = taskAbortControllers.get(taskId);
-  if (controller) {
-    controller.abort();
+  try {
+    cancelledTasks.add(taskId);
+    // 不等待网络或原生回调：用户明确停止时必须先把终态写入 SQLite，
+    // 否则进程在 prefill 中被关闭后，冷启动会把旧任务错误地显示为仍在运行。
+    usePipelineTaskStore.getState().cancelTask(taskId);
+    PipelineForeground.stop(taskId).catch(() => {});
+    const controller = taskAbortControllers.get(taskId);
+    if (controller) {
+      try {
+        controller.abort();
+      } catch {
+        // AbortController.abort must not escape into the UI press handler.
+      }
+    }
+  } catch (error) {
+    console.warn('[pipeline] cancelPipeline failed:', error);
   }
 }
 
