@@ -140,6 +140,7 @@ describe('Continuation V5 budget', () => {
         experiences: [],
       },
       primaryAnchorSummary: '',
+      primaryAnchorSeamText: '',
       recentBridgeSummary: '',
       style: {
         profileId: null,
