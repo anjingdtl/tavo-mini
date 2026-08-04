@@ -1,5 +1,46 @@
 # Changelog
 
+## [2.11.21] - 2026-08-04
+
+### Fixed
+
+- 续写 V5 修复 V2 artifact 被 `insertArtifact` 去重逻辑静默吞掉的严重缺陷：当 revision_writer 产出的 V2 正文与 V1 draft 的 contentHash 相同时，`UNIQUE(run_id, content_hash)` 冲突会让 insertArtifact 直接返回已有的 draft 行，导致整个 V1→V2→C2→V3 链路退化为 V1→C2(审V1)→V3(润色V1)，V2 扩写环节完全架空。revision_writer 的 insertArtifact 调用现在传 `requireStageMatch: true`，确保即使 hash 撞车也会生成独立的 revision_1 artifact（通过 `withDistinctArtifactBody` 加 salt 区分）。
+
+### Changed
+
+- 流水线结果页「V3 改动占比」行优化：当 V3 与 V2 正文一致（contentHash 相同）时，明确提示「V3 与 V2 正文一致，未做润色」而非笼统的 0%，帮助识别 V2 被吞或 V3 未执行润色的异常场景。
+
+### Validation
+
+- 新增 regression：V2 contentHash 与 V1 相同时仍产出独立 revision_1 artifact；全量 `npm run verify`、Android Debug 构建与模拟器安装见本次构建记录。
+
+## [2.11.20] - 2026-08-04
+
+### Changed
+
+- 续写执行进度条映射到 V5 真实阶段：`PipelineProgress` 与 `useChapterPipeline` 新增 V5 节点（`draft_writer` / `narrative_architect` / `revision_writer` / `adversarial_auditor` / `final_reviser` / `final_validate`）及 `round1/2/3`→子阶段映射，进度文案随 V1→A1→V2→C2→V3 实时推进，不再全程停在「正在准备续写上下文…」。结果页「生成进行中」横幅同步改为中文阶段名。
+- 续写结果页（V5 三稿区）新增「V3 改动占比」行：基于 V2/V3 汉字序列 LCS 计算定点润色幅度（contentHash 一致时直接显示 0%），帮助直观区分「全局相似度高」与「目标段实际已重写」。
+
+### Hardened
+
+- `buildContinuationV5RevisionAnchors` 入口对输入做 `\r\n`→`\n` 归一化防御：锚点偏移与 excerpt 永远基于 LF 口径，即便未来某条路径意外传入 CRLF 也不会造成偏移错位。经实测复核，当前 V2 落库正文为 LF、C2 锚点偏移已精确匹配，此前报告的「漂移」为诊断工具（Windows sqlite3 CLI）的换行转换假象，代码本身无 bug。
+
+### Validation
+
+- 新增锚点 builder CRLF 归一化回归；全量 `npm run verify`、Android Debug 构建与模拟器安装见本次构建记录。
+
+## [2.11.19] - 2026-08-04
+
+### Changed
+
+- 续写 V5 的 Final Reviser（V3）改由客户端展开的「V3 编辑工作包」驱动：在 `continuationV5PromptCompiler.ts` 新增 `buildContinuationV5EditWorkPacket` / `formatContinuationV5EditWorkPacket` 与 `ContinuationV5EditWorkItem` 类型，从已解析的 C2 `styleAudit.requiredCorrections` 中仅挑选 `anchorId` 非空且真实原段非空的任务，逐项回填真实 V2 原段、偏移、维度、改写目标、必须保留信息和关联义务。
+- V3 的 system/user prompt 重排：先给出按编号排序的工作包，每项明确「整体重写本段」执行动作，禁止以删词、改标点或少量近义替换完成任务；完整 V2 仍作为章节连续性基线紧随其后；Canon、A1、finalObligations 等排在工作包之后，降低对定点编辑的注意力稀释。
+- 仍保持五次物理 LLM 请求；V3 仍输出完整正文 envelope；不新增 V2/V3 差异、最小改动量、锚点命中率等结果硬门槛；`finalArtifactValidator.ts` 未做拦截改动。legacy `anchorId=null` 合同兼容、不抛错。
+
+### Validation
+
+- 新增工作包构建、legacy 空锚点兼容、Final prompt 工作包位于完整 V2 之前、工作包含真实原段与整体改写指令的回归；全量 `npm run verify`、Android Debug 构建与模拟器安装见本次构建记录。
+
 ## [2.11.18] - 2026-08-04
 
 ### Changed

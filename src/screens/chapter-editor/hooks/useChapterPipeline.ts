@@ -80,6 +80,22 @@ function continuationStageFromRunStage(
   ) {
     return stage;
   }
+  // V5 physical / local nodes map directly.
+  if (
+    stage === 'draft_writer' ||
+    stage === 'narrative_architect' ||
+    stage === 'revision_writer' ||
+    stage === 'adversarial_auditor' ||
+    stage === 'final_reviser' ||
+    stage === 'final_validate'
+  ) {
+    return stage;
+  }
+  // V5 writes round-level stages before the concrete child node; map them to
+  // the earliest sub-stage so the user sees progress as soon as the round opens.
+  if (stage === 'round1') return 'draft_writer';
+  if (stage === 'round2') return 'revision_writer';
+  if (stage === 'round3') return 'final_reviser';
   return null;
 }
 

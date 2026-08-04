@@ -1043,6 +1043,12 @@ async function runRound2(
           parentArtifactId: draftArtifact.id,
           eligibilityStatus: 'intermediate',
           rejectionCode: null,
+          // V2 must always occupy its own revision_1 row. Without this flag a
+          // contentHash collision with V1 (e.g. model echoes the draft) makes
+          // insertArtifact silently return the draft row, collapsing the whole
+          // V1→V2→C2→V3 chain into V1→C2(V1)→V3(V1). requireStageMatch forces a
+          // distinct salted body so C2 and V3 always see an independent V2.
+          requireStageMatch: true,
         });
         await updateStageResult({
           runId: run.id,
