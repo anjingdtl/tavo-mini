@@ -59,4 +59,39 @@ describe('Repair completeness policy', () => {
     expect(ok.metrics.endingAnchorRetained).toBe(true);
     expect(ok.minimalInterventionPassed).toBe(true);
   });
+
+  test('lengthExpansionMode treats all Writer paragraphs as targeted', () => {
+    const paragraphs = Array.from(
+      { length: 8 },
+      (_, i) => `扩写前自然段${i}包含足够长度的叙述正文。`,
+    );
+    const writerText = paragraphs.join('\n');
+    // Fully rewrite every paragraph (common deepen-expand pattern) — fails
+    // minimal intervention without lengthExpansionMode.
+    const expanded = Array.from(
+      { length: 8 },
+      (_, i) =>
+        `深化后段落${i}补充动作过程、人物反应与冲突升级的完整叙述内容。`,
+    ).join('\n');
+    const withoutFlag = evaluateRepairCompleteness({
+      writerText,
+      candidateText: expanded,
+      targetedSpans: [],
+    });
+    expect(withoutFlag.minimalInterventionPassed).toBe(false);
+
+    const withFlag = evaluateRepairCompleteness({
+      writerText,
+      candidateText: expanded,
+      targetedSpans: [],
+      lengthExpansionMode: true,
+    });
+    expect(withFlag.minimalInterventionPassed).toBe(true);
+    expect(withFlag.metrics.targetedWriterParagraphCount).toBe(
+      paragraphs.length,
+    );
+    // Still retains opening/ending anchors when content is long enough; ratio
+    // floors remain independent of the expansion targeting flag.
+    expect(withFlag.metrics.writerHan).toBeGreaterThan(0);
+  });
 });

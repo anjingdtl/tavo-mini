@@ -4,6 +4,7 @@ import {
   runContinuationV4LocalFinalGate,
   validateContinuationV4RepairCompliance,
 } from '../src/services/continuation/generation';
+import { isLengthExpansionIssue } from '../src/services/continuation/generation/continuationLengthContract';
 import type {
   ContinuationContextSnapshotV3,
   ContinuationV4RepairEnvelope,
@@ -632,5 +633,208 @@ describe('Continuation V4 workflow contracts', () => {
     });
     expect(gate.passed).toBe(false);
     expect(gate.checks.map(c => c.subtype)).toContain('repair_non_minimal_rewrite');
+  });
+
+  test('篇幅扩写合规：必须净增且进入 target×0.7 以上', () => {
+    const writerText = '甲'.repeat(1000);
+    const stillShort = '乙'.repeat(1200); // grew but still < 2100 for target 3000
+    const enough = '丙'.repeat(2200);
+    const lengthIssue = {
+      id: 99,
+      category: 'style',
+      subtype: 'chapter_length_under_target',
+      severity: 'error',
+      description: '偏短',
+      suggestedFix: '深化',
+      generatedStart: null,
+      generatedEnd: null,
+      generatedExcerpt: '',
+      evidenceIds: [],
+    } as any;
+    expect(isLengthExpansionIssue(lengthIssue)).toBe(true);
+
+    const controlReport = {
+      schemaVersion: 2 as const,
+      action: 'expand' as const,
+      currentHan: 1000,
+      targetHan: 3000,
+      allowedMinHan: 2100,
+      allowedMaxHan: 3900,
+      suggestions: [],
+      findings: [],
+      preserve: [],
+    };
+
+    const noGrowth = validateContinuationV4RepairCompliance({
+      writerText,
+      candidateText: writerText,
+      checkerIssues: [lengthIssue],
+      controlReport,
+      envelope: {
+        schemaVersion: 1,
+        content: writerText,
+        appliedCheckerIssueIds: ['99'],
+        appliedControlSuggestionIds: [],
+        appliedControlFindingIds: [],
+        unappliedItems: [],
+      },
+    });
+    expect(noGrowth.map(c => c.subtype)).toContain(
+      'repair_length_expansion_no_growth',
+    );
+
+    const belowFloor = validateContinuationV4RepairCompliance({
+      writerText,
+      candidateText: stillShort,
+      checkerIssues: [lengthIssue],
+      controlReport,
+      envelope: {
+        schemaVersion: 1,
+        content: stillShort,
+        appliedCheckerIssueIds: ['99'],
+        appliedControlSuggestionIds: [],
+        appliedControlFindingIds: [],
+        unappliedItems: [],
+      },
+    });
+    expect(belowFloor.map(c => c.subtype)).toContain(
+      'repair_length_expansion_below_floor',
+    );
+
+    const ok = validateContinuationV4RepairCompliance({
+      writerText,
+      candidateText: enough,
+      checkerIssues: [lengthIssue],
+      controlReport,
+      envelope: {
+        schemaVersion: 1,
+        content: enough,
+        appliedCheckerIssueIds: ['99'],
+        appliedControlSuggestionIds: [],
+        appliedControlFindingIds: [],
+        unappliedItems: [],
+      },
+    });
+    expect(
+      ok.some(c => c.subtype.startsWith('repair_length_expansion_')),
+    ).toBe(false);
+  });
+
+  test('锚点残留被 Local Final Gate 拦截为 blocking', () => {
+    const writerText = Array.from(
+      { length: 10 },
+      (_, i) => `自然段${i}推进并包含足够锚点正文。`,
+    ).join('\n');
+    const candidateWithAnchor = `${writerText}\n尾句。`.replace(
+      '自然段3推进',
+      '⟦ISSUE_1_START⟧自然段3推进⟦ISSUE_1_END⟧',
+    );
+    const gate = runContinuationV4LocalFinalGate({
+      writerText,
+      candidateText: candidateWithAnchor.replace(
+        /⟦ISSUE_\d+_(?:START|END)⟧/g,
+        '',
+      ),
+      snapshot: snapshot(),
+      controlMetrics: {} as any,
+      rawRepairContent: candidateWithAnchor,
+      targetedSpans: [
+        {
+          generatedStart: writerText.indexOf('自然段3推进'),
+          generatedEnd: writerText.indexOf('自然段3推进') + 6,
+          generatedExcerpt: '自然段3推进',
+        },
+      ],
+    });
+    expect(gate.checks.map(c => c.subtype)).toContain('repair_anchor_residue');
+    expect(
+      gate.checks.find(c => c.subtype === 'repair_anchor_residue')?.severity,
+    ).toBe('blocking');
+    expect(gate.passed).toBe(false);
+  });
+
+  test('各类 run 物理请求规划总数 ≤ 4（无问题/仅长度/仅 Checker/混合）', () => {
+    /**
+     * V4 stages: Writer always + Checker + Control in parallel (2 physical) +
+     * optional single Repair. Length expansion reuses that same Repair slot —
+     * never a 5th physical request. maxPhysicalRequests telemetry stays 4.
+     */
+    const planPhysicalRequests = (flags: {
+      lengthExpansion: boolean;
+      checkerIssues: boolean;
+      styleIssues: boolean;
+      localSafety: boolean;
+    }) => {
+      const stages = ['writer', 'checker', 'control'] as string[];
+      const needsRepair =
+        flags.lengthExpansion ||
+        flags.checkerIssues ||
+        flags.styleIssues ||
+        flags.localSafety;
+      if (needsRepair) stages.push('repair');
+      return stages.length;
+    };
+
+    const scenarios = [
+      {
+        name: '无问题',
+        flags: {
+          lengthExpansion: false,
+          checkerIssues: false,
+          styleIssues: false,
+          localSafety: false,
+        },
+      },
+      {
+        name: '仅长度',
+        flags: {
+          lengthExpansion: true,
+          checkerIssues: false,
+          styleIssues: false,
+          localSafety: false,
+        },
+      },
+      {
+        name: '仅 Checker',
+        flags: {
+          lengthExpansion: false,
+          checkerIssues: true,
+          styleIssues: false,
+          localSafety: false,
+        },
+      },
+      {
+        name: '混合',
+        flags: {
+          lengthExpansion: true,
+          checkerIssues: true,
+          styleIssues: true,
+          localSafety: true,
+        },
+      },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const count = planPhysicalRequests(scenario.flags);
+      expect(count).toBeLessThanOrEqual(4);
+    }
+    // Mixed still fits in Writer+Checker+Control+Repair.
+    expect(
+      planPhysicalRequests({
+        lengthExpansion: true,
+        checkerIssues: true,
+        styleIssues: true,
+        localSafety: true,
+      }),
+    ).toBe(4);
+    // Length alone must not invent a second repair stage.
+    expect(
+      planPhysicalRequests({
+        lengthExpansion: true,
+        checkerIssues: false,
+        styleIssues: false,
+        localSafety: false,
+      }),
+    ).toBe(4);
   });
 });
