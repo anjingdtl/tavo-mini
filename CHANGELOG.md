@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.11.22] - 2026-08-05
+
+### Fixed
+
+- 续写 V5 draft writer 章节衔接断裂：prompt 读取的是 `primaryAnchorSummary`（context builder 在续写章节场景下刻意清空成占位符的遗留标签），从未读取真实的 `primaryAnchor.excerpt`，导致模型生成第 N+1 章时完全看不到第 N 章正文，章节之间无法衔接（相对 V4 的回归）。draft writer 现改为渲染真实上一章接缝（summary + 已裁剪 excerpt 尾段）；revision writer / auditor / final reviser 三个原本不带任何上一章正文的阶段统一注入接缝块，auditor 新增「衔接检查」职责（发现问题须产出 `finalObligation`），final reviser 提示 V3 开头须与接缝自然衔接。
+- 续写 V5 Stage Caller 空正文偶发失败：`defaultV5StageCaller()` 接收了 `responseFormat` 参数但调用 `callLLMResult()` 时遗漏透传，`response_format: json_object` 从未上链，部分模型偶发返回空正文/纯计划 JSON 触发 `sanitizeChapterContent()` 的空正文校验。`defaultV5StageCaller` 现透传 `responseFormat`（与 `defaultStageCaller` 一致映射）；空正文校验不放宽，新增 `buildV5DraftWriterDiagnostics()` 收集安全诊断字段、`mapV5DraftWriterEmptyContentError()` 将错误重写为可操作中文提示（截断/过滤/网络等更具体错误优先透传）。
+- 续写结果页点展开/折叠按钮卡顿：V5「V3 改动占比」行在 JSX 内联调用 `computeV3ChangeRatio`，对 V2/V3 两段完整正文（3000+ 汉字）跑 O(N×M) 汉字序列 LCS 动态规划，且未做 `useMemo`，导致每次切换 `expanded`/`busy` 状态触发 re-render 时同步阻塞 JS 线程。现将该计算提到组件顶层并用 `useMemo` 锁定 V2/V3 的 `content` 与 `contentHash` 依赖，仅在正文实际变化时重算。
+
+### Changed
+
+- 续写结果页不再展示 V1/V2/V3 三段正文：三段各 3000+ 字的 `<Text selectable>` 同时挂载在单个 `ScrollView` 内，是上下滚动时明显掉帧的主因；对用户而言只有可采纳的 V3 才有决策价值（其正文已在工作区编辑器中审阅），过程稿正文无实际用途。V5 三稿卡片改为始终显示的摘要行——标题（V1/V2/V3）、生成 Token 数、汉字数、状态标签（过程稿·不可采纳 / 可交付终稿），去掉展开按钮与正文区。「V3 改动占比」行作为无正文情况下的质量摘要保留。
+
+### Validation
+
+- 新增章节衔接回归（draft/revision/auditor/final-reviser 四阶段接缝注入 + 占位符消失）、V5 Stage Caller 透传与空正文诊断映射测试；更新 V5 结果页测试断言三段正文永不渲染、摘要行与采纳/放弃按钮保留；全量 `npm run verify` 通过。
+
 ## [2.11.21] - 2026-08-04
 
 ### Fixed
