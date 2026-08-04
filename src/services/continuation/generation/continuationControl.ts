@@ -1,3 +1,11 @@
+/**
+ * Continuation V4 Control — original-style consistency review.
+ *
+ * Length metrics remain local and authoritative for UI soft hints only.
+ * expand/compress and expectedDeltaHan no longer drive Repair eligibility.
+ * Only precise, evidence-backed, high-confidence style issues with
+ * repairReady=true enter the single Repair request.
+ */
 import {
   countHanCharacters,
   resolveContinuationLengthContract,
@@ -7,10 +15,39 @@ import type {
   ContinuationControlAction,
   ContinuationControlFinding,
   ContinuationControlReport,
-  ContinuationControlSuggestion,
   ContinuationPlan,
+  ContinuationStyleDimension,
+  ContinuationStyleIssue,
   ContinuationV4Metrics,
 } from './types';
+
+/** Central confidence floor for style issues entering Repair. */
+export const STYLE_REPAIR_CONFIDENCE_MIN = 0.75;
+
+/**
+ * @deprecated Length progress is no longer a Repair hard gate.
+ * Kept as exports so historical imports resolve; always returns 0 for new code paths.
+ */
+export const CONTROL_PROGRESS_RATIO = 0;
+export const CONTROL_PROGRESS_FLOOR_HAN = 0;
+
+/** @deprecated Progress hard gate removed; always returns 0. */
+export function requiredControlProgressHan(_requiredDeltaHan: number): number {
+  return 0;
+}
+
+const STYLE_DIMENSIONS: ContinuationStyleDimension[] = [
+  'narrative_voice',
+  'pov',
+  'sentence_rhythm',
+  'dialogue_voice',
+  'emotional_expression',
+  'description_density',
+  'subtext',
+  'scene_transition',
+  'ai_template',
+  'padding',
+];
 
 function paragraphRanges(text: string): Array<{ start: number; end: number; value: string }> {
   const ranges: Array<{ start: number; end: number; value: string }> = [];
@@ -151,235 +188,13 @@ export function buildContinuationControlMetrics(input: {
   };
 }
 
-function reportAction(metrics: ContinuationV4Metrics): ContinuationControlReport['action'] {
+/** Diagnostic length direction for UI only — never a Repair trigger alone. */
+export function reportLengthAction(
+  metrics: ContinuationV4Metrics,
+): ContinuationControlAction {
   if (metrics.missingToMinimum > 0) return 'expand';
   if (metrics.excessOverMaximum > 0) return 'compress';
   return 'keep';
-}
-
-function localStructuralFindings(
-  metrics: ContinuationV4Metrics,
-): ContinuationControlFinding[] {
-  const findings: ContinuationControlFinding[] = [];
-
-  metrics.duplicateWindows.forEach((window, index) => {
-    findings.push({
-      findingId: `ctrl_local_duplicate_${index + 1}`,
-      subtype: 'duplicate_window',
-      severity: 'warning',
-      location: `utf16:${window.start}-${window.end}`,
-      generatedStart: window.start,
-      generatedEnd: window.end,
-      description: `检测到同一自然段或高度相似段落重复出现 ${window.count} 次，可能造成叙事退化。`,
-      suggestedFix: '合并或改写重复段落，保留一次有效表达，并补充新的动作、反应或因果推进。',
-    });
-  });
-
-  metrics.beatCoverage.forEach(beat => {
-    if (beat.paragraphIds.length > 0) return;
-    findings.push({
-      findingId: `ctrl_local_beat_gap_${beat.beatId}`,
-      subtype: 'beat_gap',
-      severity: 'warning',
-      location: beat.beatId,
-      generatedStart: null,
-      generatedEnd: null,
-      description: `计划节拍 ${beat.beatId} 未能在正文段落中找到可识别的覆盖内容。`,
-      suggestedFix: `在不破坏现有事件链的前提下补足 ${beat.beatId} 的动作、冲突或结果，并让它自然推动章末。`,
-    });
-  });
-
-  const distribution = metrics.paragraphLengthDistribution;
-  if (metrics.paragraphs.length >= 3 && distribution.median > 0) {
-    const longest = metrics.paragraphs.find(
-      paragraph => paragraph.hanCharacters === distribution.max,
-    );
-    const shortest = metrics.paragraphs.find(
-      paragraph => paragraph.hanCharacters === distribution.min,
-    );
-    const upperImbalance =
-      distribution.max >= distribution.median * 2 &&
-      distribution.max - distribution.median >= 160;
-    const lowerImbalance =
-      distribution.min <= distribution.median * 0.4 &&
-      distribution.median - distribution.min >= 120;
-    if (upperImbalance || lowerImbalance) {
-      const focus = upperImbalance ? longest : shortest;
-      findings.push({
-        findingId: 'ctrl_local_paragraph_imbalance',
-        subtype: 'paragraph_imbalance',
-        severity: 'warning',
-        location: focus?.id ?? 'paragraph_structure',
-        generatedStart: focus?.start ?? null,
-        generatedEnd: focus?.end ?? null,
-        description: `段落长度分布不均：最短 ${distribution.min}、中位数 ${distribution.median}、最长 ${distribution.max} 个汉字，局部节奏可能失衡。`,
-        suggestedFix: '将过长段落拆成有动作推进的自然段，或扩充过短段落的即时反应与因果衔接，避免只做机械分段。',
-      });
-    }
-  }
-
-  return findings;
-}
-
-function fallbackSuggestion(
-  metrics: ContinuationV4Metrics,
-): ContinuationControlSuggestion[] {
-  if (metrics.missingToMinimum > 0) {
-    return [
-      {
-        suggestionId: 'ctrl_local_expand',
-        type: 'expand_scene',
-        location: `paragraph_${metrics.paragraphs.length}_after`,
-        expectedDeltaHan: metrics.missingToMinimum,
-        instruction: `在自然段边界补充行动阻力、人物即时反应和因果推进，至少补足 ${metrics.missingToMinimum} 个汉字。`,
-        preserveBeatIds: metrics.beatCoverage
-          .filter(beat => beat.paragraphIds.length > 0)
-          .map(beat => beat.beatId),
-      },
-    ];
-  }
-  if (metrics.excessOverMaximum > 0) {
-    return [
-      {
-        suggestionId: 'ctrl_local_compress',
-        type: 'compress_repetition',
-        location: 'duplicate_windows_first',
-        expectedDeltaHan: -metrics.excessOverMaximum,
-        instruction: `优先压缩重复段落、重复心理和不推进剧情的对话，减少 ${metrics.excessOverMaximum} 个汉字以内。`,
-        preserveBeatIds: metrics.beatCoverage.map(beat => beat.beatId),
-      },
-    ];
-  }
-  return [];
-}
-
-export function buildContinuationControlFallback(
-  metrics: ContinuationV4Metrics,
-): ContinuationControlReport {
-  return {
-    schemaVersion: 1,
-    action: reportAction(metrics),
-    currentHan: metrics.actualHanCharacters,
-    targetHan: metrics.targetHanCharacters,
-    allowedMinHan: metrics.minHanCharacters,
-    allowedMaxHan: metrics.maxHanCharacters,
-    suggestions: fallbackSuggestion(metrics),
-    findings: localStructuralFindings(metrics),
-    preserve: ['人物关系', '章末钩子'],
-  };
-}
-
-/**
- * The minimum substantial progress a Repair candidate must make in Control's
- * direction. This is a HARD compliance requirement, not the final-length soft
- * gate: a candidate that falls short of this progress (and also does not reach
- * the legal band) is rejected by `validateContinuationV4RepairCompliance` with
- * `repair_control_insufficient_progress` (blocking). A candidate that meets
- * this floor but still falls short of allowedMin/allowedMax passes Control
- * compliance; the remaining pure length gap stays a `chapter_length_*` warning
- * in the Local Final Gate and does not reject.
- *
- * Defined here (single source of truth) so the Repair prompt, the compliance
- * check and the result UI never diverge on what "minimum progress" means.
- */
-export const CONTROL_PROGRESS_RATIO = 0.35;
-export const CONTROL_PROGRESS_FLOOR_HAN = 80;
-
-export function requiredControlProgressHan(requiredDeltaHan: number): number {
-  const delta = Math.abs(requiredDeltaHan);
-  if (!Number.isFinite(delta) || delta === 0) return 0;
-  return Math.min(
-    delta,
-    Math.max(
-      CONTROL_PROGRESS_FLOOR_HAN,
-      Math.ceil(delta * CONTROL_PROGRESS_RATIO),
-    ),
-  );
-}
-
-const LOCAL_EXPAND_SUGGESTION_ID = 'ctrl_local_expand';
-const LOCAL_COMPRESS_SUGGESTION_ID = 'ctrl_local_compress';
-
-function dedupeSuggestionsById(
-  suggestions: ContinuationControlSuggestion[],
-): ContinuationControlSuggestion[] {
-  const seen = new Set<string>();
-  const out: ContinuationControlSuggestion[] = [];
-  for (const suggestion of suggestions) {
-    const id = suggestion.suggestionId.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(suggestion);
-  }
-  return out;
-}
-
-function dedupeFindingsById(
-  findings: ContinuationControlFinding[],
-): ContinuationControlFinding[] {
-  const seen = new Set<string>();
-  const out: ContinuationControlFinding[] = [];
-  for (const finding of findings) {
-    const id = finding.findingId.trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(finding);
-  }
-  return out;
-}
-
-/**
- * A model suggestion is only accepted when it is non-empty, internally unique,
- * carries a finite expected delta, points in the local action's direction, and
- * does not collide with the local forced suggestion id. Suggestions that fail
- * any of these are dropped rather than re-purposed.
- */
-function filterModelSuggestions(input: {
-  suggestions: ContinuationControlSuggestion[];
-  localAction: ContinuationControlAction;
-  seenIds: Set<string>;
-}): { accepted: ContinuationControlSuggestion[]; droppedCount: number } {
-  const accepted: ContinuationControlSuggestion[] = [];
-  let droppedCount = 0;
-  for (const suggestion of input.suggestions) {
-    const id = suggestion.suggestionId.trim();
-    if (!id || input.seenIds.has(id)) {
-      droppedCount += 1;
-      continue;
-    }
-    if (!suggestion.instruction.trim()) {
-      droppedCount += 1;
-      continue;
-    }
-    const delta = suggestion.expectedDeltaHan;
-    if (!Number.isFinite(delta)) {
-      droppedCount += 1;
-      continue;
-    }
-    if (input.localAction === 'expand' && !(delta > 0)) {
-      droppedCount += 1;
-      continue;
-    }
-    if (input.localAction === 'compress' && !(delta < 0)) {
-      droppedCount += 1;
-      continue;
-    }
-    // keep is also accepted only when the model echoes keep-consistent advice;
-    // a non-zero delta under keep has no enforceable direction and is dropped.
-    if (input.localAction === 'keep' && delta !== 0) {
-      droppedCount += 1;
-      continue;
-    }
-    input.seenIds.add(id);
-    accepted.push(suggestion);
-  }
-  return { accepted, droppedCount };
-}
-
-function stripJsonFence(raw: string): string {
-  const trimmed = raw.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  return fenced?.[1]?.trim() ?? trimmed;
 }
 
 function asFiniteNumber(value: unknown): number | null {
@@ -388,74 +203,266 @@ function asFiniteNumber(value: unknown): number | null {
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
-    ? value.filter(item => typeof item === 'string').map(item => item.trim()).filter(Boolean)
+    ? value
+        .filter(item => typeof item === 'string')
+        .map(item => item.trim())
+        .filter(Boolean)
     : [];
 }
 
-function parseModelFindings(value: unknown): ContinuationControlFinding[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter(
-      (item): item is Record<string, unknown> =>
-        Boolean(item && typeof item === 'object'),
+function isStyleDimension(value: unknown): value is ContinuationStyleDimension {
+  return (
+    typeof value === 'string' &&
+    (STYLE_DIMENSIONS as string[]).includes(value)
+  );
+}
+
+/**
+ * A style issue is repair-ready only when it is precise, evidence-backed,
+ * high-confidence, and does not demand whole-chapter rewrite or new facts.
+ */
+export function isStyleIssueRepairReady(
+  issue: Pick<
+    ContinuationStyleIssue,
+    | 'severity'
+    | 'confidence'
+    | 'generatedStart'
+    | 'generatedEnd'
+    | 'generatedExcerpt'
+    | 'styleEvidenceIds'
+    | 'rewriteGoal'
+    | 'preserveMeaning'
+    | 'description'
+  >,
+): boolean {
+  if (issue.severity !== 'error') return false;
+  if (
+    !Number.isFinite(issue.confidence) ||
+    issue.confidence < STYLE_REPAIR_CONFIDENCE_MIN
+  ) {
+    return false;
+  }
+  const hasRange =
+    typeof issue.generatedStart === 'number' &&
+    typeof issue.generatedEnd === 'number' &&
+    issue.generatedStart >= 0 &&
+    issue.generatedEnd > issue.generatedStart;
+  const hasExcerpt = (issue.generatedExcerpt ?? '').trim().length >= 4;
+  if (!hasRange && !hasExcerpt) return false;
+  if (!issue.styleEvidenceIds?.length) return false;
+  const rewriteGoal = (issue.rewriteGoal ?? '').trim();
+  if (!rewriteGoal) return false;
+  if (!issue.preserveMeaning?.length) return false;
+  if (!issue.description?.trim()) return false;
+  // Reject whole-chapter / new-fact demands — audit only.
+  if (
+    /整章|全文重构|全部重写|重新创作|新增事实|补写剧情|重构整章/.test(
+      rewriteGoal,
     )
-    .map((item, index) => {
-      const description =
-        typeof item.description === 'string' ? item.description.trim() : '';
-      const suggestedFix =
-        typeof item.suggestedFix === 'string' ? item.suggestedFix.trim() : '';
-      const subtype =
-        typeof item.subtype === 'string' ? item.subtype.trim() : '';
-      const location =
-        typeof item.location === 'string' ? item.location.trim() : '';
-      if (!description || !suggestedFix || !subtype || !location) return null;
-      const rawId =
-        typeof item.findingId === 'string' ? item.findingId.trim() : '';
-      const start = asFiniteNumber(item.generatedStart);
-      const end = asFiniteNumber(item.generatedEnd);
-      return {
-        findingId: rawId || `ctrl_model_finding_${index + 1}`,
-        subtype,
-        // Findings are advisory by contract; unknown model severities are
-        // downgraded rather than becoming new hard gates.
-        severity: item.severity === 'info' ? 'info' : 'warning',
-        location,
-        generatedStart: start != null && start >= 0 ? start : null,
-        generatedEnd: end != null && end >= 0 ? end : null,
-        description,
-        suggestedFix,
-      } satisfies ContinuationControlFinding;
-    })
-    .filter(
-      (finding): finding is ContinuationControlFinding => finding !== null,
-    );
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function styleIssueToFinding(
+  issue: ContinuationStyleIssue,
+): ContinuationControlFinding {
+  return {
+    findingId: issue.findingId,
+    subtype: issue.styleDimension,
+    severity: issue.repairReady ? 'error' : 'warning',
+    location:
+      issue.generatedStart != null && issue.generatedEnd != null
+        ? `utf16:${issue.generatedStart}-${issue.generatedEnd}`
+        : issue.styleDimension,
+    generatedStart: issue.generatedStart,
+    generatedEnd: issue.generatedEnd,
+    description: issue.description,
+    suggestedFix: issue.rewriteGoal || issue.description,
+    repairReady: issue.repairReady,
+    rewriteGoal: issue.rewriteGoal,
+    preserveMeaning: issue.preserveMeaning,
+    styleEvidenceIds: issue.styleEvidenceIds,
+    styleDimension: issue.styleDimension,
+  };
+}
+
+function bindStyleIssueToArtifact(
+  issue: ContinuationStyleIssue,
+  artifactText: string,
+): ContinuationStyleIssue {
+  let { generatedStart, generatedEnd, generatedExcerpt } = issue;
+  const excerpt = (generatedExcerpt ?? '').trim();
+  if (
+    generatedStart != null &&
+    generatedEnd != null &&
+    generatedStart >= 0 &&
+    generatedEnd > generatedStart &&
+    generatedEnd <= artifactText.length
+  ) {
+    generatedExcerpt = artifactText.slice(generatedStart, generatedEnd);
+  } else if (excerpt.length >= 4) {
+    const located = artifactText.indexOf(excerpt);
+    if (located >= 0) {
+      generatedStart = located;
+      generatedEnd = located + excerpt.length;
+      generatedExcerpt = excerpt;
+    } else {
+      // Non-unique or missing excerpt → cannot repair.
+      generatedStart = null;
+      generatedEnd = null;
+      generatedExcerpt = excerpt;
+    }
+  } else {
+    generatedStart = null;
+    generatedEnd = null;
+    generatedExcerpt = excerpt;
+  }
+  const bound: ContinuationStyleIssue = {
+    ...issue,
+    generatedStart,
+    generatedEnd,
+    generatedExcerpt: generatedExcerpt ?? '',
+  };
+  return {
+    ...bound,
+    repairReady: isStyleIssueRepairReady(bound),
+  };
+}
+
+function parseStyleIssueItem(
+  item: Record<string, unknown>,
+  index: number,
+  forceWarning: boolean,
+): ContinuationStyleIssue | null {
+  const dimensionRaw =
+    item.styleDimension ?? item.subtype ?? item.dimension ?? '';
+  if (!isStyleDimension(dimensionRaw)) return null;
+  const description =
+    typeof item.description === 'string' ? item.description.trim() : '';
+  if (!description) return null;
+  const rewriteGoal =
+    typeof item.rewriteGoal === 'string'
+      ? item.rewriteGoal.trim()
+      : typeof item.suggestedFix === 'string'
+        ? item.suggestedFix.trim()
+        : '';
+  const preserveMeaning = asStringArray(
+    item.preserveMeaning ?? item.preserve ?? [],
+  );
+  const styleEvidenceIds = asStringArray(
+    item.styleEvidenceIds ?? item.evidenceIds ?? [],
+  );
+  const rawId =
+    typeof item.findingId === 'string' && item.findingId.trim()
+      ? item.findingId.trim()
+      : `style_${index + 1}`;
+  const start = asFiniteNumber(item.generatedStart);
+  const end = asFiniteNumber(item.generatedEnd);
+  const excerpt =
+    typeof item.generatedExcerpt === 'string'
+      ? item.generatedExcerpt.trim()
+      : '';
+  const confidence = Math.min(
+    1,
+    Math.max(0, Number(item.confidence) || 0),
+  );
+  let severity: 'warning' | 'error' =
+    item.severity === 'error' && !forceWarning ? 'error' : 'warning';
+  // Abstract whole-work feelings stay warnings.
+  if (
+    /整体不像|整体节奏|节奏平淡|不够像原著|全文风格/.test(description) &&
+    !excerpt &&
+    (start == null || end == null)
+  ) {
+    severity = 'warning';
+  }
+  const draft: ContinuationStyleIssue = {
+    findingId: rawId,
+    styleDimension: dimensionRaw,
+    severity,
+    confidence,
+    generatedStart: start != null && start >= 0 ? start : null,
+    generatedEnd: end != null && end >= 0 ? end : null,
+    generatedExcerpt: excerpt,
+    description,
+    styleEvidenceIds,
+    rewriteGoal,
+    preserveMeaning,
+    repairReady: false,
+  };
+  // repairReady computed after bind; preliminary:
+  draft.repairReady =
+    !forceWarning && severity === 'error' && isStyleIssueRepairReady(draft);
+  return draft;
+}
+
+function stripJsonFence(raw: string): string {
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  return fenced?.[1]?.trim() ?? trimmed;
+}
+
+function dedupeStyleIssues(
+  issues: ContinuationStyleIssue[],
+): ContinuationStyleIssue[] {
+  const seen = new Set<string>();
+  const out: ContinuationStyleIssue[] = [];
+  for (const issue of issues) {
+    const id = issue.findingId.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(issue);
+  }
+  return out;
+}
+
+/**
+ * Local fallback when Control LLM is unavailable: length diagnostics only,
+ * no expand/compress force tasks, no structural beat/paragraph Repair tasks.
+ */
+export function buildContinuationControlFallback(
+  metrics: ContinuationV4Metrics,
+  options?: { writerArtifactHash?: string | null; styleProfileRevision?: number | null },
+): ContinuationControlReport {
+  return {
+    schemaVersion: 2,
+    action: reportLengthAction(metrics),
+    currentHan: metrics.actualHanCharacters,
+    targetHan: metrics.targetHanCharacters,
+    allowedMinHan: metrics.minHanCharacters,
+    allowedMaxHan: metrics.maxHanCharacters,
+    suggestions: [],
+    findings: [],
+    preserve: ['人物关系', '章末钩子', '未标记段落原文'],
+    styleIssues: [],
+    styleWarnings: [],
+    styleProfileRevision: options?.styleProfileRevision ?? null,
+    writerArtifactHash: options?.writerArtifactHash ?? null,
+  };
 }
 
 export interface ContinuationControlParseResult {
   report: ContinuationControlReport | null;
   metricEchoMismatch: boolean;
   errorCode: string | null;
-  /** True when the model's action echo disagrees with the authoritative local
-   * action. The local action always wins; this flag is diagnostic only. */
   actionEchoMismatch?: boolean;
-  /** True when the local forced suggestion was injected because the model did
-   * not supply a direction-consistent one. */
   localSuggestionInjected?: boolean;
-  /** Count of model suggestions dropped by the validity/direction filter. */
   droppedSuggestionCount?: number;
 }
 
 /**
- * Parse the Control report and reconcile it against the authoritative local
- * metrics. The local `action` and every numeric field always win; the model's
- * `action` is only a diagnostic echo. When the local action is expand/compress,
- * a forced local suggestion (`ctrl_local_expand`/`ctrl_local_compress`) is
- * always present in the final suggestions, even if the model returned an empty
- * array or a direction-inconsistent one.
+ * Parse Control LLM output as original-style review (schema v2), with
+ * graceful acceptance of legacy v1 expand/compress envelopes (metrics only;
+ * length suggestions discarded for Repair).
  */
 export function parseContinuationControlReport(input: {
   raw: string;
   metrics: ContinuationV4Metrics;
+  artifactText?: string;
+  writerArtifactHash?: string | null;
+  styleProfileRevision?: number | null;
 }): ContinuationControlParseResult {
   let parsed: any;
   try {
@@ -474,136 +481,188 @@ export function parseContinuationControlReport(input: {
       errorCode: 'control_invalid_shape',
     };
   }
-  const modelAction = parsed.action;
-  if (
-    modelAction !== 'keep' &&
-    modelAction !== 'expand' &&
-    modelAction !== 'compress'
-  ) {
-    return {
-      report: null,
-      metricEchoMismatch: false,
-      errorCode: 'control_invalid_action',
-    };
-  }
+
   const metrics = input.metrics;
-  // Local action is the single source of truth for direction.
-  const localAction: ContinuationControlAction = reportAction(metrics);
-  const actionEchoMismatch = modelAction !== localAction;
+  const localLengthAction = reportLengthAction(metrics);
   const modelCurrent = asFiniteNumber(parsed.currentHan);
   const metricEchoMismatch =
     modelCurrent != null && modelCurrent !== metrics.actualHanCharacters;
 
-  const rawModelSuggestions: ContinuationControlSuggestion[] = Array.isArray(
-    parsed.suggestions,
-  )
-    ? parsed.suggestions
-        .filter((item: any) => item && typeof item === 'object')
-        .map((item: any, index: number) => ({
-          suggestionId:
-            typeof item.suggestionId === 'string' && item.suggestionId.trim()
-              ? item.suggestionId.trim()
-              : `ctrl_${index + 1}`,
-          type: typeof item.type === 'string' ? item.type : 'targeted_edit',
-          location:
-            typeof item.location === 'string' ? item.location : 'paragraph_boundary',
-          expectedDeltaHan:
-            asFiniteNumber(item.expectedDeltaHan) ??
-            (metrics.missingToMinimum > 0
-              ? metrics.missingToMinimum
-              : -metrics.excessOverMaximum),
-          instruction:
-            typeof item.instruction === 'string' ? item.instruction : '',
-          preserveBeatIds: asStringArray(item.preserveBeatIds),
-        }))
+  const artifactText = input.artifactText ?? '';
+  const rawIssues: unknown[] = Array.isArray(parsed.issues)
+    ? parsed.issues
+    : [];
+  const rawWarnings: unknown[] = Array.isArray(parsed.warnings)
+    ? parsed.warnings
+    : [];
+  // Legacy v1 findings → treat as style candidates only when they look style-like.
+  const legacyFindings: unknown[] = Array.isArray(parsed.findings)
+    ? parsed.findings
     : [];
 
-  // The local forced suggestion is always seeded first so the model cannot
-  // remove it by returning an empty array or a contradictory id.
-  const localFallback = buildContinuationControlFallback(metrics);
-  const localForced = localFallback.suggestions.filter(
-    s =>
-      s.suggestionId === LOCAL_EXPAND_SUGGESTION_ID ||
-      s.suggestionId === LOCAL_COMPRESS_SUGGESTION_ID,
+  const parsedIssues: ContinuationStyleIssue[] = [];
+  let index = 0;
+  for (const item of rawIssues) {
+    if (!item || typeof item !== 'object') continue;
+    const issue = parseStyleIssueItem(
+      item as Record<string, unknown>,
+      index,
+      false,
+    );
+    index += 1;
+    if (issue) parsedIssues.push(issue);
+  }
+  for (const item of rawWarnings) {
+    if (!item || typeof item !== 'object') continue;
+    const issue = parseStyleIssueItem(
+      item as Record<string, unknown>,
+      index,
+      true,
+    );
+    index += 1;
+    if (issue) parsedIssues.push(issue);
+  }
+  for (const item of legacyFindings) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    // Map legacy structural findings into audit warnings only (no Repair).
+    const issue = parseStyleIssueItem(
+      {
+        ...row,
+        styleDimension:
+          isStyleDimension(row.subtype) || isStyleDimension(row.styleDimension)
+            ? row.styleDimension ?? row.subtype
+            : 'ai_template',
+        severity: 'warning',
+        rewriteGoal: row.suggestedFix ?? row.rewriteGoal,
+        styleEvidenceIds: row.styleEvidenceIds ?? ['legacy_finding'],
+        preserveMeaning: row.preserveMeaning ?? ['保留原事件与结果'],
+        confidence: row.confidence ?? 0.4,
+      },
+      index,
+      true,
+    );
+    index += 1;
+    if (issue) parsedIssues.push(issue);
+  }
+
+  const bound = dedupeStyleIssues(
+    parsedIssues.map(issue =>
+      artifactText
+        ? bindStyleIssueToArtifact(issue, artifactText)
+        : {
+            ...issue,
+            repairReady: isStyleIssueRepairReady(issue),
+          },
+    ),
   );
-  const seenIds = new Set<string>(localForced.map(s => s.suggestionId));
-  // Under action mismatch, the model's suggestions point the wrong way and are
-  // dropped wholesale; otherwise they are filtered individually.
-  const candidatesForFilter = actionEchoMismatch ? [] : rawModelSuggestions;
-  const { accepted: acceptedModel, droppedCount } = filterModelSuggestions({
-    suggestions: candidatesForFilter,
-    localAction,
-    seenIds,
-  });
 
-  const suggestions = dedupeSuggestionsById([
-    ...localForced,
-    ...acceptedModel,
-  ]);
-  const localSuggestionInjected = localForced.length > 0;
+  const styleIssues = bound.filter(issue => issue.repairReady);
+  const styleWarnings = bound.filter(issue => !issue.repairReady);
+  const findings = styleIssues.map(styleIssueToFinding);
 
-  const findings = dedupeFindingsById([
-    ...localFallback.findings,
-    ...parseModelFindings(parsed.findings),
-  ]);
+  // Length suggestions from legacy models are intentionally discarded.
+  const droppedSuggestionCount = Array.isArray(parsed.suggestions)
+    ? parsed.suggestions.length
+    : 0;
 
-  // Preserve local defaults plus the model's preserve list (union, deduped).
-  const preserveSet = new Set<string>([
-    ...localFallback.preserve,
-    ...asStringArray(parsed.preserve),
-  ]);
+  const modelAction = parsed.action;
+  const actionEchoMismatch =
+    modelAction === 'keep' ||
+    modelAction === 'expand' ||
+    modelAction === 'compress'
+      ? modelAction !== localLengthAction
+      : false;
 
   return {
     report: {
-      schemaVersion: 1,
-      action: localAction,
+      schemaVersion: 2,
+      action: localLengthAction,
       currentHan: metrics.actualHanCharacters,
       targetHan: metrics.targetHanCharacters,
       allowedMinHan: metrics.minHanCharacters,
       allowedMaxHan: metrics.maxHanCharacters,
-      suggestions,
+      suggestions: [],
       findings,
-      preserve: Array.from(preserveSet),
+      preserve: Array.from(
+        new Set([
+          '人物关系',
+          '章末钩子',
+          '未标记段落原文',
+          ...asStringArray(parsed.preserve),
+        ]),
+      ),
+      styleIssues,
+      styleWarnings,
+      styleProfileRevision: input.styleProfileRevision ?? null,
+      writerArtifactHash:
+        typeof parsed.writerArtifactHash === 'string'
+          ? parsed.writerArtifactHash
+          : input.writerArtifactHash ?? null,
       ...(metricEchoMismatch ? { metricEchoMismatch: true } : {}),
       ...(actionEchoMismatch ? { actionEchoMismatch: true } : {}),
     },
     metricEchoMismatch,
     errorCode: null,
     actionEchoMismatch,
-    localSuggestionInjected,
-    droppedSuggestionCount: droppedCount + (actionEchoMismatch ? rawModelSuggestions.length : 0),
+    localSuggestionInjected: false,
+    droppedSuggestionCount,
   };
 }
 
 export function resolveContinuationControlReport(input: {
   metrics: ContinuationV4Metrics;
   raw?: string;
+  artifactText?: string;
+  writerArtifactHash?: string | null;
+  styleProfileRevision?: number | null;
 }): ContinuationControlParseResult & { report: ContinuationControlReport } {
   if (!input.raw) {
-    // No LLM at all: the local fallback is already authoritative and carries
-    // the local forced suggestion.
     return {
-      report: buildContinuationControlFallback(input.metrics),
+      report: buildContinuationControlFallback(input.metrics, {
+        writerArtifactHash: input.writerArtifactHash,
+        styleProfileRevision: input.styleProfileRevision,
+      }),
       metricEchoMismatch: false,
       errorCode: 'control_llm_unavailable',
       actionEchoMismatch: false,
-      localSuggestionInjected: buildContinuationControlFallback(input.metrics).suggestions.length > 0,
+      localSuggestionInjected: false,
       droppedSuggestionCount: 0,
     };
   }
   const parsed = parseContinuationControlReport({
     raw: input.raw,
     metrics: input.metrics,
+    artifactText: input.artifactText,
+    writerArtifactHash: input.writerArtifactHash,
+    styleProfileRevision: input.styleProfileRevision,
   });
-  if (parsed.report) return parsed as ContinuationControlParseResult & { report: ContinuationControlReport };
-  // Parse failed: fall back to the local deterministic report but preserve the
-  // parse error code for telemetry/UI.
+  if (parsed.report) {
+    return parsed as ContinuationControlParseResult & {
+      report: ContinuationControlReport;
+    };
+  }
   return {
-    report: buildContinuationControlFallback(input.metrics),
+    report: buildContinuationControlFallback(input.metrics, {
+      writerArtifactHash: input.writerArtifactHash,
+      styleProfileRevision: input.styleProfileRevision,
+    }),
     metricEchoMismatch: parsed.metricEchoMismatch,
     errorCode: parsed.errorCode,
     actionEchoMismatch: false,
-    localSuggestionInjected: buildContinuationControlFallback(input.metrics).suggestions.length > 0,
+    localSuggestionInjected: false,
     droppedSuggestionCount: 0,
   };
+}
+
+/** Actionable style findings that may enter Repair. */
+export function getRepairReadyStyleFindings(
+  report: ContinuationControlReport,
+): ContinuationControlFinding[] {
+  if (report.findings?.some(f => f.repairReady)) {
+    return report.findings.filter(f => f.repairReady);
+  }
+  return (report.styleIssues ?? [])
+    .filter(issue => issue.repairReady)
+    .map(styleIssueToFinding);
 }

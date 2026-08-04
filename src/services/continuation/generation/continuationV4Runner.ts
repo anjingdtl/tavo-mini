@@ -29,7 +29,7 @@ import {
 import {
   buildContinuationControlFallback,
   buildContinuationControlMetrics,
-  requiredControlProgressHan,
+  getRepairReadyStyleFindings,
   resolveContinuationControlReport,
 } from './continuationControl';
 import {
@@ -39,6 +39,10 @@ import {
   compileContinuationV4WriterMessages,
   continuationV4ProtocolSkeletonTokens,
 } from './continuationV4PromptCompiler';
+import {
+  evaluateRepairCompleteness,
+  type TargetedRepairSpan,
+} from './repairCompletenessPolicy';
 import {
   buildContinuationV4Context,
 } from './continuationContextBuilder';
@@ -637,16 +641,16 @@ export function parseContinuationV4RepairEnvelope(raw: string): ContinuationV4Re
   };
 }
 
-function isLocalGateSubtype(subtype: string): boolean {
+/** Hard local safety issues that may alone trigger Repair (never length). */
+function isHardLocalSafetyIssue(issue: Pick<RawCheckIssue, 'subtype' | 'severity'>): boolean {
+  if (issue.severity !== 'error' && issue.severity !== 'blocking') return false;
+  if (issue.subtype.startsWith('chapter_length_')) return false;
   return (
-    subtype.startsWith('chapter_length_') ||
-    subtype === 'source_overlap' ||
-    subtype === 'continuation_anchor_overlap' ||
-    subtype === 'future_leakage' ||
-    subtype === 'self_duplicate' ||
-    subtype === 'repair_prompt_leakage' ||
-    subtype === 'repair_envelope_leakage' ||
-    subtype === 'repair_candidate_collapsed'
+    issue.subtype === 'source_overlap' ||
+    issue.subtype === 'continuation_anchor_overlap' ||
+    issue.subtype === 'future_leakage' ||
+    issue.subtype === 'self_duplicate' ||
+    issue.subtype === 'resurrection_forbidden'
   );
 }
 
@@ -667,12 +671,6 @@ function isCheckerForbiddenSubtype(subtype: string): boolean {
     subtype === 'scene_pacing_drift' ||
     subtype === 'ending_hook_abrupt' ||
     subtype === 'ending_hook_abruptness'
-  );
-}
-
-function hasActionableIssue(issues: Array<Pick<RawCheckIssue, 'severity'>>): boolean {
-  return issues.some(
-    issue => issue.severity === 'error' || issue.severity === 'blocking',
   );
 }
 
@@ -711,10 +709,9 @@ function hasCheckerAuditId(values: string[], issueId: string): boolean {
 
 /**
  * Deterministically verify that a successful Repair response actually claims
- * every actionable requirement and moves the text in Control's requested
- * direction. This is deliberately a conservative contract check, not a
- * second semantic Checker: the UI must still disclose that semantic quality
- * was not re-verified after Repair.
+ * every repairReady Checker/Control requirement and rewrites the targeted
+ * spans. Completeness/collapse are handled separately by
+ * evaluateRepairCompleteness. This is not a second semantic LLM review.
  */
 export function validateContinuationV4RepairCompliance(input: {
   writerText: string;
@@ -730,8 +727,9 @@ export function validateContinuationV4RepairCompliance(input: {
       return [id, `chk_${id}`];
     }),
   );
-  const actionableCheckerIssues = input.checkerIssues.filter(
-    issue => hasActionableIssue([issue]) || isRepairableCheckerIssue(issue),
+  // Only repairReady five-dimension / safety issues require application.
+  const actionableCheckerIssues = input.checkerIssues.filter(issue =>
+    isRepairableCheckerIssue(issue) || isHardLocalSafetyIssue(issue),
   );
 
   for (const issue of actionableCheckerIssues) {
@@ -749,11 +747,7 @@ export function validateContinuationV4RepairCompliance(input: {
       continue;
     }
 
-    // An evidence-backed issue must not be satisfied by merely echoing its
-    // id. When the Checker supplied a sufficiently specific draft excerpt,
-    // retaining that exact problematic excerpt is a deterministic indication
-    // that the source text was not actually revised.
-    const excerpt = issue.generatedExcerpt.trim();
+    const excerpt = (issue.generatedExcerpt ?? '').trim();
     if (
       excerpt.length >= 4 &&
       input.writerText.includes(excerpt) &&
@@ -795,62 +789,87 @@ export function validateContinuationV4RepairCompliance(input: {
     );
   }
 
+  // Length expand/compress suggestions no longer drive compliance.
+  // Unknown suggestion ids are still soft-rejected if the model invents them.
   const suggestionIds = new Set(
     input.controlReport.suggestions.map(suggestion => suggestion.suggestionId),
   );
-  for (const suggestion of input.controlReport.suggestions) {
-    if (!input.envelope.appliedControlSuggestionIds.includes(suggestion.suggestionId)) {
-      checks.push(
-        repairComplianceIssue({
-          category: 'style',
-          subtype: 'repair_control_suggestion_unapplied',
-          severity:
-            suggestion.suggestionId === 'ctrl_local_expand' ||
-            suggestion.suggestionId === 'ctrl_local_compress'
-              ? 'warning'
-              : undefined,
-          description: `Repair 未在 appliedControlSuggestionIds 中落实 Control 建议 ${suggestion.suggestionId}：${suggestion.instruction}`,
-          suggestedFix:
-            suggestion.suggestionId === 'ctrl_local_expand' ||
-            suggestion.suggestionId === 'ctrl_local_compress'
-              ? `建议在完整终稿中落实 Control 建议 ${suggestion.suggestionId}；篇幅要求只作 warning，仍需保留完整事件链。`
-              : `必须在完整终稿中落实 Control 建议 ${suggestion.suggestionId}，并保留其要求保护的事件节拍。`,
-        }),
-      );
-    }
-  }
   for (const appliedId of input.envelope.appliedControlSuggestionIds) {
-    if (!suggestionIds.has(appliedId)) {
+    if (suggestionIds.size > 0 && !suggestionIds.has(appliedId)) {
       checks.push(
         repairComplianceIssue({
           category: 'style',
           subtype: 'repair_unknown_control_suggestion_id',
+          severity: 'warning',
           description: `Repair 声明落实了当前 Control 报告不存在的 suggestion ${appliedId}。`,
-          suggestedFix: '只填写本次冻结 Control 报告中实际存在的 suggestionId。',
+          suggestedFix: '篇幅建议已停用；appliedControlSuggestionIds 应为空或仅含报告内 id。',
         }),
       );
     }
   }
 
+  const repairReadyFindings = getRepairReadyStyleFindings(input.controlReport);
   const controlFindingIds = new Set(
     input.controlReport.findings.map(finding => finding.findingId),
   );
   const appliedControlFindingIds = input.envelope.appliedControlFindingIds ?? [];
+  for (const finding of repairReadyFindings) {
+    if (!appliedControlFindingIds.includes(finding.findingId)) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_control_finding_unapplied',
+          severity: 'blocking',
+          description: `Repair 未在 appliedControlFindingIds 中回填可执行文风 finding ${finding.findingId}：${finding.description}`,
+          suggestedFix: `必须按 rewriteGoal 修订目标范围并回填 findingId ${finding.findingId}。`,
+        }),
+      );
+      continue;
+    }
+    // Deterministic "unchanged excerpt" check when the Writer still contains the span.
+    if (
+      finding.generatedStart != null &&
+      finding.generatedEnd != null &&
+      finding.generatedEnd > finding.generatedStart &&
+      finding.generatedEnd <= input.writerText.length
+    ) {
+      const excerpt = input.writerText.slice(
+        finding.generatedStart,
+        finding.generatedEnd,
+      );
+      if (
+        excerpt.trim().length >= 4 &&
+        input.candidateText.includes(excerpt)
+      ) {
+        checks.push(
+          repairComplianceIssue({
+            category: 'style',
+            subtype: 'repair_control_style_unchanged',
+            severity: 'blocking',
+            description: `Repair 声称已落实文风 finding ${finding.findingId}，但目标原句仍完整存在：${excerpt.slice(0, 80)}`,
+            suggestedFix: `必须按 rewriteGoal 改写该范围，并遵守 preserveMeaning：${(finding.preserveMeaning ?? []).join('；')}`,
+          }),
+        );
+      }
+    }
+  }
+  // Audit-only findings: missing id is warning only.
   for (const finding of input.controlReport.findings) {
+    if (finding.repairReady) continue;
     if (!appliedControlFindingIds.includes(finding.findingId)) {
       checks.push(
         repairComplianceIssue({
           category: 'style',
           subtype: 'repair_control_finding_unapplied',
           severity: 'warning',
-          description: `Repair 未在 appliedControlFindingIds 中回填 Control finding ${finding.findingId}：${finding.description}`,
-          suggestedFix: `建议处理结构问题并回填 findingId ${finding.findingId}；结构 finding 只作 warning，不单独拒绝终稿。`,
+          description: `Repair 未回填 audit-only Control finding ${finding.findingId}（不阻断）。`,
+          suggestedFix: `audit-only 文风观察无需强制修改；如已处理可回填 findingId ${finding.findingId}。`,
         }),
       );
     }
   }
   for (const appliedId of appliedControlFindingIds) {
-    if (!controlFindingIds.has(appliedId)) {
+    if (!controlFindingIds.has(appliedId) && repairReadyFindings.every(f => f.findingId !== appliedId)) {
       checks.push(
         repairComplianceIssue({
           category: 'style',
@@ -862,59 +881,7 @@ export function validateContinuationV4RepairCompliance(input: {
     }
   }
 
-  // Minimum substantial progress — the HARD gate for whether Repair actually
-  // moved the text in Control's direction. The old check ("candidateHan >
-  // writerHan" for expand) let a Repair that added a single character pass. The
-  // rule now requires either reaching the legal band, or closing at least
-  // `requiredControlProgressHan` Han of the gap. Falling short is a blocking
-  // compliance failure and the candidate is rejected.
-  //
-  // This is intentionally distinct from the final-length SOFT gate: a candidate
-  // that meets this floor but still falls short of allowedMin/allowedMax passes
-  // Control compliance; the remaining pure length gap is recorded only as a
-  // `chapter_length_*` warning in the Local Final Gate and does not reject.
-  const writerHan = countHanCharacters(input.writerText);
-  const candidateHan = countHanCharacters(input.candidateText);
-  if (input.controlReport.action === 'expand') {
-    const reachedMin = candidateHan >= input.controlReport.allowedMinHan;
-    const requiredDelta = Math.max(
-      0,
-      input.controlReport.allowedMinHan - writerHan,
-    );
-    const requiredProgress = requiredControlProgressHan(requiredDelta);
-    const actualProgress = Math.max(0, candidateHan - writerHan);
-    if (!reachedMin && actualProgress < requiredProgress) {
-      checks.push(
-        repairComplianceIssue({
-          category: 'style',
-          subtype: 'repair_control_insufficient_progress',
-          severity: 'blocking',
-          description: `Control 要求扩写，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 增加 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法下限 ${input.controlReport.allowedMinHan}），视为未按 Control 要求进行实质修订。`,
-          suggestedFix: `必须围绕当前事件链、人物反应和章末推进自然扩写，使净增汉字达到 ${requiredProgress} 或进入合法区间 ${input.controlReport.allowedMinHan}–${input.controlReport.allowedMaxHan}；否则终稿将被拒绝。最终仍未完全达到下限时，长度只记录 warning。`,
-        }),
-      );
-    }
-  } else if (input.controlReport.action === 'compress') {
-    const reachedMax = candidateHan <= input.controlReport.allowedMaxHan;
-    const requiredDelta = Math.max(
-      0,
-      writerHan - input.controlReport.allowedMaxHan,
-    );
-    const requiredProgress = requiredControlProgressHan(requiredDelta);
-    const actualProgress = Math.max(0, writerHan - candidateHan);
-    if (!reachedMax && actualProgress < requiredProgress) {
-      checks.push(
-        repairComplianceIssue({
-          category: 'style',
-          subtype: 'repair_control_insufficient_progress',
-          severity: 'blocking',
-          description: `Control 要求收束，但 Repair 终稿汉字数 ${candidateHan} 仅比 Writer 初稿 ${writerHan} 减少 ${actualProgress} 个，未达到最低实质进度 ${requiredProgress}（也未达到合法上限 ${input.controlReport.allowedMaxHan}），视为未按 Control 要求进行实质修订。`,
-          suggestedFix: `必须在保留完整事件链和章末钩子的前提下压缩重复或不推进内容，使净减汉字达到 ${requiredProgress} 或进入合法区间 ${input.controlReport.allowedMinHan}–${input.controlReport.allowedMaxHan}；否则终稿将被拒绝。最终仍未完全达到上限时，长度只记录 warning。`,
-        }),
-      );
-    }
-  }
-
+  // Length progress hard gate intentionally removed (creative loosening).
   return checks;
 }
 
@@ -922,24 +889,11 @@ function localGateExtraIssues(
   writerText: string,
   candidateText: string,
   snapshot: ContinuationContextSnapshotV3,
+  targetedSpans: TargetedRepairSpan[] = [],
 ): RawCheckIssue[] {
   const issues: RawCheckIssue[] = [];
   const candidateHan = countHanCharacters(candidateText);
   const writerHan = countHanCharacters(writerText);
-  if (candidateHan === 0) {
-    issues.push({
-      category: 'style',
-      subtype: 'repair_empty_content',
-      severity: 'blocking',
-      confidence: 1,
-      generatedStart: null,
-      generatedEnd: null,
-      generatedExcerpt: '',
-      description: 'Repair 终稿没有可采纳的汉字正文。',
-      evidenceIds: [],
-      suggestedFix: '返回覆盖完整事件链的非空终稿。',
-    });
-  }
   if (
     writerHan > 0 &&
     normalizedRepairComparisonText(candidateText) ===
@@ -953,31 +907,51 @@ function localGateExtraIssues(
       generatedStart: null,
       generatedEnd: null,
       generatedExcerpt: '',
-      description: 'Repair 终稿与 Writer 初稿完全相同，没有执行任何综合修订。',
+      description: 'Repair 终稿与 Writer 初稿完全相同，没有执行任何精准修订。',
       evidenceIds: [],
-      suggestedFix: '必须根据 Checker/Control 报告输出真正修订后的完整终稿。',
+      suggestedFix: '必须根据 Checker 五维问题与 Control 文风问题输出真正修订后的完整终稿。',
     });
   }
-  const relativeCollapse = writerHan > 0 && candidateHan * 2 < writerHan;
-  const absoluteCollapse = candidateHan <= 1000;
-  if (absoluteCollapse || relativeCollapse) {
+
+  // Completeness / anti-collapse relative to Writer (never user target length).
+  const completeness = evaluateRepairCompleteness({
+    writerText,
+    candidateText,
+    targetedSpans,
+  });
+  for (const item of completeness.issues) {
     issues.push({
       category: 'style',
-      subtype: 'repair_candidate_collapsed',
-      severity: absoluteCollapse ? 'blocking' : 'warning',
+      subtype: item.code,
+      severity: item.severity,
       confidence: 1,
       generatedStart: null,
       generatedEnd: null,
       generatedExcerpt: '',
-      description: absoluteCollapse
-        ? `Repair 终稿仅含 ${candidateHan} 个汉字，已坍缩至 1000 字以内，疑似摘要化或丢失事件链。`
-        : `Repair 终稿相对 Writer 初稿明显缩短（${writerHan} → ${candidateHan} 个汉字），但正文仍超过 1000 字；该篇幅风险只作 warning。`,
+      description: item.description,
       evidenceIds: [],
-      suggestedFix: absoluteCollapse
-        ? '必须保留 Writer 的完整事件链、人物互动和章末推进，重新输出超过 1000 个汉字的完整终稿。'
-        : '建议保留 Writer 的完整事件链、人物互动和章末推进；篇幅本身不阻断 Repair 采纳。',
+      suggestedFix: item.suggestedFix,
     });
   }
+
+  // Absolute floor retained as a hard safety net for near-empty stubs.
+  if (candidateHan > 0 && candidateHan <= 1000 && writerHan > 1500) {
+    if (!issues.some(i => i.subtype === 'repair_content_collapsed' || i.subtype === 'repair_empty_content')) {
+      issues.push({
+        category: 'style',
+        subtype: 'repair_candidate_collapsed',
+        severity: 'blocking',
+        confidence: 1,
+        generatedStart: null,
+        generatedEnd: null,
+        generatedExcerpt: '',
+        description: `Repair 终稿仅含 ${candidateHan} 个汉字（Writer ${writerHan}），已坍缩至 1000 字以内，疑似摘要化或丢失事件链。`,
+        evidenceIds: [],
+        suggestedFix: '必须输出完整章节终稿，禁止摘要或片段。',
+      });
+    }
+  }
+
   const trimmed = candidateText.trim();
   if (/^\s*\{[\s\S]*\}\s*$/.test(trimmed) || /```(?:json|text)?/i.test(trimmed)) {
     issues.push({
@@ -1041,10 +1015,12 @@ export function runContinuationV4LocalFinalGate(input: {
   candidateText: string;
   snapshot: ContinuationContextSnapshotV3;
   controlMetrics: ContinuationV4Metrics;
+  targetedSpans?: TargetedRepairSpan[];
 }): {
   passed: boolean;
   checks: RawCheckIssue[];
   candidateMetrics: ContinuationV4Metrics;
+  completeness?: ReturnType<typeof evaluateRepairCompleteness>;
 } {
   const base = filterBySettings(
     runDeterministicChecks(
@@ -1053,12 +1029,18 @@ export function runContinuationV4LocalFinalGate(input: {
     ),
     input.snapshot.settingsSnapshot.values,
   );
+  const completeness = evaluateRepairCompleteness({
+    writerText: input.writerText,
+    candidateText: input.candidateText,
+    targetedSpans: input.targetedSpans ?? [],
+  });
   const checks = softenFinalGateLengthChecks([
     ...base,
     ...localGateExtraIssues(
       input.writerText,
       input.candidateText,
       input.snapshot,
+      input.targetedSpans ?? [],
     ),
   ]);
   return {
@@ -1070,18 +1052,14 @@ export function runContinuationV4LocalFinalGate(input: {
       text: input.candidateText,
       target: input.snapshot.settingsSnapshot.values.targetChapterChars,
     }),
+    completeness,
   };
 }
 
 /**
- * The Local Final Gate is the zero-request safety gate for the selected
- * Repair candidate. Chapter length is still evaluated locally and remains a
- * Repair trigger, but it is advisory at this final adoption point: a Repair
- * that fixes Checker/Control issues can be better than the Writer even when
- * the frozen length interval is not fully reached. Safety, non-empty output,
- * actual revision, and Control direction remain hard requirements. A relative
- * contraction above 1000 Han is advisory; only an absolute collapse to 1000
- * Han or fewer remains a hard safety block.
+ * Local Final Gate: zero-request safety + completeness. Chapter length is
+ * advisory only and never decides eligibility. Collapse is judged relative to
+ * Writer structure, not user targetChapterChars.
  */
 function softenFinalGateLengthChecks(checks: RawCheckIssue[]): RawCheckIssue[] {
   return checks.map(check => {
@@ -1089,7 +1067,7 @@ function softenFinalGateLengthChecks(checks: RawCheckIssue[]): RawCheckIssue[] {
     return {
       ...check,
       severity: 'warning',
-      suggestedFix: `${check.suggestedFix} 篇幅仅作提示，不阻断 Repair 采纳；仍需满足 Control 的修订方向和本地安全检查。`,
+      suggestedFix: `${check.suggestedFix} 篇幅仅作提示，不影响候选资格。`,
     };
   });
 }
@@ -1756,30 +1734,49 @@ async function runControlNode(input: {
   options: V4PipelineOptions;
 }): Promise<V4ControlOutcome> {
   const { run, snapshot, plan, artifact, metrics, options } = input;
-  const fallback = buildContinuationControlFallback(metrics);
+  const writerArtifactHash = artifact.contentHash;
+  const fallback = buildContinuationControlFallback(metrics, {
+    writerArtifactHash,
+  });
   const stage = await getStageResult(run.id, 'control');
+  // Persisted control.outputJson is the *normalized report* object (not raw
+  // LLM text). Re-parse only when it still looks like a model envelope.
+  const loadStoredControlReport = (
+    rawJson: string,
+  ): ContinuationControlReport | null => {
+    try {
+      const stored = JSON.parse(rawJson);
+      if (
+        stored &&
+        typeof stored === 'object' &&
+        (Array.isArray(stored.styleIssues) ||
+          Array.isArray(stored.findings) ||
+          typeof stored.currentHan === 'number')
+      ) {
+        // Already a client report — use as-is (resume-safe).
+        return stored as ContinuationControlReport;
+      }
+      return resolveContinuationControlReport({
+        metrics,
+        raw: rawJson,
+        artifactText: artifact.content,
+        writerArtifactHash,
+      }).report;
+    } catch {
+      return null;
+    }
+  };
   if (stage?.status === 'success' && stage.outputJson) {
-    const resolved = resolveContinuationControlReport({
-      metrics,
-      raw: stage.outputJson,
-    });
+    const report = loadStoredControlReport(stage.outputJson) ?? fallback;
     return {
       metrics,
-      report: resolved.report,
-      degraded: resolved.errorCode != null,
-      errorCode: resolved.errorCode,
+      report,
+      degraded: false,
+      errorCode: null,
     };
   }
   if (stage?.status === 'failed' && stage.outputJson) {
-    let report = fallback;
-    try {
-      report = resolveContinuationControlReport({
-        metrics,
-        raw: stage.outputJson,
-      }).report;
-    } catch {
-      report = fallback;
-    }
+    const report = loadStoredControlReport(stage.outputJson) ?? fallback;
     return {
       metrics,
       report,
@@ -1815,6 +1812,7 @@ async function runControlNode(input: {
     artifactText: artifact.content,
     metrics,
     plan,
+    writerArtifactHash,
   });
   const reserved = await reservePhysicalStage({
     runId: run.id,
@@ -1845,6 +1843,8 @@ async function runControlNode(input: {
     const resolved = resolveContinuationControlReport({
       metrics,
       raw: result.text,
+      artifactText: artifact.content,
+      writerArtifactHash,
     });
     const degraded = resolved.errorCode != null;
     await updateStageResult({
@@ -1874,8 +1874,18 @@ async function runControlNode(input: {
       runId: run.id,
       stage: 'control',
       errorCode: error?.code || 'control_failed',
-      errorMessage: error?.message || 'Control LLM 未能完成篇幅建议，已保留本地指标。',
-      outputJson: JSON.stringify(fallback),
+      errorMessage:
+        error?.message ||
+        'Control LLM 未能完成原著文风审查，已保留本地篇幅诊断（无 style finding）。',
+      outputJson: JSON.stringify({
+        ...fallback,
+        // Make the empty style outcome explicit for the result UI.
+        styleIssues: [],
+        styleWarnings: [],
+        findings: [],
+        controlDegraded: true,
+        controlErrorCode: error?.code || 'control_failed',
+      }),
     });
     return {
       metrics,
@@ -1997,11 +2007,24 @@ async function runRepairNode(input: {
     const envelope = parseContinuationV4RepairEnvelope(result.text);
     const localVerifyStage = await getStageResult(run.id, 'local_verify');
     if (!localVerifyStage) throw new Error('缺少 local_verify stage result。');
+    const targetedSpans: TargetedRepairSpan[] = [
+      ...checkerIssues.map(issue => ({
+        generatedStart: issue.generatedStart,
+        generatedEnd: issue.generatedEnd,
+        generatedExcerpt: issue.generatedExcerpt,
+      })),
+      ...getRepairReadyStyleFindings(control.report).map(finding => ({
+        generatedStart: finding.generatedStart,
+        generatedEnd: finding.generatedEnd,
+        generatedExcerpt: null as string | null,
+      })),
+    ];
     const gate = runContinuationV4LocalFinalGate({
       writerText: writerArtifact.content,
       candidateText: envelope.content,
       snapshot,
       controlMetrics: control.metrics,
+      targetedSpans,
     });
     const complianceChecks = validateContinuationV4RepairCompliance({
       writerText: writerArtifact.content,
@@ -2019,51 +2042,78 @@ async function runRepairNode(input: {
     const noMeaningfulChange =
       normalizedRepairComparisonText(envelope.content) ===
       normalizedRepairComparisonText(writerArtifact.content);
-    // Telemetry: distinguish how many tasks were INJECTED vs how many Repair
-    // CLAIMED to apply, plus the Control progress numbers. Stored in the
-    // existing outputJson columns; no DB migration. The UI reads these to show
-    // "注入 N 项，Repair 声明应用 M 项" instead of only the applied count.
     const injectedCheckerIssueCount = checkerIssues.filter(
-      issue => hasActionableIssue([issue]) || isRepairableCheckerIssue(issue),
+      issue => isRepairableCheckerIssue(issue) || isHardLocalSafetyIssue(issue),
     ).length;
     const appliedCheckerIssueCount = envelope.appliedCheckerIssueIds.length;
-    const injectedControlSuggestionCount =
-      control.report.suggestions.length;
-    const appliedControlSuggestionCount =
-      envelope.appliedControlSuggestionIds.length;
-    const injectedControlFindingCount = control.report.findings.length;
+    const styleReady = getRepairReadyStyleFindings(control.report);
+    const injectedControlFindingCount = styleReady.length;
     const appliedControlFindingCount =
       envelope.appliedControlFindingIds?.length ?? 0;
     const writerHan = countHanCharacters(writerArtifact.content);
     const candidateHan = countHanCharacters(envelope.content);
-    const controlRequiredDelta =
-      control.report.action === 'expand'
-        ? Math.max(0, control.report.allowedMinHan - writerHan)
-        : control.report.action === 'compress'
-          ? Math.max(0, writerHan - control.report.allowedMaxHan)
-          : 0;
-    const requiredProgressHan = requiredControlProgressHan(controlRequiredDelta);
     const actualDeltaHan = candidateHan - writerHan;
-    const controlProgressPassed =
-      control.report.action === 'keep' ||
-      (control.report.action === 'expand'
-        ? candidateHan >= control.report.allowedMinHan ||
-          Math.max(0, candidateHan - writerHan) >= requiredProgressHan
-        : candidateHan <= control.report.allowedMaxHan ||
-          Math.max(0, writerHan - candidateHan) >= requiredProgressHan);
+    const completeness = gate.completeness;
+    const repairTriggeredBy: Array<'checker' | 'style_control' | 'local_safety'> = [];
+    if (injectedCheckerIssueCount > 0) repairTriggeredBy.push('checker');
+    if (styleReady.length > 0) repairTriggeredBy.push('style_control');
+    // local_safety inferred if only safety subtypes present
+    if (
+      checkerIssues.some(isHardLocalSafetyIssue) &&
+      !repairTriggeredBy.includes('checker')
+    ) {
+      repairTriggeredBy.push('local_safety');
+    } else if (checkerIssues.some(isHardLocalSafetyIssue)) {
+      if (!repairTriggeredBy.includes('local_safety')) {
+        repairTriggeredBy.push('local_safety');
+      }
+    }
     const repairTelemetry = {
+      referenceTargetHan: control.report.targetHan,
+      actualWriterHan: writerHan,
+      lengthWarningSubtypes: localChecks
+        .filter(c => c.subtype.startsWith('chapter_length_'))
+        .map(c => c.subtype),
+      checkerActionableIssueCount: injectedCheckerIssueCount,
+      checkerAuditWarningCount: checkerIssues.filter(
+        i => i.severity === 'warning' && !isRepairableCheckerIssue(i),
+      ).length,
+      styleActionableIssueCount: styleReady.length,
+      styleAuditWarningCount: (control.report.styleWarnings ?? []).length,
+      reviewedStyleDimensions: Array.from(
+        new Set(
+          [
+            ...(control.report.styleIssues ?? []),
+            ...(control.report.styleWarnings ?? []),
+          ].map(i => i.styleDimension),
+        ),
+      ),
+      repairTriggeredBy,
       injectedCheckerIssueCount,
       appliedCheckerIssueCount,
-      injectedControlSuggestionCount,
-      appliedControlSuggestionCount,
+      injectedControlSuggestionCount: 0,
+      appliedControlSuggestionCount:
+        envelope.appliedControlSuggestionIds.length,
       injectedControlFindingCount,
       appliedControlFindingCount,
+      appliedStyleFindingCount: appliedControlFindingCount,
       controlFindingSubtypes: control.report.findings.map(finding => finding.subtype),
       writerHan,
       candidateHan,
       actualDeltaHan,
-      requiredProgressHan,
-      controlProgressPassed,
+      // Deprecated length-progress fields retained as fixed soft telemetry.
+      requiredProgressHan: 0,
+      controlProgressPassed: true,
+      writerParagraphCount: completeness?.metrics.writerParagraphCount,
+      repairParagraphCount: completeness?.metrics.candidateParagraphCount,
+      unaffectedRetentionRatio: completeness?.metrics.unaffectedRetentionRatio,
+      openingAnchorRetained: completeness?.metrics.openingAnchorRetained,
+      middleAnchorRetained: completeness?.metrics.middleAnchorRetained,
+      endingAnchorRetained: completeness?.metrics.endingAnchorRetained,
+      candidateToWriterHanRatio: completeness?.metrics.candidateToWriterHanRatio,
+      repairCompletenessPassed: completeness?.passed ?? null,
+      repairMinimalInterventionPassed:
+        completeness?.minimalInterventionPassed ?? null,
     };
     if (noMeaningfulChange) {
       const rejectionCode = 'repair_candidate_unchanged';
@@ -2374,27 +2424,26 @@ async function runV4Pipeline(
   }
   const controlReport = control?.report || buildContinuationControlFallback(metrics);
   const checkerPersisted = checker?.persistedIssues ?? [];
-  // Local safety issues that should drive Repair as explicit tasks. Length is
-  // excluded: chapter_length_* is owned by Control's local suggestion, so
-  // injecting it here would duplicate the same task under two ids.
-  const localSafetyIssues = writerChecks.filter(
-    check =>
-      isLocalGateSubtype(check.subtype) &&
-      !check.subtype.startsWith('chapter_length_') &&
-      hasActionableIssue([check]),
+  // Local safety issues that may alone trigger Repair. Length never qualifies.
+  const localSafetyIssues = writerChecks.filter(check =>
+    isHardLocalSafetyIssue(check),
   );
-  // Repair receives the union of Checker-persisted issues and non-length local
-  // safety issues, deduped by persisted check id so the same row is not tracked
-  // twice under two ids.
+  const repairReadyChecker = (checker?.issues ?? []).filter(issue =>
+    isRepairableCheckerIssue(issue),
+  );
+  const repairReadyStyle = getRepairReadyStyleFindings(controlReport);
+  // Repair receives repairReady Checker issues + hard local safety issues.
   const repairIssues = dedupeRepairIssues([
-    ...checkerPersisted,
+    ...checkerPersisted.filter(
+      issue =>
+        isRepairableCheckerIssue(issue) || isHardLocalSafetyIssue(issue),
+    ),
     ...localSafetyIssues,
   ]);
-  const actionable =
-    hasActionableIssue(checker?.issues ?? []) ||
-    hasActionableIssue(localSafetyIssues) ||
-    controlReport.action !== 'keep' ||
-    controlReport.suggestions.length > 0;
+  const shouldRepair =
+    repairReadyChecker.length > 0 ||
+    repairReadyStyle.length > 0 ||
+    localSafetyIssues.length > 0;
   if (!checker && !control) {
     await settleWithoutRepair({
       run,
@@ -2405,7 +2454,8 @@ async function runV4Pipeline(
     });
     return;
   }
-  if (!actionable) {
+  if (!shouldRepair) {
+    // Length-only or audit-only warnings: keep Writer as default candidate.
     const reason = checker
       ? 'skipped_no_actionable_revision'
       : 'skipped_checker_unavailable_no_control_revision';
@@ -2440,22 +2490,76 @@ async function runV4Pipeline(
   }
 }
 
+function isUserCancelError(error: unknown): boolean {
+  if (!error) return false;
+  const code =
+    typeof error === 'object' && error && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+  if (code === 'cancelled') return true;
+  const name =
+    typeof error === 'object' && error && 'name' in error
+      ? String((error as { name?: unknown }).name ?? '')
+      : '';
+  if (name === 'AbortError' || name === 'LLMQueueError') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /取消|cancelled|aborted|AbortError/i.test(message);
+}
+
+/**
+ * Settle a V4 run after a stage exception. Never throws — error finalizers run
+ * from fire-and-forget pipeline tasks and must not become fatal unhandled
+ * rejections (which can take down the RN host on some Android builds).
+ */
 async function finalizeV4OnError(
   runId: string,
   error: unknown,
 ): Promise<void> {
-  const run = await getRunById(runId).catch(() => null);
-  if (!run || run.state === 'cancelled' || run.state === 'outdated') return;
-  const writer = await getLatestArtifactForStage(runId, 'writer').catch(() => null);
-  const message = error instanceof Error ? error.message : String(error);
-  await casUpdateRunState(runId, ['running'], {
-    state: writer ? 'awaiting_user' : 'failed',
-    stage: writer ? 'awaiting_user' : 'writer',
-    errorCode: writer ? 'continuation_v4_degraded' : 'continuation_v4_failed',
-    errorMessage: writer ? `${message}；已保留 Writer 初稿。` : message,
-    completedAt: writer ? null : new Date().toISOString(),
-  });
-  await updateTelemetry(runId).catch(() => {});
+  try {
+    const run = await getRunById(runId).catch(() => null);
+    if (
+      !run ||
+      run.state === 'cancelled' ||
+      run.state === 'outdated' ||
+      run.state === 'completed'
+    ) {
+      return;
+    }
+
+    // User cancel (abort signal / queue cancel / explicit 续写已取消) must end
+    // as cancelled — never as failed/awaiting_user. That also stops the
+    // chapter-editor poll from navigating to the result screen after Stop.
+    if (isUserCancelError(error)) {
+      await casUpdateRunState(
+        runId,
+        ['queued', 'running', 'awaiting_user', 'interrupted'],
+        {
+          state: 'cancelled',
+          errorCode: 'cancelled',
+          errorMessage: '用户取消',
+          completedAt: new Date().toISOString(),
+        },
+      ).catch(() => false);
+      await markContinuationV4StagesCancelled(runId).catch(() => {});
+      await updateTelemetry(runId).catch(() => {});
+      return;
+    }
+
+    const writer = await getLatestArtifactForStage(runId, 'writer').catch(
+      () => null,
+    );
+    const message = error instanceof Error ? error.message : String(error);
+    await casUpdateRunState(runId, ['running'], {
+      state: writer ? 'awaiting_user' : 'failed',
+      stage: writer ? 'awaiting_user' : 'writer',
+      errorCode: writer ? 'continuation_v4_degraded' : 'continuation_v4_failed',
+      errorMessage: writer ? `${message}；已保留 Writer 初稿。` : message,
+      completedAt: writer ? null : new Date().toISOString(),
+    }).catch(() => false);
+    await updateTelemetry(runId).catch(() => {});
+  } catch (finalizeError) {
+    console.warn('[continuation-v4] finalizeV4OnError failed:', finalizeError);
+  }
 }
 
 export async function startContinuationV4Run(
@@ -2525,11 +2629,19 @@ export async function startContinuationV4Run(
         projectId: input.projectId,
       });
     } catch (error) {
-      await finalizeV4OnError(runId, error);
+      // finalizeV4OnError never throws; still guard so the floating task
+      // cannot surface as a fatal unhandled rejection on Android.
+      try {
+        await finalizeV4OnError(runId, error);
+      } catch (finalizeError) {
+        console.warn('[continuation-v4] pipeline finalizer failed:', finalizeError);
+      }
     } finally {
       activeContinuationControllers.delete(runId);
     }
-  })();
+  })().catch(error => {
+    console.warn('[continuation-v4] pipeline task failed:', error);
+  });
   return run;
 }
 
@@ -2598,17 +2710,25 @@ export async function resumeContinuationV4Run(
 
 /** Mark every not-yet-settled V4 node interrupted when the user cancels. */
 export async function markContinuationV4StagesCancelled(runId: string): Promise<void> {
-  const results = await listStageResults(runId);
+  const results = await listStageResults(runId).catch(() => [] as ContinuationGenerationStageResult[]);
   for (const result of results) {
     if (result.status !== 'queued' && result.status !== 'running') continue;
-    await updateStageResult({
-      runId,
-      stage: result.stage,
-      status: 'interrupted',
-      outputJson: result.outputJson,
-      artifactId: result.artifactId,
-      errorCode: 'cancelled',
-      errorMessage: '用户取消，reservation 不会自动重发。',
-    });
+    try {
+      await updateStageResult({
+        runId,
+        stage: result.stage,
+        status: 'interrupted',
+        outputJson: result.outputJson,
+        artifactId: result.artifactId,
+        errorCode: 'cancelled',
+        errorMessage: '用户取消，reservation 不会自动重发。',
+      });
+    } catch (error) {
+      // Per-stage best effort: a single SQLite glitch must not abort cancel.
+      console.warn(
+        `[continuation-v4] mark stage ${result.stage} interrupted failed:`,
+        error,
+      );
+    }
   }
 }

@@ -2259,19 +2259,59 @@ async function continueFromWriter(
   activeControllers.delete(runId);
 }
 
+/**
+ * User-initiated cancel. Must never throw into the UI thread: abort, DB
+ * finalization and V4 stage cleanup are all best-effort. Concurrent cancel
+ * taps and in-flight stage writers are tolerated.
+ */
 export async function cancelContinuationRun(runId: string): Promise<void> {
-  const run = await getRunById(runId);
-  const c = activeControllers.get(runId);
-  c?.abort();
-  activeControllers.delete(runId);
-  const changed = await casUpdateRunState(runId, ['queued', 'running', 'awaiting_user'], {
-    state: 'cancelled',
-    errorCode: 'cancelled',
-    errorMessage: '用户取消',
-    completedAt: new Date().toISOString(),
-  });
-  if (changed && run?.workflowVersion === 4) {
-    await markContinuationV4StagesCancelled(runId);
+  try {
+    // 1) Abort first so in-flight fetch stops. AbortController.abort is
+    // idempotent; still wrap in case a host polyfill misbehaves.
+    const controller = activeControllers.get(runId);
+    try {
+      controller?.abort();
+    } catch {
+      // ignore
+    }
+    activeControllers.delete(runId);
+
+    // 2) Load run for workflowVersion; tolerate missing/deleted rows.
+    const run = await getRunById(runId).catch(() => null);
+    if (
+      run &&
+      (run.state === 'cancelled' ||
+        run.state === 'completed' ||
+        run.state === 'outdated')
+    ) {
+      // Already terminal; still try to settle any V4 stage rows left mid-flight.
+      if (run.workflowVersion === 4) {
+        await markContinuationV4StagesCancelled(runId).catch(() => {});
+      }
+      return;
+    }
+
+    // 3) Mark run cancelled. Include interrupted so a half-settled cancel can
+    // still be forced to the cancelled terminal (user intent wins).
+    await casUpdateRunState(
+      runId,
+      ['queued', 'running', 'awaiting_user', 'interrupted'],
+      {
+        state: 'cancelled',
+        errorCode: 'cancelled',
+        errorMessage: '用户取消',
+        completedAt: new Date().toISOString(),
+      },
+    ).catch(() => false);
+
+    // 4) V4 stage rows: never let a single stage update take down the app.
+    if (run?.workflowVersion === 4 || run == null) {
+      // When run is null we still attempt V4 cleanup — no-op if no stage rows.
+      await markContinuationV4StagesCancelled(runId).catch(() => {});
+    }
+  } catch (error) {
+    // Absolute last resort: cancel is a user safety action and must not crash.
+    console.warn('[continuation] cancelContinuationRun failed:', error);
   }
 }
 

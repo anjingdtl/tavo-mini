@@ -396,14 +396,60 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     if (stage === 'control') {
       try {
         const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
+        const referenceTarget =
+          parsed?.targetHan ?? parsed?.referenceTargetHan ?? '—';
+        const actualHan = parsed?.currentHan ?? parsed?.actualWriterHan ?? '—';
         const metrics = parsed
-          ? `本地汉字数 ${parsed.currentHan ?? '—'} · 合法区间 ${parsed.allowedMinHan ?? '—'}–${parsed.allowedMaxHan ?? '—'}`
-          : '本地指标已由客户端计算。';
-        const injected = Array.isArray(parsed?.suggestions) ? parsed.suggestions.length : 0;
-        const mismatch = parsed?.metricEchoMismatch || parsed?.actionEchoMismatch;
-        const mode = result.status === 'failed'
-          ? 'Control LLM 降级，使用本地 fallback'
-          : `Control action：${parsed?.action || '—'}；注入 ${injected} 项强制建议${mismatch ? '（模型回显与本地不一致，已以本地为准）' : ''}`;
+          ? `用户参考篇幅：${referenceTarget}\n实际汉字：${actualHan}\n篇幅仅作提示，不影响候选资格`
+          : '本地篇幅诊断已由客户端计算；篇幅仅作提示。';
+
+        // Prefer explicit styleIssues / styleWarnings; fall back to findings.
+        const readyList: any[] = Array.isArray(parsed?.styleIssues)
+          ? parsed.styleIssues
+          : Array.isArray(parsed?.findings)
+            ? parsed.findings.filter((f: any) => f?.repairReady)
+            : [];
+        const warningList: any[] = Array.isArray(parsed?.styleWarnings)
+          ? parsed.styleWarnings
+          : Array.isArray(parsed?.findings)
+            ? parsed.findings.filter((f: any) => !f?.repairReady)
+            : [];
+
+        const renderStyleRow = (item: any, tag: string) => {
+          const dim =
+            item?.styleDimension || item?.subtype || item?.dimension || 'style';
+          const desc = item?.description || item?.rewriteGoal || '文风观察';
+          const goal = item?.rewriteGoal || item?.suggestedFix;
+          const excerpt = item?.generatedExcerpt
+            ? ` 摘录：「${String(item.generatedExcerpt).slice(0, 48)}」`
+            : '';
+          const ready =
+            item?.repairReady === true
+              ? ' → 进入 Repair'
+              : ' → 仅审计，不进入 Repair';
+          return `[${tag}/${dim}] ${desc}${excerpt}${
+            goal ? `\n  改写目标：${goal}` : ''
+          }${ready}`;
+        };
+
+        const detailLines = [
+          ...readyList.map((item: any) => renderStyleRow(item, '可执行')),
+          ...warningList.map((item: any) => renderStyleRow(item, 'warning')),
+        ];
+
+        let mode: string;
+        if (result.status === 'failed' || result.status === 'interrupted') {
+          mode = `Control LLM 未完成文风审查（${
+            result.errorCode || result.errorMessage || 'failed'
+          }）。本地 fallback 不含强制文风任务，本 run 无 style finding 注入 Repair。`;
+        } else if (detailLines.length === 0) {
+          mode =
+            '原著文风审查已完成：未发现可定位、可修订的局部文风问题。因此没有文风任务进入 Repair（0 项 style finding）。';
+        } else {
+          mode = `原著文风审查：可执行 ${readyList.length} 项，audit warning ${warningList.length} 项。\n${detailLines.join(
+            '\n',
+          )}`;
+        }
         return `${metrics}\n${mode}`;
       } catch {
         return result.errorMessage || 'Control 结果不可解析。';
@@ -411,42 +457,56 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     }
     if (stage === 'repair') {
       if (rejectedRepair) {
-        return `Repair 已输出完整终稿，但被 Local Final Gate 拒绝：${rejectedRepair.rejectionCode || 'local_final_gate_failed'}。默认可采纳 artifact 仍为 Writer。`;
+        const code = rejectedRepair.rejectionCode || 'local_final_gate_failed';
+        const reasonHint =
+          code.includes('partial') || code.includes('collapsed') || code.includes('summary')
+            ? 'Repair 只返回了局部内容或摘要，或丢失了大量未修改正文。'
+            : code.includes('compliance')
+              ? 'Repair 仍保留明确问题，或未通过协议回填检查。'
+              : 'Repair 未通过完整性或安全检查。';
+        return `Repair 已返回候选正文，但未通过完整性或安全检查。\n${reasonHint}\n当前默认可采纳候选为 Writer 初稿。拒绝码：${code}`;
       }
       try {
         const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
-        if (!parsed) return 'Repair 已完成。';
+        if (!parsed) return 'Repair 已完成精准最小干预修订。';
+        if (result.status === 'skipped') {
+          return '未发现需要自动修订的五维资料或文风问题，保留 Writer 原稿。';
+        }
         const injectedChecker = parsed.injectedCheckerIssueCount ?? null;
         const appliedChecker = parsed.appliedCheckerIssueIds?.length ?? 0;
-        const injectedControl = parsed.injectedControlSuggestionCount ?? null;
-        const appliedControl = parsed.appliedControlSuggestionIds?.length ?? 0;
+        const injectedStyle = parsed.injectedControlFindingCount ?? parsed.styleActionableIssueCount ?? null;
+        const appliedStyle = parsed.appliedControlFindingIds?.length ?? parsed.appliedStyleFindingCount ?? 0;
         const writerHan = parsed.writerHan ?? null;
         const candidateHan = parsed.candidateHan ?? null;
-        const requiredProgress = parsed.requiredProgressHan ?? null;
-        const progressPassed = parsed.controlProgressPassed;
-        const parts: string[] = ['完整终稿已持久化。'];
-        // 区分「注入」与「声明应用」，避免把 0 项误读为上游没注入任务
+        const parts: string[] = [
+          'Repair 已完成精准修订，并通过完整章节与本地安全检查。',
+          '未进行第二次 LLM 语义复核。',
+        ];
         parts.push(
           injectedChecker != null
-            ? `Checker：注入 ${injectedChecker} 项强制任务，Repair 声明应用 ${appliedChecker} 项。`
+            ? `Checker：注入 ${injectedChecker} 项五维/安全任务，Repair 声明应用 ${appliedChecker} 项。`
             : `Repair 声明应用 Checker issue ${appliedChecker} 项。`,
         );
         parts.push(
-          injectedControl != null
-            ? `Control：注入 ${injectedControl} 项强制建议，Repair 声明应用 ${appliedControl} 项。`
-            : `Repair 声明应用 Control suggestion ${appliedControl} 项。`,
+          injectedStyle != null
+            ? `Control：注入 ${injectedStyle} 项文风任务，Repair 声明应用 ${appliedStyle} 项。`
+            : `Repair 声明应用文风 finding ${appliedStyle} 项。`,
         );
         if (writerHan != null && candidateHan != null) {
           const delta = candidateHan - writerHan;
           const sign = delta >= 0 ? '+' : '';
-          let line = `字数变化：${writerHan} → ${candidateHan}（${sign}${delta}）`;
-          if (requiredProgress != null) {
-            line += `；最低实质进度 ${requiredProgress}`;
-          }
-          if (progressPassed != null) {
-            line += progressPassed ? '，Control 进度通过' : '，Control 进度未通过';
-          }
-          parts.push(line + '。');
+          parts.push(
+            `用户参考篇幅 / 实际汉字：参考 ${parsed.referenceTargetHan ?? '—'}，Writer ${writerHan} → Repair ${candidateHan}（${sign}${delta}）；篇幅仅作提示，不影响候选资格。`,
+          );
+        }
+        if (parsed.unaffectedRetentionRatio != null) {
+          parts.push(
+            `完整性：未涉及段落保留率 ${Math.round(parsed.unaffectedRetentionRatio * 100)}%；相对 Writer 比例 ${
+              parsed.candidateToWriterHanRatio != null
+                ? `${Math.round(parsed.candidateToWriterHanRatio * 100)}%`
+                : '—'
+            }。`,
+          );
         }
         return parts.join('\n');
       } catch {
@@ -462,12 +522,12 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         typeof subtype === 'string' && subtype.startsWith('chapter_length_'),
       );
       if (parsed?.passed === false) {
-        return `本地门禁未通过：${checkSubtypes.join('、') || '存在硬门禁问题'}`;
+        return `完整性与确定性安全检查未通过：${checkSubtypes.join('、') || '存在硬门禁问题'}。当前默认候选为 Writer。`;
       }
       if (lengthWarnings.length > 0) {
-        return `已完成本地 Final Gate；篇幅仅作提示（${lengthWarnings.join('、')}），不阻断 Repair 采纳；未进行第二次 LLM 语义复核。`;
+        return `已完成完整性与确定性安全检查；篇幅仅作提示（${lengthWarnings.join('、')}），不影响候选资格；未进行第二次 LLM 语义复核。`;
       }
-      return '已完成本地 Final Gate；未进行第二次 LLM 语义复核。';
+      return '已完成完整性与确定性安全检查；未进行第二次 LLM 语义复核。';
     } catch {
       return result.errorMessage || 'Local Final Gate 尚无结果。';
     }
@@ -483,11 +543,11 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       label: string;
       meta: string;
     }> = [
-      { id: 'writer', label: 'Writer', meta: '完整初稿；默认 eligible 候选' },
-      { id: 'checker', label: 'Checker', meta: '冻结 Canon/状态语义审查；不负责本地篇幅计数' },
-      { id: 'control', label: 'Control', meta: '本地汉字数为真值，LLM 只提供增减建议' },
-      { id: 'repair', label: 'Repair', meta: '一次请求输出完整终稿，不接受 Patch' },
-      { id: 'local_verify', label: 'Local Final Gate', meta: '零请求安全门禁；篇幅仅作提示，不等同于第二次语义复核' },
+      { id: 'writer', label: 'Writer', meta: '完整初稿；参考篇幅弱提示；默认文学基线候选' },
+      { id: 'checker', label: 'Checker', meta: '原著五维资料一致性审查' },
+      { id: 'control', label: 'Control', meta: '原著文风一致性审查' },
+      { id: 'repair', label: 'Repair', meta: '精准最小干预修订，输出完整章节' },
+      { id: 'local_verify', label: 'Local Final Gate', meta: '完整性与确定性安全检查' },
     ];
     return (
       <>
@@ -552,6 +612,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     }
     if (run.state !== 'awaiting_user') return null;
     const risk = reviewBlocked || Boolean(rejectedRepair);
+    const repairEligible =
+      !rejectedRepair &&
+      v4Stage('repair')?.status === 'success' &&
+      v4Stage('local_verify')?.status === 'success';
     return (
       <Card>
         <Text style={[styles.h, { color: risk ? colors.danger : colors.textPrimary }]}>
@@ -559,8 +623,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         </Text>
           <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
             {rejectedRepair
-            ? '已保留 rejected Repair 供审计；默认可采纳 artifact 仍为 Writer。可以查看候选正文，但不能绕过 Local Final Gate 直接采纳。'
-            : '已根据一致性审查与篇幅控制完成综合修订；已执行本地安全门禁，未进行第二次 LLM 语义复核，请在采纳前人工审阅。'}
+            ? 'Repair 未通过完整性或安全检查，当前默认候选为 Writer。已保留 rejected Repair 供审计；不能绕过 Local Final Gate 直接采纳。'
+            : repairEligible
+              ? 'Repair 已完成精准修订，并通过完整章节与本地安全检查。未进行第二次 LLM 语义复核，请在采纳前人工审阅。'
+              : '未发现需要自动修订的五维资料或文风问题，或仅有篇幅/audit 提示；当前默认候选为 Writer 原稿。'}
           </Text>
         {rejectedRepair && (
           <View style={[styles.resultCard, { backgroundColor: colors.background }]}>

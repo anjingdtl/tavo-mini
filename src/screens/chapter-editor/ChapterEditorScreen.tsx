@@ -8,7 +8,10 @@ import { Button, Header, Screen, spacing } from '../../components/ui';
 import * as db from '../../services/database';
 import { createRevision } from '../../services/revisionService';
 import { finalizeChapterMemory } from '../../services/storyMemory/storyMemoryService';
-import { finalizeContinuationChapter } from '../../services/continuation/generation';
+import {
+  finalizeContinuationChapter,
+  findLatestPendingReviewRunForChapter,
+} from '../../services/continuation/generation';
 import { findOrCreateNextChapter } from '../../services/chapterNavigation';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { EditorStackParamList } from '../../navigation/TabNavigator';
@@ -72,11 +75,32 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const finalizingRef = useRef(false);
   const [clearing, setClearing] = useState(false);
   const clearingRef = useRef(false);
+  const [pendingContinuationRunId, setPendingContinuationRunId] = useState<
+    string | null
+  >(null);
 
   useFocusEffect(
     useCallback(() => {
       loadChapter().catch(() => {});
-    }, [loadChapter]),
+      // Re-discover unadopted continuation results so tab switches do not
+      // strand awaiting_user runs without a return path.
+      let cancelled = false;
+      const project = useProjectStore.getState().currentProject;
+      if (project?.mode === 'continuation') {
+        findLatestPendingReviewRunForChapter(project.id, chapterId)
+          .then(run => {
+            if (!cancelled) setPendingContinuationRunId(run?.id ?? null);
+          })
+          .catch(() => {
+            if (!cancelled) setPendingContinuationRunId(null);
+          });
+      } else {
+        setPendingContinuationRunId(null);
+      }
+      return () => {
+        cancelled = true;
+      };
+    }, [loadChapter, chapterId]),
   );
 
   const finalizeChapter = useCallback(async () => {
@@ -275,6 +299,8 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     );
   }
 
+  const isContinuation =
+    useProjectStore.getState().currentProject?.mode === 'continuation';
   const toolbar = (
     <ChapterToolbar
       clearing={clearing}
@@ -283,9 +309,8 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       isJustFinished={isJustFinished}
       isPlaying={isPlaying}
       isSynthesizing={isSynthesizing}
-      isContinuation={
-        useProjectStore.getState().currentProject?.mode === 'continuation'
-      }
+      isContinuation={isContinuation}
+      hasPendingContinuationResult={Boolean(pendingContinuationRunId)}
       onClear={clearContent}
       onContext={() =>
         navigation.navigate('ContextPreview', { chapterId: chapter.id })
@@ -306,6 +331,14 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         })
       }
       onManualCheckpoint={() => manualCheckpoint().catch(() => {})}
+      onOpenContinuationResult={
+        pendingContinuationRunId
+          ? () =>
+              navigation.navigate('ContinuationResult', {
+                runId: pendingContinuationRunId,
+              })
+          : undefined
+      }
       onRunPipeline={runPipeline}
       onStopPipeline={stopPipeline}
       onToggleTts={() => toggleTts().catch(() => {})}

@@ -7,6 +7,8 @@ export {
   updateGenerationSettings,
   getRunById,
   findLatestAdoptedRunForChapter,
+  findLatestPendingReviewRunForChapter,
+  listPendingReviewRunsForProject,
   listRunsForProject,
   listRunningRuns,
   insertArtifact,
@@ -79,10 +81,25 @@ export {
   parseContinuationControlReport,
   resolveContinuationControlReport,
   requiredControlProgressHan,
+  reportLengthAction,
+  isStyleIssueRepairReady,
+  getRepairReadyStyleFindings,
+  STYLE_REPAIR_CONFIDENCE_MIN,
   CONTROL_PROGRESS_RATIO,
   CONTROL_PROGRESS_FLOOR_HAN,
 } from './continuationControl';
 export type { ContinuationControlParseResult } from './continuationControl';
+export {
+  evaluateRepairCompleteness,
+  splitNaturalParagraphs,
+  DEFAULT_REPAIR_COMPLETENESS_POLICY,
+  REPAIR_SUMMARY_PHRASES,
+} from './repairCompletenessPolicy';
+export type {
+  RepairCompletenessMetrics,
+  RepairCompletenessPolicy,
+  RepairCompletenessResult,
+} from './repairCompletenessPolicy';
 export {
   selectContinuationAnchor,
   type ContinuationAnchor,
@@ -108,6 +125,7 @@ export {
   bindIssuesToArtifact,
   filterBySettings,
   uncheckedCategories,
+  isRepairableCheckerIssue,
 } from './continuationChecker';
 export type { CheckerLlmEnvelope } from './continuationChecker';
 export {

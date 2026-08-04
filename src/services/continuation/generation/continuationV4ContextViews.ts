@@ -161,14 +161,20 @@ function styleView(
   }
 
   if (stage === 'control') {
+    // Control is original-style review: inject a compact style profile so the
+    // model can judge local voice/rhythm drift without Writer-level verbosity.
+    const rendered = renderStyleProfile(frozen.frozenProfile, 'compact', {
+      stage: 'writer',
+      userOverrides: frozen.userOverrides,
+    });
     return {
       profileId: frozen.profileId,
       profileHash: frozen.profileHash,
       rendererVersion: frozen.rendererVersion,
-      renderLevel: null,
-      text: '',
+      renderLevel: 'compact',
+      text: rendered.text,
       quantitative,
-      omittedReason: null,
+      omittedReason: frozen.omitReason ?? null,
     };
   }
 

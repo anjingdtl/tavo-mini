@@ -31,10 +31,11 @@ export interface RawCheckIssue {
 }
 
 /**
- * A Checker issue is repair-ready only when Repair can locate the affected
- * text and has a concrete action to perform. Severity alone is not enough:
- * an abstract warning must remain an audit note instead of becoming a fake
- * "applied" checkbox in the single Repair call.
+ * A Checker issue is repair-ready only when it is a hard five-dimension /
+ * boundary / locked-rule problem that Repair can locate and act on.
+ *
+ * Ordinary warnings, pure length deviations, and unlocated observations stay
+ * audit-only and must not consume the single Repair reservation.
  */
 export function isRepairableCheckerIssue(
   issue: Pick<
@@ -44,16 +45,35 @@ export function isRepairableCheckerIssue(
     | 'generatedEnd'
     | 'generatedExcerpt'
     | 'suggestedFix'
-  >,
+    | 'subtype'
+    | 'category'
+    | 'description'
+  > & { evidenceIds?: number[] | null },
 ): boolean {
-  if (issue.severity === 'info') return false;
+  if (issue.severity !== 'error' && issue.severity !== 'blocking') return false;
+  if (isContinuationLengthIssueSubtype(String(issue.subtype ?? ''))) {
+    return false;
+  }
+  // Style ownership moved to Control; Checker style rows stay audit-only
+  // unless they are hard local safety subtypes handled elsewhere.
+  if (
+    issue.category === 'style' &&
+    issue.subtype !== 'source_overlap' &&
+    issue.subtype !== 'continuation_anchor_overlap' &&
+    issue.subtype !== 'self_duplicate'
+  ) {
+    return false;
+  }
+  if (!issue.description?.trim()) return false;
+  if (!issue.suggestedFix?.trim()) return false;
   const hasRange =
     typeof issue.generatedStart === 'number' &&
     typeof issue.generatedEnd === 'number' &&
     issue.generatedStart >= 0 &&
     issue.generatedEnd > issue.generatedStart;
   const hasExcerpt = (issue.generatedExcerpt ?? '').trim().length >= 4;
-  return Boolean(issue.suggestedFix?.trim()) && (hasRange || hasExcerpt);
+  if (!hasRange && !hasExcerpt) return false;
+  return true;
 }
 
 const CATEGORIES: CheckCategory[] = [
@@ -102,6 +122,9 @@ export function runDeterministicChecks(
   );
   if (lengthEvaluation.status !== 'within') {
     const under = lengthEvaluation.status === 'under';
+    // Shared deterministic check still records length for V1/V2 repair paths.
+    // V4 excludes chapter_length_* from repairReady / shouldRepair and softens
+    // it to warning in Local Final Gate — never a V4 eligibility hard gate.
     issues.push({
       category: 'style',
       subtype: under
@@ -113,20 +136,12 @@ export function runDeterministicChecks(
       generatedEnd: null,
       generatedExcerpt: '',
       description: under
-        ? `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，低于本次允许下限 ${lengthContract.minHanCharacters}；目标为 ${lengthContract.targetHanCharacters}。`
-        : `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，高于本次允许上限 ${lengthContract.maxHanCharacters}；目标为 ${lengthContract.targetHanCharacters}。`,
+        ? `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，低于本次用户参考区间下限 ${lengthContract.minHanCharacters}（参考篇幅 ${lengthContract.targetHanCharacters}）。V4 下篇幅仅作提示，不影响候选资格。`
+        : `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，高于本次用户参考区间上限 ${lengthContract.maxHanCharacters}（参考篇幅 ${lengthContract.targetHanCharacters}）。V4 下篇幅仅作提示，不影响候选资格。`,
       evidenceIds: [],
       suggestedFix: under
-        ? `在保留完整事件链的基础上自然扩写约 ${Math.max(
-            1,
-            lengthContract.targetHanCharacters -
-              lengthEvaluation.actualHanCharacters,
-          )} 个汉字，最终保持在 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字。`
-        : `优先压缩重复描写、重复心理和不推进剧情的对话，减少约 ${Math.max(
-            1,
-            lengthEvaluation.actualHanCharacters -
-              lengthContract.targetHanCharacters,
-          )} 个汉字，最终保持在 ${lengthContract.minHanCharacters}–${lengthContract.maxHanCharacters} 个汉字。`,
+        ? '篇幅偏差仅供人工参考；不得为凑字数填充心理、环境、重复反应或无信息对白。'
+        : '篇幅偏差仅供人工参考；不得为压字数删掉必要情节或人物反应。',
     });
   }
 
