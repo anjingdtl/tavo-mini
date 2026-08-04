@@ -242,6 +242,30 @@ function styleBlock(text: string): string {
   return text ? `【原著风格】\n${text}` : '【原著风格】\n（无注入画像文本）';
 }
 
+/**
+ * Previous-chapter seam block. Carries the real tail of the immediately
+ * preceding chapter (or original-source seam for the first continuation
+ * chapter) so the model can connect chapter N+1 to chapter N. Empty anchor
+ * text is a degenerate case; we still emit the header so the model knows the
+ * channel exists but is intentionally empty.
+ */
+function primaryAnchorSeamBlock(seamText: string): string {
+  return seamText
+    ? `【上一章正文接缝（务必自然衔接，不得复述）】\n${seamText}`
+    : '【上一章正文接缝】\n（无可用上一章接缝；若为开篇则正常起笔）';
+}
+
+/**
+ * Recent continuation bridge: the chronological excerpts of chapters before
+ * the primary anchor (excludes the immediately-previous chapter, which is
+ * already covered by the primary anchor seam). Capped to keep the prompt
+ * bounded even when many prior chapters exist.
+ */
+function recentBridgeBlock(bridgeSummary: string): string {
+  if (!bridgeSummary) return '';
+  return `【更早正文桥（背景，勿复述）】\n${bridgeSummary.slice(0, 1800)}`;
+}
+
 function stateBlock(view: ContinuationV5StageViews['draft_writer']): string {
   const chars = view.effectiveState.characterStates
     .slice(0, 12)
@@ -286,12 +310,8 @@ export function compileContinuationV5DraftWriterMessages(input: {
     hardFactsBlock(view),
     stateBlock(view),
     styleBlock(view.style.text),
-    view.primaryAnchorSummary
-      ? `【接缝摘要】\n${view.primaryAnchorSummary}`
-      : '',
-    view.recentBridgeSummary
-      ? `【最近正文桥】\n${view.recentBridgeSummary.slice(0, 1800)}`
-      : '',
+    primaryAnchorSeamBlock(view.primaryAnchorSeamText),
+    recentBridgeBlock(view.recentBridgeSummary),
     '【输出契约】\n{"schemaVersion":1,"plan":{"chapterGoal":"...","centralConflict":"...","beats":[{"id":"beat_1","summary":"...","stateChange":"..."}]},"content":"完整章节正文"}',
   ]
     .filter(Boolean)
@@ -358,6 +378,7 @@ export function compileContinuationV5RevisionWriterMessages(input: {
     `【本章要求】\n${view.userInstruction || '（无）'}`,
     hardFactsBlock(view as any),
     styleBlock(view.style.text),
+    primaryAnchorSeamBlock(view.primaryAnchorSeamText),
     `【V1 contentHash】${input.draftArtifactHash}`,
     `【A1 architectureHash】${input.architectureHash}`,
     `【完整 V1】\n${input.draftContent}`,
@@ -399,6 +420,7 @@ export function compileContinuationV5AuditorMessages(input: {
     '每条 styleAudit 必须从下方的真实 V2 片段列表选择一个不同的 anchorId，并写清 rewriteGoal 和 preserveMeaning；不得自行摘抄、拼接、改写或杜撰 generatedExcerpt。',
     '每条 styleAudit 的 rewriteGoal 必须要求将选中片段整体改写为更好的表达，而不是只删词、改标点或替换一两个近义词。',
     '如发现 Canon/边界问题，同样必须定位 V2 原句并说明在不改变何种既有含义下修正。',
+    '【衔接检查】若 V2 开头与“上一章正文接缝”在场景、人物位置、情绪或时间上没有自然衔接（例如突兀跳场、重复已发生事件、无视接缝末尾的状态），必须生成一条 finalObligation，要求 V3 在开头补足自然衔接，并指明必须承接的接缝要素。',
     'finalObligations 要把所有需要在 V3 实际执行的修订任务按优先级重述，不要留空。',
     '只输出 JSON object。',
   ].join('\n');
@@ -415,6 +437,7 @@ export function compileContinuationV5AuditorMessages(input: {
     `【本章要求】\n${view.userInstruction || '（无）'}`,
     hardFactsBlock(view as any),
     styleBlock(view.style.text),
+    primaryAnchorSeamBlock(view.primaryAnchorSeamText),
     `【V1 保留表达参考】\n${input.draftContent}`,
     `【A1】\n${JSON.stringify(input.architecture)}`,
     `【完整 V2（C2 的唯一润色对象；仅可用下列真实片段 id 定位）】\n${revisionAnchorBlock(
@@ -514,6 +537,7 @@ export function compileContinuationV5FinalReviserMessages(input: {
       : `V2 仍低于首选下限 ${view.preferredMinHan}：你可兜底补写尚未充分展开的核心场景（行动、阻力、人物选择、信息/关系变化、后果），尽量将 V3 提升到 ${view.preferredMinHan} 以上；仍禁止重复心理/环境/空转对白。`,
     '不得追加无关描写，不得重复心理、反应、对白或解释。',
     '每个已回填的 style requirement 都必须在 V3 正文中落实其 rewriteGoal，同时保留该项的 preserveMeaning。',
+    'V3 开头必须与“上一章正文接缝”自然衔接；除非 C2 的 finalObligations 显式要求重写开头，否则不要重置已成立的场景承接，也不要复述接缝中已发生的事件。',
     '只输出从章节开头到自然结尾的完整最终章节 JSON。',
   ].join('\n');
 
@@ -530,6 +554,7 @@ export function compileContinuationV5FinalReviserMessages(input: {
       .join('\n') || '- （无）',
     level < 4 ? `【软 Canon 摘要】\n${softCanon.join('\n') || '（无）'}` : '',
     styleBlock(view.style.text),
+    primaryAnchorSeamBlock(view.primaryAnchorSeamText),
     // V3 must first act on the per-segment edit work packet; it precedes the
     // full V2 baseline so attention lands on real rewrites, not global echo.
     editWorkPacketBlock,

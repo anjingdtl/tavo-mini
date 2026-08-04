@@ -982,6 +982,15 @@ export interface FrozenContinuationV5BaseContextView {
     | 'experiences'
   >;
   primaryAnchorSummary: string;
+  /**
+   * Compact previous-chapter seam injected into every full-text V5 stage so
+   * revision/audit/polish can verify and preserve chapter-to-chapter linkage.
+   * Carries the real anchor summary plus its token-budgeted excerpt tail
+   * (empty only when no anchor exists). Distinct from primaryAnchorSummary,
+   * which is a legacy label field that the context builder empties for
+   * continuation-chapter anchors.
+   */
+  primaryAnchorSeamText: string;
   recentBridgeSummary: string;
   style: FrozenContinuationStyleStageView;
   supplements: FrozenContinuationSupplementStageView;
