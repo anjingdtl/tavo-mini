@@ -21,10 +21,13 @@ export {
   getStageResult,
   listStageResults,
   ensureContinuationV4StageResults,
+  ensureContinuationV5StageResults,
   reserveContinuationStage,
   updateStageResult,
   finalizeContinuationV4Repair,
   finalizeContinuationV4LocalGate,
+  finalizeContinuationV5Final,
+  finalizeContinuationV5ValidatorOnly,
   newContinuationStageResultId,
   getPlan,
   listChecksForArtifact,
@@ -49,10 +52,12 @@ export {
 export {
   buildContinuationContext,
   buildContinuationV4Context,
+  buildContinuationV5Context,
 } from './continuationContextBuilder';
 export type {
   BuildContinuationContextInput,
   BuildContinuationV4ContextInput,
+  BuildContinuationV5ContextInput,
 } from './continuationContextBuilder';
 export {
   assertContinuationStageBudget,
@@ -193,6 +198,44 @@ export {
   parseContinuationV4WriterEnvelope,
   parseContinuationV4RepairEnvelope,
 } from './continuationV4Runner';
+export {
+  startContinuationV5Run,
+  resumeContinuationV5Run,
+  markContinuationV5StagesCancelled,
+  parseContinuationV5DraftEnvelope,
+  parseContinuationV5ArchitectureEnvelope,
+  parseContinuationV5RevisionEnvelope,
+  parseContinuationV5AuditEnvelope,
+  parseContinuationV5FinalEnvelope,
+  hashArchitectureEnvelope,
+  hashAuditEnvelope,
+} from './continuationV5Runner';
+export {
+  validateFinalArtifact,
+} from './finalArtifactValidator';
+export type {
+  FinalArtifactValidationResult,
+  FinalArtifactValidationCode,
+} from './finalArtifactValidator';
+export {
+  CONTINUATION_V5_LENGTH_POLICY,
+  buildFallbackArchitecture,
+  buildFallbackAuditContract,
+  diagnoseLengthTelemetry,
+  resolveV5LengthTargets,
+} from './continuationV5Contracts';
+export {
+  resolveContinuationV5StageBudget,
+  preflightContinuationV5StageBudget,
+  resolveContinuationV5BudgetPreview,
+} from './continuationV5Budget';
+export {
+  compileContinuationV5DraftWriterMessages,
+  compileContinuationV5ArchitectMessages,
+  compileContinuationV5RevisionWriterMessages,
+  compileContinuationV5AuditorMessages,
+  compileContinuationV5FinalReviserWithinBudget,
+} from './continuationV5PromptCompiler';
 export { summarizeTrace, parseTraceJson } from './continuationContextTrace';
 export {
   extractAndSaveStyleProfile,

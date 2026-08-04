@@ -104,33 +104,43 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       setPlan(p?.plan ?? null);
       setPlanConfirmationStatus(p?.confirmationStatus ?? null);
       const isV4 = r.workflowVersion === 4;
-      const art = isV4
-        ? await getLatestEligibleArtifact(runId)
-        : await getLatestArtifact(runId);
+      const isV5 = r.workflowVersion === 5;
+      const art =
+        isV4 || isV5
+          ? await getLatestEligibleArtifact(runId)
+          : await getLatestArtifact(runId);
       setBody(art?.content ?? '');
-      setRepairRound(art?.stage === 'repair' ? art.repairRound : 0);
+      setRepairRound(
+        art?.stage === 'repair' || art?.stage === 'final' ? art.repairRound : 0,
+      );
       if (art) {
         setChecks(await listChecksForArtifact(runId, art.id));
       } else {
         setChecks([]);
       }
-      if (isV4) {
+      if (isV4 || isV5) {
         const results = await listStageResults(runId);
         setStageResults(results);
-        const repair = results.find(result => result.stage === 'repair');
-        const localVerify = results.find(result => result.stage === 'local_verify');
-        if (repair?.artifactId) {
-          const candidate = await getArtifactForRun(runId, repair.artifactId);
-          setRejectedRepair(
-            candidate?.eligibilityStatus === 'rejected'
-              ? {
-                  content: candidate.content,
-                  rejectionCode: candidate.rejectionCode,
-                  repairOutputJson: repair.outputJson,
-                  localVerifyOutputJson: localVerify?.outputJson ?? null,
-                }
-              : null,
+        if (isV4) {
+          const repair = results.find(result => result.stage === 'repair');
+          const localVerify = results.find(
+            result => result.stage === 'local_verify',
           );
+          if (repair?.artifactId) {
+            const candidate = await getArtifactForRun(runId, repair.artifactId);
+            setRejectedRepair(
+              candidate?.eligibilityStatus === 'rejected'
+                ? {
+                    content: candidate.content,
+                    rejectionCode: candidate.rejectionCode,
+                    repairOutputJson: repair.outputJson,
+                    localVerifyOutputJson: localVerify?.outputJson ?? null,
+                  }
+                : null,
+            );
+          } else {
+            setRejectedRepair(null);
+          }
         } else {
           setRejectedRepair(null);
         }
@@ -1024,11 +1034,300 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     return null;
   };
 
+  const renderV5StageCards = () => {
+    const usage = (() => {
+      try {
+        return JSON.parse(run.tokenUsageJson || '{}');
+      } catch {
+        return {};
+      }
+    })() as Record<string, any>;
+    const physical = stageResults
+      .filter(item => item.stage !== 'final_validate')
+      .reduce((sum, item) => sum + item.requestCount, 0);
+    const targetHan =
+      usage.targetHan ??
+      (() => {
+        try {
+          return JSON.parse(run.settingsSnapshotJson || '{}')?.values
+            ?.targetChapterChars;
+        } catch {
+          return null;
+        }
+      })();
+    const draftHan = usage.draftHan ?? null;
+    const revisionHan = usage.revisionHan ?? null;
+    const finalHan = usage.finalHan ?? null;
+    const stageDefinitions: Array<{
+      id: ContinuationGenerationStageResult['stage'];
+      label: string;
+      meta: string;
+    }> = [
+      { id: 'draft_writer', label: 'Draft Writer', meta: '完整初稿 V1' },
+      {
+        id: 'narrative_architect',
+        label: 'Narrative Architect',
+        meta: '叙事架构 A1（不写正文）',
+      },
+      {
+        id: 'revision_writer',
+        label: 'Revision Writer',
+        meta: '第一次修订稿 V2',
+      },
+      {
+        id: 'adversarial_auditor',
+        label: 'Adversarial Auditor',
+        meta: '最终修订合同 C2',
+      },
+      { id: 'final_reviser', label: 'Final Reviser', meta: '唯一最终稿 V3' },
+      {
+        id: 'final_validate',
+        label: 'Final Artifact Validator',
+        meta: '零请求技术完整性验证',
+      },
+    ];
+    const v5Stage = (id: ContinuationGenerationStageResult['stage']) =>
+      stageResults.find(item => item.stage === id) ?? null;
+    const v5Status = (id: ContinuationGenerationStageResult['stage']) => {
+      const row = v5Stage(id);
+      if (!row) return '未开始';
+      switch (row.status) {
+        case 'success':
+          return row.errorCode?.includes('degraded') ? '降级成功' : '成功';
+        case 'failed':
+          return '失败';
+        case 'running':
+          return '进行中';
+        case 'interrupted':
+          return '已中断';
+        case 'skipped':
+          return '跳过';
+        default:
+          return row.status;
+      }
+    };
+    return (
+      <>
+        <Text style={[styles.summary, { color: colors.textSecondary }]}>
+          V5 三轮三稿 · 物理请求 {physical}/5 · workflowVersion 5
+          {targetHan != null ? ` · 目标 ${targetHan} 汉字` : ''}
+        </Text>
+        <Text style={[styles.summary, { color: colors.textSecondary }]}>
+          V1：{draftHan ?? '—'} · V2：{revisionHan ?? '—'} · V3：{finalHan ?? '—'}
+          {usage.architectureDegraded ? ' · Architect 降级' : ''}
+          {usage.auditorDegraded ? ' · Auditor 降级' : ''}
+        </Text>
+        {stageDefinitions.map(stage => {
+          const result = v5Stage(stage.id);
+          const requestText = result?.requestCount
+            ? ` · ${result.requestCount} 次请求`
+            : stage.id === 'final_validate'
+              ? ' · 0 次请求'
+              : '';
+          const tokenText =
+            result &&
+            (result.inputTokens != null || result.outputTokens != null)
+              ? ` · token ${result.inputTokens ?? '—'}→${result.outputTokens ?? '—'}`
+              : '';
+          let finishReason = '';
+          try {
+            const parsed = result?.outputJson
+              ? JSON.parse(result.outputJson)
+              : null;
+            if (parsed?.finishReason || parsed?.length?.finishReason) {
+              finishReason = ` · finishReason=${
+                parsed.finishReason || parsed.length.finishReason
+              }`;
+            }
+            if (parsed?.length?.maximumOutputTokens != null) {
+              finishReason += ` · maxOut=${parsed.length.maximumOutputTokens}`;
+            }
+          } catch {
+            // ignore
+          }
+          const label = `${stage.label} · ${v5Status(stage.id)}${requestText}${tokenText}${finishReason}`;
+          return (
+            <View
+              key={stage.id}
+              style={[styles.resultCard, { backgroundColor: colors.card }]}
+            >
+              <Button
+                label={label}
+                variant="ghost"
+                onPress={() => toggleExpanded(`v5_${stage.id}`)}
+              />
+              <Text style={[styles.stageMeta, { color: colors.accent }]}>
+                {stage.meta}
+                {result?.errorCode ? ` · ${result.errorCode}` : ''}
+              </Text>
+              {expanded.has(`v5_${stage.id}`) && (
+                <Text
+                  selectable
+                  style={[styles.stageText, { color: colors.textPrimary }]}
+                >
+                  {result?.errorMessage ||
+                    result?.outputJson ||
+                    '尚无结果。'}
+                </Text>
+              )}
+            </View>
+          );
+        })}
+        <View style={[styles.block, { marginTop: spacing.sm }]}>
+          <Button
+            label={
+              expanded.has('v5_audit')
+                ? '收起生成过程审计（V1/V2）'
+                : '展开生成过程审计（V1/V2，不可采纳）'
+            }
+            variant="ghost"
+            onPress={() => toggleExpanded('v5_audit')}
+          />
+          {expanded.has('v5_audit') && (
+            <Text style={{ color: colors.textSecondary, marginTop: 6 }}>
+              V1/V2 仅用于审计与恢复，不提供采纳按钮。默认只展示可交付的
+              V3。
+              {`\n目标：${targetHan ?? '—'} · V1：${draftHan ?? '—'} · V2：${
+                revisionHan ?? '—'
+              } · V3：${finalHan ?? '—'}`}
+            </Text>
+          )}
+        </View>
+      </>
+    );
+  };
+
+  const renderV5StateBranch = () => {
+    if (run.state === 'running' || run.state === 'queued') {
+      return (
+        <Card>
+          <Text style={[styles.h, { color: colors.textPrimary }]}>
+            V5 生成进行中
+          </Text>
+          <Text style={{ color: colors.textSecondary }}>
+            当前阶段：{stageLabel(run.stage)}。Round 1/2 各最多两个并行请求，Round
+            3 仅 Final Reviser。
+          </Text>
+        </Card>
+      );
+    }
+    if (run.state === 'failed' || run.state === 'interrupted') {
+      return (
+        <Card>
+          <Text
+            style={[
+              styles.h,
+              {
+                color:
+                  run.state === 'failed' ? colors.danger : colors.textPrimary,
+              },
+            ]}
+          >
+            {run.state === 'failed' ? 'V5 生成未完成' : 'V5 生成已中断'}
+          </Text>
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+          >
+            {run.errorMessage ||
+              `当前阶段：${stageLabel(run.stage)}。已 reservation 的节点不会自动重发。`}
+          </Text>
+          <View style={styles.actions}>
+            <Button
+              label={busy ? '处理中…' : '从已持久化阶段继续'}
+              onPress={doResume}
+              disabled={busy}
+            />
+            <Button
+              label="放弃"
+              variant="secondary"
+              onPress={doAbandon}
+              disabled={busy}
+            />
+          </View>
+        </Card>
+      );
+    }
+    if (run.state === 'awaiting_regeneration') {
+      return (
+        <Card>
+          <Text style={[styles.h, { color: colors.danger }]}>
+            最终稿未形成可交付结果
+          </Text>
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+          >
+            {run.errorMessage ||
+              '本次不会自动回退到初稿或第一次修订稿。请重新生成，或放弃本次结果。'}
+          </Text>
+          <View style={styles.actions}>
+            <Button
+              label="重新生成"
+              onPress={onClose}
+              disabled={busy}
+            />
+            <Button
+              label="放弃"
+              variant="secondary"
+              onPress={doAbandon}
+              disabled={busy}
+            />
+          </View>
+        </Card>
+      );
+    }
+    if (run.state === 'awaiting_user') {
+      return (
+        <Card>
+          <Text style={[styles.h, { color: colors.textPrimary }]}>
+            V5 最终稿已待采纳
+          </Text>
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+          >
+            仅 V3（stage=final, eligible）可采纳。V1/V2 为 intermediate，不可选择。
+          </Text>
+          {body ? (
+            <Text
+              selectable
+              style={[styles.stageText, { color: colors.textPrimary }]}
+            >
+              {body.slice(0, 1200)}
+              {body.length > 1200 ? '…' : ''}
+            </Text>
+          ) : (
+            <Text style={{ color: colors.danger }}>
+              未找到可采纳的最终稿。
+            </Text>
+          )}
+          <View style={[styles.actions, { marginTop: spacing.md }]}>
+            <Button
+              label="放弃"
+              variant="secondary"
+              onPress={doAbandon}
+              disabled={busy}
+            />
+            <Button
+              label={busy ? '采纳中…' : '采纳最终稿'}
+              onPress={() => doAdopt()}
+              disabled={busy || !body}
+            />
+          </View>
+        </Card>
+      );
+    }
+    return null;
+  };
+
   return (
     <Screen>
       <Header title="流水线结果" action={headerAction} />
       <ScrollView contentContainerStyle={styles.pad}>
-        {run.workflowVersion === 4 ? (
+        {run.workflowVersion === 5 ? (
+          <>
+            {renderV5StageCards()}
+            {renderV5StateBranch()}
+          </>
+        ) : run.workflowVersion === 4 ? (
           <>
             {renderV4StageCards()}
             {renderV4StateBranch()}
@@ -1085,6 +1384,24 @@ function stageLabel(stage: string): string {
       return '本地 Final Gate';
     case 'awaiting_user':
       return '等待确认';
+    case 'round1':
+      return 'Round 1 Draft+Architect';
+    case 'round2':
+      return 'Round 2 Revision+Auditor';
+    case 'round3':
+      return 'Round 3 Final Reviser';
+    case 'draft_writer':
+      return 'Draft Writer';
+    case 'narrative_architect':
+      return 'Narrative Architect';
+    case 'revision_writer':
+      return 'Revision Writer';
+    case 'adversarial_auditor':
+      return 'Adversarial Auditor';
+    case 'final_reviser':
+      return 'Final Reviser';
+    case 'final_validate':
+      return 'Final Artifact Validator';
     default:
       return stage;
   }
