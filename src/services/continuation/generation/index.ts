@@ -119,6 +119,14 @@ export {
   continuationV4ProtocolSkeletonTokens,
 } from './continuationPromptCompiler';
 export {
+  buildRepairUnifiedTasks,
+  injectRepairAnchors,
+  stripRepairAnchors,
+  renderStyleFinding,
+  resolveStyleFindingExcerpt,
+  REPAIR_ANCHOR_MARKER_PATTERN,
+} from './continuationV4PromptCompiler';
+export {
   runDeterministicChecks,
   parseCheckerLlmJson,
   parseCheckerLlmEnvelope,
@@ -126,6 +134,7 @@ export {
   filterBySettings,
   uncheckedCategories,
   isRepairableCheckerIssue,
+  isLengthExpansionIssue,
 } from './continuationChecker';
 export type { CheckerLlmEnvelope } from './continuationChecker';
 export {

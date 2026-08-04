@@ -12,8 +12,11 @@ import type {
 import {
   evaluateContinuationLength,
   isContinuationLengthIssueSubtype,
+  isLengthExpansionIssue,
   resolveContinuationLengthContract,
 } from './continuationLengthContract';
+
+export { isLengthExpansionIssue };
 
 export interface RawCheckIssue {
   category: CheckCategory;
@@ -122,9 +125,10 @@ export function runDeterministicChecks(
   );
   if (lengthEvaluation.status !== 'within') {
     const under = lengthEvaluation.status === 'under';
-    // Shared deterministic check still records length for V1/V2 repair paths.
-    // V4 excludes chapter_length_* from repairReady / shouldRepair and softens
-    // it to warning in Local Final Gate — never a V4 eligibility hard gate.
+    // ±30% band: under min (== target×0.7) is a V4 length-expansion trigger
+    // (isLengthExpansionIssue); over max is advisory only and never triggers
+    // Repair. Local Final Gate still softens length severity to warning so
+    // length alone never blocks candidate eligibility — quality gates do.
     issues.push({
       category: 'style',
       subtype: under
@@ -136,12 +140,12 @@ export function runDeterministicChecks(
       generatedEnd: null,
       generatedExcerpt: '',
       description: under
-        ? `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，低于本次用户参考区间下限 ${lengthContract.minHanCharacters}（参考篇幅 ${lengthContract.targetHanCharacters}）。V4 下篇幅仅作提示，不影响候选资格。`
-        : `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，高于本次用户参考区间上限 ${lengthContract.maxHanCharacters}（参考篇幅 ${lengthContract.targetHanCharacters}）。V4 下篇幅仅作提示，不影响候选资格。`,
+        ? `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，低于目标体量区间下限 ${lengthContract.minHanCharacters}（目标约 ${lengthContract.targetHanCharacters}，±30%）。低于下限通常意味着场景展开不足，可触发定向深化扩写。`
+        : `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，高于目标体量区间上限 ${lengthContract.maxHanCharacters}（目标约 ${lengthContract.targetHanCharacters}，±30%）。超长仅作提示，不强制压缩。`,
       evidenceIds: [],
       suggestedFix: under
-        ? '篇幅偏差仅供人工参考；不得为凑字数填充心理、环境、重复反应或无信息对白。'
-        : '篇幅偏差仅供人工参考；不得为压字数删掉必要情节或人物反应。',
+        ? '在既有场景与节拍内深化：动作过程、对话回合、人物反应、感官细节、冲突升级阶梯；禁止注水、新增支线或复述设定。'
+        : '篇幅偏长仅供人工参考；不得为压字数删掉必要情节或人物反应。',
     });
   }
 

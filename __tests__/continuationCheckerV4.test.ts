@@ -1,5 +1,6 @@
 import {
   bindIssuesToArtifact,
+  isLengthExpansionIssue,
   isRepairableCheckerIssue,
   parseCheckerLlmEnvelope,
   parseCheckerLlmJson,
@@ -44,7 +45,7 @@ describe('Continuation V4 Checker parser', () => {
         suggestedFix: '注意一致性',
       }),
     ).toBe(false);
-    // length never repair-ready
+    // length is not five-dimension repairReady; under_target uses isLengthExpansionIssue
     expect(
       isRepairableCheckerIssue({
         severity: 'error',
@@ -55,6 +56,18 @@ describe('Continuation V4 Checker parser', () => {
         generatedEnd: 4,
         generatedExcerpt: '问题原句',
         suggestedFix: '扩写',
+      }),
+    ).toBe(false);
+    expect(
+      isLengthExpansionIssue({
+        severity: 'error',
+        subtype: 'chapter_length_under_target',
+      }),
+    ).toBe(true);
+    expect(
+      isLengthExpansionIssue({
+        severity: 'error',
+        subtype: 'chapter_length_over_target',
       }),
     ).toBe(false);
   });

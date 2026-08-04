@@ -1,3 +1,24 @@
+/**
+ * Shared Han-length contract for continuation Writer / Checker / Repair.
+ *
+ * Tolerance is proportional (±30% of target), not a fixed ±500:
+ *   1000 → 700–1300；3000 → 2100–3900；8000 → 5600–10400。
+ *
+ * Decision (V4 length-repair reform, 2026-08): both V4 and the legacy standard
+ * path (`continuationPromptCompiler` / `continuationGenerationRunner`) share
+ * this proportional contract. Fixed ±500 was too tight on large targets and
+ * too loose on small ones; a single ratio keeps UX consistent across pipelines.
+ * Do not reintroduce a separate fixed-tolerance branch without an explicit
+ * product decision.
+ */
+
+/** Soft band around the user target Han count (inclusive min/max). */
+export const CONTINUATION_LENGTH_TOLERANCE_RATIO = 0.3;
+
+/**
+ * @deprecated Fixed Han tolerance. Runtime uses CONTINUATION_LENGTH_TOLERANCE_RATIO.
+ * Kept so older imports/docs still resolve; do not use for new contract math.
+ */
 export const CONTINUATION_LENGTH_TOLERANCE_HAN = 500;
 
 export interface ContinuationLengthContract {
@@ -67,7 +88,11 @@ export function resolveContinuationLengthContract(
     1,
     Math.floor(Number.isFinite(parsed) ? parsed : 1),
   );
-  const toleranceHanCharacters = CONTINUATION_LENGTH_TOLERANCE_HAN;
+  // Proportional ±30% (rounded). Same contract for V4 and legacy standard path.
+  const toleranceHanCharacters = Math.max(
+    1,
+    Math.round(targetHanCharacters * CONTINUATION_LENGTH_TOLERANCE_RATIO),
+  );
 
   return {
     targetHanCharacters,
@@ -121,4 +146,16 @@ export function evaluateContinuationLength(
 
 export function isContinuationLengthIssueSubtype(subtype: string): boolean {
   return LENGTH_ISSUE_SUBTYPES.has(subtype);
+}
+
+/**
+ * True when local length check should drive a single V4 Repair expansion pass.
+ * Only severe shortfall (under the ±30% floor, i.e. &lt; target×0.7) qualifies.
+ * Over-target never forces compress — that remains advisory only.
+ */
+export function isLengthExpansionIssue(
+  issue: Pick<{ subtype: string; severity: string }, 'subtype' | 'severity'>,
+): boolean {
+  if (issue.severity !== 'error' && issue.severity !== 'blocking') return false;
+  return issue.subtype === 'chapter_length_under_target';
 }

@@ -577,6 +577,8 @@ export interface ContinuationControlFinding {
   location: string;
   generatedStart: number | null;
   generatedEnd: number | null;
+  /** Hit span from Writer artifact (UTF-16 slice or model-provided excerpt). */
+  generatedExcerpt?: string;
   description: string;
   suggestedFix: string;
   /** When true, Repair must rewrite the targeted span and echo findingId. */

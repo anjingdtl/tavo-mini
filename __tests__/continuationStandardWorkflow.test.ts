@@ -265,6 +265,15 @@ const writerJson = (content: string) =>
     content,
   });
 
+/**
+ * Default seedRun target is 100 Han (±30% → 70–130). Pad short fixtures so
+ * non-length tests do not accidentally open a chapter_length Repair path.
+ */
+function inDefaultLengthBand(label: string): string {
+  const pad = Math.max(0, 80 - label.length);
+  return '甲'.repeat(pad) + label;
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockState.run = null;
@@ -287,7 +296,7 @@ describe('continuation standard three-call workflow', () => {
             code: 'network_error',
           });
         }
-        return { text: writerJson('重试后正文') };
+        return { text: writerJson(inDefaultLengthBand('重试后正文')) };
       }
       return { text: JSON.stringify({ issues: [] }) };
     });
@@ -320,9 +329,13 @@ describe('continuation standard three-call workflow', () => {
             code: 'rate_limit_exceeded',
           });
         }
-        return { text: writerJson('重试后的原始正文') };
+        return {
+          text: writerJson(inDefaultLengthBand('重试后的原始正文')),
+        };
       }
       if (input.stage === 'checker') {
+        const body = inDefaultLengthBand('重试后的原始正文');
+        const idx = body.indexOf('重试');
         return {
           text: JSON.stringify({
             issues: [
@@ -331,8 +344,8 @@ describe('continuation standard three-call workflow', () => {
                 subtype: 'manual_block',
                 severity: 'blocking',
                 confidence: 1,
-                generatedStart: 0,
-                generatedEnd: 2,
+                generatedStart: idx,
+                generatedEnd: idx + 2,
                 generatedExcerpt: '重试',
                 description: '必须修复',
                 evidenceIds: [42],
@@ -342,9 +355,11 @@ describe('continuation standard three-call workflow', () => {
           }),
         };
       }
+      const body = inDefaultLengthBand('重试后的原始正文');
+      const idx = body.indexOf('重试');
       return {
         text: JSON.stringify({
-          patches: [{ start: 0, end: 2, replacement: '修正' }],
+          patches: [{ start: idx, end: idx + 2, replacement: '修正' }],
         }),
       };
     });
@@ -404,10 +419,11 @@ describe('continuation standard three-call workflow', () => {
 
   it('calls Writer and Checker exactly once and stores plan separately from content', async () => {
     seedRun({ workflowVersion: 2 });
+    const body = inDefaultLengthBand('纯正文');
     const calls: any[] = [];
     const callStage = jest.fn(async (input: any) => {
       calls.push(input);
-      if (input.stage === 'writer') return { text: writerJson('纯正文') };
+      if (input.stage === 'writer') return { text: writerJson(body) };
       return {
         text: JSON.stringify({ issues: [] }),
         usage: { prompt: 40, completion: 8 },
@@ -419,16 +435,19 @@ describe('continuation standard three-call workflow', () => {
     expect(calls.map(call => call.stage)).toEqual(['writer', 'checker']);
     expect(mockState.run.state).toBe('awaiting_user');
     expect(mockState.plans[0].chapterGoal).toBe('推进目标');
-    expect(mockState.artifacts[0].content).toBe('纯正文');
+    expect(mockState.artifacts[0].content).toBe(body);
+    expect(mockState.artifacts[0].content).toContain('纯正文');
     expect(mockState.artifacts[0].content).not.toContain('核心冲突');
   });
 
   it('calls Repair exactly once for a severe issue and never calls Checker again', async () => {
     seedRun({ workflowVersion: 2 });
+    const body = inDefaultLengthBand('待修正文');
+    const hit = body.indexOf('待修');
     const calls: any[] = [];
     const callStage = jest.fn(async (input: any) => {
       calls.push(input);
-      if (input.stage === 'writer') return { text: writerJson('待修正文') };
+      if (input.stage === 'writer') return { text: writerJson(body) };
       if (input.stage === 'checker') {
         return {
           text: JSON.stringify({
@@ -438,8 +457,8 @@ describe('continuation standard three-call workflow', () => {
                 subtype: 'manual_block',
                 severity: 'blocking',
                 confidence: 1,
-                generatedStart: 0,
-                generatedEnd: 2,
+                generatedStart: hit,
+                generatedEnd: hit + 2,
                 generatedExcerpt: '待修',
                 description: '需要修复',
                 evidenceIds: [42],
@@ -451,7 +470,13 @@ describe('continuation standard three-call workflow', () => {
       }
       return {
         text: JSON.stringify({
-          patches: [{ start: 0, end: 4, replacement: '修复后正文' }],
+          patches: [
+            {
+              start: hit,
+              end: hit + 4,
+              replacement: '修复后正文',
+            },
+          ],
         }),
       };
     });
@@ -468,7 +493,7 @@ describe('continuation standard three-call workflow', () => {
       'writer',
       'repair',
     ]);
-    expect(mockState.artifacts.at(-1).content).toBe('修复后正文');
+    expect(mockState.artifacts.at(-1).content).toContain('修复后正文');
     expect(
       JSON.parse(mockState.run.tokenUsageJson).stages.localVerify.note,
     ).toContain('未进行第二次 LLM 复检');
@@ -768,12 +793,15 @@ describe('continuation standard three-call workflow', () => {
     ).toBe(false);
   });
 
+  // Target 3000 → ±30% band 2100–3900. Cases use lengths relative to that band.
   it.each([
-    ['2100 to 2400 keeps under-target open', 2100, 2400, true, false],
-    ['4000 to 3900 keeps over-target open', 4000, 3900, true, false],
-    ['2100 to 2100 rejects unchanged length', 2100, 2100, false, false],
-    ['2100 to 1900 rejects farther under-target length', 2100, 1900, false, false],
-    ['2100 to 2600 closes the under-target issue', 2100, 2600, true, true],
+    // Both under: partial progress saved, issue stays open.
+    ['1500 to 1800 keeps under-target open', 1500, 1800, true, false],
+    // Both over but closer: partial compress saved, over-target stays open.
+    ['4500 to 4200 keeps over-target open', 4500, 4200, true, false],
+    ['1500 to 1500 rejects unchanged length', 1500, 1500, false, false],
+    ['1500 to 1200 rejects farther under-target length', 1500, 1200, false, false],
+    ['1500 to 2200 closes the under-target issue', 1500, 2200, true, true],
   ])(
     '%s',
     async (
@@ -847,7 +875,8 @@ describe('continuation standard three-call workflow', () => {
 
   it('allows one extra Repair for a safe partial length improvement and never calls Checker or Repair a third time', async () => {
     seedRun({ workflowVersion: 2, targetChapterChars: 3000 });
-    const writerContent = '甲'.repeat(2100);
+    // Start below 0.7×3000=2100; first partial repair stays under, second enters band.
+    const writerContent = '甲'.repeat(1500);
     const calls: any[] = [];
     let repairCalls = 0;
     const callStage = jest.fn(async (input: any) => {
@@ -858,7 +887,7 @@ describe('continuation standard three-call workflow', () => {
       }
       repairCalls += 1;
       const currentContent = mockState.artifacts.at(-1)?.content ?? writerContent;
-      const expansion = repairCalls === 1 ? 300 : 200;
+      const expansion = repairCalls === 1 ? 400 : 300;
       return {
         text: JSON.stringify({
           patches: [

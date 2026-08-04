@@ -278,6 +278,7 @@ function styleIssueToFinding(
         : issue.styleDimension,
     generatedStart: issue.generatedStart,
     generatedEnd: issue.generatedEnd,
+    generatedExcerpt: issue.generatedExcerpt,
     description: issue.description,
     suggestedFix: issue.rewriteGoal || issue.description,
     repairReady: issue.repairReady,
