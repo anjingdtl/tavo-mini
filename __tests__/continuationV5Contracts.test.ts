@@ -35,9 +35,7 @@ describe('Continuation V5 contracts', () => {
         plan: {
           chapterGoal: '推进冲突',
           centralConflict: '门外有追兵',
-          beats: [
-            { id: 'b1', summary: '承接', stateChange: '局面初变' },
-          ],
+          beats: [{ id: 'b1', summary: '承接', stateChange: '局面初变' }],
         },
         content: '完整的 V1 初稿正文，包含行动与后果。',
       }),
@@ -162,6 +160,7 @@ describe('Continuation V5 contracts', () => {
   test('Auditor binding soft-forces expected ids; fallback still available', () => {
     const expected = {
       draftArtifactHash: 'd'.repeat(64),
+      revisionArtifactHash: 'r'.repeat(64),
       architectureHash: 'e'.repeat(64),
       canonSnapshotId: 'cs_1',
       canonRevision: 2,
@@ -174,13 +173,18 @@ describe('Continuation V5 contracts', () => {
       JSON.stringify({
         schemaVersion: 1,
         draftArtifactHash: 'wrong',
+        revisionArtifactHash: 'wrong',
         architectureHash: expected.architectureHash,
         canonSnapshotId: expected.canonSnapshotId,
         canonRevision: expected.canonRevision,
         inputRevisionHash: expected.inputRevisionHash,
         styleProfileHash: expected.styleProfileHash,
         styleRendererVersion: expected.styleRendererVersion,
-        canonAudit: { requiredCorrections: [], protectedFacts: [], forbiddenFacts: [] },
+        canonAudit: {
+          requiredCorrections: [],
+          protectedFacts: [],
+          forbiddenFacts: [],
+        },
         styleAudit: {
           requiredCorrections: [],
           protectedPassages: [],
@@ -193,7 +197,11 @@ describe('Continuation V5 contracts', () => {
       softWarnings,
     );
     expect(softAudit.draftArtifactHash).toBe(expected.draftArtifactHash);
+    expect(softAudit.revisionArtifactHash).toBe(expected.revisionArtifactHash);
     expect(softWarnings.some(w => w.includes('draftArtifactHash'))).toBe(true);
+    expect(softWarnings.some(w => w.includes('revisionArtifactHash'))).toBe(
+      true,
+    );
 
     const fallback = buildFallbackAuditContract({
       ...expected,
@@ -205,6 +213,66 @@ describe('Continuation V5 contracts', () => {
       true,
     );
     expect(hashAuditEnvelope(fallback)).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test('Auditor resolves style tasks from client-owned V2 anchor ids', () => {
+    const expected = {
+      draftArtifactHash: 'd'.repeat(64),
+      revisionArtifactHash: 'r'.repeat(64),
+      architectureHash: 'a'.repeat(64),
+      canonSnapshotId: 'cs',
+      canonRevision: 1,
+      inputRevisionHash: 'ir',
+      styleProfileHash: null,
+      styleRendererVersion: null,
+      revisionAnchors: [
+        { anchorId: 'v2-p-007', start: 40, end: 48, text: '真实 V2 片段。' },
+      ],
+    };
+    const audit = parseContinuationV5AuditEnvelope(
+      JSON.stringify({
+        schemaVersion: 1,
+        ...expected,
+        canonAudit: {
+          requiredCorrections: [],
+          protectedFacts: [],
+          forbiddenFacts: [],
+        },
+        styleAudit: {
+          requiredCorrections: [
+            {
+              requirementId: 'style_1',
+              anchorId: 'v2-p-007',
+              generatedExcerpt: '模型自行转述，必须不用它。',
+              dimension: 'sentence_rhythm',
+              severity: 'warning',
+              description: '节奏过平',
+              rewriteGoal: '整体改写为短促动作段',
+              preserveMeaning: ['保留事件'],
+            },
+            {
+              requirementId: 'style_2',
+              anchorId: 'v2-p-missing',
+              dimension: 'narrative_voice',
+              severity: 'warning',
+            },
+          ],
+          protectedPassages: [],
+          forbiddenExpansionPatterns: [],
+        },
+        architectureAudit: { safeSceneIds: [], rejectedScenes: [] },
+        finalObligations: [],
+      }),
+      expected,
+      [],
+    );
+    expect(audit.styleAudit.requiredCorrections).toHaveLength(1);
+    expect(audit.styleAudit.requiredCorrections[0]).toMatchObject({
+      anchorId: 'v2-p-007',
+      generatedStart: 40,
+      generatedEnd: 48,
+      generatedExcerpt: '真实 V2 片段。',
+    });
   });
 
   test('Fallback architecture does not invent core facts', () => {
@@ -345,11 +413,13 @@ describe('Final Artifact Validator', () => {
       revisionArtifactHash: 'r'.repeat(64),
     });
     // Length is warning only — may pass if content is complete enough.
-    expect(result.warnings.includes('final_severe_under_target') || result.passed).toBe(
-      true,
-    );
+    expect(
+      result.warnings.includes('final_severe_under_target') || result.passed,
+    ).toBe(true);
     expect(result.blockingCodes).not.toContain('final_severe_under_target');
-    expect(result.codes.join(',')).not.toMatch(/repair_candidate_unchanged|minimal|retention/);
+    expect(result.codes.join(',')).not.toMatch(
+      /repair_candidate_unchanged|minimal|retention/,
+    );
   });
 
   test('soft gates: quality issues become warnings; non-empty body still passes', () => {

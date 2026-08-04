@@ -1,9 +1,10 @@
 /**
- * Continuation V5 runner: three rounds, three drafts, five physical calls.
+ * Continuation V5 runner: four rounds, three drafts, five physical calls.
  *
  * Round 1: Draft Writer || Narrative Architect
- * Round 2: Revision Writer || Adversarial Auditor
- * Round 3: Final Reviser
+ * Round 2: Revision Writer
+ * Round 3: Adversarial Auditor audits actual V2
+ * Round 4: Final Reviser executes C2's V2 anchors
  * Local: Final Artifact Validator (zero request)
  *
  * Hard caps: 5 physical requests total; each node reserves at most once;
@@ -22,9 +23,7 @@ import {
 } from '../../llm';
 import { ensureContextAutomationPolicy } from '../../contextAutoAllocator';
 import { countHanCharacters } from './continuationLengthContract';
-import {
-  buildContinuationV5Context,
-} from './continuationContextBuilder';
+import { buildContinuationV5Context } from './continuationContextBuilder';
 import {
   CONTINUATION_V5_LENGTH_POLICY,
   CONTINUATION_V5_SOFT_GATES,
@@ -44,6 +43,7 @@ import type { V5SoftWarning } from './continuationV5Contracts';
 import {
   compileContinuationV5ArchitectMessages,
   compileContinuationV5AuditorMessages,
+  buildContinuationV5RevisionAnchors,
   compileContinuationV5DraftWriterMessages,
   compileContinuationV5FinalReviserWithinBudget,
   compileContinuationV5RevisionWriterMessages,
@@ -66,10 +66,7 @@ import {
   reserveContinuationStage,
   updateStageResult,
 } from './generationRepository';
-import {
-  formatUnknownError,
-  formatUnknownErrorCode,
-} from './errorFormat';
+import { formatUnknownError, formatUnknownErrorCode } from './errorFormat';
 import type {
   ContinuationArtifact,
   ContinuationContextSnapshotV5,
@@ -145,7 +142,10 @@ function freezeV5ModelConfig(
     url: config.url,
     modelName: config.model_name,
     contextWindow: requirePositive(config.context_window, 'context_window'),
-    maxOutputTokens: requirePositive(config.max_output_tokens, 'max_output_tokens'),
+    maxOutputTokens: requirePositive(
+      config.max_output_tokens,
+      'max_output_tokens',
+    ),
   };
 }
 
@@ -195,7 +195,9 @@ async function resolveV5StageModels(
 }> {
   const activeConfig = await resolveLLMRequestConfig().catch(() => null);
   if (!activeConfig) {
-    throw new ContinuationCapabilityBlockedError('当前没有可用的活动 LLM 配置。');
+    throw new ContinuationCapabilityBlockedError(
+      '当前没有可用的活动 LLM 配置。',
+    );
   }
   const activeConfigId = modelConfigId(activeConfig);
   const [writer, planner, checker, control, repair] = await Promise.all([
@@ -318,17 +320,26 @@ function frozenForStage(
   stage: ContinuationV5PhysicalNode,
 ): FrozenContinuationModelConfig {
   const frozen = snapshot.settingsSnapshot.frozenModelConfigs;
-  const map: Record<ContinuationV5PhysicalNode, FrozenContinuationModelConfig | null | undefined> = {
+  const map: Record<
+    ContinuationV5PhysicalNode,
+    FrozenContinuationModelConfig | null | undefined
+  > = {
     draft_writer: frozen?.draftWriter ?? frozen?.writer,
-    narrative_architect: frozen?.narrativeArchitect ?? frozen?.planner ?? frozen?.writer,
+    narrative_architect:
+      frozen?.narrativeArchitect ?? frozen?.planner ?? frozen?.writer,
     revision_writer: frozen?.revisionWriter ?? frozen?.repair ?? frozen?.writer,
     adversarial_auditor:
-      frozen?.adversarialAuditor ?? frozen?.checker ?? frozen?.control ?? frozen?.writer,
+      frozen?.adversarialAuditor ??
+      frozen?.checker ??
+      frozen?.control ??
+      frozen?.writer,
     final_reviser: frozen?.finalReviser ?? frozen?.repair ?? frozen?.writer,
   };
   const config = map[stage];
   if (!config) {
-    throw new ContinuationCapabilityBlockedError(`缺少 ${stage} 冻结模型配置。`);
+    throw new ContinuationCapabilityBlockedError(
+      `缺少 ${stage} 冻结模型配置。`,
+    );
   }
   return config;
 }
@@ -336,7 +347,9 @@ function frozenForStage(
 async function physicalRequestCount(runId: string): Promise<number> {
   const results = await listStageResults(runId);
   return results
-    .filter(row => row.stage !== 'final_validate' && row.stage !== 'local_verify')
+    .filter(
+      row => row.stage !== 'final_validate' && row.stage !== 'local_verify',
+    )
     .reduce((sum, row) => sum + (row.requestCount || 0), 0);
 }
 
@@ -499,7 +512,10 @@ async function runRound1(
   // Reserve both before launching so one side cannot consume the only slot.
   const existingDraft = await getStageResult(run.id, 'draft_writer');
   const existingArch = await getStageResult(run.id, 'narrative_architect');
-  const existingDraftArtifact = await getLatestArtifactForStage(run.id, 'draft');
+  const existingDraftArtifact = await getLatestArtifactForStage(
+    run.id,
+    'draft',
+  );
 
   let draftArtifact = existingDraftArtifact;
   let architecture: ContinuationV5ArchitectureEnvelope | null = null;
@@ -511,7 +527,8 @@ async function runRound1(
       const stored = JSON.parse(existingArch.outputJson);
       if (stored?.envelope) {
         architecture = stored.envelope as ContinuationV5ArchitectureEnvelope;
-        architectureHash = stored.architectureHash || hashArchitectureEnvelope(architecture);
+        architectureHash =
+          stored.architectureHash || hashArchitectureEnvelope(architecture);
         architectureDegraded = Boolean(stored.degraded);
       }
     } catch {
@@ -533,9 +550,12 @@ async function runRound1(
     existingDraft.requestCount === 1 &&
     existingDraft.status !== 'success'
   ) {
-    throw Object.assign(new Error('Draft Writer 已 reservation 但缺少 V1，无法重发。'), {
-      code: 'draft_writer_reserved_without_artifact',
-    });
+    throw Object.assign(
+      new Error('Draft Writer 已 reservation 但缺少 V1，无法重发。'),
+      {
+        code: 'draft_writer_reserved_without_artifact',
+      },
+    );
   }
 
   // Resume: architect reserved but missing result → fallback, no re-send.
@@ -621,7 +641,10 @@ async function runRound1(
               outputJson: JSON.stringify(diag),
             });
             if (truncated) {
-              throw new ContinuationStageOutputTruncatedError('draft_writer', diag);
+              throw new ContinuationStageOutputTruncatedError(
+                'draft_writer',
+                diag,
+              );
             }
             throw parseError;
           }
@@ -718,7 +741,10 @@ async function runRound1(
             options,
             promptTokens: architectCompiled.promptTokens,
           });
-          if (result.finishReason === 'length' || result.emptyReason === 'length') {
+          if (
+            result.finishReason === 'length' ||
+            result.emptyReason === 'length'
+          ) {
             throw new Error('narrative_architect_output_truncated');
           }
           const envelope = parseContinuationV5ArchitectureEnvelope(result.text);
@@ -734,7 +760,8 @@ async function runRound1(
               architectureHash: hash,
               envelope,
               finishReason: result.finishReason,
-              promptTokens: result.usage?.prompt ?? architectCompiled.promptTokens,
+              promptTokens:
+                result.usage?.prompt ?? architectCompiled.promptTokens,
               completionTokens: result.usage?.completion ?? null,
             }),
           });
@@ -775,9 +802,9 @@ async function runRound1(
 
   if (tasks.length > 0) {
     const settled = await Promise.allSettled(tasks);
-    const draftFailure = settled.find(
-      item => item.status === 'rejected',
-    ) as PromiseRejectedResult | undefined;
+    const draftFailure = settled.find(item => item.status === 'rejected') as
+      | PromiseRejectedResult
+      | undefined;
     // Draft failure blocks; architect already fallbacks inside its task.
     if (!draftArtifact) {
       const reason =
@@ -857,21 +884,31 @@ async function runRound2(
   auditorDegraded: boolean;
 }> {
   await casUpdateRunState(run.id, ['running'], { stage: 'round2' });
-  const existingRevision = await getLatestArtifactForStage(run.id, 'revision_1');
+  const existingRevision = await getLatestArtifactForStage(
+    run.id,
+    'revision_1',
+  );
   const existingRevStage = await getStageResult(run.id, 'revision_writer');
-  const existingAuditStage = await getStageResult(run.id, 'adversarial_auditor');
+  const existingAuditStage = await getStageResult(
+    run.id,
+    'adversarial_auditor',
+  );
 
   let revisionArtifact = existingRevision;
   let audit: ContinuationV5AuditEnvelope | null = null;
   let auditContractHash = '';
   let auditorDegraded = false;
 
-  if (existingAuditStage?.status === 'success' && existingAuditStage.outputJson) {
+  if (
+    existingAuditStage?.status === 'success' &&
+    existingAuditStage.outputJson
+  ) {
     try {
       const stored = JSON.parse(existingAuditStage.outputJson);
       if (stored?.envelope) {
         audit = stored.envelope as ContinuationV5AuditEnvelope;
-        auditContractHash = stored.auditContractHash || hashAuditEnvelope(audit);
+        auditContractHash =
+          stored.auditContractHash || hashAuditEnvelope(audit);
         auditorDegraded = Boolean(stored.degraded);
       }
     } catch {
@@ -890,42 +927,6 @@ async function runRound2(
     );
   }
 
-  if (
-    !audit &&
-    existingAuditStage?.requestReserved &&
-    existingAuditStage.requestCount === 1
-  ) {
-    audit = buildFallbackAuditContract({
-      draftArtifactHash: draftArtifact.contentHash,
-      architectureHash,
-      canonSnapshotId: snapshot.canon.snapshotId,
-      canonRevision: snapshot.canon.revision,
-      inputRevisionHash: snapshot.inputRevisionHash,
-      styleProfileHash: snapshot.style?.profileHash ?? null,
-      styleRendererVersion: snapshot.style?.rendererVersion ?? null,
-      lockedRules: snapshot.bundles.lockedRules ?? [],
-      hardCanonFacts: snapshot.stageViews.adversarial_auditor.canon.hardFacts
-        .slice(0, 12)
-        .map(fact => fact.text),
-    });
-    auditContractHash = hashAuditEnvelope(audit);
-    auditorDegraded = true;
-    await updateStageResult({
-      runId: run.id,
-      stage: 'adversarial_auditor',
-      status: 'success',
-      outputJson: JSON.stringify({
-        schemaVersion: 1,
-        degraded: true,
-        reason: 'adversarial_auditor_degraded',
-        auditContractHash,
-        envelope: audit,
-      }),
-      errorCode: 'adversarial_auditor_degraded',
-      errorMessage: 'Auditor 结果丢失，使用本地 fallback C2。',
-    });
-  }
-
   const revisionCompiled = compileContinuationV5RevisionWriterMessages({
     view: snapshot.stageViews.revision_writer,
     draftContent: draftArtifact.content,
@@ -934,14 +935,6 @@ async function runRound2(
     architecture,
     architectureHash,
   });
-  const auditorCompiled = compileContinuationV5AuditorMessages({
-    view: snapshot.stageViews.adversarial_auditor,
-    draftContent: draftArtifact.content,
-    draftArtifactHash: draftArtifact.contentHash,
-    architecture,
-    architectureHash,
-  });
-
   const tasks: Array<Promise<void>> = [];
   if (!revisionArtifact) {
     tasks.push(
@@ -1007,7 +1000,9 @@ async function runRound2(
           }
           // Soft: unusable V2 model output → promote V1 body as intermediate V2.
           softWarnings.push(
-            `revision_writer_soft_fallback_to_v1:${parseError?.message || 'parse_failed'}`,
+            `revision_writer_soft_fallback_to_v1:${
+              parseError?.message || 'parse_failed'
+            }`,
           );
           envelope = {
             schemaVersion: 1 as const,
@@ -1071,11 +1066,13 @@ async function runRound2(
           }),
           errorCode: softWarnings.some(w => w.includes('fallback_to_v1'))
             ? 'revision_writer_soft_fallback_to_v1'
-            : softWarnings.some(w => w.includes('hash_mismatch') || w.includes('hash_missing'))
-              ? 'revision_writer_hash_soft'
-              : softWarnings.some(w => w.includes('under_preferred_min'))
-                ? 'revision_under_preferred_min'
-                : null,
+            : softWarnings.some(
+                w => w.includes('hash_mismatch') || w.includes('hash_missing'),
+              )
+            ? 'revision_writer_hash_soft'
+            : softWarnings.some(w => w.includes('under_preferred_min'))
+            ? 'revision_under_preferred_min'
+            : null,
           errorMessage: softWarnings.length
             ? `软门禁：${softWarnings.slice(0, 4).join('; ')}`
             : null,
@@ -1085,111 +1082,7 @@ async function runRound2(
     );
   }
 
-  if (!audit) {
-    tasks.push(
-      (async () => {
-        const budget = snapshot.stageBudgets.adversarial_auditor;
-        try {
-          const softWarnings: V5SoftWarning[] = [];
-          const { result } = await callNode({
-            run,
-            snapshot,
-            stage: 'adversarial_auditor',
-            messages: auditorCompiled.messages,
-            maxTokens: budget.maximumOutputTokens,
-            options,
-            promptTokens: auditorCompiled.promptTokens,
-          });
-          if (result.finishReason === 'length' || result.emptyReason === 'length') {
-            if (!CONTINUATION_V5_SOFT_GATES) {
-              throw new Error('adversarial_auditor_output_truncated');
-            }
-            softWarnings.push('adversarial_auditor_output_truncated_soft');
-          }
-          const envelope = parseContinuationV5AuditEnvelope(
-            result.text,
-            {
-              draftArtifactHash: draftArtifact.contentHash,
-              architectureHash,
-              canonSnapshotId: snapshot.canon.snapshotId,
-              canonRevision: snapshot.canon.revision,
-              inputRevisionHash: snapshot.inputRevisionHash,
-              styleProfileHash: snapshot.style?.profileHash ?? null,
-              styleRendererVersion: snapshot.style?.rendererVersion ?? null,
-            },
-            softWarnings,
-          );
-          const hash = hashAuditEnvelope(envelope);
-          const softBinding = softWarnings.some(w =>
-            w.includes('adversarial_audit_binding'),
-          );
-          await updateStageResult({
-            runId: run.id,
-            stage: 'adversarial_auditor',
-            status: 'success',
-            outputTokens: result.usage?.completion ?? null,
-            outputJson: JSON.stringify({
-              schemaVersion: 1,
-              degraded: softBinding || softWarnings.length > 0,
-              auditContractHash: hash,
-              envelope,
-              finishReason: result.finishReason,
-              softGates: CONTINUATION_V5_SOFT_GATES,
-              softWarnings,
-            }),
-            errorCode: softBinding ? 'adversarial_audit_binding_soft' : null,
-            errorMessage: softWarnings.length
-              ? `软门禁：${softWarnings.slice(0, 4).join('; ')}`
-              : null,
-          });
-          audit = envelope;
-          auditContractHash = hash;
-          auditorDegraded = softBinding || softWarnings.length > 0;
-        } catch (error: any) {
-          if (options.signal.aborted) throw error;
-          const fallback = buildFallbackAuditContract({
-            draftArtifactHash: draftArtifact.contentHash,
-            architectureHash,
-            canonSnapshotId: snapshot.canon.snapshotId,
-            canonRevision: snapshot.canon.revision,
-            inputRevisionHash: snapshot.inputRevisionHash,
-            styleProfileHash: snapshot.style?.profileHash ?? null,
-            styleRendererVersion: snapshot.style?.rendererVersion ?? null,
-            lockedRules: snapshot.bundles.lockedRules ?? [],
-            hardCanonFacts: snapshot.stageViews.adversarial_auditor.canon.hardFacts
-              .slice(0, 12)
-              .map(fact => fact.text),
-          });
-          const hash = hashAuditEnvelope(fallback);
-          await updateStageResult({
-            runId: run.id,
-            stage: 'adversarial_auditor',
-            status: 'success',
-            outputJson: JSON.stringify({
-              schemaVersion: 1,
-              degraded: true,
-              reason: 'adversarial_auditor_degraded',
-              error: error?.message || String(error),
-              auditContractHash: hash,
-              envelope: fallback,
-              softGates: CONTINUATION_V5_SOFT_GATES,
-            }),
-            errorCode:
-              String(error?.message || '').includes('binding')
-                ? 'adversarial_audit_binding_failed'
-                : 'adversarial_auditor_degraded',
-            errorMessage: 'Auditor 失败或绑定失败，使用本地 fallback C2。',
-          });
-          audit = fallback;
-          auditContractHash = hash;
-          auditorDegraded = true;
-        }
-      })(),
-    );
-  }
-
   if (tasks.length > 0) {
-    // Soft: do not let revision failure cancel a successful auditor task.
     const settled = await Promise.allSettled(tasks);
     if (!CONTINUATION_V5_SOFT_GATES) {
       const rejected = settled.find(item => item.status === 'rejected') as
@@ -1234,9 +1127,174 @@ async function runRound2(
     });
     revisionArtifact = artifact;
   }
+  // C2 is intentionally generated after V2. An older resumed run may contain
+  // a V1-based audit; it is not a valid driver for a V2 polish pass.
+  if (audit && audit.revisionArtifactHash !== revisionArtifact.contentHash) {
+    audit = null;
+    auditContractHash = '';
+    auditorDegraded = true;
+  }
+
+  if (
+    !audit &&
+    existingAuditStage?.requestReserved &&
+    existingAuditStage.requestCount === 1
+  ) {
+    audit = buildFallbackAuditContract({
+      draftArtifactHash: draftArtifact.contentHash,
+      revisionArtifactHash: revisionArtifact.contentHash,
+      architectureHash,
+      canonSnapshotId: snapshot.canon.snapshotId,
+      canonRevision: snapshot.canon.revision,
+      inputRevisionHash: snapshot.inputRevisionHash,
+      styleProfileHash: snapshot.style?.profileHash ?? null,
+      styleRendererVersion: snapshot.style?.rendererVersion ?? null,
+      lockedRules: snapshot.bundles.lockedRules ?? [],
+      hardCanonFacts: snapshot.stageViews.adversarial_auditor.canon.hardFacts
+        .slice(0, 12)
+        .map(fact => fact.text),
+    });
+    auditContractHash = hashAuditEnvelope(audit);
+    auditorDegraded = true;
+    await updateStageResult({
+      runId: run.id,
+      stage: 'adversarial_auditor',
+      status: 'success',
+      outputJson: JSON.stringify({
+        schemaVersion: 1,
+        degraded: true,
+        reason: 'adversarial_auditor_v1_contract_replaced',
+        auditContractHash,
+        envelope: audit,
+      }),
+      errorCode: 'adversarial_auditor_degraded',
+      errorMessage: 'Auditor 缺少针对 V2 的合同，使用本地 fallback C2。',
+    });
+  }
+
+  if (!audit) {
+    await casUpdateRunState(run.id, ['running'], { stage: 'round3' });
+    const revisionAnchors = buildContinuationV5RevisionAnchors(
+      revisionArtifact.content,
+    );
+    const auditorCompiled = compileContinuationV5AuditorMessages({
+      view: snapshot.stageViews.adversarial_auditor,
+      draftContent: draftArtifact.content,
+      draftArtifactHash: draftArtifact.contentHash,
+      revisionContent: revisionArtifact.content,
+      revisionArtifactHash: revisionArtifact.contentHash,
+      revisionAnchors,
+      architecture,
+      architectureHash,
+    });
+    const budget = snapshot.stageBudgets.adversarial_auditor;
+    try {
+      const softWarnings: V5SoftWarning[] = [];
+      const { result } = await callNode({
+        run,
+        snapshot,
+        stage: 'adversarial_auditor',
+        messages: auditorCompiled.messages,
+        maxTokens: budget.maximumOutputTokens,
+        options,
+        promptTokens: auditorCompiled.promptTokens,
+      });
+      if (result.finishReason === 'length' || result.emptyReason === 'length') {
+        if (!CONTINUATION_V5_SOFT_GATES) {
+          throw new Error('adversarial_auditor_output_truncated');
+        }
+        softWarnings.push('adversarial_auditor_output_truncated_soft');
+      }
+      const envelope = parseContinuationV5AuditEnvelope(
+        result.text,
+        {
+          draftArtifactHash: draftArtifact.contentHash,
+          revisionArtifactHash: revisionArtifact.contentHash,
+          architectureHash,
+          canonSnapshotId: snapshot.canon.snapshotId,
+          canonRevision: snapshot.canon.revision,
+          inputRevisionHash: snapshot.inputRevisionHash,
+          styleProfileHash: snapshot.style?.profileHash ?? null,
+          styleRendererVersion: snapshot.style?.rendererVersion ?? null,
+          revisionAnchors,
+        },
+        softWarnings,
+      );
+      const hash = hashAuditEnvelope(envelope);
+      const softBinding = softWarnings.some(w =>
+        w.includes('adversarial_audit_binding'),
+      );
+      await updateStageResult({
+        runId: run.id,
+        stage: 'adversarial_auditor',
+        status: 'success',
+        outputTokens: result.usage?.completion ?? null,
+        outputJson: JSON.stringify({
+          schemaVersion: 1,
+          degraded: softBinding || softWarnings.length > 0,
+          auditContractHash: hash,
+          envelope,
+          reviewedArtifactStage: 'revision_1',
+          reviewedArtifactHash: revisionArtifact.contentHash,
+          finishReason: result.finishReason,
+          softGates: CONTINUATION_V5_SOFT_GATES,
+          softWarnings,
+        }),
+        errorCode: softBinding ? 'adversarial_audit_binding_soft' : null,
+        errorMessage: softWarnings.length
+          ? `软门禁：${softWarnings.slice(0, 4).join('; ')}`
+          : null,
+      });
+      audit = envelope;
+      auditContractHash = hash;
+      auditorDegraded = softBinding || softWarnings.length > 0;
+    } catch (error: any) {
+      if (options.signal.aborted) throw error;
+      const fallback = buildFallbackAuditContract({
+        draftArtifactHash: draftArtifact.contentHash,
+        revisionArtifactHash: revisionArtifact.contentHash,
+        architectureHash,
+        canonSnapshotId: snapshot.canon.snapshotId,
+        canonRevision: snapshot.canon.revision,
+        inputRevisionHash: snapshot.inputRevisionHash,
+        styleProfileHash: snapshot.style?.profileHash ?? null,
+        styleRendererVersion: snapshot.style?.rendererVersion ?? null,
+        lockedRules: snapshot.bundles.lockedRules ?? [],
+        hardCanonFacts: snapshot.stageViews.adversarial_auditor.canon.hardFacts
+          .slice(0, 12)
+          .map(fact => fact.text),
+      });
+      const hash = hashAuditEnvelope(fallback);
+      await updateStageResult({
+        runId: run.id,
+        stage: 'adversarial_auditor',
+        status: 'success',
+        outputJson: JSON.stringify({
+          schemaVersion: 1,
+          degraded: true,
+          reason: 'adversarial_auditor_degraded',
+          error: error?.message || String(error),
+          auditContractHash: hash,
+          envelope: fallback,
+          reviewedArtifactStage: 'revision_1',
+          reviewedArtifactHash: revisionArtifact.contentHash,
+          softGates: CONTINUATION_V5_SOFT_GATES,
+        }),
+        errorCode: String(error?.message || '').includes('binding')
+          ? 'adversarial_audit_binding_failed'
+          : 'adversarial_auditor_degraded',
+        errorMessage: 'Auditor 失败或绑定失败，使用本地 fallback C2。',
+      });
+      audit = fallback;
+      auditContractHash = hash;
+      auditorDegraded = true;
+    }
+  }
+
   if (!audit) {
     audit = buildFallbackAuditContract({
       draftArtifactHash: draftArtifact.contentHash,
+      revisionArtifactHash: revisionArtifact.contentHash,
       architectureHash,
       canonSnapshotId: snapshot.canon.snapshotId,
       canonRevision: snapshot.canon.revision,
@@ -1284,7 +1342,9 @@ async function softDeliverRevisionAsFinal(input: {
   reasonCode: string;
   reasonMessage: string;
 }): Promise<void> {
-  const reasonCode = String(input.reasonCode || 'final_reviser_soft_promote_v2');
+  const reasonCode = String(
+    input.reasonCode || 'final_reviser_soft_promote_v2',
+  );
   const softWarnings: V5SoftWarning[] = [...input.softWarnings];
   try {
     const reviserStage =
@@ -1398,7 +1458,9 @@ async function softDeliverRevisionAsFinal(input: {
         return;
       } catch (finalizeError) {
         softWarnings.push(
-          `final_soft_promote_finalize_failed:${formatUnknownError(finalizeError)}`,
+          `final_soft_promote_finalize_failed:${formatUnknownError(
+            finalizeError,
+          )}`,
         );
         // fall through to manual path
       }
@@ -1411,9 +1473,7 @@ async function softDeliverRevisionAsFinal(input: {
       repairRound: 2,
       parentArtifactId: input.revisionArtifact.id,
       eligibilityStatus: passed ? 'eligible' : 'rejected',
-      rejectionCode: passed
-        ? null
-        : validation.blockingCodes[0] ?? reasonCode,
+      rejectionCode: passed ? null : validation.blockingCodes[0] ?? reasonCode,
       requireStageMatch: true,
     });
     await updateStageResult({
@@ -1595,7 +1655,9 @@ async function runRound3AndValidate(
         auditorDegraded,
         validateStageId: validateStage.id,
         finalReviserStageResultId: finalStage.id,
-        softWarnings: ['final_reviser_soft_promote_v2:reserved_without_artifact'],
+        softWarnings: [
+          'final_reviser_soft_promote_v2:reserved_without_artifact',
+        ],
         reasonCode: 'final_reviser_soft_promote_v2',
         reasonMessage:
           'Final Reviser 已 reservation 但缺少 V3；软门禁下以 V2 作为可交付终稿。',
@@ -1733,7 +1795,9 @@ async function runRound3AndValidate(
         validateStageId: validateStage.id,
         finalReviserStageResultId: reservedRow?.id ?? null,
         softWarnings: [
-          `final_reviser_soft_promote_v2:call_failed:${formatUnknownError(error)}`,
+          `final_reviser_soft_promote_v2:call_failed:${formatUnknownError(
+            error,
+          )}`,
         ],
         reasonCode: formatUnknownErrorCode(error, 'final_reviser_failed_soft'),
         reasonMessage: `Final Reviser 调用失败；软门禁下以 V2 作为可交付终稿。`,
@@ -1836,7 +1900,9 @@ async function runRound3AndValidate(
         finalReviserStageResultId: reserved.id,
         softWarnings: [
           ...softWarnings,
-          `final_reviser_soft_promote_v2:parse_failed:${error?.message || 'invalid'}`,
+          `final_reviser_soft_promote_v2:parse_failed:${
+            error?.message || 'invalid'
+          }`,
         ],
         reasonCode: 'final_invalid_envelope_soft',
         reasonMessage:
@@ -2052,8 +2118,8 @@ async function finalizeV5OnError(runId: string, error: unknown): Promise<void> {
       error instanceof ContinuationStageOutputTruncatedError
         ? 'draft_writer_output_truncated'
         : error instanceof ContinuationCapabilityBlockedError
-          ? error.code
-          : formatUnknownErrorCode(error, 'stage_failed');
+        ? error.code
+        : formatUnknownErrorCode(error, 'stage_failed');
     const isRegenerate =
       code.startsWith('revision_') ||
       code.startsWith('final_') ||
@@ -2104,7 +2170,10 @@ export async function startContinuationV5Run(
     chapterId: input.chapterId,
     targetPosition: input.targetPosition as any,
     sourceId: snapshot.source.sourceId,
-    sourceSnapshotJson: JSON.stringify({ schemaVersion: 1, ...snapshot.source }),
+    sourceSnapshotJson: JSON.stringify({
+      schemaVersion: 1,
+      ...snapshot.source,
+    }),
     canonSnapshotId: snapshot.canon.snapshotId,
     canonRevision: snapshot.canon.revision,
     storyMemoryFingerprint: snapshot.storyMemory.stateFingerprint,
@@ -2142,7 +2211,10 @@ export async function startContinuationV5Run(
       try {
         await finalizeV5OnError(runId, error);
       } catch (finalizeError) {
-        console.warn('[continuation-v5] pipeline finalizer failed:', finalizeError);
+        console.warn(
+          '[continuation-v5] pipeline finalizer failed:',
+          finalizeError,
+        );
       }
     } finally {
       activeContinuationControllers.delete(runId);
@@ -2201,17 +2273,12 @@ export async function resumeContinuationV5Run(
   const controller = new AbortController();
   activeContinuationControllers.set(runId, controller);
   try {
-    await runV5Pipeline(
-      { ...run, state: 'running' },
-      snapshot,
-      trace,
-      {
-        callStage,
-        deterministicOnly,
-        signal: controller.signal,
-        projectId: run.projectId,
-      },
-    );
+    await runV5Pipeline({ ...run, state: 'running' }, snapshot, trace, {
+      callStage,
+      deterministicOnly,
+      signal: controller.signal,
+      projectId: run.projectId,
+    });
   } catch (error) {
     await finalizeV5OnError(runId, error);
     throw error;

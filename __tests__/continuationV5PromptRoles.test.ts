@@ -1,6 +1,8 @@
 import {
+  compileContinuationV5AuditorMessages,
   compileContinuationV5FinalReviserMessages,
   compileContinuationV5RevisionWriterMessages,
+  buildContinuationV5RevisionAnchors,
 } from '../src/services/continuation/generation/continuationV5PromptCompiler';
 import {
   buildFallbackArchitecture,
@@ -90,6 +92,40 @@ function baseView(overrides: Record<string, unknown> = {}) {
 }
 
 describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
+  test('Auditor receives actual V2 as client-owned selectable anchors', () => {
+    const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
+    const architectureHash = hashArchitectureEnvelope(architecture);
+    const compiled = compileContinuationV5AuditorMessages({
+      view: baseView({ stage: 'adversarial_auditor' }) as any,
+      draftContent: 'V1 原始表达。',
+      draftArtifactHash: 'd'.repeat(64),
+      revisionContent: 'V2 待润色表达。',
+      revisionArtifactHash: 'r'.repeat(64),
+      revisionAnchors: buildContinuationV5RevisionAnchors('V2 待润色表达。'),
+      architecture,
+      architectureHash,
+    });
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    expect(system).toMatch(/V2 完成后/);
+    expect(system).toMatch(/3–6 条/);
+    expect(system).toMatch(/anchorId/);
+    expect(user).toMatch(/完整 V2/);
+    expect(user).toMatch(/V2 待润色表达/);
+    expect(user).toMatch(/v2-p-001/);
+    expect(user).toMatch(/revisionArtifactHash/);
+  });
+
+  test('V2 anchor builder keeps the exact paragraph text and offsets', () => {
+    const content = '第一段。\n\n  第二段。  \n\n第三段。';
+    expect(buildContinuationV5RevisionAnchors(content)).toEqual([
+      { anchorId: 'v2-p-001', start: 0, end: 4, text: '第一段。' },
+      { anchorId: 'v2-p-002', start: 8, end: 12, text: '第二段。' },
+      { anchorId: 'v2-p-003', start: 16, end: 20, text: '第三段。' },
+    ]);
+  });
+
   test('Revision Writer owns target band and forbids early stop under preferredMin', () => {
     const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
     const architectureHash = hashArchitectureEnvelope(architecture);
@@ -101,7 +137,8 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
       architecture,
       architectureHash,
     });
-    const system = compiled.messages.find(m => m.role === 'system')?.content ?? '';
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
     const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
     expect(system).toMatch(/主扩写稿/);
     expect(system).toMatch(/4500/);
@@ -117,6 +154,7 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
     const architectureHash = hashArchitectureEnvelope(architecture);
     const audit = buildFallbackAuditContract({
       draftArtifactHash: 'd'.repeat(64),
+      revisionArtifactHash: 'r'.repeat(64),
       architectureHash,
       canonSnapshotId: 'cs',
       canonRevision: 1,
@@ -142,9 +180,12 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
       audit,
       auditContractHash: hashAuditEnvelope(audit),
     });
-    const system = compiled.messages.find(m => m.role === 'system')?.content ?? '';
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
     expect(system).toMatch(/润色与 C2 合同履约/);
     expect(system).toMatch(/不要把 V3 当成主要加长环节/);
+    expect(system).toMatch(/客户端锚定编辑任务/);
+    expect(system).toMatch(/不得只删词/);
     expect(system).toMatch(/已在目标区间内/);
     expect(system).toMatch(/±10%/);
   });
@@ -154,6 +195,7 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
     const architectureHash = hashArchitectureEnvelope(architecture);
     const audit = buildFallbackAuditContract({
       draftArtifactHash: 'd'.repeat(64),
+      revisionArtifactHash: 'r'.repeat(64),
       architectureHash,
       canonSnapshotId: 'cs',
       canonRevision: 1,
@@ -179,7 +221,8 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
       audit,
       auditContractHash: hashAuditEnvelope(audit),
     });
-    const system = compiled.messages.find(m => m.role === 'system')?.content ?? '';
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
     expect(system).toMatch(/仍低于首选下限/);
     expect(system).toMatch(/兜底补写/);
   });
