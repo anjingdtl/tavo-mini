@@ -45,24 +45,37 @@ function snapshot(targetChapterChars = 3000): any {
 }
 
 describe('continuation target Han length contract', () => {
-  it('uses target ±500 and ignores punctuation/whitespace/Latin characters', () => {
+  it('uses proportional ±30% tolerance for 1000/3000/8000 targets', () => {
+    expect(resolveContinuationLengthContract(1000)).toEqual({
+      targetHanCharacters: 1000,
+      minHanCharacters: 700,
+      maxHanCharacters: 1300,
+      toleranceHanCharacters: 300,
+    });
     expect(resolveContinuationLengthContract(3000)).toEqual({
       targetHanCharacters: 3000,
-      minHanCharacters: 2500,
-      maxHanCharacters: 3500,
-      toleranceHanCharacters: 500,
+      minHanCharacters: 2100,
+      maxHanCharacters: 3900,
+      toleranceHanCharacters: 900,
+    });
+    expect(resolveContinuationLengthContract(8000)).toEqual({
+      targetHanCharacters: 8000,
+      minHanCharacters: 5600,
+      maxHanCharacters: 10400,
+      toleranceHanCharacters: 2400,
     });
     expect(countHanCharacters('甲，乙。\nABC 123！')).toBe(2);
-    expect(evaluateContinuationLength(han(2500), 3000).status).toBe('within');
-    expect(evaluateContinuationLength(han(3500), 3000).status).toBe('within');
-    expect(evaluateContinuationLength(han(2499), 3000).status).toBe('under');
-    expect(evaluateContinuationLength(han(3501), 3000).status).toBe('over');
+    expect(evaluateContinuationLength(han(2100), 3000).status).toBe('within');
+    expect(evaluateContinuationLength(han(3900), 3000).status).toBe('within');
+    expect(evaluateContinuationLength(han(2099), 3000).status).toBe('under');
+    expect(evaluateContinuationLength(han(3901), 3000).status).toBe('over');
   });
 
-  it('keeps deterministic length severity for V1/V2; V4 excludes it from repairReady', () => {
+  it('under min triggers length expansion eligibility; isRepairableCheckerIssue stays false', () => {
     const snap = snapshot();
-    const local = runDeterministicChecks(han(2499), snap);
-    const bound = bindIssuesToArtifact(local, han(2499), new Set());
+    // Below 0.7×3000 = 2100 → under_target
+    const local = runDeterministicChecks(han(1000), snap);
+    const bound = bindIssuesToArtifact(local, han(1000), new Set());
     const filtered = filterBySettings(bound, snap.settingsSnapshot.values);
     expect(filtered).toEqual(
       expect.arrayContaining([
@@ -75,8 +88,21 @@ describe('continuation target Han length contract', () => {
     const lengthIssue = filtered.find(
       i => i.subtype === 'chapter_length_under_target',
     )!;
-    const { isRepairableCheckerIssue } = require('../src/services/continuation/generation/continuationChecker');
+    const {
+      isRepairableCheckerIssue,
+      isLengthExpansionIssue,
+    } = require('../src/services/continuation/generation/continuationChecker');
+    // Five-dimension repairReady remains false; V4 uses isLengthExpansionIssue.
     expect(isRepairableCheckerIssue(lengthIssue)).toBe(false);
+    expect(isLengthExpansionIssue(lengthIssue)).toBe(true);
+  });
+
+  it('does not emit length checks inside the ±30% band', () => {
+    const snap = snapshot(3000);
+    const within = runDeterministicChecks(han(2500), snap);
+    expect(
+      within.some(i => String(i.subtype).startsWith('chapter_length_')),
+    ).toBe(false);
   });
 });
 
@@ -193,8 +219,9 @@ describe('continuation repair patch safety', () => {
   });
 
   it('rejects collapse and preserves a previously valid length band', () => {
+    // ±30% band for 3000 is 2100–3900; leaving the band is unusable.
     expect(isRepairCandidateUsable(han(3000), han(600), 3000)).toBe(false);
-    expect(isRepairCandidateUsable(han(3000), han(2400), 3000)).toBe(false);
+    expect(isRepairCandidateUsable(han(3000), han(2000), 3000)).toBe(false);
     expect(isRepairCandidateUsable(han(3000), han(2800), 3000)).toBe(true);
   });
 

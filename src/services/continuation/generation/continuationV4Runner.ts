@@ -38,6 +38,8 @@ import {
   compileContinuationV4RepairMessages,
   compileContinuationV4WriterMessages,
   continuationV4ProtocolSkeletonTokens,
+  REPAIR_ANCHOR_MARKER_PATTERN,
+  stripRepairAnchors,
 } from './continuationV4PromptCompiler';
 import {
   evaluateRepairCompleteness,
@@ -49,6 +51,11 @@ import {
 import {
   resolveContinuationV4BudgetPreview,
 } from './continuationV4Budget';
+import {
+  countHanCharacters,
+  isLengthExpansionIssue,
+  resolveContinuationLengthContract,
+} from './continuationLengthContract';
 import {
   casUpdateRunState,
   contentRevisionHash,
@@ -98,10 +105,9 @@ import type {
   StartContinuationRunInput,
 } from './continuationGenerationRunner';
 import { activeContinuationControllers } from './continuationRunControllers';
-import {
-  countHanCharacters,
-} from './continuationLengthContract';
 import { estimateMessagesTokens, estimateTokens } from '../../../utils/tokenEstimator';
+
+export { isLengthExpansionIssue };
 
 type V4PhysicalStage = Exclude<ContinuationV4StageName, 'local_verify'>;
 
@@ -881,7 +887,45 @@ export function validateContinuationV4RepairCompliance(input: {
     }
   }
 
-  // Length progress hard gate intentionally removed (creative loosening).
+  // Length expansion: candidate must grow and enter the ±30% floor (target×0.7).
+  // Over-target never requires compress. Not satisfied by id backfill alone.
+  const lengthExpansionTasks = input.checkerIssues.filter(isLengthExpansionIssue);
+  if (lengthExpansionTasks.length > 0) {
+    const writerHan = countHanCharacters(input.writerText);
+    const candidateHan = countHanCharacters(input.candidateText);
+    const targetHan =
+      input.controlReport.targetHan > 0
+        ? input.controlReport.targetHan
+        : resolveContinuationLengthContract(
+            input.controlReport.allowedMinHan > 0
+              ? Math.round(input.controlReport.allowedMinHan / 0.7)
+              : writerHan,
+          ).targetHanCharacters;
+    const contract = resolveContinuationLengthContract(targetHan);
+    const minFloor = contract.minHanCharacters;
+    if (candidateHan <= writerHan) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_length_expansion_no_growth',
+          description: `篇幅扩写任务要求候选汉字数大于初稿（当前 ${candidateHan}，初稿 ${writerHan}）。`,
+          suggestedFix:
+            '在既有场景内定向深化，使汉字数增加并进入目标区间下限以上；禁止原样返回。',
+        }),
+      );
+    } else if (candidateHan < minFloor) {
+      checks.push(
+        repairComplianceIssue({
+          category: 'style',
+          subtype: 'repair_length_expansion_below_floor',
+          description: `篇幅扩写后仍低于目标区间下限：候选 ${candidateHan}，下限 ${minFloor}（目标约 ${contract.targetHanCharacters}，±30%）。`,
+          suggestedFix:
+            '继续深化既有节拍（动作过程、对话回合、人物反应、冲突升级），直至进入目标区间下限以上。',
+        }),
+      );
+    }
+  }
+
   return checks;
 }
 
@@ -890,10 +934,35 @@ function localGateExtraIssues(
   candidateText: string,
   snapshot: ContinuationContextSnapshotV3,
   targetedSpans: TargetedRepairSpan[] = [],
+  options: {
+    lengthExpansionMode?: boolean;
+    /** Raw model content before anchor strip — residual markers are blocking. */
+    rawRepairContent?: string;
+  } = {},
 ): RawCheckIssue[] {
   const issues: RawCheckIssue[] = [];
   const candidateHan = countHanCharacters(candidateText);
   const writerHan = countHanCharacters(writerText);
+  const rawForAnchor =
+    options.rawRepairContent != null ? options.rawRepairContent : candidateText;
+  REPAIR_ANCHOR_MARKER_PATTERN.lastIndex = 0;
+  if (REPAIR_ANCHOR_MARKER_PATTERN.test(rawForAnchor)) {
+    REPAIR_ANCHOR_MARKER_PATTERN.lastIndex = 0;
+    issues.push({
+      category: 'style',
+      subtype: 'repair_anchor_residue',
+      severity: 'blocking',
+      confidence: 1,
+      generatedStart: null,
+      generatedEnd: null,
+      generatedExcerpt: '',
+      description:
+        'Repair 终稿仍残留客户端注入的任务锚点标记（⟦ISSUE_n_START/END⟧），不能直接作为章节正文。',
+      evidenceIds: [],
+      suggestedFix: '删除全部 ⟦ISSUE_*⟧ 锚点后再输出完整终稿。',
+    });
+  }
+  REPAIR_ANCHOR_MARKER_PATTERN.lastIndex = 0;
   if (
     writerHan > 0 &&
     normalizedRepairComparisonText(candidateText) ===
@@ -918,6 +987,7 @@ function localGateExtraIssues(
     writerText,
     candidateText,
     targetedSpans,
+    lengthExpansionMode: options.lengthExpansionMode === true,
   });
   for (const item of completeness.issues) {
     issues.push({
@@ -1016,6 +1086,8 @@ export function runContinuationV4LocalFinalGate(input: {
   snapshot: ContinuationContextSnapshotV3;
   controlMetrics: ContinuationV4Metrics;
   targetedSpans?: TargetedRepairSpan[];
+  lengthExpansionMode?: boolean;
+  rawRepairContent?: string;
 }): {
   passed: boolean;
   checks: RawCheckIssue[];
@@ -1033,6 +1105,7 @@ export function runContinuationV4LocalFinalGate(input: {
     writerText: input.writerText,
     candidateText: input.candidateText,
     targetedSpans: input.targetedSpans ?? [],
+    lengthExpansionMode: input.lengthExpansionMode === true,
   });
   const checks = softenFinalGateLengthChecks([
     ...base,
@@ -1041,6 +1114,10 @@ export function runContinuationV4LocalFinalGate(input: {
       input.candidateText,
       input.snapshot,
       input.targetedSpans ?? [],
+      {
+        lengthExpansionMode: input.lengthExpansionMode === true,
+        rawRepairContent: input.rawRepairContent,
+      },
     ),
   ]);
   return {
@@ -1479,19 +1556,35 @@ async function runWriterNode(
   try {
     const frozen = snapshot.settingsSnapshot.frozenModelConfigs?.writer;
     if (!frozen) throw new ContinuationCapabilityBlockedError('缺少 Writer 冻结模型。');
+    const writerBudget = stageBudget(snapshot, 'writer');
     const result = await invokeV4Stage({
       options,
       runId: run.id,
       stage: 'writer',
       messages,
-      budget: stageBudget(snapshot, 'writer'),
+      budget: writerBudget,
       frozenModelConfig: frozen,
     });
     assertNotAborted(options.signal);
-    const parsed = parseContinuationV4WriterEnvelope(result.text, {
-      chapterGoal: snapshot.stageViews.writer.userInstruction,
-      centralConflict: '围绕本章要求推进当前冲突并自然收束。',
-    });
+    if (result.finishReason === 'length') {
+      throw new Error(
+        'Writer 输出被 max_tokens 截断，未保存正文。请提高该模型的 max_output_tokens 或降低目标字数；V4 不会自动重试。',
+      );
+    }
+    let parsed: ReturnType<typeof parseContinuationV4WriterEnvelope>;
+    try {
+      parsed = parseContinuationV4WriterEnvelope(result.text, {
+        chapterGoal: snapshot.stageViews.writer.userInstruction,
+        centralConflict: '围绕本章要求推进当前冲突并自然收束。',
+      });
+    } catch (error) {
+      if (result.finishReason === 'length') {
+        throw new Error(
+          'Writer JSON 被 max_tokens 截断，未保存正文。请提高该模型的 max_output_tokens 或降低目标字数；V4 不会自动重试。',
+        );
+      }
+      throw error;
+    }
     const planHash = await savePlan(run.id, parsed.plan, 'not_required');
     const artifact = await insertArtifact({
       runId: run.id,
@@ -1509,6 +1602,12 @@ async function runWriterNode(
         schemaVersion: 1,
         planHash: planHash.planHash,
         contentHash: artifact.contentHash,
+        finishReason: result.finishReason ?? null,
+        budget: {
+          maximumOutputTokens: writerBudget.maximumOutputTokens,
+          declaredMaxOutputTokens: frozen.maxOutputTokens,
+          minimumOutputTokens: writerBudget.minimumOutputTokens,
+        },
       }),
       artifactId: artifact.id,
       outputTokens: result.usage?.completion ?? null,
@@ -2007,73 +2106,161 @@ async function runRepairNode(input: {
     const envelope = parseContinuationV4RepairEnvelope(result.text);
     const localVerifyStage = await getStageResult(run.id, 'local_verify');
     if (!localVerifyStage) throw new Error('缺少 local_verify stage result。');
+    const lengthExpansionMode = checkerIssues.some(isLengthExpansionIssue);
+    // Strip client-injected anchors; residual markers still fail the gate.
+    const stripped = stripRepairAnchors(envelope.content);
+    const candidateContent = stripped.text;
+    const envelopeForCompliance: ContinuationV4RepairEnvelope = {
+      ...envelope,
+      content: candidateContent,
+    };
+    const styleReadyFindings = getRepairReadyStyleFindings(control.report);
     const targetedSpans: TargetedRepairSpan[] = [
       ...checkerIssues.map(issue => ({
         generatedStart: issue.generatedStart,
         generatedEnd: issue.generatedEnd,
         generatedExcerpt: issue.generatedExcerpt,
       })),
-      ...getRepairReadyStyleFindings(control.report).map(finding => ({
+      ...styleReadyFindings.map(finding => ({
         generatedStart: finding.generatedStart,
         generatedEnd: finding.generatedEnd,
-        generatedExcerpt: null as string | null,
+        generatedExcerpt: finding.generatedExcerpt ?? null,
       })),
     ];
+    if (lengthExpansionMode) {
+      targetedSpans.push({
+        generatedStart: 0,
+        generatedEnd: writerArtifact.content.length,
+        generatedExcerpt: null,
+      });
+    }
     const gate = runContinuationV4LocalFinalGate({
       writerText: writerArtifact.content,
-      candidateText: envelope.content,
+      candidateText: candidateContent,
       snapshot,
       controlMetrics: control.metrics,
       targetedSpans,
+      lengthExpansionMode,
+      rawRepairContent: envelope.content,
     });
     const complianceChecks = validateContinuationV4RepairCompliance({
       writerText: writerArtifact.content,
-      candidateText: envelope.content,
+      candidateText: candidateContent,
       checkerIssues,
       controlReport: control.report,
-      envelope,
+      envelope: envelopeForCompliance,
     });
     const localChecks = [...gate.checks, ...complianceChecks];
     const blockingComplianceChecks = complianceChecks.filter(
       check => check.severity === 'error' || check.severity === 'blocking',
     );
+    const blockingQualityGateChecks = gate.checks.filter(
+      check => check.severity === 'error' || check.severity === 'blocking',
+    );
     const repairPassed = gate.passed && blockingComplianceChecks.length === 0;
-    const candidateHash = contentRevisionHash(envelope.content);
+    const candidateHash = contentRevisionHash(candidateContent);
     const noMeaningfulChange =
-      normalizedRepairComparisonText(envelope.content) ===
+      normalizedRepairComparisonText(candidateContent) ===
       normalizedRepairComparisonText(writerArtifact.content);
     const injectedCheckerIssueCount = checkerIssues.filter(
-      issue => isRepairableCheckerIssue(issue) || isHardLocalSafetyIssue(issue),
+      issue =>
+        isRepairableCheckerIssue(issue) ||
+        isHardLocalSafetyIssue(issue) ||
+        isLengthExpansionIssue(issue),
     ).length;
     const appliedCheckerIssueCount = envelope.appliedCheckerIssueIds.length;
-    const styleReady = getRepairReadyStyleFindings(control.report);
+    const styleReady = styleReadyFindings;
     const injectedControlFindingCount = styleReady.length;
     const appliedControlFindingCount =
       envelope.appliedControlFindingIds?.length ?? 0;
     const writerHan = countHanCharacters(writerArtifact.content);
-    const candidateHan = countHanCharacters(envelope.content);
+    const candidateHan = countHanCharacters(candidateContent);
     const actualDeltaHan = candidateHan - writerHan;
     const completeness = gate.completeness;
-    const repairTriggeredBy: Array<'checker' | 'style_control' | 'local_safety'> = [];
-    if (injectedCheckerIssueCount > 0) repairTriggeredBy.push('checker');
-    if (styleReady.length > 0) repairTriggeredBy.push('style_control');
-    // local_safety inferred if only safety subtypes present
+    const repairTriggeredBy: Array<
+      'checker' | 'style_control' | 'local_safety' | 'length_expansion'
+    > = [];
     if (
-      checkerIssues.some(isHardLocalSafetyIssue) &&
-      !repairTriggeredBy.includes('checker')
+      checkerIssues.some(
+        issue => isRepairableCheckerIssue(issue) || isHardLocalSafetyIssue(issue),
+      )
     ) {
-      repairTriggeredBy.push('local_safety');
-    } else if (checkerIssues.some(isHardLocalSafetyIssue)) {
+      repairTriggeredBy.push('checker');
+    }
+    if (styleReady.length > 0) repairTriggeredBy.push('style_control');
+    if (checkerIssues.some(isHardLocalSafetyIssue)) {
       if (!repairTriggeredBy.includes('local_safety')) {
         repairTriggeredBy.push('local_safety');
       }
     }
+    if (lengthExpansionMode) repairTriggeredBy.push('length_expansion');
+
+    // Structured failure diagnostics for the result UI (no auto-retry).
+    const failureDiagnostics = {
+      unappliedIssueDetails: [
+        ...checkerIssues
+          .filter(
+            issue =>
+              isRepairableCheckerIssue(issue) ||
+              isHardLocalSafetyIssue(issue) ||
+              isLengthExpansionIssue(issue),
+          )
+          .filter(
+            issue =>
+              !envelope.appliedCheckerIssueIds.includes(String(issue.id)) &&
+              !envelope.appliedCheckerIssueIds.includes(`chk_${issue.id}`),
+          )
+          .map(issue => ({
+            kind: isLengthExpansionIssue(issue)
+              ? ('length_expansion' as const)
+              : ('checker' as const),
+            id: String(issue.id),
+            subtype: issue.subtype,
+            description: issue.description,
+            generatedExcerpt: issue.generatedExcerpt ?? '',
+          })),
+        ...styleReady
+          .filter(
+            finding =>
+              !(envelope.appliedControlFindingIds ?? []).includes(
+                finding.findingId,
+          ),
+          )
+          .map(finding => ({
+            kind: 'control' as const,
+            id: finding.findingId,
+            subtype: finding.subtype,
+            description: finding.description,
+            generatedExcerpt: finding.generatedExcerpt ?? '',
+          })),
+        ...envelope.unappliedItems.map(item => ({
+          kind: 'unapplied_item' as const,
+          id: item,
+          subtype: 'unapplied_item',
+          description: item,
+          generatedExcerpt: '',
+        })),
+      ],
+      qualityGateFailures: blockingQualityGateChecks.map(check => ({
+        subtype: check.subtype,
+        severity: check.severity,
+        description: check.description,
+      })),
+      complianceFailures: blockingComplianceChecks.map(check => ({
+        subtype: check.subtype,
+        severity: check.severity,
+        description: check.description,
+      })),
+      anchorResidue: stripped.hadAnchors,
+    };
+
     const repairTelemetry = {
       referenceTargetHan: control.report.targetHan,
       actualWriterHan: writerHan,
       lengthWarningSubtypes: localChecks
         .filter(c => c.subtype.startsWith('chapter_length_'))
         .map(c => c.subtype),
+      lengthExpansionMode,
       checkerActionableIssueCount: injectedCheckerIssueCount,
       checkerAuditWarningCount: checkerIssues.filter(
         i => i.severity === 'warning' && !isRepairableCheckerIssue(i),
@@ -2114,6 +2301,7 @@ async function runRepairNode(input: {
       repairCompletenessPassed: completeness?.passed ?? null,
       repairMinimalInterventionPassed:
         completeness?.minimalInterventionPassed ?? null,
+      failureDiagnostics,
     };
     if (noMeaningfulChange) {
       const rejectionCode = 'repair_candidate_unchanged';
@@ -2158,54 +2346,52 @@ async function runRepairNode(input: {
       await updateTelemetry(run.id);
       return { artifact: null, completed: false };
     }
+    const rejectionCode = repairPassed
+      ? null
+      : blockingComplianceChecks.length > 0
+        ? 'repair_compliance_failed'
+        : 'local_final_gate_failed';
     const final = await finalizeContinuationV4Repair({
       runId: run.id,
       repairStageResultId: reserved.id,
       localVerifyStageResultId: localVerifyStage.id,
       parentArtifactId: writerArtifact.id,
-      content: envelope.content,
+      content: candidateContent,
       repairRound: 1,
-       eligibilityStatus: repairPassed ? 'eligible' : 'rejected',
-       rejectionCode: repairPassed
-         ? null
-         : blockingComplianceChecks.length > 0
-           ? 'repair_compliance_failed'
-           : 'local_final_gate_failed',
+      eligibilityStatus: repairPassed ? 'eligible' : 'rejected',
+      rejectionCode,
       localChecks,
       writerArtifactId: writerArtifact.id,
-       markWriterChecksObsolete: repairPassed,
-       tokenUsageJson: JSON.stringify({ workflowVersion: 4 }),
-       outputTokens: result.usage?.completion ?? null,
-       repairOutputJson: JSON.stringify({
+      markWriterChecksObsolete: repairPassed,
+      tokenUsageJson: JSON.stringify({ workflowVersion: 4 }),
+      outputTokens: result.usage?.completion ?? null,
+      repairOutputJson: JSON.stringify({
         schemaVersion: 1,
         appliedCheckerIssueIds: envelope.appliedCheckerIssueIds,
         appliedControlSuggestionIds: envelope.appliedControlSuggestionIds,
         appliedControlFindingIds: envelope.appliedControlFindingIds ?? [],
         unappliedItems: envelope.unappliedItems,
-         parentArtifactId: writerArtifact.id,
-         contentHash: candidateHash,
-         complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
-         rejectionCode: repairPassed
-           ? null
-           : blockingComplianceChecks.length > 0
-             ? 'repair_compliance_failed'
-             : 'local_final_gate_failed',
+        parentArtifactId: writerArtifact.id,
+        contentHash: candidateHash,
+        complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
+        rejectionCode,
         ...repairTelemetry,
       }),
       localVerifyOutputJson: JSON.stringify({
         schemaVersion: 1,
-         passed: repairPassed,
+        passed: repairPassed,
         actualHanCharacters: gate.candidateMetrics.actualHanCharacters,
         minHanCharacters: gate.candidateMetrics.minHanCharacters,
         maxHanCharacters: gate.candidateMetrics.maxHanCharacters,
         checkSubtypes: localChecks.map(check => check.subtype),
-         checkerSemanticReview: checkerIssues.length > 0 ? 'available' : 'none_or_degraded',
-         controlDegraded: control.degraded,
-         repairCompliancePassed: blockingComplianceChecks.length === 0,
-         complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
-         ...repairTelemetry,
-       }),
-       localVerifyStatus: repairPassed ? 'success' : 'failed',
+        checkerSemanticReview: checkerIssues.length > 0 ? 'available' : 'none_or_degraded',
+        controlDegraded: control.degraded,
+        repairCompliancePassed: blockingComplianceChecks.length === 0,
+        complianceCheckSubtypes: complianceChecks.map(check => check.subtype),
+        rejectionCode,
+        ...repairTelemetry,
+      }),
+      localVerifyStatus: repairPassed ? 'success' : 'failed',
     });
     await updateTelemetry(run.id);
     return { artifact: final.artifact, completed: true };
@@ -2424,26 +2610,32 @@ async function runV4Pipeline(
   }
   const controlReport = control?.report || buildContinuationControlFallback(metrics);
   const checkerPersisted = checker?.persistedIssues ?? [];
-  // Local safety issues that may alone trigger Repair. Length never qualifies.
+  // Local safety issues that may alone trigger Repair (never length over-target).
   const localSafetyIssues = writerChecks.filter(check =>
     isHardLocalSafetyIssue(check),
   );
+  // Severe shortfall only: chapter_length_under_target → directed deepen Repair.
+  const lengthExpansionIssues = writerChecks.filter(isLengthExpansionIssue);
   const repairReadyChecker = (checker?.issues ?? []).filter(issue =>
     isRepairableCheckerIssue(issue),
   );
   const repairReadyStyle = getRepairReadyStyleFindings(controlReport);
-  // Repair receives repairReady Checker issues + hard local safety issues.
+  // Repair receives Checker + safety + length expansion; still one physical request.
   const repairIssues = dedupeRepairIssues([
     ...checkerPersisted.filter(
       issue =>
-        isRepairableCheckerIssue(issue) || isHardLocalSafetyIssue(issue),
+        isRepairableCheckerIssue(issue) ||
+        isHardLocalSafetyIssue(issue) ||
+        isLengthExpansionIssue(issue),
     ),
     ...localSafetyIssues,
+    ...lengthExpansionIssues,
   ]);
   const shouldRepair =
     repairReadyChecker.length > 0 ||
     repairReadyStyle.length > 0 ||
-    localSafetyIssues.length > 0;
+    localSafetyIssues.length > 0 ||
+    lengthExpansionIssues.length > 0;
   if (!checker && !control) {
     await settleWithoutRepair({
       run,

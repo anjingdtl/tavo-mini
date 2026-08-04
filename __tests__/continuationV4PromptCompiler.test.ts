@@ -4,6 +4,11 @@ import {
   compileContinuationV4RepairMessages,
   compileContinuationV4WriterMessages,
   continuationV4ProtocolSkeletonTokens,
+  buildRepairUnifiedTasks,
+  injectRepairAnchors,
+  stripRepairAnchors,
+  renderStyleFinding,
+  resolveStyleFindingExcerpt,
 } from '../src/services/continuation/generation/continuationV4PromptCompiler';
 
 const budget = {
@@ -91,9 +96,9 @@ const plan = {
 const metrics = {
   actualHanCharacters: 2000,
   targetHanCharacters: 3000,
-  minHanCharacters: 2500,
-  maxHanCharacters: 3500,
-  missingToMinimum: 500,
+  minHanCharacters: 2100,
+  maxHanCharacters: 3900,
+  missingToMinimum: 100,
   excessOverMaximum: 0,
   deltaToTarget: -1000,
   paragraphs: [],
@@ -109,8 +114,8 @@ const controlReport = {
   action: 'keep' as const,
   currentHan: 2000,
   targetHan: 3000,
-  allowedMinHan: 2500,
-  allowedMaxHan: 3500,
+  allowedMinHan: 2100,
+  allowedMaxHan: 3900,
   suggestions: [],
   findings: [],
   styleIssues: [],
@@ -119,28 +124,33 @@ const controlReport = {
 } as any;
 
 describe('Continuation V4 Prompt contracts', () => {
-  test('Writer 动态注入不同用户目标字数为弱提示', () => {
+  test('Writer 注入 ±30% 软区间、节拍篇幅预算与深化引导', () => {
     for (const target of [1800, 3200, 6000]) {
       const messages = compileContinuationV4WriterMessages({
         ...writerView,
         targetChapterChars: target,
       });
       const system = messages[0].content;
-      expect(system).toContain(`参考篇幅约为 ${target} 个汉字`);
-      expect(system).toContain('不是必须机械达到的硬指标');
+      expect(system).toContain(`约 ${target} 个汉字`);
+      expect(system).toContain('±30%');
+      expect(system).toContain('为每个 beat');
+      expect(system).toContain('优先深化已有场景');
+      expect(system).not.toContain('可自然长于或短于');
       expect(system).not.toContain('汉字产出硬目标');
       expect(system).not.toContain('最低合格线');
       expect(system).not.toContain('在 content 未达到最低合格线');
       expect(system).toContain('不得为了接近参考字数');
-      expect(system).toContain('不要求逐项机械复现');
     }
+    const tail = compileContinuationV4WriterMessages(writerView)[1].content;
+    expect(tail).toContain('2100–3900');
+    expect(tail).toContain('是哪个节拍被压缩了');
   });
 
-  test('Writer 使用完整初稿 envelope 与动态参考篇幅', () => {
+  test('Writer 使用完整初稿 envelope 与动态目标体量', () => {
     const messages = compileContinuationV4WriterMessages(writerView);
     const system = messages[0].content;
     expect(system).toContain('schemaVersion');
-    expect(system).toContain('参考篇幅约为 3000 个汉字');
+    expect(system).toContain('约 3000 个汉字');
     expect(system).toContain('外部资料包装');
     expect(system).toContain('minimumOutputTokens');
     expect(messages[1].content).toContain('Writer 输出前最后检查');
@@ -178,6 +188,248 @@ describe('Continuation V4 Prompt contracts', () => {
     expect(messages[0].content).toContain('短句克制');
   });
 
+  test('renderStyleFinding 从 offset 切片命中原文，不使用证据占位', () => {
+    const artifactText = '他感到非常悲伤，因为失去了一切。门外风声未停。';
+    const finding = {
+      findingId: 'style_1',
+      subtype: 'emotional_expression',
+      styleDimension: 'emotional_expression',
+      severity: 'error' as const,
+      location: 'utf16:0-14',
+      generatedStart: 0,
+      generatedEnd: 14,
+      description: '模板化心理',
+      suggestedFix: '改为动作表现',
+      rewriteGoal: '改为动作表现',
+      preserveMeaning: ['保留事件'],
+      styleEvidenceIds: ['s1'],
+      repairReady: true,
+    };
+    const rendered = JSON.parse(renderStyleFinding(finding as any, artifactText));
+    expect(rendered.generatedExcerpt).toBe(artifactText.slice(0, 14));
+    expect(rendered.styleEvidenceIds).toEqual(['s1']);
+    expect(rendered.styleEvidenceIds).not.toContain('x');
+    expect(resolveStyleFindingExcerpt(finding as any, artifactText)).toBe(
+      artifactText.slice(0, 14),
+    );
+
+    const noEvidence = JSON.parse(
+      renderStyleFinding(
+        {
+          ...finding,
+          styleEvidenceIds: [],
+          repairReady: false,
+          generatedExcerpt: undefined,
+        } as any,
+        artifactText,
+      ),
+    );
+    expect(noEvidence.styleEvidenceIds).toEqual([]);
+    expect(noEvidence.repairReady).toBe(false);
+  });
+
+  test('Repair Prompt 含统一任务清单、锚点与文风 excerpt', () => {
+    const artifactText = '完整 Writer 正文冲突片段XX后续';
+    const messages = compileContinuationV4RepairMessages({
+      view: repairView,
+      artifactText,
+      plan,
+      checkerReport: {
+        issues: [
+          {
+            id: 9,
+            generatedExcerpt: '冲突片段',
+            description: '冻结冲突',
+            evidenceIds: [3],
+            category: 'plot',
+            severity: 'error',
+            subtype: 'canon_conflict',
+            suggestedFix: '改写冲突片段',
+            generatedStart: 9,
+            generatedEnd: 13,
+          } as any,
+        ],
+      },
+      controlReport: {
+        ...controlReport,
+        findings: [
+          {
+            findingId: 'style_1',
+            subtype: 'emotional_expression',
+            styleDimension: 'emotional_expression',
+            severity: 'error',
+            location: 'utf16:0-8',
+            generatedStart: 0,
+            generatedEnd: 8,
+            description: '模板化心理',
+            suggestedFix: '改为动作表现',
+            rewriteGoal: '改为动作表现',
+            preserveMeaning: ['保留事件'],
+            styleEvidenceIds: ['s1'],
+            repairReady: true,
+          },
+        ],
+        styleIssues: [
+          {
+            findingId: 'style_1',
+            styleDimension: 'emotional_expression',
+            severity: 'error',
+            confidence: 0.9,
+            generatedStart: 0,
+            generatedEnd: 8,
+            generatedExcerpt: '完整 Wri',
+            description: '模板化心理',
+            styleEvidenceIds: ['s1'],
+            rewriteGoal: '改为动作表现',
+            preserveMeaning: ['保留事件'],
+            repairReady: true,
+          },
+        ],
+      } as any,
+    });
+    const system = messages[0].content;
+    const user = messages[1].content;
+    expect(system).toContain('统一可执行任务清单');
+    expect(system).toContain('Checker：五维资料一致性修订');
+    expect(system).toContain('Control：原著文风修订');
+    expect(system).toContain('repairReady');
+    expect(system).toContain('style_1');
+    expect(system).toContain('完整 Wri');
+    expect(user).toContain('⟦ISSUE_');
+    expect(user).toContain('_START⟧');
+    expect(system).toContain('禁止保留任何锚点标记');
+  });
+
+  test('Repair 仅长度不足时注入定向深化扩写指令', () => {
+    const shortText = '甲'.repeat(1000);
+    const messages = compileContinuationV4RepairMessages({
+      view: repairView,
+      artifactText: shortText,
+      plan,
+      checkerReport: {
+        issues: [
+          {
+            id: 42,
+            category: 'style',
+            subtype: 'chapter_length_under_target',
+            severity: 'error',
+            description: '偏短',
+            suggestedFix: '深化扩写',
+            generatedStart: null,
+            generatedEnd: null,
+            generatedExcerpt: '',
+            evidenceIds: [],
+          } as any,
+        ],
+      },
+      controlReport,
+    });
+    expect(messages[0].content).toContain('定向深化扩写');
+    expect(messages[0].content).toContain('禁止新增人物');
+    expect(messages[0].content).not.toContain(
+      '本次无篇幅扩写任务：不得为了接近参考字数增加或删除内容',
+    );
+    const tasks = buildRepairUnifiedTasks({
+      artifactText: shortText,
+      checkerReport: {
+        issues: [
+          {
+            id: 42,
+            category: 'style',
+            subtype: 'chapter_length_under_target',
+            severity: 'error',
+            description: '偏短',
+            suggestedFix: '深化扩写',
+            generatedStart: null,
+            generatedEnd: null,
+            generatedExcerpt: '',
+          } as any,
+        ],
+      },
+      controlReport,
+    });
+    expect(tasks.some(t => t.kind === 'length_expansion')).toBe(true);
+  });
+
+  test('锚点注入/剥离往返一致', () => {
+    const text = '前文对峙片段后文收束。';
+    const tasks = [
+      {
+        issueIndex: 1,
+        kind: 'checker' as const,
+        id: '1',
+        description: '冲突',
+        suggestedFix: '改',
+        generatedStart: 2,
+        generatedEnd: 6,
+        generatedExcerpt: '对峙片段',
+      },
+    ];
+    const anchored = injectRepairAnchors(text, tasks);
+    expect(anchored).toContain('⟦ISSUE_1_START⟧对峙片段⟦ISSUE_1_END⟧');
+    const stripped = stripRepairAnchors(anchored);
+    expect(stripped.hadAnchors).toBe(true);
+    expect(stripped.text).toBe(text);
+    expect(stripRepairAnchors(text).hadAnchors).toBe(false);
+  });
+
+  test('混合 Checker+Control+长度 任务合并进同一次 Repair 清单', () => {
+    const tasks = buildRepairUnifiedTasks({
+      artifactText: '问题原句模板化心理后文',
+      checkerReport: {
+        issues: [
+          {
+            id: 1,
+            category: 'plot',
+            subtype: 'canon_conflict',
+            severity: 'error',
+            description: '冲突',
+            suggestedFix: '改写',
+            generatedStart: 0,
+            generatedEnd: 4,
+            generatedExcerpt: '问题原句',
+            evidenceIds: [1],
+          } as any,
+          {
+            id: 2,
+            category: 'style',
+            subtype: 'chapter_length_under_target',
+            severity: 'error',
+            description: '短',
+            suggestedFix: '扩',
+            generatedStart: null,
+            generatedEnd: null,
+            generatedExcerpt: '',
+          } as any,
+        ],
+      },
+      controlReport: {
+        ...controlReport,
+        findings: [
+          {
+            findingId: 'style_1',
+            subtype: 'padding',
+            severity: 'error',
+            location: 'utf16:4-9',
+            generatedStart: 4,
+            generatedEnd: 9,
+            generatedExcerpt: '模板化心理',
+            description: '注水',
+            suggestedFix: '删水',
+            rewriteGoal: '删水',
+            preserveMeaning: ['事件'],
+            styleEvidenceIds: ['e1'],
+            repairReady: true,
+          },
+        ],
+      },
+    });
+    expect(tasks.map(t => t.kind).sort()).toEqual(
+      ['checker', 'control', 'length_expansion'].sort(),
+    );
+    expect(tasks).toHaveLength(3);
+  });
+
   test('Repair contract 最小干预且必须输出完整章节', () => {
     const messages = compileContinuationV4RepairMessages({
       view: repairView,
@@ -195,71 +447,6 @@ describe('Continuation V4 Prompt contracts', () => {
     expect(messages[0].content).not.toContain('requiredProgress');
     expect(messages[1].content).toContain('完整 Writer 初稿开始');
     expect(messages[0].content).not.toContain('冻结 Canon 审查依据');
-  });
-
-  test('Repair Prompt 含 Checker 五维与 Control 文风两组任务', () => {
-    const messages = compileContinuationV4RepairMessages({
-      view: repairView,
-      artifactText: '完整 Writer 正文',
-      plan,
-      checkerReport: {
-        issues: [
-          {
-            id: 9,
-            generatedExcerpt: '冲突片段',
-            description: '冻结冲突',
-            evidenceIds: [3],
-            category: 'plot',
-            severity: 'error',
-            subtype: 'canon_conflict',
-            suggestedFix: '改写冲突片段',
-            generatedStart: 0,
-            generatedEnd: 4,
-          } as any,
-        ],
-      },
-      controlReport: {
-        ...controlReport,
-        findings: [
-          {
-            findingId: 'style_1',
-            subtype: 'emotional_expression',
-            styleDimension: 'emotional_expression',
-            severity: 'error',
-            location: 'utf16:0-10',
-            generatedStart: 0,
-            generatedEnd: 10,
-            description: '模板化心理',
-            suggestedFix: '改为动作表现',
-            rewriteGoal: '改为动作表现',
-            preserveMeaning: ['保留事件'],
-            styleEvidenceIds: ['s1'],
-            repairReady: true,
-          },
-        ],
-        styleIssues: [
-          {
-            findingId: 'style_1',
-            styleDimension: 'emotional_expression',
-            severity: 'error',
-            confidence: 0.9,
-            generatedStart: 0,
-            generatedEnd: 10,
-            generatedExcerpt: '冲突片段XX',
-            description: '模板化心理',
-            styleEvidenceIds: ['s1'],
-            rewriteGoal: '改为动作表现',
-            preserveMeaning: ['保留事件'],
-            repairReady: true,
-          },
-        ],
-      } as any,
-    });
-    const system = messages[0].content;
-    expect(system).toContain('Checker：五维资料一致性修订');
-    expect(system).toContain('Control：原著文风修订');
-    expect(system).toContain('repairReady');
-    expect(system).toContain('style_1');
   });
 
   test('protocol skeleton demand is measured, not a stage token constant', () => {
