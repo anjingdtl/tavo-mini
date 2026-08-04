@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.11.16] - 2026-08-04
+
+### Added
+
+- 原著分析质量改造：max_tokens 与 thinking 不再被人为压缩；30% 预算只用于正文切块，缩块重试阶梯 `[0.30, 0.20, 0.12]`；五维硬验收（characters / worldRules / relationships / plotThreads / experiences 各 ≥3，按 run + snapshot 隔离计数）失败时定向补扫，缺失维度聚焦当前模式原文范围（full=全部 / quick=最后 10 章）≤2 轮；物化回读 `materializedTotal===0` 判定为 `analysis_materialization_empty` 不激活；快速分析最后 30 章 → 最后 10 章精读，CanonQueryService 不再区分 full / quick；新增 `canonBudgetPolicy` / `canonFiveDimensionGate`。
+- Schema 33：Canon evidence 表新增 `source_origin` / `rescan_operation_id` 列及五个业务唯一索引（world_rules / characters / plot_threads / relationships / experiences），迁移中按 `review_status != superseded` 去重清理；`canonEvidenceService` 定向补扫按 `owner_type + source_origin + rescan_operation_id` 分类级删除，绝对不触碰 batch 证据或跨分类。
+- 续写 V4 字段协议统一：`writerArtifactHash` 校验 Writer artifact contentHash；`reportAction(metrics)` 让本地 Control 决策权威、模型回显仅作诊断；稳定 fingerprint（category / severity / range / 排序后 evidence / suggestedFix）替代旧 `subtype + description + excerpt`。
+- 续写 V4 Repair 可执行契约：非篇幅本地安全问题（`source_overlap` / `continuation_anchor_overlap` / `future_leakage` / `self_duplicate` / `resurrection_forbidden`）注入 Repair；篇幅类 `chapter_length_*` 由 Control 拥有；Repair 收到 `controlProgressDirective` 与 `audit-task` 段，回填 `appliedIssueIds` / `appliedControlFindingIds` / `appliedLocalSuggestionIds`，注入与采纳计数 + Writer / candidate 汉字 + actualDelta + requiredProgress + controlProgressPassed 全部接入现有 telemetry 列。
+- 续写 V4 长度收敛：P0-0 共享比例 `±30%` 长度契约（V4 / legacy 共用）；P0-1 修复 style finding excerpt，去掉证据占位；P0-2 Writer 软区间 + beat 预算 + 深化优先；P0-3 长度扩展 Repair 触发条件、增长 / 下限合规、扩展完整性；P1-1 统一任务列表 + 内联锚点 + 结构化失败诊断；P1-3 Writer `finishReason` 长度检测与 budget telemetry。
+- 续写 V4 创作松绑：Checker 软化字数目标，改用 `repairReady` / `completeness` 策略驱动 Repair；Control 改为文风审阅（不再卡扩缩进度门），文风发现明细直接展示在结果页；章节编辑器 / 续写工作台可找回未采纳的 pending review run。
+- 续写 V4 取消 / 停止路径加固：避免取消竞态与未处理 rejection；请求调度在 cancellation 期间不再注入新任务；V4 / pending / policy 单测覆盖。
+
+### Fixed
+
+- 原著分析 5 大证据 / 补扫 / coverage 缺陷：(1) 超长章节 chunk 证据绝对偏移（`BoundedSourceChapter` 附 `chunkStartChar` / `chunkEndChar`，`resolveExtractionEvidenceAgainstChapters` 统一加偏移，`insertEvidence` 落库前用 SourceReader 回读校验，偏移错误拒绝落库）；(2) 定向补扫误删其他分类证据（新 `materializeRescanResult` 按 `owner_type + source_origin + rescan_operation_id` 分类级删除，`materializeBatchResult` 补齐 `canon_world_rules` 删除与 `source_origin` 过滤）；(3) 缩块重试静默丢失正文尾部（新 `partialCoverage` + `analyzedCharEnds`，调用方把未覆盖尾部重新规划为持久化子批次）；(4) 15% 补扫预算 + 轮换片段（`SOURCE_CHUNK_RATIO_RESCAN=0.15`，`resolveCanonBudget` 派生真实 15% 预算，两轮使用不同章节区间，max_tokens / thinking 保持完整）；(5) 补扫后 `coverage` / `capabilities` 未重算（gate 通过后重新 `buildCoverage` + `updateSnapshotMeta`，五维计数改为 evidence-aware 与 Gate 一致）。
+- 续写 V4 Repair 强校验：`repair_control_insufficient_progress` 从 warning 提升为 blocking（expand / compress 双向），区分 (A) Control 方向实质进展硬门 与 (B) 最终字数在合法区间软门；Local Final Gate 保留 `chapter_length_*` warning；本地 suggestion id 缺失但进展达标仍为 warning，按产品决策维持现状。
+
+### Validation
+
+- `npm run verify`、`npm run test:coverage` 通过；新增强 schema-32 / schema-33 fixture、`sql.js` 真实 SQLite 内存测试基建与 10 个 Canon 测试文件 / 36 测试；Android Debug 构建通过；4 处工作流测试同步到新 contract。
+- 完整设计与脱敏证据见 `docs/continuation-v4-length-repair-fix-plan.md` / `docs/tavo-mini-v4-engineering-fixes-supplement.md` / `docs/tavo-mini-v4-creative-loosening-redesign.md` / `docs/tavo-mini-canon-analysis-round2-fix-plan-remote-aligned.md`。
+
 ## [2.11.15] - 2026-08-03
 
 ### Added
