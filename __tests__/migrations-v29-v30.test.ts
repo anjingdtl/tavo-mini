@@ -7,7 +7,7 @@ import { createMigrationDb } from './migrationTestUtils';
 
 describe('schema 30 Canon style-stage constraint repair', () => {
   it('remains a historical migration after Schema 31', () => {
-    expect(SCHEMA_VERSION).toBe(34);
+    expect(SCHEMA_VERSION).toBe(35);
   });
 
   it('rebuilds run and dependent task tables without losing resumable rows', () => {

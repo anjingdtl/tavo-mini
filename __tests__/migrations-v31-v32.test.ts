@@ -65,7 +65,7 @@ describe('Schema 31 → 32 continuation persistence', () => {
       .map(statement => statement.sql)
       .join('\n');
 
-    expect(SCHEMA_VERSION).toBe(34);
+    expect(SCHEMA_VERSION).toBe(35);
     expect(runSql).toContain("'auditing'");
     expect(runSql).toContain("'local_verify'");
     expect(runSql).toContain("'planner'");

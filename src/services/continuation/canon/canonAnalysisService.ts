@@ -2723,8 +2723,11 @@ async function processAnalysisRunInner(
   });
   await reportOverallProgress('finalizing');
   // Only activateSnapshotAndStyleProfile may mark the run completed.
+  // Keep stage=finalizing so heartbeat / overview labels stay in consolidation
+  // (not style_validation) until style analysis actually starts.
   await updateRunState(db, runId, {
     state: 'running',
+    stage: 'finalizing',
     completedAt: null,
   });
   await execute(
