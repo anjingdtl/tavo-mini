@@ -10,7 +10,7 @@
  *  - outdated (Source/Canon changed) → adoption blocked, re-launch against latest
  *  - awaiting_user with an artifact → adopt as draft / abandon (original path)
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -234,6 +234,26 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   useEffect(() => {
     reload().catch(() => setLoading(false));
   }, [reload]);
+
+  // Memoized V3-vs-V2 change ratio. The underlying computeV3ChangeRatio runs a
+  // full Han-character LCS (O(N×M) dynamic programming) over both chapter
+  // bodies, which is far too expensive to recompute on every re-render (e.g.
+  // toggling expand/collapse or busy state). Lock the dependencies to the two
+  // bodies and their hashes so the LCS only re-runs when the content actually
+  // changes.
+  const v3ChangeRatio = useMemo<{ ratio: number; sameHash: boolean } | null>(() => {
+    const v2Content = v5RevisionArtifact?.content ?? '';
+    const v3Content = v5FinalArtifact?.content ?? '';
+    if (!v2Content || !v3Content) return null;
+    const sameHash =
+      v5RevisionArtifact?.contentHash === v5FinalArtifact?.contentHash;
+    return { ratio: sameHash ? 0 : computeV3ChangeRatio(v2Content, v3Content), sameHash };
+  }, [
+    v5RevisionArtifact?.content,
+    v5FinalArtifact?.content,
+    v5RevisionArtifact?.contentHash,
+    v5FinalArtifact?.contentHash,
+  ]);
 
   const doAdopt = async (
     options: { forceOverwrite?: boolean; allowOpenChecks?: boolean } = {},
@@ -1174,15 +1194,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           {physical > 0 ? ` · 请求 ${physical}/5` : ''}
           {targetHan != null ? ` · 目标 ${targetHan} 字` : ''}
         </Text>
-        {(() => {
-          const v2Content = v5RevisionArtifact?.content ?? '';
-          const v3Content = v5FinalArtifact?.content ?? '';
-          if (!v2Content || !v3Content) return null;
-          const sameHash =
-            v5RevisionArtifact?.contentHash === v5FinalArtifact?.contentHash;
-          const ratio = sameHash ? 0 : computeV3ChangeRatio(v2Content, v3Content);
-          const percent = (ratio * 100).toFixed(1);
-          const hint = sameHash
+        {v3ChangeRatio && (() => {
+          const percent = (v3ChangeRatio.ratio * 100).toFixed(1);
+          const hint = v3ChangeRatio.sameHash
             ? 'V3 与 V2 正文一致，未做润色'
             : '基于汉字序列 LCS，反映定点润色幅度';
           return (
