@@ -7,8 +7,9 @@ import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import { SCHEMA_VERSION } from '../src/services/migrations';
 
 describe('Schema 32 → 33 Canon dedup infrastructure', () => {
-  it('reports SCHEMA_VERSION as 33', () => {
-    expect(SCHEMA_VERSION).toBe(33);
+  it('is superseded by a later current SCHEMA_VERSION', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(33);
+    expect(SCHEMA_VERSION).toBe(34);
   });
 
   it('emits provenance columns + 5 dedup deletes + 6 indexes', () => {

@@ -8,6 +8,7 @@ import { buildSchema25CreateSqls } from '../../services/migrations/v24-to-v25';
 import { buildSchema26CreateSqls } from '../../services/migrations/v25-to-v26';
 import { buildSchema32CreateSqls } from '../../services/migrations/v31-to-v32';
 import { buildSchema33CreateSqls } from '../../services/migrations/v32-to-v33';
+import { buildSchema34CreateSqls } from '../../services/migrations/v33-to-v34';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -639,6 +640,8 @@ export function createCurrentSchemaStatements(): string[] {
     // source_origin / rescan_operation_id columns are declared inline in the
     // v19-to-v20 CREATE TABLE above so a fresh database has them from the start.
     ...buildSchema33CreateSqls(),
+    // Schema 34 Continuation V5 stage/eligibility CHECK expansion.
+    ...buildSchema34CreateSqls(),
   ];
 }
 

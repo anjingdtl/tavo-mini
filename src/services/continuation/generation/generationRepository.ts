@@ -23,6 +23,9 @@ import type {
   ContinuationStageName,
   ContinuationStageResultStatus,
   ContinuationV4StageName,
+  ContinuationV5PhysicalNode,
+  ContinuationStageResultStageName,
+  ContinuationArtifactStage,
   ContinuationStateEvent,
   ContinuationStateProposal,
   OutboxOperation,
@@ -76,10 +79,11 @@ function rowSettings(r: any): ContinuationGenerationSettings {
 }
 
 function rowRun(r: any): ContinuationGenerationRun {
-  let workflowVersion: 2 | 4 | undefined;
+  let workflowVersion: 2 | 4 | 5 | undefined;
   try {
     const value = JSON.parse(r.context_snapshot_json || '{}')?.workflowVersion;
-    workflowVersion = value === 2 || value === 4 ? value : undefined;
+    workflowVersion =
+      value === 2 || value === 4 || value === 5 ? value : undefined;
   } catch {
     workflowVersion = undefined;
   }
@@ -614,14 +618,16 @@ export async function markRunsOutdatedForProject(
   await db.executeSql(
     `UPDATE continuation_generation_runs
      SET state = 'outdated', error_code = 'outdated', error_message = ?, updated_at = ?
-     WHERE project_id = ? AND state IN ('queued', 'running', 'awaiting_user', 'interrupted')`,
+     WHERE project_id = ? AND state IN (
+       'queued', 'running', 'awaiting_user', 'awaiting_regeneration', 'interrupted'
+     )`,
     [reason, nowIso(), projectId],
   );
 }
 
 export async function insertArtifact(input: {
   runId: string;
-  stage: 'writer' | 'repair' | 'user_edit';
+  stage: ContinuationArtifactStage;
   content: string;
   repairRound?: number;
   parentArtifactId?: string | null;
@@ -689,9 +695,11 @@ export async function getLatestArtifact(
 }
 
 /**
- * The only repository query intended for an adoption candidate. V4 must never
- * infer eligibility from the newest created_at artifact because a rejected
- * Repair artifact is intentionally retained for audit/recovery.
+ * The only repository query intended for an adoption candidate. V4/V5 must
+ * never infer eligibility from the newest created_at artifact because rejected
+ * and intermediate drafts are intentionally retained for audit/recovery.
+ *
+ * V5 deliverable is stage=final only; intermediate V1/V2 can never be eligible.
  */
 export async function getLatestEligibleArtifact(
   runId: string,
@@ -700,18 +708,29 @@ export async function getLatestEligibleArtifact(
   const [res] = await db.executeSql(
     `SELECT * FROM continuation_generation_artifacts
      WHERE run_id = ? AND eligibility_status = 'eligible'
-     ORDER BY created_at DESC, id DESC LIMIT 1`,
+       AND stage IN ('writer', 'repair', 'user_edit', 'final')
+     ORDER BY
+       CASE stage
+         WHEN 'final' THEN 0
+         WHEN 'repair' THEN 1
+         WHEN 'writer' THEN 2
+         ELSE 3
+       END,
+       created_at DESC, id DESC
+     LIMIT 1`,
     [runId],
   );
   if (res.rows.length === 0) return null;
   return rowArtifact(res.rows.item(0));
 }
 
-/** Read the newest artifact for one V4-producing stage without confusing a
- * later rejected Repair with the persisted Writer draft. */
+/** Read the newest artifact for one producing stage. */
 export async function getLatestArtifactForStage(
   runId: string,
-  stage: Extract<ContinuationArtifact['stage'], 'writer' | 'repair'>,
+  stage: Extract<
+    ContinuationArtifact['stage'],
+    'writer' | 'repair' | 'draft' | 'revision_1' | 'final'
+  >,
 ): Promise<ContinuationArtifact | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
@@ -774,7 +793,7 @@ export function newContinuationStageResultId(): string {
 
 export async function getStageResult(
   runId: string,
-  stage: ContinuationV4StageName,
+  stage: ContinuationStageResultStageName,
 ): Promise<ContinuationGenerationStageResult | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
@@ -798,7 +817,14 @@ export async function listStageResults(
        WHEN 'checker' THEN 2
        WHEN 'control' THEN 3
        WHEN 'repair' THEN 4
-       ELSE 5
+       WHEN 'local_verify' THEN 5
+       WHEN 'draft_writer' THEN 11
+       WHEN 'narrative_architect' THEN 12
+       WHEN 'revision_writer' THEN 13
+       WHEN 'adversarial_auditor' THEN 14
+       WHEN 'final_reviser' THEN 15
+       WHEN 'final_validate' THEN 16
+       ELSE 50
      END`,
     [runId],
   );
@@ -866,7 +892,7 @@ export async function ensureContinuationV4StageResults(input: {
 
 export interface ContinuationStageReservation {
   runId: string;
-  stage: ContinuationV4StageName;
+  stage: ContinuationStageResultStageName;
   modelConfigId: number | null;
   inputTokens: number | null;
   minOutputTokens: number | null;
@@ -961,7 +987,7 @@ export async function reserveContinuationStage(
 
 export interface ContinuationStageResultPatch {
   runId: string;
-  stage: ContinuationV4StageName;
+  stage: ContinuationStageResultStageName;
   status: ContinuationStageResultStatus;
   outputJson?: string | null;
   artifactId?: string | null;
@@ -969,6 +995,285 @@ export interface ContinuationStageResultPatch {
   errorCode?: string | null;
   errorMessage?: string | null;
   completedAt?: string | null;
+}
+
+/**
+ * Create the complete V5 stage ledger before the first physical request.
+ * final_validate is zero-request from the start.
+ */
+export async function ensureContinuationV5StageResults(input: {
+  runId: string;
+  stages: Record<
+    ContinuationV5PhysicalNode,
+    {
+      configId: number;
+      compiledPromptTokens: number;
+      minimumOutputTokens: number;
+      maximumOutputTokens: number;
+    }
+  >;
+}): Promise<ContinuationGenerationStageResult[]> {
+  const db = await openDatabase();
+  const ts = nowIso();
+  const physicalStages: ContinuationV5PhysicalNode[] = [
+    'draft_writer',
+    'narrative_architect',
+    'revision_writer',
+    'adversarial_auditor',
+    'final_reviser',
+  ];
+  const statements = physicalStages.map(stage => {
+    const budget = input.stages[stage];
+    return {
+      sql: `INSERT OR IGNORE INTO continuation_generation_stage_results (
+        id, run_id, stage, status, request_reserved, request_count,
+        model_config_id, input_tokens, min_output_tokens, max_output_tokens,
+        output_json, artifact_id, error_code, error_message,
+        started_at, completed_at, created_at, updated_at
+      ) VALUES (?, ?, ?, 'queued', 0, 0, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      params: [
+        newContinuationStageResultId(),
+        input.runId,
+        stage,
+        budget.configId,
+        budget.minimumOutputTokens,
+        budget.maximumOutputTokens,
+        ts,
+        ts,
+      ],
+    };
+  });
+  statements.push({
+    sql: `INSERT OR IGNORE INTO continuation_generation_stage_results (
+      id, run_id, stage, status, request_reserved, request_count,
+      model_config_id, input_tokens, min_output_tokens, max_output_tokens,
+      output_json, artifact_id, error_code, error_message,
+      started_at, completed_at, created_at, updated_at
+    ) VALUES (?, ?, 'final_validate', 'queued', 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+    params: [newContinuationStageResultId(), input.runId, ts, ts],
+  });
+  await executeTransaction(db, statements);
+  return listStageResults(input.runId);
+}
+
+/** Atomically settle V5 Final Reviser + Final Validator boundary. */
+export async function finalizeContinuationV5Final(input: {
+  runId: string;
+  finalReviserStageResultId: string;
+  finalValidateStageResultId: string;
+  parentArtifactId: string;
+  content: string;
+  eligibilityStatus: Extract<
+    ContinuationArtifactEligibility,
+    'eligible' | 'rejected'
+  >;
+  rejectionCode?: string | null;
+  tokenUsageJson: string;
+  outputTokens?: number | null;
+  finalReviserOutputJson?: string | null;
+  finalValidateOutputJson?: string | null;
+  finalValidateStatus?: Extract<
+    ContinuationStageResultStatus,
+    'success' | 'failed'
+  >;
+  runState?: Extract<
+    ContinuationRunState,
+    'awaiting_user' | 'awaiting_regeneration'
+  >;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  expectedRunStates?: ContinuationRunState[];
+  ts?: string;
+}): Promise<{
+  artifact: ContinuationArtifact;
+  finalReviserStageResult: ContinuationGenerationStageResult;
+  finalValidateStageResult: ContinuationGenerationStageResult;
+}> {
+  const db = await openDatabase();
+  const ts = input.ts ?? nowIso();
+  const artifactId = `ca_${v4().replace(/-/g, '')}`;
+  const contentHash = sha256Hex(input.content);
+  const expectedStates = input.expectedRunStates ?? ['running'];
+  const statePlaceholders = expectedStates.map(() => '?').join(', ');
+  const runState = input.runState ?? 'awaiting_user';
+  const statements: Array<{ sql: string; params?: any[] }> = [
+    {
+      sql: `INSERT INTO continuation_generation_artifacts (
+        id, run_id, stage, repair_round, parent_artifact_id, content,
+        content_hash, eligibility_status, rejection_code, created_at
+      ) VALUES (?, ?, 'final', 2, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        artifactId,
+        input.runId,
+        input.parentArtifactId,
+        input.content,
+        contentHash,
+        input.eligibilityStatus,
+        input.rejectionCode ?? null,
+        ts,
+      ],
+    },
+  ];
+  const reviserUpdateIndex = statements.length + 1;
+  statements.push({
+    sql: `UPDATE continuation_generation_stage_results SET
+        status = 'success', output_json = ?, artifact_id = ?, output_tokens = ?,
+        completed_at = ?, updated_at = ?
+      WHERE id = ? AND run_id = ? AND stage = 'final_reviser'
+        AND request_reserved = 1 AND request_count = 1`,
+    params: [
+      input.finalReviserOutputJson ?? null,
+      artifactId,
+      input.outputTokens ?? null,
+      ts,
+      ts,
+      input.finalReviserStageResultId,
+      input.runId,
+    ],
+  });
+  const validateUpdateIndex = statements.length + 1;
+  statements.push({
+    sql: `UPDATE continuation_generation_stage_results SET
+        status = ?, output_json = ?, artifact_id = ?,
+        error_code = ?, error_message = ?,
+        completed_at = ?, updated_at = ?
+      WHERE id = ? AND run_id = ? AND stage = 'final_validate'
+        AND request_reserved = 0 AND request_count = 0`,
+    params: [
+      input.finalValidateStatus ??
+        (input.eligibilityStatus === 'eligible' ? 'success' : 'failed'),
+      input.finalValidateOutputJson ?? null,
+      artifactId,
+      input.rejectionCode ?? null,
+      input.errorMessage ?? null,
+      ts,
+      ts,
+      input.finalValidateStageResultId,
+      input.runId,
+    ],
+  });
+  statements.push({
+    sql: `UPDATE continuation_generation_runs SET
+        state = ?, stage = 'awaiting_user',
+        token_usage_json = ?, error_code = ?, error_message = ?, updated_at = ?
+      WHERE id = ? AND state IN (${statePlaceholders})`,
+    params: [
+      runState,
+      input.tokenUsageJson,
+      input.errorCode ?? input.rejectionCode ?? null,
+      input.errorMessage ?? null,
+      ts,
+      input.runId,
+      ...expectedStates,
+    ],
+  });
+  const finalUpdateIndex = statements.length;
+  await executeTransaction(db, statements, {
+    onStatementComplete: (oneBasedIndex, rowsAffected) => {
+      if (
+        (oneBasedIndex === reviserUpdateIndex ||
+          oneBasedIndex === validateUpdateIndex) &&
+        rowsAffected !== 1
+      ) {
+        throw new Error('续写 V5 finalize 缺少有效 stage result，事务回滚');
+      }
+      if (oneBasedIndex === finalUpdateIndex && rowsAffected !== 1) {
+        throw new Error('续写 V5 finalize 发现 run 状态已变化，事务回滚');
+      }
+    },
+  });
+  const artifact = await getArtifactById(artifactId);
+  const finalReviserStageResult = await getStageResult(
+    input.runId,
+    'final_reviser',
+  );
+  const finalValidateStageResult = await getStageResult(
+    input.runId,
+    'final_validate',
+  );
+  if (!artifact || !finalReviserStageResult || !finalValidateStageResult) {
+    throw new Error('续写 V5 finalize 提交后读取结果失败');
+  }
+  return { artifact, finalReviserStageResult, finalValidateStageResult };
+}
+
+/** Resume-only: re-run validator decision on an existing V3 artifact. */
+export async function finalizeContinuationV5ValidatorOnly(input: {
+  runId: string;
+  finalArtifactId: string;
+  finalValidateStageResultId: string;
+  eligibilityStatus: Extract<
+    ContinuationArtifactEligibility,
+    'eligible' | 'rejected'
+  >;
+  rejectionCode?: string | null;
+  finalValidateOutputJson?: string | null;
+  tokenUsageJson: string;
+  runState?: Extract<
+    ContinuationRunState,
+    'awaiting_user' | 'awaiting_regeneration'
+  >;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  expectedRunStates?: ContinuationRunState[];
+  ts?: string;
+}): Promise<ContinuationGenerationStageResult> {
+  const db = await openDatabase();
+  const ts = input.ts ?? nowIso();
+  const expectedStates = input.expectedRunStates ?? ['running'];
+  const statePlaceholders = expectedStates.map(() => '?').join(', ');
+  const runState = input.runState ?? 'awaiting_user';
+  const statements: Array<{ sql: string; params?: any[] }> = [
+    {
+      sql: `UPDATE continuation_generation_artifacts SET
+        eligibility_status = ?, rejection_code = ?
+        WHERE id = ? AND run_id = ? AND stage = 'final'`,
+      params: [
+        input.eligibilityStatus,
+        input.rejectionCode ?? null,
+        input.finalArtifactId,
+        input.runId,
+      ],
+    },
+    {
+      sql: `UPDATE continuation_generation_stage_results SET
+        status = ?, output_json = ?, artifact_id = ?,
+        error_code = ?, error_message = ?,
+        completed_at = ?, updated_at = ?
+      WHERE id = ? AND run_id = ? AND stage = 'final_validate'
+        AND request_reserved = 0 AND request_count = 0`,
+      params: [
+        input.eligibilityStatus === 'eligible' ? 'success' : 'failed',
+        input.finalValidateOutputJson ?? null,
+        input.finalArtifactId,
+        input.rejectionCode ?? null,
+        input.errorMessage ?? null,
+        ts,
+        ts,
+        input.finalValidateStageResultId,
+        input.runId,
+      ],
+    },
+    {
+      sql: `UPDATE continuation_generation_runs SET
+        state = ?, stage = 'awaiting_user',
+        token_usage_json = ?, error_code = ?, error_message = ?, updated_at = ?
+      WHERE id = ? AND state IN (${statePlaceholders})`,
+      params: [
+        runState,
+        input.tokenUsageJson,
+        input.errorCode ?? input.rejectionCode ?? null,
+        input.errorMessage ?? null,
+        ts,
+        input.runId,
+        ...expectedStates,
+      ],
+    },
+  ];
+  await executeTransaction(db, statements);
+  const result = await getStageResult(input.runId, 'final_validate');
+  if (!result) throw new Error('续写 V5 validator-only finalize 读取失败');
+  return result;
 }
 
 export async function updateStageResult(
@@ -2112,7 +2417,7 @@ export async function findLatestPendingReviewRunForChapter(
   const [res] = await db.executeSql(
     `SELECT * FROM continuation_generation_runs
      WHERE project_id = ? AND chapter_id = ?
-       AND state = 'awaiting_user'
+       AND state IN ('awaiting_user', 'awaiting_regeneration')
      ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
     [projectId, chapterId],
   );
@@ -2131,7 +2436,7 @@ export async function listPendingReviewRunsForProject(
   const db = await openDatabase();
   const [res] = await db.executeSql(
     `SELECT * FROM continuation_generation_runs
-     WHERE project_id = ? AND state = 'awaiting_user'
+     WHERE project_id = ? AND state IN ('awaiting_user', 'awaiting_regeneration')
      ORDER BY updated_at DESC, created_at DESC LIMIT ?`,
     [projectId, limit],
   );

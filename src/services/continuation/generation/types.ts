@@ -23,7 +23,16 @@ export type ContinuationStageName =
   | 'auditing'
   | 'repair'
   | 'local_verify'
-  | 'awaiting_user';
+  | 'awaiting_user'
+  | 'draft_writer'
+  | 'narrative_architect'
+  | 'revision_writer'
+  | 'adversarial_auditor'
+  | 'final_reviser'
+  | 'final_validate'
+  | 'round1'
+  | 'round2'
+  | 'round3';
 
 /** Physical V4 nodes. `auditing` is the persisted run-level stage for the
  * parallel Checker/Control pair; their individual rows use these names. */
@@ -39,6 +48,36 @@ export type ContinuationV4ContextStage = Exclude<
   'local_verify'
 >;
 
+/** V5 physical LLM nodes (each reserves at most one request). */
+export type ContinuationV5PhysicalNode =
+  | 'draft_writer'
+  | 'narrative_architect'
+  | 'revision_writer'
+  | 'adversarial_auditor'
+  | 'final_reviser';
+
+/** V5 zero-request local node. */
+export type ContinuationV5LocalNode = 'final_validate';
+
+export type ContinuationV5Node =
+  | ContinuationV5PhysicalNode
+  | ContinuationV5LocalNode;
+
+/** Stage-result ledger stage names across V4 and V5. */
+export type ContinuationStageResultStageName =
+  | ContinuationV4StageName
+  | ContinuationV5Node;
+
+export type ContinuationV5ContextStage = ContinuationV5PhysicalNode;
+
+export const CONTINUATION_V5_ROUNDS = {
+  round1: ['draft_writer', 'narrative_architect'],
+  round2: ['revision_writer', 'adversarial_auditor'],
+  round3: ['final_reviser'],
+} as const;
+
+export const CONTINUATION_V5_MAX_PHYSICAL_REQUESTS = 5;
+
 export type ContinuationStageResultStatus =
   | 'queued'
   | 'running'
@@ -47,12 +86,24 @@ export type ContinuationStageResultStatus =
   | 'interrupted'
   | 'skipped';
 
-export type ContinuationArtifactEligibility = 'eligible' | 'rejected';
+export type ContinuationArtifactEligibility =
+  | 'eligible'
+  | 'rejected'
+  | 'intermediate';
+
+export type ContinuationArtifactStage =
+  | 'writer'
+  | 'repair'
+  | 'user_edit'
+  | 'draft'
+  | 'revision_1'
+  | 'final';
 
 export type ContinuationRunState =
   | 'queued'
   | 'running'
   | 'awaiting_user'
+  | 'awaiting_regeneration'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -157,7 +208,7 @@ export interface ContinuationGenerationSettings {
 export interface ContinuationGenerationSettingsSnapshot {
   schemaVersion: 1;
   /** Versioned generation protocol. Missing means legacy Planner semantics. */
-  workflowVersion?: 2 | 4;
+  workflowVersion?: 2 | 4 | 5;
   values: ContinuationGenerationSettings;
   resolvedModelConfigIds: {
     planner: number;
@@ -166,6 +217,12 @@ export interface ContinuationGenerationSettingsSnapshot {
     repair: number | null;
     stateExtraction: number;
     control?: number | null;
+    /** V5 frozen routing aliases (no new settings columns in v1). */
+    draftWriter?: number;
+    narrativeArchitect?: number;
+    revisionWriter?: number;
+    adversarialAuditor?: number;
+    finalReviser?: number;
   };
   /**
    * Non-secret routing fields frozen at run creation. API keys remain in
@@ -178,6 +235,11 @@ export interface ContinuationGenerationSettingsSnapshot {
     repair: FrozenContinuationModelConfig | null;
     stateExtraction: FrozenContinuationModelConfig | null;
     control?: FrozenContinuationModelConfig | null;
+    draftWriter?: FrozenContinuationModelConfig | null;
+    narrativeArchitect?: FrozenContinuationModelConfig | null;
+    revisionWriter?: FrozenContinuationModelConfig | null;
+    adversarialAuditor?: FrozenContinuationModelConfig | null;
+    finalReviser?: FrozenContinuationModelConfig | null;
   };
 }
 
@@ -345,6 +407,40 @@ export interface FrozenContinuationBudgetPolicy {
 export type ContinuationV4StageBudgets = Record<
   ContinuationV4ContextStage,
   ContinuationV4StageBudget
+>;
+
+/** V5 length policy: prompt/budget/warning only — never eligibility. */
+export interface ContinuationV5LengthPolicy {
+  preferredMinRatio: number;
+  preferredMaxRatio: number;
+  severeUnderRatio: number;
+  outputHeadroomRatio: number;
+}
+
+export interface ContinuationV5StageBudget {
+  stage: ContinuationV5PhysicalNode;
+  configId: number;
+  contextWindow: number;
+  effectiveWindow: number;
+  declaredMaxOutputTokens: number;
+  compiledPromptTokens: number;
+  protocolSkeletonTokens: number;
+  promptReserveTokens: number;
+  safetyReserveTokens: number;
+  hardContextTokens: number;
+  inputBudget: number;
+  availableOutputTokens: number;
+  demandTokens: number;
+  minimumOutputTokens: number;
+  maximumOutputTokens: number;
+  targetChapterChars: number;
+  pressure: number;
+  blockedReason: string | null;
+}
+
+export type ContinuationV5StageBudgets = Record<
+  ContinuationV5PhysicalNode,
+  ContinuationV5StageBudget
 >;
 
 export interface FrozenContinuationStyleStageView {
@@ -678,10 +774,250 @@ export interface ContinuationV4RepairEnvelope {
   unappliedItems: string[];
 }
 
+// ── Continuation V5 envelopes ───────────────────────────────────────────
+
+export interface ContinuationV5DraftEnvelope {
+  schemaVersion: 1;
+  plan: {
+    chapterGoal: string;
+    centralConflict: string;
+    beats: Array<{
+      id: string;
+      summary: string;
+      stateChange: string;
+    }>;
+  };
+  content: string;
+}
+
+export interface ContinuationV5SceneUnit {
+  sceneId: string;
+  entryState: string;
+  characterAction: string;
+  resistance: string;
+  turningPoint: string;
+  consequence: string;
+  relationshipChange: string | null;
+  informationChange: string | null;
+  riskChange: string | null;
+  canonEvidenceIds: number[];
+  requiredContinuity: string[];
+  forbiddenInventions: string[];
+}
+
+export interface ContinuationV5ArchitectureEnvelope {
+  schemaVersion: 1;
+  chapterGoal: string;
+  centralConflict: string;
+  sceneUnits: ContinuationV5SceneUnit[];
+  endingState: string;
+  forbiddenPaddingPatterns: string[];
+}
+
+export interface ContinuationV5RevisionEnvelope {
+  schemaVersion: 1;
+  draftArtifactHash: string;
+  architectureHash: string;
+  content: string;
+  usedArchitectSceneIds: string[];
+  omittedArchitectSceneIds: string[];
+  declaredNewCoreFacts: string[];
+}
+
+export type ContinuationV5CanonAuditCategory =
+  | 'character'
+  | 'world'
+  | 'relationship'
+  | 'plot'
+  | 'experience'
+  | 'knowledge'
+  | 'timeline'
+  | 'boundary'
+  | 'locked_rule';
+
+export type ContinuationV5StyleDimension =
+  | 'narrative_voice'
+  | 'pov'
+  | 'sentence_rhythm'
+  | 'dialogue_voice'
+  | 'emotional_expression'
+  | 'description_density'
+  | 'subtext'
+  | 'scene_transition'
+  | 'ai_template'
+  | 'padding';
+
+export type ContinuationV5RejectedSceneReason =
+  | 'canon_conflict'
+  | 'future_leakage'
+  | 'knowledge_conflict'
+  | 'relationship_conflict'
+  | 'style_drift'
+  | 'padding_risk'
+  | 'duplicate_function'
+  | 'unsupported_core_fact';
+
+export interface ContinuationV5AuditEnvelope {
+  schemaVersion: 1;
+  draftArtifactHash: string;
+  architectureHash: string;
+  canonSnapshotId: string;
+  canonRevision: number;
+  inputRevisionHash: string;
+  styleProfileHash: string | null;
+  styleRendererVersion: string | null;
+  canonAudit: {
+    requiredCorrections: Array<{
+      requirementId: string;
+      category: ContinuationV5CanonAuditCategory;
+      severity: 'warning' | 'error' | 'blocking';
+      confidence: number;
+      generatedStart: number | null;
+      generatedEnd: number | null;
+      generatedExcerpt: string;
+      description: string;
+      evidenceIds: number[];
+      requiredOutcome: string;
+      forbiddenChanges: string[];
+    }>;
+    protectedFacts: string[];
+    forbiddenFacts: string[];
+  };
+  styleAudit: {
+    requiredCorrections: Array<{
+      requirementId: string;
+      dimension: ContinuationV5StyleDimension;
+      severity: 'warning' | 'error';
+      confidence: number;
+      generatedStart: number | null;
+      generatedEnd: number | null;
+      generatedExcerpt: string;
+      description: string;
+      styleEvidenceIds: string[];
+      rewriteGoal: string;
+      preserveMeaning: string[];
+    }>;
+    protectedPassages: Array<{
+      passageId: string;
+      generatedStart: number;
+      generatedEnd: number;
+      generatedExcerpt: string;
+      reason: string;
+    }>;
+    forbiddenExpansionPatterns: string[];
+  };
+  architectureAudit: {
+    safeSceneIds: string[];
+    rejectedScenes: Array<{
+      sceneId: string;
+      reasonCode: ContinuationV5RejectedSceneReason;
+      description: string;
+      evidenceIds: number[];
+    }>;
+  };
+  finalObligations: Array<{
+    obligationId: string;
+    source: 'canon' | 'style' | 'architecture' | 'user_rule';
+    priority: number;
+    description: string;
+    requiredOutcome: string;
+    forbiddenChanges: string[];
+  }>;
+}
+
+export interface ContinuationV5FinalEnvelope {
+  schemaVersion: 1;
+  revisionArtifactHash: string;
+  architectureHash: string;
+  auditContractHash: string;
+  content: string;
+  appliedObligationIds: string[];
+  appliedCanonRequirementIds: string[];
+  appliedStyleRequirementIds: string[];
+  usedArchitectSceneIds: string[];
+  restoredProtectedPassageIds: string[];
+  declaredNewCoreFacts: string[];
+  unappliedItems: string[];
+}
+
+/** Shared frozen context slice for V5 full-text nodes. */
+export interface FrozenContinuationV5BaseContextView {
+  projectId: number;
+  targetChapterId: number;
+  targetPosition: ContinuationChapterPosition;
+  targetChapterChars: number;
+  preferredMinHan: number;
+  preferredMaxHan: number;
+  severeUnderHan: number;
+  userInstruction: string;
+  lockedRules: string[];
+  canon: FrozenContinuationCanonGuardView;
+  effectiveState: Pick<
+    EffectiveContinuationState,
+    | 'characterStates'
+    | 'relationships'
+    | 'plotThreads'
+    | 'knowledge'
+    | 'experiences'
+  >;
+  primaryAnchorSummary: string;
+  recentBridgeSummary: string;
+  style: FrozenContinuationStyleStageView;
+  supplements: FrozenContinuationSupplementStageView;
+  budget: ContinuationV5StageBudget;
+  snapshotRefs: {
+    canonSnapshotId: string;
+    canonRevision: number;
+    inputRevisionHash: string;
+    styleProfileHash: string | null;
+    styleRendererVersion: string | null;
+  };
+}
+
+export interface FrozenContinuationV5DraftWriterView
+  extends FrozenContinuationV5BaseContextView {
+  stage: 'draft_writer';
+  primaryAnchor: ContinuationContextSnapshot['primaryAnchor'];
+  recentChapters: ContinuationContextBundles['recentChapters'];
+  storyMemory: ContinuationContextBundles['storyMemory'];
+  episodic: ContinuationContextBundles['episodic'];
+  historicalDigests: HistoricalDigest[];
+  fullCanon: CanonContextBundle;
+}
+
+export interface FrozenContinuationV5ArchitectView
+  extends FrozenContinuationV5BaseContextView {
+  stage: 'narrative_architect';
+  fullCanon: CanonContextBundle;
+}
+
+export interface FrozenContinuationV5RevisionWriterView
+  extends FrozenContinuationV5BaseContextView {
+  stage: 'revision_writer';
+}
+
+export interface FrozenContinuationV5AuditorView
+  extends FrozenContinuationV5BaseContextView {
+  stage: 'adversarial_auditor';
+}
+
+export interface FrozenContinuationV5FinalReviserView
+  extends FrozenContinuationV5BaseContextView {
+  stage: 'final_reviser';
+}
+
+export interface ContinuationV5StageViews {
+  draft_writer: FrozenContinuationV5DraftWriterView;
+  narrative_architect: FrozenContinuationV5ArchitectView;
+  revision_writer: FrozenContinuationV5RevisionWriterView;
+  adversarial_auditor: FrozenContinuationV5AuditorView;
+  final_reviser: FrozenContinuationV5FinalReviserView;
+}
+
 export interface ContinuationContextSnapshot {
   schemaVersion: 1 | 2;
   /** New standard workflow marker; absent on historical snapshots. */
-  workflowVersion?: 2 | 4;
+  workflowVersion?: 2 | 4 | 5;
   projectId: number;
   targetChapterId: number;
   targetPosition: ContinuationChapterPosition;
@@ -744,6 +1080,23 @@ export interface ContinuationContextSnapshotV3
   stageViews: ContinuationV4StageViews;
 }
 
+/**
+ * V5 snapshot. Separate from V3 so historical V4 readers never guess V5
+ * stageBudgets / stageViews shapes.
+ */
+export interface ContinuationContextSnapshotV5
+  extends Omit<
+    ContinuationContextSnapshot,
+    'schemaVersion' | 'workflowVersion' | 'stageBudgets'
+  > {
+  schemaVersion: 4;
+  workflowVersion: 5;
+  budgetPolicy: FrozenContinuationBudgetPolicy;
+  stageBudgets: ContinuationV5StageBudgets;
+  stageViews: ContinuationV5StageViews;
+  lengthPolicy: ContinuationV5LengthPolicy;
+}
+
 export interface ContinuationContextTrace {
   sourceId: number;
   canonSnapshotId: string;
@@ -792,6 +1145,8 @@ export interface ContinuationContextTrace {
   budgetRestrictedReason?: string | null;
   v4StageBudgets?: ContinuationV4StageBudgets;
   v4StageViewHashes?: Partial<Record<ContinuationV4ContextStage, string>>;
+  v5StageBudgets?: ContinuationV5StageBudgets;
+  v5StageViewHashes?: Partial<Record<ContinuationV5PhysicalNode, string>>;
 }
 
 export interface StoryBeat {
@@ -845,7 +1200,7 @@ export interface ContinuationPlan {
 export interface ContinuationGenerationRun {
   id: string;
   /** Derived from the frozen context snapshot; absent on legacy rows. */
-  workflowVersion?: 2 | 4;
+  workflowVersion?: 2 | 4 | 5;
   projectId: number;
   chapterId: number;
   targetPosition: ContinuationChapterPosition;
@@ -876,13 +1231,13 @@ export interface ContinuationGenerationRun {
 export interface ContinuationArtifact {
   id: string;
   runId: string;
-  stage: 'writer' | 'repair' | 'user_edit';
+  stage: ContinuationArtifactStage;
   repairRound: number;
   parentArtifactId: string | null;
   content: string;
   contentHash: string;
-  /** Explicit adoption semantics added in Schema 32; absent on old in-memory
-   * fixtures/readers until the row is reloaded from the current database. */
+  /** Explicit adoption semantics added in Schema 32; intermediate is V5-only
+   * for non-deliverable V1/V2 drafts. */
   eligibilityStatus?: ContinuationArtifactEligibility;
   rejectionCode?: string | null;
   createdAt: string;
@@ -891,7 +1246,7 @@ export interface ContinuationArtifact {
 export interface ContinuationGenerationStageResult {
   id: string;
   runId: string;
-  stage: ContinuationV4StageName;
+  stage: ContinuationStageResultStageName;
   status: ContinuationStageResultStatus;
   requestReserved: boolean;
   requestCount: number;
@@ -1015,7 +1370,10 @@ export type ContinuationTruncatedStage =
   | 'writer'
   | 'checker'
   | 'control'
-  | 'repair';
+  | 'repair'
+  | 'draft_writer'
+  | 'revision_writer'
+  | 'final_reviser';
 
 /** Stable, stage-specific diagnostic for finish_reason=length. */
 export class ContinuationStageOutputTruncatedError extends Error {
@@ -1025,14 +1383,18 @@ export class ContinuationStageOutputTruncatedError extends Error {
 
   constructor(
     stage: ContinuationTruncatedStage,
-    diagnostics: Record<string, unknown>,
+    diagnostics: Record<string, unknown> = {},
   ) {
     super(
-      stage === 'writer'
+      stage === 'writer' || stage === 'draft_writer'
         ? 'Writer 输出被模型最大输出限制截断，未形成完整初稿。'
         : stage === 'repair'
           ? 'Repair 输出被模型最大输出限制截断，未形成完整终稿，系统已保留 Writer 初稿。'
-          : `${stage} 输出被模型最大输出限制截断。`,
+          : stage === 'revision_writer'
+            ? 'Revision Writer 输出被模型最大输出限制截断，未形成 V2。'
+            : stage === 'final_reviser'
+              ? 'Final Reviser 输出被模型最大输出限制截断，未形成 V3。'
+              : `${stage} 输出被模型最大输出限制截断。`,
     );
     this.name = 'ContinuationStageOutputTruncatedError';
     this.stage = stage;
