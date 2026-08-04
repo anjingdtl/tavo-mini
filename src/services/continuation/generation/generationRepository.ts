@@ -2099,6 +2099,47 @@ export async function findLatestAdoptedRunForChapter(
   return rowRun(res.rows.item(0));
 }
 
+/**
+ * Latest generation run that finished the pipeline and is waiting for the
+ * user to adopt/abandon. Used so leaving the result screen (tab switch etc.)
+ * does not strand an eligible artifact with no UI re-entry.
+ */
+export async function findLatestPendingReviewRunForChapter(
+  projectId: number,
+  chapterId: number,
+): Promise<ContinuationGenerationRun | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_generation_runs
+     WHERE project_id = ? AND chapter_id = ?
+       AND state = 'awaiting_user'
+     ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+    [projectId, chapterId],
+  );
+  if (res.rows.length === 0) return null;
+  return rowRun(res.rows.item(0));
+}
+
+/**
+ * All project runs awaiting user review (adopt/abandon), newest first.
+ * Workspace uses this to badge chapters that still have unadopted results.
+ */
+export async function listPendingReviewRunsForProject(
+  projectId: number,
+  limit = 50,
+): Promise<ContinuationGenerationRun[]> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT * FROM continuation_generation_runs
+     WHERE project_id = ? AND state = 'awaiting_user'
+     ORDER BY updated_at DESC, created_at DESC LIMIT ?`,
+    [projectId, limit],
+  );
+  const out: ContinuationGenerationRun[] = [];
+  for (let i = 0; i < res.rows.length; i++) out.push(rowRun(res.rows.item(i)));
+  return out;
+}
+
 export async function casOutboxState(
   id: string,
   expected: string[],

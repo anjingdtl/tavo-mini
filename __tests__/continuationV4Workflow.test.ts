@@ -147,7 +147,7 @@ describe('Continuation V4 workflow contracts', () => {
     ).toThrow('局部修改字段');
   });
 
-  test('Local Final Gate uses the local Han count and rejects protocol leakage', () => {
+  test('Local Final Gate softens length, rejects unchanged/leakage/collapse', () => {
     const base = '这是完整正文。'.repeat(30);
     const gate = runContinuationV4LocalFinalGate({
       writerText: base,
@@ -171,6 +171,11 @@ describe('Continuation V4 workflow contracts', () => {
     });
     expect(gate.passed).toBe(false);
     expect(gate.candidateMetrics.actualHanCharacters).toBeGreaterThan(0);
+    expect(gate.checks.map(check => check.subtype)).toContain(
+      'repair_candidate_unchanged',
+    );
+
+    // Length under target is advisory only when the candidate is a complete chapter.
     const lengthSnapshot = snapshot();
     lengthSnapshot.settingsSnapshot = {
       ...lengthSnapshot.settingsSnapshot,
@@ -179,60 +184,76 @@ describe('Continuation V4 workflow contracts', () => {
         targetChapterChars: 2000,
       },
     } as any;
+    const lengthCandidate = `${base}轻微修订。`;
     const lengthAdvisory = runContinuationV4LocalFinalGate({
       writerText: base,
-      candidateText: Array.from(
-        { length: 280 },
-        (_, index) => `修订段${index}完成。`,
-      ).join(''),
+      candidateText: lengthCandidate,
       snapshot: lengthSnapshot,
       controlMetrics: gate.candidateMetrics,
+      targetedSpans: [
+        {
+          generatedStart: lengthCandidate.length - 5,
+          generatedEnd: lengthCandidate.length,
+          generatedExcerpt: '轻微修订。',
+        },
+      ],
     });
     expect(
       lengthAdvisory.checks.find(
         check => check.subtype === 'chapter_length_under_target',
       )?.severity,
     ).toBe('warning');
-    expect(lengthAdvisory.passed).toBe(true);
-    expect(gate.checks.map(check => check.subtype)).toContain(
-      'repair_candidate_unchanged',
-    );
+    expect(
+      lengthAdvisory.checks.some(
+        c =>
+          c.subtype.startsWith('chapter_length_') &&
+          (c.severity === 'error' || c.severity === 'blocking'),
+      ),
+    ).toBe(false);
 
+    // Structural collapse / non-minimal rewrite of all paragraphs is blocking.
     const collapsedWriter = Array.from(
-      { length: 900 },
-      (_, index) => `原文段${index}推进。`,
-    ).join('');
+      { length: 40 },
+      (_, index) => `原文段${index}推进并包含足够锚点正文。`,
+    ).join('\n');
     const relativeCollapse = runContinuationV4LocalFinalGate({
       writerText: collapsedWriter,
       candidateText: Array.from(
-        { length: 300 },
-        (_, index) => `修订段${index}完成。`,
-      ).join(''),
+        { length: 40 },
+        (_, index) => `修订段${index}完全不同内容替换。`,
+      ).join('\n'),
       snapshot: snapshot(),
       controlMetrics: gate.candidateMetrics,
+      targetedSpans: [
+        {
+          generatedStart: 0,
+          generatedEnd: 10,
+          generatedExcerpt: '原文段0推进',
+        },
+      ],
     });
-    expect(
-      relativeCollapse.checks.find(
-        check => check.subtype === 'repair_candidate_collapsed',
-      )?.severity,
-    ).toBe('warning');
-    expect(relativeCollapse.passed).toBe(true);
+    expect(relativeCollapse.passed).toBe(false);
+    expect(relativeCollapse.checks.map(c => c.subtype)).toEqual(
+      expect.arrayContaining(['repair_non_minimal_rewrite']),
+    );
 
     const absoluteCollapse = runContinuationV4LocalFinalGate({
       writerText: collapsedWriter,
-      candidateText: Array.from(
-        { length: 200 },
-        (_, index) => `修订段${index}完成。`,
-      ).join(''),
+      candidateText: '本章主要讲述随后众人经过一番最终他们达成目标。',
       snapshot: snapshot(),
       controlMetrics: gate.candidateMetrics,
     });
-    expect(
-      absoluteCollapse.checks.find(
-        check => check.subtype === 'repair_candidate_collapsed',
-      )?.severity,
-    ).toBe('blocking');
     expect(absoluteCollapse.passed).toBe(false);
+    expect(
+      absoluteCollapse.checks.some(c =>
+        [
+          'repair_content_collapsed',
+          'repair_partial_output',
+          'repair_candidate_collapsed',
+          'repair_missing_unaffected_sections',
+        ].includes(c.subtype),
+      ),
+    ).toBe(true);
 
     const rejected = runContinuationV4LocalFinalGate({
       writerText: base,
@@ -246,26 +267,19 @@ describe('Continuation V4 workflow contracts', () => {
     );
   });
 
-  test('Repair compliance requires actual Checker and Control progress', () => {
+  test('Repair compliance requires Checker rewrite; length progress is not required', () => {
     const writerText = '问题原句需要被改写。'.repeat(20);
     const controlReport = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       action: 'expand' as const,
       currentHan: 200,
       targetHan: 600,
       allowedMinHan: 500,
       allowedMaxHan: 700,
-      suggestions: [
-        {
-          suggestionId: 'ctrl_1',
-          type: 'expand_scene',
-          location: 'paragraph_1_after',
-          expectedDeltaHan: 400,
-          instruction: '补充行动阻力和因果推进',
-          preserveBeatIds: ['beat_1'],
-        },
-      ],
+      suggestions: [],
       findings: [],
+      styleIssues: [],
+      styleWarnings: [],
       preserve: ['章末钩子'],
     };
     const checkerIssues = [
@@ -276,6 +290,10 @@ describe('Continuation V4 workflow contracts', () => {
         evidenceIds: [39],
         category: 'plot',
         severity: 'error',
+        subtype: 'canon_conflict',
+        suggestedFix: '改写问题原句',
+        generatedStart: 0,
+        generatedEnd: 4,
       },
     ] as any;
     const failed = validateContinuationV4RepairCompliance({
@@ -287,33 +305,29 @@ describe('Continuation V4 workflow contracts', () => {
         schemaVersion: 1,
         content: writerText,
         appliedCheckerIssueIds: ['7'],
-        appliedControlSuggestionIds: ['ctrl_1'],
+        appliedControlSuggestionIds: [],
         appliedControlFindingIds: [],
         unappliedItems: [],
       } satisfies ContinuationV4RepairEnvelope,
     });
     expect(failed.map(check => check.subtype)).toEqual(
-      expect.arrayContaining([
-        'repair_checker_issue_unchanged',
-        'repair_control_insufficient_progress',
-      ]),
+      expect.arrayContaining(['repair_checker_issue_unchanged']),
     );
-    expect(
-      failed.find(
-        check => check.subtype === 'repair_control_insufficient_progress',
-      )?.severity,
-    ).toBe('blocking');
+    expect(failed.map(check => check.subtype)).not.toContain(
+      'repair_control_insufficient_progress',
+    );
 
+    const revised = writerText.replace(/问题原句/g, '已修订事实');
     const passed = validateContinuationV4RepairCompliance({
       writerText,
-      candidateText: `${'改写后的行动推进。'.repeat(45)}终稿`,
+      candidateText: revised,
       checkerIssues,
       controlReport,
       envelope: {
         schemaVersion: 1,
-        content: `${'改写后的行动推进。'.repeat(45)}终稿`,
+        content: revised,
         appliedCheckerIssueIds: ['chk_7'],
-        appliedControlSuggestionIds: ['ctrl_1'],
+        appliedControlSuggestionIds: [],
         appliedControlFindingIds: [],
         unappliedItems: [],
       } satisfies ContinuationV4RepairEnvelope,
@@ -330,6 +344,10 @@ describe('Continuation V4 workflow contracts', () => {
         evidenceIds: [1],
         category: 'plot',
         severity: 'error',
+        subtype: 'canon_conflict',
+        suggestedFix: '改写',
+        generatedStart: 0,
+        generatedEnd: 2,
       },
     ] as any;
     const checks = validateContinuationV4RepairCompliance({
@@ -337,7 +355,7 @@ describe('Continuation V4 workflow contracts', () => {
       candidateText: '修订后的原稿。',
       checkerIssues,
       controlReport: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         action: 'keep',
         currentHan: 3,
         targetHan: 3,
@@ -359,27 +377,17 @@ describe('Continuation V4 workflow contracts', () => {
     expect(checks.map(check => check.subtype)).toContain('repair_unapplied_item');
   });
 
-  test('Repair 只增加 1 个汉字时 Control 进度不足被判定为 blocking', () => {
-    const writerText = '这是完整正文。'.repeat(200); // ~1200 han
-    // 候选只比 Writer 多 1 个汉字
+  test('字数偏差 alone 不产生 Control progress blocking', () => {
+    const writerText = '这是完整正文。'.repeat(200);
     const candidateText = `${writerText}啊`;
     const controlReport = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       action: 'expand' as const,
       currentHan: 1200,
       targetHan: 1800,
       allowedMinHan: 1600,
       allowedMaxHan: 2000,
-      suggestions: [
-        {
-          suggestionId: 'ctrl_local_expand',
-          type: 'expand_scene',
-          location: 'paragraph_1_after',
-          expectedDeltaHan: 600,
-          instruction: '扩写',
-          preserveBeatIds: [],
-        },
-      ],
+      suggestions: [],
       findings: [],
       preserve: [],
     };
@@ -392,180 +400,95 @@ describe('Continuation V4 workflow contracts', () => {
         schemaVersion: 1,
         content: candidateText,
         appliedCheckerIssueIds: [],
-        appliedControlSuggestionIds: ['ctrl_local_expand'],
-        appliedControlFindingIds: [],
-        unappliedItems: [],
-      } satisfies ContinuationV4RepairEnvelope,
-    });
-    expect(checks.map(check => check.subtype)).toContain(
-      'repair_control_insufficient_progress',
-    );
-    expect(
-      checks.find(
-        check => check.subtype === 'repair_control_insufficient_progress',
-      )?.severity,
-    ).toBe('blocking');
-  });
-
-  test('达到最低实质进度但仍低于 allowedMinHan 时 Control 合规通过，Final Gate 仅长度 warning', () => {
-    // Writer 约 1100，Control allowedMin 1600，候选约 1300：
-    // 仍低于 Control 下限，但超过绝对 1000 字坍缩线，并且增量达到建议进度。
-    const writerText = Array.from(
-      { length: 220 },
-      (_, index) => `原文段${index}推进。`,
-    ).join('');
-    const candidateText = Array.from(
-      { length: 40 },
-      (_, index) => `新增段${index}发展。`,
-    ).join('');
-    const controlReport = {
-      schemaVersion: 1 as const,
-      action: 'expand' as const,
-      currentHan: 1100,
-      targetHan: 1900,
-      allowedMinHan: 1600,
-      allowedMaxHan: 2100,
-      suggestions: [
-        {
-          suggestionId: 'ctrl_local_expand',
-          type: 'expand_scene',
-          location: 'paragraph_1_after',
-          expectedDeltaHan: 800,
-          instruction: '扩写',
-          preserveBeatIds: [],
-        },
-      ],
-      findings: [],
-      preserve: [],
-    };
-    const complianceChecks = validateContinuationV4RepairCompliance({
-      writerText,
-      candidateText: `${writerText}${candidateText}`,
-      checkerIssues: [],
-      controlReport,
-      envelope: {
-        schemaVersion: 1,
-        content: `${writerText}${candidateText}`,
-        appliedCheckerIssueIds: [],
-        appliedControlSuggestionIds: ['ctrl_local_expand'],
-        appliedControlFindingIds: [],
-        unappliedItems: [],
-      } satisfies ContinuationV4RepairEnvelope,
-    });
-    // Control 合规通过：没有 insufficient_progress
-    expect(complianceChecks.map(check => check.subtype)).not.toContain(
-      'repair_control_insufficient_progress',
-    );
-
-    // Local Final Gate：chapter_length 仍只是 warning，不阻断
-    const gateSnapshot = snapshot();
-    gateSnapshot.settingsSnapshot = {
-      ...gateSnapshot.settingsSnapshot,
-      values: {
-        ...gateSnapshot.settingsSnapshot.values,
-        targetChapterChars: 1900,
-      },
-    } as any;
-    const gate = runContinuationV4LocalFinalGate({
-      writerText,
-      candidateText: `${writerText}${candidateText}`,
-      snapshot: gateSnapshot,
-      controlMetrics: controlReport as any,
-    });
-    const lengthCheck = gate.checks.find(check =>
-      check.subtype.startsWith('chapter_length_'),
-    );
-    // 章节篇幅若有，必须是 warning 不是 error/blocking
-    if (lengthCheck) {
-      expect(lengthCheck.severity).toBe('warning');
-    }
-    // 软门禁：长度不阻断 gate（其他本地安全问题除外，此处不应有）
-    expect(gate.passed).toBe(true);
-  });
-
-  test('Repair 未回填本地 Control suggestion ID 但进度达标时仅产生 warning', () => {
-    // Writer 约 600 汉字，allowedMin 800，requiredDelta 300，requiredProgress 105。
-    // 候选追加约 120 汉字 → actualProgress 120 ≥ 105，Control 实质进度通过；
-    // 唯一未满足的是本地强制 suggestion ID 未回填，按当前契约只产生 warning，
-    // 不构成 error/blocking，候选在合规层面不被这一条拒绝。
-    const writerText = '这是完整正文。'.repeat(100);
-    const candidateText = `${writerText}${'扩展内容。'.repeat(30)}`;
-    const controlReport = {
-      schemaVersion: 1 as const,
-      action: 'expand' as const,
-      currentHan: 600,
-      targetHan: 900,
-      allowedMinHan: 800,
-      allowedMaxHan: 1000,
-      suggestions: [
-        {
-          suggestionId: 'ctrl_local_expand',
-          type: 'expand_scene',
-          location: 'paragraph_1_after',
-          expectedDeltaHan: 200,
-          instruction: '扩写',
-          preserveBeatIds: [],
-        },
-      ],
-      findings: [],
-      preserve: [],
-    };
-    const checks = validateContinuationV4RepairCompliance({
-      writerText,
-      candidateText,
-      checkerIssues: [],
-      controlReport,
-      envelope: {
-        schemaVersion: 1,
-        content: candidateText,
-        appliedCheckerIssueIds: [],
-        // 缺少 ctrl_local_expand
         appliedControlSuggestionIds: [],
         appliedControlFindingIds: [],
         unappliedItems: [],
       } satisfies ContinuationV4RepairEnvelope,
     });
-    expect(checks.map(check => check.subtype)).toContain(
-      'repair_control_suggestion_unapplied',
-    );
-    expect(
-      checks.find(
-        check => check.subtype === 'repair_control_suggestion_unapplied',
-      )?.severity,
-    ).toBe('warning');
-    // 进度达标：不应再产生 insufficient_progress
     expect(checks.map(check => check.subtype)).not.toContain(
       'repair_control_insufficient_progress',
     );
-    // 合规层面无 error/blocking → 候选不会被这条规则拒绝
-    expect(
-      checks.filter(
-        check => check.severity === 'error' || check.severity === 'blocking',
-      ),
-    ).toEqual([]);
   });
 
-  test('Control finding 未回填只产生 warning，未知 finding ID 仍属于协议错误', () => {
-    const writerText = '这是完整正文。'.repeat(300);
-    const candidateText = `${writerText}新增推进。`;
+  test('篇幅偏短只产生 warning，不单独阻断 Final Gate', () => {
+    // Candidate must differ from Writer so unchanged-check does not fire;
+    // we only assert chapter_length_* stays advisory.
+    const writerText = Array.from(
+      { length: 80 },
+      (_, index) => `原文段${index}推进叙述内容。`,
+    ).join('\n');
+    const candidateText = `${writerText}\n仅改动一句收束。`;
+    const gateSnapshot = snapshot();
+    gateSnapshot.settingsSnapshot = {
+      ...gateSnapshot.settingsSnapshot,
+      values: {
+        ...gateSnapshot.settingsSnapshot.values,
+        targetChapterChars: 5000,
+      },
+    } as any;
+    const gate = runContinuationV4LocalFinalGate({
+      writerText,
+      candidateText,
+      snapshot: gateSnapshot,
+      controlMetrics: {} as any,
+      targetedSpans: [
+        {
+          generatedStart: candidateText.length - 8,
+          generatedEnd: candidateText.length,
+          generatedExcerpt: '仅改动一句收束。',
+        },
+      ],
+    });
+    const lengthCheck = gate.checks.find(check =>
+      check.subtype.startsWith('chapter_length_'),
+    );
+    expect(lengthCheck).toBeTruthy();
+    expect(lengthCheck?.severity).toBe('warning');
+    expect(
+      gate.checks.some(
+        c =>
+          c.subtype.startsWith('chapter_length_') &&
+          (c.severity === 'error' || c.severity === 'blocking'),
+      ),
+    ).toBe(false);
+  });
+
+  test('repairReady 文风 finding 未回填为 blocking；audit-only 为 warning', () => {
+    const writerText = '他感到非常悲伤，因为失去了一切。\n门外风声未停。\n她没有回头。';
+    const candidateText = '他沉默片刻，转身离去。\n门外风声未停。\n她没有回头。';
     const controlReport = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       action: 'keep' as const,
-      currentHan: 2400,
-      targetHan: 2400,
-      allowedMinHan: 2000,
-      allowedMaxHan: 2800,
+      currentHan: 40,
+      targetHan: 40,
+      allowedMinHan: 1,
+      allowedMaxHan: 100,
       suggestions: [],
       findings: [
         {
-          findingId: 'ctrl_local_ending_hook',
-          subtype: 'ending_hook',
+          findingId: 'style_1',
+          subtype: 'emotional_expression',
+          severity: 'error' as const,
+          location: 'utf16:0-16',
+          generatedStart: 0,
+          generatedEnd: 16,
+          description: '解释性心理',
+          suggestedFix: '改为动作',
+          rewriteGoal: '改为动作',
+          preserveMeaning: ['悲伤'],
+          styleEvidenceIds: ['s1'],
+          repairReady: true,
+        },
+        {
+          findingId: 'style_audit',
+          subtype: 'sentence_rhythm',
           severity: 'warning' as const,
-          location: 'chapter_end',
+          location: 'chapter',
           generatedStart: null,
           generatedEnd: null,
-          description: '章末推进不足。',
-          suggestedFix: '补足新的行动后果和章末钩子。',
+          description: '整体节奏略显平淡',
+          suggestedFix: '可选',
+          repairReady: false,
         },
       ],
       preserve: [],
@@ -587,7 +510,28 @@ describe('Continuation V4 workflow contracts', () => {
     expect(
       missing.find(check => check.subtype === 'repair_control_finding_unapplied')
         ?.severity,
-    ).toBe('warning');
+    ).toBe('blocking');
+
+    const withReady = validateContinuationV4RepairCompliance({
+      writerText,
+      candidateText,
+      checkerIssues: [],
+      controlReport,
+      envelope: {
+        schemaVersion: 1,
+        content: candidateText,
+        appliedCheckerIssueIds: [],
+        appliedControlSuggestionIds: [],
+        appliedControlFindingIds: ['style_1'],
+        unappliedItems: [],
+      },
+    });
+    const auditOnly = withReady.find(
+      c =>
+        c.subtype === 'repair_control_finding_unapplied' &&
+        c.description.includes('style_audit'),
+    );
+    expect(auditOnly?.severity).toBe('warning');
 
     const unknown = validateContinuationV4RepairCompliance({
       writerText,
@@ -599,7 +543,7 @@ describe('Continuation V4 workflow contracts', () => {
         content: candidateText,
         appliedCheckerIssueIds: [],
         appliedControlSuggestionIds: [],
-        appliedControlFindingIds: ['ctrl_not_in_report'],
+        appliedControlFindingIds: ['style_1', 'ctrl_not_in_report'],
         unappliedItems: [],
       },
     });
@@ -607,5 +551,86 @@ describe('Continuation V4 workflow contracts', () => {
       unknown.find(check => check.subtype === 'repair_unknown_control_finding_id')
         ?.severity,
     ).toBe('blocking');
+  });
+
+  test('Repair 片段/摘要/丢锚点被完整性门禁拒绝', () => {
+    const paragraphs = Array.from(
+      { length: 12 },
+      (_, i) => `这是第${i + 1}段完整叙述内容，包含人物动作与对白。`,
+    );
+    const writerText = paragraphs.join('\n');
+    const fragment = paragraphs[5];
+    const summary = '本章主要讲述众人经过一番努力最终他们达成目标。其余内容不变。';
+
+    const fragmentGate = runContinuationV4LocalFinalGate({
+      writerText,
+      candidateText: fragment,
+      snapshot: snapshot(),
+      controlMetrics: {} as any,
+      targetedSpans: [{ generatedStart: 0, generatedEnd: 10, generatedExcerpt: paragraphs[0] }],
+    });
+    expect(fragmentGate.passed).toBe(false);
+    expect(fragmentGate.checks.map(c => c.subtype)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/repair_partial_output|repair_content_collapsed|repair_missing_unaffected/),
+      ]),
+    );
+
+    const summaryGate = runContinuationV4LocalFinalGate({
+      writerText,
+      candidateText: summary,
+      snapshot: snapshot(),
+      controlMetrics: {} as any,
+      targetedSpans: [],
+    });
+    expect(summaryGate.passed).toBe(false);
+
+    // Minimal fix: rewrite only middle paragraph, keep others
+    const repaired = paragraphs
+      .map((p, i) => (i === 5 ? '他沉默片刻，转身离开。' : p))
+      .join('\n');
+    const okGate = runContinuationV4LocalFinalGate({
+      writerText,
+      candidateText: repaired,
+      snapshot: snapshot(),
+      controlMetrics: {} as any,
+      targetedSpans: [
+        {
+          generatedStart: writerText.indexOf(paragraphs[5]),
+          generatedEnd:
+            writerText.indexOf(paragraphs[5]) + paragraphs[5].length,
+          generatedExcerpt: paragraphs[5],
+        },
+      ],
+    });
+    expect(okGate.passed).toBe(true);
+    expect(okGate.completeness?.minimalInterventionPassed).toBe(true);
+  });
+
+  test('大量改写未标记段落时最小干预失败', () => {
+    const paragraphs = Array.from(
+      { length: 8 },
+      (_, i) => `保留段落${i}的具体叙述内容应当不变。`,
+    );
+    const writerText = paragraphs.join('\n');
+    const rewritten = Array.from(
+      { length: 8 },
+      (_, i) => `完全不同的重写段落${i}内容替换了原文。`,
+    ).join('\n');
+    const gate = runContinuationV4LocalFinalGate({
+      writerText,
+      candidateText: rewritten,
+      snapshot: snapshot(),
+      controlMetrics: {} as any,
+      targetedSpans: [
+        {
+          generatedStart: 0,
+          generatedEnd: paragraphs[0].length,
+          generatedExcerpt: paragraphs[0],
+        },
+      ],
+    });
+    expect(gate.passed).toBe(false);
+    expect(gate.checks.map(c => c.subtype)).toContain('repair_non_minimal_rewrite');
   });
 });
