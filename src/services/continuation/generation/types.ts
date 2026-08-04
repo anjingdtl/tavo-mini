@@ -512,9 +512,27 @@ export interface ContinuationV4Metrics {
     mean: number;
     median: number;
   };
-  duplicateWindows: Array<{ start: number; end: number; count: number }>;
+  duplicateWindows: ContinuationDuplicateWindow[];
   beatCoverage: Array<{ beatId: string; paragraphIds: string[] }>;
   insertionBoundaries: number[];
+}
+
+export interface ContinuationDuplicateOccurrence {
+  start: number;
+  end: number;
+  paragraphId: string;
+}
+
+/**
+ * `start`/`end`/`count` remain for old consumers. `occurrences` is the
+ * authoritative precise representation and never spans the normal text
+ * between two duplicate paragraphs.
+ */
+export interface ContinuationDuplicateWindow {
+  start: number;
+  end: number;
+  count: number;
+  occurrences: ContinuationDuplicateOccurrence[];
 }
 
 /**
@@ -567,7 +585,16 @@ export interface ContinuationStyleIssue {
   rewriteGoal: string;
   preserveMeaning: string[];
   repairReady: boolean;
+  bindingStatus?: ContinuationStyleIssueBindingStatus;
 }
+
+export type ContinuationStyleIssueBindingStatus =
+  | 'bound_by_range'
+  | 'bound_by_unique_excerpt'
+  | 'range_excerpt_mismatch'
+  | 'excerpt_not_found'
+  | 'excerpt_not_unique'
+  | 'invalid_location';
 
 /** Advisory/actionable finding used by Repair audit ids (findingId). */
 export interface ContinuationControlFinding {
@@ -579,6 +606,8 @@ export interface ContinuationControlFinding {
   generatedEnd: number | null;
   /** Hit span from Writer artifact (UTF-16 slice or model-provided excerpt). */
   generatedExcerpt?: string;
+  /** Real model confidence; missing values are audit-only on compatibility paths. */
+  confidence?: number;
   description: string;
   suggestedFix: string;
   /** When true, Repair must rewrite the targeted span and echo findingId. */
@@ -587,6 +616,7 @@ export interface ContinuationControlFinding {
   preserveMeaning?: string[];
   styleEvidenceIds?: string[];
   styleDimension?: ContinuationStyleDimension;
+  bindingStatus?: ContinuationStyleIssueBindingStatus;
 }
 
 /**
@@ -615,6 +645,14 @@ export interface ContinuationControlReport {
   styleWarnings?: ContinuationStyleIssue[];
   styleProfileRevision?: number | null;
   writerArtifactHash?: string | null;
+  styleProfileHash?: string | null;
+  styleRendererVersion?: string | null;
+  echoedWriterArtifactHash?: string | null;
+  echoedStyleProfileHash?: string | null;
+  echoedStyleRendererVersion?: string | null;
+  controlBindingErrorCodes?: string[];
+  legacyFindingDowngradeCount?: number;
+  telemetryEvents?: string[];
   metricEchoMismatch?: boolean;
   /** Legacy diagnostic; length-action echo is no longer authoritative. */
   actionEchoMismatch?: boolean;
@@ -970,5 +1008,35 @@ export class ContinuationConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ContinuationConflictError';
+  }
+}
+
+export type ContinuationTruncatedStage =
+  | 'writer'
+  | 'checker'
+  | 'control'
+  | 'repair';
+
+/** Stable, stage-specific diagnostic for finish_reason=length. */
+export class ContinuationStageOutputTruncatedError extends Error {
+  readonly code: `${ContinuationTruncatedStage}_output_truncated`;
+  readonly stage: ContinuationTruncatedStage;
+  readonly diagnostics: Record<string, unknown>;
+
+  constructor(
+    stage: ContinuationTruncatedStage,
+    diagnostics: Record<string, unknown>,
+  ) {
+    super(
+      stage === 'writer'
+        ? 'Writer 输出被模型最大输出限制截断，未形成完整初稿。'
+        : stage === 'repair'
+          ? 'Repair 输出被模型最大输出限制截断，未形成完整终稿，系统已保留 Writer 初稿。'
+          : `${stage} 输出被模型最大输出限制截断。`,
+    );
+    this.name = 'ContinuationStageOutputTruncatedError';
+    this.stage = stage;
+    this.code = `${stage}_output_truncated`;
+    this.diagnostics = diagnostics;
   }
 }

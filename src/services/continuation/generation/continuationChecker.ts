@@ -15,6 +15,7 @@ import {
   isLengthExpansionIssue,
   resolveContinuationLengthContract,
 } from './continuationLengthContract';
+import type { ContinuationReferenceLengthBand } from './continuationLengthContract';
 
 export { isLengthExpansionIssue };
 
@@ -54,7 +55,12 @@ export function isRepairableCheckerIssue(
   > & { evidenceIds?: number[] | null },
 ): boolean {
   if (issue.severity !== 'error' && issue.severity !== 'blocking') return false;
-  if (isContinuationLengthIssueSubtype(String(issue.subtype ?? ''))) {
+  const subtype = String(issue.subtype ?? '');
+  if (
+    isContinuationLengthIssueSubtype(subtype) ||
+    // Historical V4 rows used this prefix for length-only Repair gates.
+    subtype.startsWith('repair_length_')
+  ) {
     return false;
   }
   // Style ownership moved to Control; Checker style rows stay audit-only
@@ -112,39 +118,47 @@ function levelOff(
 export function runDeterministicChecks(
   artifactText: string,
   snapshot: ContinuationContextSnapshot,
+  options?: {
+    lengthContract?: ContinuationReferenceLengthBand;
+  },
 ): RawCheckIssue[] {
   const issues: RawCheckIssue[] = [];
   const settings = snapshot.settingsSnapshot.values;
 
-  const lengthContract = resolveContinuationLengthContract(
-    settings.targetChapterChars,
-  );
+  const lengthContract =
+    options?.lengthContract ??
+    resolveContinuationLengthContract(settings.targetChapterChars);
   const lengthEvaluation = evaluateContinuationLength(
     artifactText,
     lengthContract,
   );
   if (lengthEvaluation.status !== 'within') {
     const under = lengthEvaluation.status === 'under';
-    // ±30% band: under min (== target×0.7) is a V4 length-expansion trigger
-    // (isLengthExpansionIssue); over max is advisory only and never triggers
-    // Repair. Local Final Gate still softens length severity to warning so
-    // length alone never blocks candidate eligibility — quality gates do.
+    const v4ToleranceRatio =
+      'toleranceRatio' in lengthContract &&
+      typeof lengthContract.toleranceRatio === 'number'
+        ? lengthContract.toleranceRatio
+        : null;
+    const v4Advisory = v4ToleranceRatio !== null;
+    const toleranceDescription = v4Advisory
+      ? `±${Math.round(v4ToleranceRatio * 100)}%`
+      : `±${lengthContract.toleranceHanCharacters} 个汉字`;
     issues.push({
       category: 'style',
       subtype: under
         ? 'chapter_length_under_target'
         : 'chapter_length_over_target',
-      severity: 'error',
+      severity: v4Advisory ? 'warning' : 'error',
       confidence: 1,
       generatedStart: null,
       generatedEnd: null,
       generatedExcerpt: '',
       description: under
-        ? `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，低于目标体量区间下限 ${lengthContract.minHanCharacters}（目标约 ${lengthContract.targetHanCharacters}，±30%）。低于下限通常意味着场景展开不足，可触发定向深化扩写。`
-        : `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，高于目标体量区间上限 ${lengthContract.maxHanCharacters}（目标约 ${lengthContract.targetHanCharacters}，±30%）。超长仅作提示，不强制压缩。`,
+        ? `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，低于目标体量区间下限 ${lengthContract.minHanCharacters}（目标约 ${lengthContract.targetHanCharacters}，${toleranceDescription}）。篇幅偏差仅供参考，不因此触发自动 Repair。`
+        : `正文含汉字 ${lengthEvaluation.actualHanCharacters} 个，高于目标体量区间上限 ${lengthContract.maxHanCharacters}（目标约 ${lengthContract.targetHanCharacters}，${toleranceDescription}）。篇幅偏差仅供参考，不因此触发自动 Repair。`,
       evidenceIds: [],
       suggestedFix: under
-        ? '在既有场景与节拍内深化：动作过程、对话回合、人物反应、感官细节、冲突升级阶梯；禁止注水、新增支线或复述设定。'
+        ? '篇幅偏差仅供人工参考；如人工判断需要展开，请自然深化既有动作、对话、反应和因果过程；没有自然内容可展开时不得填充。'
         : '篇幅偏长仅供人工参考；不得为压字数删掉必要情节或人物反应。',
     });
   }
