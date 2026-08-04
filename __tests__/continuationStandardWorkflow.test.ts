@@ -266,7 +266,7 @@ const writerJson = (content: string) =>
   });
 
 /**
- * Default seedRun target is 100 Han (±30% → 70–130). Pad short fixtures so
+ * Default seedRun target is 100 Han (legacy fixed ±500 → 1–600). Pad short fixtures so
  * non-length tests do not accidentally open a chapter_length Repair path.
  */
 function inDefaultLengthBand(label: string): string {
@@ -793,7 +793,7 @@ describe('continuation standard three-call workflow', () => {
     ).toBe(false);
   });
 
-  // Target 3000 → ±30% band 2100–3900. Cases use lengths relative to that band.
+  // Legacy target 3000 → fixed ±500 band 2500–3500. Cases use lengths relative to that band.
   it.each([
     // Both under: partial progress saved, issue stays open.
     ['1500 to 1800 keeps under-target open', 1500, 1800, true, false],
@@ -801,7 +801,7 @@ describe('continuation standard three-call workflow', () => {
     ['4500 to 4200 keeps over-target open', 4500, 4200, true, false],
     ['1500 to 1500 rejects unchanged length', 1500, 1500, false, false],
     ['1500 to 1200 rejects farther under-target length', 1500, 1200, false, false],
-    ['1500 to 2200 closes the under-target issue', 1500, 2200, true, true],
+    ['1500 to 2600 closes the under-target issue', 1500, 2600, true, true],
   ])(
     '%s',
     async (
@@ -875,7 +875,7 @@ describe('continuation standard three-call workflow', () => {
 
   it('allows one extra Repair for a safe partial length improvement and never calls Checker or Repair a third time', async () => {
     seedRun({ workflowVersion: 2, targetChapterChars: 3000 });
-    // Start below 0.7×3000=2100; first partial repair stays under, second enters band.
+    // Start below the legacy 2500 floor; first partial repair stays under, second enters band.
     const writerContent = '甲'.repeat(1500);
     const calls: any[] = [];
     let repairCalls = 0;
@@ -887,7 +887,7 @@ describe('continuation standard three-call workflow', () => {
       }
       repairCalls += 1;
       const currentContent = mockState.artifacts.at(-1)?.content ?? writerContent;
-      const expansion = repairCalls === 1 ? 400 : 300;
+      const expansion = repairCalls === 1 ? 800 : 300;
       return {
         text: JSON.stringify({
           patches: [

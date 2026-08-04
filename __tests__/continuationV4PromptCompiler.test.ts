@@ -124,7 +124,7 @@ const controlReport = {
 } as any;
 
 describe('Continuation V4 Prompt contracts', () => {
-  test('Writer 注入 ±30% 软区间、节拍篇幅预算与深化引导', () => {
+  test('Writer 注入 ±30% 软区间与自然深化引导，不分配 Beat 数字预算', () => {
     for (const target of [1800, 3200, 6000]) {
       const messages = compileContinuationV4WriterMessages({
         ...writerView,
@@ -133,8 +133,8 @@ describe('Continuation V4 Prompt contracts', () => {
       const system = messages[0].content;
       expect(system).toContain(`约 ${target} 个汉字`);
       expect(system).toContain('±30%');
-      expect(system).toContain('为每个 beat');
       expect(system).toContain('优先深化已有场景');
+      expect(system).not.toContain('为每个 beat');
       expect(system).not.toContain('可自然长于或短于');
       expect(system).not.toContain('汉字产出硬目标');
       expect(system).not.toContain('最低合格线');
@@ -142,8 +142,8 @@ describe('Continuation V4 Prompt contracts', () => {
       expect(system).toContain('不得为了接近参考字数');
     }
     const tail = compileContinuationV4WriterMessages(writerView)[1].content;
-    expect(tail).toContain('2100–3900');
-    expect(tail).toContain('是哪个节拍被压缩了');
+    expect(tail).toContain('大致接近 3000 个汉字参考目标');
+    expect(tail).not.toContain('是哪个节拍被压缩了');
   });
 
   test('Writer 使用完整初稿 envelope 与动态目标体量', () => {
@@ -266,6 +266,7 @@ describe('Continuation V4 Prompt contracts', () => {
             rewriteGoal: '改为动作表现',
             preserveMeaning: ['保留事件'],
             styleEvidenceIds: ['s1'],
+            bindingStatus: 'bound_by_range',
             repairReady: true,
           },
         ],
@@ -280,6 +281,7 @@ describe('Continuation V4 Prompt contracts', () => {
             generatedExcerpt: '完整 Wri',
             description: '模板化心理',
             styleEvidenceIds: ['s1'],
+            bindingStatus: 'bound_by_range',
             rewriteGoal: '改为动作表现',
             preserveMeaning: ['保留事件'],
             repairReady: true,
@@ -290,9 +292,12 @@ describe('Continuation V4 Prompt contracts', () => {
     const system = messages[0].content;
     const user = messages[1].content;
     expect(system).toContain('统一可执行任务清单');
-    expect(system).toContain('Checker：五维资料一致性修订');
-    expect(system).toContain('Control：原著文风修订');
-    expect(system).toContain('repairReady');
+    expect(system).toContain('[checker] subtype=canon_conflict taskId=9');
+    expect(system).toContain('subtype=emotional_expression');
+    expect(system).toContain(
+      '[style_control] subtype=emotional_expression taskId=style_1',
+    );
+    expect(system).toContain('统一可执行任务清单');
     expect(system).toContain('style_1');
     expect(system).toContain('完整 Wri');
     expect(user).toContain('⟦ISSUE_');
@@ -300,7 +305,7 @@ describe('Continuation V4 Prompt contracts', () => {
     expect(system).toContain('禁止保留任何锚点标记');
   });
 
-  test('Repair 仅长度不足时注入定向深化扩写指令', () => {
+  test('Repair 不把长度偏差编译成自动 Repair 任务', () => {
     const shortText = '甲'.repeat(1000);
     const messages = compileContinuationV4RepairMessages({
       view: repairView,
@@ -324,11 +329,8 @@ describe('Continuation V4 Prompt contracts', () => {
       },
       controlReport,
     });
-    expect(messages[0].content).toContain('定向深化扩写');
-    expect(messages[0].content).toContain('禁止新增人物');
-    expect(messages[0].content).not.toContain(
-      '本次无篇幅扩写任务：不得为了接近参考字数增加或删除内容',
-    );
+    expect(messages[0].content).toContain('篇幅偏差仅供参考，未因此触发自动 Repair');
+    expect(messages[0].content).not.toContain('定向深化扩写');
     const tasks = buildRepairUnifiedTasks({
       artifactText: shortText,
       checkerReport: {
@@ -348,32 +350,44 @@ describe('Continuation V4 Prompt contracts', () => {
       },
       controlReport,
     });
-    expect(tasks.some(t => t.kind === 'length_expansion')).toBe(true);
+    expect(tasks.some(t => t.description === '偏短')).toBe(false);
   });
 
   test('锚点注入/剥离往返一致', () => {
     const text = '前文对峙片段后文收束。';
     const tasks = [
       {
-        issueIndex: 1,
-        kind: 'checker' as const,
-        id: '1',
+        taskIndex: 1,
+        taskId: '1',
+        subtype: 'canon_conflict',
+        source: 'checker' as const,
+        priority: 20,
+        contextBefore: '',
+        contextAfter: '',
         description: '冲突',
         suggestedFix: '改',
         generatedStart: 2,
         generatedEnd: 6,
         generatedExcerpt: '对峙片段',
+        evidenceIds: [1],
+        confidence: 0.9,
+        forbiddenChanges: [],
+        anchorInjected: false,
+        issueIndex: 1,
+        kind: 'checker' as const,
+        id: '1',
       },
     ];
     const anchored = injectRepairAnchors(text, tasks);
-    expect(anchored).toContain('⟦ISSUE_1_START⟧对峙片段⟦ISSUE_1_END⟧');
-    const stripped = stripRepairAnchors(anchored);
+    expect(anchored.text).toContain('⟦ISSUE_1_START⟧对峙片段⟦ISSUE_1_END⟧');
+    expect(anchored.injectedTaskIndexes).toEqual([1]);
+    const stripped = stripRepairAnchors(anchored.text);
     expect(stripped.hadAnchors).toBe(true);
     expect(stripped.text).toBe(text);
     expect(stripRepairAnchors(text).hadAnchors).toBe(false);
   });
 
-  test('混合 Checker+Control+长度 任务合并进同一次 Repair 清单', () => {
+  test('混合 Checker+Control 任务合并进同一次 Repair 清单，长度不入卡', () => {
     const tasks = buildRepairUnifiedTasks({
       artifactText: '问题原句模板化心理后文',
       checkerReport: {
@@ -419,15 +433,15 @@ describe('Continuation V4 Prompt contracts', () => {
             rewriteGoal: '删水',
             preserveMeaning: ['事件'],
             styleEvidenceIds: ['e1'],
+            confidence: 0.9,
+            bindingStatus: 'bound_by_range',
             repairReady: true,
           },
         ],
       },
     });
-    expect(tasks.map(t => t.kind).sort()).toEqual(
-      ['checker', 'control', 'length_expansion'].sort(),
-    );
-    expect(tasks).toHaveLength(3);
+    expect(tasks.map(t => t.kind).sort()).toEqual(['checker', 'control'].sort());
+    expect(tasks).toHaveLength(2);
   });
 
   test('Repair contract 最小干预且必须输出完整章节', () => {
@@ -441,7 +455,7 @@ describe('Continuation V4 Prompt contracts', () => {
     expect(messages[0].content).toContain('最小干预修订者');
     expect(messages[0].content).toContain('即使只修改一句话');
     expect(messages[0].content).toContain('完整终稿');
-    expect(messages[0].content).toContain('不得为了接近参考字数');
+    expect(messages[0].content).toContain('篇幅偏差仅供参考，未因此触发自动 Repair');
     expect(messages[0].content).toContain('appliedControlFindingIds');
     expect(messages[0].content).not.toContain('最低实质进度');
     expect(messages[0].content).not.toContain('requiredProgress');

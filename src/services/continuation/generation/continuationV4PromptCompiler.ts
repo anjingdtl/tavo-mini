@@ -1,12 +1,10 @@
 import type { ChatMessage } from '../../llm/types';
 import { estimateTokens } from '../../../utils/tokenEstimator';
 import {
-  countHanCharacters,
-  isLengthExpansionIssue,
-  resolveContinuationLengthContract,
+  resolveContinuationV4ReferenceLengthBand,
 } from './continuationLengthContract';
 import {
-  isStyleIssueRepairReady,
+  getRepairReadyStyleFindings,
   STYLE_REPAIR_CONFIDENCE_MIN,
 } from './continuationControl';
 import { isRepairableCheckerIssue } from './continuationChecker';
@@ -15,7 +13,6 @@ import type {
   ContinuationControlFinding,
   ContinuationControlReport,
   ContinuationPlan,
-  ContinuationStyleIssue,
   ContinuationV4Metrics,
   FrozenContinuationCheckerContextView,
   FrozenContinuationControlContextView,
@@ -32,32 +29,62 @@ export const REPAIR_ISSUE_ANCHOR_START = (n: number) => `⟦ISSUE_${n}_START⟧`
 export const REPAIR_ISSUE_ANCHOR_END = (n: number) => `⟦ISSUE_${n}_END⟧`;
 export const REPAIR_ANCHOR_MARKER_PATTERN = /⟦ISSUE_\d+_(?:START|END)⟧/g;
 
+export const REPAIR_TASK_CONTEXT_CHARS = 96;
+export const MAX_REPAIR_STYLE_TASKS = 8;
+
 export interface RepairUnifiedTask {
-  /** 1-based index used in anchor tags and the numbered task list. */
-  issueIndex: number;
-  kind: 'checker' | 'control' | 'length_expansion';
-  id: string;
+  /** New canonical task-card fields. */
+  taskIndex: number;
+  taskId: string;
+  subtype: string;
+  source: 'local_safety' | 'checker' | 'style_control';
+  priority: number;
+  contextBefore: string;
+  contextAfter: string;
   description: string;
   suggestedFix: string;
   generatedStart: number | null;
   generatedEnd: number | null;
   generatedExcerpt: string;
+  evidenceIds: Array<number | string>;
+  confidence: number | null;
   rewriteGoal?: string;
   preserveMeaning?: string[];
+  forbiddenChanges: string[];
+  anchorInjected: boolean;
+  /** Compatibility aliases for older prompt/test consumers. */
+  issueIndex: number;
+  kind: 'checker' | 'control';
+  id: string;
   mustPreserve?: string[];
 }
 
+export interface RepairAnchorInjectionResult {
+  text: string;
+  injectedTaskIndexes: number[];
+  skipped: Array<{
+    taskIndex: number;
+    reason: 'no_range' | 'invalid_range' | 'overlap' | 'out_of_bounds';
+  }>;
+  overlapGroups: Array<{ taskIndexes: number[]; start: number; end: number }>;
+}
+
+export interface ContinuationRepairPromptOptions {
+  taskContextChars?: number;
+  includeWriterPlan?: boolean;
+}
+
 /**
- * Soft length goal: ±30% band + beat budget + deepen-first guidance.
- * Not a hard "must reach min before ending" quota (creative loosening retained).
+ * Soft length goal only. It must not allocate a numeric quota to individual
+ * beats or create an automatic Repair task.
  */
 function writerLengthSoftHint(view: { targetChapterChars: number }): string {
-  const contract = resolveContinuationLengthContract(view.targetChapterChars);
+  const contract = resolveContinuationV4ReferenceLengthBand(
+    view.targetChapterChars,
+  );
   return [
-    `【本章目标体量】约 ${contract.targetHanCharacters} 个汉字，正常落区间 ${contract.minHanCharacters}–${contract.maxHanCharacters}（±30%）。`,
-    '低于下限通常意味着场景展开不足，而非情节已经讲完。',
-    '规划时为每个 beat 在 summary 中标注预期篇幅量（合计约等于目标汉字数），写作时按预算展开每个节拍再推进到下一个。',
-    '若正文明显低于下限，优先深化已有场景：动作的过程与后果、对话的回合与潜台词、人物的即时反应、关键情绪的铺陈、冲突的升级阶梯——而不是提前收束、新增支线或复述设定。',
+    `【本章目标体量】约 ${contract.targetHanCharacters} 个汉字，正常落区间 ${contract.minHanCharacters}–${contract.maxHanCharacters}（±${Math.round(contract.toleranceRatio * 100)}%）。`,
+    '尽量使章节体量接近用户参考目标。若主要场景过早收束，优先深化已有场景中的动作、对话、反应、潜台词和因果过程；没有自然内容可展开时，不得为了达到数字填充。',
     '不得为了接近参考字数：填充重复心理；堆叠环境描写；重复人物反应；扩展无新信息的对白；添加总结性解释。',
   ].join('\n');
 }
@@ -65,10 +92,12 @@ function writerLengthSoftHint(view: { targetChapterChars: number }): string {
 function writerLengthTailReminder(view: {
   targetChapterChars: number;
 }): string {
-  const contract = resolveContinuationLengthContract(view.targetChapterChars);
+  const contract = resolveContinuationV4ReferenceLengthBand(
+    view.targetChapterChars,
+  );
   return [
     '【Writer 输出前最后检查】',
-    `输出前自查：正文是否落在 ${contract.minHanCharacters}–${contract.maxHanCharacters} 区间；若低于 ${contract.minHanCharacters}，是哪个节拍被压缩了？回到该节拍深化，而不是加结尾感言。`,
+    `输出前自查：正文体量是否大致接近 ${contract.targetHanCharacters} 个汉字参考目标；若主要场景过早收束，可自然深化既有动作、对话、反应、潜台词和因果过程；没有自然内容可展开时不要填充。`,
     '确认顶层 schemaVersion 是数字 1；content 必须是从章节开头到自然结尾的完整章节正文，不是摘要、提纲、片段或短结尾。',
     '只输出一个顶层 JSON object；不要在正文之外输出解释。',
   ].join('\n');
@@ -245,7 +274,7 @@ export function compileContinuationV4ControlMessages(input: {
         '你是原著续写 V4 Control，负责原著文风一致性审查。只输出 JSON，不写小说正文，不输出思考过程。',
         '不负责 expand/compress、字数差额、最低净增/净减、Beat 覆盖、段落比例或剧情事实判断。字数指标仅用于识别“凑字数痕迹”，不是修订目标。',
         '重点维度：narrative_voice、pov、sentence_rhythm、dialogue_voice、emotional_expression、description_density、subtext、scene_transition、ai_template、padding。',
-        `顶层必须为 {"schemaVersion":2,"writerArtifactHash":"","styleProfileRevision":null,"issues":[],"warnings":[],"summary":{"reviewedDimensions":[],"actionableIssueCount":0,"auditWarningCount":0}}。writerArtifactHash 原样回显 ${input.writerArtifactHash ?? ''}。`,
+        `顶层必须为 {"schemaVersion":2,"writerArtifactHash":"","styleProfileHash":"","styleRendererVersion":"","issues":[],"warnings":[],"summary":{"reviewedDimensions":[],"actionableIssueCount":0,"auditWarningCount":0}}。writerArtifactHash 原样回显 ${input.writerArtifactHash ?? ''}；styleProfileHash 原样回显 ${view.style.profileHash ?? view.snapshotRefs.styleProfileHash ?? ''}；styleRendererVersion 原样回显 ${view.style.rendererVersion ?? ''}。`,
         'issues 仅放可定位、有 styleEvidenceIds、有 rewriteGoal、有 preserveMeaning、confidence 足够高的局部文风偏离；severity=error 才可能进入 Repair。',
         `repairReady 由客户端判定（confidence≥${STYLE_REPAIR_CONFIDENCE_MIN}、可定位、有证据、rewriteGoal 明确、preserveMeaning 非空、不要求新增事实或重构整章）。`,
         '无法定位的“整体不像原著”“节奏平淡”等只能放入 warnings，不得伪装成可执行 issue。',
@@ -289,60 +318,14 @@ export function resolveStyleFindingExcerpt(
   return '';
 }
 
-function renderCheck(check: ContinuationCheckResult): string {
-  const repairReady = isRepairableCheckerIssue(check);
-  return JSON.stringify({
-    issueId: String(check.id),
-    category: check.category,
-    subtype: check.subtype,
-    severity: check.severity,
-    generatedStart: check.generatedStart,
-    generatedEnd: check.generatedEnd,
-    generatedExcerpt: check.generatedExcerpt,
-    description: check.description,
-    evidenceIds: check.evidenceIds,
-    suggestedFix: check.suggestedFix,
-    repairReady,
-    repairTask: repairReady
-      ? `改写上述 generatedExcerpt；${check.suggestedFix ?? ''}`
-      : '仅作审计记录，不作为可执行 Repair 任务',
-  });
-}
-
 export function renderStyleFinding(
   finding: ContinuationControlFinding,
   artifactText?: string,
 ): string {
   const generatedExcerpt = resolveStyleFindingExcerpt(finding, artifactText);
-  // No placeholder evidence — missing styleEvidenceIds means not repairReady.
   const styleEvidenceIds = finding.styleEvidenceIds ?? [];
   const rewriteGoal = finding.rewriteGoal ?? finding.suggestedFix ?? '';
-  const preserveMeaning =
-    finding.preserveMeaning && finding.preserveMeaning.length > 0
-      ? finding.preserveMeaning
-      : [];
-  const repairReady = isStyleIssueRepairReady({
-    severity: finding.severity === 'error' ? 'error' : 'warning',
-    confidence: 1,
-    generatedStart: finding.generatedStart,
-    generatedEnd: finding.generatedEnd,
-    generatedExcerpt,
-    styleEvidenceIds,
-    rewriteGoal,
-    preserveMeaning:
-      preserveMeaning.length > 0 ? preserveMeaning : ['保留原意'],
-    description: finding.description,
-  });
-  // If the finding was already marked repairReady upstream with real evidence,
-  // keep it when location + evidence still hold; never invent evidence.
-  const effectiveReady =
-    (finding.repairReady === true &&
-      styleEvidenceIds.length > 0 &&
-      ((generatedExcerpt.trim().length >= 4) ||
-        (finding.generatedStart != null &&
-          finding.generatedEnd != null &&
-          finding.generatedEnd > finding.generatedStart))) ||
-    repairReady;
+  const preserveMeaning = finding.preserveMeaning ?? [];
 
   return JSON.stringify({
     findingId: finding.findingId,
@@ -351,76 +334,178 @@ export function renderStyleFinding(
     generatedStart: finding.generatedStart,
     generatedEnd: finding.generatedEnd,
     generatedExcerpt: generatedExcerpt || undefined,
+    confidence:
+      typeof finding.confidence === 'number' && Number.isFinite(finding.confidence)
+        ? finding.confidence
+        : undefined,
     description: finding.description,
     styleEvidenceIds,
     rewriteGoal: rewriteGoal || undefined,
     preserveMeaning,
-    repairReady: effectiveReady,
+    repairReady: finding.repairReady === true,
+    bindingStatus: finding.bindingStatus,
   });
 }
 
-function styleIssuesFromReport(
-  report: ContinuationControlReport,
-): ContinuationStyleIssue[] {
-  if (report.styleIssues?.length) return report.styleIssues;
-  return (report.findings ?? [])
-    .filter(f => f.repairReady)
-    .map(f => ({
-      findingId: f.findingId,
-      styleDimension: (f.styleDimension ??
-        f.subtype) as ContinuationStyleIssue['styleDimension'],
-      severity: f.severity === 'error' ? 'error' : 'warning',
-      confidence: 1,
-      generatedStart: f.generatedStart,
-      generatedEnd: f.generatedEnd,
-      generatedExcerpt: f.generatedExcerpt ?? '',
-      description: f.description,
-      styleEvidenceIds: f.styleEvidenceIds ?? [],
-      rewriteGoal: f.rewriteGoal ?? f.suggestedFix,
-      preserveMeaning: f.preserveMeaning ?? [],
-      repairReady: true,
-    }));
+function taskContext(
+  artifactText: string,
+  start: number | null,
+  end: number | null,
+  excerpt: string,
+  contextChars: number,
+): { before: string; after: string } {
+  let resolvedStart = start;
+  let resolvedEnd = end;
+  if (
+    (resolvedStart == null || resolvedEnd == null) &&
+    excerpt.length >= 4
+  ) {
+    const located = artifactText.indexOf(excerpt);
+    if (located >= 0 && artifactText.indexOf(excerpt, located + excerpt.length) < 0) {
+      resolvedStart = located;
+      resolvedEnd = located + excerpt.length;
+    }
+  }
+  if (
+    resolvedStart == null ||
+    resolvedEnd == null ||
+    resolvedStart < 0 ||
+    resolvedEnd <= resolvedStart
+  ) {
+    return { before: '', after: '' };
+  }
+  return {
+    before: artifactText.slice(Math.max(0, resolvedStart - contextChars), resolvedStart),
+    after: artifactText.slice(resolvedEnd, resolvedEnd + contextChars),
+  };
+}
+
+function makeRepairTask(input: {
+  taskIndex: number;
+  source: RepairUnifiedTask['source'];
+  priority: number;
+  taskId: string;
+  subtype: string;
+  description: string;
+  suggestedFix: string;
+  generatedStart: number | null;
+  generatedEnd: number | null;
+  generatedExcerpt: string;
+  evidenceIds?: Array<number | string>;
+  confidence?: number | null;
+  rewriteGoal?: string;
+  preserveMeaning?: string[];
+  artifactText: string;
+  contextChars: number;
+}): RepairUnifiedTask {
+  const context = taskContext(
+    input.artifactText,
+    input.generatedStart,
+    input.generatedEnd,
+    input.generatedExcerpt,
+    input.contextChars,
+  );
+  return {
+    taskIndex: input.taskIndex,
+    taskId: input.taskId,
+    subtype: input.subtype,
+    source: input.source,
+    priority: input.priority,
+    contextBefore: context.before,
+    contextAfter: context.after,
+    description: input.description,
+    suggestedFix: input.suggestedFix,
+    generatedStart: input.generatedStart,
+    generatedEnd: input.generatedEnd,
+    generatedExcerpt: input.generatedExcerpt,
+    evidenceIds: input.evidenceIds ?? [],
+    confidence: input.confidence ?? null,
+    rewriteGoal: input.rewriteGoal,
+    preserveMeaning: input.preserveMeaning ?? [],
+    forbiddenChanges: ['新增 Canon 事实', '改变未标记事件链', '输出摘要或局部片段'],
+    anchorInjected: false,
+    issueIndex: input.taskIndex,
+    kind: input.source === 'style_control' ? 'control' : 'checker',
+    id: input.taskId,
+    mustPreserve: input.preserveMeaning ?? [],
+  };
 }
 
 /**
- * Build a single numbered Repair task list (Checker + Control + length expansion).
- * One physical Repair request handles all tasks — no split, no retry.
+ * Build one authoritative task card list. Length warnings and audit-only
+ * findings deliberately never become cards.
  */
 export function buildRepairUnifiedTasks(input: {
   artifactText: string;
   checkerReport?: { issues: ContinuationCheckResult[] } | null;
   controlReport: ContinuationControlReport;
+  contextChars?: number;
+  maxStyleTasks?: number;
 }): RepairUnifiedTask[] {
+  const contextChars = input.contextChars ?? REPAIR_TASK_CONTEXT_CHARS;
   const tasks: RepairUnifiedTask[] = [];
-  let issueIndex = 1;
+  let taskIndex = 1;
   const checks = input.checkerReport?.issues ?? [];
-
-  for (const check of checks.filter(isRepairableCheckerIssue)) {
-    tasks.push({
-      issueIndex: issueIndex++,
-      kind: 'checker',
-      id: String(check.id),
-      description: check.description,
-      suggestedFix: check.suggestedFix ?? '',
-      generatedStart: check.generatedStart,
-      generatedEnd: check.generatedEnd,
-      generatedExcerpt: (check.generatedExcerpt ?? '').trim(),
-      mustPreserve: [],
+  const checkerIssues = checks
+    .filter(isRepairableCheckerIssue)
+    .sort((a, b) => {
+      const aLocal =
+        a.subtype === 'source_overlap' ||
+        a.subtype === 'continuation_anchor_overlap' ||
+        a.subtype === 'future_leakage' ||
+        a.subtype === 'self_duplicate';
+      const bLocal =
+        b.subtype === 'source_overlap' ||
+        b.subtype === 'continuation_anchor_overlap' ||
+        b.subtype === 'future_leakage' ||
+        b.subtype === 'self_duplicate';
+      return Number(bLocal) - Number(aLocal);
     });
+  for (const check of checkerIssues) {
+    const excerpt = (check.generatedExcerpt ?? '').trim();
+    const start = check.generatedStart;
+    const end = check.generatedEnd;
+    tasks.push(
+      makeRepairTask({
+        taskIndex: taskIndex++,
+        source:
+          check.subtype === 'source_overlap' ||
+          check.subtype === 'continuation_anchor_overlap' ||
+          check.subtype === 'future_leakage' ||
+          check.subtype === 'self_duplicate'
+            ? 'local_safety'
+            : 'checker',
+        priority:
+          check.subtype === 'source_overlap' ||
+          check.subtype === 'continuation_anchor_overlap' ||
+          check.subtype === 'future_leakage' ||
+          check.subtype === 'self_duplicate'
+            ? 10
+            : 20,
+        taskId: String(check.id),
+        subtype: check.subtype,
+        description: check.description,
+        suggestedFix: check.suggestedFix ?? '',
+        generatedStart: start,
+        generatedEnd: end,
+        generatedExcerpt:
+          excerpt ||
+          (start != null && end != null && end > start
+            ? input.artifactText.slice(start, end)
+            : ''),
+        evidenceIds: check.evidenceIds ?? [],
+        confidence: Number.isFinite(check.confidence) ? check.confidence : null,
+        artifactText: input.artifactText,
+        contextChars,
+      }),
+    );
   }
 
-  const styleIssues = styleIssuesFromReport(input.controlReport);
-  const repairReadyStyle = styleIssues.filter(i => i.repairReady);
-  const styleFindings = (input.controlReport.findings ?? []).filter(
-    f => f.repairReady,
-  );
-  const controlItems: Array<ContinuationControlFinding | ContinuationStyleIssue> =
-    styleFindings.length
-      ? styleFindings
-      : (repairReadyStyle as ContinuationStyleIssue[]);
-
-  for (const item of controlItems) {
-    const finding = item as ContinuationControlFinding & ContinuationStyleIssue;
+  const readyFindings = getRepairReadyStyleFindings(input.controlReport);
+  const styleLimit = input.maxStyleTasks ?? MAX_REPAIR_STYLE_TASKS;
+  const styleItems = readyFindings.slice(0, styleLimit);
+  for (const item of styleItems) {
+    const finding = item as ContinuationControlFinding;
     const excerpt = resolveStyleFindingExcerpt(
       {
         generatedStart: finding.generatedStart,
@@ -429,85 +514,96 @@ export function buildRepairUnifiedTasks(input: {
       },
       input.artifactText,
     );
-    const evidence = finding.styleEvidenceIds ?? [];
-    if (!evidence.length && !(finding as ContinuationControlFinding).repairReady) {
-      continue;
-    }
-    tasks.push({
-      issueIndex: issueIndex++,
-      kind: 'control',
-      id: finding.findingId,
-      description: finding.description,
-      suggestedFix:
-        finding.rewriteGoal ?? finding.suggestedFix ?? finding.description,
-      generatedStart: finding.generatedStart,
-      generatedEnd: finding.generatedEnd,
-      generatedExcerpt: excerpt,
-      rewriteGoal: finding.rewriteGoal ?? finding.suggestedFix,
-      preserveMeaning: finding.preserveMeaning ?? [],
-      mustPreserve: finding.preserveMeaning ?? [],
-    });
+    tasks.push(
+      makeRepairTask({
+        taskIndex: taskIndex++,
+        source: 'style_control',
+        priority: 30,
+        taskId: finding.findingId,
+        subtype: finding.subtype,
+        description: finding.description,
+        suggestedFix: finding.rewriteGoal ?? finding.suggestedFix ?? finding.description,
+        generatedStart: finding.generatedStart,
+        generatedEnd: finding.generatedEnd,
+        generatedExcerpt: excerpt,
+        evidenceIds: finding.styleEvidenceIds ?? [],
+        confidence:
+          typeof finding.confidence === 'number' && Number.isFinite(finding.confidence)
+            ? finding.confidence
+            : null,
+        rewriteGoal: finding.rewriteGoal ?? finding.suggestedFix,
+        preserveMeaning: finding.preserveMeaning ?? [],
+        artifactText: input.artifactText,
+        contextChars,
+      }),
+    );
   }
-
-  for (const check of checks.filter(isLengthExpansionIssue)) {
-    tasks.push({
-      issueIndex: issueIndex++,
-      kind: 'length_expansion',
-      id: String(check.id),
-      description: check.description,
-      suggestedFix: check.suggestedFix ?? '',
-      generatedStart: null,
-      generatedEnd: null,
-      generatedExcerpt: '',
-      mustPreserve: [],
-    });
-  }
-
   return tasks;
 }
 
 /**
- * Inject ⟦ISSUE_n_START⟧…⟦ISSUE_n_END⟧ around target spans (descending offsets).
- * Overlapping ranges: later (lower-index) tasks skip if they would nest wrongly.
+ * Inject anchors using original UTF-16 coordinates. Overlapping ranges are
+ * merged into one shared marker group, so no actionable task disappears.
  */
 export function injectRepairAnchors(
   artifactText: string,
   tasks: RepairUnifiedTask[],
-): string {
-  const withRange = tasks
-    .filter(
-      t =>
-        t.generatedStart != null &&
-        t.generatedEnd != null &&
-        t.generatedEnd > t.generatedStart &&
-        t.generatedStart >= 0 &&
-        t.generatedEnd <= artifactText.length,
-    )
-    .slice()
-    .sort((a, b) => {
-      const startDiff = (b.generatedStart as number) - (a.generatedStart as number);
-      if (startDiff !== 0) return startDiff;
-      return (b.generatedEnd as number) - (a.generatedEnd as number);
-    });
+): RepairAnchorInjectionResult {
+  const skipped: RepairAnchorInjectionResult['skipped'] = [];
+  const valid = tasks
+    .map(task => {
+      const hasStart = task.generatedStart != null;
+      const hasEnd = task.generatedEnd != null;
+      if (!hasStart && !hasEnd) {
+        skipped.push({ taskIndex: task.taskIndex, reason: 'no_range' });
+        return null;
+      }
+      if (typeof task.generatedStart !== 'number' || typeof task.generatedEnd !== 'number' || task.generatedEnd <= task.generatedStart) {
+        skipped.push({ taskIndex: task.taskIndex, reason: 'invalid_range' });
+        return null;
+      }
+      if (task.generatedStart < 0 || task.generatedEnd > artifactText.length) {
+        skipped.push({ taskIndex: task.taskIndex, reason: 'out_of_bounds' });
+        return null;
+      }
+      return {
+        taskIndex: task.taskIndex,
+        start: task.generatedStart,
+        end: task.generatedEnd,
+      };
+    })
+    .filter((value): value is { taskIndex: number; start: number; end: number } => value !== null)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
 
-  let result = artifactText;
-  // Track intervals already marked in original coordinates (descending inject).
-  const occupied: Array<{ start: number; end: number }> = [];
-  for (const t of withRange) {
-    const start = t.generatedStart as number;
-    const end = t.generatedEnd as number;
-    if (occupied.some(o => start < o.end && end > o.start)) continue;
-    occupied.push({ start, end });
-    // Because we inject from high to low start, earlier (higher) offsets are
-    // already expanded; lower starts still match original coordinates.
-    result =
-      result.slice(0, start) +
-      REPAIR_ISSUE_ANCHOR_START(t.issueIndex) +
-      result.slice(start, end) +
-      REPAIR_ISSUE_ANCHOR_END(t.issueIndex) +
-      result.slice(end);
+  const groups: Array<{ taskIndexes: number[]; start: number; end: number }> = [];
+  for (const item of valid) {
+    const current = groups[groups.length - 1];
+    if (!current || item.start >= current.end) {
+      groups.push({
+        taskIndexes: [item.taskIndex],
+        start: item.start,
+        end: item.end,
+      });
+      continue;
+    }
+    current.taskIndexes.push(item.taskIndex);
+    current.start = Math.min(current.start, item.start);
+    current.end = Math.max(current.end, item.end);
   }
-  return result;
+  const overlapGroups = groups.filter(group => group.taskIndexes.length > 1);
+  const injectedTaskIndexes = groups.flatMap(group => group.taskIndexes);
+  let text = artifactText;
+  for (const group of [...groups].sort((a, b) => b.start - a.start)) {
+    const starts = group.taskIndexes
+      .map(taskIndex => REPAIR_ISSUE_ANCHOR_START(taskIndex))
+      .join('');
+    const ends = [...group.taskIndexes]
+      .reverse()
+      .map(taskIndex => REPAIR_ISSUE_ANCHOR_END(taskIndex))
+      .join('');
+    text = text.slice(0, group.start) + starts + text.slice(group.start, group.end) + ends + text.slice(group.end);
+  }
+  return { text, injectedTaskIndexes, skipped, overlapGroups };
 }
 
 /** Strip client-injected Repair anchors; report whether any markers were present. */
@@ -525,49 +621,22 @@ export function stripRepairAnchors(text: string): {
 
 function formatUnifiedTaskLine(task: RepairUnifiedTask): string {
   const parts = [
-    `${task.issueIndex}. [${task.kind}] id=${task.id}`,
-    `锚点=⟦ISSUE_${task.issueIndex}_START⟧…⟦ISSUE_${task.issueIndex}_END⟧`,
+    `${task.taskIndex}. [${task.source}] subtype=${task.subtype} taskId=${task.taskId} priority=${task.priority}`,
+    task.anchorInjected
+      ? `定位：锚点 ⟦ISSUE_${task.taskIndex}_START⟧…⟦ISSUE_${task.taskIndex}_END⟧`
+      : `定位：utf16 ${task.generatedStart ?? '—'}–${task.generatedEnd ?? '—'}；命中原文：「${task.generatedExcerpt.slice(0, 120)}」`,
     `问题：${task.description}`,
-    `建议修法：${task.suggestedFix || task.rewriteGoal || '（见描述）'}`,
+    `修订目标：${task.rewriteGoal || task.suggestedFix || '（见描述）'}`,
   ];
   if (task.generatedExcerpt) {
     parts.push(`命中原文：「${task.generatedExcerpt.slice(0, 120)}」`);
   }
-  if (task.mustPreserve?.length || task.preserveMeaning?.length) {
-    parts.push(
-      `必须保留：${(task.mustPreserve ?? task.preserveMeaning ?? []).join('；')}`,
-    );
-  }
-  if (task.generatedStart != null && task.generatedEnd != null) {
-    parts.push(`utf16=${task.generatedStart}-${task.generatedEnd}`);
-  }
+  parts.push(`前文上下文：「${task.contextBefore}」`);
+  parts.push(`后文上下文：「${task.contextAfter}」`);
+  parts.push(`证据=${task.evidenceIds.join(',') || 'none'}；confidence=${task.confidence ?? 'unknown'}`);
+  parts.push(`必须保留：${(task.preserveMeaning ?? []).join('；') || '（未提供，不能擅自改变语义）'}`);
+  parts.push(`禁止改变：${task.forbiddenChanges.join('；')}`);
   return parts.join(' | ');
-}
-
-function lengthExpansionInstruction(input: {
-  artifactText: string;
-  targetChapterChars: number;
-  plan: ContinuationPlan;
-  tasks: RepairUnifiedTask[];
-}): string | null {
-  if (!input.tasks.some(t => t.kind === 'length_expansion')) return null;
-  const contract = resolveContinuationLengthContract(input.targetChapterChars);
-  const currentHan = countHanCharacters(input.artifactText);
-  const gap = Math.max(0, contract.minHanCharacters - currentHan);
-  const beatBudget = input.plan.beats
-    .map(
-      (beat, index) =>
-        `- beat_${beat.order || index + 1}: ${beat.summary}`,
-    )
-    .join('\n');
-  return [
-    '【定向深化扩写任务】',
-    `当前汉字数=${currentHan}；目标约 ${contract.targetHanCharacters}；合格区间 ${contract.minHanCharacters}–${contract.maxHanCharacters}（±30%）；缺口约 ${gap} 个汉字。`,
-    '只在既有场景与既有节拍内深化：动作过程、对话回合、人物反应、感官细节、冲突升级阶梯。',
-    '禁止新增人物/设定/情节线；禁止摘要式扩写、禁止复述前文、禁止为每个段落平均加水。',
-    '扩写后仍须通过文风质量闸（padding / ai_template / description_density）；注水会被拒绝。',
-    `【Writer beats（按节拍深化）】\n${beatBudget || '（无）'}`,
-  ].join('\n');
 }
 
 export function compileContinuationV4RepairMessages(input: {
@@ -576,36 +645,34 @@ export function compileContinuationV4RepairMessages(input: {
   plan: ContinuationPlan;
   checkerReport?: { issues: ContinuationCheckResult[] } | null;
   controlReport: ContinuationControlReport;
+  options?: ContinuationRepairPromptOptions;
 }): ChatMessage[] {
   const { view } = input;
-  const contract = resolveContinuationLengthContract(view.targetChapterChars);
+  const contract = resolveContinuationV4ReferenceLengthBand(view.targetChapterChars);
   const checks = input.checkerReport?.issues ?? [];
   const repairableCheckerIssues = checks.filter(isRepairableCheckerIssue);
-  const lengthExpansionIssues = checks.filter(isLengthExpansionIssue);
-  const styleIssues = styleIssuesFromReport(input.controlReport);
-  const repairReadyStyle = styleIssues.filter(i => i.repairReady);
-  const styleFindings = (input.controlReport.findings ?? []).filter(
-    f => f.repairReady,
-  );
-  const unifiedTasks = buildRepairUnifiedTasks({
+  const unifiedTasksBeforeAnchors = buildRepairUnifiedTasks({
     artifactText: input.artifactText,
     checkerReport: input.checkerReport,
     controlReport: input.controlReport,
+    contextChars: input.options?.taskContextChars ?? REPAIR_TASK_CONTEXT_CHARS,
   });
-  const anchoredText = injectRepairAnchors(input.artifactText, unifiedTasks);
-  const expansionBlock = lengthExpansionInstruction({
-    artifactText: input.artifactText,
-    targetChapterChars: view.targetChapterChars,
-    plan: input.plan,
-    tasks: unifiedTasks,
-  });
-  const lengthPolicy = expansionBlock
-    ? expansionBlock
-    : [
-        `用户配置的目标体量约 ${contract.targetHanCharacters} 个汉字（区间 ${contract.minHanCharacters}–${contract.maxHanCharacters}）。`,
-        '本次无篇幅扩写任务：不得为了接近参考字数增加或删除内容。',
-        '不得为了接近参考字数：新增解释性心理；重复人物反应；堆叠环境描写；扩展无新信息对白；添加总结性句子；机械重复风格画像特征。',
-      ].join('\n');
+  const anchorResult = injectRepairAnchors(
+    input.artifactText,
+    unifiedTasksBeforeAnchors,
+  );
+  const unifiedTasks = unifiedTasksBeforeAnchors.map(task => ({
+    ...task,
+    anchorInjected: anchorResult.injectedTaskIndexes.includes(task.taskIndex),
+  }));
+  const lengthPolicy = [
+    `用户配置的目标体量约 ${contract.targetHanCharacters} 个汉字（参考区间 ${contract.minHanCharacters}–${contract.maxHanCharacters}，偏差仅供参考）。`,
+    '尽量使章节体量接近用户参考目标。若主要场景过早收束，优先深化已有场景中的动作、对话、反应、潜台词和因果过程；没有自然内容可展开时，不得为了接近参考字数填充。',
+    '篇幅偏差仅供参考，未因此触发自动 Repair；Repair 只处理统一任务卡中的 Checker、local safety 和 Control style error。',
+  ].join('\n');
+  const repairReadyStyleCount = unifiedTasks.filter(
+    task => task.source === 'style_control',
+  ).length;
 
   return [
     {
@@ -617,53 +684,28 @@ export function compileContinuationV4RepairMessages(input: {
         '禁止只输出：修改片段、新增段落、Patch、offset、replacement、修改说明、摘要、大纲、“其余内容保持不变”、“以下为修改部分”。',
         '严格结构协议：唯一合格顶层为 {"schemaVersion":1,"content":"完整章节终稿","appliedCheckerIssueIds":[],"appliedControlSuggestionIds":[],"appliedControlFindingIds":[],"unappliedItems":[]}。六个顶层字段一个都不能省略；数组即使为空也必须保留。',
         'content 只能是完整、连续、可直接作为章节正文的纯文本；不能是 JSON、Markdown、说明文字或局部补丁。',
-        '【执行顺序】1) 先处理带锚点的 Checker 五维问题；2) 再处理带锚点的 Control 文风问题；3) 若有篇幅扩写任务则定向深化；4) 不处理 audit-only warning；5) 不统一润色全文；6) 不改写未标记段落（扩写任务除外）；7) 不新增 Canon、人物经历或剧情事实。',
+        '【执行顺序】1) local_safety blocking；2) Checker blocking/error；3) Control style error；4) 不处理 audit-only warning；5) 不统一润色全文；6) 不改写未标记段落；7) 不新增 Canon、人物经历或剧情事实。',
         '【锚点协议】user 正文中的 ⟦ISSUE_n_START⟧…⟦ISSUE_n_END⟧ 仅用于定位，终稿 content 中禁止保留任何锚点标记。',
         lengthPolicy,
         '【本次统一可执行任务清单（一次请求内全部完成，禁止拆分）】',
         unifiedTasks.length
           ? unifiedTasks.map(formatUnifiedTaskLine).join('\n')
           : '（无）',
-        `- Checker repairReady 五维/边界问题共 ${repairableCheckerIssues.length} 项：必须改写对应 generatedExcerpt/锚点并回填 issueId。`,
-        `- Control repairReady 文风问题共 ${repairReadyStyle.length || styleFindings.length} 项：必须改写目标范围、落实 rewriteGoal、遵守 preserveMeaning，并回填 findingId 到 appliedControlFindingIds。`,
-        `- 篇幅定向扩写任务共 ${lengthExpansionIssues.length} 项：必须使汉字数进入目标区间下限以上，且候选汉字数 > 初稿。`,
-        '- appliedControlSuggestionIds 保持空数组即可（已不再使用篇幅 expand/compress 建议）。',
+        `【紧凑统计】Checker/local safety 可执行 ${repairableCheckerIssues.length} 项；Control style error ${repairReadyStyleCount} 项；audit-only 不进入任务卡；锚点注入 ${anchorResult.injectedTaskIndexes.length} 项；无锚点任务 ${anchorResult.skipped.length} 项；重叠组 ${anchorResult.overlapGroups.length} 组。`,
+        '- appliedControlSuggestionIds 保持空数组；字数不生成任务，也不需要回填长度进度。',
         '- unappliedItems 必须为空。只填写 id 不代表完成；客户端会检查问题原句是否仍完整保留、锚点是否残留，以及终稿是否为完整章节。',
-        `【Checker：五维资料一致性修订（明细）】\n${repairableCheckerIssues.map(renderCheck).join('\n') || '（无）'}`,
-        `【Control：原著文风修订（明细）】\n${(
-          styleFindings.length
-            ? styleFindings
-            : (repairReadyStyle as any)
-        )
-          .map((f: any) =>
-            f.findingId
-              ? renderStyleFinding(
-                  f as ContinuationControlFinding,
-                  input.artifactText,
-                )
-              : JSON.stringify(f),
-          )
-          .join('\n') || '（无）'}`,
-        `【Control 报告摘要】\n${json({
-          schemaVersion: input.controlReport.schemaVersion,
-          action: input.controlReport.action,
-          currentHan: input.controlReport.currentHan,
-          targetHan: input.controlReport.targetHan,
-          styleIssueCount: repairReadyStyle.length,
-          styleWarningCount: (input.controlReport.styleWarnings ?? []).length,
-          findings: styleFindings,
-        })}`,
-        planBlock(input.plan),
+        input.options?.includeWriterPlan === false ? '' : planBlock(input.plan),
+        'Repair 后只执行本地完整性、协议、重复和确定性安全检查；不会进行第二次 LLM 文风复核。',
         outputBudgetBlock(view),
-      ].join('\n\n'),
+      ].filter(Boolean).join('\n\n'),
     },
     {
       role: 'user',
       content: [
         '【完整 Writer 初稿开始（含任务锚点）】',
-        anchoredText,
+        anchorResult.text,
         '【完整 Writer 初稿结束】',
-        '现在只输出完整终稿 JSON envelope。只在标出的锚点范围内做最小干预修订（篇幅扩写任务除外）；未标记段落尽量保持原文；输出必须是完整章节，且 content 中不得保留任何 ⟦ISSUE_*⟧ 锚点：',
+        '现在只输出完整终稿 JSON envelope。只在任务卡指出的范围内做最小干预修订；无锚点任务使用其 utf16 范围、原文摘录和前后上下文定位；未标记段落尽量保持原文；输出必须是完整章节，且 content 中不得保留任何 ⟦ISSUE_*⟧ 锚点：',
         '{"schemaVersion":1,"content":"在此放完整终稿纯文本","appliedCheckerIssueIds":[],"appliedControlSuggestionIds":[],"appliedControlFindingIds":[],"unappliedItems":[]}',
       ].join('\n\n'),
     },
@@ -688,7 +730,8 @@ export function continuationV4ProtocolSkeletonTokens(
     control: {
       schemaVersion: 2,
       writerArtifactHash: '',
-      styleProfileRevision: null,
+      styleProfileHash: '',
+      styleRendererVersion: '',
       issues: [],
       warnings: [],
       summary: {

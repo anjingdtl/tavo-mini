@@ -45,7 +45,7 @@ describe('Continuation V4 Checker parser', () => {
         suggestedFix: '注意一致性',
       }),
     ).toBe(false);
-    // length is not five-dimension repairReady; under_target uses isLengthExpansionIssue
+    // length is not five-dimension repairReady and is never a V4 Repair trigger
     expect(
       isRepairableCheckerIssue({
         severity: 'error',
@@ -68,6 +68,18 @@ describe('Continuation V4 Checker parser', () => {
       isLengthExpansionIssue({
         severity: 'error',
         subtype: 'chapter_length_over_target',
+      }),
+    ).toBe(false);
+    expect(
+      isRepairableCheckerIssue({
+        severity: 'error',
+        category: 'plot',
+        subtype: 'repair_length_expansion_below_floor',
+        description: '历史长度门禁',
+        suggestedFix: '扩写',
+        generatedStart: 0,
+        generatedEnd: 4,
+        generatedExcerpt: '正文片段',
       }),
     ).toBe(false);
   });

@@ -84,7 +84,10 @@ jest.mock('@react-navigation/native', () => ({
     dispatch: jest.fn(),
   }),
   useFocusEffect: (cb: any) => {
-    if (typeof cb === 'function') cb();
+    const actualReact = jest.requireActual('react') as typeof import('react');
+    actualReact.useEffect(() => {
+      if (typeof cb === 'function') cb();
+    }, [cb]);
   },
 }));
 

@@ -2,6 +2,7 @@ import {
   countHanCharacters,
   evaluateContinuationLength,
   resolveContinuationLengthContract,
+  resolveContinuationV4ReferenceLengthBand,
 } from '../src/services/continuation/generation/continuationLengthContract';
 import {
   applyRepairPatches,
@@ -45,35 +46,42 @@ function snapshot(targetChapterChars = 3000): any {
 }
 
 describe('continuation target Han length contract', () => {
-  it('uses proportional ±30% tolerance for 1000/3000/8000 targets', () => {
+  it('keeps the legacy fixed ±500 contract and exposes a separate V4 ±30% advisory band', () => {
     expect(resolveContinuationLengthContract(1000)).toEqual({
       targetHanCharacters: 1000,
-      minHanCharacters: 700,
-      maxHanCharacters: 1300,
-      toleranceHanCharacters: 300,
+      minHanCharacters: 500,
+      maxHanCharacters: 1500,
+      toleranceHanCharacters: 500,
     });
     expect(resolveContinuationLengthContract(3000)).toEqual({
+      targetHanCharacters: 3000,
+      minHanCharacters: 2500,
+      maxHanCharacters: 3500,
+      toleranceHanCharacters: 500,
+    });
+    expect(resolveContinuationLengthContract(8000)).toEqual({
+      targetHanCharacters: 8000,
+      minHanCharacters: 7500,
+      maxHanCharacters: 8500,
+      toleranceHanCharacters: 500,
+    });
+    expect(resolveContinuationV4ReferenceLengthBand(3000)).toEqual({
       targetHanCharacters: 3000,
       minHanCharacters: 2100,
       maxHanCharacters: 3900,
       toleranceHanCharacters: 900,
-    });
-    expect(resolveContinuationLengthContract(8000)).toEqual({
-      targetHanCharacters: 8000,
-      minHanCharacters: 5600,
-      maxHanCharacters: 10400,
-      toleranceHanCharacters: 2400,
+      toleranceRatio: 0.3,
     });
     expect(countHanCharacters('甲，乙。\nABC 123！')).toBe(2);
-    expect(evaluateContinuationLength(han(2100), 3000).status).toBe('within');
-    expect(evaluateContinuationLength(han(3900), 3000).status).toBe('within');
-    expect(evaluateContinuationLength(han(2099), 3000).status).toBe('under');
-    expect(evaluateContinuationLength(han(3901), 3000).status).toBe('over');
+    expect(evaluateContinuationLength(han(2500), 3000).status).toBe('within');
+    expect(evaluateContinuationLength(han(3500), 3000).status).toBe('within');
+    expect(evaluateContinuationLength(han(2499), 3000).status).toBe('under');
+    expect(evaluateContinuationLength(han(3501), 3000).status).toBe('over');
   });
 
-  it('under min triggers length expansion eligibility; isRepairableCheckerIssue stays false', () => {
+  it('length deviation remains a warning-only advisory in the V4 contract', () => {
     const snap = snapshot();
-    // Below 0.7×3000 = 2100 → under_target
+    // Below the legacy 3000-500 lower bound → under_target
     const local = runDeterministicChecks(han(1000), snap);
     const bound = bindIssuesToArtifact(local, han(1000), new Set());
     const filtered = filterBySettings(bound, snap.settingsSnapshot.values);
@@ -92,14 +100,22 @@ describe('continuation target Han length contract', () => {
       isRepairableCheckerIssue,
       isLengthExpansionIssue,
     } = require('../src/services/continuation/generation/continuationChecker');
-    // Five-dimension repairReady remains false; V4 uses isLengthExpansionIssue.
+    // The default helper remains the legacy contract for compatibility.
     expect(isRepairableCheckerIssue(lengthIssue)).toBe(false);
     expect(isLengthExpansionIssue(lengthIssue)).toBe(true);
+    const v4Local = runDeterministicChecks(han(1000), snap, {
+      lengthContract: resolveContinuationV4ReferenceLengthBand(3000),
+    });
+    expect(
+      v4Local.find(i => i.subtype === 'chapter_length_under_target'),
+    ).toEqual(expect.objectContaining({ severity: 'warning' }));
   });
 
-  it('does not emit length checks inside the ±30% band', () => {
+  it('does not emit V4 length checks inside the proportional advisory band', () => {
     const snap = snapshot(3000);
-    const within = runDeterministicChecks(han(2500), snap);
+    const within = runDeterministicChecks(han(2500), snap, {
+      lengthContract: resolveContinuationV4ReferenceLengthBand(3000),
+    });
     expect(
       within.some(i => String(i.subtype).startsWith('chapter_length_')),
     ).toBe(false);
