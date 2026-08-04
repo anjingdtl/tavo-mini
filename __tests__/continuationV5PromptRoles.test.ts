@@ -3,6 +3,8 @@ import {
   compileContinuationV5FinalReviserMessages,
   compileContinuationV5RevisionWriterMessages,
   buildContinuationV5RevisionAnchors,
+  buildContinuationV5EditWorkPacket,
+  formatContinuationV5EditWorkPacket,
 } from '../src/services/continuation/generation/continuationV5PromptCompiler';
 import {
   buildFallbackArchitecture,
@@ -126,6 +128,17 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
     ]);
   });
 
+  test('V2 anchor builder normalizes CRLF input so offsets match LF baseline', () => {
+    // Same prose as the LF case above, but with Windows CRLF line endings.
+    // Offsets must match the LF result exactly (not be inflated by \r).
+    const crlf = '第一段。\r\n\r\n  第二段。  \r\n\r\n第三段。';
+    expect(buildContinuationV5RevisionAnchors(crlf)).toEqual([
+      { anchorId: 'v2-p-001', start: 0, end: 4, text: '第一段。' },
+      { anchorId: 'v2-p-002', start: 8, end: 12, text: '第二段。' },
+      { anchorId: 'v2-p-003', start: 16, end: 20, text: '第三段。' },
+    ]);
+  });
+
   test('Revision Writer owns target band and forbids early stop under preferredMin', () => {
     const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
     const architectureHash = hashArchitectureEnvelope(architecture);
@@ -184,8 +197,8 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
       compiled.messages.find(m => m.role === 'system')?.content ?? '';
     expect(system).toMatch(/润色与 C2 合同履约/);
     expect(system).toMatch(/不要把 V3 当成主要加长环节/);
-    expect(system).toMatch(/客户端锚定编辑任务/);
-    expect(system).toMatch(/不得只删词/);
+    expect(system).toMatch(/真实 V2 编辑工作包/);
+    expect(system).toMatch(/禁止以删词、改标点或只替换一两个近义词/);
     expect(system).toMatch(/已在目标区间内/);
     expect(system).toMatch(/±10%/);
   });
@@ -225,5 +238,172 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
       compiled.messages.find(m => m.role === 'system')?.content ?? '';
     expect(system).toMatch(/仍低于首选下限/);
     expect(system).toMatch(/兜底补写/);
+  });
+});
+
+describe('V5 edit work packet drives V3 polish', () => {
+  function anchoredAudit() {
+    const audit = buildFallbackAuditContract({
+      draftArtifactHash: 'd'.repeat(64),
+      revisionArtifactHash: 'r'.repeat(64),
+      architectureHash: 'a'.repeat(64),
+      canonSnapshotId: 'cs',
+      canonRevision: 1,
+      inputRevisionHash: 'ir',
+      styleProfileHash: null,
+      styleRendererVersion: null,
+      lockedRules: [],
+      hardCanonFacts: [],
+    });
+    // Inject two real anchored style corrections so the packet is non-empty.
+    audit.styleAudit.requiredCorrections = [
+      {
+        requirementId: 'style_1',
+        anchorId: 'v2-p-002',
+        dimension: 'sentence_rhythm',
+        severity: 'warning',
+        confidence: 0.8,
+        generatedStart: 8,
+        generatedEnd: 12,
+        generatedExcerpt: '真实 V2 第二段原句。',
+        description: '节奏过平，长句堆叠。',
+        styleEvidenceIds: [],
+        rewriteGoal: '拆成短促动作与留白交替的段落。',
+        preserveMeaning: ['门外的威胁', '主角选择迎击'],
+      },
+      {
+        requirementId: 'style_2',
+        anchorId: 'v2-p-005',
+        dimension: 'dialogue_voice',
+        severity: 'warning',
+        confidence: 0.7,
+        generatedStart: 60,
+        generatedEnd: 90,
+        generatedExcerpt: '真实 V2 第五段对白原句。',
+        description: '对白过于书面。',
+        styleEvidenceIds: [],
+        rewriteGoal: '改为更口语化、带停顿的对白。',
+        preserveMeaning: [],
+      },
+    ];
+    return audit;
+  }
+
+  function legacyAnchorlessAudit() {
+    const audit = buildFallbackAuditContract({
+      draftArtifactHash: 'd'.repeat(64),
+      revisionArtifactHash: 'r'.repeat(64),
+      architectureHash: 'a'.repeat(64),
+      canonSnapshotId: 'cs',
+      canonRevision: 1,
+      inputRevisionHash: 'ir',
+      styleProfileHash: null,
+      styleRendererVersion: null,
+      lockedRules: [],
+      hardCanonFacts: [],
+    });
+    // Legacy contract: anchorId null on every style correction.
+    audit.styleAudit.requiredCorrections = [
+      {
+        requirementId: 'style_legacy_1',
+        anchorId: null,
+        dimension: 'narrative_voice',
+        severity: 'warning',
+        confidence: 0.5,
+        generatedStart: null,
+        generatedEnd: null,
+        generatedExcerpt: '模型自由转述的旧引文。',
+        description: '整体语气偏差。',
+        styleEvidenceIds: [],
+        rewriteGoal: '统一为更贴近原著的叙述口吻。',
+        preserveMeaning: [],
+      },
+    ];
+    return audit;
+  }
+
+  test('buildContinuationV5EditWorkPacket maps real anchors to work items', () => {
+    const audit = anchoredAudit();
+    const packet = buildContinuationV5EditWorkPacket(audit);
+    expect(packet).toHaveLength(2);
+    expect(packet[0]).toMatchObject({
+      requirementId: 'style_1',
+      anchorId: 'v2-p-002',
+      sourceText: '真实 V2 第二段原句。',
+      sourceStart: 8,
+      sourceEnd: 12,
+      dimension: 'sentence_rhythm',
+      rewriteGoal: '拆成短促动作与留白交替的段落。',
+    });
+    expect(packet[0].preserveMeaning).toEqual(['门外的威胁', '主角选择迎击']);
+  });
+
+  test('legacy anchorId=null corrections are skipped without throwing', () => {
+    const audit = legacyAnchorlessAudit();
+    const packet = buildContinuationV5EditWorkPacket(audit);
+    expect(packet).toEqual([]);
+    // Formatter must still produce a usable (no-op) block for V3.
+    const block = formatContinuationV5EditWorkPacket(packet);
+    expect(block).toMatch(/无可定位的真实 V2 锚点任务/);
+  });
+
+  test('edit work packet precedes full V2 in Final Reviser user message', () => {
+    const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
+    const architectureHash = hashArchitectureEnvelope(architecture);
+    const audit = anchoredAudit();
+    const compiled = compileContinuationV5FinalReviserMessages({
+      view: {
+        ...baseView({ stage: 'final_reviser' }),
+        budget: {
+          ...baseView().budget,
+          stage: 'final_reviser' as const,
+        },
+      } as any,
+      revisionContent: '完整 V2 正文，作为合成 V3 的连续性基线。',
+      revisionHan: 4800,
+      revisionArtifactHash: 'r'.repeat(64),
+      architecture,
+      architectureHash,
+      audit,
+      auditContractHash: hashAuditEnvelope(audit),
+    });
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    const packetIdx = user.indexOf('V3 必须先完成的定点编辑工作包');
+    const v2Idx = user.indexOf('完整 V2（合成 V3');
+    expect(packetIdx).toBeGreaterThan(-1);
+    expect(v2Idx).toBeGreaterThan(-1);
+    expect(packetIdx).toBeLessThan(v2Idx);
+  });
+
+  test('Final prompt work items carry real V2 source text and full-rewrite instruction', () => {
+    const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
+    const architectureHash = hashArchitectureEnvelope(architecture);
+    const audit = anchoredAudit();
+    const compiled = compileContinuationV5FinalReviserMessages({
+      view: {
+        ...baseView({ stage: 'final_reviser' }),
+        budget: {
+          ...baseView().budget,
+          stage: 'final_reviser' as const,
+        },
+      } as any,
+      revisionContent: '完整 V2 正文，作为合成 V3 的连续性基线。',
+      revisionHan: 4800,
+      revisionArtifactHash: 'r'.repeat(64),
+      architecture,
+      architectureHash,
+      audit,
+      auditContractHash: hashAuditEnvelope(audit),
+    });
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    expect(user).toContain('真实 V2 第二段原句。');
+    expect(user).toContain('真实 V2 第五段对白原句。');
+    expect(user).toMatch(/将整段重新组织为新的叙述表达/);
+    expect(user).toMatch(/禁止以删词、改标点或只替换一两个近义词/);
+    // System prompt now explicitly orders per-item work first.
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
+    expect(system).toMatch(/先执行下方按编号给出的真实 V2 编辑工作包/);
+    expect(system).toMatch(/完成所有工作包后.*通读全文/);
   });
 });
