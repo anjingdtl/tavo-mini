@@ -1,9 +1,11 @@
 import type { PipelineConfig } from '../../types/pipeline';
 import { execute } from '../connection/execute';
-import { all } from '../connection/query';
+import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
+import { executeTransaction, type SqlStatement } from '../../services/database/transaction';
 import { setSetting } from './settingsRepository';
 import type { Row } from './shared';
+import type { PipelineCheckpointStage } from '../../services/pipeline/types';
 
 export async function getPipelineConfig(): Promise<PipelineConfig> {
   // 11.9 优化：原实现每个字段独立 getSetting（最多 9 次独立 SQL），合并为单次 SELECT
@@ -101,13 +103,32 @@ export async function savePipelineTask(task: {
   resolvedAt: number | null;
   resolvedAction?: string | null;
 }): Promise<void> {
+  // UPSERT via ON CONFLICT(id) DO UPDATE — NOT INSERT OR REPLACE.
+  // REPLACE deletes the conflicting row first, which would cascade through
+  // pipeline_stage_checkpoints.task_id ON DELETE CASCADE and wipe every
+  // stage checkpoint. ON CONFLICT DO UPDATE performs an in-place UPDATE and
+  // preserves child rows. id and created_at are immutable on update.
   await execute(
     await openDatabase(),
-    `INSERT OR REPLACE INTO pipeline_tasks (
+    `INSERT INTO pipeline_tasks (
        id, target_type, target_id, status, stage_results, final_text, error,
        input_fingerprint, pipeline_context_json, pipeline_context_version,
        pipeline_context_hash, created_at, updated_at, resolved_at, resolved_action
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       target_type = excluded.target_type,
+       target_id = excluded.target_id,
+       status = excluded.status,
+       stage_results = excluded.stage_results,
+       final_text = excluded.final_text,
+       error = excluded.error,
+       input_fingerprint = excluded.input_fingerprint,
+       pipeline_context_json = excluded.pipeline_context_json,
+       pipeline_context_version = excluded.pipeline_context_version,
+       pipeline_context_hash = excluded.pipeline_context_hash,
+       updated_at = excluded.updated_at,
+       resolved_at = excluded.resolved_at,
+       resolved_action = excluded.resolved_action`,
     [
       task.id,
       task.targetType,
@@ -126,6 +147,91 @@ export async function savePipelineTask(task: {
       task.resolvedAction || null,
     ],
   );
+}
+
+/**
+ * Atomic first-time creation of a pipeline task and its pending stage
+ * checkpoints in a single SQLite transaction.
+ *
+ * Invariant: after success, both the parent row and one `pending` checkpoint
+ * row per requested stage exist together; after failure (or a thrown error),
+ * NEITHER exists — no orphan checkpoints, no half-written parent row, no
+ * ghost task. This is the fix for FOREIGN KEY 787: previously `createTask`
+ * flushed the parent row asynchronously, so `ensurePendingCheckpoints` could
+ * run before the parent existed and hit the FK constraint.
+ *
+ * The statements run inside `executeTransaction`, which uses the native
+ * `database.transaction` callback; any statement failure rolls back the
+ * whole batch (savepoint semantics in the test double, native ROLLBACK in
+ * production). `PRAGMA foreign_keys = ON` is set once at connection init
+ * (initializeDatabase), so the checkpoint INSERTs are FK-checked against the
+ * parent within the same transaction.
+ */
+export async function createPipelineTaskWithCheckpoints(
+  task: {
+    id: string;
+    targetType: string;
+    targetId: number;
+    status: string;
+    stageResults: any[];
+    finalText: string | null;
+    error: string | null;
+    inputFingerprint?: string | null;
+    pipelineContextJson?: string | null;
+    pipelineContextVersion?: number | null;
+    pipelineContextHash?: string | null;
+    createdAt: number;
+    updatedAt: number;
+    resolvedAt: number | null;
+    resolvedAction?: string | null;
+  },
+  stages: PipelineCheckpointStage[],
+): Promise<void> {
+  const now = Date.now();
+  const statements: SqlStatement[] = [
+    {
+      sql: `INSERT INTO pipeline_tasks (
+              id, target_type, target_id, status, stage_results, final_text, error,
+              input_fingerprint, pipeline_context_json, pipeline_context_version,
+              pipeline_context_hash, created_at, updated_at, resolved_at, resolved_action
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        task.id,
+        task.targetType,
+        task.targetId,
+        task.status,
+        JSON.stringify(task.stageResults),
+        task.finalText,
+        task.error,
+        task.inputFingerprint ?? null,
+        task.pipelineContextJson ?? null,
+        task.pipelineContextVersion ?? null,
+        task.pipelineContextHash ?? null,
+        task.createdAt,
+        task.updatedAt,
+        task.resolvedAt,
+        task.resolvedAction || null,
+      ],
+    },
+  ];
+  for (const stage of stages) {
+    statements.push({
+      sql: `INSERT INTO pipeline_stage_checkpoints (
+              task_id, stage, status, attempt_count, updated_at
+            ) VALUES (?, ?, 'pending', 0, ?)`,
+      params: [task.id, stage, now],
+    });
+  }
+  await executeTransaction(await openDatabase(), statements);
+}
+
+/** Fetch a single pipeline task by id (diagnostic parent-exists check). */
+export async function getPipelineTaskById(id: string): Promise<any | null> {
+  const row = await one<Row>(
+    'SELECT * FROM pipeline_tasks WHERE id = ?',
+    [id],
+  );
+  return row ? mapPipelineTaskRow(row) : null;
 }
 
 function mapPipelineTaskRow(row: Row) {
