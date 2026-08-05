@@ -4,15 +4,12 @@ import {
   resolveLLMRequestConfig,
   type LLMRequestConfig,
 } from './llm';
-import { buildContext } from './contextBuilder';
 import {
   checkRequestFitsContextWindow,
   computeInputFingerprint,
   OutlineContextError,
 } from './outlineContextBuilder';
-import { createChapterGenerationRequest } from './chapterGeneration';
 import {
-  buildDraftMessages,
   buildReviewMessages,
   buildFactCheckMessages,
   buildProofMessages,
@@ -30,6 +27,10 @@ import {
   type ProofConstraints,
   type ReviewContext,
 } from '../types/pipelineContext';
+import type {
+  FrozenPresetSnapshot,
+  PipelineExecutionSnapshot,
+} from '../types/pipelineExecution';
 import { sha256Hex } from './continuation/hashUtils';
 import type { ChatMessage } from './llm';
 import { buildPostDraftAuditContext } from './postDraftRetrieval';
@@ -38,7 +39,11 @@ import { saveDraft } from './draftService';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { getStageProgressPercent } from '../utils/stages';
 import type { Chapter, Preset } from '../types/novel';
-import type { PipelineStageName, PipelineTaskStatus } from '../types/pipeline';
+import type {
+  PipelineConfig,
+  PipelineStageName,
+  PipelineTaskStatus,
+} from '../types/pipeline';
 import {
   clearLLMTaskQueueDefaults,
   setLLMTaskQueueDefaults,
@@ -51,6 +56,13 @@ import {
   validateReviewResult,
 } from './pipelineAuditValidator';
 import type { LLMResult } from './llm/types';
+import {
+  parsePersistedPipelineTaskContext,
+  resolveAuditContext,
+  serializePipelineTaskContext,
+  type ParsedPipelineTaskContext,
+} from './pipelineTaskContext';
+import { compileDraftPipelineRequest } from './draftPipelineCompiler';
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -92,17 +104,133 @@ function releaseTaskAbort(taskId: string): void {
 function resolvePreset(
   presetId: number | null,
   presets: Preset[],
+  options?: { allowFallback?: boolean },
 ): Preset | null {
   if (presetId != null) {
     const found = presets.find(p => p.id === presetId);
     if (found) return found;
-    // resolvePreset 静默回退修复：presetId 找不到时（被删除/换项目）不报错，
-    // 静默用第一个 preset，用户以为用自定义预设实际用默认
+    if (options?.allowFallback === false) {
+      return null;
+    }
+    // Live-start path: soft fallback to first preset with a warning.
     console.warn(
       `[pipeline] presetId=${presetId} not found, falling back to first preset`,
     );
   }
   return presets[0] || null;
+}
+
+function freezePreset(preset: Preset | null): FrozenPresetSnapshot | null {
+  if (!preset) return null;
+  return {
+    id: preset.id ?? null,
+    name: (preset as any).name,
+    system_prompt: preset.system_prompt || '',
+    writing_style: preset.writing_style || '',
+    extra_instructions: preset.extra_instructions || '',
+    temperature: Number(preset.temperature ?? 0.7),
+    top_p: Number(preset.top_p ?? 0.9),
+    max_tokens: Number(preset.max_tokens ?? 0),
+  };
+}
+
+function presetFromFrozen(frozen: FrozenPresetSnapshot | null): Preset | null {
+  if (!frozen) return null;
+  return {
+    id: frozen.id ?? 0,
+    project_id: 0,
+    name: frozen.name || '',
+    is_default: 0,
+    system_prompt: frozen.system_prompt,
+    writing_style: frozen.writing_style,
+    extra_instructions: frozen.extra_instructions,
+    temperature: frozen.temperature,
+    top_p: frozen.top_p,
+    max_tokens: frozen.max_tokens,
+  };
+}
+
+function buildExecutionSnapshot(params: {
+  config: PipelineConfig;
+  draftPreset: Preset | null;
+  reviewPreset: Preset | null;
+  factCheckPreset: Preset | null;
+  proofPreset: Preset | null;
+  requestConfig: LLMRequestConfig;
+}): PipelineExecutionSnapshot {
+  const contextWindow = Number(params.requestConfig.context_window) || 0;
+  if (!(contextWindow > 0)) {
+    throw new OutlineContextError(
+      'OUTLINE_MODEL_UNAVAILABLE',
+      '当前模型未配置有效上下文窗口，无法冻结流水线执行配置。',
+      'open_llm_settings',
+    );
+  }
+  const llmConfigId = Number(params.requestConfig.id);
+  if (!Number.isInteger(llmConfigId) || llmConfigId <= 0) {
+    throw new OutlineContextError(
+      'OUTLINE_MODEL_UNAVAILABLE',
+      '当前没有可用的模型配置，无法启动流水线。',
+      'open_llm_settings',
+    );
+  }
+  return {
+    pipelineMode: params.config.pipelineMode,
+    draftMaxTokens: params.config.draftMaxTokens,
+    reviewMaxTokens: params.config.reviewMaxTokens,
+    factCheckMaxTokens: params.config.factCheckMaxTokens,
+    proofMaxTokens: params.config.proofMaxTokens,
+    draftPresetId: params.config.draftPresetId,
+    reviewPresetId: params.config.reviewPresetId,
+    factCheckPresetId: params.config.factCheckPresetId,
+    proofPresetId: params.config.proofPresetId,
+    draftPreset: freezePreset(params.draftPreset),
+    reviewPreset: freezePreset(params.reviewPreset),
+    factCheckPreset: freezePreset(params.factCheckPreset),
+    proofPreset: freezePreset(params.proofPreset),
+    model: {
+      llmConfigId,
+      name: params.requestConfig.name,
+      provider: params.requestConfig.provider_type,
+      modelName: params.requestConfig.model_name,
+      contextWindow,
+      maxOutputTokens: params.requestConfig.max_output_tokens,
+    },
+    createdAt: Date.now(),
+  };
+}
+
+function requestConfigFromExecution(
+  execution: PipelineExecutionSnapshot,
+  live: LLMRequestConfig,
+): LLMRequestConfig {
+  // Reuse live credentials/url for the same config id; window/model name stay frozen.
+  return {
+    ...live,
+    id: execution.model.llmConfigId,
+    name: execution.model.name || live.name,
+    provider_type:
+      (execution.model.provider as LLMRequestConfig['provider_type']) ||
+      live.provider_type,
+    model_name: execution.model.modelName || live.model_name,
+    context_window: execution.model.contextWindow,
+    max_output_tokens:
+      execution.model.maxOutputTokens ?? live.max_output_tokens,
+  };
+}
+
+function configFromExecution(execution: PipelineExecutionSnapshot): PipelineConfig {
+  return {
+    pipelineMode: execution.pipelineMode,
+    draftPresetId: execution.draftPresetId,
+    reviewPresetId: execution.reviewPresetId,
+    factCheckPresetId: execution.factCheckPresetId,
+    proofPresetId: execution.proofPresetId,
+    draftMaxTokens: execution.draftMaxTokens,
+    reviewMaxTokens: execution.reviewMaxTokens,
+    factCheckMaxTokens: execution.factCheckMaxTokens,
+    proofMaxTokens: execution.proofMaxTokens,
+  };
 }
 
 function checkCancelled(taskId: string): boolean {
@@ -174,14 +302,26 @@ function getErrorMessage(error: any, fallback: string): string {
   return error?.message ? String(error.message) : fallback;
 }
 
-/** Serialize + hash a frozen pipeline context snapshot for Schema 38 persistence. */
+/**
+ * Serialize + hash a frozen pipeline context snapshot.
+ * Prefer {@link serializePipelineTaskContext} (V2 envelope). This wrapper
+ * remains for unit tests that only have a bare snapshot.
+ */
 export function serializePipelineContextSnapshot(
   snapshot: PipelineContextSnapshot,
+  execution?: PipelineExecutionSnapshot,
 ): {
   pipelineContextJson: string;
   pipelineContextVersion: number;
   pipelineContextHash: string;
 } {
+  if (execution) {
+    return serializePipelineTaskContext({
+      draftContext: snapshot,
+      execution,
+    });
+  }
+  // Legacy V1 bare snapshot (tests / migration helpers).
   const enriched: PipelineContextSnapshot = {
     ...snapshot,
     snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
@@ -190,96 +330,59 @@ export function serializePipelineContextSnapshot(
   const pipelineContextJson = JSON.stringify(enriched);
   return {
     pipelineContextJson,
-    pipelineContextVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    pipelineContextVersion: 1,
     pipelineContextHash: sha256Hex(pipelineContextJson).slice(0, 32),
   };
 }
 
 /**
- * Load a previously persisted snapshot. Throws OutlineContextError when the
- * JSON is missing, corrupted, or fails the integrity hash check.
+ * Load a previously persisted snapshot (draft context).
+ * Throws OutlineContextError when missing/corrupt. Prefer
+ * {@link parsePersistedPipelineTaskContext} when audit/execution are needed.
  */
-export function parsePersistedPipelineContextSnapshot(task: {
-  pipelineContextJson?: string | null;
-  pipelineContextHash?: string | null;
-  pipelineContextVersion?: number | null;
-}): PipelineContextSnapshot {
-  const json = task.pipelineContextJson;
-  if (!json || !String(json).trim()) {
-    throw new OutlineContextError(
-      'OUTLINE_SNAPSHOT_INVALID',
-      '旧任务没有冻结的流水线上下文快照，无法安全恢复。请重新开始生成。',
-      'restart_task',
-    );
-  }
-  if (task.pipelineContextHash) {
-    const actual = sha256Hex(String(json)).slice(0, 32);
-    if (actual !== task.pipelineContextHash) {
-      throw new OutlineContextError(
-        'OUTLINE_SNAPSHOT_INVALID',
-        '流水线上下文快照校验失败（可能已损坏），已阻止恢复。请重新开始生成。',
-        'restart_task',
-      );
-    }
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(String(json));
-  } catch {
-    throw new OutlineContextError(
-      'OUTLINE_SNAPSHOT_INVALID',
-      '流水线上下文快照 JSON 损坏，已阻止恢复。请重新开始生成。',
-      'restart_task',
-    );
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new OutlineContextError(
-      'OUTLINE_SNAPSHOT_INVALID',
-      '流水线上下文快照结构无效，已阻止恢复。请重新开始生成。',
-      'restart_task',
-    );
-  }
-  const snap = parsed as PipelineContextSnapshot;
-  // Minimal shape check: outline fields must be present even if empty.
-  if (typeof snap.outlineText !== 'string') {
-    throw new OutlineContextError(
-      'OUTLINE_SNAPSHOT_INVALID',
-      '流水线上下文快照缺少大纲字段，已阻止恢复。请重新开始生成。',
-      'restart_task',
-    );
-  }
-  return snap;
-}
-
-async function resolveActiveContextWindow(): Promise<number> {
-  try {
-    const llmConfig = await db.getActiveLLMConfig();
-    return Number(llmConfig?.context_window) || 0;
-  } catch {
-    return 0;
-  }
+export function parsePersistedPipelineContextSnapshot(
+  task: {
+    pipelineContextJson?: string | null;
+    pipelineContextHash?: string | null;
+    pipelineContextVersion?: number | null;
+  },
+  ownership?: {
+    expectedProjectId?: number;
+    expectedChapterId?: number;
+    expectedTaskId?: string;
+  },
+): PipelineContextSnapshot {
+  return parsePersistedPipelineTaskContext(task, ownership).draftContext;
 }
 
 /**
- * Fail-closed final request window check. Must run before every stage LLM
- * call (including repair/retry/resume).
+ * Fail-closed final request window check. Uses the actual request model's
+ * context window — never re-reads the live active config.
  */
-async function assertMessagesFitContextWindow(
-  messages: ChatMessage[],
-  reservedOutputTokens: number,
-  stageLabel: string,
-): Promise<void> {
-  const contextWindow = await resolveActiveContextWindow();
-  const estimatedInputTokens = estimateStageInputTokens(messages);
+function assertMessagesFitContextWindow(params: {
+  messages: ChatMessage[];
+  reservedOutputTokens: number;
+  contextWindow: number;
+  stageLabel: string;
+}): void {
+  const estimatedInputTokens = estimateStageInputTokens(params.messages);
   const reason = checkRequestFitsContextWindow({
     estimatedInputTokens,
-    reservedOutputTokens,
-    contextWindow,
-    stageLabel,
+    reservedOutputTokens: params.reservedOutputTokens,
+    contextWindow: params.contextWindow,
+    stageLabel: params.stageLabel,
   });
   if (reason) {
-    throw new Error(reason);
+    throw new OutlineContextError(
+      'OUTLINE_OVER_BUDGET',
+      reason,
+      'open_outlines',
+    );
   }
+}
+
+function contextWindowOf(requestConfig?: LLMRequestConfig): number {
+  return Number(requestConfig?.context_window) || 0;
 }
 
 /** Never allow an HTTP-success response without manuscript content to advance
@@ -370,11 +473,12 @@ async function runReviewStage(
   let tokens = { input: 0, output: 0, total: 0 };
   try {
     const reviewMessages = buildReviewMessages(args.draftText, args.context);
-    await assertMessagesFitContextWindow(
-      reviewMessages,
-      args.maxTokens,
-      '文学评估',
-    );
+    assertMessagesFitContextWindow({
+      messages: reviewMessages,
+      reservedOutputTokens: args.maxTokens,
+      contextWindow: contextWindowOf(requestConfig),
+      stageLabel: '文学评估',
+    });
     const first = await callLLMResult(
       reviewMessages,
       args.maxTokens,
@@ -427,11 +531,12 @@ async function runReviewStage(
         args.context,
         describeAuditFailureReason(validation.reason),
       );
-      await assertMessagesFitContextWindow(
-        repairMessages,
-        args.maxTokens,
-        '文学评估格式修复',
-      );
+      assertMessagesFitContextWindow({
+        messages: repairMessages,
+        reservedOutputTokens: args.maxTokens,
+        contextWindow: contextWindowOf(requestConfig),
+        stageLabel: '文学评估格式修复',
+      });
       const retry = await callLLMResult(
         repairMessages,
         args.maxTokens,
@@ -521,11 +626,12 @@ async function runFactCheckStage(
   let tokens = { input: 0, output: 0, total: 0 };
   try {
     const factMessages = buildFactCheckMessages(args.draftText, args.context);
-    await assertMessagesFitContextWindow(
-      factMessages,
-      args.maxTokens,
-      '事实核查',
-    );
+    assertMessagesFitContextWindow({
+      messages: factMessages,
+      reservedOutputTokens: args.maxTokens,
+      contextWindow: contextWindowOf(requestConfig),
+      stageLabel: '事实核查',
+    });
     const first = await callLLMResult(
       factMessages,
       args.maxTokens,
@@ -575,11 +681,12 @@ async function runFactCheckStage(
         args.context,
         describeAuditFailureReason(validation.reason),
       );
-      await assertMessagesFitContextWindow(
-        repairMessages,
-        args.maxTokens,
-        '事实核查格式修复',
-      );
+      assertMessagesFitContextWindow({
+        messages: repairMessages,
+        reservedOutputTokens: args.maxTokens,
+        contextWindow: contextWindowOf(requestConfig),
+        stageLabel: '事实核查格式修复',
+      });
       const retry = await callLLMResult(
         repairMessages,
         args.maxTokens,
@@ -684,11 +791,12 @@ async function runProofStage(
       args.factCheckText,
       args.constraints,
     );
-    await assertMessagesFitContextWindow(
-      proofMessages,
-      args.maxTokens,
-      '综合修订',
-    );
+    assertMessagesFitContextWindow({
+      messages: proofMessages,
+      reservedOutputTokens: args.maxTokens,
+      contextWindow: contextWindowOf(requestConfig),
+      stageLabel: '综合修订',
+    });
     const result = await callLLMResult(
       proofMessages,
       args.maxTokens,
@@ -838,6 +946,28 @@ async function runChapterPipelineInner(
   );
   const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
 
+  // Freeze execution config (mode, budgets, presets, model window) at start.
+  let execution: PipelineExecutionSnapshot;
+  try {
+    execution = buildExecutionSnapshot({
+      config,
+      draftPreset,
+      reviewPreset,
+      factCheckPreset,
+      proofPreset,
+      requestConfig,
+    });
+  } catch (error: any) {
+    store.failTask(taskId, getErrorMessage(error, '流水线执行配置冻结失败'));
+    await PipelineForeground.notifyFailed(
+      taskId,
+      chapter.title || '流水线',
+      '执行配置不可用',
+    );
+    await PipelineForeground.stop(taskId);
+    return;
+  }
+
   // 通知栏进度计算封装到 utils/stages，便于测试与 resume 共用。
   // 阶段"开始"时跳到该阶段起点，成功 complete / 降级保留初稿 时设 100，
   // 让用户在通知栏看到进度条单调递增。
@@ -942,73 +1072,46 @@ async function runChapterPipelineInner(
   let pipelineContext: PipelineContextSnapshot;
   const draftStart = Date.now();
   try {
-    const request = createChapterGenerationRequest(chapter);
-    const {
-      messages: baseContext,
-      chapters: allChapters,
-      pipelineContext: ctx,
-    } = await buildContext(
+    // Shared compiler with Context Preview so messages are byte-identical.
+    const compiled = await compileDraftPipelineRequest({
       chapter,
-      contextConfig,
-      chapter.project_id,
-      draftPreset || undefined,
-      { retrievalUserPrompt: request.userPrompt },
-    );
-    pipelineContext = {
-      ...ctx,
-      projectId: chapter.project_id,
-      chapterId: chapter.id,
-      chapterUpdatedAt: (chapter as any).updated_at ?? (chapter as any).updatedAt ?? '',
-      createdAt: Date.now(),
-      snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
-    };
+      requestConfig,
+      draftPreset,
+      draftMaxTokens: config.draftMaxTokens,
+    });
+    pipelineContext = compiled.pipelineContext;
 
-    // Freeze snapshot before the first LLM call so resume after process death
-    // reuses the same outline/context instead of re-reading the live DB.
-    store.setTaskPipelineContext(
-      taskId,
-      serializePipelineContextSnapshot(pipelineContext),
-    );
-
-    // Extract previous chapter ending from already-fetched chapters.
-    const prevChapter = allChapters
-      .filter(c => c.position < chapter.position && c.content)
-      .sort((a, b) => b.position - a.position)[0];
-    const prevEnding = prevChapter?.content?.slice(-800) || '';
-
-    // Display title continues from source boundary for continuation projects
-    // (Spec §11.3). Outline projects keep the legacy position+1 fallback.
-    let chapterTitle = chapter.title || `第 ${chapter.position + 1} 章`;
+    // Critical path: await durable snapshot write BEFORE any LLM call.
+    // Fire-and-forget store writes leave a process-death race.
     try {
-      const project = await db.getProjectById(chapter.project_id);
-      if (project?.mode === 'continuation') {
-        const { getContinuationChapterNumbering } = await import(
-          './continuation/chapterNumbering/continuationChapterNumbering'
-        );
-        const numbering = await getContinuationChapterNumbering(
-          chapter.project_id,
-        );
-        chapterTitle = numbering.getDisplayTitle(chapter) || chapterTitle;
-      }
-    } catch {
-      // Non-fatal: fall back to stored title / position+1.
+      await store.persistTaskPipelineContext(
+        taskId,
+        serializePipelineTaskContext({
+          draftContext: pipelineContext,
+          execution,
+        }),
+      );
+    } catch (persistError: any) {
+      throw persistError instanceof OutlineContextError
+        ? persistError
+        : new OutlineContextError(
+            'OUTLINE_SNAPSHOT_PERSIST_FAILED',
+            getErrorMessage(
+              persistError,
+              '冻结上下文保存失败，已阻止调用模型。',
+            ),
+            'restart_task',
+          );
     }
 
-    const draftMessages = buildDraftMessages(
-      baseContext,
-      chapterTitle,
-      chapter.content || '',
-      request.userPrompt,
-      prevEnding,
-      chapter.synopsis,
-      pipelineContext.outlineText,
-    );
+    const draftMessages = compiled.messages;
 
-    await assertMessagesFitContextWindow(
-      draftMessages,
-      config.draftMaxTokens,
-      '初稿',
-    );
+    assertMessagesFitContextWindow({
+      messages: draftMessages,
+      reservedOutputTokens: config.draftMaxTokens,
+      contextWindow: contextWindowOf(requestConfig),
+      stageLabel: '初稿',
+    });
 
     const firstDraftResult = await callLLMResult(
       draftMessages,
@@ -1046,11 +1149,12 @@ async function runChapterPipelineInner(
           content: '请直接输出章节正文；不要输出分析、思考过程或标题。',
         },
       ];
-      await assertMessagesFitContextWindow(
-        draftRetryMessages,
-        config.draftMaxTokens,
-        '初稿重试',
-      );
+      assertMessagesFitContextWindow({
+        messages: draftRetryMessages,
+        reservedOutputTokens: config.draftMaxTokens,
+        contextWindow: contextWindowOf(requestConfig),
+        stageLabel: '初稿重试',
+      });
       draftResult = await callLLMResult(
         draftRetryMessages,
         config.draftMaxTokens,
@@ -1129,6 +1233,7 @@ async function runChapterPipelineInner(
    */
   let auditContext = pipelineContext;
   if (config.pipelineMode === 'full') {
+    let auditFellBack = false;
     try {
       const retrieval = await buildPostDraftAuditContext(
         pipelineContext,
@@ -1138,16 +1243,48 @@ async function runChapterPipelineInner(
         contextConfig,
       );
       auditContext = retrieval.snapshot;
+      auditFellBack = Boolean(retrieval.fellBack);
       // Dev-only observability (SPEC §22). Never logs full body / keys.
       console.log(
         `[pipeline] post-draft retrieval episodicHits=${retrieval.episodicHitsAdded} worldbookHits=${retrieval.worldbookHitsAdded} characterHits=${retrieval.characterHitsAdded} fellBack=${retrieval.fellBack}`,
       );
     } catch (error: any) {
-      // Never block the pipeline on local retrieval.
+      // Never block the pipeline on local retrieval — fall back to draftContext.
+      auditFellBack = true;
+      auditContext = pipelineContext;
       console.warn(
         '[pipeline] post-draft retrieval error (non-fatal):',
         error?.message,
       );
+    }
+    // Persist the final auditContext so resume sees the same post-draft hits.
+    try {
+      await store.persistTaskPipelineContext(
+        taskId,
+        serializePipelineTaskContext({
+          draftContext: pipelineContext,
+          auditContext,
+          execution,
+          draftCompletedAt: Date.now(),
+          auditContextCreatedAt: Date.now(),
+          auditFellBack,
+        }),
+      );
+    } catch (persistError: any) {
+      store.failTask(
+        taskId,
+        getErrorMessage(
+          persistError,
+          '审核上下文保存失败，已阻止继续后续阶段。',
+        ),
+      );
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        '审核上下文保存失败',
+      );
+      await PipelineForeground.stop(taskId);
+      return;
     }
   }
 
@@ -1543,13 +1680,79 @@ async function resumePipelineInner(
     return;
   }
 
-  let config;
-  let presets;
+  // Load frozen task context first — resume must not re-read live pipeline settings
+  // when a V2 execution snapshot is available.
+  let parsedTaskContext: ParsedPipelineTaskContext;
+  try {
+    const taskRow = store.tasks.find(t => t.id === taskId);
+    parsedTaskContext = parsePersistedPipelineTaskContext(
+      taskRow || {
+        pipelineContextJson: null,
+        pipelineContextHash: null,
+      },
+      {
+        expectedProjectId: chapter.project_id,
+        expectedChapterId: chapter.id,
+        expectedTaskId: taskId,
+      },
+    );
+  } catch (error: any) {
+    const message = getErrorMessage(
+      error,
+      '无法加载冻结的流水线上下文快照，已阻止恢复。请重新开始生成。',
+    );
+    store.failTask(taskId, message);
+    await PipelineForeground.stop(taskId);
+    throw error;
+  }
+
+  let config: PipelineConfig;
+  let reviewPreset: Preset | null;
+  let factCheckPreset: Preset | null;
+  let proofPreset: Preset | null;
   let requestConfig: LLMRequestConfig;
   try {
-    config = await db.getPipelineConfig();
-    presets = await db.getPresetsByProject(chapter.project_id);
-    requestConfig = await resolveLLMRequestConfig();
+    if (parsedTaskContext.execution) {
+      config = configFromExecution(parsedTaskContext.execution);
+      reviewPreset = presetFromFrozen(parsedTaskContext.execution.reviewPreset);
+      factCheckPreset = presetFromFrozen(
+        parsedTaskContext.execution.factCheckPreset,
+      );
+      proofPreset = presetFromFrozen(parsedTaskContext.execution.proofPreset);
+      // Resolve live credentials for the frozen model id; keep frozen window.
+      let live: LLMRequestConfig;
+      try {
+        const { resolveLLMRequestConfigById } = await import('./llm');
+        live = await resolveLLMRequestConfigById(
+          parsedTaskContext.execution.model.llmConfigId,
+        );
+      } catch {
+        // Model deleted: do not silently fall back to active model.
+        throw new OutlineContextError(
+          'OUTLINE_MODEL_UNAVAILABLE',
+          `原任务使用的模型配置（id=${parsedTaskContext.execution.model.llmConfigId}）已不可用。恢复将改变执行环境，请重新开始生成或在设置中恢复该模型。`,
+          'open_llm_settings',
+        );
+      }
+      requestConfig = requestConfigFromExecution(
+        parsedTaskContext.execution,
+        live,
+      );
+    } else {
+      // V1 legacy: no frozen execution — fall back to live config with warning.
+      console.warn(
+        '[pipeline] resume V1 snapshot without execution freeze; using live config',
+      );
+      config = await db.getPipelineConfig();
+      const presets = await db.getPresetsByProject(chapter.project_id);
+      requestConfig = await resolveLLMRequestConfig();
+      reviewPreset = resolvePreset(config.reviewPresetId, presets as Preset[]);
+      factCheckPreset = resolvePreset(
+        config.factCheckPresetId,
+        presets as Preset[],
+      );
+      proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
+    }
   } catch (error: any) {
     store.failTask(taskId, getErrorMessage(error, '流水线配置读取失败'));
     await PipelineForeground.notifyFailed(
@@ -1560,15 +1763,11 @@ async function resumePipelineInner(
     await PipelineForeground.stop(taskId);
     return;
   }
-  const reviewPreset = resolvePreset(
-    config.reviewPresetId,
-    presets as Preset[],
-  );
-  const factCheckPreset = resolvePreset(
-    config.factCheckPresetId,
-    presets as Preset[],
-  );
-  const proofPreset = resolvePreset(config.proofPresetId, presets as Preset[]);
+
+  // Clear interrupted status when user explicitly resumes.
+  if (task.status === 'interrupted' || task.status === 'failed') {
+    store.setTaskStatus(taskId, 'reviewing');
+  }
 
   const pct = (completedStageCount: number) =>
     getStageProgressPercent(config.pipelineMode, completedStageCount);
@@ -1652,23 +1851,52 @@ async function resumePipelineInner(
   // Schema 38+: resume MUST reuse the frozen snapshot persisted at task start.
   // Never rebuild from the live DB — mid-task outline edits would otherwise
   // change what Review / Fact Check / Proof see.
-  let pipelineContext: PipelineContextSnapshot;
-  try {
-    const taskRow = store.tasks.find(t => t.id === taskId);
-    pipelineContext = parsePersistedPipelineContextSnapshot(
-      taskRow || {
-        pipelineContextJson: null,
-        pipelineContextHash: null,
-      },
-    );
-  } catch (error: any) {
-    const message = getErrorMessage(
-      error,
-      '无法加载冻结的流水线上下文快照，已阻止恢复。请重新开始生成。',
-    );
-    store.failTask(taskId, message);
-    await PipelineForeground.stop(taskId);
-    throw error;
+  const pipelineContext: PipelineContextSnapshot = parsedTaskContext.draftContext;
+  // full mode: prefer persisted auditContext (post-draft retrieval hits).
+  const auditContext: PipelineContextSnapshot =
+    config.pipelineMode === 'full'
+      ? resolveAuditContext(parsedTaskContext)
+      : pipelineContext;
+
+  // If full mode still lacks auditContext after a successful draft, rebuild
+  // post-draft retrieval from the frozen draftContext + draft text only when
+  // audit was never written (interrupted between draft success and audit persist).
+  let effectiveAuditContext = auditContext;
+  if (
+    config.pipelineMode === 'full' &&
+    !parsedTaskContext.auditContext &&
+    !completedStages.has('review')
+  ) {
+    try {
+      const contextConfig = await db.getContextConfig();
+      const retrieval = await buildPostDraftAuditContext(
+        pipelineContext,
+        draftText,
+        chapter.project_id,
+        chapter,
+        contextConfig,
+      );
+      effectiveAuditContext = retrieval.snapshot;
+      if (parsedTaskContext.execution) {
+        await store.persistTaskPipelineContext(
+          taskId,
+          serializePipelineTaskContext({
+            draftContext: pipelineContext,
+            auditContext: effectiveAuditContext,
+            execution: parsedTaskContext.execution,
+            draftCompletedAt: Date.now(),
+            auditContextCreatedAt: Date.now(),
+            auditFellBack: Boolean(retrieval.fellBack),
+          }),
+        );
+      }
+    } catch (error: any) {
+      console.warn(
+        '[pipeline] resume post-draft retrieval error (using draft context):',
+        error?.message,
+      );
+      effectiveAuditContext = pipelineContext;
+    }
   }
 
   let reviewText = reviewResult?.text || '';
@@ -1831,8 +2059,8 @@ async function resumePipelineInner(
   }
 
   /* --------------- full resume: review + factCheck THEN proof --------------- */
-  // Re-run whichever audit is missing. Conditional semantics: both audits may
-  // already be done (only proof missing), one may be done, or both missing.
+  // Re-run whichever audit is missing. Use effectiveAuditContext so post-draft
+  // retrieval hits match the normal full-mode path.
   if (!completedStages.has('review') && !completedStages.has('factCheck')) {
     // Both missing: run them in parallel exactly like the first run.
     if (checkCancelled(taskId)) return;
@@ -1854,7 +2082,7 @@ async function resumePipelineInner(
         requestConfig,
         abortSignal,
         draftText,
-        context: buildReviewContextFromSnapshot(pipelineContext),
+        context: buildReviewContextFromSnapshot(effectiveAuditContext),
         maxTokens: config.reviewMaxTokens,
         preset: reviewPreset,
       }),
@@ -1864,7 +2092,7 @@ async function resumePipelineInner(
         requestConfig,
         abortSignal,
         draftText,
-        context: buildFactCheckContextFromSnapshot(pipelineContext),
+        context: buildFactCheckContextFromSnapshot(effectiveAuditContext),
         maxTokens: config.factCheckMaxTokens,
         preset: factCheckPreset,
       }),
@@ -1897,7 +2125,7 @@ async function resumePipelineInner(
         requestConfig,
         abortSignal,
         draftText,
-        context: buildReviewContextFromSnapshot(pipelineContext),
+        context: buildReviewContextFromSnapshot(effectiveAuditContext),
         maxTokens: config.reviewMaxTokens,
         preset: reviewPreset,
       }).catch((error: any) => {
@@ -1924,7 +2152,7 @@ async function resumePipelineInner(
         requestConfig,
         abortSignal,
         draftText,
-        context: buildFactCheckContextFromSnapshot(pipelineContext),
+        context: buildFactCheckContextFromSnapshot(effectiveAuditContext),
         maxTokens: config.factCheckMaxTokens,
         preset: factCheckPreset,
       }).catch((error: any) => {
@@ -1969,7 +2197,7 @@ async function resumePipelineInner(
       draftText,
       reviewText,
       factCheckText,
-      constraints: buildProofConstraintsFromSnapshot(pipelineContext),
+      constraints: buildProofConstraintsFromSnapshot(effectiveAuditContext),
       maxTokens: config.proofMaxTokens,
       preset: proofPreset,
     });

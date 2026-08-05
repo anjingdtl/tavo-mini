@@ -10,7 +10,9 @@ export type PipelineTaskStatus =
   | 'proofing'
   | 'completed'
   | 'cancelled'
-  | 'failed';
+  | 'failed'
+  /** Cold-start / process death with successful draft + valid snapshot. */
+  | 'interrupted';
 
 export interface PipelineConfig {
   pipelineMode: PipelineMode;
@@ -49,15 +51,22 @@ export interface PipelineTask {
    */
   inputFingerprint?: string | null;
   /**
-   * Frozen PipelineContextSnapshot JSON (Schema 38+). Captured once after
-   * buildContext succeeds and before the first LLM call. Resume MUST reuse
-   * this instead of rebuilding from the live database. NULL for legacy tasks.
+   * Frozen pipeline task context JSON (Schema 38+).
+   * V1: bare PipelineContextSnapshot.
+   * V2: envelope with draftContext + optional auditContext + execution.
+   * Captured once after buildContext succeeds and before the first LLM call.
+   * Resume MUST reuse this instead of rebuilding from the live database.
    */
   pipelineContextJson?: string | null;
-  /** Snapshot schema version (currently 1). */
+  /** Snapshot envelope version (1 = bare snapshot, 2 = draft+audit+execution). */
   pipelineContextVersion?: number | null;
   /** Integrity hash of pipelineContextJson. */
   pipelineContextHash?: string | null;
+  /**
+   * True when cold-start classification left this task recoverable.
+   * Only meaningful for status === 'interrupted'.
+   */
+  recoverable?: boolean;
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;

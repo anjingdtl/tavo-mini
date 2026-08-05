@@ -48,7 +48,9 @@ export const App: React.FC = () => {
         await usePipelineTaskStore.getState().loadFromDB();
         const marked = usePipelineTaskStore.getState().markActiveTasksAsInterrupted();
         if (marked > 0) {
-          console.log(`[App] cold-start cleanup: marked ${marked} interrupted pipeline task(s) as failed`);
+          console.log(
+            `[App] cold-start cleanup: classified ${marked} interrupted pipeline task(s) (recoverable keep unresolved)`,
+          );
         }
         // Continuation TXT import: a job left running/paused when the app was
         // killed must be terminally marked `interrupted` so the import UI can
