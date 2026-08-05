@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.11.30] - 2026-08-05
+
+### Fixed
+
+- **备份引擎：非核心表缺失时不再崩溃**：解决召回时"恢复备份失败：no such table: outlines"。
+  - **根因**：`createBackup` 遍历 BACKUP_MANIFEST 读表时用 `SELECT *` 但**没有 try/catch**——与同文件的 `readBackupTables`（有容错）逻辑不一致。用户的旧库（schema < 36）没有 outlines 表，SELECT 直接抛异常中断整个备份，导致召回的前置恢复备份失败、整个召回中止。
+  - **修法**：`createBackup` 的读表循环加 try/catch，非核心表（CORE_TABLE_NAMES 之外的表如 outlines）SELECT 失败时跳过（空数组），核心表失败才 throw。与 readBackupTables 容错策略一致。
+
 ## [2.11.29] - 2026-08-05
 
 ### Fixed
