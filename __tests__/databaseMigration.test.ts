@@ -1,5 +1,6 @@
 /* eslint-env jest */
 
+import RNFS from 'react-native-fs';
 import appVersionJson from '../src/constants/version.json';
 import {
   initializeDatabase,
@@ -282,6 +283,32 @@ function createLifecycleDb(
 }
 
 describe('database initialization lifecycle', () => {
+  beforeEach(() => {
+    // Schema-recovery backup (Schema 40) writes/reads real files via RNFS.
+    // Use an in-memory file map so createBackup → readAndValidateBackup
+    // round-trips correctly in the mock environment.
+    const files = new Map<string, string>();
+    jest.clearAllMocks();
+    (RNFS.mkdir as jest.Mock).mockResolvedValue(undefined);
+    (RNFS.writeFile as jest.Mock).mockImplementation(async (path: string, content: string) => {
+      files.set(path, content);
+    });
+    (RNFS.moveFile as jest.Mock).mockImplementation(async (from: string, to: string) => {
+      files.set(to, files.get(from) || '');
+      files.delete(from);
+    });
+    (RNFS.copyFile as jest.Mock).mockImplementation(async (from: string, to: string) => {
+      files.set(to, files.get(from) || '');
+    });
+    (RNFS.readFile as jest.Mock).mockImplementation(async (path: string) => {
+      const content = files.get(path);
+      if (content === undefined) throw new Error(`ENOENT: ${path}`);
+      return content;
+    });
+    (RNFS.readDir as jest.Mock).mockResolvedValue([]);
+    (RNFS.unlink as jest.Mock).mockResolvedValue(undefined);
+    (RNFS.exists as jest.Mock).mockResolvedValue(true);
+  });
   test('fresh install creates the latest schema before seeding and finalizing app metadata', async () => {
     const mock = createLifecycleDb({ fresh: true });
 

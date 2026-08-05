@@ -16,6 +16,22 @@ import { createCurrentSchema } from './createCurrentSchema';
 import { now } from '../repositories/shared';
 import { ensureDefaultPreset } from '../repositories/presetRepository';
 import { repairOversizedNotes } from '../repositories/noteRepository';
+import { inspectKnownSchemaDrift } from './schemaDriftInspector';
+import { repairKnownSchemaDrift } from './knownSchemaRepairs';
+import {
+  captureUserDataRecallSnapshot,
+  compareRecallSnapshots,
+  type UserDataRecallSnapshot,
+  type RecallMismatch,
+} from './userDataRecallSnapshot';
+import {
+  createSchemaRecoveryBackup,
+  type SchemaRecoveryBackupResult,
+} from '../../services/schemaRecoveryBackup';
+import {
+  makeSchemaRecoveryError,
+  type SchemaRecoveryError,
+} from './schemaRecoveryError';
 
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
@@ -264,16 +280,52 @@ async function finalizeInstallInfo(
 }
 export let lastInstallInfo: InstallInfo | null = null;
 export let lastMigrationResult: MigrationResult | null = null;
+
+/**
+ * Schema-recovery state surfaced to the UI. Populated whenever the startup
+ * chain performs a drift inspection, backup, or repair. `null` on a clean
+ * fresh install with no drift.
+ */
+export interface SchemaRecoveryState {
+  /** Whether a schema-recovery backup was created this launch. */
+  backupCreated: boolean;
+  /** Path to the schema-recovery backup file (when created). */
+  backupPath?: string;
+  /** Whether a known drift repair was applied. */
+  repaired: boolean;
+  /** Before/after recall snapshot equality (true = no data lost). */
+  recallVerified: boolean;
+  /** First recall mismatch (when verification fails). */
+  mismatch?: RecallMismatch;
+  /** Before/after core-data counts for the UI summary. */
+  beforeCounts?: Record<string, number>;
+  afterCounts?: Record<string, number>;
+  /** The drift report that triggered the repair (when any). */
+  driftCodes?: string[];
+  /** Structured error (when the recovery failed). */
+  error?: SchemaRecoveryError;
+}
+
+export let lastSchemaRecovery: SchemaRecoveryState | null = null;
 export async function initializeDatabase(
   database: SQLite.SQLiteDatabase,
 ): Promise<void> {
   lastMigrationResult = null;
+  lastSchemaRecovery = null;
   await execute(database, 'PRAGMA foreign_keys = ON');
   await ensureMetadataTable(database);
   const installInfo = await detectInstallType(database);
   lastInstallInfo = installInfo;
   const recoverInterruptedFreshInstall =
     await isRecoverableInterruptedFreshInstall(database, installInfo);
+
+  // beforeSnapshot is captured for the non-fresh path so we can verify after
+  // the repair that no user data was lost.
+  let beforeSnapshot: UserDataRecallSnapshot | null = null;
+  let recoveryBackup: SchemaRecoveryBackupResult | null = null;
+  let repairApplied = false;
+  let driftCodes: string[] = [];
+
   if (installInfo.installType === 'fresh' || recoverInterruptedFreshInstall) {
     await createCurrentSchema(database);
     await execute(
@@ -292,25 +344,166 @@ export async function initializeDatabase(
         `当前数据库 Schema ${installInfo.schemaVersion} 高于应用支持的版本 ${SCHEMA_VERSION}。`,
       );
     }
-    if (installInfo.schemaVersion < SCHEMA_VERSION) {
+
+    // ── Upgrade / same-version path: inspect → backup → repair → migrate ──
+    // Even a recorded-version-equals-current database may have physical drift
+    // (the core incident). We always inspect before touching the schema.
+    const drift = await inspectKnownSchemaDrift(database);
+    const needsMigration = installInfo.schemaVersion < SCHEMA_VERSION;
+    const needsSchemaMutation = needsMigration || drift.needsRepair;
+    driftCodes = drift.repairCodes;
+
+    // 1. Capture BEFORE recall snapshot (user's irreplaceable data identity).
+    beforeSnapshot = await captureUserDataRecallSnapshot(database);
+
+    // 2. Create + verify a schema-recovery backup BEFORE any schema mutation.
+    if (needsSchemaMutation) {
+      try {
+        recoveryBackup = await createSchemaRecoveryBackup(
+          database,
+          needsMigration ? 'pre_migration' : 'schema_recovery',
+        );
+      } catch (backupError) {
+        const err = makeSchemaRecoveryError(
+          'RECOVERY_BACKUP_FAILED',
+          backupError instanceof Error
+            ? backupError.message
+            : String(backupError),
+        );
+        lastSchemaRecovery = {
+          backupCreated: false,
+          repaired: false,
+          recallVerified: false,
+          driftCodes,
+          error: err,
+        };
+        throw err;
+      }
+    }
+
+    // 3. Pre-migration known repair (idempotent — heals drift the versioned
+    //    migration engine would skip on a recorded-version-equals DB).
+    if (drift.needsRepair) {
+      const repairResult = await repairKnownSchemaDrift(database, drift);
+      if (!repairResult.ok) {
+        const err = makeSchemaRecoveryError(
+          'KNOWN_SCHEMA_REPAIR_FAILED',
+          repairResult.message,
+        );
+        lastSchemaRecovery = {
+          backupCreated: recoveryBackup !== null,
+          backupPath: recoveryBackup?.path,
+          repaired: false,
+          recallVerified: false,
+          driftCodes,
+          error: err,
+        };
+        throw err;
+      }
+      repairApplied = true;
+    }
+
+    // 4. Run versioned migrations (to Schema 40). 32→33 is now idempotent.
+    if (needsMigration) {
       lastMigrationResult = await runMigrations(
         database,
         installInfo.schemaVersion,
       );
     }
+
+    // 5. Post-migration known repair (idempotent — covers a recorded-40 DB
+    //    whose physical columns drifted again after a backup restore).
+    const postDrift = await inspectKnownSchemaDrift(database);
+    if (postDrift.needsRepair) {
+      const postRepair = await repairKnownSchemaDrift(database, postDrift);
+      if (!postRepair.ok) {
+        const err = makeSchemaRecoveryError(
+          'KNOWN_SCHEMA_REPAIR_FAILED',
+          postRepair.message,
+        );
+        lastSchemaRecovery = {
+          backupCreated: recoveryBackup !== null,
+          backupPath: recoveryBackup?.path,
+          repaired: repairApplied,
+          recallVerified: false,
+          driftCodes: postDrift.repairCodes,
+          error: err,
+        };
+        throw err;
+      }
+      repairApplied = true;
+      driftCodes = [...new Set([...driftCodes, ...postDrift.repairCodes])];
+    }
   }
+
+  // 6. Strict schema validation (now AFTER repair so a drifted DB can pass).
   await validateSchemaBeforeStartup(database);
-  await repairKnownSchemaDefects(database, installInfo.schemaVersion);
+
+  // 7. Seed defaults + indexes + note repair.
   await seedDefaults(database);
-  // Indexes are deterministic, idempotent schema artifacts. Keep this after
-  // validation and seeding so index creation cannot mask a migration defect.
   await ensureCurrentIndexes(database);
   await repairOversizedNotes(database);
+
+  // 8. Final strict validation.
   assertValidSchema(await validateSchema(database));
+
+  // 9. After-repair recall snapshot + comparison. When we captured a before
+  //    snapshot, assert no user data was lost. A mismatch blocks startup.
+  if (beforeSnapshot) {
+    const afterSnapshot = await captureUserDataRecallSnapshot(database);
+    const mismatch = compareRecallSnapshots(beforeSnapshot, afterSnapshot);
+    if (mismatch) {
+      const err = makeSchemaRecoveryError(
+        'USER_DATA_RECALL_MISMATCH',
+        `用户资料召回校验失败：${mismatch.table} ${mismatch.reason}（before=${mismatch.beforeCount}, after=${mismatch.afterCount}）`,
+        { mismatch },
+      );
+      lastSchemaRecovery = {
+        backupCreated: recoveryBackup !== null,
+        backupPath: recoveryBackup?.path,
+        repaired: repairApplied,
+        recallVerified: false,
+        mismatch,
+        driftCodes,
+        error: err,
+      };
+      throw err;
+    }
+    // Surface recovery state to the UI when a backup or repair happened.
+    if (recoveryBackup || repairApplied) {
+      lastSchemaRecovery = {
+        backupCreated: recoveryBackup !== null,
+        backupPath: recoveryBackup?.path,
+        repaired: repairApplied,
+        recallVerified: true,
+        beforeCounts: snapshotCounts(beforeSnapshot),
+        afterCounts: snapshotCounts(afterSnapshot),
+        driftCodes,
+      };
+    }
+  }
+
   await finalizeInstallInfo(database, installInfo);
-  // Keep the detected source schema for the upgrade screen and automatic
-  // backup flow; lastMigrationResult carries the successful target version.
   lastInstallInfo = installInfo;
+}
+
+/**
+ * Extract a compact count summary from a recall snapshot for UI display.
+ */
+function snapshotCounts(
+  snapshot: UserDataRecallSnapshot,
+): Record<string, number> {
+  return {
+    projects: snapshot.projects.count,
+    chapters: snapshot.chapters.count,
+    character_collections: snapshot.characterCollections.count,
+    characters: snapshot.characters.count,
+    worldbook_collections: snapshot.worldbookCollections.count,
+    worldbook_entries: snapshot.worldbookEntries.count,
+    notes: snapshot.notes.count,
+    project_resources: snapshot.projectResources.count,
+    project_collection_settings: snapshot.projectCollectionSettings.count,
+  };
 }
 
 export async function repairKnownSchemaDefects(

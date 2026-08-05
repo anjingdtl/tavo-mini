@@ -12,8 +12,9 @@ const BACKUP_DIR = `${RNFS.ExternalDirectoryPath}/backups`;
 const MAX_AUTOMATIC_BACKUPS = 3;
 const MAX_MANUAL_BACKUPS = 10;
 const MAX_PRE_RESTORE_BACKUPS = 3;
+const MAX_SCHEMA_RECOVERY_BACKUPS = 5;
 
-type BackupKind = 'automatic' | 'manual' | 'pre_restore';
+type BackupKind = 'automatic' | 'manual' | 'pre_restore' | 'pre_migration' | 'schema_recovery';
 
 /**
  * These tables are the compatibility floor for v1/v2 backups. Newer tables
@@ -316,7 +317,9 @@ async function readBackupTables(db: SQLite.SQLiteDatabase): Promise<Record<strin
 }
 
 function normalizeKind(value: unknown): BackupKind {
-  return value === 'manual' || value === 'pre_restore' ? value : 'automatic';
+  return value === 'manual' || value === 'pre_restore' || value === 'pre_migration' || value === 'schema_recovery'
+    ? value
+    : 'automatic';
 }
 
 function validateRows(
@@ -455,7 +458,7 @@ function parseBackupObject(input: unknown): { parsed: ParsedBackup | null; error
   return { parsed, errors };
 }
 
-async function readAndValidateBackup(path: string): Promise<ReadValidationResult> {
+export async function readAndValidateBackup(path: string): Promise<ReadValidationResult> {
   try {
     const content = await RNFS.readFile(path, 'utf8');
     const input = JSON.parse(content);
@@ -547,7 +550,12 @@ export async function createBackup(
 
   // 阶段 3：写入文件（95% → 99%）。
   const timestamp = Date.now();
-  const kindPrefix = kind === 'manual' ? 'manual' : kind === 'pre_restore' ? 'prerestore' : 'backup';
+  const kindPrefix =
+    kind === 'manual' ? 'manual'
+    : kind === 'pre_restore' ? 'prerestore'
+    : kind === 'schema_recovery' ? 'schemarecovery'
+    : kind === 'pre_migration' ? 'premigration'
+    : 'backup';
   const fileName = `${kindPrefix}_v${appVersion}_${timestamp}.json`;
   const filePath = `${BACKUP_DIR}/${fileName}`;
   const stagingPath = `${filePath}.tmp`;
@@ -892,6 +900,8 @@ export async function listBackups(): Promise<BackupSummary[]> {
         } else {
           if (file.name.startsWith('manual_')) kind = 'manual';
           if (file.name.startsWith('prerestore_')) kind = 'pre_restore';
+          if (file.name.startsWith('premigration_')) kind = 'pre_migration';
+          if (file.name.startsWith('schemarecovery_')) kind = 'schema_recovery';
           appVersion = backup.meta?.app_version || '';
           schemaVersion = Number(backup.meta?.schema_version || 0);
           createdAt = backup.meta?.backup_date || '';
@@ -944,6 +954,8 @@ export async function cleanupOldBackups(): Promise<void> {
       automatic: [],
       manual: [],
       pre_restore: [],
+      pre_migration: [],
+      schema_recovery: [],
     };
     for (const summary of summaries) byKind[summary.kind].push(summary);
 
@@ -951,6 +963,8 @@ export async function cleanupOldBackups(): Promise<void> {
       automatic: MAX_AUTOMATIC_BACKUPS,
       manual: MAX_MANUAL_BACKUPS,
       pre_restore: MAX_PRE_RESTORE_BACKUPS,
+      pre_migration: MAX_SCHEMA_RECOVERY_BACKUPS,
+      schema_recovery: MAX_SCHEMA_RECOVERY_BACKUPS,
     };
     for (const kind of Object.keys(byKind) as BackupKind[]) {
       for (const summary of byKind[kind].slice(limits[kind])) {

@@ -33,7 +33,7 @@ import {
   buildV31toV32Statements,
   migrateV31ToV32,
 } from './v31-to-v32';
-import { buildV32toV33Statements } from './v32-to-v33';
+import { buildV32toV33Statements, migrateV32ToV33 } from './v32-to-v33';
 import {
   buildV33toV34Statements,
   migrateV33ToV34,
@@ -46,8 +46,9 @@ import {
   buildV38toV39Statements,
   migrateV38ToV39,
 } from './v38-to-v39';
+import { migrateV39ToV40 } from './v39-to-v40';
 
-export const SCHEMA_VERSION = 39;
+export const SCHEMA_VERSION = 40;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -259,6 +260,13 @@ const MIGRATIONS: Migration[] = [
     // Logic migration (JSON backfill) via migrateV38ToV39.
     buildStatements: async () => buildV38toV39Statements(),
   },
+  {
+    from: 39,
+    to: 40,
+    breaking: false,
+    // Logic migration: idempotent canon_evidence provenance drift repair.
+    buildStatements: async () => [],
+  },
 ];
 
 export async function runMigrations(
@@ -283,10 +291,16 @@ export async function runMigrations(
       await migrateV28ToV29(db);
     } else if (migration.from === 31 && migration.to === 32) {
       await migrateV31ToV32(db);
+    } else if (migration.from === 32 && migration.to === 33) {
+      // Idempotent logic migration: ensure provenance columns + dedup + indexes.
+      await migrateV32ToV33(db);
     } else if (migration.from === 33 && migration.to === 34) {
       await migrateV33ToV34(db);
     } else if (migration.from === 38 && migration.to === 39) {
       await migrateV38ToV39(db);
+    } else if (migration.from === 39 && migration.to === 40) {
+      // Idempotent logic migration: repair canon_evidence provenance drift.
+      await migrateV39ToV40(db);
     } else {
       const statements = await migration.buildStatements(db);
       await executeTransaction(db, statements, { faultDomain: 'migration' });
