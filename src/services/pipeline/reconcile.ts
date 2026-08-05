@@ -236,7 +236,11 @@ function buildCallConfig(
   projectId: number,
   requestConfig: LLMRequestConfig,
   taskId: string,
-  extras?: { responseFormat?: 'json_object' },
+  extras?: {
+    responseFormat?: 'json_object';
+    /** OpenAI-compatible extension; lets reasoning-capable gateways skip CoT. */
+    thinking?: { type: 'enabled' | 'disabled' };
+  },
 ) {
   return {
     temperature: preset?.temperature,
@@ -246,9 +250,29 @@ function buildCallConfig(
     projectId,
     taskId,
     responseFormat: extras?.responseFormat,
+    thinking: extras?.thinking,
     requestConfig,
   };
 }
+
+/**
+ * For reasoning models whose chain-of-thought exhausted the stage budget,
+ * double the per-stage max tokens for the retry, clamped to the model's own
+ * output ceiling so we never request more than the endpoint can return.
+ */
+function bumpRetryBudget(stageMax: number, modelMax?: number): number {
+  const safeStage = Number.isFinite(stageMax) && stageMax > 0 ? stageMax : 0;
+  const doubled = Math.max(safeStage, Math.floor(safeStage * 2));
+  if (!modelMax || modelMax <= 0) return doubled;
+  return Math.min(doubled, Math.floor(modelMax));
+}
+
+/**
+ * Reasoning-only specific repair instruction (more directive than the generic
+ * describeAuditFailureReason label). Tells the model to skip CoT entirely.
+ */
+const REASONING_ONLY_REPAIR_HINT =
+  '上一轮只输出了推理/思考过程，未给出 JSON 报告。请直接输出 JSON 报告本体，不要输出任何推理、分析或思考过程。';
 
 function accumulateTokens(
   acc: { input: number; output: number; total: number },
@@ -1000,12 +1024,25 @@ async function actionRunReview(
         });
 
         if (!validation.valid) {
+          const isReasoningOnly = validation.reason === 'reasoning_only';
+          // For reasoning models that burned the whole budget on CoT, retry
+          // with a doubled budget (clamped to the model ceiling) and ask the
+          // gateway to disable thinking. Otherwise fall through to the generic
+          // one-shot format repair.
+          const retryMaxTokens = isReasoningOnly
+            ? bumpRetryBudget(
+                runtime.config.reviewMaxTokens,
+                runtime.requestConfig.max_output_tokens,
+              )
+            : runtime.config.reviewMaxTokens;
           const repair = compileReviewStageRequest({
             draftText,
             context,
-            maxTokens: runtime.config.reviewMaxTokens,
+            maxTokens: retryMaxTokens,
             contextWindow: runtime.requestConfig.context_window || 0,
-            repairReason: describeAuditFailureReason(validation.reason),
+            repairReason: isReasoningOnly
+              ? REASONING_ONLY_REPAIR_HINT
+              : describeAuditFailureReason(validation.reason),
           });
           if (!repair.ready) {
             await persistStage(taskId, {
@@ -1020,15 +1057,20 @@ async function actionRunReview(
           }
           const retry = await callReadyLLM(
             repair,
-            runtime.config.reviewMaxTokens,
+            retryMaxTokens,
             buildCallConfig(
               runtime.reviewPreset,
-              runtime.config.reviewMaxTokens,
+              retryMaxTokens,
               'pipeline_review',
               chapter.project_id,
               runtime.requestConfig,
               taskId,
-              { responseFormat: 'json_object' },
+              isReasoningOnly
+                ? {
+                    responseFormat: 'json_object',
+                    thinking: { type: 'disabled' },
+                  }
+                : { responseFormat: 'json_object' },
             ),
             abortSignal,
           );
@@ -1039,6 +1081,14 @@ async function actionRunReview(
           }
           tokens = accumulateTokens(tokens, retry);
           validation = validateReviewResult(retry, draftText, { hasOutline });
+          logPipelineAudit({
+            stage: 'review',
+            attempt: 2,
+            valid: validation.valid,
+            reason: validation.reason,
+            textLength: retry.text?.length || 0,
+            taskId,
+          });
         }
 
         if (validation.valid && validation.normalizedText) {
@@ -1055,7 +1105,10 @@ async function actionRunReview(
           stage: 'review',
           text: '',
           status: 'failed',
-          error: formatAuditFailureMessage('review', validation.reason),
+          error:
+            validation.reason === 'reasoning_only'
+              ? '文学评估仅返回推理内容，未产生报告。请在「设置」中提高该模型的审阅 max_tokens，或改用非推理模型。'
+              : formatAuditFailureMessage('review', validation.reason),
           tokens,
           durationMs: Date.now() - start,
         });
@@ -1163,13 +1216,34 @@ async function actionRunFactCheck(
         }
         tokens = accumulateTokens(tokens, first);
         let validation = validateFactCheckResult(first, draftText);
+        logPipelineAudit({
+          stage: 'factCheck',
+          attempt: 1,
+          valid: validation.valid,
+          reason: validation.reason,
+          textLength: first.text?.length || 0,
+          taskId,
+        });
         if (!validation.valid) {
+          const isReasoningOnly = validation.reason === 'reasoning_only';
+          // For reasoning models that burned the whole budget on CoT, retry
+          // with a doubled budget (clamped to the model ceiling) and ask the
+          // gateway to disable thinking. Otherwise fall through to the generic
+          // one-shot format repair.
+          const retryMaxTokens = isReasoningOnly
+            ? bumpRetryBudget(
+                runtime.config.factCheckMaxTokens,
+                runtime.requestConfig.max_output_tokens,
+              )
+            : runtime.config.factCheckMaxTokens;
           const repair = compileFactCheckStageRequest({
             draftText,
             context,
-            maxTokens: runtime.config.factCheckMaxTokens,
+            maxTokens: retryMaxTokens,
             contextWindow: runtime.requestConfig.context_window || 0,
-            repairReason: describeAuditFailureReason(validation.reason),
+            repairReason: isReasoningOnly
+              ? REASONING_ONLY_REPAIR_HINT
+              : describeAuditFailureReason(validation.reason),
           });
           if (!repair.ready) {
             await persistStage(taskId, {
@@ -1184,15 +1258,20 @@ async function actionRunFactCheck(
           }
           const retry = await callReadyLLM(
             repair,
-            runtime.config.factCheckMaxTokens,
+            retryMaxTokens,
             buildCallConfig(
               runtime.factCheckPreset,
-              runtime.config.factCheckMaxTokens,
+              retryMaxTokens,
               'pipeline_factcheck',
               chapter.project_id,
               runtime.requestConfig,
               taskId,
-              { responseFormat: 'json_object' },
+              isReasoningOnly
+                ? {
+                    responseFormat: 'json_object',
+                    thinking: { type: 'disabled' },
+                  }
+                : { responseFormat: 'json_object' },
             ),
             abortSignal,
           );
@@ -1203,6 +1282,14 @@ async function actionRunFactCheck(
           }
           tokens = accumulateTokens(tokens, retry);
           validation = validateFactCheckResult(retry, draftText);
+          logPipelineAudit({
+            stage: 'factCheck',
+            attempt: 2,
+            valid: validation.valid,
+            reason: validation.reason,
+            textLength: retry.text?.length || 0,
+            taskId,
+          });
         }
         if (validation.valid && validation.normalizedText) {
           await persistStage(taskId, {
@@ -1218,7 +1305,10 @@ async function actionRunFactCheck(
           stage: 'factCheck',
           text: '',
           status: 'failed',
-          error: formatAuditFailureMessage('factCheck', validation.reason),
+          error:
+            validation.reason === 'reasoning_only'
+              ? '事实核查仅返回推理内容，未产生报告。请在「设置」中提高该模型的事实核查 max_tokens，或改用非推理模型。'
+              : formatAuditFailureMessage('factCheck', validation.reason),
           tokens,
           durationMs: Date.now() - start,
         });
