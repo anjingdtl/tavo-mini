@@ -42,6 +42,7 @@ import { ContinuationWorkspaceScreen } from '../screens/continuation/Continuatio
 import { ContinuationStateReviewScreen } from '../screens/continuation/ContinuationStateReviewScreen';
 import { RevisionHistoryScreen } from '../screens/RevisionHistoryScreen';
 import { BackupCenterScreen } from '../screens/BackupCenterScreen';
+import { RecallScreen } from '../screens/RecallScreen';
 import { ContextPreviewScreen } from '../screens/ContextPreviewScreen';
 import { DraftPreviewScreen } from '../screens/DraftPreviewScreen';
 import { UsageStatsScreen } from '../screens/UsageStatsScreen';
@@ -83,6 +84,7 @@ export type SettingsStackParamList = {
   PipelineResult: { taskId: string };
   ContinuationResult: { runId: string };
   BackupCenter: undefined;
+  Recall: undefined;
   UsageStats: undefined;
   ContextAutoConfig: undefined;
   ContinuationGenerationConfig: undefined;
@@ -291,6 +293,7 @@ const SettingsStackScreen = () => (
       component={SettingsContinuationResultRoute}
     />
     <SettingsStack.Screen name="BackupCenter" component={BackupCenterScreen} />
+    <SettingsStack.Screen name="Recall" component={RecallScreen} />
     <SettingsStack.Screen name="UsageStats" component={UsageStatsScreen} />
     <SettingsStack.Screen
       name="ContextAutoConfig"

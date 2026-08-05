@@ -205,6 +205,14 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
           disabled={operating}
           flex
         />
+        <View style={styles.recallBtnWrap}>
+          <Button
+            label="召回潜在数据"
+            variant="secondary"
+            onPress={() => (navigation.navigate as any)('Recall')}
+            flex
+          />
+        </View>
         {operating && progress ? (
           <View style={styles.progressWrap}>
             <View style={[styles.progressTrack, { backgroundColor: theme.colors.accentSoft }]}>
@@ -248,6 +256,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     elevation: 2,
     zIndex: 2,
+  },
+  recallBtnWrap: {
+    marginTop: spacing.md,
   },
   progressWrap: {
     marginTop: spacing.sm,

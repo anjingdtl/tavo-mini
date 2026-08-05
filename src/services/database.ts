@@ -35,3 +35,6 @@ export * from '../data/repositories/contextAutoRepository';
 export * from '../data/repositories/storyMemoryRepository';
 export * from '../data/repositories/continuationResourceBindingRepository';
 export * from '../data/repositories/outlineRepository';
+
+// 召回潜在数据功能（备份中心入口）
+export * from './recall/dataRecallService';
