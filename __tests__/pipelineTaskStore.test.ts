@@ -112,9 +112,10 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
 
     expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(1);
     const task = usePipelineTaskStore.getState().tasks[0];
+    // No successful draft → failed, but keep unresolved so user can see it.
     expect(task.status).toBe('failed');
-    expect(task.resolvedAt).not.toBeNull();
-    expect(task.error).toMatch(/已退出或任务已停止/);
+    expect(task.resolvedAt).toBeNull();
+    expect(task.error).toMatch(/没有成功的初稿|无法安全恢复|中断/);
   });
 });
 

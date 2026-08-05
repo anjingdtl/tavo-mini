@@ -17,6 +17,7 @@ const mockStore: {
   cancelTask: jest.Mock;
   setTaskInputFingerprint: jest.Mock;
   setTaskPipelineContext: jest.Mock;
+  persistTaskPipelineContext: jest.Mock;
   tasks: any[];
   getState: () => typeof mockStore;
 } = {
@@ -28,6 +29,7 @@ const mockStore: {
   cancelTask: jest.fn(),
   setTaskInputFingerprint: jest.fn(),
   setTaskPipelineContext: jest.fn(),
+  persistTaskPipelineContext: jest.fn(async () => undefined),
   tasks: [],
   getState() {
     return mockStore;
@@ -78,6 +80,50 @@ jest.mock('../src/services/contextBuilder', () => ({
   buildContext: (...args: any[]) => mockBuildContext(...args),
 }));
 
+jest.mock('../src/services/draftPipelineCompiler', () => ({
+  compileDraftPipelineRequest: jest.fn(async () => ({
+    messages: [{ role: 'system', content: 'story context' }],
+    baseContext: [{ role: 'system', content: 'story context' }],
+    pipelineContext: {
+      presetText: 'preset-text',
+      storyMemoryText: 'story-memory',
+      characterText: 'character-text',
+      noteText: 'note-text',
+      worldbookText: 'worldbook-text',
+      episodicMemoryText: 'episodic-text',
+      recentBridgeText: 'recent-bridge',
+      currentInstructionText: 'instruction',
+      retrievalUserPrompt: 'user-prompt',
+      outlineText: '',
+      outlineFingerprint: '',
+      outlineIds: [],
+      outlineComplete: true,
+      outlineEstimatedTokens: 0,
+      projectId: 10,
+      chapterId: 1,
+    },
+    estimatedInputTokens: 10,
+    reservedOutputTokens: 4000,
+    safetyMargin: 512,
+    contextWindow: 128000,
+    fits: true,
+    blockingReason: null,
+    chapterTitle: 'Chapter 1',
+    prevEnding: '',
+    userPrompt: 'continue chapter',
+    draftPreset: null,
+    requestConfig: {
+      id: 1,
+      context_window: 128000,
+      provider_type: 'openai_compatible',
+      api_key: 'sk',
+      model_name: 'm',
+      url: 'https://example.com/v1/chat/completions',
+    },
+    trace: [],
+  })),
+}));
+
 jest.mock('../src/services/chapterGeneration', () => ({
   createChapterGenerationRequest: jest.fn(() => ({
     mode: 'continue',
@@ -120,7 +166,7 @@ const chapter: Chapter = {
 };
 
 /** Snapshot mock with all fields the new flow needs. */
-function snapshotMock(overrides: Record<string, string> = {}) {
+function snapshotMock(overrides: Record<string, any> = {}) {
   return {
     presetText: 'preset-text',
     storyMemoryText: 'story-memory',
@@ -131,6 +177,11 @@ function snapshotMock(overrides: Record<string, string> = {}) {
     recentBridgeText: 'recent-bridge',
     currentInstructionText: 'instruction',
     retrievalUserPrompt: 'user-prompt',
+    outlineText: '',
+    outlineFingerprint: '',
+    outlineIds: [],
+    outlineComplete: true,
+    outlineEstimatedTokens: 0,
     ...overrides,
   };
 }
@@ -199,6 +250,9 @@ beforeEach(() => {
     url: 'https://api.example/v1/chat/completions',
     api_key: 'sk-test',
     model_name: 'model-a',
+    provider_type: 'openai_compatible',
+    context_window: 128000,
+    max_output_tokens: 8000,
   });
   mockSaveDraft.mockResolvedValue(1);
   mockBuildContext.mockReset();
@@ -933,6 +987,9 @@ test('pipeline defaults to non-streaming draft generation and reuses one LLM req
     url: 'https://api.example/v1/chat/completions',
     api_key: 'sk-shared',
     model_name: 'shared-model',
+    provider_type: 'openai_compatible' as const,
+    context_window: 128000,
+    max_output_tokens: 8000,
   };
   mockResolveLLMRequestConfig.mockResolvedValueOnce(llmRequestConfig);
   mockCallLLMResult

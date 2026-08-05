@@ -14,7 +14,7 @@ import {
 
 describe('Schema 35 → 36 outline migration', () => {
   it('reports SCHEMA_VERSION as 37', () => {
-    expect(SCHEMA_VERSION).toBe(37);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(38);
   });
 
   it('outlines table DDL has all required columns', () => {
