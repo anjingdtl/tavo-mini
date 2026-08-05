@@ -1,8 +1,6 @@
 /**
  * Pipeline durable state machine (architecture convergence).
- *
- * Phase 1 exports pure decision + projection helpers only.
- * Runner still uses legacy paths until phase 3 wires reconcilePipelineTask.
+ * Single decision + reconcile entry for first-run and resume.
  */
 
 export type {
