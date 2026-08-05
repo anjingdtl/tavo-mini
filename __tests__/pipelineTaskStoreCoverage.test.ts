@@ -61,12 +61,15 @@ describe('pipeline task store complete lifecycle', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(id).toMatch(/^pt_/);
     store.updateTaskStage(id, { stage: 'draft', status: 'completed', output: '草稿' } as any);
+    // updateTaskStage hands off to the async per-task persistence queue; flush it
+    // so mergeStageResult commits before the subsequent synchronous transitions.
+    await new Promise<void>(resolve => setImmediate(resolve));
     store.setTaskStatus(id, 'reviewing');
     store.completeTask(id, '最终文本');
     store.failTask(id, '失败原因');
     store.cancelTask(id);
     store.resolveTask(id, 'accept');
-    await Promise.resolve();
+    await new Promise<void>(resolve => setImmediate(resolve));
     const task = usePipelineTaskStore.getState().tasks.find(item => item.id === id)!;
     expect(task.status).toBe('cancelled');
     expect(task.stageResults).toHaveLength(1);
