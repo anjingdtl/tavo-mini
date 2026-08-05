@@ -12,6 +12,7 @@ import {
   type RouteProp,
 } from '@react-navigation/native';
 import * as db from '../services/database';
+import { computeInputFingerprint } from '../services/outlineContextBuilder';
 import type { PipelineStageResult } from '../types/pipeline';
 
 type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'PipelineResult'>;
@@ -196,6 +197,40 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         Alert.alert('章节不存在');
         return;
       }
+
+      // Adopt-time drift detection (Schema 37): if the task carries a frozen
+      // input fingerprint, recompute the live one and warn the user when the
+      // outline or chapter changed between generation and adoption. The user
+      // may still proceed — this is a warning, not a block.
+      const baselineFp = task.inputFingerprint;
+      if (baselineFp) {
+        try {
+          const liveFp = await computeInputFingerprint({
+            projectId: chapter.project_id,
+            chapterId: chapter.id,
+            chapterUpdatedAt: chapter.updated_at,
+          });
+          if (liveFp !== baselineFp) {
+            const proceed = await new Promise<boolean>(resolve => {
+              Alert.alert(
+                '资料已变化',
+                '本结果基于任务启动时的大纲/章节版本。当前大纲或章节资料已变化，采纳前请确认结果仍然合适。',
+                [
+                  { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+                  { text: '仍然采纳', style: 'destructive', onPress: () => resolve(true) },
+                ],
+              );
+            });
+            if (!proceed) {
+              setAdopting(false);
+              return;
+            }
+          }
+        } catch {
+          /* best-effort: drift check failure never blocks adoption */
+        }
+      }
+
       await db.updateChapter(chapter.id, { content: task.finalText });
       resolveTask(task.id, 'accept');
       acceptedRef.current = true; // 标记已 accept，阻止 unmount cleanup 重复 resolve

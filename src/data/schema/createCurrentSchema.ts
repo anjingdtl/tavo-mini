@@ -244,6 +244,7 @@ export function createCurrentSchemaStatements(): string[] {
         stage_results TEXT NOT NULL DEFAULT '[]',
         final_text TEXT,
         error TEXT,
+        input_fingerprint TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         resolved_at INTEGER,
