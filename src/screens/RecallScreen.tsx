@@ -49,6 +49,22 @@ function formatTime(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 健壮地从任意 thrown 值提取可读消息（Error / string / {message} / 其他）。 */
+function extractErrorMessage(e: unknown): string {
+  if (e == null) return '未知错误';
+  if (typeof e === 'string') return e;
+  if (e instanceof Error) return e.message || e.toString();
+  if (typeof e === 'object' && 'message' in e) {
+    const m = (e as any).message;
+    if (typeof m === 'string' && m.length > 0) return m;
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
 interface Props {
   onClose?: () => void;
 }
@@ -62,6 +78,7 @@ export const RecallScreen: React.FC<Props> = ({ onClose }) => {
   const [report, setReport] = useState<RecallScanReport | null>(null);
   const [result, setResult] = useState<RecallResult | null>(null);
   const [repairDrift, setRepairDrift] = useState(true);
+  const [scanError, setScanError] = useState('');
   const [selectedSources, setSelectedSources] = useState<Set<string>>(
     new Set(),
   );
@@ -82,7 +99,9 @@ export const RecallScreen: React.FC<Props> = ({ onClose }) => {
       setSelectedSources(defaultSelected);
       setPhase('preview');
     } catch (e: any) {
-      Toast.show({ type: 'error', text1: '扫描失败', text2: e?.message });
+      const msg = extractErrorMessage(e);
+      Toast.show({ type: 'error', text1: '扫描失败', text2: msg });
+      setScanError(msg);
       setPhase('scanError');
     }
   }, []);
@@ -118,7 +137,7 @@ export const RecallScreen: React.FC<Props> = ({ onClose }) => {
               setResult(r);
               setPhase('result');
             } catch (e: any) {
-              Alert.alert('召回失败', e?.message || '未知错误');
+              Alert.alert('召回失败', extractErrorMessage(e));
               setPhase('preview');
             }
           },
@@ -147,6 +166,13 @@ export const RecallScreen: React.FC<Props> = ({ onClose }) => {
               扫描当前数据库与历史备份，把因版本升级、结构漂移等原因无法正常显示的资料重新找回并合并到当前库。{'\n\n'}
               本操作不会删除任何现有数据，执行前会自动创建恢复备份。
             </Text>
+            {phase === 'scanError' && scanError ? (
+              <View style={[styles.errorBox, { borderColor: theme.colors.danger }]}>
+                <Text style={[styles.errorText, { color: theme.colors.danger }]}>
+                  {scanError}
+                </Text>
+              </View>
+            ) : null}
           </View>
           <Button
             label={phase === 'scanError' ? '重新扫描' : '开始扫描'}
@@ -401,6 +427,13 @@ const styles = StyleSheet.create({
   noticeCard: { borderRadius: 8, padding: spacing.md, marginBottom: spacing.md },
   noticeTitle: { fontSize: 16, fontWeight: '700', marginBottom: spacing.xs },
   noticeText: { fontSize: 13, lineHeight: 20, marginTop: spacing.xs },
+  errorBox: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 6,
+    padding: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  errorText: { fontSize: 12, lineHeight: 17 },
   list: { padding: spacing.lg, paddingBottom: 120 },
   sectionTitle: { fontSize: 14, fontWeight: '700', marginBottom: spacing.sm },
   warning: { fontSize: 13, marginTop: spacing.xs },
