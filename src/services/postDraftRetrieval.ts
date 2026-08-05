@@ -1,32 +1,23 @@
 /**
  * Post-draft secondary local retrieval (SPEC §10).
  *
- * After the draft is generated, the model may have written entities (an old
- * character, a place, an object, a "first time" / "again" expression) that
- * were NOT in the original retrieval query. This module re-runs the EXISTING
- * local retrievers using the draft as an additional signal and merges the new
- * hits into a {@link PipelineContextSnapshot}.
+ * After the draft is generated, the model may have written entities that were
+ * NOT in the original retrieval query. Full-mode audit rebuild must re-score
+ * only within the frozen candidate pool captured at task start — never re-read
+ * live project data.
  *
  * Hard guarantees (SPEC §10.3):
  * - No remote LLM call;
  * - No database write, no Story Memory update, no Checkpoint re-run;
  * - Must not retrieve future chapters (position >= current chapter);
- * - On any failure, fall back to the original snapshot unchanged;
- * - Must never block the pipeline — caller wraps in try/catch too.
+ * - On any failure, fall back to the original snapshot unchanged.
  *
- * Merge / dedupe (SPEC §10.4):
- * - Episodic hits: original ∪ draft-driven, deduped by chapter id, recent-first;
- * - Worldbook hits: original lines ∪ draft-activated lines, deduped by content;
- * - Character cards: original ∪ draft-activated, deduped by character id/name.
- *
- * This module is read-only relative to the DB and never imports anything that
- * mutates state. It only reuses pure retrievers + read-only DB helpers.
+ * Capture (`captureFrozenAuditCandidates`) may read DB once at task start.
+ * Rebuild (`buildPostDraftAuditContextFromFrozen`) is pure over frozen data.
  */
 import * as db from './database';
 import {
   buildContext,
-  buildWorldbookContext,
-  buildCharacterContext,
   resolveStoryStateForRetrieval,
 } from './contextBuilder';
 import {
@@ -50,6 +41,12 @@ import {
 import { clipTextToTokenBudget } from '../utils/tokenEstimator';
 import type { Chapter, ContextConfig } from '../types/novel';
 import type { PipelineContextSnapshot } from '../types/pipelineContext';
+import type {
+  FrozenAuditCandidates,
+  FrozenCharacterCandidate,
+  FrozenChapterCandidate,
+  FrozenWorldbookCandidate,
+} from '../types/pipelineFrozen';
 
 export interface PostDraftRetrievalResult {
   snapshot: PipelineContextSnapshot;
@@ -66,17 +63,150 @@ export interface PostDraftRetrievalResult {
 }
 
 /**
- * Build a {@link PipelineContextSnapshot} enriched with draft-driven local
- * retrieval. Never throws; on error returns the original snapshot with
- * fellBack=true.
+ * Capture the full-mode audit candidate pool at task start.
+ * This is the only place allowed to read live repositories for audit candidates.
  */
-export async function buildPostDraftAuditContext(
+export async function captureFrozenAuditCandidates(
+  chapter: Chapter,
+  projectId: number,
+  contextConfig: ContextConfig,
+): Promise<FrozenAuditCandidates> {
+  let chapters: Chapter[] = [];
+  try {
+    chapters = await db.getChaptersByProject(projectId);
+  } catch {
+    chapters = [];
+  }
+
+  let rawChapterIds: number[] = [];
+  let storyStateText = '';
+  try {
+    const prepared = await prepareStoryMemoryForGeneration(
+      projectId,
+      chapter,
+      contextConfig,
+      { mode: 'preview' },
+    );
+    rawChapterIds = prepared?.coverage?.rawChapterIds || [];
+    const state = resolveStoryStateForRetrieval(prepared);
+    if (state && typeof state === 'object') {
+      try {
+        storyStateText = JSON.stringify(state).slice(0, 20000);
+      } catch {
+        storyStateText = '';
+      }
+    }
+  } catch {
+    rawChapterIds = [];
+  }
+
+  const previousChaptersAll = chapters.filter(c => c.position < chapter.position);
+  const episodicPool = excludeRawFromEpisodicCandidates(
+    previousChaptersAll,
+    rawChapterIds,
+  ).filter(c => c.position < chapter.position);
+
+  const episodicCandidates: FrozenChapterCandidate[] = episodicPool.map(c => ({
+    id: c.id,
+    position: c.position,
+    title: c.title || '',
+    memory_summary: String((c as any).memory_summary || ''),
+  }));
+
+  const characterCandidates: FrozenCharacterCandidate[] = [];
+  try {
+    const characters = (await db.getCharactersByProject(projectId)) as any[];
+    for (const character of characters) {
+      const data = safeJsonLocal(character.data_json);
+      const card = data.data || data;
+      const charName = character.name || card.name || '未命名角色';
+      const text = [
+        `角色「${charName}」`,
+        card.system_prompt && `角色系统提示：${card.system_prompt}`,
+        card.description && `描述：${card.description}`,
+        card.personality && `性格：${card.personality}`,
+        card.scenario && `场景：${card.scenario}`,
+        card.first_mes && `开场消息：${card.first_mes}`,
+        card.mes_example && `对话示例：${card.mes_example}`,
+        card.post_history_instructions &&
+          `后置指令：${card.post_history_instructions}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      characterCandidates.push({
+        id: Number(character.id) || 0,
+        name: charName,
+        cardText: text,
+      });
+    }
+  } catch {
+    /* empty pool */
+  }
+
+  const worldbookCandidates: FrozenWorldbookCandidate[] = [];
+  try {
+    const entries = ((await db.getWorldbookEntriesByProject(projectId)) as any[])
+      .slice()
+      .sort(
+        (a, b) =>
+          Number(a.position || 0) - Number(b.position || 0) ||
+          Number(a.id || 0) - Number(b.id || 0),
+      );
+    for (const entry of entries) {
+      const primary = normalizeKeysLocal(
+        entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword,
+      );
+      const secondary = normalizeKeysLocal(
+        entry.keyword_secondary ?? entry.keysecondary ?? entry.secondary_keys,
+      );
+      worldbookCandidates.push({
+        id: Number(entry.id) || null,
+        keywords: primary,
+        secondaryKeywords: secondary,
+        content: String(entry.content || ''),
+        constant: entry.constant === 1 || entry.constant === true,
+        position: Number(entry.position || 0),
+      });
+    }
+  } catch {
+    /* empty pool */
+  }
+
+  return {
+    episodicCandidates,
+    characterCandidates,
+    worldbookCandidates,
+    contextConfig: {
+      strategy: contextConfig.strategy,
+      slidingWindowSize: contextConfig.slidingWindowSize,
+      customRangeStart: contextConfig.customRangeStart,
+      customRangeEnd: contextConfig.customRangeEnd,
+      resourceBudget: contextConfig.resourceBudget,
+      includeResources: contextConfig.includeResources,
+      summaryBudgetTokens: contextConfig.summaryBudgetTokens,
+      storyStateBudgetTokens: contextConfig.storyStateBudgetTokens,
+      episodicMemoryBudgetTokens: contextConfig.episodicMemoryBudgetTokens,
+      memoryTopK: contextConfig.memoryTopK,
+      worldbookRecursive: contextConfig.worldbookRecursive,
+    },
+    chapterPosition: chapter.position,
+    chapterTitle: chapter.title || '',
+    chapterSynopsis: chapter.synopsis || '',
+    rawChapterIds,
+    storyStateText,
+    createdAt: Date.now(),
+  };
+}
+
+/**
+ * Pure post-draft audit rebuild from frozen candidates only.
+ * Does not touch SQLite / live repositories.
+ */
+export function buildPostDraftAuditContextFromFrozen(
   original: PipelineContextSnapshot,
   draftText: string,
-  projectId: number,
-  chapter: Chapter,
-  contextConfig: ContextConfig,
-): Promise<PostDraftRetrievalResult> {
+  frozen: FrozenAuditCandidates,
+): PostDraftRetrievalResult {
   const noop = (reason: string): PostDraftRetrievalResult => ({
     snapshot: original,
     episodicHitsAdded: 0,
@@ -87,29 +217,30 @@ export async function buildPostDraftAuditContext(
   });
 
   if (!draftText || !draftText.trim()) return noop('empty draft');
-  if (!chapter || typeof chapter.position !== 'number') {
-    return noop('invalid chapter');
-  }
+  if (!frozen) return noop('missing frozen candidates');
 
   try {
-    const [
-      episodicResult,
-      worldbookResult,
-      characterResult,
-    ] = await Promise.all([
-      runPostDraftEpisodicRetrieval(original, draftText, projectId, chapter, contextConfig),
-      runPostDraftWorldbookRetrieval(original, draftText, projectId, chapter, contextConfig),
-      runPostDraftCharacterRetrieval(original, draftText, projectId, chapter, contextConfig),
-    ]);
+    const episodicResult = runFrozenEpisodicRetrieval(
+      original,
+      draftText,
+      frozen,
+    );
+    const worldbookResult = runFrozenWorldbookRetrieval(
+      original,
+      draftText,
+      frozen,
+    );
+    const characterResult = runFrozenCharacterRetrieval(
+      original,
+      draftText,
+      frozen,
+    );
 
     const snapshot: PipelineContextSnapshot = {
       ...original,
       episodicMemoryText: episodicResult.text,
       worldbookText: worldbookResult.text,
       characterText: characterResult.text,
-      // storyMemoryText / presetText / noteText / recentBridgeText /
-      // currentInstructionText / retrievalUserPrompt are unchanged: SPEC §10
-      // forbids re-running the checkpoint and forbids touching Story Memory.
     };
 
     return {
@@ -120,89 +251,171 @@ export async function buildPostDraftAuditContext(
       fellBack: false,
     };
   } catch (error: any) {
-    return noop(error?.message ? String(error.message) : 'post-draft retrieval error');
+    return noop(
+      error?.message ? String(error.message) : 'frozen post-draft retrieval error',
+    );
   }
 }
 
-/* ----------------------------- episodic ----------------------------- */
-
 /**
- * Re-run the episodic TF-IDF retrieval using the draft as an additional query
- * signal, then merge with the original snapshot's episodic text. Never pulls
- * chapters at position >= current chapter (no future leakage).
+ * Legacy live-DB path. Prefer {@link buildPostDraftAuditContextFromFrozen}
+ * for pipeline reconcile. Kept for tests that intentionally exercise live reads.
  */
-async function runPostDraftEpisodicRetrieval(
+export async function buildPostDraftAuditContext(
   original: PipelineContextSnapshot,
   draftText: string,
   projectId: number,
   chapter: Chapter,
-  config: ContextConfig,
-): Promise<{ text: string; added: number }> {
-  // Read chapters fresh (read-only). We must never modify them.
-  let chapters: Chapter[] = [];
+  contextConfig: ContextConfig,
+): Promise<PostDraftRetrievalResult> {
+  if (!draftText || !draftText.trim()) {
+    return {
+      snapshot: original,
+      episodicHitsAdded: 0,
+      worldbookHitsAdded: 0,
+      characterHitsAdded: 0,
+      fellBack: true,
+      fallbackReason: 'empty draft',
+    };
+  }
+  if (!chapter || typeof chapter.position !== 'number') {
+    return {
+      snapshot: original,
+      episodicHitsAdded: 0,
+      worldbookHitsAdded: 0,
+      characterHitsAdded: 0,
+      fellBack: true,
+      fallbackReason: 'invalid chapter',
+    };
+  }
+  // Capture then pure rebuild so even the legacy entry freezes one snapshot.
   try {
-    chapters = await db.getChaptersByProject(projectId);
+    const frozen = await captureFrozenAuditCandidates(
+      chapter,
+      projectId,
+      contextConfig,
+    );
+    return buildPostDraftAuditContextFromFrozen(original, draftText, frozen);
+  } catch (error: any) {
+    return {
+      snapshot: original,
+      episodicHitsAdded: 0,
+      worldbookHitsAdded: 0,
+      characterHitsAdded: 0,
+      fellBack: true,
+      fallbackReason: error?.message
+        ? String(error.message)
+        : 'post-draft retrieval error',
+    };
+  }
+}
+
+function safeJsonLocal(text: string): any {
+  try {
+    return JSON.parse(text || '{}');
   } catch {
+    return {};
+  }
+}
+
+function normalizeKeysLocal(raw: any): string[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.map(k => String(k || '').trim()).filter(Boolean);
+  }
+  if (typeof raw === 'string') {
+    return raw
+      .split(/[,，;；|]/)
+      .map(k => k.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function includesKeyLocal(text: string, key: string): boolean {
+  if (!key) return false;
+  return text.toLowerCase().includes(key.toLowerCase());
+}
+
+function runFrozenEpisodicRetrieval(
+  original: PipelineContextSnapshot,
+  draftText: string,
+  frozen: FrozenAuditCandidates,
+): { text: string; added: number } {
+  const config = frozen.contextConfig;
+  const chaptersLike = frozen.episodicCandidates.map(c => ({
+    id: c.id,
+    position: c.position,
+    title: c.title,
+    memory_summary: c.memory_summary,
+  }));
+  if (chaptersLike.length === 0) {
     return { text: original.episodicMemoryText, added: 0 };
   }
 
-  // We reuse prepare() ONLY to resolve the same usable Story Memory snapshot
-  // the draft saw (entity boosts / eligibility). We pass mode 'preview' so it
-  // never spends LLM tokens and never rebuilds the checkpoint.
-  let prepared: Awaited<ReturnType<typeof prepareStoryMemoryForGeneration>> | null = null;
-  try {
-    prepared = await prepareStoryMemoryForGeneration(projectId, chapter, config, {
-      mode: 'preview',
-    });
-  } catch {
-    prepared = null;
-  }
-
-  const coverage = prepared?.coverage;
-  const rawChapterIds = coverage?.rawChapterIds || [];
-  const previousChaptersAll = chapters.filter(c => c.position < chapter.position);
-  // Exclude raw bridge chapters (same rule as buildContext) AND any future/same.
-  const episodicCandidates = excludeRawFromEpisodicCandidates(
-    previousChaptersAll,
-    rawChapterIds,
-  ).filter(c => c.position < chapter.position);
-
-  if (episodicCandidates.length === 0) {
-    return { text: original.episodicMemoryText, added: 0 };
-  }
-
-  // Build an augmented query: original retrieval query + the fresh draft text.
-  // The draft carries the actual entities the model wrote, which is exactly
-  // what we want to detect (old character / place / "first time").
-  const previousForQuery = resolvePreviousChapterForQuery(previousChaptersAll, chapter);
+  const previousForQuery = resolvePreviousChapterForQuery(
+    chaptersLike as any,
+    {
+      id: 0,
+      project_id: 0,
+      position: frozen.chapterPosition,
+      title: frozen.chapterTitle,
+      synopsis: frozen.chapterSynopsis,
+      content: '',
+      status: 'draft',
+      summary_json: null,
+      created_at: '',
+      updated_at: '',
+    },
+  );
   const baseQuery = buildEpisodicRetrievalQuery({
-    currentChapter: chapter,
+    currentChapter: {
+      id: 0,
+      project_id: 0,
+      position: frozen.chapterPosition,
+      title: frozen.chapterTitle,
+      synopsis: frozen.chapterSynopsis,
+      content: '',
+      status: 'draft',
+      summary_json: null,
+      created_at: '',
+      updated_at: '',
+    },
     previousChapter: previousForQuery,
     retrievalUserPrompt: original.retrievalUserPrompt,
   });
   const draftQuery = `${baseQuery}\n${draftText.slice(0, 4000)}`;
 
-  const docs = episodicCandidates
-    .map(c => ({ chapter: c, text: String((c as any).memory_summary || '') }))
+  const docs = chaptersLike
+    .map(c => ({
+      chapter: c as any,
+      text: String(c.memory_summary || ''),
+    }))
     .filter(item => item.text.trim());
   if (docs.length === 0) {
     return { text: original.episodicMemoryText, added: 0 };
   }
 
-  // Build IDF over candidates (mirror buildContext's path).
   const idf = buildIdfLocal(docs.map(d => d.text));
   if (!idf || idf.size === 0) {
     return { text: original.episodicMemoryText, added: 0 };
   }
 
-  const storyStateForRetrieval = resolveStoryStateForRetrieval(prepared);
-  const storyTerms = collectStoryRetrievalTerms(storyStateForRetrieval ?? null);
+  let storyState: any = null;
+  if (frozen.storyStateText) {
+    try {
+      storyState = JSON.parse(frozen.storyStateText);
+    } catch {
+      storyState = null;
+    }
+  }
+  const storyTerms = collectStoryRetrievalTerms(storyState);
   const active = findActiveStoryTerms(draftQuery, storyTerms);
   const scored = scoreMemoryCandidates(
     docs,
     draftQuery,
     idf,
-    storyStateForRetrieval ?? null,
+    storyState,
     defaultCosine,
     defaultVectorize.bind(null, idf),
     { storyTerms, activeTerms: active },
@@ -210,37 +423,149 @@ async function runPostDraftEpisodicRetrieval(
   const topK = config.memoryTopK ?? 10;
   const budgetTokens =
     config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
-
-  // Merge: take the draft-driven selection, then fill from original-text
-  // chapters that were not selected. Dedupe by chapter id (handled inside the
-  // merge helper via chapter-prefix matching).
   const draftSelected = selectMemoryCandidates(scored, active, topK);
-
-  // For "added" accounting: identify which selected chapters were NOT in the
-  // original episodic text. We detect by chapter id mention in the prefix
-  // pattern "第 N 章「title」摘要" — the same format buildContext emits.
   const originalChapterIds = extractChapterIdsFromEpisodicText(
     original.episodicMemoryText,
-    chapters,
+    chaptersLike as any,
   );
   const addedCount = draftSelected.filter(
     item => !originalChapterIds.has(item.chapter.id),
   ).length;
-
-  // Original chapters not re-selected: preserve their existing line so we do
-  // not lose information that was already injected into the draft.
   const budgeted = selectCandidatesWithinTokenBudget(draftSelected, budgetTokens);
   const draftTextOut = orderCandidatesForDisplay(budgeted)
     .map(item => formatMemoryCandidateLine(item))
     .join('\n');
-
   const merged = mergeEpisodicTextPreservingOriginal(
     draftTextOut,
     original.episodicMemoryText,
   );
-
   return { text: merged, added: addedCount };
 }
+
+function runFrozenWorldbookRetrieval(
+  original: PipelineContextSnapshot,
+  draftText: string,
+  frozen: FrozenAuditCandidates,
+): { text: string; added: number } {
+  const config = frozen.contextConfig;
+  const budget =
+    config.resourceBudget && config.resourceBudget > 0
+      ? Math.max(0, budgetForWorldbook(config.resourceBudget))
+      : 2000;
+  if (budget <= 0) return { text: original.worldbookText, added: 0 };
+
+  const haystack = `${frozen.chapterTitle}\n${frozen.chapterSynopsis}\n${draftText}`;
+  const recursive = config.worldbookRecursive !== false;
+  const activated = new Map<number | null, FrozenWorldbookCandidate>();
+
+  const tryActivate = (scan: string) => {
+    for (const entry of frozen.worldbookCandidates) {
+      if (activated.has(entry.id)) continue;
+      if (entry.constant) {
+        activated.set(entry.id, entry);
+        continue;
+      }
+      if (entry.keywords.length === 0) {
+        activated.set(entry.id, entry);
+        continue;
+      }
+      const primaryHit = entry.keywords.some(k => includesKeyLocal(scan, k));
+      if (!primaryHit) continue;
+      if (entry.secondaryKeywords.length === 0) {
+        activated.set(entry.id, entry);
+        continue;
+      }
+      if (entry.secondaryKeywords.some(k => includesKeyLocal(scan, k))) {
+        activated.set(entry.id, entry);
+      } else {
+        activated.set(entry.id, entry);
+      }
+    }
+  };
+
+  tryActivate(haystack);
+  if (recursive && activated.size > 0) {
+    tryActivate(
+      `${haystack}\n\n${Array.from(activated.values())
+        .map(e => e.content)
+        .join('\n')}`,
+    );
+  }
+  if (activated.size === 0 && frozen.worldbookCandidates.length > 0) {
+    for (const entry of frozen.worldbookCandidates) {
+      activated.set(entry.id, entry);
+    }
+  }
+
+  const lines: string[] = [];
+  let remaining = budget;
+  for (const entry of activated.values()) {
+    if (remaining <= 0) break;
+    const label = entry.keywords[0] || '';
+    const body = entry.content || '';
+    const line = label ? `关键词「${label}」：${body}` : body;
+    const clipped = clipTextToTokenBudget(line, remaining);
+    if (!clipped) continue;
+    lines.push(clipped);
+    remaining -= Math.max(1, Math.ceil(clipped.length / 2));
+  }
+
+  const originalLines = (original.worldbookText || '')
+    .split('\n')
+    .filter(Boolean);
+  const originalBodies = new Set(
+    originalLines.map(line => stripWorldbookPrefix(line)),
+  );
+  const draftLines = lines.filter(Boolean);
+  const addedLines = draftLines.filter(
+    line => !originalBodies.has(stripWorldbookPrefix(line)),
+  );
+  if (addedLines.length === 0) {
+    return { text: original.worldbookText, added: 0 };
+  }
+  return {
+    text: [...originalLines, ...addedLines].join('\n'),
+    added: addedLines.length,
+  };
+}
+
+function runFrozenCharacterRetrieval(
+  original: PipelineContextSnapshot,
+  draftText: string,
+  frozen: FrozenAuditCandidates,
+): { text: string; added: number } {
+  const config = frozen.contextConfig;
+  const budget =
+    config.resourceBudget && config.resourceBudget > 0
+      ? Math.floor(config.resourceBudget * 0.35)
+      : 1500;
+  if (budget <= 0) return { text: original.characterText, added: 0 };
+
+  const draftLower = draftText.toLowerCase();
+  const originalNames = extractCharacterNames(original.characterText);
+  const seenNames = new Set(originalNames);
+  const addedBlocks: string[] = [];
+  let added = 0;
+  for (const candidate of frozen.characterCandidates) {
+    if (seenNames.has(candidate.name)) continue;
+    if (!draftLower.includes(candidate.name.toLowerCase())) continue;
+    addedBlocks.push(candidate.cardText);
+    seenNames.add(candidate.name);
+    added += 1;
+  }
+  if (addedBlocks.length === 0) {
+    return { text: original.characterText, added: 0 };
+  }
+  const addedText = clipTextToTokenBudget(
+    addedBlocks.join('\n\n'),
+    Math.max(256, Math.floor(budget * 0.5)),
+  );
+  const keptOriginal = original.characterText || '';
+  const merged = keptOriginal ? `${keptOriginal}\n\n${addedText}` : addedText;
+  return { text: merged, added };
+}
+
+/* ----------------------------- shared pure helpers ----------------------------- */
 
 function buildIdfLocal(docs: string[]): Map<string, number> {
   const df = new Map<string, number>();
@@ -332,60 +657,6 @@ function mergeEpisodicTextPreservingOriginal(
   return `${draftEpisodicText}\n${preserved.join('\n')}`;
 }
 
-/* ----------------------------- worldbook ----------------------------- */
-
-async function runPostDraftWorldbookRetrieval(
-  original: PipelineContextSnapshot,
-  draftText: string,
-  projectId: number,
-  chapter: Chapter,
-  config: ContextConfig,
-): Promise<{ text: string; added: number }> {
-  try {
-    // Activate worldbook using the draft text as an additional haystack.
-    const budget =
-      config.resourceBudget && config.resourceBudget > 0
-        ? Math.max(
-            0,
-            budgetForWorldbook(config.resourceBudget),
-          )
-        : 2000;
-    if (budget <= 0) return { text: original.worldbookText, added: 0 };
-
-    // Use the draft text (plus original scan context) to find newly-relevant
-    // entries. buildWorldbookContext is pure (read-only DB inside).
-    const draftScan = `${chapter.title || ''}\n${chapter.synopsis || ''}\n${draftText}`;
-    const result = await buildWorldbookContext(
-      projectId,
-      budget,
-      draftScan,
-      config.worldbookRecursive !== false,
-    );
-
-    // Merge: keep original worldbook lines, append draft-activated lines whose
-    // body (after the "关键词「x」：" prefix) is not already present.
-    const originalLines = (original.worldbookText || '')
-      .split('\n')
-      .filter(Boolean);
-    const originalBodies = new Set(
-      originalLines.map(line => stripWorldbookPrefix(line)),
-    );
-    const draftLines = (result.text || '').split('\n').filter(Boolean);
-    const addedLines = draftLines.filter(
-      line => !originalBodies.has(stripWorldbookPrefix(line)),
-    );
-
-    if (addedLines.length === 0) {
-      return { text: original.worldbookText, added: 0 };
-    }
-
-    const merged = [...originalLines, ...addedLines].join('\n');
-    return { text: merged, added: addedLines.length };
-  } catch {
-    return { text: original.worldbookText, added: 0 };
-  }
-}
-
 function budgetForWorldbook(resourceBudget: number): number {
   // Mirror buildResourceContext's worldbook share: budget - 35% char - 20% note.
   const characterBudget = Math.floor(resourceBudget * 0.35);
@@ -399,72 +670,6 @@ function stripWorldbookPrefix(line: string): string {
   return idx >= 0 ? line.slice(idx + 1) : line;
 }
 
-/* ----------------------------- characters ----------------------------- */
-
-async function runPostDraftCharacterRetrieval(
-  original: PipelineContextSnapshot,
-  draftText: string,
-  projectId: number,
-  _chapter: Chapter,
-  config: ContextConfig,
-): Promise<{ text: string; added: number }> {
-  try {
-    const budget =
-      config.resourceBudget && config.resourceBudget > 0
-        ? Math.floor(config.resourceBudget * 0.35)
-        : 1500;
-    if (budget <= 0) return { text: original.characterText, added: 0 };
-
-    // Fetch characters and activate those whose canonical name / alias appears
-    // in the draft. buildCharacterContext returns all characters clipped to
-    // budget; we then filter to those mentioned in the draft and merge with the
-    // original snapshot's character text.
-    const allChars = await buildCharacterContext(projectId, budget);
-    const draftLower = draftText.toLowerCase();
-    const charBlocks = splitCharacterBlocks(allChars.text);
-    const originalNames = extractCharacterNames(original.characterText);
-
-    let added = 0;
-    const keptOriginal = original.characterText || '';
-    const addedBlocks: string[] = [];
-    const seenNames = new Set(originalNames);
-
-    for (const block of charBlocks) {
-      const name = extractCharacterNameFromBlock(block);
-      if (!name) continue;
-      if (seenNames.has(name)) continue;
-      // Mention check: name appears in draft (case-insensitive).
-      if (!draftLower.includes(name.toLowerCase())) continue;
-      addedBlocks.push(block);
-      seenNames.add(name);
-      added += 1;
-    }
-
-    if (addedBlocks.length === 0) {
-      return { text: original.characterText, added: 0 };
-    }
-
-    // Clip the newly added blocks to the remaining budget so we don't blow the
-    // proof/factcheck context.
-    const addedText = clipTextToTokenBudget(
-      addedBlocks.join('\n\n'),
-      Math.max(256, Math.floor(budget * 0.5)),
-    );
-    const merged = keptOriginal
-      ? `${keptOriginal}\n\n${addedText}`
-      : addedText;
-    return { text: merged, added };
-  } catch {
-    return { text: original.characterText, added: 0 };
-  }
-}
-
-function splitCharacterBlocks(text: string): string[] {
-  if (!text) return [];
-  // Blocks are separated by blank lines and start with "角色「name」".
-  return text.split(/\n\n+/).filter(block => block.includes('角色「'));
-}
-
 function extractCharacterNames(text: string): string[] {
   if (!text) return [];
   const names: string[] = [];
@@ -474,11 +679,6 @@ function extractCharacterNames(text: string): string[] {
     names.push(m[1]);
   }
   return names;
-}
-
-function extractCharacterNameFromBlock(block: string): string | null {
-  const m = block.match(/角色「([^」]+)」/);
-  return m ? m[1] : null;
 }
 
 /**

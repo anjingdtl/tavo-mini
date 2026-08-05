@@ -122,6 +122,7 @@ export type OutlineContextErrorCode =
   | 'OUTLINE_READ_FAILED'
   | 'OUTLINE_BUDGET_UNKNOWN'
   | 'OUTLINE_OVER_BUDGET'
+  | 'OUTLINE_CONTEXT_WINDOW_EXCEEDED'
   | 'OUTLINE_SNAPSHOT_INVALID'
   | 'OUTLINE_MODEL_UNAVAILABLE'
   | 'OUTLINE_SNAPSHOT_PERSIST_FAILED'
@@ -180,17 +181,20 @@ const OUTLINE_CONTRACT =
   '7. 如大纲与既有事实冲突，应从当前状态合理拉回，而不是篡改过去。';
 
 /**
- * Default fraction of the model context window reserved for outlines.
+ * Management-page suggestion: fraction of the model context window recommended
+ * for outlines. This is NOT a hard generation block.
  *
- * Outlines are the highest creative constraint, so they get a generous slice,
- * but it is still bounded so an absurdly large outline cannot consume the
- * entire window. The pipeline subtracts this from the input side BEFORE
- * allocating the ordinary resource budget, so characters/notes/worldbook
- * compress first when space is tight.
+ * Actual generation uses the conservation budget (full outline + fixed prompt +
+ * mandatory body + output reserve + safety margin vs window). Soft materials
+ * compress first; only true total overflow blocks the call.
  */
 export const OUTLINE_BUDGET_RATIO = 0.3;
 
-/** Derive the outline token budget from the model context window. */
+/**
+ * Soft management suggestion budget (30% of window).
+ * Do not use this alone to block generation — see
+ * `deriveGenerationOutlineBudgetTokens` in contextBuilder.
+ */
 export function deriveOutlineBudgetTokens(contextWindow: number): number {
   if (!(contextWindow > 0)) return 0;
   return Math.floor(contextWindow * OUTLINE_BUDGET_RATIO);

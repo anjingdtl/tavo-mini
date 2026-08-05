@@ -328,9 +328,12 @@ export async function buildContext(
   );
 
   // Resolve outline first so soft budgets can yield to the full outline plan.
+  // Generation packing uses the real remaining input budget (not the 30%
+  // management suggestion), so a 40% outline is allowed when the total request fits.
   const preOutlineContext = await buildOutlineContextForProject(
     projectId,
     options.contextWindow,
+    options.reservedOutputTokens,
   );
   let effectiveResourceBudget = config.resourceBudget;
   let effectiveStoryStateBudget = config.storyStateBudgetTokens ?? 8000;
@@ -738,9 +741,32 @@ function buildPresetPrompt(preset?: Preset): string {
  * final window check separately blocks real generation when the model window
  * is unknown.
  */
+/**
+ * Generation packing budget for outlines.
+ *
+ * Management UI still shows OUTLINE_BUDGET_RATIO (30%) as a soft suggestion.
+ * Actual generation only blocks when full outline + fixed prompt + mandatory
+ * body + output reserve + safety margin exceed the model window.
+ */
+export function deriveGenerationOutlineBudgetTokens(
+  contextWindow: number,
+  reservedOutputTokens = 0,
+): number {
+  if (!(contextWindow > 0)) return 0;
+  const safety = deriveContextSafetyMargin(contextWindow);
+  const reserved = Math.max(0, Number(reservedOutputTokens) || 0);
+  // Leave a small fixed-protocol floor so packing is not the sole gate.
+  const fixedProtocolFloor = 256;
+  return Math.max(
+    0,
+    contextWindow - reserved - safety - fixedProtocolFloor,
+  );
+}
+
 async function buildOutlineContextForProject(
   projectId: number,
   contextWindowOverride?: number,
+  reservedOutputTokens?: number,
 ): Promise<BuiltOutlineContext> {
   // Partial database facades (tests / incomplete mocks) may omit getProjectById.
   // Without a project row we cannot claim outline mode — return empty legally.
@@ -773,7 +799,16 @@ async function buildOutlineContextForProject(
       contextWindow = 0;
     }
   }
-  const outlineBudgetTokens = deriveOutlineBudgetTokens(contextWindow);
+  // Prefer generation budget (full remaining input). Fall back to 30% suggest
+  // only when window is unknown (0) so packing does not silently accept infinite.
+  const generationBudget = deriveGenerationOutlineBudgetTokens(
+    contextWindow,
+    reservedOutputTokens,
+  );
+  const outlineBudgetTokens =
+    generationBudget > 0
+      ? generationBudget
+      : deriveOutlineBudgetTokens(contextWindow);
   // buildOutlineContext throws OutlineContextError on repository failure —
   // never swallow into EMPTY_OUTLINE_CONTEXT.
   return await buildOutlineContext({
