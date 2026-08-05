@@ -42,8 +42,12 @@ import { buildV34toV35Statements } from './v34-to-v35';
 import { buildV35toV36Statements } from './v35-to-v36';
 import { buildV36toV37Statements } from './v36-to-v37';
 import { buildV37toV38Statements } from './v37-to-v38';
+import {
+  buildV38toV39Statements,
+  migrateV38ToV39,
+} from './v38-to-v39';
 
-export const SCHEMA_VERSION = 38;
+export const SCHEMA_VERSION = 39;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -248,6 +252,13 @@ const MIGRATIONS: Migration[] = [
     breaking: false,
     buildStatements: async () => buildV37toV38Statements(),
   },
+  {
+    from: 38,
+    to: 39,
+    breaking: false,
+    // Logic migration (JSON backfill) via migrateV38ToV39.
+    buildStatements: async () => buildV38toV39Statements(),
+  },
 ];
 
 export async function runMigrations(
@@ -274,6 +285,8 @@ export async function runMigrations(
       await migrateV31ToV32(db);
     } else if (migration.from === 33 && migration.to === 34) {
       await migrateV33ToV34(db);
+    } else if (migration.from === 38 && migration.to === 39) {
+      await migrateV38ToV39(db);
     } else {
       const statements = await migration.buildStatements(db);
       await executeTransaction(db, statements, { faultDomain: 'migration' });
