@@ -507,14 +507,35 @@ describe('runner awaits persist before LLM', () => {
     const mockStore: any = {
       setTaskStatus: jest.fn(),
       updateTaskStage: jest.fn(),
+      persistTaskStage: jest.fn(async () => undefined),
+      persistTaskStatus: jest.fn(async () => undefined),
       completeTask: jest.fn(),
+      persistCompleteTask: jest.fn(async () => undefined),
       setTaskFinalText: jest.fn(),
+      persistTaskFinalText: jest.fn(async () => undefined),
       failTask: jest.fn(),
+      persistFailTask: jest.fn(async (id: string, err: string) => {
+        mockStore.failTask(id, err);
+      }),
       cancelTask: jest.fn(),
       setTaskInputFingerprint: jest.fn(),
       setTaskPipelineContext: jest.fn(),
       persistTaskPipelineContext: mockPersist,
-      tasks: [],
+      // reconcile requires an existing task row (createTask before run).
+      tasks: [
+        {
+          id: 'task-persist-fail',
+          targetType: 'chapter',
+          targetId: 1,
+          status: 'idle',
+          stageResults: [],
+          finalText: null,
+          error: null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          resolvedAt: null,
+        },
+      ],
       getState() {
         return mockStore;
       },
@@ -559,10 +580,24 @@ describe('runner awaits persist before LLM', () => {
         context_window: 128000,
       })),
       getProjectById: jest.fn(async () => ({ id: 1, mode: 'outline' })),
+      ensurePendingCheckpoints: jest.fn(async () => undefined),
+      getStageCheckpoints: jest.fn(async () => []),
+      getStageCheckpoint: jest.fn(async () => null),
+      claimStageCheckpoint: jest.fn(async () => true),
+      upsertStageCheckpoint: jest.fn(async () => undefined),
     }));
     jest.doMock('../src/services/llm', () => ({
       callLLMResult: (...args: any[]) => mockCallLLM(...args),
       resolveLLMRequestConfig: jest.fn(async () => ({
+        id: 1,
+        name: 'm',
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://example.com/v1/chat/completions',
+        context_window: 32000,
+      })),
+      resolveLLMRequestConfigById: jest.fn(async () => ({
         id: 1,
         name: 'm',
         provider_type: 'openai_compatible',

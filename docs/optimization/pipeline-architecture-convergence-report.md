@@ -157,7 +157,8 @@ Review 后 / FactCheck 后 / Proof 后 / Final 后 / complete 前 / running 并�
 
 | 路径 | 状态 |
 |---|---|
-| `runChapterPipelineInner` / `resumePipelineInner` 双路径业务 | **入口已改调 reconcile**；文件内旧函数体遗留为死代码（后续可删） |
+| `runChapterPipelineInner` / `resumePipelineInner` 双路径业务 | **已删除**；`pipelineRunner.ts` 仅为薄门面（~220 行） |
+| 旧 stage helpers（runReview/FactCheck/Proof 在 runner 内） | **已删除**；逻辑在 `pipeline/reconcile.ts` |
 | `stage_results` 无限追加 | 改为每阶段 upsert 投影 |
 | Resume 重跑已成功 Proof | 由决策表禁止 |
 | Preview「实际发送消息」 | 改为「预估请求」 |
