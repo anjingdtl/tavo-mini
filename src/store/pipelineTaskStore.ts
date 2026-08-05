@@ -4,21 +4,55 @@ import type { PipelineTask, PipelineStageResult, PipelineTaskStatus } from '../t
 import { classifyInterruptedTask } from '../services/pipelineTaskContext';
 import { OutlineContextError } from '../services/outlineContextBuilder';
 
+function mergeStageResult(
+  existing: PipelineStageResult[],
+  result: PipelineStageResult,
+): PipelineStageResult[] {
+  // One effective result per stage (invariant 3).
+  return [...existing.filter(s => s.stage !== result.stage), result];
+}
+
+function mapStageStatusToCheckpoint(
+  status: PipelineStageResult['status'],
+): 'succeeded' | 'failed' | 'skipped' {
+  if (status === 'success') return 'succeeded';
+  if (status === 'skipped') return 'skipped';
+  return 'failed';
+}
+
 interface PipelineTaskState {
   tasks: PipelineTask[];
   _loaded: boolean;
   loadFromDB: () => Promise<void>;
   createTask: (targetType: 'chapter' | 'freeform', targetId: number) => string;
+  /**
+   * Fire-and-forget stage update (legacy). Prefer {@link persistTaskStage}.
+   */
   updateTaskStage: (taskId: string, result: PipelineStageResult) => void;
+  /**
+   * Critical path: await checkpoint upsert + task projection write, then memory.
+   */
+  persistTaskStage: (
+    taskId: string,
+    result: PipelineStageResult,
+  ) => Promise<void>;
   setTaskStatus: (taskId: string, status: PipelineTaskStatus) => void;
+  /** Await task status write (state machine transitions). */
+  persistTaskStatus: (
+    taskId: string,
+    status: PipelineTaskStatus,
+  ) => Promise<void>;
   completeTask: (taskId: string, finalText: string) => void;
+  persistCompleteTask: (taskId: string, finalText: string) => Promise<void>;
   /**
    * Persist final/draft text without changing task status.
    * Used on degraded paths (audit/proof failed) so failed is not overwritten
    * by completeTask, while UI can still show the retained draft.
    */
   setTaskFinalText: (taskId: string, finalText: string) => void;
+  persistTaskFinalText: (taskId: string, finalText: string) => Promise<void>;
   failTask: (taskId: string, error: string) => void;
+  persistFailTask: (taskId: string, error: string) => Promise<void>;
   cancelTask: (taskId: string) => void;
   /**
    * Persist the frozen input fingerprint on a task (projectId | chapterId |
@@ -209,64 +243,245 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   },
 
   updateTaskStage: (taskId, result) => {
-    set((state) => {
-      const tasks = state.tasks.map((t) =>
-        t.id === taskId
-          ? { ...t, stageResults: [...t.stageResults, result], updatedAt: Date.now() }
-          : t
-      );
-      const task = tasks.find((t) => t.id === taskId);
-      if (task) persistTask(task);
-      return { tasks };
+    // Legacy non-await path: still dual-write via queue, replace per stage.
+    void get().persistTaskStage(taskId, result).catch(err => {
+      console.warn('[pipelineTaskStore] updateTaskStage persist failed:', taskId, err);
     });
+  },
+
+  persistTaskStage: async (taskId, result) => {
+    await awaitTaskPersistenceQueue(taskId);
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (!existing) {
+      throw new Error(`persistTaskStage: task ${taskId} not found`);
+    }
+
+    try {
+      await db.upsertStageCheckpoint({
+        taskId,
+        stage: result.stage,
+        status: mapStageStatusToCheckpoint(result.status),
+        outputText: result.text ?? null,
+        errorMessage: result.error ?? null,
+        inputTokens: result.tokens?.input ?? null,
+        outputTokens: result.tokens?.output ?? null,
+        totalTokens: result.tokens?.total ?? null,
+        durationMs: result.durationMs ?? null,
+      });
+    } catch (err) {
+      console.warn('[pipelineTaskStore] upsertStageCheckpoint failed:', taskId, err);
+      throw err;
+    }
+
+    const now = Date.now();
+    const next: PipelineTask = {
+      ...existing,
+      stageResults: mergeStageResult(existing.stageResults, result),
+      updatedAt: now,
+    };
+    // Durable task row (stage_results projection) after checkpoint succeeds.
+    await db.savePipelineTask({
+      id: next.id,
+      targetType: next.targetType,
+      targetId: next.targetId,
+      status: next.status,
+      stageResults: next.stageResults,
+      finalText: next.finalText,
+      error: next.error,
+      inputFingerprint: next.inputFingerprint ?? null,
+      pipelineContextJson: next.pipelineContextJson ?? null,
+      pipelineContextVersion: next.pipelineContextVersion ?? null,
+      pipelineContextHash: next.pipelineContextHash ?? null,
+      createdAt: next.createdAt,
+      updatedAt: next.updatedAt,
+      resolvedAt: next.resolvedAt,
+      resolvedAction: next.resolvedAction || null,
+    });
+
+    set(state => ({
+      tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+    }));
   },
 
   setTaskStatus: (taskId, status) => {
-    set((state) => {
-      const tasks = state.tasks.map((t) =>
-        t.id === taskId ? { ...t, status, updatedAt: Date.now() } : t
-      );
-      const task = tasks.find((t) => t.id === taskId);
-      if (task) persistTask(task);
-      return { tasks };
+    // Optimistic memory update for UI; durable write is awaited on critical paths.
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (existing) {
+      const next = { ...existing, status, updatedAt: Date.now() };
+      set(state => ({
+        tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+      }));
+      persistTask(next);
+    }
+  },
+
+  persistTaskStatus: async (taskId, status) => {
+    await awaitTaskPersistenceQueue(taskId);
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (!existing) return;
+    const next: PipelineTask = { ...existing, status, updatedAt: Date.now() };
+    await db.savePipelineTask({
+      id: next.id,
+      targetType: next.targetType,
+      targetId: next.targetId,
+      status: next.status,
+      stageResults: next.stageResults,
+      finalText: next.finalText,
+      error: next.error,
+      inputFingerprint: next.inputFingerprint ?? null,
+      pipelineContextJson: next.pipelineContextJson ?? null,
+      pipelineContextVersion: next.pipelineContextVersion ?? null,
+      pipelineContextHash: next.pipelineContextHash ?? null,
+      createdAt: next.createdAt,
+      updatedAt: next.updatedAt,
+      resolvedAt: next.resolvedAt,
+      resolvedAction: next.resolvedAction || null,
     });
+    set(state => ({
+      tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+    }));
   },
 
   completeTask: (taskId, finalText) => {
-    set((state) => {
-      const tasks = state.tasks.map((t) =>
-        t.id === taskId
-          ? { ...t, status: 'completed' as PipelineTaskStatus, finalText, updatedAt: Date.now() }
-          : t
-      );
-      const task = tasks.find((t) => t.id === taskId);
-      if (task) persistTask(task);
-      return { tasks };
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (existing) {
+      const next: PipelineTask = {
+        ...existing,
+        status: 'completed',
+        finalText,
+        updatedAt: Date.now(),
+      };
+      set(state => ({
+        tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+      }));
+      persistTask(next);
+    }
+  },
+
+  persistCompleteTask: async (taskId, finalText) => {
+    await awaitTaskPersistenceQueue(taskId);
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (!existing) return;
+    const next: PipelineTask = {
+      ...existing,
+      status: 'completed',
+      finalText,
+      updatedAt: Date.now(),
+    };
+    await db.savePipelineTask({
+      id: next.id,
+      targetType: next.targetType,
+      targetId: next.targetId,
+      status: next.status,
+      stageResults: next.stageResults,
+      finalText: next.finalText,
+      error: next.error,
+      inputFingerprint: next.inputFingerprint ?? null,
+      pipelineContextJson: next.pipelineContextJson ?? null,
+      pipelineContextVersion: next.pipelineContextVersion ?? null,
+      pipelineContextHash: next.pipelineContextHash ?? null,
+      createdAt: next.createdAt,
+      updatedAt: next.updatedAt,
+      resolvedAt: next.resolvedAt,
+      resolvedAction: next.resolvedAction || null,
     });
+    set(state => ({
+      tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+    }));
   },
 
   setTaskFinalText: (taskId, finalText) => {
-    set((state) => {
-      const tasks = state.tasks.map((t) =>
-        t.id === taskId
-          ? { ...t, finalText, updatedAt: Date.now() }
-          : t
-      );
-      const task = tasks.find((t) => t.id === taskId);
-      if (task) persistTask(task);
-      return { tasks };
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (existing) {
+      const next: PipelineTask = {
+        ...existing,
+        finalText,
+        updatedAt: Date.now(),
+      };
+      set(state => ({
+        tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+      }));
+      persistTask(next);
+    }
+  },
+
+  persistTaskFinalText: async (taskId, finalText) => {
+    await awaitTaskPersistenceQueue(taskId);
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (!existing) return;
+    const next: PipelineTask = {
+      ...existing,
+      finalText,
+      updatedAt: Date.now(),
+    };
+    await db.savePipelineTask({
+      id: next.id,
+      targetType: next.targetType,
+      targetId: next.targetId,
+      status: next.status,
+      stageResults: next.stageResults,
+      finalText: next.finalText,
+      error: next.error,
+      inputFingerprint: next.inputFingerprint ?? null,
+      pipelineContextJson: next.pipelineContextJson ?? null,
+      pipelineContextVersion: next.pipelineContextVersion ?? null,
+      pipelineContextHash: next.pipelineContextHash ?? null,
+      createdAt: next.createdAt,
+      updatedAt: next.updatedAt,
+      resolvedAt: next.resolvedAt,
+      resolvedAction: next.resolvedAction || null,
     });
+    set(state => ({
+      tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+    }));
   },
 
   failTask: (taskId, error) => {
-    set((state) => {
-      const tasks = state.tasks.map((t) =>
-        t.id === taskId ? { ...t, status: 'failed' as PipelineTaskStatus, error, updatedAt: Date.now() } : t
-      );
-      const task = tasks.find((t) => t.id === taskId);
-      if (task) persistTask(task);
-      return { tasks };
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (existing) {
+      const next: PipelineTask = {
+        ...existing,
+        status: 'failed',
+        error,
+        updatedAt: Date.now(),
+      };
+      set(state => ({
+        tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+      }));
+      persistTask(next);
+    }
+  },
+
+  persistFailTask: async (taskId, error) => {
+    await awaitTaskPersistenceQueue(taskId);
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (!existing) return;
+    const next: PipelineTask = {
+      ...existing,
+      status: 'failed',
+      error,
+      updatedAt: Date.now(),
+    };
+    await db.savePipelineTask({
+      id: next.id,
+      targetType: next.targetType,
+      targetId: next.targetId,
+      status: next.status,
+      stageResults: next.stageResults,
+      finalText: next.finalText,
+      error: next.error,
+      inputFingerprint: next.inputFingerprint ?? null,
+      pipelineContextJson: next.pipelineContextJson ?? null,
+      pipelineContextVersion: next.pipelineContextVersion ?? null,
+      pipelineContextHash: next.pipelineContextHash ?? null,
+      createdAt: next.createdAt,
+      updatedAt: next.updatedAt,
+      resolvedAt: next.resolvedAt,
+      resolvedAction: next.resolvedAction || null,
     });
+    set(state => ({
+      tasks: state.tasks.map(t => (t.id === taskId ? next : t)),
+    }));
   },
 
   cancelTask: (taskId) => {
@@ -420,6 +635,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   markActiveTasksAsInterrupted: () => {
     const now = Date.now();
     let marked = 0;
+    // Best-effort: flip any running stage checkpoints to interrupted (Schema 39+).
+    void db.interruptAllRunningStages?.().catch(() => undefined);
     set((state) => {
       const tasks = state.tasks.map((task) => {
         // Cold start: active statuses mean the previous process died mid-run.
