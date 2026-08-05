@@ -31,3 +31,4 @@ export * from '../data/repositories/noteConfigRepository';
 export * from '../data/repositories/contextAutoRepository';
 export * from '../data/repositories/storyMemoryRepository';
 export * from '../data/repositories/continuationResourceBindingRepository';
+export * from '../data/repositories/outlineRepository';
