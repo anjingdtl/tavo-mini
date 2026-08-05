@@ -513,14 +513,23 @@ export async function createBackup(
   await RNFS.mkdir(BACKUP_DIR);
 
   // 阶段 1：读取数据表（0% → 50%）。按表数加权，sanitize 开销已包含在内。
+  // 非核心表（如 outlines 等较新 schema 才有的表）在旧库上可能不存在，
+  // SELECT 失败时跳过（空数组）而非中断整个备份——与 readBackupTables 的
+  // 容错策略一致。核心表缺失才视为致命错误。
   const tables: Record<string, Record<string, any>[]> = {};
   const totalTables = BACKUP_MANIFEST.length;
   for (let i = 0; i < totalTables; i += 1) {
     const table = BACKUP_MANIFEST[i];
-    const rows = await allRows(db, table.name);
-    tables[table.name] = rows
-      .map(row => sanitizeBackupRow(table.name, row))
-      .filter((row): row is Record<string, any> => row !== null);
+    try {
+      const rows = await allRows(db, table.name);
+      tables[table.name] = rows
+        .map(row => sanitizeBackupRow(table.name, row))
+        .filter((row): row is Record<string, any> => row !== null);
+    } catch (error) {
+      if (CORE_TABLE_NAMES.has(table.name)) throw error;
+      // 非核心表在旧 schema 库上可能缺失，跳过（记空数组）。
+      tables[table.name] = [];
+    }
     report(((i + 1) / totalTables) * 50, `读取数据表 (${i + 1}/${totalTables})`);
   }
 
