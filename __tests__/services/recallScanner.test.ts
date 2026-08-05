@@ -8,7 +8,7 @@ import {
   __resetForTest,
 } from '../../src/data/connection/openDatabase';
 import { setupInMemoryFs } from '../schema40-fixture-helpers';
-import { createBackup, readAndValidateBackup } from '../../src/services/backupService';
+import { createBackup } from '../../src/services/backupService';
 import { SCHEMA_RECOVERY_DIR } from '../../src/services/schemaRecoveryBackup';
 import { scanRecallSources } from '../../src/services/recall/recallScanner';
 
