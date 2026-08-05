@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.11.23] - 2026-08-05
+
+### Fixed
+
+- **Pipeline 三封口收敛**：冻结执行、checkpoint/CAS 全面 fail-closed、预算器真正驱动最终 messages。
+  - **冻结 Draft 请求**：任务启动时持久化 `FrozenDraftRequest`（含最终 messages 与 fingerprint）；Draft 首次/Resume/重试只发送冻结 messages，不再从 live 大纲/人物/世界书/Story Memory 重编译。
+  - **冻结 Audit 候选**：full 模式在启动时捕获 `FrozenAuditCandidates`；Draft 完成后仅在冻结池内重打分生成 `auditContext`，不得再读实时 Repository；缺候选的旧任务不可静默恢复。
+  - **CAS / checkpoint fail-closed**：统一 `executeClaimedStage`；`getStageCheckpoints` / claim 抛错或 `rowsAffected != 1` 时 LLM 调用次数为 0；普通异常不会把阶段永久卡在 `running`；关键终态走 awaited `persistFailTask`。
+  - **预算驱动最终消息**：Review / Fact Check / Proof 的可选资料按守恒 allocation 实际裁剪；模型调用只接受 `ReadyStageRequest`；retry/repair 超窗不调模型。
+  - **大纲 30% 不再硬阻断生成**：`OUTLINE_BUDGET_RATIO=0.3` 仅作管理页建议；生成用剩余输入预算装完整大纲，仅当完整大纲 + fixed prompt + 必需正文 + 输出预留 + 安全余量超窗时阻断。
+
+### Changed
+
+- 统一阶段编译结果为 `ready: true | false` 联合类型；错误分类不再用中文正则判断大纲错误。
+
+### Validation
+
+- 新增封口单测（冻结 / 预算 / CAS fail-closed）与 Schema 39 故障注入恢复测试；pipeline 相关回归与 `tsc --noEmit` 通过。
+
 ## [2.11.22] - 2026-08-05
 
 ### Fixed

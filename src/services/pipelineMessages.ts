@@ -66,44 +66,50 @@ export function buildDraftMessages(
  * Budgets are conservative defaults in tokens; SPEC §9.3 says internal constants
  * are acceptable for this pass (no settings page wiring required).
  */
+/**
+ * Soft upper bounds used only when the caller has not already budget-clipped
+ * context fields. The conservation allocator in compileStageRequest is the
+ * authority for optional-section sizes; these defaults prevent runaway fields
+ * when builders are used outside the compiler.
+ */
 const REVIEW_BUDGET = {
-  preset: 1500,
-  character: 2000,
-  note: 1200,
-  worldbook: 2000,
-  storyMemory: 1500,
-  episodic: 1500,
-  recentBridge: 2500,
-  instruction: 600,
-  userPrompt: 600,
+  preset: 8000,
+  character: 8000,
+  note: 6000,
+  worldbook: 8000,
+  storyMemory: 8000,
+  episodic: 8000,
+  recentBridge: 10000,
+  instruction: 2000,
+  userPrompt: 2000,
   // Outline is NEVER clipped: the frozen full text from the pipeline snapshot
   // is required for cross-stage consistency. Stage-level window checks block
   // the call when the complete outline + required body cannot fit.
 };
 
 const FACTCHECK_BUDGET = {
-  preset: 1200,
-  instruction: 800,
-  userPrompt: 600,
-  recentBridge: 3000,
-  storyMemory: 2500,
-  episodic: 3000,
-  worldbook: 3000,
-  character: 2000,
-  note: 1500,
+  preset: 8000,
+  instruction: 2000,
+  userPrompt: 2000,
+  recentBridge: 10000,
+  storyMemory: 10000,
+  episodic: 10000,
+  worldbook: 10000,
+  character: 8000,
+  note: 6000,
   // Outline is never clipped (see REVIEW_BUDGET note).
 };
 
 const PROOF_BUDGET = {
-  preset: 1200,
-  instruction: 600,
-  userPrompt: 500,
-  character: 1500,
-  worldRules: 2000,
-  storyState: 2000,
-  episodic: 1800,
-  note: 1000,
-  recentBridge: 2500,
+  preset: 8000,
+  instruction: 2000,
+  userPrompt: 2000,
+  character: 8000,
+  worldRules: 8000,
+  storyState: 8000,
+  episodic: 8000,
+  note: 6000,
+  recentBridge: 10000,
   // Outline is never clipped (see REVIEW_BUDGET note).
 };
 

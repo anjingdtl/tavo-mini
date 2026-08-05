@@ -14,7 +14,12 @@ import type {
   FrozenPresetSnapshot,
   PipelineExecutionSnapshot,
 } from '../types/pipelineExecution';
+import type {
+  FrozenAuditCandidates,
+  FrozenDraftRequest,
+} from '../types/pipelineFrozen';
 import type { PipelineMode } from '../types/pipeline';
+import type { ChatMessage } from './llm';
 import { OutlineContextError } from './outlineContextBuilder';
 import { sha256Hex } from './continuation/hashUtils';
 
@@ -26,6 +31,13 @@ export interface PersistedPipelineTaskContextV2 {
   draftContext: PipelineContextSnapshot;
   auditContext?: PipelineContextSnapshot;
   execution: PipelineExecutionSnapshot;
+  /** Frozen final Draft request (messages actually sent / to be sent). */
+  frozenDraftRequest?: FrozenDraftRequest;
+  /**
+   * Full-mode post-draft retrieval candidate pool, frozen at task start.
+   * Required for safe audit rebuild; missing → cannot recover full audits.
+   */
+  frozenAuditCandidates?: FrozenAuditCandidates;
   createdAt: number;
   draftCompletedAt?: number;
   auditContextCreatedAt?: number;
@@ -38,8 +50,193 @@ export interface ParsedPipelineTaskContext {
   draftContext: PipelineContextSnapshot;
   auditContext: PipelineContextSnapshot | null;
   execution: PipelineExecutionSnapshot | null;
+  frozenDraftRequest: FrozenDraftRequest | null;
+  frozenAuditCandidates: FrozenAuditCandidates | null;
   createdAt: number;
   auditFellBack?: boolean;
+}
+
+export function computeFrozenDraftRequestFingerprint(
+  messages: ChatMessage[],
+  meta: {
+    estimatedInputTokens: number;
+    reservedOutputTokens: number;
+    safetyMargin: number;
+    contextWindow: number;
+  },
+): string {
+  const payload = JSON.stringify({
+    messages,
+    estimatedInputTokens: meta.estimatedInputTokens,
+    reservedOutputTokens: meta.reservedOutputTokens,
+    safetyMargin: meta.safetyMargin,
+    contextWindow: meta.contextWindow,
+  });
+  return sha256Hex(payload).slice(0, 32);
+}
+
+function parseFrozenDraftRequest(
+  raw: unknown,
+): FrozenDraftRequest | null {
+  if (raw == null) return null;
+  if (!isPlainObject(raw)) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '冻结初稿请求结构无效，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  if (!Array.isArray(raw.messages)) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '冻结初稿请求缺少 messages，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const messages: ChatMessage[] = raw.messages.map((m: unknown) => {
+    if (!isPlainObject(m) || typeof m.role !== 'string') {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_INVALID',
+        '冻结初稿请求 messages 非法，已阻止恢复。请重新开始生成。',
+        'restart_task',
+      );
+    }
+    return {
+      role: m.role as ChatMessage['role'],
+      content: String(m.content ?? ''),
+    };
+  });
+  return {
+    messages,
+    estimatedInputTokens: requireNonNegativeFinite(
+      raw.estimatedInputTokens,
+      'frozenDraftRequest.estimatedInputTokens',
+    ),
+    reservedOutputTokens: requireNonNegativeFinite(
+      raw.reservedOutputTokens,
+      'frozenDraftRequest.reservedOutputTokens',
+    ),
+    safetyMargin: requireNonNegativeFinite(
+      raw.safetyMargin,
+      'frozenDraftRequest.safetyMargin',
+    ),
+    contextWindow: requireNonNegativeFinite(
+      raw.contextWindow,
+      'frozenDraftRequest.contextWindow',
+    ),
+    allocations: Array.isArray(raw.allocations)
+      ? raw.allocations.map((a: unknown) => {
+          if (!isPlainObject(a)) {
+            return { id: 'unknown', requested: 0, allocated: 0, truncated: false };
+          }
+          return {
+            id: String(a.id ?? ''),
+            requested: Number(a.requested) || 0,
+            allocated: Number(a.allocated) || 0,
+            truncated: Boolean(a.truncated),
+          };
+        })
+      : [],
+    requestFingerprint: String(raw.requestFingerprint || ''),
+    chapterTitle: String(raw.chapterTitle || ''),
+    prevEnding: String(raw.prevEnding || ''),
+    userPrompt: String(raw.userPrompt || ''),
+  };
+}
+
+function parseFrozenAuditCandidates(
+  raw: unknown,
+): FrozenAuditCandidates | null {
+  if (raw == null) return null;
+  if (!isPlainObject(raw)) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '冻结审核候选集合结构无效，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const cfg = raw.contextConfig;
+  if (!isPlainObject(cfg)) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '冻结审核候选集合缺少 contextConfig，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  return {
+    episodicCandidates: Array.isArray(raw.episodicCandidates)
+      ? raw.episodicCandidates.map((c: unknown) => {
+          const row = isPlainObject(c) ? c : {};
+          return {
+            id: Number(row.id) || 0,
+            position: Number(row.position) || 0,
+            title: String(row.title || ''),
+            memory_summary: String(row.memory_summary || ''),
+          };
+        })
+      : [],
+    characterCandidates: Array.isArray(raw.characterCandidates)
+      ? raw.characterCandidates.map((c: unknown) => {
+          const row = isPlainObject(c) ? c : {};
+          return {
+            id: Number(row.id) || 0,
+            name: String(row.name || ''),
+            cardText: String(row.cardText || ''),
+          };
+        })
+      : [],
+    worldbookCandidates: Array.isArray(raw.worldbookCandidates)
+      ? raw.worldbookCandidates.map((c: unknown) => {
+          const row = isPlainObject(c) ? c : {};
+          return {
+            id: row.id == null ? null : Number(row.id) || null,
+            keywords: Array.isArray(row.keywords)
+              ? row.keywords.map(String)
+              : [],
+            secondaryKeywords: Array.isArray(row.secondaryKeywords)
+              ? row.secondaryKeywords.map(String)
+              : [],
+            content: String(row.content || ''),
+            constant: Boolean(row.constant),
+            position: Number(row.position) || 0,
+          };
+        })
+      : [],
+    contextConfig: {
+      strategy: (cfg.strategy as any) || 'sliding',
+      slidingWindowSize: Number(cfg.slidingWindowSize) || 0,
+      customRangeStart: Number(cfg.customRangeStart) || 0,
+      customRangeEnd: Number(cfg.customRangeEnd) || -1,
+      resourceBudget: Number(cfg.resourceBudget) || 0,
+      includeResources: Boolean(cfg.includeResources),
+      summaryBudgetTokens:
+        cfg.summaryBudgetTokens != null
+          ? Number(cfg.summaryBudgetTokens)
+          : undefined,
+      storyStateBudgetTokens:
+        cfg.storyStateBudgetTokens != null
+          ? Number(cfg.storyStateBudgetTokens)
+          : undefined,
+      episodicMemoryBudgetTokens:
+        cfg.episodicMemoryBudgetTokens != null
+          ? Number(cfg.episodicMemoryBudgetTokens)
+          : undefined,
+      memoryTopK:
+        cfg.memoryTopK != null ? Number(cfg.memoryTopK) : undefined,
+      worldbookRecursive:
+        cfg.worldbookRecursive != null
+          ? Boolean(cfg.worldbookRecursive)
+          : undefined,
+    },
+    chapterPosition: Number(raw.chapterPosition) || 0,
+    chapterTitle: String(raw.chapterTitle || ''),
+    chapterSynopsis: String(raw.chapterSynopsis || ''),
+    rawChapterIds: Array.isArray(raw.rawChapterIds)
+      ? raw.rawChapterIds.map((n: unknown) => Number(n) || 0)
+      : [],
+    storyStateText: String(raw.storyStateText || ''),
+    createdAt: Number(raw.createdAt) || Date.now(),
+  };
 }
 
 export interface PipelineTaskContextOwnership {
@@ -370,6 +567,8 @@ export function parsePipelineTaskContextV1(
     draftContext,
     auditContext: null,
     execution: null,
+    frozenDraftRequest: null,
+    frozenAuditCandidates: null,
     createdAt: draftContext.createdAt ?? Date.now(),
   };
 }
@@ -414,6 +613,10 @@ export function parsePipelineTaskContextV2(
     draftContext,
     auditContext,
     execution,
+    frozenDraftRequest: parseFrozenDraftRequest(raw.frozenDraftRequest),
+    frozenAuditCandidates: parseFrozenAuditCandidates(
+      raw.frozenAuditCandidates,
+    ),
     createdAt,
     auditFellBack: Boolean(raw.auditFellBack),
   };
@@ -493,6 +696,8 @@ export function serializePipelineTaskContext(params: {
   draftContext: PipelineContextSnapshot;
   auditContext?: PipelineContextSnapshot | null;
   execution: PipelineExecutionSnapshot;
+  frozenDraftRequest?: FrozenDraftRequest | null;
+  frozenAuditCandidates?: FrozenAuditCandidates | null;
   createdAt?: number;
   draftCompletedAt?: number;
   auditContextCreatedAt?: number;
@@ -520,6 +725,12 @@ export function serializePipelineTaskContext(params: {
       snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
       createdAt: params.auditContext.createdAt ?? Date.now(),
     };
+  }
+  if (params.frozenDraftRequest) {
+    envelope.frozenDraftRequest = params.frozenDraftRequest;
+  }
+  if (params.frozenAuditCandidates) {
+    envelope.frozenAuditCandidates = params.frozenAuditCandidates;
   }
   if (params.draftCompletedAt != null) {
     envelope.draftCompletedAt = params.draftCompletedAt;

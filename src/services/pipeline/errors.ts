@@ -30,17 +30,9 @@ export function mapOutlineErrorToPipelineError(
       OUTLINE_EXECUTION_CONFIG_INVALID: 'EXECUTION_CONFIG_CHANGED',
       OUTLINE_CONTEXT_WINDOW_EXCEEDED: 'CONTEXT_WINDOW_EXCEEDED',
     };
-    const mapped = codeMap[error.code] || 'CONTEXT_WINDOW_EXCEEDED';
-    // Only outline-specific over-budget maps to OUTLINE_TOO_LARGE.
-    // Generic window overflow from non-outline causes should be CONTEXT_WINDOW_EXCEEDED.
-    let code: PipelineErrorCode = mapped;
-    if (
-      error.code === 'OUTLINE_OVER_BUDGET' &&
-      error.message &&
-      !/大纲|outline/i.test(error.message)
-    ) {
-      code = 'CONTEXT_WINDOW_EXCEEDED';
-    }
+    // Preserve structured codes only — never classify by Chinese message text.
+    const code: PipelineErrorCode =
+      codeMap[error.code] || 'CONTEXT_WINDOW_EXCEEDED';
     return pipelineError(code, error.message, {
       userAction: (error.userAction as PipelineError['userAction']) || 'none',
     });

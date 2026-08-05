@@ -129,23 +129,111 @@ export function allocateStageContextBudget(
     };
   }
 
-  // Normalize optional weights to sum ≤ 100 (treat as percentages).
+  // Multi-round optional allocation: weight caps first, then redistribute
+  // unused budget to truncated sections so short sections do not waste budget.
   const opts = input.optionalSections || [];
   const weightSum = opts.reduce((s, o) => s + Math.max(0, o.weight || 0), 0);
   const scale = weightSum > 100 ? 100 / weightSum : 1;
   const remainingForOptional = remaining;
 
-  const optionalAllocations = opts.map(o => {
+  const allocated = new Map<string, number>();
+  for (const o of opts) {
     const w = Math.max(0, o.weight || 0) * scale;
     const cap = Math.floor((remainingForOptional * w) / 100);
-    const allocated = Math.min(Math.max(0, o.tokens), Math.max(0, cap));
+    allocated.set(
+      o.id,
+      Math.min(Math.max(0, o.tokens), Math.max(0, cap)),
+    );
+  }
+
+  // Redistribute leftover across still-hungry sections (up to 4 rounds).
+  for (let round = 0; round < 4; round++) {
+    let used = 0;
+    for (const o of opts) {
+      used += allocated.get(o.id) || 0;
+    }
+    let leftover = remainingForOptional - used;
+    if (leftover <= 0) break;
+
+    const hungry = opts.filter(
+      o => (allocated.get(o.id) || 0) < Math.max(0, o.tokens),
+    );
+    if (hungry.length === 0) break;
+
+    const hungryWeightSum = hungry.reduce(
+      (s, o) => s + Math.max(0, o.weight || 0),
+      0,
+    );
+    if (hungryWeightSum <= 0) {
+      // Equal split when weights are zero.
+      const each = Math.floor(leftover / hungry.length);
+      let spent = 0;
+      for (const o of hungry) {
+        const need = Math.max(0, o.tokens) - (allocated.get(o.id) || 0);
+        const add = Math.min(need, each);
+        allocated.set(o.id, (allocated.get(o.id) || 0) + add);
+        spent += add;
+      }
+      // Remainder tokens to first hungry that still needs more.
+      let rem = leftover - spent;
+      for (const o of hungry) {
+        if (rem <= 0) break;
+        const need = Math.max(0, o.tokens) - (allocated.get(o.id) || 0);
+        if (need <= 0) continue;
+        const add = Math.min(need, rem);
+        allocated.set(o.id, (allocated.get(o.id) || 0) + add);
+        rem -= add;
+      }
+      continue;
+    }
+
+    let spent = 0;
+    for (const o of hungry) {
+      const share = Math.floor(
+        (leftover * Math.max(0, o.weight || 0)) / hungryWeightSum,
+      );
+      const need = Math.max(0, o.tokens) - (allocated.get(o.id) || 0);
+      const add = Math.min(need, share);
+      allocated.set(o.id, (allocated.get(o.id) || 0) + add);
+      spent += add;
+    }
+    // Greedy fill remaining 1-token leftovers.
+    let rem = leftover - spent;
+    for (const o of hungry) {
+      if (rem <= 0) break;
+      const need = Math.max(0, o.tokens) - (allocated.get(o.id) || 0);
+      if (need <= 0) continue;
+      allocated.set(o.id, (allocated.get(o.id) || 0) + 1);
+      rem -= 1;
+    }
+  }
+
+  const optionalAllocations = opts.map(o => {
+    const alloc = allocated.get(o.id) || 0;
     return {
       id: o.id,
       requested: o.tokens,
-      allocated,
-      truncated: allocated < o.tokens,
+      allocated: alloc,
+      truncated: alloc < o.tokens,
     };
   });
+
+  // Conservation: sum(allocated) ≤ remainingForOptional
+  const sumAllocated = optionalAllocations.reduce(
+    (s, a) => s + a.allocated,
+    0,
+  );
+  if (sumAllocated > remainingForOptional && remainingForOptional >= 0) {
+    // Defensive clamp (should not happen with integer floor math).
+    let overflow = sumAllocated - remainingForOptional;
+    for (let i = optionalAllocations.length - 1; i >= 0 && overflow > 0; i--) {
+      const cut = Math.min(optionalAllocations[i].allocated, overflow);
+      optionalAllocations[i].allocated -= cut;
+      optionalAllocations[i].truncated =
+        optionalAllocations[i].allocated < optionalAllocations[i].requested;
+      overflow -= cut;
+    }
+  }
 
   return {
     contextWindow,
