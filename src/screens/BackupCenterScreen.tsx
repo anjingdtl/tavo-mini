@@ -205,6 +205,14 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
           disabled={operating}
           flex
         />
+        <View style={styles.recallBtnWrap}>
+          <Button
+            label="召回潜在数据"
+            variant="secondary"
+            onPress={() => (navigation.navigate as any)('Recall')}
+            flex
+          />
+        </View>
         {operating && progress ? (
           <View style={styles.progressWrap}>
             <View style={[styles.progressTrack, { backgroundColor: theme.colors.accentSoft }]}>
@@ -217,14 +225,6 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
             </Text>
           </View>
         ) : null}
-      </View>
-      <View style={[styles.recallEntry, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}>
-        <Button
-          label="召回潜在数据"
-          variant="secondary"
-          onPress={() => (navigation.navigate as any)('Recall')}
-          flex
-        />
       </View>
       <View style={[styles.privacyNotice, { backgroundColor: theme.colors.surface }]}>
         <Text style={[styles.privacyText, { color: theme.colors.textSecondary }]}>备份文件包含小说正文、人物、世界观和笔记等内容。请勿将未加密备份上传到不可信位置。</Text>
@@ -257,11 +257,8 @@ const styles = StyleSheet.create({
     elevation: 2,
     zIndex: 2,
   },
-  recallEntry: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+  recallBtnWrap: {
+    marginTop: spacing.md,
   },
   progressWrap: {
     marginTop: spacing.sm,
