@@ -825,6 +825,7 @@ async function runChapterPipelineInner(
       request.userPrompt,
       prevEnding,
       chapter.synopsis,
+      pipelineContext.outlineText,
     );
 
     const firstDraftResult = await callLLMResult(
@@ -1479,6 +1480,11 @@ async function resumePipelineInner(
       recentBridgeText: '',
       currentInstructionText: '',
       retrievalUserPrompt: '',
+      outlineText: '',
+      outlineFingerprint: '',
+      outlineIds: [],
+      outlineComplete: true,
+      outlineEstimatedTokens: 0,
     };
   }
 

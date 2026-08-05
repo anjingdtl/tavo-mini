@@ -6,6 +6,12 @@ import type { ChatMessage } from './llm';
 import type { ContextTraceItem } from '../types/contextTrace';
 import type { PipelineContextSnapshot } from '../types/pipelineContext';
 import {
+  buildOutlineContext,
+  deriveOutlineBudgetTokens,
+  EMPTY_OUTLINE_CONTEXT,
+  type BuiltOutlineContext,
+} from './outlineContextBuilder';
+import {
   getOrAnalyzeNoteStyle,
   mergeStyleProfiles,
   DEFAULT_STYLE_WEIGHTS,
@@ -390,6 +396,13 @@ export async function buildContext(
     chapterTitle: currentChapter.title,
     chapterSynopsis: currentChapter.synopsis,
   });
+
+  // Outline context (大纲创作模式升级). Built with its OWN budget derived from
+  // the active model's context window, independent from resourceBudget. Only
+  // outline-mode projects get outline injection. Strict no-truncation: if the
+  // full outline set does not fit, block here before any model call.
+  const outlineContext = await buildOutlineContextForProject(projectId);
+
   const messages: ChatMessage[] = [
     { role: 'system', content: resolvedSystemPrompt },
   ];
@@ -408,6 +421,34 @@ export async function buildContext(
     clipped: false,
     preview: resolvedSystemPrompt.slice(0, 500),
   });
+
+  // Outline injection: the highest creative constraint. Injected as a system
+  // message right after the preset so it appears early and cannot be overridden
+  // by a later user/chapter instruction. Strict no-truncation: a blocked
+  // outline (does not fit budget) throws here so the model is never called with
+  // a silently clipped plan.
+  if (outlineContext.text) {
+    if (!outlineContext.complete) {
+      throw new Error(outlineContext.blockingReason || '大纲无法完整注入，已阻止生成。');
+    }
+    messages.push({ role: 'system', content: outlineContext.text });
+    trace.push({
+      kind: 'outline',
+      sourceId: null,
+      title: '★ 项目大纲',
+      reason: outlineContext.enabledCount
+        ? `最高创作约束｜${outlineContext.enabledCount} 份｜完整注入`
+        : '最高创作约束',
+      estimatedTokens: outlineContext.estimatedTokens,
+      included: true,
+      clipped: false,
+      preview: outlineContext.text.slice(0, 500),
+    });
+  } else if (!outlineContext.complete) {
+    // No text but blocked (e.g. all outlines disabled yet budget check failed
+    // defensively). Surface the block reason so the user can act.
+    throw new Error(outlineContext.blockingReason || '大纲无法完整注入，已阻止生成。');
+  }
 
   // Story Memory Checkpoint — reuse the SAME prepared snapshot so coverage,
   // entity boosts, Renderer and trace all see a consistent view. Never re-read
@@ -578,6 +619,15 @@ export async function buildContext(
     recentBridgeText: snapshotRecentBridgeText,
     currentInstructionText: instructionContent,
     retrievalUserPrompt: options.retrievalUserPrompt || '',
+    // Frozen outline snapshot: every stage of this task reads these fields
+    // instead of re-querying the DB, so a mid-task outline edit cannot change
+    // the plan the draft was generated against.
+    outlineText: outlineContext.text,
+    outlineFingerprint: outlineContext.fingerprint,
+    outlineIds: outlineContext.outlineIds,
+    outlineComplete: outlineContext.complete,
+    outlineBlockingReason: outlineContext.blockingReason,
+    outlineEstimatedTokens: outlineContext.estimatedTokens,
     sourceFingerprint: `proj=${projectId}|chapter=${currentChapter.id ?? currentChapter.position}`,
   };
 
@@ -591,6 +641,40 @@ function buildPresetPrompt(preset?: Preset): string {
   if (preset.extra_instructions)
     parts.push(`附加要求：${preset.extra_instructions}`);
   return parts.join('\n\n');
+}
+
+/**
+ * Resolve the project mode + active model context window, then build the
+ * outline context with its own budget. Non-outline modes and any failure
+ * (missing project / llm config) return the empty context so generation
+ * degrades gracefully to the legacy behaviour instead of crashing.
+ */
+async function buildOutlineContextForProject(
+  projectId: number,
+): Promise<BuiltOutlineContext> {
+  try {
+    const project = await db.getProjectById(projectId);
+    const projectMode = project?.mode;
+    if (projectMode !== 'outline') {
+      return EMPTY_OUTLINE_CONTEXT;
+    }
+    let contextWindow = 0;
+    try {
+      const llmConfig = await db.getActiveLLMConfig();
+      contextWindow = Number(llmConfig?.context_window) || 0;
+    } catch {
+      // LLM config not available (e.g. preview before config). Fall back to 0
+      // which disables the budget check — outlines still inject when present.
+    }
+    const outlineBudgetTokens = deriveOutlineBudgetTokens(contextWindow);
+    return await buildOutlineContext({
+      projectId,
+      projectMode,
+      outlineBudgetTokens,
+    });
+  } catch {
+    return EMPTY_OUTLINE_CONTEXT;
+  }
 }
 
 /**

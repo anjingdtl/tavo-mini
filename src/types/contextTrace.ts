@@ -7,7 +7,8 @@ export type ContextSourceKind =
   | 'character'
   | 'note'
   | 'worldbook'
-  | 'instruction';
+  | 'instruction'
+  | 'outline';
 
 export interface ContextTraceItem {
   kind: ContextSourceKind;
