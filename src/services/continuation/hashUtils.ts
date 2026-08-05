@@ -165,10 +165,25 @@ function stateToHex(state: typeof INITIAL_STATE): string {
  */
 export function sha256Hex(value: string): string {
   const stream = new Sha256Stream();
+  // Chunk large strings to avoid one-shot utf8Encode OOM. Must NOT cut inside
+  // a UTF-16 surrogate pair: utf8Encode encodes an unpaired high/low surrogate
+  // as a 3-byte sequence, while a complete emoji is 4 bytes — a mid-pair cut
+  // at exactly 65536 would make streaming digests diverge from a single pass.
   const CHUNK_SIZE = 65536;
   let pos = 0;
   while (pos < value.length) {
-    const end = pos + CHUNK_SIZE < value.length ? pos + CHUNK_SIZE : value.length;
+    let end = pos + CHUNK_SIZE < value.length ? pos + CHUNK_SIZE : value.length;
+    if (end > pos && end < value.length) {
+      const left = value.charCodeAt(end - 1);
+      // High surrogate U+D800..U+DBFF followed by low surrogate → back up one.
+      if (left >= 0xd800 && left <= 0xdbff) {
+        end -= 1;
+      }
+    }
+    if (end <= pos) {
+      // Pathological single high-surrogate unit: still advance to avoid hang.
+      end = pos + 1;
+    }
     stream.updateString(value.substring(pos, end));
     pos = end;
   }

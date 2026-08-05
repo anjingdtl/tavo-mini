@@ -97,8 +97,13 @@ export function applyParsingEdits(
         const merged: ParsedChapter = {
           ...prev,
           sourceEndOffset: cur.sourceEndOffset,
+          // charCount is source span including heading (parser contract).
           charCount: cur.sourceEndOffset - prev.sourceStartOffset,
-          contentSha256: sha256Hex('merged'),
+          // Placeholder only — applyParsingEditsToJob recomputes the real body
+          // hash from chunk storage on persist. Never trust this placeholder.
+          contentSha256: sha256Hex(
+            `merged:${prev.contentStartOffset}:${cur.sourceEndOffset}`,
+          ),
         };
         current.splice(idx - 1, 2, merged);
         current = renumber(current);
@@ -121,7 +126,10 @@ export function applyParsingEdits(
           title: edit.firstTitle,
           sourceEndOffset: edit.atOffset,
           charCount: edit.atOffset - ch.sourceStartOffset,
-          contentSha256: sha256Hex('split-first'),
+          // Placeholder — real body hash recomputed on persist.
+          contentSha256: sha256Hex(
+            `split-first:${ch.contentStartOffset}:${edit.atOffset}`,
+          ),
         };
         const second: ParsedChapter = {
           ...ch,
@@ -130,7 +138,9 @@ export function applyParsingEdits(
           sourceStartOffset: edit.atOffset,
           contentStartOffset: edit.atOffset,
           charCount: ch.sourceEndOffset - edit.atOffset,
-          contentSha256: sha256Hex('split-second'),
+          contentSha256: sha256Hex(
+            `split-second:${edit.atOffset}:${ch.sourceEndOffset}`,
+          ),
         };
         current.splice(idx, 1, first, second);
         current = renumber(current);

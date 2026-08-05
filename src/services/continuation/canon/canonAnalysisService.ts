@@ -1984,6 +1984,10 @@ async function processAnalysisRunInner(
   };
   const partialCoverageEntries: PartialCoverageInfo[] = [];
 
+  // Drain queued batches, then heal orphan partials. If healing re-queues any
+  // parent, drain again (bounded) so the final incomplete_batches gate does
+  // not fail on a freshly re-queued batch that never got a process pass.
+  for (let healPass = 0; healPass < 8; healPass += 1) {
   while (true) {
     if (signal.aborted) {
       break;
@@ -2433,30 +2437,16 @@ async function processAnalysisRunInner(
     }
   }
 
-  // Close partial parents whose children have all completed. Parent stays
-  // partial only while uncovered tails are still queued/running/failed.
-  {
-    const latest = await listBatches(runId);
-    for (const parent of latest.filter(b => b.state === 'partial')) {
-      const children = latest.filter(
-        b => b.parentBatchIndex === parent.batchIndex,
-      );
-      if (children.length === 0) continue;
-      const allChildrenDone = children.every(c => c.state === 'completed');
-      if (allChildrenDone) {
-        await execute(
-          db,
-          `UPDATE continuation_analysis_batches SET
-            state = 'completed', had_partial_coverage = 1,
-            error_code = NULL,
-            error_message = 'partial 尾段已由子批次完成',
-            updated_at = ?, completed_at = ?
-            WHERE run_id = ? AND batch_index = ?`,
-          [now(), now(), runId, parent.batchIndex],
-        );
-      }
+  // Close partial parents / re-queue true orphans, then loop if re-queued.
+  const requeued = await healOrphanPartialBatches(db, runId);
+  if (requeued > 0 && !signal.aborted) {
+    const latestAfterHeal = await getRunById(runId);
+    if (latestAfterHeal && latestAfterHeal.state === 'running') {
+      continue; // outer healPass for-loop
     }
   }
+  break; // no re-queue or run no longer running
+  } // end healPass for-loop
 
   // Hard gate before finalizing: any non-terminal batch/work item blocks Gate,
   // style analysis, activation.
@@ -4179,7 +4169,124 @@ async function resetInterruptedAnalysisWork(
       WHERE run_id = ? AND state IN ('running', 'failed', 'cancelled')`,
     [ts, runId],
   );
-  // partial parents stay partial; their queued children remain executable.
+  // partial parents with queued children stay partial until children finish.
+  // Orphan partials (claimed tails but no child rows) must be re-queued or
+  // "重试未完成项" exits immediately with incomplete_batches and zero feedback.
+  await healOrphanPartialBatches(db, runId, ts);
+}
+
+/**
+ * Unstick `partial` parents.
+ *
+ * Cases:
+ * 1) Linked children (`parent_batch_index`) all completed → promote parent.
+ * 2) No linked children, but completed sibling/top-level batches cover a
+ *    proper sub-range of the parent (legacy/broken linkage, e.g. packing
+ *    tails written without parent_batch_index) → promote parent.
+ * 3) True orphan (no coverage tails at all) → re-queue parent + work items
+ *    so extraction can re-spawn packing tails. Caller must re-enter the
+ *    queued-batch loop after this, or the final gate will fail on `queued`.
+ *
+ * Returns how many parents were re-queued (case 3).
+ */
+async function healOrphanPartialBatches(
+  db: SQLite.SQLiteDatabase,
+  runId: string,
+  ts: string = now(),
+): Promise<number> {
+  const batches = await listBatches(runId);
+  let requeued = 0;
+  // Include `queued` so a previous orphan re-queue that already has covering
+  // tails (broken parent_batch_index linkage) is promoted instead of re-LLM'd
+  // and then failing the incomplete_batches gate.
+  for (const parent of batches.filter(
+    b =>
+      (b.state === 'partial' || b.state === 'queued') &&
+      b.coverageKind !== 'retry_tail',
+  )) {
+    const children = batches.filter(
+      b => b.parentBatchIndex === parent.batchIndex,
+    );
+    if (children.length > 0) {
+      if (
+        parent.state === 'partial' &&
+        children.every(c => c.state === 'completed')
+      ) {
+        await execute(
+          db,
+          `UPDATE continuation_analysis_batches SET
+            state = 'completed', had_partial_coverage = 1,
+            error_code = NULL,
+            error_message = 'partial 尾段已由子批次完成',
+            updated_at = ?, completed_at = ?
+            WHERE run_id = ? AND batch_index = ?`,
+          [ts, ts, runId, parent.batchIndex],
+        );
+      }
+      // Incomplete linked children remain executable via their own queued state.
+      continue;
+    }
+
+    // Legacy/broken linkage: completed batches that properly sit inside this
+    // parent's range (not the parent itself) act as packing tails.
+    // Observed on device: parent batch 2 partial/queued, tails 8+9 completed
+    // at end of range but parent_batch_index left NULL.
+    const coveringTails = batches.filter(
+      b =>
+        b.batchIndex !== parent.batchIndex &&
+        b.state === 'completed' &&
+        Number(b.startPosition) >= Number(parent.startPosition) &&
+        Number(b.endPosition) <= Number(parent.endPosition) &&
+        Number(b.startPosition) > Number(parent.startPosition),
+    );
+    if (coveringTails.length > 0) {
+      await execute(
+        db,
+        `UPDATE continuation_analysis_batches SET
+          state = 'completed', had_partial_coverage = 1,
+          error_code = NULL,
+          error_message = 'partial 尾段已由覆盖子区间批次完成（含无 parent 链接的补尾）',
+          updated_at = ?, completed_at = ?
+          WHERE run_id = ? AND batch_index = ?`,
+        [ts, ts, runId, parent.batchIndex],
+      );
+      // Work items may still be queued after an orphan re-queue — mark done so
+      // the incomplete_batches item gate does not block activation.
+      await execute(
+        db,
+        `UPDATE continuation_analysis_work_items SET
+          state = 'completed', error_code = NULL,
+          error_message = '由覆盖补尾批次完成',
+          completed_at = COALESCE(completed_at, ?), updated_at = ?
+          WHERE run_id = ? AND batch_index = ?
+            AND state IN ('queued', 'running', 'failed')`,
+        [ts, ts, runId, parent.batchIndex],
+      );
+      continue;
+    }
+
+    // True orphan with no covering tails: only re-queue from partial (not when
+    // already queued — that would spin forever at the gate).
+    if (parent.state !== 'partial') continue;
+    await execute(
+      db,
+      `UPDATE continuation_analysis_batches SET
+        state = 'queued', error_code = NULL, error_message = NULL,
+        completed_at = NULL, updated_at = ?
+        WHERE run_id = ? AND batch_index = ?`,
+      [ts, runId, parent.batchIndex],
+    );
+    await execute(
+      db,
+      `UPDATE continuation_analysis_work_items SET
+        state = 'queued', result_json = NULL, error_code = NULL,
+        error_message = NULL, completed_at = NULL, updated_at = ?
+        WHERE run_id = ? AND batch_index = ?`,
+      [ts, runId, parent.batchIndex],
+    );
+    requeued += 1;
+  }
+  return requeued;
 }
 
 export async function resumeAnalysis(

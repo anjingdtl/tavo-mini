@@ -235,7 +235,16 @@ export const StyleProfileDetailScreen: React.FC<{
           ) : null}
           {row.errorMessage ? (
             <Text style={{ color: theme.colors.danger, marginTop: spacing.xs }}>
+              {row.errorCode ? `[${row.errorCode}] ` : ''}
               {row.errorMessage}
+            </Text>
+          ) : null}
+          {row.errorCode === 'style_sample_hash_mismatch' ||
+          row.errorCode === 'continuation_source_integrity_failed' ||
+          row.errorCode === 'chunk_length_mismatch' ||
+          row.errorCode === 'chunk_hash_mismatch' ? (
+            <Text style={{ color: theme.colors.danger, marginTop: spacing.xs }}>
+              此错误不可通过“单独重试”恢复，请重新导入原始 TXT 并重新分析。
             </Text>
           ) : null}
         </Card>
