@@ -76,7 +76,7 @@ export async function exportToText(projectId: number): Promise<string> {
 
 export async function exportShineWriterNovelJSON(projectId: number): Promise<string> {
   const project = await db.getProjectById(projectId);
-  const [chapters, fragments, plotlines, characters, worldbookEntries, notes, presets] = await Promise.all([
+  const [chapters, fragments, plotlines, characters, worldbookEntries, notes, presets, outlines] = await Promise.all([
     db.getChaptersByProject(projectId),
     db.getFragmentsByProject(projectId),
     db.getPlotlinesByProject(projectId),
@@ -84,19 +84,25 @@ export async function exportShineWriterNovelJSON(projectId: number): Promise<str
     db.getWorldbookEntriesByProject(projectId),
     db.getNotesByProject(projectId),
     db.getPresetsByProject(projectId),
+    db.getOutlinesByProject(projectId),
   ]);
 
   // Spec §15: continuation projects export as shinewriter-project-v3, which
   // carries the active source, text chunks, source chapters and settings/
-  // boundary. v1/v2 (outline/freeform) keep their existing shape.
+  // boundary. Outline/freeform projects export as v4 when they carry outlines
+  // (Schema 36, 大纲创作模式升级); otherwise keep v2 for compatibility.
   const isContinuation = project?.mode === 'continuation';
+  const hasOutlines = outlines && outlines.length > 0;
   const continuationPayload = isContinuation
     ? await buildContinuationExportPayload(projectId)
     : undefined;
+  // v4 = outline/freeform projects WITH outlines; v2 = outline/freeform without;
+  // v3 = continuation (unchanged).
+  const specVersion = isContinuation ? 3 : hasOutlines ? 4 : 2;
 
   const data: any = {
-    spec: isContinuation ? 'shinewriter-project-v3' : 'shinewriter-project-v2',
-    version: isContinuation ? '3.0' : '2.0',
+    spec: `shinewriter-project-v${specVersion}`,
+    version: `${specVersion}.0`,
     exportedAt: new Date().toISOString(),
     project,
     chapters,
@@ -110,6 +116,20 @@ export async function exportShineWriterNovelJSON(projectId: number): Promise<str
       worldbookEntries,
       notes,
       presets,
+      // v4+: outlines (title/content/source/enable/order). Omitted for v2
+      // projects without outlines so older apps still read the file.
+      ...(hasOutlines
+        ? {
+            outlines: outlines.map((outline: any) => ({
+              title: outline.title,
+              content: outline.content,
+              source_type: outline.sourceType,
+              source_file_name: outline.sourceFileName ?? null,
+              enabled: outline.enabled ? 1 : 0,
+              position: outline.position,
+            })),
+          }
+        : {}),
     },
     contextConfig: await db.getContextConfig(),
   };
