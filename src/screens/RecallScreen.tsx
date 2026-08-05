@@ -19,6 +19,7 @@ import {
   spacing,
 } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
+import appVersionJson from '../constants/version.json';
 import {
   scanRecallSources,
   applyRecall,
@@ -161,6 +162,9 @@ export const RecallScreen: React.FC<Props> = ({ onClose }) => {
           <View style={[styles.noticeCard, { backgroundColor: theme.colors.surface }]}>
             <Text style={[styles.noticeTitle, { color: theme.colors.textPrimary }]}>
               召回潜在数据
+            </Text>
+            <Text style={[styles.versionTag, { color: theme.colors.textMuted }]}>
+              {appVersionJson.versionName}
             </Text>
             <Text style={[styles.noticeText, { color: theme.colors.textSecondary }]}>
               扫描当前数据库与历史备份，把因版本升级、结构漂移等原因无法正常显示的资料重新找回并合并到当前库。{'\n\n'}
@@ -426,6 +430,7 @@ const styles = StyleSheet.create({
   body: { padding: spacing.lg },
   noticeCard: { borderRadius: 8, padding: spacing.md, marginBottom: spacing.md },
   noticeTitle: { fontSize: 16, fontWeight: '700', marginBottom: spacing.xs },
+  versionTag: { fontSize: 11, marginBottom: spacing.xs },
   noticeText: { fontSize: 13, lineHeight: 20, marginTop: spacing.xs },
   errorBox: {
     borderWidth: StyleSheet.hairlineWidth,
