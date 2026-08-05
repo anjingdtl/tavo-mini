@@ -1397,4 +1397,30 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     backup: true,
     restoreOrder: 515,
   },
+  // Schema 36 Outline resource (大纲创作模式升级). A project-level first-class
+  // resource with independent enable/position/budget; restored alongside the
+  // other project-scoped resources.
+  {
+    name: 'outlines',
+    columns: [
+      'id',
+      'project_id',
+      'title',
+      'content',
+      'source_type',
+      'source_file_name',
+      'enabled',
+      'position',
+      'estimated_tokens',
+      'content_hash',
+      'created_at',
+      'updated_at',
+    ],
+    indexes: [
+      'idx_outlines_project_position',
+      'idx_outlines_project_enabled',
+    ],
+    backup: true,
+    restoreOrder: 132,
+  },
 ];
