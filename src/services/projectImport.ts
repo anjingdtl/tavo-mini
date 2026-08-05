@@ -320,11 +320,24 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
         ) {
           throw new Error(`项目包 outlines[${i}].enabled 非法`);
         }
-        if (
-          outline.position != null &&
-          !Number.isFinite(Number(outline.position))
-        ) {
-          throw new Error(`项目包 outlines[${i}].position 非法`);
+        if (outline.position != null) {
+          const pos = Number(outline.position);
+          if (!Number.isInteger(pos) || pos < 0) {
+            throw new Error(
+              `项目包 outlines[${i}].position 必须是非负整数，收到 ${String(outline.position)}`,
+            );
+          }
+        }
+        const willEnable =
+          outline.enabled === true ||
+          Number(outline.enabled) === 1 ||
+          outline.enabled === '1';
+        const contentStr =
+          outline.content == null ? '' : String(outline.content);
+        if (willEnable && !contentStr.trim()) {
+          throw new Error(
+            `项目包 outlines[${i}] 启用但正文为空，已拒绝导入`,
+          );
         }
         const sourceTypeRaw =
           outline.source_type ?? outline.sourceType ?? 'manual';
@@ -335,10 +348,17 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
         }
       }
 
-      // Sort by exported position so createOutline assigns sequential positions.
-      const sorted = [...outlines].sort(
-        (a, b) => Number(a.position ?? 0) - Number(b.position ?? 0),
-      );
+      // Sort by exported position (stable for ties) so createOutline order is
+      // deterministic. Invalid positions already rejected above.
+      const sorted = [...outlines]
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => {
+          const pa = Number(a.item.position ?? 0);
+          const pb = Number(b.item.position ?? 0);
+          if (pa !== pb) return pa - pb;
+          return a.index - b.index;
+        })
+        .map(entry => entry.item);
       const newIds: number[] = [];
       for (const outline of sorted) {
         const title = String(outline.title ?? '');

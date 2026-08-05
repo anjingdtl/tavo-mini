@@ -182,6 +182,15 @@ export async function setOutlineEnabled(
   outlineId: number,
   enabled: boolean,
 ): Promise<void> {
+  if (enabled) {
+    const existing = await getOutlineById(outlineId);
+    if (!existing || existing.projectId !== projectId) {
+      throw new Error('启用大纲失败：找不到该大纲');
+    }
+    if (!String(existing.content || '').trim()) {
+      throw new Error('启用大纲失败：正文为空，请先填写大纲内容');
+    }
+  }
   await execute(
     await openDatabase(),
     'UPDATE outlines SET enabled = ?, updated_at = ? WHERE id = ? AND project_id = ?',
