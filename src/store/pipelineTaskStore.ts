@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import * as db from '../services/database';
 import type { PipelineTask, PipelineStageResult, PipelineTaskStatus } from '../types/pipeline';
+import { classifyInterruptedTask } from '../services/pipelineTaskContext';
+import { OutlineContextError } from '../services/outlineContextBuilder';
 
 interface PipelineTaskState {
   tasks: PipelineTask[];
@@ -25,8 +27,8 @@ interface PipelineTaskState {
    */
   setTaskInputFingerprint: (taskId: string, fingerprint: string) => void;
   /**
-   * Persist the frozen PipelineContextSnapshot (Schema 38+) before the first
-   * LLM call so resume can reuse the same outline/context after process death.
+   * Synchronously update in-memory snapshot fields only (no DB write).
+   * Prefer {@link persistTaskPipelineContext} on the critical LLM path.
    */
   setTaskPipelineContext: (
     taskId: string,
@@ -36,13 +38,30 @@ interface PipelineTaskState {
       pipelineContextHash: string;
     },
   ) => void;
+  /**
+   * Critical path: await SQLite write of the frozen pipeline context, then
+   * sync Zustand memory. Throws OutlineContextError on failure so the runner
+   * can block the first LLM call.
+   */
+  persistTaskPipelineContext: (
+    taskId: string,
+    snapshot: {
+      pipelineContextJson: string;
+      pipelineContextVersion: number;
+      pipelineContextHash: string;
+    },
+  ) => Promise<void>;
   resolveTask: (taskId: string, action: 'accept' | 'reject') => void;
   clearResolved: () => void;
   getActiveTaskForTarget: (targetType: 'chapter' | 'freeform', targetId: number) => PipelineTask | undefined;
   getUnresolvedCount: () => number;
-  /** 把 updatedAt 超过 staleMs 的活跃任务标记为 failed（用于回前台自愈）。返回标记的任务数。 */
+  /** 把 updatedAt 超过 staleMs 的活跃任务按可恢复性分类标记。返回标记的任务数。 */
   markStaleTasksAsFailed: (staleMs?: number) => number;
-  /** 冷启动时中断上次进程遗留的全部活跃任务；不会伪装为可继续运行。 */
+  /**
+   * 冷启动：分类上次进程遗留的活跃任务。
+   * 有成功 Draft + 合法快照 → interrupted/recoverable（不 resolve）。
+   * 否则 → failed（不自动 resolve，保留在任务中心）。
+   */
   markActiveTasksAsInterrupted: () => number;
 }
 
@@ -52,17 +71,42 @@ let taskIdCounter = 0;
 // after the successful review result and overwrite `stage_results` with stale
 // (often empty) data on disk.
 const taskPersistenceChains = new Map<string, Promise<void>>();
-const activeStatuses: PipelineTaskStatus[] = ['idle', 'queued', 'drafting', 'reviewing', 'factChecking', 'proofing'];
+const activeStatuses: PipelineTaskStatus[] = [
+  'idle',
+  'queued',
+  'drafting',
+  'reviewing',
+  'factChecking',
+  'proofing',
+];
 
+/**
+ * Classify and mark an interrupted active task. Recoverable tasks keep
+ * resolvedAt=null so the task center can offer Resume.
+ */
 function interruptTask(task: PipelineTask, now: number): PipelineTask {
+  const classification = classifyInterruptedTask(task);
+  if (classification.recoverable) {
+    return {
+      ...task,
+      status: 'interrupted',
+      recoverable: true,
+      error: classification.reason,
+      updatedAt: now,
+      // Keep unresolved so Resume remains available.
+      resolvedAt: null,
+      resolvedAction: null,
+    };
+  }
   return {
     ...task,
     status: 'failed',
-    error: '运行被中断（App 已退出或任务已停止）',
+    recoverable: false,
+    error: classification.reason,
     updatedAt: now,
-    // 不再弹出过期任务的全局结果提示，也不会阻塞同章节重新生成。
-    resolvedAt: now,
-    resolvedAction: 'reject',
+    // Do not auto-resolve: user should still see the failed task.
+    resolvedAt: null,
+    resolvedAction: null,
   };
 }
 
@@ -96,6 +140,17 @@ function persistTask(task: PipelineTask) {
   taskPersistenceChains.set(task.id, next);
 }
 
+/**
+ * Wait for any in-flight fire-and-forget writes for this task so a dedicated
+ * context UPDATE does not race with a stale INSERT OR REPLACE.
+ */
+async function awaitTaskPersistenceQueue(taskId: string): Promise<void> {
+  const previous = taskPersistenceChains.get(taskId);
+  if (previous) {
+    await previous.catch(() => undefined);
+  }
+}
+
 export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   tasks: [],
   _loaded: false,
@@ -116,6 +171,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         pipelineContextJson: row.pipelineContextJson ?? null,
         pipelineContextVersion: row.pipelineContextVersion ?? null,
         pipelineContextHash: row.pipelineContextHash ?? null,
+        recoverable: row.status === 'interrupted' ? true : undefined,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         resolvedAt: row.resolvedAt,
@@ -216,7 +272,14 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   cancelTask: (taskId) => {
     set((state) => {
       const tasks = state.tasks.map((t) =>
-        t.id === taskId ? { ...t, status: 'cancelled' as PipelineTaskStatus, updatedAt: Date.now() } : t
+        t.id === taskId
+          ? {
+              ...t,
+              status: 'cancelled' as PipelineTaskStatus,
+              recoverable: false,
+              updatedAt: Date.now(),
+            }
+          : t
       );
       const task = tasks.find((t) => t.id === taskId);
       if (task) persistTask(task);
@@ -254,6 +317,50 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     });
   },
 
+  persistTaskPipelineContext: async (taskId, snapshot) => {
+    // Ensure the task row exists (createTask may still be flushing INSERT).
+    await awaitTaskPersistenceQueue(taskId);
+
+    const existing = get().tasks.find(t => t.id === taskId);
+    if (!existing) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_PERSIST_FAILED',
+        '冻结上下文保存失败：找不到流水线任务。',
+        'restart_task',
+      );
+    }
+
+    try {
+      await db.updatePipelineTaskContext(taskId, {
+        json: snapshot.pipelineContextJson,
+        version: snapshot.pipelineContextVersion,
+        hash: snapshot.pipelineContextHash,
+      });
+    } catch (error: any) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_PERSIST_FAILED',
+        `冻结上下文保存失败：${error?.message ? String(error.message) : '数据库写入错误'}。已阻止调用模型。`,
+        'restart_task',
+      );
+    }
+
+    // Sync memory only after durable write succeeds.
+    const now = Date.now();
+    set(state => ({
+      tasks: state.tasks.map(t =>
+        t.id === taskId
+          ? {
+              ...t,
+              pipelineContextJson: snapshot.pipelineContextJson,
+              pipelineContextVersion: snapshot.pipelineContextVersion,
+              pipelineContextHash: snapshot.pipelineContextHash,
+              updatedAt: now,
+            }
+          : t,
+      ),
+    }));
+  },
+
   resolveTask: (taskId, action) => {
     set((state) => {
       const tasks = state.tasks.map((t) =>
@@ -288,6 +395,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
 
   markStaleTasksAsFailed: (staleMs = 10 * 60 * 1000) => {
     // 单阶段 LLM 耗时可能较长（尤其长文本生成），过短阈值会误判仍在运行的任务。
+    // 超时后仍按可恢复性分类，不把有 Draft + 合法快照的任务永久判死。
     const now = Date.now();
     let marked = 0;
     set((state) => {
@@ -314,8 +422,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     let marked = 0;
     set((state) => {
       const tasks = state.tasks.map((task) => {
-        // JS/原生流水线不具备跨进程恢复执行能力。冷启动时看到活跃状态，
-        // 只能说明上个进程已中断，绝不能继续占用章节的生成入口。
+        // Cold start: active statuses mean the previous process died mid-run.
+        // Classify into interrupted (recoverable) or failed (not recoverable).
         if (task.resolvedAt === null && activeStatuses.includes(task.status)) {
           marked += 1;
           const updated = interruptTask(task, now);

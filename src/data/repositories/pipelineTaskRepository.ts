@@ -185,3 +185,41 @@ export async function deleteResolvedPipelineTasks(): Promise<void> {
     'DELETE FROM pipeline_tasks WHERE resolved_at IS NOT NULL',
   );
 }
+
+/**
+ * Dedicated critical-path write for the frozen pipeline context snapshot.
+ * Must succeed (exactly 1 row) before the first LLM call. Does not go through
+ * the fire-and-forget store persistence queue.
+ */
+export async function updatePipelineTaskContext(
+  taskId: string,
+  snapshot: {
+    json: string;
+    version: number;
+    hash: string;
+  },
+): Promise<void> {
+  const database = await openDatabase();
+  const result = await execute(
+    database,
+    `UPDATE pipeline_tasks
+     SET pipeline_context_json = ?,
+         pipeline_context_version = ?,
+         pipeline_context_hash = ?,
+         updated_at = ?
+     WHERE id = ?`,
+    [
+      snapshot.json,
+      snapshot.version,
+      snapshot.hash,
+      Date.now(),
+      taskId,
+    ],
+  );
+  const rowsAffected = Number((result as any)?.rowsAffected ?? 0);
+  if (rowsAffected !== 1) {
+    throw new Error(
+      `更新流水线上下文快照失败：任务 ${taskId} 影响行数 ${rowsAffected}（期望 1）`,
+    );
+  }
+}

@@ -123,14 +123,17 @@ export type OutlineContextErrorCode =
   | 'OUTLINE_BUDGET_UNKNOWN'
   | 'OUTLINE_OVER_BUDGET'
   | 'OUTLINE_SNAPSHOT_INVALID'
-  | 'OUTLINE_MODEL_UNAVAILABLE';
+  | 'OUTLINE_MODEL_UNAVAILABLE'
+  | 'OUTLINE_SNAPSHOT_PERSIST_FAILED'
+  | 'OUTLINE_EXECUTION_CONFIG_INVALID';
 
 export class OutlineContextError extends Error {
   readonly code: OutlineContextErrorCode;
   readonly userAction?:
     | 'open_outlines'
     | 'open_llm_settings'
-    | 'restart_task';
+    | 'restart_task'
+    | 'open_task_center';
 
   constructor(
     code: OutlineContextErrorCode,
@@ -319,18 +322,24 @@ export function computeOutlinePacking(params: {
   const overageTokens =
     params.budgetTokens > 0 ? Math.max(0, totalTokens - params.budgetTokens) : 0;
 
-  // Suggest disabling lowest-priority sections until remaining prefix + overhead
-  // fits. Walk the tail of rendered section tokens.
+  // Suggest disabling lowest-priority (tail) sections by re-packing each
+  // candidate prefix and re-estimating tokens — never approximate by subtraction.
   const suggestedDisableIds: number[] = [];
-  if (overageTokens > 0) {
-    let running = totalTokens;
-    for (let i = perOutlineTokens.length - 1; i >= 0; i -= 1) {
-      if (running <= params.budgetTokens) break;
-      suggestedDisableIds.push(outlineIds[i]);
-      // Approx: removing a section frees its rendered tokens (+ a small join).
-      running -= perOutlineTokens[i];
+  if (overageTokens > 0 && items.length > 0) {
+    let keepCount = items.length;
+    while (keepCount > 0) {
+      const prefixItems = items.slice(0, keepCount);
+      const prefixText = [
+        sharedHeader,
+        ...prefixItems.map(i => i.renderedText),
+      ].join('\n\n');
+      const prefixTokens = estimateTokens(prefixText);
+      if (prefixTokens <= params.budgetTokens) break;
+      keepCount -= 1;
     }
-    suggestedDisableIds.reverse();
+    for (let i = keepCount; i < items.length; i += 1) {
+      suggestedDisableIds.push(items[i].id);
+    }
   }
 
   return {

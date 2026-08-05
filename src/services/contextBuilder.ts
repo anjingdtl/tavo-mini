@@ -7,6 +7,7 @@ import type { ContextTraceItem } from '../types/contextTrace';
 import type { PipelineContextSnapshot } from '../types/pipelineContext';
 import {
   buildOutlineContext,
+  deriveContextSafetyMargin,
   deriveOutlineBudgetTokens,
   EMPTY_OUTLINE_CONTEXT,
   OutlineContextError,
@@ -67,6 +68,14 @@ export interface BuildContextResult {
 export interface BuildContextOptions {
   retrievalUserPrompt?: string;
   storyMemoryMode?: 'generation' | 'preview';
+  /**
+   * When set, soft materials (notes / worldbook / episodic / story memory)
+   * shrink to leave room for the full outline + reserved output + safety margin.
+   * Outline is never clipped.
+   */
+  reservedOutputTokens?: number;
+  /** Override active-model window (use frozen request config when available). */
+  contextWindow?: number;
 }
 
 /**
@@ -318,6 +327,66 @@ export async function buildContext(
     rawChapterIds,
   );
 
+  // Resolve outline first so soft budgets can yield to the full outline plan.
+  const preOutlineContext = await buildOutlineContextForProject(
+    projectId,
+    options.contextWindow,
+  );
+  let effectiveResourceBudget = config.resourceBudget;
+  let effectiveStoryStateBudget = config.storyStateBudgetTokens ?? 8000;
+  let effectiveSlidingWindow = config.slidingWindowSize;
+  let effectiveMemoryTopK = config.memoryTopK ?? 10;
+  let effectiveEpisodicBudget =
+    config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
+  const resolvedContextWindow =
+    options.contextWindow != null && options.contextWindow > 0
+      ? Number(options.contextWindow)
+      : 0;
+  const reservedOut =
+    options.reservedOutputTokens != null && options.reservedOutputTokens > 0
+      ? Number(options.reservedOutputTokens)
+      : 0;
+  if (resolvedContextWindow > 0 && reservedOut > 0) {
+    const safety = deriveContextSafetyMargin(resolvedContextWindow);
+    const fixedProtocol = 256;
+    const outlineTokens = preOutlineContext.estimatedTokens || 0;
+    const availableInput = Math.max(
+      0,
+      resolvedContextWindow - safety - reservedOut - fixedProtocol,
+    );
+    const remainingAfterOutline = Math.max(0, availableInput - outlineTokens);
+    if (remainingAfterOutline > 0) {
+      const softCap = remainingAfterOutline;
+      effectiveStoryStateBudget = Math.min(
+        effectiveStoryStateBudget,
+        Math.floor(softCap * 0.35),
+      );
+      effectiveResourceBudget = Math.min(
+        effectiveResourceBudget,
+        Math.floor(softCap * 0.4),
+      );
+      effectiveSlidingWindow = Math.min(
+        effectiveSlidingWindow,
+        Math.floor(softCap * 0.2),
+      );
+      effectiveEpisodicBudget = Math.min(
+        effectiveEpisodicBudget,
+        Math.floor(softCap * 0.25),
+      );
+      if (softCap < 1500) {
+        effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 2);
+      } else if (softCap < 4000) {
+        effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 3);
+      }
+    } else if (outlineTokens > 0) {
+      effectiveStoryStateBudget = 0;
+      effectiveResourceBudget = 0;
+      effectiveSlidingWindow = 0;
+      effectiveMemoryTopK = 0;
+      effectiveEpisodicBudget = 0;
+    }
+  }
+
   // Episodic query: title + synopsis + user prompt + content head + previous tail.
   // Entity boosts only from prepare()-usable checkpoints (never dirty/empty/failed/rebuilding).
   const previousForQuery = resolvePreviousChapterForQuery(
@@ -353,8 +422,8 @@ export async function buildContext(
       episodicCandidates,
       currentChapter,
       idf,
-      config.memoryTopK ?? 10,
-      config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
+      effectiveMemoryTopK,
+      effectiveEpisodicBudget,
       retrievalOptions,
     );
   } catch {
@@ -362,8 +431,8 @@ export async function buildContext(
     memoryText = buildMemoryContext(
       episodicCandidates,
       currentChapter,
-      config.memoryTopK ?? 10,
-      config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
+      effectiveMemoryTopK,
+      effectiveEpisodicBudget,
       retrievalOptions,
     );
   }
@@ -398,11 +467,9 @@ export async function buildContext(
     chapterSynopsis: currentChapter.synopsis,
   });
 
-  // Outline context (大纲创作模式升级). Built with its OWN budget derived from
-  // the active model's context window, independent from resourceBudget. Only
-  // outline-mode projects get outline injection. Strict no-truncation: if the
-  // full outline set does not fit, block here before any model call.
-  const outlineContext = await buildOutlineContextForProject(projectId);
+  // Outline already resolved above (preOutlineContext) so soft budgets yielded
+  // to the full outline before episodic / resource assembly.
+  const outlineContext = preOutlineContext;
 
   const messages: ChatMessage[] = [
     { role: 'system', content: resolvedSystemPrompt },
@@ -429,7 +496,11 @@ export async function buildContext(
   // Strict no-truncation: a blocked outline throws before any model call.
   if (outlineContext.text) {
     if (!outlineContext.complete) {
-      throw new Error(outlineContext.blockingReason || '大纲无法完整注入，已阻止生成。');
+      throw new OutlineContextError(
+        'OUTLINE_OVER_BUDGET',
+        outlineContext.blockingReason || '大纲无法完整注入，已阻止生成。',
+        'open_outlines',
+      );
     }
     const primary = messages[0];
     if (primary?.role === 'system') {
@@ -453,7 +524,11 @@ export async function buildContext(
   } else if (!outlineContext.complete) {
     // No text but blocked (e.g. all outlines disabled yet budget check failed
     // defensively). Surface the block reason so the user can act.
-    throw new Error(outlineContext.blockingReason || '大纲无法完整注入，已阻止生成。');
+    throw new OutlineContextError(
+      'OUTLINE_OVER_BUDGET',
+      outlineContext.blockingReason || '大纲无法完整注入，已阻止生成。',
+      'open_outlines',
+    );
   }
 
   // Story Memory Checkpoint — reuse the SAME prepared snapshot so coverage,
@@ -463,7 +538,7 @@ export async function buildContext(
     projectId,
     currentChapter,
     prepared?.checkpoint ?? null,
-    config.storyStateBudgetTokens ?? 8000,
+    effectiveStoryStateBudget,
     { retrievalUserPrompt: options.retrievalUserPrompt },
   );
   if (storyMemory.text) {
@@ -495,10 +570,10 @@ export async function buildContext(
   let snapshotNoteText = '';
   let snapshotWorldbookText = '';
 
-  if (config.includeResources && config.resourceBudget > 0) {
+  if (config.includeResources && effectiveResourceBudget > 0) {
     const resourceResult = await buildResourceContext(
       projectId,
-      config.resourceBudget,
+      effectiveResourceBudget,
       scanText,
       config.worldbookRecursive !== false,
       currentChapter,
@@ -549,7 +624,7 @@ export async function buildContext(
   } else {
     previousContent = buildPreviousContentText(
       currentChapter,
-      config,
+      { ...config, slidingWindowSize: effectiveSlidingWindow },
       chapters,
     );
   }
@@ -665,6 +740,7 @@ function buildPresetPrompt(preset?: Preset): string {
  */
 async function buildOutlineContextForProject(
   projectId: number,
+  contextWindowOverride?: number,
 ): Promise<BuiltOutlineContext> {
   // Partial database facades (tests / incomplete mocks) may omit getProjectById.
   // Without a project row we cannot claim outline mode — return empty legally.
@@ -686,12 +762,16 @@ async function buildOutlineContextForProject(
     return EMPTY_OUTLINE_CONTEXT;
   }
   let contextWindow = 0;
-  try {
-    const llmConfig = await db.getActiveLLMConfig();
-    contextWindow = Number(llmConfig?.context_window) || 0;
-  } catch {
-    // Preview / pre-config: budget unknown. Do not treat as empty outline.
-    contextWindow = 0;
+  if (contextWindowOverride != null && contextWindowOverride > 0) {
+    contextWindow = Number(contextWindowOverride);
+  } else {
+    try {
+      const llmConfig = await db.getActiveLLMConfig();
+      contextWindow = Number(llmConfig?.context_window) || 0;
+    } catch {
+      // Preview / pre-config: budget unknown. Do not treat as empty outline.
+      contextWindow = 0;
+    }
   }
   const outlineBudgetTokens = deriveOutlineBudgetTokens(contextWindow);
   // buildOutlineContext throws OutlineContextError on repository failure —
