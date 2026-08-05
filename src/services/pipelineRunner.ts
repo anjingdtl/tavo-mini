@@ -63,6 +63,7 @@ import {
   type ParsedPipelineTaskContext,
 } from './pipelineTaskContext';
 import { compileDraftPipelineRequest } from './draftPipelineCompiler';
+import { reconcilePipelineTask } from './pipeline/reconcile';
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -873,6 +874,10 @@ async function runProofStage(
  * Entry points
  * ========================================================================= */
 
+/**
+ * Single entry for first-run and resume. Both call {@link reconcilePipelineTask}.
+ * @deprecated Prefer reconcilePipelineTask; kept as stable public API.
+ */
 export async function runChapterPipeline(
   taskId: string,
   chapter: Chapter,
@@ -899,7 +904,11 @@ export async function runChapterPipeline(
     );
   });
   try {
-    await runChapterPipelineInner(taskId, chapter, onStageUpdate, abortSignal);
+    await reconcilePipelineTask(taskId, chapter, {
+      onStageUpdate,
+      abortSignal,
+      isCancelled: isPipelineCancelled,
+    });
   } finally {
     releaseTaskAbort(taskId);
     clearLLMTaskQueueDefaults(taskId);
@@ -1618,6 +1627,9 @@ export async function runFreeformPipeline(
  * never overwritten. (SPEC §18.3)
  * ========================================================================= */
 
+/**
+ * Resume / continue — same state machine as first run.
+ */
 export async function resumePipeline(
   taskId: string,
   chapter: Chapter,
@@ -1629,14 +1641,26 @@ export async function resumePipeline(
     queuePriority: options.queuePriority || 'manual',
   });
   const abortSignal = registerTaskAbort(taskId);
+  PipelineForeground.start(
+    taskId,
+    chapter.title || '流水线',
+    '正在恢复任务',
+    0,
+  ).catch(() => {});
   try {
-    await resumePipelineInner(taskId, chapter, onStageUpdate, abortSignal);
+    await reconcilePipelineTask(taskId, chapter, {
+      onStageUpdate,
+      abortSignal,
+      isCancelled: isPipelineCancelled,
+    });
   } finally {
     releaseTaskAbort(taskId);
     clearLLMTaskQueueDefaults(taskId);
     cancelledTasks.delete(taskId);
   }
 }
+
+export { reconcilePipelineTask };
 
 async function resumePipelineInner(
   taskId: string,
