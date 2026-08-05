@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.11.29] - 2026-08-05
+
+### Fixed
+
+- **召回合并：绕过启动初始化直连原始数据库**：解决"召回中止 无法打开数据库：[object Object]"。
+  - **根因**：`openDatabase()` 内部调 `initializeDatabase()`——当数据库 schema 漂移/损坏导致启动校验 fail-closed 时，`initializeDatabase` 抛 `SchemaRecoveryError`（结构化对象），`openDatabase` re-throw，merger 的 catch 用 `e?.message` 提取失败渲染成 `[object Object]`。召回功能本该修复的库，自己却连不上。
+  - **降级原始连接**：`applyRecall` 在 `openDatabase()` 失败时，降级到 `SQLite.openDatabase` 直接打开原始连接（跳过 initializeDatabase 的校验链），让召回/修复仍能操作数据库。底层 SQLite 连接其实已打开，只是初始化没过。
+  - **全链路 extractMessage**：merger 所有 catch 路径（DB_OPEN / RECOVERY_BACKUP / DRIFT_REPAIR / SOURCE_INSERT）统一用 `extractMessage`，处理 Error / string / {message} / SchemaRecoveryError{code,errors} / 任意对象，杜绝 `[object Object]`。
+
 ## [2.11.28] - 2026-08-05
 
 ### Fixed
