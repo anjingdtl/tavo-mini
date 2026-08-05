@@ -201,61 +201,60 @@ function countRows(tables: Record<string, any[]>): number {
 }
 
 
-function checksumPayload(backup: {
-  format: 'shinewriter-backup';
-  format_version: 3;
-  meta: BackupMetaV3;
-  tables: Record<string, any[]>;
-  external_assets: BackupExternalAsset[];
-}): string {
-  const metaWithoutChecksum = { ...backup.meta, checksum: undefined };
-  return JSON.stringify({
-    format: backup.format,
-    format_version: backup.format_version,
-    meta: metaWithoutChecksum,
-    tables: backup.tables,
-    external_assets: backup.external_assets,
-  });
-}
-
+/**
+ * 增量式 payload 哈希器：不落地完整 payload 字符串，逐片段喂给 Sha256Stream。
+ *
+ * 字节兼容性（关键）：旧实现是 `sha256(JSON.stringify(payload))`，且内部按
+ * 全局 64K 字符边界切片喂给 utf8Encode（切片不保护 surrogate pair）。已写入
+ * 磁盘的历史 v3 备份 checksum 都是按这套语义算出来的，因此这里必须逐字复现：
+ *   - 片段按到达顺序拼接后，在「全局」64K 整数倍位置切片（leftover 进位），
+ *     与旧实现对同一 payload 产生完全相同的切片序列 → 相同 digest；
+ *   - 片段序列本身与 `JSON.stringify({format, format_version, meta, tables,
+ *     external_assets})` 的字节输出完全一致（键序 = 对象插入序 = 下面 feed 顺序）。
+ *
+ * 内存收益：任意时刻只持有「当前片段（单表 JSON）+ <64K leftover」，峰值从
+ * 「整份 payload 字符串」降到「最大单表 JSON」，消除大库备份校验 OOM。
+ */
 /**
  * 流式 SHA-256 over UTF-8 字节，复用 {@link Sha256Stream} 的 O(1) 内存实现。
  *
  * 历史 one-shot 版本会先 `utf8Encode` 整个 JSON 字符串为 Uint8Array，再分配
  * 一份 padded 副本，对 multi-MB 备份（多 TXT 原著 + 全量正文）峰值 4 份大内
  * 存副本，且纯 JS SHA-256 计算即使每 1KB 让出一次事件循环，仍持续占用主线程
- * 数秒到数十秒，是「点击新增备份就卡死」的根因。
- *
- * 流式版本只保留 <64 字节 pending 缓冲 + 8-word hash state，每 ~64KB 让出一次
- * 事件循环（setTimeout 0），UI 始终可响应。digest 与原 one-shot 等价（已由
+ * 数秒到数十秒，是「点击新增备份就卡死」的根因。流式版本只保留 <64 字节
+ * pending 缓冲 + 8-word hash state，digest 与原 one-shot 等价（已由
  * __tests__/continuationHashStream.test.ts 覆盖等价性）。
  */
-async function sha256(
-  value: string,
-  onProgress?: (fraction: number) => void,
-): Promise<string> {
-  const stream = new Sha256Stream();
-  const CHUNK_CHAR_SIZE = 65536; // 64K chars per chunk ≈ 64-256KB UTF-8
-  const total = value.length;
-  let pos = 0;
-  let chunkIndex = 0;
-  while (pos < total) {
-    const end = Math.min(pos + CHUNK_CHAR_SIZE, total);
-    stream.updateString(value.substring(pos, end));
-    pos = end;
-    chunkIndex += 1;
-    // 每 4 个 chunk（~256KB chars）让出一次事件循环。过低（如每 1KB）会让
-    // setTimeout 调度开销主导；过高（如每 32KB+）会让单次让出之间累积太多
-    // 主线程工作。~256KB 是经验上 UI 流畅与吞吐的折中点。
-    if (chunkIndex % 4 === 0) {
-      await yieldToEventLoop();
-      onProgress?.(total === 0 ? 1 : pos / total);
+class BackupPayloadHasher {
+  private readonly stream = new Sha256Stream();
+  private leftover = '';
+  private static readonly CHUNK_CHAR_SIZE = 65536;
+
+  feed(piece: string): void {
+    let text = piece;
+    if (this.leftover.length > 0) {
+      text = this.leftover + piece;
+      this.leftover = '';
     }
+    const CHUNK = BackupPayloadHasher.CHUNK_CHAR_SIZE;
+    let pos = 0;
+    while (text.length - pos >= CHUNK) {
+      this.stream.updateString(text.substring(pos, pos + CHUNK));
+      pos += CHUNK;
+    }
+    this.leftover = pos > 0 ? text.substring(pos) : text;
   }
-  onProgress?.(1);
-  return stream.digest();
+
+  digest(): string {
+    if (this.leftover.length > 0) {
+      this.stream.updateString(this.leftover);
+      this.leftover = '';
+    }
+    return this.stream.digest();
+  }
 }
 
+/** 让出一次事件循环，避免长哈希阻塞 UI 线程。 */
 function yieldToEventLoop(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
@@ -263,12 +262,59 @@ function yieldToEventLoop(): Promise<void> {
 /**
  * Exported for deterministic format-v3 tests and tooling.
  * `onProgress` 报告 0..1 的 fraction，供 createBackup 映射成阶段百分比。
+ *
+ * 内存安全（v2.11.x OOM 修复）：旧实现先 `JSON.stringify` 整个 payload 再哈希，
+ * 对 100MB+ 大库备份等于在「文件原文 + 解析对象图」之外再压一份等量大字符串，
+ * 直接触发 Java/Hermes OOM，导致备份中心召回与 schema-recovery 校验全部失败。
+ * 新实现按 JSON.stringify 的字节序逐片段（meta → 单表 → external_assets）喂给
+ * {@link BackupPayloadHasher}，digest 与旧实现一致（见该类注释的兼容性说明）。
  */
 export async function computeBackupChecksum(
   backup: BackupV3,
   onProgress?: (fraction: number) => void,
 ): Promise<string> {
-  return sha256(checksumPayload(backup), onProgress);
+  const hasher = new BackupPayloadHasher();
+  const tableKeys = Object.keys(backup.tables);
+  // 片段数 = 头 1 + meta 1 + 每表 1 + external_assets/收尾 1，用于进度估算。
+  const totalPieces = tableKeys.length + 3;
+  let donePieces = 0;
+  const feedWithProgress = (piece: string) => {
+    hasher.feed(piece);
+    donePieces += 1;
+    onProgress?.(donePieces / totalPieces);
+  };
+
+  // 与 JSON.stringify({format, format_version, meta, tables, external_assets})
+  // 字节一致：键序为对象字面量插入序。
+  feedWithProgress('{"format":');
+  hasher.feed(JSON.stringify(backup.format));
+  hasher.feed(',"format_version":');
+  hasher.feed(JSON.stringify(backup.format_version));
+  hasher.feed(',"meta":');
+  // checksum 字段置 undefined → stringify 时省略该键，与旧 checksumPayload 一致。
+  hasher.feed(JSON.stringify({ ...backup.meta, checksum: undefined }));
+  hasher.feed(',"tables":{');
+  await yieldToEventLoop();
+
+  for (let index = 0; index < tableKeys.length; index += 1) {
+    const key = tableKeys[index];
+    hasher.feed(index > 0 ? ',' : '');
+    hasher.feed(JSON.stringify(key));
+    hasher.feed(':');
+    // 单表 JSON 是此刻最大的临时字符串，喂完即可被 GC 回收，不会叠加。
+    hasher.feed(JSON.stringify(backup.tables[key]));
+    // 每 4 张表让出一次事件循环，保持 UI 可响应（与旧实现的让出策略同量级）。
+    if (index % 4 === 3) {
+      await yieldToEventLoop();
+      onProgress?.(donePieces / totalPieces);
+    }
+  }
+
+  hasher.feed('},"external_assets":');
+  feedWithProgress(JSON.stringify(backup.external_assets));
+  hasher.feed('}');
+  onProgress?.(1);
+  return hasher.digest();
 }
 
 /** Legacy v2 fingerprint; retained only so old files remain readable. */
@@ -460,8 +506,12 @@ function parseBackupObject(input: unknown): { parsed: ParsedBackup | null; error
 
 export async function readAndValidateBackup(path: string): Promise<ReadValidationResult> {
   try {
-    const content = await RNFS.readFile(path, 'utf8');
-    const input = JSON.parse(content);
+    // 大库备份可达 100MB+：readFile 的原文字符串与 JSON.parse 的对象图必然短暂
+    // 共存，因此解析一完成就立刻断开对原文的引用，让后续 checksum 阶段不再叠加
+    // 第三份大内存（旧实现还把整个 payload 重新 stringify 一遍，直接 OOM）。
+    let rawContent: string | null = await RNFS.readFile(path, 'utf8');
+    const input = JSON.parse(rawContent);
+    rawContent = null;
     const { parsed, errors } = parseBackupObject(input);
     if (!parsed) return { parsed: null, validation: { valid: false, errors } };
 
@@ -483,11 +533,17 @@ export async function readAndValidateBackup(path: string): Promise<ReadValidatio
     validation.valid = validation.errors.length === 0;
     return { parsed: validation.valid ? parsed : null, validation };
   } catch (error: any) {
+    const message = error?.message || String(error);
+    const isOom = /OutOfMemory|Failed to allocate/i.test(String(message));
     return {
       parsed: null,
       validation: {
         valid: false,
-        errors: [`读取或解析备份失败：${error?.message || String(error)}`],
+        errors: [
+          isOom
+            ? `读取或解析备份失败：备份文件过大，设备内存不足（${message}）。请释放设备内存后重试。`
+            : `读取或解析备份失败：${message}`,
+        ],
       },
     };
   }
