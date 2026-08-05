@@ -55,7 +55,16 @@ function emptyRecoverable(): Record<RecallTable, number> {
 }
 
 export async function scanRecallSources(): Promise<RecallScanReport> {
-  const currentDb = await scanCurrentDb();
+  // 总入口包 try/catch：扫描本身绝不能抛——召回功能要应对的恰恰是"库有问题"
+  // 的场景，如果扫描入口自己崩在 openDatabase / inspectKnownSchemaDrift 上，
+  // 就失去了召回的意义。任何异常都转成一个诊断报告返回，让 UI 展示。
+  let currentDb: CurrentDbFinding;
+  try {
+    currentDb = await scanCurrentDb();
+  } catch (e: any) {
+    currentDb = makeUnreachableCurrentDb(extractMessage(e));
+  }
+
   const schemaRecoverySources = await scanDir(
     SCHEMA_RECOVERY_DIR,
     'schema-recovery',
@@ -70,6 +79,30 @@ export async function scanRecallSources(): Promise<RecallScanReport> {
     b.createdAt.localeCompare(a.createdAt),
   );
   return { scannedAt: Date.now(), currentDb, sources };
+}
+
+/** 当前库完全不可读时，构造一个全 -1 的诊断 finding（不抛）。 */
+function makeUnreachableCurrentDb(_reason: string): CurrentDbFinding {
+  const rowCount = {} as Record<RecallTable, number>;
+  const existingKeys = {} as Record<RecallTable, string[]>;
+  for (const t of RECALL_TABLES) {
+    rowCount[t] = -1;
+    existingKeys[t] = [];
+  }
+  return {
+    reachable: false,
+    schemaDrift: {
+      recordedSchemaVersion: 0,
+      canonEvidenceExists: false,
+      sourceOriginExists: false,
+      rescanOperationIdExists: false,
+      rescanIndexExists: false,
+      needsRepair: false,
+      repairCodes: [],
+    },
+    rowCount,
+    existingKeys,
+  };
 }
 
 async function scanCurrentDb(): Promise<CurrentDbFinding> {

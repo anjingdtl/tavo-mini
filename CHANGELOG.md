@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.11.27] - 2026-08-05
+
+### Fixed
+
+- **召回扫描彻底防崩**：解决真机上"扫描失败 [object Object]"问题（V2.11.26 修复不彻底）。
+  - **根因**：`scanCurrentDb` 里 `openDatabase()` 和 `inspectKnownSchemaDrift(db)` 没有 try/catch 保护。真机上报障用户的库恰好处于损坏/漂移状态，settings 表读取抛异常，冒泡到 UI catch；召回功能本应应对"库有问题"的场景，扫描入口自己却崩了。
+  - **总入口防崩**：`scanRecallSources` 包最外层 try/catch，库不可读时构造一个全 -1 的 unreachable 诊断报告返回（不抛），UI 进 preview 态展示"当前库读取失败"，仍可继续扫描备份源。
+  - **版本号显示**：RecallScreen 入口态显示当前 versionName，用户截图即可确认跑的版本，避免误报。
+
 ## [2.11.26] - 2026-08-05
 
 ### Fixed
