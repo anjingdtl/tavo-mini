@@ -259,11 +259,9 @@ const styles = StyleSheet.create({
   },
   recallEntry: {
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
+    paddingTop: spacing.lg,
     paddingBottom: spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    elevation: 1,
-    zIndex: 1,
   },
   progressWrap: {
     marginTop: spacing.sm,
