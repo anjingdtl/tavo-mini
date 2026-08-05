@@ -12,6 +12,7 @@
  * 安全不变量：绝不 DELETE/UPDATE 现有行；合并用 INSERT OR IGNORE + 主键预检。
  */
 import type SQLite from 'react-native-sqlite-storage';
+import SQLiteModule from 'react-native-sqlite-storage';
 import { openDatabase } from '../../data/connection/openDatabase';
 import { executeTransaction, type SqlStatement } from '../database/transaction';
 import { SCHEMA_MANIFEST } from '../database/schemaManifest';
@@ -39,6 +40,40 @@ import {
 } from './recallTypes';
 import { readExistingKeys } from './recallScanner';
 
+/** 健壮地从任意 thrown 值提取可读消息。 */
+function extractMessage(e: unknown): string {
+  if (e == null) return '未知错误';
+  if (typeof e === 'string') return e;
+  if (e instanceof Error) return e.message || e.toString();
+  if (typeof e === 'object' && 'message' in e) {
+    const m = (e as any).message;
+    if (typeof m === 'string' && m.length > 0) return m;
+  }
+  // SchemaRecoveryError 等结构化错误可能把详情放在 code / errors 字段
+  if (typeof e === 'object') {
+    const code = (e as any).code;
+    const errors = (e as any).errors;
+    if (typeof code === 'string' || (Array.isArray(errors) && errors.length > 0)) {
+      return [code, ...(Array.isArray(errors) ? errors : [])].filter(Boolean).join('; ');
+    }
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
+/**
+ * 当 openDatabase()（含 initializeDatabase）失败时，降级到直接打开原始 SQLite
+ * 连接，绕过启动初始化链路。这样即使数据库 schema 损坏/漂移导致启动校验
+ * fail-closed，召回功能仍能拿到原始连接执行修复操作。
+ */
+async function openRawDatabase(): Promise<SQLite.SQLiteDatabase> {
+  SQLiteModule.enablePromise(true);
+  return SQLiteModule.openDatabase({ name: 'shine_writer.db', location: 'default' });
+}
+
 export async function applyRecall(
   selection: RecallSelection,
 ): Promise<RecallResult> {
@@ -49,8 +84,19 @@ export async function applyRecall(
   let db: SQLite.SQLiteDatabase;
   try {
     db = await openDatabase();
-  } catch (e: any) {
-    return failedResult('DB_OPEN_FAILED', `无法打开数据库：${e?.message ?? e}`);
+  } catch (openErr: any) {
+    // openDatabase() 内部调 initializeDatabase——如果启动校验 fail-closed
+    // （schema 漂移、召回快照不一致等），整个连接会被作废。但底层的 SQLite
+    // 连接其实已打开，只是初始化没过。降级到直接打开原始连接，让召回/修复
+    // 仍能操作数据库。
+    try {
+      db = await openRawDatabase();
+    } catch (rawErr: any) {
+      return failedResult(
+        'DB_OPEN_FAILED',
+        `无法打开数据库：${extractMessage(openErr)}（原始连接也失败：${extractMessage(rawErr)}）`,
+      );
+    }
   }
 
   // 1. 强制恢复备份（任何写操作之前）。失败立即返回，不动数据。
@@ -61,7 +107,7 @@ export async function applyRecall(
   } catch (e: any) {
     return failedResult(
       'RECOVERY_BACKUP_FAILED',
-      `恢复备份失败：${e?.message ?? e}`,
+      `恢复备份失败：${extractMessage(e)}`,
     );
   }
 
@@ -82,7 +128,7 @@ export async function applyRecall(
         errors.push(`漂移修复未成功：${repairResult.message}`);
       }
     } catch (e: any) {
-      errors.push(`漂移修复失败：${e?.message ?? e}`);
+      errors.push(`漂移修复失败：${extractMessage(e)}`);
     }
   }
 
@@ -96,7 +142,7 @@ export async function applyRecall(
       }
       await mergeFromBackup(db, parsed.tables, applied);
     } catch (e: any) {
-      errors.push(`${filePath}: ${e?.message ?? e}`);
+      errors.push(`${filePath}: ${extractMessage(e)}`);
     }
   }
 
