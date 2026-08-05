@@ -311,10 +311,12 @@ describe('activateSnapshotAndStyleProfile', () => {
     expect(invalidateStmt.params).toContain(5000); // boundaryCharOffsetExclusive
   });
 
-  it('refuses to activate a snapshot that is neither awaiting_review nor ready', async () => {
+  it('refuses to activate a snapshot that is neither awaiting_review, ready nor failed', async () => {
+    // `failed` is now activatable (Canon may be complete while the run failed
+    // only at the style stage). `staging` / `outdated` remain non-activatable.
     (getSnapshotById as jest.Mock).mockResolvedValue({
       ...awaitingSnap,
-      status: 'failed',
+      status: 'outdated',
     });
 
     await expect(
