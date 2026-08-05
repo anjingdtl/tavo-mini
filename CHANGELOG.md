@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.11.31] - 2026-08-06
+
+### Fixed
+
+- **备份中心：大库备份召回 OOM，所有备份源被误报「无效或已损坏」**（报 `Failed to allocate ... until OOM, growth limit 268435456`）
+  - **根因**：召回/校验链路同时持有三份巨型内存——`readFile` 全量文件原文、`JSON.parse` 对象图、`computeBackupChecksum` 又把整个 payload 重新 `JSON.stringify` 一遍。100MB+ 备份超出 Java 默认 256MB 堆增长上限，召回扫描与 schema-recovery 前置校验全部失败，「修复结构漂移」和「备份召回」两条恢复路径同时被堵死。
+  - **流式 checksum**：`computeBackupChecksum` 改为按 `JSON.stringify` 字节序逐片段（meta → 单表 → external_assets）喂给 `Sha256Stream`，保留旧实现 64K 全局切片语义，字节级兼容——存量备份 checksum 全部仍可验证；峰值内存从「整份 payload 字符串」降到「最大单表 JSON」。
+  - **及时释放**：`readAndValidateBackup` 解析完成后立即断开文件原文引用，避免第三份大内存叠加；OOM 报错改为可读的中文提示。
+  - **堆余量**：AndroidManifest 增加 `android:largeHeap="true"`，提高 Java 堆增长上限。
+  - 新增兼容性守卫测试（流式 digest 与历史 one-shot 语义一致，含 64K+ 单表/中文/emoji），2293 用例全绿。
+
 ## [2.11.30] - 2026-08-05
 
 ### Fixed

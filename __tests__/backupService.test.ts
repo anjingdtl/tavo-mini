@@ -14,6 +14,7 @@ import {
 } from '../src/services/backupService';
 import { SCHEMA_MANIFEST } from '../src/services/database/schemaManifest';
 import { SCHEMA_VERSION } from '../src/services/migrations';
+import { sha256Hex } from '../src/services/continuation/hashUtils';
 
 type TableRows = Record<string, any>[];
 
@@ -674,5 +675,36 @@ describe('backupService', () => {
     await expect(listBackups()).resolves.toEqual([]);
     (RNFS.readDir as jest.Mock).mockRejectedValueOnce(new Error('清理目录不可读'));
     await expect(cleanupOldBackups()).resolves.toBeUndefined();
+  });
+
+  /**
+   * 兼容性守卫：流式分片版 computeBackupChecksum 的 digest 必须与历史
+   * one-shot 语义（sha256(JSON.stringify(payload))）完全一致，否则存量
+   * v3 备份会被误判为「校验和不匹配 → 已损坏」，召回功能直接不可用。
+   */
+  test('streaming checksum digest equals legacy one-shot payload digest', async () => {
+    // 单表 JSON 超过 64K 字符，强制跨多个分片边界；含中文 + emoji（surrogate pair）。
+    const longText = Array.from({ length: 3000 }, (_, i) => `第${i}章内容：这是一段正文文本。✨`).join('');
+    const backup = await makeV3Backup({
+      chapters: [
+        { id: 'ch-1', project_id: 'p-1', title: '第一章', content: longText, sort_order: 1 },
+        { id: 'ch-2', project_id: 'p-1', title: '第二章', content: '短内容📖', sort_order: 2 },
+      ],
+      projects: [{ id: 'p-1', title: '测试项目', created_at: '2026-06-13T00:00:00Z' }],
+    });
+
+    // 历史语义参照：对整份 payload 字符串一次性哈希（旧 checksumPayload + one-shot sha256）。
+    const legacyPayload = JSON.stringify({
+      format: backup.format,
+      format_version: backup.format_version,
+      meta: { ...backup.meta, checksum: undefined },
+      tables: backup.tables,
+      external_assets: backup.external_assets,
+    });
+    const legacyDigest = sha256Hex(legacyPayload);
+
+    await expect(computeBackupChecksum(backup)).resolves.toBe(legacyDigest);
+    // meta.checksum 本身也是用同一套算法算的，round-trip 必须自洽。
+    expect(backup.meta.checksum).toBe(legacyDigest);
   });
 });
