@@ -13,8 +13,8 @@ import {
 } from '../src/services/migrations/v35-to-v36';
 
 describe('Schema 35 → 36 outline migration', () => {
-  it('reports SCHEMA_VERSION as 36', () => {
-    expect(SCHEMA_VERSION).toBe(36);
+  it('reports SCHEMA_VERSION as 37', () => {
+    expect(SCHEMA_VERSION).toBe(37);
   });
 
   it('outlines table DDL has all required columns', () => {
