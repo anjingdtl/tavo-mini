@@ -13,8 +13,11 @@
  *  3. Outlines are NEVER silently truncated. If the full set does not fit the
  *     budget, `complete` is false and a `blockingReason` explains the gap; the
  *     pipeline must block before calling the model rather than clipping.
- *  4. A stable fingerprint captures ids + positions + content hashes so the
- *     pipeline snapshot can detect mid-task outline edits at adoption time.
+ *  4. A stable fingerprint covers contract version + full stitched text so
+ *     title / content / order / enable set / format changes are all detected.
+ *
+ * Single authority: {@link computeOutlinePacking} is the pure packing function
+ * used by Pipeline, Context Preview, and Outline Management UI.
  */
 import type { ProjectMode } from '../types/novel';
 import type { Outline } from '../types/outline';
@@ -22,12 +25,45 @@ import { getEnabledOutlinesByProject } from '../data/repositories/outlineReposit
 import { estimateTokens } from '../utils/tokenEstimator';
 import { sha256Hex } from './continuation/hashUtils';
 
+/** Bump when the outline contract header/rules text changes. */
+export const OUTLINE_CONTRACT_VERSION = 1;
+
 /** A single outline's identifying info used to build the snapshot fingerprint. */
 export interface OutlineVersionEntry {
   id: number;
   updatedAt: number;
   hash: string;
   position: number;
+  title?: string;
+}
+
+/** Per-outline packing detail shared by UI / preview / pipeline. */
+export interface OutlinePackingItem {
+  id: number;
+  title: string;
+  position: number;
+  contentTokens: number;
+  /** Tokens of the rendered section (title + body labels included). */
+  renderedTokens: number;
+  renderedText: string;
+  contentHash: string;
+  enabled: boolean;
+}
+
+/** Result of the pure outline packing function. */
+export interface OutlinePackingResult {
+  stitchedText: string;
+  totalTokens: number;
+  sharedOverheadTokens: number;
+  items: OutlinePackingItem[];
+  fingerprint: string;
+  complete: boolean;
+  overageTokens: number;
+  suggestedDisableIds: number[];
+  outlineIds: number[];
+  outlineVersions: OutlineVersionEntry[];
+  /** Per-outline rendered tokens in stitch order (UI-compatible). */
+  perOutlineTokens: number[];
 }
 
 /** Result of stitching the enabled outlines into one context block. */
@@ -46,16 +82,18 @@ export interface BuiltOutlineContext {
   complete: boolean;
   /** Human-readable reason when `complete` is false. */
   blockingReason?: string;
-  /** Stable content fingerprint (ids + positions + hashes). */
+  /** Stable content fingerprint (contract + stitched text). */
   fingerprint: string;
   /**
-   * Per-outline token estimates (content only, no header) in stitch order.
-   * Used by the management UI and the preview blocking panel to show exactly
-   * which outlines are heaviest and to suggest which to disable first.
+   * Per-outline token estimates (rendered section) in stitch order.
+   * Used by the management UI and the preview blocking panel.
    */
   perOutlineTokens: number[];
   /** The budget that was checked against, or 0 when budget is unknown. */
   outlineBudgetTokens: number;
+  /** Structured packing detail for UI/trace. */
+  packingItems?: OutlinePackingItem[];
+  sharedOverheadTokens?: number;
 }
 
 /**
@@ -64,7 +102,7 @@ export interface BuiltOutlineContext {
  * outlines to disable so the full set fits without silent truncation.
  */
 export interface OutlineBudgetGuidance {
-  /** Sum of all enabled outlines' content tokens. */
+  /** Sum of all enabled outlines' tokens (matches packing total). */
   totalTokens: number;
   /** Budget derived from the model context window (0 if unknown). */
   budgetTokens: number;
@@ -79,6 +117,33 @@ export interface OutlineBudgetGuidance {
   suggestedDisableIds: number[];
 }
 
+/** Structured fail-closed errors for outline context building. */
+export type OutlineContextErrorCode =
+  | 'OUTLINE_READ_FAILED'
+  | 'OUTLINE_BUDGET_UNKNOWN'
+  | 'OUTLINE_OVER_BUDGET'
+  | 'OUTLINE_SNAPSHOT_INVALID'
+  | 'OUTLINE_MODEL_UNAVAILABLE';
+
+export class OutlineContextError extends Error {
+  readonly code: OutlineContextErrorCode;
+  readonly userAction?:
+    | 'open_outlines'
+    | 'open_llm_settings'
+    | 'restart_task';
+
+  constructor(
+    code: OutlineContextErrorCode,
+    message: string,
+    userAction?: OutlineContextError['userAction'],
+  ) {
+    super(message);
+    this.name = 'OutlineContextError';
+    this.code = code;
+    this.userAction = userAction;
+  }
+}
+
 /** The empty context returned for non-outline modes / no enabled outlines. */
 export const EMPTY_OUTLINE_CONTEXT: BuiltOutlineContext = {
   text: '',
@@ -90,6 +155,8 @@ export const EMPTY_OUTLINE_CONTEXT: BuiltOutlineContext = {
   fingerprint: '',
   perOutlineTokens: [],
   outlineBudgetTokens: 0,
+  packingItems: [],
+  sharedOverheadTokens: 0,
 };
 
 /** Header prefix explaining the semantics of the outline block. */
@@ -127,12 +194,182 @@ export function deriveOutlineBudgetTokens(contextWindow: number): number {
 }
 
 /**
+ * Provider / tokenizer safety margin for final request window checks.
+ * max(512, ~4% of context window).
+ */
+export function deriveContextSafetyMargin(contextWindow: number): number {
+  if (!(contextWindow > 0)) return 512;
+  return Math.max(512, Math.floor(contextWindow * 0.04));
+}
+
+/**
+ * Final compiled-request window check used by every pipeline stage (and
+ * retries). Returns null when the request fits; otherwise a user-facing
+ * Chinese error message.
+ */
+export function checkRequestFitsContextWindow(params: {
+  estimatedInputTokens: number;
+  reservedOutputTokens: number;
+  contextWindow: number;
+  stageLabel?: string;
+}): string | null {
+  const {
+    estimatedInputTokens,
+    reservedOutputTokens,
+    contextWindow,
+    stageLabel,
+  } = params;
+  if (!(contextWindow > 0)) {
+    return '未配置有效的模型上下文窗口，无法安全发起生成。请先在设置中配置活动模型的 context window。';
+  }
+  const safety = deriveContextSafetyMargin(contextWindow);
+  const total =
+    estimatedInputTokens + Math.max(0, reservedOutputTokens) + safety;
+  if (total <= contextWindow) return null;
+  const stage = stageLabel ? `（${stageLabel}）` : '';
+  const deficit = total - contextWindow;
+  return (
+    `请求超出模型上下文窗口${stage}：输入约 ${estimatedInputTokens.toLocaleString()} + ` +
+    `输出预留 ${reservedOutputTokens.toLocaleString()} + 安全余量 ${safety.toLocaleString()} ` +
+    `= ${total.toLocaleString()}，超过窗口 ${contextWindow.toLocaleString()} ` +
+    `（超 ${deficit.toLocaleString()} tokens）。请关闭部分大纲、缩短正文资料，或更换更大上下文模型。`
+  );
+}
+
+/**
+ * Pure packing function — single authority for stitch text, tokens, fingerprint,
+ * completeness and disable suggestions. Used by Pipeline / Preview / Outline UI.
+ */
+export function computeOutlinePacking(params: {
+  outlines: Array<
+    Pick<
+      Outline,
+      | 'id'
+      | 'title'
+      | 'content'
+      | 'position'
+      | 'contentHash'
+      | 'enabled'
+      | 'updatedAt'
+    >
+  >;
+  budgetTokens: number;
+  contractVersion?: number;
+}): OutlinePackingResult {
+  const contractVersion = params.contractVersion ?? OUTLINE_CONTRACT_VERSION;
+  // Only enabled outlines participate; preserve caller order (expected position ASC).
+  const enabled = params.outlines.filter(o => o.enabled !== false);
+  if (enabled.length === 0) {
+    return {
+      stitchedText: '',
+      totalTokens: 0,
+      sharedOverheadTokens: 0,
+      items: [],
+      fingerprint: '',
+      complete: true,
+      overageTokens: 0,
+      suggestedDisableIds: [],
+      outlineIds: [],
+      outlineVersions: [],
+      perOutlineTokens: [],
+    };
+  }
+
+  const sharedHeader = [OUTLINE_HEADER, OUTLINE_CONTRACT].join('\n\n');
+  const sharedOverheadTokens = estimateTokens(sharedHeader);
+
+  const items: OutlinePackingItem[] = enabled.map((outline, index) => {
+    const priority = index === 0 ? '最高优先级' : '补充约束';
+    const title = outline.title || `大纲 ${index + 1}`;
+    const body = outline.content || '';
+    const renderedText = `【大纲 ${index + 1}｜${priority}】\n标题：${title}\n正文：\n${body}`;
+    return {
+      id: outline.id,
+      title,
+      position: outline.position,
+      contentTokens: estimateTokens(body),
+      renderedTokens: estimateTokens(renderedText),
+      renderedText,
+      contentHash: outline.contentHash || '',
+      enabled: true,
+    };
+  });
+
+  const stitchedText = [sharedHeader, ...items.map(i => i.renderedText)].join(
+    '\n\n',
+  );
+  const totalTokens = estimateTokens(stitchedText);
+  const fingerprint = computeStitchedOutlineFingerprint(
+    stitchedText,
+    contractVersion,
+  );
+
+  const perOutlineTokens = items.map(i => i.renderedTokens);
+  const outlineIds = items.map(i => i.id);
+  const outlineVersions: OutlineVersionEntry[] = enabled.map((o, index) => ({
+    id: o.id,
+    updatedAt: o.updatedAt ?? 0,
+    hash: o.contentHash || '',
+    position: o.position,
+    title: items[index].title,
+  }));
+
+  const complete =
+    !(params.budgetTokens > 0) || totalTokens <= params.budgetTokens;
+  const overageTokens =
+    params.budgetTokens > 0 ? Math.max(0, totalTokens - params.budgetTokens) : 0;
+
+  // Suggest disabling lowest-priority sections until remaining prefix + overhead
+  // fits. Walk the tail of rendered section tokens.
+  const suggestedDisableIds: number[] = [];
+  if (overageTokens > 0) {
+    let running = totalTokens;
+    for (let i = perOutlineTokens.length - 1; i >= 0; i -= 1) {
+      if (running <= params.budgetTokens) break;
+      suggestedDisableIds.push(outlineIds[i]);
+      // Approx: removing a section frees its rendered tokens (+ a small join).
+      running -= perOutlineTokens[i];
+    }
+    suggestedDisableIds.reverse();
+  }
+
+  return {
+    stitchedText,
+    totalTokens,
+    sharedOverheadTokens,
+    items,
+    fingerprint,
+    complete,
+    overageTokens,
+    suggestedDisableIds,
+    outlineIds,
+    outlineVersions,
+    perOutlineTokens,
+  };
+}
+
+/**
+ * Fingerprint over contract version + full stitched text. Title-only edits,
+ * content edits, reordering, enable-set changes and contract bumps all change
+ * the digest.
+ */
+export function computeStitchedOutlineFingerprint(
+  stitchedText: string,
+  contractVersion: number = OUTLINE_CONTRACT_VERSION,
+): string {
+  if (!stitchedText) return '';
+  return sha256Hex(`${contractVersion}\n${stitchedText}`).slice(0, 16);
+}
+
+/**
  * Build the outline context block for a project.
  *
  * Returns {@link EMPTY_OUTLINE_CONTEXT} for any non-outline mode, guaranteeing
  * continuation / freeform projects are never injected. For outline-mode
  * projects with enabled outlines, stitches them in position order and checks
  * the full text against the budget WITHOUT truncating.
+ *
+ * Repository / DB failures throw {@link OutlineContextError} (fail-closed).
  */
 export async function buildOutlineContext(params: {
   projectId: number;
@@ -146,104 +383,79 @@ export async function buildOutlineContext(params: {
     return EMPTY_OUTLINE_CONTEXT;
   }
 
-  const outlines = await getEnabledOutlinesByProject(projectId);
+  let outlines: Outline[];
+  try {
+    outlines = await getEnabledOutlinesByProject(projectId);
+  } catch (error: any) {
+    throw new OutlineContextError(
+      'OUTLINE_READ_FAILED',
+      `读取项目大纲失败：${error?.message ? String(error.message) : '数据库错误'}`,
+      'open_outlines',
+    );
+  }
+
   if (outlines.length === 0) {
     return EMPTY_OUTLINE_CONTEXT;
   }
 
-  const perOutlineTokens = outlines.map(o => estimateTokens(o.content || ''));
-  const { text, versions } = stitchOutlines(outlines);
-  const estimatedTokens = estimateTokens(text);
+  const packing = computeOutlinePacking({
+    outlines,
+    budgetTokens: outlineBudgetTokens,
+  });
 
-  const fingerprint = computeOutlineFingerprint(versions);
-
-  // Strict budget check: never truncate. If the complete stitched text does not
-  // fit, mark incomplete so the pipeline blocks before calling the model. The
-  // blocking message tells the user exactly what to do (segmented enablement:
-  // disable the lowest-priority outlines, shorten content, or switch model).
-  if (outlineBudgetTokens > 0 && estimatedTokens > outlineBudgetTokens) {
-    const guidance = computeOutlineBudgetGuidance(
-      perOutlineTokens,
-      outlines.map(o => o.id),
-      outlineBudgetTokens,
-    );
+  if (!packing.complete) {
     const suggestText =
-      guidance.suggestedDisableIds.length > 0
-        ? `建议先关闭靠后的 ${guidance.suggestedDisableIds.length} 份大纲（分段启用），或缩短内容，或更换更大上下文模型。`
+      packing.suggestedDisableIds.length > 0
+        ? `建议先关闭靠后的 ${packing.suggestedDisableIds.length} 份大纲（分段启用），或缩短内容，或更换更大上下文模型。`
         : `建议缩短内容，或更换更大上下文模型。`;
     return {
-      text,
-      outlineIds: versions.map(v => v.id),
-      outlineVersions: versions,
-      estimatedTokens,
+      text: packing.stitchedText,
+      outlineIds: packing.outlineIds,
+      outlineVersions: packing.outlineVersions,
+      estimatedTokens: packing.totalTokens,
       enabledCount: outlines.length,
       complete: false,
       blockingReason:
-        `已启用大纲 ${outlines.length} 份，大纲总计 ${estimatedTokens.toLocaleString()} tokens，` +
-        `超出可用大纲空间 ${outlineBudgetTokens.toLocaleString()} tokens（超 ${guidance.overageTokens.toLocaleString()}）。` +
+        `已启用大纲 ${outlines.length} 份，大纲总计 ${packing.totalTokens.toLocaleString()} tokens，` +
+        `超出可用大纲空间 ${outlineBudgetTokens.toLocaleString()} tokens（超 ${packing.overageTokens.toLocaleString()}）。` +
         `${suggestText}可在「资料 - 大纲」中调整启用与排序。`,
-      fingerprint,
-      perOutlineTokens,
+      fingerprint: packing.fingerprint,
+      perOutlineTokens: packing.perOutlineTokens,
       outlineBudgetTokens,
+      packingItems: packing.items,
+      sharedOverheadTokens: packing.sharedOverheadTokens,
     };
   }
 
   return {
-    text,
-    outlineIds: versions.map(v => v.id),
-    outlineVersions: versions,
-    estimatedTokens,
+    text: packing.stitchedText,
+    outlineIds: packing.outlineIds,
+    outlineVersions: packing.outlineVersions,
+    estimatedTokens: packing.totalTokens,
     enabledCount: outlines.length,
     complete: true,
-    fingerprint,
-    perOutlineTokens,
+    fingerprint: packing.fingerprint,
+    perOutlineTokens: packing.perOutlineTokens,
     outlineBudgetTokens,
+    packingItems: packing.items,
+    sharedOverheadTokens: packing.sharedOverheadTokens,
   };
 }
 
-/** Stitch enabled outlines into a single labeled block with header + contract. */
-function stitchOutlines(outlines: Outline[]): {
-  text: string;
-  versions: OutlineVersionEntry[];
-} {
-  const sections: string[] = [];
-  const versions: OutlineVersionEntry[] = [];
-
-  outlines.forEach((outline, index) => {
-    const priority = index === 0 ? '最高优先级' : '补充约束';
-    const title = outline.title || `大纲 ${index + 1}`;
-    const body = outline.content || '';
-    sections.push(
-      `【大纲 ${index + 1}｜${priority}】\n标题：${title}\n正文：\n${body}`,
-    );
-    versions.push({
-      id: outline.id,
-      updatedAt: outline.updatedAt,
-      hash: outline.contentHash,
-      position: outline.position,
-    });
-  });
-
-  const text = [OUTLINE_HEADER, OUTLINE_CONTRACT, ...sections].join('\n\n');
-  return { text, versions };
-}
-
 /**
- * Stable fingerprint: SHA-256 over the ordered id/position/hash tuple of every
- * included outline. Reordering, editing, enabling/disabling, or adding/removing
- * an outline all change the digest; identical outlines always match.
+ * Legacy version-tuple fingerprint. Prefer
+ * {@link computeStitchedOutlineFingerprint} for new code — title-only edits
+ * are invisible to content-hash-only digests.
  */
 export function computeOutlineFingerprint(
   versions: OutlineVersionEntry[],
 ): string {
   if (versions.length === 0) return '';
-  // Sort by position then id for determinism (versions are already in stitch
-  // order, but be defensive against callers passing unsorted input).
   const ordered = [...versions].sort(
     (a, b) => a.position - b.position || a.id - b.id,
   );
   const payload = ordered
-    .map(v => `${v.id}:${v.position}:${v.hash}`)
+    .map(v => `${v.id}:${v.position}:${v.hash}:${v.title ?? ''}`)
     .join('|');
   return sha256Hex(payload).slice(0, 16);
 }
@@ -257,27 +469,16 @@ export async function computeLiveOutlineFingerprint(
 ): Promise<string> {
   const outlines = await getEnabledOutlinesByProject(projectId);
   if (outlines.length === 0) return '';
-  return computeOutlineFingerprint(
-    outlines.map(o => ({
-      id: o.id,
-      updatedAt: o.updatedAt,
-      hash: o.contentHash,
-      position: o.position,
-    })),
-  );
+  const packing = computeOutlinePacking({
+    outlines,
+    budgetTokens: 0,
+  });
+  return packing.fingerprint;
 }
 
 /**
  * Compute the full pipeline input fingerprint for a chapter generation task:
  * `hash(projectId | chapterId | chapterUpdatedAt | outlineFingerprint)`.
- *
- * This is the stable baseline persisted at task completion and re-computed at
- * result-adoption time. A change in any component (outline edited/reordered,
- * chapter body rewritten externally, chapter re-saved) produces a different
- * digest, so the adoption flow can warn the user the result is stale.
- *
- * `outlineFingerprint` is optional so callers that already hold the frozen
- * snapshot value can pass it directly instead of re-querying the DB.
  */
 export async function computeInputFingerprint(params: {
   projectId: number;
@@ -295,21 +496,21 @@ export async function computeInputFingerprint(params: {
 /**
  * Compute budget guidance for the outline management UI and blocking panels.
  *
- * `perOutlineTokens` and `outlineIds` MUST be in the same order (stitch order:
- * position ASC then id ASC). The guidance greedily marks the LOWEST-priority
- * enabled outlines (i.e. the tail of the list) as "suggested to disable" until
- * the remaining prefix fits the budget — this is the "segmented enablement"
- * hint that tells the user exactly which outlines to turn off.
+ * `perOutlineTokens` and `outlineIds` MUST be in the same order (stitch order).
+ * Guidance greedily marks the LOWEST-priority enabled outlines as suggested
+ * to disable until the remaining prefix fits the budget.
  *
- * Returns overBudget=false when budgetTokens <= 0 (unknown budget) so the UI
- * never shows a false overage warning before the user has configured an LLM.
+ * When using shared overhead (header + contract), pass `sharedOverheadTokens`
+ * so the suggestion accounts for fixed cost that cannot be disabled.
  */
 export function computeOutlineBudgetGuidance(
   perOutlineTokens: number[],
   outlineIds: number[],
   budgetTokens: number,
+  sharedOverheadTokens = 0,
 ): OutlineBudgetGuidance {
-  const totalTokens = perOutlineTokens.reduce((sum, t) => sum + t, 0);
+  const outlineSum = perOutlineTokens.reduce((sum, t) => sum + t, 0);
+  const totalTokens = outlineSum + Math.max(0, sharedOverheadTokens);
   if (!(budgetTokens > 0)) {
     return {
       totalTokens,
@@ -329,9 +530,6 @@ export function computeOutlineBudgetGuidance(
       suggestedDisableIds: [],
     };
   }
-  // Greedily drop the lowest-priority (tail) outlines until the prefix fits.
-  // Walk from the end, accumulating the disabled tokens; stop once the
-  // remaining head tokens are within budget.
   const suggestedDisableIds: number[] = [];
   let runningTotal = totalTokens;
   for (let i = perOutlineTokens.length - 1; i >= 0; i -= 1) {
@@ -344,8 +542,35 @@ export function computeOutlineBudgetGuidance(
     budgetTokens,
     overBudget: true,
     overageTokens,
-    // Reverse so the suggested-disable order matches stitch priority (disable
-    // the very last one first, which is what the loop collected in reverse).
     suggestedDisableIds: suggestedDisableIds.reverse(),
+  };
+}
+
+/**
+ * Convenience for UI: pack enabled outlines and return budget guidance that
+ * matches Pipeline token accounting (title + contract + separators included).
+ */
+export function computeOutlineBudgetGuidanceFromOutlines(
+  outlines: Array<
+    Pick<
+      Outline,
+      | 'id'
+      | 'title'
+      | 'content'
+      | 'position'
+      | 'contentHash'
+      | 'enabled'
+      | 'updatedAt'
+    >
+  >,
+  budgetTokens: number,
+): OutlineBudgetGuidance {
+  const packing = computeOutlinePacking({ outlines, budgetTokens });
+  return {
+    totalTokens: packing.totalTokens,
+    budgetTokens,
+    overBudget: packing.overageTokens > 0 && budgetTokens > 0,
+    overageTokens: packing.overageTokens,
+    suggestedDisableIds: packing.suggestedDisableIds,
   };
 }

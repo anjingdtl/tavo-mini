@@ -1,8 +1,30 @@
+/** Outline-consistency assessment status returned by literary review. */
+export type OutlineAssessmentStatus =
+  | 'aligned'
+  | 'partial'
+  | 'deviated'
+  | 'over_advanced';
+
+/**
+ * Structured outline execution assessment produced by the review stage when
+ * a project outline was injected. Arrays are empty when no issues found.
+ */
+export interface OutlineAssessment {
+  status: OutlineAssessmentStatus;
+  fulfilledBeats: string[];
+  missingBeats: string[];
+  deviations: string[];
+  prematureBeats: string[];
+  factRollbackRisks: string[];
+}
+
 /** Literary review report shape (strengths / issues / suggestions). */
 export interface ReviewReport {
   strengths: string[];
   issues: string[];
   suggestions: string[];
+  /** Present only when the review stage received a project outline. */
+  outlineAssessment?: OutlineAssessment;
 }
 
 /** Structured fact-check item (compatible with free-form string items). */

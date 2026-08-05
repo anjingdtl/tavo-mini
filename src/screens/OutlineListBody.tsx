@@ -27,7 +27,7 @@ import { estimateTokens } from '../utils/tokenEstimator';
 import type { Outline } from '../types/outline';
 import {
   deriveOutlineBudgetTokens,
-  computeOutlineBudgetGuidance,
+  computeOutlineBudgetGuidanceFromOutlines,
   type OutlineBudgetGuidance,
 } from '../services/outlineContextBuilder';
 import Toast from 'react-native-toast-message';
@@ -71,10 +71,9 @@ export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) 
   // bar stays live as the user toggles / reorders.
   const enabledGuidance: OutlineBudgetGuidance = useMemo(() => {
     const enabled = outlines.filter(o => o.enabled);
-    const perTokens = enabled.map(o => estimateTokens(o.content || ''));
-    const ids = enabled.map(o => o.id);
     const budget = deriveOutlineBudgetTokens(contextWindow);
-    return computeOutlineBudgetGuidance(perTokens, ids, budget);
+    // Must match Pipeline packing (title + contract + separators), not content-only.
+    return computeOutlineBudgetGuidanceFromOutlines(enabled, budget);
   }, [outlines, contextWindow]);
 
   const suggestedDisableSet = useMemo(
@@ -90,9 +89,20 @@ export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) 
       const parts: string[] = [];
       if (result.successCount > 0) parts.push(`成功导入 ${result.successCount} 份大纲`);
       if (result.failureCount > 0) parts.push(`${result.failureCount} 份失败`);
+      const failureDetail =
+        result.failures.length > 0
+          ? result.failures
+              .slice(0, 3)
+              .map(f => `${f.fileName}: ${f.reason}`)
+              .join('；') +
+            (result.failures.length > 3
+              ? `…等 ${result.failures.length} 个文件`
+              : '')
+          : undefined;
       Toast.show({
         type: result.failureCount > 0 ? 'error' : 'success',
         text1: parts.join('，') || '未导入任何大纲',
+        text2: failureDetail,
       });
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导入失败', text2: error?.message });
@@ -349,18 +359,38 @@ const OutlineEditor: React.FC<{
   const tokenEstimate = estimateTokens(content);
 
   const handleSave = useCallback(async () => {
+    if (saving) return;
+    const trimmedTitle = title.trim();
+    const trimmedContent = content.trim();
+    const resolvedTitle =
+      trimmedTitle ||
+      (trimmedContent
+        ? trimmedContent.slice(0, 20).replace(/\s+/g, ' ')
+        : '未命名大纲');
+    // Empty body may be saved as draft, but must not stay enabled.
+    const resolvedEnabled = trimmedContent ? enabled : false;
+    if (enabled && !trimmedContent) {
+      Toast.show({
+        type: 'info',
+        text1: '正文为空，已自动关闭启用',
+        text2: '空正文可保存草稿，但不能作为启用大纲注入',
+      });
+    }
     setSaving(true);
     try {
       if (outline) {
-        await db.updateOutline(outline.id, { title, content });
-        await db.setOutlineEnabled(projectId, outline.id, enabled);
+        await db.updateOutline(outline.id, {
+          title: resolvedTitle,
+          content,
+        });
+        await db.setOutlineEnabled(projectId, outline.id, resolvedEnabled);
       } else {
         const newId = await db.createOutline(projectId, {
-          title,
+          title: resolvedTitle,
           content,
           sourceType: 'manual',
         });
-        await db.setOutlineEnabled(projectId, newId, enabled);
+        await db.setOutlineEnabled(projectId, newId, resolvedEnabled);
       }
       Toast.show({ type: 'success', text1: '已保存大纲' });
       onSaved();
@@ -369,7 +399,7 @@ const OutlineEditor: React.FC<{
     } finally {
       setSaving(false);
     }
-  }, [outline, projectId, title, content, enabled, onSaved]);
+  }, [outline, projectId, title, content, enabled, onSaved, saving]);
 
   return (
     <ScrollView

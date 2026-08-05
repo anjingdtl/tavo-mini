@@ -36,6 +36,47 @@ const STATUS_LABELS: Record<PipelineStageResult['status'], string> = {
  * or model reasoning (those are never persisted as stage text after the audit
  * validity fix). Failed empty stages surface the structured error message.
  */
+const OUTLINE_STATUS_LABELS: Record<string, string> = {
+  aligned: '一致',
+  partial: '部分一致',
+  deviated: '偏离主线',
+  over_advanced: '进度超前',
+};
+
+/** Parse review-stage outlineAssessment for the dedicated report card. */
+export function parseOutlineAssessmentFromReview(
+  stageResults: PipelineStageResult[],
+): {
+  status: string;
+  fulfilledBeats: string[];
+  missingBeats: string[];
+  deviations: string[];
+  prematureBeats: string[];
+  factRollbackRisks: string[];
+} | null {
+  const review = stageResults.find(
+    s => s.stage === 'review' && s.status === 'success' && s.text,
+  );
+  if (!review?.text) return null;
+  try {
+    const parsed = JSON.parse(review.text);
+    const oa = parsed?.outlineAssessment;
+    if (!oa || typeof oa !== 'object') return null;
+    return {
+      status: String(oa.status || ''),
+      fulfilledBeats: Array.isArray(oa.fulfilledBeats) ? oa.fulfilledBeats : [],
+      missingBeats: Array.isArray(oa.missingBeats) ? oa.missingBeats : [],
+      deviations: Array.isArray(oa.deviations) ? oa.deviations : [],
+      prematureBeats: Array.isArray(oa.prematureBeats) ? oa.prematureBeats : [],
+      factRollbackRisks: Array.isArray(oa.factRollbackRisks)
+        ? oa.factRollbackRisks
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function formatStageText(stage: PipelineStageResult): string {
   if (stage.status === 'failed' && !stage.text?.trim()) {
     return stage.error || '该阶段失败。';
@@ -310,6 +351,48 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
           本次输入上下文 tokens：{inputTokens.toLocaleString()}
         </Text>
+        {(() => {
+          const assessment = parseOutlineAssessmentFromReview(task.stageResults);
+          if (!assessment) return null;
+          const list = (title: string, items: string[]) =>
+            items.length > 0 ? (
+              <View key={title} style={{ marginTop: spacing.sm }}>
+                <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
+                  {title}
+                </Text>
+                {items.map((item, idx) => (
+                  <Text
+                    key={`${title}-${idx}`}
+                    style={[styles.stageText, { color: theme.colors.textPrimary }]}
+                  >
+                    · {item}
+                  </Text>
+                ))}
+              </View>
+            ) : null;
+          return (
+            <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
+              <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
+                大纲执行报告 ·{' '}
+                {OUTLINE_STATUS_LABELS[assessment.status] || assessment.status || '未知'}
+              </Text>
+              {list('已完成节点', assessment.fulfilledBeats)}
+              {list('遗漏节点', assessment.missingBeats)}
+              {list('主线偏离', assessment.deviations)}
+              {list('提前发生节点', assessment.prematureBeats)}
+              {list('历史回滚风险', assessment.factRollbackRisks)}
+              {!assessment.fulfilledBeats.length &&
+              !assessment.missingBeats.length &&
+              !assessment.deviations.length &&
+              !assessment.prematureBeats.length &&
+              !assessment.factRollbackRisks.length ? (
+                <Text style={[styles.stageText, { color: theme.colors.textMuted }]}>
+                  未发现额外的大纲节点问题。
+                </Text>
+              ) : null}
+            </View>
+          );
+        })()}
         {task.stageResults.map(renderStageCard)}
         {task.finalText && (
           <View style={styles.actions}>

@@ -5,12 +5,36 @@ import type {
   DraftEchoCheckResult,
   FactCheckItem,
   FactCheckReport,
+  OutlineAssessment,
+  OutlineAssessmentStatus,
   ReviewReport,
 } from '../types/pipelineAudit';
 import { AUDIT_ECHO_THRESHOLDS } from '../types/pipelineAudit';
 import { extractJSON } from '../utils/jsonExtractor';
 
-const REVIEW_TOP_LEVEL_KEYS = new Set(['strengths', 'issues', 'suggestions']);
+const REVIEW_TOP_LEVEL_KEYS = new Set([
+  'strengths',
+  'issues',
+  'suggestions',
+  'outlineAssessment',
+]);
+const OUTLINE_ASSESSMENT_STATUSES = new Set<OutlineAssessmentStatus>([
+  'aligned',
+  'partial',
+  'deviated',
+  'over_advanced',
+]);
+const OUTLINE_ASSESSMENT_ARRAY_KEYS = [
+  'fulfilledBeats',
+  'missingBeats',
+  'deviations',
+  'prematureBeats',
+  'factRollbackRisks',
+] as const;
+const OUTLINE_ASSESSMENT_ALLOWED_KEYS = new Set<string>([
+  'status',
+  ...OUTLINE_ASSESSMENT_ARRAY_KEYS,
+]);
 const FACT_CHECK_TOP_LEVEL_KEYS = new Set(['errors', 'warnings', 'confirmed']);
 const FACT_ITEM_ALLOWED_KEYS = new Set([
   'description',
@@ -465,9 +489,69 @@ function checkRecursiveDraftEcho(
 /**
  * Validate literary review LLM output. Only valid structured reports pass.
  */
+export interface ValidateReviewOptions {
+  /**
+   * When true, `outlineAssessment` is required and strictly validated.
+   * When false, the field must be absent (legacy three-field format).
+   * When omitted, the field is optional but validated if present.
+   */
+  hasOutline?: boolean;
+}
+
+/**
+ * Strictly validate an outlineAssessment object. Returns a failure detail
+ * string, or the normalized assessment on success.
+ */
+function normalizeOutlineAssessment(
+  value: unknown,
+):
+  | { ok: true; assessment: OutlineAssessment }
+  | { ok: false; details: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, details: 'outlineAssessment 必须是对象' };
+  }
+  const obj = value as Record<string, unknown>;
+  const extra = Object.keys(obj).filter(
+    k => !OUTLINE_ASSESSMENT_ALLOWED_KEYS.has(k),
+  );
+  if (extra.length > 0) {
+    return {
+      ok: false,
+      details: `outlineAssessment 含未知字段: ${extra.join(', ')}`,
+    };
+  }
+  if (typeof obj.status !== 'string' || !OUTLINE_ASSESSMENT_STATUSES.has(obj.status as OutlineAssessmentStatus)) {
+    return {
+      ok: false,
+      details:
+        'outlineAssessment.status 必须是 aligned|partial|deviated|over_advanced',
+    };
+  }
+  const assessment: OutlineAssessment = {
+    status: obj.status as OutlineAssessmentStatus,
+    fulfilledBeats: [],
+    missingBeats: [],
+    deviations: [],
+    prematureBeats: [],
+    factRollbackRisks: [],
+  };
+  for (const key of OUTLINE_ASSESSMENT_ARRAY_KEYS) {
+    const normalized = normalizeStringArrayStrict(obj[key]);
+    if (!normalized.ok) {
+      return {
+        ok: false,
+        details: `outlineAssessment.${key}: ${normalized.details}`,
+      };
+    }
+    assessment[key] = normalized.items;
+  }
+  return { ok: true, assessment };
+}
+
 export function validateReviewResult(
   result: LLMResult,
   draftText: string,
+  options?: ValidateReviewOptions,
 ): AuditValidationResult<ReviewReport> {
   const pre = precheckContent(result);
   if (pre) return pre as AuditValidationResult<ReviewReport>;
@@ -567,10 +651,33 @@ export function validateReviewResult(
     );
   }
 
+  const hasOutline = options?.hasOutline;
+  let outlineAssessment: OutlineAssessment | undefined;
+
+  if ('outlineAssessment' in obj) {
+    if (hasOutline === false) {
+      return fail(
+        'unexpected_shape',
+        '无大纲时不得输出 outlineAssessment',
+      );
+    }
+    const normalized = normalizeOutlineAssessment(obj.outlineAssessment);
+    if (!normalized.ok) {
+      return fail('unexpected_shape', normalized.details);
+    }
+    outlineAssessment = normalized.assessment;
+  } else if (hasOutline === true) {
+    return fail(
+      'missing_required_fields',
+      '有大纲时必须输出 outlineAssessment',
+    );
+  }
+
   const report: ReviewReport = {
     strengths: strengths.items,
     issues: issues.items,
     suggestions: suggestions.items,
+    ...(outlineAssessment ? { outlineAssessment } : {}),
   };
   const normalizedText = JSON.stringify(report);
 
@@ -582,6 +689,15 @@ export function validateReviewResult(
     ...report.strengths,
     ...report.issues,
     ...report.suggestions,
+    ...(outlineAssessment
+      ? [
+          ...outlineAssessment.fulfilledBeats,
+          ...outlineAssessment.missingBeats,
+          ...outlineAssessment.deviations,
+          ...outlineAssessment.prematureBeats,
+          ...outlineAssessment.factRollbackRisks,
+        ]
+      : []),
   ].join('\n');
   const echo = detectDraftEcho(bodyBlob, draftText);
   if (echo.isEcho) {
