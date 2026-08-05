@@ -13,6 +13,7 @@ import {
   buildAnalysisBatchesCreateSqlV35,
   buildSchema35CreateSqls,
 } from '../../services/migrations/v34-to-v35';
+import { buildSchema36CreateSqls } from '../../services/migrations/v35-to-v36';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -657,6 +658,10 @@ export function createCurrentSchemaStatements(): string[] {
     ...buildSchema34CreateSqls(),
     // Schema 35 Canon analysis batch partial/segment indexes (table created above).
     ...buildSchema35CreateSqls(),
+    // Schema 36 Outline resource (大纲创作模式升级). Outlines are a project-
+    // level first-class resource with independent enable/position/budget,
+    // separate from project_resources. Fresh installs build the table directly.
+    ...buildSchema36CreateSqls(),
   ];
 }
 
