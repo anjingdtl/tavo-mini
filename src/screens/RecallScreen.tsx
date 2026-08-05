@@ -303,9 +303,19 @@ export const RecallScreen: React.FC<Props> = ({ onClose }) => {
                 当前库诊断
               </Text>
               {!dbInfo.reachable && (
-                <Text style={[styles.warning, { color: theme.colors.danger }]}>
-                  当前数据库存在结构漂移，部分资料暂时无法读取。
-                </Text>
+                <View>
+                  <Text style={[styles.warning, { color: theme.colors.danger }]}>
+                    当前数据库存在结构漂移，部分资料暂时无法读取。
+                  </Text>
+                  {dbInfo.unreachableReason ? (
+                    <Text style={[styles.warningDetail, { color: theme.colors.danger }]}>
+                      原因：{dbInfo.unreachableReason}
+                    </Text>
+                  ) : null}
+                  <Text style={[styles.warningHint, { color: theme.colors.textSecondary }]}>
+                    你的资料可能仍在库里。点击下方"修复数据库结构漂移"尝试恢复读取。
+                  </Text>
+                </View>
               )}
               {dbInfo.schemaDrift.needsRepair && (
                 <View style={[styles.switchRow, { borderColor: theme.colors.border }]}>
@@ -314,7 +324,7 @@ export const RecallScreen: React.FC<Props> = ({ onClose }) => {
                       修复数据库结构漂移
                     </Text>
                     <Text style={[styles.switchHint, { color: theme.colors.textMuted }]}>
-                      检测到 canon_evidence 缺列等已知漂移，修复后资料可重新读取（推荐）
+                      修复已知 schema 漂移（canon_evidence 缺列等），修复后资料可能重新读取（推荐）
                     </Text>
                   </View>
                   <Switch
@@ -442,6 +452,8 @@ const styles = StyleSheet.create({
   list: { padding: spacing.lg, paddingBottom: 120 },
   sectionTitle: { fontSize: 14, fontWeight: '700', marginBottom: spacing.sm },
   warning: { fontSize: 13, marginTop: spacing.xs },
+  warningDetail: { fontSize: 11, marginTop: spacing.xs, lineHeight: 16 },
+  warningHint: { fontSize: 12, marginTop: spacing.xs, lineHeight: 17 },
   switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
