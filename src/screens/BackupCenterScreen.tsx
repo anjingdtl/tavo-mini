@@ -22,6 +22,8 @@ const KIND_LABELS: Record<BackupSummary['kind'], string> = {
   automatic: '自动',
   manual: '手动',
   pre_restore: '恢复前',
+  pre_migration: '迁移前',
+  schema_recovery: '结构修复',
 };
 
 function formatTime(iso: string): string {

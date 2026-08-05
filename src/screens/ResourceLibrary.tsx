@@ -47,6 +47,7 @@ import {
 import { CharacterEditor } from '../components/CharacterEditor';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
+import { useDatabaseRecoveryStore } from '../store/databaseRecoveryStore';
 import * as db from '../services/database';
 import type { ResourceType } from '../services/database';
 import { estimateTokens } from '../utils/tokenEstimator';
@@ -154,6 +155,11 @@ export const ResourceLibrary: React.FC<{
     notes: [],
     presets: [],
   });
+  // Distinguish "loaded but empty" from "DB read failed". The incident root
+  // cause was that a DB read error left `items` at its initial empty value and
+  // the UI rendered "还没有角色卡" — hiding the user's still-intact data.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const recoveryLoadState = useDatabaseRecoveryStore(s => s.loadState);
   const [characterCollections, setCharacterCollections] = useState<any[]>([]);
   const [collections, setCollections] = useState<any[]>([]);
   const [noteCollections, setNoteCollections] = useState<any[]>([]);
@@ -209,6 +215,7 @@ export const ResourceLibrary: React.FC<{
 
   const loadData = useCallback(async () => {
     const loadGeneration = ++loadGenerationRef.current;
+    try {
     const [
       characters,
       worldbook,
@@ -237,6 +244,10 @@ export const ResourceLibrary: React.FC<{
     // Project changes can start a second load before the first Promise.all
     // settles. Never let the old project overwrite the newer screen state.
     if (loadGeneration !== loadGenerationRef.current) return;
+    // Clear any previous load error only on a successful load (not on every
+    // render — clearing unconditionally in the test's useFocusEffect mock
+    // caused an infinite re-render loop).
+    setLoadError(null);
     setItems({ characters, worldbook, notes, presets });
     setCharacterCollections(characterCollectionRows);
     setCollections(worldbookCollections);
@@ -295,6 +306,16 @@ export const ResourceLibrary: React.FC<{
       )
     ) {
       setSelectedCharacterCollectionId(null);
+    }
+    } catch (error: any) {
+      // CRITICAL: a DB read error must NOT be swallowed into an empty list.
+      // The incident root cause was that this Promise.all rejected, setItems
+      // never ran, and the UI showed "还没有角色卡" for data that was still
+      // in the DB. Now we record the error so the UI renders a recovery card
+      // instead of a fake empty state.
+      if (loadGeneration !== loadGenerationRef.current) return;
+      setLoadError(error?.message || '资料读取失败');
+      useDatabaseRecoveryStore.getState().setLoading();
     }
   }, [
     projectId,
@@ -1700,6 +1721,19 @@ export const ResourceLibrary: React.FC<{
                   </Card>
                 )
               }
+            />
+          ) : loadError || recoveryLoadState === 'error' ? (
+            // Database read failed — do NOT show a fake empty state. The user's
+            // data may still be intact in the DB; this card tells them to
+            // complete the database repair or restart.
+            <EmptyState
+              title="资料暂时无法读取"
+              description="本地数据可能仍然存在。请先完成数据库修复，或重启应用后重试。不要卸载或清除应用数据。"
+            />
+          ) : recoveryLoadState === 'repairing' ? (
+            <EmptyState
+              title="正在修复本地资料数据库"
+              description="不会删除角色卡、世界书或章节，请勿关闭应用。"
             />
           ) : activeItems.length === 0 ? (
             <EmptyState

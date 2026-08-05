@@ -1,21 +1,30 @@
 /**
- * Schema 32 鈫?33 migration: Canon fact business-key UNIQUE indexes + evidence
+ * Schema 32 → 33 migration: Canon fact business-key UNIQUE indexes + evidence
  * provenance columns.
+ *
+ * Schema 40 refactor: the two `ALTER TABLE ADD COLUMN` statements moved out of
+ * `buildV32toV33Statements` into the shared idempotent
+ * `ensureCanonEvidenceProvenanceSchema` (called by the logic migration
+ * `migrateV32ToV33`). The build-statements path now only carries the dedup +
+ * index work, all of which is already idempotent.
  */
 import { buildV32toV33Statements, buildSchema33CreateSqls } from '../src/services/migrations/v32-to-v33';
 import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import { SCHEMA_VERSION } from '../src/services/migrations';
 
-describe('Schema 32 鈫?33 Canon dedup infrastructure', () => {
+describe('Schema 32 → 33 Canon dedup infrastructure', () => {
   it('is superseded by a later current SCHEMA_VERSION', () => {
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(33);
   });
 
-  it('emits provenance columns + rebind-then-dedup + 6 indexes', () => {
+  it('emits rebind-then-dedup + 6 indexes (provenance ALTERs moved to ensure function)', () => {
     const statements = buildV32toV33Statements();
     const sqls = statements.map(s => s.sql);
-    expect(sqls.filter(s => /ADD COLUMN source_origin/.test(s))).toHaveLength(1);
-    expect(sqls.filter(s => /ADD COLUMN rescan_operation_id/.test(s))).toHaveLength(1);
+    // The ALTER TABLE ADD COLUMN statements are now applied dynamically by
+    // ensureCanonEvidenceProvenanceSchema (check-then-ALTER), NOT in the static
+    // build-statements batch. Assert they are absent here.
+    expect(sqls.filter(s => /ADD COLUMN source_origin/.test(s))).toHaveLength(0);
+    expect(sqls.filter(s => /ADD COLUMN rescan_operation_id/.test(s))).toHaveLength(0);
     // Each of 5 fact tables: rebind UPDATE + link dedup DELETE + fact DELETE
     expect(sqls.filter(s => /UPDATE canon_evidence_links/.test(s)).length).toBeGreaterThanOrEqual(5);
     expect(sqls.filter(s => /^DELETE FROM canon_/.test(s)).length).toBeGreaterThanOrEqual(5);
