@@ -57,6 +57,8 @@ import type { ChatMessage } from '../services/llm';
 interface Props {
   chapterId: number;
   onClose: () => void;
+  /** Navigate to the Resources > 大纲 management tab. Injected by the route. */
+  onNavigateOutlines?: () => void;
 }
 
 const KIND_ICON: Record<
@@ -155,6 +157,7 @@ function statusBadge(item: ContextTraceItem) {
 export const ContextPreviewScreen: React.FC<Props> = ({
   chapterId,
   onClose,
+  onNavigateOutlines,
 }) => {
   const { theme } = useThemeStore();
   const [loading, setLoading] = useState(true);
@@ -162,6 +165,10 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   const [estimatedInputTokens, setEstimatedInputTokens] = useState(0);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [showMessages, setShowMessages] = useState(false);
+  // Outline-budget block: when buildContext throws because the enabled
+  // outlines do not fit, capture the reason so the preview can show an
+  // actionable panel (with a link to 大纲 management) instead of just a Toast.
+  const [outlineBlock, setOutlineBlock] = useState<string | null>(null);
   const [expandedMsg, setExpandedMsg] = useState<number | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [continuationPreview, setContinuationPreview] = useState(false);
@@ -353,8 +360,19 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       setTrace(result.trace);
       setEstimatedInputTokens(result.estimatedInputTokens);
       setMessages(result.messages);
+      setOutlineBlock(null);
     } catch (e: any) {
-      Toast.show({ type: 'error', text1: '构建上下文失败', text2: e?.message });
+      const message = e?.message ? String(e.message) : '构建上下文失败';
+      // An outline-budget block carries "大纲" + "tokens" in the message;
+      // surface it as an actionable panel instead of a transient Toast.
+      if (/大纲.*tokens|超出可用大纲空间/.test(message)) {
+        setOutlineBlock(message);
+        setTrace([]);
+        setMessages([]);
+      } else {
+        setOutlineBlock(null);
+        Toast.show({ type: 'error', text1: '构建上下文失败', text2: message });
+      }
     } finally {
       setLoading(false);
     }
@@ -514,6 +532,32 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           />
         }
       />
+      {outlineBlock ? (
+        <View
+          style={[
+            styles.outlineBlockPanel,
+            {
+              backgroundColor: `${theme.colors.danger}1A`,
+              borderColor: theme.colors.danger,
+            },
+          ]}
+        >
+          <Text style={[styles.outlineBlockTitle, { color: theme.colors.danger }]}>
+            大纲超出上下文预算，已阻止生成
+          </Text>
+          <Text style={[styles.outlineBlockText, { color: theme.colors.textPrimary }]}>
+            {outlineBlock}
+          </Text>
+          {onNavigateOutlines ? (
+            <Button
+              label="前往大纲管理"
+              variant="secondary"
+              compact
+              onPress={onNavigateOutlines}
+            />
+          ) : null}
+        </View>
+      ) : null}
       <View
         style={[styles.toggleRow, { borderBottomColor: theme.colors.border }]}
       >
@@ -667,6 +711,22 @@ export const ContextPreviewScreen: React.FC<Props> = ({
 };
 
 const styles = StyleSheet.create({
+  outlineBlockPanel: {
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: spacing.md,
+    marginHorizontal: spacing.lg,
+    marginVertical: spacing.sm,
+    gap: spacing.xs,
+  },
+  outlineBlockTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  outlineBlockText: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',

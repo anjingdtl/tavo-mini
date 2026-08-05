@@ -48,6 +48,35 @@ export interface BuiltOutlineContext {
   blockingReason?: string;
   /** Stable content fingerprint (ids + positions + hashes). */
   fingerprint: string;
+  /**
+   * Per-outline token estimates (content only, no header) in stitch order.
+   * Used by the management UI and the preview blocking panel to show exactly
+   * which outlines are heaviest and to suggest which to disable first.
+   */
+  perOutlineTokens: number[];
+  /** The budget that was checked against, or 0 when budget is unknown. */
+  outlineBudgetTokens: number;
+}
+
+/**
+ * Budget guidance for the outline management UI and blocking panels. Tells the
+ * user how much they are over budget and suggests the lowest-priority enabled
+ * outlines to disable so the full set fits without silent truncation.
+ */
+export interface OutlineBudgetGuidance {
+  /** Sum of all enabled outlines' content tokens. */
+  totalTokens: number;
+  /** Budget derived from the model context window (0 if unknown). */
+  budgetTokens: number;
+  /** True when totalTokens exceeds budgetTokens (and budget > 0). */
+  overBudget: boolean;
+  /** How many tokens over budget (0 if not over). */
+  overageTokens: number;
+  /**
+   * Ids of enabled outlines to disable (lowest priority first) so the remaining
+   * set fits the budget. Empty when not over budget or budget unknown.
+   */
+  suggestedDisableIds: number[];
 }
 
 /** The empty context returned for non-outline modes / no enabled outlines. */
@@ -59,6 +88,8 @@ export const EMPTY_OUTLINE_CONTEXT: BuiltOutlineContext = {
   enabledCount: 0,
   complete: true,
   fingerprint: '',
+  perOutlineTokens: [],
+  outlineBudgetTokens: 0,
 };
 
 /** Header prefix explaining the semantics of the outline block. */
@@ -120,14 +151,26 @@ export async function buildOutlineContext(params: {
     return EMPTY_OUTLINE_CONTEXT;
   }
 
+  const perOutlineTokens = outlines.map(o => estimateTokens(o.content || ''));
   const { text, versions } = stitchOutlines(outlines);
   const estimatedTokens = estimateTokens(text);
 
   const fingerprint = computeOutlineFingerprint(versions);
 
   // Strict budget check: never truncate. If the complete stitched text does not
-  // fit, mark incomplete so the pipeline blocks before calling the model.
+  // fit, mark incomplete so the pipeline blocks before calling the model. The
+  // blocking message tells the user exactly what to do (segmented enablement:
+  // disable the lowest-priority outlines, shorten content, or switch model).
   if (outlineBudgetTokens > 0 && estimatedTokens > outlineBudgetTokens) {
+    const guidance = computeOutlineBudgetGuidance(
+      perOutlineTokens,
+      outlines.map(o => o.id),
+      outlineBudgetTokens,
+    );
+    const suggestText =
+      guidance.suggestedDisableIds.length > 0
+        ? `建议先关闭靠后的 ${guidance.suggestedDisableIds.length} 份大纲（分段启用），或缩短内容，或更换更大上下文模型。`
+        : `建议缩短内容，或更换更大上下文模型。`;
     return {
       text,
       outlineIds: versions.map(v => v.id),
@@ -137,9 +180,11 @@ export async function buildOutlineContext(params: {
       complete: false,
       blockingReason:
         `已启用大纲 ${outlines.length} 份，大纲总计 ${estimatedTokens.toLocaleString()} tokens，` +
-        `当前可用大纲空间 ${outlineBudgetTokens.toLocaleString()} tokens。` +
-        `请关闭部分大纲、缩短内容，或选择更大上下文模型。`,
+        `超出可用大纲空间 ${outlineBudgetTokens.toLocaleString()} tokens（超 ${guidance.overageTokens.toLocaleString()}）。` +
+        `${suggestText}可在「资料 - 大纲」中调整启用与排序。`,
       fingerprint,
+      perOutlineTokens,
+      outlineBudgetTokens,
     };
   }
 
@@ -151,6 +196,8 @@ export async function buildOutlineContext(params: {
     enabledCount: outlines.length,
     complete: true,
     fingerprint,
+    perOutlineTokens,
+    outlineBudgetTokens,
   };
 }
 
@@ -243,4 +290,62 @@ export async function computeInputFingerprint(params: {
     (await computeLiveOutlineFingerprint(params.projectId));
   const payload = `proj=${params.projectId}|chapter=${params.chapterId}|updatedAt=${params.chapterUpdatedAt}|outline=${outlineFp}`;
   return sha256Hex(payload).slice(0, 16);
+}
+
+/**
+ * Compute budget guidance for the outline management UI and blocking panels.
+ *
+ * `perOutlineTokens` and `outlineIds` MUST be in the same order (stitch order:
+ * position ASC then id ASC). The guidance greedily marks the LOWEST-priority
+ * enabled outlines (i.e. the tail of the list) as "suggested to disable" until
+ * the remaining prefix fits the budget — this is the "segmented enablement"
+ * hint that tells the user exactly which outlines to turn off.
+ *
+ * Returns overBudget=false when budgetTokens <= 0 (unknown budget) so the UI
+ * never shows a false overage warning before the user has configured an LLM.
+ */
+export function computeOutlineBudgetGuidance(
+  perOutlineTokens: number[],
+  outlineIds: number[],
+  budgetTokens: number,
+): OutlineBudgetGuidance {
+  const totalTokens = perOutlineTokens.reduce((sum, t) => sum + t, 0);
+  if (!(budgetTokens > 0)) {
+    return {
+      totalTokens,
+      budgetTokens,
+      overBudget: false,
+      overageTokens: 0,
+      suggestedDisableIds: [],
+    };
+  }
+  const overageTokens = Math.max(0, totalTokens - budgetTokens);
+  if (overageTokens === 0) {
+    return {
+      totalTokens,
+      budgetTokens,
+      overBudget: false,
+      overageTokens: 0,
+      suggestedDisableIds: [],
+    };
+  }
+  // Greedily drop the lowest-priority (tail) outlines until the prefix fits.
+  // Walk from the end, accumulating the disabled tokens; stop once the
+  // remaining head tokens are within budget.
+  const suggestedDisableIds: number[] = [];
+  let runningTotal = totalTokens;
+  for (let i = perOutlineTokens.length - 1; i >= 0; i -= 1) {
+    if (runningTotal <= budgetTokens) break;
+    suggestedDisableIds.push(outlineIds[i]);
+    runningTotal -= perOutlineTokens[i];
+  }
+  return {
+    totalTokens,
+    budgetTokens,
+    overBudget: true,
+    overageTokens,
+    // Reverse so the suggested-disable order matches stitch priority (disable
+    // the very last one first, which is what the loop collected in reverse).
+    suggestedDisableIds: suggestedDisableIds.reverse(),
+  };
 }
