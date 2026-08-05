@@ -49,6 +49,28 @@ export function mapImportErrorToUserMessage(
         title: '分块校验失败',
         suggestion: '请重新导入该文件。',
       };
+    case 'continuation_source_integrity_failed':
+    case 'chunk_length_mismatch':
+    case 'chunk_hash_mismatch':
+    case 'chunk_offset_gap':
+    case 'chunk_offset_overlap':
+    case 'chunk_surrogate_boundary':
+    case 'read_range_length_mismatch':
+    case 'chapter_range_invalid':
+    case 'chapter_content_mismatch':
+      return {
+        title: '原著存储完整性失败',
+        suggestion:
+          '当前错误不可通过“稍后重试”恢复。请重新导入原始 TXT；' +
+          '若导入后仍失败，请先执行原著完整性检查。',
+      };
+    case 'style_sample_hash_mismatch':
+      return {
+        title: '风格样本校验失败',
+        suggestion:
+          '采样正文与源回读不一致，通常表示原著分块已损坏。' +
+          '请重新导入原始 TXT，不要反复点击单独重试。',
+      };
     case 'storage_full':
       return {
         title: '存储空间不足',

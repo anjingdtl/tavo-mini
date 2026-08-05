@@ -26,6 +26,10 @@ import { NORMALIZATION_VERSION, createStreamingNormalizer } from './continuation
 import { applyParsingEdits, type ParsingEdit } from './continuationEditLog';
 import { Sha256Stream, sha256Hex } from './hashUtils';
 import {
+  adjustUtf16ChunkEnd,
+  assertSourceIntegrityQuick,
+} from './sourceIntegrity';
+import {
   asSourcePosition,
   asUtf16Offset,
   buildActivateSourceBoundaryStatements,
@@ -39,6 +43,7 @@ import {
   insertChunks,
   insertSource,
   nextSourceVersionInTx,
+  readChunksForRange,
   updateSourceStatus,
   validateChunkContiguity,
   type InsertChapterInput,
@@ -574,7 +579,13 @@ async function runPipelineToReview(
       // file_index is a provenance hint, not an offset participant (Spec §9.3).
       chunkBand += normalizedBlock;
       while (chunkBand.length >= CHUNK_CHAR_TARGET) {
-        const slice = chunkBand.slice(0, CHUNK_CHAR_TARGET);
+        // Never split a UTF-16 surrogate pair at the fixed band target. A cut
+        // that leaves an unpaired high surrogate in chunk N and low surrogate
+        // in chunk N+1 can desync declared offsets from content.length after
+        // SQLite TEXT round-trips, which then fails style-sample hash re-read
+        // past the first ~65536 boundary.
+        const cut = adjustUtf16ChunkEnd(chunkBand, CHUNK_CHAR_TARGET);
+        const slice = chunkBand.slice(0, cut);
         const start = chunkBandStart;
         const end = start + slice.length;
         await insertChunks(db, sourceId, [
@@ -589,7 +600,7 @@ async function runPipelineToReview(
         ]);
         chunkIndex += 1;
         chunkBandStart = end;
-        chunkBand = chunkBand.slice(CHUNK_CHAR_TARGET);
+        chunkBand = chunkBand.slice(cut);
       }
       normalizedCharCursor += normalizedBlock.length;
 
@@ -674,12 +685,15 @@ async function runPipelineToReview(
   });
   await flushChapterBatch(parsedFinal.chapters, lastFileIndex);
 
-  // --- validate chunk contiguity (DB-side, unchanged) ---
+  // --- validate chunk contiguity + content length/hash (DB-side) ---
   await updateJob(db, jobId, { stage: 'validating' });
   const contiguity = await validateChunkContiguity(db, sourceId, normMeta.normalizedCharCount);
   if (!contiguity.ok) {
     throw new Error(`分块完整性校验失败：${contiguity.gap ?? '未知'}`);
   }
+  // Contiguity only checks declared offsets. Also require each row's
+  // content.length and content_sha256 to match metadata before needs_review.
+  await assertSourceIntegrityQuick(db, sourceId, normMeta.normalizedCharCount);
 
   // --- finalize source metadata + job ---
   // Multi-file: detectedEncoding records the primary (first) file's encoding
@@ -767,6 +781,37 @@ export async function previewParsedSource(jobId: string): Promise<ParsedSourcePr
   };
 }
 
+/**
+ * Read a UTF-16 body slice from stored chunks (import/edit path only).
+ * Uses the same local-slice arithmetic as SourceReader.
+ */
+async function readSourceBodyRange(
+  db: Awaited<ReturnType<typeof getDb>>,
+  sourceId: number,
+  start: number,
+  end: number,
+): Promise<string> {
+  if (start >= end) return '';
+  const chunks = await readChunksForRange(
+    db,
+    sourceId,
+    asUtf16Offset(start),
+    asUtf16Offset(end),
+  );
+  let result = '';
+  for (const chunk of chunks) {
+    const localStart = Math.max(0, start - chunk.charStartOffset);
+    const localEnd = Math.min(
+      chunk.content.length,
+      end - chunk.charStartOffset,
+    );
+    if (localEnd > localStart) {
+      result += chunk.content.slice(localStart, localEnd);
+    }
+  }
+  return result;
+}
+
 /** Apply preview edits (rename/merge/split/exclude) to the staging chapters (Spec §11.2). */
 export async function applyParsingEditsToJob(
   jobId: string,
@@ -782,6 +827,11 @@ export async function applyParsingEditsToJob(
   );
   const chapters: any[] = [];
   for (let i = 0; i < chapRes.rows.length; i++) chapters.push(chapRes.rows.item(i));
+  // Preserve file_index by source_start_offset for re-insert (merge/split renumber).
+  const fileIndexByStart = new Map<number, number>();
+  for (const c of chapters) {
+    fileIndexByStart.set(Number(c.source_start_offset), Number(c.file_index ?? 0));
+  }
   const edited = applyParsingEdits(
     chapters.map(c => ({
       position: c.position,
@@ -800,28 +850,55 @@ export async function applyParsingEditsToJob(
     edits,
   );
 
-  // Persist edited metadata in one transaction.
+  // Rebuild chapter rows: merge reduces count, split increases count. Updating
+  // only by existing `position` leaves orphan rows or drops new halves — both
+  // produce wrong ranges that later fail style-sample hash re-verification.
+  // Staging sources have no FK dependents on chapter ids, so full rebuild is safe.
   const ts = now();
-  const statements: SqlStatement[] = edited.map(c => ({
-    sql: `UPDATE continuation_source_chapters SET
-      title = ?, is_excluded = ?, exclusion_reason = ?,
-      source_start_offset = ?, content_start_offset = ?, source_end_offset = ?,
-      char_count = ?, content_sha256 = ?, updated_at = ?
-      WHERE source_id = ? AND position = ?`,
-    params: [
-      c.title,
-      c.isExcluded ? 1 : 0,
-      c.exclusionReason ?? null,
-      c.sourceStartOffset,
-      c.contentStartOffset,
-      c.sourceEndOffset,
-      c.charCount,
-      c.contentSha256,
-      ts,
+  const statements: SqlStatement[] = [
+    {
+      sql: 'DELETE FROM continuation_source_chapters WHERE source_id = ?',
+      params: [job.sourceId],
+    },
+  ];
+  for (const c of edited) {
+    const body = await readSourceBodyRange(
+      db,
       job.sourceId,
-      c.position,
-    ],
-  }));
+      Number(c.contentStartOffset),
+      Number(c.sourceEndOffset),
+    );
+    const contentSha256 = sha256Hex(body);
+    const fileIndex =
+      fileIndexByStart.get(Number(c.sourceStartOffset)) ??
+      fileIndexByStart.get(Number(c.contentStartOffset)) ??
+      0;
+    statements.push({
+      sql: `INSERT INTO continuation_source_chapters (
+          source_id, position, volume_title, detected_title, title, content_sha256,
+          char_count, paragraph_count, source_start_offset, content_start_offset,
+          source_end_offset, is_excluded, exclusion_reason, file_index, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        job.sourceId,
+        c.position,
+        c.volumeTitle,
+        c.detectedTitle,
+        c.title,
+        contentSha256,
+        c.charCount,
+        c.paragraphCount,
+        c.sourceStartOffset,
+        c.contentStartOffset,
+        c.sourceEndOffset,
+        c.isExcluded ? 1 : 0,
+        c.exclusionReason ?? null,
+        fileIndex,
+        ts,
+        ts,
+      ],
+    });
+  }
   await executeTransaction(db, statements);
   return previewParsedSource(jobId);
 }
@@ -1317,10 +1394,26 @@ export async function cleanupImportPath(relativePath: string): Promise<void> {
 }
 
 export function classifyError(e: any): string {
+  if (e && typeof e === 'object' && typeof e.code === 'string') {
+    // Prefer dedicated integrity error codes when present.
+    if (
+      e.code === 'chunk_length_mismatch' ||
+      e.code === 'chunk_hash_mismatch' ||
+      e.code === 'chunk_offset_gap' ||
+      e.code === 'chunk_offset_overlap' ||
+      e.code === 'chunk_surrogate_boundary' ||
+      e.code === 'continuation_source_integrity_failed' ||
+      e.code === 'read_range_length_mismatch'
+    ) {
+      return 'chunk_integrity_failed';
+    }
+  }
   const msg = String(e?.message ?? '');
   if (/编码|encoding/i.test(msg)) return 'unsupported_encoding';
   if (/过大|too.?large/i.test(msg)) return 'file_too_large';
-  if (/完整性|integrity|chunk/i.test(msg)) return 'chunk_integrity_failed';
+  if (/完整性|integrity|chunk|hash 校验|分块/i.test(msg)) {
+    return 'chunk_integrity_failed';
+  }
   if (/解析|parse/i.test(msg)) return 'parse_failed';
   if (/空间|storage|disk/i.test(msg)) return 'storage_full';
   return 'decode_failed';
