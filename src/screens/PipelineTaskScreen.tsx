@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Header, Screen, spacing } from '../components/ui';
@@ -7,6 +7,7 @@ import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import type { PipelineTask } from '../types/pipeline';
 import { cancelPipeline, resumePipeline } from '../services/pipelineRunner';
+import { isReconcileActive } from '../services/pipeline';
 import * as db from '../services/database';
 
 const ACTIVE_STATUSES = new Set([
@@ -58,6 +59,8 @@ export const PipelineTaskScreen: React.FC = () => {
   const navigation = useNavigation();
   const { tasks, clearResolved, resolveTask, loadFromDB } =
     usePipelineTaskStore();
+  /** Task ids with an in-flight continue click (CAS / reconcile). */
+  const [resumingIds, setResumingIds] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     loadFromDB();
@@ -99,6 +102,14 @@ export const PipelineTaskScreen: React.FC = () => {
   };
 
   const continueTask = async (task: PipelineTask) => {
+    if (resumingIds[task.id] || isReconcileActive(task.id)) {
+      Toast.show({
+        type: 'info',
+        text1: '任务已在运行',
+        text2: '请勿重复点击继续',
+      });
+      return;
+    }
     if (task.targetType !== 'chapter') {
       Toast.show({
         type: 'error',
@@ -107,6 +118,7 @@ export const PipelineTaskScreen: React.FC = () => {
       });
       return;
     }
+    setResumingIds(prev => ({ ...prev, [task.id]: true }));
     try {
       const chapter = await db.getChapterById(task.targetId);
       if (!chapter) {
@@ -118,21 +130,35 @@ export const PipelineTaskScreen: React.FC = () => {
         return;
       }
       Toast.show({ type: 'info', text1: '正在继续任务…' });
-      resumePipeline(task.id, chapter).catch((error: any) => {
-        Toast.show({
-          type: 'error',
-          text1: '继续失败',
-          text2: error?.message || '请重新开始生成',
-        });
-      });
       // @ts-ignore
       navigation.navigate('PipelineResult', { taskId: task.id });
+      resumePipeline(task.id, chapter).catch((error: any) => {
+        const already =
+          error?.code === 'TASK_ALREADY_RUNNING' ||
+          /已在运行/.test(String(error?.message || ''));
+        Toast.show({
+          type: already ? 'info' : 'error',
+          text1: already ? '任务已在运行' : '继续失败',
+          text2: already
+            ? '请勿重复点击继续'
+            : error?.message || '请重新开始生成',
+        });
+      });
     } catch (e: any) {
       Toast.show({
         type: 'error',
         text1: '继续失败',
         text2: e?.message || '未知错误',
       });
+    } finally {
+      // Keep disabled briefly; reconcile lock is the real guard.
+      setTimeout(() => {
+        setResumingIds(prev => {
+          const next = { ...prev };
+          delete next[task.id];
+          return next;
+        });
+      }, 1500);
     }
   };
 
@@ -194,7 +220,8 @@ export const PipelineTaskScreen: React.FC = () => {
           <View style={styles.actions}>
             {recoverable ? (
               <Button
-                label="继续任务"
+                label={resumingIds[item.id] ? '继续中…' : '继续任务'}
+                disabled={Boolean(resumingIds[item.id]) || isReconcileActive(item.id)}
                 onPress={() => {
                   continueTask(item).catch(() => undefined);
                 }}

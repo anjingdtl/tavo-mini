@@ -43,6 +43,33 @@ const OUTLINE_STATUS_LABELS: Record<string, string> = {
   over_advanced: '进度超前',
 };
 
+/**
+ * One effective result per stage (prefer success > skipped > failed; last wins).
+ * Result page must not guess via unbounded .find on append-only history.
+ */
+export function uniqueStageResults(
+  stageResults: PipelineStageResult[],
+): PipelineStageResult[] {
+  const priority: Record<string, number> = {
+    success: 50,
+    skipped: 40,
+    failed: 30,
+  };
+  const map = new Map<string, PipelineStageResult>();
+  for (const row of stageResults || []) {
+    if (!row?.stage) continue;
+    const prev = map.get(row.stage);
+    const pri = priority[row.status] ?? 0;
+    const prevPri = prev ? priority[prev.status] ?? 0 : -1;
+    if (!prev || pri >= prevPri) {
+      map.set(row.stage, row);
+    }
+  }
+  return ['draft', 'review', 'factCheck', 'proof']
+    .map(s => map.get(s))
+    .filter(Boolean) as PipelineStageResult[];
+}
+
 /** Parse review-stage outlineAssessment for the dedicated report card. */
 export function parseOutlineAssessmentFromReview(
   stageResults: PipelineStageResult[],
@@ -54,7 +81,7 @@ export function parseOutlineAssessmentFromReview(
   prematureBeats: string[];
   factRollbackRisks: string[];
 } | null {
-  const review = stageResults.find(
+  const review = uniqueStageResults(stageResults).find(
     s => s.stage === 'review' && s.status === 'success' && s.text,
   );
   if (!review?.text) return null;
@@ -197,7 +224,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       (stage.stage === 'review' || stage.stage === 'factCheck') &&
       stage.status === 'failed',
   ).length;
-  const proofStage = task.stageResults.find((stage) => stage.stage === 'proof');
+  const proofStage = uniqueStageResults(task.stageResults).find(
+    stage => stage.stage === 'proof',
+  );
   const duration = task.updatedAt - task.createdAt;
   const durationText = duration > 60000
     ? `${Math.floor(duration / 60000)}m ${Math.round((duration % 60000) / 1000)}s`
@@ -393,7 +422,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             </View>
           );
         })()}
-        {task.stageResults.map(renderStageCard)}
+        {uniqueStageResults(task.stageResults).map(renderStageCard)}
         {task.finalText && (
           <View style={styles.actions}>
             <Button label="放弃" variant="ghost" onPress={handleReject} disabled={adopting} />
