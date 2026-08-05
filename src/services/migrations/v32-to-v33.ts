@@ -30,7 +30,10 @@
  * rows keep their values; `source_origin` defaults to 'batch' so existing
  * evidence is treated as the original batch product.
  */
+import type SQLite from 'react-native-sqlite-storage';
 import type { SqlStatement } from '../database/transaction';
+import { executeTransaction } from '../database/transaction';
+import { ensureCanonEvidenceProvenanceSchema } from '../../data/schema/knownSchemaRepairs';
 
 /**
  * Provenance values for `canon_evidence.source_origin`.
@@ -44,15 +47,12 @@ export function buildV32toV33Statements(): SqlStatement[] {
   const statements: SqlStatement[] = [];
 
   // ── 1. canon_evidence provenance columns ──────────────────────────────
-  // ALTER TABLE ADD COLUMN with a DEFAULT is supported by the bundled Android
-  // SQLite and backfills existing rows with 'batch' so they are never mistaken
-  // for rescan output.
-  statements.push({
-    sql: `ALTER TABLE canon_evidence ADD COLUMN source_origin TEXT NOT NULL DEFAULT 'batch'`,
-  });
-  statements.push({
-    sql: `ALTER TABLE canon_evidence ADD COLUMN rescan_operation_id TEXT`,
-  });
+  // NOTE: The two ALTER TABLE ADD COLUMN statements that used to live here
+  // (source_origin, rescan_operation_id) are now applied dynamically and
+  // idempotently by `ensureCanonEvidenceProvenanceSchema`, called from the
+  // logic migration `migrateV32ToV33` below. The build-statements path only
+  // carries the dedup + index work, all of which is already idempotent
+  // (DELETE matches zero rows when no dups; CREATE INDEX IF NOT EXISTS).
 
   // ── 2. Duplicate-row cleanup before UNIQUE indexes ────────────────────
   // Rebind evidence links from older duplicates onto the newest (MAX id)
@@ -132,6 +132,34 @@ export function buildV32toV33Statements(): SqlStatement[] {
   });
 
   return statements;
+}
+
+/**
+ * Logic migration for Schema 32 → 33.
+ *
+ * This is the idempotent entry point: it first dynamically ensures the two
+ * provenance columns exist (via `ensureCanonEvidenceProvenanceSchema`, which
+ * checks PRAGMA before ALTERing), then runs the dedup-cleanup + business-unique
+ * indexes (all already idempotent). Repeated invocation is a no-op.
+ *
+ * Handles every partial-migration state:
+ *   - Schema 32 with both columns missing
+ *   - Schema 32 with only one column present
+ *   - Schema 32 with both columns present but index missing
+ *   - Re-run after a partial failure (no duplicate-column error)
+ */
+export async function migrateV32ToV33(
+  db: SQLite.SQLiteDatabase,
+): Promise<void> {
+  // 1. Idempotent provenance column + index ensure (check-then-ALTER).
+  await ensureCanonEvidenceProvenanceSchema(db);
+
+  // 2. Dedup cleanup + business-unique indexes (all idempotent: DELETE matches
+  //    zero rows when no duplicates; CREATE [UNIQUE] INDEX IF NOT EXISTS).
+  const statements = buildV32toV33Statements();
+  if (statements.length > 0) {
+    await executeTransaction(db, statements, { faultDomain: 'migration' });
+  }
 }
 
 /**
