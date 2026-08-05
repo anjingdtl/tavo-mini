@@ -111,6 +111,14 @@ export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) 
 
   const handleToggleEnabled = useCallback(
     async (outline: Outline, value: boolean) => {
+      if (value && !String(outline.content || '').trim()) {
+        Toast.show({
+          type: 'error',
+          text1: '无法启用',
+          text2: '正文为空，请先填写大纲内容',
+        });
+        return;
+      }
       // Optimistic update for responsiveness.
       setOutlines(prev =>
         prev.map(o => (o.id === outline.id ? { ...o, enabled: value } : o)),
@@ -223,41 +231,64 @@ export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) 
         />
       </View>
 
-      {/* Outline budget summary bar — only when at least one outline is
-          enabled. Shows total enabled tokens vs the model-derived budget and
-          turns red + suggests segmented enablement when over budget. */}
-      {enabledGuidance.totalTokens > 0 ? (
-        <View
-          style={[
-            styles.budgetBar,
-            {
-              backgroundColor: enabledGuidance.overBudget
-                ? `${theme.colors.danger}1A`
-                : theme.colors.accentSoft,
-              borderColor: enabledGuidance.overBudget
-                ? theme.colors.danger
-                : theme.colors.border,
-            },
-          ]}
-        >
-          <Text
+      {/* Outline budget summary — model must be configured; never show / 0. */}
+      {outlines.some(o => o.enabled) ? (
+        contextWindow > 0 ? (
+          enabledGuidance.totalTokens > 0 || enabledGuidance.budgetTokens > 0 ? (
+            <View
+              style={[
+                styles.budgetBar,
+                {
+                  backgroundColor: enabledGuidance.overBudget
+                    ? `${theme.colors.danger}1A`
+                    : theme.colors.accentSoft,
+                  borderColor: enabledGuidance.overBudget
+                    ? theme.colors.danger
+                    : theme.colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.budgetText,
+                  {
+                    color: enabledGuidance.overBudget
+                      ? theme.colors.danger
+                      : theme.colors.textPrimary,
+                  },
+                ]}
+              >
+                {enabledGuidance.overBudget
+                  ? `⚠ 已启用大纲超出预算：${enabledGuidance.totalTokens.toLocaleString()} / ${enabledGuidance.budgetTokens.toLocaleString()} tokens（超 ${enabledGuidance.overageTokens.toLocaleString()}）`
+                  : `已启用大纲：${enabledGuidance.totalTokens.toLocaleString()} / ${enabledGuidance.budgetTokens.toLocaleString()} tokens`}
+              </Text>
+              {enabledGuidance.overBudget ? (
+                <Text style={[styles.budgetHint, { color: theme.colors.danger }]}>
+                  {enabledGuidance.suggestedDisableIds.length > 0
+                    ? `建议关闭靠后的 ${enabledGuidance.suggestedDisableIds.length} 份大纲（标记为"建议关闭"），或缩短内容，或更换更大上下文模型。`
+                    : '建议缩短内容，或更换更大上下文模型。'}
+                </Text>
+              ) : null}
+            </View>
+          ) : null
+        ) : (
+          <View
             style={[
-              styles.budgetText,
-              { color: enabledGuidance.overBudget ? theme.colors.danger : theme.colors.textPrimary },
+              styles.budgetBar,
+              {
+                backgroundColor: theme.colors.accentSoft,
+                borderColor: theme.colors.border,
+              },
             ]}
           >
-            {enabledGuidance.overBudget
-              ? `⚠ 已启用大纲超出预算：${enabledGuidance.totalTokens.toLocaleString()} / ${enabledGuidance.budgetTokens.toLocaleString()} tokens（超 ${enabledGuidance.overageTokens.toLocaleString()}）`
-              : `已启用大纲：${enabledGuidance.totalTokens.toLocaleString()} / ${enabledGuidance.budgetTokens.toLocaleString()} tokens`}
-          </Text>
-          {enabledGuidance.overBudget ? (
-            <Text style={[styles.budgetHint, { color: theme.colors.danger }]}>
-              {enabledGuidance.suggestedDisableIds.length > 0
-                ? `建议关闭靠后的 ${enabledGuidance.suggestedDisableIds.length} 份大纲（标记为"建议关闭"），或缩短内容，或更换更大上下文模型。`
-                : '建议缩短内容，或更换更大上下文模型。'}
+            <Text style={[styles.budgetText, { color: theme.colors.textPrimary }]}>
+              当前未配置可用模型，暂无法计算大纲预算
             </Text>
-          ) : null}
-        </View>
+            <Text style={[styles.budgetHint, { color: theme.colors.textSecondary }]}>
+              请先在设置中配置在线模型及上下文窗口，再启用大纲。
+            </Text>
+          </View>
+        )
       ) : null}
 
       {outlines.length === 0 ? (
@@ -357,6 +388,13 @@ const OutlineEditor: React.FC<{
   const [saving, setSaving] = useState(false);
 
   const tokenEstimate = estimateTokens(content);
+  const initialTitle = outline?.title ?? '';
+  const initialContent = outline?.content ?? '';
+  const initialEnabled = outline?.enabled ?? false;
+  const dirty =
+    title !== initialTitle ||
+    content !== initialContent ||
+    enabled !== initialEnabled;
 
   const handleSave = useCallback(async () => {
     if (saving) return;
@@ -401,6 +439,23 @@ const OutlineEditor: React.FC<{
     }
   }, [outline, projectId, title, content, enabled, onSaved, saving]);
 
+  const requestClose = useCallback(() => {
+    if (!dirty || saving) {
+      onClose();
+      return;
+    }
+    Alert.alert('未保存的修改', '当前大纲有未保存的修改，确定离开吗？', [
+      { text: '继续编辑', style: 'cancel' },
+      { text: '放弃修改', style: 'destructive', onPress: onClose },
+      {
+        text: '保存并返回',
+        onPress: () => {
+          handleSave().catch(() => undefined);
+        },
+      },
+    ]);
+  }, [dirty, saving, onClose, handleSave]);
+
   return (
     <ScrollView
       style={{ flex: 1 }}
@@ -408,10 +463,10 @@ const OutlineEditor: React.FC<{
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.editorHeader}>
-        <TouchableOpacity onPress={onClose} style={styles.backBtn}>
+        <TouchableOpacity onPress={requestClose} style={styles.backBtn}>
           <ArrowLeft size={20} color={theme.colors.textPrimary} />
           <Text style={[styles.backText, { color: theme.colors.textPrimary }]}>
-            返回列表
+            返回列表{dirty ? ' *' : ''}
           </Text>
         </TouchableOpacity>
       </View>

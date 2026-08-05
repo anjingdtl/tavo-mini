@@ -31,7 +31,6 @@ import {
 import { useThemeStore } from '../store/themeStore';
 import Toast from 'react-native-toast-message';
 import * as db from '../services/database';
-import { buildContext } from '../services/contextBuilder';
 import {
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
@@ -348,24 +347,36 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       setContinuationBudgetSummary('');
       setContinuationStageBudgets(null);
       setContinuationFreezeSummary(null);
-      const config = await db.getContextConfig();
-      const presets = await db.getPresetsByProject(chapter.project_id);
-      const result = await buildContext(
-        chapter,
-        config,
-        chapter.project_id,
-        presets[0],
-        { storyMemoryMode: 'preview' },
+      // Non-continuation: use the same Draft compiler as the real pipeline.
+      const { compileDraftPipelineRequest } = await import(
+        '../services/draftPipelineCompiler'
       );
-      setTrace(result.trace);
-      setEstimatedInputTokens(result.estimatedInputTokens);
-      setMessages(result.messages);
-      setOutlineBlock(null);
+      const compiled = await compileDraftPipelineRequest({
+        chapter,
+        preview: true,
+      });
+      setTrace(compiled.trace);
+      setEstimatedInputTokens(compiled.estimatedInputTokens);
+      setMessages(compiled.messages);
+      if (!compiled.fits && compiled.blockingReason) {
+        setOutlineBlock(compiled.blockingReason);
+      } else {
+        setOutlineBlock(null);
+      }
     } catch (e: any) {
       const message = e?.message ? String(e.message) : '构建上下文失败';
-      // An outline-budget block carries "大纲" + "tokens" in the message;
-      // surface it as an actionable panel instead of a transient Toast.
-      if (/大纲.*tokens|超出可用大纲空间/.test(message)) {
+      // Prefer structured OutlineContextError codes over Chinese regex matching.
+      const code = e?.code ? String(e.code) : '';
+      const isOutlineBlock =
+        code === 'OUTLINE_OVER_BUDGET' ||
+        code === 'OUTLINE_BUDGET_UNKNOWN' ||
+        code === 'OUTLINE_READ_FAILED' ||
+        code === 'OUTLINE_MODEL_UNAVAILABLE' ||
+        code === 'OUTLINE_SNAPSHOT_INVALID' ||
+        code === 'OUTLINE_SNAPSHOT_PERSIST_FAILED' ||
+        code === 'OUTLINE_EXECUTION_CONFIG_INVALID' ||
+        e?.name === 'OutlineContextError';
+      if (isOutlineBlock) {
         setOutlineBlock(message);
         setTrace([]);
         setMessages([]);

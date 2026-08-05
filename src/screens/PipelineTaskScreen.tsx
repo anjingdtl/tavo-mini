@@ -6,7 +6,8 @@ import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import type { PipelineTask } from '../types/pipeline';
-import { cancelPipeline } from '../services/pipelineRunner';
+import { cancelPipeline, resumePipeline } from '../services/pipelineRunner';
+import * as db from '../services/database';
 
 const ACTIVE_STATUSES = new Set([
   'idle',
@@ -27,6 +28,7 @@ const STATUS_MARK: Record<string, string> = {
   completed: '完成',
   cancelled: '取消',
   failed: '失败',
+  interrupted: '中断',
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -39,7 +41,17 @@ const STATUS_LABEL: Record<string, string> = {
   completed: '已完成',
   cancelled: '已取消',
   failed: '已失败',
+  interrupted: '已中断（可继续）',
 };
+
+function isRecoverable(task: PipelineTask): boolean {
+  if (task.status === 'interrupted' && task.recoverable !== false) {
+    return true;
+  }
+  // Legacy: failed with successful draft + snapshot may still be recoverable
+  // if classify left recoverable flag.
+  return task.status === 'interrupted' || Boolean(task.recoverable);
+}
 
 export const PipelineTaskScreen: React.FC = () => {
   const { theme } = useThemeStore();
@@ -86,8 +98,47 @@ export const PipelineTaskScreen: React.FC = () => {
     }
   };
 
+  const continueTask = async (task: PipelineTask) => {
+    if (task.targetType !== 'chapter') {
+      Toast.show({
+        type: 'error',
+        text1: '无法继续',
+        text2: '仅支持章节流水线恢复',
+      });
+      return;
+    }
+    try {
+      const chapter = await db.getChapterById(task.targetId);
+      if (!chapter) {
+        Toast.show({
+          type: 'error',
+          text1: '无法继续',
+          text2: '目标章节不存在，请重新开始生成',
+        });
+        return;
+      }
+      Toast.show({ type: 'info', text1: '正在继续任务…' });
+      resumePipeline(task.id, chapter).catch((error: any) => {
+        Toast.show({
+          type: 'error',
+          text1: '继续失败',
+          text2: error?.message || '请重新开始生成',
+        });
+      });
+      // @ts-ignore
+      navigation.navigate('PipelineResult', { taskId: task.id });
+    } catch (e: any) {
+      Toast.show({
+        type: 'error',
+        text1: '继续失败',
+        text2: e?.message || '未知错误',
+      });
+    }
+  };
+
   const renderItem = ({ item }: { item: PipelineTask }) => {
     const isRunning = ACTIVE_STATUSES.has(item.status);
+    const recoverable = isRecoverable(item);
     const stageCount = item.stageResults.length;
     const skippedCount = item.stageResults.filter(
       stage => stage.status === 'skipped',
@@ -118,9 +169,17 @@ export const PipelineTaskScreen: React.FC = () => {
                 : '自由写作'}
             </Text>
             <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-              {STATUS_LABEL[item.status]} · {stageCount}/{totalStages} 阶段 ·
-              跳过 {skippedCount} · {durationText}
+              {STATUS_LABEL[item.status] || item.status} · {stageCount}/
+              {totalStages} 阶段 · 跳过 {skippedCount} · {durationText}
             </Text>
+            {item.error ? (
+              <Text
+                style={[styles.error, { color: theme.colors.danger }]}
+                numberOfLines={2}
+              >
+                {item.error}
+              </Text>
+            ) : null}
           </View>
         </View>
         {isRunning ? (
@@ -133,6 +192,14 @@ export const PipelineTaskScreen: React.FC = () => {
           </View>
         ) : (
           <View style={styles.actions}>
+            {recoverable ? (
+              <Button
+                label="继续任务"
+                onPress={() => {
+                  continueTask(item).catch(() => undefined);
+                }}
+              />
+            ) : null}
             {item.status !== 'cancelled' ? (
               <Button
                 label="查看结果"
@@ -144,7 +211,7 @@ export const PipelineTaskScreen: React.FC = () => {
               />
             ) : null}
             <Button
-              label="从列表移除"
+              label={recoverable ? '放弃' : '从列表移除'}
               variant="ghost"
               onPress={() => removeTask(item.id)}
             />
@@ -161,7 +228,7 @@ export const PipelineTaskScreen: React.FC = () => {
         subtitle={
           activeTasks.length
             ? `运行中 ${activeTasks.length} 项`
-            : '可管理已完成、失败或已取消的任务'
+            : '可管理已完成、失败、中断或已取消的任务'
         }
         action={
           <Button
@@ -201,23 +268,62 @@ export const PipelineTaskScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  list: { padding: spacing.lg, gap: spacing.md, paddingBottom: 100 },
-  empty: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyText: { fontSize: 16 },
-  card: { borderRadius: 8, padding: spacing.md, gap: spacing.sm },
-  row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  info: { flex: 1 },
-  title: { fontSize: 15, fontWeight: '700' },
-  meta: { fontSize: 12, marginTop: 2 },
-  actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
-  footer: { padding: spacing.lg, borderTopWidth: StyleSheet.hairlineWidth },
+  list: {
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  card: {
+    borderRadius: 12,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
   statusPill: {
-    minWidth: 44,
-    minHeight: 32,
+    borderWidth: 1,
     borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  statusPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  info: {
+    flex: 1,
+  },
+  title: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  meta: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  error: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  actions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  empty: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    padding: spacing.lg,
   },
-  statusPillText: { fontSize: 12, fontWeight: '800' },
+  emptyText: {
+    fontSize: 14,
+  },
+  footer: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    padding: spacing.md,
+  },
 });
