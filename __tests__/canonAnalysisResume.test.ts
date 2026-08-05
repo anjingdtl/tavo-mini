@@ -2,6 +2,7 @@ const mockOpenDatabase = jest.fn();
 const mockExecute = jest.fn();
 const mockGetRunById = jest.fn();
 const mockUpdateRunState = jest.fn();
+const mockListBatches = jest.fn();
 
 jest.mock('../src/data/connection/openDatabase', () => ({
   openDatabase: (...args: any[]) => mockOpenDatabase(...args),
@@ -14,6 +15,9 @@ jest.mock('../src/data/connection/execute', () => ({
 jest.mock('../src/services/continuation/canon/canonRepository', () => ({
   getRunById: (...args: any[]) => mockGetRunById(...args),
   updateRunState: (...args: any[]) => mockUpdateRunState(...args),
+  // resumeAnalysis → resetInterruptedAnalysisWork → healOrphanPartialBatches
+  // re-reads all batches to unstick orphan partial parents.
+  listBatches: (...args: any[]) => mockListBatches(...args),
 }));
 
 import {
@@ -36,6 +40,9 @@ describe('Canon analysis resume after interruption', () => {
     mockGetRunById.mockResolvedValue(cancelledRun);
     mockExecute.mockResolvedValue(undefined);
     mockUpdateRunState.mockResolvedValue(undefined);
+    // healOrphanPartialBatches re-reads batches; return empty so no partial
+    // parents need healing (keeps this a DB-boundary test).
+    mockListBatches.mockResolvedValue([]);
   });
 
   it('treats paused, failed and explicitly cancelled tasks as resumable', () => {
