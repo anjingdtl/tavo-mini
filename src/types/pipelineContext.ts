@@ -12,6 +12,9 @@
  * are valid (e.g. a project with no characters) and MUST be filtered by the
  * message builders, not silently dropped here.
  */
+/** Current persisted pipeline context snapshot schema version. */
+export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 1 as const;
+
 export interface PipelineContextSnapshot {
   /** Macro-replaced system prompt, writing style and extra instructions. */
   presetText: string;
@@ -41,7 +44,7 @@ export interface PipelineContextSnapshot {
    * at buildContext time so every stage of one task sees the same plan.
    */
   outlineText: string;
-  /** Stable fingerprint of the frozen outlines (ids + positions + hashes). */
+  /** Stable fingerprint of the frozen outlines (contract + stitched text). */
   outlineFingerprint: string;
   /** Ids of the outlines actually injected, in stitch order. */
   outlineIds: number[];
@@ -57,6 +60,13 @@ export interface PipelineContextSnapshot {
    * Not consumed by prompts; only logged at dev level.
    */
   sourceFingerprint?: string;
+
+  /** Persisted snapshot metadata (Schema 38+). */
+  projectId?: number;
+  chapterId?: number;
+  chapterUpdatedAt?: string | number;
+  createdAt?: number;
+  snapshotVersion?: typeof PIPELINE_CONTEXT_SNAPSHOT_VERSION;
 }
 
 /**

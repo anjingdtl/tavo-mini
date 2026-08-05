@@ -297,6 +297,44 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
     //     to match the exported state, preserving the user's intent.
     const outlines = pkg.resources.outlines;
     if (outlines && outlines.length > 0) {
+      // Validate the entire outlines array before any write so illegal data
+      // never partially lands in the new project.
+      for (let i = 0; i < outlines.length; i += 1) {
+        const outline = outlines[i];
+        if (!outline || typeof outline !== 'object') {
+          throw new Error(`项目包 outlines[${i}] 不是有效对象`);
+        }
+        if (outline.title != null && typeof outline.title !== 'string') {
+          throw new Error(`项目包 outlines[${i}].title 必须是字符串`);
+        }
+        if (outline.content != null && typeof outline.content !== 'string') {
+          throw new Error(`项目包 outlines[${i}].content 必须是字符串`);
+        }
+        if (
+          outline.enabled != null &&
+          typeof outline.enabled !== 'boolean' &&
+          outline.enabled !== 0 &&
+          outline.enabled !== 1 &&
+          outline.enabled !== '0' &&
+          outline.enabled !== '1'
+        ) {
+          throw new Error(`项目包 outlines[${i}].enabled 非法`);
+        }
+        if (
+          outline.position != null &&
+          !Number.isFinite(Number(outline.position))
+        ) {
+          throw new Error(`项目包 outlines[${i}].position 非法`);
+        }
+        const sourceTypeRaw =
+          outline.source_type ?? outline.sourceType ?? 'manual';
+        if (sourceTypeRaw !== 'txt' && sourceTypeRaw !== 'manual') {
+          throw new Error(
+            `项目包 outlines[${i}].source_type 必须是 manual 或 txt`,
+          );
+        }
+      }
+
       // Sort by exported position so createOutline assigns sequential positions.
       const sorted = [...outlines].sort(
         (a, b) => Number(a.position ?? 0) - Number(b.position ?? 0),
@@ -319,7 +357,10 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
         });
         newIds.push(newId);
         // Restore the exported enabled state (default is off).
-        const enabled = Number(outline.enabled) === 1;
+        const enabled =
+          outline.enabled === true ||
+          Number(outline.enabled) === 1 ||
+          outline.enabled === '1';
         if (enabled) {
           await db.setOutlineEnabled(projectId, newId, true);
         }

@@ -15,6 +15,16 @@ jest.mock('../src/services/database', () => ({
   getNotesContentByIds: jest.fn(async () => ({})),
   getWorldbookEntriesByProject: jest.fn(async () => []),
   getProjectNoteConfig: jest.fn(async () => null),
+  // Non-outline / freeform project for snapshot baseline tests.
+  getProjectById: jest.fn(async () => ({ id: 7, mode: 'outline', name: 'p' })),
+  getActiveLLMConfig: jest.fn(async () => ({
+    id: 1,
+    context_window: 128000,
+  })),
+}));
+
+jest.mock('../src/data/repositories/outlineRepository', () => ({
+  getEnabledOutlinesByProject: jest.fn(async () => []),
 }));
 
 jest.mock('../src/services/storyMemory/storyMemoryPrepare', () => ({

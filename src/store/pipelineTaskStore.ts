@@ -24,6 +24,18 @@ interface PipelineTaskState {
    * state so the result-adoption flow can later detect outline/chapter drift.
    */
   setTaskInputFingerprint: (taskId: string, fingerprint: string) => void;
+  /**
+   * Persist the frozen PipelineContextSnapshot (Schema 38+) before the first
+   * LLM call so resume can reuse the same outline/context after process death.
+   */
+  setTaskPipelineContext: (
+    taskId: string,
+    snapshot: {
+      pipelineContextJson: string;
+      pipelineContextVersion: number;
+      pipelineContextHash: string;
+    },
+  ) => void;
   resolveTask: (taskId: string, action: 'accept' | 'reject') => void;
   clearResolved: () => void;
   getActiveTaskForTarget: (targetType: 'chapter' | 'freeform', targetId: number) => PipelineTask | undefined;
@@ -66,6 +78,9 @@ function persistTask(task: PipelineTask) {
     finalText: task.finalText,
     error: task.error,
     inputFingerprint: task.inputFingerprint ?? null,
+    pipelineContextJson: task.pipelineContextJson ?? null,
+    pipelineContextVersion: task.pipelineContextVersion ?? null,
+    pipelineContextHash: task.pipelineContextHash ?? null,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     resolvedAt: task.resolvedAt,
@@ -98,6 +113,9 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         finalText: row.finalText,
         error: row.error,
         inputFingerprint: row.inputFingerprint ?? null,
+        pipelineContextJson: row.pipelineContextJson ?? null,
+        pipelineContextVersion: row.pipelineContextVersion ?? null,
+        pipelineContextHash: row.pipelineContextHash ?? null,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         resolvedAt: row.resolvedAt,
@@ -212,6 +230,25 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         t.id === taskId ? { ...t, inputFingerprint: fingerprint } : t
       );
       const task = tasks.find((t) => t.id === taskId);
+      if (task) persistTask(task);
+      return { tasks };
+    });
+  },
+
+  setTaskPipelineContext: (taskId, snapshot) => {
+    set(state => {
+      const tasks = state.tasks.map(t =>
+        t.id === taskId
+          ? {
+              ...t,
+              pipelineContextJson: snapshot.pipelineContextJson,
+              pipelineContextVersion: snapshot.pipelineContextVersion,
+              pipelineContextHash: snapshot.pipelineContextHash,
+              updatedAt: Date.now(),
+            }
+          : t,
+      );
+      const task = tasks.find(t => t.id === taskId);
       if (task) persistTask(task);
       return { tasks };
     });

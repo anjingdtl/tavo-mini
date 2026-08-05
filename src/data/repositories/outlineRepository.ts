@@ -193,19 +193,38 @@ export async function setOutlineEnabled(
  * Rewrite the position of every outline in a project to match the provided
  * id order. Runs in one transaction so the order is never half-applied.
  *
- * `orderedIds` must contain exactly the project's outline ids; unknown ids are
- * ignored defensively (their position is set to a high tail value).
+ * Strict validation before any write:
+ *  - no duplicate ids
+ *  - every id belongs to the project
+ *  - count and set of ids must exactly match the project's outlines
  */
 export async function reorderOutlines(
   projectId: number,
   orderedIds: number[],
 ): Promise<void> {
+  if (new Set(orderedIds).size !== orderedIds.length) {
+    throw new Error('大纲排序失败：存在重复的大纲 ID');
+  }
+  const existing = await getOutlinesByProject(projectId);
+  const existingIds = existing.map(o => o.id).sort((a, b) => a - b);
+  const incomingIds = [...orderedIds].sort((a, b) => a - b);
+  if (existingIds.length !== incomingIds.length) {
+    throw new Error(
+      `大纲排序失败：传入 ${incomingIds.length} 个 ID，项目实际有 ${existingIds.length} 份大纲`,
+    );
+  }
+  for (let i = 0; i < existingIds.length; i += 1) {
+    if (existingIds[i] !== incomingIds[i]) {
+      throw new Error('大纲排序失败：传入的 ID 集合与项目大纲不一致');
+    }
+  }
   const database = await openDatabase();
   const statements: SqlStatement[] = [];
+  const now = Date.now();
   orderedIds.forEach((id, index) => {
     statements.push({
       sql: 'UPDATE outlines SET position = ?, updated_at = ? WHERE id = ? AND project_id = ?',
-      params: [index, Date.now(), id, projectId],
+      params: [index, now, id, projectId],
     });
   });
   if (statements.length === 0) return;
