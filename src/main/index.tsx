@@ -12,8 +12,10 @@ import {
 import { consumeSuppressedPipelinePrompt } from '../navigation/pipelinePromptSuppression';
 import { PipelineResultPrompt } from '../components/PipelineResultPrompt';
 import Toast from 'react-native-toast-message';
-import { openDatabase, lastInstallInfo } from '../services/database';
+import { openDatabase, lastInstallInfo, lastSchemaRecovery } from '../services/database';
 import { hasBreakingMigration } from '../services/migrations';
+import { isSchemaRecoveryError } from '../data/schema/schemaRecoveryError';
+import { useDatabaseRecoveryStore } from '../store/databaseRecoveryStore';
 import { UpgradeScreen } from '../screens/UpgradeScreen';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { useSettingsStore } from '../store/settingsStore';
@@ -95,6 +97,21 @@ export const App: React.FC = () => {
         }
         const info = lastInstallInfo;
 
+        // Surface the Schema 40 recovery state to resource screens.
+        const recoveryState = lastSchemaRecovery;
+        if (recoveryState) {
+          useDatabaseRecoveryStore.getState().setRecovery(recoveryState);
+          if (recoveryState.recallVerified && recoveryState.repaired) {
+            const counts = recoveryState.afterCounts || {};
+            Toast.show({
+              type: 'success',
+              text1: '本地资料已自动修复',
+              text2: `角色卡 ${counts.characters ?? 0} · 世界书 ${counts.worldbook_entries ?? 0} · 章节 ${counts.chapters ?? 0}`,
+              visibilityTime: 4000,
+            });
+          }
+        }
+
         if (
           info?.installType === 'upgrade' &&
           info.previousVersion &&
@@ -108,10 +125,27 @@ export const App: React.FC = () => {
           }
         }
       } catch (error: any) {
-        // 数据库初始化失败时仍标记 ready，让用户看到主界面（而非白屏），
-        // 但通过 Toast 提示错误。后续 DB 操作会各自抛错。
-        setReady(true);
-        Toast.show({ type: 'error', text1: '数据库初始化失败', text2: error?.message });
+        // Schema-recovery failures (backup failed, recall mismatch, repair
+        // failed) must NOT silently show an empty UI. Surface the structured
+        // error so the user knows their data is still in the DB / backup.
+        if (isSchemaRecoveryError(error)) {
+          useDatabaseRecoveryStore.getState().setError(error.code, error.message);
+          Toast.show({
+            type: 'error',
+            text1: '本地资料数据库修复失败',
+            text2: '原数据库和恢复备份已保留，请勿卸载或清除应用数据。',
+            visibilityTime: 8000,
+          });
+          // Still mark ready so the user can see the error screen / export
+          // the backup, but resource screens will read the error state and
+          // show "资料暂时无法读取" instead of a fake empty list.
+          setReady(true);
+        } else {
+          // 数据库初始化失败时仍标记 ready，让用户看到主界面（而非白屏），
+          // 但通过 Toast 提示错误。后续 DB 操作会各自抛错。
+          setReady(true);
+          Toast.show({ type: 'error', text1: '数据库初始化失败', text2: error?.message });
+        }
       }
     };
 
