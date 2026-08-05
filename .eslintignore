@@ -1,2 +1,3 @@
 android/app/jni/llama.cpp/
 coverage/
+test-logs/

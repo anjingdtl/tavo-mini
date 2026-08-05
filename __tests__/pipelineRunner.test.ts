@@ -1745,11 +1745,15 @@ test('full: one side reasoning-only fails that side only', async () => {
 
   await runPipeline('task-full-reasoning-side');
 
-  // review first + one repair = 2, factcheck 1, proof 1 (+draft)
+  // review first + one reasoning-directed retry = 2, factcheck 1, proof 1 (+draft)
   const reviewCalls = mockCallLLMResult.mock.calls.filter(
     (c: any[]) => c[2]?.scenario === 'pipeline_review',
   );
   expect(reviewCalls.length).toBe(2);
+  // The retry must request disabled thinking + a doubled budget clamped to
+  // the model ceiling (reviewMaxTokens 1500 → 3000; max_output_tokens 8000).
+  expect(reviewCalls[1][2].thinking).toEqual({ type: 'disabled' });
+  expect(reviewCalls[1][2].max_tokens).toBe(3000);
   expect(
     callForScenario(mockCallLLMResult.mock.calls, 'pipeline_proof'),
   ).toBeDefined();
@@ -1758,12 +1762,154 @@ test('full: one side reasoning-only fails that side only', async () => {
     expect.objectContaining({
       stage: 'review',
       status: 'failed',
+      // Reasoning-only failure now surfaces an actionable hint rather than the
+      // vague "返回格式无效" label.
       error: expect.stringContaining('推理'),
+    }),
+  );
+  expect(mockStore.persistTaskStage).toHaveBeenCalledWith(
+    'task-full-reasoning-side',
+    expect.objectContaining({
+      stage: 'review',
+      status: 'failed',
+      error: expect.stringContaining('max_tokens'),
     }),
   );
   expect(mockStore.persistCompleteTask).toHaveBeenCalledWith(
     'task-full-reasoning-side',
     'final-fc-only',
+  );
+});
+
+test('review reasoning-only → thinking-disabled retry succeeds', async () => {
+  mockCallLLMResult.mockImplementation(async (_m: any[], _t: any, cfg: any) => {
+    if (cfg.scenario === 'pipeline_draft') {
+      return {
+        text: 'draft-body',
+        inputTokens: 10,
+        outputTokens: 20,
+        totalTokens: 30,
+      };
+    }
+    if (cfg.scenario === 'pipeline_review') {
+      // First call: reasoning model burns the whole budget on CoT.
+      if (cfg.thinking === undefined) {
+        return {
+          text: null,
+          reasoningText: '我先评估情节与人物弧光……'.repeat(40),
+          emptyReason: 'reasoning_only',
+          inputTokens: 5,
+          outputTokens: 1500,
+          totalTokens: 1505,
+        };
+      }
+      // Retry with thinking disabled → model emits the JSON report directly.
+      return {
+        text: validReview({
+          strengths: ['人物动机清晰'],
+          issues: ['中段节奏稍快'],
+          suggestions: ['可在转折前增加铺垫'],
+        }),
+        inputTokens: 6,
+        outputTokens: 60,
+        totalTokens: 66,
+      };
+    }
+    if (cfg.scenario === 'pipeline_proof') {
+      return {
+        text: 'final-from-retry-review',
+        inputTokens: 12,
+        outputTokens: 20,
+        totalTokens: 32,
+      };
+    }
+    throw new Error(cfg.scenario);
+  });
+
+  await runPipeline('task-review-reasoning-retry');
+
+  const reviewCalls = mockCallLLMResult.mock.calls.filter(
+    (c: any[]) => c[2]?.scenario === 'pipeline_review',
+  );
+  expect(reviewCalls.length).toBe(2);
+  expect(reviewCalls[1][2].thinking).toEqual({ type: 'disabled' });
+  expect(reviewCalls[1][2].max_tokens).toBe(3000);
+  expect(mockStore.persistTaskStage).toHaveBeenCalledWith(
+    'task-review-reasoning-retry',
+    expect.objectContaining({
+      stage: 'review',
+      status: 'success',
+      text: expect.stringContaining('人物动机清晰'),
+    }),
+  );
+});
+
+test('factCheck reasoning-only → thinking-disabled retry succeeds', async () => {
+  mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'full' }));
+  mockCallLLMResult.mockImplementation(async (_m: any[], _t: any, cfg: any) => {
+    if (cfg.scenario === 'pipeline_draft') {
+      return {
+        text: 'draft-body',
+        inputTokens: 10,
+        outputTokens: 20,
+        totalTokens: 30,
+      };
+    }
+    if (cfg.scenario === 'pipeline_review') {
+      return {
+        text: validReview({ strengths: ['ok'] }),
+        inputTokens: 5,
+        outputTokens: 40,
+        totalTokens: 45,
+      };
+    }
+    if (cfg.scenario === 'pipeline_factcheck') {
+      if (cfg.thinking === undefined) {
+        return {
+          text: null,
+          reasoningText: '核验时间线与设定……'.repeat(40),
+          emptyReason: 'reasoning_only',
+          inputTokens: 5,
+          outputTokens: 1500,
+          totalTokens: 1505,
+        };
+      }
+      return {
+        text: validFactCheck({
+          errors: ['第3章银钥匙归属与前文矛盾'],
+          confirmed: ['主角动机一致'],
+        }),
+        inputTokens: 6,
+        outputTokens: 50,
+        totalTokens: 56,
+      };
+    }
+    if (cfg.scenario === 'pipeline_proof') {
+      return {
+        text: 'final-from-retry-fc',
+        inputTokens: 12,
+        outputTokens: 20,
+        totalTokens: 32,
+      };
+    }
+    throw new Error(cfg.scenario);
+  });
+
+  await runPipeline('task-fc-reasoning-retry');
+
+  const fcCalls = mockCallLLMResult.mock.calls.filter(
+    (c: any[]) => c[2]?.scenario === 'pipeline_factcheck',
+  );
+  expect(fcCalls.length).toBe(2);
+  expect(fcCalls[1][2].thinking).toEqual({ type: 'disabled' });
+  expect(fcCalls[1][2].max_tokens).toBe(3000);
+  expect(mockStore.persistTaskStage).toHaveBeenCalledWith(
+    'task-fc-reasoning-retry',
+    expect.objectContaining({
+      stage: 'factCheck',
+      status: 'success',
+      text: expect.stringContaining('银钥匙归属'),
+    }),
   );
 });
 
