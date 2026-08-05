@@ -34,6 +34,24 @@ export interface PipelineContextSnapshot {
 
   /** The user's writing instruction for this run (retrieval prompt). */
   retrievalUserPrompt: string;
+
+  /**
+   * Project outline text (future plot plan) injected as the highest creative
+   * constraint. Empty for non-outline modes / no enabled outlines. Frozen once
+   * at buildContext time so every stage of one task sees the same plan.
+   */
+  outlineText: string;
+  /** Stable fingerprint of the frozen outlines (ids + positions + hashes). */
+  outlineFingerprint: string;
+  /** Ids of the outlines actually injected, in stitch order. */
+  outlineIds: number[];
+  /** Whether the full outline text fit the budget (false → pipeline blocked). */
+  outlineComplete: boolean;
+  /** Human-readable reason when the outline could not be fully injected. */
+  outlineBlockingReason?: string;
+  /** Token estimate of the frozen outline text. */
+  outlineEstimatedTokens: number;
+
   /**
    * Optional fingerprint for debugging cross-stage source consistency.
    * Not consumed by prompts; only logged at dev level.
@@ -56,6 +74,8 @@ export interface ReviewContext {
   recentBridgeText: string;
   currentInstructionText: string;
   retrievalUserPrompt: string;
+  /** Project outline plan (future direction); empty when not applicable. */
+  outlineText: string;
 }
 
 /**
@@ -72,6 +92,12 @@ export interface FactCheckContext {
   worldbookText: string;
   characterText: string;
   noteText: string;
+  /**
+   * Project outline plan treated as FUTURE planning only — never as already-
+   * happened facts. The fact-check prompt must keep this strictly separated
+   * from story memory / recent body.
+   */
+  outlineText: string;
 }
 
 /**
@@ -88,6 +114,8 @@ export interface ProofConstraints {
   episodicMemoryText: string;
   noteText: string;
   recentBridgeText: string;
+  /** Project outline plan the proof must protect (preserve correct beats). */
+  outlineText: string;
 }
 
 export function buildReviewContextFromSnapshot(
@@ -103,6 +131,7 @@ export function buildReviewContextFromSnapshot(
     recentBridgeText: snapshot.recentBridgeText,
     currentInstructionText: snapshot.currentInstructionText,
     retrievalUserPrompt: snapshot.retrievalUserPrompt,
+    outlineText: snapshot.outlineText,
   };
 }
 
@@ -119,6 +148,7 @@ export function buildFactCheckContextFromSnapshot(
     worldbookText: snapshot.worldbookText,
     characterText: snapshot.characterText,
     noteText: snapshot.noteText,
+    outlineText: snapshot.outlineText,
   };
 }
 
@@ -137,5 +167,6 @@ export function buildProofConstraintsFromSnapshot(
     episodicMemoryText: snapshot.episodicMemoryText,
     noteText: snapshot.noteText,
     recentBridgeText: snapshot.recentBridgeText,
+    outlineText: snapshot.outlineText,
   };
 }

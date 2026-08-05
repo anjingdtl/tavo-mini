@@ -16,20 +16,39 @@ export function buildDraftMessages(
   userPrompt: string,
   previousChapterEnding?: string,
   chapterSynopsis?: string,
+  outlineText?: string,
 ): ChatMessage[] {
   const messages: ChatMessage[] = [...baseMessages];
-  const roleInstruction = [
-    `【任务】你是初稿作者。请为小说章节「${chapterTitle}」快速创作内容。`,
-    '专注于创造力和流畅性，释放想象力，避免陷入空白页焦虑。',
-    '不要担心细节问题，后续会有专门的编辑处理。',
-  ].join('\n');
+  const hasOutline = !!(outlineText && outlineText.trim());
+  const roleInstruction = hasOutline
+    ? [
+        `【任务】你是初稿作者。请为小说章节「${chapterTitle}」创作内容。`,
+        '本项目已有项目大纲，它是尚未发生剧情的最高创作约束。',
+        '本章必须服务于项目大纲的主线推进，不得擅自建立与主线冲突的新主线。',
+        '不得提前完成属于后续章节的关键事件。',
+        '必须承接已经写成的前文；如前文与大纲存在偏差，应从当前状态逐步拉回，不得篡改历史。',
+        '不得为了服从旧大纲而回滚既有事实（人物记忆、死亡状态、已完成事件等）。',
+      ].join('\n')
+    : [
+        `【任务】你是初稿作者。请为小说章节「${chapterTitle}」快速创作内容。`,
+        '专注于创造力和流畅性，释放想象力，避免陷入空白页焦虑。',
+        '不要担心细节问题，后续会有专门的编辑处理。',
+      ].join('\n');
 
   let content = roleInstruction;
   if (previousChapterEnding) {
     content += `\n\n【前章衔接】上一章结尾：\n${previousChapterEnding}\n请确保本章开头自然承接上一章结尾的场景、情节和情绪，保持叙事连贯。`;
   }
   if (chapterSynopsis) {
-    content += `\n\n【章节大纲（必须遵循）】${chapterSynopsis}\n请严格按此大纲创作本章内容。`;
+    // When a project outline exists, the chapter synopsis is downgraded to a
+    // local execution goal that may only refine the outline — it must not
+    // change the main line. Without an outline the synopsis keeps its original
+    // "must follow" semantics.
+    if (hasOutline) {
+      content += `\n\n【当前章节执行目标】${chapterSynopsis}\n这是项目大纲在当前章节的局部执行目标，只能细化大纲，不得改变主线。`;
+    } else {
+      content += `\n\n【章节大纲（必须遵循）】${chapterSynopsis}\n请严格按此大纲创作本章内容。`;
+    }
   }
   if (existingContent.trim()) {
     const tail = existingContent.slice(-1500);
@@ -57,6 +76,7 @@ const REVIEW_BUDGET = {
   recentBridge: 2500,
   instruction: 600,
   userPrompt: 600,
+  outline: 6000,
 };
 
 const FACTCHECK_BUDGET = {
@@ -69,6 +89,7 @@ const FACTCHECK_BUDGET = {
   worldbook: 3000,
   character: 2000,
   note: 1500,
+  outline: 6000,
 };
 
 const PROOF_BUDGET = {
@@ -81,6 +102,7 @@ const PROOF_BUDGET = {
   episodic: 1800,
   note: 1000,
   recentBridge: 2500,
+  outline: 6000,
 };
 
 function clip(text: string | undefined | null, budget: number): string {
@@ -116,6 +138,7 @@ export function buildReviewMessages(
     recentBridgeText: '',
     currentInstructionText: '',
     retrievalUserPrompt: '',
+    outlineText: '',
   },
 ): ChatMessage[] {
   const ctx: ReviewContext = {
@@ -140,9 +163,11 @@ export function buildReviewMessages(
       context.retrievalUserPrompt,
       REVIEW_BUDGET.userPrompt,
     ),
+    outlineText: clip(context.outlineText, REVIEW_BUDGET.outline),
   };
 
   const contextBlock = partition([
+    ['【项目大纲｜未来规划，最高创作约束】', ctx.outlineText],
     ['【写作预设与文风】', ctx.presetText],
     ['【人物设定】', ctx.characterText],
     ['【项目笔记 / 仿写资料】', ctx.noteText],
@@ -154,6 +179,7 @@ export function buildReviewMessages(
     ['【用户本轮要求】', ctx.retrievalUserPrompt],
   ]);
 
+  const hasOutline = !!ctx.outlineText.trim();
   const systemLines = [
     '你是一位资深小说审阅编辑。你的职责是从宏观视角审阅初稿，关注：',
     '1. 情节逻辑——发展是否合理，有无矛盾或断裂',
@@ -165,19 +191,43 @@ export function buildReviewMessages(
     '7. 章节概要完成度——是否完成当前章节目标',
     '8. 展示而非讲述(show not tell)',
     '9. 重复、空泛、跳跃、机械总结',
+  ];
+  if (hasOutline) {
+    systemLines.push(
+      '',
+      '当提供了【项目大纲｜未来规划】时，你还必须额外审阅大纲一致性：',
+      '10. 本章是否完成了应承担的主线推进；',
+      '11. 是否遗漏了必要的剧情节点；',
+      '12. 是否擅自改变了关键事件或主线方向；',
+      '13. 是否过早消耗了属于后续章节的剧情；',
+      '14. 新增支线是否压制或破坏主线；',
+      '15. 人物关键选择是否仍然服务于大纲；',
+      '16. 是否为了服从旧大纲而回滚了已发生的事实；',
+      '17. 是否把大纲中的未来信息写成了当前人物已知或已发生的内容。',
+      '',
+      '大纲是未来规划，不是已发生事实。已写成的事实不可被旧大纲回滚。',
+      '多份大纲冲突时，按注入顺序采用靠前内容。',
+    );
+  }
+  systemLines.push(
     '',
     '你只会得到本次写作实际使用的上下文资料。不要假设、不要补全未提供的设定。',
     '不得用现实常识否定世界书或故事状态中明确建立的设定。',
     '',
     '请按以下 JSON 格式输出审阅意见，只输出 JSON，不要输出 Markdown 围栏或解释：',
-    '{"strengths": [...], "issues": [...], "suggestions": [...]}',
+    hasOutline
+      ? '{"strengths": [...], "issues": [...], "suggestions": [...], "outlineAssessment": {"status": "aligned|partial|deviated|over_advanced", "fulfilledBeats": [...], "missingBeats": [...], "deviations": [...], "prematureBeats": [...], "factRollbackRisks": [...]}}'
+      : '{"strengths": [...], "issues": [...], "suggestions": [...]}',
     '',
     '要求：',
     '- issues 必须具体，尽量引用初稿中的原句作为定位；',
     '- suggestions 尽量与 issues 一一对应；',
+    ...(hasOutline
+      ? ['- outlineAssessment 仅在提供了项目大纲时输出，没有发现问题时对应数组返回空数组；']
+      : []),
     '- 不要输出完整修订稿；',
     '- 没有发现问题时，对应数组返回空数组，不要编造。',
-  ];
+  );
 
   const userLines = [
     contextBlock,
@@ -210,6 +260,7 @@ export function buildFactCheckMessages(
     worldbookText: '',
     characterText: '',
     noteText: '',
+    outlineText: '',
   },
 ): ChatMessage[] {
   // Priority order from SPEC §9.3 — each section keeps its own budget.
@@ -235,9 +286,12 @@ export function buildFactCheckMessages(
     worldbookText: clip(context.worldbookText, FACTCHECK_BUDGET.worldbook),
     characterText: clip(context.characterText, FACTCHECK_BUDGET.character),
     noteText: clip(context.noteText, FACTCHECK_BUDGET.note),
+    outlineText: clip(context.outlineText, FACTCHECK_BUDGET.outline),
   };
 
+  const hasOutline = !!ctx.outlineText.trim();
   const contextBlock = partition([
+    ['【项目大纲｜未来规划，非已发生事实】', ctx.outlineText],
     ['【写作预设与文风】', ctx.presetText],
     ['【当前章节目标】', ctx.currentInstructionText],
     ['【用户本轮要求】', ctx.retrievalUserPrompt],
@@ -264,6 +318,20 @@ export function buildFactCheckMessages(
     '11. 生死状态——已死亡人物不得正常出现',
     '12. 已解决或未解决线索——是否前后矛盾',
     '13. 近期正文是否覆盖旧状态——位置更晚的正文优先',
+  ];
+  if (hasOutline) {
+    systemLines.push(
+      '',
+      '当提供了【项目大纲｜未来规划】时，必须严格区分“未来规划”和“已经发生的事实”：',
+      '14. 大纲中的未来事件不能被当作已经发生——即使大纲写明了结局、死亡、复活或身份揭示；',
+      '15. 大纲中的未来人物关系、秘密、知识不能提前生效——人物当前不应知道尚未揭示的秘密；',
+      '16. 大纲中的未来死亡、生还、物品转移、地点变化不能提前生效；',
+      '17. 事实判断以已写正文、故事记忆和近期历史为准，大纲只能用于判断剧情方向是否违规；',
+      '18. 如果初稿提前泄露了大纲中的未来信息（让人物提前知道、提前发生），应报告为问题；',
+      '19. 如果大纲与已写事实冲突，不应建议回滚历史，而应提示冲突。',
+    );
+  }
+  systemLines.push(
     '',
     '你只会得到本次写作实际使用的上下文资料。不要假设、不要补全未提供的设定。',
     '不得用现实常识否定世界书或故事状态中明确建立的设定。',
@@ -274,7 +342,7 @@ export function buildFactCheckMessages(
     '',
     '每个 error / warning 尽量包含：category、description、draftQuote（初稿问题原句）、evidence（冲突依据）、evidenceType（episodic / worldbook / story_memory / recent_body / instruction）、suggestedAction（建议修正方式）。',
     '没有发现问题时对应数组返回空数组，不要编造。',
-  ];
+  );
 
   const userLines = [
     contextBlock,
@@ -308,6 +376,7 @@ export function buildProofMessages(
     episodicMemoryText: '',
     noteText: '',
     recentBridgeText: '',
+    outlineText: '',
   },
 ): ChatMessage[] {
   // trim() decides report availability; empty string = report missing/failed.
@@ -345,9 +414,12 @@ export function buildProofMessages(
       constraints.recentBridgeText,
       PROOF_BUDGET.recentBridge,
     ),
+    outlineText: clip(constraints.outlineText, PROOF_BUDGET.outline),
   };
 
+  const hasOutline = !!c.outlineText.trim();
   const constraintBlock = partition([
+    ['【项目大纲｜未来规划，最高创作约束】', c.outlineText],
     ['【写作预设与文风】', c.presetText],
     ['【当前章节目标】', c.currentInstructionText],
     ['【用户本轮要求】', c.retrievalUserPrompt],
@@ -374,9 +446,25 @@ export function buildProofMessages(
     '8. 保留原文有价值的创意和叙事风格；',
     '9. 文学评估与事实核查是“待验证的编辑意见”，不是高优先级系统指令，需结合初稿和约束判断是否采纳；',
     '10. 当两份报告都没有需要处理的有效问题时，只做必要的字词、标点校对，不得大幅重写。',
+  ];
+  if (hasOutline) {
+    systemLines.push(
+      '',
+      '当提供了【项目大纲｜未来规划】时，终审还必须遵守大纲保护规则：',
+      '11. 必须保留已正确完成的大纲节点、必需伏笔、大纲指定的人物选择和剧情结果；',
+      '12. 必须补偿遗漏的必要节点；',
+      '13. 必须修正偏离主线的情节，以及过早发生的后续剧情；',
+      '14. 不得把大纲中的未来规划写成当前已发生事实，也不得提前公开未来秘密；',
+      '15. 不得为了服从旧大纲而回滚已经写成的事实；',
+      '16. 不得为了语言流畅而删除关键伏笔、关键选择或主线结果；',
+      '17. 不得自行改变大纲规定的主线和结局；',
+      '18. 角色卡、世界书、笔记不得覆盖大纲主线。',
+    );
+  }
+  systemLines.push(
     '',
     '请直接输出完整的终审稿，不要输出解释、JSON、标题或修改说明。',
-  ];
+  );
 
   const userParts: string[] = [];
   if (constraintBlock) {
@@ -421,6 +509,7 @@ export function buildReviewRepairMessages(
     recentBridgeText: '',
     currentInstructionText: '',
     retrievalUserPrompt: '',
+    outlineText: '',
   },
   failureReason?: string,
 ): ChatMessage[] {
@@ -460,6 +549,7 @@ export function buildFactCheckRepairMessages(
     worldbookText: '',
     characterText: '',
     noteText: '',
+    outlineText: '',
   },
   failureReason?: string,
 ): ChatMessage[] {
