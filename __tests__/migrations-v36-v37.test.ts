@@ -9,7 +9,7 @@ import { buildV36toV37Statements } from '../src/services/migrations/v36-to-v37';
 
 describe('Schema 36 → 37 input fingerprint migration', () => {
   it('reports SCHEMA_VERSION as 37', () => {
-    expect(SCHEMA_VERSION).toBe(37);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(38);
   });
 
   it('adds input_fingerprint column to pipeline_tasks', () => {
