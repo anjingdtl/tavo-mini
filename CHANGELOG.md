@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.11.24] - 2026-08-05
+
+### Fixed
+
+- **Schema 40 用户资料召回修复**：解决覆盖安装后角色卡、世界书显示为空的 P0 事故。
+  - **根因**：数据库 recorded `schema_version=39`，但 `canon_evidence` 表的 `source_origin` / `rescan_operation_id`（Schema 32→33 provenance 列）从未实际落地。版本迁移引擎跳过 32→33，漂移永久存在；引用 `source_origin` 的查询（Canon rescan、启动校验器）抛 `no such column`，中断初始化链，UI 来不及读到仍然完好的角色卡和世界书。
+  - **Schema 39→40**：新增幂等 `ensureCanonEvidenceProvenanceSchema`（check-then-ALTER + backfill `batch` + CREATE INDEX IF NOT EXISTS），不依赖 `ADD COLUMN IF NOT EXISTS`。
+  - **32→33 幂等化**：重构为逻辑迁移 `migrateV32ToV33`，共享同一 ensure 函数；不再无条件 ALTER（旧代码在已有列的库上重复执行会抛 `duplicate column`）。
+  - **初始化顺序重排**：inspect 漂移 → 捕获召回快照 → 创建+校验 schema-recovery 备份 → pre-migration repair → migrate → post-migration repair → strict validate → seed → 比较召回快照 → 全部成功才写版本标记。
+  - **召回快照**：分块读完整 ID 集合，strict before/after 比较（角色/世界书/合集/关联表）；不一致时阻止启动并报 `USER_DATA_RECALL_MISMATCH`。
+  - **schema-recovery 备份**：独立 `schema-recovery/` 目录，写后重读校验 checksum + 核心表行数；`SELECT *` 容忍漂移列；核心表行数不匹配时 fail-closed。
+  - **UI 防假空态**：`ResourceLibrary` 新增 `loadError` 状态——数据库读取错误不再渲染成"还没有角色卡"；改为显示"资料暂时无法读取，数据可能仍然存在"。
+  - **恢复状态上报**：`main/index.tsx` 修复成功时 Toast 展示前后数量；恢复失败时不掩盖错误，提示保留原数据库和恢复备份。
+  - **canon_evidence 整表缺失**：不创建空表掩盖问题，保留数据库和备份，返回结构化恢复错误。
+  - **备份类型扩展**：新增 `pre_migration` / `schema_recovery` BackupKind。
+
+### Validation
+
+- 新增 19 个 drift-matrix 测试（Case A–O）覆盖正常升级、漂移修复、安全失败；E2E 修复证明在真实 sql.js SQLite 上验证 recorded-39 漂移库修复后数据不变；模拟器覆盖安装验证（注入漂移 DB → 装修复版 → 角色卡/世界书重新出现 → Schema 40 物理确认）；2271 Jest pass / 0 TS errors。
+
 ## [2.11.23] - 2026-08-05
 
 ### Fixed
