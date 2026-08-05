@@ -27,8 +27,10 @@ import type {
   FrozenPresetSnapshot,
   PipelineExecutionSnapshot,
 } from '../../types/pipelineExecution';
-import type { ChatMessage } from '../llm';
-import { buildPostDraftAuditContext } from '../postDraftRetrieval';
+import {
+  buildPostDraftAuditContextFromFrozen,
+  captureFrozenAuditCandidates,
+} from '../postDraftRetrieval';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { saveDraft } from '../draftService';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
@@ -54,11 +56,15 @@ import {
   resolveStageCheckpoints,
 } from './taskView';
 import {
+  compileDraftFromFrozenRequest,
   compileDraftStageRequest,
   compileFactCheckStageRequest,
   compileProofStageRequest,
   compileReviewStageRequest,
+  requireReadyStageRequest,
+  type ReadyStageRequest,
 } from './compileStageRequest';
+import { executeClaimedStage } from './executeClaimedStage';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 
@@ -340,17 +346,13 @@ export async function reconcilePipelineTask(
   ).catch(() => {});
 
   try {
-    // Ensure pending checkpoint rows exist (Schema 39+).
-    try {
-      await db.ensurePendingCheckpoints?.(taskId, [
-        'draft',
-        'review',
-        'factCheck',
-        'proof',
-      ]);
-    } catch {
-      /* pre-39 or mock */
-    }
+    // Schema 39+: checkpoint rows are required. Fail-closed on DB errors.
+    await db.ensurePendingCheckpoints(taskId, [
+      'draft',
+      'review',
+      'factCheck',
+      'proof',
+    ]);
 
     // Bound iterations to avoid infinite loops on bugs.
     for (let step = 0; step < 32; step++) {
@@ -365,14 +367,8 @@ export async function reconcilePipelineTask(
         throw new Error('找不到管线任务');
       }
 
-      let checkpointRows: Awaited<
-        ReturnType<typeof db.getStageCheckpoints>
-      > | null = null;
-      try {
-        checkpointRows = await db.getStageCheckpoints(taskId);
-      } catch {
-        checkpointRows = null;
-      }
+      // Fail-closed: checkpoint query errors must not fall back to memory-only.
+      const checkpointRows = await db.getStageCheckpoints(taskId);
 
       const stages = resolveStageCheckpoints({
         checkpointRows,
@@ -446,7 +442,11 @@ async function handleBlocked(
     return;
   }
   if (code === 'STAGE_FAILED' || code === 'TASK_NOT_RECOVERABLE') {
-    store.failTask(taskId, action.reason.message);
+    if (store.persistFailTask) {
+      await store.persistFailTask(taskId, action.reason.message);
+    } else {
+      store.failTask(taskId, action.reason.message);
+    }
     await PipelineForeground.notifyFailed(
       taskId,
       chapter.title || '流水线',
@@ -455,7 +455,11 @@ async function handleBlocked(
     await PipelineForeground.stop(taskId);
     return;
   }
-  store.failTask(taskId, action.reason.message);
+  if (store.persistFailTask) {
+    await store.persistFailTask(taskId, action.reason.message);
+  } else {
+    store.failTask(taskId, action.reason.message);
+  }
   await PipelineForeground.notifyFailed(
     taskId,
     chapter.title || '流水线',
@@ -611,23 +615,40 @@ async function actionPersistInitialSnapshot(
     draftPreset: runtime.draftPreset,
     draftMaxTokens: execution.draftMaxTokens,
   });
-  if (!compiled.fits && compiled.blockingError) {
-    throw new OutlineContextError(
-      compiled.blockingError.code === 'OUTLINE_TOO_LARGE'
+  if (!compiled.ready) {
+    const code =
+      compiled.error.code === 'OUTLINE_TOO_LARGE'
         ? 'OUTLINE_OVER_BUDGET'
-        : 'OUTLINE_OVER_BUDGET',
-      compiled.blockingError.message,
-      compiled.blockingError.userAction === 'open_outline'
+        : 'OUTLINE_CONTEXT_WINDOW_EXCEEDED';
+    throw new OutlineContextError(
+      code,
+      compiled.error.message,
+      compiled.error.userAction === 'open_outline'
         ? 'open_outlines'
         : 'restart_task',
     );
   }
   const pipelineContext = compiled.draftCompile!.pipelineContext;
+  const frozenDraftRequest = compiled.frozenDraftRequest!;
+
+  // Freeze full-mode audit candidate pool at the same moment as draft context.
+  let frozenAuditCandidates = runtime.parsed?.frozenAuditCandidates || null;
+  if (execution.pipelineMode === 'full' && !frozenAuditCandidates) {
+    const contextConfig = await db.getContextConfig();
+    frozenAuditCandidates = await captureFrozenAuditCandidates(
+      chapter,
+      chapter.project_id,
+      contextConfig,
+    );
+  }
+
   await store.persistTaskPipelineContext(
     taskId,
     serializePipelineTaskContext({
       draftContext: pipelineContext,
       execution,
+      frozenDraftRequest,
+      frozenAuditCandidates,
     }),
   );
   void abortSignal;
@@ -641,138 +662,157 @@ async function actionRunDraft(
   options: ReconcileOptions,
 ): Promise<void> {
   if (cancelled(taskId, options)) return;
-  const store = usePipelineTaskStore.getState();
 
-  // CAS claim
-  let claimed = true;
-  try {
-    claimed = await db.claimStageCheckpoint(taskId, 'draft');
-  } catch {
-    claimed = true; // mock / pre-39
-  }
-  if (!claimed) {
+  const claim = await executeClaimedStage({
+    taskId,
+    stage: 'draft',
+    abortSignal,
+    isCancelled: () => cancelled(taskId, options),
+    onClaimed: async () => {
+      const store = usePipelineTaskStore.getState();
+      if (store.persistTaskStatus) {
+        await store.persistTaskStatus(taskId, 'drafting');
+      } else {
+        store.setTaskStatus(taskId, 'drafting');
+      }
+      onStageUpdate?.({
+        stage: 'draft',
+        label: '正在生成初稿',
+        startedAt: Date.now(),
+      });
+      PipelineForeground.updateProgress(taskId, '正在生成初稿', 0).catch(
+        () => {},
+      );
+    },
+    run: async () => {
+      const store = usePipelineTaskStore.getState();
+      const runtime = await loadRuntime(taskId, chapter);
+      if (!runtime.parsed?.draftContext || !runtime.parsed.execution) {
+        throw new OutlineContextError(
+          'OUTLINE_SNAPSHOT_INVALID',
+          '缺少冻结草稿上下文，无法生成初稿。',
+          'restart_task',
+        );
+      }
+      if (!runtime.parsed.frozenDraftRequest) {
+        throw new OutlineContextError(
+          'OUTLINE_SNAPSHOT_INVALID',
+          '缺少冻结初稿请求，无法安全恢复。请重新开始生成。',
+          'restart_task',
+        );
+      }
+
+      // Draft must send frozen messages — never recompile from live project data.
+      const firstCompile = compileDraftFromFrozenRequest({
+        frozen: runtime.parsed.frozenDraftRequest,
+      });
+      const firstReady = requireReadyStageRequest(firstCompile);
+      const start = Date.now();
+      let tokens = { input: 0, output: 0, total: 0 };
+
+      try {
+        let result = await callReadyLLM(
+          firstReady,
+          runtime.config.draftMaxTokens,
+          buildCallConfig(
+            runtime.draftPreset,
+            runtime.config.draftMaxTokens,
+            'pipeline_draft',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+          ),
+          abortSignal,
+        );
+        if (cancelled(taskId, options)) {
+          const err = new Error('任务已取消') as Error & { code?: string };
+          err.code = 'cancelled';
+          throw err;
+        }
+        tokens = accumulateTokens(tokens, result);
+        let draftText = result.text || '';
+        if (
+          !draftText.trim() &&
+          (result.emptyReason === 'reasoning_only' ||
+            result.emptyReason === 'length')
+        ) {
+          const retryCompile = compileDraftFromFrozenRequest({
+            frozen: runtime.parsed.frozenDraftRequest,
+            retryInstruction:
+              '请直接输出章节正文；不要输出分析、思考过程或标题。',
+          });
+          if (!retryCompile.ready) {
+            throw new OutlineContextError(
+              'OUTLINE_CONTEXT_WINDOW_EXCEEDED',
+              retryCompile.error.message,
+              'restart_task',
+            );
+          }
+          result = await callReadyLLM(
+            retryCompile,
+            runtime.config.draftMaxTokens,
+            buildCallConfig(
+              runtime.draftPreset,
+              runtime.config.draftMaxTokens,
+              'pipeline_draft',
+              chapter.project_id,
+              runtime.requestConfig,
+              taskId,
+            ),
+            abortSignal,
+          );
+          if (cancelled(taskId, options)) {
+            const err = new Error('任务已取消') as Error & { code?: string };
+            err.code = 'cancelled';
+            throw err;
+          }
+          tokens = accumulateTokens(tokens, result);
+          draftText = result.text || '';
+        }
+        if (!draftText.trim()) {
+          switch (result.emptyReason) {
+            case 'reasoning_only':
+              throw new Error(
+                '初稿仅返回推理内容，未产生正文。请提高模型最大输出 token 或改用非推理模型。',
+              );
+            case 'length':
+              throw new Error(
+                '初稿输出被 max_tokens 截断，未产生正文。请提高初稿或模型最大输出 token。',
+              );
+            default:
+              throw new Error('初稿未返回正文，请检查模型服务后重试。');
+          }
+        }
+        await persistStage(taskId, {
+          stage: 'draft',
+          text: draftText,
+          status: 'success',
+          tokens,
+          durationMs: Date.now() - start,
+        });
+      } catch (error: any) {
+        if (isAbortError(error, abortSignal) || cancelled(taskId, options)) {
+          store.cancelTask(taskId);
+          await PipelineForeground.stop(taskId);
+          throw error;
+        }
+        await persistStage(taskId, {
+          stage: 'draft',
+          text: '',
+          status: 'failed',
+          error: getErrorMessage(error, '初稿生成失败'),
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        throw error;
+      }
+    },
+  });
+
+  if (!claim.claimed) {
     throw Object.assign(new Error('任务已在运行'), {
       code: 'TASK_ALREADY_RUNNING',
     });
-  }
-
-  await store.persistTaskStatus?.(taskId, 'drafting');
-  store.setTaskStatus(taskId, 'drafting');
-  onStageUpdate?.({
-    stage: 'draft',
-    label: '正在生成初稿',
-    startedAt: Date.now(),
-  });
-  PipelineForeground.updateProgress(taskId, '正在生成初稿', 0).catch(() => {});
-
-  const runtime = await loadRuntime(taskId, chapter);
-  if (!runtime.parsed?.draftContext || !runtime.parsed.execution) {
-    // Snapshot must exist (persist_initial_snapshot).
-    throw new OutlineContextError(
-      'OUTLINE_SNAPSHOT_INVALID',
-      '缺少冻结草稿上下文，无法生成初稿。',
-      'restart_task',
-    );
-  }
-
-  const compiled = await compileDraftStageRequest({
-    chapter,
-    requestConfig: runtime.requestConfig,
-    draftPreset: runtime.draftPreset,
-    draftMaxTokens: runtime.config.draftMaxTokens,
-  });
-  // Prefer frozen messages from the snapshot path: recompile must use same
-  // frozen draftContext fields. compileDraft rebuilds live — for true freeze
-  // we use messages from draft compile only when snapshot was just built.
-  // On resume of failed draft (context exists), rebuild messages from frozen
-  // context via chapterGeneration is not available; re-call compiler with
-  // frozen preset/window is acceptable if context snapshot is still used for
-  // later stages. Draft messages: use compiled.messages (compiler is unified).
-  const draftMessages = compiled.messages;
-  const start = Date.now();
-  let tokens = { input: 0, output: 0, total: 0 };
-
-  try {
-    let result = await callLLMResult(
-      draftMessages,
-      runtime.config.draftMaxTokens,
-      buildCallConfig(
-        runtime.draftPreset,
-        runtime.config.draftMaxTokens,
-        'pipeline_draft',
-        chapter.project_id,
-        runtime.requestConfig,
-        taskId,
-      ),
-      abortSignal,
-    );
-    if (cancelled(taskId, options)) return;
-    tokens = accumulateTokens(tokens, result);
-    let draftText = result.text || '';
-    if (
-      !draftText.trim() &&
-      (result.emptyReason === 'reasoning_only' || result.emptyReason === 'length')
-    ) {
-      const retryMessages: ChatMessage[] = [
-        ...draftMessages,
-        {
-          role: 'user',
-          content: '请直接输出章节正文；不要输出分析、思考过程或标题。',
-        },
-      ];
-      result = await callLLMResult(
-        retryMessages,
-        runtime.config.draftMaxTokens,
-        buildCallConfig(
-          runtime.draftPreset,
-          runtime.config.draftMaxTokens,
-          'pipeline_draft',
-          chapter.project_id,
-          runtime.requestConfig,
-          taskId,
-        ),
-        abortSignal,
-      );
-      if (cancelled(taskId, options)) return;
-      tokens = accumulateTokens(tokens, result);
-      draftText = result.text || '';
-    }
-    if (!draftText.trim()) {
-      switch (result.emptyReason) {
-        case 'reasoning_only':
-          throw new Error(
-            '初稿仅返回推理内容，未产生正文。请提高模型最大输出 token 或改用非推理模型。',
-          );
-        case 'length':
-          throw new Error(
-            '初稿输出被 max_tokens 截断，未产生正文。请提高初稿或模型最大输出 token。',
-          );
-        default:
-          throw new Error('初稿未返回正文，请检查模型服务后重试。');
-      }
-    }
-    await persistStage(taskId, {
-      stage: 'draft',
-      text: draftText,
-      status: 'success',
-      tokens,
-      durationMs: Date.now() - start,
-    });
-  } catch (error: any) {
-    if (isAbortError(error, abortSignal) || cancelled(taskId, options)) {
-      store.cancelTask(taskId);
-      await PipelineForeground.stop(taskId);
-      throw error;
-    }
-    await persistStage(taskId, {
-      stage: 'draft',
-      text: '',
-      status: 'failed',
-      error: getErrorMessage(error, '初稿生成失败'),
-      tokens,
-      durationMs: Date.now() - start,
-    });
-    throw error;
   }
 }
 
@@ -791,38 +831,30 @@ async function actionBuildAuditContext(
       'restart_task',
     );
   }
-  const draftCp = (
-    await db.getStageCheckpoint?.(taskId, 'draft').catch(() => null)
-  ) as { outputText?: string } | null;
-  const draftText =
-    draftCp?.outputText ||
-    store.tasks
-      .find(t => t.id === taskId)
-      ?.stageResults.find(s => s.stage === 'draft' && s.status === 'success')
-      ?.text ||
-    '';
+  const draftText = await getDraftText(taskId);
   if (!draftText) {
     throw new Error('无法构建审核上下文：缺少初稿正文');
   }
 
   let auditContext = runtime.parsed.draftContext;
   let auditFellBack = false;
-  try {
-    const contextConfig = await db.getContextConfig();
-    // Preferred: retrieval only re-scores within the frozen draft snapshot
-    // candidate set (postDraftRetrieval already keys off snapshot strings).
-    const retrieval = await buildPostDraftAuditContext(
+
+  // Full mode: only re-score within frozen candidate pool. Never re-query live DB.
+  if (runtime.config.pipelineMode === 'full') {
+    if (!runtime.parsed.frozenAuditCandidates) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_INVALID',
+        '缺少冻结审核候选集合，无法安全恢复审核上下文。请重新开始生成。',
+        'restart_task',
+      );
+    }
+    const retrieval = buildPostDraftAuditContextFromFrozen(
       runtime.parsed.draftContext,
       draftText,
-      chapter.project_id,
-      chapter,
-      contextConfig,
+      runtime.parsed.frozenAuditCandidates,
     );
     auditContext = retrieval.snapshot;
     auditFellBack = Boolean(retrieval.fellBack);
-  } catch {
-    auditFellBack = true;
-    auditContext = runtime.parsed.draftContext;
   }
 
   await store.persistTaskPipelineContext(
@@ -831,6 +863,8 @@ async function actionBuildAuditContext(
       draftContext: runtime.parsed.draftContext,
       auditContext,
       execution: runtime.parsed.execution,
+      frozenDraftRequest: runtime.parsed.frozenDraftRequest,
+      frozenAuditCandidates: runtime.parsed.frozenAuditCandidates,
       draftCompletedAt: Date.now(),
       auditContextCreatedAt: Date.now(),
       auditFellBack,
@@ -839,12 +873,9 @@ async function actionBuildAuditContext(
 }
 
 async function getDraftText(taskId: string): Promise<string> {
-  try {
-    const row = await db.getStageCheckpoint(taskId, 'draft');
-    if (row?.outputText) return row.outputText;
-  } catch {
-    /* */
-  }
+  // Fail-closed: checkpoint read errors propagate.
+  const row = await db.getStageCheckpoint(taskId, 'draft');
+  if (row?.outputText) return row.outputText;
   const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
   return (
     task?.stageResults.find(s => s.stage === 'draft' && s.status === 'success')
@@ -856,17 +887,23 @@ async function getStageText(
   taskId: string,
   stage: PipelineStageName,
 ): Promise<string> {
-  try {
-    const row = await db.getStageCheckpoint(taskId, stage);
-    if (row?.status === 'succeeded' && row.outputText) return row.outputText;
-  } catch {
-    /* */
-  }
+  const row = await db.getStageCheckpoint(taskId, stage);
+  if (row?.status === 'succeeded' && row.outputText) return row.outputText;
   const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
   return (
     task?.stageResults.find(s => s.stage === stage && s.status === 'success')
       ?.text || ''
   );
+}
+
+/** Model callers may only receive ReadyStageRequest. */
+async function callReadyLLM(
+  ready: ReadyStageRequest,
+  maxTokens: number,
+  config: ReturnType<typeof buildCallConfig>,
+  abortSignal?: AbortSignal,
+): Promise<LLMResult> {
+  return callLLMResult(ready.messages, maxTokens, config, abortSignal);
 }
 
 function auditSnapshot(parsed: ParsedPipelineTaskContext): PipelineContextSnapshot {
@@ -881,139 +918,168 @@ async function actionRunReview(
   options: ReconcileOptions,
 ): Promise<void> {
   if (cancelled(taskId, options)) return;
-  let claimed = true;
-  try {
-    claimed = await db.claimStageCheckpoint(taskId, 'review');
-  } catch {
-    claimed = true;
-  }
-  if (!claimed) {
-    throw Object.assign(new Error('任务已在运行'), {
-      code: 'TASK_ALREADY_RUNNING',
-    });
-  }
 
-  const store = usePipelineTaskStore.getState();
-  store.setTaskStatus(taskId, 'reviewing');
-  onStageUpdate?.({
+  const claim = await executeClaimedStage({
+    taskId,
     stage: 'review',
-    label: '正在进行文学评估',
-    startedAt: Date.now(),
-  });
-  const runtime = await loadRuntime(taskId, chapter);
-  if (!runtime.parsed) throw new Error('缺少冻结上下文');
-  const draftText = await getDraftText(taskId);
-  const ctxSnap =
-    runtime.config.pipelineMode === 'full'
-      ? auditSnapshot(runtime.parsed)
-      : runtime.parsed.draftContext;
-  const context = buildReviewContextFromSnapshot(ctxSnap);
-  const start = Date.now();
-  let tokens = { input: 0, output: 0, total: 0 };
+    abortSignal,
+    isCancelled: () => cancelled(taskId, options),
+    onClaimed: async () => {
+      const store = usePipelineTaskStore.getState();
+      if (store.persistTaskStatus) {
+        await store.persistTaskStatus(taskId, 'reviewing');
+      } else {
+        store.setTaskStatus(taskId, 'reviewing');
+      }
+      onStageUpdate?.({
+        stage: 'review',
+        label: '正在进行文学评估',
+        startedAt: Date.now(),
+      });
+    },
+    run: async () => {
+      const store = usePipelineTaskStore.getState();
+      const runtime = await loadRuntime(taskId, chapter);
+      if (!runtime.parsed) throw new Error('缺少冻结上下文');
+      const draftText = await getDraftText(taskId);
+      const ctxSnap =
+        runtime.config.pipelineMode === 'full'
+          ? auditSnapshot(runtime.parsed)
+          : runtime.parsed.draftContext;
+      const context = buildReviewContextFromSnapshot(ctxSnap);
+      const start = Date.now();
+      let tokens = { input: 0, output: 0, total: 0 };
 
-  const compiled = compileReviewStageRequest({
-    draftText,
-    context,
-    maxTokens: runtime.config.reviewMaxTokens,
-    contextWindow: runtime.requestConfig.context_window || 0,
-  });
-  if (!compiled.fits && compiled.blockingError) {
-    await persistStage(taskId, {
-      stage: 'review',
-      text: '',
-      status: 'failed',
-      error: compiled.blockingError.message,
-      durationMs: Date.now() - start,
-    });
-    return;
-  }
-
-  try {
-    const first = await callLLMResult(
-      compiled.messages,
-      runtime.config.reviewMaxTokens,
-      buildCallConfig(
-        runtime.reviewPreset,
-        runtime.config.reviewMaxTokens,
-        'pipeline_review',
-        chapter.project_id,
-        runtime.requestConfig,
-        taskId,
-        { responseFormat: 'json_object' },
-      ),
-      abortSignal,
-    );
-    if (cancelled(taskId, options)) return;
-    tokens = accumulateTokens(tokens, first);
-    const hasOutline = !!(context.outlineText && context.outlineText.trim());
-    let validation = validateReviewResult(first, draftText, { hasOutline });
-    logPipelineAudit({
-      stage: 'review',
-      attempt: 1,
-      valid: validation.valid,
-      reason: validation.reason,
-      textLength: first.text?.length || 0,
-      taskId,
-    });
-
-    if (!validation.valid) {
-      const repair = compileReviewStageRequest({
+      const compiled = compileReviewStageRequest({
         draftText,
         context,
         maxTokens: runtime.config.reviewMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
-        repairReason: describeAuditFailureReason(validation.reason),
       });
-      const retry = await callLLMResult(
-        repair.messages,
-        runtime.config.reviewMaxTokens,
-        buildCallConfig(
-          runtime.reviewPreset,
-          runtime.config.reviewMaxTokens,
-          'pipeline_review',
-          chapter.project_id,
-          runtime.requestConfig,
-          taskId,
-          { responseFormat: 'json_object' },
-        ),
-        abortSignal,
-      );
-      if (cancelled(taskId, options)) return;
-      tokens = accumulateTokens(tokens, retry);
-      validation = validateReviewResult(retry, draftText, { hasOutline });
-    }
+      if (!compiled.ready) {
+        await persistStage(taskId, {
+          stage: 'review',
+          text: '',
+          status: 'failed',
+          error: compiled.error.message,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
 
-    if (validation.valid && validation.normalizedText) {
-      await persistStage(taskId, {
-        stage: 'review',
-        text: validation.normalizedText,
-        status: 'success',
-        tokens,
-        durationMs: Date.now() - start,
-      });
-      return;
-    }
-    await persistStage(taskId, {
-      stage: 'review',
-      text: '',
-      status: 'failed',
-      error: formatAuditFailureMessage('review', validation.reason),
-      tokens,
-      durationMs: Date.now() - start,
-    });
-  } catch (error: any) {
-    if (isAbortError(error, abortSignal)) {
-      store.cancelTask(taskId);
-      await PipelineForeground.stop(taskId);
-      throw error;
-    }
-    await persistStage(taskId, {
-      stage: 'review',
-      text: '',
-      status: 'failed',
-      error: getErrorMessage(error, '文学评估失败'),
-      tokens,
-      durationMs: Date.now() - start,
+      try {
+        const first = await callReadyLLM(
+          compiled,
+          runtime.config.reviewMaxTokens,
+          buildCallConfig(
+            runtime.reviewPreset,
+            runtime.config.reviewMaxTokens,
+            'pipeline_review',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+            { responseFormat: 'json_object' },
+          ),
+          abortSignal,
+        );
+        if (cancelled(taskId, options)) {
+          const err = new Error('任务已取消') as Error & { code?: string };
+          err.code = 'cancelled';
+          throw err;
+        }
+        tokens = accumulateTokens(tokens, first);
+        const hasOutline = !!(context.outlineText && context.outlineText.trim());
+        let validation = validateReviewResult(first, draftText, { hasOutline });
+        logPipelineAudit({
+          stage: 'review',
+          attempt: 1,
+          valid: validation.valid,
+          reason: validation.reason,
+          textLength: first.text?.length || 0,
+          taskId,
+        });
+
+        if (!validation.valid) {
+          const repair = compileReviewStageRequest({
+            draftText,
+            context,
+            maxTokens: runtime.config.reviewMaxTokens,
+            contextWindow: runtime.requestConfig.context_window || 0,
+            repairReason: describeAuditFailureReason(validation.reason),
+          });
+          if (!repair.ready) {
+            await persistStage(taskId, {
+              stage: 'review',
+              text: '',
+              status: 'failed',
+              error: repair.error.message,
+              tokens,
+              durationMs: Date.now() - start,
+            });
+            return;
+          }
+          const retry = await callReadyLLM(
+            repair,
+            runtime.config.reviewMaxTokens,
+            buildCallConfig(
+              runtime.reviewPreset,
+              runtime.config.reviewMaxTokens,
+              'pipeline_review',
+              chapter.project_id,
+              runtime.requestConfig,
+              taskId,
+              { responseFormat: 'json_object' },
+            ),
+            abortSignal,
+          );
+          if (cancelled(taskId, options)) {
+            const err = new Error('任务已取消') as Error & { code?: string };
+            err.code = 'cancelled';
+            throw err;
+          }
+          tokens = accumulateTokens(tokens, retry);
+          validation = validateReviewResult(retry, draftText, { hasOutline });
+        }
+
+        if (validation.valid && validation.normalizedText) {
+          await persistStage(taskId, {
+            stage: 'review',
+            text: validation.normalizedText,
+            status: 'success',
+            tokens,
+            durationMs: Date.now() - start,
+          });
+          return;
+        }
+        await persistStage(taskId, {
+          stage: 'review',
+          text: '',
+          status: 'failed',
+          error: formatAuditFailureMessage('review', validation.reason),
+          tokens,
+          durationMs: Date.now() - start,
+        });
+      } catch (error: any) {
+        if (isAbortError(error, abortSignal)) {
+          store.cancelTask(taskId);
+          await PipelineForeground.stop(taskId);
+          throw error;
+        }
+        await persistStage(taskId, {
+          stage: 'review',
+          text: '',
+          status: 'failed',
+          error: getErrorMessage(error, '文学评估失败'),
+          tokens,
+          durationMs: Date.now() - start,
+        });
+      }
+    },
+  });
+
+  if (!claim.claimed) {
+    throw Object.assign(new Error('任务已在运行'), {
+      code: 'TASK_ALREADY_RUNNING',
     });
   }
 }
@@ -1026,118 +1092,157 @@ async function actionRunFactCheck(
   options: ReconcileOptions,
 ): Promise<void> {
   if (cancelled(taskId, options)) return;
-  let claimed = true;
-  try {
-    claimed = await db.claimStageCheckpoint(taskId, 'factCheck');
-  } catch {
-    claimed = true;
-  }
-  if (!claimed) {
-    throw Object.assign(new Error('任务已在运行'), {
-      code: 'TASK_ALREADY_RUNNING',
-    });
-  }
 
-  const store = usePipelineTaskStore.getState();
-  store.setTaskStatus(taskId, 'factChecking');
-  onStageUpdate?.({
+  const claim = await executeClaimedStage({
+    taskId,
     stage: 'factCheck',
-    label: '正在进行事实核查',
-    startedAt: Date.now(),
-  });
-  const runtime = await loadRuntime(taskId, chapter);
-  if (!runtime.parsed) throw new Error('缺少冻结上下文');
-  const draftText = await getDraftText(taskId);
-  const ctxSnap =
-    runtime.config.pipelineMode === 'full'
-      ? auditSnapshot(runtime.parsed)
-      : runtime.parsed.draftContext;
-  const context = buildFactCheckContextFromSnapshot(ctxSnap);
-  const start = Date.now();
-  let tokens = { input: 0, output: 0, total: 0 };
+    abortSignal,
+    isCancelled: () => cancelled(taskId, options),
+    onClaimed: async () => {
+      const store = usePipelineTaskStore.getState();
+      if (store.persistTaskStatus) {
+        await store.persistTaskStatus(taskId, 'factChecking');
+      } else {
+        store.setTaskStatus(taskId, 'factChecking');
+      }
+      onStageUpdate?.({
+        stage: 'factCheck',
+        label: '正在进行事实核查',
+        startedAt: Date.now(),
+      });
+    },
+    run: async () => {
+      const store = usePipelineTaskStore.getState();
+      const runtime = await loadRuntime(taskId, chapter);
+      if (!runtime.parsed) throw new Error('缺少冻结上下文');
+      const draftText = await getDraftText(taskId);
+      const ctxSnap =
+        runtime.config.pipelineMode === 'full'
+          ? auditSnapshot(runtime.parsed)
+          : runtime.parsed.draftContext;
+      const context = buildFactCheckContextFromSnapshot(ctxSnap);
+      const start = Date.now();
+      let tokens = { input: 0, output: 0, total: 0 };
 
-  const compiled = compileFactCheckStageRequest({
-    draftText,
-    context,
-    maxTokens: runtime.config.factCheckMaxTokens,
-    contextWindow: runtime.requestConfig.context_window || 0,
-  });
-
-  try {
-    const first = await callLLMResult(
-      compiled.messages,
-      runtime.config.factCheckMaxTokens,
-      buildCallConfig(
-        runtime.factCheckPreset,
-        runtime.config.factCheckMaxTokens,
-        'pipeline_factcheck',
-        chapter.project_id,
-        runtime.requestConfig,
-        taskId,
-        { responseFormat: 'json_object' },
-      ),
-      abortSignal,
-    );
-    if (cancelled(taskId, options)) return;
-    tokens = accumulateTokens(tokens, first);
-    let validation = validateFactCheckResult(first, draftText);
-    if (!validation.valid) {
-      const repair = compileFactCheckStageRequest({
+      const compiled = compileFactCheckStageRequest({
         draftText,
         context,
         maxTokens: runtime.config.factCheckMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
-        repairReason: describeAuditFailureReason(validation.reason),
       });
-      const retry = await callLLMResult(
-        repair.messages,
-        runtime.config.factCheckMaxTokens,
-        buildCallConfig(
-          runtime.factCheckPreset,
+      if (!compiled.ready) {
+        await persistStage(taskId, {
+          stage: 'factCheck',
+          text: '',
+          status: 'failed',
+          error: compiled.error.message,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+
+      try {
+        const first = await callReadyLLM(
+          compiled,
           runtime.config.factCheckMaxTokens,
-          'pipeline_factcheck',
-          chapter.project_id,
-          runtime.requestConfig,
-          taskId,
-          { responseFormat: 'json_object' },
-        ),
-        abortSignal,
-      );
-      if (cancelled(taskId, options)) return;
-      tokens = accumulateTokens(tokens, retry);
-      validation = validateFactCheckResult(retry, draftText);
-    }
-    if (validation.valid && validation.normalizedText) {
-      await persistStage(taskId, {
-        stage: 'factCheck',
-        text: validation.normalizedText,
-        status: 'success',
-        tokens,
-        durationMs: Date.now() - start,
-      });
-      return;
-    }
-    await persistStage(taskId, {
-      stage: 'factCheck',
-      text: '',
-      status: 'failed',
-      error: formatAuditFailureMessage('factCheck', validation.reason),
-      tokens,
-      durationMs: Date.now() - start,
-    });
-  } catch (error: any) {
-    if (isAbortError(error, abortSignal)) {
-      store.cancelTask(taskId);
-      await PipelineForeground.stop(taskId);
-      throw error;
-    }
-    await persistStage(taskId, {
-      stage: 'factCheck',
-      text: '',
-      status: 'failed',
-      error: getErrorMessage(error, '事实核查失败'),
-      tokens,
-      durationMs: Date.now() - start,
+          buildCallConfig(
+            runtime.factCheckPreset,
+            runtime.config.factCheckMaxTokens,
+            'pipeline_factcheck',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+            { responseFormat: 'json_object' },
+          ),
+          abortSignal,
+        );
+        if (cancelled(taskId, options)) {
+          const err = new Error('任务已取消') as Error & { code?: string };
+          err.code = 'cancelled';
+          throw err;
+        }
+        tokens = accumulateTokens(tokens, first);
+        let validation = validateFactCheckResult(first, draftText);
+        if (!validation.valid) {
+          const repair = compileFactCheckStageRequest({
+            draftText,
+            context,
+            maxTokens: runtime.config.factCheckMaxTokens,
+            contextWindow: runtime.requestConfig.context_window || 0,
+            repairReason: describeAuditFailureReason(validation.reason),
+          });
+          if (!repair.ready) {
+            await persistStage(taskId, {
+              stage: 'factCheck',
+              text: '',
+              status: 'failed',
+              error: repair.error.message,
+              tokens,
+              durationMs: Date.now() - start,
+            });
+            return;
+          }
+          const retry = await callReadyLLM(
+            repair,
+            runtime.config.factCheckMaxTokens,
+            buildCallConfig(
+              runtime.factCheckPreset,
+              runtime.config.factCheckMaxTokens,
+              'pipeline_factcheck',
+              chapter.project_id,
+              runtime.requestConfig,
+              taskId,
+              { responseFormat: 'json_object' },
+            ),
+            abortSignal,
+          );
+          if (cancelled(taskId, options)) {
+            const err = new Error('任务已取消') as Error & { code?: string };
+            err.code = 'cancelled';
+            throw err;
+          }
+          tokens = accumulateTokens(tokens, retry);
+          validation = validateFactCheckResult(retry, draftText);
+        }
+        if (validation.valid && validation.normalizedText) {
+          await persistStage(taskId, {
+            stage: 'factCheck',
+            text: validation.normalizedText,
+            status: 'success',
+            tokens,
+            durationMs: Date.now() - start,
+          });
+          return;
+        }
+        await persistStage(taskId, {
+          stage: 'factCheck',
+          text: '',
+          status: 'failed',
+          error: formatAuditFailureMessage('factCheck', validation.reason),
+          tokens,
+          durationMs: Date.now() - start,
+        });
+      } catch (error: any) {
+        if (isAbortError(error, abortSignal)) {
+          store.cancelTask(taskId);
+          await PipelineForeground.stop(taskId);
+          throw error;
+        }
+        await persistStage(taskId, {
+          stage: 'factCheck',
+          text: '',
+          status: 'failed',
+          error: getErrorMessage(error, '事实核查失败'),
+          tokens,
+          durationMs: Date.now() - start,
+        });
+      }
+    },
+  });
+
+  if (!claim.claimed) {
+    throw Object.assign(new Error('任务已在运行'), {
+      code: 'TASK_ALREADY_RUNNING',
     });
   }
 }
@@ -1169,121 +1274,148 @@ async function actionRunProof(
   options: ReconcileOptions,
 ): Promise<void> {
   if (cancelled(taskId, options)) return;
-  let claimed = true;
-  try {
-    claimed = await db.claimStageCheckpoint(taskId, 'proof');
-  } catch {
-    claimed = true;
+
+  // Mark skipped counterpart stages before claim (mode-dependent).
+  {
+    const runtime = await loadRuntime(taskId, chapter);
+    if (runtime.config.pipelineMode === 'twoStage') {
+      await persistSkipped(taskId, 'factCheck', '仅评估模式已跳过事实核查');
+    } else if (runtime.config.pipelineMode === 'conditional') {
+      await persistSkipped(taskId, 'review', '仅核查模式已跳过文学评估');
+    }
   }
-  if (!claimed) {
+
+  const claim = await executeClaimedStage({
+    taskId,
+    stage: 'proof',
+    abortSignal,
+    isCancelled: () => cancelled(taskId, options),
+    onClaimed: async () => {
+      const store = usePipelineTaskStore.getState();
+      if (store.persistTaskStatus) {
+        await store.persistTaskStatus(taskId, 'proofing');
+      } else {
+        store.setTaskStatus(taskId, 'proofing');
+      }
+      onStageUpdate?.({
+        stage: 'proof',
+        label: '正在综合修订',
+        startedAt: Date.now(),
+      });
+    },
+    run: async () => {
+      const store = usePipelineTaskStore.getState();
+      const runtime = await loadRuntime(taskId, chapter);
+      PipelineForeground.updateProgress(
+        taskId,
+        '正在综合修订',
+        getStageProgressPercent(runtime.config.pipelineMode, 2),
+      ).catch(() => {});
+
+      if (!runtime.parsed) throw new Error('缺少冻结上下文');
+      const draftText = await getDraftText(taskId);
+      const reviewText = await getStageText(taskId, 'review');
+      const factCheckText = await getStageText(taskId, 'factCheck');
+      const ctxSnap =
+        runtime.config.pipelineMode === 'full'
+          ? auditSnapshot(runtime.parsed)
+          : runtime.parsed.draftContext;
+      const constraints = buildProofConstraintsFromSnapshot(ctxSnap);
+      const start = Date.now();
+      const compiled = compileProofStageRequest({
+        draftText,
+        reviewText,
+        factCheckText,
+        constraints,
+        maxTokens: runtime.config.proofMaxTokens,
+        contextWindow: runtime.requestConfig.context_window || 0,
+      });
+      if (!compiled.ready) {
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: draftText,
+          status: 'failed',
+          error: compiled.error.message,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+
+      try {
+        const result = await callReadyLLM(
+          compiled,
+          runtime.config.proofMaxTokens,
+          buildCallConfig(
+            runtime.proofPreset,
+            runtime.config.proofMaxTokens,
+            'pipeline_proof',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+          ),
+          abortSignal,
+        );
+        if (cancelled(taskId, options)) {
+          const err = new Error('任务已取消') as Error & { code?: string };
+          err.code = 'cancelled';
+          throw err;
+        }
+        const content =
+          typeof result.text === 'string' && result.text.trim().length > 0
+            ? result.text
+            : null;
+        if (!content) {
+          const hasReasoning =
+            typeof result.reasoningText === 'string' &&
+            result.reasoningText.trim().length > 0;
+          const error = hasReasoning
+            ? '终审仅返回推理内容，已回退到初稿'
+            : '终审输出为空，已回退到初稿';
+          await persistStage(taskId, {
+            stage: 'proof',
+            text: draftText,
+            status: 'failed',
+            error,
+            tokens: {
+              input: result.inputTokens,
+              output: result.outputTokens,
+              total: result.totalTokens,
+            },
+            durationMs: Date.now() - start,
+          });
+          return;
+        }
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: content,
+          status: 'success',
+          tokens: {
+            input: result.inputTokens,
+            output: result.outputTokens,
+            total: result.totalTokens,
+          },
+          durationMs: Date.now() - start,
+        });
+      } catch (error: any) {
+        if (isAbortError(error, abortSignal)) {
+          store.cancelTask(taskId);
+          await PipelineForeground.stop(taskId);
+          throw error;
+        }
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: draftText,
+          status: 'failed',
+          error: getErrorMessage(error, '终审失败，已回退到初稿'),
+          durationMs: Date.now() - start,
+        });
+      }
+    },
+  });
+
+  if (!claim.claimed) {
     throw Object.assign(new Error('任务已在运行'), {
       code: 'TASK_ALREADY_RUNNING',
-    });
-  }
-
-  const store = usePipelineTaskStore.getState();
-  // Mark skipped counterpart stages for twoStage/conditional.
-  const runtime = await loadRuntime(taskId, chapter);
-  if (runtime.config.pipelineMode === 'twoStage') {
-    await persistSkipped(taskId, 'factCheck', '仅评估模式已跳过事实核查');
-  } else if (runtime.config.pipelineMode === 'conditional') {
-    await persistSkipped(taskId, 'review', '仅核查模式已跳过文学评估');
-  }
-
-  store.setTaskStatus(taskId, 'proofing');
-  onStageUpdate?.({
-    stage: 'proof',
-    label: '正在综合修订',
-    startedAt: Date.now(),
-  });
-  PipelineForeground.updateProgress(
-    taskId,
-    '正在综合修订',
-    getStageProgressPercent(runtime.config.pipelineMode, 2),
-  ).catch(() => {});
-
-  if (!runtime.parsed) throw new Error('缺少冻结上下文');
-  const draftText = await getDraftText(taskId);
-  const reviewText = await getStageText(taskId, 'review');
-  const factCheckText = await getStageText(taskId, 'factCheck');
-  const ctxSnap =
-    runtime.config.pipelineMode === 'full'
-      ? auditSnapshot(runtime.parsed)
-      : runtime.parsed.draftContext;
-  const constraints = buildProofConstraintsFromSnapshot(ctxSnap);
-  const start = Date.now();
-  const compiled = compileProofStageRequest({
-    draftText,
-    reviewText,
-    factCheckText,
-    constraints,
-    maxTokens: runtime.config.proofMaxTokens,
-    contextWindow: runtime.requestConfig.context_window || 0,
-  });
-
-  try {
-    const result = await callLLMResult(
-      compiled.messages,
-      runtime.config.proofMaxTokens,
-      buildCallConfig(
-        runtime.proofPreset,
-        runtime.config.proofMaxTokens,
-        'pipeline_proof',
-        chapter.project_id,
-        runtime.requestConfig,
-        taskId,
-      ),
-      abortSignal,
-    );
-    if (cancelled(taskId, options)) return;
-    const content =
-      typeof result.text === 'string' && result.text.trim().length > 0
-        ? result.text
-        : null;
-    if (!content) {
-      const hasReasoning =
-        typeof result.reasoningText === 'string' &&
-        result.reasoningText.trim().length > 0;
-      const error = hasReasoning
-        ? '终审仅返回推理内容，已回退到初稿'
-        : '终审输出为空，已回退到初稿';
-      await persistStage(taskId, {
-        stage: 'proof',
-        text: draftText,
-        status: 'failed',
-        error,
-        tokens: {
-          input: result.inputTokens,
-          output: result.outputTokens,
-          total: result.totalTokens,
-        },
-        durationMs: Date.now() - start,
-      });
-      return;
-    }
-    await persistStage(taskId, {
-      stage: 'proof',
-      text: content,
-      status: 'success',
-      tokens: {
-        input: result.inputTokens,
-        output: result.outputTokens,
-        total: result.totalTokens,
-      },
-      durationMs: Date.now() - start,
-    });
-  } catch (error: any) {
-    if (isAbortError(error, abortSignal)) {
-      store.cancelTask(taskId);
-      await PipelineForeground.stop(taskId);
-      throw error;
-    }
-    await persistStage(taskId, {
-      stage: 'proof',
-      text: draftText,
-      status: 'failed',
-      error: getErrorMessage(error, '终审失败，已回退到初稿'),
-      durationMs: Date.now() - start,
     });
   }
 }

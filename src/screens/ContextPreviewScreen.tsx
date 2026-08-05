@@ -358,11 +358,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         preview: true,
       });
       setTrace(compiled.draftCompile?.trace || []);
-      setEstimatedInputTokens(compiled.estimatedInputTokens);
-      setMessages(compiled.messages);
-      if (!compiled.fits) {
+      setEstimatedInputTokens(compiled.estimatedInputTokens ?? 0);
+      setMessages(compiled.ready ? compiled.messages : compiled.messages || []);
+      if (!compiled.ready) {
         setOutlineBlock(
-          compiled.blockingError?.message ||
+          compiled.error.message ||
             compiled.draftCompile?.blockingReason ||
             '请求超出模型上下文窗口',
         );

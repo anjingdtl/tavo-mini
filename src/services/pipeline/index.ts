@@ -39,14 +39,19 @@ export type {
 
 export {
   compileDraftStageRequest,
+  compileDraftFromFrozenRequest,
   compilePipelineStageRequest,
   compileReviewStageRequest,
   compileFactCheckStageRequest,
   compileProofStageRequest,
+  requireReadyStageRequest,
 } from './compileStageRequest';
 export type {
   CompiledStageRequest,
+  StageCompileResult,
+  ReadyStageRequest,
   ContextAllocationTrace,
+  ContextBudgetDiagnostics,
 } from './compileStageRequest';
 
 export {
@@ -55,5 +60,11 @@ export {
   formatPipelineErrorForUser,
   isOutlineBudgetError,
 } from './errors';
+
+export { executeClaimedStage } from './executeClaimedStage';
+export type {
+  ExecuteClaimedStageOptions,
+  ExecuteClaimedStageResult,
+} from './executeClaimedStage';
 
 export { reconcilePipelineTask, isReconcileActive } from './reconcile';
