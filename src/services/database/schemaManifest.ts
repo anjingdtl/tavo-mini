@@ -296,6 +296,7 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'stage_results',
       'final_text',
       'error',
+      'input_fingerprint',
       'created_at',
       'updated_at',
       'resolved_at',

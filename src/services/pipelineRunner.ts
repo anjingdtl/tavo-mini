@@ -5,6 +5,7 @@ import {
   type LLMRequestConfig,
 } from './llm';
 import { buildContext } from './contextBuilder';
+import { computeInputFingerprint } from './outlineContextBuilder';
 import { createChapterGenerationRequest } from './chapterGeneration';
 import {
   buildDraftMessages,
@@ -719,6 +720,20 @@ async function runChapterPipelineInner(
     } catch {
       /* best-effort */
     }
+    // Freeze the input fingerprint at terminal state so the result-adoption
+    // flow can later detect outline/chapter drift. Uses the snapshot's outline
+    // fingerprint (frozen at buildContext) and the chapter's saved updatedAt.
+    try {
+      const fingerprint = await computeInputFingerprint({
+        projectId: chapter.project_id,
+        chapterId: chapter.id,
+        chapterUpdatedAt: chapter.updated_at,
+        outlineFingerprint: pipelineContext.outlineFingerprint,
+      });
+      store.setTaskInputFingerprint(taskId, fingerprint);
+    } catch {
+      /* best-effort: a missing fingerprint just disables drift detection */
+    }
     if (options?.degraded) {
       // Keep status/error from failTask; only attach retained draft text.
       store.setTaskFinalText(taskId, text);
@@ -1407,6 +1422,20 @@ async function resumePipelineInner(
       });
     } catch {
       /* best-effort */
+    }
+    // Freeze the input fingerprint at terminal state so the result-adoption
+    // flow can later detect outline/chapter drift. Uses the snapshot's outline
+    // fingerprint (frozen at buildContext) and the chapter's saved updatedAt.
+    try {
+      const fingerprint = await computeInputFingerprint({
+        projectId: chapter.project_id,
+        chapterId: chapter.id,
+        chapterUpdatedAt: chapter.updated_at,
+        outlineFingerprint: pipelineContext.outlineFingerprint,
+      });
+      store.setTaskInputFingerprint(taskId, fingerprint);
+    } catch {
+      /* best-effort: a missing fingerprint just disables drift detection */
     }
     if (options?.degraded) {
       store.setTaskFinalText(taskId, text);

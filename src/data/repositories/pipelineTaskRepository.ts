@@ -92,6 +92,7 @@ export async function savePipelineTask(task: {
   stageResults: any[];
   finalText: string | null;
   error: string | null;
+  inputFingerprint?: string | null;
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;
@@ -99,8 +100,8 @@ export async function savePipelineTask(task: {
 }): Promise<void> {
   await execute(
     await openDatabase(),
-    `INSERT OR REPLACE INTO pipeline_tasks (id, target_type, target_id, status, stage_results, final_text, error, created_at, updated_at, resolved_at, resolved_action)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO pipeline_tasks (id, target_type, target_id, status, stage_results, final_text, error, input_fingerprint, created_at, updated_at, resolved_at, resolved_action)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       task.id,
       task.targetType,
@@ -109,6 +110,7 @@ export async function savePipelineTask(task: {
       JSON.stringify(task.stageResults),
       task.finalText,
       task.error,
+      task.inputFingerprint ?? null,
       task.createdAt,
       task.updatedAt,
       task.resolvedAt,
@@ -135,6 +137,7 @@ export async function getUnresolvedPipelineTasks(): Promise<any[]> {
     })(),
     finalText: row.final_text,
     error: row.error,
+    inputFingerprint: row.input_fingerprint ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     resolvedAt: row.resolved_at,
@@ -160,6 +163,7 @@ export async function getAllPipelineTasks(): Promise<any[]> {
     })(),
     finalText: row.final_text,
     error: row.error,
+    inputFingerprint: row.input_fingerprint ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     resolvedAt: row.resolved_at,
