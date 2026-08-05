@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.11.25] - 2026-08-05
+
+### Added
+
+- **备份中心「召回潜在数据」功能**：为升级后资料"显示为空"的场景提供手动召回入口。
+  - **三源扫描**：源 A 诊断当前库（schema 漂移检测 + 11 张召回表行数 + 主键集合）；源 B 扫描 `schema-recovery/` 恢复点 JSON；源 C 扫描 `backups/` 用户备份 JSON。
+  - **主键差集算法**：`recoverable` 按源行主键与当前库已有键集合的差集计算，精确区分"完全缺失"与"部分缺失"，避免把已存在数据误判为可召回。
+  - **扫描→预览→勾选→合并**：用户主动触发，按源×表预览可召回量，勾选后执行；默认只勾选有可召回量的源。
+  - **安全合并**：合并前强制 `createSchemaRecoveryBackup`（失败即中止、不动数据）；源 A 修复 = `repairKnownSchemaDrift`，源 B/C 合并 = `INSERT OR IGNORE` 只补缺失行，绝不 DELETE/UPDATE 现有行。
+  - **非递减召回守卫**：合并前后 `captureUserDataRecallSnapshot` 比对，after 必须是 before 的超集；数据减少立即标 failed（区别于迁移场景的严格相等守卫，召回语义是"只增不减"）。
+  - **列投影兼容**：旧 schema 备份（缺新列/多已删列）通过 `SCHEMA_MANIFEST` 列交集安全合并。
+  - **新模块**：`src/services/recall/`（recallTypes / recallScanner / recallMerger / dataRecallService）+ `src/screens/RecallScreen.tsx`；备份中心新增入口按钮，SettingsStack 注册 Recall 路由。
+  - **复用 V2.11.24 召回基础设施**：不造新合并引擎，90% 复用 schemaDriftInspector / knownSchemaRepairs / userDataRecallSnapshot / schemaRecoveryBackup / backupService。
+
+### Validation
+
+- 18 个真实 SQLite 测试（S1-S8 扫描 + M1-M10 合并 + E2E 端到端）；`npm run verify` 全过（279 套件 / 2292 测试 / 0 TS 错误）；模拟器覆盖安装验证入口可达、扫描结果真实、按钮布局无重叠。
+
 ## [2.11.24] - 2026-08-05
 
 ### Fixed
