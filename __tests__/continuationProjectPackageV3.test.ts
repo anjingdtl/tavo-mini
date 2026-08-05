@@ -102,9 +102,20 @@ describe('project package v3 parser (Spec §15, §18.2)', () => {
     expect(preview.mode).toBe('outline'); // legacy fallback
   });
 
-  it('rejects an unsupported spec version (v4)', () => {
-    const v4 = JSON.stringify({ spec: 'shinewriter-project-v4', project: {} });
-    expect(() => parseProjectPackage(v4)).toThrow(/不支持的项目包版本/);
+  it('rejects an unsupported spec version (v5)', () => {
+    const v5 = JSON.stringify({ spec: 'shinewriter-project-v5', project: {} });
+    expect(() => parseProjectPackage(v5)).toThrow(/不支持的项目包版本/);
+  });
+
+  it('accepts a v4 outline package (Schema 36 outlines)', () => {
+    const v4 = JSON.stringify({
+      spec: 'shinewriter-project-v4',
+      project: { mode: 'outline' },
+      resources: { outlines: [{ title: '主线', content: '...', enabled: 1, position: 0 }] },
+    });
+    const pkg = parseProjectPackage(v4);
+    expect(pkg.specVersion).toBe(4);
+    expect(pkg.resources.outlines).toHaveLength(1);
   });
 
   it('rejects a v3 package with an unknown project mode', () => {

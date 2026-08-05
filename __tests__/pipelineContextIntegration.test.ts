@@ -34,6 +34,11 @@ function fullSnapshot(): PipelineContextSnapshot {
     recentBridgeText: '【第7章】张明把银钥匙交给李雪，叮嘱她保管。',
     currentInstructionText: '当前章节：「第8章」 章节概要：张明独自调查盐湖边线索。',
     retrievalUserPrompt: '继续推进调查，让张明发现新证据。',
+    outlineText: '',
+    outlineFingerprint: '',
+    outlineIds: [],
+    outlineComplete: true,
+    outlineEstimatedTokens: 0,
     sourceFingerprint: 'proj=7|chapter=8',
   };
 }
@@ -123,6 +128,11 @@ test('snapshot with empty sections does not break the audit message builders', (
     recentBridgeText: '',
     currentInstructionText: '',
     retrievalUserPrompt: '',
+    outlineText: '',
+    outlineFingerprint: '',
+    outlineIds: [],
+    outlineComplete: true,
+    outlineEstimatedTokens: 0,
   };
   const reviewMessages = buildReviewMessages(
     'd',
