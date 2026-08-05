@@ -149,3 +149,67 @@ describe('pipeline task store complete lifecycle', () => {
     expect(usePipelineTaskStore.getState().tasks).toHaveLength(1);
   });
 });
+
+describe('pipeline task input fingerprint persistence', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSavePipelineTask.mockResolvedValue(undefined);
+    usePipelineTaskStore.setState({ tasks: [], _loaded: true });
+  });
+
+  // Flush the async per-task persistence chain so mock calls are recorded.
+  const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+
+  it('setTaskInputFingerprint updates the task and persists it', async () => {
+    const store = usePipelineTaskStore.getState();
+    const id = store.createTask('chapter', 5);
+    await flush();
+    mockSavePipelineTask.mockClear();
+
+    store.setTaskInputFingerprint(id, 'fp-abc123');
+    await flush();
+
+    const task = usePipelineTaskStore.getState().tasks.find(t => t.id === id);
+    expect(task?.inputFingerprint).toBe('fp-abc123');
+    expect(mockSavePipelineTask).toHaveBeenCalledTimes(1);
+    const persisted = mockSavePipelineTask.mock.calls[0][0];
+    expect(persisted.inputFingerprint).toBe('fp-abc123');
+  });
+
+  it('loadFromDB restores inputFingerprint from the row', async () => {
+    mockGetAllPipelineTasks.mockResolvedValue([
+      { ...persistedRow, inputFingerprint: 'fp-from-db' },
+    ]);
+    usePipelineTaskStore.setState({ tasks: [], _loaded: false });
+    await usePipelineTaskStore.getState().loadFromDB();
+    const task = usePipelineTaskStore.getState().tasks[0];
+    expect(task.inputFingerprint).toBe('fp-from-db');
+  });
+
+  it('persistTask snapshot includes inputFingerprint field', async () => {
+    const store = usePipelineTaskStore.getState();
+    const id = store.createTask('chapter', 6);
+    store.setTaskInputFingerprint(id, 'fp-snapshot');
+    await flush();
+    // Use the LAST persistence call for this id — createTask persists first
+    // (fingerprint null), setTaskInputFingerprint persists again with the value.
+    const calls = mockSavePipelineTask.mock.calls.filter(
+      (call: any[]) => call[0].id === id,
+    );
+    const persisted = calls[calls.length - 1]?.[0];
+    expect(persisted).toBeDefined();
+    expect(persisted.inputFingerprint).toBe('fp-snapshot');
+  });
+
+  it('tasks without fingerprint persist null (legacy compatibility)', async () => {
+    const store = usePipelineTaskStore.getState();
+    const id = store.createTask('chapter', 7);
+    await flush();
+    // No setTaskInputFingerprint called → inputFingerprint undefined → persisted as null.
+    const persisted = mockSavePipelineTask.mock.calls.find(
+      (call: any[]) => call[0].id === id,
+    )?.[0];
+    expect(persisted).toBeDefined();
+    expect(persisted.inputFingerprint).toBeNull();
+  });
+});
