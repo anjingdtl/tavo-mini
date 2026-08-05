@@ -220,7 +220,25 @@ export const FreeformEditor: React.FC = () => {
       return;
     }
 
-    const taskId = createTask('freeform', currentProject.id);
+    // Atomically persist the parent task + pending checkpoints before
+    // starting the runner. On DB failure surface a "无法启动流水线" error
+    // instead of running the pipeline against a missing parent row.
+    let taskId: string;
+    try {
+      taskId = await createTask('freeform', currentProject.id);
+    } catch (error: any) {
+      console.warn(
+        '[FreeformEditor] PIPELINE_TASK_CREATE_FAILED',
+        'projectId=', currentProject.id,
+        'code=', error?.code,
+        'message=', error?.message,
+      );
+      Alert.alert(
+        '无法启动流水线',
+        '写作任务未能保存到本地数据库，因此没有调用模型。\n请重试；如仍然失败，请重新打开应用后检查数据库状态。',
+      );
+      return;
+    }
     try {
       await runFreeformPipeline(
         taskId,

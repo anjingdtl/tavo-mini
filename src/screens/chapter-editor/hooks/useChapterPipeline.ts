@@ -41,7 +41,7 @@ type RunningPipelineStatus = Extract<
 type CreateTask = (
   targetType: 'chapter' | 'freeform',
   targetId: number,
-) => string;
+) => Promise<string>;
 
 const RUNNING_PIPELINE_STATUSES: RunningPipelineStatus[] = [
   'idle',
@@ -211,7 +211,29 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       if (!chapter) return;
       setGenerating(true);
       setProgressVisible(true);
-      const taskId = createTask('chapter', chapter.id);
+      // Persist the parent task + pending checkpoints atomically BEFORE
+      // starting the foreground service or reconcile. If the DB write fails
+      // we surface a "无法启动流水线" error and never call the model — the
+      // failure happens before any LLM request is made.
+      let taskId: string;
+      try {
+        taskId = await createTask('chapter', chapter.id);
+      } catch (error: any) {
+        setProgressVisible(false);
+        setQueued(false);
+        setGenerating(false);
+        console.warn(
+          '[useChapterPipeline] PIPELINE_TASK_CREATE_FAILED',
+          'chapterId=', chapter.id,
+          'code=', error?.code,
+          'message=', error?.message,
+        );
+        Alert.alert(
+          '无法启动流水线',
+          '写作任务未能保存到本地数据库，因此没有调用模型。\n请重试；如仍然失败，请重新打开应用后检查数据库状态。',
+        );
+        return;
+      }
       suppressGlobalPipelinePrompt(taskId);
       requestNotificationPermission()
         .then(async granted => {

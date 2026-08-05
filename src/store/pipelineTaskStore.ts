@@ -24,7 +24,17 @@ interface PipelineTaskState {
   tasks: PipelineTask[];
   _loaded: boolean;
   loadFromDB: () => Promise<void>;
-  createTask: (targetType: 'chapter' | 'freeform', targetId: number) => string;
+  /**
+   * Atomically persist the new pipeline task AND its four pending stage
+   * checkpoints in one SQLite transaction, then add it to the in-memory
+   * store. Returns the task id only after the transaction has committed.
+   * Throws on DB failure — callers must surface a "无法启动流水线" error
+   * rather than running the pipeline with a missing parent row (FK 787).
+   */
+  createTask: (
+    targetType: 'chapter' | 'freeform',
+    targetId: number,
+  ) => Promise<string>;
   /**
    * Fire-and-forget stage update (legacy). Prefer {@link persistTaskStage}.
    */
@@ -223,8 +233,9 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     }
   },
 
-  createTask: (targetType, targetId) => {
-    const id = `pt_${Date.now().toString(36)}_${++taskIdCounter}`;
+  createTask: async (targetType, targetId) => {
+    const now = Date.now();
+    const id = `pt_${now.toString(36)}_${++taskIdCounter}`;
     const task: PipelineTask = {
       id,
       targetType,
@@ -233,12 +244,44 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       stageResults: [],
       finalText: null,
       error: null,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
       resolvedAt: null,
     };
+    // Persist parent + four pending checkpoints in ONE transaction BEFORE
+    // the task enters the store or is handed to the runner. On failure we
+    // do not add a ghost task, do not return an id, and do not start the
+    // foreground service or reconcile — so LLM call count stays 0 and the
+    // UI can surface a "无法启动流水线" error instead of hitting FK 787.
+    try {
+      await db.createPipelineTaskWithCheckpoints(
+        {
+          id,
+          targetType,
+          targetId,
+          status: 'idle',
+          stageResults: [],
+          finalText: null,
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        },
+        ['draft', 'review', 'factCheck', 'proof'],
+      );
+    } catch (err: any) {
+      console.warn(
+        '[pipelineTaskStore] PIPELINE_TASK_CREATE_FAILED',
+        'taskId=', id,
+        'targetType=', targetType,
+        'targetId=', targetId,
+        'code=', err?.code,
+        'message=', err?.message,
+      );
+      throw err;
+    }
+    // Transaction committed: safe to expose the task to the rest of the app.
     set((state) => ({ tasks: [...state.tasks, task] }));
-    persistTask(task);
     return id;
   },
 
