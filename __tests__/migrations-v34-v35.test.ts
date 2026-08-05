@@ -10,8 +10,8 @@ import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import { SCHEMA_VERSION } from '../src/services/migrations';
 
 describe('Schema 34 → 35 Canon batch reliability', () => {
-  it('reports SCHEMA_VERSION as 35', () => {
-    expect(SCHEMA_VERSION).toBe(35);
+  it('reports SCHEMA_VERSION as 36', () => {
+    expect(SCHEMA_VERSION).toBe(36);
   });
 
   it('emits batches rebuild with partial + segment columns', () => {

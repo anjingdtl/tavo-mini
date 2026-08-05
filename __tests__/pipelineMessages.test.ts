@@ -34,6 +34,7 @@ const baseReviewContext: ReviewContext = {
   recentBridgeText: 'recent-bridge-content',
   currentInstructionText: 'instruction-content',
   retrievalUserPrompt: 'user-prompt-content',
+  outlineText: '',
 };
 
 const baseFactCheckContext: FactCheckContext = {
@@ -46,6 +47,7 @@ const baseFactCheckContext: FactCheckContext = {
   worldbookText: 'worldbook-content',
   characterText: 'character-content',
   noteText: 'note-content',
+  outlineText: '',
 };
 
 const baseProofConstraints: ProofConstraints = {
@@ -58,6 +60,7 @@ const baseProofConstraints: ProofConstraints = {
   episodicMemoryText: 'episodic-content',
   noteText: 'note-content',
   recentBridgeText: 'recent-bridge-content',
+  outlineText: '',
 };
 
 function userContent(messages: { role: string; content: string }[]): string {

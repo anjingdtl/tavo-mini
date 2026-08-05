@@ -67,6 +67,11 @@ function baseSnapshot(overrides: Partial<PipelineContextSnapshot> = {}): Pipelin
     recentBridgeText: '',
     currentInstructionText: '继续推进剧情',
     retrievalUserPrompt: '继续推进剧情',
+    outlineText: '',
+    outlineFingerprint: '',
+    outlineIds: [],
+    outlineComplete: true,
+    outlineEstimatedTokens: 0,
     ...overrides,
   };
 }

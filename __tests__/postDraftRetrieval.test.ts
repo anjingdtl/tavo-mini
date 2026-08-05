@@ -52,6 +52,11 @@ const baseSnapshot: PipelineContextSnapshot = {
   recentBridgeText: 'bridge',
   currentInstructionText: 'instruction',
   retrievalUserPrompt: '继续推进调查',
+  outlineText: '',
+  outlineFingerprint: '',
+  outlineIds: [],
+  outlineComplete: true,
+  outlineEstimatedTokens: 0,
 };
 
 function chapterFixture(overrides: Partial<Chapter> = {}): Chapter {
