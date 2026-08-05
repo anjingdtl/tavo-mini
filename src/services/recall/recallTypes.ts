@@ -90,6 +90,8 @@ export interface CurrentDbFinding {
   rowCount: Record<RecallTable, number>;
   /** 当前库每张表的键集合（字符串化），用于和源做差集 */
   existingKeys: Record<RecallTable, string[]>;
+  /** 当 reachable=false 时的具体错误原因（供 UI 展示） */
+  unreachableReason?: string;
 }
 
 export interface BackupSourceFinding {

@@ -82,7 +82,7 @@ export async function scanRecallSources(): Promise<RecallScanReport> {
 }
 
 /** 当前库完全不可读时，构造一个全 -1 的诊断 finding（不抛）。 */
-function makeUnreachableCurrentDb(_reason: string): CurrentDbFinding {
+function makeUnreachableCurrentDb(reason: string): CurrentDbFinding {
   const rowCount = {} as Record<RecallTable, number>;
   const existingKeys = {} as Record<RecallTable, string[]>;
   for (const t of RECALL_TABLES) {
@@ -91,17 +91,21 @@ function makeUnreachableCurrentDb(_reason: string): CurrentDbFinding {
   }
   return {
     reachable: false,
+    // needsRepair=true 让 UI 显示"修复结构漂移"开关——即使诊断没检出具体
+    // 漂移，repairKnownSchemaDrift 是幂等安全的，值得一试；用户的数据可能
+    // 还在库里，只是某个已知 schema 缺陷挡住了读取。
     schemaDrift: {
       recordedSchemaVersion: 0,
       canonEvidenceExists: false,
       sourceOriginExists: false,
       rescanOperationIdExists: false,
       rescanIndexExists: false,
-      needsRepair: false,
+      needsRepair: true,
       repairCodes: [],
     },
     rowCount,
     existingKeys,
+    unreachableReason: reason || '数据库打开或读取时发生未知错误',
   };
 }
 
