@@ -347,19 +347,25 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       setContinuationBudgetSummary('');
       setContinuationStageBudgets(null);
       setContinuationFreezeSummary(null);
-      // Non-continuation: use the same Draft compiler as the real pipeline.
-      const { compileDraftPipelineRequest } = await import(
-        '../services/draftPipelineCompiler'
+      // Non-continuation: same Draft compiler as reconcile (preview mode).
+      // Without a frozen task snapshot this is an estimated request, not a
+      // committed send payload.
+      const { compileDraftStageRequest } = await import(
+        '../services/pipeline/compileStageRequest'
       );
-      const compiled = await compileDraftPipelineRequest({
+      const compiled = await compileDraftStageRequest({
         chapter,
         preview: true,
       });
-      setTrace(compiled.trace);
+      setTrace(compiled.draftCompile?.trace || []);
       setEstimatedInputTokens(compiled.estimatedInputTokens);
       setMessages(compiled.messages);
-      if (!compiled.fits && compiled.blockingReason) {
-        setOutlineBlock(compiled.blockingReason);
+      if (!compiled.fits) {
+        setOutlineBlock(
+          compiled.blockingError?.message ||
+            compiled.draftCompile?.blockingReason ||
+            '请求超出模型上下文窗口',
+        );
       } else {
         setOutlineBlock(null);
       }
@@ -573,7 +579,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         style={[styles.toggleRow, { borderBottomColor: theme.colors.border }]}
       >
         <Button
-          label={showMessages ? '查看资料分配' : '查看实际请求'}
+          label={showMessages ? '查看资料分配' : '查看预估请求'}
           variant="secondary"
           compact
           onPress={() => {
@@ -585,7 +591,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           style={[styles.tokenSummary, { color: theme.colors.textSecondary }]}
         >
           {showMessages
-            ? `${messages.length} 条实际发送消息`
+            ? `${messages.length} 条预估请求消息（未冻结任务）`
             : `${trace.length} 项资料分配`}
         </Text>
       </View>
