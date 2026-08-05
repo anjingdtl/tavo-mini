@@ -12,6 +12,7 @@ jest.mock('../src/data/repositories/outlineRepository', () => ({
 import {
   buildOutlineContext,
   computeOutlineFingerprint,
+  computeOutlineBudgetGuidance,
   deriveOutlineBudgetTokens,
   EMPTY_OUTLINE_CONTEXT,
 } from '../src/services/outlineContextBuilder';
@@ -171,18 +172,47 @@ describe('buildOutlineContext strict budget (no truncation)', () => {
   });
 
   test('blocking reason reports enabled count and token gap', async () => {
+    // CJK content so each char is 1 token — predictable large token counts.
     mockedGetEnabled.mockResolvedValue([
-      makeOutline({ id: 1, content: 'x'.repeat(500), contentHash: 'x' }),
-      makeOutline({ id: 2, content: 'y'.repeat(500), contentHash: 'y' }),
+      makeOutline({ id: 1, content: '一二三四五六七八九十'.repeat(20), contentHash: 'x' }),
+      makeOutline({ id: 2, content: '一二三四五六七八九十'.repeat(20), contentHash: 'y' }),
     ]);
     const result = await buildOutlineContext({
       projectId: 1,
       projectMode: 'outline',
-      outlineBudgetTokens: 10,
+      outlineBudgetTokens: 50,
     });
     expect(result.complete).toBe(false);
     expect(result.blockingReason).toContain('2');
-    expect(result.blockingReason).toContain('请关闭部分大纲');
+    // Segmented-enablement hint: tells the user to disable low-priority outlines.
+    expect(result.blockingReason).toContain('分段启用');
+    expect(result.blockingReason).toContain('资料 - 大纲');
+  });
+
+  test('perOutlineTokens populated in stitch order', async () => {
+    // CJK content so the estimator counts more chars as more tokens.
+    mockedGetEnabled.mockResolvedValue([
+      makeOutline({ id: 1, position: 0, content: '一二三', contentHash: 'a' }),
+      makeOutline({ id: 2, position: 1, content: '一二三四五六七八九十', contentHash: 'b' }),
+    ]);
+    const result = await buildOutlineContext({
+      projectId: 1,
+      projectMode: 'outline',
+      outlineBudgetTokens: 100000,
+    });
+    expect(result.perOutlineTokens).toHaveLength(2);
+    // Second outline has more CJK chars → more tokens.
+    expect(result.perOutlineTokens[1]).toBeGreaterThan(result.perOutlineTokens[0]);
+  });
+
+  test('outlineBudgetTokens echoed back in result', async () => {
+    mockedGetEnabled.mockResolvedValue([makeOutline()]);
+    const result = await buildOutlineContext({
+      projectId: 1,
+      projectMode: 'outline',
+      outlineBudgetTokens: 12345,
+    });
+    expect(result.outlineBudgetTokens).toBe(12345);
   });
 
   test('zero budget disables the check (no false block)', async () => {
@@ -250,5 +280,71 @@ describe('deriveOutlineBudgetTokens', () => {
     expect(deriveOutlineBudgetTokens(0)).toBe(0);
     expect(deriveOutlineBudgetTokens(-1)).toBe(0);
     expect(deriveOutlineBudgetTokens(NaN)).toBe(0);
+  });
+});
+
+describe('computeOutlineBudgetGuidance (segmented enablement)', () => {
+  test('not over budget when total <= budget', () => {
+    const g = computeOutlineBudgetGuidance([100, 200], [1, 2], 1000);
+    expect(g.overBudget).toBe(false);
+    expect(g.overageTokens).toBe(0);
+    expect(g.totalTokens).toBe(300);
+    expect(g.suggestedDisableIds).toEqual([]);
+  });
+
+  test('over budget and suggests disabling lowest-priority (tail) outlines', () => {
+    // ids [1,2,3], tokens [100,200,300], budget 350. Total 600 > 350.
+    // Drop tail: disable id=3 (300) → remaining 300 <= 350 → fits.
+    const g = computeOutlineBudgetGuidance([100, 200, 300], [1, 2, 3], 350);
+    expect(g.overBudget).toBe(true);
+    expect(g.overageTokens).toBe(250);
+    expect(g.suggestedDisableIds).toEqual([3]);
+  });
+
+  test('disables multiple tail outlines until prefix fits', () => {
+    // ids [1,2,3], tokens [400,200,300], budget 350. Total 900 > 350.
+    // Drop id=3 (300) → 600 > 350; drop id=2 (200) → 400 > 350; drop none more
+    // because id=1 alone (400) still > 350, but we already dropped the tail.
+    // Greedy stops once running <= budget OR list exhausted. After dropping 3
+    // and 2, running = 400 > 350, loop continues to drop id=1 → running=0.
+    const g = computeOutlineBudgetGuidance([400, 200, 300], [1, 2, 3], 350);
+    expect(g.overBudget).toBe(true);
+    // Even disabling all cannot fit (400 alone > 350) → suggests all.
+    expect(g.suggestedDisableIds.sort()).toEqual([1, 2, 3]);
+  });
+
+  test('suggests the right set when disabling two is enough', () => {
+    // ids [1,2,3], tokens [100,300,300], budget 350. Total 700 > 350.
+    // Drop id=3 (300) → 400 > 350; drop id=2 (300) → 100 <= 350 → fits.
+    const g = computeOutlineBudgetGuidance([100, 300, 300], [1, 2, 3], 350);
+    expect(g.overBudget).toBe(true);
+    expect(g.suggestedDisableIds.sort()).toEqual([2, 3]);
+  });
+
+  test('unknown budget (0) never reports overage', () => {
+    const g = computeOutlineBudgetGuidance([99999], [1], 0);
+    expect(g.overBudget).toBe(false);
+    expect(g.overageTokens).toBe(0);
+    expect(g.suggestedDisableIds).toEqual([]);
+  });
+
+  test('exactly at budget is not over', () => {
+    const g = computeOutlineBudgetGuidance([300], [1], 300);
+    expect(g.overBudget).toBe(false);
+    expect(g.suggestedDisableIds).toEqual([]);
+  });
+
+  test('empty outline list never over', () => {
+    const g = computeOutlineBudgetGuidance([], [], 1000);
+    expect(g.overBudget).toBe(false);
+    expect(g.totalTokens).toBe(0);
+    expect(g.suggestedDisableIds).toEqual([]);
+  });
+
+  test('suggested order matches stitch priority (disable last first)', () => {
+    // ids [1,2,3,4], tokens [50,50,50,300], budget 200. Total 450 > 200.
+    // Drop id=4 (300) → 150 <= 200 → fits. Only id=4 suggested.
+    const g = computeOutlineBudgetGuidance([50, 50, 50, 300], [1, 2, 3, 4], 200);
+    expect(g.suggestedDisableIds).toEqual([4]);
   });
 });

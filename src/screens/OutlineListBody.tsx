@@ -7,7 +7,7 @@
  * with their own table, so this component talks to the outline repository
  * directly rather than going through the polymorphic project_resources path.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -25,6 +25,11 @@ import * as db from '../services/database';
 import { importOutlinesFromTxt } from '../services/outlineImport';
 import { estimateTokens } from '../utils/tokenEstimator';
 import type { Outline } from '../types/outline';
+import {
+  deriveOutlineBudgetTokens,
+  computeOutlineBudgetGuidance,
+  type OutlineBudgetGuidance,
+} from '../services/outlineContextBuilder';
 import Toast from 'react-native-toast-message';
 
 export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) => {
@@ -32,11 +37,21 @@ export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) 
   const [outlines, setOutlines] = useState<Outline[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Outline | 'new' | null>(null);
+  const [contextWindow, setContextWindow] = useState(0);
 
   const loadOutlines = useCallback(async () => {
     try {
       const list = await db.getOutlinesByProject(projectId);
       setOutlines(list);
+      // Fetch the active model's context window so the budget bar can show the
+      // outline token budget. Failures (no LLM configured) leave it at 0,
+      // which disables the over-budget warning rather than showing a false one.
+      try {
+        const llmConfig = await db.getActiveLLMConfig();
+        setContextWindow(Number(llmConfig?.context_window) || 0);
+      } catch {
+        setContextWindow(0);
+      }
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '加载大纲失败', text2: error?.message });
     } finally {
@@ -48,6 +63,24 @@ export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) 
     setLoading(true);
     loadOutlines();
   }, [loadOutlines]);
+
+  // Budget guidance for the top summary bar + per-item "suggested disable"
+  // hint. Enabled outlines are taken in position order (same as the context
+  // builder) so the suggested-disable set matches what the pipeline would
+  // actually drop. Recomputed on every outlines/contextWindow change so the
+  // bar stays live as the user toggles / reorders.
+  const enabledGuidance: OutlineBudgetGuidance = useMemo(() => {
+    const enabled = outlines.filter(o => o.enabled);
+    const perTokens = enabled.map(o => estimateTokens(o.content || ''));
+    const ids = enabled.map(o => o.id);
+    const budget = deriveOutlineBudgetTokens(contextWindow);
+    return computeOutlineBudgetGuidance(perTokens, ids, budget);
+  }, [outlines, contextWindow]);
+
+  const suggestedDisableSet = useMemo(
+    () => new Set(enabledGuidance.suggestedDisableIds),
+    [enabledGuidance],
+  );
 
   const handleImportTxt = useCallback(async () => {
     try {
@@ -180,6 +213,43 @@ export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) 
         />
       </View>
 
+      {/* Outline budget summary bar — only when at least one outline is
+          enabled. Shows total enabled tokens vs the model-derived budget and
+          turns red + suggests segmented enablement when over budget. */}
+      {enabledGuidance.totalTokens > 0 ? (
+        <View
+          style={[
+            styles.budgetBar,
+            {
+              backgroundColor: enabledGuidance.overBudget
+                ? `${theme.colors.danger}1A`
+                : theme.colors.accentSoft,
+              borderColor: enabledGuidance.overBudget
+                ? theme.colors.danger
+                : theme.colors.border,
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.budgetText,
+              { color: enabledGuidance.overBudget ? theme.colors.danger : theme.colors.textPrimary },
+            ]}
+          >
+            {enabledGuidance.overBudget
+              ? `⚠ 已启用大纲超出预算：${enabledGuidance.totalTokens.toLocaleString()} / ${enabledGuidance.budgetTokens.toLocaleString()} tokens（超 ${enabledGuidance.overageTokens.toLocaleString()}）`
+              : `已启用大纲：${enabledGuidance.totalTokens.toLocaleString()} / ${enabledGuidance.budgetTokens.toLocaleString()} tokens`}
+          </Text>
+          {enabledGuidance.overBudget ? (
+            <Text style={[styles.budgetHint, { color: theme.colors.danger }]}>
+              {enabledGuidance.suggestedDisableIds.length > 0
+                ? `建议关闭靠后的 ${enabledGuidance.suggestedDisableIds.length} 份大纲（标记为"建议关闭"），或缩短内容，或更换更大上下文模型。`
+                : '建议缩短内容，或更换更大上下文模型。'}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
       {outlines.length === 0 ? (
         <EmptyState
           title="还没有大纲"
@@ -220,6 +290,13 @@ export const OutlineListBody: React.FC<{ projectId: number }> = ({ projectId }) 
                   顺序 {index + 1}
                 </Text>
               </View>
+              {outline.enabled && suggestedDisableSet.has(outline.id) ? (
+                <View style={[styles.suggestBadge, { borderColor: theme.colors.danger }]}>
+                  <Text style={[styles.suggestText, { color: theme.colors.danger }]}>
+                    建议关闭：分段启用，关闭后剩余大纲可完整注入
+                  </Text>
+                </View>
+              ) : null}
               <View style={styles.actionRow}>
                 <TouchableOpacity
                   onPress={() => handleMove(outline, -1)}
@@ -376,6 +453,32 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     marginBottom: spacing.md,
+  },
+  budgetBar: {
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: spacing.sm,
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+  },
+  budgetText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  budgetHint: {
+    fontSize: 12,
+  },
+  suggestBadge: {
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    marginTop: spacing.xs,
+    alignSelf: 'flex-start',
+  },
+  suggestText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   list: {
     gap: spacing.sm,
