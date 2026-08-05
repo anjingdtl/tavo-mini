@@ -122,6 +122,7 @@ export type ResourceStackParamList = {
   ResourceLibrary: {
     initialTab?:
       | 'continuation'
+      | 'outlines'
       | 'characters'
       | 'worldbook'
       | 'notes'
@@ -193,6 +194,14 @@ const ContextPreviewRoute = ({
   <ContextPreviewScreen
     chapterId={route.params.chapterId}
     onClose={() => navigation.goBack()}
+    onNavigateOutlines={() => {
+      // Jump to the Resources tab and open the 大纲 sub-tab directly so the
+      // user can disable/shorten outlines after an outline-budget block.
+      (navigation as any).navigate('Resources', {
+        screen: 'ResourceLibrary',
+        params: { initialTab: 'outlines' },
+      });
+    }}
   />
 );
 
