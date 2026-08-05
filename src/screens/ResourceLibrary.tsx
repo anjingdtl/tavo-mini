@@ -23,6 +23,7 @@ import {
   Download,
   FilePlus2,
   Import,
+  ListTree,
   NotebookPen,
   Pencil,
   RefreshCw,
@@ -72,15 +73,16 @@ import {
 import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
 import { ContinuationHomeBody } from './continuation/ContinuationHomeScreen';
+import { OutlineListBody } from './OutlineListBody';
 
 // 续写 as a first-class tab of the resource library (Spec §8.3 flattened):
 // the old ResourceHomeScreen entry-list layer is removed, and 续写 sits beside
 // the four content tabs in the SegmentedControl. It renders an embedded body
 // (ContinuationHomeBody) instead of a DB-backed item list, so it is excluded
 // from the DB-loading/resource-type/editor paths below.
-type ResourceTab = 'continuation' | 'characters' | 'worldbook' | 'notes' | 'presets';
+type ResourceTab = 'continuation' | 'outlines' | 'characters' | 'worldbook' | 'notes' | 'presets';
 /** Tabs that back a DB item list (everything except the continuation entry). */
-type ContentTab = Exclude<ResourceTab, 'continuation'>;
+type ContentTab = Exclude<ResourceTab, 'continuation' | 'outlines'>;
 type EditorKind =
   | ContentTab
   | 'worldbookCollection'
@@ -89,6 +91,7 @@ type EditorKind =
 
 const TABS: { value: ResourceTab; label: string }[] = [
   { value: 'continuation', label: '续写' },
+  { value: 'outlines', label: '大纲' },
   { value: 'characters', label: '角色' },
   { value: 'worldbook', label: '世界书' },
   { value: 'notes', label: '笔记' },
@@ -306,14 +309,14 @@ export const ResourceLibrary: React.FC<{
     }, [loadData]),
   );
 
-  const continuationUsageFor = useCallback((tab: ContentTab, id: number) => {
-    const kind = RESOURCE_TYPE[tab];
+  const continuationUsageFor = useCallback((tab: ContentTab | ResourceTab, id: number) => {
+    const kind = RESOURCE_TYPE[tab as ContentTab];
     return continuationBindings.find(item => item.resource_kind === kind && item.resource_id === id)?.continuation_usage || 'unclassified';
   }, [continuationBindings]);
 
-  const chooseContinuationUsage = useCallback((tab: ContentTab, item: any) => {
+  const chooseContinuationUsage = useCallback((tab: ContentTab | ResourceTab, item: any) => {
     if (currentProject?.mode !== 'continuation') return;
-    const kind = RESOURCE_TYPE[tab];
+    const kind = RESOURCE_TYPE[tab as ContentTab];
     const save = async (usage: 'external_supplement' | 'original_mirror' | 'excluded') => {
       try {
         await db.setContinuationResourceUsage({ projectId, resourceKind: kind, resourceId: item.id, usage });
@@ -725,7 +728,7 @@ export const ResourceLibrary: React.FC<{
     }
   };
 
-  const openEditor = async (kind: EditorKind, item: any) => {
+  const openEditor = async (kind: EditorKind | ResourceTab, item: any) => {
     const noteContent =
       kind === 'notes' ? await db.getNoteContentById(item.id) : '';
     // BUG-8 修复：新建的角色/世界书 name 是 "未命名角色" 等占位符，
@@ -745,11 +748,12 @@ export const ResourceLibrary: React.FC<{
     // saveEditor 会把 keyword_primary 覆盖为空，列表就会回退显示“未命名条目”。
     const storedName =
       kind === 'worldbook' ? item.keyword_primary || '' : item.name || '';
-    const isPlaceholder = storedName === placeholderByKind[kind];
+    const editorKind = kind as EditorKind;
+    const isPlaceholder = storedName === placeholderByKind[editorKind];
     setShowNoteChapters(false);
     setNoteSelection({ start: 0, end: 0 });
     setEditor({
-      kind,
+      kind: editorKind,
       item,
       name: isPlaceholder ? '' : storedName,
       content:
@@ -923,7 +927,7 @@ export const ResourceLibrary: React.FC<{
     }
     // Continuation tab has no DB-backed items; this handler is only wired up
     // from content-tab list rows, but guard anyway for type safety.
-    if (tab === 'continuation') return;
+    if (tab === 'continuation' || tab === 'outlines') return;
     // Phase9-BUG#11: 包裹 try-catch，失败时 Toast 提示（状态会通过 store 自动同步）
     try {
       await db.setProjectResourceEnabled(
@@ -984,7 +988,7 @@ export const ResourceLibrary: React.FC<{
     }
   };
 
-  const remove = (kind: EditorKind, id: number, title: string) => {
+  const remove = (kind: EditorKind | ResourceTab, id: number, title: string) => {
     Alert.alert('删除资料', `确定删除「${title}」？`, [
       { text: '取消', style: 'cancel' },
       {
@@ -1033,7 +1037,7 @@ export const ResourceLibrary: React.FC<{
       ? items.notes.filter(
           item => item.collection_id === selectedNoteCollectionId,
         )
-      : items[tab];
+      : items[tab as ContentTab];
   const canAddManual = tab !== 'characters';
   const editorTitle = useMemo(
     () => (editor ? `编辑${tabLabel(editor.kind)}` : ''),
@@ -1050,13 +1054,21 @@ export const ResourceLibrary: React.FC<{
     setTimeout(() => noteContentInputRef.current?.focus(), 0);
   };
 
+  // The 大纲 tab is only meaningful for outline-mode projects. Continuation
+  // has its own Canon system and freeform is free-form, so neither should see
+  // the outline entry (optimization plan: "非大纲模式不得被意外改变").
+  const visibleTabs = useMemo(() => {
+    if (currentProject?.mode === 'outline') return TABS;
+    return TABS.filter(t => t.value !== 'outlines');
+  }, [currentProject?.mode]);
+
   return (
     <Screen>
       <Header title="资料库" subtitle={subtitle} />
       <View style={styles.tabs}>
         <SegmentedControl
           value={tab}
-          options={TABS}
+          options={visibleTabs}
           onChange={value => {
             setTab(value);
             setSelectedCollectionId(null);
@@ -1075,6 +1087,8 @@ export const ResourceLibrary: React.FC<{
       ) : null}
       {tab === 'continuation' ? (
         <ContinuationHomeBody navigation={navigation} />
+      ) : tab === 'outlines' && currentProject ? (
+        <OutlineListBody projectId={currentProject.id} />
       ) : (
         <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.actions}>
@@ -2317,15 +2331,16 @@ export const ResourceLibrary: React.FC<{
   );
 };
 
-function iconFor(tab: ContentTab, color: string) {
+function iconFor(tab: ResourceTab, color: string) {
   const props = { size: 20, color };
   if (tab === 'characters') return <UserRound {...props} />;
   if (tab === 'worldbook') return <BookMarked {...props} />;
   if (tab === 'notes') return <NotebookPen {...props} />;
+  if (tab === 'outlines') return <ListTree {...props} />;
   return <SlidersHorizontal {...props} />;
 }
 
-function defaultMaxTokens(kind: EditorKind): number {
+function defaultMaxTokens(kind: EditorKind | ResourceTab): number {
   if (kind === 'characters') return 50000;
   if (kind === 'characterCollection') return 50000;
   if (kind === 'worldbookCollection') return 50000;
@@ -2335,7 +2350,7 @@ function defaultMaxTokens(kind: EditorKind): number {
   return 4000;
 }
 
-function tabLabel(kind: EditorKind): string {
+function tabLabel(kind: EditorKind | ResourceTab): string {
   if (kind === 'characters') return '角色卡';
   if (kind === 'characterCollection') return '角色合集';
   if (kind === 'worldbookCollection') return '世界书合集';
@@ -2345,21 +2360,21 @@ function tabLabel(kind: EditorKind): string {
   return '预设';
 }
 
-function placeholderFor(tab: ContentTab, addingEntry: boolean): string {
+function placeholderFor(tab: ResourceTab, addingEntry: boolean): string {
   if (tab === 'worldbook')
     return addingEntry ? '新世界书条目主关键词' : '新世界书合集名称';
   if (tab === 'notes') return '新笔记标题';
   return '新预设名称';
 }
 
-function emptyTitle(tab: ContentTab): string {
+function emptyTitle(tab: ResourceTab): string {
   if (tab === 'characters') return '还没有角色卡';
   if (tab === 'worldbook') return '还没有世界书条目';
   if (tab === 'notes') return '还没有笔记';
   return '还没有预设';
 }
 
-function titleFor(kind: EditorKind, item: any): string {
+function titleFor(kind: EditorKind | ResourceTab, item: any): string {
   if (kind === 'characters') return item.name || '未命名角色';
   if (kind === 'characterCollection') return item.name || '未命名角色合集';
   if (kind === 'worldbookCollection') return item.name || '未命名世界书';
@@ -2367,7 +2382,7 @@ function titleFor(kind: EditorKind, item: any): string {
   return item.title || item.name || '未命名';
 }
 
-function metaFor(tab: ContentTab, item: any): string {
+function metaFor(tab: ResourceTab, item: any): string {
   if (tab === 'characters')
     return `${item.collection_name || '未分组'} · ${
       item.source_type === 'png' ? 'PNG 角色卡' : 'JSON 角色卡'
