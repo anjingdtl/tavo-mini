@@ -57,7 +57,7 @@ jest.mock('../src/services/storyMemory/storyMemoryService', () => ({
 jest.mock('../src/store/pipelineTaskStore', () => ({
   usePipelineTaskStore: {
     getState: () => ({
-      createTask: jest.fn(() => 'task-1'),
+      createTask: jest.fn(async () => 'task-1'),
       getActiveTaskForTarget: jest.fn(() => null),
       tasks: [],
     }),

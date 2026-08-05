@@ -3,11 +3,14 @@
 const mockGetAllPipelineTasks = jest.fn();
 const mockSavePipelineTask = jest.fn();
 const mockDeleteResolvedPipelineTasks = jest.fn();
+const mockCreatePipelineTaskWithCheckpoints = jest.fn();
 
 jest.mock('../src/services/database', () => ({
   getAllPipelineTasks: (...args: any[]) => mockGetAllPipelineTasks(...args),
   savePipelineTask: (...args: any[]) => mockSavePipelineTask(...args),
   deleteResolvedPipelineTasks: (...args: any[]) => mockDeleteResolvedPipelineTasks(...args),
+  createPipelineTaskWithCheckpoints: (...args: any[]) =>
+    mockCreatePipelineTaskWithCheckpoints(...args),
   upsertStageCheckpoint: jest.fn(async () => undefined),
   interruptAllRunningStages: jest.fn(async () => 0),
   claimStageCheckpoint: jest.fn(async () => true),
@@ -38,6 +41,7 @@ describe('pipeline task store complete lifecycle', () => {
     mockGetAllPipelineTasks.mockResolvedValue([persistedRow]);
     mockSavePipelineTask.mockResolvedValue(undefined);
     mockDeleteResolvedPipelineTasks.mockResolvedValue(undefined);
+    mockCreatePipelineTaskWithCheckpoints.mockResolvedValue(undefined);
     usePipelineTaskStore.setState({ tasks: [], _loaded: false });
   });
 
@@ -57,7 +61,7 @@ describe('pipeline task store complete lifecycle', () => {
 
   test('creates and updates every task status, stage, result, and resolution', async () => {
     const store = usePipelineTaskStore.getState();
-    const id = store.createTask('chapter', 1);
+    const id = await store.createTask('chapter', 1);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(id).toMatch(/^pt_/);
     store.updateTaskStage(id, { stage: 'draft', status: 'completed', output: '草稿' } as any);
@@ -163,6 +167,7 @@ describe('pipeline task input fingerprint persistence', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSavePipelineTask.mockResolvedValue(undefined);
+    mockCreatePipelineTaskWithCheckpoints.mockResolvedValue(undefined);
     usePipelineTaskStore.setState({ tasks: [], _loaded: true });
   });
 
@@ -171,7 +176,7 @@ describe('pipeline task input fingerprint persistence', () => {
 
   it('setTaskInputFingerprint updates the task and persists it', async () => {
     const store = usePipelineTaskStore.getState();
-    const id = store.createTask('chapter', 5);
+    const id = await store.createTask('chapter', 5);
     await flush();
     mockSavePipelineTask.mockClear();
 
@@ -197,11 +202,12 @@ describe('pipeline task input fingerprint persistence', () => {
 
   it('persistTask snapshot includes inputFingerprint field', async () => {
     const store = usePipelineTaskStore.getState();
-    const id = store.createTask('chapter', 6);
+    const id = await store.createTask('chapter', 6);
     store.setTaskInputFingerprint(id, 'fp-snapshot');
     await flush();
-    // Use the LAST persistence call for this id — createTask persists first
-    // (fingerprint null), setTaskInputFingerprint persists again with the value.
+    // createTask persists atomically via createPipelineTaskWithCheckpoints
+    // (not savePipelineTask). setTaskInputFingerprint then persists again via
+    // savePipelineTask with the fingerprint value — assert on that call.
     const calls = mockSavePipelineTask.mock.calls.filter(
       (call: any[]) => call[0].id === id,
     );
@@ -212,13 +218,14 @@ describe('pipeline task input fingerprint persistence', () => {
 
   it('tasks without fingerprint persist null (legacy compatibility)', async () => {
     const store = usePipelineTaskStore.getState();
-    const id = store.createTask('chapter', 7);
+    const id = await store.createTask('chapter', 7);
     await flush();
-    // No setTaskInputFingerprint called → inputFingerprint undefined → persisted as null.
-    const persisted = mockSavePipelineTask.mock.calls.find(
-      (call: any[]) => call[0].id === id,
+    // createTask persists the parent via createPipelineTaskWithCheckpoints;
+    // the task snapshot passed there must carry a null inputFingerprint.
+    const persisted = mockCreatePipelineTaskWithCheckpoints.mock.calls.find(
+      (call: any[]) => call[0]?.id === id,
     )?.[0];
     expect(persisted).toBeDefined();
-    expect(persisted.inputFingerprint).toBeNull();
+    expect(persisted.inputFingerprint ?? null).toBeNull();
   });
 });

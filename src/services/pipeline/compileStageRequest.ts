@@ -379,6 +379,56 @@ function clipByAllocation(
   return clipTextToTokenBudget(text, allocation);
 }
 
+/**
+ * Mandatory allocation ids — these are NEVER reduced by the final-window
+ * shrink loop. Only optional sections (preset/character/worldbook/note/
+ * storyMemory/episodic/recentBridge/currentInstruction/userPrompt/
+ * worldRules/storyState/reviewReport/factCheckReport) may be shortened.
+ */
+const MANDATORY_ALLOCATION_IDS = new Set(['outline', 'mandatory_body']);
+
+/**
+ * Reduce ONLY optional allocations to recover at least `reductionTokens`.
+ * Heuristic: reclaim from the largest-reclaimable optional section first,
+ * ties broken by lower business weight already encoded in the id ordering
+ * (heaviest reclaimable wins). Mutates `allocations` in place. Returns
+ * true when any allocation actually changed (false when nothing left to
+ * reclaim — caller should then declare Blocked).
+ *
+ * Invariants preserved:
+ *   - allocated >= 0
+ *   - allocated <= requested
+ *   - mandatory ids (outline / mandatory_body) are never touched
+ *   - sum(allocated) stays conserved/monotone-non-increasing
+ */
+export function shrinkOptionalAllocations(
+  allocations: ContextAllocationTrace[],
+  reductionTokens: number,
+): boolean {
+  if (reductionTokens <= 0) return false;
+  let remaining = Math.ceil(reductionTokens);
+  let changed = false;
+  // Sort a WORKING INDEX of optional sections by reclaimable tokens
+  // descending so the shrink loop recovers from the biggest offenders
+  // first. We iterate over indices so we can mutate `allocations` in place.
+  const optionalIndices = allocations
+    .map((a, idx) => ({ idx, reclaimable: Math.max(0, a.allocated) }))
+    .filter(e => !MANDATORY_ALLOCATION_IDS.has(allocations[e.idx].id))
+    .sort((a, b) => b.reclaimable - a.reclaimable);
+
+  for (const { idx } of optionalIndices) {
+    if (remaining <= 0) break;
+    const entry = allocations[idx];
+    const reclaim = Math.min(entry.allocated, remaining);
+    if (reclaim <= 0) continue;
+    entry.allocated = Math.max(0, entry.allocated - reclaim);
+    entry.truncated = entry.allocated < entry.requested || entry.truncated;
+    remaining -= reclaim;
+    changed = true;
+  }
+  return changed;
+}
+
 function allocMap(
   allocations: Array<{ id: string; allocated: number }>,
 ): Map<string, number> {
@@ -448,13 +498,33 @@ export function compileReviewStageRequest(params: {
     outlineText,
   };
 
-  const messages = params.repairReason
-    ? buildReviewRepairMessages(params.draftText, clipped, params.repairReason)
-    : buildReviewMessages(params.draftText, clipped);
+  // Rebuild closure used by finalizeCompiled's shrink loop: given an
+  // updated allocation list, re-clip ONLY optional fields (outline + draft
+  // body are mandatory and never clipped here) and reconstruct messages.
+  const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
+    const m = allocMap(allocations);
+    const ctx: ReviewContext = {
+      presetText: clipByAllocation(params.context.presetText, m.get('preset') || 0),
+      characterText: clipByAllocation(params.context.characterText, m.get('character') || 0),
+      noteText: clipByAllocation(params.context.noteText, m.get('note') || 0),
+      worldbookText: clipByAllocation(params.context.worldbookText, m.get('worldbook') || 0),
+      storyMemoryText: clipByAllocation(params.context.storyMemoryText, m.get('storyMemory') || 0),
+      episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, m.get('episodic') || 0),
+      recentBridgeText: clipByAllocation(params.context.recentBridgeText, m.get('recentBridge') || 0),
+      currentInstructionText: clipByAllocation(params.context.currentInstructionText, m.get('currentInstruction') || 0),
+      retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, m.get('userPrompt') || 0),
+      outlineText,
+    };
+    return params.repairReason
+      ? buildReviewRepairMessages(params.draftText, ctx, params.repairReason)
+      : buildReviewMessages(params.draftText, ctx);
+  };
 
   return finalizeCompiled({
     stage,
-    messages,
+    messages: params.repairReason
+      ? buildReviewRepairMessages(params.draftText, clipped, params.repairReason)
+      : buildReviewMessages(params.draftText, clipped),
     maxTokens: params.maxTokens,
     contextWindow: params.contextWindow,
     outlineTokens,
@@ -466,6 +536,7 @@ export function compileReviewStageRequest(params: {
       { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
       ...budget.optionalAllocations,
     ],
+    rebuild,
   });
 }
 
@@ -528,13 +599,32 @@ export function compileFactCheckStageRequest(params: {
     outlineText,
   };
 
-  const messages = params.repairReason
-    ? buildFactCheckRepairMessages(params.draftText, clipped, params.repairReason)
-    : buildFactCheckMessages(params.draftText, clipped);
+  // Rebuild closure for finalizeCompiled's shrink loop: only optional
+  // fields are re-clipped; outline + draft body stay mandatory.
+  const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
+    const m = allocMap(allocations);
+    const ctx: FactCheckContext = {
+      presetText: clipByAllocation(params.context.presetText, m.get('preset') || 0),
+      currentInstructionText: clipByAllocation(params.context.currentInstructionText, m.get('currentInstruction') || 0),
+      retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, m.get('userPrompt') || 0),
+      recentBridgeText: clipByAllocation(params.context.recentBridgeText, m.get('recentBridge') || 0),
+      storyMemoryText: clipByAllocation(params.context.storyMemoryText, m.get('storyMemory') || 0),
+      episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, m.get('episodic') || 0),
+      worldbookText: clipByAllocation(params.context.worldbookText, m.get('worldbook') || 0),
+      characterText: clipByAllocation(params.context.characterText, m.get('character') || 0),
+      noteText: clipByAllocation(params.context.noteText, m.get('note') || 0),
+      outlineText,
+    };
+    return params.repairReason
+      ? buildFactCheckRepairMessages(params.draftText, ctx, params.repairReason)
+      : buildFactCheckMessages(params.draftText, ctx);
+  };
 
   return finalizeCompiled({
     stage,
-    messages,
+    messages: params.repairReason
+      ? buildFactCheckRepairMessages(params.draftText, clipped, params.repairReason)
+      : buildFactCheckMessages(params.draftText, clipped),
     maxTokens: params.maxTokens,
     contextWindow: params.contextWindow,
     outlineTokens,
@@ -546,6 +636,7 @@ export function compileFactCheckStageRequest(params: {
       { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
       ...budget.optionalAllocations,
     ],
+    rebuild,
   });
 }
 
@@ -614,16 +705,39 @@ export function compileProofStageRequest(params: {
     outlineText,
   };
 
-  const messages = buildProofMessages(
-    params.draftText,
-    params.reviewText,
-    params.factCheckText,
-    clipped,
-  );
+  // Rebuild closure for finalizeCompiled's shrink loop: only optional
+  // constraints are re-clipped; draft/review/factCheck bodies + outline
+  // stay mandatory.
+  const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
+    const m = allocMap(allocations);
+    const ctx: ProofConstraints = {
+      presetText: clipByAllocation(params.constraints.presetText, m.get('preset') || 0),
+      currentInstructionText: clipByAllocation(params.constraints.currentInstructionText, m.get('currentInstruction') || 0),
+      retrievalUserPrompt: clipByAllocation(params.constraints.retrievalUserPrompt, m.get('userPrompt') || 0),
+      relevantCharacterConstraints: clipByAllocation(params.constraints.relevantCharacterConstraints, m.get('character') || 0),
+      relevantWorldRules: clipByAllocation(params.constraints.relevantWorldRules, m.get('worldRules') || 0),
+      currentStoryState: clipByAllocation(params.constraints.currentStoryState, m.get('storyState') || 0),
+      episodicMemoryText: clipByAllocation(params.constraints.episodicMemoryText, m.get('episodic') || 0),
+      noteText: clipByAllocation(params.constraints.noteText, m.get('note') || 0),
+      recentBridgeText: clipByAllocation(params.constraints.recentBridgeText, m.get('recentBridge') || 0),
+      outlineText,
+    };
+    return buildProofMessages(
+      params.draftText,
+      params.reviewText,
+      params.factCheckText,
+      ctx,
+    );
+  };
 
   return finalizeCompiled({
     stage,
-    messages,
+    messages: buildProofMessages(
+      params.draftText,
+      params.reviewText,
+      params.factCheckText,
+      clipped,
+    ),
     maxTokens: params.maxTokens,
     contextWindow: params.contextWindow,
     outlineTokens,
@@ -635,6 +749,7 @@ export function compileProofStageRequest(params: {
       { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
       ...budget.optionalAllocations,
     ],
+    rebuild,
   });
 }
 
@@ -694,48 +809,26 @@ function finalizeCompiled(params: {
   fixedMessagesTokens: number;
   budget: ReturnType<typeof allocateStageContextBudget>;
   allocations: ContextAllocationTrace[];
+  /**
+   * Rebuild messages from an updated allocation list. Only OPTIONAL
+   * sections are re-clipped inside this closure; outline and stage body
+   * are mandatory and stay verbatim. Invoked by the shrink loop below.
+   */
+  rebuild?: (allocations: ContextAllocationTrace[]) => ChatMessage[];
 }): StageCompileResult {
-  let messages = params.messages;
-  let estimatedInputTokens = estimateStageInputTokens(messages);
+  // Local mutable copy of allocations so the shrink loop can mutate
+  // optional entries without touching the caller's budget object.
+  const allocations = params.allocations.map(a => ({ ...a }));
   const safetyMargin = params.budget.safetyMargin;
-  const limit =
-    params.contextWindow - params.maxTokens - safetyMargin;
+  const limit = params.contextWindow - params.maxTokens - safetyMargin;
 
-  // If final assembly slightly overshoots (label overhead), trim optional user
-  // content once rather than calling the model over window.
-  if (
-    params.budget.fitsMandatory &&
-    limit > 0 &&
-    estimatedInputTokens > limit
-  ) {
-    const overshoot = estimatedInputTokens - limit;
-    messages = messages.map(m => {
-      if (m.role !== 'user' && m.role !== 'system') return m;
-      // Prefer trimming the larger user payload (context partitions).
-      const target = Math.max(
-        0,
-        estimateTokens(m.content) - overshoot - 32,
-      );
-      if (target <= 0 || estimateTokens(m.content) < 200) return m;
-      return {
-        ...m,
-        content: clipTextToTokenBudget(m.content, target),
-      };
-    });
-    estimatedInputTokens = estimateStageInputTokens(messages);
-  }
-
-  const finalFits =
-    estimatedInputTokens + params.maxTokens + safetyMargin <=
-    params.contextWindow;
-  const fits = finalFits && params.budget.fitsMandatory;
-
-  if (!fits) {
-    const message = !params.budget.fitsMandatory
-      ? params.budget.blockingReason === 'fixed_overflow'
+  // If mandatory content already cannot fit, do not attempt optional
+  // shrinking — classify and return Blocked immediately.
+  if (!params.budget.fitsMandatory) {
+    const message =
+      params.budget.blockingReason === 'fixed_overflow'
         ? '固定 Prompt 与输出预留无法放入模型窗口'
-        : '完整大纲与阶段必需正文无法放入模型窗口'
-      : '阶段请求超出模型上下文窗口';
+        : '完整大纲与阶段必需正文无法放入模型窗口';
     return {
       ready: false,
       stage: params.stage,
@@ -754,16 +847,84 @@ function finalizeCompiled(params: {
         contextWindow: params.contextWindow,
         reservedOutputTokens: params.maxTokens,
         safetyMargin,
+        estimatedInputTokens: estimateStageInputTokens(params.messages),
+        fullOutlineTokens: params.outlineTokens,
+        mandatoryBodyTokens: params.bodyTokens,
+        fixedMessagesTokens: params.fixedMessagesTokens,
+        remainingForOptional: params.budget.remainingForOptional,
+        blockingReason: params.budget.blockingReason,
+      },
+      allocations,
+      messages: params.messages,
+      estimatedInputTokens: estimateStageInputTokens(params.messages),
+    };
+  }
+
+  // Optional-only shrink loop (max 3 passes). When the assembled messages
+  // slightly overshoot the window (label / role overhead), we do NOT clip
+  // the assembled system/user string — that would truncate the full
+  // outline, the draft body, the system protocol, and repair instructions.
+  // Instead we reduce ONLY optional allocations, then rebuild messages and
+  // re-estimate.
+  let messages = params.messages;
+  let estimatedInputTokens = estimateStageInputTokens(messages);
+  const rebuild = params.rebuild;
+  const MAX_SHRINK_PASSES = 3;
+
+  for (let pass = 0; pass < MAX_SHRINK_PASSES; pass += 1) {
+    if (limit <= 0) break;
+    if (estimatedInputTokens <= limit) break;
+
+    if (!rebuild) {
+      // No rebuild closure (shouldn't happen for review/factCheck/proof,
+      // but guard defensively) — cannot shrink without reconstruction.
+      break;
+    }
+
+    const overshoot = estimatedInputTokens - limit;
+    const changed = shrinkOptionalAllocations(allocations, overshoot + 32);
+    if (!changed) break;
+
+    messages = rebuild(allocations);
+    estimatedInputTokens = estimateStageInputTokens(messages);
+  }
+
+  const finalFits =
+    estimatedInputTokens + params.maxTokens + safetyMargin <=
+    params.contextWindow;
+
+  if (!finalFits) {
+    // Mandatory fits but final assembled messages still do not — classify
+    // why. OUTLINE_TOO_LARGE only when the full outline alone (plus fixed
+    // scaffold + output + safety) overflows; otherwise the body/protocol
+    // combination is the cause → CONTEXT_WINDOW_EXCEEDED.
+    const message = '阶段请求超出模型上下文窗口';
+    return {
+      ready: false,
+      stage: params.stage,
+      error: classifyBlockingError({
+        stage: params.stage,
+        outlineTokens: params.outlineTokens,
+        fixedMessagesTokens: params.fixedMessagesTokens,
+        mandatoryBodyTokens: params.bodyTokens,
+        reservedOutputTokens: params.maxTokens,
+        safetyMargin,
+        contextWindow: params.contextWindow,
+        budgetBlocking: null,
+        message,
+      }),
+      diagnostics: {
+        contextWindow: params.contextWindow,
+        reservedOutputTokens: params.maxTokens,
+        safetyMargin,
         estimatedInputTokens,
         fullOutlineTokens: params.outlineTokens,
         mandatoryBodyTokens: params.bodyTokens,
         fixedMessagesTokens: params.fixedMessagesTokens,
         remainingForOptional: params.budget.remainingForOptional,
-        blockingReason: params.budget.fitsMandatory
-          ? 'final_window'
-          : params.budget.blockingReason,
+        blockingReason: 'final_window',
       },
-      allocations: params.allocations,
+      allocations,
       messages,
       estimatedInputTokens,
     };
@@ -777,7 +938,7 @@ function finalizeCompiled(params: {
     reservedOutputTokens: params.maxTokens,
     safetyMargin,
     contextWindow: params.contextWindow,
-    allocations: params.allocations,
+    allocations,
   };
 }
 

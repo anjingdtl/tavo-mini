@@ -4,7 +4,7 @@ import { act, fireEvent, render } from '@testing-library/react-native';
 const mockUpdateChapter = jest.fn();
 const mockGetChapterById = jest.fn();
 const mockGetActiveTaskForTarget = jest.fn(() => null);
-const mockCreateTask = jest.fn(() => 'task-1');
+const mockCreateTask = jest.fn(async () => 'task-1');
 const mockRunChapterPipeline = jest.fn();
 const mockCancelPipeline = jest.fn();
 const mockNavigate = jest.fn();
@@ -124,7 +124,7 @@ describe('ChapterEditor toolbar', () => {
       activeTtsSessionId: null,
     });
     mockCancelPipeline.mockClear();
-    mockCreateTask.mockImplementation(() => {
+    mockCreateTask.mockImplementation(async () => {
       mockTasks.push({
         id: 'task-1',
         targetType: 'chapter',
