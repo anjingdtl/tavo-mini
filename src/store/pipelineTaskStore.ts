@@ -18,6 +18,12 @@ interface PipelineTaskState {
   setTaskFinalText: (taskId: string, finalText: string) => void;
   failTask: (taskId: string, error: string) => void;
   cancelTask: (taskId: string) => void;
+  /**
+   * Persist the frozen input fingerprint on a task (projectId | chapterId |
+   * chapterUpdatedAt | outlineFingerprint). Called by the runner at terminal
+   * state so the result-adoption flow can later detect outline/chapter drift.
+   */
+  setTaskInputFingerprint: (taskId: string, fingerprint: string) => void;
   resolveTask: (taskId: string, action: 'accept' | 'reject') => void;
   clearResolved: () => void;
   getActiveTaskForTarget: (targetType: 'chapter' | 'freeform', targetId: number) => PipelineTask | undefined;
@@ -59,6 +65,7 @@ function persistTask(task: PipelineTask) {
     stageResults: task.stageResults.map(stage => ({ ...stage })),
     finalText: task.finalText,
     error: task.error,
+    inputFingerprint: task.inputFingerprint ?? null,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     resolvedAt: task.resolvedAt,
@@ -90,6 +97,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         stageResults: row.stageResults || [],
         finalText: row.finalText,
         error: row.error,
+        inputFingerprint: row.inputFingerprint ?? null,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         resolvedAt: row.resolvedAt,
@@ -191,6 +199,17 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     set((state) => {
       const tasks = state.tasks.map((t) =>
         t.id === taskId ? { ...t, status: 'cancelled' as PipelineTaskStatus, updatedAt: Date.now() } : t
+      );
+      const task = tasks.find((t) => t.id === taskId);
+      if (task) persistTask(task);
+      return { tasks };
+    });
+  },
+
+  setTaskInputFingerprint: (taskId, fingerprint) => {
+    set((state) => {
+      const tasks = state.tasks.map((t) =>
+        t.id === taskId ? { ...t, inputFingerprint: fingerprint } : t
       );
       const task = tasks.find((t) => t.id === taskId);
       if (task) persistTask(task);

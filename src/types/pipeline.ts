@@ -41,6 +41,13 @@ export interface PipelineTask {
   stageResults: PipelineStageResult[];
   finalText: string | null;
   error: string | null;
+  /**
+   * Frozen input fingerprint (projectId | chapterId | chapterUpdatedAt |
+   * outlineFingerprint) captured at task completion. Used by the result-adoption
+   * flow to detect whether the outline or chapter changed between generation
+   * and adoption. NULL for legacy tasks created before Schema 37.
+   */
+  inputFingerprint?: string | null;
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;

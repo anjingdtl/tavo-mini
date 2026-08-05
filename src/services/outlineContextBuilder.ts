@@ -219,3 +219,28 @@ export async function computeLiveOutlineFingerprint(
     })),
   );
 }
+
+/**
+ * Compute the full pipeline input fingerprint for a chapter generation task:
+ * `hash(projectId | chapterId | chapterUpdatedAt | outlineFingerprint)`.
+ *
+ * This is the stable baseline persisted at task completion and re-computed at
+ * result-adoption time. A change in any component (outline edited/reordered,
+ * chapter body rewritten externally, chapter re-saved) produces a different
+ * digest, so the adoption flow can warn the user the result is stale.
+ *
+ * `outlineFingerprint` is optional so callers that already hold the frozen
+ * snapshot value can pass it directly instead of re-querying the DB.
+ */
+export async function computeInputFingerprint(params: {
+  projectId: number;
+  chapterId: number;
+  chapterUpdatedAt: number | string;
+  outlineFingerprint?: string;
+}): Promise<string> {
+  const outlineFp =
+    params.outlineFingerprint ??
+    (await computeLiveOutlineFingerprint(params.projectId));
+  const payload = `proj=${params.projectId}|chapter=${params.chapterId}|updatedAt=${params.chapterUpdatedAt}|outline=${outlineFp}`;
+  return sha256Hex(payload).slice(0, 16);
+}
