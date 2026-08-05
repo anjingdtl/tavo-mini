@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.11.26] - 2026-08-05
+
+### Fixed
+
+- **召回扫描真机崩溃修复**：解决真机上"扫描失败 [object Object]"问题。
+  - **根因**：Toast 错误展示用 `e?.message`，真机 release bundle 里部分异常对象没有标准 `message` 属性，渲染成 `[object Object]`；同时 `scanDir` 循环里 `parseBackupFile` 调用未包 try/catch，单个损坏备份文件会让整个扫描抛出。
+  - **健壮错误提取**：新增 `extractMessage` / `extractErrorMessage` helper，处理 Error / string / {message} / 其他对象，保证 Toast 永远显示可读字符串。
+  - **单文件异常隔离**：`scanDir` 每个文件解析包 try/catch，失败的文件记录一条 invalid finding（"读取失败：<原因>"）而非中断整个扫描。
+  - **错误详情可见**：scanError 态 UI 展示具体错误信息，方便用户报告。
+
 ## [2.11.25] - 2026-08-05
 
 ### Added
