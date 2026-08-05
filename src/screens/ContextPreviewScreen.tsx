@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronRight,
   Globe,
+  ListTree,
   MessageSquare,
   StickyNote,
   Users,
@@ -71,6 +72,7 @@ const KIND_ICON: Record<
   note: StickyNote,
   worldbook: Globe,
   instruction: MessageSquare,
+  outline: ListTree,
 };
 
 /** 续写 context category 内部名 → 中文展示（Spec §10.3） */

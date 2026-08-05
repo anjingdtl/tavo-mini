@@ -17,7 +17,7 @@ import {
  * chapters, settings/boundary and continuation chapters; the v3 branch is
  * implemented alongside the continuation backup work (Spec §15).
  */
-export type ProjectPackageSpecVersion = 1 | 2 | 3;
+export type ProjectPackageSpecVersion = 1 | 2 | 3 | 4;
 
 export interface ProjectImportPreview {
   specVersion: ProjectPackageSpecVersion;
@@ -39,6 +39,8 @@ export interface ParsedProjectPackage {
     worldbookEntries: any[];
     notes: any[];
     presets: any[];
+    /** v4+ outline project packages carry outlines (Schema 36+). */
+    outlines?: any[];
   };
   contextConfig?: any;
   /**
@@ -78,9 +80,9 @@ export function parseProjectPackage(text: string): ParsedProjectPackage {
   }
   const specVersion = parseInt(specVersionMatch[1], 10);
   // Spec §15: v1/v2 stay compatible; v3 is the continuation package introduced
-  // in Schema 19. The dedicated v3 import path lives in the continuation
-  // service; the generic parser still accepts the version so previews work.
-  if (specVersion !== 1 && specVersion !== 2 && specVersion !== 3) {
+  // in Schema 19. v4 extends v2 (outline/freeform) with the outlines resource
+  // (Schema 36, 大纲创作模式升级). Older apps reject v4; this build accepts all.
+  if (specVersion !== 1 && specVersion !== 2 && specVersion !== 3 && specVersion !== 4) {
     throw new Error(`不支持的项目包版本：v${specVersion}`);
   }
 
@@ -96,6 +98,7 @@ export function parseProjectPackage(text: string): ParsedProjectPackage {
       worldbookEntries: Array.isArray(data.resources?.worldbookEntries) ? data.resources.worldbookEntries : [],
       notes: Array.isArray(data.resources?.notes) ? data.resources.notes : [],
       presets: Array.isArray(data.resources?.presets) ? data.resources.presets : [],
+      outlines: Array.isArray(data.resources?.outlines) ? data.resources.outlines : [],
     },
     contextConfig: data.contextConfig,
     // Spec §15: v3 packages carry the continuation payload.
@@ -116,7 +119,8 @@ export function previewProjectPackage(pkg: ParsedProjectPackage): ProjectImportP
     pkg.resources.characters.length +
     pkg.resources.worldbookEntries.length +
     pkg.resources.notes.length +
-    pkg.resources.presets.length;
+    pkg.resources.presets.length +
+    (pkg.resources.outlines?.length ?? 0);
 
   return {
     specVersion: pkg.specVersion as ProjectPackageSpecVersion,
@@ -284,6 +288,46 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
 
       if (preset.enabled_for_project === 0) {
         await db.setProjectResourceEnabled(projectId, 'preset', presetId, false);
+      }
+    }
+
+    // j2. v4+ outline packages: restore outlines (title/content/source/enable/
+    //     order). Older v2/v3 packages have no outlines array and skip this.
+    //     Each outline is created disabled-by-default then re-enabled/reordered
+    //     to match the exported state, preserving the user's intent.
+    const outlines = pkg.resources.outlines;
+    if (outlines && outlines.length > 0) {
+      // Sort by exported position so createOutline assigns sequential positions.
+      const sorted = [...outlines].sort(
+        (a, b) => Number(a.position ?? 0) - Number(b.position ?? 0),
+      );
+      const newIds: number[] = [];
+      for (const outline of sorted) {
+        const title = String(outline.title ?? '');
+        const content = String(outline.content ?? '');
+        const sourceType =
+          outline.source_type === 'txt' || outline.sourceType === 'txt'
+            ? 'txt'
+            : 'manual';
+        const sourceFileName =
+          outline.source_file_name ?? outline.sourceFileName ?? undefined;
+        const newId = await db.createOutline(projectId, {
+          title,
+          content,
+          sourceType,
+          sourceFileName,
+        });
+        newIds.push(newId);
+        // Restore the exported enabled state (default is off).
+        const enabled = Number(outline.enabled) === 1;
+        if (enabled) {
+          await db.setOutlineEnabled(projectId, newId, true);
+        }
+      }
+      // Restore exact order via reorderOutlines (positions are now 0..n-1
+      // matching the sorted export order, but reorder makes it deterministic).
+      if (newIds.length > 1) {
+        await db.reorderOutlines(projectId, newIds);
       }
     }
 
