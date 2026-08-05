@@ -5,7 +5,7 @@
 把灵感、资料和章节放在一台手机里，安心写完你的长篇故事。
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#开始使用)
-[![Version](https://img.shields.io/badge/Version-V2.11.23-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.11.24-blue.svg)](CHANGELOG.md)
 
 </div>
 
@@ -19,7 +19,7 @@ ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮�
 
 新建作品后就能建立章节、填写梗概、记录人物和伏笔。编辑器会自动保存，章节还可以保留多个修订版本，方便比较和回退。
 
-如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 39**（含流水线阶段 checkpoint）。
+如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 40**（含流水线阶段 checkpoint 与 canon_evidence provenance 漂移自愈）。
 
 ### 让 AI 帮你，而不是替你失控
 

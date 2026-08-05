@@ -6,6 +6,7 @@ module.exports = {
     '/android/app/jni/llama.cpp/',
     '/__tests__/migrationTestUtils.ts$',
     '/__tests__/helpers/',
+    '/__tests__/schema40-fixture-helpers.ts$',
   ],
   collectCoverageFrom: [
     'src/data/**/*.ts',

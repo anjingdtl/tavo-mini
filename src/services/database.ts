@@ -8,8 +8,10 @@ export {
   initializeDatabase,
   lastInstallInfo,
   lastMigrationResult,
+  lastSchemaRecovery,
   repairKnownSchemaDefects,
 } from '../data/schema/initializeDatabase';
+export type { SchemaRecoveryState } from '../data/schema/initializeDatabase';
 export type {
   InstallInfo,
   InstallType,
