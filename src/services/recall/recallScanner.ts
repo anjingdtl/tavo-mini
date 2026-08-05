@@ -107,8 +107,8 @@ async function scanDir(
     return [];
   }
   const findings: BackupSourceFinding[] = [];
-  for (const f of files.filter(f => f.name.endsWith('.json'))) {
-    const finding = await parseBackupFile(f, sourceId, currentKeys);
+  for (const file of files.filter(item => item.name.endsWith('.json'))) {
+    const finding = await parseBackupFile(file, sourceId, currentKeys);
     if (finding) findings.push(finding);
   }
   return findings;
