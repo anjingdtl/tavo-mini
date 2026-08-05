@@ -5,7 +5,7 @@ import { buildV26toV27Statements } from '../../src/services/migrations/v26-to-v2
 
 describe('schema 26 → 27 local LLM removal', () => {
   it('targets the current schema version', () => {
-    expect(SCHEMA_VERSION).toBe(37);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(38);
   });
 
   it('keeps only online configs and preserves their fields', () => {

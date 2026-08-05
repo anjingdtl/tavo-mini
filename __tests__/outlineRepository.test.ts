@@ -136,6 +136,18 @@ describe('deleteOutline', () => {
 
 describe('setOutlineEnabled', () => {
   it('scopes the update by projectId and id', async () => {
+    mockOne.mockResolvedValue({
+      id: 42,
+      project_id: 7,
+      title: 'T',
+      content: '有正文',
+      enabled: 0,
+      position: 0,
+      estimated_tokens: 1,
+      content_hash: 'h',
+      created_at: 1,
+      updated_at: 1,
+    });
     await setOutlineEnabled(7, 42, true);
     const [, sql, params] = mockExecute.mock.calls[0];
     expect(sql).toContain('WHERE id = ? AND project_id = ?');
@@ -148,6 +160,23 @@ describe('setOutlineEnabled', () => {
     await setOutlineEnabled(7, 42, false);
     const [, , params] = mockExecute.mock.calls[0];
     expect(params[0]).toBe(0);
+  });
+
+  it('rejects enabling empty content', async () => {
+    mockOne.mockResolvedValue({
+      id: 42,
+      project_id: 7,
+      title: 'T',
+      content: '   ',
+      enabled: 0,
+      position: 0,
+      estimated_tokens: 0,
+      content_hash: 'h',
+      created_at: 1,
+      updated_at: 1,
+    });
+    await expect(setOutlineEnabled(7, 42, true)).rejects.toThrow(/正文为空/);
+    expect(mockExecute).not.toHaveBeenCalled();
   });
 });
 
