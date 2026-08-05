@@ -9,6 +9,7 @@ import {
   buildOutlineContext,
   deriveOutlineBudgetTokens,
   EMPTY_OUTLINE_CONTEXT,
+  OutlineContextError,
   type BuiltOutlineContext,
 } from './outlineContextBuilder';
 import {
@@ -422,16 +423,21 @@ export async function buildContext(
     preview: resolvedSystemPrompt.slice(0, 500),
   });
 
-  // Outline injection: the highest creative constraint. Injected as a system
-  // message right after the preset so it appears early and cannot be overridden
-  // by a later user/chapter instruction. Strict no-truncation: a blocked
-  // outline (does not fit budget) throws here so the model is never called with
-  // a silently clipped plan.
+  // Outline injection: the highest creative constraint. Compiled into the
+  // primary system message (together with the preset) so providers that
+  // de-prioritize or drop consecutive system messages still see the plan.
+  // Strict no-truncation: a blocked outline throws before any model call.
   if (outlineContext.text) {
     if (!outlineContext.complete) {
       throw new Error(outlineContext.blockingReason || '大纲无法完整注入，已阻止生成。');
     }
-    messages.push({ role: 'system', content: outlineContext.text });
+    const primary = messages[0];
+    if (primary?.role === 'system') {
+      primary.content = `${primary.content}\n\n${outlineContext.text}`;
+    } else {
+      messages.unshift({ role: 'system', content: outlineContext.text });
+    }
+    // Keep presetText in the snapshot as the raw preset; outline is separate.
     trace.push({
       kind: 'outline',
       sourceId: null,
@@ -645,36 +651,56 @@ function buildPresetPrompt(preset?: Preset): string {
 
 /**
  * Resolve the project mode + active model context window, then build the
- * outline context with its own budget. Non-outline modes and any failure
- * (missing project / llm config) return the empty context so generation
- * degrades gracefully to the legacy behaviour instead of crashing.
+ * outline context with its own budget.
+ *
+ * Fail-closed:
+ *  - non-outline modes → empty (legal)
+ *  - no enabled outlines → empty (legal)
+ *  - repository / project read failures → rethrow OutlineContextError
+ *  - OutlineContextError from buildOutlineContext → rethrow
+ *
+ * Missing LLM config yields budget 0 so outlines still inject; the pipeline
+ * final window check separately blocks real generation when the model window
+ * is unknown.
  */
 async function buildOutlineContextForProject(
   projectId: number,
 ): Promise<BuiltOutlineContext> {
-  try {
-    const project = await db.getProjectById(projectId);
-    const projectMode = project?.mode;
-    if (projectMode !== 'outline') {
-      return EMPTY_OUTLINE_CONTEXT;
-    }
-    let contextWindow = 0;
-    try {
-      const llmConfig = await db.getActiveLLMConfig();
-      contextWindow = Number(llmConfig?.context_window) || 0;
-    } catch {
-      // LLM config not available (e.g. preview before config). Fall back to 0
-      // which disables the budget check — outlines still inject when present.
-    }
-    const outlineBudgetTokens = deriveOutlineBudgetTokens(contextWindow);
-    return await buildOutlineContext({
-      projectId,
-      projectMode,
-      outlineBudgetTokens,
-    });
-  } catch {
+  // Partial database facades (tests / incomplete mocks) may omit getProjectById.
+  // Without a project row we cannot claim outline mode — return empty legally.
+  if (typeof (db as any).getProjectById !== 'function') {
     return EMPTY_OUTLINE_CONTEXT;
   }
+  let project;
+  try {
+    project = await db.getProjectById(projectId);
+  } catch (error: any) {
+    throw new OutlineContextError(
+      'OUTLINE_READ_FAILED',
+      `读取项目信息失败：${error?.message ? String(error.message) : '数据库错误'}`,
+      'open_outlines',
+    );
+  }
+  const projectMode = project?.mode;
+  if (projectMode !== 'outline') {
+    return EMPTY_OUTLINE_CONTEXT;
+  }
+  let contextWindow = 0;
+  try {
+    const llmConfig = await db.getActiveLLMConfig();
+    contextWindow = Number(llmConfig?.context_window) || 0;
+  } catch {
+    // Preview / pre-config: budget unknown. Do not treat as empty outline.
+    contextWindow = 0;
+  }
+  const outlineBudgetTokens = deriveOutlineBudgetTokens(contextWindow);
+  // buildOutlineContext throws OutlineContextError on repository failure —
+  // never swallow into EMPTY_OUTLINE_CONTEXT.
+  return await buildOutlineContext({
+    projectId,
+    projectMode,
+    outlineBudgetTokens,
+  });
 }
 
 /**

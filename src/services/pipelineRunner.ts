@@ -5,7 +5,11 @@ import {
   type LLMRequestConfig,
 } from './llm';
 import { buildContext } from './contextBuilder';
-import { computeInputFingerprint } from './outlineContextBuilder';
+import {
+  checkRequestFitsContextWindow,
+  computeInputFingerprint,
+  OutlineContextError,
+} from './outlineContextBuilder';
 import { createChapterGenerationRequest } from './chapterGeneration';
 import {
   buildDraftMessages,
@@ -14,16 +18,20 @@ import {
   buildProofMessages,
   buildReviewRepairMessages,
   buildFactCheckRepairMessages,
+  estimateStageInputTokens,
 } from './pipelineMessages';
 import {
   buildReviewContextFromSnapshot,
   buildFactCheckContextFromSnapshot,
   buildProofConstraintsFromSnapshot,
+  PIPELINE_CONTEXT_SNAPSHOT_VERSION,
   type FactCheckContext,
   type PipelineContextSnapshot,
   type ProofConstraints,
   type ReviewContext,
 } from '../types/pipelineContext';
+import { sha256Hex } from './continuation/hashUtils';
+import type { ChatMessage } from './llm';
 import { buildPostDraftAuditContext } from './postDraftRetrieval';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { saveDraft } from './draftService';
@@ -166,6 +174,114 @@ function getErrorMessage(error: any, fallback: string): string {
   return error?.message ? String(error.message) : fallback;
 }
 
+/** Serialize + hash a frozen pipeline context snapshot for Schema 38 persistence. */
+export function serializePipelineContextSnapshot(
+  snapshot: PipelineContextSnapshot,
+): {
+  pipelineContextJson: string;
+  pipelineContextVersion: number;
+  pipelineContextHash: string;
+} {
+  const enriched: PipelineContextSnapshot = {
+    ...snapshot,
+    snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    createdAt: snapshot.createdAt ?? Date.now(),
+  };
+  const pipelineContextJson = JSON.stringify(enriched);
+  return {
+    pipelineContextJson,
+    pipelineContextVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    pipelineContextHash: sha256Hex(pipelineContextJson).slice(0, 32),
+  };
+}
+
+/**
+ * Load a previously persisted snapshot. Throws OutlineContextError when the
+ * JSON is missing, corrupted, or fails the integrity hash check.
+ */
+export function parsePersistedPipelineContextSnapshot(task: {
+  pipelineContextJson?: string | null;
+  pipelineContextHash?: string | null;
+  pipelineContextVersion?: number | null;
+}): PipelineContextSnapshot {
+  const json = task.pipelineContextJson;
+  if (!json || !String(json).trim()) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '旧任务没有冻结的流水线上下文快照，无法安全恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  if (task.pipelineContextHash) {
+    const actual = sha256Hex(String(json)).slice(0, 32);
+    if (actual !== task.pipelineContextHash) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_INVALID',
+        '流水线上下文快照校验失败（可能已损坏），已阻止恢复。请重新开始生成。',
+        'restart_task',
+      );
+    }
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(json));
+  } catch {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '流水线上下文快照 JSON 损坏，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '流水线上下文快照结构无效，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const snap = parsed as PipelineContextSnapshot;
+  // Minimal shape check: outline fields must be present even if empty.
+  if (typeof snap.outlineText !== 'string') {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '流水线上下文快照缺少大纲字段，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  return snap;
+}
+
+async function resolveActiveContextWindow(): Promise<number> {
+  try {
+    const llmConfig = await db.getActiveLLMConfig();
+    return Number(llmConfig?.context_window) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Fail-closed final request window check. Must run before every stage LLM
+ * call (including repair/retry/resume).
+ */
+async function assertMessagesFitContextWindow(
+  messages: ChatMessage[],
+  reservedOutputTokens: number,
+  stageLabel: string,
+): Promise<void> {
+  const contextWindow = await resolveActiveContextWindow();
+  const estimatedInputTokens = estimateStageInputTokens(messages);
+  const reason = checkRequestFitsContextWindow({
+    estimatedInputTokens,
+    reservedOutputTokens,
+    contextWindow,
+    stageLabel,
+  });
+  if (reason) {
+    throw new Error(reason);
+  }
+}
+
 /** Never allow an HTTP-success response without manuscript content to advance
  * the outline pipeline. `reasoning_content` is intentionally not a draft. */
 function draftEmptyResponseError(result: LLMResult): Error {
@@ -253,8 +369,14 @@ async function runReviewStage(
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
   try {
+    const reviewMessages = buildReviewMessages(args.draftText, args.context);
+    await assertMessagesFitContextWindow(
+      reviewMessages,
+      args.maxTokens,
+      '文学评估',
+    );
     const first = await callLLMResult(
-      buildReviewMessages(args.draftText, args.context),
+      reviewMessages,
       args.maxTokens,
       buildCallConfig(
         args.preset,
@@ -272,7 +394,8 @@ async function runReviewStage(
     throwIfCancelled(taskId, abortSignal);
     tokens = accumulateTokens(tokens, first);
 
-    let validation = validateReviewResult(first, args.draftText);
+    const hasOutline = !!(args.context.outlineText && args.context.outlineText.trim());
+    let validation = validateReviewResult(first, args.draftText, { hasOutline });
     logPipelineAudit({
       stage: 'review',
       attempt: 1,
@@ -299,12 +422,18 @@ async function runReviewStage(
         taskId,
       });
 
+      const repairMessages = buildReviewRepairMessages(
+        args.draftText,
+        args.context,
+        describeAuditFailureReason(validation.reason),
+      );
+      await assertMessagesFitContextWindow(
+        repairMessages,
+        args.maxTokens,
+        '文学评估格式修复',
+      );
       const retry = await callLLMResult(
-        buildReviewRepairMessages(
-          args.draftText,
-          args.context,
-          describeAuditFailureReason(validation.reason),
-        ),
+        repairMessages,
         args.maxTokens,
         buildCallConfig(
           args.preset,
@@ -319,7 +448,7 @@ async function runReviewStage(
       );
       throwIfCancelled(taskId, abortSignal);
       tokens = accumulateTokens(tokens, retry);
-      validation = validateReviewResult(retry, args.draftText);
+      validation = validateReviewResult(retry, args.draftText, { hasOutline });
       logPipelineAudit({
         stage: 'review',
         attempt: 2,
@@ -391,8 +520,14 @@ async function runFactCheckStage(
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
   try {
+    const factMessages = buildFactCheckMessages(args.draftText, args.context);
+    await assertMessagesFitContextWindow(
+      factMessages,
+      args.maxTokens,
+      '事实核查',
+    );
     const first = await callLLMResult(
-      buildFactCheckMessages(args.draftText, args.context),
+      factMessages,
       args.maxTokens,
       buildCallConfig(
         args.preset,
@@ -435,12 +570,18 @@ async function runFactCheckStage(
         taskId,
       });
 
+      const repairMessages = buildFactCheckRepairMessages(
+        args.draftText,
+        args.context,
+        describeAuditFailureReason(validation.reason),
+      );
+      await assertMessagesFitContextWindow(
+        repairMessages,
+        args.maxTokens,
+        '事实核查格式修复',
+      );
       const retry = await callLLMResult(
-        buildFactCheckRepairMessages(
-          args.draftText,
-          args.context,
-          describeAuditFailureReason(validation.reason),
-        ),
+        repairMessages,
         args.maxTokens,
         buildCallConfig(
           args.preset,
@@ -537,13 +678,19 @@ async function runProofStage(
   store.setTaskStatus(taskId, 'proofing');
   const start = Date.now();
   try {
+    const proofMessages = buildProofMessages(
+      args.draftText,
+      args.reviewText,
+      args.factCheckText,
+      args.constraints,
+    );
+    await assertMessagesFitContextWindow(
+      proofMessages,
+      args.maxTokens,
+      '综合修订',
+    );
     const result = await callLLMResult(
-      buildProofMessages(
-        args.draftText,
-        args.reviewText,
-        args.factCheckText,
-        args.constraints,
-      ),
+      proofMessages,
       args.maxTokens,
       buildCallConfig(
         args.preset,
@@ -807,7 +954,21 @@ async function runChapterPipelineInner(
       draftPreset || undefined,
       { retrievalUserPrompt: request.userPrompt },
     );
-    pipelineContext = ctx;
+    pipelineContext = {
+      ...ctx,
+      projectId: chapter.project_id,
+      chapterId: chapter.id,
+      chapterUpdatedAt: (chapter as any).updated_at ?? (chapter as any).updatedAt ?? '',
+      createdAt: Date.now(),
+      snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    };
+
+    // Freeze snapshot before the first LLM call so resume after process death
+    // reuses the same outline/context instead of re-reading the live DB.
+    store.setTaskPipelineContext(
+      taskId,
+      serializePipelineContextSnapshot(pipelineContext),
+    );
 
     // Extract previous chapter ending from already-fetched chapters.
     const prevChapter = allChapters
@@ -843,6 +1004,12 @@ async function runChapterPipelineInner(
       pipelineContext.outlineText,
     );
 
+    await assertMessagesFitContextWindow(
+      draftMessages,
+      config.draftMaxTokens,
+      '初稿',
+    );
+
     const firstDraftResult = await callLLMResult(
       draftMessages,
       config.draftMaxTokens,
@@ -872,14 +1039,20 @@ async function runChapterPipelineInner(
       // Outline contexts are already packed from the persisted pipeline budget,
       // so increasing max_tokens here could exceed the model window. Retry once
       // at the same safe budget with an explicit no-reasoning instruction.
+      const draftRetryMessages: ChatMessage[] = [
+        ...draftMessages,
+        {
+          role: 'user',
+          content: '请直接输出章节正文；不要输出分析、思考过程或标题。',
+        },
+      ];
+      await assertMessagesFitContextWindow(
+        draftRetryMessages,
+        config.draftMaxTokens,
+        '初稿重试',
+      );
       draftResult = await callLLMResult(
-        [
-          ...draftMessages,
-          {
-            role: 'user',
-            content: '请直接输出章节正文；不要输出分析、思考过程或标题。',
-          },
-        ],
+        draftRetryMessages,
         config.draftMaxTokens,
         buildCallConfig(
           draftPreset,
@@ -1371,12 +1544,10 @@ async function resumePipelineInner(
   }
 
   let config;
-  let contextConfig;
   let presets;
   let requestConfig: LLMRequestConfig;
   try {
     config = await db.getPipelineConfig();
-    contextConfig = await db.getContextConfig();
     presets = await db.getPresetsByProject(chapter.project_id);
     requestConfig = await resolveLLMRequestConfig();
   } catch (error: any) {
@@ -1478,43 +1649,26 @@ async function resumePipelineInner(
     return;
   }
 
-  // Rebuild the shared snapshot for downstream stages. Resume is allowed to
-  // rebuild the snapshot because the original in-memory snapshot was lost when
-  // the previous process died; this read-only rebuild produces the same view
-  // buildContext would have produced. (SPEC §18.3 — does not modify saved
-  // final text, only re-derives the audit context.)
+  // Schema 38+: resume MUST reuse the frozen snapshot persisted at task start.
+  // Never rebuild from the live DB — mid-task outline edits would otherwise
+  // change what Review / Fact Check / Proof see.
   let pipelineContext: PipelineContextSnapshot;
   try {
-    const built = await buildContext(
-      chapter,
-      contextConfig,
-      chapter.project_id,
-      presets[0],
+    const taskRow = store.tasks.find(t => t.id === taskId);
+    pipelineContext = parsePersistedPipelineContextSnapshot(
+      taskRow || {
+        pipelineContextJson: null,
+        pipelineContextHash: null,
+      },
     );
-    pipelineContext = built.pipelineContext;
   } catch (error: any) {
-    // Snapshot rebuild failed: fall back to an empty snapshot so stages still
-    // run with whatever the draft stored, rather than blocking resume.
-    console.warn(
-      '[pipeline] resume snapshot rebuild failed (non-fatal):',
-      error?.message,
+    const message = getErrorMessage(
+      error,
+      '无法加载冻结的流水线上下文快照，已阻止恢复。请重新开始生成。',
     );
-    pipelineContext = {
-      presetText: '',
-      storyMemoryText: '',
-      characterText: '',
-      noteText: '',
-      worldbookText: '',
-      episodicMemoryText: '',
-      recentBridgeText: '',
-      currentInstructionText: '',
-      retrievalUserPrompt: '',
-      outlineText: '',
-      outlineFingerprint: '',
-      outlineIds: [],
-      outlineComplete: true,
-      outlineEstimatedTokens: 0,
-    };
+    store.failTask(taskId, message);
+    await PipelineForeground.stop(taskId);
+    throw error;
   }
 
   let reviewText = reviewResult?.text || '';

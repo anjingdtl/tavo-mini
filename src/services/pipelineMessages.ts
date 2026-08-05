@@ -76,7 +76,9 @@ const REVIEW_BUDGET = {
   recentBridge: 2500,
   instruction: 600,
   userPrompt: 600,
-  outline: 6000,
+  // Outline is NEVER clipped: the frozen full text from the pipeline snapshot
+  // is required for cross-stage consistency. Stage-level window checks block
+  // the call when the complete outline + required body cannot fit.
 };
 
 const FACTCHECK_BUDGET = {
@@ -89,7 +91,7 @@ const FACTCHECK_BUDGET = {
   worldbook: 3000,
   character: 2000,
   note: 1500,
-  outline: 6000,
+  // Outline is never clipped (see REVIEW_BUDGET note).
 };
 
 const PROOF_BUDGET = {
@@ -102,7 +104,7 @@ const PROOF_BUDGET = {
   episodic: 1800,
   note: 1000,
   recentBridge: 2500,
-  outline: 6000,
+  // Outline is never clipped (see REVIEW_BUDGET note).
 };
 
 function clip(text: string | undefined | null, budget: number): string {
@@ -163,7 +165,8 @@ export function buildReviewMessages(
       context.retrievalUserPrompt,
       REVIEW_BUDGET.userPrompt,
     ),
-    outlineText: clip(context.outlineText, REVIEW_BUDGET.outline),
+    // Full frozen outline — never silently truncated across stages.
+    outlineText: context.outlineText ? String(context.outlineText) : '',
   };
 
   const contextBlock = partition([
@@ -286,7 +289,8 @@ export function buildFactCheckMessages(
     worldbookText: clip(context.worldbookText, FACTCHECK_BUDGET.worldbook),
     characterText: clip(context.characterText, FACTCHECK_BUDGET.character),
     noteText: clip(context.noteText, FACTCHECK_BUDGET.note),
-    outlineText: clip(context.outlineText, FACTCHECK_BUDGET.outline),
+    // Full frozen outline — never silently truncated across stages.
+    outlineText: context.outlineText ? String(context.outlineText) : '',
   };
 
   const hasOutline = !!ctx.outlineText.trim();
@@ -414,7 +418,8 @@ export function buildProofMessages(
       constraints.recentBridgeText,
       PROOF_BUDGET.recentBridge,
     ),
-    outlineText: clip(constraints.outlineText, PROOF_BUDGET.outline),
+    // Full frozen outline — never silently truncated across stages.
+    outlineText: constraints.outlineText ? String(constraints.outlineText) : '',
   };
 
   const hasOutline = !!c.outlineText.trim();
@@ -514,9 +519,35 @@ export function buildReviewRepairMessages(
   failureReason?: string,
 ): ChatMessage[] {
   const base = buildReviewMessages(draftText, context);
+  const hasOutline = !!(context.outlineText && context.outlineText.trim());
   const reasonLabel = failureReason
     ? `上一轮错误类型：${failureReason}`
     : '上一轮输出格式无效';
+  const schemaLines = hasOutline
+    ? [
+        '请只输出：',
+        '{',
+        '  "strengths": [],',
+        '  "issues": [],',
+        '  "suggestions": [],',
+        '  "outlineAssessment": {',
+        '    "status": "aligned|partial|deviated|over_advanced",',
+        '    "fulfilledBeats": [],',
+        '    "missingBeats": [],',
+        '    "deviations": [],',
+        '    "prematureBeats": [],',
+        '    "factRollbackRisks": []',
+        '  }',
+        '}',
+      ]
+    : [
+        '请只输出：',
+        '{',
+        '  "strengths": [],',
+        '  "issues": [],',
+        '  "suggestions": []',
+        '}',
+      ];
   const repair = [
     '你上一轮输出不是有效的文学评估 JSON。',
     '不要重写、续写、润色或复述小说正文。',
@@ -524,12 +555,7 @@ export function buildReviewRepairMessages(
     '不要使用 Markdown 代码块。',
     reasonLabel,
     '',
-    '请只输出：',
-    '{',
-    '  "strengths": [],',
-    '  "issues": [],',
-    '  "suggestions": []',
-    '}',
+    ...schemaLines,
   ].join('\n');
   return [...base, { role: 'user', content: repair }];
 }

@@ -41,8 +41,9 @@ import {
 import { buildV34toV35Statements } from './v34-to-v35';
 import { buildV35toV36Statements } from './v35-to-v36';
 import { buildV36toV37Statements } from './v36-to-v37';
+import { buildV37toV38Statements } from './v37-to-v38';
 
-export const SCHEMA_VERSION = 37;
+export const SCHEMA_VERSION = 38;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -240,6 +241,12 @@ const MIGRATIONS: Migration[] = [
     to: 37,
     breaking: false,
     buildStatements: async () => buildV36toV37Statements(),
+  },
+  {
+    from: 37,
+    to: 38,
+    breaking: false,
+    buildStatements: async () => buildV37toV38Statements(),
   },
 ];
 

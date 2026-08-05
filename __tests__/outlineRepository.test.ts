@@ -153,6 +153,11 @@ describe('setOutlineEnabled', () => {
 
 describe('reorderOutlines', () => {
   it('writes sequential positions 0..n in one transaction', async () => {
+    mockAll.mockResolvedValue([
+      { id: 10, project_id: 7, position: 0 },
+      { id: 20, project_id: 7, position: 1 },
+      { id: 30, project_id: 7, position: 2 },
+    ]);
     await reorderOutlines(7, [10, 20, 30]);
     expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
     const [, statements] = mockExecuteTransaction.mock.calls[0];
@@ -162,8 +167,27 @@ describe('reorderOutlines', () => {
     expect(statements[2].params).toEqual([2, expect.any(Number), 30, 7]);
   });
 
-  it('is a no-op for an empty id list', async () => {
+  it('is a no-op for an empty id list when project has no outlines', async () => {
+    mockAll.mockResolvedValue([]);
     await reorderOutlines(7, []);
+    expect(mockExecuteTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects mismatched id sets before writing', async () => {
+    mockAll.mockResolvedValue([
+      { id: 10, project_id: 7, position: 0 },
+      { id: 20, project_id: 7, position: 1 },
+    ]);
+    await expect(reorderOutlines(7, [10, 99])).rejects.toThrow(/不一致|实际有/);
+    expect(mockExecuteTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate ids before writing', async () => {
+    mockAll.mockResolvedValue([
+      { id: 10, project_id: 7, position: 0 },
+      { id: 20, project_id: 7, position: 1 },
+    ]);
+    await expect(reorderOutlines(7, [10, 10])).rejects.toThrow(/重复/);
     expect(mockExecuteTransaction).not.toHaveBeenCalled();
   });
 });

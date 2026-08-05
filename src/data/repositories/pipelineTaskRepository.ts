@@ -93,6 +93,9 @@ export async function savePipelineTask(task: {
   finalText: string | null;
   error: string | null;
   inputFingerprint?: string | null;
+  pipelineContextJson?: string | null;
+  pipelineContextVersion?: number | null;
+  pipelineContextHash?: string | null;
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;
@@ -100,8 +103,11 @@ export async function savePipelineTask(task: {
 }): Promise<void> {
   await execute(
     await openDatabase(),
-    `INSERT OR REPLACE INTO pipeline_tasks (id, target_type, target_id, status, stage_results, final_text, error, input_fingerprint, created_at, updated_at, resolved_at, resolved_action)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO pipeline_tasks (
+       id, target_type, target_id, status, stage_results, final_text, error,
+       input_fingerprint, pipeline_context_json, pipeline_context_version,
+       pipeline_context_hash, created_at, updated_at, resolved_at, resolved_action
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       task.id,
       task.targetType,
@@ -111,6 +117,9 @@ export async function savePipelineTask(task: {
       task.finalText,
       task.error,
       task.inputFingerprint ?? null,
+      task.pipelineContextJson ?? null,
+      task.pipelineContextVersion ?? null,
+      task.pipelineContextHash ?? null,
       task.createdAt,
       task.updatedAt,
       task.resolvedAt,
@@ -119,11 +128,8 @@ export async function savePipelineTask(task: {
   );
 }
 
-export async function getUnresolvedPipelineTasks(): Promise<any[]> {
-  const rows = await all<Row>(
-    'SELECT * FROM pipeline_tasks WHERE resolved_at IS NULL ORDER BY created_at DESC',
-  );
-  return rows.map(row => ({
+function mapPipelineTaskRow(row: Row) {
+  return {
     id: row.id,
     targetType: row.target_type,
     targetId: row.target_id,
@@ -138,37 +144,31 @@ export async function getUnresolvedPipelineTasks(): Promise<any[]> {
     finalText: row.final_text,
     error: row.error,
     inputFingerprint: row.input_fingerprint ?? null,
+    pipelineContextJson: row.pipeline_context_json ?? null,
+    pipelineContextVersion:
+      row.pipeline_context_version != null
+        ? Number(row.pipeline_context_version)
+        : null,
+    pipelineContextHash: row.pipeline_context_hash ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     resolvedAt: row.resolved_at,
     resolvedAction: row.resolved_action,
-  }));
+  };
+}
+
+export async function getUnresolvedPipelineTasks(): Promise<any[]> {
+  const rows = await all<Row>(
+    'SELECT * FROM pipeline_tasks WHERE resolved_at IS NULL ORDER BY created_at DESC',
+  );
+  return rows.map(mapPipelineTaskRow);
 }
 
 export async function getAllPipelineTasks(): Promise<any[]> {
   const rows = await all<Row>(
     'SELECT * FROM pipeline_tasks ORDER BY created_at DESC',
   );
-  return rows.map(row => ({
-    id: row.id,
-    targetType: row.target_type,
-    targetId: row.target_id,
-    status: row.status,
-    stageResults: (() => {
-      try {
-        return JSON.parse(row.stage_results);
-      } catch {
-        return [];
-      }
-    })(),
-    finalText: row.final_text,
-    error: row.error,
-    inputFingerprint: row.input_fingerprint ?? null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    resolvedAt: row.resolved_at,
-    resolvedAction: row.resolved_action,
-  }));
+  return rows.map(mapPipelineTaskRow);
 }
 
 export async function deletePipelineTask(id: string): Promise<void> {

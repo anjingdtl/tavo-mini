@@ -48,6 +48,16 @@ export interface PipelineTask {
    * and adoption. NULL for legacy tasks created before Schema 37.
    */
   inputFingerprint?: string | null;
+  /**
+   * Frozen PipelineContextSnapshot JSON (Schema 38+). Captured once after
+   * buildContext succeeds and before the first LLM call. Resume MUST reuse
+   * this instead of rebuilding from the live database. NULL for legacy tasks.
+   */
+  pipelineContextJson?: string | null;
+  /** Snapshot schema version (currently 1). */
+  pipelineContextVersion?: number | null;
+  /** Integrity hash of pipelineContextJson. */
+  pipelineContextHash?: string | null;
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;

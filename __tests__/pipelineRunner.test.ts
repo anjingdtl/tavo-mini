@@ -15,6 +15,9 @@ const mockStore: {
   setTaskFinalText: jest.Mock;
   failTask: jest.Mock;
   cancelTask: jest.Mock;
+  setTaskInputFingerprint: jest.Mock;
+  setTaskPipelineContext: jest.Mock;
+  tasks: any[];
   getState: () => typeof mockStore;
 } = {
   setTaskStatus: jest.fn(),
@@ -23,6 +26,9 @@ const mockStore: {
   setTaskFinalText: jest.fn(),
   failTask: jest.fn(),
   cancelTask: jest.fn(),
+  setTaskInputFingerprint: jest.fn(),
+  setTaskPipelineContext: jest.fn(),
+  tasks: [],
   getState() {
     return mockStore;
   },
@@ -38,6 +44,12 @@ const mockBuildContext = jest.fn();
 jest.mock('../src/services/database', () => ({
   getPipelineConfig: (...args: any[]) => mockGetPipelineConfig(...args),
   getContextConfig: (...args: any[]) => mockGetContextConfig(...args),
+  getActiveLLMConfig: jest.fn(async () => ({
+    id: 1,
+    context_window: 128000,
+    max_output_tokens: 8000,
+  })),
+  getProjectById: jest.fn(async () => ({ id: 10, mode: 'outline' })),
   getPresetsByProject: jest.fn(async () => [
     {
       id: 1,
