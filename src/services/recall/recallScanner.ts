@@ -28,6 +28,32 @@ import {
 const BACKUP_DIR = `${RNFS.ExternalDirectoryPath}/backups`;
 const RECALL_CHUNK_SIZE = 2000;
 
+/** 健壮地从任意 thrown 值提取可读消息（Error / string / {message} / 其他）。 */
+function extractMessage(e: unknown): string {
+  if (e == null) return '';
+  if (typeof e === 'string') return e;
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'object' && 'message' in e) {
+    const m = (e as any).message;
+    if (typeof m === 'string' && m.length > 0) return m;
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
+function emptyRowCount(): Record<RecallTable, number> {
+  const o = {} as Record<RecallTable, number>;
+  for (const t of RECALL_TABLES) o[t] = 0;
+  return o;
+}
+
+function emptyRecoverable(): Record<RecallTable, number> {
+  return emptyRowCount();
+}
+
 export async function scanRecallSources(): Promise<RecallScanReport> {
   const currentDb = await scanCurrentDb();
   const schemaRecoverySources = await scanDir(
@@ -108,8 +134,27 @@ async function scanDir(
   }
   const findings: BackupSourceFinding[] = [];
   for (const file of files.filter(item => item.name.endsWith('.json'))) {
-    const finding = await parseBackupFile(file, sourceId, currentKeys);
-    if (finding) findings.push(finding);
+    try {
+      const finding = await parseBackupFile(file, sourceId, currentKeys);
+      if (finding) findings.push(finding);
+    } catch (e: any) {
+      // 单个备份文件解析失败不应中断整个扫描。记录一条 invalid finding,
+      // 让用户看到这个文件存在问题但继续扫描其余文件。
+      findings.push({
+        sourceId,
+        filePath: file.path,
+        fileName: file.name,
+        kind: 'unknown',
+        createdAt: new Date(0).toISOString(),
+        schemaVersion: 0,
+        appVersion: '',
+        sizeBytes: file.size ?? 0,
+        valid: false,
+        invalidReason: `读取失败：${extractMessage(e) || '未知错误'}`,
+        rowCount: emptyRowCount(),
+        recoverable: emptyRecoverable(),
+      });
+    }
   }
   return findings;
 }
