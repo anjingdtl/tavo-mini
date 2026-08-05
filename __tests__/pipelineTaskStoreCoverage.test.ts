@@ -8,6 +8,12 @@ jest.mock('../src/services/database', () => ({
   getAllPipelineTasks: (...args: any[]) => mockGetAllPipelineTasks(...args),
   savePipelineTask: (...args: any[]) => mockSavePipelineTask(...args),
   deleteResolvedPipelineTasks: (...args: any[]) => mockDeleteResolvedPipelineTasks(...args),
+  upsertStageCheckpoint: jest.fn(async () => undefined),
+  interruptAllRunningStages: jest.fn(async () => 0),
+  claimStageCheckpoint: jest.fn(async () => true),
+  getStageCheckpoints: jest.fn(async () => []),
+  ensurePendingCheckpoints: jest.fn(async () => undefined),
+  getStageCheckpoint: jest.fn(async () => null),
 }));
 
 import { usePipelineTaskStore } from '../src/store/pipelineTaskStore';

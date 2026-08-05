@@ -14,6 +14,7 @@ import {
   buildSchema35CreateSqls,
 } from '../../services/migrations/v34-to-v35';
 import { buildSchema36CreateSqls } from '../../services/migrations/v35-to-v36';
+import { buildSchema39CreateSqls } from '../../services/migrations/v38-to-v39';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -666,6 +667,8 @@ export function createCurrentSchemaStatements(): string[] {
     // level first-class resource with independent enable/position/budget,
     // separate from project_resources. Fresh installs build the table directly.
     ...buildSchema36CreateSqls(),
+    // Schema 39 pipeline stage checkpoints (one row per task+stage).
+    ...buildSchema39CreateSqls(),
   ];
 }
 

@@ -4,6 +4,10 @@ jest.mock('../src/services/database', () => ({
   getAllPipelineTasks: jest.fn(async () => []),
   savePipelineTask: jest.fn(async () => undefined),
   deleteResolvedPipelineTasks: jest.fn(async () => undefined),
+  upsertStageCheckpoint: jest.fn(async () => undefined),
+  interruptAllRunningStages: jest.fn(async () => 0),
+  claimStageCheckpoint: jest.fn(async () => true),
+  getStageCheckpoints: jest.fn(async () => []),
 }));
 
 describe('pipelineTaskStore.markStaleTasksAsFailed', () => {

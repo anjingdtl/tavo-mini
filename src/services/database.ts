@@ -27,6 +27,7 @@ export * from '../data/repositories/settingsRepository';
 export * from '../data/repositories/usageRepository';
 export * from '../data/repositories/contentRepository';
 export * from '../data/repositories/pipelineTaskRepository';
+export * from '../data/repositories/pipelineStageCheckpointRepository';
 export * from '../data/repositories/noteConfigRepository';
 export * from '../data/repositories/contextAutoRepository';
 export * from '../data/repositories/storyMemoryRepository';
