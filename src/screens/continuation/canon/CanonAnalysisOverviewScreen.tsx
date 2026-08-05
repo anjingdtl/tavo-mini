@@ -513,6 +513,12 @@ export const CanonAnalysisOverviewScreen: React.FC<{
 
   const continueRun = async () => {
     if (!latestRun) return;
+    setBusy(true);
+    Toast.show({
+      type: 'info',
+      text1: '正在重试未完成项…',
+      text2: '可能需要数分钟，请保持网络畅通',
+    });
     try {
       await PipelineForeground.start(
         latestRun.id,
@@ -537,17 +543,46 @@ export const CanonAnalysisOverviewScreen: React.FC<{
         },
       });
       await PipelineForeground.stop(latestRun.id);
+      // resumeAnalysis often returns a failed run without throwing (e.g. still
+      // incomplete batches). Surface that — silent reload looked like a no-op.
       if (run.state === 'completed') {
+        Toast.show({ type: 'success', text1: '原著分析已完成' });
         await PipelineForeground.notifyComplete(
           `ca:${latestRun.id}`,
           '原著分析完成',
           '原著资料已自动启用。',
         );
+      } else if (run.state === 'failed') {
+        Toast.show({
+          type: 'error',
+          text1: '重试后仍未完成',
+          text2: run.errorMessage ?? '请查看红字说明或重新发起完整分析',
+          visibilityTime: 6000,
+        });
+      } else if (run.state === 'paused' || run.state === 'cancelled') {
+        Toast.show({
+          type: 'info',
+          text1: run.state === 'paused' ? '分析已暂停' : '分析已取消',
+        });
+      } else {
+        Toast.show({
+          type: 'info',
+          text1: `分析状态：${RUN_STATE_LABELS[run.state] ?? run.state}`,
+          text2: run.errorMessage ?? undefined,
+        });
       }
       await reload();
     } catch (e: any) {
       await PipelineForeground.stop(latestRun.id);
-      Toast.show({ type: 'error', text1: '继续失败', text2: e?.message });
+      Toast.show({
+        type: 'error',
+        text1: '继续失败',
+        text2: e?.message,
+        visibilityTime: 6000,
+      });
+      await reload();
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -595,22 +630,47 @@ export const CanonAnalysisOverviewScreen: React.FC<{
     if (!currentProject) return;
     Alert.alert(
       '单独重试风格分析',
-      '将基于当前原著边界重新分析写作风格，并保留你已保存的用户修正。',
+      '将基于当前原著边界重新分析写作风格，并保留你已保存的用户修正。分析可能需要 1–3 分钟，请保持网络畅通，勿反复点击。',
       [
         { text: '取消', style: 'cancel' },
         {
           text: '开始',
           onPress: async () => {
             setBusy(true);
+            Toast.show({
+              type: 'info',
+              text1: '正在分析原著写作风格…',
+              text2: '可能需要数分钟，请稍候',
+            });
             try {
               await retryStyleAnalysis(currentProject.id);
-              Toast.show({ type: 'success', text1: '风格分析已完成' });
+              Toast.show({
+                type: 'success',
+                text1: '风格分析已完成并已尝试启用',
+              });
               await reload();
             } catch (e: any) {
+              const code = e?.code as string | undefined;
+              const integrity =
+                code === 'style_sample_hash_mismatch' ||
+                code === 'continuation_source_integrity_failed' ||
+                code === 'chunk_length_mismatch' ||
+                code === 'chunk_hash_mismatch' ||
+                code === 'chunk_offset_gap' ||
+                code === 'chunk_offset_overlap' ||
+                code === 'read_range_length_mismatch' ||
+                code === 'chapter_range_invalid' ||
+                code === 'chunk_surrogate_boundary';
+              // Style may already be ready while activation failed (e.g. old
+              // snapshot marked failed at style stage). Surface the real error
+              // and reload so the user can tap 启用原著风格.
               Toast.show({
                 type: 'error',
-                text1: '风格分析失败',
-                text2: e?.message,
+                text1: integrity
+                  ? '原著完整性失败（不可重试）'
+                  : '风格分析或启用失败',
+                text2: e?.message ?? '请下拉刷新后查看风格状态',
+                visibilityTime: 6000,
               });
               await reload();
             } finally {
@@ -934,6 +994,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                       onPress={() => {
                         void continueRun();
                       }}
+                      disabled={busy}
                     />
                   )}
                   {latestRun.state === 'failed' && (
@@ -942,6 +1003,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                       onPress={() => {
                         void continueRun();
                       }}
+                      disabled={busy}
                     />
                   )}
                   {latestRun.state === 'cancelled' && (
@@ -950,6 +1012,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                       onPress={() => {
                         void continueRun();
                       }}
+                      disabled={busy}
                     />
                   )}
                   {materialProgress.map(item => {

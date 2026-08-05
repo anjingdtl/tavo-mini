@@ -67,6 +67,12 @@ import {
 import { sha256Hex } from '../hashUtils';
 import { computeStyleProfileHash } from './styleProfileHash';
 import { resolveStyleEvidenceConfidence } from './styleEvidenceConfidence';
+import {
+  assertSourceIntegrityQuick,
+  ContinuationSourceIntegrityError,
+  isContinuationSourceIntegrityError,
+} from '../sourceIntegrity';
+import { openDatabase } from '../../../data/connection/openDatabase';
 
 const PROFILE_SCHEMA_VERSION = 2;
 /**
@@ -224,6 +230,22 @@ export async function runStyleAnalysis(
       );
     }
 
+    // Preflight: chunk length/hash/offset integrity before sampling or LLM.
+    // Deterministic source damage must not reach the model or create ready profiles.
+    try {
+      const db = await openDatabase();
+      await assertSourceIntegrityQuick(
+        db,
+        sourceSnapshot.sourceId,
+        null,
+      );
+    } catch (integrityErr) {
+      if (isContinuationSourceIntegrityError(integrityErr)) {
+        return fail(integrityErr.code, integrityErr.message);
+      }
+      throw integrityErr;
+    }
+
     // Read bounded chapters (invariant: only through the bounded reader).
     const chapters = await continuationSourceReader.listBoundedSourceChapters(
       sourceSnapshot,
@@ -342,6 +364,10 @@ export async function runStyleAnalysis(
       });
       return { profileId, success: false };
     }
+    if (isContinuationSourceIntegrityError(err)) {
+      // Deterministic storage damage — do not wrap as "稍后再试".
+      return fail(err.code, err.message);
+    }
     return fail('style_analysis_failed', friendlyFailure(message));
   } finally {
     // Always release the controller so a stale entry can't abort a future
@@ -418,7 +444,34 @@ export async function retryStyleAnalysis(projectId: number): Promise<void> {
     signal: controller.signal,
   });
   if (!result.success) {
-    throw new Error('风格分析重试失败，请稍后再试。');
+    // Preserve the underlying actionable error (integrity / hash / LLM) so
+    // "单独重试" does not collapse deterministic source damage into a generic
+    // "请稍后再试" loop.
+    const profiles = await listStyleProfilesForProject(projectId);
+    const failed = profiles.find(p => p.id === result.profileId);
+    const detail =
+      failed?.errorMessage && failed.errorMessage.trim().length > 0
+        ? failed.errorMessage
+        : '风格分析重试失败。';
+    const code = failed?.errorCode ?? 'style_analysis_failed';
+    const integrityCodes = new Set([
+      'style_sample_hash_mismatch',
+      'continuation_source_integrity_failed',
+      'chunk_length_mismatch',
+      'chunk_hash_mismatch',
+      'chunk_offset_gap',
+      'chunk_offset_overlap',
+      'read_range_length_mismatch',
+      'chapter_range_invalid',
+      'chunk_surrogate_boundary',
+    ]);
+    if (integrityCodes.has(code)) {
+      throw new ContinuationSourceIntegrityError(
+        code as import('../sourceIntegrity').ContinuationSourceIntegrityCode,
+        detail,
+      );
+    }
+    throw new Error(detail);
   }
   await activateSnapshotAndStyleProfile({
     projectId,
@@ -517,10 +570,20 @@ async function readSampleSpans(
     });
     // Re-verify the hash on read so a drifted store cannot silently feed the
     // LLM altered text (Spec §5.4: evidence is hash-verified on every read).
+    // Do NOT skip, warn-through, or re-sample — this is a hard integrity gate.
     if (sha256Hex(text) !== ref.contentHash) {
-      throw new Error(
+      throw new ContinuationSourceIntegrityError(
+        'style_sample_hash_mismatch',
         `风格样本 hash 校验失败：chapter ${ref.sourceChapterId} ` +
-          `[${ref.charStart}, ${ref.charEnd})`,
+          `[${ref.charStart}, ${ref.charEnd})。` +
+          `采样正文与按绝对偏移回读不一致，原著分块可能已损坏。` +
+          `请执行原著完整性检查或重新导入原始 TXT（不可通过重复点击重试绕过）。`,
+        {
+          sourceChapterId: ref.sourceChapterId,
+          charStart: ref.charStart,
+          charEnd: ref.charEnd,
+          readerLength: text.length,
+        },
       );
     }
     out.push({ ref, text });

@@ -29,6 +29,20 @@ jest.mock('../src/services/continuation/continuationSourceReader', () => ({
   },
 }));
 
+// Preflight integrity gate opens the DB; unit tests mock an empty healthy scan.
+jest.mock('../src/data/connection/openDatabase', () => ({
+  openDatabase: jest.fn(async () => ({
+    executeSql: jest.fn(async () => [
+      {
+        rows: {
+          length: 0,
+          item: () => null,
+        },
+      },
+    ]),
+  })),
+}));
+
 jest.mock('../src/services/continuation/canon/canonRepository', () => ({
   getActiveSnapshot: jest.fn(),
   listRunsForProject: jest.fn(),
@@ -492,12 +506,12 @@ describe('runStyleAnalysis', () => {
       signal: new AbortController().signal,
     });
 
-    // The tamper guard must abort before activation.
+    // The tamper guard must abort before activation with a dedicated integrity code.
     expect(result.success).toBe(false);
     expect(updateStyleProfileState).toHaveBeenCalledWith(
       expect.any(String),
       'failed',
-      expect.objectContaining({ errorCode: 'style_analysis_failed' }),
+      expect.objectContaining({ errorCode: 'style_sample_hash_mismatch' }),
     );
   });
 

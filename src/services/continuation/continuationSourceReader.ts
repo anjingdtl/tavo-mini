@@ -36,6 +36,7 @@ import {
   type ContinuationSourceReader,
   type ContinuationSourceSnapshot,
 } from './types';
+import { ContinuationSourceIntegrityError } from './sourceIntegrity';
 
 /**
  * Build a snapshot from the live active source + settings. Phase 2 captures
@@ -245,6 +246,13 @@ async function readBoundedChaptersFromRows(
  * Slice chunk contents to a UTF-16 sub-range `[start, end)` (Spec §9.3, §12.3).
  * Chunks are read by their stored offsets and sliced locally so the chunks
  * table remains the single text authority.
+ *
+ * Self-checks (fail loud — never silently return a shifted/truncated span):
+ *  - at least one overlapping chunk when range is non-empty
+ *  - first chunk covers `start`, last chunk covers `end`
+ *  - adjacent chunks have no gap/overlap in declared offsets
+ *  - each chunk's content.length matches declared end-start
+ *  - final result.length === end - start
  */
 async function readTextRange(
   db: SQLite.SQLiteDatabase,
@@ -253,9 +261,67 @@ async function readTextRange(
   end: Utf16Offset,
 ): Promise<string> {
   if (start >= end) return '';
+  const expectedLen = end - start;
   const chunks = await readChunksForRange(db, sourceId, start, end);
+  if (chunks.length === 0) {
+    throw new ContinuationSourceIntegrityError(
+      'continuation_source_integrity_failed',
+      `原著分块缺失：无法读取区间 [${start}, ${end})。请重新导入原著。`,
+      { sourceId, start, end },
+    );
+  }
+  const first = chunks[0];
+  const last = chunks[chunks.length - 1];
+  if (first.charStartOffset > start || first.charEndOffset <= start) {
+    throw new ContinuationSourceIntegrityError(
+      'chunk_offset_gap',
+      `原著分块未覆盖起点 ${start}（首块 [${first.charStartOffset}, ${first.charEndOffset})）。请重新导入原著。`,
+      { sourceId, start, end, chunkStart: first.charStartOffset },
+    );
+  }
+  if (last.charEndOffset < end || last.charStartOffset >= end) {
+    throw new ContinuationSourceIntegrityError(
+      'chunk_offset_gap',
+      `原著分块未覆盖终点 ${end}（末块 [${last.charStartOffset}, ${last.charEndOffset})）。请重新导入原著。`,
+      { sourceId, start, end, chunkEnd: last.charEndOffset },
+    );
+  }
+
   let result = '';
+  let prevEnd: number | null = null;
   for (const chunk of chunks) {
+    const declaredLen = chunk.charEndOffset - chunk.charStartOffset;
+    if (chunk.content.length !== declaredLen) {
+      throw new ContinuationSourceIntegrityError(
+        'chunk_length_mismatch',
+        `原著分块长度不一致：声明 ${declaredLen}，实际 content.length=${chunk.content.length}` +
+          `（offset [${chunk.charStartOffset}, ${chunk.charEndOffset})）。请重新导入原著。`,
+        {
+          sourceId,
+          start: chunk.charStartOffset,
+          end: chunk.charEndOffset,
+          declaredLen,
+          actualLen: chunk.content.length,
+        },
+      );
+    }
+    if (prevEnd != null && chunk.charStartOffset !== prevEnd) {
+      const code =
+        chunk.charStartOffset > prevEnd
+          ? 'chunk_offset_gap'
+          : 'chunk_offset_overlap';
+      throw new ContinuationSourceIntegrityError(
+        code,
+        `原著分块偏移不连续：期望 ${prevEnd}，实际 ${chunk.charStartOffset}。请重新导入原著。`,
+        {
+          sourceId,
+          start: prevEnd,
+          end: chunk.charStartOffset,
+        },
+      );
+    }
+    prevEnd = chunk.charEndOffset;
+
     // Translate global offsets to local slice indices within this chunk.
     const localStart = Math.max(0, start - chunk.charStartOffset);
     const localEnd = Math.min(
@@ -265,6 +331,14 @@ async function readTextRange(
     if (localEnd > localStart) {
       result += chunk.content.slice(localStart, localEnd);
     }
+  }
+  if (result.length !== expectedLen) {
+    throw new ContinuationSourceIntegrityError(
+      'read_range_length_mismatch',
+      `原著回读长度不匹配：期望 ${expectedLen}，实际 ${result.length}` +
+        `（区间 [${start}, ${end})）。请重新导入原著。`,
+      { sourceId, start, end, expectedLen, actualLen: result.length },
+    );
   }
   return result;
 }

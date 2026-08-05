@@ -76,7 +76,15 @@ export async function activateSnapshotAndStyleProfile(
   if (snap.profile === 'quick') {
     throw new Error('旧版 Quick 离线预览不能激活，请重新发起 LLM 原著分析。');
   }
-  if (snap.status !== 'awaiting_review' && snap.status !== 'ready') {
+  // `failed` is allowed when style analysis later succeeds via "单独重试":
+  // Canon may already be complete while the run/snapshot was marked failed at
+  // the style stage. Five-dimension gate + evidence checks below still apply.
+  // `staging` / `outdated` remain non-activatable.
+  if (
+    snap.status !== 'awaiting_review' &&
+    snap.status !== 'ready' &&
+    snap.status !== 'failed'
+  ) {
     throw new Error(`快照状态 ${snap.status} 不可激活`);
   }
 
@@ -86,12 +94,17 @@ export async function activateSnapshotAndStyleProfile(
     analysisRun.projectId !== input.projectId ||
     analysisRun.canonSnapshotId !== input.canonSnapshotId ||
     // A retry may add the missing style profile after an older Canon run was
-    // already completed (or failed at style analysis). Re-applying this same
-    // source-bound snapshot is safe and atomically refreshes the active style
-    // pointer; every other identity/source guard below still applies.
-    !['running', 'awaiting_review', 'completed', 'failed'].includes(
-      analysisRun.state,
-    )
+    // already completed (or failed/paused at style analysis). Re-applying this
+    // same source-bound snapshot is safe and atomically refreshes the active
+    // style pointer; every other identity/source guard below still applies.
+    // `paused` is common after cold-start / app background during extraction.
+    ![
+      'running',
+      'awaiting_review',
+      'completed',
+      'failed',
+      'paused',
+    ].includes(analysisRun.state)
   ) {
     throw new Error('分析任务不存在、已变更或当前状态不可激活');
   }
