@@ -107,6 +107,11 @@ interface PipelineTaskState {
    * 否则 → failed（不自动 resolve，保留在任务中心）。
    */
   markActiveTasksAsInterrupted: () => number;
+  /**
+   * Register an already-persisted task in memory (batch orchestrator tasks
+   * are created by the batch repository, not by createTask). Idempotent.
+   */
+  registerPersistedTask: (task: PipelineTask) => void;
 }
 
 let taskIdCounter = 0;
@@ -649,6 +654,13 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         t.resolvedAt === null &&
         (t.status === 'idle' || t.status === 'queued' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'factChecking' || t.status === 'proofing')
     );
+  },
+
+  registerPersistedTask: (task) => {
+    set(state => {
+      if (state.tasks.some(t => t.id === task.id)) return state;
+      return { tasks: [...state.tasks, task] };
+    });
   },
 
   markStaleTasksAsFailed: (staleMs = 10 * 60 * 1000) => {
