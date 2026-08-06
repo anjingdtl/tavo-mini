@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.11.32] - 2026-08-06
+
+### Added
+
+- **弹性上下文预算池（所有 Pipeline 阶段共享）**：统一 80% 软池 / 95% 弹性带 / 不可借用 Safety Margin 的确定性分配器，支持 min/target/max 需求模型、空模块回收、跨模块重分配、高价值模块条件借用突发池；Review / Fact Check / Proof / Repair / Draft 全部接入统一编译器；Frozen Draft 保存完整预算轨迹；普通网络重试复用冻结消息与分配（flag：`elastic_budget_v2_enabled`）。
+- **批量写 N 章（大纲创作模式独立入口）**：长剧情摘要 → LLM 规划 N 章可编辑章纲 → 严格串行复用现有单章 Pipeline；每章自动采用为草稿（含旧正文修订与幂等指纹）；应用退出后可恢复；每章一次只创建当前任务；批次预算上限与按原因暂停（结果未知 / 额度不足 / 上下文不足 / 批次预算 / 项目变化）；完成后输出质量与 token 报告（flag：`multi_chapter_batch_enabled`）。
+- **持久化 LLM Attempt 与错误分类**：`pipeline_stage_attempts` 表记录每次阶段调用（冻结请求指纹、预算轨迹、模型快照、provider request id、HTTP 状态与 Retry-After）；8 类失败分类（safe_retry / outcome_unknown / rate_limit / account_quota / config_error / context_error / content_filter / fatal）；30s/2m/5m+jitter 自动退避，最多 3 次，`outcome_unknown` 绝不盲目重发。
+
+### Changed
+
+- **Schema 40 → 42**：新增 `pipeline_stage_attempts`、`multi_chapter_batches`、`multi_chapter_batch_items`、`multi_chapter_batch_item_runs`（含备份/恢复/Schema 校验/级联）。
+- 手动结果页“采纳”与批次自动采用共用同一领域服务 `adoptPipelineTaskResult`（旧正文修订 + 正文写入 + 任务 resolve + 故事记忆失效标记）。
+- 批次子 Pipeline 使用 background 优先级且抑制逐任务通知，批次整体只显示一个前台通知。
+
 ## [2.11.31] - 2026-08-06
 
 ### Fixed
