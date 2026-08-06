@@ -60,9 +60,6 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     chapterCount: String(BATCH_DEFAULT_CHAPTERS),
     targetWords: String(BATCH_DEFAULT_TARGET_WORDS),
     pipelineMode: 'full' as 'draft_only' | 'fast' | 'full',
-    maxLlmCalls: '',
-    maxInputTokens: '',
-    maxOutputTokens: '',
   });
   const [edited, setEdited] = useState<BatchChapterPlanItem[]>([]);
 
@@ -137,9 +134,6 @@ export function MultiChapterBatchScreen(): React.ReactElement {
         chapterCount: count,
         targetWordsPerChapter: Number(form.targetWords) || BATCH_DEFAULT_TARGET_WORDS,
         pipelineMode: form.pipelineMode,
-        maxLlmCalls: form.maxLlmCalls ? Number(form.maxLlmCalls) : null,
-        maxInputTokens: form.maxInputTokens ? Number(form.maxInputTokens) : null,
-        maxOutputTokens: form.maxOutputTokens ? Number(form.maxOutputTokens) : null,
       });
       const plan = await store.runPlanner(id);
       setEdited(plan.chapters.map(c => ({ ...c })));
@@ -270,38 +264,14 @@ export function MultiChapterBatchScreen(): React.ReactElement {
                 onChange={v => setForm(f => ({ ...f, pipelineMode: v }))}
               />
             </Section>
-            <Section title="批次消耗上限（可选）">
-              <Field label="最大 LLM 调用次数">
-                <TextInput
-                  style={[styles.input, { backgroundColor: theme.colors.card, color: theme.colors.textPrimary }]}
-                  keyboardType="numeric"
-                  value={form.maxLlmCalls}
-                  onChangeText={t => setForm(f => ({ ...f, maxLlmCalls: t }))}
-                />
-              </Field>
-              <Field label="最大输入 tokens">
-                <TextInput
-                  style={[styles.input, { backgroundColor: theme.colors.card, color: theme.colors.textPrimary }]}
-                  keyboardType="numeric"
-                  value={form.maxInputTokens}
-                  onChangeText={t => setForm(f => ({ ...f, maxInputTokens: t }))}
-                />
-              </Field>
-              <Field label="最大输出 tokens">
-                <TextInput
-                  style={[styles.input, { backgroundColor: theme.colors.card, color: theme.colors.textPrimary }]}
-                  keyboardType="numeric"
-                  value={form.maxOutputTokens}
-                  onChangeText={t => setForm(f => ({ ...f, maxOutputTokens: t }))}
-                />
-              </Field>
+            <View style={styles.row}>
               <Button
                 label={store.loading ? '正在规划…' : '开始规划'}
                 icon={ListChecks}
                 onPress={handleCreate}
                 disabled={store.loading}
               />
-            </Section>
+            </View>
           </>
         )}
 
