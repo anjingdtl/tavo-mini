@@ -69,6 +69,15 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     }
   }, [store]);
 
+  // 进入页面时自动加载当前项目的活跃批次：规划后的计划持久化在 SQLite，
+  // 退出/杀进程后重新进入必须回到规划预览（而不是创建页）。
+  useEffect(() => {
+    if (currentProject) {
+      store.loadActiveBatchForProject(currentProject.id).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProject?.id]);
+
   // 运行页轮询（运行中每 2s 刷新一次状态）。
   useEffect(() => {
     if (!store.batch || view !== 'running') return;
