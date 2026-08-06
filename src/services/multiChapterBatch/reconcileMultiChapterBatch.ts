@@ -35,8 +35,10 @@ import {
 } from './determineNextBatchAction';
 import { adoptPipelineTaskResult } from './batchAdoption';
 import { MultiChapterBatchError } from './errors';
+import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { runChapterPipeline, resumePipeline } from '../pipelineRunner';
 import type { PipelineCheckpointStage } from '../pipeline/types';
+import type { PipelineTaskStatus } from '../../types/pipeline';
 import type { BatchItemCompletionQuality } from '../../types/multiChapterBatch';
 
 export interface BatchProgressInfo {
@@ -278,6 +280,27 @@ async function executeBatchAction(params: {
         llmConfigSnapshotJson: '{}',
         reason: 'batch_start',
       });
+      // The single-chapter pipeline persists through pipelineTaskStore; the
+      // batch creates tasks directly, so register the task in memory too
+      // (idempotent) — otherwise persistTaskStage / persistTaskPipelineContext
+      // reject the unknown task and the chapter never starts.
+      usePipelineTaskStore.getState().registerPersistedTask({
+        id: taskId,
+        targetType: 'chapter',
+        targetId: currentItem.chapterId,
+        status: 'idle',
+        stageResults: [],
+        finalText: null,
+        error: null,
+        inputFingerprint: null,
+        pipelineContextJson: null,
+        pipelineContextVersion: null,
+        pipelineContextHash: null,
+        createdAt: now,
+        updatedAt: now,
+        resolvedAt: null,
+        resolvedAction: null,
+      });
       notify(`已创建第 ${currentItem.ordinal} 章流水线任务`);
       return 'continue';
     }
@@ -287,6 +310,32 @@ async function executeBatchAction(params: {
       if (!currentItem || !currentItem.chapterId || !currentItem.activePipelineTaskId) {
         return 'continue';
       }
+      const taskId = currentItem.activePipelineTaskId;
+      // Cold-start / process restart: the task row exists but was never
+      // registered in the in-memory pipeline store. Register (idempotent) so
+      // the single-chapter pipeline's store writes succeed.
+      const existingTask = await getPipelineTaskById(taskId);
+      if (existingTask) {
+        usePipelineTaskStore.getState().registerPersistedTask({
+          id: existingTask.id,
+          targetType: (existingTask.targetType || 'chapter') as 'chapter',
+          targetId: Number(existingTask.targetId ?? currentItem.chapterId),
+          status: (existingTask.status || 'idle') as PipelineTaskStatus,
+          stageResults: Array.isArray(existingTask.stageResults)
+            ? existingTask.stageResults
+            : [],
+          finalText: existingTask.finalText ?? null,
+          error: existingTask.error ?? null,
+          inputFingerprint: existingTask.inputFingerprint ?? null,
+          pipelineContextJson: existingTask.pipelineContextJson ?? null,
+          pipelineContextVersion: existingTask.pipelineContextVersion ?? null,
+          pipelineContextHash: existingTask.pipelineContextHash ?? null,
+          createdAt: Number(existingTask.createdAt ?? Date.now()),
+          updatedAt: Number(existingTask.updatedAt ?? Date.now()),
+          resolvedAt: existingTask.resolvedAt ?? null,
+          resolvedAction: existingTask.resolvedAction ?? null,
+        });
+      }
       const chapter = await db.getChapterById(currentItem.chapterId);
       if (!chapter) {
         await updateBatchStatus(batchId, 'paused_project_changed', {
@@ -295,7 +344,6 @@ async function executeBatchAction(params: {
         });
         return 'stop';
       }
-      const taskId = currentItem.activePipelineTaskId;
       const run = () =>
         action.type === 'run_pipeline'
           ? params.runPipelineImpl(taskId, chapter, undefined, {

@@ -18,6 +18,7 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
       setTaskStatus: jest.fn(),
       persistTaskStage: jest.fn(),
       updateTaskStage: jest.fn(),
+      registerPersistedTask: jest.fn(),
       persistTaskPipelineContext: jest.fn(),
       setTaskPipelineContext: jest.fn(),
       persistCompleteTask: jest.fn(),
