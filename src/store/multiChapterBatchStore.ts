@@ -300,9 +300,31 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
       set({ error: null });
       const batch = get().batch;
       if (!batch) return;
+      const currentItem = get().items.find(
+        i => i.ordinal === batch.currentOrdinal,
+      );
+      const needsReset =
+        currentItem &&
+        (currentItem.status === 'outcome_unknown' ||
+          currentItem.status === 'failed' ||
+          currentItem.status === 'blocked_context_budget' ||
+          currentItem.status === 'blocked_account_quota' ||
+          currentItem.status === 'blocked_batch_budget' ||
+          currentItem.status === 'waiting_retry');
+      if (needsReset) {
+        // 用户确认继续：解绑失败任务，创建新 run（旧 task/attempt 历史保留
+        // 在 item_runs，审计不丢）；换模型/充值后由新 run 重新生成。
+        await batchRepo.updateBatchItem(batchId, currentItem.ordinal, {
+          status: 'running_pipeline',
+          activePipelineTaskId: null,
+          errorCode: null,
+          errorMessage: null,
+          nextRetryAt: null,
+        });
+      }
       if (batch.status.startsWith('paused_')) {
-        // Re-arm: paused_* → running (reconcile re-reads state and pauses
-        // again only if the cause persists).
+        // Re-arm: paused_* → running（reconcile 重新决策；若根因未消除会
+        // 再次按分类暂停）。
         await batchRepo.updateBatchStatus(batchId, 'running', {
           pauseReason: null,
           errorCode: null,
