@@ -1,0 +1,325 @@
+/**
+ * Multi-chapter batch store (Phase 8).
+ *
+ * Responsibilities: load batch + items, create planning drafts, persist
+ * edited plans, start/pause/resume/cancel, drive the batch foreground
+ * notification, and expose loading/error. The batch STATE itself always
+ * lives in SQLite — the store only mirrors it for rendering.
+ */
+import { create } from 'zustand';
+import * as batchRepo from '../data/repositories/multiChapterBatchRepository';
+import type {
+  MultiChapterBatchItemRow,
+  MultiChapterBatchRow,
+} from '../data/repositories/multiChapterBatchRepository';
+import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
+import { reconcileMultiChapterBatch } from '../services/multiChapterBatch/reconcileMultiChapterBatch';
+import { cancelPipeline } from '../services/pipelineRunner';
+import { PipelineForeground } from '../native/PipelineForegroundModule';
+import { BATCH_DEFAULT_CHAPTERS, BATCH_DEFAULT_TARGET_WORDS } from '../types/multiChapterBatch';
+import type { BatchChapterPlan } from '../types/multiChapterBatch';
+
+let instanceId = `ui_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+export function resetBatchInstanceId(): void {
+  instanceId = `ui_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export interface BatchCreateDraftInput {
+  projectId: number;
+  sourcePrompt: string;
+  chapterCount: number;
+  targetWordsPerChapter: number;
+  pipelineMode: string;
+  maxLlmCalls?: number | null;
+  maxInputTokens?: number | null;
+  maxOutputTokens?: number | null;
+}
+
+interface MultiChapterBatchState {
+  batch: MultiChapterBatchRow | null;
+  items: MultiChapterBatchItemRow[];
+  plan: BatchChapterPlan | null;
+  loading: boolean;
+  error: string | null;
+  reconciling: boolean;
+  lastMessage: string | null;
+
+  loadBatch: (batchId: string) => Promise<void>;
+  loadActiveBatchForProject: (projectId: number) => Promise<void>;
+  createDraftBatch: (input: BatchCreateDraftInput) => Promise<string>;
+  runPlanner: (batchId: string) => Promise<BatchChapterPlan>;
+  saveEditedPlan: (
+    batchId: string,
+    chapters: BatchChapterPlan['chapters'],
+  ) => Promise<void>;
+  start: (batchId: string) => Promise<void>;
+  pause: (batchId: string) => Promise<void>;
+  resume: (batchId: string) => Promise<void>;
+  cancel: (batchId: string) => Promise<void>;
+  refresh: () => Promise<void>;
+  clearError: () => void;
+}
+
+async function refreshBatch(
+  set: (partial: Partial<MultiChapterBatchState>) => void,
+  get: () => MultiChapterBatchState,
+): Promise<void> {
+  const batch = get().batch;
+  if (!batch) return;
+  const [fresh, items] = await Promise.all([
+    batchRepo.getBatchById(batch.id),
+    batchRepo.getBatchItems(batch.id),
+  ]);
+  set({ batch: fresh, items });
+}
+
+export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
+  (set, get) => ({
+    batch: null,
+    items: [],
+    plan: null,
+    loading: false,
+    error: null,
+    reconciling: false,
+    lastMessage: null,
+
+    loadBatch: async batchId => {
+      set({ loading: true, error: null });
+      try {
+        const [batch, items] = await Promise.all([
+          batchRepo.getBatchById(batchId),
+          batchRepo.getBatchItems(batchId),
+        ]);
+        set({ batch, items, loading: false });
+      } catch (error: any) {
+        set({ loading: false, error: String(error?.message || '加载批次失败') });
+      }
+    },
+
+    loadActiveBatchForProject: async projectId => {
+      set({ loading: true, error: null });
+      try {
+        const batch = await batchRepo.getActiveBatchByProject(projectId);
+        if (!batch) {
+          set({ batch: null, items: [], loading: false });
+          return;
+        }
+        const items = await batchRepo.getBatchItems(batch.id);
+        set({ batch, items, loading: false });
+      } catch (error: any) {
+        set({ loading: false, error: String(error?.message || '加载批次失败') });
+      }
+    },
+
+    createDraftBatch: async input => {
+      set({ loading: true, error: null });
+      try {
+        const id = `batch_${Date.now().toString(36)}_${Math.random()
+          .toString(36)
+          .slice(2, 8)}`;
+        await batchRepo.createBatch({
+          id,
+          projectId: input.projectId,
+          sourcePrompt: input.sourcePrompt,
+          chapterCount: input.chapterCount,
+          targetWordsPerChapter: input.targetWordsPerChapter,
+          pipelineMode: input.pipelineMode,
+          budget: {
+            maxLlmCalls: input.maxLlmCalls ?? null,
+            maxInputTokens: input.maxInputTokens ?? null,
+            maxOutputTokens: input.maxOutputTokens ?? null,
+          },
+        });
+        for (let i = 1; i <= input.chapterCount; i += 1) {
+          await batchRepo.createBatchItem({
+            batchId: id,
+            ordinal: i,
+            title: `第 ${i} 章`,
+            synopsis: '',
+            keyBeatsJson: '[]',
+            targetWords: input.targetWordsPerChapter,
+          });
+        }
+        const [batch, items] = await Promise.all([
+          batchRepo.getBatchById(id),
+          batchRepo.getBatchItems(id),
+        ]);
+        set({ batch, items, loading: false });
+        return id;
+      } catch (error: any) {
+        set({ loading: false, error: String(error?.message || '创建批次失败') });
+        throw error;
+      }
+    },
+
+    runPlanner: async batchId => {
+      const batch = get().batch;
+      if (!batch) throw new Error('批次不存在');
+      set({ loading: true, error: null });
+      try {
+        const materials = await collectPlannerMaterials(batch.projectId);
+        const result = await createBatchChapterPlan({
+          projectId: batch.projectId,
+          sourcePrompt: batch.sourcePrompt,
+          chapterCount: batch.chapterCount,
+          targetWordsPerChapter: batch.targetWordsPerChapter,
+          pipelineMode: batch.pipelineMode,
+          materials,
+        });
+        await batchRepo.updateBatchStatus(batchId, 'planning', {
+          plannerOutputJson: JSON.stringify(result.plan),
+          plannerHash: result.hash,
+          plannerRequestJson: result.requestJson,
+          plannerRequestFingerprint: result.requestFingerprint,
+        });
+        set({ plan: result.plan, loading: false });
+        return result.plan;
+      } catch (error: any) {
+        set({ loading: false, error: String(error?.message || '规划失败') });
+        throw error;
+      }
+    },
+
+    saveEditedPlan: async (batchId, chapters) => {
+      set({ loading: true, error: null });
+      try {
+        const normalized = normalizeEditedPlan(chapters, chapters.length);
+        if (!normalized.ok) {
+          throw new Error(normalized.errors.join('；'));
+        }
+        for (const chapter of normalized.plan.chapters) {
+          await batchRepo.updateBatchItem(batchId, chapter.ordinal, {
+            title: chapter.title,
+            synopsis: chapter.synopsis,
+            keyBeatsJson: JSON.stringify(chapter.keyBeats),
+            carryIn: chapter.carryIn || null,
+            carryOut: chapter.carryOut || null,
+            targetWords: chapter.targetWords,
+          });
+        }
+        const hash = computePlannerHash(normalized.plan);
+        // Freeze the plan hash + mark ready; reconcile may now start.
+        await batchRepo.updateBatchStatus(batchId, 'ready', {
+          plannerHash: hash,
+          plannerOutputJson: JSON.stringify(normalized.plan),
+        });
+        await refreshBatch(set, get);
+        set({ plan: normalized.plan, loading: false });
+      } catch (error: any) {
+        set({ loading: false, error: String(error?.message || '保存计划失败') });
+        throw error;
+      }
+    },
+
+    start: async batchId => {
+      set({ reconciling: true, error: null });
+      const batch = get().batch;
+      if (batch) {
+        PipelineForeground.start(
+          `batch_${batchId}`,
+          batch.projectId ? '批量写章' : '批量写章',
+          '准备中',
+          0,
+        ).catch(() => {});
+      }
+      try {
+        await reconcileMultiChapterBatch(batchId, {
+          owner: instanceId,
+          onProgress: info => {
+            set({ lastMessage: info.message || null });
+            const pct = Math.round(
+              (info.completedCount / Math.max(1, info.chapterCount)) * 100,
+            );
+            PipelineForeground.updateProgress(
+              `batch_${batchId}`,
+              info.itemStatus
+                ? `第 ${info.currentOrdinal}/${info.chapterCount} 章 · ${info.message || ''}`
+                : `第 ${info.currentOrdinal}/${info.chapterCount} 章`,
+              pct,
+            ).catch(() => {});
+          },
+        });
+      } catch (error: any) {
+        set({
+          reconciling: false,
+          error: String(error?.message || '批次运行失败'),
+        });
+        PipelineForeground.stop(`batch_${batchId}`).catch(() => {});
+        return;
+      }
+      await refreshBatch(set, get);
+      const fresh = get().batch;
+      if (fresh?.status === 'completed') {
+        PipelineForeground.notifyComplete(
+          `batch_${batchId}`,
+          '批量写章完成',
+          `已完成 ${fresh.completedCount}/${fresh.chapterCount} 章`,
+        ).catch(() => {});
+      } else if (fresh?.status.startsWith('paused_')) {
+        PipelineForeground.notifyFailed(
+          `batch_${batchId}`,
+          '批量写章暂停',
+          fresh.errorMessage || '批次已暂停',
+        ).catch(() => {});
+      }
+      PipelineForeground.stop(`batch_${batchId}`).catch(() => {});
+      set({ reconciling: false });
+    },
+
+    pause: async batchId => {
+      try {
+        await batchRepo.updateBatchStatus(batchId, 'paused_user', {
+          pauseReason: 'user_pause',
+        });
+        await refreshBatch(set, get);
+      } catch (error: any) {
+        set({ error: String(error?.message || '暂停失败') });
+      }
+    },
+
+    resume: async batchId => {
+      set({ error: null });
+      const batch = get().batch;
+      if (!batch) return;
+      if (batch.status.startsWith('paused_')) {
+        // Re-arm: paused_* → running (reconcile re-reads state and pauses
+        // again only if the cause persists).
+        await batchRepo.updateBatchStatus(batchId, 'running', {
+          pauseReason: null,
+          errorCode: null,
+          errorMessage: null,
+        });
+      }
+      await get().start(batchId);
+    },
+
+    cancel: async batchId => {
+      try {
+        await batchRepo.updateBatchStatus(batchId, 'cancelled', {
+          cancelledAt: Date.now(),
+          errorCode: 'BATCH_CANCELLED',
+        });
+        // Cancel the active pipeline task if any (does NOT delete chapters).
+        const item = get().items.find(i => i.ordinal === get().batch?.currentOrdinal);
+        if (item?.activePipelineTaskId) {
+          cancelPipeline(item.activePipelineTaskId);
+        }
+        await refreshBatch(set, get);
+        PipelineForeground.stop(`batch_${batchId}`).catch(() => {});
+      } catch (error: any) {
+        set({ error: String(error?.message || '取消批次失败') });
+      }
+    },
+
+    refresh: async () => {
+      await refreshBatch(set, get);
+    },
+
+    clearError: () => set({ error: null }),
+  }),
+);
+
+export {
+  BATCH_DEFAULT_CHAPTERS,
+  BATCH_DEFAULT_TARGET_WORDS,
+};
