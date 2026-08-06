@@ -97,6 +97,49 @@ export async function withProjectMemoryLock<T>(
   }
 }
 
+/**
+ * Classify a check-service failure as transient (worth auto-retry on next
+ * finalize / story-memory rebuild) vs fatal (won't recover without user
+ * intervention). Mirrors LLMRequestError.failureClass when available and
+ * falls back to message/code heuristics for un-classified errors (network
+ * stack errors, fetch errors, sandbox timeouts, etc.).
+ */
+function isTransientCheckpointFailure(error: unknown): boolean {
+  if (!error) return false;
+  const anyErr = error as {
+    code?: string;
+    cause?: { status?: number; code?: string; message?: string };
+    status?: number;
+    failureClass?: string;
+    message?: string;
+  };
+  const cls = anyErr.failureClass;
+  if (typeof cls === 'string') {
+    return cls === 'safe_retry' || cls === 'rate_limit' || cls === 'outcome_unknown';
+  }
+  const code = String(anyErr.code || anyErr.cause?.code || '').toLowerCase();
+  const message = String(anyErr.message || anyErr.cause?.message || '').toLowerCase();
+  const status = Number(anyErr.status || anyErr.cause?.status || 0);
+  if (status === 429 || status >= 500) return true;
+  const transientCodes = [
+    'total_timeout',
+    'idle_timeout',
+    'connect_timeout',
+    'network_error',
+    'networkrequestfailed',
+    'failed_to_fetch',
+    'rate_limit',
+    'rate-limit',
+    'safe_retry',
+    'outcome_unknown',
+    'timeout',
+  ];
+  if (transientCodes.some(c => code.includes(c) || message.includes(c))) {
+    return true;
+  }
+  return false;
+}
+
 export interface GenerateChapterMemoryPatchInput {
   chapter: Chapter;
   previousState: StoryMemoryState;
@@ -695,6 +738,10 @@ export async function finalizeChapterMemory(
       // Chapter stays final; old checkpoint preserved.
       const message =
         error instanceof Error ? error.message : '长期记忆整理失败';
+      // Phase：LLM 暂态错误（网络 / 超时 / 5xx / 429）不应让用户感觉定稿失败。
+      // 章节正文已安全保存，下一次定稿会重试该检查点（ checkpoint 仍 pending），
+      // toast 改为「待整理」以避免误导用户。
+      const transient = isTransientCheckpointFailure(error);
       if (
         error instanceof StoryMemoryError &&
         error.code === 'MEMORY_BASE_FINGERPRINT_MISMATCH'
@@ -711,6 +758,21 @@ export async function finalizeChapterMemory(
           record.dirtyFromPosition,
           message,
         );
+      }
+      if (transient) {
+        return {
+          state: record.state,
+          patchId: record.state.metadata.lastAppliedPatchId || '',
+          episodicMemoryText: freshChapter.memory_summary || '',
+          reused: false,
+          chapterFinalized: true,
+          checkpointAttempted: true,
+          checkpointUpdated: false,
+          pendingCount: pending.length,
+          statusMessage: `章节已定稿。长期记忆待整理（LLM 暂不可达，下次定稿或打开「故事记忆」会自动重试）。${
+            message ? `（${message.slice(0, 80)}）` : ''
+          }`,
+        };
       }
       return {
         state: record.state,
