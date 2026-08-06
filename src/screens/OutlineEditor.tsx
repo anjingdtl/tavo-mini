@@ -123,6 +123,14 @@ export const OutlineEditor: React.FC = () => {
       <View style={styles.quickActions}>
         <Button label="故事概览" icon={BarChart3} variant="secondary" onPress={() => navigation.navigate('StoryOverview')} compact flex />
         <Button label="上下文" icon={Settings2} variant="secondary" onPress={() => navigation.navigate('ContextConfig')} compact flex />
+        <Button
+          label="批量写章"
+          icon={FileText}
+          variant="secondary"
+          compact
+          flex
+          onPress={() => navigation.navigate('MultiChapterBatch')}
+        />
       </View>
       <View style={[styles.chapterMeta, { borderBottomColor: theme.colors.border }]}>
         <Text style={[styles.chapterMetaTitle, { color: theme.colors.accent }]}>正文卷</Text>
