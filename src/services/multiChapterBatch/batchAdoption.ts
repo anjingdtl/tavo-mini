@@ -115,7 +115,7 @@ export async function adoptPipelineTaskResult(
     'chapter',
     chapter.id,
   );
-  if (latestRevision?.sourceRef === input.taskId) {
+  if (latestRevision?.source_ref === input.taskId) {
     return {
       adoptedRevisionId: latestRevision.id,
       adoptionFingerprint: fingerprint,
