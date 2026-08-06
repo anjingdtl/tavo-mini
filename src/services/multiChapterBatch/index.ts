@@ -3,7 +3,7 @@
  */
 export {
   reconcileMultiChapterBatch,
-  buildChapterSynopsis,
+  buildBatchChapterInstruction,
   type BatchProgressInfo,
   type ReconcileMultiChapterBatchOptions,
 } from './reconcileMultiChapterBatch';

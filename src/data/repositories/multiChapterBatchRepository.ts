@@ -574,6 +574,8 @@ export async function createBatchChapterForItem(
     position: number;
     title: string;
     synopsis: string;
+    /** Optional structured metadata (batch instruction etc.). */
+    summaryJson?: string | null;
   },
 ): Promise<number> {
   const now = Date.now();
@@ -581,13 +583,14 @@ export async function createBatchChapterForItem(
   let chapterId: number | null = null;
   const statements: SqlStatement[] = [
     {
-      sql: `INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, '', 'planned', ?, ?)`,
+      sql: `INSERT INTO chapters (project_id, position, title, synopsis, content, status, summary_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, '', 'planned', ?, ?, ?)`,
       params: [
         input.projectId,
         input.position,
         input.title,
         input.synopsis,
+        input.summaryJson ?? null,
         timestamp,
         timestamp,
       ],

@@ -74,6 +74,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function getErrorMessage(error: any, fallback: string): string {
+  return error?.message ? String(error.message) : fallback;
+}
+
 /** Load the persisted status of the current item's pipeline task. */
 async function loadTaskStatuses(
   item: MultiChapterBatchItemRow | undefined,
@@ -241,7 +245,12 @@ async function executeBatchAction(params: {
         projectId: batch.projectId,
         position,
         title: currentItem.title || `第 ${currentItem.ordinal} 章`,
-        synopsis: buildChapterSynopsis(batch, currentItem),
+        // 章节摘要只使用每章独立的计划摘要（列表显示正确）；批次总目标等
+        // 指令以结构化方式存 summary_json，仅用于 Draft 生成补充。
+        synopsis: currentItem.synopsis,
+        summaryJson: JSON.stringify({
+          batch_instruction: buildBatchChapterInstruction(batch, currentItem),
+        }),
       });
       notify(`已创建第 ${currentItem.ordinal} 章`);
       return 'continue';
@@ -379,7 +388,14 @@ async function executeBatchAction(params: {
               foregroundOwner: 'batch',
             });
       notify(action.type === 'run_pipeline' ? '开始生成当前章' : '恢复当前章');
-      await run();
+      try {
+        await run();
+      } catch (error: any) {
+        // 单章 pipeline 异常（网络/超时/模型错误）不中断批次循环：下一轮
+        // 决策会依据持久化的 task 状态与 attempt 分类自动进入暂停/等待重试，
+        // 保证 UI 与真实状态同步（断点续写闭环）。
+        notify(`当前章运行失败：${getErrorMessage(error, '未知错误')}`);
+      }
       return 'continue';
     }
 
@@ -560,8 +576,8 @@ function summarizeTaskUsage(task: any): {
   return { llmCalls, inputTokens, outputTokens };
 }
 
-/** Build the structured chapter synopsis from plan item (doc §8). */
-export function buildChapterSynopsis(
+/** Build the structured batch writing instruction (stored in summary_json). */
+export function buildBatchChapterInstruction(
   batch: MultiChapterBatchRow,
   item: MultiChapterBatchItemRow,
 ): string {
@@ -573,10 +589,10 @@ export function buildChapterSynopsis(
       return [];
     }
   })() as string[];
-  const parts = [
-    `【批次总目标】\n${batch.sourcePrompt}`,
-    `【本章目标】\n${item.synopsis}`,
-  ];
+  const parts: string[] = [];
+  if (batch.sourcePrompt) {
+    parts.push(`【批次总目标】\n${batch.sourcePrompt}`);
+  }
   if (beats.length > 0) {
     parts.push(`【必须发生】\n${beats.map(b => `- ${b}`).join('\n')}`);
   }
