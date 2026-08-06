@@ -4,6 +4,7 @@ import { act, fireEvent, render } from '@testing-library/react-native';
 const mockUpdateChapter = jest.fn();
 const mockGetChapterById = jest.fn();
 const mockGetActiveTaskForTarget = jest.fn(() => null);
+const mockGetLatestResumableFailedTask = jest.fn(() => undefined);
 const mockCreateTask = jest.fn(async () => 'task-1');
 const mockRunChapterPipeline = jest.fn();
 const mockCancelPipeline = jest.fn();
@@ -68,6 +69,13 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
     getState: () => ({
       createTask: mockCreateTask,
       getActiveTaskForTarget: mockGetActiveTaskForTarget,
+      // Resume support: tests that exercise the resumable path set this mock,
+      // tests that don't see no resumable task and fall through to the regular
+      // createTask flow.
+      getLatestResumableFailedTask: () =>
+        typeof mockGetLatestResumableFailedTask === 'function'
+          ? mockGetLatestResumableFailedTask()
+          : undefined,
       tasks: mockTasks,
     }),
     // The ChapterEditor effect subscribes to task changes; tests that do not
