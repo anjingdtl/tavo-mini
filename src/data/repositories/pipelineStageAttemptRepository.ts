@@ -223,3 +223,16 @@ export async function getRetryDueAttempts(
   );
   return rows.map(mapRow);
 }
+
+/** Latest attempt across all stages of a task (failure classification). */
+export async function getLatestAttemptByTask(
+  pipelineTaskId: string,
+): Promise<PipelineStageAttemptRow | null> {
+  const row = await one(
+    `SELECT * FROM pipeline_stage_attempts
+     WHERE pipeline_task_id = ?
+     ORDER BY attempt_no DESC, started_at DESC LIMIT 1`,
+    [pipelineTaskId],
+  );
+  return row ? mapRow(row) : null;
+}
