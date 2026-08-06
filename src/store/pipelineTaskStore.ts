@@ -120,8 +120,19 @@ let taskIdCounter = 0;
 // after the successful review result and overwrite `stage_results` with stale
 // (often empty) data on disk.
 const taskPersistenceChains = new Map<string, Promise<void>>();
+// 前台任务中心视为「活跃」的状态（含 idle：已创建未运行）。
 const activeStatuses: PipelineTaskStatus[] = [
   'idle',
+  'queued',
+  'drafting',
+  'reviewing',
+  'factChecking',
+  'proofing',
+];
+// 冷启动/超时分类只处理「已经开始」的任务。idle = 已创建但从未运行（例如
+// 批次编排器预建的任务、创建后即被杀进程的单章任务）——保持 idle 才能安全
+// 重跑，误标 interrupted 会让批次恢复时被判定 TASK_NOT_RECOVERABLE。
+const interruptibleStatuses: PipelineTaskStatus[] = [
   'queued',
   'drafting',
   'reviewing',
@@ -658,8 +669,12 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
 
   registerPersistedTask: (task) => {
     set(state => {
-      if (state.tasks.some(t => t.id === task.id)) return state;
-      return { tasks: [...state.tasks, task] };
+      const exists = state.tasks.some(t => t.id === task.id);
+      return {
+        tasks: exists
+          ? state.tasks.map(t => (t.id === task.id ? task : t))
+          : [...state.tasks, task],
+      };
     });
   },
 
@@ -672,7 +687,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       const tasks = state.tasks.map((t) => {
         if (
           !t.resolvedAt &&
-          activeStatuses.includes(t.status) &&
+          interruptibleStatuses.includes(t.status) &&
           now - (t.updatedAt || t.createdAt) > staleMs
         ) {
           marked += 1;
@@ -694,9 +709,10 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     void db.interruptAllRunningStages?.().catch(() => undefined);
     set((state) => {
       const tasks = state.tasks.map((task) => {
-        // Cold start: active statuses mean the previous process died mid-run.
-        // Classify into interrupted (recoverable) or failed (not recoverable).
-        if (task.resolvedAt === null && activeStatuses.includes(task.status)) {
+        // Cold start: only tasks that actually started (queued..proofing)
+        // mean the previous process died mid-run. idle tasks (e.g. batch
+        // pre-created ones) must stay idle so they can safely run/resume.
+        if (task.resolvedAt === null && interruptibleStatuses.includes(task.status)) {
           marked += 1;
           const updated = interruptTask(task, now);
           persistTask(updated);
