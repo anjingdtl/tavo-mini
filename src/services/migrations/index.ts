@@ -51,8 +51,12 @@ import {
   buildV40toV41Statements,
   migrateV40ToV41,
 } from './v40-to-v41';
+import {
+  buildV41toV42Statements,
+  migrateV41ToV42,
+} from './v41-to-v42';
 
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 42;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -278,6 +282,13 @@ const MIGRATIONS: Migration[] = [
     buildStatements: async () => buildV40toV41Statements(),
     migrate: migrateV40ToV41,
   },
+  {
+    from: 41,
+    to: 42,
+    breaking: false,
+    buildStatements: async () => buildV41toV42Statements(),
+    migrate: migrateV41ToV42,
+  },
 ];
 
 export async function runMigrations(
@@ -314,6 +325,8 @@ export async function runMigrations(
       await migrateV39ToV40(db);
     } else if (migration.from === 40 && migration.to === 41) {
       await migrateV40ToV41(db);
+    } else if (migration.from === 41 && migration.to === 42) {
+      await migrateV41ToV42(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

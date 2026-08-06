@@ -223,11 +223,11 @@ export async function createCanonInMemoryDb(): Promise<InMemorySqliteDb> {
           executeSql(sqlStmt: string, params: any[] = [], cb?: any) {
             const result = runStatement(db, sqlStmt, params);
             if (typeof cb === 'function') {
-              try {
-                cb(null, result);
-              } catch {
-                /* test doubles may pass undefined tx */
-              }
+              // Propagate callback throws (e.g. onStatementComplete assertions)
+              // so the scope aborts and the SAVEPOINT rolls back — matching
+              // the native transaction contract. A swallowed throw would
+              // silently commit a partial batch.
+              cb(null, result);
             }
             return result;
           },
