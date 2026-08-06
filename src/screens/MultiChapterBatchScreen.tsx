@@ -94,6 +94,31 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     }
   }, [batchStatus]);
 
+  // 冷启动恢复：编辑计划从已持久化的批次条目重建（本地 edited state 是
+  // 易失的，新进程后为空）。
+  useEffect(() => {
+    if (view === 'preview' && edited.length === 0 && store.items.length > 0) {
+      setEdited(
+        store.items.map(item => ({
+          ordinal: item.ordinal,
+          title: item.title,
+          synopsis: item.synopsis,
+          keyBeats: (() => {
+            try {
+              const parsed = JSON.parse(item.keyBeatsJson || '[]');
+              return Array.isArray(parsed) ? parsed : [];
+            } catch {
+              return [];
+            }
+          })(),
+          carryIn: item.carryIn || '',
+          carryOut: item.carryOut || '',
+          targetWords: item.targetWords,
+        })),
+      );
+    }
+  }, [view, edited.length, store.items]);
+
   const handleCreate = async () => {
     const count = Number(form.chapterCount);
     if (count < BATCH_MIN_CHAPTERS || count > BATCH_MAX_CHAPTERS) {
