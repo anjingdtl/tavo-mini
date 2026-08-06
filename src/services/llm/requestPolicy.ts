@@ -8,6 +8,36 @@ export type LLMErrorCode =
   | 'network_error'
   | 'provider_error';
 
+/**
+ * Phase 3 failure classification (doc §11):
+ *   safe_retry      — retryable without risk of duplicate billing
+ *   outcome_unknown — request may have executed; NEVER auto-retry silently
+ *   rate_limit      — 429 / explicit rate limit; Retry-After preferred
+ *   account_quota   — insufficient_quota / billing limit / balance
+ *   config_error    — model missing / invalid API key / bad URL
+ *   context_error   — local Ready-compile failure (LLM call count 0)
+ *   content_filter  — provider content policy rejection
+ *   fatal           — anything else
+ */
+export type LLMFailureClass =
+  | 'safe_retry'
+  | 'outcome_unknown'
+  | 'rate_limit'
+  | 'account_quota'
+  | 'config_error'
+  | 'context_error'
+  | 'content_filter'
+  | 'fatal';
+
+export interface LLMFailureMetadata {
+  failureClass: LLMFailureClass;
+  httpStatus?: number;
+  providerCode?: string;
+  retryAfterMs?: number;
+  providerRequestId?: string;
+  requestMayHaveExecuted: boolean;
+}
+
 export interface LLMTimeoutPolicy {
   totalTimeoutMs?: number;
   idleTimeoutMs?: number;
@@ -31,13 +61,129 @@ export const LLM_TIMEOUTS = {
 export class LLMRequestError extends Error {
   readonly code: LLMErrorCode | string;
   readonly cause?: unknown;
+  readonly failureClass: LLMFailureClass;
+  readonly httpStatus?: number;
+  readonly providerCode?: string;
+  readonly retryAfterMs?: number;
+  readonly providerRequestId?: string;
+  readonly requestMayHaveExecuted: boolean;
 
-  constructor(message: string, code: LLMErrorCode | string, cause?: unknown) {
+  constructor(
+    message: string,
+    code: LLMErrorCode | string,
+    cause?: unknown,
+    metadata?: Partial<LLMFailureMetadata>,
+  ) {
     super(message);
     this.name = 'LLMRequestError';
     this.code = code;
     this.cause = cause;
+    this.failureClass = metadata?.failureClass ?? 'fatal';
+    this.httpStatus = metadata?.httpStatus;
+    this.providerCode = metadata?.providerCode;
+    this.retryAfterMs = metadata?.retryAfterMs;
+    this.providerRequestId = metadata?.providerRequestId;
+    this.requestMayHaveExecuted =
+      metadata?.requestMayHaveExecuted ?? true;
   }
+}
+
+/**
+ * Phase 3: classify an LLM failure from code/status/message (doc §11).
+ * Deterministic — same input yields the same class.
+ */
+export function classifyLLMFailure(params: {
+  code?: string | null;
+  httpStatus?: number | null;
+  message?: string | null;
+}): LLMFailureClass {
+  const status = Number(params.httpStatus) || 0;
+  const code = String(params.code || '').toLowerCase();
+  const message = String(params.message || '').toLowerCase();
+
+  // Account quota / billing gates (checked before generic 4xx).
+  if (
+    /insufficient_quota|billing[_ ]?limit|balance[_ ]?not[_ ]?enough|credit_exhausted|quota_exceeded|insufficient.*balance|out[_ ]?of[_ ]?quota/i.test(
+      `${code} ${message}`,
+    )
+  ) {
+    return 'account_quota';
+  }
+
+  // Explicit rate limiting.
+  if (
+    status === 429 ||
+    /rate_limit|rate limit|too_many_requests/i.test(`${code} ${message}`)
+  ) {
+    return 'rate_limit';
+  }
+
+  // Content policy rejections.
+  if (
+    /content_filter|content_policy|safety_system|policy_violation/i.test(
+      `${code} ${message}`,
+    )
+  ) {
+    return 'content_filter';
+  }
+
+  // Configuration errors: bad key / missing model / bad endpoint.
+  if (
+    status === 401 ||
+    status === 403 ||
+    (status === 404 &&
+      /model|not_found/i.test(`${code} ${message}`)) ||
+    status === 400
+  ) {
+    return 'config_error';
+  }
+
+  // Transient server-side / gateway errors.
+  if (
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  ) {
+    return 'safe_retry';
+  }
+
+  return 'fatal';
+}
+
+/**
+ * Phase 3: retry backoff schedule (doc §12): 30s → 2m → 5m, plus 10~20%
+ * jitter. Deterministic for a fixed now: the jitter uses the attempt no so
+ * replays stay stable.
+ */
+export const AUTO_RETRY_BACKOFF_MS = [30_000, 120_000, 300_000] as const;
+export const MAX_AUTO_RETRY_ATTEMPTS = 3;
+
+export function computeRetryBackoffMs(attemptNo: number): number {
+  const index = Math.max(0, Math.min(attemptNo - 1, AUTO_RETRY_BACKOFF_MS.length - 1));
+  const base = AUTO_RETRY_BACKOFF_MS[index];
+  // 10%~20% jitter derived from a stable hash of attemptNo.
+  const seed = Math.floor((attemptNo * 2654435761) % 1000000);
+  const jitter = 0.1 + (seed % 1000) / 10000; // 0.10 ~ 0.20
+  return Math.floor(base * jitter);
+}
+
+export function shouldAutoRetryFailure(params: {
+  failureClass: LLMFailureClass;
+  attemptNo: number;
+  now?: number;
+  nextRetryAt?: number | null;
+}): boolean {
+  if (params.failureClass !== 'safe_retry' && params.failureClass !== 'rate_limit') {
+    return false;
+  }
+  if (params.attemptNo > MAX_AUTO_RETRY_ATTEMPTS) {
+    return false;
+  }
+  if (params.nextRetryAt != null && params.now != null) {
+    return params.nextRetryAt <= params.now;
+  }
+  return true;
 }
 
 export function resolveLLMTimeoutPolicy(
@@ -169,20 +315,49 @@ export function toLLMRequestError(
       idle_timeout: '本地模型长时间没有输出，已停止本次生成。',
       total_timeout: '请求超时，请检查网络或模型服务。',
     };
+    // Phase 3 classification: connect_timeout happens before the request is
+    // sent (safe retry); total/idle timeout means the request MAY have
+    // executed server-side (outcome_unknown — never auto-retry blindly).
+    const mayHaveExecuted = timeoutCode !== 'connect_timeout';
     return new LLMRequestError(
       messages[timeoutCode] || fallbackMessage,
       timeoutCode,
+      undefined,
+      {
+        failureClass:
+          timeoutCode === 'connect_timeout' ? 'safe_retry' : 'outcome_unknown',
+        requestMayHaveExecuted: mayHaveExecuted,
+      },
     );
   }
   if (error?.code === 'cancelled' || error?.name === 'AbortError') {
-    return new LLMRequestError('已取消', 'cancelled', error);
+    return new LLMRequestError('已取消', 'cancelled', error, {
+      failureClass: 'fatal',
+      requestMayHaveExecuted: false,
+    });
   }
   if (error?.code === 'provider_error') return error;
   if (error?.status || String(error?.code || '').startsWith('HTTP_')) {
+    const httpStatus = Number(error?.status) || undefined;
+    const metadata: Partial<LLMFailureMetadata> = {
+      httpStatus,
+      providerCode: String(error?.code || ''),
+      retryAfterMs: Number(error?.retryAfterMs) || undefined,
+      providerRequestId: error?.providerRequestId || undefined,
+      // 429/5xx = provider answered → request may have executed; treat as
+      // outcome_unknown only for the transport-level codes, not HTTP errors.
+      requestMayHaveExecuted: true,
+      failureClass: classifyLLMFailure({
+        code: error?.code,
+        httpStatus,
+        message: error?.message,
+      }),
+    };
     return new LLMRequestError(
       error.message || fallbackMessage,
       'provider_error',
       error,
+      metadata,
     );
   }
   if (
@@ -195,11 +370,21 @@ export function toLLMRequestError(
       error?.message || '网络请求失败，请检查网络连接。',
       'network_error',
       error,
+      {
+        // After the request is sent, a network failure may still have
+        // executed server-side.
+        failureClass: 'outcome_unknown',
+        requestMayHaveExecuted: true,
+      },
     );
   }
   return new LLMRequestError(
     error?.message || fallbackMessage,
     'provider_error',
     error,
+    {
+      failureClass: 'fatal',
+      requestMayHaveExecuted: true,
+    },
   );
 }

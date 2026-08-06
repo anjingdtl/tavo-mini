@@ -8,6 +8,8 @@ export interface Migration {
   buildStatements: (
     database: SQLite.SQLiteDatabase,
   ) => Promise<SqlStatement[]>;
+  /** Optional logic migration run after the statement batch (idempotent). */
+  migrate?: (database: SQLite.SQLiteDatabase) => Promise<void>;
 }
 
 export interface MigrationResult {
