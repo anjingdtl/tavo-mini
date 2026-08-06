@@ -162,6 +162,84 @@ describe('crash-point recovery', () => {
     expect(item.status).toBe('outcome_unknown');
   });
 
+  it('resumes with a NEW run after a user-confirmed retry (no deadlock)', async () => {
+    await resetDb();
+    await seedProject();
+    await seedBatch('b1', 1);
+    let failOnce = true;
+    const flakyRunner = {
+      run: async (taskId: string) => {
+        if (failOnce) {
+          failOnce = false;
+          await savePipelineTask({
+            id: taskId,
+            targetType: 'chapter',
+            targetId: 0,
+            status: 'failed',
+            stageResults: [],
+            finalText: null,
+            error: '第一次失败',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            resolvedAt: null,
+          });
+          throw new Error('第一次失败');
+        }
+        await savePipelineTask({
+          id: taskId,
+          targetType: 'chapter',
+          targetId: 0,
+          status: 'completed',
+          stageResults: [
+            {
+              stage: 'draft',
+              status: 'success',
+              text: '第二次成功正文',
+              tokens: { input: 1, output: 2, total: 3 },
+            },
+          ],
+          finalText: '第二次成功正文',
+          error: null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          resolvedAt: null,
+        });
+      },
+    };
+    // 第一次 reconcile：pipeline 失败 → 暂停落库。
+    await reconcileMultiChapterBatch('b1', {
+      owner: 'o1',
+      runPipeline: flakyRunner.run as any,
+    });
+    const paused = await getBatchById('b1');
+    expect(paused?.status).toBe('paused_timeout_unknown');
+    const pausedItem = (await getBatchItems('b1'))[0];
+    const oldTaskId = pausedItem.activePipelineTaskId;
+    expect(oldTaskId).toBeTruthy();
+
+    // 用户确认继续：解绑失败任务 + 批次回到 running（等价 store.resume）。
+    await updateBatchItem('b1', 1, {
+      status: 'running_pipeline',
+      activePipelineTaskId: null,
+      errorCode: null,
+      errorMessage: null,
+    });
+    await updateBatchStatus('b1', 'running');
+
+    // 第二次 reconcile：创建新 run 并成功完成。
+    await reconcileMultiChapterBatch('b1', {
+      owner: 'o1',
+      runPipeline: flakyRunner.run as any,
+    });
+    const done = await getBatchById('b1');
+    expect(done?.status).toBe('completed');
+    const doneItem = (await getBatchItems('b1'))[0];
+    // 新任务替代旧任务（旧 attempt 历史保留在 item_runs）。
+    expect(doneItem.activePipelineTaskId).not.toBe(oldTaskId);
+    const chapter = await getChapterById(doneItem.chapterId!);
+    expect(chapter?.content).toBe('第二次成功正文');
+  });
+
   it('creates chapters with the independent plan synopsis (not the batch digest)', async () => {
     await resetDb();
     await seedProject();
