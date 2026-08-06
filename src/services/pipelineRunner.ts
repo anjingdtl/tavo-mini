@@ -34,6 +34,11 @@ export type StageInfo = ReconcileStageInfo;
 export interface PipelineRunOptions {
   queueClass?: 'pipeline' | 'background';
   queuePriority?: 'manual' | 'background';
+  /**
+   * 'batch' suppresses the per-task foreground notification so the batch
+   * owns a single aggregated notification (Phase 8). Defaults to 'task'.
+   */
+  foregroundOwner?: 'task' | 'batch';
 }
 
 export function cancelPipeline(taskId: string): void {
@@ -137,20 +142,23 @@ export async function runChapterPipeline(
     queuePriority: options.queuePriority || 'manual',
   });
   const abortSignal = registerTaskAbort(taskId);
+  const ownsForeground = (options.foregroundOwner ?? 'task') === 'task';
   // 必须在用户仍处于前台、且任何数据库/网络 await 之前启动服务。若等到配置读取
   // 完成后用户已经切到后台，Android 12+ 会拒绝 startForegroundService，原先错误被
   // 静默降级后就表现为“流水线一切后台必失败”。
-  PipelineForeground.start(
-    taskId,
-    chapter.title || '流水线',
-    '正在准备写作',
-    0,
-  ).catch(error => {
-    console.warn(
-      '[pipeline] early foreground start failed (non-fatal):',
-      error,
-    );
-  });
+  if (ownsForeground) {
+    PipelineForeground.start(
+      taskId,
+      chapter.title || '流水线',
+      '正在准备写作',
+      0,
+    ).catch(error => {
+      console.warn(
+        '[pipeline] early foreground start failed (non-fatal):',
+        error,
+      );
+    });
+  }
   try {
     await reconcilePipelineTask(taskId, chapter, {
       onStageUpdate,
@@ -201,12 +209,15 @@ export async function resumePipeline(
     queuePriority: options.queuePriority || 'manual',
   });
   const abortSignal = registerTaskAbort(taskId);
-  PipelineForeground.start(
-    taskId,
-    chapter.title || '流水线',
-    '正在恢复任务',
-    0,
-  ).catch(() => {});
+  const ownsForeground = (options.foregroundOwner ?? 'task') === 'task';
+  if (ownsForeground) {
+    PipelineForeground.start(
+      taskId,
+      chapter.title || '流水线',
+      '正在恢复任务',
+      0,
+    ).catch(() => {});
+  }
   try {
     await reconcilePipelineTask(taskId, chapter, {
       onStageUpdate,

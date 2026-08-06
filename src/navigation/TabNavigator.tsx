@@ -44,6 +44,7 @@ import { RevisionHistoryScreen } from '../screens/RevisionHistoryScreen';
 import { BackupCenterScreen } from '../screens/BackupCenterScreen';
 import { RecallScreen } from '../screens/RecallScreen';
 import { ContextPreviewScreen } from '../screens/ContextPreviewScreen';
+import { MultiChapterBatchScreen } from '../screens/MultiChapterBatchScreen';
 import { DraftPreviewScreen } from '../screens/DraftPreviewScreen';
 import { UsageStatsScreen } from '../screens/UsageStatsScreen';
 import { VoiceSettingsScreen } from '../screens/VoiceSettingsScreen';
@@ -68,6 +69,7 @@ export type EditorStackParamList = {
     projectId: number;
   };
   ContextPreview: { chapterId: number };
+  MultiChapterBatch: undefined;
   DraftPreview: {
     targetType: 'chapter' | 'freeform';
     targetId: number;
@@ -207,6 +209,8 @@ const ContextPreviewRoute = ({
   />
 );
 
+const MultiChapterBatchRoute = () => <MultiChapterBatchScreen />;
+
 const DraftPreviewRoute = ({
   route,
   navigation,
@@ -267,6 +271,10 @@ const EditorStackScreen = () => (
       component={RevisionHistoryRoute}
     />
     <EditorStack.Screen name="ContextPreview" component={ContextPreviewRoute} />
+    <EditorStack.Screen
+      name="MultiChapterBatch"
+      component={MultiChapterBatchRoute}
+    />
     <EditorStack.Screen name="DraftPreview" component={DraftPreviewRoute} />
   </EditorStack.Navigator>
 );
