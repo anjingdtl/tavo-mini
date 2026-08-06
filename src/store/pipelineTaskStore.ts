@@ -120,15 +120,6 @@ let taskIdCounter = 0;
 // after the successful review result and overwrite `stage_results` with stale
 // (often empty) data on disk.
 const taskPersistenceChains = new Map<string, Promise<void>>();
-// 前台任务中心视为「活跃」的状态（含 idle：已创建未运行）。
-const activeStatuses: PipelineTaskStatus[] = [
-  'idle',
-  'queued',
-  'drafting',
-  'reviewing',
-  'factChecking',
-  'proofing',
-];
 // 冷启动/超时分类只处理「已经开始」的任务。idle = 已创建但从未运行（例如
 // 批次编排器预建的任务、创建后即被杀进程的单章任务）——保持 idle 才能安全
 // 重跑，误标 interrupted 会让批次恢复时被判定 TASK_NOT_RECOVERABLE。
