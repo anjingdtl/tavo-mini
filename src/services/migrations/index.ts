@@ -47,8 +47,12 @@ import {
   migrateV38ToV39,
 } from './v38-to-v39';
 import { migrateV39ToV40 } from './v39-to-v40';
+import {
+  buildV40toV41Statements,
+  migrateV40ToV41,
+} from './v40-to-v41';
 
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -267,6 +271,13 @@ const MIGRATIONS: Migration[] = [
     // Logic migration: idempotent canon_evidence provenance drift repair.
     buildStatements: async () => [],
   },
+  {
+    from: 40,
+    to: 41,
+    breaking: false,
+    buildStatements: async () => buildV40toV41Statements(),
+    migrate: migrateV40ToV41,
+  },
 ];
 
 export async function runMigrations(
@@ -301,6 +312,10 @@ export async function runMigrations(
     } else if (migration.from === 39 && migration.to === 40) {
       // Idempotent logic migration: repair canon_evidence provenance drift.
       await migrateV39ToV40(db);
+    } else if (migration.from === 40 && migration.to === 41) {
+      await migrateV40ToV41(db);
+    } else if (migration.migrate) {
+      await migration.migrate(db);
     } else {
       const statements = await migration.buildStatements(db);
       await executeTransaction(db, statements, { faultDomain: 'migration' });

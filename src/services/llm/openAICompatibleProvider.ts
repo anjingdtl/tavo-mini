@@ -99,7 +99,13 @@ export function classifyEmptyResponse(input: {
 export function formatLLMError(
   status: number,
   responseText: string,
-): Error & { code?: string; status?: number } {
+  headers?: Headers | null,
+): Error & {
+  code?: string;
+  status?: number;
+  retryAfterMs?: number;
+  providerRequestId?: string;
+} {
   let code = `HTTP_${status}`;
   let message = responseText.slice(0, 300);
 
@@ -112,14 +118,38 @@ export function formatLLMError(
     // Keep raw text for non-JSON providers.
   }
 
+  // Phase 3: surface Retry-After and provider request id for durable attempts.
+  let retryAfterMs: number | undefined;
+  let providerRequestId: string | undefined;
+  try {
+    const retryAfter = headers?.get?.('retry-after');
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      if (Number.isFinite(seconds) && seconds >= 0) {
+        retryAfterMs = Math.ceil(seconds * 1000);
+      }
+    }
+    providerRequestId =
+      headers?.get?.('x-request-id') ||
+      headers?.get?.('request-id') ||
+      headers?.get?.('x-amzn-requestid') ||
+      undefined;
+  } catch {
+    // headers access is best-effort
+  }
+
   const formatted = new Error(
     `API 请求失败 (${status}, ${code}): ${message}`,
   ) as Error & {
     code?: string;
     status?: number;
+    retryAfterMs?: number;
+    providerRequestId?: string;
   };
   formatted.code = code;
   formatted.status = status;
+  if (retryAfterMs !== undefined) formatted.retryAfterMs = retryAfterMs;
+  if (providerRequestId) formatted.providerRequestId = providerRequestId;
   return formatted;
 }
 
@@ -312,12 +342,20 @@ export const openAICompatibleProvider: LLMProvider = {
                   text,
                 );
               if (!responseFormatUnsupported) {
-                throw formatLLMError(response.status, text);
+                throw formatLLMError(
+                  response.status,
+                  text,
+                  response.headers,
+                );
               }
               delete requestBody.response_format;
               response = await sendRequest();
               if (!response.ok) {
-                throw formatLLMError(response.status, await response.text());
+                throw formatLLMError(
+                  response.status,
+                  await response.text(),
+                  response.headers,
+                );
               }
             }
 
@@ -332,7 +370,11 @@ export const openAICompatibleProvider: LLMProvider = {
               data.choices.length === 0
             ) {
               if (data && typeof data === 'object' && 'error' in data) {
-                throw formatLLMError(200, JSON.stringify(data.error));
+                throw formatLLMError(
+                  200,
+                  JSON.stringify(data.error),
+                  response.headers,
+                );
               }
             }
             const choice = data.choices?.[0];

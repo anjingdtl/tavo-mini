@@ -33,6 +33,7 @@ import {
 } from '../postDraftRetrieval';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { saveDraft } from '../draftService';
+import { sha256Hex } from '../continuation/hashUtils';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
 import { getStageProgressPercent } from '../../utils/stages';
 import type { Chapter, Preset } from '../../types/novel';
@@ -67,12 +68,263 @@ import {
 import { executeClaimedStage } from './executeClaimedStage';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
+import {
+  createStageAttempt,
+  getStageAttempts,
+  updateStageAttempt,
+} from '../../data/repositories/pipelineStageAttemptRepository';
+import {
+  LLMRequestError,
+  computeRetryBackoffMs,
+  MAX_AUTO_RETRY_ATTEMPTS,
+  type LLMFailureClass,
+} from '../llm/requestPolicy';
 
 export type StageInfo = {
   stage: PipelineStageName | 'idle';
   label: string;
   startedAt: number;
 };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Stage → checkpoint stage mapping for auto-retry. */
+const ACTION_TO_STAGE: Record<string, PipelineStageName | undefined> = {
+  run_draft: 'draft',
+  run_review: 'review',
+  run_fact_check: 'factCheck',
+  run_review_and_fact_check: 'review',
+  run_proof: 'proof',
+};
+
+/** Next attempt sequence number for a task+stage (persisted count + 1). */
+async function nextAttemptNo(taskId: string, stage: string): Promise<number> {
+  const attempts = await getStageAttempts(taskId, stage);
+  return attempts.length + 1;
+}
+
+function classifyAttemptError(
+  error: any,
+  attemptNo: number,
+): {
+  status: 'safe_to_retry' | 'outcome_unknown' | 'blocked' | 'failed' | 'cancelled';
+  failureClass: LLMFailureClass | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  httpStatus: number | null;
+  retryAfterMs: number | null;
+  providerRequestId: string | null;
+  nextRetryAt: number | null;
+} {
+  if (error?.code === 'cancelled' || error?.name === 'AbortError') {
+    return {
+      status: 'cancelled',
+      failureClass: 'fatal',
+      errorCode: 'cancelled',
+      errorMessage: '已取消',
+      httpStatus: null,
+      retryAfterMs: null,
+      providerRequestId: null,
+      nextRetryAt: null,
+    };
+  }
+  if (error instanceof LLMRequestError) {
+    const failureClass = error.failureClass || 'fatal';
+    const backoffMs = Math.max(
+      error.retryAfterMs ?? 0,
+      computeRetryBackoffMs(attemptNo),
+    );
+    let status: 'safe_to_retry' | 'outcome_unknown' | 'blocked' | 'failed';
+    let nextRetryAt: number | null;
+    if (failureClass === 'safe_retry' || failureClass === 'rate_limit') {
+      status = 'safe_to_retry';
+      nextRetryAt = Date.now() + backoffMs;
+    } else if (failureClass === 'outcome_unknown') {
+      // Request may have executed — never auto-retry silently.
+      status = 'outcome_unknown';
+      nextRetryAt = null;
+    } else if (failureClass === 'context_error') {
+      status = 'blocked';
+      nextRetryAt = null;
+    } else {
+      status = 'failed';
+      nextRetryAt = null;
+    }
+    return {
+      status,
+      failureClass,
+      errorCode: String(error.code || ''),
+      errorMessage: error.message || '',
+      httpStatus: error.httpStatus ?? null,
+      retryAfterMs: error.retryAfterMs ?? null,
+      providerRequestId: error.providerRequestId ?? null,
+      nextRetryAt,
+    };
+  }
+  return {
+    status: 'failed',
+    failureClass: 'fatal',
+    errorCode: null,
+    errorMessage: error?.message ? String(error.message) : '阶段失败',
+    httpStatus: null,
+    retryAfterMs: null,
+    providerRequestId: null,
+    nextRetryAt: null,
+  };
+}
+
+/**
+ * Wrap ONE LLM call in a persisted pipeline_stage_attempts row.
+ * On success returns the LLM result (caller keeps existing control flow); on
+ * failure the attempt is classified + scheduled, then the original error is
+ * RE-THROWN so the existing checkpoint/status flow is unchanged.
+ * Fail-closed: attempt write errors propagate (no silent no-op).
+ */
+async function runStageAttempt<T extends {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}>(params: {
+  taskId: string;
+  stage: string;
+  requestFingerprint: string;
+  allocationTraceJson?: string | null;
+  frozenRequestJson?: string | null;
+  llmConfigId?: number | null;
+  llmConfigSnapshotJson: string;
+  run: () => Promise<T>;
+}): Promise<T> {
+  const attemptNo = await nextAttemptNo(params.taskId, params.stage);
+  const attemptId = `${params.taskId}:${params.stage}:${attemptNo}`;
+  const now = Date.now();
+  await createStageAttempt({
+    id: attemptId,
+    pipelineTaskId: params.taskId,
+    stage: params.stage,
+    attemptNo,
+    requestFingerprint: params.requestFingerprint,
+    allocationTraceJson: params.allocationTraceJson ?? null,
+    frozenRequestJson: params.frozenRequestJson ?? null,
+    llmConfigId: params.llmConfigId ?? null,
+    llmConfigSnapshotJson: params.llmConfigSnapshotJson,
+    clientRequestId: attemptId,
+    startedAt: now,
+  });
+  try {
+    const result = await params.run();
+    await updateStageAttempt({
+      id: attemptId,
+      status: 'succeeded',
+      completedAt: Date.now(),
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      totalTokens: result.totalTokens,
+    });
+    return result;
+  } catch (error: any) {
+    const classified = classifyAttemptError(error, attemptNo);
+    try {
+      await updateStageAttempt({
+        id: attemptId,
+        status: classified.status,
+        failureClass: classified.failureClass,
+        errorCode: classified.errorCode,
+        errorMessage: classified.errorMessage,
+        httpStatus: classified.httpStatus,
+        retryAfterMs: classified.retryAfterMs,
+        providerRequestId: classified.providerRequestId,
+        nextRetryAt: classified.nextRetryAt,
+        completedAt: Date.now(),
+      });
+    } catch {
+      // attempt persistence failure must not mask the original error
+    }
+    throw error;
+  }
+}
+
+/** Stable fingerprint for a non-draft stage request (messages + window). */
+function stageFingerprint(
+  stage: string,
+  compiled: ReadyStageRequest,
+): string {
+  try {
+    return sha256Hex(
+      JSON.stringify({
+        stage,
+        messages: compiled.messages,
+        maxTokens: compiled.reservedOutputTokens,
+        contextWindow: compiled.contextWindow,
+      }),
+    ).slice(0, 32);
+  } catch {
+    return `${stage}:${compiled.estimatedInputTokens}`;
+  }
+}
+
+/** LLM config snapshot without secrets (never api_key). */
+function llmConfigSnapshotJson(requestConfig: any): string {
+  return JSON.stringify({
+    name: requestConfig?.name,
+    modelName: requestConfig?.model_name,
+    contextWindow: requestConfig?.context_window,
+    maxOutputTokens: requestConfig?.max_output_tokens,
+    provider: requestConfig?.provider_type,
+  });
+}
+
+function llmConfigIdOf(requestConfig: any): number | null {
+  const id = Number(requestConfig?.id);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+/**
+ * Auto-retry gate: when the next action targets a stage whose latest attempt
+ * is safe_to_retry and its persisted next_retry_at has arrived, reset the
+ * stage checkpoint to pending so the loop re-runs it with the SAME frozen
+ * request (never recompiled). Returns 'continue' (retry scheduled/executed)
+ * or 'stop' (still waiting — hand back to UI/batch resume).
+ */
+async function maybeAutoRetryStage(params: {
+  taskId: string;
+  stages: ReturnType<typeof resolveStageCheckpoints>;
+  action: PipelineAction;
+  options: ReconcileOptions;
+}): Promise<'continue' | 'stop'> {
+  const stage = ACTION_TO_STAGE[params.action.type];
+  if (!stage) return 'continue';
+  const checkpoint = params.stages.find(s => s.stage === stage);
+  if (!checkpoint || checkpoint.status !== 'failed') return 'continue';
+  const attempts = await getStageAttempts(params.taskId, stage);
+  const latest = attempts[attempts.length - 1];
+  if (!latest) return 'continue';
+  if (latest.status !== 'safe_to_retry') return 'continue';
+  if (latest.attemptNo > MAX_AUTO_RETRY_ATTEMPTS) return 'continue';
+  const now = Date.now();
+  const nextRetryAt = latest.nextRetryAt ?? now;
+  if (nextRetryAt > now) {
+    // Persisted schedule already durable; wait briefly then hand back if
+    // still not due (batch/cold-start resume re-checks next_retry_at).
+    const waitMs = Math.min(nextRetryAt - now, 15_000);
+    await sleep(waitMs);
+    if (params.options.abortSignal?.aborted) return 'stop';
+    if (Date.now() < nextRetryAt) return 'stop';
+  }
+  // Reset checkpoint to pending so determineNextPipelineAction re-runs the
+  // stage. Same frozen request: attempts are keyed per stage, and the stage
+  // run path always reads the frozen request (never live data).
+  await db.upsertStageCheckpoint({
+    taskId: params.taskId,
+    stage: stage as any,
+    status: 'pending',
+    errorCode: null,
+    errorMessage: null,
+    bumpAttempt: true,
+  });
+  return 'continue';
+}
 
 export interface ReconcileOptions {
   onStageUpdate?: (info: StageInfo | string) => void;
@@ -423,6 +675,19 @@ export async function reconcilePipelineTask(
         return;
       }
 
+      // Phase 3: persisted auto-retry gate (safe_retry/rate_limit only).
+      // outcome_unknown never auto-retries; waiting_retry survives restarts
+      // via the persisted next_retry_at.
+      const retryResult = await maybeAutoRetryStage({
+        taskId,
+        stages,
+        action,
+        options,
+      });
+      if (retryResult === 'stop') {
+        return;
+      }
+
       const handled = await executeAction({
         taskId,
         chapter,
@@ -753,19 +1018,35 @@ async function actionRunDraft(
       let tokens = { input: 0, output: 0, total: 0 };
 
       try {
-        let result = await callReadyLLM(
-          firstReady,
-          runtime.config.draftMaxTokens,
-          buildCallConfig(
-            runtime.draftPreset,
-            runtime.config.draftMaxTokens,
-            'pipeline_draft',
-            chapter.project_id,
-            runtime.requestConfig,
-            taskId,
-          ),
-          abortSignal,
-        );
+        let result = await runStageAttempt({
+          taskId,
+          stage: 'draft',
+          requestFingerprint:
+            runtime.parsed.frozenDraftRequest.requestFingerprint || '',
+          allocationTraceJson: firstReady.elasticBudgetTrace
+            ? JSON.stringify(firstReady.elasticBudgetTrace)
+            : null,
+          frozenRequestJson: JSON.stringify({
+            ref: 'pipeline_context_json',
+            fingerprint: runtime.parsed.frozenDraftRequest.requestFingerprint,
+          }),
+          llmConfigId: llmConfigIdOf(runtime.requestConfig),
+          llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          run: () =>
+            callReadyLLM(
+              firstReady,
+              runtime.config.draftMaxTokens,
+              buildCallConfig(
+                runtime.draftPreset,
+                runtime.config.draftMaxTokens,
+                'pipeline_draft',
+                chapter.project_id,
+                runtime.requestConfig,
+                taskId,
+              ),
+              abortSignal,
+            ),
+        });
         if (cancelled(taskId, options)) {
           const err = new Error('任务已取消') as Error & { code?: string };
           err.code = 'cancelled';
@@ -790,19 +1071,36 @@ async function actionRunDraft(
               'restart_task',
             );
           }
-          result = await callReadyLLM(
-            retryCompile,
-            runtime.config.draftMaxTokens,
-            buildCallConfig(
-              runtime.draftPreset,
-              runtime.config.draftMaxTokens,
-              'pipeline_draft',
-              chapter.project_id,
-              runtime.requestConfig,
-              taskId,
-            ),
-            abortSignal,
-          );
+          const retryReady = requireReadyStageRequest(retryCompile);
+          result = await runStageAttempt({
+            taskId,
+            stage: 'draft',
+            requestFingerprint:
+              runtime.parsed.frozenDraftRequest.requestFingerprint || '',
+            allocationTraceJson: retryReady.elasticBudgetTrace
+              ? JSON.stringify(retryReady.elasticBudgetTrace)
+              : null,
+            frozenRequestJson: JSON.stringify({
+              ref: 'pipeline_context_json',
+              fingerprint: runtime.parsed.frozenDraftRequest.requestFingerprint,
+            }),
+            llmConfigId: llmConfigIdOf(runtime.requestConfig),
+            llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+            run: () =>
+              callReadyLLM(
+                retryReady,
+                runtime.config.draftMaxTokens,
+                buildCallConfig(
+                  runtime.draftPreset,
+                  runtime.config.draftMaxTokens,
+                  'pipeline_draft',
+                  chapter.project_id,
+                  runtime.requestConfig,
+                  taskId,
+                ),
+                abortSignal,
+              ),
+          });
           if (cancelled(taskId, options)) {
             const err = new Error('任务已取消') as Error & { code?: string };
             err.code = 'cancelled';
@@ -1010,21 +1308,33 @@ async function actionRunReview(
         return;
       }
 
+      // Phase 3: persist one durable attempt row per LLM call.
       try {
-        const first = await callReadyLLM(
-          compiled,
-          runtime.config.reviewMaxTokens,
-          buildCallConfig(
-            runtime.reviewPreset,
-            runtime.config.reviewMaxTokens,
-            'pipeline_review',
-            chapter.project_id,
-            runtime.requestConfig,
-            taskId,
-            { responseFormat: 'json_object' },
-          ),
-          abortSignal,
-        );
+        const first = await runStageAttempt({
+          taskId,
+          stage: 'review',
+          requestFingerprint: stageFingerprint('review', compiled),
+          allocationTraceJson: compiled.elasticBudgetTrace
+            ? JSON.stringify(compiled.elasticBudgetTrace)
+            : null,
+          llmConfigId: llmConfigIdOf(runtime.requestConfig),
+          llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          run: () =>
+            callReadyLLM(
+              compiled,
+              runtime.config.reviewMaxTokens,
+              buildCallConfig(
+                runtime.reviewPreset,
+                runtime.config.reviewMaxTokens,
+                'pipeline_review',
+                chapter.project_id,
+                runtime.requestConfig,
+                taskId,
+                { responseFormat: 'json_object' },
+              ),
+              abortSignal,
+            ),
+        });
         if (cancelled(taskId, options)) {
           const err = new Error('任务已取消') as Error & { code?: string };
           err.code = 'cancelled';
@@ -1075,25 +1385,37 @@ async function actionRunReview(
             });
             return;
           }
-          const retry = await callReadyLLM(
-            repair,
-            retryMaxTokens,
-            buildCallConfig(
-              runtime.reviewPreset,
-              retryMaxTokens,
-              'pipeline_review',
-              chapter.project_id,
-              runtime.requestConfig,
-              taskId,
-              isReasoningOnly
-                ? {
-                    responseFormat: 'json_object',
-                    thinking: { type: 'disabled' },
-                  }
-                : { responseFormat: 'json_object' },
-            ),
-            abortSignal,
-          );
+          const repairReady = requireReadyStageRequest(repair);
+          const retry = await runStageAttempt({
+            taskId,
+            stage: 'review',
+            requestFingerprint: stageFingerprint('review', repairReady),
+            allocationTraceJson: repairReady.elasticBudgetTrace
+              ? JSON.stringify(repairReady.elasticBudgetTrace)
+              : null,
+            llmConfigId: llmConfigIdOf(runtime.requestConfig),
+            llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+            run: () =>
+              callReadyLLM(
+                repairReady,
+                retryMaxTokens,
+                buildCallConfig(
+                  runtime.reviewPreset,
+                  retryMaxTokens,
+                  'pipeline_review',
+                  chapter.project_id,
+                  runtime.requestConfig,
+                  taskId,
+                  isReasoningOnly
+                    ? {
+                        responseFormat: 'json_object',
+                        thinking: { type: 'disabled' },
+                      }
+                    : { responseFormat: 'json_object' },
+                ),
+                abortSignal,
+              ),
+          });
           if (cancelled(taskId, options)) {
             const err = new Error('任务已取消') as Error & { code?: string };
             err.code = 'cancelled';
@@ -1215,21 +1537,33 @@ async function actionRunFactCheck(
         return;
       }
 
+      // Phase 3: persist one durable attempt row per LLM call.
       try {
-        const first = await callReadyLLM(
-          compiled,
-          runtime.config.factCheckMaxTokens,
-          buildCallConfig(
-            runtime.factCheckPreset,
-            runtime.config.factCheckMaxTokens,
-            'pipeline_factcheck',
-            chapter.project_id,
-            runtime.requestConfig,
-            taskId,
-            { responseFormat: 'json_object' },
-          ),
-          abortSignal,
-        );
+        const first = await runStageAttempt({
+          taskId,
+          stage: 'factCheck',
+          requestFingerprint: stageFingerprint('factCheck', compiled),
+          allocationTraceJson: compiled.elasticBudgetTrace
+            ? JSON.stringify(compiled.elasticBudgetTrace)
+            : null,
+          llmConfigId: llmConfigIdOf(runtime.requestConfig),
+          llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          run: () =>
+            callReadyLLM(
+              compiled,
+              runtime.config.factCheckMaxTokens,
+              buildCallConfig(
+                runtime.factCheckPreset,
+                runtime.config.factCheckMaxTokens,
+                'pipeline_factcheck',
+                chapter.project_id,
+                runtime.requestConfig,
+                taskId,
+                { responseFormat: 'json_object' },
+              ),
+              abortSignal,
+            ),
+        });
         if (cancelled(taskId, options)) {
           const err = new Error('任务已取消') as Error & { code?: string };
           err.code = 'cancelled';
@@ -1278,25 +1612,37 @@ async function actionRunFactCheck(
             });
             return;
           }
-          const retry = await callReadyLLM(
-            repair,
-            retryMaxTokens,
-            buildCallConfig(
-              runtime.factCheckPreset,
-              retryMaxTokens,
-              'pipeline_factcheck',
-              chapter.project_id,
-              runtime.requestConfig,
-              taskId,
-              isReasoningOnly
-                ? {
-                    responseFormat: 'json_object',
-                    thinking: { type: 'disabled' },
-                  }
-                : { responseFormat: 'json_object' },
-            ),
-            abortSignal,
-          );
+          const repairReady = requireReadyStageRequest(repair);
+          const retry = await runStageAttempt({
+            taskId,
+            stage: 'factCheck',
+            requestFingerprint: stageFingerprint('factCheck', repairReady),
+            allocationTraceJson: repairReady.elasticBudgetTrace
+              ? JSON.stringify(repairReady.elasticBudgetTrace)
+              : null,
+            llmConfigId: llmConfigIdOf(runtime.requestConfig),
+            llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+            run: () =>
+              callReadyLLM(
+                repairReady,
+                retryMaxTokens,
+                buildCallConfig(
+                  runtime.factCheckPreset,
+                  retryMaxTokens,
+                  'pipeline_factcheck',
+                  chapter.project_id,
+                  runtime.requestConfig,
+                  taskId,
+                  isReasoningOnly
+                    ? {
+                        responseFormat: 'json_object',
+                        thinking: { type: 'disabled' },
+                      }
+                    : { responseFormat: 'json_object' },
+                ),
+                abortSignal,
+              ),
+          });
           if (cancelled(taskId, options)) {
             const err = new Error('任务已取消') as Error & { code?: string };
             err.code = 'cancelled';
@@ -1454,20 +1800,32 @@ async function actionRunProof(
         return;
       }
 
+      // Phase 3: persist one durable attempt row per LLM call.
       try {
-        const result = await callReadyLLM(
-          compiled,
-          runtime.config.proofMaxTokens,
-          buildCallConfig(
-            runtime.proofPreset,
-            runtime.config.proofMaxTokens,
-            'pipeline_proof',
-            chapter.project_id,
-            runtime.requestConfig,
-            taskId,
-          ),
-          abortSignal,
-        );
+        const result = await runStageAttempt({
+          taskId,
+          stage: 'proof',
+          requestFingerprint: stageFingerprint('proof', compiled),
+          allocationTraceJson: compiled.elasticBudgetTrace
+            ? JSON.stringify(compiled.elasticBudgetTrace)
+            : null,
+          llmConfigId: llmConfigIdOf(runtime.requestConfig),
+          llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          run: () =>
+            callReadyLLM(
+              compiled,
+              runtime.config.proofMaxTokens,
+              buildCallConfig(
+                runtime.proofPreset,
+                runtime.config.proofMaxTokens,
+                'pipeline_proof',
+                chapter.project_id,
+                runtime.requestConfig,
+                taskId,
+              ),
+              abortSignal,
+            ),
+        });
         if (cancelled(taskId, options)) {
           const err = new Error('任务已取消') as Error & { code?: string };
           err.code = 'cancelled';
