@@ -13,6 +13,7 @@ import type {
   MultiChapterBatchRow,
 } from '../data/repositories/multiChapterBatchRepository';
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
+import { resolveLLMRequestConfig } from '../services/llm';
 import { reconcileMultiChapterBatch } from '../services/multiChapterBatch/reconcileMultiChapterBatch';
 import { cancelPipeline } from '../services/pipelineRunner';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
@@ -30,9 +31,6 @@ export interface BatchCreateDraftInput {
   chapterCount: number;
   targetWordsPerChapter: number;
   pipelineMode: string;
-  maxLlmCalls?: number | null;
-  maxInputTokens?: number | null;
-  maxOutputTokens?: number | null;
 }
 
 interface MultiChapterBatchState {
@@ -124,11 +122,6 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           chapterCount: input.chapterCount,
           targetWordsPerChapter: input.targetWordsPerChapter,
           pipelineMode: input.pipelineMode,
-          budget: {
-            maxLlmCalls: input.maxLlmCalls ?? null,
-            maxInputTokens: input.maxInputTokens ?? null,
-            maxOutputTokens: input.maxOutputTokens ?? null,
-          },
         });
         for (let i = 1; i <= input.chapterCount; i += 1) {
           await batchRepo.createBatchItem({
@@ -172,6 +165,20 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           plannerRequestJson: result.requestJson,
           plannerRequestFingerprint: result.requestFingerprint,
         });
+        // 批次消耗上限由弹性预算池自动分配（用户无需感知）：按模型上下文窗口
+        // 给出宽松防失控上限；每个单章请求仍受弹性预算精确约束。
+        try {
+          const requestConfig = await resolveLLMRequestConfig();
+          const contextWindow =
+            Number(requestConfig?.context_window) || 128000;
+          await batchRepo.updateBatchBudget(batchId, {
+            maxLlmCalls: batch.chapterCount * 12,
+            maxInputTokens: Math.floor(contextWindow * 4),
+            maxOutputTokens: Math.floor(contextWindow * 2),
+          });
+        } catch {
+          // 自动分配失败不阻断规划；保持无上限（单章弹性预算仍生效）。
+        }
         set({ plan: result.plan, loading: false });
         return result.plan;
       } catch (error: any) {
