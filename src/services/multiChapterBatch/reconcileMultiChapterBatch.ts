@@ -37,6 +37,7 @@ import { adoptPipelineTaskResult } from './batchAdoption';
 import { MultiChapterBatchError } from './errors';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { runChapterPipeline, resumePipeline } from '../pipelineRunner';
+import type { StageInfo as PipelineStageInfo } from '../pipelineRunner';
 import type { PipelineCheckpointStage } from '../pipeline/types';
 import type { PipelineTaskStatus } from '../../types/pipeline';
 import type { BatchItemCompletionQuality } from '../../types/multiChapterBatch';
@@ -49,6 +50,8 @@ export interface BatchProgressInfo {
   chapterCount: number;
   itemStatus?: string;
   taskStatus?: string;
+  /** Current single-chapter pipeline stage (live heartbeat). */
+  stage?: string;
   message?: string;
 }
 
@@ -344,14 +347,33 @@ async function executeBatchAction(params: {
         });
         return 'stop';
       }
+      // Live stage heartbeat: forward the single-chapter pipeline stage so
+      // the batch notification / run page shows progress (not a frozen text)
+      // and the user can tell the batch is alive.
+      const notifyStage = (info: PipelineStageInfo | string) => {
+        const label = typeof info === 'string' ? info : info?.label;
+        const stage = typeof info === 'string' ? undefined : info?.stage;
+        if (label) {
+          options.onProgress?.({
+            batchId,
+            status: batch.status,
+            currentOrdinal: batch.currentOrdinal,
+            completedCount: batch.completedCount,
+            chapterCount: batch.chapterCount,
+            itemStatus: currentItem?.status,
+            stage,
+            message: label,
+          });
+        }
+      };
       const run = () =>
         action.type === 'run_pipeline'
-          ? params.runPipelineImpl(taskId, chapter, undefined, {
+          ? params.runPipelineImpl(taskId, chapter, notifyStage, {
               queueClass: 'pipeline',
               queuePriority: 'background',
               foregroundOwner: 'batch',
             })
-          : params.resumePipelineImpl(taskId, chapter, undefined, {
+          : params.resumePipelineImpl(taskId, chapter, notifyStage, {
               queueClass: 'pipeline',
               queuePriority: 'background',
               foregroundOwner: 'batch',

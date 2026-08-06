@@ -10,6 +10,7 @@ import {
   navigationRef,
 } from '../navigation/navigationRef';
 import { consumeSuppressedPipelinePrompt } from '../navigation/pipelinePromptSuppression';
+import { isBatchPipelineTaskId } from '../services/multiChapterBatch/batchTask';
 import { PipelineResultPrompt } from '../components/PipelineResultPrompt';
 import Toast from 'react-native-toast-message';
 import { openDatabase, lastInstallInfo, lastSchemaRecovery } from '../services/database';
@@ -203,7 +204,10 @@ export const App: React.FC = () => {
           // global prompt for those.
           const isEligible = !prompted.has(t.id)
             && t.resolvedAt === null
-            && (t.status === 'completed' || t.status === 'failed');
+            && (t.status === 'completed' || t.status === 'failed')
+            // 批量写章的子任务由批次状态机自动采用（完成后统一报告），
+            // 不弹每章的全局结果提示。
+            && !isBatchPipelineTaskId(t.id);
           if (!isEligible) return false;
           if (consumeSuppressedPipelinePrompt(t.id)) {
             prompted.add(t.id);

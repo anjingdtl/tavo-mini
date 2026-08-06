@@ -41,6 +41,8 @@ interface MultiChapterBatchState {
   error: string | null;
   reconciling: boolean;
   lastMessage: string | null;
+  /** Current single-chapter pipeline stage (live heartbeat). */
+  lastStage: string | null;
 
   loadBatch: (batchId: string) => Promise<void>;
   loadActiveBatchForProject: (projectId: number) => Promise<void>;
@@ -80,6 +82,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
     error: null,
     reconciling: false,
     lastMessage: null,
+    lastStage: null,
 
     loadBatch: async batchId => {
       set({ loading: true, error: null });
@@ -233,7 +236,10 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         await reconcileMultiChapterBatch(batchId, {
           owner: instanceId,
           onProgress: info => {
-            set({ lastMessage: info.message || null });
+            set({
+              lastMessage: info.message || null,
+              lastStage: info.stage || null,
+            });
             const pct = Math.round(
               (info.completedCount / Math.max(1, info.chapterCount)) * 100,
             );

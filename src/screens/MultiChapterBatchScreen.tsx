@@ -32,6 +32,10 @@ import {
   BATCH_MIN_CHAPTERS,
 } from '../types/multiChapterBatch';
 import type { BatchChapterPlanItem } from '../types/multiChapterBatch';
+import {
+  getPipelineStageOrder,
+  STAGE_LABELS,
+} from '../utils/stages';
 
 type BatchView = 'create' | 'preview' | 'running' | 'paused' | 'report';
 
@@ -410,20 +414,67 @@ function RunningView(props: {
   onRefresh: () => void;
 }) {
   const { theme, store } = props;
+  // 心跳：每 2 秒刷新“最后更新”时间，让用户确认批次没有卡死。
+  const [lastTick, setLastTick] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setLastTick(Date.now()), 2000);
+    return () => clearInterval(timer);
+  }, []);
   const batch = store.batch;
   if (!batch) {
     return <Text style={{ color: theme.colors.textSecondary }}>批次不存在</Text>;
   }
   const current = store.items.find(i => i.ordinal === batch.currentOrdinal);
   const completed = store.items.filter(i => i.status.startsWith('succeeded'));
+  // 总体进度 = 已完成章 + 当前章内阶段进度（保证运行中进度条持续移动）。
+  const stageOrder = getPipelineStageOrder(batch.pipelineMode);
+  const stageIdx = store.lastStage
+    ? stageOrder.indexOf(store.lastStage as any)
+    : -1;
+  const stagePct = stageIdx >= 0 ? (stageIdx / stageOrder.length) * 100 : 0;
+  const overallPct = Math.min(
+    100,
+    Math.round(
+      (((batch.currentOrdinal - 1) + stagePct / 100) /
+        Math.max(1, batch.chapterCount)) *
+        100,
+    ),
+  );
+  const tickLabel = new Date(lastTick).toLocaleTimeString('zh-CN', {
+    hour12: false,
+  });
   return (
     <>
       <Section title={`批次进度 ${batch.completedCount}/${batch.chapterCount}`}>
+        <View
+          style={[
+            styles.progressTrack,
+            { backgroundColor: theme.colors.border },
+          ]}
+        >
+          <View
+            style={[
+              styles.progressFill,
+              {
+                width: `${overallPct}%`,
+                backgroundColor: theme.colors.accent,
+              },
+            ]}
+          />
+        </View>
+        <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>
+          总进度 {overallPct}% · 最后更新 {tickLabel}
+        </Text>
         <Card style={styles.cardMb}>
           <Text style={[styles.bold, { color: theme.colors.textPrimary }]}>
             当前章：第 {batch.currentOrdinal}/{batch.chapterCount} 章
             {current ? ` · ${current.title}` : ''}
           </Text>
+          {store.lastStage ? (
+            <Text style={[styles.mt4, { color: theme.colors.accent }]}>
+              当前阶段：{STAGE_LABELS[store.lastStage as keyof typeof STAGE_LABELS] || store.lastStage}
+            </Text>
+          ) : null}
           {current ? (
             <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>
               章节状态：{current.status}
@@ -599,6 +650,13 @@ const styles = StyleSheet.create({
   mt4: { marginTop: 4 },
   mt8: { marginTop: 8 },
   cardMb: { marginBottom: spacing.md },
+  progressTrack: {
+    height: 10,
+    borderRadius: 5,
+    overflow: 'hidden',
+    marginBottom: spacing.sm,
+  },
+  progressFill: { height: '100%', borderRadius: 5 },
   errorBox: { color: '#c00', paddingVertical: spacing.md },
   inputMultiline: {
     borderRadius: 8,
