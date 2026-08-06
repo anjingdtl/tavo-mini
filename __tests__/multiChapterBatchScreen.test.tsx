@@ -35,6 +35,7 @@ jest.mock('../src/store/projectStore', () => ({
   }),
 }));
 
+const mockLoadActive = jest.fn();
 jest.mock('../src/store/multiChapterBatchStore', () => ({
   useMultiChapterBatchStore: () => ({
     batch: null,
@@ -45,7 +46,7 @@ jest.mock('../src/store/multiChapterBatchStore', () => ({
     reconciling: false,
     lastMessage: null,
     refresh: jest.fn(),
-    loadActiveBatchForProject: jest.fn(),
+    loadActiveBatchForProject: (...args: any[]) => mockLoadActive(...args),
     createDraftBatch: jest.fn(),
     runPlanner: jest.fn(),
     saveEditedPlan: jest.fn(),
@@ -61,6 +62,14 @@ import { MultiChapterBatchScreen } from '../src/screens/MultiChapterBatchScreen'
 describe('MultiChapterBatchScreen', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('auto-loads the active batch on mount (plan survives navigation)', async () => {
+    mockIsEnabled.mockResolvedValue(true);
+    mockLoadActive.mockResolvedValue(undefined);
+    render(<MultiChapterBatchScreen />);
+    await waitFor(() => expect(mockLoadActive).toHaveBeenCalled());
+    expect(mockLoadActive).toHaveBeenCalledWith(1);
   });
 
   it('shows the guarded placeholder when the feature flag is OFF', async () => {
