@@ -291,55 +291,28 @@ export function MultiChapterBatchScreen(): React.ReactElement {
                   <TextInput
                     style={[styles.input, { backgroundColor: theme.colors.background, color: theme.colors.textPrimary }]}
                     value={chapter.title}
+                    placeholder="章节标题"
+                    placeholderTextColor={theme.colors.textMuted}
                     onChangeText={t =>
                       setEdited(prev => prev.map((c, i) => (i === index ? { ...c, title: t } : c)))
                     }
                   />
                   <TextInput
-                    style={[styles.inputMultiline, { backgroundColor: theme.colors.background, color: theme.colors.textPrimary }]}
+                    style={[styles.synopsisInput, { backgroundColor: theme.colors.background, color: theme.colors.textPrimary }]}
                     multiline
                     value={chapter.synopsis}
+                    placeholder="本章摘要（可在写作中随时调优）"
+                    placeholderTextColor={theme.colors.textMuted}
                     onChangeText={t =>
                       setEdited(prev => prev.map((c, i) => (i === index ? { ...c, synopsis: t } : c)))
                     }
                   />
                   <TextInput
                     style={[styles.input, { backgroundColor: theme.colors.background, color: theme.colors.textPrimary }]}
-                    value={chapter.keyBeats.join('；')}
-                    placeholder="关键节拍（分号分隔）"
-                    placeholderTextColor={theme.colors.textMuted}
-                    onChangeText={t =>
-                      setEdited(prev =>
-                        prev.map((c, i) =>
-                          i === index
-                            ? { ...c, keyBeats: t.split('；').map(s => s.trim()).filter(Boolean) }
-                            : c,
-                        ),
-                      )
-                    }
-                  />
-                  <TextInput
-                    style={[styles.input, { backgroundColor: theme.colors.background, color: theme.colors.textPrimary }]}
-                    value={chapter.carryIn || ''}
-                    placeholder="承接前文"
-                    placeholderTextColor={theme.colors.textMuted}
-                    onChangeText={t =>
-                      setEdited(prev => prev.map((c, i) => (i === index ? { ...c, carryIn: t } : c)))
-                    }
-                  />
-                  <TextInput
-                    style={[styles.input, { backgroundColor: theme.colors.background, color: theme.colors.textPrimary }]}
-                    value={chapter.carryOut || ''}
-                    placeholder="交给下一章"
-                    placeholderTextColor={theme.colors.textMuted}
-                    onChangeText={t =>
-                      setEdited(prev => prev.map((c, i) => (i === index ? { ...c, carryOut: t } : c)))
-                    }
-                  />
-                  <TextInput
-                    style={[styles.input, { backgroundColor: theme.colors.background, color: theme.colors.textPrimary }]}
                     keyboardType="numeric"
                     value={String(chapter.targetWords)}
+                    placeholder="目标字数"
+                    placeholderTextColor={theme.colors.textMuted}
                     onChangeText={t =>
                       setEdited(prev =>
                         prev.map((c, i) =>
@@ -623,6 +596,15 @@ const styles = StyleSheet.create({
     padding: 10,
     fontSize: 14,
     minHeight: 60,
+    textAlignVertical: 'top',
+    marginBottom: spacing.sm,
+  },
+  synopsisInput: {
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 14,
+    minHeight: 80,
+    maxHeight: 160,
     textAlignVertical: 'top',
     marginBottom: spacing.sm,
   },

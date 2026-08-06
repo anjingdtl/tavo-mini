@@ -190,8 +190,13 @@ export function parseBatchPlanFallback(
         titleMatch && titleMatch[1] && titleMatch[1].trim()
           ? titleMatch[1].trim()
           : `第 ${chapters.length + 1} 章`;
+      // 摘要跳过标题行（避免“第 N 章 标题”重复进摘要）。
+      const bodyLines = current.slice(1).map(l => l.trim()).filter(Boolean);
       const synopsis =
-        current.join('\n').trim() || `第 ${chapters.length + 1} 章摘要`;
+        bodyLines.join('\n').trim() ||
+        (titleMatch && titleMatch[1] && titleMatch[1].trim()
+          ? titleMatch[1].trim()
+          : `第 ${chapters.length + 1} 章摘要`);
       chapters.push({
         ordinal: chapters.length + 1,
         title,
