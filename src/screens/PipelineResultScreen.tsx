@@ -13,6 +13,7 @@ import {
 } from '@react-navigation/native';
 import * as db from '../services/database';
 import { computeInputFingerprint } from '../services/outlineContextBuilder';
+import { adoptPipelineTaskResult } from '../services/multiChapterBatch/batchAdoption';
 import type { PipelineStageResult } from '../types/pipeline';
 
 type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'PipelineResult'>;
@@ -301,8 +302,16 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         }
       }
 
-      await db.updateChapter(chapter.id, { content: task.finalText });
-      resolveTask(task.id, 'accept');
+      // Phase 7: manual and batch adoption share ONE domain service. The
+      // service keeps every side effect (old-body revision, chapter write,
+      // updated_at, task resolved, story memory dirty mark). Drift warning
+      // below is UI-only (batch adoption is guarded by the batch state
+      // machine instead).
+      await adoptPipelineTaskResult({
+        taskId: task.id,
+        chapterId: task.targetId,
+        source: 'manual',
+      });
       acceptedRef.current = true; // 标记已 accept，阻止 unmount cleanup 重复 resolve
       Alert.alert('已采纳', '流水线正文已覆盖到章节并保存。');
       onAdopted?.(task.finalText);
