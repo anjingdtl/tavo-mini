@@ -98,6 +98,10 @@ interface PipelineTaskState {
   resolveTask: (taskId: string, action: 'accept' | 'reject') => void;
   clearResolved: () => void;
   getActiveTaskForTarget: (targetType: 'chapter' | 'freeform', targetId: number) => PipelineTask | undefined;
+  getLatestResumableFailedTask: (
+    targetType: 'chapter' | 'freeform',
+    targetId: number,
+  ) => PipelineTask | undefined;
   getUnresolvedCount: () => number;
   /** 把 updatedAt 超过 staleMs 的活跃任务按可恢复性分类标记。返回标记的任务数。 */
   markStaleTasksAsFailed: (staleMs?: number) => number;
@@ -656,6 +660,30 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         t.resolvedAt === null &&
         (t.status === 'idle' || t.status === 'queued' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'factChecking' || t.status === 'proofing')
     );
+  },
+
+  /**
+   * 查找一个仍然可从中间阶段继续的 failed/interrupted task。
+   * 返回的 task 代表“以前跑过一部分、但某个阶段中断了”——用户再次点 AI 续写时
+   * 应该调 resumePipeline 而不是创建新任务，从而保留已成功的 stage 检查点、
+   * frozen request 与已完成的输出，避免重发前面阶段已经走过的 LLM 请求。
+   * 在内存中的 task 列表与已持久化的 checkpoints 同时检查（checkpoint 是
+   * resume 的真正唯一依据，task. stageResults 是 UI 投影）。
+   */
+  getLatestResumableFailedTask: (
+    targetType: 'chapter' | 'freeform',
+    targetId: number,
+  ): PipelineTask | undefined => {
+    const candidates = get()
+      .tasks.filter(
+        t =>
+          t.targetType === targetType &&
+          t.targetId === targetId &&
+          t.resolvedAt === null &&
+          (t.status === 'failed' || t.status === 'interrupted'),
+      )
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return candidates[0];
   },
 
   registerPersistedTask: (task) => {

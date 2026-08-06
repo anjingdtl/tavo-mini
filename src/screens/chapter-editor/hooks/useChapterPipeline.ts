@@ -3,8 +3,10 @@ import { Alert } from 'react-native';
 import Toast from 'react-native-toast-message';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { EditorStackParamList } from '../../../navigation/TabNavigator';
+import * as db from '../../../services/database';
 import {
   cancelPipeline,
+  resumePipeline,
   runChapterPipeline,
   type StageInfo,
 } from '../../../services/pipelineRunner';
@@ -280,6 +282,78 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     [chapter, openPipelineResult],
   );
 
+  // 等价于 executeRunPipeline，但复用现有 failed/interrupted 任务并调 resumePipeline。
+  // 把这个先于 runPipeline 定义，以便在 Alert.onPress 回调里可闭包引用，同时避免
+  // TDZ / useCallback-deps-before-declaration 的 TS 错误。
+  const executeResumePipeline = useCallback(
+    async (taskId: string) => {
+      if (!chapter) return;
+      setGenerating(true);
+      setProgressVisible(true);
+      setQueued(false);
+      suppressGlobalPipelinePrompt(taskId);
+      requestNotificationPermission()
+        .then(async granted => {
+          const available = granted && (await PipelineForeground.isAvailable());
+          if (!available) {
+            Toast.show({
+              type: 'info',
+              text1: '未开启通知权限',
+              text2: '后台写作会继续尝试运行，但无法显示进度和完成提醒。',
+            });
+          }
+        })
+        .catch(() => undefined);
+      try {
+        // Resume 前重置所有 failed/interrupted 阶段的检查点：determineNextPipelineAction
+        // 看到 status='failed' 会返回 blocked、不会重试，重置为 'pending' 才能让状态机
+        // 重新运行该阶段（已成功的 stage 不受影响，仍会被跳过）。
+        const checkpoints = await db.getStageCheckpoints(taskId);
+        const failedOrInterrupted = checkpoints.filter(
+          cp => cp.status === 'failed' || cp.status === 'interrupted',
+        );
+        for (const cp of failedOrInterrupted) {
+          await db.upsertStageCheckpoint({
+            taskId,
+            stage: cp.stage,
+            status: 'pending',
+            errorCode: null,
+            errorMessage: null,
+            bumpAttempt: false,
+          });
+        }
+        await resumePipeline(
+          taskId,
+          chapter,
+          (info: StageInfo | string) => {
+            if (typeof info === 'object') {
+              setCurrentStage(info.stage);
+              setProgressStartedAt(info.startedAt);
+            }
+          },
+        );
+        setProgressVisible(false);
+        setQueued(false);
+        const finishedTask = usePipelineTaskStore
+          .getState()
+          .tasks.find(task => task.id === taskId);
+        if (finishedTask?.status === 'completed') {
+          openPipelineResult(taskId);
+        } else if (finishedTask?.status === 'failed') {
+          resultTaskIdRef.current = taskId;
+          Alert.alert('流水线失败', finishedTask.error || '未知错误');
+        }
+      } catch (error: any) {
+        setProgressVisible(false);
+        setQueued(false);
+        Alert.alert('流水线异常', error?.message || '请检查 API 配置。');
+      } finally {
+        setGenerating(false);
+      }
+    },
+    [chapter, openPipelineResult],
+  );
+
   const continuationRunIdRef = useRef<string | null>(null);
 
   const runContinuation = useCallback(async () => {
@@ -404,11 +478,30 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       ]);
       return;
     }
-    const { createTask, getActiveTaskForTarget } =
+    const { createTask, getActiveTaskForTarget, getLatestResumableFailedTask } =
       usePipelineTaskStore.getState();
     const existing = getActiveTaskForTarget('chapter', chapter.id);
     if (existing) {
       Alert.alert('已有进行中的流水线', '请等待当前任务完成或到任务中心取消。');
+      return;
+    }
+    const resumable = getLatestResumableFailedTask('chapter', chapter.id);
+    if (resumable) {
+      Alert.alert(
+        '从上次失败阶段继续',
+        '检测到上一次流水线进度。选「继续」将复用已完成的检查点，只重跑剩余阶段，避免浪费 API 用量。',
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '从头开始',
+            onPress: () => executeRunPipeline(createTask).catch(() => {}),
+          },
+          {
+            text: '继续',
+            onPress: () => executeResumePipeline(resumable.id).catch(() => {}),
+          },
+        ],
+      );
       return;
     }
     if (chapter.content.trim()) {
@@ -426,7 +519,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     } else {
       executeRunPipeline(createTask).catch(() => {});
     }
-  }, [chapter, executeRunPipeline, runContinuation]);
+  }, [chapter, executeRunPipeline, executeResumePipeline, runContinuation]);
 
   const stopPipeline = useCallback(() => {
     // Stop must never throw into the toolbar onPress — an uncaught exception
