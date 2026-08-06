@@ -97,12 +97,30 @@ export function MultiChapterBatchScreen(): React.ReactElement {
       setView('report');
     } else if (batchStatus.startsWith('paused_')) {
       setView('paused');
-    } else if (batchStatus === 'planning' || batchStatus === 'draft' || batchStatus === 'ready') {
-      setView('preview');
+    } else if (
+      batchStatus === 'planning' ||
+      batchStatus === 'draft' ||
+      batchStatus === 'ready'
+    ) {
+      // 批次状态在第一章采用前一直是 ready。此时若协调器正在驱动
+      // （reconciling）或 item 已有执行痕迹（章节已建/等待重试），说明
+      // 批次已启动——必须显示运行页（包括运行中切走再切回的重新挂载），
+      // 不能掉回预览/创建页误导用户重新开始。
+      const hasExecutionTraces = store.items.some(
+        i =>
+          i.status !== 'pending' ||
+          i.chapterId != null ||
+          i.activePipelineTaskId != null,
+      );
+      if (store.reconciling || hasExecutionTraces) {
+        setView('running');
+      } else {
+        setView('preview');
+      }
     } else {
       setView('running');
     }
-  }, [batchStatus]);
+  }, [batchStatus, store.reconciling, store.items]);
 
   // 冷启动恢复：编辑计划从已持久化的批次条目重建（本地 edited state 是
   // 易失的，新进程后为空）。
@@ -165,8 +183,10 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     }
     try {
       await store.saveEditedPlan(store.batch.id, edited);
-      await store.start(store.batch.id);
+      // 立即切到运行页：store.start 非阻塞驱动 reconcile，页面通过轮询
+      // 刷新进度（此前 await 整批完成后才切页，用户以为按钮没响应）。
       setView('running');
+      await store.start(store.batch.id);
     } catch (error: any) {
       Alert.alert('启动失败', String(error?.message || '请检查计划后重试'));
     }
@@ -342,7 +362,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
                 label={store.loading ? '保存中…' : '开始批量写作'}
                 icon={Play}
                 onPress={handleStart}
-                disabled={store.loading}
+                disabled={store.loading || store.reconciling}
               />
               <Button label="放弃" variant="ghost" icon={X} onPress={handleCancel} />
             </View>

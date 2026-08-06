@@ -19,6 +19,9 @@ export const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
 
 /** 按 pipelineMode 返回阶段串；full 4 阶段、twoStage/conditional 3 阶段、noReview 1 阶段。 */
 export function getPipelineStageOrder(mode: string): PipelineStageName[] {
+  // Batch form modes map to single-chapter modes (see mapBatchModeToPipelineMode).
+  if (mode === 'draft_only') return ['draft'];
+  if (mode === 'fast') return ['draft', 'review', 'proof'];
   if (mode === 'noReview') return ['draft'];
   if (mode === 'twoStage') return ['draft', 'review', 'proof'];
   if (mode === 'conditional') return ['draft', 'factCheck', 'proof'];

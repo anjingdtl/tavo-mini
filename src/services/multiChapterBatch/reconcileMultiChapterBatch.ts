@@ -27,7 +27,7 @@ import {
   type MultiChapterBatchRow,
 } from '../../data/repositories/multiChapterBatchRepository';
 import { getPipelineTaskById } from '../../data/repositories/pipelineTaskRepository';
-import { getLatestAttemptByTask } from '../../data/repositories/pipelineStageAttemptRepository';
+import { getLatestAttemptByTask, getTaskAttempts } from '../../data/repositories/pipelineStageAttemptRepository';
 import { getChaptersByProject } from '../../data/repositories/projectRepository';
 import {
   determineNextBatchAction,
@@ -39,6 +39,7 @@ import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { runChapterPipeline, resumePipeline } from '../pipelineRunner';
 import type { StageInfo as PipelineStageInfo } from '../pipelineRunner';
 import type { PipelineCheckpointStage } from '../pipeline/types';
+import type { PipelineMode } from '../../types/pipeline';
 import type { PipelineTaskStatus } from '../../types/pipeline';
 import type { BatchItemCompletionQuality } from '../../types/multiChapterBatch';
 
@@ -69,6 +70,16 @@ export interface ReconcileMultiChapterBatchOptions {
 const DEFAULT_LEASE_MS = 60_000;
 const MAX_STEPS = 200;
 const WAIT_CHUNK_MS = 15_000;
+
+/**
+ * Batch form modes → single-chapter pipeline modes.
+ * UI: 仅草稿 / 快速 / 完整；execution: noReview / twoStage / full.
+ */
+export function mapBatchModeToPipelineMode(mode: string): PipelineMode {
+  if (mode === 'draft_only') return 'noReview';
+  if (mode === 'fast') return 'twoStage';
+  return 'full';
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -147,6 +158,21 @@ export async function reconcileMultiChapterBatch(
       }
       if (batch.status.startsWith('paused_')) {
         return; // user/pause action required
+      }
+      // Renew the lease on every state-machine step (RB-8): a long single-
+      // chapter run must not let the lease expire and admit a second owner.
+      // Fail-closed: losing the lease stops progress immediately.
+      const renewed = await claimBatchLease(
+        batchId,
+        owner,
+        leaseMs,
+        batch.rowVersion,
+      );
+      if (!renewed) {
+        throw new MultiChapterBatchError(
+          'BATCH_LEASE_CONFLICT',
+          '批次租约已失效，请重新开始',
+        );
       }
       const items = await getBatchItems(batchId);
       const currentItem = items.find(i => i.ordinal === batch.currentOrdinal);
@@ -381,12 +407,40 @@ async function executeBatchAction(params: {
               queueClass: 'pipeline',
               queuePriority: 'background',
               foregroundOwner: 'batch',
+              pipelineModeOverride: mapBatchModeToPipelineMode(
+                batch.pipelineMode,
+              ),
             })
           : params.resumePipelineImpl(taskId, chapter, notifyStage, {
               queueClass: 'pipeline',
               queuePriority: 'background',
               foregroundOwner: 'batch',
+              pipelineModeOverride: mapBatchModeToPipelineMode(
+                batch.pipelineMode,
+              ),
             });
+      // Heartbeat renewal while a whole chapter pipeline runs (may take
+      // minutes — far beyond the 60s lease): renew every leaseMs/2 so no
+      // second owner can claim mid-chapter. A failed heartbeat only stops
+      // progress on the next loop step (the request itself cannot be
+      // interrupted without corrupting the outcome).
+      const heartbeat = setInterval(() => {
+        void (async () => {
+          try {
+            const b = await getBatchById(batchId);
+            if (b) {
+              await claimBatchLease(
+                batchId,
+                options.owner,
+                options.leaseMs ?? DEFAULT_LEASE_MS,
+                b.rowVersion,
+              );
+            }
+          } catch {
+            // heartbeat failure is not fatal mid-request; the loop re-checks
+          }
+        })();
+      }, Math.max(10_000, Math.floor((options.leaseMs ?? DEFAULT_LEASE_MS) / 2)));
       notify(action.type === 'run_pipeline' ? '开始生成当前章' : '恢复当前章');
       try {
         await run();
@@ -395,6 +449,8 @@ async function executeBatchAction(params: {
         // 决策会依据持久化的 task 状态与 attempt 分类自动进入暂停/等待重试，
         // 保证 UI 与真实状态同步（断点续写闭环）。
         notify(`当前章运行失败：${getErrorMessage(error, '未知错误')}`);
+      } finally {
+        clearInterval(heartbeat);
       }
       return 'continue';
     }
@@ -547,30 +603,38 @@ async function adoptAndCommit(params: {
     adoptedRevisionId: adopted.adoptedRevisionId,
   });
 
-  // Reflect pipeline token usage into the batch budget.
+  // Reflect pipeline token usage into the batch budget. Audit source of
+  // truth: pipeline_stage_attempts (one row per HTTP request, including
+  // failed / retried / outcome-unknown calls). Successful rows carry tokens.
   try {
-    const usage = summarizeTaskUsage(task);
-    await incrementBatchUsage(batchId, usage);
+    const attempts = await getTaskAttempts(taskId);
+    await incrementBatchUsage(batchId, summarizeAttemptsUsage(attempts));
   } catch {
     // non-fatal
   }
   return 'continue';
 }
 
-function summarizeTaskUsage(task: any): {
+function summarizeAttemptsUsage(
+  attempts: Array<{
+    status?: string | null;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    totalTokens?: number | null;
+  }>,
+): {
   llmCalls: number;
   inputTokens: number;
   outputTokens: number;
 } {
-  const stages = Array.isArray(task.stageResults) ? task.stageResults : [];
   let llmCalls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
-  for (const stage of stages) {
-    if (stage?.status === 'success' || stage?.status === 'succeeded') {
-      llmCalls += 1;
-      inputTokens += Number(stage.tokens?.input ?? 0);
-      outputTokens += Number(stage.tokens?.output ?? 0);
+  for (const attempt of attempts) {
+    llmCalls += 1;
+    if (attempt.status === 'succeeded') {
+      inputTokens += Number(attempt.inputTokens ?? 0);
+      outputTokens += Number(attempt.outputTokens ?? 0);
     }
   }
   return { llmCalls, inputTokens, outputTokens };

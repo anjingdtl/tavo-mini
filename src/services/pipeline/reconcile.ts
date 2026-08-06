@@ -37,7 +37,7 @@ import { sha256Hex } from '../continuation/hashUtils';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
 import { getStageProgressPercent } from '../../utils/stages';
 import type { Chapter, Preset } from '../../types/novel';
-import type { PipelineConfig, PipelineStageName } from '../../types/pipeline';
+import type { PipelineConfig, PipelineMode, PipelineStageName } from '../../types/pipeline';
 import {
   describeAuditFailureReason,
   formatAuditFailureMessage,
@@ -331,6 +331,11 @@ export interface ReconcileOptions {
   abortSignal?: AbortSignal;
   isCancelled?: (taskId: string) => boolean;
   registerCancel?: (taskId: string) => void;
+  /**
+   * Batch-owned tasks execute with the mode chosen on the batch form; only
+   * applied when no frozen execution snapshot exists yet (first run).
+   */
+  pipelineModeOverride?: PipelineMode;
 }
 
 const reconciling = new Set<string>();
@@ -569,6 +574,29 @@ function cancelled(
   return false;
 }
 
+/**
+ * Abort handling shared by every stage executor and the outer loop:
+ * - user cancel (isCancelled set): terminate the task (cancelled).
+ * - pause interrupt (abort signal only): keep the task recoverable — the
+ *   running checkpoint is already `interrupted`, resume reuses succeeded
+ *   stages and re-fetches from the frozen request.
+ */
+async function settleInterruptedTask(
+  taskId: string,
+  options: ReconcileOptions,
+): Promise<void> {
+  const store = usePipelineTaskStore.getState();
+  if (options.isCancelled?.(taskId)) {
+    store.cancelTask(taskId);
+  } else {
+    if (store.persistTaskStatus) {
+      await store.persistTaskStatus(taskId, 'interrupted');
+    } else {
+      store.setTaskStatus(taskId, 'interrupted');
+    }
+  }
+}
+
 async function persistSkipped(
   taskId: string,
   stage: PipelineStageName,
@@ -707,7 +735,7 @@ export async function reconcilePipelineTask(
     await PipelineForeground.stop(taskId);
   } catch (error: any) {
     if (isAbortError(error, abortSignal) || cancelled(taskId, options)) {
-      store.cancelTask(taskId);
+      await settleInterruptedTask(taskId, options);
       await PipelineForeground.stop(taskId);
       return;
     }
@@ -914,6 +942,11 @@ async function actionPersistInitialSnapshot(
       proofPreset: runtime.proofPreset,
       requestConfig: runtime.requestConfig,
     });
+  // Batch-owned first run: the batch form's mode wins over the global
+  // pipeline setting. Resume never overrides a frozen snapshot.
+  if (options.pipelineModeOverride && !runtime.parsed?.execution) {
+    execution.pipelineMode = options.pipelineModeOverride;
+  }
 
   const compiled = await compileDraftStageRequest({
     chapter,
@@ -992,7 +1025,6 @@ async function actionRunDraft(
       );
     },
     run: async () => {
-      const store = usePipelineTaskStore.getState();
       const runtime = await loadRuntime(taskId, chapter);
       if (!runtime.parsed?.draftContext || !runtime.parsed.execution) {
         throw new OutlineContextError(
@@ -1132,7 +1164,7 @@ async function actionRunDraft(
         });
       } catch (error: any) {
         if (isAbortError(error, abortSignal) || cancelled(taskId, options)) {
-          store.cancelTask(taskId);
+          await settleInterruptedTask(taskId, options);
           await PipelineForeground.stop(taskId);
           throw error;
         }
@@ -1278,7 +1310,6 @@ async function actionRunReview(
       });
     },
     run: async () => {
-      const store = usePipelineTaskStore.getState();
       const runtime = await loadRuntime(taskId, chapter);
       if (!runtime.parsed) throw new Error('缺少冻结上下文');
       const draftText = await getDraftText(taskId);
@@ -1456,7 +1487,7 @@ async function actionRunReview(
         });
       } catch (error: any) {
         if (isAbortError(error, abortSignal)) {
-          store.cancelTask(taskId);
+          await settleInterruptedTask(taskId, options);
           await PipelineForeground.stop(taskId);
           throw error;
         }
@@ -1507,7 +1538,6 @@ async function actionRunFactCheck(
       });
     },
     run: async () => {
-      const store = usePipelineTaskStore.getState();
       const runtime = await loadRuntime(taskId, chapter);
       if (!runtime.parsed) throw new Error('缺少冻结上下文');
       const draftText = await getDraftText(taskId);
@@ -1682,7 +1712,7 @@ async function actionRunFactCheck(
         });
       } catch (error: any) {
         if (isAbortError(error, abortSignal)) {
-          store.cancelTask(taskId);
+          await settleInterruptedTask(taskId, options);
           await PipelineForeground.stop(taskId);
           throw error;
         }
@@ -1762,7 +1792,6 @@ async function actionRunProof(
       });
     },
     run: async () => {
-      const store = usePipelineTaskStore.getState();
       const runtime = await loadRuntime(taskId, chapter);
       PipelineForeground.updateProgress(
         taskId,
@@ -1869,7 +1898,7 @@ async function actionRunProof(
         });
       } catch (error: any) {
         if (isAbortError(error, abortSignal)) {
-          store.cancelTask(taskId);
+          await settleInterruptedTask(taskId, options);
           await PipelineForeground.stop(taskId);
           throw error;
         }

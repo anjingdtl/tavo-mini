@@ -391,6 +391,51 @@ export async function updateBatchBudget(
   );
 }
 
+/**
+ * Cold-start normalization (RB-5): any batch left in an active state by a
+ * killed process has NO live executor — it must be parked into a recoverable
+ * pause instead of lying as `running`/`ready` with nobody driving it.
+ *
+ * Cold start runs exactly once at process boot, so ANY lease still present
+ * belongs to the dead process: it is cleared unconditionally (a live lease
+ * would otherwise make the next 开始批量写作 fail with BATCH_LEASE_CONFLICT
+ * — the 线程被占用 user report).
+ *
+ * Covered states:
+ *   - running / waiting_retry                     → paused_user
+ *   - ready with execution traces (an item already
+ *     created a chapter / bound a task / moved off
+ *     pending — the reconciler started, status only
+ *     flips to running on the first adoption)      → paused_user
+ *   - ready with zero execution (fresh confirmed
+ *     plan)                                        → untouched
+ */
+export async function pauseInterruptedBatches(
+  now = Date.now(),
+): Promise<number> {
+  const result = await execute(
+    await openDatabase(),
+    `UPDATE multi_chapter_batches
+     SET status = 'paused_user',
+         pause_reason = 'interrupted',
+         error_code = 'BATCH_INTERRUPTED',
+         error_message = '应用中断，请确认后继续',
+         lease_owner = NULL,
+         lease_expires_at = NULL,
+         updated_at = ?
+     WHERE status IN ('running', 'waiting_retry')
+        OR (status = 'ready' AND EXISTS (
+              SELECT 1 FROM multi_chapter_batch_items
+              WHERE batch_id = multi_chapter_batches.id
+                AND (status <> 'pending'
+                     OR chapter_id IS NOT NULL
+                     OR active_pipeline_task_id IS NOT NULL)
+            ))`,
+    [now],
+  );
+  return result.rowsAffected ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // Items
 // ---------------------------------------------------------------------------

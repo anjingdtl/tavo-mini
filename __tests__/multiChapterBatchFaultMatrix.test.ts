@@ -100,7 +100,25 @@ async function seedBatch(batchId = 'b1', count = 2) {
       targetWords: 3000,
     });
   }
-  await updateBatchStatus(batchId, 'ready', { startPosition: -1 });
+  // Production path freezes the tail anchor in saveEditedPlan (RB-3); the
+  // fixture must NOT hand-set startPosition — drift tests freeze it below
+  // through the same repository call the production path uses.
+  await updateBatchStatus(batchId, 'ready');
+}
+
+/** Freeze the tail anchor exactly like the production saveEditedPlan path. */
+async function freezeTailAnchor(batchId: string, startPosition: number) {
+  const chapters = await getChaptersByProject(1);
+  const tail =
+    chapters.length > 0
+      ? chapters.reduce((max, c) =>
+          Number(c.position) >= Number(max.position) ? c : max,
+        )
+      : null;
+  await updateBatchStatus(batchId, 'ready', {
+    startPosition,
+    expectedTailChapterId: tail?.id ?? null,
+  });
 }
 
 /** Runner that completes every task it is handed. */
@@ -378,6 +396,8 @@ describe('tail drift & deleted chapters', () => {
     await resetDb();
     await seedProject();
     await seedBatch('b1', 2);
+    // Production saveEditedPlan freezes the anchor when the plan is saved.
+    await freezeTailAnchor('b1', -1);
     // User inserted an extra chapter after the batch started (tail moved).
     await execute(
       await openDatabase(),
