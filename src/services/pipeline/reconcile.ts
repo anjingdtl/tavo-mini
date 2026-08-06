@@ -83,6 +83,22 @@ export interface ReconcileOptions {
 
 const reconciling = new Set<string>();
 
+/**
+ * Phase 2+ elastic budget switch, resolved once per reconcile entry (one
+ * settings read, then reused by every stage compiler call). Defaults to
+ * legacy fixed-weight allocator when the flag is off.
+ */
+let elasticBudgetEnabled = false;
+
+async function refreshElasticBudgetFlag(): Promise<void> {
+  try {
+    const { isElasticBudgetV2Enabled } = await import('../featureFlags');
+    elasticBudgetEnabled = await isElasticBudgetV2Enabled();
+  } catch {
+    elasticBudgetEnabled = false;
+  }
+}
+
 function getErrorMessage(error: any, fallback: string): string {
   return error?.message ? String(error.message) : fallback;
 }
@@ -357,6 +373,7 @@ export async function reconcilePipelineTask(
     throw err;
   }
   reconciling.add(taskId);
+  await refreshElasticBudgetFlag();
 
   const store = usePipelineTaskStore.getState();
   const onStageUpdate = options.onStageUpdate;
@@ -638,6 +655,7 @@ async function actionPersistInitialSnapshot(
     requestConfig: runtime.requestConfig,
     draftPreset: runtime.draftPreset,
     draftMaxTokens: execution.draftMaxTokens,
+    elasticBudget: elasticBudgetEnabled,
   });
   if (!compiled.ready) {
     const code =
@@ -979,6 +997,7 @@ async function actionRunReview(
         context,
         maxTokens: runtime.config.reviewMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
+        elasticBudget: elasticBudgetEnabled,
       });
       if (!compiled.ready) {
         await persistStage(taskId, {
@@ -1043,6 +1062,7 @@ async function actionRunReview(
             repairReason: isReasoningOnly
               ? REASONING_ONLY_REPAIR_HINT
               : describeAuditFailureReason(validation.reason),
+            elasticBudget: elasticBudgetEnabled,
           });
           if (!repair.ready) {
             await persistStage(taskId, {
@@ -1182,6 +1202,7 @@ async function actionRunFactCheck(
         context,
         maxTokens: runtime.config.factCheckMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
+        elasticBudget: elasticBudgetEnabled,
       });
       if (!compiled.ready) {
         await persistStage(taskId, {
@@ -1244,6 +1265,7 @@ async function actionRunFactCheck(
             repairReason: isReasoningOnly
               ? REASONING_ONLY_REPAIR_HINT
               : describeAuditFailureReason(validation.reason),
+            elasticBudget: elasticBudgetEnabled,
           });
           if (!repair.ready) {
             await persistStage(taskId, {
@@ -1419,6 +1441,7 @@ async function actionRunProof(
         constraints,
         maxTokens: runtime.config.proofMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
+        elasticBudget: elasticBudgetEnabled,
       });
       if (!compiled.ready) {
         await persistStage(taskId, {
