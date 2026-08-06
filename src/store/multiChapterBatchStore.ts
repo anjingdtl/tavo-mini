@@ -15,7 +15,8 @@ import type {
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
 import { resolveLLMRequestConfig } from '../services/llm';
 import { reconcileMultiChapterBatch } from '../services/multiChapterBatch/reconcileMultiChapterBatch';
-import { cancelPipeline } from '../services/pipelineRunner';
+import { cancelPipeline, interruptPipelineTask } from '../services/pipelineRunner';
+import { getChaptersByProject } from '../data/repositories/projectRepository';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { BATCH_DEFAULT_CHAPTERS, BATCH_DEFAULT_TARGET_WORDS } from '../types/multiChapterBatch';
 import type { BatchChapterPlan } from '../types/multiChapterBatch';
@@ -71,6 +72,69 @@ async function refreshBatch(
     batchRepo.getBatchItems(batch.id),
   ]);
   set({ batch: fresh, items });
+}
+
+/**
+ * Drive one reconcile run to completion in the background. The store's
+ * `start` returns immediately; this helper owns the foreground notification
+ * lifecycle and clears the `reconciling` guard exactly once.
+ */
+async function driveBatchReconcile(
+  batchId: string,
+  set: (partial: Partial<MultiChapterBatchState>) => void,
+  get: () => MultiChapterBatchState,
+): Promise<void> {
+  try {
+    await reconcileMultiChapterBatch(batchId, {
+      owner: instanceId,
+      onProgress: info => {
+        set({
+          lastMessage: info.message || null,
+          lastStage: info.stage || null,
+        });
+        const pct = Math.round(
+          (info.completedCount / Math.max(1, info.chapterCount)) * 100,
+        );
+        PipelineForeground.updateProgress(
+          `batch_${batchId}`,
+          info.itemStatus
+            ? `第 ${info.currentOrdinal}/${info.chapterCount} 章 · ${info.message || ''}`
+            : `第 ${info.currentOrdinal}/${info.chapterCount} 章`,
+          pct,
+        ).catch(() => {});
+      },
+    });
+  } catch (error: any) {
+    set({
+      reconciling: false,
+      error: String(error?.message || '批次运行失败'),
+    });
+    PipelineForeground.stop(`batch_${batchId}`).catch(() => {});
+    // 异常退出也刷新真实状态（task failed → 暂停分类由下次 reconcile 落库）。
+    try {
+      await refreshBatch(set, get);
+    } catch {
+      // ignore
+    }
+    return;
+  }
+  await refreshBatch(set, get);
+  const fresh = get().batch;
+  if (fresh?.status === 'completed') {
+    PipelineForeground.notifyComplete(
+      `batch_${batchId}`,
+      '批量写章完成',
+      `已完成 ${fresh.completedCount}/${fresh.chapterCount} 章`,
+    ).catch(() => {});
+  } else if (fresh?.status.startsWith('paused_')) {
+    PipelineForeground.notifyFailed(
+      `batch_${batchId}`,
+      '批量写章暂停',
+      fresh.errorMessage || '批次已暂停',
+    ).catch(() => {});
+  }
+  PipelineForeground.stop(`batch_${batchId}`).catch(() => {});
+  set({ reconciling: false });
 }
 
 export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
@@ -208,10 +272,31 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           });
         }
         const hash = computePlannerHash(normalized.plan);
+        // Freeze the project-tail anchor so drift protection can actually
+        // run: startPosition = current tail position, expectedTailChapterId
+        // = the tail chapter. Without this the batch would keep writing into
+        // a project whose tail the user has changed mid-run.
+        const batchRow = await batchRepo.getBatchById(batchId);
+        if (!batchRow) {
+          throw new Error('批次不存在');
+        }
+        const projectChapters = await getChaptersByProject(batchRow.projectId);
+        const tailPosition =
+          projectChapters.length > 0
+            ? Math.max(...projectChapters.map((c: any) => Number(c.position)))
+            : -1;
+        const tailChapter =
+          projectChapters.length > 0
+            ? projectChapters.reduce((max: any, c: any) =>
+                Number(c.position) >= Number(max.position) ? c : max,
+              )
+            : null;
         // Freeze the plan hash + mark ready; reconcile may now start.
         await batchRepo.updateBatchStatus(batchId, 'ready', {
           plannerHash: hash,
           plannerOutputJson: JSON.stringify(normalized.plan),
+          startPosition: tailPosition,
+          expectedTailChapterId: tailChapter?.id ?? null,
         });
         await refreshBatch(set, get);
         set({ plan: normalized.plan, loading: false });
@@ -222,67 +307,22 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
     },
 
     start: async batchId => {
+      // 防重入：reconcile 已在驱动时忽略重复启动（按钮也已禁用）。
+      if (get().reconciling) return;
       set({ reconciling: true, error: null });
       const batch = get().batch;
       if (batch) {
         PipelineForeground.start(
           `batch_${batchId}`,
-          batch.projectId ? '批量写章' : '批量写章',
+          '批量写章',
           '准备中',
           0,
         ).catch(() => {});
       }
-      try {
-        await reconcileMultiChapterBatch(batchId, {
-          owner: instanceId,
-          onProgress: info => {
-            set({
-              lastMessage: info.message || null,
-              lastStage: info.stage || null,
-            });
-            const pct = Math.round(
-              (info.completedCount / Math.max(1, info.chapterCount)) * 100,
-            );
-            PipelineForeground.updateProgress(
-              `batch_${batchId}`,
-              info.itemStatus
-                ? `第 ${info.currentOrdinal}/${info.chapterCount} 章 · ${info.message || ''}`
-                : `第 ${info.currentOrdinal}/${info.chapterCount} 章`,
-              pct,
-            ).catch(() => {});
-          },
-        });
-      } catch (error: any) {
-        set({
-          reconciling: false,
-          error: String(error?.message || '批次运行失败'),
-        });
-        PipelineForeground.stop(`batch_${batchId}`).catch(() => {});
-        // 异常退出也刷新真实状态（task failed → 暂停分类由下次 reconcile 落库）。
-        try {
-          await refreshBatch(set, get);
-        } catch {
-          // ignore
-        }
-        return;
-      }
-      await refreshBatch(set, get);
-      const fresh = get().batch;
-      if (fresh?.status === 'completed') {
-        PipelineForeground.notifyComplete(
-          `batch_${batchId}`,
-          '批量写章完成',
-          `已完成 ${fresh.completedCount}/${fresh.chapterCount} 章`,
-        ).catch(() => {});
-      } else if (fresh?.status.startsWith('paused_')) {
-        PipelineForeground.notifyFailed(
-          `batch_${batchId}`,
-          '批量写章暂停',
-          fresh.errorMessage || '批次已暂停',
-        ).catch(() => {});
-      }
-      PipelineForeground.stop(`batch_${batchId}`).catch(() => {});
-      set({ reconciling: false });
+      // 非阻塞：reconcile 在后台驱动，UI 通过轮询/心跳刷新；立即返回让
+      // 页面切到运行视图（此前 await 整个 reconcile 会让界面停在预览页，
+      // 且开始按钮可被重复点击）。
+      void driveBatchReconcile(batchId, set, get);
     },
 
     pause: async batchId => {
@@ -290,6 +330,15 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         await batchRepo.updateBatchStatus(batchId, 'paused_user', {
           pauseReason: 'user_pause',
         });
+        // 立即中断当前章节的 LLM 请求（不终态化任务：checkpoint 落为
+        // interrupted，恢复时复用已成功阶段）。否则用户点暂停后模型仍会
+        // 继续生成，费用继续产生。
+        const currentItem = get().items.find(
+          i => i.ordinal === get().batch?.currentOrdinal,
+        );
+        if (currentItem?.activePipelineTaskId) {
+          interruptPipelineTask(currentItem.activePipelineTaskId);
+        }
         await refreshBatch(set, get);
       } catch (error: any) {
         set({ error: String(error?.message || '暂停失败') });
@@ -354,6 +403,28 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
 
     refresh: async () => {
       await refreshBatch(set, get);
+      // 等待重试到期后自动续驱（safe_retry 自动恢复）：reconcile 在
+      // wait_until 未到期时会提前交还控制权，若之后无人再次驱动，批次会
+      // 停在运行状态但实际无人执行——运行页每 2s 调用 refresh，这里充当
+      // 看门狗：重试时间已到且无协调器在跑时自动重新驱动。
+      const b = get().batch;
+      if (!b || get().reconciling) return;
+      if (
+        b.status.startsWith('paused_') ||
+        ['completed', 'cancelled', 'failed'].includes(b.status)
+      ) {
+        return;
+      }
+      const current = get().items.find(
+        i => i.ordinal === b.currentOrdinal,
+      );
+      if (
+        current?.status === 'waiting_retry' &&
+        current.nextRetryAt != null &&
+        current.nextRetryAt <= Date.now()
+      ) {
+        void get().start(b.id);
+      }
     },
 
     clearError: () => set({ error: null }),

@@ -236,3 +236,19 @@ export async function getLatestAttemptByTask(
   );
   return row ? mapRow(row) : null;
 }
+
+/**
+ * All attempts of a task (audit source of truth for LLM usage: one row per
+ * HTTP request, including failed / retried / outcome-unknown calls).
+ */
+export async function getTaskAttempts(
+  pipelineTaskId: string,
+): Promise<PipelineStageAttemptRow[]> {
+  const rows = await all(
+    `SELECT * FROM pipeline_stage_attempts
+     WHERE pipeline_task_id = ?
+     ORDER BY stage ASC, attempt_no ASC, started_at ASC`,
+    [pipelineTaskId],
+  );
+  return rows.map(mapRow);
+}

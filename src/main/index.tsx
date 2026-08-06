@@ -55,6 +55,22 @@ export const App: React.FC = () => {
             `[App] cold-start cleanup: classified ${marked} interrupted pipeline task(s) (recoverable keep unresolved)`,
           );
         }
+        // Multi-chapter batch: a batch left `running` by a killed process has
+        // no live executor — park it into a recoverable pause so the batch
+        // screen never shows "running" with nobody driving it.
+        try {
+          const { pauseInterruptedBatches } = await import(
+            '../data/repositories/multiChapterBatchRepository'
+          );
+          const pausedBatches = await pauseInterruptedBatches();
+          if (pausedBatches > 0) {
+            console.log(
+              `[App] cold-start cleanup: parked ${pausedBatches} interrupted batch(es) as paused_user`,
+            );
+          }
+        } catch (e) {
+          console.warn('[App] batch cold-start normalize skipped', e);
+        }
         // Continuation TXT import: a job left running/paused when the app was
         // killed must be terminally marked `interrupted` so the import UI can
         // surface a resume/cancel card and startContinuationImport won't
