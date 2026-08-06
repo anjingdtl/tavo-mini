@@ -25,11 +25,13 @@ export function executeTransaction(
   options: {
     faultDomain?: SqlFaultDomain;
     /** Optional per-statement callback for callers that need rows-affected
-     * counts (e.g. optimistic-concurrency conflict detection). Native SQLite
-     * invokes this from each statement's success callback. */
+     * counts (e.g. optimistic-concurrency conflict detection) and/or the
+     * inserted row id (e.g. batch chapter creation). Native SQLite invokes
+     * this from each statement's success callback. */
     onStatementComplete?: (
       oneBasedIndex: number,
       rowsAffected: number,
+      insertId?: number | undefined,
     ) => void;
   } = {},
 ): Promise<void> {
@@ -65,7 +67,11 @@ export function executeTransaction(
               if (delivered) return;
               delivered = true;
               try {
-                onStmt(index + 1, (result as any).rowsAffected ?? 0);
+                onStmt(
+                  index + 1,
+                  (result as any).rowsAffected ?? 0,
+                  (result as any).insertId ?? undefined,
+                );
               } catch (error) {
                 // A rows-affected assertion is part of the transaction
                 // contract. Reject and rethrow from the native callback so
