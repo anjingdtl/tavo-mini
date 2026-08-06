@@ -15,6 +15,7 @@ import {
 } from '../../services/migrations/v34-to-v35';
 import { buildSchema36CreateSqls } from '../../services/migrations/v35-to-v36';
 import { buildSchema39CreateSqls } from '../../services/migrations/v38-to-v39';
+import { buildSchema41CreateSqls } from '../../services/migrations/v40-to-v41';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -669,6 +670,8 @@ export function createCurrentSchemaStatements(): string[] {
     ...buildSchema36CreateSqls(),
     // Schema 39 pipeline stage checkpoints (one row per task+stage).
     ...buildSchema39CreateSqls(),
+    // Schema 41 pipeline stage attempts (one row per LLM attempt per stage).
+    ...buildSchema41CreateSqls(),
   ];
 }
 

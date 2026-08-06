@@ -137,6 +137,17 @@ jest.mock('../src/services/database', () => ({
   interruptAllRunningStages: jest.fn(async () => 0),
 }));
 
+// Phase 3: attempt persistence is covered by the dedicated repository tests;
+// fault-injection runs keep attempt writes inert.
+jest.mock('../src/data/repositories/pipelineStageAttemptRepository', () => ({
+  createStageAttempt: jest.fn(async () => undefined),
+  updateStageAttempt: jest.fn(async () => undefined),
+  getStageAttempts: jest.fn(async () => []),
+  getLatestStageAttempt: jest.fn(async () => null),
+  getStageAttempt: jest.fn(async () => null),
+  getRetryDueAttempts: jest.fn(async () => []),
+}));
+
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (messages: any, maxTokens: any, config: any, signal?: any) =>
     mockCallLLMResult(messages, maxTokens, config, signal),

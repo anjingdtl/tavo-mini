@@ -215,6 +215,18 @@ jest.mock('../src/native/PipelineForegroundModule', () => ({
   },
 }));
 
+// Phase 3: attempt repository is exercised via real SQLite tests
+// (pipelineStageAttemptRepository.test.ts); unit runs mock it to keep the
+// pipeline state machine tests focused on orchestration.
+jest.mock('../src/data/repositories/pipelineStageAttemptRepository', () => ({
+  createStageAttempt: jest.fn(async () => undefined),
+  updateStageAttempt: jest.fn(async () => undefined),
+  getStageAttempts: jest.fn(async () => []),
+  getLatestStageAttempt: jest.fn(async () => null),
+  getStageAttempt: jest.fn(async () => null),
+  getRetryDueAttempts: jest.fn(async () => []),
+}));
+
 const chapter: Chapter = {
   id: 1,
   project_id: 10,
