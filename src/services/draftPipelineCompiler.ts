@@ -146,13 +146,29 @@ export async function compileDraftPipelineRequest(params: {
     // Non-fatal.
   }
 
+  // 批次写章：章节摘要只存独立计划摘要；批次总目标/节拍/衔接等指令存于
+  // summary_json.batch_instruction，Draft 生成时合并进章节指令（列表显示
+  // 保持简洁，生成质量不受影响）。
+  let chapterSynopsis = String(chapter.synopsis || '');
+  try {
+    const meta =
+      typeof chapter.summary_json === 'string'
+        ? JSON.parse(chapter.summary_json || '{}')
+        : chapter.summary_json || {};
+    if (typeof meta?.batch_instruction === 'string' && meta.batch_instruction.trim()) {
+      chapterSynopsis = `${chapterSynopsis}\n\n${meta.batch_instruction.trim()}`;
+    }
+  } catch {
+    // summary_json 非 JSON 或读取失败时忽略批次指令。
+  }
+
   const messages = buildDraftMessages(
     baseContext,
     chapterTitle,
     chapter.content || '',
     request.userPrompt,
     prevEnding,
-    chapter.synopsis,
+    chapterSynopsis,
     pipelineContext.outlineText,
   );
 
