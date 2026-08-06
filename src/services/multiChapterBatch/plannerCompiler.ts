@@ -34,7 +34,7 @@ export interface CompileBatchPlannerInput {
   optionalInstruction?: string;
 }
 
-const OUTPUT_PROTOCOL = `请输出严格 JSON（不要输出任何其他内容）：
+const OUTPUT_PROTOCOL = `请输出 N 章写作计划。优先使用严格 JSON（推荐）：
 {
   "chapters": [
     {
@@ -53,7 +53,9 @@ const OUTPUT_PROTOCOL = `请输出严格 JSON（不要输出任何其他内容�
 - ordinal 必须从 1 开始连续且唯一
 - 每章 title 与 synopsis 非空
 - keyBeats 至少一个元素
-- targetWords 为正整数`;
+- targetWords 为正整数
+
+如果无法输出 JSON，也可以直接分章节列出摘要（每章用“第 N 章”开头，每章至少包含：标题 + 一段梗概），格式自由即可。`;
 
 export function buildPlannerMessages(params: {
   sourcePrompt: string;

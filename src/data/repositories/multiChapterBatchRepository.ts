@@ -357,6 +357,40 @@ export async function incrementBatchUsage(
   );
 }
 
+/**
+ * Set (or clear) the batch spend caps. The UI no longer exposes these — the
+ * planner auto-allocates a loose ceiling from the model window (elastic
+ * budget still governs each single-chapter request).
+ */
+export async function updateBatchBudget(
+  batchId: string,
+  budget: {
+    maxLlmCalls?: number | null;
+    maxInputTokens?: number | null;
+    maxOutputTokens?: number | null;
+  },
+): Promise<void> {
+  const sets: string[] = ['updated_at = ?'];
+  const params: unknown[] = [Date.now()];
+  const map: Array<[keyof typeof budget, string]> = [
+    ['maxLlmCalls', 'max_llm_calls'],
+    ['maxInputTokens', 'max_input_tokens'],
+    ['maxOutputTokens', 'max_output_tokens'],
+  ];
+  for (const [key, column] of map) {
+    if (budget[key] !== undefined) {
+      sets.push(`${column} = ?`);
+      params.push(budget[key]);
+    }
+  }
+  params.push(batchId);
+  await execute(
+    await openDatabase(),
+    `UPDATE multi_chapter_batches SET ${sets.join(', ')} WHERE id = ?`,
+    params,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Items
 // ---------------------------------------------------------------------------

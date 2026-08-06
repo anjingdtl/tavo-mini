@@ -105,16 +105,136 @@ export function parseBatchChapterPlan(
   rawText: string,
   expectedCount: number,
 ): PlannerValidationResult {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawText);
-  } catch {
-    return {
-      ok: false,
-      errors: ['JSON 解析失败，输出不是合法 JSON'],
-    };
+  const json = extractPlanJson(rawText);
+  if (json != null) {
+    // 模型给出了 JSON 结构：内容不合法时直接失败（走一次结构修复请求），
+    // 不落入宽松解析——宽松解析只用于模型完全没有输出 JSON 的场景。
+    return validateBatchChapterPlan(json, expectedCount);
   }
-  return validateBatchChapterPlan(parsed, expectedCount);
+  // 宽松回退：输出不是严格 JSON 时按章节摘要解析。
+  return parseBatchPlanFallback(rawText, expectedCount);
+}
+
+/**
+ * 宽容 JSON 提取：支持 ```json 代码块包裹、前后解释文字、首尾大括号截取。
+ * 提取不到返回 null（调用方走宽松摘要解析）。
+ */
+export function extractPlanJson(rawText: string): unknown | null {
+  let text = String(rawText || '').trim();
+  if (!text) return null;
+  // 去掉 ```json / ``` 代码块包裹。
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  // 截取首尾大括号之间的部分（容忍前后解释文字）。
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    text = text.substring(start, end + 1);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 宽松摘要解析：模型直接输出 N 章摘要文本（每章以“第 N 章 / 第一章 / 1.”等
+ * 开头）时，按章节切分并构造可编辑计划。
+ */
+export function parseBatchPlanFallback(
+  rawText: string,
+  expectedCount: number,
+  defaultTargetWords = 3000,
+): PlannerValidationResult {
+  const text = String(rawText || '').trim();
+  const lines = text.split(/\r?\n/);
+  const chapters: BatchChapterPlanItem[] = [];
+
+  // 先判断是否存在明确的章节分隔标记（“第 N 章 / 第一章 / 1.”）。
+  const hasChapterMarkers = lines.some(line =>
+    /^(第\s*[0-9一二三四五六七八九十]+\s*章|[0-9]+[.、)])/.test(line.trim()),
+  );
+
+  if (!hasChapterMarkers) {
+    // 段落模式：按空行分段；单段且过短视为无法识别（例如模型只回了
+    // 一句解释，而非章节摘要）。
+    const blocks = text
+      .split(/\n\s*\n/)
+      .map(b => b.trim())
+      .filter(Boolean);
+    if (blocks.length === 0 || (blocks.length === 1 && blocks[0].length < 8)) {
+      return { ok: false, errors: ['无法识别任何章节摘要'] };
+    }
+    for (let i = 0; i < Math.min(expectedCount, blocks.length); i += 1) {
+      const block = blocks[i];
+      chapters.push({
+        ordinal: i + 1,
+        title: `第 ${i + 1} 章`,
+        synopsis: block,
+        keyBeats: [block.split(/[。！？!?\n]/)[0].trim() || '推进本章目标'],
+        carryIn: '',
+        carryOut: '',
+        targetWords: defaultTargetWords,
+      });
+    }
+  } else {
+    let current: string[] = [];
+    const flush = () => {
+      if (current.length === 0) return;
+      const first = current[0];
+      const titleMatch = first.match(
+        /^(?:第\s*[0-9一二三四五六七八九十]+\s*章|[0-9]+[.、)])?\s*(.{0,20})/,
+      );
+      const title =
+        titleMatch && titleMatch[1] && titleMatch[1].trim()
+          ? titleMatch[1].trim()
+          : `第 ${chapters.length + 1} 章`;
+      const synopsis =
+        current.join('\n').trim() || `第 ${chapters.length + 1} 章摘要`;
+      chapters.push({
+        ordinal: chapters.length + 1,
+        title,
+        synopsis,
+        keyBeats: [synopsis.split(/[。！？!?\n]/)[0].trim() || '推进本章目标'],
+        carryIn: '',
+        carryOut: '',
+        targetWords: defaultTargetWords,
+      });
+      current = [];
+    };
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (/^(第\s*[0-9一二三四五六七八九十]+\s*章|[0-9]+[.、)])/.test(trimmed)) {
+        flush();
+        current.push(trimmed);
+      } else {
+        current.push(trimmed);
+      }
+    }
+    flush();
+  }
+
+  if (chapters.length === 0) {
+    return { ok: false, errors: ['无法识别任何章节摘要'] };
+  }
+  // 数量不足时补齐占位章节（用户可在预览页编辑）。
+  while (chapters.length < expectedCount) {
+    chapters.push({
+      ordinal: chapters.length + 1,
+      title: `第 ${chapters.length + 1} 章`,
+      synopsis: '待补充本章摘要',
+      keyBeats: ['推进本章目标'],
+      carryIn: '',
+      carryOut: '',
+      targetWords: defaultTargetWords,
+    });
+  }
+  const plan: BatchChapterPlan = {
+    chapters: chapters.slice(0, expectedCount),
+  };
+  return { ok: true, plan };
 }
 
 export function computePlannerHash(plan: BatchChapterPlan): string {

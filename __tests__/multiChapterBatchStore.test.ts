@@ -51,6 +51,11 @@ jest.mock('../src/services/multiChapterBatch/reconcileMultiChapterBatch', () => 
   reconcileMultiChapterBatch: jest.fn(async () => undefined),
 }));
 
+const mockResolveLLMRequestConfig = jest.fn();
+jest.mock('../src/services/llm', () => ({
+  resolveLLMRequestConfig: (...args: any[]) => mockResolveLLMRequestConfig(...args),
+}));
+
 jest.mock('../src/native/PipelineForegroundModule', () => ({
   PipelineForeground: {
     start: jest.fn(() => Promise.resolve()),
@@ -123,6 +128,9 @@ describe('multiChapterBatchStore', () => {
       `INSERT INTO projects (id, name, mode, created_at, updated_at) VALUES (1, 'p', 'outline', 't', 't')`,
       [],
     );
+    mockResolveLLMRequestConfig.mockResolvedValue({
+      context_window: 1000000,
+    });
     const store = useMultiChapterBatchStore.getState();
     const id = await store.createDraftBatch({
       projectId: 1,
@@ -136,6 +144,10 @@ describe('multiChapterBatchStore', () => {
     const batch = await getBatchById(id);
     expect(batch?.status).toBe('planning');
     expect(batch?.plannerHash).toBe('planner-hash-1');
+    // 批次消耗上限由弹性预算池自动分配（用户无需感知）
+    expect(batch?.maxLlmCalls).toBe(24);
+    expect(batch?.maxInputTokens).toBe(4_000_000);
+    expect(batch?.maxOutputTokens).toBe(2_000_000);
     expect(createBatchChapterPlan).toHaveBeenCalled();
   });
 

@@ -11,6 +11,8 @@ import {
   computePlannerHash,
   normalizeEditedPlan,
   createBatchChapterPlan,
+  extractPlanJson,
+  parseBatchPlanFallback,
   BatchPlannerError,
 } from '../src/services/multiChapterBatch/planner';
 import { compileBatchPlannerRequest } from '../src/services/multiChapterBatch/plannerCompiler';
@@ -121,6 +123,65 @@ describe('validateBatchChapterPlan', () => {
   it('rejects non-JSON output', () => {
     const result = parseBatchChapterPlan('不是 JSON', 1);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('lenient planning (user-friendly output)', () => {
+  it('extracts JSON from a markdown code block with surrounding prose', () => {
+    const json = extractPlanJson(
+      '好的，以下是计划：\n```json\n' +
+        JSON.stringify(validPlan) +
+        '\n```\n希望对你有帮助',
+    );
+    expect(json).not.toBeNull();
+    const result = parseBatchChapterPlan(
+      '好的，以下是计划：\n```json\n' +
+        JSON.stringify(validPlan) +
+        '\n```\n希望对你有帮助',
+      2,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('extracts JSON wrapped by free-form prose (first { to last })', () => {
+    const result = parseBatchChapterPlan(
+      `这里是规划说明。\n{"chapters": [${JSON.stringify(validPlan.chapters[0])}, ${JSON.stringify(
+        validPlan.chapters[1],
+      )}]}\n以上就是全部。`,
+      2,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('falls back to plain chapter summaries when the model skips JSON', () => {
+    const freeText = `第 1 章 晨雾中的塔楼\n学院平静的日常生活被打破。艾琳对魔法史充满好奇。\n第 2 章 深渊中的回响\n艾琳走下阶梯，发现地下回廊中的古老魔法痕迹。\n第 3 章 封印的苏醒\n封印石碑前的光芒开始流动，精灵苏醒。`;
+    const result = parseBatchChapterPlan(freeText, 3);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.chapters).toHaveLength(3);
+    expect(result.plan.chapters[0].title).toContain('晨雾');
+    expect(result.plan.chapters[1].title).toContain('深渊');
+    expect(result.plan.chapters[0].synopsis).toContain('学院平静');
+    expect(result.plan.chapters[0].targetWords).toBe(3000);
+  });
+
+  it('falls back to paragraph blocks without chapter markers', () => {
+    const result = parseBatchChapterPlan(
+      '第一段摘要内容。\n\n第二段摘要内容。\n\n第三段摘要内容。',
+      3,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.chapters).toHaveLength(3);
+    expect(result.plan.chapters[2].synopsis).toContain('第三段');
+  });
+
+  it('pads missing chapters with placeholders for the user to edit', () => {
+    const result = parseBatchPlanFallback('第 1 章 只有一章。\n内容。', 3);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.chapters).toHaveLength(3);
+    expect(result.plan.chapters[1].synopsis).toContain('待补充');
   });
 });
 

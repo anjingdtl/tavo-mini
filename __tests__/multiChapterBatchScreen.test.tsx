@@ -71,8 +71,10 @@ describe('MultiChapterBatchScreen', () => {
 
   it('renders the create form when enabled', async () => {
     mockIsEnabled.mockResolvedValue(true);
-    const { findByText } = render(<MultiChapterBatchScreen />);
+    const { findByText, queryByText } = render(<MultiChapterBatchScreen />);
     await waitFor(() => expect(mockIsEnabled).toHaveBeenCalled());
     await expect(findByText('剧情摘要')).resolves.toBeTruthy();
+    // 批次消耗上限由弹性预算池自动分配，创建页不再暴露输入。
+    expect(queryByText('批次消耗上限（可选）')).toBeNull();
   });
 });
