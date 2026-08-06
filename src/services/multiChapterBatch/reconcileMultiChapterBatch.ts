@@ -301,10 +301,12 @@ async function executeBatchAction(params: {
           ? params.runPipelineImpl(taskId, chapter, undefined, {
               queueClass: 'pipeline',
               queuePriority: 'background',
+              foregroundOwner: 'batch',
             })
           : params.resumePipelineImpl(taskId, chapter, undefined, {
               queueClass: 'pipeline',
               queuePriority: 'background',
+              foregroundOwner: 'batch',
             });
       notify(action.type === 'run_pipeline' ? '开始生成当前章' : '恢复当前章');
       await run();
