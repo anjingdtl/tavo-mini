@@ -184,6 +184,10 @@ function decideRunningPipeline(
   item: MultiChapterBatchItemRow,
 ): MultiChapterBatchAction {
   const ordinal = item.ordinal;
+  // Chapter deleted by the user (FK SET NULL) — fail closed, never recreate.
+  if (item.chapterId == null) {
+    return { type: 'pause_project_changed', ordinal };
+  }
   const taskId = item.activePipelineTaskId;
   if (!taskId) {
     return { type: 'create_pipeline_task', ordinal };
