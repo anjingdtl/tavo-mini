@@ -258,6 +258,12 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           error: String(error?.message || '批次运行失败'),
         });
         PipelineForeground.stop(`batch_${batchId}`).catch(() => {});
+        // 异常退出也刷新真实状态（task failed → 暂停分类由下次 reconcile 落库）。
+        try {
+          await refreshBatch(set, get);
+        } catch {
+          // ignore
+        }
         return;
       }
       await refreshBatch(set, get);

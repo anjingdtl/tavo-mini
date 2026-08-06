@@ -129,6 +129,59 @@ function completingRunner() {
 }
 
 describe('crash-point recovery', () => {
+  it('persists a pause state when the chapter pipeline throws (UI stays in sync)', async () => {
+    await resetDb();
+    await seedProject();
+    await seedBatch('b1', 1);
+    const failingRunner = {
+      run: async (taskId: string) => {
+        // 模拟单章 pipeline 失败：真实 runner 会先落库 task failed 再抛错。
+        await savePipelineTask({
+          id: taskId,
+          targetType: 'chapter',
+          targetId: 0,
+          status: 'failed',
+          stageResults: [],
+          finalText: null,
+          error: '模拟网络失败',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          resolvedAt: null,
+        });
+        throw new Error('模拟网络失败');
+      },
+    };
+    await reconcileMultiChapterBatch('b1', {
+      owner: 'o1',
+      runPipeline: failingRunner.run as any,
+    });
+    // 状态机必须把失败落库：批次暂停，而非停留在 running_pipeline。
+    const batch = await getBatchById('b1');
+    expect(batch?.status).toBe('paused_timeout_unknown');
+    const item = (await getBatchItems('b1'))[0];
+    expect(item.status).toBe('outcome_unknown');
+  });
+
+  it('creates chapters with the independent plan synopsis (not the batch digest)', async () => {
+    await resetDb();
+    await seedProject();
+    await seedBatch('b1', 1);
+    const chapterId = await createBatchChapterForItem('b1', 1, {
+      projectId: 1,
+      position: 0,
+      title: 't',
+      synopsis: '独立的本章摘要',
+      summaryJson: JSON.stringify({ batch_instruction: '【批次总目标】xx' }),
+    });
+    const chapter = await getChapterById(chapterId);
+    expect(chapter?.synopsis).toBe('独立的本章摘要');
+    const meta =
+      typeof chapter?.summary_json === 'string'
+        ? JSON.parse(chapter.summary_json)
+        : chapter?.summary_json || {};
+    expect(meta.batch_instruction).toContain('批次总目标');
+  });
+
   it('recovers a task created but never run (task INSERT committed, checkpoints pending)', async () => {
     await resetDb();
     await seedProject();
