@@ -20,6 +20,11 @@ import {
   allocateStageContextBudget,
   deriveDefaultSafetyMargin,
 } from './budgetAllocator';
+import {
+  compileStageRequestWithElasticBudget,
+  type ElasticStageModule,
+} from './elasticStageCompiler';
+import type { ElasticBudgetTrace } from './elasticBudgetAllocator';
 import type { ChatMessage, LLMRequestConfig } from '../llm';
 import type { Chapter, Preset } from '../../types/novel';
 import type {
@@ -72,6 +77,8 @@ export type StageCompileResult =
       allocations: ContextAllocationTrace[];
       draftCompile?: CompileDraftPipelineRequestResult;
       frozenDraftRequest?: FrozenDraftRequest;
+      /** Phase 2+ elastic budget trace when elasticBudget is enabled. */
+      elasticBudgetTrace?: ElasticBudgetTrace;
     }
   | {
       ready: false;
@@ -82,6 +89,8 @@ export type StageCompileResult =
       messages?: ChatMessage[];
       estimatedInputTokens?: number;
       draftCompile?: CompileDraftPipelineRequestResult;
+      /** Phase 2+ elastic budget trace when elasticBudget is enabled. */
+      elasticBudgetTrace?: ElasticBudgetTrace;
     };
 
 /** Only Ready compile results may be passed to callLLMResult. */
@@ -180,8 +189,12 @@ export async function compileDraftStageRequest(params: {
   draftPreset?: Preset | null;
   draftMaxTokens?: number;
   preview?: boolean;
+  elasticBudget?: boolean;
 }): Promise<StageCompileResult> {
-  const compiled = await compileDraftPipelineRequest(params);
+  const compiled = await compileDraftPipelineRequest({
+    ...params,
+    elasticBudget: params.elasticBudget,
+  });
   const safetyMargin =
     compiled.safetyMargin || deriveDefaultSafetyMargin(compiled.contextWindow);
   const allocations: ContextAllocationTrace[] = [];
@@ -254,6 +267,7 @@ export async function compileDraftStageRequest(params: {
     chapterTitle: compiled.chapterTitle,
     prevEnding: compiled.prevEnding,
     userPrompt: compiled.userPrompt,
+    elasticBudgetTrace: compiled.elasticBudgetTrace,
   };
 
   return {
@@ -267,6 +281,7 @@ export async function compileDraftStageRequest(params: {
     allocations,
     draftCompile: compiled,
     frozenDraftRequest,
+    elasticBudgetTrace: compiled.elasticBudgetTrace,
   };
 }
 
@@ -443,7 +458,11 @@ export function compileReviewStageRequest(params: {
   maxTokens: number;
   contextWindow: number;
   repairReason?: string;
+  elasticBudget?: boolean;
 }): StageCompileResult {
+  if (params.elasticBudget) {
+    return compileReviewWithElasticBudget(params);
+  }
   const stage = params.repairReason ? 'review_repair' : 'review';
   const outlineText = params.context.outlineText
     ? String(params.context.outlineText)
@@ -540,13 +559,74 @@ export function compileReviewStageRequest(params: {
   });
 }
 
+/**
+ * Elastic-budget variant of compileReviewStageRequest (Phase 2).
+ * Mandatory: full outline + draft body (verbatim). Elastic modules follow
+ * the doc §19 Review priority: recent bridge / story memory / key characters
+ * / key world rules are preferred; episodic / notes / preset / instruction
+ * blocks are optional.
+ */
+function compileReviewWithElasticBudget(params: {
+  draftText: string;
+  context: ReviewContext;
+  maxTokens: number;
+  contextWindow: number;
+  repairReason?: string;
+}): StageCompileResult {
+  const stage = params.repairReason ? 'review_repair' : 'review';
+  const outlineText = String(params.context.outlineText || '');
+  const mandatoryModules: ElasticStageModule[] = [
+    { id: 'outline', text: outlineText, requirement: 'mandatory', priority: 10, relevance: 1 },
+    { id: 'mandatory_body', text: params.draftText, requirement: 'mandatory', priority: 10, relevance: 1 },
+  ];
+  const elasticModules: ElasticStageModule[] = [
+    { id: 'recentBridge', text: params.context.recentBridgeText, requirement: 'preferred', priority: 8, relevance: 0.9 },
+    { id: 'storyMemory', text: params.context.storyMemoryText, requirement: 'preferred', priority: 7, relevance: 0.85 },
+    { id: 'character', text: params.context.characterText, requirement: 'preferred', priority: 6, relevance: 0.8 },
+    { id: 'worldbook', text: params.context.worldbookText, requirement: 'preferred', priority: 6, relevance: 0.8 },
+    { id: 'episodic', text: params.context.episodicMemoryText, requirement: 'optional', priority: 4, relevance: 0.6 },
+    { id: 'note', text: params.context.noteText, requirement: 'optional', priority: 3, relevance: 0.5 },
+    { id: 'preset', text: params.context.presetText, requirement: 'optional', priority: 3, relevance: 0.5 },
+    { id: 'currentInstruction', text: params.context.currentInstructionText, requirement: 'optional', priority: 2, relevance: 0.5 },
+    { id: 'userPrompt', text: params.context.retrievalUserPrompt, requirement: 'optional', priority: 2, relevance: 0.5 },
+  ];
+  return compileStageRequestWithElasticBudget({
+    stage,
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    mandatoryModules,
+    elasticModules,
+    buildMessages: clipped => {
+      const ctx: ReviewContext = {
+        presetText: clipped.get('preset') || '',
+        characterText: clipped.get('character') || '',
+        noteText: clipped.get('note') || '',
+        worldbookText: clipped.get('worldbook') || '',
+        storyMemoryText: clipped.get('storyMemory') || '',
+        episodicMemoryText: clipped.get('episodic') || '',
+        recentBridgeText: clipped.get('recentBridge') || '',
+        currentInstructionText: clipped.get('currentInstruction') || '',
+        retrievalUserPrompt: clipped.get('userPrompt') || '',
+        outlineText,
+      };
+      return params.repairReason
+        ? buildReviewRepairMessages(params.draftText, ctx, params.repairReason)
+        : buildReviewMessages(params.draftText, ctx);
+    },
+  });
+}
+
 export function compileFactCheckStageRequest(params: {
   draftText: string;
   context: FactCheckContext;
   maxTokens: number;
   contextWindow: number;
   repairReason?: string;
+  elasticBudget?: boolean;
 }): StageCompileResult {
+  if (params.elasticBudget) {
+    return compileFactCheckWithElasticBudget(params);
+  }
   const stage = params.repairReason ? 'factCheck_repair' : 'factCheck';
   const outlineText = params.context.outlineText
     ? String(params.context.outlineText)
@@ -640,6 +720,62 @@ export function compileFactCheckStageRequest(params: {
   });
 }
 
+/**
+ * Elastic-budget variant of compileFactCheckStageRequest (Phase 2).
+ * Mandatory: full outline + draft body. Elastic: character facts / world
+ * rules / story memory / recent bridge are preferred; episodic / notes /
+ * preset / instruction blocks are optional.
+ */
+function compileFactCheckWithElasticBudget(params: {
+  draftText: string;
+  context: FactCheckContext;
+  maxTokens: number;
+  contextWindow: number;
+  repairReason?: string;
+}): StageCompileResult {
+  const stage = params.repairReason ? 'factCheck_repair' : 'factCheck';
+  const outlineText = String(params.context.outlineText || '');
+  const mandatoryModules: ElasticStageModule[] = [
+    { id: 'outline', text: outlineText, requirement: 'mandatory', priority: 10, relevance: 1 },
+    { id: 'mandatory_body', text: params.draftText, requirement: 'mandatory', priority: 10, relevance: 1 },
+  ];
+  const elasticModules: ElasticStageModule[] = [
+    { id: 'recentBridge', text: params.context.recentBridgeText, requirement: 'preferred', priority: 8, relevance: 0.9 },
+    { id: 'storyMemory', text: params.context.storyMemoryText, requirement: 'preferred', priority: 7, relevance: 0.85 },
+    { id: 'character', text: params.context.characterText, requirement: 'preferred', priority: 6, relevance: 0.8 },
+    { id: 'worldbook', text: params.context.worldbookText, requirement: 'preferred', priority: 6, relevance: 0.8 },
+    { id: 'episodic', text: params.context.episodicMemoryText, requirement: 'optional', priority: 4, relevance: 0.6 },
+    { id: 'note', text: params.context.noteText, requirement: 'optional', priority: 3, relevance: 0.5 },
+    { id: 'preset', text: params.context.presetText, requirement: 'optional', priority: 3, relevance: 0.5 },
+    { id: 'currentInstruction', text: params.context.currentInstructionText, requirement: 'optional', priority: 2, relevance: 0.5 },
+    { id: 'userPrompt', text: params.context.retrievalUserPrompt, requirement: 'optional', priority: 2, relevance: 0.5 },
+  ];
+  return compileStageRequestWithElasticBudget({
+    stage,
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    mandatoryModules,
+    elasticModules,
+    buildMessages: clipped => {
+      const ctx: FactCheckContext = {
+        presetText: clipped.get('preset') || '',
+        currentInstructionText: clipped.get('currentInstruction') || '',
+        retrievalUserPrompt: clipped.get('userPrompt') || '',
+        recentBridgeText: clipped.get('recentBridge') || '',
+        storyMemoryText: clipped.get('storyMemory') || '',
+        episodicMemoryText: clipped.get('episodic') || '',
+        worldbookText: clipped.get('worldbook') || '',
+        characterText: clipped.get('character') || '',
+        noteText: clipped.get('note') || '',
+        outlineText,
+      };
+      return params.repairReason
+        ? buildFactCheckRepairMessages(params.draftText, ctx, params.repairReason)
+        : buildFactCheckMessages(params.draftText, ctx);
+    },
+  });
+}
+
 export function compileProofStageRequest(params: {
   draftText: string;
   reviewText: string;
@@ -647,7 +783,11 @@ export function compileProofStageRequest(params: {
   constraints: ProofConstraints;
   maxTokens: number;
   contextWindow: number;
+  elasticBudget?: boolean;
 }): StageCompileResult {
+  if (params.elasticBudget) {
+    return compileProofWithElasticBudget(params);
+  }
   const stage = 'proof';
   const outlineText = params.constraints.outlineText
     ? String(params.constraints.outlineText)
@@ -754,6 +894,68 @@ export function compileProofStageRequest(params: {
 }
 
 /**
+ * Elastic-budget variant of compileProofStageRequest (Phase 2).
+ * Mandatory: draft + review + factCheck bodies (verbatim). Proof does NOT
+ * actively consume the burst band (doc §19): every elastic module is
+ * optional with moderate relevance so only light high-relevance settings
+ * may borrow under pressure.
+ */
+function compileProofWithElasticBudget(params: {
+  draftText: string;
+  reviewText: string;
+  factCheckText: string;
+  constraints: ProofConstraints;
+  maxTokens: number;
+  contextWindow: number;
+}): StageCompileResult {
+  const stage = 'proof';
+  const outlineText = String(params.constraints.outlineText || '');
+  const body = [params.draftText, params.reviewText, params.factCheckText].join('\n');
+  const mandatoryModules: ElasticStageModule[] = [
+    { id: 'outline', text: outlineText, requirement: 'mandatory', priority: 10, relevance: 1 },
+    { id: 'mandatory_body', text: body, requirement: 'mandatory', priority: 10, relevance: 1 },
+  ];
+  const elasticModules: ElasticStageModule[] = [
+    { id: 'character', text: params.constraints.relevantCharacterConstraints, requirement: 'optional', priority: 5, relevance: 0.7 },
+    { id: 'worldRules', text: params.constraints.relevantWorldRules, requirement: 'optional', priority: 5, relevance: 0.7 },
+    { id: 'storyState', text: params.constraints.currentStoryState, requirement: 'optional', priority: 5, relevance: 0.7 },
+    { id: 'recentBridge', text: params.constraints.recentBridgeText, requirement: 'optional', priority: 4, relevance: 0.6 },
+    { id: 'episodic', text: params.constraints.episodicMemoryText, requirement: 'optional', priority: 4, relevance: 0.6 },
+    { id: 'note', text: params.constraints.noteText, requirement: 'optional', priority: 3, relevance: 0.5 },
+    { id: 'preset', text: params.constraints.presetText, requirement: 'optional', priority: 3, relevance: 0.5 },
+    { id: 'currentInstruction', text: params.constraints.currentInstructionText, requirement: 'optional', priority: 2, relevance: 0.5 },
+    { id: 'userPrompt', text: params.constraints.retrievalUserPrompt, requirement: 'optional', priority: 2, relevance: 0.5 },
+  ];
+  return compileStageRequestWithElasticBudget({
+    stage,
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    mandatoryModules,
+    elasticModules,
+    buildMessages: clipped => {
+      const ctx: ProofConstraints = {
+        presetText: clipped.get('preset') || '',
+        currentInstructionText: clipped.get('currentInstruction') || '',
+        retrievalUserPrompt: clipped.get('userPrompt') || '',
+        relevantCharacterConstraints: clipped.get('character') || '',
+        relevantWorldRules: clipped.get('worldRules') || '',
+        currentStoryState: clipped.get('storyState') || '',
+        episodicMemoryText: clipped.get('episodic') || '',
+        noteText: clipped.get('note') || '',
+        recentBridgeText: clipped.get('recentBridge') || '',
+        outlineText,
+      };
+      return buildProofMessages(
+        params.draftText,
+        params.reviewText,
+        params.factCheckText,
+        ctx,
+      );
+    },
+  });
+}
+
+/**
  * Facade used by reconcile / preview for any non-draft stage.
  */
 export function compilePipelineStageRequest(params: {
@@ -767,6 +969,7 @@ export function compilePipelineStageRequest(params: {
   maxTokens: number;
   contextWindow: number;
   repairReason?: string;
+  elasticBudget?: boolean;
 }): StageCompileResult {
   if (params.stage === 'review') {
     return compileReviewStageRequest({
@@ -775,6 +978,7 @@ export function compilePipelineStageRequest(params: {
       maxTokens: params.maxTokens,
       contextWindow: params.contextWindow,
       repairReason: params.repairReason,
+      elasticBudget: params.elasticBudget,
     });
   }
   if (params.stage === 'factCheck') {
@@ -784,6 +988,7 @@ export function compilePipelineStageRequest(params: {
       maxTokens: params.maxTokens,
       contextWindow: params.contextWindow,
       repairReason: params.repairReason,
+      elasticBudget: params.elasticBudget,
     });
   }
   if (params.stage === 'proof') {
@@ -794,6 +999,7 @@ export function compilePipelineStageRequest(params: {
       constraints: params.proofConstraints || emptyProofConstraints(),
       maxTokens: params.maxTokens,
       contextWindow: params.contextWindow,
+      elasticBudget: params.elasticBudget,
     });
   }
   throw new Error('compilePipelineStageRequest: use compileDraftStageRequest for draft');

@@ -1,6 +1,7 @@
 import * as db from './database';
 import { processMacros } from './macroReplace';
 import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
+import { allocateElasticStageContextBudget } from './pipeline/elasticBudgetAllocator';
 import type { Chapter, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
 import type { ContextTraceItem } from '../types/contextTrace';
@@ -63,6 +64,8 @@ export interface BuildContextResult {
    * instead of re-reading the DB or re-parsing `messages`. See SPEC §7.
    */
   pipelineContext: PipelineContextSnapshot;
+  /** Phase 2+ elastic budget trace when options.elasticBudget is enabled. */
+  elasticBudgetTrace?: import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
 }
 
 export interface BuildContextOptions {
@@ -76,6 +79,11 @@ export interface BuildContextOptions {
   reservedOutputTokens?: number;
   /** Override active-model window (use frozen request config when available). */
   contextWindow?: number;
+  /**
+   * Phase 2+: replace the fixed-ratio soft budget caps with the elastic
+   * 80%/95% allocator. Flag OFF keeps the legacy fixed-ratio behavior.
+   */
+  elasticBudget?: boolean;
 }
 
 /**
@@ -335,6 +343,11 @@ export async function buildContext(
     options.contextWindow,
     options.reservedOutputTokens,
   );
+  // Preset + outline are the only mandatory sections; the allocator result
+  // above is attached for diagnostics / freezing.
+  let elasticBudgetTrace:
+    | import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace
+    | undefined;
   let effectiveResourceBudget = config.resourceBudget;
   let effectiveStoryStateBudget = config.storyStateBudgetTokens ?? 8000;
   let effectiveSlidingWindow = config.slidingWindowSize;
@@ -358,7 +371,122 @@ export async function buildContext(
       resolvedContextWindow - safety - reservedOut - fixedProtocol,
     );
     const remainingAfterOutline = Math.max(0, availableInput - outlineTokens);
-    if (remainingAfterOutline > 0) {
+    if (options.elasticBudget) {
+      // Elastic budget pool (Phase 2): protocol + full outline are mandatory;
+      // story state / resources / sliding window / episodic compete in the
+      // 80% soft pool and may borrow the 95% burst band by priority×relevance.
+      // Blocked (mandatory > hard limit) zeroes soft budgets; the final fits
+      // check in the draft compiler then blocks the LLM call (call count 0).
+      const storyStateAvailable = config.storyStateBudgetTokens ?? 8000;
+      const episodicAvailable =
+        config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
+      const allocResult = allocateElasticStageContextBudget({
+        contextWindow: resolvedContextWindow,
+        reservedOutputTokens: reservedOut,
+        safetyMargin: safety,
+        demands: [
+          {
+            id: 'protocol',
+            availableTokens: fixedProtocol,
+            minTokens: fixedProtocol,
+            targetTokens: fixedProtocol,
+            maxTokens: fixedProtocol,
+            priority: 10,
+            relevance: 1,
+            requirement: 'mandatory',
+            reclaimable: false,
+            shrinkPriority: 10,
+            burstPriority: 0,
+          },
+          {
+            id: 'outline',
+            availableTokens: outlineTokens,
+            minTokens: outlineTokens,
+            targetTokens: outlineTokens,
+            maxTokens: outlineTokens,
+            priority: 10,
+            relevance: 1,
+            requirement: 'mandatory',
+            reclaimable: false,
+            shrinkPriority: 10,
+            burstPriority: 0,
+          },
+          {
+            id: 'storyState',
+            availableTokens: storyStateAvailable,
+            minTokens: Math.floor(storyStateAvailable * 0.3),
+            targetTokens: storyStateAvailable,
+            maxTokens: storyStateAvailable,
+            priority: 5,
+            relevance: 0.8,
+            requirement: 'preferred',
+            reclaimable: true,
+            shrinkPriority: 6,
+            burstPriority: 3,
+          },
+          {
+            id: 'resources',
+            availableTokens: config.resourceBudget,
+            minTokens: Math.floor(config.resourceBudget * 0.3),
+            targetTokens: config.resourceBudget,
+            maxTokens: config.resourceBudget,
+            priority: 4,
+            relevance: 0.75,
+            requirement: 'preferred',
+            reclaimable: true,
+            shrinkPriority: 5,
+            burstPriority: 2,
+          },
+          {
+            id: 'slidingWindow',
+            availableTokens: config.slidingWindowSize,
+            minTokens: Math.floor(config.slidingWindowSize * 0.2),
+            targetTokens: config.slidingWindowSize,
+            maxTokens: config.slidingWindowSize,
+            priority: 3,
+            relevance: 0.6,
+            requirement: 'optional',
+            reclaimable: true,
+            shrinkPriority: 3,
+            burstPriority: 0,
+          },
+          {
+            id: 'episodic',
+            availableTokens: episodicAvailable,
+            minTokens: Math.floor(episodicAvailable * 0.3),
+            targetTokens: episodicAvailable,
+            maxTokens: episodicAvailable,
+            priority: 4,
+            relevance: 0.7,
+            requirement: 'optional',
+            reclaimable: true,
+            shrinkPriority: 4,
+            burstPriority: 1,
+          },
+        ],
+      });
+      elasticBudgetTrace = allocResult.trace;
+      if (allocResult.ok) {
+        effectiveStoryStateBudget =
+          allocResult.allocations.get('storyState') || 0;
+        effectiveResourceBudget = allocResult.allocations.get('resources') || 0;
+        effectiveSlidingWindow = allocResult.allocations.get('slidingWindow') || 0;
+        effectiveEpisodicBudget = allocResult.allocations.get('episodic') || 0;
+        if (remainingAfterOutline < 1500) {
+          effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 2);
+        } else if (remainingAfterOutline < 4000) {
+          effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 3);
+        }
+      } else {
+        // Mandatory (protocol + outline) exceeds the hard limit — zero all
+        // soft budgets; the draft fits check blocks the LLM call.
+        effectiveStoryStateBudget = 0;
+        effectiveResourceBudget = 0;
+        effectiveSlidingWindow = 0;
+        effectiveMemoryTopK = 0;
+        effectiveEpisodicBudget = 0;
+      }
+    } else if (remainingAfterOutline > 0) {
       const softCap = remainingAfterOutline;
       effectiveStoryStateBudget = Math.min(
         effectiveStoryStateBudget,
@@ -715,7 +843,7 @@ export async function buildContext(
     sourceFingerprint: `proj=${projectId}|chapter=${currentChapter.id ?? currentChapter.position}`,
   };
 
-  return { messages, chapters, trace, estimatedInputTokens, pipelineContext };
+  return { messages, chapters, trace, estimatedInputTokens, pipelineContext, elasticBudgetTrace };
 }
 
 function buildPresetPrompt(preset?: Preset): string {

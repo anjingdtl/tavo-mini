@@ -40,6 +40,8 @@ export interface CompileDraftPipelineRequestResult {
   requestConfig: LLMRequestConfig;
   trace: ContextTraceItem[];
   allocations?: Record<string, number>;
+  /** Phase 2+ elastic budget trace when elasticBudget is enabled. */
+  elasticBudgetTrace?: import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
 }
 
 function resolvePreset(
@@ -65,6 +67,7 @@ export async function compileDraftPipelineRequest(params: {
   requestConfig?: LLMRequestConfig;
   draftPreset?: Preset | null;
   draftMaxTokens?: number;
+  elasticBudget?: boolean;
 }): Promise<CompileDraftPipelineRequestResult> {
   const chapter = params.chapter;
   const pipelineConfig = await db.getPipelineConfig();
@@ -97,6 +100,7 @@ export async function compileDraftPipelineRequest(params: {
     pipelineContext: ctx,
     trace,
     estimatedInputTokens: baseEstimated,
+    elasticBudgetTrace,
   } = await buildContext(
     chapter,
     contextConfig,
@@ -107,6 +111,7 @@ export async function compileDraftPipelineRequest(params: {
       storyMemoryMode: params.preview ? 'preview' : undefined,
       reservedOutputTokens,
       contextWindow,
+      elasticBudget: params.elasticBudget,
     },
   );
 
@@ -176,5 +181,6 @@ export async function compileDraftPipelineRequest(params: {
     draftPreset,
     requestConfig,
     trace: trace || [],
+    elasticBudgetTrace,
   };
 }

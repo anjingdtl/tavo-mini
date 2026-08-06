@@ -25,6 +25,8 @@ export interface FrozenDraftRequest {
   chapterTitle: string;
   prevEnding: string;
   userPrompt: string;
+  /** Phase 2+ elastic budget trace (soft/burst/risk) when enabled. */
+  elasticBudgetTrace?: unknown;
 }
 
 export interface FrozenChapterCandidate {
