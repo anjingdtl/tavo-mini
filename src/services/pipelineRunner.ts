@@ -25,6 +25,7 @@ import {
   type StageInfo as ReconcileStageInfo,
 } from './pipeline/reconcile';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
+import type { PipelineMode } from '../types/pipeline';
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -39,6 +40,13 @@ export interface PipelineRunOptions {
    * owns a single aggregated notification (Phase 8). Defaults to 'task'.
    */
   foregroundOwner?: 'task' | 'batch';
+  /**
+   * Batch-owned tasks must execute with the mode chosen on the batch form
+   * (draft_only → noReview etc), NOT the global pipeline setting. Only
+   * applied when the task has no frozen execution snapshot yet (first run);
+   * resume always keeps the frozen value.
+   */
+  pipelineModeOverride?: PipelineMode;
 }
 
 export function cancelPipeline(taskId: string): void {
@@ -63,6 +71,22 @@ export function cancelPipeline(taskId: string): void {
 
 export function isPipelineCancelled(taskId: string): boolean {
   return cancelledTasks.has(taskId);
+}
+
+/**
+ * Pause interrupt (batch pause): abort the in-flight LLM request WITHOUT
+ * terminating the task. The stage checkpoint is released as `interrupted` by
+ * the executing stage, so a later resume reuses already-succeeded stages.
+ */
+export function interruptPipelineTask(taskId: string): void {
+  const controller = taskAbortControllers.get(taskId);
+  if (controller) {
+    try {
+      controller.abort();
+    } catch {
+      // AbortController.abort must not escape into the UI press handler.
+    }
+  }
 }
 
 function registerTaskAbort(taskId: string): AbortSignal {
@@ -164,6 +188,7 @@ export async function runChapterPipeline(
       onStageUpdate,
       abortSignal,
       isCancelled: isPipelineCancelled,
+      pipelineModeOverride: options.pipelineModeOverride,
     });
   } finally {
     releaseTaskAbort(taskId);
@@ -223,6 +248,7 @@ export async function resumePipeline(
       onStageUpdate,
       abortSignal,
       isCancelled: isPipelineCancelled,
+      pipelineModeOverride: options.pipelineModeOverride,
     });
   } finally {
     releaseTaskAbort(taskId);

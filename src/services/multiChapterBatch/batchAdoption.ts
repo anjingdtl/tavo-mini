@@ -116,26 +116,38 @@ export async function adoptPipelineTaskResult(
     chapter.id,
   );
   if (latestRevision?.source_ref === input.taskId) {
-    return {
-      adoptedRevisionId: latestRevision.id,
-      adoptionFingerprint: fingerprint,
-      finalText,
-      alreadyAdopted: true,
-    };
+    // Crash-window guard (RB-2): the previous-content revision may have been
+    // persisted while the process died BEFORE chapter.content was updated.
+    // Only short-circuit when the body actually landed — otherwise re-write
+    // the body and record the pipeline revision.
+    const bodyLanded = String(chapter.content) === finalText;
+    if (bodyLanded) {
+      return {
+        adoptedRevisionId: latestRevision.id,
+        adoptionFingerprint: fingerprint,
+        finalText,
+        alreadyAdopted: true,
+      };
+    }
   }
 
   // 1. Save the OLD body as a revision (content history preservation).
   const oldContent = String(chapter.content || '');
   if (oldContent.trim()) {
-    await createContentRevision({
-      projectId: chapter.project_id,
-      targetType: 'chapter',
-      targetId: chapter.id,
-      title: chapter.title || '',
-      content: oldContent,
-      source: 'adoption_previous',
-      sourceRef: input.taskId,
-    });
+    const previousAlreadyRecorded =
+      latestRevision?.source_ref === input.taskId &&
+      latestRevision?.source === 'adoption_previous';
+    if (!previousAlreadyRecorded) {
+      await createContentRevision({
+        projectId: chapter.project_id,
+        targetType: 'chapter',
+        targetId: chapter.id,
+        title: chapter.title || '',
+        content: oldContent,
+        source: 'adoption_previous',
+        sourceRef: input.taskId,
+      });
+    }
   }
 
   // 2. Write the new body; batch adoption keeps the chapter as draft.

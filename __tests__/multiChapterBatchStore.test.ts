@@ -198,10 +198,15 @@ describe('multiChapterBatchStore', () => {
       { ordinal: 1, title: '第一章', synopsis: 's', keyBeats: ['k'], carryIn: '', carryOut: '', targetWords: 3000 },
     ]);
     await useMultiChapterBatchStore.getState().start(id);
+    // Non-blocking start (RB-7): the reconciler is driven in the background,
+    // so `reconciling` stays true right after start returns.
+    expect(useMultiChapterBatchStore.getState().reconciling).toBe(true);
     expect(reconcileMultiChapterBatch).toHaveBeenCalledWith(
       id,
       expect.objectContaining({ owner: expect.stringMatching(/^ui_/) }),
     );
+    // …and is cleared once the background drive completes.
+    await new Promise(r => setTimeout(r, 10));
     expect(useMultiChapterBatchStore.getState().reconciling).toBe(false);
   });
 
@@ -223,5 +228,47 @@ describe('multiChapterBatchStore', () => {
     await useMultiChapterBatchStore.getState().cancel(id);
     const batch = await getBatchById(id);
     expect(batch?.status).toBe('cancelled');
+  });
+
+  it('auto re-drives the batch when a retry becomes due (refresh watchdog)', async () => {
+    await resetDb();
+    await execute(
+      await openDatabase(),
+      `INSERT INTO projects (id, name, mode, created_at, updated_at) VALUES (1, 'p', 'outline', 't', 't')`,
+      [],
+    );
+    const store = useMultiChapterBatchStore.getState();
+    const id = await store.createDraftBatch({
+      projectId: 1,
+      sourcePrompt: '摘要',
+      chapterCount: 1,
+      targetWordsPerChapter: 3000,
+      pipelineMode: 'full',
+    });
+    // Chapter failed with safe_retry: item waiting_retry, retry time passed,
+    // batch still 'running' with no live coordinator (reconcile handed back
+    // after wait_until).
+    await execute(
+      await openDatabase(),
+      `UPDATE multi_chapter_batches SET status = 'running' WHERE id = ?`,
+      [id],
+    );
+    await execute(
+      await openDatabase(),
+      `UPDATE multi_chapter_batch_items
+       SET status = 'waiting_retry', next_retry_at = ?
+       WHERE batch_id = ? AND ordinal = 1`,
+      [Date.now() - 1000, id],
+    );
+
+    await store.loadBatch(id);
+    (reconcileMultiChapterBatch as jest.Mock).mockClear();
+    await store.refresh();
+    // Let the background drive finish.
+    await new Promise(r => setTimeout(r, 10));
+
+    // The refresh watchdog must have re-driven the reconciler automatically.
+    expect(reconcileMultiChapterBatch).toHaveBeenCalledTimes(1);
+    expect(useMultiChapterBatchStore.getState().reconciling).toBe(false);
   });
 });
