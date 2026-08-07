@@ -308,6 +308,9 @@ export async function adoptPipelineTaskResultAtomic(
   });
 
   // 2. Batch item binding + counters fold into the SAME transaction.
+  // F2-01: the pipeline revision id only exists at execution time, so the item
+  // UPDATE reads last_insert_rowid() (the statement right before it is always
+  // the pipeline-revision INSERT) instead of a pre-built NULL parameter.
   let itemStatementIndex = -1;
   let counterStatementIndex = -1;
   if (input.batchId && input.ordinal != null && input.chapterCount != null) {
@@ -317,8 +320,8 @@ export async function adoptPipelineTaskResultAtomic(
       chapterCount: input.chapterCount,
       completionQuality: input.completionQuality ?? 'full_pipeline',
       adoptionFingerprint: fingerprint,
-      adoptedRevisionId: null, // resolved via last_insert_rowid below
-    });
+      adoptedRevisionId: null,
+    }, { useLastInsertRowId: true });
     for (const stmt of commitStatements) {
       statements.push(stmt);
     }

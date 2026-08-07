@@ -945,6 +945,13 @@ export async function commitBatchItemAdoption(params: {
  * false — the fingerprint is WRITTEN by the same UPDATE, so matching it in the
  * WHERE would always fail; idempotency + single-writer safety are guaranteed
  * by the caller's pre-check and the batch lease.
+ *
+ * useLastInsertRowId (F2-01): the atomic adoption path cannot know the
+ * pipeline revision id when the statement batch is built (it only exists at
+ * execution time, after the INSERT runs). When enabled, the item UPDATE reads
+ * last_insert_rowid() directly — in the atomic batch the previous statement is
+ * always the pipeline-revision INSERT, so the value written is exactly that
+ * revision's id. The standalone path keeps the parameterized form.
  */
 export async function buildCommitBatchItemAdoptionStatements(
   params: {
@@ -955,7 +962,10 @@ export async function buildCommitBatchItemAdoptionStatements(
     adoptionFingerprint: string;
     adoptedRevisionId: number | null;
   },
-  options?: { enforceFingerprintMatch?: boolean },
+  options?: {
+    enforceFingerprintMatch?: boolean;
+    useLastInsertRowId?: boolean;
+  },
 ): Promise<SqlStatement[]> {
   const item = await getBatchItem(params.batchId, params.ordinal);
   if (!item) {
@@ -980,6 +990,10 @@ export async function buildCommitBatchItemAdoptionStatements(
         ? 'succeeded_with_draft'
         : 'succeeded_with_user_text';
   const enforceFingerprintMatch = options?.enforceFingerprintMatch ?? false;
+  const useLastInsertRowId = options?.useLastInsertRowId ?? false;
+  const revisionColumn = useLastInsertRowId
+    ? 'adopted_revision_id = last_insert_rowid()'
+    : 'adopted_revision_id = ?';
   return [
     {
       // CL-07: the atomic adoption folds the fingerprint WRITE into this same
@@ -987,30 +1001,40 @@ export async function buildCommitBatchItemAdoptionStatements(
       // WHERE fingerprint guard (concurrent-writer protection).
       sql: `UPDATE multi_chapter_batch_items
             SET status = ?, completion_quality = ?, adoption_fingerprint = ?,
-                adopted_revision_id = ?, completed_at = ?, updated_at = ?
+                ${revisionColumn}, completed_at = ?, updated_at = ?
             WHERE batch_id = ? AND ordinal = ?${enforceFingerprintMatch ? ' AND adoption_fingerprint = ?' : ''}`,
-      params: enforceFingerprintMatch
+      params: useLastInsertRowId
         ? [
             itemStatus,
             params.completionQuality,
             params.adoptionFingerprint,
-            params.adoptedRevisionId,
             now,
             now,
             params.batchId,
             params.ordinal,
-            params.adoptionFingerprint,
           ]
-        : [
-            itemStatus,
-            params.completionQuality,
-            params.adoptionFingerprint,
-            params.adoptedRevisionId,
-            now,
-            now,
-            params.batchId,
-            params.ordinal,
-          ],
+        : enforceFingerprintMatch
+          ? [
+              itemStatus,
+              params.completionQuality,
+              params.adoptionFingerprint,
+              params.adoptedRevisionId,
+              now,
+              now,
+              params.batchId,
+              params.ordinal,
+              params.adoptionFingerprint,
+            ]
+          : [
+              itemStatus,
+              params.completionQuality,
+              params.adoptionFingerprint,
+              params.adoptedRevisionId,
+              now,
+              now,
+              params.batchId,
+              params.ordinal,
+            ],
     },
     {
       sql: `UPDATE multi_chapter_batches
