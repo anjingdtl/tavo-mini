@@ -1,5 +1,6 @@
 import SQLite from 'react-native-sqlite-storage';
 import { initializeDatabase } from '../schema/initializeDatabase';
+import type { StartupPhase } from '../../services/startupProgress';
 
 SQLite.enablePromise(true);
 
@@ -19,7 +20,14 @@ export function __setDatabaseForTest(
   opening = null;
 }
 
-export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
+export interface OpenDatabaseOptions {
+  /** CL-04: real startup-phase callback (initializeDatabase steps). */
+  onPhase?: (phase: StartupPhase) => void;
+}
+
+export async function openDatabase(
+  options?: OpenDatabaseOptions,
+): Promise<SQLite.SQLiteDatabase> {
   if (db) return db;
   if (opening) return opening;
 
@@ -28,7 +36,7 @@ export async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
       name: DB_NAME,
       location: 'default',
     });
-    await initializeDatabase(database);
+    await initializeDatabase(database, options);
     db = database;
     opening = null;
     return database;
