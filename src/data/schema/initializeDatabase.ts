@@ -384,6 +384,9 @@ export async function initializeDatabase(
         recoveryBackup = await createSchemaRecoveryBackup(
           database,
           needsMigration ? 'pre_migration' : 'schema_recovery',
+          // F2-04: the backup describes the SOURCE database — the schema
+          // version of the DB as found on disk, not the migration target.
+          installInfo.schemaVersion,
         );
       } catch (backupError) {
         const err = makeSchemaRecoveryError(

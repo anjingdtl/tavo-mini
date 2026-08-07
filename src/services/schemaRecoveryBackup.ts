@@ -90,10 +90,17 @@ async function liveCoreCounts(
  * Create a schema-recovery backup in the dedicated directory with ONE full
  * write pass (CL-09). Returns the path on success; throws on any failure so
  * the caller knows NOT to proceed with schema mutation.
+ *
+ * F2-04: the backup metadata must describe the SOURCE database, not the app's
+ * target schema. `sourceSchemaVersion` (the live DB's schema before any
+ * mutation) is written into meta.schema_version; callers pass
+ * installInfo.schemaVersion. Defaults to the current SCHEMA_VERSION for
+ * non-migration callers (backward compatible).
  */
 export async function createSchemaRecoveryBackup(
   database: SQLite.SQLiteDatabase,
   kind: 'pre_migration' | 'schema_recovery' = 'schema_recovery',
+  sourceSchemaVersion?: number,
 ): Promise<SchemaRecoveryBackupResult> {
   await RNFS.mkdir(SCHEMA_RECOVERY_DIR);
 
@@ -108,7 +115,7 @@ export async function createSchemaRecoveryBackup(
   //    serialized bytes BEFORE writing (no post-write re-read needed).
   const meta = {
     app_version: appVersion,
-    schema_version: SCHEMA_VERSION,
+    schema_version: sourceSchemaVersion ?? SCHEMA_VERSION,
     created_at: new Date().toISOString(),
     kind,
     checksum_algorithm: 'sha256',
