@@ -47,6 +47,12 @@ export interface PipelineRunOptions {
    * resume always keeps the frozen value.
    */
   pipelineModeOverride?: PipelineMode;
+  /**
+   * BN-04: when set, every LLM attempt checks the batch's hard budget
+   * caps BEFORE any HTTP request is issued. Exceeding the cap throws
+   * BatchBudgetExceededError and the batch reconciler pauses the item.
+   */
+  batchBudgetGate?: { batchId: string };
 }
 
 export function cancelPipeline(taskId: string): void {
@@ -189,6 +195,7 @@ export async function runChapterPipeline(
       abortSignal,
       isCancelled: isPipelineCancelled,
       pipelineModeOverride: options.pipelineModeOverride,
+      batchBudgetGate: options.batchBudgetGate,
     });
   } finally {
     releaseTaskAbort(taskId);
@@ -249,6 +256,7 @@ export async function resumePipeline(
       abortSignal,
       isCancelled: isPipelineCancelled,
       pipelineModeOverride: options.pipelineModeOverride,
+      batchBudgetGate: options.batchBudgetGate,
     });
   } finally {
     releaseTaskAbort(taskId);

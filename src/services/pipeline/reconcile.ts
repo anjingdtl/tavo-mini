@@ -7,6 +7,7 @@
  * awaits persistence, then plans again.
  */
 import * as db from '../database';
+import { one } from '../../data/connection/query';
 import {
   callLLMResult,
   resolveLLMRequestConfig,
@@ -181,6 +182,12 @@ function classifyAttemptError(
  * failure the attempt is classified + scheduled, then the original error is
  * RE-THROWN so the existing checkpoint/status flow is unchanged.
  * Fail-closed: attempt write errors propagate (no silent no-op).
+ *
+ * BN-04: when a `batchId` is provided, the batch's hard budget caps are
+ * checked BEFORE any HTTP attempt row is created. The caller will see a
+ * typed BatchBudgetExceededError; no attempt is recorded (so no bill is
+ * accrued) and the batch reconciler will pause the item as
+ * `paused_batch_budget` for user action.
  */
 async function runStageAttempt<T extends {
   inputTokens: number;
@@ -194,8 +201,13 @@ async function runStageAttempt<T extends {
   frozenRequestJson?: string | null;
   llmConfigId?: number | null;
   llmConfigSnapshotJson: string;
+  /** BN-04: when set, enforce the batch's hard caps before issuing the request. */
+  batchBudgetGate?: { batchId: string };
   run: () => Promise<T>;
 }): Promise<T> {
+  if (params.batchBudgetGate) {
+    await assertBatchBudgetAvailable(params.batchBudgetGate.batchId, params.stage);
+  }
   const attemptNo = await nextAttemptNo(params.taskId, params.stage);
   const attemptId = `${params.taskId}:${params.stage}:${attemptNo}`;
   const now = Date.now();
@@ -336,6 +348,12 @@ export interface ReconcileOptions {
    * applied when no frozen execution snapshot exists yet (first run).
    */
   pipelineModeOverride?: PipelineMode;
+  /**
+   * BN-04: when set, every stage attempt is preceded by a hard batch-budget
+   * check. Exceeding the cap throws BatchBudgetExceededError BEFORE any
+   * HTTP request is issued and the batch reconciler pauses the item.
+   */
+  batchBudgetGate?: { batchId: string };
 }
 
 const reconciling = new Set<string>();
@@ -562,6 +580,84 @@ function isAbortError(error: any, abortSignal?: AbortSignal): boolean {
   return Boolean(abortSignal?.aborted || error?.code === 'cancelled');
 }
 
+/** BN-11: thread the foreground owner through reconcile. When the task is
+ *  owned by a batch, suppress per-task PipelineForeground calls — the batch
+ *  owns the single aggregated notification. Single-chapter mode defaults
+ *  to 'task' and keeps existing behaviour.
+ *
+ *  Scope: set when entering reconcilePipelineTask (mirror of the entry
+ *  options.batchBudgetGate flag). Cleared on exit. Reads are sync.
+ */
+let activeForegroundOwner: 'task' | 'batch' = 'task';
+function shouldEmitForeground(): boolean {
+  return activeForegroundOwner === 'task';
+}
+
+/**
+ * BN-04: hard budget gate. Read the batch's durable caps and current usage,
+ * estimate the worst-case cost for the upcoming stage, and throw a typed
+ * error BEFORE any HTTP attempt row is created. The error carries the
+ * batch + stage context so the reconciler can pause the batch correctly.
+ *
+ * The cap is intentionally enforced on the conservative side: each stage is
+ * allowed to consume up to its configured max-tokens, so even a near-empty
+ * input overflows the cap. When a cap is null (uncapped) we skip the check.
+ */
+export class BatchBudgetExceededError extends Error {
+  readonly code: 'BATCH_BUDGET_EXCEEDED';
+  readonly batchId: string;
+  readonly stage: string;
+  readonly cap: 'calls' | 'input' | 'output';
+  constructor(batchId: string, stage: string, cap: BatchBudgetExceededError['cap'], message: string) {
+    super(message);
+    this.name = 'BatchBudgetExceededError';
+    this.code = 'BATCH_BUDGET_EXCEEDED';
+    this.batchId = batchId;
+    this.stage = stage;
+    this.cap = cap;
+  }
+}
+
+async function assertBatchBudgetAvailable(batchId: string, stage: string): Promise<void> {
+  const row = await one(
+    `SELECT max_llm_calls, max_input_tokens, max_output_tokens,
+            used_llm_calls, used_input_tokens, used_output_tokens
+     FROM multi_chapter_batches WHERE id = ?`,
+    [batchId],
+  );
+  if (!row) return; // batch vanished — caller will surface the missing-state error.
+  const maxLlmCalls = row.max_llm_calls != null ? Number(row.max_llm_calls) : null;
+  const maxInput = row.max_input_tokens != null ? Number(row.max_input_tokens) : null;
+  const maxOutput = row.max_output_tokens != null ? Number(row.max_output_tokens) : null;
+  const usedLlmCalls = Number(row.used_llm_calls ?? 0);
+  const usedInput = Number(row.used_input_tokens ?? 0);
+  const usedOutput = Number(row.used_output_tokens ?? 0);
+  if (maxLlmCalls != null && usedLlmCalls >= maxLlmCalls) {
+    throw new BatchBudgetExceededError(
+      batchId,
+      stage,
+      'calls',
+      `批次 LLM 调用已达上限（${usedLlmCalls}/${maxLlmCalls}），已暂停第 ${stage} 阶段请求。`,
+    );
+  }
+  if (maxInput != null && usedInput >= maxInput) {
+    throw new BatchBudgetExceededError(
+      batchId,
+      stage,
+      'input',
+      `批次输入 token 已达上限（${usedInput}/${maxInput}），已暂停第 ${stage} 阶段请求。`,
+    );
+  }
+  if (maxOutput != null && usedOutput >= maxOutput) {
+    throw new BatchBudgetExceededError(
+      batchId,
+      stage,
+      'output',
+      `批次输出 token 已达上限（${usedOutput}/${maxOutput}），已暂停第 ${stage} 阶段请求。`,
+    );
+  }
+}
+
 function cancelled(
   taskId: string,
   options: ReconcileOptions,
@@ -654,17 +750,26 @@ export async function reconcilePipelineTask(
   }
   reconciling.add(taskId);
   await refreshElasticBudgetFlag();
+  // BN-11: switch foreground ownership based on the batch gate. The flag
+  // is restored in `finally` so nested reconcile entries do not leak state.
+  const prevForegroundOwner = activeForegroundOwner;
+  activeForegroundOwner = options.batchBudgetGate ? 'batch' : 'task';
 
   const store = usePipelineTaskStore.getState();
   const onStageUpdate = options.onStageUpdate;
   const abortSignal = options.abortSignal;
 
-  PipelineForeground.start(
-    taskId,
-    chapter.title || '流水线',
-    '正在准备写作',
-    0,
-  ).catch(() => {});
+  // BN-11: batch-owned tasks defer all notifications to the single
+  // batch-owned notification owned by the reconciler. Without this gate
+  // every sub-task fires its own Android notification on top of the batch's.
+  if (shouldEmitForeground()) {
+    PipelineForeground.start(
+      taskId,
+      chapter.title || '流水线',
+      '正在准备写作',
+      0,
+    ).catch(() => {});
+  }
 
   try {
     // Schema 39+: checkpoint rows are required. Fail-closed on DB errors.
@@ -747,14 +852,17 @@ export async function reconcilePipelineTask(
     } else {
       store.failTask(taskId, message);
     }
-    await PipelineForeground.notifyFailed(
-      taskId,
-      chapter.title || '流水线',
-      mapped?.message || '执行失败',
-    );
+    if (shouldEmitForeground()) {
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        mapped?.message || '执行失败',
+      );
+    }
     await PipelineForeground.stop(taskId);
   } finally {
     reconciling.delete(taskId);
+    activeForegroundOwner = prevForegroundOwner;
   }
 }
 
@@ -781,11 +889,13 @@ async function handleBlocked(
     } else {
       store.failTask(taskId, action.reason.message);
     }
-    await PipelineForeground.notifyFailed(
-      taskId,
-      chapter.title || '流水线',
-      action.reason.message,
-    );
+    if (shouldEmitForeground()) {
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        action.reason.message,
+      );
+    }
     await PipelineForeground.stop(taskId);
     return;
   }
@@ -794,11 +904,13 @@ async function handleBlocked(
   } else {
     store.failTask(taskId, action.reason.message);
   }
-  await PipelineForeground.notifyFailed(
-    taskId,
-    chapter.title || '流水线',
-    action.reason.message,
-  );
+  if (shouldEmitForeground()) {
+    await PipelineForeground.notifyFailed(
+      taskId,
+      chapter.title || '流水线',
+      action.reason.message,
+    );
+  }
   await PipelineForeground.stop(taskId);
   void stages;
 }
@@ -1020,9 +1132,11 @@ async function actionRunDraft(
         label: '正在生成初稿',
         startedAt: Date.now(),
       });
-      PipelineForeground.updateProgress(taskId, '正在生成初稿', 0).catch(
-        () => {},
-      );
+      if (shouldEmitForeground()) {
+        PipelineForeground.updateProgress(taskId, '正在生成初稿', 0).catch(
+          () => {},
+        );
+      }
     },
     run: async () => {
       const runtime = await loadRuntime(taskId, chapter);
@@ -1064,6 +1178,7 @@ async function actionRunDraft(
           }),
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          batchBudgetGate: options.batchBudgetGate,
           run: () =>
             callReadyLLM(
               firstReady,
@@ -1118,6 +1233,7 @@ async function actionRunDraft(
             }),
             llmConfigId: llmConfigIdOf(runtime.requestConfig),
             llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+            batchBudgetGate: options.batchBudgetGate,
             run: () =>
               callReadyLLM(
                 retryReady,
@@ -1350,6 +1466,7 @@ async function actionRunReview(
             : null,
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          batchBudgetGate: options.batchBudgetGate,
           run: () =>
             callReadyLLM(
               compiled,
@@ -1426,6 +1543,7 @@ async function actionRunReview(
               : null,
             llmConfigId: llmConfigIdOf(runtime.requestConfig),
             llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+            batchBudgetGate: options.batchBudgetGate,
             run: () =>
               callReadyLLM(
                 repairReady,
@@ -1578,6 +1696,7 @@ async function actionRunFactCheck(
             : null,
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          batchBudgetGate: options.batchBudgetGate,
           run: () =>
             callReadyLLM(
               compiled,
@@ -1652,6 +1771,7 @@ async function actionRunFactCheck(
               : null,
             llmConfigId: llmConfigIdOf(runtime.requestConfig),
             llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+            batchBudgetGate: options.batchBudgetGate,
             run: () =>
               callReadyLLM(
                 repairReady,
@@ -1793,11 +1913,13 @@ async function actionRunProof(
     },
     run: async () => {
       const runtime = await loadRuntime(taskId, chapter);
-      PipelineForeground.updateProgress(
-        taskId,
-        '正在综合修订',
-        getStageProgressPercent(runtime.config.pipelineMode, 2),
-      ).catch(() => {});
+      if (shouldEmitForeground()) {
+        PipelineForeground.updateProgress(
+          taskId,
+          '正在综合修订',
+          getStageProgressPercent(runtime.config.pipelineMode, 2),
+        ).catch(() => {});
+      }
 
       if (!runtime.parsed) throw new Error('缺少冻结上下文');
       const draftText = await getDraftText(taskId);
@@ -1840,6 +1962,7 @@ async function actionRunProof(
             : null,
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          batchBudgetGate: options.batchBudgetGate,
           run: () =>
             callReadyLLM(
               compiled,
@@ -2018,12 +2141,14 @@ async function actionFinalizeFromDraft(
     } else {
       store.setTaskFinalText(taskId, draftText);
     }
-    await PipelineForeground.notifyFailed(
-      taskId,
-      chapter.title || '流水线',
-      message,
-    );
-    await PipelineForeground.updateProgress(taskId, '已保留初稿', 100);
+    if (shouldEmitForeground()) {
+      await PipelineForeground.notifyFailed(
+        taskId,
+        chapter.title || '流水线',
+        message,
+      );
+      await PipelineForeground.updateProgress(taskId, '已保留初稿', 100);
+    }
     await PipelineForeground.stop(taskId);
     return;
   }
@@ -2038,13 +2163,15 @@ async function actionFinalizeFromDraft(
   } else {
     store.completeTask(taskId, draftText);
   }
-  await PipelineForeground.updateProgress(taskId, '已完成', 100);
-  await PipelineForeground.notifyComplete(
-    taskId,
-    chapter.title || '流水线',
-    '已写完，点击查看',
-  );
-  await PipelineForeground.stop(taskId);
+  if (shouldEmitForeground()) {
+    await PipelineForeground.updateProgress(taskId, '已完成', 100);
+    await PipelineForeground.notifyComplete(
+      taskId,
+      chapter.title || '流水线',
+      '已写完，点击查看',
+    );
+  }
+    await PipelineForeground.stop(taskId);
 }
 
 async function actionFinalizeFromProof(
@@ -2061,13 +2188,15 @@ async function actionFinalizeFromProof(
   } else {
     store.completeTask(taskId, text);
   }
-  await PipelineForeground.updateProgress(taskId, '已完成', 100);
-  await PipelineForeground.notifyComplete(
-    taskId,
-    chapter.title || '流水线',
-    '已写完，点击查看',
-  );
-  await PipelineForeground.stop(taskId);
+  if (shouldEmitForeground()) {
+    await PipelineForeground.updateProgress(taskId, '已完成', 100);
+    await PipelineForeground.notifyComplete(
+      taskId,
+      chapter.title || '流水线',
+      '已写完，点击查看',
+    );
+  }
+    await PipelineForeground.stop(taskId);
 }
 
 async function actionComplete(taskId: string, chapter: Chapter): Promise<void> {
@@ -2087,13 +2216,15 @@ async function actionComplete(taskId: string, chapter: Chapter): Promise<void> {
   } else {
     store.completeTask(taskId, text);
   }
-  await PipelineForeground.updateProgress(taskId, '已完成', 100);
-  await PipelineForeground.notifyComplete(
-    taskId,
-    chapter.title || '流水线',
-    '已写完，点击查看',
-  );
-  await PipelineForeground.stop(taskId);
+  if (shouldEmitForeground()) {
+    await PipelineForeground.updateProgress(taskId, '已完成', 100);
+    await PipelineForeground.notifyComplete(
+      taskId,
+      chapter.title || '流水线',
+      '已写完，点击查看',
+    );
+  }
+    await PipelineForeground.stop(taskId);
 }
 
 export function isReconcileActive(taskId: string): boolean {
