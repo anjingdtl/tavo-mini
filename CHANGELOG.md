@@ -1,6 +1,21 @@
 # Changelog
 
-## [2.11.33] - 2026-08-06
+## [2.11.34] - 2026-08-07
+
+### Fixed
+
+- **safe_retry 真实重试链路（CL-01）**：`blocked(STAGE_FAILED)` 此前先于自动重试被消费，失败 checkpoint 的 safe_retry/rate_limit attempt 永远不会触发重试（任务永久 failed）；现在 `determineRetryDisposition` 纯函数在终态前判定（未到期 wait_retry / 到期 retry_now / 超限 manual_pause / outcome_unknown manual_confirm），reconciler 在 STAGE_FAILED 之前消费并重置 checkpoint 为 pending 重跑同一冻结请求；新增真实 reconcile 链路测试（LLM 抛错 → attempt=safe_to_retry → checkpoint=failed → resume → 自动重试 → completed，复用同一 request fingerprint）。
+- **初始化失败绝不进入主界面（CL-02）**：init 失败时旧逻辑仍 `setReady(true)`，`initError && !ready` 的错误页永远不会渲染，用户看到空项目列表；现在显式 `AppStartupState = splash | initializing | ready | failed`，失败渲染安全错误页（错误码 / 原数据库保留提示 / 重试入口），NavigationContainer 与 TabNavigator 绝不渲染；SchemaRecoveryError 与普通 INIT_FAILED 走同一安全页。
+- **升级前后内容级指纹校验（CL-03）**：旧 recall snapshot 只校验 count/min/max/sum/ids，同 id 同 count 的正文改写无法发现；新增 `userContentFingerprint`（projects / chapters / characters / worldbook_entries / notes / project_resources / project_collection_settings 的内容列 SHA-256，显式区分 null/''/0/false/缺失列，fail-closed），`initializeDatabase` 在迁移/修复前后严格比对，mismatch 抛 `USER_CONTENT_FINGERPRINT_MISMATCH` 阻断启动并保留原库与安全备份；迁移新增列按共有列对齐，v4→v5/v10→v11 的 collection_id 归一化走白名单。
+- **真实 StartupPhase 动态进度（CL-04）**：启动从静态 splash 直接跳到主界面，期间无任何进度；现在 `initializeDatabase`/`openDatabase` 暴露真实阶段回调（打开数据库 / 检查结构 / 内容指纹 / 安全备份 / 迁移 / Schema 校验 / 内容核验 / 载入设置 / 恢复任务），App 渲染由真实步骤驱动的进度条与阶段文案，全程无白屏空 Fragment，失败页不残留。
+- **批量长请求串行 LeaseSession 心跳（CL-05）**：batch lease（TTL 60s）此前只在状态机每步续租，120–180s 的单章 LLM 请求期间会过期并被第二执行器抢占；新增 `BatchLeaseSession`：TTL/3 心跳、renew 串行化（同一时间最多一个 CAS）、每次使用最新 rowVersion、CAS 失败立即 `lost=true` 且禁止后续请求、`stop()` 等待在飞 renew 且绝不回写；`run_pipeline`/`resume_pipeline` 期间真实心跳（含 120s 集成测试）。
+- **批次预算真实硬门禁（CL-06）**：旧门禁只检查 `used >= cap`（不含 upcoming 请求），且 `used_*` 只在整章 Adoption 后更新；现在每次请求前从 `pipeline_stage_attempts` 实时聚合，判断 `used + upcoming <= cap`（calls +1 / input + 预估 / output + 预留），超限在 HTTP 请求前抛 `BatchBudgetExceededError`（零 attempt 行、零账单），批次落 `paused_batch_budget`；attempt 终态立即入账。
+- **Adoption 原子闭环（CL-07）**：旧流程 6 次独立写（旧 revision → chapter → pipeline revision → item → counters → usage），任意点崩溃留半提交；现在批次采用走单事务（旧正文修订 + 正文 + pipeline 修订 + item 指纹 + 批次计数），fault-injection 在 5 个语句边界注入崩溃全部 all-or-nothing 回滚，恢复后重试无重复。
+- **Backup Center 轻量索引（CL-08）**：列表页此前对每个备份 `readFile` + `JSON.parse` 完整内容（10×100MB 必卡死）；现在备份创建时写 tiny sidecar（*.json.meta.json），列表只 readDir + stat + 读小 sidecar（完整备份读取次数 = 0），旧备份按 filename/mtime/size 立即显示并后台 `backfillBackupMeta` 补齐。
+- **Schema Recovery 单次 IO（CL-09）**：`createSchemaRecoveryBackup` 此前 createBackup → 完整重读校验 → copyFile 三重全量 IO；现在单次写路径（读表 → 序列化 → 写前计算 checksum → staging → 原子 rename 直达 schema-recovery 目录），零重读零复制，checksum / 行数 / 可恢复性不降级。
+- **Foreground owner 调用级状态（CL-10）**：`reconcile.ts` 的模块级 `activeForegroundOwner` 在单章 Task 与 Batch Task 并发时互相污染；改为 `ReconcileOptions.foregroundOwner` 调用级字段，所有 start/updateProgress/notifyComplete/notifyFailed 按当前 Task 的 options 判定（stop 保留资源清理语义）。
+
+ - 2026-08-06
 
 ### Fixed
 
