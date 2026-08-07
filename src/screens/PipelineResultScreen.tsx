@@ -335,8 +335,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     handleClose();
   };
 
-  // F2-07: 终稿超时/失败时，从失败环节重启 —— 只重跑失败的 stage
-  // （复用 frozen request），已成功的初稿/审阅/核查结果不重复计费。
+  // F2-07: 失败时从失败环节重启 —— 只重跑失败的 stage（复用 frozen
+  // request），已成功的阶段不重复计费。仅 draft 失败（无成功阶段）也必须
+  // 提供重试入口：状态机从初稿 checkpoint 重新开始，与首次运行等价。
   const failedStages = uniqueStageResults(task.stageResults).filter(
     s => s.status === 'failed',
   );
@@ -346,8 +347,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const canResumeFailed =
     task.status === 'failed' &&
     task.targetType === 'chapter' &&
-    failedStages.length > 0 &&
-    succeededStages.length > 0;
+    failedStages.length > 0;
+  const resumeLabel =
+    succeededStages.length > 0 ? '从失败环节重启' : '重新尝试';
 
   const handleResumeFailed = async () => {
     if (adopting) return;
@@ -355,10 +357,14 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     const failedLabels = failedStages
       .map(s => STAGE_LABELS[s.stage])
       .join('、');
+    const proceedCopy =
+      succeededStages.length > 0
+        ? `仅重试失败阶段（${failedLabels}），已成功的阶段（初稿/审阅/核查）将直接复用，不会重复计费。确定继续？`
+        : `从初稿阶段重新运行完整流水线，不会重复计费未完成的请求。确定继续？`;
     const proceed = await new Promise<boolean>(resolve => {
       Alert.alert(
-        '从失败环节重启',
-        `仅重试失败阶段（${failedLabels}），已成功的阶段（初稿/审阅/核查）将直接复用，不会重复计费。确定继续？`,
+        succeededStages.length > 0 ? '从失败环节重启' : '重新尝试',
+        proceedCopy,
         [
           { text: '取消', style: 'cancel', onPress: () => resolve(false) },
           { text: '重启', onPress: () => resolve(true) },
@@ -517,7 +523,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           <View style={styles.actions}>
             {canResumeFailed ? (
               <Button
-                label="从失败环节重启"
+                label={resumeLabel}
                 variant="ghost"
                 onPress={handleResumeFailed}
                 disabled={adopting}

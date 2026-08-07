@@ -163,4 +163,39 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
     await findByText('采纳');
     expect(queryByText('从失败环节重启')).toBeNull();
   });
+
+  it('仅初稿失败（无成功阶段）时也提供"重新尝试"入口（真机 BUG 回归）', async () => {
+    mockTasks[0] = {
+      id: 't3',
+      targetType: 'chapter',
+      targetId: 3,
+      status: 'failed',
+      stageResults: [
+        {
+          stage: 'draft',
+          status: 'failed',
+          text: '',
+          error: 'API 请求失败 (401): Authentication Fails',
+          durationMs: 1000,
+        },
+      ],
+      finalText: null,
+      error: null,
+      inputFingerprint: null,
+      pipelineContextJson: null,
+      pipelineContextVersion: null,
+      pipelineContextHash: null,
+      createdAt: 1000,
+      updatedAt: 2000,
+      resolvedAt: null,
+      resolvedAction: null,
+    };
+    const { findByText } = render(<PipelineResultScreen taskId="t3" />);
+    const retryButton = await findByText('重新尝试');
+    expect(retryButton).toBeTruthy();
+    fireEvent.press(retryButton);
+    await waitFor(() => expect(mockResetCheckpoints).toHaveBeenCalledWith('t3'));
+    await waitFor(() => expect(mockResumePipeline).toHaveBeenCalled());
+    expect(mockResumePipeline.mock.calls[0][0]).toBe('t3');
+  });
 });
