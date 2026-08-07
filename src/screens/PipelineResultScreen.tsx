@@ -14,6 +14,12 @@ import {
 import * as db from '../services/database';
 import { computeInputFingerprint } from '../services/outlineContextBuilder';
 import { adoptPipelineTaskResult } from '../services/multiChapterBatch/batchAdoption';
+import { resumePipeline } from '../services/pipelineRunner';
+import {
+  resetFailedStageCheckpointsForResume,
+} from '../data/repositories/pipelineStageCheckpointRepository';
+import { execute } from '../data/connection/execute';
+import { openDatabase } from '../data/connection/openDatabase';
 import type { PipelineStageResult } from '../types/pipeline';
 
 type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'PipelineResult'>;
@@ -329,6 +335,81 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     handleClose();
   };
 
+  // F2-07: 终稿超时/失败时，从失败环节重启 —— 只重跑失败的 stage
+  // （复用 frozen request），已成功的初稿/审阅/核查结果不重复计费。
+  const failedStages = uniqueStageResults(task.stageResults).filter(
+    s => s.status === 'failed',
+  );
+  const succeededStages = uniqueStageResults(task.stageResults).filter(
+    s => s.status === 'success',
+  );
+  const canResumeFailed =
+    task.status === 'failed' &&
+    task.targetType === 'chapter' &&
+    failedStages.length > 0 &&
+    succeededStages.length > 0;
+
+  const handleResumeFailed = async () => {
+    if (adopting) return;
+    if (!canResumeFailed) return;
+    const failedLabels = failedStages
+      .map(s => STAGE_LABELS[s.stage])
+      .join('、');
+    const proceed = await new Promise<boolean>(resolve => {
+      Alert.alert(
+        '从失败环节重启',
+        `仅重试失败阶段（${failedLabels}），已成功的阶段（初稿/审阅/核查）将直接复用，不会重复计费。确定继续？`,
+        [
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+          { text: '重启', onPress: () => resolve(true) },
+        ],
+      );
+    });
+    if (!proceed) return;
+    setAdopting(true);
+    try {
+      const chapter = await db.getChapterById(task.targetId);
+      if (!chapter) {
+        Alert.alert('章节不存在');
+        setAdopting(false);
+        return;
+      }
+      // 失败/中断的 checkpoint 重置为 pending；pipeline 状态机只重跑这些。
+      await resetFailedStageCheckpointsForResume(task.id);
+      // task 转 interrupted（resume 路径），保留 finalText（失败回退的初稿）。
+      await execute(
+        await openDatabase(),
+        `UPDATE pipeline_tasks SET status = 'interrupted', updated_at = ? WHERE id = ?`,
+        [Date.now(), task.id],
+      );
+      usePipelineTaskStore
+        .getState()
+        .registerPersistedTask({
+          id: task.id,
+          targetType: task.targetType as 'chapter',
+          targetId: task.targetId,
+          status: 'interrupted',
+          stageResults: task.stageResults,
+          finalText: task.finalText ?? null,
+          error: null,
+          inputFingerprint: task.inputFingerprint ?? null,
+          pipelineContextJson: task.pipelineContextJson ?? null,
+          pipelineContextVersion: task.pipelineContextVersion ?? null,
+          pipelineContextHash: task.pipelineContextHash ?? null,
+          createdAt: task.createdAt,
+          updatedAt: Date.now(),
+          resolvedAt: null,
+          resolvedAction: null,
+        });
+      await resumePipeline(task.id, chapter);
+      Alert.alert('已重启', '流水线已从失败阶段继续，可在任务中心查看进度。');
+      handleClose();
+    } catch (error: any) {
+      Alert.alert('重启失败', error?.message || '未知错误');
+      setAdopting(false);
+    }
+  };
+
   const renderStageCard = (stage: PipelineStageResult) => {
     const isExpanded = expanded.has(stage.stage);
     const textLength = stage.text?.length || 0;
@@ -432,10 +513,22 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           );
         })()}
         {uniqueStageResults(task.stageResults).map(renderStageCard)}
-        {task.finalText && (
+        {(task.finalText || canResumeFailed) && (
           <View style={styles.actions}>
-            <Button label="放弃" variant="ghost" onPress={handleReject} disabled={adopting} />
-            <Button label={adopting ? '采纳中…' : '采纳'} onPress={handleAccept} disabled={adopting} />
+            {canResumeFailed ? (
+              <Button
+                label="从失败环节重启"
+                variant="ghost"
+                onPress={handleResumeFailed}
+                disabled={adopting}
+              />
+            ) : null}
+            {task.finalText ? (
+              <>
+                <Button label="放弃" variant="ghost" onPress={handleReject} disabled={adopting} />
+                <Button label={adopting ? '采纳中…' : '采纳'} onPress={handleAccept} disabled={adopting} />
+              </>
+            ) : null}
           </View>
         )}
       </ScrollView>

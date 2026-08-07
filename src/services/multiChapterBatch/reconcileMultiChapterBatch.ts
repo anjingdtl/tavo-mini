@@ -219,6 +219,9 @@ export async function reconcileMultiChapterBatch(
         taskStatuses,
         latestAttempts,
       });
+      console.log(
+        `[batch-reconcile] step=${step} batchStatus=${batch.status} ordinal=${batch.currentOrdinal} action=${action.type} itemStatus=${currentItem?.status} activeTask=${currentItem?.activePipelineTaskId ?? 'null'} taskStatuses=${JSON.stringify(taskStatuses)}`,
+      );
 
       const handled = await executeBatchAction({
         batchId,
@@ -322,6 +325,9 @@ async function executeBatchAction(params: {
         });
         return 'continue';
       }
+      console.log(
+        `[batch-reconcile] create_pipeline_task ord=${currentItem.ordinal} itemStatus=${currentItem.status} chapterId=${currentItem.chapterId}`,
+      );
       await updateBatchItem(batchId, currentItem.ordinal, {
         status: 'creating_pipeline_task',
       });
@@ -582,8 +588,14 @@ async function executeBatchAction(params: {
       return 'stop';
 
     case 'adopt_full_result':
-    case 'adopt_draft_result':
+    case 'adopt_draft_result': {
+      if (currentItem) {
+        console.log(
+          `[batch-reconcile] adopt ord=${currentItem.ordinal} itemStatus=${currentItem.status} activeTask=${currentItem.activePipelineTaskId} fp=${currentItem.adoptionFingerprint ?? 'null'}`,
+        );
+      }
       return adoptAndCommit(params);
+    }
 
     case 'verify_adoption': {
       if (!currentItem?.chapterId) return 'continue';
