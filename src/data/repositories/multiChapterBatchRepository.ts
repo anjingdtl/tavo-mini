@@ -906,8 +906,9 @@ export async function createPipelineTaskForBatchItem(params: {
 /**
  * 3. Commit an adopted item and advance the batch counters in ONE transaction.
  * Idempotency: an item already in a succeeded* state with the SAME fingerprint
- * is a no-op (repeated reconcile must not advance counters twice). Any other
- * mismatch fails closed.
+ * is a no-op (repeated reconcile must not advance counters twice). A
+ * fingerprint mismatch (standalone path, enforceFingerprintMatch=true) fails
+ * closed with BATCH_ADOPTION_MISMATCH.
  */
 export async function commitBatchItemAdoption(params: {
   batchId: string;
@@ -917,6 +918,45 @@ export async function commitBatchItemAdoption(params: {
   adoptionFingerprint: string;
   adoptedRevisionId: number | null;
 }): Promise<void> {
+  const statements = await buildCommitBatchItemAdoptionStatements(params, {
+    enforceFingerprintMatch: true,
+  });
+  if (statements.length === 0) return; // idempotent no-op
+  await executeTransaction(await openDatabase(), statements, {
+    onStatementComplete: (index, rowsAffected) => {
+      if (index === 1 && rowsAffected <= 0) {
+        throw new Error('BATCH_ADOPTION_MISMATCH');
+      }
+      if (index === 2 && rowsAffected <= 0) {
+        throw new Error('BATCH_NOT_FOUND');
+      }
+    },
+  });
+}
+
+/**
+ * CL-07: statement-builder variant so the batch reconciler can fold the item
+ * + counter commit INTO the same transaction as the body/revisions writes
+ * (one atomic adoption closed loop — no half-committed adoption windows).
+ * Returns [] when the item is already committed with the same fingerprint.
+ *
+ * enforceFingerprintMatch: the standalone path matches the WHERE clause on the
+ * persisted fingerprint (concurrent-writer guard). The atomic path passes
+ * false — the fingerprint is WRITTEN by the same UPDATE, so matching it in the
+ * WHERE would always fail; idempotency + single-writer safety are guaranteed
+ * by the caller's pre-check and the batch lease.
+ */
+export async function buildCommitBatchItemAdoptionStatements(
+  params: {
+    batchId: string;
+    ordinal: number;
+    chapterCount: number;
+    completionQuality: BatchItemCompletionQuality;
+    adoptionFingerprint: string;
+    adoptedRevisionId: number | null;
+  },
+  options?: { enforceFingerprintMatch?: boolean },
+): Promise<SqlStatement[]> {
   const item = await getBatchItem(params.batchId, params.ordinal);
   if (!item) {
     throw new Error('BATCH_ITEM_NOT_FOUND');
@@ -928,7 +968,7 @@ export async function commitBatchItemAdoption(params: {
     item.adoptionFingerprint === params.adoptionFingerprint
   ) {
     // Already committed — idempotent no-op.
-    return;
+    return [];
   }
   const now = Date.now();
   const nextOrdinal = params.ordinal + 1;
@@ -939,23 +979,38 @@ export async function commitBatchItemAdoption(params: {
       : params.completionQuality === 'draft_only'
         ? 'succeeded_with_draft'
         : 'succeeded_with_user_text';
-  const statements: SqlStatement[] = [
+  const enforceFingerprintMatch = options?.enforceFingerprintMatch ?? false;
+  return [
     {
+      // CL-07: the atomic adoption folds the fingerprint WRITE into this same
+      // UPDATE (enforceFingerprintMatch=false). The standalone path keeps the
+      // WHERE fingerprint guard (concurrent-writer protection).
       sql: `UPDATE multi_chapter_batch_items
             SET status = ?, completion_quality = ?, adoption_fingerprint = ?,
                 adopted_revision_id = ?, completed_at = ?, updated_at = ?
-            WHERE batch_id = ? AND ordinal = ? AND adoption_fingerprint = ?`,
-      params: [
-        itemStatus,
-        params.completionQuality,
-        params.adoptionFingerprint,
-        params.adoptedRevisionId,
-        now,
-        now,
-        params.batchId,
-        params.ordinal,
-        params.adoptionFingerprint,
-      ],
+            WHERE batch_id = ? AND ordinal = ?${enforceFingerprintMatch ? ' AND adoption_fingerprint = ?' : ''}`,
+      params: enforceFingerprintMatch
+        ? [
+            itemStatus,
+            params.completionQuality,
+            params.adoptionFingerprint,
+            params.adoptedRevisionId,
+            now,
+            now,
+            params.batchId,
+            params.ordinal,
+            params.adoptionFingerprint,
+          ]
+        : [
+            itemStatus,
+            params.completionQuality,
+            params.adoptionFingerprint,
+            params.adoptedRevisionId,
+            now,
+            now,
+            params.batchId,
+            params.ordinal,
+          ],
     },
     {
       sql: `UPDATE multi_chapter_batches
@@ -976,14 +1031,4 @@ export async function commitBatchItemAdoption(params: {
       ],
     },
   ];
-  await executeTransaction(await openDatabase(), statements, {
-    onStatementComplete: (index, rowsAffected) => {
-      if (index === 1 && rowsAffected <= 0) {
-        throw new Error('BATCH_ADOPTION_MISMATCH');
-      }
-      if (index === 2 && rowsAffected <= 0) {
-        throw new Error('BATCH_NOT_FOUND');
-      }
-    },
-  });
 }
