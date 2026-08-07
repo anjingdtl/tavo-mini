@@ -336,7 +336,12 @@ describe('database initialization lifecycle', () => {
         index > indexIndex && sql.startsWith('SELECT id, title FROM notes'),
     );
     expect(indexIndex).toBeGreaterThan(seedIndex);
-    expect(derivedRepairIndex).toBeGreaterThan(indexIndex);
+    // RB-16 fix (V2.11.34): the destructive oversized-note repair query
+    // (`SELECT id, title FROM notes`) is no longer part of the startup
+    // path. The repair must only run as an explicit user action from
+    // Settings → 数据维护. We assert the negative: the SQL must not
+    // appear in the executed log.
+    expect(derivedRepairIndex).toBe(-1);
   });
 
   test.each([8, 13])(

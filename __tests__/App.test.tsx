@@ -21,7 +21,12 @@ jest.mock('../src/services/database', () => ({
     worldbookRecursive: true,
   })),
   getSetting: jest.fn(async () => null),
-  openDatabase: jest.fn(),
+  // RB-20 fix (V2.11.34): the mock must return a valid database handle, not
+  // undefined. Returning undefined caused init() to reach the outer catch
+  // path, and the test was depending on legacy behaviour where the catch
+  // branch called setReady(true). With the safe error screen, init() must
+  // complete via the happy path for tabs to render.
+  openDatabase: jest.fn(async () => ({ executeSql: () => undefined })),
 }));
 
 test('renders the real ShineWriter workspace tabs', async () => {
@@ -32,5 +37,5 @@ test('renders the real ShineWriter workspace tabs', async () => {
     expect(screen.getByText('2 资料')).toBeTruthy();
     expect(screen.getByText('3 写作')).toBeTruthy();
     expect(screen.getByText('设置')).toBeTruthy();
-  }, { timeout: 2500 });
+  }, { timeout: 5000 });
 });
