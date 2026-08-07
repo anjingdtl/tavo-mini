@@ -203,6 +203,18 @@ describe('CL-01: safe_retry 真实 reconcile 链路（不 mock 状态机）', ()
 
     // 第二次 reconcile（resume）：retry disposition 必须先于 STAGE_FAILED 消费。
     // 修复前：任务仍 failed，checkpoint 仍 failed —— 自动重试被阻断。
+    //
+    // 时序说明：attempt 的 next_retry_at 按退避表写入（attempt 1 ≈ 3~6s，
+    // AUTO_RETRY_BACKOFF_MS[0]=30s × 10%~20% jitter）。本测试连续两次
+    // reconcile 的间隔在慢机器（Windows）上偶发超过退避、在快机器（Linux CI）
+    // 上必然小于退避——wait_retry 分支会 sleep 后返回 waiting，任务保持
+    // failed。测试目标只是验证"重试 disposition 可被消费"，因此显式把
+    // next_retry_at 拨回过去模拟退避到期（生产语义等价：到期后 resume）。
+    await execute(
+      await openDatabase(),
+      `UPDATE pipeline_stage_attempts SET next_retry_at = 0 WHERE pipeline_task_id = ?`,
+      [taskId],
+    );
     await reconcilePipelineTask(taskId, chapter);
 
     taskRow = await all(`SELECT * FROM pipeline_tasks WHERE id = ?`, [taskId]);
