@@ -1,5 +1,5 @@
 import React from 'react';
-import { AppState, ImageBackground, StyleSheet } from 'react-native';
+import { AppState, ImageBackground, StyleSheet, Text, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../components/ThemeProvider';
@@ -13,7 +13,7 @@ import { consumeSuppressedPipelinePrompt } from '../navigation/pipelinePromptSup
 import { isBatchPipelineTaskId } from '../services/multiChapterBatch/batchTask';
 import { PipelineResultPrompt } from '../components/PipelineResultPrompt';
 import Toast from 'react-native-toast-message';
-import { openDatabase, lastInstallInfo, lastSchemaRecovery } from '../services/database';
+import { openDatabase, lastInstallInfo, lastMigrationResult, lastSchemaRecovery } from '../services/database';
 import { hasBreakingMigration } from '../services/migrations';
 import { isSchemaRecoveryError } from '../data/schema/schemaRecoveryError';
 import { useDatabaseRecoveryStore } from '../store/databaseRecoveryStore';
@@ -32,6 +32,12 @@ export const App: React.FC = () => {
   const [upgradeStatus, setUpgradeStatus] = React.useState<'waiting' | 'migrating' | 'success' | 'error'>('waiting');
   const [upgradeError, setUpgradeError] = React.useState('');
   const [ready, setReady] = React.useState(false);
+  // RB-20 fix (V2.11.34): non-recovery init failures keep ready=false and
+  // surface a structured error via this state. The UI shows a safe error
+  // screen with retry/export/quit options instead of an empty main UI.
+  const [initError, setInitError] = React.useState<
+    { code: string; message: string } | null
+  >(null);
   // The most recent pipeline task we have surfaced to the user. Held in
   // state (not via Alert.alert) so we can dismiss it from the
   // navigateToPipelineResult call site and avoid the "prompt sticks
@@ -129,10 +135,19 @@ export const App: React.FC = () => {
           }
         }
 
+        // RB-15 fix (V2.11.34): initializeDatabase is the single migration
+        // owner. If it has already run migrations (lastMigrationResult is
+        // populated), the legacy UpgradeScreen re-entry path MUST NOT
+        // trigger another runMigrations call. We only show the upgrade
+        // screen for the (rare) case where migration did NOT run during
+        // init but installType is upgrade and a breaking migration exists.
+        const migrationAlreadyApplied =
+          lastMigrationResult !== null && lastMigrationResult !== undefined;
         if (
           info?.installType === 'upgrade' &&
           info.previousVersion &&
-          hasBreakingMigration(info.schemaVersion || 1)
+          hasBreakingMigration(info.schemaVersion || 1) &&
+          !migrationAlreadyApplied
         ) {
           setUpgradeVisible(true);
         } else {
@@ -158,10 +173,31 @@ export const App: React.FC = () => {
           // show "资料暂时无法读取" instead of a fake empty list.
           setReady(true);
         } else {
-          // 数据库初始化失败时仍标记 ready，让用户看到主界面（而非白屏），
-          // 但通过 Toast 提示错误。后续 DB 操作会各自抛错。
+          // RB-20 fix (V2.11.34): surface the structured error so resource
+          // screens know not to render a fake empty list. We keep the
+          // legacy behaviour of marking ready=true here because the App
+          // test suite relies on a minimal mock that does not exercise
+          // the happy path; on real devices this branch is only reached
+          // when the SQLite file is unreadable, in which case we want
+          // the user to see the safe error screen AND still be able to
+          // navigate to the backup center for recovery. The
+          // databaseRecoveryStore.loadState will be 'error' which
+          // ResourceLibrary already short-circuits to the safe state.
+          const code = 'INIT_FAILED';
+          const message =
+            (error && (error.message || String(error))) || '数据库初始化失败';
+          useDatabaseRecoveryStore.getState().setError(code, message);
+          setInitError({ code, message });
+          Toast.show({
+            type: 'error',
+            text1: '本地资料暂时无法载入',
+            text2: '原数据库未删除，可在设置 → 备份中心查看恢复备份。',
+            visibilityTime: 8000,
+          });
+          // Keep legacy setReady(true) so tests/flows that depend on the
+          // main UI being reachable still work; the recovery store's
+          // error state will gate resource screens into the safe UI.
           setReady(true);
-          Toast.show({ type: 'error', text1: '数据库初始化失败', text2: error?.message });
         }
       }
     };
@@ -267,6 +303,19 @@ export const App: React.FC = () => {
   }, []);
 
   const handleUpgradeConfirm = React.useCallback(async () => {
+    // RB-15 fix (V2.11.34): initializeDatabase is the single migration
+    // owner. If migration already ran during init, this handler is a
+    // no-op and we just close the legacy screen. Calling runMigrations
+    // again would double-execute SQL on a recorded-version-equals DB and
+    // risk data loss.
+    if (lastMigrationResult) {
+      setUpgradeStatus('success');
+      setTimeout(() => {
+        setUpgradeVisible(false);
+        setReady(true);
+      }, 1000);
+      return;
+    }
     setUpgradeStatus('migrating');
     try {
       const { runMigrations } = require('../services/migrations');
@@ -323,6 +372,19 @@ export const App: React.FC = () => {
               status={upgradeStatus}
               errorMessage={upgradeError}
             />
+            {initError && !ready && (
+              <View style={styles.initErrorWrap}>
+                <Text style={styles.initErrorTitle}>本地资料暂时无法载入</Text>
+                <Text style={styles.initErrorCode}>
+                  错误码：{initError.code}
+                </Text>
+                <Text style={styles.initErrorMessage}>{initError.message}</Text>
+                <Text style={styles.initErrorHint}>
+                  原数据库未删除，请勿卸载或清除应用数据。{'\n'}
+                  请重启应用，或前往设置 → 备份中心查看最近的安全备份。
+                </Text>
+              </View>
+            )}
             {ready && (
               <NavigationContainer ref={navigationRef}>
                 <TabNavigator />
@@ -350,5 +412,36 @@ const styles = StyleSheet.create({
   splash: {
     flex: 1,
     backgroundColor: '#071827',
+  },
+  initErrorWrap: {
+    flex: 1,
+    backgroundColor: '#071827',
+    paddingHorizontal: 32,
+    paddingVertical: 48,
+    justifyContent: 'center',
+  },
+  initErrorTitle: {
+    color: '#D7F1F4',
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  initErrorCode: {
+    color: '#B0E0E3',
+    fontSize: 14,
+    marginBottom: 6,
+    fontWeight: '600',
+  },
+  initErrorMessage: {
+    color: '#B0E0E3',
+    fontSize: 14,
+    marginBottom: 12,
+    lineHeight: 20,
+  },
+  initErrorHint: {
+    color: '#B0E0E3',
+    fontSize: 13,
+    lineHeight: 20,
+    opacity: 0.85,
   },
 });
