@@ -16,6 +16,89 @@ const MAX_SCHEMA_RECOVERY_BACKUPS = 5;
 
 type BackupKind = 'automatic' | 'manual' | 'pre_restore' | 'pre_migration' | 'schema_recovery';
 
+// ---------------------------------------------------------------------------
+// CL-08: sidecar metadata for the Backup Center list.
+//
+// listBackups() must NEVER read + JSON.parse a complete backup (10 × 100MB is
+// a guaranteed freeze). Every backup gets a tiny `backup_xxx.json.meta.json`
+// sidecar written right after the backup file; the list reads only
+// readDir + stat + the small sidecar. Legacy backups without a sidecar are
+// shown immediately from filename/mtime/size and backfilled in the background
+// via `backfillBackupMeta`.
+// ---------------------------------------------------------------------------
+
+export const BACKUP_SIDECAR_SUFFIX = '.meta.json';
+
+export interface BackupSidecarMeta {
+  formatVersion: 1;
+  kind: BackupKind;
+  appVersion: string;
+  schemaVersion: number;
+  createdAt: string;
+  size: number;
+  checksum: string;
+  validationState: 'created';
+}
+
+export function sidecarPathFor(backupPath: string): string {
+  return `${backupPath}${BACKUP_SIDECAR_SUFFIX}`;
+}
+
+async function writeBackupSidecar(
+  filePath: string,
+  meta: Omit<BackupSidecarMeta, 'formatVersion'>,
+): Promise<void> {
+  const sidecar: BackupSidecarMeta = { formatVersion: 1, ...meta };
+  await RNFS.writeFile(sidecarPathFor(filePath), JSON.stringify(sidecar), 'utf8');
+}
+
+/** Parse a sidecar file defensively; null when absent or malformed. */
+export async function readBackupSidecar(
+  sidecarPath: string,
+): Promise<BackupSidecarMeta | null> {
+  try {
+    const raw = await RNFS.readFile(sidecarPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      parsed.formatVersion === 1 &&
+      typeof parsed.createdAt === 'string'
+    ) {
+      return parsed as BackupSidecarMeta;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Backfill a sidecar for a legacy backup (no sidecar on disk). Reads the full
+ * backup ONCE — the Backup Center calls this in the background AFTER the list
+ * has already rendered from filename/mtime/size, never on the list hot path.
+ */
+export async function backfillBackupMeta(backupPath: string): Promise<void> {
+  try {
+    const exists = await RNFS.exists(sidecarPathFor(backupPath));
+    if (exists) return;
+    const stat = await RNFS.stat(backupPath);
+    const { parsed } = await readAndValidateBackup(backupPath);
+    if (!parsed) return;
+    await writeBackupSidecar(backupPath, {
+      kind: parsed.kind,
+      appVersion: parsed.appVersion,
+      schemaVersion: parsed.schemaVersion,
+      createdAt: parsed.createdAt,
+      size: Number(stat.size ?? 0),
+      checksum: '',
+      validationState: 'created',
+    });
+  } catch {
+    // best-effort — the list keeps working without the sidecar
+  }
+}
+
 /**
  * These tables are the compatibility floor for v1/v2 backups. Newer tables
  * are optional when reading an older backup and are left untouched on restore.
@@ -60,6 +143,9 @@ export interface BackupSummary {
   createdAt: string;
   size: number;
   valid: boolean;
+  /** CL-08: legacy backup without a sidecar yet — shown from
+   *  filename/mtime/size; the UI backfills the sidecar in the background. */
+  metaPending?: boolean;
 }
 
 export interface BackupValidation {
@@ -348,7 +434,13 @@ async function allRows(db: SQLite.SQLiteDatabase, table: string): Promise<Record
   return rows;
 }
 
-async function readBackupTables(db: SQLite.SQLiteDatabase): Promise<Record<string, Record<string, any>[]>> {
+/**
+ * Read every manifest table into the serialization shape. Core tables missing
+ * on a pre-manifest database throw (fail-closed); optional tables are skipped
+ * as empty arrays. Exported for the CL-09 schema-recovery writer so it can
+ * build the payload with a single read pass.
+ */
+export async function readBackupTables(db: SQLite.SQLiteDatabase): Promise<Record<string, Record<string, any>[]>> {
   const tables: Record<string, Record<string, any>[]> = {};
   for (const table of BACKUP_MANIFEST) {
     try {
@@ -636,6 +728,24 @@ export async function createBackup(
       // original storage error and let the next backup attempt retry cleanly.
     }
     throw error;
+  }
+
+  // CL-08: write the tiny sidecar right after the backup lands so the Backup
+  // Center list never has to read the full file. Best-effort: a missing
+  // sidecar degrades to filename/mtime/size + background backfill.
+  try {
+    const stat = await RNFS.stat(filePath);
+    await writeBackupSidecar(filePath, {
+      kind,
+      appVersion,
+      schemaVersion: Number(schemaVersion),
+      createdAt: meta.created_at,
+      size: Number(stat.size ?? 0),
+      checksum: meta.checksum,
+      validationState: 'created',
+    });
+  } catch {
+    // non-fatal — list falls back to legacy display + backfill
   }
 
   // 阶段 4：清理旧备份（99% → 100%）。
@@ -945,48 +1055,47 @@ export async function listBackups(): Promise<BackupSummary[]> {
   try {
     await RNFS.mkdir(BACKUP_DIR);
     const files = await RNFS.readDir(BACKUP_DIR);
-    const jsonFiles = files.filter(file => file.name.endsWith('.json'));
+    // CL-08: only complete backup JSON files are listed; sidecar files
+    // (*.json.meta.json) are consumed, never listed.
+    const jsonFiles = files.filter(
+      file => file.name.endsWith('.json') && !file.name.endsWith(BACKUP_SIDECAR_SUFFIX),
+    );
     const summaries: BackupSummary[] = [];
 
     for (const file of jsonFiles) {
       try {
-        const content = await RNFS.readFile(file.path, 'utf8');
-        const backup = JSON.parse(content);
-        let kind: BackupKind = 'automatic';
-        let appVersion = '';
-        let schemaVersion = 0;
-        let createdAt = '';
-
-        if (backup.format === 'shinewriter-backup' && backup.format_version >= 2) {
-          kind = normalizeKind(backup.meta?.kind);
-          appVersion = backup.meta?.app_version || '';
-          schemaVersion = Number(backup.meta?.schema_version || 0);
-          createdAt = backup.meta?.created_at || '';
-        } else {
-          if (file.name.startsWith('manual_')) kind = 'manual';
-          if (file.name.startsWith('prerestore_')) kind = 'pre_restore';
-          if (file.name.startsWith('premigration_')) kind = 'pre_migration';
-          if (file.name.startsWith('schemarecovery_')) kind = 'schema_recovery';
-          appVersion = backup.meta?.app_version || '';
-          schemaVersion = Number(backup.meta?.schema_version || 0);
-          createdAt = backup.meta?.backup_date || '';
+        // 1. Tiny sidecar (readDir/stat + small meta only — NEVER the full
+        //    backup JSON on the list hot path).
+        const sidecar = await readBackupSidecar(sidecarPathFor(file.path));
+        if (sidecar) {
+          summaries.push({
+            path: file.path,
+            kind: sidecar.kind,
+            appVersion: sidecar.appVersion,
+            schemaVersion: sidecar.schemaVersion,
+            createdAt: sidecar.createdAt || new Date(file.mtime || 0).toISOString(),
+            size: sidecar.size || file.size,
+            valid: true,
+          });
+          continue;
         }
-
-        // 列表只做轻量结构校验，SHA-256 校验延迟到恢复时（restoreFromBackup）。
-        // 原 listBackups 对每个备份都跑一次完整 SHA-256，是"一按备份就卡死"的根因。
-        const structValid = !!(
-          backup.format === 'shinewriter-backup'
-          && backup.format_version
-          && backup.meta
-        );
+        // 2. Legacy backup without a sidecar: display immediately from
+        //    filename / mtime / size; the UI backfills the sidecar in the
+        //    background (backfillBackupMeta) — never block the list.
+        let kind: BackupKind = 'automatic';
+        if (file.name.startsWith('manual_')) kind = 'manual';
+        if (file.name.startsWith('prerestore_')) kind = 'pre_restore';
+        if (file.name.startsWith('premigration_')) kind = 'pre_migration';
+        if (file.name.startsWith('schemarecovery_')) kind = 'schema_recovery';
         summaries.push({
           path: file.path,
           kind,
-          appVersion,
-          schemaVersion,
-          createdAt: createdAt || new Date(file.mtime || 0).toISOString(),
+          appVersion: '',
+          schemaVersion: 0,
+          createdAt: new Date(file.mtime || 0).toISOString(),
           size: file.size,
-          valid: structValid,
+          valid: true,
+          metaPending: true,
         });
       } catch {
         summaries.push({
