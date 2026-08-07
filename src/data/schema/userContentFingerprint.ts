@@ -174,6 +174,15 @@ export interface ContentFingerprintTable {
   columnAggregates: Record<string, string>;
   /** Per-row hash map (stable key → row hash). Empty when rowCount > cap. */
   rowHashes: Map<string, string>;
+  /**
+   * Per-row PER-COLUMN value hashes keyed by stable row key
+   * (column → sha256(value)). Lets the comparator re-derive a shared-column
+   * row hash under a DIFFERENT column set: shared columns are taken from the
+   * BEFORE snapshot's column set, so a cross-row content swap flips the
+   * row-key-bound hash even when the sorted per-column value sets match
+   * (F2-03). Only populated when rowCount <= MAX_ROW_HASH_MAP_ROWS.
+   */
+  rowColumnHashes: Map<string, Record<string, string>>;
   /** Aggregate SHA-256 over (rowCount, sorted row hashes). */
   aggregateHash: string;
 }
@@ -248,6 +257,7 @@ export async function captureUserContentFingerprint(
         columnsUsed: [],
         columnAggregates: {},
         rowHashes: new Map(),
+        rowColumnHashes: new Map(),
         aggregateHash: sha256Hex('missing-table'),
       };
       tableAggregates.push(`${spec.label}:${sha256Hex('missing-table')}`);
@@ -282,25 +292,40 @@ export async function captureUserContentFingerprint(
     const rows: Array<{ key: string; hash: string }> = [];
     // Per-column value hashes for column-set alignment (bounded by the cap).
     const columnValues: Record<string, string[]> = {};
+    // Per-row per-column hashes for row-key-bound shared-column comparison
+    // under differing column sets (F2-03).
+    const rowColumnValueHashes: Array<{
+      key: string;
+      values: Record<string, string>;
+    }> = [];
     for (const column of available) columnValues[column] = [];
 
     for (let i = 0; i < result.rows.length; i += 1) {
       const row = result.rows.item(i) as Record<string, unknown>;
       rows.push({ key: rowKeyOf(spec, row), hash: rowHash(spec, row, missingColumns) });
+      const perRow: Record<string, string> = {};
       for (const column of available) {
-        columnValues[column].push(
-          sha256Hex(normalizeFingerprintValue(row[column])),
-        );
+        const valueHash = sha256Hex(normalizeFingerprintValue(row[column]));
+        columnValues[column].push(valueHash);
+        perRow[column] = valueHash;
       }
+      rowColumnValueHashes.push({ key: rowKeyOf(spec, row), values: perRow });
     }
     // Stable sort by key before hashing — insertion order must not matter.
     rows.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    rowColumnValueHashes.sort((a, b) =>
+      a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
+    );
 
     const rowHashes = new Map<string, string>();
+    const rowColumnHashes = new Map<string, Record<string, string>>();
     const columnAggregates: Record<string, string> = {};
     const bounded = rows.length <= MAX_ROW_HASH_MAP_ROWS;
     if (bounded) {
       for (const row of rows) rowHashes.set(row.key, row.hash);
+      for (const row of rowColumnValueHashes) {
+        rowColumnHashes.set(row.key, row.values);
+      }
       for (const [column, values] of Object.entries(columnValues)) {
         values.sort();
         columnAggregates[column] = sha256Hex(JSON.stringify(values));
@@ -315,6 +340,7 @@ export async function captureUserContentFingerprint(
       columnsUsed: [...available].sort(),
       columnAggregates,
       rowHashes,
+      rowColumnHashes,
       aggregateHash,
     };
     tableAggregates.push(`${spec.label}:${aggregateHash}`);
@@ -412,9 +438,63 @@ export function compareUserContentFingerprints(
       Object.keys(afterTable.columnAggregates).length > 0;
 
     if (allow || !sameColumnSet) {
-      // Allowlist (collection_id 归一化) or migrated column set: compare the
-      // shared columns via per-column aggregates. Row hashes embed the raw
-      // (un-filtered) columns and are NOT comparable in these modes.
+      // Allowlist (collection_id 归一化) or migrated column set. The shared
+      // columns are taken from the BEFORE snapshot's column set; every
+      // before-column still exists after (removal is already a hard fail).
+      // Row-key-bound comparison proves per-row content stability — a
+      // cross-row swap flips it even when the sorted per-column value sets
+      // match (F2-03).
+      const beforeRows =
+        beforeTable.rowHashes.size === beforeTable.rowCount &&
+        beforeTable.rowColumnHashes &&
+        beforeTable.rowColumnHashes.size === beforeTable.rowCount;
+      const afterRows =
+        afterTable.rowHashes.size === afterTable.rowCount &&
+        afterTable.rowColumnHashes &&
+        afterTable.rowColumnHashes.size === afterTable.rowCount;
+      if (beforeRows && afterRows) {
+        for (const [key, beforeValues] of beforeTable.rowColumnHashes) {
+          const afterValues = afterTable.rowColumnHashes.get(key);
+          if (!afterValues) {
+            return {
+              table: spec.label,
+              reason: 'row_content',
+              rowKey: key,
+              detail: `${spec.table} 行缺失（before 有 after 无）：${key}`,
+            };
+          }
+          const sharedBefore = beforeColumns.map(
+            c => `${c}=${beforeValues[c]}`,
+          );
+          const sharedAfter = beforeColumns.map(c => `${c}=${afterValues[c]}`);
+          if (sha256Hex(sharedBefore.join('\u0001')) !== sha256Hex(sharedAfter.join('\u0001'))) {
+            const diffColumn = beforeColumns.find(
+              c => beforeValues[c] !== afterValues[c],
+            );
+            return {
+              table: spec.label,
+              reason: 'row_content',
+              rowKey: key,
+              detail: `${spec.table} 行内容变化：${key}（列 ${diffColumn ?? '?'}）`,
+            };
+          }
+        }
+        for (const key of afterTable.rowColumnHashes.keys()) {
+          if (!beforeTable.rowColumnHashes.has(key)) {
+            return {
+              table: spec.label,
+              reason: 'row_content',
+              rowKey: key,
+              detail: `${spec.table} 新增行（before 无 after 有）：${key}`,
+            };
+          }
+        }
+        continue; // every shared column is byte-identical under its row key
+      }
+      // Unbounded fallback: per-column aggregates only prove value-set
+      // stability, so a cross-row swap may hide here. Keep the fail-closed
+      // shape of the pre-F2-03 behavior for huge tables (row-level maps are
+      // not populated above the cap).
       if (columnAggregatesUsable) {
         for (const column of beforeColumns) {
           if (!afterColumns.includes(column)) {
