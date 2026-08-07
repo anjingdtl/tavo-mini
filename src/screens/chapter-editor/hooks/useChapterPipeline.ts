@@ -489,9 +489,16 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     if (resumable) {
       Alert.alert(
         '从上次失败阶段继续',
-        '检测到上一次流水线进度。选「继续」将复用已完成的检查点，只重跑剩余阶段，避免浪费 API 用量。',
+        '检测到上一次流水线进度。选「继续」将复用已完成的检查点，只重跑剩余阶段，避免浪费 API 用量；也可以先查看任务详情确认失败原因。',
         [
           { text: '取消', style: 'cancel' },
+          {
+            text: '查看任务详情',
+            onPress: () =>
+              navigation.navigate('PipelineResult', {
+                taskId: resumable.id,
+              }),
+          },
           {
             text: '从头开始',
             onPress: () => executeRunPipeline(createTask).catch(() => {}),
