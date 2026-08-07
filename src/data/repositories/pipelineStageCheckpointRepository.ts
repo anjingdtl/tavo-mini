@@ -89,6 +89,41 @@ export async function ensurePendingCheckpoints(
 }
 
 /**
+ * F2-07: whether any stage checkpoint of the task ever succeeded. Batch
+ * resume uses this to decide between continuing the failed task from its
+ * failed stage (reuses succeeded draft/review/factCheck output + frozen
+ * request) vs a brand-new run that regenerates every stage.
+ */
+export async function hasSucceededStageCheckpoints(
+  taskId: string,
+): Promise<boolean> {
+  const rows = await all<Row>(
+    `SELECT stage FROM pipeline_stage_checkpoints
+     WHERE task_id = ? AND status = 'succeeded'`,
+    [taskId],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * F2-07: reset failed/interrupted/running stage checkpoints back to pending
+ * so a user-confirmed resume re-runs ONLY those stages — the pipeline state
+ * machine skips every succeeded checkpoint and re-uses its frozen request.
+ * Never touches succeeded rows.
+ */
+export async function resetFailedStageCheckpointsForResume(
+  taskId: string,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    `UPDATE pipeline_stage_checkpoints
+     SET status = 'pending', error_code = NULL, error_message = NULL, updated_at = ?
+     WHERE task_id = ? AND status IN ('failed', 'interrupted', 'running')`,
+    [Date.now(), taskId],
+  );
+}
+
+/**
  * Upsert a stage result. Must be awaited on the critical path.
  * Throws if write does not affect a row after insert/update.
  */

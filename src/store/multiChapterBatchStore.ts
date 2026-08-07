@@ -16,6 +16,11 @@ import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, c
 import { resolveLLMRequestConfig } from '../services/llm';
 import { reconcileMultiChapterBatch } from '../services/multiChapterBatch/reconcileMultiChapterBatch';
 import { cancelPipeline, interruptPipelineTask } from '../services/pipelineRunner';
+import {
+  hasSucceededStageCheckpoints,
+  resetFailedStageCheckpointsForResume,
+} from '../data/repositories/pipelineStageCheckpointRepository';
+import { savePipelineTask } from '../data/repositories/pipelineTaskRepository';
 import { getChaptersByProject } from '../data/repositories/projectRepository';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { BATCH_DEFAULT_CHAPTERS, BATCH_DEFAULT_TARGET_WORDS } from '../types/multiChapterBatch';
@@ -361,15 +366,42 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           currentItem.status === 'blocked_batch_budget' ||
           currentItem.status === 'waiting_retry');
       if (needsReset) {
-        // 用户确认继续：解绑失败任务，创建新 run（旧 task/attempt 历史保留
-        // 在 item_runs，审计不丢）；换模型/充值后由新 run 重新生成。
-        await batchRepo.updateBatchItem(batchId, currentItem.ordinal, {
-          status: 'running_pipeline',
-          activePipelineTaskId: null,
-          errorCode: null,
-          errorMessage: null,
-          nextRetryAt: null,
-        });
+        // F2-07: 若旧任务已有成功阶段（例如 network_error 中断在终审，
+        // draft/review/factCheck 已成功），"确认后继续"保留任务、重置失败
+        // stage 为 pending、task 转 interrupted —— pipeline 状态机只重跑
+        // 失败阶段（复用 frozen request），不再从头生成已成功的阶段（避免
+        // token 浪费）。无任何成功阶段时才解绑创建全新 run（旧 task/attempt
+        // 历史保留在 item_runs，审计不丢）。
+        const taskId = currentItem.activePipelineTaskId;
+        if (taskId != null && (await hasSucceededStageCheckpoints(taskId))) {
+          await resetFailedStageCheckpointsForResume(taskId);
+          await savePipelineTask({
+            id: taskId,
+            targetType: 'chapter',
+            targetId: currentItem.chapterId ?? 0,
+            status: 'interrupted',
+            stageResults: [],
+            finalText: null,
+            error: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            resolvedAt: null,
+          });
+          await batchRepo.updateBatchItem(batchId, currentItem.ordinal, {
+            status: 'running_pipeline',
+            errorCode: null,
+            errorMessage: null,
+            nextRetryAt: null,
+          });
+        } else {
+          await batchRepo.updateBatchItem(batchId, currentItem.ordinal, {
+            status: 'running_pipeline',
+            activePipelineTaskId: null,
+            errorCode: null,
+            errorMessage: null,
+            nextRetryAt: null,
+          });
+        }
       }
       if (batch.status.startsWith('paused_')) {
         // Re-arm: paused_* → running（reconcile 重新决策；若根因未消除会

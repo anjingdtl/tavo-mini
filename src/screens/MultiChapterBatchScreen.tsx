@@ -21,6 +21,8 @@ import {
 } from 'react-native';
 import { Play, Pause, X, RefreshCw, ListChecks } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { EditorStackParamList } from '../navigation/TabNavigator';
 import { Button, Card, Header, Screen, Section, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
@@ -55,7 +57,8 @@ function useFlag(): boolean {
 }
 
 export function MultiChapterBatchScreen(): React.ReactElement {
-  const navigation = useNavigation();
+  const navigation =
+    useNavigation<NativeStackNavigationProp<EditorStackParamList>>();
   const { theme } = useThemeStore();
   const enabled = useFlag();
   const { currentProject } = useProjectStore();
@@ -392,7 +395,21 @@ export function MultiChapterBatchScreen(): React.ReactElement {
         )}
 
         {view === 'paused' && store.batch && (
-          <PausedView theme={theme} store={store} onResume={handleResume} onCancel={handleCancel} />
+          <PausedView
+            theme={theme}
+            store={store}
+            onResume={handleResume}
+            onCancel={handleCancel}
+            onViewTask={() => {
+              // F2-07: 直达当前章的流水线结果页（查看失败详情/已成功阶段）。
+              const taskId = store.items.find(
+                i => i.ordinal === store.batch!.currentOrdinal,
+              )?.activePipelineTaskId;
+              if (taskId) {
+                navigation.navigate('PipelineResult', { taskId });
+              }
+            }}
+          />
         )}
 
         {view === 'report' && store.batch && (
@@ -576,6 +593,7 @@ function PausedView(props: {
   store: ReturnType<typeof useMultiChapterBatchStore.getState>;
   onResume: () => void;
   onCancel: () => void;
+  onViewTask?: () => void;
 }) {
   const { theme, store } = props;
   const batch = store.batch!;
@@ -597,6 +615,11 @@ function PausedView(props: {
   }
   if (batch.status === 'paused_context_budget') {
     actions.push(['重新编译后继续', props.onResume]);
+  }
+  // F2-07: 结果未知（network_error 等）时提供直达当前章流水线结果页的
+  // 入口，用户可先查看失败详情/已成功阶段，再决定继续方式。
+  if (batch.status === 'paused_timeout_unknown' && props.onViewTask) {
+    actions.push(['查看任务详情', props.onViewTask]);
   }
   actions.push(['结束批次', props.onCancel]);
   return (
