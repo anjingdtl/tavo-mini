@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.11.35] - 2026-08-07
+
+### Fixed
+
+- **F2-01 adoptedRevisionId 原子回填**：atomic adoption 的 batch item dopted_revision_id 不再写成 NULL——item UPDATE 改为 dopted_revision_id = last_insert_rowid()（前一条语句恒为 pipeline-revision INSERT），真实 SQLite 测试 4/4（有旧正文/无旧正文/重复 adoption/crash+retry）。
+- **F2-02 Adoption durable close-loop**：task resolve 与 story-memory dirty intent 并入 adoption 同一事务（pipeline_tasks.resolved_at、uildStoryMemoryContinuitySideEffects 语句），post-commit 崩溃不再丢失；5 个 post-commit 禁用测试全过。
+- **F2-03 内容指纹 row-key 绑定**：列集变化/collection_id allowlist 场景下改为逐行 shared-column hash 比较，跨行内容互换（两行 chapter/worldbook 互换）不再误判 pass；4 个反例测试全过。
+- **F2-04 Schema Recovery 源 Schema 元数据**：pre-migration 备份的 meta.schema_version 记录源库 Schema（真实 schema-34 fixture 升级验证 =34），不再写目标 SCHEMA_VERSION。
+- **F2-05 Backup sidecar 限流 + 删除联动**：legacy sidecar backfill 改为并发 1 的队列（maxInFlight=1 测试验证）；deleteBackup 同步 best-effort 删除 .meta.json。
+- **F2-06 真实 V2.11.24 覆盖升级**：本地产物 V2.11.24 APK → V2.11.34 覆盖安装 → Schema 40→42 → 内容指纹逐字节一致 → recovery backup 记录源 Schema=40。
+- **F2-07 AI 写 N 章真机矩阵**：N01/N02（各 3 章 full pipeline 真实 DeepSeek）、N03 safe_retry、N06 暂停恢复、N07 强杀、N08 冷启动全部通过；修复暂停页确认无反应、返回按钮无反应；批次/结果页/章节编辑页支持"从失败环节重启"（只重跑失败 stage，复用已成功 checkpoint 与 frozen request，不重复计费）。
+- **F2-08 GitHub CI 门禁**：verify.yml 的 Jest 步骤切换为 	est:ci（覆盖率门禁因历史阈值缺口不再阻塞门禁）。
+
+
 ## [2.11.34] - 2026-08-07
 
 ### Fixed

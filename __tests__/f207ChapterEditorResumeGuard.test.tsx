@@ -8,7 +8,6 @@
  *   - 查看任务详情：直达流水线结果页
  * 修复前无任何提示，用户直接新建任务重复调用流水线浪费 token。
  */
-import React from 'react';
 import { renderHook, act } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 

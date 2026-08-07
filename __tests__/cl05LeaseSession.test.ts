@@ -14,7 +14,6 @@
 import { __setDatabaseForTest, __resetForTest } from '../src/data/connection/openDatabase';
 import { execute } from '../src/data/connection/execute';
 import { openDatabase } from '../src/data/connection/openDatabase';
-import { all } from '../src/data/connection/query';
 import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import type { InMemorySqliteDb } from './helpers/canonInMemoryDb';
 import {
