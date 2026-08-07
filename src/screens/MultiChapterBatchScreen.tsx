@@ -20,6 +20,7 @@ import {
   View,
 } from 'react-native';
 import { Play, Pause, X, RefreshCw, ListChecks } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
 import { Button, Card, Header, Screen, Section, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
@@ -54,6 +55,7 @@ function useFlag(): boolean {
 }
 
 export function MultiChapterBatchScreen(): React.ReactElement {
+  const navigation = useNavigation();
   const { theme } = useThemeStore();
   const enabled = useFlag();
   const { currentProject } = useProjectStore();
@@ -255,8 +257,18 @@ export function MultiChapterBatchScreen(): React.ReactElement {
             variant="ghost"
             compact
             onPress={() => {
+              // F2-07: running/paused 视图的返回必须真正离开批次页（goBack），
+              // 批次在后台继续。原实现 setView('create') + loadActiveBatchForProject
+              // 会把运行中的批次重新加载进 store，view effect 又强制切回 running，
+              // 导致按钮"无反应"。创建/预览视图保持清表单回到创建页。
+              if (view === 'running' || view === 'paused') {
+                navigation.goBack();
+                return;
+              }
               setView('create');
-              store.loadActiveBatchForProject(currentProject?.id ?? 0).catch(() => {});
+              store.loadActiveBatchForProject(
+                currentProject?.id ?? 0,
+              ).catch(() => {});
             }}
           />
         }

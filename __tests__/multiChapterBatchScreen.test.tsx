@@ -35,6 +35,11 @@ jest.mock('../src/store/projectStore', () => ({
   }),
 }));
 
+const mockGoBack = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({ goBack: (...args: any[]) => mockGoBack(...args) }),
+}));
+
 const mockLoadActive = jest.fn();
 jest.mock('../src/store/multiChapterBatchStore', () => ({
   useMultiChapterBatchStore: () => ({
