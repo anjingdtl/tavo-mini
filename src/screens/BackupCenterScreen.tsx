@@ -6,7 +6,7 @@ import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from 
 import { useThemeStore } from '../store/themeStore';
 import {
   listBackups,
-  backfillBackupMeta,
+  backfillBackupMetaQueued,
   createManualBackup,
   restoreFromBackup,
   deleteBackup,
@@ -62,12 +62,12 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
       // CL-08: legacy backups without a sidecar are ALREADY rendered from
       // filename/mtime/size; backfill their sidecars in the background so
       // the next visit is fully sidecar-driven (never block the list).
+      // F2-05: bounded-concurrency queue (default 1) — Promise.all would
+      // full-read every legacy backup simultaneously.
       const pending = list.filter(item => item.metaPending);
       if (pending.length > 0) {
-        void Promise.all(
-          pending.map(item =>
-            backfillBackupMeta(item.path).catch(() => undefined),
-          ),
+        void backfillBackupMetaQueued(pending.map(item => item.path)).catch(
+          () => undefined,
         );
       }
     } catch (e: any) {

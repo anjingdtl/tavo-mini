@@ -690,11 +690,16 @@ describe('backupService', () => {
     (RNFS.readFile as jest.Mock).mockResolvedValue(JSON.stringify(backup));
 
     await cleanupOldBackups();
-    expect(RNFS.unlink).toHaveBeenCalledTimes(1);
+    // F2-05: deleteBackup removes the backup AND its .meta.json sidecar.
+    expect(RNFS.unlink).toHaveBeenCalledTimes(2);
   });
 
   test('deleteBackup only removes existing files', async () => {
-    (RNFS.exists as jest.Mock).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    (RNFS.exists as jest.Mock)
+      .mockResolvedValueOnce(true) // backup.json exists
+      .mockResolvedValueOnce(false) // its sidecar does not
+      .mockResolvedValueOnce(false) // missing.json does not exist
+      .mockResolvedValueOnce(false); // nor its sidecar
     await deleteBackup('/a/backup.json');
     await deleteBackup('/a/missing.json');
     expect(RNFS.unlink).toHaveBeenCalledTimes(1);
