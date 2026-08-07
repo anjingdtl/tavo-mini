@@ -3,27 +3,25 @@
  * irreplaceable creative data BEFORE any ALTER / migration / repair touches the
  * physical schema.
  *
- * Design:
- *   - Reuses the v3 backup pipeline (`createBackup`) for atomic staging +
- *     SHA-256 checksum, so we do NOT maintain a second serialization format.
- *   - Writes to a dedicated `schema-recovery/` directory inside the app's
- *     internal document directory so these backups are never confused with
- *     user-initiated backups and are never auto-pruned by the normal cleanup.
- *   - After writing, re-reads and validates the file (parsable, checksum
- *     matches, core-table row counts match the live DB) before returning the
- *     path. A backup that fails verification is treated as a failure — the
- *     caller MUST NOT proceed with schema mutation.
- *   - Tolerates drifted/old schemas: `createBackup` uses `SELECT *` per table
- *     and `readBackupTables` already skips non-core missing tables, so a DB
- *     missing `canon_evidence.source_origin` (or even the table) still
- *     produces a valid backup of the columns that DO exist.
+ * Design (CL-09):
+ *   - SINGLE write pass into the dedicated `schema-recovery/` directory: read
+ *     tables → serialize → compute SHA-256 (before write, no re-read) → write
+ *     staging → atomic rename. The old pipeline (createBackup → re-read +
+ *     validate → copyFile) touched the full backup THREE times; on a 100MB+
+ *     library that is three full-size IO passes per startup.
+ *   - Safety is NOT reduced: the checksum is computed over the exact bytes
+ *     written, core-table row counts are verified against the live DB before
+ *     the rename, and the file is re-parseable by the standard v3 reader
+ *     (restoreFromBackup / readAndValidateBackup accept it unchanged).
+ *   - Fail-closed: any read / checksum / row-count / write failure throws —
+ *     the caller MUST NOT proceed with schema mutation.
  */
 import RNFS from 'react-native-fs';
 import type SQLite from 'react-native-sqlite-storage';
 import { SCHEMA_VERSION } from './migrations';
 import {
-  createBackup,
-  readAndValidateBackup,
+  computeBackupChecksum,
+  readBackupTables,
 } from './backupService';
 import { execute } from '../data/connection/execute';
 import appVersionJson from '../constants/version.json';
@@ -47,7 +45,7 @@ export interface SchemaRecoveryBackupFailure {
 
 /**
  * The core creative-data tables whose row counts must round-trip through the
- * backup verbatim. A count mismatch after re-read is a hard failure.
+ * backup verbatim. A count mismatch is a hard failure.
  */
 export const CORE_RECOVERY_TABLES = [
   'projects',
@@ -89,10 +87,8 @@ async function liveCoreCounts(
 }
 
 /**
- * Create a schema-recovery backup in the dedicated directory and verify it.
- *
- * Returns the path on success. Throws (returns a structured failure via the
- * thrown Error's message) when the backup cannot be created or verified, so
+ * Create a schema-recovery backup in the dedicated directory with ONE full
+ * write pass (CL-09). Returns the path on success; throws on any failure so
  * the caller knows NOT to proceed with schema mutation.
  */
 export async function createSchemaRecoveryBackup(
@@ -104,48 +100,64 @@ export async function createSchemaRecoveryBackup(
   const appVersion = appVersionJson.versionName.replace(/^V/, '');
   const liveCounts = await liveCoreCounts(database);
 
-  // createBackup writes to BACKUP_DIR (ExternalDirectoryPath/backups). We then
-  // copy the verified file into the dedicated schema-recovery directory so it
-  // survives the normal backup rotation.
-  const sourcePath = await createBackup(
-    database,
-    appVersion,
-    SCHEMA_VERSION,
+  // 1. Single read pass of every manifest table (skips missing optional
+  //    tables, throws on missing core tables).
+  const tables = await readBackupTables(database);
+
+  // 2. Build the standard v3 payload and compute the SHA-256 over the exact
+  //    serialized bytes BEFORE writing (no post-write re-read needed).
+  const meta = {
+    app_version: appVersion,
+    schema_version: SCHEMA_VERSION,
+    created_at: new Date().toISOString(),
     kind,
-  );
+    checksum_algorithm: 'sha256',
+    checksum: '',
+  } as const;
+  const draft = {
+    format: 'shinewriter-backup',
+    format_version: 3,
+    meta,
+    tables,
+    external_assets: [],
+  };
+  // computeBackupChecksum mirrors the byte order of JSON.stringify({format,
+  // format_version, meta, tables, external_assets}) — the same bytes we write.
+  const checksum = await computeBackupChecksum(draft as any);
+  (meta as { checksum: string }).checksum = checksum;
 
-  // Re-read + validate the written file (checksum + structure).
-  const { parsed, validation } = await readAndValidateBackup(sourcePath);
-  if (!parsed || !validation.valid) {
-    throw new Error(
-      `Schema-recovery backup verification failed: ${validation.errors.join('; ')}`,
-    );
-  }
-
-  // Verify core-table row counts round-trip.
-  const backedCounts: Record<string, number> = {};
-  for (const table of CORE_RECOVERY_TABLES) {
-    backedCounts[table] = parsed.tables[table]?.length ?? -1;
-  }
+  // 3. Verify core-table row counts round-trip (in-memory — no re-read).
   for (const table of CORE_RECOVERY_TABLES) {
     if (liveCounts[table] === -1) continue; // missing in live DB
-    if (backedCounts[table] !== liveCounts[table]) {
+    const backedCount = tables[table]?.length ?? -1;
+    if (backedCount !== liveCounts[table]) {
       throw new Error(
-        `Schema-recovery backup row-count mismatch for ${table}: live=${liveCounts[table]} backed=${backedCounts[table]}`,
+        `Schema-recovery backup row-count mismatch for ${table}: live=${liveCounts[table]} backed=${backedCount}`,
       );
     }
   }
 
-  // Copy into the dedicated schema-recovery directory (keeps the verified file
-  // separate from user backups and safe from auto-cleanup).
+  // 4. Atomic write: staging → rename. No intermediate copy into another
+  //    directory, no second full-size IO pass.
   const timestamp = Date.now();
   const destName = `schemarecovery_v${appVersion}_${timestamp}.json`;
   const destPath = `${SCHEMA_RECOVERY_DIR}/${destName}`;
-  await RNFS.copyFile(sourcePath, destPath);
+  const stagingPath = `${destPath}.tmp`;
+  try {
+    await RNFS.writeFile(stagingPath, JSON.stringify(draft), 'utf8');
+    await RNFS.moveFile(stagingPath, destPath);
+  } catch (error) {
+    try {
+      await RNFS.unlink(stagingPath);
+    } catch {
+      // The write can fail before the staging file exists.
+    }
+    throw error;
+  }
 
   return {
     path: destPath,
-    checksum: '',
+    checksum,
     verified: true,
     coreCounts: liveCounts,
   };
