@@ -402,18 +402,53 @@ export async function updateBatchBudget(
  * — the 线程被占用 user report).
  *
  * Covered states:
- *   - running / waiting_retry                     → paused_user
+ *   - running                                       → paused_user
+ *   - paused_* (any flavour): clear the dead lease
+ *     so the next 开始批量写作 CAS can succeed. Status
+ *     is preserved — user intent is already captured
+ *     in the persisted status.
  *   - ready with execution traces (an item already
  *     created a chapter / bound a task / moved off
  *     pending — the reconciler started, status only
  *     flips to running on the first adoption)      → paused_user
  *   - ready with zero execution (fresh confirmed
- *     plan)                                        → untouched
+ *     plan)                                         → untouched
+ *   - waiting_retry: KEEP THE STATUS. The persisted
+ *     `next_retry_at` is the durable retry schedule;
+ *     parking it to paused_user would force the user
+ *     to click "确认后继续" to drive the retry, defeating
+ *     the whole auto-retry path. Only the stale lease
+ *     (dead owner) is cleared.
  */
 export async function pauseInterruptedBatches(
   now = Date.now(),
 ): Promise<number> {
-  const result = await execute(
+  // waiting_retry: clear dead lease, keep status.
+  const waiting = await execute(
+    await openDatabase(),
+    `UPDATE multi_chapter_batches
+     SET lease_owner = NULL,
+         lease_expires_at = NULL,
+         updated_at = ?
+     WHERE status = 'waiting_retry'
+       AND lease_owner IS NOT NULL`,
+    [now],
+  );
+  // paused_*: clear the lease unconditionally — paused status already
+  // implies the previous executor has stopped, so any remaining lease is
+  // stale by definition. Preserves the user-visible status.
+  const pausedLeaseClear = await execute(
+    await openDatabase(),
+    `UPDATE multi_chapter_batches
+     SET lease_owner = NULL,
+         lease_expires_at = NULL,
+         updated_at = ?
+     WHERE status LIKE 'paused_%'
+       AND lease_owner IS NOT NULL`,
+    [now],
+  );
+  // running + ready-with-traces → paused_user (the legacy RB-5 path).
+  const paused = await execute(
     await openDatabase(),
     `UPDATE multi_chapter_batches
      SET status = 'paused_user',
@@ -423,7 +458,7 @@ export async function pauseInterruptedBatches(
          lease_owner = NULL,
          lease_expires_at = NULL,
          updated_at = ?
-     WHERE status IN ('running', 'waiting_retry')
+     WHERE status = 'running'
         OR (status = 'ready' AND EXISTS (
               SELECT 1 FROM multi_chapter_batch_items
               WHERE batch_id = multi_chapter_batches.id
@@ -433,7 +468,11 @@ export async function pauseInterruptedBatches(
             ))`,
     [now],
   );
-  return result.rowsAffected ?? 0;
+  return (
+    (waiting.rowsAffected ?? 0) +
+    (pausedLeaseClear.rowsAffected ?? 0) +
+    (paused.rowsAffected ?? 0)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -600,6 +639,110 @@ export async function getItemRuns(
     [batchId, ordinal],
   );
   return rows.map(mapRunRow);
+}
+
+/**
+ * Every pipeline_task_id ever bound to any item in this batch (append-only
+ * audit; one row per bind). Used by {@link setBatchUsageFromRuns} to compute
+ * the authoritative batch usage: cross-task, cross-run, crash-safe.
+ */
+export async function getBatchTaskIds(batchId: string): Promise<string[]> {
+  const rows = await all(
+    `SELECT DISTINCT pipeline_task_id FROM multi_chapter_batch_item_runs
+     WHERE batch_id = ? AND pipeline_task_id IS NOT NULL`,
+    [batchId],
+  );
+  return rows.map(r => String(r.pipeline_task_id));
+}
+
+interface AttemptUsageLike {
+  status?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+}
+
+/**
+ * Aggregate a list of stage attempts into billable usage:
+ *   - succeeded: bill input + output tokens
+ *   - safe_to_retry / outcome_unknown / failed / blocked: bill input tokens
+ *     (model billed for the request, even though output may be missing) and
+ *     count the call (no output tokens to bill)
+ *   - cancelled: 0 (caller never confirmed — provider typically does not bill)
+ *
+ * Centralised so the cross-task aggregator and the per-task counter return
+ * the same shape. Defensive against undefined / null tokens.
+ */
+export function summarizeAttemptsUsage(
+  attempts: AttemptUsageLike[],
+): { llmCalls: number; inputTokens: number; outputTokens: number } {
+  let llmCalls = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const attempt of attempts) {
+    llmCalls += 1;
+    const status = String(attempt.status ?? '');
+    const inTok = Number(attempt.inputTokens ?? 0) || 0;
+    const outTok = Number(attempt.outputTokens ?? 0) || 0;
+    if (status === 'succeeded') {
+      inputTokens += inTok;
+      outputTokens += outTok;
+    } else if (status === 'cancelled') {
+      // Cancelled before the model was called → no billable usage.
+      llmCalls -= 1;
+    } else {
+      // safe_to_retry / outcome_unknown / failed / blocked: provider charged
+      // for the request even when output is unusable.
+      inputTokens += inTok;
+    }
+  }
+  return { llmCalls, inputTokens, outputTokens };
+}
+
+/**
+ * Recompute the batch usage from the durable `item_runs.pipeline_task_id`
+ * history (every LLM call ever made on behalf of this batch, including
+ * abandoned runs after user resume). SET (not increment) — repeated reconcile
+ * is idempotent and crash-safe.
+ */
+export async function setBatchUsageFromRuns(batchId: string): Promise<{
+  llmCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+}> {
+  const taskIds = await getBatchTaskIds(batchId);
+  if (taskIds.length === 0) {
+    // No runs yet → leave usage at zero.
+    await execute(
+      await openDatabase(),
+      `UPDATE multi_chapter_batches
+       SET used_llm_calls = 0, used_input_tokens = 0, used_output_tokens = 0, updated_at = ?
+       WHERE id = ?`,
+      [Date.now(), batchId],
+    );
+    return { llmCalls: 0, inputTokens: 0, outputTokens: 0 };
+  }
+  const placeholders = taskIds.map(() => '?').join(',');
+  const rows = await all(
+    `SELECT status, input_tokens, output_tokens
+     FROM pipeline_stage_attempts
+     WHERE pipeline_task_id IN (${placeholders})`,
+    taskIds,
+  );
+  const usage = summarizeAttemptsUsage(
+    rows.map(r => ({
+      status: r.status,
+      inputTokens: r.input_tokens,
+      outputTokens: r.output_tokens,
+    })),
+  );
+  await execute(
+    await openDatabase(),
+    `UPDATE multi_chapter_batches
+     SET used_llm_calls = ?, used_input_tokens = ?, used_output_tokens = ?, updated_at = ?
+     WHERE id = ?`,
+    [usage.llmCalls, usage.inputTokens, usage.outputTokens, Date.now(), batchId],
+  );
+  return usage;
 }
 
 // ---------------------------------------------------------------------------

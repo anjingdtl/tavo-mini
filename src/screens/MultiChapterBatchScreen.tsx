@@ -434,10 +434,14 @@ function RunningView(props: {
   onRefresh: () => void;
 }) {
   const { theme, store } = props;
-  // 心跳：每 2 秒刷新“最后更新”时间，让用户确认批次没有卡死。
-  const [lastTick, setLastTick] = useState(Date.now());
+  // BN-12: the "last update" label must come from the durable SQLite state
+  // (batch.updatedAt / current attempt.last_progress_at), NOT a local clock
+  // that ticks every 2s. The store already mirrors SQLite; we read its
+  // updatedAt here. A local timer is kept only to re-render periodically so
+  // the label visually updates as time passes — but the value is real.
+  const [, setTick] = useState(0);
   useEffect(() => {
-    const timer = setInterval(() => setLastTick(Date.now()), 2000);
+    const timer = setInterval(() => setTick(t => (t + 1) % 1_000_000), 2000);
     return () => clearInterval(timer);
   }, []);
   const batch = store.batch;
@@ -460,9 +464,16 @@ function RunningView(props: {
         100,
     ),
   );
-  const tickLabel = new Date(lastTick).toLocaleTimeString('zh-CN', {
-    hour12: false,
-  });
+  // Real "last update" from batch.updatedAt (mirrors SQLite). If the batch
+  // has not advanced in > 60s, surface a hint that progress may be stalled.
+  const updatedAtMs = Number(batch.updatedAt) || 0;
+  const updatedLabel = updatedAtMs
+    ? new Date(updatedAtMs).toLocaleTimeString('zh-CN', { hour12: false })
+    : '—';
+  const idleSeconds = updatedAtMs
+    ? Math.floor((Date.now() - updatedAtMs) / 1000)
+    : 0;
+  const stalled = idleSeconds >= 60 && batch.status !== 'completed';
   return (
     <>
       <Section title={`批次进度 ${batch.completedCount}/${batch.chapterCount}`}>
@@ -483,7 +494,8 @@ function RunningView(props: {
           />
         </View>
         <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>
-          总进度 {overallPct}% · 最后更新 {tickLabel}
+          总进度 {overallPct}% · 最后更新 {updatedLabel}
+          {stalled ? `（已 ${idleSeconds}s 未更新，可能在等待服务端响应）` : ''}
         </Text>
         <Card style={styles.cardMb}>
           <Text style={[styles.bold, { color: theme.colors.textPrimary }]}>

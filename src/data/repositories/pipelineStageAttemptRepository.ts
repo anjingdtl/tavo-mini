@@ -224,14 +224,24 @@ export async function getRetryDueAttempts(
   return rows.map(mapRow);
 }
 
-/** Latest attempt across all stages of a task (failure classification). */
+/** Latest attempt across all stages of a task (failure classification).
+ *
+ * BN-05: chronological ordering, NOT attempt_no DESC. attempt_no is only
+ * unique WITHIN a (task_id, stage); ordering by it globally would pick
+ * a retry from an earlier stage over the newest attempt of a later
+ * stage (e.g. a successful draft attempt #2 would be picked over a
+ * failing review attempt #1 if the later stage's attempt_no was lower).
+ */
 export async function getLatestAttemptByTask(
   pipelineTaskId: string,
 ): Promise<PipelineStageAttemptRow | null> {
   const row = await one(
     `SELECT * FROM pipeline_stage_attempts
      WHERE pipeline_task_id = ?
-     ORDER BY attempt_no DESC, started_at DESC LIMIT 1`,
+     ORDER BY COALESCE(completed_at, started_at) DESC,
+              started_at DESC,
+              id DESC
+     LIMIT 1`,
     [pipelineTaskId],
   );
   return row ? mapRow(row) : null;

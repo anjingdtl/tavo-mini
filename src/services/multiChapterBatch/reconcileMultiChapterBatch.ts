@@ -21,13 +21,13 @@ import {
   releaseBatchLease,
   updateBatchItem,
   updateBatchStatus,
-  incrementBatchUsage,
+  setBatchUsageFromRuns,
   commitBatchItemAdoption,
   type MultiChapterBatchItemRow,
   type MultiChapterBatchRow,
 } from '../../data/repositories/multiChapterBatchRepository';
 import { getPipelineTaskById } from '../../data/repositories/pipelineTaskRepository';
-import { getLatestAttemptByTask, getTaskAttempts } from '../../data/repositories/pipelineStageAttemptRepository';
+import { getLatestAttemptByTask } from '../../data/repositories/pipelineStageAttemptRepository';
 import { getChaptersByProject } from '../../data/repositories/projectRepository';
 import {
   determineNextBatchAction,
@@ -38,6 +38,7 @@ import { MultiChapterBatchError } from './errors';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { runChapterPipeline, resumePipeline } from '../pipelineRunner';
 import type { StageInfo as PipelineStageInfo } from '../pipelineRunner';
+import { BatchBudgetExceededError } from '../pipeline/reconcile';
 import type { PipelineCheckpointStage } from '../pipeline/types';
 import type { PipelineMode } from '../../types/pipeline';
 import type { PipelineTaskStatus } from '../../types/pipeline';
@@ -106,15 +107,44 @@ async function loadLatestAttempts(
   return { [item.activePipelineTaskId]: attempt };
 }
 
-/** Detect unexpected insertion/reorder at the project tail (doc §25). */
+/** Detect unexpected insertion/reorder at the project tail (doc §25).
+ *
+ * Two checks (both must pass for the project to be considered unchanged):
+ *   1. tail position equals startPosition + completedCount
+ *      (user inserted or deleted a tail chapter)
+ *   2. expectedTailChapterId (frozen on saveEditedPlan) is still present
+ *      and at the expected position — protects against the user deleting
+ *      the tail and creating a new chapter at the same position
+ *
+ * startPosition = -1 is the "empty project" anchor: chapter count grows
+ * from 0; expectedTail = -1 + completedCount = completedCount - 1, which is
+ * the position of the last adopted chapter. The check degenerates to a
+ * pure tail-position check and the id check is skipped when the anchor is
+ * unset (legacy batches) or when no chapters exist yet.
+ */
 async function checkProjectTailDrift(batch: MultiChapterBatchRow): Promise<boolean> {
   if (batch.startPosition == null) return false;
   const chapters = await getChaptersByProject(batch.projectId);
-  const tail = chapters.length > 0
-    ? Math.max(...chapters.map(c => c.position))
-    : -1;
+  if (chapters.length === 0) return false;
+
+  const positions = chapters.map(c => c.position);
+  const tail = Math.max(...positions);
   const expectedTail = batch.startPosition + batch.completedCount;
-  return tail !== expectedTail;
+  if (tail !== expectedTail) return true;
+
+  // Tail chapter id identity check. expectedTailChapterId is the chapter
+  // id that existed at the tail when saveEditedPlan froze the plan. It is
+  // only meaningful while the batch has not appended any chapter of its
+  // own — after the first adoption the tail becomes a batch-owned chapter,
+  // so the original anchor no longer applies. For legacy batches without
+  // an anchor (null), skip the id assertion (position check is enough).
+  if (batch.completedCount === 0 && batch.expectedTailChapterId != null) {
+    const tailChapter = chapters.find(c => c.position === tail);
+    if (!tailChapter || tailChapter.id !== batch.expectedTailChapterId) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function reconcileMultiChapterBatch(
@@ -410,6 +440,7 @@ async function executeBatchAction(params: {
               pipelineModeOverride: mapBatchModeToPipelineMode(
                 batch.pipelineMode,
               ),
+              batchBudgetGate: { batchId },
             })
           : params.resumePipelineImpl(taskId, chapter, notifyStage, {
               queueClass: 'pipeline',
@@ -418,50 +449,73 @@ async function executeBatchAction(params: {
               pipelineModeOverride: mapBatchModeToPipelineMode(
                 batch.pipelineMode,
               ),
+              batchBudgetGate: { batchId },
             });
-      // Heartbeat renewal while a whole chapter pipeline runs (may take
-      // minutes — far beyond the 60s lease): renew every leaseMs/2 so no
-      // second owner can claim mid-chapter. A failed heartbeat only stops
-      // progress on the next loop step (the request itself cannot be
-      // interrupted without corrupting the outcome).
-      const heartbeat = setInterval(() => {
-        void (async () => {
-          try {
-            const b = await getBatchById(batchId);
-            if (b) {
-              await claimBatchLease(
-                batchId,
-                options.owner,
-                options.leaseMs ?? DEFAULT_LEASE_MS,
-                b.rowVersion,
-              );
-            }
-          } catch {
-            // heartbeat failure is not fatal mid-request; the loop re-checks
-          }
-        })();
-      }, Math.max(10_000, Math.floor((options.leaseMs ?? DEFAULT_LEASE_MS) / 2)));
+      // BN-09 / BN-10: a separate setInterval heartbeat racing the main
+      // loop's per-step CAS for the same rowVersion is a guaranteed
+      // collision. The main loop already renews the lease on every state-
+      // machine step (see `claimBatchLease` at the top of the for-loop);
+      // a long single-chapter run is bounded by maxSteps (200) and the
+      // pipeline executor itself fails closed if it cannot complete.
+      // Removing the timer eliminates the race and the "in-flight async
+      // write after clearInterval" hazard.
       notify(action.type === 'run_pipeline' ? '开始生成当前章' : '恢复当前章');
       try {
         await run();
       } catch (error: any) {
+        // BN-04: typed batch budget overflow — persist the durable pause
+        // BEFORE the generic notify so a process kill mid-handler still
+        // leaves the batch in a recoverable state.
+        if (error instanceof BatchBudgetExceededError) {
+          try {
+            await updateBatchItem(batchId, batch.currentOrdinal, {
+              status: 'blocked_batch_budget',
+              errorCode: 'BATCH_SPEND_BUDGET_BLOCKED',
+              errorMessage: error.message,
+            });
+            await updateBatchStatus(batchId, 'paused_batch_budget', {
+              errorCode: 'BATCH_SPEND_BUDGET_BLOCKED',
+            });
+          } catch {
+            // best-effort; the next reconcile loop will redo this.
+          }
+          return 'stop';
+        }
         // 单章 pipeline 异常（网络/超时/模型错误）不中断批次循环：下一轮
         // 决策会依据持久化的 task 状态与 attempt 分类自动进入暂停/等待重试，
         // 保证 UI 与真实状态同步（断点续写闭环）。
         notify(`当前章运行失败：${getErrorMessage(error, '未知错误')}`);
       } finally {
-        clearInterval(heartbeat);
+        // BN-09/10: redundant heartbeat setInterval removed; lease renewal
+        // is single-owned by the main loop's per-step CAS.
       }
       return 'continue';
     }
 
     case 'wait_until': {
       const remaining = action.timestamp - Date.now();
+      // Persist the durable retry schedule BEFORE sleeping so a process
+      // exit / cold start can recover from SQLite — the in-memory watchdog
+      // is the only thing that knows about `Date.now()`, but the batch
+      // UI / cold-start reconciler must read the same source of truth.
+      try {
+        await updateBatchItem(batchId, batch.currentOrdinal, {
+          status: 'waiting_retry',
+          nextRetryAt: action.timestamp,
+        });
+        // Batch header mirrors the waiting state so a paused_* watchdog /
+        // cold-start scan can distinguish "running but waiting" from
+        // "actively driving" without reading items.
+        await updateBatchStatus(batchId, 'waiting_retry');
+      } catch {
+        // non-fatal — best-effort durability; the item stage attempts
+        // already carry nextRetryAt.
+      }
       if (remaining > 0) {
+        // Cap the in-process wait so the JS thread is not pinned for a
+        // long backoff; the page watchdog + cold-start resume re-drive.
         await sleep(Math.min(remaining, WAIT_CHUNK_MS));
         if (Date.now() < action.timestamp) {
-          // Still not due — hand back; next reconcile (or cold start) re-checks
-          // the persisted next_retry_at.
           return 'stop';
         }
       }
@@ -603,41 +657,15 @@ async function adoptAndCommit(params: {
     adoptedRevisionId: adopted.adoptedRevisionId,
   });
 
-  // Reflect pipeline token usage into the batch budget. Audit source of
-  // truth: pipeline_stage_attempts (one row per HTTP request, including
-  // failed / retried / outcome-unknown calls). Successful rows carry tokens.
+  // Cross-task, cross-run, crash-safe usage aggregation (BN-03). SET
+  // (not increment) — repeated reconcile produces the same value.
   try {
-    const attempts = await getTaskAttempts(taskId);
-    await incrementBatchUsage(batchId, summarizeAttemptsUsage(attempts));
+    await setBatchUsageFromRuns(batchId);
   } catch {
-    // non-fatal
+    // non-fatal — batch header is informational; per-attempt billing
+    // still recorded in pipeline_stage_attempts.
   }
   return 'continue';
-}
-
-function summarizeAttemptsUsage(
-  attempts: Array<{
-    status?: string | null;
-    inputTokens?: number | null;
-    outputTokens?: number | null;
-    totalTokens?: number | null;
-  }>,
-): {
-  llmCalls: number;
-  inputTokens: number;
-  outputTokens: number;
-} {
-  let llmCalls = 0;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  for (const attempt of attempts) {
-    llmCalls += 1;
-    if (attempt.status === 'succeeded') {
-      inputTokens += Number(attempt.inputTokens ?? 0);
-      outputTokens += Number(attempt.outputTokens ?? 0);
-    }
-  }
-  return { llmCalls, inputTokens, outputTokens };
 }
 
 /** Build the structured batch writing instruction (stored in summary_json). */
