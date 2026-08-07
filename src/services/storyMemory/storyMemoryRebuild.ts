@@ -10,7 +10,10 @@ import {
   stableTextFingerprint,
 } from './storyMemoryFingerprint';
 import { applyStoryMemoryPatch } from './storyMemoryMerger';
-import { splitCheckpointBatches } from './storyMemoryPolicy';
+import {
+  splitCheckpointBatches,
+  STORY_MEMORY_DEFAULT_BATCH_SIZE,
+} from './storyMemoryPolicy';
 import {
   generateValidatedChapterMemoryPatch,
   renderEpisodicMemoryText,
@@ -159,21 +162,13 @@ export async function rebuildStoryMemoryUnlocked(
 
   // Batch rebuild path (default): same checkpoint extraction as incremental
   // updates, so cast accumulation rules stay consistent and we avoid N
-  // per-chapter patches that under-extract people.
+  // per-chapter patches that under-extract people. LLM batch size is the fixed
+  // safe constant, decoupled from the policy trigger interval.
   if (schedulerEnabled && chapters.length > 0) {
-    let preferredBatch = 3;
-    if (typeof (db as any).ensureStoryMemoryPolicy === 'function') {
-      try {
-        const policy = await (db as any).ensureStoryMemoryPolicy(
-          projectId,
-          config.slidingWindowSize,
-        );
-        preferredBatch = policy?.intervalChapters || 3;
-      } catch {
-        preferredBatch = 3;
-      }
-    }
-    const batches = splitCheckpointBatches(chapters, preferredBatch);
+    const batches = splitCheckpointBatches(
+      chapters,
+      STORY_MEMORY_DEFAULT_BATCH_SIZE,
+    );
     // Once any batch is regenerated, later batches must not reuse pre-edit
     // applied patches even if fingerprints coincidentally match.
     let forceRegenerateRemaining = dirtyRebuild;

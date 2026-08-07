@@ -379,9 +379,9 @@ export type StoryMemoryUpdateMode =
 export interface StoryMemoryPolicy {
   projectId: number;
   mode: StoryMemoryUpdateMode;
-  /** 2～10；默认 3 */
+  /** 2～10；默认 10（checkpoint 触发周期） */
   intervalChapters: number;
-  /** 默认取 slidingWindowSize 的 60% 或 2400 */
+  /** 默认取 slidingWindowSize 的 60% 或 12000（与默认 10 章周期对齐） */
   pendingTokenSoftLimit: number;
   updateOnKeyChapter: boolean;
   updatedAt: string;

@@ -2,6 +2,15 @@ import type { Chapter } from '../../types/novel';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { StoryMemoryCoveragePlan } from './storyMemoryTypes';
 
+/**
+ * Hard ceiling on how many chapters may enter the draft context as RAW full
+ * text — regardless of the model context window or the sliding token budget.
+ * Applies to both the pending bridge (chapters after the last checkpoint) and
+ * the plain sliding window. Older history must be covered by episodic
+ * summaries / Story Memory, never by raw text.
+ */
+export const STORY_MEMORY_MAX_RAW_CHAPTERS = 10;
+
 function hasUsableEpisodicSummary(chapter: Chapter): boolean {
   return Boolean(chapter.memory_summary?.trim());
 }
@@ -82,6 +91,14 @@ export function planStoryMemoryCoverage(input: {
     };
   }
 
+  // Raw full text is capped at the most recent 10 valid chapters. Older
+  // pending chapters may only be covered by episodic summaries (never raw),
+  // so a huge context window cannot silently grow the raw prompt — history
+  // must be carried by Story Memory / summaries / checkpoint catch-up.
+  const rawCandidates = pendingChapters.slice(-STORY_MEMORY_MAX_RAW_CHAPTERS);
+  const rawCandidateIds = new Set(rawCandidates.map(c => c.id));
+  const olderPending = pendingChapters.filter(c => !rawCandidateIds.has(c.id));
+
   // Prefer full raw coverage in position order. Never drop early pending
   // chapters while keeping only the tail.
   const rawChapterIds: number[] = [];
@@ -99,10 +116,10 @@ export function planStoryMemoryCoverage(input: {
   }
   const pendingBudget = Math.max(0, budget - seamReserve);
 
-  // First pass: try to place all pending chapters as raw in order.
+  // First pass: try to place all raw candidates as raw in order.
   let canAllRaw = true;
   let probeTokens = 0;
-  for (const chapter of pendingChapters) {
+  for (const chapter of rawCandidates) {
     const tokens = chapterRawTokens(chapter);
     if (probeTokens + tokens > pendingBudget) {
       canAllRaw = false;
@@ -112,30 +129,49 @@ export function planStoryMemoryCoverage(input: {
   }
 
   if (canAllRaw) {
-    for (const chapter of pendingChapters) {
+    for (const chapter of rawCandidates) {
       rawChapterIds.push(chapter.id);
       usedTokens += chapterRawTokens(chapter);
     }
+    // Older-than-10 pending chapters: episodic summary only, never raw.
+    for (const chapter of olderPending) {
+      if (hasUsableEpisodicSummary(chapter)) {
+        const cost = chapterSummaryTokens(chapter);
+        if (cost <= pendingBudget - usedTokens) {
+          episodicFallbackChapterIds.push(chapter.id);
+          usedTokens += cost;
+        } else {
+          uncoveredChapterIds.push(chapter.id);
+        }
+      } else {
+        uncoveredChapterIds.push(chapter.id);
+      }
+    }
+    const hardDue = uncoveredChapterIds.length > 0;
     return {
       checkpointThroughPosition: input.checkpointThroughPosition,
       pendingChapters,
       seamChapter,
       rawChapterIds,
-      episodicFallbackChapterIds: [],
-      uncoveredChapterIds: [],
+      episodicFallbackChapterIds,
+      uncoveredChapterIds,
       estimatedRawTokens: usedTokens + seamReserve,
-      hardDue: false,
-      reason: 'full_raw',
+      hardDue,
+      reason: hardDue
+        ? 'coverage_gap'
+        : episodicFallbackChapterIds.length > 0
+          ? 'mixed_raw_episodic'
+          : 'full_raw',
     };
   }
 
-  // Second pass: keep as much early raw as possible, then degrade earliest
-  // remaining chapters to verified episodic summaries. Still never invent
-  // coverage for empty summaries.
+  // Second pass: keep as much raw as possible within the recent-10 candidates,
+  // then degrade earliest remaining chapters to verified episodic summaries.
+  // Still never invent coverage for empty summaries.
   let remainingBudget = pendingBudget;
   const remaining: Chapter[] = [];
 
-  for (const chapter of pendingChapters) {
+  for (const chapter of rawCandidates) {
     const tokens = chapterRawTokens(chapter);
     if (tokens <= remainingBudget) {
       rawChapterIds.push(chapter.id);
@@ -151,7 +187,7 @@ export function planStoryMemoryCoverage(input: {
   // remaining chapters.
   if (remaining.length > 0) {
     const rawSet = new Set(rawChapterIds);
-    const ordered = [...pendingChapters];
+    const ordered = [...rawCandidates];
     for (const chapter of ordered) {
       if (!rawSet.has(chapter.id)) continue;
       if (remaining.length === 0) break;
@@ -172,10 +208,10 @@ export function planStoryMemoryCoverage(input: {
     }
     rawChapterIds.length = 0;
     rawChapterIds.push(
-      ...pendingChapters.filter(c => rawSet.has(c.id)).map(c => c.id),
+      ...rawCandidates.filter(c => rawSet.has(c.id)).map(c => c.id),
     );
 
-    const stillRemaining = pendingChapters.filter(
+    const stillRemaining = rawCandidates.filter(
       chapter =>
         !rawSet.has(chapter.id) &&
         !episodicFallbackChapterIds.includes(chapter.id),
@@ -198,6 +234,22 @@ export function planStoryMemoryCoverage(input: {
         usedTokens += rawCost;
         continue;
       }
+      uncoveredChapterIds.push(chapter.id);
+    }
+  }
+
+  // Older-than-10 pending chapters: episodic summary only, never raw.
+  for (const chapter of olderPending) {
+    if (hasUsableEpisodicSummary(chapter)) {
+      const cost = chapterSummaryTokens(chapter);
+      if (cost <= remainingBudget) {
+        episodicFallbackChapterIds.push(chapter.id);
+        remainingBudget -= cost;
+        usedTokens += cost;
+      } else {
+        uncoveredChapterIds.push(chapter.id);
+      }
+    } else {
       uncoveredChapterIds.push(chapter.id);
     }
   }

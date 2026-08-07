@@ -23,6 +23,10 @@ import type {
   StoredStoryMemoryBatch,
 } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
+import {
+  splitCheckpointBatches,
+  STORY_MEMORY_DEFAULT_BATCH_SIZE,
+} from './storyMemoryPolicy';
 import { getContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
 
 function renderBatchEpisodicText(
@@ -448,20 +452,13 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
       pendingRemaining: 0,
     };
   }
-  const { splitCheckpointBatches, createDefaultStoryMemoryPolicy } =
-    await import('./storyMemoryPolicy');
-  let preferredBatch = 3;
-  if (typeof (db as any).ensureStoryMemoryPolicy === 'function') {
-    try {
-      const policy = await (db as any).ensureStoryMemoryPolicy(input.projectId);
-      preferredBatch = policy?.intervalChapters || 3;
-    } catch {
-      preferredBatch = createDefaultStoryMemoryPolicy(
-        input.projectId,
-      ).intervalChapters;
-    }
-  }
-  const batches = splitCheckpointBatches(pending, preferredBatch);
+  // Fixed safe LLM batch size, decoupled from the trigger interval: even when
+  // the policy interval is 10 chapters, one extraction call never handles more
+  // than STORY_MEMORY_DEFAULT_BATCH_SIZE (3) chapters.
+  const batches = splitCheckpointBatches(
+    pending,
+    STORY_MEMORY_DEFAULT_BATCH_SIZE,
+  );
   let batchesApplied = 0;
   for (const batchChapters of batches) {
     if (input.signal?.aborted) {
@@ -492,10 +489,16 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
         );
         throw error;
       }
+      // Append-only checkpoint advance failure: the previously successful
+      // checkpoint remains valid (it is the latest SUCCESSFUL state, still
+      // persisted in the row). Preserve the pre-attempt status — never flip a
+      // clean/empty record to 'failed', which would make the old checkpoint
+      // ineligible for injection even though it describes real history.
+      // `lastError` still records the failed attempt for diagnostics/retry.
       await db.setStoryMemoryBuildStatus(
         input.projectId,
-        record.status === 'dirty' ? 'dirty' : 'failed',
-        state.throughChapterPosition + 1,
+        record.status,
+        record.dirtyFromPosition,
         message,
       );
       throw error;
