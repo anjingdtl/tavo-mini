@@ -6,11 +6,19 @@ import type {
   StoryMemoryUpdateMode,
 } from './storyMemoryTypes';
 
-export const STORY_MEMORY_DEFAULT_INTERVAL = 3;
+export const STORY_MEMORY_DEFAULT_INTERVAL = 10;
 export const STORY_MEMORY_MIN_INTERVAL = 2;
 export const STORY_MEMORY_MAX_INTERVAL = 10;
 export const STORY_MEMORY_MAX_BATCH_SIZE = 10;
-export const STORY_MEMORY_DEFAULT_PENDING_SOFT_LIMIT = 2400;
+/**
+ * Internal LLM checkpoint batch size — deliberately decoupled from
+ * intervalChapters. The interval decides WHEN a checkpoint update triggers;
+ * the batch decides HOW MANY chapters one LLM extraction call handles.
+ * A fixed safe batch keeps JSON truncation / structured-output failures rare
+ * even when the trigger interval grows (e.g. default 10).
+ */
+export const STORY_MEMORY_DEFAULT_BATCH_SIZE = 3;
+export const STORY_MEMORY_DEFAULT_PENDING_SOFT_LIMIT = 12000;
 
 const VALID_MODES: StoryMemoryUpdateMode[] = [
   'smart',
@@ -86,17 +94,21 @@ export function listPendingChapters(
 
 /**
  * Split pending chapters into checkpoint batches.
- * Prefer the project interval (default 3); never exceed STORY_MEMORY_MAX_BATCH_SIZE.
- * Large rebuilds with max=10 routinely truncate JSON on smaller models.
+ * Default batch size is the fixed safe LLM batch (3), NOT the trigger interval
+ * (10 by default) — the two concepts are independent on purpose.
+ * Never exceed STORY_MEMORY_MAX_BATCH_SIZE.
  */
 export function splitCheckpointBatches(
   chapters: Chapter[],
-  preferredBatchSize: number = STORY_MEMORY_DEFAULT_INTERVAL,
+  preferredBatchSize: number = STORY_MEMORY_DEFAULT_BATCH_SIZE,
 ): Chapter[][] {
   if (chapters.length === 0) return [];
   const size = Math.min(
     STORY_MEMORY_MAX_BATCH_SIZE,
-    Math.max(1, Math.round(preferredBatchSize || STORY_MEMORY_DEFAULT_INTERVAL)),
+    Math.max(
+      1,
+      Math.round(preferredBatchSize || STORY_MEMORY_DEFAULT_BATCH_SIZE),
+    ),
   );
   const batches: Chapter[][] = [];
   for (let i = 0; i < chapters.length; i += size) {

@@ -91,7 +91,7 @@ export const ContextConfigScreen: React.FC = () => {
           })}
         </View>
         <Field label="最近正文窗口 tokens" value={String(draft.slidingWindowSize)} onChangeText={(value) => updateDraft({ ...draft, slidingWindowSize: Number(value) ?? 0 })} keyboardType="number-pad" />
-        <Field label="最近正文章数" value={String(draft.recentChapterCount ?? 3)} onChangeText={(value) => updateDraft({ ...draft, recentChapterCount: Number(value) ?? 3 })} keyboardType="number-pad" />
+        <Field label="最近正文章数（最多 10 章）" value={String(Math.min(10, Math.max(1, draft.recentChapterCount ?? 10)))} onChangeText={(value) => updateDraft({ ...draft, recentChapterCount: Math.min(10, Math.max(1, Number(value) || 10)) })} keyboardType="number-pad" />
         <Field label="记忆摘要预算 tokens" value={String(draft.summaryBudgetTokens ?? 20000)} onChangeText={(value) => updateDraft({ ...draft, summaryBudgetTokens: Number(value) ?? 20000 })} keyboardType="number-pad" />
         <Field label="记忆摘要 Top K" value={String(draft.memoryTopK ?? 10)} onChangeText={(value) => updateDraft({ ...draft, memoryTopK: Number(value) ?? 10 })} keyboardType="number-pad" />
         <Field label="资料预算 tokens" value={String(draft.resourceBudget)} onChangeText={(value) => updateDraft({ ...draft, resourceBudget: Number(value) ?? 0 })} keyboardType="number-pad" />

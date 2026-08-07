@@ -24,6 +24,7 @@ import { retrieveNoteFragments, type RetrievalQuery } from './noteRetriever';
 import {
   buildPendingBridgeText,
   excludeRawFromEpisodicCandidates,
+  STORY_MEMORY_MAX_RAW_CHAPTERS,
 } from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
 import { prepareStoryMemoryForGeneration } from './storyMemory/storyMemoryPrepare';
@@ -1598,7 +1599,14 @@ export function selectPreviousChapters(
     );
   }
 
-  const recentCount = Math.max(1, Number(config.recentChapterCount ?? 3));
+  // Sliding strategy: hard business clamp at STORY_MEMORY_MAX_RAW_CHAPTERS —
+  // a huge context window or legacy/hostile config (recentChapterCount=100)
+  // must never push more than 10 chapters of raw full text into the prompt.
+  // Token budget is a SECOND layer applied on top of this count cap.
+  const recentCount = Math.min(
+    STORY_MEMORY_MAX_RAW_CHAPTERS,
+    Math.max(1, Number(config.recentChapterCount ?? 3)),
+  );
   return previous.slice(-recentCount);
 }
 

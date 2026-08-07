@@ -33,7 +33,7 @@ describe('storyMemoryPolicy', () => {
     expect(clampIntervalChapters(-3)).toBe(2);
     expect(clampIntervalChapters(3)).toBe(3);
     expect(clampIntervalChapters(99)).toBe(10);
-    expect(clampIntervalChapters(Number.NaN)).toBe(3);
+    expect(clampIntervalChapters(Number.NaN)).toBe(10);
     expect(normalizeStoryMemoryMode('nope')).toBe('smart');
     expect(normalizeStoryMemoryMode('fixed')).toBe('fixed');
   });

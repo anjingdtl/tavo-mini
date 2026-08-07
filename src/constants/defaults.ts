@@ -20,7 +20,7 @@ export const DEFAULT_CONTEXT_STRATEGY = 'sliding';
 export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   strategy: 'sliding',
   slidingWindowSize: 4000,
-  recentChapterCount: 3,
+  recentChapterCount: 10,
   summaryBudgetTokens: 20000,
   storyStateBudgetTokens: DEFAULT_STORY_STATE_BUDGET,
   episodicMemoryBudgetTokens: DEFAULT_EPISODIC_MEMORY_BUDGET,

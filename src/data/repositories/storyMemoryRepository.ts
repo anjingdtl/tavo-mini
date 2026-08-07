@@ -11,6 +11,7 @@ import {
   clampIntervalChapters,
   createDefaultStoryMemoryPolicy,
   normalizeStoryMemoryMode,
+  STORY_MEMORY_DEFAULT_PENDING_SOFT_LIMIT,
 } from '../../services/storyMemory/storyMemoryPolicy';
 import type {
   BatchChapterSummary,
@@ -547,8 +548,11 @@ export async function ensureStoryMemoryPolicy(
 ): Promise<StoryMemoryPolicy> {
   const existing = await getStoryMemoryPolicy(projectId);
   if (existing) return existing;
+  // Default soft limit aligns with the default 10-chapter trigger interval
+  // (10 × ~1.2K tokens). A low limit would make smart mode auto-update every
+  // 2-3 chapters and defeat the "roughly every 10 chapters" cadence.
   const pendingTokenSoftLimit = Math.max(
-    200,
+    STORY_MEMORY_DEFAULT_PENDING_SOFT_LIMIT,
     Math.round((slidingWindowSize || 4000) * 0.6),
   );
   const policy = createDefaultStoryMemoryPolicy(projectId, {
