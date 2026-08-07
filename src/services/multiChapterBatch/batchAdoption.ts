@@ -16,9 +16,12 @@
  * and skips re-writing content / re-creating revisions.
  */
 import * as db from '../database';
+import { openDatabase } from '../../data/connection/openDatabase';
 import { createContentRevision, getLatestContentRevision } from '../../data/repositories/contentRepository';
 import { getPipelineTaskById } from '../../data/repositories/pipelineTaskRepository';
 import { getBatchItem } from '../../data/repositories/multiChapterBatchRepository';
+import { buildCommitBatchItemAdoptionStatements } from '../../data/repositories/multiChapterBatchRepository';
+import { executeTransaction, type SqlStatement } from '../database/transaction';
 import { sha256Hex } from '../continuation/hashUtils';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { MultiChapterBatchError } from './errors';
@@ -172,6 +175,189 @@ export async function adoptPipelineTaskResult(
   }
 
   // 5. Story memory / downstream invalidation mark.
+  try {
+    await db.markStoryMemoryDirtyIfCovered?.(
+      chapter.project_id,
+      chapter.position,
+      `pipeline_adopt:${input.taskId}`,
+    );
+  } catch {
+    // non-fatal
+  }
+
+  return {
+    adoptedRevisionId,
+    adoptionFingerprint: fingerprint,
+    finalText,
+    alreadyAdopted: false,
+  };
+}
+
+/**
+ * CL-07: ATOMIC batch adoption — one SQLite transaction closes the loop:
+ *
+ *   old-body revision → chapter.content → pipeline revision
+ *   → item adoptionFingerprint / adoptedRevisionId → batch counters
+ *
+ * No half-committed windows: a crash or fault mid-transaction rolls back
+ * EVERYTHING (body, revisions, item, counters). Story-memory dirty marking
+ * stays POST-transaction best-effort (idempotent SET semantics — a repeated
+ * adoption re-marks the same state) and the store resolve is in-memory
+ * best-effort (the DB row persists via the store's own write).
+ *
+ * Returns the same shape as adoptPipelineTaskResult. `alreadyAdopted` is set
+ * when the item already carries the same fingerprint (idempotent no-op).
+ */
+export async function adoptPipelineTaskResultAtomic(
+  input: AdoptPipelineTaskResultInput & { chapterCount?: number },
+): Promise<AdoptPipelineTaskResultOutput> {
+  const task = await getPipelineTaskById(input.taskId);
+  if (!task) {
+    throw new MultiChapterBatchError(
+      'BATCH_ADOPTION_FAILED',
+      '找不到流水线任务，无法采用结果',
+    );
+  }
+  const finalText = String(task.finalText || '');
+  if (!finalText.trim()) {
+    throw new MultiChapterBatchError(
+      'BATCH_ADOPTION_FAILED',
+      '任务没有可采用的正文',
+    );
+  }
+  const chapter = await db.getChapterById(input.chapterId);
+  if (!chapter) {
+    throw new MultiChapterBatchError(
+      'BATCH_ADOPTION_FAILED',
+      '章节不存在，无法采用结果',
+    );
+  }
+  const fingerprint = computeAdoptionFingerprint({
+    batchId: input.batchId,
+    ordinal: input.ordinal,
+    chapterId: input.chapterId,
+    pipelineTaskId: input.taskId,
+    finalText,
+  });
+  const item = input.batchId
+    ? await getBatchItem(input.batchId, input.ordinal ?? 0)
+    : null;
+  if (item?.adoptionFingerprint === fingerprint) {
+    return {
+      adoptedRevisionId: item.adoptedRevisionId,
+      adoptionFingerprint: fingerprint,
+      finalText,
+      alreadyAdopted: true,
+    };
+  }
+  const latestRevision = await getLatestContentRevision(
+    'chapter',
+    chapter.id,
+  );
+  if (latestRevision?.source_ref === input.taskId) {
+    const bodyLanded = String(chapter.content) === finalText;
+    if (bodyLanded) {
+      return {
+        adoptedRevisionId: latestRevision.id,
+        adoptionFingerprint: fingerprint,
+        finalText,
+        alreadyAdopted: true,
+      };
+    }
+  }
+
+  const oldContent = String(chapter.content || '');
+  const previousAlreadyRecorded =
+    latestRevision?.source_ref === input.taskId &&
+    latestRevision?.source === 'adoption_previous';
+
+  // 1. Content statements: old-body revision (optional) → chapter.content →
+  //    pipeline revision.
+  const statements: SqlStatement[] = [];
+  if (oldContent.trim() && !previousAlreadyRecorded) {
+    statements.push({
+      sql: `INSERT INTO content_revisions (
+              project_id, target_type, target_id, title, content, source, source_ref, created_at
+            ) VALUES (?, 'chapter', ?, ?, ?, 'adoption_previous', ?, ?)`,
+      params: [
+        chapter.project_id,
+        chapter.id,
+        chapter.title || '',
+        oldContent,
+        input.taskId,
+        new Date().toISOString(),
+      ],
+    });
+  }
+  statements.push({
+    sql: `UPDATE chapters SET content = ?, updated_at = ? WHERE id = ?`,
+    params: [finalText, new Date().toISOString(), chapter.id],
+  });
+  statements.push({
+    sql: `INSERT INTO content_revisions (
+            project_id, target_type, target_id, title, content, source, source_ref, created_at
+          ) VALUES (?, 'chapter', ?, ?, ?, 'pipeline', ?, ?)`,
+    params: [
+      chapter.project_id,
+      chapter.id,
+      chapter.title || '',
+      finalText,
+      input.taskId,
+      new Date().toISOString(),
+    ],
+  });
+
+  // 2. Batch item binding + counters fold into the SAME transaction.
+  let itemStatementIndex = -1;
+  let counterStatementIndex = -1;
+  if (input.batchId && input.ordinal != null && input.chapterCount != null) {
+    const commitStatements = await buildCommitBatchItemAdoptionStatements({
+      batchId: input.batchId,
+      ordinal: input.ordinal,
+      chapterCount: input.chapterCount,
+      completionQuality: input.completionQuality ?? 'full_pipeline',
+      adoptionFingerprint: fingerprint,
+      adoptedRevisionId: null, // resolved via last_insert_rowid below
+    });
+    for (const stmt of commitStatements) {
+      statements.push(stmt);
+    }
+    if (commitStatements.length > 0) {
+      itemStatementIndex = statements.length - commitStatements.length + 1;
+      counterStatementIndex = statements.length;
+    }
+  }
+
+  let adoptedRevisionId: number | null = null;
+  // Pipeline revision is the LAST content statement (index 3 when an old-body
+  // revision was recorded, otherwise 2). Counter statements follow it.
+  const pipelineRevisionIndex =
+    itemStatementIndex > 0 ? itemStatementIndex - 1 : statements.length;
+  await executeTransaction(
+    await openDatabase(),
+    statements,
+    {
+      faultDomain: 'adoption',
+      onStatementComplete: (index, rowsAffected, insertId) => {
+        if (index === pipelineRevisionIndex) {
+          adoptedRevisionId = insertId ?? null;
+        }
+        if (index === itemStatementIndex && rowsAffected <= 0) {
+          throw new Error('BATCH_ADOPTION_MISMATCH');
+        }
+        if (index === counterStatementIndex && rowsAffected <= 0) {
+          throw new Error('BATCH_NOT_FOUND');
+        }
+      },
+    },
+  );
+
+  // Post-transaction best-effort (idempotent SET semantics).
+  try {
+    usePipelineTaskStore.getState().resolveTask(input.taskId, 'accept');
+  } catch {
+    // store resolution is best-effort; the DB row persists via persistTask
+  }
   try {
     await db.markStoryMemoryDirtyIfCovered?.(
       chapter.project_id,
