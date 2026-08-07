@@ -187,7 +187,32 @@ export async function createCanonInMemoryDb(): Promise<InMemorySqliteDb> {
     // that actually contain multiple statements.
     runOneOrMore(db, stmt);
   }
+  return wrapSqlJsDb(db);
+}
 
+/**
+ * Raw in-memory SQLite WITHOUT any schema — lets callers exercise the real
+ * `initializeDatabase` fresh-install path end-to-end.
+ */
+export async function createEmptyInMemoryDb(): Promise<InMemorySqliteDb> {
+  const SQL = await initSqlJs({
+    locateFile: (file: string) =>
+      path.join(
+        __dirname,
+        '..',
+        '..',
+        'node_modules',
+        'sql.js',
+        'dist',
+        file,
+      ),
+  });
+  const db = new SQL.Database() as unknown as SqlJsDbInstance;
+  db.run('PRAGMA foreign_keys = ON');
+  return wrapSqlJsDb(db);
+}
+
+function wrapSqlJsDb(db: SqlJsDbInstance): InMemorySqliteDb {
   const wrapped: InMemorySqliteDb = {
     dbname: ':memory:',
     _sqljs: db as unknown as SqlJsDatabase,
