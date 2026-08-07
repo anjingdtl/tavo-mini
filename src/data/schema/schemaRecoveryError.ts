@@ -14,6 +14,12 @@ export type SchemaRecoveryErrorCode =
   | 'CANON_RESCAN_INDEX_MISSING'
   | 'KNOWN_SCHEMA_REPAIR_FAILED'
   | 'USER_DATA_RECALL_MISMATCH'
+  // CL-03: content-level fingerprint mismatch across an upgrade — the
+  // irreplaceable data (chapter bodies, characters, worldbook, notes) was
+  // rewritten while the schema mutated. Blocks startup, keeps the original
+  // DB and the schema-recovery backup untouched.
+  | 'USER_CONTENT_FINGERPRINT_MISMATCH'
+  | 'SCHEMA_RECOVERY_FAILED'
   | 'SCHEMA_VALIDATION_FAILED'
   | 'RESOURCE_RELOAD_FAILED'
   // RB-20 fix (V2.11.34): non-schema-recovery init failure surfaced by
@@ -94,6 +100,14 @@ export const SCHEMA_RECOVERY_ERROR_COPY: Record<
   USER_DATA_RECALL_MISMATCH: {
     title: '资料召回校验失败',
     detail: '修复前后用户资料不一致，已阻止启动以保护数据。原数据库和恢复备份已保留。',
+  },
+  USER_CONTENT_FINGERPRINT_MISMATCH: {
+    title: '内容指纹校验失败',
+    detail: '升级前后章节/角色/世界书/笔记内容不一致，已阻止启动以保护数据。原数据库和恢复备份已保留，请勿卸载或清除应用数据。',
+  },
+  SCHEMA_RECOVERY_FAILED: {
+    title: '数据库修复失败',
+    detail: '修复流程未能完成。原数据库和恢复备份已保留，请勿卸载或清除应用数据。',
   },
   SCHEMA_VALIDATION_FAILED: {
     title: '数据库 Schema 校验失败',

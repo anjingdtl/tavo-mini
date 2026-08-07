@@ -21,23 +21,40 @@ import { UpgradeScreen } from '../screens/UpgradeScreen';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { useSettingsStore } from '../store/settingsStore';
 import appVersionJson from '../constants/version.json';
+import {
+  progressFor,
+  type StartupPhase,
+  type StartupProgress,
+} from '../services/startupProgress';
 import type { PipelineTask } from '../types/pipeline';
 
 const splashImage = require('../assets/splash.png');
 const SPLASH_VISIBLE_MS = 1200;
 
+/**
+ * CL-02: explicit startup state machine. Init failure must land in 'failed'
+ * and MUST NOT render NavigationContainer / TabNavigator / empty lists.
+ */
+export type AppStartupState = 'splash' | 'initializing' | 'ready' | 'failed';
+
 export const App: React.FC = () => {
   const [showSplash, setShowSplash] = React.useState(true);
+  const [startupState, setStartupState] =
+    React.useState<AppStartupState>('splash');
   const [upgradeVisible, setUpgradeVisible] = React.useState(false);
   const [upgradeStatus, setUpgradeStatus] = React.useState<'waiting' | 'migrating' | 'success' | 'error'>('waiting');
   const [upgradeError, setUpgradeError] = React.useState('');
-  const [ready, setReady] = React.useState(false);
-  // RB-20 fix (V2.11.34): non-recovery init failures keep ready=false and
-  // surface a structured error via this state. The UI shows a safe error
-  // screen with retry/export/quit options instead of an empty main UI.
+  // CL-02: init failures keep startupState='failed' and surface a structured
+  // error via this state. The UI shows a safe error screen with a retry
+  // entry instead of the main UI / an empty project list.
   const [initError, setInitError] = React.useState<
     { code: string; message: string } | null
   >(null);
+  const [retryNonce, setRetryNonce] = React.useState(0);
+  // CL-04: real-phase-driven startup progress. Percent only moves when a
+  // REAL awaited step starts (never a random timer).
+  const [startupProgress, setStartupProgress] =
+    React.useState<StartupProgress | null>(null);
   // The most recent pipeline task we have surfaced to the user. Held in
   // state (not via Alert.alert) so we can dismiss it from the
   // navigateToPipelineResult call site and avoid the "prompt sticks
@@ -45,15 +62,25 @@ export const App: React.FC = () => {
   const [pendingPrompt, setPendingPrompt] = React.useState<PipelineTask | null>(null);
 
   React.useEffect(() => {
+    const reportPhase = (phase: StartupPhase) => {
+      setStartupProgress(progressFor(phase));
+    };
     const init = async () => {
-      // 8.2 修复：init 无 try-catch，openDatabase 抛错时 setReady 永不执行，App 永久卡白屏
+      // CL-02: 8.2 修复保留 —— init 无 try-catch，openDatabase 抛错时
+      // startupState 永不离开 initializing，App 永久卡白屏。
       try {
-        await openDatabase();
+        reportPhase('opening_database');
+        // CL-04: openDatabase forwards the real initializeDatabase phases
+        // (checking_schema / capturing_fingerprint / creating_backup /
+        // migrating / validating_schema / verifying_content) via onPhase.
+        await openDatabase({ onPhase: reportPhase });
         // 必须在任何写作入口可用前同步后台开关。此前只有进入设置页时才调用
         // loadSettings，导致默认开启的前台服务桥接仍保持 false，流水线切后台即失去保活。
+        reportPhase('loading_settings');
         await useSettingsStore.getState().loadSettings();
         // 流水线无法跨进程恢复执行：冷启动时任何 active 状态都属于上次已中断
         // 的运行，必须立即终态化，不能等 10 分钟 stale 窗口后继续卡住章节。
+        reportPhase('recovering_tasks');
         await usePipelineTaskStore.getState().loadFromDB();
         const marked = usePipelineTaskStore.getState().markActiveTasksAsInterrupted();
         if (marked > 0) {
@@ -151,15 +178,16 @@ export const App: React.FC = () => {
         ) {
           setUpgradeVisible(true);
         } else {
-          setReady(true);
+          setStartupState('ready');
           if (info?.installType === 'upgrade') {
             Toast.show({ type: 'info', text1: `已升级到 ${appVersionJson.versionName}`, visibilityTime: 1000 });
           }
         }
       } catch (error: any) {
-        // Schema-recovery failures (backup failed, recall mismatch, repair
-        // failed) must NOT silently show an empty UI. Surface the structured
-        // error so the user knows their data is still in the DB / backup.
+        // CL-02: 任何初始化失败都必须进入安全错误页（startupState='failed'），
+        // 绝不渲染 NavigationContainer / TabNavigator / 空项目列表。
+        // Schema-recovery 失败与普通 INIT_FAILED 走同一安全页，但保留
+        // recovery store 的 error 状态供备份中心入口读取。
         if (isSchemaRecoveryError(error)) {
           useDatabaseRecoveryStore.getState().setError(error.code, error.message);
           Toast.show({
@@ -168,21 +196,12 @@ export const App: React.FC = () => {
             text2: '原数据库和恢复备份已保留，请勿卸载或清除应用数据。',
             visibilityTime: 8000,
           });
-          // Still mark ready so the user can see the error screen / export
-          // the backup, but resource screens will read the error state and
-          // show "资料暂时无法读取" instead of a fake empty list.
-          setReady(true);
+          const code = 'SCHEMA_RECOVERY_FAILED';
+          const message = String(error.message || '数据库修复失败');
+          useDatabaseRecoveryStore.getState().setError(code, message);
+          setInitError({ code, message });
+          setStartupState('failed');
         } else {
-          // RB-20 fix (V2.11.34): surface the structured error so resource
-          // screens know not to render a fake empty list. We keep the
-          // legacy behaviour of marking ready=true here because the App
-          // test suite relies on a minimal mock that does not exercise
-          // the happy path; on real devices this branch is only reached
-          // when the SQLite file is unreadable, in which case we want
-          // the user to see the safe error screen AND still be able to
-          // navigate to the backup center for recovery. The
-          // databaseRecoveryStore.loadState will be 'error' which
-          // ResourceLibrary already short-circuits to the safe state.
           const code = 'INIT_FAILED';
           const message =
             (error && (error.message || String(error))) || '数据库初始化失败';
@@ -194,21 +213,19 @@ export const App: React.FC = () => {
             text2: '原数据库未删除，可在设置 → 备份中心查看恢复备份。',
             visibilityTime: 8000,
           });
-          // Keep legacy setReady(true) so tests/flows that depend on the
-          // main UI being reachable still work; the recovery store's
-          // error state will gate resource screens into the safe UI.
-          setReady(true);
+          setStartupState('failed');
         }
       }
     };
 
     const timer = setTimeout(() => {
       setShowSplash(false);
+      setStartupState('initializing');
       init();
     }, SPLASH_VISIBLE_MS);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [retryNonce]);
 
   // Watch for newly-completed / failed pipeline tasks and surface a result
   // prompt. The original ChapterEditor-local `executeRunPipeline` only worked
@@ -312,7 +329,7 @@ export const App: React.FC = () => {
       setUpgradeStatus('success');
       setTimeout(() => {
         setUpgradeVisible(false);
-        setReady(true);
+        setStartupState('ready');
       }, 1000);
       return;
     }
@@ -328,7 +345,7 @@ export const App: React.FC = () => {
       setUpgradeStatus('success');
       setTimeout(() => {
         setUpgradeVisible(false);
-        setReady(true);
+        setStartupState('ready');
       }, 1000);
     } catch (err: any) {
       setUpgradeStatus('error');
@@ -340,7 +357,7 @@ export const App: React.FC = () => {
   // taskId（由 MainActivity 从通知 intent extra 写入 PipelineForegroundModule），
   // 若存在则导航到对应任务的 PipelineResult。
   React.useEffect(() => {
-    if (!ready) return;
+    if (startupState !== 'ready') return;
     let cancelled = false;
     // 8.17 修复：保存 timer id 在 cleanup 中 clearTimeout，避免 ready 变化时旧 timer 仍执行
     let navTimer: ReturnType<typeof setTimeout> | null = null;
@@ -355,7 +372,7 @@ export const App: React.FC = () => {
       cancelled = true;
       if (navTimer) clearTimeout(navTimer);
     };
-  }, [ready]);
+  }, [startupState]);
 
   return (
     <SafeAreaProvider>
@@ -372,7 +389,7 @@ export const App: React.FC = () => {
               status={upgradeStatus}
               errorMessage={upgradeError}
             />
-            {initError && !ready && (
+            {startupState === 'failed' && initError && (
               <View style={styles.initErrorWrap}>
                 <Text style={styles.initErrorTitle}>本地资料暂时无法载入</Text>
                 <Text style={styles.initErrorCode}>
@@ -381,11 +398,49 @@ export const App: React.FC = () => {
                 <Text style={styles.initErrorMessage}>{initError.message}</Text>
                 <Text style={styles.initErrorHint}>
                   原数据库未删除，请勿卸载或清除应用数据。{'\n'}
-                  请重启应用，或前往设置 → 备份中心查看最近的安全备份。
+                  可重启应用重试；恢复备份位于 备份中心（schema-recovery）。
+                </Text>
+                <View style={styles.initErrorActions}>
+                  <Text
+                    style={styles.initErrorRetry}
+                    onPress={() => {
+                      // 重新走一遍 init（openDatabase → settings → 任务恢复）。
+                      setInitError(null);
+                      setStartupState('initializing');
+                      setRetryNonce(n => n + 1);
+                    }}
+                  >
+                    重试载入
+                  </Text>
+                </View>
+              </View>
+            )}
+            {startupState === 'initializing' && (
+              // CL-04: real-phase-driven progress. The phase label and
+              // percent only move when a real awaited startup step runs —
+              // no random timers. Guarantees no white/empty fragment
+              // between splash and main UI.
+              <View style={styles.initProgressWrap}>
+                <Text style={styles.initProgressTitle}>
+                  {startupProgress?.message || '正在载入本地资料…'}
+                </Text>
+                <View style={styles.initProgressTrack}>
+                  <View
+                    style={[
+                      styles.initProgressFill,
+                      { width: `${startupProgress?.percent ?? 0}%` },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.initProgressPercent}>
+                  {Math.round(startupProgress?.percent ?? 0)}%
+                </Text>
+                <Text style={styles.initErrorHint}>
+                  首次打开可能需要较长时间，请勿关闭应用。
                 </Text>
               </View>
             )}
-            {ready && (
+            {startupState === 'ready' && (
               <NavigationContainer ref={navigationRef}>
                 <TabNavigator />
               </NavigationContainer>
@@ -443,5 +498,50 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     opacity: 0.85,
+  },
+  initErrorActions: {
+    marginTop: 24,
+  },
+  initErrorRetry: {
+    color: '#439EA6',
+    fontSize: 16,
+    fontWeight: '700',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    alignSelf: 'flex-start',
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(67, 158, 166, 0.15)',
+  },
+  initProgressWrap: {
+    flex: 1,
+    backgroundColor: '#071827',
+    paddingHorizontal: 32,
+    justifyContent: 'center',
+  },
+  initProgressTitle: {
+    color: '#D7F1F4',
+    fontSize: 20,
+    fontWeight: '700',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  initProgressTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    overflow: 'hidden',
+  },
+  initProgressFill: {
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: '#439EA6',
+  },
+  initProgressPercent: {
+    color: '#B0E0E3',
+    fontSize: 14,
+    marginTop: 8,
+    textAlign: 'center',
+    fontWeight: '600',
   },
 });

@@ -24,6 +24,12 @@ import {
   type RecallMismatch,
 } from './userDataRecallSnapshot';
 import {
+  captureUserContentFingerprint,
+  compareUserContentFingerprints,
+  type UserContentFingerprint,
+  type ContentFingerprintMismatch,
+} from './userContentFingerprint';
+import {
   createSchemaRecoveryBackup,
   type SchemaRecoveryBackupResult,
 } from '../../services/schemaRecoveryBackup';
@@ -31,9 +37,15 @@ import {
   makeSchemaRecoveryError,
   type SchemaRecoveryError,
 } from './schemaRecoveryError';
+import type { StartupPhase } from '../../services/startupProgress';
 
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
+
+/** CL-04: optional real-phase callback consumed by the App startup UI. */
+export interface InitializeDatabaseOptions {
+  onPhase?: (phase: StartupPhase) => void;
+}
 
 async function ensureMetadataTable(
   database: SQLite.SQLiteDatabase,
@@ -279,7 +291,6 @@ async function finalizeInstallInfo(
 }
 export let lastInstallInfo: InstallInfo | null = null;
 export let lastMigrationResult: MigrationResult | null = null;
-
 /**
  * Schema-recovery state surfaced to the UI. Populated whenever the startup
  * chain performs a drift inspection, backup, or repair. `null` on a clean
@@ -308,7 +319,9 @@ export interface SchemaRecoveryState {
 export let lastSchemaRecovery: SchemaRecoveryState | null = null;
 export async function initializeDatabase(
   database: SQLite.SQLiteDatabase,
+  options?: InitializeDatabaseOptions,
 ): Promise<void> {
+  const onPhase = options?.onPhase;
   lastMigrationResult = null;
   lastSchemaRecovery = null;
   await execute(database, 'PRAGMA foreign_keys = ON');
@@ -321,11 +334,16 @@ export async function initializeDatabase(
   // beforeSnapshot is captured for the non-fresh path so we can verify after
   // the repair that no user data was lost.
   let beforeSnapshot: UserDataRecallSnapshot | null = null;
+  // CL-03: content-level fingerprint of the irreplaceable data. Compared
+  // strictly after migration/repair — a same-count content rewrite now blocks
+  // startup instead of passing the legacy count/sum check.
+  let beforeContentFingerprint: UserContentFingerprint | null = null;
   let recoveryBackup: SchemaRecoveryBackupResult | null = null;
   let repairApplied = false;
   let driftCodes: string[] = [];
 
   if (installInfo.installType === 'fresh' || recoverInterruptedFreshInstall) {
+    onPhase?.('checking_schema');
     await createCurrentSchema(database);
     await execute(
       database,
@@ -352,11 +370,16 @@ export async function initializeDatabase(
     const needsSchemaMutation = needsMigration || drift.needsRepair;
     driftCodes = drift.repairCodes;
 
-    // 1. Capture BEFORE recall snapshot (user's irreplaceable data identity).
+    // 1. Capture BEFORE recall snapshot (user's irreplaceable data identity)
+    //    + content-level fingerprint (CL-03). Both are captured before any
+    //    schema mutation. A fingerprint read failure throws — fail-closed.
+    onPhase?.('capturing_fingerprint');
     beforeSnapshot = await captureUserDataRecallSnapshot(database);
+    beforeContentFingerprint = await captureUserContentFingerprint(database);
 
     // 2. Create + verify a schema-recovery backup BEFORE any schema mutation.
     if (needsSchemaMutation) {
+      onPhase?.('creating_backup');
       try {
         recoveryBackup = await createSchemaRecoveryBackup(
           database,
@@ -404,6 +427,7 @@ export async function initializeDatabase(
 
     // 4. Run versioned migrations (to Schema 40). 32→33 is now idempotent.
     if (needsMigration) {
+      onPhase?.('migrating');
       lastMigrationResult = await runMigrations(
         database,
         installInfo.schemaVersion,
@@ -436,6 +460,7 @@ export async function initializeDatabase(
   }
 
   // 6. Strict schema validation (now AFTER repair so a drifted DB can pass).
+  onPhase?.('validating_schema');
   await validateSchemaBeforeStartup(database);
 
   // 7. Seed defaults + indexes + note repair.
@@ -493,6 +518,40 @@ export async function initializeDatabase(
         afterCounts: snapshotCounts(afterSnapshot),
         driftCodes,
       };
+    }
+  }
+
+  // 9b. CL-03: content-level fingerprint strict compare. Any content rewrite
+  //     of projects / chapters / characters / worldbook_entries / notes /
+  //     project_resources / project_collection_settings across the upgrade
+  //     blocks startup — the original DB and the schema-recovery backup stay
+  //     untouched for the user.
+  if (beforeContentFingerprint) {
+    onPhase?.('verifying_content');
+    const afterContentFingerprint = await captureUserContentFingerprint(database);
+    // v4→v5 / v10→v11 normalize collection_id = 0 → real binding; those
+    // migrations only run for libraries below Schema 11.
+    const allowCollectionIdMigration = installInfo.schemaVersion < 11;
+    const contentMismatch: ContentFingerprintMismatch | null =
+      compareUserContentFingerprints(beforeContentFingerprint, afterContentFingerprint, {
+        allowCollectionIdMigration,
+      });
+    if (contentMismatch) {
+      const err = makeSchemaRecoveryError(
+        'USER_CONTENT_FINGERPRINT_MISMATCH',
+        `升级前后内容指纹不一致，已停止启动并保留原数据库与安全备份：${contentMismatch.detail}`,
+        { mismatch: contentMismatch as unknown as RecallMismatch },
+      );
+      lastSchemaRecovery = {
+        backupCreated: recoveryBackup !== null,
+        backupPath: recoveryBackup?.path,
+        repaired: repairApplied,
+        recallVerified: false,
+        mismatch: contentMismatch as unknown as RecallMismatch,
+        driftCodes,
+        error: err,
+      };
+      throw err;
     }
   }
 
