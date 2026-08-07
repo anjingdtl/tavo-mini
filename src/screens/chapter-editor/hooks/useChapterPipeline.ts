@@ -526,7 +526,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     } else {
       executeRunPipeline(createTask).catch(() => {});
     }
-  }, [chapter, executeRunPipeline, executeResumePipeline, runContinuation]);
+  }, [chapter, executeRunPipeline, executeResumePipeline, runContinuation, navigation]);
 
   const stopPipeline = useCallback(() => {
     // Stop must never throw into the toolbar onPress — an uncaught exception
