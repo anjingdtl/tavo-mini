@@ -623,7 +623,7 @@ describe('backupService', () => {
     expect(mockDb.transaction).not.toHaveBeenCalled();
   });
 
-  test('listBackups sorts v3 summaries and marks unreadable files invalid', async () => {
+  test('listBackups sorts v3 summaries and marks broken files metaPending (CL-08: zero full reads)', async () => {
     const backup1 = await makeV3Backup({}, { created_at: '2026-01-01T00:00:00Z', kind: 'automatic' });
     const backup2 = await makeV3Backup({}, { created_at: '2026-06-01T00:00:00Z', kind: 'manual' });
     const files = [
@@ -632,16 +632,50 @@ describe('backupService', () => {
       { name: 'broken.json', path: '/a/broken.json', mtime: new Date('2026-07-01'), size: 10 },
     ];
     (RNFS.readDir as jest.Mock).mockResolvedValue(files);
+    // CL-08: the list reads ONLY the small sidecar JSONs, never the full
+    // backup bodies. A backup without a sidecar → metaPending (background
+    // backfill), and a full-body read on the list path is a test failure.
     (RNFS.readFile as jest.Mock).mockImplementation(async (path: string) => {
-      if (path.includes('1.json')) return JSON.stringify(backup1);
-      if (path.includes('2.json')) return JSON.stringify(backup2);
-      throw new Error('parse error');
+      if (path.endsWith('.meta.json')) {
+        if (path.includes('1.json')) {
+          return JSON.stringify({
+            formatVersion: 1,
+            kind: backup1.meta.kind,
+            appVersion: backup1.meta.app_version,
+            schemaVersion: backup1.meta.schema_version,
+            createdAt: backup1.meta.created_at,
+            size: 100,
+            checksum: '',
+            validationState: 'created',
+          });
+        }
+        if (path.includes('2.json')) {
+          return JSON.stringify({
+            formatVersion: 1,
+            kind: backup2.meta.kind,
+            appVersion: backup2.meta.app_version,
+            schemaVersion: backup2.meta.schema_version,
+            createdAt: backup2.meta.created_at,
+            size: 200,
+            checksum: '',
+            validationState: 'created',
+          });
+        }
+        throw new Error('no sidecar');
+      }
+      throw new Error('full backup read is forbidden on the list path');
     });
 
     const summaries = await listBackups();
     expect(summaries).toHaveLength(3);
     expect(summaries.find(item => item.kind === 'manual')?.valid).toBe(true);
-    expect(summaries.find(item => item.path.includes('broken'))?.valid).toBe(false);
+    expect(summaries.find(item => item.path.includes('broken'))?.metaPending).toBe(true);
+    expect(summaries.find(item => item.path.includes('broken'))?.valid).toBe(true);
+    // 列表阶段完整备份 JSON 读取次数必须为 0（CL-08 核心验收）。
+    const fullReads = (RNFS.readFile as jest.Mock).mock.calls.filter(
+      (args: string[]) => !args[0].endsWith('.meta.json'),
+    );
+    expect(fullReads).toHaveLength(0);
   });
 
   test('cleanupOldBackups enforces per-kind retention limits', async () => {
