@@ -41,7 +41,6 @@ interface SqlJsDbInstance {
 }
 
 export type SqlJsDatabase = SqlJsDbInstance;
-
 /**
  * An in-memory SQLite database shaped to satisfy the `SQLiteDatabase` interface
  * that the Canon analysis code consumes. Implements both the Promise
@@ -82,6 +81,17 @@ export interface InMemorySqliteDb {
   _sqljs: SqlJsDatabase;
   /** Close + free the WASM database. Call in afterAll. */
   close(): void;
+}
+
+/**
+ * Wrap an existing sql.js handle (e.g. one loaded from a committed historical
+ * fixture .db file via `new SQL.Database(bytes)`) into the same
+ * SQLiteDatabase-shaped test double used by the in-memory helpers. Shares the
+ * SAVEPOINT transaction semantics so executeTransaction keeps its atomic
+ * contract on fixture-backed databases.
+ */
+export function wrapSqlJsDb(db: SqlJsDbInstance): InMemorySqliteDb {
+  return wrapSqlJsDbImpl(db);
 }
 
 /**
@@ -212,10 +222,9 @@ export async function createEmptyInMemoryDb(): Promise<InMemorySqliteDb> {
   return wrapSqlJsDb(db);
 }
 
-function wrapSqlJsDb(db: SqlJsDbInstance): InMemorySqliteDb {
+function wrapSqlJsDbImpl(db: SqlJsDbInstance): InMemorySqliteDb {
   const wrapped: InMemorySqliteDb = {
-    dbname: ':memory:',
-    _sqljs: db as unknown as SqlJsDatabase,
+    dbname: ':memory:',    _sqljs: db as unknown as SqlJsDatabase,
     // Stubs for SQLiteDatabase members the Canon code never calls in tests.
     readTransaction: () => undefined,
     attach: () => undefined,
