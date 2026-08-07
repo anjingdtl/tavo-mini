@@ -54,6 +54,10 @@ import {
 } from '../pipelineTaskContext';
 import { determineNextPipelineAction } from './determineNextPipelineAction';
 import {
+  determineRetryDisposition,
+  type RetryDisposition,
+} from './determineNextPipelineAction';
+import {
   buildPersistedTaskView,
   resolveStageCheckpoints,
 } from './taskView';
@@ -74,6 +78,7 @@ import {
   getStageAttempts,
   updateStageAttempt,
 } from '../../data/repositories/pipelineStageAttemptRepository';
+import { setBatchUsageFromRuns } from '../../data/repositories/multiChapterBatchRepository';
 import {
   LLMRequestError,
   computeRetryBackoffMs,
@@ -201,12 +206,20 @@ async function runStageAttempt<T extends {
   frozenRequestJson?: string | null;
   llmConfigId?: number | null;
   llmConfigSnapshotJson: string;
-  /** BN-04: when set, enforce the batch's hard caps before issuing the request. */
+  /** BN-04/CL-06: when set, enforce the batch's hard caps before issuing the request. */
   batchBudgetGate?: { batchId: string };
+  /** CL-06: worst-case input/output for the upcoming request (compiled). */
+  estimatedInputTokens?: number;
+  reservedOutputTokens?: number;
   run: () => Promise<T>;
 }): Promise<T> {
   if (params.batchBudgetGate) {
-    await assertBatchBudgetAvailable(params.batchBudgetGate.batchId, params.stage);
+    await assertBatchBudgetAvailable({
+      batchId: params.batchBudgetGate.batchId,
+      stage: params.stage,
+      estimatedInputTokens: params.estimatedInputTokens,
+      reservedOutputTokens: params.reservedOutputTokens,
+    });
   }
   const attemptNo = await nextAttemptNo(params.taskId, params.stage);
   const attemptId = `${params.taskId}:${params.stage}:${attemptNo}`;
@@ -234,6 +247,8 @@ async function runStageAttempt<T extends {
       outputTokens: result.outputTokens,
       totalTokens: result.totalTokens,
     });
+    // CL-06: usage must reflect this attempt immediately (not at adoption).
+    await refreshBatchUsage(params.batchBudgetGate);
     return result;
   } catch (error: any) {
     const classified = classifyAttemptError(error, attemptNo);
@@ -253,6 +268,9 @@ async function runStageAttempt<T extends {
     } catch {
       // attempt persistence failure must not mask the original error
     }
+    // CL-06: a failed / retryable / unknown attempt still consumed budget —
+    // reflect it immediately (the next gate re-checks used + upcoming).
+    await refreshBatchUsage(params.batchBudgetGate);
     throw error;
   }
 }
@@ -354,6 +372,12 @@ export interface ReconcileOptions {
    * HTTP request is issued and the batch reconciler pauses the item.
    */
   batchBudgetGate?: { batchId: string };
+  /**
+   * CL-10: call-level foreground ownership. 'batch' suppresses per-task
+   * PipelineForeground notifications (the batch owns the aggregate).
+   * Defaults to 'task'.
+   */
+  foregroundOwner?: 'task' | 'batch';
 }
 
 const reconciling = new Set<string>();
@@ -580,28 +604,29 @@ function isAbortError(error: any, abortSignal?: AbortSignal): boolean {
   return Boolean(abortSignal?.aborted || error?.code === 'cancelled');
 }
 
-/** BN-11: thread the foreground owner through reconcile. When the task is
- *  owned by a batch, suppress per-task PipelineForeground calls — the batch
- *  owns the single aggregated notification. Single-chapter mode defaults
- *  to 'task' and keeps existing behaviour.
- *
- *  Scope: set when entering reconcilePipelineTask (mirror of the entry
- *  options.batchBudgetGate flag). Cleared on exit. Reads are sync.
- */
-let activeForegroundOwner: 'task' | 'batch' = 'task';
-function shouldEmitForeground(): boolean {
-  return activeForegroundOwner === 'task';
-}
+/** BN-11/CL-10: foreground ownership is CALL-LEVEL state (options), never a
+ *  module global — two concurrent tasks (single-chapter A + batch B) must not
+ *  pollute each other's notification ownership. Batch-owned tasks suppress
+ *  per-task PipelineForeground calls; the batch owns the single aggregated
+ *  notification. Single-chapter mode defaults to 'task'. */
+
 
 /**
- * BN-04: hard budget gate. Read the batch's durable caps and current usage,
- * estimate the worst-case cost for the upcoming stage, and throw a typed
- * error BEFORE any HTTP attempt row is created. The error carries the
- * batch + stage context so the reconciler can pause the batch correctly.
+ * BN-04 / CL-06: hard batch budget gate. Read the batch's durable caps and
+ * CURRENT usage (re-aggregated from pipeline_stage_attempts right before the
+ * check — never stale adoption-time counters), estimate the worst-case cost
+ * for the upcoming stage, and throw a typed error BEFORE any HTTP attempt
+ * row is created. The error carries the batch + stage context so the
+ * reconciler can pause the batch correctly.
  *
- * The cap is intentionally enforced on the conservative side: each stage is
- * allowed to consume up to its configured max-tokens, so even a near-empty
- * input overflows the cap. When a cap is null (uncapped) we skip the check.
+ * The real gate is `used + upcoming <= cap` (plan §9):
+ *   usedCalls + 1          <= maxLlmCalls
+ *   usedInput + estimated  <= maxInputTokens
+ *   usedOutput + reserved  <= maxOutputTokens
+ *
+ * When a cap is null (uncapped) we skip the check. `estimatedInputTokens` /
+ * `reservedOutputTokens` come from the compiled stage request; callers that
+ * cannot provide them pass 0 (the call-count gate still applies).
  */
 export class BatchBudgetExceededError extends Error {
   readonly code: 'BATCH_BUDGET_EXCEEDED';
@@ -618,7 +643,13 @@ export class BatchBudgetExceededError extends Error {
   }
 }
 
-async function assertBatchBudgetAvailable(batchId: string, stage: string): Promise<void> {
+async function assertBatchBudgetAvailable(params: {
+  batchId: string;
+  stage: string;
+  estimatedInputTokens?: number;
+  reservedOutputTokens?: number;
+}): Promise<void> {
+  const { batchId, stage } = params;
   const row = await one(
     `SELECT max_llm_calls, max_input_tokens, max_output_tokens,
             used_llm_calls, used_input_tokens, used_output_tokens
@@ -629,32 +660,64 @@ async function assertBatchBudgetAvailable(batchId: string, stage: string): Promi
   const maxLlmCalls = row.max_llm_calls != null ? Number(row.max_llm_calls) : null;
   const maxInput = row.max_input_tokens != null ? Number(row.max_input_tokens) : null;
   const maxOutput = row.max_output_tokens != null ? Number(row.max_output_tokens) : null;
-  const usedLlmCalls = Number(row.used_llm_calls ?? 0);
-  const usedInput = Number(row.used_input_tokens ?? 0);
-  const usedOutput = Number(row.used_output_tokens ?? 0);
-  if (maxLlmCalls != null && usedLlmCalls >= maxLlmCalls) {
+
+  // CL-06: re-aggregate usage from the durable attempt history so used_*
+  // reflects every attempt that already happened — never the adoption-time
+  // counters (they lag by a whole chapter).
+  let usedLlmCalls = Number(row.used_llm_calls ?? 0);
+  let usedInput = Number(row.used_input_tokens ?? 0);
+  let usedOutput = Number(row.used_output_tokens ?? 0);
+  try {
+    const fresh = await setBatchUsageFromRuns(batchId);
+    usedLlmCalls = fresh.llmCalls;
+    usedInput = fresh.inputTokens;
+    usedOutput = fresh.outputTokens;
+  } catch {
+    // non-fatal: the counters we already read are used as a fallback; the
+    // attempt row itself remains the audit source of truth.
+  }
+
+  const estimatedInput = Math.max(0, Number(params.estimatedInputTokens ?? 0));
+  const reservedOutput = Math.max(0, Number(params.reservedOutputTokens ?? 0));
+
+  // used + upcoming <= cap — the real hard gate (not just used < cap).
+  if (maxLlmCalls != null && usedLlmCalls + 1 > maxLlmCalls) {
     throw new BatchBudgetExceededError(
       batchId,
       stage,
       'calls',
-      `批次 LLM 调用已达上限（${usedLlmCalls}/${maxLlmCalls}），已暂停第 ${stage} 阶段请求。`,
+      `批次 LLM 调用将超上限（已用 ${usedLlmCalls} + 本次 1 > ${maxLlmCalls}），已暂停第 ${stage} 阶段请求。`,
     );
   }
-  if (maxInput != null && usedInput >= maxInput) {
+  if (maxInput != null && usedInput + estimatedInput > maxInput) {
     throw new BatchBudgetExceededError(
       batchId,
       stage,
       'input',
-      `批次输入 token 已达上限（${usedInput}/${maxInput}），已暂停第 ${stage} 阶段请求。`,
+      `批次输入 token 将超上限（已用 ${usedInput} + 预计 ${estimatedInput} > ${maxInput}），已暂停第 ${stage} 阶段请求。`,
     );
   }
-  if (maxOutput != null && usedOutput >= maxOutput) {
+  if (maxOutput != null && usedOutput + reservedOutput > maxOutput) {
     throw new BatchBudgetExceededError(
       batchId,
       stage,
       'output',
-      `批次输出 token 已达上限（${usedOutput}/${maxOutput}），已暂停第 ${stage} 阶段请求。`,
+      `批次输出 token 将超上限（已用 ${usedOutput} + 预留 ${reservedOutput} > ${maxOutput}），已暂停第 ${stage} 阶段请求。`,
     );
+  }
+}
+
+/** CL-06: re-aggregate batch usage after an attempt terminal state so used_*
+ *  reflects every attempt that already happened (never adoption-time lag). */
+async function refreshBatchUsage(
+  gate: { batchId: string } | undefined,
+): Promise<void> {
+  if (!gate) return;
+  try {
+    await setBatchUsageFromRuns(gate.batchId);
+  } catch {
+    // non-fatal: the attempt row remains the audit source of truth and the
+    // next request's gate re-aggregates before checking.
   }
 }
 
@@ -750,10 +813,9 @@ export async function reconcilePipelineTask(
   }
   reconciling.add(taskId);
   await refreshElasticBudgetFlag();
-  // BN-11: switch foreground ownership based on the batch gate. The flag
-  // is restored in `finally` so nested reconcile entries do not leak state.
-  const prevForegroundOwner = activeForegroundOwner;
-  activeForegroundOwner = options.batchBudgetGate ? 'batch' : 'task';
+  // CL-10: call-level (never module-global) foreground ownership. Defaults to
+  // 'task' unless the caller (batch reconciler) declares 'batch'.
+  const emitForeground = (options.foregroundOwner ?? 'task') === 'task';
 
   const store = usePipelineTaskStore.getState();
   const onStageUpdate = options.onStageUpdate;
@@ -762,7 +824,7 @@ export async function reconcilePipelineTask(
   // BN-11: batch-owned tasks defer all notifications to the single
   // batch-owned notification owned by the reconciler. Without this gate
   // every sub-task fires its own Android notification on top of the batch's.
-  if (shouldEmitForeground()) {
+  if (emitForeground) {
     PipelineForeground.start(
       taskId,
       chapter.title || '流水线',
@@ -803,8 +865,32 @@ export async function reconcilePipelineTask(
       const view = buildPersistedTaskView(task);
       const action = determineNextPipelineAction(view, stages);
 
+      // CL-01: a failed stage checkpoint with a persisted safe_retry /
+      // rate_limit attempt must NOT be blocked terminally by STAGE_FAILED.
+      // Consume the retry disposition first: waiting → hand back to the
+      // UI/batch watchdog; retried → loop re-runs the stage; manual_* →
+      // surface the distinct message instead of the generic failure.
+      if (action.type === 'blocked' && action.reason.code === 'STAGE_FAILED') {
+        const retry = await consumeFailedStageRetryDisposition({
+          taskId,
+          stage: action.reason.stage,
+          options,
+        });
+        if (retry.outcome === 'waiting') return;
+        if (retry.outcome === 'retried') continue;
+        await handleBlocked(
+          taskId,
+          chapter,
+          action,
+          stages,
+          retry.message,
+          emitForeground,
+        );
+        return;
+      }
+
       if (action.type === 'blocked') {
-        await handleBlocked(taskId, chapter, action, stages);
+        await handleBlocked(taskId, chapter, action, stages, undefined, emitForeground);
         return;
       }
 
@@ -844,6 +930,13 @@ export async function reconcilePipelineTask(
       await PipelineForeground.stop(taskId);
       return;
     }
+    // CL-06: batch budget gate errors must NOT be swallowed into a generic
+    // failed task — the batch reconciler catches this typed error and pauses
+    // the batch (paused_batch_budget). Swallowing it here would leave the
+    // batch spinning on pause_unknown_outcome instead of the durable pause.
+    if (error instanceof BatchBudgetExceededError) {
+      throw error;
+    }
     const mapped = mapOutlineErrorToPipelineError(error);
     const message =
       mapped?.message || getErrorMessage(error, '流水线执行失败');
@@ -852,7 +945,7 @@ export async function reconcilePipelineTask(
     } else {
       store.failTask(taskId, message);
     }
-    if (shouldEmitForeground()) {
+    if (emitForeground) {
       await PipelineForeground.notifyFailed(
         taskId,
         chapter.title || '流水线',
@@ -862,8 +955,66 @@ export async function reconcilePipelineTask(
     await PipelineForeground.stop(taskId);
   } finally {
     reconciling.delete(taskId);
-    activeForegroundOwner = prevForegroundOwner;
   }
+}
+
+/**
+ * CL-01: consume the persisted retry disposition for a failed stage checkpoint
+ * BEFORE `blocked(STAGE_FAILED)` is handled terminally.
+ *
+ * The pure decision lives in `determineRetryDisposition`; this function only
+ * executes the durable transitions:
+ *   - wait_retry  → sleep a bounded chunk; if still not due, hand back to the
+ *                   UI / batch watchdog (the attempt row's next_retry_at is
+ *                   already durable). If due during the wait, fall through to
+ *                   reset the checkpoint and retry.
+ *   - retry_now   → reset the checkpoint to pending with a bumped attempt
+ *                   count so the loop re-runs the stage with the SAME frozen
+ *                   request (never recompiled).
+ *   - manual_*    → return the reason message so handleBlocked can surface it
+ *                   instead of the generic STAGE_FAILED text.
+ *   - fail        → no retry; STAGE_FAILED proceeds as before.
+ */
+async function consumeFailedStageRetryDisposition(params: {
+  taskId: string;
+  stage?: string;
+  options: ReconcileOptions;
+}): Promise<
+  { outcome: 'waiting' } | { outcome: 'retried' } | { outcome: 'none'; message?: string }
+> {
+  const stage = params.stage;
+  if (!stage) return { outcome: 'none' };
+  const attempts = await getStageAttempts(params.taskId, stage);
+  const latest = attempts[attempts.length - 1];
+  if (!latest) return { outcome: 'none' };
+  const disposition: RetryDisposition = determineRetryDisposition(latest);
+
+  if (disposition.kind === 'fail') return { outcome: 'none' };
+  if (disposition.kind === 'manual_pause' || disposition.kind === 'manual_confirm') {
+    return { outcome: 'none', message: disposition.message };
+  }
+
+  if (disposition.kind === 'wait_retry') {
+    const waitMs = Math.min(
+      Math.max(0, disposition.retryAt - Date.now()),
+      15_000,
+    );
+    await sleep(waitMs);
+    if (params.options.abortSignal?.aborted) return { outcome: 'waiting' };
+    if (Date.now() < disposition.retryAt) return { outcome: 'waiting' };
+    // Due during the bounded wait — reset and retry now.
+  }
+
+  // retry_now (or wait_retry became due): reset checkpoint → re-run the stage.
+  await db.upsertStageCheckpoint({
+    taskId: params.taskId,
+    stage: stage as any,
+    status: 'pending',
+    errorCode: null,
+    errorMessage: null,
+    bumpAttempt: true,
+  });
+  return { outcome: 'retried' };
 }
 
 async function handleBlocked(
@@ -871,9 +1022,12 @@ async function handleBlocked(
   chapter: Chapter,
   action: Extract<PipelineAction, { type: 'blocked' }>,
   stages: ReturnType<typeof resolveStageCheckpoints>,
+  messageOverride?: string,
+  emitForeground = true,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const code = action.reason.code;
+  const message = messageOverride || action.reason.message;
   if (code === 'TASK_TERMINAL') {
     await PipelineForeground.stop(taskId);
     return;
@@ -885,30 +1039,30 @@ async function handleBlocked(
   }
   if (code === 'STAGE_FAILED' || code === 'TASK_NOT_RECOVERABLE') {
     if (store.persistFailTask) {
-      await store.persistFailTask(taskId, action.reason.message);
+      await store.persistFailTask(taskId, message);
     } else {
-      store.failTask(taskId, action.reason.message);
+      store.failTask(taskId, message);
     }
-    if (shouldEmitForeground()) {
+    if (emitForeground) {
       await PipelineForeground.notifyFailed(
         taskId,
         chapter.title || '流水线',
-        action.reason.message,
+        message,
       );
     }
     await PipelineForeground.stop(taskId);
     return;
   }
   if (store.persistFailTask) {
-    await store.persistFailTask(taskId, action.reason.message);
+    await store.persistFailTask(taskId, message);
   } else {
-    store.failTask(taskId, action.reason.message);
+    store.failTask(taskId, message);
   }
-  if (shouldEmitForeground()) {
+  if (emitForeground) {
     await PipelineForeground.notifyFailed(
       taskId,
       chapter.title || '流水线',
-      action.reason.message,
+      message,
     );
   }
   await PipelineForeground.stop(taskId);
@@ -963,16 +1117,36 @@ async function executeAction(params: {
       await actionRunProof(taskId, chapter, onStageUpdate, abortSignal, options);
       return 'continue';
     case 'finalize_from_draft':
-      await actionFinalizeFromDraft(taskId, chapter, action.degraded === true);
+      await actionFinalizeFromDraft(
+        taskId,
+        chapter,
+        action.degraded === true,
+        (options.foregroundOwner ?? 'task') === 'task',
+      );
       return 'continue';
     case 'finalize_from_proof':
-      await actionFinalizeFromProof(taskId, chapter);
+      await actionFinalizeFromProof(
+        taskId,
+        chapter,
+        (options.foregroundOwner ?? 'task') === 'task',
+      );
       return 'continue';
     case 'complete':
-      await actionComplete(taskId, chapter);
+      await actionComplete(
+        taskId,
+        chapter,
+        (options.foregroundOwner ?? 'task') === 'task',
+      );
       return 'stop';
     case 'blocked':
-      await handleBlocked(taskId, chapter, action, params.stages);
+      await handleBlocked(
+        taskId,
+        chapter,
+        action,
+        params.stages,
+        undefined,
+        (params.options.foregroundOwner ?? 'task') === 'task',
+      );
       return 'stop';
     default:
       store.failTask(taskId, '未知流水线动作');
@@ -1115,6 +1289,7 @@ async function actionRunDraft(
 ): Promise<void> {
   if (cancelled(taskId, options)) return;
 
+  const emitForeground = (options.foregroundOwner ?? 'task') === 'task';
   const claim = await executeClaimedStage({
     taskId,
     stage: 'draft',
@@ -1132,7 +1307,7 @@ async function actionRunDraft(
         label: '正在生成初稿',
         startedAt: Date.now(),
       });
-      if (shouldEmitForeground()) {
+      if (emitForeground) {
         PipelineForeground.updateProgress(taskId, '正在生成初稿', 0).catch(
           () => {},
         );
@@ -1179,6 +1354,8 @@ async function actionRunDraft(
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
           batchBudgetGate: options.batchBudgetGate,
+          estimatedInputTokens: firstReady.estimatedInputTokens,
+          reservedOutputTokens: firstReady.reservedOutputTokens,
           run: () =>
             callReadyLLM(
               firstReady,
@@ -1234,6 +1411,8 @@ async function actionRunDraft(
             llmConfigId: llmConfigIdOf(runtime.requestConfig),
             llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
             batchBudgetGate: options.batchBudgetGate,
+            estimatedInputTokens: retryReady.estimatedInputTokens,
+            reservedOutputTokens: retryReady.reservedOutputTokens,
             run: () =>
               callReadyLLM(
                 retryReady,
@@ -1282,6 +1461,11 @@ async function actionRunDraft(
         if (isAbortError(error, abortSignal) || cancelled(taskId, options)) {
           await settleInterruptedTask(taskId, options);
           await PipelineForeground.stop(taskId);
+          throw error;
+        }
+        // CL-06: budget-blocked requests never mark the stage failed — the
+        // batch pauses itself; a later resume must be able to retry.
+        if (error instanceof BatchBudgetExceededError) {
           throw error;
         }
         await persistStage(taskId, {
@@ -1467,6 +1651,8 @@ async function actionRunReview(
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
           batchBudgetGate: options.batchBudgetGate,
+          estimatedInputTokens: compiled.estimatedInputTokens,
+          reservedOutputTokens: compiled.reservedOutputTokens,
           run: () =>
             callReadyLLM(
               compiled,
@@ -1544,6 +1730,8 @@ async function actionRunReview(
             llmConfigId: llmConfigIdOf(runtime.requestConfig),
             llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
             batchBudgetGate: options.batchBudgetGate,
+            estimatedInputTokens: repairReady.estimatedInputTokens,
+            reservedOutputTokens: repairReady.reservedOutputTokens,
             run: () =>
               callReadyLLM(
                 repairReady,
@@ -1607,6 +1795,10 @@ async function actionRunReview(
         if (isAbortError(error, abortSignal)) {
           await settleInterruptedTask(taskId, options);
           await PipelineForeground.stop(taskId);
+          throw error;
+        }
+        // CL-06: budget-blocked requests never mark the stage failed.
+        if (error instanceof BatchBudgetExceededError) {
           throw error;
         }
         await persistStage(taskId, {
@@ -1697,6 +1889,8 @@ async function actionRunFactCheck(
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
           batchBudgetGate: options.batchBudgetGate,
+          estimatedInputTokens: compiled.estimatedInputTokens,
+          reservedOutputTokens: compiled.reservedOutputTokens,
           run: () =>
             callReadyLLM(
               compiled,
@@ -1772,6 +1966,8 @@ async function actionRunFactCheck(
             llmConfigId: llmConfigIdOf(runtime.requestConfig),
             llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
             batchBudgetGate: options.batchBudgetGate,
+            estimatedInputTokens: repairReady.estimatedInputTokens,
+            reservedOutputTokens: repairReady.reservedOutputTokens,
             run: () =>
               callReadyLLM(
                 repairReady,
@@ -1834,6 +2030,10 @@ async function actionRunFactCheck(
         if (isAbortError(error, abortSignal)) {
           await settleInterruptedTask(taskId, options);
           await PipelineForeground.stop(taskId);
+          throw error;
+        }
+        // CL-06: budget-blocked requests never mark the stage failed.
+        if (error instanceof BatchBudgetExceededError) {
           throw error;
         }
         await persistStage(taskId, {
@@ -1912,8 +2112,9 @@ async function actionRunProof(
       });
     },
     run: async () => {
+      const emitForeground = (options.foregroundOwner ?? 'task') === 'task';
       const runtime = await loadRuntime(taskId, chapter);
-      if (shouldEmitForeground()) {
+      if (emitForeground) {
         PipelineForeground.updateProgress(
           taskId,
           '正在综合修订',
@@ -1963,6 +2164,8 @@ async function actionRunProof(
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
           batchBudgetGate: options.batchBudgetGate,
+          estimatedInputTokens: compiled.estimatedInputTokens,
+          reservedOutputTokens: compiled.reservedOutputTokens,
           run: () =>
             callReadyLLM(
               compiled,
@@ -2025,6 +2228,10 @@ async function actionRunProof(
           await PipelineForeground.stop(taskId);
           throw error;
         }
+        // CL-06: budget-blocked requests never mark the stage failed.
+        if (error instanceof BatchBudgetExceededError) {
+          throw error;
+        }
         await persistStage(taskId, {
           stage: 'proof',
           text: draftText,
@@ -2083,6 +2290,7 @@ async function actionFinalizeFromDraft(
   taskId: string,
   chapter: Chapter,
   degraded: boolean,
+  emitForeground = true,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const draftText = await getDraftText(taskId);
@@ -2141,7 +2349,7 @@ async function actionFinalizeFromDraft(
     } else {
       store.setTaskFinalText(taskId, draftText);
     }
-    if (shouldEmitForeground()) {
+    if (emitForeground) {
       await PipelineForeground.notifyFailed(
         taskId,
         chapter.title || '流水线',
@@ -2163,7 +2371,7 @@ async function actionFinalizeFromDraft(
   } else {
     store.completeTask(taskId, draftText);
   }
-  if (shouldEmitForeground()) {
+  if (emitForeground) {
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
     await PipelineForeground.notifyComplete(
       taskId,
@@ -2177,6 +2385,7 @@ async function actionFinalizeFromDraft(
 async function actionFinalizeFromProof(
   taskId: string,
   chapter: Chapter,
+  emitForeground = true,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const proofText = await getStageText(taskId, 'proof');
@@ -2188,7 +2397,7 @@ async function actionFinalizeFromProof(
   } else {
     store.completeTask(taskId, text);
   }
-  if (shouldEmitForeground()) {
+  if (emitForeground) {
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
     await PipelineForeground.notifyComplete(
       taskId,
@@ -2199,7 +2408,11 @@ async function actionFinalizeFromProof(
     await PipelineForeground.stop(taskId);
 }
 
-async function actionComplete(taskId: string, chapter: Chapter): Promise<void> {
+async function actionComplete(
+  taskId: string,
+  chapter: Chapter,
+  emitForeground = true,
+): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const task = store.tasks.find(t => t.id === taskId);
   if (task?.status === 'completed') {
@@ -2216,7 +2429,7 @@ async function actionComplete(taskId: string, chapter: Chapter): Promise<void> {
   } else {
     store.completeTask(taskId, text);
   }
-  if (shouldEmitForeground()) {
+  if (emitForeground) {
     await PipelineForeground.updateProgress(taskId, '已完成', 100);
     await PipelineForeground.notifyComplete(
       taskId,

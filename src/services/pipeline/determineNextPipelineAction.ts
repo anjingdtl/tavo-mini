@@ -10,6 +10,7 @@
 
 import type { PipelineMode, PipelineStageName } from '../../types/pipeline';
 import { getCheckpoint } from './projectStageCheckpoints';
+import { MAX_AUTO_RETRY_ATTEMPTS } from '../llm/requestPolicy';
 import type {
   PersistedPipelineTaskView,
   PersistedStageCheckpoint,
@@ -17,6 +18,57 @@ import type {
   PipelineError,
   StageStatus,
 } from './types';
+
+/**
+ * CL-01: retry disposition for a FAILED stage checkpoint, decided BEFORE any
+ * terminal `blocked(STAGE_FAILED)` is emitted.
+ *
+ * Pure decision — reads only the latest persisted attempt row:
+ *   - safe_to_retry / rate_limit, not due      → wait_retry
+ *   - safe_to_retry / rate_limit, due, in-limit → retry_now
+ *   - safe_to_retry / rate_limit, over limit    → manual_pause
+ *   - outcome_unknown                           → manual_confirm (never auto-retry)
+ *   - anything else                             → fail (STAGE_FAILED as before)
+ */
+export type RetryDisposition =
+  | { kind: 'wait_retry'; retryAt: number }
+  | { kind: 'retry_now' }
+  | { kind: 'manual_pause'; message: string }
+  | { kind: 'manual_confirm'; message: string }
+  | { kind: 'fail' };
+
+export function determineRetryDisposition(attempt: {
+  status?: string | null;
+  failureClass?: string | null;
+  attemptNo?: number | null;
+  nextRetryAt?: number | null;
+}): RetryDisposition {
+  const status = String(attempt.status ?? '');
+  const failureClass = String(attempt.failureClass ?? '');
+  const attemptNo = Number(attempt.attemptNo ?? 0);
+
+  if (status === 'outcome_unknown' || failureClass === 'outcome_unknown') {
+    return {
+      kind: 'manual_confirm',
+      message: '请求可能已执行但结果未知，请确认后重新执行或更换模型',
+    };
+  }
+  if (
+    status === 'safe_to_retry' &&
+    (failureClass === 'safe_retry' || failureClass === 'rate_limit')
+  ) {
+    if (attemptNo > MAX_AUTO_RETRY_ATTEMPTS) {
+      return {
+        kind: 'manual_pause',
+        message: `已超过自动重试上限（${MAX_AUTO_RETRY_ATTEMPTS} 次），请稍后手动重试`,
+      };
+    }
+    const retryAt = attempt.nextRetryAt ?? Date.now();
+    if (retryAt > Date.now()) return { kind: 'wait_retry', retryAt };
+    return { kind: 'retry_now' };
+  }
+  return { kind: 'fail' };
+}
 
 function blocked(
   code: PipelineError['code'],
