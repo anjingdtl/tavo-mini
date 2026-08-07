@@ -40,8 +40,8 @@ jobs:
       - name: TypeScript
         run: npm run typecheck
 
-      - name: Jest with coverage
-        run: npm run test:coverage
+      - name: Jest (CI mode)
+        run: npm run test:ci
 
   android-debug:
     name: Android Debug build
