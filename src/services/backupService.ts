@@ -100,6 +100,29 @@ export async function backfillBackupMeta(backupPath: string): Promise<void> {
 }
 
 /**
+ * F2-05: backfill legacy sidecars with a bounded concurrency queue instead of
+ * Promise.all — each backfill full-reads one complete backup, so concurrent
+ * backfills on a large library would read N backups at once. Default
+ * concurrency = 1 (serial): the list has already rendered from
+ * filename/mtime/size, so there is no need to race the reads. One failing
+ * item does not affect the others.
+ */
+export async function backfillBackupMetaQueued(
+  backupPaths: string[],
+  concurrency = 1,
+): Promise<void> {
+  const queue = [...backupPaths];
+  const workerCount = Math.max(1, Math.min(concurrency, queue.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (queue.length > 0) {
+      const path = queue.shift() as string;
+      await backfillBackupMeta(path);
+    }
+  });
+  await Promise.all(workers);
+}
+
+/**
  * These tables are the compatibility floor for v1/v2 backups. Newer tables
  * are optional when reading an older backup and are left untouched on restore.
  */
@@ -1119,6 +1142,14 @@ export async function listBackups(): Promise<BackupSummary[]> {
 
 export async function deleteBackup(path: string): Promise<void> {
   if (await RNFS.exists(path)) await RNFS.unlink(path);
+  // F2-05: best-effort remove the sidecar too — an orphaned
+  // backup_xxx.json.meta.json must not survive the backup it describes.
+  try {
+    const sidecar = sidecarPathFor(path);
+    if (await RNFS.exists(sidecar)) await RNFS.unlink(sidecar);
+  } catch {
+    // best-effort — the backup file itself is already gone
+  }
 }
 
 export async function cleanupOldBackups(): Promise<void> {
