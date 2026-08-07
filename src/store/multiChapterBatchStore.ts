@@ -380,6 +380,12 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           errorMessage: null,
         });
       }
+      // F2-07: refresh the in-memory state IMMEDIATELY — the paused view is
+      // driven by store.batch.status and does not poll, while reconcile is a
+      // long-running drive (minutes per chapter). Without this refresh the UI
+      // stays on the paused screen with no visible reaction until the whole
+      // reconcile finishes.
+      await refreshBatch(set, get);
       await get().start(batchId);
     },
 
