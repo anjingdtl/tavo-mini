@@ -15,7 +15,6 @@ import { assertValidSchema, validateSchema } from './schemaValidator';
 import { createCurrentSchema } from './createCurrentSchema';
 import { now } from '../repositories/shared';
 import { ensureDefaultPreset } from '../repositories/presetRepository';
-import { repairOversizedNotes } from '../repositories/noteRepository';
 import { inspectKnownSchemaDrift } from './schemaDriftInspector';
 import { repairKnownSchemaDrift } from './knownSchemaRepairs';
 import {
@@ -442,7 +441,21 @@ export async function initializeDatabase(
   // 7. Seed defaults + indexes + note repair.
   await seedDefaults(database);
   await ensureCurrentIndexes(database);
-  await repairOversizedNotes(database);
+  // RB-16 fix (V2.11.34): the previous implementation called
+  // `repairOversizedNotes(database)` here on every cold start. That was
+  // destructive (it splits oversized notes, deletes the original note
+  // and replaces it with chunks), could leave the database in an
+  // inconsistent state if it crashed mid-repair, and had no user
+  // confirmation / rollback path. The V2.11.34 plan moves this to an
+  // explicit maintenance action under Settings → 数据维护 (gated by
+  // the `startup_note_repair_enabled` feature flag). We deliberately
+  // do NOT read the flag here, because reading it would force the
+  // settingsRepository to call `openDatabase()` on the cached singleton
+  // and break the startup path. Future maintenance UI will invoke
+  // `repairOversizedNotes` explicitly with its own safety backup.
+  //
+  // Function `repairOversizedNotes` is still exported from
+  // `noteRepository.ts` for the future maintenance screen to consume.
 
   // 8. Final strict validation.
   assertValidSchema(await validateSchema(database));

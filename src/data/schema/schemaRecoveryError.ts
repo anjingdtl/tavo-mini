@@ -15,7 +15,11 @@ export type SchemaRecoveryErrorCode =
   | 'KNOWN_SCHEMA_REPAIR_FAILED'
   | 'USER_DATA_RECALL_MISMATCH'
   | 'SCHEMA_VALIDATION_FAILED'
-  | 'RESOURCE_RELOAD_FAILED';
+  | 'RESOURCE_RELOAD_FAILED'
+  // RB-20 fix (V2.11.34): non-schema-recovery init failure surfaced by
+  // App/index.tsx when openDatabase / initializeDatabase throws an
+  // unrelated error. The UI surfaces the safe error screen.
+  | 'INIT_FAILED';
 
 export interface SchemaRecoveryError extends Error {
   code: SchemaRecoveryErrorCode;
@@ -98,5 +102,9 @@ export const SCHEMA_RECOVERY_ERROR_COPY: Record<
   RESOURCE_RELOAD_FAILED: {
     title: '资料重新加载失败',
     detail: '修复已完成，但资料页面未能自动刷新。请重启应用。',
+  },
+  INIT_FAILED: {
+    title: '本地资料暂时无法载入',
+    detail: '原数据库未删除。请前往设置 → 备份中心查看最近的安全备份。',
   },
 };
