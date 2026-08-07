@@ -60,6 +60,7 @@ import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import type { InMemorySqliteDb } from './helpers/canonInMemoryDb';
 import { __setDatabaseForTest, __resetForTest } from '../src/data/connection/openDatabase';
 import { execute } from '../src/data/connection/execute';
+import { one, all } from '../src/data/connection/query';
 import { openDatabase } from '../src/data/connection/openDatabase';
 import { useMultiChapterBatchStore, resetBatchInstanceId } from '../src/store/multiChapterBatchStore';
 import {
@@ -68,6 +69,7 @@ import {
   updateBatchStatus,
   updateBatchItem,
 } from '../src/data/repositories/multiChapterBatchRepository';
+import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -147,6 +149,117 @@ describe('F2-07: resume 后 UI 状态立即刷新（不依赖 reconcile 完成�
 
     const item = store.getState().items[0];
     expect(item?.status).toBe('running_pipeline');
+    expect(item?.activePipelineTaskId).toBeNull();
+  });
+});
+
+describe('F2-07: resume 有成功 checkpoint 时从失败 stage 续跑（token 保护）', () => {
+  async function seedPausedBatchWithCheckpoints(): Promise<string> {
+    await execute(
+      await openDatabase(),
+      `INSERT INTO projects (id, name, mode, created_at, updated_at) VALUES (1, 'p', 'outline', 't', 't')`,
+    );
+    await createBatch({
+      id: 'b1',
+      projectId: 1,
+      sourcePrompt: 's',
+      chapterCount: 1,
+      targetWordsPerChapter: 3000,
+      pipelineMode: 'full',
+    });
+    await createBatchItem({
+      batchId: 'b1',
+      ordinal: 1,
+      title: '第1章',
+      synopsis: 's',
+      keyBeatsJson: '[]',
+      targetWords: 3000,
+    });
+    const taskId = 'batch_b1_ord1_t1';
+    await savePipelineTask({
+      id: taskId,
+      targetType: 'chapter',
+      targetId: 100,
+      status: 'failed',
+      stageResults: [],
+      finalText: null,
+      error: 'Network request failed',
+      createdAt: 1000,
+      updatedAt: 2000,
+      resolvedAt: null,
+    });
+    // 模拟 network_error 中断在终审：draft/review/factCheck succeeded，proof failed。
+    const now = Date.now();
+    for (const stage of ['draft', 'review', 'factCheck']) {
+      await execute(
+        await openDatabase(),
+        `INSERT INTO pipeline_stage_checkpoints (task_id, stage, status, attempt_count, updated_at)
+         VALUES (?, ?, 'succeeded', 1, ?)`,
+        [taskId, stage, now],
+      );
+    }
+    await execute(
+      await openDatabase(),
+      `INSERT INTO pipeline_stage_checkpoints (task_id, stage, status, attempt_count, updated_at)
+       VALUES (?, 'proof', 'failed', 1, ?)`,
+      [taskId, now],
+    );
+    await updateBatchStatus('b1', 'paused_timeout_unknown', {
+      errorCode: 'BATCH_LLM_OUTCOME_UNKNOWN',
+    });
+    await updateBatchItem('b1', 1, {
+      status: 'outcome_unknown',
+      activePipelineTaskId: taskId,
+      errorCode: 'BATCH_LLM_OUTCOME_UNKNOWN',
+    });
+    return taskId;
+  }
+
+  it('有成功 checkpoint：resume 保留 task，失败 stage 重置为 pending，task 转 interrupted', async () => {
+    await resetDb();
+    const taskId = await seedPausedBatchWithCheckpoints();
+    const store = useMultiChapterBatchStore;
+    await store.getState().loadBatch('b1');
+
+    await store.getState().resume('b1');
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    // task 保留（未解绑）。
+    const item = store.getState().items[0];
+    expect(item?.status).toBe('running_pipeline');
+    expect(item?.activePipelineTaskId).toBe(taskId);
+
+    // task 状态转为 interrupted（pipeline 状态机对 interrupted 走 resume）。
+    const task = await one(
+      `SELECT status FROM pipeline_tasks WHERE id = ?`,
+      [taskId],
+    );
+    expect(String(task?.status)).toBe('interrupted');
+
+    // 失败 stage 重置为 pending；成功 stage 保留 succeeded（不会重跑）。
+    const checkpoints = await all(
+      `SELECT stage, status FROM pipeline_stage_checkpoints WHERE task_id = ? ORDER BY stage`,
+      [taskId],
+    );
+    const byStage = Object.fromEntries(
+      checkpoints.map((r: any) => [r.stage, r.status]),
+    );
+    expect(byStage.draft).toBe('succeeded');
+    expect(byStage.review).toBe('succeeded');
+    expect(byStage.factCheck).toBe('succeeded');
+    expect(byStage.proof).toBe('pending');
+  });
+
+  it('无成功 checkpoint：resume 仍走全新 run（解绑 task）', async () => {
+    await resetDb();
+    await seedPausedBatch();
+    const store = useMultiChapterBatchStore;
+    await store.getState().loadBatch('b1');
+
+    await store.getState().resume('b1');
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const item = store.getState().items[0];
     expect(item?.activePipelineTaskId).toBeNull();
   });
 });
