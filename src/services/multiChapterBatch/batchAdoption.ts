@@ -21,6 +21,10 @@ import { createContentRevision, getLatestContentRevision } from '../../data/repo
 import { getPipelineTaskById } from '../../data/repositories/pipelineTaskRepository';
 import { getBatchItem } from '../../data/repositories/multiChapterBatchRepository';
 import { buildCommitBatchItemAdoptionStatements } from '../../data/repositories/multiChapterBatchRepository';
+import {
+  getProjectStoryMemory,
+  buildStoryMemoryContinuitySideEffects,
+} from '../../data/repositories/storyMemoryRepository';
 import { executeTransaction, type SqlStatement } from '../database/transaction';
 import { sha256Hex } from '../continuation/hashUtils';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
@@ -330,6 +334,28 @@ export async function adoptPipelineTaskResultAtomic(
       counterStatementIndex = statements.length;
     }
   }
+
+  // F2-02: task resolve + story-memory continuity side effects fold into the
+  // SAME transaction. A crash right after COMMIT can no longer strand an
+  // unresolved pipeline task or lose the story-memory dirty intent — both are
+  // durable before the transaction returns. The post-commit store refresh and
+  // best-effort mark remain only as idempotent in-memory/backstop calls.
+  const nowIso = new Date().toISOString();
+  const smRecord = await getProjectStoryMemory(chapter.project_id);
+  const smSideEffects = buildStoryMemoryContinuitySideEffects(
+    smRecord,
+    chapter.project_id,
+    chapter.position,
+    `pipeline_adopt:${input.taskId}`,
+    nowIso,
+  );
+  statements.push(
+    {
+      sql: `UPDATE pipeline_tasks SET resolved_at = ?, resolved_action = 'accept', updated_at = ? WHERE id = ?`,
+      params: [nowIso, nowIso, input.taskId],
+    },
+    ...smSideEffects.statements,
+  );
 
   let adoptedRevisionId: number | null = null;
   // Pipeline revision is the LAST content statement (index 3 when an old-body
