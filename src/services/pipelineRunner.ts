@@ -196,6 +196,8 @@ export async function runChapterPipeline(
       isCancelled: isPipelineCancelled,
       pipelineModeOverride: options.pipelineModeOverride,
       batchBudgetGate: options.batchBudgetGate,
+      // CL-10: call-level foreground ownership (never module-global).
+      foregroundOwner: options.foregroundOwner,
     });
   } finally {
     releaseTaskAbort(taskId);
@@ -257,6 +259,8 @@ export async function resumePipeline(
       isCancelled: isPipelineCancelled,
       pipelineModeOverride: options.pipelineModeOverride,
       batchBudgetGate: options.batchBudgetGate,
+      // CL-10: call-level foreground ownership (never module-global).
+      foregroundOwner: options.foregroundOwner,
     });
   } finally {
     releaseTaskAbort(taskId);
