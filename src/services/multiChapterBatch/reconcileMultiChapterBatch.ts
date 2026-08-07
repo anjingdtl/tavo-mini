@@ -33,7 +33,8 @@ import {
   determineNextBatchAction,
   type MultiChapterBatchAction,
 } from './determineNextBatchAction';
-import { adoptPipelineTaskResult } from './batchAdoption';
+import { adoptPipelineTaskResultAtomic } from './batchAdoption';
+import { BatchLeaseSession } from './leaseSession';
 import { MultiChapterBatchError } from './errors';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { runChapterPipeline, resumePipeline } from '../pipelineRunner';
@@ -451,17 +452,26 @@ async function executeBatchAction(params: {
               ),
               batchBudgetGate: { batchId },
             });
-      // BN-09 / BN-10: a separate setInterval heartbeat racing the main
-      // loop's per-step CAS for the same rowVersion is a guaranteed
-      // collision. The main loop already renews the lease on every state-
-      // machine step (see `claimBatchLease` at the top of the for-loop);
-      // a long single-chapter run is bounded by maxSteps (200) and the
-      // pipeline executor itself fails closed if it cannot complete.
-      // Removing the timer eliminates the race and the "in-flight async
-      // write after clearInterval" hazard.
+      // BN-09 / BN-10: the main loop renews the lease on every state-machine
+      // step (see `claimBatchLease` at the top of the for-loop). A long
+      // single-chapter run (120–180s) outlives the 60s TTL, so CL-05 starts a
+      // SERIALIZED heartbeat session for the duration of the run — renew at
+      // TTL/3 against the latest rowVersion. If the CAS ever loses to another
+      // executor, the session marks itself lost and the batch fails closed
+      // (no further LLM requests).
       notify(action.type === 'run_pipeline' ? '开始生成当前章' : '恢复当前章');
+      const leaseSession = new BatchLeaseSession(batchId, {
+        owner: options.owner,
+        leaseMs: options.leaseMs ?? DEFAULT_LEASE_MS,
+        readBatch: () => getBatchById(batchId),
+        claim: claimBatchLease,
+      });
+      await leaseSession.start();
       try {
         await run();
+        // Fail-closed: if the lease was lost while the request ran, another
+        // executor owns the batch — stop immediately.
+        leaseSession.assertOwned();
       } catch (error: any) {
         // BN-04: typed batch budget overflow — persist the durable pause
         // BEFORE the generic notify so a process kill mid-handler still
@@ -486,8 +496,7 @@ async function executeBatchAction(params: {
         // 保证 UI 与真实状态同步（断点续写闭环）。
         notify(`当前章运行失败：${getErrorMessage(error, '未知错误')}`);
       } finally {
-        // BN-09/10: redundant heartbeat setInterval removed; lease renewal
-        // is single-owned by the main loop's per-step CAS.
+        await leaseSession.stop();
       }
       return 'continue';
     }
@@ -632,30 +641,20 @@ async function adoptAndCommit(params: {
   const quality: BatchItemCompletionQuality =
     action.type === 'adopt_draft_result' ? 'draft_only' : 'full_pipeline';
 
-  const adopted = await adoptPipelineTaskResult({
+  // CL-07: ONE transaction closes the adoption loop — old-body revision,
+  // chapter.content, pipeline revision, item fingerprint/adoptedRevisionId
+  // AND batch counters. A crash mid-adoption rolls back everything; the
+  // idempotency fingerprint still makes repeated reconcile a no-op.
+  const adopted = await adoptPipelineTaskResultAtomic({
     taskId,
     chapterId: currentItem.chapterId,
     source: 'multi_chapter_batch',
     batchId,
     ordinal: currentItem.ordinal,
     completionQuality: quality,
-  });
-
-  // Persist the idempotency fingerprint BEFORE committing counters.
-  await updateBatchItem(batchId, currentItem.ordinal, {
-    status: 'adopting',
-    adoptionFingerprint: adopted.adoptionFingerprint,
-    adoptedRevisionId: adopted.adoptedRevisionId,
-    completionQuality: quality,
-  });
-  await commitBatchItemAdoption({
-    batchId,
-    ordinal: currentItem.ordinal,
     chapterCount: batch.chapterCount,
-    completionQuality: quality,
-    adoptionFingerprint: adopted.adoptionFingerprint,
-    adoptedRevisionId: adopted.adoptedRevisionId,
   });
+  void adopted;
 
   // Cross-task, cross-run, crash-safe usage aggregation (BN-03). SET
   // (not increment) — repeated reconcile produces the same value.
