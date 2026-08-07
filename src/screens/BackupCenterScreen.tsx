@@ -6,6 +6,7 @@ import { Button, Card, EmptyState, Header, LoadingState, Screen, spacing } from 
 import { useThemeStore } from '../store/themeStore';
 import {
   listBackups,
+  backfillBackupMeta,
   createManualBackup,
   restoreFromBackup,
   deleteBackup,
@@ -58,6 +59,17 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
     try {
       const list = await listBackups();
       setBackups(list);
+      // CL-08: legacy backups without a sidecar are ALREADY rendered from
+      // filename/mtime/size; backfill their sidecars in the background so
+      // the next visit is fully sidecar-driven (never block the list).
+      const pending = list.filter(item => item.metaPending);
+      if (pending.length > 0) {
+        void Promise.all(
+          pending.map(item =>
+            backfillBackupMeta(item.path).catch(() => undefined),
+          ),
+        );
+      }
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '操作失败', text2: e?.message });
     } finally {
