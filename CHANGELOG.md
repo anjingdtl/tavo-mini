@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.11.38] - 2026-08-08
+
+### Fixed
+
+- **Schema 43 Story Memory 迁移语义收窄（P2）**：`v42-to-v43` 从「所有 `mode='smart'` 行一律改 10」收窄为仅改「旧系统默认 smart/3」。历史证据：`STORY_MEMORY_DEFAULT_INTERVAL` 在 Schema 40 时代为 3（`b52a7148`），Schema 40 后期改为 10 且只对新 policy 生效（`52f09c6f`），smart 间隔在 StoryMemoryScreen 中始终允许用户手工编辑——因此 smart/5、smart/7 等是用户明确配置，升级不得覆盖。迁移矩阵 M1-M11（真实 sql.js + initializeDatabase 链）：smart/3→10、smart/5→5、smart/7→7、smart/2→2、smart/10→10、fixed/manual/every_chapter 不变、无 policy 行不创建、重跑幂等、升级后用户重设 smart/5 保持；数据安全断言覆盖 projects/chapters/outlines/notes/characters/worldbook/llm_config/pipeline_tasks/checkpoints/attempts/revisions/batch 表前后字节一致。
+- **finalizeChapterMemory 返回态与持久化状态对齐（P2）**：`finalizeChapterMemory` 在 batch1 成功 + batch2 失败时，DB 已持久化 clean/through=batch1 终点，但 catch 返回的仍是函数入口快照（through=-1/empty），UI 立即显示旧态与 DB 矛盾；修复为 catch 后重读最新持久化 row，返回 `state`/`patchId`/`pendingCount` 全部基于 latest，dirty 语义不变。真实 SQLite 回归：batch1 success + batch2 failure 后返回 through=2/patchId 非空/pendingCount=5，首批失败仍返回 through=-1 且不伪造 clean。
+- **Story Memory scheduler 动态 import 静态化（测试可达性）**：`storyMemoryService` 对 `storyMemoryPolicy`/`storyMemoryCheckpointService`/`storyMemoryRebuild` 的 `await import()` 改为静态 import（Babel CJS 循环安全），使 `finalizeChapterMemory` 的 scheduler 路径（此前在 Jest 下完全不可执行）可被真实 SQLite 测试覆盖。
+
 ## [2.11.37] - 2026-08-08
 
 ### Fixed
