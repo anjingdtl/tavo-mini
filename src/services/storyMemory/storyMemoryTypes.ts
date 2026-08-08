@@ -357,7 +357,9 @@ export type StoryMemoryErrorCode =
   | 'MEMORY_CHECKPOINT_COVERAGE_GAP'
   | 'MEMORY_CHECKPOINT_TRANSACTION_FAILED'
   | 'MEMORY_CHECKPOINT_CANCELLED'
-  | 'MEMORY_CHECKPOINT_FAILED';
+  | 'MEMORY_CHECKPOINT_FAILED'
+  | 'MEMORY_CHECKPOINT_EMPTY_RESPONSE'
+  | 'MEMORY_CHECKPOINT_BATCH_TOO_LARGE';
 
 export class StoryMemoryError extends Error {
   constructor(public readonly code: StoryMemoryErrorCode, message: string) {

@@ -52,6 +52,7 @@ import type {
   ContextSourceKind,
 } from '../types/contextTrace';
 import type { ChatMessage } from '../services/llm';
+import type { StoryMemoryPrepareWarning } from '../services/storyMemory/storyMemoryPrepare';
 
 interface Props {
   chapterId: number;
@@ -168,6 +169,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   // outlines do not fit, capture the reason so the preview can show an
   // actionable panel (with a link to 大纲 management) instead of just a Toast.
   const [outlineBlock, setOutlineBlock] = useState<string | null>(null);
+  // Non-blocking Story Memory degradation (V2.11.38 repair plan P0):
+  // missing / dirty / failed checkpoint or partially omitted history.
+  const [storyMemoryWarnings, setStoryMemoryWarnings] = useState<
+    StoryMemoryPrepareWarning[]
+  >([]);
   const [expandedMsg, setExpandedMsg] = useState<number | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [continuationPreview, setContinuationPreview] = useState(false);
@@ -201,6 +207,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           : null;
       if (project?.mode === 'continuation') {
         setContinuationPreview(true);
+        setStoryMemoryWarnings([]);
         const requestConfig = await resolveLLMRequestConfig();
         const settings = await ensureGenerationSettings(chapter.project_id);
         const policy = await ensureContextAutomationPolicy();
@@ -358,6 +365,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         preview: true,
       });
       setTrace(compiled.draftCompile?.trace || []);
+      setStoryMemoryWarnings(
+        compiled.draftCompile?.storyMemoryWarnings || [],
+      );
       setEstimatedInputTokens(compiled.estimatedInputTokens ?? 0);
       setMessages(compiled.ready ? compiled.messages : compiled.messages || []);
       if (!compiled.ready) {
@@ -573,6 +583,45 @@ export const ContextPreviewScreen: React.FC<Props> = ({
               onPress={onNavigateOutlines}
             />
           ) : null}
+        </View>
+      ) : null}
+      {storyMemoryWarnings.length > 0 ? (
+        <View
+          style={[
+            styles.outlineBlockPanel,
+            {
+              backgroundColor: `${theme.colors.warning}1A`,
+              borderColor: theme.colors.warning,
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.outlineBlockTitle,
+              { color: theme.colors.warning },
+            ]}
+          >
+            长期记忆暂不可用，已降级上下文
+          </Text>
+          {storyMemoryWarnings.map((warning, index) => (
+            <Text
+              key={`${warning.code}-${index}`}
+              style={[
+                styles.outlineBlockText,
+                { color: theme.colors.textPrimary },
+              ]}
+            >
+              {warning.message}
+            </Text>
+          ))}
+          <Text
+            style={[
+              styles.outlineBlockText,
+              { color: theme.colors.textSecondary },
+            ]}
+          >
+            你可以继续生成，或稍后前往「故事记忆」重新整理。
+          </Text>
         </View>
       ) : null}
       <View

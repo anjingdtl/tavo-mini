@@ -28,6 +28,7 @@ import {
 } from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
 import { prepareStoryMemoryForGeneration } from './storyMemory/storyMemoryPrepare';
+import type { StoryMemoryPrepareWarning } from './storyMemory/storyMemoryPrepare';
 import {
   resolveUsableCheckpointForTarget,
   type CheckpointEligibilityResult,
@@ -65,6 +66,12 @@ export interface BuildContextResult {
    * instead of re-reading the DB or re-parsing `messages`. See SPEC §7.
    */
   pipelineContext: PipelineContextSnapshot;
+  /**
+   * Non-blocking Story Memory warnings (degraded context / failed checkpoint
+   * update / partially omitted history). Present when the request compiled
+   * without a usable long-term checkpoint. Never empty for a clean build.
+   */
+  storyMemoryWarnings: StoryMemoryPrepareWarning[];
   /** Phase 2+ elastic budget trace when options.elasticBudget is enabled. */
   elasticBudgetTrace?: import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
 }
@@ -317,7 +324,11 @@ export async function buildContext(
       mode: options.storyMemoryMode === 'preview' ? 'preview' : 'generation',
     },
   );
-  if (prepared.blocked) {
+  // V2.11.38 repair plan P0: only FATAL errors (illegal target chapter
+  // position) hard-block the context build. Missing / dirty / failed
+  // checkpoints, failed update attempts and uncovered chapters degrade the
+  // context with warnings but never prevent writing.
+  if (prepared.fatal) {
     throw new Error(
       prepared.blockReason || '故事记忆覆盖不足，无法安全生成。',
     );
@@ -844,7 +855,15 @@ export async function buildContext(
     sourceFingerprint: `proj=${projectId}|chapter=${currentChapter.id ?? currentChapter.position}`,
   };
 
-  return { messages, chapters, trace, estimatedInputTokens, pipelineContext, elasticBudgetTrace };
+  return {
+    messages,
+    chapters,
+    trace,
+    estimatedInputTokens,
+    pipelineContext,
+    storyMemoryWarnings: prepared?.warnings || [],
+    elasticBudgetTrace,
+  };
 }
 
 function buildPresetPrompt(preset?: Preset): string {

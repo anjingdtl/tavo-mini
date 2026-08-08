@@ -10,7 +10,6 @@ import {
 } from './storyMemoryCheckpointEligibility';
 import type { ProjectStoryMemoryRecord } from '../../data/repositories/storyMemoryRepository';
 import type { StoryMemoryCoveragePlan } from './storyMemoryTypes';
-import { StoryMemoryError } from './storyMemoryTypes';
 
 /**
  * V2.5.14+ — carry the eligibility decision (reason + original status /
@@ -26,7 +25,28 @@ import { StoryMemoryError } from './storyMemoryTypes';
  * V2.5.16+ — illegal *target* chapter position hard-blocks prepare() before
  * coverage planning / checkpoint advance / rebuild / LLM. Illegal checkpoint
  * through position remains a safe degrade (no inject, coverage from -1).
+ *
+ * V2.11.38+ (repair plan P0) — `blocked` now only means FATAL: the request
+ * itself cannot be built (illegal target chapter position). Coverage gaps and
+ * failed checkpoint updates are observable DEGRADED states: the context is
+ * still compilable, the user is warned, and writing may continue. Long-term
+ * memory is an enhancement, never a writing license.
  */
+
+export type StoryMemoryPrepareWarningCode =
+  | 'story_memory_missing'
+  | 'story_memory_dirty'
+  | 'story_memory_failed'
+  | 'checkpoint_update_failed'
+  | 'history_partially_omitted';
+
+export interface StoryMemoryPrepareWarning {
+  code: StoryMemoryPrepareWarningCode;
+  message: string;
+  uncoveredChapterIds?: number[];
+  action: 'open_story_memory' | 'adjust_context' | 'retry_later';
+}
+
 export interface PrepareStoryMemoryResult {
   checkpoint: ProjectStoryMemoryRecord | null;
   /**
@@ -37,13 +57,90 @@ export interface PrepareStoryMemoryResult {
   checkpointEligibility: CheckpointEligibilityResult;
   coverage: StoryMemoryCoveragePlan;
   checkpointUpdated: boolean;
+  /**
+   * Legacy field. Only true when `fatal` is true — retained so existing
+   * callers that still check `blocked` do not silently change behavior.
+   */
   blocked: boolean;
   blockReason: string;
+  /**
+   * True only when the request itself cannot be built (illegal target chapter
+   * position). Coverage gaps / failed checkpoint updates are NOT fatal.
+   */
+  fatal: boolean;
+  /**
+   * True when this request actually lost history continuity (uncovered
+   * chapters) or a checkpoint update attempt failed. Drives the warning UI.
+   */
+  degraded: boolean;
+  /** Non-blocking warnings; the request can still be compiled and sent. */
+  warnings: StoryMemoryPrepareWarning[];
 }
 
 /** User-facing copy when the target chapter position is not a legal position. */
 export const INVALID_TARGET_CHAPTER_POSITION_MESSAGE =
   '目标章节位置无效，无法安全构建上下文。';
+
+const WARNING_MESSAGES: Record<
+  StoryMemoryPrepareWarningCode,
+  (uncoveredCount?: number) => string
+> = {
+  story_memory_missing: () => '当前项目还没有长期记忆检查点，近期章节使用摘要与正文兜底。',
+  story_memory_dirty: () =>
+    '长期记忆状态为待重建（dirty），本次未注入长期故事状态。',
+  story_memory_failed: () =>
+    '长期记忆上次整理失败，本次未注入长期故事状态。',
+  checkpoint_update_failed: () =>
+    '长期记忆整理失败，已使用最近正文继续写作。',
+  history_partially_omitted: count =>
+    `较早的 ${count} 章未纳入本次请求，人物与伏笔连续性可能下降。`,
+};
+
+function buildWarnings(
+  input: {
+    eligibility: CheckpointEligibilityResult;
+    uncoveredChapterIds?: number[];
+    checkpointUpdateFailed?: boolean;
+  },
+): StoryMemoryPrepareWarning[] {
+  const warnings: StoryMemoryPrepareWarning[] = [];
+  const { eligibility, uncoveredChapterIds, checkpointUpdateFailed } = input;
+  const uncovered = uncoveredChapterIds || [];
+  const add = (
+    code: StoryMemoryPrepareWarningCode,
+    action: StoryMemoryPrepareWarning['action'],
+  ) => {
+    warnings.push({
+      code,
+      message: WARNING_MESSAGES[code](
+        code === 'history_partially_omitted' ? uncovered.length : undefined,
+      ),
+      ...(code === 'history_partially_omitted'
+        ? { uncoveredChapterIds: [...uncovered] }
+        : {}),
+      action,
+    });
+  };
+
+  if (!eligibility.usable && eligibility.reason !== 'future_or_same_position') {
+    if (eligibility.reason === 'missing') {
+      add('story_memory_missing', 'open_story_memory');
+    } else if (eligibility.reason === 'not_clean') {
+      if (eligibility.originalStatus === 'dirty') {
+        add('story_memory_dirty', 'open_story_memory');
+      } else if (eligibility.originalStatus === 'failed') {
+        add('story_memory_failed', 'open_story_memory');
+      }
+    }
+  }
+  if (checkpointUpdateFailed) {
+    add('checkpoint_update_failed', 'retry_later');
+  }
+  if (uncovered.length > 0) {
+    add('history_partially_omitted', 'adjust_context');
+  }
+  return warnings;
+}
 
 /**
  * Prepare story memory for generation/context build.
@@ -52,6 +149,11 @@ export const INVALID_TARGET_CHAPTER_POSITION_MESSAGE =
  *
  * Checkpoint injection / entity weighting / coverage start all go through
  * resolveUsableCheckpointForTarget (future or same-position → unusable).
+ *
+ * Non-blocking contract (V2.11.38 repair plan P0): the ONLY hard failure is
+ * an illegal target chapter position (`fatal=true`). Missing / dirty / failed
+ * checkpoints, failed update attempts and uncovered chapters all return a
+ * degraded-but-compilable result with warnings.
  */
 export async function prepareStoryMemoryForGeneration(
   projectId: number,
@@ -92,6 +194,9 @@ export async function prepareStoryMemoryForGeneration(
       checkpointUpdated: false,
       blocked: true,
       blockReason: INVALID_TARGET_CHAPTER_POSITION_MESSAGE,
+      fatal: true,
+      degraded: false,
+      warnings: [],
     };
   }
 
@@ -114,48 +219,62 @@ export async function prepareStoryMemoryForGeneration(
       checkpointUpdated: false,
       blocked: false,
       blockReason: '',
+      fatal: false,
+      degraded: false,
+      warnings: buildWarnings({ eligibility }),
     };
   }
 
-  // Preview never spends LLM tokens.
+  // Preview never spends LLM tokens. Coverage gaps degrade instead of blocking.
   if (mode === 'preview') {
     return {
       checkpoint: eligibility.usable ? eligibility.checkpoint : null,
       checkpointEligibility: eligibility,
       coverage,
       checkpointUpdated: false,
-      blocked: coverage.uncoveredChapterIds.length > 0,
-      blockReason:
-        coverage.uncoveredChapterIds.length > 0
-          ? '长期记忆覆盖不足，请先整理检查点或扩大上下文预算。'
-          : '',
+      blocked: false,
+      blockReason: '',
+      fatal: false,
+      degraded: coverage.uncoveredChapterIds.length > 0,
+      warnings: buildWarnings({ eligibility, uncoveredChapterIds: coverage.uncoveredChapterIds }),
     };
   }
 
-  // Hard due: attempt one batch checkpoint update before generation.
+  // Hard due: attempt one batch checkpoint update before generation. A failed
+  // update is a warning, never a blocker — re-plan coverage and continue.
   try {
-    const { withProjectMemoryLock } = await import('./storyMemoryService');
+    const { withProjectMemoryLock, runStoryMemoryTaskOnce } = await import(
+      './storyMemoryService'
+    );
     const { advanceStoryMemoryCheckpointsUnlocked } = await import(
       './storyMemoryCheckpointService'
     );
     const { rebuildStoryMemoryUnlocked } = await import('./storyMemoryRebuild');
-    await withProjectMemoryLock(projectId, async () => {
-      const latestRecord = await db.ensureProjectStoryMemoryRow(projectId);
-      if (latestRecord.status === 'dirty') {
-        await rebuildStoryMemoryUnlocked(projectId, {
-          mode: 'auto',
-          throughPosition: currentChapter.position - 1,
-          signal: options.signal,
-        });
-        return;
-      }
-      await advanceStoryMemoryCheckpointsUnlocked({
-        projectId,
-        // Catch up enough pending to close coverage gap.
-        throughPosition: currentChapter.position - 1,
-        signal: options.signal,
-      });
-    });
+    const maintainThrough = currentChapter.position - 1;
+    // P2: single-flight dedupe — concurrent preview/finalize/generation for
+    // the same project+range share one maintenance run instead of queueing
+    // duplicate checkpoint batches.
+    await runStoryMemoryTaskOnce(
+      `story-memory-maintain:${projectId}:${maintainThrough}`,
+      () =>
+        withProjectMemoryLock(projectId, async () => {
+          const latestRecord = await db.ensureProjectStoryMemoryRow(projectId);
+          if (latestRecord.status === 'dirty') {
+            await rebuildStoryMemoryUnlocked(projectId, {
+              mode: 'auto',
+              throughPosition: maintainThrough,
+              signal: options.signal,
+            });
+            return;
+          }
+          await advanceStoryMemoryCheckpointsUnlocked({
+            projectId,
+            // Catch up enough pending to close coverage gap.
+            throughPosition: maintainThrough,
+            signal: options.signal,
+          });
+        }),
+    );
     const refreshed = await db.ensureProjectStoryMemoryRow(projectId);
     const refreshedEligibility = resolveUsableCheckpointForTarget(
       refreshed,
@@ -168,19 +287,6 @@ export async function prepareStoryMemoryForGeneration(
         refreshedEligibility.checkpointThroughPosition,
       slidingBudgetTokens: config.slidingWindowSize || 4000,
     });
-    if (coverage.uncoveredChapterIds.length > 0) {
-      return {
-        checkpoint: refreshedEligibility.usable
-          ? refreshedEligibility.checkpoint
-          : null,
-        checkpointEligibility: refreshedEligibility,
-        coverage,
-        checkpointUpdated: true,
-        blocked: true,
-        blockReason:
-          '长期记忆整理后仍存在未覆盖章节，无法安全生成。请重试整理或调整上下文预算。',
-      };
-    }
     return {
       checkpoint: refreshedEligibility.usable
         ? refreshedEligibility.checkpoint
@@ -190,9 +296,16 @@ export async function prepareStoryMemoryForGeneration(
       checkpointUpdated: true,
       blocked: false,
       blockReason: '',
+      fatal: false,
+      degraded: coverage.uncoveredChapterIds.length > 0,
+      warnings: buildWarnings({
+        eligibility: refreshedEligibility,
+        uncoveredChapterIds: coverage.uncoveredChapterIds,
+      }),
     };
-  } catch (error) {
-    // Re-plan after failure; allow if episodic fallback can cover.
+  } catch {
+    // Re-plan after failure; the result stays compilable even when uncovered
+    // chapters remain. The update failure is surfaced as a warning only.
     const chaptersAfter = await db.getChaptersByProject(projectId);
     const latest = await db.ensureProjectStoryMemoryRow(projectId);
     const latestEligibility = resolveUsableCheckpointForTarget(
@@ -205,22 +318,22 @@ export async function prepareStoryMemoryForGeneration(
       checkpointThroughPosition: latestEligibility.checkpointThroughPosition,
       slidingBudgetTokens: config.slidingWindowSize || 4000,
     });
-    if (coverage.uncoveredChapterIds.length === 0) {
-      return {
-        checkpoint: latestEligibility.usable
-          ? latestEligibility.checkpoint
-          : null,
-        checkpointEligibility: latestEligibility,
-        coverage,
-        checkpointUpdated: false,
-        blocked: false,
-        blockReason: '',
-      };
-    }
-    const message = error instanceof Error ? error.message : '长期记忆整理失败';
-    throw new StoryMemoryError(
-      'MEMORY_CHECKPOINT_COVERAGE_GAP',
-      `无法构建连续上下文：${message}`,
-    );
+    return {
+      checkpoint: latestEligibility.usable
+        ? latestEligibility.checkpoint
+        : null,
+      checkpointEligibility: latestEligibility,
+      coverage,
+      checkpointUpdated: false,
+      blocked: false,
+      blockReason: '',
+      fatal: false,
+      degraded: true,
+      warnings: buildWarnings({
+        eligibility: latestEligibility,
+        uncoveredChapterIds: coverage.uncoveredChapterIds,
+        checkpointUpdateFailed: true,
+      }),
+    };
   }
 }

@@ -13,6 +13,10 @@ import {
   buildStoryMemoryPatchMessages,
   buildStoryMemoryRepairMessages,
 } from './storyMemoryPrompts';
+import {
+  decideEmptyResponseAction,
+  STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+} from './storyMemoryAttemptPolicy';
 import type {
   ChapterMemoryPatchDraft,
   StoryMemoryState,
@@ -103,6 +107,37 @@ export async function withProjectMemoryLock<T>(
     release();
     if (projectLocks.get(projectId) === queued) projectLocks.delete(projectId);
   }
+}
+
+const inflightTasks = new Map<string, Promise<unknown>>();
+
+/**
+ * V2.11.38 repair plan P2 — process-wide in-flight dedupe for Story Memory
+ * maintenance tasks. Preview / finalize / generation may all ask to maintain
+ * the SAME project+range concurrently; a second caller with the same key
+ * reuses the running promise instead of queueing a duplicate checkpoint run.
+ *
+ * The project lock alone already serializes maintenance, but without dedupe a
+ * second queued caller would re-read the DB and re-run an empty advance; with
+ * dedupe it simply awaits the in-flight maintenance. Failures propagate to
+ * every caller — nothing is swallowed fire-and-forget.
+ */
+export async function runStoryMemoryTaskOnce<T>(
+  key: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const existing = inflightTasks.get(key);
+  if (existing) return existing as Promise<T>;
+  const promise = task().finally(() => {
+    if (inflightTasks.get(key) === promise) inflightTasks.delete(key);
+  });
+  inflightTasks.set(key, promise);
+  return promise;
+}
+
+/** True while a Story Memory maintenance task for this key is running. */
+export function isStoryMemoryTaskRunning(key: string): boolean {
+  return inflightTasks.has(key);
 }
 
 /**
@@ -207,6 +242,7 @@ async function requestPatch(
   projectId: number,
   scenario: string,
   signal?: AbortSignal,
+  thinking?: { type: 'disabled' },
 ): Promise<LLMResult> {
   let result: LLMResult | undefined;
   for (let requestAttempt = 0; requestAttempt < 2; requestAttempt += 1) {
@@ -221,6 +257,7 @@ async function requestPatch(
           queueClass: 'background',
           queuePriority: 'normal',
           responseFormat: 'json_object',
+          thinking,
         },
         signal,
       );
@@ -236,10 +273,12 @@ async function requestPatch(
       if (!transient || requestAttempt > 0 || signal?.aborted) throw error;
     }
   }
-  if (!result?.text?.trim()) {
+  // V2.11.38 repair plan P1: empty business bodies flow to the attempt
+  // coordinator for classification instead of throwing here.
+  if (!result) {
     throw new StoryMemoryError(
       'MEMORY_PATCH_INVALID_JSON',
-      '模型没有返回记忆补丁。',
+      '记忆补丁请求未能返回结果，请重试。',
     );
   }
   return result;
@@ -259,106 +298,132 @@ export async function generateValidatedChapterMemoryPatch(
     input.previousState,
   );
   const scenario = input.scenario || 'story_memory_patch';
-  const firstBudget = clampPatchTokens(input.memoryPatchMaxTokens);
-  const firstResult = await requestPatch(
-    messages,
-    firstBudget,
-    input.chapter.project_id,
-    scenario,
-    input.signal,
-  );
-  try {
-    return parseAndValidateMemoryPatch(
-      firstResult.text || '',
-      input.previousState,
-      input.chapter.content,
-    );
-  } catch (firstError) {
+  let budget = clampPatchTokens(input.memoryPatchMaxTokens);
+  let currentMessages: Array<{
+    role: 'system' | 'user' | 'assistant';
+    content: string;
+  }> = messages;
+  let thinking: { type: 'disabled' } | undefined;
+  let attempt = 0;
+  while (attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
+    attempt += 1;
     if (input.signal?.aborted) {
       throw new StoryMemoryError(
         'MEMORY_REBUILD_CANCELLED',
         '故事记忆任务已取消。',
       );
     }
-    const message =
-      firstError instanceof Error ? firstError.message : '未知校验错误';
-    const repairBudget = nextPatchTokenBudget(firstBudget);
-    const repairedResult = await requestPatch(
-      buildStoryMemoryRepairMessages(
-        messages,
-        firstResult.text || '',
-        `${message}${
-          firstResult.finishReason === 'length' ? '（输出达到长度上限）' : ''
-        }`,
-      ),
-      repairBudget,
+    const scenarioForAttempt =
+      attempt === 1
+        ? scenario
+        : attempt === 2
+          ? 'story_memory_patch_repair'
+          : 'story_memory_patch_retry';
+    const result = await requestPatch(
+      currentMessages,
+      budget,
       input.chapter.project_id,
-      'story_memory_patch_repair',
+      scenarioForAttempt,
       input.signal,
+      thinking,
     );
-    try {
-      return parseAndValidateMemoryPatch(
-        repairedResult.text || '',
-        input.previousState,
-        input.chapter.content,
-      );
-    } catch (repairError) {
-      if (input.signal?.aborted) {
-        throw new StoryMemoryError(
-          'MEMORY_REBUILD_CANCELLED',
-          '故事记忆任务已取消。',
-        );
-      }
-      const repairMessage =
-        repairError instanceof Error ? repairError.message : '未知校验错误';
-      const finalBudget = nextPatchTokenBudget(repairBudget);
-      const finalResult = await requestPatch(
-        buildStoryMemoryFreshRetryMessages(
-          messages,
-          `${repairMessage}${
-            repairedResult.finishReason === 'length'
-              ? '（输出达到长度上限）'
-              : ''
-          }`,
-        ),
-        finalBudget,
-        input.chapter.project_id,
-        'story_memory_patch_retry',
-        input.signal,
-      );
+    thinking = undefined;
+    const text = result?.text?.trim() || '';
+
+    if (text) {
       try {
         return parseAndValidateMemoryPatch(
-          finalResult.text || '',
+          text,
           input.previousState,
           input.chapter.content,
         );
-      } catch (finalError) {
-        if (
-          finalError instanceof StoryMemoryError &&
-          finalError.code === 'MEMORY_EVIDENCE_NOT_FOUND'
-        ) {
-          try {
-            return parseAndValidateMemoryPatch(
-              finalResult.text || '',
-              input.previousState,
-              input.chapter.content,
-              { recoverEvidence: true },
-            );
-          } catch {
-            // Keep the precise model/validation error below when recovery
-            // cannot ground or safely discard the offending operation.
-          }
-        }
-        if (finalResult.finishReason === 'length') {
+      } catch (parseError) {
+        if (input.signal?.aborted) {
           throw new StoryMemoryError(
-            'MEMORY_PATCH_INVALID_JSON',
-            `模型连续返回被截断的记忆 JSON（已自动扩容到 ${finalBudget} tokens）。请检查模型的单次输出上限。`,
+            'MEMORY_REBUILD_CANCELLED',
+            '故事记忆任务已取消。',
           );
         }
-        throw finalError;
+        if (attempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
+          if (
+            parseError instanceof StoryMemoryError &&
+            parseError.code === 'MEMORY_EVIDENCE_NOT_FOUND'
+          ) {
+            try {
+              return parseAndValidateMemoryPatch(
+                text,
+                input.previousState,
+                input.chapter.content,
+                { recoverEvidence: true },
+              );
+            } catch {
+              // Keep the precise model/validation error below.
+            }
+          }
+          if (result.finishReason === 'length') {
+            throw new StoryMemoryError(
+              'MEMORY_PATCH_INVALID_JSON',
+              `模型连续返回被截断的记忆 JSON（已自动扩容到 ${budget} tokens）。请检查模型的单次输出上限。`,
+            );
+          }
+          throw parseError;
+        }
+        const message =
+          parseError instanceof Error ? parseError.message : '未知校验错误';
+        const next = nextPatchTokenBudget(budget);
+        if (next <= budget) {
+          throw new StoryMemoryError(
+            'MEMORY_PATCH_INVALID_JSON',
+            `输出预算已达模型上限（${budget} tokens），模型仍无法返回完整 JSON。请提高 max_output_tokens 后重试。`,
+          );
+        }
+        budget = next;
+        currentMessages =
+          attempt === 1
+            ? buildStoryMemoryRepairMessages(
+                messages,
+                text,
+                `${message}${
+                  result.finishReason === 'length'
+                    ? '（输出达到长度上限）'
+                    : ''
+                }`,
+              )
+            : // Second consecutive parse failure → fresh retry WITHOUT echoing
+              // the invalid assistant output (mirrors the legacy coordinator).
+              buildStoryMemoryFreshRetryMessages(
+                messages,
+                `${message}${
+                  result.finishReason === 'length'
+                    ? '（输出达到长度上限）'
+                    : ''
+                }`,
+              );
       }
+    } else {
+      const action = decideEmptyResponseAction({
+        emptyReason: result?.emptyReason,
+        finishReason: result?.finishReason,
+        attempt,
+        maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+        currentBudget: budget,
+        nextBudget: nextPatchTokenBudget(budget),
+      });
+      if (action.type === 'fail') {
+        throw new StoryMemoryError(
+          action.code as StoryMemoryError['code'],
+          action.reason,
+        );
+      }
+      budget = Math.max(budget, action.budget);
+      thinking = action.disableThinking ? { type: 'disabled' } : undefined;
+      currentMessages = messages;
     }
   }
+  throw new StoryMemoryError(
+    'MEMORY_PATCH_INVALID_JSON',
+    '记忆补丁生成失败，已超过最大尝试次数。',
+  );
 }
 
 export function renderEpisodicMemoryText(

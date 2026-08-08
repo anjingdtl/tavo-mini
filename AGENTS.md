@@ -120,6 +120,7 @@ SQLite 数据库 `shine_writer.db`，**Schema version 40**（`src/services/migra
 - `CHANGELOG.md` — 版本变更，发版前对齐
 - `docs/RELEASE_CHECKLIST.md` — Release APK 发版前验收清单
 - `docs/FAULT_INJECTION_MATRIX.md` — 故障注入场景矩阵
+- `docs/EMULATOR_QA_PLAYBOOK.md` — 模拟器 QA 实操流程与踩坑记录（项目卡片导航、Maestro 中文失效、工具栏横滑、DB 直灌等）
 - `docs/superpowers/specs/Tavo-Mini-Agent-Optimization-Plan.md` — 优化路线（当前在改的就是这份）
 - `docs/optimization/`、`docs/pipeline-perf/` — AI 管线性能与调优记录
 
