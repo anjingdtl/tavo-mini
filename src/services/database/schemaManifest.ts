@@ -363,6 +363,7 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'input_tokens',
       'output_tokens',
       'total_tokens',
+      'reasoning_tokens',
     ],
     indexes: [
       'idx_pipeline_stage_attempts_task_stage',
@@ -1503,6 +1504,7 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'chapter_count',
       'target_words_per_chapter',
       'pipeline_mode',
+      'reasoning_effort',
       'planner_output_json',
       'planner_hash',
       'planner_request_json',

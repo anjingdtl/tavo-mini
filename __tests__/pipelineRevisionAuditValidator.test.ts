@@ -122,7 +122,7 @@ describe('validateReviewV2Result', () => {
     ]);
   });
 
-  test('rejects wrong draftHash', () => {
+  test('normalizes wrong draftHash to the client hash', () => {
     const report = validReview();
     report.draftHash = 'deadbeef';
     const v = validateReviewV2Result({
@@ -131,11 +131,12 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.reason).toBe('missing_required_fields');
+    expect(v.valid).toBe(true);
+    expect(v.report?.draftHash).toBe(HASH);
+    expect(v.warnings).toContain('draftHash 缺失或不一致，已采用客户端 hash');
   });
 
-  test('rejects schemaVersion !== 2', () => {
+  test('normalizes schemaVersion !== 2', () => {
     const report = validReview();
     report.schemaVersion = 1;
     const v = validateReviewV2Result({
@@ -144,10 +145,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
+    expect(v.valid).toBe(true);
+    expect(v.report?.schemaVersion).toBe(2);
   });
 
-  test('rejects unknown top-level fields', () => {
+  test('ignores unknown top-level fields with a warning', () => {
     const report = validReview();
     (report as any).extraField = 'x';
     const v = validateReviewV2Result({
@@ -156,11 +158,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.details).toContain('不允许的顶层字段');
+    expect(v.valid).toBe(true);
+    expect(v.warnings?.join(' ')).toContain('extraField');
   });
 
-  test('rejects anchor scope without existing anchorId', () => {
+  test('downgrades anchor scope without existing anchorId', () => {
     const report = validReview();
     (correctionsOf(report)[0] as any).anchorId = 'draft-p-999';
     const v = validateReviewV2Result({
@@ -169,11 +171,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.details).toContain('需要存在的 anchorId');
+    expect(v.valid).toBe(true);
+    expect(v.report?.requiredCorrections[0].scope).toBe('chapter');
   });
 
-  test('rejects range scope with a single anchorId', () => {
+  test('downgrades range scope with a single anchorId', () => {
     const report = validReview();
     report.requiredCorrections = [
       {
@@ -193,11 +195,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.details).toContain('至少两个');
+    expect(v.valid).toBe(true);
+    expect(v.report?.requiredCorrections[0].scope).toBe('chapter');
   });
 
-  test('rejects insertion scope without locators', () => {
+  test('downgrades insertion scope without locators', () => {
     const report = validReview();
     report.requiredCorrections = [
       {
@@ -216,11 +218,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.details).toContain('before/after');
+    expect(v.valid).toBe(true);
+    expect(v.report?.requiredCorrections[0].scope).toBe('chapter');
   });
 
-  test('rejects chapter scope carrying anchors', () => {
+  test('normalizes chapter scope carrying anchors', () => {
     const report = validReview();
     (correctionsOf(report)[1] as any).anchorId = 'draft-p-001';
     const v = validateReviewV2Result({
@@ -229,11 +231,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.details).toContain('不得携带 anchor');
+    expect(v.valid).toBe(true);
+    expect(v.report?.requiredCorrections[1].scope).toBe('chapter');
   });
 
-  test('rejects boundary scope with wrong boundary value', () => {
+  test('downgrades boundary scope with wrong boundary value', () => {
     const report = validReview();
     report.requiredCorrections = [
       {
@@ -253,11 +255,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.details).toContain('boundary');
+    expect(v.valid).toBe(true);
+    expect(v.report?.requiredCorrections[0].scope).toBe('chapter');
   });
 
-  test('rejects required correction with empty rewriteGoal', () => {
+  test('fills a missing rewriteGoal for a required correction', () => {
     const report = validReview();
     const bad = {
       id: 'r12',
@@ -275,11 +277,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.details).toContain('缺少 rewriteGoal');
+    expect(v.valid).toBe(true);
+    expect(v.report?.requiredCorrections[0].rewriteGoal).toBeTruthy();
   });
 
-  test('rejects unknown correction fields (excerpt / offsets)', () => {
+  test('ignores unknown correction fields (excerpt / offsets)', () => {
     const report = validReview();
     (correctionsOf(report)[0] as any).excerpt = '整段正文';
     (correctionsOf(report)[0] as any).start = 0;
@@ -289,11 +291,11 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
-    expect(v.details).toContain('含未知字段');
+    expect(v.valid).toBe(true);
+    expect(v.report?.requiredCorrections[0].id).toBe('r1');
   });
 
-  test('rejects protectedAnchorIds referencing missing anchors', () => {
+  test('drops protectedAnchorIds referencing missing anchors', () => {
     const report = validReview();
     report.protectedAnchorIds = ['draft-p-999'];
     const v = validateReviewV2Result({
@@ -302,7 +304,46 @@ describe('validateReviewV2Result', () => {
       expectedHash: HASH,
       anchors: ANCHORS,
     });
-    expect(v.valid).toBe(false);
+    expect(v.valid).toBe(true);
+    expect(v.report?.protectedAnchorIds).toEqual([]);
+  });
+
+  test('fills missing Review V2 fields without a second LLM call', () => {
+    const v = validateReviewV2Result({
+      result: llm({ schemaVersion: 2, draftHash: HASH }),
+      canonicalDraft: CANONICAL,
+      expectedHash: HASH,
+      anchors: ANCHORS,
+    });
+    expect(v.valid).toBe(true);
+    expect(v.report?.requiredCorrections).toEqual([]);
+    expect(v.report?.outlineExecution.missingBeats).toEqual([]);
+    expect(v.warnings).toContain('outlineExecution 缺失，已填充空对象');
+  });
+
+  test('normalizes narrative review prose into a chapter warning', () => {
+    const v = validateReviewV2Result({
+      result: {
+        text: '本章节奏基本清晰，但人物对白略显生硬，建议在相遇段落增加停顿和情绪递进。',
+        reasoningText: null,
+        finishReason: 'stop',
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      },
+      canonicalDraft: CANONICAL,
+      expectedHash: HASH,
+      anchors: ANCHORS,
+    });
+    expect(v.valid).toBe(true);
+    expect(v.warnings).toContain('review_narrative_fallback');
+    expect(v.report?.requiredCorrections[0]).toEqual(
+      expect.objectContaining({
+        id: 'review-narrative-fallback-001',
+        scope: 'chapter',
+        severity: 'warning',
+      }),
+    );
   });
 
   test('rejects same-report conflict: protected anchor is also a required/hard target', () => {

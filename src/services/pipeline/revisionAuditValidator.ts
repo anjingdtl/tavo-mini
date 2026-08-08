@@ -14,9 +14,9 @@
  *   9. no novel body / prompt / reasoning leakage;
  *  10. normalized JSON field order is stable (resume + fingerprint safe).
  *
- * First validation failure keeps the existing one-shot format repair policy;
- * a second failure fails the stage (no infinite retry) — handled by the
- * reconcile loop, not here.
+ * Review V2 uses a strict fast path followed by deterministic local
+ * normalization. FactCheck V2 remains strict and keeps its existing repair
+ * policy in the reconciler.
  */
 import type { LLMResult } from '../llm/types';
 import type {
@@ -426,7 +426,7 @@ function parseV2Report(
  * Validate Review V2 LLM output against the canonical draft + anchors.
  * `expectedHash` must be `computeDraftHash(canonicalDraft)` (client-side).
  */
-export function validateReviewV2Result(params: {
+function validateReviewV2StrictResult(params: {
   result: LLMResult;
   canonicalDraft: string;
   expectedHash: string;
@@ -552,6 +552,433 @@ export function validateReviewV2Result(params: {
     valid: true,
     report,
     normalizedText,
+    similarity: detectDraftEcho(normalizedText, params.canonicalDraft).similarity,
+  };
+}
+
+const REVIEW_NARRATIVE_HINT_RE =
+  /(建议|问题|不足|需要|节奏|文风|逻辑|评价|评估|优点|缺点|修改|改进)/;
+
+function tolerantText(value: unknown, maxChars: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, maxChars) : '';
+}
+
+function tolerantStringArray(
+  value: unknown,
+  maxItems: number,
+  label: string,
+  warnings: string[],
+): string[] {
+  if (!Array.isArray(value)) {
+    warnings.push(`${label} 已归一化为空数组`);
+    return [];
+  }
+  if (value.length > maxItems) {
+    warnings.push(`${label} 超上限，已截断`);
+  }
+  const result: string[] = [];
+  for (const entry of value.slice(0, maxItems)) {
+    if (typeof entry !== 'string' || !entry.trim()) {
+      warnings.push(`${label} 含非法元素，已丢弃`);
+      continue;
+    }
+    result.push(entry.trim().slice(0, REVISION_V2_LIMITS.MAX_CORRECTION_TEXT_CHARS));
+  }
+  return result;
+}
+
+function pickTolerantText(
+  obj: Record<string, unknown>,
+  keys: string[],
+): string {
+  for (const key of keys) {
+    const text = tolerantText(obj[key], REVISION_V2_LIMITS.MAX_CORRECTION_TEXT_CHARS);
+    if (text) return text;
+  }
+  return '';
+}
+
+function normalizeTolerantCorrection(
+  value: unknown,
+  index: number,
+  anchors: PipelineRevisionAnchor[],
+  warnings: string[],
+  usedIds: Set<string>,
+): PipelineAuditCorrectionV2 | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    warnings.push(`requiredCorrections[${index}] 非对象，已丢弃`);
+    return null;
+  }
+  const c = value as Record<string, unknown>;
+  const exists = (id: unknown): id is string =>
+    typeof id === 'string' && anchors.some(anchor => anchor.id === id.trim());
+  const anchorId = exists(c.anchorId) ? String(c.anchorId).trim() : undefined;
+  const anchorIds = Array.isArray(c.anchorIds)
+    ? c.anchorIds.filter(exists).map(id => id.trim())
+    : [];
+  const insertionBeforeAnchorId = exists(c.insertionBeforeAnchorId)
+    ? String(c.insertionBeforeAnchorId).trim()
+    : undefined;
+  const insertionAfterAnchorId = exists(c.insertionAfterAnchorId)
+    ? String(c.insertionAfterAnchorId).trim()
+    : undefined;
+  const boundary =
+    c.boundary === 'opening' || c.boundary === 'ending' ? c.boundary : undefined;
+
+  const rawScope = typeof c.scope === 'string' ? c.scope.trim() : '';
+  let scope: PipelineAuditCorrectionV2['scope'];
+  if (SCOPES.has(rawScope)) {
+    scope = rawScope as PipelineAuditCorrectionV2['scope'];
+  } else if (anchorId) {
+    scope = 'anchor';
+    warnings.push(`requiredCorrections[${index}].scope 已根据 anchorId 推断`);
+  } else if (anchorIds.length >= 2) {
+    scope = 'range';
+    warnings.push(`requiredCorrections[${index}].scope 已根据 anchorIds 推断`);
+  } else if (insertionBeforeAnchorId || insertionAfterAnchorId) {
+    scope = 'insertion';
+    warnings.push(`requiredCorrections[${index}].scope 已根据插入定位推断`);
+  } else if (boundary) {
+    scope = 'boundary';
+    warnings.push(`requiredCorrections[${index}].scope 已根据 boundary 推断`);
+  } else {
+    scope = 'chapter';
+    warnings.push(`requiredCorrections[${index}].scope 已归一化为 chapter`);
+  }
+
+  const requestedScope = scope;
+  if (
+    (scope === 'anchor' && !anchorId) ||
+    (scope === 'range' && anchorIds.length < 2) ||
+    (scope === 'insertion' && !insertionBeforeAnchorId && !insertionAfterAnchorId) ||
+    (scope === 'boundary' && !boundary)
+  ) {
+    scope = 'chapter';
+    warnings.push(
+      `requiredCorrections[${index}] 的 ${requestedScope} 定位无效，已降级为 chapter`,
+    );
+  }
+
+  const rawSeverity = typeof c.severity === 'string' ? c.severity.trim() : '';
+  const diagnosis = pickTolerantText(c, [
+    'diagnosis',
+    'problem',
+    'issue',
+    'description',
+    'message',
+  ]);
+  const rewriteGoal = pickTolerantText(c, [
+    'rewriteGoal',
+    'suggestedAction',
+    'suggestion',
+    'action',
+    'fix',
+  ]);
+  const severity: PipelineAuditCorrectionV2['severity'] = SEVERITIES.has(
+    rawSeverity,
+  )
+    ? (rawSeverity as PipelineAuditCorrectionV2['severity'])
+    : /(必须|错误|冲突|硬约束|事实)/.test(`${diagnosis}${rewriteGoal}`)
+      ? 'required'
+      : 'warning';
+  if (!SEVERITIES.has(rawSeverity)) {
+    warnings.push(`requiredCorrections[${index}].severity 已归一化为 ${severity}`);
+  }
+
+  if (!diagnosis && !rewriteGoal) {
+    warnings.push(`requiredCorrections[${index}] 缺少可用描述，已丢弃`);
+    return null;
+  }
+  const normalizedDiagnosis =
+    diagnosis || '模型未提供具体诊断，将按修订目标处理。';
+  const normalizedRewriteGoal =
+    rewriteGoal || '根据该评估修订对应内容，同时保持既有事实与大纲边界。';
+  const preserveMeaning = Array.isArray(c.preserveMeaning)
+    ? c.preserveMeaning
+        .filter(p => typeof p === 'string' && p.trim())
+        .slice(0, REVISION_V2_LIMITS.MAX_PRESERVE_MEANING_ITEMS)
+        .map(p => String(p).trim().slice(0, REVISION_V2_LIMITS.MAX_PRESERVE_MEANING_CHARS))
+    : [];
+  if (c.preserveMeaning != null && !Array.isArray(c.preserveMeaning)) {
+    warnings.push(`requiredCorrections[${index}].preserveMeaning 已归一化为空数组`);
+  }
+
+  let id = tolerantText(c.id, 120);
+  if (!id) {
+    id = `review-normalized-${String(index + 1).padStart(3, '0')}`;
+    warnings.push(`requiredCorrections[${index}].id 已生成`);
+  }
+  const baseId = id;
+  let suffix = 2;
+  while (usedIds.has(id)) id = `${baseId}-${suffix++}`;
+  if (id !== baseId) warnings.push(`requiredCorrections[${index}].id 重复，已去重`);
+  usedIds.add(id);
+
+  const out: PipelineAuditCorrectionV2 = {
+    id,
+    scope,
+    dimension:
+      tolerantText(c.dimension, 120) ||
+      (warnings.push(`requiredCorrections[${index}].dimension 已归一化为 literary`), 'literary'),
+    severity,
+    diagnosis: normalizedDiagnosis,
+    rewriteGoal: normalizedRewriteGoal,
+    preserveMeaning,
+  };
+  if (scope === 'anchor' && anchorId) out.anchorId = anchorId;
+  if (scope === 'range') out.anchorIds = [...new Set(anchorIds)];
+  if (scope === 'insertion') {
+    if (insertionBeforeAnchorId) out.insertionBeforeAnchorId = insertionBeforeAnchorId;
+    if (insertionAfterAnchorId) out.insertionAfterAnchorId = insertionAfterAnchorId;
+  }
+  if (scope === 'boundary' && boundary) {
+    out.boundary = boundary;
+    if (anchorId) out.anchorId = anchorId;
+  }
+  return out;
+}
+
+function emptyOutlineExecution(): PipelineReviewReportV2['outlineExecution'] {
+  return {
+    fulfilledBeats: [],
+    missingBeats: [],
+    deviations: [],
+    prematureBeats: [],
+    mustPreserve: [],
+    mustNotAdvance: [],
+  };
+}
+
+function buildNarrativeReviewFallback(
+  text: string,
+  expectedHash: string,
+): AuditValidationResult<PipelineReviewReportV2> | null {
+  const trimmed = text.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > 2400 ||
+    !REVIEW_NARRATIVE_HINT_RE.test(trimmed)
+  ) {
+    return null;
+  }
+  const diagnosis = trimmed.slice(0, REVISION_V2_LIMITS.MAX_CORRECTION_TEXT_CHARS);
+  const report: PipelineReviewReportV2 = {
+    schemaVersion: 2,
+    draftHash: expectedHash,
+    requiredCorrections: [
+      {
+        id: 'review-narrative-fallback-001',
+        scope: 'chapter',
+        dimension: 'literary',
+        severity: 'warning',
+        diagnosis,
+        rewriteGoal: '结合该文学评估统一修订本章，同时保持既有事实与大纲边界。',
+        preserveMeaning: [],
+      },
+    ],
+    protectedAnchorIds: [],
+    outlineExecution: emptyOutlineExecution(),
+  };
+  return {
+    valid: true,
+    report,
+    normalizedText: JSON.stringify(report),
+    warnings: ['review_narrative_fallback'],
+    similarity: 0,
+  };
+}
+
+/**
+ * Tolerant Review V2 path. It accepts protocol drift (missing fields,
+ * harmless extra fields, malformed locators and narrative review prose),
+ * but still fails closed for reasoning-only output, prompt/anchor leakage,
+ * draft echo, truncated JSON and genuinely novel non-review output.
+ */
+export function validateReviewV2Result(params: {
+  result: LLMResult;
+  canonicalDraft: string;
+  expectedHash: string;
+  anchors: PipelineRevisionAnchor[];
+}): AuditValidationResult<PipelineReviewReportV2> {
+  const strict = validateReviewV2StrictResult(params);
+  if (strict.valid) return strict;
+
+  const text =
+    typeof params.result.text === 'string' && params.result.text.trim()
+      ? params.result.text.trim()
+      : '';
+  const reasoning =
+    typeof params.result.reasoningText === 'string' && params.result.reasoningText.trim()
+      ? params.result.reasoningText.trim()
+      : '';
+  if (!text && reasoning) {
+    return failV2('reasoning_only', 'content 为空，仅返回 reasoning_content');
+  }
+  if (!text) return failV2('empty_content', 'content 为空');
+  if (/<think[\s\S]*?<\/think>/i.test(text) || /^<think\b/i.test(text)) {
+    return failV2('unexpected_shape', '输出含 <think> 推理泄漏');
+  }
+  const rawLeak = checkAnchorMarkerLeak([text]) || checkPromptLeak([text]);
+  if (rawLeak) return failV2('unexpected_shape', rawLeak);
+
+  const earlyEcho = detectDraftEcho(text, params.canonicalDraft);
+  if (
+    earlyEcho.isEcho &&
+    !text.startsWith('{') &&
+    !text.includes('"draftHash"')
+  ) {
+    return failV2('draft_echo', earlyEcho.reason || 'draft_echo');
+  }
+
+  const extracted = extractAuditJsonPayload(text);
+  if (!extracted.jsonText) {
+    if (params.result.finishReason === 'length' || extracted.truncatedLikely) {
+      return failV2('truncated_output', 'JSON 不完整或被截断');
+    }
+    const narrative = buildNarrativeReviewFallback(text, params.expectedHash);
+    if (narrative) return narrative;
+    return failV2('novel_output', '输出不是可归一化的 Review 报告');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(extracted.jsonText);
+  } catch {
+    return failV2('invalid_json', 'JSON.parse 失败');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return failV2('unexpected_shape', '根节点不是 JSON 对象');
+  }
+  const obj = parsed as Record<string, unknown>;
+  const allStrings: string[] = [];
+  collectStrings(parsed, allStrings);
+  const markerLeak = checkAnchorMarkerLeak(allStrings);
+  if (markerLeak) return failV2('unexpected_shape', markerLeak);
+  const promptLeak = checkPromptLeak(allStrings);
+  if (promptLeak) return failV2('unexpected_shape', promptLeak);
+  const echo = detectDraftEcho(allStrings.join('\n'), params.canonicalDraft);
+  if (echo.isEcho) return failV2('draft_echo', echo.reason || '报告回显初稿');
+  if (extracted.surroundingProseLength > 2000) {
+    return failV2('novel_output', 'JSON 外围包含过多连续正文');
+  }
+
+  const warnings: string[] = ['review_protocol_normalized'];
+  const allowedTopLevel = REVIEW_V2_TOP_LEVEL_KEYS;
+  const extras = Object.keys(obj).filter(key => !allowedTopLevel.has(key));
+  if (extras.length > 0) warnings.push(`忽略未知顶层字段: ${extras.join(', ')}`);
+  if (Number(obj.schemaVersion) !== 2) warnings.push('schemaVersion 已归一化为 2');
+  if (obj.draftHash !== params.expectedHash) {
+    warnings.push('draftHash 缺失或不一致，已采用客户端 hash');
+  }
+
+  const protectedAnchorIds = tolerantStringArray(
+    obj.protectedAnchorIds,
+    REVISION_V2_LIMITS.MAX_PROTECTED_ITEMS,
+    'protectedAnchorIds',
+    warnings,
+  ).filter(id => {
+    const exists = params.anchors.some(anchor => anchor.id === id);
+    if (!exists) warnings.push(`protectedAnchorIds 丢弃未知 anchor: ${id}`);
+    return exists;
+  });
+
+  const outlineExecution = emptyOutlineExecution();
+  const rawOutline = obj.outlineExecution;
+  if (!rawOutline || typeof rawOutline !== 'object' || Array.isArray(rawOutline)) {
+    warnings.push('outlineExecution 缺失，已填充空对象');
+  } else {
+    const oe = rawOutline as Record<string, unknown>;
+    const outlineKeys = new Set([
+      'fulfilledBeats',
+      'missingBeats',
+      'deviations',
+      'prematureBeats',
+      'mustPreserve',
+      'endingGoal',
+      'mustNotAdvance',
+    ]);
+    const outlineExtras = Object.keys(oe).filter(key => !outlineKeys.has(key));
+    if (outlineExtras.length > 0) {
+      warnings.push(`忽略 outlineExecution 未知字段: ${outlineExtras.join(', ')}`);
+    }
+    for (const key of [
+      'fulfilledBeats',
+      'missingBeats',
+      'deviations',
+      'prematureBeats',
+      'mustPreserve',
+      'mustNotAdvance',
+    ] as const) {
+      outlineExecution[key] = tolerantStringArray(
+        oe[key],
+        REVISION_V2_LIMITS.MAX_BEAT_ITEMS,
+        `outlineExecution.${key}`,
+        warnings,
+      );
+    }
+    if (typeof oe.endingGoal === 'string' && oe.endingGoal.trim()) {
+      outlineExecution.endingGoal = tolerantText(
+        oe.endingGoal,
+        REVISION_V2_LIMITS.MAX_CORRECTION_TEXT_CHARS,
+      );
+    } else if (oe.endingGoal != null) {
+      warnings.push('outlineExecution.endingGoal 已丢弃');
+    }
+  }
+
+  const corrections: PipelineAuditCorrectionV2[] = [];
+  const usedIds = new Set<string>();
+  const rawCorrections = Array.isArray(obj.requiredCorrections)
+    ? obj.requiredCorrections
+    : [];
+  if (!Array.isArray(obj.requiredCorrections)) {
+    warnings.push('requiredCorrections 缺失，已填充为空数组');
+  }
+  if (rawCorrections.length > REVISION_V2_LIMITS.MAX_CORRECTIONS) {
+    warnings.push('requiredCorrections 超上限，已截断');
+  }
+  for (let index = 0; index < Math.min(rawCorrections.length, REVISION_V2_LIMITS.MAX_CORRECTIONS); index += 1) {
+    const correction = normalizeTolerantCorrection(
+      rawCorrections[index],
+      index,
+      params.anchors,
+      warnings,
+      usedIds,
+    );
+    if (correction) corrections.push(correction);
+  }
+
+  const protectedSet = new Set(protectedAnchorIds);
+  for (const correction of corrections) {
+    if (correction.severity === 'warning') continue;
+    const targets =
+      correction.scope === 'anchor' && correction.anchorId
+        ? [correction.anchorId]
+        : correction.scope === 'range'
+          ? correction.anchorIds || []
+          : [];
+    const conflict = targets.find(id => protectedSet.has(id));
+    if (conflict) {
+      return failV2('conflict', `保护锚点 ${conflict} 与 required/hard 修订定位重叠`);
+    }
+  }
+
+  const report: PipelineReviewReportV2 = {
+    schemaVersion: 2,
+    draftHash: params.expectedHash,
+    requiredCorrections: corrections,
+    protectedAnchorIds,
+    outlineExecution,
+  };
+  const normalizedText = JSON.stringify(report);
+  if (normalizedText.length > REVISION_V2_LIMITS.MAX_REPORT_CHARS) {
+    return failV2('oversized_report', '归一化报告整体过长');
+  }
+  return {
+    valid: true,
+    report,
+    normalizedText,
+    warnings,
     similarity: detectDraftEcho(normalizedText, params.canonicalDraft).similarity,
   };
 }

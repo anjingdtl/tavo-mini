@@ -1,4 +1,8 @@
 import type { PipelineConfig } from '../../types/pipeline';
+import {
+  DEFAULT_PIPELINE_REASONING_EFFORT,
+  isPipelineReasoningEffort,
+} from '../../services/pipeline/reasoningPolicy';
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
@@ -11,6 +15,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
   // 11.9 优化：原实现每个字段独立 getSetting（最多 9 次独立 SQL），合并为单次 SELECT
   const keys = [
     'pipeline_mode',
+    'pipeline_reasoning_effort',
     'pipeline_draft_preset_id',
     'pipeline_review_preset_id',
     'pipeline_factcheck_preset_id',
@@ -30,6 +35,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
   const get = (k: string): string | null => settingsMap.get(k) ?? null;
 
   const savedMode = get('pipeline_mode');
+  const savedReasoningEffort = get('pipeline_reasoning_effort');
   const pipelineMode =
     savedMode === 'noReview' ||
     savedMode === 'conditional' ||
@@ -45,6 +51,9 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
 
   return {
     pipelineMode,
+    reasoningEffort: isPipelineReasoningEffort(savedReasoningEffort)
+      ? savedReasoningEffort
+      : DEFAULT_PIPELINE_REASONING_EFFORT,
     draftPresetId: presetId('pipeline_draft_preset_id'),
     reviewPresetId: presetId('pipeline_review_preset_id'),
     factCheckPresetId: presetId('pipeline_factcheck_preset_id'),
@@ -58,6 +67,12 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
 
 export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
   await setSetting('pipeline_mode', config.pipelineMode);
+  await setSetting(
+    'pipeline_reasoning_effort',
+    isPipelineReasoningEffort(config.reasoningEffort)
+      ? config.reasoningEffort
+      : DEFAULT_PIPELINE_REASONING_EFFORT,
+  );
   await setSetting(
     'pipeline_draft_preset_id',
     config.draftPresetId !== null ? String(config.draftPresetId) : '',

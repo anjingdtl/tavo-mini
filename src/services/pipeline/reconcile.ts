@@ -29,6 +29,16 @@ import type {
   PipelineExecutionSnapshot,
 } from '../../types/pipelineExecution';
 import {
+  CURRENT_FINAL_REVISER_REASONING_POLICY_VERSION,
+  resolveFinalReviserReasoning,
+} from './finalReviserReasoningPolicy';
+import {
+  applyPipelineReasoningBudget,
+  normalizePipelineReasoningEffort,
+  resolvePipelineReasoning,
+  type PipelineReasoningDecision,
+} from './reasoningPolicy';
+import {
   buildPostDraftAuditContextFromFrozen,
   captureFrozenAuditCandidates,
 } from '../postDraftRetrieval';
@@ -40,7 +50,12 @@ import { sha256Hex } from '../continuation/hashUtils';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
 import { getStageProgressPercent } from '../../utils/stages';
 import type { Chapter, Preset } from '../../types/novel';
-import type { PipelineConfig, PipelineMode, PipelineStageName } from '../../types/pipeline';
+import type {
+  PipelineConfig,
+  PipelineMode,
+  PipelineReasoningEffort,
+  PipelineStageName,
+} from '../../types/pipeline';
 import {
   describeAuditFailureReason,
   formatAuditFailureMessage,
@@ -60,7 +75,7 @@ import {
   canonicalizeDraft,
   computeDraftHash,
 } from './revisionAnchors';
-import type { LLMResult } from '../llm/types';
+import type { LLMResult, ReasoningEffort } from '../llm/types';
 import {
   parsePersistedPipelineTaskContext,
   serializePipelineTaskContext,
@@ -215,6 +230,7 @@ async function runStageAttempt<T extends {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  reasoningTokens?: number | null;
 }>(params: {
   taskId: string;
   stage: string;
@@ -266,6 +282,7 @@ async function runStageAttempt<T extends {
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       totalTokens: result.totalTokens,
+      reasoningTokens: result.reasoningTokens ?? null,
     });
     // CL-06: usage must reflect this attempt immediately (not at adoption).
     await refreshBatchUsage(params.batchBudgetGate);
@@ -299,6 +316,11 @@ async function runStageAttempt<T extends {
 function stageFingerprint(
   stage: string,
   compiled: ReadyStageRequest,
+  semantics?: {
+    thinking?: 'enabled' | 'disabled';
+    reasoningEffort?: string;
+    reasoningPolicyVersion?: number;
+  },
 ): string {
   try {
     return sha256Hex(
@@ -307,6 +329,9 @@ function stageFingerprint(
         messages: compiled.messages,
         maxTokens: compiled.reservedOutputTokens,
         contextWindow: compiled.contextWindow,
+        thinking: semantics?.thinking,
+        reasoningEffort: semantics?.reasoningEffort,
+        reasoningPolicyVersion: semantics?.reasoningPolicyVersion,
       }),
     ).slice(0, 32);
   } catch {
@@ -386,6 +411,8 @@ export interface ReconcileOptions {
    * applied when no frozen execution snapshot exists yet (first run).
    */
   pipelineModeOverride?: PipelineMode;
+  /** Batch-owned V2 tasks inherit the batch-frozen product tier on first run. */
+  pipelineReasoningEffortOverride?: PipelineReasoningEffort | null;
   /**
    * BN-04: when set, every stage attempt is preceded by a hard batch-budget
    * check. Exceeding the cap throws BatchBudgetExceededError BEFORE any
@@ -462,6 +489,8 @@ function buildExecutionSnapshot(params: {
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2;
   contextBudgetVersion?: 1 | 2;
+  finalReviserReasoningPolicyVersion?: 1 | 2;
+  reasoningEffort?: PipelineConfig['reasoningEffort'];
 }): PipelineExecutionSnapshot {
   const contextWindow = Number(params.requestConfig.context_window) || 0;
   if (!(contextWindow > 0)) {
@@ -486,6 +515,15 @@ function buildExecutionSnapshot(params: {
       : {}),
     ...(params.contextBudgetVersion
       ? { contextBudgetVersion: params.contextBudgetVersion }
+      : {}),
+    ...(params.finalReviserReasoningPolicyVersion
+      ? {
+          finalReviserReasoningPolicyVersion:
+            params.finalReviserReasoningPolicyVersion,
+        }
+      : {}),
+    ...(params.reasoningEffort
+      ? { reasoningEffort: params.reasoningEffort }
       : {}),
     draftMaxTokens: params.config.draftMaxTokens,
     reviewMaxTokens: params.config.reviewMaxTokens,
@@ -514,6 +552,7 @@ function buildExecutionSnapshot(params: {
 function configFromExecution(execution: PipelineExecutionSnapshot): PipelineConfig {
   return {
     pipelineMode: execution.pipelineMode,
+    reasoningEffort: execution.reasoningEffort,
     draftPresetId: execution.draftPresetId,
     reviewPresetId: execution.reviewPresetId,
     factCheckPresetId: execution.factCheckPresetId,
@@ -573,6 +612,8 @@ function buildCallConfig(
     responseFormat?: 'json_object';
     /** OpenAI-compatible extension; lets reasoning-capable gateways skip CoT. */
     thinking?: { type: 'enabled' | 'disabled' };
+    /** DeepSeek V4 Flash Final Reviser reasoning intensity. */
+    reasoningEffort?: ReasoningEffort;
   },
 ) {
   return {
@@ -584,6 +625,7 @@ function buildCallConfig(
     taskId,
     responseFormat: extras?.responseFormat,
     thinking: extras?.thinking,
+    reasoningEffort: extras?.reasoningEffort,
     requestConfig,
   };
 }
@@ -621,7 +663,17 @@ function buildStructuredAuditCallConfig(
   projectId: number,
   requestConfig: LLMRequestConfig,
   taskId: string,
+  reasoning?: PipelineReasoningDecision,
 ) {
+  const v2Reasoning =
+    reasoning?.thinking && reasoning.effort
+      ? {
+          thinking: reasoning.thinking,
+          reasoningEffort: reasoning.effort,
+        }
+      : {
+          thinking: { type: 'disabled' as const },
+        };
   return {
     ...buildCallConfig(
       preset,
@@ -632,7 +684,7 @@ function buildStructuredAuditCallConfig(
       taskId,
       {
         responseFormat: 'json_object',
-        thinking: { type: 'disabled' },
+        ...v2Reasoning,
       },
     ),
     temperature: 0.2,
@@ -847,6 +899,7 @@ async function persistStage(
     status: 'success' | 'failed' | 'skipped';
     error?: string;
     tokens?: { input: number; output: number; total: number };
+    warnings?: string[];
     durationMs: number;
   },
 ): Promise<void> {
@@ -1319,11 +1372,25 @@ async function actionPersistInitialSnapshot(
     contextBudgetVersion =
       Number(taskRow?.contextBudgetVersion) === 2 ? 2 : 1;
   }
-  // Fresh freeze from live config only when no execution yet.
+  // Fresh freeze from live config only when no execution yet. The selected
+  // V2 tier scales all four stage output reserves once; resume reuses the
+  // already-scaled values from the frozen snapshot.
+  const selectedReasoningEffort =
+    options.pipelineReasoningEffortOverride !== undefined
+      ? options.pipelineReasoningEffortOverride
+      : normalizePipelineReasoningEffort(runtime.config.reasoningEffort);
+  const freshConfig =
+    outlineWorkflowVersion === 2 && !existingExecution && selectedReasoningEffort
+      ? applyPipelineReasoningBudget(runtime.config, selectedReasoningEffort)
+      : outlineWorkflowVersion === 2 &&
+          !existingExecution &&
+          options.pipelineReasoningEffortOverride === null
+        ? { ...runtime.config, reasoningEffort: undefined }
+        : runtime.config;
   const execution =
     runtime.parsed?.execution ||
     buildExecutionSnapshot({
-      config: runtime.config,
+      config: freshConfig,
       draftPreset: runtime.draftPreset,
       reviewPreset: runtime.reviewPreset,
       factCheckPreset: runtime.factCheckPreset,
@@ -1331,6 +1398,12 @@ async function actionPersistInitialSnapshot(
       requestConfig: runtime.requestConfig,
       outlineWorkflowVersion,
       contextBudgetVersion,
+      finalReviserReasoningPolicyVersion:
+        outlineWorkflowVersion === 2
+          ? CURRENT_FINAL_REVISER_REASONING_POLICY_VERSION
+          : 1,
+      reasoningEffort:
+        outlineWorkflowVersion === 2 ? freshConfig.reasoningEffort : undefined,
     });
   // Batch-owned first run: the batch form's mode wins over the global
   // pipeline setting. Resume never overrides a frozen snapshot.
@@ -1433,6 +1506,16 @@ async function actionRunDraft(
           'restart_task',
         );
       }
+      const reasoning = resolvePipelineReasoning(
+        runtime.parsed.execution,
+        runtime.requestConfig,
+      );
+      const draftReasoningSemantics = {
+        thinking: reasoning.thinking?.type,
+        reasoningEffort: reasoning.effort,
+        reasoningPolicyVersion:
+          runtime.parsed.execution.finalReviserReasoningPolicyVersion,
+      } as const;
 
       // Draft must send frozen messages — never recompile from live project data.
       const firstCompile = compileDraftFromFrozenRequest({
@@ -1447,13 +1530,17 @@ async function actionRunDraft(
           taskId,
           stage: 'draft',
           requestFingerprint:
-            runtime.parsed.frozenDraftRequest.requestFingerprint || '',
+            runtime.parsed.execution.reasoningEffort
+              ? stageFingerprint('draft', firstReady, draftReasoningSemantics)
+              : runtime.parsed.frozenDraftRequest.requestFingerprint || '',
           allocationTraceJson: firstReady.elasticBudgetTrace
             ? JSON.stringify(firstReady.elasticBudgetTrace)
             : null,
           frozenRequestJson: JSON.stringify({
             ref: 'pipeline_context_json',
             fingerprint: runtime.parsed.frozenDraftRequest.requestFingerprint,
+            thinking: reasoning.thinking?.type ?? 'omitted',
+            reasoningEffort: reasoning.effort ?? null,
           }),
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
@@ -1471,6 +1558,10 @@ async function actionRunDraft(
                 chapter.project_id,
                 runtime.requestConfig,
                 taskId,
+                {
+                  thinking: reasoning.thinking,
+                  reasoningEffort: reasoning.effort,
+                },
               ),
               abortSignal,
             ),
@@ -1504,13 +1595,17 @@ async function actionRunDraft(
             taskId,
             stage: 'draft',
             requestFingerprint:
-              runtime.parsed.frozenDraftRequest.requestFingerprint || '',
+              runtime.parsed.execution.reasoningEffort
+                ? stageFingerprint('draft', retryReady, draftReasoningSemantics)
+                : runtime.parsed.frozenDraftRequest.requestFingerprint || '',
             allocationTraceJson: retryReady.elasticBudgetTrace
               ? JSON.stringify(retryReady.elasticBudgetTrace)
               : null,
             frozenRequestJson: JSON.stringify({
               ref: 'pipeline_context_json',
               fingerprint: runtime.parsed.frozenDraftRequest.requestFingerprint,
+              thinking: reasoning.thinking?.type ?? 'omitted',
+              reasoningEffort: reasoning.effort ?? null,
             }),
             llmConfigId: llmConfigIdOf(runtime.requestConfig),
             llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
@@ -1528,6 +1623,10 @@ async function actionRunDraft(
                   chapter.project_id,
                   runtime.requestConfig,
                   taskId,
+                  {
+                    thinking: reasoning.thinking,
+                    reasoningEffort: reasoning.effort,
+                  },
                 ),
                 abortSignal,
               ),
@@ -1702,7 +1801,9 @@ function isElasticBudgetV2(
 
 /**
  * V5-Lite V2 review stage: canonical draft + stable anchors + tagged single
- * injection + Review V2 contract validation + one-shot format repair.
+ * injection + tolerant Review V2 contract validation. Review V2 protocol
+ * normalization is deliberately local and single-shot; FactCheck V2 remains
+ * strict and keeps its existing repair policy.
  * request_version=2 is recorded on attempts (§13).
  */
 async function runReviewV2Stage(params: {
@@ -1713,7 +1814,11 @@ async function runReviewV2Stage(params: {
   options: ReconcileOptions;
 }): Promise<void> {
   const { taskId, chapter, runtime, abortSignal, options } = params;
-  if (!runtime.parsed) throw new Error('缺少冻结上下文');
+  if (!runtime.parsed?.execution) throw new Error('缺少冻结上下文');
+  const reasoning = resolvePipelineReasoning(
+    runtime.parsed.execution,
+    runtime.requestConfig,
+  );
   const draftText = await getDraftText(taskId);
   const canonicalDraft = canonicalizeDraft(draftText);
   const anchors = buildRevisionAnchors(canonicalDraft);
@@ -1764,7 +1869,12 @@ async function runReviewV2Stage(params: {
       taskId,
       stage: 'review',
       requestVersion: 2,
-      requestFingerprint: stageFingerprint('review', compiled),
+      requestFingerprint: stageFingerprint('review', compiled, {
+        thinking: reasoning.thinking?.type,
+        reasoningEffort: reasoning.effort,
+        reasoningPolicyVersion:
+          runtime.parsed.execution.finalReviserReasoningPolicyVersion,
+      }),
       allocationTraceJson: compiled.elasticBudgetTrace
         ? JSON.stringify(compiled.elasticBudgetTrace)
         : null,
@@ -1784,6 +1894,7 @@ async function runReviewV2Stage(params: {
             chapter.project_id,
             runtime.requestConfig,
             taskId,
+            reasoning,
           ),
           abortSignal,
         ),
@@ -1804,82 +1915,12 @@ async function runReviewV2Stage(params: {
       taskId,
     });
 
-    if (!validation.valid) {
-      const isReasoningOnly = validation.reason === 'reasoning_only';
-      const retryMaxTokens = isReasoningOnly
-        ? bumpRetryBudget(
-            runtime.config.reviewMaxTokens,
-            runtime.requestConfig.max_output_tokens,
-          )
-        : runtime.config.reviewMaxTokens;
-      const repair = compile(
-        isReasoningOnly
-          ? REASONING_ONLY_REPAIR_HINT
-          : buildV2RepairReason(validation.reason, validation.details),
-        retryMaxTokens,
-      );
-      if (!repair.ready) {
-        await persistStage(taskId, {
-          stage: 'review',
-          text: '',
-          status: 'failed',
-          error: repair.error.message,
-          tokens,
-          durationMs: Date.now() - start,
-        });
-        return;
-      }
-      const repairReady = requireReadyStageRequest(repair);
-      const retry = await runStageAttempt({
-        taskId,
-        stage: 'review',
-        requestVersion: 2,
-        requestFingerprint: stageFingerprint('review', repairReady),
-        allocationTraceJson: repairReady.elasticBudgetTrace
-          ? JSON.stringify(repairReady.elasticBudgetTrace)
-          : null,
-        llmConfigId: llmConfigIdOf(runtime.requestConfig),
-        llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
-        batchBudgetGate: options.batchBudgetGate,
-        estimatedInputTokens: repairReady.estimatedInputTokens,
-        reservedOutputTokens: repairReady.reservedOutputTokens,
-        run: () =>
-          callReadyLLM(
-            repairReady,
-            retryMaxTokens,
-            buildStructuredAuditCallConfig(
-              runtime.reviewPreset,
-              retryMaxTokens,
-              'pipeline_review',
-              chapter.project_id,
-              runtime.requestConfig,
-              taskId,
-            ),
-            abortSignal,
-          ),
-      });
-      if (cancelled(taskId, options)) {
-        const err = new Error('任务已取消') as Error & { code?: string };
-        err.code = 'cancelled';
-        throw err;
-      }
-      tokens = accumulateTokens(tokens, retry);
-      validation = validate(retry);
-      logPipelineAudit({
-        stage: 'review',
-        attempt: 2,
-        valid: validation.valid,
-        reason: validation.reason,
-        textLength: retry.text?.length || 0,
-        taskId,
-      });
-    }
-
     if (validation.valid && validation.normalizedText) {
       await persistStage(taskId, {
         stage: 'review',
         text: validation.normalizedText,
         status: 'success',
+        warnings: validation.warnings,
         tokens,
         durationMs: Date.now() - start,
       });
@@ -1928,7 +1969,11 @@ async function runFactCheckV2Stage(params: {
   options: ReconcileOptions;
 }): Promise<void> {
   const { taskId, chapter, runtime, abortSignal, options } = params;
-  if (!runtime.parsed) throw new Error('缺少冻结上下文');
+  if (!runtime.parsed?.execution) throw new Error('缺少冻结上下文');
+  const reasoning = resolvePipelineReasoning(
+    runtime.parsed.execution,
+    runtime.requestConfig,
+  );
   const draftText = await getDraftText(taskId);
   const canonicalDraft = canonicalizeDraft(draftText);
   const anchors = buildRevisionAnchors(canonicalDraft);
@@ -1979,7 +2024,12 @@ async function runFactCheckV2Stage(params: {
       taskId,
       stage: 'factCheck',
       requestVersion: 2,
-      requestFingerprint: stageFingerprint('factCheck', compiled),
+      requestFingerprint: stageFingerprint('factCheck', compiled, {
+        thinking: reasoning.thinking?.type,
+        reasoningEffort: reasoning.effort,
+        reasoningPolicyVersion:
+          runtime.parsed.execution.finalReviserReasoningPolicyVersion,
+      }),
       allocationTraceJson: compiled.elasticBudgetTrace
         ? JSON.stringify(compiled.elasticBudgetTrace)
         : null,
@@ -1999,6 +2049,7 @@ async function runFactCheckV2Stage(params: {
             chapter.project_id,
             runtime.requestConfig,
             taskId,
+            reasoning,
           ),
           abortSignal,
         ),
@@ -2049,7 +2100,12 @@ async function runFactCheckV2Stage(params: {
         taskId,
         stage: 'factCheck',
         requestVersion: 2,
-        requestFingerprint: stageFingerprint('factCheck', repairReady),
+        requestFingerprint: stageFingerprint('factCheck', repairReady, {
+          thinking: reasoning.thinking?.type,
+          reasoningEffort: reasoning.effort,
+          reasoningPolicyVersion:
+            runtime.parsed.execution.finalReviserReasoningPolicyVersion,
+        }),
         allocationTraceJson: repairReady.elasticBudgetTrace
           ? JSON.stringify(repairReady.elasticBudgetTrace)
           : null,
@@ -2069,6 +2125,7 @@ async function runFactCheckV2Stage(params: {
               chapter.project_id,
               runtime.requestConfig,
               taskId,
+              reasoning,
             ),
             abortSignal,
           ),
@@ -2661,7 +2718,7 @@ async function runFinalReviserV2Stage(params: {
   options: ReconcileOptions;
 }): Promise<void> {
   const { taskId, chapter, runtime, abortSignal, options } = params;
-  if (!runtime.parsed) throw new Error('缺少冻结上下文');
+  if (!runtime.parsed?.execution) throw new Error('缺少冻结上下文');
   const draftText = await getDraftText(taskId);
   const canonicalDraft = canonicalizeDraft(draftText);
   const anchors = buildRevisionAnchors(canonicalDraft);
@@ -2731,15 +2788,36 @@ async function runFinalReviserV2Stage(params: {
     return;
   }
 
+  const reasoning = resolveFinalReviserReasoning({
+    execution: runtime.parsed.execution,
+    model: runtime.requestConfig,
+    contract: compiledContract.contract,
+  });
+  const proofSemantics = {
+    thinking: reasoning.thinking?.type,
+    reasoningEffort: reasoning.effort,
+    reasoningPolicyVersion: reasoning.policyVersion,
+  } as const;
+  const frozenProofRequest = JSON.stringify({
+    requestVersion: 2,
+    reasoningPolicyVersion: reasoning.policyVersion ?? 1,
+    thinking: reasoning.thinking?.type ?? 'omitted',
+    reasoningEffort: reasoning.effort ?? null,
+    messagesHash: sha256Hex(JSON.stringify(compiled.messages)).slice(0, 32),
+    maxTokens: runtime.config.proofMaxTokens,
+    contextWindow: compiled.contextWindow,
+  });
+
   try {
     const result = await runStageAttempt({
       taskId,
       stage: 'proof',
       requestVersion: 2,
-      requestFingerprint: stageFingerprint('proof', compiled),
+      requestFingerprint: stageFingerprint('proof', compiled, proofSemantics),
       allocationTraceJson: compiled.elasticBudgetTrace
         ? JSON.stringify(compiled.elasticBudgetTrace)
         : null,
+      frozenRequestJson: frozenProofRequest,
       llmConfigId: llmConfigIdOf(runtime.requestConfig),
       llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
       batchBudgetGate: options.batchBudgetGate,
@@ -2756,6 +2834,10 @@ async function runFinalReviserV2Stage(params: {
             chapter.project_id,
             runtime.requestConfig,
             taskId,
+            {
+              thinking: reasoning.thinking,
+              reasoningEffort: reasoning.effort,
+            },
           ),
           abortSignal,
         ),
@@ -2823,6 +2905,10 @@ async function runFinalReviserV2Stage(params: {
       stage: 'proof',
       text: content,
       status: 'success',
+      warnings: [
+        ...compiledContract.warnings,
+        ...(validator.warnings || []),
+      ],
       tokens: {
         input: result.inputTokens,
         output: result.outputTokens,

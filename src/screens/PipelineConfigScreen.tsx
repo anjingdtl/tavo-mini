@@ -6,6 +6,11 @@ import { useProjectStore } from '../store/projectStore';
 import * as db from '../services/database';
 import type { Preset } from '../types/novel';
 import type { PipelineConfig, PipelineMode } from '../types/pipeline';
+import {
+  DEFAULT_PIPELINE_REASONING_EFFORT,
+  PIPELINE_REASONING_EFFORT_OPTIONS,
+  type PipelineReasoningEffort,
+} from '../services/pipeline/reasoningPolicy';
 
 const MODE_OPTIONS: { value: PipelineMode; label: string }[] = [
   { value: 'noReview', label: '无审核' },
@@ -30,6 +35,7 @@ const STAGE_LABELS = [
 
 const DEFAULT_CONFIG: PipelineConfig = {
   pipelineMode: 'twoStage',
+  reasoningEffort: DEFAULT_PIPELINE_REASONING_EFFORT,
   draftPresetId: null,
   reviewPresetId: null,
   factCheckPresetId: null,
@@ -149,6 +155,31 @@ export const PipelineConfigScreen: React.FC = () => {
           />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
             {MODE_HELP[config.pipelineMode]}
+          </Text>
+        </View>
+
+        <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
+          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>V2 思考强度</Text>
+          <SegmentedControl
+            value={config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT}
+            options={PIPELINE_REASONING_EFFORT_OPTIONS.map(option => ({
+              value: option.value,
+              label: option.label,
+            }))}
+            onChange={(reasoningEffort: PipelineReasoningEffort) =>
+              setConfig({ ...config, reasoningEffort })
+            }
+          />
+          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+            {PIPELINE_REASONING_EFFORT_OPTIONS.find(
+              option => option.value === (config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT),
+            )?.description}
+            {' '}该档位统一作用于 V2 的初稿、审阅、事实核查、终审四个调用；运行时会同步扩大/收缩输出预留，并从可选上下文弹性借用预算。
+          </Text>
+          <Text
+            style={[styles.hint, { color: theme.colors.textSecondary }]}
+          >
+            仅官方 DeepSeek V4 Flash 端点发送 reasoning_effort；官方当前将 low/medium 兼容映射为 high。历史任务恢复时继续使用任务快照，不会被当前设置改写。
           </Text>
         </View>
 

@@ -10,6 +10,7 @@ import type {
   LLMRequestConfig,
   LLMResult,
   LLMQueueClass,
+  ReasoningEffort,
 } from './types';
 import {
   scheduleLLMRequest,
@@ -38,6 +39,52 @@ export function normalizeChatCompletionUrl(baseUrl: string): string {
 
 export function createLLMConfigError(): Error {
   return new Error('请先在设置中配置 API 地址、API Key 和模型名称。');
+}
+
+/**
+ * Resolve the deliberately narrow first-wave capability set.  A model name
+ * alone is insufficient: compatible gateways may reject vendor extensions,
+ * so only the official DeepSeek host is allowed to receive the field.
+ */
+export function supportsReasoningEffort(params: {
+  providerType?: string | null;
+  modelName?: string | null;
+  baseUrl?: string | null;
+}): boolean {
+  if (params.providerType !== 'openai_compatible') return false;
+  if (String(params.modelName ?? '').trim().toLowerCase() !== 'deepseek-v4-flash') {
+    return false;
+  }
+  try {
+    return new URL(String(params.baseUrl ?? '')).hostname.toLowerCase() === 'api.deepseek.com';
+  } catch {
+    return false;
+  }
+}
+
+function isValidReasoningEffort(value: unknown): value is ReasoningEffort {
+  return (
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'max'
+  );
+}
+
+function parseNonNegativeUsageNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+/** Parse the official completion_tokens_details.reasoning_tokens field. */
+export function parseReasoningTokens(usage: unknown): number | null {
+  if (!usage || typeof usage !== 'object') return null;
+  const details = (usage as { completion_tokens_details?: unknown })
+    .completion_tokens_details;
+  if (!details || typeof details !== 'object') return null;
+  return parseNonNegativeUsageNumber(
+    (details as { reasoning_tokens?: unknown }).reasoning_tokens,
+  );
 }
 
 /**
@@ -321,6 +368,17 @@ export const openAICompatibleProvider: LLMProvider = {
             if (options.thinking) {
               requestBody.thinking = options.thinking;
             }
+            if (
+              options.thinking?.type === 'enabled' &&
+              isValidReasoningEffort(options.reasoningEffort) &&
+              supportsReasoningEffort({
+                providerType: config.provider_type,
+                modelName: config.model_name,
+                baseUrl: config.url,
+              })
+            ) {
+              requestBody.reasoning_effort = options.reasoningEffort;
+            }
             const sendRequest = () =>
               fetch(config.url, {
                 method: 'POST',
@@ -337,10 +395,10 @@ export const openAICompatibleProvider: LLMProvider = {
               const text = await response.text();
               const responseFormatUnsupported =
                 options.responseFormat === 'json_object' &&
+                !('reasoning_effort' in requestBody) &&
                 response.status === 400 &&
-                /response[_ ]?format|json[_ ]?object|unsupported|unknown/i.test(
-                  text,
-                );
+                /(response[_ ]?format|json[_ -]?object)/i.test(text) &&
+                /(unsupported|unknown|not supported|invalid)/i.test(text);
               if (!responseFormatUnsupported) {
                 throw formatLLMError(
                   response.status,
@@ -402,18 +460,27 @@ export const openAICompatibleProvider: LLMProvider = {
                   hasChoices: !!choice,
                 });
             const usage = data.usage || {};
-            const inputTokens = Number(usage.prompt_tokens ?? inputEstimate);
-            const outputTokens = Number(
-              usage.completion_tokens ??
-                estimateTokens(text || '') + estimateTokens(reasoningText || ''),
+            const inputUsage = parseNonNegativeUsageNumber(usage.prompt_tokens);
+            const outputUsage = parseNonNegativeUsageNumber(
+              usage.completion_tokens,
             );
-            const totalTokens = Number(
-              usage.total_tokens ?? inputTokens + outputTokens,
-            );
+            const totalUsage = parseNonNegativeUsageNumber(usage.total_tokens);
+            const inputTokens = inputUsage ?? inputEstimate;
+            const outputTokens =
+              outputUsage ??
+              estimateTokens(text || '') + estimateTokens(reasoningText || '');
+            const totalTokens = totalUsage ?? inputTokens + outputTokens;
+            const reasoningTokens = parseReasoningTokens(usage);
+            const visibleOutputTokens =
+              reasoningTokens == null
+                ? null
+                : Math.max(0, outputTokens - reasoningTokens);
             timeoutController.markProgress('progress');
             return {
               text,
               reasoningText,
+              reasoningTokens,
+              visibleOutputTokens,
               inputTokens,
               outputTokens,
               totalTokens,

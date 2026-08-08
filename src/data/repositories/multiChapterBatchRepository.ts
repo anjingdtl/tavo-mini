@@ -20,6 +20,7 @@ import type {
   MultiChapterBatchItemStatus,
   BatchItemCompletionQuality,
 } from '../../types/multiChapterBatch';
+import type { PipelineReasoningEffort } from '../../types/pipeline';
 import type { PipelineCheckpointStage } from '../../services/pipeline/types';
 import type { Row } from './shared';
 
@@ -35,6 +36,8 @@ export interface MultiChapterBatchRow {
   chapterCount: number;
   targetWordsPerChapter: number;
   pipelineMode: string;
+  /** Frozen V2 tier; NULL means a pre-Schema-46 historical batch. */
+  reasoningEffort?: PipelineReasoningEffort | null;
   plannerOutputJson: string | null;
   plannerHash: string | null;
   plannerRequestJson: string | null;
@@ -120,6 +123,12 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
     chapterCount: Number(row.chapter_count),
     targetWordsPerChapter: Number(row.target_words_per_chapter),
     pipelineMode: String(row.pipeline_mode || 'full'),
+    reasoningEffort:
+      row.reasoning_effort === 'low' ||
+      row.reasoning_effort === 'medium' ||
+      row.reasoning_effort === 'high'
+        ? row.reasoning_effort
+        : null,
     plannerOutputJson: row.planner_output_json ?? null,
     plannerHash: row.planner_hash ?? null,
     plannerRequestJson: row.planner_request_json ?? null,
@@ -205,6 +214,8 @@ export interface CreateBatchInput {
   chapterCount: number;
   targetWordsPerChapter: number;
   pipelineMode: string;
+  /** New V2 batches pass the product tier explicitly. */
+  reasoningEffort?: PipelineReasoningEffort | null;
   budget?: {
     maxLlmCalls?: number | null;
     maxInputTokens?: number | null;
@@ -227,11 +238,11 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
     await openDatabase(),
     `INSERT INTO multi_chapter_batches (
        id, project_id, status, source_prompt, chapter_count,
-       target_words_per_chapter, pipeline_mode,
+       target_words_per_chapter, pipeline_mode, reasoning_effort,
        max_llm_calls, max_input_tokens, max_output_tokens,
        outline_workflow_version, context_budget_version,
        created_at, updated_at
-     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.projectId,
@@ -239,6 +250,7 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
       input.chapterCount,
       input.targetWordsPerChapter,
       input.pipelineMode,
+      input.reasoningEffort ?? null,
       input.budget?.maxLlmCalls ?? null,
       input.budget?.maxInputTokens ?? null,
       input.budget?.maxOutputTokens ?? null,
