@@ -491,14 +491,16 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
       }
       // Append-only checkpoint advance failure: the previously successful
       // checkpoint remains valid (it is the latest SUCCESSFUL state, still
-      // persisted in the row). Preserve the pre-attempt status — never flip a
-      // clean/empty record to 'failed', which would make the old checkpoint
-      // ineligible for injection even though it describes real history.
-      // `lastError` still records the failed attempt for diagnostics/retry.
+      // persisted in the row). Preserve the latest persisted status — never
+      // flip a clean/empty record to 'failed', and never write back the
+      // function-entry status: after batch1 succeeded `state` carries the
+      // persisted clean status, while `record` (entry snapshot) still says
+      // 'empty' and would clobber the row back to empty. `lastError` still
+      // records the failed attempt for diagnostics/retry.
       await db.setStoryMemoryBuildStatus(
         input.projectId,
-        record.status,
-        record.dirtyFromPosition,
+        state.metadata.status,
+        state.metadata.dirtyFromPosition,
         message,
       );
       throw error;

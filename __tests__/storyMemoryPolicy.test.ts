@@ -132,7 +132,7 @@ describe('storyMemoryPolicy', () => {
     ).toBe('key_chapter');
   });
 
-  it('smart mode becomes due when pending tokens exceed soft limit', () => {
+  it('smart mode below the interval never triggers on token volume alone', () => {
     const long = chapter(0, '很长的章节正文。'.repeat(400));
     const policy = createDefaultStoryMemoryPolicy(1, {
       mode: 'smart',
@@ -144,8 +144,10 @@ describe('storyMemoryPolicy', () => {
       checkpointThroughPosition: -1,
       pendingChapters: [long],
     });
-    expect(decision.due).toBe(true);
-    expect(decision.reason).toBe('pending_token_limit');
+    // 产品节奏：1..interval-1 章由 interval 主导，token 累计不提前触发；
+    // 安全事件（dirty / coverage gap / manual / key chapter）仍可提前。
+    expect(decision.due).toBe(false);
+    expect(decision.reason).toBe('none');
   });
 
   it('predicts next checkpoint chapter position', () => {

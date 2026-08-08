@@ -752,10 +752,19 @@ export async function finalizeChapterMemory(
           message,
         );
       } else {
+        // 与 advance 同一语义：失败时保留「最近一次成功持久化」checkpoint
+        // 的状态。重新读取最新 row —— batch1 成功后 batch2 失败时 row 已是
+        // clean（batch1 终点），不能用函数入口时的旧 status 回写；dirty 标记
+        // 必须原样保留。
+        const latest = await db.ensureProjectStoryMemoryRow(
+          freshChapter.project_id,
+        );
         await db.setStoryMemoryBuildStatus(
           freshChapter.project_id,
-          record.status === 'dirty' ? 'dirty' : record.status,
-          record.dirtyFromPosition,
+          record.status === 'dirty' ? 'dirty' : latest.status,
+          record.status === 'dirty'
+            ? record.dirtyFromPosition
+            : latest.dirtyFromPosition,
           message,
         );
       }
