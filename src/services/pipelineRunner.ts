@@ -25,7 +25,7 @@ import {
   type StageInfo as ReconcileStageInfo,
 } from './pipeline/reconcile';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
-import type { PipelineMode } from '../types/pipeline';
+import type { PipelineMode, PipelineReasoningEffort } from '../types/pipeline';
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -47,6 +47,11 @@ export interface PipelineRunOptions {
    * resume always keeps the frozen value.
    */
   pipelineModeOverride?: PipelineMode;
+  /**
+   * Batch-owned V2 tasks inherit the tier frozen on the batch header. Applied
+   * only before the task has an execution snapshot; resume keeps the snapshot.
+   */
+  pipelineReasoningEffortOverride?: PipelineReasoningEffort | null;
   /**
    * BN-04: when set, every LLM attempt checks the batch's hard budget
    * caps BEFORE any HTTP request is issued. Exceeding the cap throws
@@ -195,6 +200,7 @@ export async function runChapterPipeline(
       abortSignal,
       isCancelled: isPipelineCancelled,
       pipelineModeOverride: options.pipelineModeOverride,
+      pipelineReasoningEffortOverride: options.pipelineReasoningEffortOverride,
       batchBudgetGate: options.batchBudgetGate,
       // CL-10: call-level foreground ownership (never module-global).
       foregroundOwner: options.foregroundOwner,
@@ -258,6 +264,7 @@ export async function resumePipeline(
       abortSignal,
       isCancelled: isPipelineCancelled,
       pipelineModeOverride: options.pipelineModeOverride,
+      pipelineReasoningEffortOverride: options.pipelineReasoningEffortOverride,
       batchBudgetGate: options.batchBudgetGate,
       // CL-10: call-level foreground ownership (never module-global).
       foregroundOwner: options.foregroundOwner,

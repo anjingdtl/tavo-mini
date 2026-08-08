@@ -461,6 +461,7 @@ async function executeBatchAction(params: {
               pipelineModeOverride: mapBatchModeToPipelineMode(
                 batch.pipelineMode,
               ),
+              pipelineReasoningEffortOverride: batch.reasoningEffort ?? null,
               batchBudgetGate: { batchId },
             })
           : params.resumePipelineImpl(taskId, chapter, notifyStage, {
@@ -470,6 +471,7 @@ async function executeBatchAction(params: {
               pipelineModeOverride: mapBatchModeToPipelineMode(
                 batch.pipelineMode,
               ),
+              pipelineReasoningEffortOverride: batch.reasoningEffort ?? null,
               batchBudgetGate: { batchId },
             });
       // BN-09 / BN-10: the main loop renews the lease on every state-machine

@@ -45,6 +45,7 @@ export interface PipelineStageAttemptRow {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
+  reasoningTokens: number | null;
 }
 
 export interface CreateStageAttemptInput {
@@ -78,6 +79,7 @@ export interface UpdateStageAttemptInput {
   inputTokens?: number | null;
   outputTokens?: number | null;
   totalTokens?: number | null;
+  reasoningTokens?: number | null;
 }
 
 function mapRow(row: any): PipelineStageAttemptRow {
@@ -108,6 +110,8 @@ function mapRow(row: any): PipelineStageAttemptRow {
     inputTokens: row.input_tokens != null ? Number(row.input_tokens) : null,
     outputTokens: row.output_tokens != null ? Number(row.output_tokens) : null,
     totalTokens: row.total_tokens != null ? Number(row.total_tokens) : null,
+    reasoningTokens:
+      row.reasoning_tokens != null ? Number(row.reasoning_tokens) : null,
   };
 }
 
@@ -159,6 +163,7 @@ export async function updateStageAttempt(
     ['input_tokens', input.inputTokens ?? null],
     ['output_tokens', input.outputTokens ?? null],
     ['total_tokens', input.totalTokens ?? null],
+    ['reasoning_tokens', input.reasoningTokens ?? null],
   ];
   for (const [column, value] of fields) {
     if (value !== undefined) {

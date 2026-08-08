@@ -102,7 +102,12 @@ async function seedChapter(
   return result.insertId;
 }
 
-async function seedBatch(batchId = 'b1', count = 1, pipelineMode = 'full') {
+async function seedBatch(
+  batchId = 'b1',
+  count = 1,
+  pipelineMode = 'full',
+  reasoningEffort?: 'low' | 'medium' | 'high',
+) {
   await createBatch({
     id: batchId,
     projectId: 1,
@@ -110,6 +115,7 @@ async function seedBatch(batchId = 'b1', count = 1, pipelineMode = 'full') {
     chapterCount: count,
     targetWordsPerChapter: 3000,
     pipelineMode,
+    reasoningEffort,
   });
   for (let i = 1; i <= count; i += 1) {
     await createBatchItem({
@@ -163,7 +169,7 @@ describe('RB-1 batch mode reaches pipeline execution', () => {
   it('passes the batch pipelineMode into the chapter pipeline run options', async () => {
     await resetDb();
     await seedProject();
-    await seedBatch('rb1', 1, 'draft_only');
+    await seedBatch('rb1', 1, 'draft_only', 'high');
     const runner = capturingRunner();
 
     await reconcileMultiChapterBatch('rb1', {
@@ -176,6 +182,7 @@ describe('RB-1 batch mode reaches pipeline execution', () => {
     // The batch mode selection MUST reach the pipeline execution layer
     // (batch 'draft_only' maps to single-chapter 'noReview').
     expect(runner.calls[0].options?.pipelineModeOverride).toBe('noReview');
+    expect(runner.calls[0].options?.pipelineReasoningEffortOverride).toBe('high');
   });
 });
 

@@ -63,6 +63,8 @@ export interface AuditValidationResult<T> {
   reason?: AuditValidationFailureReason;
   details?: string;
   similarity?: number;
+  /** Non-blocking Review V2 normalization/fallback notes. */
+  warnings?: string[];
 }
 
 export interface DraftEchoCheckResult {

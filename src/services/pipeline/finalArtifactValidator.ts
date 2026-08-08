@@ -10,9 +10,6 @@
  *   - reasoning only, no body;
  *   - `<think>` / system prompt / contract / anchor-marker leaks;
  *   - output is a JSON audit contract / patch / change notes;
- *   - whole text is repeated paragraphs;
- *   - catastrophic length collapse relative to the draft, combined with
- *     summary/truncation signals;
  *   - tail stops at an unclosed technical separator / protocol block.
  *
  * Single soft heuristics (short text, normal novel words like 总结/最终,
@@ -36,6 +33,8 @@ export interface FinalValidatorResult {
   valid: boolean;
   code: FinalValidatorCode;
   details?: string;
+  /** Soft signals are retained for the result UI but never block delivery. */
+  warnings?: FinalValidatorCode[];
 }
 
 const ANCHOR_MARKER_RE = /\[draft-p-\d{3}/;
@@ -179,13 +178,13 @@ export function validateFinalArtifact(params: {
     return { valid: false, code: 'patch_leak', details: '输出疑似 patch/diff/修改说明' };
   }
 
-  // Whole-paragraph duplicate.
+  const warnings: FinalValidatorCode[] = [];
+
+  // Whole-paragraph duplicate is a reviewable quality warning. It is not a
+  // deterministic delivery failure: a valid novel body must not be silently
+  // replaced by the draft merely because repetition heuristics fired.
   if (detectWholeParagraphDuplicate(body)) {
-    return {
-      valid: false,
-      code: 'whole_paragraph_duplicate',
-      details: '全文由重复段落构成',
-    };
+    warnings.push('whole_paragraph_duplicate');
   }
 
   // finishReason === 'length' is a COMBINED signal only (§6.4): a complete
@@ -220,11 +219,7 @@ export function validateFinalArtifact(params: {
       /(余略|内容省略|以下省略|未完待续|其余省略|以此类推|后略)/.test(body) ||
       /^省略[。.]/.test(body);
     if (ratio < 0.2 && summaryDominated) {
-      return {
-        valid: false,
-        code: 'catastrophic_collapse',
-        details: `相对初稿灾难性坍缩 (ratio=${ratio.toFixed(2)}) 且命中摘要/截断信号`,
-      };
+      warnings.push('catastrophic_collapse');
     }
   }
 
@@ -237,5 +232,5 @@ export function validateFinalArtifact(params: {
     };
   }
 
-  return { valid: true, code: 'ok' };
+  return { valid: true, code: 'ok', warnings: warnings.length ? warnings : undefined };
 }

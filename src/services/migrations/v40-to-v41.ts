@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS pipeline_stage_attempts (
   input_tokens INTEGER,
   output_tokens INTEGER,
   total_tokens INTEGER,
+  reasoning_tokens INTEGER,
 
   UNIQUE (pipeline_task_id, stage, attempt_no),
   FOREIGN KEY (pipeline_task_id) REFERENCES pipeline_tasks(id) ON DELETE CASCADE

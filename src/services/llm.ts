@@ -10,6 +10,7 @@ import type {
   LLMQueuePriority,
   LLMQueueState,
   LLMRequestMetrics,
+  ReasoningEffort,
 } from './llm/types';
 import { scheduleLLMRequest } from './llm/requestScheduler';
 
@@ -23,6 +24,7 @@ export type {
   LLMQueuePriority,
   LLMQueueState,
   LLMRequestMetrics,
+  ReasoningEffort,
 } from './llm/types';
 
 export {
@@ -30,6 +32,8 @@ export {
   createLLMConfigError,
   formatLLMError,
   createConcurrencyLimiter,
+  supportsReasoningEffort,
+  parseReasoningTokens,
 } from './llm/openAICompatibleProvider';
 
 export interface LLMCallConfig {
@@ -39,6 +43,7 @@ export interface LLMCallConfig {
   responseFormat?: 'json_object';
   /** Optional OpenAI-compatible extension; omitted for existing callers. */
   thinking?: { type: 'enabled' | 'disabled' };
+  reasoningEffort?: ReasoningEffort;
   scenario?: string;
   projectId?: number;
   taskId?: string;
@@ -162,6 +167,7 @@ export async function callLLMResult(
       max_tokens: maxTokens ?? config?.max_tokens,
       responseFormat: config?.responseFormat,
       thinking: config?.thinking,
+      reasoningEffort: config?.reasoningEffort,
       scenario: config?.scenario,
       projectId: config?.projectId,
       taskId: config?.taskId,
