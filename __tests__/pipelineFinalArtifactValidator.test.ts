@@ -93,9 +93,55 @@ describe('validateFinalArtifact — hard fails', () => {
     expect(r.code).toBe('whole_paragraph_duplicate');
   });
 
-  test('finishReason length fails', () => {
+  test('finishReason=length with complete ellipsis-ending body passes', () => {
     const r = validateFinalArtifact({
       text: '主角走向森林……',
+      finishReason: 'length',
+    });
+    expect(r.valid).toBe(true);
+    expect(r.code).toBe('ok');
+  });
+
+  test('finishReason=length with full chapter body passes', () => {
+    const r = validateFinalArtifact({
+      text: DRAFT,
+      finishReason: 'length',
+      canonicalDraft: DRAFT,
+    });
+    expect(r.valid).toBe(true);
+    expect(r.code).toBe('ok');
+  });
+
+  test('finishReason=length + cut sentence tail fails', () => {
+    const r = validateFinalArtifact({
+      text: '主角加快了脚步，穿过树林，绕过溪流，向着远处的山脊前进，风声在耳边呼啸',
+      finishReason: 'length',
+    });
+    expect(r.valid).toBe(false);
+    expect(r.code).toBe('finish_length_incomplete');
+  });
+
+  test('finishReason=length + unclosed quote fails', () => {
+    const r = validateFinalArtifact({
+      text: '老者抬头说道：“你终于来了，我等了你十年',
+      finishReason: 'length',
+    });
+    expect(r.valid).toBe(false);
+    expect(r.code).toBe('finish_length_incomplete');
+  });
+
+  test('finishReason=length + omission marker fails', () => {
+    const r = validateFinalArtifact({
+      text: '他们一路向北走了三天三夜，途中经历了不少艰险，其余内容省略',
+      finishReason: 'length',
+    });
+    expect(r.valid).toBe(false);
+    expect(r.code).toBe('finish_length_incomplete');
+  });
+
+  test('finishReason=length + unclosed fence fails', () => {
+    const r = validateFinalArtifact({
+      text: '主角走向森林。\n```',
       finishReason: 'length',
     });
     expect(r.valid).toBe(false);

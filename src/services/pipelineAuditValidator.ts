@@ -874,6 +874,8 @@ export function describeAuditFailureReason(
       return '输出了完整正文';
     case 'unexpected_shape':
       return '结构不符合要求';
+    case 'conflict':
+      return '保护锚点与修订定位冲突';
     default:
       return '输出格式无效';
   }

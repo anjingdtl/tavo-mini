@@ -240,18 +240,43 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     : `${Math.round(duration / 1000)}s`;
   const retainedDraft =
     task.status === 'failed' && Boolean(task.finalText && task.finalText.trim());
+  // 任务仍在后台运行（idle/排队/初稿/审阅/核查/终审）：结果页只展示
+  // 历史阶段卡，不允许采纳/放弃（finalText 是旧初稿），也不显示重启。
+  const RUNNING_STATUSES = new Set([
+    'idle',
+    'queued',
+    'drafting',
+    'reviewing',
+    'factChecking',
+    'proofing',
+  ]);
+  const isRunning = RUNNING_STATUSES.has(task.status);
+  const RUNNING_STAGE_LABEL: Record<string, string> = {
+    idle: '准备中',
+    queued: '排队中',
+    drafting: '初稿生成',
+    reviewing: '审阅/评估',
+    factChecking: '事实核查',
+    proofing: '终审',
+  };
   const statusSummary =
     task.status === 'completed'
       ? failedAuditCount > 0
         ? `已完成（${failedAuditCount} 项审核失败）`
         : '已完成'
-      : task.status === 'failed'
-        ? retainedDraft
-          ? '未完整完成（已保留初稿）'
-          : '异常终止'
-        : task.status === 'cancelled'
-          ? '已取消'
-          : '进行中';
+      : isRunning
+        ? `进行中 · ${RUNNING_STAGE_LABEL[task.status] || '运行中'}`
+        : task.status === 'failed'
+          ? retainedDraft
+            ? '未完整完成（已保留初稿）'
+            : '异常终止'
+          : task.status === 'interrupted'
+            ? retainedDraft
+              ? '已中断（已保留初稿）'
+              : '已中断，可从失败阶段继续'
+            : task.status === 'cancelled'
+              ? '已取消'
+              : '进行中';
 
   const toggleExpanded = (stage: string) => {
     const next = new Set(expanded);
@@ -335,9 +360,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     handleClose();
   };
 
-  // F2-07: 失败时从失败环节重启 —— 只重跑失败的 stage（复用 frozen
+  // F2-07: 失败/中断时从失败环节重启 —— 只重跑失败的 stage（复用 frozen
   // request），已成功的阶段不重复计费。仅 draft 失败（无成功阶段）也必须
   // 提供重试入口：状态机从初稿 checkpoint 重新开始，与首次运行等价。
+  // interrupted（进程被杀/超时/后台重启未完成）同样必须能继续：它只是
+  // 尚未跑完，不是终态。只有 completed / cancelled / running 中的任务
+  // 不提供重启入口。
   const failedStages = uniqueStageResults(task.stageResults).filter(
     s => s.status === 'failed',
   );
@@ -345,9 +373,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     s => s.status === 'success',
   );
   const canResumeFailed =
-    task.status === 'failed' &&
     task.targetType === 'chapter' &&
-    failedStages.length > 0;
+    (task.status === 'failed' || task.status === 'interrupted') &&
+    (failedStages.length > 0 || task.status === 'interrupted');
   const resumeLabel =
     succeededStages.length > 0 ? '从失败环节重启' : '重新尝试';
 
@@ -359,7 +387,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       .join('、');
     const proceedCopy =
       succeededStages.length > 0
-        ? `仅重试失败阶段（${failedLabels}），已成功的阶段（初稿/审阅/核查）将直接复用，不会重复计费。确定继续？`
+        ? `仅重试未完成阶段（${failedLabels || '剩余阶段'}），已成功的阶段（初稿/审阅/核查）将直接复用，不会重复计费。确定继续？`
         : `从初稿阶段重新运行完整流水线，不会重复计费未完成的请求。确定继续？`;
     const proceed = await new Promise<boolean>(resolve => {
       Alert.alert(
@@ -463,14 +491,20 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
           {statusSummary} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
         </Text>
-        {proofStage?.status === 'skipped' && failedAuditCount > 0 ? (
+        {!isRunning && proofStage?.status === 'skipped' && failedAuditCount > 0 ? (
           <Text style={[styles.summary, { color: theme.colors.danger }]}>
             审核未通过，未执行终审，已保留初稿
           </Text>
         ) : null}
-        {proofStage?.status === 'failed' ? (
+        {!isRunning && proofStage?.status === 'failed' ? (
           <Text style={[styles.summary, { color: theme.colors.danger }]}>
             {proofStage.error || '终审失败，已回退初稿'}
+          </Text>
+        ) : null}
+        {isRunning ? (
+          <Text style={[styles.summary, { color: theme.colors.warning }]}>
+            任务仍在后台运行，页面显示的是已完成阶段的历史记录；运行结束后
+            可在此查看最终结果并采纳。
           </Text>
         ) : null}
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
@@ -519,7 +553,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           );
         })()}
         {uniqueStageResults(task.stageResults).map(renderStageCard)}
-        {(task.finalText || canResumeFailed) && (
+        {(task.finalText && !isRunning) || canResumeFailed ? (
           <View style={styles.actions}>
             {canResumeFailed ? (
               <Button
@@ -529,14 +563,14 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
                 disabled={adopting}
               />
             ) : null}
-            {task.finalText ? (
+            {task.finalText && !isRunning ? (
               <>
                 <Button label="放弃" variant="ghost" onPress={handleReject} disabled={adopting} />
                 <Button label={adopting ? '采纳中…' : '采纳'} onPress={handleAccept} disabled={adopting} />
               </>
             ) : null}
           </View>
-        )}
+        ) : null}
       </ScrollView>
     </Screen>
   );

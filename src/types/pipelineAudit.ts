@@ -53,7 +53,8 @@ export type AuditValidationFailureReason =
   | 'truncated_output'
   | 'oversized_report'
   | 'unexpected_shape'
-  | 'novel_output';
+  | 'novel_output'
+  | 'conflict';
 
 export interface AuditValidationResult<T> {
   valid: boolean;

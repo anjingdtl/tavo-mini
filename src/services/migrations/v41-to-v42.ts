@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS multi_chapter_batches (
   used_input_tokens INTEGER NOT NULL DEFAULT 0,
   used_output_tokens INTEGER NOT NULL DEFAULT 0,
 
+  outline_workflow_version INTEGER NOT NULL DEFAULT 1,
+  context_budget_version INTEGER NOT NULL DEFAULT 1,
+
   pause_reason TEXT,
   error_code TEXT,
   error_message TEXT,

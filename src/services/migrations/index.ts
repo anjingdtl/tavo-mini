@@ -59,8 +59,9 @@ import {
   buildV42toV43Statements,
   migrateV42ToV43,
 } from './v42-to-v43';
+import { migrateV43ToV44 } from './v43-to-v44';
 
-export const SCHEMA_VERSION = 43;
+export const SCHEMA_VERSION = 44;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -300,6 +301,15 @@ const MIGRATIONS: Migration[] = [
     // Logic migration: one-time smart policy interval unification (42→43).
     buildStatements: async () => buildV42toV43Statements(),
     migrate: migrateV42ToV43,
+  },
+  {
+    from: 43,
+    to: 44,
+    breaking: false,
+    // Logic migration: idempotent pipeline task / batch version-freeze
+    // columns (43→44). ALTERs run only when a column is missing.
+    buildStatements: async () => [],
+    migrate: migrateV43ToV44,
   },
 ];
 

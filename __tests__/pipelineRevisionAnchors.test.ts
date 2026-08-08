@@ -80,6 +80,47 @@ describe('buildRevisionAnchors', () => {
     expect(anchors[1].start).toBe(10);
   });
 
+  test('single newline stays INSIDE the natural paragraph (A\\nB)', () => {
+    const draft = 'A\nB\n\nC';
+    const anchors = buildRevisionAnchors(draft);
+    expect(anchors).toHaveLength(2);
+    // "A\nB" is ONE natural paragraph (single newline is not a separator).
+    expect(anchors[0].id).toBe('draft-p-001');
+    expect(anchors[0].text).toBe('A\nB');
+    expect(anchors[0].start).toBe(0);
+    expect(anchors[0].end).toBe(3);
+    expect(anchors[1].id).toBe('draft-p-002');
+    expect(anchors[1].text).toBe('C');
+    expect(anchors[1].start).toBe(5);
+    expect(anchors[1].end).toBe(6);
+    // Offsets always reconstruct the original characters.
+    for (const a of anchors) {
+      expect(draft.substring(a.start, a.end)).toBe(a.text);
+    }
+  });
+
+  test('multiple blank lines still split exactly one paragraph boundary', () => {
+    const draft = '第一段\n第二行\n\n\n\n第三段';
+    const anchors = buildRevisionAnchors(draft);
+    expect(anchors).toHaveLength(2);
+    expect(anchors[0].text).toBe('第一段\n第二行');
+    expect(anchors[1].text).toBe('第三段');
+  });
+
+  test('tagged draft keeps single-newline paragraphs intact', () => {
+    const { taggedText, anchors } = buildTaggedDraft('A\nB\n\nC');
+    expect(anchors).toHaveLength(2);
+    expect(taggedText).toContain('[draft-p-001]\nA\nB');
+    expect(taggedText).toContain('[draft-p-002]\nC');
+    // canonical body chars are never mutated by tagging.
+    const bodyOnly = taggedText
+      .replace(/\[draft-p-\d{3}(?:-s-\d{3})?\]/g, '')
+      .split('\n')
+      .filter(l => l.trim().length > 0)
+      .join('\n');
+    expect(bodyOnly).toBe('A\nB\nC');
+  });
+
   test('identical canonical drafts produce identical anchors', () => {
     const draft = '甲\n\n乙。\n\n丙！';
     const a = buildRevisionAnchors(draft);

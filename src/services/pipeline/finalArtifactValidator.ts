@@ -64,6 +64,57 @@ function detectWholeParagraphDuplicate(body: string): boolean {
   return false;
 }
 
+/** Sentence/clause terminators that legitimately close a body tail. */
+const TERMINAL_PUNCT_RE = /[。！？…!?.。"」』"'）)]$/;
+
+const OMISSION_MARKER_RE = /(未完待续|以下省略|内容省略|其余省略|后略|余略|以此类推|中略)/;
+
+/** Whether the body tail ends on an unclosed technical separator. */
+function isUnclosedTechnicalTail(body: string): boolean {
+  return (
+    /```$/.test(body) ||
+    /<\/?(think|system|user|assistant)$/.test(body) ||
+    body.endsWith('【') ||
+    (body.endsWith('】') === false && /【[^】]*$/.test(body))
+  );
+}
+
+/**
+ * Whether the body tail reads as cut mid-clause: the LAST 20 characters
+ * contain no terminal punctuation at all. Complete chapters virtually always
+ * end on 。！？… or a closing quote/bracket within that window; an
+ * uninterrupted plain-text run of 20 chars with finishReason=length is a
+ * strong truncation signal. Short complete texts ending in ellipsis or a
+ * closing mark never trip this.
+ */
+function endsMidSentence(body: string): boolean {
+  return !TERMINAL_PUNCT_RE.test(body.slice(-20));
+}
+
+/** Whether the last 20 chars hold an unclosed opening quote/bracket. */
+function hasUnclosedOpeningTail(body: string): boolean {
+  const tail = body.slice(-20);
+  const pairs: Array<[string, string]> = [
+    ['“', '”'],
+    ['「', '」'],
+    ['（', '）'],
+    ['【', '】'],
+    ['(', ')'],
+    ['[', ']'],
+  ];
+  for (const [open, close] of pairs) {
+    const opens = (tail.split(open).length - 1);
+    const closes = (tail.split(close).length - 1);
+    if (opens > closes) return true;
+  }
+  return false;
+}
+
+/** Whether the tail contains an explicit omission / continuation marker. */
+function hasOmissionMarker(body: string): boolean {
+  return OMISSION_MARKER_RE.test(body.slice(-100));
+}
+
 /**
  * Validate the final artifact. Pure; may be tested directly.
  */
@@ -137,13 +188,24 @@ export function validateFinalArtifact(params: {
     };
   }
 
-  // finishReason === 'length' → likely truncation (technical, hard fail).
+  // finishReason === 'length' is a COMBINED signal only (§6.4): a complete
+  // body that happened to touch the output ceiling must pass; only output
+  // with concrete incomplete evidence hard-fails. `length` alone NEVER
+  // blocks a full chapter.
   if (params.finishReason === 'length') {
-    return {
-      valid: false,
-      code: 'finish_length_incomplete',
-      details: 'finishReason=length，输出可能被截断',
-    };
+    const signals: string[] = [];
+    if (isUnclosedTechnicalTail(body)) signals.push('尾部未闭合技术分隔符');
+    if (endsMidSentence(body)) signals.push('句尾未闭合');
+    if (hasUnclosedOpeningTail(body)) signals.push('引号/括号未闭合');
+    if (hasOmissionMarker(body)) signals.push('省略/续写标记');
+    if (signals.length > 0) {
+      return {
+        valid: false,
+        code: 'finish_length_incomplete',
+        details: `finishReason=length 且输出明显未完成（${signals.join('、')}）`,
+      };
+    }
+    // Length + complete body → pass (no draft fallback).
   }
 
   // Catastrophic collapse vs draft + truncation signals (§12.2).
@@ -166,13 +228,8 @@ export function validateFinalArtifact(params: {
     }
   }
 
-  // Unclosed technical separator at tail.
-  if (
-    /```$/.test(body) ||
-    /<\/?(think|system|user|assistant)$/.test(body) ||
-    body.endsWith('【') ||
-    body.endsWith('】') === false && /【[^】]*$/.test(body)
-  ) {
+  // Unclosed technical separator at tail (independent of finishReason).
+  if (isUnclosedTechnicalTail(body)) {
     return {
       valid: false,
       code: 'finish_length_incomplete',
