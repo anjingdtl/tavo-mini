@@ -17,6 +17,7 @@ import initSqlJsNs from 'sql.js';
 import { __setDatabaseForTest, __resetForTest } from '../src/data/connection/openDatabase';
 import { initializeDatabase } from '../src/data/schema/initializeDatabase';
 import { createSchemaRecoveryBackup, SCHEMA_RECOVERY_DIR } from '../src/services/schemaRecoveryBackup';
+import { SCHEMA_VERSION } from '../src/services/migrations';
 import { wrapSqlJsDb, type InMemorySqliteDb } from './helpers/canonInMemoryDb';
 import { setupInMemoryFs } from './schema40-fixture-helpers';
 
@@ -109,6 +110,6 @@ describe('F2-04: schema recovery metadata 记录源 Schema', () => {
     const backups = await findRecoveryBackupFiles();
     expect(backups.length).toBe(1);
     const parsed = JSON.parse(backups[0].content);
-    expect(parsed.meta.schema_version).toBe(42);
+    expect(parsed.meta.schema_version).toBe(SCHEMA_VERSION);
   });
 });

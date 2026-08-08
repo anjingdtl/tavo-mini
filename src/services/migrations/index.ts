@@ -55,8 +55,12 @@ import {
   buildV41toV42Statements,
   migrateV41ToV42,
 } from './v41-to-v42';
+import {
+  buildV42toV43Statements,
+  migrateV42ToV43,
+} from './v42-to-v43';
 
-export const SCHEMA_VERSION = 42;
+export const SCHEMA_VERSION = 43;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -289,6 +293,14 @@ const MIGRATIONS: Migration[] = [
     buildStatements: async () => buildV41toV42Statements(),
     migrate: migrateV41ToV42,
   },
+  {
+    from: 42,
+    to: 43,
+    breaking: false,
+    // Logic migration: one-time smart policy interval unification (42→43).
+    buildStatements: async () => buildV42toV43Statements(),
+    migrate: migrateV42ToV43,
+  },
 ];
 
 export async function runMigrations(
@@ -327,6 +339,9 @@ export async function runMigrations(
       await migrateV40ToV41(db);
     } else if (migration.from === 41 && migration.to === 42) {
       await migrateV41ToV42(db);
+    } else if (migration.from === 42 && migration.to === 43) {
+      // One-time data migration: unify legacy smart policy interval to 10.
+      await migrateV42ToV43(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {
