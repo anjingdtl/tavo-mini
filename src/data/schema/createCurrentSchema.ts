@@ -251,6 +251,8 @@ export function createCurrentSchemaStatements(): string[] {
         pipeline_context_json TEXT,
         pipeline_context_version INTEGER,
         pipeline_context_hash TEXT,
+        outline_workflow_version INTEGER NOT NULL DEFAULT 1,
+        context_budget_version INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         resolved_at INTEGER,

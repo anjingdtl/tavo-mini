@@ -98,6 +98,8 @@ export async function savePipelineTask(task: {
   pipelineContextJson?: string | null;
   pipelineContextVersion?: number | null;
   pipelineContextHash?: string | null;
+  outlineWorkflowVersion?: number | null;
+  contextBudgetVersion?: number | null;
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;
@@ -113,8 +115,9 @@ export async function savePipelineTask(task: {
     `INSERT INTO pipeline_tasks (
        id, target_type, target_id, status, stage_results, final_text, error,
        input_fingerprint, pipeline_context_json, pipeline_context_version,
-       pipeline_context_hash, created_at, updated_at, resolved_at, resolved_action
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       pipeline_context_hash, outline_workflow_version, context_budget_version,
+       created_at, updated_at, resolved_at, resolved_action
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        target_type = excluded.target_type,
        target_id = excluded.target_id,
@@ -126,6 +129,8 @@ export async function savePipelineTask(task: {
        pipeline_context_json = excluded.pipeline_context_json,
        pipeline_context_version = excluded.pipeline_context_version,
        pipeline_context_hash = excluded.pipeline_context_hash,
+       outline_workflow_version = excluded.outline_workflow_version,
+       context_budget_version = excluded.context_budget_version,
        updated_at = excluded.updated_at,
        resolved_at = excluded.resolved_at,
        resolved_action = excluded.resolved_action`,
@@ -141,6 +146,8 @@ export async function savePipelineTask(task: {
       task.pipelineContextJson ?? null,
       task.pipelineContextVersion ?? null,
       task.pipelineContextHash ?? null,
+      task.outlineWorkflowVersion ?? 1,
+      task.contextBudgetVersion ?? 1,
       task.createdAt,
       task.updatedAt,
       task.resolvedAt,
@@ -180,6 +187,8 @@ export async function createPipelineTaskWithCheckpoints(
     pipelineContextJson?: string | null;
     pipelineContextVersion?: number | null;
     pipelineContextHash?: string | null;
+    outlineWorkflowVersion?: number | null;
+    contextBudgetVersion?: number | null;
     createdAt: number;
     updatedAt: number;
     resolvedAt: number | null;
@@ -193,8 +202,9 @@ export async function createPipelineTaskWithCheckpoints(
       sql: `INSERT INTO pipeline_tasks (
               id, target_type, target_id, status, stage_results, final_text, error,
               input_fingerprint, pipeline_context_json, pipeline_context_version,
-              pipeline_context_hash, created_at, updated_at, resolved_at, resolved_action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              pipeline_context_hash, outline_workflow_version, context_budget_version,
+              created_at, updated_at, resolved_at, resolved_action
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [
         task.id,
         task.targetType,
@@ -207,6 +217,8 @@ export async function createPipelineTaskWithCheckpoints(
         task.pipelineContextJson ?? null,
         task.pipelineContextVersion ?? null,
         task.pipelineContextHash ?? null,
+        task.outlineWorkflowVersion ?? 1,
+        task.contextBudgetVersion ?? 1,
         task.createdAt,
         task.updatedAt,
         task.resolvedAt,
@@ -256,6 +268,14 @@ function mapPipelineTaskRow(row: Row) {
         ? Number(row.pipeline_context_version)
         : null,
     pipelineContextHash: row.pipeline_context_hash ?? null,
+    outlineWorkflowVersion:
+      row.outline_workflow_version != null
+        ? Number(row.outline_workflow_version)
+        : null,
+    contextBudgetVersion:
+      row.context_budget_version != null
+        ? Number(row.context_budget_version)
+        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     resolvedAt: row.resolved_at,

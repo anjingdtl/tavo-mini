@@ -102,33 +102,31 @@ export function buildRevisionAnchors(
 ): PipelineRevisionAnchor[] {
   const text = String(canonicalDraft ?? '');
   const anchors: PipelineRevisionAnchor[] = [];
+  const lines = text.split('\n');
 
-  const blocks = text.split('\n');
   let paragraphIndex = 0;
-  let cursor = 0;
-  // Track how many non-empty paragraphs got an id so far.
   let paragraphCount = 0;
+  let cursor = 0;
+  // Natural paragraph accumulation (§6.3): ONE or MORE blank lines separate
+  // paragraphs; a single newline stays INSIDE the paragraph, so `A\nB`
+  // forms a single anchor with text "A\nB". Blank/whitespace-only lines are
+  // separators — they are skipped but their real offsets stay accounted.
+  let paraLines: string[] = [];
+  let paraStart = 0;
 
-  for (let i = 0; i < blocks.length; i += 1) {
-    const block = blocks[i];
-    const isBlank = block.trim().length === 0;
-    // Blank block: consume its own length plus a following newline separator.
-    if (isBlank) {
-      cursor += block.length;
-      if (i < blocks.length - 1) {
-        cursor += 1;
-      }
-      continue;
-    }
-    const paraStart = cursor;
-    const paraEnd = cursor + block.length;
-    const para = text.substring(paraStart, paraEnd);
+  const flushParagraph = () => {
+    if (paraLines.length === 0) return;
+    // Exact paragraph text = its lines joined by '\n' (segment-internal
+    // newlines stay inside; the trailing separator newline does not).
+    const para = paraLines.join('\n');
+    const paraStartFixed = paraStart;
+    const paraEnd = paraStartFixed + para.length;
     paragraphCount += 1;
 
     if (para.length <= maxAnchorLength) {
       anchors.push({
         id: `draft-p-${pad3(paragraphCount)}`,
-        start: paraStart,
+        start: paraStartFixed,
         end: paraEnd,
         text: para,
         paragraphIndex,
@@ -139,22 +137,42 @@ export function buildRevisionAnchors(
       segments.forEach((seg, segIndex) => {
         anchors.push({
           id: `draft-p-${pad3(paragraphCount)}-s-${pad3(segIndex + 1)}`,
-          start: paraStart + seg.start,
-          end: paraStart + seg.end,
-          text: text.substring(paraStart + seg.start, paraStart + seg.end),
+          start: paraStartFixed + seg.start,
+          end: paraStartFixed + seg.end,
+          text: para.substring(seg.start, seg.end),
           paragraphIndex,
           segmentIndex: segIndex,
         });
       });
     }
+    paragraphIndex += 1;
+    paraLines = [];
+  };
 
-    // Consume the paragraph plus its separator newline (if not last block).
-    cursor = paraEnd;
-    if (i < blocks.length - 1) {
+  for (let i = 0; i < lines.length; i += 1) {
+    const block = lines[i];
+    const isBlank = block.trim().length === 0;
+    if (isBlank) {
+      // A blank line terminates the current paragraph, then consumes its
+      // own length plus the following newline separator.
+      flushParagraph();
+      cursor += block.length;
+      if (i < lines.length - 1) {
+        cursor += 1;
+      }
+      continue;
+    }
+    if (paraLines.length === 0) {
+      paraStart = cursor;
+    }
+    paraLines.push(block);
+    cursor += block.length;
+    if (i < lines.length - 1) {
       cursor += 1;
     }
-    paragraphIndex += 1;
   }
+  flushParagraph();
+
   return anchors;
 }
 

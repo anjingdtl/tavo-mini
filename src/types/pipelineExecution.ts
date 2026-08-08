@@ -41,10 +41,18 @@ export interface PipelineExecutionSnapshot {
    * 2 → Anchored Review / FactCheck + Revision Contract + Final Reviser
    *      + Local Final Artifact Validator.
    * Decided once at first execution-snapshot freeze; resume must never
-   * re-read the live default. No schema migration (stored in
-   * pipeline_context_json).
+   * re-read the live default. New snapshots MUST carry this field; only
+   * parsing of HISTORICAL snapshots interprets a missing value as 1.
    */
   outlineWorkflowVersion?: 1 | 2;
+
+  /**
+   * Context-budget strategy version frozen at task start (Schema 44+).
+   * undefined / 1 → Legacy budget; 2 → elastic budget V2.
+   * Frozen with the workflow version; resume must never re-read the live
+   * default. Missing on historical snapshots → Legacy (1).
+   */
+  contextBudgetVersion?: 1 | 2;
 
   draftMaxTokens: number;
   reviewMaxTokens: number;

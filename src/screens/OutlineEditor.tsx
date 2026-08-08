@@ -6,7 +6,6 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../components/ui';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
-import { isMultiChapterBatchEnabled } from '../services/featureFlags';
 import * as db from '../services/database';
 import type { EditorStackParamList } from '../navigation/TabNavigator';
 import type { Chapter } from '../types/novel';
@@ -18,23 +17,6 @@ export const OutlineEditor: React.FC = () => {
   const { currentProject } = useProjectStore();
   const navigation = useNavigation<Navigation>();
   const [chapters, setChapters] = useState<Chapter[]>([]);
-  const [batchEntryEnabled, setBatchEntryEnabled] = useState(false);
-
-  // Phase 8: the batch entry stays hidden until the guarded feature flag is
-  // enabled (the batch screen itself also guards, defense in depth).
-  useFocusEffect(
-    useCallback(() => {
-      let mounted = true;
-      isMultiChapterBatchEnabled()
-        .then(v => {
-          if (mounted) setBatchEntryEnabled(v);
-        })
-        .catch(() => {});
-      return () => {
-        mounted = false;
-      };
-    }, []),
-  );
 
   const loadChapters = useCallback(async () => {
     if (!currentProject) {
@@ -141,16 +123,14 @@ export const OutlineEditor: React.FC = () => {
       <View style={styles.quickActions}>
         <Button label="故事概览" icon={BarChart3} variant="secondary" onPress={() => navigation.navigate('StoryOverview')} compact flex />
         <Button label="上下文" icon={Settings2} variant="secondary" onPress={() => navigation.navigate('ContextConfig')} compact flex />
-        {batchEntryEnabled ? (
-          <Button
-            label="批量写章"
-            icon={FileText}
-            variant="secondary"
-            compact
-            flex
-            onPress={() => navigation.navigate('MultiChapterBatch')}
-          />
-        ) : null}
+        <Button
+          label="一键写 N 章"
+          icon={FileText}
+          variant="secondary"
+          compact
+          flex
+          onPress={() => navigation.navigate('MultiChapterBatch')}
+        />
       </View>
       <View style={[styles.chapterMeta, { borderBottomColor: theme.colors.border }]}>
         <Text style={[styles.chapterMetaTitle, { color: theme.colors.accent }]}>正文卷</Text>

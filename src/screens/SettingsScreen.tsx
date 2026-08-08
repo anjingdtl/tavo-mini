@@ -46,15 +46,6 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'eyecare', label: '护眼' },
 ];
 
-import {
-  isElasticBudgetV2Enabled,
-  isMultiChapterBatchEnabled,
-  isOutlineWorkflowV2Enabled,
-  setElasticBudgetV2Enabled,
-  setMultiChapterBatchEnabled,
-  setOutlineWorkflowV2Enabled,
-} from '../services/featureFlags';
-
 export const SettingsScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { theme, mode, setMode } = useThemeStore();
@@ -63,98 +54,6 @@ export const SettingsScreen: React.FC = () => {
   const { workspaceMode } = useProjectStore();
   const unresolvedCount = usePipelineTaskStore(s => s.getUnresolvedCount());
   const loadFromDB = usePipelineTaskStore(s => s.loadFromDB);
-
-  // RB-17 fix (V2.11.34): experimental feature flags surface to release
-  // users via Settings → 实验功能. Both flags default OFF; flipping them
-  // here persists the choice into the settings table.
-  const [multiChapterBatchEnabled, setMultiChapterBatchLocal] =
-    React.useState(false);
-  const [elasticBudgetV2Enabled, setElasticBudgetV2Local] =
-    React.useState(false);
-  const [outlineWorkflowV2Enabled, setOutlineWorkflowV2Local] =
-    React.useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [batch, elastic, outlineV2] = await Promise.all([
-          isMultiChapterBatchEnabled(),
-          isElasticBudgetV2Enabled(),
-          isOutlineWorkflowV2Enabled(),
-        ]);
-        if (!cancelled) {
-          setMultiChapterBatchLocal(batch);
-          setElasticBudgetV2Local(elastic);
-          setOutlineWorkflowV2Local(outlineV2);
-        }
-      } catch {
-        // Flag reads are non-critical; keep defaults (OFF).
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const toggleMultiChapterBatch = async (value: boolean) => {
-    setMultiChapterBatchLocal(value);
-    try {
-      await setMultiChapterBatchEnabled(value);
-      Toast.show({
-        type: value ? 'success' : 'info',
-        text1: value ? 'AI 写 N 章已开启' : 'AI 写 N 章已关闭',
-        text2: value
-          ? '重启应用后生效。当前为实验功能，可能影响章节状态。'
-          : '重启应用后生效。',
-      });
-    } catch (e: any) {
-      setMultiChapterBatchLocal(!value);
-      Toast.show({
-        type: 'error',
-        text1: '保存失败',
-        text2: e?.message || '请稍后重试',
-      });
-    }
-  };
-
-  const toggleElasticBudgetV2 = async (value: boolean) => {
-    setElasticBudgetV2Local(value);
-    try {
-      await setElasticBudgetV2Enabled(value);
-      Toast.show({
-        type: value ? 'success' : 'info',
-        text1: value ? '弹性上下文预算已开启' : '弹性上下文预算已关闭',
-        text2: '重启应用后生效。',
-      });
-    } catch (e: any) {
-      setElasticBudgetV2Local(!value);
-      Toast.show({
-        type: 'error',
-        text1: '保存失败',
-        text2: e?.message || '请稍后重试',
-      });
-    }
-  };
-
-  const toggleOutlineWorkflowV2 = async (value: boolean) => {
-    setOutlineWorkflowV2Local(value);
-    try {
-      await setOutlineWorkflowV2Enabled(value);
-      Toast.show({
-        type: value ? 'success' : 'info',
-        text1: value ? '定向修订流水线已开启' : '定向修订流水线已关闭',
-        text2: '重启应用后生效；仅影响之后新发起的大纲章节生成任务。',
-      });
-    } catch (e: any) {
-      setOutlineWorkflowV2Local(!value);
-      Toast.show({
-        type: 'error',
-        text1: '保存失败',
-        text2: e?.message || '请稍后重试',
-      });
-    }
-  };
 
   useEffect(() => {
     loadFromDB();
@@ -347,94 +246,6 @@ export const SettingsScreen: React.FC = () => {
               variant="secondary"
               onPress={() => navigation.navigate('UsageStats')}
             />
-          </Card>
-        </Section>
-        <Section title="实验功能">
-          <Card>
-            <Text
-              style={[styles.cardTitle, { color: theme.colors.textPrimary }]}
-            >
-              实验功能
-            </Text>
-            <Text
-              style={[styles.cardMeta, { color: theme.colors.textSecondary }]}
-            >
-              以下功能默认关闭。开启后需要重启应用生效；属于早期实验，
-              可能影响章节状态、上下文分配或后台任务，请先在备份中心手动
-              创建一份备份。
-            </Text>
-            <View style={styles.switchRow}>
-              <View style={styles.switchText}>
-                <Text
-                  style={[
-                    styles.switchTitle,
-                    { color: theme.colors.textPrimary },
-                  ]}
-                >
-                  AI 写 N 章
-                </Text>
-                <Text
-                  style={[
-                    styles.switchHint,
-                    { color: theme.colors.textSecondary },
-                  ]}
-                >
-                  多章节批量写章（仅大纲模式）。
-                </Text>
-              </View>
-              <Switch
-                value={multiChapterBatchEnabled}
-                onValueChange={toggleMultiChapterBatch}
-              />
-            </View>
-            <View style={styles.switchRow}>
-              <View style={styles.switchText}>
-                <Text
-                  style={[
-                    styles.switchTitle,
-                    { color: theme.colors.textPrimary },
-                  ]}
-                >
-                  弹性上下文预算
-                </Text>
-                <Text
-                  style={[
-                    styles.switchHint,
-                    { color: theme.colors.textSecondary },
-                  ]}
-                >
-                  流水线跨阶段 80% / 95% 双阈值预算池（实验）。
-                </Text>
-              </View>
-              <Switch
-                value={elasticBudgetV2Enabled}
-                onValueChange={toggleElasticBudgetV2}
-              />
-            </View>
-            <View style={styles.switchRow}>
-              <View style={styles.switchText}>
-                <Text
-                  style={[
-                    styles.switchTitle,
-                    { color: theme.colors.textPrimary },
-                  ]}
-                >
-                  定向修订流水线
-                </Text>
-                <Text
-                  style={[
-                    styles.switchHint,
-                    { color: theme.colors.textSecondary },
-                  ]}
-                >
-                  大纲章节锚点审核 + 修订合同 + 终稿修订（实验）。
-                </Text>
-              </View>
-              <Switch
-                value={outlineWorkflowV2Enabled}
-                onValueChange={toggleOutlineWorkflowV2}
-              />
-            </View>
           </Card>
         </Section>
         <Section title="关于">

@@ -12,11 +12,6 @@
 import React from 'react';
 import { render, waitFor, fireEvent } from '@testing-library/react-native';
 
-const mockIsEnabled = jest.fn();
-jest.mock('../src/services/featureFlags', () => ({
-  isMultiChapterBatchEnabled: (...args: any[]) => mockIsEnabled(...args),
-}));
-
 jest.mock('../src/store/themeStore', () => ({
   useThemeStore: () => ({
     theme: {
@@ -97,12 +92,10 @@ import { MultiChapterBatchScreen } from '../src/screens/MultiChapterBatchScreen'
 describe('F2-07: 批次页返回按钮', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockIsEnabled.mockResolvedValue(true);
   });
 
   it('运行中（running）视图：点"返回"调用 navigation.goBack 离开批次页', async () => {
     render(<MultiChapterBatchScreen />);
-    await waitFor(() => expect(mockIsEnabled).toHaveBeenCalled());
     // 渲染到 running 视图（有执行痕迹）。
     await waitFor(() =>
       expect(

@@ -198,4 +198,69 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
     await waitFor(() => expect(mockResumePipeline).toHaveBeenCalled());
     expect(mockResumePipeline.mock.calls[0][0]).toBe('t3');
   });
+
+  it('任务中断（interrupted）时也显示"从失败环节重启"（超时/杀进程后可继续）', async () => {
+    mockTasks[0] = {
+      id: 't4',
+      targetType: 'chapter',
+      targetId: 4,
+      status: 'interrupted',
+      stageResults: [
+        { stage: 'draft', status: 'success', text: '初稿内容', durationMs: 1000 },
+        { stage: 'review', status: 'failed', text: '', error: 'Network request failed', durationMs: 1000 },
+      ],
+      finalText: null,
+      error: null,
+      inputFingerprint: null,
+      pipelineContextJson: null,
+      pipelineContextVersion: null,
+      pipelineContextHash: null,
+      createdAt: 1000,
+      updatedAt: 2000,
+      resolvedAt: null,
+      resolvedAction: null,
+    };
+    const { findByText, getByText } = render(
+      <PipelineResultScreen taskId="t4" />,
+    );
+    // 修复前：interrupted 被误显示为"进行中"且无重启入口。
+    expect(await findByText('从失败环节重启')).toBeTruthy();
+    expect(getByText(/已中断，可从失败阶段继续/)).toBeTruthy();
+    fireEvent.press(await findByText('从失败环节重启'));
+    await waitFor(() => expect(mockResetCheckpoints).toHaveBeenCalledWith('t4'));
+    await waitFor(() => expect(mockResumePipeline).toHaveBeenCalled());
+    expect(mockResumePipeline.mock.calls[0][0]).toBe('t4');
+  });
+
+  it('任务运行中（reviewing）时不显示采纳/放弃/重启，且提示后台运行', async () => {
+    mockTasks[0] = {
+      id: 't5',
+      targetType: 'chapter',
+      targetId: 5,
+      status: 'reviewing',
+      stageResults: [
+        { stage: 'draft', status: 'success', text: '初稿内容', durationMs: 1000 },
+        { stage: 'review', status: 'failed', text: '', error: '网络错误（重试中）', durationMs: 1000 },
+      ],
+      finalText: '初稿内容',
+      error: null,
+      inputFingerprint: null,
+      pipelineContextJson: null,
+      pipelineContextVersion: null,
+      pipelineContextHash: null,
+      createdAt: 1000,
+      updatedAt: 2000,
+      resolvedAt: null,
+      resolvedAction: null,
+    };
+    const { queryByText, findByText, getByText } = render(
+      <PipelineResultScreen taskId="t5" />,
+    );
+    // 运行中：头部标明当前阶段，不提供采纳/放弃/重启（避免误采纳旧初稿）。
+    expect(getByText(/进行中 · 审阅\/评估/)).toBeTruthy();
+    expect(queryByText('采纳')).toBeNull();
+    expect(queryByText('放弃')).toBeNull();
+    expect(queryByText('从失败环节重启')).toBeNull();
+    expect(await findByText(/任务仍在后台运行/)).toBeTruthy();
+  });
 });

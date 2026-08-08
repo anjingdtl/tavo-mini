@@ -12,6 +12,10 @@ import type {
   MultiChapterBatchItemRow,
   MultiChapterBatchRow,
 } from '../data/repositories/multiChapterBatchRepository';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../services/pipeline/outlineWorkflowVersion';
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
 import { resolveLLMRequestConfig } from '../services/llm';
 import { reconcileMultiChapterBatch } from '../services/multiChapterBatch/reconcileMultiChapterBatch';
@@ -194,6 +198,10 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           chapterCount: input.chapterCount,
           targetWordsPerChapter: input.targetWordsPerChapter,
           pipelineMode: input.pipelineMode,
+          // §4.4: freeze the CURRENT protocol versions ONCE at batch
+          // creation; every chapter task later copies them from the row.
+          outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+          contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         });
         for (let i = 1; i <= input.chapterCount; i += 1) {
           await batchRepo.createBatchItem({
