@@ -9,7 +9,13 @@
  * persisted policies at runtime.
  *
  * This migration is deliberately narrow:
- *   - ONLY `mode = 'smart'` rows are touched.
+ *   - ONLY `mode = 'smart'` rows with the legacy system-default interval (3)
+ *     are touched. Historical evidence: `STORY_MEMORY_DEFAULT_INTERVAL` was 3
+ *     until commit 52f09c6f (Schema 40 era) changed the runtime default to 10
+ *     for NEW policies only; the schema column default is still 3. The smart
+ *     interval is user-editable in the UI (StoryMemoryScreen), so smart/5,
+ *     smart/7, smart/2 etc. are explicit user choices and MUST be preserved.
+ *     smart/3 is the only value that can represent a legacy system default.
  *   - `fixed`, `every_chapter`, `manual` are explicit user strategy modes and
  *     stay untouched.
  *   - Rows that do not exist are not created — projects without a policy keep
@@ -28,7 +34,7 @@ import type { SqlStatement } from '../database/transaction';
 import { executeTransaction } from '../database/transaction';
 
 export const SMART_INTERVAL_UNIFICATION_SQL =
-  `UPDATE project_story_memory_policy SET interval_chapters = 10 WHERE mode = 'smart'`;
+  `UPDATE project_story_memory_policy SET interval_chapters = 10 WHERE mode = 'smart' AND interval_chapters = 3`;
 
 export function buildV42toV43Statements(): SqlStatement[] {
   return [{ sql: SMART_INTERVAL_UNIFICATION_SQL }];
