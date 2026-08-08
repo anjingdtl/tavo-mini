@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.11.36] - 2026-08-08
+
+### Fixed
+
+- **F3-01 Batch resume 冻结上下文丢失（P1）**：批量写 N 章「确认后继续」路径曾用全量 `savePipelineTask` UPSERT 重置任务（draft/review/factCheck 已成功、proof 失败后），未传 `input_fingerprint` / `pipeline_context_json` / `pipeline_context_version` / `pipeline_context_hash`，UPSERT 把这些字段写成 NULL，任务转 interrupted 后 Pipeline 状态机判定 `TASK_NOT_RECOVERABLE`，用户已付费的成功阶段全部作废；新增职责单一的 `updatePipelineTaskResumeState`（只改 status=interrupted / error / resolved_* / updated_at，严格保留 id / target / created_at / stage_results / final_text / 冻结上下文四字段），batch store.resume 不再走全量 UPSERT；真实 SQLite 穿透测试（Batch → Pipeline → Adoption）验证同一 task + 同一 frozen context + 只重跑 proof（1 次 HTTP）+ token 不重复计费 + 最终 adoption 成功。
+- **F3-02 结果页 draft-only 重试不受影响**：无任何 succeeded checkpoint 时 Batch 解绑创建全新 run、结果页「重新尝试」同 task 从 draft 重跑，两条路径均有真实 SQLite 测试守护（frozen context 保留）。
+
 ## [2.11.35] - 2026-08-07
 
 ### Fixed
