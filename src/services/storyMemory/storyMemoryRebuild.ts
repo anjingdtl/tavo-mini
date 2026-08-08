@@ -19,7 +19,7 @@ import {
   renderEpisodicMemoryText,
   withProjectMemoryLock,
 } from './storyMemoryService';
-import type { StoryMemoryState } from './storyMemoryTypes';
+import type { StoryMemoryPartialSuccess, StoryMemoryState } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
 import { makeContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
 
@@ -327,6 +327,20 @@ export async function rebuildStoryMemoryUnlocked(
               );
         }
         const message = error instanceof Error ? error.message : '未知错误';
+        // Code-review fix 1: a split batch may have persisted its first half
+        // before failing on the second. The error carries `partial` — the
+        // latest persisted state and its completed-chapter count. Fold it in
+        // BEFORE deciding failed-vs-clean, otherwise this batch counts as
+        // completedChapters=0 and the whole project would be marked 'failed',
+        // clobbering the first half's clean checkpoint.
+        const partial = (error as {
+          partial?: StoryMemoryPartialSuccess;
+        } | null)?.partial;
+        if (partial) {
+          state = partial.state;
+          expectedPersistedFingerprint = state.metadata.stateFingerprint;
+          completedChapters += partial.completedChapters;
+        }
         // V2.11.38 repair plan P1 §6.4: when at least one batch already
         // succeeded, keep the latest clean checkpoint as the persisted status
         // instead of flipping the whole rebuild to 'failed'. The failed batch

@@ -45,6 +45,14 @@ export type StoryMemoryEmptyResponseAction =
        * (e.g. "context_window 或 max_output_tokens 过小").
        */
       userActionHint?: string;
+      /**
+       * True when this failure is a length/truncation dead end: the budget
+       * cannot grow further. The coordinator converts this to a batch split
+       * (MEMORY_CHECKPOINT_BATCH_TOO_LARGE) when the batch has more than one
+       * chapter, or to an actionable model-capability error for a single
+       * chapter. Pure policy — the coordinator owns the batch-size decision.
+       */
+      shrinkBatch?: boolean;
     };
 
 export interface DecideEmptyResponseActionInput {
@@ -94,8 +102,8 @@ export function decideEmptyResponseAction(
         reason: '模型仅返回思考内容，已关闭思考模式并提高输出预算重试。',
       };
     case 'length':
-      // Output was truncated. Raise budget; the coordinator shrinks the batch
-      // when the budget is already at the model cap.
+      // Output was truncated. Raise budget; when the budget is already at
+      // the model cap the coordinator shrinks the batch (shrinkBatch).
       if (isLastAttempt || input.nextBudget <= input.currentBudget) {
         return {
           type: 'fail',
@@ -104,6 +112,7 @@ export function decideEmptyResponseAction(
           reason:
             '模型输出持续达到长度上限，且输出预算已到模型上限。请提高模型的 max_output_tokens 或 context_window 后重试。',
           userActionHint: 'context_window / max_output_tokens 过小',
+          shrinkBatch: true,
         };
       }
       return {

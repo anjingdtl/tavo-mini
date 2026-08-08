@@ -19,6 +19,7 @@ import { validateStoryMemoryBatchPatch } from './storyMemoryBatchValidator';
 import type {
   EpisodicSummary,
   StoryMemoryBatchPatchDraft,
+  StoryMemoryPartialSuccess,
   StoryMemoryState,
   StoredStoryMemoryBatch,
 } from './storyMemoryTypes';
@@ -295,10 +296,21 @@ async function runCheckpointAttemptLoop(
     estimatedInputTokens: input.inputTokens,
   });
   if (budget <= 0) {
+    // Code-review fix 2: a multi-chapter combination that does not fit the
+    // window must SPLIT (each sub-batch re-estimates its input and gets its
+    // own budget) instead of failing outright. Only a single chapter that
+    // still cannot fit is a real model-capability dead end.
     const shrink = decideCheckpointBatchSize({
       safeOutputMax: budget,
       estimatedInputTokens: input.inputTokens,
     });
+    if (batchSize > 1) {
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
+        '当前模型 context_window 无法容纳本批次检查点请求（含约 ' +
+          `${input.inputTokens} 词元输入），已拆分批次重试。`,
+      );
+    }
     throw new StoryMemoryError('MEMORY_CHECKPOINT_FAILED', shrink.hint);
   }
 
@@ -378,7 +390,10 @@ async function runCheckpointAttemptLoop(
         }
         const message =
           parseError instanceof Error ? parseError.message : '未知校验错误';
-        const next = nextCheckpointBudget(budget, input.model.maxOutputTokens);
+        const next = nextCheckpointBudget(budget, input.model.maxOutputTokens, {
+          contextWindow: input.model.contextWindow,
+          estimatedInputTokens: input.inputTokens,
+        });
         if (next <= budget) {
           // Budget cannot grow further while the output is still truncated.
           if (batchSize > 1) {
@@ -422,9 +437,20 @@ async function runCheckpointAttemptLoop(
         attempt,
         maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
         currentBudget: budget,
-        nextBudget: nextCheckpointBudget(budget, input.model.maxOutputTokens),
+        nextBudget: nextCheckpointBudget(budget, input.model.maxOutputTokens, {
+          contextWindow: input.model.contextWindow,
+          estimatedInputTokens: input.inputTokens,
+        }),
       });
       if (action.type === 'fail') {
+        // Code-review fix 4: an empty LENGTH response at the budget cap means
+        // this batch is too big for the model — split instead of failing.
+        if (action.shrinkBatch && batchSize > 1) {
+          throw new StoryMemoryError(
+            'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
+            '模型返回空输出且输出预算已达模型上限，已拆分批次重试。',
+          );
+        }
         throw new StoryMemoryError(
           action.code as StoryMemoryError['code'],
           action.reason,
@@ -489,6 +515,12 @@ export async function runStoryMemoryCheckpointBatch(input: {
  * a failure on the second half still keeps the first half's clean checkpoint
  * (partial success semantics). One chapter that still cannot fit surfaces an
  * actionable model-capability error.
+ *
+ * Code-review fix 1: when the FIRST half succeeded and the SECOND half fails,
+ * the thrown error carries `partial` (the latest persisted state, its
+ * completed-chapter count and summary texts). Outer coordinators (advance /
+ * rebuild) consume it so they write back the newest successful status —
+ * never the stale function-entry empty/dirty snapshot, and never 'failed'.
  */
 async function runStoryMemoryCheckpointBatchWithShrink(
   input: Parameters<typeof runStoryMemoryCheckpointBatch>[0],
@@ -510,24 +542,56 @@ async function runStoryMemoryCheckpointBatchWithShrink(
         { ...input, chapters: input.chapters.slice(0, half) },
         memoryPatchMaxTokens,
       );
-      const second = await runStoryMemoryCheckpointBatchWithShrink(
-        {
-          ...input,
-          chapters: input.chapters.slice(half),
-          previousState: first.state,
-          expectedPersistedFingerprint:
-            first.state.metadata.stateFingerprint,
-        },
-        memoryPatchMaxTokens,
-      );
-      return {
-        state: second.state,
-        batch: second.batch,
-        chapterSummaryTexts: [
-          ...first.chapterSummaryTexts,
-          ...second.chapterSummaryTexts,
-        ],
-      };
+      try {
+        const second = await runStoryMemoryCheckpointBatchWithShrink(
+          {
+            ...input,
+            chapters: input.chapters.slice(half),
+            previousState: first.state,
+            expectedPersistedFingerprint:
+              first.state.metadata.stateFingerprint,
+          },
+          memoryPatchMaxTokens,
+        );
+        return {
+          state: second.state,
+          batch: second.batch,
+          chapterSummaryTexts: [
+            ...first.chapterSummaryTexts,
+            ...second.chapterSummaryTexts,
+          ],
+        };
+      } catch (secondError) {
+        // The first half is already persisted and MUST NOT be rolled back or
+        // overwritten by the caller's stale state. Attach the latest
+        // successful state to the failure (any error type — a plain network
+        // Error must keep its own classification while still carrying the
+        // partial success). If the second half itself already carried an
+        // inner partial (deeper split), keep that newer state and accumulate
+        // its completed chapters.
+        const innerPartial = (secondError as {
+          partial?: StoryMemoryPartialSuccess;
+        }).partial;
+        const merged: StoryMemoryPartialSuccess = innerPartial
+          ? {
+              state: innerPartial.state,
+              completedChapters:
+                innerPartial.completedChapters +
+                first.chapterSummaryTexts.length,
+              chapterSummaryTexts: [
+                ...first.chapterSummaryTexts,
+                ...innerPartial.chapterSummaryTexts,
+              ],
+            }
+          : {
+              state: first.state,
+              completedChapters: first.chapterSummaryTexts.length,
+              chapterSummaryTexts: first.chapterSummaryTexts,
+            };
+        (secondError as { partial?: StoryMemoryPartialSuccess }).partial =
+          merged;
+        throw secondError;
+      }
     }
     throw error;
   }
@@ -680,12 +744,17 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
       // flip a clean/empty record to 'failed', and never write back the
       // function-entry status: after batch1 succeeded `state` carries the
       // persisted clean status, while `record` (entry snapshot) still says
-      // 'empty' and would clobber the row back to empty. `lastError` still
-      // records the failed attempt for diagnostics/retry.
+      // 'empty' and would clobber the row back to empty. When a split batch
+      // persisted its first half and failed on the second, the error carries
+      // `partial.state` — the newest persisted state — which is even newer
+      // than `state`. `lastError` still records the failed attempt.
+      const partial = (error as { partial?: StoryMemoryPartialSuccess } | null)
+        ?.partial;
+      const latestState = partial?.state ?? state;
       await db.setStoryMemoryBuildStatus(
         input.projectId,
-        state.metadata.status,
-        state.metadata.dirtyFromPosition,
+        latestState.metadata.status,
+        latestState.metadata.dirtyFromPosition,
         message,
       );
       throw error;

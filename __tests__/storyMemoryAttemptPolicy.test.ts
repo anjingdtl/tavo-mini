@@ -133,4 +133,57 @@ describe('decideEmptyResponseAction recovery matrix (repair plan P1 §6.2)', () 
     });
     expect(action.type).toBe('fresh_retry');
   });
+
+  it('length at the cap fails with shrinkBatch=true so the coordinator can split the batch', () => {
+    const action = decideEmptyResponseAction({
+      emptyReason: 'length',
+      finishReason: 'length',
+      attempt: 2,
+      maxAttempts: 3,
+      currentBudget: 2000,
+      nextBudget: 2000,
+    });
+    expect(action.type).toBe('fail');
+    if (action.type === 'fail') {
+      expect(action.shrinkBatch).toBe(true);
+    }
+  });
+
+  it('length on the final attempt also requests shrinking', () => {
+    const action = decideEmptyResponseAction({
+      emptyReason: 'length',
+      finishReason: 'length',
+      attempt: 3,
+      maxAttempts: 3,
+      currentBudget: 4000,
+      nextBudget: 4000,
+    });
+    expect(action.type).toBe('fail');
+    if (action.type === 'fail') {
+      expect(action.shrinkBatch).toBe(true);
+    }
+  });
+
+  it('non-length failure classes never request shrinking', () => {
+    const cases: Array<{ emptyReason?: string; attempt: number }> = [
+      { emptyReason: 'reasoning_only', attempt: 3 },
+      { emptyReason: 'no_choices', attempt: 1 },
+      { emptyReason: 'content_filter', attempt: 1 },
+      { attempt: 3 },
+    ];
+    for (const item of cases) {
+      const action = decideEmptyResponseAction({
+        emptyReason: item.emptyReason as any,
+        finishReason: null,
+        attempt: item.attempt,
+        maxAttempts: 3,
+        currentBudget: 2400,
+        nextBudget: 2400,
+      });
+      expect(action.type).toBe('fail');
+      if (action.type === 'fail') {
+        expect(action.shrinkBatch).toBeFalsy();
+      }
+    }
+  });
 });

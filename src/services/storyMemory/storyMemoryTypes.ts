@@ -342,6 +342,7 @@ export type StoryMemoryErrorCode =
   | 'MEMORY_NOT_INITIALIZED'
   | 'MEMORY_DIRTY'
   | 'MEMORY_PATCH_INVALID_JSON'
+  | 'MEMORY_PATCH_BUDGET_INFEASIBLE'
   | 'MEMORY_PATCH_SCHEMA_INVALID'
   | 'MEMORY_EVIDENCE_NOT_FOUND'
   | 'MEMORY_ENTITY_REFERENCE_INVALID'
@@ -361,8 +362,32 @@ export type StoryMemoryErrorCode =
   | 'MEMORY_CHECKPOINT_EMPTY_RESPONSE'
   | 'MEMORY_CHECKPOINT_BATCH_TOO_LARGE';
 
+/**
+ * Partial-success payload attached to a checkpoint failure (repair plan P1
+ * §6.4 / code-review fix 1). When a split batch persisted its first half and
+ * then failed on the second half, the error carries the latest successfully
+ * persisted state so outer coordinators (advance / rebuild) never clobber it
+ * back to the function-entry empty/dirty snapshot.
+ */
+export interface StoryMemoryPartialSuccess {
+  /** Latest successfully persisted state (first half of a split batch). */
+  state: StoryMemoryState;
+  /** Number of chapters whose checkpoints were persisted in this run. */
+  completedChapters: number;
+  chapterSummaryTexts: Array<{ chapterId: number; text: string }>;
+}
+
 export class StoryMemoryError extends Error {
-  constructor(public readonly code: StoryMemoryErrorCode, message: string) {
+  constructor(
+    public readonly code: StoryMemoryErrorCode,
+    message: string,
+    /**
+     * Latest persisted partial success when a split batch failed after its
+     * first half was already saved. Used by advance/rebuild catch blocks to
+     * write back the newest successful status instead of the entry snapshot.
+     */
+    public partial?: StoryMemoryPartialSuccess,
+  ) {
     super(message);
     this.name = 'StoryMemoryError';
   }
