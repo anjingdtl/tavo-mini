@@ -327,12 +327,25 @@ export async function rebuildStoryMemoryUnlocked(
               );
         }
         const message = error instanceof Error ? error.message : '未知错误';
-        await db.setStoryMemoryBuildStatus(
-          projectId,
-          'failed',
-          batchChapters[0]?.position ?? replayStart,
-          message,
-        );
+        // V2.11.38 repair plan P1 §6.4: when at least one batch already
+        // succeeded, keep the latest clean checkpoint as the persisted status
+        // instead of flipping the whole rebuild to 'failed'. The failed batch
+        // is still recorded in `lastError` for diagnostics/retry.
+        if (completedChapters > 0) {
+          await db.setStoryMemoryBuildStatus(
+            projectId,
+            state.metadata.status,
+            state.metadata.dirtyFromPosition,
+            message,
+          );
+        } else {
+          await db.setStoryMemoryBuildStatus(
+            projectId,
+            'failed',
+            batchChapters[0]?.position ?? replayStart,
+            message,
+          );
+        }
         let fromLabel = makeContinuationChapterNumbering(null).getDefaultTitle(
           (batchChapters[0]?.position ?? 0) as any,
         );

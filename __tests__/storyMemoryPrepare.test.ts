@@ -72,7 +72,7 @@ describe('prepareStoryMemoryForGeneration', () => {
     expect(result.coverage.checkpointThroughPosition).toBe(-1);
   });
 
-  it('preview hard-due with uncovered chapters blocks without calling LLM', async () => {
+  it('preview hard-due with uncovered chapters degrades with warning without calling LLM', async () => {
     const huge = '超长'.repeat(500);
     const chapters = [
       chapter(0, huge),
@@ -102,8 +102,14 @@ describe('prepareStoryMemoryForGeneration', () => {
       { slidingWindowSize: 10 } as any,
       { mode: 'preview' },
     );
-    expect(result.blocked).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(result.fatal).toBe(false);
+    expect(result.degraded).toBe(true);
     expect(result.checkpointUpdated).toBe(false);
+    expect(result.warnings.some(w => w.code === 'history_partially_omitted')).toBe(
+      true,
+    );
+    expect(result.warnings[0]?.uncoveredChapterIds?.length).toBeGreaterThan(0);
   });
 
   // V2.5.14: checkpointEligibility is carried out of prepare() so trace can

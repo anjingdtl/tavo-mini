@@ -39,6 +39,12 @@ export interface CompileDraftPipelineRequestResult {
   draftPreset: Preset | null;
   requestConfig: LLMRequestConfig;
   trace: ContextTraceItem[];
+  /**
+   * Non-blocking Story Memory warnings from the same buildContext() call the
+   * messages were compiled from. Preview / reconcile surfaces them as warning
+   * panels instead of blocking generation.
+   */
+  storyMemoryWarnings: import('./storyMemory/storyMemoryPrepare').StoryMemoryPrepareWarning[];
   allocations?: Record<string, number>;
   /** Phase 2+ elastic budget trace when elasticBudget is enabled. */
   elasticBudgetTrace?: import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
@@ -101,6 +107,7 @@ export async function compileDraftPipelineRequest(params: {
     trace,
     estimatedInputTokens: baseEstimated,
     elasticBudgetTrace,
+    storyMemoryWarnings,
   } = await buildContext(
     chapter,
     contextConfig,
@@ -197,6 +204,7 @@ export async function compileDraftPipelineRequest(params: {
     draftPreset,
     requestConfig,
     trace: trace || [],
+    storyMemoryWarnings: storyMemoryWarnings || [],
     elasticBudgetTrace,
   };
 }

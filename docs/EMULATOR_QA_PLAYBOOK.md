@@ -1,0 +1,102 @@
+# TAVO-MINI 模拟器 QA 实操手册（踩坑记录）
+
+> 来源：2026-08-08 大纲 Story Memory 修复轮真机穿测（P0/P1 全链路）
+> 设备：emulator-5554（pixel_6 / API 37）/ 包名 com.shinewriter / V2.11.38
+> 全局工具卡：`~/.claude/CLAUDE.md` 的 Maestro + ADB 卡 + `~/.claude/memory/maestro-adb.md`
+
+## 1. 一轮 QA 的标准流程
+
+```powershell
+# 0) 证据目录（产物一律进 test-logs/，不许污染仓库根）
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+New-Item -ItemType Directory -Path "test-logs/emulator-qa-$stamp" -Force | Out-Null
+
+# 1) 构建 + 安装（保留数据用 install -r，不要 pm clear）
+npm run apk:debug
+adb -s emulator-5554 install -r "dist/apk/debug/ShineWriter-V2.11.38-debug.apk"
+
+# 2) 启动 + UI 探测
+adb -s emulator-5554 shell am force-stop com.shinewriter
+adb -s emulator-5554 shell am start -n "com.shinewriter/.MainActivity"
+Start-Sleep -Seconds 5
+adb -s emulator-5554 shell uiautomator dump /sdcard/qa.xml | Out-Null
+adb -s emulator-5554 exec-out cat /sdcard/qa.xml > test-logs/ui-1.xml
+node scripts/qa/ui-list-texts.mjs emulator-5554 test-logs/ui-1.xml
+
+# 3) LLM / 项目前置检查
+adb -s emulator-5554 exec-out run-as com.shinewriter cat databases/shine_writer.db > test-logs/db.sqlite
+# 用 python 脚本查（不要内联 -c，见踩坑 8）
+
+# 4) 语义驱动：ui-find → ui-tap
+node scripts/qa/ui-find.mjs emulator-5554 '关键字'
+node scripts/qa/ui-tap.mjs --serial emulator-5554 --match '关键字' --partial --dump test-logs/ui-x.xml
+```
+
+## 2. 本轮踩坑记录（血泪）
+
+### 2.1 项目列表页：点卡片不会导航！
+`ProjectListScreen` 的项目卡片 `onPress` 只调 `setCurrentProject(item)`，**不导航**。
+正确流程：点卡片（选中当前项目）→ 再点底部 **"3 写作"** tab 才进章节列表。
+表现：点卡片后 UI 树完全不变（只有"当前工作项目"badge），容易误判为点击无效。
+
+### 2.2 Maestro 中文匹配必挂（GBK 编码）
+`maestro test` 对中文文本断言/匹配是乱码（日志 `Assert that "?????" is visible FAILED`），
+flow YAML 里的 `tapOn: "R2-测试项目"` / `assertVisible: "作品集"` 全部失效。
+**结论：本项目 UI 驱动不要用 maestro 中文匹配，一律 `adb shell input tap` + `ui-find.mjs` 坐标。**
+（maestro hierarchy/list-devices 仍可用；它显示的 `pixel_6 / android-33` 与 adb 的 API 37 是两套信息源，以 adb 为准。）
+
+### 2.3 按钮坐标：用 ui-list-nodes.mjs 拿准确 bounds
+```powershell
+node scripts/qa/ui-list-nodes.mjs test-logs/ui-x.xml | Select-String 'CLICK|关键字'
+```
+注意：`ui-list-nodes.mjs` **不带 serial 参数**（直接传 xml 路径）；`ui-list-texts.mjs` / `ui-find.mjs` **带 serial**。搞混就 ENOENT。
+
+### 2.4 章节编辑器工具栏是横向 ScrollView
+"AI 重新生成/定稿/版本"在左侧；**"历史/朗读/上下文/草稿"在右侧，必须横向滑动**才可见：
+```powershell
+adb -s emulator-5554 shell input swipe 900 880 300 880 300
+```
+上下文预览入口就是工具栏里的"上下文"按钮（icon Eye），不在顶部 tab。
+
+### 2.5 直接改模拟器 DB（构造测试数据的路径）
+```powershell
+# app 必须 force-stop，否则 SQLite 锁冲突 + 覆盖丢失
+adb -s emulator-5554 shell am force-stop com.shinewriter
+adb -s emulator-5554 exec-out run-as com.shinewriter cat databases/shine_writer.db > test-logs/db-live.sqlite
+# python 改完：
+adb -s emulator-5554 push test-logs/db-live.sqlite /data/local/tmp/qa-db.sqlite
+adb -s emulator-5554 shell run-as com.shinewriter cp /data/local/tmp/qa-db.sqlite databases/shine_writer.db
+adb -s emulator-5554 shell am start -n "com.shinewriter/.MainActivity"
+```
+坑：
+- chapters 表 SELECT 结果 dict 的 key 是 **id 不是 position**（`SELECT id, position, title`），按 position 索引会 KeyError
+- 修改前先 `PRAGMA table_info(chapters)` 拿全列，INSERT 要带全 NOT NULL 列（created_at/updated_at 等）
+
+### 2.6 PowerShell 里内联 python 必炸
+`python -c "..."` 里的双引号/中文/`\` 在 pwsh 下会被转义吃掉（`length(content)` 被解析成 cmdlet）。
+**一律写成 `test-logs/*.py` 文件再 `python test-logs/x.py`。**
+
+### 2.7 force-stop 会杀死运行中的 pipeline
+前台服务（PipelineForeground）也保不住 `am force-stop`。第 12 章 pipeline 跑到
+proofing 被我 force-stop 中断成 `interrupted`（"任务被中断，可重新开始或恢复"）。
+证据采集完再 force-stop；要验证完整 pipeline 必须等它跑完。
+
+### 2.8 RN Alert 对话框：点击后可能有"残留"假象
+降级确认框（"长期记忆暂不可用"）点击"继续生成"后，uiautomator dump 可能仍显示
+对话框（旧视图缓存）。**判断是否生效看 logcat ReactNativeJS 的 pipeline 日志或 DB**，
+别只信 UI dump。BACK 键 = 取消对话框。
+
+### 2.9 zai-mcp 图片分析有配额（429）
+`zai-mcp-server_analyze_image` 当月配额耗尽会 429（`Weekly/Monthly Limit Exhausted`）。
+截图排障不可用时，**纯靠 UI 树驱动**：dump → ui-list-texts → ui-find → tap。
+
+### 2.10 uiautomator dump 会输出旧视图
+页面切换后等 2-5 秒再 dump；dump 失败（无输出）时重跑一次，别拿上一次的 xml 瞎找节点。
+
+## 3. 本章（2026-08-08 Story Memory 修复）验证过的真实链路
+
+- 第 12 章 + 11 章正文 + 无 checkpoint → 上下文预览显示降级 warning panel（"长期记忆暂不可用，已降级上下文"），**不再报"构建上下文失败"**
+- 生成按钮 → 降级确认 Alert（继续生成/前往故事记忆/取消）→ 继续生成 → pipeline 正常运行
+- generation 模式自动触发 checkpoint advance：真实 LLM 4 批全部 applied（clean, through=10）
+- 整理成功后再次预览 → "检查点截至第 11 章；coverage完整；无空洞" 已注入
+- 验证工具：`python test-logs/probe-*.py`（sqlite3 查询 story_memory/batches/pipeline_tasks/chapters）
