@@ -55,4 +55,26 @@ describe('feature flags (Phase 0 baseline)', () => {
       'false',
     );
   });
+
+  it('explicit "false" is permanently respected (user choice, never overridden)', async () => {
+    mockGetSetting.mockResolvedValue('false');
+    await expect(isMultiChapterBatchEnabled()).resolves.toBe(false);
+    await expect(isElasticBudgetV2Enabled()).resolves.toBe(false);
+  });
+
+  it('the two flags are independent: batch ON never implies elastic budget ON', async () => {
+    mockGetSetting.mockImplementation(async (key: string) => {
+      if (key === FEATURE_FLAG_KEYS.multiChapterBatch) return 'true';
+      return null;
+    });
+    await expect(isMultiChapterBatchEnabled()).resolves.toBe(true);
+    await expect(isElasticBudgetV2Enabled()).resolves.toBe(false);
+
+    mockGetSetting.mockImplementation(async (key: string) => {
+      if (key === FEATURE_FLAG_KEYS.elasticBudgetV2) return 'true';
+      return null;
+    });
+    await expect(isMultiChapterBatchEnabled()).resolves.toBe(false);
+    await expect(isElasticBudgetV2Enabled()).resolves.toBe(true);
+  });
 });

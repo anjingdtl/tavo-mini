@@ -225,6 +225,22 @@ describe('P3: sliding raw candidate hard cap at 10', () => {
     expect(selected.length).toBeLessThanOrEqual(10);
   });
 
+  it('T1: recentChapterCount=1 keeps exactly 1 chapter', () => {
+    expect(selectWith(1)).toHaveLength(1);
+  });
+
+  it('T10: recentChapterCount=10 keeps exactly 10 chapters', () => {
+    expect(selectWith(10)).toHaveLength(10);
+  });
+
+  it('TStr: persisted garbage string clamps to 10, never all history', () => {
+    const selected = selectWith('garbage' as unknown as number);
+    expect(selected.length).toBeGreaterThanOrEqual(1);
+    expect(selected.length).toBeLessThanOrEqual(10);
+    const zero = selectWith('0' as unknown as number);
+    expect(zero).toHaveLength(1);
+  });
+
   it('full/custom strategies are unaffected by the sliding clamp', () => {
     const chapters = Array.from({ length: 30 }, (_, i) =>
       chapter(i, { content: `第 ${i + 1} 章正文。` }),
