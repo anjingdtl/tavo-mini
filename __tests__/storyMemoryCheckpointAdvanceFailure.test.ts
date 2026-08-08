@@ -66,6 +66,9 @@ function cleanRecordThrough(
   const state = createEmptyStoryMemory(projectId);
   state.throughChapterPosition = through;
   state.throughChapterId = through + 1;
+  // 与真实 mapProjectRow 一致：列 status 会覆写 state.metadata.status
+  // （否则 mock 会造出生产环境不存在的 column=clean / metadata=empty 漂移）。
+  state.metadata.status = 'clean';
   return { status: 'clean', dirtyFromPosition: null, state };
 }
 

@@ -1603,9 +1603,18 @@ export function selectPreviousChapters(
   // a huge context window or legacy/hostile config (recentChapterCount=100)
   // must never push more than 10 chapters of raw full text into the prompt.
   // Token budget is a SECOND layer applied on top of this count cap.
+  // Non-finite values (NaN / Infinity / garbage) fall back to the max raw
+  // chapter count instead of degenerating into "all history" (slice(-NaN)
+  // would select everything).
+  const rawRecent = Number(config.recentChapterCount ?? 3);
   const recentCount = Math.min(
     STORY_MEMORY_MAX_RAW_CHAPTERS,
-    Math.max(1, Number(config.recentChapterCount ?? 3)),
+    Math.max(
+      1,
+      Number.isFinite(rawRecent)
+        ? Math.round(rawRecent)
+        : STORY_MEMORY_MAX_RAW_CHAPTERS,
+    ),
   );
   return previous.slice(-recentCount);
 }
