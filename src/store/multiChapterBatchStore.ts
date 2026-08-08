@@ -20,7 +20,7 @@ import {
   hasSucceededStageCheckpoints,
   resetFailedStageCheckpointsForResume,
 } from '../data/repositories/pipelineStageCheckpointRepository';
-import { savePipelineTask } from '../data/repositories/pipelineTaskRepository';
+import { updatePipelineTaskResumeState } from '../data/repositories/pipelineTaskRepository';
 import { getChaptersByProject } from '../data/repositories/projectRepository';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { BATCH_DEFAULT_CHAPTERS, BATCH_DEFAULT_TARGET_WORDS } from '../types/multiChapterBatch';
@@ -375,18 +375,12 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         const taskId = currentItem.activePipelineTaskId;
         if (taskId != null && (await hasSucceededStageCheckpoints(taskId))) {
           await resetFailedStageCheckpointsForResume(taskId);
-          await savePipelineTask({
-            id: taskId,
-            targetType: 'chapter',
-            targetId: currentItem.chapterId ?? 0,
-            status: 'interrupted',
-            stageResults: [],
-            finalText: null,
-            error: null,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            resolvedAt: null,
-          });
+          // F3-01: resume 状态更新必须走 targeted UPDATE —— 严禁全量
+          // savePipelineTask（UPSERT 会把 input_fingerprint /
+          // pipeline_context_json / pipeline_context_version /
+          // pipeline_context_hash 写成 NULL，导致状态机 TASK_NOT_RECOVERABLE，
+          // 用户已付费的 draft/review/factCheck 全部作废）。
+          await updatePipelineTaskResumeState(taskId);
           await batchRepo.updateBatchItem(batchId, currentItem.ordinal, {
             status: 'running_pipeline',
             errorCode: null,
