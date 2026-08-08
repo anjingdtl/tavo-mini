@@ -305,6 +305,50 @@ describe('validateReviewV2Result', () => {
     expect(v.valid).toBe(false);
   });
 
+  test('rejects same-report conflict: protected anchor is also a required/hard target', () => {
+    const report = validReview();
+    correctionsOf(report).push({
+      id: 'rConflict',
+      scope: 'anchor',
+      anchorId: 'draft-p-001',
+      dimension: '文学',
+      severity: 'required',
+      diagnosis: '需要改写开头',
+      rewriteGoal: '重写该段',
+      preserveMeaning: [],
+    });
+    const v = validateReviewV2Result({
+      result: llm(report),
+      canonicalDraft: CANONICAL,
+      expectedHash: HASH,
+      anchors: ANCHORS,
+    });
+    expect(v.valid).toBe(false);
+    expect(v.reason).toBe('conflict');
+    expect(v.details).toContain('draft-p-001');
+  });
+
+  test('same-report warning-level overlap is NOT a conflict', () => {
+    const report = validReview();
+    correctionsOf(report).push({
+      id: 'rWarn',
+      scope: 'anchor',
+      anchorId: 'draft-p-001',
+      dimension: '文风',
+      severity: 'warning',
+      diagnosis: '可润色',
+      rewriteGoal: '微调措辞',
+      preserveMeaning: [],
+    });
+    const v = validateReviewV2Result({
+      result: llm(report),
+      canonicalDraft: CANONICAL,
+      expectedHash: HASH,
+      anchors: ANCHORS,
+    });
+    expect(v.valid).toBe(true);
+  });
+
   test('rejects full draft echo in a string leaf', () => {
     const report = validReview();
     (correctionsOf(report)[0] as any).diagnosis = DRAFT;

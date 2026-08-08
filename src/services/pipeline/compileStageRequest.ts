@@ -1046,6 +1046,60 @@ export function compileFactCheckV2StageRequest(params: {
 }
 
 /**
+ * Contract-declared hard constraints used only as a dedup source. The
+ * contract JSON already carries `hardConstraints` (from the FactCheck
+ * report); re-injecting identical lines via the module texts would
+ * duplicate content for no benefit (§6.1).
+ */
+function extractContractHardConstraints(contractJson: string): string[] {
+  if (!contractJson) return [];
+  try {
+    const obj = JSON.parse(contractJson) as { hardConstraints?: unknown };
+    if (Array.isArray(obj?.hardConstraints)) {
+      return obj.hardConstraints
+        .filter((h: unknown): h is string => typeof h === 'string')
+        .map(h => h.trim())
+        .filter(h => h.length > 0);
+    }
+  } catch {
+    // Non-JSON contract → nothing to dedup against.
+  }
+  return [];
+}
+
+/**
+ * Build the hard-constraint list from the two full module texts.
+ *
+ * Rules (§6.1): the full module text participates in budget allocation;
+ * list splitting follows explicit line breaks only (never per character);
+ * empty lines are dropped; duplicates are stably removed while preserving
+ * original order; lines already declared inside the revision contract are
+ * not injected again.
+ */
+function buildHardConstraintLines(
+  constraints: ProofConstraints,
+  contractJson: string,
+): string {
+  const contractHard = new Set(extractContractHardConstraints(contractJson));
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const block of [
+    constraints.relevantCharacterConstraints,
+    constraints.relevantWorldRules,
+  ]) {
+    for (const raw of String(block ?? '').split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (contractHard.has(line)) continue;
+      if (seen.has(line)) continue;
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
  * Final Reviser (V2 Proof) compiler — workflow version 2 only.
  *
  * Mandatory: revision contract JSON + full canonical draft (single
@@ -1075,11 +1129,7 @@ export function compileFinalReviserStageRequest(params: {
     Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens - contractTokens) +
     PARTITION_OVERHEAD;
 
-  const hardConstraints = [
-    ...params.constraints.relevantCharacterConstraints,
-    ...params.constraints.relevantWorldRules,
-  ].filter(h => h && h.trim());
-  const hardList = hardConstraints.join('\n');
+  const hardList = buildHardConstraintLines(params.constraints, params.contractJson);
 
   const optionalSections = [
     { id: 'hardConstraints', tokens: estimateTokens(hardList), weight: 4 },

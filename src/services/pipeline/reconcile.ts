@@ -37,10 +37,6 @@ import { saveDraft } from '../draftService';
 import type { PipelineFactCheckReportV2 } from '../../types/pipelineRevision';
 import type { PipelineReviewReportV2 } from '../../types/pipelineRevision';
 import { sha256Hex } from '../continuation/hashUtils';
-import {
-  DEFAULT_OUTLINE_WORKFLOW_VERSION,
-  shouldFreezeOutlineWorkflowV2,
-} from './outlineWorkflowVersion';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
 import { getStageProgressPercent } from '../../utils/stages';
 import type { Chapter, Preset } from '../../types/novel';
@@ -404,35 +400,13 @@ export interface ReconcileOptions {
   foregroundOwner?: 'task' | 'batch';
 }
 
-const reconciling = new Set<string>();
-
 /**
- * Phase 2+ elastic budget + V5-Lite V2 workflow switches, resolved once per
- * reconcile entry (one settings read, then reused by every stage compiler
- * call). Defaults to legacy behavior when either flag is off. Both settings
- * reads run in parallel so the microtask chain stays identical to the
- * baseline single-flag refresh.
+ * Pipeline protocol versions are FROZEN per task (task row columns + the
+ * execution snapshot) — no module-level mutable flags, no live settings
+ * reads. Concurrent tasks each read their own frozen versions; a global
+ * boolean would let task A/B overwrite each other's strategy mid-process.
  */
-let elasticBudgetEnabled = false;
-let outlineWorkflowV2Enabled = false;
-
-async function refreshPipelineFlags(): Promise<void> {
-  try {
-    const {
-      isElasticBudgetV2Enabled,
-      isOutlineWorkflowV2Enabled,
-    } = await import('../featureFlags');
-    const [elastic, outlineV2] = await Promise.all([
-      isElasticBudgetV2Enabled(),
-      isOutlineWorkflowV2Enabled(),
-    ]);
-    elasticBudgetEnabled = elastic;
-    outlineWorkflowV2Enabled = outlineV2;
-  } catch {
-    elasticBudgetEnabled = false;
-    outlineWorkflowV2Enabled = false;
-  }
-}
+const reconciling = new Set<string>();
 
 function getErrorMessage(error: any, fallback: string): string {
   return error?.message ? String(error.message) : fallback;
@@ -487,6 +461,7 @@ function buildExecutionSnapshot(params: {
   proofPreset: Preset | null;
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2;
+  contextBudgetVersion?: 1 | 2;
 }): PipelineExecutionSnapshot {
   const contextWindow = Number(params.requestConfig.context_window) || 0;
   if (!(contextWindow > 0)) {
@@ -508,6 +483,9 @@ function buildExecutionSnapshot(params: {
     pipelineMode: params.config.pipelineMode,
     ...(params.outlineWorkflowVersion
       ? { outlineWorkflowVersion: params.outlineWorkflowVersion }
+      : {}),
+    ...(params.contextBudgetVersion
+      ? { contextBudgetVersion: params.contextBudgetVersion }
       : {}),
     draftMaxTokens: params.config.draftMaxTokens,
     reviewMaxTokens: params.config.reviewMaxTokens,
@@ -852,7 +830,6 @@ export async function reconcilePipelineTask(
     throw err;
   }
   reconciling.add(taskId);
-  await refreshPipelineFlags();
   // CL-10: call-level (never module-global) foreground ownership. Defaults to
   // 'task' unless the caller (batch reconciler) declares 'batch'.
   const emitForeground = (options.foregroundOwner ?? 'task') === 'task';
@@ -945,6 +922,26 @@ export async function reconcilePipelineTask(
       });
       if (retryResult === 'stop') {
         return;
+      }
+
+      // V2 proof resume (§6.5): a FAILED proof checkpoint with a persisted
+      // safe_to_retry attempt must re-fire the SAME protocol proof instead of
+      // degrading to draft immediately. The decision layer returns
+      // finalize_from_draft (degraded) for proof failures, so consume the
+      // retry disposition right before finalize: retried → loop re-runs the
+      // proof stage with the frozen request; waiting → hand back (task stays
+      // failed, watchdog/UI resumes later); none → degrade as designed.
+      if (
+        action.type === 'finalize_from_draft' &&
+        action.degraded === true
+      ) {
+        const proofRetry = await consumeFailedStageRetryDisposition({
+          taskId,
+          stage: 'proof',
+          options,
+        });
+        if (proofRetry.outcome === 'retried') continue;
+        if (proofRetry.outcome === 'waiting') return;
       }
 
       const handled = await executeAction({
@@ -1258,24 +1255,27 @@ async function actionPersistInitialSnapshot(
   const store = usePipelineTaskStore.getState();
   // Fire the project lookup in parallel with loadRuntime so first-freeze never
   // adds a serial DB round-trip to the microtask chain.
-  const projectPromise = db.getProjectById(chapter.project_id);
   const runtime = await loadRuntime(taskId, chapter);
-  // Resolve the V5-Lite workflow version once at first freeze. Resume never
-  // re-reads live project mode / default: frozen tasks keep their version.
-  let outlineWorkflowVersion: 1 | 2 | undefined;
-  if (!runtime.parsed?.execution) {
-    const project = await projectPromise;
-    const projectMode = project?.mode ?? null;
-    outlineWorkflowVersion = shouldFreezeOutlineWorkflowV2({
-      projectMode,
-      chapterId: chapter.id,
-      defaultVersion:
-        outlineWorkflowV2Enabled && DEFAULT_OUTLINE_WORKFLOW_VERSION === 1
-          ? 2
-          : DEFAULT_OUTLINE_WORKFLOW_VERSION,
-    })
-      ? 2
-      : undefined;
+  // Resolve the protocol versions ONCE at first freeze from the TASK ROW
+  // (frozen at task creation, Schema 44). Resume never re-reads live
+  // project mode / defaults: frozen tasks keep their version. Missing or
+  // unparseable row values fail closed to V1 (§4.3). New snapshots always
+  // carry BOTH fields explicitly (1 or 2) — only parsing HISTORICAL
+  // snapshots interprets an absent field as 1.
+  const existingExecution = runtime.parsed?.execution;
+  let outlineWorkflowVersion: 1 | 2;
+  let contextBudgetVersion: 1 | 2;
+  if (existingExecution) {
+    outlineWorkflowVersion =
+      existingExecution.outlineWorkflowVersion === 2 ? 2 : 1;
+    contextBudgetVersion =
+      existingExecution.contextBudgetVersion === 2 ? 2 : 1;
+  } else {
+    const taskRow = store.tasks.find(t => t.id === taskId);
+    outlineWorkflowVersion =
+      Number(taskRow?.outlineWorkflowVersion) === 2 ? 2 : 1;
+    contextBudgetVersion =
+      Number(taskRow?.contextBudgetVersion) === 2 ? 2 : 1;
   }
   // Fresh freeze from live config only when no execution yet.
   const execution =
@@ -1288,6 +1288,7 @@ async function actionPersistInitialSnapshot(
       proofPreset: runtime.proofPreset,
       requestConfig: runtime.requestConfig,
       outlineWorkflowVersion,
+      contextBudgetVersion,
     });
   // Batch-owned first run: the batch form's mode wins over the global
   // pipeline setting. Resume never overrides a frozen snapshot.
@@ -1300,7 +1301,7 @@ async function actionPersistInitialSnapshot(
     requestConfig: runtime.requestConfig,
     draftPreset: runtime.draftPreset,
     draftMaxTokens: execution.draftMaxTokens,
-    elasticBudget: elasticBudgetEnabled,
+    elasticBudget: execution.contextBudgetVersion === 2,
   });
   if (!compiled.ready) {
     const code =
@@ -1648,6 +1649,13 @@ function isOutlineWorkflowV2(
   runtime: Awaited<ReturnType<typeof loadRuntime>>,
 ): boolean {
   return runtime.parsed?.execution?.outlineWorkflowVersion === 2;
+}
+
+/** True when the frozen execution selected the elastic budget V2 strategy. */
+function isElasticBudgetV2(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+): boolean {
+  return runtime.parsed?.execution?.contextBudgetVersion === 2;
 }
 
 /**
@@ -2141,7 +2149,7 @@ async function actionRunReview(
         context,
         maxTokens: runtime.config.reviewMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
-        elasticBudget: elasticBudgetEnabled,
+        elasticBudget: isElasticBudgetV2(runtime),
       });
       if (!compiled.ready) {
         await persistStage(taskId, {
@@ -2221,7 +2229,7 @@ async function actionRunReview(
             repairReason: isReasoningOnly
               ? REASONING_ONLY_REPAIR_HINT
               : describeAuditFailureReason(validation.reason),
-            elasticBudget: elasticBudgetEnabled,
+            elasticBudget: isElasticBudgetV2(runtime),
           });
           if (!repair.ready) {
             await persistStage(taskId, {
@@ -2389,7 +2397,7 @@ async function actionRunFactCheck(
         context,
         maxTokens: runtime.config.factCheckMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
-        elasticBudget: elasticBudgetEnabled,
+        elasticBudget: isElasticBudgetV2(runtime),
       });
       if (!compiled.ready) {
         await persistStage(taskId, {
@@ -2467,7 +2475,7 @@ async function actionRunFactCheck(
             repairReason: isReasoningOnly
               ? REASONING_ONLY_REPAIR_HINT
               : describeAuditFailureReason(validation.reason),
-            elasticBudget: elasticBudgetEnabled,
+            elasticBudget: isElasticBudgetV2(runtime),
           });
           if (!repair.ready) {
             await persistStage(taskId, {
@@ -2881,7 +2889,7 @@ async function actionRunProof(
         constraints,
         maxTokens: runtime.config.proofMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
-        elasticBudget: elasticBudgetEnabled,
+        elasticBudget: isElasticBudgetV2(runtime),
       });
       if (!compiled.ready) {
         await persistStage(taskId, {

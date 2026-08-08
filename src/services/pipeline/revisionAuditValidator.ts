@@ -513,6 +513,30 @@ export function validateReviewV2Result(params: {
     corrections.push(normalizeCorrection(correctionsRaw[i], params.anchors)!);
   }
 
+  // Protocol conflict (§6.2): a protected anchor that is ALSO the target of
+  // a required/hard correction in the SAME report contradicts itself (the
+  // Final Reviser is told to both preserve and modify it). Reject with
+  // `conflict` so the one-shot format repair fires; the contract compiler
+  // resolves cross-report (review protection vs FactCheck hard revision)
+  // conflicts separately with fact-first semantics.
+  const protectedIds = new Set(protectedAnchorIds.items);
+  for (const c of corrections) {
+    if (c.severity === 'warning') continue;
+    const targets: string[] = [];
+    if (c.scope === 'anchor' && c.anchorId) targets.push(c.anchorId);
+    if (c.scope === 'range' && Array.isArray(c.anchorIds)) {
+      for (const id of c.anchorIds) if (id) targets.push(id);
+    }
+    for (const id of targets) {
+      if (protectedIds.has(id)) {
+        return failV2(
+          'conflict',
+          `保护锚点 ${id} 与 required/hard 修订定位重叠`,
+        );
+      }
+    }
+  }
+
   const report: PipelineReviewReportV2 = {
     schemaVersion: 2,
     draftHash: params.expectedHash,

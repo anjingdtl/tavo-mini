@@ -34,6 +34,12 @@ interface PipelineTaskState {
   createTask: (
     targetType: 'chapter' | 'freeform',
     targetId: number,
+    versions?: {
+      /** Frozen outline workflow version (1 = Legacy, 2 = V2). */
+      outlineWorkflowVersion: 1 | 2;
+      /** Frozen context budget version (1 = Legacy, 2 = elastic V2). */
+      contextBudgetVersion: 1 | 2;
+    },
   ) => Promise<string>;
   /**
    * Fire-and-forget stage update (legacy). Prefer {@link persistTaskStage}.
@@ -180,6 +186,8 @@ function persistTask(task: PipelineTask) {
     pipelineContextJson: task.pipelineContextJson ?? null,
     pipelineContextVersion: task.pipelineContextVersion ?? null,
     pipelineContextHash: task.pipelineContextHash ?? null,
+    outlineWorkflowVersion: task.outlineWorkflowVersion ?? null,
+    contextBudgetVersion: task.contextBudgetVersion ?? null,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     resolvedAt: task.resolvedAt,
@@ -226,6 +234,14 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         pipelineContextJson: row.pipelineContextJson ?? null,
         pipelineContextVersion: row.pipelineContextVersion ?? null,
         pipelineContextHash: row.pipelineContextHash ?? null,
+        outlineWorkflowVersion:
+          row.outlineWorkflowVersion != null
+            ? Number(row.outlineWorkflowVersion)
+            : null,
+        contextBudgetVersion:
+          row.contextBudgetVersion != null
+            ? Number(row.contextBudgetVersion)
+            : null,
         recoverable: row.status === 'interrupted' ? true : undefined,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -244,7 +260,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     }
   },
 
-  createTask: async (targetType, targetId) => {
+  createTask: async (targetType, targetId, versions) => {
     const now = Date.now();
     const id = `pt_${now.toString(36)}_${++taskIdCounter}`;
     const task: PipelineTask = {
@@ -255,6 +271,11 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       stageResults: [],
       finalText: null,
       error: null,
+      // §4.2: new tasks must EXPLICITLY freeze their protocol versions at
+      // creation (never rely on the DB column default, which exists only
+      // for pre-upgrade rows). Legacy callers (freeform) omit versions → 1.
+      outlineWorkflowVersion: versions?.outlineWorkflowVersion ?? 1,
+      contextBudgetVersion: versions?.contextBudgetVersion ?? 1,
       createdAt: now,
       updatedAt: now,
       resolvedAt: null,
@@ -274,6 +295,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
           stageResults: [],
           finalText: null,
           error: null,
+          outlineWorkflowVersion: task.outlineWorkflowVersion ?? null,
+          contextBudgetVersion: task.contextBudgetVersion ?? null,
           createdAt: now,
           updatedAt: now,
           resolvedAt: null,
@@ -346,6 +369,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextJson: next.pipelineContextJson ?? null,
       pipelineContextVersion: next.pipelineContextVersion ?? null,
       pipelineContextHash: next.pipelineContextHash ?? null,
+      outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
+      contextBudgetVersion: next.contextBudgetVersion ?? null,
       createdAt: next.createdAt,
       updatedAt: next.updatedAt,
       resolvedAt: next.resolvedAt,
@@ -386,6 +411,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextJson: next.pipelineContextJson ?? null,
       pipelineContextVersion: next.pipelineContextVersion ?? null,
       pipelineContextHash: next.pipelineContextHash ?? null,
+      outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
+      contextBudgetVersion: next.contextBudgetVersion ?? null,
       createdAt: next.createdAt,
       updatedAt: next.updatedAt,
       resolvedAt: next.resolvedAt,
@@ -434,6 +461,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextJson: next.pipelineContextJson ?? null,
       pipelineContextVersion: next.pipelineContextVersion ?? null,
       pipelineContextHash: next.pipelineContextHash ?? null,
+      outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
+      contextBudgetVersion: next.contextBudgetVersion ?? null,
       createdAt: next.createdAt,
       updatedAt: next.updatedAt,
       resolvedAt: next.resolvedAt,
@@ -480,6 +509,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextJson: next.pipelineContextJson ?? null,
       pipelineContextVersion: next.pipelineContextVersion ?? null,
       pipelineContextHash: next.pipelineContextHash ?? null,
+      outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
+      contextBudgetVersion: next.contextBudgetVersion ?? null,
       createdAt: next.createdAt,
       updatedAt: next.updatedAt,
       resolvedAt: next.resolvedAt,
@@ -528,6 +559,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextJson: next.pipelineContextJson ?? null,
       pipelineContextVersion: next.pipelineContextVersion ?? null,
       pipelineContextHash: next.pipelineContextHash ?? null,
+      outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
+      contextBudgetVersion: next.contextBudgetVersion ?? null,
       createdAt: next.createdAt,
       updatedAt: next.updatedAt,
       resolvedAt: next.resolvedAt,

@@ -27,7 +27,6 @@ import { Button, Card, Header, Screen, Section, spacing } from '../components/ui
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
 import { useMultiChapterBatchStore } from '../store/multiChapterBatchStore';
-import { isMultiChapterBatchEnabled } from '../services/featureFlags';
 import {
   BATCH_DEFAULT_CHAPTERS,
   BATCH_DEFAULT_TARGET_WORDS,
@@ -42,25 +41,10 @@ import {
 
 type BatchView = 'create' | 'preview' | 'running' | 'paused' | 'report';
 
-function useFlag(): boolean {
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    let mounted = true;
-    isMultiChapterBatchEnabled().then(v => {
-      if (mounted) setEnabled(v);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-  return enabled;
-}
-
 export function MultiChapterBatchScreen(): React.ReactElement {
   const navigation =
     useNavigation<NativeStackNavigationProp<EditorStackParamList>>();
   const { theme } = useThemeStore();
-  const enabled = useFlag();
   const { currentProject } = useProjectStore();
   const store = useMultiChapterBatchStore();
   const [view, setView] = useState<BatchView>('create');
@@ -228,27 +212,16 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     ]);
   };
 
-  if (!enabled) {
-    return (
-      <Screen>
-        <Header title="批量写章" />
-        <Text style={{ padding: spacing.lg, color: theme.colors.textSecondary }}>
-          该功能暂未开放。
-        </Text>
-      </Screen>
-    );
-  }
-
   const headerTitle =
     view === 'create'
-      ? '批量写章'
+      ? '一键写 N 章'
       : view === 'preview'
         ? '规划预览'
         : view === 'report'
           ? '批次报告'
           : store.batch
             ? `第 ${store.batch.currentOrdinal}/${store.batch.chapterCount} 章`
-            : '批量写章';
+            : '一键写 N 章';
 
   return (
     <Screen>

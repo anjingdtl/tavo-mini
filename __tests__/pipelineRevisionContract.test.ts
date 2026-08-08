@@ -278,7 +278,7 @@ describe('compileRevisionContract', () => {
     expect(r.contract.hardConstraints).toEqual(['古井在森林深处']);
   });
 
-  test('protected anchors aggregate (report + work-item anchors)', () => {
+  test('protected anchors come ONLY from report-declared protection', () => {
     const r = compileRevisionContract({
       canonicalDraft: CANONICAL,
       anchors: ANCHORS,
@@ -286,9 +286,75 @@ describe('compileRevisionContract', () => {
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    // review().protectedAnchorIds = ['draft-p-001']; r2 anchor = draft-p-002
-    expect(r.contract.protectedAnchorIds).toContain('draft-p-001');
-    expect(r.contract.protectedAnchorIds).toContain('draft-p-002');
+    // review().protectedAnchorIds = ['draft-p-001']; r2's anchor (draft-p-002)
+    // is a revision TARGET and must NOT auto-join the protection set.
+    expect(r.contract.protectedAnchorIds).toEqual(['draft-p-001']);
+    expect(r.contract.protectedAnchorIds).not.toContain('draft-p-002');
+  });
+
+  test('factCheck hard revision overlapping review protection wins (fact-first)', () => {
+    const r = compileRevisionContract({
+      canonicalDraft: CANONICAL,
+      anchors: ANCHORS,
+      review: review(),
+      factCheck: factCheck({
+        requiredCorrections: [
+          correction({
+            id: 'fA',
+            scope: 'anchor',
+            anchorId: 'draft-p-001',
+            severity: 'hard',
+            dimension: '事实硬约束',
+            diagnosis: '位置错误',
+            rewriteGoal: '修正位置',
+          }),
+        ],
+      }),
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.contract.protectedAnchorIds).not.toContain('draft-p-001');
+    expect(
+      r.warnings.some(w => w.includes('draft-p-001') && w.includes('事实修订优先')),
+    ).toBe(true);
+  });
+
+  test('review protection survives when factCheck targets other anchors', () => {
+    const r = compileRevisionContract({
+      canonicalDraft: CANONICAL,
+      anchors: ANCHORS,
+      review: review(),
+      factCheck: factCheck(),
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // factCheck() hard-revises draft-p-003; review protects draft-p-001.
+    expect(r.contract.protectedAnchorIds).toEqual(['draft-p-001']);
+    expect(r.warnings.some(w => w.includes('事实修订优先'))).toBe(false);
+  });
+
+  test('factCheck warning-level overlap does NOT drop protection', () => {
+    const r = compileRevisionContract({
+      canonicalDraft: CANONICAL,
+      anchors: ANCHORS,
+      review: review(),
+      factCheck: factCheck({
+        requiredCorrections: [
+          correction({
+            id: 'fW',
+            scope: 'anchor',
+            anchorId: 'draft-p-001',
+            severity: 'warning',
+            dimension: '文风',
+            diagnosis: '可润色',
+            rewriteGoal: '微调',
+          }),
+        ],
+      }),
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.contract.protectedAnchorIds).toEqual(['draft-p-001']);
   });
 
   test('outline obligations flow from review', () => {

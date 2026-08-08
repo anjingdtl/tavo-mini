@@ -1,15 +1,12 @@
 /**
- * Phase 8: MultiChapterBatchScreen smoke tests.
- * - flag OFF → shows the guarded placeholder (no crash, no entry leak)
- * - flag ON → renders the create form
+ * MultiChapterBatchScreen — default-capability smoke tests.
+ *
+ * The feature flag is GONE: outline projects render the create form directly
+ * (no placeholder, no flag read). Only real precondition failures (no
+ * project / wrong mode) produce explicit error states.
  */
 import React from 'react';
 import { render, waitFor } from '@testing-library/react-native';
-
-const mockIsEnabled = jest.fn();
-jest.mock('../src/services/featureFlags', () => ({
-  isMultiChapterBatchEnabled: (...args: any[]) => mockIsEnabled(...args),
-}));
 
 jest.mock('../src/store/themeStore', () => ({
   useThemeStore: () => ({
@@ -64,31 +61,41 @@ jest.mock('../src/store/multiChapterBatchStore', () => ({
 
 import { MultiChapterBatchScreen } from '../src/screens/MultiChapterBatchScreen';
 
-describe('MultiChapterBatchScreen', () => {
+describe('MultiChapterBatchScreen (default capability)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
   it('auto-loads the active batch on mount (plan survives navigation)', async () => {
-    mockIsEnabled.mockResolvedValue(true);
     mockLoadActive.mockResolvedValue(undefined);
     render(<MultiChapterBatchScreen />);
     await waitFor(() => expect(mockLoadActive).toHaveBeenCalled());
     expect(mockLoadActive).toHaveBeenCalledWith(1);
   });
 
-  it('shows the guarded placeholder when the feature flag is OFF', async () => {
-    mockIsEnabled.mockResolvedValue(false);
-    const { findByText } = render(<MultiChapterBatchScreen />);
-    await expect(findByText('该功能暂未开放。')).resolves.toBeTruthy();
+  it('renders the create form directly for outline projects (no flag gate)', async () => {
+    const { findByText, queryByText } = render(<MultiChapterBatchScreen />);
+    await expect(findByText('剧情摘要')).resolves.toBeTruthy();
+    // No experimental placeholder and no flag read anywhere.
+    expect(queryByText('该功能暂未开放。')).toBeNull();
+    expect(queryByText('实验功能')).toBeNull();
   });
 
-  it('renders the create form when enabled', async () => {
-    mockIsEnabled.mockResolvedValue(true);
-    const { findByText, queryByText } = render(<MultiChapterBatchScreen />);
-    await waitFor(() => expect(mockIsEnabled).toHaveBeenCalled());
-    await expect(findByText('剧情摘要')).resolves.toBeTruthy();
-    // 批次消耗上限由弹性预算池自动分配，创建页不再暴露输入。
-    expect(queryByText('批次消耗上限（可选）')).toBeNull();
+  it('titles the page 一键写 N 章', async () => {
+    const { findByText } = render(<MultiChapterBatchScreen />);
+    await expect(findByText('一键写 N 章')).resolves.toBeTruthy();
+  });
+
+  it('never references the removed feature flag', () => {
+    // Guard against accidentally re-adding a flag read in the screen.
+    const source = require('fs').readFileSync(
+      require('path').resolve(
+        __dirname,
+        '../src/screens/MultiChapterBatchScreen.tsx',
+      ),
+      'utf8',
+    );
+    expect(source).not.toContain('isMultiChapterBatchEnabled');
+    expect(source).not.toContain('暂未开放');
   });
 });

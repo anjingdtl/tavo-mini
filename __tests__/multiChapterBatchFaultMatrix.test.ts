@@ -581,6 +581,8 @@ describe('retry exhaustion & cold-start waiting', () => {
         usedLlmCalls: 0,
         usedInputTokens: 0,
         usedOutputTokens: 0,
+        outlineWorkflowVersion: 1,
+        contextBudgetVersion: 1,
         pauseReason: null,
         errorCode: null,
         errorMessage: null,

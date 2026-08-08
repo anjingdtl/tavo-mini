@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.11.39] - 2026-08-08
+
+### Added
+
+- **默认能力启用（Schema 44 版本冻结）**：一键写 N 章、弹性上下文预算 V2、大纲写作 Workflow V2 从实验开关升级为正式默认能力。设置页删除三个实验开关；`pipeline_tasks` 与 `multi_chapter_batches` 新增 `outline_workflow_version` / `context_budget_version`（迁移默认 1 = Legacy，新任务/新批次创建时显式写 2）；运行时权威顺序为 冻结 Snapshot > 任务行版本列 > fail-closed V1，绝不按实时设置切换协议；批次创建时一次性冻结版本，全部子任务复制批次版本，单批次不混用协议；新快照始终显式携带两个版本字段，仅解析历史快照时缺失才视为 V1。迁移幂等可重跑，升级前后其他表字节不变。
+
+### Fixed
+
+- **章节编辑页进度条残留（模拟器实测链路）**：任务失败后若后台自动重试/用户确认继续复用同一任务 ID 重跑并最终完成，`useChapterPipeline` 的 `resultTaskIdRef`（failed 时被占用）+ `seenTerminalRef`（不区分状态）会把同任务的 completed 双重拦截——进度条残留、结果页不跳转。修复：failed 分支不再占用 `resultTaskIdRef`，`seenTerminalRef` 改为按状态（completed/failed）记录，失败转成功始终重新处理；回归测试覆盖 failed→重试→completed、已完成防重、再次失败→再完成三个场景。
+- **流水线结果页状态语义统一**：interrupted（进程被杀/超时/重启未完成）任务此前被误显示为"进行中"且无重启入口，用户无法从失败阶段继续；现显示"已中断，可从失败阶段继续"，并提供"从失败环节重启"（重置失败/中断 checkpoint 后 resume，只重跑未完成阶段，成功阶段不重复计费）。任务运行中（idle~proofing）时结果页不再显示"采纳/放弃"（避免误采纳旧初稿）也不显示重启，头部标明当前阶段并提示后台运行中。failed 与 interrupted 场景均有渲染测试。
+- **Final Reviser 硬约束不再拆成单字（P1）**：`compileFinalReviserStageRequest` 曾对两个字符串做展开语法，把中文约束拆成单字 bullet（token 膨胀 + 语义损坏）；改为完整模块文本参与预算分配、按行切分、空行过滤、稳定去重保序，且不再重复注入修订合同内已有的 hardConstraints。
+- **待修订锚点不再同时被标记为保护锚点（P1）**：`protectedAnchorIds` 现在只来自审核报告显式声明；workItem 定位锚点不再自动加入保护集合；同一报告内保护锚点与 required/hard 修订定位重叠时 Validator 判为协议冲突并触发一次格式修复；跨报告冲突按「事实修订优先」移出保护集合并记录确定性 warning。
+- **自然段切分与方案一致（P2）**：`buildRevisionAnchors` 改为以「一个或多个空行」分隔自然段，单个换行属于同一自然段，UTF-16 offset 保持精确，tagged Draft 不改变正文字符。
+- **`finishReason=length` 不再单独判失败（P2）**：只有组合「未闭合技术块 / 尾部无终止标点的截断句 / 未闭合引号括号 / 省略续写标记 / 灾难性坍缩」才 Hard Fail；length + 完整正文直接通过。
+- **tokenEstimator 裁剪与估算同构**：`clipTextToTokenBudget` 按与 `estimateTokens` 相同的分词模型推进（CJK 单字 / ASCII 词 / 标点计费、空白免费），消除换行与连续 ASCII 串的 off-by-one 裁剪误差。
+
 ## [2.11.38] - 2026-08-08
 
 ### Fixed

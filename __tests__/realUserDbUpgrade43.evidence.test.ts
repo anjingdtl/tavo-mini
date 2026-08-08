@@ -111,8 +111,20 @@ describeUpgrade('real user DB Schema42 → 43 upgrade (manual evidence)', () => 
     const after = await snapshot();
     for (const t of Object.keys(before)) {
       if (t === 'project_story_memory_policy') continue;
+      // Schema 44 adds the two frozen version columns (default 1) to
+      // pipeline_tasks / multi_chapter_batches — pre-upgrade rows gain the
+      // columns with value 1, so those two tables are asserted separately
+      // below (version = 1 = Legacy for every pre-upgrade row).
+      if (t === 'pipeline_tasks' || t === 'multi_chapter_batches') continue;
       if (before[t] === '__missing__' && after[t] === '__missing__') continue;
       expect(after[t]).toBe(before[t]);
+    }
+    const [taskVersions] = await wrapped.executeSql(
+      `SELECT DISTINCT outline_workflow_version, context_budget_version FROM pipeline_tasks`,
+    );
+    for (let i = 0; i < taskVersions.rows.length; i += 1) {
+      expect(Number(taskVersions.rows.item(i).outline_workflow_version)).toBe(1);
+      expect(Number(taskVersions.rows.item(i).context_budget_version)).toBe(1);
     }
     const afterSchema = await wrapped.executeSql(
       "SELECT value FROM settings WHERE key = 'schema_version'",

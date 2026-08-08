@@ -16,6 +16,10 @@ import { requestNotificationPermission } from '../../../utils/notificationPermis
 import { usePipelineTaskStore } from '../../../store/pipelineTaskStore';
 import { useProjectStore } from '../../../store/projectStore';
 import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../../../services/pipeline/outlineWorkflowVersion';
+import {
   cancelContinuationRun,
   startContinuationRun,
 } from '../../../services/continuation/generation';
@@ -43,6 +47,10 @@ type RunningPipelineStatus = Extract<
 type CreateTask = (
   targetType: 'chapter' | 'freeform',
   targetId: number,
+  versions?: {
+    outlineWorkflowVersion: 1 | 2;
+    contextBudgetVersion: 1 | 2;
+  },
 ) => Promise<string>;
 
 const RUNNING_PIPELINE_STATUSES: RunningPipelineStatus[] = [
@@ -118,7 +126,9 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
   const [continuationStage, setContinuationStage] =
     useState<ContinuationPipelineStage | null>(null);
   const resultTaskIdRef = useRef<string | null>(null);
-  const seenTerminalRef = useRef<Set<string>>(new Set());
+  const seenTerminalRef = useRef<Map<string, 'completed' | 'failed'>>(
+    new Map(),
+  );
   const continuationStageRef = useRef<ContinuationPipelineStage | null>(null);
 
   const openPipelineResult = useCallback(
@@ -158,16 +168,24 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
               task.status === 'failed'),
         );
     const handleTerminal = (task: { id: string; status: string }) => {
-      if (
-        task.id === resultTaskIdRef.current ||
-        seenTerminalRef.current.has(task.id)
-      )
-        return;
-      seenTerminalRef.current.add(task.id);
+      const prev = seenTerminalRef.current.get(task.id);
       if (task.status === 'completed') {
+        // The result page was already opened for this task — never navigate
+        // twice. Auto-retry keeps the SAME task id, so a completed task that
+        // later fails/retries must still be handled once per terminal state.
+        if (task.id === resultTaskIdRef.current) return;
+        if (prev === 'completed') return;
+        seenTerminalRef.current.set(task.id, 'completed');
         openPipelineResult(task.id);
       } else if (task.status === 'failed') {
-        resultTaskIdRef.current = task.id;
+        // A task may fail, be auto-retried/resumed in the background (same
+        // id), then complete. Every failure must clear the progress UI; the
+        // completed transition afterwards is still processed above because
+        // `failed` never claims resultTaskIdRef. Only the FIRST failure may
+        // record the state (subsequent identical failures stay silent).
+        if (prev === undefined) {
+          seenTerminalRef.current.set(task.id, 'failed');
+        }
         setProgressVisible(false);
         setGenerating(false);
         setQueued(false);
@@ -219,7 +237,20 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       // failure happens before any LLM request is made.
       let taskId: string;
       try {
-        taskId = await createTask('chapter', chapter.id);
+        // §4.2: NEW outline chapter tasks freeze the CURRENT protocol
+        // versions explicitly at creation; non-outline / freeform /
+        // pseudo-chapters stay Legacy (V1).
+        const project = useProjectStore.getState().currentProject;
+        const isOutlineChapter =
+          project?.mode === 'outline' && chapter.id > 0;
+        taskId = await createTask('chapter', chapter.id, {
+          outlineWorkflowVersion: isOutlineChapter
+            ? CURRENT_OUTLINE_WORKFLOW_VERSION
+            : 1,
+          contextBudgetVersion: isOutlineChapter
+            ? CURRENT_CONTEXT_BUDGET_VERSION
+            : 1,
+        });
       } catch (error: any) {
         setProgressVisible(false);
         setQueued(false);
@@ -268,7 +299,6 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         if (finishedTask?.status === 'completed') {
           openPipelineResult(taskId);
         } else if (finishedTask?.status === 'failed') {
-          resultTaskIdRef.current = taskId;
           Alert.alert('流水线失败', finishedTask.error || '未知错误');
         }
       } catch (error: any) {
@@ -340,7 +370,6 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         if (finishedTask?.status === 'completed') {
           openPipelineResult(taskId);
         } else if (finishedTask?.status === 'failed') {
-          resultTaskIdRef.current = taskId;
           Alert.alert('流水线失败', finishedTask.error || '未知错误');
         }
       } catch (error: any) {

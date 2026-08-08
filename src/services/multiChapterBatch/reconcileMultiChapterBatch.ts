@@ -346,6 +346,10 @@ async function executeBatchAction(params: {
           stageResults: [],
           finalText: null,
           error: null,
+          // §4.4: every chapter task of a batch copies the FROZEN batch
+          // versions — never re-reads the app default mid-batch.
+          outlineWorkflowVersion: batch.outlineWorkflowVersion ?? 1,
+          contextBudgetVersion: batch.contextBudgetVersion ?? 1,
           createdAt: now,
           updatedAt: now,
           resolvedAt: null,
@@ -371,6 +375,8 @@ async function executeBatchAction(params: {
         pipelineContextJson: null,
         pipelineContextVersion: null,
         pipelineContextHash: null,
+        outlineWorkflowVersion: batch.outlineWorkflowVersion ?? 1,
+        contextBudgetVersion: batch.contextBudgetVersion ?? 1,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
@@ -405,6 +411,14 @@ async function executeBatchAction(params: {
           pipelineContextJson: existingTask.pipelineContextJson ?? null,
           pipelineContextVersion: existingTask.pipelineContextVersion ?? null,
           pipelineContextHash: existingTask.pipelineContextHash ?? null,
+          outlineWorkflowVersion:
+            existingTask.outlineWorkflowVersion != null
+              ? Number(existingTask.outlineWorkflowVersion)
+              : null,
+          contextBudgetVersion:
+            existingTask.contextBudgetVersion != null
+              ? Number(existingTask.contextBudgetVersion)
+              : null,
           createdAt: Number(existingTask.createdAt ?? Date.now()),
           updatedAt: Number(existingTask.updatedAt ?? Date.now()),
           resolvedAt: existingTask.resolvedAt ?? null,

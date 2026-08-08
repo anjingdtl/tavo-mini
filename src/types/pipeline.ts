@@ -63,6 +63,18 @@ export interface PipelineTask {
   /** Integrity hash of pipelineContextJson. */
   pipelineContextHash?: string | null;
   /**
+   * Frozen outline workflow protocol version (Schema 44+).
+   * 1 = Legacy Review / FactCheck / Proof; 2 = anchored audits + revision
+   * contract + Final Reviser. Frozen ONCE at task creation; resume never
+   * re-reads the live default. Pre-upgrade tasks default to 1.
+   */
+  outlineWorkflowVersion?: number | null;
+  /**
+   * Frozen context-budget strategy version (Schema 44+).
+   * 1 = Legacy budget; 2 = elastic budget V2. Frozen with the task.
+   */
+  contextBudgetVersion?: number | null;
+  /**
    * True when cold-start classification left this task recoverable.
    * Only meaningful for status === 'interrupted'.
    */

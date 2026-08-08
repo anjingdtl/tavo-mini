@@ -304,15 +304,34 @@ export function compileRevisionContract(
       protectedAnchorIds.push(id);
     }
   };
+  // Protection comes ONLY from the review report's explicit declaration
+  // (§6.2). WorkItem locators (anchor/range/insertion/boundary) are revision
+  // targets — adding them to the protection set would make the same passage
+  // both "must modify" and "must preserve".
   if (input.review) {
     for (const id of input.review.protectedAnchorIds || []) pushAnchor(id);
   }
-  // WorkItem anchors for range/insertion/boundary also protect their locals.
-  for (const item of workItems) {
-    if (!item.anchors) continue;
-    for (const a of item.anchors) pushAnchor(a.id);
-    pushAnchor(item.insertionBeforeAnchorId);
-    pushAnchor(item.insertionAfterAnchorId);
+  // Cross-report conflict (§6.2): when an effective FactCheck required/hard
+  // correction targets a review-protected anchor, fact correctness wins —
+  // drop it from the protection set and record a deterministic warning.
+  const factHardTargets = new Set<string>();
+  for (const c of factCorrections) {
+    if (c.severity === 'warning') continue;
+    if (c.scope === 'anchor' && c.anchorId) factHardTargets.add(c.anchorId);
+    if (c.scope === 'range' && Array.isArray(c.anchorIds)) {
+      for (const id of c.anchorIds) if (id) factHardTargets.add(id);
+    }
+  }
+  if (factHardTargets.size > 0) {
+    for (let i = protectedAnchorIds.length - 1; i >= 0; i -= 1) {
+      const id = protectedAnchorIds[i];
+      if (factHardTargets.has(id)) {
+        protectedAnchorIds.splice(i, 1);
+        warnings.push(
+          `事实修订优先：保护锚点 ${id} 与 FactCheck required/hard 修订定位冲突，已移出保护集合`,
+        );
+      }
+    }
   }
 
   const protectedFacts: string[] = [];

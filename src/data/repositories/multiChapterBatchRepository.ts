@@ -11,6 +11,10 @@ import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
 import { executeTransaction, type SqlStatement } from '../../services/database/transaction';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../../services/pipeline/outlineWorkflowVersion';
 import type {
   MultiChapterBatchStatus,
   MultiChapterBatchItemStatus,
@@ -46,6 +50,13 @@ export interface MultiChapterBatchRow {
   usedLlmCalls: number;
   usedInputTokens: number;
   usedOutputTokens: number;
+  /**
+   * Frozen protocol versions (Schema 44+). 1 = Legacy; 2 = V2 workflow /
+   * elastic budget. Frozen once at batch creation; every chapter task of
+   * the batch copies these values instead of re-reading the app default.
+   */
+  outlineWorkflowVersion: number;
+  contextBudgetVersion: number;
   pauseReason: string | null;
   errorCode: string | null;
   errorMessage: string | null;
@@ -126,6 +137,8 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
     usedLlmCalls: Number(row.used_llm_calls ?? 0),
     usedInputTokens: Number(row.used_input_tokens ?? 0),
     usedOutputTokens: Number(row.used_output_tokens ?? 0),
+    outlineWorkflowVersion: Number(row.outline_workflow_version ?? 1),
+    contextBudgetVersion: Number(row.context_budget_version ?? 1),
     pauseReason: row.pause_reason ?? null,
     errorCode: row.error_code ?? null,
     errorMessage: row.error_message ?? null,
@@ -197,6 +210,14 @@ export interface CreateBatchInput {
     maxInputTokens?: number | null;
     maxOutputTokens?: number | null;
   };
+  /**
+   * Frozen protocol versions (Schema 44+). `createBatch` is the NEW-batch
+   * creation entry point, so the default is the CURRENT protocol (2); the
+   * DB column default (1) exists only for pre-upgrade rows. Legacy callers
+   * may pass 1 explicitly.
+   */
+  outlineWorkflowVersion?: number;
+  contextBudgetVersion?: number;
   createdAt?: number;
 }
 
@@ -208,8 +229,9 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
        id, project_id, status, source_prompt, chapter_count,
        target_words_per_chapter, pipeline_mode,
        max_llm_calls, max_input_tokens, max_output_tokens,
+       outline_workflow_version, context_budget_version,
        created_at, updated_at
-     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.projectId,
@@ -220,6 +242,8 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
       input.budget?.maxLlmCalls ?? null,
       input.budget?.maxInputTokens ?? null,
       input.budget?.maxOutputTokens ?? null,
+      input.outlineWorkflowVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION,
+      input.contextBudgetVersion ?? CURRENT_CONTEXT_BUDGET_VERSION,
       now,
       now,
     ],
@@ -829,6 +853,9 @@ export async function createPipelineTaskForBatchItem(params: {
     stageResults: any[];
     finalText: string | null;
     error: string | null;
+    /** Frozen batch versions (§4.4): every child task copies the batch. */
+    outlineWorkflowVersion?: number | null;
+    contextBudgetVersion?: number | null;
     createdAt: number;
     updatedAt: number;
     resolvedAt: number | null;
@@ -843,8 +870,9 @@ export async function createPipelineTaskForBatchItem(params: {
     {
       sql: `INSERT INTO pipeline_tasks (
               id, target_type, target_id, status, stage_results, final_text, error,
+              outline_workflow_version, context_budget_version,
               created_at, updated_at, resolved_at
-            ) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, NULL)`,
+            ) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, NULL)`,
       params: [
         params.task.id,
         params.task.targetType,
@@ -852,6 +880,8 @@ export async function createPipelineTaskForBatchItem(params: {
         params.task.status,
         params.task.finalText,
         params.task.error,
+        params.task.outlineWorkflowVersion ?? 1,
+        params.task.contextBudgetVersion ?? 1,
         params.task.createdAt,
         params.task.updatedAt,
       ],
