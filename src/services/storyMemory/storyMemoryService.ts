@@ -31,6 +31,12 @@ import {
 } from './storyMemoryPolicy';
 import { advanceStoryMemoryCheckpointsUnlocked } from './storyMemoryCheckpointService';
 import { rebuildStoryMemoryUnlocked } from './storyMemoryRebuild';
+import {
+  checkpointMaxTokens as planPatchMaxTokens,
+  decideCheckpointBatchSize,
+  estimateCheckpointInputTokens,
+  nextCheckpointBudget,
+} from './storyMemoryBudget';
 
 /**
  * Resolve a display-number mapper for user-visible Story Memory text (Spec §11.3).
@@ -219,20 +225,6 @@ export function parseAndValidateMemoryPatch(
   });
 }
 
-const MIN_MEMORY_PATCH_OUTPUT_TOKENS = 2400;
-const MAX_MEMORY_PATCH_OUTPUT_TOKENS = 16000;
-
-function clampPatchTokens(value: number): number {
-  return Math.min(
-    MAX_MEMORY_PATCH_OUTPUT_TOKENS,
-    Math.max(MIN_MEMORY_PATCH_OUTPUT_TOKENS, Math.round(value)),
-  );
-}
-
-function nextPatchTokenBudget(current: number): number {
-  return clampPatchTokens(Math.max(current * 2, 4800));
-}
-
 async function requestPatch(
   messages: Array<{
     role: 'system' | 'user' | 'assistant';
@@ -298,7 +290,40 @@ export async function generateValidatedChapterMemoryPatch(
     input.previousState,
   );
   const scenario = input.scenario || 'story_memory_patch';
-  let budget = clampPatchTokens(input.memoryPatchMaxTokens);
+  // Code-review fix 5: reuse the single Story Memory budget planner instead of
+  // the legacy fixed 2400..16000 derivation. The ACTIVE model's
+  // context_window / max_output_tokens clamp every request (initial AND each
+  // retry), so a small model never receives a doomed oversized request.
+  let model: { contextWindow?: number; maxOutputTokens?: number } = {};
+  try {
+    const active = await db.getActiveLLMConfig();
+    const contextWindow = Number(active?.context_window);
+    const maxOutputTokens = Number(active?.max_output_tokens);
+    model = {
+      contextWindow: contextWindow > 0 ? contextWindow : undefined,
+      maxOutputTokens: maxOutputTokens > 0 ? maxOutputTokens : undefined,
+    };
+  } catch {
+    // Unknown model capability → legacy derivation, no extra clamp.
+  }
+  const inputTokens = estimateCheckpointInputTokens(messages);
+  let budget = planPatchMaxTokens({
+    memoryPatchMaxTokens: input.memoryPatchMaxTokens,
+    batchSize: 1,
+    contextWindow: model.contextWindow,
+    maxOutputTokens: model.maxOutputTokens,
+    estimatedInputTokens: inputTokens,
+  });
+  if (budget <= 0) {
+    const shrink = decideCheckpointBatchSize({
+      safeOutputMax: budget,
+      estimatedInputTokens: inputTokens,
+    });
+    throw new StoryMemoryError(
+      'MEMORY_PATCH_BUDGET_INFEASIBLE',
+      shrink.hint,
+    );
+  }
   let currentMessages: Array<{
     role: 'system' | 'user' | 'assistant';
     content: string;
@@ -370,7 +395,10 @@ export async function generateValidatedChapterMemoryPatch(
         }
         const message =
           parseError instanceof Error ? parseError.message : '未知校验错误';
-        const next = nextPatchTokenBudget(budget);
+        const next = nextCheckpointBudget(budget, model.maxOutputTokens, {
+          contextWindow: model.contextWindow,
+          estimatedInputTokens: inputTokens,
+        });
         if (next <= budget) {
           throw new StoryMemoryError(
             'MEMORY_PATCH_INVALID_JSON',
@@ -407,9 +435,15 @@ export async function generateValidatedChapterMemoryPatch(
         attempt,
         maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
         currentBudget: budget,
-        nextBudget: nextPatchTokenBudget(budget),
+        nextBudget: nextCheckpointBudget(budget, model.maxOutputTokens, {
+          contextWindow: model.contextWindow,
+          estimatedInputTokens: inputTokens,
+        }),
       });
       if (action.type === 'fail') {
+        // Single-chapter patch: no batch split exists on this path, so a
+        // shrinkBatch suggestion (length at cap) becomes a plain actionable
+        // model-capability failure.
         throw new StoryMemoryError(
           action.code as StoryMemoryError['code'],
           action.reason,

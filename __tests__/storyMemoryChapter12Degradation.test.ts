@@ -32,6 +32,41 @@ jest.mock('../src/services/macroReplace', () => ({
   processMacros: jest.fn(async (text: string) => text),
 }));
 
+// 被测代码用动态 import() 加载协作模块；Jest 无
+// --experimental-vm-modules 时原生动态 import 不可用。注册 mock 工厂
+// （返回真实实现）让需要动态 import 的路径可解析。
+jest.mock(
+  '../src/services/storyMemory/storyMemoryPolicy',
+  () => jest.requireActual('../src/services/storyMemory/storyMemoryPolicy'),
+);
+jest.mock(
+  '../src/services/storyMemory/storyMemoryMerger',
+  () => jest.requireActual('../src/services/storyMemory/storyMemoryMerger'),
+);
+jest.mock(
+  '../src/services/storyMemory/storyMemoryService',
+  () => jest.requireActual('../src/services/storyMemory/storyMemoryService'),
+);
+jest.mock(
+  '../src/services/storyMemory/storyMemoryRebuild',
+  () => jest.requireActual('../src/services/storyMemory/storyMemoryRebuild'),
+);
+jest.mock(
+  '../src/services/storyMemory/storyMemoryCheckpointService',
+  () =>
+    jest.requireActual(
+      '../src/services/storyMemory/storyMemoryCheckpointService',
+    ),
+);
+jest.mock(
+  '../src/services/continuation/chapterNumbering/continuationChapterNumbering',
+  () => ({
+    getContinuationChapterNumbering: jest.fn(async () => ({
+      getDisplayNumber: (position: number) => position + 1,
+    })),
+  }),
+);
+
 import { prepareStoryMemoryForGeneration } from '../src/services/storyMemory/storyMemoryPrepare';
 import { buildContext } from '../src/services/contextBuilder';
 import { STORY_MEMORY_MAX_RAW_CHAPTERS } from '../src/services/storyMemory/storyMemoryCoverage';
@@ -87,6 +122,7 @@ describe('repair plan P0 — chapter 12 with never-succeeded checkpoint', () => 
     jest.clearAllMocks();
     mockGetChapters.mockResolvedValue([...buildElevenChapters(), targetChapter]);
     mockGetMemory.mockResolvedValue(EMPTY_RECORD);
+    mockEnsure.mockResolvedValue(EMPTY_RECORD);
   });
 
   it('prepare degrades: fatal=false, raw ≤ 10 chapters, chapter 1 uncovered, warning emitted', async () => {
@@ -151,5 +187,44 @@ describe('repair plan P0 — chapter 12 with never-succeeded checkpoint', () => 
     expect(prepared.fatal).toBe(false);
     expect(prepared.degraded).toBe(false);
     expect(prepared.coverage.uncoveredChapterIds).toEqual([]);
+  });
+
+  it('generation: checkpoint maintenance failure degrades with warnings, writing can still start', async () => {
+    // 长期记忆完全缺失（empty record），第 12 章 generation 时维护链路失败
+    // （Jest 环境动态 import 不可用，与真实 LLM 故障同样落入 prepare 的
+    // 降级 catch；生产中则可能是网络/模型错误）。prepare 必须降级而非阻断。
+    const prepared = await prepareStoryMemoryForGeneration(
+      1,
+      targetChapter,
+      { slidingWindowSize: 4000 } as any,
+      { mode: 'generation' },
+    );
+    expect(prepared.fatal).toBe(false);
+    expect(prepared.blocked).toBe(false);
+    expect(prepared.degraded).toBe(true);
+    const updateFailed = prepared.warnings.find(
+      w => w.code === 'checkpoint_update_failed',
+    );
+    expect(updateFailed).toBeDefined();
+    // 覆盖不足同样以警告呈现，不锁死写作。
+    expect(prepared.coverage.uncoveredChapterIds.length).toBeGreaterThan(0);
+
+    // 用户选择继续后可以启动写作：buildContext 仍编译出非空 messages。
+    const result = await buildContext(
+      targetChapter,
+      CONTEXT_CONFIG,
+      1,
+      undefined,
+      { storyMemoryMode: 'generation', retrievalUserPrompt: '' },
+    );
+    expect(result.messages.length).toBeGreaterThan(0);
+    expect(
+      result.storyMemoryWarnings.some(
+        w => w.code === 'checkpoint_update_failed',
+      ),
+    ).toBe(true);
+    const storyTrace = result.trace.find(t => t.kind === 'story_memory');
+    expect(storyTrace).toBeDefined();
+    expect(storyTrace?.reason).toContain('未覆盖');
   });
 });

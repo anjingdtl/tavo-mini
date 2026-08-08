@@ -123,17 +123,33 @@ export function estimateCheckpointInputTokens(
   );
 }
 
+/**
+ * Next retry budget. The first argument carries the current budget; the
+ * optional `maxOutputTokens` preserves the legacy two-arg contract. The
+ * optional third argument carries the ACTIVE model capabilities so EVERY
+ * expansion is clamped by the same `safeOutputMaxForModel` hard cap
+ * (context_window - estimatedInputTokens - protocol safety) — a retry must
+ * never exceed the model window that the first attempt already fit into.
+ *
+ * Returns 0 when the window cannot fit even protocol + input, i.e. the budget
+ * cannot grow any further — callers must split the batch or fail with an
+ * actionable model-capability hint.
+ */
 export function nextCheckpointBudget(
   current: number,
   maxOutputTokens?: number,
+  model?: { contextWindow?: number; estimatedInputTokens?: number },
 ): number {
   const doubled = Math.max(current * 2, 4800);
-  const cap =
-    maxOutputTokens != null && maxOutputTokens > 0
-      ? Math.floor(maxOutputTokens)
-      : MAX_CHECKPOINT_OUTPUT_TOKENS;
-  return Math.min(
-    cap,
-    Math.max(MIN_CHECKPOINT_OUTPUT_TOKENS, Math.round(doubled)),
+  const cap = safeOutputMaxForModel({
+    memoryPatchMaxTokens: 1,
+    batchSize: 1,
+    contextWindow: model?.contextWindow,
+    maxOutputTokens,
+    estimatedInputTokens: model?.estimatedInputTokens,
+  });
+  return Math.max(
+    0,
+    Math.min(cap, Math.max(MIN_CHECKPOINT_OUTPUT_TOKENS, Math.round(doubled))),
   );
 }

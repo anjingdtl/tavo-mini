@@ -95,4 +95,30 @@ describe('storyMemoryBudget planner (repair plan P1 §6.3)', () => {
     expect(nextCheckpointBudget(2400, 2000)).toBe(2000);
     expect(nextCheckpointBudget(2400, 4000)).toBe(4000);
   });
+
+  it('every retry expansion stays within context_window - input - safetyMargin (P1 fix 3)', () => {
+    // 窗口剩余空间 8192-6000-256 = 1936，扩容不得突破。
+    expect(
+      nextCheckpointBudget(2400, 4000, {
+        contextWindow: 8192,
+        estimatedInputTokens: 6000,
+      }),
+    ).toBe(1936);
+    // 窗口连协议 + 输入都放不下 → 预算无法继续增长（返回 0）。
+    expect(
+      nextCheckpointBudget(2400, 4000, {
+        contextWindow: 5000,
+        estimatedInputTokens: 5000,
+      }),
+    ).toBe(0);
+    // max_output_tokens 更紧时取更小值。
+    expect(
+      nextCheckpointBudget(2400, 1200, {
+        contextWindow: 32768,
+        estimatedInputTokens: 1000,
+      }),
+    ).toBe(1200);
+    // 无模型能力声明时保持原语义。
+    expect(nextCheckpointBudget(2400, undefined)).toBe(4800);
+  });
 });
