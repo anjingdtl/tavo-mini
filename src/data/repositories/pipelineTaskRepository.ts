@@ -329,3 +329,51 @@ export async function updatePipelineTaskContext(
     );
   }
 }
+
+/**
+ * F3-01: targeted resume-state write for a user-confirmed resume.
+ *
+ * Unlike `savePipelineTask` (a full UPSERT that overwrites EVERY column),
+ * this UPDATE only flips the fields the state machine needs to re-enter the
+ * task:
+ *
+ *   status          = 'interrupted'   (resume path, see determineNextPipelineAction)
+ *   error           = NULL            (stale failure text must not block resume)
+ *   resolved_at     = NULL            (task re-opened; adoption not yet done)
+ *   resolved_action = NULL
+ *   updated_at      = now
+ *
+ * It NEVER touches:
+ *   id / target_type / target_id / created_at
+ *   stage_results / final_text
+ *   input_fingerprint / pipeline_context_json / pipeline_context_version /
+ *   pipeline_context_hash
+ *
+ * so a task that already paid for draft/review/factCheck keeps its frozen
+ * execution + draft context + input fingerprint, and the pipeline state
+ * machine resumes ONLY the failed stage (same task, same frozen request,
+ * succeeded stages never re-run, no double billing).
+ */
+export async function updatePipelineTaskResumeState(
+  taskId: string,
+  now = Date.now(),
+): Promise<void> {
+  const database = await openDatabase();
+  const result = await execute(
+    database,
+    `UPDATE pipeline_tasks
+     SET status = 'interrupted',
+         error = NULL,
+         resolved_at = NULL,
+         resolved_action = NULL,
+         updated_at = ?
+     WHERE id = ?`,
+    [now, taskId],
+  );
+  const rowsAffected = Number((result as any)?.rowsAffected ?? 0);
+  if (rowsAffected !== 1) {
+    throw new Error(
+      `恢复流水线任务失败：任务 ${taskId} 影响行数 ${rowsAffected}（期望 1）`,
+    );
+  }
+}
