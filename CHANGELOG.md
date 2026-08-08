@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.11.37] - 2026-08-08
+
+### Fixed
+
+- **F4-01 Story Memory partial success 后失败（P1）**：empty 首轮推进时 batch1 成功（checkpoint 已持久化为 clean）后 batch2 失败，失败处理器写回的是函数入口时的旧 `record.status`（empty），把整行 status 回写成 empty——`memory_json` 里 batch1 终点仍在，但 eligibility 只看 status 列，`not_clean` 导致已有检查点不可注入（"长期故事检查点 0 tokens / 未包含"）；修复为失败时保留「最近一次成功持久化」checkpoint 语义：`advanceStoryMemoryCheckpointsUnlocked` 写回内存中最新已应用 state 的 metadata（batch1 成功 → clean），`finalizeChapterMemory` catch 重读最新 row 再写回且 dirty 标记原样保留；真实 SQLite 穿透回归：empty→success→failure 后 status=clean / through=batch1 终点 / lastError=batch2 错误 / eligibility=usable，retry 从 batch2 继续（LLM 只调 1 次，batch1 不重做），首批失败不伪造 clean，dirty rebuild 失败仍不可注入，preview 编译路径 story_memory included + tokens>0。
+- **F4-02 Smart 默认10章节奏（P2）**：smart 模式 `pending_token_limit` 提前触发移除——1..interval-1 章不再因普通 token 累计（长章节书约 3~4 章即触发）破坏 10 章主节奏；第 10 章 `interval_reached`，安全事件（dirty / coverage gap hardDue / manual / key chapter）继续允许提前；pendingTokenSoftLimit 字段保留（兼容已存 policy 行）。
+- **F4-03 Sliding raw 非法值防御（P3）**：`selectPreviousChapters` 对 NaN/Infinity 等非有限 `recentChapterCount` 回退到最大 raw 章数（10）并 clamp 1..10——此前 `slice(-NaN)` 会退化成「全部历史」（100 章全量进 prompt）；full/custom 语义不变；StoryMemoryScreen 间隔输入瞬态默认 `'3'` 改为 `STORY_MEMORY_DEFAULT_INTERVAL` 常量。
+
 ## [2.11.36] - 2026-08-08
 
 ### Fixed
