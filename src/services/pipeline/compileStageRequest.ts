@@ -10,6 +10,11 @@ import {
   buildProofMessages,
   buildReviewRepairMessages,
   buildFactCheckRepairMessages,
+  buildReviewV2Messages,
+  buildFactCheckV2Messages,
+  buildReviewV2RepairMessages,
+  buildFactCheckV2RepairMessages,
+  buildFinalReviserMessages,
   estimateStageInputTokens,
 } from '../pipelineMessages';
 import {
@@ -773,6 +778,397 @@ function compileFactCheckWithElasticBudget(params: {
         ? buildFactCheckRepairMessages(params.draftText, ctx, params.repairReason)
         : buildFactCheckMessages(params.draftText, ctx);
     },
+  });
+}
+
+/**
+ * Review V2 (anchored) compiler — workflow version 2 only.
+ *
+ * Body is the SINGLE tagged-draft injection (§5.5). Optional context sections
+ * are clipped by the same conservation allocator; outline stays mandatory and
+ * verbatim. Pure function (0 LLM / 0 DB) so resume reconstructs the exact
+ * same request from persisted draft + anchors.
+ */
+export function compileReviewV2StageRequest(params: {
+  taggedDraft: string;
+  context: ReviewContext;
+  draftHash: string;
+  maxTokens: number;
+  contextWindow: number;
+  repairReason?: string;
+}): StageCompileResult {
+  const stage = params.repairReason ? 'review_repair' : 'review';
+  const outlineText = params.context.outlineText
+    ? String(params.context.outlineText)
+    : '';
+  const outlineTokens = estimateTokens(outlineText);
+  const bodyTokens = estimateTokens(params.taggedDraft);
+
+  const scaffold = params.repairReason
+    ? buildReviewV2RepairMessages({
+        taggedDraft: params.taggedDraft,
+        context: emptyReviewContext(),
+        draftHash: params.draftHash,
+        failureReason: params.repairReason,
+      })
+    : buildReviewV2Messages({
+        taggedDraft: params.taggedDraft,
+        context: emptyReviewContext(),
+        draftHash: params.draftHash,
+      });
+  const PARTITION_OVERHEAD = 128;
+  const fixedMessagesTokens =
+    Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens) +
+    PARTITION_OVERHEAD;
+
+  const optionalSections = [
+    { id: 'preset', tokens: estimateTokens(params.context.presetText), weight: REVIEW_OPTIONAL_WEIGHTS.preset },
+    { id: 'character', tokens: estimateTokens(params.context.characterText), weight: REVIEW_OPTIONAL_WEIGHTS.character },
+    { id: 'note', tokens: estimateTokens(params.context.noteText), weight: REVIEW_OPTIONAL_WEIGHTS.note },
+    { id: 'worldbook', tokens: estimateTokens(params.context.worldbookText), weight: REVIEW_OPTIONAL_WEIGHTS.worldbook },
+    { id: 'storyMemory', tokens: estimateTokens(params.context.storyMemoryText), weight: REVIEW_OPTIONAL_WEIGHTS.storyMemory },
+    { id: 'episodic', tokens: estimateTokens(params.context.episodicMemoryText), weight: REVIEW_OPTIONAL_WEIGHTS.episodic },
+    { id: 'recentBridge', tokens: estimateTokens(params.context.recentBridgeText), weight: REVIEW_OPTIONAL_WEIGHTS.recentBridge },
+    { id: 'currentInstruction', tokens: estimateTokens(params.context.currentInstructionText), weight: REVIEW_OPTIONAL_WEIGHTS.currentInstruction },
+    { id: 'userPrompt', tokens: estimateTokens(params.context.retrievalUserPrompt), weight: REVIEW_OPTIONAL_WEIGHTS.userPrompt },
+  ];
+
+  const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
+  const budget = allocateStageContextBudget({
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    safetyMargin,
+    fixedMessagesTokens,
+    fullOutlineTokens: outlineTokens,
+    mandatoryBodyTokens: bodyTokens,
+    optionalSections,
+  });
+
+  const am = allocMap(budget.optionalAllocations);
+  const clipped: ReviewContext = {
+    presetText: clipByAllocation(params.context.presetText, am.get('preset') || 0),
+    characterText: clipByAllocation(params.context.characterText, am.get('character') || 0),
+    noteText: clipByAllocation(params.context.noteText, am.get('note') || 0),
+    worldbookText: clipByAllocation(params.context.worldbookText, am.get('worldbook') || 0),
+    storyMemoryText: clipByAllocation(params.context.storyMemoryText, am.get('storyMemory') || 0),
+    episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, am.get('episodic') || 0),
+    recentBridgeText: clipByAllocation(params.context.recentBridgeText, am.get('recentBridge') || 0),
+    currentInstructionText: clipByAllocation(params.context.currentInstructionText, am.get('currentInstruction') || 0),
+    retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, am.get('userPrompt') || 0),
+    outlineText,
+  };
+
+  const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
+    const m = allocMap(allocations);
+    const ctx: ReviewContext = {
+      presetText: clipByAllocation(params.context.presetText, m.get('preset') || 0),
+      characterText: clipByAllocation(params.context.characterText, m.get('character') || 0),
+      noteText: clipByAllocation(params.context.noteText, m.get('note') || 0),
+      worldbookText: clipByAllocation(params.context.worldbookText, m.get('worldbook') || 0),
+      storyMemoryText: clipByAllocation(params.context.storyMemoryText, m.get('storyMemory') || 0),
+      episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, m.get('episodic') || 0),
+      recentBridgeText: clipByAllocation(params.context.recentBridgeText, m.get('recentBridge') || 0),
+      currentInstructionText: clipByAllocation(params.context.currentInstructionText, m.get('currentInstruction') || 0),
+      retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, m.get('userPrompt') || 0),
+      outlineText,
+    };
+    return params.repairReason
+      ? buildReviewV2RepairMessages({
+          taggedDraft: params.taggedDraft,
+          context: ctx,
+          draftHash: params.draftHash,
+          failureReason: params.repairReason,
+        })
+      : buildReviewV2Messages({
+          taggedDraft: params.taggedDraft,
+          context: ctx,
+          draftHash: params.draftHash,
+        });
+  };
+
+  return finalizeCompiled({
+    stage,
+    messages: params.repairReason
+      ? buildReviewV2RepairMessages({
+          taggedDraft: params.taggedDraft,
+          context: clipped,
+          draftHash: params.draftHash,
+          failureReason: params.repairReason,
+        })
+      : buildReviewV2Messages({
+          taggedDraft: params.taggedDraft,
+          context: clipped,
+          draftHash: params.draftHash,
+        }),
+    maxTokens: params.maxTokens,
+    contextWindow: params.contextWindow,
+    outlineTokens,
+    bodyTokens,
+    fixedMessagesTokens,
+    budget,
+    allocations: [
+      { id: 'outline', requested: outlineTokens, allocated: outlineTokens, truncated: false },
+      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
+      ...budget.optionalAllocations,
+    ],
+    rebuild,
+  });
+}
+
+/**
+ * FactCheck V2 (anchored) compiler — workflow version 2 only.
+ * Same shape as compileReviewV2StageRequest; body is the tagged draft.
+ */
+export function compileFactCheckV2StageRequest(params: {
+  taggedDraft: string;
+  context: FactCheckContext;
+  draftHash: string;
+  maxTokens: number;
+  contextWindow: number;
+  repairReason?: string;
+}): StageCompileResult {
+  const stage = params.repairReason ? 'factCheck_repair' : 'factCheck';
+  const outlineText = params.context.outlineText
+    ? String(params.context.outlineText)
+    : '';
+  const outlineTokens = estimateTokens(outlineText);
+  const bodyTokens = estimateTokens(params.taggedDraft);
+
+  const scaffold = params.repairReason
+    ? buildFactCheckV2RepairMessages({
+        taggedDraft: params.taggedDraft,
+        context: emptyFactCheckContext(),
+        draftHash: params.draftHash,
+        failureReason: params.repairReason,
+      })
+    : buildFactCheckV2Messages({
+        taggedDraft: params.taggedDraft,
+        context: emptyFactCheckContext(),
+        draftHash: params.draftHash,
+      });
+  const PARTITION_OVERHEAD = 128;
+  const fixedMessagesTokens =
+    Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens) +
+    PARTITION_OVERHEAD;
+
+  const optionalSections = [
+    { id: 'preset', tokens: estimateTokens(params.context.presetText), weight: FACTCHECK_OPTIONAL_WEIGHTS.preset },
+    { id: 'currentInstruction', tokens: estimateTokens(params.context.currentInstructionText), weight: FACTCHECK_OPTIONAL_WEIGHTS.currentInstruction },
+    { id: 'userPrompt', tokens: estimateTokens(params.context.retrievalUserPrompt), weight: FACTCHECK_OPTIONAL_WEIGHTS.userPrompt },
+    { id: 'recentBridge', tokens: estimateTokens(params.context.recentBridgeText), weight: FACTCHECK_OPTIONAL_WEIGHTS.recentBridge },
+    { id: 'storyMemory', tokens: estimateTokens(params.context.storyMemoryText), weight: FACTCHECK_OPTIONAL_WEIGHTS.storyMemory },
+    { id: 'episodic', tokens: estimateTokens(params.context.episodicMemoryText), weight: FACTCHECK_OPTIONAL_WEIGHTS.episodic },
+    { id: 'worldbook', tokens: estimateTokens(params.context.worldbookText), weight: FACTCHECK_OPTIONAL_WEIGHTS.worldbook },
+    { id: 'character', tokens: estimateTokens(params.context.characterText), weight: FACTCHECK_OPTIONAL_WEIGHTS.character },
+    { id: 'note', tokens: estimateTokens(params.context.noteText), weight: FACTCHECK_OPTIONAL_WEIGHTS.note },
+  ];
+
+  const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
+  const budget = allocateStageContextBudget({
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    safetyMargin,
+    fixedMessagesTokens,
+    fullOutlineTokens: outlineTokens,
+    mandatoryBodyTokens: bodyTokens,
+    optionalSections,
+  });
+
+  const am = allocMap(budget.optionalAllocations);
+  const clipped: FactCheckContext = {
+    presetText: clipByAllocation(params.context.presetText, am.get('preset') || 0),
+    currentInstructionText: clipByAllocation(params.context.currentInstructionText, am.get('currentInstruction') || 0),
+    retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, am.get('userPrompt') || 0),
+    recentBridgeText: clipByAllocation(params.context.recentBridgeText, am.get('recentBridge') || 0),
+    storyMemoryText: clipByAllocation(params.context.storyMemoryText, am.get('storyMemory') || 0),
+    episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, am.get('episodic') || 0),
+    worldbookText: clipByAllocation(params.context.worldbookText, am.get('worldbook') || 0),
+    characterText: clipByAllocation(params.context.characterText, am.get('character') || 0),
+    noteText: clipByAllocation(params.context.noteText, am.get('note') || 0),
+    outlineText,
+  };
+
+  const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
+    const m = allocMap(allocations);
+    const ctx: FactCheckContext = {
+      presetText: clipByAllocation(params.context.presetText, m.get('preset') || 0),
+      currentInstructionText: clipByAllocation(params.context.currentInstructionText, m.get('currentInstruction') || 0),
+      retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, m.get('userPrompt') || 0),
+      recentBridgeText: clipByAllocation(params.context.recentBridgeText, m.get('recentBridge') || 0),
+      storyMemoryText: clipByAllocation(params.context.storyMemoryText, m.get('storyMemory') || 0),
+      episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, m.get('episodic') || 0),
+      worldbookText: clipByAllocation(params.context.worldbookText, m.get('worldbook') || 0),
+      characterText: clipByAllocation(params.context.characterText, m.get('character') || 0),
+      noteText: clipByAllocation(params.context.noteText, m.get('note') || 0),
+      outlineText,
+    };
+    return params.repairReason
+      ? buildFactCheckV2RepairMessages({
+          taggedDraft: params.taggedDraft,
+          context: ctx,
+          draftHash: params.draftHash,
+          failureReason: params.repairReason,
+        })
+      : buildFactCheckV2Messages({
+          taggedDraft: params.taggedDraft,
+          context: ctx,
+          draftHash: params.draftHash,
+        });
+  };
+
+  return finalizeCompiled({
+    stage,
+    messages: params.repairReason
+      ? buildFactCheckV2RepairMessages({
+          taggedDraft: params.taggedDraft,
+          context: clipped,
+          draftHash: params.draftHash,
+          failureReason: params.repairReason,
+        })
+      : buildFactCheckV2Messages({
+          taggedDraft: params.taggedDraft,
+          context: clipped,
+          draftHash: params.draftHash,
+        }),
+    maxTokens: params.maxTokens,
+    contextWindow: params.contextWindow,
+    outlineTokens,
+    bodyTokens,
+    fixedMessagesTokens,
+    budget,
+    allocations: [
+      { id: 'outline', requested: outlineTokens, allocated: outlineTokens, truncated: false },
+      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
+      ...budget.optionalAllocations,
+    ],
+    rebuild,
+  });
+}
+
+/**
+ * Final Reviser (V2 Proof) compiler — workflow version 2 only.
+ *
+ * Mandatory: revision contract JSON + full canonical draft (single
+ * injection). Optional: slim chapter goal / user prompt / seam / preset /
+ * hard constraints. Pure function (0 LLM / 0 DB) so resume deterministically
+ * rebuilds the identical request from persisted draft + audits.
+ */
+export function compileFinalReviserStageRequest(params: {
+  contractJson: string;
+  workItemCount: number;
+  canonicalDraft: string;
+  constraints: ProofConstraints;
+  maxTokens: number;
+  contextWindow: number;
+}): StageCompileResult {
+  const stage = 'proof';
+  const bodyTokens = estimateTokens(params.canonicalDraft);
+  const contractTokens = estimateTokens(params.contractJson);
+
+  const scaffold = buildFinalReviserMessages({
+    contractJson: params.contractJson,
+    workItemCount: params.workItemCount,
+    canonicalDraft: params.canonicalDraft,
+  });
+  const PARTITION_OVERHEAD = 128;
+  const fixedMessagesTokens =
+    Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens - contractTokens) +
+    PARTITION_OVERHEAD;
+
+  const hardConstraints = [
+    ...params.constraints.relevantCharacterConstraints,
+    ...params.constraints.relevantWorldRules,
+  ].filter(h => h && h.trim());
+  const hardList = hardConstraints.join('\n');
+
+  const optionalSections = [
+    { id: 'hardConstraints', tokens: estimateTokens(hardList), weight: 4 },
+    { id: 'recentBridge', tokens: estimateTokens(params.constraints.recentBridgeText), weight: 3 },
+    { id: 'preset', tokens: estimateTokens(params.constraints.presetText), weight: 2 },
+    { id: 'currentInstruction', tokens: estimateTokens(params.constraints.currentInstructionText), weight: 2 },
+    { id: 'userPrompt', tokens: estimateTokens(params.constraints.retrievalUserPrompt), weight: 1 },
+  ];
+
+  const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
+  const budget = allocateStageContextBudget({
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    safetyMargin,
+    fixedMessagesTokens,
+    fullOutlineTokens: 0,
+    mandatoryBodyTokens: bodyTokens + contractTokens,
+    optionalSections,
+  });
+
+  const am = allocMap(budget.optionalAllocations);
+  const clipped = clipByAllocation(hardList, am.get('hardConstraints') || 0);
+  const hardListClipped = clipped.length > 0 ? clipped.split('\n') : [];
+
+  const messages = buildFinalReviserMessages({
+    contractJson: params.contractJson,
+    workItemCount: params.workItemCount,
+    canonicalDraft: params.canonicalDraft,
+    currentInstructionText: clipByAllocation(
+      params.constraints.currentInstructionText,
+      am.get('currentInstruction') || 0,
+    ),
+    retrievalUserPrompt: clipByAllocation(
+      params.constraints.retrievalUserPrompt,
+      am.get('userPrompt') || 0,
+    ),
+    recentBridgeText: clipByAllocation(
+      params.constraints.recentBridgeText,
+      am.get('recentBridge') || 0,
+    ),
+    presetText: clipByAllocation(
+      params.constraints.presetText,
+      am.get('preset') || 0,
+    ),
+    hardConstraints: hardListClipped,
+  });
+
+  const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
+    const m = allocMap(allocations);
+    const hard = clipByAllocation(hardList, m.get('hardConstraints') || 0);
+    return buildFinalReviserMessages({
+      contractJson: params.contractJson,
+      workItemCount: params.workItemCount,
+      canonicalDraft: params.canonicalDraft,
+      currentInstructionText: clipByAllocation(
+        params.constraints.currentInstructionText,
+        m.get('currentInstruction') || 0,
+      ),
+      retrievalUserPrompt: clipByAllocation(
+        params.constraints.retrievalUserPrompt,
+        m.get('userPrompt') || 0,
+      ),
+      recentBridgeText: clipByAllocation(
+        params.constraints.recentBridgeText,
+        m.get('recentBridge') || 0,
+      ),
+      presetText: clipByAllocation(
+        params.constraints.presetText,
+        m.get('preset') || 0,
+      ),
+      hardConstraints: hard.length > 0 ? hard.split('\n') : [],
+    });
+  };
+
+  return finalizeCompiled({
+    stage,
+    messages,
+    maxTokens: params.maxTokens,
+    contextWindow: params.contextWindow,
+    outlineTokens: 0,
+    bodyTokens: bodyTokens + contractTokens,
+    fixedMessagesTokens,
+    budget,
+    allocations: [
+      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
+      { id: 'contract', requested: contractTokens, allocated: contractTokens, truncated: false },
+      ...budget.optionalAllocations,
+    ],
+    rebuild,
   });
 }
 

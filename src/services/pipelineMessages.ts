@@ -617,3 +617,419 @@ export function estimateStageInputTokens(messages: ChatMessage[]): number {
     0,
   );
 }
+
+// ---------------------------------------------------------------------------
+// V5-Lite workflow version 2: anchored Review / FactCheck messages.
+// Draft body is injected EXACTLY ONCE in tagged form (§5.5). Audit reports are
+// structured contracts (§6–§8); the client backfills real anchor text.
+// ---------------------------------------------------------------------------
+
+/** Shared correction schema doc used by both V2 audit prompts. */
+const V2_CORRECTION_SCHEMA_LINES = [
+  '"requiredCorrections": 数组中每条修正项必须符合：',
+  '  {',
+  '    "id": "唯一短 id，如 r1 / f2",',
+  '    "scope": "anchor | range | insertion | chapter | boundary",',
+  '    "dimension": "问题维度（如 人物表现 / 连续性 / 大纲执行）",',
+  '    "severity": "required | hard | warning",',
+  '    "diagnosis": "问题诊断（简洁）",',
+  '    "rewriteGoal": "期望的修订目标（简洁、可执行）",',
+  '    "preserveMeaning": ["修订时必须保留的原意（可为空数组）"]',
+  '  }',
+  'scope 定位字段规则：',
+  '  - anchor：anchorId（单段问题）；',
+  '  - range：anchorIds（至少两个，跨段/顺序问题）；',
+  '  - insertion：insertionBeforeAnchorId 或 insertionAfterAnchorId（缺段/插入点）；',
+  '  - chapter：整个章节层面，不填任何 anchor 字段；',
+  '  - boundary：boundary 取 "opening" | "ending"（开头承接/章末落点），可附邻近 anchorId。',
+  '禁止输出 excerpt、start、end 或任何原文摘录——所有原文由客户端根据 anchor 回填。',
+  '禁止把 [draft-p-xxx] 标记写进诊断或任何报告文本。',
+];
+
+const V2_COMMON_RULES = [
+  '你只会得到本次写作实际使用的上下文资料。不要假设、不要补全未提供的设定。',
+  '不得用现实常识否定世界书或故事状态中明确建立的设定。',
+  '只输出 JSON，不要输出 Markdown 围栏、解释或推理过程。',
+  '没有问题时，对应数组返回空数组，不要编造。',
+  '不得输出完整修订稿或整段正文重述。',
+];
+
+/**
+ * Literary review V2 (anchored). Review judges literature, outline execution
+ * and chapter structure — NOT canon hard-fact adjudication (§7).
+ */
+export function buildReviewV2Messages(params: {
+  taggedDraft: string;
+  context: ReviewContext;
+  draftHash: string;
+  /** Anchor count for the tagged draft; used to bound id validity. */
+  anchorCount?: number;
+}): ChatMessage[] {
+  const ctx: ReviewContext = {
+    presetText: clip(params.context.presetText, REVIEW_BUDGET.preset),
+    characterText: clip(params.context.characterText, REVIEW_BUDGET.character),
+    noteText: clip(params.context.noteText, REVIEW_BUDGET.note),
+    worldbookText: clip(params.context.worldbookText, REVIEW_BUDGET.worldbook),
+    storyMemoryText: clip(params.context.storyMemoryText, REVIEW_BUDGET.storyMemory),
+    episodicMemoryText: clip(
+      params.context.episodicMemoryText,
+      REVIEW_BUDGET.episodic,
+    ),
+    recentBridgeText: clip(
+      params.context.recentBridgeText,
+      REVIEW_BUDGET.recentBridge,
+    ),
+    currentInstructionText: clip(
+      params.context.currentInstructionText,
+      REVIEW_BUDGET.instruction,
+    ),
+    retrievalUserPrompt: clip(
+      params.context.retrievalUserPrompt,
+      REVIEW_BUDGET.userPrompt,
+    ),
+    outlineText: params.context.outlineText ? String(params.context.outlineText) : '',
+  };
+
+  const contextBlock = partition([
+    ['【项目大纲｜未来规划，最高创作约束】', ctx.outlineText],
+    ['【写作预设与文风】', ctx.presetText],
+    ['【人物设定】', ctx.characterText],
+    ['【项目笔记 / 仿写资料】', ctx.noteText],
+    ['【世界书 / 世界规则】', ctx.worldbookText],
+    ['【当前故事状态】', ctx.storyMemoryText],
+    ['【历史章节事件】', ctx.episodicMemoryText],
+    ['【近期正文 / 衔接】', ctx.recentBridgeText],
+    ['【当前章节目标】', ctx.currentInstructionText],
+    ['【用户本轮要求】', ctx.retrievalUserPrompt],
+  ]);
+
+  const systemLines = [
+    '你是小说终审前的审阅编辑。你的职责是执行“修订合同”的第一步：',
+    '对带锚点的初稿做文学、大纲执行与章节结构评估，把判断转成可定位、可执行的修正合同。',
+    '',
+    '关注范围（仅文学与结构，不裁决事实对错）：',
+    '1. 本章大纲节点落实情况——是否完成应承担的主线推进；',
+    '2. 缺失 Beat 与后续剧情是否提前（premature）；',
+    '3. 场景顺序、节奏、人物表现、对话与情绪递进；',
+    '4. 开头承接上一章、章末落点是否得当；',
+    '5. 冗余、重复、Show/Tell、机械总结；',
+    '6. 已正确完成且终稿必须保护的内容（列入 protectedAnchorIds）。',
+    '',
+    '正文以锚点形式给出，每个 [draft-p-xxx] 是一次定位：',
+    '- 锚点标记只用于定位，禁止写入报告或小说；',
+    '- 输出必须紧凑，不得重复整段正文，不得输出完整修订稿。',
+    '',
+    '请按以下 JSON 合同输出（schemaVersion 固定 2，draftHash 必须与给定值一致）：',
+    '{',
+    '  "schemaVersion": 2,',
+    '  "draftHash": "' + params.draftHash + '",',
+    '  "requiredCorrections": [],',
+    '  "protectedAnchorIds": [],',
+    '  "outlineExecution": {',
+    '    "fulfilledBeats": [],',
+    '    "missingBeats": [],',
+    '    "deviations": [],',
+    '    "prematureBeats": [],',
+    '    "mustPreserve": [],',
+    '    "endingGoal": "",',
+    '    "mustNotAdvance": []',
+    '  }',
+    '}',
+    '',
+    ...V2_CORRECTION_SCHEMA_LINES,
+    'outlineExecution 语义：',
+    '  - fulfilledBeats：本章已正确完成的大纲节点；',
+    '  - missingBeats：应当完成但缺失的节点；',
+    '  - deviations：偏离主线的情节；',
+    '  - prematureBeats：过早发生的后续剧情；',
+    '  - mustPreserve：终稿必须保留的内容（与 protectedAnchorIds 互补）；',
+    '  - endingGoal：本章应落到的结尾状态（无则空字符串）；',
+    '  - mustNotAdvance：不得提前写成的未来内容。',
+    '',
+    ...V2_COMMON_RULES,
+  ];
+
+  const userLines = [
+    contextBlock,
+    '【带锚点的初稿｜正文只出现这一次】',
+    params.taggedDraft,
+  ].filter(Boolean);
+
+  return [
+    { role: 'system', content: systemLines.join('\n') },
+    { role: 'user', content: userLines.join('\n\n') },
+  ];
+}
+
+/**
+ * Fact-check V2 (anchored). Facts / state / continuity / knowledge boundary;
+ * never overrides established world rules with real-world common sense (§8).
+ */
+export function buildFactCheckV2Messages(params: {
+  taggedDraft: string;
+  context: FactCheckContext;
+  draftHash: string;
+}): ChatMessage[] {
+  const ctx: FactCheckContext = {
+    presetText: clip(params.context.presetText, FACTCHECK_BUDGET.preset),
+    currentInstructionText: clip(
+      params.context.currentInstructionText,
+      FACTCHECK_BUDGET.instruction,
+    ),
+    retrievalUserPrompt: clip(
+      params.context.retrievalUserPrompt,
+      FACTCHECK_BUDGET.userPrompt,
+    ),
+    recentBridgeText: clip(
+      params.context.recentBridgeText,
+      FACTCHECK_BUDGET.recentBridge,
+    ),
+    storyMemoryText: clip(params.context.storyMemoryText, FACTCHECK_BUDGET.storyMemory),
+    episodicMemoryText: clip(
+      params.context.episodicMemoryText,
+      FACTCHECK_BUDGET.episodic,
+    ),
+    worldbookText: clip(params.context.worldbookText, FACTCHECK_BUDGET.worldbook),
+    characterText: clip(params.context.characterText, FACTCHECK_BUDGET.character),
+    noteText: clip(params.context.noteText, FACTCHECK_BUDGET.note),
+    outlineText: params.context.outlineText ? String(params.context.outlineText) : '',
+  };
+
+  const contextBlock = partition([
+    ['【项目大纲｜未来规划，非已发生事实】', ctx.outlineText],
+    ['【写作预设与文风】', ctx.presetText],
+    ['【当前章节目标】', ctx.currentInstructionText],
+    ['【用户本轮要求】', ctx.retrievalUserPrompt],
+    ['【近期正文 / Pending Bridge】', ctx.recentBridgeText],
+    ['【当前故事状态 / Story Memory】', ctx.storyMemoryText],
+    ['【历史章节事件 / Episodic Memory】', ctx.episodicMemoryText],
+    ['【世界书 / 世界规则】', ctx.worldbookText],
+    ['【人物设定】', ctx.characterText],
+    ['【项目笔记】', ctx.noteText],
+  ]);
+
+  const systemLines = [
+    '你是小说事实核查员。你的职责是把初稿中的事实性问题转成可定位、可执行的修正合同。',
+    '',
+    '检查范围：',
+    '1. 人物位置、身体和情绪状态；',
+    '2. 人物已知 / 未知信息（信息边界）；',
+    '3. 关系、时间、地点和物品归属；',
+    '4. 能力与世界规则；',
+    '5. 已发生事件、Story Memory、Episodic Memory、Recent Bridge 连续性；',
+    '6. 不得提前发生或提前得知的硬事实；',
+    '7. 用户明确确认的事实。',
+    '',
+    '纪律：',
+    '- 大纲中的未来事件不能被当作已经发生；',
+    '- 当近期正文与较旧的 Story Memory 冲突时，以位置更晚的近期正文为准；',
+    '- 不负责纯文学偏好，不得用现实常识覆盖已建立的世界规则；',
+    '- 锚点标记只用于定位，禁止写入报告或小说；',
+    '- 输出必须紧凑，不得重复整段正文。',
+    '',
+    '请按以下 JSON 合同输出（schemaVersion 固定 2，draftHash 必须与给定值一致）：',
+    '{',
+    '  "schemaVersion": 2,',
+    '  "draftHash": "' + params.draftHash + '",',
+    '  "requiredCorrections": [],',
+    '  "protectedFacts": [],',
+    '  "hardConstraints": []',
+    '}',
+    '',
+    ...V2_CORRECTION_SCHEMA_LINES,
+    'protectedFacts：已确认正确且终稿必须保持的事实；',
+    'hardConstraints：任何修订都不得违反的硬约束。',
+    '',
+    ...V2_COMMON_RULES,
+  ];
+
+  const userLines = [
+    contextBlock,
+    '【带锚点的初稿｜正文只出现这一次】',
+    params.taggedDraft,
+  ].filter(Boolean);
+
+  return [
+    { role: 'system', content: systemLines.join('\n') },
+    { role: 'user', content: userLines.join('\n\n') },
+  ];
+}
+
+/** One-shot format repair for Review V2 (same policy as V1). */
+export function buildReviewV2RepairMessages(params: {
+  taggedDraft: string;
+  context: ReviewContext;
+  draftHash: string;
+  failureReason?: string;
+}): ChatMessage[] {
+  const base = buildReviewV2Messages(params);
+  const reasonLabel = params.failureReason
+    ? `上一轮错误类型：${params.failureReason}`
+    : '上一轮输出格式无效';
+  const repair = [
+    '你上一轮输出不是有效的 V2 文学评估合同。',
+    '不要重写、续写、润色或复述小说正文。',
+    '不要输出推理过程。',
+    '不要使用 Markdown 代码块。',
+    reasonLabel,
+    '',
+    '请只输出：',
+    '{',
+    '  "schemaVersion": 2,',
+    '  "draftHash": "' + params.draftHash + '",',
+    '  "requiredCorrections": [],',
+    '  "protectedAnchorIds": [],',
+    '  "outlineExecution": {',
+    '    "fulfilledBeats": [],',
+    '    "missingBeats": [],',
+    '    "deviations": [],',
+    '    "prematureBeats": [],',
+    '    "mustPreserve": [],',
+    '    "endingGoal": "",',
+    '    "mustNotAdvance": []',
+    '  }',
+    '}',
+  ].join('\n');
+  return [...base, { role: 'user', content: repair }];
+}
+
+/** One-shot format repair for FactCheck V2 (same policy as V1). */
+export function buildFactCheckV2RepairMessages(params: {
+  taggedDraft: string;
+  context: FactCheckContext;
+  draftHash: string;
+  failureReason?: string;
+}): ChatMessage[] {
+  const base = buildFactCheckV2Messages(params);
+  const reasonLabel = params.failureReason
+    ? `上一轮错误类型：${params.failureReason}`
+    : '上一轮输出格式无效';
+  const repair = [
+    '你上一轮输出不是有效的 V2 事实核查合同。',
+    '不要重写、续写、润色或复述小说正文。',
+    '不要输出推理过程。',
+    '不要使用 Markdown 代码块。',
+    reasonLabel,
+    '',
+    '请只输出：',
+    '{',
+    '  "schemaVersion": 2,',
+    '  "draftHash": "' + params.draftHash + '",',
+    '  "requiredCorrections": [],',
+    '  "protectedFacts": [],',
+    '  "hardConstraints": []',
+    '}',
+  ].join('\n');
+  return [...base, { role: 'user', content: repair }];
+}
+
+// ---------------------------------------------------------------------------
+// Final Reviser (V2 Proof) — executes the revision contract, does NOT re-study
+// every source. Contract first, full canonical draft second, minimal chapter
+// goal / seam / style / hard constraints after (§11).
+// ---------------------------------------------------------------------------
+
+const FINAL_REVISER_BUDGET = {
+  preset: 3000,
+  instruction: 1500,
+  userPrompt: 1500,
+  recentBridge: 6000,
+  hardConstraints: 4000,
+};
+
+/**
+ * V2 Final Reviser messages (§11). The revision contract is the single
+ * "edit work packet"; the draft is injected once; the whole outline, raw
+ * audit JSON, full character/worldbook/story-memory blobs are NOT re-injected.
+ *
+ * Output protocol (§11.5): complete novel body only. No patch/diff, no
+ * "其余内容不变", no contract JSON, no change notes, no anchor markers,
+ * no reasoning, no prompt echoes.
+ */
+export function buildFinalReviserMessages(params: {
+  /** Serialized revision contract JSON (compact). */
+  contractJson: string;
+  /** Contract work-item count for the prompt (observability-friendly). */
+  workItemCount: number;
+  /** Full canonical draft (single injection). */
+  canonicalDraft: string;
+  currentInstructionText?: string;
+  retrievalUserPrompt?: string;
+  recentBridgeText?: string;
+  /** Slimmed preset (writing style essentials). */
+  presetText?: string;
+  /** Contract-derived hard constraints (may duplicate contract JSON). */
+  hardConstraints?: string[];
+}): ChatMessage[] {
+  const instruction = clip(
+    params.currentInstructionText,
+    FINAL_REVISER_BUDGET.instruction,
+  );
+  const userPrompt = clip(params.retrievalUserPrompt, FINAL_REVISER_BUDGET.userPrompt);
+  const bridge = clip(params.recentBridgeText, FINAL_REVISER_BUDGET.recentBridge);
+  const preset = clip(params.presetText, FINAL_REVISER_BUDGET.preset);
+  const hardList = (params.hardConstraints || [])
+    .filter(h => h && h.trim())
+    .map(h => `- ${h.trim()}`)
+    .join('\n');
+
+  const hasContract =
+    typeof params.contractJson === 'string' && params.contractJson.trim().length > 0;
+
+  const systemLines = [
+    '你是终稿修订员（Final Reviser）。你的任务不是重新创作，也不是重新研究全部资料，',
+    '而是严格按给定的“修订合同”对初稿做定向修订。',
+    '',
+    '必须遵守：',
+    '1. 逐条执行修订合同中的 workItems；',
+    '2. 只对合同要求的位置做必要修改，其余内容保持原样；',
+    '3. 优先保证事实与硬约束正确（合同顺序已按优先级排好）；',
+    '4. 不得引入新人物、新地点、新物品、新能力或新世界规则；',
+    '5. 不得擅自改变大纲节点和用户本轮要求；',
+    '6. 必须保留合同列出的 protectedAnchorIds / protectedFacts / outlineObligations.mustPreserve；',
+    '7. 不得提前写出 outlineObligations.mustNotAdvance 中的未来内容；',
+    '8. 修订必须满足合同 outlineObligations.endingGoal 要求的章末状态（如提供）；',
+    '9. 保持原文有价值的创意和叙事风格，采用最小必要修改；',
+    '10. 合同没有要求修改的部分，不要动。',
+    '',
+    '输出要求：',
+    '- 直接输出完整的终稿正文；',
+    '- 禁止输出 patch / diff / “其余内容不变”等说明；',
+    '- 禁止输出修订合同 JSON 或任何修改说明；',
+    '- 禁止输出 [draft-p-xxx] 之类的锚点标记；',
+    '- 禁止输出推理过程（<think> 等）；',
+    '- 禁止复述提示词内容。',
+  ];
+
+  const userParts: string[] = [];
+  if (hasContract) {
+    userParts.push('【修订合同（Edit Work Packet）｜最高执行优先级】');
+    userParts.push(params.contractJson);
+    if (params.workItemCount >= 0) {
+      userParts.push(`合同包含 ${params.workItemCount} 条修订项。`);
+    }
+  }
+  userParts.push('【初稿｜正文只出现这一次】');
+  userParts.push(params.canonicalDraft);
+
+  const extraBlock = partition([
+    ['【当前章节目标】', instruction],
+    ['【用户本轮要求】', userPrompt],
+    ['【上一章接缝 / 近期正文】', bridge],
+    ['【精简文风参考】', preset],
+  ]);
+  if (extraBlock) {
+    userParts.push('【上下文（辅助）】');
+    userParts.push(extraBlock);
+  }
+  if (hardList) {
+    userParts.push('【硬约束】');
+    userParts.push(hardList);
+  }
+  userParts.push('请根据修订合同完成定向修订，并直接输出完整终稿正文。');
+
+  return [
+    { role: 'system', content: systemLines.join('\n') },
+    { role: 'user', content: userParts.join('\n\n') },
+  ];
+}
