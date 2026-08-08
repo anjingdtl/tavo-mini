@@ -520,8 +520,25 @@ export function parsePipelineExecutionSnapshot(
       'restart_task',
     );
   }
+  const workflowVersionRaw = raw.outlineWorkflowVersion;
+  let outlineWorkflowVersion: 1 | 2 | undefined;
+  if (
+    workflowVersionRaw === 1 ||
+    workflowVersionRaw === 2 ||
+    workflowVersionRaw === '1' ||
+    workflowVersionRaw === '2'
+  ) {
+    outlineWorkflowVersion = Number(workflowVersionRaw) as 1 | 2;
+  } else if (workflowVersionRaw != null && workflowVersionRaw !== '') {
+    throw new OutlineContextError(
+      'OUTLINE_EXECUTION_CONFIG_INVALID',
+      `不支持的流水线工作流版本 ${String(workflowVersionRaw)}，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  }
   return {
     pipelineMode: mode as PipelineMode,
+    outlineWorkflowVersion,
     draftMaxTokens: requireNonNegativeFinite(raw.draftMaxTokens, 'draftMaxTokens'),
     reviewMaxTokens: requireNonNegativeFinite(
       raw.reviewMaxTokens,

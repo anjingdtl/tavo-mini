@@ -18,6 +18,13 @@ import {
 export const FEATURE_FLAG_KEYS = {
   elasticBudgetV2: 'elastic_budget_v2_enabled',
   multiChapterBatch: 'multi_chapter_batch_enabled',
+  /**
+   * Outline pipeline V5-Lite workflow v2 (anchored audits + revision
+   * contract + final reviser). Default OFF; when ON, newly frozen outline
+   * chapter tasks freeze `outlineWorkflowVersion=2`. Frozen tasks keep their
+   * version regardless of this flag.
+   */
+  outlineWorkflowV2: 'outline_workflow_v2_enabled',
   // RB-16 fix (V2.11.34): `repairOversizedNotes` is destructive (it
   // deletes the original note and replaces it with chunks). It must
   // never run on a normal cold start. The default is OFF; the Settings
@@ -45,6 +52,16 @@ export async function isMultiChapterBatchEnabled(): Promise<boolean> {
 
 export async function setMultiChapterBatchEnabled(enabled: boolean): Promise<void> {
   await setSetting(FEATURE_FLAG_KEYS.multiChapterBatch, String(enabled));
+}
+
+/** Outline pipeline V5-Lite workflow v2 (anchored audits + contract). */
+export async function isOutlineWorkflowV2Enabled(): Promise<boolean> {
+  const v = await getSetting(FEATURE_FLAG_KEYS.outlineWorkflowV2);
+  return v === 'true';
+}
+
+export async function setOutlineWorkflowV2Enabled(enabled: boolean): Promise<void> {
+  await setSetting(FEATURE_FLAG_KEYS.outlineWorkflowV2, String(enabled));
 }
 
 /**
