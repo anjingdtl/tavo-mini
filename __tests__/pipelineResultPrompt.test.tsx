@@ -96,6 +96,27 @@ describe('PipelineResultPrompt', () => {
     expect(onViewResult).toHaveBeenCalledWith('pt_test');
   });
 
+  it('offers direct recovery for a failed chapter task when onResume is provided', () => {
+    const onResume = jest.fn();
+    const failed: PipelineTask = {
+      ...baseTask,
+      status: 'failed',
+      finalText: '初稿正文',
+      error: '文学评估失败，已保留初稿，未生成终审稿。',
+    };
+    const { getByText, getByTestId } = render(
+      <PipelineResultPrompt
+        task={failed}
+        onDismiss={jest.fn()}
+        onViewResult={jest.fn()}
+        onResume={onResume}
+      />,
+    );
+    expect(getByText('从失败处继续重跑')).toBeTruthy();
+    fireEvent.press(getByTestId('pipeline-prompt-confirm'));
+    expect(onResume).toHaveBeenCalledWith('pt_test');
+  });
+
   it('treats a completed task with empty finalText as a special case', () => {
     const onDismiss = jest.fn();
     const empty: PipelineTask = { ...baseTask, finalText: '   ' };

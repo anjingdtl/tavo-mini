@@ -46,7 +46,9 @@ export interface LLMTimeoutPolicy {
 export const LLM_TIMEOUTS = {
   connectionMs: 20_000,
   normalMs: 60_000,
-  chapterDraftMs: 180_000,
+  // Pipeline stages use this only as a last-resort client watchdog. A valid
+  // response that arrives earlier is always accepted as-is.
+  chapterDraftMs: 300_000,
   // Canon extraction sends chapter context and asks for evidence-rich JSON.
   // Cloud providers can legitimately queue this longer than an ordinary chat.
   // DeepSeek keeps an accepted request connected for up to ten minutes before
@@ -226,6 +228,8 @@ export function resolveLLMTimeoutPolicy(
 export interface LLMTimeoutController {
   signal: AbortSignal;
   metrics: LLMRequestMetrics;
+  /** Exposed so timeout errors can identify the client-side cutoff clearly. */
+  totalTimeoutMs?: number;
   markProgress: (kind?: 'first_token' | 'progress') => void;
   getAbortCode: () => LLMErrorCode | undefined;
   dispose: () => void;
@@ -293,6 +297,7 @@ export function createLLMTimeoutController(options: {
   return {
     signal: controller.signal,
     metrics,
+    totalTimeoutMs: options.policy.totalTimeoutMs,
     markProgress,
     getAbortCode: () => abortCode,
     dispose: () => {
@@ -313,8 +318,12 @@ export function toLLMRequestError(
     const messages: Record<string, string> = {
       cancelled: '已取消',
       connect_timeout: '连接测试超时，请检查手机网络、API 地址和模型服务。',
-      idle_timeout: '本地模型长时间没有输出，已停止本次生成。',
-      total_timeout: '请求超时，请检查网络或模型服务。',
+      idle_timeout: '软件阻断：本地模型长时间没有输出，已主动停止本次生成。',
+      total_timeout: `软件阻断：本地等待 LLM 响应超过 ${
+        timeoutController.totalTimeoutMs
+          ? Math.ceil(timeoutController.totalTimeoutMs / 1000)
+          : '设定'
+      } 秒，已主动终止本阶段；未收到完整回复。`,
     };
     // Phase 3 classification: connect_timeout happens before the request is
     // sent (safe retry); total/idle timeout means the request MAY have

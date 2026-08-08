@@ -27,6 +27,10 @@ import { ensureCanonEvidenceProvenanceSchema } from '../src/data/schema/knownSch
 import { repairKnownSchemaDrift } from '../src/data/schema/knownSchemaRepairs';
 import { inspectKnownSchemaDrift } from '../src/data/schema/schemaDriftInspector';
 import {
+  buildV39toV40Statements,
+  migrateV39ToV40,
+} from '../src/services/migrations/v39-to-v40';
+import {
   captureUserDataRecallSnapshot,
   compareRecallSnapshots,
 } from '../src/data/schema/userDataRecallSnapshot';
@@ -63,6 +67,19 @@ describe('Schema 40 drift-repair matrix', () => {
     } catch {
       /* ignore */
     }
+  });
+
+  it('Schema 39 → 40 delegates to the shared repair and is idempotent', async () => {
+    await seedCanonicalData(db);
+    await dropProvenanceColumns(db);
+
+    await migrateV39ToV40(db as any);
+    expect(await columnExists(db, 'canon_evidence', 'source_origin')).toBe(true);
+    expect(await columnExists(db, 'canon_evidence', 'rescan_operation_id')).toBe(true);
+    expect(await indexExists(db, 'idx_canon_evidence_rescan_op')).toBe(true);
+
+    await migrateV39ToV40(db as any);
+    expect(buildV39toV40Statements()).toEqual([]);
   });
 
   // ── Normal upgrades ──────────────────────────────────────────────────────

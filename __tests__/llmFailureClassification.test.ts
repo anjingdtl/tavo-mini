@@ -157,10 +157,17 @@ describe('toLLMRequestError classification (Phase 3)', () => {
 
   it('maps total_timeout / idle_timeout to outcome_unknown (may have executed)', () => {
     for (const code of ['total_timeout', 'idle_timeout']) {
-      const ctrl = { getAbortCode: () => code } as any;
+      const ctrl = {
+        getAbortCode: () => code,
+        totalTimeoutMs: 300_000,
+      } as any;
       const err = toLLMRequestError(new Error('x'), ctrl, 'fallback');
       expect(err.failureClass).toBe('outcome_unknown');
       expect(err.requestMayHaveExecuted).toBe(true);
+      if (code === 'total_timeout') {
+        expect(err.message).toContain('软件阻断');
+        expect(err.message).toContain('300 秒');
+      }
     }
   });
 

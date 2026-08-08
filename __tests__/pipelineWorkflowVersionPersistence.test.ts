@@ -27,7 +27,10 @@ import { execute } from '../src/data/connection/execute';
 import { all } from '../src/data/connection/query';
 import { usePipelineTaskStore } from '../src/store/pipelineTaskStore';
 import { reconcilePipelineTask } from '../src/services/pipeline/reconcile';
-import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
+import {
+  savePipelineTask,
+  updatePipelineTaskResumeState,
+} from '../src/data/repositories/pipelineTaskRepository';
 import type { ChatMessage } from '../src/services/llm';
 import type { LLMResult } from '../src/services/llm/types';
 import type { Chapter } from '../src/types/novel';
@@ -213,6 +216,20 @@ async function frozenExecution(
   return parsed?.execution ?? null;
 }
 
+async function taskRow(taskId: string): Promise<Record<string, any>> {
+  const rows = await all(
+    `SELECT id, status, stage_results, final_text, error,
+            input_fingerprint, pipeline_context_json, pipeline_context_version,
+            pipeline_context_hash, outline_workflow_version,
+            context_budget_version, created_at, updated_at, resolved_at,
+            resolved_action
+       FROM pipeline_tasks
+      WHERE id = ?`,
+    [taskId],
+  );
+  return rows[0] as Record<string, any>;
+}
+
 describe('workflow version persistence (§4.3)', () => {
   jest.setTimeout(60_000);
 
@@ -311,5 +328,147 @@ describe('workflow version persistence (§4.3)', () => {
     const execution2 = await frozenExecution(taskId);
     expect(execution2?.outlineWorkflowVersion).toBe(2);
     expect(execution2?.contextBudgetVersion).toBe(2);
+  });
+
+  it('V2 row survives a legacy-shaped full UPSERT with missing versions', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('noReview');
+    const taskId = 't-persist-v2-missing-write';
+    await registerTask(taskId, chapterId, {
+      outlineWorkflowVersion: 2,
+      contextBudgetVersion: 2,
+    });
+
+    await savePipelineTask({
+      id: taskId,
+      targetType: 'chapter',
+      targetId: chapterId,
+      status: 'interrupted',
+      stageResults: [],
+      finalText: null,
+      error: 'legacy-shaped write',
+      createdAt: 1,
+      updatedAt: 2,
+      resolvedAt: null,
+    });
+
+    await expect(taskRow(taskId)).resolves.toMatchObject({
+      outline_workflow_version: 2,
+      context_budget_version: 2,
+    });
+  });
+
+  it('V2 row cannot be downgraded by an explicit 1/1 UPSERT', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('noReview');
+    const taskId = 't-persist-v2-legacy-write';
+    await registerTask(taskId, chapterId, {
+      outlineWorkflowVersion: 2,
+      contextBudgetVersion: 2,
+    });
+
+    await savePipelineTask({
+      id: taskId,
+      targetType: 'chapter',
+      targetId: chapterId,
+      status: 'interrupted',
+      stageResults: [],
+      finalText: null,
+      error: 'wrong legacy write',
+      outlineWorkflowVersion: 1,
+      contextBudgetVersion: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      resolvedAt: null,
+    });
+
+    await expect(taskRow(taskId)).resolves.toMatchObject({
+      outline_workflow_version: 2,
+      context_budget_version: 2,
+    });
+  });
+
+  it('V1 row cannot be upgraded by an erroneous V2 UPSERT', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('noReview');
+    const taskId = 't-persist-v1-v2-write';
+    await registerTask(taskId, chapterId, {
+      outlineWorkflowVersion: 1,
+      contextBudgetVersion: 1,
+    });
+
+    await savePipelineTask({
+      id: taskId,
+      targetType: 'chapter',
+      targetId: chapterId,
+      status: 'interrupted',
+      stageResults: [],
+      finalText: null,
+      error: 'wrong v2 write',
+      outlineWorkflowVersion: 2,
+      contextBudgetVersion: 2,
+      createdAt: 1,
+      updatedAt: 2,
+      resolvedAt: null,
+    });
+
+    await expect(taskRow(taskId)).resolves.toMatchObject({
+      outline_workflow_version: 1,
+      context_budget_version: 1,
+    });
+  });
+
+  it('targeted resume only changes resume-state fields and keeps frozen task data', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('noReview');
+    const taskId = 't-persist-targeted-resume';
+    const createdAt = 10;
+    const updatedAt = 20;
+    await savePipelineTask({
+      id: taskId,
+      targetType: 'chapter',
+      targetId: chapterId,
+      status: 'failed',
+      stageResults: [
+        { stage: 'draft', status: 'success', text: '保留初稿', durationMs: 12 },
+      ],
+      finalText: '保留初稿',
+      error: '请求超时',
+      inputFingerprint: 'fingerprint-v2',
+      pipelineContextJson: '{"frozen":true}',
+      pipelineContextVersion: 2,
+      pipelineContextHash: 'context-hash-v2',
+      outlineWorkflowVersion: 2,
+      contextBudgetVersion: 2,
+      createdAt,
+      updatedAt,
+      resolvedAt: 99,
+      resolvedAction: 'accept',
+    });
+    const before = await taskRow(taskId);
+    const resumedAt = 1234;
+
+    await updatePipelineTaskResumeState(taskId, resumedAt);
+
+    const after = await taskRow(taskId);
+    for (const field of [
+      'id',
+      'stage_results',
+      'final_text',
+      'input_fingerprint',
+      'pipeline_context_json',
+      'pipeline_context_version',
+      'pipeline_context_hash',
+      'created_at',
+      'outline_workflow_version',
+      'context_budget_version',
+    ]) {
+      expect(after[field]).toBe(before[field]);
+    }
+    expect(after.status).toBe('interrupted');
+    expect(after.error).toBeNull();
+    expect(after.resolved_at).toBeNull();
+    expect(after.resolved_action).toBeNull();
+    expect(after.updated_at).toBe(resumedAt);
   });
 });

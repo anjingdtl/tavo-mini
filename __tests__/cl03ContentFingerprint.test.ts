@@ -27,7 +27,14 @@ const {
   captureUserContentFingerprint,
   compareUserContentFingerprints,
   normalizeFingerprintValue,
+  fingerprintTableSummary,
 } = fingerprintModule;
+import {
+  CONTENT_FINGERPRINT_TABLES,
+  MAX_ROW_HASH_MAP_ROWS,
+  type ContentFingerprintTable,
+  type UserContentFingerprint,
+} from '../src/data/schema/userContentFingerprint';
 import { initializeDatabase } from '../src/data/schema/initializeDatabase';
 
 let db: InMemorySqliteDb | null = null;
@@ -286,5 +293,287 @@ describe('集成：initializeDatabase 升级前后内容指纹（CL-03 fail-clos
     expect(caught.code).toBe('USER_CONTENT_FINGERPRINT_MISMATCH');
     expect(String(caught.message)).toContain('chapters');
     spy.mockRestore();
+  });
+});
+
+function makeFingerprint(
+  overrides: Record<string, Partial<ContentFingerprintTable>> = {},
+): UserContentFingerprint {
+  const tables = Object.fromEntries(
+    CONTENT_FINGERPRINT_TABLES.map(spec => [
+      spec.label,
+      {
+        missing: false,
+        rowCount: 0,
+        columnsUsed: [],
+        columnAggregates: {},
+        rowHashes: new Map<string, string>(),
+        rowColumnHashes: new Map<string, Record<string, string>>(),
+        aggregateHash: 'stable',
+        ...overrides[spec.label],
+      },
+    ]),
+  ) as Record<string, ContentFingerprintTable>;
+  return { tables, overallHash: 'stable', capturedAt: 0 };
+}
+
+class ReportedSizeMap<K, V> extends Map<K, V> {
+  constructor(entries: readonly (readonly [K, V])[], private readonly reportedSize: number) {
+    super(entries);
+  }
+
+  get size(): number {
+    return this.reportedSize;
+  }
+}
+
+describe('内容指纹未覆盖分支', () => {
+  it('normalizes arrays, sorted objects, NaN, booleans and fallback values', () => {
+    expect(normalizeFingerprintValue(NaN)).toBe('NaN');
+    expect(normalizeFingerprintValue(true)).toBe('true');
+    expect(normalizeFingerprintValue(['', 0, false])).toBe(
+      '["\\"\\"","0","false"]',
+    );
+    expect(normalizeFingerprintValue({ z: 1, a: false })).toBe(
+      '{"a":false,"z":1}',
+    );
+    expect(normalizeFingerprintValue(Symbol('fallback'))).toBe('Symbol(fallback)');
+  });
+
+  it('captures missing tables distinctly from empty tables', async () => {
+    const missingDb = await createEmptyInMemoryDb();
+    try {
+      const snapshot = await captureUserContentFingerprint(missingDb as any);
+      expect(snapshot.tables.projects).toMatchObject({
+        missing: true,
+        rowCount: 0,
+      });
+      expect(fingerprintTableSummary(snapshot).projects).toBe(-1);
+    } finally {
+      missingDb.close();
+    }
+
+    const fresh = await resetDb();
+    const snapshot = await captureUserContentFingerprint(fresh as any);
+    expect(snapshot.tables.projects).toMatchObject({
+      missing: false,
+      rowCount: 0,
+    });
+    expect(fingerprintTableSummary(snapshot).projects).toBe(0);
+  });
+
+  it('propagates both PRAGMA and SELECT failures fail-closed', async () => {
+    const pragmaErrorDb = {
+      executeSql: jest.fn().mockRejectedValue(new Error('pragma failed')),
+    };
+    await expect(
+      captureUserContentFingerprint(pragmaErrorDb as any),
+    ).rejects.toThrow(/pragma failed/);
+
+    const selectErrorDb = {
+      executeSql: jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.startsWith('PRAGMA')) {
+          return [
+            {
+              rows: {
+                length: 1,
+                item: () => ({ name: 'id' }),
+              },
+            },
+          ];
+        }
+        throw new Error('select failed');
+      }),
+    };
+    await expect(
+      captureUserContentFingerprint(selectErrorDb as any),
+    ).rejects.toThrow(/select failed/);
+  });
+
+  it('reports missing snapshots, table appearance/disappearance and column removal', () => {
+    const beforeMissingSnapshot = makeFingerprint();
+    const afterMissingSnapshot = makeFingerprint();
+    delete afterMissingSnapshot.tables.chapters;
+    expect(
+      compareUserContentFingerprints(
+        beforeMissingSnapshot,
+        afterMissingSnapshot,
+      ),
+    ).toMatchObject({ table: 'chapters', reason: 'table_missing' });
+
+    const appeared = compareUserContentFingerprints(
+      makeFingerprint({ projects: { missing: true } }),
+      makeFingerprint(),
+    );
+    expect(appeared).toMatchObject({
+      table: 'projects',
+      reason: 'table_appeared',
+    });
+
+    const disappeared = compareUserContentFingerprints(
+      makeFingerprint(),
+      makeFingerprint({ projects: { missing: true } }),
+    );
+    expect(disappeared).toMatchObject({
+      table: 'projects',
+      reason: 'table_missing',
+    });
+
+    const removedColumn = compareUserContentFingerprints(
+      makeFingerprint({
+        chapters: {
+          columnsUsed: ['content', 'summary_json'],
+          aggregateHash: 'before',
+        },
+      }),
+      makeFingerprint({
+        chapters: {
+          columnsUsed: ['content'],
+          aggregateHash: 'after',
+        },
+      }),
+    );
+    expect(removedColumn).toMatchObject({
+      table: 'chapters',
+      reason: 'row_content',
+    });
+    expect(removedColumn?.detail).toContain('summary_json');
+  });
+
+  it('reports same-count row loss, row addition and row content change by key', () => {
+    const beforeRows = new Map([
+      ['id=1', 'hash-1'],
+      ['id=2', 'hash-2'],
+    ]);
+    const before = makeFingerprint({
+      chapters: {
+        rowCount: 2,
+        columnsUsed: ['content'],
+        aggregateHash: 'before',
+        rowHashes: beforeRows,
+      },
+    });
+
+    const missingRow = compareUserContentFingerprints(
+      before,
+      makeFingerprint({
+        chapters: {
+          rowCount: 2,
+          columnsUsed: ['content'],
+          aggregateHash: 'after',
+          rowHashes: new Map([
+            ['id=1', 'hash-1'],
+            ['id=3', 'hash-3'],
+          ]),
+        },
+      }),
+    );
+    expect(missingRow?.rowKey).toBe('id=2');
+    expect(missingRow?.detail).toContain('行缺失');
+
+    const changedRow = compareUserContentFingerprints(
+      before,
+      makeFingerprint({
+        chapters: {
+          rowCount: 2,
+          columnsUsed: ['content'],
+          aggregateHash: 'after',
+          rowHashes: new Map([
+            ['id=1', 'hash-1'],
+            ['id=2', 'changed'],
+          ]),
+        },
+      }),
+    );
+    expect(changedRow?.rowKey).toBe('id=2');
+    expect(changedRow?.detail).toContain('行内容变化');
+
+    const newRow = compareUserContentFingerprints(
+      makeFingerprint({
+        chapters: {
+          rowCount: 2,
+          columnsUsed: ['content'],
+          aggregateHash: 'before',
+          rowHashes: new Map([
+            ['id=1', 'hash-1'],
+            ['id=2', 'hash-2'],
+          ]),
+        },
+      }),
+      makeFingerprint({
+        chapters: {
+          rowCount: 2,
+          columnsUsed: ['content'],
+          aggregateHash: 'after',
+          rowHashes: new ReportedSizeMap(
+            [
+              ['id=1', 'hash-1'],
+              ['id=2', 'hash-2'],
+              ['id=3', 'hash-3'],
+            ],
+            2,
+          ),
+        },
+      }),
+    );
+    expect(newRow?.rowKey).toBe('id=3');
+    expect(newRow?.detail).toContain('新增行');
+  });
+
+  it('uses column aggregate fallback for unbounded snapshots and fails closed when unavailable', () => {
+    const huge = {
+      rowCount: MAX_ROW_HASH_MAP_ROWS + 1,
+      columnsUsed: ['content'],
+      rowHashes: new Map<string, string>(),
+      rowColumnHashes: new Map<string, Record<string, string>>(),
+      aggregateHash: 'before',
+    };
+    const stableFallback = compareUserContentFingerprints(
+      makeFingerprint({
+        chapters: {
+          ...huge,
+          columnAggregates: { content: 'same' },
+        },
+      }),
+      makeFingerprint({
+        chapters: {
+          ...huge,
+          columnsUsed: ['content', 'summary_json'],
+          aggregateHash: 'after',
+          columnAggregates: { content: 'same' },
+        },
+      }),
+    );
+    expect(stableFallback).toBeNull();
+
+    const changedColumn = compareUserContentFingerprints(
+      makeFingerprint({
+        chapters: {
+          ...huge,
+          columnAggregates: { content: 'before' },
+        },
+      }),
+      makeFingerprint({
+        chapters: {
+          ...huge,
+          columnsUsed: ['content', 'summary_json'],
+          aggregateHash: 'after',
+          columnAggregates: { content: 'after' },
+        },
+      }),
+    );
+    expect(changedColumn?.detail).toContain('列内容变化');
+
+    const noAggregate = compareUserContentFingerprints(
+      makeFingerprint({ chapters: huge }),
+      makeFingerprint({
+        chapters: {
+          ...huge,
+          columnsUsed: ['content', 'summary_json'],
+          aggregateHash: 'after',
+        },
+      }),
+    );
+    expect(noAggregate?.detail).toContain('无法按列对齐校验');
   });
 });

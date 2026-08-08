@@ -339,6 +339,40 @@ describe('V2 production state machine (frozen version=2)', () => {
     expect(await checkpointStatus(taskId, 'proof')).toBe('succeeded');
   });
 
+  it('V2 Review / FactCheck use deterministic, reasoning-disabled audit requests', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('full');
+    const taskId = 't-v2-structured-audit-options';
+    await registerTask(taskId, chapterId);
+    const auditConfigs: Record<string, any[]> = { review: [], factCheck: [] };
+    mockCallLLMResult = jest
+      .fn()
+      .mockImplementation(async (messages: ChatMessage[], _maxTokens: number, config: any) => {
+        const stage = stageOf(messages);
+        if (stage === 'draft') return llm(DRAFT_BODY);
+        if (stage === 'review' || stage === 'factCheck') {
+          auditConfigs[stage].push(config);
+          return stage === 'review'
+            ? llm(JSON.stringify(reviewV2Report()))
+            : llm(JSON.stringify(factCheckV2Report()));
+        }
+        if (stage === 'proof') return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
+        throw new Error(`unexpected stage: ${stage}`);
+      });
+
+    await reconcilePipelineTask(taskId, chapterFor(chapterId));
+
+    for (const stage of ['review', 'factCheck'] as const) {
+      expect(auditConfigs[stage]).toHaveLength(1);
+      expect(auditConfigs[stage][0]).toMatchObject({
+        responseFormat: 'json_object',
+        thinking: { type: 'disabled' },
+        temperature: 0.2,
+        top_p: 1,
+      });
+    }
+  });
+
   it('V2 conditional: Draft → FactCheck → Final Reviser (3 requests)', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('conditional');
@@ -456,6 +490,7 @@ describe('V2 production state machine (frozen version=2)', () => {
     const taskId = 't-v2-repair';
     await registerTask(taskId, chapterId);
     let reviewCalls = 0;
+    const reviewMessages: ChatMessage[][] = [];
     mockCallLLMResult = jest
       .fn()
       .mockImplementation(async (messages: ChatMessage[]) => {
@@ -464,6 +499,7 @@ describe('V2 production state machine (frozen version=2)', () => {
             return llm(DRAFT_BODY);
           case 'review': {
             reviewCalls += 1;
+            reviewMessages.push(messages);
             if (reviewCalls === 1) {
               // Malformed report (missing outlineExecution) → repair.
               return llm(JSON.stringify({ schemaVersion: 2, draftHash: DRAFT_HASH }));
@@ -483,6 +519,52 @@ describe('V2 production state machine (frozen version=2)', () => {
     const attempts = await attemptsFor(taskId);
     expect(attempts.filter(a => a.stage === 'review').length).toBe(2);
     expectV2AttemptVersions(attempts);
+    expect(reviewMessages[1][reviewMessages[1].length - 1].content).toContain(
+      'outlineExecution',
+    );
+    expect(await taskStatus(taskId)).toBe('completed');
+  });
+
+  it('V2 reasoning-only repair keeps thinking disabled and recompiles the bumped budget', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('twoStage');
+    const taskId = 't-v2-reasoning-repair-budget';
+    await registerTask(taskId, chapterId);
+    const reviewConfigs: any[] = [];
+    let reviewCalls = 0;
+    mockCallLLMResult = jest
+      .fn()
+      .mockImplementation(async (messages: ChatMessage[], _maxTokens: number, config: any) => {
+        switch (stageOf(messages)) {
+          case 'draft':
+            return llm(DRAFT_BODY);
+          case 'review':
+            reviewCalls += 1;
+            reviewConfigs.push(config);
+            if (reviewCalls === 1) {
+              return {
+                text: null,
+                reasoningText: '先分析章节结构……'.repeat(40),
+                emptyReason: 'reasoning_only',
+                inputTokens: 50,
+                outputTokens: 1500,
+                totalTokens: 1550,
+              };
+            }
+            return llm(JSON.stringify(reviewV2Report()));
+          case 'proof':
+            return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
+          default:
+            throw new Error('unexpected stage');
+        }
+      });
+
+    await reconcilePipelineTask(taskId, chapterFor(chapterId));
+
+    expect(reviewConfigs).toHaveLength(2);
+    expect(reviewConfigs[0].thinking).toEqual({ type: 'disabled' });
+    expect(reviewConfigs[1].thinking).toEqual({ type: 'disabled' });
+    expect(reviewConfigs[1].max_tokens).toBe(reviewConfigs[0].max_tokens * 2);
     expect(await taskStatus(taskId)).toBe('completed');
   });
 
