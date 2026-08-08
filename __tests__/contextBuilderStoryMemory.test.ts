@@ -36,6 +36,9 @@ function makePrepared(
     checkpointUpdated: false,
     blocked: false,
     blockReason: '',
+    fatal: false,
+    degraded: false,
+    warnings: [],
     ...overrides,
   };
 }

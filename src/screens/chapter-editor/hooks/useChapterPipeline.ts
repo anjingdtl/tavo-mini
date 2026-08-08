@@ -485,6 +485,57 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       Alert.alert('已有进行中的流水线', '请等待当前任务完成或到任务中心取消。');
       return;
     }
+    // V2.11.38 repair plan P0: long-term memory is an enhancement, not a
+    // writing license. When the context would be degraded (missing / dirty /
+    // failed checkpoint, partially omitted history), confirm with the user
+    // instead of blocking — they may continue writing or open Story Memory.
+    const confirmDegraded = async (proceed: () => void) => {
+      try {
+        const contextConfig = await db.getContextConfig();
+        const { prepareStoryMemoryForGeneration } = await import(
+          '../../../services/storyMemory/storyMemoryPrepare'
+        );
+        const prepared = await prepareStoryMemoryForGeneration(
+          project!.id,
+          chapter,
+          contextConfig,
+          { mode: 'preview' },
+        );
+        if (prepared.fatal) {
+          Alert.alert(
+            '无法构建上下文',
+            prepared.blockReason || '目标章节位置无效，无法安全构建上下文。',
+          );
+          return;
+        }
+        if (!prepared.degraded || prepared.warnings.length === 0) {
+          proceed();
+          return;
+        }
+        const omitted = prepared.warnings.find(
+          w => w.code === 'history_partially_omitted',
+        );
+        const detail =
+          omitted?.message ||
+          prepared.warnings[0]?.message ||
+          '长期记忆暂不可用，已使用最近正文继续写作。';
+        Alert.alert(
+          '长期记忆暂不可用',
+          `${detail}\n\n你可以继续生成，或稍后前往「故事记忆」重新整理。`,
+          [
+            { text: '取消', style: 'cancel' },
+            {
+              text: '前往故事记忆',
+              onPress: () => navigation.navigate('StoryMemory'),
+            },
+            { text: '继续生成', onPress: () => proceed() },
+          ],
+        );
+      } catch {
+        // Readiness check is best-effort; never block writing on its failure.
+        proceed();
+      }
+    };
     const resumable = getLatestResumableFailedTask('chapter', chapter.id);
     if (resumable) {
       Alert.alert(
@@ -501,11 +552,11 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           },
           {
             text: '从头开始',
-            onPress: () => executeRunPipeline(createTask).catch(() => {}),
+            onPress: () => confirmDegraded(() => executeRunPipeline(createTask).catch(() => {})),
           },
           {
             text: '继续',
-            onPress: () => executeResumePipeline(resumable.id).catch(() => {}),
+            onPress: () => confirmDegraded(() => executeResumePipeline(resumable.id).catch(() => {})),
           },
         ],
       );
@@ -519,12 +570,12 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           { text: '取消', style: 'cancel' },
           {
             text: '覆盖并生成',
-            onPress: () => executeRunPipeline(createTask).catch(() => {}),
+            onPress: () => confirmDegraded(() => executeRunPipeline(createTask).catch(() => {})),
           },
         ],
       );
     } else {
-      executeRunPipeline(createTask).catch(() => {});
+      confirmDegraded(() => executeRunPipeline(createTask).catch(() => {}));
     }
   }, [chapter, executeRunPipeline, executeResumePipeline, runContinuation, navigation]);
 

@@ -283,15 +283,18 @@ describe('story memory LLM patch service', () => {
     ]);
   });
 
-  it('rejects empty output and respects an already aborted signal', async () => {
-    mockCallLLMResult.mockResolvedValueOnce(response(null));
+  it('boundedly retries empty output then fails with actionable diagnostic', async () => {
+    // Empty business body (no emptyReason classification) must enter the
+    // bounded recovery flow instead of throwing on the first attempt.
+    mockCallLLMResult.mockResolvedValue(response(null));
     await expect(
       generateValidatedChapterMemoryPatch({
         chapter,
         previousState: createEmptyStoryMemory(7),
         memoryPatchMaxTokens: 800,
       }),
-    ).rejects.toThrow('没有返回记忆补丁');
+    ).rejects.toThrow('模型连续没有返回任何输出');
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
 
     const controller = new AbortController();
     controller.abort();
