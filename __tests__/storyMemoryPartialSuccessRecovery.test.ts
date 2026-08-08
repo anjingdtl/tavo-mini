@@ -363,3 +363,7 @@ describe('P1: context preview closure after partial success (real SQLite)', () =
     expect(result.pipelineContext.storyMemoryText.length).toBeGreaterThan(0);
   });
 });
+
+
+
+

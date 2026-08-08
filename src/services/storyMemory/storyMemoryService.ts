@@ -19,6 +19,14 @@ import type {
 } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
 import { validateChapterMemoryPatch } from './storyMemoryValidator';
+import {
+  createDefaultStoryMemoryPolicy,
+  evaluateStoryMemoryDue,
+  listPendingChapters,
+  predictNextCheckpointPosition,
+} from './storyMemoryPolicy';
+import { advanceStoryMemoryCheckpointsUnlocked } from './storyMemoryCheckpointService';
+import { rebuildStoryMemoryUnlocked } from './storyMemoryRebuild';
 
 /**
  * Resolve a display-number mapper for user-visible Story Memory text (Spec §11.3).
@@ -591,17 +599,6 @@ export async function finalizeChapterMemory(
       return finalizeChapterMemoryLegacyPerChapter(freshChapter, options);
     }
 
-    const {
-      createDefaultStoryMemoryPolicy,
-      evaluateStoryMemoryDue,
-      listPendingChapters,
-      predictNextCheckpointPosition,
-    } = await import('./storyMemoryPolicy');
-    const { advanceStoryMemoryCheckpointsUnlocked } = await import(
-      './storyMemoryCheckpointService'
-    );
-    const { rebuildStoryMemoryUnlocked } = await import('./storyMemoryRebuild');
-
     const contextConfig = await db.getContextConfig();
     const policy =
       typeof (db as any).ensureStoryMemoryPolicy === 'function'
@@ -742,6 +739,13 @@ export async function finalizeChapterMemory(
       // 章节正文已安全保存，下一次定稿会重试该检查点（ checkpoint 仍 pending），
       // toast 改为「待整理」以避免误导用户。
       const transient = isTransientCheckpointFailure(error);
+      // 与 advance 同一语义：失败时保留「最近一次成功持久化」checkpoint
+      // 的状态。重新读取最新 row —— batch1 成功后 batch2 失败时 row 已是
+      // clean（batch1 终点），不能用函数入口时的旧 status 回写；dirty 标记
+      // 必须原样保留。返回给调用方的 state/patchId/pendingCount 也必须基于
+      // 最新持久化行，而不是函数入口快照（否则 UI 会显示 through=-1 的旧态，
+      // 与 DB 实际已推进到 batch1 终点的状态矛盾）。
+      let returnedState = record.state;
       if (
         error instanceof StoryMemoryError &&
         error.code === 'MEMORY_BASE_FINGERPRINT_MISMATCH'
@@ -752,10 +756,6 @@ export async function finalizeChapterMemory(
           message,
         );
       } else {
-        // 与 advance 同一语义：失败时保留「最近一次成功持久化」checkpoint
-        // 的状态。重新读取最新 row —— batch1 成功后 batch2 失败时 row 已是
-        // clean（batch1 终点），不能用函数入口时的旧 status 回写；dirty 标记
-        // 必须原样保留。
         const latest = await db.ensureProjectStoryMemoryRow(
           freshChapter.project_id,
         );
@@ -767,31 +767,39 @@ export async function finalizeChapterMemory(
             : latest.dirtyFromPosition,
           message,
         );
+        returnedState = latest.state;
       }
+      const returnedPatchId = returnedState.metadata.lastAppliedPatchId || '';
+      const pendingRemaining = allChapters.filter(
+        item =>
+          Boolean(item.content?.trim()) &&
+          (item.status === 'final' || item.finalized_at != null) &&
+          item.position > returnedState.throughChapterPosition,
+      ).length;
       if (transient) {
         return {
-          state: record.state,
-          patchId: record.state.metadata.lastAppliedPatchId || '',
+          state: returnedState,
+          patchId: returnedPatchId,
           episodicMemoryText: freshChapter.memory_summary || '',
           reused: false,
           chapterFinalized: true,
           checkpointAttempted: true,
           checkpointUpdated: false,
-          pendingCount: pending.length,
+          pendingCount: pendingRemaining,
           statusMessage: `章节已定稿。长期记忆待整理（LLM 暂不可达，下次定稿或打开「故事记忆」会自动重试）。${
             message ? `（${message.slice(0, 80)}）` : ''
           }`,
         };
       }
       return {
-        state: record.state,
-        patchId: record.state.metadata.lastAppliedPatchId || '',
+        state: returnedState,
+        patchId: returnedPatchId,
         episodicMemoryText: freshChapter.memory_summary || '',
         reused: false,
         chapterFinalized: true,
         checkpointAttempted: true,
         checkpointUpdated: false,
-        pendingCount: pending.length,
+        pendingCount: pendingRemaining,
         statusMessage: `章节已定稿，但长期记忆整理失败。正文已安全保存，可稍后重试。${
           message ? `（${message.slice(0, 80)}）` : ''
         }`,
