@@ -117,6 +117,13 @@ export function splitCheckpointBatches(
   return batches;
 }
 
+/**
+ * Smart/fixed cadence is interval-driven: 1..interval-1 pending chapters never
+ * trigger on token volume alone — the pending token soft limit is NOT a smart
+ * trigger, so ordinary long chapters keep the ~10-chapter product cadence.
+ * Early triggers remain: dirty rebuild, coverage gap (hardDue), manual
+ * request, and key chapters (smart mode).
+ */
 export function evaluateStoryMemoryDue(input: {
   policy: StoryMemoryPolicy;
   checkpointThroughPosition: number;
@@ -176,7 +183,6 @@ export function evaluateStoryMemoryDue(input: {
   }
 
   const policy = createDefaultStoryMemoryPolicy(input.policy.projectId, input.policy);
-  const pendingTokens = estimatePendingTokens(pending);
 
   if (policy.mode === 'manual') {
     return {
@@ -223,19 +229,6 @@ export function evaluateStoryMemoryDue(input: {
       reason: 'interval_reached',
       fromPosition,
       throughPosition: limitedThrough,
-    };
-  }
-
-  if (
-    policy.mode === 'smart' &&
-    pendingTokens >= policy.pendingTokenSoftLimit
-  ) {
-    return {
-      due: true,
-      hard: false,
-      reason: 'pending_token_limit',
-      fromPosition,
-      throughPosition,
     };
   }
 

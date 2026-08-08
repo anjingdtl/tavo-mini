@@ -28,6 +28,7 @@ import {
   describeStoryMemoryPolicy,
   listPendingChapters,
   predictNextCheckpointPosition,
+  STORY_MEMORY_DEFAULT_INTERVAL,
 } from '../services/storyMemory/storyMemoryPolicy';
 import {
   rebuildStoryMemory,
@@ -99,7 +100,9 @@ export const StoryMemoryScreen: React.FC<{ onClose?: () => void }> = ({
     null,
   );
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [intervalText, setIntervalText] = useState('3');
+  const [intervalText, setIntervalText] = useState(
+    String(STORY_MEMORY_DEFAULT_INTERVAL),
+  );
   const [displayOf, setDisplayOf] = useState<
     ((position: number) => number) | null
   >(null);
