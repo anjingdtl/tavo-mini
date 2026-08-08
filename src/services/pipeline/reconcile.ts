@@ -34,7 +34,13 @@ import {
 } from '../postDraftRetrieval';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { saveDraft } from '../draftService';
+import type { PipelineFactCheckReportV2 } from '../../types/pipelineRevision';
+import type { PipelineReviewReportV2 } from '../../types/pipelineRevision';
 import { sha256Hex } from '../continuation/hashUtils';
+import {
+  DEFAULT_OUTLINE_WORKFLOW_VERSION,
+  shouldFreezeOutlineWorkflowV2,
+} from './outlineWorkflowVersion';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
 import { getStageProgressPercent } from '../../utils/stages';
 import type { Chapter, Preset } from '../../types/novel';
@@ -46,6 +52,18 @@ import {
   validateFactCheckResult,
   validateReviewResult,
 } from '../pipelineAuditValidator';
+import {
+  validateFactCheckV2Result,
+  validateReviewV2Result,
+} from './revisionAuditValidator';
+import { compileRevisionContract } from './revisionContract';
+import { validateFinalArtifact } from './finalArtifactValidator';
+import {
+  buildRevisionAnchors,
+  buildTaggedDraft,
+  canonicalizeDraft,
+  computeDraftHash,
+} from './revisionAnchors';
 import type { LLMResult } from '../llm/types';
 import {
   parsePersistedPipelineTaskContext,
@@ -65,8 +83,11 @@ import {
   compileDraftFromFrozenRequest,
   compileDraftStageRequest,
   compileFactCheckStageRequest,
+  compileFactCheckV2StageRequest,
+  compileFinalReviserStageRequest,
   compileProofStageRequest,
   compileReviewStageRequest,
+  compileReviewV2StageRequest,
   requireReadyStageRequest,
   type ReadyStageRequest,
 } from './compileStageRequest';
@@ -201,6 +222,8 @@ async function runStageAttempt<T extends {
 }>(params: {
   taskId: string;
   stage: string;
+  /** Request protocol version recorded on the attempt (V2 audits = 2). */
+  requestVersion?: number;
   requestFingerprint: string;
   allocationTraceJson?: string | null;
   frozenRequestJson?: string | null;
@@ -229,6 +252,7 @@ async function runStageAttempt<T extends {
     pipelineTaskId: params.taskId,
     stage: params.stage,
     attemptNo,
+    requestVersion: params.requestVersion ?? 1,
     requestFingerprint: params.requestFingerprint,
     allocationTraceJson: params.allocationTraceJson ?? null,
     frozenRequestJson: params.frozenRequestJson ?? null,
@@ -383,18 +407,30 @@ export interface ReconcileOptions {
 const reconciling = new Set<string>();
 
 /**
- * Phase 2+ elastic budget switch, resolved once per reconcile entry (one
- * settings read, then reused by every stage compiler call). Defaults to
- * legacy fixed-weight allocator when the flag is off.
+ * Phase 2+ elastic budget + V5-Lite V2 workflow switches, resolved once per
+ * reconcile entry (one settings read, then reused by every stage compiler
+ * call). Defaults to legacy behavior when either flag is off. Both settings
+ * reads run in parallel so the microtask chain stays identical to the
+ * baseline single-flag refresh.
  */
 let elasticBudgetEnabled = false;
+let outlineWorkflowV2Enabled = false;
 
-async function refreshElasticBudgetFlag(): Promise<void> {
+async function refreshPipelineFlags(): Promise<void> {
   try {
-    const { isElasticBudgetV2Enabled } = await import('../featureFlags');
-    elasticBudgetEnabled = await isElasticBudgetV2Enabled();
+    const {
+      isElasticBudgetV2Enabled,
+      isOutlineWorkflowV2Enabled,
+    } = await import('../featureFlags');
+    const [elastic, outlineV2] = await Promise.all([
+      isElasticBudgetV2Enabled(),
+      isOutlineWorkflowV2Enabled(),
+    ]);
+    elasticBudgetEnabled = elastic;
+    outlineWorkflowV2Enabled = outlineV2;
   } catch {
     elasticBudgetEnabled = false;
+    outlineWorkflowV2Enabled = false;
   }
 }
 
@@ -450,6 +486,7 @@ function buildExecutionSnapshot(params: {
   factCheckPreset: Preset | null;
   proofPreset: Preset | null;
   requestConfig: LLMRequestConfig;
+  outlineWorkflowVersion?: 1 | 2;
 }): PipelineExecutionSnapshot {
   const contextWindow = Number(params.requestConfig.context_window) || 0;
   if (!(contextWindow > 0)) {
@@ -469,6 +506,9 @@ function buildExecutionSnapshot(params: {
   }
   return {
     pipelineMode: params.config.pipelineMode,
+    ...(params.outlineWorkflowVersion
+      ? { outlineWorkflowVersion: params.outlineWorkflowVersion }
+      : {}),
     draftMaxTokens: params.config.draftMaxTokens,
     reviewMaxTokens: params.config.reviewMaxTokens,
     factCheckMaxTokens: params.config.factCheckMaxTokens,
@@ -812,7 +852,7 @@ export async function reconcilePipelineTask(
     throw err;
   }
   reconciling.add(taskId);
-  await refreshElasticBudgetFlag();
+  await refreshPipelineFlags();
   // CL-10: call-level (never module-global) foreground ownership. Defaults to
   // 'task' unless the caller (batch reconciler) declares 'batch'.
   const emitForeground = (options.foregroundOwner ?? 'task') === 'task';
@@ -1216,7 +1256,27 @@ async function actionPersistInitialSnapshot(
 ): Promise<void> {
   if (cancelled(taskId, options)) return;
   const store = usePipelineTaskStore.getState();
+  // Fire the project lookup in parallel with loadRuntime so first-freeze never
+  // adds a serial DB round-trip to the microtask chain.
+  const projectPromise = db.getProjectById(chapter.project_id);
   const runtime = await loadRuntime(taskId, chapter);
+  // Resolve the V5-Lite workflow version once at first freeze. Resume never
+  // re-reads live project mode / default: frozen tasks keep their version.
+  let outlineWorkflowVersion: 1 | 2 | undefined;
+  if (!runtime.parsed?.execution) {
+    const project = await projectPromise;
+    const projectMode = project?.mode ?? null;
+    outlineWorkflowVersion = shouldFreezeOutlineWorkflowV2({
+      projectMode,
+      chapterId: chapter.id,
+      defaultVersion:
+        outlineWorkflowV2Enabled && DEFAULT_OUTLINE_WORKFLOW_VERSION === 1
+          ? 2
+          : DEFAULT_OUTLINE_WORKFLOW_VERSION,
+    })
+      ? 2
+      : undefined;
+  }
   // Fresh freeze from live config only when no execution yet.
   const execution =
     runtime.parsed?.execution ||
@@ -1227,6 +1287,7 @@ async function actionPersistInitialSnapshot(
       factCheckPreset: runtime.factCheckPreset,
       proofPreset: runtime.proofPreset,
       requestConfig: runtime.requestConfig,
+      outlineWorkflowVersion,
     });
   // Batch-owned first run: the batch form's mode wins over the global
   // pipeline setting. Resume never overrides a frozen snapshot.
@@ -1582,6 +1643,450 @@ function auditSnapshot(parsed: ParsedPipelineTaskContext): PipelineContextSnapsh
   return parsed.auditContext || parsed.draftContext;
 }
 
+/** True when the frozen execution selected the V5-Lite V2 workflow. */
+function isOutlineWorkflowV2(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+): boolean {
+  return runtime.parsed?.execution?.outlineWorkflowVersion === 2;
+}
+
+/**
+ * V5-Lite V2 review stage: canonical draft + stable anchors + tagged single
+ * injection + Review V2 contract validation + one-shot format repair.
+ * request_version=2 is recorded on attempts (§13).
+ */
+async function runReviewV2Stage(params: {
+  taskId: string;
+  chapter: Chapter;
+  runtime: Awaited<ReturnType<typeof loadRuntime>>;
+  abortSignal?: AbortSignal;
+  options: ReconcileOptions;
+}): Promise<void> {
+  const { taskId, chapter, runtime, abortSignal, options } = params;
+  if (!runtime.parsed) throw new Error('缺少冻结上下文');
+  const draftText = await getDraftText(taskId);
+  const canonicalDraft = canonicalizeDraft(draftText);
+  const anchors = buildRevisionAnchors(canonicalDraft);
+  const draftHash = computeDraftHash(canonicalDraft);
+  const tagged = buildTaggedDraft(canonicalDraft);
+  const ctxSnap =
+    runtime.config.pipelineMode === 'full'
+      ? auditSnapshot(runtime.parsed)
+      : runtime.parsed.draftContext;
+  const context = buildReviewContextFromSnapshot(ctxSnap);
+  const start = Date.now();
+  let tokens = { input: 0, output: 0, total: 0 };
+
+  const compile = (repairReason?: string) =>
+    compileReviewV2StageRequest({
+      taggedDraft: tagged.taggedText,
+      context,
+      draftHash,
+      maxTokens: runtime.config.reviewMaxTokens,
+      contextWindow: runtime.requestConfig.context_window || 0,
+      repairReason,
+    });
+  const validate = (result: LLMResult) =>
+    validateReviewV2Result({
+      result,
+      canonicalDraft,
+      expectedHash: draftHash,
+      anchors,
+    });
+
+  let compiled = compile();
+  if (!compiled.ready) {
+    await persistStage(taskId, {
+      stage: 'review',
+      text: '',
+      status: 'failed',
+      error: compiled.error.message,
+      durationMs: Date.now() - start,
+    });
+    return;
+  }
+
+  try {
+    const first = await runStageAttempt({
+      taskId,
+      stage: 'review',
+      requestVersion: 2,
+      requestFingerprint: stageFingerprint('review', compiled),
+      allocationTraceJson: compiled.elasticBudgetTrace
+        ? JSON.stringify(compiled.elasticBudgetTrace)
+        : null,
+      llmConfigId: llmConfigIdOf(runtime.requestConfig),
+      llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+      batchBudgetGate: options.batchBudgetGate,
+      estimatedInputTokens: compiled.estimatedInputTokens,
+      reservedOutputTokens: compiled.reservedOutputTokens,
+      run: () =>
+        callReadyLLM(
+          compiled,
+          runtime.config.reviewMaxTokens,
+          buildCallConfig(
+            runtime.reviewPreset,
+            runtime.config.reviewMaxTokens,
+            'pipeline_review',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+            { responseFormat: 'json_object' },
+          ),
+          abortSignal,
+        ),
+    });
+    if (cancelled(taskId, options)) {
+      const err = new Error('任务已取消') as Error & { code?: string };
+      err.code = 'cancelled';
+      throw err;
+    }
+    tokens = accumulateTokens(tokens, first);
+    let validation = validate(first);
+    logPipelineAudit({
+      stage: 'review',
+      attempt: 1,
+      valid: validation.valid,
+      reason: validation.reason,
+      textLength: first.text?.length || 0,
+      taskId,
+    });
+
+    if (!validation.valid) {
+      const isReasoningOnly = validation.reason === 'reasoning_only';
+      const retryMaxTokens = isReasoningOnly
+        ? bumpRetryBudget(
+            runtime.config.reviewMaxTokens,
+            runtime.requestConfig.max_output_tokens,
+          )
+        : runtime.config.reviewMaxTokens;
+      const repair = compile(
+        isReasoningOnly
+          ? REASONING_ONLY_REPAIR_HINT
+          : describeAuditFailureReason(validation.reason),
+      );
+      if (!repair.ready) {
+        await persistStage(taskId, {
+          stage: 'review',
+          text: '',
+          status: 'failed',
+          error: repair.error.message,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+      const repairReady = requireReadyStageRequest(repair);
+      const retry = await runStageAttempt({
+        taskId,
+        stage: 'review',
+        requestVersion: 2,
+        requestFingerprint: stageFingerprint('review', repairReady),
+        allocationTraceJson: repairReady.elasticBudgetTrace
+          ? JSON.stringify(repairReady.elasticBudgetTrace)
+          : null,
+        llmConfigId: llmConfigIdOf(runtime.requestConfig),
+        llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+        batchBudgetGate: options.batchBudgetGate,
+        estimatedInputTokens: repairReady.estimatedInputTokens,
+        reservedOutputTokens: repairReady.reservedOutputTokens,
+        run: () =>
+          callReadyLLM(
+            repairReady,
+            retryMaxTokens,
+            buildCallConfig(
+              runtime.reviewPreset,
+              retryMaxTokens,
+              'pipeline_review',
+              chapter.project_id,
+              runtime.requestConfig,
+              taskId,
+              isReasoningOnly
+                ? {
+                    responseFormat: 'json_object',
+                    thinking: { type: 'disabled' },
+                  }
+                : { responseFormat: 'json_object' },
+            ),
+            abortSignal,
+          ),
+      });
+      if (cancelled(taskId, options)) {
+        const err = new Error('任务已取消') as Error & { code?: string };
+        err.code = 'cancelled';
+        throw err;
+      }
+      tokens = accumulateTokens(tokens, retry);
+      validation = validate(retry);
+      logPipelineAudit({
+        stage: 'review',
+        attempt: 2,
+        valid: validation.valid,
+        reason: validation.reason,
+        textLength: retry.text?.length || 0,
+        taskId,
+      });
+    }
+
+    if (validation.valid && validation.normalizedText) {
+      await persistStage(taskId, {
+        stage: 'review',
+        text: validation.normalizedText,
+        status: 'success',
+        tokens,
+        durationMs: Date.now() - start,
+      });
+      return;
+    }
+    await persistStage(taskId, {
+      stage: 'review',
+      text: '',
+      status: 'failed',
+      error:
+        validation.reason === 'reasoning_only'
+          ? '文学评估仅返回推理内容，未产生报告。请在「设置」中提高该模型的审阅 max_tokens，或改用非推理模型。'
+          : formatAuditFailureMessage('review', validation.reason),
+      tokens,
+      durationMs: Date.now() - start,
+    });
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) {
+      await settleInterruptedTask(taskId, options);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
+    if (error instanceof BatchBudgetExceededError) {
+      throw error;
+    }
+    await persistStage(taskId, {
+      stage: 'review',
+      text: '',
+      status: 'failed',
+      error: getErrorMessage(error, '文学评估失败'),
+      tokens,
+      durationMs: Date.now() - start,
+    });
+  }
+}
+
+/**
+ * V5-Lite V2 fact-check stage: anchored single injection + FactCheck V2
+ * contract validation + one-shot format repair. request_version=2 (§13).
+ */
+async function runFactCheckV2Stage(params: {
+  taskId: string;
+  chapter: Chapter;
+  runtime: Awaited<ReturnType<typeof loadRuntime>>;
+  abortSignal?: AbortSignal;
+  options: ReconcileOptions;
+}): Promise<void> {
+  const { taskId, chapter, runtime, abortSignal, options } = params;
+  if (!runtime.parsed) throw new Error('缺少冻结上下文');
+  const draftText = await getDraftText(taskId);
+  const canonicalDraft = canonicalizeDraft(draftText);
+  const anchors = buildRevisionAnchors(canonicalDraft);
+  const draftHash = computeDraftHash(canonicalDraft);
+  const tagged = buildTaggedDraft(canonicalDraft);
+  const ctxSnap =
+    runtime.config.pipelineMode === 'full'
+      ? auditSnapshot(runtime.parsed)
+      : runtime.parsed.draftContext;
+  const context = buildFactCheckContextFromSnapshot(ctxSnap);
+  const start = Date.now();
+  let tokens = { input: 0, output: 0, total: 0 };
+
+  const compile = (repairReason?: string) =>
+    compileFactCheckV2StageRequest({
+      taggedDraft: tagged.taggedText,
+      context,
+      draftHash,
+      maxTokens: runtime.config.factCheckMaxTokens,
+      contextWindow: runtime.requestConfig.context_window || 0,
+      repairReason,
+    });
+  const validate = (result: LLMResult) =>
+    validateFactCheckV2Result({
+      result,
+      canonicalDraft,
+      expectedHash: draftHash,
+      anchors,
+    });
+
+  let compiled = compile();
+  if (!compiled.ready) {
+    await persistStage(taskId, {
+      stage: 'factCheck',
+      text: '',
+      status: 'failed',
+      error: compiled.error.message,
+      durationMs: Date.now() - start,
+    });
+    return;
+  }
+
+  try {
+    const first = await runStageAttempt({
+      taskId,
+      stage: 'factCheck',
+      requestVersion: 2,
+      requestFingerprint: stageFingerprint('factCheck', compiled),
+      allocationTraceJson: compiled.elasticBudgetTrace
+        ? JSON.stringify(compiled.elasticBudgetTrace)
+        : null,
+      llmConfigId: llmConfigIdOf(runtime.requestConfig),
+      llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+      batchBudgetGate: options.batchBudgetGate,
+      estimatedInputTokens: compiled.estimatedInputTokens,
+      reservedOutputTokens: compiled.reservedOutputTokens,
+      run: () =>
+        callReadyLLM(
+          compiled,
+          runtime.config.factCheckMaxTokens,
+          buildCallConfig(
+            runtime.factCheckPreset,
+            runtime.config.factCheckMaxTokens,
+            'pipeline_factcheck',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+            { responseFormat: 'json_object' },
+          ),
+          abortSignal,
+        ),
+    });
+    if (cancelled(taskId, options)) {
+      const err = new Error('任务已取消') as Error & { code?: string };
+      err.code = 'cancelled';
+      throw err;
+    }
+    tokens = accumulateTokens(tokens, first);
+    let validation = validate(first);
+    logPipelineAudit({
+      stage: 'factCheck',
+      attempt: 1,
+      valid: validation.valid,
+      reason: validation.reason,
+      textLength: first.text?.length || 0,
+      taskId,
+    });
+
+    if (!validation.valid) {
+      const isReasoningOnly = validation.reason === 'reasoning_only';
+      const retryMaxTokens = isReasoningOnly
+        ? bumpRetryBudget(
+            runtime.config.factCheckMaxTokens,
+            runtime.requestConfig.max_output_tokens,
+          )
+        : runtime.config.factCheckMaxTokens;
+      const repair = compile(
+        isReasoningOnly
+          ? REASONING_ONLY_REPAIR_HINT
+          : describeAuditFailureReason(validation.reason),
+      );
+      if (!repair.ready) {
+        await persistStage(taskId, {
+          stage: 'factCheck',
+          text: '',
+          status: 'failed',
+          error: repair.error.message,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+      const repairReady = requireReadyStageRequest(repair);
+      const retry = await runStageAttempt({
+        taskId,
+        stage: 'factCheck',
+        requestVersion: 2,
+        requestFingerprint: stageFingerprint('factCheck', repairReady),
+        allocationTraceJson: repairReady.elasticBudgetTrace
+          ? JSON.stringify(repairReady.elasticBudgetTrace)
+          : null,
+        llmConfigId: llmConfigIdOf(runtime.requestConfig),
+        llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+        batchBudgetGate: options.batchBudgetGate,
+        estimatedInputTokens: repairReady.estimatedInputTokens,
+        reservedOutputTokens: repairReady.reservedOutputTokens,
+        run: () =>
+          callReadyLLM(
+            repairReady,
+            retryMaxTokens,
+            buildCallConfig(
+              runtime.factCheckPreset,
+              retryMaxTokens,
+              'pipeline_factcheck',
+              chapter.project_id,
+              runtime.requestConfig,
+              taskId,
+              isReasoningOnly
+                ? {
+                    responseFormat: 'json_object',
+                    thinking: { type: 'disabled' },
+                  }
+                : { responseFormat: 'json_object' },
+            ),
+            abortSignal,
+          ),
+      });
+      if (cancelled(taskId, options)) {
+        const err = new Error('任务已取消') as Error & { code?: string };
+        err.code = 'cancelled';
+        throw err;
+      }
+      tokens = accumulateTokens(tokens, retry);
+      validation = validate(retry);
+      logPipelineAudit({
+        stage: 'factCheck',
+        attempt: 2,
+        valid: validation.valid,
+        reason: validation.reason,
+        textLength: retry.text?.length || 0,
+        taskId,
+      });
+    }
+
+    if (validation.valid && validation.normalizedText) {
+      await persistStage(taskId, {
+        stage: 'factCheck',
+        text: validation.normalizedText,
+        status: 'success',
+        tokens,
+        durationMs: Date.now() - start,
+      });
+      return;
+    }
+    await persistStage(taskId, {
+      stage: 'factCheck',
+      text: '',
+      status: 'failed',
+      error:
+        validation.reason === 'reasoning_only'
+          ? '事实核查仅返回推理内容，未产生报告。请在「设置」中提高该模型的核查 max_tokens，或改用非推理模型。'
+          : formatAuditFailureMessage('factCheck', validation.reason),
+      tokens,
+      durationMs: Date.now() - start,
+    });
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) {
+      await settleInterruptedTask(taskId, options);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
+    if (error instanceof BatchBudgetExceededError) {
+      throw error;
+    }
+    await persistStage(taskId, {
+      stage: 'factCheck',
+      text: '',
+      status: 'failed',
+      error: getErrorMessage(error, '事实核查失败'),
+      tokens,
+      durationMs: Date.now() - start,
+    });
+  }
+}
+
 async function actionRunReview(
   taskId: string,
   chapter: Chapter,
@@ -1611,6 +2116,16 @@ async function actionRunReview(
     },
     run: async () => {
       const runtime = await loadRuntime(taskId, chapter);
+      if (isOutlineWorkflowV2(runtime)) {
+        await runReviewV2Stage({
+          taskId,
+          chapter,
+          runtime,
+          abortSignal,
+          options,
+        });
+        return;
+      }
       if (!runtime.parsed) throw new Error('缺少冻结上下文');
       const draftText = await getDraftText(taskId);
       const ctxSnap =
@@ -1849,6 +2364,16 @@ async function actionRunFactCheck(
     },
     run: async () => {
       const runtime = await loadRuntime(taskId, chapter);
+      if (isOutlineWorkflowV2(runtime)) {
+        await runFactCheckV2Stage({
+          taskId,
+          chapter,
+          runtime,
+          abortSignal,
+          options,
+        });
+        return;
+      }
       if (!runtime.parsed) throw new Error('缺少冻结上下文');
       const draftText = await getDraftText(taskId);
       const ctxSnap =
@@ -2074,6 +2599,212 @@ async function actionRunReviewAndFactCheck(
   ]);
 }
 
+/**
+ * V5-Lite V2 Final Reviser stage (§11–§12):
+ *   persisted draft → canonical + anchors → parse V2 audits → compile
+ *   revision contract (0 LLM) → Final Reviser request (contract first,
+ *   full draft second) → Local Final Artifact Validator before success
+ *   persist. request_version=2 recorded on attempts (§13).
+ *
+ * Fail-closed (§10.6): when both audit sides are invalid, no proof request
+ * is issued and the task degrades to draft fallback (existing semantics).
+ */
+async function runFinalReviserV2Stage(params: {
+  taskId: string;
+  chapter: Chapter;
+  runtime: Awaited<ReturnType<typeof loadRuntime>>;
+  abortSignal?: AbortSignal;
+  options: ReconcileOptions;
+}): Promise<void> {
+  const { taskId, chapter, runtime, abortSignal, options } = params;
+  if (!runtime.parsed) throw new Error('缺少冻结上下文');
+  const draftText = await getDraftText(taskId);
+  const canonicalDraft = canonicalizeDraft(draftText);
+  const anchors = buildRevisionAnchors(canonicalDraft);
+  const ctxSnap =
+    runtime.config.pipelineMode === 'full'
+      ? auditSnapshot(runtime.parsed)
+      : runtime.parsed.draftContext;
+  const constraints = buildProofConstraintsFromSnapshot(ctxSnap);
+  const start = Date.now();
+  const tokens = { input: 0, output: 0, total: 0 };
+
+  // Parse persisted V2 audit reports (already normalized by the validator).
+  const reviewText = await getStageText(taskId, 'review');
+  const factCheckText = await getStageText(taskId, 'factCheck');
+  const parseV2 = (raw: string) => {
+    if (!raw || !raw.trim()) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && parsed.schemaVersion === 2) {
+        return parsed as PipelineReviewReportV2 | PipelineFactCheckReportV2;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+  const reviewV2 = reviewText ? (parseV2(reviewText) as PipelineReviewReportV2 | null) : null;
+  const factV2 = factCheckText
+    ? (parseV2(factCheckText) as PipelineFactCheckReportV2 | null)
+    : null;
+
+  const compiledContract = compileRevisionContract({
+    canonicalDraft,
+    anchors,
+    review: reviewV2,
+    factCheck: factV2,
+  });
+  if (!compiledContract.ok) {
+    // Both audit sides invalid → draft fallback, proof never fires (§10.6).
+    await persistStage(taskId, {
+      stage: 'proof',
+      text: draftText,
+      status: 'failed',
+      error: '修订合同构建失败（审核报告均无法使用），已回退到初稿',
+      durationMs: Date.now() - start,
+    });
+    return;
+  }
+  const contractJson = JSON.stringify(compiledContract.contract);
+
+  const compiled = compileFinalReviserStageRequest({
+    contractJson,
+    workItemCount: compiledContract.contract.workItems.length,
+    canonicalDraft,
+    constraints,
+    maxTokens: runtime.config.proofMaxTokens,
+    contextWindow: runtime.requestConfig.context_window || 0,
+  });
+  if (!compiled.ready) {
+    await persistStage(taskId, {
+      stage: 'proof',
+      text: draftText,
+      status: 'failed',
+      error: compiled.error.message,
+      durationMs: Date.now() - start,
+    });
+    return;
+  }
+
+  try {
+    const result = await runStageAttempt({
+      taskId,
+      stage: 'proof',
+      requestVersion: 2,
+      requestFingerprint: stageFingerprint('proof', compiled),
+      allocationTraceJson: compiled.elasticBudgetTrace
+        ? JSON.stringify(compiled.elasticBudgetTrace)
+        : null,
+      llmConfigId: llmConfigIdOf(runtime.requestConfig),
+      llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+      batchBudgetGate: options.batchBudgetGate,
+      estimatedInputTokens: compiled.estimatedInputTokens,
+      reservedOutputTokens: compiled.reservedOutputTokens,
+      run: () =>
+        callReadyLLM(
+          compiled,
+          runtime.config.proofMaxTokens,
+          buildCallConfig(
+            runtime.proofPreset,
+            runtime.config.proofMaxTokens,
+            'pipeline_proof',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+          ),
+          abortSignal,
+        ),
+    });
+    if (cancelled(taskId, options)) {
+      const err = new Error('任务已取消') as Error & { code?: string };
+      err.code = 'cancelled';
+      throw err;
+    }
+    tokens.input += result.inputTokens || 0;
+    tokens.output += result.outputTokens || 0;
+    tokens.total += result.totalTokens || 0;
+
+    const content =
+      typeof result.text === 'string' && result.text.trim().length > 0
+        ? result.text
+        : null;
+    if (!content) {
+      const hasReasoning =
+        typeof result.reasoningText === 'string' &&
+        result.reasoningText.trim().length > 0;
+      await persistStage(taskId, {
+        stage: 'proof',
+        text: draftText,
+        status: 'failed',
+        error: hasReasoning
+          ? '终稿仅返回推理内容，已回退到初稿'
+          : '终稿输出为空，已回退到初稿',
+        tokens: {
+          input: result.inputTokens,
+          output: result.outputTokens,
+          total: result.totalTokens,
+        },
+        durationMs: Date.now() - start,
+      });
+      return;
+    }
+
+    // Local Final Artifact Validator (§12): 0 LLM, no attempt, before the
+    // proof checkpoint is persisted as success. Fail → draft fallback.
+    const validator = validateFinalArtifact({
+      text: content,
+      reasoningText: result.reasoningText,
+      finishReason: result.finishReason,
+      canonicalDraft,
+      contractJson,
+    });
+    if (!validator.valid) {
+      await persistStage(taskId, {
+        stage: 'proof',
+        text: draftText,
+        status: 'failed',
+        error: `终稿本地校验未通过（${validator.code}），已回退到初稿`,
+        tokens: {
+          input: result.inputTokens,
+          output: result.outputTokens,
+          total: result.totalTokens,
+        },
+        durationMs: Date.now() - start,
+      });
+      return;
+    }
+
+    await persistStage(taskId, {
+      stage: 'proof',
+      text: content,
+      status: 'success',
+      tokens: {
+        input: result.inputTokens,
+        output: result.outputTokens,
+        total: result.totalTokens,
+      },
+      durationMs: Date.now() - start,
+    });
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) {
+      await settleInterruptedTask(taskId, options);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
+    if (error instanceof BatchBudgetExceededError) {
+      throw error;
+    }
+    await persistStage(taskId, {
+      stage: 'proof',
+      text: draftText,
+      status: 'failed',
+      error: getErrorMessage(error, '终审失败，已回退到初稿'),
+      durationMs: Date.now() - start,
+    });
+  }
+}
+
 async function actionRunProof(
   taskId: string,
   chapter: Chapter,
@@ -2120,6 +2851,17 @@ async function actionRunProof(
           '正在综合修订',
           getStageProgressPercent(runtime.config.pipelineMode, 2),
         ).catch(() => {});
+      }
+
+      if (isOutlineWorkflowV2(runtime)) {
+        await runFinalReviserV2Stage({
+          taskId,
+          chapter,
+          runtime,
+          abortSignal,
+          options,
+        });
+        return;
       }
 
       if (!runtime.parsed) throw new Error('缺少冻结上下文');

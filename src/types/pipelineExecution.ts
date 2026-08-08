@@ -35,6 +35,17 @@ export interface FrozenModelSnapshot {
 export interface PipelineExecutionSnapshot {
   pipelineMode: PipelineMode;
 
+  /**
+   * Outline pipeline request protocol version frozen at task start.
+   * undefined / 1 → Legacy Review / FactCheck / Proof.
+   * 2 → Anchored Review / FactCheck + Revision Contract + Final Reviser
+   *      + Local Final Artifact Validator.
+   * Decided once at first execution-snapshot freeze; resume must never
+   * re-read the live default. No schema migration (stored in
+   * pipeline_context_json).
+   */
+  outlineWorkflowVersion?: 1 | 2;
+
   draftMaxTokens: number;
   reviewMaxTokens: number;
   factCheckMaxTokens: number;

@@ -49,8 +49,10 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
 import {
   isElasticBudgetV2Enabled,
   isMultiChapterBatchEnabled,
+  isOutlineWorkflowV2Enabled,
   setElasticBudgetV2Enabled,
   setMultiChapterBatchEnabled,
+  setOutlineWorkflowV2Enabled,
 } from '../services/featureFlags';
 
 export const SettingsScreen: React.FC = () => {
@@ -69,18 +71,22 @@ export const SettingsScreen: React.FC = () => {
     React.useState(false);
   const [elasticBudgetV2Enabled, setElasticBudgetV2Local] =
     React.useState(false);
+  const [outlineWorkflowV2Enabled, setOutlineWorkflowV2Local] =
+    React.useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [batch, elastic] = await Promise.all([
+        const [batch, elastic, outlineV2] = await Promise.all([
           isMultiChapterBatchEnabled(),
           isElasticBudgetV2Enabled(),
+          isOutlineWorkflowV2Enabled(),
         ]);
         if (!cancelled) {
           setMultiChapterBatchLocal(batch);
           setElasticBudgetV2Local(elastic);
+          setOutlineWorkflowV2Local(outlineV2);
         }
       } catch {
         // Flag reads are non-critical; keep defaults (OFF).
@@ -123,6 +129,25 @@ export const SettingsScreen: React.FC = () => {
       });
     } catch (e: any) {
       setElasticBudgetV2Local(!value);
+      Toast.show({
+        type: 'error',
+        text1: '保存失败',
+        text2: e?.message || '请稍后重试',
+      });
+    }
+  };
+
+  const toggleOutlineWorkflowV2 = async (value: boolean) => {
+    setOutlineWorkflowV2Local(value);
+    try {
+      await setOutlineWorkflowV2Enabled(value);
+      Toast.show({
+        type: value ? 'success' : 'info',
+        text1: value ? '定向修订流水线已开启' : '定向修订流水线已关闭',
+        text2: '重启应用后生效；仅影响之后新发起的大纲章节生成任务。',
+      });
+    } catch (e: any) {
+      setOutlineWorkflowV2Local(!value);
       Toast.show({
         type: 'error',
         text1: '保存失败',
@@ -384,6 +409,30 @@ export const SettingsScreen: React.FC = () => {
               <Switch
                 value={elasticBudgetV2Enabled}
                 onValueChange={toggleElasticBudgetV2}
+              />
+            </View>
+            <View style={styles.switchRow}>
+              <View style={styles.switchText}>
+                <Text
+                  style={[
+                    styles.switchTitle,
+                    { color: theme.colors.textPrimary },
+                  ]}
+                >
+                  定向修订流水线
+                </Text>
+                <Text
+                  style={[
+                    styles.switchHint,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
+                  大纲章节锚点审核 + 修订合同 + 终稿修订（实验）。
+                </Text>
+              </View>
+              <Switch
+                value={outlineWorkflowV2Enabled}
+                onValueChange={toggleOutlineWorkflowV2}
               />
             </View>
           </Card>
