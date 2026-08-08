@@ -607,6 +607,48 @@ function bumpRetryBudget(stageMax: number, modelMax?: number): number {
 const REASONING_ONLY_REPAIR_HINT =
   '上一轮只输出了推理/思考过程，未给出 JSON 报告。请直接输出 JSON 报告本体，不要输出任何推理、分析或思考过程。';
 
+/**
+ * V2 audit reports are machine-readable contracts, not creative prose.
+ * Reasoning-capable gateways must skip chain-of-thought for every audit
+ * attempt, including the first request and non-reasoning format repairs. A
+ * low, fixed sampling temperature also prevents a preset intended for prose
+ * generation from destabilising the contract shape.
+ */
+function buildStructuredAuditCallConfig(
+  preset: Preset | null,
+  maxTokens: number,
+  scenario: string,
+  projectId: number,
+  requestConfig: LLMRequestConfig,
+  taskId: string,
+) {
+  return {
+    ...buildCallConfig(
+      preset,
+      maxTokens,
+      scenario,
+      projectId,
+      requestConfig,
+      taskId,
+      {
+        responseFormat: 'json_object',
+        thinking: { type: 'disabled' },
+      },
+    ),
+    temperature: 0.2,
+    top_p: 1,
+  };
+}
+
+function buildV2RepairReason(
+  reason: Parameters<typeof describeAuditFailureReason>[0],
+  details: string | undefined,
+): string {
+  const label = describeAuditFailureReason(reason);
+  const detail = typeof details === 'string' ? details.trim().slice(0, 240) : '';
+  return detail ? `${label}；校验提示：${detail}` : label;
+}
+
 function accumulateTokens(
   acc: { input: number; output: number; total: number },
   result: LLMResult,
@@ -1685,12 +1727,15 @@ async function runReviewV2Stage(params: {
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
 
-  const compile = (repairReason?: string) =>
+  const compile = (
+    repairReason?: string,
+    maxTokens = runtime.config.reviewMaxTokens,
+  ) =>
     compileReviewV2StageRequest({
       taggedDraft: tagged.taggedText,
       context,
       draftHash,
-      maxTokens: runtime.config.reviewMaxTokens,
+      maxTokens,
       contextWindow: runtime.requestConfig.context_window || 0,
       repairReason,
     });
@@ -1732,14 +1777,13 @@ async function runReviewV2Stage(params: {
         callReadyLLM(
           compiled,
           runtime.config.reviewMaxTokens,
-          buildCallConfig(
+          buildStructuredAuditCallConfig(
             runtime.reviewPreset,
             runtime.config.reviewMaxTokens,
             'pipeline_review',
             chapter.project_id,
             runtime.requestConfig,
             taskId,
-            { responseFormat: 'json_object' },
           ),
           abortSignal,
         ),
@@ -1771,7 +1815,8 @@ async function runReviewV2Stage(params: {
       const repair = compile(
         isReasoningOnly
           ? REASONING_ONLY_REPAIR_HINT
-          : describeAuditFailureReason(validation.reason),
+          : buildV2RepairReason(validation.reason, validation.details),
+        retryMaxTokens,
       );
       if (!repair.ready) {
         await persistStage(taskId, {
@@ -1802,19 +1847,13 @@ async function runReviewV2Stage(params: {
           callReadyLLM(
             repairReady,
             retryMaxTokens,
-            buildCallConfig(
+            buildStructuredAuditCallConfig(
               runtime.reviewPreset,
               retryMaxTokens,
               'pipeline_review',
               chapter.project_id,
               runtime.requestConfig,
               taskId,
-              isReasoningOnly
-                ? {
-                    responseFormat: 'json_object',
-                    thinking: { type: 'disabled' },
-                  }
-                : { responseFormat: 'json_object' },
             ),
             abortSignal,
           ),
@@ -1903,12 +1942,15 @@ async function runFactCheckV2Stage(params: {
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
 
-  const compile = (repairReason?: string) =>
+  const compile = (
+    repairReason?: string,
+    maxTokens = runtime.config.factCheckMaxTokens,
+  ) =>
     compileFactCheckV2StageRequest({
       taggedDraft: tagged.taggedText,
       context,
       draftHash,
-      maxTokens: runtime.config.factCheckMaxTokens,
+      maxTokens,
       contextWindow: runtime.requestConfig.context_window || 0,
       repairReason,
     });
@@ -1950,14 +1992,13 @@ async function runFactCheckV2Stage(params: {
         callReadyLLM(
           compiled,
           runtime.config.factCheckMaxTokens,
-          buildCallConfig(
+          buildStructuredAuditCallConfig(
             runtime.factCheckPreset,
             runtime.config.factCheckMaxTokens,
             'pipeline_factcheck',
             chapter.project_id,
             runtime.requestConfig,
             taskId,
-            { responseFormat: 'json_object' },
           ),
           abortSignal,
         ),
@@ -1989,7 +2030,8 @@ async function runFactCheckV2Stage(params: {
       const repair = compile(
         isReasoningOnly
           ? REASONING_ONLY_REPAIR_HINT
-          : describeAuditFailureReason(validation.reason),
+          : buildV2RepairReason(validation.reason, validation.details),
+        retryMaxTokens,
       );
       if (!repair.ready) {
         await persistStage(taskId, {
@@ -2020,19 +2062,13 @@ async function runFactCheckV2Stage(params: {
           callReadyLLM(
             repairReady,
             retryMaxTokens,
-            buildCallConfig(
+            buildStructuredAuditCallConfig(
               runtime.factCheckPreset,
               retryMaxTokens,
               'pipeline_factcheck',
               chapter.project_id,
               runtime.requestConfig,
               taskId,
-              isReasoningOnly
-                ? {
-                    responseFormat: 'json_object',
-                    thinking: { type: 'disabled' },
-                  }
-                : { responseFormat: 'json_object' },
             ),
             abortSignal,
           ),

@@ -88,7 +88,7 @@ export async function migrateV38ToV39(db: SQLite.SQLiteDatabase): Promise<void> 
       const stage = String(item.stage);
       const statusRaw = String(item.status || 'pending');
       const mapped =
-        statusRaw === 'success'
+        statusRaw === 'success' || statusRaw === 'succeeded'
           ? 'succeeded'
           : statusRaw === 'failed'
             ? 'failed'

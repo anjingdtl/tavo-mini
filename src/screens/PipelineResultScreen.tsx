@@ -18,8 +18,6 @@ import { resumePipeline } from '../services/pipelineRunner';
 import {
   resetFailedStageCheckpointsForResume,
 } from '../data/repositories/pipelineStageCheckpointRepository';
-import { execute } from '../data/connection/execute';
-import { openDatabase } from '../data/connection/openDatabase';
 import type { PipelineStageResult } from '../types/pipeline';
 
 type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'PipelineResult'>;
@@ -410,28 +408,16 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       }
       // 失败/中断的 checkpoint 重置为 pending；pipeline 状态机只重跑这些。
       await resetFailedStageCheckpointsForResume(task.id);
+      const resumedAt = Date.now();
       // task 转 interrupted（resume 路径），保留 finalText（失败回退的初稿）。
-      await execute(
-        await openDatabase(),
-        `UPDATE pipeline_tasks SET status = 'interrupted', updated_at = ? WHERE id = ?`,
-        [Date.now(), task.id],
-      );
+      await db.updatePipelineTaskResumeState(task.id, resumedAt);
       usePipelineTaskStore
         .getState()
         .registerPersistedTask({
-          id: task.id,
-          targetType: task.targetType as 'chapter',
-          targetId: task.targetId,
+          ...task,
           status: 'interrupted',
-          stageResults: task.stageResults,
-          finalText: task.finalText ?? null,
           error: null,
-          inputFingerprint: task.inputFingerprint ?? null,
-          pipelineContextJson: task.pipelineContextJson ?? null,
-          pipelineContextVersion: task.pipelineContextVersion ?? null,
-          pipelineContextHash: task.pipelineContextHash ?? null,
-          createdAt: task.createdAt,
-          updatedAt: Date.now(),
+          updatedAt: resumedAt,
           resolvedAt: null,
           resolvedAction: null,
         });

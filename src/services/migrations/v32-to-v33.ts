@@ -157,9 +157,7 @@ export async function migrateV32ToV33(
   // 2. Dedup cleanup + business-unique indexes (all idempotent: DELETE matches
   //    zero rows when no duplicates; CREATE [UNIQUE] INDEX IF NOT EXISTS).
   const statements = buildV32toV33Statements();
-  if (statements.length > 0) {
-    await executeTransaction(db, statements, { faultDomain: 'migration' });
-  }
+  await executeTransaction(db, statements, { faultDomain: 'migration' });
 }
 
 /**
@@ -203,7 +201,34 @@ function rebindLinksThenDedup(
 ): SqlStatement[] {
   const keyList = keyColumns.join(', ');
   const keyEq = keyColumns.map(c => `d.${c} = k.${c}`).join(' AND ');
+  const keyEqToD = keyColumns.map(c => `k2.${c} = d.${c}`).join(' AND ');
   return [
+    {
+      // If the keeper already owns the same evidence link, remove only the
+      // obsolete duplicate link first. Otherwise the UPDATE below would hit
+      // canon_evidence_links' primary key before the generic dedup statement
+      // gets a chance to run.
+      sql: `DELETE FROM canon_evidence_links
+        WHERE rowid IN (
+          SELECT old.rowid
+          FROM canon_evidence_links old
+          INNER JOIN ${table} d ON d.id = old.owner_id
+          INNER JOIN ${table} k ON k.id = (
+            SELECT MAX(k2.id) FROM ${table} k2
+            WHERE k2.review_status != 'superseded'
+              AND ${keyEqToD}
+          )
+          INNER JOIN canon_evidence_links keeper
+            ON keeper.evidence_id = old.evidence_id
+           AND keeper.snapshot_id = old.snapshot_id
+           AND keeper.owner_type = old.owner_type
+           AND keeper.owner_id = k.id
+          WHERE old.owner_type = ?
+            AND d.review_status != 'superseded'
+            AND d.id != k.id
+        )`,
+      params: [ownerType],
+    },
     {
       sql: `UPDATE canon_evidence_links
         SET owner_id = (

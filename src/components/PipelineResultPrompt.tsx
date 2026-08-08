@@ -7,6 +7,8 @@ export interface PipelineResultPromptProps {
   task: PipelineTask | null;
   onDismiss: () => void;
   onViewResult: (taskId: string) => void;
+  /** Optional direct recovery action for failed/interrupted chapter tasks. */
+  onResume?: (taskId: string) => void;
 }
 
 export function buildPipelineResultPromptCopy(task: PipelineTask): {
@@ -72,10 +74,15 @@ export const PipelineResultPrompt: React.FC<PipelineResultPromptProps> = ({
   task,
   onDismiss,
   onViewResult,
+  onResume,
 }) => {
   const { theme } = useThemeStore();
   if (!task) return null;
   const { title, body, confirmLabel, cancelLabel } = buildCopy(task);
+  const canResume = Boolean(onResume)
+    && task.targetType === 'chapter'
+    && (task.status === 'failed' || task.status === 'interrupted');
+  const primaryLabel = canResume ? '从失败处继续重跑' : confirmLabel;
   return (
     <Modal
       visible={!!task}
@@ -100,7 +107,7 @@ export const PipelineResultPrompt: React.FC<PipelineResultPromptProps> = ({
             >
               <Text style={[styles.buttonText, { color: theme.colors.textSecondary }]}>{cancelLabel}</Text>
             </Pressable>
-            {confirmLabel === '查看结果' ? (
+            {primaryLabel === '查看结果' ? (
               <Pressable
                 onPress={() => { onViewResult(task.id); }}
                 testID="pipeline-prompt-confirm"
@@ -111,11 +118,17 @@ export const PipelineResultPrompt: React.FC<PipelineResultPromptProps> = ({
                   { backgroundColor: theme.colors.accent, opacity: pressed ? 0.8 : 1 },
                 ]}
               >
-                <Text style={[styles.buttonText, styles.primaryButtonText]}>{confirmLabel}</Text>
+                <Text style={[styles.buttonText, styles.primaryButtonText]}>{primaryLabel}</Text>
               </Pressable>
             ) : (
               <Pressable
-                onPress={onDismiss}
+                onPress={() => {
+                  if (canResume) {
+                    onResume?.(task.id);
+                    return;
+                  }
+                  onDismiss();
+                }}
                 testID="pipeline-prompt-confirm"
                 accessibilityRole="button"
                 style={({ pressed }) => [
@@ -124,7 +137,7 @@ export const PipelineResultPrompt: React.FC<PipelineResultPromptProps> = ({
                   { backgroundColor: theme.colors.accent, opacity: pressed ? 0.8 : 1 },
                 ]}
               >
-                <Text style={[styles.buttonText, styles.primaryButtonText]}>{confirmLabel}</Text>
+                <Text style={[styles.buttonText, styles.primaryButtonText]}>{primaryLabel}</Text>
               </Pressable>
             )}
           </View>
