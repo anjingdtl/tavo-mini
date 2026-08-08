@@ -60,8 +60,10 @@ import {
   migrateV42ToV43,
 } from './v42-to-v43';
 import { migrateV43ToV44 } from './v43-to-v44';
+import { migrateV44ToV45 } from './v44-to-v45';
+import { migrateV45ToV46 } from './v45-to-v46';
 
-export const SCHEMA_VERSION = 44;
+export const SCHEMA_VERSION = 46;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -310,6 +312,20 @@ const MIGRATIONS: Migration[] = [
     // columns (43→44). ALTERs run only when a column is missing.
     buildStatements: async () => [],
     migrate: migrateV43ToV44,
+  },
+  {
+    from: 44,
+    to: 45,
+    breaking: false,
+    buildStatements: async () => [],
+    migrate: migrateV44ToV45,
+  },
+  {
+    from: 45,
+    to: 46,
+    breaking: false,
+    buildStatements: async () => [],
+    migrate: migrateV45ToV46,
   },
 ];
 

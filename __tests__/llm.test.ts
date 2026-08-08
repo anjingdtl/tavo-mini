@@ -2,6 +2,7 @@ import {
   normalizeChatCompletionUrl,
   createLLMConfigError,
   openAICompatibleProvider,
+  supportsReasoningEffort,
 } from '../src/services/llm/openAICompatibleProvider';
 import { testLLMConnection } from '../src/services/llm';
 
@@ -122,6 +123,133 @@ test('forwards an optional thinking control without changing callers that omit i
 
   const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
   expect(request.thinking).toEqual({ type: 'disabled' });
+});
+
+test.each(['low', 'medium', 'high', 'max'] as const)(
+  'sends DeepSeek V4 Flash reasoning_effort=%s only for the official endpoint',
+  async effort => {
+    const fetchMock = jest.fn(async (..._args: any[]) => ({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '正文' }, finish_reason: 'stop' }],
+      }),
+    }));
+    globalThis.fetch = fetchMock as any;
+
+    await openAICompatibleProvider.generate(
+      [{ role: 'user', content: '写一段' }],
+      {
+        thinking: { type: 'enabled' },
+        reasoningEffort: effort,
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'test-key',
+          model_name: 'deepseek-v4-flash',
+          url: 'https://api.deepseek.com/v1/chat/completions',
+        },
+      },
+    );
+
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(request.thinking).toEqual({ type: 'enabled' });
+    expect(request.reasoning_effort).toBe(effort);
+  },
+);
+
+test('does not send reasoning_effort for a gateway or disabled thinking', async () => {
+  expect(
+    supportsReasoningEffort({
+      providerType: 'openai_compatible',
+      modelName: 'deepseek-v4-flash',
+      baseUrl: 'https://api.deepseek.com/v1/chat/completions',
+    }),
+  ).toBe(true);
+  expect(
+    supportsReasoningEffort({
+      providerType: 'openai_compatible',
+      modelName: 'deepseek-v4-flash',
+      baseUrl: 'https://gateway.example.com/v1/chat/completions',
+    }),
+  ).toBe(false);
+
+  const fetchMock = jest.fn(async (..._args: any[]) => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '正文' }, finish_reason: 'stop' }],
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+  await openAICompatibleProvider.generate(
+    [{ role: 'user', content: '写一段' }],
+    {
+      thinking: { type: 'disabled' },
+      reasoningEffort: 'max',
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'test-key',
+        model_name: 'deepseek-v4-flash',
+        url: 'https://api.deepseek.com/v1/chat/completions',
+      },
+    },
+  );
+  const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+  expect(request).not.toHaveProperty('reasoning_effort');
+});
+
+test('reports official reasoning token usage and derives visible output tokens', async () => {
+  const fetchMock = jest.fn(async (..._args: any[]) => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '正文' }, finish_reason: 'stop' }],
+      usage: {
+        prompt_tokens: 10,
+        completion_tokens: 20,
+        total_tokens: 30,
+        completion_tokens_details: { reasoning_tokens: 12 },
+      },
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: '写一段' }],
+    {
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'test-key',
+        model_name: 'deepseek-v4-flash',
+        url: 'https://api.deepseek.com/v1/chat/completions',
+      },
+    },
+  );
+  expect(result.reasoningTokens).toBe(12);
+  expect(result.visibleOutputTokens).toBe(8);
+});
+
+test('does not silently retry when DeepSeek rejects reasoning_effort', async () => {
+  const fetchMock = jest.fn<any, any[]>().mockResolvedValue({
+    ok: false,
+    status: 400,
+    text: async () => 'reasoning_effort unsupported',
+    headers: { get: () => null },
+  });
+  globalThis.fetch = fetchMock as any;
+  await expect(
+    openAICompatibleProvider.generate(
+      [{ role: 'user', content: '写一段' }],
+      {
+        responseFormat: 'json_object',
+        thinking: { type: 'enabled' },
+        reasoningEffort: 'high',
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'test-key',
+          model_name: 'deepseek-v4-flash',
+          url: 'https://api.deepseek.com/v1/chat/completions',
+        },
+      },
+    ),
+  ).rejects.toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 test('falls back without JSON mode when a compatible provider rejects it', async () => {

@@ -450,11 +450,18 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           variant="ghost"
           onPress={() => toggleExpanded(stage.stage)}
         />
-        <Text style={[styles.stageMeta, { color: statusColor }]}>
+        <Text
+          style={[styles.stageMeta, { color: statusColor }]}
+        >
           耗时 {Math.round(stage.durationMs / 1000)}s
           {stage.tokens ? ` · ${stage.tokens.total.toLocaleString()} tokens` : ''}
           {stage.error ? ` · ${stage.error}` : ''}
         </Text>
+        {stage.warnings?.length ? (
+          <Text style={[styles.stageMeta, { color: theme.colors.warning }]}>
+            提示：{stage.warnings.join('；')}
+          </Text>
+        ) : null}
         {isExpanded && (
           <Text
             style={[styles.stageText, { color: theme.colors.textPrimary }]}

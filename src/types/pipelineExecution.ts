@@ -5,6 +5,9 @@
  * never re-reads live settings (pipelineMode, stage budgets, presets, model).
  */
 import type { PipelineMode } from './pipeline';
+import type { PipelineReasoningEffort } from './pipeline';
+
+export type FinalReviserReasoningPolicyVersion = 1 | 2;
 
 /** Snapshot of a resolved preset at task start (content, not just id). */
 export interface FrozenPresetSnapshot {
@@ -53,6 +56,15 @@ export interface PipelineExecutionSnapshot {
    * default. Missing on historical snapshots → Legacy (1).
    */
   contextBudgetVersion?: 1 | 2;
+
+  /**
+   * Frozen Final Reviser reasoning policy. Missing / 1 is historical Legacy;
+   * new Outline V2 snapshots explicitly carry 2.
+   */
+  finalReviserReasoningPolicyVersion?: FinalReviserReasoningPolicyVersion;
+
+  /** Frozen V2 product tier applied to Draft / Review / FactCheck / Proof. */
+  reasoningEffort?: PipelineReasoningEffort;
 
   draftMaxTokens: number;
   reviewMaxTokens: number;

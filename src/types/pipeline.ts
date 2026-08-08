@@ -1,5 +1,6 @@
 export type PipelineStageName = 'draft' | 'review' | 'factCheck' | 'proof';
 export type PipelineMode = 'noReview' | 'twoStage' | 'conditional' | 'full';
+export type PipelineReasoningEffort = 'low' | 'medium' | 'high';
 
 export type PipelineTaskStatus =
   | 'idle'
@@ -16,6 +17,8 @@ export type PipelineTaskStatus =
 
 export interface PipelineConfig {
   pipelineMode: PipelineMode;
+  /** V2 product tier; omitted by legacy callers and normalized to medium. */
+  reasoningEffort?: PipelineReasoningEffort;
   draftPresetId: number | null;
   reviewPresetId: number | null;
   factCheckPresetId: number | null;
@@ -31,6 +34,8 @@ export interface PipelineStageResult {
   text: string;
   status: 'success' | 'failed' | 'skipped';
   error?: string;
+  /** Non-blocking local/audit quality warnings retained with the stage. */
+  warnings?: string[];
   tokens?: { input: number; output: number; total: number };
   durationMs: number;
 }

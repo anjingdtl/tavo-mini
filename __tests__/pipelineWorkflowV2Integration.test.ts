@@ -373,6 +373,68 @@ describe('V2 production state machine (frozen version=2)', () => {
     }
   });
 
+  it('V2 DeepSeek Final Reviser freezes adaptive reasoning semantics and usage', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('full');
+    const taskId = 't-v2-deepseek-reasoning';
+    await registerTask(taskId, chapterId);
+    await execute(
+      await openDatabase(),
+      `UPDATE llm_config SET base_url = ?, model_name = ? WHERE id = 1`,
+      ['https://api.deepseek.com/v1', 'deepseek-v4-flash'],
+    );
+    const stageConfigs: Record<string, any[]> = {
+      draft: [],
+      review: [],
+      factCheck: [],
+      proof: [],
+    };
+    mockCallLLMResult = jest
+      .fn()
+      .mockImplementation(async (messages: ChatMessage[], _maxTokens: number, config: any) => {
+        const stage = stageOf(messages);
+        stageConfigs[stage]?.push(config);
+        if (stage === 'draft') return llm(DRAFT_BODY);
+        if (stage === 'review') return llm(JSON.stringify(reviewV2Report()));
+        if (stage === 'factCheck') return llm(JSON.stringify(factCheckV2Report()));
+        if (stage === 'proof') {
+          return {
+            ...llm(DRAFT_BODY + '\n\n老者温和地提醒了他。'),
+            reasoningTokens: 12,
+            visibleOutputTokens: 88,
+          };
+        }
+        throw new Error(`unexpected stage: ${stage}`);
+      });
+
+    await reconcilePipelineTask(taskId, chapterFor(chapterId));
+
+    expect(await taskStatus(taskId)).toBe('completed');
+    for (const stage of ['draft', 'review', 'factCheck', 'proof']) {
+      expect(stageConfigs[stage]).toHaveLength(1);
+      expect(stageConfigs[stage][0]).toMatchObject({
+        thinking: { type: 'enabled' },
+        reasoningEffort: 'medium',
+      });
+    }
+    const attemptRows = await all(
+      `SELECT reasoning_tokens, frozen_request_json, request_fingerprint
+       FROM pipeline_stage_attempts WHERE pipeline_task_id = ? AND stage = 'proof'`,
+      [taskId],
+    );
+    expect(Number(attemptRows[0].reasoning_tokens)).toBe(12);
+    const frozen = JSON.parse(String(attemptRows[0].frozen_request_json));
+    expect(frozen).toMatchObject({
+      requestVersion: 2,
+      reasoningPolicyVersion: 2,
+      thinking: 'enabled',
+      reasoningEffort: 'medium',
+    });
+    expect(String(attemptRows[0].frozen_request_json)).not.toContain('api_key');
+    expect(String(attemptRows[0].frozen_request_json)).not.toContain('修订合同');
+    expect(String(attemptRows[0].request_fingerprint)).toHaveLength(32);
+  });
+
   it('V2 conditional: Draft → FactCheck → Final Reviser (3 requests)', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('conditional');
@@ -426,8 +488,8 @@ describe('V2 production state machine (frozen version=2)', () => {
           case 'draft':
             return llm(DRAFT_BODY);
           case 'review':
-            // Invalid review: wrong draftHash → fail-closed review side.
-            return llm(JSON.stringify(reviewV2Report({ draftHash: 'deadbeef' })));
+            // Genuine novel output (not review prose) remains fail-closed.
+            return llm('这是一段与审核无关的连续正文。');
           case 'factCheck':
             return llm(JSON.stringify(factCheckV2Report()));
           case 'proof':
@@ -443,10 +505,10 @@ describe('V2 production state machine (frozen version=2)', () => {
     expect(await checkpointStatus(taskId, 'review')).toBe('failed');
     expect(await checkpointStatus(taskId, 'factCheck')).toBe('succeeded');
     expect(await checkpointStatus(taskId, 'proof')).toBe('succeeded');
-    // Review repair fires once (2 review attempts), then the valid factCheck
-    // side carries the contract.
+    // Review has one failed attempt; the valid factCheck side carries the
+    // contract without a default Review format-repair request.
     const attempts = await attemptsFor(taskId);
-    expect(attempts.filter(a => a.stage === 'review').length).toBe(2);
+    expect(attempts.filter(a => a.stage === 'review').length).toBe(1);
     expect(attempts.filter(a => a.stage === 'proof').length).toBe(1);
   });
 
@@ -462,9 +524,9 @@ describe('V2 production state machine (frozen version=2)', () => {
           case 'draft':
             return llm(DRAFT_BODY);
           case 'review':
-            return llm(JSON.stringify(reviewV2Report({ draftHash: 'bad' })));
+            return llm('这是一段与审核无关的连续正文。');
           case 'factCheck':
-            return llm(JSON.stringify(factCheckV2Report({ draftHash: 'bad' })));
+            return llm('这同样不是事实核查报告。');
           case 'proof':
             throw new Error('proof must never fire');
           default:
@@ -484,7 +546,7 @@ describe('V2 production state machine (frozen version=2)', () => {
     expect(String(rows[0]?.final_text ?? '')).toContain('森林');
   });
 
-  it('V2 format repair fires AT MOST once and all attempts are request_version=2', async () => {
+  it('V2 malformed Review is normalized locally with one request', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('twoStage');
     const taskId = 't-v2-repair';
@@ -501,7 +563,7 @@ describe('V2 production state machine (frozen version=2)', () => {
             reviewCalls += 1;
             reviewMessages.push(messages);
             if (reviewCalls === 1) {
-              // Malformed report (missing outlineExecution) → repair.
+              // Malformed report (missing outlineExecution) → local normalize.
               return llm(JSON.stringify({ schemaVersion: 2, draftHash: DRAFT_HASH }));
             }
             return llm(JSON.stringify(reviewV2Report()));
@@ -515,17 +577,15 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    expect(reviewCalls).toBe(2);
+    expect(reviewCalls).toBe(1);
     const attempts = await attemptsFor(taskId);
-    expect(attempts.filter(a => a.stage === 'review').length).toBe(2);
+    expect(attempts.filter(a => a.stage === 'review').length).toBe(1);
     expectV2AttemptVersions(attempts);
-    expect(reviewMessages[1][reviewMessages[1].length - 1].content).toContain(
-      'outlineExecution',
-    );
+    expect(reviewMessages).toHaveLength(1);
     expect(await taskStatus(taskId)).toBe('completed');
   });
 
-  it('V2 reasoning-only repair keeps thinking disabled and recompiles the bumped budget', async () => {
+  it('V2 reasoning-only Review fails closed without a format-repair request', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('twoStage');
     const taskId = 't-v2-reasoning-repair-budget';
@@ -561,11 +621,9 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    expect(reviewConfigs).toHaveLength(2);
+    expect(reviewConfigs).toHaveLength(1);
     expect(reviewConfigs[0].thinking).toEqual({ type: 'disabled' });
-    expect(reviewConfigs[1].thinking).toEqual({ type: 'disabled' });
-    expect(reviewConfigs[1].max_tokens).toBe(reviewConfigs[0].max_tokens * 2);
-    expect(await taskStatus(taskId)).toBe('completed');
+    expect(await taskStatus(taskId)).toBe('failed');
   });
 
   it('Final Artifact Validator blocks incomplete proof BEFORE checkpoint success (draft fallback)', async () => {

@@ -18,6 +18,8 @@ import {
 } from '../services/pipeline/outlineWorkflowVersion';
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
 import { resolveLLMRequestConfig } from '../services/llm';
+import * as db from '../services/database';
+import { normalizePipelineReasoningEffort } from '../services/pipeline/reasoningPolicy';
 import { reconcileMultiChapterBatch } from '../services/multiChapterBatch/reconcileMultiChapterBatch';
 import { cancelPipeline, interruptPipelineTask } from '../services/pipelineRunner';
 import {
@@ -198,6 +200,11 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           chapterCount: input.chapterCount,
           targetWordsPerChapter: input.targetWordsPerChapter,
           pipelineMode: input.pipelineMode,
+          // Freeze the product tier at batch creation. Child tasks inherit it
+          // even if the global PipelineConfig changes while planning/running.
+          reasoningEffort: normalizePipelineReasoningEffort(
+            (await db.getPipelineConfig()).reasoningEffort,
+          ),
           // §4.4: freeze the CURRENT protocol versions ONCE at batch
           // creation; every chapter task later copies them from the row.
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,

@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS multi_chapter_batches (
   chapter_count INTEGER NOT NULL,
   target_words_per_chapter INTEGER NOT NULL,
   pipeline_mode TEXT NOT NULL,
+  -- Schema 46: nullable for pre-upgrade batches, new V2 batches write low/
+  -- medium/high explicitly so every child task inherits one frozen tier.
+  reasoning_effort TEXT,
 
   planner_output_json TEXT,
   planner_hash TEXT,

@@ -1,7 +1,7 @@
 /**
- * U3: V2.11.24 / Schema40 老用户 → Schema43 全链升级（真实 sql.js + initializeDatabase）。
+ * U3: V2.11.24 / Schema40 老用户 → current 全链升级（真实 sql.js + initializeDatabase）。
  *
- * Schema 40 → 41 → 42 → 43 完整迁移链，携带：
+ * Schema 40 → current 完整迁移链，携带：
  *   - projects/chapters/outlines/notes/characters/worldbook/llm_config
  *   - pipeline_tasks/checkpoints/attempts/content_revisions
  *   - multi_chapter_batches/items/runs
@@ -23,7 +23,7 @@ import { SCHEMA_VERSION } from '../src/services/migrations';
 
 const T = '2026-07-20T00:00:00.000Z';
 
-describe('U3: Schema40 (V2.11.24) → Schema43 full chain (real sql.js)', () => {
+describe('U3: Schema40 (V2.11.24) → current full chain (real sql.js)', () => {
   let db: InMemorySqliteDb;
 
   beforeEach(async () => {
@@ -155,7 +155,7 @@ describe('U3: Schema40 (V2.11.24) → Schema43 full chain (real sql.js)', () => 
     return out;
   }
 
-  it('runs the full 40→41→42→43 chain; only legacy smart/3 policy changes', async () => {
+  it('runs the full Schema40→current chain; only legacy smart/3 policy changes', async () => {
     const before = await snapshotTables();
     const beforeSchema = await db.executeSql(
       "SELECT value FROM settings WHERE key = 'schema_version'",
@@ -168,7 +168,7 @@ describe('U3: Schema40 (V2.11.24) → Schema43 full chain (real sql.js)', () => 
       "SELECT value FROM settings WHERE key = 'schema_version'",
     );
     expect(after[0].rows.item(0).value).toBe(String(SCHEMA_VERSION));
-    expect(String(SCHEMA_VERSION)).toBe('44');
+    expect(String(SCHEMA_VERSION)).toBe('46');
 
     const fullAfter = await snapshotTables();
     for (const table of Object.keys(before)) {

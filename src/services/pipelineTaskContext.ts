@@ -19,6 +19,7 @@ import type {
   FrozenDraftRequest,
 } from '../types/pipelineFrozen';
 import type { PipelineMode } from '../types/pipeline';
+import type { PipelineReasoningEffort } from '../types/pipeline';
 import type { ChatMessage } from './llm';
 import { OutlineContextError } from './outlineContextBuilder';
 import { sha256Hex } from './continuation/hashUtils';
@@ -536,9 +537,45 @@ export function parsePipelineExecutionSnapshot(
       'restart_task',
     );
   }
+  const reasoningPolicyRaw = raw.finalReviserReasoningPolicyVersion;
+  let finalReviserReasoningPolicyVersion:
+    | 1
+    | 2
+    | undefined;
+  if (
+    reasoningPolicyRaw === 1 ||
+    reasoningPolicyRaw === 2 ||
+    reasoningPolicyRaw === '1' ||
+    reasoningPolicyRaw === '2'
+  ) {
+    finalReviserReasoningPolicyVersion = Number(reasoningPolicyRaw) as 1 | 2;
+  } else if (reasoningPolicyRaw != null && reasoningPolicyRaw !== '') {
+    throw new OutlineContextError(
+      'OUTLINE_EXECUTION_CONFIG_INVALID',
+      `不支持的终稿推理策略版本 ${String(reasoningPolicyRaw)}，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  }
+  const reasoningEffortRaw = raw.reasoningEffort;
+  let reasoningEffort: PipelineReasoningEffort | undefined;
+  if (
+    reasoningEffortRaw === 'low' ||
+    reasoningEffortRaw === 'medium' ||
+    reasoningEffortRaw === 'high'
+  ) {
+    reasoningEffort = reasoningEffortRaw;
+  } else if (reasoningEffortRaw != null && reasoningEffortRaw !== '') {
+    throw new OutlineContextError(
+      'OUTLINE_EXECUTION_CONFIG_INVALID',
+      `不支持的流水线思考强度 ${String(reasoningEffortRaw)}，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  }
   return {
     pipelineMode: mode as PipelineMode,
     outlineWorkflowVersion,
+    finalReviserReasoningPolicyVersion,
+    reasoningEffort,
     draftMaxTokens: requireNonNegativeFinite(raw.draftMaxTokens, 'draftMaxTokens'),
     reviewMaxTokens: requireNonNegativeFinite(
       raw.reviewMaxTokens,

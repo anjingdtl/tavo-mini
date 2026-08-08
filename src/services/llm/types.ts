@@ -8,6 +8,10 @@ export interface LLMResult {
   text: string | null;
   /** Optional chain-of-thought (message.reasoning_content). Must not enter business text. */
   reasoningText?: string | null;
+  /** Official hidden reasoning token count, when the provider reports it. */
+  reasoningTokens?: number | null;
+  /** Visible output token count derived from official usage, when available. */
+  visibleOutputTokens?: number | null;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -32,8 +36,14 @@ export interface LLMResult {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    completion_tokens_details?: {
+      reasoning_tokens?: number;
+    };
   };
 }
+
+/** DeepSeek-style reasoning intensity. Thinking remains enabled separately. */
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max';
 
 export interface LLMGenerateOptions {
   temperature?: number;
@@ -42,6 +52,8 @@ export interface LLMGenerateOptions {
   responseFormat?: 'json_object';
   /** Optional OpenAI-compatible extension; omitted for existing callers. */
   thinking?: { type: 'enabled' | 'disabled' };
+  /** Sent only when the selected provider capability explicitly supports it. */
+  reasoningEffort?: ReasoningEffort;
   scenario?: string;
   projectId?: number;
   taskId?: string;

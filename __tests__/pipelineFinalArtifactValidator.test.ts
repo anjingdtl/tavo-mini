@@ -81,7 +81,7 @@ describe('validateFinalArtifact — hard fails', () => {
     }
   });
 
-  test('whole-paragraph duplicate fails', () => {
+  test('whole-paragraph duplicate is a soft warning', () => {
     const longPara =
       '主角走向森林，风吹动树叶沙沙作响，光线透过树冠洒下来，他加快了脚步继续赶路。远处的鸟鸣声回荡在山谷之中，他深吸一口气，握紧了手中的行囊。'.repeat(
         2,
@@ -89,8 +89,9 @@ describe('validateFinalArtifact — hard fails', () => {
     expect(longPara.length).toBeGreaterThanOrEqual(100);
     const para = Array(4).fill(longPara).join('\n');
     const r = validateFinalArtifact({ text: para });
-    expect(r.valid).toBe(false);
-    expect(r.code).toBe('whole_paragraph_duplicate');
+    expect(r.valid).toBe(true);
+    expect(r.code).toBe('ok');
+    expect(r.warnings).toContain('whole_paragraph_duplicate');
   });
 
   test('finishReason=length with complete ellipsis-ending body passes', () => {
@@ -148,13 +149,14 @@ describe('validateFinalArtifact — hard fails', () => {
     expect(r.code).toBe('finish_length_incomplete');
   });
 
-  test('catastrophic collapse + summary signal fails', () => {
+  test('catastrophic collapse + summary signal is a soft warning', () => {
     const r = validateFinalArtifact({
       text: '以上为本章内容摘要，其余内容省略。',
       canonicalDraft: DRAFT,
     });
-    expect(r.valid).toBe(false);
-    expect(r.code).toBe('catastrophic_collapse');
+    expect(r.valid).toBe(true);
+    expect(r.code).toBe('ok');
+    expect(r.warnings).toContain('catastrophic_collapse');
   });
 
   test('tail stops at unclosed fence fails', () => {
