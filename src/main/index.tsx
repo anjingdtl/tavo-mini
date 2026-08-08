@@ -13,7 +13,14 @@ import { consumeSuppressedPipelinePrompt } from '../navigation/pipelinePromptSup
 import { isBatchPipelineTaskId } from '../services/multiChapterBatch/batchTask';
 import { PipelineResultPrompt } from '../components/PipelineResultPrompt';
 import Toast from 'react-native-toast-message';
-import { openDatabase, lastInstallInfo, lastMigrationResult, lastSchemaRecovery } from '../services/database';
+import {
+  getChapterById,
+  openDatabase,
+  lastInstallInfo,
+  lastMigrationResult,
+  lastSchemaRecovery,
+  updatePipelineTaskResumeState,
+} from '../services/database';
 import { hasBreakingMigration } from '../services/migrations';
 import { isSchemaRecoveryError } from '../data/schema/schemaRecoveryError';
 import { useDatabaseRecoveryStore } from '../store/databaseRecoveryStore';
@@ -21,6 +28,8 @@ import { UpgradeScreen } from '../screens/UpgradeScreen';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { useSettingsStore } from '../store/settingsStore';
 import appVersionJson from '../constants/version.json';
+import { resumePipeline } from '../services/pipelineRunner';
+import { resetFailedStageCheckpointsForResume } from '../data/repositories/pipelineStageCheckpointRepository';
 import {
   progressFor,
   type StartupPhase,
@@ -60,6 +69,60 @@ export const App: React.FC = () => {
   // navigateToPipelineResult call site and avoid the "prompt sticks
   // around after navigating" UX bug.
   const [pendingPrompt, setPendingPrompt] = React.useState<PipelineTask | null>(null);
+
+  const handlePromptResume = React.useCallback((task: PipelineTask) => {
+    setPendingPrompt(null);
+    if (
+      task.targetType !== 'chapter'
+      || (task.status !== 'failed' && task.status !== 'interrupted')
+    ) {
+      navigateToPipelineResult(task.id);
+      return;
+    }
+
+    (async () => {
+      try {
+        const chapter = await getChapterById(task.targetId);
+        if (!chapter) {
+          Toast.show({
+            type: 'error',
+            text1: '无法继续',
+            text2: '目标章节不存在，请前往任务详情处理',
+          });
+          navigateToPipelineResult(task.id);
+          return;
+        }
+        await resetFailedStageCheckpointsForResume(task.id);
+        const resumedAt = Date.now();
+        await updatePipelineTaskResumeState(task.id, resumedAt);
+        usePipelineTaskStore.getState().registerPersistedTask({
+          ...task,
+          status: 'interrupted',
+          error: null,
+          updatedAt: resumedAt,
+          resolvedAt: null,
+          resolvedAction: null,
+        });
+        Toast.show({ type: 'info', text1: '正在从失败处继续重跑' });
+        resumePipeline(task.id, chapter).catch((error: any) => {
+          const already =
+            error?.code === 'TASK_ALREADY_RUNNING' ||
+            /已在运行/.test(String(error?.message || ''));
+          Toast.show({
+            type: already ? 'info' : 'error',
+            text1: already ? '任务已在运行' : '继续失败',
+            text2: already ? '请勿重复点击' : error?.message || '请前往任务详情处理',
+          });
+        });
+      } catch (error: any) {
+        Toast.show({
+          type: 'error',
+          text1: '继续失败',
+          text2: error?.message || '请前往任务详情处理',
+        });
+      }
+    })();
+  }, []);
 
   React.useEffect(() => {
     const reportPhase = (phase: StartupPhase) => {
@@ -450,6 +513,10 @@ export const App: React.FC = () => {
         <PipelineResultPrompt
           task={pendingPrompt}
           onDismiss={() => { setPendingPrompt(null); }}
+          onResume={(taskId) => {
+            const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
+            if (task) handlePromptResume(task);
+          }}
           onViewResult={(taskId) => {
             // Dismiss *before* navigation so the modal does not flash on
             // top of the result screen for a frame.

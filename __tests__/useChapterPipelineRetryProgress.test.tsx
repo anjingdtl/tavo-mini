@@ -9,7 +9,7 @@
  * 修复后：failed 只清进度条不占用 resultTaskIdRef；completed 始终处理
  * （除非该任务已完成导航过）；同任务重试成功 → 清进度条 + 导航结果页。
  */
-import { renderHook, act } from '@testing-library/react-native';
+import { renderHook, act, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
 const mockAlert = jest.fn();
@@ -19,7 +19,15 @@ const mockNavigate = jest.fn();
 let mockTasks: any[] = [];
 let subscribeCb: ((state: any, prev: any) => void) | null = null;
 
-const mockGetState = jest.fn(() => ({ tasks: mockTasks }));
+const mockCreateTask = jest.fn();
+const mockGetActiveTaskForTarget = jest.fn();
+const mockGetLatestResumableFailedTask = jest.fn();
+const mockGetState = jest.fn(() => ({
+  tasks: mockTasks,
+  createTask: mockCreateTask,
+  getActiveTaskForTarget: mockGetActiveTaskForTarget,
+  getLatestResumableFailedTask: mockGetLatestResumableFailedTask,
+}));
 
 jest.mock('../src/store/pipelineTaskStore', () => ({
   usePipelineTaskStore: {
@@ -38,10 +46,13 @@ jest.mock('../src/store/projectStore', () => ({
 }));
 
 jest.mock('../src/services/pipelineRunner', () => ({
-  runChapterPipeline: jest.fn(() => Promise.resolve()),
+  runChapterPipeline: (taskId: any, chapterArg: any, onStageUpdate: any) =>
+    mockRunChapterPipeline(taskId, chapterArg, onStageUpdate),
   resumePipeline: jest.fn(() => Promise.resolve()),
   cancelPipeline: jest.fn(),
 }));
+
+const mockRunChapterPipeline = jest.fn((..._args: any[]) => Promise.resolve());
 
 jest.mock('../src/services/database', () => ({
   getStageCheckpoints: jest.fn(() => Promise.resolve([])),
@@ -111,6 +122,10 @@ describe('章节编辑页进度条：failed → 同任务自动重试 → comple
     mockNavigate.mockClear();
     mockTasks = [];
     subscribeCb = null;
+    mockCreateTask.mockResolvedValue('t_retry_1');
+    mockGetActiveTaskForTarget.mockReturnValue(undefined);
+    mockGetLatestResumableFailedTask.mockReturnValue(undefined);
+    mockRunChapterPipeline.mockResolvedValue(undefined);
   });
 
   it('任务失败清进度条；同任务重试成功后清进度条并导航结果页（修复回归）', () => {
@@ -156,7 +171,7 @@ describe('章节编辑页进度条：failed → 同任务自动重试 → comple
   });
 
   it('同任务 completed 后再次 completed 不重复导航', () => {
-    const { result } = renderHook(() =>
+    renderHook(() =>
       useChapterPipeline({
         chapter,
         chapterId: 1,
@@ -210,5 +225,53 @@ describe('章节编辑页进度条：failed → 同任务自动重试 → comple
     expect(mockNavigate).toHaveBeenCalledWith('PipelineResult', {
       taskId: 't_retry_1',
     });
+  });
+
+  it('单章节阶段超时失败弹窗可直接从失败处继续重跑', async () => {
+    const taskId = 't_timeout_retry';
+    mockCreateTask.mockResolvedValue(taskId);
+    mockRunChapterPipeline.mockImplementation(async () => {
+      mockTasks = [task('failed', taskId)];
+    });
+
+    const { result } = renderHook(() =>
+      useChapterPipeline({
+        chapter,
+        chapterId: 1,
+        navigation: { navigate: mockNavigate } as any,
+      }),
+    );
+
+    act(() => {
+      result.current.runPipeline();
+    });
+
+    await waitFor(() =>
+      expect(mockRunChapterPipeline).toHaveBeenCalledWith(
+        taskId,
+        chapter,
+        expect.any(Function),
+      ),
+    );
+
+    const failureCall = mockAlert.mock.calls.find(
+      call => call[0] === '流水线失败',
+    );
+    expect(failureCall).toBeTruthy();
+    const retryButton = failureCall?.[2]?.find(
+      (button: any) => button.text === '从失败处继续重跑',
+    );
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.onPress?.();
+    });
+    await waitFor(() =>
+      expect(require('../src/services/pipelineRunner').resumePipeline).toHaveBeenCalledWith(
+        taskId,
+        chapter,
+        expect.any(Function),
+      ),
+    );
   });
 });

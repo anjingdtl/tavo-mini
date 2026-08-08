@@ -130,6 +130,13 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     new Map(),
   );
   const continuationStageRef = useRef<ContinuationPipelineStage | null>(null);
+  // executeRunPipeline is declared before executeResumePipeline because the
+  // latter is also used by the "已有失败任务" prompt below. Keep a ref for
+  // the terminal failure alert so the timeout dialog can invoke the latest
+  // resume closure without reopening the task centre first.
+  const resumePipelineRef = useRef<
+    ((taskId: string) => Promise<void>) | null
+  >(null);
 
   const openPipelineResult = useCallback(
     (taskId: string) => {
@@ -226,6 +233,31 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     return () => seenTerminal.clear();
   }, []);
 
+  const showPipelineFailureAlert = useCallback(
+    (taskId: string, message: string) => {
+      Alert.alert('流水线失败', message, [
+        { text: '稍后处理', style: 'cancel' },
+        {
+          text: '查看任务详情',
+          onPress: () =>
+            navigation.navigate('PipelineResult', {
+              taskId,
+            }),
+        },
+        {
+          text: '从失败处继续重跑',
+          onPress: () => {
+            const resume = resumePipelineRef.current;
+            if (resume) {
+              resume(taskId).catch(() => undefined);
+            }
+          },
+        },
+      ]);
+    },
+    [navigation],
+  );
+
   const executeRunPipeline = useCallback(
     async (createTask: CreateTask) => {
       if (!chapter) return;
@@ -299,17 +331,30 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         if (finishedTask?.status === 'completed') {
           openPipelineResult(taskId);
         } else if (finishedTask?.status === 'failed') {
-          Alert.alert('流水线失败', finishedTask.error || '未知错误');
+          showPipelineFailureAlert(
+            taskId,
+            finishedTask.error || '未知错误',
+          );
         }
       } catch (error: any) {
         setProgressVisible(false);
         setQueued(false);
-        Alert.alert('流水线异常', error?.message || '请检查 API 配置。');
+        const failedTask = usePipelineTaskStore
+          .getState()
+          .tasks.find(task => task.id === taskId && task.status === 'failed');
+        if (failedTask) {
+          showPipelineFailureAlert(
+            taskId,
+            failedTask.error || error?.message || '请检查 API 配置。',
+          );
+        } else {
+          Alert.alert('流水线异常', error?.message || '请检查 API 配置。');
+        }
       } finally {
         setGenerating(false);
       }
     },
-    [chapter, openPipelineResult],
+    [chapter, openPipelineResult, showPipelineFailureAlert],
   );
 
   // 等价于 executeRunPipeline，但复用现有 failed/interrupted 任务并调 resumePipeline。
@@ -370,18 +415,33 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         if (finishedTask?.status === 'completed') {
           openPipelineResult(taskId);
         } else if (finishedTask?.status === 'failed') {
-          Alert.alert('流水线失败', finishedTask.error || '未知错误');
+          showPipelineFailureAlert(
+            taskId,
+            finishedTask.error || '未知错误',
+          );
         }
       } catch (error: any) {
         setProgressVisible(false);
         setQueued(false);
-        Alert.alert('流水线异常', error?.message || '请检查 API 配置。');
+        const failedTask = usePipelineTaskStore
+          .getState()
+          .tasks.find(task => task.id === taskId && task.status === 'failed');
+        if (failedTask) {
+          showPipelineFailureAlert(
+            taskId,
+            failedTask.error || error?.message || '请检查 API 配置。',
+          );
+        } else {
+          Alert.alert('流水线异常', error?.message || '请检查 API 配置。');
+        }
       } finally {
         setGenerating(false);
       }
     },
-    [chapter, openPipelineResult],
+    [chapter, openPipelineResult, showPipelineFailureAlert],
   );
+
+  resumePipelineRef.current = executeResumePipeline;
 
   const continuationRunIdRef = useRef<string | null>(null);
 

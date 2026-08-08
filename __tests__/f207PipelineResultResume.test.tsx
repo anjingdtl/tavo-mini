@@ -10,6 +10,7 @@ import React from 'react';
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
 
 const mockResolveTask = jest.fn();
+const mockRegisterPersistedTask = jest.fn();
 const mockTasks: any[] = [
   {
     id: 't1',
@@ -25,9 +26,11 @@ const mockTasks: any[] = [
     finalText: '初稿回退',
     error: null,
     inputFingerprint: null,
-    pipelineContextJson: null,
-    pipelineContextVersion: null,
-    pipelineContextHash: null,
+    pipelineContextJson: '{"frozen":true}',
+    pipelineContextVersion: 2,
+    pipelineContextHash: 'hash-v2',
+    outlineWorkflowVersion: 2,
+    contextBudgetVersion: 2,
     createdAt: 1000,
     updatedAt: 2000,
     resolvedAt: null,
@@ -45,7 +48,7 @@ jest.mock('../src/store/pipelineTaskStore', () => {
       getState: () => ({
         tasks: mockTasks,
         resolveTask: (...args: any[]) => mockResolveTask(...args),
-        registerPersistedTask: jest.fn(),
+        registerPersistedTask: mockRegisterPersistedTask,
       }),
     }),
   };
@@ -77,8 +80,11 @@ jest.mock('@react-navigation/native', () => ({
 }));
 
 const mockGetChapter = jest.fn();
+const mockUpdatePipelineTaskResumeState = jest.fn();
 jest.mock('../src/services/database', () => ({
   getChapterById: (...args: any[]) => mockGetChapter(...args),
+  updatePipelineTaskResumeState: (...args: any[]) =>
+    mockUpdatePipelineTaskResumeState(...args),
 }));
 
 const mockResumePipeline = jest.fn();
@@ -92,20 +98,15 @@ jest.mock('../src/data/repositories/pipelineStageCheckpointRepository', () => ({
     mockResetCheckpoints(...args),
 }));
 
-jest.mock('../src/data/connection/execute', () => ({
-  execute: jest.fn(async () => ({ rows: { length: 0 } })),
-}));
-
-jest.mock('../src/data/connection/openDatabase', () => ({
-  openDatabase: jest.fn(async () => ({})),
-}));
-
 import { Alert } from 'react-native';
 import { PipelineResultScreen } from '../src/screens/PipelineResultScreen';
 
 describe('F2-07: 流水线结果页从失败环节重启', () => {
+  const resumeOrder: string[] = [];
+
   beforeEach(() => {
     jest.clearAllMocks();
+    resumeOrder.length = 0;
     mockGetChapter.mockResolvedValue({
       id: 1,
       project_id: 1,
@@ -113,7 +114,18 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
       content: '',
     });
     mockResumePipeline.mockResolvedValue(undefined);
-    mockResetCheckpoints.mockResolvedValue(undefined);
+    mockResetCheckpoints.mockImplementation(async () => {
+      resumeOrder.push('resetFailedStageCheckpointsForResume');
+    });
+    mockUpdatePipelineTaskResumeState.mockImplementation(async () => {
+      resumeOrder.push('updatePipelineTaskResumeState');
+    });
+    mockRegisterPersistedTask.mockImplementation(() => {
+      resumeOrder.push('registerPersistedTask');
+    });
+    mockResumePipeline.mockImplementation(async () => {
+      resumeOrder.push('resumePipeline');
+    });
     jest.spyOn(Alert, 'alert').mockImplementation((_t, _m, buttons) => {
       buttons?.find(b => b.text === '重启')?.onPress?.();
     });
@@ -134,6 +146,25 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
       id: 1,
       title: '第1章',
     });
+    expect(mockUpdatePipelineTaskResumeState).toHaveBeenCalledWith(
+      't1',
+      expect.any(Number),
+    );
+    expect(mockRegisterPersistedTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 't1',
+        status: 'interrupted',
+        outlineWorkflowVersion: 2,
+        contextBudgetVersion: 2,
+        pipelineContextJson: '{"frozen":true}',
+      }),
+    );
+    expect(resumeOrder).toEqual([
+      'resetFailedStageCheckpointsForResume',
+      'updatePipelineTaskResumeState',
+      'registerPersistedTask',
+      'resumePipeline',
+    ]);
   });
 
   it('task 已完成时不显示重启按钮', async () => {
