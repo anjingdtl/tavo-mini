@@ -11,6 +11,7 @@
 import type { PipelineMode, PipelineStageName } from '../../types/pipeline';
 import { getCheckpoint } from './projectStageCheckpoints';
 import { MAX_AUTO_RETRY_ATTEMPTS } from '../llm/requestPolicy';
+import { FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE } from './finalBriefComplianceValidator';
 import type {
   PersistedPipelineTaskView,
   PersistedStageCheckpoint,
@@ -171,7 +172,11 @@ export function determineNextPipelineAction(
   const draft = getCheckpoint(stages, 'draft');
   const review = getCheckpoint(stages, 'review');
   const factCheck = getCheckpoint(stages, 'factCheck');
+  const brief = getCheckpoint(stages, 'brief');
   const proof = getCheckpoint(stages, 'proof');
+  const isV3 =
+    Number(task.outlineWorkflowVersion) === 3 &&
+    Number(task.contextBudgetVersion) === 3;
 
   // --- Draft ---------------------------------------------------------
   if (isOpen(draft.status)) {
@@ -196,12 +201,15 @@ export function determineNextPipelineAction(
     return decideNoReview(task, proof);
   }
   if (mode === 'twoStage') {
+    if (isV3) return decideTwoStageV3(task, review, brief, proof);
     return decideTwoStage(task, review, proof);
   }
   if (mode === 'conditional') {
+    if (isV3) return decideConditionalV3(task, factCheck, brief, proof);
     return decideConditional(task, factCheck, proof);
   }
   if (mode === 'full') {
+    if (isV3) return decideFullV3(task, review, factCheck, brief, proof);
     return decideFull(task, review, factCheck, proof);
   }
 
@@ -260,6 +268,7 @@ function decideNoReview(
 function decideAfterProof(
   task: PersistedPipelineTaskView,
   proof: PersistedStageCheckpoint,
+  requireManualRetry = false,
 ): PipelineAction {
   if (proof.status === 'succeeded') {
     if (!hasUsableFinalText(task)) {
@@ -272,6 +281,17 @@ function decideAfterProof(
     return { type: 'complete' };
   }
   if (proof.status === 'failed') {
+    if (requireManualRetry || proof.errorCode === FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE) {
+      return blocked(
+        'STAGE_FAILED',
+        proof.errorMessage || '终稿失败，请从失败节点重试',
+        {
+          stage: 'proof',
+          userAction: 'retry',
+          diagnostics: { errorCode: proof.errorCode },
+        },
+      );
+    }
     if (!hasUsableFinalText(task)) {
       return { type: 'finalize_from_draft', degraded: true };
     }
@@ -329,6 +349,64 @@ function decideTwoStage(
   return decideAfterProof(task, proof);
 }
 
+function decideAfterBrief(
+  task: PersistedPipelineTaskView,
+  brief: PersistedStageCheckpoint,
+  proof: PersistedStageCheckpoint,
+): PipelineAction {
+  if (isOpen(brief.status)) return { type: 'run_brief' };
+  if (brief.status === 'failed' || brief.status === 'skipped') {
+    // V3 Final is not trustworthy without a validated Brief.  In particular,
+    // an API response that failed the Brief schema gate must never be replaced
+    // by a local success-looking fallback and allowed to reach Proof.  Keep
+    // the task failed so the UI can retry this exact stage and reuse
+    // the already successful audit checkpoints.
+    return blocked(
+      'STAGE_FAILED',
+      brief.errorMessage || 'Brief 未完成，已阻断终稿；请从 Brief 阶段重启',
+      {
+        stage: 'brief',
+        userAction: 'retry',
+      },
+    );
+  }
+  if (brief.status !== 'succeeded') {
+    return blocked('UNKNOWN_STATE', `Brief 阶段状态非法: ${brief.status}`, {
+      stage: 'brief',
+      userAction: 'restart_task',
+    });
+  }
+  return decideAfterProof(task, proof, true);
+}
+
+function decideTwoStageV3(
+  task: PersistedPipelineTaskView,
+  review: PersistedStageCheckpoint,
+  brief: PersistedStageCheckpoint,
+  proof: PersistedStageCheckpoint,
+): PipelineAction {
+  if (isOpen(review.status)) return { type: 'run_review' };
+  if (review.status === 'failed') {
+    return blocked('STAGE_FAILED', '文学评估失败，请从失败节点重试', {
+      stage: 'review',
+      userAction: 'retry',
+    });
+  }
+  if (review.status === 'skipped') {
+    return blocked('STAGE_FAILED', 'V3 文学评估缺失，请从失败节点重试', {
+      stage: 'review',
+      userAction: 'retry',
+    });
+  }
+  if (review.status !== 'succeeded') {
+    return blocked('UNKNOWN_STATE', `评估阶段状态非法: ${review.status}`, {
+      stage: 'review',
+      userAction: 'restart_task',
+    });
+  }
+  return decideAfterBrief(task, brief, proof);
+}
+
 function decideConditional(
   task: PersistedPipelineTaskView,
   factCheck: PersistedStageCheckpoint,
@@ -360,6 +438,55 @@ function decideConditional(
     );
   }
   return decideAfterProof(task, proof);
+}
+
+function hasExecutableFactCorrections(factCheck: PersistedStageCheckpoint): boolean {
+  const text = String(factCheck.outputText || '');
+  if (!text.trim()) return false;
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const corrections = Array.isArray(parsed.corrections)
+      ? parsed.corrections
+      : Array.isArray(parsed.requiredCorrections)
+        ? parsed.requiredCorrections
+        : [];
+    return corrections.some((item: any) =>
+      item && (item.severity === 'hard' || item.severity === 'required'),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function decideConditionalV3(
+  task: PersistedPipelineTaskView,
+  factCheck: PersistedStageCheckpoint,
+  brief: PersistedStageCheckpoint,
+  proof: PersistedStageCheckpoint,
+): PipelineAction {
+  if (isOpen(factCheck.status)) return { type: 'run_fact_check' };
+  if (factCheck.status === 'failed') {
+    return blocked('STAGE_FAILED', '事实核查失败，请从失败节点重试', {
+      stage: 'factCheck',
+      userAction: 'retry',
+    });
+  }
+  if (factCheck.status === 'skipped') {
+    return blocked('STAGE_FAILED', 'V3 事实核查缺失，请从失败节点重试', {
+      stage: 'factCheck',
+      userAction: 'retry',
+    });
+  }
+  if (factCheck.status !== 'succeeded') {
+    return blocked('UNKNOWN_STATE', `事实核查阶段状态非法: ${factCheck.status}`, {
+      stage: 'factCheck',
+      userAction: 'restart_task',
+    });
+  }
+  if (!hasExecutableFactCorrections(factCheck)) {
+    return { type: 'finalize_from_draft' };
+  }
+  return decideAfterBrief(task, brief, proof);
 }
 
 function auditResolved(status: StageStatus): boolean {
@@ -420,4 +547,45 @@ function decideFull(
   }
 
   return decideAfterProof(task, proof);
+}
+
+function decideFullV3(
+  task: PersistedPipelineTaskView,
+  review: PersistedStageCheckpoint,
+  factCheck: PersistedStageCheckpoint,
+  brief: PersistedStageCheckpoint,
+  proof: PersistedStageCheckpoint,
+): PipelineAction {
+  if (!task.hasAuditContext) {
+    const auditsAllResolved = auditResolved(review.status) && auditResolved(factCheck.status);
+    if (!auditsAllResolved) return { type: 'build_audit_context' };
+  }
+  const reviewOpen = isOpen(review.status);
+  const factOpen = isOpen(factCheck.status);
+  if (reviewOpen && factOpen) return { type: 'run_review_and_fact_check' };
+  if (reviewOpen) return { type: 'run_review' };
+  if (factOpen) return { type: 'run_fact_check' };
+
+  // V3 never permits a fact-only Final. Review is the authority for literary
+  // direction and continuity; a failed audit must be retried, never degraded
+  // into a Draft-only deliverable.
+  if (review.status === 'failed') {
+    return blocked('STAGE_FAILED', '文学评估失败，请从失败节点重试', {
+      stage: 'review',
+      userAction: 'retry',
+    });
+  }
+  if (review.status !== 'succeeded') {
+    return blocked('STAGE_FAILED', 'V3 文学评估缺失，请从失败节点重试', {
+      stage: 'review',
+      userAction: 'retry',
+    });
+  }
+  if (factCheck.status === 'failed') {
+    return blocked('STAGE_FAILED', '事实核查失败，请从失败节点重试', {
+      stage: 'factCheck',
+      userAction: 'retry',
+    });
+  }
+  return decideAfterBrief(task, brief, proof);
 }

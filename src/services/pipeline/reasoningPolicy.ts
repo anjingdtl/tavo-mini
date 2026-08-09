@@ -1,36 +1,79 @@
 import type { LLMRequestConfig, ReasoningEffort } from '../llm/types';
 import { supportsReasoningEffort } from '../llm/openAICompatibleProvider';
-import type { PipelineConfig } from '../../types/pipeline';
+import type { PipelineConfig, PipelineStageName } from '../../types/pipeline';
 import type { PipelineExecutionSnapshot } from '../../types/pipelineExecution';
 
-/** User-facing V2 pipeline reasoning tiers. */
+/** New V3 product tiers. `medium` is intentionally not part of this type. */
+export type PipelineReasoningTier = 'low' | 'high' | 'max';
+
+/** Historical V2 setting shape retained for frozen-task compatibility. */
 export type PipelineReasoningEffort = 'low' | 'medium' | 'high';
 
-export const DEFAULT_PIPELINE_REASONING_EFFORT: PipelineReasoningEffort = 'medium';
+export const DEFAULT_PIPELINE_REASONING_EFFORT: PipelineReasoningTier = 'high';
 
 export const PIPELINE_REASONING_EFFORT_OPTIONS: Array<{
-  value: PipelineReasoningEffort;
+  value: PipelineReasoningTier;
   label: string;
   description: string;
 }> = [
   {
     value: 'low',
     label: '快速',
-    description: '低思考预算，优先响应速度。',
-  },
-  {
-    value: 'medium',
-    label: '平衡',
-    description: '中思考预算，速度与一致性均衡。',
+    description: '低思考预算，优先响应速度，所有创作节点保留基础 Thinking。',
   },
   {
     value: 'high',
+    label: '平衡',
+    description: 'Draft/Review/FactCheck/Final 使用 high Thinking。',
+  },
+  {
+    value: 'max',
     label: '质量',
-    description: '高思考预算，为四个节点保留更多推理空间。',
+    description: 'Draft/Final 使用 max，Review/FactCheck 最高为 high。',
   },
 ];
 
-/** Output reserve multiplier relative to the balanced (medium) baseline. */
+export function isPipelineReasoningTier(
+  value: unknown,
+): value is PipelineReasoningTier {
+  return value === 'low' || value === 'high' || value === 'max';
+}
+
+/** Historical parser: accepts medium only for V1/V2 records. */
+export function isPipelineReasoningEffort(
+  value: unknown,
+): value is PipelineReasoningEffort {
+  return value === 'low' || value === 'medium' || value === 'high';
+}
+
+/**
+ * Normalize a live/new setting to V3 semantics. Old values are migrated as
+ * specified by the V3 plan: medium→high, high→max.
+ */
+export function normalizePipelineReasoningTier(
+  value: unknown,
+): PipelineReasoningTier {
+  if (value === 'low') return 'low';
+  if (value === 'medium') return 'high';
+  if (value === 'high') return 'max';
+  if (value === 'max') return 'max';
+  return DEFAULT_PIPELINE_REASONING_EFFORT;
+}
+
+/**
+ * Compatibility normalizer used only by V2 callers/tests. It intentionally
+ * keeps medium instead of rewriting a historical fingerprint.
+ */
+export function normalizePipelineReasoningEffort(
+  value: unknown,
+): PipelineReasoningEffort {
+  return isPipelineReasoningEffort(value) ? value : 'high';
+}
+
+/**
+ * Deprecated V2 output multiplier. It remains exported so V2 tests and old
+ * non-outline callers keep their exact budget semantics. V3 never calls it.
+ */
 export const PIPELINE_REASONING_OUTPUT_MULTIPLIER: Record<
   PipelineReasoningEffort,
   number
@@ -40,26 +83,6 @@ export const PIPELINE_REASONING_OUTPUT_MULTIPLIER: Record<
   high: 1.45,
 };
 
-export function isPipelineReasoningEffort(
-  value: unknown,
-): value is PipelineReasoningEffort {
-  return value === 'low' || value === 'medium' || value === 'high';
-}
-
-/** Missing/legacy setting falls back to the balanced product tier. */
-export function normalizePipelineReasoningEffort(
-  value: unknown,
-): PipelineReasoningEffort {
-  return isPipelineReasoningEffort(value)
-    ? value
-    : DEFAULT_PIPELINE_REASONING_EFFORT;
-}
-
-/**
- * Scale every V2 stage's output reserve together. Context compilers subtract
- * this reserve before allocating optional input modules, so high thinking
- * automatically borrows from optional context instead of starving the model.
- */
 export function scalePipelineStageMaxTokens(
   baseTokens: number,
   effort: PipelineReasoningEffort,
@@ -71,7 +94,7 @@ export function scalePipelineStageMaxTokens(
   );
 }
 
-/** Apply the selected tier to the four V2 stage output reserves. */
+/** Apply the legacy V2 multiplier. Do not use for V3. */
 export function applyPipelineReasoningBudget(
   config: PipelineConfig,
   effort: PipelineReasoningEffort = normalizePipelineReasoningEffort(
@@ -82,7 +105,10 @@ export function applyPipelineReasoningBudget(
     ...config,
     reasoningEffort: effort,
     draftMaxTokens: scalePipelineStageMaxTokens(config.draftMaxTokens, effort),
-    reviewMaxTokens: scalePipelineStageMaxTokens(config.reviewMaxTokens, effort),
+    reviewMaxTokens: scalePipelineStageMaxTokens(
+      config.reviewMaxTokens,
+      effort,
+    ),
     factCheckMaxTokens: scalePipelineStageMaxTokens(
       config.factCheckMaxTokens,
       effort,
@@ -91,18 +117,95 @@ export function applyPipelineReasoningBudget(
   };
 }
 
+export const STAGE_REASONING_PROFILE_V2: Record<
+  PipelineReasoningTier,
+  Record<PipelineStageName, PipelineReasoningTier>
+> = {
+  low: {
+    draft: 'low',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'low',
+    proof: 'low',
+  },
+  high: {
+    draft: 'high',
+    review: 'high',
+    factCheck: 'high',
+    brief: 'low',
+    proof: 'high',
+  },
+  max: {
+    draft: 'max',
+    review: 'high',
+    factCheck: 'high',
+    brief: 'low',
+    proof: 'max',
+  },
+};
+
+export interface PipelineV3StageReasoning {
+  stage: PipelineStageName;
+  requestedTier: PipelineReasoningTier;
+  effectiveTier: PipelineReasoningTier;
+  thinking: { type: 'enabled' };
+  effort: PipelineReasoningTier;
+  supported: boolean;
+  historical: false;
+  downgradeReason?: string;
+}
+
+export function getV3StageTier(
+  requested: PipelineReasoningTier,
+  stage: PipelineStageName,
+): PipelineReasoningTier {
+  return STAGE_REASONING_PROFILE_V2[requested][stage];
+}
+
+/**
+ * V3 stage profile. Brief is deliberately hard-coded to enabled + low: it is
+ * a semantic compressor, not a user-facing quality dial. Provider support
+ * only controls whether the extension is emitted, never whether Thinking is
+ * semantically requested.
+ */
+export function resolveV3StageReasoning(
+  requested: PipelineReasoningTier,
+  stage: PipelineStageName,
+  model: Pick<LLMRequestConfig, 'provider_type' | 'model_name' | 'url'>,
+): PipelineV3StageReasoning {
+  const effectiveTier = getV3StageTier(requested, stage);
+  const supported = supportsReasoningEffort({
+    providerType: model.provider_type,
+    modelName: model.model_name,
+    baseUrl: model.url,
+  });
+  return {
+    stage,
+    requestedTier: requested,
+    effectiveTier,
+    thinking: { type: 'enabled' },
+    effort: effectiveTier,
+    supported,
+    historical: false,
+    ...(effectiveTier !== requested
+      ? {
+          downgradeReason:
+            stage === 'brief'
+              ? 'Brief Compiler 固定使用 low Thinking，不随产品档位升级'
+              : 'Review/FactCheck 阶段最高使用 high Thinking',
+        }
+      : {}),
+  };
+}
+
 export interface PipelineReasoningDecision {
-  effort?: PipelineReasoningEffort;
+  effort?: PipelineReasoningEffort | PipelineReasoningTier;
   thinking?: { type: 'enabled' };
   supported: boolean;
   historical: boolean;
 }
 
-/**
- * Resolve frozen V2 request semantics for any of the four normal stages.
- * Historical snapshots without a selected effort intentionally omit both
- * vendor extensions so Resume does not silently change its old behavior.
- */
+/** Resolve frozen V2 request semantics; kept unchanged for historical tasks. */
 export function resolvePipelineReasoning(
   execution: Pick<
     PipelineExecutionSnapshot,
@@ -111,7 +214,10 @@ export function resolvePipelineReasoning(
   model: Pick<LLMRequestConfig, 'provider_type' | 'model_name' | 'url'>,
 ): PipelineReasoningDecision {
   const effort = execution.reasoningEffort;
-  if (execution.outlineWorkflowVersion !== 2 || !isPipelineReasoningEffort(effort)) {
+  if (
+    execution.outlineWorkflowVersion !== 2 ||
+    !isPipelineReasoningEffort(effort)
+  ) {
     return {
       supported: false,
       historical: execution.outlineWorkflowVersion === 2 && !effort,
@@ -134,9 +240,8 @@ export function resolvePipelineReasoning(
   };
 }
 
-/** Keep the provider-facing type explicit at the boundary. */
 export function toProviderReasoningEffort(
-  effort: PipelineReasoningEffort | undefined,
+  effort: PipelineReasoningEffort | PipelineReasoningTier | undefined,
 ): ReasoningEffort | undefined {
   return effort;
 }

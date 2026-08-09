@@ -12,6 +12,8 @@ export interface ExecuteClaimedStageOptions<T> {
   run: () => Promise<T>;
   /** Called only after successful CAS claim (e.g. persist drafting status). */
   onClaimed?: () => Promise<void>;
+  /** Local-only stages can claim a checkpoint without counting an API attempt. */
+  countAttempt?: boolean;
   abortSignal?: AbortSignal;
   isCancelled?: () => boolean;
 }
@@ -62,10 +64,22 @@ async function releaseRunningCheckpoint(
 export async function executeClaimedStage<T>(
   options: ExecuteClaimedStageOptions<T>,
 ): Promise<ExecuteClaimedStageResult<T>> {
-  const { taskId, stage, run, onClaimed, abortSignal, isCancelled } = options;
+  const {
+    taskId,
+    stage,
+    run,
+    onClaimed,
+    countAttempt,
+    abortSignal,
+    isCancelled,
+  } = options;
 
   // Fail-closed: any claim error propagates; never treat as success.
-  const claimed = await db.claimStageCheckpoint(taskId, stage);
+  const claimed = await db.claimStageCheckpoint(
+    taskId,
+    stage,
+    countAttempt !== false,
+  );
   if (!claimed) {
     return { claimed: false, reason: 'TASK_ALREADY_RUNNING' };
   }

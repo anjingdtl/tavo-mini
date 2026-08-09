@@ -29,6 +29,11 @@ import type {
   PipelineRevisionAnchor,
   PipelineReviewReportV2,
 } from '../../types/pipelineRevision';
+import type {
+  NormalizedCorrectionV3,
+  NormalizedFactCheckV3,
+  NormalizedReviewV3,
+} from './briefCompilerTypes';
 import { detectDraftEcho, extractAuditJsonPayload } from '../pipelineAuditValidator';
 
 /** Upper bounds for V2 arrays / items (§9.7). */
@@ -1043,5 +1048,244 @@ export function validateFactCheckV2Result(params: {
     report,
     normalizedText,
     similarity: detectDraftEcho(normalizedText, params.canonicalDraft).similarity,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Workflow V3 normalized audit boundary
+// ---------------------------------------------------------------------------
+
+function v3Text(value: unknown, max = 800): string {
+  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+function v3Array(value: unknown, max = 60): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(item => typeof item === 'string' && item.trim())
+    .slice(0, max)
+    .map(item => v3Text(item, 320));
+}
+
+function v3Severity(value: unknown, diagnosis: string, goal: string): 'hard' | 'required' | 'warning' {
+  if (value === 'hard' || value === 'required' || value === 'warning') return value;
+  return /(必须|硬约束|事实|冲突|错误)/.test(`${diagnosis}${goal}`)
+    ? 'required'
+    : 'warning';
+}
+
+function v3Location(
+  raw: Record<string, unknown>,
+  anchors: PipelineRevisionAnchor[],
+): { valid: boolean; explicitChapter: boolean; location: string } {
+  const scope = v3Text(raw.scope, 40);
+  const anchorId = v3Text(raw.anchorId, 120);
+  const anchorIds = Array.isArray(raw.anchorIds)
+    ? raw.anchorIds.map(item => v3Text(item, 120)).filter(Boolean)
+    : [];
+  const hasAnchor = (id: string) => anchors.some(anchor => anchor.id === id);
+  if (scope === 'chapter') return { valid: true, explicitChapter: true, location: 'chapter' };
+  if (scope === 'boundary' && (raw.boundary === 'opening' || raw.boundary === 'ending')) {
+    return {
+      valid: raw.anchorId == null || hasAnchor(anchorId),
+      explicitChapter: false,
+      location: raw.boundary,
+    };
+  }
+  if (scope === 'anchor') {
+    return { valid: hasAnchor(anchorId), explicitChapter: false, location: 'middle' };
+  }
+  if (scope === 'range') {
+    return {
+      valid: anchorIds.length >= 2 && anchorIds.every(hasAnchor),
+      explicitChapter: false,
+      location: 'middle',
+    };
+  }
+  if (scope === 'insertion') {
+    const before = v3Text(raw.insertionBeforeAnchorId, 120);
+    const after = v3Text(raw.insertionAfterAnchorId, 120);
+    return {
+      valid: Boolean((before && hasAnchor(before)) || (after && hasAnchor(after))),
+      explicitChapter: false,
+      location: raw.boundary === 'opening' || raw.boundary === 'ending' ? raw.boundary : 'middle',
+    };
+  }
+  const explicitHint = v3Text(raw.locationHint, 80);
+  return { valid: false, explicitChapter: false, location: explicitHint || 'unlocated' };
+}
+
+function v3Correction(
+  raw: unknown,
+  index: number,
+  source: 'review' | 'factCheck',
+  anchors: PipelineRevisionAnchor[],
+  warnings: string[],
+): { item: NormalizedCorrectionV3 | null; advisory?: string; unlocated?: boolean } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    warnings.push(`${source} corrections[${index}] 非对象，已丢弃`);
+    return { item: null };
+  }
+  const row = raw as Record<string, unknown>;
+  const diagnosis = v3Text(row.diagnosis ?? row.problem ?? row.issue);
+  const rewriteGoal = v3Text(row.rewriteGoal ?? row.action ?? row.suggestion ?? row.fix);
+  if (!diagnosis && !rewriteGoal) {
+    warnings.push(`${source} corrections[${index}] 无诊断/目标，已丢弃`);
+    return { item: null };
+  }
+  const severity = v3Severity(row.severity, diagnosis, rewriteGoal);
+  const location = v3Location(row, anchors);
+  const sourceId = v3Text(row.id, 120) || `${source}-v3-${String(index + 1).padStart(3, '0')}`;
+  const item: NormalizedCorrectionV3 = {
+    sourceId,
+    source,
+    severity,
+    dimension: v3Text(row.dimension, 120) || 'literary',
+    diagnosis,
+    rewriteGoal,
+    preserveMeaning: v3Array(row.preserveMeaning, 20),
+    locationHint: location.location,
+    evidenceQuote: v3Text(row.evidenceQuote ?? row.quote, 80) || undefined,
+  };
+  if (severity === 'warning') {
+    return {
+      item: null,
+      advisory: `${item.dimension}：${diagnosis || rewriteGoal}`,
+    };
+  }
+  if (!location.valid && !location.explicitChapter) {
+    warnings.push(`${source} ${sourceId} 定位无效，转为 unlocatedRequired，不扩大为 chapter`);
+    return { item: { ...item, locationHint: 'unlocated' }, unlocated: true };
+  }
+  return { item };
+}
+
+function v3ReportPayload(result: LLMResult):
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; reason: AuditValidationFailureReason; details: string } {
+  const text = typeof result.text === 'string' ? result.text.trim() : '';
+  const reasoning = typeof result.reasoningText === 'string' ? result.reasoningText.trim() : '';
+  if (!text && reasoning) return { ok: false, reason: 'reasoning_only', details: 'content 为空，仅返回 reasoning_content' };
+  if (!text) return { ok: false, reason: 'empty_content', details: 'content 为空' };
+  if (/<think[\s\S]*?<\/think>/i.test(text) || /^<think\b/i.test(text)) {
+    return { ok: false, reason: 'unexpected_shape', details: '输出含 <think> 推理泄漏' };
+  }
+  const extracted = extractAuditJsonPayload(text);
+  if (!extracted.jsonText) return { ok: false, reason: 'invalid_json', details: '无法提取 JSON' };
+  try {
+    const parsed = JSON.parse(extracted.jsonText);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, reason: 'unexpected_shape', details: '根节点不是对象' };
+    }
+    return { ok: true, value: parsed as Record<string, unknown> };
+  } catch {
+    return { ok: false, reason: 'invalid_json', details: 'JSON.parse 失败' };
+  }
+}
+
+/** V3 Review normalizer: invalid locators reduce authority, never widen it. */
+export function validateReviewV3Result(params: {
+  result: LLMResult;
+  expectedHash: string;
+  anchors: PipelineRevisionAnchor[];
+}): AuditValidationResult<NormalizedReviewV3> {
+  const payload = v3ReportPayload(params.result);
+  if (!payload.ok) return failV2<NormalizedReviewV3>(payload.reason, payload.details);
+  const warnings: string[] = [];
+  const obj = payload.value;
+  if (obj.draftHash != null && obj.draftHash !== params.expectedHash) {
+    return failV2<NormalizedReviewV3>(
+      'missing_required_fields',
+      'draftHash 与客户端不一致（Review V3）',
+    );
+  }
+  if (obj.draftHash == null) warnings.push('draftHash 缺失，已由客户端补齐');
+  const rawCorrections = Array.isArray(obj.requiredCorrections)
+    ? obj.requiredCorrections
+    : Array.isArray(obj.corrections)
+      ? obj.corrections
+      : [];
+  const executableCorrections: NormalizedCorrectionV3[] = [];
+  const unlocatedRequired: NormalizedCorrectionV3[] = [];
+  const advisoryNotes = v3Array(obj.advisoryNotes, 40);
+  for (let i = 0; i < rawCorrections.length && i < 60; i += 1) {
+    const normalized = v3Correction(rawCorrections[i], i, 'review', params.anchors, warnings);
+    if (normalized.advisory) advisoryNotes.push(normalized.advisory);
+    else if (normalized.item && normalized.unlocated) unlocatedRequired.push(normalized.item);
+    else if (normalized.item) executableCorrections.push(normalized.item);
+  }
+  const rawOutline = obj.outlineExecution;
+  const outline = rawOutline && typeof rawOutline === 'object' && !Array.isArray(rawOutline)
+    ? rawOutline as Record<string, unknown>
+    : {};
+  const report: NormalizedReviewV3 = {
+    schemaVersion: 3,
+    draftHash: params.expectedHash,
+    executableCorrections,
+    unlocatedRequired,
+    advisoryNotes: [...new Set(advisoryNotes.filter(Boolean))],
+    outlineExecution: {
+      fulfilledBeats: v3Array(outline.fulfilledBeats),
+      missingBeats: v3Array(outline.missingBeats),
+      deviations: v3Array(outline.deviations),
+      prematureBeats: v3Array(outline.prematureBeats),
+      mustPreserve: v3Array(outline.mustPreserve),
+      endingGoal: v3Text(outline.endingGoal, 800),
+      mustNotAdvance: v3Array(outline.mustNotAdvance),
+    },
+    protectedFacts: v3Array(obj.protectedFacts),
+    warnings,
+  };
+  return {
+    valid: true,
+    report,
+    normalizedText: JSON.stringify(report),
+    warnings,
+    similarity: 0,
+  };
+}
+
+/** V3 FactCheck normalizer; it shares locator authority rules with Review. */
+export function validateFactCheckV3Result(params: {
+  result: LLMResult;
+  expectedHash: string;
+  anchors: PipelineRevisionAnchor[];
+}): AuditValidationResult<NormalizedFactCheckV3> {
+  const payload = v3ReportPayload(params.result);
+  if (!payload.ok) return failV2<NormalizedFactCheckV3>(payload.reason, payload.details);
+  const warnings: string[] = [];
+  const obj = payload.value;
+  if (obj.draftHash != null && obj.draftHash !== params.expectedHash) {
+    return failV2<NormalizedFactCheckV3>(
+      'missing_required_fields',
+      'draftHash 与客户端不一致（FactCheck V3）',
+    );
+  }
+  if (obj.draftHash == null) warnings.push('draftHash 缺失，已由客户端补齐');
+  const rawCorrections = Array.isArray(obj.requiredCorrections)
+    ? obj.requiredCorrections
+    : Array.isArray(obj.corrections)
+      ? obj.corrections
+      : [];
+  const corrections: NormalizedCorrectionV3[] = [];
+  for (let i = 0; i < rawCorrections.length && i < 60; i += 1) {
+    const normalized = v3Correction(rawCorrections[i], i, 'factCheck', params.anchors, warnings);
+    if (normalized.item && !normalized.unlocated) corrections.push(normalized.item);
+    else if (normalized.item) corrections.push(normalized.item);
+  }
+  const report: NormalizedFactCheckV3 = {
+    schemaVersion: 3,
+    draftHash: params.expectedHash,
+    corrections,
+    protectedFacts: v3Array(obj.protectedFacts),
+    hardConstraints: v3Array(obj.hardConstraints),
+    warnings,
+  };
+  return {
+    valid: true,
+    report,
+    normalizedText: JSON.stringify(report),
+    warnings,
+    similarity: 0,
   };
 }

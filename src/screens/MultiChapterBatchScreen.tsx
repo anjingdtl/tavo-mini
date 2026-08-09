@@ -34,6 +34,7 @@ import {
   BATCH_MIN_CHAPTERS,
 } from '../types/multiChapterBatch';
 import type { BatchChapterPlanItem } from '../types/multiChapterBatch';
+import type { PipelineReasoningEffort } from '../types/pipeline';
 import { PIPELINE_REASONING_EFFORT_OPTIONS } from '../services/pipeline/reasoningPolicy';
 import {
   getPipelineStageOrder,
@@ -255,7 +256,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
           <>
             <Section title="剧情摘要">
               <TextInput
-                style={[styles.input, { backgroundColor: theme.colors.card, color: theme.colors.textPrimary }]}
+                style={[styles.inputMultiline, { backgroundColor: theme.colors.card, color: theme.colors.textPrimary }]}
                 placeholder="输入较长的局部剧情摘要、阶段目标或故事弧提示词…"
                 placeholderTextColor={theme.colors.textMuted}
                 multiline
@@ -301,7 +302,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
           <>
             {store.batch?.reasoningEffort ? (
               <Card style={styles.cardMb}>
-                <Text style={[styles.bold, { color: theme.colors.textPrimary }]}>V2 思考强度</Text>
+                <Text style={[styles.bold, { color: theme.colors.textPrimary }]}>V3 思考强度</Text>
                 <Text style={[styles.mt4, { color: theme.colors.accent }]}>批次已冻结：{reasoningEffortLabel(store.batch.reasoningEffort)}</Text>
                 <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>后续章节任务会继承该档位；修改流水线配置不会影响本批次。</Text>
               </Card>
@@ -410,7 +411,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
   );
 }
 
-function reasoningEffortLabel(value: 'low' | 'medium' | 'high'): string {
+function reasoningEffortLabel(value: PipelineReasoningEffort): string {
   return PIPELINE_REASONING_EFFORT_OPTIONS.find(option => option.value === value)?.label || value;
 }
 
@@ -465,7 +466,10 @@ function RunningView(props: {
   const current = store.items.find(i => i.ordinal === batch.currentOrdinal);
   const completed = store.items.filter(i => i.status.startsWith('succeeded'));
   // 总体进度 = 已完成章 + 当前章内阶段进度（保证运行中进度条持续移动）。
-  const stageOrder = getPipelineStageOrder(batch.pipelineMode);
+  const stageOrder = getPipelineStageOrder(batch.pipelineMode, {
+    outlineWorkflowVersion: batch.outlineWorkflowVersion,
+    contextBudgetVersion: batch.contextBudgetVersion,
+  });
   const stageIdx = store.lastStage
     ? stageOrder.indexOf(store.lastStage as any)
     : -1;
@@ -492,7 +496,7 @@ function RunningView(props: {
     <>
       <Section title={`批次进度 ${batch.completedCount}/${batch.chapterCount}`}>
         {batch.reasoningEffort ? (
-          <Text style={[styles.mt4, { color: theme.colors.accent }]}>V2 思考强度：{reasoningEffortLabel(batch.reasoningEffort)}（批次冻结）</Text>
+          <Text style={[styles.mt4, { color: theme.colors.accent }]}>V3 思考强度：{reasoningEffortLabel(batch.reasoningEffort)}（批次冻结）</Text>
         ) : null}
         <View
           style={[
@@ -660,7 +664,7 @@ function ReportView(props: {
       <Section title={batch.status === 'completed' ? '批次完成' : '批次已结束'}>
         <Card>
           {batch.reasoningEffort ? (
-            <Text style={[styles.mt4, { color: theme.colors.accent }]}>V2 思考强度：{reasoningEffortLabel(batch.reasoningEffort)}（批次冻结）</Text>
+            <Text style={[styles.mt4, { color: theme.colors.accent }]}>V3 思考强度：{reasoningEffortLabel(batch.reasoningEffort)}（批次冻结）</Text>
           ) : null}
           <Text
             style={[styles.bold, { color: theme.colors.textPrimary }]}

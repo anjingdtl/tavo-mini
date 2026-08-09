@@ -72,8 +72,11 @@ export interface PersistedPipelineTaskView {
   status: PipelineTaskStatus | string;
   /** Frozen mode; required once execution snapshot exists. */
   pipelineMode: PipelineMode | null;
-  /** True when V2 execution (or equivalent) is persisted and valid. */
+  /** True when an execution snapshot (V2/V3) is persisted and valid. */
   hasExecutionSnapshot: boolean;
+  /** Frozen protocol versions used by the state machine. */
+  outlineWorkflowVersion?: number | null;
+  contextBudgetVersion?: number | null;
   /** True when draftContext (frozen retrieval) is persisted. */
   hasDraftContext: boolean;
   /**
@@ -97,6 +100,7 @@ export type PipelineAction =
   | { type: 'run_review' }
   | { type: 'run_fact_check' }
   | { type: 'run_review_and_fact_check' }
+  | { type: 'run_brief' }
   | { type: 'run_proof' }
   | {
       type: 'finalize_from_draft';
@@ -112,6 +116,7 @@ export const LLM_STAGES: PipelineStageName[] = [
   'draft',
   'review',
   'factCheck',
+  'brief',
   'proof',
 ];
 

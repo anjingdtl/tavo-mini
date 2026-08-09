@@ -126,7 +126,8 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
     reasoningEffort:
       row.reasoning_effort === 'low' ||
       row.reasoning_effort === 'medium' ||
-      row.reasoning_effort === 'high'
+      row.reasoning_effort === 'high' ||
+      row.reasoning_effort === 'max'
         ? row.reasoning_effort
         : null,
     plannerOutputJson: row.planner_output_json ?? null,
@@ -214,7 +215,7 @@ export interface CreateBatchInput {
   chapterCount: number;
   targetWordsPerChapter: number;
   pipelineMode: string;
-  /** New V2 batches pass the product tier explicitly. */
+  /** New V3 batches pass the normalized product tier explicitly. */
   reasoningEffort?: PipelineReasoningEffort | null;
   budget?: {
     maxLlmCalls?: number | null;

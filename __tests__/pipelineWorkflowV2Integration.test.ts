@@ -275,7 +275,10 @@ function expectV2AttemptVersions(attempts: any[]) {
   }
 }
 
-async function checkpointStatus(taskId: string, stage: string): Promise<string> {
+async function checkpointStatus(
+  taskId: string,
+  stage: string,
+): Promise<string> {
   const rows = await all(
     `SELECT status FROM pipeline_stage_checkpoints
      WHERE task_id = ? AND stage = ?`,
@@ -285,10 +288,17 @@ async function checkpointStatus(taskId: string, stage: string): Promise<string> 
 }
 
 async function taskStatus(taskId: string): Promise<string> {
-  const rows = await all(`SELECT status, final_text, error FROM pipeline_tasks WHERE id = ?`, [taskId]);
+  const rows = await all(
+    `SELECT status, final_text, error FROM pipeline_tasks WHERE id = ?`,
+    [taskId],
+  );
   if (rows[0]?.error) {
     // eslint-disable-next-line no-console
-    console.log('DEBUG task error:', taskId, String(rows[0].error).slice(0, 300));
+    console.log(
+      'DEBUG task error:',
+      taskId,
+      String(rows[0].error).slice(0, 300),
+    );
   }
   return rows[0]?.status ?? '__missing__';
 }
@@ -327,11 +337,7 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     expect(await taskStatus(taskId)).toBe('completed');
     const attempts = await attemptsFor(taskId);
-    expect(attempts.map(a => a.stage)).toEqual([
-      'draft',
-      'review',
-      'proof',
-    ]);
+    expect(attempts.map(a => a.stage)).toEqual(['draft', 'review', 'proof']);
     expectV2AttemptVersions(attempts);
     for (const a of attempts) {
       expect(a.status).toBe('succeeded');
@@ -347,18 +353,21 @@ describe('V2 production state machine (frozen version=2)', () => {
     const auditConfigs: Record<string, any[]> = { review: [], factCheck: [] };
     mockCallLLMResult = jest
       .fn()
-      .mockImplementation(async (messages: ChatMessage[], _maxTokens: number, config: any) => {
-        const stage = stageOf(messages);
-        if (stage === 'draft') return llm(DRAFT_BODY);
-        if (stage === 'review' || stage === 'factCheck') {
-          auditConfigs[stage].push(config);
-          return stage === 'review'
-            ? llm(JSON.stringify(reviewV2Report()))
-            : llm(JSON.stringify(factCheckV2Report()));
-        }
-        if (stage === 'proof') return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
-        throw new Error(`unexpected stage: ${stage}`);
-      });
+      .mockImplementation(
+        async (messages: ChatMessage[], _maxTokens: number, config: any) => {
+          const stage = stageOf(messages);
+          if (stage === 'draft') return llm(DRAFT_BODY);
+          if (stage === 'review' || stage === 'factCheck') {
+            auditConfigs[stage].push(config);
+            return stage === 'review'
+              ? llm(JSON.stringify(reviewV2Report()))
+              : llm(JSON.stringify(factCheckV2Report()));
+          }
+          if (stage === 'proof')
+            return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
+          throw new Error(`unexpected stage: ${stage}`);
+        },
+      );
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
@@ -391,21 +400,24 @@ describe('V2 production state machine (frozen version=2)', () => {
     };
     mockCallLLMResult = jest
       .fn()
-      .mockImplementation(async (messages: ChatMessage[], _maxTokens: number, config: any) => {
-        const stage = stageOf(messages);
-        stageConfigs[stage]?.push(config);
-        if (stage === 'draft') return llm(DRAFT_BODY);
-        if (stage === 'review') return llm(JSON.stringify(reviewV2Report()));
-        if (stage === 'factCheck') return llm(JSON.stringify(factCheckV2Report()));
-        if (stage === 'proof') {
-          return {
-            ...llm(DRAFT_BODY + '\n\n老者温和地提醒了他。'),
-            reasoningTokens: 12,
-            visibleOutputTokens: 88,
-          };
-        }
-        throw new Error(`unexpected stage: ${stage}`);
-      });
+      .mockImplementation(
+        async (messages: ChatMessage[], _maxTokens: number, config: any) => {
+          const stage = stageOf(messages);
+          stageConfigs[stage]?.push(config);
+          if (stage === 'draft') return llm(DRAFT_BODY);
+          if (stage === 'review') return llm(JSON.stringify(reviewV2Report()));
+          if (stage === 'factCheck')
+            return llm(JSON.stringify(factCheckV2Report()));
+          if (stage === 'proof') {
+            return {
+              ...llm(DRAFT_BODY + '\n\n老者温和地提醒了他。'),
+              reasoningTokens: 12,
+              visibleOutputTokens: 88,
+            };
+          }
+          throw new Error(`unexpected stage: ${stage}`);
+        },
+      );
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
@@ -414,7 +426,7 @@ describe('V2 production state machine (frozen version=2)', () => {
       expect(stageConfigs[stage]).toHaveLength(1);
       expect(stageConfigs[stage][0]).toMatchObject({
         thinking: { type: 'enabled' },
-        reasoningEffort: 'medium',
+        reasoningEffort: 'high',
       });
     }
     const attemptRows = await all(
@@ -428,10 +440,12 @@ describe('V2 production state machine (frozen version=2)', () => {
       requestVersion: 2,
       reasoningPolicyVersion: 2,
       thinking: 'enabled',
-      reasoningEffort: 'medium',
+      reasoningEffort: 'high',
     });
     expect(String(attemptRows[0].frozen_request_json)).not.toContain('api_key');
-    expect(String(attemptRows[0].frozen_request_json)).not.toContain('修订合同');
+    expect(String(attemptRows[0].frozen_request_json)).not.toContain(
+      '修订合同',
+    );
     expect(String(attemptRows[0].request_fingerprint)).toHaveLength(32);
   });
 
@@ -446,11 +460,7 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     expect(await taskStatus(taskId)).toBe('completed');
     const attempts = await attemptsFor(taskId);
-    expect(attempts.map(a => a.stage)).toEqual([
-      'draft',
-      'factCheck',
-      'proof',
-    ]);
+    expect(attempts.map(a => a.stage)).toEqual(['draft', 'factCheck', 'proof']);
     expectV2AttemptVersions(attempts);
   });
 
@@ -542,7 +552,10 @@ describe('V2 production state machine (frozen version=2)', () => {
     const proofAttempts = await attemptsFor(taskId);
     expect(proofAttempts.filter(a => a.stage === 'proof').length).toBe(0);
     expect(await taskStatus(taskId)).toBe('failed');
-    const rows = await all(`SELECT final_text FROM pipeline_tasks WHERE id = ?`, [taskId]);
+    const rows = await all(
+      `SELECT final_text FROM pipeline_tasks WHERE id = ?`,
+      [taskId],
+    );
     expect(String(rows[0]?.final_text ?? '')).toContain('森林');
   });
 
@@ -564,7 +577,9 @@ describe('V2 production state machine (frozen version=2)', () => {
             reviewMessages.push(messages);
             if (reviewCalls === 1) {
               // Malformed report (missing outlineExecution) → local normalize.
-              return llm(JSON.stringify({ schemaVersion: 2, draftHash: DRAFT_HASH }));
+              return llm(
+                JSON.stringify({ schemaVersion: 2, draftHash: DRAFT_HASH }),
+              );
             }
             return llm(JSON.stringify(reviewV2Report()));
           }
@@ -594,30 +609,32 @@ describe('V2 production state machine (frozen version=2)', () => {
     let reviewCalls = 0;
     mockCallLLMResult = jest
       .fn()
-      .mockImplementation(async (messages: ChatMessage[], _maxTokens: number, config: any) => {
-        switch (stageOf(messages)) {
-          case 'draft':
-            return llm(DRAFT_BODY);
-          case 'review':
-            reviewCalls += 1;
-            reviewConfigs.push(config);
-            if (reviewCalls === 1) {
-              return {
-                text: null,
-                reasoningText: '先分析章节结构……'.repeat(40),
-                emptyReason: 'reasoning_only',
-                inputTokens: 50,
-                outputTokens: 1500,
-                totalTokens: 1550,
-              };
-            }
-            return llm(JSON.stringify(reviewV2Report()));
-          case 'proof':
-            return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
-          default:
-            throw new Error('unexpected stage');
-        }
-      });
+      .mockImplementation(
+        async (messages: ChatMessage[], _maxTokens: number, config: any) => {
+          switch (stageOf(messages)) {
+            case 'draft':
+              return llm(DRAFT_BODY);
+            case 'review':
+              reviewCalls += 1;
+              reviewConfigs.push(config);
+              if (reviewCalls === 1) {
+                return {
+                  text: null,
+                  reasoningText: '先分析章节结构……'.repeat(40),
+                  emptyReason: 'reasoning_only',
+                  inputTokens: 50,
+                  outputTokens: 1500,
+                  totalTokens: 1550,
+                };
+              }
+              return llm(JSON.stringify(reviewV2Report()));
+            case 'proof':
+              return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
+            default:
+              throw new Error('unexpected stage');
+          }
+        },
+      );
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
@@ -658,7 +675,10 @@ describe('V2 production state machine (frozen version=2)', () => {
     // Draft fallback: task degrades to failed with the draft preserved as
     // finalText — no extra model call beyond the one proof attempt.
     expect(await taskStatus(taskId)).toBe('failed');
-    const rows = await all(`SELECT final_text FROM pipeline_tasks WHERE id = ?`, [taskId]);
+    const rows = await all(
+      `SELECT final_text FROM pipeline_tasks WHERE id = ?`,
+      [taskId],
+    );
     expect(String(rows[0]?.final_text ?? '')).toContain('森林');
   });
 
@@ -749,10 +769,15 @@ describe('V2 production state machine (frozen version=2)', () => {
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
     // eslint-disable-next-line no-console
-    console.log('DEBUG legacy cp:', JSON.stringify(await all(
-      `SELECT stage, status, error_message FROM pipeline_stage_checkpoints WHERE task_id = ?`,
-      [taskId],
-    )));
+    console.log(
+      'DEBUG legacy cp:',
+      JSON.stringify(
+        await all(
+          `SELECT stage, status, error_message FROM pipeline_stage_checkpoints WHERE task_id = ?`,
+          [taskId],
+        ),
+      ),
+    );
     expect(await taskStatus(taskId)).toBe('completed');
     const attempts = await attemptsFor(taskId);
     for (const a of attempts) {

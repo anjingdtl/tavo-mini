@@ -26,6 +26,7 @@ const STAGE_LABELS: Record<PipelineStageResult['stage'], string> = {
   draft: '初稿',
   review: '审阅/评估',
   factCheck: '事实核查',
+  brief: '终稿 Brief',
   proof: '终稿',
 };
 
@@ -70,7 +71,7 @@ export function uniqueStageResults(
       map.set(row.stage, row);
     }
   }
-  return ['draft', 'review', 'factCheck', 'proof']
+  return ['draft', 'review', 'factCheck', 'brief', 'proof']
     .map(s => map.get(s))
     .filter(Boolean) as PipelineStageResult[];
 }
@@ -116,7 +117,11 @@ export function formatStageText(stage: PipelineStageResult): string {
   if (!stage.text) {
     return stage.status === 'skipped' ? '该阶段已跳过。' : '';
   }
-  if (stage.stage !== 'review' && stage.stage !== 'factCheck') {
+  if (
+    stage.stage !== 'review' &&
+    stage.stage !== 'factCheck' &&
+    stage.stage !== 'brief'
+  ) {
     return stage.text;
   }
   try {
@@ -246,6 +251,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     'drafting',
     'reviewing',
     'factChecking',
+    'briefing',
     'proofing',
   ]);
   const isRunning = RUNNING_STATUSES.has(task.status);
@@ -255,6 +261,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     drafting: '初稿生成',
     reviewing: '审阅/评估',
     factChecking: '事实核查',
+    briefing: 'Brief 编译',
     proofing: '终审',
   };
   const statusSummary =
@@ -267,7 +274,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         : task.status === 'failed'
           ? retainedDraft
             ? '未完整完成（已保留初稿）'
-            : '异常终止'
+            : proofStage?.status === 'failed'
+              ? '终稿失败，可从失败节点重试'
+              : '异常终止'
           : task.status === 'interrupted'
             ? retainedDraft
               ? '已中断（已保留初稿）'
@@ -375,7 +384,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     (task.status === 'failed' || task.status === 'interrupted') &&
     (failedStages.length > 0 || task.status === 'interrupted');
   const resumeLabel =
-    succeededStages.length > 0 ? '从失败环节重启' : '重新尝试';
+    succeededStages.length > 0 ? '从失败节点重试' : '重新尝试';
 
   const handleResumeFailed = async () => {
     if (adopting) return;
@@ -389,11 +398,11 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         : `从初稿阶段重新运行完整流水线，不会重复计费未完成的请求。确定继续？`;
     const proceed = await new Promise<boolean>(resolve => {
       Alert.alert(
-        succeededStages.length > 0 ? '从失败环节重启' : '重新尝试',
+        succeededStages.length > 0 ? '从失败节点重试' : '重新尝试',
         proceedCopy,
         [
           { text: '取消', style: 'cancel', onPress: () => resolve(false) },
-          { text: '重启', onPress: () => resolve(true) },
+          { text: '重试', onPress: () => resolve(true) },
         ],
       );
     });
@@ -409,7 +418,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       // 失败/中断的 checkpoint 重置为 pending；pipeline 状态机只重跑这些。
       await resetFailedStageCheckpointsForResume(task.id);
       const resumedAt = Date.now();
-      // task 转 interrupted（resume 路径），保留 finalText（失败回退的初稿）。
+      // task 转 interrupted（resume 路径）；若旧任务已有 finalText 也保留，
+      // 但 V3 失败路径不会把初稿写成可采纳终稿。
       await db.updatePipelineTaskResumeState(task.id, resumedAt);
       usePipelineTaskStore
         .getState()
@@ -422,10 +432,10 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           resolvedAction: null,
         });
       await resumePipeline(task.id, chapter);
-      Alert.alert('已重启', '流水线已从失败阶段继续，可在任务中心查看进度。');
+      Alert.alert('已重试', '流水线已从失败节点继续，可在任务中心查看进度。');
       handleClose();
     } catch (error: any) {
-      Alert.alert('重启失败', error?.message || '未知错误');
+      Alert.alert('重试失败', error?.message || '未知错误');
       setAdopting(false);
     }
   };
@@ -455,6 +465,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         >
           耗时 {Math.round(stage.durationMs / 1000)}s
           {stage.tokens ? ` · ${stage.tokens.total.toLocaleString()} tokens` : ''}
+          {stage.tokens?.visible != null
+            ? ` · 可见 ${stage.tokens.visible.toLocaleString()}`
+            : ''}
+          {stage.tokens?.reasoning != null
+            ? ` · Thinking ${stage.tokens.reasoning.toLocaleString()}`
+            : ''}
           {stage.error ? ` · ${stage.error}` : ''}
         </Text>
         {stage.warnings?.length ? (
@@ -491,7 +507,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         ) : null}
         {!isRunning && proofStage?.status === 'failed' ? (
           <Text style={[styles.summary, { color: theme.colors.danger }]}>
-            {proofStage.error || '终审失败，已回退初稿'}
+            {proofStage.error || '终稿失败，请从失败节点重试'}
           </Text>
         ) : null}
         {isRunning ? (

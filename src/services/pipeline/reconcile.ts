@@ -22,19 +22,19 @@ import {
   buildReviewContextFromSnapshot,
   buildFactCheckContextFromSnapshot,
   buildProofConstraintsFromSnapshot,
+  buildFinalContinuityCapsule,
   type PipelineContextSnapshot,
 } from '../../types/pipelineContext';
 import type {
   FrozenPresetSnapshot,
   PipelineExecutionSnapshot,
 } from '../../types/pipelineExecution';
-import {
-  CURRENT_FINAL_REVISER_REASONING_POLICY_VERSION,
-  resolveFinalReviserReasoning,
-} from './finalReviserReasoningPolicy';
+import { resolveFinalReviserReasoning } from './finalReviserReasoningPolicy';
 import {
   applyPipelineReasoningBudget,
   normalizePipelineReasoningEffort,
+  normalizePipelineReasoningTier,
+  resolveV3StageReasoning,
   resolvePipelineReasoning,
   type PipelineReasoningDecision,
 } from './reasoningPolicy';
@@ -48,7 +48,16 @@ import type { PipelineFactCheckReportV2 } from '../../types/pipelineRevision';
 import type { PipelineReviewReportV2 } from '../../types/pipelineRevision';
 import { sha256Hex } from '../continuation/hashUtils';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
-import { getStageProgressPercent } from '../../utils/stages';
+import {
+  getPipelineStageOrder,
+  getStageProgressPercent,
+} from '../../utils/stages';
+import {
+  allocateOutlinePipelineBudgetV3,
+  cloneDefaultOutlinePipelineBudgetPolicyV3,
+  resolveElasticStageOutputReservation,
+} from '../contextAutoAllocator';
+import { estimateTokens } from '../../utils/tokenEstimator';
 import type { Chapter, Preset } from '../../types/novel';
 import type {
   PipelineConfig,
@@ -56,6 +65,7 @@ import type {
   PipelineReasoningEffort,
   PipelineStageName,
 } from '../../types/pipeline';
+import type { PipelineReasoningTier } from './reasoningPolicy';
 import {
   describeAuditFailureReason,
   formatAuditFailureMessage,
@@ -66,6 +76,8 @@ import {
 import {
   validateFactCheckV2Result,
   validateReviewV2Result,
+  validateFactCheckV3Result,
+  validateReviewV3Result,
 } from './revisionAuditValidator';
 import { compileRevisionContract } from './revisionContract';
 import { validateFinalArtifact } from './finalArtifactValidator';
@@ -86,22 +98,38 @@ import {
   determineRetryDisposition,
   type RetryDisposition,
 } from './determineNextPipelineAction';
-import {
-  buildPersistedTaskView,
-  resolveStageCheckpoints,
-} from './taskView';
+import { buildPersistedTaskView, resolveStageCheckpoints } from './taskView';
 import {
   compileDraftFromFrozenRequest,
   compileDraftStageRequest,
   compileFactCheckStageRequest,
   compileFactCheckV2StageRequest,
   compileFinalReviserStageRequest,
+  compileFinalReviserV3StageRequest,
   compileProofStageRequest,
   compileReviewStageRequest,
   compileReviewV2StageRequest,
   requireReadyStageRequest,
   type ReadyStageRequest,
 } from './compileStageRequest';
+import { compileBriefStageRequest } from './compileBriefStageRequest';
+import {
+  compileDeterministicBrief,
+  computeBriefSourceHash,
+} from './deterministicBriefCompiler';
+import { validateFinalWritingBrief } from './briefResultValidator';
+import {
+  FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+  validateFinalBriefCompliance,
+} from './finalBriefComplianceValidator';
+import { shouldCallBriefCompiler } from './briefTriggerPolicy';
+import type {
+  BriefCompilerInputV1,
+  FinalWritingBriefV1,
+  NormalizedFactCheckV3,
+  NormalizedReviewV3,
+} from './briefCompilerTypes';
+import { renderFinalWritingBrief } from './renderFinalWritingBrief';
 import { executeClaimedStage } from './executeClaimedStage';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
@@ -134,6 +162,7 @@ const ACTION_TO_STAGE: Record<string, PipelineStageName | undefined> = {
   run_review: 'review',
   run_fact_check: 'factCheck',
   run_review_and_fact_check: 'review',
+  run_brief: 'brief',
   run_proof: 'proof',
 };
 
@@ -147,7 +176,12 @@ function classifyAttemptError(
   error: any,
   attemptNo: number,
 ): {
-  status: 'safe_to_retry' | 'outcome_unknown' | 'blocked' | 'failed' | 'cancelled';
+  status:
+    | 'safe_to_retry'
+    | 'outcome_unknown'
+    | 'blocked'
+    | 'failed'
+    | 'cancelled';
   failureClass: LLMFailureClass | null;
   errorCode: string | null;
   errorMessage: string | null;
@@ -226,12 +260,14 @@ function classifyAttemptError(
  * accrued) and the batch reconciler will pause the item as
  * `paused_batch_budget` for user action.
  */
-async function runStageAttempt<T extends {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  reasoningTokens?: number | null;
-}>(params: {
+async function runStageAttempt<
+  T extends {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    reasoningTokens?: number | null;
+  },
+>(params: {
   taskId: string;
   stage: string;
   /** Request protocol version recorded on the attempt (V2 audits = 2). */
@@ -412,7 +448,10 @@ export interface ReconcileOptions {
    */
   pipelineModeOverride?: PipelineMode;
   /** Batch-owned V2 tasks inherit the batch-frozen product tier on first run. */
-  pipelineReasoningEffortOverride?: PipelineReasoningEffort | null;
+  pipelineReasoningEffortOverride?:
+    | PipelineReasoningEffort
+    | PipelineReasoningTier
+    | null;
   /**
    * BN-04: when set, every stage attempt is preceded by a hard batch-budget
    * check. Exceeding the cap throws BatchBudgetExceededError BEFORE any
@@ -480,6 +519,10 @@ function resolvePreset(
   return presets[0] || null;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 function buildExecutionSnapshot(params: {
   config: PipelineConfig;
   draftPreset: Preset | null;
@@ -487,9 +530,9 @@ function buildExecutionSnapshot(params: {
   factCheckPreset: Preset | null;
   proofPreset: Preset | null;
   requestConfig: LLMRequestConfig;
-  outlineWorkflowVersion?: 1 | 2;
-  contextBudgetVersion?: 1 | 2;
-  finalReviserReasoningPolicyVersion?: 1 | 2;
+  outlineWorkflowVersion?: 1 | 2 | 3;
+  contextBudgetVersion?: 1 | 2 | 3;
+  finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
   reasoningEffort?: PipelineConfig['reasoningEffort'];
 }): PipelineExecutionSnapshot {
   const contextWindow = Number(params.requestConfig.context_window) || 0;
@@ -508,6 +551,111 @@ function buildExecutionSnapshot(params: {
       'open_llm_settings',
     );
   }
+  const isV3 =
+    params.outlineWorkflowVersion === 3 && params.contextBudgetVersion === 3;
+  const requestedTier = isV3
+    ? normalizePipelineReasoningTier(
+        params.reasoningEffort ?? params.config.reasoningEffort,
+      )
+    : undefined;
+  const stageReasoning =
+    isV3 && requestedTier
+      ? (Object.fromEntries(
+          (['draft', 'review', 'factCheck', 'brief', 'proof'] as const).map(
+            stage => {
+              const resolved = resolveV3StageReasoning(
+                requestedTier,
+                stage,
+                params.requestConfig,
+              );
+              return [
+                stage,
+                {
+                  stage,
+                  requestedTier: resolved.requestedTier,
+                  effectiveTier: resolved.effectiveTier,
+                  thinking: 'enabled' as const,
+                  effort: resolved.effort,
+                  downgradeReason: resolved.downgradeReason,
+                },
+              ];
+            },
+          ),
+        ) as PipelineExecutionSnapshot['stageReasoning'])
+      : undefined;
+  const briefVisibleOutputFloor = isV3
+    ? clampNumber(
+        Number(params.config.briefVisibleOutputFloor) || 1200,
+        768,
+        2048,
+      )
+    : undefined;
+  const briefReasoningHeadroom = isV3
+    ? clampNumber(
+        Number(params.config.briefReasoningHeadroom) || 1200,
+        1024,
+        2048,
+      )
+    : undefined;
+  const briefMaxTokens = isV3
+    ? resolveElasticStageOutputReservation({
+        contextWindow,
+        modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+      })
+    : undefined;
+  const stageBudgets =
+    isV3 && requestedTier
+      ? (() => {
+          const budgetPolicy = cloneDefaultOutlinePipelineBudgetPolicyV3();
+          const briefHeadroom = briefReasoningHeadroom || 1200;
+          budgetPolicy.stages.brief.reasoningHeadroom = {
+            low: briefHeadroom,
+            high: briefHeadroom,
+            max: briefHeadroom,
+          };
+          const allocation = allocateOutlinePipelineBudgetV3({
+            contextWindow,
+            requestedTier,
+            modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+            requestMaxTokenOverrides: {
+              brief: briefMaxTokens,
+            },
+            visibleOutputFloors: {
+              draft: Math.max(1, params.config.draftMaxTokens),
+              review: Math.max(1, params.config.reviewMaxTokens),
+              factCheck: Math.max(1, params.config.factCheckMaxTokens),
+              brief: briefVisibleOutputFloor || 1200,
+              proof: Math.max(
+                1024,
+                Math.ceil(params.config.draftMaxTokens * 1.2) + 256,
+              ),
+            },
+            policy: budgetPolicy,
+          });
+          return (
+            ['draft', 'review', 'factCheck', 'brief', 'proof'] as const
+          ).map(stage => {
+            const item = allocation.stages[stage];
+            return {
+              stage,
+              visibleOutputFloor: item.visibleOutputFloor,
+              reasoningHeadroom: item.reasoningHeadroom,
+              requestMaxTokens: item.requestMaxTokens,
+              estimatedMandatoryInput: item.estimatedMandatoryInputTokens,
+              optionalInputBudget: item.optionalInputBudget,
+              safetyMargin: item.safetyReserveTokens,
+              softInputLimit: item.softInputLimit,
+              hardInputLimit: item.hardInputLimit,
+              fitsSoftInput: item.fitsSoftInput,
+              fitsModelOutput: item.fitsModelOutput,
+              localFallbackRecommended: item.localFallbackRecommended,
+            };
+          });
+        })()
+      : undefined;
+  const frozenStageMax = (stage: PipelineStageName, fallback: number): number =>
+    stageBudgets?.find(item => item.stage === stage)?.requestMaxTokens ||
+    fallback;
   return {
     pipelineMode: params.config.pipelineMode,
     ...(params.outlineWorkflowVersion
@@ -525,10 +673,25 @@ function buildExecutionSnapshot(params: {
     ...(params.reasoningEffort
       ? { reasoningEffort: params.reasoningEffort }
       : {}),
-    draftMaxTokens: params.config.draftMaxTokens,
-    reviewMaxTokens: params.config.reviewMaxTokens,
-    factCheckMaxTokens: params.config.factCheckMaxTokens,
-    proofMaxTokens: params.config.proofMaxTokens,
+    ...(isV3
+      ? {
+          reasoningProfileVersion: 2 as const,
+          requestedReasoningTier: requestedTier,
+          stageReasoning,
+          briefPolicyVersion: 1 as const,
+          briefVisibleOutputFloor,
+          briefReasoningHeadroom,
+          briefMaxTokens,
+          stageBudgets,
+        }
+      : {}),
+    draftMaxTokens: frozenStageMax('draft', params.config.draftMaxTokens),
+    reviewMaxTokens: frozenStageMax('review', params.config.reviewMaxTokens),
+    factCheckMaxTokens: frozenStageMax(
+      'factCheck',
+      params.config.factCheckMaxTokens,
+    ),
+    proofMaxTokens: frozenStageMax('proof', params.config.proofMaxTokens),
     draftPresetId: params.config.draftPresetId,
     reviewPresetId: params.config.reviewPresetId,
     factCheckPresetId: params.config.factCheckPresetId,
@@ -549,10 +712,13 @@ function buildExecutionSnapshot(params: {
   };
 }
 
-function configFromExecution(execution: PipelineExecutionSnapshot): PipelineConfig {
+function configFromExecution(
+  execution: PipelineExecutionSnapshot,
+): PipelineConfig {
   return {
     pipelineMode: execution.pipelineMode,
     reasoningEffort: execution.reasoningEffort,
+    reasoningProfileVersion: execution.reasoningProfileVersion,
     draftPresetId: execution.draftPresetId,
     reviewPresetId: execution.reviewPresetId,
     factCheckPresetId: execution.factCheckPresetId,
@@ -561,6 +727,8 @@ function configFromExecution(execution: PipelineExecutionSnapshot): PipelineConf
     reviewMaxTokens: execution.reviewMaxTokens,
     factCheckMaxTokens: execution.factCheckMaxTokens,
     proofMaxTokens: execution.proofMaxTokens,
+    briefVisibleOutputFloor: execution.briefVisibleOutputFloor,
+    briefReasoningHeadroom: execution.briefReasoningHeadroom,
   };
 }
 
@@ -631,9 +799,10 @@ function buildCallConfig(
 }
 
 /**
- * For reasoning models whose chain-of-thought exhausted the stage budget,
- * double the per-stage max tokens for the retry, clamped to the model's own
- * output ceiling so we never request more than the endpoint can return.
+ * Defensive budget increase for a retry that the provider explicitly ended
+ * with `finishReason=length`. A `reasoning_only` classification alone does
+ * not prove budget exhaustion; callers must inspect the finish reason before
+ * using this helper.
  */
 function bumpRetryBudget(stageMax: number, modelMax?: number): number {
   const safeStage = Number.isFinite(stageMax) && stageMax > 0 ? stageMax : 0;
@@ -647,7 +816,7 @@ function bumpRetryBudget(stageMax: number, modelMax?: number): number {
  * describeAuditFailureReason label). Tells the model to skip CoT entirely.
  */
 const REASONING_ONLY_REPAIR_HINT =
-  '上一轮只输出了推理/思考过程，未给出 JSON 报告。请直接输出 JSON 报告本体，不要输出任何推理、分析或思考过程。';
+  '上一轮只输出了 reasoning_content，message.content 为空，未给出 JSON 报告。请把最终 JSON 报告写入 content 本体，不要只结束在 reasoning_content；不要输出任何推理、分析或思考过程。';
 
 /**
  * V2 audit reports are machine-readable contracts, not creative prose.
@@ -665,15 +834,14 @@ function buildStructuredAuditCallConfig(
   taskId: string,
   reasoning?: PipelineReasoningDecision,
 ) {
-  const v2Reasoning =
-    reasoning?.thinking && reasoning.effort
-      ? {
-          thinking: reasoning.thinking,
-          reasoningEffort: reasoning.effort,
-        }
-      : {
-          thinking: { type: 'disabled' as const },
-        };
+  const v2Reasoning = reasoning?.thinking
+    ? {
+        thinking: reasoning.thinking,
+        reasoningEffort: reasoning.effort,
+      }
+    : {
+        thinking: { type: 'disabled' as const },
+      };
   return {
     ...buildCallConfig(
       preset,
@@ -697,18 +865,70 @@ function buildV2RepairReason(
   details: string | undefined,
 ): string {
   const label = describeAuditFailureReason(reason);
-  const detail = typeof details === 'string' ? details.trim().slice(0, 240) : '';
+  const detail =
+    typeof details === 'string' ? details.trim().slice(0, 240) : '';
   return detail ? `${label}；校验提示：${detail}` : label;
 }
 
+function tokenBreakdown(result: LLMResult) {
+  const reasoning = Math.max(
+    0,
+    Number(
+      result.reasoningTokens ??
+        result.rawUsage?.completion_tokens_details?.reasoning_tokens ??
+        0,
+    ),
+  );
+  const visible = Math.max(
+    0,
+    Number(
+      result.visibleOutputTokens ??
+        Math.max(0, result.outputTokens - reasoning),
+    ),
+  );
+  return {
+    input: result.inputTokens || 0,
+    output: result.outputTokens || 0,
+    total: result.totalTokens || 0,
+    reasoning,
+    visible,
+  };
+}
+
+/** Safe, body-free diagnostics for distinguishing empty JSON from truncation. */
+function auditObservation(result: LLMResult) {
+  const usage = tokenBreakdown(result);
+  const reasoningOnly =
+    result.emptyReason === 'reasoning_only' ||
+    (!result.text && Boolean(result.reasoningText));
+  return {
+    reasoningLength: result.reasoningText?.length || 0,
+    finishReason: result.finishReason,
+    outputTokens: result.outputTokens,
+    reasoningTokens: result.reasoningTokens,
+    visibleOutputTokens: result.visibleOutputTokens ?? usage.visible,
+    emptyReason: result.emptyReason,
+    reasoningBudgetExhausted: reasoningOnly && result.finishReason === 'length',
+  };
+}
+
 function accumulateTokens(
-  acc: { input: number; output: number; total: number },
+  acc: {
+    input: number;
+    output: number;
+    total: number;
+    reasoning?: number;
+    visible?: number;
+  },
   result: LLMResult,
 ) {
+  const current = tokenBreakdown(result);
   return {
-    input: acc.input + (result.inputTokens || 0),
-    output: acc.output + (result.outputTokens || 0),
-    total: acc.total + (result.totalTokens || 0),
+    input: acc.input + current.input,
+    output: acc.output + current.output,
+    total: acc.total + current.total,
+    reasoning: (acc.reasoning || 0) + current.reasoning,
+    visible: (acc.visible || 0) + current.visible,
   };
 }
 
@@ -721,7 +941,6 @@ function isAbortError(error: any, abortSignal?: AbortSignal): boolean {
  *  pollute each other's notification ownership. Batch-owned tasks suppress
  *  per-task PipelineForeground calls; the batch owns the single aggregated
  *  notification. Single-chapter mode defaults to 'task'. */
-
 
 /**
  * BN-04 / CL-06: hard batch budget gate. Read the batch's durable caps and
@@ -745,7 +964,12 @@ export class BatchBudgetExceededError extends Error {
   readonly batchId: string;
   readonly stage: string;
   readonly cap: 'calls' | 'input' | 'output';
-  constructor(batchId: string, stage: string, cap: BatchBudgetExceededError['cap'], message: string) {
+  constructor(
+    batchId: string,
+    stage: string,
+    cap: BatchBudgetExceededError['cap'],
+    message: string,
+  ) {
     super(message);
     this.name = 'BatchBudgetExceededError';
     this.code = 'BATCH_BUDGET_EXCEEDED';
@@ -769,9 +993,12 @@ async function assertBatchBudgetAvailable(params: {
     [batchId],
   );
   if (!row) return; // batch vanished — caller will surface the missing-state error.
-  const maxLlmCalls = row.max_llm_calls != null ? Number(row.max_llm_calls) : null;
-  const maxInput = row.max_input_tokens != null ? Number(row.max_input_tokens) : null;
-  const maxOutput = row.max_output_tokens != null ? Number(row.max_output_tokens) : null;
+  const maxLlmCalls =
+    row.max_llm_calls != null ? Number(row.max_llm_calls) : null;
+  const maxInput =
+    row.max_input_tokens != null ? Number(row.max_input_tokens) : null;
+  const maxOutput =
+    row.max_output_tokens != null ? Number(row.max_output_tokens) : null;
 
   // CL-06: re-aggregate usage from the durable attempt history so used_*
   // reflects every attempt that already happened — never the adoption-time
@@ -833,10 +1060,7 @@ async function refreshBatchUsage(
   }
 }
 
-function cancelled(
-  taskId: string,
-  options: ReconcileOptions,
-): boolean {
+function cancelled(taskId: string, options: ReconcileOptions): boolean {
   if (options.abortSignal?.aborted) return true;
   if (options.isCancelled?.(taskId)) {
     usePipelineTaskStore.getState().cancelTask(taskId);
@@ -898,6 +1122,7 @@ async function persistStage(
     text: string;
     status: 'success' | 'failed' | 'skipped';
     error?: string;
+    errorCode?: string;
     tokens?: { input: number; output: number; total: number };
     warnings?: string[];
     durationMs: number;
@@ -947,12 +1172,15 @@ export async function reconcilePipelineTask(
 
   try {
     // Schema 39+: checkpoint rows are required. Fail-closed on DB errors.
-    await db.ensurePendingCheckpoints(taskId, [
-      'draft',
-      'review',
-      'factCheck',
-      'proof',
-    ]);
+    const initialTask = usePipelineTaskStore
+      .getState()
+      .tasks.find(t => t.id === taskId);
+    const initialStages =
+      Number(initialTask?.outlineWorkflowVersion) === 3 &&
+      Number(initialTask?.contextBudgetVersion) === 3
+        ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+        : ['draft', 'review', 'factCheck', 'proof'];
+    await db.ensurePendingCheckpoints(taskId, initialStages as any);
 
     // Bound iterations to avoid infinite loops on bugs.
     for (let step = 0; step < 32; step++) {
@@ -962,7 +1190,9 @@ export async function reconcilePipelineTask(
       }
 
       // Reload memory projection; prefer DB checkpoints when available.
-      const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
+      const task = usePipelineTaskStore
+        .getState()
+        .tasks.find(t => t.id === taskId);
       if (!task) {
         throw new Error('找不到管线任务');
       }
@@ -973,6 +1203,8 @@ export async function reconcilePipelineTask(
       const stages = resolveStageCheckpoints({
         checkpointRows,
         stageResults: task.stageResults,
+        outlineWorkflowVersion: task.outlineWorkflowVersion,
+        contextBudgetVersion: task.contextBudgetVersion,
       });
       const view = buildPersistedTaskView(task);
       const action = determineNextPipelineAction(view, stages);
@@ -1002,7 +1234,14 @@ export async function reconcilePipelineTask(
       }
 
       if (action.type === 'blocked') {
-        await handleBlocked(taskId, chapter, action, stages, undefined, emitForeground);
+        await handleBlocked(
+          taskId,
+          chapter,
+          action,
+          stages,
+          undefined,
+          emitForeground,
+        );
         return;
       }
 
@@ -1026,10 +1265,7 @@ export async function reconcilePipelineTask(
       // retry disposition right before finalize: retried → loop re-runs the
       // proof stage with the frozen request; waiting → hand back (task stays
       // failed, watchdog/UI resumes later); none → degrade as designed.
-      if (
-        action.type === 'finalize_from_draft' &&
-        action.degraded === true
-      ) {
+      if (action.type === 'finalize_from_draft' && action.degraded === true) {
         const proofRetry = await consumeFailedStageRetryDisposition({
           taskId,
           stage: 'proof',
@@ -1070,8 +1306,7 @@ export async function reconcilePipelineTask(
       throw error;
     }
     const mapped = mapOutlineErrorToPipelineError(error);
-    const message =
-      mapped?.message || getErrorMessage(error, '流水线执行失败');
+    const message = mapped?.message || getErrorMessage(error, '流水线执行失败');
     if (store.persistFailTask) {
       await store.persistFailTask(taskId, message);
     } else {
@@ -1112,7 +1347,9 @@ async function consumeFailedStageRetryDisposition(params: {
   stage?: string;
   options: ReconcileOptions;
 }): Promise<
-  { outcome: 'waiting' } | { outcome: 'retried' } | { outcome: 'none'; message?: string }
+  | { outcome: 'waiting' }
+  | { outcome: 'retried' }
+  | { outcome: 'none'; message?: string }
 > {
   const stage = params.stage;
   if (!stage) return { outcome: 'none' };
@@ -1122,7 +1359,10 @@ async function consumeFailedStageRetryDisposition(params: {
   const disposition: RetryDisposition = determineRetryDisposition(latest);
 
   if (disposition.kind === 'fail') return { outcome: 'none' };
-  if (disposition.kind === 'manual_pause' || disposition.kind === 'manual_confirm') {
+  if (
+    disposition.kind === 'manual_pause' ||
+    disposition.kind === 'manual_confirm'
+  ) {
     return { outcome: 'none', message: disposition.message };
   }
 
@@ -1219,13 +1459,25 @@ async function executeAction(params: {
       await actionPersistInitialSnapshot(taskId, chapter, abortSignal, options);
       return 'continue';
     case 'run_draft':
-      await actionRunDraft(taskId, chapter, onStageUpdate, abortSignal, options);
+      await actionRunDraft(
+        taskId,
+        chapter,
+        onStageUpdate,
+        abortSignal,
+        options,
+      );
       return 'continue';
     case 'build_audit_context':
       await actionBuildAuditContext(taskId, chapter, options);
       return 'continue';
     case 'run_review':
-      await actionRunReview(taskId, chapter, onStageUpdate, abortSignal, options);
+      await actionRunReview(
+        taskId,
+        chapter,
+        onStageUpdate,
+        abortSignal,
+        options,
+      );
       return 'continue';
     case 'run_fact_check':
       await actionRunFactCheck(
@@ -1245,8 +1497,23 @@ async function executeAction(params: {
         options,
       );
       return 'continue';
+    case 'run_brief':
+      await actionRunBrief(
+        taskId,
+        chapter,
+        onStageUpdate,
+        abortSignal,
+        options,
+      );
+      return 'continue';
     case 'run_proof':
-      await actionRunProof(taskId, chapter, onStageUpdate, abortSignal, options);
+      await actionRunProof(
+        taskId,
+        chapter,
+        onStageUpdate,
+        abortSignal,
+        options,
+      );
       return 'continue';
     case 'finalize_from_draft':
       await actionFinalizeFromDraft(
@@ -1287,7 +1554,10 @@ async function executeAction(params: {
   }
 }
 
-async function loadRuntime(taskId: string, chapter: Chapter): Promise<{
+async function loadRuntime(
+  taskId: string,
+  chapter: Chapter,
+): Promise<{
   parsed: ParsedPipelineTaskContext | null;
   config: PipelineConfig;
   requestConfig: LLMRequestConfig;
@@ -1327,7 +1597,9 @@ async function loadRuntime(taskId: string, chapter: Chapter): Promise<{
   }
 
   const config = await db.getPipelineConfig();
-  const presets = (await db.getPresetsByProject(chapter.project_id)) as Preset[];
+  const presets = (await db.getPresetsByProject(
+    chapter.project_id,
+  )) as Preset[];
   const requestConfig = await resolveLLMRequestConfig();
   return {
     parsed,
@@ -1352,41 +1624,72 @@ async function actionPersistInitialSnapshot(
   // adds a serial DB round-trip to the microtask chain.
   const runtime = await loadRuntime(taskId, chapter);
   // Resolve the protocol versions ONCE at first freeze from the TASK ROW
-  // (frozen at task creation, Schema 44). Resume never re-reads live
-  // project mode / defaults: frozen tasks keep their version. Missing or
-  // unparseable row values fail closed to V1 (§4.3). New snapshots always
-  // carry BOTH fields explicitly (1 or 2) — only parsing HISTORICAL
+  // (frozen at task creation). Resume never re-reads live project mode /
+  // defaults: frozen tasks keep their version. Missing or unparseable row
+  // values fail closed to V1. New snapshots always carry both fields.
   // snapshots interprets an absent field as 1.
   const existingExecution = runtime.parsed?.execution;
-  let outlineWorkflowVersion: 1 | 2;
-  let contextBudgetVersion: 1 | 2;
+  let outlineWorkflowVersion: 1 | 2 | 3;
+  let contextBudgetVersion: 1 | 2 | 3;
   if (existingExecution) {
     outlineWorkflowVersion =
-      existingExecution.outlineWorkflowVersion === 2 ? 2 : 1;
+      existingExecution.outlineWorkflowVersion === 3
+        ? 3
+        : existingExecution.outlineWorkflowVersion === 2
+        ? 2
+        : 1;
     contextBudgetVersion =
-      existingExecution.contextBudgetVersion === 2 ? 2 : 1;
+      existingExecution.contextBudgetVersion === 3
+        ? 3
+        : existingExecution.contextBudgetVersion === 2
+        ? 2
+        : 1;
   } else {
     const taskRow = store.tasks.find(t => t.id === taskId);
     outlineWorkflowVersion =
-      Number(taskRow?.outlineWorkflowVersion) === 2 ? 2 : 1;
+      Number(taskRow?.outlineWorkflowVersion) === 3
+        ? 3
+        : Number(taskRow?.outlineWorkflowVersion) === 2
+        ? 2
+        : 1;
     contextBudgetVersion =
-      Number(taskRow?.contextBudgetVersion) === 2 ? 2 : 1;
+      Number(taskRow?.contextBudgetVersion) === 3
+        ? 3
+        : Number(taskRow?.contextBudgetVersion) === 2
+        ? 2
+        : 1;
   }
-  // Fresh freeze from live config only when no execution yet. The selected
-  // V2 tier scales all four stage output reserves once; resume reuses the
-  // already-scaled values from the frozen snapshot.
+  const isV3 = outlineWorkflowVersion === 3 && contextBudgetVersion === 3;
+  // Fresh freeze from live config only when no execution yet. V2 preserves its
+  // historical multiplier; V3 stores requested/effective stage tiers and uses
+  // independent output + reasoning reservations.
   const selectedReasoningEffort =
     options.pipelineReasoningEffortOverride !== undefined
       ? options.pipelineReasoningEffortOverride
+      : isV3
+      ? normalizePipelineReasoningTier(runtime.config.reasoningEffort)
       : normalizePipelineReasoningEffort(runtime.config.reasoningEffort);
   const freshConfig =
-    outlineWorkflowVersion === 2 && !existingExecution && selectedReasoningEffort
-      ? applyPipelineReasoningBudget(runtime.config, selectedReasoningEffort)
+    isV3 && !existingExecution && selectedReasoningEffort
+      ? {
+          ...runtime.config,
+          reasoningEffort: normalizePipelineReasoningTier(
+            selectedReasoningEffort,
+          ),
+          reasoningProfileVersion: 2 as const,
+        }
       : outlineWorkflowVersion === 2 &&
-          !existingExecution &&
-          options.pipelineReasoningEffortOverride === null
-        ? { ...runtime.config, reasoningEffort: undefined }
-        : runtime.config;
+        !existingExecution &&
+        selectedReasoningEffort
+      ? applyPipelineReasoningBudget(
+          runtime.config,
+          normalizePipelineReasoningEffort(selectedReasoningEffort),
+        )
+      : outlineWorkflowVersion === 2 &&
+        !existingExecution &&
+        options.pipelineReasoningEffortOverride === null
+      ? { ...runtime.config, reasoningEffort: undefined }
+      : runtime.config;
   const execution =
     runtime.parsed?.execution ||
     buildExecutionSnapshot({
@@ -1399,11 +1702,11 @@ async function actionPersistInitialSnapshot(
       outlineWorkflowVersion,
       contextBudgetVersion,
       finalReviserReasoningPolicyVersion:
-        outlineWorkflowVersion === 2
-          ? CURRENT_FINAL_REVISER_REASONING_POLICY_VERSION
-          : 1,
+        outlineWorkflowVersion === 3 ? 3 : outlineWorkflowVersion === 2 ? 2 : 1,
       reasoningEffort:
-        outlineWorkflowVersion === 2 ? freshConfig.reasoningEffort : undefined,
+        outlineWorkflowVersion === 2 || outlineWorkflowVersion === 3
+          ? freshConfig.reasoningEffort
+          : undefined,
     });
   // Batch-owned first run: the batch form's mode wins over the global
   // pipeline setting. Resume never overrides a frozen snapshot.
@@ -1416,7 +1719,9 @@ async function actionPersistInitialSnapshot(
     requestConfig: runtime.requestConfig,
     draftPreset: runtime.draftPreset,
     draftMaxTokens: execution.draftMaxTokens,
-    elasticBudget: execution.contextBudgetVersion === 2,
+    elasticBudget:
+      execution.contextBudgetVersion === 2 ||
+      execution.contextBudgetVersion === 3,
   });
   if (!compiled.ready) {
     const code =
@@ -1506,9 +1811,16 @@ async function actionRunDraft(
           'restart_task',
         );
       }
-      const reasoning = resolvePipelineReasoning(
-        runtime.parsed.execution,
-        runtime.requestConfig,
+      const reasoning =
+        stageReasoning(runtime, 'draft') ||
+        resolvePipelineReasoning(
+          runtime.parsed.execution,
+          runtime.requestConfig,
+        );
+      const draftMaxTokens = stageMaxTokens(
+        runtime,
+        'draft',
+        runtime.config.draftMaxTokens,
       );
       const draftReasoningSemantics = {
         thinking: reasoning.thinking?.type,
@@ -1529,10 +1841,9 @@ async function actionRunDraft(
         let result = await runStageAttempt({
           taskId,
           stage: 'draft',
-          requestFingerprint:
-            runtime.parsed.execution.reasoningEffort
-              ? stageFingerprint('draft', firstReady, draftReasoningSemantics)
-              : runtime.parsed.frozenDraftRequest.requestFingerprint || '',
+          requestFingerprint: runtime.parsed.execution.reasoningEffort
+            ? stageFingerprint('draft', firstReady, draftReasoningSemantics)
+            : runtime.parsed.frozenDraftRequest.requestFingerprint || '',
           allocationTraceJson: firstReady.elasticBudgetTrace
             ? JSON.stringify(firstReady.elasticBudgetTrace)
             : null,
@@ -1550,10 +1861,10 @@ async function actionRunDraft(
           run: () =>
             callReadyLLM(
               firstReady,
-              runtime.config.draftMaxTokens,
+              draftMaxTokens,
               buildCallConfig(
                 runtime.draftPreset,
-                runtime.config.draftMaxTokens,
+                draftMaxTokens,
                 'pipeline_draft',
                 chapter.project_id,
                 runtime.requestConfig,
@@ -1594,10 +1905,9 @@ async function actionRunDraft(
           result = await runStageAttempt({
             taskId,
             stage: 'draft',
-            requestFingerprint:
-              runtime.parsed.execution.reasoningEffort
-                ? stageFingerprint('draft', retryReady, draftReasoningSemantics)
-                : runtime.parsed.frozenDraftRequest.requestFingerprint || '',
+            requestFingerprint: runtime.parsed.execution.reasoningEffort
+              ? stageFingerprint('draft', retryReady, draftReasoningSemantics)
+              : runtime.parsed.frozenDraftRequest.requestFingerprint || '',
             allocationTraceJson: retryReady.elasticBudgetTrace
               ? JSON.stringify(retryReady.elasticBudgetTrace)
               : null,
@@ -1615,10 +1925,10 @@ async function actionRunDraft(
             run: () =>
               callReadyLLM(
                 retryReady,
-                runtime.config.draftMaxTokens,
+                draftMaxTokens,
                 buildCallConfig(
                   runtime.draftPreset,
-                  runtime.config.draftMaxTokens,
+                  draftMaxTokens,
                   'pipeline_draft',
                   chapter.project_id,
                   runtime.requestConfig,
@@ -1781,7 +2091,9 @@ async function callReadyLLM(
   return callLLMResult(ready.messages, maxTokens, config, abortSignal);
 }
 
-function auditSnapshot(parsed: ParsedPipelineTaskContext): PipelineContextSnapshot {
+function auditSnapshot(
+  parsed: ParsedPipelineTaskContext,
+): PipelineContextSnapshot {
   return parsed.auditContext || parsed.draftContext;
 }
 
@@ -1792,11 +2104,52 @@ function isOutlineWorkflowV2(
   return runtime.parsed?.execution?.outlineWorkflowVersion === 2;
 }
 
-/** True when the frozen execution selected the elastic budget V2 strategy. */
-function isElasticBudgetV2(
+function isOutlineWorkflowV3(
   runtime: Awaited<ReturnType<typeof loadRuntime>>,
 ): boolean {
-  return runtime.parsed?.execution?.contextBudgetVersion === 2;
+  return (
+    runtime.parsed?.execution?.outlineWorkflowVersion === 3 &&
+    runtime.parsed?.execution?.contextBudgetVersion === 3
+  );
+}
+
+function stageMaxTokens(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+  stage: PipelineStageName,
+  fallback: number,
+): number {
+  const frozen = runtime.parsed?.execution?.stageBudgets?.find(
+    budget => budget.stage === stage,
+  );
+  return frozen?.requestMaxTokens && frozen.requestMaxTokens > 0
+    ? frozen.requestMaxTokens
+    : fallback;
+}
+
+function stageReasoning(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+  stage: PipelineStageName,
+): PipelineReasoningDecision | null {
+  const execution = runtime.parsed?.execution;
+  if (!execution) return null;
+  const frozen = execution.stageReasoning?.[stage];
+  if (execution.outlineWorkflowVersion === 3 && frozen) {
+    return {
+      effort: frozen.effort || frozen.effectiveTier,
+      thinking: frozen.thinking === 'enabled' ? { type: 'enabled' } : undefined,
+      supported: frozen.effort != null,
+      historical: false,
+    };
+  }
+  return resolvePipelineReasoning(execution, runtime.requestConfig);
+}
+
+/** V2 and V3 both use the existing per-request elastic allocator. */
+function isElasticBudgetEnabled(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+): boolean {
+  const version = runtime.parsed?.execution?.contextBudgetVersion;
+  return version === 2 || version === 3;
 }
 
 /**
@@ -1912,6 +2265,7 @@ async function runReviewV2Stage(params: {
       valid: validation.valid,
       reason: validation.reason,
       textLength: first.text?.length || 0,
+      ...auditObservation(first),
       taskId,
     });
 
@@ -1932,7 +2286,7 @@ async function runReviewV2Stage(params: {
       status: 'failed',
       error:
         validation.reason === 'reasoning_only'
-          ? '文学评估仅返回推理内容，未产生报告。请在「设置」中提高该模型的审阅 max_tokens，或改用非推理模型。'
+          ? '文学评估的 content 为空，仅返回推理通道 reasoning_content，未产生报告；请结合 finishReason 判断是否截断，不能仅凭此结论提高 max_tokens。'
           : formatAuditFailureMessage('review', validation.reason),
       tokens,
       durationMs: Date.now() - start,
@@ -2067,12 +2421,13 @@ async function runFactCheckV2Stage(params: {
       valid: validation.valid,
       reason: validation.reason,
       textLength: first.text?.length || 0,
+      ...auditObservation(first),
       taskId,
     });
 
     if (!validation.valid) {
       const isReasoningOnly = validation.reason === 'reasoning_only';
-      const retryMaxTokens = isReasoningOnly
+      const retryMaxTokens = isReasoningOnly && first.finishReason === 'length'
         ? bumpRetryBudget(
             runtime.config.factCheckMaxTokens,
             runtime.requestConfig.max_output_tokens,
@@ -2143,6 +2498,7 @@ async function runFactCheckV2Stage(params: {
         valid: validation.valid,
         reason: validation.reason,
         textLength: retry.text?.length || 0,
+        ...auditObservation(retry),
         taskId,
       });
     }
@@ -2163,7 +2519,7 @@ async function runFactCheckV2Stage(params: {
       status: 'failed',
       error:
         validation.reason === 'reasoning_only'
-          ? '事实核查仅返回推理内容，未产生报告。请在「设置」中提高该模型的核查 max_tokens，或改用非推理模型。'
+          ? '事实核查的 content 为空，仅返回推理通道 reasoning_content，未产生报告；请结合 finishReason 判断是否截断，不能仅凭此结论提高 max_tokens。'
           : formatAuditFailureMessage('factCheck', validation.reason),
       tokens,
       durationMs: Date.now() - start,
@@ -2182,6 +2538,247 @@ async function runFactCheckV2Stage(params: {
       text: '',
       status: 'failed',
       error: getErrorMessage(error, '事实核查失败'),
+      tokens,
+      durationMs: Date.now() - start,
+    });
+  }
+}
+
+async function runV3AuditStage(params: {
+  stage: 'review' | 'factCheck';
+  taskId: string;
+  chapter: Chapter;
+  runtime: Awaited<ReturnType<typeof loadRuntime>>;
+  abortSignal?: AbortSignal;
+  options: ReconcileOptions;
+}): Promise<void> {
+  const { stage, taskId, chapter, runtime, abortSignal, options } = params;
+  if (!runtime.parsed?.execution) throw new Error('缺少冻结上下文');
+  const draftText = await getDraftText(taskId);
+  const canonicalDraft = canonicalizeDraft(draftText);
+  const anchors = buildRevisionAnchors(canonicalDraft);
+  const draftHash = computeDraftHash(canonicalDraft);
+  const taggedDraft = buildTaggedDraft(canonicalDraft).taggedText;
+  const snapshot =
+    runtime.config.pipelineMode === 'full'
+      ? auditSnapshot(runtime.parsed)
+      : runtime.parsed.draftContext;
+  const baseContext =
+    stage === 'review'
+      ? buildReviewContextFromSnapshot(snapshot)
+      : buildFactCheckContextFromSnapshot(snapshot);
+  // V3 audit requests must retain the independently frozen seam. Put the
+  // ending first because the conservation clip keeps the prefix; this keeps
+  // the immediately preceding scene visible even when the optional bridge is
+  // shortened under a small model window.
+  const seamText = [
+    snapshot.immediatePreviousChapterEnding
+      ? `【上一章即时结尾】\n${snapshot.immediatePreviousChapterEnding}`
+      : '',
+    snapshot.immediatePreviousChapterText
+      ? `【上一章即时正文】\n${snapshot.immediatePreviousChapterText}`
+      : '',
+    baseContext.recentBridgeText
+      ? `【近期桥接】\n${baseContext.recentBridgeText}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const context = {
+    ...baseContext,
+    recentBridgeText: seamText || baseContext.recentBridgeText,
+  };
+  const maxTokens = stageMaxTokens(
+    runtime,
+    stage,
+    stage === 'review'
+      ? runtime.config.reviewMaxTokens
+      : runtime.config.factCheckMaxTokens,
+  );
+  const reasoning = stageReasoning(runtime, stage);
+  const start = Date.now();
+  let tokens = { input: 0, output: 0, total: 0 };
+
+  const compile = (repairReason?: string) =>
+    stage === 'review'
+      ? compileReviewV2StageRequest({
+          taggedDraft,
+          context: context as ReturnType<typeof buildReviewContextFromSnapshot>,
+          draftHash,
+          maxTokens,
+          contextWindow: runtime.requestConfig.context_window || 0,
+          repairReason,
+          elasticBudget: isElasticBudgetEnabled(runtime),
+        })
+      : compileFactCheckV2StageRequest({
+          taggedDraft,
+          context: context as ReturnType<
+            typeof buildFactCheckContextFromSnapshot
+          >,
+          draftHash,
+          maxTokens,
+          contextWindow: runtime.requestConfig.context_window || 0,
+          repairReason,
+          elasticBudget: isElasticBudgetEnabled(runtime),
+        });
+
+  const validate = (result: LLMResult) =>
+    stage === 'review'
+      ? validateReviewV3Result({ result, expectedHash: draftHash, anchors })
+      : validateFactCheckV3Result({ result, expectedHash: draftHash, anchors });
+
+  const compiled = compile();
+  if (!compiled.ready) {
+    await persistStage(taskId, {
+      stage,
+      text: '',
+      status: 'failed',
+      error: compiled.error.message,
+      durationMs: Date.now() - start,
+    });
+    return;
+  }
+
+  const callCompiled = async (
+    ready: ReadyStageRequest,
+    attemptNo: number,
+    disableThinking: boolean,
+  ) => {
+    const semantics = {
+      thinking: disableThinking
+        ? ('disabled' as const)
+        : reasoning?.thinking?.type,
+      reasoningEffort: disableThinking ? undefined : reasoning?.effort,
+      reasoningPolicyVersion: 3,
+    };
+    const frozenRequestJson = JSON.stringify({
+      requestVersion: 3,
+      stage,
+      attempt: attemptNo,
+      thinking: semantics.thinking || 'omitted',
+      reasoningEffort: semantics.reasoningEffort || null,
+      responseFormat: 'json_object',
+      temperature: 0.2,
+      topP: 1,
+      messagesHash: sha256Hex(JSON.stringify(ready.messages)).slice(0, 32),
+      maxTokens: ready.reservedOutputTokens,
+      contextWindow: ready.contextWindow,
+    });
+    return runStageAttempt({
+      taskId,
+      stage,
+      requestVersion: 3,
+      requestFingerprint: stageFingerprint(stage, ready, semantics),
+      allocationTraceJson: ready.elasticBudgetTrace
+        ? JSON.stringify(ready.elasticBudgetTrace)
+        : null,
+      frozenRequestJson,
+      llmConfigId: llmConfigIdOf(runtime.requestConfig),
+      llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+      batchBudgetGate: options.batchBudgetGate,
+      estimatedInputTokens: ready.estimatedInputTokens,
+      reservedOutputTokens: ready.reservedOutputTokens,
+      run: () =>
+        callReadyLLM(
+          ready,
+          ready.reservedOutputTokens,
+          disableThinking
+            ? buildStructuredAuditCallConfig(
+                stage === 'review'
+                  ? runtime.reviewPreset
+                  : runtime.factCheckPreset,
+                ready.reservedOutputTokens,
+                stage === 'review' ? 'pipeline_review' : 'pipeline_factcheck',
+                chapter.project_id,
+                runtime.requestConfig,
+                taskId,
+                { supported: false, historical: false },
+              )
+            : buildStructuredAuditCallConfig(
+                stage === 'review'
+                  ? runtime.reviewPreset
+                  : runtime.factCheckPreset,
+                ready.reservedOutputTokens,
+                stage === 'review' ? 'pipeline_review' : 'pipeline_factcheck',
+                chapter.project_id,
+                runtime.requestConfig,
+                taskId,
+                reasoning || undefined,
+              ),
+          abortSignal,
+        ),
+    });
+  };
+
+  try {
+    let result = await callCompiled(compiled, 1, false);
+    tokens = accumulateTokens(tokens, result);
+    let validation: any = validate(result);
+    logPipelineAudit({
+      stage,
+      attempt: 1,
+      valid: validation.valid,
+      reason: validation.reason,
+      textLength: result.text?.length || 0,
+      ...auditObservation(result),
+      taskId,
+    });
+    if (!validation.valid && validation.reason === 'reasoning_only') {
+      const repair = compile(REASONING_ONLY_REPAIR_HINT);
+      if (repair.ready) {
+        result = await callCompiled(repair, 2, true);
+        tokens = accumulateTokens(tokens, result);
+        validation = validate(result);
+        logPipelineAudit({
+          stage,
+          attempt: 2,
+          valid: validation.valid,
+          reason: validation.reason,
+          textLength: result.text?.length || 0,
+          ...auditObservation(result),
+          taskId,
+        });
+      }
+    }
+    if (validation.valid && validation.normalizedText) {
+      await persistStage(taskId, {
+        stage,
+        text: validation.normalizedText,
+        status: 'success',
+        warnings: validation.warnings,
+        tokens,
+        durationMs: Date.now() - start,
+      });
+      return;
+    }
+    await persistStage(taskId, {
+      stage,
+      text: '',
+      status: 'failed',
+      error:
+        validation.reason === 'reasoning_only'
+          ? `${
+              stage === 'review' ? '文学评估' : '事实核查'
+            }仅返回推理内容，提取重试后仍无报告`
+          : formatAuditFailureMessage(stage, validation.reason),
+      tokens,
+      durationMs: Date.now() - start,
+    });
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) {
+      await settleInterruptedTask(taskId, options);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
+    if (error instanceof BatchBudgetExceededError) throw error;
+    await persistStage(taskId, {
+      stage,
+      text: '',
+      status: 'failed',
+      error: getErrorMessage(
+        error,
+        stage === 'review' ? '文学评估失败' : '事实核查失败',
+      ),
       tokens,
       durationMs: Date.now() - start,
     });
@@ -2217,6 +2814,17 @@ async function actionRunReview(
     },
     run: async () => {
       const runtime = await loadRuntime(taskId, chapter);
+      if (isOutlineWorkflowV3(runtime)) {
+        await runV3AuditStage({
+          stage: 'review',
+          taskId,
+          chapter,
+          runtime,
+          abortSignal,
+          options,
+        });
+        return;
+      }
       if (isOutlineWorkflowV2(runtime)) {
         await runReviewV2Stage({
           taskId,
@@ -2242,7 +2850,7 @@ async function actionRunReview(
         context,
         maxTokens: runtime.config.reviewMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
-        elasticBudget: isElasticBudgetV2(runtime),
+        elasticBudget: isElasticBudgetEnabled(runtime),
       });
       if (!compiled.ready) {
         await persistStage(taskId, {
@@ -2291,7 +2899,9 @@ async function actionRunReview(
           throw err;
         }
         tokens = accumulateTokens(tokens, first);
-        const hasOutline = !!(context.outlineText && context.outlineText.trim());
+        const hasOutline = !!(
+          context.outlineText && context.outlineText.trim()
+        );
         let validation = validateReviewResult(first, draftText, { hasOutline });
         logPipelineAudit({
           stage: 'review',
@@ -2299,16 +2909,18 @@ async function actionRunReview(
           valid: validation.valid,
           reason: validation.reason,
           textLength: first.text?.length || 0,
+          ...auditObservation(first),
           taskId,
         });
 
         if (!validation.valid) {
           const isReasoningOnly = validation.reason === 'reasoning_only';
-          // For reasoning models that burned the whole budget on CoT, retry
-          // with a doubled budget (clamped to the model ceiling) and ask the
-          // gateway to disable thinking. Otherwise fall through to the generic
-          // one-shot format repair.
-          const retryMaxTokens = isReasoningOnly
+          // A reasoning-only response may be either a length truncation or a
+          // stop-without-content response. Keep the existing bounded recovery
+          // retry, but use finishReason diagnostics rather than assuming that
+          // the model exhausted its CoT budget.
+          const retryMaxTokens =
+            isReasoningOnly && first.finishReason === 'length'
             ? bumpRetryBudget(
                 runtime.config.reviewMaxTokens,
                 runtime.requestConfig.max_output_tokens,
@@ -2322,7 +2934,7 @@ async function actionRunReview(
             repairReason: isReasoningOnly
               ? REASONING_ONLY_REPAIR_HINT
               : describeAuditFailureReason(validation.reason),
-            elasticBudget: isElasticBudgetV2(runtime),
+            elasticBudget: isElasticBudgetEnabled(runtime),
           });
           if (!repair.ready) {
             await persistStage(taskId, {
@@ -2382,6 +2994,7 @@ async function actionRunReview(
             valid: validation.valid,
             reason: validation.reason,
             textLength: retry.text?.length || 0,
+            ...auditObservation(retry),
             taskId,
           });
         }
@@ -2402,7 +3015,7 @@ async function actionRunReview(
           status: 'failed',
           error:
             validation.reason === 'reasoning_only'
-              ? '文学评估仅返回推理内容，未产生报告。请在「设置」中提高该模型的审阅 max_tokens，或改用非推理模型。'
+              ? '文学评估的 content 为空，仅返回推理通道 reasoning_content，未产生报告；请结合 finishReason 判断是否截断，不能仅凭此结论提高 max_tokens。'
               : formatAuditFailureMessage('review', validation.reason),
           tokens,
           durationMs: Date.now() - start,
@@ -2465,6 +3078,17 @@ async function actionRunFactCheck(
     },
     run: async () => {
       const runtime = await loadRuntime(taskId, chapter);
+      if (isOutlineWorkflowV3(runtime)) {
+        await runV3AuditStage({
+          stage: 'factCheck',
+          taskId,
+          chapter,
+          runtime,
+          abortSignal,
+          options,
+        });
+        return;
+      }
       if (isOutlineWorkflowV2(runtime)) {
         await runFactCheckV2Stage({
           taskId,
@@ -2490,7 +3114,7 @@ async function actionRunFactCheck(
         context,
         maxTokens: runtime.config.factCheckMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
-        elasticBudget: isElasticBudgetV2(runtime),
+        elasticBudget: isElasticBudgetEnabled(runtime),
       });
       if (!compiled.ready) {
         await persistStage(taskId, {
@@ -2546,15 +3170,17 @@ async function actionRunFactCheck(
           valid: validation.valid,
           reason: validation.reason,
           textLength: first.text?.length || 0,
+          ...auditObservation(first),
           taskId,
         });
         if (!validation.valid) {
           const isReasoningOnly = validation.reason === 'reasoning_only';
-          // For reasoning models that burned the whole budget on CoT, retry
-          // with a doubled budget (clamped to the model ceiling) and ask the
-          // gateway to disable thinking. Otherwise fall through to the generic
-          // one-shot format repair.
-          const retryMaxTokens = isReasoningOnly
+          // A reasoning-only response may be either a length truncation or a
+          // stop-without-content response. Keep the existing bounded recovery
+          // retry, but use finishReason diagnostics rather than assuming that
+          // the model exhausted its CoT budget.
+          const retryMaxTokens =
+            isReasoningOnly && first.finishReason === 'length'
             ? bumpRetryBudget(
                 runtime.config.factCheckMaxTokens,
                 runtime.requestConfig.max_output_tokens,
@@ -2568,7 +3194,7 @@ async function actionRunFactCheck(
             repairReason: isReasoningOnly
               ? REASONING_ONLY_REPAIR_HINT
               : describeAuditFailureReason(validation.reason),
-            elasticBudget: isElasticBudgetV2(runtime),
+            elasticBudget: isElasticBudgetEnabled(runtime),
           });
           if (!repair.ready) {
             await persistStage(taskId, {
@@ -2628,6 +3254,7 @@ async function actionRunFactCheck(
             valid: validation.valid,
             reason: validation.reason,
             textLength: retry.text?.length || 0,
+            ...auditObservation(retry),
             taskId,
           });
         }
@@ -2647,7 +3274,7 @@ async function actionRunFactCheck(
           status: 'failed',
           error:
             validation.reason === 'reasoning_only'
-              ? '事实核查仅返回推理内容，未产生报告。请在「设置」中提高该模型的事实核查 max_tokens，或改用非推理模型。'
+              ? '事实核查的 content 为空，仅返回推理通道 reasoning_content，未产生报告；请结合 finishReason 判断是否截断，不能仅凭此结论提高 max_tokens。'
               : formatAuditFailureMessage('factCheck', validation.reason),
           tokens,
           durationMs: Date.now() - start,
@@ -2700,6 +3327,288 @@ async function actionRunReviewAndFactCheck(
   ]);
 }
 
+function parseNormalizedAudit<T>(text: string): T | null {
+  try {
+    const parsed = JSON.parse(text) as T & { schemaVersion?: number };
+    return parsed && parsed.schemaVersion === 3 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildBriefCompilerInput(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+  reviewText: string,
+  factCheckText: string,
+): BriefCompilerInputV1 {
+  const review = parseNormalizedAudit<NormalizedReviewV3>(reviewText);
+  const factCheck = parseNormalizedAudit<NormalizedFactCheckV3>(factCheckText);
+  const sourceWithoutHash: Omit<BriefCompilerInputV1, 'sourceHash'> = {
+    schemaVersion: 1,
+    workflowMode:
+      runtime.config.pipelineMode === 'conditional'
+        ? 'conditional'
+        : runtime.config.pipelineMode === 'full'
+        ? 'full'
+        : 'twoStage',
+    ...(review
+      ? {
+          review: {
+            executableCorrections: review.executableCorrections,
+            unlocatedRequired: review.unlocatedRequired,
+            advisoryNotes: review.advisoryNotes,
+            outlineExecution: review.outlineExecution,
+          },
+        }
+      : {}),
+    ...(factCheck
+      ? {
+          factCheck: {
+            corrections: factCheck.corrections,
+            protectedFacts: factCheck.protectedFacts,
+            hardConstraints: factCheck.hardConstraints,
+          },
+        }
+      : {}),
+  };
+  return {
+    ...sourceWithoutHash,
+    sourceHash: computeBriefSourceHash(sourceWithoutHash),
+  };
+}
+
+async function actionRunBrief(
+  taskId: string,
+  chapter: Chapter,
+  onStageUpdate: ReconcileOptions['onStageUpdate'],
+  abortSignal: AbortSignal | undefined,
+  options: ReconcileOptions,
+): Promise<void> {
+  if (cancelled(taskId, options)) return;
+  const claim = await executeClaimedStage({
+    taskId,
+    stage: 'brief',
+    countAttempt: false,
+    abortSignal,
+    isCancelled: () => cancelled(taskId, options),
+    onClaimed: async () => {
+      const store = usePipelineTaskStore.getState();
+      if (store.persistTaskStatus)
+        await store.persistTaskStatus(taskId, 'briefing');
+      else store.setTaskStatus(taskId, 'briefing');
+      onStageUpdate?.({
+        stage: 'brief',
+        label: '正在整理终稿写作要求',
+        startedAt: Date.now(),
+      });
+    },
+    run: async () => {
+      const runtime = await loadRuntime(taskId, chapter);
+      if (!runtime.parsed?.execution) throw new Error('缺少冻结上下文');
+      const start = Date.now();
+      const input = buildBriefCompilerInput(
+        runtime,
+        await getStageText(taskId, 'review'),
+        await getStageText(taskId, 'factCheck'),
+      );
+      const decision = shouldCallBriefCompiler(input);
+      const fallback = () => compileDeterministicBrief(input);
+      const persistLocal = async (
+        brief: FinalWritingBriefV1,
+        warnings: string[],
+        tokens?: {
+          input: number;
+          output: number;
+          total: number;
+          reasoning?: number;
+          visible?: number;
+        },
+      ) => {
+        await persistStage(taskId, {
+          stage: 'brief',
+          text: JSON.stringify(brief),
+          status: 'success',
+          warnings,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+      };
+      const persistBriefFailure = async (
+        error: string,
+        tokens?: {
+          input: number;
+          output: number;
+          total: number;
+          reasoning?: number;
+          visible?: number;
+        },
+      ) => {
+        // Once the API Brief has been admitted and returned an invalid or
+        // failed result, a local fallback is not equivalent evidence.  The
+        // state machine must stop before Final and expose a restart-from-Brief
+        // action so an unverified Final can never be adopted silently.
+        await persistStage(taskId, {
+          stage: 'brief',
+          text: '',
+          status: 'failed',
+          error,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+      };
+
+      if (!decision.callApi) {
+        await persistLocal(fallback(), [
+          '本地确定性 Brief（简单合同，无 API）',
+        ]);
+        return;
+      }
+
+      const compiled = compileBriefStageRequest({
+        input,
+        contextWindow: runtime.requestConfig.context_window || 0,
+        modelMaxOutputTokens: runtime.requestConfig.max_output_tokens,
+        visibleOutputFloor: runtime.parsed.execution.briefVisibleOutputFloor,
+        reasoningHeadroom: runtime.parsed.execution.briefReasoningHeadroom,
+        requestMaxTokens: runtime.parsed.execution.briefMaxTokens,
+      });
+      if (!compiled.ready) {
+        await persistLocal(fallback(), [
+          'Brief API 因上下文窗口不足未调用，已使用本地 Brief；Thinking 未被静默关闭',
+        ]);
+        return;
+      }
+
+      // The checkpoint claim above is deliberately not an API attempt: a
+      // simple/local Brief must remain attempt_count=0. Count exactly one
+      // attempt only after the API budget gate has admitted the request.
+      await db.upsertStageCheckpoint({
+        taskId,
+        stage: 'brief',
+        status: 'running',
+        startedAt: start,
+        bumpAttempt: true,
+      });
+      const briefAttemptNo =
+        (await getStageAttempts(taskId, 'brief')).length + 1;
+
+      const semantics = {
+        thinking: 'enabled' as const,
+        reasoningEffort: 'low' as const,
+        reasoningPolicyVersion: 1,
+      };
+      const frozenRequestJson = JSON.stringify({
+        requestVersion: 1,
+        sourceHash: input.sourceHash,
+        thinking: 'enabled',
+        reasoningEffort: 'low',
+        visibleOutputFloor: compiled.budget.visibleOutputFloor,
+        reasoningHeadroom: compiled.budget.reasoningHeadroom,
+        maxTokens: compiled.reservedOutputTokens,
+        elasticBudgetTrace: compiled.elasticBudgetTrace || null,
+        messagesHash: sha256Hex(JSON.stringify(compiled.messages)).slice(0, 32),
+      });
+      try {
+        const result = await runStageAttempt({
+          taskId,
+          stage: 'brief',
+          requestVersion: 1,
+          requestFingerprint: stageFingerprint(
+            'brief',
+            compiled as unknown as ReadyStageRequest,
+            semantics,
+          ),
+          allocationTraceJson: compiled.elasticBudgetTrace
+            ? JSON.stringify({
+                ...compiled.elasticBudgetTrace,
+                visibleOutputFloor: compiled.budget.visibleOutputFloor,
+                reasoningHeadroom: compiled.budget.reasoningHeadroom,
+              })
+            : null,
+          frozenRequestJson,
+          llmConfigId: llmConfigIdOf(runtime.requestConfig),
+          llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          batchBudgetGate: options.batchBudgetGate,
+          estimatedInputTokens: compiled.estimatedInputTokens,
+          reservedOutputTokens: compiled.reservedOutputTokens,
+          run: () =>
+            callReadyLLM(
+              compiled as unknown as ReadyStageRequest,
+              compiled.reservedOutputTokens,
+              {
+                ...buildCallConfig(
+                  null,
+                  compiled.reservedOutputTokens,
+                  'pipeline_brief',
+                  chapter.project_id,
+                  runtime.requestConfig,
+                  taskId,
+                  {
+                    responseFormat: 'json_object',
+                    thinking: { type: 'enabled' },
+                    reasoningEffort: 'low',
+                  },
+                ),
+                temperature: 0.1,
+                top_p: 1,
+              },
+              abortSignal,
+            ),
+        });
+        const validation = validateFinalWritingBrief({
+          raw: result.text || '',
+          input,
+        });
+        logPipelineAudit({
+          stage: 'brief',
+          attempt: briefAttemptNo,
+          valid: validation.valid,
+          textLength: result.text?.length || 0,
+          ...auditObservation(result),
+          taskId,
+        });
+        if (validation.valid && validation.brief) {
+          await persistLocal(
+            validation.brief,
+            [
+              'Brief Compiler（Thinking enabled + low）',
+              ...(validation.warnings || []),
+            ],
+            {
+              ...tokenBreakdown(result),
+            },
+          );
+          return;
+        }
+        await persistBriefFailure(
+          `Brief API 输出未通过完整性门禁，已阻断终稿：${
+            validation.error || '未知原因'
+          }`,
+          tokenBreakdown(result),
+        );
+      } catch (error: any) {
+        if (isAbortError(error, abortSignal)) {
+          await settleInterruptedTask(taskId, options);
+          await PipelineForeground.stop(taskId);
+          throw error;
+        }
+        if (error instanceof BatchBudgetExceededError) throw error;
+        await persistBriefFailure(
+          `Brief API 调用失败，已阻断终稿：${getErrorMessage(
+            error,
+            '未知错误',
+          )}`,
+        );
+      }
+    },
+  });
+  if (!claim.claimed) {
+    throw Object.assign(new Error('任务已在运行'), {
+      code: 'TASK_ALREADY_RUNNING',
+    });
+  }
+}
+
 /**
  * V5-Lite V2 Final Reviser stage (§11–§12):
  *   persisted draft → canonical + anchors → parse V2 audits → compile
@@ -2745,7 +3654,9 @@ async function runFinalReviserV2Stage(params: {
       return null;
     }
   };
-  const reviewV2 = reviewText ? (parseV2(reviewText) as PipelineReviewReportV2 | null) : null;
+  const reviewV2 = reviewText
+    ? (parseV2(reviewText) as PipelineReviewReportV2 | null)
+    : null;
   const factV2 = factCheckText
     ? (parseV2(factCheckText) as PipelineFactCheckReportV2 | null)
     : null;
@@ -2905,10 +3816,7 @@ async function runFinalReviserV2Stage(params: {
       stage: 'proof',
       text: content,
       status: 'success',
-      warnings: [
-        ...compiledContract.warnings,
-        ...(validator.warnings || []),
-      ],
+      warnings: [...compiledContract.warnings, ...(validator.warnings || [])],
       tokens: {
         input: result.inputTokens,
         output: result.outputTokens,
@@ -2930,6 +3838,261 @@ async function runFinalReviserV2Stage(params: {
       text: draftText,
       status: 'failed',
       error: getErrorMessage(error, '终审失败，已回退到初稿'),
+      durationMs: Date.now() - start,
+    });
+  }
+}
+
+async function runFinalReviserV3Stage(params: {
+  taskId: string;
+  chapter: Chapter;
+  runtime: Awaited<ReturnType<typeof loadRuntime>>;
+  abortSignal?: AbortSignal;
+  options: ReconcileOptions;
+}): Promise<void> {
+  const { taskId, chapter, runtime, abortSignal, options } = params;
+  if (!runtime.parsed?.execution) throw new Error('缺少冻结上下文');
+  const draftText = await getDraftText(taskId);
+  const canonicalDraft = canonicalizeDraft(draftText);
+  const briefText = await getStageText(taskId, 'brief');
+  let brief: FinalWritingBriefV1 | null = null;
+  try {
+    const parsed = JSON.parse(briefText) as FinalWritingBriefV1;
+    if (parsed && parsed.schemaVersion === 1) brief = parsed;
+  } catch {
+    brief = null;
+  }
+  if (!brief) {
+    await persistStage(taskId, {
+      stage: 'proof',
+      text: '',
+      status: 'failed',
+      error: 'Final V3 缺少有效 Brief，请从失败节点重试',
+      errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+      durationMs: 0,
+    });
+    return;
+  }
+  const draftSnapshot = runtime.parsed.draftContext;
+  const sourceSnapshot = runtime.parsed.auditContext || draftSnapshot;
+  const capsule = buildFinalContinuityCapsule({
+    ...sourceSnapshot,
+    // Immediate previous chapter is a Draft-time mandatory seam. Audit
+    // retrieval may intentionally replace optional modules but never it.
+    outlineText: draftSnapshot.outlineText,
+    immediatePreviousChapterText: draftSnapshot.immediatePreviousChapterText,
+    immediatePreviousChapterEnding:
+      draftSnapshot.immediatePreviousChapterEnding,
+    immediatePreviousChapterId: draftSnapshot.immediatePreviousChapterId,
+    immediatePreviousChapterPosition:
+      draftSnapshot.immediatePreviousChapterPosition,
+  });
+  const writingBrief = renderFinalWritingBrief(brief);
+  const maxTokens = stageMaxTokens(
+    runtime,
+    'proof',
+    runtime.config.proofMaxTokens,
+  );
+  const compiled = compileFinalReviserV3StageRequest({
+    writingBrief,
+    canonicalDraft,
+    capsule,
+    maxTokens,
+    contextWindow: runtime.requestConfig.context_window || 0,
+    modelMaxOutputTokens: runtime.requestConfig.max_output_tokens,
+    elasticBudget: isElasticBudgetEnabled(runtime),
+  });
+  const start = Date.now();
+  if (!compiled.ready) {
+    await persistStage(taskId, {
+      stage: 'proof',
+      text: '',
+      status: 'failed',
+      error: `${compiled.error.message}；请从失败节点重试`,
+      errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+      durationMs: Date.now() - start,
+    });
+    return;
+  }
+  const reasoning = stageReasoning(runtime, 'proof');
+  const semantics = {
+    thinking: reasoning?.thinking?.type,
+    reasoningEffort: reasoning?.effort,
+    reasoningPolicyVersion: 3,
+  } as const;
+  const runProofAttempt = (request: ReadyStageRequest, repairPass: number) =>
+    runStageAttempt({
+      taskId,
+      stage: 'proof',
+      requestVersion: 3,
+      requestFingerprint: stageFingerprint('proof', request, semantics),
+      allocationTraceJson: JSON.stringify(request.allocations),
+      frozenRequestJson: JSON.stringify({
+        requestVersion: 3,
+        thinking: semantics.thinking || 'omitted',
+        reasoningEffort: semantics.reasoningEffort || null,
+        messagesHash: sha256Hex(JSON.stringify(request.messages)).slice(0, 32),
+        maxTokens: request.reservedOutputTokens,
+        visibleFinalFloor: Math.max(
+          1024,
+          Math.ceil(estimateTokens(canonicalDraft) * 1.2) + 256,
+        ),
+        contextWindow: request.contextWindow,
+        continuityRepairPass: repairPass,
+      }),
+      llmConfigId: llmConfigIdOf(runtime.requestConfig),
+      llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+      batchBudgetGate: options.batchBudgetGate,
+      estimatedInputTokens: request.estimatedInputTokens,
+      reservedOutputTokens: request.reservedOutputTokens,
+      run: () =>
+        callReadyLLM(
+          request,
+          request.reservedOutputTokens,
+          buildCallConfig(
+            runtime.proofPreset,
+            request.reservedOutputTokens,
+            'pipeline_proof',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+            {
+              thinking: reasoning?.thinking,
+              reasoningEffort: reasoning?.effort,
+            },
+          ),
+          abortSignal,
+        ),
+    });
+  try {
+    let request: ReadyStageRequest = compiled;
+    let repairPass = 0;
+    let acceptedContent: string | null = null;
+    let acceptedTokens: ReturnType<typeof tokenBreakdown> | null = null;
+    let acceptedWarnings: string[] | undefined;
+    while (repairPass <= 1) {
+      const result = await runProofAttempt(request, repairPass);
+      const content =
+        typeof result.text === 'string' && result.text.trim().length > 0
+          ? result.text
+          : null;
+      const tokens = tokenBreakdown(result);
+      if (!content) {
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: '',
+          status: 'failed',
+          error:
+            result.reasoningText && result.reasoningText.trim()
+              ? '终稿仅返回推理内容，请从失败节点重试'
+              : '终稿输出为空，请从失败节点重试',
+          errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+      const validator = validateFinalArtifact({
+        text: content,
+        reasoningText: result.reasoningText,
+        finishReason: result.finishReason,
+        canonicalDraft,
+      });
+      if (!validator.valid) {
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: '',
+          status: 'failed',
+          error: `终稿本地校验未通过（${validator.code}），请从失败节点重试`,
+          errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+      const compliance = validateFinalBriefCompliance({ text: content, brief });
+      if (!compliance.valid) {
+        console.log(
+          `[pipeline-audit] stage=proof taskId=${taskId} continuityGate=failed code=${compliance.code} repairPass=${repairPass}`,
+        );
+        if (repairPass === 0) {
+          const repairBrief = `${writingBrief}\n\n【上一次终稿未通过连续性硬门禁】\n${compliance.details || 'Brief 禁止提前推进的内容仍出现在正文中。'}\n必须删除包含这些未来信息的完整段落或场景，不得只替换关键词；严格收束在 Brief 的结尾状态，直接输出完整终稿正文。`;
+          const repaired = compileFinalReviserV3StageRequest({
+            writingBrief: repairBrief,
+            canonicalDraft,
+            capsule,
+            maxTokens,
+            contextWindow: runtime.requestConfig.context_window || 0,
+            modelMaxOutputTokens: runtime.requestConfig.max_output_tokens,
+            elasticBudget: isElasticBudgetEnabled(runtime),
+          });
+          if (!repaired.ready) {
+            await persistStage(taskId, {
+              stage: 'proof',
+              text: '',
+              status: 'failed',
+              error: `终稿连续性修复请求无法编译：${repaired.error.message}；请从失败节点重试`,
+              errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+              tokens,
+              durationMs: Date.now() - start,
+            });
+            return;
+          }
+          request = repaired;
+          repairPass += 1;
+          continue;
+        }
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: '',
+          status: 'failed',
+          error: `终稿连续性硬门禁未通过（${compliance.code}），请从失败节点重试`,
+          errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+      console.log(
+        `[pipeline-audit] stage=proof taskId=${taskId} continuityGate=passed repairPass=${repairPass}`,
+      );
+      acceptedContent = content;
+      acceptedTokens = tokens;
+      acceptedWarnings = validator.warnings;
+      break;
+    }
+    if (!acceptedContent || !acceptedTokens) {
+      await persistStage(taskId, {
+        stage: 'proof',
+        text: '',
+        status: 'failed',
+        error: '终稿连续性硬门禁未产生可交付正文，请从失败节点重试',
+        errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+        durationMs: Date.now() - start,
+      });
+      return;
+    }
+    await persistStage(taskId, {
+      stage: 'proof',
+      text: acceptedContent,
+      status: 'success',
+      warnings: acceptedWarnings,
+      tokens: acceptedTokens,
+      durationMs: Date.now() - start,
+    });
+  } catch (error: any) {
+    if (isAbortError(error, abortSignal)) {
+      await settleInterruptedTask(taskId, options);
+      await PipelineForeground.stop(taskId);
+      throw error;
+    }
+    if (error instanceof BatchBudgetExceededError) throw error;
+    await persistStage(taskId, {
+      stage: 'proof',
+      text: '',
+      status: 'failed',
+      error: `${getErrorMessage(error, '终稿失败')}；请从失败节点重试`,
+      errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
       durationMs: Date.now() - start,
     });
   }
@@ -2979,10 +4142,37 @@ async function actionRunProof(
         PipelineForeground.updateProgress(
           taskId,
           '正在综合修订',
-          getStageProgressPercent(runtime.config.pipelineMode, 2),
+          getStageProgressPercent(
+            runtime.config.pipelineMode,
+            Math.max(
+              0,
+              getPipelineStageOrder(runtime.config.pipelineMode, {
+                outlineWorkflowVersion:
+                  runtime.parsed?.execution?.outlineWorkflowVersion,
+                contextBudgetVersion:
+                  runtime.parsed?.execution?.contextBudgetVersion,
+              }).indexOf('proof'),
+            ),
+            {
+              outlineWorkflowVersion:
+                runtime.parsed?.execution?.outlineWorkflowVersion,
+              contextBudgetVersion:
+                runtime.parsed?.execution?.contextBudgetVersion,
+            },
+          ),
         ).catch(() => {});
       }
 
+      if (isOutlineWorkflowV3(runtime)) {
+        await runFinalReviserV3Stage({
+          taskId,
+          chapter,
+          runtime,
+          abortSignal,
+          options,
+        });
+        return;
+      }
       if (isOutlineWorkflowV2(runtime)) {
         await runFinalReviserV2Stage({
           taskId,
@@ -3011,7 +4201,7 @@ async function actionRunProof(
         constraints,
         maxTokens: runtime.config.proofMaxTokens,
         contextWindow: runtime.requestConfig.context_window || 0,
-        elasticBudget: isElasticBudgetV2(runtime),
+        elasticBudget: isElasticBudgetEnabled(runtime),
       });
       if (!compiled.ready) {
         await persistStage(taskId, {
@@ -3140,7 +4330,9 @@ async function saveDraftBody(
     /* best-effort */
   }
   try {
-    const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
+    const task = usePipelineTaskStore
+      .getState()
+      .tasks.find(t => t.id === taskId);
     const fpOutline =
       task?.pipelineContextJson != null
         ? parsePersistedPipelineTaskContext(task).draftContext
@@ -3152,7 +4344,9 @@ async function saveDraftBody(
       chapterUpdatedAt: chapter.updated_at,
       outlineFingerprint: fpOutline,
     });
-    usePipelineTaskStore.getState().setTaskInputFingerprint(taskId, fingerprint);
+    usePipelineTaskStore
+      .getState()
+      .setTaskInputFingerprint(taskId, fingerprint);
   } catch {
     /* */
   }
@@ -3170,6 +4364,7 @@ async function actionFinalizeFromDraft(
   if (mode === 'noReview') {
     await persistSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
     await persistSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
+    await persistSkipped(taskId, 'brief', '无审核模式已跳过 Brief 整理');
     await persistSkipped(taskId, 'proof', '无审核模式已跳过终审校对');
   } else if (degraded) {
     // Do not leave proof pending — decision already made.
@@ -3185,6 +4380,18 @@ async function actionFinalizeFromDraft(
         existingProof.status !== 'skipped')
     ) {
       await persistSkipped(taskId, 'proof', '前置阶段失败，未执行终审');
+    }
+    const existingBrief =
+      store.tasks
+        .find(x => x.id === taskId)
+        ?.stageResults?.find(s => s.stage === 'brief') || null;
+    if (
+      !existingBrief ||
+      (existingBrief.status !== 'failed' &&
+        existingBrief.status !== 'success' &&
+        existingBrief.status !== 'skipped')
+    ) {
+      await persistSkipped(taskId, 'brief', '前置阶段失败，未执行 Brief 整理');
     }
   }
   await saveDraftBody(taskId, chapter, draftText);
@@ -3251,7 +4458,7 @@ async function actionFinalizeFromDraft(
       '已写完，点击查看',
     );
   }
-    await PipelineForeground.stop(taskId);
+  await PipelineForeground.stop(taskId);
 }
 
 async function actionFinalizeFromProof(
@@ -3277,7 +4484,7 @@ async function actionFinalizeFromProof(
       '已写完，点击查看',
     );
   }
-    await PipelineForeground.stop(taskId);
+  await PipelineForeground.stop(taskId);
 }
 
 async function actionComplete(
@@ -3309,7 +4516,7 @@ async function actionComplete(
       '已写完，点击查看',
     );
   }
-    await PipelineForeground.stop(taskId);
+  await PipelineForeground.stop(taskId);
 }
 
 export function isReconcileActive(taskId: string): boolean {

@@ -5,11 +5,11 @@
 把灵感、资料和章节放在一台手机里，安心写完你的长篇故事。
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#开始使用)
-[![Version](https://img.shields.io/badge/Version-V2.11.39-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V2.11.40-blue.svg)](CHANGELOG.md)
 
 </div>
 
-当前版本：**V2.11.39** · 支持 Android 7.0 及以上设备
+当前版本：**V2.11.40** · 支持 Android 7.0 及以上设备
 
 ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮助你管理作品、写章节、整理人物和世界观，也可以按你的设置调用 AI 辅助创作。作品数据默认保存在手机本地；是否使用在线模型，始终由你决定。
 
@@ -19,7 +19,7 @@ ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮�
 
 新建作品后就能建立章节、填写梗概、记录人物和伏笔。编辑器会自动保存，章节还可以保留多个修订版本，方便比较和回退。
 
-如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 46**（含流水线阶段 checkpoint、持久化 LLM Attempt、弹性上下文预算池、批量写章批次表、Final Reviser reasoning token 观测与批次级思考档位冻结；Schema 43 为旧项目 Smart 故事记忆策略间隔一次性统一迁移，Schema 44 为任务与批次增加 Workflow/Budget 版本冻结列，Schema 45 为 reasoning token 观测列，Schema 46 为批次思考档位快照——新任务默认启用大纲写作 V2 与弹性预算 V2，升级前的旧任务与旧批次自动按 V1 恢复）。
+如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 46**（含流水线阶段 checkpoint、持久化 LLM Attempt、弹性上下文预算池、批量写章批次表、Final Reviser reasoning token 观测与批次级思考档位冻结；Schema 43 为旧项目 Smart 故事记忆策略间隔一次性统一迁移，Schema 44 为任务与批次增加 Workflow/Budget 版本冻结列，Schema 45 为 reasoning token 观测列，Schema 46 为批次思考档位快照——新任务默认启用大纲写作 V3 与统一弹性预算池，升级前的旧任务与旧批次自动按冻结版本恢复）。
 
 ### 让 AI 帮你，而不是替你失控
 
@@ -90,9 +90,9 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 ## 获取正式安装包
 
-正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.39-release.apk`
+正式 APK 文件：`dist/apk/release/ShineWriter-V2.11.40-release.apk`
 
-构建标识：`versionName=V2.11.39`，`versionCode=2113900`。
+构建标识：`versionName=V2.11.40`，`versionCode=2114000`。
 
 ## 开发者参考
 
@@ -103,4 +103,4 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 - [V4 FULL-Control 验收报告](docs/optimization/continuation-full-control-v4-validation-report.md)
 - [完整版本变更](CHANGELOG.md)
 
-The current version is **V2.11.39**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, and text-to-speech.
+The current version is **V2.11.40**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, and text-to-speech.

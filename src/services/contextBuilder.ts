@@ -833,6 +833,15 @@ export async function buildContext(
     0,
   );
 
+  // Keep the immediately preceding chapter separate from the sliding bridge.
+  // The bridge may be clipped or assembled from several chapters, while Final
+  // V3 must always be able to recover the exact last-chapter seam.
+  const immediatePreviousChapter = chapters
+    .filter(chapter => chapter.position < currentChapter.position && chapter.content)
+    .sort((a, b) => b.position - a.position)[0];
+  const immediatePreviousChapterText = immediatePreviousChapter?.content || '';
+  const immediatePreviousChapterEnding = immediatePreviousChapterText.slice(-1200);
+
   const pipelineContext: PipelineContextSnapshot = {
     presetText: resolvedSystemPrompt,
     storyMemoryText: storyMemory.text,
@@ -841,6 +850,10 @@ export async function buildContext(
     worldbookText: snapshotWorldbookText,
     episodicMemoryText: memoryText,
     recentBridgeText: snapshotRecentBridgeText,
+    immediatePreviousChapterText,
+    immediatePreviousChapterEnding,
+    immediatePreviousChapterId: immediatePreviousChapter?.id,
+    immediatePreviousChapterPosition: immediatePreviousChapter?.position,
     currentInstructionText: instructionContent,
     retrievalUserPrompt: options.retrievalUserPrompt || '',
     // Frozen outline snapshot: every stage of this task reads these fields
