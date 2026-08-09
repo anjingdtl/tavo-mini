@@ -49,10 +49,18 @@ export interface PipelineStageAttemptRow {
   finishReason: string | null;
   emptyReason: string | null;
   responseChannel: 'content' | 'reasoning' | 'both' | 'empty' | null;
+  responseCandidateChannel:
+    | 'content'
+    | 'reasoning'
+    | 'both_content_preferred'
+    | 'both_reasoning_preferred'
+    | null;
   visibleOutputTokens: number | null;
   parseFailureCode: string | null;
   formatterUsed: boolean;
   reasoningContentTemp: string | null;
+  responseCandidateTemp: string | null;
+  validationDetailsJson: string | null;
 }
 
 export interface CreateStageAttemptInput {
@@ -95,6 +103,14 @@ export interface UpdateStageAttemptInput {
   parseFailureCode?: string | null;
   formatterUsed?: boolean;
   reasoningContentTemp?: string | null;
+  responseCandidateTemp?: string | null;
+  responseCandidateChannel?:
+    | 'content'
+    | 'reasoning'
+    | 'both_content_preferred'
+    | 'both_reasoning_preferred'
+    | null;
+  validationDetailsJson?: string | null;
 }
 
 function mapRow(row: any): PipelineStageAttemptRow {
@@ -136,6 +152,13 @@ function mapRow(row: any): PipelineStageAttemptRow {
       row.response_channel === 'empty'
         ? row.response_channel
         : null,
+    responseCandidateChannel:
+      row.response_candidate_channel === 'content' ||
+      row.response_candidate_channel === 'reasoning' ||
+      row.response_candidate_channel === 'both_content_preferred' ||
+      row.response_candidate_channel === 'both_reasoning_preferred'
+        ? row.response_candidate_channel
+        : null,
     visibleOutputTokens:
       row.visible_output_tokens != null
         ? Number(row.visible_output_tokens)
@@ -143,6 +166,8 @@ function mapRow(row: any): PipelineStageAttemptRow {
     parseFailureCode: row.parse_failure_code ?? null,
     formatterUsed: Boolean(Number(row.formatter_used ?? 0)),
     reasoningContentTemp: row.reasoning_content_temp ?? null,
+    responseCandidateTemp: row.response_candidate_temp ?? null,
+    validationDetailsJson: row.validation_details_json ?? null,
   };
 }
 
@@ -208,6 +233,9 @@ export async function updateStageAttempt(
       input.formatterUsed == null ? undefined : input.formatterUsed ? 1 : 0,
     ],
     ['reasoning_content_temp', input.reasoningContentTemp],
+    ['response_candidate_temp', input.responseCandidateTemp],
+    ['response_candidate_channel', input.responseCandidateChannel],
+    ['validation_details_json', input.validationDetailsJson],
   ];
   for (const [column, value] of [...fields, ...diagnosticFields]) {
     if (value !== undefined) {
@@ -267,7 +295,8 @@ export async function clearTemporaryReasoningForTaskStage(
   await execute(
     await openDatabase(),
     `UPDATE pipeline_stage_attempts
-        SET reasoning_content_temp = NULL
+        SET reasoning_content_temp = NULL,
+            response_candidate_temp = NULL
       WHERE pipeline_task_id = ? AND stage = ?`,
     [pipelineTaskId, stage],
   );

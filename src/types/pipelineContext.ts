@@ -71,7 +71,7 @@ export interface PipelineContextSnapshot {
   chapterId?: number;
   chapterUpdatedAt?: string | number;
   createdAt?: number;
-  snapshotVersion?: 1 | 3;
+  snapshotVersion?: 1 | 3 | 4;
 }
 
 /**

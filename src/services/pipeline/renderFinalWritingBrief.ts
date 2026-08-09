@@ -1,11 +1,12 @@
 import type {
   FinalWritingBriefV1,
   FinalWritingBriefV31,
+  FinalWritingBriefV32,
 } from './briefCompilerTypes';
 
 /** Render only human-readable writing instructions; machine IDs never enter Final. */
 export function renderFinalWritingBrief(
-  brief: FinalWritingBriefV1 | FinalWritingBriefV31,
+  brief: FinalWritingBriefV1 | FinalWritingBriefV31 | FinalWritingBriefV32,
 ): string {
   const sections: string[] = [];
   if (brief.mustFix.length) {

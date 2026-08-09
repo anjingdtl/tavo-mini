@@ -2419,24 +2419,26 @@ function compileFinalReviserV3WithElasticBudget(params: {
   const briefTokens = estimateTokens(params.writingBrief);
   const visibleOutputFloor = Math.max(1024, Math.ceil(draftTokens * 1.2) + 256);
   const modelCap = Math.max(0, Number(params.modelMaxOutputTokens) || 0);
-  const outputReservationTooSmall = params.maxTokens < visibleOutputFloor;
-  if (
-    outputReservationTooSmall ||
-    (modelCap > 0 && modelCap < params.maxTokens)
-  ) {
+  // The frozen stage budget may reserve space for the configured tier's
+  // Thinking headroom, while the provider exposes a smaller physical output
+  // ceiling.  Treat that ceiling as the request's actual reservation and
+  // continue when the current chapter's visible completion floor still fits.
+  // Only a genuinely too-small provider cap is fail-closed.
+  const reservedOutputTokens =
+    modelCap > 0 ? Math.min(params.maxTokens, modelCap) : params.maxTokens;
+  const outputReservationTooSmall = reservedOutputTokens < visibleOutputFloor;
+  if (outputReservationTooSmall) {
     return {
       ready: false,
       stage: 'proof',
       error: pipelineError(
         'CONTEXT_WINDOW_EXCEEDED',
-        outputReservationTooSmall
-          ? 'Final V3 输出预留低于可见正文下限，已阻止请求'
-          : 'Final V3 模型输出上限无法同时容纳可见正文下限与 Thinking 余量',
+        'Final V3 模型输出上限低于当前章节可见正文下限，已阻止请求',
         { stage: 'proof', userAction: 'none' },
       ),
       diagnostics: {
         contextWindow: params.contextWindow,
-        reservedOutputTokens: params.maxTokens,
+        reservedOutputTokens,
         safetyMargin: deriveDefaultSafetyMargin(params.contextWindow),
         estimatedInputTokens: 0,
         fullOutlineTokens: outlineTokens,
@@ -2611,7 +2613,7 @@ function compileFinalReviserV3WithElasticBudget(params: {
   return compileStageRequestWithElasticBudget({
     stage: 'proof',
     contextWindow: params.contextWindow,
-    reservedOutputTokens: params.maxTokens,
+    reservedOutputTokens,
     mandatoryModules,
     elasticModules,
     buildMessages,

@@ -57,8 +57,13 @@ export interface PersistedPipelineTaskContextV3
   version: 3;
 }
 
+export interface PersistedPipelineTaskContextV4
+  extends Omit<PersistedPipelineTaskContextV2, 'version'> {
+  version: 4;
+}
+
 export interface ParsedPipelineTaskContext {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   draftContext: PipelineContextSnapshot;
   auditContext: PipelineContextSnapshot | null;
   execution: PipelineExecutionSnapshot | null;
@@ -396,7 +401,8 @@ export function parsePipelineContextSnapshotStrict(
     // Content snapshot version is currently fixed at 1; reject unknown.
     if (
       Number(raw.snapshotVersion) !== 1 &&
-      Number(raw.snapshotVersion) !== 3
+      Number(raw.snapshotVersion) !== 3 &&
+      Number(raw.snapshotVersion) !== 4
     ) {
       throw new OutlineContextError(
         'OUTLINE_SNAPSHOT_INVALID',
@@ -440,7 +446,11 @@ export function parsePipelineContextSnapshotStrict(
         ? Number(raw.createdAt)
         : undefined,
     snapshotVersion:
-      raw.snapshotVersion == null || Number(raw.snapshotVersion) === 1 ? 1 : 3,
+      raw.snapshotVersion == null || Number(raw.snapshotVersion) === 1
+        ? 1
+        : Number(raw.snapshotVersion) === 4
+        ? 4
+        : 3,
     immediatePreviousChapterText:
       typeof raw.immediatePreviousChapterText === 'string'
         ? raw.immediatePreviousChapterText
@@ -627,16 +637,18 @@ export function parsePipelineExecutionSnapshot(
     );
   }
   const contextBudgetRaw = raw.contextBudgetVersion;
-  let contextBudgetVersion: 1 | 2 | 3 | undefined;
+  let contextBudgetVersion: 1 | 2 | 3 | 4 | undefined;
   if (
     contextBudgetRaw === 1 ||
     contextBudgetRaw === 2 ||
     contextBudgetRaw === 3 ||
+    contextBudgetRaw === 4 ||
     contextBudgetRaw === '1' ||
     contextBudgetRaw === '2' ||
     contextBudgetRaw === '3'
+    || contextBudgetRaw === '4'
   ) {
-    contextBudgetVersion = Number(contextBudgetRaw) as 1 | 2 | 3;
+    contextBudgetVersion = Number(contextBudgetRaw) as 1 | 2 | 3 | 4;
   } else if (contextBudgetRaw != null && contextBudgetRaw !== '') {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
@@ -647,10 +659,14 @@ export function parsePipelineExecutionSnapshot(
     );
   }
 
-  if ((outlineWorkflowVersion === 3) !== (contextBudgetVersion === 3)) {
+  if (
+    outlineWorkflowVersion === 3 &&
+    contextBudgetVersion !== 3 &&
+    contextBudgetVersion !== 4
+  ) {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
-      '工作流版本 3 必须与上下文预算版本 3 成对冻结，已阻止恢复。',
+      '工作流版本 3 必须与上下文预算版本 3/4 成对冻结，已阻止恢复。',
       'restart_task',
     );
   }
@@ -658,7 +674,7 @@ export function parsePipelineExecutionSnapshot(
   let v3Fields: Partial<PipelineExecutionSnapshot> = {};
   if (outlineWorkflowVersion === 3) {
     if (
-      contextBudgetVersion !== 3 ||
+      (contextBudgetVersion !== 3 && contextBudgetVersion !== 4) ||
       finalReviserReasoningPolicyVersion !== 3
     ) {
       throw new OutlineContextError(
@@ -668,7 +684,9 @@ export function parsePipelineExecutionSnapshot(
       );
     }
     const reasoningProfileVersion =
-      raw.reasoningProfileVersion === 3 || raw.reasoningProfileVersion === '3'
+      raw.reasoningProfileVersion === 4 || raw.reasoningProfileVersion === '4'
+        ? 4
+        : raw.reasoningProfileVersion === 3 || raw.reasoningProfileVersion === '3'
         ? 3
         : raw.reasoningProfileVersion === 2 ||
           raw.reasoningProfileVersion === '2'
@@ -677,7 +695,17 @@ export function parsePipelineExecutionSnapshot(
     if (reasoningProfileVersion == null) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        'V3 冻结配置缺少有效 reasoningProfileVersion（2/3），已阻止恢复。',
+        'V3 冻结配置缺少有效 reasoningProfileVersion（2/3/4），已阻止恢复。',
+        'restart_task',
+      );
+    }
+    if (
+      (reasoningProfileVersion === 3 && contextBudgetVersion !== 3) ||
+      (reasoningProfileVersion === 2 && contextBudgetVersion !== 3)
+    ) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        'V3.1/V3 legacy reasoning profile 必须与 context budget 3 成对冻结，已阻止恢复。',
         'restart_task',
       );
     }
@@ -724,6 +752,8 @@ export function parsePipelineExecutionSnapshot(
         effectiveTier: value.effectiveTier,
         thinking: value.thinking === 'disabled' ? 'disabled' : 'enabled',
         effort: isPipelineReasoningTier(value.effort) ? value.effort : null,
+        supported:
+          typeof value.supported === 'boolean' ? value.supported : undefined,
         downgradeReason:
           typeof value.downgradeReason === 'string'
             ? value.downgradeReason
@@ -742,7 +772,8 @@ export function parsePipelineExecutionSnapshot(
         'restart_task',
       );
     }
-    const expectedBriefPolicyVersion = reasoningProfileVersion === 3 ? 2 : 1;
+    const expectedBriefPolicyVersion =
+      reasoningProfileVersion === 4 ? 3 : reasoningProfileVersion === 3 ? 2 : 1;
     if (
       raw.briefPolicyVersion !== expectedBriefPolicyVersion &&
       raw.briefPolicyVersion !== String(expectedBriefPolicyVersion)
@@ -763,6 +794,22 @@ export function parsePipelineExecutionSnapshot(
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
         'V3.1 Review/FactCheck 必须冻结为 Thinking disabled + low，已阻止恢复。',
+        'restart_task',
+      );
+    }
+    if (
+      reasoningProfileVersion === 4 &&
+      (contextBudgetVersion !== 4 ||
+        stageReasoning.review?.effectiveTier !== 'low' ||
+        stageReasoning.factCheck?.effectiveTier !== 'low' ||
+        stageReasoning.brief?.effectiveTier !== 'low' ||
+        stageReasoning.review?.thinking !== 'enabled' ||
+        stageReasoning.factCheck?.thinking !== 'enabled' ||
+        stageReasoning.brief?.thinking !== 'enabled')
+    ) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        'V3.2 Review/FactCheck/Brief 必须冻结为 Thinking enabled + low，且使用 context budget 4，已阻止恢复。',
         'restart_task',
       );
     }
@@ -947,6 +994,21 @@ export function parsePipelineTaskContextV3(
   return { ...parsed, version: 3 };
 }
 
+export function parsePipelineTaskContextV4(
+  raw: unknown,
+  ownership?: PipelineTaskContextOwnership,
+): ParsedPipelineTaskContext {
+  if (!isPlainObject(raw) || Number(raw.version) !== 4) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '不支持的 V4 流水线上下文版本，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const parsed = parsePipelineTaskContextV2({ ...raw, version: 2 }, ownership);
+  return { ...parsed, version: 4 };
+}
+
 /**
  * Parse a persisted task context from DB columns. Supports V1 (bare snapshot)
  * and V2 (envelope). Strict ownership + integrity checks.
@@ -1003,6 +1065,9 @@ export function parsePersistedPipelineTaskContext(
       ? Number(parsed.version)
       : 1;
 
+  if (declaredVersion === 4 || Number((parsed as any).version) === 4) {
+    return parsePipelineTaskContextV4(parsed, ownership);
+  }
   if (declaredVersion === 3 || Number((parsed as any).version) === 3) {
     return parsePipelineTaskContextV3(parsed, ownership);
   }
@@ -1043,7 +1108,10 @@ export function serializePipelineTaskContext(params: {
   const isV3 =
     params.execution.outlineWorkflowVersion === 3 &&
     params.execution.contextBudgetVersion === 3;
-  const snapshotVersion = isV3 ? 3 : 1;
+  const isV32 =
+    params.execution.outlineWorkflowVersion === 3 &&
+    params.execution.contextBudgetVersion === 4;
+  const snapshotVersion = isV32 ? 4 : isV3 ? 3 : 1;
   const draftContext: PipelineContextSnapshot = {
     ...params.draftContext,
     snapshotVersion,
@@ -1051,8 +1119,9 @@ export function serializePipelineTaskContext(params: {
   };
   const envelope:
     | PersistedPipelineTaskContextV2
-    | PersistedPipelineTaskContextV3 = {
-    version: isV3 ? 3 : 2,
+    | PersistedPipelineTaskContextV3
+    | PersistedPipelineTaskContextV4 = {
+    version: isV32 ? 4 : isV3 ? 3 : 2,
     draftContext,
     execution: params.execution,
     createdAt,
@@ -1082,7 +1151,7 @@ export function serializePipelineTaskContext(params: {
   const pipelineContextJson = JSON.stringify(envelope);
   return {
     pipelineContextJson,
-    pipelineContextVersion: isV3 ? 3 : PIPELINE_TASK_CONTEXT_VERSION,
+    pipelineContextVersion: isV32 ? 4 : isV3 ? 3 : PIPELINE_TASK_CONTEXT_VERSION,
     pipelineContextHash: sha256Hex(pipelineContextJson).slice(0, 32),
   };
 }

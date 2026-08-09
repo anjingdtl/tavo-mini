@@ -28,6 +28,7 @@ import {
   inspectKnownSchemaDrift,
   type SchemaDriftReport,
 } from './schemaDriftInspector';
+import { V49_ATTEMPT_COLUMNS } from '../../services/migrations/v48-to-v49';
 
 export const EVIDENCE_SOURCE_ORIGIN_BATCH = 'batch';
 
@@ -36,6 +37,10 @@ export type SchemaRepairOutcomeCode =
   | 'CANON_SOURCE_ORIGIN_MISSING'
   | 'CANON_RESCAN_OPERATION_ID_MISSING'
   | 'CANON_RESCAN_INDEX_MISSING'
+  | 'PIPELINE_STAGE_ATTEMPTS_TABLE_MISSING'
+  | 'PIPELINE_RESPONSE_CANDIDATE_TEMP_MISSING'
+  | 'PIPELINE_RESPONSE_CANDIDATE_CHANNEL_MISSING'
+  | 'PIPELINE_VALIDATION_DETAILS_MISSING'
   | 'NO_REPAIR_NEEDED';
 
 export interface SchemaRepairResult {
@@ -149,6 +154,34 @@ export async function ensureCanonEvidenceProvenanceSchema(
   return true;
 }
 
+/** Idempotently repair Schema 49 columns on a recorded-49 drifted database. */
+export async function ensurePipelineStageAttemptV49Schema(
+  database: SQLite.SQLiteDatabase,
+): Promise<boolean> {
+  const tableCheck = await execute(
+    database,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pipeline_stage_attempts'",
+  );
+  if (tableCheck.rows.length === 0) return false;
+  const colResult = await execute(
+    database,
+    'PRAGMA table_info(pipeline_stage_attempts)',
+  );
+  const columns = new Set<string>();
+  for (let i = 0; i < colResult.rows.length; i++) {
+    columns.add(colResult.rows.item(i).name);
+  }
+  const statements: SqlStatement[] = V49_ATTEMPT_COLUMNS.filter(
+    column => !columns.has(column.name),
+  ).map(column => ({ sql: column.ddl }));
+  if (statements.length > 0) {
+    await executeTransaction(database, statements, {
+      faultDomain: 'restore',
+    });
+  }
+  return true;
+}
+
 /**
  * Repair all known schema drift defects detected by
  * {@link inspectKnownSchemaDrift}. Idempotent and safe to call every launch.
@@ -181,10 +214,22 @@ export async function repairKnownSchemaDrift(
         'canon_evidence table is entirely missing. The database may be corrupted; refusing to create an empty table.',
     };
   }
+  if (
+    drift.repairCodes.includes('PIPELINE_STAGE_ATTEMPTS_TABLE_MISSING')
+  ) {
+    return {
+      ok: false,
+      codes: ['PIPELINE_STAGE_ATTEMPTS_TABLE_MISSING' as SchemaRepairOutcomeCode],
+      report: drift,
+      message:
+        'pipeline_stage_attempts table is entirely missing. Refusing to create an empty attempt ledger.',
+    };
+  }
 
   const evidenceBefore = (await canonEvidenceIdentity(database)) ?? undefined;
 
   await ensureCanonEvidenceProvenanceSchema(database);
+  await ensurePipelineStageAttemptV49Schema(database);
 
   const evidenceAfter = (await canonEvidenceIdentity(database)) ?? undefined;
 
@@ -206,6 +251,19 @@ export async function repairKnownSchemaDrift(
   }
   if (drift.repairCodes.includes('CANON_RESCAN_INDEX_MISSING')) {
     codes.push('CANON_RESCAN_INDEX_MISSING');
+  }
+  if (
+    drift.repairCodes.includes('PIPELINE_RESPONSE_CANDIDATE_TEMP_MISSING')
+  ) {
+    codes.push('PIPELINE_RESPONSE_CANDIDATE_TEMP_MISSING');
+  }
+  if (
+    drift.repairCodes.includes('PIPELINE_RESPONSE_CANDIDATE_CHANNEL_MISSING')
+  ) {
+    codes.push('PIPELINE_RESPONSE_CANDIDATE_CHANNEL_MISSING');
+  }
+  if (drift.repairCodes.includes('PIPELINE_VALIDATION_DETAILS_MISSING')) {
+    codes.push('PIPELINE_VALIDATION_DETAILS_MISSING');
   }
 
   return {

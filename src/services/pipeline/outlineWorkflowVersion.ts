@@ -15,16 +15,18 @@
  * resume semantics; the Schema 44 columns are never dropped.
  */
 export type OutlineWorkflowVersion = 1 | 2 | 3;
-export type ContextBudgetVersion = 1 | 2 | 3;
+export type ContextBudgetVersion = 1 | 2 | 3 | 4;
 
 /**
  * Protocol versions written to NEW outline chapter tasks / batches.
  * 3 = normalized audits + Brief Compiler + continuity capsule (workflow),
- * independent per-stage budget V3 (context budget). Only "new task / new batch creation"
+ * independent per-stage budget V3 (context budget). V4 is the V3.2
+ * structured-semantic contract with the same workflow graph and independent
+ * per-stage budgets. Only "new task / new batch creation"
  * code may read these.
  */
 export const CURRENT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 3;
-export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 3;
+export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 4;
 
 /**
  * @deprecated Rollback-era default (Legacy 1). Kept only for callers that

@@ -4,14 +4,16 @@ import {
   type BriefTargetKindV31,
   type BriefCompilerInputV1,
   type FinalWritingBriefImmutableEnvelopeV31,
+  type FinalWritingBriefImmutableEnvelopeV32,
   type FinalWritingBriefV31,
+  type FinalWritingBriefV32,
   type FinalWritingBriefV1,
 } from './briefCompilerTypes';
 import type { StructuredOutputCompatibility } from './reasoningPolicy';
 
 export interface BriefValidationResult {
   valid: boolean;
-  brief?: FinalWritingBriefV1 | FinalWritingBriefV31;
+  brief?: FinalWritingBriefV1 | FinalWritingBriefV31 | FinalWritingBriefV32;
   warnings: string[];
   error?: string;
 }
@@ -517,5 +519,178 @@ export function validateFinalWritingBriefV31(params: {
       endingState,
       styleAdvisories,
     },
+  };
+}
+
+/** V3.2 semantic Brief validator.  The envelope is always local authority. */
+export function validateFinalWritingBriefV32(params: {
+  raw: string;
+  envelope: FinalWritingBriefImmutableEnvelopeV32;
+}): BriefValidationResult {
+  const warnings: string[] = [];
+  const extracted = extractAuditJsonPayload(String(params.raw || '').trim());
+  if (!extracted.jsonText) {
+    return { valid: false, warnings, error: 'Brief V3.2 输出不是完整 JSON' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(extracted.jsonText);
+  } catch {
+    return { valid: false, warnings, error: 'Brief V3.2 JSON 解析失败' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { valid: false, warnings, error: 'Brief V3.2 根节点不是对象' };
+  }
+  if (hasLeak(parsed)) {
+    return { valid: false, warnings, error: 'Brief V3.2 含机器协议或 Thinking 泄漏' };
+  }
+  const raw = parsed as Record<string, unknown>;
+  const rawVerdict = raw.verdict;
+  if (rawVerdict !== 'apply_changes' && rawVerdict !== 'no_changes') {
+    return { valid: false, warnings, error: 'Brief V3.2 verdict 无效' };
+  }
+  for (const key of [
+    'schemaVersion',
+    'briefPolicyVersion',
+    'sourceHash',
+    'requiredSourceIds',
+    'protectedFacts',
+    'hardConstraints',
+    'mustNotAdvance',
+    'outlineObligations',
+    'endingBoundary',
+  ]) {
+    if (raw[key] !== undefined) {
+      warnings.push('Brief V3.2 ' + key + ' 已由本地不可变信封覆盖');
+    }
+  }
+  const knownIds = new Set(params.envelope.requiredSourceIds);
+  const instructionsRaw = Array.isArray(raw.instructions) ? raw.instructions : [];
+  if (instructionsRaw.length > MAX_MUST_FIX) {
+    return { valid: false, warnings, error: 'Brief V3.2 instructions 超过上限' };
+  }
+  const instructions: FinalWritingBriefV32['instructions'] = [];
+  const mustFix: FinalWritingBriefV32['mustFix'] = [];
+  const covered = new Set<string>();
+  const seen = new Map<string, string>();
+  for (let index = 0; index < instructionsRaw.length; index += 1) {
+    const item = instructionsRaw[index];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return {
+        valid: false,
+        warnings,
+        error: 'Brief V3.2 instructions[' + String(index) + '] 结构无效',
+      };
+    }
+    const row = item as Record<string, unknown>;
+    const sourceIds = normalizeBriefSourceIds(row.sourceIds, knownIds, warnings);
+    const priorityRaw =
+      typeof row.priority === 'string' ? row.priority.trim().toLowerCase() : '';
+    const priority =
+      priorityRaw === 'hard' || priorityRaw === 'required'
+        ? priorityRaw
+        : priorityRaw === 'advisory' || priorityRaw === 'warning'
+        ? 'advisory'
+        : null;
+    const target = normalizeTarget(row.target);
+    const instruction =
+      typeof row.instruction === 'string' ? row.instruction.trim() : '';
+    if (
+      !sourceIds ||
+      !sourceIds.length ||
+      !priority ||
+      !target ||
+      !instruction
+    ) {
+      return {
+        valid: false,
+        warnings,
+        error: 'Brief V3.2 instruction 缺少 sourceIds/priority/target/instruction',
+      };
+    }
+    const preserve = strings(row.preserve);
+    for (const sourceId of sourceIds) {
+      covered.add(sourceId);
+      const previous = seen.get(sourceId);
+      if (previous && previous !== instruction && priority !== 'advisory') {
+        return {
+          valid: false,
+          warnings,
+          error: 'Brief V3.2 同一 sourceId 存在相互冲突的 hard/required 指令',
+        };
+      }
+      seen.set(sourceId, instruction);
+    }
+    instructions.push({
+      sourceIds,
+      priority,
+      target: target.kind,
+      instruction: instruction.slice(0, MAX_TEXT),
+      preserve,
+    });
+    mustFix.push({
+      sourceIds,
+      target,
+      instruction: instruction.slice(0, MAX_TEXT),
+      preserve,
+    });
+  }
+  for (const requiredId of params.envelope.requiredSourceIds) {
+    if (!covered.has(requiredId)) {
+      return {
+        valid: false,
+        warnings,
+        error: 'Brief V3.2 未覆盖 required/hard: ' + requiredId,
+      };
+    }
+  }
+  if (
+    rawVerdict === 'no_changes' &&
+    params.envelope.requiredSourceIds.length > 0
+  ) {
+    return {
+      valid: false,
+      warnings,
+      error: 'Brief V3.2 no_changes 不能带有 required/hard sourceId',
+    };
+  }
+  const openingContinuity = strings(raw.openingContinuity);
+  const styleAdvisories = strings(raw.styleAdvisories);
+  if (
+    rawVerdict === 'no_changes' &&
+    !openingContinuity.length &&
+    !styleAdvisories.length
+  ) {
+    return {
+      valid: false,
+      warnings,
+      error: 'Brief V3.2 no_changes 缺少开篇衔接或保持策略',
+    };
+  }
+  const brief: FinalWritingBriefV32 = {
+    schemaVersion: 3,
+    briefPolicyVersion: 3,
+    sourceHash: params.envelope.sourceHash,
+    requiredSourceIds: params.envelope.requiredSourceIds,
+    protectedFacts: params.envelope.protectedFacts,
+    hardConstraints: params.envelope.hardConstraints,
+    mustNotAdvance: params.envelope.mustNotAdvance,
+    outlineObligations: params.envelope.outlineObligations,
+    endingBoundary: params.envelope.endingBoundary,
+    verdict: rawVerdict,
+    coveredRequiredIds: [...covered].filter(id =>
+      params.envelope.requiredSourceIds.includes(id),
+    ),
+    openingContinuity,
+    instructions,
+    mustFix,
+    mustPreserve: params.envelope.protectedFacts,
+    endingState: params.envelope.endingBoundary,
+    styleAdvisories,
+  };
+  return {
+    valid: true,
+    warnings,
+    brief,
   };
 }

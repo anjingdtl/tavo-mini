@@ -64,8 +64,9 @@ import { migrateV44ToV45 } from './v44-to-v45';
 import { migrateV45ToV46 } from './v45-to-v46';
 import { migrateV46ToV47 } from './v46-to-v47';
 import { migrateV47ToV48 } from './v47-to-v48';
+import { migrateV48ToV49 } from './v48-to-v49';
 
-export const SCHEMA_VERSION = 48;
+export const SCHEMA_VERSION = 49;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -345,6 +346,13 @@ const MIGRATIONS: Migration[] = [
     breaking: false,
     buildStatements: async () => [],
     migrate: migrateV47ToV48,
+  },
+  {
+    from: 48,
+    to: 49,
+    breaking: false,
+    buildStatements: async () => [],
+    migrate: migrateV48ToV49,
   },
 ];
 
