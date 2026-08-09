@@ -1,8 +1,5 @@
 import type { ChatMessage } from './llm';
-import {
-  clipTextToTokenBudget,
-  estimateTokens,
-} from '../utils/tokenEstimator';
+import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
 import type {
   FactCheckContext,
   ProofConstraints,
@@ -232,17 +229,17 @@ export function buildReviewMessages(
     '- issues 必须具体，尽量引用初稿中的原句作为定位；',
     '- suggestions 尽量与 issues 一一对应；',
     ...(hasOutline
-      ? ['- outlineAssessment 仅在提供了项目大纲时输出，没有发现问题时对应数组返回空数组；']
+      ? [
+          '- outlineAssessment 仅在提供了项目大纲时输出，没有发现问题时对应数组返回空数组；',
+        ]
       : []),
     '- 不要输出完整修订稿；',
     '- 没有发现问题时，对应数组返回空数组，不要编造。',
   );
 
-  const userLines = [
-    contextBlock,
-    '【需要审阅的初稿】',
-    draftText,
-  ].filter(Boolean);
+  const userLines = [contextBlock, '【需要审阅的初稿】', draftText].filter(
+    Boolean,
+  );
 
   return [
     { role: 'system', content: systemLines.join('\n') },
@@ -287,7 +284,10 @@ export function buildFactCheckMessages(
       context.recentBridgeText,
       FACTCHECK_BUDGET.recentBridge,
     ),
-    storyMemoryText: clip(context.storyMemoryText, FACTCHECK_BUDGET.storyMemory),
+    storyMemoryText: clip(
+      context.storyMemoryText,
+      FACTCHECK_BUDGET.storyMemory,
+    ),
     episodicMemoryText: clip(
       context.episodicMemoryText,
       FACTCHECK_BUDGET.episodic,
@@ -354,11 +354,9 @@ export function buildFactCheckMessages(
     '没有发现问题时对应数组返回空数组，不要编造。',
   );
 
-  const userLines = [
-    contextBlock,
-    '【需要核查的初稿】',
-    draftText,
-  ].filter(Boolean);
+  const userLines = [contextBlock, '【需要核查的初稿】', draftText].filter(
+    Boolean,
+  );
 
   return [
     { role: 'system', content: systemLines.join('\n') },
@@ -671,7 +669,10 @@ export function buildReviewV2Messages(params: {
     characterText: clip(params.context.characterText, REVIEW_BUDGET.character),
     noteText: clip(params.context.noteText, REVIEW_BUDGET.note),
     worldbookText: clip(params.context.worldbookText, REVIEW_BUDGET.worldbook),
-    storyMemoryText: clip(params.context.storyMemoryText, REVIEW_BUDGET.storyMemory),
+    storyMemoryText: clip(
+      params.context.storyMemoryText,
+      REVIEW_BUDGET.storyMemory,
+    ),
     episodicMemoryText: clip(
       params.context.episodicMemoryText,
       REVIEW_BUDGET.episodic,
@@ -688,7 +689,9 @@ export function buildReviewV2Messages(params: {
       params.context.retrievalUserPrompt,
       REVIEW_BUDGET.userPrompt,
     ),
-    outlineText: params.context.outlineText ? String(params.context.outlineText) : '',
+    outlineText: params.context.outlineText
+      ? String(params.context.outlineText)
+      : '',
   };
 
   const contextBlock = partition([
@@ -785,15 +788,26 @@ export function buildFactCheckV2Messages(params: {
       params.context.recentBridgeText,
       FACTCHECK_BUDGET.recentBridge,
     ),
-    storyMemoryText: clip(params.context.storyMemoryText, FACTCHECK_BUDGET.storyMemory),
+    storyMemoryText: clip(
+      params.context.storyMemoryText,
+      FACTCHECK_BUDGET.storyMemory,
+    ),
     episodicMemoryText: clip(
       params.context.episodicMemoryText,
       FACTCHECK_BUDGET.episodic,
     ),
-    worldbookText: clip(params.context.worldbookText, FACTCHECK_BUDGET.worldbook),
-    characterText: clip(params.context.characterText, FACTCHECK_BUDGET.character),
+    worldbookText: clip(
+      params.context.worldbookText,
+      FACTCHECK_BUDGET.worldbook,
+    ),
+    characterText: clip(
+      params.context.characterText,
+      FACTCHECK_BUDGET.character,
+    ),
     noteText: clip(params.context.noteText, FACTCHECK_BUDGET.note),
-    outlineText: params.context.outlineText ? String(params.context.outlineText) : '',
+    outlineText: params.context.outlineText
+      ? String(params.context.outlineText)
+      : '',
   };
 
   const contextBlock = partition([
@@ -853,6 +867,82 @@ export function buildFactCheckV2Messages(params: {
   return [
     { role: 'system', content: systemLines.join('\n') },
     { role: 'user', content: userLines.join('\n\n') },
+  ];
+}
+
+/** V3.1 semantic audit contracts. Anchor text may remain as reading context,
+ * but the contract never requires an anchor locator to be valid. */
+export function buildReviewV31Messages(params: {
+  canonicalDraft: string;
+  context: ReviewContext;
+  draftHash: string;
+}): ChatMessage[] {
+  const base = buildReviewV2Messages({
+    taggedDraft: params.canonicalDraft,
+    context: params.context,
+    draftHash: params.draftHash,
+  });
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 ShineWriter V3.1 的文学评估器。只输出结构化评估，不输出正文、推理或 Markdown。',
+        '位置使用 target.kind：opening、scene、middle、ending、global；不要依赖锚点 ID 才能成立。',
+        '每条 correction 必须包含 id、severity（hard/required/advisory；warning 也可作为 advisory 别名）、category、target、finding、instruction；preserve 可选，evidenceQuote、sceneHint、sourceRefs 可选。',
+        '必须提供 outlineExecution 的 fulfilledBeats、missingBeats、deviations、prematureBeats、mustPreserve、endingGoal、mustNotAdvance 数组/字段。',
+        '顶层只能输出 schemaVersion、draftHash、corrections、protectedFacts、outlineExecution 这五个字段，不得添加其他字段。',
+        'schemaVersion 必须是数字 3；draftHash 必须与给定值完全一致。',
+        JSON.stringify({
+          schemaVersion: 3,
+          draftHash: params.draftHash,
+          corrections: [],
+          protectedFacts: [],
+          outlineExecution: {
+            fulfilledBeats: [],
+            missingBeats: [],
+            deviations: [],
+            prematureBeats: [],
+            mustPreserve: [],
+            endingGoal: '',
+            mustNotAdvance: [],
+          },
+        }),
+      ].join('\n'),
+    },
+    { role: 'user', content: base[1].content },
+  ];
+}
+
+export function buildFactCheckV31Messages(params: {
+  canonicalDraft: string;
+  context: FactCheckContext;
+  draftHash: string;
+}): ChatMessage[] {
+  const base = buildFactCheckV2Messages({
+    taggedDraft: params.canonicalDraft,
+    context: params.context,
+    draftHash: params.draftHash,
+  });
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 ShineWriter V3.1 的事实核查器。只输出结构化核查，不输出正文、推理或 Markdown。',
+        '位置使用 target.kind：opening、scene、middle、ending、global；不要依赖锚点 ID 才能成立。',
+        '每条 correction 必须包含 id、severity（hard/required/advisory；warning 也可作为 advisory 别名）、category、target、finding、instruction；preserve 可选，evidenceQuote、sceneHint、sourceRefs 可选。',
+        'corrections 可以是空数组，表示没有事实修正；hardConstraints 必须始终提供数组，缺失即为无效合同。',
+        '顶层只能输出 schemaVersion、draftHash、corrections、protectedFacts、hardConstraints 这五个字段，不得添加其他字段。',
+        'schemaVersion 必须是数字 3；draftHash 必须与给定值完全一致。',
+        JSON.stringify({
+          schemaVersion: 3,
+          draftHash: params.draftHash,
+          corrections: [],
+          protectedFacts: [],
+          hardConstraints: [],
+        }),
+      ].join('\n'),
+    },
+    { role: 'user', content: base[1].content },
   ];
 }
 
@@ -966,8 +1056,14 @@ export function buildFinalReviserMessages(params: {
     params.currentInstructionText,
     FINAL_REVISER_BUDGET.instruction,
   );
-  const userPrompt = clip(params.retrievalUserPrompt, FINAL_REVISER_BUDGET.userPrompt);
-  const bridge = clip(params.recentBridgeText, FINAL_REVISER_BUDGET.recentBridge);
+  const userPrompt = clip(
+    params.retrievalUserPrompt,
+    FINAL_REVISER_BUDGET.userPrompt,
+  );
+  const bridge = clip(
+    params.recentBridgeText,
+    FINAL_REVISER_BUDGET.recentBridge,
+  );
   const preset = clip(params.presetText, FINAL_REVISER_BUDGET.preset);
   const hardList = (params.hardConstraints || [])
     .filter(h => h && h.trim())
@@ -975,7 +1071,8 @@ export function buildFinalReviserMessages(params: {
     .join('\n');
 
   const hasContract =
-    typeof params.contractJson === 'string' && params.contractJson.trim().length > 0;
+    typeof params.contractJson === 'string' &&
+    params.contractJson.trim().length > 0;
 
   const systemLines = [
     '你是终稿修订员（Final Reviser）。你的任务不是重新创作，也不是重新研究全部资料，',
@@ -1040,6 +1137,7 @@ const FINAL_V3_BUDGET = {
   storyMemory: 8000,
   characters: 6000,
   worldRules: 6000,
+  note: 4000,
   recentBridge: 6000,
   episodic: 5000,
   instruction: 1800,
@@ -1063,6 +1161,7 @@ export function buildFinalReviserV3Messages(params: {
     episodicMemoryText: string;
     relevantCharacterText: string;
     relevantWorldRules: string;
+    noteText: string;
     currentInstructionText: string;
     retrievalUserPrompt: string;
     presetText: string;
@@ -1091,12 +1190,28 @@ export function buildFinalReviserV3Messages(params: {
   ];
   const optional = partition([
     ['【故事状态】', clip(c.storyMemoryText, FINAL_V3_BUDGET.storyMemory)],
-    ['【相关人物状态】', clip(c.relevantCharacterText, FINAL_V3_BUDGET.characters)],
-    ['【相关世界规则】', clip(c.relevantWorldRules, FINAL_V3_BUDGET.worldRules)],
-    ['【近期桥接正文】', clip(c.recentBridgeText, FINAL_V3_BUDGET.recentBridge)],
+    [
+      '【相关人物状态】',
+      clip(c.relevantCharacterText, FINAL_V3_BUDGET.characters),
+    ],
+    [
+      '【相关世界规则】',
+      clip(c.relevantWorldRules, FINAL_V3_BUDGET.worldRules),
+    ],
+    ['【相关项目笔记】', clip(c.noteText, FINAL_V3_BUDGET.note)],
+    [
+      '【近期桥接正文】',
+      clip(c.recentBridgeText, FINAL_V3_BUDGET.recentBridge),
+    ],
     ['【历史事件】', clip(c.episodicMemoryText, FINAL_V3_BUDGET.episodic)],
-    ['【当前章节目标】', clip(c.currentInstructionText, FINAL_V3_BUDGET.instruction)],
-    ['【用户本轮要求】', clip(c.retrievalUserPrompt, FINAL_V3_BUDGET.userPrompt)],
+    [
+      '【当前章节目标】',
+      clip(c.currentInstructionText, FINAL_V3_BUDGET.instruction),
+    ],
+    [
+      '【用户本轮要求】',
+      clip(c.retrievalUserPrompt, FINAL_V3_BUDGET.userPrompt),
+    ],
     ['【精简文风】', clip(c.presetText, FINAL_V3_BUDGET.preset)],
   ]);
   if (optional) parts.push('【连续性与写作上下文】', optional);

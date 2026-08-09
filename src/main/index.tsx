@@ -1,5 +1,5 @@
 import React from 'react';
-import { AppState, ImageBackground, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, ImageBackground, StyleSheet, Text, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../components/ThemeProvider';
@@ -71,7 +71,7 @@ export const App: React.FC = () => {
   const [pendingPrompt, setPendingPrompt] = React.useState<PipelineTask | null>(null);
   const pendingPromptIdRef = React.useRef<string | null>(null);
 
-  const handlePromptResume = React.useCallback((task: PipelineTask) => {
+  const handlePromptResume = React.useCallback(async (task: PipelineTask) => {
     pendingPromptIdRef.current = null;
     setPendingPrompt(null);
     if (
@@ -82,8 +82,19 @@ export const App: React.FC = () => {
       return;
     }
 
-    (async () => {
-      try {
+    const proceed = await new Promise<boolean>(resolve => {
+      Alert.alert(
+        '从失败节点重试',
+        '将只重新调用失败节点及尚未成功的下游节点；已成功的 Draft、审阅、核查或 Brief checkpoint 会直接复用。重试可能产生新的 API 费用，是否继续？',
+        [
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+          { text: '确认重试', onPress: () => resolve(true) },
+        ],
+      );
+    });
+    if (!proceed) return;
+
+    try {
         const chapter = await getChapterById(task.targetId);
         if (!chapter) {
           Toast.show({
@@ -116,14 +127,13 @@ export const App: React.FC = () => {
             text2: already ? '请勿重复点击' : error?.message || '请前往任务详情处理',
           });
         });
-      } catch (error: any) {
-        Toast.show({
-          type: 'error',
-          text1: '继续失败',
-          text2: error?.message || '请前往任务详情处理',
-        });
-      }
-    })();
+    } catch (error: any) {
+      Toast.show({
+        type: 'error',
+        text1: '继续失败',
+        text2: error?.message || '请前往任务详情处理',
+      });
+    }
   }, []);
 
   React.useEffect(() => {

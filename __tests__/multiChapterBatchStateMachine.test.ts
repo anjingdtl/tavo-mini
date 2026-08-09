@@ -43,7 +43,9 @@ import type {
 // Part 1: decision table
 // ---------------------------------------------------------------------------
 
-function batchRow(overrides: Partial<MultiChapterBatchRow> = {}): MultiChapterBatchRow {
+function batchRow(
+  overrides: Partial<MultiChapterBatchRow> = {},
+): MultiChapterBatchRow {
   return {
     id: 'b1',
     projectId: 1,
@@ -115,16 +117,20 @@ function itemRow(
   };
 }
 
-function decide(input: Partial<DetermineBatchActionInput> & {
-  batch: MultiChapterBatchRow;
-  items: MultiChapterBatchItemRow[];
-}) {
+function decide(
+  input: Partial<DetermineBatchActionInput> & {
+    batch: MultiChapterBatchRow;
+    items: MultiChapterBatchItemRow[];
+  },
+) {
   return determineNextBatchAction(input as DetermineBatchActionInput);
 }
 
 describe('determineNextBatchAction — batch-level', () => {
   it('plans or waits for confirmation before start', () => {
-    expect(decide({ batch: batchRow({ status: 'draft' }), items: [] }).type).toBe('plan_batch');
+    expect(
+      decide({ batch: batchRow({ status: 'draft' }), items: [] }).type,
+    ).toBe('plan_batch');
     expect(
       decide({ batch: batchRow({ status: 'planning' }), items: [] }).type,
     ).toBe('wait_for_plan_confirmation');
@@ -157,9 +163,9 @@ describe('determineNextBatchAction — batch-level', () => {
 describe('determineNextBatchAction — item-level', () => {
   it('creates chapter → pipeline task → runs the pipeline in order', () => {
     const base = batchRow();
-    expect(
-      decide({ batch: base, items: [itemRow(1)] }).type,
-    ).toBe('create_chapter');
+    expect(decide({ batch: base, items: [itemRow(1)] }).type).toBe(
+      'create_chapter',
+    );
     expect(
       decide({
         batch: base,
@@ -277,6 +283,44 @@ describe('determineNextBatchAction — item-level', () => {
         },
       }).type,
     ).toBe('pause_account_quota');
+
+    expect(
+      decide({
+        batch: batchRow(),
+        items: [failedItem],
+        taskStatuses: { t1: 'failed' },
+        latestAttempts: {
+          t1: {
+            id: 'a3',
+            pipelineTaskId: 't1',
+            stage: 'factCheck',
+            attemptNo: 2,
+            requestVersion: 3,
+            requestFingerprint: 'f',
+            allocationTraceJson: null,
+            frozenRequestJson: null,
+            llmConfigId: null,
+            llmConfigSnapshotJson: '{}',
+            clientRequestId: 'c',
+            providerRequestId: null,
+            status: 'succeeded',
+            failureClass: 'response_invalid',
+            errorCode: 'PIPELINE_RESPONSE_INVALID',
+            errorMessage: 'content 为空',
+            httpStatus: null,
+            retryAfterMs: null,
+            startedAt: 0,
+            lastProgressAt: null,
+            deadlineAt: null,
+            nextRetryAt: null,
+            completedAt: 1,
+            inputTokens: 10,
+            outputTokens: 10,
+            totalTokens: 20,
+          } as any,
+        },
+      }).type,
+    ).toBe('pause_response_invalid');
   });
 
   it('waits for the persisted retry time, then re-runs', () => {
@@ -298,7 +342,9 @@ describe('determineNextBatchAction — item-level', () => {
       activePipelineTaskId: 't1',
       nextRetryAt: past,
     });
-    expect(decide({ batch: batchRow(), items: [dueItem] }).type).toBe('run_pipeline');
+    expect(decide({ batch: batchRow(), items: [dueItem] }).type).toBe(
+      'run_pipeline',
+    );
   });
 
   it('advances a succeeded item and verifies an adopting item', () => {
@@ -323,7 +369,10 @@ describe('determineNextBatchAction — item-level', () => {
 
 import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import type { InMemorySqliteDb } from './helpers/canonInMemoryDb';
-import { __setDatabaseForTest, __resetForTest } from '../src/data/connection/openDatabase';
+import {
+  __setDatabaseForTest,
+  __resetForTest,
+} from '../src/data/connection/openDatabase';
 import { execute } from '../src/data/connection/execute';
 import { openDatabase } from '../src/data/connection/openDatabase';
 import {

@@ -21,6 +21,10 @@ export interface BriefSourceItem {
 
 export interface NormalizedCorrectionV3 extends BriefSourceItem {
   source: 'review' | 'factCheck';
+  /** Optional evidence references retained for diagnostics, never authority. */
+  sourceRefs?: string[];
+  /** Human-readable scene hint; it never acts as a hard locator. */
+  sceneHint?: string;
 }
 
 export interface NormalizedReviewV3 {
@@ -85,6 +89,52 @@ export interface FinalWritingBriefV1 {
   advisoryNotes: string[];
 }
 
+export type BriefTargetKindV31 =
+  | 'opening'
+  | 'scene'
+  | 'middle'
+  | 'ending'
+  | 'global';
+
+/** Locally-owned fields in the V3.1 Brief envelope. */
+export interface FinalWritingBriefImmutableEnvelopeV31 {
+  schemaVersion: 2;
+  sourceHash: string;
+  requiredSourceIds: string[];
+  protectedFacts: string[];
+  hardConstraints: string[];
+  mustNotAdvance: string[];
+  outlineObligations: string[];
+  endingBoundary: string;
+}
+
+export interface BriefCompilerInputV31 {
+  schemaVersion: 2;
+  sourceHash: string;
+  workflowMode: 'twoStage' | 'conditional' | 'full';
+  immutableEnvelope: FinalWritingBriefImmutableEnvelopeV31;
+  review?: BriefCompilerInputV1['review'];
+  factCheck?: BriefCompilerInputV1['factCheck'];
+}
+
+export interface FinalWritingBriefV31
+  extends FinalWritingBriefImmutableEnvelopeV31 {
+  coveredRequiredIds: string[];
+  openingContinuity: string[];
+  mustFix: Array<{
+    sourceIds: string[];
+    target: {
+      kind: BriefTargetKindV31;
+      hint?: string;
+    };
+    instruction: string;
+    preserve: string[];
+  }>;
+  mustPreserve: string[];
+  endingState: string;
+  styleAdvisories: string[];
+}
+
 export interface BriefTriggerPolicy {
   minHardOrRequired: number;
   minAllExecutable: number;
@@ -111,6 +161,41 @@ export function briefRequiredSourceIds(input: BriefCompilerInputV1): string[] {
     }
   }
   return [...ids].sort();
+}
+
+export function briefRequiredSourceIdsV31(input: BriefCompilerInputV31): string[] {
+  return [...input.immutableEnvelope.requiredSourceIds];
+}
+
+export function buildBriefImmutableEnvelopeV31(
+  input: BriefCompilerInputV1,
+): FinalWritingBriefImmutableEnvelopeV31 {
+  const review = input.review?.outlineExecution;
+  const protectedFacts = [
+    ...(review?.mustPreserve || []),
+    ...(input.factCheck?.protectedFacts || []),
+  ];
+  const hardConstraints = [...(input.factCheck?.hardConstraints || [])];
+  const outlineObligations = [
+    ...(review?.fulfilledBeats || []).map(item => `已覆盖：${item}`),
+    ...(review?.missingBeats || []).map(item => `必须补足：${item}`),
+    ...(review?.deviations || []).map(item => `修正偏离：${item}`),
+    ...(review?.prematureBeats || []).map(item => `不得提前兑现：${item}`),
+  ];
+  return {
+    schemaVersion: 2,
+    sourceHash: input.sourceHash,
+    requiredSourceIds: briefRequiredSourceIds(input),
+    protectedFacts: uniqueStrings(protectedFacts),
+    hardConstraints: uniqueStrings(hardConstraints),
+    mustNotAdvance: uniqueStrings(review?.mustNotAdvance || []),
+    outlineObligations: uniqueStrings(outlineObligations),
+    endingBoundary: String(review?.endingGoal || '').trim(),
+  };
+}
+
+function uniqueStrings(items: string[]): string[] {
+  return [...new Set(items.map(item => String(item || '').trim()).filter(Boolean))];
 }
 
 export function briefWarningCount(input: BriefCompilerInputV1): number {

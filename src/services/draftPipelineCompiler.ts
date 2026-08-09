@@ -70,6 +70,14 @@ function resolvePreset(
 export async function compileDraftPipelineRequest(params: {
   chapter: Chapter;
   preview?: boolean;
+  /**
+   * Story Memory policy for this compile. Pipeline first-run snapshots use
+   * `preview` deliberately: a missing/partial checkpoint is a degradable
+   * context warning, never a synchronous prerequisite for the first Draft
+   * request. The explicit option keeps this separate from the UI preview
+   * flag so other callers can retain the maintenance policy when needed.
+   */
+  storyMemoryMode?: 'generation' | 'preview';
   requestConfig?: LLMRequestConfig;
   draftPreset?: Preset | null;
   draftMaxTokens?: number;
@@ -120,7 +128,8 @@ export async function compileDraftPipelineRequest(params: {
     draftPreset || undefined,
     {
       retrievalUserPrompt: request.userPrompt,
-      storyMemoryMode: params.preview ? 'preview' : undefined,
+      storyMemoryMode:
+        params.storyMemoryMode ?? (params.preview ? 'preview' : undefined),
       reservedOutputTokens,
       contextWindow,
       elasticBudget: params.elasticBudget,
@@ -142,9 +151,11 @@ export async function compileDraftPipelineRequest(params: {
     .sort((a, b) => b.position - a.position)[0];
   const prevEnding = prevChapter?.content?.slice(-800) || '';
   const immediatePreviousChapterText = prevChapter?.content || '';
-  const immediatePreviousChapterEnding = immediatePreviousChapterText.slice(-1200);
+  const immediatePreviousChapterEnding =
+    immediatePreviousChapterText.slice(-1200);
   pipelineContext.immediatePreviousChapterText = immediatePreviousChapterText;
-  pipelineContext.immediatePreviousChapterEnding = immediatePreviousChapterEnding;
+  pipelineContext.immediatePreviousChapterEnding =
+    immediatePreviousChapterEnding;
   pipelineContext.immediatePreviousChapterId = prevChapter?.id;
   pipelineContext.immediatePreviousChapterPosition = prevChapter?.position;
 
@@ -173,7 +184,10 @@ export async function compileDraftPipelineRequest(params: {
       typeof chapter.summary_json === 'string'
         ? JSON.parse(chapter.summary_json || '{}')
         : chapter.summary_json || {};
-    if (typeof meta?.batch_instruction === 'string' && meta.batch_instruction.trim()) {
+    if (
+      typeof meta?.batch_instruction === 'string' &&
+      meta.batch_instruction.trim()
+    ) {
       chapterSynopsis = `${chapterSynopsis}\n\n${meta.batch_instruction.trim()}`;
     }
   } catch {

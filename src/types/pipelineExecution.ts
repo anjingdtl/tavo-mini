@@ -94,10 +94,10 @@ export interface PipelineExecutionSnapshot {
   reasoningEffort?: PipelineReasoningEffort;
 
   /** V3 product profile and per-stage frozen effective tiers. */
-  reasoningProfileVersion?: 1 | 2;
+  reasoningProfileVersion?: 1 | 2 | 3;
   requestedReasoningTier?: PipelineReasoningTier;
   stageReasoning?: Partial<Record<PipelineStageName, FrozenStageReasoning>>;
-  briefPolicyVersion?: 1;
+  briefPolicyVersion?: 1 | 2;
   briefVisibleOutputFloor?: number;
   briefReasoningHeadroom?: number;
   briefMaxTokens?: number;

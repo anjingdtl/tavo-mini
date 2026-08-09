@@ -62,8 +62,10 @@ import {
 import { migrateV43ToV44 } from './v43-to-v44';
 import { migrateV44ToV45 } from './v44-to-v45';
 import { migrateV45ToV46 } from './v45-to-v46';
+import { migrateV46ToV47 } from './v46-to-v47';
+import { migrateV47ToV48 } from './v47-to-v48';
 
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 48;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -327,6 +329,23 @@ const MIGRATIONS: Migration[] = [
     buildStatements: async () => [],
     migrate: migrateV45ToV46,
   },
+  {
+    from: 46,
+    to: 47,
+    // V3/profile2 execution chains are intentionally removed as a recovery
+    // boundary. runMigrations therefore requests a schema-recovery backup
+    // before invoking this migration.
+    breaking: true,
+    buildStatements: async () => [],
+    migrate: migrateV46ToV47,
+  },
+  {
+    from: 47,
+    to: 48,
+    breaking: false,
+    buildStatements: async () => [],
+    migrate: migrateV47ToV48,
+  },
 ];
 
 export async function runMigrations(
@@ -368,6 +387,10 @@ export async function runMigrations(
     } else if (migration.from === 42 && migration.to === 43) {
       // One-time data migration: unify legacy smart policy interval to 10.
       await migrateV42ToV43(db);
+    } else if (migration.from === 46 && migration.to === 47) {
+      await migrateV46ToV47(db);
+    } else if (migration.from === 47 && migration.to === 48) {
+      await migrateV47ToV48(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

@@ -271,6 +271,7 @@ function isSensitiveKey(key: string): boolean {
   if (normalized.includes('auth_header') || normalized.includes('authorization_header')) {
     return true;
   }
+  if (normalized === 'reasoning_content_temp') return true;
   if (normalized === 'token' || normalized.endsWith('_token')) return true;
   if (normalized === 'credential' || normalized.endsWith('_credentials')) return true;
   if (normalized.startsWith('webdav_') || normalized.startsWith('sync_')) return true;
@@ -463,11 +464,19 @@ async function allRows(db: SQLite.SQLiteDatabase, table: string): Promise<Record
  * as empty arrays. Exported for the CL-09 schema-recovery writer so it can
  * build the payload with a single read pass.
  */
-export async function readBackupTables(db: SQLite.SQLiteDatabase): Promise<Record<string, Record<string, any>[]>> {
+export async function readBackupTables(
+  db: SQLite.SQLiteDatabase,
+  options: { redactSensitive?: boolean } = {},
+): Promise<Record<string, Record<string, any>[]>> {
   const tables: Record<string, Record<string, any>[]> = {};
   for (const table of BACKUP_MANIFEST) {
     try {
-      tables[table.name] = await allRows(db, table.name);
+      const rows = await allRows(db, table.name);
+      tables[table.name] = options.redactSensitive
+        ? rows
+            .map(row => sanitizeBackupRow(table.name, row))
+            .filter((row): row is Record<string, any> => row !== null)
+        : rows;
     } catch (error) {
       if (CORE_TABLE_NAMES.has(table.name)) throw error;
       // An optional table may be absent on a pre-manifest database. Do not

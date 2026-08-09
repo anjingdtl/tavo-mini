@@ -1,4 +1,7 @@
-import type { FinalWritingBriefV1 } from './briefCompilerTypes';
+import type {
+  FinalWritingBriefV1,
+  FinalWritingBriefV31,
+} from './briefCompilerTypes';
 
 /**
  * A V3 Proof failure that must remain visible to the user. The reconciler
@@ -61,42 +64,20 @@ function addStructuredMarkers(markers: Set<string>, text: string): void {
   }
 }
 
-function addDeletionMarkers(markers: Set<string>, instruction: string): void {
-  // Review may state a hard removal as “删除或后移至下一章 A、B、C 等内容”.
-  // Preserve the local guard as plain lexical markers; the instruction itself
-  // remains natural language in the Final prompt.
-  const match = instruction.match(
-    /(?:删除|移除)(?:或后移至下一章)?([^，。；;]+)/,
-  );
-  if (!match) return;
-  for (const rawPart of match[1].split(/[、,，]|和|或|及|以及/)) {
-    const part = rawPart
-      .replace(/[“”「」『』"']/g, '')
-      .replace(/(?:等)?内容$/u, '')
-      .replace(/(?:分布|指令)$/u, '')
-      .trim();
-    if (part.length >= 2) addMarker(markers, part);
-    if (part.endsWith('指令')) addMarker(markers, part.slice(0, -2));
-  }
-}
-
-function collectForbiddenMarkers(brief: FinalWritingBriefV1): Set<string> {
+function collectForbiddenMarkers(
+  brief: FinalWritingBriefV1 | FinalWritingBriefV31,
+): Set<string> {
   const markers = new Set<string>();
   for (const item of brief.mustNotAdvance) {
     addQuotedMarkers(markers, item);
     addStructuredMarkers(markers, item);
-  }
-  for (const item of brief.mustFix) {
-    addQuotedMarkers(markers, item.instruction);
-    addStructuredMarkers(markers, item.instruction);
-    addDeletionMarkers(markers, item.instruction);
   }
   return markers;
 }
 
 export function validateFinalBriefCompliance(params: {
   text: string;
-  brief: FinalWritingBriefV1;
+  brief: FinalWritingBriefV1 | FinalWritingBriefV31;
 }): FinalBriefComplianceResult {
   const normalizedText = normalizeForMatch(params.text);
   const matchedMarkers = [...collectForbiddenMarkers(params.brief)].filter(

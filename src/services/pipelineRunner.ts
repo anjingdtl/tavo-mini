@@ -178,6 +178,20 @@ export async function runChapterPipeline(
   });
   const abortSignal = registerTaskAbort(taskId);
   const ownsForeground = (options.foregroundOwner ?? 'task') === 'task';
+  // A first-run task can spend time compiling/freezing its context before
+  // the Draft checkpoint is claimed. Persist an explicit active status now so
+  // the UI, cold-start recovery, and task center do not mistake that window
+  // for an untouched `idle` task.
+  try {
+    await usePipelineTaskStore.getState().persistTaskStatus?.(taskId, 'queued');
+  } catch (error) {
+    console.warn('[pipeline] failed to mark task queued:', taskId, error);
+  }
+  onStageUpdate?.({
+    stage: 'idle',
+    label: '正在整理上下文（不等待长期记忆）',
+    startedAt: Date.now(),
+  });
   // 必须在用户仍处于前台、且任何数据库/网络 await 之前启动服务。若等到配置读取
   // 完成后用户已经切到后台，Android 12+ 会拒绝 startForegroundService，原先错误被
   // 静默降级后就表现为“流水线一切后台必失败”。
@@ -250,6 +264,20 @@ export async function resumePipeline(
   });
   const abortSignal = registerTaskAbort(taskId);
   const ownsForeground = (options.foregroundOwner ?? 'task') === 'task';
+  try {
+    await usePipelineTaskStore.getState().persistTaskStatus?.(taskId, 'queued');
+  } catch (error) {
+    console.warn(
+      '[pipeline] failed to mark resumed task queued:',
+      taskId,
+      error,
+    );
+  }
+  onStageUpdate?.({
+    stage: 'idle',
+    label: '正在恢复任务上下文',
+    startedAt: Date.now(),
+  });
   if (ownsForeground) {
     PipelineForeground.start(
       taskId,

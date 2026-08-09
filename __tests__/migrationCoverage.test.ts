@@ -109,11 +109,13 @@ describe('migration statement coverage', () => {
     });
     expect(onBackup).toHaveBeenCalledTimes(1);
 
-    const fromSupported = await runMigrations(database, 27);
+    // V46→V47 intentionally requires a schema-recovery backup. Use v47 as
+    // the supported no-breaking starting point for this assertion.
+    const fromSupported = await runMigrations(database, 47);
     expect(fromSupported.hadBreaking).toBe(false);
     expect(fromSupported.backupPath).toBeNull();
     expect(hasBreakingMigration(2)).toBe(true);
-    expect(hasBreakingMigration(27)).toBe(false);
+    expect(hasBreakingMigration(47)).toBe(false);
     expect(isIncompatibleUpgrade(2)).toBe(true);
     expect(isIncompatibleUpgrade(3)).toBe(false);
   });

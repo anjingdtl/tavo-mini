@@ -46,6 +46,13 @@ export interface PipelineStageAttemptRow {
   outputTokens: number | null;
   totalTokens: number | null;
   reasoningTokens: number | null;
+  finishReason: string | null;
+  emptyReason: string | null;
+  responseChannel: 'content' | 'reasoning' | 'both' | 'empty' | null;
+  visibleOutputTokens: number | null;
+  parseFailureCode: string | null;
+  formatterUsed: boolean;
+  reasoningContentTemp: string | null;
 }
 
 export interface CreateStageAttemptInput {
@@ -62,6 +69,7 @@ export interface CreateStageAttemptInput {
   clientRequestId: string;
   startedAt?: number;
   deadlineAt?: number | null;
+  formatterUsed?: boolean;
 }
 
 export interface UpdateStageAttemptInput {
@@ -80,6 +88,13 @@ export interface UpdateStageAttemptInput {
   outputTokens?: number | null;
   totalTokens?: number | null;
   reasoningTokens?: number | null;
+  finishReason?: string | null;
+  emptyReason?: string | null;
+  responseChannel?: 'content' | 'reasoning' | 'both' | 'empty' | null;
+  visibleOutputTokens?: number | null;
+  parseFailureCode?: string | null;
+  formatterUsed?: boolean;
+  reasoningContentTemp?: string | null;
 }
 
 function mapRow(row: any): PipelineStageAttemptRow {
@@ -112,6 +127,22 @@ function mapRow(row: any): PipelineStageAttemptRow {
     totalTokens: row.total_tokens != null ? Number(row.total_tokens) : null,
     reasoningTokens:
       row.reasoning_tokens != null ? Number(row.reasoning_tokens) : null,
+    finishReason: row.finish_reason ?? null,
+    emptyReason: row.empty_reason ?? null,
+    responseChannel:
+      row.response_channel === 'content' ||
+      row.response_channel === 'reasoning' ||
+      row.response_channel === 'both' ||
+      row.response_channel === 'empty'
+        ? row.response_channel
+        : null,
+    visibleOutputTokens:
+      row.visible_output_tokens != null
+        ? Number(row.visible_output_tokens)
+        : null,
+    parseFailureCode: row.parse_failure_code ?? null,
+    formatterUsed: Boolean(Number(row.formatter_used ?? 0)),
+    reasoningContentTemp: row.reasoning_content_temp ?? null,
   };
 }
 
@@ -125,8 +156,8 @@ export async function createStageAttempt(
        id, pipeline_task_id, stage, attempt_no, request_version,
        request_fingerprint, allocation_trace_json, frozen_request_json,
        llm_config_id, llm_config_snapshot_json, client_request_id,
-       status, started_at, deadline_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?)`,
+       status, formatter_used, started_at, deadline_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?)`,
     [
       input.id,
       input.pipelineTaskId,
@@ -139,6 +170,7 @@ export async function createStageAttempt(
       input.llmConfigId ?? null,
       input.llmConfigSnapshotJson,
       input.clientRequestId,
+      input.formatterUsed ? 1 : 0,
       now,
       input.deadlineAt ?? null,
     ],
@@ -151,21 +183,33 @@ export async function updateStageAttempt(
   const sets: string[] = ['status = ?'];
   const params: unknown[] = [input.status];
   const fields: Array<[string, unknown]> = [
-    ['failure_class', input.failureClass ?? null],
-    ['error_code', input.errorCode ?? null],
-    ['error_message', input.errorMessage ?? null],
-    ['http_status', input.httpStatus ?? null],
-    ['retry_after_ms', input.retryAfterMs ?? null],
-    ['provider_request_id', input.providerRequestId ?? null],
-    ['next_retry_at', input.nextRetryAt ?? null],
-    ['completed_at', input.completedAt ?? null],
-    ['last_progress_at', input.lastProgressAt ?? null],
-    ['input_tokens', input.inputTokens ?? null],
-    ['output_tokens', input.outputTokens ?? null],
-    ['total_tokens', input.totalTokens ?? null],
-    ['reasoning_tokens', input.reasoningTokens ?? null],
+    ['failure_class', input.failureClass],
+    ['error_code', input.errorCode],
+    ['error_message', input.errorMessage],
+    ['http_status', input.httpStatus],
+    ['retry_after_ms', input.retryAfterMs],
+    ['provider_request_id', input.providerRequestId],
+    ['next_retry_at', input.nextRetryAt],
+    ['completed_at', input.completedAt],
+    ['last_progress_at', input.lastProgressAt],
+    ['input_tokens', input.inputTokens],
+    ['output_tokens', input.outputTokens],
+    ['total_tokens', input.totalTokens],
+    ['reasoning_tokens', input.reasoningTokens],
   ];
-  for (const [column, value] of fields) {
+  const diagnosticFields: Array<[string, unknown]> = [
+    ['finish_reason', input.finishReason],
+    ['empty_reason', input.emptyReason],
+    ['response_channel', input.responseChannel],
+    ['visible_output_tokens', input.visibleOutputTokens],
+    ['parse_failure_code', input.parseFailureCode],
+    [
+      'formatter_used',
+      input.formatterUsed == null ? undefined : input.formatterUsed ? 1 : 0,
+    ],
+    ['reasoning_content_temp', input.reasoningContentTemp],
+  ];
+  for (const [column, value] of [...fields, ...diagnosticFields]) {
     if (value !== undefined) {
       sets.push(`${column} = ?`);
       params.push(value);
@@ -213,6 +257,20 @@ export async function getStageAttempt(
     [attemptId],
   );
   return row ? mapRow(row) : null;
+}
+
+/** Clear cold-start reasoning scratch data once a checkpoint is settled. */
+export async function clearTemporaryReasoningForTaskStage(
+  pipelineTaskId: string,
+  stage: string,
+): Promise<void> {
+  await execute(
+    await openDatabase(),
+    `UPDATE pipeline_stage_attempts
+        SET reasoning_content_temp = NULL
+      WHERE pipeline_task_id = ? AND stage = ?`,
+    [pipelineTaskId, stage],
+  );
 }
 
 /** Attempts waiting on a persisted retry schedule whose time has come. */

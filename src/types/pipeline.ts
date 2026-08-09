@@ -29,8 +29,8 @@ export interface PipelineConfig {
   pipelineMode: PipelineMode;
   /** V2/V3 product tier; V3 settings normalize to low/high/max. */
   reasoningEffort?: PipelineReasoningEffort;
-  /** Product reasoning profile version; new outline tasks freeze version 2. */
-  reasoningProfileVersion?: 1 | 2;
+  /** Product reasoning profile version; new outline tasks freeze version 3. */
+  reasoningProfileVersion?: 1 | 2 | 3;
   draftPresetId: number | null;
   reviewPresetId: number | null;
   factCheckPresetId: number | null;
@@ -105,6 +105,12 @@ export interface PipelineTask {
    * 1 = Legacy budget; 2 = elastic budget V2. Frozen with the task.
    */
   contextBudgetVersion?: number | null;
+  /** Parent task for a derived Final-only rewrite; source task is immutable. */
+  parentTaskId?: string | null;
+  /** Currently supported derived task kind. */
+  derivedKind?: 'final_rewrite' | null;
+  /** User-supplied low-priority instruction for a derived Final rewrite. */
+  derivedInstruction?: string | null;
   /**
    * True when cold-start classification left this task recoverable.
    * Only meaningful for status === 'interrupted'.

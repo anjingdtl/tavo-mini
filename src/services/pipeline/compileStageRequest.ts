@@ -203,6 +203,7 @@ export async function compileDraftStageRequest(params: {
   draftPreset?: Preset | null;
   draftMaxTokens?: number;
   preview?: boolean;
+  storyMemoryMode?: 'generation' | 'preview';
   elasticBudget?: boolean;
 }): Promise<StageCompileResult> {
   const compiled = await compileDraftPipelineRequest({
@@ -2537,6 +2538,16 @@ function compileFinalReviserV3WithElasticBudget(params: {
       shrinkPriority: 6,
     },
     {
+      id: 'note',
+      text: c.noteText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.75,
+      maxTokens: 4000,
+      burstPriority: 5,
+      shrinkPriority: 5,
+    },
+    {
       id: 'recent_bridge',
       text: c.recentBridgeText,
       requirement: 'optional',
@@ -2590,6 +2601,7 @@ function compileFinalReviserV3WithElasticBudget(params: {
         storyMemoryText: clipped.get('story_memory') || '',
         relevantCharacterText: clipped.get('characters') || '',
         relevantWorldRules: clipped.get('world_rules') || '',
+        noteText: clipped.get('note') || '',
         recentBridgeText: clipped.get('recent_bridge') || '',
         episodicMemoryText: clipped.get('episodic') || '',
         presetText: clipped.get('preset') || '',

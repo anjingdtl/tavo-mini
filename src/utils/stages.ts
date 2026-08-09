@@ -18,7 +18,7 @@ export const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
   proof: '终审打磨',
 };
 
-/** 按 pipelineMode 返回阶段串；full 4 阶段、twoStage/conditional 3 阶段、noReview 1 阶段。 */
+/** 按 pipelineMode 与冻结版本返回阶段串；V3.1 full 为 5 阶段。 */
 export function getPipelineStageOrder(
   mode: string,
   versions?: {
