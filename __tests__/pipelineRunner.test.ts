@@ -782,7 +782,10 @@ test('full: review and factCheck run; proof receives both reports (SPEC §5.4)',
     'task-full',
     expect.objectContaining({ stage: 'factCheck', status: 'success' }),
   );
-  expect(mockStore.persistCompleteTask).toHaveBeenCalledWith('task-full', 'final');
+  expect(mockStore.persistCompleteTask).toHaveBeenCalledWith(
+    'task-full',
+    'final',
+  );
 });
 
 test('full: both audits fail → proof never called, fallback to draft (SPEC §13.4)', async () => {
@@ -1122,6 +1125,8 @@ test('pipeline defaults to non-streaming draft generation and reuses one LLM req
     input: 11,
     output: 22,
     total: 33,
+    reasoning: 0,
+    visible: 22,
   });
   for (const call of mockCallLLMResult.mock.calls) {
     // Identity may be a frozen/rebuilt config object; fields must match.
@@ -1731,6 +1736,7 @@ test('full: one side reasoning-only fails that side only', async () => {
       return {
         text: null,
         reasoningText: '只推理不输出 JSON',
+        finishReason: 'length',
         inputTokens: 5,
         outputTokens: 20,
         totalTokens: 25,
@@ -1804,12 +1810,13 @@ test('review reasoning-only → thinking-disabled retry succeeds', async () => {
       };
     }
     if (cfg.scenario === 'pipeline_review') {
-      // First call: reasoning model burns the whole budget on CoT.
+      // First call: provider explicitly reports length after reasoning.
       if (cfg.thinking === undefined) {
         return {
           text: null,
           reasoningText: '我先评估情节与人物弧光……'.repeat(40),
           emptyReason: 'reasoning_only',
+          finishReason: 'length',
           inputTokens: 5,
           outputTokens: 1500,
           totalTokens: 1505,
@@ -1881,6 +1888,7 @@ test('factCheck reasoning-only → thinking-disabled retry succeeds', async () =
           text: null,
           reasoningText: '核验时间线与设定……'.repeat(40),
           emptyReason: 'reasoning_only',
+          finishReason: 'length',
           inputTokens: 5,
           outputTokens: 1500,
           totalTokens: 1505,

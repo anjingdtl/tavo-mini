@@ -99,7 +99,12 @@ export async function compileDraftPipelineRequest(params: {
     );
   }
 
-  const request = createChapterGenerationRequest(chapter);
+  // The compiler owns the single current-body injection. Keep the body out
+  // of retrievalUserPrompt so revision/continuation does not see tail + full
+  // body twice.
+  const request = createChapterGenerationRequest(chapter, {
+    includeExistingContent: false,
+  });
   const {
     messages: baseContext,
     chapters: allChapters,
@@ -136,6 +141,12 @@ export async function compileDraftPipelineRequest(params: {
     .filter(c => c.position < chapter.position && c.content)
     .sort((a, b) => b.position - a.position)[0];
   const prevEnding = prevChapter?.content?.slice(-800) || '';
+  const immediatePreviousChapterText = prevChapter?.content || '';
+  const immediatePreviousChapterEnding = immediatePreviousChapterText.slice(-1200);
+  pipelineContext.immediatePreviousChapterText = immediatePreviousChapterText;
+  pipelineContext.immediatePreviousChapterEnding = immediatePreviousChapterEnding;
+  pipelineContext.immediatePreviousChapterId = prevChapter?.id;
+  pipelineContext.immediatePreviousChapterPosition = prevChapter?.position;
 
   let chapterTitle = chapter.title || `第 ${chapter.position + 1} 章`;
   try {

@@ -12,14 +12,20 @@ import {
 import type {
   FrozenModelSnapshot,
   FrozenPresetSnapshot,
+  FrozenStageBudgetV3,
+  FrozenStageReasoning,
   PipelineExecutionSnapshot,
 } from '../types/pipelineExecution';
 import type {
   FrozenAuditCandidates,
   FrozenDraftRequest,
 } from '../types/pipelineFrozen';
-import type { PipelineMode } from '../types/pipeline';
+import type { PipelineMode, PipelineStageName } from '../types/pipeline';
 import type { PipelineReasoningEffort } from '../types/pipeline';
+import {
+  isPipelineReasoningTier,
+  type PipelineReasoningTier,
+} from './pipeline/reasoningPolicy';
 import type { ChatMessage } from './llm';
 import { OutlineContextError } from './outlineContextBuilder';
 import { sha256Hex } from './continuation/hashUtils';
@@ -46,8 +52,13 @@ export interface PersistedPipelineTaskContextV2 {
   auditFellBack?: boolean;
 }
 
+export interface PersistedPipelineTaskContextV3
+  extends Omit<PersistedPipelineTaskContextV2, 'version'> {
+  version: 3;
+}
+
 export interface ParsedPipelineTaskContext {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   draftContext: PipelineContextSnapshot;
   auditContext: PipelineContextSnapshot | null;
   execution: PipelineExecutionSnapshot | null;
@@ -76,9 +87,7 @@ export function computeFrozenDraftRequestFingerprint(
   return sha256Hex(payload).slice(0, 32);
 }
 
-function parseFrozenDraftRequest(
-  raw: unknown,
-): FrozenDraftRequest | null {
+function parseFrozenDraftRequest(raw: unknown): FrozenDraftRequest | null {
   if (raw == null) return null;
   if (!isPlainObject(raw)) {
     throw new OutlineContextError(
@@ -128,7 +137,12 @@ function parseFrozenDraftRequest(
     allocations: Array.isArray(raw.allocations)
       ? raw.allocations.map((a: unknown) => {
           if (!isPlainObject(a)) {
-            return { id: 'unknown', requested: 0, allocated: 0, truncated: false };
+            return {
+              id: 'unknown',
+              requested: 0,
+              allocated: 0,
+              truncated: false,
+            };
           }
           return {
             id: String(a.id ?? ''),
@@ -222,8 +236,7 @@ function parseFrozenAuditCandidates(
         cfg.episodicMemoryBudgetTokens != null
           ? Number(cfg.episodicMemoryBudgetTokens)
           : undefined,
-      memoryTopK:
-        cfg.memoryTopK != null ? Number(cfg.memoryTopK) : undefined,
+      memoryTopK: cfg.memoryTopK != null ? Number(cfg.memoryTopK) : undefined,
       worldbookRecursive:
         cfg.worldbookRecursive != null
           ? Boolean(cfg.worldbookRecursive)
@@ -347,7 +360,9 @@ export function parsePipelineContextSnapshotStrict(
     if (typeof raw[field] !== 'string') {
       throw new OutlineContextError(
         'OUTLINE_SNAPSHOT_INVALID',
-        `流水线上下文快照缺少字段 ${String(field)}，已阻止恢复。请重新开始生成。`,
+        `流水线上下文快照缺少字段 ${String(
+          field,
+        )}，已阻止恢复。请重新开始生成。`,
         'restart_task',
       );
     }
@@ -379,10 +394,15 @@ export function parsePipelineContextSnapshotStrict(
     Number(raw.snapshotVersion) !== PIPELINE_CONTEXT_SNAPSHOT_VERSION
   ) {
     // Content snapshot version is currently fixed at 1; reject unknown.
-    if (Number(raw.snapshotVersion) !== 1) {
+    if (
+      Number(raw.snapshotVersion) !== 1 &&
+      Number(raw.snapshotVersion) !== 3
+    ) {
       throw new OutlineContextError(
         'OUTLINE_SNAPSHOT_INVALID',
-        `不支持的上下文内容版本 ${String(raw.snapshotVersion)}，已阻止恢复。请重新开始生成。`,
+        `不支持的上下文内容版本 ${String(
+          raw.snapshotVersion,
+        )}，已阻止恢复。请重新开始生成。`,
         'restart_task',
       );
     }
@@ -412,14 +432,37 @@ export function parsePipelineContextSnapshotStrict(
         ? Number(raw.chapterId)
         : undefined,
     chapterUpdatedAt:
-      raw.chapterUpdatedAt != null ? (raw.chapterUpdatedAt as string | number) : undefined,
+      raw.chapterUpdatedAt != null
+        ? (raw.chapterUpdatedAt as string | number)
+        : undefined,
     createdAt:
       raw.createdAt != null && Number.isFinite(Number(raw.createdAt))
         ? Number(raw.createdAt)
         : undefined,
-    snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    snapshotVersion:
+      raw.snapshotVersion == null || Number(raw.snapshotVersion) === 1 ? 1 : 3,
+    immediatePreviousChapterText:
+      typeof raw.immediatePreviousChapterText === 'string'
+        ? raw.immediatePreviousChapterText
+        : undefined,
+    immediatePreviousChapterEnding:
+      typeof raw.immediatePreviousChapterEnding === 'string'
+        ? raw.immediatePreviousChapterEnding
+        : undefined,
+    immediatePreviousChapterId:
+      raw.immediatePreviousChapterId != null &&
+      Number.isFinite(Number(raw.immediatePreviousChapterId))
+        ? Number(raw.immediatePreviousChapterId)
+        : undefined,
+    immediatePreviousChapterPosition:
+      raw.immediatePreviousChapterPosition != null &&
+      Number.isFinite(Number(raw.immediatePreviousChapterPosition))
+        ? Number(raw.immediatePreviousChapterPosition)
+        : undefined,
     sourceFingerprint:
-      typeof raw.sourceFingerprint === 'string' ? raw.sourceFingerprint : undefined,
+      typeof raw.sourceFingerprint === 'string'
+        ? raw.sourceFingerprint
+        : undefined,
     outlineBlockingReason:
       typeof raw.outlineBlockingReason === 'string'
         ? raw.outlineBlockingReason
@@ -482,7 +525,8 @@ function parseFrozenModel(raw: unknown): FrozenModelSnapshot {
     modelName: String(raw.modelName ?? ''),
     contextWindow,
     maxOutputTokens:
-      raw.maxOutputTokens != null && Number.isFinite(Number(raw.maxOutputTokens))
+      raw.maxOutputTokens != null &&
+      Number.isFinite(Number(raw.maxOutputTokens))
         ? Number(raw.maxOutputTokens)
         : undefined,
   };
@@ -522,37 +566,45 @@ export function parsePipelineExecutionSnapshot(
     );
   }
   const workflowVersionRaw = raw.outlineWorkflowVersion;
-  let outlineWorkflowVersion: 1 | 2 | undefined;
+  let outlineWorkflowVersion: 1 | 2 | 3 | undefined;
   if (
     workflowVersionRaw === 1 ||
     workflowVersionRaw === 2 ||
+    workflowVersionRaw === 3 ||
     workflowVersionRaw === '1' ||
-    workflowVersionRaw === '2'
+    workflowVersionRaw === '2' ||
+    workflowVersionRaw === '3'
   ) {
-    outlineWorkflowVersion = Number(workflowVersionRaw) as 1 | 2;
+    outlineWorkflowVersion = Number(workflowVersionRaw) as 1 | 2 | 3;
   } else if (workflowVersionRaw != null && workflowVersionRaw !== '') {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
-      `不支持的流水线工作流版本 ${String(workflowVersionRaw)}，已阻止恢复。请重新开始生成。`,
+      `不支持的流水线工作流版本 ${String(
+        workflowVersionRaw,
+      )}，已阻止恢复。请重新开始生成。`,
       'restart_task',
     );
   }
   const reasoningPolicyRaw = raw.finalReviserReasoningPolicyVersion;
-  let finalReviserReasoningPolicyVersion:
-    | 1
-    | 2
-    | undefined;
+  let finalReviserReasoningPolicyVersion: 1 | 2 | 3 | undefined;
   if (
     reasoningPolicyRaw === 1 ||
     reasoningPolicyRaw === 2 ||
+    reasoningPolicyRaw === 3 ||
     reasoningPolicyRaw === '1' ||
-    reasoningPolicyRaw === '2'
+    reasoningPolicyRaw === '2' ||
+    reasoningPolicyRaw === '3'
   ) {
-    finalReviserReasoningPolicyVersion = Number(reasoningPolicyRaw) as 1 | 2;
+    finalReviserReasoningPolicyVersion = Number(reasoningPolicyRaw) as
+      | 1
+      | 2
+      | 3;
   } else if (reasoningPolicyRaw != null && reasoningPolicyRaw !== '') {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
-      `不支持的终稿推理策略版本 ${String(reasoningPolicyRaw)}，已阻止恢复。请重新开始生成。`,
+      `不支持的终稿推理策略版本 ${String(
+        reasoningPolicyRaw,
+      )}，已阻止恢复。请重新开始生成。`,
       'restart_task',
     );
   }
@@ -561,22 +613,198 @@ export function parsePipelineExecutionSnapshot(
   if (
     reasoningEffortRaw === 'low' ||
     reasoningEffortRaw === 'medium' ||
-    reasoningEffortRaw === 'high'
+    reasoningEffortRaw === 'high' ||
+    reasoningEffortRaw === 'max'
   ) {
-    reasoningEffort = reasoningEffortRaw;
+    reasoningEffort = reasoningEffortRaw as PipelineReasoningEffort;
   } else if (reasoningEffortRaw != null && reasoningEffortRaw !== '') {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
-      `不支持的流水线思考强度 ${String(reasoningEffortRaw)}，已阻止恢复。请重新开始生成。`,
+      `不支持的流水线思考强度 ${String(
+        reasoningEffortRaw,
+      )}，已阻止恢复。请重新开始生成。`,
       'restart_task',
     );
   }
+  const contextBudgetRaw = raw.contextBudgetVersion;
+  let contextBudgetVersion: 1 | 2 | 3 | undefined;
+  if (
+    contextBudgetRaw === 1 ||
+    contextBudgetRaw === 2 ||
+    contextBudgetRaw === 3 ||
+    contextBudgetRaw === '1' ||
+    contextBudgetRaw === '2' ||
+    contextBudgetRaw === '3'
+  ) {
+    contextBudgetVersion = Number(contextBudgetRaw) as 1 | 2 | 3;
+  } else if (contextBudgetRaw != null && contextBudgetRaw !== '') {
+    throw new OutlineContextError(
+      'OUTLINE_EXECUTION_CONFIG_INVALID',
+      `不支持的上下文预算版本 ${String(
+        contextBudgetRaw,
+      )}，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  }
+
+  if ((outlineWorkflowVersion === 3) !== (contextBudgetVersion === 3)) {
+    throw new OutlineContextError(
+      'OUTLINE_EXECUTION_CONFIG_INVALID',
+      '工作流版本 3 必须与上下文预算版本 3 成对冻结，已阻止恢复。',
+      'restart_task',
+    );
+  }
+
+  let v3Fields: Partial<PipelineExecutionSnapshot> = {};
+  if (outlineWorkflowVersion === 3) {
+    if (
+      contextBudgetVersion !== 3 ||
+      finalReviserReasoningPolicyVersion !== 3
+    ) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        '工作流版本 3 的冻结配置 context budget / Final policy 版本不完整，已阻止恢复。',
+        'restart_task',
+      );
+    }
+    if (
+      raw.reasoningProfileVersion !== 2 &&
+      raw.reasoningProfileVersion !== '2'
+    ) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        'V3 冻结配置缺少 reasoningProfileVersion=2，已阻止恢复。',
+        'restart_task',
+      );
+    }
+    if (!isPipelineReasoningTier(raw.requestedReasoningTier)) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        'V3 冻结配置缺少 requestedReasoningTier，已阻止恢复。',
+        'restart_task',
+      );
+    }
+    if (!isPlainObject(raw.stageReasoning)) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        'V3 冻结配置缺少 stageReasoning，已阻止恢复。',
+        'restart_task',
+      );
+    }
+    const stageReasoning: Partial<
+      Record<PipelineStageName, FrozenStageReasoning>
+    > = {};
+    for (const stage of [
+      'draft',
+      'review',
+      'factCheck',
+      'brief',
+      'proof',
+    ] as const) {
+      const value = (raw.stageReasoning as Record<string, unknown>)[stage];
+      if (
+        !isPlainObject(value) ||
+        !isPipelineReasoningTier(value.effectiveTier)
+      ) {
+        throw new OutlineContextError(
+          'OUTLINE_EXECUTION_CONFIG_INVALID',
+          `V3 冻结配置缺少 ${stage} 推理档位，已阻止恢复。`,
+          'restart_task',
+        );
+      }
+      stageReasoning[stage] = {
+        stage,
+        requestedTier: isPipelineReasoningTier(value.requestedTier)
+          ? value.requestedTier
+          : raw.requestedReasoningTier,
+        effectiveTier: value.effectiveTier,
+        thinking: value.thinking === 'disabled' ? 'disabled' : 'enabled',
+        effort: isPipelineReasoningTier(value.effort) ? value.effort : null,
+        downgradeReason:
+          typeof value.downgradeReason === 'string'
+            ? value.downgradeReason
+            : undefined,
+      };
+    }
+    if (
+      stageReasoning.brief?.thinking !== 'enabled' ||
+      stageReasoning.brief.effectiveTier !== 'low'
+    ) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        'V3 Brief 必须冻结为 Thinking enabled + low，已阻止恢复。',
+        'restart_task',
+      );
+    }
+    if (raw.briefPolicyVersion !== 1 && raw.briefPolicyVersion !== '1') {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        'V3 冻结配置缺少 briefPolicyVersion=1，已阻止恢复。',
+        'restart_task',
+      );
+    }
+    v3Fields = {
+      reasoningProfileVersion: 2,
+      requestedReasoningTier:
+        raw.requestedReasoningTier as PipelineReasoningTier,
+      stageReasoning,
+      briefPolicyVersion: 1,
+      briefVisibleOutputFloor: Number.isFinite(
+        Number(raw.briefVisibleOutputFloor),
+      )
+        ? Number(raw.briefVisibleOutputFloor)
+        : undefined,
+      briefReasoningHeadroom: Number.isFinite(
+        Number(raw.briefReasoningHeadroom),
+      )
+        ? Number(raw.briefReasoningHeadroom)
+        : undefined,
+      briefMaxTokens: Number.isFinite(Number(raw.briefMaxTokens))
+        ? Number(raw.briefMaxTokens)
+        : undefined,
+      stageBudgets: Array.isArray(raw.stageBudgets)
+        ? raw.stageBudgets.filter(isPlainObject).map(
+            (value: Record<string, unknown>) =>
+              ({
+                stage: String(value.stage) as PipelineStageName,
+                visibleOutputFloor: Number(value.visibleOutputFloor) || 0,
+                reasoningHeadroom: Number(value.reasoningHeadroom) || 0,
+                requestMaxTokens: Number(value.requestMaxTokens) || 0,
+                estimatedMandatoryInput:
+                  Number(value.estimatedMandatoryInput) || 0,
+                optionalInputBudget: Number(value.optionalInputBudget) || 0,
+                safetyMargin: Number(value.safetyMargin) || 0,
+                softInputLimit: Number(value.softInputLimit) || undefined,
+                hardInputLimit: Number(value.hardInputLimit) || undefined,
+                fitsSoftInput:
+                  typeof value.fitsSoftInput === 'boolean'
+                    ? value.fitsSoftInput
+                    : undefined,
+                fitsModelOutput:
+                  typeof value.fitsModelOutput === 'boolean'
+                    ? value.fitsModelOutput
+                    : undefined,
+                localFallbackRecommended:
+                  typeof value.localFallbackRecommended === 'boolean'
+                    ? value.localFallbackRecommended
+                    : undefined,
+              } as FrozenStageBudgetV3),
+          )
+        : undefined,
+    };
+  }
+
   return {
     pipelineMode: mode as PipelineMode,
     outlineWorkflowVersion,
+    contextBudgetVersion,
     finalReviserReasoningPolicyVersion,
     reasoningEffort,
-    draftMaxTokens: requireNonNegativeFinite(raw.draftMaxTokens, 'draftMaxTokens'),
+    ...v3Fields,
+    draftMaxTokens: requireNonNegativeFinite(
+      raw.draftMaxTokens,
+      'draftMaxTokens',
+    ),
     reviewMaxTokens: requireNonNegativeFinite(
       raw.reviewMaxTokens,
       'reviewMaxTokens',
@@ -585,7 +813,10 @@ export function parsePipelineExecutionSnapshot(
       raw.factCheckMaxTokens,
       'factCheckMaxTokens',
     ),
-    proofMaxTokens: requireNonNegativeFinite(raw.proofMaxTokens, 'proofMaxTokens'),
+    proofMaxTokens: requireNonNegativeFinite(
+      raw.proofMaxTokens,
+      'proofMaxTokens',
+    ),
     draftPresetId:
       raw.draftPresetId == null || raw.draftPresetId === ''
         ? null
@@ -641,7 +872,9 @@ export function parsePipelineTaskContextV2(
   if (Number(raw.version) !== 2) {
     throw new OutlineContextError(
       'OUTLINE_SNAPSHOT_INVALID',
-      `不支持的流水线上下文版本 ${String(raw.version)}，已阻止恢复。请重新开始生成。`,
+      `不支持的流水线上下文版本 ${String(
+        raw.version,
+      )}，已阻止恢复。请重新开始生成。`,
       'restart_task',
     );
   }
@@ -674,6 +907,21 @@ export function parsePipelineTaskContextV2(
     createdAt,
     auditFellBack: Boolean(raw.auditFellBack),
   };
+}
+
+export function parsePipelineTaskContextV3(
+  raw: unknown,
+  ownership?: PipelineTaskContextOwnership,
+): ParsedPipelineTaskContext {
+  if (!isPlainObject(raw) || Number(raw.version) !== 3) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      '不支持的 V3 流水线上下文版本，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const parsed = parsePipelineTaskContextV2({ ...raw, version: 2 }, ownership);
+  return { ...parsed, version: 3 };
 }
 
 /**
@@ -729,9 +977,12 @@ export function parsePersistedPipelineTaskContext(
     task.pipelineContextVersion != null
       ? Number(task.pipelineContextVersion)
       : isPlainObject(parsed) && parsed.version != null
-        ? Number(parsed.version)
-        : 1;
+      ? Number(parsed.version)
+      : 1;
 
+  if (declaredVersion === 3 || Number((parsed as any).version) === 3) {
+    return parsePipelineTaskContextV3(parsed, ownership);
+  }
   if (declaredVersion === 2 || Number((parsed as any).version) === 2) {
     return parsePipelineTaskContextV2(parsed, ownership);
   }
@@ -762,13 +1013,23 @@ export function serializePipelineTaskContext(params: {
   pipelineContextHash: string;
 } {
   const createdAt = params.createdAt ?? Date.now();
+  // Context builders now know about V3 fields, but a frozen V1/V2 execution
+  // must still serialize with its historical envelope/compiler semantics.
+  // The execution protocol, not a copied snapshot's current constant, owns
+  // the envelope version.
+  const isV3 =
+    params.execution.outlineWorkflowVersion === 3 &&
+    params.execution.contextBudgetVersion === 3;
+  const snapshotVersion = isV3 ? 3 : 1;
   const draftContext: PipelineContextSnapshot = {
     ...params.draftContext,
-    snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    snapshotVersion,
     createdAt: params.draftContext.createdAt ?? createdAt,
   };
-  const envelope: PersistedPipelineTaskContextV2 = {
-    version: 2,
+  const envelope:
+    | PersistedPipelineTaskContextV2
+    | PersistedPipelineTaskContextV3 = {
+    version: isV3 ? 3 : 2,
     draftContext,
     execution: params.execution,
     createdAt,
@@ -776,7 +1037,7 @@ export function serializePipelineTaskContext(params: {
   if (params.auditContext) {
     envelope.auditContext = {
       ...params.auditContext,
-      snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+      snapshotVersion,
       createdAt: params.auditContext.createdAt ?? Date.now(),
     };
   }
@@ -798,7 +1059,7 @@ export function serializePipelineTaskContext(params: {
   const pipelineContextJson = JSON.stringify(envelope);
   return {
     pipelineContextJson,
-    pipelineContextVersion: PIPELINE_TASK_CONTEXT_VERSION,
+    pipelineContextVersion: isV3 ? 3 : PIPELINE_TASK_CONTEXT_VERSION,
     pipelineContextHash: sha256Hex(pipelineContextJson).slice(0, 32),
   };
 }

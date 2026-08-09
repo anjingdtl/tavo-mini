@@ -893,13 +893,18 @@ export function formatAuditFailureMessage(
 }
 
 export function logPipelineAudit(fields: {
-  stage: 'review' | 'factCheck';
+  stage: 'review' | 'factCheck' | 'brief';
   attempt: number;
   valid: boolean;
   reason?: AuditValidationFailureReason;
   textLength?: number;
   reasoningLength?: number;
   finishReason?: string | null;
+  outputTokens?: number | null;
+  reasoningTokens?: number | null;
+  visibleOutputTokens?: number | null;
+  emptyReason?: string | null;
+  reasoningBudgetExhausted?: boolean;
   similarity?: number;
   retry?: boolean;
   taskId?: string;
@@ -917,6 +922,21 @@ export function logPipelineAudit(fields: {
     parts.push(`reasoningLength=${fields.reasoningLength}`);
   }
   if (fields.finishReason) parts.push(`finishReason=${fields.finishReason}`);
+  if (fields.outputTokens != null) {
+    parts.push(`outputTokens=${fields.outputTokens}`);
+  }
+  if (fields.reasoningTokens != null) {
+    parts.push(`reasoningTokens=${fields.reasoningTokens}`);
+  }
+  if (fields.visibleOutputTokens != null) {
+    parts.push(`visibleOutputTokens=${fields.visibleOutputTokens}`);
+  }
+  if (fields.emptyReason) parts.push(`emptyReason=${fields.emptyReason}`);
+  if (fields.reasoningBudgetExhausted != null) {
+    parts.push(
+      `reasoningBudgetExhausted=${fields.reasoningBudgetExhausted ? 'true' : 'false'}`,
+    );
+  }
   if (fields.similarity != null) {
     parts.push(`similarity=${fields.similarity.toFixed(3)}`);
   }

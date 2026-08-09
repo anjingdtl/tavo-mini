@@ -1,6 +1,15 @@
-export type PipelineStageName = 'draft' | 'review' | 'factCheck' | 'proof';
+export type PipelineStageName =
+  | 'draft'
+  | 'review'
+  | 'factCheck'
+  | 'brief'
+  | 'proof';
 export type PipelineMode = 'noReview' | 'twoStage' | 'conditional' | 'full';
-export type PipelineReasoningEffort = 'low' | 'medium' | 'high';
+/**
+ * New V3 settings use low/high/max. `medium` is retained only so historical
+ * V2 execution snapshots and their retry fingerprints remain parseable.
+ */
+export type PipelineReasoningEffort = 'low' | 'medium' | 'high' | 'max';
 
 export type PipelineTaskStatus =
   | 'idle'
@@ -8,6 +17,7 @@ export type PipelineTaskStatus =
   | 'drafting'
   | 'reviewing'
   | 'factChecking'
+  | 'briefing'
   | 'proofing'
   | 'completed'
   | 'cancelled'
@@ -17,8 +27,10 @@ export type PipelineTaskStatus =
 
 export interface PipelineConfig {
   pipelineMode: PipelineMode;
-  /** V2 product tier; omitted by legacy callers and normalized to medium. */
+  /** V2/V3 product tier; V3 settings normalize to low/high/max. */
   reasoningEffort?: PipelineReasoningEffort;
+  /** Product reasoning profile version; new outline tasks freeze version 2. */
+  reasoningProfileVersion?: 1 | 2;
   draftPresetId: number | null;
   reviewPresetId: number | null;
   factCheckPresetId: number | null;
@@ -27,6 +39,10 @@ export interface PipelineConfig {
   reviewMaxTokens: number;
   factCheckMaxTokens: number;
   proofMaxTokens: number;
+  /** Independent Brief visible JSON budget; no preset is required. */
+  briefVisibleOutputFloor?: number;
+  /** Independent low-Thinking headroom for Brief. */
+  briefReasoningHeadroom?: number;
 }
 
 export interface PipelineStageResult {
@@ -34,9 +50,19 @@ export interface PipelineStageResult {
   text: string;
   status: 'success' | 'failed' | 'skipped';
   error?: string;
+  /** Durable machine-readable failure code, when a stage needs special recovery. */
+  errorCode?: string;
   /** Non-blocking local/audit quality warnings retained with the stage. */
   warnings?: string[];
-  tokens?: { input: number; output: number; total: number };
+  tokens?: {
+    input: number;
+    output: number;
+    total: number;
+    /** Hidden Thinking tokens, when reported by the provider. */
+    reasoning?: number;
+    /** Visible business-output tokens, independent from reasoning. */
+    visible?: number;
+  };
   durationMs: number;
 }
 

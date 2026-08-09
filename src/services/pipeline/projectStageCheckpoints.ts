@@ -39,10 +39,11 @@ function mapLegacyStatus(
  */
 export function projectStageResultsToCheckpoints(
   stageResults: Array<
-    Pick<PipelineStageResult, 'stage' | 'status' | 'text' | 'error'> & {
+    Pick<PipelineStageResult, 'stage' | 'status' | 'text' | 'error' | 'errorCode'> & {
       status?: string;
     }
   >,
+  options: { includeBrief?: boolean } = {},
 ): PersistedStageCheckpoint[] {
   const map = new Map<string, PersistedStageCheckpoint>();
 
@@ -53,6 +54,7 @@ export function projectStageResultsToCheckpoints(
       stage,
       status: mapLegacyStatus(row.status),
       outputText: row.text ?? null,
+      errorCode: row.errorCode ?? null,
       errorMessage: row.error ?? null,
     };
     const prev = map.get(stage);
@@ -68,7 +70,10 @@ export function projectStageResultsToCheckpoints(
     }
   }
 
-  return ['draft', 'review', 'factCheck', 'proof'].map(stage => {
+  const names = options.includeBrief
+    ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+    : ['draft', 'review', 'factCheck', 'proof'];
+  return names.map(stage => {
     return (
       map.get(stage) || {
         stage: stage as PipelineStageName,

@@ -9,7 +9,7 @@ import type { PipelineConfig, PipelineMode } from '../types/pipeline';
 import {
   DEFAULT_PIPELINE_REASONING_EFFORT,
   PIPELINE_REASONING_EFFORT_OPTIONS,
-  type PipelineReasoningEffort,
+  type PipelineReasoningTier,
 } from '../services/pipeline/reasoningPolicy';
 
 const MODE_OPTIONS: { value: PipelineMode; label: string }[] = [
@@ -36,6 +36,7 @@ const STAGE_LABELS = [
 const DEFAULT_CONFIG: PipelineConfig = {
   pipelineMode: 'twoStage',
   reasoningEffort: DEFAULT_PIPELINE_REASONING_EFFORT,
+  reasoningProfileVersion: 2,
   draftPresetId: null,
   reviewPresetId: null,
   factCheckPresetId: null,
@@ -159,14 +160,16 @@ export const PipelineConfigScreen: React.FC = () => {
         </View>
 
         <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>V2 思考强度</Text>
+          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>V3 思考强度</Text>
           <SegmentedControl
-            value={config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT}
+            value={(config.reasoningEffort === 'medium'
+              ? DEFAULT_PIPELINE_REASONING_EFFORT
+              : config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT) as PipelineReasoningTier}
             options={PIPELINE_REASONING_EFFORT_OPTIONS.map(option => ({
               value: option.value,
               label: option.label,
             }))}
-            onChange={(reasoningEffort: PipelineReasoningEffort) =>
+            onChange={(reasoningEffort: PipelineReasoningTier) =>
               setConfig({ ...config, reasoningEffort })
             }
           />
@@ -174,12 +177,12 @@ export const PipelineConfigScreen: React.FC = () => {
             {PIPELINE_REASONING_EFFORT_OPTIONS.find(
               option => option.value === (config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT),
             )?.description}
-            {' '}该档位统一作用于 V2 的初稿、审阅、事实核查、终审四个调用；运行时会同步扩大/收缩输出预留，并从可选上下文弹性借用预算。
+            {' '}Draft/Final 跟随用户档位；Review/FactCheck 最高为 high；Brief Compiler 始终启用 low Thinking，独立分配可见 JSON 与推理余量。
           </Text>
           <Text
             style={[styles.hint, { color: theme.colors.textSecondary }]}
           >
-            仅官方 DeepSeek V4 Flash 端点发送 reasoning_effort；官方当前将 low/medium 兼容映射为 high。历史任务恢复时继续使用任务快照，不会被当前设置改写。
+            新任务保存 low/high/max。上下文容量不足时会记录 effective 降级；Brief 空间不足只使用本地整理，不会静默关闭 Thinking。历史任务恢复时继续使用冻结快照。
           </Text>
         </View>
 

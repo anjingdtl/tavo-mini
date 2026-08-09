@@ -5,31 +5,48 @@
  * V2.2.0 新增：本文件替代 pipelineRunner 中内联的 totalStages / pct 逻辑。
  */
 
-export type PipelineStageName = 'draft' | 'review' | 'factCheck' | 'proof';
+export type PipelineStageName = 'draft' | 'review' | 'factCheck' | 'brief' | 'proof';
 
-export const PIPELINE_STAGES: PipelineStageName[] = ['draft', 'review', 'factCheck', 'proof'];
+export const PIPELINE_STAGES: PipelineStageName[] = ['draft', 'review', 'factCheck', 'brief', 'proof'];
 
 export const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
   idle: '准备中',
   draft: '草稿',
   review: '点评',
   factCheck: '事实核查',
+  brief: '终稿整理',
   proof: '终审打磨',
 };
 
 /** 按 pipelineMode 返回阶段串；full 4 阶段、twoStage/conditional 3 阶段、noReview 1 阶段。 */
-export function getPipelineStageOrder(mode: string): PipelineStageName[] {
+export function getPipelineStageOrder(
+  mode: string,
+  versions?: {
+    outlineWorkflowVersion?: number | null;
+    contextBudgetVersion?: number | null;
+  },
+): PipelineStageName[] {
+  const isV3 =
+    Number(versions?.outlineWorkflowVersion) === 3 &&
+    Number(versions?.contextBudgetVersion) === 3;
   // Batch form modes map to single-chapter modes (see mapBatchModeToPipelineMode).
   if (mode === 'draft_only') return ['draft'];
-  if (mode === 'fast') return ['draft', 'review', 'proof'];
+  if (mode === 'fast') return isV3 ? ['draft', 'review', 'brief', 'proof'] : ['draft', 'review', 'proof'];
   if (mode === 'noReview') return ['draft'];
-  if (mode === 'twoStage') return ['draft', 'review', 'proof'];
-  if (mode === 'conditional') return ['draft', 'factCheck', 'proof'];
-  return ['draft', 'review', 'factCheck', 'proof'];
+  if (mode === 'twoStage') return isV3 ? ['draft', 'review', 'brief', 'proof'] : ['draft', 'review', 'proof'];
+  if (mode === 'conditional') return isV3 ? ['draft', 'factCheck', 'brief', 'proof'] : ['draft', 'factCheck', 'proof'];
+  return isV3 ? ['draft', 'review', 'factCheck', 'brief', 'proof'] : ['draft', 'review', 'factCheck', 'proof'];
 }
 
 /** 当前阶段在进度条上的起点百分比 = floor(completed / total * 100)，上限 99。 */
-export function getStageProgressPercent(mode: string, completedStages: number): number {
-  const total = getPipelineStageOrder(mode).length;
+export function getStageProgressPercent(
+  mode: string,
+  completedStages: number,
+  versions?: {
+    outlineWorkflowVersion?: number | null;
+    contextBudgetVersion?: number | null;
+  },
+): number {
+  const total = getPipelineStageOrder(mode, versions).length;
   return Math.min(99, Math.round((completedStages / total) * 100));
 }

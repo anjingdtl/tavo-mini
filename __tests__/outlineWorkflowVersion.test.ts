@@ -2,7 +2,8 @@
  * Outline pipeline V5-Lite — workflow version routing (Phase 0).
  *
  * Covers:
- *   - shouldFreezeOutlineWorkflowV2 gating (outline/chapter/id>0/default=2)
+ *   - shouldFreezeOutlineWorkflowV2 remains available for historical V2
+ *   - shouldFreezeOutlineWorkflowV3 gating (outline/chapter/id>0/default=3)
  *   - snapshot serialize/parse round-trip of outlineWorkflowVersion
  *   - legacy tasks without the field stay V1 (undefined)
  *   - invalid version values fail closed
@@ -14,6 +15,7 @@ import {
 import {
   DEFAULT_OUTLINE_WORKFLOW_VERSION,
   shouldFreezeOutlineWorkflowV2,
+  shouldFreezeOutlineWorkflowV3,
   type OutlineWorkflowVersion,
 } from '../src/services/pipeline/outlineWorkflowVersion';
 import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
@@ -136,6 +138,26 @@ describe('shouldFreezeOutlineWorkflowV2', () => {
   test('default constant is 1 until A/B passes', () => {
     expect(DEFAULT_OUTLINE_WORKFLOW_VERSION).toBe(1);
   });
+
+  test('freezes V3 for real outline chapter when default is 3', () => {
+    expect(
+      shouldFreezeOutlineWorkflowV3({
+        projectMode: 'outline',
+        chapterId: 12,
+        defaultVersion: 3,
+      }),
+    ).toBe(true);
+  });
+
+  test('freeform pseudo-chapter (id 0) stays out of V3', () => {
+    expect(
+      shouldFreezeOutlineWorkflowV3({
+        projectMode: 'outline',
+        chapterId: 0,
+        defaultVersion: 3,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe('snapshot outlineWorkflowVersion round-trip', () => {
@@ -172,7 +194,7 @@ describe('snapshot outlineWorkflowVersion round-trip', () => {
       execution: execution(),
     });
     const raw = JSON.parse(ser.pipelineContextJson);
-    raw.execution.outlineWorkflowVersion = 3;
+    raw.execution.outlineWorkflowVersion = 4;
     const tampered = JSON.stringify(raw);
     // Hash is optional in parsing; omit it so the version check is reached.
     expect(() =>
@@ -197,8 +219,8 @@ describe('snapshot outlineWorkflowVersion round-trip', () => {
     ).toThrow(/校验失败/);
   });
 
-  test('type-level: version only allows 1 | 2', () => {
-    const v: OutlineWorkflowVersion = 2;
-    expect(v).toBe(2);
+  test('type-level: version allows historical 1 | 2 and current 3', () => {
+    const v: OutlineWorkflowVersion = 3;
+    expect(v).toBe(3);
   });
 });

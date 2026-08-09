@@ -42,14 +42,20 @@ type ChapterNavigation = NativeStackNavigationProp<
 >;
 type RunningPipelineStatus = Extract<
   PipelineTaskStatus,
-  'idle' | 'queued' | 'drafting' | 'reviewing' | 'factChecking' | 'proofing'
+  | 'idle'
+  | 'queued'
+  | 'drafting'
+  | 'reviewing'
+  | 'factChecking'
+  | 'briefing'
+  | 'proofing'
 >;
 type CreateTask = (
   targetType: 'chapter' | 'freeform',
   targetId: number,
   versions?: {
-    outlineWorkflowVersion: 1 | 2;
-    contextBudgetVersion: 1 | 2;
+    outlineWorkflowVersion: 1 | 2 | 3;
+    contextBudgetVersion: 1 | 2 | 3;
   },
 ) => Promise<string>;
 
@@ -59,6 +65,7 @@ const RUNNING_PIPELINE_STATUSES: RunningPipelineStatus[] = [
   'drafting',
   'reviewing',
   'factChecking',
+  'briefing',
   'proofing',
 ];
 
@@ -68,6 +75,7 @@ function stageFromTaskStatus(
   if (status === 'drafting') return 'draft';
   if (status === 'reviewing') return 'review';
   if (status === 'factChecking') return 'factCheck';
+  if (status === 'briefing') return 'brief';
   if (status === 'proofing') return 'proof';
   return 'idle';
 }

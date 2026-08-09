@@ -3,6 +3,7 @@ import * as db from '../services/database';
 import type { PipelineTask, PipelineStageResult, PipelineTaskStatus } from '../types/pipeline';
 import { classifyInterruptedTask } from '../services/pipelineTaskContext';
 import { OutlineContextError } from '../services/outlineContextBuilder';
+import type { PipelineCheckpointStage } from '../services/pipeline/types';
 
 function mergeStageResult(
   existing: PipelineStageResult[],
@@ -35,10 +36,10 @@ interface PipelineTaskState {
     targetType: 'chapter' | 'freeform',
     targetId: number,
     versions?: {
-      /** Frozen outline workflow version (1 = Legacy, 2 = V2). */
-      outlineWorkflowVersion: 1 | 2;
-      /** Frozen context budget version (1 = Legacy, 2 = elastic V2). */
-      contextBudgetVersion: 1 | 2;
+      /** Frozen outline workflow version (1 = Legacy, 2 = V2, 3 = V3). */
+      outlineWorkflowVersion: 1 | 2 | 3;
+      /** Frozen context budget version (1 = Legacy, 2 = V2, 3 = V3). */
+      contextBudgetVersion: 1 | 2 | 3;
     },
   ) => Promise<string>;
   /**
@@ -138,6 +139,7 @@ const interruptibleStatuses: PipelineTaskStatus[] = [
   'drafting',
   'reviewing',
   'factChecking',
+  'briefing',
   'proofing',
 ];
 
@@ -280,7 +282,11 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       updatedAt: now,
       resolvedAt: null,
     };
-    // Persist parent + four pending checkpoints in ONE transaction BEFORE
+    const checkpointStages: PipelineCheckpointStage[] =
+      task.outlineWorkflowVersion === 3 && task.contextBudgetVersion === 3
+        ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+        : ['draft', 'review', 'factCheck', 'proof'];
+    // Persist parent + pending checkpoints in ONE transaction BEFORE
     // the task enters the store or is handed to the runner. On failure we
     // do not add a ghost task, do not return an id, and do not start the
     // foreground service or reconcile — so LLM call count stays 0 and the
@@ -301,7 +307,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
           updatedAt: now,
           resolvedAt: null,
         },
-        ['draft', 'review', 'factCheck', 'proof'],
+        checkpointStages,
       );
     } catch (err: any) {
       console.warn(
@@ -339,6 +345,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         stage: result.stage,
         status: mapStageStatusToCheckpoint(result.status),
         outputText: result.text ?? null,
+        errorCode: result.errorCode ?? null,
         errorMessage: result.error ?? null,
         inputTokens: result.tokens?.input ?? null,
         outputTokens: result.tokens?.output ?? null,
@@ -772,7 +779,12 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         }
         return task;
       });
-      return { tasks };
+      // Do not publish a new array when there was no active task. Startup
+      // calls this immediately after loading persisted tasks; publishing an
+      // unchanged array would make global terminal-task subscribers scan the
+      // history a second time and can replace a fresh success prompt with an
+      // older failure prompt.
+      return marked > 0 ? { tasks } : state;
     });
     return marked;
   },

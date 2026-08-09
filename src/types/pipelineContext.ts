@@ -13,7 +13,7 @@
  * message builders, not silently dropped here.
  */
 /** Current persisted pipeline context snapshot schema version. */
-export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 1 as const;
+export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 3 as const;
 
 export interface PipelineContextSnapshot {
   /** Macro-replaced system prompt, writing style and extra instructions. */
@@ -32,6 +32,11 @@ export interface PipelineContextSnapshot {
   episodicMemoryText: string;
   /** Pending Bridge / Seam / sliding-window recent body text. */
   recentBridgeText: string;
+  /** The immediately preceding chapter, frozen independently of the bridge. */
+  immediatePreviousChapterText?: string;
+  immediatePreviousChapterEnding?: string;
+  immediatePreviousChapterId?: number;
+  immediatePreviousChapterPosition?: number;
   /** Current chapter title + synopsis instruction block. */
   currentInstructionText: string;
 
@@ -66,7 +71,7 @@ export interface PipelineContextSnapshot {
   chapterId?: number;
   chapterUpdatedAt?: string | number;
   createdAt?: number;
-  snapshotVersion?: typeof PIPELINE_CONTEXT_SNAPSHOT_VERSION;
+  snapshotVersion?: 1 | 3;
 }
 
 /**
@@ -86,6 +91,8 @@ export interface ReviewContext {
   retrievalUserPrompt: string;
   /** Project outline plan (future direction); empty when not applicable. */
   outlineText: string;
+  immediatePreviousChapterText?: string;
+  immediatePreviousChapterEnding?: string;
 }
 
 /**
@@ -108,6 +115,8 @@ export interface FactCheckContext {
    * from story memory / recent body.
    */
   outlineText: string;
+  immediatePreviousChapterText?: string;
+  immediatePreviousChapterEnding?: string;
 }
 
 /**
@@ -126,6 +135,8 @@ export interface ProofConstraints {
   recentBridgeText: string;
   /** Project outline plan the proof must protect (preserve correct beats). */
   outlineText: string;
+  immediatePreviousChapterText?: string;
+  immediatePreviousChapterEnding?: string;
 }
 
 export function buildReviewContextFromSnapshot(
@@ -141,7 +152,9 @@ export function buildReviewContextFromSnapshot(
     recentBridgeText: snapshot.recentBridgeText,
     currentInstructionText: snapshot.currentInstructionText,
     retrievalUserPrompt: snapshot.retrievalUserPrompt,
-    outlineText: snapshot.outlineText,
+  outlineText: snapshot.outlineText,
+    immediatePreviousChapterText: snapshot.immediatePreviousChapterText || '',
+    immediatePreviousChapterEnding: snapshot.immediatePreviousChapterEnding || '',
   };
 }
 
@@ -159,6 +172,8 @@ export function buildFactCheckContextFromSnapshot(
     characterText: snapshot.characterText,
     noteText: snapshot.noteText,
     outlineText: snapshot.outlineText,
+    immediatePreviousChapterText: snapshot.immediatePreviousChapterText || '',
+    immediatePreviousChapterEnding: snapshot.immediatePreviousChapterEnding || '',
   };
 }
 
@@ -178,5 +193,39 @@ export function buildProofConstraintsFromSnapshot(
     noteText: snapshot.noteText,
     recentBridgeText: snapshot.recentBridgeText,
     outlineText: snapshot.outlineText,
+    immediatePreviousChapterText: snapshot.immediatePreviousChapterText || '',
+    immediatePreviousChapterEnding: snapshot.immediatePreviousChapterEnding || '',
+  };
+}
+
+export interface FinalContinuityCapsule {
+  fullOutlineText: string;
+  immediatePreviousChapterText: string;
+  immediatePreviousEnding: string;
+  recentBridgeText: string;
+  storyMemoryText: string;
+  episodicMemoryText: string;
+  relevantCharacterText: string;
+  relevantWorldRules: string;
+  currentInstructionText: string;
+  retrievalUserPrompt: string;
+  presetText: string;
+}
+
+export function buildFinalContinuityCapsule(
+  snapshot: PipelineContextSnapshot,
+): FinalContinuityCapsule {
+  return {
+    fullOutlineText: snapshot.outlineText,
+    immediatePreviousChapterText: snapshot.immediatePreviousChapterText || '',
+    immediatePreviousEnding: snapshot.immediatePreviousChapterEnding || '',
+    recentBridgeText: snapshot.recentBridgeText,
+    storyMemoryText: snapshot.storyMemoryText,
+    episodicMemoryText: snapshot.episodicMemoryText,
+    relevantCharacterText: snapshot.characterText,
+    relevantWorldRules: snapshot.worldbookText,
+    currentInstructionText: snapshot.currentInstructionText,
+    retrievalUserPrompt: snapshot.retrievalUserPrompt,
+    presetText: snapshot.presetText,
   };
 }

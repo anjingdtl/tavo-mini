@@ -19,7 +19,10 @@ import {
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
 import { resolveLLMRequestConfig } from '../services/llm';
 import * as db from '../services/database';
-import { normalizePipelineReasoningEffort } from '../services/pipeline/reasoningPolicy';
+import {
+  isPipelineReasoningTier,
+  normalizePipelineReasoningTier,
+} from '../services/pipeline/reasoningPolicy';
 import { reconcileMultiChapterBatch } from '../services/multiChapterBatch/reconcileMultiChapterBatch';
 import { cancelPipeline, interruptPipelineTask } from '../services/pipelineRunner';
 import {
@@ -193,6 +196,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         const id = `batch_${Date.now().toString(36)}_${Math.random()
           .toString(36)
           .slice(2, 8)}`;
+        const pipelineConfig = await db.getPipelineConfig();
         await batchRepo.createBatch({
           id,
           projectId: input.projectId,
@@ -202,9 +206,9 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           pipelineMode: input.pipelineMode,
           // Freeze the product tier at batch creation. Child tasks inherit it
           // even if the global PipelineConfig changes while planning/running.
-          reasoningEffort: normalizePipelineReasoningEffort(
-            (await db.getPipelineConfig()).reasoningEffort,
-          ),
+          reasoningEffort: isPipelineReasoningTier(pipelineConfig.reasoningEffort)
+            ? pipelineConfig.reasoningEffort
+            : normalizePipelineReasoningTier(pipelineConfig.reasoningEffort),
           // §4.4: freeze the CURRENT protocol versions ONCE at batch
           // creation; every chapter task later copies them from the row.
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,

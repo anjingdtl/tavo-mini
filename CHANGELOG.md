@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.11.40] - 2026-08-09
+
+### Added
+
+- **大纲流水线 V3**：新任务冻结 Brief Compiler、连续性闭包和五阶段持久化状态机；Draft / Review / FactCheck / Brief / Final 的职责与恢复边界独立记录，旧任务继续按冻结的 V1/V2 协议恢复。
+- **统一弹性算力池**：五个 API 阶段统一使用每请求 80% soft pool、95% burst band 与硬上限；Brief 不再配置独立小预算或静态 4K 上限，仅将可见 JSON 保底与 low Thinking headroom 分账。
+
+### Fixed
+
+- **Brief Thinking 语义固定**：Brief 始终发送 `thinking=enabled` 与 `reasoning_effort=low`；输出上限不足时改用本地 Brief，不静默关闭 Thinking，也不自动重试 Brief API。
+- **终稿连续性**：Final 使用完整 canonical draft、完整大纲、即时上一章正文/章末和故事状态闭包，避免 Revision Contract、锚点 ID 或重复初稿注入造成上下文断裂。
+- **审核归一化与传递**：Review / FactCheck 的定位失败、warning、required/hard 冲突在本地归一化，Brief 完整性门禁后再以纯文本写作 Brief 传递给 Final。
+
 ## [2.11.39] - 2026-08-08
 
 ### Added

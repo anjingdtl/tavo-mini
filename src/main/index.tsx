@@ -69,8 +69,10 @@ export const App: React.FC = () => {
   // navigateToPipelineResult call site and avoid the "prompt sticks
   // around after navigating" UX bug.
   const [pendingPrompt, setPendingPrompt] = React.useState<PipelineTask | null>(null);
+  const pendingPromptIdRef = React.useRef<string | null>(null);
 
   const handlePromptResume = React.useCallback((task: PipelineTask) => {
+    pendingPromptIdRef.current = null;
     setPendingPrompt(null);
     if (
       task.targetType !== 'chapter'
@@ -103,7 +105,7 @@ export const App: React.FC = () => {
           resolvedAt: null,
           resolvedAction: null,
         });
-        Toast.show({ type: 'info', text1: '正在从失败处继续重跑' });
+        Toast.show({ type: 'info', text1: '正在从失败节点重试' });
         resumePipeline(task.id, chapter).catch((error: any) => {
           const already =
             error?.code === 'TASK_ALREADY_RUNNING' ||
@@ -350,7 +352,22 @@ export const App: React.FC = () => {
         .sort((a: PipelineTask, b: PipelineTask) => b.updatedAt - a.updatedAt);
       if (finished.length === 0) return;
       const task = finished[0];
-      prompted.add(task.id);
+      const pendingId = pendingPromptIdRef.current;
+      const pending = pendingId
+        ? tasks.find(candidate => candidate.id === pendingId)
+        : null;
+      // A second store update can happen during startup. Do not let an older
+      // terminal task overwrite the prompt that is already being shown for a
+      // newer result. Newer terminal work may replace it and remains the
+      // freshest item the user needs to inspect.
+      if (pending && task.updatedAt <= pending.updatedAt) return;
+      // One global prompt is shared by all targets. Mark older eligible
+      // terminal rows as surfaced together with the newest one, otherwise a
+      // later unrelated store update would replay historical failures.
+      finished.forEach(candidate => {
+        if (candidate.updatedAt <= task.updatedAt) prompted.add(candidate.id);
+      });
+      pendingPromptIdRef.current = task.id;
       // Render via a controlled React Modal (see PipelineResultPrompt)
       // instead of Alert.alert. Native Alerts stick around on top of any
       // screen the user navigates to, which made the prompt feel like it
@@ -370,7 +387,10 @@ export const App: React.FC = () => {
         // 同时清空已经在 pending 的同类弹窗（如果有的话）
         setPendingPrompt((prev) => {
           if (!prev) return prev;
-          if (prompted.has(prev.id)) return null;
+          if (prompted.has(prev.id)) {
+            pendingPromptIdRef.current = null;
+            return null;
+          }
           return prev;
         });
       }
@@ -512,7 +532,10 @@ export const App: React.FC = () => {
         )}
         <PipelineResultPrompt
           task={pendingPrompt}
-          onDismiss={() => { setPendingPrompt(null); }}
+          onDismiss={() => {
+            pendingPromptIdRef.current = null;
+            setPendingPrompt(null);
+          }}
           onResume={(taskId) => {
             const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
             if (task) handlePromptResume(task);
@@ -520,6 +543,7 @@ export const App: React.FC = () => {
           onViewResult={(taskId) => {
             // Dismiss *before* navigation so the modal does not flash on
             // top of the result screen for a frame.
+            pendingPromptIdRef.current = null;
             setPendingPrompt(null);
             navigateToPipelineResult(taskId);
           }}

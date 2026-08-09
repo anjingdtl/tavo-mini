@@ -9,6 +9,7 @@ import {
 import type {
   PersistedPipelineTaskView,
   PersistedStageCheckpoint,
+  PipelineCheckpointStage,
   StageStatus,
 } from './types';
 import type { PipelineStageCheckpointRow } from '../../data/repositories/pipelineStageCheckpointRepository';
@@ -17,7 +18,9 @@ import { projectStageResultsToCheckpoints } from './projectStageCheckpoints';
 export function checkpointsFromRows(
   rows: PipelineStageCheckpointRow[],
 ): PersistedStageCheckpoint[] {
-  const names = ['draft', 'review', 'factCheck', 'proof'] as const;
+  const names: PipelineCheckpointStage[] = rows.some(row => row.stage === 'brief')
+    ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+    : ['draft', 'review', 'factCheck', 'proof'];
   const map = new Map(rows.map(r => [r.stage, r]));
   return names.map(stage => {
     const row = map.get(stage);
@@ -45,11 +48,17 @@ export function checkpointsFromRows(
 export function resolveStageCheckpoints(params: {
   checkpointRows?: PipelineStageCheckpointRow[] | null;
   stageResults?: PipelineTask['stageResults'];
+  outlineWorkflowVersion?: number | null;
+  contextBudgetVersion?: number | null;
 }): PersistedStageCheckpoint[] {
   if (params.checkpointRows && params.checkpointRows.length > 0) {
     return checkpointsFromRows(params.checkpointRows);
   }
-  return projectStageResultsToCheckpoints(params.stageResults || []);
+  return projectStageResultsToCheckpoints(params.stageResults || [], {
+    includeBrief:
+      Number(params.outlineWorkflowVersion) === 3 &&
+      Number(params.contextBudgetVersion) === 3,
+  });
 }
 
 export function buildPersistedTaskView(
@@ -61,6 +70,8 @@ export function buildPersistedTaskView(
     | 'pipelineContextJson'
     | 'pipelineContextHash'
     | 'pipelineContextVersion'
+    | 'outlineWorkflowVersion'
+    | 'contextBudgetVersion'
     | 'error'
   >,
   options?: {
@@ -83,11 +94,17 @@ export function buildPersistedTaskView(
 
   const mode: PipelineMode | null =
     parsed?.execution?.pipelineMode ?? null;
+  const outlineWorkflowVersion =
+    parsed?.execution?.outlineWorkflowVersion ?? task.outlineWorkflowVersion ?? null;
+  const contextBudgetVersion =
+    parsed?.execution?.contextBudgetVersion ?? task.contextBudgetVersion ?? null;
 
   return {
     id: task.id,
     status: task.status,
     pipelineMode: mode,
+    outlineWorkflowVersion,
+    contextBudgetVersion,
     hasExecutionSnapshot: Boolean(parsed?.execution),
     hasDraftContext: Boolean(parsed?.draftContext),
     hasAuditContext: Boolean(parsed?.auditContext),

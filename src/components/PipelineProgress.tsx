@@ -68,6 +68,7 @@ const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
   draft: '草稿中...',
   review: '点评中...',
   factCheck: '事实检查中...',
+  brief: '整理终稿 Brief 中...',
   proof: '打磨中...',
 };
 

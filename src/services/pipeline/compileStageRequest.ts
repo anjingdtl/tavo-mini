@@ -15,6 +15,7 @@ import {
   buildReviewV2RepairMessages,
   buildFactCheckV2RepairMessages,
   buildFinalReviserMessages,
+  buildFinalReviserV3Messages,
   estimateStageInputTokens,
 } from '../pipelineMessages';
 import {
@@ -36,19 +37,19 @@ import type {
   FactCheckContext,
   PipelineContextSnapshot,
   ProofConstraints,
+  FinalContinuityCapsule,
   ReviewContext,
 } from '../../types/pipelineContext';
 import type { FrozenDraftRequest } from '../../types/pipelineFrozen';
 import type { PipelineStageName } from '../../types/pipeline';
 import type { PipelineError } from './types';
 import { pipelineError } from './errors';
-import { estimateTokens, clipTextToTokenBudget } from '../../utils/tokenEstimator';
 import {
-  computeFrozenDraftRequestFingerprint,
-} from '../pipelineTaskContext';
-import {
-  checkRequestFitsContextWindow,
-} from '../outlineContextBuilder';
+  estimateTokens,
+  clipTextToTokenBudget,
+} from '../../utils/tokenEstimator';
+import { computeFrozenDraftRequestFingerprint } from '../pipelineTaskContext';
+import { checkRequestFitsContextWindow } from '../outlineContextBuilder';
 
 export interface ContextAllocationTrace {
   id: string;
@@ -73,7 +74,11 @@ export interface ContextBudgetDiagnostics {
 export type StageCompileResult =
   | {
       ready: true;
-      stage: PipelineStageName | 'draft_retry' | 'review_repair' | 'factCheck_repair';
+      stage:
+        | PipelineStageName
+        | 'draft_retry'
+        | 'review_repair'
+        | 'factCheck_repair';
       messages: ChatMessage[];
       estimatedInputTokens: number;
       reservedOutputTokens: number;
@@ -87,7 +92,11 @@ export type StageCompileResult =
     }
   | {
       ready: false;
-      stage: PipelineStageName | 'draft_retry' | 'review_repair' | 'factCheck_repair';
+      stage:
+        | PipelineStageName
+        | 'draft_retry'
+        | 'review_repair'
+        | 'factCheck_repair';
       error: PipelineError;
       diagnostics: ContextBudgetDiagnostics;
       allocations: ContextAllocationTrace[];
@@ -161,10 +170,10 @@ function classifyBlockingError(params: {
     params.stage === 'review_repair'
       ? 'review'
       : params.stage === 'factCheck_repair'
-        ? 'factCheck'
-        : params.stage === 'draft_retry'
-          ? 'draft'
-          : (params.stage as any);
+      ? 'factCheck'
+      : params.stage === 'draft_retry'
+      ? 'draft'
+      : (params.stage as any);
 
   // OUTLINE_TOO_LARGE only when the full outline alone (with fixed scaffold +
   // output + safety, zero body) cannot fit. No Chinese regex classification.
@@ -263,12 +272,15 @@ export async function compileDraftStageRequest(params: {
     safetyMargin,
     contextWindow: compiled.contextWindow,
     allocations,
-    requestFingerprint: computeFrozenDraftRequestFingerprint(compiled.messages, {
-      estimatedInputTokens: compiled.estimatedInputTokens,
-      reservedOutputTokens: compiled.reservedOutputTokens,
-      safetyMargin,
-      contextWindow: compiled.contextWindow,
-    }),
+    requestFingerprint: computeFrozenDraftRequestFingerprint(
+      compiled.messages,
+      {
+        estimatedInputTokens: compiled.estimatedInputTokens,
+        reservedOutputTokens: compiled.reservedOutputTokens,
+        safetyMargin,
+        contextWindow: compiled.contextWindow,
+      },
+    ),
     chapterTitle: compiled.chapterTitle,
     prevEnding: compiled.prevEnding,
     userPrompt: compiled.userPrompt,
@@ -391,10 +403,7 @@ const PROOF_OPTIONAL_WEIGHTS: Record<string, number> = {
   factCheckReport: 13,
 };
 
-function clipByAllocation(
-  text: string,
-  allocation: number,
-): string {
+function clipByAllocation(text: string, allocation: number): string {
   if (!text || allocation <= 0) return '';
   return clipTextToTokenBudget(text, allocation);
 }
@@ -477,7 +486,11 @@ export function compileReviewStageRequest(params: {
 
   // Fixed scaffold ≈ system prompt without optional partitions.
   const scaffold = params.repairReason
-    ? buildReviewRepairMessages(params.draftText, emptyReviewContext(), params.repairReason)
+    ? buildReviewRepairMessages(
+        params.draftText,
+        emptyReviewContext(),
+        params.repairReason,
+      )
     : buildReviewMessages(params.draftText, emptyReviewContext());
   // Partition labels / role overhead not present in empty scaffold alone.
   const PARTITION_OVERHEAD = 128;
@@ -486,15 +499,51 @@ export function compileReviewStageRequest(params: {
     PARTITION_OVERHEAD;
 
   const optionalSections = [
-    { id: 'preset', tokens: estimateTokens(params.context.presetText), weight: REVIEW_OPTIONAL_WEIGHTS.preset },
-    { id: 'character', tokens: estimateTokens(params.context.characterText), weight: REVIEW_OPTIONAL_WEIGHTS.character },
-    { id: 'note', tokens: estimateTokens(params.context.noteText), weight: REVIEW_OPTIONAL_WEIGHTS.note },
-    { id: 'worldbook', tokens: estimateTokens(params.context.worldbookText), weight: REVIEW_OPTIONAL_WEIGHTS.worldbook },
-    { id: 'storyMemory', tokens: estimateTokens(params.context.storyMemoryText), weight: REVIEW_OPTIONAL_WEIGHTS.storyMemory },
-    { id: 'episodic', tokens: estimateTokens(params.context.episodicMemoryText), weight: REVIEW_OPTIONAL_WEIGHTS.episodic },
-    { id: 'recentBridge', tokens: estimateTokens(params.context.recentBridgeText), weight: REVIEW_OPTIONAL_WEIGHTS.recentBridge },
-    { id: 'currentInstruction', tokens: estimateTokens(params.context.currentInstructionText), weight: REVIEW_OPTIONAL_WEIGHTS.currentInstruction },
-    { id: 'userPrompt', tokens: estimateTokens(params.context.retrievalUserPrompt), weight: REVIEW_OPTIONAL_WEIGHTS.userPrompt },
+    {
+      id: 'preset',
+      tokens: estimateTokens(params.context.presetText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.preset,
+    },
+    {
+      id: 'character',
+      tokens: estimateTokens(params.context.characterText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.character,
+    },
+    {
+      id: 'note',
+      tokens: estimateTokens(params.context.noteText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.note,
+    },
+    {
+      id: 'worldbook',
+      tokens: estimateTokens(params.context.worldbookText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.worldbook,
+    },
+    {
+      id: 'storyMemory',
+      tokens: estimateTokens(params.context.storyMemoryText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.storyMemory,
+    },
+    {
+      id: 'episodic',
+      tokens: estimateTokens(params.context.episodicMemoryText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.episodic,
+    },
+    {
+      id: 'recentBridge',
+      tokens: estimateTokens(params.context.recentBridgeText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.recentBridge,
+    },
+    {
+      id: 'currentInstruction',
+      tokens: estimateTokens(params.context.currentInstructionText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.currentInstruction,
+    },
+    {
+      id: 'userPrompt',
+      tokens: estimateTokens(params.context.retrievalUserPrompt),
+      weight: REVIEW_OPTIONAL_WEIGHTS.userPrompt,
+    },
   ];
 
   const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
@@ -510,15 +559,39 @@ export function compileReviewStageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: ReviewContext = {
-    presetText: clipByAllocation(params.context.presetText, am.get('preset') || 0),
-    characterText: clipByAllocation(params.context.characterText, am.get('character') || 0),
+    presetText: clipByAllocation(
+      params.context.presetText,
+      am.get('preset') || 0,
+    ),
+    characterText: clipByAllocation(
+      params.context.characterText,
+      am.get('character') || 0,
+    ),
     noteText: clipByAllocation(params.context.noteText, am.get('note') || 0),
-    worldbookText: clipByAllocation(params.context.worldbookText, am.get('worldbook') || 0),
-    storyMemoryText: clipByAllocation(params.context.storyMemoryText, am.get('storyMemory') || 0),
-    episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, am.get('episodic') || 0),
-    recentBridgeText: clipByAllocation(params.context.recentBridgeText, am.get('recentBridge') || 0),
-    currentInstructionText: clipByAllocation(params.context.currentInstructionText, am.get('currentInstruction') || 0),
-    retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, am.get('userPrompt') || 0),
+    worldbookText: clipByAllocation(
+      params.context.worldbookText,
+      am.get('worldbook') || 0,
+    ),
+    storyMemoryText: clipByAllocation(
+      params.context.storyMemoryText,
+      am.get('storyMemory') || 0,
+    ),
+    episodicMemoryText: clipByAllocation(
+      params.context.episodicMemoryText,
+      am.get('episodic') || 0,
+    ),
+    recentBridgeText: clipByAllocation(
+      params.context.recentBridgeText,
+      am.get('recentBridge') || 0,
+    ),
+    currentInstructionText: clipByAllocation(
+      params.context.currentInstructionText,
+      am.get('currentInstruction') || 0,
+    ),
+    retrievalUserPrompt: clipByAllocation(
+      params.context.retrievalUserPrompt,
+      am.get('userPrompt') || 0,
+    ),
     outlineText,
   };
 
@@ -528,15 +601,39 @@ export function compileReviewStageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: ReviewContext = {
-      presetText: clipByAllocation(params.context.presetText, m.get('preset') || 0),
-      characterText: clipByAllocation(params.context.characterText, m.get('character') || 0),
+      presetText: clipByAllocation(
+        params.context.presetText,
+        m.get('preset') || 0,
+      ),
+      characterText: clipByAllocation(
+        params.context.characterText,
+        m.get('character') || 0,
+      ),
       noteText: clipByAllocation(params.context.noteText, m.get('note') || 0),
-      worldbookText: clipByAllocation(params.context.worldbookText, m.get('worldbook') || 0),
-      storyMemoryText: clipByAllocation(params.context.storyMemoryText, m.get('storyMemory') || 0),
-      episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, m.get('episodic') || 0),
-      recentBridgeText: clipByAllocation(params.context.recentBridgeText, m.get('recentBridge') || 0),
-      currentInstructionText: clipByAllocation(params.context.currentInstructionText, m.get('currentInstruction') || 0),
-      retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, m.get('userPrompt') || 0),
+      worldbookText: clipByAllocation(
+        params.context.worldbookText,
+        m.get('worldbook') || 0,
+      ),
+      storyMemoryText: clipByAllocation(
+        params.context.storyMemoryText,
+        m.get('storyMemory') || 0,
+      ),
+      episodicMemoryText: clipByAllocation(
+        params.context.episodicMemoryText,
+        m.get('episodic') || 0,
+      ),
+      recentBridgeText: clipByAllocation(
+        params.context.recentBridgeText,
+        m.get('recentBridge') || 0,
+      ),
+      currentInstructionText: clipByAllocation(
+        params.context.currentInstructionText,
+        m.get('currentInstruction') || 0,
+      ),
+      retrievalUserPrompt: clipByAllocation(
+        params.context.retrievalUserPrompt,
+        m.get('userPrompt') || 0,
+      ),
       outlineText,
     };
     return params.repairReason
@@ -547,7 +644,11 @@ export function compileReviewStageRequest(params: {
   return finalizeCompiled({
     stage,
     messages: params.repairReason
-      ? buildReviewRepairMessages(params.draftText, clipped, params.repairReason)
+      ? buildReviewRepairMessages(
+          params.draftText,
+          clipped,
+          params.repairReason,
+        )
       : buildReviewMessages(params.draftText, clipped),
     maxTokens: params.maxTokens,
     contextWindow: params.contextWindow,
@@ -556,8 +657,18 @@ export function compileReviewStageRequest(params: {
     fixedMessagesTokens,
     budget,
     allocations: [
-      { id: 'outline', requested: outlineTokens, allocated: outlineTokens, truncated: false },
-      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
+      {
+        id: 'outline',
+        requested: outlineTokens,
+        allocated: outlineTokens,
+        truncated: false,
+      },
+      {
+        id: 'mandatory_body',
+        requested: bodyTokens,
+        allocated: bodyTokens,
+        truncated: false,
+      },
       ...budget.optionalAllocations,
     ],
     rebuild,
@@ -581,19 +692,85 @@ function compileReviewWithElasticBudget(params: {
   const stage = params.repairReason ? 'review_repair' : 'review';
   const outlineText = String(params.context.outlineText || '');
   const mandatoryModules: ElasticStageModule[] = [
-    { id: 'outline', text: outlineText, requirement: 'mandatory', priority: 10, relevance: 1 },
-    { id: 'mandatory_body', text: params.draftText, requirement: 'mandatory', priority: 10, relevance: 1 },
+    {
+      id: 'outline',
+      text: outlineText,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+    {
+      id: 'mandatory_body',
+      text: params.draftText,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
   ];
   const elasticModules: ElasticStageModule[] = [
-    { id: 'recentBridge', text: params.context.recentBridgeText, requirement: 'preferred', priority: 8, relevance: 0.9 },
-    { id: 'storyMemory', text: params.context.storyMemoryText, requirement: 'preferred', priority: 7, relevance: 0.85 },
-    { id: 'character', text: params.context.characterText, requirement: 'preferred', priority: 6, relevance: 0.8 },
-    { id: 'worldbook', text: params.context.worldbookText, requirement: 'preferred', priority: 6, relevance: 0.8 },
-    { id: 'episodic', text: params.context.episodicMemoryText, requirement: 'optional', priority: 4, relevance: 0.6 },
-    { id: 'note', text: params.context.noteText, requirement: 'optional', priority: 3, relevance: 0.5 },
-    { id: 'preset', text: params.context.presetText, requirement: 'optional', priority: 3, relevance: 0.5 },
-    { id: 'currentInstruction', text: params.context.currentInstructionText, requirement: 'optional', priority: 2, relevance: 0.5 },
-    { id: 'userPrompt', text: params.context.retrievalUserPrompt, requirement: 'optional', priority: 2, relevance: 0.5 },
+    {
+      id: 'recentBridge',
+      text: params.context.recentBridgeText,
+      requirement: 'preferred',
+      priority: 8,
+      relevance: 0.9,
+    },
+    {
+      id: 'storyMemory',
+      text: params.context.storyMemoryText,
+      requirement: 'preferred',
+      priority: 7,
+      relevance: 0.85,
+    },
+    {
+      id: 'character',
+      text: params.context.characterText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.8,
+    },
+    {
+      id: 'worldbook',
+      text: params.context.worldbookText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.8,
+    },
+    {
+      id: 'episodic',
+      text: params.context.episodicMemoryText,
+      requirement: 'optional',
+      priority: 4,
+      relevance: 0.6,
+    },
+    {
+      id: 'note',
+      text: params.context.noteText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'preset',
+      text: params.context.presetText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'currentInstruction',
+      text: params.context.currentInstructionText,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
+    {
+      id: 'userPrompt',
+      text: params.context.retrievalUserPrompt,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
   ];
   return compileStageRequestWithElasticBudget({
     stage,
@@ -640,7 +817,11 @@ export function compileFactCheckStageRequest(params: {
   const bodyTokens = estimateTokens(params.draftText);
 
   const scaffold = params.repairReason
-    ? buildFactCheckRepairMessages(params.draftText, emptyFactCheckContext(), params.repairReason)
+    ? buildFactCheckRepairMessages(
+        params.draftText,
+        emptyFactCheckContext(),
+        params.repairReason,
+      )
     : buildFactCheckMessages(params.draftText, emptyFactCheckContext());
   const PARTITION_OVERHEAD = 128;
   const fixedMessagesTokens =
@@ -648,15 +829,51 @@ export function compileFactCheckStageRequest(params: {
     PARTITION_OVERHEAD;
 
   const optionalSections = [
-    { id: 'preset', tokens: estimateTokens(params.context.presetText), weight: FACTCHECK_OPTIONAL_WEIGHTS.preset },
-    { id: 'currentInstruction', tokens: estimateTokens(params.context.currentInstructionText), weight: FACTCHECK_OPTIONAL_WEIGHTS.currentInstruction },
-    { id: 'userPrompt', tokens: estimateTokens(params.context.retrievalUserPrompt), weight: FACTCHECK_OPTIONAL_WEIGHTS.userPrompt },
-    { id: 'recentBridge', tokens: estimateTokens(params.context.recentBridgeText), weight: FACTCHECK_OPTIONAL_WEIGHTS.recentBridge },
-    { id: 'storyMemory', tokens: estimateTokens(params.context.storyMemoryText), weight: FACTCHECK_OPTIONAL_WEIGHTS.storyMemory },
-    { id: 'episodic', tokens: estimateTokens(params.context.episodicMemoryText), weight: FACTCHECK_OPTIONAL_WEIGHTS.episodic },
-    { id: 'worldbook', tokens: estimateTokens(params.context.worldbookText), weight: FACTCHECK_OPTIONAL_WEIGHTS.worldbook },
-    { id: 'character', tokens: estimateTokens(params.context.characterText), weight: FACTCHECK_OPTIONAL_WEIGHTS.character },
-    { id: 'note', tokens: estimateTokens(params.context.noteText), weight: FACTCHECK_OPTIONAL_WEIGHTS.note },
+    {
+      id: 'preset',
+      tokens: estimateTokens(params.context.presetText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.preset,
+    },
+    {
+      id: 'currentInstruction',
+      tokens: estimateTokens(params.context.currentInstructionText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.currentInstruction,
+    },
+    {
+      id: 'userPrompt',
+      tokens: estimateTokens(params.context.retrievalUserPrompt),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.userPrompt,
+    },
+    {
+      id: 'recentBridge',
+      tokens: estimateTokens(params.context.recentBridgeText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.recentBridge,
+    },
+    {
+      id: 'storyMemory',
+      tokens: estimateTokens(params.context.storyMemoryText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.storyMemory,
+    },
+    {
+      id: 'episodic',
+      tokens: estimateTokens(params.context.episodicMemoryText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.episodic,
+    },
+    {
+      id: 'worldbook',
+      tokens: estimateTokens(params.context.worldbookText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.worldbook,
+    },
+    {
+      id: 'character',
+      tokens: estimateTokens(params.context.characterText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.character,
+    },
+    {
+      id: 'note',
+      tokens: estimateTokens(params.context.noteText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.note,
+    },
   ];
 
   const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
@@ -672,14 +889,38 @@ export function compileFactCheckStageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: FactCheckContext = {
-    presetText: clipByAllocation(params.context.presetText, am.get('preset') || 0),
-    currentInstructionText: clipByAllocation(params.context.currentInstructionText, am.get('currentInstruction') || 0),
-    retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, am.get('userPrompt') || 0),
-    recentBridgeText: clipByAllocation(params.context.recentBridgeText, am.get('recentBridge') || 0),
-    storyMemoryText: clipByAllocation(params.context.storyMemoryText, am.get('storyMemory') || 0),
-    episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, am.get('episodic') || 0),
-    worldbookText: clipByAllocation(params.context.worldbookText, am.get('worldbook') || 0),
-    characterText: clipByAllocation(params.context.characterText, am.get('character') || 0),
+    presetText: clipByAllocation(
+      params.context.presetText,
+      am.get('preset') || 0,
+    ),
+    currentInstructionText: clipByAllocation(
+      params.context.currentInstructionText,
+      am.get('currentInstruction') || 0,
+    ),
+    retrievalUserPrompt: clipByAllocation(
+      params.context.retrievalUserPrompt,
+      am.get('userPrompt') || 0,
+    ),
+    recentBridgeText: clipByAllocation(
+      params.context.recentBridgeText,
+      am.get('recentBridge') || 0,
+    ),
+    storyMemoryText: clipByAllocation(
+      params.context.storyMemoryText,
+      am.get('storyMemory') || 0,
+    ),
+    episodicMemoryText: clipByAllocation(
+      params.context.episodicMemoryText,
+      am.get('episodic') || 0,
+    ),
+    worldbookText: clipByAllocation(
+      params.context.worldbookText,
+      am.get('worldbook') || 0,
+    ),
+    characterText: clipByAllocation(
+      params.context.characterText,
+      am.get('character') || 0,
+    ),
     noteText: clipByAllocation(params.context.noteText, am.get('note') || 0),
     outlineText,
   };
@@ -689,14 +930,38 @@ export function compileFactCheckStageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: FactCheckContext = {
-      presetText: clipByAllocation(params.context.presetText, m.get('preset') || 0),
-      currentInstructionText: clipByAllocation(params.context.currentInstructionText, m.get('currentInstruction') || 0),
-      retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, m.get('userPrompt') || 0),
-      recentBridgeText: clipByAllocation(params.context.recentBridgeText, m.get('recentBridge') || 0),
-      storyMemoryText: clipByAllocation(params.context.storyMemoryText, m.get('storyMemory') || 0),
-      episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, m.get('episodic') || 0),
-      worldbookText: clipByAllocation(params.context.worldbookText, m.get('worldbook') || 0),
-      characterText: clipByAllocation(params.context.characterText, m.get('character') || 0),
+      presetText: clipByAllocation(
+        params.context.presetText,
+        m.get('preset') || 0,
+      ),
+      currentInstructionText: clipByAllocation(
+        params.context.currentInstructionText,
+        m.get('currentInstruction') || 0,
+      ),
+      retrievalUserPrompt: clipByAllocation(
+        params.context.retrievalUserPrompt,
+        m.get('userPrompt') || 0,
+      ),
+      recentBridgeText: clipByAllocation(
+        params.context.recentBridgeText,
+        m.get('recentBridge') || 0,
+      ),
+      storyMemoryText: clipByAllocation(
+        params.context.storyMemoryText,
+        m.get('storyMemory') || 0,
+      ),
+      episodicMemoryText: clipByAllocation(
+        params.context.episodicMemoryText,
+        m.get('episodic') || 0,
+      ),
+      worldbookText: clipByAllocation(
+        params.context.worldbookText,
+        m.get('worldbook') || 0,
+      ),
+      characterText: clipByAllocation(
+        params.context.characterText,
+        m.get('character') || 0,
+      ),
       noteText: clipByAllocation(params.context.noteText, m.get('note') || 0),
       outlineText,
     };
@@ -708,7 +973,11 @@ export function compileFactCheckStageRequest(params: {
   return finalizeCompiled({
     stage,
     messages: params.repairReason
-      ? buildFactCheckRepairMessages(params.draftText, clipped, params.repairReason)
+      ? buildFactCheckRepairMessages(
+          params.draftText,
+          clipped,
+          params.repairReason,
+        )
       : buildFactCheckMessages(params.draftText, clipped),
     maxTokens: params.maxTokens,
     contextWindow: params.contextWindow,
@@ -717,8 +986,18 @@ export function compileFactCheckStageRequest(params: {
     fixedMessagesTokens,
     budget,
     allocations: [
-      { id: 'outline', requested: outlineTokens, allocated: outlineTokens, truncated: false },
-      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
+      {
+        id: 'outline',
+        requested: outlineTokens,
+        allocated: outlineTokens,
+        truncated: false,
+      },
+      {
+        id: 'mandatory_body',
+        requested: bodyTokens,
+        allocated: bodyTokens,
+        truncated: false,
+      },
       ...budget.optionalAllocations,
     ],
     rebuild,
@@ -741,19 +1020,85 @@ function compileFactCheckWithElasticBudget(params: {
   const stage = params.repairReason ? 'factCheck_repair' : 'factCheck';
   const outlineText = String(params.context.outlineText || '');
   const mandatoryModules: ElasticStageModule[] = [
-    { id: 'outline', text: outlineText, requirement: 'mandatory', priority: 10, relevance: 1 },
-    { id: 'mandatory_body', text: params.draftText, requirement: 'mandatory', priority: 10, relevance: 1 },
+    {
+      id: 'outline',
+      text: outlineText,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+    {
+      id: 'mandatory_body',
+      text: params.draftText,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
   ];
   const elasticModules: ElasticStageModule[] = [
-    { id: 'recentBridge', text: params.context.recentBridgeText, requirement: 'preferred', priority: 8, relevance: 0.9 },
-    { id: 'storyMemory', text: params.context.storyMemoryText, requirement: 'preferred', priority: 7, relevance: 0.85 },
-    { id: 'character', text: params.context.characterText, requirement: 'preferred', priority: 6, relevance: 0.8 },
-    { id: 'worldbook', text: params.context.worldbookText, requirement: 'preferred', priority: 6, relevance: 0.8 },
-    { id: 'episodic', text: params.context.episodicMemoryText, requirement: 'optional', priority: 4, relevance: 0.6 },
-    { id: 'note', text: params.context.noteText, requirement: 'optional', priority: 3, relevance: 0.5 },
-    { id: 'preset', text: params.context.presetText, requirement: 'optional', priority: 3, relevance: 0.5 },
-    { id: 'currentInstruction', text: params.context.currentInstructionText, requirement: 'optional', priority: 2, relevance: 0.5 },
-    { id: 'userPrompt', text: params.context.retrievalUserPrompt, requirement: 'optional', priority: 2, relevance: 0.5 },
+    {
+      id: 'recentBridge',
+      text: params.context.recentBridgeText,
+      requirement: 'preferred',
+      priority: 8,
+      relevance: 0.9,
+    },
+    {
+      id: 'storyMemory',
+      text: params.context.storyMemoryText,
+      requirement: 'preferred',
+      priority: 7,
+      relevance: 0.85,
+    },
+    {
+      id: 'character',
+      text: params.context.characterText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.8,
+    },
+    {
+      id: 'worldbook',
+      text: params.context.worldbookText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.8,
+    },
+    {
+      id: 'episodic',
+      text: params.context.episodicMemoryText,
+      requirement: 'optional',
+      priority: 4,
+      relevance: 0.6,
+    },
+    {
+      id: 'note',
+      text: params.context.noteText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'preset',
+      text: params.context.presetText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'currentInstruction',
+      text: params.context.currentInstructionText,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
+    {
+      id: 'userPrompt',
+      text: params.context.retrievalUserPrompt,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
   ];
   return compileStageRequestWithElasticBudget({
     stage,
@@ -775,7 +1120,11 @@ function compileFactCheckWithElasticBudget(params: {
         outlineText,
       };
       return params.repairReason
-        ? buildFactCheckRepairMessages(params.draftText, ctx, params.repairReason)
+        ? buildFactCheckRepairMessages(
+            params.draftText,
+            ctx,
+            params.repairReason,
+          )
         : buildFactCheckMessages(params.draftText, ctx);
     },
   });
@@ -796,7 +1145,11 @@ export function compileReviewV2StageRequest(params: {
   maxTokens: number;
   contextWindow: number;
   repairReason?: string;
+  elasticBudget?: boolean;
 }): StageCompileResult {
+  if (params.elasticBudget) {
+    return compileReviewV2WithElasticBudget(params);
+  }
   const stage = params.repairReason ? 'review_repair' : 'review';
   const outlineText = params.context.outlineText
     ? String(params.context.outlineText)
@@ -822,15 +1175,51 @@ export function compileReviewV2StageRequest(params: {
     PARTITION_OVERHEAD;
 
   const optionalSections = [
-    { id: 'preset', tokens: estimateTokens(params.context.presetText), weight: REVIEW_OPTIONAL_WEIGHTS.preset },
-    { id: 'character', tokens: estimateTokens(params.context.characterText), weight: REVIEW_OPTIONAL_WEIGHTS.character },
-    { id: 'note', tokens: estimateTokens(params.context.noteText), weight: REVIEW_OPTIONAL_WEIGHTS.note },
-    { id: 'worldbook', tokens: estimateTokens(params.context.worldbookText), weight: REVIEW_OPTIONAL_WEIGHTS.worldbook },
-    { id: 'storyMemory', tokens: estimateTokens(params.context.storyMemoryText), weight: REVIEW_OPTIONAL_WEIGHTS.storyMemory },
-    { id: 'episodic', tokens: estimateTokens(params.context.episodicMemoryText), weight: REVIEW_OPTIONAL_WEIGHTS.episodic },
-    { id: 'recentBridge', tokens: estimateTokens(params.context.recentBridgeText), weight: REVIEW_OPTIONAL_WEIGHTS.recentBridge },
-    { id: 'currentInstruction', tokens: estimateTokens(params.context.currentInstructionText), weight: REVIEW_OPTIONAL_WEIGHTS.currentInstruction },
-    { id: 'userPrompt', tokens: estimateTokens(params.context.retrievalUserPrompt), weight: REVIEW_OPTIONAL_WEIGHTS.userPrompt },
+    {
+      id: 'preset',
+      tokens: estimateTokens(params.context.presetText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.preset,
+    },
+    {
+      id: 'character',
+      tokens: estimateTokens(params.context.characterText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.character,
+    },
+    {
+      id: 'note',
+      tokens: estimateTokens(params.context.noteText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.note,
+    },
+    {
+      id: 'worldbook',
+      tokens: estimateTokens(params.context.worldbookText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.worldbook,
+    },
+    {
+      id: 'storyMemory',
+      tokens: estimateTokens(params.context.storyMemoryText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.storyMemory,
+    },
+    {
+      id: 'episodic',
+      tokens: estimateTokens(params.context.episodicMemoryText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.episodic,
+    },
+    {
+      id: 'recentBridge',
+      tokens: estimateTokens(params.context.recentBridgeText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.recentBridge,
+    },
+    {
+      id: 'currentInstruction',
+      tokens: estimateTokens(params.context.currentInstructionText),
+      weight: REVIEW_OPTIONAL_WEIGHTS.currentInstruction,
+    },
+    {
+      id: 'userPrompt',
+      tokens: estimateTokens(params.context.retrievalUserPrompt),
+      weight: REVIEW_OPTIONAL_WEIGHTS.userPrompt,
+    },
   ];
 
   const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
@@ -846,30 +1235,78 @@ export function compileReviewV2StageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: ReviewContext = {
-    presetText: clipByAllocation(params.context.presetText, am.get('preset') || 0),
-    characterText: clipByAllocation(params.context.characterText, am.get('character') || 0),
+    presetText: clipByAllocation(
+      params.context.presetText,
+      am.get('preset') || 0,
+    ),
+    characterText: clipByAllocation(
+      params.context.characterText,
+      am.get('character') || 0,
+    ),
     noteText: clipByAllocation(params.context.noteText, am.get('note') || 0),
-    worldbookText: clipByAllocation(params.context.worldbookText, am.get('worldbook') || 0),
-    storyMemoryText: clipByAllocation(params.context.storyMemoryText, am.get('storyMemory') || 0),
-    episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, am.get('episodic') || 0),
-    recentBridgeText: clipByAllocation(params.context.recentBridgeText, am.get('recentBridge') || 0),
-    currentInstructionText: clipByAllocation(params.context.currentInstructionText, am.get('currentInstruction') || 0),
-    retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, am.get('userPrompt') || 0),
+    worldbookText: clipByAllocation(
+      params.context.worldbookText,
+      am.get('worldbook') || 0,
+    ),
+    storyMemoryText: clipByAllocation(
+      params.context.storyMemoryText,
+      am.get('storyMemory') || 0,
+    ),
+    episodicMemoryText: clipByAllocation(
+      params.context.episodicMemoryText,
+      am.get('episodic') || 0,
+    ),
+    recentBridgeText: clipByAllocation(
+      params.context.recentBridgeText,
+      am.get('recentBridge') || 0,
+    ),
+    currentInstructionText: clipByAllocation(
+      params.context.currentInstructionText,
+      am.get('currentInstruction') || 0,
+    ),
+    retrievalUserPrompt: clipByAllocation(
+      params.context.retrievalUserPrompt,
+      am.get('userPrompt') || 0,
+    ),
     outlineText,
   };
 
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: ReviewContext = {
-      presetText: clipByAllocation(params.context.presetText, m.get('preset') || 0),
-      characterText: clipByAllocation(params.context.characterText, m.get('character') || 0),
+      presetText: clipByAllocation(
+        params.context.presetText,
+        m.get('preset') || 0,
+      ),
+      characterText: clipByAllocation(
+        params.context.characterText,
+        m.get('character') || 0,
+      ),
       noteText: clipByAllocation(params.context.noteText, m.get('note') || 0),
-      worldbookText: clipByAllocation(params.context.worldbookText, m.get('worldbook') || 0),
-      storyMemoryText: clipByAllocation(params.context.storyMemoryText, m.get('storyMemory') || 0),
-      episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, m.get('episodic') || 0),
-      recentBridgeText: clipByAllocation(params.context.recentBridgeText, m.get('recentBridge') || 0),
-      currentInstructionText: clipByAllocation(params.context.currentInstructionText, m.get('currentInstruction') || 0),
-      retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, m.get('userPrompt') || 0),
+      worldbookText: clipByAllocation(
+        params.context.worldbookText,
+        m.get('worldbook') || 0,
+      ),
+      storyMemoryText: clipByAllocation(
+        params.context.storyMemoryText,
+        m.get('storyMemory') || 0,
+      ),
+      episodicMemoryText: clipByAllocation(
+        params.context.episodicMemoryText,
+        m.get('episodic') || 0,
+      ),
+      recentBridgeText: clipByAllocation(
+        params.context.recentBridgeText,
+        m.get('recentBridge') || 0,
+      ),
+      currentInstructionText: clipByAllocation(
+        params.context.currentInstructionText,
+        m.get('currentInstruction') || 0,
+      ),
+      retrievalUserPrompt: clipByAllocation(
+        params.context.retrievalUserPrompt,
+        m.get('userPrompt') || 0,
+      ),
       outlineText,
     };
     return params.repairReason
@@ -907,8 +1344,18 @@ export function compileReviewV2StageRequest(params: {
     fixedMessagesTokens,
     budget,
     allocations: [
-      { id: 'outline', requested: outlineTokens, allocated: outlineTokens, truncated: false },
-      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
+      {
+        id: 'outline',
+        requested: outlineTokens,
+        allocated: outlineTokens,
+        truncated: false,
+      },
+      {
+        id: 'mandatory_body',
+        requested: bodyTokens,
+        allocated: bodyTokens,
+        truncated: false,
+      },
       ...budget.optionalAllocations,
     ],
     rebuild,
@@ -926,7 +1373,11 @@ export function compileFactCheckV2StageRequest(params: {
   maxTokens: number;
   contextWindow: number;
   repairReason?: string;
+  elasticBudget?: boolean;
 }): StageCompileResult {
+  if (params.elasticBudget) {
+    return compileFactCheckV2WithElasticBudget(params);
+  }
   const stage = params.repairReason ? 'factCheck_repair' : 'factCheck';
   const outlineText = params.context.outlineText
     ? String(params.context.outlineText)
@@ -952,15 +1403,51 @@ export function compileFactCheckV2StageRequest(params: {
     PARTITION_OVERHEAD;
 
   const optionalSections = [
-    { id: 'preset', tokens: estimateTokens(params.context.presetText), weight: FACTCHECK_OPTIONAL_WEIGHTS.preset },
-    { id: 'currentInstruction', tokens: estimateTokens(params.context.currentInstructionText), weight: FACTCHECK_OPTIONAL_WEIGHTS.currentInstruction },
-    { id: 'userPrompt', tokens: estimateTokens(params.context.retrievalUserPrompt), weight: FACTCHECK_OPTIONAL_WEIGHTS.userPrompt },
-    { id: 'recentBridge', tokens: estimateTokens(params.context.recentBridgeText), weight: FACTCHECK_OPTIONAL_WEIGHTS.recentBridge },
-    { id: 'storyMemory', tokens: estimateTokens(params.context.storyMemoryText), weight: FACTCHECK_OPTIONAL_WEIGHTS.storyMemory },
-    { id: 'episodic', tokens: estimateTokens(params.context.episodicMemoryText), weight: FACTCHECK_OPTIONAL_WEIGHTS.episodic },
-    { id: 'worldbook', tokens: estimateTokens(params.context.worldbookText), weight: FACTCHECK_OPTIONAL_WEIGHTS.worldbook },
-    { id: 'character', tokens: estimateTokens(params.context.characterText), weight: FACTCHECK_OPTIONAL_WEIGHTS.character },
-    { id: 'note', tokens: estimateTokens(params.context.noteText), weight: FACTCHECK_OPTIONAL_WEIGHTS.note },
+    {
+      id: 'preset',
+      tokens: estimateTokens(params.context.presetText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.preset,
+    },
+    {
+      id: 'currentInstruction',
+      tokens: estimateTokens(params.context.currentInstructionText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.currentInstruction,
+    },
+    {
+      id: 'userPrompt',
+      tokens: estimateTokens(params.context.retrievalUserPrompt),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.userPrompt,
+    },
+    {
+      id: 'recentBridge',
+      tokens: estimateTokens(params.context.recentBridgeText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.recentBridge,
+    },
+    {
+      id: 'storyMemory',
+      tokens: estimateTokens(params.context.storyMemoryText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.storyMemory,
+    },
+    {
+      id: 'episodic',
+      tokens: estimateTokens(params.context.episodicMemoryText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.episodic,
+    },
+    {
+      id: 'worldbook',
+      tokens: estimateTokens(params.context.worldbookText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.worldbook,
+    },
+    {
+      id: 'character',
+      tokens: estimateTokens(params.context.characterText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.character,
+    },
+    {
+      id: 'note',
+      tokens: estimateTokens(params.context.noteText),
+      weight: FACTCHECK_OPTIONAL_WEIGHTS.note,
+    },
   ];
 
   const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
@@ -976,14 +1463,38 @@ export function compileFactCheckV2StageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: FactCheckContext = {
-    presetText: clipByAllocation(params.context.presetText, am.get('preset') || 0),
-    currentInstructionText: clipByAllocation(params.context.currentInstructionText, am.get('currentInstruction') || 0),
-    retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, am.get('userPrompt') || 0),
-    recentBridgeText: clipByAllocation(params.context.recentBridgeText, am.get('recentBridge') || 0),
-    storyMemoryText: clipByAllocation(params.context.storyMemoryText, am.get('storyMemory') || 0),
-    episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, am.get('episodic') || 0),
-    worldbookText: clipByAllocation(params.context.worldbookText, am.get('worldbook') || 0),
-    characterText: clipByAllocation(params.context.characterText, am.get('character') || 0),
+    presetText: clipByAllocation(
+      params.context.presetText,
+      am.get('preset') || 0,
+    ),
+    currentInstructionText: clipByAllocation(
+      params.context.currentInstructionText,
+      am.get('currentInstruction') || 0,
+    ),
+    retrievalUserPrompt: clipByAllocation(
+      params.context.retrievalUserPrompt,
+      am.get('userPrompt') || 0,
+    ),
+    recentBridgeText: clipByAllocation(
+      params.context.recentBridgeText,
+      am.get('recentBridge') || 0,
+    ),
+    storyMemoryText: clipByAllocation(
+      params.context.storyMemoryText,
+      am.get('storyMemory') || 0,
+    ),
+    episodicMemoryText: clipByAllocation(
+      params.context.episodicMemoryText,
+      am.get('episodic') || 0,
+    ),
+    worldbookText: clipByAllocation(
+      params.context.worldbookText,
+      am.get('worldbook') || 0,
+    ),
+    characterText: clipByAllocation(
+      params.context.characterText,
+      am.get('character') || 0,
+    ),
     noteText: clipByAllocation(params.context.noteText, am.get('note') || 0),
     outlineText,
   };
@@ -991,14 +1502,38 @@ export function compileFactCheckV2StageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: FactCheckContext = {
-      presetText: clipByAllocation(params.context.presetText, m.get('preset') || 0),
-      currentInstructionText: clipByAllocation(params.context.currentInstructionText, m.get('currentInstruction') || 0),
-      retrievalUserPrompt: clipByAllocation(params.context.retrievalUserPrompt, m.get('userPrompt') || 0),
-      recentBridgeText: clipByAllocation(params.context.recentBridgeText, m.get('recentBridge') || 0),
-      storyMemoryText: clipByAllocation(params.context.storyMemoryText, m.get('storyMemory') || 0),
-      episodicMemoryText: clipByAllocation(params.context.episodicMemoryText, m.get('episodic') || 0),
-      worldbookText: clipByAllocation(params.context.worldbookText, m.get('worldbook') || 0),
-      characterText: clipByAllocation(params.context.characterText, m.get('character') || 0),
+      presetText: clipByAllocation(
+        params.context.presetText,
+        m.get('preset') || 0,
+      ),
+      currentInstructionText: clipByAllocation(
+        params.context.currentInstructionText,
+        m.get('currentInstruction') || 0,
+      ),
+      retrievalUserPrompt: clipByAllocation(
+        params.context.retrievalUserPrompt,
+        m.get('userPrompt') || 0,
+      ),
+      recentBridgeText: clipByAllocation(
+        params.context.recentBridgeText,
+        m.get('recentBridge') || 0,
+      ),
+      storyMemoryText: clipByAllocation(
+        params.context.storyMemoryText,
+        m.get('storyMemory') || 0,
+      ),
+      episodicMemoryText: clipByAllocation(
+        params.context.episodicMemoryText,
+        m.get('episodic') || 0,
+      ),
+      worldbookText: clipByAllocation(
+        params.context.worldbookText,
+        m.get('worldbook') || 0,
+      ),
+      characterText: clipByAllocation(
+        params.context.characterText,
+        m.get('character') || 0,
+      ),
       noteText: clipByAllocation(params.context.noteText, m.get('note') || 0),
       outlineText,
     };
@@ -1037,11 +1572,277 @@ export function compileFactCheckV2StageRequest(params: {
     fixedMessagesTokens,
     budget,
     allocations: [
-      { id: 'outline', requested: outlineTokens, allocated: outlineTokens, truncated: false },
-      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
+      {
+        id: 'outline',
+        requested: outlineTokens,
+        allocated: outlineTokens,
+        truncated: false,
+      },
+      {
+        id: 'mandatory_body',
+        requested: bodyTokens,
+        allocated: bodyTokens,
+        truncated: false,
+      },
       ...budget.optionalAllocations,
     ],
     rebuild,
+  });
+}
+
+/** Elastic V3 variant of the anchored Review compiler. The outline and the
+ * tagged draft remain mandatory; only the frozen auxiliary context competes
+ * inside the per-request 80% soft pool / burst band. */
+function compileReviewV2WithElasticBudget(params: {
+  taggedDraft: string;
+  context: ReviewContext;
+  draftHash: string;
+  maxTokens: number;
+  contextWindow: number;
+  repairReason?: string;
+}): StageCompileResult {
+  const stage = params.repairReason ? 'review_repair' : 'review';
+  const outlineText = String(params.context.outlineText || '');
+  const mandatoryModules: ElasticStageModule[] = [
+    {
+      id: 'outline',
+      text: outlineText,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+    {
+      id: 'mandatory_body',
+      text: params.taggedDraft,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+  ];
+  const elasticModules: ElasticStageModule[] = [
+    {
+      id: 'recentBridge',
+      text: params.context.recentBridgeText,
+      requirement: 'preferred',
+      priority: 8,
+      relevance: 0.9,
+    },
+    {
+      id: 'storyMemory',
+      text: params.context.storyMemoryText,
+      requirement: 'preferred',
+      priority: 7,
+      relevance: 0.85,
+    },
+    {
+      id: 'character',
+      text: params.context.characterText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.8,
+    },
+    {
+      id: 'worldbook',
+      text: params.context.worldbookText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.8,
+    },
+    {
+      id: 'episodic',
+      text: params.context.episodicMemoryText,
+      requirement: 'optional',
+      priority: 4,
+      relevance: 0.6,
+    },
+    {
+      id: 'note',
+      text: params.context.noteText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'preset',
+      text: params.context.presetText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'currentInstruction',
+      text: params.context.currentInstructionText,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
+    {
+      id: 'userPrompt',
+      text: params.context.retrievalUserPrompt,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
+  ];
+  return compileStageRequestWithElasticBudget({
+    stage,
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    mandatoryModules,
+    elasticModules,
+    buildMessages: clipped => {
+      const context: ReviewContext = {
+        presetText: clipped.get('preset') || '',
+        characterText: clipped.get('character') || '',
+        noteText: clipped.get('note') || '',
+        worldbookText: clipped.get('worldbook') || '',
+        storyMemoryText: clipped.get('storyMemory') || '',
+        episodicMemoryText: clipped.get('episodic') || '',
+        recentBridgeText: clipped.get('recentBridge') || '',
+        currentInstructionText: clipped.get('currentInstruction') || '',
+        retrievalUserPrompt: clipped.get('userPrompt') || '',
+        outlineText,
+      };
+      return params.repairReason
+        ? buildReviewV2RepairMessages({
+            taggedDraft: params.taggedDraft,
+            context,
+            draftHash: params.draftHash,
+            failureReason: params.repairReason,
+          })
+        : buildReviewV2Messages({
+            taggedDraft: params.taggedDraft,
+            context,
+            draftHash: params.draftHash,
+          });
+    },
+  });
+}
+
+/** Elastic V3 variant of the anchored FactCheck compiler. */
+function compileFactCheckV2WithElasticBudget(params: {
+  taggedDraft: string;
+  context: FactCheckContext;
+  draftHash: string;
+  maxTokens: number;
+  contextWindow: number;
+  repairReason?: string;
+}): StageCompileResult {
+  const stage = params.repairReason ? 'factCheck_repair' : 'factCheck';
+  const outlineText = String(params.context.outlineText || '');
+  const mandatoryModules: ElasticStageModule[] = [
+    {
+      id: 'outline',
+      text: outlineText,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+    {
+      id: 'mandatory_body',
+      text: params.taggedDraft,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+  ];
+  const elasticModules: ElasticStageModule[] = [
+    {
+      id: 'recentBridge',
+      text: params.context.recentBridgeText,
+      requirement: 'preferred',
+      priority: 8,
+      relevance: 0.9,
+    },
+    {
+      id: 'storyMemory',
+      text: params.context.storyMemoryText,
+      requirement: 'preferred',
+      priority: 7,
+      relevance: 0.85,
+    },
+    {
+      id: 'worldbook',
+      text: params.context.worldbookText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.8,
+    },
+    {
+      id: 'character',
+      text: params.context.characterText,
+      requirement: 'preferred',
+      priority: 6,
+      relevance: 0.8,
+    },
+    {
+      id: 'episodic',
+      text: params.context.episodicMemoryText,
+      requirement: 'optional',
+      priority: 4,
+      relevance: 0.6,
+    },
+    {
+      id: 'note',
+      text: params.context.noteText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'preset',
+      text: params.context.presetText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'currentInstruction',
+      text: params.context.currentInstructionText,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
+    {
+      id: 'userPrompt',
+      text: params.context.retrievalUserPrompt,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
+  ];
+  return compileStageRequestWithElasticBudget({
+    stage,
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    mandatoryModules,
+    elasticModules,
+    buildMessages: clipped => {
+      const context: FactCheckContext = {
+        presetText: clipped.get('preset') || '',
+        currentInstructionText: clipped.get('currentInstruction') || '',
+        retrievalUserPrompt: clipped.get('userPrompt') || '',
+        recentBridgeText: clipped.get('recentBridge') || '',
+        storyMemoryText: clipped.get('storyMemory') || '',
+        episodicMemoryText: clipped.get('episodic') || '',
+        worldbookText: clipped.get('worldbook') || '',
+        characterText: clipped.get('character') || '',
+        noteText: clipped.get('note') || '',
+        outlineText,
+      };
+      return params.repairReason
+        ? buildFactCheckV2RepairMessages({
+            taggedDraft: params.taggedDraft,
+            context,
+            draftHash: params.draftHash,
+            failureReason: params.repairReason,
+          })
+        : buildFactCheckV2Messages({
+            taggedDraft: params.taggedDraft,
+            context,
+            draftHash: params.draftHash,
+          });
+    },
   });
 }
 
@@ -1126,17 +1927,38 @@ export function compileFinalReviserStageRequest(params: {
   });
   const PARTITION_OVERHEAD = 128;
   const fixedMessagesTokens =
-    Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens - contractTokens) +
-    PARTITION_OVERHEAD;
+    Math.max(
+      0,
+      estimateStageInputTokens(scaffold) - bodyTokens - contractTokens,
+    ) + PARTITION_OVERHEAD;
 
-  const hardList = buildHardConstraintLines(params.constraints, params.contractJson);
+  const hardList = buildHardConstraintLines(
+    params.constraints,
+    params.contractJson,
+  );
 
   const optionalSections = [
     { id: 'hardConstraints', tokens: estimateTokens(hardList), weight: 4 },
-    { id: 'recentBridge', tokens: estimateTokens(params.constraints.recentBridgeText), weight: 3 },
-    { id: 'preset', tokens: estimateTokens(params.constraints.presetText), weight: 2 },
-    { id: 'currentInstruction', tokens: estimateTokens(params.constraints.currentInstructionText), weight: 2 },
-    { id: 'userPrompt', tokens: estimateTokens(params.constraints.retrievalUserPrompt), weight: 1 },
+    {
+      id: 'recentBridge',
+      tokens: estimateTokens(params.constraints.recentBridgeText),
+      weight: 3,
+    },
+    {
+      id: 'preset',
+      tokens: estimateTokens(params.constraints.presetText),
+      weight: 2,
+    },
+    {
+      id: 'currentInstruction',
+      tokens: estimateTokens(params.constraints.currentInstructionText),
+      weight: 2,
+    },
+    {
+      id: 'userPrompt',
+      tokens: estimateTokens(params.constraints.retrievalUserPrompt),
+      weight: 1,
+    },
   ];
 
   const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
@@ -1214,8 +2036,18 @@ export function compileFinalReviserStageRequest(params: {
     fixedMessagesTokens,
     budget,
     allocations: [
-      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
-      { id: 'contract', requested: contractTokens, allocated: contractTokens, truncated: false },
+      {
+        id: 'mandatory_body',
+        requested: bodyTokens,
+        allocated: bodyTokens,
+        truncated: false,
+      },
+      {
+        id: 'contract',
+        requested: contractTokens,
+        allocated: contractTokens,
+        truncated: false,
+      },
       ...budget.optionalAllocations,
     ],
     rebuild,
@@ -1255,15 +2087,51 @@ export function compileProofStageRequest(params: {
     PARTITION_OVERHEAD;
 
   const optionalSections = [
-    { id: 'preset', tokens: estimateTokens(params.constraints.presetText), weight: PROOF_OPTIONAL_WEIGHTS.preset },
-    { id: 'currentInstruction', tokens: estimateTokens(params.constraints.currentInstructionText), weight: PROOF_OPTIONAL_WEIGHTS.currentInstruction },
-    { id: 'userPrompt', tokens: estimateTokens(params.constraints.retrievalUserPrompt), weight: PROOF_OPTIONAL_WEIGHTS.userPrompt },
-    { id: 'character', tokens: estimateTokens(params.constraints.relevantCharacterConstraints), weight: PROOF_OPTIONAL_WEIGHTS.character },
-    { id: 'worldRules', tokens: estimateTokens(params.constraints.relevantWorldRules), weight: PROOF_OPTIONAL_WEIGHTS.worldRules },
-    { id: 'storyState', tokens: estimateTokens(params.constraints.currentStoryState), weight: PROOF_OPTIONAL_WEIGHTS.storyState },
-    { id: 'episodic', tokens: estimateTokens(params.constraints.episodicMemoryText), weight: PROOF_OPTIONAL_WEIGHTS.episodic },
-    { id: 'note', tokens: estimateTokens(params.constraints.noteText), weight: PROOF_OPTIONAL_WEIGHTS.note },
-    { id: 'recentBridge', tokens: estimateTokens(params.constraints.recentBridgeText), weight: PROOF_OPTIONAL_WEIGHTS.recentBridge },
+    {
+      id: 'preset',
+      tokens: estimateTokens(params.constraints.presetText),
+      weight: PROOF_OPTIONAL_WEIGHTS.preset,
+    },
+    {
+      id: 'currentInstruction',
+      tokens: estimateTokens(params.constraints.currentInstructionText),
+      weight: PROOF_OPTIONAL_WEIGHTS.currentInstruction,
+    },
+    {
+      id: 'userPrompt',
+      tokens: estimateTokens(params.constraints.retrievalUserPrompt),
+      weight: PROOF_OPTIONAL_WEIGHTS.userPrompt,
+    },
+    {
+      id: 'character',
+      tokens: estimateTokens(params.constraints.relevantCharacterConstraints),
+      weight: PROOF_OPTIONAL_WEIGHTS.character,
+    },
+    {
+      id: 'worldRules',
+      tokens: estimateTokens(params.constraints.relevantWorldRules),
+      weight: PROOF_OPTIONAL_WEIGHTS.worldRules,
+    },
+    {
+      id: 'storyState',
+      tokens: estimateTokens(params.constraints.currentStoryState),
+      weight: PROOF_OPTIONAL_WEIGHTS.storyState,
+    },
+    {
+      id: 'episodic',
+      tokens: estimateTokens(params.constraints.episodicMemoryText),
+      weight: PROOF_OPTIONAL_WEIGHTS.episodic,
+    },
+    {
+      id: 'note',
+      tokens: estimateTokens(params.constraints.noteText),
+      weight: PROOF_OPTIONAL_WEIGHTS.note,
+    },
+    {
+      id: 'recentBridge',
+      tokens: estimateTokens(params.constraints.recentBridgeText),
+      weight: PROOF_OPTIONAL_WEIGHTS.recentBridge,
+    },
   ];
 
   const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
@@ -1279,15 +2147,42 @@ export function compileProofStageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: ProofConstraints = {
-    presetText: clipByAllocation(params.constraints.presetText, am.get('preset') || 0),
-    currentInstructionText: clipByAllocation(params.constraints.currentInstructionText, am.get('currentInstruction') || 0),
-    retrievalUserPrompt: clipByAllocation(params.constraints.retrievalUserPrompt, am.get('userPrompt') || 0),
-    relevantCharacterConstraints: clipByAllocation(params.constraints.relevantCharacterConstraints, am.get('character') || 0),
-    relevantWorldRules: clipByAllocation(params.constraints.relevantWorldRules, am.get('worldRules') || 0),
-    currentStoryState: clipByAllocation(params.constraints.currentStoryState, am.get('storyState') || 0),
-    episodicMemoryText: clipByAllocation(params.constraints.episodicMemoryText, am.get('episodic') || 0),
-    noteText: clipByAllocation(params.constraints.noteText, am.get('note') || 0),
-    recentBridgeText: clipByAllocation(params.constraints.recentBridgeText, am.get('recentBridge') || 0),
+    presetText: clipByAllocation(
+      params.constraints.presetText,
+      am.get('preset') || 0,
+    ),
+    currentInstructionText: clipByAllocation(
+      params.constraints.currentInstructionText,
+      am.get('currentInstruction') || 0,
+    ),
+    retrievalUserPrompt: clipByAllocation(
+      params.constraints.retrievalUserPrompt,
+      am.get('userPrompt') || 0,
+    ),
+    relevantCharacterConstraints: clipByAllocation(
+      params.constraints.relevantCharacterConstraints,
+      am.get('character') || 0,
+    ),
+    relevantWorldRules: clipByAllocation(
+      params.constraints.relevantWorldRules,
+      am.get('worldRules') || 0,
+    ),
+    currentStoryState: clipByAllocation(
+      params.constraints.currentStoryState,
+      am.get('storyState') || 0,
+    ),
+    episodicMemoryText: clipByAllocation(
+      params.constraints.episodicMemoryText,
+      am.get('episodic') || 0,
+    ),
+    noteText: clipByAllocation(
+      params.constraints.noteText,
+      am.get('note') || 0,
+    ),
+    recentBridgeText: clipByAllocation(
+      params.constraints.recentBridgeText,
+      am.get('recentBridge') || 0,
+    ),
     outlineText,
   };
 
@@ -1297,15 +2192,42 @@ export function compileProofStageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: ProofConstraints = {
-      presetText: clipByAllocation(params.constraints.presetText, m.get('preset') || 0),
-      currentInstructionText: clipByAllocation(params.constraints.currentInstructionText, m.get('currentInstruction') || 0),
-      retrievalUserPrompt: clipByAllocation(params.constraints.retrievalUserPrompt, m.get('userPrompt') || 0),
-      relevantCharacterConstraints: clipByAllocation(params.constraints.relevantCharacterConstraints, m.get('character') || 0),
-      relevantWorldRules: clipByAllocation(params.constraints.relevantWorldRules, m.get('worldRules') || 0),
-      currentStoryState: clipByAllocation(params.constraints.currentStoryState, m.get('storyState') || 0),
-      episodicMemoryText: clipByAllocation(params.constraints.episodicMemoryText, m.get('episodic') || 0),
-      noteText: clipByAllocation(params.constraints.noteText, m.get('note') || 0),
-      recentBridgeText: clipByAllocation(params.constraints.recentBridgeText, m.get('recentBridge') || 0),
+      presetText: clipByAllocation(
+        params.constraints.presetText,
+        m.get('preset') || 0,
+      ),
+      currentInstructionText: clipByAllocation(
+        params.constraints.currentInstructionText,
+        m.get('currentInstruction') || 0,
+      ),
+      retrievalUserPrompt: clipByAllocation(
+        params.constraints.retrievalUserPrompt,
+        m.get('userPrompt') || 0,
+      ),
+      relevantCharacterConstraints: clipByAllocation(
+        params.constraints.relevantCharacterConstraints,
+        m.get('character') || 0,
+      ),
+      relevantWorldRules: clipByAllocation(
+        params.constraints.relevantWorldRules,
+        m.get('worldRules') || 0,
+      ),
+      currentStoryState: clipByAllocation(
+        params.constraints.currentStoryState,
+        m.get('storyState') || 0,
+      ),
+      episodicMemoryText: clipByAllocation(
+        params.constraints.episodicMemoryText,
+        m.get('episodic') || 0,
+      ),
+      noteText: clipByAllocation(
+        params.constraints.noteText,
+        m.get('note') || 0,
+      ),
+      recentBridgeText: clipByAllocation(
+        params.constraints.recentBridgeText,
+        m.get('recentBridge') || 0,
+      ),
       outlineText,
     };
     return buildProofMessages(
@@ -1331,11 +2253,356 @@ export function compileProofStageRequest(params: {
     fixedMessagesTokens,
     budget,
     allocations: [
-      { id: 'outline', requested: outlineTokens, allocated: outlineTokens, truncated: false },
-      { id: 'mandatory_body', requested: bodyTokens, allocated: bodyTokens, truncated: false },
+      {
+        id: 'outline',
+        requested: outlineTokens,
+        allocated: outlineTokens,
+        truncated: false,
+      },
+      {
+        id: 'mandatory_body',
+        requested: bodyTokens,
+        allocated: bodyTokens,
+        truncated: false,
+      },
       ...budget.optionalAllocations,
     ],
     rebuild,
+  });
+}
+
+/**
+ * Final Reviser V3 compiler. Mandatory input is plain Brief + canonical draft
+ * + full outline; the continuity capsule is retained as far as its own floor
+ * allows. The visible output floor is computed independently from reasoning
+ * headroom by the caller and is never reduced to preserve a tier label.
+ */
+export function compileFinalReviserV3StageRequest(params: {
+  writingBrief: string;
+  canonicalDraft: string;
+  capsule: FinalContinuityCapsule;
+  maxTokens: number;
+  contextWindow: number;
+  modelMaxOutputTokens?: number;
+  elasticBudget?: boolean;
+}): StageCompileResult {
+  if (params.elasticBudget) {
+    return compileFinalReviserV3WithElasticBudget(params);
+  }
+  const draftTokens = estimateTokens(params.canonicalDraft);
+  const outlineTokens = estimateTokens(params.capsule.fullOutlineText);
+  const briefTokens = estimateTokens(params.writingBrief);
+  const modelCap = Math.max(
+    0,
+    Number(params.modelMaxOutputTokens) || Number(params.maxTokens) || 0,
+  );
+  const visibleOutputFloor = Math.max(1024, Math.ceil(draftTokens * 1.2) + 256);
+  const requestedOutput = Math.max(
+    Number(params.maxTokens) || 0,
+    visibleOutputFloor,
+  );
+  const reservedOutputTokens =
+    modelCap > 0 ? Math.min(modelCap, requestedOutput) : requestedOutput;
+  const messages = buildFinalReviserV3Messages({
+    writingBrief: params.writingBrief,
+    canonicalDraft: params.canonicalDraft,
+    capsule: params.capsule,
+  });
+  const estimatedInputTokens = estimateStageInputTokens(messages);
+  const safetyMargin = deriveDefaultSafetyMargin(params.contextWindow);
+  const fits =
+    params.contextWindow > 0 &&
+    reservedOutputTokens >= visibleOutputFloor &&
+    estimatedInputTokens + reservedOutputTokens + safetyMargin <=
+      params.contextWindow;
+  const allocations: ContextAllocationTrace[] = [
+    {
+      id: 'final_brief',
+      requested: briefTokens,
+      allocated: briefTokens,
+      truncated: false,
+    },
+    {
+      id: 'canonical_draft',
+      requested: draftTokens,
+      allocated: draftTokens,
+      truncated: false,
+    },
+    {
+      id: 'full_outline',
+      requested: outlineTokens,
+      allocated: outlineTokens,
+      truncated: false,
+    },
+    {
+      id: 'immediate_previous',
+      requested: estimateTokens(params.capsule.immediatePreviousChapterText),
+      allocated: estimateTokens(params.capsule.immediatePreviousChapterText),
+      truncated: false,
+    },
+  ];
+  if (!fits) {
+    const code =
+      reservedOutputTokens < visibleOutputFloor
+        ? 'CONTEXT_WINDOW_EXCEEDED'
+        : outlineTokens > 0 &&
+          outlineTokens +
+            draftTokens +
+            briefTokens +
+            reservedOutputTokens +
+            safetyMargin >
+            params.contextWindow
+        ? 'OUTLINE_TOO_LARGE'
+        : 'CONTEXT_WINDOW_EXCEEDED';
+    return {
+      ready: false,
+      stage: 'proof',
+      error: pipelineError(
+        code,
+        code === 'OUTLINE_TOO_LARGE'
+          ? 'Final V3 的完整大纲、初稿、Brief 与可见正文下限无法同时适配模型窗口'
+          : 'Final V3 的 mandatory 输入与可见正文下限无法适配模型窗口',
+        {
+          stage: 'proof',
+          userAction: code === 'OUTLINE_TOO_LARGE' ? 'open_outline' : 'none',
+        },
+      ),
+      diagnostics: {
+        contextWindow: params.contextWindow,
+        reservedOutputTokens,
+        safetyMargin,
+        estimatedInputTokens,
+        fullOutlineTokens: outlineTokens,
+        mandatoryBodyTokens: draftTokens + briefTokens,
+        fixedMessagesTokens: Math.max(
+          0,
+          estimatedInputTokens - draftTokens - outlineTokens - briefTokens,
+        ),
+        remainingForOptional: 0,
+        blockingReason: 'final_window',
+      },
+      allocations,
+      messages,
+      estimatedInputTokens,
+    };
+  }
+  return {
+    ready: true,
+    stage: 'proof',
+    messages,
+    estimatedInputTokens,
+    reservedOutputTokens,
+    safetyMargin,
+    contextWindow: params.contextWindow,
+    allocations,
+  };
+}
+
+/**
+ * Final V3 elastic compiler. The Brief, full draft, full outline, current
+ * chapter goal and immediate ending are mandatory; the rest of the continuity
+ * capsule is independently allocated in the existing 80% soft pool / burst
+ * band for this HTTP request.
+ */
+function compileFinalReviserV3WithElasticBudget(params: {
+  writingBrief: string;
+  canonicalDraft: string;
+  capsule: FinalContinuityCapsule;
+  maxTokens: number;
+  contextWindow: number;
+  modelMaxOutputTokens?: number;
+}): StageCompileResult {
+  const c = params.capsule;
+  const draftTokens = estimateTokens(params.canonicalDraft);
+  const outlineTokens = estimateTokens(c.fullOutlineText);
+  const briefTokens = estimateTokens(params.writingBrief);
+  const visibleOutputFloor = Math.max(1024, Math.ceil(draftTokens * 1.2) + 256);
+  const modelCap = Math.max(0, Number(params.modelMaxOutputTokens) || 0);
+  const outputReservationTooSmall = params.maxTokens < visibleOutputFloor;
+  if (
+    outputReservationTooSmall ||
+    (modelCap > 0 && modelCap < params.maxTokens)
+  ) {
+    return {
+      ready: false,
+      stage: 'proof',
+      error: pipelineError(
+        'CONTEXT_WINDOW_EXCEEDED',
+        outputReservationTooSmall
+          ? 'Final V3 输出预留低于可见正文下限，已阻止请求'
+          : 'Final V3 模型输出上限无法同时容纳可见正文下限与 Thinking 余量',
+        { stage: 'proof', userAction: 'none' },
+      ),
+      diagnostics: {
+        contextWindow: params.contextWindow,
+        reservedOutputTokens: params.maxTokens,
+        safetyMargin: deriveDefaultSafetyMargin(params.contextWindow),
+        estimatedInputTokens: 0,
+        fullOutlineTokens: outlineTokens,
+        mandatoryBodyTokens: draftTokens + briefTokens,
+        fixedMessagesTokens: 0,
+        remainingForOptional: 0,
+        blockingReason: 'final_window',
+      },
+      allocations: [],
+    };
+  }
+
+  const mandatoryModules: ElasticStageModule[] = [
+    {
+      id: 'final_brief',
+      text: params.writingBrief,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+    {
+      id: 'canonical_draft',
+      text: params.canonicalDraft,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+    {
+      id: 'full_outline',
+      text: c.fullOutlineText,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+    {
+      id: 'current_instruction',
+      text: c.currentInstructionText,
+      requirement: 'mandatory',
+      priority: 9,
+      relevance: 1,
+    },
+    {
+      id: 'immediate_ending',
+      text: c.immediatePreviousEnding,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+  ];
+  const elasticModules: ElasticStageModule[] = [
+    {
+      id: 'immediate_previous',
+      text: c.immediatePreviousChapterText,
+      requirement: 'preferred',
+      priority: 9,
+      relevance: 1,
+      minTokens: Math.min(2000, estimateTokens(c.immediatePreviousChapterText)),
+      targetTokens: Math.min(
+        12000,
+        estimateTokens(c.immediatePreviousChapterText),
+      ),
+      maxTokens: Math.min(
+        12000,
+        estimateTokens(c.immediatePreviousChapterText),
+      ),
+      burstPriority: 9,
+      shrinkPriority: 9,
+    },
+    {
+      id: 'story_memory',
+      text: c.storyMemoryText,
+      requirement: 'preferred',
+      priority: 8,
+      relevance: 0.9,
+      minTokens: Math.min(1000, estimateTokens(c.storyMemoryText)),
+      targetTokens: Math.min(8000, estimateTokens(c.storyMemoryText)),
+      maxTokens: Math.min(8000, estimateTokens(c.storyMemoryText)),
+      burstPriority: 8,
+      shrinkPriority: 8,
+    },
+    {
+      id: 'characters',
+      text: c.relevantCharacterText,
+      requirement: 'preferred',
+      priority: 7,
+      relevance: 0.8,
+      maxTokens: 6000,
+      burstPriority: 6,
+      shrinkPriority: 7,
+    },
+    {
+      id: 'world_rules',
+      text: c.relevantWorldRules,
+      requirement: 'preferred',
+      priority: 7,
+      relevance: 0.8,
+      maxTokens: 6000,
+      burstPriority: 6,
+      shrinkPriority: 6,
+    },
+    {
+      id: 'recent_bridge',
+      text: c.recentBridgeText,
+      requirement: 'optional',
+      priority: 5,
+      relevance: 0.7,
+      maxTokens: 6000,
+      burstPriority: 3,
+      shrinkPriority: 4,
+    },
+    {
+      id: 'episodic',
+      text: c.episodicMemoryText,
+      requirement: 'optional',
+      priority: 4,
+      relevance: 0.6,
+      maxTokens: 5000,
+      burstPriority: 2,
+      shrinkPriority: 3,
+    },
+    {
+      id: 'preset',
+      text: c.presetText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+      maxTokens: 2200,
+      burstPriority: 1,
+      shrinkPriority: 2,
+    },
+    {
+      id: 'user_prompt',
+      text: c.retrievalUserPrompt,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+      maxTokens: 1800,
+      burstPriority: 1,
+      shrinkPriority: 1,
+    },
+  ];
+  const buildMessages = (clipped: ReadonlyMap<string, string>): ChatMessage[] =>
+    buildFinalReviserV3Messages({
+      writingBrief: clipped.get('final_brief') || '',
+      canonicalDraft: clipped.get('canonical_draft') || '',
+      capsule: {
+        ...c,
+        fullOutlineText: clipped.get('full_outline') || '',
+        currentInstructionText: clipped.get('current_instruction') || '',
+        immediatePreviousChapterText: clipped.get('immediate_previous') || '',
+        immediatePreviousEnding: clipped.get('immediate_ending') || '',
+        storyMemoryText: clipped.get('story_memory') || '',
+        relevantCharacterText: clipped.get('characters') || '',
+        relevantWorldRules: clipped.get('world_rules') || '',
+        recentBridgeText: clipped.get('recent_bridge') || '',
+        episodicMemoryText: clipped.get('episodic') || '',
+        presetText: clipped.get('preset') || '',
+        retrievalUserPrompt: clipped.get('user_prompt') || '',
+      },
+    });
+  return compileStageRequestWithElasticBudget({
+    stage: 'proof',
+    contextWindow: params.contextWindow,
+    reservedOutputTokens: params.maxTokens,
+    mandatoryModules,
+    elasticModules,
+    buildMessages,
   });
 }
 
@@ -1356,21 +2623,89 @@ function compileProofWithElasticBudget(params: {
 }): StageCompileResult {
   const stage = 'proof';
   const outlineText = String(params.constraints.outlineText || '');
-  const body = [params.draftText, params.reviewText, params.factCheckText].join('\n');
+  const body = [params.draftText, params.reviewText, params.factCheckText].join(
+    '\n',
+  );
   const mandatoryModules: ElasticStageModule[] = [
-    { id: 'outline', text: outlineText, requirement: 'mandatory', priority: 10, relevance: 1 },
-    { id: 'mandatory_body', text: body, requirement: 'mandatory', priority: 10, relevance: 1 },
+    {
+      id: 'outline',
+      text: outlineText,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
+    {
+      id: 'mandatory_body',
+      text: body,
+      requirement: 'mandatory',
+      priority: 10,
+      relevance: 1,
+    },
   ];
   const elasticModules: ElasticStageModule[] = [
-    { id: 'character', text: params.constraints.relevantCharacterConstraints, requirement: 'optional', priority: 5, relevance: 0.7 },
-    { id: 'worldRules', text: params.constraints.relevantWorldRules, requirement: 'optional', priority: 5, relevance: 0.7 },
-    { id: 'storyState', text: params.constraints.currentStoryState, requirement: 'optional', priority: 5, relevance: 0.7 },
-    { id: 'recentBridge', text: params.constraints.recentBridgeText, requirement: 'optional', priority: 4, relevance: 0.6 },
-    { id: 'episodic', text: params.constraints.episodicMemoryText, requirement: 'optional', priority: 4, relevance: 0.6 },
-    { id: 'note', text: params.constraints.noteText, requirement: 'optional', priority: 3, relevance: 0.5 },
-    { id: 'preset', text: params.constraints.presetText, requirement: 'optional', priority: 3, relevance: 0.5 },
-    { id: 'currentInstruction', text: params.constraints.currentInstructionText, requirement: 'optional', priority: 2, relevance: 0.5 },
-    { id: 'userPrompt', text: params.constraints.retrievalUserPrompt, requirement: 'optional', priority: 2, relevance: 0.5 },
+    {
+      id: 'character',
+      text: params.constraints.relevantCharacterConstraints,
+      requirement: 'optional',
+      priority: 5,
+      relevance: 0.7,
+    },
+    {
+      id: 'worldRules',
+      text: params.constraints.relevantWorldRules,
+      requirement: 'optional',
+      priority: 5,
+      relevance: 0.7,
+    },
+    {
+      id: 'storyState',
+      text: params.constraints.currentStoryState,
+      requirement: 'optional',
+      priority: 5,
+      relevance: 0.7,
+    },
+    {
+      id: 'recentBridge',
+      text: params.constraints.recentBridgeText,
+      requirement: 'optional',
+      priority: 4,
+      relevance: 0.6,
+    },
+    {
+      id: 'episodic',
+      text: params.constraints.episodicMemoryText,
+      requirement: 'optional',
+      priority: 4,
+      relevance: 0.6,
+    },
+    {
+      id: 'note',
+      text: params.constraints.noteText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'preset',
+      text: params.constraints.presetText,
+      requirement: 'optional',
+      priority: 3,
+      relevance: 0.5,
+    },
+    {
+      id: 'currentInstruction',
+      text: params.constraints.currentInstructionText,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
+    {
+      id: 'userPrompt',
+      text: params.constraints.retrievalUserPrompt,
+      requirement: 'optional',
+      priority: 2,
+      relevance: 0.5,
+    },
   ];
   return compileStageRequestWithElasticBudget({
     stage,
@@ -1448,7 +2783,9 @@ export function compilePipelineStageRequest(params: {
       elasticBudget: params.elasticBudget,
     });
   }
-  throw new Error('compilePipelineStageRequest: use compileDraftStageRequest for draft');
+  throw new Error(
+    'compilePipelineStageRequest: use compileDraftStageRequest for draft',
+  );
 }
 
 function finalizeCompiled(params: {

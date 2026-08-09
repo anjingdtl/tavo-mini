@@ -82,7 +82,7 @@ export const PipelineResultPrompt: React.FC<PipelineResultPromptProps> = ({
   const canResume = Boolean(onResume)
     && task.targetType === 'chapter'
     && (task.status === 'failed' || task.status === 'interrupted');
-  const primaryLabel = canResume ? '从失败处继续重跑' : confirmLabel;
+  const primaryLabel = canResume ? '从失败节点重试' : confirmLabel;
   return (
     <Modal
       visible={!!task}

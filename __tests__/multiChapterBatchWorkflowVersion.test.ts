@@ -2,7 +2,7 @@
  * Multi-chapter batch — frozen protocol-version propagation (§4.4).
  *
  * The batch row freezes outlineWorkflowVersion / contextBudgetVersion ONCE
- * at creation (CURRENT = 2 for new batches; migrated legacy batches stay 1).
+ * at creation (CURRENT = 3 for new batches; migrated legacy batches stay 1).
  * Every chapter task created by the batch state machine must COPY the batch
  * row versions — never re-read the app default mid-batch. A single batch
  * never mixes versions across its child tasks.
@@ -32,7 +32,10 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
 
 import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import type { InMemorySqliteDb } from './helpers/canonInMemoryDb';
-import { __setDatabaseForTest, __resetForTest } from '../src/data/connection/openDatabase';
+import {
+  __setDatabaseForTest,
+  __resetForTest,
+} from '../src/data/connection/openDatabase';
 import { execute } from '../src/data/connection/execute';
 import { openDatabase } from '../src/data/connection/openDatabase';
 import { all } from '../src/data/connection/query';
@@ -158,12 +161,14 @@ async function pipelineTaskVersions(): Promise<
 describe('multi-chapter batch workflow version freeze (§4.4)', () => {
   jest.setTimeout(60_000);
 
-  it('new batch freezes CURRENT versions (2) and every child task copies them', async () => {
+  it('new batch freezes CURRENT versions (3) and every child task copies them', async () => {
     await resetDb();
     await seedProject();
     await seedBatch('b-new', 3);
     const batch = await getBatchById('b-new');
-    expect(batch?.outlineWorkflowVersion).toBe(CURRENT_OUTLINE_WORKFLOW_VERSION);
+    expect(batch?.outlineWorkflowVersion).toBe(
+      CURRENT_OUTLINE_WORKFLOW_VERSION,
+    );
     expect(batch?.contextBudgetVersion).toBe(CURRENT_CONTEXT_BUDGET_VERSION);
 
     const runner = completingRunner();
@@ -176,8 +181,8 @@ describe('multi-chapter batch workflow version freeze (§4.4)', () => {
     const versions = await pipelineTaskVersions();
     expect(versions.length).toBe(3);
     for (const v of versions) {
-      expect(v.outline).toBe(2);
-      expect(v.budget).toBe(2);
+      expect(v.outline).toBe(3);
+      expect(v.budget).toBe(3);
     }
   });
 

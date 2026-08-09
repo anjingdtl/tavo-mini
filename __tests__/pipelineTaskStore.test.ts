@@ -121,6 +121,23 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
     expect(task.resolvedAt).toBeNull();
     expect(task.error).toMatch(/没有成功的初稿|无法安全恢复|中断/);
   });
+
+  it('does not publish a store update when no active task needs interruption', () => {
+    const now = Date.now();
+    usePipelineTaskStore.setState({
+      tasks: [{
+        id: 'already-done', targetType: 'chapter', targetId: 1,
+        status: 'completed', stageResults: [], finalText: 'done', error: null,
+        createdAt: now, updatedAt: now, resolvedAt: null,
+      } as any],
+    });
+    const listener = jest.fn();
+    const unsubscribe = usePipelineTaskStore.subscribe(listener);
+
+    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(0);
+    expect(listener).not.toHaveBeenCalled();
+    unsubscribe();
+  });
 });
 
 describe('pipelineTaskStore.setTaskFinalText', () => {

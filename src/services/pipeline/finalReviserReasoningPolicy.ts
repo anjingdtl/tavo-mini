@@ -1,13 +1,17 @@
 import type { PipelineExecutionSnapshot } from '../../types/pipelineExecution';
 import type { PipelineRevisionContract } from '../../types/pipelineRevision';
 import type { LLMRequestConfig, ReasoningEffort } from '../llm/types';
-import { resolvePipelineReasoning } from './reasoningPolicy';
+import {
+  resolvePipelineReasoning,
+  resolveV3StageReasoning,
+  type PipelineReasoningTier,
+} from './reasoningPolicy';
 
 /** Frozen policy version for the Outline V2 Final Reviser. */
-export type FinalReviserReasoningPolicyVersion = 1 | 2;
+export type FinalReviserReasoningPolicyVersion = 1 | 2 | 3;
 
 /** New tasks opt into the adaptive policy; historical snapshots stay Legacy. */
-export const CURRENT_FINAL_REVISER_REASONING_POLICY_VERSION: FinalReviserReasoningPolicyVersion = 2;
+export const CURRENT_FINAL_REVISER_REASONING_POLICY_VERSION: FinalReviserReasoningPolicyVersion = 3;
 
 export interface FinalReviserReasoningDecision {
   policyVersion: FinalReviserReasoningPolicyVersion | undefined;
@@ -15,6 +19,38 @@ export interface FinalReviserReasoningDecision {
   thinking?: { type: 'enabled' };
   supported: boolean;
   complexity: 'legacy' | 'simple' | 'complex' | 'global';
+  requestedTier?: PipelineReasoningTier;
+  effectiveTier?: PipelineReasoningTier;
+  downgradeReason?: string;
+}
+
+/** V3 Final follows the user tier (unlike Review/FactCheck and Brief). */
+export function resolveFinalReviserV3Reasoning(params: {
+  execution: Pick<
+    PipelineExecutionSnapshot,
+    'outlineWorkflowVersion' | 'requestedReasoningTier'
+  >;
+  model: Pick<LLMRequestConfig, 'provider_type' | 'model_name' | 'url'>;
+}): FinalReviserReasoningDecision {
+  const requested = params.execution.requestedReasoningTier;
+  if (params.execution.outlineWorkflowVersion !== 3 || !requested) {
+    return {
+      policyVersion: params.execution.outlineWorkflowVersion === 3 ? 3 : undefined,
+      supported: false,
+      complexity: 'legacy',
+    };
+  }
+  const resolved = resolveV3StageReasoning(requested, 'proof', params.model);
+  return {
+    policyVersion: 3,
+    effort: resolved.effort,
+    thinking: resolved.thinking,
+    supported: resolved.supported,
+    complexity: 'simple',
+    requestedTier: resolved.requestedTier,
+    effectiveTier: resolved.effectiveTier,
+    downgradeReason: resolved.downgradeReason,
+  };
 }
 
 /**
