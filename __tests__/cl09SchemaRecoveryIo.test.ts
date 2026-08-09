@@ -119,4 +119,37 @@ describe('CL-09: schema recovery 单次 IO', () => {
     expect(raw).toBeTruthy();
     expect(JSON.parse(raw!).meta.checksum).toBe(result.checksum);
   });
+
+  it('schema-recovery 不落 API key 或临时 reasoning', async () => {
+    await resetDb();
+    await execute(
+      await openDatabase(),
+      `INSERT INTO llm_config
+        (id, name, base_url, api_key, model_name, is_active)
+       VALUES (7, '测试配置', 'https://example.test', 'sk-live-secret', 'model', 1)`,
+    );
+    await execute(
+      await openDatabase(),
+      `INSERT INTO pipeline_tasks
+        (id, target_type, target_id, status, stage_results, created_at, updated_at)
+       VALUES ('recovery-task', 'chapter', 1, 'failed', '[]', 1, 1)`,
+    );
+    await execute(
+      await openDatabase(),
+      `INSERT INTO pipeline_stage_attempts
+        (id, pipeline_task_id, stage, attempt_no, request_fingerprint,
+         llm_config_snapshot_json, client_request_id, status, started_at,
+         reasoning_content_temp)
+       VALUES ('recovery-task:review:1', 'recovery-task', 'review', 1, 'fp',
+               '{}', 'client', 'succeeded', 1, 'private reasoning scratch')`,
+    );
+
+    const result = await createSchemaRecoveryBackup(testDb as any, 'pre_migration');
+    const { parsed, validation } = await readAndValidateBackup(result.path);
+    expect(validation.valid).toBe(true);
+    expect(parsed!.tables.llm_config[0]).not.toHaveProperty('api_key');
+    expect(parsed!.tables.pipeline_stage_attempts[0]).not.toHaveProperty(
+      'reasoning_content_temp',
+    );
+  });
 });

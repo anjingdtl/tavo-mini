@@ -5,6 +5,7 @@
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
+import { executeTransaction } from '../../services/database/transaction';
 import type { Row } from './shared';
 import type {
   PipelineCheckpointStage,
@@ -106,21 +107,59 @@ export async function hasSucceededStageCheckpoints(
 }
 
 /**
- * F2-07: reset failed/interrupted/running stage checkpoints back to pending
- * so a user-confirmed resume re-runs ONLY those stages — the pipeline state
- * machine skips every succeeded checkpoint and re-uses its frozen request.
- * Never touches succeeded rows.
+ * V3.1 recovery: find the first failed/interrupted/running checkpoint and
+ * reset it plus every downstream checkpoint. Successful checkpoints before
+ * the failure remain immutable and are reused; downstream success cannot
+ * survive a retry boundary because it may have consumed stale upstream data.
+ * Attempt rows are intentionally retained for audit and cost accounting.
  */
 export async function resetFailedStageCheckpointsForResume(
   taskId: string,
 ): Promise<void> {
-  await execute(
-    await openDatabase(),
-    `UPDATE pipeline_stage_checkpoints
-     SET status = 'pending', error_code = NULL, error_message = NULL, updated_at = ?
-     WHERE task_id = ? AND status IN ('failed', 'interrupted', 'running')`,
-    [Date.now(), taskId],
+  const rows = await all<Row>(
+    `SELECT stage, status FROM pipeline_stage_checkpoints WHERE task_id = ?`,
+    [taskId],
   );
+  const order = ['draft', 'review', 'factCheck', 'brief', 'proof', 'finalize'];
+  const firstFailure = rows.reduce((minimum, row) => {
+    const status = String(row.status || '');
+    const index = order.indexOf(String(row.stage));
+    return index >= 0 && ['failed', 'interrupted', 'running'].includes(status)
+      ? Math.min(minimum, index)
+      : minimum;
+  }, Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(firstFailure)) return;
+  const now = Date.now();
+  const statements = rows
+    .filter(row => {
+      const index = order.indexOf(String(row.stage));
+      if (index < 0 || String(row.status) === 'pending') return false;
+
+      // Review and FactCheck are parallel branches in full mode. A failure
+      // on one branch must not invalidate the other branch's successful
+      // checkpoint; Brief is the join and will wait for the failed branch to
+      // be retried. If both branches failed, both are reset by the normal
+      // downstream rule.
+      const isSuccessfulParallelSibling =
+        ((firstFailure === order.indexOf('review') && String(row.stage) === 'factCheck') ||
+          (firstFailure === order.indexOf('factCheck') && String(row.stage) === 'review')) &&
+        String(row.status) === 'succeeded';
+      if (isSuccessfulParallelSibling) return false;
+      return index >= firstFailure;
+    })
+    .map(row => ({
+      sql: `UPDATE pipeline_stage_checkpoints
+               SET status = 'pending', output_text = NULL,
+                   error_code = NULL, error_message = NULL,
+                   input_tokens = NULL, output_tokens = NULL,
+                   total_tokens = NULL, duration_ms = NULL,
+                   started_at = NULL, completed_at = NULL, updated_at = ?
+             WHERE task_id = ? AND stage = ?`,
+      params: [now, taskId, String(row.stage)],
+    }));
+  if (statements.length > 0) {
+    await executeTransaction(await openDatabase(), statements);
+  }
 }
 
 /**

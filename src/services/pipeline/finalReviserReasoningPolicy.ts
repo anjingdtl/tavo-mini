@@ -16,7 +16,7 @@ export const CURRENT_FINAL_REVISER_REASONING_POLICY_VERSION: FinalReviserReasoni
 export interface FinalReviserReasoningDecision {
   policyVersion: FinalReviserReasoningPolicyVersion | undefined;
   effort?: ReasoningEffort;
-  thinking?: { type: 'enabled' };
+  thinking?: { type: 'enabled' | 'disabled' };
   supported: boolean;
   complexity: 'legacy' | 'simple' | 'complex' | 'global';
   requestedTier?: PipelineReasoningTier;
@@ -35,7 +35,8 @@ export function resolveFinalReviserV3Reasoning(params: {
   const requested = params.execution.requestedReasoningTier;
   if (params.execution.outlineWorkflowVersion !== 3 || !requested) {
     return {
-      policyVersion: params.execution.outlineWorkflowVersion === 3 ? 3 : undefined,
+      policyVersion:
+        params.execution.outlineWorkflowVersion === 3 ? 3 : undefined,
       supported: false,
       complexity: 'legacy',
     };
@@ -63,11 +64,12 @@ export function classifyFinalReviserComplexity(
 ): Exclude<FinalReviserReasoningDecision['complexity'], 'legacy'> {
   const workItems = Array.isArray(contract.workItems) ? contract.workItems : [];
   const obligations = contract.outlineObligations;
-  const hardItems = workItems.filter(item =>
-    item.severity === 'hard' &&
-    /(constraint|事实|知识|时间线|continuity|冲突)/i.test(
-      String(item.dimension || ''),
-    ),
+  const hardItems = workItems.filter(
+    item =>
+      item.severity === 'hard' &&
+      /(constraint|事实|知识|时间线|continuity|冲突)/i.test(
+        String(item.dimension || ''),
+      ),
   );
 
   if (

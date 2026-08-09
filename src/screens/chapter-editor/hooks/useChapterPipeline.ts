@@ -131,6 +131,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
   const [progressStartedAt, setProgressStartedAt] = useState(Date.now());
   const [progressVisible, setProgressVisible] = useState(false);
   const [queued, setQueued] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [continuationStage, setContinuationStage] =
     useState<ContinuationPipelineStage | null>(null);
   const resultTaskIdRef = useRef<string | null>(null);
@@ -142,9 +143,9 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
   // latter is also used by the "已有失败任务" prompt below. Keep a ref for
   // the terminal failure alert so the timeout dialog can invoke the latest
   // resume closure without reopening the task centre first.
-  const resumePipelineRef = useRef<
-    ((taskId: string) => Promise<void>) | null
-  >(null);
+  const resumePipelineRef = useRef<((taskId: string) => Promise<void>) | null>(
+    null,
+  );
 
   const openPipelineResult = useCallback(
     (taskId: string) => {
@@ -153,6 +154,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       setProgressVisible(false);
       setGenerating(false);
       setQueued(false);
+      setPreparing(false);
       setContinuationStage(null);
       continuationStageRef.current = null;
       navigation.navigate('PipelineResult', { taskId });
@@ -167,6 +169,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     setProgressVisible(true);
     setGenerating(true);
     setQueued(task.status === 'queued');
+    setPreparing(task.status === 'idle' || task.status === 'queued');
   }, []);
 
   useEffect(() => {
@@ -204,6 +207,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         setProgressVisible(false);
         setGenerating(false);
         setQueued(false);
+        setPreparing(false);
       }
     };
 
@@ -271,6 +275,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       if (!chapter) return;
       setGenerating(true);
       setProgressVisible(true);
+      setPreparing(true);
       // Persist the parent task + pending checkpoints atomically BEFORE
       // starting the foreground service or reconcile. If the DB write fails
       // we surface a "无法启动流水线" error and never call the model — the
@@ -281,8 +286,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         // versions explicitly at creation; non-outline / freeform /
         // pseudo-chapters stay Legacy (V1).
         const project = useProjectStore.getState().currentProject;
-        const isOutlineChapter =
-          project?.mode === 'outline' && chapter.id > 0;
+        const isOutlineChapter = project?.mode === 'outline' && chapter.id > 0;
         taskId = await createTask('chapter', chapter.id, {
           outlineWorkflowVersion: isOutlineChapter
             ? CURRENT_OUTLINE_WORKFLOW_VERSION
@@ -295,11 +299,15 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         setProgressVisible(false);
         setQueued(false);
         setGenerating(false);
+        setPreparing(false);
         console.warn(
           '[useChapterPipeline] PIPELINE_TASK_CREATE_FAILED',
-          'chapterId=', chapter.id,
-          'code=', error?.code,
-          'message=', error?.message,
+          'chapterId=',
+          chapter.id,
+          'code=',
+          error?.code,
+          'message=',
+          error?.message,
         );
         Alert.alert(
           '无法启动流水线',
@@ -326,6 +334,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           chapter,
           (info: StageInfo | string) => {
             if (typeof info === 'object') {
+              setPreparing(info.stage === 'idle');
               setCurrentStage(info.stage);
               setProgressStartedAt(info.startedAt);
             }
@@ -333,20 +342,19 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         );
         setProgressVisible(false);
         setQueued(false);
+        setPreparing(false);
         const finishedTask = usePipelineTaskStore
           .getState()
           .tasks.find(task => task.id === taskId);
         if (finishedTask?.status === 'completed') {
           openPipelineResult(taskId);
         } else if (finishedTask?.status === 'failed') {
-          showPipelineFailureAlert(
-            taskId,
-            finishedTask.error || '未知错误',
-          );
+          showPipelineFailureAlert(taskId, finishedTask.error || '未知错误');
         }
       } catch (error: any) {
         setProgressVisible(false);
         setQueued(false);
+        setPreparing(false);
         const failedTask = usePipelineTaskStore
           .getState()
           .tasks.find(task => task.id === taskId && task.status === 'failed');
@@ -360,6 +368,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         }
       } finally {
         setGenerating(false);
+        setPreparing(false);
       }
     },
     [chapter, openPipelineResult, showPipelineFailureAlert],
@@ -374,6 +383,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       setGenerating(true);
       setProgressVisible(true);
       setQueued(false);
+      setPreparing(false);
       suppressGlobalPipelinePrompt(taskId);
       requestNotificationPermission()
         .then(async granted => {
@@ -405,16 +415,13 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
             bumpAttempt: false,
           });
         }
-        await resumePipeline(
-          taskId,
-          chapter,
-          (info: StageInfo | string) => {
-            if (typeof info === 'object') {
-              setCurrentStage(info.stage);
-              setProgressStartedAt(info.startedAt);
-            }
-          },
-        );
+        await resumePipeline(taskId, chapter, (info: StageInfo | string) => {
+          if (typeof info === 'object') {
+            setPreparing(info.stage === 'idle');
+            setCurrentStage(info.stage);
+            setProgressStartedAt(info.startedAt);
+          }
+        });
         setProgressVisible(false);
         setQueued(false);
         const finishedTask = usePipelineTaskStore
@@ -423,14 +430,12 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         if (finishedTask?.status === 'completed') {
           openPipelineResult(taskId);
         } else if (finishedTask?.status === 'failed') {
-          showPipelineFailureAlert(
-            taskId,
-            finishedTask.error || '未知错误',
-          );
+          showPipelineFailureAlert(taskId, finishedTask.error || '未知错误');
         }
       } catch (error: any) {
         setProgressVisible(false);
         setQueued(false);
+        setPreparing(false);
         const failedTask = usePipelineTaskStore
           .getState()
           .tasks.find(task => task.id === taskId && task.status === 'failed');
@@ -444,6 +449,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         }
       } finally {
         setGenerating(false);
+        setPreparing(false);
       }
     },
     [chapter, openPipelineResult, showPipelineFailureAlert],
@@ -465,6 +471,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     setProgressStartedAt(Date.now());
     setCurrentStage('draft');
     setQueued(false);
+    setPreparing(false);
     setContinuationStage('context');
     continuationStageRef.current = 'context';
     try {
@@ -472,7 +479,9 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       const numbering = await getContinuationChapterNumbering(project.id);
       const instruction =
         chapter.synopsis?.trim() ||
-        `续写${numbering.getDefaultTitle(chapter.position as any)}，保持与前文一致。`;
+        `续写${numbering.getDefaultTitle(
+          chapter.position as any,
+        )}，保持与前文一致。`;
       const run = await startContinuationRun({
         projectId: project.id,
         chapterId: chapter.id,
@@ -531,6 +540,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           }
           setProgressVisible(false);
           setGenerating(false);
+          setPreparing(false);
           setContinuationStage(null);
           continuationStageRef.current = null;
           if (latest.state === 'failed') {
@@ -551,11 +561,13 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       }
       setProgressVisible(false);
       setGenerating(false);
+      setPreparing(false);
       setContinuationStage(null);
       continuationStageRef.current = null;
     } catch (error: any) {
       setProgressVisible(false);
       setGenerating(false);
+      setPreparing(false);
       setContinuationStage(null);
       continuationStageRef.current = null;
       Alert.alert('续写异常', error?.message || '请检查 Canon/API 配置。');
@@ -649,11 +661,17 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           },
           {
             text: '从头开始',
-            onPress: () => confirmDegraded(() => executeRunPipeline(createTask).catch(() => {})),
+            onPress: () =>
+              confirmDegraded(() =>
+                executeRunPipeline(createTask).catch(() => {}),
+              ),
           },
           {
             text: '继续',
-            onPress: () => confirmDegraded(() => executeResumePipeline(resumable.id).catch(() => {})),
+            onPress: () =>
+              confirmDegraded(() =>
+                executeResumePipeline(resumable.id).catch(() => {}),
+              ),
           },
         ],
       );
@@ -667,14 +685,23 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           { text: '取消', style: 'cancel' },
           {
             text: '覆盖并生成',
-            onPress: () => confirmDegraded(() => executeRunPipeline(createTask).catch(() => {})),
+            onPress: () =>
+              confirmDegraded(() =>
+                executeRunPipeline(createTask).catch(() => {}),
+              ),
           },
         ],
       );
     } else {
       confirmDegraded(() => executeRunPipeline(createTask).catch(() => {}));
     }
-  }, [chapter, executeRunPipeline, executeResumePipeline, runContinuation, navigation]);
+  }, [
+    chapter,
+    executeRunPipeline,
+    executeResumePipeline,
+    runContinuation,
+    navigation,
+  ]);
 
   const stopPipeline = useCallback(() => {
     // Stop must never throw into the toolbar onPress — an uncaught exception
@@ -683,6 +710,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
       setGenerating(false);
       setProgressVisible(false);
       setQueued(false);
+      setPreparing(false);
       setContinuationStage(null);
       continuationStageRef.current = null;
       if (continuationRunIdRef.current) {
@@ -731,6 +759,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     progressStartedAt,
     progressVisible,
     queued,
+    preparing,
     continuationStage,
     runPipeline,
     stopPipeline,

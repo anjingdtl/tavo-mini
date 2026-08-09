@@ -224,12 +224,13 @@ export const LLMSettingsScreen: React.FC = () => {
     }
   };
 
-  // 上下文长度变化后弹窗确认是否同步大纲流水线 4 阶段 max_tokens。
+  // 上下文长度变化后弹窗确认是否同步大纲流水线的创作/审核阶段预算；
+  // V3.1 Brief 由独立弹性预算计算，不写入这组固定值。
   // 该兼容入口不参与 Continuation V4 的阶段预算。
   const maybePromptSyncPipeline = (prev: number, next: number) => {
     Alert.alert(
       '上下文长度已更新',
-      `检测到上下文长度从 ${prev} 改为 ${next}。\n\n是否自动调整大纲流水线各阶段的 Max Tokens？\n\n按兼容比例分配输出预算，将覆盖大纲流水线配置页里的现有值。原著续写 V4 会在每次 run 中按 Context Automation Policy 和各阶段模型能力动态计算。`,
+      `检测到上下文长度从 ${prev} 改为 ${next}。\n\n是否自动调整大纲流水线的阶段 Max Tokens？\n\n按兼容比例分配 Draft/Review/FactCheck/Final 输出预算；V3.1 Brief 使用独立弹性预算，将覆盖大纲流水线配置页里的现有值。原著续写 V4 会在每次 run 中按 Context Automation Policy 和各阶段模型能力动态计算。`,
       [
         { text: '取消', style: 'cancel' },
         {

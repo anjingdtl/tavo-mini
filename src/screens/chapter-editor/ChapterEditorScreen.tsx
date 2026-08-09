@@ -54,6 +54,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     progressStartedAt,
     progressVisible,
     queued,
+    preparing,
     continuationStage,
     runPipeline,
     stopPipeline,
@@ -134,34 +135,36 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         Toast.show({
           type: 'success',
           text1: '章节已定稿',
-          text2: `状态提取与故事记忆重建已排队（hash ${fin.revisionHash.slice(0, 8)}）。`,
+          text2: `状态提取与故事记忆重建已排队（hash ${fin.revisionHash.slice(
+            0,
+            8,
+          )}）。`,
         });
       } else {
         const result = await finalizeChapterMemory(savedChapter.id);
         await loadChapter();
         Toast.show({
-          type: result.checkpointAttempted && !result.checkpointUpdated
-            ? 'info'
-            : 'success',
+          type:
+            result.checkpointAttempted && !result.checkpointUpdated
+              ? 'info'
+              : 'success',
           text1: '章节已定稿',
-          text2: result.statusMessage || (
-            result.checkpointUpdated
+          text2:
+            result.statusMessage ||
+            (result.checkpointUpdated
               ? `长期记忆已整理到第 ${
                   // statusMessage is preferred; this fallback keeps outline projects working
                   result.state.throughChapterPosition + 1
                 } 章。`
               : result.pendingCount > 0
-                ? `长期记忆待整理 ${result.pendingCount} 章。`
-                : undefined
-          ),
+              ? `长期记忆待整理 ${result.pendingCount} 章。`
+              : undefined),
         });
       }
     } catch (error: any) {
       Alert.alert(
         '定稿失败',
-        `章节正文已尽量保存。\n${
-          error?.message || '请稍后重试。'
-        }`,
+        `章节正文已尽量保存。\n${error?.message || '请稍后重试。'}`,
       );
     } finally {
       finalizingRef.current = false;
@@ -179,40 +182,45 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     if (!currentChapter || clearingRef.current) return;
     clearingRef.current = true;
     setClearing(true);
-    Alert.alert('清空正文', '确定要清空当前章节的全部正文内容？', [
-      { text: '取消', style: 'cancel', onPress: finishClearing },
-      {
-        text: '清空',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await autoSaveRef.current.flush();
-            const latestChapter = latestChapterRef.current;
-            if (!latestChapter) return;
-            await createRevision({
-              projectId: latestChapter.project_id,
-              targetType: 'chapter',
-              targetId: latestChapter.id,
-              title: latestChapter.title,
-              content: latestChapter.content,
-              source: 'before_clear',
-            });
-            await db.updateChapter(latestChapter.id, { content: '' });
-            latestChapterRef.current = { ...latestChapter, content: '' };
-            await loadChapter();
-            setSaveStatus('saved');
-          } catch (error: any) {
-            Toast.show({
-              type: 'error',
-              text1: '操作失败',
-              text2: error?.message,
-            });
-          } finally {
-            finishClearing();
-          }
+    Alert.alert(
+      '清空正文',
+      '确定要清空当前章节的全部正文内容？',
+      [
+        { text: '取消', style: 'cancel', onPress: finishClearing },
+        {
+          text: '清空',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await autoSaveRef.current.flush();
+              const latestChapter = latestChapterRef.current;
+              if (!latestChapter) return;
+              await createRevision({
+                projectId: latestChapter.project_id,
+                targetType: 'chapter',
+                targetId: latestChapter.id,
+                title: latestChapter.title,
+                content: latestChapter.content,
+                source: 'before_clear',
+              });
+              await db.updateChapter(latestChapter.id, { content: '' });
+              latestChapterRef.current = { ...latestChapter, content: '' };
+              await loadChapter();
+              setSaveStatus('saved');
+            } catch (error: any) {
+              Toast.show({
+                type: 'error',
+                text1: '操作失败',
+                text2: error?.message,
+              });
+            } finally {
+              finishClearing();
+            }
+          },
         },
-      },
-    ], { cancelable: false });
+      ],
+      { cancelable: false },
+    );
   }, [autoSaveRef, finishClearing, loadChapter, setSaveStatus]);
 
   const changeEditableField = useCallback(
@@ -391,6 +399,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         progressStartedAt={progressStartedAt}
         progressVisible={progressVisible}
         queued={queued}
+        preparing={preparing}
         continuationStage={continuationStage}
         focusMode={focusMode}
       />

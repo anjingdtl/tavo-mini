@@ -82,7 +82,9 @@ describe('migration engine', () => {
   test('returns null backupPath when no breaking migration', async () => {
     const { db } = createMockDb('4');
     const { runMigrations } = require('../src/services/migrations');
-    const result = await runMigrations(db as any, 27);
+    // V46→V47 is the intentional V3.1 recovery boundary; start after it to
+    // exercise the non-breaking lineage migration only.
+    const result = await runMigrations(db as any, 47);
     expect(result.backupPath).toBeNull();
     expect(result.hadBreaking).toBe(false);
   });

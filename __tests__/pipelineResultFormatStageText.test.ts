@@ -1,4 +1,7 @@
-import { formatStageText } from '../src/screens/PipelineResultScreen';
+import {
+  formatStageText,
+  splitStageWarnings,
+} from '../src/screens/PipelineResultScreen';
 import type { PipelineStageResult } from '../src/types/pipeline';
 
 function stage(partial: Partial<PipelineStageResult>): PipelineStageResult {
@@ -51,4 +54,21 @@ test('skipped stage has a clear message', () => {
   expect(
     formatStageText(stage({ stage: 'proof', status: 'skipped', text: '' })),
   ).toContain('跳过');
+});
+
+test('Brief envelope normalization is a neutral notice, not a red warning', () => {
+  const result = splitStageWarnings(
+    stage({
+      stage: 'brief',
+      warnings: [
+        'Brief Compiler（Thinking disabled，优先输出 content 合同）',
+        'Brief sourceHash 已由本地不可变信封覆盖',
+        'Brief hardConstraints 已由本地不可变信封覆盖',
+        'Brief mustFix 缺少 target/instruction',
+      ],
+    }),
+  );
+
+  expect(result.notices).toHaveLength(3);
+  expect(result.warnings).toEqual(['Brief mustFix 缺少 target/instruction']);
 });

@@ -11,6 +11,7 @@ import { executeTransaction, type SqlStatement } from '../../services/database/t
 import { setSetting } from './settingsRepository';
 import type { Row } from './shared';
 import type { PipelineCheckpointStage } from '../../services/pipeline/types';
+import type { PipelineStageCheckpointRow } from './pipelineStageCheckpointRepository';
 
 export async function getPipelineConfig(): Promise<PipelineConfig> {
   // 11.9 优化：原实现每个字段独立 getSetting（最多 9 次独立 SQL），合并为单次 SELECT
@@ -54,7 +55,8 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
     return v !== null ? Number(v) : null;
   };
 
-  const isV3Profile = savedProfileVersion === '2';
+  const isV3Profile =
+    savedProfileVersion === '2' || savedProfileVersion === '3';
   const normalizedTier =
     isV3Profile && isPipelineReasoningTier(savedReasoningEffort)
       ? savedReasoningEffort
@@ -62,7 +64,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
   // Settings migration is intentionally a single transaction so a crash
   // cannot leave the tier and profile version at different interpretations.
   if (
-    savedProfileVersion !== '2' ||
+    savedProfileVersion !== '3' ||
     savedReasoningEffort !== normalizedTier
   ) {
     const database = await openDatabase();
@@ -73,7 +75,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
       },
       {
         sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-        params: ['pipeline_reasoning_profile_version', '2'],
+        params: ['pipeline_reasoning_profile_version', '3'],
       },
     ]);
   }
@@ -82,7 +84,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
     reasoningEffort: isPipelineReasoningTier(normalizedTier)
       ? normalizedTier
       : DEFAULT_PIPELINE_REASONING_EFFORT,
-    reasoningProfileVersion: 2,
+    reasoningProfileVersion: 3,
     draftPresetId: presetId('pipeline_draft_preset_id'),
     reviewPresetId: presetId('pipeline_review_preset_id'),
     factCheckPresetId: presetId('pipeline_factcheck_preset_id'),
@@ -113,7 +115,7 @@ export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
     },
     {
       sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-      params: ['pipeline_reasoning_profile_version', '2'],
+      params: ['pipeline_reasoning_profile_version', '3'],
     },
   ]);
   await setSetting(
@@ -166,6 +168,9 @@ export async function savePipelineTask(task: {
   pipelineContextHash?: string | null;
   outlineWorkflowVersion?: number | null;
   contextBudgetVersion?: number | null;
+  parentTaskId?: string | null;
+  derivedKind?: string | null;
+  derivedInstruction?: string | null;
   createdAt: number;
   updatedAt: number;
   resolvedAt: number | null;
@@ -182,8 +187,9 @@ export async function savePipelineTask(task: {
        id, target_type, target_id, status, stage_results, final_text, error,
        input_fingerprint, pipeline_context_json, pipeline_context_version,
        pipeline_context_hash, outline_workflow_version, context_budget_version,
+       parent_task_id, derived_kind, derived_instruction,
        created_at, updated_at, resolved_at, resolved_action
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        target_type = excluded.target_type,
        target_id = excluded.target_id,
@@ -197,6 +203,9 @@ export async function savePipelineTask(task: {
        pipeline_context_hash = excluded.pipeline_context_hash,
        outline_workflow_version = pipeline_tasks.outline_workflow_version,
        context_budget_version = pipeline_tasks.context_budget_version,
+       parent_task_id = COALESCE(excluded.parent_task_id, pipeline_tasks.parent_task_id),
+       derived_kind = COALESCE(excluded.derived_kind, pipeline_tasks.derived_kind),
+       derived_instruction = COALESCE(excluded.derived_instruction, pipeline_tasks.derived_instruction),
        updated_at = excluded.updated_at,
        resolved_at = excluded.resolved_at,
        resolved_action = excluded.resolved_action`,
@@ -214,6 +223,9 @@ export async function savePipelineTask(task: {
       task.pipelineContextHash ?? null,
       task.outlineWorkflowVersion ?? 1,
       task.contextBudgetVersion ?? 1,
+      task.parentTaskId ?? null,
+      task.derivedKind ?? null,
+      task.derivedInstruction ?? null,
       task.createdAt,
       task.updatedAt,
       task.resolvedAt,
@@ -255,6 +267,9 @@ export async function createPipelineTaskWithCheckpoints(
     pipelineContextHash?: string | null;
     outlineWorkflowVersion?: number | null;
     contextBudgetVersion?: number | null;
+    parentTaskId?: string | null;
+    derivedKind?: string | null;
+    derivedInstruction?: string | null;
     createdAt: number;
     updatedAt: number;
     resolvedAt: number | null;
@@ -269,8 +284,9 @@ export async function createPipelineTaskWithCheckpoints(
               id, target_type, target_id, status, stage_results, final_text, error,
               input_fingerprint, pipeline_context_json, pipeline_context_version,
               pipeline_context_hash, outline_workflow_version, context_budget_version,
+              parent_task_id, derived_kind, derived_instruction,
               created_at, updated_at, resolved_at, resolved_action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [
         task.id,
         task.targetType,
@@ -285,6 +301,9 @@ export async function createPipelineTaskWithCheckpoints(
         task.pipelineContextHash ?? null,
         task.outlineWorkflowVersion ?? 1,
         task.contextBudgetVersion ?? 1,
+        task.parentTaskId ?? null,
+        task.derivedKind ?? null,
+        task.derivedInstruction ?? null,
         task.createdAt,
         task.updatedAt,
         task.resolvedAt,
@@ -298,6 +317,115 @@ export async function createPipelineTaskWithCheckpoints(
               task_id, stage, status, attempt_count, updated_at
             ) VALUES (?, ?, 'pending', 0, ?)`,
       params: [task.id, stage, now],
+    });
+  }
+  await executeTransaction(await openDatabase(), statements);
+}
+
+/**
+ * Atomically create a derived Final-only task and copy the already-validated
+ * upstream checkpoints into it. The source task remains untouched; the child
+ * owns a fresh pending proof checkpoint and therefore can never re-run Draft,
+ * Review, FactCheck, or Brief.
+ */
+export async function createDerivedPipelineTaskWithCheckpoints(
+  task: {
+    id: string;
+    targetType: string;
+    targetId: number;
+    status: string;
+    stageResults: any[];
+    finalText: string | null;
+    error: string | null;
+    inputFingerprint?: string | null;
+    pipelineContextJson?: string | null;
+    pipelineContextVersion?: number | null;
+    pipelineContextHash?: string | null;
+    outlineWorkflowVersion?: number | null;
+    contextBudgetVersion?: number | null;
+    parentTaskId: string;
+    derivedKind: string;
+    derivedInstruction: string;
+    createdAt: number;
+    updatedAt: number;
+    resolvedAt: number | null;
+    resolvedAction?: string | null;
+  },
+  checkpoints: Array<
+    Pick<
+      PipelineStageCheckpointRow,
+      | 'stage'
+      | 'status'
+      | 'outputText'
+      | 'errorCode'
+      | 'errorMessage'
+      | 'inputTokens'
+      | 'outputTokens'
+      | 'totalTokens'
+      | 'durationMs'
+      | 'attemptCount'
+      | 'startedAt'
+      | 'completedAt'
+      | 'updatedAt'
+    >
+  >,
+): Promise<void> {
+  const statements: SqlStatement[] = [
+    {
+      sql: `INSERT INTO pipeline_tasks (
+              id, target_type, target_id, status, stage_results, final_text, error,
+              input_fingerprint, pipeline_context_json, pipeline_context_version,
+              pipeline_context_hash, outline_workflow_version, context_budget_version,
+              parent_task_id, derived_kind, derived_instruction,
+              created_at, updated_at, resolved_at, resolved_action
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        task.id,
+        task.targetType,
+        task.targetId,
+        task.status,
+        JSON.stringify(task.stageResults),
+        task.finalText,
+        task.error,
+        task.inputFingerprint ?? null,
+        task.pipelineContextJson ?? null,
+        task.pipelineContextVersion ?? null,
+        task.pipelineContextHash ?? null,
+        task.outlineWorkflowVersion ?? 1,
+        task.contextBudgetVersion ?? 1,
+        task.parentTaskId,
+        task.derivedKind,
+        task.derivedInstruction,
+        task.createdAt,
+        task.updatedAt,
+        task.resolvedAt,
+        task.resolvedAction || null,
+      ],
+    },
+  ];
+  for (const checkpoint of checkpoints) {
+    statements.push({
+      sql: `INSERT INTO pipeline_stage_checkpoints (
+              task_id, stage, status, output_text, error_code, error_message,
+              input_tokens, output_tokens, total_tokens, duration_ms,
+              attempt_count, started_at, completed_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        task.id,
+        checkpoint.stage,
+        checkpoint.status,
+        checkpoint.outputText ?? null,
+        checkpoint.errorCode ?? null,
+        checkpoint.errorMessage ?? null,
+        checkpoint.inputTokens ?? null,
+        checkpoint.outputTokens ?? null,
+        checkpoint.totalTokens ?? null,
+        checkpoint.durationMs ?? null,
+        checkpoint.attemptCount ?? 0,
+        checkpoint.startedAt ?? null,
+        checkpoint.completedAt ?? null,
+        checkpoint.updatedAt ?? Date.now(),
+      ],
     });
   }
   await executeTransaction(await openDatabase(), statements);
@@ -342,6 +470,9 @@ function mapPipelineTaskRow(row: Row) {
       row.context_budget_version != null
         ? Number(row.context_budget_version)
         : null,
+    parentTaskId: row.parent_task_id ?? null,
+    derivedKind: row.derived_kind ?? null,
+    derivedInstruction: row.derived_instruction ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     resolvedAt: row.resolved_at,
@@ -374,7 +505,12 @@ export async function deletePipelineTask(id: string): Promise<void> {
 export async function deleteResolvedPipelineTasks(): Promise<void> {
   await execute(
     await openDatabase(),
-    'DELETE FROM pipeline_tasks WHERE resolved_at IS NOT NULL',
+    `DELETE FROM pipeline_tasks
+      WHERE resolved_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM pipeline_tasks AS child
+           WHERE child.parent_task_id = pipeline_tasks.id
+        )`,
   );
 }
 

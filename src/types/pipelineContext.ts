@@ -207,6 +207,7 @@ export interface FinalContinuityCapsule {
   episodicMemoryText: string;
   relevantCharacterText: string;
   relevantWorldRules: string;
+  noteText: string;
   currentInstructionText: string;
   retrievalUserPrompt: string;
   presetText: string;
@@ -224,6 +225,7 @@ export function buildFinalContinuityCapsule(
     episodicMemoryText: snapshot.episodicMemoryText,
     relevantCharacterText: snapshot.characterText,
     relevantWorldRules: snapshot.worldbookText,
+    noteText: snapshot.noteText,
     currentInstructionText: snapshot.currentInstructionText,
     retrievalUserPrompt: snapshot.retrievalUserPrompt,
     presetText: snapshot.presetText,

@@ -667,13 +667,17 @@ export function parsePipelineExecutionSnapshot(
         'restart_task',
       );
     }
-    if (
-      raw.reasoningProfileVersion !== 2 &&
-      raw.reasoningProfileVersion !== '2'
-    ) {
+    const reasoningProfileVersion =
+      raw.reasoningProfileVersion === 3 || raw.reasoningProfileVersion === '3'
+        ? 3
+        : raw.reasoningProfileVersion === 2 ||
+          raw.reasoningProfileVersion === '2'
+        ? 2
+        : null;
+    if (reasoningProfileVersion == null) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        'V3 冻结配置缺少 reasoningProfileVersion=2，已阻止恢复。',
+        'V3 冻结配置缺少有效 reasoningProfileVersion（2/3），已阻止恢复。',
         'restart_task',
       );
     }
@@ -726,29 +730,48 @@ export function parsePipelineExecutionSnapshot(
             : undefined,
       };
     }
+    const expectedBriefThinking =
+      reasoningProfileVersion === 3 ? 'disabled' : 'enabled';
     if (
-      stageReasoning.brief?.thinking !== 'enabled' ||
+      stageReasoning.brief?.thinking !== expectedBriefThinking ||
       stageReasoning.brief.effectiveTier !== 'low'
     ) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        'V3 Brief 必须冻结为 Thinking enabled + low，已阻止恢复。',
+        `V3 Brief 必须冻结为 Thinking ${expectedBriefThinking} + low，已阻止恢复。`,
         'restart_task',
       );
     }
-    if (raw.briefPolicyVersion !== 1 && raw.briefPolicyVersion !== '1') {
+    const expectedBriefPolicyVersion = reasoningProfileVersion === 3 ? 2 : 1;
+    if (
+      raw.briefPolicyVersion !== expectedBriefPolicyVersion &&
+      raw.briefPolicyVersion !== String(expectedBriefPolicyVersion)
+    ) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        'V3 冻结配置缺少 briefPolicyVersion=1，已阻止恢复。',
+        `V3 冻结配置缺少 briefPolicyVersion=${expectedBriefPolicyVersion}，已阻止恢复。`,
+        'restart_task',
+      );
+    }
+    if (
+      reasoningProfileVersion === 3 &&
+      (stageReasoning.review?.effectiveTier !== 'low' ||
+        stageReasoning.factCheck?.effectiveTier !== 'low' ||
+        stageReasoning.review?.thinking !== 'disabled' ||
+        stageReasoning.factCheck?.thinking !== 'disabled')
+    ) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        'V3.1 Review/FactCheck 必须冻结为 Thinking disabled + low，已阻止恢复。',
         'restart_task',
       );
     }
     v3Fields = {
-      reasoningProfileVersion: 2,
+      reasoningProfileVersion,
       requestedReasoningTier:
         raw.requestedReasoningTier as PipelineReasoningTier,
       stageReasoning,
-      briefPolicyVersion: 1,
+      briefPolicyVersion: expectedBriefPolicyVersion,
       briefVisibleOutputFloor: Number.isFinite(
         Number(raw.briefVisibleOutputFloor),
       )

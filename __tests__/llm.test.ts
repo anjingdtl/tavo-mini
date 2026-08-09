@@ -125,6 +125,46 @@ test('forwards an optional thinking control without changing callers that omit i
   expect(request.thinking).toEqual({ type: 'disabled' });
 });
 
+test('omits disabled-thinking extension when a compatible gateway rejects it', async () => {
+  const fetchMock = jest
+    .fn()
+    .mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => 'thinking parameter unsupported',
+      headers: { get: () => null },
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [
+          { message: { content: '{"ok":true}' }, finish_reason: 'stop' },
+        ],
+      }),
+    });
+  globalThis.fetch = fetchMock as any;
+
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: 'Return JSON.' }],
+    {
+      responseFormat: 'json_object',
+      thinking: { type: 'disabled' },
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'test-key',
+        model_name: 'gateway-model',
+        url: 'https://api.example.com/v1/chat/completions',
+      },
+    },
+  );
+
+  expect(result.text).toBe('{"ok":true}');
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const retryRequest = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
+  expect(retryRequest).not.toHaveProperty('thinking');
+  expect(retryRequest.response_format).toEqual({ type: 'json_object' });
+});
+
 test.each(['low', 'medium', 'high', 'max'] as const)(
   'sends DeepSeek V4 Flash reasoning_effort=%s only for the official endpoint',
   async effort => {
@@ -234,20 +274,17 @@ test('does not silently retry when DeepSeek rejects reasoning_effort', async () 
   });
   globalThis.fetch = fetchMock as any;
   await expect(
-    openAICompatibleProvider.generate(
-      [{ role: 'user', content: '写一段' }],
-      {
-        responseFormat: 'json_object',
-        thinking: { type: 'enabled' },
-        reasoningEffort: 'high',
-        requestConfig: {
-          provider_type: 'openai_compatible',
-          api_key: 'test-key',
-          model_name: 'deepseek-v4-flash',
-          url: 'https://api.deepseek.com/v1/chat/completions',
-        },
+    openAICompatibleProvider.generate([{ role: 'user', content: '写一段' }], {
+      responseFormat: 'json_object',
+      thinking: { type: 'enabled' },
+      reasoningEffort: 'high',
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'test-key',
+        model_name: 'deepseek-v4-flash',
+        url: 'https://api.deepseek.com/v1/chat/completions',
       },
-    ),
+    }),
   ).rejects.toBeTruthy();
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
@@ -482,7 +519,10 @@ test('keeps stop reasoning-only distinct from length truncation', async () => {
     json: async () => ({
       choices: [
         {
-          message: { content: '', reasoning_content: '完成了内部判断，但未写报告' },
+          message: {
+            content: '',
+            reasoning_content: '完成了内部判断，但未写报告',
+          },
           finish_reason: 'stop',
         },
       ],
@@ -533,17 +573,14 @@ test('throws the real gateway error when a 200 response carries an error body', 
   globalThis.fetch = fetchMock as any;
 
   await expect(
-    openAICompatibleProvider.generate(
-      [{ role: 'user', content: 'x' }],
-      {
-        requestConfig: {
-          provider_type: 'openai_compatible',
-          api_key: 'k',
-          model_name: 'm',
-          url: 'https://api.example.com/v1/chat/completions',
-        },
+    openAICompatibleProvider.generate([{ role: 'user', content: 'x' }], {
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'm',
+        url: 'https://api.example.com/v1/chat/completions',
       },
-    ),
+    }),
   ).rejects.toThrow(/unsupported_parameter|response_format/);
 });
 

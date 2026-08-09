@@ -109,7 +109,10 @@ export async function createSchemaRecoveryBackup(
 
   // 1. Single read pass of every manifest table (skips missing optional
   //    tables, throws on missing core tables).
-  const tables = await readBackupTables(database);
+  // A schema-recovery file is durable/exportable recovery material. Do not
+  // persist API credentials or the same-checkpoint reasoning scratch column;
+  // the latter is intentionally only a live-process recovery aid.
+  const tables = await readBackupTables(database, { redactSensitive: true });
 
   // 2. Build the standard v3 payload and compute the SHA-256 over the exact
   //    serialized bytes BEFORE writing (no post-write re-read needed).

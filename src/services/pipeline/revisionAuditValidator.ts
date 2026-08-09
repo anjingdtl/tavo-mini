@@ -91,6 +91,17 @@ const CORRECTION_ALLOWED_KEYS = new Set([
 
 const SCOPES = new Set(['anchor', 'range', 'insertion', 'chapter', 'boundary']);
 const SEVERITIES = new Set(['required', 'hard', 'warning']);
+const V31_SEVERITIES = new Set(['required', 'hard', 'warning', 'advisory']);
+const V31_CATEGORIES = new Set([
+  'opening_continuity',
+  'outline_execution',
+  'character',
+  'world_rule',
+  'timeline',
+  'space',
+  'causality',
+  'style',
+]);
 
 function failV2<T>(
   reason: AuditValidationFailureReason,
@@ -1068,16 +1079,41 @@ function v3Array(value: unknown, max = 60): string[] {
 }
 
 function v3Severity(value: unknown, diagnosis: string, goal: string): 'hard' | 'required' | 'warning' {
-  if (value === 'hard' || value === 'required' || value === 'warning') return value;
+  if (value === 'hard' || value === 'required') return value;
+  if (value === 'warning' || value === 'advisory') return 'warning';
   return /(必须|硬约束|事实|冲突|错误)/.test(`${diagnosis}${goal}`)
     ? 'required'
     : 'warning';
+}
+
+function isV31AdvisorySeverity(value: unknown): boolean {
+  return value === 'warning' || value === 'advisory';
 }
 
 function v3Location(
   raw: Record<string, unknown>,
   anchors: PipelineRevisionAnchor[],
 ): { valid: boolean; explicitChapter: boolean; location: string } {
+  const target = raw.target ?? raw.location;
+  const targetKind =
+    typeof target === 'string'
+      ? target.trim()
+      : target && typeof target === 'object' && !Array.isArray(target)
+        ? v3Text((target as Record<string, unknown>).kind, 40)
+        : '';
+  if (
+    targetKind === 'opening' ||
+    targetKind === 'middle' ||
+    targetKind === 'ending' ||
+    targetKind === 'global' ||
+    targetKind === 'scene'
+  ) {
+    return {
+      valid: true,
+      explicitChapter: targetKind === 'global',
+      location: targetKind === 'scene' ? 'middle' : targetKind,
+    };
+  }
   const scope = v3Text(raw.scope, 40);
   const anchorId = v3Text(raw.anchorId, 120);
   const anchorIds = Array.isArray(raw.anchorIds)
@@ -1121,31 +1157,86 @@ function v3Correction(
   source: 'review' | 'factCheck',
   anchors: PipelineRevisionAnchor[],
   warnings: string[],
+  strictSemantic = false,
 ): { item: NormalizedCorrectionV3 | null; advisory?: string; unlocated?: boolean } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     warnings.push(`${source} corrections[${index}] 非对象，已丢弃`);
     return { item: null };
   }
   const row = raw as Record<string, unknown>;
-  const diagnosis = v3Text(row.diagnosis ?? row.problem ?? row.issue);
-  const rewriteGoal = v3Text(row.rewriteGoal ?? row.action ?? row.suggestion ?? row.fix);
+  const targetValue = row.target ?? row.location;
+  const targetObject =
+    targetValue && typeof targetValue === 'object' && !Array.isArray(targetValue)
+      ? targetValue as Record<string, unknown>
+      : null;
+  const diagnosis = v3Text(
+    row.finding ?? row.diagnosis ?? row.problem ?? row.issue,
+  );
+  const rewriteGoal = v3Text(
+    row.instruction ?? row.rewriteGoal ?? row.action ?? row.suggestion ?? row.fix,
+  );
+  if (strictSemantic) {
+    const category = row.category ?? row.dimension;
+    if (!v3Text(row.id, 120)) {
+      return { item: null, advisory: `${source} corrections[${index}] 缺少 id` };
+    }
+    if (!V31_SEVERITIES.has(String(row.severity || ''))) {
+      return { item: null, advisory: `${source} corrections[${index}] severity 非法` };
+    }
+    if (!v3Text(category, 120)) {
+      return { item: null, advisory: `${source} corrections[${index}] 缺少 category` };
+    }
+    if (!V31_CATEGORIES.has(v3Text(category, 120))) {
+      return { item: null, advisory: `${source} corrections[${index}] category 非法` };
+    }
+    const target = row.target ?? row.location;
+    const targetKind =
+      typeof target === 'string'
+        ? target.trim()
+        : target && typeof target === 'object' && !Array.isArray(target)
+          ? v3Text((target as Record<string, unknown>).kind, 40)
+          : '';
+    if (!['opening', 'scene', 'middle', 'ending', 'global'].includes(targetKind)) {
+      return { item: null, advisory: `${source} corrections[${index}] target.kind 非法` };
+    }
+    const requiredSeverity = row.severity === 'hard' || row.severity === 'required';
+    if (requiredSeverity && (!diagnosis || !rewriteGoal)) {
+      return { item: null, advisory: `${source} corrections[${index}] 缺少 finding/instruction` };
+    }
+    if (!diagnosis && !rewriteGoal) {
+      return { item: null, advisory: `${source} corrections[${index}] 缺少 finding/instruction` };
+    }
+  }
   if (!diagnosis && !rewriteGoal) {
     warnings.push(`${source} corrections[${index}] 无诊断/目标，已丢弃`);
     return { item: null };
   }
   const severity = v3Severity(row.severity, diagnosis, rewriteGoal);
   const location = v3Location(row, anchors);
-  const sourceId = v3Text(row.id, 120) || `${source}-v3-${String(index + 1).padStart(3, '0')}`;
+  const sourceId = strictSemantic
+    ? v3Text(row.id, 120)
+    : v3Text(row.id, 120) || `${source}-v3-${String(index + 1).padStart(3, '0')}`;
   const item: NormalizedCorrectionV3 = {
     sourceId,
     source,
     severity,
-    dimension: v3Text(row.dimension, 120) || 'literary',
+    dimension: v3Text(row.category ?? row.dimension, 120) || 'literary',
     diagnosis,
     rewriteGoal,
-    preserveMeaning: v3Array(row.preserveMeaning, 20),
+    preserveMeaning: v3Array(row.preserve ?? row.preserveMeaning, 20),
     locationHint: location.location,
-    evidenceQuote: v3Text(row.evidenceQuote ?? row.quote, 80) || undefined,
+    evidenceQuote:
+      v3Text(
+        row.evidenceQuote ?? row.quote ?? targetObject?.evidenceQuote,
+        80,
+      ) || undefined,
+    sourceRefs: Array.isArray(row.sourceRefs ?? targetObject?.sourceRefs)
+      ? v3Array(row.sourceRefs ?? targetObject?.sourceRefs, 8)
+      : undefined,
+    sceneHint: v3Text(
+      row.sceneHint ?? row.locationHint ?? targetObject?.sceneHint,
+      120,
+    ) || undefined,
   };
   if (severity === 'warning') {
     return {
@@ -1160,18 +1251,21 @@ function v3Correction(
   return { item };
 }
 
-function v3ReportPayload(result: LLMResult):
+function v3ReportPayload(result: LLMResult, allowReasoning = false):
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; reason: AuditValidationFailureReason; details: string } {
   const text = typeof result.text === 'string' ? result.text.trim() : '';
   const reasoning = typeof result.reasoningText === 'string' ? result.reasoningText.trim() : '';
-  if (!text && reasoning) return { ok: false, reason: 'reasoning_only', details: 'content 为空，仅返回 reasoning_content' };
-  if (!text) return { ok: false, reason: 'empty_content', details: 'content 为空' };
-  if (/<think[\s\S]*?<\/think>/i.test(text) || /^<think\b/i.test(text)) {
+  if (!text && reasoning && !allowReasoning) return { ok: false, reason: 'reasoning_only', details: 'content 为空，仅返回 reasoning_content' };
+  if (!text && !reasoning) return { ok: false, reason: 'empty_content', details: 'content 为空' };
+  const sourceText = text || reasoning;
+  if (/<think[\s\S]*?<\/think>/i.test(sourceText) || /^<think\b/i.test(sourceText)) {
     return { ok: false, reason: 'unexpected_shape', details: '输出含 <think> 推理泄漏' };
   }
-  const extracted = extractAuditJsonPayload(text);
-  if (!extracted.jsonText) return { ok: false, reason: 'invalid_json', details: '无法提取 JSON' };
+  const extracted = extractAuditJsonPayload(sourceText);
+  if (!extracted.jsonText) {
+    return { ok: false, reason: text ? 'invalid_json' : 'reasoning_only', details: '无法提取 JSON' };
+  }
   try {
     const parsed = JSON.parse(extracted.jsonText);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -1188,11 +1282,22 @@ export function validateReviewV3Result(params: {
   result: LLMResult;
   expectedHash: string;
   anchors: PipelineRevisionAnchor[];
+  strictSemantic?: boolean;
 }): AuditValidationResult<NormalizedReviewV3> {
-  const payload = v3ReportPayload(params.result);
+  const strictSemantic = params.strictSemantic === true;
+  const payload = v3ReportPayload(params.result, strictSemantic);
   if (!payload.ok) return failV2<NormalizedReviewV3>(payload.reason, payload.details);
   const warnings: string[] = [];
   const obj = payload.value;
+  if (strictSemantic && Number(obj.schemaVersion) !== 3) {
+    return failV2<NormalizedReviewV3>(
+      'missing_required_fields',
+      'Review V3.1 schemaVersion 必须为 3',
+    );
+  }
+  if (strictSemantic && typeof obj.draftHash !== 'string') {
+    return failV2<NormalizedReviewV3>('missing_required_fields', 'Review V3.1 缺少 draftHash');
+  }
   if (obj.draftHash != null && obj.draftHash !== params.expectedHash) {
     return failV2<NormalizedReviewV3>(
       'missing_required_fields',
@@ -1205,19 +1310,68 @@ export function validateReviewV3Result(params: {
     : Array.isArray(obj.corrections)
       ? obj.corrections
       : [];
+  if (strictSemantic && !Array.isArray(obj.corrections) && !Array.isArray(obj.requiredCorrections)) {
+    return failV2<NormalizedReviewV3>('missing_required_fields', 'Review V3.1 缺少 corrections 数组');
+  }
   const executableCorrections: NormalizedCorrectionV3[] = [];
   const unlocatedRequired: NormalizedCorrectionV3[] = [];
   const advisoryNotes = v3Array(obj.advisoryNotes, 40);
   for (let i = 0; i < rawCorrections.length && i < 60; i += 1) {
-    const normalized = v3Correction(rawCorrections[i], i, 'review', params.anchors, warnings);
+    const normalized = v3Correction(
+      rawCorrections[i],
+      i,
+      'review',
+      params.anchors,
+      warnings,
+      strictSemantic,
+    );
+    if (
+      strictSemantic &&
+      normalized.advisory &&
+      !isV31AdvisorySeverity((rawCorrections[i] as any)?.severity)
+    ) {
+      return failV2<NormalizedReviewV3>('missing_required_fields', normalized.advisory);
+    }
     if (normalized.advisory) advisoryNotes.push(normalized.advisory);
     else if (normalized.item && normalized.unlocated) unlocatedRequired.push(normalized.item);
     else if (normalized.item) executableCorrections.push(normalized.item);
   }
   const rawOutline = obj.outlineExecution;
+  if (strictSemantic && (!rawOutline || typeof rawOutline !== 'object' || Array.isArray(rawOutline))) {
+    return failV2<NormalizedReviewV3>('missing_required_fields', 'Review V3.1 缺少 outlineExecution');
+  }
   const outline = rawOutline && typeof rawOutline === 'object' && !Array.isArray(rawOutline)
     ? rawOutline as Record<string, unknown>
     : {};
+  if (strictSemantic) {
+    for (const key of [
+      'fulfilledBeats',
+      'missingBeats',
+      'deviations',
+      'prematureBeats',
+      'mustPreserve',
+      'mustNotAdvance',
+    ]) {
+      if (!Array.isArray(outline[key])) {
+        return failV2<NormalizedReviewV3>(
+          'missing_required_fields',
+          `Review V3.1 outlineExecution.${key} 必须是数组`,
+        );
+      }
+    }
+    if (typeof outline.endingGoal !== 'string') {
+      return failV2<NormalizedReviewV3>(
+        'missing_required_fields',
+        'Review V3.1 outlineExecution.endingGoal 必须是字符串',
+      );
+    }
+    if (!Array.isArray(obj.protectedFacts)) {
+      return failV2<NormalizedReviewV3>(
+        'missing_required_fields',
+        'Review V3.1 protectedFacts 必须是数组',
+      );
+    }
+  }
   const report: NormalizedReviewV3 = {
     schemaVersion: 3,
     draftHash: params.expectedHash,
@@ -1250,11 +1404,22 @@ export function validateFactCheckV3Result(params: {
   result: LLMResult;
   expectedHash: string;
   anchors: PipelineRevisionAnchor[];
+  strictSemantic?: boolean;
 }): AuditValidationResult<NormalizedFactCheckV3> {
-  const payload = v3ReportPayload(params.result);
+  const strictSemantic = params.strictSemantic === true;
+  const payload = v3ReportPayload(params.result, strictSemantic);
   if (!payload.ok) return failV2<NormalizedFactCheckV3>(payload.reason, payload.details);
   const warnings: string[] = [];
   const obj = payload.value;
+  if (strictSemantic && Number(obj.schemaVersion) !== 3) {
+    return failV2<NormalizedFactCheckV3>(
+      'missing_required_fields',
+      'FactCheck V3.1 schemaVersion 必须为 3',
+    );
+  }
+  if (strictSemantic && typeof obj.draftHash !== 'string') {
+    return failV2<NormalizedFactCheckV3>('missing_required_fields', 'FactCheck V3.1 缺少 draftHash');
+  }
   if (obj.draftHash != null && obj.draftHash !== params.expectedHash) {
     return failV2<NormalizedFactCheckV3>(
       'missing_required_fields',
@@ -1267,9 +1432,26 @@ export function validateFactCheckV3Result(params: {
     : Array.isArray(obj.corrections)
       ? obj.corrections
       : [];
+  if (strictSemantic && !Array.isArray(obj.corrections) && !Array.isArray(obj.requiredCorrections)) {
+    return failV2<NormalizedFactCheckV3>('missing_required_fields', 'FactCheck V3.1 缺少 corrections 数组');
+  }
   const corrections: NormalizedCorrectionV3[] = [];
   for (let i = 0; i < rawCorrections.length && i < 60; i += 1) {
-    const normalized = v3Correction(rawCorrections[i], i, 'factCheck', params.anchors, warnings);
+    const normalized = v3Correction(
+      rawCorrections[i],
+      i,
+      'factCheck',
+      params.anchors,
+      warnings,
+      strictSemantic,
+    );
+    if (
+      strictSemantic &&
+      normalized.advisory &&
+      !isV31AdvisorySeverity((rawCorrections[i] as any)?.severity)
+    ) {
+      return failV2<NormalizedFactCheckV3>('missing_required_fields', normalized.advisory);
+    }
     if (normalized.item && !normalized.unlocated) corrections.push(normalized.item);
     else if (normalized.item) corrections.push(normalized.item);
   }
@@ -1281,6 +1463,18 @@ export function validateFactCheckV3Result(params: {
     hardConstraints: v3Array(obj.hardConstraints),
     warnings,
   };
+  if (strictSemantic && !Array.isArray(obj.hardConstraints)) {
+    return failV2<NormalizedFactCheckV3>(
+      'missing_required_fields',
+      'FactCheck V3.1 缺少 hardConstraints 数组',
+    );
+  }
+  if (strictSemantic && !Array.isArray(obj.protectedFacts)) {
+    return failV2<NormalizedFactCheckV3>(
+      'missing_required_fields',
+      'FactCheck V3.1 protectedFacts 必须是数组',
+    );
+  }
   return {
     valid: true,
     report,

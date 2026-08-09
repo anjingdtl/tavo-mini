@@ -23,6 +23,7 @@ export type MultiChapterBatchAction =
   | { type: 'resume_pipeline'; ordinal: number }
   | { type: 'wait_until'; timestamp: number }
   | { type: 'pause_unknown_outcome'; ordinal: number }
+  | { type: 'pause_response_invalid'; ordinal: number }
   | { type: 'pause_account_quota'; ordinal: number }
   | { type: 'pause_context_budget'; ordinal: number }
   | { type: 'pause_batch_budget'; ordinal: number }
@@ -103,9 +104,7 @@ export function determineNextBatchAction(
     return { type: 'pause_batch_budget', ordinal: batch.currentOrdinal };
   }
 
-  const currentItem = input.items.find(
-    i => i.ordinal === batch.currentOrdinal,
-  );
+  const currentItem = input.items.find(i => i.ordinal === batch.currentOrdinal);
   if (!currentItem) {
     // All items consumed → completed (or counts drifted — fail closed).
     if (batch.completedCount >= batch.chapterCount) {
@@ -236,6 +235,9 @@ function decideFailedItem(
   if (failureClass === 'outcome_unknown') {
     return { type: 'pause_unknown_outcome', ordinal };
   }
+  if (failureClass === 'response_invalid') {
+    return { type: 'pause_response_invalid', ordinal };
+  }
   if (failureClass === 'account_quota') {
     return { type: 'pause_account_quota', ordinal };
   }
@@ -244,8 +246,7 @@ function decideFailedItem(
   }
   if (failureClass === 'safe_retry' || failureClass === 'rate_limit') {
     const nextRetryAt = latest?.nextRetryAt ?? Date.now();
-    const canRetry =
-      latest?.status === 'safe_to_retry' && attemptNo <= 3;
+    const canRetry = latest?.status === 'safe_to_retry' && attemptNo <= 3;
     if (canRetry && nextRetryAt > Date.now()) {
       return { type: 'wait_until', timestamp: nextRetryAt };
     }

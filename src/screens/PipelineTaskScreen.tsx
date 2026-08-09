@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
@@ -9,6 +9,10 @@ import type { PipelineTask } from '../types/pipeline';
 import { cancelPipeline, resumePipeline } from '../services/pipelineRunner';
 import { isReconcileActive } from '../services/pipeline';
 import * as db from '../services/database';
+import {
+  resetFailedStageCheckpointsForResume,
+} from '../data/repositories/pipelineStageCheckpointRepository';
+import { getPipelineStageOrder } from '../utils/stages';
 
 const ACTIVE_STATUSES = new Set([
   'idle',
@@ -49,9 +53,37 @@ function isRecoverable(task: PipelineTask): boolean {
   if (task.status === 'interrupted' && task.recoverable !== false) {
     return true;
   }
-  // Legacy: failed with successful draft + snapshot may still be recoverable
-  // if classify left recoverable flag.
-  return task.status === 'interrupted' || Boolean(task.recoverable);
+  // A failed required checkpoint is resumable from that exact node. The
+  // result page uses the same rule; keeping it here makes the task center a
+  // reliable recovery entry point after a cold start.
+  return (
+    task.status === 'failed' &&
+    task.stageResults.some(stage => stage.status === 'failed')
+  );
+}
+
+function resolveTaskMode(task: PipelineTask): string {
+  try {
+    const raw = task.pipelineContextJson
+      ? JSON.parse(task.pipelineContextJson)
+      : null;
+    const mode = raw?.execution?.pipelineMode;
+    if (
+      mode === 'noReview' ||
+      mode === 'twoStage' ||
+      mode === 'conditional' ||
+      mode === 'full'
+    ) {
+      return mode;
+    }
+  } catch {
+    // Fall through to the stage projection for legacy rows.
+  }
+  const stages = new Set(task.stageResults.map(stage => stage.stage));
+  if (stages.has('review') && stages.has('factCheck')) return 'full';
+  if (stages.has('factCheck')) return 'conditional';
+  if (stages.has('review')) return 'twoStage';
+  return 'twoStage';
 }
 
 export const PipelineTaskScreen: React.FC = () => {
@@ -118,6 +150,17 @@ export const PipelineTaskScreen: React.FC = () => {
       });
       return;
     }
+    const proceed = await new Promise<boolean>(resolve => {
+      Alert.alert(
+        '从失败节点重试',
+        '将只重试失败节点及尚未成功的下游节点；已成功的 checkpoint 会直接复用。该操作可能产生新的 API 费用，是否继续？',
+        [
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+          { text: '确认重试', onPress: () => resolve(true) },
+        ],
+      );
+    });
+    if (!proceed) return;
     setResumingIds(prev => ({ ...prev, [task.id]: true }));
     try {
       const chapter = await db.getChapterById(task.targetId);
@@ -129,6 +172,17 @@ export const PipelineTaskScreen: React.FC = () => {
         });
         return;
       }
+      await resetFailedStageCheckpointsForResume(task.id);
+      const resumedAt = Date.now();
+      await db.updatePipelineTaskResumeState(task.id, resumedAt);
+      usePipelineTaskStore.getState().registerPersistedTask({
+        ...task,
+        status: 'interrupted',
+        error: null,
+        updatedAt: resumedAt,
+        resolvedAt: null,
+        resolvedAction: null,
+      });
       Toast.show({ type: 'info', text1: '正在继续任务…' });
       // @ts-ignore
       navigation.navigate('PipelineResult', { taskId: task.id });
@@ -169,7 +223,10 @@ export const PipelineTaskScreen: React.FC = () => {
     const skippedCount = item.stageResults.filter(
       stage => stage.status === 'skipped',
     ).length;
-    const totalStages = 4;
+    const totalStages = getPipelineStageOrder(resolveTaskMode(item), {
+      outlineWorkflowVersion: item.outlineWorkflowVersion,
+      contextBudgetVersion: item.contextBudgetVersion,
+    }).length;
     const duration = item.updatedAt - item.createdAt;
     const durationText =
       duration > 60000
@@ -220,7 +277,11 @@ export const PipelineTaskScreen: React.FC = () => {
           <View style={styles.actions}>
             {recoverable ? (
               <Button
-                label={resumingIds[item.id] ? '继续中…' : '继续任务'}
+                label={resumingIds[item.id]
+                  ? '重试中…'
+                  : item.status === 'failed'
+                    ? '从失败节点重试'
+                    : '继续任务'}
                 disabled={Boolean(resumingIds[item.id]) || isReconcileActive(item.id)}
                 onPress={() => {
                   continueTask(item).catch(() => undefined);

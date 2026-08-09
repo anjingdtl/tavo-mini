@@ -17,6 +17,8 @@ import {
   buildProofMessages,
   buildReviewRepairMessages,
   buildFactCheckRepairMessages,
+  buildReviewV31Messages,
+  buildFactCheckV31Messages,
 } from '../src/services/pipelineMessages';
 import type {
   FactCheckContext,
@@ -98,6 +100,38 @@ describe('buildReviewMessages', () => {
     const system = messages.find(m => m.role === 'system')!.content;
     expect(system).toContain('{"strengths": [...], "issues": [...], "suggestions": [...]}');
     expect(system).toContain('不要输出 Markdown 围栏');
+  });
+});
+
+describe('V3.1 structured prompts', () => {
+  test('uses a positive allowlist without priming historical Review fields', () => {
+    const system = buildReviewV31Messages({
+      canonicalDraft: 'draft-body',
+      context: baseReviewContext,
+      draftHash: 'hash',
+    })[0].content;
+
+    expect(system).toContain(
+      '顶层只能输出 schemaVersion、draftHash、corrections、protectedFacts、outlineExecution 这五个字段',
+    );
+    expect(system).not.toMatch(
+      /strengths|issues|suggestions|outlineAssessment|schemaVersion=2/i,
+    );
+  });
+
+  test('uses a positive allowlist without priming historical FactCheck fields', () => {
+    const system = buildFactCheckV31Messages({
+      canonicalDraft: 'draft-body',
+      context: baseFactCheckContext,
+      draftHash: 'hash',
+    })[0].content;
+
+    expect(system).toContain(
+      '顶层只能输出 schemaVersion、draftHash、corrections、protectedFacts、hardConstraints 这五个字段',
+    );
+    expect(system).not.toMatch(
+      /errors|warnings|confirmed|schemaVersion=2/i,
+    );
   });
 });
 

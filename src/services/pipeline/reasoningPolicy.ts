@@ -19,17 +19,20 @@ export const PIPELINE_REASONING_EFFORT_OPTIONS: Array<{
   {
     value: 'low',
     label: '快速',
-    description: '低思考预算，优先响应速度，所有创作节点保留基础 Thinking。',
+    description:
+      '低思考预算；Draft/Final 保留基础 Thinking，结构化审查关闭 Thinking。',
   },
   {
     value: 'high',
     label: '平衡',
-    description: 'Draft/Review/FactCheck/Final 使用 high Thinking。',
+    description:
+      'Draft/Final 使用 high；Review/FactCheck/Brief 关闭 Thinking，优先输出可解析合同。',
   },
   {
     value: 'max',
     label: '质量',
-    description: 'Draft/Final 使用 max，Review/FactCheck 最高为 high。',
+    description:
+      'Draft/Final 使用 max；Review/FactCheck/Brief 关闭 Thinking，优先输出可解析合同。',
   },
 ];
 
@@ -37,6 +40,25 @@ export function isPipelineReasoningTier(
   value: unknown,
 ): value is PipelineReasoningTier {
   return value === 'low' || value === 'high' || value === 'max';
+}
+
+/**
+ * Model-agnostic compatibility for V3.1 structured-output stages. DeepSeek
+ * V4 Flash is the acceptance benchmark that exposed this requirement, but
+ * the safe tolerance is a contract property, not a model-name exception.
+ * Any provider may compact semantically empty arrays or emit optional
+ * findings in a shape that cannot be adopted. The validator still fails
+ * closed for malformed roots, immutable-envelope drift, required/hard
+ * evidence, hard facts and all final-artifact gates.
+ */
+export type StructuredOutputCompatibility =
+  | 'strict'
+  | 'compact-structured-output';
+
+export function structuredOutputCompatibilityForConfig(
+  _model: Pick<LLMRequestConfig, 'provider_type' | 'model_name' | 'url'>,
+): StructuredOutputCompatibility {
+  return 'compact-structured-output';
 }
 
 /** Historical parser: accepts medium only for V1/V2 records. */
@@ -144,11 +166,46 @@ export const STAGE_REASONING_PROFILE_V2: Record<
   },
 };
 
+/**
+ * V3.1 fail-closed profile. Review, FactCheck and Brief remain semantically
+ * strict but explicitly disable provider Thinking: these stages must put a
+ * compact JSON contract in message.content, and hidden reasoning cannot be
+ * adopted as an audit result. Only Draft and Final follow the user's quality
+ * tier with Thinking enabled. Keep the historical V2 profile above because
+ * old frozen tasks still need to reproduce their original request semantics.
+ */
+export const STAGE_REASONING_PROFILE_V31: Record<
+  PipelineReasoningTier,
+  Record<PipelineStageName, PipelineReasoningTier>
+> = {
+  low: {
+    draft: 'low',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'low',
+    proof: 'low',
+  },
+  high: {
+    draft: 'high',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'low',
+    proof: 'high',
+  },
+  max: {
+    draft: 'max',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'low',
+    proof: 'max',
+  },
+};
+
 export interface PipelineV3StageReasoning {
   stage: PipelineStageName;
   requestedTier: PipelineReasoningTier;
   effectiveTier: PipelineReasoningTier;
-  thinking: { type: 'enabled' };
+  thinking: { type: 'enabled' | 'disabled' };
   effort: PipelineReasoningTier;
   supported: boolean;
   historical: false;
@@ -198,9 +255,40 @@ export function resolveV3StageReasoning(
   };
 }
 
+/** Resolve the V3.1 fail-closed request semantics for a new task. */
+export function resolveV31StageReasoning(
+  requested: PipelineReasoningTier,
+  stage: PipelineStageName,
+  model: Pick<LLMRequestConfig, 'provider_type' | 'model_name' | 'url'>,
+): PipelineV3StageReasoning {
+  const effectiveTier = STAGE_REASONING_PROFILE_V31[requested][stage];
+  const supported = supportsReasoningEffort({
+    providerType: model.provider_type,
+    modelName: model.model_name,
+    baseUrl: model.url,
+  });
+  const structuredStage =
+    stage === 'review' || stage === 'factCheck' || stage === 'brief';
+  return {
+    stage,
+    requestedTier: requested,
+    effectiveTier,
+    thinking: { type: structuredStage ? 'disabled' : 'enabled' },
+    effort: effectiveTier,
+    supported,
+    historical: false,
+    ...(effectiveTier !== requested
+      ? {
+          downgradeReason:
+            'V3.1 Review/FactCheck/Brief 关闭 Thinking；仅 Draft/Final 随产品档位变化',
+        }
+      : {}),
+  };
+}
+
 export interface PipelineReasoningDecision {
   effort?: PipelineReasoningEffort | PipelineReasoningTier;
-  thinking?: { type: 'enabled' };
+  thinking?: { type: 'enabled' | 'disabled' };
   supported: boolean;
   historical: boolean;
 }
