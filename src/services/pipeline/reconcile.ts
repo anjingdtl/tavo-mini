@@ -36,6 +36,7 @@ import {
   normalizePipelineReasoningTier,
   resolveV3StageReasoning,
   resolveV31StageReasoning,
+  resolveV32StageReasoning,
   structuredOutputCompatibilityForConfig,
   resolvePipelineReasoning,
   type PipelineReasoningDecision,
@@ -122,8 +123,12 @@ import {
 import {
   validateFinalWritingBrief,
   validateFinalWritingBriefV31,
+  validateFinalWritingBriefV32,
 } from './briefResultValidator';
-import { buildBriefImmutableEnvelopeV31 } from './briefCompilerTypes';
+import {
+  buildBriefImmutableEnvelopeV31,
+  buildBriefImmutableEnvelopeV32,
+} from './briefCompilerTypes';
 import {
   FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
   validateFinalBriefCompliance,
@@ -133,7 +138,9 @@ import type {
   BriefCompilerInputV1,
   BriefCompilerInputV31,
   FinalWritingBriefV31,
+  FinalWritingBriefV32,
   FinalWritingBriefV1,
+  BriefCompilerInputV32,
   NormalizedFactCheckV3,
   NormalizedReviewV3,
 } from './briefCompilerTypes';
@@ -141,8 +148,22 @@ import { renderFinalWritingBrief } from './renderFinalWritingBrief';
 import {
   buildFactCheckV31Messages,
   buildReviewV31Messages,
+  buildFactCheckV32Messages,
+  buildReviewV32Messages,
 } from '../pipelineMessages';
 import { adaptV31AuditResult } from './v31AuditCompatibility';
+import { adaptV32AuditResult } from './v32AuditCompatibility';
+import { selectStructuredCandidate } from './structuredCandidate';
+import {
+  buildFactCheckImmutableEnvelopeV32,
+  buildFactCheckInputRefsV32,
+  buildReviewImmutableEnvelopeV32,
+  validateFactCheckSemanticPayloadV32,
+  validateReviewSemanticPayloadV32,
+  buildAuditSourceManifest,
+  REVIEW_V32_DIMENSIONS,
+  type FactCheckV32Category,
+} from './auditSemanticEnvelope';
 import { buildAuditFormatterPrompt } from './auditFormatter';
 import { buildBriefContractFormatterPrompt } from './briefFormatter';
 import { executeClaimedStage } from './executeClaimedStage';
@@ -311,6 +332,8 @@ async function runStageAttempt<
   formatterUsed?: boolean;
   /** V3.1 only: retain reasoning for same-checkpoint cold-start recovery. */
   persistReasoningContentTemp?: boolean;
+  /** V3.2/general structured candidate scratch for cold-start recovery. */
+  persistResponseCandidateTemp?: boolean;
   run: () => Promise<T>;
 }): Promise<T> {
   if (params.batchBudgetGate) {
@@ -341,6 +364,80 @@ async function runStageAttempt<
   });
   try {
     const result = await params.run();
+    const isV32Request = params.requestVersion === 32;
+    const isV31Request = params.requestVersion === 31;
+    const expectedRootKeys = isV32Request
+      ? params.stage === 'review'
+        ? ['verdict', 'findings', 'outlineAssessment', 'coverage']
+        : params.stage === 'factCheck'
+        ? ['verdict', 'findings', 'confirmedFactRefs', 'coverage']
+        : params.stage === 'brief'
+        ? ['verdict', 'instructions', 'openingContinuity', 'styleAdvisories']
+        : []
+      : isV31Request
+      ? params.stage === 'review'
+        ? ['schemaVersion', 'draftHash', 'corrections', 'outlineExecution']
+        : params.stage === 'factCheck'
+        ? ['schemaVersion', 'draftHash', 'corrections', 'hardConstraints']
+        : params.stage === 'brief'
+        ? ['schemaVersion', 'coveredRequiredIds', 'mustFix', 'endingState']
+        : []
+      : [];
+    const coverageKeys = isV32Request
+      ? params.stage === 'review'
+        ? [
+            'opening_continuity',
+            'outline_execution',
+            'character',
+            'prose',
+            'ending_boundary',
+          ]
+        : params.stage === 'factCheck'
+        ? [
+            'timeline',
+            'character_state',
+            'object_state',
+            'world_rule',
+            'spatial_logic',
+            'knowledge_boundary',
+            'outline_boundary',
+          ]
+        : []
+      : [];
+    const candidateSelection = params.persistResponseCandidateTemp
+      ? selectStructuredCandidate({
+          content: result.text ?? null,
+          reasoning: result.reasoningText ?? null,
+          expectedRootKeys,
+          coverageKeys,
+          findingKeys:
+            params.stage === 'brief'
+              ? ['instructions', 'mustFix']
+              : [
+                  'findings',
+                  'corrections',
+                  'requiredCorrections',
+                  'issues',
+                  'errors',
+                ],
+        })
+      : null;
+    const scratchCandidate = candidateSelection?.candidate;
+    const scratchText =
+      scratchCandidate?.text ||
+      result.text?.trim() ||
+      result.reasoningText?.trim() ||
+      '';
+    const scratchChannel =
+      candidateSelection && candidateSelection.responseChannel !== 'empty'
+        ? candidateSelection.responseChannel
+        : result.text?.trim()
+        ? result.reasoningText?.trim()
+          ? 'both_content_preferred'
+          : 'content'
+        : result.reasoningText?.trim()
+        ? 'reasoning'
+        : null;
     await updateStageAttempt({
       id: attemptId,
       status: 'succeeded',
@@ -376,6 +473,12 @@ async function runStageAttempt<
       // recovery. Callers clear it once validation settles the checkpoint.
       reasoningContentTemp: params.persistReasoningContentTemp
         ? result.reasoningText?.trim() || null
+        : null,
+      responseCandidateTemp: params.persistResponseCandidateTemp
+        ? scratchText.slice(0, 12000) || null
+        : null,
+      responseCandidateChannel: params.persistResponseCandidateTemp
+        ? scratchChannel
         : null,
     });
     // CL-06: usage must reflect this attempt immediately (not at adoption).
@@ -589,8 +692,8 @@ function buildExecutionSnapshot(params: {
   proofPreset: Preset | null;
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2 | 3;
-  contextBudgetVersion?: 1 | 2 | 3;
-  reasoningProfileVersion?: 1 | 2 | 3;
+  contextBudgetVersion?: 1 | 2 | 3 | 4;
+  reasoningProfileVersion?: 1 | 2 | 3 | 4;
   finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
   reasoningEffort?: PipelineConfig['reasoningEffort'];
 }): PipelineExecutionSnapshot {
@@ -611,9 +714,12 @@ function buildExecutionSnapshot(params: {
     );
   }
   const isV3 =
-    params.outlineWorkflowVersion === 3 && params.contextBudgetVersion === 3;
+    params.outlineWorkflowVersion === 3 &&
+    (params.contextBudgetVersion === 3 || params.contextBudgetVersion === 4);
   const reasoningProfileVersion = isV3
-    ? params.reasoningProfileVersion === 2
+    ? params.contextBudgetVersion === 4 || params.reasoningProfileVersion === 4
+      ? 4
+      : params.reasoningProfileVersion === 2
       ? 2
       : 3
     : undefined;
@@ -634,7 +740,13 @@ function buildExecutionSnapshot(params: {
                       stage,
                       params.requestConfig,
                     )
-                  : resolveV31StageReasoning(
+                  : reasoningProfileVersion === 3
+                  ? resolveV31StageReasoning(
+                      requestedTier,
+                      stage,
+                      params.requestConfig,
+                    )
+                  : resolveV32StageReasoning(
                       requestedTier,
                       stage,
                       params.requestConfig,
@@ -647,6 +759,7 @@ function buildExecutionSnapshot(params: {
                   effectiveTier: resolved.effectiveTier,
                   thinking: resolved.thinking.type,
                   effort: resolved.effort,
+                  supported: resolved.supported,
                   downgradeReason: resolved.downgradeReason,
                 },
               ];
@@ -746,10 +859,14 @@ function buildExecutionSnapshot(params: {
       : {}),
     ...(isV3
       ? {
-          reasoningProfileVersion: reasoningProfileVersion as 2 | 3,
+          reasoningProfileVersion: reasoningProfileVersion as 2 | 3 | 4,
           requestedReasoningTier: requestedTier,
           stageReasoning,
-          briefPolicyVersion: (reasoningProfileVersion === 2 ? 1 : 2) as 1 | 2,
+          briefPolicyVersion: (reasoningProfileVersion === 2
+            ? 1
+            : reasoningProfileVersion === 3
+            ? 2
+            : 3) as 1 | 2 | 3,
           briefVisibleOutputFloor,
           briefReasoningHeadroom,
           briefMaxTokens,
@@ -983,6 +1100,75 @@ function auditObservation(result: LLMResult) {
   };
 }
 
+/** Persist only bounded, body-free structured-stage diagnostics. */
+function validationDetailsJson(params: {
+  validation: any;
+  selection?: ReturnType<typeof selectStructuredCandidate> | null;
+  formatterEligible: boolean;
+  formatterDecision: string;
+}): string {
+  const details =
+    params.validation?.details && typeof params.validation.details === 'object'
+      ? params.validation.details
+      : {};
+  const validationError =
+    typeof params.validation?.details === 'string'
+      ? params.validation.details.slice(0, 600)
+      : undefined;
+  const candidate = params.selection?.candidate;
+  return JSON.stringify({
+    version: 1,
+    failureCode:
+      params.validation?.reason ||
+      params.validation?.error ||
+      (params.validation?.valid ? 'ok' : 'AUDIT_INVALID'),
+    missingPaths: Array.isArray(details.missingPaths)
+      ? details.missingPaths.slice(0, 32)
+      : [],
+    invalidPaths: Array.isArray(details.invalidPaths)
+      ? details.invalidPaths.slice(0, 32)
+      : [],
+    rootKeys: candidate?.rootKeys?.slice(0, 32) || [],
+    candidateChannel:
+      params.selection?.responseChannel &&
+      params.selection.responseChannel !== 'empty'
+        ? params.selection.responseChannel
+        : undefined,
+    candidateChars: candidate?.candidateChars || 0,
+    candidateHash: candidate?.candidateHash,
+    findingCount:
+      typeof details.findingCount === 'number'
+        ? details.findingCount
+        : undefined,
+    requiredFindingCount:
+      typeof details.requiredFindingCount === 'number'
+        ? details.requiredFindingCount
+        : undefined,
+    coverageDimensions: Array.isArray(details.coverageDimensions)
+      ? details.coverageDimensions.slice(0, 32)
+      : [],
+    formatterEligible: params.formatterEligible,
+    formatterDecision: params.formatterDecision,
+    ...(validationError ? { validationError } : {}),
+    rejectedChannels: params.selection?.rejected?.slice(0, 8) || [],
+  }).slice(0, 4000);
+}
+
+function validationFieldHint(validation: any): string {
+  const details =
+    validation?.details && typeof validation.details === 'object'
+      ? validation.details
+      : {};
+  const paths = [
+    ...(Array.isArray(details.missingPaths) ? details.missingPaths : []),
+    ...(Array.isArray(details.invalidPaths) ? details.invalidPaths : []),
+  ]
+    .map(item => String(item).trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  return paths.length ? '；字段诊断：' + paths.join('、') : '';
+}
+
 async function updateLatestAttemptDiagnostics(
   taskId: string,
   stage: string,
@@ -993,6 +1179,14 @@ async function updateLatestAttemptDiagnostics(
     errorMessage?: string | null;
     formatterUsed?: boolean;
     clearReasoning?: boolean;
+    clearCandidate?: boolean;
+    responseCandidateChannel?:
+      | 'content'
+      | 'reasoning'
+      | 'both_content_preferred'
+      | 'both_reasoning_preferred'
+      | null;
+    validationDetailsJson?: string | null;
   },
 ): Promise<void> {
   const latest = await getLatestStageAttempt(taskId, stage);
@@ -1013,9 +1207,21 @@ async function updateLatestAttemptDiagnostics(
     ...(fields.formatterUsed !== undefined
       ? { formatterUsed: fields.formatterUsed }
       : {}),
-    ...(fields.clearReasoning ? { reasoningContentTemp: null } : {}),
+    ...(fields.responseCandidateChannel !== undefined
+      ? { responseCandidateChannel: fields.responseCandidateChannel }
+      : {}),
+    ...(fields.validationDetailsJson !== undefined
+      ? { validationDetailsJson: fields.validationDetailsJson }
+      : {}),
+    ...(fields.clearReasoning || fields.clearCandidate
+      ? {
+          reasoningContentTemp: fields.clearReasoning ? null : undefined,
+          responseCandidateTemp:
+            fields.clearCandidate || fields.clearReasoning ? null : undefined,
+        }
+      : {}),
   });
-  if (fields.clearReasoning) {
+  if (fields.clearReasoning || fields.clearCandidate) {
     await clearTemporaryReasoningForTaskStage(taskId, stage);
   }
 }
@@ -1285,7 +1491,7 @@ export async function reconcilePipelineTask(
       .tasks.find(t => t.id === taskId);
     const initialStages =
       Number(initialTask?.outlineWorkflowVersion) === 3 &&
-      Number(initialTask?.contextBudgetVersion) === 3
+      [3, 4].includes(Number(initialTask?.contextBudgetVersion))
         ? ['draft', 'review', 'factCheck', 'brief', 'proof']
         : ['draft', 'review', 'factCheck', 'proof'];
     await db.ensurePendingCheckpoints(taskId, initialStages as any);
@@ -1738,7 +1944,7 @@ async function actionPersistInitialSnapshot(
   // snapshots interprets an absent field as 1.
   const existingExecution = runtime.parsed?.execution;
   let outlineWorkflowVersion: 1 | 2 | 3;
-  let contextBudgetVersion: 1 | 2 | 3;
+  let contextBudgetVersion: 1 | 2 | 3 | 4;
   if (existingExecution) {
     outlineWorkflowVersion =
       existingExecution.outlineWorkflowVersion === 3
@@ -1747,7 +1953,9 @@ async function actionPersistInitialSnapshot(
         ? 2
         : 1;
     contextBudgetVersion =
-      existingExecution.contextBudgetVersion === 3
+      existingExecution.contextBudgetVersion === 4
+        ? 4
+        : existingExecution.contextBudgetVersion === 3
         ? 3
         : existingExecution.contextBudgetVersion === 2
         ? 2
@@ -1761,13 +1969,17 @@ async function actionPersistInitialSnapshot(
         ? 2
         : 1;
     contextBudgetVersion =
-      Number(taskRow?.contextBudgetVersion) === 3
+      Number(taskRow?.contextBudgetVersion) === 4
+        ? 4
+        : Number(taskRow?.contextBudgetVersion) === 3
         ? 3
         : Number(taskRow?.contextBudgetVersion) === 2
         ? 2
         : 1;
   }
-  const isV3 = outlineWorkflowVersion === 3 && contextBudgetVersion === 3;
+  const isV3 =
+    outlineWorkflowVersion === 3 &&
+    (contextBudgetVersion === 3 || contextBudgetVersion === 4);
   // Fresh freeze from live config only when no execution yet. V2 preserves its
   // historical multiplier; V3 stores requested/effective stage tiers and uses
   // independent output + reasoning reservations.
@@ -1784,7 +1996,8 @@ async function actionPersistInitialSnapshot(
           reasoningEffort: normalizePipelineReasoningTier(
             selectedReasoningEffort,
           ),
-          reasoningProfileVersion: 3 as const,
+          reasoningProfileVersion:
+            contextBudgetVersion === 4 ? (4 as const) : (3 as const),
         }
       : outlineWorkflowVersion === 2 &&
         !existingExecution &&
@@ -1813,7 +2026,9 @@ async function actionPersistInitialSnapshot(
         outlineWorkflowVersion === 3 ? 3 : outlineWorkflowVersion === 2 ? 2 : 1,
       reasoningProfileVersion:
         outlineWorkflowVersion === 3
-          ? freshConfig.reasoningProfileVersion === 2
+          ? contextBudgetVersion === 4
+            ? 4
+            : freshConfig.reasoningProfileVersion === 2
             ? 2
             : 3
           : undefined,
@@ -1842,7 +2057,8 @@ async function actionPersistInitialSnapshot(
     storyMemoryMode: 'preview',
     elasticBudget:
       execution.contextBudgetVersion === 2 ||
-      execution.contextBudgetVersion === 3,
+      execution.contextBudgetVersion === 3 ||
+      execution.contextBudgetVersion === 4,
   });
   if (!compiled.ready) {
     const code =
@@ -2245,7 +2461,8 @@ function isOutlineWorkflowV3(
 ): boolean {
   return (
     runtime.parsed?.execution?.outlineWorkflowVersion === 3 &&
-    runtime.parsed?.execution?.contextBudgetVersion === 3
+    (runtime.parsed?.execution?.contextBudgetVersion === 3 ||
+      runtime.parsed?.execution?.contextBudgetVersion === 4)
   );
 }
 
@@ -2255,6 +2472,15 @@ function isV31Profile(
   return (
     isOutlineWorkflowV3(runtime) &&
     runtime.parsed?.execution?.reasoningProfileVersion === 3
+  );
+}
+
+function isV32Profile(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+): boolean {
+  return (
+    isOutlineWorkflowV3(runtime) &&
+    runtime.parsed?.execution?.reasoningProfileVersion === 4
   );
 }
 
@@ -2284,7 +2510,7 @@ function stageReasoning(
       thinking: {
         type: frozen.thinking === 'enabled' ? 'enabled' : 'disabled',
       },
-      supported: frozen.effort != null,
+      supported: frozen.supported ?? frozen.effort != null,
       historical: false,
     };
   }
@@ -2296,7 +2522,7 @@ function isElasticBudgetEnabled(
   runtime: Awaited<ReturnType<typeof loadRuntime>>,
 ): boolean {
   const version = runtime.parsed?.execution?.contextBudgetVersion;
-  return version === 2 || version === 3;
+  return version === 2 || version === 3 || version === 4;
 }
 
 /**
@@ -2766,6 +2992,60 @@ async function runV3AuditStage(params: {
   );
   const reasoning = stageReasoning(runtime, stage);
   const v31 = isV31Profile(runtime);
+  const v32 = isV32Profile(runtime);
+  const factCheckInputRefs = v32
+    ? buildFactCheckInputRefsV32([
+        {
+          key: 'continuity',
+          text: [
+            snapshot.immediatePreviousChapterText,
+            snapshot.immediatePreviousChapterEnding,
+            snapshot.recentBridgeText,
+            snapshot.storyMemoryText,
+            snapshot.episodicMemoryText,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
+        { key: 'characters', text: snapshot.characterText },
+        { key: 'worldbook', text: snapshot.worldbookText },
+        { key: 'outline', text: snapshot.outlineText },
+      ])
+    : [];
+  const v32ReviewEnvelope = v32
+    ? buildReviewImmutableEnvelopeV32({
+        draftHash,
+        endingBoundary: snapshot.outlineText.trim().slice(-1200),
+      })
+    : null;
+  const v32FactCheckEnvelope = v32
+    ? buildFactCheckImmutableEnvelopeV32({
+        draftHash,
+        inputFactRefs: factCheckInputRefs,
+      })
+    : null;
+  const factCheckInputDimensions: FactCheckV32Category[] = v32
+    ? [
+        ...(snapshot.immediatePreviousChapterText ||
+        snapshot.immediatePreviousChapterEnding ||
+        snapshot.recentBridgeText ||
+        snapshot.episodicMemoryText
+          ? (['timeline', 'spatial_logic'] as FactCheckV32Category[])
+          : []),
+        ...(snapshot.characterText
+          ? ([
+              'character_state',
+              'knowledge_boundary',
+            ] as FactCheckV32Category[])
+          : []),
+        ...(snapshot.worldbookText
+          ? (['object_state', 'world_rule'] as FactCheckV32Category[])
+          : []),
+        ...(snapshot.outlineText
+          ? (['outline_boundary'] as FactCheckV32Category[])
+          : []),
+      ]
+    : [];
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
 
@@ -2792,10 +3072,79 @@ async function runV3AuditStage(params: {
           elasticBudget: isElasticBudgetEnabled(runtime),
         });
 
+  let lastCandidateSelection: ReturnType<
+    typeof selectStructuredCandidate
+  > | null = null;
+  let legalSourceIdsForFormatter: string[] | undefined;
   const validate = (result: LLMResult) => {
+    if (v32) {
+      const adapted = adaptV32AuditResult(result, stage);
+      lastCandidateSelection = adapted.selection;
+      if (!adapted.selection.candidate) {
+        return {
+          valid: false as const,
+          reason:
+            result.emptyReason === 'reasoning_only' ||
+            (!result.text?.trim() && result.reasoningText?.trim())
+              ? 'reasoning_only'
+              : 'invalid_json',
+          details: adapted.selection.rejected
+            .map(item => item.channel + ':' + item.reason)
+            .join(', '),
+        };
+      }
+      return stage === 'review'
+        ? validateReviewSemanticPayloadV32({
+            raw: adapted.selection.candidate.parsed,
+            envelope: v32ReviewEnvelope!,
+            legalSourceIds: legalSourceIdsForFormatter,
+          })
+        : validateFactCheckSemanticPayloadV32({
+            raw: adapted.selection.candidate.parsed,
+            envelope: v32FactCheckEnvelope!,
+            inputDimensions: factCheckInputDimensions,
+            legalSourceIds: legalSourceIdsForFormatter,
+          });
+    }
+    const structuredCandidate = v31
+      ? selectStructuredCandidate({
+          result,
+          expectedRootKeys:
+            stage === 'review'
+              ? [
+                  'schemaVersion',
+                  'draftHash',
+                  'corrections',
+                  'outlineExecution',
+                ]
+              : [
+                  'schemaVersion',
+                  'draftHash',
+                  'corrections',
+                  'hardConstraints',
+                ],
+          findingKeys: [
+            'corrections',
+            'requiredCorrections',
+            'issues',
+            'errors',
+          ],
+        })
+      : null;
+    lastCandidateSelection = structuredCandidate;
+    const candidateResult =
+      v31 && structuredCandidate
+        ? structuredCandidate.candidate
+          ? {
+              ...result,
+              text: structuredCandidate.candidate.text,
+              reasoningText: null,
+            }
+          : result
+        : result;
     const compatible = v31
-      ? adaptV31AuditResult(result, stage, draftHash).result
-      : result;
+      ? adaptV31AuditResult(candidateResult, stage, draftHash).result
+      : candidateResult;
     // The standalone V3 validator may inspect reasoning text for diagnostics
     // and compatibility tests. A live V3.1 task must never adopt that hidden
     // channel as the business report: only message.content is admissible.
@@ -2832,10 +3181,26 @@ async function runV3AuditStage(params: {
     });
     return;
   }
-  const compiled: ReadyStageRequest = v31
-    ? (() => {
-        const messages =
-          stage === 'review'
+  const compiled: ReadyStageRequest =
+    v31 || v32
+      ? (() => {
+          const messages = v32
+            ? stage === 'review'
+              ? buildReviewV32Messages({
+                  canonicalDraft,
+                  context: context as ReturnType<
+                    typeof buildReviewContextFromSnapshot
+                  >,
+                })
+              : buildFactCheckV32Messages({
+                  canonicalDraft,
+                  context: context as ReturnType<
+                    typeof buildFactCheckContextFromSnapshot
+                  >,
+                  inputFactRefs: factCheckInputRefs,
+                  inputDimensions: factCheckInputDimensions,
+                })
+            : stage === 'review'
             ? buildReviewV31Messages({
                 canonicalDraft,
                 context: context as ReturnType<
@@ -2850,15 +3215,15 @@ async function runV3AuditStage(params: {
                 >,
                 draftHash,
               });
-        return {
-          ...compiledBase,
-          messages,
-          estimatedInputTokens: estimateTokens(
-            messages.map(message => message.content).join('\n'),
-          ),
-        };
-      })()
-    : compiledBase;
+          return {
+            ...compiledBase,
+            messages,
+            estimatedInputTokens: estimateTokens(
+              messages.map(message => message.content).join('\n'),
+            ),
+          };
+        })()
+      : compiledBase;
 
   const callCompiled = async (
     ready: ReadyStageRequest,
@@ -2870,10 +3235,10 @@ async function runV3AuditStage(params: {
         ? ('disabled' as const)
         : reasoning?.thinking?.type,
       reasoningEffort: disableThinking ? undefined : reasoning?.effort,
-      reasoningPolicyVersion: 3,
+      reasoningPolicyVersion: v32 ? 4 : 3,
     };
     const frozenRequestJson = JSON.stringify({
-      requestVersion: 3,
+      requestVersion: v32 ? 32 : 3,
       stage,
       attempt: attemptNo,
       thinking: semantics.thinking || 'omitted',
@@ -2888,7 +3253,7 @@ async function runV3AuditStage(params: {
     return runStageAttempt({
       taskId,
       stage,
-      requestVersion: 3,
+      requestVersion: v32 ? 32 : 3,
       requestFingerprint: stageFingerprint(stage, ready, semantics),
       allocationTraceJson: ready.elasticBudgetTrace
         ? JSON.stringify(ready.elasticBudgetTrace)
@@ -2900,6 +3265,7 @@ async function runV3AuditStage(params: {
       estimatedInputTokens: ready.estimatedInputTokens,
       reservedOutputTokens: ready.reservedOutputTokens,
       persistReasoningContentTemp: v31,
+      persistResponseCandidateTemp: v31 || v32,
       run: () =>
         callReadyLLM(
           ready,
@@ -2935,14 +3301,49 @@ async function runV3AuditStage(params: {
   const runAuditFormatter = async (
     invalid: LLMResult,
   ): Promise<{ result: LLMResult; legalSourceIds: string[] }> => {
+    const selection = selectStructuredCandidate({
+      result: invalid,
+      expectedRootKeys:
+        stage === 'review'
+          ? ['verdict', 'findings', 'outlineAssessment', 'coverage']
+          : ['verdict', 'findings', 'confirmedFactRefs', 'coverage'],
+      findingKeys: [
+        'findings',
+        'corrections',
+        'requiredCorrections',
+        'issues',
+        'errors',
+      ],
+    });
+    const candidate =
+      selection.candidate?.text ||
+      invalid.text?.trim() ||
+      invalid.reasoningText?.trim() ||
+      '';
     const formatter = buildAuditFormatterPrompt({
       stage,
-      candidate: invalid.reasoningText || invalid.text || '',
+      candidate,
+      contractVersion: v32 ? 32 : 31,
+      legalSourceIds: v32 ? legalSourceIdsForFormatter : undefined,
+      requiredCoverageDimensions: v32
+        ? stage === 'review'
+          ? [...REVIEW_V32_DIMENSIONS]
+          : factCheckInputDimensions
+        : undefined,
+      requiredFactRefs:
+        v32 && stage === 'factCheck' ? factCheckInputRefs : undefined,
     });
     const { messages, legalSourceIds } = formatter;
+    // The formatter is body-free and never re-runs the primary audit, but a
+    // legacy V3.1 contract can still contain several executable corrections
+    // plus its required envelope arrays.  1536 tokens was small enough to
+    // truncate a valid formatter response (finish_reason=length), turning a
+    // recoverable candidate into a failed checkpoint.  Keep this independent
+    // from the primary stage budget while leaving ample room for the compact
+    // semantic V3.2 contract.
     const reservedOutputTokens = Math.min(
-      1536,
-      Math.max(768, Math.floor(maxTokens || 1024)),
+      4096,
+      Math.max(1024, Math.floor(maxTokens || 1024)),
     );
     const ready = {
       ready: true as const,
@@ -2958,16 +3359,16 @@ async function runV3AuditStage(params: {
     } as ReadyStageRequest;
     const semantics = {
       thinking: 'disabled' as const,
-      reasoningPolicyVersion: 3,
+      reasoningPolicyVersion: v32 ? 4 : 3,
     };
     const result = await runStageAttempt({
       taskId,
       stage,
-      requestVersion: 31,
+      requestVersion: v32 ? 32 : 31,
       requestFingerprint: stageFingerprint(stage, ready, semantics),
       allocationTraceJson: JSON.stringify({ formatter: true }),
       frozenRequestJson: JSON.stringify({
-        requestVersion: 31,
+        requestVersion: v32 ? 32 : 31,
         formatter: true,
         thinking: 'disabled',
         maxTokens: reservedOutputTokens,
@@ -2981,6 +3382,7 @@ async function runV3AuditStage(params: {
       reservedOutputTokens,
       formatterUsed: true,
       persistReasoningContentTemp: true,
+      persistResponseCandidateTemp: true,
       run: () =>
         callReadyLLM(
           ready,
@@ -3008,14 +3410,15 @@ async function runV3AuditStage(params: {
     // checkpoint's persisted reasoning; it must never silently replay a full
     // audit request. A new explicit retry gets a newer checkpoint.startedAt
     // and therefore starts a fresh bounded decision.
-    const checkpointAtStart = v31
+    const structuredProfile = v31 || v32;
+    const checkpointAtStart = structuredProfile
       ? await db.getStageCheckpoint(taskId, stage)
       : null;
-    const latestAttempt = v31
+    const latestAttempt = structuredProfile
       ? await getLatestStageAttempt(taskId, stage)
       : null;
     const sameCheckpointAttempt = Boolean(
-      v31 &&
+      structuredProfile &&
         checkpointAtStart?.startedAt != null &&
         latestAttempt &&
         latestAttempt.startedAt >= checkpointAtStart.startedAt,
@@ -3023,15 +3426,21 @@ async function runV3AuditStage(params: {
     const formatterAlreadyAttempted = Boolean(
       sameCheckpointAttempt && latestAttempt?.formatterUsed,
     );
-    const coldStartHasNoRecoverableReasoning = Boolean(
-      sameCheckpointAttempt && !latestAttempt?.reasoningContentTemp,
+    const coldStartHasNoRecoverableCandidate = Boolean(
+      sameCheckpointAttempt &&
+        !latestAttempt?.responseCandidateTemp &&
+        !latestAttempt?.reasoningContentTemp,
     );
     let result: LLMResult;
     let validation: any;
+    let formatterUsedThisRun = false;
     if (sameCheckpointAttempt && latestAttempt) {
+      const candidateScratch = latestAttempt.responseCandidateTemp || '';
       result = {
-        text: '',
-        reasoningText: latestAttempt.reasoningContentTemp || null,
+        text: candidateScratch || '',
+        reasoningText: candidateScratch
+          ? null
+          : latestAttempt.reasoningContentTemp || null,
         inputTokens: Number(latestAttempt.inputTokens || 0),
         outputTokens: Number(latestAttempt.outputTokens || 0),
         totalTokens: Number(latestAttempt.totalTokens || 0),
@@ -3048,7 +3457,7 @@ async function runV3AuditStage(params: {
         attempt: latestAttempt.attemptNo,
         valid: validation.valid,
         reason: validation.reason,
-        textLength: 0,
+        textLength: result.text?.length || 0,
         ...auditObservation(result),
         taskId,
       });
@@ -3066,44 +3475,58 @@ async function runV3AuditStage(params: {
         taskId,
       });
     }
-    // A provider may ignore the disabled-thinking extension or still expose
-    // a reasoning-only response through a compatible gateway. Give the
-    // structured contract one fresh, explicit content-only retry before the
-    // optional Formatter. Never replay this on a same-checkpoint cold start:
-    // that path may only consume the durable response scratch once.
-    if (
-      !validation.valid &&
-      validation.reason === 'reasoning_only' &&
-      !sameCheckpointAttempt
-    ) {
-      const repair = compile(REASONING_ONLY_REPAIR_HINT);
-      if (repair.ready) {
-        result = await callCompiled(repair, 2, true);
-        tokens = accumulateTokens(tokens, result);
-        validation = validate(result);
-        logPipelineAudit({
-          stage,
-          attempt: 2,
-          valid: validation.valid,
-          reason: validation.reason,
-          textLength: result.text?.length || 0,
-          ...auditObservation(result),
-          taskId,
-        });
-      }
-    }
-    const recoverableFormatterInput = result.reasoningText?.trim() || '';
-    if (
-      !validation.valid &&
-      v31 &&
-      recoverableFormatterInput &&
+    const formatterSelection = selectStructuredCandidate({
+      result,
+      expectedRootKeys:
+        stage === 'review'
+          ? ['verdict', 'findings', 'outlineAssessment', 'coverage']
+          : ['verdict', 'findings', 'confirmedFactRefs', 'coverage'],
+      findingKeys: [
+        'findings',
+        'corrections',
+        'requiredCorrections',
+        'issues',
+        'errors',
+      ],
+    });
+    const recoverableFormatterInput =
+      formatterSelection.candidate?.text ||
+      result.text?.trim() ||
+      result.reasoningText?.trim() ||
+      '';
+    const formatterEligible =
+      Boolean(recoverableFormatterInput) &&
+      // V3.2 may receive prose or a JSON fragment only in reasoning_content.
+      // Let the body-free Formatter normalize that bounded candidate once;
+      // requiring a parsed root here would turn recoverable reasoning-only
+      // responses into an unnecessary full-stage retry.
+      (!v32 ||
+        Boolean(formatterSelection.candidate) ||
+        Boolean(result.reasoningText?.trim())) &&
       result.finishReason !== 'content_filter' &&
       !formatterAlreadyAttempted &&
-      !coldStartHasNoRecoverableReasoning
+      !coldStartHasNoRecoverableCandidate;
+    if (
+      v32 &&
+      !(legalSourceIdsForFormatter || []).length &&
+      formatterSelection.candidate
     ) {
+      legalSourceIdsForFormatter = buildAuditSourceManifest(
+        stage,
+        formatterSelection.candidate.parsed,
+      );
+    }
+    if (!validation.valid && (v31 || v32) && formatterEligible) {
       await updateLatestAttemptDiagnostics(taskId, stage, {
         parseFailureCode: validation.reason || 'AUDIT_INVALID',
+        validationDetailsJson: validationDetailsJson({
+          validation,
+          selection: lastCandidateSelection || formatterSelection,
+          formatterEligible,
+          formatterDecision: 'formatter_started',
+        }),
       });
+      formatterUsedThisRun = true;
       const formatted = await runAuditFormatter(result);
       result = formatted.result;
       tokens = accumulateTokens(tokens, result);
@@ -3118,6 +3541,7 @@ async function runV3AuditStage(params: {
               ]
             : validation.report.corrections || [];
         if (
+          v31 &&
           corrections.some(
             (item: { sourceId?: string }) =>
               !legalIds.has(String(item.sourceId || '').trim()),
@@ -3130,6 +3554,20 @@ async function runV3AuditStage(params: {
           };
         }
       }
+      if (
+        validation.valid &&
+        v32 &&
+        validation.report &&
+        formatted.legalSourceIds.length === 0 &&
+        ((validation.report.executableCorrections || []).length ||
+          (validation.report.corrections || []).length)
+      ) {
+        validation = {
+          valid: false,
+          reason: 'missing_required_fields',
+          details: 'Audit Formatter 未得到候选 sourceId manifest',
+        };
+      }
       logPipelineAudit({
         stage,
         attempt: 2,
@@ -3140,16 +3578,39 @@ async function runV3AuditStage(params: {
         taskId,
       });
     }
+    const diagnosticSelection = (lastCandidateSelection ||
+      formatterSelection) as ReturnType<typeof selectStructuredCandidate>;
     if (validation.valid && validation.normalizedText) {
       await updateLatestAttemptDiagnostics(taskId, stage, {
         parseFailureCode: null,
+        responseCandidateChannel:
+          diagnosticSelection.responseChannel !== 'empty'
+            ? diagnosticSelection.responseChannel
+            : null,
+        validationDetailsJson: validationDetailsJson({
+          validation,
+          selection: diagnosticSelection,
+          formatterEligible,
+          formatterDecision: formatterUsedThisRun
+            ? 'formatter_succeeded'
+            : formatterAlreadyAttempted
+            ? 'formatter_already_attempted'
+            : 'primary_contract',
+        }),
         clearReasoning: true,
       });
       await persistStage(taskId, {
         stage,
         text: validation.normalizedText,
         status: 'success',
-        warnings: validation.warnings,
+        warnings: [
+          ...(validation.warnings || []),
+          formatterUsedThisRun
+            ? 'Contract Formatter（Thinking disabled；未重跑完整主审）'
+            : v32
+            ? '合同首轮通过（Review/FactCheck primary：Thinking enabled + low）'
+            : '合同首轮通过',
+        ],
         tokens,
         durationMs: Date.now() - start,
       });
@@ -3165,12 +3626,33 @@ async function runV3AuditStage(params: {
               stage === 'review' ? '文学评估' : '事实核查'
             }仅返回推理内容，未产生 message.content 合同`
           : formatAuditFailureMessage(stage, validation.reason),
+      responseCandidateChannel:
+        diagnosticSelection.responseChannel !== 'empty'
+          ? diagnosticSelection.responseChannel
+          : null,
+      validationDetailsJson: validationDetailsJson({
+        validation,
+        selection: diagnosticSelection,
+        formatterEligible,
+        formatterDecision:
+          formatterEligible && !formatterAlreadyAttempted
+            ? 'formatter_not_used_or_failed'
+            : 'not_eligible',
+      }),
       clearReasoning: true,
     });
     await persistStage(taskId, {
       stage,
       text: '',
       status: 'failed',
+      warnings: [
+        '结构化合同失败：' +
+          String(validation.reason || 'AUDIT_INVALID') +
+          validationFieldHint(validation),
+        formatterUsedThisRun
+          ? 'Contract Formatter（Thinking disabled；已尝试一次）'
+          : 'Contract Formatter 未执行',
+      ],
       error:
         validation.reason === 'reasoning_only'
           ? `${
@@ -3746,7 +4228,9 @@ async function actionRunReviewAndFactCheck(
 function parseNormalizedAudit<T>(text: string): T | null {
   try {
     const parsed = JSON.parse(text) as T & { schemaVersion?: number };
-    return parsed && parsed.schemaVersion === 3 ? parsed : null;
+    return parsed && (parsed.schemaVersion === 3 || parsed.schemaVersion === 4)
+      ? parsed
+      : null;
   } catch {
     return null;
   }
@@ -3804,6 +4288,18 @@ function buildBriefCompilerInputV31(
   };
 }
 
+function buildBriefCompilerInputV32(
+  input: BriefCompilerInputV1,
+): BriefCompilerInputV32 {
+  const immutableEnvelope = buildBriefImmutableEnvelopeV32(input);
+  return {
+    ...input,
+    schemaVersion: 3,
+    briefPolicyVersion: 3,
+    immutableEnvelope,
+  };
+}
+
 async function actionRunBrief(
   taskId: string,
   chapter: Chapter,
@@ -3839,15 +4335,30 @@ async function actionRunBrief(
         await getStageText(taskId, 'factCheck'),
       );
       const v31 = isV31Profile(runtime);
-      const input: BriefCompilerInputV1 | BriefCompilerInputV31 = v31
+      const v32 = isV32Profile(runtime);
+      const input:
+        | BriefCompilerInputV1
+        | BriefCompilerInputV31
+        | BriefCompilerInputV32 = v32
+        ? buildBriefCompilerInputV32(inputBase)
+        : v31
         ? buildBriefCompilerInputV31(inputBase)
         : inputBase;
-      const decision = v31
-        ? { callApi: true, reason: 'V3.1 Final path requires Brief API' }
-        : shouldCallBriefCompiler(inputBase);
+      const decision =
+        v32 || v31
+          ? {
+              callApi: true,
+              reason: v32
+                ? 'V3.2 Brief primary is mandatory'
+                : 'V3.1 Final path requires Brief API',
+            }
+          : shouldCallBriefCompiler(inputBase);
       const fallback = () => compileDeterministicBrief(inputBase);
       const persistLocal = async (
-        brief: FinalWritingBriefV1 | FinalWritingBriefV31,
+        brief:
+          | FinalWritingBriefV1
+          | FinalWritingBriefV31
+          | FinalWritingBriefV32,
         warnings: string[],
         tokens?: {
           input: number;
@@ -3861,7 +4372,13 @@ async function actionRunBrief(
           stage: 'brief',
           text: JSON.stringify(brief),
           status: 'success',
-          warnings,
+          warnings: warnings || [
+            v32
+              ? 'Brief V3.2 合同/API 失败，已阻断终稿'
+              : v31
+              ? 'Brief V3.1 合同/API 失败，已阻断终稿'
+              : 'Brief 合同/API 失败，已阻断终稿',
+          ],
           tokens,
           durationMs: Date.now() - start,
         });
@@ -3875,6 +4392,7 @@ async function actionRunBrief(
           reasoning?: number;
           visible?: number;
         },
+        warnings?: string[],
       ) => {
         // Once the API Brief has been admitted and returned an invalid or
         // failed result, a local fallback is not equivalent evidence.  The
@@ -3885,6 +4403,7 @@ async function actionRunBrief(
           text: '',
           status: 'failed',
           error,
+          warnings,
           tokens,
           durationMs: Date.now() - start,
         });
@@ -3906,9 +4425,9 @@ async function actionRunBrief(
         requestMaxTokens: runtime.parsed.execution.briefMaxTokens,
       });
       if (!compiled.ready) {
-        if (v31) {
+        if (v31 || v32) {
           await persistBriefFailure(
-            `Brief V3.1 上下文窗口不足，已阻断终稿：${
+            `Brief ${v32 ? 'V3.2' : 'V3.1'} 上下文窗口不足，已阻断终稿：${
               compiled.error?.message || '无法编译请求'
             }`,
           );
@@ -3937,17 +4456,19 @@ async function actionRunBrief(
       const semantics = {
         thinking: briefThinking,
         reasoningEffort: v31 ? undefined : ('low' as const),
-        reasoningPolicyVersion: v31 ? 2 : 1,
+        reasoningPolicyVersion: v32 ? 4 : v31 ? 2 : 1,
       };
       const frozenRequestJson = JSON.stringify({
-        requestVersion: v31 ? 31 : 1,
+        requestVersion: v32 ? 32 : v31 ? 31 : 1,
         sourceHash: input.sourceHash,
         thinking: briefThinking,
         reasoningEffort: v31 ? null : 'low',
         visibleOutputFloor: compiled.budget.visibleOutputFloor,
         reasoningHeadroom: compiled.budget.reasoningHeadroom,
         maxTokens: compiled.reservedOutputTokens,
-        immutableEnvelope: v31
+        immutableEnvelope: v32
+          ? (input as BriefCompilerInputV32).immutableEnvelope
+          : v31
           ? (input as BriefCompilerInputV31).immutableEnvelope
           : undefined,
         elasticBudgetTrace: compiled.elasticBudgetTrace || null,
@@ -3956,10 +4477,35 @@ async function actionRunBrief(
       const runBriefContractFormatter = async (
         invalid: LLMResult,
       ): Promise<LLMResult> => {
-        if (!v31) throw new Error('Brief Contract Formatter 仅适用于 V3.1');
+        if (!v31 && !v32)
+          throw new Error('Brief Contract Formatter 仅适用于 V3.1/V3.2');
+        const selection = selectStructuredCandidate({
+          result: invalid,
+          expectedRootKeys: v32
+            ? [
+                'verdict',
+                'instructions',
+                'openingContinuity',
+                'styleAdvisories',
+              ]
+            : [
+                'schemaVersion',
+                'coveredRequiredIds',
+                'openingContinuity',
+                'mustFix',
+              ],
+          findingKeys: ['instructions', 'mustFix'],
+        });
         const prompt = buildBriefContractFormatterPrompt({
-          candidate: invalid.reasoningText || invalid.text || '',
-          envelope: (input as BriefCompilerInputV31).immutableEnvelope,
+          candidate:
+            selection.candidate?.text ||
+            invalid.text?.trim() ||
+            invalid.reasoningText?.trim() ||
+            '',
+          envelope: v32
+            ? (input as BriefCompilerInputV32).immutableEnvelope
+            : (input as BriefCompilerInputV31).immutableEnvelope,
+          contractVersion: v32 ? 32 : 31,
         });
         const reservedOutputTokens = Math.min(
           1536,
@@ -3980,14 +4526,14 @@ async function actionRunBrief(
         return runStageAttempt({
           taskId,
           stage: 'brief',
-          requestVersion: 32,
+          requestVersion: v32 ? 32 : 31,
           requestFingerprint: stageFingerprint('brief', ready, {
             thinking: 'disabled',
-            reasoningPolicyVersion: 3,
+            reasoningPolicyVersion: v32 ? 4 : 3,
           }),
           allocationTraceJson: JSON.stringify({ formatter: true }),
           frozenRequestJson: JSON.stringify({
-            requestVersion: 32,
+            requestVersion: v32 ? 32 : 31,
             formatter: true,
             thinking: 'disabled',
             legalSourceIds: prompt.legalSourceIds,
@@ -4003,6 +4549,7 @@ async function actionRunBrief(
           reservedOutputTokens,
           formatterUsed: true,
           persistReasoningContentTemp: true,
+          persistResponseCandidateTemp: true,
           run: () =>
             callReadyLLM(
               ready,
@@ -4031,7 +4578,7 @@ async function actionRunBrief(
         const firstResult = await runStageAttempt({
           taskId,
           stage: 'brief',
-          requestVersion: v31 ? 31 : 1,
+          requestVersion: v32 ? 32 : v31 ? 31 : 1,
           requestFingerprint: stageFingerprint(
             'brief',
             compiled as unknown as ReadyStageRequest,
@@ -4052,6 +4599,7 @@ async function actionRunBrief(
           reservedOutputTokens: compiled.reservedOutputTokens,
           formatterUsed: false,
           persistReasoningContentTemp: v31,
+          persistResponseCandidateTemp: v31 || v32,
           run: () =>
             callReadyLLM(
               compiled as unknown as ReadyStageRequest,
@@ -4077,21 +4625,63 @@ async function actionRunBrief(
             ),
         });
         callTokens = accumulateTokens(callTokens, firstResult);
-        let result = firstResult;
-        let validation = v31
-          ? validateFinalWritingBriefV31({
-              // V3.1 admits only message.content. A hidden reasoning payload
-              // is input to the bounded Formatter, never a Brief artifact.
-              raw: result.text || '',
+        let briefSelection: ReturnType<typeof selectStructuredCandidate> = {
+          candidate: null,
+          responseChannel: 'empty',
+          rejected: [],
+        };
+        const validateBriefResult = (value: LLMResult) => {
+          briefSelection = selectStructuredCandidate({
+            result: value,
+            expectedRootKeys: v32
+              ? [
+                  'verdict',
+                  'instructions',
+                  'openingContinuity',
+                  'styleAdvisories',
+                ]
+              : v31
+              ? [
+                  'schemaVersion',
+                  'coveredRequiredIds',
+                  'openingContinuity',
+                  'mustFix',
+                ]
+              : [
+                  'schemaVersion',
+                  'sourceHash',
+                  'coveredRequiredIds',
+                  'mustFix',
+                ],
+            findingKeys: ['instructions', 'mustFix'],
+          });
+          const raw =
+            briefSelection.candidate?.text ||
+            value.text ||
+            value.reasoningText ||
+            '';
+          if (v32) {
+            return validateFinalWritingBriefV32({
+              raw,
+              envelope: (input as BriefCompilerInputV32).immutableEnvelope,
+            });
+          }
+          if (v31) {
+            return validateFinalWritingBriefV31({
+              raw,
               envelope: (input as BriefCompilerInputV31).immutableEnvelope,
               compatibility: structuredOutputCompatibilityForConfig(
                 runtime.requestConfig,
               ),
-            })
-          : validateFinalWritingBrief({
-              raw: result.text || '',
-              input: input as BriefCompilerInputV1,
             });
+          }
+          return validateFinalWritingBrief({
+            raw,
+            input: input as BriefCompilerInputV1,
+          });
+        };
+        let result = firstResult;
+        let validation = validateBriefResult(result);
         logPipelineAudit({
           stage: 'brief',
           attempt: briefAttemptNo,
@@ -4101,25 +4691,25 @@ async function actionRunBrief(
           taskId,
         });
         if (
-          v31 &&
+          (v31 || v32) &&
           !validation.valid &&
-          (result.reasoningText?.trim() || result.text?.trim()) &&
+          (briefSelection.candidate ||
+            result.reasoningText?.trim() ||
+            result.text?.trim()) &&
           result.finishReason !== 'content_filter'
         ) {
           await updateLatestAttemptDiagnostics(taskId, 'brief', {
             parseFailureCode: validation.error || 'BRIEF_SCHEMA_INVALID',
+            validationDetailsJson: validationDetailsJson({
+              validation,
+              selection: briefSelection,
+              formatterEligible: true,
+              formatterDecision: 'formatter_started',
+            }),
           });
           result = await runBriefContractFormatter(firstResult);
           callTokens = accumulateTokens(callTokens, result);
-          validation = validateFinalWritingBriefV31({
-            // The formatter is required to place its contract in content;
-            // reasoning-only formatter output is not accepted as success.
-            raw: result.text || '',
-            envelope: (input as BriefCompilerInputV31).immutableEnvelope,
-            compatibility: structuredOutputCompatibilityForConfig(
-              runtime.requestConfig,
-            ),
-          });
+          validation = validateBriefResult(result);
           logPipelineAudit({
             stage: 'brief',
             attempt: briefAttemptNo + 1,
@@ -4140,6 +4730,21 @@ async function actionRunBrief(
                   validation.error || '未知原因'
                 }`,
               }),
+          responseCandidateChannel:
+            briefSelection.responseChannel !== 'empty'
+              ? briefSelection.responseChannel
+              : null,
+          validationDetailsJson: validationDetailsJson({
+            validation,
+            selection: briefSelection,
+            formatterEligible:
+              Boolean(briefSelection.candidate) ||
+              Boolean(result.text?.trim() || result.reasoningText?.trim()),
+            formatterDecision:
+              result === firstResult
+                ? 'primary_contract'
+                : 'formatter_succeeded_or_failed',
+          }),
           clearReasoning: true,
         });
         if (validation.valid && validation.brief) {
@@ -4148,6 +4753,8 @@ async function actionRunBrief(
             [
               v31
                 ? 'Brief Compiler（Thinking disabled，优先输出 content 合同）'
+                : v32
+                ? 'Brief Compiler V3.2（Thinking enabled + low）'
                 : 'Brief Compiler（Thinking enabled + low）',
               ...(result === firstResult
                 ? []
@@ -4437,30 +5044,42 @@ async function runFinalReviserV3Stage(params: {
   const canonicalDraft = canonicalizeDraft(draftText);
   const briefText = await getStageText(taskId, 'brief');
   const v31 = isV31Profile(runtime);
-  let brief: FinalWritingBriefV1 | FinalWritingBriefV31 | null = null;
+  const v32 = isV32Profile(runtime);
+  let brief:
+    | FinalWritingBriefV1
+    | FinalWritingBriefV31
+    | FinalWritingBriefV32
+    | null = null;
   try {
     const parsed = JSON.parse(briefText) as
       | FinalWritingBriefV1
-      | FinalWritingBriefV31;
-    if (parsed && parsed.schemaVersion === (v31 ? 2 : 1)) brief = parsed;
+      | FinalWritingBriefV31
+      | FinalWritingBriefV32;
+    if (parsed && parsed.schemaVersion === (v32 ? 3 : v31 ? 2 : 1))
+      brief = parsed;
   } catch {
     brief = null;
   }
-  if (v31 && brief) {
-    const briefInput = buildBriefCompilerInputV31(
-      buildBriefCompilerInput(
-        runtime,
-        await getStageText(taskId, 'review'),
-        await getStageText(taskId, 'factCheck'),
-      ),
+  if ((v31 || v32) && brief) {
+    const briefInputBase = buildBriefCompilerInput(
+      runtime,
+      await getStageText(taskId, 'review'),
+      await getStageText(taskId, 'factCheck'),
     );
-    const validated = validateFinalWritingBriefV31({
-      raw: briefText,
-      envelope: briefInput.immutableEnvelope,
-      compatibility: structuredOutputCompatibilityForConfig(
-        runtime.requestConfig,
-      ),
-    });
+    const validated = v32
+      ? validateFinalWritingBriefV32({
+          raw: briefText,
+          envelope:
+            buildBriefCompilerInputV32(briefInputBase).immutableEnvelope,
+        })
+      : validateFinalWritingBriefV31({
+          raw: briefText,
+          envelope:
+            buildBriefCompilerInputV31(briefInputBase).immutableEnvelope,
+          compatibility: structuredOutputCompatibilityForConfig(
+            runtime.requestConfig,
+          ),
+        });
     brief = validated.valid ? validated.brief || null : null;
   }
   if (!brief) {
@@ -4535,17 +5154,17 @@ async function runFinalReviserV3Stage(params: {
   const semantics = {
     thinking: reasoning?.thinking?.type,
     reasoningEffort: reasoning?.effort,
-    reasoningPolicyVersion: 3,
+    reasoningPolicyVersion: v32 ? 4 : 3,
   } as const;
   const runProofAttempt = (request: ReadyStageRequest, repairPass: number) =>
     runStageAttempt({
       taskId,
       stage: 'proof',
-      requestVersion: 3,
+      requestVersion: v32 ? 32 : 3,
       requestFingerprint: stageFingerprint('proof', request, semantics),
       allocationTraceJson: JSON.stringify(request.allocations),
       frozenRequestJson: JSON.stringify({
-        requestVersion: 3,
+        requestVersion: v32 ? 32 : 3,
         thinking: semantics.thinking || 'omitted',
         reasoningEffort: semantics.reasoningEffort || null,
         messagesHash: sha256Hex(JSON.stringify(request.messages)).slice(0, 32),
@@ -4583,7 +5202,7 @@ async function runFinalReviserV3Stage(params: {
         ),
     });
   try {
-    if (v31) {
+    if (v31 || v32) {
       // V3.1 Final is exactly one model call. The local checks below are a
       // hard gate only; a failed result is persisted for manual retry from
       // Proof and is never repaired by a hidden second Final call.

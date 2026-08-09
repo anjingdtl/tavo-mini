@@ -96,11 +96,18 @@ const V31_CATEGORIES = new Set([
   'opening_continuity',
   'outline_execution',
   'character',
+  'character_state',
   'world_rule',
+  'object_state',
+  'knowledge_boundary',
+  'outline_boundary',
   'timeline',
   'space',
+  'spatial_logic',
   'causality',
   'style',
+  'prose',
+  'ending_boundary',
 ]);
 
 function failV2<T>(
@@ -1090,6 +1097,52 @@ function isV31AdvisorySeverity(value: unknown): boolean {
   return value === 'warning' || value === 'advisory';
 }
 
+function normalizeV31Category(value: unknown): string {
+  const raw = v3Text(value, 120).toLocaleLowerCase();
+  const aliases: Record<string, string> = {
+    opening: 'opening_continuity',
+    continuity: 'opening_continuity',
+    opening_continuity: 'opening_continuity',
+    '开篇衔接': 'opening_continuity',
+    outline: 'outline_execution',
+    outline_execution: 'outline_execution',
+    '大纲执行': 'outline_execution',
+    character: 'character',
+    character_state: 'character_state',
+    '人物状态': 'character_state',
+    '人物行为': 'character',
+    world: 'world_rule',
+    world_rule: 'world_rule',
+    '世界规则': 'world_rule',
+    object: 'object_state',
+    object_state: 'object_state',
+    '物品状态': 'object_state',
+    knowledge: 'knowledge_boundary',
+    knowledge_boundary: 'knowledge_boundary',
+    '知识边界': 'knowledge_boundary',
+    timeline: 'timeline',
+    time: 'timeline',
+    '时间线': 'timeline',
+    space: 'space',
+    spatial: 'space',
+    spatial_logic: 'space',
+    '空间逻辑': 'space',
+    causality: 'causality',
+    cause_effect: 'causality',
+    '因果链': 'causality',
+    style: 'style',
+    prose: 'style',
+    literary: 'style',
+    '文风': 'style',
+    '语言': 'style',
+    ending: 'ending_boundary',
+    ending_boundary: 'ending_boundary',
+    boundary: 'ending_boundary',
+    '结尾边界': 'ending_boundary',
+  };
+  return aliases[raw] || raw;
+}
+
 function v3Location(
   raw: Record<string, unknown>,
   anchors: PipelineRevisionAnchor[],
@@ -1177,6 +1230,7 @@ function v3Correction(
   );
   if (strictSemantic) {
     const category = row.category ?? row.dimension;
+    const normalizedCategory = normalizeV31Category(category);
     if (!v3Text(row.id, 120)) {
       return { item: null, advisory: `${source} corrections[${index}] 缺少 id` };
     }
@@ -1186,8 +1240,11 @@ function v3Correction(
     if (!v3Text(category, 120)) {
       return { item: null, advisory: `${source} corrections[${index}] 缺少 category` };
     }
-    if (!V31_CATEGORIES.has(v3Text(category, 120))) {
-      return { item: null, advisory: `${source} corrections[${index}] category 非法` };
+    if (!V31_CATEGORIES.has(normalizedCategory)) {
+      return {
+        item: null,
+        advisory: `${source} corrections[${index}] category 非法（${v3Text(category, 120) || '空'}）`,
+      };
     }
     const target = row.target ?? row.location;
     const targetKind =
@@ -1220,7 +1277,7 @@ function v3Correction(
     sourceId,
     source,
     severity,
-    dimension: v3Text(row.category ?? row.dimension, 120) || 'literary',
+    dimension: normalizeV31Category(row.category ?? row.dimension) || 'literary',
     diagnosis,
     rewriteGoal,
     preserveMeaning: v3Array(row.preserve ?? row.preserveMeaning, 20),

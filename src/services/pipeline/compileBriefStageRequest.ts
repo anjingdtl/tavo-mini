@@ -5,7 +5,9 @@ import { resolveElasticStageOutputReservation } from '../contextAutoAllocator';
 import {
   briefRequiredSourceIds,
   briefRequiredSourceIdsV31,
+  briefRequiredSourceIdsV32,
   briefWarningCount,
+  type BriefCompilerInputV32,
   type BriefCompilerInputV31,
   type BriefCompilerInputV1,
 } from './briefCompilerTypes';
@@ -30,7 +32,7 @@ export interface BriefBudget {
 export interface CompiledBriefStageRequest {
   stage: 'brief';
   messages: ChatMessage[];
-  input: BriefCompilerInputV1 | BriefCompilerInputV31;
+  input: BriefCompilerInputV1 | BriefCompilerInputV31 | BriefCompilerInputV32;
   budget: BriefBudget;
   estimatedInputTokens: number;
   reservedOutputTokens: number;
@@ -41,27 +43,38 @@ export interface CompiledBriefStageRequest {
   elasticBudgetTrace?: ElasticBudgetTrace;
 }
 
-type BriefCompilerInput = BriefCompilerInputV1 | BriefCompilerInputV31;
+type BriefCompilerInput =
+  | BriefCompilerInputV1
+  | BriefCompilerInputV31
+  | BriefCompilerInputV32;
 
 function isV31Input(input: BriefCompilerInput): input is BriefCompilerInputV31 {
   return input.schemaVersion === 2;
 }
 
+function isV32Input(input: BriefCompilerInput): input is BriefCompilerInputV32 {
+  return input.schemaVersion === 3;
+}
+
 function requiredIds(input: BriefCompilerInput): string[] {
   return isV31Input(input)
     ? briefRequiredSourceIdsV31(input)
+    : isV32Input(input)
+    ? briefRequiredSourceIdsV32(input)
     : briefRequiredSourceIds(input);
 }
 
 function warningCount(input: BriefCompilerInput): number {
-  if (!isV31Input(input)) return briefWarningCount(input);
+  if (!isV31Input(input) && !isV32Input(input)) return briefWarningCount(input);
   return [
     ...(input.review?.advisoryNotes || []),
     ...(input.review?.executableCorrections || []),
     ...(input.review?.unlocatedRequired || []),
     ...(input.factCheck?.corrections || []),
   ].filter(item =>
-    typeof item === 'string' ? Boolean(item.trim()) : item.severity === 'warning',
+    typeof item === 'string'
+      ? Boolean(item.trim())
+      : item.severity === 'warning',
   ).length;
 }
 
@@ -79,30 +92,28 @@ export function calculateBriefBudget(params: {
   reasoningHeadroom?: number;
 }): BriefBudget {
   const maxOutput = Math.max(0, Number(params.modelMaxOutputTokens) || 0);
-  const computedFloor = clamp(
+  const v32 = isV32Input(params.input);
+  const complexityFloor =
     512 +
-      requiredIds(params.input).length * 140 +
-      warningCount(params.input) * 60,
-    768,
-    2048,
-  );
-  const visibleOutputFloor = clamp(
-    Math.max(
-      Number(params.visibleOutputFloor) > 0
-        ? Number(params.visibleOutputFloor)
-        : 0,
-      computedFloor,
-    ),
-    768,
-    2048,
-  );
-  const reasoningHeadroom = clamp(
+    requiredIds(params.input).length * 140 +
+    warningCount(params.input) * 60;
+  const computedFloor = v32
+    ? Math.max(768, complexityFloor)
+    : clamp(complexityFloor, 768, 2048);
+  const requestedVisibleFloor =
+    Number(params.visibleOutputFloor) > 0
+      ? Number(params.visibleOutputFloor)
+      : 0;
+  const visibleOutputFloor = v32
+    ? Math.max(768, requestedVisibleFloor, computedFloor)
+    : clamp(Math.max(requestedVisibleFloor, computedFloor), 768, 2048);
+  const requestedReasoningHeadroom =
     Number(params.reasoningHeadroom) > 0
       ? Number(params.reasoningHeadroom)
-      : 1200,
-    1024,
-    2048,
-  );
+      : 1200;
+  const reasoningHeadroom = v32
+    ? Math.max(1024, requestedReasoningHeadroom)
+    : clamp(requestedReasoningHeadroom, 1024, 2048);
   // `max_tokens` is the elastic per-request provider reservation.  The
   // visible JSON floor and low reasoning headroom remain independent minimum
   // fit accounts, but they must not become a Brief-only 2K/4K cap.  New V3
@@ -115,8 +126,7 @@ export function calculateBriefBudget(params: {
           contextWindow: params.contextWindow,
           modelMaxOutputTokens: params.modelMaxOutputTokens,
         });
-  const minimumRequiredOutputTokens =
-    visibleOutputFloor + reasoningHeadroom;
+  const minimumRequiredOutputTokens = visibleOutputFloor + reasoningHeadroom;
   const messages = buildBriefCompilerMessages(params.input);
   const estimatedInputTokens = estimateTokens(
     messages.map(message => message.content).join('\n'),
@@ -151,6 +161,41 @@ export function buildBriefCompilerMessages(
   input: BriefCompilerInput,
 ): ChatMessage[] {
   const allowedSourceIds = requiredIds(input);
+  if (isV32Input(input)) {
+    return [
+      {
+        role: 'system',
+        content: [
+          '你是 ShineWriter V3.2 Brief Compiler。此独立 API 调用启用 low Thinking，只把已验证的 Review/FactCheck 语义压缩为 Final 可执行要求。',
+          '不得重新审阅 Draft，不得新增事实、人物或剧情，不得输出正文或推理过程。',
+          '只输出 BriefSemanticPayloadV32 JSON：verdict 为 apply_changes 或 no_changes，必须包含 instructions、openingContinuity、styleAdvisories。',
+          'sourceIds 只能逐字引用白名单；hard/required sourceId 必须被 instruction 覆盖。没有必改项时 verdict 可以是 no_changes，但 openingContinuity 仍需给出至少一条保持策略，不能输出空数组。',
+          'no_changes 时必须写出“从上一章结尾状态自然衔接，并保持已确认的人物、时间、地点和物品状态”等具体保持策略；不得用空 instructions、空 openingContinuity、空 styleAdvisories 伪装成完整 Brief。',
+          '本地 immutableEnvelope 是权威，不要输出或改写其中的 sourceHash、requiredSourceIds、protectedFacts、hardConstraints、mustNotAdvance、outlineObligations、endingBoundary。',
+          'instruction 必须包含 sourceIds、priority、target、instruction；target 只能是 opening/scene/middle/ending/global。',
+          '每个 hard/required sourceId 只能出现在一条逻辑 instruction 中；如果 Review 与 FactCheck 对同一 sourceId 都有发现，必须合并为一条不相互矛盾的 instruction，不得为同一 sourceId 输出两条不同的 hard/required 指令。',
+          '同一条 instruction 可以覆盖多个 sourceId，但只有它们确实共享同一个修复动作时才这样做；不得为了覆盖清单编造或拆分相互冲突的要求。',
+          JSON.stringify({
+            verdict: allowedSourceIds.length ? 'apply_changes' : 'no_changes',
+            instructions: [],
+            openingContinuity: [
+              '从上一章结尾状态自然衔接，保持已确认的人物、时间、地点和物品状态。',
+            ],
+            styleAdvisories: [],
+          }),
+          'sourceId 白名单：' + JSON.stringify(allowedSourceIds),
+          '本地不可变信封：' + JSON.stringify(input.immutableEnvelope),
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          review: input.review,
+          factCheck: input.factCheck,
+        }),
+      },
+    ];
+  }
   if (isV31Input(input)) {
     return [
       {
@@ -160,7 +205,9 @@ export function buildBriefCompilerMessages(
           '不得重新审阅初稿，不得新增事实、人物或剧情，不得输出小说正文或推理过程。',
           '本地不可变信封是最终权威；不得改写其中的 sourceHash、requiredSourceIds、protectedFacts、hardConstraints、mustNotAdvance、outlineObligations、endingBoundary。',
           '只输出 BriefWritingSemanticPayloadV31 JSON，不要 Markdown、解释或推理。',
-          `语义输出应包含 schemaVersion=2、coveredRequiredIds、openingContinuity、mustFix、mustPreserve、endingState、styleAdvisories；sourceId 只能从白名单选择：${JSON.stringify(allowedSourceIds)}。`,
+          `语义输出应包含 schemaVersion=2、coveredRequiredIds、openingContinuity、mustFix、mustPreserve、endingState、styleAdvisories；sourceId 只能从白名单选择：${JSON.stringify(
+            allowedSourceIds,
+          )}。`,
           'mustFix 每项必须包含 sourceIds（字符串数组）、target（kind 为 opening/scene/middle/ending/global）、instruction（非空字符串）、preserve（字符串数组）。',
           '如果没有 required/hard 修复，coveredRequiredIds 与 mustFix 必须为 []；没有对应语义时其余数组也输出 []，不要省略 schemaVersion。',
           'endingState 有结尾边界时请原样复述 endingBoundary；不要编造新的结尾。',
@@ -196,7 +243,9 @@ export function buildBriefCompilerMessages(
         '保留所有 hard/required，保留大纲的不得提前推进与结尾目标，把 warning 放入 advisoryNotes。',
         '只输出符合 FinalWritingBriefV1 的 JSON 对象，不要输出 Markdown、解释或推理。',
         `必须保留机器字段：schemaVersion 必须为 1，sourceHash 必须原样等于 ${input.sourceHash}；coveredRequiredIds、mustFix、mustPreserve、mustNotAdvance、openingContinuity、endingState、advisoryNotes 也必须按下列合同输出。`,
-        `sourceId 白名单（只能逐字选择，禁止创造、改写或从报告正文猜测）：${JSON.stringify(allowedSourceIds)}；coveredRequiredIds 与 mustFix[].sourceIds 都只能使用此白名单。没有对应修复时 mustFix 输出空数组，不要填入角色名、章节名或自造 id。`,
+        `sourceId 白名单（只能逐字选择，禁止创造、改写或从报告正文猜测）：${JSON.stringify(
+          allowedSourceIds,
+        )}；coveredRequiredIds 与 mustFix[].sourceIds 都只能使用此白名单。没有对应修复时 mustFix 输出空数组，不要填入角色名、章节名或自造 id。`,
         'mustFix 每一项必须完整包含 sourceIds（字符串数组）、location（字符串）、instruction（非空字符串）、preserve（字符串数组）四个字段；禁止用 rewriteGoal、diagnosis 或其他字段替代 instruction，无法形成完整项时直接输出 mustFix: []。',
         `mustFix 项模板：${JSON.stringify({
           sourceIds: allowedSourceIds.length ? [allowedSourceIds[0]] : [],

@@ -73,8 +73,9 @@ export function splitStageWarnings(stage: PipelineStageResult): {
       'Brief coveredRequiredIds 仅作为诊断；最终覆盖集合已由 mustFix.sourceIds 本地计算',
     );
     const isExecutionNote =
-      /^Brief Compiler（.*）$/.test(message) ||
-      /^Contract Formatter（.*）$/.test(message);
+      /^Brief Compiler.*（.*）$/.test(message) ||
+      /^Contract Formatter（.*）$/.test(message) ||
+      /^合同首轮通过/.test(message);
     if (isImmutableOverride || isCoverageDiagnostic || isExecutionNote) {
       notices.push(message);
     } else {
@@ -436,17 +437,19 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const resumeLabel =
     succeededStages.length > 0 ? '从失败节点重试' : '重新尝试';
 
-  const isV31Task = (() => {
+  const isV3Task = (() => {
     if (
       Number(task.outlineWorkflowVersion) !== 3 ||
-      Number(task.contextBudgetVersion) !== 3 ||
+      ![3, 4].includes(Number(task.contextBudgetVersion)) ||
       !task.pipelineContextJson
     ) {
       return false;
     }
     try {
       const parsed = JSON.parse(task.pipelineContextJson);
-      return parsed?.execution?.reasoningProfileVersion === 3;
+      return [3, 4].includes(
+        Number(parsed?.execution?.reasoningProfileVersion),
+      );
     } catch {
       return false;
     }
@@ -455,7 +458,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     task.targetType === 'chapter' &&
     task.status === 'completed' &&
     Boolean(task.finalText?.trim()) &&
-    isV31Task;
+    isV3Task;
 
   const handleResumeFailed = async () => {
     if (adopting) return;
@@ -591,7 +594,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             <>
               {notices.length ? (
                 <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
-                  说明：终稿 Brief 已按本地不可变约束归一化
+                  说明：{notices.join('；')}
                 </Text>
               ) : null}
               {warnings.length ? (

@@ -96,7 +96,7 @@ describe('Schema 46 → 47 V3.1 fail-closed recovery migration', () => {
     const db = await seed();
     const backup = jest.fn(async () => 'schema-recovery/test.json');
     const result = await runMigrations(db as any, 46, backup);
-    expect(SCHEMA_VERSION).toBe(48);
+    expect(SCHEMA_VERSION).toBe(49);
     expect(backup).toHaveBeenCalledTimes(1);
     expect(result.hadBreaking).toBe(true);
     expect(result.backupPath).toBe('schema-recovery/test.json');

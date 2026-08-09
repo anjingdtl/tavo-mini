@@ -530,6 +530,43 @@ describe('ShineWriter V3.1 contracts', () => {
     ).toBe('none');
   });
 
+  test('fills only the locally known draft hash for a native V3.1 formatter payload', () => {
+    const adapted = adaptV31AuditResult(
+      result(
+        JSON.stringify({
+          schemaVersion: 3,
+          corrections: [],
+          protectedFacts: [],
+          outlineExecution: {
+            fulfilledBeats: [],
+            missingBeats: [],
+            deviations: [],
+            prematureBeats: [],
+            mustPreserve: [],
+            mustNotAdvance: [],
+            endingGoal: '',
+          },
+        }),
+      ),
+      'review',
+      'draft-hash',
+    );
+
+    expect(adapted.adaptation).toBe('local_fields_completed');
+    expect(JSON.parse(adapted.result.text || '{}')).toMatchObject({
+      schemaVersion: 3,
+      draftHash: 'draft-hash',
+    });
+    expect(
+      validateReviewV3Result({
+        result: adapted.result,
+        expectedHash: 'draft-hash',
+        anchors: [],
+        strictSemantic: true,
+      }).valid,
+    ).toBe(true);
+  });
+
   test('Formatter prompts contain no Draft/context and force disabled Thinking', () => {
     const audit = buildAuditFormatterPrompt({
       stage: 'review',
@@ -537,6 +574,7 @@ describe('ShineWriter V3.1 contracts', () => {
     });
     expect(JSON.stringify(audit.messages)).not.toContain('长大纲正文');
     expect(JSON.stringify(audit.messages)).toContain('只整理已有判断');
+    expect(JSON.stringify(audit.messages)).toContain('corrections 必须保留候选中已有的 id');
     const brief = buildBriefContractFormatterPrompt({
       candidate: '已有 Brief 判断',
       envelope: buildBriefImmutableEnvelopeV31(briefInput()),

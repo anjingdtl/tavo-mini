@@ -4,6 +4,7 @@ export interface TableManifest {
   indexes?: readonly string[];
   backup: boolean;
   restoreOrder: number;
+  backupExcludedColumns?: readonly string[];
 }
 
 /**
@@ -375,6 +376,13 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'parse_failure_code',
       'formatter_used',
       'reasoning_content_temp',
+      'response_candidate_temp',
+      'response_candidate_channel',
+      'validation_details_json',
+    ],
+    backupExcludedColumns: [
+      'reasoning_content_temp',
+      'response_candidate_temp',
     ],
     indexes: [
       'idx_pipeline_stage_attempts_task_stage',

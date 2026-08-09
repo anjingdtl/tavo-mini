@@ -6,6 +6,7 @@ type V31AuditStage = Extract<PipelineStageName, 'review' | 'factCheck'>;
 
 export type V31AuditAdaptation =
   | 'none'
+  | 'local_fields_completed'
   | 'legacy_review_shape'
   | 'legacy_fact_check_shape'
   | 'v2_review_shape'
@@ -20,11 +21,18 @@ const V31_CATEGORIES = new Set([
   'opening_continuity',
   'outline_execution',
   'character',
+  'character_state',
   'world_rule',
+  'object_state',
+  'knowledge_boundary',
+  'outline_boundary',
   'timeline',
   'space',
+  'spatial_logic',
   'causality',
   'style',
+  'prose',
+  'ending_boundary',
 ]);
 
 const V31_TARGETS = new Set(['opening', 'scene', 'middle', 'ending', 'global']);
@@ -333,7 +341,19 @@ export function adaptV31AuditResult(
   const isNativeV31 =
     Number(raw.schemaVersion) === 3 &&
     (Array.isArray(raw.corrections) || Array.isArray(raw.requiredCorrections));
-  if (isNativeV31) return { result, adaptation: 'none' };
+  if (isNativeV31) {
+    // schemaVersion and draftHash are transport/envelope facts.  A legacy
+    // formatter is allowed to omit the locally known hash, but an explicit
+    // conflicting hash must remain visible to the strict validator.
+    if (typeof raw.draftHash !== 'string' || !raw.draftHash.trim()) {
+      return withPayload(
+        result,
+        { ...raw, schemaVersion: 3, draftHash },
+        'local_fields_completed',
+      );
+    }
+    return { result, adaptation: 'none' };
+  }
 
   if (
     Number(raw.schemaVersion) === 2 &&

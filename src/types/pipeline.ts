@@ -30,7 +30,7 @@ export interface PipelineConfig {
   /** V2/V3 product tier; V3 settings normalize to low/high/max. */
   reasoningEffort?: PipelineReasoningEffort;
   /** Product reasoning profile version; new outline tasks freeze version 3. */
-  reasoningProfileVersion?: 1 | 2 | 3;
+  reasoningProfileVersion?: 1 | 2 | 3 | 4;
   draftPresetId: number | null;
   reviewPresetId: number | null;
   factCheckPresetId: number | null;

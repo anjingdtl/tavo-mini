@@ -13,6 +13,7 @@ import {
   getLatestStageAttempt,
   getStageAttempt,
   getRetryDueAttempts,
+  clearTemporaryReasoningForTaskStage,
 } from '../src/data/repositories/pipelineStageAttemptRepository';
 import {
   createPipelineTaskWithCheckpoints,
@@ -115,6 +116,45 @@ describe('pipeline_stage_attempts repository', () => {
     expect(attempt?.failureClass).toBe('safe_retry');
     expect(attempt?.retryAfterMs).toBe(5_000);
     expect(attempt?.nextRetryAt).toBe(nextRetryAt);
+  });
+
+  it('persists, reads, and clears the Schema 49 candidate scratch fields', async () => {
+    await resetDb();
+    const taskId = await seedTask();
+    const attemptId = `${taskId}:review:1`;
+    await createStageAttempt({
+      id: attemptId,
+      pipelineTaskId: taskId,
+      stage: 'review',
+      attemptNo: 1,
+      requestFingerprint: 'v32-fp',
+      llmConfigSnapshotJson: '{}',
+      clientRequestId: attemptId,
+    });
+    await updateStageAttempt({
+      id: attemptId,
+      status: 'succeeded',
+      reasoningContentTemp: 'legacy-reasoning-scratch',
+      responseCandidateTemp: '{"verdict":"pass"}',
+      responseCandidateChannel: 'both_reasoning_preferred',
+      validationDetailsJson: JSON.stringify({
+        version: 1,
+        failureCode: 'REVIEW_SEMANTIC_INVALID',
+        missingPaths: ['coverage'],
+      }),
+    });
+    const stored = await getStageAttempt(attemptId);
+    expect(stored).toMatchObject({
+      reasoningContentTemp: 'legacy-reasoning-scratch',
+      responseCandidateTemp: '{"verdict":"pass"}',
+      responseCandidateChannel: 'both_reasoning_preferred',
+      validationDetailsJson: expect.stringContaining('REVIEW_SEMANTIC_INVALID'),
+    });
+
+    await clearTemporaryReasoningForTaskStage(taskId, 'review');
+    const cleared = await getStageAttempt(attemptId);
+    expect(cleared?.reasoningContentTemp).toBeNull();
+    expect(cleared?.responseCandidateTemp).toBeNull();
   });
 
   it('appends attempts in order (attempt_no unique per task+stage)', async () => {

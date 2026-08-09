@@ -186,6 +186,39 @@ describe('Outline Pipeline V3 reasoning and independent budget contracts', () =>
     ).toBe('mandatory');
   });
 
+  test('Final V3 clamps an oversized frozen reservation to the provider cap', () => {
+    const compiled = compileFinalReviserV3StageRequest({
+      writingBrief: '保持森林与守林人的衔接。',
+      canonicalDraft: '主角走进森林，遇到了守林人。',
+      capsule: buildFinalContinuityCapsule({
+        presetText: '',
+        storyMemoryText: '',
+        characterText: '',
+        noteText: '',
+        worldbookText: '',
+        episodicMemoryText: '',
+        recentBridgeText: '',
+        immediatePreviousChapterText: '',
+        immediatePreviousChapterEnding: '',
+        currentInstructionText: '完成本章收束。',
+        retrievalUserPrompt: '',
+        outlineText: '本章完成森林相遇。',
+        outlineFingerprint: 'outline',
+        outlineIds: [1],
+        outlineComplete: true,
+        outlineEstimatedTokens: 8,
+      }),
+      maxTokens: 6592,
+      contextWindow: 8000,
+      modelMaxOutputTokens: 4000,
+      elasticBudget: true,
+    });
+    expect(compiled.ready).toBe(true);
+    if (compiled.ready) {
+      expect(compiled.reservedOutputTokens).toBe(4000);
+    }
+  });
+
   test('Final Brief compliance gate catches a future beat retained from draft', () => {
     const brief = compileDeterministicBrief(input());
     const invalid = validateFinalBriefCompliance({
