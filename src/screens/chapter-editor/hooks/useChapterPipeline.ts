@@ -55,7 +55,7 @@ type CreateTask = (
   targetId: number,
   versions?: {
     outlineWorkflowVersion: 1 | 2 | 3;
-    contextBudgetVersion: 1 | 2 | 3;
+    contextBudgetVersion: 1 | 2 | 3 | 4;
   },
 ) => Promise<string>;
 

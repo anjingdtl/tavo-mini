@@ -43,9 +43,9 @@ export async function createDerivedFinalRewriteTask(
   }
   if (
     Number(parent.outlineWorkflowVersion) !== 3 ||
-    Number(parent.contextBudgetVersion) !== 3
+    ![3, 4].includes(Number(parent.contextBudgetVersion))
   ) {
-    throw new Error('仅重写终稿仅适用于 V3.1 流水线；请重新运行完整流水线。');
+    throw new Error('仅重写终稿仅适用于 V3.1/V3.2 流水线；请重新运行完整流水线。');
   }
 
   let parsed;
@@ -58,11 +58,11 @@ export async function createDerivedFinalRewriteTask(
   }
   if (
     !parsed.execution ||
-    parsed.execution.reasoningProfileVersion !== 3 ||
+    ![3, 4].includes(Number(parsed.execution.reasoningProfileVersion)) ||
     parsed.execution.outlineWorkflowVersion !== 3 ||
-    parsed.execution.contextBudgetVersion !== 3
+    ![3, 4].includes(Number(parsed.execution.contextBudgetVersion))
   ) {
-    throw new Error('原任务不是 V3.1 冻结配置，已阻止派生终稿。');
+    throw new Error('原任务不是 V3.1/V3.2 冻结配置，已阻止派生终稿。');
   }
   if (parsed.execution.pipelineMode === 'noReview') {
     throw new Error('无审核模式没有 Brief，不能只重写终稿；请运行完整流水线。');
@@ -72,7 +72,8 @@ export async function createDerivedFinalRewriteTask(
   const byStage = new Map(sourceCheckpoints.map(row => [row.stage, row]));
   const required = getPipelineStageOrder(parsed.execution.pipelineMode, {
     outlineWorkflowVersion: 3,
-    contextBudgetVersion: 3,
+    contextBudgetVersion:
+      parsed.execution.contextBudgetVersion === 4 ? 4 : 3,
   });
   for (const stage of required) {
     const row = byStage.get(stage);
@@ -127,7 +128,8 @@ export async function createDerivedFinalRewriteTask(
     pipelineContextVersion: parent.pipelineContextVersion ?? null,
     pipelineContextHash: parent.pipelineContextHash ?? null,
     outlineWorkflowVersion: 3,
-    contextBudgetVersion: 3,
+    contextBudgetVersion:
+      Number(parent.contextBudgetVersion) === 4 ? 4 : 3,
     parentTaskId: parent.id,
     derivedKind: DERIVED_FINAL_REWRITE_KIND,
     derivedInstruction: normalizedInstruction,

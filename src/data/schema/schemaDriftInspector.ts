@@ -21,7 +21,11 @@ export type SchemaRepairCode =
   | 'CANON_EVIDENCE_TABLE_MISSING'
   | 'CANON_SOURCE_ORIGIN_MISSING'
   | 'CANON_RESCAN_OPERATION_ID_MISSING'
-  | 'CANON_RESCAN_INDEX_MISSING';
+  | 'CANON_RESCAN_INDEX_MISSING'
+  | 'PIPELINE_STAGE_ATTEMPTS_TABLE_MISSING'
+  | 'PIPELINE_RESPONSE_CANDIDATE_TEMP_MISSING'
+  | 'PIPELINE_RESPONSE_CANDIDATE_CHANNEL_MISSING'
+  | 'PIPELINE_VALIDATION_DETAILS_MISSING';
 
 export interface SchemaDriftReport {
   /** The schema_version recorded in settings (may be stale / optimistic). */
@@ -34,6 +38,10 @@ export interface SchemaDriftReport {
   rescanOperationIdExists: boolean;
   /** Whether `idx_canon_evidence_rescan_op` index exists. */
   rescanIndexExists: boolean;
+  pipelineStageAttemptsExists: boolean;
+  responseCandidateTempExists: boolean;
+  responseCandidateChannelExists: boolean;
+  validationDetailsExists: boolean;
   /** True when one or more known drift defects need repair. */
   needsRepair: boolean;
   /** Structured codes describing the specific defects. */
@@ -127,6 +135,27 @@ export async function inspectKnownSchemaDrift(
     'idx_canon_evidence_rescan_op',
   );
 
+  const pipelineStageAttemptsExists = await tableExists(
+    database,
+    'pipeline_stage_attempts',
+  );
+  let responseCandidateTempExists = false;
+  let responseCandidateChannelExists = false;
+  let validationDetailsExists = false;
+  if (pipelineStageAttemptsExists) {
+    const attemptColumns = await tableInfo(
+      database,
+      'pipeline_stage_attempts',
+    );
+    responseCandidateTempExists = attemptColumns.has(
+      'response_candidate_temp',
+    );
+    responseCandidateChannelExists = attemptColumns.has(
+      'response_candidate_channel',
+    );
+    validationDetailsExists = attemptColumns.has('validation_details_json');
+  }
+
   const repairCodes: SchemaRepairCode[] = [];
   if (!canonEvidenceExists) {
     // The table is expected to exist from Schema 20 onward. A missing table is
@@ -139,6 +168,21 @@ export async function inspectKnownSchemaDrift(
     }
     if (!rescanIndexExists) repairCodes.push('CANON_RESCAN_INDEX_MISSING');
   }
+  if (recordedSchemaVersion >= 49) {
+    if (!pipelineStageAttemptsExists) {
+      repairCodes.push('PIPELINE_STAGE_ATTEMPTS_TABLE_MISSING');
+    } else {
+      if (!responseCandidateTempExists) {
+        repairCodes.push('PIPELINE_RESPONSE_CANDIDATE_TEMP_MISSING');
+      }
+      if (!responseCandidateChannelExists) {
+        repairCodes.push('PIPELINE_RESPONSE_CANDIDATE_CHANNEL_MISSING');
+      }
+      if (!validationDetailsExists) {
+        repairCodes.push('PIPELINE_VALIDATION_DETAILS_MISSING');
+      }
+    }
+  }
 
   return {
     recordedSchemaVersion,
@@ -146,6 +190,10 @@ export async function inspectKnownSchemaDrift(
     sourceOriginExists,
     rescanOperationIdExists,
     rescanIndexExists,
+    pipelineStageAttemptsExists,
+    responseCandidateTempExists,
+    responseCandidateChannelExists,
+    validationDetailsExists,
     needsRepair: repairCodes.length > 0,
     repairCodes,
   };

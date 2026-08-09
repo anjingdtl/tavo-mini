@@ -20,19 +20,19 @@ export const PIPELINE_REASONING_EFFORT_OPTIONS: Array<{
     value: 'low',
     label: '快速',
     description:
-      '低思考预算；Draft/Final 保留基础 Thinking，结构化审查关闭 Thinking。',
+      '低思考预算；Draft/Final 与 V3.2 结构化审查均保留 Thinking。',
   },
   {
     value: 'high',
     label: '平衡',
     description:
-      'Draft/Final 使用 high；Review/FactCheck/Brief 关闭 Thinking，优先输出可解析合同。',
+      'Draft/Final 使用 high；V3.2 Review/FactCheck/Brief 固定 low Thinking。',
   },
   {
     value: 'max',
     label: '质量',
     description:
-      'Draft/Final 使用 max；Review/FactCheck/Brief 关闭 Thinking，优先输出可解析合同。',
+      'Draft/Final 使用 max；V3.2 Review/FactCheck/Brief 固定 low Thinking。',
   },
 ];
 
@@ -201,6 +201,39 @@ export const STAGE_REASONING_PROFILE_V31: Record<
   },
 };
 
+/**
+ * V3.2 structured-stage profile.  The semantic primary calls genuinely use
+ * low Thinking; only the bounded Formatter calls disable Thinking.  Keep this
+ * separate from V3.1 so a frozen historical task can never be silently
+ * rewritten during resume.
+ */
+export const STAGE_REASONING_PROFILE_V32: Record<
+  PipelineReasoningTier,
+  Record<PipelineStageName, PipelineReasoningTier>
+> = {
+  low: {
+    draft: 'low',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'low',
+    proof: 'low',
+  },
+  high: {
+    draft: 'high',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'low',
+    proof: 'high',
+  },
+  max: {
+    draft: 'max',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'low',
+    proof: 'max',
+  },
+};
+
 export interface PipelineV3StageReasoning {
   stage: PipelineStageName;
   requestedTier: PipelineReasoningTier;
@@ -281,6 +314,38 @@ export function resolveV31StageReasoning(
       ? {
           downgradeReason:
             'V3.1 Review/FactCheck/Brief 关闭 Thinking；仅 Draft/Final 随产品档位变化',
+        }
+      : {}),
+  };
+}
+
+/** Resolve V3.2 primary semantics: Review/FactCheck/Brief enabled + low. */
+export function resolveV32StageReasoning(
+  requested: PipelineReasoningTier,
+  stage: PipelineStageName,
+  model: Pick<LLMRequestConfig, 'provider_type' | 'model_name' | 'url'>,
+): PipelineV3StageReasoning {
+  const effectiveTier = STAGE_REASONING_PROFILE_V32[requested][stage];
+  const supported = supportsReasoningEffort({
+    providerType: model.provider_type,
+    modelName: model.model_name,
+    baseUrl: model.url,
+  });
+  const structuredPrimary =
+    stage === 'review' || stage === 'factCheck' || stage === 'brief';
+  return {
+    stage,
+    requestedTier: requested,
+    effectiveTier,
+    thinking: { type: 'enabled' },
+    effort: effectiveTier,
+    supported,
+    historical: false,
+    ...(effectiveTier !== requested
+      ? {
+          downgradeReason: structuredPrimary
+            ? 'V3.2 Review/FactCheck/Brief primary 固定使用 enabled + low'
+            : 'V3.2 Draft/Final 随用户档位执行',
         }
       : {}),
   };

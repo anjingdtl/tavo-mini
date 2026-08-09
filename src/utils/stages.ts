@@ -28,7 +28,7 @@ export function getPipelineStageOrder(
 ): PipelineStageName[] {
   const isV3 =
     Number(versions?.outlineWorkflowVersion) === 3 &&
-    Number(versions?.contextBudgetVersion) === 3;
+    [3, 4].includes(Number(versions?.contextBudgetVersion));
   // Batch form modes map to single-chapter modes (see mapBatchModeToPipelineMode).
   if (mode === 'draft_only') return ['draft'];
   if (mode === 'fast') return isV3 ? ['draft', 'review', 'brief', 'proof'] : ['draft', 'review', 'proof'];

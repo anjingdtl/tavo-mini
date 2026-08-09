@@ -4,6 +4,7 @@ import RNFS from 'react-native-fs';
 import {
   computeBackupChecksum,
   createBackup,
+  readBackupTables,
   restoreFromBackup,
   cleanupOldBackups,
   validateBackup,
@@ -259,6 +260,33 @@ describe('backupService', () => {
     expect(written.external_assets).toEqual([]);
     expect(written.tables.llm_config[0]).not.toHaveProperty('api_key');
     expect((RNFS.writeFile as jest.Mock).mock.calls[0][1]).not.toMatch(/sk-|Bearer |"api_key"\s*:\s*"[^"\n]+"|password|token/i);
+  });
+
+  test('Schema 49 candidate scratch is excluded from manual backup reads', async () => {
+    const mockDb = createMockDb(
+      makeFullTables({
+        pipeline_stage_attempts: [
+          {
+            id: 'attempt-1',
+            response_candidate_temp: '{"secret":"draft"}',
+            reasoning_content_temp: 'private reasoning',
+            response_candidate_channel: 'content',
+            validation_details_json: '{"version":1,"candidateChars":20}',
+          },
+        ],
+      }),
+    );
+    const tables = await readBackupTables(mockDb);
+    expect(tables.pipeline_stage_attempts[0]).not.toHaveProperty(
+      'response_candidate_temp',
+    );
+    expect(tables.pipeline_stage_attempts[0]).not.toHaveProperty(
+      'reasoning_content_temp',
+    );
+    expect(tables.pipeline_stage_attempts[0]).toMatchObject({
+      response_candidate_channel: 'content',
+      validation_details_json: '{"version":1,"candidateChars":20}',
+    });
   });
 
   test('backup and restore preserve V4 policy, stage results, and rejected eligibility', async () => {

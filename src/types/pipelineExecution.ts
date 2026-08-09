@@ -38,6 +38,8 @@ export interface FrozenStageReasoning {
   thinking: 'enabled' | 'disabled';
   /** Provider-facing effort. Brief is always low in V3. */
   effort: PipelineReasoningTier | null;
+  /** Whether this frozen provider/model advertised explicit reasoning support. */
+  supported?: boolean;
   downgradeReason?: string;
 }
 
@@ -82,7 +84,7 @@ export interface PipelineExecutionSnapshot {
    * Frozen with the workflow version; resume must never re-read the live
    * default. Missing on historical snapshots → Legacy (1).
    */
-  contextBudgetVersion?: 1 | 2 | 3;
+  contextBudgetVersion?: 1 | 2 | 3 | 4;
 
   /**
    * Frozen Final Reviser reasoning policy. Missing / 1 is historical Legacy;
@@ -94,10 +96,10 @@ export interface PipelineExecutionSnapshot {
   reasoningEffort?: PipelineReasoningEffort;
 
   /** V3 product profile and per-stage frozen effective tiers. */
-  reasoningProfileVersion?: 1 | 2 | 3;
+  reasoningProfileVersion?: 1 | 2 | 3 | 4;
   requestedReasoningTier?: PipelineReasoningTier;
   stageReasoning?: Partial<Record<PipelineStageName, FrozenStageReasoning>>;
-  briefPolicyVersion?: 1 | 2;
+  briefPolicyVersion?: 1 | 2 | 3;
   briefVisibleOutputFloor?: number;
   briefReasoningHeadroom?: number;
   briefMaxTokens?: number;

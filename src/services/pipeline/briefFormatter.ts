@@ -1,9 +1,15 @@
 import type { ChatMessage } from '../llm';
-import type { FinalWritingBriefImmutableEnvelopeV31 } from './briefCompilerTypes';
+import type {
+  FinalWritingBriefImmutableEnvelopeV31,
+  FinalWritingBriefImmutableEnvelopeV32,
+} from './briefCompilerTypes';
 
 export interface BriefContractFormatterInput {
   candidate: string;
-  envelope: FinalWritingBriefImmutableEnvelopeV31;
+  envelope:
+    | FinalWritingBriefImmutableEnvelopeV31
+    | FinalWritingBriefImmutableEnvelopeV32;
+  contractVersion?: 31 | 32;
 }
 
 export interface BriefContractFormatterPrompt {
@@ -12,29 +18,39 @@ export interface BriefContractFormatterPrompt {
 }
 
 /**
- * Build the one-shot Brief contract formatter prompt.
- *
- * It receives only the failed Brief response, the semantic payload schema,
- * the legal source-id manifest, and the locally authoritative immutable
- * envelope. It never receives Draft, outline text, retrieval context, or
- * project materials, so it cannot silently become a second Brief compiler.
+ * Build a one-shot Brief formatter prompt.  It receives only the failed
+ * response, semantic schema, local envelope and source manifest.
  */
 export function buildBriefContractFormatterPrompt(
   input: BriefContractFormatterInput,
 ): BriefContractFormatterPrompt {
   const candidate = String(input.candidate || '').trim().slice(0, 12000);
-  const legalSourceIds = [...new Set(input.envelope.requiredSourceIds.map(id => String(id).trim()).filter(Boolean))];
+  const legalSourceIds = [
+    ...new Set(
+      input.envelope.requiredSourceIds
+        .map(id => String(id).trim())
+        .filter(Boolean),
+    ),
+  ];
+  const v32 = input.contractVersion === 32;
   const messages: ChatMessage[] = [
     {
       role: 'system',
       content: [
-        '你是一次性的 ShineWriter V3.1 Contract Formatter，只整理已有 Brief 判断。',
+        v32
+          ? '你是一次性的 ShineWriter V3.2 Brief Formatter，只整理候选中已有的 Brief 语义。'
+          : '你是一次性的 ShineWriter V3.1 Contract Formatter，只整理已有 Brief 判断。',
         '不得重新审阅 Draft，不得读取或假设大纲、人物、世界书、上下文、记忆或任何长材料，不得新增剧情和事实。',
         '只把候选响应中已经出现的语义整理成可验证 JSON；没有依据的字段必须保持空数组或空字符串。',
         '不可变信封由本地覆盖，是最终权威；不要改写其中的 sourceHash、requiredSourceIds、protectedFacts、hardConstraints、mustNotAdvance、outlineObligations、endingBoundary。',
         '必须输出 message.content，禁止只输出 reasoning_content、Markdown 或解释。',
-        '输出 schemaVersion=2，并包含 coveredRequiredIds、openingContinuity、mustFix、mustPreserve、endingState、styleAdvisories。',
-        `mustFix.sourceIds 只能从合法清单选择：${JSON.stringify(legalSourceIds)}。每项必须包含非空 instruction、target.kind（opening/scene/middle/ending/global）和 preserve 数组。`,
+        v32
+          ? '输出 verdict、instructions、openingContinuity、styleAdvisories；instruction.sourceIds 只能从合法清单选择。'
+          : '输出 schemaVersion=2，并包含 coveredRequiredIds、openingContinuity、mustFix、mustPreserve、endingState、styleAdvisories。',
+        '合法 sourceId：' + JSON.stringify(legalSourceIds),
+        v32
+          ? '每个 hard/required 合法 sourceId 最多出现在一条逻辑 instruction 中；同一 sourceId 的重复语义只能合并，不能保留相互矛盾的两条 hard/required 指令。不得创造 sourceId 或新的修复语义。'
+          : '每个合法 sourceId 最多出现在一条 mustFix 中；同一 sourceId 的重复语义只能合并，不能保留相互矛盾的两条必改指令。',
       ].join('\n'),
     },
     {

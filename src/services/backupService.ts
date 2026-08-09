@@ -477,6 +477,14 @@ export async function readBackupTables(
             .map(row => sanitizeBackupRow(table.name, row))
             .filter((row): row is Record<string, any> => row !== null)
         : rows;
+      if (table.backupExcludedColumns?.length) {
+        const excluded = new Set(table.backupExcludedColumns);
+        tables[table.name] = tables[table.name].map(row => {
+          const sanitized = { ...row };
+          for (const key of excluded) delete sanitized[key];
+          return sanitized;
+        });
+      }
     } catch (error) {
       if (CORE_TABLE_NAMES.has(table.name)) throw error;
       // An optional table may be absent on a pre-manifest database. Do not
@@ -705,6 +713,14 @@ export async function createBackup(
       tables[table.name] = rows
         .map(row => sanitizeBackupRow(table.name, row))
         .filter((row): row is Record<string, any> => row !== null);
+      if (table.backupExcludedColumns?.length) {
+        const excluded = new Set(table.backupExcludedColumns);
+        tables[table.name] = tables[table.name].map(row => {
+          const sanitized = { ...row };
+          for (const key of excluded) delete sanitized[key];
+          return sanitized;
+        });
+      }
     } catch (error) {
       if (CORE_TABLE_NAMES.has(table.name)) throw error;
       // 非核心表在旧 schema 库上可能缺失，跳过（记空数组）。
