@@ -10,6 +10,7 @@ export interface PipelineProgressProps {
   visible: boolean;
   taskId?: string;
   queued?: boolean;
+  preparing?: boolean;
   continuationStage?: ContinuationPipelineStage;
 }
 
@@ -77,6 +78,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   startedAt,
   visible,
   queued = false,
+  preparing = false,
   continuationStage,
 }) => {
   const { theme } = useThemeStore();
@@ -106,10 +108,12 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
       <View style={styles.row}>
         <ActivityIndicator size="small" color={theme.colors.accent} />
         <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
-          {queued
+          {preparing
+            ? '正在整理上下文（不等待长期记忆）...'
+            : queued
             ? '排队中，等待可用的模型请求槽位...'
             : continuationStage
-              ? CONTINUATION_STAGE_LABELS[continuationStage]
+            ? CONTINUATION_STAGE_LABELS[continuationStage]
             : STAGE_LABELS[stage] || stage}
         </Text>
         <Text style={[styles.timer, { color: theme.colors.textMuted }]}>

@@ -35,6 +35,8 @@ import {
   normalizePipelineReasoningEffort,
   normalizePipelineReasoningTier,
   resolveV3StageReasoning,
+  resolveV31StageReasoning,
+  structuredOutputCompatibilityForConfig,
   resolvePipelineReasoning,
   type PipelineReasoningDecision,
 } from './reasoningPolicy';
@@ -117,7 +119,11 @@ import {
   compileDeterministicBrief,
   computeBriefSourceHash,
 } from './deterministicBriefCompiler';
-import { validateFinalWritingBrief } from './briefResultValidator';
+import {
+  validateFinalWritingBrief,
+  validateFinalWritingBriefV31,
+} from './briefResultValidator';
+import { buildBriefImmutableEnvelopeV31 } from './briefCompilerTypes';
 import {
   FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
   validateFinalBriefCompliance,
@@ -125,17 +131,28 @@ import {
 import { shouldCallBriefCompiler } from './briefTriggerPolicy';
 import type {
   BriefCompilerInputV1,
+  BriefCompilerInputV31,
+  FinalWritingBriefV31,
   FinalWritingBriefV1,
   NormalizedFactCheckV3,
   NormalizedReviewV3,
 } from './briefCompilerTypes';
 import { renderFinalWritingBrief } from './renderFinalWritingBrief';
+import {
+  buildFactCheckV31Messages,
+  buildReviewV31Messages,
+} from '../pipelineMessages';
+import { adaptV31AuditResult } from './v31AuditCompatibility';
+import { buildAuditFormatterPrompt } from './auditFormatter';
+import { buildBriefContractFormatterPrompt } from './briefFormatter';
 import { executeClaimedStage } from './executeClaimedStage';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 import {
+  clearTemporaryReasoningForTaskStage,
   createStageAttempt,
   getStageAttempts,
+  getLatestStageAttempt,
   updateStageAttempt,
 } from '../../data/repositories/pipelineStageAttemptRepository';
 import { setBatchUsageFromRuns } from '../../data/repositories/multiChapterBatchRepository';
@@ -165,6 +182,9 @@ const ACTION_TO_STAGE: Record<string, PipelineStageName | undefined> = {
   run_brief: 'brief',
   run_proof: 'proof',
 };
+
+/** The provider answered, but the structured business contract was unusable. */
+export const PIPELINE_RESPONSE_INVALID_ERROR_CODE = 'PIPELINE_RESPONSE_INVALID';
 
 /** Next attempt sequence number for a task+stage (persisted count + 1). */
 async function nextAttemptNo(taskId: string, stage: string): Promise<number> {
@@ -266,6 +286,11 @@ async function runStageAttempt<
     outputTokens: number;
     totalTokens: number;
     reasoningTokens?: number | null;
+    text?: string | null;
+    reasoningText?: string | null;
+    visibleOutputTokens?: number | null;
+    finishReason?: string | null;
+    emptyReason?: string;
   },
 >(params: {
   taskId: string;
@@ -282,6 +307,10 @@ async function runStageAttempt<
   /** CL-06: worst-case input/output for the upcoming request (compiled). */
   estimatedInputTokens?: number;
   reservedOutputTokens?: number;
+  /** True for the one-shot lightweight Audit Formatter call. */
+  formatterUsed?: boolean;
+  /** V3.1 only: retain reasoning for same-checkpoint cold-start recovery. */
+  persistReasoningContentTemp?: boolean;
   run: () => Promise<T>;
 }): Promise<T> {
   if (params.batchBudgetGate) {
@@ -308,6 +337,7 @@ async function runStageAttempt<
     llmConfigSnapshotJson: params.llmConfigSnapshotJson,
     clientRequestId: attemptId,
     startedAt: now,
+    formatterUsed: params.formatterUsed ?? false,
   });
   try {
     const result = await params.run();
@@ -319,6 +349,34 @@ async function runStageAttempt<
       outputTokens: result.outputTokens,
       totalTokens: result.totalTokens,
       reasoningTokens: result.reasoningTokens ?? null,
+      finishReason: result.finishReason ?? null,
+      emptyReason:
+        result.emptyReason ??
+        (result.text?.trim()
+          ? null
+          : result.reasoningText?.trim()
+          ? 'reasoning_only'
+          : 'empty'),
+      responseChannel: result.text?.trim()
+        ? result.reasoningText?.trim()
+          ? 'both'
+          : 'content'
+        : result.reasoningText?.trim()
+        ? 'reasoning'
+        : 'empty',
+      visibleOutputTokens:
+        result.visibleOutputTokens ??
+        Math.max(
+          0,
+          Number(result.outputTokens || 0) -
+            Number(result.reasoningTokens || 0),
+        ),
+      formatterUsed: params.formatterUsed ?? false,
+      // Keep reasoning only long enough for same-checkpoint cold-start
+      // recovery. Callers clear it once validation settles the checkpoint.
+      reasoningContentTemp: params.persistReasoningContentTemp
+        ? result.reasoningText?.trim() || null
+        : null,
     });
     // CL-06: usage must reflect this attempt immediately (not at adoption).
     await refreshBatchUsage(params.batchBudgetGate);
@@ -532,6 +590,7 @@ function buildExecutionSnapshot(params: {
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2 | 3;
   contextBudgetVersion?: 1 | 2 | 3;
+  reasoningProfileVersion?: 1 | 2 | 3;
   finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
   reasoningEffort?: PipelineConfig['reasoningEffort'];
 }): PipelineExecutionSnapshot {
@@ -553,6 +612,11 @@ function buildExecutionSnapshot(params: {
   }
   const isV3 =
     params.outlineWorkflowVersion === 3 && params.contextBudgetVersion === 3;
+  const reasoningProfileVersion = isV3
+    ? params.reasoningProfileVersion === 2
+      ? 2
+      : 3
+    : undefined;
   const requestedTier = isV3
     ? normalizePipelineReasoningTier(
         params.reasoningEffort ?? params.config.reasoningEffort,
@@ -563,18 +627,25 @@ function buildExecutionSnapshot(params: {
       ? (Object.fromEntries(
           (['draft', 'review', 'factCheck', 'brief', 'proof'] as const).map(
             stage => {
-              const resolved = resolveV3StageReasoning(
-                requestedTier,
-                stage,
-                params.requestConfig,
-              );
+              const resolved =
+                reasoningProfileVersion === 2
+                  ? resolveV3StageReasoning(
+                      requestedTier,
+                      stage,
+                      params.requestConfig,
+                    )
+                  : resolveV31StageReasoning(
+                      requestedTier,
+                      stage,
+                      params.requestConfig,
+                    );
               return [
                 stage,
                 {
                   stage,
                   requestedTier: resolved.requestedTier,
                   effectiveTier: resolved.effectiveTier,
-                  thinking: 'enabled' as const,
+                  thinking: resolved.thinking.type,
                   effort: resolved.effort,
                   downgradeReason: resolved.downgradeReason,
                 },
@@ -675,10 +746,10 @@ function buildExecutionSnapshot(params: {
       : {}),
     ...(isV3
       ? {
-          reasoningProfileVersion: 2 as const,
+          reasoningProfileVersion: reasoningProfileVersion as 2 | 3,
           requestedReasoningTier: requestedTier,
           stageReasoning,
-          briefPolicyVersion: 1 as const,
+          briefPolicyVersion: (reasoningProfileVersion === 2 ? 1 : 2) as 1 | 2,
           briefVisibleOutputFloor,
           briefReasoningHeadroom,
           briefMaxTokens,
@@ -780,7 +851,7 @@ function buildCallConfig(
     responseFormat?: 'json_object';
     /** OpenAI-compatible extension; lets reasoning-capable gateways skip CoT. */
     thinking?: { type: 'enabled' | 'disabled' };
-    /** DeepSeek V4 Flash Final Reviser reasoning intensity. */
+    /** Provider reasoning intensity when the provider accepts the extension. */
     reasoningEffort?: ReasoningEffort;
   },
 ) {
@@ -910,6 +981,43 @@ function auditObservation(result: LLMResult) {
     emptyReason: result.emptyReason,
     reasoningBudgetExhausted: reasoningOnly && result.finishReason === 'length',
   };
+}
+
+async function updateLatestAttemptDiagnostics(
+  taskId: string,
+  stage: string,
+  fields: {
+    parseFailureCode?: string | null;
+    failureClass?: LLMFailureClass | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    formatterUsed?: boolean;
+    clearReasoning?: boolean;
+  },
+): Promise<void> {
+  const latest = await getLatestStageAttempt(taskId, stage);
+  if (!latest) return;
+  await updateStageAttempt({
+    id: latest.id,
+    status: latest.status,
+    ...(fields.parseFailureCode !== undefined
+      ? { parseFailureCode: fields.parseFailureCode }
+      : {}),
+    ...(fields.failureClass !== undefined
+      ? { failureClass: fields.failureClass }
+      : {}),
+    ...(fields.errorCode !== undefined ? { errorCode: fields.errorCode } : {}),
+    ...(fields.errorMessage !== undefined
+      ? { errorMessage: fields.errorMessage }
+      : {}),
+    ...(fields.formatterUsed !== undefined
+      ? { formatterUsed: fields.formatterUsed }
+      : {}),
+    ...(fields.clearReasoning ? { reasoningContentTemp: null } : {}),
+  });
+  if (fields.clearReasoning) {
+    await clearTemporaryReasoningForTaskStage(taskId, stage);
+  }
 }
 
 function accumulateTokens(
@@ -1676,7 +1784,7 @@ async function actionPersistInitialSnapshot(
           reasoningEffort: normalizePipelineReasoningTier(
             selectedReasoningEffort,
           ),
-          reasoningProfileVersion: 2 as const,
+          reasoningProfileVersion: 3 as const,
         }
       : outlineWorkflowVersion === 2 &&
         !existingExecution &&
@@ -1703,6 +1811,12 @@ async function actionPersistInitialSnapshot(
       contextBudgetVersion,
       finalReviserReasoningPolicyVersion:
         outlineWorkflowVersion === 3 ? 3 : outlineWorkflowVersion === 2 ? 2 : 1,
+      reasoningProfileVersion:
+        outlineWorkflowVersion === 3
+          ? freshConfig.reasoningProfileVersion === 2
+            ? 2
+            : 3
+          : undefined,
       reasoningEffort:
         outlineWorkflowVersion === 2 || outlineWorkflowVersion === 3
           ? freshConfig.reasoningEffort
@@ -1719,6 +1833,13 @@ async function actionPersistInitialSnapshot(
     requestConfig: runtime.requestConfig,
     draftPreset: runtime.draftPreset,
     draftMaxTokens: execution.draftMaxTokens,
+    // Story Memory is an enhancement, not a writing license. Freeze the
+    // latest usable checkpoint and pending bridge here, but never make the
+    // first Draft request wait for synchronous checkpoint maintenance. The
+    // prepare step returns a durable degradation warning when coverage is
+    // incomplete; Story Memory maintenance remains available through its own
+    // flow / chapter finalization.
+    storyMemoryMode: 'preview',
     elasticBudget:
       execution.contextBudgetVersion === 2 ||
       execution.contextBudgetVersion === 3,
@@ -1841,6 +1962,7 @@ async function actionRunDraft(
         let result = await runStageAttempt({
           taskId,
           stage: 'draft',
+          requestVersion: isV31Profile(runtime) ? 3 : undefined,
           requestFingerprint: runtime.parsed.execution.reasoningEffort
             ? stageFingerprint('draft', firstReady, draftReasoningSemantics)
             : runtime.parsed.frozenDraftRequest.requestFingerprint || '',
@@ -1858,6 +1980,7 @@ async function actionRunDraft(
           batchBudgetGate: options.batchBudgetGate,
           estimatedInputTokens: firstReady.estimatedInputTokens,
           reservedOutputTokens: firstReady.reservedOutputTokens,
+          persistReasoningContentTemp: isV31Profile(runtime),
           run: () =>
             callReadyLLM(
               firstReady,
@@ -1886,6 +2009,7 @@ async function actionRunDraft(
         let draftText = result.text || '';
         if (
           !draftText.trim() &&
+          !isV31Profile(runtime) &&
           (result.emptyReason === 'reasoning_only' ||
             result.emptyReason === 'length')
         ) {
@@ -1970,6 +2094,12 @@ async function actionRunDraft(
           tokens,
           durationMs: Date.now() - start,
         });
+        if (isV31Profile(runtime)) {
+          await updateLatestAttemptDiagnostics(taskId, 'draft', {
+            parseFailureCode: null,
+            clearReasoning: true,
+          });
+        }
       } catch (error: any) {
         if (isAbortError(error, abortSignal) || cancelled(taskId, options)) {
           await settleInterruptedTask(taskId, options);
@@ -1989,6 +2119,12 @@ async function actionRunDraft(
           tokens,
           durationMs: Date.now() - start,
         });
+        if (isV31Profile(runtime)) {
+          await updateLatestAttemptDiagnostics(taskId, 'draft', {
+            parseFailureCode: 'DRAFT_OUTPUT_INVALID',
+            clearReasoning: true,
+          });
+        }
         throw error;
       }
     },
@@ -2113,6 +2249,15 @@ function isOutlineWorkflowV3(
   );
 }
 
+function isV31Profile(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+): boolean {
+  return (
+    isOutlineWorkflowV3(runtime) &&
+    runtime.parsed?.execution?.reasoningProfileVersion === 3
+  );
+}
+
 function stageMaxTokens(
   runtime: Awaited<ReturnType<typeof loadRuntime>>,
   stage: PipelineStageName,
@@ -2136,7 +2281,9 @@ function stageReasoning(
   if (execution.outlineWorkflowVersion === 3 && frozen) {
     return {
       effort: frozen.effort || frozen.effectiveTier,
-      thinking: frozen.thinking === 'enabled' ? { type: 'enabled' } : undefined,
+      thinking: {
+        type: frozen.thinking === 'enabled' ? 'enabled' : 'disabled',
+      },
       supported: frozen.effort != null,
       historical: false,
     };
@@ -2280,6 +2427,15 @@ async function runReviewV2Stage(params: {
       });
       return;
     }
+    await updateLatestAttemptDiagnostics(taskId, 'review', {
+      parseFailureCode: validation.reason || 'AUDIT_INVALID',
+      failureClass: 'response_invalid',
+      errorCode: PIPELINE_RESPONSE_INVALID_ERROR_CODE,
+      errorMessage:
+        validation.reason === 'reasoning_only'
+          ? '文学评估仅返回推理内容，未产生 message.content 合同'
+          : formatAuditFailureMessage('review', validation.reason),
+    });
     await persistStage(taskId, {
       stage: 'review',
       text: '',
@@ -2427,12 +2583,13 @@ async function runFactCheckV2Stage(params: {
 
     if (!validation.valid) {
       const isReasoningOnly = validation.reason === 'reasoning_only';
-      const retryMaxTokens = isReasoningOnly && first.finishReason === 'length'
-        ? bumpRetryBudget(
-            runtime.config.factCheckMaxTokens,
-            runtime.requestConfig.max_output_tokens,
-          )
-        : runtime.config.factCheckMaxTokens;
+      const retryMaxTokens =
+        isReasoningOnly && first.finishReason === 'length'
+          ? bumpRetryBudget(
+              runtime.config.factCheckMaxTokens,
+              runtime.requestConfig.max_output_tokens,
+            )
+          : runtime.config.factCheckMaxTokens;
       const repair = compile(
         isReasoningOnly
           ? REASONING_ONLY_REPAIR_HINT
@@ -2451,13 +2608,16 @@ async function runFactCheckV2Stage(params: {
         return;
       }
       const repairReady = requireReadyStageRequest(repair);
+      const retryReasoning: PipelineReasoningDecision = isReasoningOnly
+        ? { supported: false, historical: false }
+        : reasoning;
       const retry = await runStageAttempt({
         taskId,
         stage: 'factCheck',
         requestVersion: 2,
         requestFingerprint: stageFingerprint('factCheck', repairReady, {
-          thinking: reasoning.thinking?.type,
-          reasoningEffort: reasoning.effort,
+          thinking: retryReasoning.thinking?.type,
+          reasoningEffort: retryReasoning.effort,
           reasoningPolicyVersion:
             runtime.parsed.execution.finalReviserReasoningPolicyVersion,
         }),
@@ -2480,7 +2640,7 @@ async function runFactCheckV2Stage(params: {
               chapter.project_id,
               runtime.requestConfig,
               taskId,
-              reasoning,
+              retryReasoning,
             ),
             abortSignal,
           ),
@@ -2513,6 +2673,15 @@ async function runFactCheckV2Stage(params: {
       });
       return;
     }
+    await updateLatestAttemptDiagnostics(taskId, 'factCheck', {
+      parseFailureCode: validation.reason || 'AUDIT_INVALID',
+      failureClass: 'response_invalid',
+      errorCode: PIPELINE_RESPONSE_INVALID_ERROR_CODE,
+      errorMessage:
+        validation.reason === 'reasoning_only'
+          ? '事实核查仅返回推理内容，未产生 message.content 合同'
+          : formatAuditFailureMessage('factCheck', validation.reason),
+    });
     await persistStage(taskId, {
       stage: 'factCheck',
       text: '',
@@ -2596,6 +2765,7 @@ async function runV3AuditStage(params: {
       : runtime.config.factCheckMaxTokens,
   );
   const reasoning = stageReasoning(runtime, stage);
+  const v31 = isV31Profile(runtime);
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
 
@@ -2622,22 +2792,73 @@ async function runV3AuditStage(params: {
           elasticBudget: isElasticBudgetEnabled(runtime),
         });
 
-  const validate = (result: LLMResult) =>
-    stage === 'review'
-      ? validateReviewV3Result({ result, expectedHash: draftHash, anchors })
-      : validateFactCheckV3Result({ result, expectedHash: draftHash, anchors });
+  const validate = (result: LLMResult) => {
+    const compatible = v31
+      ? adaptV31AuditResult(result, stage, draftHash).result
+      : result;
+    // The standalone V3 validator may inspect reasoning text for diagnostics
+    // and compatibility tests. A live V3.1 task must never adopt that hidden
+    // channel as the business report: only message.content is admissible.
+    if (v31 && !compatible.text?.trim() && compatible.reasoningText?.trim()) {
+      return {
+        valid: false as const,
+        reason: 'reasoning_only' as const,
+        details: 'content 为空，仅返回 reasoning_content',
+      };
+    }
+    return stage === 'review'
+      ? validateReviewV3Result({
+          result: compatible,
+          expectedHash: draftHash,
+          anchors,
+          strictSemantic: v31,
+        })
+      : validateFactCheckV3Result({
+          result: compatible,
+          expectedHash: draftHash,
+          anchors,
+          strictSemantic: v31,
+        });
+  };
 
-  const compiled = compile();
-  if (!compiled.ready) {
+  const compiledBase = compile();
+  if (!compiledBase.ready) {
     await persistStage(taskId, {
       stage,
       text: '',
       status: 'failed',
-      error: compiled.error.message,
+      error: compiledBase.error.message,
       durationMs: Date.now() - start,
     });
     return;
   }
+  const compiled: ReadyStageRequest = v31
+    ? (() => {
+        const messages =
+          stage === 'review'
+            ? buildReviewV31Messages({
+                canonicalDraft,
+                context: context as ReturnType<
+                  typeof buildReviewContextFromSnapshot
+                >,
+                draftHash,
+              })
+            : buildFactCheckV31Messages({
+                canonicalDraft,
+                context: context as ReturnType<
+                  typeof buildFactCheckContextFromSnapshot
+                >,
+                draftHash,
+              });
+        return {
+          ...compiledBase,
+          messages,
+          estimatedInputTokens: estimateTokens(
+            messages.map(message => message.content).join('\n'),
+          ),
+        };
+      })()
+    : compiledBase;
 
   const callCompiled = async (
     ready: ReadyStageRequest,
@@ -2678,6 +2899,7 @@ async function runV3AuditStage(params: {
       batchBudgetGate: options.batchBudgetGate,
       estimatedInputTokens: ready.estimatedInputTokens,
       reservedOutputTokens: ready.reservedOutputTokens,
+      persistReasoningContentTemp: v31,
       run: () =>
         callReadyLLM(
           ready,
@@ -2710,20 +2932,150 @@ async function runV3AuditStage(params: {
     });
   };
 
-  try {
-    let result = await callCompiled(compiled, 1, false);
-    tokens = accumulateTokens(tokens, result);
-    let validation: any = validate(result);
-    logPipelineAudit({
+  const runAuditFormatter = async (
+    invalid: LLMResult,
+  ): Promise<{ result: LLMResult; legalSourceIds: string[] }> => {
+    const formatter = buildAuditFormatterPrompt({
       stage,
-      attempt: 1,
-      valid: validation.valid,
-      reason: validation.reason,
-      textLength: result.text?.length || 0,
-      ...auditObservation(result),
-      taskId,
+      candidate: invalid.reasoningText || invalid.text || '',
     });
-    if (!validation.valid && validation.reason === 'reasoning_only') {
+    const { messages, legalSourceIds } = formatter;
+    const reservedOutputTokens = Math.min(
+      1536,
+      Math.max(768, Math.floor(maxTokens || 1024)),
+    );
+    const ready = {
+      ready: true as const,
+      stage,
+      messages,
+      estimatedInputTokens: estimateTokens(
+        messages.map(message => message.content).join('\n'),
+      ),
+      reservedOutputTokens,
+      safetyMargin: 128,
+      contextWindow: runtime.requestConfig.context_window || 0,
+      allocations: [],
+    } as ReadyStageRequest;
+    const semantics = {
+      thinking: 'disabled' as const,
+      reasoningPolicyVersion: 3,
+    };
+    const result = await runStageAttempt({
+      taskId,
+      stage,
+      requestVersion: 31,
+      requestFingerprint: stageFingerprint(stage, ready, semantics),
+      allocationTraceJson: JSON.stringify({ formatter: true }),
+      frozenRequestJson: JSON.stringify({
+        requestVersion: 31,
+        formatter: true,
+        thinking: 'disabled',
+        maxTokens: reservedOutputTokens,
+        legalSourceIds,
+        messagesHash: sha256Hex(JSON.stringify(messages)).slice(0, 32),
+      }),
+      llmConfigId: llmConfigIdOf(runtime.requestConfig),
+      llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+      batchBudgetGate: options.batchBudgetGate,
+      estimatedInputTokens: ready.estimatedInputTokens,
+      reservedOutputTokens,
+      formatterUsed: true,
+      persistReasoningContentTemp: true,
+      run: () =>
+        callReadyLLM(
+          ready,
+          reservedOutputTokens,
+          buildStructuredAuditCallConfig(
+            stage === 'review' ? runtime.reviewPreset : runtime.factCheckPreset,
+            reservedOutputTokens,
+            stage === 'review'
+              ? 'pipeline_review_formatter'
+              : 'pipeline_factcheck_formatter',
+            chapter.project_id,
+            runtime.requestConfig,
+            taskId,
+            { supported: false, historical: false },
+          ),
+          abortSignal,
+        ),
+    });
+    return { result, legalSourceIds };
+  };
+
+  try {
+    // A process can die after the provider response is durably recorded but
+    // before the checkpoint is settled. V3.1 may recover only the same
+    // checkpoint's persisted reasoning; it must never silently replay a full
+    // audit request. A new explicit retry gets a newer checkpoint.startedAt
+    // and therefore starts a fresh bounded decision.
+    const checkpointAtStart = v31
+      ? await db.getStageCheckpoint(taskId, stage)
+      : null;
+    const latestAttempt = v31
+      ? await getLatestStageAttempt(taskId, stage)
+      : null;
+    const sameCheckpointAttempt = Boolean(
+      v31 &&
+        checkpointAtStart?.startedAt != null &&
+        latestAttempt &&
+        latestAttempt.startedAt >= checkpointAtStart.startedAt,
+    );
+    const formatterAlreadyAttempted = Boolean(
+      sameCheckpointAttempt && latestAttempt?.formatterUsed,
+    );
+    const coldStartHasNoRecoverableReasoning = Boolean(
+      sameCheckpointAttempt && !latestAttempt?.reasoningContentTemp,
+    );
+    let result: LLMResult;
+    let validation: any;
+    if (sameCheckpointAttempt && latestAttempt) {
+      result = {
+        text: '',
+        reasoningText: latestAttempt.reasoningContentTemp || null,
+        inputTokens: Number(latestAttempt.inputTokens || 0),
+        outputTokens: Number(latestAttempt.outputTokens || 0),
+        totalTokens: Number(latestAttempt.totalTokens || 0),
+        reasoningTokens: latestAttempt.reasoningTokens,
+        visibleOutputTokens: latestAttempt.visibleOutputTokens,
+        finishReason: latestAttempt.finishReason,
+        emptyReason: (latestAttempt.emptyReason ||
+          'empty') as LLMResult['emptyReason'],
+      };
+      tokens = accumulateTokens(tokens, result);
+      validation = validate(result);
+      logPipelineAudit({
+        stage,
+        attempt: latestAttempt.attemptNo,
+        valid: validation.valid,
+        reason: validation.reason,
+        textLength: 0,
+        ...auditObservation(result),
+        taskId,
+      });
+    } else {
+      result = await callCompiled(compiled, 1, false);
+      tokens = accumulateTokens(tokens, result);
+      validation = validate(result);
+      logPipelineAudit({
+        stage,
+        attempt: 1,
+        valid: validation.valid,
+        reason: validation.reason,
+        textLength: result.text?.length || 0,
+        ...auditObservation(result),
+        taskId,
+      });
+    }
+    // A provider may ignore the disabled-thinking extension or still expose
+    // a reasoning-only response through a compatible gateway. Give the
+    // structured contract one fresh, explicit content-only retry before the
+    // optional Formatter. Never replay this on a same-checkpoint cold start:
+    // that path may only consume the durable response scratch once.
+    if (
+      !validation.valid &&
+      validation.reason === 'reasoning_only' &&
+      !sameCheckpointAttempt
+    ) {
       const repair = compile(REASONING_ONLY_REPAIR_HINT);
       if (repair.ready) {
         result = await callCompiled(repair, 2, true);
@@ -2740,7 +3092,59 @@ async function runV3AuditStage(params: {
         });
       }
     }
+    const recoverableFormatterInput = result.reasoningText?.trim() || '';
+    if (
+      !validation.valid &&
+      v31 &&
+      recoverableFormatterInput &&
+      result.finishReason !== 'content_filter' &&
+      !formatterAlreadyAttempted &&
+      !coldStartHasNoRecoverableReasoning
+    ) {
+      await updateLatestAttemptDiagnostics(taskId, stage, {
+        parseFailureCode: validation.reason || 'AUDIT_INVALID',
+      });
+      const formatted = await runAuditFormatter(result);
+      result = formatted.result;
+      tokens = accumulateTokens(tokens, result);
+      validation = validate(result);
+      if (validation.valid && validation.report) {
+        const legalIds = new Set(formatted.legalSourceIds);
+        const corrections =
+          stage === 'review'
+            ? [
+                ...(validation.report.executableCorrections || []),
+                ...(validation.report.unlocatedRequired || []),
+              ]
+            : validation.report.corrections || [];
+        if (
+          corrections.some(
+            (item: { sourceId?: string }) =>
+              !legalIds.has(String(item.sourceId || '').trim()),
+          )
+        ) {
+          validation = {
+            valid: false,
+            reason: 'missing_required_fields',
+            details: 'Audit Formatter 生成了候选 reasoning 中不存在的 sourceId',
+          };
+        }
+      }
+      logPipelineAudit({
+        stage,
+        attempt: 2,
+        valid: validation.valid,
+        reason: validation.reason,
+        textLength: result.text?.length || 0,
+        ...auditObservation(result),
+        taskId,
+      });
+    }
     if (validation.valid && validation.normalizedText) {
+      await updateLatestAttemptDiagnostics(taskId, stage, {
+        parseFailureCode: null,
+        clearReasoning: true,
+      });
       await persistStage(taskId, {
         stage,
         text: validation.normalizedText,
@@ -2751,6 +3155,18 @@ async function runV3AuditStage(params: {
       });
       return;
     }
+    await updateLatestAttemptDiagnostics(taskId, stage, {
+      parseFailureCode: validation.reason || 'AUDIT_INVALID',
+      failureClass: 'response_invalid',
+      errorCode: PIPELINE_RESPONSE_INVALID_ERROR_CODE,
+      errorMessage:
+        validation.reason === 'reasoning_only'
+          ? `${
+              stage === 'review' ? '文学评估' : '事实核查'
+            }仅返回推理内容，未产生 message.content 合同`
+          : formatAuditFailureMessage(stage, validation.reason),
+      clearReasoning: true,
+    });
     await persistStage(taskId, {
       stage,
       text: '',
@@ -2921,11 +3337,11 @@ async function actionRunReview(
           // the model exhausted its CoT budget.
           const retryMaxTokens =
             isReasoningOnly && first.finishReason === 'length'
-            ? bumpRetryBudget(
-                runtime.config.reviewMaxTokens,
-                runtime.requestConfig.max_output_tokens,
-              )
-            : runtime.config.reviewMaxTokens;
+              ? bumpRetryBudget(
+                  runtime.config.reviewMaxTokens,
+                  runtime.requestConfig.max_output_tokens,
+                )
+              : runtime.config.reviewMaxTokens;
           const repair = compileReviewStageRequest({
             draftText,
             context,
@@ -3181,11 +3597,11 @@ async function actionRunFactCheck(
           // the model exhausted its CoT budget.
           const retryMaxTokens =
             isReasoningOnly && first.finishReason === 'length'
-            ? bumpRetryBudget(
-                runtime.config.factCheckMaxTokens,
-                runtime.requestConfig.max_output_tokens,
-              )
-            : runtime.config.factCheckMaxTokens;
+              ? bumpRetryBudget(
+                  runtime.config.factCheckMaxTokens,
+                  runtime.requestConfig.max_output_tokens,
+                )
+              : runtime.config.factCheckMaxTokens;
           const repair = compileFactCheckStageRequest({
             draftText,
             context,
@@ -3377,6 +3793,17 @@ function buildBriefCompilerInput(
   };
 }
 
+function buildBriefCompilerInputV31(
+  input: BriefCompilerInputV1,
+): BriefCompilerInputV31 {
+  const immutableEnvelope = buildBriefImmutableEnvelopeV31(input);
+  return {
+    ...input,
+    schemaVersion: 2,
+    immutableEnvelope,
+  };
+}
+
 async function actionRunBrief(
   taskId: string,
   chapter: Chapter,
@@ -3406,15 +3833,21 @@ async function actionRunBrief(
       const runtime = await loadRuntime(taskId, chapter);
       if (!runtime.parsed?.execution) throw new Error('缺少冻结上下文');
       const start = Date.now();
-      const input = buildBriefCompilerInput(
+      const inputBase = buildBriefCompilerInput(
         runtime,
         await getStageText(taskId, 'review'),
         await getStageText(taskId, 'factCheck'),
       );
-      const decision = shouldCallBriefCompiler(input);
-      const fallback = () => compileDeterministicBrief(input);
+      const v31 = isV31Profile(runtime);
+      const input: BriefCompilerInputV1 | BriefCompilerInputV31 = v31
+        ? buildBriefCompilerInputV31(inputBase)
+        : inputBase;
+      const decision = v31
+        ? { callApi: true, reason: 'V3.1 Final path requires Brief API' }
+        : shouldCallBriefCompiler(inputBase);
+      const fallback = () => compileDeterministicBrief(inputBase);
       const persistLocal = async (
-        brief: FinalWritingBriefV1,
+        brief: FinalWritingBriefV1 | FinalWritingBriefV31,
         warnings: string[],
         tokens?: {
           input: number;
@@ -3473,9 +3906,17 @@ async function actionRunBrief(
         requestMaxTokens: runtime.parsed.execution.briefMaxTokens,
       });
       if (!compiled.ready) {
-        await persistLocal(fallback(), [
-          'Brief API 因上下文窗口不足未调用，已使用本地 Brief；Thinking 未被静默关闭',
-        ]);
+        if (v31) {
+          await persistBriefFailure(
+            `Brief V3.1 上下文窗口不足，已阻断终稿：${
+              compiled.error?.message || '无法编译请求'
+            }`,
+          );
+        } else {
+          await persistLocal(fallback(), [
+            'Brief API 因上下文窗口不足未调用，已使用本地 Brief；Thinking 未被静默关闭',
+          ]);
+        }
         return;
       }
 
@@ -3492,27 +3933,105 @@ async function actionRunBrief(
       const briefAttemptNo =
         (await getStageAttempts(taskId, 'brief')).length + 1;
 
+      const briefThinking = v31 ? ('disabled' as const) : ('enabled' as const);
       const semantics = {
-        thinking: 'enabled' as const,
-        reasoningEffort: 'low' as const,
-        reasoningPolicyVersion: 1,
+        thinking: briefThinking,
+        reasoningEffort: v31 ? undefined : ('low' as const),
+        reasoningPolicyVersion: v31 ? 2 : 1,
       };
       const frozenRequestJson = JSON.stringify({
-        requestVersion: 1,
+        requestVersion: v31 ? 31 : 1,
         sourceHash: input.sourceHash,
-        thinking: 'enabled',
-        reasoningEffort: 'low',
+        thinking: briefThinking,
+        reasoningEffort: v31 ? null : 'low',
         visibleOutputFloor: compiled.budget.visibleOutputFloor,
         reasoningHeadroom: compiled.budget.reasoningHeadroom,
         maxTokens: compiled.reservedOutputTokens,
+        immutableEnvelope: v31
+          ? (input as BriefCompilerInputV31).immutableEnvelope
+          : undefined,
         elasticBudgetTrace: compiled.elasticBudgetTrace || null,
         messagesHash: sha256Hex(JSON.stringify(compiled.messages)).slice(0, 32),
       });
-      try {
-        const result = await runStageAttempt({
+      const runBriefContractFormatter = async (
+        invalid: LLMResult,
+      ): Promise<LLMResult> => {
+        if (!v31) throw new Error('Brief Contract Formatter 仅适用于 V3.1');
+        const prompt = buildBriefContractFormatterPrompt({
+          candidate: invalid.reasoningText || invalid.text || '',
+          envelope: (input as BriefCompilerInputV31).immutableEnvelope,
+        });
+        const reservedOutputTokens = Math.min(
+          1536,
+          Math.max(768, Math.floor(compiled.reservedOutputTokens)),
+        );
+        const ready = {
+          ready: true as const,
+          stage: 'brief' as const,
+          messages: prompt.messages,
+          estimatedInputTokens: estimateTokens(
+            prompt.messages.map(message => message.content).join('\n'),
+          ),
+          reservedOutputTokens,
+          safetyMargin: 128,
+          contextWindow: runtime.requestConfig.context_window || 0,
+          allocations: [],
+        } as ReadyStageRequest;
+        return runStageAttempt({
           taskId,
           stage: 'brief',
-          requestVersion: 1,
+          requestVersion: 32,
+          requestFingerprint: stageFingerprint('brief', ready, {
+            thinking: 'disabled',
+            reasoningPolicyVersion: 3,
+          }),
+          allocationTraceJson: JSON.stringify({ formatter: true }),
+          frozenRequestJson: JSON.stringify({
+            requestVersion: 32,
+            formatter: true,
+            thinking: 'disabled',
+            legalSourceIds: prompt.legalSourceIds,
+            messagesHash: sha256Hex(JSON.stringify(prompt.messages)).slice(
+              0,
+              32,
+            ),
+          }),
+          llmConfigId: llmConfigIdOf(runtime.requestConfig),
+          llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),
+          batchBudgetGate: options.batchBudgetGate,
+          estimatedInputTokens: ready.estimatedInputTokens,
+          reservedOutputTokens,
+          formatterUsed: true,
+          persistReasoningContentTemp: true,
+          run: () =>
+            callReadyLLM(
+              ready,
+              reservedOutputTokens,
+              buildStructuredAuditCallConfig(
+                null,
+                reservedOutputTokens,
+                'pipeline_brief_formatter',
+                chapter.project_id,
+                runtime.requestConfig,
+                taskId,
+                { supported: false, historical: false },
+              ),
+              abortSignal,
+            ),
+        });
+      };
+      let callTokens = {
+        input: 0,
+        output: 0,
+        total: 0,
+        reasoning: 0,
+        visible: 0,
+      };
+      try {
+        const firstResult = await runStageAttempt({
+          taskId,
+          stage: 'brief',
+          requestVersion: v31 ? 31 : 1,
           requestFingerprint: stageFingerprint(
             'brief',
             compiled as unknown as ReadyStageRequest,
@@ -3531,6 +4050,8 @@ async function actionRunBrief(
           batchBudgetGate: options.batchBudgetGate,
           estimatedInputTokens: compiled.estimatedInputTokens,
           reservedOutputTokens: compiled.reservedOutputTokens,
+          formatterUsed: false,
+          persistReasoningContentTemp: v31,
           run: () =>
             callReadyLLM(
               compiled as unknown as ReadyStageRequest,
@@ -3545,8 +4066,8 @@ async function actionRunBrief(
                   taskId,
                   {
                     responseFormat: 'json_object',
-                    thinking: { type: 'enabled' },
-                    reasoningEffort: 'low',
+                    thinking: { type: briefThinking },
+                    ...(v31 ? {} : { reasoningEffort: 'low' as const }),
                   },
                 ),
                 temperature: 0.1,
@@ -3555,10 +4076,22 @@ async function actionRunBrief(
               abortSignal,
             ),
         });
-        const validation = validateFinalWritingBrief({
-          raw: result.text || '',
-          input,
-        });
+        callTokens = accumulateTokens(callTokens, firstResult);
+        let result = firstResult;
+        let validation = v31
+          ? validateFinalWritingBriefV31({
+              // V3.1 admits only message.content. A hidden reasoning payload
+              // is input to the bounded Formatter, never a Brief artifact.
+              raw: result.text || '',
+              envelope: (input as BriefCompilerInputV31).immutableEnvelope,
+              compatibility: structuredOutputCompatibilityForConfig(
+                runtime.requestConfig,
+              ),
+            })
+          : validateFinalWritingBrief({
+              raw: result.text || '',
+              input: input as BriefCompilerInputV1,
+            });
         logPipelineAudit({
           stage: 'brief',
           attempt: briefAttemptNo,
@@ -3567,15 +4100,62 @@ async function actionRunBrief(
           ...auditObservation(result),
           taskId,
         });
+        if (
+          v31 &&
+          !validation.valid &&
+          (result.reasoningText?.trim() || result.text?.trim()) &&
+          result.finishReason !== 'content_filter'
+        ) {
+          await updateLatestAttemptDiagnostics(taskId, 'brief', {
+            parseFailureCode: validation.error || 'BRIEF_SCHEMA_INVALID',
+          });
+          result = await runBriefContractFormatter(firstResult);
+          callTokens = accumulateTokens(callTokens, result);
+          validation = validateFinalWritingBriefV31({
+            // The formatter is required to place its contract in content;
+            // reasoning-only formatter output is not accepted as success.
+            raw: result.text || '',
+            envelope: (input as BriefCompilerInputV31).immutableEnvelope,
+            compatibility: structuredOutputCompatibilityForConfig(
+              runtime.requestConfig,
+            ),
+          });
+          logPipelineAudit({
+            stage: 'brief',
+            attempt: briefAttemptNo + 1,
+            valid: validation.valid,
+            textLength: result.text?.length || 0,
+            ...auditObservation(result),
+            taskId,
+          });
+        }
+        await updateLatestAttemptDiagnostics(taskId, 'brief', {
+          parseFailureCode: validation.valid ? null : 'BRIEF_SCHEMA_INVALID',
+          ...(validation.valid
+            ? {}
+            : {
+                failureClass: 'response_invalid' as const,
+                errorCode: PIPELINE_RESPONSE_INVALID_ERROR_CODE,
+                errorMessage: `Brief V3.1 结构化合同无效：${
+                  validation.error || '未知原因'
+                }`,
+              }),
+          clearReasoning: true,
+        });
         if (validation.valid && validation.brief) {
           await persistLocal(
             validation.brief,
             [
-              'Brief Compiler（Thinking enabled + low）',
+              v31
+                ? 'Brief Compiler（Thinking disabled，优先输出 content 合同）'
+                : 'Brief Compiler（Thinking enabled + low）',
+              ...(result === firstResult
+                ? []
+                : ['Contract Formatter（Thinking disabled）']),
               ...(validation.warnings || []),
             ],
             {
-              ...tokenBreakdown(result),
+              ...callTokens,
             },
           );
           return;
@@ -3584,7 +4164,7 @@ async function actionRunBrief(
           `Brief API 输出未通过完整性门禁，已阻断终稿：${
             validation.error || '未知原因'
           }`,
-          tokenBreakdown(result),
+          callTokens,
         );
       } catch (error: any) {
         if (isAbortError(error, abortSignal)) {
@@ -3598,6 +4178,7 @@ async function actionRunBrief(
             error,
             '未知错误',
           )}`,
+          callTokens,
         );
       }
     },
@@ -3855,12 +4436,32 @@ async function runFinalReviserV3Stage(params: {
   const draftText = await getDraftText(taskId);
   const canonicalDraft = canonicalizeDraft(draftText);
   const briefText = await getStageText(taskId, 'brief');
-  let brief: FinalWritingBriefV1 | null = null;
+  const v31 = isV31Profile(runtime);
+  let brief: FinalWritingBriefV1 | FinalWritingBriefV31 | null = null;
   try {
-    const parsed = JSON.parse(briefText) as FinalWritingBriefV1;
-    if (parsed && parsed.schemaVersion === 1) brief = parsed;
+    const parsed = JSON.parse(briefText) as
+      | FinalWritingBriefV1
+      | FinalWritingBriefV31;
+    if (parsed && parsed.schemaVersion === (v31 ? 2 : 1)) brief = parsed;
   } catch {
     brief = null;
+  }
+  if (v31 && brief) {
+    const briefInput = buildBriefCompilerInputV31(
+      buildBriefCompilerInput(
+        runtime,
+        await getStageText(taskId, 'review'),
+        await getStageText(taskId, 'factCheck'),
+      ),
+    );
+    const validated = validateFinalWritingBriefV31({
+      raw: briefText,
+      envelope: briefInput.immutableEnvelope,
+      compatibility: structuredOutputCompatibilityForConfig(
+        runtime.requestConfig,
+      ),
+    });
+    brief = validated.valid ? validated.brief || null : null;
   }
   if (!brief) {
     await persistStage(taskId, {
@@ -3875,7 +4476,7 @@ async function runFinalReviserV3Stage(params: {
   }
   const draftSnapshot = runtime.parsed.draftContext;
   const sourceSnapshot = runtime.parsed.auditContext || draftSnapshot;
-  const capsule = buildFinalContinuityCapsule({
+  const baseCapsule = buildFinalContinuityCapsule({
     ...sourceSnapshot,
     // Immediate previous chapter is a Draft-time mandatory seam. Audit
     // retrieval may intentionally replace optional modules but never it.
@@ -3887,6 +4488,22 @@ async function runFinalReviserV3Stage(params: {
     immediatePreviousChapterPosition:
       draftSnapshot.immediatePreviousChapterPosition,
   });
+  const derivedInstruction = String(
+    usePipelineTaskStore.getState().tasks.find(item => item.id === taskId)
+      ?.derivedInstruction || '',
+  ).trim();
+  const capsule = derivedInstruction
+    ? {
+        ...baseCapsule,
+        currentInstructionText: [
+          baseCapsule.currentInstructionText,
+          '【用户补充的终稿修订要求｜优先级低于 Brief 硬约束与事实边界】',
+          derivedInstruction,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      }
+    : baseCapsule;
   const writingBrief = renderFinalWritingBrief(brief);
   const maxTokens = stageMaxTokens(
     runtime,
@@ -3945,6 +4562,7 @@ async function runFinalReviserV3Stage(params: {
       batchBudgetGate: options.batchBudgetGate,
       estimatedInputTokens: request.estimatedInputTokens,
       reservedOutputTokens: request.reservedOutputTokens,
+      persistReasoningContentTemp: v31,
       run: () =>
         callReadyLLM(
           request,
@@ -3965,6 +4583,100 @@ async function runFinalReviserV3Stage(params: {
         ),
     });
   try {
+    if (v31) {
+      // V3.1 Final is exactly one model call. The local checks below are a
+      // hard gate only; a failed result is persisted for manual retry from
+      // Proof and is never repaired by a hidden second Final call.
+      const result = await runProofAttempt(compiled, 0);
+      const tokens = tokenBreakdown(result);
+      const content =
+        typeof result.text === 'string' && result.text.trim().length > 0
+          ? result.text
+          : null;
+      if (!content) {
+        await updateLatestAttemptDiagnostics(taskId, 'proof', {
+          parseFailureCode: result.reasoningText?.trim()
+            ? 'FINAL_REASONING_ONLY'
+            : 'FINAL_EMPTY_CONTENT',
+          failureClass: 'response_invalid',
+          errorCode: PIPELINE_RESPONSE_INVALID_ERROR_CODE,
+          errorMessage: result.reasoningText?.trim()
+            ? '终稿仅返回 reasoning_content，未产生 message.content'
+            : '终稿 content 为空',
+          clearReasoning: true,
+        });
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: '',
+          status: 'failed',
+          error: result.reasoningText?.trim()
+            ? '终稿仅返回 reasoning_content，已阻断；请从失败节点重试'
+            : '终稿输出为空，已阻断；请从失败节点重试',
+          errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+      const validator = validateFinalArtifact({
+        text: content,
+        reasoningText: result.reasoningText,
+        finishReason: result.finishReason,
+        canonicalDraft,
+      });
+      if (!validator.valid) {
+        await updateLatestAttemptDiagnostics(taskId, 'proof', {
+          parseFailureCode: `FINAL_ARTIFACT_${validator.code}`,
+          failureClass: 'response_invalid',
+          errorCode: PIPELINE_RESPONSE_INVALID_ERROR_CODE,
+          errorMessage: `终稿本地校验未通过（${validator.code}）`,
+          clearReasoning: true,
+        });
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: '',
+          status: 'failed',
+          error: `终稿本地校验未通过（${validator.code}），请从失败节点重试`,
+          errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+      const compliance = validateFinalBriefCompliance({ text: content, brief });
+      if (!compliance.valid) {
+        await updateLatestAttemptDiagnostics(taskId, 'proof', {
+          parseFailureCode: `FINAL_${compliance.code}`,
+          failureClass: 'response_invalid',
+          errorCode: PIPELINE_RESPONSE_INVALID_ERROR_CODE,
+          errorMessage: `终稿连续性硬门禁未通过（${compliance.code}）`,
+          clearReasoning: true,
+        });
+        await persistStage(taskId, {
+          stage: 'proof',
+          text: '',
+          status: 'failed',
+          error: `终稿连续性硬门禁未通过（${compliance.code}），请从失败节点重试`,
+          errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+          tokens,
+          durationMs: Date.now() - start,
+        });
+        return;
+      }
+      await updateLatestAttemptDiagnostics(taskId, 'proof', {
+        parseFailureCode: null,
+        clearReasoning: true,
+      });
+      await persistStage(taskId, {
+        stage: 'proof',
+        text: content,
+        status: 'success',
+        warnings: validator.warnings,
+        tokens,
+        durationMs: Date.now() - start,
+      });
+      return;
+    }
     let request: ReadyStageRequest = compiled;
     let repairPass = 0;
     let acceptedContent: string | null = null;
@@ -4016,7 +4728,9 @@ async function runFinalReviserV3Stage(params: {
           `[pipeline-audit] stage=proof taskId=${taskId} continuityGate=failed code=${compliance.code} repairPass=${repairPass}`,
         );
         if (repairPass === 0) {
-          const repairBrief = `${writingBrief}\n\n【上一次终稿未通过连续性硬门禁】\n${compliance.details || 'Brief 禁止提前推进的内容仍出现在正文中。'}\n必须删除包含这些未来信息的完整段落或场景，不得只替换关键词；严格收束在 Brief 的结尾状态，直接输出完整终稿正文。`;
+          const repairBrief = `${writingBrief}\n\n【上一次终稿未通过连续性硬门禁】\n${
+            compliance.details || 'Brief 禁止提前推进的内容仍出现在正文中。'
+          }\n必须删除包含这些未来信息的完整段落或场景，不得只替换关键词；严格收束在 Brief 的结尾状态，直接输出完整终稿正文。`;
           const repaired = compileFinalReviserV3StageRequest({
             writingBrief: repairBrief,
             canonicalDraft,

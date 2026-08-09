@@ -52,11 +52,18 @@ export function supportsReasoningEffort(params: {
   baseUrl?: string | null;
 }): boolean {
   if (params.providerType !== 'openai_compatible') return false;
-  if (String(params.modelName ?? '').trim().toLowerCase() !== 'deepseek-v4-flash') {
+  if (
+    String(params.modelName ?? '')
+      .trim()
+      .toLowerCase() !== 'deepseek-v4-flash'
+  ) {
     return false;
   }
   try {
-    return new URL(String(params.baseUrl ?? '')).hostname.toLowerCase() === 'api.deepseek.com';
+    return (
+      new URL(String(params.baseUrl ?? '')).hostname.toLowerCase() ===
+      'api.deepseek.com'
+    );
   } catch {
     return false;
   }
@@ -64,10 +71,7 @@ export function supportsReasoningEffort(params: {
 
 function isValidReasoningEffort(value: unknown): value is ReasoningEffort {
   return (
-    value === 'low' ||
-    value === 'medium' ||
-    value === 'high' ||
-    value === 'max'
+    value === 'low' || value === 'medium' || value === 'high' || value === 'max'
   );
 }
 
@@ -392,30 +396,47 @@ export const openAICompatibleProvider: LLMProvider = {
               });
             let response = await sendRequest();
 
-            if (!response.ok) {
+            // OpenAI-compatible gateways do not agree on optional protocol
+            // extensions. Structured V3.1 calls request disabled Thinking, so
+            // a gateway that rejects that extension can safely retry once with
+            // the field omitted (omission is the portable non-thinking form).
+            // Enabled Thinking is intentionally not silently downgraded: it
+            // is a user-visible creative-quality choice and must fail closed
+            // if the provider rejects its reasoning contract.
+            for (let fallback = 0; !response.ok && fallback < 2; fallback++) {
               const text = await response.text();
               const responseFormatUnsupported =
                 options.responseFormat === 'json_object' &&
-                !('reasoning_effort' in requestBody) &&
                 response.status === 400 &&
                 /(response[_ ]?format|json[_ -]?object)/i.test(text) &&
-                /(unsupported|unknown|not supported|invalid)/i.test(text);
-              if (!responseFormatUnsupported) {
-                throw formatLLMError(
-                  response.status,
+                /(unsupported|unknown|not supported|invalid|unrecognized|unexpected)/i.test(
                   text,
-                  response.headers,
                 );
+              const disabledThinkingUnsupported =
+                options.thinking?.type === 'disabled' &&
+                response.status === 400 &&
+                /(thinking|reasoning(?:[_ ]?content|[_ ]?effort)?)/i.test(
+                  text,
+                ) &&
+                /(unsupported|unknown|not supported|invalid|unrecognized|unexpected|additional|extra)/i.test(
+                  text,
+                );
+              if (!responseFormatUnsupported && !disabledThinkingUnsupported) {
+                throw formatLLMError(response.status, text, response.headers);
               }
-              delete requestBody.response_format;
+              if (responseFormatUnsupported) delete requestBody.response_format;
+              if (disabledThinkingUnsupported) {
+                delete requestBody.thinking;
+                delete requestBody.reasoning_effort;
+              }
               response = await sendRequest();
-              if (!response.ok) {
-                throw formatLLMError(
-                  response.status,
-                  await response.text(),
-                  response.headers,
-                );
-              }
+            }
+            if (!response.ok) {
+              throw formatLLMError(
+                response.status,
+                await response.text(),
+                response.headers,
+              );
             }
 
             const data = await response.json();
@@ -424,10 +445,7 @@ export const openAICompatibleProvider: LLMProvider = {
             // Surfacing it here prevents Canon analysis from retrying an
             // unsupported-parameter failure three times and then reporting a
             // misleading "model does not support JSON" message.
-            if (
-              !Array.isArray(data.choices) ||
-              data.choices.length === 0
-            ) {
+            if (!Array.isArray(data.choices) || data.choices.length === 0) {
               if (data && typeof data === 'object' && 'error' in data) {
                 throw formatLLMError(
                   200,

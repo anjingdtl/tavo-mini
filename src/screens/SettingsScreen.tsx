@@ -130,7 +130,7 @@ export const SettingsScreen: React.FC = () => {
             >
               {workspaceMode === 'continuation'
                 ? '配置续写的规划、生成、一致性检查、修复和状态提取规则。'
-                : '4 阶段协作写作：初稿作者 → 审阅编辑 + 事实核查员 → 终审校对员。'}
+                : 'V3.1 协作写作按模式动态分阶段：初稿 → 审阅/事实核查 → Brief 终稿整理 → 终稿；失败节点可精确重试。'}
             </Text>
             <Button
               label="流水线配置"

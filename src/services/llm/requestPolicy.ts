@@ -17,6 +17,9 @@ export type LLMErrorCode =
  *   config_error    — model missing / invalid API key / bad URL
  *   context_error   — local Ready-compile failure (LLM call count 0)
  *   content_filter  — provider content policy rejection
+ *   response_invalid — provider responded, but the business contract was
+ *                      invalid (JSON/schema/channel); the response is known
+ *                      and must never be mislabeled outcome_unknown
  *   fatal           — anything else
  */
 export type LLMFailureClass =
@@ -27,6 +30,7 @@ export type LLMFailureClass =
   | 'config_error'
   | 'context_error'
   | 'content_filter'
+  | 'response_invalid'
   | 'fatal';
 
 export interface LLMFailureMetadata {
@@ -85,8 +89,7 @@ export class LLMRequestError extends Error {
     this.providerCode = metadata?.providerCode;
     this.retryAfterMs = metadata?.retryAfterMs;
     this.providerRequestId = metadata?.providerRequestId;
-    this.requestMayHaveExecuted =
-      metadata?.requestMayHaveExecuted ?? true;
+    this.requestMayHaveExecuted = metadata?.requestMayHaveExecuted ?? true;
   }
 }
 
@@ -133,20 +136,14 @@ export function classifyLLMFailure(params: {
   if (
     status === 401 ||
     status === 403 ||
-    (status === 404 &&
-      /model|not_found/i.test(`${code} ${message}`)) ||
+    (status === 404 && /model|not_found/i.test(`${code} ${message}`)) ||
     status === 400
   ) {
     return 'config_error';
   }
 
   // Transient server-side / gateway errors.
-  if (
-    status === 500 ||
-    status === 502 ||
-    status === 503 ||
-    status === 504
-  ) {
+  if (status === 500 || status === 502 || status === 503 || status === 504) {
     return 'safe_retry';
   }
 
@@ -162,7 +159,10 @@ export const AUTO_RETRY_BACKOFF_MS = [30_000, 120_000, 300_000] as const;
 export const MAX_AUTO_RETRY_ATTEMPTS = 3;
 
 export function computeRetryBackoffMs(attemptNo: number): number {
-  const index = Math.max(0, Math.min(attemptNo - 1, AUTO_RETRY_BACKOFF_MS.length - 1));
+  const index = Math.max(
+    0,
+    Math.min(attemptNo - 1, AUTO_RETRY_BACKOFF_MS.length - 1),
+  );
   const base = AUTO_RETRY_BACKOFF_MS[index];
   // 10%~20% jitter derived from a stable hash of attemptNo.
   const seed = Math.floor((attemptNo * 2654435761) % 1000000);
@@ -176,7 +176,10 @@ export function shouldAutoRetryFailure(params: {
   now?: number;
   nextRetryAt?: number | null;
 }): boolean {
-  if (params.failureClass !== 'safe_retry' && params.failureClass !== 'rate_limit') {
+  if (
+    params.failureClass !== 'safe_retry' &&
+    params.failureClass !== 'rate_limit'
+  ) {
     return false;
   }
   if (params.attemptNo > MAX_AUTO_RETRY_ATTEMPTS) {

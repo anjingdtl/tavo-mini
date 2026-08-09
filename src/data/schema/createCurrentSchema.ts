@@ -253,12 +253,17 @@ export function createCurrentSchemaStatements(): string[] {
         pipeline_context_hash TEXT,
         outline_workflow_version INTEGER NOT NULL DEFAULT 1,
         context_budget_version INTEGER NOT NULL DEFAULT 1,
+        parent_task_id TEXT,
+        derived_kind TEXT,
+        derived_instruction TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         resolved_at INTEGER,
         resolved_action TEXT
       )
     `,
+    `CREATE INDEX IF NOT EXISTS idx_pipeline_tasks_parent_task
+       ON pipeline_tasks(parent_task_id)`,
     `
       CREATE TABLE IF NOT EXISTS freeform_documents (
         project_id INTEGER PRIMARY KEY,

@@ -1,6 +1,6 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Alert, BackHandler, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Button, Header, Screen, spacing } from '../components/ui';
+import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import {
@@ -18,6 +18,7 @@ import { resumePipeline } from '../services/pipelineRunner';
 import {
   resetFailedStageCheckpointsForResume,
 } from '../data/repositories/pipelineStageCheckpointRepository';
+import { createDerivedFinalRewriteTask } from '../services/pipeline/derivedFinalRewrite';
 import type { PipelineStageResult } from '../types/pipeline';
 
 type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'PipelineResult'>;
@@ -35,6 +36,53 @@ const STATUS_LABELS: Record<PipelineStageResult['status'], string> = {
   failed: '失败',
   skipped: '已跳过',
 };
+
+const BRIEF_IMMUTABLE_KEYS = new Set([
+  'sourceHash',
+  'requiredSourceIds',
+  'protectedFacts',
+  'hardConstraints',
+  'mustNotAdvance',
+  'outlineObligations',
+  'endingBoundary',
+]);
+
+/**
+ * Local Brief-envelope ownership is an expected normalization, not an
+ * actionable warning. Keep it in the durable warning array for diagnostics,
+ * but render it as a compact neutral notice so a successful Brief does not
+ * look like a failed stage. Historical tasks may use either 信封 or 封套.
+ */
+export function splitStageWarnings(stage: PipelineStageResult): {
+  warnings: string[];
+  notices: string[];
+} {
+  if (stage.stage !== 'brief' || !stage.warnings?.length) {
+    return { warnings: stage.warnings || [], notices: [] };
+  }
+
+  const notices: string[] = [];
+  const warnings: string[] = [];
+  for (const message of stage.warnings) {
+    const isImmutableOverride = [...BRIEF_IMMUTABLE_KEYS].some(key =>
+      new RegExp(
+        `^Brief ${key} 已由本地不可变(?:信封|封套)覆盖$`,
+      ).test(message),
+    );
+    const isCoverageDiagnostic = message.startsWith(
+      'Brief coveredRequiredIds 仅作为诊断；最终覆盖集合已由 mustFix.sourceIds 本地计算',
+    );
+    const isExecutionNote =
+      /^Brief Compiler（.*）$/.test(message) ||
+      /^Contract Formatter（.*）$/.test(message);
+    if (isImmutableOverride || isCoverageDiagnostic || isExecutionNote) {
+      notices.push(message);
+    } else {
+      warnings.push(message);
+    }
+  }
+  return { warnings, notices };
+}
 
 /**
  * Render stage body for the result cards.
@@ -194,6 +242,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // 10.2: 采纳进行中状态，disable 采纳/放弃按钮防止重复点击触发多次 updateChapter
   const [adopting, setAdopting] = useState(false);
+  const [rewriteVisible, setRewriteVisible] = useState(false);
+  const [rewriteInstruction, setRewriteInstruction] = useState('');
   // 标记是否已被 handleAccept 标记为 accept，避免 unmount cleanup 的
   // setTimeout 与 handleAccept 的 resolveTask('accept') 竞态重复 resolve。
   const acceptedRef = useRef(false);
@@ -386,6 +436,27 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const resumeLabel =
     succeededStages.length > 0 ? '从失败节点重试' : '重新尝试';
 
+  const isV31Task = (() => {
+    if (
+      Number(task.outlineWorkflowVersion) !== 3 ||
+      Number(task.contextBudgetVersion) !== 3 ||
+      !task.pipelineContextJson
+    ) {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(task.pipelineContextJson);
+      return parsed?.execution?.reasoningProfileVersion === 3;
+    } catch {
+      return false;
+    }
+  })();
+  const canRewriteFinal =
+    task.targetType === 'chapter' &&
+    task.status === 'completed' &&
+    Boolean(task.finalText?.trim()) &&
+    isV31Task;
+
   const handleResumeFailed = async () => {
     if (adopting) return;
     if (!canResumeFailed) return;
@@ -394,7 +465,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       .join('、');
     const proceedCopy =
       succeededStages.length > 0
-        ? `仅重试未完成阶段（${failedLabels || '剩余阶段'}），已成功的阶段（初稿/审阅/核查）将直接复用，不会重复计费。确定继续？`
+        ? `仅重试未完成阶段（${failedLabels || '剩余阶段'}），已成功的阶段（初稿/审阅/核查/Brief）将直接复用，不会重复计费。确定继续？`
         : `从初稿阶段重新运行完整流水线，不会重复计费未完成的请求。确定继续？`;
     const proceed = await new Promise<boolean>(resolve => {
       Alert.alert(
@@ -440,6 +511,47 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     }
   };
 
+  const handleCreateFinalRewrite = async () => {
+    if (adopting) return;
+    const instruction = rewriteInstruction.trim();
+    if (!instruction) {
+      Alert.alert('需要修订要求', '请补充一条希望终稿调整的要求。');
+      return;
+    }
+    const proceed = await new Promise<boolean>(resolve => {
+      Alert.alert(
+        '确认仅重写终稿',
+        '将复用原任务冻结的 Draft、审阅、核查、Brief 和连续性证据，只新增一次 Final API 调用并产生费用。Brief 硬约束、人物/世界观事实和大纲边界优先于这条要求。继续吗？',
+        [
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+          { text: '确认并执行', onPress: () => resolve(true) },
+        ],
+      );
+    });
+    if (!proceed) return;
+    setAdopting(true);
+    try {
+      const chapter = await db.getChapterById(task.targetId);
+      if (!chapter) {
+        Alert.alert('章节不存在');
+        setAdopting(false);
+        return;
+      }
+      const derived = await createDerivedFinalRewriteTask(task.id, instruction);
+      setRewriteVisible(false);
+      setRewriteInstruction('');
+      setAdopting(false);
+      resumePipeline(derived.id, chapter).catch(error => {
+        console.warn('[pipeline] derived Final rewrite failed:', error);
+      });
+      Alert.alert('已创建派生任务', '仅重写终稿已开始，可在任务中心查看新结果。');
+      handleClose();
+    } catch (error: any) {
+      Alert.alert('无法创建派生任务', error?.message || '未知错误');
+      setAdopting(false);
+    }
+  };
+
   const renderStageCard = (stage: PipelineStageResult) => {
     const isExpanded = expanded.has(stage.stage);
     const textLength = stage.text?.length || 0;
@@ -473,11 +585,23 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             : ''}
           {stage.error ? ` · ${stage.error}` : ''}
         </Text>
-        {stage.warnings?.length ? (
-          <Text style={[styles.stageMeta, { color: theme.colors.warning }]}>
-            提示：{stage.warnings.join('；')}
-          </Text>
-        ) : null}
+        {(() => {
+          const { warnings, notices } = splitStageWarnings(stage);
+          return (
+            <>
+              {notices.length ? (
+                <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
+                  说明：终稿 Brief 已按本地不可变约束归一化
+                </Text>
+              ) : null}
+              {warnings.length ? (
+                <Text style={[styles.stageMeta, { color: theme.colors.warning }]}>
+                  提示：{warnings.join('；')}
+                </Text>
+              ) : null}
+            </>
+          );
+        })()}
         {isExpanded && (
           <Text
             style={[styles.stageText, { color: theme.colors.textPrimary }]}
@@ -562,6 +686,49 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           );
         })()}
         {uniqueStageResults(task.stageResults).map(renderStageCard)}
+        {canRewriteFinal ? (
+          <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
+            <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
+              仅重写终稿
+            </Text>
+            <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
+              复用全部前置证据，只执行一次新的 Final；原任务与原终稿保持不变。
+            </Text>
+            {rewriteVisible ? (
+              <>
+                <Field
+                  label="补充一条修订要求"
+                  value={rewriteInstruction}
+                  onChangeText={setRewriteInstruction}
+                  multiline
+                  maxLength={2000}
+                  placeholder="例如：放慢对话节奏，增加环境感官描写，但不要改变事实和结尾边界。"
+                  inputStyle={styles.rewriteInput}
+                />
+                <View style={styles.rewriteActions}>
+                  <Button
+                    label="取消"
+                    variant="ghost"
+                    onPress={() => setRewriteVisible(false)}
+                    disabled={adopting}
+                  />
+                  <Button
+                    label={adopting ? '创建中…' : '确认并执行'}
+                    onPress={handleCreateFinalRewrite}
+                    disabled={adopting}
+                  />
+                </View>
+              </>
+            ) : (
+              <Button
+                label="仅重写终稿"
+                variant="ghost"
+                onPress={() => setRewriteVisible(true)}
+                disabled={adopting}
+              />
+            )}
+          </View>
+        ) : null}
         {(task.finalText && !isRunning) || canResumeFailed ? (
           <View style={styles.actions}>
             {canResumeFailed ? (
@@ -592,4 +759,6 @@ const styles = StyleSheet.create({
   stageMeta: { fontSize: 12, fontWeight: '700' },
   stageText: { fontSize: 14, lineHeight: 22, marginTop: spacing.sm },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md, marginTop: spacing.lg },
+  rewriteInput: { minHeight: 96, textAlignVertical: 'top' },
+  rewriteActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md },
 });

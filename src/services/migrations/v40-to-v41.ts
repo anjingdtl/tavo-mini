@@ -47,6 +47,16 @@ CREATE TABLE IF NOT EXISTS pipeline_stage_attempts (
   total_tokens INTEGER,
   reasoning_tokens INTEGER,
 
+  -- V3.1 fail-closed diagnostics.  The temporary reasoning column is only
+  -- retained while the same checkpoint is recoverable from a cold start.
+  finish_reason TEXT,
+  empty_reason TEXT,
+  response_channel TEXT,
+  visible_output_tokens INTEGER,
+  parse_failure_code TEXT,
+  formatter_used INTEGER NOT NULL DEFAULT 0,
+  reasoning_content_temp TEXT,
+
   UNIQUE (pipeline_task_id, stage, attempt_no),
   FOREIGN KEY (pipeline_task_id) REFERENCES pipeline_tasks(id) ON DELETE CASCADE
 )`;

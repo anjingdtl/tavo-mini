@@ -4,7 +4,9 @@ import { deriveDefaultSafetyMargin } from './budgetAllocator';
 import { resolveElasticStageOutputReservation } from '../contextAutoAllocator';
 import {
   briefRequiredSourceIds,
+  briefRequiredSourceIdsV31,
   briefWarningCount,
+  type BriefCompilerInputV31,
   type BriefCompilerInputV1,
 } from './briefCompilerTypes';
 import {
@@ -28,7 +30,7 @@ export interface BriefBudget {
 export interface CompiledBriefStageRequest {
   stage: 'brief';
   messages: ChatMessage[];
-  input: BriefCompilerInputV1;
+  input: BriefCompilerInputV1 | BriefCompilerInputV31;
   budget: BriefBudget;
   estimatedInputTokens: number;
   reservedOutputTokens: number;
@@ -39,12 +41,36 @@ export interface CompiledBriefStageRequest {
   elasticBudgetTrace?: ElasticBudgetTrace;
 }
 
+type BriefCompilerInput = BriefCompilerInputV1 | BriefCompilerInputV31;
+
+function isV31Input(input: BriefCompilerInput): input is BriefCompilerInputV31 {
+  return input.schemaVersion === 2;
+}
+
+function requiredIds(input: BriefCompilerInput): string[] {
+  return isV31Input(input)
+    ? briefRequiredSourceIdsV31(input)
+    : briefRequiredSourceIds(input);
+}
+
+function warningCount(input: BriefCompilerInput): number {
+  if (!isV31Input(input)) return briefWarningCount(input);
+  return [
+    ...(input.review?.advisoryNotes || []),
+    ...(input.review?.executableCorrections || []),
+    ...(input.review?.unlocatedRequired || []),
+    ...(input.factCheck?.corrections || []),
+  ].filter(item =>
+    typeof item === 'string' ? Boolean(item.trim()) : item.severity === 'warning',
+  ).length;
+}
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
 export function calculateBriefBudget(params: {
-  input: BriefCompilerInputV1;
+  input: BriefCompilerInput;
   contextWindow: number;
   modelMaxOutputTokens?: number;
   /** Frozen elastic output reservation; absent only for direct/legacy callers. */
@@ -55,8 +81,8 @@ export function calculateBriefBudget(params: {
   const maxOutput = Math.max(0, Number(params.modelMaxOutputTokens) || 0);
   const computedFloor = clamp(
     512 +
-      briefRequiredSourceIds(params.input).length * 140 +
-      briefWarningCount(params.input) * 60,
+      requiredIds(params.input).length * 140 +
+      warningCount(params.input) * 60,
     768,
     2048,
   );
@@ -122,9 +148,45 @@ export function calculateBriefBudget(params: {
 }
 
 export function buildBriefCompilerMessages(
-  input: BriefCompilerInputV1,
+  input: BriefCompilerInput,
 ): ChatMessage[] {
-  const allowedSourceIds = briefRequiredSourceIds(input);
+  const allowedSourceIds = requiredIds(input);
+  if (isV31Input(input)) {
+    return [
+      {
+        role: 'system',
+        content: [
+          '你是小说流水线 V3.1 的 Brief Compiler，只把已归一化审核意见压缩为终稿语义要求。',
+          '不得重新审阅初稿，不得新增事实、人物或剧情，不得输出小说正文或推理过程。',
+          '本地不可变信封是最终权威；不得改写其中的 sourceHash、requiredSourceIds、protectedFacts、hardConstraints、mustNotAdvance、outlineObligations、endingBoundary。',
+          '只输出 BriefWritingSemanticPayloadV31 JSON，不要 Markdown、解释或推理。',
+          `语义输出应包含 schemaVersion=2、coveredRequiredIds、openingContinuity、mustFix、mustPreserve、endingState、styleAdvisories；sourceId 只能从白名单选择：${JSON.stringify(allowedSourceIds)}。`,
+          'mustFix 每项必须包含 sourceIds（字符串数组）、target（kind 为 opening/scene/middle/ending/global）、instruction（非空字符串）、preserve（字符串数组）。',
+          '如果没有 required/hard 修复，coveredRequiredIds 与 mustFix 必须为 []；没有对应语义时其余数组也输出 []，不要省略 schemaVersion。',
+          'endingState 有结尾边界时请原样复述 endingBoundary；不要编造新的结尾。',
+          `最小合法语义模板：${JSON.stringify({
+            schemaVersion: 2,
+            coveredRequiredIds: allowedSourceIds.length ? allowedSourceIds : [],
+            openingContinuity: [],
+            mustFix: [],
+            mustPreserve: [],
+            endingState: '原样复述本地 endingBoundary',
+            styleAdvisories: [],
+          })}`,
+          `本地不可变信封：${JSON.stringify(input.immutableEnvelope)}`,
+          '即使 Thinking 开启，JSON 也必须写入 message.content，不能只返回 reasoning_content。',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: `【已归一化审核输入】\n${JSON.stringify({
+          review: input.review,
+          factCheck: input.factCheck,
+          immutableEnvelope: input.immutableEnvelope,
+        })}`,
+      },
+    ];
+  }
   return [
     {
       role: 'system',
@@ -181,7 +243,7 @@ function arrayValue(value: unknown): any[] {
 
 /** Keep all executable constraints mandatory while allowing advisory material
  * to participate in the same elastic allocator as every other stage. */
-function buildBriefBudgetModules(input: BriefCompilerInputV1): {
+function buildBriefBudgetModules(input: BriefCompilerInput): {
   mandatory: ElasticStageModule[];
   optional: ElasticStageModule[];
 } {
@@ -232,9 +294,9 @@ function buildBriefBudgetModules(input: BriefCompilerInputV1): {
 }
 
 function buildBriefInputFromBudgetModules(
-  input: BriefCompilerInputV1,
+  input: BriefCompilerInput,
   clipped: ReadonlyMap<string, string>,
-): BriefCompilerInputV1 {
+): BriefCompilerInput {
   const core = parseRecord(clipped.get('brief_core'));
   const advisory = parseRecord(clipped.get('brief_advisory'));
   return {
@@ -267,7 +329,7 @@ function buildBriefInputFromBudgetModules(
 }
 
 export function compileBriefStageRequest(params: {
-  input: BriefCompilerInputV1;
+  input: BriefCompilerInput;
   contextWindow: number;
   modelMaxOutputTokens?: number;
   requestMaxTokens?: number;

@@ -123,7 +123,9 @@ async function loadLatestAttempts(
  * pure tail-position check and the id check is skipped when the anchor is
  * unset (legacy batches) or when no chapters exist yet.
  */
-async function checkProjectTailDrift(batch: MultiChapterBatchRow): Promise<boolean> {
+async function checkProjectTailDrift(
+  batch: MultiChapterBatchRow,
+): Promise<boolean> {
   if (batch.startPosition == null) return false;
   const chapters = await getChaptersByProject(batch.projectId);
   if (chapters.length === 0) return false;
@@ -183,7 +185,8 @@ export async function reconcileMultiChapterBatch(
     for (let step = 0; step < maxSteps; step += 1) {
       // Re-read EVERYTHING from SQLite before deciding (never UI state).
       const batch = await getBatchById(batchId);
-      if (!batch) throw new MultiChapterBatchError('BATCH_NOT_FOUND', '批次不存在');
+      if (!batch)
+        throw new MultiChapterBatchError('BATCH_NOT_FOUND', '批次不存在');
       if (['completed', 'cancelled', 'failed'].includes(batch.status)) {
         return;
       }
@@ -220,7 +223,11 @@ export async function reconcileMultiChapterBatch(
         latestAttempts,
       });
       console.log(
-        `[batch-reconcile] step=${step} batchStatus=${batch.status} ordinal=${batch.currentOrdinal} action=${action.type} itemStatus=${currentItem?.status} activeTask=${currentItem?.activePipelineTaskId ?? 'null'} taskStatuses=${JSON.stringify(taskStatuses)}`,
+        `[batch-reconcile] step=${step} batchStatus=${batch.status} ordinal=${
+          batch.currentOrdinal
+        } action=${action.type} itemStatus=${currentItem?.status} activeTask=${
+          currentItem?.activePipelineTaskId ?? 'null'
+        } taskStatuses=${JSON.stringify(taskStatuses)}`,
       );
 
       const handled = await executeBatchAction({
@@ -392,7 +399,11 @@ async function executeBatchAction(params: {
 
     case 'run_pipeline':
     case 'resume_pipeline': {
-      if (!currentItem || !currentItem.chapterId || !currentItem.activePipelineTaskId) {
+      if (
+        !currentItem ||
+        !currentItem.chapterId ||
+        !currentItem.activePipelineTaskId
+      ) {
         return 'continue';
       }
       const taskId = currentItem.activePipelineTaskId;
@@ -568,6 +579,19 @@ async function executeBatchAction(params: {
       });
       return 'stop';
 
+    case 'pause_response_invalid':
+      await updateBatchItem(batchId, action.ordinal, {
+        status: 'failed',
+        errorCode: 'BATCH_PIPELINE_FAILED',
+        errorMessage:
+          '模型已返回，但结构化审查合同无效；已保留已完成阶段，请从失败节点重试，不属于结果未知',
+      });
+      await updateBatchStatus(batchId, 'paused_user', {
+        errorCode: 'BATCH_PIPELINE_FAILED',
+        errorMessage: '结构化审查合同无效，请检查模型兼容性后从失败节点重试',
+      });
+      return 'stop';
+
     case 'pause_account_quota':
       await updateBatchItem(batchId, action.ordinal, {
         status: 'blocked_account_quota',
@@ -611,7 +635,11 @@ async function executeBatchAction(params: {
     case 'adopt_draft_result': {
       if (currentItem) {
         console.log(
-          `[batch-reconcile] adopt ord=${currentItem.ordinal} itemStatus=${currentItem.status} activeTask=${currentItem.activePipelineTaskId} fp=${currentItem.adoptionFingerprint ?? 'null'}`,
+          `[batch-reconcile] adopt ord=${currentItem.ordinal} itemStatus=${
+            currentItem.status
+          } activeTask=${currentItem.activePipelineTaskId} fp=${
+            currentItem.adoptionFingerprint ?? 'null'
+          }`,
         );
       }
       return adoptAndCommit(params);
@@ -620,7 +648,9 @@ async function executeBatchAction(params: {
     case 'verify_adoption': {
       if (!currentItem?.chapterId) return 'continue';
       const chapter = await db.getChapterById(currentItem.chapterId);
-      const bodyOk = Boolean(chapter?.content && String(chapter.content).trim());
+      const bodyOk = Boolean(
+        chapter?.content && String(chapter.content).trim(),
+      );
       const fingerprintOk = Boolean(currentItem.adoptionFingerprint);
       if (bodyOk && fingerprintOk) {
         // Commit is idempotent — safe to re-run after a crash.

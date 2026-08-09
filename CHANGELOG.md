@@ -6,12 +6,15 @@
 
 - **大纲流水线 V3**：新任务冻结 Brief Compiler、连续性闭包和五阶段持久化状态机；Draft / Review / FactCheck / Brief / Final 的职责与恢复边界独立记录，旧任务继续按冻结的 V1/V2 协议恢复。
 - **统一弹性算力池**：五个 API 阶段统一使用每请求 80% soft pool、95% burst band 与硬上限；Brief 不再配置独立小预算或静态 4K 上限，仅将可见 JSON 保底与 low Thinking headroom 分账。
+- **V3.1 fail-closed 恢复**：Review / FactCheck / Brief / Final 任一必需节点输出为空、结构无效或合同不完整时立即阻断下游；失败重试精确重置首个失败节点及其下游，成功 checkpoint 与完整 attempt 历史保留。
+- **派生终稿任务**：结果页支持“仅重写终稿”，复用原任务冻结的 Draft、审阅、核查、Brief 与连续性证据，只新增一次 Final API 调用；Schema 48 持久化父任务、派生类型和用户修订要求。
 
 ### Fixed
 
 - **Brief Thinking 语义固定**：Brief 始终发送 `thinking=enabled` 与 `reasoning_effort=low`；输出上限不足时改用本地 Brief，不静默关闭 Thinking，也不自动重试 Brief API。
 - **终稿连续性**：Final 使用完整 canonical draft、完整大纲、即时上一章正文/章末和故事状态闭包，避免 Revision Contract、锚点 ID 或重复初稿注入造成上下文断裂。
 - **审核归一化与传递**：Review / FactCheck 的定位失败、warning、required/hard 冲突在本地归一化，Brief 完整性门禁后再以纯文本写作 Brief 传递给 Final。
+- **旧链升级清理与诊断**：Schema 46→47 在升级前创建 schema-recovery 备份，精确清理旧 V3/profile2 任务，保留 V2、用户正文、修订和用量记录；Attempt 记录 finish/empty/channel/visible token/Formatter 等诊断，冷启动只允许使用同 checkpoint 的临时 reasoning。
 
 ## [2.11.39] - 2026-08-08
 

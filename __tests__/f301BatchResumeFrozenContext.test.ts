@@ -151,7 +151,10 @@ function baseExecution(
   };
 }
 
-async function seedBaseData(): Promise<{ projectId: number; chapterId: number }> {
+async function seedBaseData(): Promise<{
+  projectId: number;
+  chapterId: number;
+}> {
   await execute(
     await openDatabase(),
     `INSERT INTO projects (id, name, mode, created_at, updated_at)
@@ -199,7 +202,11 @@ function frozenContext(chapterId: number, mode: 'full' | 'noReview') {
 async function seedProofFailedScenario(): Promise<{
   taskId: string;
   chapterId: number;
-  frozen: { pipelineContextJson: string; pipelineContextVersion: number; pipelineContextHash: string };
+  frozen: {
+    pipelineContextJson: string;
+    pipelineContextVersion: number;
+    pipelineContextHash: string;
+  };
 }> {
   await seedBaseData();
   await createBatch({
@@ -254,19 +261,46 @@ async function seedProofFailedScenario(): Promise<{
     db,
     `INSERT INTO pipeline_stage_checkpoints ${cpCols}
      VALUES (?, 'draft', 'succeeded', ?, NULL, NULL, ?, ?, ?, 5000, 1, ?, ?, ?)`,
-    [taskId, '初稿正文。', 500, 800, 1300, now - 90_000, now - 80_000, now - 80_000],
+    [
+      taskId,
+      '初稿正文。',
+      500,
+      800,
+      1300,
+      now - 90_000,
+      now - 80_000,
+      now - 80_000,
+    ],
   );
   await execute(
     db,
     `INSERT INTO pipeline_stage_checkpoints ${cpCols}
      VALUES (?, 'review', 'succeeded', ?, NULL, NULL, ?, ?, ?, 3000, 1, ?, ?, ?)`,
-    [taskId, '审阅报告。', 200, 100, 300, now - 75_000, now - 70_000, now - 70_000],
+    [
+      taskId,
+      '审阅报告。',
+      200,
+      100,
+      300,
+      now - 75_000,
+      now - 70_000,
+      now - 70_000,
+    ],
   );
   await execute(
     db,
     `INSERT INTO pipeline_stage_checkpoints ${cpCols}
      VALUES (?, 'factCheck', 'succeeded', ?, NULL, NULL, ?, ?, ?, 2000, 1, ?, ?, ?)`,
-    [taskId, '核查报告。', 100, 50, 150, now - 65_000, now - 60_000, now - 60_000],
+    [
+      taskId,
+      '核查报告。',
+      100,
+      50,
+      150,
+      now - 65_000,
+      now - 60_000,
+      now - 60_000,
+    ],
   );
   await execute(
     db,
@@ -365,10 +399,9 @@ describe('F3-01: batch resume 保留 frozen context（proof failed → 继续）
     const { taskId, chapterId, frozen } = await seedProofFailedScenario();
 
     // resume 前快照
-    const before = await one(
-      `SELECT * FROM pipeline_tasks WHERE id = ?`,
-      [taskId],
-    );
+    const before = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
+      taskId,
+    ]);
     expect(before).not.toBeNull();
     const b = before as any;
     const beforeAttempts = await attemptsFor(taskId);
@@ -386,7 +419,9 @@ describe('F3-01: batch resume 保留 frozen context（proof failed → 继续）
     await waitForReconcileDone();
 
     // ---- Task identity：同一 taskId，禁止创建新 task ----
-    const after = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [taskId]);
+    const after = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
+      taskId,
+    ]);
     expect(after).not.toBeNull();
     const a = after as any;
     expect(a.id).toBe(b.id);
@@ -415,11 +450,15 @@ describe('F3-01: batch resume 保留 frozen context（proof failed → 继续）
     const count = (stage: string, rows: any[]) =>
       rows.filter(a => a.stage === stage).length;
     expect(count('draft', afterAttempts)).toBe(count('draft', beforeAttempts));
-    expect(count('review', afterAttempts)).toBe(count('review', beforeAttempts));
+    expect(count('review', afterAttempts)).toBe(
+      count('review', beforeAttempts),
+    );
     expect(count('factCheck', afterAttempts)).toBe(
       count('factCheck', beforeAttempts),
     );
-    expect(count('proof', afterAttempts)).toBe(count('proof', beforeAttempts) + 1);
+    expect(count('proof', afterAttempts)).toBe(
+      count('proof', beforeAttempts) + 1,
+    );
     const proofSucceeded = afterAttempts.filter(
       a => a.stage === 'proof' && a.status === 'succeeded',
     );
@@ -430,7 +469,9 @@ describe('F3-01: batch resume 保留 frozen context（proof failed → 继续）
       rows
         .filter(a => a.stage === stage)
         .reduce((acc, a) => acc + (a.total_tokens || 0), 0);
-    expect(sumTokens('draft', afterAttempts)).toBe(sumTokens('draft', beforeAttempts));
+    expect(sumTokens('draft', afterAttempts)).toBe(
+      sumTokens('draft', beforeAttempts),
+    );
     expect(sumTokens('review', afterAttempts)).toBe(
       sumTokens('review', beforeAttempts),
     );
@@ -457,16 +498,14 @@ describe('F3-01: batch resume 保留 frozen context（proof failed → 继续）
     expect(items[0].adoptedRevisionId).not.toBeNull();
     expect(items[0].adoptionFingerprint).not.toBeNull();
 
-    const chapter = await one(
-      `SELECT * FROM chapters WHERE id = ?`,
-      [chapterId],
-    );
+    const chapter = await one(`SELECT * FROM chapters WHERE id = ?`, [
+      chapterId,
+    ]);
     expect(chapter).not.toBeNull();
     expect(String((chapter as any).content)).toContain('终稿正文');
-    const revision = await one(
-      `SELECT * FROM content_revisions WHERE id = ?`,
-      [items[0].adoptedRevisionId],
-    );
+    const revision = await one(`SELECT * FROM content_revisions WHERE id = ?`, [
+      items[0].adoptedRevisionId,
+    ]);
     expect(revision).not.toBeNull();
     expect((revision as any).source).toBe('pipeline');
   });
@@ -573,19 +612,24 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
     expect(items[0].adoptedRevisionId).not.toBeNull();
     expect(items[0].activePipelineTaskId).not.toBe(taskId);
 
-    const newTask = await one(
-      `SELECT * FROM pipeline_tasks WHERE id = ?`,
-      [items[0].activePipelineTaskId],
-    );
+    const newTask = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
+      items[0].activePipelineTaskId,
+    ]);
     expect(newTask).not.toBeNull();
     expect(String((newTask as any).status)).toBe('completed');
     expect(mockCallLLMResult).toHaveBeenCalledTimes(1);
 
-    const oldTask = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [taskId]);
+    const oldTask = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
+      taskId,
+    ]);
     // 旧 task 的 frozen context 原样保留（历史审计不丢）。
     expect(oldTask).not.toBeNull();
-    expect((oldTask as any).pipeline_context_json).toBe(frozen.pipelineContextJson);
-    expect((oldTask as any).pipeline_context_hash).toBe(frozen.pipelineContextHash);
+    expect((oldTask as any).pipeline_context_json).toBe(
+      frozen.pipelineContextJson,
+    );
+    expect((oldTask as any).pipeline_context_hash).toBe(
+      frozen.pipelineContextHash,
+    );
 
     const batch = await getBatchById('b2');
     expect(batch?.status).toBe('completed');
@@ -673,7 +717,9 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
     });
     await resumePipeline(taskId, chapterFor(chapterId));
 
-    const task = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [taskId]);
+    const task = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
+      taskId,
+    ]);
     expect(task).not.toBeNull();
     const t = task as any;
     expect(String(t.status)).toBe('completed');

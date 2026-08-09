@@ -68,6 +68,13 @@ export function determineRetryDisposition(attempt: {
     if (retryAt > Date.now()) return { kind: 'wait_retry', retryAt };
     return { kind: 'retry_now' };
   }
+  if (failureClass === 'response_invalid') {
+    return {
+      kind: 'manual_pause',
+      message:
+        '模型已返回，但结构化合同无效；已阻断该阶段，请从失败节点重试，不会按“结果未知”重复请求',
+    };
+  }
   return { kind: 'fail' };
 }
 
@@ -96,7 +103,9 @@ function hasUsableFinalText(task: PersistedPipelineTaskView): boolean {
   return typeof task.finalText === 'string' && task.finalText.length > 0;
 }
 
-function anyRunning(stages: PersistedStageCheckpoint[]): PersistedStageCheckpoint | null {
+function anyRunning(
+  stages: PersistedStageCheckpoint[],
+): PersistedStageCheckpoint | null {
   return stages.find(s => s.status === 'running') || null;
 }
 
@@ -222,11 +231,13 @@ function decideTerminalOrComplete(
   task: PersistedPipelineTaskView,
 ): PipelineAction {
   if (statusIsFailedWithFinal(task)) {
-    return blocked('TASK_TERMINAL', task.finalText
-      ? '任务已失败并保留正文'
-      : '任务已失败', {
-      userAction: 'none',
-    });
+    return blocked(
+      'TASK_TERMINAL',
+      task.finalText ? '任务已失败并保留正文' : '任务已失败',
+      {
+        userAction: 'none',
+      },
+    );
   }
   if (hasUsableFinalText(task)) {
     if (String(task.status) === 'completed') {
@@ -281,7 +292,10 @@ function decideAfterProof(
     return { type: 'complete' };
   }
   if (proof.status === 'failed') {
-    if (requireManualRetry || proof.errorCode === FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE) {
+    if (
+      requireManualRetry ||
+      proof.errorCode === FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE
+    ) {
       return blocked(
         'STAGE_FAILED',
         proof.errorMessage || '终稿失败，请从失败节点重试',
@@ -304,7 +318,18 @@ function decideAfterProof(
     return { type: 'run_proof' };
   }
   if (proof.status === 'skipped') {
-    // Skipped because audit failed — degraded finalize from draft.
+    if (requireManualRetry) {
+      return blocked(
+        'STAGE_FAILED',
+        '终稿阶段缺失，已阻断任务；请从失败节点重试',
+        {
+          stage: 'proof',
+          userAction: 'retry',
+        },
+      );
+    }
+    // Historical V1/V2 tasks may still degrade when proof was intentionally
+    // skipped. V3.1 callers always pass requireManualRetry=true.
     if (!hasUsableFinalText(task)) {
       return { type: 'finalize_from_draft', degraded: true };
     }
@@ -440,24 +465,6 @@ function decideConditional(
   return decideAfterProof(task, proof);
 }
 
-function hasExecutableFactCorrections(factCheck: PersistedStageCheckpoint): boolean {
-  const text = String(factCheck.outputText || '');
-  if (!text.trim()) return false;
-  try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    const corrections = Array.isArray(parsed.corrections)
-      ? parsed.corrections
-      : Array.isArray(parsed.requiredCorrections)
-        ? parsed.requiredCorrections
-        : [];
-    return corrections.some((item: any) =>
-      item && (item.severity === 'hard' || item.severity === 'required'),
-    );
-  } catch {
-    return false;
-  }
-}
-
 function decideConditionalV3(
   task: PersistedPipelineTaskView,
   factCheck: PersistedStageCheckpoint,
@@ -478,23 +485,20 @@ function decideConditionalV3(
     });
   }
   if (factCheck.status !== 'succeeded') {
-    return blocked('UNKNOWN_STATE', `事实核查阶段状态非法: ${factCheck.status}`, {
-      stage: 'factCheck',
-      userAction: 'restart_task',
-    });
-  }
-  if (!hasExecutableFactCorrections(factCheck)) {
-    return { type: 'finalize_from_draft' };
+    return blocked(
+      'UNKNOWN_STATE',
+      `事实核查阶段状态非法: ${factCheck.status}`,
+      {
+        stage: 'factCheck',
+        userAction: 'restart_task',
+      },
+    );
   }
   return decideAfterBrief(task, brief, proof);
 }
 
 function auditResolved(status: StageStatus): boolean {
-  return (
-    status === 'succeeded' ||
-    status === 'failed' ||
-    status === 'skipped'
-  );
+  return status === 'succeeded' || status === 'failed' || status === 'skipped';
 }
 
 function decideFull(
@@ -539,11 +543,9 @@ function decideFull(
     if (!hasUsableFinalText(task)) {
       return { type: 'finalize_from_draft', degraded: true };
     }
-    return blocked(
-      'TASK_TERMINAL',
-      '文学评估与事实核查均失败，已保留初稿',
-      { userAction: 'none' },
-    );
+    return blocked('TASK_TERMINAL', '文学评估与事实核查均失败，已保留初稿', {
+      userAction: 'none',
+    });
   }
 
   return decideAfterProof(task, proof);
@@ -557,7 +559,8 @@ function decideFullV3(
   proof: PersistedStageCheckpoint,
 ): PipelineAction {
   if (!task.hasAuditContext) {
-    const auditsAllResolved = auditResolved(review.status) && auditResolved(factCheck.status);
+    const auditsAllResolved =
+      auditResolved(review.status) && auditResolved(factCheck.status);
     if (!auditsAllResolved) return { type: 'build_audit_context' };
   }
   const reviewOpen = isOpen(review.status);
@@ -583,6 +586,12 @@ function decideFullV3(
   }
   if (factCheck.status === 'failed') {
     return blocked('STAGE_FAILED', '事实核查失败，请从失败节点重试', {
+      stage: 'factCheck',
+      userAction: 'retry',
+    });
+  }
+  if (factCheck.status !== 'succeeded') {
+    return blocked('STAGE_FAILED', 'V3 事实核查缺失，请从失败节点重试', {
       stage: 'factCheck',
       userAction: 'retry',
     });

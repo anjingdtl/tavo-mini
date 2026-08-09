@@ -36,7 +36,7 @@ const STAGE_LABELS = [
 const DEFAULT_CONFIG: PipelineConfig = {
   pipelineMode: 'twoStage',
   reasoningEffort: DEFAULT_PIPELINE_REASONING_EFFORT,
-  reasoningProfileVersion: 2,
+  reasoningProfileVersion: 3,
   draftPresetId: null,
   reviewPresetId: null,
   factCheckPresetId: null,
@@ -177,7 +177,7 @@ export const PipelineConfigScreen: React.FC = () => {
             {PIPELINE_REASONING_EFFORT_OPTIONS.find(
               option => option.value === (config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT),
             )?.description}
-            {' '}Draft/Final 跟随用户档位；Review/FactCheck 最高为 high；Brief Compiler 始终启用 low Thinking，独立分配可见 JSON 与推理余量。
+            {' '}Draft/Final 跟随用户档位；Review/FactCheck/Brief 固定使用 low Thinking，独立分配可见 JSON 与推理余量。
           </Text>
           <Text
             style={[styles.hint, { color: theme.colors.textSecondary }]}

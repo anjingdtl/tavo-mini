@@ -1,7 +1,9 @@
 import { sha256Hex } from '../continuation/hashUtils';
 import {
   briefRequiredSourceIds,
+  buildBriefImmutableEnvelopeV31,
   type BriefCompilerInputV1,
+  type FinalWritingBriefV31,
   type BriefSourceItem,
   type FinalWritingBriefV1,
 } from './briefCompilerTypes';
@@ -98,5 +100,38 @@ export function compileDeterministicBrief(
     openingContinuity,
     endingState: input.review?.outlineExecution.endingGoal?.trim() || '',
     advisoryNotes,
+  };
+}
+
+/** Compatibility helper for tests/tools; V3.1 runtime never silently uses it
+ * as a substitute for the mandatory Brief API call. */
+export function compileDeterministicBriefV31(
+  input: BriefCompilerInputV1,
+): FinalWritingBriefV31 {
+  const legacy = compileDeterministicBrief(input);
+  const envelope = buildBriefImmutableEnvelopeV31(input);
+  return {
+    ...envelope,
+    coveredRequiredIds: legacy.coveredRequiredIds,
+    openingContinuity: legacy.openingContinuity,
+    mustFix: legacy.mustFix.map(item => ({
+      sourceIds: item.sourceIds,
+      target: {
+        kind:
+          item.location.includes('开头')
+            ? 'opening'
+            : item.location.includes('结尾')
+              ? 'ending'
+              : item.location.includes('中段')
+                ? 'middle'
+                : 'global',
+        hint: item.location,
+      },
+      instruction: item.instruction,
+      preserve: item.preserve,
+    })),
+    mustPreserve: legacy.mustPreserve,
+    endingState: legacy.endingState,
+    styleAdvisories: legacy.advisoryNotes,
   };
 }

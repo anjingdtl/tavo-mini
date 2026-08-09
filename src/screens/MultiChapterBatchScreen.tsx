@@ -185,6 +185,17 @@ export function MultiChapterBatchScreen(): React.ReactElement {
 
   const handleResume = async () => {
     if (!store.batch) return;
+    const proceed = await new Promise<boolean>(resolve => {
+      Alert.alert(
+        '确认后继续批次',
+        '当前章节会按 checkpoint 精确恢复：已成功的阶段直接复用，失败或尚未成功的阶段可能重新调用模型并产生 API 费用；结果未知时可能产生重复费用。是否继续？',
+        [
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+          { text: '确认继续', onPress: () => resolve(true) },
+        ],
+      );
+    });
+    if (!proceed) return;
     try {
       await store.resume(store.batch.id);
     } catch (error: any) {
