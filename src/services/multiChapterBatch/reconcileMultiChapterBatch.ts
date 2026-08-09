@@ -333,7 +333,11 @@ async function executeBatchAction(params: {
       });
       const taskId = `batch_${batchId}_ord${currentItem.ordinal}_${Date.now()}`;
       const now = Date.now();
-      const stages: PipelineCheckpointStage[] = ['draft', 'review', 'factCheck', 'proof'];
+      const isV3 =
+        batch.outlineWorkflowVersion === 3 && batch.contextBudgetVersion === 3;
+      const stages: PipelineCheckpointStage[] = isV3
+        ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+        : ['draft', 'review', 'factCheck', 'proof'];
       await createPipelineTaskForBatchItem({
         batchId,
         ordinal: currentItem.ordinal,

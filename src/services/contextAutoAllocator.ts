@@ -14,14 +14,21 @@ import {
   DEFAULT_CONTEXT_AUTOMATION_POLICY_V2,
   serializeContextAutomationPolicy,
   type ContextAutomationPolicyV2,
+  DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3,
+  type OutlinePipelineBudgetPolicyV3,
+  type OutlinePipelineStageV3,
+  type OutlineReasoningTierV3,
 } from './contextAutomationPolicy';
 
 export {
   buildContinuationPolicyPreview,
   cloneDefaultContextAutomationPolicy,
+  cloneDefaultOutlinePipelineBudgetPolicyV3,
   DEFAULT_CONTEXT_AUTOMATION_POLICY_V2,
+  DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3,
   hashContextAutomationPolicy,
   isContextAutomationPolicyV2,
+  isOutlinePipelineBudgetPolicyV3,
   serializeContextAutomationPolicy,
 } from './contextAutomationPolicy';
 export type {
@@ -31,7 +38,37 @@ export type {
   ContinuationV4Stage,
   RatioCurve,
   StageRatioRule,
+  OutlinePipelineBudgetPolicyV3,
+  OutlinePipelineStageV3,
+  OutlineReasoningTierV3,
+  StageBudgetPolicyV3,
 } from './contextAutomationPolicy';
+
+export interface OutlineStageBudgetAllocationV3 {
+  stage: OutlinePipelineStageV3;
+  requestedTier: OutlineReasoningTierV3;
+  effectiveTier: OutlineReasoningTierV3;
+  visibleOutputFloor: number;
+  reasoningHeadroom: number;
+  requestMaxTokens: number;
+  estimatedMandatoryInputTokens: number;
+  softInputLimit: number;
+  hardInputLimit: number;
+  safetyReserveTokens: number;
+  optionalInputBudget: number;
+  fitsModelOutput: boolean;
+  fitsSoftInput: boolean;
+  fitsContextWindow: boolean;
+  localFallbackRecommended: boolean;
+}
+
+export interface OutlinePipelineBudgetAllocationV3 {
+  schemaVersion: 3;
+  allocatorVersion: 'outline-pipeline-budget-v3';
+  contextWindow: number;
+  requestedTier: OutlineReasoningTierV3;
+  stages: Record<OutlinePipelineStageV3, OutlineStageBudgetAllocationV3>;
+}
 
 export interface ResourceCounts {
   characters: number;
@@ -125,11 +162,45 @@ export const MIN_NOTE_TOKENS = 500;
 export const MIN_WORLDBOOK_ENTRY_TOKENS = 500;
 export const MIN_WORLDBOOK_COLLECTION_TOKENS = 2000;
 export const MIN_PIPELINE_TOKENS = 256;
+/**
+ * Per-request output reserve in the elastic outline envelope.  DeepSeek's
+ * 1M context / 200K output configuration naturally lands here; this is an
+ * envelope derived from the model window, not a Brief-specific cap.
+ */
+export const ELASTIC_STAGE_OUTPUT_RESERVE_RATIO = 0.2;
 
 const floor = (value: number, min: number): number =>
   Math.max(min, Math.round(value));
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.round(value)));
+
+/**
+ * Resolve the output reservation for one elastic stage request.
+ *
+ * The configured model output ceiling is preserved when it fits inside the
+ * per-request 20% reserve; when a gateway reports a larger ceiling, the
+ * reserve remains derived from the current context window.  This keeps every
+ * stage on the same elastic envelope and avoids inventing a tiny Brief-only
+ * max_tokens value.
+ */
+export function resolveElasticStageOutputReservation(params: {
+  contextWindow: number;
+  modelMaxOutputTokens?: number | null;
+}): number {
+  const contextWindow = Math.max(0, Math.floor(Number(params.contextWindow) || 0));
+  const configured = Math.max(
+    0,
+    Math.floor(Number(params.modelMaxOutputTokens) || 0),
+  );
+  const reserve = Math.floor(
+    contextWindow * ELASTIC_STAGE_OUTPUT_RESERVE_RATIO,
+  );
+  if (configured > 0 && reserve > 0) {
+    return Math.max(MIN_PIPELINE_TOKENS, Math.min(configured, reserve));
+  }
+  if (configured > 0) return Math.max(MIN_PIPELINE_TOKENS, configured);
+  return Math.max(MIN_PIPELINE_TOKENS, reserve);
+}
 
 /**
  * 根据用户输入的 maxContextTokens 和当前资源数量，
@@ -143,9 +214,7 @@ export function allocateContextBudget(
   policy: ContextAutomationPolicyV2 = DEFAULT_CONTEXT_AUTOMATION_POLICY_V2,
 ): AllocationResult {
   if (!Number.isFinite(maxContextTokens) || maxContextTokens <= 0) {
-    throw new Error(
-      `maxContextTokens 必须为正数，收到：${maxContextTokens}`,
-    );
+    throw new Error(`maxContextTokens 必须为正数，收到：${maxContextTokens}`);
   }
 
   const outline = policy.outlineCompatibility;
@@ -158,7 +227,10 @@ export function allocateContextBudget(
   let episodicMemoryBudgetTokens: number;
   let slidingWindowSize: number;
   if (inputBudget < 5000) {
-    resourceBudget = Math.max(1, Math.round(inputBudget * outline.resourceBudgetRatio));
+    resourceBudget = Math.max(
+      1,
+      Math.round(inputBudget * outline.resourceBudgetRatio),
+    );
     storyStateBudgetTokens = Math.max(
       1,
       Math.round(inputBudget * outline.storyStateBudgetRatio),
@@ -169,7 +241,10 @@ export function allocateContextBudget(
     );
     slidingWindowSize = Math.max(
       1,
-      inputBudget - resourceBudget - storyStateBudgetTokens - episodicMemoryBudgetTokens,
+      inputBudget -
+        resourceBudget -
+        storyStateBudgetTokens -
+        episodicMemoryBudgetTokens,
     );
   } else {
     resourceBudget = floor(
@@ -221,7 +296,10 @@ export function allocateContextBudget(
   );
 
   // 输出侧
-  const draftMaxTokens = floor(outputBudget * outline.draftRatio, MIN_PIPELINE_TOKENS);
+  const draftMaxTokens = floor(
+    outputBudget * outline.draftRatio,
+    MIN_PIPELINE_TOKENS,
+  );
   const reviewMaxTokens = floor(
     outputBudget * outline.reviewRatio,
     MIN_PIPELINE_TOKENS,
@@ -307,9 +385,7 @@ export async function countAllResources(): Promise<ResourceCounts> {
   // 触发数据库初始化（与 connection/query.ts 内部行为一致）
   await openDatabase();
   const countOf = async (table: string): Promise<number> => {
-    const rows = await all<{ c: number }>(
-      `SELECT COUNT(*) AS c FROM ${table}`,
-    );
+    const rows = await all<{ c: number }>(`SELECT COUNT(*) AS c FROM ${table}`);
     return Number(rows[0]?.c ?? 0);
   };
   const [characters, notes, worldbookEntries, worldbookCollections] =
@@ -326,9 +402,7 @@ export async function countAllResources(): Promise<ResourceCounts> {
  * 查询 LLM 配置数。
  */
 export async function countLlmConfigs(): Promise<number> {
-  const rows = await all<{ c: number }>(
-    'SELECT COUNT(*) AS c FROM llm_config',
-  );
+  const rows = await all<{ c: number }>('SELECT COUNT(*) AS c FROM llm_config');
   return Number(rows[0]?.c ?? 0);
 }
 
@@ -411,30 +485,33 @@ export async function applyContextAutoAllocation(
     },
     {
       sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['summary_budget_tokens', String(allocation.summaryBudgetTokens)],
+    },
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
       params: [
-        'summary_budget_tokens',
-        String(allocation.summaryBudgetTokens),
+        'story_state_budget_tokens',
+        String(allocation.storyStateBudgetTokens),
       ],
     },
     {
       sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['story_state_budget_tokens', String(allocation.storyStateBudgetTokens)],
+      params: [
+        'episodic_memory_budget_tokens',
+        String(allocation.episodicMemoryBudgetTokens),
+      ],
     },
     {
       sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['episodic_memory_budget_tokens', String(allocation.episodicMemoryBudgetTokens)],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['memory_patch_max_tokens', String(allocation.memoryPatchMaxTokens)],
+      params: [
+        'memory_patch_max_tokens',
+        String(allocation.memoryPatchMaxTokens),
+      ],
     },
     // PipelineConfig 字段
     {
       sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: [
-        'pipeline_draft_max_tokens',
-        String(allocation.draftMaxTokens),
-      ],
+      params: ['pipeline_draft_max_tokens', String(allocation.draftMaxTokens)],
     },
     {
       sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
@@ -452,10 +529,7 @@ export async function applyContextAutoAllocation(
     },
     {
       sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: [
-        'pipeline_proof_max_tokens',
-        String(allocation.proofMaxTokens),
-      ],
+      params: ['pipeline_proof_max_tokens', String(allocation.proofMaxTokens)],
     },
     // llm_config
     {
@@ -500,14 +574,19 @@ export async function applyContextAutoAllocation(
   await executeTransaction(db, statements);
 
   // 阶段 3：写 last_applied 记录（与主事务分开，避免读现有值与执行时机冲突）
-  const record = buildAppliedRecord(maxContextTokens, allocation, {
-    llmConfigs: llmCount,
-    presets: presetCount,
-    characters: resourceCounts.characters,
-    notes: resourceCounts.notes,
-    worldbookEntries: resourceCounts.worldbookEntries,
-    worldbookCollections: resourceCounts.worldbookCollections,
-  }, policy);
+  const record = buildAppliedRecord(
+    maxContextTokens,
+    allocation,
+    {
+      llmConfigs: llmCount,
+      presets: presetCount,
+      characters: resourceCounts.characters,
+      notes: resourceCounts.notes,
+      worldbookEntries: resourceCounts.worldbookEntries,
+      worldbookCollections: resourceCounts.worldbookCollections,
+    },
+    policy,
+  );
   await setContextAutoLastApplied(record);
 
   return record;
@@ -527,7 +606,9 @@ export async function applyContextAutoAllocation(
  *
  * @throws Error 当 contextWindow <= 0 或非有限数
  */
-export function computePipelineMaxTokensFromContextWindow(contextWindow: number): {
+export function computePipelineMaxTokensFromContextWindow(
+  contextWindow: number,
+): {
   draftMaxTokens: number;
   reviewMaxTokens: number;
   factCheckMaxTokens: number;
@@ -545,6 +626,155 @@ export function computePipelineMaxTokensFromContextWindow(contextWindow: number)
       MIN_PIPELINE_TOKENS,
     ),
     proofMaxTokens: floor(outputBudget * RATIO_PROOF, MIN_PIPELINE_TOKENS),
+  };
+}
+
+const OUTLINE_PIPELINE_STAGES_V3: OutlinePipelineStageV3[] = [
+  'draft',
+  'review',
+  'factCheck',
+  'brief',
+  'proof',
+];
+
+function resolveOutlineStageTierV3(
+  requestedTier: OutlineReasoningTierV3,
+  stage: OutlinePipelineStageV3,
+): OutlineReasoningTierV3 {
+  if (stage === 'brief') return 'low';
+  if (
+    (stage === 'review' || stage === 'factCheck') &&
+    requestedTier === 'max'
+  ) {
+    return 'high';
+  }
+  return requestedTier;
+}
+
+/**
+ * Allocate the V3 outline pipeline with visible output and hidden Thinking
+ * accounted for separately.  In particular, Brief never borrows a user's
+ * high/max tier and never treats an output-cap shortage as permission to
+ * disable Thinking; callers should use the local deterministic Brief when
+ * `fitsModelOutput` is false.
+ */
+export function allocateOutlinePipelineBudgetV3(params: {
+  contextWindow: number;
+  requestedTier: OutlineReasoningTierV3;
+  modelMaxOutputTokens?: number;
+  requestMaxTokenOverrides?: Partial<
+    Record<OutlinePipelineStageV3, number>
+  >;
+  visibleOutputFloors?: Partial<Record<OutlinePipelineStageV3, number>>;
+  estimatedMandatoryInputTokens?: Partial<
+    Record<OutlinePipelineStageV3, number>
+  >;
+  policy?: OutlinePipelineBudgetPolicyV3;
+}): OutlinePipelineBudgetAllocationV3 {
+  const {
+    contextWindow,
+    requestedTier,
+    modelMaxOutputTokens,
+    requestMaxTokenOverrides,
+    visibleOutputFloors,
+    estimatedMandatoryInputTokens,
+  } = params;
+  const policy = params.policy ?? DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3;
+
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+    throw new Error(`contextWindow 必须为正数，收到：${contextWindow}`);
+  }
+  if (!['low', 'high', 'max'].includes(requestedTier)) {
+    throw new Error(`不支持的 V3 推理档位：${requestedTier}`);
+  }
+
+  const stages = {} as Record<
+    OutlinePipelineStageV3,
+    OutlineStageBudgetAllocationV3
+  >;
+
+  for (const stage of OUTLINE_PIPELINE_STAGES_V3) {
+    const stagePolicy = policy.stages[stage];
+    const visibleOverride = visibleOutputFloors?.[stage];
+    const visibleOutputFloor = Math.max(
+      MIN_PIPELINE_TOKENS,
+      Math.ceil(
+        Number.isFinite(visibleOverride) && (visibleOverride ?? 0) > 0
+          ? (visibleOverride as number)
+          : stagePolicy.visibleOutputFloor,
+      ),
+    );
+    const effectiveTier = resolveOutlineStageTierV3(requestedTier, stage);
+    const reasoningHeadroom = Math.max(
+      MIN_PIPELINE_TOKENS,
+      Math.ceil(stagePolicy.reasoningHeadroom[effectiveTier]),
+    );
+    const defaultRequestMaxTokens = visibleOutputFloor + reasoningHeadroom;
+    const requestOverride = requestMaxTokenOverrides?.[stage];
+    const requestMaxTokens =
+      Number.isFinite(requestOverride) && (requestOverride ?? 0) > 0
+        ? Math.max(MIN_PIPELINE_TOKENS, Math.ceil(requestOverride as number))
+        : defaultRequestMaxTokens;
+    const estimatedMandatory = Math.max(
+      0,
+      Math.ceil(estimatedMandatoryInputTokens?.[stage] ?? 0),
+    );
+    const safetyReserveTokens = Math.max(
+      MIN_PIPELINE_TOKENS,
+      Math.ceil(contextWindow * stagePolicy.safetyMarginRatio),
+    );
+    const hardInputLimit = Math.max(
+      0,
+      contextWindow - requestMaxTokens - safetyReserveTokens,
+    );
+    const softInputLimit = Math.max(
+      0,
+      Math.floor(contextWindow * 0.8) - requestMaxTokens - safetyReserveTokens,
+    );
+    const optionalInputBudget = Math.max(
+      0,
+      softInputLimit - estimatedMandatory,
+    );
+    const configuredOutputCap = stagePolicy.maxOutputCap ?? Infinity;
+    const availableOutput = Math.min(
+      configuredOutputCap,
+      Number.isFinite(modelMaxOutputTokens) && (modelMaxOutputTokens ?? 0) > 0
+        ? (modelMaxOutputTokens as number)
+        : Infinity,
+    );
+    // `requestMaxTokens` is the provider reservation.  The visible JSON and
+    // low/high/max reasoning contract is a separate minimum-fit check; a
+    // larger elastic reservation must not be mistaken for a tier upgrade.
+    const fitsModelOutput =
+      availableOutput >= visibleOutputFloor + reasoningHeadroom;
+    const fitsSoftInput = estimatedMandatory <= softInputLimit;
+    const fitsContextWindow = estimatedMandatory <= hardInputLimit;
+
+    stages[stage] = {
+      stage,
+      requestedTier,
+      effectiveTier,
+      visibleOutputFloor,
+      reasoningHeadroom,
+      requestMaxTokens,
+      estimatedMandatoryInputTokens: estimatedMandatory,
+      softInputLimit,
+      hardInputLimit,
+      safetyReserveTokens,
+      optionalInputBudget,
+      fitsModelOutput,
+      fitsSoftInput,
+      fitsContextWindow,
+      localFallbackRecommended: stage === 'brief' && !fitsModelOutput,
+    };
+  }
+
+  return {
+    schemaVersion: 3,
+    allocatorVersion: 'outline-pipeline-budget-v3',
+    contextWindow,
+    requestedTier,
+    stages,
   };
 }
 

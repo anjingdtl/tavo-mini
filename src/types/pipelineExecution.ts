@@ -4,10 +4,10 @@
  * Captured once when a pipeline task starts so resume / cold-start recovery
  * never re-reads live settings (pipelineMode, stage budgets, presets, model).
  */
-import type { PipelineMode } from './pipeline';
-import type { PipelineReasoningEffort } from './pipeline';
+import type { PipelineMode, PipelineReasoningEffort, PipelineStageName } from './pipeline';
+import type { PipelineReasoningTier } from '../services/pipeline/reasoningPolicy';
 
-export type FinalReviserReasoningPolicyVersion = 1 | 2;
+export type FinalReviserReasoningPolicyVersion = 1 | 2 | 3;
 
 /** Snapshot of a resolved preset at task start (content, not just id). */
 export interface FrozenPresetSnapshot {
@@ -31,6 +31,33 @@ export interface FrozenModelSnapshot {
   maxOutputTokens?: number;
 }
 
+export interface FrozenStageReasoning {
+  stage: PipelineStageName;
+  requestedTier: PipelineReasoningTier;
+  effectiveTier: PipelineReasoningTier;
+  thinking: 'enabled' | 'disabled';
+  /** Provider-facing effort. Brief is always low in V3. */
+  effort: PipelineReasoningTier | null;
+  downgradeReason?: string;
+}
+
+export interface FrozenStageBudgetV3 {
+  stage: PipelineStageName;
+  visibleOutputFloor: number;
+  reasoningHeadroom: number;
+  requestMaxTokens: number;
+  estimatedMandatoryInput: number;
+  optionalInputBudget: number;
+  safetyMargin: number;
+  softInputLimit?: number;
+  hardInputLimit?: number;
+  fitsSoftInput?: boolean;
+  /** Whether the frozen provider/output cap can hold visible + Thinking. */
+  fitsModelOutput?: boolean;
+  /** Brief only: use deterministic local compiler when false. */
+  localFallbackRecommended?: boolean;
+}
+
 /**
  * Full execution config frozen at task start.
  * Resume MUST use this instead of getPipelineConfig() / getActiveLLMConfig().
@@ -47,7 +74,7 @@ export interface PipelineExecutionSnapshot {
    * re-read the live default. New snapshots MUST carry this field; only
    * parsing of HISTORICAL snapshots interprets a missing value as 1.
    */
-  outlineWorkflowVersion?: 1 | 2;
+  outlineWorkflowVersion?: 1 | 2 | 3;
 
   /**
    * Context-budget strategy version frozen at task start (Schema 44+).
@@ -55,7 +82,7 @@ export interface PipelineExecutionSnapshot {
    * Frozen with the workflow version; resume must never re-read the live
    * default. Missing on historical snapshots → Legacy (1).
    */
-  contextBudgetVersion?: 1 | 2;
+  contextBudgetVersion?: 1 | 2 | 3;
 
   /**
    * Frozen Final Reviser reasoning policy. Missing / 1 is historical Legacy;
@@ -65,6 +92,16 @@ export interface PipelineExecutionSnapshot {
 
   /** Frozen V2 product tier applied to Draft / Review / FactCheck / Proof. */
   reasoningEffort?: PipelineReasoningEffort;
+
+  /** V3 product profile and per-stage frozen effective tiers. */
+  reasoningProfileVersion?: 1 | 2;
+  requestedReasoningTier?: PipelineReasoningTier;
+  stageReasoning?: Partial<Record<PipelineStageName, FrozenStageReasoning>>;
+  briefPolicyVersion?: 1;
+  briefVisibleOutputFloor?: number;
+  briefReasoningHeadroom?: number;
+  briefMaxTokens?: number;
+  stageBudgets?: FrozenStageBudgetV3[];
 
   draftMaxTokens: number;
   reviewMaxTokens: number;

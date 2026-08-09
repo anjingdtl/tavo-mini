@@ -119,9 +119,10 @@ export function extractContentText(rawContent: unknown): string | null {
 /**
  * Map an empty `text` to a categorical reason (Spec §1 / S1). Ordered so the
  * most actionable signals win: a content_filter or length finish_reason is
- * more informative than a generic "empty", and reasoning-only output (where
- * the model burned its budget on chain-of-thought) must not be conflated
- * with "model does not support JSON".
+ * more informative than a generic "empty". `reasoning_only` means only that
+ * business `content` is absent while `reasoning_content` exists; it must not
+ * be treated as proof that chain-of-thought exhausted the output budget.
+ * `finishReason=length` is the separate truncation signal.
  */
 export function classifyEmptyResponse(input: {
   finishReason: string | null;

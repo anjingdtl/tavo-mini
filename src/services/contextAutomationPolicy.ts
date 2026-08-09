@@ -294,3 +294,112 @@ export function buildContinuationPolicyPreview(
     controlReportDensity: { ...policy.continuation.controlReportDensity },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Outline Pipeline Budget V3
+// ---------------------------------------------------------------------------
+
+export type OutlinePipelineStageV3 =
+  | 'draft'
+  | 'review'
+  | 'factCheck'
+  | 'brief'
+  | 'proof';
+export type OutlineReasoningTierV3 = 'low' | 'high' | 'max';
+
+export interface StageBudgetPolicyV3 {
+  /** Minimum visible completion reservation, independent of hidden Thinking. */
+  visibleOutputFloor: number;
+  /** Optional ratio used by preview/auto allocation when no stage override exists. */
+  visibleOutputRatio?: number;
+  /** Hidden-reasoning reservation for each product tier. */
+  reasoningHeadroom: Record<OutlineReasoningTierV3, number>;
+  /** Per-stage safety reserve; never borrowed by another stage. */
+  safetyMarginRatio: number;
+  maxOutputCap?: number;
+}
+
+export interface OutlinePipelineBudgetPolicyV3 {
+  schemaVersion: 3;
+  allocatorVersion: 'outline-pipeline-budget-v3';
+  stages: Record<OutlinePipelineStageV3, StageBudgetPolicyV3>;
+}
+
+export const DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3: OutlinePipelineBudgetPolicyV3 =
+  {
+    schemaVersion: 3,
+    allocatorVersion: 'outline-pipeline-budget-v3',
+    stages: {
+      draft: {
+        visibleOutputFloor: 4000,
+        visibleOutputRatio: 0.2,
+        reasoningHeadroom: { low: 1024, high: 1536, max: 2048 },
+        safetyMarginRatio: 0.0625,
+      },
+      review: {
+        visibleOutputFloor: 1500,
+        reasoningHeadroom: { low: 1024, high: 1536, max: 1536 },
+        safetyMarginRatio: 0.0625,
+      },
+      factCheck: {
+        visibleOutputFloor: 1500,
+        reasoningHeadroom: { low: 1024, high: 1536, max: 1536 },
+        safetyMarginRatio: 0.0625,
+      },
+      brief: {
+        visibleOutputFloor: 1200,
+        reasoningHeadroom: { low: 1200, high: 1200, max: 1200 },
+        safetyMarginRatio: 0.0625,
+      },
+      proof: {
+        visibleOutputFloor: 5000,
+        visibleOutputRatio: 0.2,
+        reasoningHeadroom: { low: 1024, high: 1536, max: 2048 },
+        safetyMarginRatio: 0.0625,
+      },
+    },
+  };
+
+function isFinitePositive(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+export function isOutlinePipelineBudgetPolicyV3(
+  value: unknown,
+): value is OutlinePipelineBudgetPolicyV3 {
+  if (!value || typeof value !== 'object') return false;
+  const policy = value as Partial<OutlinePipelineBudgetPolicyV3>;
+  if (
+    policy.schemaVersion !== 3 ||
+    policy.allocatorVersion !== 'outline-pipeline-budget-v3' ||
+    !policy.stages
+  ) {
+    return false;
+  }
+  for (const stage of [
+    'draft',
+    'review',
+    'factCheck',
+    'brief',
+    'proof',
+  ] as const) {
+    const item = policy.stages[stage];
+    if (!item || !isFinitePositive(item.visibleOutputFloor)) return false;
+    if (
+      !item.reasoningHeadroom ||
+      !isFinitePositive(item.reasoningHeadroom.low) ||
+      !isFinitePositive(item.reasoningHeadroom.high) ||
+      !isFinitePositive(item.reasoningHeadroom.max) ||
+      !isFiniteRatio(item.safetyMarginRatio)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function cloneDefaultOutlinePipelineBudgetPolicyV3(): OutlinePipelineBudgetPolicyV3 {
+  return JSON.parse(
+    JSON.stringify(DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3),
+  ) as OutlinePipelineBudgetPolicyV3;
+}

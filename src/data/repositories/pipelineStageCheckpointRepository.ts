@@ -209,6 +209,7 @@ export async function upsertStageCheckpoint(params: {
 export async function claimStageCheckpoint(
   taskId: string,
   stage: PipelineCheckpointStage,
+  bumpAttempt = true,
 ): Promise<boolean> {
   const db = await openDatabase();
   const now = Date.now();
@@ -225,14 +226,14 @@ export async function claimStageCheckpoint(
     `UPDATE pipeline_stage_checkpoints
      SET status = 'running',
          started_at = ?,
-         attempt_count = attempt_count + 1,
+         attempt_count = attempt_count + ?,
          updated_at = ?,
          error_code = NULL,
          error_message = NULL
      WHERE task_id = ?
        AND stage = ?
        AND status IN ('pending', 'interrupted')`,
-    [now, now, taskId, stage],
+    [now, bumpAttempt ? 1 : 0, now, taskId, stage],
   );
   return Number((result as any)?.rowsAffected ?? 0) === 1;
 }
@@ -285,10 +286,11 @@ export function checkpointsToStageResults(
   text: string;
   status: 'success' | 'failed' | 'skipped';
   error?: string;
+  errorCode?: string;
   tokens?: { input: number; output: number; total: number };
   durationMs: number;
 }> {
-  const order = ['draft', 'review', 'factCheck', 'proof'];
+  const order = ['draft', 'review', 'factCheck', 'brief', 'proof'];
   const sorted = [...rows].sort(
     (a, b) => order.indexOf(a.stage) - order.indexOf(b.stage),
   );
@@ -310,6 +312,7 @@ export function checkpointsToStageResults(
             ? ('skipped' as const)
             : ('failed' as const),
       error: r.errorMessage || undefined,
+      errorCode: r.errorCode || undefined,
       tokens:
         r.inputTokens != null || r.outputTokens != null || r.totalTokens != null
           ? {

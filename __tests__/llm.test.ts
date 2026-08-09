@@ -476,6 +476,50 @@ test('classifies a reasoning-only response as emptyReason=reasoning_only', async
   expect(result.emptyReason).toBe('reasoning_only');
 });
 
+test('keeps stop reasoning-only distinct from length truncation', async () => {
+  const fetchMock = jest.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [
+        {
+          message: { content: '', reasoning_content: '完成了内部判断，但未写报告' },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 1338,
+        total_tokens: 1438,
+        completion_tokens_details: { reasoning_tokens: 1338 },
+      },
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: '输出审阅 JSON' }],
+    {
+      max_tokens: 31_536,
+      responseFormat: 'json_object',
+      thinking: { type: 'enabled' },
+      reasoningEffort: 'high',
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'k',
+        model_name: 'deepseek-v4-flash',
+        url: 'https://api.deepseek.com/chat/completions',
+      },
+    },
+  );
+
+  expect(result.text).toBeNull();
+  expect(result.emptyReason).toBe('reasoning_only');
+  expect(result.finishReason).toBe('stop');
+  expect(result.outputTokens).toBe(1338);
+  expect(result.reasoningTokens).toBe(1338);
+  expect(result.visibleOutputTokens).toBe(0);
+});
+
 test('throws the real gateway error when a 200 response carries an error body', async () => {
   const fetchMock = jest.fn(async () => ({
     ok: true,

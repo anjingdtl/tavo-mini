@@ -112,7 +112,7 @@ describe('PipelineResultPrompt', () => {
         onResume={onResume}
       />,
     );
-    expect(getByText('从失败处继续重跑')).toBeTruthy();
+    expect(getByText('从失败节点重试')).toBeTruthy();
     fireEvent.press(getByTestId('pipeline-prompt-confirm'));
     expect(onResume).toHaveBeenCalledWith('pt_test');
   });

@@ -13,6 +13,7 @@ import {
   type StageStatus,
 } from '../src/services/pipeline';
 import type { PipelineMode, PipelineStageName } from '../src/types/pipeline';
+import { FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE } from '../src/services/pipeline/finalBriefComplianceValidator';
 
 function stage(
   name: PipelineStageName,
@@ -29,6 +30,7 @@ function stages(
     'draft',
     'review',
     'factCheck',
+    'brief',
     'proof',
   ];
   return names.map(n => stage(n, map[n] || 'pending'));
@@ -66,6 +68,21 @@ describe('projectStageResultsToCheckpoints', () => {
     expect(projected.find(s => s.stage === 'review')?.status).toBe('skipped');
     expect(projected.find(s => s.stage === 'factCheck')?.status).toBe(
       'pending',
+    );
+  });
+
+  test('preserves a stage error code for recovery planning', () => {
+    const projected = projectStageResultsToCheckpoints([
+      {
+        stage: 'proof',
+        status: 'failed',
+        text: '',
+        error: '终稿失败',
+        errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+      },
+    ]);
+    expect(projected.find(s => s.stage === 'proof')?.errorCode).toBe(
+      FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
     );
   });
 });
@@ -282,6 +299,90 @@ describe('determineNextPipelineAction — twoStage', () => {
     );
     expect(a).toEqual({ type: 'finalize_from_draft', degraded: true });
   });
+
+  test('V3 Review failure → blocked for manual retry, never draft fallback', () => {
+    const a = determineNextPipelineAction(
+      task({
+        pipelineMode: mode,
+        outlineWorkflowVersion: 3,
+        contextBudgetVersion: 3,
+        status: 'failed',
+      }),
+      stages({
+        draft: 'succeeded',
+        review: 'failed',
+        factCheck: 'skipped',
+        brief: 'pending',
+        proof: 'pending',
+      }),
+    );
+    expect(a).toMatchObject({
+      type: 'blocked',
+      reason: {code: 'STAGE_FAILED', stage: 'review', userAction: 'retry'},
+    });
+    expect(actionType(a)).not.toBe('finalize_from_draft');
+  });
+
+  test('V3 Proof hard-gate failure → blocked for manual retry, never draft fallback', () => {
+    const a = determineNextPipelineAction(
+      task({
+        pipelineMode: mode,
+        outlineWorkflowVersion: 3,
+        contextBudgetVersion: 3,
+        status: 'failed',
+      }),
+      [
+        stage('draft', 'succeeded'),
+        stage('review', 'succeeded'),
+        stage('factCheck', 'skipped'),
+        stage('brief', 'succeeded'),
+        {
+          stage: 'proof',
+          status: 'failed',
+          outputText: null,
+          errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+          errorMessage: '终稿连续性硬门禁未通过，请从失败节点重试',
+        },
+      ],
+    );
+    expect(a).toMatchObject({
+      type: 'blocked',
+      reason: {
+        code: 'STAGE_FAILED',
+        stage: 'proof',
+        userAction: 'retry',
+      },
+    });
+    expect(actionType(a)).not.toBe('finalize_from_draft');
+  });
+
+  test('V3 Brief failure → blocked for manual retry, never draft fallback', () => {
+    const a = determineNextPipelineAction(
+      task({
+        pipelineMode: mode,
+        outlineWorkflowVersion: 3,
+        contextBudgetVersion: 3,
+        status: 'failed',
+      }),
+      [
+        stage('draft', 'succeeded'),
+        stage('review', 'succeeded'),
+        stage('factCheck', 'skipped'),
+        {
+          stage: 'brief',
+          status: 'failed',
+          outputText: null,
+          errorMessage: 'Brief 失败',
+        },
+        stage('proof', 'pending'),
+      ],
+    );
+    expect(a).toMatchObject({
+      type: 'blocked',
+      reason: {code: 'STAGE_FAILED', stage: 'brief', userAction: 'retry'},
+    });
+    expect(actionType(a)).not.toBe('finalize_from_draft');
+  });
 });
 
 describe('determineNextPipelineAction — conditional', () => {
@@ -317,6 +418,23 @@ describe('determineNextPipelineAction — conditional', () => {
       }),
     );
     expect(actionType(a)).toBe('finalize_from_proof');
+  });
+
+  test('V3 factCheck failure → blocked for manual retry, never draft fallback', () => {
+    const a = determineNextPipelineAction(
+      task({
+        pipelineMode: mode,
+        outlineWorkflowVersion: 3,
+        contextBudgetVersion: 3,
+        status: 'failed',
+      }),
+      stages({draft: 'succeeded', factCheck: 'failed', proof: 'pending'}),
+    );
+    expect(a).toMatchObject({
+      type: 'blocked',
+      reason: {code: 'STAGE_FAILED', stage: 'factCheck', userAction: 'retry'},
+    });
+    expect(actionType(a)).not.toBe('finalize_from_draft');
   });
 });
 
@@ -399,6 +517,30 @@ describe('determineNextPipelineAction — full', () => {
     expect(actionType(a)).toBe('run_proof');
   });
 
+  test('V3 failed audit → blocked for manual retry, never draft fallback', () => {
+    const a = determineNextPipelineAction(
+      task({
+        pipelineMode: mode,
+        outlineWorkflowVersion: 3,
+        contextBudgetVersion: 3,
+        hasAuditContext: true,
+        status: 'failed',
+      }),
+      stages({
+        draft: 'succeeded',
+        review: 'succeeded',
+        factCheck: 'failed',
+        brief: 'pending',
+        proof: 'pending',
+      }),
+    );
+    expect(a).toMatchObject({
+      type: 'blocked',
+      reason: {code: 'STAGE_FAILED', stage: 'factCheck', userAction: 'retry'},
+    });
+    expect(actionType(a)).not.toBe('finalize_from_draft');
+  });
+
   test('PROOF SUCCEEDED after full path → finalize_from_proof only', () => {
     const a = determineNextPipelineAction(
       task({
@@ -432,6 +574,41 @@ describe('determineNextPipelineAction — full', () => {
       }),
     );
     expect(actionType(a)).toBe('complete');
+  });
+
+  test('V3 invalid Brief → blocked STAGE_FAILED, never finalize draft or run proof', () => {
+    const a = determineNextPipelineAction(
+      task({
+        pipelineMode: mode,
+        outlineWorkflowVersion: 3,
+        contextBudgetVersion: 3,
+        hasAuditContext: true,
+        status: 'failed',
+      }),
+      [
+        stage('draft', 'succeeded'),
+        stage('review', 'succeeded'),
+        stage('factCheck', 'succeeded'),
+        {
+          stage: 'brief',
+          status: 'failed',
+          outputText: null,
+          errorMessage: 'Brief API 输出未通过完整性门禁，已阻断终稿',
+        },
+        stage('proof', 'pending'),
+      ],
+    );
+    expect(a).toMatchObject({
+      type: 'blocked',
+      reason: {
+        code: 'STAGE_FAILED',
+        stage: 'brief',
+        userAction: 'retry',
+        message: 'Brief API 输出未通过完整性门禁，已阻断终稿',
+      },
+    });
+    expect(actionType(a)).not.toBe('finalize_from_draft');
+    expect(actionType(a)).not.toBe('run_proof');
   });
 });
 

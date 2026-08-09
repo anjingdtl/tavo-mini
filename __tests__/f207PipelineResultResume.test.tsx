@@ -1,8 +1,8 @@
 /**
- * F2-07: 流水线结果页"从失败环节重启"按钮。
+ * F2-07: 流水线结果页"从失败节点重试"按钮。
  *
  * 场景：终稿（proof）超时失败、初稿/审阅/核查已成功、finalText 保留初稿回退
- * 时，结果页应提供"从失败环节重启"按钮 —— 点击后重置失败 stage checkpoint
+ * 时，结果页应提供"从失败节点重试"按钮 —— 点击后重置失败 stage checkpoint
  * 为 pending、task 转 interrupted 并 resumePipeline（只重跑失败阶段，复用
  * 已成功阶段与 frozen request，不重复计费）。修复前只有放弃/采纳。
  */
@@ -101,7 +101,7 @@ jest.mock('../src/data/repositories/pipelineStageCheckpointRepository', () => ({
 import { Alert } from 'react-native';
 import { PipelineResultScreen } from '../src/screens/PipelineResultScreen';
 
-describe('F2-07: 流水线结果页从失败环节重启', () => {
+describe('F2-07: 流水线结果页从失败节点重试', () => {
   const resumeOrder: string[] = [];
 
   beforeEach(() => {
@@ -127,18 +127,18 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
       resumeOrder.push('resumePipeline');
     });
     jest.spyOn(Alert, 'alert').mockImplementation((_t, _m, buttons) => {
-      buttons?.find(b => b.text === '重启')?.onPress?.();
+      buttons?.find(b => b.text === '重试')?.onPress?.();
     });
   });
 
-  it('终稿失败时显示"从失败环节重启"按钮（修复前只有放弃/采纳）', async () => {
+  it('终稿失败时显示"从失败节点重试"按钮（修复前只有放弃/采纳）', async () => {
     const { findByText } = render(<PipelineResultScreen taskId="t1" />);
-    expect(await findByText('从失败环节重启')).toBeTruthy();
+    expect(await findByText('从失败节点重试')).toBeTruthy();
   });
 
   it('点击后重置失败 checkpoint、task 转 interrupted 并 resumePipeline', async () => {
     const { findByText } = render(<PipelineResultScreen taskId="t1" />);
-    fireEvent.press(await findByText('从失败环节重启'));
+    fireEvent.press(await findByText('从失败节点重试'));
     await waitFor(() => expect(mockResetCheckpoints).toHaveBeenCalledWith('t1'));
     await waitFor(() => expect(mockResumePipeline).toHaveBeenCalled());
     expect(mockResumePipeline.mock.calls[0][0]).toBe('t1');
@@ -192,7 +192,7 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
       <PipelineResultScreen taskId="t2" />,
     );
     await findByText('采纳');
-    expect(queryByText('从失败环节重启')).toBeNull();
+    expect(queryByText('从失败节点重试')).toBeNull();
   });
 
   it('仅初稿失败（无成功阶段）时也提供"重新尝试"入口（真机 BUG 回归）', async () => {
@@ -230,7 +230,7 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
     expect(mockResumePipeline.mock.calls[0][0]).toBe('t3');
   });
 
-  it('任务中断（interrupted）时也显示"从失败环节重启"（超时/杀进程后可继续）', async () => {
+  it('任务中断（interrupted）时也显示"从失败节点重试"（超时/杀进程后可继续）', async () => {
     mockTasks[0] = {
       id: 't4',
       targetType: 'chapter',
@@ -255,9 +255,9 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
       <PipelineResultScreen taskId="t4" />,
     );
     // 修复前：interrupted 被误显示为"进行中"且无重启入口。
-    expect(await findByText('从失败环节重启')).toBeTruthy();
+    expect(await findByText('从失败节点重试')).toBeTruthy();
     expect(getByText(/已中断，可从失败阶段继续/)).toBeTruthy();
-    fireEvent.press(await findByText('从失败环节重启'));
+    fireEvent.press(await findByText('从失败节点重试'));
     await waitFor(() => expect(mockResetCheckpoints).toHaveBeenCalledWith('t4'));
     await waitFor(() => expect(mockResumePipeline).toHaveBeenCalled());
     expect(mockResumePipeline.mock.calls[0][0]).toBe('t4');
@@ -291,7 +291,7 @@ describe('F2-07: 流水线结果页从失败环节重启', () => {
     expect(getByText(/进行中 · 审阅\/评估/)).toBeTruthy();
     expect(queryByText('采纳')).toBeNull();
     expect(queryByText('放弃')).toBeNull();
-    expect(queryByText('从失败环节重启')).toBeNull();
+    expect(queryByText('从失败节点重试')).toBeNull();
     expect(await findByText(/任务仍在后台运行/)).toBeTruthy();
   });
 });

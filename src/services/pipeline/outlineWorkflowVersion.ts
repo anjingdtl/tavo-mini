@@ -14,17 +14,17 @@
  * the two CURRENT constants to 1. Frozen V2 tasks/batches keep their V2
  * resume semantics; the Schema 44 columns are never dropped.
  */
-export type OutlineWorkflowVersion = 1 | 2;
-export type ContextBudgetVersion = 1 | 2;
+export type OutlineWorkflowVersion = 1 | 2 | 3;
+export type ContextBudgetVersion = 1 | 2 | 3;
 
 /**
  * Protocol versions written to NEW outline chapter tasks / batches.
- * 2 = anchored audits + revision contract + Final Reviser (workflow),
- * elastic budget V2 (context budget). Only "new task / new batch creation"
+ * 3 = normalized audits + Brief Compiler + continuity capsule (workflow),
+ * independent per-stage budget V3 (context budget). Only "new task / new batch creation"
  * code may read these.
  */
-export const CURRENT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 2;
-export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 2;
+export const CURRENT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 3;
+export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 3;
 
 /**
  * @deprecated Rollback-era default (Legacy 1). Kept only for callers that
@@ -51,4 +51,15 @@ export function shouldFreezeOutlineWorkflowV2(params: {
   if (params.projectMode !== 'outline') return false;
   if (!Number.isInteger(params.chapterId) || params.chapterId <= 0) return false;
   return (params.defaultVersion ?? DEFAULT_OUTLINE_WORKFLOW_VERSION) === 2;
+}
+
+/** Eligibility check for the current V3 outline protocol. */
+export function shouldFreezeOutlineWorkflowV3(params: {
+  projectMode: string | null | undefined;
+  chapterId: number;
+  defaultVersion?: OutlineWorkflowVersion;
+}): boolean {
+  if (params.projectMode !== 'outline') return false;
+  if (!Number.isInteger(params.chapterId) || params.chapterId <= 0) return false;
+  return (params.defaultVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION) === 3;
 }

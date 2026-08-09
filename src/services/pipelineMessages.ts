@@ -650,6 +650,7 @@ const V2_COMMON_RULES = [
   '你只会得到本次写作实际使用的上下文资料。不要假设、不要补全未提供的设定。',
   '不得用现实常识否定世界书或故事状态中明确建立的设定。',
   '只输出 JSON，不要输出 Markdown 围栏、解释或推理过程。',
+  'Thinking/Reasoning 是内部思考通道；最终合同必须写入 message.content，不能只停留在 reasoning_content。',
   '没有问题时，对应数组返回空数组，不要编造。',
   '不得输出完整修订稿或整段正文重述。',
 ];
@@ -1031,5 +1032,77 @@ export function buildFinalReviserMessages(params: {
   return [
     { role: 'system', content: systemLines.join('\n') },
     { role: 'user', content: userParts.join('\n\n') },
+  ];
+}
+
+const FINAL_V3_BUDGET = {
+  previousChapter: 12000,
+  storyMemory: 8000,
+  characters: 6000,
+  worldRules: 6000,
+  recentBridge: 6000,
+  episodic: 5000,
+  instruction: 1800,
+  userPrompt: 1800,
+  preset: 2200,
+};
+
+/**
+ * V3 Final messages: plain writing brief + canonical draft + continuity
+ * capsule. No Revision Contract JSON, source IDs or anchor protocol.
+ */
+export function buildFinalReviserV3Messages(params: {
+  writingBrief: string;
+  canonicalDraft: string;
+  capsule: {
+    fullOutlineText: string;
+    immediatePreviousChapterText: string;
+    immediatePreviousEnding: string;
+    recentBridgeText: string;
+    storyMemoryText: string;
+    episodicMemoryText: string;
+    relevantCharacterText: string;
+    relevantWorldRules: string;
+    currentInstructionText: string;
+    retrievalUserPrompt: string;
+    presetText: string;
+  };
+}): ChatMessage[] {
+  const c = params.capsule;
+  const system = [
+    '你是小说终稿编辑（Final Reviser）。根据简短修订要求完善本章。',
+    '保持未涉及内容的事实、叙事视角、剧情方向与文风稳定；不得改变既有剧情方向。',
+    '必须自然承接上一章即时状态和本章当前目标，不得把未来大纲内容提前写成已发生事实。',
+    'Final Writing Brief 中的“必须修改”“不得提前推进”“结尾状态”是硬性执行边界，优先于 canonical draft；canonical draft 是待修材料，其中若含被禁止的后续剧情，必须删除或后移，不能原样保留。',
+    '输出前逐项复核 Brief 的硬性边界；不得只改一个词而保留同一段提前推进的事实或任务。',
+    '完整输出修订后的正文，不输出分析、推理、JSON、提示词、修改说明、patch 或 diff。',
+  ].join('\n');
+  const parts: string[] = [
+    '【Final Writing Brief｜只作为写作要求，不要复述】',
+    params.writingBrief,
+    '【canonical draft｜正文完整注入一次】',
+    params.canonicalDraft,
+    '【项目完整大纲｜未来计划，不是已发生事实】',
+    c.fullOutlineText,
+    '【上一章完整正文｜用于即时衔接】',
+    clip(c.immediatePreviousChapterText, FINAL_V3_BUDGET.previousChapter),
+    '【上一章结尾】',
+    c.immediatePreviousEnding,
+  ];
+  const optional = partition([
+    ['【故事状态】', clip(c.storyMemoryText, FINAL_V3_BUDGET.storyMemory)],
+    ['【相关人物状态】', clip(c.relevantCharacterText, FINAL_V3_BUDGET.characters)],
+    ['【相关世界规则】', clip(c.relevantWorldRules, FINAL_V3_BUDGET.worldRules)],
+    ['【近期桥接正文】', clip(c.recentBridgeText, FINAL_V3_BUDGET.recentBridge)],
+    ['【历史事件】', clip(c.episodicMemoryText, FINAL_V3_BUDGET.episodic)],
+    ['【当前章节目标】', clip(c.currentInstructionText, FINAL_V3_BUDGET.instruction)],
+    ['【用户本轮要求】', clip(c.retrievalUserPrompt, FINAL_V3_BUDGET.userPrompt)],
+    ['【精简文风】', clip(c.presetText, FINAL_V3_BUDGET.preset)],
+  ]);
+  if (optional) parts.push('【连续性与写作上下文】', optional);
+  parts.push('请直接输出完整终稿正文。');
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: parts.filter(Boolean).join('\n\n') },
   ];
 }

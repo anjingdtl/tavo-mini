@@ -1,7 +1,8 @@
 import type { PipelineConfig } from '../../types/pipeline';
 import {
   DEFAULT_PIPELINE_REASONING_EFFORT,
-  isPipelineReasoningEffort,
+  isPipelineReasoningTier,
+  normalizePipelineReasoningTier,
 } from '../../services/pipeline/reasoningPolicy';
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
@@ -16,6 +17,9 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
   const keys = [
     'pipeline_mode',
     'pipeline_reasoning_effort',
+    'pipeline_reasoning_profile_version',
+    'pipeline_brief_visible_output_floor',
+    'pipeline_brief_reasoning_headroom',
     'pipeline_draft_preset_id',
     'pipeline_review_preset_id',
     'pipeline_factcheck_preset_id',
@@ -36,6 +40,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
 
   const savedMode = get('pipeline_mode');
   const savedReasoningEffort = get('pipeline_reasoning_effort');
+  const savedProfileVersion = get('pipeline_reasoning_profile_version');
   const pipelineMode =
     savedMode === 'noReview' ||
     savedMode === 'conditional' ||
@@ -49,11 +54,35 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
     return v !== null ? Number(v) : null;
   };
 
+  const isV3Profile = savedProfileVersion === '2';
+  const normalizedTier =
+    isV3Profile && isPipelineReasoningTier(savedReasoningEffort)
+      ? savedReasoningEffort
+      : normalizePipelineReasoningTier(savedReasoningEffort);
+  // Settings migration is intentionally a single transaction so a crash
+  // cannot leave the tier and profile version at different interpretations.
+  if (
+    savedProfileVersion !== '2' ||
+    savedReasoningEffort !== normalizedTier
+  ) {
+    const database = await openDatabase();
+    await executeTransaction(database, [
+      {
+        sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+        params: ['pipeline_reasoning_effort', normalizedTier],
+      },
+      {
+        sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+        params: ['pipeline_reasoning_profile_version', '2'],
+      },
+    ]);
+  }
   return {
     pipelineMode,
-    reasoningEffort: isPipelineReasoningEffort(savedReasoningEffort)
-      ? savedReasoningEffort
+    reasoningEffort: isPipelineReasoningTier(normalizedTier)
+      ? normalizedTier
       : DEFAULT_PIPELINE_REASONING_EFFORT,
+    reasoningProfileVersion: 2,
     draftPresetId: presetId('pipeline_draft_preset_id'),
     reviewPresetId: presetId('pipeline_review_preset_id'),
     factCheckPresetId: presetId('pipeline_factcheck_preset_id'),
@@ -62,17 +91,31 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
     reviewMaxTokens: Number(get('pipeline_review_max_tokens') || 1500),
     factCheckMaxTokens: Number(get('pipeline_factcheck_max_tokens') || 1500),
     proofMaxTokens: Number(get('pipeline_proof_max_tokens') || 4000),
+    briefVisibleOutputFloor: Number(
+      get('pipeline_brief_visible_output_floor') || 1200,
+    ),
+    briefReasoningHeadroom: Number(
+      get('pipeline_brief_reasoning_headroom') || 1200,
+    ),
   };
 }
 
 export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
   await setSetting('pipeline_mode', config.pipelineMode);
-  await setSetting(
-    'pipeline_reasoning_effort',
-    isPipelineReasoningEffort(config.reasoningEffort)
-      ? config.reasoningEffort
-      : DEFAULT_PIPELINE_REASONING_EFFORT,
-  );
+  const tier = isPipelineReasoningTier(config.reasoningEffort)
+    ? config.reasoningEffort
+    : normalizePipelineReasoningTier(config.reasoningEffort);
+  const database = await openDatabase();
+  await executeTransaction(database, [
+    {
+      sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      params: ['pipeline_reasoning_effort', tier],
+    },
+    {
+      sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      params: ['pipeline_reasoning_profile_version', '2'],
+    },
+  ]);
   await setSetting(
     'pipeline_draft_preset_id',
     config.draftPresetId !== null ? String(config.draftPresetId) : '',
@@ -99,6 +142,14 @@ export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
     String(config.factCheckMaxTokens),
   );
   await setSetting('pipeline_proof_max_tokens', String(config.proofMaxTokens));
+  await setSetting(
+    'pipeline_brief_visible_output_floor',
+    String(config.briefVisibleOutputFloor ?? 1200),
+  );
+  await setSetting(
+    'pipeline_brief_reasoning_headroom',
+    String(config.briefReasoningHeadroom ?? 1200),
+  );
 }
 
 export async function savePipelineTask(task: {
