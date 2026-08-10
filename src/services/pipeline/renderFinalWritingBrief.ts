@@ -2,13 +2,21 @@ import type {
   FinalWritingBriefV1,
   FinalWritingBriefV31,
   FinalWritingBriefV32,
+  FinalWritingBriefV33,
 } from './briefCompilerTypes';
 
 /** Render only human-readable writing instructions; machine IDs never enter Final. */
 export function renderFinalWritingBrief(
-  brief: FinalWritingBriefV1 | FinalWritingBriefV31 | FinalWritingBriefV32,
+  brief:
+    | FinalWritingBriefV1
+    | FinalWritingBriefV31
+    | FinalWritingBriefV32
+    | FinalWritingBriefV33,
 ): string {
   const sections: string[] = [];
+  if ('strategy' in brief && brief.strategy) {
+    sections.push(`【执行策略】\n${brief.strategy}`);
+  }
   if (brief.mustFix.length) {
     sections.push(
       `【必须修改】\n${brief.mustFix

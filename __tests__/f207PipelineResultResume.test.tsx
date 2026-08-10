@@ -8,6 +8,10 @@
  */
 import React from 'react';
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 const mockResolveTask = jest.fn();
 const mockRegisterPersistedTask = jest.fn();
@@ -29,8 +33,8 @@ const mockTasks: any[] = [
     pipelineContextJson: '{"frozen":true}',
     pipelineContextVersion: 2,
     pipelineContextHash: 'hash-v2',
-    outlineWorkflowVersion: 2,
-    contextBudgetVersion: 2,
+    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+    contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
     createdAt: 1000,
     updatedAt: 2000,
     resolvedAt: null,
@@ -154,8 +158,8 @@ describe('F2-07: 流水线结果页从失败节点重试', () => {
       expect.objectContaining({
         id: 't1',
         status: 'interrupted',
-        outlineWorkflowVersion: 2,
-        contextBudgetVersion: 2,
+        outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         pipelineContextJson: '{"frozen":true}',
       }),
     );
@@ -183,6 +187,8 @@ describe('F2-07: 流水线结果页从失败节点重试', () => {
       pipelineContextJson: null,
       pipelineContextVersion: null,
       pipelineContextHash: null,
+      outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+      contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
       createdAt: 1000,
       updatedAt: 2000,
       resolvedAt: null,
@@ -216,6 +222,8 @@ describe('F2-07: 流水线结果页从失败节点重试', () => {
       pipelineContextJson: null,
       pipelineContextVersion: null,
       pipelineContextHash: null,
+      outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+      contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
       createdAt: 1000,
       updatedAt: 2000,
       resolvedAt: null,
@@ -246,6 +254,8 @@ describe('F2-07: 流水线结果页从失败节点重试', () => {
       pipelineContextJson: null,
       pipelineContextVersion: null,
       pipelineContextHash: null,
+      outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+      contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
       createdAt: 1000,
       updatedAt: 2000,
       resolvedAt: null,

@@ -44,6 +44,10 @@ import type { PipelineCheckpointStage } from '../pipeline/types';
 import type { PipelineMode } from '../../types/pipeline';
 import type { PipelineTaskStatus } from '../../types/pipeline';
 import type { BatchItemCompletionQuality } from '../../types/multiChapterBatch';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../pipeline/outlineWorkflowVersion';
 
 export interface BatchProgressInfo {
   batchId: string;
@@ -98,6 +102,20 @@ async function loadTaskStatuses(
   if (!item?.activePipelineTaskId) return {};
   const task = await getPipelineTaskById(item.activePipelineTaskId);
   return task ? { [item.activePipelineTaskId]: String(task.status) } : {};
+}
+
+async function loadTaskWorkflowVersions(
+  item: MultiChapterBatchItemRow | undefined,
+): Promise<Record<string, number>> {
+  if (!item?.activePipelineTaskId) return {};
+  const task = await getPipelineTaskById(item.activePipelineTaskId);
+  return task
+    ? {
+        [item.activePipelineTaskId]: Number(
+          task.outlineWorkflowVersion ?? 1,
+        ),
+      }
+    : {};
 }
 
 async function loadLatestAttempts(
@@ -211,6 +229,7 @@ export async function reconcileMultiChapterBatch(
       const items = await getBatchItems(batchId);
       const currentItem = items.find(i => i.ordinal === batch.currentOrdinal);
       const taskStatuses = await loadTaskStatuses(currentItem);
+      const taskWorkflowVersions = await loadTaskWorkflowVersions(currentItem);
       const latestAttempts = (await loadLatestAttempts(currentItem)) as Record<
         string,
         any
@@ -220,6 +239,7 @@ export async function reconcileMultiChapterBatch(
         batch,
         items,
         taskStatuses,
+        taskWorkflowVersions,
         latestAttempts,
       });
       console.log(
@@ -340,10 +360,18 @@ async function executeBatchAction(params: {
       });
       const taskId = `batch_${batchId}_ord${currentItem.ordinal}_${Date.now()}`;
       const now = Date.now();
-      const isV3 =
-        batch.outlineWorkflowVersion === 3 &&
-        (batch.contextBudgetVersion === 3 || batch.contextBudgetVersion === 4);
-      const stages: PipelineCheckpointStage[] = isV3
+      const taskWorkflowVersion =
+        Number(batch.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION
+          ? batch.outlineWorkflowVersion
+          : CURRENT_OUTLINE_WORKFLOW_VERSION;
+      const taskContextVersion =
+        Number(batch.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION
+          ? batch.contextBudgetVersion
+          : 4;
+      const isStructured =
+        [3, 4].includes(Number(taskWorkflowVersion)) &&
+        (taskContextVersion === 3 || taskContextVersion === 4);
+      const stages: PipelineCheckpointStage[] = isStructured
         ? ['draft', 'review', 'factCheck', 'brief', 'proof']
         : ['draft', 'review', 'factCheck', 'proof'];
       await createPipelineTaskForBatchItem({
@@ -360,8 +388,8 @@ async function executeBatchAction(params: {
           error: null,
           // §4.4: every chapter task of a batch copies the FROZEN batch
           // versions — never re-reads the app default mid-batch.
-          outlineWorkflowVersion: batch.outlineWorkflowVersion ?? 1,
-          contextBudgetVersion: batch.contextBudgetVersion ?? 1,
+          outlineWorkflowVersion: taskWorkflowVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION,
+          contextBudgetVersion: taskContextVersion ?? CURRENT_CONTEXT_BUDGET_VERSION,
           createdAt: now,
           updatedAt: now,
           resolvedAt: null,
@@ -387,8 +415,8 @@ async function executeBatchAction(params: {
         pipelineContextJson: null,
         pipelineContextVersion: null,
         pipelineContextHash: null,
-        outlineWorkflowVersion: batch.outlineWorkflowVersion ?? 1,
-        contextBudgetVersion: batch.contextBudgetVersion ?? 1,
+        outlineWorkflowVersion: taskWorkflowVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION,
+        contextBudgetVersion: taskContextVersion ?? CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
@@ -468,15 +496,17 @@ async function executeBatchAction(params: {
           });
         }
       };
+      const currentPipelineMode =
+        Number(batch.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION
+          ? ('full' as const)
+          : mapBatchModeToPipelineMode(batch.pipelineMode);
       const run = () =>
         action.type === 'run_pipeline'
           ? params.runPipelineImpl(taskId, chapter, notifyStage, {
               queueClass: 'pipeline',
               queuePriority: 'background',
               foregroundOwner: 'batch',
-              pipelineModeOverride: mapBatchModeToPipelineMode(
-                batch.pipelineMode,
-              ),
+              pipelineModeOverride: currentPipelineMode,
               pipelineReasoningEffortOverride: batch.reasoningEffort ?? null,
               batchBudgetGate: { batchId },
             })
@@ -484,9 +514,7 @@ async function executeBatchAction(params: {
               queueClass: 'pipeline',
               queuePriority: 'background',
               foregroundOwner: 'batch',
-              pipelineModeOverride: mapBatchModeToPipelineMode(
-                batch.pipelineMode,
-              ),
+              pipelineModeOverride: currentPipelineMode,
               pipelineReasoningEffortOverride: batch.reasoningEffort ?? null,
               batchBudgetGate: { batchId },
             });
@@ -538,6 +566,26 @@ async function executeBatchAction(params: {
       }
       return 'continue';
     }
+
+    case 'pause_legacy_pipeline':
+      await updateBatchItem(batchId, action.ordinal, {
+        status: 'failed',
+        errorCode: 'BATCH_LEGACY_WORKFLOW_BLOCKED',
+        errorMessage: '该章使用旧版流水线，不能继续；请按新版重新创建批次。',
+      });
+      await updateBatchStatus(batchId, 'paused_user', {
+        errorCode: 'BATCH_LEGACY_WORKFLOW_BLOCKED',
+        errorMessage: '旧版未完成流水线已停止恢复；已完成章节保留，请按新版重新创建剩余章节。',
+      });
+      return 'stop';
+
+    case 'pause_legacy_batch':
+      await updateBatchStatus(batchId, 'paused_user', {
+        errorCode: 'BATCH_LEGACY_WORKFLOW_BLOCKED',
+        errorMessage:
+          '旧版批次已停止执行；已完成章节保留，请按新版重新创建剩余章节。',
+      });
+      return 'stop';
 
     case 'wait_until': {
       const remaining = action.timestamp - Date.now();

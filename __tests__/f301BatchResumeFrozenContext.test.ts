@@ -54,6 +54,10 @@ import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
 import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
 import { resumePipeline } from '../src/services/pipelineRunner';
 import type { Chapter } from '../src/types/novel';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 let mockCallLLMResult: jest.Mock = jest.fn();
 
@@ -121,6 +125,53 @@ function baseExecution(
 ): PipelineExecutionSnapshot {
   return {
     pipelineMode: 'full',
+    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+    contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+    finalReviserReasoningPolicyVersion: 3,
+    reasoningEffort: 'low',
+    reasoningProfileVersion: 5,
+    requestedReasoningTier: 'low',
+    stageReasoning: {
+      draft: {
+        stage: 'draft',
+        requestedTier: 'low',
+        effectiveTier: 'low',
+        thinking: 'enabled',
+        effort: 'low',
+      },
+      review: {
+        stage: 'review',
+        requestedTier: 'low',
+        effectiveTier: 'low',
+        thinking: 'enabled',
+        effort: 'low',
+      },
+      factCheck: {
+        stage: 'factCheck',
+        requestedTier: 'low',
+        effectiveTier: 'low',
+        thinking: 'enabled',
+        effort: 'low',
+      },
+      brief: {
+        stage: 'brief',
+        requestedTier: 'low',
+        effectiveTier: 'low',
+        thinking: 'enabled',
+        effort: 'low',
+      },
+      proof: {
+        stage: 'proof',
+        requestedTier: 'low',
+        effectiveTier: 'low',
+        thinking: 'enabled',
+        effort: 'low',
+      },
+    },
+    briefPolicyVersion: 4,
+    briefVisibleOutputFloor: 1200,
+    briefReasoningHeadroom: 1200,
+    briefMaxTokens: 4000,
     draftMaxTokens: 4000,
     reviewMaxTokens: 1500,
     factCheckMaxTokens: 1500,
@@ -172,14 +223,11 @@ async function seedBaseData(): Promise<{
 }
 
 /** 完整有效 frozen snapshot（用生产 serializer 生成，hash 天然匹配）。 */
-function frozenContext(chapterId: number, mode: 'full' | 'noReview') {
+function frozenContext(chapterId: number) {
   return serializePipelineTaskContext({
     draftContext: baseSnapshot({ projectId: 1, chapterId }),
-    auditContext:
-      mode === 'full'
-        ? baseSnapshot({ projectId: 1, chapterId, characterText: 'char+audit' })
-        : null,
-    execution: baseExecution({ pipelineMode: mode }),
+    auditContext: baseSnapshot({ projectId: 1, chapterId, characterText: 'char+audit' }),
+    execution: baseExecution(),
     frozenDraftRequest: {
       messages: [
         { role: 'system', content: 'draft system' },
@@ -197,6 +245,81 @@ function frozenContext(chapterId: number, mode: 'full' | 'noReview') {
     },
     createdAt: 5000,
   });
+}
+
+function currentPipelineResult(messages: unknown[], config: any) {
+  switch (config?.scenario) {
+    case 'pipeline_draft':
+      return {
+        text: '当前统一流程初稿正文。',
+        inputTokens: 100,
+        outputTokens: 300,
+        totalTokens: 400,
+        emptyReason: null,
+      };
+    case 'pipeline_review':
+      return {
+        text: JSON.stringify({
+          verdict: 'pass',
+          checked: [
+            'opening_continuity',
+            'outline_execution',
+            'character',
+            'prose',
+            'ending_boundary',
+          ],
+          findings: [],
+          preserve: [],
+          ending: '',
+        }),
+        inputTokens: 100,
+        outputTokens: 40,
+        totalTokens: 140,
+      };
+    case 'pipeline_factcheck':
+      {
+        const system = String(
+          (messages[0] as { content?: unknown } | undefined)?.content || '',
+        );
+        const receiptMatch = system.match(
+          /本次必须写入 checked 的收据：(\[[^\n]*\])/,
+        );
+        const checked = receiptMatch ? JSON.parse(receiptMatch[1]) : [];
+      return {
+        text: JSON.stringify({
+          verdict: checked.length ? 'pass' : 'not_applicable',
+          checked,
+          findings: [],
+          preserve: [],
+        }),
+        inputTokens: 100,
+        outputTokens: 30,
+        totalTokens: 130,
+      };
+      }
+    case 'pipeline_brief':
+      return {
+        text: JSON.stringify({
+          strategy: '保持连续性',
+          actions: [],
+          preserve: [],
+          ending: '',
+        }),
+        inputTokens: 100,
+        outputTokens: 30,
+        totalTokens: 130,
+      };
+    case 'pipeline_proof':
+      return {
+        text: '当前统一流程终稿正文。',
+        inputTokens: 60,
+        outputTokens: 400,
+        totalTokens: 460,
+        emptyReason: null,
+      };
+    default:
+      throw new Error(`unexpected scenario: ${String(config?.scenario)}`);
+  }
 }
 
 async function seedProofFailedScenario(): Promise<{
@@ -233,7 +356,7 @@ async function seedProofFailedScenario(): Promise<{
   });
   await updateBatchStatus('b1', 'ready');
 
-  const frozen = frozenContext(createdChapterId, 'full');
+  const frozen = frozenContext(createdChapterId);
   const taskId = 'task-proof-failed';
   const now = Date.now();
   await savePipelineTask({
@@ -248,6 +371,8 @@ async function seedProofFailedScenario(): Promise<{
     pipelineContextJson: frozen.pipelineContextJson,
     pipelineContextVersion: frozen.pipelineContextVersion,
     pipelineContextHash: frozen.pipelineContextHash,
+    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+    contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
     createdAt: now - 100_000,
     updatedAt: now - 10_000,
     resolvedAt: null,
@@ -305,6 +430,28 @@ async function seedProofFailedScenario(): Promise<{
   await execute(
     db,
     `INSERT INTO pipeline_stage_checkpoints ${cpCols}
+     VALUES (?, 'brief', 'succeeded', ?, NULL, NULL, ?, ?, ?, 1500, 1, ?, ?, ?)`,
+    [
+      taskId,
+      JSON.stringify({
+        schemaVersion: 4,
+        briefPolicyVersion: 4,
+        strategy: '保持连续性',
+        actions: [],
+        preserve: [],
+        ending: '',
+      }),
+      100,
+      40,
+      140,
+      now - 58_000,
+      now - 57_000,
+      now - 57_000,
+    ],
+  );
+  await execute(
+    db,
+    `INSERT INTO pipeline_stage_checkpoints ${cpCols}
      VALUES (?, 'proof', 'failed', NULL, 'ERR_NETWORK', '网络错误',
              NULL, NULL, NULL, 1000, 1, ?, ?, ?)`,
     [taskId, now - 55_000, now - 50_000, now - 50_000],
@@ -339,7 +486,14 @@ async function seedProofFailedScenario(): Promise<{
   await execute(
     db,
     `INSERT INTO pipeline_stage_attempts ${attCols}
-     VALUES (?, ?, 'proof', 1, 1, 'fp-proof', NULL, NULL, 1, '{}', 'c4',
+     VALUES (?, ?, 'brief', 1, 33, 'fp-brief', NULL, NULL, 1, '{}', 'c4',
+             'succeeded', NULL, NULL, NULL, NULL, NULL, ?, ?, 100, 40, 140)`,
+    [`${taskId}:brief:1`, taskId, now - 58_000, now - 57_000],
+  );
+  await execute(
+    db,
+    `INSERT INTO pipeline_stage_attempts ${attCols}
+     VALUES (?, ?, 'proof', 1, 33, 'fp-proof', NULL, NULL, 1, '{}', 'c5',
              'failed', 'fatal', 'ERR_NETWORK', '网络错误', NULL, NULL, ?, ?, NULL, NULL, NULL)`,
     [`${taskId}:proof:1`, taskId, now - 55_000, now - 50_000],
   );
@@ -406,13 +560,9 @@ describe('F3-01: batch resume 保留 frozen context（proof failed → 继续）
     const b = before as any;
     const beforeAttempts = await attemptsFor(taskId);
 
-    mockCallLLMResult = jest.fn(async () => ({
-      text: '终稿正文（proof 修复后）。',
-      inputTokens: 60,
-      outputTokens: 400,
-      totalTokens: 460,
-      emptyReason: null,
-    }));
+    mockCallLLMResult = jest.fn(async (messages: unknown[], _tokens: number, config: any) =>
+      currentPipelineResult(messages, config),
+    );
 
     await useMultiChapterBatchStore.getState().loadBatch('b1');
     await useMultiChapterBatchStore.getState().resume('b1');
@@ -523,7 +673,7 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
       sourcePrompt: 's',
       chapterCount: 1,
       targetWordsPerChapter: 3000,
-      pipelineMode: 'draft_only',
+      pipelineMode: 'full',
     });
     await createBatchItem({
       batchId: 'b2',
@@ -540,7 +690,7 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
       synopsis: 's',
     });
 
-    const frozen = frozenContext(createdChapterId, 'noReview');
+    const frozen = frozenContext(createdChapterId);
     const taskId = 'task-draft-only-failed';
     const now = Date.now();
     await savePipelineTask({
@@ -555,6 +705,8 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
       pipelineContextJson: frozen.pipelineContextJson,
       pipelineContextVersion: frozen.pipelineContextVersion,
       pipelineContextHash: frozen.pipelineContextHash,
+      outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+      contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
       createdAt: now - 100_000,
       updatedAt: now - 10_000,
       resolvedAt: null,
@@ -570,6 +722,15 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
                NULL, NULL, NULL, 500, 1, ?, ?, ?)`,
       [taskId, now - 55_000, now - 50_000, now - 50_000],
     );
+    for (const stage of ['review', 'factCheck', 'brief', 'proof']) {
+      await execute(
+        db,
+        `INSERT INTO pipeline_stage_checkpoints ${cpCols}
+         VALUES (?, ?, 'pending', NULL, NULL, NULL,
+                 NULL, NULL, NULL, NULL, 0, NULL, NULL, ?)`,
+        [taskId, stage, now],
+      );
+    }
     const attCols = `(id, pipeline_task_id, stage, attempt_no, request_version,
        request_fingerprint, allocation_trace_json, frozen_request_json,
        llm_config_id, llm_config_snapshot_json, client_request_id,
@@ -594,13 +755,9 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
       [taskId],
     );
 
-    mockCallLLMResult = jest.fn(async () => ({
-      text: '全新初稿正文（draft-only 重跑）。',
-      inputTokens: 100,
-      outputTokens: 300,
-      totalTokens: 400,
-      emptyReason: null,
-    }));
+    mockCallLLMResult = jest.fn(async (messages: unknown[], _tokens: number, config: any) =>
+      currentPipelineResult(messages, config),
+    );
 
     await useMultiChapterBatchStore.getState().loadBatch('b2');
     await useMultiChapterBatchStore.getState().resume('b2');
@@ -617,7 +774,7 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
     ]);
     expect(newTask).not.toBeNull();
     expect(String((newTask as any).status)).toBe('completed');
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(1);
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(5);
 
     const oldTask = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
       taskId,
@@ -638,7 +795,7 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
   it('结果页"重新尝试"路径：同一 task 从 draft 重跑，frozen context 保留', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData();
-    const frozen = frozenContext(chapterId, 'noReview');
+    const frozen = frozenContext(chapterId);
     const taskId = 'task-draft-retry-same';
     const now = Date.now();
     await savePipelineTask({
@@ -653,6 +810,8 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
       pipelineContextJson: frozen.pipelineContextJson,
       pipelineContextVersion: frozen.pipelineContextVersion,
       pipelineContextHash: frozen.pipelineContextHash,
+      outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+      contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
       createdAt: now - 100_000,
       updatedAt: now - 10_000,
       resolvedAt: null,
@@ -681,13 +840,9 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
       [`${taskId}:draft:1`, taskId, now - 55_000, now - 50_000],
     );
 
-    mockCallLLMResult = jest.fn(async () => ({
-      text: '重新尝试后的初稿正文。',
-      inputTokens: 100,
-      outputTokens: 300,
-      totalTokens: 400,
-      emptyReason: null,
-    }));
+    mockCallLLMResult = jest.fn(async (messages: unknown[], _tokens: number, config: any) =>
+      currentPipelineResult(messages, config),
+    );
 
     // PipelineResultScreen.handleResumeFailed 的生产路径：
     // resetFailedStageCheckpointsForResume + 裸 SQL 只改 status +
@@ -710,6 +865,8 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
       pipelineContextJson: frozen.pipelineContextJson,
       pipelineContextVersion: frozen.pipelineContextVersion,
       pipelineContextHash: frozen.pipelineContextHash,
+      outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+      contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
       createdAt: now - 100_000,
       updatedAt: Date.now(),
       resolvedAt: null,
@@ -727,11 +884,17 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
     expect(t.pipeline_context_hash).toBe(frozen.pipelineContextHash);
     // finalize 按生产语义重算 fingerprint；resume 本身不得清空它。
     expect(t.input_fingerprint).not.toBeNull();
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(1);
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(5);
 
     const attempts = await attemptsFor(taskId);
     const succeeded = attempts.filter(a => a.status === 'succeeded');
-    expect(succeeded).toHaveLength(1);
-    expect(succeeded[0].stage).toBe('draft');
+    expect(succeeded).toHaveLength(5);
+    expect(succeeded.map(a => a.stage)).toEqual([
+      'brief',
+      'draft',
+      'factCheck',
+      'proof',
+      'review',
+    ]);
   });
 });

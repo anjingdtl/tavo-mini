@@ -54,7 +54,7 @@ type CreateTask = (
   targetType: 'chapter' | 'freeform',
   targetId: number,
   versions?: {
-    outlineWorkflowVersion: 1 | 2 | 3;
+    outlineWorkflowVersion: 1 | 2 | 3 | 4;
     contextBudgetVersion: 1 | 2 | 3 | 4;
   },
 ) => Promise<string>;
@@ -647,6 +647,27 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     };
     const resumable = getLatestResumableFailedTask('chapter', chapter.id);
     if (resumable) {
+      const isCurrentTask =
+        Number(resumable.outlineWorkflowVersion) ===
+        CURRENT_OUTLINE_WORKFLOW_VERSION;
+      if (!isCurrentTask) {
+        Alert.alert(
+          '旧版流水线已停止恢复',
+          '检测到旧版未完成任务。它仍可查看历史结果，但不能继续执行；按新版重新生成会创建新的完整流水线任务，旧任务和已完成数据会保留。',
+          [
+            { text: '查看任务详情', onPress: () => navigation.navigate('PipelineResult', { taskId: resumable.id }) },
+            {
+              text: '按新版重新生成',
+              onPress: () =>
+                confirmDegraded(() =>
+                  executeRunPipeline(createTask).catch(() => {}),
+                ),
+            },
+            { text: '取消', style: 'cancel' },
+          ],
+        );
+        return;
+      }
       Alert.alert(
         '从上次失败阶段继续',
         '检测到上一次流水线进度。选「继续」将复用已完成的检查点，只重跑剩余阶段，避免浪费 API 用量；也可以先查看任务详情确认失败原因。',

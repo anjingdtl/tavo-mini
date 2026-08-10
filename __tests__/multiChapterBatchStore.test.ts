@@ -75,6 +75,10 @@ import { useMultiChapterBatchStore, resetBatchInstanceId } from '../src/store/mu
 import { getBatchById, getBatchItems } from '../src/data/repositories/multiChapterBatchRepository';
 import { createBatchChapterPlan } from '../src/services/multiChapterBatch/planner';
 import { reconcileMultiChapterBatch } from '../src/services/multiChapterBatch/reconcileMultiChapterBatch';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -228,6 +232,73 @@ describe('multiChapterBatchStore', () => {
     await useMultiChapterBatchStore.getState().cancel(id);
     const batch = await getBatchById(id);
     expect(batch?.status).toBe('cancelled');
+  });
+
+  it('closes a legacy batch and creates a current batch for its remaining tail', async () => {
+    await resetDb();
+    await execute(
+      await openDatabase(),
+      `INSERT INTO projects (id, name, mode, created_at, updated_at) VALUES (1, 'p', 'outline', 't', 't')`,
+      [],
+    );
+    await execute(
+      await openDatabase(),
+      `INSERT INTO chapters (id, project_id, position, title, synopsis, content, status, created_at, updated_at)
+       VALUES (100, 1, 0, '旧当前章', '旧梗概', '', 'planned', 't', 't')`,
+      [],
+    );
+    await execute(
+      await openDatabase(),
+      `INSERT INTO multi_chapter_batches (
+         id, project_id, status, source_prompt, chapter_count,
+         target_words_per_chapter, pipeline_mode, reasoning_effort,
+         outline_workflow_version, context_budget_version, created_at, updated_at
+       ) VALUES ('legacy-tail', 1, 'paused_user', '原摘要', 3, 3000, 'full', 'high', 1, 1, 't', 't')`,
+      [],
+    );
+    await execute(
+      await openDatabase(),
+      `INSERT INTO multi_chapter_batch_items
+       (batch_id, ordinal, title, synopsis, key_beats_json, target_words, status, chapter_id, created_at, updated_at)
+       VALUES
+       ('legacy-tail', 1, '已完成', '完成梗概', '["完成"]', 3000, 'succeeded', NULL, 't', 't'),
+       ('legacy-tail', 2, '当前章', '当前梗概', '["推进"]', 3200, 'failed', 100, 't', 't'),
+       ('legacy-tail', 3, '后续章', '后续梗概', '["承接"]', 3400, 'pending', NULL, 't', 't')`,
+      [],
+    );
+
+    await useMultiChapterBatchStore.getState().loadBatch('legacy-tail');
+    await expect(
+      useMultiChapterBatchStore.getState().resume('legacy-tail'),
+    ).rejects.toMatchObject({ code: 'BATCH_LEGACY_WORKFLOW_BLOCKED' });
+    const newBatchId = await useMultiChapterBatchStore
+      .getState()
+      .restartLegacyBatch('legacy-tail');
+
+    const oldBatch = await getBatchById('legacy-tail');
+    const newBatch = await getBatchById(newBatchId);
+    const newItems = await getBatchItems(newBatchId);
+    expect(oldBatch?.status).toBe('cancelled');
+    expect(oldBatch?.errorCode).toBe('BATCH_LEGACY_WORKFLOW_BLOCKED');
+    expect(newBatch?.status).toBe('ready');
+    expect(newBatch?.outlineWorkflowVersion).toBe(
+      CURRENT_OUTLINE_WORKFLOW_VERSION,
+    );
+    expect(newBatch?.contextBudgetVersion).toBe(
+      CURRENT_CONTEXT_BUDGET_VERSION,
+    );
+    expect(newItems).toHaveLength(2);
+    expect(newItems[0]).toEqual(
+      expect.objectContaining({
+        ordinal: 1,
+        chapterId: 100,
+        status: 'chapter_ready',
+        targetWords: 3200,
+      }),
+    );
+    expect(newItems[1]).toEqual(
+      expect.objectContaining({ ordinal: 2, chapterId: null, status: 'pending' }),
+    );
   });
 
   it('auto re-drives the batch when a retry becomes due (refresh watchdog)', async () => {

@@ -41,11 +41,12 @@ export async function createDerivedFinalRewriteTask(
   if (parent.status !== 'completed' || !String(parent.finalText || '').trim()) {
     throw new Error('原任务尚未完成，不能只重写终稿。');
   }
+  const parentWorkflowVersion = Number(parent.outlineWorkflowVersion);
   if (
-    Number(parent.outlineWorkflowVersion) !== 3 ||
+    ![3, 4].includes(parentWorkflowVersion) ||
     ![3, 4].includes(Number(parent.contextBudgetVersion))
   ) {
-    throw new Error('仅重写终稿仅适用于 V3.1/V3.2 流水线；请重新运行完整流水线。');
+    throw new Error('仅重写终稿仅适用于结构化完整流水线；请重新运行完整流水线。');
   }
 
   let parsed;
@@ -58,11 +59,11 @@ export async function createDerivedFinalRewriteTask(
   }
   if (
     !parsed.execution ||
-    ![3, 4].includes(Number(parsed.execution.reasoningProfileVersion)) ||
-    parsed.execution.outlineWorkflowVersion !== 3 ||
+    ![3, 4, 5].includes(Number(parsed.execution.reasoningProfileVersion)) ||
+    ![3, 4].includes(Number(parsed.execution.outlineWorkflowVersion)) ||
     ![3, 4].includes(Number(parsed.execution.contextBudgetVersion))
   ) {
-    throw new Error('原任务不是 V3.1/V3.2 冻结配置，已阻止派生终稿。');
+    throw new Error('原任务不是当前结构化冻结配置，已阻止派生终稿。');
   }
   if (parsed.execution.pipelineMode === 'noReview') {
     throw new Error('无审核模式没有 Brief，不能只重写终稿；请运行完整流水线。');
@@ -71,7 +72,7 @@ export async function createDerivedFinalRewriteTask(
   const sourceCheckpoints = await getStageCheckpoints(parent.id);
   const byStage = new Map(sourceCheckpoints.map(row => [row.stage, row]));
   const required = getPipelineStageOrder(parsed.execution.pipelineMode, {
-    outlineWorkflowVersion: 3,
+    outlineWorkflowVersion: parentWorkflowVersion,
     contextBudgetVersion:
       parsed.execution.contextBudgetVersion === 4 ? 4 : 3,
   });
@@ -127,7 +128,7 @@ export async function createDerivedFinalRewriteTask(
     pipelineContextJson: parent.pipelineContextJson ?? null,
     pipelineContextVersion: parent.pipelineContextVersion ?? null,
     pipelineContextHash: parent.pipelineContextHash ?? null,
-    outlineWorkflowVersion: 3,
+    outlineWorkflowVersion: parentWorkflowVersion as 3 | 4,
     contextBudgetVersion:
       Number(parent.contextBudgetVersion) === 4 ? 4 : 3,
     parentTaskId: parent.id,

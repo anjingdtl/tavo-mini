@@ -45,7 +45,8 @@ export interface BatchCreateDraftInput {
   sourcePrompt: string;
   chapterCount: number;
   targetWordsPerChapter: number;
-  pipelineMode: string;
+  /** Historical input only; new batches always use the complete pipeline. */
+  pipelineMode?: string;
 }
 
 interface MultiChapterBatchState {
@@ -70,6 +71,8 @@ interface MultiChapterBatchState {
   start: (batchId: string) => Promise<void>;
   pause: (batchId: string) => Promise<void>;
   resume: (batchId: string) => Promise<void>;
+  /** Close a legacy batch and materialize its unfinished tail as a current batch. */
+  restartLegacyBatch: (batchId: string) => Promise<string>;
   cancel: (batchId: string) => Promise<void>;
   refresh: () => Promise<void>;
   clearError: () => void;
@@ -203,7 +206,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           sourcePrompt: input.sourcePrompt,
           chapterCount: input.chapterCount,
           targetWordsPerChapter: input.targetWordsPerChapter,
-          pipelineMode: input.pipelineMode,
+          pipelineMode: 'full',
           // Freeze the product tier at batch creation. Child tasks inherit it
           // even if the global PipelineConfig changes while planning/running.
           reasoningEffort: isPipelineReasoningTier(pipelineConfig.reasoningEffort)
@@ -247,7 +250,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           sourcePrompt: batch.sourcePrompt,
           chapterCount: batch.chapterCount,
           targetWordsPerChapter: batch.targetWordsPerChapter,
-          pipelineMode: batch.pipelineMode,
+          pipelineMode: 'full',
           materials,
         });
         await batchRepo.updateBatchStatus(batchId, 'planning', {
@@ -373,6 +376,14 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
       set({ error: null });
       const batch = get().batch;
       if (!batch) return;
+      if (Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION) {
+        const error = Object.assign(
+          new Error('该批次使用旧版生成流程，不能继续；请按新版重新规划剩余章节。'),
+          { code: 'BATCH_LEGACY_WORKFLOW_BLOCKED' },
+        );
+        set({ error: error.message });
+        throw error;
+      }
       const currentItem = get().items.find(
         i => i.ordinal === batch.currentOrdinal,
       );
@@ -432,6 +443,150 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
       // reconcile finishes.
       await refreshBatch(set, get);
       await get().start(batchId);
+    },
+
+    restartLegacyBatch: async batchId => {
+      set({ loading: true, error: null });
+      try {
+        const [legacyBatch, legacyItems] = await Promise.all([
+          batchRepo.getBatchById(batchId),
+          batchRepo.getBatchItems(batchId),
+        ]);
+        if (!legacyBatch) {
+          throw new Error('批次不存在');
+        }
+        if (
+          Number(legacyBatch.outlineWorkflowVersion) ===
+          CURRENT_OUTLINE_WORKFLOW_VERSION
+        ) {
+          throw new Error('当前批次已是新版，无需重新规划');
+        }
+
+        const completedStatuses = new Set([
+          'succeeded',
+          'succeeded_with_draft',
+          'succeeded_with_user_text',
+        ]);
+        const remaining = legacyItems.filter(
+          item =>
+            !completedStatuses.has(item.status) && item.status !== 'cancelled',
+        );
+        if (remaining.length === 0) {
+          throw new Error('旧批次没有可继续的剩余章节');
+        }
+
+        const projectChapters = await getChaptersByProject(legacyBatch.projectId);
+        const tailPosition =
+          projectChapters.length > 0
+            ? Math.max(...projectChapters.map(chapter => Number(chapter.position)))
+            : -1;
+        const tailChapter =
+          projectChapters.length > 0
+            ? projectChapters.reduce((max, chapter) =>
+                Number(chapter.position) >= Number(max.position) ? chapter : max,
+              )
+            : null;
+        const firstRemaining = remaining[0];
+        const reusableChapterId =
+          firstRemaining.chapterId != null &&
+          tailChapter?.id === firstRemaining.chapterId
+            ? firstRemaining.chapterId
+            : null;
+        const plan: BatchChapterPlan = {
+          chapters: remaining.map((item, index) => {
+            let keyBeats: string[] = [];
+            try {
+              const parsed = JSON.parse(item.keyBeatsJson || '[]');
+              keyBeats = Array.isArray(parsed)
+                ? parsed.map(String).map(value => value.trim()).filter(Boolean)
+                : [];
+            } catch {
+              keyBeats = [];
+            }
+            return {
+              ordinal: index + 1,
+              title: item.title.trim() || `第 ${index + 1} 章`,
+              synopsis: item.synopsis.trim() || '继续本章既定剧情目标',
+              keyBeats: keyBeats.length > 0 ? keyBeats : ['推进本章目标'],
+              carryIn: item.carryIn || '',
+              carryOut: item.carryOut || '',
+              targetWords: item.targetWords || legacyBatch.targetWordsPerChapter,
+            };
+          }),
+        };
+        const pipelineConfig = await db.getPipelineConfig();
+        const reasoningEffort = isPipelineReasoningTier(pipelineConfig.reasoningEffort)
+          ? pipelineConfig.reasoningEffort
+          : normalizePipelineReasoningTier(pipelineConfig.reasoningEffort);
+        const newBatchId = `batch_${Date.now().toString(36)}_${Math.random()
+          .toString(36)
+          .slice(2, 8)}`;
+
+        // Close the old execution lineage before creating its replacement.
+        // This prevents two active batches for the same project if creation
+        // fails; all old items/tasks remain queryable for history/audit.
+        await batchRepo.updateBatchStatus(batchId, 'cancelled', {
+          cancelledAt: Date.now(),
+          errorCode: 'BATCH_LEGACY_WORKFLOW_BLOCKED',
+          errorMessage: '旧版批次已结束；未完成章节已转入新版批次。',
+        });
+        await batchRepo.createBatch({
+          id: newBatchId,
+          projectId: legacyBatch.projectId,
+          sourcePrompt: legacyBatch.sourcePrompt,
+          chapterCount: plan.chapters.length,
+          targetWordsPerChapter: legacyBatch.targetWordsPerChapter,
+          pipelineMode: 'full',
+          reasoningEffort,
+          outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+          contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+        });
+        for (const chapter of plan.chapters) {
+          await batchRepo.createBatchItem({
+            batchId: newBatchId,
+            ordinal: chapter.ordinal,
+            title: chapter.title,
+            synopsis: chapter.synopsis,
+            keyBeatsJson: JSON.stringify(chapter.keyBeats),
+            carryIn: chapter.carryIn,
+            carryOut: chapter.carryOut,
+            targetWords: chapter.targetWords,
+          });
+        }
+        if (reusableChapterId != null) {
+          await batchRepo.updateBatchItem(newBatchId, 1, {
+            chapterId: reusableChapterId,
+            status: 'chapter_ready',
+            activePipelineTaskId: null,
+            errorCode: null,
+            errorMessage: null,
+            nextRetryAt: null,
+          });
+        }
+        await batchRepo.updateBatchStatus(newBatchId, 'ready', {
+          plannerOutputJson: JSON.stringify(plan),
+          plannerHash: computePlannerHash(plan),
+          startPosition: tailPosition,
+          expectedTailChapterId: tailChapter?.id ?? null,
+        });
+        const [newBatch, newItems] = await Promise.all([
+          batchRepo.getBatchById(newBatchId),
+          batchRepo.getBatchItems(newBatchId),
+        ]);
+        set({
+          batch: newBatch,
+          items: newItems,
+          plan,
+          loading: false,
+          reconciling: false,
+          lastMessage: null,
+          lastStage: null,
+        });
+        return newBatchId;
+      } catch (error: any) {
+        set({ loading: false, error: String(error?.message || '按新版重建批次失败') });
+        throw error;
+      }
     },
 
     cancel: async batchId => {

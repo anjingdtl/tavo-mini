@@ -52,6 +52,10 @@ import { determineNextBatchAction } from '../src/services/multiChapterBatch/dete
 import { MultiChapterBatchError } from '../src/services/multiChapterBatch/errors';
 import { claimBatchLease } from '../src/data/repositories/multiChapterBatchRepository';
 import { createStageAttempt, updateStageAttempt } from '../src/data/repositories/pipelineStageAttemptRepository';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -89,6 +93,8 @@ async function seedBatch(batchId = 'b1', count = 2) {
     chapterCount: count,
     targetWordsPerChapter: 3000,
     pipelineMode: 'full',
+    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+    contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
   });
   for (let i = 1; i <= count; i += 1) {
     await createBatchItem({
@@ -302,11 +308,13 @@ describe('crash-point recovery', () => {
         stageResults: [],
         finalText: null,
         error: null,
+        outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
       },
-      stages: ['draft', 'review', 'factCheck', 'proof'],
+      stages: ['draft', 'review', 'factCheck', 'brief', 'proof'],
       runNo: 1,
       llmConfigSnapshotJson: '{}',
       reason: 'batch_start',
@@ -317,7 +325,7 @@ describe('crash-point recovery', () => {
     expect(batch?.status).toBe('completed');
     // The orphan task was resumed, not duplicated.
     const checkpoints = await getStageCheckpoints('orphan-task');
-    expect(checkpoints).toHaveLength(4);
+    expect(checkpoints).toHaveLength(5);
     expect((await getChaptersByProject(1)).length).toBe(1);
   });
 
@@ -344,11 +352,13 @@ describe('crash-point recovery', () => {
         stageResults: [],
         finalText: '已完成的正文',
         error: null,
+        outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
       },
-      stages: ['draft', 'review', 'factCheck', 'proof'],
+      stages: ['draft', 'review', 'factCheck', 'brief', 'proof'],
       runNo: 1,
       llmConfigSnapshotJson: '{}',
       reason: 'batch_start',
@@ -435,11 +445,13 @@ describe('tail drift & deleted chapters', () => {
         stageResults: [],
         finalText: null,
         error: null,
+        outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
       },
-      stages: ['draft', 'review', 'factCheck', 'proof'],
+      stages: ['draft', 'review', 'factCheck', 'brief', 'proof'],
       runNo: 1,
       llmConfigSnapshotJson: '{}',
       reason: 'batch_start',
@@ -522,11 +534,13 @@ describe('retry exhaustion & cold-start waiting', () => {
         stageResults: [],
         finalText: null,
         error: 'boom',
+        outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
       },
-      stages: ['draft', 'review', 'factCheck', 'proof'],
+      stages: ['draft', 'review', 'factCheck', 'brief', 'proof'],
       runNo: 1,
       llmConfigSnapshotJson: '{}',
       reason: 'batch_start',
@@ -581,8 +595,8 @@ describe('retry exhaustion & cold-start waiting', () => {
         usedLlmCalls: 0,
         usedInputTokens: 0,
         usedOutputTokens: 0,
-        outlineWorkflowVersion: 1,
-        contextBudgetVersion: 1,
+        outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         pauseReason: null,
         errorCode: null,
         errorMessage: null,

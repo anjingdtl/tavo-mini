@@ -2,6 +2,7 @@ import type {
   FinalWritingBriefV1,
   FinalWritingBriefV31,
   FinalWritingBriefV32,
+  FinalWritingBriefV33,
 } from './briefCompilerTypes';
 
 /**
@@ -66,7 +67,11 @@ function addStructuredMarkers(markers: Set<string>, text: string): void {
 }
 
 function collectForbiddenMarkers(
-  brief: FinalWritingBriefV1 | FinalWritingBriefV31 | FinalWritingBriefV32,
+  brief:
+    | FinalWritingBriefV1
+    | FinalWritingBriefV31
+    | FinalWritingBriefV32
+    | FinalWritingBriefV33,
 ): Set<string> {
   const markers = new Set<string>();
   for (const item of brief.mustNotAdvance) {
@@ -78,7 +83,11 @@ function collectForbiddenMarkers(
 
 export function validateFinalBriefCompliance(params: {
   text: string;
-  brief: FinalWritingBriefV1 | FinalWritingBriefV31 | FinalWritingBriefV32;
+  brief:
+    | FinalWritingBriefV1
+    | FinalWritingBriefV31
+    | FinalWritingBriefV32
+    | FinalWritingBriefV33;
 }): FinalBriefComplianceResult {
   const normalizedText = normalizeForMatch(params.text);
   const matchedMarkers = [...collectForbiddenMarkers(params.brief)].filter(

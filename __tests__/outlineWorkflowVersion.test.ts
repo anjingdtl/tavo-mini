@@ -194,7 +194,7 @@ describe('snapshot outlineWorkflowVersion round-trip', () => {
       execution: execution(),
     });
     const raw = JSON.parse(ser.pipelineContextJson);
-    raw.execution.outlineWorkflowVersion = 4;
+    raw.execution.outlineWorkflowVersion = 99;
     const tampered = JSON.stringify(raw);
     // Hash is optional in parsing; omit it so the version check is reached.
     expect(() =>
@@ -219,8 +219,8 @@ describe('snapshot outlineWorkflowVersion round-trip', () => {
     ).toThrow(/校验失败/);
   });
 
-  test('type-level: version allows historical 1 | 2 and current 3', () => {
-    const v: OutlineWorkflowVersion = 3;
-    expect(v).toBe(3);
+  test('type-level: version allows historical 1 | 2 | 3 and current 4', () => {
+    const v: OutlineWorkflowVersion = 4;
+    expect(v).toBe(4);
   });
 });

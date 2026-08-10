@@ -36,7 +36,7 @@ export interface FrozenStageReasoning {
   requestedTier: PipelineReasoningTier;
   effectiveTier: PipelineReasoningTier;
   thinking: 'enabled' | 'disabled';
-  /** Provider-facing effort. Brief is always low in V3. */
+  /** Provider-facing effort. Current Review/FactCheck are low; Brief follows the tier. */
   effort: PipelineReasoningTier | null;
   /** Whether this frozen provider/model advertised explicit reasoning support. */
   supported?: boolean;
@@ -76,7 +76,7 @@ export interface PipelineExecutionSnapshot {
    * re-read the live default. New snapshots MUST carry this field; only
    * parsing of HISTORICAL snapshots interprets a missing value as 1.
    */
-  outlineWorkflowVersion?: 1 | 2 | 3;
+  outlineWorkflowVersion?: 1 | 2 | 3 | 4;
 
   /**
    * Context-budget strategy version frozen at task start (Schema 44+).
@@ -96,10 +96,10 @@ export interface PipelineExecutionSnapshot {
   reasoningEffort?: PipelineReasoningEffort;
 
   /** V3 product profile and per-stage frozen effective tiers. */
-  reasoningProfileVersion?: 1 | 2 | 3 | 4;
+  reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
   requestedReasoningTier?: PipelineReasoningTier;
   stageReasoning?: Partial<Record<PipelineStageName, FrozenStageReasoning>>;
-  briefPolicyVersion?: 1 | 2 | 3;
+  briefPolicyVersion?: 1 | 2 | 3 | 4;
   briefVisibleOutputFloor?: number;
   briefReasoningHeadroom?: number;
   briefMaxTokens?: number;
