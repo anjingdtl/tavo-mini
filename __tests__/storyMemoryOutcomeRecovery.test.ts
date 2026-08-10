@@ -112,5 +112,20 @@ describe('Story Memory outcome_unknown recovery', () => {
     expect(
       await listStoryMemoryRequestAttempts(1, ['outcome_unknown']),
     ).toHaveLength(0);
+
+    await expect(
+      requestStoryMemoryMaintenance({
+        projectId: 1,
+        throughPosition: 2,
+        reason: 'interval',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        projectId: 1,
+        state: expect.objectContaining({
+          metadata: expect.objectContaining({ status: 'clean' }),
+        }),
+      }),
+    );
   });
 });
