@@ -25,7 +25,7 @@ describe('settingsStore background pipeline initialization', () => {
   });
 
   it('enables the native foreground bridge even when unrelated settings fail to load', async () => {
-    mockGetBackgroundPipelineEnabled.mockResolvedValue(true);
+    mockGetBackgroundPipelineEnabled.mockResolvedValue(false);
     mockGetLLMConfigs.mockRejectedValue(new Error('LLM settings unavailable'));
     mockGetContextConfig.mockResolvedValue({});
 

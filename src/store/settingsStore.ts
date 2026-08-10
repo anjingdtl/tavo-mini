@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import * as db from '../services/database';
-import { DEFAULT_CONTEXT_CONFIG } from '../constants/defaults';
+import {
+  DEFAULT_BACKGROUND_PIPELINE_ENABLED,
+  DEFAULT_CONTEXT_CONFIG,
+} from '../constants/defaults';
 import type { ContextConfig, LLMConfig } from '../types/novel';
 
 interface SettingsState {
@@ -39,13 +42,13 @@ export const useSettingsStore = create<SettingsState>(set => ({
   llmConfig: emptyLLMConfig,
   llmConfigs: [emptyLLMConfig],
   contextConfig: DEFAULT_CONTEXT_CONFIG,
-  backgroundPipelineEnabled: true,
+  backgroundPipelineEnabled: DEFAULT_BACKGROUND_PIPELINE_ENABLED,
   allowInsecureLanHttp: false,
 
   loadSettings: async () => {
     // 后台保活必须独立于其余设置加载：LLM 配置或上下文配置读失败时，
-    // 仍要把已持久化的后台开关同步给原生前台服务桥接。
-    let backgroundPipelineEnabled = true;
+    // 仍要把全局默认开启状态同步给原生前台服务桥接。
+    let backgroundPipelineEnabled = DEFAULT_BACKGROUND_PIPELINE_ENABLED;
     let allowInsecureLanHttp = false;
     try {
       backgroundPipelineEnabled = await db.getBackgroundPipelineEnabled();
@@ -65,6 +68,8 @@ export const useSettingsStore = create<SettingsState>(set => ({
         );
       }
     }
+    // 忽略历史数据库中的关闭值，后台写作始终全局开启。
+    backgroundPipelineEnabled = DEFAULT_BACKGROUND_PIPELINE_ENABLED;
     const {
       PipelineForeground,
     } = require('../native/PipelineForegroundModule');
@@ -150,13 +155,14 @@ export const useSettingsStore = create<SettingsState>(set => ({
     set({ contextConfig });
   },
 
-  setBackgroundPipelineEnabled: async enabled => {
-    await db.setBackgroundPipelineEnabled(enabled);
-    set({ backgroundPipelineEnabled: enabled });
+  setBackgroundPipelineEnabled: async _enabled => {
+    // 保留旧 API 以兼容历史调用方，但后台写作不再允许被关闭。
+    await db.setBackgroundPipelineEnabled(DEFAULT_BACKGROUND_PIPELINE_ENABLED);
+    set({ backgroundPipelineEnabled: DEFAULT_BACKGROUND_PIPELINE_ENABLED });
     const {
       PipelineForeground,
     } = require('../native/PipelineForegroundModule');
-    PipelineForeground.setEnabled(enabled);
+    PipelineForeground.setEnabled(DEFAULT_BACKGROUND_PIPELINE_ENABLED);
   },
 
   setAllowInsecureLanHttp: async enabled => {

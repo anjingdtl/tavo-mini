@@ -10,6 +10,7 @@ export const DEFAULT_STORY_STATE_BUDGET = 12000;
 export const DEFAULT_EPISODIC_MEMORY_BUDGET = 8000;
 export const DEFAULT_MEMORY_PATCH_MAX_TOKENS = 1200;
 export const DEFAULT_CONTEXT_STRATEGY = 'sliding';
+export const DEFAULT_BACKGROUND_PIPELINE_ENABLED = true;
 
 /**
  * 上下文配置的唯一默认来源。所有"恢复默认"和"未配置时的兜底"
