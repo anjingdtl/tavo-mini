@@ -34,16 +34,35 @@ import {
   evaluateStoryMemoryDue,
   listPendingChapters,
   predictNextCheckpointPosition,
+  STORY_MEMORY_DEFAULT_BATCH_SIZE,
 } from './storyMemoryPolicy';
-import { advanceStoryMemoryCheckpointsUnlocked } from './storyMemoryCheckpointService';
+import {
+  advanceStoryMemoryCheckpointsUnlocked,
+  type StoryMemoryCheckpointProgressEvent,
+} from './storyMemoryCheckpointService';
 import { rebuildStoryMemoryUnlocked } from './storyMemoryRebuild';
 import {
-  checkpointMaxTokens as planPatchMaxTokens,
-  decideCheckpointBatchSize,
-  estimateCheckpointInputTokens,
-  nextCheckpointBudget,
-} from './storyMemoryBudget';
-import { listStoryMemoryRequestAttempts } from '../../data/repositories/storyMemoryRequestAttemptRepository';
+  freezeStoryMemoryLLMConfig,
+  planStoryMemoryRequest,
+  type FrozenStoryMemoryLLMConfig,
+} from './storyMemoryRequestBudget';
+import {
+  acknowledgeStoryMemoryOutcomeUnknown,
+  listStoryMemoryRequestAttempts,
+} from '../../data/repositories/storyMemoryRequestAttemptRepository';
+import {
+  storyMemoryPercent,
+  storyMemoryTaskId,
+  type StoryMemoryTaskKind,
+  type StoryMemoryTaskPhase,
+  type StoryMemoryTaskProgressPatch,
+  useStoryMemoryTaskStore,
+} from '../../store/storyMemoryTaskStore';
+import {
+  startStoryMemoryForeground,
+  stopStoryMemoryForeground,
+  updateStoryMemoryForeground,
+} from './storyMemoryForeground';
 
 /**
  * Resolve a display-number mapper for user-visible Story Memory text (Spec §11.3).
@@ -163,10 +182,14 @@ export type StoryMemoryMaintenanceReason =
 
 export interface StoryMemoryMaintenanceRequest {
   projectId: number;
-  throughPosition: number;
+  throughPosition?: number;
   reason: StoryMemoryMaintenanceReason;
   priority?: 'background' | 'manual';
   signal?: AbortSignal;
+  userAcknowledgedUnknown?: boolean;
+  acknowledgedAttemptIds?: string[];
+  clearFirst?: boolean;
+  mode?: 'auto' | 'full' | 'legacy_bootstrap';
 }
 
 export interface StoryMemoryMaintenanceResult {
@@ -175,6 +198,143 @@ export interface StoryMemoryMaintenanceResult {
   state: StoryMemoryState;
   batchesApplied: number;
   pendingRemaining: number;
+}
+
+const activeMaintenanceControllers = new Map<number, AbortController>();
+
+export function cancelStoryMemoryMaintenance(projectId: number): void {
+  activeMaintenanceControllers.get(projectId)?.abort();
+}
+
+function maintenanceKind(input: {
+  reason: StoryMemoryMaintenanceReason;
+  status: string;
+}): StoryMemoryTaskKind {
+  if (input.reason === 'coverage_gap') return 'hard_gap_repair';
+  if (input.status === 'empty') return 'bootstrap';
+  if (input.status === 'dirty' || input.status === 'failed') return 'rebuild';
+  if (input.reason === 'manual') return 'manual';
+  return 'checkpoint';
+}
+
+function phaseLabel(phase: StoryMemoryTaskPhase): string {
+  switch (phase) {
+    case 'preparing':
+      return '正在准备';
+    case 'planning':
+      return '正在规划整理范围';
+    case 'requesting':
+      return '正在分析';
+    case 'validating':
+      return '正在校验长期记忆';
+    case 'applying':
+      return '正在合并故事状态';
+    case 'saving':
+      return '正在保存';
+    case 'completed':
+      return '整理完成';
+    case 'cancelled':
+      return '已停止整理';
+    case 'outcome_unknown':
+      return '上次请求结果未确认';
+    case 'failed':
+      return '整理失败';
+  }
+}
+
+function rangeLabel(fromPosition: number | null, throughPosition: number | null): string {
+  if (fromPosition == null || throughPosition == null) return '';
+  const from = fromPosition + 1;
+  const through = throughPosition + 1;
+  return from === through ? `第 ${from} 章` : `第 ${from}～${through} 章`;
+}
+
+function taskMessage(
+  phase: StoryMemoryTaskPhase,
+  fromPosition: number | null,
+  throughPosition: number | null,
+): string {
+  const range = rangeLabel(fromPosition, throughPosition);
+  const prefix = phaseLabel(phase);
+  return range && (phase === 'requesting' || phase === 'planning')
+    ? `${prefix}${range}`
+    : prefix;
+}
+
+function publishTaskProgress(
+  projectId: number,
+  patch: StoryMemoryTaskProgressPatch,
+): void {
+  const taskId = storyMemoryTaskId(projectId);
+  const store = useStoryMemoryTaskStore.getState();
+  const current = store.getTask(taskId);
+  if (!current) return;
+  const nextFrom =
+    patch.currentFromPosition !== undefined
+      ? patch.currentFromPosition
+      : current.currentFromPosition;
+  const nextThrough =
+    patch.currentThroughPosition !== undefined
+      ? patch.currentThroughPosition
+      : current.currentThroughPosition;
+  const phase = patch.phase || current.phase;
+  const nextPatch: StoryMemoryTaskProgressPatch = {
+    ...patch,
+    message:
+      patch.message ||
+      taskMessage(phase, nextFrom ?? null, nextThrough ?? null),
+  };
+  store.updateTask(taskId, nextPatch);
+  const updated = store.getTask(taskId);
+  if (updated) {
+    void updateStoryMemoryForeground(
+      projectId,
+      updated.message,
+      updated.percent,
+    ).catch(() => undefined);
+  }
+}
+
+async function startTaskProgress(input: {
+  projectId: number;
+  kind: StoryMemoryTaskKind;
+  totalChapters: number;
+  totalBatches: number;
+}): Promise<void> {
+  const startedAt = Date.now();
+  const taskId = storyMemoryTaskId(input.projectId);
+  useStoryMemoryTaskStore.getState().startTask({
+    taskId,
+    projectId: input.projectId,
+    kind: input.kind,
+    phase: 'preparing',
+    totalChapters: input.totalChapters,
+    completedChapters: 0,
+    totalBatches: input.totalBatches,
+    completedBatches: 0,
+    currentFromPosition: null,
+    currentThroughPosition: null,
+    currentAttempt: null,
+    maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+    percent: storyMemoryPercent(0, input.totalChapters),
+    startedAt,
+    updatedAt: startedAt,
+    message: '正在准备',
+  });
+  await startStoryMemoryForeground(input.projectId, '正在准备', 0).catch(
+    () => undefined,
+  );
+}
+
+function completeTaskProgress(
+  projectId: number,
+  phase: Extract<StoryMemoryTaskPhase, 'completed' | 'failed' | 'cancelled' | 'outcome_unknown'>,
+  message: string,
+  error?: string,
+): void {
+  useStoryMemoryTaskStore
+    .getState()
+    .finishTask(storyMemoryTaskId(projectId), phase, message, error);
 }
 
 /**
@@ -186,15 +346,36 @@ export interface StoryMemoryMaintenanceResult {
 export async function requestStoryMemoryMaintenance(
   input: StoryMemoryMaintenanceRequest,
 ): Promise<StoryMemoryMaintenanceResult> {
-  const throughPosition = Math.max(-1, Math.floor(input.throughPosition));
-  const key = `story-memory-maintain:${input.projectId}:${throughPosition}`;
-  return runStoryMemoryTaskOnce(key, () =>
+  const requestedThrough =
+    input.throughPosition == null
+      ? 'latest'
+      : String(Math.max(-1, Math.floor(input.throughPosition)));
+  const key = `story-memory-maintain:${input.projectId}:${requestedThrough}`;
+  return runStoryMemoryTaskOnce(key, async () =>
     withProjectMemoryLock(input.projectId, async () => {
-      const unknown = await listStoryMemoryRequestAttempts(input.projectId, [
+      let unknown = await listStoryMemoryRequestAttempts(input.projectId, [
         'prepared',
         'sent',
         'outcome_unknown',
       ]);
+      if (input.userAcknowledgedUnknown && unknown.length > 0) {
+        const firstLogicalBatch = unknown[0].logicalBatchId;
+        const selectedIds =
+          input.acknowledgedAttemptIds?.length
+            ? input.acknowledgedAttemptIds
+            : unknown
+                .filter(row => row.logicalBatchId === firstLogicalBatch)
+                .map(row => row.attemptId);
+        await acknowledgeStoryMemoryOutcomeUnknown({
+          projectId: input.projectId,
+          attemptIds: selectedIds,
+        });
+        unknown = await listStoryMemoryRequestAttempts(input.projectId, [
+          'prepared',
+          'sent',
+          'outcome_unknown',
+        ]);
+      }
       if (unknown.length > 0) {
         throw new StoryMemoryError(
           'MEMORY_CHECKPOINT_OUTCOME_UNKNOWN',
@@ -202,39 +383,187 @@ export async function requestStoryMemoryMaintenance(
         );
       }
 
-      const record = await db.ensureProjectStoryMemoryRow(input.projectId);
-      if (record.status === 'dirty' || input.reason === 'dirty') {
-        const rebuilt = await rebuildStoryMemoryUnlocked(input.projectId, {
-          mode: 'auto',
-          throughPosition,
-          signal: input.signal,
-        });
-        const rebuiltPending = (await db.getChaptersByProject(input.projectId)).filter(
+      let record = await db.ensureProjectStoryMemoryRow(input.projectId);
+      if (input.clearFirst) {
+        await db.clearStoryMemory(input.projectId);
+        record = await db.ensureProjectStoryMemoryRow(input.projectId);
+      }
+      const allChapters = await db.getChaptersByProject(input.projectId);
+      const finalChapters = allChapters
+        .filter(
           chapter =>
             Boolean(chapter.content?.trim()) &&
-            chapter.position > rebuilt.state.throughChapterPosition &&
-            chapter.position <= throughPosition,
-        ).length;
+            (chapter.status === 'final' || chapter.finalized_at != null),
+        )
+        .sort((a, b) => a.position - b.position);
+      const throughPosition = Math.max(
+        -1,
+        Math.floor(
+          input.throughPosition ??
+            finalChapters.at(-1)?.position ??
+            record.state.throughChapterPosition,
+        ),
+      );
+      const rebuild =
+        input.clearFirst ||
+        input.mode === 'full' ||
+        record.status === 'dirty' ||
+        record.status === 'failed' ||
+        record.status === 'empty';
+      const startPosition = rebuild
+        ? record.dirtyFromPosition ?? Math.max(0, record.state.throughChapterPosition + 1)
+        : record.state.throughChapterPosition + 1;
+      const workChapters = finalChapters.filter(
+        chapter => chapter.position >= startPosition && chapter.position <= throughPosition,
+      );
+      const totalChapters = workChapters.length;
+      const totalBatches = Math.ceil(totalChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE);
+      const kind = maintenanceKind({ reason: input.reason, status: record.status });
+      await startTaskProgress({
+        projectId: input.projectId,
+        kind,
+        totalChapters,
+        totalBatches,
+      });
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort();
+      if (input.signal) {
+        if (input.signal.aborted) controller.abort();
+        else input.signal.addEventListener('abort', forwardAbort, { once: true });
+      }
+      activeMaintenanceControllers.set(input.projectId, controller);
+      const taskId = storyMemoryTaskId(input.projectId);
+      const checkpointProgress = (progress: StoryMemoryCheckpointProgressEvent) => {
+        const phase = progress.phase as StoryMemoryTaskPhase;
+        publishTaskProgress(input.projectId, {
+          phase,
+          currentFromPosition: progress.fromPosition,
+          currentThroughPosition: progress.throughPosition,
+          currentAttempt: progress.attempt,
+          maxAttempts: progress.maxAttempts,
+          message: taskMessage(
+            phase,
+            progress.fromPosition,
+            progress.throughPosition,
+          ),
+        });
+      };
+      const rebuildProgress = (progress: {
+        currentPosition: number;
+        totalChapters: number;
+        completedChapters: number;
+        status: 'preparing' | 'running' | 'saving' | 'completed';
+      }) => {
+        const phase: StoryMemoryTaskPhase =
+          progress.status === 'preparing'
+            ? 'preparing'
+            : progress.status === 'saving'
+              ? 'saving'
+              : progress.status === 'completed'
+                ? 'completed'
+                : 'planning';
+        const batches = Math.ceil(progress.totalChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE);
+        const completedBatches =
+          progress.completedChapters >= progress.totalChapters
+            ? batches
+            : Math.floor(progress.completedChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE);
+        publishTaskProgress(input.projectId, {
+          phase,
+          totalChapters: progress.totalChapters,
+          completedChapters: progress.completedChapters,
+          totalBatches: batches,
+          completedBatches,
+          currentFromPosition: progress.currentPosition,
+          currentThroughPosition: progress.currentPosition,
+          currentAttempt: null,
+          message: taskMessage(
+            phase,
+            progress.currentPosition,
+            progress.currentPosition,
+          ),
+        });
+      };
+      try {
+        publishTaskProgress(input.projectId, { phase: 'preparing', message: '正在准备' });
+        if (rebuild) {
+          const rebuilt = await rebuildStoryMemoryUnlocked(input.projectId, {
+            mode: input.mode || 'auto',
+            throughPosition,
+            signal: controller.signal,
+            onProgress: rebuildProgress,
+            onCheckpointProgress: checkpointProgress,
+          });
+          const rebuiltPending = (await db.getChaptersByProject(input.projectId)).filter(
+            chapter =>
+              Boolean(chapter.content?.trim()) &&
+              chapter.position > rebuilt.state.throughChapterPosition &&
+              chapter.position <= throughPosition,
+          ).length;
+          completeTaskProgress(input.projectId, 'completed', '整理完成');
+          return {
+            projectId: input.projectId,
+            throughPosition,
+            state: rebuilt.state,
+            batchesApplied: rebuilt.completedChapters > 0 ? 1 : 0,
+            pendingRemaining: rebuiltPending,
+          };
+        }
+        const advanced = await advanceStoryMemoryCheckpointsUnlocked({
+          projectId: input.projectId,
+          throughPosition,
+          signal: controller.signal,
+          onProgress: checkpointProgress,
+          onBatchComplete: range => {
+            const current = useStoryMemoryTaskStore.getState().getTask(taskId);
+            if (!current) return;
+            const count = finalChapters.filter(
+              chapter =>
+                chapter.position >= range.fromPosition &&
+                chapter.position <= range.throughPosition,
+            ).length;
+            publishTaskProgress(input.projectId, {
+              phase: 'saving',
+              completedChapters: Math.min(
+                current.totalChapters,
+                current.completedChapters + count,
+              ),
+              completedBatches: Math.min(
+                current.totalBatches,
+                current.completedBatches + 1,
+              ),
+            });
+          },
+        });
+        completeTaskProgress(input.projectId, 'completed', '整理完成');
         return {
           projectId: input.projectId,
           throughPosition,
-          state: rebuilt.state,
-          batchesApplied: rebuilt.completedChapters > 0 ? 1 : 0,
-          pendingRemaining: rebuiltPending,
+          state: advanced.state,
+          batchesApplied: advanced.batchesApplied,
+          pendingRemaining: advanced.pendingRemaining,
         };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '长期记忆整理失败';
+        const latestUnknown = await listStoryMemoryRequestAttempts(input.projectId, [
+          'outcome_unknown',
+        ]);
+        const phase: Extract<StoryMemoryTaskPhase, 'failed' | 'cancelled' | 'outcome_unknown'> =
+          controller.signal.aborted ||
+          (error as { code?: string } | null)?.code === 'MEMORY_REBUILD_CANCELLED' ||
+          (error as { code?: string } | null)?.code === 'MEMORY_CHECKPOINT_CANCELLED'
+            ? 'cancelled'
+            : latestUnknown.length > 0
+              ? 'outcome_unknown'
+              : 'failed';
+        completeTaskProgress(input.projectId, phase, phaseLabel(phase), message);
+        throw error;
+      } finally {
+        if (input.signal) input.signal.removeEventListener('abort', forwardAbort);
+        if (activeMaintenanceControllers.get(input.projectId) === controller) {
+          activeMaintenanceControllers.delete(input.projectId);
+        }
+        await stopStoryMemoryForeground(input.projectId).catch(() => undefined);
       }
-      const advanced = await advanceStoryMemoryCheckpointsUnlocked({
-        projectId: input.projectId,
-        throughPosition,
-        signal: input.signal,
-      });
-      return {
-        projectId: input.projectId,
-        throughPosition,
-        state: advanced.state,
-        batchesApplied: advanced.batchesApplied,
-        pendingRemaining: advanced.pendingRemaining,
-      };
     }),
   );
 }
@@ -297,6 +626,7 @@ async function requestPatch(
   scenario: string,
   signal?: AbortSignal,
   attemptBudget?: StoryMemoryAttemptBudget,
+  frozenConfig?: FrozenStoryMemoryLLMConfig,
 ): Promise<LLMResult> {
   const result = await callLLMResult(
     messages,
@@ -305,6 +635,7 @@ async function requestPatch(
       scenario,
       projectId,
       physicalRequestHooks: attemptBudget?.hooks(),
+      requestConfig: frozenConfig?.requestConfig,
     }),
     signal,
   );
@@ -331,23 +662,10 @@ export async function generateValidatedChapterMemoryPatch(
     input.previousState,
   );
   const scenario = input.scenario || 'story_memory_patch';
-  // Code-review fix 5: reuse the single Story Memory budget planner instead of
-  // the legacy fixed 2400..16000 derivation. The ACTIVE model's
-  // context_window / max_output_tokens clamp every request (initial AND each
-  // retry), so a small model never receives a doomed oversized request.
-  let model: { contextWindow?: number; maxOutputTokens?: number } = {};
-  try {
-    const active = await db.getActiveLLMConfig();
-    const contextWindow = Number(active?.context_window);
-    const maxOutputTokens = Number(active?.max_output_tokens);
-    model = {
-      contextWindow: contextWindow > 0 ? contextWindow : undefined,
-      maxOutputTokens: maxOutputTokens > 0 ? maxOutputTokens : undefined,
-    };
-  } catch {
-    // Unknown model capability → legacy derivation, no extra clamp.
-  }
-  const inputTokens = estimateCheckpointInputTokens(messages);
+  // Freeze the actual request config once. Budget and provider must observe
+  // the same model even if the user changes the active config while a retry
+  // is being prepared.
+  const frozenConfig = await freezeStoryMemoryLLMConfig();
   const attemptBudget =
     input.attemptBudget ||
     new StoryMemoryAttemptBudget({
@@ -363,23 +681,6 @@ export async function generateValidatedChapterMemoryPatch(
       maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
       durable: false,
     });
-  let budget = planPatchMaxTokens({
-    memoryPatchMaxTokens: input.memoryPatchMaxTokens,
-    batchSize: 1,
-    contextWindow: model.contextWindow,
-    maxOutputTokens: model.maxOutputTokens,
-    estimatedInputTokens: inputTokens,
-  });
-  if (budget <= 0) {
-    const shrink = decideCheckpointBatchSize({
-      safeOutputMax: budget,
-      estimatedInputTokens: inputTokens,
-    });
-    throw new StoryMemoryError(
-      'MEMORY_PATCH_BUDGET_INFEASIBLE',
-      shrink.hint,
-    );
-  }
   let currentMessages: Array<{
     role: 'system' | 'user' | 'assistant';
     content: string;
@@ -399,15 +700,28 @@ export async function generateValidatedChapterMemoryPatch(
         : attempt === 2
           ? 'story_memory_patch_repair'
           : 'story_memory_patch_retry';
+    const plan = planStoryMemoryRequest({
+      config: frozenConfig,
+      messages: currentMessages,
+      legacyOutputTokens: input.memoryPatchMaxTokens,
+      batchSize: 1,
+    });
+    if (!plan.fits) {
+      throw new StoryMemoryError(
+        'MEMORY_PATCH_BUDGET_INFEASIBLE',
+        plan.reason || '当前模型无法容纳本章长期记忆请求。',
+      );
+    }
     let result: LLMResult;
     try {
       result = await requestPatch(
         currentMessages,
-        budget,
+        plan.maxTokens,
         input.chapter.project_id,
         scenarioForAttempt,
         input.signal,
         attemptBudget,
+        frozenConfig,
       );
     } catch (error) {
       if (
@@ -461,24 +775,13 @@ export async function generateValidatedChapterMemoryPatch(
           if (result.finishReason === 'length') {
             throw new StoryMemoryError(
               'MEMORY_PATCH_INVALID_JSON',
-              `模型连续返回被截断的记忆 JSON（已自动扩容到 ${budget} tokens）。请检查模型的单次输出上限。`,
+              `模型连续返回被截断的记忆 JSON（输出 reservation 为 ${plan.maxTokens} tokens）。请检查模型的单次输出上限。`,
             );
           }
           throw parseError;
         }
         const message =
           parseError instanceof Error ? parseError.message : '未知校验错误';
-        const next = nextCheckpointBudget(budget, model.maxOutputTokens, {
-          contextWindow: model.contextWindow,
-          estimatedInputTokens: inputTokens,
-        });
-        if (next <= budget) {
-          throw new StoryMemoryError(
-            'MEMORY_PATCH_INVALID_JSON',
-            `输出预算已达模型上限（${budget} tokens），模型仍无法返回完整 JSON。请提高 max_output_tokens 后重试。`,
-          );
-        }
-        budget = next;
         currentMessages =
           attempt === 1
             ? buildStoryMemoryRepairMessages(
@@ -509,11 +812,8 @@ export async function generateValidatedChapterMemoryPatch(
           ? attemptBudget.used
           : attempt,
         maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
-        currentBudget: budget,
-        nextBudget: nextCheckpointBudget(budget, model.maxOutputTokens, {
-          contextWindow: model.contextWindow,
-          estimatedInputTokens: inputTokens,
-        }),
+        currentBudget: plan.maxTokens,
+        nextBudget: plan.maxTokens,
       });
       if (action.type === 'fail') {
         // Single-chapter patch: no batch split exists on this path, so a
@@ -524,7 +824,6 @@ export async function generateValidatedChapterMemoryPatch(
           action.reason,
         );
       }
-      budget = Math.max(budget, action.budget);
       currentMessages = messages;
     }
   }

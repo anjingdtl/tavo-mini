@@ -1,4 +1,4 @@
-import type { LLMCallConfig } from '../llm';
+import type { LLMCallConfig, LLMRequestConfig } from '../llm';
 
 /**
  * The only request policy for Story Memory network calls. Story Memory is a
@@ -15,12 +15,15 @@ export const STORY_MEMORY_STRUCTURED_POLICY = {
 };
 
 export function buildStoryMemoryLLMConfig(
-  input: Pick<LLMCallConfig, 'scenario' | 'projectId' | 'physicalRequestHooks'>,
+  input: Pick<LLMCallConfig, 'scenario' | 'projectId' | 'physicalRequestHooks'> & {
+    requestConfig?: LLMRequestConfig;
+  },
 ): LLMCallConfig {
   return {
     ...STORY_MEMORY_STRUCTURED_POLICY,
     scenario: input.scenario,
     projectId: input.projectId,
     physicalRequestHooks: input.physicalRequestHooks,
+    requestConfig: input.requestConfig,
   };
 }

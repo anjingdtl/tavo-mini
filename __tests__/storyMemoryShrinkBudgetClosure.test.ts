@@ -11,7 +11,6 @@
 
 import type { Chapter } from '../src/types/novel';
 import { estimateCheckpointInputTokens } from '../src/services/storyMemory/storyMemoryBudget';
-import { buildStoryMemoryCheckpointMessages } from '../src/services/storyMemory/storyMemoryPrompts';
 import { createEmptyStoryMemory } from '../src/services/storyMemory/storyMemoryDefaults';
 
 const mockCallLLMResult = jest.fn();
@@ -144,12 +143,11 @@ describe('P1 fix 2: zero-budget multi-chapter batch auto-splits instead of faili
     // 每章正文足够长，使 3 章组合输入超出窗口（预算 0），但拆散后可以容纳。
     const longContent = '故事正文内容。'.repeat(40); // ~200 字/章
     const batch = [chapter(0, longContent), chapter(1, longContent), chapter(2, longContent)];
-    const threeMessages = buildStoryMemoryCheckpointMessages(batch, makeState());
-    const threeInput = estimateCheckpointInputTokens(threeMessages);
     // 3 章时窗口放不下（预算 0），拆散后子批次拥有正预算。
-    const contextWindow = threeInput - 1;
+    const contextWindow = 5240;
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'v5-model',
       context_window: contextWindow,
       max_output_tokens: 8192,
     });
@@ -196,11 +194,10 @@ describe('P1 fix 2: zero-budget multi-chapter batch auto-splits instead of faili
 
   it('single chapter that still cannot fit fails WITHOUT sending a doomed LLM request', async () => {
     const batch = [chapter(0, '故事正文内容。'.repeat(200))]; // ~1000 字
-    const messages = buildStoryMemoryCheckpointMessages(batch, makeState());
-    const input = estimateCheckpointInputTokens(messages);
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
-      context_window: input - 1,
+      model_name: 'v5-model',
+      context_window: 4500,
       max_output_tokens: 8192,
     });
 
@@ -235,6 +232,7 @@ describe('P1 fix 3: every retry stays under the context_window hard cap', () => 
     mockSaveBatch.mockResolvedValue(undefined);
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'v5-model',
       context_window: 5000,
       max_output_tokens: 100000,
     });
@@ -244,14 +242,12 @@ describe('P1 fix 3: every retry stays under the context_window hard cap', () => 
     const longContent = '故事正文内容。'.repeat(40); // ~200 字/章
     const batch = [chapter(0, longContent), chapter(1, longContent), chapter(2, longContent)];
     // 3 章组合输入：headroom 很小 → 初始预算被 context_window 压住。
-    const threeInput = estimateCheckpointInputTokens(
-      buildStoryMemoryCheckpointMessages(batch, makeState()),
-    );
     // 3 章放不下（预算 0）→ 拆成 [2 章, 1 章]；2 章仍有正预算但不足以容纳
     // 长输出 → 空 length → 无法扩容 → 再拆成单章 → 单章成功。
-    const contextWindow = threeInput + 100;
+    const contextWindow = 5500;
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'v5-model',
       context_window: contextWindow,
       max_output_tokens: 100000,
     });
@@ -299,6 +295,7 @@ describe('P1 fix 4: empty length response at budget cap splits multi-chapter bat
     mockSaveBatch.mockResolvedValue(undefined);
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'v5-model',
       context_window: 32768,
       max_output_tokens: 2000,
     });

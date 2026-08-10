@@ -49,6 +49,13 @@ export interface CompleteStoryMemoryRequestAttemptInput {
   finishedAt?: number;
 }
 
+export interface AcknowledgeStoryMemoryOutcomeUnknownInput {
+  projectId: number;
+  /** Explicit rows only; callers must not blanket-delete the audit ledger. */
+  attemptIds: string[];
+  finishedAt?: number;
+}
+
 function mapRow(row: any): StoryMemoryRequestAttemptRow {
   return {
     attemptId: String(row.attempt_id),
@@ -110,6 +117,33 @@ export async function completeStoryMemoryRequestAttempt(
       input.attemptId,
     ],
   );
+}
+
+/**
+ * User-confirmed recovery for one logical unknown request. The ledger row is
+ * kept for audit and moved to the existing terminal `cancelled` state; no
+ * automatic path calls this function.
+ */
+export async function acknowledgeStoryMemoryOutcomeUnknown(
+  input: AcknowledgeStoryMemoryOutcomeUnknownInput,
+): Promise<number> {
+  const attemptIds = [...new Set(input.attemptIds.map(String).filter(Boolean))];
+  if (attemptIds.length === 0) return 0;
+  const database = await openDatabase();
+  const placeholders = attemptIds.map(() => '?').join(', ');
+  const result = await execute(
+    database,
+    `UPDATE story_memory_request_attempts SET
+       status = 'cancelled',
+       failure_class = 'user_acknowledged_outcome_unknown',
+       error_code = 'USER_ACKNOWLEDGED_OUTCOME_UNKNOWN',
+       finished_at = ?
+     WHERE project_id = ?
+       AND attempt_id IN (${placeholders})
+       AND status IN ('prepared', 'sent', 'outcome_unknown')`,
+    [input.finishedAt ?? Date.now(), input.projectId, ...attemptIds],
+  );
+  return Number((result as any)?.rowsAffected ?? 0);
 }
 
 export async function getStoryMemoryRequestAttempt(

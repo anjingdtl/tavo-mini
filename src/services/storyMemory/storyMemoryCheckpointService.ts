@@ -31,9 +31,6 @@ import {
 import { getContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
 import {
   checkpointMaxTokens as planCheckpointMaxTokens,
-  decideCheckpointBatchSize,
-  estimateCheckpointInputTokens,
-  nextCheckpointBudget,
 } from './storyMemoryBudget';
 import {
   decideEmptyResponseAction,
@@ -45,6 +42,11 @@ import {
   createStoryMemoryLogicalBatchId,
 } from './storyMemoryAttemptBudget';
 import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
+import {
+  freezeStoryMemoryLLMConfig,
+  planStoryMemoryRequest,
+  type FrozenStoryMemoryLLMConfig,
+} from './storyMemoryRequestBudget';
 
 function renderBatchEpisodicText(
   summary: EpisodicSummary,
@@ -126,6 +128,7 @@ async function requestCheckpoint(
   scenario: string,
   signal?: AbortSignal,
   attemptBudget?: StoryMemoryAttemptBudget,
+  frozenConfig?: FrozenStoryMemoryLLMConfig,
 ): Promise<LLMResult> {
   // Exactly one call enters the coordinator. Transport retries and protocol
   // fallbacks are accounted by the shared physical-request hook instead of a
@@ -137,6 +140,7 @@ async function requestCheckpoint(
       scenario,
       projectId,
       physicalRequestHooks: attemptBudget?.hooks(),
+      requestConfig: frozenConfig?.requestConfig,
     }),
     signal,
   );
@@ -184,11 +188,13 @@ export async function generateValidatedCheckpointBatch(input: {
   chapters: Chapter[];
   previousState: StoryMemoryState;
   memoryPatchMaxTokens: number;
+  frozenConfig?: FrozenStoryMemoryLLMConfig;
   signal?: AbortSignal;
   scenario?:
     | 'story_memory_checkpoint'
     | 'story_memory_checkpoint_legacy_bootstrap';
   attemptBudget?: StoryMemoryAttemptBudget;
+  onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
 }): Promise<StoryMemoryBatchPatchDraft> {
   if (input.signal?.aborted) {
     throw new StoryMemoryError(
@@ -215,21 +221,9 @@ export async function generateValidatedCheckpointBatch(input: {
   } catch {
     getDisplayNumber = undefined;
   }
-  // V2.11.38 repair plan P1 §6.3: consult the ACTIVE model's real
-  // context_window / max_output_tokens before planning the output budget.
-  let model: { contextWindow?: number; maxOutputTokens?: number } = {};
-  try {
-    const active = await db.getActiveLLMConfig();
-    const contextWindow = Number(active?.context_window);
-    const maxOutputTokens = Number(active?.max_output_tokens);
-    model = {
-      contextWindow: contextWindow > 0 ? contextWindow : undefined,
-      maxOutputTokens: maxOutputTokens > 0 ? maxOutputTokens : undefined,
-    };
-  } catch {
-    // Unknown model capability → legacy derivation, no extra clamp.
-  }
-  const inputTokens = estimateCheckpointInputTokens(messages);
+  // Freeze the provider config together with the capability snapshot. Every
+  // retry/repair for this logical batch must use this same model.
+  const frozenConfig = input.frozenConfig || (await freezeStoryMemoryLLMConfig());
 
   const attemptBudget =
     input.attemptBudget ||
@@ -256,10 +250,23 @@ export async function generateValidatedCheckpointBatch(input: {
     signal: input.signal,
     getDisplayNumber,
     baseMessages: messages,
-    model,
-    inputTokens,
+    frozenConfig,
     attemptBudget,
+    onProgress: input.onProgress,
   });
+}
+
+export interface StoryMemoryCheckpointProgressEvent {
+  phase:
+    | 'planning'
+    | 'requesting'
+    | 'validating'
+    | 'applying'
+    | 'saving';
+  fromPosition: number;
+  throughPosition: number;
+  attempt: number | null;
+  maxAttempts: number;
 }
 
 interface CheckpointAttemptLoopInput {
@@ -271,9 +278,9 @@ interface CheckpointAttemptLoopInput {
   signal?: AbortSignal;
   getDisplayNumber?: (position: number) => number;
   baseMessages: Array<{ role: 'system' | 'user'; content: string }>;
-  model: { contextWindow?: number; maxOutputTokens?: number };
-  inputTokens: number;
+  frozenConfig: FrozenStoryMemoryLLMConfig;
   attemptBudget: StoryMemoryAttemptBudget;
+  onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
 }
 
 /**
@@ -294,31 +301,6 @@ async function runCheckpointAttemptLoop(
   input: CheckpointAttemptLoopInput,
 ): Promise<StoryMemoryBatchPatchDraft> {
   const batchSize = input.chapters.length;
-  let budget = planCheckpointMaxTokens({
-    memoryPatchMaxTokens: input.memoryPatchMaxTokens,
-    batchSize,
-    contextWindow: input.model.contextWindow,
-    maxOutputTokens: input.model.maxOutputTokens,
-    estimatedInputTokens: input.inputTokens,
-  });
-  if (budget <= 0) {
-    // Code-review fix 2: a multi-chapter combination that does not fit the
-    // window must SPLIT (each sub-batch re-estimates its input and gets its
-    // own budget) instead of failing outright. Only a single chapter that
-    // still cannot fit is a real model-capability dead end.
-    const shrink = decideCheckpointBatchSize({
-      safeOutputMax: budget,
-      estimatedInputTokens: input.inputTokens,
-    });
-    if (batchSize > 1) {
-      throw new StoryMemoryError(
-        'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
-        '当前模型 context_window 无法容纳本批次检查点请求（含约 ' +
-          `${input.inputTokens} 词元输入），已拆分批次重试。`,
-      );
-    }
-    throw new StoryMemoryError('MEMORY_CHECKPOINT_FAILED', shrink.hint);
-  }
 
   let messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> =
     input.baseMessages;
@@ -337,15 +319,48 @@ async function runCheckpointAttemptLoop(
         : attempt === 2
           ? 'story_memory_checkpoint_repair'
           : 'story_memory_checkpoint_retry';
+    const plan = planStoryMemoryRequest({
+      config: input.frozenConfig,
+      messages,
+      legacyOutputTokens: input.memoryPatchMaxTokens,
+      batchSize,
+    });
+    input.onProgress?.({
+      phase: 'planning',
+      fromPosition: input.chapters[0].position,
+      throughPosition: input.chapters.at(-1)!.position,
+      attempt: null,
+      maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+    });
+    if (!plan.fits) {
+      if (batchSize > 1) {
+        throw new StoryMemoryError(
+          'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
+          `${plan.reason} 已在发送前拆分批次。`,
+        );
+      }
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_FAILED',
+        plan.reason || '当前模型无法容纳单章长期记忆请求。',
+      );
+    }
     let result: LLMResult;
     try {
+      input.onProgress?.({
+        phase: 'requesting',
+        fromPosition: input.chapters[0].position,
+        throughPosition: input.chapters.at(-1)!.position,
+        attempt,
+        maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+      });
       result = await requestCheckpoint(
         messages,
-        budget,
+        plan.maxTokens,
         input.projectId,
         scenario,
         input.signal,
         input.attemptBudget,
+        input.frozenConfig,
       );
     } catch (error) {
       if (
@@ -361,6 +376,13 @@ async function runCheckpointAttemptLoop(
       }
       throw error;
     }
+    input.onProgress?.({
+      phase: 'validating',
+      fromPosition: input.chapters[0].position,
+      throughPosition: input.chapters.at(-1)!.position,
+      attempt,
+      maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+    });
     const text = result?.text?.trim() || '';
 
     if (text) {
@@ -401,23 +423,24 @@ async function runCheckpointAttemptLoop(
             if (batchSize > 1) {
               throw new StoryMemoryError(
                 'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
-                `模型连续返回被截断的检查点 JSON（已自动扩容到 ${budget} tokens），已拆分批次重试。`,
+                `模型连续返回被截断的检查点 JSON（输出 reservation 为 ${plan.maxTokens} tokens），已拆分批次重试。`,
               );
             }
             throw new StoryMemoryError(
               'MEMORY_CHECKPOINT_FAILED',
-              `模型单章检查点输出仍被截断（输出预算已达 ${budget} tokens）。请提高模型的 max_output_tokens 或 context_window 后重试。`,
+              `模型单章检查点输出仍被截断（输出 reservation 为 ${plan.maxTokens} tokens）。请提高模型的 max_output_tokens 或 context_window 后重试。`,
             );
           }
           throw parseError;
         }
         const message =
           parseError instanceof Error ? parseError.message : '未知校验错误';
-        const next = nextCheckpointBudget(budget, input.model.maxOutputTokens, {
-          contextWindow: input.model.contextWindow,
-          estimatedInputTokens: input.inputTokens,
-        });
-        if (next <= budget) {
+        const budget = plan.maxTokens;
+        if (
+          !input.frozenConfig.contextWindow &&
+          !input.frozenConfig.maxOutputTokens &&
+          result.finishReason === 'length'
+        ) {
           // Budget cannot grow further while the output is still truncated.
           if (batchSize > 1) {
             throw new StoryMemoryError(
@@ -430,7 +453,6 @@ async function runCheckpointAttemptLoop(
             `输出预算已达模型上限（${budget} tokens），模型仍无法返回完整 JSON。请提高 max_output_tokens 后重试。`,
           );
         }
-        budget = next;
         messages =
           attempt === 1
             ? buildStoryMemoryCheckpointRepairMessages(
@@ -461,11 +483,8 @@ async function runCheckpointAttemptLoop(
           ? input.attemptBudget.used
           : attempt,
         maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
-        currentBudget: budget,
-        nextBudget: nextCheckpointBudget(budget, input.model.maxOutputTokens, {
-          contextWindow: input.model.contextWindow,
-          estimatedInputTokens: input.inputTokens,
-        }),
+        currentBudget: plan.maxTokens,
+        nextBudget: plan.maxTokens,
       });
       if (action.type === 'fail') {
         // Code-review fix 4: an empty LENGTH response at the budget cap means
@@ -482,7 +501,6 @@ async function runCheckpointAttemptLoop(
         );
       }
       // Fresh retry — never echo an empty assistant message.
-      budget = Math.max(budget, action.budget);
       messages = input.baseMessages;
     }
   }
@@ -509,11 +527,14 @@ export async function runStoryMemoryCheckpointBatch(input: {
    */
   expectedPersistedFingerprint?: string;
   memoryPatchMaxTokens?: number;
+  /** One frozen provider/capability snapshot shared by all split children. */
+  frozenConfig?: FrozenStoryMemoryLLMConfig;
   createSnapshot?: boolean;
   signal?: AbortSignal;
   scenario?:
     | 'story_memory_checkpoint'
     | 'story_memory_checkpoint_legacy_bootstrap';
+  onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
 }): Promise<RunCheckpointBatchResult> {
   const ordered = [...input.chapters].sort((a, b) => a.position - b.position);
   if (!ordered.length) {
@@ -526,8 +547,10 @@ export async function runStoryMemoryCheckpointBatch(input: {
     input.memoryPatchMaxTokens != null
       ? { memoryPatchMaxTokens: input.memoryPatchMaxTokens }
       : await db.getContextConfig();
+  const frozenConfig =
+    input.frozenConfig || (await freezeStoryMemoryLLMConfig());
   return runStoryMemoryCheckpointBatchWithShrink(
-    { ...input, chapters: ordered },
+    { ...input, chapters: ordered, frozenConfig },
     config.memoryPatchMaxTokens || 1200,
   );
 }
@@ -642,9 +665,11 @@ async function runStoryMemoryCheckpointBatchCore(
     chapters: ordered,
     previousState: input.previousState,
     memoryPatchMaxTokens,
+    frozenConfig: input.frozenConfig,
     signal: input.signal,
     scenario: input.scenario,
     attemptBudget,
+    onProgress: input.onProgress,
   });
   const sourceFingerprint = fingerprintBatchSource(ordered);
   const batchId = `batch_${input.projectId}_${ordered[0].position}_${
@@ -657,6 +682,13 @@ async function runStoryMemoryCheckpointBatchCore(
     now: new Date().toISOString(),
     batchId,
     title: ordered[ordered.length - 1].title,
+  });
+  input.onProgress?.({
+    phase: 'applying',
+    fromPosition: ordered[0].position,
+    throughPosition: ordered.at(-1)!.position,
+    attempt: null,
+    maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
   });
   const chapterSummaryTexts = draft.chapterSummaries.map(summary => {
     const chapter = ordered.find(item => item.id === summary.chapterId);
@@ -676,6 +708,13 @@ async function runStoryMemoryCheckpointBatchCore(
       text,
       estimatedTokens: estimateTokens(text),
     };
+  });
+  input.onProgress?.({
+    phase: 'saving',
+    fromPosition: ordered[0].position,
+    throughPosition: ordered.at(-1)!.position,
+    attempt: null,
+    maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
   });
   await db.saveStoryMemoryBatchUpdate({
     previousFingerprint:
@@ -706,6 +745,11 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
   projectId: number;
   throughPosition?: number;
   signal?: AbortSignal;
+  onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
+  onBatchComplete?: (range: {
+    fromPosition: number;
+    throughPosition: number;
+  }) => void;
 }): Promise<{
   state: StoryMemoryState;
   batchesApplied: number;
@@ -759,9 +803,14 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
         chapters: batchChapters,
         previousState: state,
         signal: input.signal,
+        onProgress: input.onProgress,
       });
       state = result.state;
       batchesApplied += 1;
+      input.onBatchComplete?.({
+        fromPosition: batchChapters[0].position,
+        throughPosition: batchChapters.at(-1)!.position,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : '检查点更新失败';
       if (
