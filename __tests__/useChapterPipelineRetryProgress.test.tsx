@@ -53,10 +53,27 @@ jest.mock('../src/services/pipelineRunner', () => ({
 }));
 
 const mockRunChapterPipeline = jest.fn((..._args: any[]) => Promise.resolve());
+const mockGetStageCheckpoints = jest.fn(() => Promise.resolve([]));
+const mockUpsertStageCheckpoint = jest.fn(() => Promise.resolve());
+const mockGetContextConfig = jest.fn(() =>
+  Promise.resolve({ slidingWindowSize: 4000 }),
+);
 
 jest.mock('../src/services/database', () => ({
-  getStageCheckpoints: jest.fn(() => Promise.resolve([])),
-  upsertStageCheckpoint: jest.fn(() => Promise.resolve()),
+  getStageCheckpoints: () => mockGetStageCheckpoints(),
+  upsertStageCheckpoint: () => mockUpsertStageCheckpoint(),
+  getContextConfig: () => mockGetContextConfig(),
+}));
+
+const mockPrepareStoryMemory = jest.fn();
+const mockEnqueueStoryMemoryMaintenance = jest.fn();
+jest.mock('../src/services/storyMemory/storyMemoryPrepare', () => ({
+  prepareStoryMemoryForGeneration: (...args: any[]) =>
+    mockPrepareStoryMemory(...args),
+}));
+jest.mock('../src/services/storyMemory/storyMemoryService', () => ({
+  enqueueStoryMemoryMaintenance: (...args: any[]) =>
+    mockEnqueueStoryMemoryMaintenance(...args),
 }));
 
 jest.mock('react-native-toast-message', () => ({ show: jest.fn() }));
@@ -126,6 +143,11 @@ describe('章节编辑页进度条：failed → 同任务自动重试 → comple
     mockGetActiveTaskForTarget.mockReturnValue(undefined);
     mockGetLatestResumableFailedTask.mockReturnValue(undefined);
     mockRunChapterPipeline.mockResolvedValue(undefined);
+    mockPrepareStoryMemory.mockResolvedValue({
+      fatal: false,
+      hardGap: false,
+      blockReason: '',
+    });
   });
 
   it('任务失败清进度条；同任务重试成功后清进度条并导航结果页（修复回归）', () => {
@@ -273,5 +295,36 @@ describe('章节编辑页进度条：failed → 同任务自动重试 → comple
         expect.any(Function),
       ),
     );
+  });
+
+  it('Preview Hard Gap blocks generation and enqueues maintenance once', async () => {
+    mockPrepareStoryMemory.mockResolvedValue({
+      fatal: true,
+      hardGap: true,
+      blockReason: '第 1～3 章存在未覆盖历史信息',
+    });
+    const { result } = renderHook(() =>
+      useChapterPipeline({
+        chapter,
+        chapterId: 1,
+        navigation: { navigate: mockNavigate } as any,
+      }),
+    );
+
+    await act(async () => {
+      result.current.runPipeline();
+      await Promise.resolve();
+    });
+    expect(mockGetContextConfig).toHaveBeenCalled();
+    await waitFor(() => expect(mockPrepareStoryMemory).toHaveBeenCalled());
+    expect(mockEnqueueStoryMemoryMaintenance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 1,
+        throughPosition: -1,
+        reason: 'coverage_gap',
+        priority: 'background',
+      }),
+    );
+    expect(mockRunChapterPipeline).not.toHaveBeenCalled();
   });
 });

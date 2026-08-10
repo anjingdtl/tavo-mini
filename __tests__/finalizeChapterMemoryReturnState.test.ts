@@ -254,7 +254,7 @@ describe('AE-04: finalizeChapterMemory returned state vs persisted state', () =>
     ).rejects.toThrow('mock LLM 故障');
 
     const record = await getProjectStoryMemory(1);
-    expect(record!.status).toBe('empty');
+    expect(record!.status).toBe('failed');
     expect(record!.state.throughChapterPosition).toBe(-1);
     expect(result.state.throughChapterPosition).toBe(-1);
     expect(result.patchId).toBe('');

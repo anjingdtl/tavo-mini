@@ -2,7 +2,10 @@ import type { Chapter } from '../../types/novel';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import { invalidateIdf } from '../../utils/idfCache';
 import * as db from '../database';
-import { runStoryMemoryCheckpointBatch } from './storyMemoryCheckpointService';
+import {
+  runStoryMemoryCheckpointBatch,
+  type StoryMemoryCheckpointProgressEvent,
+} from './storyMemoryCheckpointService';
 import { createEmptyStoryMemory } from './storyMemoryDefaults';
 import {
   fingerprintChapterSource,
@@ -50,6 +53,7 @@ export interface RebuildStoryMemoryOptions {
   throughPosition?: number;
   mode?: 'auto' | 'full' | 'legacy_bootstrap';
   onProgress?: (progress: StoryMemoryRebuildProgress) => void;
+  onCheckpointProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
   signal?: AbortSignal;
 }
 
@@ -287,6 +291,7 @@ export async function rebuildStoryMemoryUnlocked(
               mode === 'legacy_bootstrap'
                 ? 'story_memory_checkpoint_legacy_bootstrap'
                 : 'story_memory_checkpoint',
+            onProgress: options.onCheckpointProgress,
           });
           state = result.state;
           expectedPersistedFingerprint = state.metadata.stateFingerprint;
