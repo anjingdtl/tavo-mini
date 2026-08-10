@@ -48,6 +48,15 @@ import type {
 import type { Chapter } from '../src/types/novel';
 
 describe('twenty-chapter story memory lifecycle', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('finalizes 20 chapters in order and survives repeated truncated JSON', async () => {
     const chapters = new Map<number, Chapter>();
     for (let position = 0; position < 20; position++) {
@@ -130,16 +139,27 @@ describe('twenty-chapter story memory lifecycle', () => {
     const results = [];
     for (let id = 1; id <= 20; id++) {
       results.push(await finalizeChapterMemory(id));
+      // The user-facing finalize call returns first. Run the queued legacy
+      // maintenance worker explicitly so this lifecycle test can inspect the
+      // eventual durable memory state without making the writing path wait.
+      await jest.runOnlyPendingTimersAsync();
     }
 
     expect(results).toHaveLength(20);
-    expect(results.every(result => result.episodicMemoryText.length > 0)).toBe(
+    expect(results.every(result => result.chapterFinalized)).toBe(true);
+    expect(results.every(result => result.maintenanceQueued)).toBe(true);
+    expect(results.every(result => result.checkpointAttempted === false)).toBe(
       true,
     );
     expect(state.throughChapterPosition).toBe(19);
     expect(patches).toHaveProperty('size', 20);
     expect(
       [...chapters.values()].every(chapter => chapter.status === 'final'),
+    ).toBe(true);
+    expect(
+      [...chapters.values()].every(
+        chapter => (chapter.memory_summary ?? '').length > 0,
+      ),
     ).toBe(true);
     expect(attempts.get(3)).toBe(3);
     expect(attempts.get(18)).toBe(3);

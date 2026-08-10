@@ -360,7 +360,8 @@ export type StoryMemoryErrorCode =
   | 'MEMORY_CHECKPOINT_CANCELLED'
   | 'MEMORY_CHECKPOINT_FAILED'
   | 'MEMORY_CHECKPOINT_EMPTY_RESPONSE'
-  | 'MEMORY_CHECKPOINT_BATCH_TOO_LARGE';
+  | 'MEMORY_CHECKPOINT_BATCH_TOO_LARGE'
+  | 'MEMORY_CHECKPOINT_OUTCOME_UNKNOWN';
 
 /**
  * Partial-success payload attached to a checkpoint failure (repair plan P1

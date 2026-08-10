@@ -1,7 +1,7 @@
 # TAVO-MINI 模拟器 QA 实操手册（踩坑记录）
 
-> 来源：2026-08-08 大纲 Story Memory 修复轮真机穿测（P0/P1 全链路）
-> 设备：emulator-5554（pixel_6 / API 37）/ 包名 com.shinewriter / V2.11.38
+> 来源：2026-08-10 Story Memory No-Stall P1/P2 V3 真机穿测
+> 设备：emulator-5554（pixel_6 / API 37）/ 包名 com.shinewriter / V2.11.40
 > 全局工具卡：`~/.claude/CLAUDE.md` 的 Maestro + ADB 卡 + `~/.claude/memory/maestro-adb.md`
 
 ## 1. 一轮 QA 的标准流程
@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Path "test-logs/emulator-qa-$stamp" -Force | Out-N
 
 # 1) 构建 + 安装（保留数据用 install -r，不要 pm clear）
 npm run apk:debug
-adb -s emulator-5554 install -r "dist/apk/debug/ShineWriter-V2.11.38-debug.apk"
+adb -s emulator-5554 install -r "dist/apk/debug/ShineWriter-V2.11.40-debug.apk"
 
 # 2) 启动 + UI 探测
 adb -s emulator-5554 shell am force-stop com.shinewriter
@@ -93,10 +93,11 @@ proofing 被我 force-stop 中断成 `interrupted`（"任务被中断，可重�
 ### 2.10 uiautomator dump 会输出旧视图
 页面切换后等 2-5 秒再 dump；dump 失败（无输出）时重跑一次，别拿上一次的 xml 瞎找节点。
 
-## 3. 本章（2026-08-08 Story Memory 修复）验证过的真实链路
+## 3. Story Memory P1 V3 真实链路边界
 
-- 第 12 章 + 11 章正文 + 无 checkpoint → 上下文预览显示降级 warning panel（"长期记忆暂不可用，已降级上下文"），**不再报"构建上下文失败"**
-- 生成按钮 → 降级确认 Alert（继续生成/前往故事记忆/取消）→ 继续生成 → pipeline 正常运行
-- generation 模式自动触发 checkpoint advance：真实 LLM 4 批全部 applied（clean, through=10）
-- 整理成功后再次预览 → "检查点截至第 11 章；coverage完整；无空洞" 已注入
-- 验证工具：`python test-logs/probe-*.py`（sqlite3 查询 story_memory/batches/pipeline_tasks/chapters）
+- Safe Coverage：本地覆盖可证明时，写作入口立即继续；后台维护排队，前台不等待 Story Memory LLM。
+- Hard Gap：本地发现历史硬缺口时，立即显示“暂不能安全生成”；不通过降级确认绕过，也不先发 LLM 请求。
+- 定稿：章节正文与 `final` 状态先在本地事务落库；摘要/检查点维护属于后续后台工作，Partial Success 保留已应用状态。
+- 请求：每个 Story Memory 逻辑子任务使用 `thinking: { type: "disabled" }`，真实物理 HTTP 预算最多 3 次；`sent` 后进程中断在冷启动被标记为 `outcome_unknown`，禁止静默重发。
+- 调试升级：必须使用 `adb install -r`。若设备现有包由正式 TAVO MINI 证书签名，需要用同一既有证书签名的 debug 变体；禁止卸载、`pm clear` 或删除数据库。
+- 验证工具：将临时 SQLite 快照脚本放入 `test-logs/`（仅记录配置元数据，不记录 API Key），并结合 `uiautomator dump`、过滤后的 logcat 与 ledger 行做证据闭环。

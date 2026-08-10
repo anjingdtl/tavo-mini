@@ -59,7 +59,10 @@ jest.mock(
     ),
 );
 
-import { finalizeChapterMemory } from '../src/services/storyMemory/storyMemoryService';
+import {
+  finalizeChapterMemory,
+  requestStoryMemoryMaintenance,
+} from '../src/services/storyMemory/storyMemoryService';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -156,7 +159,16 @@ async function chaptersOfProject(): Promise<Chapter[]> {
 }
 
 describe('AE-04: finalizeChapterMemory returned state vs persisted state', () => {
-  it('batch1 success + batch2 failure returns the LATEST persisted state, not the entry snapshot', async () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockCallLLMResult.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('returns local state first; explicit maintenance preserves batch1 after batch2 failure', async () => {
     await resetDb();
     // 8 chapters → smart default interval 10 triggers due on finalize of the
     // last chapter with pendingCount 8 < 10? No: interval 10 needs 10 pending.
@@ -184,6 +196,21 @@ describe('AE-04: finalizeChapterMemory returned state vs persisted state', () =>
 
     const result = await finalizeChapterMemory(8);
 
+    // The writing path returns before any Story Memory LLM call.
+    expect(result.chapterFinalized).toBe(true);
+    expect(result.maintenanceQueued).toBe(true);
+    expect(result.checkpointAttempted).toBe(false);
+    expect(result.state.throughChapterPosition).toBe(-1);
+    expect(result.pendingCount).toBe(8);
+
+    await expect(
+      requestStoryMemoryMaintenance({
+        projectId: 1,
+        throughPosition: 7,
+        reason: 'interval',
+      }),
+    ).rejects.toThrow('mock LLM 故障');
+
     // Persisted DB row: clean with through = batch1 endpoint (position 2).
     const record = await getProjectStoryMemory(1);
     expect(record).not.toBeNull();
@@ -192,16 +219,13 @@ describe('AE-04: finalizeChapterMemory returned state vs persisted state', () =>
     expect(record!.lastError).toContain('mock LLM 故障');
     const persistedPatchId = record!.state.metadata.lastAppliedPatchId;
 
-    // Returned state must match the LATEST persisted state, not the entry
-    // snapshot (which would say through=-1 / status=empty).
-    expect(result.state.throughChapterPosition).toBe(2);
-    expect(result.state.metadata.status).toBe('clean');
-    expect(result.patchId).toBe(persistedPatchId);
-    expect(result.patchId.length).toBeGreaterThan(0);
-    // Real remaining pending chapters after through=2: positions 3..7 = 5.
-    expect(result.pendingCount).toBe(5);
+    // The local-first return is intentionally the entry snapshot; the
+    // persisted row is the source of truth after background maintenance.
+    expect(result.state.throughChapterPosition).toBe(-1);
+    expect(result.patchId).toBe('');
     expect(result.checkpointUpdated).toBe(false);
     expect(result.chapterFinalized).toBe(true);
+    expect(persistedPatchId).toBeTruthy();
   });
 
   it('first batch failure keeps returned through at the entry position (no fabricated clean)', async () => {
@@ -218,6 +242,16 @@ describe('AE-04: finalizeChapterMemory returned state vs persisted state', () =>
     mockCallLLMResult.mockRejectedValueOnce(new Error('mock LLM 故障'));
 
     const result = await finalizeChapterMemory(8);
+
+    expect(result.chapterFinalized).toBe(true);
+    expect(result.maintenanceQueued).toBe(true);
+    await expect(
+      requestStoryMemoryMaintenance({
+        projectId: 1,
+        throughPosition: 7,
+        reason: 'interval',
+      }),
+    ).rejects.toThrow('mock LLM 故障');
 
     const record = await getProjectStoryMemory(1);
     expect(record!.status).toBe('empty');

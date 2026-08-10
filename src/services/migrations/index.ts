@@ -65,8 +65,12 @@ import { migrateV45ToV46 } from './v45-to-v46';
 import { migrateV46ToV47 } from './v46-to-v47';
 import { migrateV47ToV48 } from './v47-to-v48';
 import { migrateV48ToV49 } from './v48-to-v49';
+import {
+  buildV49toV50Statements,
+  migrateV49ToV50,
+} from './v49-to-v50';
 
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 50;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -354,6 +358,13 @@ const MIGRATIONS: Migration[] = [
     buildStatements: async () => [],
     migrate: migrateV48ToV49,
   },
+  {
+    from: 49,
+    to: 50,
+    breaking: false,
+    buildStatements: async () => buildV49toV50Statements(),
+    migrate: migrateV49ToV50,
+  },
 ];
 
 export async function runMigrations(
@@ -399,6 +410,8 @@ export async function runMigrations(
       await migrateV46ToV47(db);
     } else if (migration.from === 47 && migration.to === 48) {
       await migrateV47ToV48(db);
+    } else if (migration.from === 49 && migration.to === 50) {
+      await migrateV49ToV50(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

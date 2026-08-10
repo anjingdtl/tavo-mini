@@ -43,7 +43,12 @@ describe('structured story memory baseline protection', () => {
         }),
       ]),
       700,
-      { scenario: 'memory_summary', projectId: chapter.project_id },
+      expect.objectContaining({
+        scenario: 'memory_summary',
+        projectId: chapter.project_id,
+        queueClass: 'background',
+        thinking: { type: 'disabled' },
+      }),
     );
     expect(updateChapter).toHaveBeenCalledWith(
       chapter.id,

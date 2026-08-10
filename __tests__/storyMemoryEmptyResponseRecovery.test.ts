@@ -163,6 +163,9 @@ describe('repair plan P1 — checkpoint empty-response recovery', () => {
     });
 
     expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
+    const firstCall = mockCallLLMResult.mock.calls[0];
+    expect(firstCall[2]?.thinking).toEqual({ type: 'disabled' });
+    expect(firstCall[2]?.responseFormat).toBe('json_object');
     // Second request must carry thinking: disabled.
     const secondCall = mockCallLLMResult.mock.calls[1];
     expect(secondCall[2]?.thinking).toEqual({ type: 'disabled' });

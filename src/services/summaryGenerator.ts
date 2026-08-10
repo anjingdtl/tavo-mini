@@ -3,6 +3,11 @@ import { callLLM } from './llm';
 import { extractJSON } from '../utils/jsonExtractor';
 import { estimateTokens } from '../utils/tokenEstimator';
 import type { ChapterSummary } from '../types/novel';
+import {
+  StoryMemoryAttemptBudget,
+  createStoryMemoryLogicalBatchId,
+} from './storyMemory/storyMemoryAttemptBudget';
+import { STORY_MEMORY_MAX_PHYSICAL_REQUESTS } from './storyMemory/storyMemoryAttemptPolicy';
 
 const EMPTY_SUMMARY: ChapterSummary = {
   brief: '',
@@ -89,6 +94,18 @@ export async function generateMemorySummary(
   if (!chapter.content.trim())
     throw new Error('章节正文为空，无法生成记忆摘要。');
 
+  const attemptBudget = new StoryMemoryAttemptBudget({
+    logicalBatchId: createStoryMemoryLogicalBatchId({
+      projectId: chapter.project_id,
+      fromPosition: chapter.position,
+      throughPosition: chapter.position,
+      kind: 'summary',
+    }),
+    projectId: chapter.project_id,
+    fromPosition: chapter.position,
+    throughPosition: chapter.position,
+    maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+  });
   const result = await callLLM(
     [
       {
@@ -125,7 +142,13 @@ ${chapter.content}`,
       },
     ],
     Math.max(targetChars * 2, 700),
-    { scenario: 'memory_summary', projectId: chapter.project_id },
+    {
+      scenario: 'memory_summary',
+      projectId: chapter.project_id,
+      queueClass: 'background',
+      thinking: { type: 'disabled' },
+      physicalRequestHooks: attemptBudget.hooks(),
+    },
   );
 
   const memorySummary = (result || '').trim();

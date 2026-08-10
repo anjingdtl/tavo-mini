@@ -22,6 +22,11 @@ import {
 import type { StoryMemoryPartialSuccess, StoryMemoryState } from './storyMemoryTypes';
 import { StoryMemoryError } from './storyMemoryTypes';
 import { makeContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
+import {
+  StoryMemoryAttemptBudget,
+  createStoryMemoryLogicalBatchId,
+} from './storyMemoryAttemptBudget';
+import { STORY_MEMORY_MAX_PHYSICAL_REQUESTS } from './storyMemoryAttemptPolicy';
 
 export interface StoryMemoryRebuildProgress {
   projectId: number;
@@ -425,6 +430,18 @@ export async function rebuildStoryMemoryUnlocked(
               mode === 'legacy_bootstrap'
                 ? 'story_memory_legacy_bootstrap'
                 : 'story_memory_patch',
+            attemptBudget: new StoryMemoryAttemptBudget({
+              logicalBatchId: createStoryMemoryLogicalBatchId({
+                projectId,
+                fromPosition: inputChapter.position,
+                throughPosition: inputChapter.position,
+                kind: 'rebuild_patch',
+              }),
+              projectId,
+              fromPosition: inputChapter.position,
+              throughPosition: inputChapter.position,
+              maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+            }),
           });
           regeneratedPatches += 1;
         }

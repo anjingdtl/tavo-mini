@@ -48,6 +48,8 @@ function response(text: string | null) {
 describe('story memory LLM patch service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCallLLMResult.mockReset();
+    mockGetActiveLLMConfig.mockReset();
     // 默认大模型能力：不干扰既有预算断言（2400/3200/4800/9600/16000）。
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
@@ -92,7 +94,7 @@ describe('story memory LLM patch service', () => {
     expect(mockCallLLMResult.mock.calls[1][1]).toBe(4800);
   });
 
-  it('retries a transient network or timeout failure before parsing', async () => {
+  it('does not silently retry a total-timeout outcome whose HTTP result is unknown', async () => {
     mockCallLLMResult
       .mockRejectedValueOnce(
         Object.assign(new Error('请求超时'), { code: 'total_timeout' }),
@@ -105,11 +107,8 @@ describe('story memory LLM patch service', () => {
         previousState: createEmptyStoryMemory(7),
         memoryPatchMaxTokens: 3200,
       }),
-    ).resolves.toEqual(expect.objectContaining({ schemaVersion: 1 }));
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
-    expect(mockCallLLMResult.mock.calls.map(call => call[1])).toEqual([
-      3200, 3200,
-    ]);
+    ).rejects.toThrow('请求超时');
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(1);
   });
 
   it('repairs missing evidence and unknown entity references', async () => {

@@ -384,17 +384,50 @@ export const openAICompatibleProvider: LLMProvider = {
             ) {
               requestBody.reasoning_effort = options.reasoningEffort;
             }
-            const sendRequest = () =>
-              fetch(config.url, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${config.api_key}`,
-                },
-                body: JSON.stringify(requestBody),
-                signal: timeoutController.signal,
-              });
-            let response = await sendRequest();
+            const sendRequest = async (kind: string) => {
+              await options.physicalRequestHooks?.beforeRequest?.({ kind });
+              try {
+                const response = await fetch(config.url, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${config.api_key}`,
+                  },
+                  body: JSON.stringify(requestBody),
+                  signal: timeoutController.signal,
+                });
+                try {
+                  await options.physicalRequestHooks?.afterRequest?.({
+                    kind,
+                    outcome: 'response',
+                    httpStatus: response.status,
+                    providerRequestId:
+                      response.headers.get('x-request-id') ||
+                      response.headers.get('request-id') ||
+                      response.headers.get('x-amzn-requestid') ||
+                      undefined,
+                  });
+                } catch {
+                  // Durable accounting is intentionally fail-closed before a
+                  // request, but an after-response bookkeeping failure must
+                  // never replace the provider response or cause a duplicate
+                  // request. A sent row remains recoverable as unknown.
+                }
+                return response;
+              } catch (error) {
+                try {
+                  await options.physicalRequestHooks?.afterRequest?.({
+                    kind,
+                    outcome: 'transport_error',
+                    error,
+                  });
+                } catch {
+                  // Preserve the original transport error.
+                }
+                throw error;
+              }
+            };
+            let response = await sendRequest('primary');
 
             // OpenAI-compatible gateways do not agree on optional protocol
             // extensions. Structured V3.1 calls request disabled Thinking, so
@@ -429,7 +462,7 @@ export const openAICompatibleProvider: LLMProvider = {
                 delete requestBody.thinking;
                 delete requestBody.reasoning_effort;
               }
-              response = await sendRequest();
+              response = await sendRequest('protocol_fallback');
             }
             if (!response.ok) {
               throw formatLLMError(

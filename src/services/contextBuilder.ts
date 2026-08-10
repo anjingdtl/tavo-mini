@@ -66,11 +66,7 @@ export interface BuildContextResult {
    * instead of re-reading the DB or re-parsing `messages`. See SPEC §7.
    */
   pipelineContext: PipelineContextSnapshot;
-  /**
-   * Non-blocking Story Memory warnings (degraded context / failed checkpoint
-   * update / partially omitted history). Present when the request compiled
-   * without a usable long-term checkpoint. Never empty for a clean build.
-   */
+  /** Local readiness warnings; safe coverage never blocks the request. */
   storyMemoryWarnings: StoryMemoryPrepareWarning[];
   /** Phase 2+ elastic budget trace when options.elasticBudget is enabled. */
   elasticBudgetTrace?: import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
@@ -310,8 +306,9 @@ export async function buildContext(
   const trace: ContextTraceItem[] = [];
   let chapters = await db.getChaptersByProject(projectId);
 
-  // Checkpoint / pending bridge / seam preparation. Never force catch-up to
-  // previous chapter; only hard-due may spend LLM tokens (generation mode).
+  // Checkpoint / pending bridge / seam preparation. This is local-only:
+  // generation mode may signal background maintenance, but never waits for
+  // Story Memory LLM work.
   // V2.5.14: removed the `|| true` dead-code guard — the call is unconditional
   // (prepare() itself falls back to ensureProjectStoryMemoryRow when
   // getProjectStoryMemory is absent), so the gate was misleading. Coverage,
@@ -324,10 +321,8 @@ export async function buildContext(
       mode: options.storyMemoryMode === 'preview' ? 'preview' : 'generation',
     },
   );
-  // V2.11.38 repair plan P0: only FATAL errors (illegal target chapter
-  // position) hard-block the context build. Missing / dirty / failed
-  // checkpoints, failed update attempts and uncovered chapters degrade the
-  // context with warnings but never prevent writing.
+  // A hard coverage gap and an illegal target position are both fail-closed
+  // local safety decisions. No network request is awaited on this path.
   if (prepared.fatal) {
     throw new Error(
       prepared.blockReason || '故事记忆覆盖不足，无法安全生成。',
@@ -1804,7 +1799,9 @@ function assembleRecentSummariesWithinBudget(
  * checkpoint is clean and through < target. Still refuse non-clean statuses.
  */
 export function resolveStoryStateForRetrieval(
-  prepared: Awaited<ReturnType<typeof prepareStoryMemoryForGeneration>> | null,
+  prepared: {
+    checkpoint: import('../data/repositories/storyMemoryRepository').ProjectStoryMemoryRecord | null;
+  } | null,
 ): MemoryRetrievalOptions['storyState'] {
   try {
     const record = prepared?.checkpoint;

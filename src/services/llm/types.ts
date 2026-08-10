@@ -3,6 +3,33 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * Optional transport lifecycle hooks used by callers that need to account for
+ * every real HTTP dispatch.  The hooks deliberately expose only request kind,
+ * response status and provider request id; they never receive headers,
+ * credentials, prompt text or response bodies.
+ */
+export interface LLMPhysicalRequestBeforeEvent {
+  kind: string;
+}
+
+export interface LLMPhysicalRequestAfterEvent {
+  kind: string;
+  outcome: 'response' | 'transport_error';
+  httpStatus?: number;
+  providerRequestId?: string;
+  error?: unknown;
+}
+
+export interface LLMPhysicalRequestHooks {
+  beforeRequest?: (
+    event: LLMPhysicalRequestBeforeEvent,
+  ) => void | Promise<void>;
+  afterRequest?: (
+    event: LLMPhysicalRequestAfterEvent,
+  ) => void | Promise<void>;
+}
+
 export interface LLMResult {
   /** Official model output (message.content). Never filled from reasoning. */
   text: string | null;
@@ -63,6 +90,7 @@ export interface LLMGenerateOptions {
   queuePriority?: LLMQueuePriority;
   onQueueState?: (state: LLMQueueState) => void;
   onProgress?: (metrics: LLMRequestMetrics) => void;
+  physicalRequestHooks?: LLMPhysicalRequestHooks;
   requestConfig?: LLMRequestConfig;
 }
 
