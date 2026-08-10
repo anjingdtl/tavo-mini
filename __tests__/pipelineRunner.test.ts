@@ -443,6 +443,38 @@ test('resume refuses an incomplete legacy task before changing its status or cal
   expect(mockCallLLMResult).not.toHaveBeenCalled();
 });
 
+test('resume refuses current-workflow tasks with legacy budget before touching saved chapter text', async () => {
+  const protectedChapter: Chapter = {
+    ...chapter,
+    content: '用户已保存的章节正文',
+  };
+  mockStore.tasks.push({
+    id: 'legacy-budget-resume',
+    targetType: 'chapter',
+    targetId: protectedChapter.id,
+    status: 'interrupted',
+    stageResults: [],
+    finalText: null,
+    error: '旧预算任务',
+    outlineWorkflowVersion: 4,
+    contextBudgetVersion: 4,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    resolvedAt: null,
+  });
+  const { resumePipeline } = require('../src/services/pipelineRunner');
+
+  await expect(
+    resumePipeline('legacy-budget-resume', protectedChapter),
+  ).rejects.toMatchObject({
+    code: 'LEGACY_PIPELINE_RESUME_BLOCKED',
+  });
+  expect(mockStore.persistTaskStatus).not.toHaveBeenCalled();
+  expect(mockCallLLMResult).not.toHaveBeenCalled();
+  expect(mockSaveDraft).not.toHaveBeenCalled();
+  expect(protectedChapter.content).toBe('用户已保存的章节正文');
+});
+
 test('outline draft that only returns reasoning is failed instead of saved as an empty success', async () => {
   mockGetPipelineConfig.mockResolvedValue(
     baseConfig({ pipelineMode: 'noReview' }),

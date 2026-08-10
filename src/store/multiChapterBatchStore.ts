@@ -376,9 +376,12 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
       set({ error: null });
       const batch = get().batch;
       if (!batch) return;
-      if (Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION) {
+      if (
+        Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
+        Number(batch.contextBudgetVersion) !== CURRENT_CONTEXT_BUDGET_VERSION
+      ) {
         const error = Object.assign(
-          new Error('该批次使用旧版生成流程，不能继续；请按新版重新规划剩余章节。'),
+          new Error('该批次使用旧版生成流程或预算协议，不能继续；请按新版重新规划剩余章节。'),
           { code: 'BATCH_LEGACY_WORKFLOW_BLOCKED' },
         );
         set({ error: error.message });
@@ -457,7 +460,9 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         }
         if (
           Number(legacyBatch.outlineWorkflowVersion) ===
-          CURRENT_OUTLINE_WORKFLOW_VERSION
+            CURRENT_OUTLINE_WORKFLOW_VERSION &&
+          Number(legacyBatch.contextBudgetVersion) ===
+            CURRENT_CONTEXT_BUDGET_VERSION
         ) {
           throw new Error('当前批次已是新版，无需重新规划');
         }

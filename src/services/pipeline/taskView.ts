@@ -57,7 +57,7 @@ export function resolveStageCheckpoints(params: {
   return projectStageResultsToCheckpoints(params.stageResults || [], {
     includeBrief:
       [3, 4].includes(Number(params.outlineWorkflowVersion)) &&
-      [3, 4].includes(Number(params.contextBudgetVersion)),
+      [3, 4, 5].includes(Number(params.contextBudgetVersion)),
   });
 }
 

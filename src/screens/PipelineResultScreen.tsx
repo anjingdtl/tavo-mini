@@ -435,7 +435,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     s => s.status === 'success',
   );
   const isCurrentTask =
-    Number(task.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION;
+    Number(task.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION &&
+    Number(task.contextBudgetVersion) === CURRENT_CONTEXT_BUDGET_VERSION;
   const canResumeFailed =
     task.targetType === 'chapter' &&
     isCurrentTask &&
@@ -451,7 +452,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const isCurrentStructuredTask = (() => {
     if (
       Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
-      ![3, 4].includes(Number(task.contextBudgetVersion)) ||
+      Number(task.contextBudgetVersion) !== CURRENT_CONTEXT_BUDGET_VERSION ||
       !task.pipelineContextJson
     ) {
       return false;

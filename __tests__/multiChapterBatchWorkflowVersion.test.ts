@@ -2,7 +2,7 @@
  * Multi-chapter batch — frozen protocol-version propagation (§4.4).
  *
  * The batch row freezes outlineWorkflowVersion / contextBudgetVersion ONCE
- * at creation (CURRENT = 3/4 for new batches; migrated legacy batches stay 1).
+ * at creation (CURRENT = 4/5 for new batches; migrated legacy batches stay 1).
  * Every chapter task created by the batch state machine must COPY the batch
  * row versions — never re-read the app default mid-batch. A single batch
  * never mixes versions across its child tasks.

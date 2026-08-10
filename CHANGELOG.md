@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.11.41] - 2026-08-10
+
+### Fixed
+
+- **大纲流水线 Budget V5**：Draft / Review / FactCheck / Brief / Final 五次独立请求统一使用 `context_window × 20%` 弹性输出 reservation，并受模型输出上限约束，彻底退出旧的 50/15/15/20 固定拆分。
+- **预算入口收束**：Context Auto 不再写入旧阶段固定预算，LLM Settings 删除旧比例同步入口，Pipeline Config 删除四阶段手工 Max Tokens 控件。
+- **旧任务边界**：旧 Budget 任务不再 Resume 或继续 Batch，阻断发生在模型调用和任务状态修改之前，已保存章节正文保持不变；Schema 50、Story Memory 非阻塞定稿和 request ledger 保持不变。
+
+### Validation
+
+- `npm run verify` 通过：361 个测试套件通过，2928 个测试通过；正式 APK 已完成签名构建与模拟器覆盖安装。
+- 真实 LLM 验证：3 次单章五阶段成功，3 章 Batch 成功 3/3，16 次总调用中包含 1 次 FactCheck reasoning-only 自动重试。
+
 ## [2.11.40] - 2026-08-09
 
 ### Added

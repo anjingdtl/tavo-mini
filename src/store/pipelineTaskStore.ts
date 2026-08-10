@@ -38,8 +38,8 @@ interface PipelineTaskState {
     versions?: {
       /** Frozen outline workflow version (1 = Legacy, 2 = V2, 3 = V3.2, 4 = current). */
       outlineWorkflowVersion: 1 | 2 | 3 | 4;
-      /** Frozen context budget version (1 = Legacy, 2 = V2, 3 = V3). */
-      contextBudgetVersion: 1 | 2 | 3 | 4;
+      /** Frozen context budget version (1 = Legacy, 2–4 = historical, 5 = current). */
+      contextBudgetVersion: 1 | 2 | 3 | 4 | 5;
     },
   ) => Promise<string>;
   /**
@@ -291,7 +291,9 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     };
     const checkpointStages: PipelineCheckpointStage[] =
       [3, 4].includes(Number(task.outlineWorkflowVersion)) &&
-      (task.contextBudgetVersion === 3 || task.contextBudgetVersion === 4)
+      (task.contextBudgetVersion === 3 ||
+        task.contextBudgetVersion === 4 ||
+        task.contextBudgetVersion === 5)
         ? ['draft', 'review', 'factCheck', 'brief', 'proof']
         : ['draft', 'review', 'factCheck', 'proof'];
     // Persist parent + pending checkpoints in ONE transaction BEFORE

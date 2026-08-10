@@ -14,8 +14,10 @@ import {
 } from '../src/services/pipelineTaskContext';
 import {
   DEFAULT_OUTLINE_WORKFLOW_VERSION,
+  CURRENT_CONTEXT_BUDGET_VERSION,
   shouldFreezeOutlineWorkflowV2,
   shouldFreezeOutlineWorkflowV3,
+  type ContextBudgetVersion,
   type OutlineWorkflowVersion,
 } from '../src/services/pipeline/outlineWorkflowVersion';
 import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
@@ -222,5 +224,11 @@ describe('snapshot outlineWorkflowVersion round-trip', () => {
   test('type-level: version allows historical 1 | 2 | 3 and current 4', () => {
     const v: OutlineWorkflowVersion = 4;
     expect(v).toBe(4);
+  });
+
+  test('current context budget version is V5 for the independent elastic stages', () => {
+    const v: ContextBudgetVersion = 5;
+    expect(v).toBe(CURRENT_CONTEXT_BUDGET_VERSION);
+    expect(CURRENT_CONTEXT_BUDGET_VERSION).toBe(5);
   });
 });

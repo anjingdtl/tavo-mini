@@ -28,8 +28,10 @@ export function getPipelineStageOrder(
 ): PipelineStageName[] {
   const isStructured =
     [3, 4].includes(Number(versions?.outlineWorkflowVersion)) &&
-    [3, 4].includes(Number(versions?.contextBudgetVersion));
-  const isCurrent = Number(versions?.outlineWorkflowVersion) === 4;
+    [3, 4, 5].includes(Number(versions?.contextBudgetVersion));
+  const isCurrent =
+    Number(versions?.outlineWorkflowVersion) === 4 &&
+    Number(versions?.contextBudgetVersion) === 5;
   if (isCurrent) return ['draft', 'review', 'factCheck', 'brief', 'proof'];
   // Batch form modes map to single-chapter modes (see mapBatchModeToPipelineMode).
   if (mode === 'draft_only') return ['draft'];

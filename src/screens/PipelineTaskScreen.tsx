@@ -58,7 +58,10 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function isRecoverable(task: PipelineTask): boolean {
-  if (Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION) {
+  if (
+    Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
+    Number(task.contextBudgetVersion) !== CURRENT_CONTEXT_BUDGET_VERSION
+  ) {
     return false;
   }
   if (task.status === 'interrupted' && task.recoverable !== false) {
@@ -75,7 +78,8 @@ function isRecoverable(task: PipelineTask): boolean {
 
 function isLegacyIncomplete(task: PipelineTask): boolean {
   return (
-    Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION &&
+    (Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
+      Number(task.contextBudgetVersion) !== CURRENT_CONTEXT_BUDGET_VERSION) &&
     ['failed', 'interrupted'].includes(task.status)
   );
 }
