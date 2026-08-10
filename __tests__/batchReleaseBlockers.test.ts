@@ -4,8 +4,8 @@
  * Each test here proves a defect found in the release audit — the test FAILS
  * on the audited HEAD and PASSES after the minimal fix:
  *
- *   RB-1  batch pipelineMode selection never reaches the single-chapter
- *         pipeline execution (UI mode vs real execution mismatch).
+ *   RB-1  the unified full batch pipeline reaches single-chapter execution
+ *         with the frozen reasoning tier (the old mode selector is removed).
  *   RB-2  adoption crash window: an 'adoption_previous' revision written but
  *         chapter content not yet written is short-circuited by the
  *         latestRevision idempotency check → empty chapter body + batch
@@ -165,8 +165,8 @@ function capturingRunner() {
 // ---------------------------------------------------------------------------
 // RB-1: batch pipelineMode must reach the single-chapter execution
 // ---------------------------------------------------------------------------
-describe('RB-1 batch mode reaches pipeline execution', () => {
-  it('passes the batch pipelineMode into the chapter pipeline run options', async () => {
+describe('RB-1 unified batch pipeline reaches execution', () => {
+  it('always runs the unified full pipeline and preserves the reasoning tier', async () => {
     await resetDb();
     await seedProject();
     await seedBatch('rb1', 1, 'draft_only', 'high');
@@ -179,9 +179,9 @@ describe('RB-1 batch mode reaches pipeline execution', () => {
     });
 
     expect(runner.calls.length).toBe(1);
-    // The batch mode selection MUST reach the pipeline execution layer
-    // (batch 'draft_only' maps to single-chapter 'noReview').
-    expect(runner.calls[0].options?.pipelineModeOverride).toBe('noReview');
+    // Generation mode is historical-only; every new batch uses the complete
+    // pipeline while retaining the user-selected reasoning tier.
+    expect(runner.calls[0].options?.pipelineModeOverride).toBe('full');
     expect(runner.calls[0].options?.pipelineReasoningEffortOverride).toBe('high');
   });
 });

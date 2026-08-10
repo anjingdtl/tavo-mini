@@ -5,7 +5,7 @@ export type AuditFormatterStage = 'review' | 'factCheck';
 export interface AuditFormatterInput {
   stage: AuditFormatterStage;
   candidate: string;
-  contractVersion?: 31 | 32;
+  contractVersion?: 31 | 32 | 33;
   legalSourceIds?: string[];
   /** Local receipt fields the body-free formatter must preserve. */
   requiredCoverageDimensions?: string[];
@@ -38,6 +38,7 @@ export function buildAuditFormatterPrompt(
           ),
         ),
       ];
+  const v33 = input.contractVersion === 33;
   const v32 = input.contractVersion === 32;
   const requiredCoverageDimensions = [
     ...new Set(
@@ -53,8 +54,24 @@ export function buildAuditFormatterPrompt(
         .filter(Boolean),
     ),
   ];
-  const semanticTemplate =
-    input.stage === 'review'
+  const semanticTemplate = v33
+    ? input.stage === 'review'
+      ? {
+          verdict: 'pass',
+          checked: requiredCoverageDimensions,
+          findings: [],
+          preserve: [],
+          ending: '',
+        }
+      : {
+          verdict: requiredFactRefs.length || requiredCoverageDimensions.length
+            ? 'pass'
+            : 'not_applicable',
+          checked: [...requiredCoverageDimensions, ...requiredFactRefs],
+          findings: [],
+          preserve: [],
+        }
+    : input.stage === 'review'
       ? {
           verdict: 'pass',
           findings: [],
@@ -82,11 +99,17 @@ export function buildAuditFormatterPrompt(
     {
       role: 'system',
       content: [
-        v32
+        v33
+          ? '你是一次性的当前协议 Audit Formatter，只整理候选中已有的语义判断，不新增审核意见。'
+          : v32
           ? '你是一次性的 V3.2 Audit Formatter，只整理候选中已有的语义判断，不新增审核意见。'
           : '你是一次性的 Audit Formatter，只整理已有判断，不新增审核意见；把候选审核结果整理成 V3.1 合同。',
         '不得重新分析，不得引入初稿、大纲、上下文、人物、世界书或任何长材料；不得创造新的 sourceId。',
-        v32
+        v33
+          ? `当前阶段：${input.stage === 'review' ? 'Review' : 'FactCheck'}。只输出当前阶段的单个 JSON 对象；顶层只能有 verdict、checked、findings，可选 preserve、ending；target 必须引用候选中已有的 Draft anchor，合法 anchor 列表为：${JSON.stringify(
+              legalSourceIds,
+            )}。`
+          : v32
           ? `当前阶段：${input.stage === 'review' ? 'Review' : 'FactCheck'}。只输出当前阶段的单个 JSON 对象，顶层不得出现 review、factCheck、payload、result 或其他包装键；每条保留的 finding 必须带 sourceId，且只能引用候选 manifest 中已有的 ID。Review 必须包含 verdict、findings、outlineAssessment、coverage；FactCheck 必须包含 verdict、findings、confirmedFactRefs、coverage。`
           : '只输出 schemaVersion=3 的 ' +
             input.stage +
@@ -98,7 +121,12 @@ export function buildAuditFormatterPrompt(
           : !v32
           ? 'FactCheck 合同必须包含 corrections、protectedFacts、hardConstraints 三个数组；corrections 可为空。'
           : '',
-        v32
+        v33
+          ? `checked 必须原样包含这些本地收据：${JSON.stringify([
+              ...requiredCoverageDimensions,
+              ...requiredFactRefs,
+            ])}；每条 finding 使用 target、level、issue、instruction。`
+          : v32
           ? `coverage.checkedDimensions 必须原样包含这些本地收据：${JSON.stringify(
               requiredCoverageDimensions,
             )}。${
@@ -109,10 +137,14 @@ export function buildAuditFormatterPrompt(
                 : ''
             }`
           : '',
-        v32
+        v33
+          ? '候选没有完整判断时使用 pass 与空 findings；不得创造新的 anchor、事实或修复要求。'
+          : v32
           ? '如果候选没有一条完整、可定位、可执行的 finding，只能输出 verdict=pass 与 findings=[]（FactCheck 有本地收据时不得输出 not_applicable）；不要把不完整判断改造成 finding。'
           : '',
-        v32 ? `仅允许按照这个顶层模板输出，不得新增包装层：${JSON.stringify(semanticTemplate)}` : '',
+        v32 || v33
+          ? `仅允许按照这个顶层模板输出，不得新增包装层：${JSON.stringify(semanticTemplate)}`
+          : '',
       ].join('\n'),
     },
     {
@@ -123,7 +155,9 @@ export function buildAuditFormatterPrompt(
         '候选原文开始',
         candidate,
         '候选原文结束',
-        v32
+        v33
+          ? '再次确认：只输出当前阶段的简化 JSON；保留候选中的判断，不能新增判断或 anchor。'
+          : v32
           ? '再次确认：输出必须是当前阶段的单个顶层 JSON；保留候选中的判断，不能新增判断或 sourceId；缺少完整判断时使用模板中的 pass 空 findings。'
           : '',
       ].join('\n'),

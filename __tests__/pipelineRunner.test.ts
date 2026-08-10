@@ -419,6 +419,30 @@ test('noReview: only draft is called, review/factCheck/proof are skipped', async
   );
 });
 
+test('resume refuses an incomplete legacy task before changing its status or calling the model', async () => {
+  mockStore.tasks.push({
+    id: 'legacy-resume',
+    targetType: 'chapter',
+    targetId: chapter.id,
+    status: 'interrupted',
+    stageResults: [],
+    finalText: null,
+    error: '旧任务',
+    outlineWorkflowVersion: 3,
+    contextBudgetVersion: 4,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    resolvedAt: null,
+  });
+  const { resumePipeline } = require('../src/services/pipelineRunner');
+
+  await expect(resumePipeline('legacy-resume', chapter)).rejects.toMatchObject({
+    code: 'LEGACY_PIPELINE_RESUME_BLOCKED',
+  });
+  expect(mockStore.persistTaskStatus).not.toHaveBeenCalled();
+  expect(mockCallLLMResult).not.toHaveBeenCalled();
+});
+
 test('outline draft that only returns reasoning is failed instead of saved as an empty success', async () => {
   mockGetPipelineConfig.mockResolvedValue(
     baseConfig({ pipelineMode: 'noReview' }),

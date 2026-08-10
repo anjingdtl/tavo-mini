@@ -36,8 +36,8 @@ interface PipelineTaskState {
     targetType: 'chapter' | 'freeform',
     targetId: number,
     versions?: {
-      /** Frozen outline workflow version (1 = Legacy, 2 = V2, 3 = V3). */
-      outlineWorkflowVersion: 1 | 2 | 3;
+      /** Frozen outline workflow version (1 = Legacy, 2 = V2, 3 = V3.2, 4 = current). */
+      outlineWorkflowVersion: 1 | 2 | 3 | 4;
       /** Frozen context budget version (1 = Legacy, 2 = V2, 3 = V3). */
       contextBudgetVersion: 1 | 2 | 3 | 4;
     },
@@ -290,7 +290,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       resolvedAt: null,
     };
     const checkpointStages: PipelineCheckpointStage[] =
-      task.outlineWorkflowVersion === 3 &&
+      [3, 4].includes(Number(task.outlineWorkflowVersion)) &&
       (task.contextBudgetVersion === 3 || task.contextBudgetVersion === 4)
         ? ['draft', 'review', 'factCheck', 'brief', 'proof']
         : ['draft', 'review', 'factCheck', 'proof'];

@@ -29,6 +29,10 @@ import {
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
 import { reconcileMultiChapterBatch } from '../src/services/multiChapterBatch/reconcileMultiChapterBatch';
 import { BatchLeaseSession } from '../src/services/multiChapterBatch/leaseSession';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -271,11 +275,13 @@ describe('集成：batch run_pipeline 长请求期间 lease 心跳（CL-05）', 
         stageResults: [],
         finalText: null,
         error: null,
+        outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         resolvedAt: null,
       },
-      stages: ['draft', 'review', 'factCheck', 'proof'],
+      stages: ['draft', 'review', 'factCheck', 'brief', 'proof'],
       runNo: 1,
       llmConfigSnapshotJson: '{}',
       reason: 'batch_start',

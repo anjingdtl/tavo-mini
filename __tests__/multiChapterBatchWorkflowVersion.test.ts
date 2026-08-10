@@ -186,16 +186,16 @@ describe('multi-chapter batch workflow version freeze (§4.4)', () => {
     }
   });
 
-  it('legacy batch (migrated version 1) keeps ALL child tasks at V1', async () => {
+  it('legacy batch (migrated version 1) stops before creating or resuming children', async () => {
     await resetDb();
     await seedProject();
     await seedBatch('b-legacy', 2, {
       outlineWorkflowVersion: 1,
       contextBudgetVersion: 1,
     });
-    const batch = await getBatchById('b-legacy');
-    expect(batch?.outlineWorkflowVersion).toBe(1);
-    expect(batch?.contextBudgetVersion).toBe(1);
+    const legacyBatch = await getBatchById('b-legacy');
+    expect(legacyBatch?.outlineWorkflowVersion).toBe(1);
+    expect(legacyBatch?.contextBudgetVersion).toBe(1);
 
     const runner = completingRunner();
     await reconcileMultiChapterBatch('b-legacy', {
@@ -203,12 +203,12 @@ describe('multi-chapter batch workflow version freeze (§4.4)', () => {
       runPipeline: runner.run as any,
     });
 
+    const batch = await getBatchById('b-legacy');
+    expect(batch?.status).toBe('paused_user');
+    expect(batch?.errorCode).toBe('BATCH_LEGACY_WORKFLOW_BLOCKED');
+    expect(runner.calls).toHaveLength(0);
     const versions = await pipelineTaskVersions();
-    expect(versions.length).toBe(2);
-    for (const v of versions) {
-      expect(v.outline).toBe(1);
-      expect(v.budget).toBe(1);
-    }
+    expect(versions).toEqual([]);
   });
 
   it('mixed batch versions never happen: children always match the frozen row', async () => {
@@ -243,6 +243,9 @@ describe('multi-chapter batch workflow version freeze (§4.4)', () => {
       runPipeline: runner.run as any,
     });
 
+    const batch = await getBatchById('b-mixed');
+    expect(batch?.status).toBe('paused_user');
+    expect(runner.calls).toHaveLength(0);
     const versions = await pipelineTaskVersions();
     for (const v of versions) {
       expect(v.outline).toBe(1);

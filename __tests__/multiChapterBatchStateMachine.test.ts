@@ -38,6 +38,10 @@ import type {
   MultiChapterBatchItemRow,
   MultiChapterBatchRow,
 } from '../src/data/repositories/multiChapterBatchRepository';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 // ---------------------------------------------------------------------------
 // Part 1: decision table
@@ -69,8 +73,8 @@ function batchRow(
     usedLlmCalls: 0,
     usedInputTokens: 0,
     usedOutputTokens: 0,
-    outlineWorkflowVersion: 1,
-    contextBudgetVersion: 1,
+    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+    contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
     pauseReason: null,
     errorCode: null,
     errorMessage: null,

@@ -1061,6 +1061,84 @@ export function buildFactCheckV32Messages(params: {
   ];
 }
 
+/** Current compact semantic contract. Machine IDs/envelopes are local. */
+export function buildReviewV33Messages(params: {
+  canonicalDraft: string;
+  context: ReviewContext;
+}): ChatMessage[] {
+  const base = buildReviewV2Messages({
+    taggedDraft: params.canonicalDraft,
+    context: params.context,
+    draftHash: '',
+  });
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 ShineWriter 当前统一流水线的 Review 评估器。保持 low Thinking；最终 JSON 必须写入 message.content。',
+        '只做语义判断，不输出正文、Markdown、推理过程、schema、hash、sourceId 或本地信封。',
+        '顶层只输出 verdict、checked、findings，可选 preserve、ending。',
+        'verdict 只能是 pass 或 needs_revision；checked 必须原样包含这五个已检查维度：opening_continuity、outline_execution、character、prose、ending_boundary。',
+        'findings 可为空；每项只写 target（必须是 Draft 中的 anchor，如 draft-p-001）、level（hard/required/advisory）、issue、instruction，可选 preserve。不得创造 Draft 中不存在的 anchor。',
+        'needs_revision 必须至少有一条 hard 或 required finding；没有完整判断时使用 pass 与空 findings。',
+        JSON.stringify({
+          verdict: 'pass',
+          checked: [
+            'opening_continuity',
+            'outline_execution',
+            'character',
+            'prose',
+            'ending_boundary',
+          ],
+          findings: [],
+          preserve: [],
+          ending: '',
+        }),
+      ].join('\n'),
+    },
+    { role: 'user', content: base[1].content },
+  ];
+}
+
+export function buildFactCheckV33Messages(params: {
+  canonicalDraft: string;
+  context: FactCheckContext;
+  inputFactRefs?: readonly string[];
+  inputDimensions?: readonly string[];
+}): ChatMessage[] {
+  const base = buildFactCheckV2Messages({
+    taggedDraft: params.canonicalDraft,
+    context: params.context,
+    draftHash: '',
+  });
+  const checked = [
+    ...(params.inputDimensions || []).map(String),
+    ...(params.inputFactRefs || []).map(String),
+  ];
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 ShineWriter 当前统一流水线的 FactCheck 事实核查器。保持 low Thinking；最终 JSON 必须写入 message.content。',
+        '只做语义判断，不输出正文、Markdown、推理过程、schema、hash、sourceId 或事实数据库正文。',
+        '顶层只输出 verdict、checked、findings，可选 preserve。',
+        'checked 是必须保留的核查收据，必须逐字包含本次冻结输入的全部维度和事实 ID；不能新增或改写 ID。',
+        'verdict 只能是 pass、needs_revision、not_applicable；存在任何 checked 输入时不得使用 not_applicable。',
+        'findings 可为空；每项只写 target（必须是 Draft 中的 anchor，如 draft-p-001）、level（hard/required/advisory）、issue、instruction，可选 preserve。不得创造 Draft 中不存在的 anchor。',
+        'needs_revision 必须至少有一条 hard 或 required finding；没有完整事实冲突时使用 pass 与空 findings。',
+        `本次必须写入 checked 的收据：${JSON.stringify([...new Set(checked)])}`,
+        JSON.stringify({
+          verdict: checked.length ? 'pass' : 'not_applicable',
+          checked: [...new Set(checked)],
+          findings: [],
+          preserve: [],
+        }),
+      ].join('\n'),
+    },
+    { role: 'user', content: base[1].content },
+  ];
+}
+
 /** One-shot format repair for Review V2 (same policy as V1). */
 export function buildReviewV2RepairMessages(params: {
   taggedDraft: string;

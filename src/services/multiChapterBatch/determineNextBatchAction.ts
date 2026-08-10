@@ -13,6 +13,7 @@ import type {
   MultiChapterBatchRow,
 } from '../../data/repositories/multiChapterBatchRepository';
 import type { PipelineStageAttemptRow } from '../../data/repositories/pipelineStageAttemptRepository';
+import { CURRENT_OUTLINE_WORKFLOW_VERSION } from '../pipeline/outlineWorkflowVersion';
 
 export type MultiChapterBatchAction =
   | { type: 'plan_batch' }
@@ -21,6 +22,8 @@ export type MultiChapterBatchAction =
   | { type: 'create_pipeline_task'; ordinal: number }
   | { type: 'run_pipeline'; ordinal: number }
   | { type: 'resume_pipeline'; ordinal: number }
+  | { type: 'pause_legacy_pipeline'; ordinal: number }
+  | { type: 'pause_legacy_batch' }
   | { type: 'wait_until'; timestamp: number }
   | { type: 'pause_unknown_outcome'; ordinal: number }
   | { type: 'pause_response_invalid'; ordinal: number }
@@ -40,6 +43,8 @@ export interface DetermineBatchActionInput {
   items: MultiChapterBatchItemRow[];
   /** taskId → persisted pipeline task status (from SQLite, not UI). */
   taskStatuses?: Record<string, string>;
+  /** taskId → frozen workflow version, used to block old Resume paths. */
+  taskWorkflowVersions?: Record<string, number>;
   /** Latest attempt per task for the current item (failure-driven). */
   latestAttempts?: Record<string, PipelineStageAttemptRow | null>;
   /** Effective batch budget check (max vs used). */
@@ -73,6 +78,11 @@ export function determineNextBatchAction(
   }
   if (PAUSED_STATUSES.has(batch.status)) {
     return { type: 'no_op', reason: `batch_paused:${batch.status}` };
+  }
+  if (
+    Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION
+  ) {
+    return { type: 'pause_legacy_batch' };
   }
   if (batch.status === 'draft') {
     // Created but never planned — planner must run (UI flow) before confirm.
@@ -133,11 +143,17 @@ function decideItemAction(
         : { type: 'create_pipeline_task', ordinal };
 
     case 'chapter_ready':
+      if (isLegacyIncompleteTask(input, item.activePipelineTaskId)) {
+        return { type: 'pause_legacy_pipeline', ordinal };
+      }
       return item.activePipelineTaskId == null
         ? { type: 'create_pipeline_task', ordinal }
         : { type: 'run_pipeline', ordinal };
 
     case 'creating_pipeline_task':
+      if (isLegacyIncompleteTask(input, item.activePipelineTaskId)) {
+        return { type: 'pause_legacy_pipeline', ordinal };
+      }
       return item.activePipelineTaskId == null
         ? { type: 'create_pipeline_task', ordinal }
         : { type: 'run_pipeline', ordinal };
@@ -146,6 +162,9 @@ function decideItemAction(
       return decideRunningPipeline(input, item);
 
     case 'waiting_retry': {
+      if (isLegacyIncompleteTask(input, item.activePipelineTaskId)) {
+        return { type: 'pause_legacy_pipeline', ordinal };
+      }
       const retryAt = item.nextRetryAt ?? 0;
       if (retryAt <= Date.now()) {
         return { type: 'run_pipeline', ordinal };
@@ -196,6 +215,9 @@ function decideRunningPipeline(
     // Unknown task (deleted externally) — fail closed, never auto-recreate.
     return { type: 'pause_unknown_outcome', ordinal };
   }
+  if (isLegacyIncompleteTask(input, taskId)) {
+    return { type: 'pause_legacy_pipeline', ordinal };
+  }
   if (taskStatus === 'idle' || taskStatus === 'queued') {
     // Task created but never started → first run.
     return { type: 'run_pipeline', ordinal };
@@ -207,6 +229,13 @@ function decideRunningPipeline(
     taskStatus === 'proofing' ||
     taskStatus === 'interrupted'
   ) {
+    if (
+      input.taskWorkflowVersions &&
+      Number(input.taskWorkflowVersions[taskId]) !==
+        CURRENT_OUTLINE_WORKFLOW_VERSION
+    ) {
+      return { type: 'pause_legacy_pipeline', ordinal };
+    }
     // Already started (or process-dead mid-run) → resume.
     return { type: 'resume_pipeline', ordinal };
   }
@@ -227,6 +256,9 @@ function decideFailedItem(
   const taskId = item.activePipelineTaskId;
   if (!taskId) {
     return { type: 'pause_unknown_outcome', ordinal };
+  }
+  if (isLegacyIncompleteTask(input, taskId)) {
+    return { type: 'pause_legacy_pipeline', ordinal };
   }
   const latest = input.latestAttempts?.[taskId] ?? null;
   const failureClass = latest?.failureClass;
@@ -258,4 +290,18 @@ function decideFailedItem(
   }
   // Generic failure without classification → pause for the user.
   return { type: 'pause_unknown_outcome', ordinal };
+}
+
+function isLegacyIncompleteTask(
+  input: DetermineBatchActionInput,
+  taskId: string | null,
+): boolean {
+  if (!taskId || !input.taskWorkflowVersions) return false;
+  const status = input.taskStatuses?.[taskId];
+  return (
+    Number(input.taskWorkflowVersions[taskId]) !==
+      CURRENT_OUTLINE_WORKFLOW_VERSION &&
+    status !== 'completed' &&
+    status !== 'cancelled'
+  );
 }

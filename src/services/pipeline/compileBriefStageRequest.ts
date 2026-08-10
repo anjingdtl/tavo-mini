@@ -6,6 +6,8 @@ import {
   briefRequiredSourceIds,
   briefRequiredSourceIdsV31,
   briefRequiredSourceIdsV32,
+  briefRequiredSourceIdsV33,
+  type BriefCompilerInputV33,
   briefWarningCount,
   type BriefCompilerInputV32,
   type BriefCompilerInputV31,
@@ -32,7 +34,11 @@ export interface BriefBudget {
 export interface CompiledBriefStageRequest {
   stage: 'brief';
   messages: ChatMessage[];
-  input: BriefCompilerInputV1 | BriefCompilerInputV31 | BriefCompilerInputV32;
+  input:
+    | BriefCompilerInputV1
+    | BriefCompilerInputV31
+    | BriefCompilerInputV32
+    | BriefCompilerInputV33;
   budget: BriefBudget;
   estimatedInputTokens: number;
   reservedOutputTokens: number;
@@ -46,7 +52,8 @@ export interface CompiledBriefStageRequest {
 type BriefCompilerInput =
   | BriefCompilerInputV1
   | BriefCompilerInputV31
-  | BriefCompilerInputV32;
+  | BriefCompilerInputV32
+  | BriefCompilerInputV33;
 
 function isV31Input(input: BriefCompilerInput): input is BriefCompilerInputV31 {
   return input.schemaVersion === 2;
@@ -56,16 +63,24 @@ function isV32Input(input: BriefCompilerInput): input is BriefCompilerInputV32 {
   return input.schemaVersion === 3;
 }
 
+function isV33Input(input: BriefCompilerInput): input is BriefCompilerInputV33 {
+  return input.schemaVersion === 4;
+}
+
 function requiredIds(input: BriefCompilerInput): string[] {
   return isV31Input(input)
     ? briefRequiredSourceIdsV31(input)
+    : isV33Input(input)
+    ? briefRequiredSourceIdsV33(input)
     : isV32Input(input)
     ? briefRequiredSourceIdsV32(input)
     : briefRequiredSourceIds(input);
 }
 
 function warningCount(input: BriefCompilerInput): number {
-  if (!isV31Input(input) && !isV32Input(input)) return briefWarningCount(input);
+  if (!isV31Input(input) && !isV32Input(input) && !isV33Input(input)) {
+    return briefWarningCount(input);
+  }
   return [
     ...(input.review?.advisoryNotes || []),
     ...(input.review?.executableCorrections || []),
@@ -93,25 +108,26 @@ export function calculateBriefBudget(params: {
 }): BriefBudget {
   const maxOutput = Math.max(0, Number(params.modelMaxOutputTokens) || 0);
   const v32 = isV32Input(params.input);
+  const v33 = isV33Input(params.input);
   const complexityFloor =
     512 +
     requiredIds(params.input).length * 140 +
     warningCount(params.input) * 60;
-  const computedFloor = v32
+  const computedFloor = v32 || v33
     ? Math.max(768, complexityFloor)
     : clamp(complexityFloor, 768, 2048);
   const requestedVisibleFloor =
     Number(params.visibleOutputFloor) > 0
       ? Number(params.visibleOutputFloor)
       : 0;
-  const visibleOutputFloor = v32
+  const visibleOutputFloor = v32 || v33
     ? Math.max(768, requestedVisibleFloor, computedFloor)
     : clamp(Math.max(requestedVisibleFloor, computedFloor), 768, 2048);
   const requestedReasoningHeadroom =
     Number(params.reasoningHeadroom) > 0
       ? Number(params.reasoningHeadroom)
       : 1200;
-  const reasoningHeadroom = v32
+  const reasoningHeadroom = v32 || v33
     ? Math.max(1024, requestedReasoningHeadroom)
     : clamp(requestedReasoningHeadroom, 1024, 2048);
   // `max_tokens` is the elastic per-request provider reservation.  The
@@ -161,6 +177,36 @@ export function buildBriefCompilerMessages(
   input: BriefCompilerInput,
 ): ChatMessage[] {
   const allowedSourceIds = requiredIds(input);
+  if (isV33Input(input)) {
+    const envelope = input.immutableEnvelope;
+    return [
+      {
+        role: 'system',
+        content: [
+          '你是 ShineWriter 当前统一流水线的 Brief Compiler。Brief 思考强度跟随用户档位；只把已归一化的 Review/FactCheck 语义压缩为 Final 可执行要求。',
+          '不得重新审阅 Draft，不得新增事实、人物或剧情，不得输出正文、Markdown 或推理过程。',
+          '只输出 strategy、actions、preserve、ending 四类语义字段；不要输出 schema、hash、sourceId 白名单或本地不可变信封。',
+          'actions 每项必须包含 covers（只能逐字使用短 ID）、instruction；可选 preserve。required/hard 短 ID 必须至少被一条 action 覆盖；同一 ID 不得被相互矛盾的 action 覆盖。',
+          `允许的短 ID：${JSON.stringify(envelope.allowedSourceIds)}`,
+          `required/hard 短 ID：${JSON.stringify(envelope.requiredSourceIds)}`,
+          'ending 只能复述已给出的结尾边界；preserve 只能保留输入中已有的事实或约束。',
+          JSON.stringify({
+            strategy: '保持前章状态自然衔接，只执行已确认的必要修订。',
+            actions: [],
+            preserve: [],
+            ending: envelope.endingBoundary,
+          }),
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          review: input.review,
+          factCheck: input.factCheck,
+        }),
+      },
+    ];
+  }
   if (isV32Input(input)) {
     return [
       {

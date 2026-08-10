@@ -5,26 +5,12 @@ import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
 import * as db from '../services/database';
 import type { Preset } from '../types/novel';
-import type { PipelineConfig, PipelineMode } from '../types/pipeline';
+import type { PipelineConfig } from '../types/pipeline';
 import {
   DEFAULT_PIPELINE_REASONING_EFFORT,
   PIPELINE_REASONING_EFFORT_OPTIONS,
   type PipelineReasoningTier,
 } from '../services/pipeline/reasoningPolicy';
-
-const MODE_OPTIONS: { value: PipelineMode; label: string }[] = [
-  { value: 'noReview', label: '无审核' },
-  { value: 'twoStage', label: '仅评估' },
-  { value: 'conditional', label: '仅核查' },
-  { value: 'full', label: '完整' },
-];
-
-const MODE_HELP: Record<PipelineMode, string> = {
-  noReview: '仅生成初稿，不运行任何评估、核查或终审，速度最快。',
-  twoStage: '草稿生成后只运行审阅/评估，再由终审根据评估意见修订完稿。',
-  conditional: '草稿生成后只运行事实核查员，再由终审根据核查结果修订完稿。',
-  full: '保留草稿、审阅、事实核查、终审四阶段，质量优先但耗时最长。',
-};
 
 const STAGE_LABELS = [
   { key: 'draft', name: '初稿作者', maxKey: 'draftMaxTokens' as const, presetKey: 'draftPresetId' as const },
@@ -34,9 +20,9 @@ const STAGE_LABELS = [
 ];
 
 const DEFAULT_CONFIG: PipelineConfig = {
-  pipelineMode: 'twoStage',
+  pipelineMode: 'full',
   reasoningEffort: DEFAULT_PIPELINE_REASONING_EFFORT,
-  reasoningProfileVersion: 3,
+  reasoningProfileVersion: 5,
   draftPresetId: null,
   reviewPresetId: null,
   factCheckPresetId: null,
@@ -45,13 +31,6 @@ const DEFAULT_CONFIG: PipelineConfig = {
   reviewMaxTokens: 1500,
   factCheckMaxTokens: 1500,
   proofMaxTokens: 4000,
-};
-
-const STAGES_FOR_MODE: Record<PipelineMode, typeof STAGE_LABELS> = {
-  noReview: STAGE_LABELS.filter((s) => s.key === 'draft'),
-  twoStage: STAGE_LABELS.filter((s) => s.key !== 'factCheck'),
-  conditional: STAGE_LABELS.filter((s) => s.key !== 'review'),
-  full: STAGE_LABELS,
 };
 
 export const PipelineConfigScreen: React.FC = () => {
@@ -148,19 +127,7 @@ export const PipelineConfigScreen: React.FC = () => {
       <Header title="流水线配置" />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>生成模式</Text>
-          <SegmentedControl
-            value={config.pipelineMode}
-            options={MODE_OPTIONS}
-            onChange={(pipelineMode) => setConfig({ ...config, pipelineMode })}
-          />
-          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            {MODE_HELP[config.pipelineMode]}
-          </Text>
-        </View>
-
-        <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>V3 思考强度</Text>
+          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>思考强度</Text>
           <SegmentedControl
             value={(config.reasoningEffort === 'medium'
               ? DEFAULT_PIPELINE_REASONING_EFFORT
@@ -177,19 +144,19 @@ export const PipelineConfigScreen: React.FC = () => {
             {PIPELINE_REASONING_EFFORT_OPTIONS.find(
               option => option.value === (config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT),
             )?.description}
-            {' '}Draft/Final 跟随用户档位；Review/FactCheck/Brief 固定使用 low Thinking，独立分配可见 JSON 与推理余量。
+            {' '}Draft、Brief、Final 跟随用户档位；Review/FactCheck 固定使用 low Thinking。
           </Text>
           <Text
             style={[styles.hint, { color: theme.colors.textSecondary }]}
           >
-            新任务保存 low/high/max。上下文容量不足时会记录 effective 降级；Brief 空间不足只使用本地整理，不会静默关闭 Thinking。历史任务恢复时继续使用冻结快照。
+            新任务统一执行 Draft → Review 与 FactCheck → Brief → Final；历史已完成任务仍可查看，旧未完成任务需按新版重新生成。
           </Text>
         </View>
 
         <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
           为每个阶段绑定一个写作预设。未绑定时将使用项目默认预设。
         </Text>
-        {STAGES_FOR_MODE[config.pipelineMode].map((stage) => (
+        {STAGE_LABELS.map((stage) => (
           <View key={stage.key} style={[styles.card, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>{stage.name}</Text>
             {renderPresetPicker(stage.presetKey, '绑定预设')}

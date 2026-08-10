@@ -2,7 +2,7 @@
  * Multi-chapter batch screen (Phase 8) — outline mode only.
  *
  * One screen with internal views:
- *   1. create   — summary, N, target words, mode, optional budget caps
+ *   1. create   — summary, N and target words
  *   2. preview  — editable plan (title/synopsis/beats/carryIn/carryOut/words)
  *   3. running  — serial progress, attempts, retry time, budget usage
  *   4. paused   — cause-specific actions
@@ -40,6 +40,7 @@ import {
   getPipelineStageOrder,
   STAGE_LABELS,
 } from '../utils/stages';
+import { CURRENT_OUTLINE_WORKFLOW_VERSION } from '../services/pipeline/outlineWorkflowVersion';
 
 type BatchView = 'create' | 'preview' | 'running' | 'paused' | 'report';
 
@@ -54,7 +55,6 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     sourcePrompt: '',
     chapterCount: String(BATCH_DEFAULT_CHAPTERS),
     targetWords: String(BATCH_DEFAULT_TARGET_WORDS),
-    pipelineMode: 'full' as 'draft_only' | 'fast' | 'full',
   });
   const [edited, setEdited] = useState<BatchChapterPlanItem[]>([]);
 
@@ -155,7 +155,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
         sourcePrompt: form.sourcePrompt.trim(),
         chapterCount: count,
         targetWordsPerChapter: Number(form.targetWords) || BATCH_DEFAULT_TARGET_WORDS,
-        pipelineMode: form.pipelineMode,
+        pipelineMode: 'full',
       });
       const plan = await store.runPlanner(id);
       setEdited(plan.chapters.map(c => ({ ...c })));
@@ -185,6 +185,16 @@ export function MultiChapterBatchScreen(): React.ReactElement {
 
   const handleResume = async () => {
     if (!store.batch) return;
+    if (
+      Number(store.batch.outlineWorkflowVersion) !==
+      CURRENT_OUTLINE_WORKFLOW_VERSION
+    ) {
+      Alert.alert(
+        '旧版批次已停止恢复',
+        '已完成章节保留。请按新版重新规划剩余章节。',
+      );
+      return;
+    }
     const proceed = await new Promise<boolean>(resolve => {
       Alert.alert(
         '确认后继续批次',
@@ -209,6 +219,18 @@ export function MultiChapterBatchScreen(): React.ReactElement {
       await store.pause(store.batch.id);
     } catch {
       // store surfaces errors via state
+    }
+  };
+
+  const handleRestartLegacyBatch = async () => {
+    if (!store.batch) return;
+    try {
+      await store.restartLegacyBatch(store.batch.id);
+      setEdited(useMultiChapterBatchStore.getState().plan?.chapters.map(c => ({ ...c })) || []);
+      setView('preview');
+      Alert.alert('新版批次已创建', '已保留旧批次历史，并把未完成章节转入新版批次。请确认计划后开始写作。');
+    } catch (error: any) {
+      Alert.alert('无法创建新版批次', String(error?.message || '请稍后重试'));
     }
   };
 
@@ -292,11 +314,6 @@ export function MultiChapterBatchScreen(): React.ReactElement {
                   onChangeText={t => setForm(f => ({ ...f, targetWords: t }))}
                 />
               </Field>
-              <SegmentedMode
-                theme={theme}
-                value={form.pipelineMode}
-                onChange={v => setForm(f => ({ ...f, pipelineMode: v }))}
-              />
             </Section>
             <View style={styles.row}>
               <Button
@@ -313,7 +330,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
           <>
             {store.batch?.reasoningEffort ? (
               <Card style={styles.cardMb}>
-                <Text style={[styles.bold, { color: theme.colors.textPrimary }]}>V3 思考强度</Text>
+                <Text style={[styles.bold, { color: theme.colors.textPrimary }]}>思考强度</Text>
                 <Text style={[styles.mt4, { color: theme.colors.accent }]}>批次已冻结：{reasoningEffortLabel(store.batch.reasoningEffort)}</Text>
                 <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>后续章节任务会继承该档位；修改流水线配置不会影响本批次。</Text>
               </Card>
@@ -392,6 +409,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
             theme={theme}
             store={store}
             onResume={handleResume}
+            onRestartLegacy={handleRestartLegacyBatch}
             onCancel={handleCancel}
             onViewTask={() => {
               // F2-07: 直达当前章的流水线结果页（查看失败详情/已成功阶段）。
@@ -424,32 +442,6 @@ export function MultiChapterBatchScreen(): React.ReactElement {
 
 function reasoningEffortLabel(value: PipelineReasoningEffort): string {
   return PIPELINE_REASONING_EFFORT_OPTIONS.find(option => option.value === value)?.label || value;
-}
-
-function SegmentedMode(props: {
-  theme: any;
-  value: 'draft_only' | 'fast' | 'full';
-  onChange: (v: 'draft_only' | 'fast' | 'full') => void;
-}) {
-  return (
-    <View style={styles.row}>
-      {(
-        [
-          ['draft_only', '仅草稿'],
-          ['fast', '快速'],
-          ['full', '完整'],
-        ] as const
-      ).map(([value, label]) => (
-        <Button
-          key={value}
-          label={label}
-          variant={props.value === value ? 'primary' : 'ghost'}
-          compact
-          onPress={() => props.onChange(value)}
-        />
-      ))}
-    </View>
-  );
 }
 
 function RunningView(props: {
@@ -507,7 +499,7 @@ function RunningView(props: {
     <>
       <Section title={`批次进度 ${batch.completedCount}/${batch.chapterCount}`}>
         {batch.reasoningEffort ? (
-          <Text style={[styles.mt4, { color: theme.colors.accent }]}>V3 思考强度：{reasoningEffortLabel(batch.reasoningEffort)}（批次冻结）</Text>
+          <Text style={[styles.mt4, { color: theme.colors.accent }]}>思考强度：{reasoningEffortLabel(batch.reasoningEffort)}（批次冻结）</Text>
         ) : null}
         <View
           style={[
@@ -595,6 +587,7 @@ function PausedView(props: {
   theme: any;
   store: ReturnType<typeof useMultiChapterBatchStore.getState>;
   onResume: () => void;
+  onRestartLegacy: () => void;
   onCancel: () => void;
   onViewTask?: () => void;
 }) {
@@ -609,14 +602,18 @@ function PausedView(props: {
     paused_user: '已暂停',
   };
   const reason = reasonLabels[batch.status] || batch.status;
+  const legacyWorkflow =
+    Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION;
   const actions: Array<[string, () => void]> = [];
-  if (batch.status !== 'paused_project_changed') {
+  if (legacyWorkflow) {
+    actions.push(['按新版继续剩余章节', props.onRestartLegacy]);
+  } else if (batch.status !== 'paused_project_changed') {
     actions.push(['确认后继续', props.onResume]);
   }
-  if (batch.status === 'paused_account_quota') {
+  if (!legacyWorkflow && batch.status === 'paused_account_quota') {
     actions.push(['更换模型后继续', props.onResume]);
   }
-  if (batch.status === 'paused_context_budget') {
+  if (!legacyWorkflow && batch.status === 'paused_context_budget') {
     actions.push(['重新编译后继续', props.onResume]);
   }
   // F2-07: 结果未知（network_error 等）时提供直达当前章流水线结果页的
@@ -633,17 +630,20 @@ function PausedView(props: {
           <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>
             {batch.errorMessage || '请选择下一步操作'}
           </Text>
-          {batch.status === 'paused_timeout_unknown' ? (
+          {legacyWorkflow ? (
+            <Text style={[styles.mt8, { color: theme.colors.warning }]}>旧版未完成任务不会继续执行；已完成章节和历史记录保留。</Text>
+          ) : null}
+          {!legacyWorkflow && batch.status === 'paused_timeout_unknown' ? (
             <Text style={[styles.mt8, { color: theme.colors.warning }]}>
               提示：请求可能已在服务端执行，重新执行可能产生重复费用。
             </Text>
           ) : null}
-          {batch.status === 'paused_context_budget' ? (
+          {!legacyWorkflow && batch.status === 'paused_context_budget' ? (
             <Text style={[styles.mt8, { color: theme.colors.textSecondary }]}>
               当前章尚未调用模型；可重新弹性编译、更换更大上下文模型、降低目标字数或编辑当前章纲。
             </Text>
           ) : null}
-          {batch.status === 'paused_batch_budget' ? (
+          {!legacyWorkflow && batch.status === 'paused_batch_budget' ? (
             <Text style={[styles.mt8, { color: theme.colors.textSecondary }]}>
               可增加预算、减少剩余章数、降低后续字数或结束批次。
             </Text>
@@ -675,7 +675,7 @@ function ReportView(props: {
       <Section title={batch.status === 'completed' ? '批次完成' : '批次已结束'}>
         <Card>
           {batch.reasoningEffort ? (
-            <Text style={[styles.mt4, { color: theme.colors.accent }]}>V3 思考强度：{reasoningEffortLabel(batch.reasoningEffort)}（批次冻结）</Text>
+            <Text style={[styles.mt4, { color: theme.colors.accent }]}>思考强度：{reasoningEffortLabel(batch.reasoningEffort)}（批次冻结）</Text>
           ) : null}
           <Text
             style={[styles.bold, { color: theme.colors.textPrimary }]}

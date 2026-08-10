@@ -336,6 +336,7 @@ describe('V3.2 production structured-stage recovery', () => {
               ? llm(JSON.stringify({ verdict: 'pass', findings: [] }))
               : llm(JSON.stringify(reviewV32()));
           }
+          if (stage === 'factCheck') return llm(JSON.stringify(factCheckV32()));
           if (stage === 'brief') return llm(JSON.stringify(briefV32()));
           if (stage === 'proof')
             return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
@@ -389,6 +390,7 @@ describe('V3.2 production structured-stage recovery', () => {
             emptyReason: 'reasoning_only',
           });
         }
+        if (stage === 'factCheck') return llm(JSON.stringify(factCheckV32()));
         if (stage === 'brief') return llm(JSON.stringify(briefV32()));
         if (stage === 'proof')
           return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
@@ -430,6 +432,7 @@ describe('V3.2 production structured-stage recovery', () => {
                 emptyReason: 'reasoning_only',
               });
         }
+        if (stage === 'factCheck') return llm(JSON.stringify(factCheckV32()));
         if (stage === 'brief') return llm(JSON.stringify(briefV32()));
         if (stage === 'proof')
           return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');

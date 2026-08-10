@@ -19,20 +19,17 @@ export const PIPELINE_REASONING_EFFORT_OPTIONS: Array<{
   {
     value: 'low',
     label: '快速',
-    description:
-      '低思考预算；Draft/Final 与 V3.2 结构化审查均保留 Thinking。',
+    description: '所有阶段使用低思考预算；审阅与核查固定 low。',
   },
   {
     value: 'high',
     label: '平衡',
-    description:
-      'Draft/Final 使用 high；V3.2 Review/FactCheck/Brief 固定 low Thinking。',
+    description: 'Draft/Brief/Final 使用 high；Review/FactCheck 固定 low。',
   },
   {
     value: 'max',
     label: '质量',
-    description:
-      'Draft/Final 使用 max；V3.2 Review/FactCheck/Brief 固定 low Thinking。',
+    description: 'Draft/Brief/Final 使用 max；Review/FactCheck 固定 low。',
   },
 ];
 
@@ -234,6 +231,34 @@ export const STAGE_REASONING_PROFILE_V32: Record<
   },
 };
 
+/** Current unified profile: Brief follows the user tier; audits stay low. */
+export const STAGE_REASONING_PROFILE_V33: Record<
+  PipelineReasoningTier,
+  Record<PipelineStageName, PipelineReasoningTier>
+> = {
+  low: {
+    draft: 'low',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'low',
+    proof: 'low',
+  },
+  high: {
+    draft: 'high',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'high',
+    proof: 'high',
+  },
+  max: {
+    draft: 'max',
+    review: 'low',
+    factCheck: 'low',
+    brief: 'max',
+    proof: 'max',
+  },
+};
+
 export interface PipelineV3StageReasoning {
   stage: PipelineStageName;
   requestedTier: PipelineReasoningTier;
@@ -346,6 +371,37 @@ export function resolveV32StageReasoning(
           downgradeReason: structuredPrimary
             ? 'V3.2 Review/FactCheck/Brief primary 固定使用 enabled + low'
             : 'V3.2 Draft/Final 随用户档位执行',
+        }
+      : {}),
+  };
+}
+
+/** Resolve the current unified semantics: audits low, Brief follows tier. */
+export function resolveV33StageReasoning(
+  requested: PipelineReasoningTier,
+  stage: PipelineStageName,
+  model: Pick<LLMRequestConfig, 'provider_type' | 'model_name' | 'url'>,
+): PipelineV3StageReasoning {
+  const effectiveTier = STAGE_REASONING_PROFILE_V33[requested][stage];
+  const supported = supportsReasoningEffort({
+    providerType: model.provider_type,
+    modelName: model.model_name,
+    baseUrl: model.url,
+  });
+  const auditStage = stage === 'review' || stage === 'factCheck';
+  return {
+    stage,
+    requestedTier: requested,
+    effectiveTier,
+    thinking: { type: 'enabled' },
+    effort: effectiveTier,
+    supported,
+    historical: false,
+    ...(effectiveTier !== requested
+      ? {
+          downgradeReason: auditStage
+            ? '当前统一流水线的 Review/FactCheck 固定使用 low'
+            : undefined,
         }
       : {}),
   };

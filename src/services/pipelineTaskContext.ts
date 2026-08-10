@@ -576,16 +576,18 @@ export function parsePipelineExecutionSnapshot(
     );
   }
   const workflowVersionRaw = raw.outlineWorkflowVersion;
-  let outlineWorkflowVersion: 1 | 2 | 3 | undefined;
+  let outlineWorkflowVersion: 1 | 2 | 3 | 4 | undefined;
   if (
     workflowVersionRaw === 1 ||
     workflowVersionRaw === 2 ||
     workflowVersionRaw === 3 ||
+    workflowVersionRaw === 4 ||
     workflowVersionRaw === '1' ||
     workflowVersionRaw === '2' ||
-    workflowVersionRaw === '3'
+    workflowVersionRaw === '3' ||
+    workflowVersionRaw === '4'
   ) {
-    outlineWorkflowVersion = Number(workflowVersionRaw) as 1 | 2 | 3;
+    outlineWorkflowVersion = Number(workflowVersionRaw) as 1 | 2 | 3 | 4;
   } else if (workflowVersionRaw != null && workflowVersionRaw !== '') {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
@@ -645,8 +647,8 @@ export function parsePipelineExecutionSnapshot(
     contextBudgetRaw === 4 ||
     contextBudgetRaw === '1' ||
     contextBudgetRaw === '2' ||
-    contextBudgetRaw === '3'
-    || contextBudgetRaw === '4'
+    contextBudgetRaw === '3' ||
+    contextBudgetRaw === '4'
   ) {
     contextBudgetVersion = Number(contextBudgetRaw) as 1 | 2 | 3 | 4;
   } else if (contextBudgetRaw != null && contextBudgetRaw !== '') {
@@ -659,32 +661,44 @@ export function parsePipelineExecutionSnapshot(
     );
   }
 
+  const isStructuredWorkflow =
+    outlineWorkflowVersion === 3 || outlineWorkflowVersion === 4;
+  const isCurrentWorkflow = outlineWorkflowVersion === 4;
   if (
-    outlineWorkflowVersion === 3 &&
-    contextBudgetVersion !== 3 &&
-    contextBudgetVersion !== 4
+    isStructuredWorkflow &&
+    (isCurrentWorkflow
+      ? contextBudgetVersion !== 4
+      : contextBudgetVersion !== 3 && contextBudgetVersion !== 4)
   ) {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
-      '工作流版本 3 必须与上下文预算版本 3/4 成对冻结，已阻止恢复。',
+      isCurrentWorkflow
+        ? '当前统一流水线必须与上下文预算版本 4 成对冻结，已阻止恢复。'
+        : '工作流版本 3 必须与上下文预算版本 3/4 成对冻结，已阻止恢复。',
       'restart_task',
     );
   }
 
   let v3Fields: Partial<PipelineExecutionSnapshot> = {};
-  if (outlineWorkflowVersion === 3) {
+  if (isStructuredWorkflow) {
     if (
-      (contextBudgetVersion !== 3 && contextBudgetVersion !== 4) ||
+      (isCurrentWorkflow
+        ? contextBudgetVersion !== 4
+        : contextBudgetVersion !== 3 && contextBudgetVersion !== 4) ||
       finalReviserReasoningPolicyVersion !== 3
     ) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        '工作流版本 3 的冻结配置 context budget / Final policy 版本不完整，已阻止恢复。',
+        isCurrentWorkflow
+          ? '当前统一流水线的冻结配置 context budget / Final policy 版本不完整，已阻止恢复。'
+          : '工作流版本 3 的冻结配置 context budget / Final policy 版本不完整，已阻止恢复。',
         'restart_task',
       );
     }
-    const reasoningProfileVersion =
-      raw.reasoningProfileVersion === 4 || raw.reasoningProfileVersion === '4'
+    const reasoningProfileVersion: 2 | 3 | 4 | 5 | null =
+      raw.reasoningProfileVersion === 5 || raw.reasoningProfileVersion === '5'
+        ? 5
+        : raw.reasoningProfileVersion === 4 || raw.reasoningProfileVersion === '4'
         ? 4
         : raw.reasoningProfileVersion === 3 || raw.reasoningProfileVersion === '3'
         ? 3
@@ -695,7 +709,23 @@ export function parsePipelineExecutionSnapshot(
     if (reasoningProfileVersion == null) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        'V3 冻结配置缺少有效 reasoningProfileVersion（2/3/4），已阻止恢复。',
+        isCurrentWorkflow
+          ? '当前统一流水线冻结配置缺少 reasoningProfileVersion=5，已阻止恢复。'
+          : 'V3 冻结配置缺少有效 reasoningProfileVersion（2/3/4），已阻止恢复。',
+        'restart_task',
+      );
+    }
+    if (isCurrentWorkflow && reasoningProfileVersion !== 5) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        '当前统一流水线必须使用 reasoningProfileVersion=5，已阻止恢复。',
+        'restart_task',
+      );
+    }
+    if (!isCurrentWorkflow && reasoningProfileVersion === 5) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        '历史 V3 流水线不能使用当前 reasoningProfileVersion=5，已阻止恢复。',
         'restart_task',
       );
     }
@@ -762,18 +792,29 @@ export function parsePipelineExecutionSnapshot(
     }
     const expectedBriefThinking =
       reasoningProfileVersion === 3 ? 'disabled' : 'enabled';
+    const expectedBriefTier = isCurrentWorkflow
+      ? (raw.requestedReasoningTier as PipelineReasoningTier)
+      : 'low';
     if (
       stageReasoning.brief?.thinking !== expectedBriefThinking ||
-      stageReasoning.brief.effectiveTier !== 'low'
+      stageReasoning.brief.effectiveTier !== expectedBriefTier
     ) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        `V3 Brief 必须冻结为 Thinking ${expectedBriefThinking} + low，已阻止恢复。`,
+        isCurrentWorkflow
+          ? `当前统一流水线 Brief 必须冻结为 Thinking ${expectedBriefThinking} + ${expectedBriefTier}，已阻止恢复。`
+          : `V3 Brief 必须冻结为 Thinking ${expectedBriefThinking} + low，已阻止恢复。`,
         'restart_task',
       );
     }
     const expectedBriefPolicyVersion =
-      reasoningProfileVersion === 4 ? 3 : reasoningProfileVersion === 3 ? 2 : 1;
+      reasoningProfileVersion === 5
+        ? 4
+        : reasoningProfileVersion === 4
+        ? 3
+        : reasoningProfileVersion === 3
+        ? 2
+        : 1;
     if (
       raw.briefPolicyVersion !== expectedBriefPolicyVersion &&
       raw.briefPolicyVersion !== String(expectedBriefPolicyVersion)
@@ -781,6 +822,23 @@ export function parsePipelineExecutionSnapshot(
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
         `V3 冻结配置缺少 briefPolicyVersion=${expectedBriefPolicyVersion}，已阻止恢复。`,
+        'restart_task',
+      );
+    }
+    if (
+      reasoningProfileVersion === 5 &&
+      (contextBudgetVersion !== 4 ||
+        stageReasoning.draft?.effectiveTier !== raw.requestedReasoningTier ||
+        stageReasoning.proof?.effectiveTier !== raw.requestedReasoningTier ||
+        stageReasoning.review?.effectiveTier !== 'low' ||
+        stageReasoning.factCheck?.effectiveTier !== 'low' ||
+        stageReasoning.review?.thinking !== 'enabled' ||
+        stageReasoning.factCheck?.thinking !== 'enabled' ||
+        stageReasoning.brief?.thinking !== 'enabled')
+    ) {
+      throw new OutlineContextError(
+        'OUTLINE_EXECUTION_CONFIG_INVALID',
+        '当前统一流水线必须保持 Draft/Brief/Proof 跟随用户档位、Review/FactCheck 为 enabled + low，且使用 context budget 4，已阻止恢复。',
         'restart_task',
       );
     }
@@ -1111,7 +1169,10 @@ export function serializePipelineTaskContext(params: {
   const isV32 =
     params.execution.outlineWorkflowVersion === 3 &&
     params.execution.contextBudgetVersion === 4;
-  const snapshotVersion = isV32 ? 4 : isV3 ? 3 : 1;
+  const isV33 =
+    params.execution.outlineWorkflowVersion === 4 &&
+    params.execution.contextBudgetVersion === 4;
+  const snapshotVersion = isV33 || isV32 ? 4 : isV3 ? 3 : 1;
   const draftContext: PipelineContextSnapshot = {
     ...params.draftContext,
     snapshotVersion,
@@ -1121,7 +1182,7 @@ export function serializePipelineTaskContext(params: {
     | PersistedPipelineTaskContextV2
     | PersistedPipelineTaskContextV3
     | PersistedPipelineTaskContextV4 = {
-    version: isV32 ? 4 : isV3 ? 3 : 2,
+    version: isV33 || isV32 ? 4 : isV3 ? 3 : 2,
     draftContext,
     execution: params.execution,
     createdAt,
@@ -1151,7 +1212,8 @@ export function serializePipelineTaskContext(params: {
   const pipelineContextJson = JSON.stringify(envelope);
   return {
     pipelineContextJson,
-    pipelineContextVersion: isV32 ? 4 : isV3 ? 3 : PIPELINE_TASK_CONTEXT_VERSION,
+    pipelineContextVersion:
+      isV33 || isV32 ? 4 : isV3 ? 3 : PIPELINE_TASK_CONTEXT_VERSION,
     pipelineContextHash: sha256Hex(pipelineContextJson).slice(0, 32),
   };
 }
