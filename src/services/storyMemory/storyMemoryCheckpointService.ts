@@ -643,6 +643,16 @@ export async function runStoryMemoryCheckpointBatch(input: {
     | 'story_memory_checkpoint'
     | 'story_memory_checkpoint_legacy_bootstrap';
   onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
+  /**
+   * Fired once per persisted split child (governance §9). When a 3-chapter
+   * logical batch splits 2+1 and the first half is persisted, this fires
+   * before the second half begins, so the task store can advance
+   * completedChapters incrementally rather than only at full-batch success.
+   */
+  onChildBatchComplete?: (range: {
+    fromPosition: number;
+    throughPosition: number;
+  }) => void;
 }): Promise<RunCheckpointBatchResult> {
   const ordered = [...input.chapters].sort((a, b) => a.position - b.position);
   if (!ordered.length) {
@@ -693,10 +703,18 @@ async function runStoryMemoryCheckpointBatchWithShrink(
       input.chapters.length > 1
     ) {
       const half = Math.ceil(input.chapters.length / 2);
+      const firstChapters = input.chapters.slice(0, half);
       const first = await runStoryMemoryCheckpointBatchWithShrink(
-        { ...input, chapters: input.chapters.slice(0, half) },
+        { ...input, chapters: firstChapters },
         memoryPatchMaxTokens,
       );
+      // Governance §9: surface the first split child's persistence as
+      // incremental progress so the task store's completedChapters reflects
+      // real work even if the second child later fails.
+      input.onChildBatchComplete?.({
+        fromPosition: firstChapters[0].position,
+        throughPosition: firstChapters.at(-1)!.position,
+      });
       try {
         const second = await runStoryMemoryCheckpointBatchWithShrink(
           {
@@ -858,6 +876,16 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
     fromPosition: number;
     throughPosition: number;
   }) => void;
+  /**
+   * Per persisted split child (governance §9). When a logical batch splits,
+   * this fires as each child half is persisted, so the task store advances
+   * completedChapters incrementally. If a logical batch does NOT split, only
+   * onBatchComplete fires (once, for the whole batch).
+   */
+  onChildBatchComplete?: (range: {
+    fromPosition: number;
+    throughPosition: number;
+  }) => void;
 }): Promise<{
   state: StoryMemoryState;
   batchesApplied: number;
@@ -912,6 +940,7 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
         previousState: state,
         signal: input.signal,
         onProgress: input.onProgress,
+        onChildBatchComplete: input.onChildBatchComplete,
       });
       state = result.state;
       batchesApplied += 1;
