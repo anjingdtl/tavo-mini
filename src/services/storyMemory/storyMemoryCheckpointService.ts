@@ -305,6 +305,35 @@ interface CheckpointAttemptLoopInput {
 }
 
 /**
+ * Decide whether a paid Repair round can safely fit the model window
+ * (governance plan §7.3).
+ *
+ * A Repair echoes the invalid assistant output plus a repair instruction on
+ * top of the original prompt. If the invalid output itself is so large that
+ * adding it would push the request past the hard input limit, we must NOT
+ * truncate the invalid JSON (that would corrupt the repair signal). Instead
+ * the caller skips Repair and falls through to a Fresh Retry.
+ *
+ * `invalidOutputTokens` is the estimated token cost of the model's previous
+ * (invalid) JSON output. `baseInputTokens` is the original prompt's estimated
+ * input tokens. `repairInstructionTokens` is the repair directive cost.
+ * `hardInputLimit` is the model's hard input ceiling.
+ */
+export function shouldSkipRepairForInfeasibleSize(input: {
+  invalidOutputTokens: number;
+  baseInputTokens: number;
+  repairInstructionTokens: number;
+  hardInputLimit: number;
+  contextWindow: number;
+}): boolean {
+  // Unknown capability → keep the legacy behaviour (attempt the repair).
+  if (input.contextWindow <= 0 || input.hardInputLimit <= 0) return false;
+  const repairInputEstimate =
+    input.baseInputTokens + input.invalidOutputTokens + input.repairInstructionTokens;
+  return repairInputEstimate > input.hardInputLimit;
+}
+
+/**
  * Bounded checkpoint attempt coordinator (repair plan P1 §6.2).
  *
  * - At most STORY_MEMORY_MAX_PHYSICAL_REQUESTS physical LLM calls per batch.
@@ -507,15 +536,42 @@ async function runCheckpointAttemptLoop(
         }
         messages =
           attempt === 1
-            ? buildStoryMemoryCheckpointRepairMessages(
-                input.baseMessages,
-                text,
-                `${message}${
-                  result.finishReason === 'length'
-                    ? '（输出达到长度上限）'
-                    : ''
-                }`,
-              )
+            ? // Governance §7.3: if the invalid output is so large that echoing
+              // it for a paid Repair would exceed the model's hard input limit,
+              // skip Repair (never truncate the invalid JSON) and fall through
+              // to a Fresh Retry instead.
+              shouldSkipRepairForInfeasibleSize({
+                invalidOutputTokens: estimateTokens(text),
+                baseInputTokens: estimateTokens(
+                  input.baseMessages.map(m => m.content).join('\n'),
+                ),
+                repairInstructionTokens: 200,
+                hardInputLimit: input.frozenConfig.contextWindow
+                  ? Math.max(
+                      0,
+                      input.frozenConfig.contextWindow -
+                        plan.maxTokens -
+                        Math.min(
+                          1024,
+                          Math.max(256, Math.floor(input.frozenConfig.contextWindow * 0.02)),
+                        ),
+                    )
+                  : 0,
+                contextWindow: input.frozenConfig.contextWindow,
+              })
+              ? buildStoryMemoryCheckpointRetryMessages(
+                  input.baseMessages,
+                  `${message}（invalid 输出过大，已跳过 Repair 直接 Fresh Retry）`,
+                )
+              : buildStoryMemoryCheckpointRepairMessages(
+                  input.baseMessages,
+                  text,
+                  `${message}${
+                    result.finishReason === 'length'
+                      ? '（输出达到长度上限）'
+                      : ''
+                  }`,
+                )
             : // Second consecutive parse failure → fresh retry WITHOUT echoing
               // the invalid assistant output (mirrors the legacy coordinator).
               buildStoryMemoryCheckpointRetryMessages(

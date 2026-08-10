@@ -46,6 +46,7 @@ import {
   planStoryMemoryRequest,
   type FrozenStoryMemoryLLMConfig,
 } from './storyMemoryRequestBudget';
+import { shouldSkipRepairForInfeasibleSize } from './storyMemoryCheckpointService';
 import {
   acknowledgeStoryMemoryOutcomeUnknown,
   listStoryMemoryRequestAttempts,
@@ -784,15 +785,44 @@ export async function generateValidatedChapterMemoryPatch(
           parseError instanceof Error ? parseError.message : '未知校验错误';
         currentMessages =
           attempt === 1
-            ? buildStoryMemoryRepairMessages(
-                messages,
-                text,
-                `${message}${
-                  result.finishReason === 'length'
-                    ? '（输出达到长度上限）'
-                    : ''
-                }`,
-              )
+            ? // Governance §7.3: skip paid Repair if the invalid output is too
+              // large to safely echo into the model window; fall through to a
+              // Fresh Retry instead of truncating the invalid JSON.
+              shouldSkipRepairForInfeasibleSize({
+                invalidOutputTokens: estimateTokens(text),
+                baseInputTokens: estimateTokens(
+                  messages.map(m => m.content).join('\n'),
+                ),
+                repairInstructionTokens: 200,
+                hardInputLimit: frozenConfig.contextWindow
+                  ? Math.max(
+                      0,
+                      frozenConfig.contextWindow -
+                        plan.maxTokens -
+                        Math.min(
+                          1024,
+                          Math.max(
+                            256,
+                            Math.floor(frozenConfig.contextWindow * 0.02),
+                          ),
+                        ),
+                    )
+                  : 0,
+                contextWindow: frozenConfig.contextWindow,
+              })
+              ? buildStoryMemoryFreshRetryMessages(
+                  messages,
+                  `${message}（invalid 输出过大，已跳过 Repair 直接 Fresh Retry）`,
+                )
+              : buildStoryMemoryRepairMessages(
+                  messages,
+                  text,
+                  `${message}${
+                    result.finishReason === 'length'
+                      ? '（输出达到长度上限）'
+                      : ''
+                  }`,
+                )
             : // Second consecutive parse failure → fresh retry WITHOUT echoing
               // the invalid assistant output (mirrors the legacy coordinator).
               buildStoryMemoryFreshRetryMessages(
