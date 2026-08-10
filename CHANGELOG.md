@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.11.44] - 2026-08-10
+
+### Added — Story Memory 长期稳定性最终治理
+
+- **Mainline Reconciler（§4）**：新增确定性本地收束器 `storyMemoryMainlineReconciler.ts`。复杂长篇真实测试中出现 3 次 HTTP 200 但因 `chapterSummaries ↔ mainlinePatch` 分类差异（摘要写了主线变化但结构化无 mutation）被判 `MEMORY_CHECKPOINT_SCHEMA_INVALID` 的失败，现改为本地降级：摘要文本转入 `events[]` 保留检索、清空 mainline 分类字段、归一化 assessment，不再消耗 paid Repair/Fresh Retry。Structured State 仍是唯一持久事实权威，真正 Range/Reference/Evidence/CAS 错误仍 hard fail。
+- **Input Elastic Allocator（§5/§6）**：Story Memory Input 从硬窗口 `contextWindow - output - 256` 升级为真正接入项目已有 `allocateElasticStageContextBudget()`，Prompt 拆为 Mandatory / Preferred High / Preferred Low / Optional。fast path 保持现有 prompt 语义不变；超窗口时按 Optional→Preferred Low 分级压缩、最终重估 Soft/Burst/Hard 再决定 send/shrink/3→2→1。禁止字符串 slice JSON、禁止截断当前章节正文。
+- **State Compaction（§6）**：确定性 relevantCharacter resolver（canonicalName/alias 出现在当前 batch 正文即相关）让 rich character state、relationships、timeline 按 batch 相关性分层进入 Prompt，长篇 100/300/1000 章后 Prompt 不再随状态线性膨胀。不改 DB，只改 Prompt View。
+- **Repair 可行性门禁（§7.3）**：当 invalid output 过大致 paid Repair 超窗口时，跳过 Repair 转 Fresh Retry，不截断 invalid JSON。batch 与单章两条路径均已接入。
+- **Split 子批进度（§9）**：3→2→1 拆分时每个 child 持久化即推进 `completedChapters`，不再只在整逻辑 batch 完成才 +N，避免用户误判任务卡死。
+
+### Validation
+
+- `npm run verify` 通过：368 个测试套件通过、1 个跳过；2971 个测试通过、3 个跳过。
+- 新增专项测试：Mainline Reconciler（11 tests）、Prompt Materials + Elastic Allocator（12 tests）、Repair Budget（6 tests）、Split Child Progress（2 tests）。
+- 升级覆盖安装（`adb install -r`，禁止 uninstall/pm clear）：V2.11.40 → V2.11.43 Debug 签名一致，firstInstallTime 不变，4 个项目 / 53 章节 / Story Memory（6 applied + 4 invalidated）/ active LLM 配置（deepseek-v4-flash，1M/200K）全部保留；冷启动无 FATAL，DB `integrity_check=ok`。
+
 ## [2.11.43] - 2026-08-10
 
 ### Fixed

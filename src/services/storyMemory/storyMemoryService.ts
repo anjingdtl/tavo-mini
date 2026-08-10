@@ -46,6 +46,7 @@ import {
   planStoryMemoryRequest,
   type FrozenStoryMemoryLLMConfig,
 } from './storyMemoryRequestBudget';
+import { shouldSkipRepairForInfeasibleSize } from './storyMemoryCheckpointService';
 import {
   acknowledgeStoryMemoryOutcomeUnknown,
   listStoryMemoryRequestAttempts,
@@ -485,6 +486,10 @@ export async function requestStoryMemoryMaintenance(
       };
       try {
         publishTaskProgress(input.projectId, { phase: 'preparing', message: '正在准备' });
+        // Reset the per-maintenance split-child progress accumulator so
+        // onBatchComplete does not double-count chapters already credited by
+        // onChildBatchComplete (governance §9).
+        let childChaptersAlreadyCounted = 0;
         if (rebuild) {
           const rebuilt = await rebuildStoryMemoryUnlocked(input.projectId, {
             mode: input.mode || 'auto',
@@ -513,6 +518,29 @@ export async function requestStoryMemoryMaintenance(
           throughPosition,
           signal: controller.signal,
           onProgress: checkpointProgress,
+          onChildBatchComplete: range => {
+            // Governance §9: a split child persisted — advance
+            // completedChapters now, before the rest of the logical batch
+            // finishes, so the percent reflects real progress and a later
+            // child failure cannot hide the work already persisted.
+            const current = useStoryMemoryTaskStore
+              .getState()
+              .getTask(taskId);
+            if (!current) return;
+            const childCount = finalChapters.filter(
+              chapter =>
+                chapter.position >= range.fromPosition &&
+                chapter.position <= range.throughPosition,
+            ).length;
+            childChaptersAlreadyCounted += childCount;
+            publishTaskProgress(input.projectId, {
+              phase: 'saving',
+              completedChapters: Math.min(
+                current.totalChapters,
+                current.completedChapters + childCount,
+              ),
+            });
+          },
           onBatchComplete: range => {
             const current = useStoryMemoryTaskStore.getState().getTask(taskId);
             if (!current) return;
@@ -521,11 +549,16 @@ export async function requestStoryMemoryMaintenance(
                 chapter.position >= range.fromPosition &&
                 chapter.position <= range.throughPosition,
             ).length;
+            // If split children already advanced completedChapters for this
+            // logical batch, only credit the remaining chapters here so we do
+            // not double-count (governance §9 progress integrity).
+            const remaining = Math.max(0, count - childChaptersAlreadyCounted);
+            childChaptersAlreadyCounted = 0;
             publishTaskProgress(input.projectId, {
               phase: 'saving',
               completedChapters: Math.min(
                 current.totalChapters,
-                current.completedChapters + count,
+                current.completedChapters + remaining,
               ),
               completedBatches: Math.min(
                 current.totalBatches,
@@ -784,15 +817,44 @@ export async function generateValidatedChapterMemoryPatch(
           parseError instanceof Error ? parseError.message : '未知校验错误';
         currentMessages =
           attempt === 1
-            ? buildStoryMemoryRepairMessages(
-                messages,
-                text,
-                `${message}${
-                  result.finishReason === 'length'
-                    ? '（输出达到长度上限）'
-                    : ''
-                }`,
-              )
+            ? // Governance §7.3: skip paid Repair if the invalid output is too
+              // large to safely echo into the model window; fall through to a
+              // Fresh Retry instead of truncating the invalid JSON.
+              shouldSkipRepairForInfeasibleSize({
+                invalidOutputTokens: estimateTokens(text),
+                baseInputTokens: estimateTokens(
+                  messages.map(m => m.content).join('\n'),
+                ),
+                repairInstructionTokens: 200,
+                hardInputLimit: frozenConfig.contextWindow
+                  ? Math.max(
+                      0,
+                      frozenConfig.contextWindow -
+                        plan.maxTokens -
+                        Math.min(
+                          1024,
+                          Math.max(
+                            256,
+                            Math.floor(frozenConfig.contextWindow * 0.02),
+                          ),
+                        ),
+                    )
+                  : 0,
+                contextWindow: frozenConfig.contextWindow,
+              })
+              ? buildStoryMemoryFreshRetryMessages(
+                  messages,
+                  `${message}（invalid 输出过大，已跳过 Repair 直接 Fresh Retry）`,
+                )
+              : buildStoryMemoryRepairMessages(
+                  messages,
+                  text,
+                  `${message}${
+                    result.finishReason === 'length'
+                      ? '（输出达到长度上限）'
+                      : ''
+                  }`,
+                )
             : // Second consecutive parse failure → fresh retry WITHOUT echoing
               // the invalid assistant output (mirrors the legacy coordinator).
               buildStoryMemoryFreshRetryMessages(
