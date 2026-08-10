@@ -36,7 +36,7 @@ export interface FrozenStageReasoning {
   requestedTier: PipelineReasoningTier;
   effectiveTier: PipelineReasoningTier;
   thinking: 'enabled' | 'disabled';
-  /** Provider-facing effort. Current Review/FactCheck are low; Brief follows the tier. */
+  /** Provider-facing effort. Current Review follows the tier; FactCheck is low; Brief follows the tier. */
   effort: PipelineReasoningTier | null;
   /** Whether this frozen provider/model advertised explicit reasoning support. */
   supported?: boolean;

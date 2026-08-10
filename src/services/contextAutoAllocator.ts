@@ -558,22 +558,16 @@ function resolveOutlineStageTierV3(
   requestedTier: OutlineReasoningTierV3,
   stage: OutlinePipelineStageV3,
 ): OutlineReasoningTierV3 {
-  if (stage === 'brief') return 'low';
-  if (
-    (stage === 'review' || stage === 'factCheck') &&
-    requestedTier === 'max'
-  ) {
-    return 'high';
-  }
+  if (stage === 'brief' || stage === 'factCheck') return 'low';
   return requestedTier;
 }
 
 /**
  * Allocate the V3 outline pipeline with visible output and hidden Thinking
- * accounted for separately.  In particular, Brief never borrows a user's
- * high/max tier and never treats an output-cap shortage as permission to
- * disable Thinking; callers should use the local deterministic Brief when
- * `fitsModelOutput` is false.
+ * accounted for separately. Review follows the selected product tier,
+ * including max; FactCheck and Brief retain their low Thinking reservation.
+ * An output-cap shortage is never permission to disable Thinking; callers
+ * should use the local deterministic Brief when `fitsModelOutput` is false.
  */
 export function allocateOutlinePipelineBudgetV3(params: {
   contextWindow: number;

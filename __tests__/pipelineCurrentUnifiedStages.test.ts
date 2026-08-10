@@ -14,6 +14,8 @@ import {
   resolveV33StageReasoning,
   type PipelineReasoningTier,
 } from '../src/services/pipeline/reasoningPolicy';
+import { buildReviewV33Messages } from '../src/services/pipelineMessages';
+import { allocateOutlinePipelineBudgetV3 } from '../src/services/contextAutoAllocator';
 import { buildAuditFormatterPrompt } from '../src/services/pipeline/auditFormatter';
 import {
   parsePersistedPipelineTaskContext,
@@ -78,7 +80,7 @@ function currentExecution(): PipelineExecutionSnapshot {
     PipelineReasoningTier
   > = {
     draft: 'high',
-    review: 'low',
+    review: 'high',
     factCheck: 'low',
     brief: 'high',
     proof: 'high',
@@ -134,25 +136,48 @@ function currentExecution(): PipelineExecutionSnapshot {
 }
 
 describe('current unified outline pipeline', () => {
-  test('uses one tier for Draft/Brief/Final while audits remain low', () => {
+  test('uses the selected tier for Draft/Review/Brief/Final while FactCheck remains low', () => {
     for (const tier of ['low', 'high', 'max'] as const) {
-      expect(resolveV33StageReasoning(tier, 'draft', MODEL).effectiveTier).toBe(
-        tier,
-      );
-      expect(resolveV33StageReasoning(tier, 'brief', MODEL).effectiveTier).toBe(
-        tier,
-      );
-      expect(resolveV33StageReasoning(tier, 'proof', MODEL).effectiveTier).toBe(
-        tier,
-      );
-      for (const stage of ['review', 'factCheck'] as const) {
+      for (const stage of ['draft', 'review', 'brief', 'proof'] as const) {
         expect(resolveV33StageReasoning(tier, stage, MODEL)).toMatchObject({
-          effectiveTier: 'low',
-          effort: 'low',
+          effectiveTier: tier,
+          effort: tier,
           thinking: { type: 'enabled' },
         });
       }
+      expect(resolveV33StageReasoning(tier, 'factCheck', MODEL)).toMatchObject({
+        effectiveTier: 'low',
+        effort: 'low',
+        thinking: { type: 'enabled' },
+      });
     }
+    expect(
+      resolveV33StageReasoning('max', 'review', MODEL).downgradeReason,
+    ).toBeUndefined();
+    expect(
+      resolveV33StageReasoning('max', 'factCheck', MODEL).downgradeReason,
+    ).toContain('FactCheck');
+  });
+
+  test('Review prompt delegates the effective tier to the frozen request', () => {
+    const system = String(
+      buildReviewV33Messages({
+        canonicalDraft: '[draft-p-001] 初稿。',
+        context: context(),
+      })[0].content,
+    );
+    expect(system).toContain('按本次任务冻结的有效 Thinking 档位执行');
+    expect(system).not.toContain('保持 low Thinking');
+  });
+
+  test('current budget allocation keeps Review at MAX while FactCheck stays low', () => {
+    const allocation = allocateOutlinePipelineBudgetV3({
+      contextWindow: 128000,
+      modelMaxOutputTokens: 8192,
+      requestedTier: 'max',
+    });
+    expect(allocation.stages.review.effectiveTier).toBe('max');
+    expect(allocation.stages.factCheck.effectiveTier).toBe('low');
   });
 
   test('accepts compact audit payloads and rejects unknown anchors', () => {
