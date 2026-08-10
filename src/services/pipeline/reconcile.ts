@@ -60,6 +60,7 @@ import {
   allocateOutlinePipelineBudgetV3,
   cloneDefaultOutlinePipelineBudgetPolicyV3,
   resolveElasticStageOutputReservation,
+  resolveOutlineElasticStageReservations,
 } from '../contextAutoAllocator';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { Chapter, Preset } from '../../types/novel';
@@ -714,7 +715,7 @@ function buildExecutionSnapshot(params: {
   proofPreset: Preset | null;
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2 | 3 | 4;
-  contextBudgetVersion?: 1 | 2 | 3 | 4;
+  contextBudgetVersion?: 1 | 2 | 3 | 4 | 5;
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
   finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
   reasoningEffort?: PipelineConfig['reasoningEffort'];
@@ -740,7 +741,11 @@ function buildExecutionSnapshot(params: {
     (params.contextBudgetVersion === 3 || params.contextBudgetVersion === 4);
   const isV4 =
     params.outlineWorkflowVersion === 4 &&
-    (params.contextBudgetVersion === 3 || params.contextBudgetVersion === 4);
+    (params.contextBudgetVersion === 3 ||
+      params.contextBudgetVersion === 4 ||
+      params.contextBudgetVersion === 5);
+  const isCurrentElasticBudget =
+    params.outlineWorkflowVersion === 4 && params.contextBudgetVersion === 5;
   const isStructured = isV3 || isV4;
   const reasoningProfileVersion = isV4
     ? 5
@@ -835,19 +840,24 @@ function buildExecutionSnapshot(params: {
             contextWindow,
             requestedTier,
             modelMaxOutputTokens: params.requestConfig.max_output_tokens,
-            requestMaxTokenOverrides: {
-              brief: briefMaxTokens,
-            },
-            visibleOutputFloors: {
-              draft: Math.max(1, params.config.draftMaxTokens),
-              review: Math.max(1, params.config.reviewMaxTokens),
-              factCheck: Math.max(1, params.config.factCheckMaxTokens),
-              brief: briefVisibleOutputFloor || 1200,
-              proof: Math.max(
-                1024,
-                Math.ceil(params.config.draftMaxTokens * 1.2) + 256,
-              ),
-            },
+            requestMaxTokenOverrides: isCurrentElasticBudget
+              ? resolveOutlineElasticStageReservations({
+                  contextWindow,
+                  modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+                })
+              : { brief: briefMaxTokens },
+            visibleOutputFloors: isCurrentElasticBudget
+              ? { brief: briefVisibleOutputFloor || 1200 }
+              : {
+                  draft: Math.max(1, params.config.draftMaxTokens),
+                  review: Math.max(1, params.config.reviewMaxTokens),
+                  factCheck: Math.max(1, params.config.factCheckMaxTokens),
+                  brief: briefVisibleOutputFloor || 1200,
+                  proof: Math.max(
+                    1024,
+                    Math.ceil(params.config.draftMaxTokens * 1.2) + 256,
+                  ),
+                },
             policy: budgetPolicy,
           });
           return (
@@ -1527,7 +1537,7 @@ export async function reconcilePipelineTask(
       .tasks.find(t => t.id === taskId);
     const initialStages =
       [3, 4].includes(Number(initialTask?.outlineWorkflowVersion)) &&
-      [3, 4].includes(Number(initialTask?.contextBudgetVersion))
+      [3, 4, 5].includes(Number(initialTask?.contextBudgetVersion))
         ? ['draft', 'review', 'factCheck', 'brief', 'proof']
         : ['draft', 'review', 'factCheck', 'proof'];
     await db.ensurePendingCheckpoints(taskId, initialStages as any);
@@ -1982,7 +1992,7 @@ async function actionPersistInitialSnapshot(
   // snapshots interprets an absent field as 1.
   const existingExecution = runtime.parsed?.execution;
   let outlineWorkflowVersion: 1 | 2 | 3 | 4;
-  let contextBudgetVersion: 1 | 2 | 3 | 4;
+  let contextBudgetVersion: 1 | 2 | 3 | 4 | 5;
   if (existingExecution) {
     outlineWorkflowVersion =
       existingExecution.outlineWorkflowVersion === 4
@@ -1993,7 +2003,9 @@ async function actionPersistInitialSnapshot(
         ? 2
         : 1;
     contextBudgetVersion =
-      existingExecution.contextBudgetVersion === 4
+      existingExecution.contextBudgetVersion === 5
+        ? 5
+        : existingExecution.contextBudgetVersion === 4
         ? 4
         : existingExecution.contextBudgetVersion === 3
         ? 3
@@ -2011,7 +2023,9 @@ async function actionPersistInitialSnapshot(
         ? 2
         : 1;
     contextBudgetVersion =
-      Number(taskRow?.contextBudgetVersion) === 4
+      Number(taskRow?.contextBudgetVersion) === 5
+        ? 5
+        : Number(taskRow?.contextBudgetVersion) === 4
         ? 4
         : Number(taskRow?.contextBudgetVersion) === 3
         ? 3
@@ -2021,7 +2035,9 @@ async function actionPersistInitialSnapshot(
   }
   const isStructured =
     [3, 4].includes(outlineWorkflowVersion) &&
-    (contextBudgetVersion === 3 || contextBudgetVersion === 4);
+    (contextBudgetVersion === 3 ||
+      contextBudgetVersion === 4 ||
+      contextBudgetVersion === 5);
   // Fresh freeze from live config only when no execution yet. V2 preserves its
   // historical multiplier; V3 stores requested/effective stage tiers and uses
   // independent output + reasoning reservations.
@@ -2116,7 +2132,8 @@ async function actionPersistInitialSnapshot(
     elasticBudget:
       execution.contextBudgetVersion === 2 ||
       execution.contextBudgetVersion === 3 ||
-      execution.contextBudgetVersion === 4,
+      execution.contextBudgetVersion === 4 ||
+      execution.contextBudgetVersion === 5,
   });
   if (!compiled.ready) {
     const code =
@@ -2520,7 +2537,8 @@ function isOutlineWorkflowV3(
   return (
     [3, 4].includes(Number(runtime.parsed?.execution?.outlineWorkflowVersion)) &&
     (runtime.parsed?.execution?.contextBudgetVersion === 3 ||
-      runtime.parsed?.execution?.contextBudgetVersion === 4)
+      runtime.parsed?.execution?.contextBudgetVersion === 4 ||
+      runtime.parsed?.execution?.contextBudgetVersion === 5)
   );
 }
 
@@ -2589,7 +2607,7 @@ function isElasticBudgetEnabled(
   runtime: Awaited<ReturnType<typeof loadRuntime>>,
 ): boolean {
   const version = runtime.parsed?.execution?.contextBudgetVersion;
-  return version === 2 || version === 3 || version === 4;
+  return version === 2 || version === 3 || version === 4 || version === 5;
 }
 
 /**

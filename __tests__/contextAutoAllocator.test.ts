@@ -2,15 +2,13 @@
 
 import {
   allocateContextBudget,
+  buildOutlineElasticBudgetPreview,
+  resolveElasticStageOutputReservation,
   RATIO_INPUT,
   RATIO_OUTPUT,
   RATIO_SLIDING_WINDOW,
   RATIO_RESOURCE_BUDGET,
   RATIO_SUMMARY_BUDGET,
-  RATIO_DRAFT,
-  RATIO_REVIEW,
-  RATIO_FACT_CHECK,
-  RATIO_PROOF,
   RATIO_RESOURCE_CHARACTER,
   RATIO_RESOURCE_NOTE,
   RATIO_RESOURCE_WORLDBOOK,
@@ -56,15 +54,10 @@ describe('allocateContextBudget', () => {
     expect(result.episodicMemoryBudgetTokens).toBe(16000);
     expect(result.summaryBudgetTokens).toBe(48000);
     expect(result.memoryPatchMaxTokens).toBe(3200);
-    // 输出侧
-    expect(result.draftMaxTokens).toBe(20000);
-    expect(result.reviewMaxTokens).toBe(6000);
-    expect(result.factCheckMaxTokens).toBe(6000);
-    expect(result.proofMaxTokens).toBe(8000);
     // 同步字段
     expect(result.llmContextWindow).toBe(200000);
     expect(result.llmMaxOutputTokens).toBe(40000);
-    expect(result.presetMaxTokens).toBe(20000);
+    expect(result.presetMaxTokens).toBe(40000);
     // 资料预算内部分配
     // 角色：32000 * 0.35 / 10 = 1120
     expect(result.characterMaxTokens).toBe(1120);
@@ -86,7 +79,6 @@ describe('allocateContextBudget', () => {
     expect(result.inputBudget).toBe(800000);
     expect(result.outputBudget).toBe(200000);
     expect(result.slidingWindowSize).toBe(592000);
-    expect(result.draftMaxTokens).toBe(100000);
     // inputBudget=800000, resourceBudget=160000, characterTotal=56000, /50=1120
     expect(result.characterMaxTokens).toBe(1120);
   });
@@ -113,10 +105,6 @@ describe('allocateContextBudget', () => {
     expect(result.noteMaxTokens).toBe(MIN_NOTE_TOKENS);
     expect(result.worldbookEntryMaxTokens).toBe(MIN_WORLDBOOK_ENTRY_TOKENS);
     expect(result.worldbookCollectionMaxTokens).toBe(MIN_WORLDBOOK_COLLECTION_TOKENS);
-    expect(result.draftMaxTokens).toBe(MIN_PIPELINE_TOKENS);
-    expect(result.reviewMaxTokens).toBe(MIN_PIPELINE_TOKENS);
-    expect(result.factCheckMaxTokens).toBe(MIN_PIPELINE_TOKENS);
-    expect(result.proofMaxTokens).toBe(MIN_PIPELINE_TOKENS);
   });
 
   test('非整千（如 999）正常计算', () => {
@@ -130,7 +118,6 @@ describe('allocateContextBudget', () => {
     expect(
       RATIO_SLIDING_WINDOW + RATIO_RESOURCE_BUDGET + RATIO_SUMMARY_BUDGET,
     ).toBeCloseTo(1);
-    expect(RATIO_DRAFT + RATIO_REVIEW + RATIO_FACT_CHECK + RATIO_PROOF).toBeCloseTo(1);
     expect(
       RATIO_RESOURCE_CHARACTER + RATIO_RESOURCE_NOTE + RATIO_RESOURCE_WORLDBOOK,
     ).toBeCloseTo(1);
@@ -324,8 +311,9 @@ describe('applyContextAutoAllocation', () => {
     expect(mockedExecuteTransaction).toHaveBeenCalledTimes(1);
     const [dbArg, statements] = mockedExecuteTransaction.mock.calls[0];
     expect(dbArg).toEqual({});
-    // 12 个 settings（含 input + policy）+ llm_config + presets + 4 个资源表 = 18 个
-    expect(statements.length).toBe(18);
+    // 8 个 settings（含 input + policy + 6 个 ContextConfig）+ llm_config
+    // + presets + 4 个资源表 = 14 个；大纲阶段预算不再写入 settings。
+    expect(statements.length).toBe(14);
     // 检测参数（SQL 用 VALUES(?,?)，key 在 params[0]）
     const settingsStmts = statements.filter(
       (s: any) => typeof s.params[0] === 'string' && !s.sql.includes('UPDATE'),
@@ -337,10 +325,10 @@ describe('applyContextAutoAllocation', () => {
     expect(settingsKeys).toContain('story_state_budget_tokens');
     expect(settingsKeys).toContain('episodic_memory_budget_tokens');
     expect(settingsKeys).toContain('memory_patch_max_tokens');
-    expect(settingsKeys).toContain('pipeline_draft_max_tokens');
-    expect(settingsKeys).toContain('pipeline_review_max_tokens');
-    expect(settingsKeys).toContain('pipeline_factcheck_max_tokens');
-    expect(settingsKeys).toContain('pipeline_proof_max_tokens');
+    expect(settingsKeys).not.toContain('pipeline_draft_max_tokens');
+    expect(settingsKeys).not.toContain('pipeline_review_max_tokens');
+    expect(settingsKeys).not.toContain('pipeline_factcheck_max_tokens');
+    expect(settingsKeys).not.toContain('pipeline_proof_max_tokens');
     expect(settingsKeys).toContain('context_auto_input');
     expect(settingsKeys).toContain('context_auto_policy_v2');
     // UPDATE 语句
@@ -354,6 +342,22 @@ describe('applyContextAutoAllocation', () => {
     expect(mockedSetContextAutoLastApplied).toHaveBeenCalledTimes(1);
     expect(record.maxContextTokens).toBe(200000);
     expect(record.allocation.inputBudget).toBe(160000);
+  });
+
+  test('当前自动分配不再写入旧流水线四阶段固定预算', async () => {
+    await applyContextAutoAllocation(200000);
+    const [, statements] = mockedExecuteTransaction.mock.calls[0];
+    const settingsKeys = statements
+      .filter((s: any) => s.sql.includes('INSERT OR REPLACE INTO settings'))
+      .map((s: any) => s.params[0]);
+    expect(settingsKeys).not.toEqual(
+      expect.arrayContaining([
+        'pipeline_draft_max_tokens',
+        'pipeline_review_max_tokens',
+        'pipeline_factcheck_max_tokens',
+        'pipeline_proof_max_tokens',
+      ]),
+    );
   });
 
   test('资源数量为 0 时跳过对应 UPDATE', async () => {
@@ -390,11 +394,11 @@ describe('applyContextAutoAllocation', () => {
     expect(llmStmt.params).toEqual([200000, 40000]);
   });
 
-  test('presets UPDATE 用 draftMaxTokens 作为 max_tokens', async () => {
+  test('presets UPDATE 使用模型输出基线，不再使用 Draft 的旧 50% 分配', async () => {
     await applyContextAutoAllocation(200000);
     const [, statements] = mockedExecuteTransaction.mock.calls[0];
     const presetStmt = statements.find((s: any) => s.sql.includes('UPDATE presets'));
-    expect(presetStmt.params).toEqual([20000]); // draftMaxTokens = 40000 * 0.5
+    expect(presetStmt.params).toEqual([40000]);
   });
 
   test('事务失败抛错且不写 last_applied', async () => {
@@ -414,11 +418,11 @@ describe('applyContextAutoAllocation', () => {
   test('ContextConfig/PipelineConfig 其他字段不被覆写（INSERT OR REPLACE 单 key）', async () => {
     await applyContextAutoAllocation(200000);
     const [, statements] = mockedExecuteTransaction.mock.calls[0];
-    // 12 个 settings INSERT OR REPLACE（含 policy/input + 6 ContextConfig + 4 PipelineConfig）
+    // 8 个 settings INSERT OR REPLACE（含 policy/input + 6 ContextConfig）
     const settingsStmts = statements.filter((s: any) =>
       s.sql.includes('INSERT OR REPLACE INTO settings'),
     );
-    expect(settingsStmts.length).toBe(12);
+    expect(settingsStmts.length).toBe(8);
     // 不应包含 strategy / pipelineMode / presetId 等 key
     const settingsKeys = settingsStmts.map((s: any) => s.params[0]);
     expect(settingsKeys).not.toContain('context_strategy');
@@ -428,125 +432,46 @@ describe('applyContextAutoAllocation', () => {
 });
 
 // ============================================================================
-// 轻量级同步：computePipelineMaxTokensFromContextWindow + syncPipelineMaxTokensFromContextWindow
+// 大纲流水线：五阶段独立弹性 reservation
 // ============================================================================
 
-import {
-  computePipelineMaxTokensFromContextWindow,
-  syncPipelineMaxTokensFromContextWindow,
-} from '../src/services/contextAutoAllocator';
-import { setSetting } from '../src/data/repositories/settingsRepository';
+const OUTLINE_STAGES = ['draft', 'review', 'factCheck', 'brief', 'proof'] as const;
 
-describe('computePipelineMaxTokensFromContextWindow', () => {
-  test('抛错：contextWindow <= 0', () => {
-    expect(() => computePipelineMaxTokensFromContextWindow(0)).toThrow(/正数/);
-    expect(() => computePipelineMaxTokensFromContextWindow(-1)).toThrow(/正数/);
-  });
+describe('buildOutlineElasticBudgetPreview', () => {
+  test.each([
+    [1_000_000, 200_000, 200_000],
+    [1_000_000, 64_000, 64_000],
+    [128_000, 32_000, 25_600],
+  ])(
+    'context=%i modelMax=%i 时五阶段都使用独立 reservation=%i',
+    (contextWindow, modelMaxOutputTokens, expected) => {
+      const preview = buildOutlineElasticBudgetPreview({
+        contextWindow,
+        modelMaxOutputTokens,
+      });
+      expect(
+        OUTLINE_STAGES.map(stage => preview.stages[stage].requestMaxTokens),
+      ).toEqual(OUTLINE_STAGES.map(() => expected));
+    },
+  );
 
-  test('抛错：contextWindow 非有限数', () => {
-    expect(() => computePipelineMaxTokensFromContextWindow(NaN)).toThrow(/正数/);
-    expect(() => computePipelineMaxTokensFromContextWindow(Infinity)).toThrow(
-      /正数/,
-    );
-  });
-
-  test('典型值 200000 的比例正确（与 allocateContextBudget 输出一致）', () => {
-    const tokens = computePipelineMaxTokensFromContextWindow(200000);
-    // outputBudget = 200000 * 0.2 = 40000
-    // draft = 40000 * 0.5 = 20000
-    // review = 40000 * 0.15 = 6000
-    // factCheck = 40000 * 0.15 = 6000
-    // proof = 40000 * 0.2 = 8000
-    expect(tokens.draftMaxTokens).toBe(20000);
-    expect(tokens.reviewMaxTokens).toBe(6000);
-    expect(tokens.factCheckMaxTokens).toBe(6000);
-    expect(tokens.proofMaxTokens).toBe(8000);
-  });
-
-  test('与 allocateContextBudget 的输出侧完全一致', () => {
-    const full = allocateContextBudget(200000, {
-      characters: 10,
-      notes: 10,
-      worldbookEntries: 20,
-      worldbookCollections: 4,
+  test('预览使用同一个 resolver，并保留阶段语义 floor', () => {
+    const preview = buildOutlineElasticBudgetPreview({
+      contextWindow: 1_000_000,
+      modelMaxOutputTokens: 200_000,
     });
-    const lite = computePipelineMaxTokensFromContextWindow(200000);
-    expect(lite.draftMaxTokens).toBe(full.draftMaxTokens);
-    expect(lite.reviewMaxTokens).toBe(full.reviewMaxTokens);
-    expect(lite.factCheckMaxTokens).toBe(full.factCheckMaxTokens);
-    expect(lite.proofMaxTokens).toBe(full.proofMaxTokens);
+    const expected = resolveElasticStageOutputReservation({
+      contextWindow: 1_000_000,
+      modelMaxOutputTokens: 200_000,
+    });
+    expect(preview.stages.draft.requestMaxTokens).toBe(expected);
+    expect(preview.stages.brief.visibleOutputFloor).toBe(1200);
+    expect(preview.stages.proof.visibleOutputFloor).toBe(5000);
   });
 
-  test('极小值 100 触发 MIN_PIPELINE_TOKENS floor', () => {
-    const tokens = computePipelineMaxTokensFromContextWindow(100);
-    // outputBudget = 100 * 0.2 = 20
-    // draft = 20 * 0.5 = 10 → floor 到 256
-    expect(tokens.draftMaxTokens).toBe(MIN_PIPELINE_TOKENS);
-    expect(tokens.reviewMaxTokens).toBe(MIN_PIPELINE_TOKENS);
-    expect(tokens.factCheckMaxTokens).toBe(MIN_PIPELINE_TOKENS);
-    expect(tokens.proofMaxTokens).toBe(MIN_PIPELINE_TOKENS);
-  });
-
-  test('DeepSeek 常见上下文 65536 算出合理值', () => {
-    const tokens = computePipelineMaxTokensFromContextWindow(65536);
-    // outputBudget = 65536 * 0.2 = 13107
-    // draft = 13107 * 0.5 = 6554
-    // review = 13107 * 0.15 = 1966
-    // factCheck = 13107 * 0.15 = 1966
-    // proof = 13107 * 0.2 = 2621
-    expect(tokens.draftMaxTokens).toBe(6554);
-    expect(tokens.reviewMaxTokens).toBe(1966);
-    expect(tokens.factCheckMaxTokens).toBe(1966);
-    expect(tokens.proofMaxTokens).toBe(2621);
-    // review/factCheck 大于 1500 默认值，证明能解决 full 模式被截断的问题
-    expect(tokens.reviewMaxTokens).toBeGreaterThan(1500);
-    expect(tokens.factCheckMaxTokens).toBeGreaterThan(1500);
-  });
-});
-
-describe('syncPipelineMaxTokensFromContextWindow', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  test('调用 setSetting 4 次，写入正确的 key 和值', async () => {
-    const tokens = await syncPipelineMaxTokensFromContextWindow(200000);
-    expect(setSetting).toHaveBeenCalledTimes(4);
-    // 4 个 key 必须正确
-    const keys = (setSetting as jest.Mock).mock.calls.map(c => c[0]);
-    expect(keys).toEqual([
-      'pipeline_draft_max_tokens',
-      'pipeline_review_max_tokens',
-      'pipeline_factcheck_max_tokens',
-      'pipeline_proof_max_tokens',
-    ]);
-    // 值与 compute 函数一致
-    const calls = (setSetting as jest.Mock).mock.calls;
-    expect(calls[0][1]).toBe(String(tokens.draftMaxTokens));
-    expect(calls[1][1]).toBe(String(tokens.reviewMaxTokens));
-    expect(calls[2][1]).toBe(String(tokens.factCheckMaxTokens));
-    expect(calls[3][1]).toBe(String(tokens.proofMaxTokens));
-  });
-
-  test('不写其他 settings key（不污染 ContextConfig）', async () => {
-    await syncPipelineMaxTokensFromContextWindow(65536);
-    const keys = (setSetting as jest.Mock).mock.calls.map(c => c[0]);
-    expect(keys).not.toContain('sliding_window_size');
-    expect(keys).not.toContain('resource_budget');
-    expect(keys).not.toContain('pipeline_mode');
-    expect(keys).not.toContain('pipeline_draft_preset_id');
-  });
-
-  test('contextWindow <= 0 时抛错且不调 setSetting', async () => {
-    await expect(syncPipelineMaxTokensFromContextWindow(0)).rejects.toThrow(
-      /正数/,
-    );
-    expect(setSetting).not.toHaveBeenCalled();
-  });
-
-  test('返回值与 compute 函数一致', async () => {
-    const expected = computePipelineMaxTokensFromContextWindow(100000);
-    const actual = await syncPipelineMaxTokensFromContextWindow(100000);
-    expect(actual).toEqual(expected);
+  test('无模型输出上限时仍受 context 的 20% reservation 和最小值保护', () => {
+    expect(
+      resolveElasticStageOutputReservation({ contextWindow: 100 }),
+    ).toBe(MIN_PIPELINE_TOKENS);
   });
 });

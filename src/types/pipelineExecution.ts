@@ -80,11 +80,12 @@ export interface PipelineExecutionSnapshot {
 
   /**
    * Context-budget strategy version frozen at task start (Schema 44+).
-   * undefined / 1 → Legacy budget; 2 → elastic budget V2.
+   * undefined / 1 → Legacy budget; 2–4 → historical elastic protocols;
+   * 5 → current independent elastic reservation for all five stages.
    * Frozen with the workflow version; resume must never re-read the live
    * default. Missing on historical snapshots → Legacy (1).
    */
-  contextBudgetVersion?: 1 | 2 | 3 | 4;
+  contextBudgetVersion?: 1 | 2 | 3 | 4 | 5;
 
   /**
    * Frozen Final Reviser reasoning policy. Missing / 1 is historical Legacy;

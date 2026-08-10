@@ -13,7 +13,10 @@ import type {
   MultiChapterBatchRow,
 } from '../../data/repositories/multiChapterBatchRepository';
 import type { PipelineStageAttemptRow } from '../../data/repositories/pipelineStageAttemptRepository';
-import { CURRENT_OUTLINE_WORKFLOW_VERSION } from '../pipeline/outlineWorkflowVersion';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../pipeline/outlineWorkflowVersion';
 
 export type MultiChapterBatchAction =
   | { type: 'plan_batch' }
@@ -45,6 +48,8 @@ export interface DetermineBatchActionInput {
   taskStatuses?: Record<string, string>;
   /** taskId → frozen workflow version, used to block old Resume paths. */
   taskWorkflowVersions?: Record<string, number>;
+  /** taskId → frozen context budget version, used to block old Resume paths. */
+  taskContextBudgetVersions?: Record<string, number>;
   /** Latest attempt per task for the current item (failure-driven). */
   latestAttempts?: Record<string, PipelineStageAttemptRow | null>;
   /** Effective batch budget check (max vs used). */
@@ -80,7 +85,8 @@ export function determineNextBatchAction(
     return { type: 'no_op', reason: `batch_paused:${batch.status}` };
   }
   if (
-    Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION
+    Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
+    Number(batch.contextBudgetVersion) !== CURRENT_CONTEXT_BUDGET_VERSION
   ) {
     return { type: 'pause_legacy_batch' };
   }
@@ -229,11 +235,7 @@ function decideRunningPipeline(
     taskStatus === 'proofing' ||
     taskStatus === 'interrupted'
   ) {
-    if (
-      input.taskWorkflowVersions &&
-      Number(input.taskWorkflowVersions[taskId]) !==
-        CURRENT_OUTLINE_WORKFLOW_VERSION
-    ) {
+    if (isLegacyIncompleteTask(input, taskId)) {
       return { type: 'pause_legacy_pipeline', ordinal };
     }
     // Already started (or process-dead mid-run) → resume.
@@ -299,8 +301,13 @@ function isLegacyIncompleteTask(
   if (!taskId || !input.taskWorkflowVersions) return false;
   const status = input.taskStatuses?.[taskId];
   return (
-    Number(input.taskWorkflowVersions[taskId]) !==
-      CURRENT_OUTLINE_WORKFLOW_VERSION &&
+    (Number(input.taskWorkflowVersions[taskId]) !==
+      CURRENT_OUTLINE_WORKFLOW_VERSION ||
+      Boolean(
+        input.taskContextBudgetVersions &&
+          Number(input.taskContextBudgetVersions[taskId]) !==
+            CURRENT_CONTEXT_BUDGET_VERSION,
+      )) &&
     status !== 'completed' &&
     status !== 'cancelled'
   );

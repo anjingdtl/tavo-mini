@@ -3,9 +3,10 @@
  *
  * 设计文档：docs/superpowers/specs/2026-07-18-context-auto-config-design.md
  *
- * 顶层分配：maxContextTokens 的 80% 作输入预算、20% 作输出预算。
+ * 顶层分配：maxContextTokens 的 80% 作输入预算、20% 作模型输出上限。
  * 输入侧按 45/20/25/10 拆给滑动窗口/资料/全局故事状态/章节事件；
- * 输出侧按 50/15/15/20 拆给草稿/审阅/事实/校对。
+ * 大纲流水线阶段预算不在这里切分，而是在任务首次运行时按模型能力
+ * 为五个独立请求分别冻结 20% reservation。
  * 资源级单项上限按实际数量动态分摊（R1 算法）。
  */
 
@@ -85,12 +86,7 @@ export interface AllocationResult {
   storyStateBudgetTokens: number;
   episodicMemoryBudgetTokens: number;
   memoryPatchMaxTokens: number;
-  // 输出侧（写入 PipelineConfig）
-  draftMaxTokens: number;
-  reviewMaxTokens: number;
-  factCheckMaxTokens: number;
-  proofMaxTokens: number;
-  // 同步写入 llm_config / presets
+  // 同步写入 llm_config / presets；大纲阶段不再写 PipelineConfig 固定值
   llmContextWindow: number;
   llmMaxOutputTokens: number;
   presetMaxTokens: number;
@@ -124,16 +120,6 @@ export const RATIO_EPISODIC_MEMORY_BUDGET =
     .episodicMemoryBudgetRatio;
 export const RATIO_SUMMARY_BUDGET =
   RATIO_STORY_STATE_BUDGET + RATIO_EPISODIC_MEMORY_BUDGET;
-
-// 输出侧内部比例（占 outputBudget）
-export const RATIO_DRAFT =
-  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.draftRatio;
-export const RATIO_REVIEW =
-  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.reviewRatio;
-export const RATIO_FACT_CHECK =
-  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.factCheckRatio;
-export const RATIO_PROOF =
-  DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.proofRatio;
 
 // 资料预算内部子比例（contextBuilder.ts 现有约定）
 export const RATIO_RESOURCE_CHARACTER =
@@ -295,24 +281,6 @@ export function allocateContextBudget(
     MAX_MEMORY_PATCH_TOKENS,
   );
 
-  // 输出侧
-  const draftMaxTokens = floor(
-    outputBudget * outline.draftRatio,
-    MIN_PIPELINE_TOKENS,
-  );
-  const reviewMaxTokens = floor(
-    outputBudget * outline.reviewRatio,
-    MIN_PIPELINE_TOKENS,
-  );
-  const factCheckMaxTokens = floor(
-    outputBudget * outline.factCheckRatio,
-    MIN_PIPELINE_TOKENS,
-  );
-  const proofMaxTokens = floor(
-    outputBudget * outline.proofRatio,
-    MIN_PIPELINE_TOKENS,
-  );
-
   // 资料预算内部子分配（角色 35% / 笔记 20% / 世界书 45%）
   const characterTotal = resourceBudget * outline.resourceCharacterRatio;
   const noteTotal = resourceBudget * outline.resourceNoteRatio;
@@ -344,13 +312,9 @@ export function allocateContextBudget(
     storyStateBudgetTokens,
     episodicMemoryBudgetTokens,
     memoryPatchMaxTokens,
-    draftMaxTokens,
-    reviewMaxTokens,
-    factCheckMaxTokens,
-    proofMaxTokens,
     llmContextWindow: Math.round(maxContextTokens),
     llmMaxOutputTokens: outputBudget,
-    presetMaxTokens: draftMaxTokens,
+    presetMaxTokens: outputBudget,
     characterMaxTokens,
     noteMaxTokens,
     worldbookEntryMaxTokens,
@@ -375,7 +339,6 @@ import {
   setContextAutomationPolicy,
   type ContextAutoAppliedRecord,
 } from '../data/repositories/contextAutoRepository';
-import { setSetting } from '../data/repositories/settingsRepository';
 
 /**
  * 查询所有项目的资源数量（用于动态分配单项上限）。
@@ -508,29 +471,6 @@ export async function applyContextAutoAllocation(
         String(allocation.memoryPatchMaxTokens),
       ],
     },
-    // PipelineConfig 字段
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['pipeline_draft_max_tokens', String(allocation.draftMaxTokens)],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: [
-        'pipeline_review_max_tokens',
-        String(allocation.reviewMaxTokens),
-      ],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: [
-        'pipeline_factcheck_max_tokens',
-        String(allocation.factCheckMaxTokens),
-      ],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['pipeline_proof_max_tokens', String(allocation.proofMaxTokens)],
-    },
     // llm_config
     {
       sql: 'UPDATE llm_config SET context_window = ?, max_output_tokens = ?',
@@ -592,43 +532,6 @@ export async function applyContextAutoAllocation(
   return record;
 }
 
-// ============================================================================
-// 轻量级同步：LLM 设置保存后只更新流水线 4 阶段 max_tokens
-// ============================================================================
-
-/**
- * 仅根据 LLM 上下文长度计算流水线 4 阶段的 max_tokens，不涉及资源分配。
- * 复用 RATIO_OUTPUT / RATIO_DRAFT / RATIO_REVIEW / RATIO_FACT_CHECK / RATIO_PROOF。
- *
- * 与 allocateContextBudget 的区别：
- * - allocateContextBudget 需要资源计数，会算出资料预算、滑动窗口等所有字段
- * - 本函数只算 4 个 pipeline_*_max_tokens，用于 LLM 设置保存后的轻量级同步
- *
- * @throws Error 当 contextWindow <= 0 或非有限数
- */
-export function computePipelineMaxTokensFromContextWindow(
-  contextWindow: number,
-): {
-  draftMaxTokens: number;
-  reviewMaxTokens: number;
-  factCheckMaxTokens: number;
-  proofMaxTokens: number;
-} {
-  if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
-    throw new Error(`contextWindow 必须为正数，收到：${contextWindow}`);
-  }
-  const outputBudget = Math.round(contextWindow * RATIO_OUTPUT);
-  return {
-    draftMaxTokens: floor(outputBudget * RATIO_DRAFT, MIN_PIPELINE_TOKENS),
-    reviewMaxTokens: floor(outputBudget * RATIO_REVIEW, MIN_PIPELINE_TOKENS),
-    factCheckMaxTokens: floor(
-      outputBudget * RATIO_FACT_CHECK,
-      MIN_PIPELINE_TOKENS,
-    ),
-    proofMaxTokens: floor(outputBudget * RATIO_PROOF, MIN_PIPELINE_TOKENS),
-  };
-}
-
 const OUTLINE_PIPELINE_STAGES_V3: OutlinePipelineStageV3[] = [
   'draft',
   'review',
@@ -636,6 +539,20 @@ const OUTLINE_PIPELINE_STAGES_V3: OutlinePipelineStageV3[] = [
   'brief',
   'proof',
 ];
+
+/** Resolve one independent reservation for every current outline stage. */
+export function resolveOutlineElasticStageReservations(params: {
+  contextWindow: number;
+  modelMaxOutputTokens?: number | null;
+}): Record<OutlinePipelineStageV3, number> {
+  const reservation = resolveElasticStageOutputReservation({
+    contextWindow: params.contextWindow,
+    modelMaxOutputTokens: params.modelMaxOutputTokens,
+  });
+  return Object.fromEntries(
+    OUTLINE_PIPELINE_STAGES_V3.map(stage => [stage, reservation]),
+  ) as Record<OutlinePipelineStageV3, number>;
+}
 
 function resolveOutlineStageTierV3(
   requestedTier: OutlineReasoningTierV3,
@@ -779,28 +696,23 @@ export function allocateOutlinePipelineBudgetV3(params: {
 }
 
 /**
- * LLM 设置保存后的轻量级同步：仅根据 context_window 算出并写入 4 个 pipeline_*_max_tokens。
- * 不涉及资源预算，不需要资源计数，不会修改 llm_config / presets / 资料表。
- *
- * 用户在 PipelineConfigScreen 手动调过的值会被覆盖，因此调用方应先弹窗确认。
+ * Build the five-stage preview with the exact same per-stage resolver used by
+ * task snapshot freezing.  The UI may display this result, but it must not
+ * reconstruct the 20% rule or the stage policy itself.
  */
-export async function syncPipelineMaxTokensFromContextWindow(
-  contextWindow: number,
-): Promise<{
-  draftMaxTokens: number;
-  reviewMaxTokens: number;
-  factCheckMaxTokens: number;
-  proofMaxTokens: number;
-}> {
-  const tokens = computePipelineMaxTokensFromContextWindow(contextWindow);
-  await Promise.all([
-    setSetting('pipeline_draft_max_tokens', String(tokens.draftMaxTokens)),
-    setSetting('pipeline_review_max_tokens', String(tokens.reviewMaxTokens)),
-    setSetting(
-      'pipeline_factcheck_max_tokens',
-      String(tokens.factCheckMaxTokens),
-    ),
-    setSetting('pipeline_proof_max_tokens', String(tokens.proofMaxTokens)),
-  ]);
-  return tokens;
+export function buildOutlineElasticBudgetPreview(params: {
+  contextWindow: number;
+  modelMaxOutputTokens?: number | null;
+  requestedTier?: OutlineReasoningTierV3;
+  policy?: OutlinePipelineBudgetPolicyV3;
+}): OutlinePipelineBudgetAllocationV3 {
+  const requestedTier = params.requestedTier ?? 'low';
+  const requestMaxTokens = resolveOutlineElasticStageReservations(params);
+  return allocateOutlinePipelineBudgetV3({
+    contextWindow: params.contextWindow,
+    requestedTier,
+    modelMaxOutputTokens: params.modelMaxOutputTokens ?? undefined,
+    requestMaxTokenOverrides: requestMaxTokens,
+    policy: params.policy,
+  });
 }

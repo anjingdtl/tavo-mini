@@ -639,18 +639,20 @@ export function parsePipelineExecutionSnapshot(
     );
   }
   const contextBudgetRaw = raw.contextBudgetVersion;
-  let contextBudgetVersion: 1 | 2 | 3 | 4 | undefined;
+  let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | undefined;
   if (
     contextBudgetRaw === 1 ||
     contextBudgetRaw === 2 ||
     contextBudgetRaw === 3 ||
     contextBudgetRaw === 4 ||
+    contextBudgetRaw === 5 ||
     contextBudgetRaw === '1' ||
     contextBudgetRaw === '2' ||
     contextBudgetRaw === '3' ||
-    contextBudgetRaw === '4'
+    contextBudgetRaw === '4' ||
+    contextBudgetRaw === '5'
   ) {
-    contextBudgetVersion = Number(contextBudgetRaw) as 1 | 2 | 3 | 4;
+    contextBudgetVersion = Number(contextBudgetRaw) as 1 | 2 | 3 | 4 | 5;
   } else if (contextBudgetRaw != null && contextBudgetRaw !== '') {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
@@ -667,13 +669,13 @@ export function parsePipelineExecutionSnapshot(
   if (
     isStructuredWorkflow &&
     (isCurrentWorkflow
-      ? contextBudgetVersion !== 4
+      ? contextBudgetVersion !== 5
       : contextBudgetVersion !== 3 && contextBudgetVersion !== 4)
   ) {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
       isCurrentWorkflow
-        ? '当前统一流水线必须与上下文预算版本 4 成对冻结，已阻止恢复。'
+        ? '当前统一流水线必须与上下文预算版本 5 成对冻结，已阻止恢复。'
         : '工作流版本 3 必须与上下文预算版本 3/4 成对冻结，已阻止恢复。',
       'restart_task',
     );
@@ -683,7 +685,7 @@ export function parsePipelineExecutionSnapshot(
   if (isStructuredWorkflow) {
     if (
       (isCurrentWorkflow
-        ? contextBudgetVersion !== 4
+        ? contextBudgetVersion !== 5
         : contextBudgetVersion !== 3 && contextBudgetVersion !== 4) ||
       finalReviserReasoningPolicyVersion !== 3
     ) {
@@ -827,7 +829,7 @@ export function parsePipelineExecutionSnapshot(
     }
     if (
       reasoningProfileVersion === 5 &&
-      (contextBudgetVersion !== 4 ||
+      (contextBudgetVersion !== 5 ||
         stageReasoning.draft?.effectiveTier !== raw.requestedReasoningTier ||
         stageReasoning.proof?.effectiveTier !== raw.requestedReasoningTier ||
         stageReasoning.review?.effectiveTier !== 'low' ||
@@ -838,7 +840,7 @@ export function parsePipelineExecutionSnapshot(
     ) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        '当前统一流水线必须保持 Draft/Brief/Proof 跟随用户档位、Review/FactCheck 为 enabled + low，且使用 context budget 4，已阻止恢复。',
+        '当前统一流水线必须保持 Draft/Brief/Proof 跟随用户档位、Review/FactCheck 为 enabled + low，且使用 context budget 5，已阻止恢复。',
         'restart_task',
       );
     }
@@ -1171,7 +1173,8 @@ export function serializePipelineTaskContext(params: {
     params.execution.contextBudgetVersion === 4;
   const isV33 =
     params.execution.outlineWorkflowVersion === 4 &&
-    params.execution.contextBudgetVersion === 4;
+    (params.execution.contextBudgetVersion === 4 ||
+      params.execution.contextBudgetVersion === 5);
   const snapshotVersion = isV33 || isV32 ? 4 : isV3 ? 3 : 1;
   const draftContext: PipelineContextSnapshot = {
     ...params.draftContext,

@@ -27,7 +27,10 @@ import {
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import type { PipelineMode, PipelineReasoningEffort } from '../types/pipeline';
 import { getPipelineTaskById } from '../data/repositories/pipelineTaskRepository';
-import { CURRENT_OUTLINE_WORKFLOW_VERSION } from './pipeline/outlineWorkflowVersion';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from './pipeline/outlineWorkflowVersion';
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -277,11 +280,13 @@ export async function resumePipeline(
   if (
     persistedTask &&
     incompleteStatuses.has(String(persistedTask.status)) &&
-    Number(persistedTask.outlineWorkflowVersion) !==
-      CURRENT_OUTLINE_WORKFLOW_VERSION
+    (Number(persistedTask.outlineWorkflowVersion) !==
+      CURRENT_OUTLINE_WORKFLOW_VERSION ||
+      Number(persistedTask.contextBudgetVersion) !==
+        CURRENT_CONTEXT_BUDGET_VERSION)
   ) {
     const error = Object.assign(
-      new Error('该任务使用旧版生成流程，不能继续；请按新版重新生成。'),
+      new Error('该任务使用旧版生成流程或预算协议，不能继续；请按新版重新生成。'),
       { code: 'LEGACY_PIPELINE_RESUME_BLOCKED' },
     );
     throw error;

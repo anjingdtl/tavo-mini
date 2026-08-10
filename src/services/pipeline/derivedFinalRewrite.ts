@@ -44,7 +44,7 @@ export async function createDerivedFinalRewriteTask(
   const parentWorkflowVersion = Number(parent.outlineWorkflowVersion);
   if (
     ![3, 4].includes(parentWorkflowVersion) ||
-    ![3, 4].includes(Number(parent.contextBudgetVersion))
+    ![3, 4, 5].includes(Number(parent.contextBudgetVersion))
   ) {
     throw new Error('仅重写终稿仅适用于结构化完整流水线；请重新运行完整流水线。');
   }
@@ -61,7 +61,7 @@ export async function createDerivedFinalRewriteTask(
     !parsed.execution ||
     ![3, 4, 5].includes(Number(parsed.execution.reasoningProfileVersion)) ||
     ![3, 4].includes(Number(parsed.execution.outlineWorkflowVersion)) ||
-    ![3, 4].includes(Number(parsed.execution.contextBudgetVersion))
+    ![3, 4, 5].includes(Number(parsed.execution.contextBudgetVersion))
   ) {
     throw new Error('原任务不是当前结构化冻结配置，已阻止派生终稿。');
   }
@@ -73,8 +73,7 @@ export async function createDerivedFinalRewriteTask(
   const byStage = new Map(sourceCheckpoints.map(row => [row.stage, row]));
   const required = getPipelineStageOrder(parsed.execution.pipelineMode, {
     outlineWorkflowVersion: parentWorkflowVersion,
-    contextBudgetVersion:
-      parsed.execution.contextBudgetVersion === 4 ? 4 : 3,
+    contextBudgetVersion: parsed.execution.contextBudgetVersion,
   });
   for (const stage of required) {
     const row = byStage.get(stage);
@@ -129,8 +128,7 @@ export async function createDerivedFinalRewriteTask(
     pipelineContextVersion: parent.pipelineContextVersion ?? null,
     pipelineContextHash: parent.pipelineContextHash ?? null,
     outlineWorkflowVersion: parentWorkflowVersion as 3 | 4,
-    contextBudgetVersion:
-      Number(parent.contextBudgetVersion) === 4 ? 4 : 3,
+    contextBudgetVersion: Number(parent.contextBudgetVersion) as 3 | 4 | 5,
     parentTaskId: parent.id,
     derivedKind: DERIVED_FINAL_REWRITE_KIND,
     derivedInstruction: normalizedInstruction,

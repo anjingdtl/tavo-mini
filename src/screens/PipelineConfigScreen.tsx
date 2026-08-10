@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Button, EmptyState, Field, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import { Button, EmptyState, Header, Screen, SegmentedControl, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
 import * as db from '../services/database';
@@ -13,10 +13,10 @@ import {
 } from '../services/pipeline/reasoningPolicy';
 
 const STAGE_LABELS = [
-  { key: 'draft', name: '初稿作者', maxKey: 'draftMaxTokens' as const, presetKey: 'draftPresetId' as const },
-  { key: 'review', name: '审阅/评估', maxKey: 'reviewMaxTokens' as const, presetKey: 'reviewPresetId' as const },
-  { key: 'factCheck', name: '事实核查员', maxKey: 'factCheckMaxTokens' as const, presetKey: 'factCheckPresetId' as const },
-  { key: 'proof', name: '终审校对员', maxKey: 'proofMaxTokens' as const, presetKey: 'proofPresetId' as const },
+  { key: 'draft', name: '初稿作者', presetKey: 'draftPresetId' as const },
+  { key: 'review', name: '审阅/评估', presetKey: 'reviewPresetId' as const },
+  { key: 'factCheck', name: '事实核查员', presetKey: 'factCheckPresetId' as const },
+  { key: 'proof', name: '终审校对员', presetKey: 'proofPresetId' as const },
 ];
 
 const DEFAULT_CONFIG: PipelineConfig = {
@@ -154,21 +154,12 @@ export const PipelineConfigScreen: React.FC = () => {
         </View>
 
         <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-          为每个阶段绑定一个写作预设。未绑定时将使用项目默认预设。
+          为每个阶段绑定一个写作预设。未绑定时将使用项目默认预设；新大纲任务的五次调用会按冻结模型能力独立计算弹性 reservation。
         </Text>
         {STAGE_LABELS.map((stage) => (
           <View key={stage.key} style={[styles.card, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>{stage.name}</Text>
             {renderPresetPicker(stage.presetKey, '绑定预设')}
-            <Field
-              label="Max Tokens"
-              value={String(config[stage.maxKey])}
-              onChangeText={(value) => {
-                const num = parseInt(value, 10);
-                if (!Number.isNaN(num)) setConfig({ ...config, [stage.maxKey]: num });
-              }}
-              keyboardType="numeric"
-            />
           </View>
         ))}
         <Button label={saving ? '保存中...' : '保存配置'} onPress={save} disabled={saving} />

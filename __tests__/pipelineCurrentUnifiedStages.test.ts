@@ -99,7 +99,7 @@ function currentExecution(): PipelineExecutionSnapshot {
   return {
     pipelineMode: 'full',
     outlineWorkflowVersion: 4,
-    contextBudgetVersion: 4,
+    contextBudgetVersion: 5,
     finalReviserReasoningPolicyVersion: 3,
     reasoningEffort: 'high',
     reasoningProfileVersion: 5,
@@ -274,7 +274,7 @@ describe('current unified outline pipeline', () => {
     expect(
       getPipelineStageOrder('noReview', {
         outlineWorkflowVersion: 4,
-        contextBudgetVersion: 4,
+        contextBudgetVersion: 5,
       }),
     ).toEqual(['draft', 'review', 'factCheck', 'brief', 'proof']);
   });
@@ -289,7 +289,7 @@ describe('current unified outline pipeline', () => {
     expect(parsed.version).toBe(4);
     expect(parsed.execution).toMatchObject({
       outlineWorkflowVersion: 4,
-      contextBudgetVersion: 4,
+      contextBudgetVersion: 5,
       reasoningProfileVersion: 5,
       briefPolicyVersion: 4,
       pipelineMode: 'full',

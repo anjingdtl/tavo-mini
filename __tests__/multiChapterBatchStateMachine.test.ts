@@ -162,6 +162,14 @@ describe('determineNextBatchAction — batch-level', () => {
     });
     expect(action.type).toBe('pause_batch_budget');
   });
+
+  it('pauses a current-workflow batch that still carries the legacy budget version', () => {
+    const action = decide({
+      batch: batchRow({ contextBudgetVersion: 4 }),
+      items: [itemRow(1)],
+    });
+    expect(action.type).toBe('pause_legacy_batch');
+  });
 });
 
 describe('determineNextBatchAction — item-level', () => {
@@ -204,6 +212,27 @@ describe('determineNextBatchAction — item-level', () => {
       taskStatuses: { t1: 'completed' },
     });
     expect(action.type).toBe('adopt_full_result');
+  });
+
+  it('pauses an incomplete current-workflow task with the legacy budget version', () => {
+    const action = decide({
+      batch: batchRow(),
+      items: [
+        itemRow(1, {
+          chapterId: 10,
+          status: 'running_pipeline',
+          activePipelineTaskId: 'legacy-budget-task',
+        }),
+      ],
+      taskStatuses: { 'legacy-budget-task': 'interrupted' },
+      taskWorkflowVersions: {
+        'legacy-budget-task': CURRENT_OUTLINE_WORKFLOW_VERSION,
+      },
+      taskContextBudgetVersions: {
+        'legacy-budget-task': 4,
+      },
+    });
+    expect(action).toEqual({ type: 'pause_legacy_pipeline', ordinal: 1 });
   });
 
   it('pauses by failure class (outcome_unknown / quota)', () => {
