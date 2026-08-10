@@ -11,7 +11,7 @@ import type {
  * characters before long chapterSummaries (truncation resilience).
  * Do NOT use canonicalStringify here — it sorts keys alphabetically.
  */
-function promptStringify(value: unknown): string {
+export function promptStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
@@ -53,7 +53,7 @@ const PATCH_ITEM_CONTRACT = `数组项字段契约（字段名必须逐字一致
 每个 newCharacters 项必须同时包含唯一 tempRef 和非空 canonicalName。每条关系必须连接两个不同的真实人物引用。
 evidenceQuote 从正文连续复制 4～80 字，必须与正文同语言且可定位。`;
 
-const MAINLINE_EXTRACTION_USER_BLOCK = `【故事主线检查清单】
+export const MAINLINE_EXTRACTION_USER_BLOCK = `【故事主线检查清单】
 只记录会持续约束后续章节的主线状态，并以正文原句作为证据；可以做保守概括，但不得添加正文没有的事件、动机或结果。
 1. 当前剧情弧：当前持续推进的叙事阶段。无当前弧时可 start；已有弧推进时 update；结束时 complete；旧弧结束且新弧开始时 replace。
 2. 当前目标：核心行动方下一步明确、持续的目标。目标改变时更新；正文明确完成/放弃且暂无新目标时用空字符串清空；没有变化则写 null。
@@ -266,7 +266,7 @@ export const STORY_MEMORY_CHECKPOINT_SYSTEM_PROMPT = `你是小说连续性记�
 chapterSummaries 必须与输入章节一一对应、顺序一致，不得缺章或重复；中间发生又撤销的事件写进对应章节摘要，但不要污染最终全局状态。
 只输出一个 JSON 对象，不要输出 Markdown、解释或代码围栏。`;
 
-const BATCH_ITEM_CONTRACT = `数组项字段契约：
+export const BATCH_ITEM_CONTRACT = `数组项字段契约：
 - evidence[]: {"chapterId":数字,"quote":"对应章节正文原句4-80字连续复制"}
 - newCharacters[]: {"tempRef":"new_char_唯一","canonicalName":"姓名","aliases":[],"role":"身份角色可短","identity":"","stableTraits":[],"initialState":{"location":"批次末位置优先","physicalState":"","emotionalState":"","currentGoal":"","knowledge":[],"possessions":[],"secrets":[]},"status":"active","evidence":[{"chapterId":首次出场章ID,"quote":"含姓名的正文原句"}]}
 - characterUpdates[]: {"characterRef":"已有精确ID","addAliases":[],"profileCorrections":{},"stateChanges":{},"correctionReason":"","addKnowledge":[],"removeKnowledge":[],"addPossessions":[],"removePossessions":[],"addSecrets":[],"removeSecrets":[],"clearFields":[],"evidence":[]}
@@ -279,7 +279,7 @@ const BATCH_ITEM_CONTRACT = `数组项字段契约：
 - mainlinePatch 与单章协议类似，但 evidenceQuote 改为 evidence 数组。
 填写顺序：先人物与关系，后章节摘要。newCharacters 宁可多不可漏。chapterSummaries 字段用于检索，须写清主体/对象，避免模糊代词。`;
 
-function createEmptyBatchPatch(
+export function createEmptyBatchPatch(
   chapters: Chapter[],
 ): StoryMemoryBatchPatchDraft {
   const ordered = [...chapters].sort((a, b) => a.position - b.position);
@@ -333,7 +333,7 @@ function createEmptyBatchPatch(
 }
 
 /** Stable field order for model output: people before long summaries. */
-function orderedBatchSchemaForPrompt(
+export function orderedBatchSchemaForPrompt(
   draft: StoryMemoryBatchPatchDraft,
 ): Record<string, unknown> {
   return {
