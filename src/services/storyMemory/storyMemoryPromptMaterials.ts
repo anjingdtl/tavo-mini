@@ -125,18 +125,6 @@ export function resolveRelevantCharacterIds(
   return relevant;
 }
 
-interface StoryMainlineView {
-  currentArc: unknown;
-  currentObjective: unknown;
-  activeConflicts: unknown;
-  openThreads: unknown;
-  foreshadowing: unknown;
-  timelineAnchors: unknown;
-  recentCompletedBeats: unknown[];
-  recentResolvedThreads: unknown[];
-  archiveDigest: unknown;
-}
-
 /**
  * Build the Preferred High mainline block: the open/active mainline state
  * that governs continuity. This is the high-priority slice of the previous
