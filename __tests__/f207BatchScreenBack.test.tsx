@@ -6,8 +6,8 @@
  * 进 store → view effect（batchStatus='running' + hasExecutionTraces）强制
  * 切回 'running' 视图 → 用户点"返回"页面原地不动。
  *
- * 修复：running / paused 视图下"返回"调用 navigation.goBack()（批次后台
- * 继续）；create / preview 视图保持回创建页。
+ * 修复：所有视图下"返回"都调用 navigation.goBack()；running / paused
+ * 视图离开后批次仍在后台继续。
  */
 import React from 'react';
 import { render, waitFor, fireEvent } from '@testing-library/react-native';

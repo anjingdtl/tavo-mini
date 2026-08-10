@@ -24,7 +24,6 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useThemeStore } from '../store/themeStore';
 import { testLLMConnection } from '../services/llm';
 import type { LLMQueueState } from '../services/llm';
-import { syncPipelineMaxTokensFromContextWindow } from '../services/contextAutoAllocator';
 import type { LLMConfig } from '../types/novel';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
 import RNFS from 'react-native-fs';
@@ -192,11 +191,6 @@ export const LLMSettingsScreen: React.FC = () => {
   const save = async () => {
     if (!validate()) return;
     setSaving(true);
-    // 记录保存前的 context_window，用于检测是否需要弹窗同步大纲流水线 max_tokens
-    const prevContextWindow =
-      draft.id > 0
-        ? llmConfigs.find(c => c.id === draft.id)?.context_window ?? null
-        : null;
     try {
       const id = await saveLLMConfig(draft);
       setSelectedId(id);
@@ -207,52 +201,11 @@ export const LLMSettingsScreen: React.FC = () => {
       // （包括 setActiveLLMConfig 后变化的 is_active 字段），避免 draft.is_active 过时
       isEditingRef.current = false;
       Toast.show({ type: 'success', text1: 'LLM 配置已保存' });
-      // 上下文长度变化时，仅为大纲流水线提供可选的兼容同步提示。
-      // 原著续写 V4 不消费这些 pipeline_* 固定值，而是按已持久化
-      // ContextAutomationPolicy 与各阶段冻结模型能力动态解析。
-      if (
-        prevContextWindow !== null &&
-        prevContextWindow !== draft.context_window &&
-        draft.context_window > 0
-      ) {
-        maybePromptSyncPipeline(prevContextWindow, draft.context_window);
-      }
     } catch (error: any) {
       Alert.alert('保存失败', error?.message || '配置写入失败，请重试。');
     } finally {
       setSaving(false);
     }
-  };
-
-  // 上下文长度变化后弹窗确认是否同步大纲流水线的创作/审核阶段预算；
-  // V3.1 Brief 由独立弹性预算计算，不写入这组固定值。
-  // 该兼容入口不参与 Continuation V4 的阶段预算。
-  const maybePromptSyncPipeline = (prev: number, next: number) => {
-    Alert.alert(
-      '上下文长度已更新',
-      `检测到上下文长度从 ${prev} 改为 ${next}。\n\n是否自动调整大纲流水线的阶段 Max Tokens？\n\n按兼容比例分配 Draft/Review/FactCheck/Final 输出预算；V3.1 Brief 使用独立弹性预算，将覆盖大纲流水线配置页里的现有值。原著续写 V4 会在每次 run 中按 Context Automation Policy 和各阶段模型能力动态计算。`,
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '同步',
-          onPress: async () => {
-            try {
-              const tokens = await syncPipelineMaxTokensFromContextWindow(next);
-              Toast.show({
-                type: 'success',
-                text1: '流水线 max_tokens 已同步',
-                text2: `draft=${tokens.draftMaxTokens} / review=${tokens.reviewMaxTokens} / factCheck=${tokens.factCheckMaxTokens} / proof=${tokens.proofMaxTokens}`,
-              });
-            } catch (e: any) {
-              Alert.alert(
-                '同步失败',
-                e?.message || '流水线 max_tokens 同步失败。',
-              );
-            }
-          },
-        },
-      ],
-    );
   };
 
   const saveAndTest = async () => {
@@ -535,7 +488,7 @@ export const LLMSettingsScreen: React.FC = () => {
                   { color: theme.colors.textSecondary },
                 ]}
               >
-                按模型上下文长度自动分配滑动窗口、流水线和资料 Token 预算。
+                按模型上下文长度自动分配输入/资料预算，并预览新大纲任务的五阶段弹性 reservation。
               </Text>
             </View>
             <Button

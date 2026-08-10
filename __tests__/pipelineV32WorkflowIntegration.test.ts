@@ -106,13 +106,16 @@ function stageOf(messages: ChatMessage[]): string {
   if (body.includes('V3.2 的文学评估器') || body.includes('当前阶段：Review')) {
     return 'review';
   }
+  if (body.includes('当前统一流水线的 Review')) return 'review';
   if (
     body.includes('V3.2 的事实核查器') ||
     body.includes('当前阶段：FactCheck')
   ) {
     return 'factCheck';
   }
+  if (body.includes('当前统一流水线的 FactCheck')) return 'factCheck';
   if (body.includes('V3.2 Brief Compiler')) return 'brief';
+  if (body.includes('当前统一流水线的 Brief Compiler')) return 'brief';
   if (
     body.includes('你是终稿修订员') ||
     body.includes('你是终审校对员') ||
@@ -157,7 +160,14 @@ async function seedBaseData(mode: string): Promise<{ chapterId: number }> {
   return { chapterId: chapterResult.insertId as number };
 }
 
-async function registerTask(taskId: string, chapterId: number): Promise<void> {
+async function registerTask(
+  taskId: string,
+  chapterId: number,
+  versions: { outlineWorkflowVersion: number; contextBudgetVersion: number } = {
+    outlineWorkflowVersion: 3,
+    contextBudgetVersion: 4,
+  },
+): Promise<void> {
   const now = Date.now();
   usePipelineTaskStore.getState().registerPersistedTask({
     id: taskId,
@@ -171,8 +181,8 @@ async function registerTask(taskId: string, chapterId: number): Promise<void> {
     pipelineContextJson: null,
     pipelineContextVersion: null,
     pipelineContextHash: null,
-    outlineWorkflowVersion: 3,
-    contextBudgetVersion: 4,
+    outlineWorkflowVersion: versions.outlineWorkflowVersion,
+    contextBudgetVersion: versions.contextBudgetVersion,
     createdAt: now,
     updatedAt: now,
     resolvedAt: null,
@@ -186,8 +196,8 @@ async function registerTask(taskId: string, chapterId: number): Promise<void> {
     stageResults: [],
     finalText: null,
     error: null,
-    outlineWorkflowVersion: 3,
-    contextBudgetVersion: 4,
+    outlineWorkflowVersion: versions.outlineWorkflowVersion,
+    contextBudgetVersion: versions.contextBudgetVersion,
     createdAt: now,
     updatedAt: now,
     resolvedAt: null,
@@ -525,5 +535,117 @@ describe('V3.2 production structured-stage recovery', () => {
     expect(
       (await attemptsFor(taskId)).filter(row => row.stage === 'proof'),
     ).toHaveLength(0);
+  });
+
+  test('current V4 + Budget V5 freezes one elastic reservation for all five calls', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('full');
+    await execute(
+      await openDatabase(),
+      `UPDATE llm_config SET context_window = 1000000, max_output_tokens = 200000 WHERE id = 1`,
+    );
+    // Deliberately polluted historical settings must not affect a V5 snapshot.
+    for (const [key, value] of [
+      ['pipeline_draft_max_tokens', '100000'],
+      ['pipeline_review_max_tokens', '30000'],
+      ['pipeline_factcheck_max_tokens', '30000'],
+      ['pipeline_proof_max_tokens', '40000'],
+    ]) {
+      await execute(
+        await openDatabase(),
+        `INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`,
+        [key, value],
+      );
+    }
+    const taskId = 't-v5-independent-reservation';
+    await registerTask(taskId, chapterId, {
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 5,
+    });
+    const calls: Array<{ stage: string; maxTokens: number }> = [];
+    mockCallLLMResult = jest
+      .fn()
+      .mockImplementation(async (messages: ChatMessage[], maxTokens: number) => {
+        const stage = stageOf(messages);
+        calls.push({ stage, maxTokens });
+        if (stage === 'draft') return llm(DRAFT_BODY);
+        if (stage === 'review') {
+          return llm(
+            JSON.stringify({
+              verdict: 'pass',
+              checked: REVIEW_COVERAGE,
+              findings: [],
+            }),
+          );
+        }
+        if (stage === 'factCheck') {
+          return llm(
+            JSON.stringify({
+              verdict: 'pass',
+              checked: [
+                'timeline',
+                'character_state',
+                'object_state',
+                'world_rule',
+                'spatial_logic',
+                'knowledge_boundary',
+                'outline_boundary',
+              ],
+              findings: [],
+            }),
+          );
+        }
+        if (stage === 'brief') {
+          return llm(
+            JSON.stringify({
+              strategy: '保持森林与守林人的衔接。',
+              actions: [],
+              preserve: [],
+              ending: '停在守林人的警告之后。',
+            }),
+          );
+        }
+        if (stage === 'proof') return llm(DRAFT_BODY + '\n\n老者点了点头。');
+        throw new Error('unexpected stage: ' + stage);
+      });
+
+    await reconcilePipelineTask(taskId, chapterFor(chapterId));
+
+    expect(await taskStatus(taskId)).toBe('completed');
+    expect(calls.map(call => call.stage)).toEqual([
+      'draft',
+      'review',
+      'factCheck',
+      'brief',
+      'proof',
+    ]);
+    expect(calls.map(call => call.maxTokens)).toEqual([
+      200000,
+      200000,
+      200000,
+      200000,
+      200000,
+    ]);
+    const rows = await all(
+      'SELECT pipeline_context_json FROM pipeline_tasks WHERE id = ?',
+      [taskId],
+    );
+    const execution = JSON.parse(String(rows[0].pipeline_context_json)).execution;
+    expect(execution.contextBudgetVersion).toBe(5);
+    expect(execution.stageBudgets).toHaveLength(5);
+    expect(execution.stageBudgets.map((item: any) => item.requestMaxTokens)).toEqual([
+      200000,
+      200000,
+      200000,
+      200000,
+      200000,
+    ]);
+    expect(execution.stageBudgets.map((item: any) => item.visibleOutputFloor)).toEqual([
+      4000,
+      1500,
+      1500,
+      1200,
+      5000,
+    ]);
   });
 });

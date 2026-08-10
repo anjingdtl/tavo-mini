@@ -16,9 +16,11 @@ import { useSettingsStore } from '../store/settingsStore';
 import {
   allocateContextBudget,
   applyContextAutoAllocation,
+  buildOutlineElasticBudgetPreview,
   countAllResources,
   ensureContextAutomationPolicy,
   type AllocationResult,
+  type OutlinePipelineBudgetAllocationV3,
   type ResourceCounts,
 } from '../services/contextAutoAllocator';
 import {
@@ -39,7 +41,6 @@ import {
 } from '../services/contextAutomationPolicy';
 import {
   DEFAULT_CONTEXT_CONFIG,
-  DEFAULT_MAX_TOKENS,
 } from '../constants/defaults';
 import * as db from '../services/database';
 
@@ -140,15 +141,29 @@ export const ContextAutoConfigScreen: React.FC = () => {
     }
   }, [numericInput, policy, resourceCounts]);
 
+  const outlineBudgetPreview: OutlinePipelineBudgetAllocationV3 | null =
+    useMemo(() => {
+      if (!preview) return null;
+      try {
+        return buildOutlineElasticBudgetPreview({
+          contextWindow: preview.llmContextWindow,
+          modelMaxOutputTokens: preview.llmMaxOutputTokens,
+          requestedTier: 'low',
+        });
+      } catch {
+        return null;
+      }
+    }, [preview]);
+
   const continuationBudgetPreview: ContinuationV4BudgetPreview | null =
     useMemo(() => {
       const active =
         llmConfigs.find(config => config?.is_active === 1) || llmConfigs[0];
-      if (!active || numericInput <= 0) return null;
+      if (!active || numericInput <= 0 || !preview) return null;
       const model: FrozenContinuationStageModel = {
         configId: Number(active.id) || 0,
         contextWindow: numericInput,
-        maxOutputTokens: numericInput,
+        maxOutputTokens: preview.llmMaxOutputTokens,
       };
       try {
         return resolveContinuationV4BudgetPreview({
@@ -163,7 +178,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
       } catch {
         return null;
       }
-    }, [llmConfigs, numericInput, policy]);
+    }, [llmConfigs, numericInput, policy, preview]);
 
   const isWarning = numericInput > 0 && numericInput < WARNING_THRESHOLD;
 
@@ -181,7 +196,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
       `将以 ${formatNumber(numericInput)} tokens 为基准，覆写：\n\n` +
         '• 所有 LLM 配置的 context_window 与 max_output_tokens\n' +
         '• 所有预设的 max_tokens\n' +
-        '• 当前项目的上下文与流水线配置\n' +
+        '• 当前项目的上下文与资源预算配置（大纲新任务按五阶段弹性预算冻结）\n' +
         '• 所有项目的角色、笔记、世界书 max_tokens\n\n' +
         '此操作不可撤销。',
       [
@@ -223,8 +238,8 @@ export const ContextAutoConfigScreen: React.FC = () => {
   const handleRestoreDefaults = () => {
     Alert.alert(
       '恢复默认配置',
-      '将把 ContextConfig、PipelineConfig 的 token 字段恢复到出厂默认值。\n\n' +
-        '注意：LLM 配置、预设、资源级 max_tokens 不会被重置。',
+      '将把 ContextConfig 与上下文自动化策略恢复到出厂默认值。\n\n' +
+        '注意：LLM 配置、预设、旧版流水线字段和资源级 max_tokens 不会被重置。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -233,19 +248,11 @@ export const ContextAutoConfigScreen: React.FC = () => {
           onPress: async () => {
             setRestoring(true);
             try {
-              const pipelineConfig = await db.getPipelineConfig();
               const defaultPolicy = cloneDefaultContextAutomationPolicy();
               await setContextAutomationPolicy(defaultPolicy);
               await setContextAutoInput(DEFAULT_INPUT_VALUE);
               await db.setContextConfig({
                 ...DEFAULT_CONTEXT_CONFIG,
-              });
-              await db.setPipelineConfig({
-                ...pipelineConfig,
-                draftMaxTokens: DEFAULT_MAX_TOKENS,
-                reviewMaxTokens: 1500,
-                factCheckMaxTokens: 1500,
-                proofMaxTokens: DEFAULT_MAX_TOKENS,
               });
               Toast.show({ type: 'success', text1: '已恢复默认配置' });
               setInputText(String(DEFAULT_INPUT_VALUE));
@@ -487,28 +494,42 @@ export const ContextAutoConfigScreen: React.FC = () => {
                 { color: theme.colors.accent, marginTop: spacing.md },
               ]}
             >
-              📤 输出侧（20% = {formatNumber(preview.outputBudget)}）
+              📤 模型输出基线（20% = {formatNumber(preview.outputBudget)}）
             </Text>
             <PreviewRow
-              label="草稿"
-              value={preview.draftMaxTokens}
+              label="LLM max_output_tokens（非本地）"
+              value={preview.llmMaxOutputTokens}
               color={theme.colors.textPrimary}
             />
-            <PreviewRow
-              label="审阅"
-              value={preview.reviewMaxTokens}
-              color={theme.colors.textPrimary}
-            />
-            <PreviewRow
-              label="事实核查"
-              value={preview.factCheckMaxTokens}
-              color={theme.colors.textPrimary}
-            />
-            <PreviewRow
-              label="校对"
-              value={preview.proofMaxTokens}
-              color={theme.colors.textPrimary}
-            />
+
+            {outlineBudgetPreview ? (
+              <>
+                <Text
+                  style={[
+                    styles.groupTitle,
+                    { color: theme.colors.accent, marginTop: spacing.md },
+                  ]}
+                >
+                  🧩 大纲五阶段独立弹性 reservation（新任务）
+                </Text>
+                {(
+                  [
+                    ['draft', 'Draft 初稿'],
+                    ['review', 'Review 审阅'],
+                    ['factCheck', 'FactCheck 核查'],
+                    ['brief', 'Brief 摘要'],
+                    ['proof', 'Final 终稿'],
+                  ] as const
+                ).map(([stage, label]) => (
+                  <PreviewRow
+                    key={stage}
+                    label={label}
+                    value={outlineBudgetPreview.stages[stage].requestMaxTokens}
+                    color={theme.colors.textPrimary}
+                  />
+                ))}
+              </>
+            ) : null}
 
             <Text
               style={[
@@ -557,11 +578,6 @@ export const ContextAutoConfigScreen: React.FC = () => {
               color={theme.colors.textPrimary}
             />
             <PreviewRow
-              label="LLM max_output_tokens（非本地）"
-              value={preview.llmMaxOutputTokens}
-              color={theme.colors.textPrimary}
-            />
-            <PreviewRow
               label="Presets max_tokens（全部）"
               value={preview.presetMaxTokens}
               color={theme.colors.textPrimary}
@@ -588,7 +604,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
         </View>
 
         <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-          默认输出 token 上限：{DEFAULT_MAX_TOKENS}。
+          新大纲任务的五个阶段各自冻结弹性 reservation，不读取旧版四阶段 Max Tokens。
         </Text>
       </ScrollView>
     </Screen>

@@ -104,18 +104,27 @@ async function loadTaskStatuses(
   return task ? { [item.activePipelineTaskId]: String(task.status) } : {};
 }
 
-async function loadTaskWorkflowVersions(
+async function loadTaskVersions(
   item: MultiChapterBatchItemRow | undefined,
-): Promise<Record<string, number>> {
-  if (!item?.activePipelineTaskId) return {};
+): Promise<{
+  taskWorkflowVersions: Record<string, number>;
+  taskContextBudgetVersions: Record<string, number>;
+}> {
+  if (!item?.activePipelineTaskId) {
+    return { taskWorkflowVersions: {}, taskContextBudgetVersions: {} };
+  }
   const task = await getPipelineTaskById(item.activePipelineTaskId);
-  return task
-    ? {
-        [item.activePipelineTaskId]: Number(
-          task.outlineWorkflowVersion ?? 1,
-        ),
-      }
-    : {};
+  if (!task) {
+    return { taskWorkflowVersions: {}, taskContextBudgetVersions: {} };
+  }
+  return {
+    taskWorkflowVersions: {
+      [item.activePipelineTaskId]: Number(task.outlineWorkflowVersion ?? 1),
+    },
+    taskContextBudgetVersions: {
+      [item.activePipelineTaskId]: Number(task.contextBudgetVersion ?? 1),
+    },
+  };
 }
 
 async function loadLatestAttempts(
@@ -229,7 +238,7 @@ export async function reconcileMultiChapterBatch(
       const items = await getBatchItems(batchId);
       const currentItem = items.find(i => i.ordinal === batch.currentOrdinal);
       const taskStatuses = await loadTaskStatuses(currentItem);
-      const taskWorkflowVersions = await loadTaskWorkflowVersions(currentItem);
+      const taskVersions = await loadTaskVersions(currentItem);
       const latestAttempts = (await loadLatestAttempts(currentItem)) as Record<
         string,
         any
@@ -239,7 +248,7 @@ export async function reconcileMultiChapterBatch(
         batch,
         items,
         taskStatuses,
-        taskWorkflowVersions,
+        ...taskVersions,
         latestAttempts,
       });
       console.log(
@@ -367,10 +376,12 @@ async function executeBatchAction(params: {
       const taskContextVersion =
         Number(batch.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION
           ? batch.contextBudgetVersion
-          : 4;
+          : CURRENT_CONTEXT_BUDGET_VERSION;
       const isStructured =
         [3, 4].includes(Number(taskWorkflowVersion)) &&
-        (taskContextVersion === 3 || taskContextVersion === 4);
+        (taskContextVersion === 3 ||
+          taskContextVersion === 4 ||
+          taskContextVersion === 5);
       const stages: PipelineCheckpointStage[] = isStructured
         ? ['draft', 'review', 'factCheck', 'brief', 'proof']
         : ['draft', 'review', 'factCheck', 'proof'];

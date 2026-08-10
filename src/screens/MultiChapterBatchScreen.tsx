@@ -268,18 +268,10 @@ export function MultiChapterBatchScreen(): React.ReactElement {
             variant="ghost"
             compact
             onPress={() => {
-              // F2-07: running/paused 视图的返回必须真正离开批次页（goBack），
-              // 批次在后台继续。原实现 setView('create') + loadActiveBatchForProject
-              // 会把运行中的批次重新加载进 store，view effect 又强制切回 running，
-              // 导致按钮"无反应"。创建/预览视图保持清表单回到创建页。
-              if (view === 'running' || view === 'paused') {
-                navigation.goBack();
-                return;
-              }
-              setView('create');
-              store.loadActiveBatchForProject(
-                currentProject?.id ?? 0,
-              ).catch(() => {});
+              // 返回按钮始终离开批次页回到章节列表。批次状态已持久化，
+              // 运行中/暂停中离开不会中断后台任务；创建/预览页也不能
+              // 通过 setView('create') 留在当前路由，否则按钮看起来无效。
+              navigation.goBack();
             }}
           />
         }

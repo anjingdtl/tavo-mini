@@ -102,7 +102,8 @@ export interface PipelineTask {
   outlineWorkflowVersion?: number | null;
   /**
    * Frozen context-budget strategy version (Schema 44+).
-   * 1 = Legacy budget; 2 = elastic budget V2. Frozen with the task.
+   * 1 = Legacy budget; 2 = elastic budget V2; 5 = current five-stage
+   * independent elastic reservations. Frozen with the task.
    */
   contextBudgetVersion?: number | null;
   /** Parent task for a derived Final-only rewrite; source task is immutable. */

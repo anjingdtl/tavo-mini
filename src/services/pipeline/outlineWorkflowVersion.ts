@@ -15,7 +15,7 @@
  * resume semantics; the Schema 44 columns are never dropped.
  */
 export type OutlineWorkflowVersion = 1 | 2 | 3 | 4;
-export type ContextBudgetVersion = 1 | 2 | 3 | 4;
+export type ContextBudgetVersion = 1 | 2 | 3 | 4 | 5;
 
 /**
  * Protocol versions written to NEW outline chapter tasks / batches.
@@ -23,9 +23,13 @@ export type ContextBudgetVersion = 1 | 2 | 3 | 4;
  * 4 = the current unified full pipeline: simplified semantic payloads,
  * user-tier Draft/Brief/Final, and low Review/FactCheck. Only new-task / new-
  * batch creation code may read these constants.
+ *
+ * Context budget 5 is the current independent elastic reservation protocol:
+ * each Draft / Review / FactCheck / Brief / Final call resolves its own
+ * 20%-of-window reservation at first freeze.
  */
 export const CURRENT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 4;
-export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 4;
+export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 5;
 
 /**
  * @deprecated Rollback-era default (Legacy 1). Kept only for callers that

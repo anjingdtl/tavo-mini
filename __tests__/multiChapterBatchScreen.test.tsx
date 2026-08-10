@@ -6,7 +6,7 @@
  * project / wrong mode) produce explicit error states.
  */
 import React from 'react';
-import { render, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 jest.mock('../src/store/themeStore', () => ({
   useThemeStore: () => ({
@@ -84,6 +84,18 @@ describe('MultiChapterBatchScreen (default capability)', () => {
   it('titles the page 一键写 N 章', async () => {
     const { findByText } = render(<MultiChapterBatchScreen />);
     await expect(findByText('一键写 N 章')).resolves.toBeTruthy();
+  });
+
+  it('创建页点击返回会离开批次页回到章节列表', async () => {
+    mockLoadActive.mockResolvedValue(undefined);
+    const { findByText, getByText } = render(<MultiChapterBatchScreen />);
+    await expect(findByText('剧情摘要')).resolves.toBeTruthy();
+
+    fireEvent.press(getByText('返回'));
+
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    // 返回操作不应再次加载活跃批次；加载只来自页面进入时的初始化。
+    expect(mockLoadActive).toHaveBeenCalledTimes(1);
   });
 
   it('never references the removed feature flag', () => {

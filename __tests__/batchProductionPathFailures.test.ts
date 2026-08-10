@@ -65,6 +65,7 @@ import {
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
 import { reconcileMultiChapterBatch } from '../src/services/multiChapterBatch/reconcileMultiChapterBatch';
 import { LLMRequestError } from '../src/services/llm/requestPolicy';
+import { CURRENT_CONTEXT_BUDGET_VERSION } from '../src/services/pipeline/outlineWorkflowVersion';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -231,7 +232,7 @@ describe('BN-01 / BN-02: persistent waiting_retry production path', () => {
         finalText: null,
         error: null,
         outlineWorkflowVersion: 4,
-        contextBudgetVersion: 4,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         resolvedAt: null,
@@ -284,7 +285,7 @@ describe('BN-01 / BN-02: persistent waiting_retry production path', () => {
         finalText: null,
         error: 'transient',
         outlineWorkflowVersion: 4,
-        contextBudgetVersion: 4,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         resolvedAt: null,
@@ -684,7 +685,7 @@ describe('BN-04: hard batch budget gate before each LLM request', () => {
         finalText: null,
         error: null,
         outlineWorkflowVersion: 4,
-        contextBudgetVersion: 4,
+        contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         resolvedAt: null,
