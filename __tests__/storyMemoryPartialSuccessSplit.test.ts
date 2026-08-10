@@ -316,3 +316,120 @@ describe('P1 fix: split-batch partial success must survive second-half failure',
     expect(eligibility.usable).toBe(true);
   });
 });
+
+describe('governance §9: split child progress (onChildBatchComplete)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Small max_output_tokens forces a 3-chapter batch to split.
+    mockGetActiveLLMConfig.mockResolvedValue({
+      id: 1,
+      context_window: 32768,
+      max_output_tokens: 2000,
+    });
+  });
+
+  it('advance: onChildBatchComplete fires with the first half range before the second half runs', async () => {
+    await resetDb();
+    await seedProjectWithChapters(3);
+    const chapters = await chaptersOfProject();
+    const firstHalf = chapters.slice(0, 2); // positions 0-1
+    const secondHalf = chapters.slice(2, 3); // position 2
+    const truncated = validBatchPatchJson(chapters.slice(0, 3)).slice(0, 80);
+
+    const childCalls: Array<{ fromPosition: number; throughPosition: number }> = [];
+    const batchCalls: Array<{ fromPosition: number; throughPosition: number }> = [];
+
+    // Track call order across child + batch callbacks to prove the child
+    // fires BEFORE the whole-batch completion.
+    const callOrder: string[] = [];
+
+    mockCallLLMResult
+      .mockResolvedValueOnce({
+        text: truncated,
+        inputTokens: 10,
+        outputTokens: 2000,
+        totalTokens: 2010,
+        finishReason: 'length',
+      })
+      .mockResolvedValueOnce({
+        text: validBatchPatchJson(firstHalf),
+        inputTokens: 10,
+        outputTokens: 10,
+        totalTokens: 20,
+        finishReason: 'stop',
+      })
+      .mockResolvedValueOnce({
+        text: validBatchPatchJson(secondHalf),
+        inputTokens: 10,
+        outputTokens: 10,
+        totalTokens: 20,
+        finishReason: 'stop',
+      });
+
+    await advanceStoryMemoryCheckpointsUnlocked({
+      projectId: 1,
+      onChildBatchComplete: range => {
+        childCalls.push(range);
+        callOrder.push('child');
+      },
+      onBatchComplete: range => {
+        batchCalls.push(range);
+        callOrder.push('batch');
+      },
+    });
+
+    // First half (positions 0-1) persisted → child fires once with that range.
+    expect(childCalls).toHaveLength(1);
+    expect(childCalls[0].fromPosition).toBe(0);
+    expect(childCalls[0].throughPosition).toBe(1);
+    // Whole logical batch (positions 0-2) completes → batch fires once.
+    expect(batchCalls).toHaveLength(1);
+    expect(batchCalls[0].fromPosition).toBe(0);
+    expect(batchCalls[0].throughPosition).toBe(2);
+    // Child must fire before the whole-batch completion.
+    expect(callOrder).toEqual(['child', 'batch']);
+  });
+
+  it('advance: onChildBatchComplete fires even when the second half later fails', async () => {
+    await resetDb();
+    await seedProjectWithChapters(3);
+    const chapters = await chaptersOfProject();
+    const firstHalf = chapters.slice(0, 2);
+    const truncated = validBatchPatchJson(chapters.slice(0, 3)).slice(0, 80);
+
+    const childCalls: Array<{ fromPosition: number; throughPosition: number }> = [];
+    const batchCalls: Array<{ fromPosition: number; throughPosition: number }> = [];
+
+    mockCallLLMResult
+      .mockResolvedValueOnce({
+        text: truncated,
+        inputTokens: 10,
+        outputTokens: 2000,
+        totalTokens: 2010,
+        finishReason: 'length',
+      })
+      .mockResolvedValueOnce({
+        text: validBatchPatchJson(firstHalf),
+        inputTokens: 10,
+        outputTokens: 10,
+        totalTokens: 20,
+        finishReason: 'stop',
+      })
+      .mockRejectedValueOnce(new Error('第二半 mock LLM 故障'));
+
+    await expect(
+      advanceStoryMemoryCheckpointsUnlocked({
+        projectId: 1,
+        onChildBatchComplete: range => childCalls.push(range),
+        onBatchComplete: range => batchCalls.push(range),
+      }),
+    ).rejects.toThrow('第二半 mock LLM 故障');
+
+    // The first child persisted → progress surfaced before the failure.
+    expect(childCalls).toHaveLength(1);
+    expect(childCalls[0].fromPosition).toBe(0);
+    expect(childCalls[0].throughPosition).toBe(1);
+    // Whole-batch completion never fires (second half failed).
+    expect(batchCalls).toHaveLength(0);
+  });
+});
