@@ -11,6 +11,7 @@ import {
   validateEvidenceQuote,
 } from './storyMemoryValidator';
 import { batchPatchToChapterDraft } from './storyMemoryMerger';
+import { reconcileStoryMemoryMainlineDraft } from './storyMemoryMainlineReconciler';
 import { makeContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -561,6 +562,17 @@ export function validateStoryMemoryBatchPatch(
   });
   // Optional mainline lists: strip items with no usable summary already done;
   // empty evidence is allowed for completedBeats/timeline after coercion.
+
+  // Local mainline reconcile (governance plan §4): collapse pure
+  // chapterSummaries ↔ mainlinePatch classification divergence BEFORE the
+  // strict consistency check so a paid Repair / Fresh Retry round is not
+  // consumed for what is really a retrieval-annotation vs structured-state
+  // label difference. Structured State stays the sole persistent authority;
+  // the model's mainlineChanges / newThreads / resolvedThreads text is
+  // preserved in events for retrieval instead of hard-failing.
+  const reconciled = reconcileStoryMemoryMainlineDraft(draft).reconciledDraft;
+  draft.chapterSummaries = reconciled.chapterSummaries;
+  draft.mainlinePatch = reconciled.mainlinePatch;
 
   // Reuse chapter-level entity validation against concatenated content.
   const { chapterDraft } = batchPatchToChapterDraft(draft, last.title || '');

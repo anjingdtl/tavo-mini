@@ -45,8 +45,13 @@ import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
 import {
   freezeStoryMemoryLLMConfig,
   planStoryMemoryRequest,
+  planStoryMemoryElasticRequest,
   type FrozenStoryMemoryLLMConfig,
 } from './storyMemoryRequestBudget';
+import {
+  buildStoryMemoryCheckpointMaterials,
+  type StoryMemoryCheckpointMaterials,
+} from './storyMemoryPromptMaterials';
 
 function renderBatchEpisodicText(
   summary: EpisodicSummary,
@@ -212,6 +217,13 @@ export async function generateValidatedCheckpointBatch(input: {
     input.chapters,
     input.previousState,
   );
+  // Tiered materials for the elastic allocator path (governance §5). Built
+  // unconditionally — the loop decides whether to use them based on whether
+  // the frozen config exposes a real capability.
+  const materials = buildStoryMemoryCheckpointMaterials(
+    input.chapters,
+    input.previousState,
+  );
   const scenario = input.scenario || 'story_memory_checkpoint';
   const projectId = input.chapters[0].project_id;
   let getDisplayNumber: ((position: number) => number) | undefined;
@@ -250,6 +262,7 @@ export async function generateValidatedCheckpointBatch(input: {
     signal: input.signal,
     getDisplayNumber,
     baseMessages: messages,
+    materials,
     frozenConfig,
     attemptBudget,
     onProgress: input.onProgress,
@@ -278,9 +291,46 @@ interface CheckpointAttemptLoopInput {
   signal?: AbortSignal;
   getDisplayNumber?: (position: number) => number;
   baseMessages: Array<{ role: 'system' | 'user'; content: string }>;
+  /**
+   * Tiered prompt materials (governance §5). When present and the frozen
+   * config carries a known capability, the loop plans each attempt through
+   * the elastic allocator instead of the legacy hard-window planner. Repair /
+   * fresh-retry append their own messages after the base, so the elastic plan
+   * is only the source of the primary plan + the split decision.
+   */
+  materials?: StoryMemoryCheckpointMaterials;
   frozenConfig: FrozenStoryMemoryLLMConfig;
   attemptBudget: StoryMemoryAttemptBudget;
   onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
+}
+
+/**
+ * Decide whether a paid Repair round can safely fit the model window
+ * (governance plan §7.3).
+ *
+ * A Repair echoes the invalid assistant output plus a repair instruction on
+ * top of the original prompt. If the invalid output itself is so large that
+ * adding it would push the request past the hard input limit, we must NOT
+ * truncate the invalid JSON (that would corrupt the repair signal). Instead
+ * the caller skips Repair and falls through to a Fresh Retry.
+ *
+ * `invalidOutputTokens` is the estimated token cost of the model's previous
+ * (invalid) JSON output. `baseInputTokens` is the original prompt's estimated
+ * input tokens. `repairInstructionTokens` is the repair directive cost.
+ * `hardInputLimit` is the model's hard input ceiling.
+ */
+export function shouldSkipRepairForInfeasibleSize(input: {
+  invalidOutputTokens: number;
+  baseInputTokens: number;
+  repairInstructionTokens: number;
+  hardInputLimit: number;
+  contextWindow: number;
+}): boolean {
+  // Unknown capability → keep the legacy behaviour (attempt the repair).
+  if (input.contextWindow <= 0 || input.hardInputLimit <= 0) return false;
+  const repairInputEstimate =
+    input.baseInputTokens + input.invalidOutputTokens + input.repairInstructionTokens;
+  return repairInputEstimate > input.hardInputLimit;
 }
 
 /**
@@ -319,12 +369,43 @@ async function runCheckpointAttemptLoop(
         : attempt === 2
           ? 'story_memory_checkpoint_repair'
           : 'story_memory_checkpoint_retry';
-    const plan = planStoryMemoryRequest({
-      config: input.frozenConfig,
-      messages,
-      legacyOutputTokens: input.memoryPatchMaxTokens,
-      batchSize,
-    });
+    // Elastic allocator path (governance §5) for the primary attempt when a
+    // real capability is known and tiered materials are available. Repair /
+    // fresh-retry append their own dialogue, so they keep using the legacy
+    // per-message planner (also independently planned — Phase 5).
+    const capabilityKnown =
+      input.frozenConfig.contextWindow > 0 ||
+      input.frozenConfig.maxOutputTokens > 0;
+    const useElastic = attempt === 1 && capabilityKnown && Boolean(input.materials);
+    const elasticPlan = useElastic
+      ? planStoryMemoryElasticRequest({
+          config: input.frozenConfig,
+          materials: input.materials!,
+          batchSize,
+          legacyOutputTokens: input.memoryPatchMaxTokens,
+        })
+      : null;
+    const legacyPlan = elasticPlan
+      ? null
+      : planStoryMemoryRequest({
+          config: input.frozenConfig,
+          messages,
+          legacyOutputTokens: input.memoryPatchMaxTokens,
+          batchSize,
+        });
+    const plan = {
+      fits: elasticPlan
+        ? elasticPlan.strategy === 'full_prompt'
+        : legacyPlan!.fits,
+      maxTokens: elasticPlan ? elasticPlan.maxTokens : legacyPlan!.maxTokens,
+      reason: elasticPlan ? elasticPlan.reason : legacyPlan!.reason,
+      // On the elastic fast path, prefer the allocator-built messages so the
+      // compact path's clipped modules are what we actually send.
+      messages:
+        elasticPlan && elasticPlan.messages.length
+          ? elasticPlan.messages
+          : messages,
+    };
     input.onProgress?.({
       phase: 'planning',
       fromPosition: input.chapters[0].position,
@@ -354,7 +435,7 @@ async function runCheckpointAttemptLoop(
         maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
       });
       result = await requestCheckpoint(
-        messages,
+        plan.messages,
         plan.maxTokens,
         input.projectId,
         scenario,
@@ -455,15 +536,42 @@ async function runCheckpointAttemptLoop(
         }
         messages =
           attempt === 1
-            ? buildStoryMemoryCheckpointRepairMessages(
-                input.baseMessages,
-                text,
-                `${message}${
-                  result.finishReason === 'length'
-                    ? '（输出达到长度上限）'
-                    : ''
-                }`,
-              )
+            ? // Governance §7.3: if the invalid output is so large that echoing
+              // it for a paid Repair would exceed the model's hard input limit,
+              // skip Repair (never truncate the invalid JSON) and fall through
+              // to a Fresh Retry instead.
+              shouldSkipRepairForInfeasibleSize({
+                invalidOutputTokens: estimateTokens(text),
+                baseInputTokens: estimateTokens(
+                  input.baseMessages.map(m => m.content).join('\n'),
+                ),
+                repairInstructionTokens: 200,
+                hardInputLimit: input.frozenConfig.contextWindow
+                  ? Math.max(
+                      0,
+                      input.frozenConfig.contextWindow -
+                        plan.maxTokens -
+                        Math.min(
+                          1024,
+                          Math.max(256, Math.floor(input.frozenConfig.contextWindow * 0.02)),
+                        ),
+                    )
+                  : 0,
+                contextWindow: input.frozenConfig.contextWindow,
+              })
+              ? buildStoryMemoryCheckpointRetryMessages(
+                  input.baseMessages,
+                  `${message}（invalid 输出过大，已跳过 Repair 直接 Fresh Retry）`,
+                )
+              : buildStoryMemoryCheckpointRepairMessages(
+                  input.baseMessages,
+                  text,
+                  `${message}${
+                    result.finishReason === 'length'
+                      ? '（输出达到长度上限）'
+                      : ''
+                  }`,
+                )
             : // Second consecutive parse failure → fresh retry WITHOUT echoing
               // the invalid assistant output (mirrors the legacy coordinator).
               buildStoryMemoryCheckpointRetryMessages(
@@ -535,6 +643,16 @@ export async function runStoryMemoryCheckpointBatch(input: {
     | 'story_memory_checkpoint'
     | 'story_memory_checkpoint_legacy_bootstrap';
   onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
+  /**
+   * Fired once per persisted split child (governance §9). When a 3-chapter
+   * logical batch splits 2+1 and the first half is persisted, this fires
+   * before the second half begins, so the task store can advance
+   * completedChapters incrementally rather than only at full-batch success.
+   */
+  onChildBatchComplete?: (range: {
+    fromPosition: number;
+    throughPosition: number;
+  }) => void;
 }): Promise<RunCheckpointBatchResult> {
   const ordered = [...input.chapters].sort((a, b) => a.position - b.position);
   if (!ordered.length) {
@@ -585,10 +703,18 @@ async function runStoryMemoryCheckpointBatchWithShrink(
       input.chapters.length > 1
     ) {
       const half = Math.ceil(input.chapters.length / 2);
+      const firstChapters = input.chapters.slice(0, half);
       const first = await runStoryMemoryCheckpointBatchWithShrink(
-        { ...input, chapters: input.chapters.slice(0, half) },
+        { ...input, chapters: firstChapters },
         memoryPatchMaxTokens,
       );
+      // Governance §9: surface the first split child's persistence as
+      // incremental progress so the task store's completedChapters reflects
+      // real work even if the second child later fails.
+      input.onChildBatchComplete?.({
+        fromPosition: firstChapters[0].position,
+        throughPosition: firstChapters.at(-1)!.position,
+      });
       try {
         const second = await runStoryMemoryCheckpointBatchWithShrink(
           {
@@ -750,6 +876,16 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
     fromPosition: number;
     throughPosition: number;
   }) => void;
+  /**
+   * Per persisted split child (governance §9). When a logical batch splits,
+   * this fires as each child half is persisted, so the task store advances
+   * completedChapters incrementally. If a logical batch does NOT split, only
+   * onBatchComplete fires (once, for the whole batch).
+   */
+  onChildBatchComplete?: (range: {
+    fromPosition: number;
+    throughPosition: number;
+  }) => void;
 }): Promise<{
   state: StoryMemoryState;
   batchesApplied: number;
@@ -804,6 +940,7 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
         previousState: state,
         signal: input.signal,
         onProgress: input.onProgress,
+        onChildBatchComplete: input.onChildBatchComplete,
       });
       state = result.state;
       batchesApplied += 1;
