@@ -1,6 +1,9 @@
 import type { ContextConfig } from '../../types/novel';
 import type { VoiceConfig, TtsEngine, SystemTtsConfig } from '../../types/tts';
-import { DEFAULT_CONTEXT_CONFIG } from '../../constants/defaults';
+import {
+  DEFAULT_BACKGROUND_PIPELINE_ENABLED,
+  DEFAULT_CONTEXT_CONFIG,
+} from '../../constants/defaults';
 import {
   DEFAULT_SYSTEM_TTS_CONFIG,
   DEFAULT_VOICE_CONFIG,
@@ -146,15 +149,19 @@ export async function setContextConfig(config: ContextConfig): Promise<void> {
 }
 
 export async function getBackgroundPipelineEnabled(): Promise<boolean> {
-  const v = await getSetting('background_pipeline_enabled');
-  if (v == null) return true; // 默认开启
-  return v !== 'false';
+  // 后台写作现为全局固定能力。保留这个读取接口兼容旧数据库和调用方，
+  // 但历史上保存的 false 不再改变运行行为。
+  return DEFAULT_BACKGROUND_PIPELINE_ENABLED;
 }
 
 export async function setBackgroundPipelineEnabled(
-  enabled: boolean,
+  _enabled: boolean,
 ): Promise<void> {
-  await setSetting('background_pipeline_enabled', String(enabled));
+  // 兼容旧调用方，但不允许重新关闭全局后台写作。
+  await setSetting(
+    'background_pipeline_enabled',
+    String(DEFAULT_BACKGROUND_PIPELINE_ENABLED),
+  );
 }
 
 export async function getAllowInsecureLanHttp(): Promise<boolean> {
