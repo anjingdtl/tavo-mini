@@ -831,16 +831,16 @@ export function parsePipelineExecutionSnapshot(
       reasoningProfileVersion === 5 &&
       (contextBudgetVersion !== 5 ||
         stageReasoning.draft?.effectiveTier !== raw.requestedReasoningTier ||
-        stageReasoning.proof?.effectiveTier !== raw.requestedReasoningTier ||
-        stageReasoning.review?.effectiveTier !== 'low' ||
+        stageReasoning.review?.effectiveTier !== raw.requestedReasoningTier ||
         stageReasoning.factCheck?.effectiveTier !== 'low' ||
+        stageReasoning.proof?.effectiveTier !== raw.requestedReasoningTier ||
         stageReasoning.review?.thinking !== 'enabled' ||
         stageReasoning.factCheck?.thinking !== 'enabled' ||
         stageReasoning.brief?.thinking !== 'enabled')
     ) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        '当前统一流水线必须保持 Draft/Brief/Proof 跟随用户档位、Review/FactCheck 为 enabled + low，且使用 context budget 5，已阻止恢复。',
+        '当前统一流水线必须保持 Draft/Review/Brief/Proof 跟随用户档位、FactCheck 为 enabled + low，且使用 context budget 5，已阻止恢复。',
         'restart_task',
       );
     }

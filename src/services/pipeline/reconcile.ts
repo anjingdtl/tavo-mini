@@ -3764,7 +3764,9 @@ async function runV3AuditStage(params: {
           formatterUsedThisRun
             ? 'Contract Formatter（Thinking disabled；未重跑完整主审）'
             : v33
-            ? '合同首轮通过（当前 Review/FactCheck：Thinking enabled + low）'
+            ? `合同首轮通过（当前 ${
+                stage === 'review' ? 'Review' : 'FactCheck'
+              }：Thinking enabled + ${reasoning?.effort || 'low'}）`
             : v32
             ? '合同首轮通过（Review/FactCheck primary：Thinking enabled + low）'
             : '合同首轮通过',

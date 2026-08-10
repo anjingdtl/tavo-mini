@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.11.43] - 2026-08-10
+
+### Fixed
+
+- **大纲流水线 Review 思考档位**：新任务的 Draft / Review / Brief / Final 随用户选择的 low、medium、high、MAX 档位执行，Review 不再被固定为 low；MAX 从请求参数、弹性预算、冻结快照到阶段诊断全链路支持。FactCheck 继续按设计固定使用 low。
+- **Review 提示词与配置说明**：移除 Review 的 low 固定文案，统一使用本次任务冻结的有效思考档位，避免提示词、预算和实际请求三者语义不一致。
+
+### Validation
+
+- `npm run verify` 通过：364 个测试套件通过、2 个跳过；2939 个测试通过、4 个跳过。
+- DeepSeek `deepseek-v4-flash` 模拟器实测 MAX：Review 阶段实际请求记录为 `thinking=enabled` / `reasoningEffort=max`，阶段成功完成并进入终稿。
+- 正式 APK 硬验收通过：证书 SHA-256 为 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`，v2、单 signer、zipalign、包名和版本元数据均通过。
+
 ## [2.11.41] - 2026-08-10
 
 ### Fixed

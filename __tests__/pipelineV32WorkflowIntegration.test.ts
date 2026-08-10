@@ -557,17 +557,26 @@ describe('V3.2 production structured-stage recovery', () => {
         [key, value],
       );
     }
+    await execute(
+      await openDatabase(),
+      `INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`,
+      ['pipeline_reasoning_effort', 'max'],
+    );
     const taskId = 't-v5-independent-reservation';
     await registerTask(taskId, chapterId, {
       outlineWorkflowVersion: 4,
       contextBudgetVersion: 5,
     });
-    const calls: Array<{ stage: string; maxTokens: number }> = [];
+    const calls: Array<{
+      stage: string;
+      maxTokens: number;
+      reasoningEffort?: string;
+    }> = [];
     mockCallLLMResult = jest
       .fn()
-      .mockImplementation(async (messages: ChatMessage[], maxTokens: number) => {
+      .mockImplementation(async (messages: ChatMessage[], maxTokens: number, config?: { reasoningEffort?: string }) => {
         const stage = stageOf(messages);
-        calls.push({ stage, maxTokens });
+        calls.push({ stage, maxTokens, reasoningEffort: config?.reasoningEffort });
         if (stage === 'draft') return llm(DRAFT_BODY);
         if (stage === 'review') {
           return llm(
@@ -625,6 +634,13 @@ describe('V3.2 production structured-stage recovery', () => {
       200000,
       200000,
       200000,
+    ]);
+    expect(calls.map(call => call.reasoningEffort)).toEqual([
+      'max',
+      'max',
+      'low',
+      'max',
+      'max',
     ]);
     const rows = await all(
       'SELECT pipeline_context_json FROM pipeline_tasks WHERE id = ?',

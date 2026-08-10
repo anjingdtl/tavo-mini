@@ -21,8 +21,8 @@ export type ContextBudgetVersion = 1 | 2 | 3 | 4 | 5;
  * Protocol versions written to NEW outline chapter tasks / batches.
  * 3 = the V3.2 structured-semantic contract with the original rich payloads.
  * 4 = the current unified full pipeline: simplified semantic payloads,
- * user-tier Draft/Brief/Final, and low Review/FactCheck. Only new-task / new-
- * batch creation code may read these constants.
+ * user-tier Draft/Review/Brief/Final, and low FactCheck. Only new-task /
+ * new-batch creation code may read these constants.
  *
  * Context budget 5 is the current independent elastic reservation protocol:
  * each Draft / Review / FactCheck / Brief / Final call resolves its own
