@@ -19,15 +19,15 @@
 
 ### Release APK（Agent 必读）
 
-生成正式 APK 前必须阅读 `docs/RELEASE_APK_BUILD.md`，并按其中的“标准构建步骤”和“构建后验收”执行。主构建机的四项 `SHINE_WRITER_RELEASE_*` 已保存在 Windows 用户环境中；若当前 Agent/终端进程读取不到，先用指南里的 PowerShell 片段把 User 级变量加载到 Process 级，再运行 `npm run apk:release`。
+生成正式 APK 前必须阅读 `docs/RELEASE_APK_BUILD.md` 和 `docs/RELEASE_CHECKLIST.md`，并按其中的“标准构建步骤”和“构建后验收”执行。发版版本号必须用 `npm version <x.y.z> --no-git-tag-version --ignore-scripts`，确保 `package.json` 与 `package-lock.json` 同步；然后运行 `npm run prebuild` 生成 `src/constants/version.json`，不得手改该生成文件。主构建机的四项 `SHINE_WRITER_RELEASE_*` 已保存在 Windows 用户环境中；若当前 Agent/终端进程读取不到，先按指南把 User 级变量加载到 Process 级，再运行 `npm run apk:release`。
 
-正式 keystore 是本地忽略文件 `android/keystores/tavo-mini-release.keystore`，alias 为 `tavo-mini-release`，证书 SHA-256 必须为 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。不得创建新 keystore、改用 Debug 签名、从 Git 历史传播密码或把密码写入仓库/日志。
+正式 keystore 是本地忽略文件 `android/keystores/tavo-mini-release.keystore`；当前工作机的绝对路径为 `E:\AiWorkSpace\tavo-mini\android\keystores\tavo-mini-release.keystore`，alias 为 `tavo-mini-release`，证书 SHA-256 必须为 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`。`SHINE_WRITER_RELEASE_STORE_FILE` 不得继续指向旧的 `D:\...` 路径。不得创建新 keystore、改用 Debug 签名、从 Git 历史传播密码或把密码写入仓库/日志。
 
 ### APK 产物目录
 
 `dist/apk/{debug|release}/ShineWriter-V<ver>-{debug|release}.apk` 是唯一交付路径。Gradle 原生 `android/app/build/outputs/apk/` 只是中间产物，不要手动复制 APK 到项目其他目录。
 
-`scripts/build-apk.js` 会强校验 `src/constants/version.json` 与 `package.json` 的 `version`/`versionName`/`versionCode`/`releaseTitle` 必须一致，否则构建直接失败。`npm run prebuild`（`scripts/generate-version-json.js`）负责生成这份元数据，`apk:*` 命令都已内嵌 `prebuild`，**不要手改 `version.json`**。
+`scripts/build-apk.js` 会强校验 `src/constants/version.json` 与 `package.json` 的 `version`/`versionName`/`versionCode`/`releaseTitle` 必须一致，否则构建直接失败。`npm run prebuild`（`scripts/generate-version-json.js`）负责生成这份元数据，`apk:*` 命令都已内嵌 `prebuild`，**不要手改 `version.json`**。发版前必须确认 `package-lock.json` 已随 `package.json` 一起更新，并通过 `npm run verify:version` / `npm run verify`。
 
 ## 架构要点
 
@@ -45,7 +45,7 @@
 - `voiceStore` — TTS 朗读状态/配置
 
 ### 数据层
-SQLite 数据库 `shine_writer.db`，**Schema version 40**（`src/services/migrations/index.ts` 的 `SCHEMA_VERSION`，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。当前 Schema 在 `src/data/schema/createCurrentSchema.ts` 创建，迁移在 `src/services/migrations/vN-to-vN+1.ts` 按版本递增。Schema 19 新增 5 张「原著续写」表（`continuation_sources` / `continuation_source_text_chunks` / `continuation_source_chapters` / `continuation_settings` / `continuation_import_jobs`），其中 `continuation_import_jobs` 是首张 `backup:false` 表；Schema 20 新增 Canon snapshot / analysis run-batch / evidence / 五类 Canon 与时间线表，以及 `continuation_settings.active_canon_snapshot_id`；Schema 21 新增续写 generation settings/runs/artifacts/plans/checks、state proposals/events/entities、sync outbox 与 style profiles；Schema 22–34 为续写/Canon/V4/V5 增量演进（详见各 `vN-to-vN+1.ts`）；Schema 35 重构 Canon analysis batch 索引；Schema 36 新增「大纲」一等项目级资源 `outlines`（独立 enable/position/budget，与 `project_resources` 分离）并给 `pipeline_tasks` 增加 `input_fingerprint` 用于 adopt-time 漂移检测；Schema 37–38 为修复/约束补全；Schema 39 新增 `pipeline_stage_checkpoints`（每 task+stage 一行，CAS 持久化，支撑 phase 5 持久状态机与 fail-closed 恢复）；Schema 40 将 32→33 的 `canon_evidence` provenance 补列改为幂等逻辑迁移（`ensureCanonEvidenceProvenanceSchema`），修复 recorded-39 但物理缺列的漂移库，并新增启动期漂移检查（`schemaDriftInspector`）、用户资料召回快照（`userDataRecallSnapshot`）、schema-recovery 备份（`schemaRecoveryBackup`）。续写领域服务在 `src/services/continuation/`，Phase 2 Canon 在 `src/services/continuation/canon/`（Phase 3 只通过 `CanonQueryService` 读取，禁止 UI/生成代码直查 Canon 表）；Phase 3 生成在 `src/services/continuation/generation/`（独立 runner，不复用 freeform stage 枚举）。大纲领域在 `src/services/outlineContextBuilder.ts` + `src/data/repositories/outlineRepository.ts`；Pipeline 架构在 phase 1–6 收敛后，运行时入口仍在 `src/services/pipelineRunner.ts`，但状态机判定/CAS/预算/编译已拆到 `src/services/pipeline/`（`reconcile.ts` / `compileStageRequest.ts` / `budgetAllocator.ts` / `determineNextPipelineAction.ts` 等），不要再把它们当 `pipelineRunner` 内联逻辑改。
+SQLite 数据库 `shine_writer.db`，**Schema version 50**（`src/services/migrations/index.ts` 的 `SCHEMA_VERSION`，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。当前 Schema 在 `src/data/schema/createCurrentSchema.ts` 创建，迁移在 `src/services/migrations/vN-to-vN+1.ts` 按版本递增。Schema 19 新增 5 张「原著续写」表（`continuation_sources` / `continuation_source_text_chunks` / `continuation_source_chapters` / `continuation_settings` / `continuation_import_jobs`），其中 `continuation_import_jobs` 是首张 `backup:false` 表；Schema 20 新增 Canon snapshot / analysis run-batch / evidence / 五类 Canon 与时间线表，以及 `continuation_settings.active_canon_snapshot_id`；Schema 21 新增续写 generation settings/runs/artifacts/plans/checks、state proposals/events/entities、sync outbox 与 style profiles；Schema 22–34 为续写/Canon/V4/V5 增量演进（详见各 `vN-to-vN+1.ts`）；Schema 35 重构 Canon analysis batch 索引；Schema 36 新增「大纲」一等项目级资源 `outlines`（独立 enable/position/budget，与 `project_resources` 分离）并给 `pipeline_tasks` 增加 `input_fingerprint` 用于 adopt-time 漂移检测；Schema 37–38 为修复/约束补全；Schema 39 新增 `pipeline_stage_checkpoints`（每 task+stage 一行，CAS 持久化，支撑 phase 5 持久状态机与 fail-closed 恢复）；Schema 40 将 32→33 的 `canon_evidence` provenance 补列改为幂等逻辑迁移（`ensureCanonEvidenceProvenanceSchema`），修复 recorded-39 但物理缺列的漂移库，并新增启动期漂移检查（`schemaDriftInspector`）、用户资料召回快照（`userDataRecallSnapshot`）、schema-recovery 备份（`schemaRecoveryBackup`）；Schema 41–50 为后续批量写章、故事记忆、预算与漂移修复增量，详见各 `vN-to-vN+1.ts`。续写领域服务在 `src/services/continuation/`，Phase 2 Canon 在 `src/services/continuation/canon/`（Phase 3 只通过 `CanonQueryService` 读取，禁止 UI/生成代码直查 Canon 表）；Phase 3 生成在 `src/services/continuation/generation/`（独立 runner，不复用 freeform stage 枚举）。大纲领域在 `src/services/outlineContextBuilder.ts` + `src/data/repositories/outlineRepository.ts`；Pipeline 架构在 phase 1–6 收敛后，运行时入口仍在 `src/services/pipelineRunner.ts`，但状态机判定/CAS/预算/编译已拆到 `src/services/pipeline/`（`reconcile.ts` / `compileStageRequest.ts` / `budgetAllocator.ts` / `determineNextPipelineAction.ts` 等），不要再把它们当 `pipelineRunner` 内联逻辑改。
 
 数据访问分层，**不要绕过**：
 - `src/data/connection/` — SQLite 连接、查询、事务边界
@@ -79,7 +79,7 @@ SQLite 数据库 `shine_writer.db`，**Schema version 40**（`src/services/migra
 
 ### Gradle 与签名
 - `android/build.gradle` 和 `settings.gradle` 使用阿里云 Maven 镜像，修改时不要删掉
-- Release 签名 keystore 在 `android/keystores/tavo-mini-release.keystore`（本地忽略文件），Release 构建必须显式提供环境变量，**不会用默认密码**：`SHINE_WRITER_RELEASE_STORE_FILE` / `SHINE_WRITER_RELEASE_STORE_PASSWORD` / `SHINE_WRITER_RELEASE_KEY_ALIAS` / `SHINE_WRITER_RELEASE_KEY_PASSWORD`
+- Release 签名 keystore 在 `android/keystores/tavo-mini-release.keystore`（本地忽略文件；当前绝对路径为 `E:\AiWorkSpace\tavo-mini\android\keystores\tavo-mini-release.keystore`），Release 构建必须显式提供环境变量，**不会用默认密码**：`SHINE_WRITER_RELEASE_STORE_FILE` / `SHINE_WRITER_RELEASE_STORE_PASSWORD` / `SHINE_WRITER_RELEASE_KEY_ALIAS` / `SHINE_WRITER_RELEASE_KEY_PASSWORD`
 - `--minify`（`-PenableReleaseMinification=true`）是 R8/资源压缩评估开关，正式发布仍需在真机验证
 
 ### postinstall 补丁
