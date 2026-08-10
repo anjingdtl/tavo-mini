@@ -15,7 +15,7 @@ async function columnNames(db: any): Promise<Set<string>> {
   return new Set(result.rows.raw().map((row: any) => row.name));
 }
 
-describe('Schema 48 → 49 V3.2 structured-stage persistence', () => {
+describe('Schema 48 → current V3.2 structured-stage persistence', () => {
   test('upgrades an old attempts table and remains idempotent', async () => {
     const db = await createEmptyInMemoryDb();
     try {
@@ -29,7 +29,7 @@ describe('Schema 48 → 49 V3.2 structured-stage persistence', () => {
       expect(result).toMatchObject({
         fromVersion: 48,
         toVersion: SCHEMA_VERSION,
-        migrationsRun: 1,
+        migrationsRun: SCHEMA_VERSION - 48,
         hadBreaking: false,
       });
       await migrateV48ToV49(db as any);
@@ -42,7 +42,7 @@ describe('Schema 48 → 49 V3.2 structured-stage persistence', () => {
       const [version] = await db.executeSql(
         "SELECT value FROM settings WHERE key = 'schema_version'",
       );
-      expect(version.rows.item(0).value).toBe('49');
+      expect(version.rows.item(0).value).toBe(String(SCHEMA_VERSION));
     } finally {
       db.close();
     }
@@ -55,6 +55,40 @@ describe('Schema 48 → 49 V3.2 structured-stage persistence', () => {
       expect(names.has('response_candidate_temp')).toBe(true);
       expect(names.has('response_candidate_channel')).toBe(true);
       expect(names.has('validation_details_json')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  test('fresh-install schema contains only transport metadata for Story Memory attempts', async () => {
+    const db = await createCanonInMemoryDb();
+    try {
+      const [result] = await db.executeSql(
+        'PRAGMA table_info(story_memory_request_attempts)',
+      );
+      const names = new Set(result.rows.raw().map((row: any) => row.name));
+      expect(names).toEqual(
+        new Set([
+          'attempt_id',
+          'logical_batch_id',
+          'project_id',
+          'from_position',
+          'through_position',
+          'request_kind',
+          'attempt_no',
+          'status',
+          'failure_class',
+          'error_code',
+          'http_status',
+          'provider_request_id',
+          'started_at',
+          'finished_at',
+        ]),
+      );
+      expect(names.has('prompt')).toBe(false);
+      expect(names.has('body')).toBe(false);
+      expect(names.has('api_key')).toBe(false);
+      expect(names.has('reasoning')).toBe(false);
     } finally {
       db.close();
     }

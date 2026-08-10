@@ -60,6 +60,7 @@ const chapter = {
 
 describe('chapter structured-memory finalization', () => {
   beforeEach(() => {
+    jest.useFakeTimers();
     jest.clearAllMocks();
     const state = createEmptyStoryMemory(7);
     mockDb.getChapterById.mockResolvedValue(chapter);
@@ -96,100 +97,64 @@ describe('chapter structured-memory finalization', () => {
     });
   });
 
-  it('renders deterministic episodic text and saves one atomic update', async () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('finalizes the chapter locally and queues memory work without waiting for LLM', async () => {
     const result = await finalizeChapterMemory(1);
-    expect(result.episodicMemoryText).toBe(
-      '核心事件：林岚发现暗门；暗门被打开\n主线变化：调查开始\n新增悬念：暗门通向何处\n关键词：钟楼；暗门',
-    );
-    expect(mockDb.saveStoryMemoryUpdate).toHaveBeenCalledTimes(1);
-    expect(mockDb.saveStoryMemoryUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        episodicMemoryText: result.episodicMemoryText,
-        state: expect.objectContaining({ throughChapterPosition: 0 }),
-      }),
-    );
-  });
-
-  it('does not duplicate an already applied patch', async () => {
-    const first = await finalizeChapterMemory(1);
-    const state = createEmptyStoryMemory(7);
-    state.throughChapterId = 1;
-    state.throughChapterPosition = 0;
-    state.metadata.lastAppliedPatchId = first.patchId;
-    mockDb.ensureProjectStoryMemoryRow.mockResolvedValue({
-      state,
-      status: 'clean',
-      dirtyFromPosition: null,
-    });
-    mockDb.getChapterMemoryPatch.mockResolvedValue({
-      status: 'applied',
-      patch: {
-        patchId: first.patchId,
-        sourceFingerprint: first.patchId.split('_')[2],
-        episodicSummary: createEmptyChapterMemoryPatch({
-          chapterId: 1,
-          chapterPosition: 0,
-          title: '第一章',
-        }).episodicSummary,
-      },
-    });
-    mockDb.saveStoryMemoryUpdate.mockClear();
-    const second = await finalizeChapterMemory(1);
-    expect(second.reused).toBe(true);
-    expect(mockDb.saveStoryMemoryUpdate).not.toHaveBeenCalled();
-    expect(mockDb.updateChapter).toHaveBeenCalledWith(
+    expect(result.chapterFinalized).toBe(true);
+    expect(result.maintenanceQueued).toBe(true);
+    expect(result.checkpointAttempted).toBe(false);
+    expect(result.checkpointUpdated).toBe(false);
+    expect(result.episodicMemoryText).toBe('');
+    expect(mockDb.finalizeChapterLocally).toHaveBeenCalledWith(
       1,
-      expect.objectContaining({
-        memory_summary: expect.stringContaining('雨夜里，林岚推开钟楼暗门'),
-        memory_summary_tokens: expect.any(Number),
-      }),
+      expect.any(String),
     );
+    expect(mockDb.saveStoryMemoryUpdate).not.toHaveBeenCalled();
+    expect(mockCallLLMResult).not.toHaveBeenCalled();
   });
 
-  it('persists a deterministic synopsis fallback when provider summary is empty', async () => {
+  it('does not synchronously invoke the provider even when the background result would fail', async () => {
+    mockCallLLMResult.mockRejectedValue(new Error('mock LLM 故障'));
+    await expect(finalizeChapterMemory(1)).resolves.toEqual(
+      expect.objectContaining({
+        chapterFinalized: true,
+        checkpointAttempted: false,
+        maintenanceQueued: true,
+      }),
+    );
+    expect(mockCallLLMResult).not.toHaveBeenCalled();
+    expect(mockDb.markStoryMemoryDirty).not.toHaveBeenCalled();
+  });
+
+  it('returns the locally persisted chapter summary while maintenance is pending', async () => {
     const chapterWithSynopsis = {
       ...chapter,
       synopsis: '林岚在雨夜发现钟楼暗门。',
+      memory_summary: '本地已有摘要',
     };
     mockDb.getChapterById.mockResolvedValue(chapterWithSynopsis);
-    const patch = createEmptyChapterMemoryPatch({
-      chapterId: 1,
-      chapterPosition: 0,
-      title: '第一章',
-    });
-    mockCallLLMResult.mockResolvedValue({
-      text: JSON.stringify(patch),
-      inputTokens: 10,
-      outputTokens: 10,
-      totalTokens: 20,
-    });
 
     const result = await finalizeChapterMemory(1);
 
-    expect(result.episodicMemoryText).toBe(
-      '核心事件：林岚在雨夜发现钟楼暗门。',
-    );
-    expect(mockDb.saveStoryMemoryUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        episodicMemoryText: result.episodicMemoryText,
-      }),
-    );
+    expect(result.episodicMemoryText).toBe('本地已有摘要');
+    expect(mockCallLLMResult).not.toHaveBeenCalled();
   });
 
-  it('keeps saved body and marks dirty when both model attempts fail', async () => {
+  it('keeps the saved body when a future maintenance attempt would fail', async () => {
     mockCallLLMResult.mockResolvedValue({
       text: '{bad',
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
     });
-    await expect(finalizeChapterMemory(1)).rejects.toThrow();
-    expect(mockDb.saveStoryMemoryUpdate).not.toHaveBeenCalled();
-    expect(mockDb.markStoryMemoryDirty).toHaveBeenCalledWith(
-      7,
-      0,
-      expect.any(String),
+    await expect(finalizeChapterMemory(1)).resolves.toEqual(
+      expect.objectContaining({ chapterFinalized: true }),
     );
+    expect(mockDb.saveStoryMemoryUpdate).not.toHaveBeenCalled();
+    expect(mockDb.markStoryMemoryDirty).not.toHaveBeenCalled();
   });
 
   it('omits empty episodic sections', () => {

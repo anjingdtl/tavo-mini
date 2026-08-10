@@ -37,8 +37,14 @@ import {
 } from './storyMemoryBudget';
 import {
   decideEmptyResponseAction,
+  isSafeStoryMemoryRetryError,
   STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
 } from './storyMemoryAttemptPolicy';
+import {
+  StoryMemoryAttemptBudget,
+  createStoryMemoryLogicalBatchId,
+} from './storyMemoryAttemptBudget';
+import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
 
 function renderBatchEpisodicText(
   summary: EpisodicSummary,
@@ -119,40 +125,21 @@ async function requestCheckpoint(
   projectId: number,
   scenario: string,
   signal?: AbortSignal,
-  thinking?: { type: 'disabled' },
+  attemptBudget?: StoryMemoryAttemptBudget,
 ): Promise<LLMResult> {
-  let result: LLMResult | undefined;
-  for (let requestAttempt = 0; requestAttempt < 2; requestAttempt += 1) {
-    try {
-      result = await callLLMResult(
-        messages,
-        maxTokens,
-        {
-          temperature: 0.1,
-          scenario,
-          projectId,
-          queueClass: 'background',
-          queuePriority: 'normal',
-          responseFormat: 'json_object',
-          thinking,
-        },
-        signal,
-      );
-      break;
-    } catch (error: any) {
-      const status = Number(error?.cause?.status || error?.status || 0);
-      const transient =
-        ['total_timeout', 'idle_timeout', 'network_error'].includes(
-          String(error?.code || ''),
-        ) ||
-        status === 429 ||
-        status >= 500;
-      if (!transient || requestAttempt > 0 || signal?.aborted) throw error;
-    }
-  }
-  // V2.11.38 repair plan P1: an empty business body is NOT thrown here —
-  // the attempt coordinator consumes `emptyReason` / `finishReason` and
-  // decides the bounded recovery action per the matrix.
+  // Exactly one call enters the coordinator. Transport retries and protocol
+  // fallbacks are accounted by the shared physical-request hook instead of a
+  // hidden retry loop in this lower-level request helper.
+  const result = await callLLMResult(
+    messages,
+    maxTokens,
+    buildStoryMemoryLLMConfig({
+      scenario,
+      projectId,
+      physicalRequestHooks: attemptBudget?.hooks(),
+    }),
+    signal,
+  );
   if (!result) {
     throw new StoryMemoryError(
       'MEMORY_CHECKPOINT_FAILED',
@@ -201,6 +188,7 @@ export async function generateValidatedCheckpointBatch(input: {
   scenario?:
     | 'story_memory_checkpoint'
     | 'story_memory_checkpoint_legacy_bootstrap';
+  attemptBudget?: StoryMemoryAttemptBudget;
 }): Promise<StoryMemoryBatchPatchDraft> {
   if (input.signal?.aborted) {
     throw new StoryMemoryError(
@@ -243,6 +231,22 @@ export async function generateValidatedCheckpointBatch(input: {
   }
   const inputTokens = estimateCheckpointInputTokens(messages);
 
+  const attemptBudget =
+    input.attemptBudget ||
+    new StoryMemoryAttemptBudget({
+      logicalBatchId: createStoryMemoryLogicalBatchId({
+        projectId,
+        fromPosition: input.chapters[0].position,
+        throughPosition: input.chapters.at(-1)!.position,
+        kind: input.scenario || 'checkpoint',
+      }),
+      projectId,
+      fromPosition: input.chapters[0].position,
+      throughPosition: input.chapters.at(-1)!.position,
+      maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+      durable: false,
+    });
+
   return runCheckpointAttemptLoop({
     chapters: input.chapters,
     previousState: input.previousState,
@@ -254,6 +258,7 @@ export async function generateValidatedCheckpointBatch(input: {
     baseMessages: messages,
     model,
     inputTokens,
+    attemptBudget,
   });
 }
 
@@ -268,6 +273,7 @@ interface CheckpointAttemptLoopInput {
   baseMessages: Array<{ role: 'system' | 'user'; content: string }>;
   model: { contextWindow?: number; maxOutputTokens?: number };
   inputTokens: number;
+  attemptBudget: StoryMemoryAttemptBudget;
 }
 
 /**
@@ -316,7 +322,6 @@ async function runCheckpointAttemptLoop(
 
   let messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> =
     input.baseMessages;
-  let thinking: { type: 'disabled' } | undefined;
   let attempt = 0;
   while (attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
     attempt += 1;
@@ -332,15 +337,30 @@ async function runCheckpointAttemptLoop(
         : attempt === 2
           ? 'story_memory_checkpoint_repair'
           : 'story_memory_checkpoint_retry';
-    const result = await requestCheckpoint(
-      messages,
-      budget,
-      input.projectId,
-      scenario,
-      input.signal,
-      thinking,
-    );
-    thinking = undefined;
+    let result: LLMResult;
+    try {
+      result = await requestCheckpoint(
+        messages,
+        budget,
+        input.projectId,
+        scenario,
+        input.signal,
+        input.attemptBudget,
+      );
+    } catch (error) {
+      if (
+        !input.signal?.aborted &&
+        isSafeStoryMemoryRetryError(error) &&
+        attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS &&
+        (input.attemptBudget.hasObservedPhysicalRequest
+          ? input.attemptBudget.canSend()
+          : true)
+      ) {
+        messages = input.baseMessages;
+        continue;
+      }
+      throw error;
+    }
     const text = result?.text?.trim() || '';
 
     if (text) {
@@ -358,7 +378,10 @@ async function runCheckpointAttemptLoop(
             '故事记忆检查点任务已取消。',
           );
         }
-        if (attempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
+        const physicalAttempt = input.attemptBudget.hasObservedPhysicalRequest
+          ? input.attemptBudget.used
+          : attempt;
+        if (physicalAttempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
           if (
             parseError instanceof StoryMemoryError &&
             parseError.code === 'MEMORY_CHECKPOINT_EVIDENCE_NOT_FOUND'
@@ -434,7 +457,9 @@ async function runCheckpointAttemptLoop(
       const action = decideEmptyResponseAction({
         emptyReason: result?.emptyReason,
         finishReason: result?.finishReason,
-        attempt,
+        attempt: input.attemptBudget.hasObservedPhysicalRequest
+          ? input.attemptBudget.used
+          : attempt,
         maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
         currentBudget: budget,
         nextBudget: nextCheckpointBudget(budget, input.model.maxOutputTokens, {
@@ -458,7 +483,6 @@ async function runCheckpointAttemptLoop(
       }
       // Fresh retry — never echo an empty assistant message.
       budget = Math.max(budget, action.budget);
-      thinking = action.disableThinking ? { type: 'disabled' } : undefined;
       messages = input.baseMessages;
     }
   }
@@ -601,14 +625,27 @@ async function runStoryMemoryCheckpointBatchCore(
   input: Parameters<typeof runStoryMemoryCheckpointBatch>[0],
   memoryPatchMaxTokens: number,
 ): Promise<RunCheckpointBatchResult> {
+  const ordered = [...input.chapters].sort((a, b) => a.position - b.position);
+  const attemptBudget = new StoryMemoryAttemptBudget({
+    logicalBatchId: createStoryMemoryLogicalBatchId({
+      projectId: input.projectId,
+      fromPosition: ordered[0].position,
+      throughPosition: ordered.at(-1)!.position,
+      kind: input.scenario || 'checkpoint',
+    }),
+    projectId: input.projectId,
+    fromPosition: ordered[0].position,
+    throughPosition: ordered.at(-1)!.position,
+    maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+  });
   const draft = await generateValidatedCheckpointBatch({
-    chapters: input.chapters,
+    chapters: ordered,
     previousState: input.previousState,
     memoryPatchMaxTokens,
     signal: input.signal,
     scenario: input.scenario,
+    attemptBudget,
   });
-  const ordered = input.chapters;
   const sourceFingerprint = fingerprintBatchSource(ordered);
   const batchId = `batch_${input.projectId}_${ordered[0].position}_${
     ordered[ordered.length - 1].position

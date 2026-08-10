@@ -168,7 +168,7 @@ describe('U3: Schema40 (V2.11.24) → current full chain (real sql.js)', () => {
       "SELECT value FROM settings WHERE key = 'schema_version'",
     );
     expect(after[0].rows.item(0).value).toBe(String(SCHEMA_VERSION));
-    expect(String(SCHEMA_VERSION)).toBe('49');
+    expect(String(SCHEMA_VERSION)).toBe('50');
 
     const fullAfter = await snapshotTables();
     for (const table of Object.keys(before)) {

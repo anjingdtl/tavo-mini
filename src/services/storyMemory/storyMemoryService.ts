@@ -15,8 +15,14 @@ import {
 } from './storyMemoryPrompts';
 import {
   decideEmptyResponseAction,
+  isSafeStoryMemoryRetryError,
   STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
 } from './storyMemoryAttemptPolicy';
+import {
+  StoryMemoryAttemptBudget,
+  createStoryMemoryLogicalBatchId,
+} from './storyMemoryAttemptBudget';
+import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
 import type {
   ChapterMemoryPatchDraft,
   StoryMemoryState,
@@ -37,6 +43,7 @@ import {
   estimateCheckpointInputTokens,
   nextCheckpointBudget,
 } from './storyMemoryBudget';
+import { listStoryMemoryRequestAttempts } from '../../data/repositories/storyMemoryRequestAttemptRepository';
 
 /**
  * Resolve a display-number mapper for user-visible Story Memory text (Spec §11.3).
@@ -76,6 +83,8 @@ export interface FinalizeChapterMemoryResult {
   checkpointAttempted: boolean;
   /** Whether checkpoint batch succeeded. */
   checkpointUpdated: boolean;
+  /** Whether maintenance was queued after the local finalize transaction. */
+  maintenanceQueued?: boolean;
   pendingCount: number;
   statusMessage: string;
 }
@@ -146,47 +155,99 @@ export function isStoryMemoryTaskRunning(key: string): boolean {
   return inflightTasks.has(key);
 }
 
+export type StoryMemoryMaintenanceReason =
+  | 'interval'
+  | 'dirty'
+  | 'coverage_gap'
+  | 'manual';
+
+export interface StoryMemoryMaintenanceRequest {
+  projectId: number;
+  throughPosition: number;
+  reason: StoryMemoryMaintenanceReason;
+  priority?: 'background' | 'manual';
+  signal?: AbortSignal;
+}
+
+export interface StoryMemoryMaintenanceResult {
+  projectId: number;
+  throughPosition: number;
+  state: StoryMemoryState;
+  batchesApplied: number;
+  pendingRemaining: number;
+}
+
 /**
- * Classify a check-service failure as transient (worth auto-retry on next
- * finalize / story-memory rebuild) vs fatal (won't recover without user
- * intervention). Mirrors LLMRequestError.failureClass when available and
- * falls back to message/code heuristics for un-classified errors (network
- * stack errors, fetch errors, sandbox timeouts, etc.).
+ * Durable-aware coordinator. The in-memory single-flight map only suppresses
+ * duplicate work in one process; the request-attempt ledger below prevents a
+ * cold-started process from silently replaying a request whose provider
+ * outcome was unknown.
  */
-function isTransientCheckpointFailure(error: unknown): boolean {
-  if (!error) return false;
-  const anyErr = error as {
-    code?: string;
-    cause?: { status?: number; code?: string; message?: string };
-    status?: number;
-    failureClass?: string;
-    message?: string;
-  };
-  const cls = anyErr.failureClass;
-  if (typeof cls === 'string') {
-    return cls === 'safe_retry' || cls === 'rate_limit' || cls === 'outcome_unknown';
-  }
-  const code = String(anyErr.code || anyErr.cause?.code || '').toLowerCase();
-  const message = String(anyErr.message || anyErr.cause?.message || '').toLowerCase();
-  const status = Number(anyErr.status || anyErr.cause?.status || 0);
-  if (status === 429 || status >= 500) return true;
-  const transientCodes = [
-    'total_timeout',
-    'idle_timeout',
-    'connect_timeout',
-    'network_error',
-    'networkrequestfailed',
-    'failed_to_fetch',
-    'rate_limit',
-    'rate-limit',
-    'safe_retry',
-    'outcome_unknown',
-    'timeout',
-  ];
-  if (transientCodes.some(c => code.includes(c) || message.includes(c))) {
-    return true;
-  }
-  return false;
+export async function requestStoryMemoryMaintenance(
+  input: StoryMemoryMaintenanceRequest,
+): Promise<StoryMemoryMaintenanceResult> {
+  const throughPosition = Math.max(-1, Math.floor(input.throughPosition));
+  const key = `story-memory-maintain:${input.projectId}:${throughPosition}`;
+  return runStoryMemoryTaskOnce(key, () =>
+    withProjectMemoryLock(input.projectId, async () => {
+      const unknown = await listStoryMemoryRequestAttempts(input.projectId, [
+        'prepared',
+        'sent',
+        'outcome_unknown',
+      ]);
+      if (unknown.length > 0) {
+        throw new StoryMemoryError(
+          'MEMORY_CHECKPOINT_OUTCOME_UNKNOWN',
+          `检测到 ${unknown.length} 个结果未知的长期记忆请求，已停止自动重发，请在故事记忆页面确认后重试。`,
+        );
+      }
+
+      const record = await db.ensureProjectStoryMemoryRow(input.projectId);
+      if (record.status === 'dirty' || input.reason === 'dirty') {
+        const rebuilt = await rebuildStoryMemoryUnlocked(input.projectId, {
+          mode: 'auto',
+          throughPosition,
+          signal: input.signal,
+        });
+        const rebuiltPending = (await db.getChaptersByProject(input.projectId)).filter(
+          chapter =>
+            Boolean(chapter.content?.trim()) &&
+            chapter.position > rebuilt.state.throughChapterPosition &&
+            chapter.position <= throughPosition,
+        ).length;
+        return {
+          projectId: input.projectId,
+          throughPosition,
+          state: rebuilt.state,
+          batchesApplied: rebuilt.completedChapters > 0 ? 1 : 0,
+          pendingRemaining: rebuiltPending,
+        };
+      }
+      const advanced = await advanceStoryMemoryCheckpointsUnlocked({
+        projectId: input.projectId,
+        throughPosition,
+        signal: input.signal,
+      });
+      return {
+        projectId: input.projectId,
+        throughPosition,
+        state: advanced.state,
+        batchesApplied: advanced.batchesApplied,
+        pendingRemaining: advanced.pendingRemaining,
+      };
+    }),
+  );
+}
+
+/** Queue background maintenance without making the caller await the LLM. */
+export function enqueueStoryMemoryMaintenance(
+  input: StoryMemoryMaintenanceRequest,
+): void {
+  setTimeout(() => {
+    // Background maintenance is best-effort and never becomes an unhandled
+    // rejection. The coordinator/advance path persists terminal diagnostics.
+    void requestStoryMemoryMaintenance(input).catch(() => undefined);
+  }, 0);
 }
 
 export interface GenerateChapterMemoryPatchInput {
@@ -195,6 +256,7 @@ export interface GenerateChapterMemoryPatchInput {
   memoryPatchMaxTokens: number;
   signal?: AbortSignal;
   scenario?: 'story_memory_patch' | 'story_memory_legacy_bootstrap';
+  attemptBudget?: StoryMemoryAttemptBudget;
 }
 
 export function parseAndValidateMemoryPatch(
@@ -234,39 +296,18 @@ async function requestPatch(
   projectId: number,
   scenario: string,
   signal?: AbortSignal,
-  thinking?: { type: 'disabled' },
+  attemptBudget?: StoryMemoryAttemptBudget,
 ): Promise<LLMResult> {
-  let result: LLMResult | undefined;
-  for (let requestAttempt = 0; requestAttempt < 2; requestAttempt += 1) {
-    try {
-      result = await callLLMResult(
-        messages,
-        maxTokens,
-        {
-          temperature: 0.1,
-          scenario,
-          projectId,
-          queueClass: 'background',
-          queuePriority: 'normal',
-          responseFormat: 'json_object',
-          thinking,
-        },
-        signal,
-      );
-      break;
-    } catch (error: any) {
-      const status = Number(error?.cause?.status || error?.status || 0);
-      const transient =
-        ['total_timeout', 'idle_timeout', 'network_error'].includes(
-          String(error?.code || ''),
-        ) ||
-        status === 429 ||
-        status >= 500;
-      if (!transient || requestAttempt > 0 || signal?.aborted) throw error;
-    }
-  }
-  // V2.11.38 repair plan P1: empty business bodies flow to the attempt
-  // coordinator for classification instead of throwing here.
+  const result = await callLLMResult(
+    messages,
+    maxTokens,
+    buildStoryMemoryLLMConfig({
+      scenario,
+      projectId,
+      physicalRequestHooks: attemptBudget?.hooks(),
+    }),
+    signal,
+  );
   if (!result) {
     throw new StoryMemoryError(
       'MEMORY_PATCH_INVALID_JSON',
@@ -307,6 +348,21 @@ export async function generateValidatedChapterMemoryPatch(
     // Unknown model capability → legacy derivation, no extra clamp.
   }
   const inputTokens = estimateCheckpointInputTokens(messages);
+  const attemptBudget =
+    input.attemptBudget ||
+    new StoryMemoryAttemptBudget({
+      logicalBatchId: createStoryMemoryLogicalBatchId({
+        projectId: input.chapter.project_id,
+        fromPosition: input.chapter.position,
+        throughPosition: input.chapter.position,
+        kind: input.scenario || 'patch',
+      }),
+      projectId: input.chapter.project_id,
+      fromPosition: input.chapter.position,
+      throughPosition: input.chapter.position,
+      maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+      durable: false,
+    });
   let budget = planPatchMaxTokens({
     memoryPatchMaxTokens: input.memoryPatchMaxTokens,
     batchSize: 1,
@@ -328,7 +384,6 @@ export async function generateValidatedChapterMemoryPatch(
     role: 'system' | 'user' | 'assistant';
     content: string;
   }> = messages;
-  let thinking: { type: 'disabled' } | undefined;
   let attempt = 0;
   while (attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
     attempt += 1;
@@ -344,15 +399,30 @@ export async function generateValidatedChapterMemoryPatch(
         : attempt === 2
           ? 'story_memory_patch_repair'
           : 'story_memory_patch_retry';
-    const result = await requestPatch(
-      currentMessages,
-      budget,
-      input.chapter.project_id,
-      scenarioForAttempt,
-      input.signal,
-      thinking,
-    );
-    thinking = undefined;
+    let result: LLMResult;
+    try {
+      result = await requestPatch(
+        currentMessages,
+        budget,
+        input.chapter.project_id,
+        scenarioForAttempt,
+        input.signal,
+        attemptBudget,
+      );
+    } catch (error) {
+      if (
+        !input.signal?.aborted &&
+        isSafeStoryMemoryRetryError(error) &&
+        attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS &&
+        (attemptBudget.hasObservedPhysicalRequest
+          ? attemptBudget.canSend()
+          : true)
+      ) {
+        currentMessages = messages;
+        continue;
+      }
+      throw error;
+    }
     const text = result?.text?.trim() || '';
 
     if (text) {
@@ -369,7 +439,10 @@ export async function generateValidatedChapterMemoryPatch(
             '故事记忆任务已取消。',
           );
         }
-        if (attempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
+        const physicalAttempt = attemptBudget.hasObservedPhysicalRequest
+          ? attemptBudget.used
+          : attempt;
+        if (physicalAttempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
           if (
             parseError instanceof StoryMemoryError &&
             parseError.code === 'MEMORY_EVIDENCE_NOT_FOUND'
@@ -432,7 +505,9 @@ export async function generateValidatedChapterMemoryPatch(
       const action = decideEmptyResponseAction({
         emptyReason: result?.emptyReason,
         finishReason: result?.finishReason,
-        attempt,
+        attempt: attemptBudget.hasObservedPhysicalRequest
+          ? attemptBudget.used
+          : attempt,
         maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
         currentBudget: budget,
         nextBudget: nextCheckpointBudget(budget, model.maxOutputTokens, {
@@ -450,7 +525,6 @@ export async function generateValidatedChapterMemoryPatch(
         );
       }
       budget = Math.max(budget, action.budget);
-      thinking = action.disableThinking ? { type: 'disabled' } : undefined;
       currentMessages = messages;
     }
   }
@@ -580,6 +654,18 @@ async function finalizeChapterMemoryLegacyPerChapter(
       previousState,
       memoryPatchMaxTokens: contextConfig.memoryPatchMaxTokens || 1200,
       signal: options.signal,
+      attemptBudget: new StoryMemoryAttemptBudget({
+        logicalBatchId: createStoryMemoryLogicalBatchId({
+          projectId: freshChapter.project_id,
+          fromPosition: freshChapter.position,
+          throughPosition: freshChapter.position,
+          kind: 'legacy_patch',
+        }),
+        projectId: freshChapter.project_id,
+        fromPosition: freshChapter.position,
+        throughPosition: freshChapter.position,
+        maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+      }),
     });
     const applied = applyStoryMemoryPatch(previousState, draft, {
       projectId: freshChapter.project_id,
@@ -642,11 +728,15 @@ export async function finalizeChapterMemory(
   if (!chapter.content.trim())
     throw new Error('章节正文为空，无法更新故事记忆。');
 
-  return withProjectMemoryLock(chapter.project_id, async () => {
+  let maintenance: StoryMemoryMaintenanceRequest | null = null;
+  let backgroundJob: (() => Promise<void>) | null = null;
+
+  const result = await withProjectMemoryLock(chapter.project_id, async () => {
     const freshChapter = await db.getChapterById(chapterId);
     if (!freshChapter) throw new Error('章节不存在。');
 
-    // Step A: local finalize first — never depends on LLM success.
+    // Step A is deliberately local and atomic. Nothing below this point may
+    // make the user wait for Story Memory LLM work.
     const finalizedAt = new Date().toISOString();
     if (typeof (db as any).finalizeChapterLocally === 'function') {
       await (db as any).finalizeChapterLocally(freshChapter.id, finalizedAt);
@@ -657,31 +747,29 @@ export async function finalizeChapterMemory(
       });
     }
 
-    if (
+    const scheduleLegacySummary =
       typeof (db as any).getStructuredStoryMemoryEnabled === 'function' &&
-      !(await (db as any).getStructuredStoryMemoryEnabled())
-    ) {
-      const episodicMemoryText = await generateMemorySummary(chapterId);
-      if (episodicMemoryText) {
-        await db.updateChapter(chapterId, {
-          memory_summary: episodicMemoryText,
-          memory_summary_tokens: estimateTokens(episodicMemoryText),
-        });
-      }
-      invalidateIdf(freshChapter.project_id);
+      !(await (db as any).getStructuredStoryMemoryEnabled());
+
+    if (scheduleLegacySummary) {
       const record = await db.ensureProjectStoryMemoryRow(
         freshChapter.project_id,
       );
+      backgroundJob = async () => {
+        await generateMemorySummary(chapterId);
+        invalidateIdf(freshChapter.project_id);
+      };
       return {
         state: record.state,
         patchId: '',
-        episodicMemoryText,
+        episodicMemoryText: freshChapter.memory_summary || '',
         reused: false,
         chapterFinalized: true,
         checkpointAttempted: false,
         checkpointUpdated: false,
+        maintenanceQueued: true,
         pendingCount: 0,
-        statusMessage: '章节已定稿。',
+        statusMessage: '章节已定稿，记忆摘要已安排后台生成。',
       };
     }
 
@@ -693,9 +781,42 @@ export async function finalizeChapterMemory(
         ? await (db as any).getStoryMemoryCheckpointSchedulerEnabled()
         : true;
 
+    const scheduleLegacyPatch =
+      async (): Promise<FinalizeChapterMemoryResult> => {
+        const record = await db.ensureProjectStoryMemoryRow(
+          freshChapter.project_id,
+        );
+        backgroundJob = async () => {
+          await runStoryMemoryTaskOnce(
+            'story-memory-legacy:' +
+              freshChapter.project_id +
+              ':' +
+              freshChapter.id,
+            () =>
+              withProjectMemoryLock(freshChapter.project_id, () =>
+                finalizeChapterMemoryLegacyPerChapter(freshChapter, {
+                  ...options,
+                  signal: undefined,
+                }),
+              ),
+          );
+        };
+        return {
+          state: record.state,
+          patchId: record.state.metadata.lastAppliedPatchId || '',
+          episodicMemoryText: freshChapter.memory_summary || '',
+          reused: false,
+          chapterFinalized: true,
+          checkpointAttempted: false,
+          checkpointUpdated: false,
+          maintenanceQueued: true,
+          pendingCount: 1,
+          statusMessage: '章节已定稿，长期记忆已安排后台整理。',
+        };
+      };
+
     if (!schedulerEnabled) {
-      // Compatibility path: every chapter still uses v1 patch generation.
-      return finalizeChapterMemoryLegacyPerChapter(freshChapter, options);
+      return scheduleLegacyPatch();
     }
 
     const contextConfig = await db.getContextConfig();
@@ -707,12 +828,10 @@ export async function finalizeChapterMemory(
           )
         : createDefaultStoryMemoryPolicy(freshChapter.project_id);
 
-    // every_chapter mode uses batch size 1 path (still one batch request).
-    const useLegacySingle =
-      policy.mode === 'every_chapter' && options.forceRegenerate;
-
-    if (useLegacySingle) {
-      return finalizeChapterMemoryLegacyPerChapter(freshChapter, options);
+    // Explicit forceRegenerate keeps the compatibility per-chapter path, but
+    // it is still queued after local finalization and never awaited here.
+    if (policy.mode === 'every_chapter' && options.forceRegenerate) {
+      return scheduleLegacyPatch();
     }
 
     const allChapters = await db.getChaptersByProject(freshChapter.project_id);
@@ -729,7 +848,6 @@ export async function finalizeChapterMemory(
       ),
       record.state.throughChapterPosition,
     );
-    // Ensure current chapter is counted even if status race.
     if (
       !pending.some(item => item.id === freshChapter.id) &&
       freshChapter.position > record.state.throughChapterPosition
@@ -745,7 +863,8 @@ export async function finalizeChapterMemory(
       dirty: record.status === 'dirty',
     });
 
-    if (!due.due) {
+    const maintenanceDue = due.due || record.status === 'failed';
+    if (!maintenanceDue) {
       const nextPos = predictNextCheckpointPosition(
         policy,
         record.state.throughChapterPosition,
@@ -763,146 +882,58 @@ export async function finalizeChapterMemory(
         pendingCount: pending.length,
         statusMessage:
           pending.length > 0
-            ? `长期记忆待整理 ${pending.length} 章${
-                nextPos != null
-                  ? // nextPos is 1-based under position+1 semantics; map via internal pos.
-                    `，将在${chapterLabel(displayOf, nextPos - 1)}后更新`
-                  : ''
-              }。`
+            ? '长期记忆待整理 ' +
+              pending.length +
+              ' 章' +
+              (nextPos != null
+                ? '，将在' + chapterLabel(displayOf, nextPos - 1) + '后更新'
+                : '') +
+              '。'
             : '章节已定稿。',
       };
     }
 
-    try {
-      const throughPosition = resolveDirtyRebuildThroughPosition(
-        record.state.throughChapterPosition,
-        freshChapter.position,
-        due.throughPosition,
-      );
-      if (record.status === 'dirty') {
-        const rebuilt = await rebuildStoryMemoryUnlocked(
-          freshChapter.project_id,
-          {
-            mode: 'auto',
-            throughPosition,
-            signal: options.signal,
-          },
-        );
-        const pendingRemaining = allChapters.filter(
-          item =>
-            Boolean(item.content?.trim()) &&
-            (item.status === 'final' || item.finalized_at != null) &&
-            item.position > rebuilt.state.throughChapterPosition,
-        ).length;
-        const displayOf = await loadDisplayNumberFn(freshChapter.project_id);
-        return {
-          state: rebuilt.state,
-          patchId: rebuilt.state.metadata.lastAppliedPatchId || '',
-          episodicMemoryText: freshChapter.memory_summary || '',
-          reused: false,
-          chapterFinalized: true,
-          checkpointAttempted: true,
-          checkpointUpdated: rebuilt.completedChapters > 0,
-          pendingCount: pendingRemaining,
-          statusMessage: `长期记忆已从变更位置重建到${chapterLabel(
-            displayOf,
-            rebuilt.state.throughChapterPosition,
-          )}。`,
-        };
-      }
-      const advanced = await advanceStoryMemoryCheckpointsUnlocked({
-        projectId: freshChapter.project_id,
-        throughPosition,
-        signal: options.signal,
-      });
-      const displayOf = await loadDisplayNumberFn(freshChapter.project_id);
-      return {
-        state: advanced.state,
-        patchId: advanced.state.metadata.lastAppliedPatchId || '',
-        episodicMemoryText: freshChapter.memory_summary || '',
-        reused: false,
-        chapterFinalized: true,
-        checkpointAttempted: true,
-        checkpointUpdated: advanced.batchesApplied > 0,
-        pendingCount: advanced.pendingRemaining,
-        statusMessage: `长期记忆已整理到${chapterLabel(
-          displayOf,
-          advanced.state.throughChapterPosition,
-        )}。`,
-      };
-    } catch (error) {
-      // Chapter stays final; old checkpoint preserved.
-      const message =
-        error instanceof Error ? error.message : '长期记忆整理失败';
-      // Phase：LLM 暂态错误（网络 / 超时 / 5xx / 429）不应让用户感觉定稿失败。
-      // 章节正文已安全保存，下一次定稿会重试该检查点（ checkpoint 仍 pending），
-      // toast 改为「待整理」以避免误导用户。
-      const transient = isTransientCheckpointFailure(error);
-      // 与 advance 同一语义：失败时保留「最近一次成功持久化」checkpoint
-      // 的状态。重新读取最新 row —— batch1 成功后 batch2 失败时 row 已是
-      // clean（batch1 终点），不能用函数入口时的旧 status 回写；dirty 标记
-      // 必须原样保留。返回给调用方的 state/patchId/pendingCount 也必须基于
-      // 最新持久化行，而不是函数入口快照（否则 UI 会显示 through=-1 的旧态，
-      // 与 DB 实际已推进到 batch1 终点的状态矛盾）。
-      let returnedState = record.state;
-      if (
-        error instanceof StoryMemoryError &&
-        error.code === 'MEMORY_BASE_FINGERPRINT_MISMATCH'
-      ) {
-        await db.markStoryMemoryDirty(
-          freshChapter.project_id,
-          freshChapter.position,
-          message,
-        );
-      } else {
-        const latest = await db.ensureProjectStoryMemoryRow(
-          freshChapter.project_id,
-        );
-        await db.setStoryMemoryBuildStatus(
-          freshChapter.project_id,
-          record.status === 'dirty' ? 'dirty' : latest.status,
-          record.status === 'dirty'
-            ? record.dirtyFromPosition
-            : latest.dirtyFromPosition,
-          message,
-        );
-        returnedState = latest.state;
-      }
-      const returnedPatchId = returnedState.metadata.lastAppliedPatchId || '';
-      const pendingRemaining = allChapters.filter(
-        item =>
-          Boolean(item.content?.trim()) &&
-          (item.status === 'final' || item.finalized_at != null) &&
-          item.position > returnedState.throughChapterPosition,
-      ).length;
-      if (transient) {
-        return {
-          state: returnedState,
-          patchId: returnedPatchId,
-          episodicMemoryText: freshChapter.memory_summary || '',
-          reused: false,
-          chapterFinalized: true,
-          checkpointAttempted: true,
-          checkpointUpdated: false,
-          pendingCount: pendingRemaining,
-          statusMessage: `章节已定稿。长期记忆待整理（LLM 暂不可达，下次定稿或打开「故事记忆」会自动重试）。${
-            message ? `（${message.slice(0, 80)}）` : ''
-          }`,
-        };
-      }
-      return {
-        state: returnedState,
-        patchId: returnedPatchId,
-        episodicMemoryText: freshChapter.memory_summary || '',
-        reused: false,
-        chapterFinalized: true,
-        checkpointAttempted: true,
-        checkpointUpdated: false,
-        pendingCount: pendingRemaining,
-        statusMessage: `章节已定稿，但长期记忆整理失败。正文已安全保存，可稍后重试。${
-          message ? `（${message.slice(0, 80)}）` : ''
-        }`,
-      };
-    }
+    const throughPosition = resolveDirtyRebuildThroughPosition(
+      record.state.throughChapterPosition,
+      freshChapter.position,
+      due.throughPosition ?? pending.at(-1)?.position ?? freshChapter.position,
+    );
+    const maintenanceReason: StoryMemoryMaintenanceReason =
+      record.status === 'dirty' || due.reason === 'dirty_rebuild'
+        ? 'dirty'
+        : due.reason === 'coverage_gap'
+          ? 'coverage_gap'
+          : due.reason === 'manual'
+            ? 'manual'
+            : 'interval';
+    maintenance = {
+      projectId: freshChapter.project_id,
+      throughPosition,
+      reason: maintenanceReason,
+      priority: 'background',
+    };
+    return {
+      state: record.state,
+      patchId: record.state.metadata.lastAppliedPatchId || '',
+      episodicMemoryText: freshChapter.memory_summary || '',
+      reused: false,
+      chapterFinalized: true,
+      checkpointAttempted: false,
+      checkpointUpdated: false,
+      maintenanceQueued: true,
+      pendingCount: pending.length,
+      statusMessage:
+        '章节已定稿，长期记忆已安排后台整理（待整理 ' +
+        pending.length +
+        ' 章）。',
+    };
   });
+
+  if (maintenance) enqueueStoryMemoryMaintenance(maintenance);
+  if (backgroundJob) {
+    setTimeout(() => {
+      void backgroundJob!().catch(() => undefined);
+    }, 0);
+  }
+  return result;
 }

@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- **Story Memory P1 V3 无阻滞与安全边界**：章节定稿先完成本地原子落库，Story Memory LLM 维护改为后台排队；Safe Coverage 继续编译，Hard Gap / 非法目标位置 fail-closed；所有 Story Memory 请求显式 Non-Thinking，并通过单逻辑批次最多 3 次真实 HTTP 请求的统一预算（含协议回退）与持久化请求账本防止冷启动静默重发。Partial Success、CAS 和用户正文保持可恢复。
+- **Schema 50**：新增 `story_memory_request_attempts` 传输账本，仅保存请求范围、状态、HTTP/Provider 诊断和时间，不保存提示词、正文、API Key 或 reasoning 文本。
 - **Brief Thinking 语义固定**：Brief 始终发送 `thinking=enabled` 与 `reasoning_effort=low`；输出上限不足时改用本地 Brief，不静默关闭 Thinking，也不自动重试 Brief API。
 - **终稿连续性**：Final 使用完整 canonical draft、完整大纲、即时上一章正文/章末和故事状态闭包，避免 Revision Contract、锚点 ID 或重复初稿注入造成上下文断裂。
 - **审核归一化与传递**：Review / FactCheck 的定位失败、warning、required/hard 冲突在本地归一化，Brief 完整性门禁后再以纯文本写作 Brief 传递给 Final。

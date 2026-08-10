@@ -19,7 +19,7 @@ ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮�
 
 新建作品后就能建立章节、填写梗概、记录人物和伏笔。编辑器会自动保存，章节还可以保留多个修订版本，方便比较和回退。
 
-如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 48**（含流水线阶段 checkpoint、持久化 LLM Attempt、弹性上下文预算池、批量写章批次表、Final Reviser reasoning token 观测、V3.1 fail-closed 诊断与派生终稿任务 lineage；Schema 43 为旧项目 Smart 故事记忆策略间隔一次性统一迁移，Schema 44 为任务与批次增加 Workflow/Budget 版本冻结列，Schema 45 为 reasoning token 观测列，Schema 46 为批次思考档位快照，Schema 47 清理旧 V3/profile2 执行链并补齐 Formatter 诊断，Schema 48 保存“仅重写终稿”的父任务与用户要求——新任务默认启用大纲写作 V3.1 与统一弹性预算池，升级前的旧任务与旧批次自动按冻结版本恢复）。
+如果你已经有完整原著，也可以创建“原著续写”项目：导入原著、设置续写边界、完成 Canon 分析后，再从边界之后继续写新的章节。本地数据库当前为 **Schema 50**（含流水线阶段 checkpoint、持久化 LLM Attempt、弹性上下文预算池、批量写章批次表、Final Reviser reasoning token 观测、V3.1 fail-closed 诊断与派生终稿任务 lineage，以及 Story Memory 真实 HTTP 请求账本；Schema 49 保存“仅重写终稿”的父任务与用户要求，Schema 50 将 Story Memory 每个物理请求的结果状态持久化，冷启动时对未确认结果执行 fail-closed 处理）。
 
 ### 让 AI 帮你，而不是替你失控
 

@@ -10,6 +10,7 @@ import type {
   LLMQueuePriority,
   LLMQueueState,
   LLMRequestMetrics,
+  LLMPhysicalRequestHooks,
   ReasoningEffort,
 } from './llm/types';
 import { scheduleLLMRequest } from './llm/requestScheduler';
@@ -24,6 +25,7 @@ export type {
   LLMQueuePriority,
   LLMQueueState,
   LLMRequestMetrics,
+  LLMPhysicalRequestHooks,
   ReasoningEffort,
 } from './llm/types';
 
@@ -51,6 +53,7 @@ export interface LLMCallConfig {
   queuePriority?: LLMQueuePriority;
   onQueueState?: (state: LLMQueueState) => void;
   onProgress?: (metrics: LLMRequestMetrics) => void;
+  physicalRequestHooks?: LLMPhysicalRequestHooks;
   requestConfig?: LLMRequestConfig;
 }
 
@@ -175,6 +178,7 @@ export async function callLLMResult(
       queuePriority: config?.queuePriority,
       onQueueState: config?.onQueueState,
       onProgress: config?.onProgress,
+      physicalRequestHooks: config?.physicalRequestHooks,
       requestConfig,
     },
     externalSignal,

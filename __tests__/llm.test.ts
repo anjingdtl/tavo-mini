@@ -5,6 +5,7 @@ import {
   supportsReasoningEffort,
 } from '../src/services/llm/openAICompatibleProvider';
 import { testLLMConnection } from '../src/services/llm';
+import { StoryMemoryAttemptBudget } from '../src/services/storyMemory/storyMemoryAttemptBudget';
 
 test.each([
   ['https://api.example.com', 'https://api.example.com/v1/chat/completions'],
@@ -163,6 +164,48 @@ test('omits disabled-thinking extension when a compatible gateway rejects it', a
   const retryRequest = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
   expect(retryRequest).not.toHaveProperty('thinking');
   expect(retryRequest.response_format).toEqual({ type: 'json_object' });
+});
+
+test('counts every protocol fallback as a physical request and stops at three', async () => {
+  const headers = { get: () => null };
+  const fetchMock = jest.fn().mockResolvedValue({
+    ok: false,
+    status: 400,
+    text: async () => 'response_format unsupported',
+    headers,
+  });
+  globalThis.fetch = fetchMock as any;
+  const budget = new StoryMemoryAttemptBudget({
+    logicalBatchId: 'story-memory:test:budget',
+    projectId: 1,
+    fromPosition: 0,
+    throughPosition: 0,
+    maxPhysicalRequests: 3,
+    durable: false,
+  });
+
+  await expect(
+    openAICompatibleProvider.generate(
+      [{ role: 'user', content: 'Return JSON.' }],
+      {
+        responseFormat: 'json_object',
+        thinking: { type: 'disabled' },
+        physicalRequestHooks: budget.hooks(),
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'test-key',
+          model_name: 'gateway-model',
+          url: 'https://api.example.com/v1/chat/completions',
+        },
+      },
+    ),
+  ).rejects.toThrow();
+
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(budget.used).toBe(3);
+  await expect(
+    budget.hooks().beforeRequest?.({ kind: 'should-not-send' }),
+  ).rejects.toMatchObject({ code: 'STORY_MEMORY_PHYSICAL_REQUEST_BUDGET_EXHAUSTED' });
 });
 
 test.each(['low', 'medium', 'high', 'max'] as const)(

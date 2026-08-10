@@ -149,6 +149,25 @@ export const App: React.FC = () => {
         // (checking_schema / capturing_fingerprint / creating_backup /
         // migrating / validating_schema / verifying_content) via onPhase.
         await openDatabase({ onPhase: reportPhase });
+        // Story Memory request attempts are written as `sent` before fetch().
+        // A process killed between send and response must be classified as
+        // outcome_unknown before any background maintenance can resume; never
+        // silently replay a possibly billed request on cold start.
+        try {
+          const {
+            markSentStoryMemoryAttemptsOutcomeUnknown,
+          } = await import(
+            '../data/repositories/storyMemoryRequestAttemptRepository'
+          );
+          const unknown = await markSentStoryMemoryAttemptsOutcomeUnknown();
+          if (unknown > 0) {
+            console.warn(
+              `[App] cold-start cleanup: classified ${unknown} Story Memory request attempt(s) as outcome_unknown`,
+            );
+          }
+        } catch (e) {
+          console.warn('[App] Story Memory attempt reconciliation skipped', e);
+        }
         // 必须在任何写作入口可用前同步后台开关。此前只有进入设置页时才调用
         // loadSettings，导致默认开启的前台服务桥接仍保持 false，流水线切后台即失去保活。
         reportPhase('loading_settings');

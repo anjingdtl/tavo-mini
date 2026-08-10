@@ -72,6 +72,32 @@ export interface DecideEmptyResponseActionInput {
 
 export const STORY_MEMORY_MAX_PHYSICAL_REQUESTS = 3;
 
+/** Only transport failures known to be safe can consume another budget slot. */
+export function isSafeStoryMemoryRetryError(error: unknown): boolean {
+  const value = error as {
+    failureClass?: unknown;
+    httpStatus?: unknown;
+    status?: unknown;
+    cause?: { status?: unknown };
+    code?: unknown;
+  } | null;
+  if (!value) return false;
+  if (value.failureClass === 'outcome_unknown') return false;
+  if (
+    value.failureClass === 'safe_retry' ||
+    value.failureClass === 'rate_limit'
+  ) {
+    return true;
+  }
+  const status = Number(
+    value.httpStatus || value.status || value.cause?.status || 0,
+  );
+  if (status === 429 || status >= 500) return true;
+  return ['connect_timeout', 'safe_retry', 'rate_limit'].includes(
+    String(value.code || '').toLowerCase(),
+  );
+}
+
 /**
  * Decide the recovery action for an empty LLM response.
  * Pure function — unit-testable without any database or provider.
