@@ -1075,7 +1075,7 @@ export function buildReviewV33Messages(params: {
     {
       role: 'system',
       content: [
-        '你是 ShineWriter 当前统一流水线的 Review 评估器。保持 low Thinking；最终 JSON 必须写入 message.content。',
+        '你是 ShineWriter 当前统一流水线的 Review 评估器。按本次任务冻结的有效 Thinking 档位执行；最终 JSON 必须写入 message.content。',
         '只做语义判断，不输出正文、Markdown、推理过程、schema、hash、sourceId 或本地信封。',
         '顶层只输出 verdict、checked、findings，可选 preserve、ending。',
         'verdict 只能是 pass 或 needs_revision；checked 必须原样包含这五个已检查维度：opening_continuity、outline_execution、character、prose、ending_boundary。',

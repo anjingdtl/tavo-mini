@@ -19,17 +19,17 @@ export const PIPELINE_REASONING_EFFORT_OPTIONS: Array<{
   {
     value: 'low',
     label: '快速',
-    description: '所有阶段使用低思考预算；审阅与核查固定 low。',
+    description: '所有阶段使用低思考预算；事实核查固定 low。',
   },
   {
     value: 'high',
     label: '平衡',
-    description: 'Draft/Brief/Final 使用 high；Review/FactCheck 固定 low。',
+    description: 'Draft/Review/Brief/Final 使用 high；FactCheck 固定 low。',
   },
   {
     value: 'max',
     label: '质量',
-    description: 'Draft/Brief/Final 使用 max；Review/FactCheck 固定 low。',
+    description: 'Draft/Review/Brief/Final 使用 max；FactCheck 固定 low。',
   },
 ];
 
@@ -231,7 +231,7 @@ export const STAGE_REASONING_PROFILE_V32: Record<
   },
 };
 
-/** Current unified profile: Brief follows the user tier; audits stay low. */
+/** Current unified profile: Review follows the user tier; FactCheck stays low. */
 export const STAGE_REASONING_PROFILE_V33: Record<
   PipelineReasoningTier,
   Record<PipelineStageName, PipelineReasoningTier>
@@ -245,14 +245,14 @@ export const STAGE_REASONING_PROFILE_V33: Record<
   },
   high: {
     draft: 'high',
-    review: 'low',
+    review: 'high',
     factCheck: 'low',
     brief: 'high',
     proof: 'high',
   },
   max: {
     draft: 'max',
-    review: 'low',
+    review: 'max',
     factCheck: 'low',
     brief: 'max',
     proof: 'max',
@@ -376,7 +376,7 @@ export function resolveV32StageReasoning(
   };
 }
 
-/** Resolve the current unified semantics: audits low, Brief follows tier. */
+/** Resolve the current unified semantics: Review follows tier; FactCheck stays low. */
 export function resolveV33StageReasoning(
   requested: PipelineReasoningTier,
   stage: PipelineStageName,
@@ -388,7 +388,7 @@ export function resolveV33StageReasoning(
     modelName: model.model_name,
     baseUrl: model.url,
   });
-  const auditStage = stage === 'review' || stage === 'factCheck';
+  const factCheckStage = stage === 'factCheck';
   return {
     stage,
     requestedTier: requested,
@@ -399,8 +399,8 @@ export function resolveV33StageReasoning(
     historical: false,
     ...(effectiveTier !== requested
       ? {
-          downgradeReason: auditStage
-            ? '当前统一流水线的 Review/FactCheck 固定使用 low'
+          downgradeReason: factCheckStage
+            ? '当前统一流水线的 FactCheck 固定使用 low'
             : undefined,
         }
       : {}),

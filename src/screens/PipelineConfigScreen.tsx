@@ -144,7 +144,7 @@ export const PipelineConfigScreen: React.FC = () => {
             {PIPELINE_REASONING_EFFORT_OPTIONS.find(
               option => option.value === (config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT),
             )?.description}
-            {' '}Draft、Brief、Final 跟随用户档位；Review/FactCheck 固定使用 low Thinking。
+            {' '}Draft、Review、Brief、Final 跟随用户档位；FactCheck 固定使用 low Thinking。
           </Text>
           <Text
             style={[styles.hint, { color: theme.colors.textSecondary }]}
