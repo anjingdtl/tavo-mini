@@ -27,6 +27,10 @@ jest.mock('../src/store/themeStore', () => ({
 
 import { PipelineResultPrompt } from '../src/components/PipelineResultPrompt';
 import type { PipelineTask } from '../src/types/pipeline';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 const baseTask: PipelineTask = {
   id: 'pt_test',
@@ -36,6 +40,8 @@ const baseTask: PipelineTask = {
   stageResults: [],
   finalText: 'some content',
   error: null,
+  outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+  contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
   createdAt: 0,
   updatedAt: 0,
   resolvedAt: null,

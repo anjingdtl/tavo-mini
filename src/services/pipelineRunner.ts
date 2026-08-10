@@ -26,6 +26,8 @@ import {
 } from './pipeline/reconcile';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import type { PipelineMode, PipelineReasoningEffort } from '../types/pipeline';
+import { getPipelineTaskById } from '../data/repositories/pipelineTaskRepository';
+import { CURRENT_OUTLINE_WORKFLOW_VERSION } from './pipeline/outlineWorkflowVersion';
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -258,6 +260,32 @@ export async function resumePipeline(
   onStageUpdate?: (info: StageInfo | string) => void,
   options: PipelineRunOptions = {},
 ): Promise<void> {
+  const persistedTask =
+    usePipelineTaskStore.getState().tasks.find(task => task.id === taskId) ||
+    (await getPipelineTaskById(taskId));
+  const incompleteStatuses = new Set([
+    'idle',
+    'queued',
+    'drafting',
+    'reviewing',
+    'factChecking',
+    'briefing',
+    'proofing',
+    'failed',
+    'interrupted',
+  ]);
+  if (
+    persistedTask &&
+    incompleteStatuses.has(String(persistedTask.status)) &&
+    Number(persistedTask.outlineWorkflowVersion) !==
+      CURRENT_OUTLINE_WORKFLOW_VERSION
+  ) {
+    const error = Object.assign(
+      new Error('该任务使用旧版生成流程，不能继续；请按新版重新生成。'),
+      { code: 'LEGACY_PIPELINE_RESUME_BLOCKED' },
+    );
+    throw error;
+  }
   setLLMTaskQueueDefaults(taskId, {
     queueClass: options.queueClass || 'pipeline',
     queuePriority: options.queuePriority || 'manual',

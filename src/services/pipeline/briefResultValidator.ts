@@ -1,19 +1,25 @@
 import { extractAuditJsonPayload } from '../pipelineAuditValidator';
 import {
   briefRequiredSourceIds,
+  type FinalWritingBriefImmutableEnvelopeV33,
   type BriefTargetKindV31,
   type BriefCompilerInputV1,
   type FinalWritingBriefImmutableEnvelopeV31,
   type FinalWritingBriefImmutableEnvelopeV32,
   type FinalWritingBriefV31,
   type FinalWritingBriefV32,
+  type FinalWritingBriefV33,
   type FinalWritingBriefV1,
 } from './briefCompilerTypes';
 import type { StructuredOutputCompatibility } from './reasoningPolicy';
 
 export interface BriefValidationResult {
   valid: boolean;
-  brief?: FinalWritingBriefV1 | FinalWritingBriefV31 | FinalWritingBriefV32;
+  brief?:
+    | FinalWritingBriefV1
+    | FinalWritingBriefV31
+    | FinalWritingBriefV32
+    | FinalWritingBriefV33;
   warnings: string[];
   error?: string;
 }
@@ -693,4 +699,133 @@ export function validateFinalWritingBriefV32(params: {
     warnings,
     brief,
   };
+}
+
+/** Current compact Brief validator. The envelope and source IDs are local. */
+export function validateFinalWritingBriefV33(params: {
+  raw: string;
+  envelope: FinalWritingBriefImmutableEnvelopeV33;
+}): BriefValidationResult {
+  const warnings: string[] = [];
+  const extracted = extractAuditJsonPayload(String(params.raw || '').trim());
+  if (!extracted.jsonText) {
+    return { valid: false, warnings, error: '当前 Brief 输出不是完整 JSON' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(extracted.jsonText);
+  } catch {
+    return { valid: false, warnings, error: '当前 Brief JSON 解析失败' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { valid: false, warnings, error: '当前 Brief 根节点不是对象' };
+  }
+  if (hasLeak(parsed)) {
+    return { valid: false, warnings, error: '当前 Brief 含机器协议或 Thinking 泄漏' };
+  }
+  const raw = parsed as Record<string, unknown>;
+  const strategy =
+    typeof raw.strategy === 'string' && raw.strategy.trim()
+      ? raw.strategy.trim().slice(0, MAX_TEXT)
+      : '按已验证意见执行必要修订并保持连续性';
+  if (raw.strategy === undefined) {
+    warnings.push('当前 Brief 缺少 strategy，已采用安全默认策略');
+  }
+  const knownIds = new Set(params.envelope.allowedSourceIds);
+  const actionsRaw = Array.isArray(raw.actions)
+    ? raw.actions
+    : Array.isArray(raw.instructions)
+    ? raw.instructions
+    : [];
+  if (actionsRaw.length > MAX_MUST_FIX) {
+    return { valid: false, warnings, error: '当前 Brief actions 超过上限' };
+  }
+  const actions: FinalWritingBriefV33['actions'] = [];
+  const mustFix: FinalWritingBriefV33['mustFix'] = [];
+  const covered = new Set<string>();
+  const seen = new Map<string, string>();
+  for (let index = 0; index < actionsRaw.length; index += 1) {
+    const item = actionsRaw[index];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { valid: false, warnings, error: `当前 Brief actions[${index}] 结构无效` };
+    }
+    const row = item as Record<string, unknown>;
+    const covers = normalizeBriefSourceIds(
+      row.covers ?? row.sourceIds,
+      knownIds,
+      warnings,
+    );
+    const instruction =
+      typeof row.instruction === 'string' ? row.instruction.trim() : '';
+    if (!covers || !covers.length || !instruction) {
+      return {
+        valid: false,
+        warnings,
+        error: '当前 Brief action 缺少 covers/instruction',
+      };
+    }
+    const target = normalizeTarget(row.target || 'global') || {
+      kind: 'global' as const,
+    };
+    const preserve = strings(row.preserve);
+    for (const id of covers) {
+      const previous = seen.get(id);
+      if (previous && previous !== instruction) {
+        return {
+          valid: false,
+          warnings,
+          error: '当前 Brief 同一短 ID 存在相互矛盾的 action',
+        };
+      }
+      seen.set(id, instruction);
+      covered.add(id);
+    }
+    const clippedInstruction = instruction.slice(0, MAX_TEXT);
+    actions.push({
+      covers,
+      instruction: clippedInstruction,
+      target: target.kind,
+      preserve,
+    });
+    mustFix.push({
+      sourceIds: covers,
+      target,
+      instruction: clippedInstruction,
+      preserve,
+    });
+  }
+  for (const id of params.envelope.requiredSourceIds) {
+    if (!covered.has(id)) {
+      return {
+        valid: false,
+        warnings,
+        error: `当前 Brief 未覆盖 required/hard: ${id}`,
+      };
+    }
+  }
+  const preserve = strings(raw.preserve);
+  const ending =
+    typeof raw.ending === 'string' && raw.ending.trim()
+      ? raw.ending.trim().slice(0, MAX_TEXT)
+      : params.envelope.endingBoundary;
+  if (raw.ending === undefined && params.envelope.endingBoundary) {
+    warnings.push('当前 Brief 缺少 ending，已采用本地结尾边界');
+  }
+  const mustPreserve = [
+    ...new Set([...params.envelope.protectedFacts, ...preserve]),
+  ];
+  const brief: FinalWritingBriefV33 = {
+    ...params.envelope,
+    strategy,
+    actions,
+    preserve,
+    ending,
+    mustFix,
+    mustPreserve,
+    mustNotAdvance: params.envelope.mustNotAdvance,
+    openingContinuity: [],
+    endingState: ending,
+    styleAdvisories: [],
+  };
+  return { valid: true, warnings, brief };
 }

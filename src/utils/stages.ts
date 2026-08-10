@@ -18,7 +18,7 @@ export const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
   proof: '终审打磨',
 };
 
-/** 按 pipelineMode 与冻结版本返回阶段串；V3.1 full 为 5 阶段。 */
+/** 按 pipelineMode 与冻结版本返回阶段串；当前协议始终使用完整 5 阶段。 */
 export function getPipelineStageOrder(
   mode: string,
   versions?: {
@@ -26,16 +26,18 @@ export function getPipelineStageOrder(
     contextBudgetVersion?: number | null;
   },
 ): PipelineStageName[] {
-  const isV3 =
-    Number(versions?.outlineWorkflowVersion) === 3 &&
+  const isStructured =
+    [3, 4].includes(Number(versions?.outlineWorkflowVersion)) &&
     [3, 4].includes(Number(versions?.contextBudgetVersion));
+  const isCurrent = Number(versions?.outlineWorkflowVersion) === 4;
+  if (isCurrent) return ['draft', 'review', 'factCheck', 'brief', 'proof'];
   // Batch form modes map to single-chapter modes (see mapBatchModeToPipelineMode).
   if (mode === 'draft_only') return ['draft'];
-  if (mode === 'fast') return isV3 ? ['draft', 'review', 'brief', 'proof'] : ['draft', 'review', 'proof'];
+  if (mode === 'fast') return isStructured ? ['draft', 'review', 'brief', 'proof'] : ['draft', 'review', 'proof'];
   if (mode === 'noReview') return ['draft'];
-  if (mode === 'twoStage') return isV3 ? ['draft', 'review', 'brief', 'proof'] : ['draft', 'review', 'proof'];
-  if (mode === 'conditional') return isV3 ? ['draft', 'factCheck', 'brief', 'proof'] : ['draft', 'factCheck', 'proof'];
-  return isV3 ? ['draft', 'review', 'factCheck', 'brief', 'proof'] : ['draft', 'review', 'factCheck', 'proof'];
+  if (mode === 'twoStage') return isStructured ? ['draft', 'review', 'brief', 'proof'] : ['draft', 'review', 'proof'];
+  if (mode === 'conditional') return isStructured ? ['draft', 'factCheck', 'brief', 'proof'] : ['draft', 'factCheck', 'proof'];
+  return isStructured ? ['draft', 'review', 'factCheck', 'brief', 'proof'] : ['draft', 'review', 'factCheck', 'proof'];
 }
 
 /** 当前阶段在进度条上的起点百分比 = floor(completed / total * 100)，上限 99。 */

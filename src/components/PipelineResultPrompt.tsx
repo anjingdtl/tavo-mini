@@ -2,6 +2,7 @@ import React from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useThemeStore } from '../store/themeStore';
 import type { PipelineTask } from '../types/pipeline';
+import { CURRENT_OUTLINE_WORKFLOW_VERSION } from '../services/pipeline/outlineWorkflowVersion';
 
 export interface PipelineResultPromptProps {
   task: PipelineTask | null;
@@ -81,6 +82,7 @@ export const PipelineResultPrompt: React.FC<PipelineResultPromptProps> = ({
   const { title, body, confirmLabel, cancelLabel } = buildCopy(task);
   const canResume = Boolean(onResume)
     && task.targetType === 'chapter'
+    && Number(task.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION
     && (task.status === 'failed' || task.status === 'interrupted');
   const primaryLabel = canResume ? '从失败节点重试' : confirmLabel;
   return (

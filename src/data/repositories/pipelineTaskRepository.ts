@@ -13,7 +13,15 @@ import type { Row } from './shared';
 import type { PipelineCheckpointStage } from '../../services/pipeline/types';
 import type { PipelineStageCheckpointRow } from './pipelineStageCheckpointRepository';
 
-export async function getPipelineConfig(): Promise<PipelineConfig> {
+export async function getPipelineConfig(options?: {
+  /**
+   * Read the frozen-era mode only for direct historical V2 state-machine
+   * verification. Product/UI callers must keep seeing the unified full
+   * pipeline; public Resume paths reject unfinished legacy tasks before this
+   * compatibility read can be used.
+   */
+  includeHistoricalMode?: boolean;
+}): Promise<PipelineConfig> {
   // 11.9 优化：原实现每个字段独立 getSetting（最多 9 次独立 SQL），合并为单次 SELECT
   const keys = [
     'pipeline_mode',
@@ -39,24 +47,29 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
   const settingsMap = new Map(rows.map(r => [r.key, r.value]));
   const get = (k: string): string | null => settingsMap.get(k) ?? null;
 
-  const savedMode = get('pipeline_mode');
   const savedReasoningEffort = get('pipeline_reasoning_effort');
   const savedProfileVersion = get('pipeline_reasoning_profile_version');
-  const pipelineMode =
-    savedMode === 'noReview' ||
-    savedMode === 'conditional' ||
-    savedMode === 'full' ||
-    savedMode === 'twoStage'
-      ? savedMode
-      : 'twoStage';
+  // Generation modes are historical settings only. New settings expose one
+  // complete pipeline; frozen old task snapshots still retain their mode.
+  // The opt-in read exists solely for direct V2 state-machine audit paths;
+  // normal product callers always receive full.
+  const savedPipelineMode = get('pipeline_mode');
+  const pipelineMode = options?.includeHistoricalMode &&
+    (savedPipelineMode === 'noReview' ||
+      savedPipelineMode === 'twoStage' ||
+      savedPipelineMode === 'conditional' ||
+      savedPipelineMode === 'full')
+    ? (savedPipelineMode as PipelineConfig['pipelineMode'])
+    : ('full' as const);
 
   const presetId = (k: string): number | null => {
     const v = get(k);
     return v !== null ? Number(v) : null;
   };
 
-  const isV3Profile =
-    savedProfileVersion === '2' || savedProfileVersion === '3';
+  const isV3Profile = ['2', '3', '4', '5'].includes(
+    String(savedProfileVersion),
+  );
   const normalizedTier =
     isV3Profile && isPipelineReasoningTier(savedReasoningEffort)
       ? savedReasoningEffort
@@ -64,7 +77,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
   // Settings migration is intentionally a single transaction so a crash
   // cannot leave the tier and profile version at different interpretations.
   if (
-    savedProfileVersion !== '3' ||
+    savedProfileVersion !== '5' ||
     savedReasoningEffort !== normalizedTier
   ) {
     const database = await openDatabase();
@@ -75,7 +88,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
       },
       {
         sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-        params: ['pipeline_reasoning_profile_version', '3'],
+        params: ['pipeline_reasoning_profile_version', '5'],
       },
     ]);
   }
@@ -84,7 +97,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
     reasoningEffort: isPipelineReasoningTier(normalizedTier)
       ? normalizedTier
       : DEFAULT_PIPELINE_REASONING_EFFORT,
-    reasoningProfileVersion: 3,
+    reasoningProfileVersion: 5,
     draftPresetId: presetId('pipeline_draft_preset_id'),
     reviewPresetId: presetId('pipeline_review_preset_id'),
     factCheckPresetId: presetId('pipeline_factcheck_preset_id'),
@@ -103,7 +116,7 @@ export async function getPipelineConfig(): Promise<PipelineConfig> {
 }
 
 export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
-  await setSetting('pipeline_mode', config.pipelineMode);
+  await setSetting('pipeline_mode', 'full');
   const tier = isPipelineReasoningTier(config.reasoningEffort)
     ? config.reasoningEffort
     : normalizePipelineReasoningTier(config.reasoningEffort);
@@ -115,7 +128,7 @@ export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
     },
     {
       sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-      params: ['pipeline_reasoning_profile_version', '3'],
+      params: ['pipeline_reasoning_profile_version', '5'],
     },
   ]);
   await setSetting(

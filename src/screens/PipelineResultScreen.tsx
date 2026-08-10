@@ -14,7 +14,11 @@ import {
 import * as db from '../services/database';
 import { computeInputFingerprint } from '../services/outlineContextBuilder';
 import { adoptPipelineTaskResult } from '../services/multiChapterBatch/batchAdoption';
-import { resumePipeline } from '../services/pipelineRunner';
+import { resumePipeline, runChapterPipeline } from '../services/pipelineRunner';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../services/pipeline/outlineWorkflowVersion';
 import {
   resetFailedStageCheckpointsForResume,
 } from '../data/repositories/pipelineStageCheckpointRepository';
@@ -430,16 +434,23 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const succeededStages = uniqueStageResults(task.stageResults).filter(
     s => s.status === 'success',
   );
+  const isCurrentTask =
+    Number(task.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION;
   const canResumeFailed =
     task.targetType === 'chapter' &&
+    isCurrentTask &&
     (task.status === 'failed' || task.status === 'interrupted') &&
     (failedStages.length > 0 || task.status === 'interrupted');
+  const legacyIncomplete =
+    task.targetType === 'chapter' &&
+    !isCurrentTask &&
+    (task.status === 'failed' || task.status === 'interrupted');
   const resumeLabel =
     succeededStages.length > 0 ? '从失败节点重试' : '重新尝试';
 
-  const isV3Task = (() => {
+  const isCurrentStructuredTask = (() => {
     if (
-      Number(task.outlineWorkflowVersion) !== 3 ||
+      Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
       ![3, 4].includes(Number(task.contextBudgetVersion)) ||
       !task.pipelineContextJson
     ) {
@@ -447,9 +458,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     }
     try {
       const parsed = JSON.parse(task.pipelineContextJson);
-      return [3, 4].includes(
-        Number(parsed?.execution?.reasoningProfileVersion),
-      );
+      return Number(parsed?.execution?.reasoningProfileVersion) === 5;
     } catch {
       return false;
     }
@@ -458,7 +467,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     task.targetType === 'chapter' &&
     task.status === 'completed' &&
     Boolean(task.finalText?.trim()) &&
-    isV3Task;
+    isCurrentStructuredTask;
 
   const handleResumeFailed = async () => {
     if (adopting) return;
@@ -510,6 +519,42 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       handleClose();
     } catch (error: any) {
       Alert.alert('重试失败', error?.message || '未知错误');
+      setAdopting(false);
+    }
+  };
+
+  const handleRestartLegacy = async () => {
+    if (adopting || isCurrentTask || task.targetType !== 'chapter') return;
+    const proceed = await new Promise<boolean>(resolve => {
+      Alert.alert(
+        '按新版重新生成',
+        '旧版未完成任务不能继续。将创建一条新的完整流水线任务，旧任务和尝试记录会保留。',
+        [
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+          { text: '创建新版任务', onPress: () => resolve(true) },
+        ],
+      );
+    });
+    if (!proceed) return;
+    setAdopting(true);
+    try {
+      const chapter = await db.getChapterById(task.targetId);
+      if (!chapter) throw new Error('章节不存在');
+      const newTaskId = await usePipelineTaskStore.getState().createTask(
+        'chapter',
+        task.targetId,
+        {
+          outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+          contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+        },
+      );
+      Alert.alert('新版任务已创建', '完整流水线已开始，可在任务中心查看进度。');
+      runChapterPipeline(newTaskId, chapter).catch(error => {
+        console.warn('[pipeline] current restart failed:', error);
+      });
+      handleClose();
+    } catch (error: any) {
+      Alert.alert('创建新版任务失败', error?.message || '请重试');
       setAdopting(false);
     }
   };
@@ -732,8 +777,16 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             )}
           </View>
         ) : null}
-        {(task.finalText && !isRunning) || canResumeFailed ? (
+        {(task.finalText && !isRunning) || canResumeFailed || legacyIncomplete ? (
           <View style={styles.actions}>
+            {legacyIncomplete ? (
+              <Button
+                label="按新版重新生成"
+                variant="ghost"
+                onPress={handleRestartLegacy}
+                disabled={adopting}
+              />
+            ) : null}
             {canResumeFailed ? (
               <Button
                 label={resumeLabel}

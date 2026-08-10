@@ -6,13 +6,21 @@ import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import type { PipelineTask } from '../types/pipeline';
-import { cancelPipeline, resumePipeline } from '../services/pipelineRunner';
+import {
+  cancelPipeline,
+  resumePipeline,
+  runChapterPipeline,
+} from '../services/pipelineRunner';
 import { isReconcileActive } from '../services/pipeline';
 import * as db from '../services/database';
 import {
   resetFailedStageCheckpointsForResume,
 } from '../data/repositories/pipelineStageCheckpointRepository';
 import { getPipelineStageOrder } from '../utils/stages';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../services/pipeline/outlineWorkflowVersion';
 
 const ACTIVE_STATUSES = new Set([
   'idle',
@@ -50,6 +58,9 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function isRecoverable(task: PipelineTask): boolean {
+  if (Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION) {
+    return false;
+  }
   if (task.status === 'interrupted' && task.recoverable !== false) {
     return true;
   }
@@ -59,6 +70,13 @@ function isRecoverable(task: PipelineTask): boolean {
   return (
     task.status === 'failed' &&
     task.stageResults.some(stage => stage.status === 'failed')
+  );
+}
+
+function isLegacyIncomplete(task: PipelineTask): boolean {
+  return (
+    Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION &&
+    ['failed', 'interrupted'].includes(task.status)
   );
 }
 
@@ -216,9 +234,44 @@ export const PipelineTaskScreen: React.FC = () => {
     }
   };
 
+  const restartLegacyTask = async (task: PipelineTask) => {
+    const proceed = await new Promise<boolean>(resolve => {
+      Alert.alert(
+        '按新版重新生成',
+        '将创建一条新的完整流水线任务。旧任务、旧尝试记录和已完成阶段会保留，不会继续调用旧版流程。',
+        [
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+          { text: '创建新版任务', onPress: () => resolve(true) },
+        ],
+      );
+    });
+    if (!proceed) return;
+    try {
+      const chapter = await db.getChapterById(task.targetId);
+      if (!chapter) throw new Error('目标章节不存在');
+      const newTaskId = await usePipelineTaskStore.getState().createTask(
+        'chapter',
+        task.targetId,
+        {
+          outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+          contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+        },
+      );
+      Toast.show({ type: 'info', text1: '新版任务已创建', text2: '正在执行完整流水线' });
+      // @ts-ignore
+      navigation.navigate('PipelineResult', { taskId: newTaskId });
+      runChapterPipeline(newTaskId, chapter).catch(error => {
+        Toast.show({ type: 'error', text1: '新版任务失败', text2: error?.message || '请查看任务详情' });
+      });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '创建新版任务失败', text2: error?.message || '请重试' });
+    }
+  };
+
   const renderItem = ({ item }: { item: PipelineTask }) => {
     const isRunning = ACTIVE_STATUSES.has(item.status);
     const recoverable = isRecoverable(item);
+    const legacyIncomplete = isLegacyIncomplete(item);
     const stageCount = item.stageResults.length;
     const skippedCount = item.stageResults.filter(
       stage => stage.status === 'skipped',
@@ -275,6 +328,12 @@ export const PipelineTaskScreen: React.FC = () => {
           </View>
         ) : (
           <View style={styles.actions}>
+            {legacyIncomplete ? (
+              <Button
+                label="按新版重新生成"
+                onPress={() => restartLegacyTask(item).catch(() => undefined)}
+              />
+            ) : null}
             {recoverable ? (
               <Button
                 label={resumingIds[item.id]

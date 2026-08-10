@@ -40,6 +40,10 @@ import {
 import { LLMRequestError } from '../src/services/llm/requestPolicy';
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
 import type { Chapter } from '../src/types/novel';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 let mockCallLLMResult: jest.Mock = jest.fn();
 
@@ -64,7 +68,8 @@ afterEach(async () => {
 });
 
 async function seedBaseData(): Promise<{ chapterId: number }> {
-  // 空库直接跑 noReview 流水线：draft → finalize_from_draft → complete。
+  // New tasks always use the unified full pipeline. The old noReview setting
+  // remains here to prove that historical settings cannot re-enable it.
   await execute(
     await openDatabase(),
     `INSERT INTO settings (key, value) VALUES ('pipeline_mode', 'noReview')`,
@@ -110,6 +115,8 @@ async function registerTask(
     pipelineContextJson: null,
     pipelineContextVersion: null,
     pipelineContextHash: null,
+    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+    contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
     createdAt: now,
     updatedAt: now,
     resolvedAt: null,
@@ -123,6 +130,8 @@ async function registerTask(
     stageResults: [],
     finalText: null,
     error: null,
+    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+    contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
     createdAt: now,
     updatedAt: now,
     resolvedAt: null,
@@ -162,24 +171,85 @@ describe('CL-01: safe_retry 真实 reconcile 链路（不 mock 状态机）', ()
     await registerTask(taskId, chapterId, 'idle');
     const chapter = chapterFor(chapterId);
 
-    // 第一次 LLM 调用抛 safe_retry，之后返回正常正文。
-    mockCallLLMResult = jest
-      .fn()
-      .mockImplementationOnce(async () => {
+    // 第一次 Draft 调用抛 safe_retry，恢复后返回正文；当前统一流程的
+    // 其余四阶段返回最小合法语义协议。
+    let draftFailed = false;
+    mockCallLLMResult = jest.fn().mockImplementation(async (_messages: any[], _tokens: any, config: any) => {
+      if (config.scenario === 'pipeline_draft' && !draftFailed) {
+        draftFailed = true;
         throw new LLMRequestError('transient 503', 'transient', undefined, {
           httpStatus: 503,
           retryAfterMs: 0,
           failureClass: 'safe_retry',
           requestMayHaveExecuted: false,
         });
-      })
-      .mockImplementationOnce(async () => ({
-        text: '第一章正文。',
-        inputTokens: 100,
-        outputTokens: 200,
-        totalTokens: 300,
-        emptyReason: null,
-      }));
+      }
+      if (config.scenario === 'pipeline_draft') {
+        return {
+          text: '第一章正文。',
+          inputTokens: 100,
+          outputTokens: 200,
+          totalTokens: 300,
+          emptyReason: null,
+        };
+      }
+      if (config.scenario === 'pipeline_review') {
+        return {
+          text: JSON.stringify({
+            verdict: 'pass',
+            checked: [
+              'opening_continuity',
+              'outline_execution',
+              'character',
+              'prose',
+              'ending_boundary',
+            ],
+            findings: [],
+            preserve: [],
+            ending: '',
+          }),
+          inputTokens: 100,
+          outputTokens: 40,
+          totalTokens: 140,
+        };
+      }
+      if (config.scenario === 'pipeline_factcheck') {
+        return {
+          text: JSON.stringify({
+            verdict: 'not_applicable',
+            checked: [],
+            findings: [],
+            preserve: [],
+          }),
+          inputTokens: 100,
+          outputTokens: 30,
+          totalTokens: 130,
+        };
+      }
+      if (config.scenario === 'pipeline_brief') {
+        return {
+          text: JSON.stringify({
+            strategy: '保持连续性',
+            actions: [],
+            preserve: [],
+            ending: '',
+          }),
+          inputTokens: 100,
+          outputTokens: 30,
+          totalTokens: 130,
+        };
+      }
+      if (config.scenario === 'pipeline_proof') {
+        return {
+          text: '终稿正文',
+          inputTokens: 100,
+          outputTokens: 200,
+          totalTokens: 300,
+          emptyReason: null,
+        };
+      }
+      throw new Error(`unexpected scenario: ${String(config.scenario)}`);
+    });
 
     // 第一次 reconcile：真实链路写出 attempt=safe_to_retry + checkpoint=failed。
     await reconcilePipelineTask(taskId, chapter);
@@ -221,10 +291,13 @@ describe('CL-01: safe_retry 真实 reconcile 链路（不 mock 状态机）', ()
     expect(taskRow[0].status).toBe('completed');
 
     attempts = await attemptsFor(taskId);
-    const succeeded = attempts.filter(a => a.status === 'succeeded');
+    const draftAttempts = attempts.filter(a => a.stage === 'draft');
+    const succeeded = draftAttempts.filter(a => a.status === 'succeeded');
     expect(succeeded.length).toBe(1);
     // 重试必须复用同一 frozen request fingerprint（不重新编译上下文）。
-    expect(attempts[1].request_fingerprint).toBe(attempts[0].request_fingerprint);
+    expect(draftAttempts[1].request_fingerprint).toBe(
+      draftAttempts[0].request_fingerprint,
+    );
 
     const draftCheckpoint = await all(
       `SELECT * FROM pipeline_stage_checkpoints WHERE task_id = ? AND stage = 'draft'`,

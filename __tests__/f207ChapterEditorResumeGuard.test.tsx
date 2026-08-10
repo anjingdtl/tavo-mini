@@ -10,6 +10,10 @@
  */
 import { renderHook, act } from '@testing-library/react-native';
 import { Alert } from 'react-native';
+import {
+  CURRENT_CONTEXT_BUDGET_VERSION,
+  CURRENT_OUTLINE_WORKFLOW_VERSION,
+} from '../src/services/pipeline/outlineWorkflowVersion';
 
 const mockAlert = jest.fn();
 jest.spyOn(Alert, 'alert').mockImplementation(mockAlert);
@@ -28,6 +32,8 @@ const mockTasks: any[] = [
     pipelineContextJson: null,
     pipelineContextVersion: null,
     pipelineContextHash: null,
+    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+    contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
     createdAt: 1000,
     updatedAt: 2000,
     resolvedAt: null,

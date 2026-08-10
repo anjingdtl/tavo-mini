@@ -14,18 +14,17 @@
  * the two CURRENT constants to 1. Frozen V2 tasks/batches keep their V2
  * resume semantics; the Schema 44 columns are never dropped.
  */
-export type OutlineWorkflowVersion = 1 | 2 | 3;
+export type OutlineWorkflowVersion = 1 | 2 | 3 | 4;
 export type ContextBudgetVersion = 1 | 2 | 3 | 4;
 
 /**
  * Protocol versions written to NEW outline chapter tasks / batches.
- * 3 = normalized audits + Brief Compiler + continuity capsule (workflow),
- * independent per-stage budget V3 (context budget). V4 is the V3.2
- * structured-semantic contract with the same workflow graph and independent
- * per-stage budgets. Only "new task / new batch creation"
- * code may read these.
+ * 3 = the V3.2 structured-semantic contract with the original rich payloads.
+ * 4 = the current unified full pipeline: simplified semantic payloads,
+ * user-tier Draft/Brief/Final, and low Review/FactCheck. Only new-task / new-
+ * batch creation code may read these constants.
  */
-export const CURRENT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 3;
+export const CURRENT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 4;
 export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 4;
 
 /**
@@ -64,4 +63,20 @@ export function shouldFreezeOutlineWorkflowV3(params: {
   if (params.projectMode !== 'outline') return false;
   if (!Number.isInteger(params.chapterId) || params.chapterId <= 0) return false;
   return (params.defaultVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION) === 3;
+}
+
+/** Eligibility check for the current unified outline protocol. */
+export function shouldFreezeOutlineWorkflowV4(params: {
+  projectMode: string | null | undefined;
+  chapterId: number;
+  defaultVersion?: OutlineWorkflowVersion;
+}): boolean {
+  if (params.projectMode !== 'outline') return false;
+  if (!Number.isInteger(params.chapterId) || params.chapterId <= 0) return false;
+  return (params.defaultVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION) === 4;
+}
+
+/** Old unfinished tasks are retained for history but cannot be resumed. */
+export function isCurrentOutlineWorkflowVersion(value: unknown): boolean {
+  return Number(value) === CURRENT_OUTLINE_WORKFLOW_VERSION;
 }

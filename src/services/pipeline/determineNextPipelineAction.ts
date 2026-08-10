@@ -184,7 +184,7 @@ export function determineNextPipelineAction(
   const brief = getCheckpoint(stages, 'brief');
   const proof = getCheckpoint(stages, 'proof');
   const isV3 =
-    Number(task.outlineWorkflowVersion) === 3 &&
+    [3, 4].includes(Number(task.outlineWorkflowVersion)) &&
     [3, 4].includes(Number(task.contextBudgetVersion));
 
   // --- Draft ---------------------------------------------------------

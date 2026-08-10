@@ -182,6 +182,55 @@ export interface FinalWritingBriefV32
   styleAdvisories: string[];
 }
 
+/** Current Brief contract: short source IDs and no model-owned envelope. */
+export interface FinalWritingBriefImmutableEnvelopeV33 {
+  schemaVersion: 4;
+  briefPolicyVersion: 4;
+  sourceHash: string;
+  allowedSourceIds: string[];
+  requiredSourceIds: string[];
+  protectedFacts: string[];
+  hardConstraints: string[];
+  mustNotAdvance: string[];
+  outlineObligations: string[];
+  endingBoundary: string;
+}
+
+export interface BriefCompilerInputV33 {
+  schemaVersion: 4;
+  briefPolicyVersion: 4;
+  sourceHash: string;
+  workflowMode: 'full';
+  immutableEnvelope: FinalWritingBriefImmutableEnvelopeV33;
+  review?: BriefCompilerInputV1['review'];
+  factCheck?: BriefCompilerInputV1['factCheck'];
+}
+
+export interface FinalWritingBriefV33
+  extends FinalWritingBriefImmutableEnvelopeV33 {
+  strategy: string;
+  actions: Array<{
+    covers: string[];
+    instruction: string;
+    target: BriefTargetKindV31;
+    preserve: string[];
+  }>;
+  preserve: string[];
+  ending: string;
+  /** Local compatibility view consumed by Final and compliance gates. */
+  mustFix: Array<{
+    sourceIds: string[];
+    target: { kind: BriefTargetKindV31; hint?: string };
+    instruction: string;
+    preserve: string[];
+  }>;
+  mustPreserve: string[];
+  mustNotAdvance: string[];
+  openingContinuity: string[];
+  endingState: string;
+  styleAdvisories: string[];
+}
+
 export interface BriefTriggerPolicy {
   minHardOrRequired: number;
   minAllExecutable: number;
@@ -215,6 +264,10 @@ export function briefRequiredSourceIdsV31(input: BriefCompilerInputV31): string[
 }
 
 export function briefRequiredSourceIdsV32(input: BriefCompilerInputV32): string[] {
+  return [...input.immutableEnvelope.requiredSourceIds];
+}
+
+export function briefRequiredSourceIdsV33(input: BriefCompilerInputV33): string[] {
   return [...input.immutableEnvelope.requiredSourceIds];
 }
 
@@ -259,6 +312,29 @@ export function buildBriefImmutableEnvelopeV32(
     mustNotAdvance: v31.mustNotAdvance,
     outlineObligations: v31.outlineObligations,
     endingBoundary: v31.endingBoundary,
+  };
+}
+
+export function buildBriefImmutableEnvelopeV33(
+  input: BriefCompilerInputV1,
+): FinalWritingBriefImmutableEnvelopeV33 {
+  const v32 = buildBriefImmutableEnvelopeV32(input);
+  const allSourceIds = uniqueStrings([
+    ...(input.review?.executableCorrections || []).map(item => item.sourceId),
+    ...(input.review?.unlocatedRequired || []).map(item => item.sourceId),
+    ...(input.factCheck?.corrections || []).map(item => item.sourceId),
+  ]);
+  return {
+    schemaVersion: 4,
+    briefPolicyVersion: 4,
+    sourceHash: v32.sourceHash,
+    allowedSourceIds: allSourceIds,
+    requiredSourceIds: v32.requiredSourceIds,
+    protectedFacts: v32.protectedFacts,
+    hardConstraints: v32.hardConstraints,
+    mustNotAdvance: v32.mustNotAdvance,
+    outlineObligations: v32.outlineObligations,
+    endingBoundary: v32.endingBoundary,
   };
 }
 
