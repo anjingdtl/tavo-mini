@@ -60,7 +60,14 @@ describe('memory summary prompt (V2.5.8)', () => {
     const maxTokens = callArgs[1];
     const config = callArgs[2];
     expect(maxTokens).toBe(700);
-    expect(config).toEqual({ scenario: 'memory_summary', projectId: 7 });
+    expect(config).toEqual(
+      expect.objectContaining({
+        scenario: 'memory_summary',
+        projectId: 7,
+        queueClass: 'background',
+        thinking: { type: 'disabled' },
+      }),
+    );
 
     const userContent = messages.find(m => m.role === 'user')!
       .content as string;

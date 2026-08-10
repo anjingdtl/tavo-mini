@@ -18,6 +18,7 @@ import { buildSchema39CreateSqls } from '../../services/migrations/v38-to-v39';
 import { buildSchema41CreateSqls } from '../../services/migrations/v40-to-v41';
 import { buildSchema42CreateSqls } from '../../services/migrations/v41-to-v42';
 import { buildSchema49CreateSqls } from '../../services/migrations/v48-to-v49';
+import { buildSchema50CreateSqls } from '../../services/migrations/v49-to-v50';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -685,6 +686,8 @@ export function createCurrentSchemaStatements(): string[] {
     ...buildSchema42CreateSqls(),
     // Schema 49 V3.2 candidate scratch and validation diagnostics.
     ...buildSchema49CreateSqls(),
+    // Schema 50 durable Story Memory physical-request ledger.
+    ...buildSchema50CreateSqls(),
   ];
 }
 

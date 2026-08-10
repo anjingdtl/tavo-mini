@@ -6,9 +6,9 @@
  * the target:
  *   - the most recent 10 chapters may enter the context as raw text;
  *   - chapter 1 falls into uncoveredChapterIds;
- *   - prepare() must DEGRADE with warnings, never block;
- *   - buildContext() must still compile non-empty messages with a
- *     story_memory trace entry that lists the omitted chapter.
+ *   - prepare() must fail closed with a hard-gap diagnostic;
+ *   - buildContext() must refuse to compile a generation context while the
+ *     historical continuity boundary is not covered.
  */
 
 import type { Chapter } from '../src/types/novel';
@@ -125,7 +125,7 @@ describe('repair plan P0 — chapter 12 with never-succeeded checkpoint', () => 
     mockEnsure.mockResolvedValue(EMPTY_RECORD);
   });
 
-  it('prepare degrades: fatal=false, raw ≤ 10 chapters, chapter 1 uncovered, warning emitted', async () => {
+  it('prepare fails closed: chapter 1 is uncovered and the hard gap is explicit', async () => {
     const prepared = await prepareStoryMemoryForGeneration(
       1,
       targetChapter,
@@ -133,9 +133,10 @@ describe('repair plan P0 — chapter 12 with never-succeeded checkpoint', () => 
       { mode: 'preview' },
     );
 
-    expect(prepared.fatal).toBe(false);
-    expect(prepared.blocked).toBe(false);
-    expect(prepared.degraded).toBe(true);
+    expect(prepared.fatal).toBe(true);
+    expect(prepared.blocked).toBe(true);
+    expect(prepared.hardGap).toBe(true);
+    expect(prepared.degraded).toBe(false);
     expect(prepared.coverage.rawChapterIds.length).toBeLessThanOrEqual(
       STORY_MEMORY_MAX_RAW_CHAPTERS,
     );
@@ -144,35 +145,20 @@ describe('repair plan P0 — chapter 12 with never-succeeded checkpoint', () => 
       id => id - 1,
     );
     expect(uncoveredPositions).toEqual([0]);
-    const omitted = prepared.warnings.find(
-      w => w.code === 'history_partially_omitted',
-    );
-    expect(omitted).toBeDefined();
-    expect(omitted?.uncoveredChapterIds).toEqual([1]);
+    expect(prepared.blockReason).toContain('第 1 章');
     expect(prepared.checkpoint).toBeNull();
   });
 
-  it('buildContext compiles non-empty messages with degraded trace and warnings', async () => {
-    const result = await buildContext(
-      targetChapter,
-      CONTEXT_CONFIG,
-      1,
-      undefined,
-      { storyMemoryMode: 'preview', retrievalUserPrompt: '' },
-    );
-
-    expect(result.messages.length).toBeGreaterThan(0);
-    expect(result.storyMemoryWarnings.length).toBeGreaterThan(0);
-    expect(
-      result.storyMemoryWarnings.some(
-        w => w.code === 'history_partially_omitted',
+  it('buildContext refuses to compile while a historical hard gap exists', async () => {
+    await expect(
+      buildContext(
+        targetChapter,
+        CONTEXT_CONFIG,
+        1,
+        undefined,
+        { storyMemoryMode: 'preview', retrievalUserPrompt: '' },
       ),
-    ).toBe(true);
-    const storyTrace = result.trace.find(t => t.kind === 'story_memory');
-    expect(storyTrace).toBeDefined();
-    expect(storyTrace?.reason).toContain('未覆盖');
-    // The degraded preview must not pretend history was fully covered.
-    expect(result.messages.some(m => m.content.includes('第 1 章'))).toBe(false);
+    ).rejects.toThrow('第 1 章存在未覆盖');
   });
 
   it('non-degraded early chapter (≤ 10 pending) stays quiet', async () => {
@@ -189,42 +175,20 @@ describe('repair plan P0 — chapter 12 with never-succeeded checkpoint', () => 
     expect(prepared.coverage.uncoveredChapterIds).toEqual([]);
   });
 
-  it('generation: checkpoint maintenance failure degrades with warnings, writing can still start', async () => {
-    // 长期记忆完全缺失（empty record），第 12 章 generation 时维护链路失败
-    // （Jest 环境动态 import 不可用，与真实 LLM 故障同样落入 prepare 的
-    // 降级 catch；生产中则可能是网络/模型错误）。prepare 必须降级而非阻断。
+  it('generation: hard-gap readiness returns immediately and queues maintenance', async () => {
+    // 长期记忆完全缺失（empty record），第 12 章 generation 时只做本地
+    // readiness 分析；维护任务在返回后后台排队，写作主链路不等待 LLM。
     const prepared = await prepareStoryMemoryForGeneration(
       1,
       targetChapter,
       { slidingWindowSize: 4000 } as any,
       { mode: 'generation' },
     );
-    expect(prepared.fatal).toBe(false);
-    expect(prepared.blocked).toBe(false);
-    expect(prepared.degraded).toBe(true);
-    const updateFailed = prepared.warnings.find(
-      w => w.code === 'checkpoint_update_failed',
-    );
-    expect(updateFailed).toBeDefined();
-    // 覆盖不足同样以警告呈现，不锁死写作。
+    expect(prepared.fatal).toBe(true);
+    expect(prepared.blocked).toBe(true);
+    expect(prepared.hardGap).toBe(true);
+    expect(prepared.maintenanceDue).toBe(true);
     expect(prepared.coverage.uncoveredChapterIds.length).toBeGreaterThan(0);
-
-    // 用户选择继续后可以启动写作：buildContext 仍编译出非空 messages。
-    const result = await buildContext(
-      targetChapter,
-      CONTEXT_CONFIG,
-      1,
-      undefined,
-      { storyMemoryMode: 'generation', retrievalUserPrompt: '' },
-    );
-    expect(result.messages.length).toBeGreaterThan(0);
-    expect(
-      result.storyMemoryWarnings.some(
-        w => w.code === 'checkpoint_update_failed',
-      ),
-    ).toBe(true);
-    const storyTrace = result.trace.find(t => t.kind === 'story_memory');
-    expect(storyTrace).toBeDefined();
-    expect(storyTrace?.reason).toContain('未覆盖');
+    expect(prepared.maintenanceReason).toBe('coverage_gap');
   });
 });

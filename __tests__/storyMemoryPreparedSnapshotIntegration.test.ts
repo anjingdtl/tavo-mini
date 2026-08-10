@@ -180,7 +180,7 @@ describe('SPEC §10.1 — prepareStoryMemoryForGeneration integration', () => {
     expect(prepared.coverage.uncoveredChapterIds).toEqual([]);
   });
 
-  it('coverage insufficient in preview mode degrades with warnings and stays compilable', async () => {
+  it('coverage insufficient in preview mode fails closed before context compilation', async () => {
     const huge = '超长正文'.repeat(800);
     const chapters = [
       makeChapter(1, 0, huge, ''),
@@ -203,12 +203,11 @@ describe('SPEC §10.1 — prepareStoryMemoryForGeneration integration', () => {
       { mode: 'preview' },
     );
 
-    expect(prepared.blocked).toBe(false);
-    expect(prepared.fatal).toBe(false);
-    expect(prepared.degraded).toBe(true);
-    expect(
-      prepared.warnings.some(w => w.code === 'history_partially_omitted'),
-    ).toBe(true);
+    expect(prepared.blocked).toBe(true);
+    expect(prepared.fatal).toBe(true);
+    expect(prepared.hardGap).toBe(true);
+    expect(prepared.degraded).toBe(false);
+    expect(prepared.blockReason).toContain('暂不能安全生成');
     expect(prepared.coverage.uncoveredChapterIds.length).toBeGreaterThan(0);
     // Coverage-insufficient preview must NOT silently fall back to future state.
     expect(prepared.checkpoint).toBeNull();
