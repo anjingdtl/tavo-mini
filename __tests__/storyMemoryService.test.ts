@@ -50,9 +50,10 @@ describe('story memory LLM patch service', () => {
     jest.clearAllMocks();
     mockCallLLMResult.mockReset();
     mockGetActiveLLMConfig.mockReset();
-    // 默认大模型能力：不干扰既有预算断言（2400/3200/4800/9600/16000）。
+    // 默认大模型能力：主路径使用 Budget V5 的弹性 reservation。
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'test-model',
       context_window: 131072,
       max_output_tokens: 65536,
     });
@@ -90,8 +91,8 @@ describe('story memory LLM patch service', () => {
         responseFormat: 'json_object',
       }),
     );
-    expect(mockCallLLMResult.mock.calls[0][1]).toBe(2400);
-    expect(mockCallLLMResult.mock.calls[1][1]).toBe(4800);
+    expect(mockCallLLMResult.mock.calls[0][1]).toBe(26214);
+    expect(mockCallLLMResult.mock.calls[1][1]).toBe(26214);
   });
 
   it('does not silently retry a total-timeout outcome whose HTTP result is unknown', async () => {
@@ -266,7 +267,7 @@ describe('story memory LLM patch service', () => {
     ).resolves.toEqual(expect.objectContaining({ schemaVersion: 1 }));
     expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
     expect(mockCallLLMResult.mock.calls.map(call => call[1])).toEqual([
-      2400, 4800, 9600,
+      26214, 26214, 26214,
     ]);
     expect(mockCallLLMResult.mock.calls[2][2]).toEqual(
       expect.objectContaining({ scenario: 'story_memory_patch_retry' }),
@@ -287,9 +288,9 @@ describe('story memory LLM patch service', () => {
         previousState: createEmptyStoryMemory(7),
         memoryPatchMaxTokens: 4000,
       }),
-    ).rejects.toThrow('已自动扩容到 16000 tokens');
+    ).rejects.toThrow('输出 reservation 为 26214 tokens');
     expect(mockCallLLMResult.mock.calls.map(call => call[1])).toEqual([
-      4000, 8000, 16000,
+      26214, 26214, 26214,
     ]);
   });
 
@@ -321,6 +322,7 @@ describe('story memory LLM patch service', () => {
   it('legacy bootstrap never sends a doomed request when the window cannot fit the patch (P1 fix 5)', async () => {
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'v5-model',
       context_window: 1200,
       max_output_tokens: 4000,
     });
@@ -338,6 +340,7 @@ describe('story memory LLM patch service', () => {
   it('legacy patch retries respect the model max_output_tokens / context_window caps (P1 fix 5)', async () => {
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'v5-model',
       context_window: 32768,
       max_output_tokens: 2000,
     });

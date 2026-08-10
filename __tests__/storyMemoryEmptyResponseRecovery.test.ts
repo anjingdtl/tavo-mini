@@ -135,6 +135,7 @@ function makeState() {
 describe('repair plan P1 — checkpoint empty-response recovery', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCallLLMResult.mockReset();
     mockGetContextConfig.mockResolvedValue({ memoryPatchMaxTokens: 1200 });
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
@@ -173,12 +174,25 @@ describe('repair plan P1 — checkpoint empty-response recovery', () => {
     expect(mockSaveBatch).toHaveBeenCalledTimes(1);
   });
 
-  it('length → raised budget retry → success', async () => {
+  it('length at the V5 reservation → split child batches → success', async () => {
     const batch = [chapter(0), chapter(1)];
+    mockGetActiveLLMConfig.mockResolvedValue({
+      id: 1,
+      model_name: 'v5-model',
+      context_window: 32768,
+      max_output_tokens: 8192,
+    });
     mockCallLLMResult
       .mockResolvedValueOnce(emptyResult('length', 'length'))
       .mockResolvedValueOnce({
-        text: validBatchPatchJson(batch),
+        text: validBatchPatchJson([chapter(0)]),
+        inputTokens: 10,
+        outputTokens: 10,
+        totalTokens: 20,
+        finishReason: 'stop',
+      })
+      .mockResolvedValueOnce({
+        text: validBatchPatchJson([chapter(1)]),
         inputTokens: 10,
         outputTokens: 10,
         totalTokens: 20,
@@ -191,10 +205,10 @@ describe('repair plan P1 — checkpoint empty-response recovery', () => {
       previousState: makeState(),
     });
 
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
     const firstMaxTokens = mockCallLLMResult.mock.calls[0][1] as number;
     const secondMaxTokens = mockCallLLMResult.mock.calls[1][1] as number;
-    expect(secondMaxTokens).toBeGreaterThan(firstMaxTokens);
+    expect(secondMaxTokens).toBe(firstMaxTokens);
     expect(result.state.throughChapterPosition).toBe(1);
   });
 

@@ -24,6 +24,8 @@ import {
   startContinuationRun,
 } from '../../../services/continuation/generation';
 import { getContinuationChapterNumbering } from '../../../services/continuation/chapterNumbering/continuationChapterNumbering';
+import { prepareStoryMemoryForGeneration } from '../../../services/storyMemory/storyMemoryPrepare';
+import { enqueueStoryMemoryMaintenance } from '../../../services/storyMemory/storyMemoryService';
 import type { Chapter } from '../../../types/novel';
 import type {
   PipelineStageName,
@@ -599,9 +601,6 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     const confirmDegraded = async (proceed: () => void) => {
       try {
         const contextConfig = await db.getContextConfig();
-        const { prepareStoryMemoryForGeneration } = await import(
-          '../../../services/storyMemory/storyMemoryPrepare'
-        );
         const prepared = await prepareStoryMemoryForGeneration(
           project!.id,
           chapter,
@@ -609,6 +608,19 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           { mode: 'preview' },
         );
         if (prepared.fatal || prepared.hardGap) {
+          if (prepared.hardGap || prepared.maintenanceDue) {
+            enqueueStoryMemoryMaintenance({
+              projectId: project!.id,
+              throughPosition: Math.max(-1, chapter.position - 1),
+              reason: 'coverage_gap',
+              priority: 'background',
+            });
+            Toast.show({
+              type: 'info',
+              text1: '故事长期记忆覆盖不足',
+              text2: '已在后台开始整理，完成后可重新生成。',
+            });
+          }
           Alert.alert(
             '暂不能安全生成',
             prepared.blockReason ||
