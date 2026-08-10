@@ -45,8 +45,13 @@ import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
 import {
   freezeStoryMemoryLLMConfig,
   planStoryMemoryRequest,
+  planStoryMemoryElasticRequest,
   type FrozenStoryMemoryLLMConfig,
 } from './storyMemoryRequestBudget';
+import {
+  buildStoryMemoryCheckpointMaterials,
+  type StoryMemoryCheckpointMaterials,
+} from './storyMemoryPromptMaterials';
 
 function renderBatchEpisodicText(
   summary: EpisodicSummary,
@@ -212,6 +217,13 @@ export async function generateValidatedCheckpointBatch(input: {
     input.chapters,
     input.previousState,
   );
+  // Tiered materials for the elastic allocator path (governance §5). Built
+  // unconditionally — the loop decides whether to use them based on whether
+  // the frozen config exposes a real capability.
+  const materials = buildStoryMemoryCheckpointMaterials(
+    input.chapters,
+    input.previousState,
+  );
   const scenario = input.scenario || 'story_memory_checkpoint';
   const projectId = input.chapters[0].project_id;
   let getDisplayNumber: ((position: number) => number) | undefined;
@@ -250,6 +262,7 @@ export async function generateValidatedCheckpointBatch(input: {
     signal: input.signal,
     getDisplayNumber,
     baseMessages: messages,
+    materials,
     frozenConfig,
     attemptBudget,
     onProgress: input.onProgress,
@@ -278,6 +291,14 @@ interface CheckpointAttemptLoopInput {
   signal?: AbortSignal;
   getDisplayNumber?: (position: number) => number;
   baseMessages: Array<{ role: 'system' | 'user'; content: string }>;
+  /**
+   * Tiered prompt materials (governance §5). When present and the frozen
+   * config carries a known capability, the loop plans each attempt through
+   * the elastic allocator instead of the legacy hard-window planner. Repair /
+   * fresh-retry append their own messages after the base, so the elastic plan
+   * is only the source of the primary plan + the split decision.
+   */
+  materials?: StoryMemoryCheckpointMaterials;
   frozenConfig: FrozenStoryMemoryLLMConfig;
   attemptBudget: StoryMemoryAttemptBudget;
   onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
@@ -319,12 +340,43 @@ async function runCheckpointAttemptLoop(
         : attempt === 2
           ? 'story_memory_checkpoint_repair'
           : 'story_memory_checkpoint_retry';
-    const plan = planStoryMemoryRequest({
-      config: input.frozenConfig,
-      messages,
-      legacyOutputTokens: input.memoryPatchMaxTokens,
-      batchSize,
-    });
+    // Elastic allocator path (governance §5) for the primary attempt when a
+    // real capability is known and tiered materials are available. Repair /
+    // fresh-retry append their own dialogue, so they keep using the legacy
+    // per-message planner (also independently planned — Phase 5).
+    const capabilityKnown =
+      input.frozenConfig.contextWindow > 0 ||
+      input.frozenConfig.maxOutputTokens > 0;
+    const useElastic = attempt === 1 && capabilityKnown && Boolean(input.materials);
+    const elasticPlan = useElastic
+      ? planStoryMemoryElasticRequest({
+          config: input.frozenConfig,
+          materials: input.materials!,
+          batchSize,
+          legacyOutputTokens: input.memoryPatchMaxTokens,
+        })
+      : null;
+    const legacyPlan = elasticPlan
+      ? null
+      : planStoryMemoryRequest({
+          config: input.frozenConfig,
+          messages,
+          legacyOutputTokens: input.memoryPatchMaxTokens,
+          batchSize,
+        });
+    const plan = {
+      fits: elasticPlan
+        ? elasticPlan.strategy === 'full_prompt'
+        : legacyPlan!.fits,
+      maxTokens: elasticPlan ? elasticPlan.maxTokens : legacyPlan!.maxTokens,
+      reason: elasticPlan ? elasticPlan.reason : legacyPlan!.reason,
+      // On the elastic fast path, prefer the allocator-built messages so the
+      // compact path's clipped modules are what we actually send.
+      messages:
+        elasticPlan && elasticPlan.messages.length
+          ? elasticPlan.messages
+          : messages,
+    };
     input.onProgress?.({
       phase: 'planning',
       fromPosition: input.chapters[0].position,
@@ -354,7 +406,7 @@ async function runCheckpointAttemptLoop(
         maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
       });
       result = await requestCheckpoint(
-        messages,
+        plan.messages,
         plan.maxTokens,
         input.projectId,
         scenario,
