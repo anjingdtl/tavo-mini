@@ -486,6 +486,10 @@ export async function requestStoryMemoryMaintenance(
       };
       try {
         publishTaskProgress(input.projectId, { phase: 'preparing', message: '正在准备' });
+        // Reset the per-maintenance split-child progress accumulator so
+        // onBatchComplete does not double-count chapters already credited by
+        // onChildBatchComplete (governance §9).
+        let childChaptersAlreadyCounted = 0;
         if (rebuild) {
           const rebuilt = await rebuildStoryMemoryUnlocked(input.projectId, {
             mode: input.mode || 'auto',
@@ -514,6 +518,29 @@ export async function requestStoryMemoryMaintenance(
           throughPosition,
           signal: controller.signal,
           onProgress: checkpointProgress,
+          onChildBatchComplete: range => {
+            // Governance §9: a split child persisted — advance
+            // completedChapters now, before the rest of the logical batch
+            // finishes, so the percent reflects real progress and a later
+            // child failure cannot hide the work already persisted.
+            const current = useStoryMemoryTaskStore
+              .getState()
+              .getTask(taskId);
+            if (!current) return;
+            const childCount = finalChapters.filter(
+              chapter =>
+                chapter.position >= range.fromPosition &&
+                chapter.position <= range.throughPosition,
+            ).length;
+            childChaptersAlreadyCounted += childCount;
+            publishTaskProgress(input.projectId, {
+              phase: 'saving',
+              completedChapters: Math.min(
+                current.totalChapters,
+                current.completedChapters + childCount,
+              ),
+            });
+          },
           onBatchComplete: range => {
             const current = useStoryMemoryTaskStore.getState().getTask(taskId);
             if (!current) return;
@@ -522,11 +549,16 @@ export async function requestStoryMemoryMaintenance(
                 chapter.position >= range.fromPosition &&
                 chapter.position <= range.throughPosition,
             ).length;
+            // If split children already advanced completedChapters for this
+            // logical batch, only credit the remaining chapters here so we do
+            // not double-count (governance §9 progress integrity).
+            const remaining = Math.max(0, count - childChaptersAlreadyCounted);
+            childChaptersAlreadyCounted = 0;
             publishTaskProgress(input.projectId, {
               phase: 'saving',
               completedChapters: Math.min(
                 current.totalChapters,
-                current.completedChapters + count,
+                current.completedChapters + remaining,
               ),
               completedBatches: Math.min(
                 current.totalBatches,
