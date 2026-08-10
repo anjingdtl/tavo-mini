@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 基于 tavo-maker 小说家工作台的 **Android-only** React Native 应用（不支持 iOS 构建）。核心能力：多章节长篇写作、多阶段 AI 生成管线、角色卡/世界书注入、TTS 朗读、增量故事记忆（Checkpoint 架构），以及基于 Canon/原著画风的"原著续写"工作流。
 
-当前工作树版本为 **V2.11.33**（以 `package.json` 与 `src/constants/version.json` 为准）；数据库 **Schema 42**（`src/services/migrations/index.ts` 的 `SCHEMA_VERSION`，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。
+当前工作树版本为 **V2.11.41**（以 `package.json` 与 `src/constants/version.json` 为准）；数据库 **Schema 50**（`src/services/migrations/index.ts` 的 `SCHEMA_VERSION`，`MIN_COMPATIBLE_SCHEMA_VERSION = 3`）。
 
 > 本文件专注代码事实与架构。Agent 跑命令、构建、测试陷阱、Release 键盘等操作细节见 `AGENTS.md`，不要重复。
 
@@ -47,10 +47,11 @@ npm run zspace:put        # 上传
 
 ### Release APK（必读）
 
-生成正式 APK 前必须阅读 `docs/RELEASE_APK_BUILD.md`，并按其中的标准构建步骤与构建后验收执行。四项 `SHINE_WRITER_RELEASE_*` 环境变量（本地保存在 Windows 用户环境）；若当前进程读不到，先用该指南里的 PowerShell 片段把 User 级变量加载到 Process 级，再运行 `npm run apk:release`。
+生成正式 APK 前必须阅读 `docs/RELEASE_APK_BUILD.md` 和 `docs/RELEASE_CHECKLIST.md`，并按其中的标准构建步骤与构建后验收执行。版本号必须使用 `npm version <x.y.z> --no-git-tag-version --ignore-scripts`，确保 `package.json` 与 `package-lock.json` 一起更新；随后运行 `npm run prebuild` 生成 `src/constants/version.json`。四项 `SHINE_WRITER_RELEASE_*` 环境变量本地保存在 Windows 用户环境；若当前进程读不到，先按指南把 User 级变量加载到 Process 级，再运行 `npm run apk:release`。
 
-- 正式 keystore：本地忽略文件 `android/keystores/tavo-mini-release.keystore`，alias `tavo-mini-release`
+- 正式 keystore：本地忽略文件 `android/keystores/tavo-mini-release.keystore`，当前绝对路径 `E:\AiWorkSpace\tavo-mini\android\keystores\tavo-mini-release.keystore`，alias `tavo-mini-release`
 - 证书 SHA-256 必须为 `017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`
+- `SHINE_WRITER_RELEASE_STORE_FILE` 不得继续指向旧的 `D:\...` 路径，必须指向当前仓库的 `android/keystores/tavo-mini-release.keystore`
 - **不得**创建新 keystore、改用 Debug 签名、从 Git 历史传播密码或把密码写入仓库/日志
 - 发版验收清单见 `docs/RELEASE_CHECKLIST.md`
 
@@ -60,7 +61,7 @@ npm run zspace:put        # 上传
 
 ## 架构
 
-React Native CLI + TypeScript。Zustand 状态管理（**7 个 store**），SQLite 本地持久化（**schema 42**）。底部 **5 Tab** 导航（项目/资料/写作/构建/设置），三色主题系统，多阶段 AI 管线 + 前台服务保活 + 阶段 Checkpoint 持久状态机 + 弹性上下文预算池。
+React Native CLI + TypeScript。Zustand 状态管理（**7 个 store**），SQLite 本地持久化（**schema 50**）。底部 **5 Tab** 导航（项目/资料/写作/构建/设置），三色主题系统，多阶段 AI 管线 + 前台服务保活 + 阶段 Checkpoint 持久状态机 + 弹性上下文预算池。
 
 入口：`index.js` → `src/main/index.tsx`（ThemeProvider + NavigationContainer）→ `src/navigation/TabNavigator.tsx`。Tab 顺序为 `1 项目 → 2 资料/续写资料 → 3 写作/续写 → 构建 → 设置`；原著续写模式下"资料"和"写作"两个 Tab 文案切换为"续写资料"/"续写"，前 3 步之间显示箭头提示。**资料 Tab 在 Stack 内是一个五段 SegmentedControl**（续写 / 大纲 / 角色 / 世界书 / 笔记 / 预设），原 ResourceHome 中转层已移除，续写页直接嵌入。
 
@@ -76,11 +77,11 @@ React Native CLI + TypeScript。Zustand 状态管理（**7 个 store**），SQLi
 
 **页面绝不直接写 SQL**，一律调 `services/database.ts` 导出的 Repository 函数。
 
-主要表（Schema 42）：projects、chapters、fragments、plotlines、project_plotlines、characters、character_collections、worldbook_collections、worldbook_entries、note_collections、notes、project_note_config、note_style_profiles、presets、llm_config、settings、project_resources、llm_usage_logs、pipeline_tasks、**pipeline_stage_checkpoints**（Schema 39，每 task+stage 一行，CAS 持久化，支撑 fail-closed 恢复）、**pipeline_stage_attempts**（Schema 42，持久化 LLM Attempt 重试轨迹）、**multi_chapter_batches** / **multi_chapter_batch_items**（Schema 41+42，批量写章批次表）、freeform_documents、content_revisions、generation_drafts、**outlines**（Schema 36，独立项目级资源，与 `project_resources` 分离）、project_story_memory、chapter_memory_patches、story_memory_snapshots、project_story_memory_policy、story_memory_batches，以及续写域的导入、Canon、风格画像、状态和生成表（见下文）。
+主要表（Schema 50）：projects、chapters、fragments、plotlines、project_plotlines、characters、character_collections、worldbook_collections、worldbook_entries、note_collections、notes、project_note_config、note_style_profiles、presets、llm_config、settings、project_resources、llm_usage_logs、pipeline_tasks、**pipeline_stage_checkpoints**（Schema 39，每 task+stage 一行，CAS 持久化，支撑 fail-closed 恢复）、**pipeline_stage_attempts**（Schema 42，持久化 LLM Attempt 重试轨迹）、**multi_chapter_batches** / **multi_chapter_batch_items**（Schema 41+42，批量写章批次表）、freeform_documents、content_revisions、generation_drafts、**outlines**（Schema 36，独立项目级资源，与 `project_resources` 分离）、project_story_memory、chapter_memory_patches、story_memory_snapshots、project_story_memory_policy、story_memory_batches，以及续写域的导入、Canon、风格画像、状态和生成表（见下文）。
 
-#### 数据库迁移（schema 3 → 42）
+#### 数据库迁移（schema 3 → 50）
 
-增量迁移引擎在 `src/services/migrations/`：`index.ts` 定义 `SCHEMA_VERSION = 42` 与 `MIN_COMPATIBLE_SCHEMA_VERSION = 3`，`MIGRATIONS` 数组串联 `v3-to-v4.ts` … `v41-to-v42.ts`。`runMigrations()` 只跑 `from >= 当前版本` 的迁移；标 `breaking: true` 的迁移会先触发备份（`backupService.ts`，存 `{ExternalDirectoryPath}/backups/`，最多保留 3 份）。v25→v26 因逻辑非纯 SQL，单独走 `migrateV25ToV26(db)`；v26→v27 是移除本地模型相关数据的破坏性迁移；v32→v33 给 Canon evidence 加 `source_origin` / `rescan_operation_id` 列 + 五个业务唯一索引（迁移中按 `review_status != superseded` 去重清理）；v39→v40 把 v32→v33 的 `canon_evidence` provenance 补列改为**幂等逻辑迁移** `ensureCanonEvidenceProvenanceSchema`，修复 recorded-39 但物理缺列的漂移库，并增加启动期漂移检查、用户资料召回快照、schema-recovery 备份。
+增量迁移引擎在 `src/services/migrations/`：`index.ts` 定义 `SCHEMA_VERSION = 50` 与 `MIN_COMPATIBLE_SCHEMA_VERSION = 3`，`MIGRATIONS` 数组串联 `v3-to-v4.ts` … `v49-to-v50.ts`。`runMigrations()` 只跑 `from >= 当前版本` 的迁移；标 `breaking: true` 的迁移会先触发备份（`backupService.ts`，存 `{ExternalDirectoryPath}/backups/`，最多保留 3 份）。v25→v26 因逻辑非纯 SQL，单独走 `migrateV25ToV26(db)`；v26→v27 是移除本地模型相关数据的破坏性迁移；v32→v33 给 Canon evidence 加 `source_origin` / `rescan_operation_id` 列 + 五个业务唯一索引（迁移中按 `review_status != superseded` 去重清理）；v39→v40 把 v32→v33 的 `canon_evidence` provenance 补列改为**幂等逻辑迁移** `ensureCanonEvidenceProvenanceSchema`，修复 recorded-39 但物理缺列的漂移库，并增加启动期漂移检查、用户资料召回快照、schema-recovery 备份；v40→v50 的后续迁移继续以 `src/services/migrations/` 中的实际文件为准。
 
 > **新增表或字段时必须两处都改**（极易遗漏）：
 > 1. 写一个新的 `vN-to-vN+1.ts` 并注册进 `MIGRATIONS`，同时把 `SCHEMA_VERSION` +1；
@@ -130,7 +131,7 @@ React Native CLI + TypeScript。Zustand 状态管理（**7 个 store**），SQLi
 
 生成前默认智能更新、目标约每 3 章一次批量整理；最近正文负责短期连续性。Episodic 检索含中文 n-gram、实体/人物组合加权、混合 Top-K。相关验收与硬化报告在 `docs/V2.5.*-STORY-MEMORY-*.md` 与 `docs/optimization/`（其中带 TEST-REPORT 字样的报告已被 `.gitignore` 移出仓库）。
 
-### 原著续写域（Canon + 画风画像 + Generation，schema 19 → 42）
+### 原著续写域（Canon + 画风画像 + Generation，schema 19 → 50）
 
 独立子域，**自顶向下三层**：
 
