@@ -96,14 +96,24 @@ describe('story memory mainline contract', () => {
     expect(repaired.at(-1)?.content).toContain('禁止把 mainlinePatch 改成全空');
   });
 
-  it('rejects a changed mainline assessment with no state mutation', () => {
-    expect(() =>
-      validateStoryMemoryBatchPatch(
-        emptyBatchWithMainlineSummary(),
-        createEmptyStoryMemory(7),
-        [chapter],
-        { requireMainlineAssessment: true },
-      ),
-    ).toThrow(/主线/);
+  it('locally reconciles a changed mainline assessment with no state mutation (governance §4 Rule A+E)', () => {
+    // Old behavior: this combination hard-failed with MEMORY_CHECKPOINT_SCHEMA_INVALID,
+    // consuming a paid Repair round. Per the final governance plan, pure
+    // classification divergence is now reconciled locally:
+    //   - mainlineChanges text → downgraded to events (retrieval preserved)
+    //   - assessment=changed with no mutation → normalized to unchanged
+    // Structured State remains the sole persistent authority.
+    const draft = validateStoryMemoryBatchPatch(
+      emptyBatchWithMainlineSummary(),
+      createEmptyStoryMemory(7),
+      [chapter],
+      { requireMainlineAssessment: true },
+    );
+    expect(draft.mainlinePatch.assessment?.result).toBe('unchanged');
+    expect(draft.chapterSummaries[0].mainlineChanges).toHaveLength(0);
+    // The mainline information is preserved for retrieval, tagged by origin.
+    expect(draft.chapterSummaries[0].events).toContain(
+      '[主线] 林岚决定调查钟楼暗门。',
+    );
   });
 });
