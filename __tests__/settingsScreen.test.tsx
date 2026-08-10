@@ -48,4 +48,11 @@ describe('SettingsScreen', () => {
     expect(getByText('用量统计')).toBeTruthy();
     expect(queryByText('上下文自动化配置')).toBeNull();
   });
+
+  it('does not expose the background writing switch', () => {
+    const { queryByText } = render(<SettingsScreen />);
+
+    expect(queryByText('后台写作')).toBeNull();
+    expect(queryByText('保持后台运行')).toBeNull();
+  });
 });

@@ -177,7 +177,6 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   const [expandedMsg, setExpandedMsg] = useState<number | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [continuationPreview, setContinuationPreview] = useState(false);
-  const [pipelineV3BudgetSummary, setPipelineV3BudgetSummary] = useState('');
   const [continuationBudgetSummary, setContinuationBudgetSummary] =
     useState('');
   const [continuationStageBudgets, setContinuationStageBudgets] =
@@ -208,7 +207,6 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           : null;
       if (project?.mode === 'continuation') {
         setContinuationPreview(true);
-        setPipelineV3BudgetSummary('');
         setStoryMemoryWarnings([]);
         const requestConfig = await resolveLLMRequestConfig();
         const settings = await ensureGenerationSettings(chapter.project_id);
@@ -353,7 +351,6 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         return;
       }
       setContinuationPreview(false);
-      setPipelineV3BudgetSummary('');
       setContinuationBudgetSummary('');
       setContinuationStageBudgets(null);
       setContinuationFreezeSummary(null);
@@ -367,21 +364,6 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         chapter,
         preview: true,
       });
-      const draftVisibleFloor = Math.max(
-        768,
-        Number(
-          compiled.ready
-            ? compiled.reservedOutputTokens
-            : compiled.diagnostics.reservedOutputTokens,
-        ),
-      );
-      const finalVisibleFloor = Math.max(
-        1024,
-        Math.ceil(draftVisibleFloor * 1.2) + 256,
-      );
-      setPipelineV3BudgetSummary(
-        `V3 Draft 可见输出预留 ${draftVisibleFloor.toLocaleString()}；Final 可见输出下限 ${finalVisibleFloor.toLocaleString()}（与 Draft 的 Thinking 余量独立）；Brief 始终 Thinking enabled + low，JSON 可见预算与 low 余量独立，空间不足转本地 Brief。`,
-      );
       setTrace(compiled.draftCompile?.trace || []);
       setStoryMemoryWarnings(
         compiled.draftCompile?.storyMemoryWarnings || [],
@@ -416,7 +398,6 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         setMessages([]);
       } else {
       setOutlineBlock(null);
-        setPipelineV3BudgetSummary('');
         Toast.show({ type: 'error', text1: '构建上下文失败', text2: message });
       }
     } finally {
@@ -640,26 +621,6 @@ export const ContextPreviewScreen: React.FC<Props> = ({
             ]}
           >
             你可以继续生成，或稍后前往「故事记忆」重新整理。
-          </Text>
-        </View>
-      ) : null}
-      {pipelineV3BudgetSummary ? (
-        <View
-          style={[
-            styles.outlineBlockPanel,
-            {
-              backgroundColor: `${theme.colors.accentSoft}`,
-              borderColor: theme.colors.border,
-            },
-          ]}
-        >
-          <Text
-            style={[styles.outlineBlockTitle, { color: theme.colors.textPrimary }]}
-          >
-            Outline Pipeline V3 预算说明
-          </Text>
-          <Text style={[styles.outlineBlockText, { color: theme.colors.textSecondary }]}>
-            {pipelineV3BudgetSummary}
           </Text>
         </View>
       ) : null}
