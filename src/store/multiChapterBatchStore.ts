@@ -15,7 +15,43 @@ import type {
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+  type ContextBudgetVersion,
 } from '../services/pipeline/outlineWorkflowVersion';
+import { getContextAutoMode } from '../data/repositories/contextAutoRepository';
+
+/**
+ * Resolve the context-budget version to freeze on a NEW batch.
+ *
+ * V3 is opt-in via the persisted `context_auto_mode = 'v3'` setting (Plan §12).
+ * When V3 is enabled, batches freeze version 6 so the hierarchical allocator
+ * runs for every child task; otherwise batches freeze the current V2 version.
+ * Failures reading the setting fall back to V2 — never block batch creation.
+ */
+async function resolveBatchContextBudgetVersion(): Promise<ContextBudgetVersion> {
+  try {
+    const mode = await getContextAutoMode();
+    return mode === 'v3'
+      ? V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+      : CURRENT_CONTEXT_BUDGET_VERSION;
+  } catch {
+    return CURRENT_CONTEXT_BUDGET_VERSION;
+  }
+}
+
+/**
+ * Resume compatibility check (Plan §12 / §23 GO Gate #12 / #13).
+ *
+ * V2 (5) and V3 (6) batches are both resumable on their own version — neither
+ * is silently upgraded. Any other version (1–4, legacy) is blocked.
+ */
+function isBatchContextBudgetVersionResumable(version: unknown): boolean {
+  const n = Number(version);
+  return (
+    n === CURRENT_CONTEXT_BUDGET_VERSION ||
+    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+  );
+}
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
 import { resolveLLMRequestConfig } from '../services/llm';
 import * as db from '../services/database';
@@ -212,10 +248,13 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           reasoningEffort: isPipelineReasoningTier(pipelineConfig.reasoningEffort)
             ? pipelineConfig.reasoningEffort
             : normalizePipelineReasoningTier(pipelineConfig.reasoningEffort),
-          // §4.4: freeze the CURRENT protocol versions ONCE at batch
-          // creation; every chapter task later copies them from the row.
+          // §4.4: freeze the protocol versions ONCE at batch creation; every
+          // chapter task later copies them from the row. Context Budget V3 is
+          // opt-in via context_auto_mode — when enabled, batches freeze
+          // version 6 so every child task routes through the hierarchical
+          // allocator (Plan §12 / §23 GO Gate #13 V3 Resume no drift).
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
-          contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+          contextBudgetVersion: await resolveBatchContextBudgetVersion(),
         });
         for (let i = 1; i <= input.chapterCount; i += 1) {
           await batchRepo.createBatchItem({
@@ -378,7 +417,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
       if (!batch) return;
       if (
         Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
-        Number(batch.contextBudgetVersion) !== CURRENT_CONTEXT_BUDGET_VERSION
+        !isBatchContextBudgetVersionResumable(batch.contextBudgetVersion)
       ) {
         const error = Object.assign(
           new Error('该批次使用旧版生成流程或预算协议，不能继续；请按新版重新规划剩余章节。'),
@@ -461,8 +500,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         if (
           Number(legacyBatch.outlineWorkflowVersion) ===
             CURRENT_OUTLINE_WORKFLOW_VERSION &&
-          Number(legacyBatch.contextBudgetVersion) ===
-            CURRENT_CONTEXT_BUDGET_VERSION
+          isBatchContextBudgetVersionResumable(legacyBatch.contextBudgetVersion)
         ) {
           throw new Error('当前批次已是新版，无需重新规划');
         }
@@ -544,7 +582,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           pipelineMode: 'full',
           reasoningEffort,
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
-          contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+          contextBudgetVersion: await resolveBatchContextBudgetVersion(),
         });
         for (const chapter of plan.chapters) {
           await batchRepo.createBatchItem({

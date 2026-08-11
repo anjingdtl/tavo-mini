@@ -38,8 +38,8 @@ interface PipelineTaskState {
     versions?: {
       /** Frozen outline workflow version (1 = Legacy, 2 = V2, 3 = V3.2, 4 = current). */
       outlineWorkflowVersion: 1 | 2 | 3 | 4;
-      /** Frozen context budget version (1 = Legacy, 2–4 = historical, 5 = current). */
-      contextBudgetVersion: 1 | 2 | 3 | 4 | 5;
+      /** Frozen context budget version (1 = Legacy, 2–4 = historical, 5 = current, 6 = V3 hierarchical elastic). */
+      contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6;
     },
   ) => Promise<string>;
   /**

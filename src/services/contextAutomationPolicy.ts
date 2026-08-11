@@ -403,3 +403,224 @@ export function cloneDefaultOutlinePipelineBudgetPolicyV3(): OutlinePipelineBudg
     JSON.stringify(DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3),
   ) as OutlinePipelineBudgetPolicyV3;
 }
+
+// ---------------------------------------------------------------------------
+// Context Budget V3 — Hierarchical Elastic Board/Item Policy
+// (docs/optimization/Tavo-Mini-Context-Budget-V3-Hierarchical-Elastic-Optimization-Plan.md)
+//
+// V3 supersedes the V2 outline-compatibility fixed ratios with a three-level
+// elastic system:
+//
+//   Model window
+//     → Soft / Burst / Hard envelope (water levels)
+//       → Board Soft Targets × Elastic Ceilings
+//         → Resource Item Demands
+//
+// Soft Target ≠ Hard Cap. Boards whose actual demand is below their soft
+// target release the unused budget into a Global Elastic Pool; boards with
+// unmet demand borrow from that pool by priority × relevance. Resources never
+// share the V2 fixed 35/20/45 split — every activated candidate competes by
+// actual demand / activation / explicit selection.
+//
+// Versioning: V3 is independent of `context_budget_version`'s numerical
+// sequence. The protocol column still advances monotonically (current = 5);
+// V3 tasks freeze `context_budget_version = 6` and persist
+// `context_auto_mode = 'v3'` + `context_auto_policy_v3 = {...}` so legacy V2
+// resumes never auto-upgrade.
+// ---------------------------------------------------------------------------
+
+export type ContextBudgetBoardKey =
+  | 'storyState'
+  | 'resources'
+  | 'slidingWindow'
+  | 'episodic';
+
+export interface ContextBudgetBoardPolicy {
+  /** Share of the elastic pool targeted when demand is healthy. */
+  softRatio: number;
+  /** Maximum share this board may grow to via cross-board borrowing. */
+  elasticCeilingRatio: number;
+  /** Higher priority boards borrow reclaimed budget first. */
+  priority: number;
+}
+
+export type ResourceActivationReason =
+  | 'primary_secondary_hit'
+  | 'constant'
+  | 'primary_hit'
+  | 'recursive_hit'
+  | 'project_fallback'
+  | 'explicit';
+
+export interface ContextAutomationPolicyV3 {
+  schemaVersion: 3;
+  allocatorVersion: 'context-automation-v3';
+  profile: 'balanced';
+  waterLevels: {
+    /** Soft input water level (default 0.80 of post-reserve envelope). */
+    softRatio: number;
+    /** Burst input water level (default 0.95). */
+    burstRatio: number;
+  };
+  boards: Record<ContextBudgetBoardKey, ContextBudgetBoardPolicy>;
+  /** Global reserve kept inside the elastic pool to absorb estimation drift. */
+  globalReserveRatio: number;
+  resourceItems: {
+    /** Multiplier applied to priority×relevance score for explicit picks. */
+    explicitSelectionBoost: number;
+    /**
+     * Demands whose unmet target is at most this many tokens are full-fit
+     * before larger demands get any surplus (Plan §7).
+     */
+    smallDemandFullFitBias: number;
+    /**
+     * Activation source → relevance mapping (Plan §6.4). Higher relevance wins
+     * at parity on priority and explicit selection.
+     */
+    activationWeights: Record<ResourceActivationReason, number>;
+  };
+}
+
+export const DEFAULT_CONTEXT_AUTOMATION_POLICY_V3: ContextAutomationPolicyV3 = {
+  schemaVersion: 3,
+  allocatorVersion: 'context-automation-v3',
+  profile: 'balanced',
+  waterLevels: {
+    softRatio: 0.8,
+    burstRatio: 0.95,
+  },
+  boards: {
+    storyState: {
+      softRatio: 0.2,
+      elasticCeilingRatio: 0.3,
+      priority: 8,
+    },
+    resources: {
+      softRatio: 0.3,
+      elasticCeilingRatio: 0.5,
+      priority: 9,
+    },
+    slidingWindow: {
+      softRatio: 0.25,
+      elasticCeilingRatio: 0.4,
+      priority: 8,
+    },
+    episodic: {
+      softRatio: 0.15,
+      elasticCeilingRatio: 0.3,
+      priority: 6,
+    },
+  },
+  globalReserveRatio: 0.1,
+  resourceItems: {
+    explicitSelectionBoost: 1.8,
+    smallDemandFullFitBias: 4000,
+    activationWeights: {
+      primary_secondary_hit: 1.0,
+      constant: 0.95,
+      primary_hit: 0.9,
+      recursive_hit: 0.75,
+      project_fallback: 0.45,
+      explicit: 1.0,
+    },
+  },
+};
+
+function isBoardPolicy(value: unknown): value is ContextBudgetBoardPolicy {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Partial<ContextBudgetBoardPolicy>;
+  return (
+    isFiniteRatio(v.softRatio) &&
+    isFiniteRatio(v.elasticCeilingRatio) &&
+    v.softRatio <= v.elasticCeilingRatio &&
+    typeof v.priority === 'number' &&
+    Number.isFinite(v.priority) &&
+    v.priority >= 0
+  );
+}
+
+export function isContextAutomationPolicyV3(
+  value: unknown,
+): value is ContextAutomationPolicyV3 {
+  if (!value || typeof value !== 'object') return false;
+  const p = value as Partial<ContextAutomationPolicyV3>;
+  if (
+    p.schemaVersion !== 3 ||
+    p.allocatorVersion !== 'context-automation-v3' ||
+    p.profile !== 'balanced' ||
+    !p.waterLevels ||
+    !p.boards ||
+    !p.resourceItems
+  ) {
+    return false;
+  }
+  const wl = p.waterLevels;
+  if (
+    !isFiniteRatio(wl.softRatio) ||
+    !isFiniteRatio(wl.burstRatio) ||
+    wl.softRatio <= 0 ||
+    wl.burstRatio <= wl.softRatio ||
+    wl.burstRatio > 1
+  ) {
+    return false;
+  }
+  const boards = p.boards;
+  if (
+    !isBoardPolicy(boards.storyState) ||
+    !isBoardPolicy(boards.resources) ||
+    !isBoardPolicy(boards.slidingWindow) ||
+    !isBoardPolicy(boards.episodic)
+  ) {
+    return false;
+  }
+  const softSum =
+    boards.storyState.softRatio +
+    boards.resources.softRatio +
+    boards.slidingWindow.softRatio +
+    boards.episodic.softRatio +
+    (typeof p.globalReserveRatio === 'number'
+      ? p.globalReserveRatio
+      : Number.NaN);
+  if (!Number.isFinite(softSum) || softSum > 1 + 1e-9) return false;
+  const ri = p.resourceItems;
+  if (
+    !ri ||
+    typeof ri.explicitSelectionBoost !== 'number' ||
+    !(ri.explicitSelectionBoost > 0) ||
+    typeof ri.smallDemandFullFitBias !== 'number' ||
+    !(ri.smallDemandFullFitBias >= 0) ||
+    !ri.activationWeights
+  ) {
+    return false;
+  }
+  const requiredActivations: ResourceActivationReason[] = [
+    'primary_secondary_hit',
+    'constant',
+    'primary_hit',
+    'recursive_hit',
+    'project_fallback',
+    'explicit',
+  ];
+  for (const key of requiredActivations) {
+    if (!isFiniteRatio(ri.activationWeights[key])) return false;
+  }
+  return true;
+}
+
+export function cloneDefaultContextAutomationPolicyV3(): ContextAutomationPolicyV3 {
+  return JSON.parse(
+    JSON.stringify(DEFAULT_CONTEXT_AUTOMATION_POLICY_V3),
+  ) as ContextAutomationPolicyV3;
+}
+
+export function hashContextAutomationPolicyV3(
+  policy: ContextAutomationPolicyV3,
+): string {
+  return sha256Hex(stableSerialize(policy));
+}
+
+export function serializeContextAutomationPolicyV3(
+  policy: ContextAutomationPolicyV3,
+): string {
+  return JSON.stringify(policy);
+}

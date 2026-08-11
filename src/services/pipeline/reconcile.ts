@@ -722,7 +722,7 @@ function buildExecutionSnapshot(params: {
   proofPreset: Preset | null;
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2 | 3 | 4;
-  contextBudgetVersion?: 1 | 2 | 3 | 4 | 5;
+  contextBudgetVersion?: 1 | 2 | 3 | 4 | 5 | 6;
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
   finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
   reasoningEffort?: PipelineConfig['reasoningEffort'];
@@ -1999,7 +1999,7 @@ async function actionPersistInitialSnapshot(
   // snapshots interprets an absent field as 1.
   const existingExecution = runtime.parsed?.execution;
   let outlineWorkflowVersion: 1 | 2 | 3 | 4;
-  let contextBudgetVersion: 1 | 2 | 3 | 4 | 5;
+  let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6;
   if (existingExecution) {
     outlineWorkflowVersion =
       existingExecution.outlineWorkflowVersion === 4

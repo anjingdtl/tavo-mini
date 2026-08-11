@@ -15,6 +15,39 @@
 /** Current persisted pipeline context snapshot schema version. */
 export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 3 as const;
 
+/**
+ * Context Budget V3 hierarchical allocator summary embedded in the snapshot
+ * (Plan §13). Carries per-board demand / soft target / allocated / borrowed so
+ * the snapshot is self-describing — reviewers, factCheck and proof see the
+ * SAME allocation view the draft was generated against, without re-running the
+ * allocator. Optional; absent for V1/V2 snapshots.
+ */
+export interface ContextBudgetV3Summary {
+  contextBudgetVersion: 6;
+  policyHash: string;
+  envelope: {
+    contextWindow: number;
+    reservedOutputTokens: number;
+    safetyMargin: number;
+    hardInputLimit: number;
+    softInputLimit: number;
+    burstInputLimit: number;
+    mandatoryTokens: number;
+    softElasticPool: number;
+    burstElasticPool: number;
+  };
+  boards: {
+    key: 'storyState' | 'resources' | 'slidingWindow' | 'episodic';
+    actualDemandTokens: number;
+    softTargetTokens: number;
+    elasticMaxTokens: number;
+    allocatedTokens: number;
+    reclaimedTokens: number;
+    borrowedTokens: number;
+    reason: string;
+  }[];
+}
+
 export interface PipelineContextSnapshot {
   /** Macro-replaced system prompt, writing style and extra instructions. */
   presetText: string;
@@ -72,6 +105,12 @@ export interface PipelineContextSnapshot {
   chapterUpdatedAt?: string | number;
   createdAt?: number;
   snapshotVersion?: 1 | 3 | 4;
+  /**
+   * Context Budget V3 hierarchical allocator summary (Plan §13). Present only
+   * when the task was frozen with context_budget_version >= 6. Downstream
+   * stages use this to render the same allocation view in their prompts.
+   */
+  contextBudgetV3Summary?: ContextBudgetV3Summary;
 }
 
 /**

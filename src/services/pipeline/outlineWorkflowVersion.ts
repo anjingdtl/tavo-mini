@@ -15,7 +15,7 @@
  * resume semantics; the Schema 44 columns are never dropped.
  */
 export type OutlineWorkflowVersion = 1 | 2 | 3 | 4;
-export type ContextBudgetVersion = 1 | 2 | 3 | 4 | 5;
+export type ContextBudgetVersion = 1 | 2 | 3 | 4 | 5 | 6;
 
 /**
  * Protocol versions written to NEW outline chapter tasks / batches.
@@ -27,9 +27,21 @@ export type ContextBudgetVersion = 1 | 2 | 3 | 4 | 5;
  * Context budget 5 is the current independent elastic reservation protocol:
  * each Draft / Review / FactCheck / Brief / Final call resolves its own
  * 20%-of-window reservation at first freeze.
+ *
+ * Context budget 6 is the V3 hierarchical board/item elastic allocator
+ * (`docs/optimization/Tavo-Mini-Context-Budget-V3-Hierarchical-Elastic-Optimization-Plan.md`).
+ * It is opt-in via `context_auto_mode = 'v3'`; tasks frozen at 6 route through
+ * the hierarchical allocator in `contextBuilder.ts`, while 5 keeps the V2
+ * single-level elastic path. Resume gate still rejects cross-version resume.
  */
 export const CURRENT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 4;
 export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 5;
+/**
+ * Context budget version frozen on NEW tasks when the user has applied V3
+ * auto-config. Distinct from `CURRENT_CONTEXT_BUDGET_VERSION` so V3 stays
+ * opt-in until end-to-end validation promotes it to the global default.
+ */
+export const V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION = 6 as const;
 
 /**
  * @deprecated Rollback-era default (Legacy 1). Kept only for callers that

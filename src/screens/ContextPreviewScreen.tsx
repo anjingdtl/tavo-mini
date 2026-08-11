@@ -191,6 +191,14 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   const [selectedContinuationStage, setSelectedContinuationStage] = useState<
     'writer' | 'checker' | 'control' | 'repair'
   >('writer');
+  /**
+   * Context Budget V3 hierarchical trace (Plan §15). Populated for
+   * non-continuation previews when context_auto_mode = 'v3' so the user can
+   * see board-level demand / soft target / allocated / borrowed.
+   */
+  const [hierarchicalBudgetTrace, setHierarchicalBudgetTrace] = useState<
+    import('../services/context/hierarchicalContextAllocator').HierarchicalBudgetResult | null
+  >(null);
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -354,6 +362,19 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       setContinuationBudgetSummary('');
       setContinuationStageBudgets(null);
       setContinuationFreezeSummary(null);
+      // Read Context Budget mode so preview matches what a live send would do.
+      // V3 (context_auto_mode = 'v3') → freeze contextBudgetVersion = 6 and
+      // surface the hierarchical allocator trace for the board summary panel.
+      let contextBudgetVersion: number | undefined;
+      try {
+        const { getContextAutoMode } = await import(
+          '../data/repositories/contextAutoRepository'
+        );
+        const mode = await getContextAutoMode();
+        if (mode === 'v3') contextBudgetVersion = 6;
+      } catch {
+        // Settings read failure: fall back to V2 preview path.
+      }
       // Non-continuation: same Draft compiler as reconcile (preview mode).
       // Without a frozen task snapshot this is an estimated request, not a
       // committed send payload.
@@ -363,12 +384,16 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       const compiled = await compileDraftStageRequest({
         chapter,
         preview: true,
+        contextBudgetVersion,
       });
       setTrace(compiled.draftCompile?.trace || []);
       setStoryMemoryWarnings(
         compiled.draftCompile?.storyMemoryWarnings || [],
       );
       setEstimatedInputTokens(compiled.estimatedInputTokens ?? 0);
+      setHierarchicalBudgetTrace(
+        compiled.hierarchicalBudgetTrace ?? compiled.draftCompile?.hierarchicalBudgetTrace ?? null,
+      );
       setMessages(compiled.ready ? compiled.messages : compiled.messages || []);
       if (!compiled.ready) {
         setOutlineBlock(
@@ -435,6 +460,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({
 
   const renderTraceItem = ({ item }: { item: ContextTraceItem }) => {
     const Icon = KIND_ICON[item.kind];
+    const hasV3Detail =
+      typeof item.demandTokens === 'number' ||
+      typeof item.allocatedTokens === 'number' ||
+      typeof item.softTargetTokens === 'number' ||
+      typeof item.borrowedTokens === 'number';
     return (
       <Card style={styles.traceCard}>
         <View style={styles.traceRow}>
@@ -462,6 +492,28 @@ export const ContextPreviewScreen: React.FC<Props> = ({
             >
               {item.reason}
             </Text>
+            {hasV3Detail ? (
+              <Text
+                style={{
+                  color: theme.colors.textMuted,
+                  fontSize: 11,
+                  marginTop: 2,
+                }}
+                numberOfLines={2}
+              >
+                {typeof item.demandTokens === 'number'
+                  ? `需求 ${item.demandTokens.toLocaleString()} · `
+                  : ''}
+                {typeof item.allocatedTokens === 'number'
+                  ? `分配 ${item.allocatedTokens.toLocaleString()}`
+                  : ''}
+                {typeof item.borrowedTokens === 'number' &&
+                item.borrowedTokens > 0
+                  ? ` · 借调 +${item.borrowedTokens.toLocaleString()}`
+                  : ''}
+                {item.allocationReason ? ` （${item.allocationReason}）` : ''}
+              </Text>
+            ) : null}
           </View>
           <View style={styles.traceMeta}>
             <Text
@@ -622,6 +674,91 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           >
             你可以继续生成，或稍后前往「故事记忆」重新整理。
           </Text>
+        </View>
+      ) : null}
+      {hierarchicalBudgetTrace ? (
+        <View
+          style={[
+            styles.outlineBlockPanel,
+            {
+              borderColor: theme.colors.accent,
+              backgroundColor: theme.colors.accentSoft,
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.outlineBlockTitle,
+              { color: theme.colors.textPrimary },
+            ]}
+          >
+            上下文预算 V3 分层弹性
+          </Text>
+          <Text
+            style={[
+              styles.outlineBlockText,
+              { color: theme.colors.textSecondary },
+            ]}
+          >
+            模型窗口 {hierarchicalBudgetTrace.envelope.contextWindow.toLocaleString()} ·
+            强制输入上限 {hierarchicalBudgetTrace.envelope.hardInputLimit.toLocaleString()} ·
+            软线 {hierarchicalBudgetTrace.envelope.softInputLimit.toLocaleString()} ·
+            突发线 {hierarchicalBudgetTrace.envelope.burstInputLimit.toLocaleString()}
+          </Text>
+          <Text
+            style={[
+              styles.outlineBlockText,
+              { color: theme.colors.textSecondary, marginTop: spacing.xs },
+            ]}
+          >
+            必须保留 {hierarchicalBudgetTrace.envelope.mandatoryTokens.toLocaleString()} ·
+            弹性池 {hierarchicalBudgetTrace.envelope.softElasticPool.toLocaleString()} ·
+            突发池 {hierarchicalBudgetTrace.envelope.burstElasticPool.toLocaleString()} ·
+            风险等级 {hierarchicalBudgetTrace.riskLevel}
+          </Text>
+          {(
+            [
+              ['storyState', '故事状态'],
+              ['resources', '资料'],
+              ['slidingWindow', '滑动窗口'],
+              ['episodic', '情节记忆'],
+            ] as const
+          ).map(([key, label]) => {
+            const board = hierarchicalBudgetTrace.boardAllocations[key];
+            if (!board) return null;
+            return (
+              <View key={key} style={{ marginTop: spacing.xs }}>
+                <Text
+                  style={{
+                    color: theme.colors.textPrimary,
+                    fontWeight: '700',
+                    fontSize: 13,
+                  }}
+                >
+                  {label}
+                </Text>
+                <Text
+                  style={{
+                    color: theme.colors.textSecondary,
+                    fontSize: 12,
+                    marginTop: 2,
+                  }}
+                >
+                  需求 {board.actualDemandTokens.toLocaleString()} ·
+                  软目标 {board.softTargetTokens.toLocaleString()} ·
+                  弹性上限 {board.elasticMaxTokens.toLocaleString()} ·
+                  分配 {board.allocatedTokens.toLocaleString()}
+                  {board.borrowedTokens > 0
+                    ? ` · 借调 +${board.borrowedTokens.toLocaleString()}`
+                    : ''}
+                  {board.reclaimedTokens > 0
+                    ? ` · 回收 ${board.reclaimedTokens.toLocaleString()}`
+                    : ''}
+                  {' '}（{board.reason}）
+                </Text>
+              </View>
+            );
+          })}
         </View>
       ) : null}
       <View

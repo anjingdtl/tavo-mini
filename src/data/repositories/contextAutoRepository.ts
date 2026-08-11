@@ -11,10 +11,13 @@ import type { AllocationResult } from '../../services/contextAutoAllocator';
 import {
   buildContinuationPolicyPreview,
   cloneDefaultContextAutomationPolicy,
+  cloneDefaultContextAutomationPolicyV3,
   hashContextAutomationPolicy,
   isContextAutomationPolicyV2,
+  isContextAutomationPolicyV3,
   serializeContextAutomationPolicy,
   type ContextAutomationPolicyV2,
+  type ContextAutomationPolicyV3,
   type ContinuationPolicyPreview,
 } from '../../services/contextAutomationPolicy';
 import { getSetting, setSetting } from './settingsRepository';
@@ -22,6 +25,13 @@ import { getSetting, setSetting } from './settingsRepository';
 const KEY_INPUT = 'context_auto_input';
 const KEY_LAST_APPLIED = 'context_auto_last_applied';
 const KEY_POLICY = 'context_auto_policy_v2';
+// Context Budget V3 (Plan §10): persist Policy + mode marker, not runtime
+// numbers. `context_auto_mode = 'v3'` tells new task creation to freeze
+// context_budget_version = 6 and route through the hierarchical allocator.
+const KEY_MODE = 'context_auto_mode';
+const KEY_POLICY_V3 = 'context_auto_policy_v3';
+
+export type ContextAutoMode = 'v2' | 'v3';
 
 export interface ContextAutoAppliedRecord {
   /** Schema 1 records predate the versioned Continuation policy. */
@@ -76,6 +86,52 @@ export async function setContextAutomationPolicy(
     throw new Error('setContextAutomationPolicy: policy schema 无效');
   }
   await setSetting(KEY_POLICY, serializeContextAutomationPolicy(policy));
+}
+
+// ---------------------------------------------------------------------------
+// Context Budget V3 mode + policy persistence (Plan §10 / §12).
+// ---------------------------------------------------------------------------
+
+export async function getContextAutoMode(): Promise<ContextAutoMode> {
+  const raw = await getSetting(KEY_MODE);
+  return raw === 'v3' ? 'v3' : 'v2';
+}
+
+export async function setContextAutoMode(mode: ContextAutoMode): Promise<void> {
+  if (mode !== 'v2' && mode !== 'v3') {
+    throw new Error(`setContextAutoMode: unsupported mode ${mode}`);
+  }
+  await setSetting(KEY_MODE, mode);
+}
+
+export async function getContextAutomationPolicyV3(): Promise<ContextAutomationPolicyV3 | null> {
+  const raw = await getSetting(KEY_POLICY_V3);
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isContextAutomationPolicyV3(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setContextAutomationPolicyV3(
+  policy: ContextAutomationPolicyV3,
+): Promise<void> {
+  if (!isContextAutomationPolicyV3(policy)) {
+    throw new Error('setContextAutomationPolicyV3: policy schema 无效');
+  }
+  // Persist as deterministic JSON (sorted keys) so policyHash is stable across
+  // read/write rounds — V3 snapshot fingerprints rely on this (Plan §16).
+  await setSetting(KEY_POLICY_V3, JSON.stringify(policy));
+}
+
+export async function ensureContextAutomationPolicyV3(): Promise<ContextAutomationPolicyV3> {
+  const persisted = await getContextAutomationPolicyV3();
+  if (persisted) return persisted;
+  const policy = cloneDefaultContextAutomationPolicyV3();
+  await setContextAutomationPolicyV3(policy);
+  return policy;
 }
 
 export async function getContextAutoLastApplied(): Promise<ContextAutoAppliedRecord | null> {
