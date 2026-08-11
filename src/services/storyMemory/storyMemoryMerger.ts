@@ -112,10 +112,17 @@ export function applyStoryMemoryPatch(
     now?: string;
     /** tempRef → first evidence chapterId for deterministic stable IDs */
     characterSeedChapterIds?: Map<string, number>;
+    /**
+     * Optional batch temporal maps. When present, firstSeen/opened/lastChanged
+     * /resolved timestamps are recovered from each item's Evidence chapters
+     * instead of the batch through chapter. Single-chapter patches omit this.
+     */
+    temporalMaps?: StoryMemoryBatchTemporalMaps;
     /** optional last applied unit id override (batch_*) */
     lastAppliedUnitId?: string;
   },
 ): ApplyPatchResult {
+  const temporal = context.temporalMaps;
   if (
     context.projectId !== previous.projectId ||
     draft.chapterRef.chapterId !== context.chapterId ||
@@ -177,15 +184,21 @@ export function applyStoryMemoryPatch(
       item.canonicalName,
       item.aliases,
     );
+    const itemTemporal = temporal?.newCharacters.get(item.tempRef);
     if (existing) {
       existing.aliases = unique([
         ...existing.aliases,
         ...item.aliases,
         item.canonicalName === existing.canonicalName ? '' : item.canonicalName,
       ]);
+      const mergeChapterId =
+        itemTemporal?.lastChapterId ?? context.chapterId;
+      existing.lastChangedChapterId = mergeChapterId;
+      existing.lastChangedPosition =
+        itemTemporal?.lastPosition ?? context.chapterPosition;
       existing.evidenceChapterIds = recentEvidence(
         existing.evidenceChapterIds,
-        context.chapterId,
+        mergeChapterId,
       );
       refMap.set(item.tempRef, existing.id);
       warnings.push({
@@ -195,7 +208,17 @@ export function applyStoryMemoryPatch(
       continue;
     }
     const seedChapterId =
-      context.characterSeedChapterIds?.get(item.tempRef) ?? context.chapterId;
+      context.characterSeedChapterIds?.get(item.tempRef) ??
+      itemTemporal?.firstChapterId ??
+      context.chapterId;
+    const firstPosition =
+      itemTemporal?.firstPosition ?? context.chapterPosition;
+    const lastChapterId = itemTemporal?.lastChapterId ?? context.chapterId;
+    const lastPosition = itemTemporal?.lastPosition ?? context.chapterPosition;
+    const evidenceChapterIds =
+      itemTemporal?.evidenceChapterIds?.length
+        ? itemTemporal.evidenceChapterIds
+        : [seedChapterId];
     const baseId = stableId(
       `char_${context.projectId}`,
       `${normalizeName(item.canonicalName)}|${seedChapterId}`,
@@ -222,16 +245,18 @@ export function applyStoryMemoryPatch(
       },
       status: item.status,
       firstSeenChapterId: seedChapterId,
-      firstSeenPosition: context.chapterPosition,
-      lastChangedChapterId: context.chapterId,
-      lastChangedPosition: context.chapterPosition,
-      evidenceChapterIds: [seedChapterId],
+      firstSeenPosition: firstPosition,
+      lastChangedChapterId: lastChapterId,
+      lastChangedPosition: lastPosition,
+      evidenceChapterIds,
     };
     refMap.set(item.tempRef, id);
   }
 
   for (const update of draft.characterUpdates) {
-    const character = state.characters[update.characterRef];
+    const character =
+      state.characters[update.characterRef] ||
+      state.characters[refMap.get(update.characterRef) || ''];
     if (!character) {
       warnings.push({
         code: 'CHARACTER_UPDATE_SKIPPED',
@@ -239,6 +264,9 @@ export function applyStoryMemoryPatch(
       });
       continue;
     }
+    const itemTemporal =
+      temporal?.characterUpdates.get(update.characterRef) ||
+      temporal?.newCharacters.get(update.characterRef);
     character.aliases = unique([...character.aliases, ...update.addAliases]);
     if (Object.keys(update.profileCorrections || {}).length > 0) {
       character.immutableProfile = {
@@ -283,11 +311,13 @@ export function applyStoryMemoryPatch(
       ),
     };
     if (update.status) character.status = update.status;
-    character.lastChangedChapterId = context.chapterId;
-    character.lastChangedPosition = context.chapterPosition;
+    const lastChapterId = itemTemporal?.lastChapterId ?? context.chapterId;
+    const lastPosition = itemTemporal?.lastPosition ?? context.chapterPosition;
+    character.lastChangedChapterId = lastChapterId;
+    character.lastChangedPosition = lastPosition;
     character.evidenceChapterIds = recentEvidence(
       character.evidenceChapterIds,
-      context.chapterId,
+      lastChapterId,
     );
   }
 
@@ -297,9 +327,17 @@ export function applyStoryMemoryPatch(
     if (item.direction === 'bidirectional' && fromId > toId) {
       [fromId, toId] = [toId, fromId];
     }
+    const itemTemporal = temporal?.newRelationships.get(item.tempRef);
+    const seedChapterId = itemTemporal?.firstChapterId ?? context.chapterId;
+    const lastChapterId = itemTemporal?.lastChapterId ?? context.chapterId;
+    const lastPosition = itemTemporal?.lastPosition ?? context.chapterPosition;
+    const evidenceChapterIds =
+      itemTemporal?.evidenceChapterIds?.length
+        ? itemTemporal.evidenceChapterIds
+        : [seedChapterId];
     const relationSeed = `${fromId}|${toId}|${item.direction}|${normalizeName(
       item.relationType,
-    )}|${context.chapterId}`;
+    )}|${seedChapterId}`;
     const id = resolveAvailableId(
       stableId(`rel_${context.projectId}`, relationSeed),
       state.relationships,
@@ -315,16 +353,22 @@ export function applyStoryMemoryPatch(
       publicStatus: item.publicStatus,
       hiddenStatus: item.hiddenStatus,
       reason: item.reason,
-      firstSeenChapterId: context.chapterId,
-      lastChangedChapterId: context.chapterId,
-      lastChangedPosition: context.chapterPosition,
-      evidenceChapterIds: [context.chapterId],
+      firstSeenChapterId: seedChapterId,
+      lastChangedChapterId: lastChapterId,
+      lastChangedPosition: lastPosition,
+      evidenceChapterIds,
     };
     refMap.set(item.tempRef, id);
   }
 
   for (const update of draft.relationshipUpdates) {
-    const relationship = state.relationships[update.relationshipRef];
+    const relationship =
+      state.relationships[update.relationshipRef] ||
+      state.relationships[refMap.get(update.relationshipRef) || ''];
+    if (!relationship) continue;
+    const itemTemporal =
+      temporal?.relationshipUpdates.get(update.relationshipRef) ||
+      temporal?.newRelationships.get(update.relationshipRef);
     Object.assign(
       relationship,
       Object.fromEntries(
@@ -336,34 +380,42 @@ export function applyStoryMemoryPatch(
         ),
       ),
     );
-    relationship.lastChangedChapterId = context.chapterId;
-    relationship.lastChangedPosition = context.chapterPosition;
+    const lastChapterId = itemTemporal?.lastChapterId ?? context.chapterId;
+    const lastPosition = itemTemporal?.lastPosition ?? context.chapterPosition;
+    relationship.lastChangedChapterId = lastChapterId;
+    relationship.lastChangedPosition = lastPosition;
     relationship.evidenceChapterIds = recentEvidence(
       relationship.evidenceChapterIds,
-      context.chapterId,
+      lastChapterId,
     );
   }
 
   const mainline = state.mainline;
   const arc = draft.mainlinePatch.currentArcUpdate;
-  const addCompletedBeat = (id: string, summary: string) => {
+  const addCompletedBeat = (
+    id: string,
+    summary: string,
+    chapterId = context.chapterId,
+  ) => {
     if (!mainline.recentCompletedBeats.some(beat => beat.id === id)) {
       mainline.recentCompletedBeats.push({
         id,
         summary,
-        chapterId: context.chapterId,
+        chapterId,
       });
     }
   };
+  const arcTemporal = temporal?.currentArc;
   if (arc.action === 'start') {
+    const startedChapterId = arcTemporal?.firstChapterId ?? context.chapterId;
     mainline.currentArc = {
       id: stableId(
         `arc_${context.projectId}`,
-        `${arc.name}|${context.chapterId}`,
+        `${arc.name}|${startedChapterId}`,
       ),
       name: arc.name,
       summary: arc.summary,
-      startedChapterId: context.chapterId,
+      startedChapterId,
     };
   } else if (arc.action === 'update' && mainline.currentArc) {
     mainline.currentArc.name = arc.name || mainline.currentArc.name;
@@ -373,19 +425,25 @@ export function applyStoryMemoryPatch(
       addCompletedBeat(
         mainline.currentArc.id,
         arc.summary || mainline.currentArc.summary,
+        arcTemporal?.lastChapterId ?? context.chapterId,
       );
     }
     mainline.currentArc = null;
   } else if (arc.action === 'replace' && mainline.currentArc) {
-    addCompletedBeat(mainline.currentArc.id, mainline.currentArc.summary);
+    addCompletedBeat(
+      mainline.currentArc.id,
+      mainline.currentArc.summary,
+      arcTemporal?.lastChapterId ?? context.chapterId,
+    );
+    const startedChapterId = arcTemporal?.firstChapterId ?? context.chapterId;
     mainline.currentArc = {
       id: stableId(
         `arc_${context.projectId}`,
-        `${arc.name}|${context.chapterId}`,
+        `${arc.name}|${startedChapterId}`,
       ),
       name: arc.name,
       summary: arc.summary,
-      startedChapterId: context.chapterId,
+      startedChapterId,
     };
   }
   if (draft.mainlinePatch.currentObjective) {
@@ -393,25 +451,34 @@ export function applyStoryMemoryPatch(
       draft.mainlinePatch.currentObjective.value.trim();
   }
   for (const item of draft.mainlinePatch.conflictUpserts) {
+    const itemTemporal =
+      temporal?.conflictUpserts.get(item.ref) ||
+      temporal?.conflictUpserts.get(item.title);
+    const seedChapterId = itemTemporal?.firstChapterId ?? context.chapterId;
+    const lastChapterId = itemTemporal?.lastChapterId ?? context.chapterId;
+    const resolvedExistingId =
+      (item.ref && mainline.activeConflicts[item.ref] && item.ref) ||
+      (item.ref && refMap.get(item.ref) && mainline.activeConflicts[refMap.get(item.ref)!]
+        ? refMap.get(item.ref)
+        : undefined);
     const id =
-      item.ref && mainline.activeConflicts[item.ref]
-        ? item.ref
-        : stableId(
-            `conflict_${context.projectId}`,
-            `${item.title}|${context.chapterId}`,
-          );
+      resolvedExistingId ||
+      stableId(
+        `conflict_${context.projectId}`,
+        `${item.title}|${seedChapterId}`,
+      );
+    const previous = mainline.activeConflicts[id];
     mainline.activeConflicts[id] = {
       id,
       title: item.title,
       parties: unique((item.parties || []).map(ref => refMap.get(ref) || ref)),
       state: item.state || '',
       stakes: item.stakes || '',
-      openedChapterId:
-        mainline.activeConflicts[id]?.openedChapterId || context.chapterId,
-      lastChangedChapterId: context.chapterId,
+      openedChapterId: previous?.openedChapterId || seedChapterId,
+      lastChangedChapterId: lastChapterId,
       evidenceChapterIds: recentEvidence(
-        mainline.activeConflicts[id]?.evidenceChapterIds || [],
-        context.chapterId,
+        previous?.evidenceChapterIds || [],
+        lastChapterId,
       ),
     };
     if (item.ref) refMap.set(item.ref, id);
@@ -426,19 +493,30 @@ export function applyStoryMemoryPatch(
       });
       continue;
     }
+    const itemTemporal = temporal?.conflictResolutions.get(item.conflictRef);
+    const resolveChapterId =
+      itemTemporal?.lastChapterId ?? context.chapterId;
     addCompletedBeat(
       stableId(
         `beat_${context.projectId}`,
-        `conflict|${conflict.id}|${context.chapterId}`,
+        `conflict|${conflict.id}|${resolveChapterId}`,
       ),
       `冲突「${conflict.title}」解决：${item.resolution}`,
+      resolveChapterId,
     );
     delete mainline.activeConflicts[id];
   }
   for (const item of draft.mainlinePatch.threadOpens) {
+    const itemTemporal = temporal?.threadOpens.get(item.ref);
+    const seedChapterId = itemTemporal?.firstChapterId ?? context.chapterId;
+    const lastChapterId = itemTemporal?.lastChapterId ?? context.chapterId;
+    const evidenceChapterIds =
+      itemTemporal?.evidenceChapterIds?.length
+        ? itemTemporal.evidenceChapterIds
+        : [seedChapterId];
     const id = stableId(
       `thread_${context.projectId}`,
-      `${item.title}|${context.chapterId}`,
+      `${item.title}|${seedChapterId}`,
     );
     mainline.openThreads[id] = {
       id,
@@ -448,10 +526,10 @@ export function applyStoryMemoryPatch(
         (item.ownerCharacterRefs || []).map(ref => refMap.get(ref) || ref),
       ),
       priority: item.priority || 'normal',
-      openedChapterId: context.chapterId,
-      lastChangedChapterId: context.chapterId,
+      openedChapterId: seedChapterId,
+      lastChangedChapterId: lastChapterId,
       deadlineOrTrigger: item.deadlineOrTrigger || '',
-      evidenceChapterIds: [context.chapterId],
+      evidenceChapterIds,
     };
     refMap.set(item.ref, id);
   }
@@ -467,15 +545,19 @@ export function applyStoryMemoryPatch(
       });
       continue;
     }
+    const itemTemporal =
+      temporal?.threadUpdates.get(item.ref) ||
+      temporal?.threadOpens.get(item.ref);
     thread.title = item.title || thread.title;
     thread.description = item.description || thread.description;
     thread.priority = item.priority || thread.priority;
     thread.deadlineOrTrigger =
       item.deadlineOrTrigger || thread.deadlineOrTrigger;
-    thread.lastChangedChapterId = context.chapterId;
+    const lastChapterId = itemTemporal?.lastChapterId ?? context.chapterId;
+    thread.lastChangedChapterId = lastChapterId;
     thread.evidenceChapterIds = recentEvidence(
       thread.evidenceChapterIds,
-      context.chapterId,
+      lastChapterId,
     );
   }
   for (const item of draft.mainlinePatch.threadResolutions) {
@@ -488,23 +570,31 @@ export function applyStoryMemoryPatch(
       });
       continue;
     }
+    const itemTemporal = temporal?.threadResolutions.get(item.threadRef);
     mainline.recentResolvedThreads.push({
       id,
       title: thread.title,
       resolution: item.resolution,
       openedChapterId: thread.openedChapterId,
-      resolvedChapterId: context.chapterId,
+      resolvedChapterId: itemTemporal?.lastChapterId ?? context.chapterId,
     });
     delete mainline.openThreads[id];
   }
   for (const item of draft.mainlinePatch.foreshadowingUpserts) {
+    const itemTemporal =
+      temporal?.foreshadowingUpserts.get(item.ref) ||
+      temporal?.foreshadowingUpserts.get(item.setup || '');
+    const seedChapterId = itemTemporal?.firstChapterId ?? context.chapterId;
+    const lastChapterId = itemTemporal?.lastChapterId ?? context.chapterId;
     const id =
       item.ref && mainline.foreshadowing[item.ref]
         ? item.ref
-        : stableId(
-            `foreshadow_${context.projectId}`,
-            `${item.setup}|${context.chapterId}`,
-          );
+        : item.ref && refMap.get(item.ref) && mainline.foreshadowing[refMap.get(item.ref)!]
+          ? refMap.get(item.ref)!
+          : stableId(
+              `foreshadow_${context.projectId}`,
+              `${item.setup}|${seedChapterId}`,
+            );
     const existing = mainline.foreshadowing[id];
     const requestedStatus = item.status || existing?.status || 'open';
     mainline.foreshadowing[id] = {
@@ -515,38 +605,47 @@ export function applyStoryMemoryPatch(
         existing?.status === 'paid' && requestedStatus !== 'paid'
           ? 'paid'
           : requestedStatus,
-      openedChapterId: existing?.openedChapterId || context.chapterId,
-      lastChangedChapterId: context.chapterId,
+      openedChapterId: existing?.openedChapterId || seedChapterId,
+      lastChangedChapterId: lastChapterId,
       evidenceChapterIds: recentEvidence(
         existing?.evidenceChapterIds || [],
-        context.chapterId,
+        lastChapterId,
       ),
     };
+    if (item.ref) refMap.set(item.ref, id);
   }
   for (const item of draft.mainlinePatch.timelineAnchors) {
+    const itemTemporal =
+      temporal?.timelineAnchors.get(item.ref) ||
+      temporal?.timelineAnchors.get(item.label);
+    const chapterId = itemTemporal?.firstChapterId ?? context.chapterId;
     const id = stableId(
       `time_${context.projectId}`,
-      `${item.label}|${context.chapterId}`,
+      `${item.label}|${chapterId}`,
     );
     mainline.timelineAnchors[id] = {
       id,
       label: item.label,
       timeDescription: item.timeDescription,
       event: item.event,
-      chapterId: context.chapterId,
+      chapterId,
       pinned: item.pinned,
     };
   }
   for (const item of draft.mainlinePatch.completedBeats) {
+    const itemTemporal =
+      temporal?.completedBeats.get(item.ref) ||
+      temporal?.completedBeats.get(item.summary);
+    const chapterId = itemTemporal?.lastChapterId ?? context.chapterId;
     const id = stableId(
       `beat_${context.projectId}`,
-      `${item.summary}|${context.chapterId}`,
+      `${item.summary}|${chapterId}`,
     );
     if (!mainline.recentCompletedBeats.some(beat => beat.id === id)) {
       mainline.recentCompletedBeats.push({
         id,
         summary: item.summary,
-        chapterId: context.chapterId,
+        chapterId,
       });
     }
   }
@@ -593,6 +692,244 @@ function firstEvidenceChapterId(
   return evidence?.[0]?.chapterId ?? fallback;
 }
 
+/** Local-only temporal window derived from BatchEvidenceQuote chapters. */
+export interface StoryMemoryItemTemporal {
+  firstChapterId: number;
+  firstPosition: number;
+  lastChapterId: number;
+  lastPosition: number;
+  evidenceChapterIds: number[];
+}
+
+/**
+ * Per-item temporal maps for a single batch apply.
+ * Keys are patch refs (tempRef / characterRef / conflictRef / …).
+ * Mutation remains one Merger pass; only timestamps are recovered from Evidence.
+ */
+export interface StoryMemoryBatchTemporalMaps {
+  chapterPositionById: Map<number, number>;
+  newCharacters: Map<string, StoryMemoryItemTemporal>;
+  characterUpdates: Map<string, StoryMemoryItemTemporal>;
+  newRelationships: Map<string, StoryMemoryItemTemporal>;
+  relationshipUpdates: Map<string, StoryMemoryItemTemporal>;
+  conflictUpserts: Map<string, StoryMemoryItemTemporal>;
+  conflictResolutions: Map<string, StoryMemoryItemTemporal>;
+  threadOpens: Map<string, StoryMemoryItemTemporal>;
+  threadUpdates: Map<string, StoryMemoryItemTemporal>;
+  threadResolutions: Map<string, StoryMemoryItemTemporal>;
+  foreshadowingUpserts: Map<string, StoryMemoryItemTemporal>;
+  timelineAnchors: Map<string, StoryMemoryItemTemporal>;
+  completedBeats: Map<string, StoryMemoryItemTemporal>;
+  currentArc?: StoryMemoryItemTemporal;
+}
+
+function buildChapterPositionById(
+  draft: StoryMemoryBatchPatchDraft,
+): Map<number, number> {
+  const map = new Map<number, number>();
+  map.set(draft.rangeRef.fromChapterId, draft.rangeRef.fromPosition);
+  map.set(draft.rangeRef.throughChapterId, draft.rangeRef.throughPosition);
+  for (const summary of draft.chapterSummaries) {
+    if (Number.isFinite(summary.chapterId)) {
+      map.set(summary.chapterId, summary.chapterPosition);
+    }
+  }
+  return map;
+}
+
+function evidenceTemporal(
+  evidence: BatchEvidenceQuote[] | undefined,
+  fallbackChapterId: number,
+  fallbackPosition: number,
+  positionById: Map<number, number>,
+): StoryMemoryItemTemporal {
+  const uniqueIds = [
+    ...new Set(
+      (evidence || [])
+        .map(item => item.chapterId)
+        .filter(id => Number.isFinite(id)),
+    ),
+  ];
+  if (uniqueIds.length === 0) {
+    return {
+      firstChapterId: fallbackChapterId,
+      firstPosition: fallbackPosition,
+      lastChapterId: fallbackChapterId,
+      lastPosition: fallbackPosition,
+      evidenceChapterIds: [fallbackChapterId],
+    };
+  }
+  const sorted = [...uniqueIds].sort((left, right) => {
+    const leftPos = positionById.get(left);
+    const rightPos = positionById.get(right);
+    if (leftPos != null && rightPos != null && leftPos !== rightPos) {
+      return leftPos - rightPos;
+    }
+    if (leftPos != null && rightPos == null) return -1;
+    if (leftPos == null && rightPos != null) return 1;
+    return left - right;
+  });
+  const firstChapterId = sorted[0];
+  const lastChapterId = sorted[sorted.length - 1];
+  return {
+    firstChapterId,
+    firstPosition: positionById.get(firstChapterId) ?? fallbackPosition,
+    lastChapterId,
+    lastPosition: positionById.get(lastChapterId) ?? fallbackPosition,
+    evidenceChapterIds: sorted,
+  };
+}
+
+function putTemporal(
+  map: Map<string, StoryMemoryItemTemporal>,
+  key: string,
+  temporal: StoryMemoryItemTemporal,
+  positionById: Map<number, number>,
+): void {
+  if (!key) return;
+  const existing = map.get(key);
+  if (!existing) {
+    map.set(key, temporal);
+    return;
+  }
+  const mergedIds = [
+    ...new Set([
+      ...existing.evidenceChapterIds,
+      ...temporal.evidenceChapterIds,
+    ]),
+  ];
+  map.set(
+    key,
+    evidenceTemporal(
+      mergedIds.map(chapterId => ({ chapterId, quote: '' })),
+      temporal.firstChapterId,
+      temporal.firstPosition,
+      positionById,
+    ),
+  );
+}
+
+export function buildStoryMemoryBatchTemporalMaps(
+  draft: StoryMemoryBatchPatchDraft,
+): StoryMemoryBatchTemporalMaps {
+  const chapterPositionById = buildChapterPositionById(draft);
+  const fallbackChapterId = draft.rangeRef.throughChapterId;
+  const fallbackPosition = draft.rangeRef.throughPosition;
+  const maps: StoryMemoryBatchTemporalMaps = {
+    chapterPositionById,
+    newCharacters: new Map(),
+    characterUpdates: new Map(),
+    newRelationships: new Map(),
+    relationshipUpdates: new Map(),
+    conflictUpserts: new Map(),
+    conflictResolutions: new Map(),
+    threadOpens: new Map(),
+    threadUpdates: new Map(),
+    threadResolutions: new Map(),
+    foreshadowingUpserts: new Map(),
+    timelineAnchors: new Map(),
+    completedBeats: new Map(),
+  };
+  const of = (evidence: BatchEvidenceQuote[] | undefined) =>
+    evidenceTemporal(
+      evidence,
+      fallbackChapterId,
+      fallbackPosition,
+      chapterPositionById,
+    );
+
+  for (const item of draft.newCharacters) {
+    putTemporal(maps.newCharacters, item.tempRef, of(item.evidence), chapterPositionById);
+  }
+  for (const item of draft.characterUpdates) {
+    putTemporal(
+      maps.characterUpdates,
+      item.characterRef,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.newRelationships) {
+    putTemporal(
+      maps.newRelationships,
+      item.tempRef,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.relationshipUpdates) {
+    putTemporal(
+      maps.relationshipUpdates,
+      item.relationshipRef,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.mainlinePatch.conflictUpserts) {
+    putTemporal(
+      maps.conflictUpserts,
+      item.ref || item.title,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.mainlinePatch.conflictResolutions || []) {
+    putTemporal(
+      maps.conflictResolutions,
+      item.conflictRef,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.mainlinePatch.threadOpens) {
+    putTemporal(maps.threadOpens, item.ref, of(item.evidence), chapterPositionById);
+  }
+  for (const item of draft.mainlinePatch.threadUpdates) {
+    putTemporal(
+      maps.threadUpdates,
+      item.ref,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.mainlinePatch.threadResolutions) {
+    putTemporal(
+      maps.threadResolutions,
+      item.threadRef,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.mainlinePatch.foreshadowingUpserts) {
+    putTemporal(
+      maps.foreshadowingUpserts,
+      item.ref || item.setup || '',
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.mainlinePatch.timelineAnchors) {
+    putTemporal(
+      maps.timelineAnchors,
+      item.ref || item.label,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  for (const item of draft.mainlinePatch.completedBeats) {
+    putTemporal(
+      maps.completedBeats,
+      item.ref || item.summary,
+      of(item.evidence),
+      chapterPositionById,
+    );
+  }
+  if (draft.mainlinePatch.currentArcUpdate.action !== 'none') {
+    maps.currentArc = of(draft.mainlinePatch.currentArcUpdate.evidence);
+  }
+  return maps;
+}
+
 /** Convert a net-change batch patch into the chapter patch shape for reuse. */
 export function batchPatchToChapterDraft(
   draft: StoryMemoryBatchPatchDraft,
@@ -600,12 +937,16 @@ export function batchPatchToChapterDraft(
 ): {
   chapterDraft: ChapterMemoryPatchDraft;
   characterSeedChapterIds: Map<string, number>;
+  temporalMaps: StoryMemoryBatchTemporalMaps;
 } {
+  const temporalMaps = buildStoryMemoryBatchTemporalMaps(draft);
   const characterSeedChapterIds = new Map<string, number>();
   for (const item of draft.newCharacters) {
+    const temporal = temporalMaps.newCharacters.get(item.tempRef);
     characterSeedChapterIds.set(
       item.tempRef,
-      firstEvidenceChapterId(item.evidence, draft.rangeRef.fromChapterId),
+      temporal?.firstChapterId ??
+        firstEvidenceChapterId(item.evidence, draft.rangeRef.fromChapterId),
     );
   }
   const combined = draft.chapterSummaries;
@@ -742,7 +1083,7 @@ export function batchPatchToChapterDraft(
       })),
     },
   };
-  return { chapterDraft, characterSeedChapterIds };
+  return { chapterDraft, characterSeedChapterIds, temporalMaps };
 }
 
 export function applyStoryMemoryBatchPatch(
@@ -771,10 +1112,8 @@ export function applyStoryMemoryBatchPatch(
       '批次终点早于当前检查点。',
     );
   }
-  const { chapterDraft, characterSeedChapterIds } = batchPatchToChapterDraft(
-    draft,
-    context.title || '',
-  );
+  const { chapterDraft, characterSeedChapterIds, temporalMaps } =
+    batchPatchToChapterDraft(draft, context.title || '');
   const applied = applyStoryMemoryPatch(previous, chapterDraft, {
     projectId: context.projectId,
     chapterId: draft.rangeRef.throughChapterId,
@@ -783,6 +1122,7 @@ export function applyStoryMemoryBatchPatch(
     baseMemoryFingerprint: context.baseMemoryFingerprint,
     now: context.now,
     characterSeedChapterIds,
+    temporalMaps,
     lastAppliedUnitId: context.batchId,
   });
   const resolvedBatch: StoredStoryMemoryBatch = {

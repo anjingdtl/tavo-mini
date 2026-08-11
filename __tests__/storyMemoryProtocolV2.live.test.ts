@@ -27,7 +27,8 @@ import {
   compileStoryMemoryObservations,
   validateCompiledStoryMemoryBatchPatch,
 } from '../src/services/storyMemory/storyMemoryObservationCompiler';
-import { extractJSON } from '../src/utils/jsonExtractor';
+import { applyStoryMemoryBatchPatch } from '../src/services/storyMemory/storyMemoryMerger';
+import { parseStoryMemoryObservationCandidate } from '../src/services/storyMemory/storyMemoryObservationFormatter';
 import { estimateMessagesTokens } from '../src/utils/tokenEstimator';
 import type { ChatMessage } from '../src/services/llm';
 import type { Chapter } from '../src/types/novel';
@@ -35,6 +36,20 @@ import type {
   StoryCharacter,
   StoryMemoryState,
 } from '../src/services/storyMemory/storyMemoryTypes';
+
+function rawObservationCount(raw: unknown): number {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 0;
+  const chapters = Array.isArray((raw as { chapters?: unknown }).chapters)
+    ? ((raw as { chapters: unknown[] }).chapters)
+    : [];
+  return chapters.reduce<number>((total, chapter) => {
+    if (!chapter || typeof chapter !== 'object' || Array.isArray(chapter)) {
+      return total;
+    }
+    const observations = (chapter as { observations?: unknown }).observations;
+    return total + (Array.isArray(observations) ? observations.length : 0);
+  }, 0);
+}
 
 const LIVE = process.env.LIVE_STORY_MEMORY === '1';
 const describeLive = LIVE ? describe : describe.skip;
@@ -354,11 +369,14 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
     expect(llm.httpStatus).toBe(200);
     expect(llm.finishReason).not.toBe('length');
     expect(llm.text.length).toBeGreaterThan(0);
-    const raw = extractJSON(llm.text);
+    // Production isomorphic parse path (checkpoint service uses the same helper).
+    const raw = parseStoryMemoryObservationCandidate(llm.text);
+    const observationsReceived = rawObservationCount(raw);
     const normalized = normalizeStoryMemoryObservationPayload(
       raw,
       materials.includedChapterHandles,
     );
+    expect(normalized.missingChapterHandles).toEqual([]);
     const compiled = compileStoryMemoryObservations({
       chapters,
       previousState: state,
@@ -372,16 +390,64 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
       chapters,
       evidence,
     );
-    const observationsReceived = normalized.chapters.reduce(
-      (sum, item) => sum + item.observations.length,
-      0,
-    );
     const semanticGate = evaluateStoryMemoryKnownChangeSemanticGate({
       observationsReceived,
       observationsAccepted: compiled.acceptedObservations,
       patch: compiled.patch,
     });
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(outDir, 'live-complex-long-diag-from-jest.json'),
+      JSON.stringify(
+        {
+          httpStatus: llm.httpStatus,
+          finishReason: llm.finishReason,
+          emptyReason: llm.emptyReason,
+          textLen: llm.text.length,
+          observationsReceived,
+          observationsAccepted: compiled.acceptedObservations,
+          observationsDropped: compiled.droppedObservations,
+          warningCodes: [...new Set(compiled.warnings.map(item => item.code))],
+          normalizeWarnings: [
+            ...new Set(normalized.warnings.map(item => item.code)),
+          ],
+          semanticGate,
+          patchSnapshot: {
+            newCharacters: compiled.patch.newCharacters.length,
+            characterUpdates: compiled.patch.characterUpdates.length,
+            newRelationships: compiled.patch.newRelationships.length,
+            relationshipUpdates: compiled.patch.relationshipUpdates.length,
+            conflictUpserts: compiled.patch.mainlinePatch.conflictUpserts.length,
+            conflictResolutions: (
+              compiled.patch.mainlinePatch.conflictResolutions || []
+            ).length,
+            threadOpens: compiled.patch.mainlinePatch.threadOpens.length,
+            threadUpdates: compiled.patch.mainlinePatch.threadUpdates.length,
+            threadResolutions:
+              compiled.patch.mainlinePatch.threadResolutions.length,
+            foreshadowingUpserts:
+              compiled.patch.mainlinePatch.foreshadowingUpserts.length,
+            timelineAnchors: compiled.patch.mainlinePatch.timelineAnchors.length,
+            objective: Boolean(compiled.patch.mainlinePatch.currentObjective),
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
     expect(semanticGate.pass).toBe(true);
+    expect(observationsReceived).toBeGreaterThan(0);
+    expect(compiled.acceptedObservations).toBeGreaterThanOrEqual(3);
+    expect(semanticGate.categories.length).toBeGreaterThan(0);
+
+    const applied = applyStoryMemoryBatchPatch(state, compiled.patch, {
+      projectId: 1,
+      sourceFingerprint: 'live-complex-long-3x18000',
+      batchId: 'batch_live_complex_long_3x18000',
+    });
+    expect(applied.resolvedBatch.status).toBe('applied');
+    expect(applied.state.throughChapterPosition).toBe(9);
     report.complexLong = {
       pass: semanticGate.pass,
       httpStatus: llm.httpStatus,
@@ -396,8 +462,11 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
       semanticGateReason: semanticGate.reason,
       warningCodes: [...new Set(compiled.warnings.map(item => item.code))],
       usage: llm.usage,
+      applied: true,
+      throughChapterPosition: applied.state.throughChapterPosition,
+      physicalAttemptCount: 1,
       requestPath:
-        'callLLMResult -> providerRegistry -> openAICompatibleProvider',
+        'callLLMResult -> buildStoryMemoryLLMConfig -> STORY_MEMORY_V2_REQUEST_KINDS.primary -> parseStoryMemoryObservationCandidate -> normalize/compile/validate/apply',
     };
   }, 300000);
 
@@ -623,3 +692,6 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
     };
   });
 });
+
+
+
