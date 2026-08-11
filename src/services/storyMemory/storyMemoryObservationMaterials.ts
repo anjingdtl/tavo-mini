@@ -128,45 +128,62 @@ function renderRelationship(
   return `${handle} | ${from}↔${to} | ${clean(relationship.relationType) || '-'} | state=${clean(relationship.currentState) || '-'} | trust=${relationship.trustLevel}`;
 }
 
-function renderActiveMainline(
-  state: StoryMemoryState,
-  handles: StoryMemoryEntityHandleEnvelope,
-): string {
-  const mainline = state.mainline;
-  const lines: string[] = [];
-  if (mainline.currentArc) {
-    lines.push(`A01 | ${clean(mainline.currentArc.name)} | ${clean(mainline.currentArc.summary)}`);
-  } else {
-    lines.push('A01 | （当前无剧情弧）');
-  }
-  lines.push(`OBJECTIVE | ${clean(mainline.currentObjective) || '（无当前目标）'}`);
-  Object.values(mainline.activeConflicts)
-    .sort((left, right) => left.id.localeCompare(right.id))
-    .forEach(conflict => {
-      const handle = handles.reverseConflict.get(conflict.id) || '';
-      const parties = conflict.parties
-        .map(id => handles.reverseCharacter.get(id) || '?')
-        .join(',');
-      lines.push(`${handle} | ${clean(conflict.title)} | state=${clean(conflict.state)} | stakes=${clean(conflict.stakes)} | parties=${parties || '-'}`);
-    });
-  Object.values(mainline.openThreads)
-    .sort((left, right) => left.id.localeCompare(right.id))
-    .forEach(thread => {
-      const handle = handles.reverseThread.get(thread.id) || '';
-      const owners = thread.ownerCharacterIds
-        .map(id => handles.reverseCharacter.get(id) || '?')
-        .join(',');
-      lines.push(`${handle} | ${clean(thread.title)} | ${clean(thread.description)} | priority=${thread.priority} | owners=${owners || '-'}`);
-    });
-  Object.values(mainline.foreshadowing)
-    .sort((left, right) => left.id.localeCompare(right.id))
-    .forEach(item => {
-      const handle = handles.reverseForeshadowing.get(item.id) || '';
-      lines.push(`${handle} | setup=${clean(item.setup)} | payoff=${clean(item.expectedPayoff)} | status=${item.status}`);
-    });
-  return lines.join('\n');
+const MAINLINE_FIELD_CHAR_LIMIT = 240;
+
+function boundField(value: string, limit = MAINLINE_FIELD_CHAR_LIMIT): string {
+  const cleaned = clean(value);
+  if (Array.from(cleaned).length <= limit) return cleaned;
+  return Array.from(cleaned).slice(0, limit).join('') + '…';
 }
 
+function renderCurrentArc(state: StoryMemoryState): string {
+  const arc = state.mainline.currentArc;
+  if (!arc) return 'A01 | none';
+  return `A01 | ${boundField(arc.name, 80) || 'none'} | ${boundField(arc.summary, 160) || 'none'}`;
+}
+
+function renderCurrentObjective(state: StoryMemoryState): string {
+  return `OBJECTIVE | ${boundField(state.mainline.currentObjective, 160) || 'none'}`;
+}
+
+function conflictRelevance(
+  conflict: StoryMemoryState['mainline']['activeConflicts'][string],
+  body: string,
+  relevantIds: ReadonlySet<string>,
+): number {
+  let score = 0.4;
+  if (conflict.parties.some(id => relevantIds.has(id))) score += 0.35;
+  if (keywordMatches(`${conflict.title} ${conflict.state}`, body)) score += 0.2;
+  return Math.min(1, score);
+}
+
+function threadRelevance(
+  thread: StoryMemoryState['mainline']['openThreads'][string],
+  body: string,
+  relevantIds: ReadonlySet<string>,
+): number {
+  let score = 0.35;
+  if (thread.ownerCharacterIds.some(id => relevantIds.has(id))) score += 0.3;
+  if (keywordMatches(`${thread.title} ${thread.description}`, body)) score += 0.2;
+  if (thread.priority === 'critical') score += 0.15;
+  else if (thread.priority === 'high') score += 0.1;
+  return Math.min(1, score);
+}
+
+function foreshadowRelevance(
+  item: StoryMemoryState['mainline']['foreshadowing'][string],
+  body: string,
+): number {
+  let score = 0.3;
+  if (keywordMatches(`${item.setup} ${item.expectedPayoff}`, body)) score += 0.35;
+  if (item.status === 'open' || item.status === 'partially_paid') score += 0.15;
+  return Math.min(1, score);
+}
+
+/**
+ * Pack complete items without half-item clipping. Oversized candidates are
+ * skipped so later smaller items can still fill remaining budget.
+ */
 export function packWholeItems<T>(
   items: T[],
   tokenBudget: number,
@@ -178,11 +195,45 @@ export function packWholeItems<T>(
   let used = 0;
   for (const item of items) {
     const cost = estimateTokens(render(item));
-    if (used + cost > budget) break;
+    if (used + cost > budget) continue;
     packed.push(item);
     used += cost;
   }
   return packed;
+}
+
+export interface PackWholeItemsResult<T> {
+  included: T[];
+  skippedTooLarge: T[];
+  remainingBudget: number;
+}
+
+export function packWholeItemsWithDiagnostics<T>(
+  items: T[],
+  tokenBudget: number,
+  render: (item: T) => string,
+): PackWholeItemsResult<T> {
+  const budget = Math.max(0, Math.floor(Number(tokenBudget) || 0));
+  if (budget <= 0) {
+    return { included: [], skippedTooLarge: [...items], remainingBudget: 0 };
+  }
+  const included: T[] = [];
+  const skippedTooLarge: T[] = [];
+  let used = 0;
+  for (const item of items) {
+    const cost = estimateTokens(render(item));
+    if (used + cost > budget) {
+      if (cost > budget - used) skippedTooLarge.push(item);
+      continue;
+    }
+    included.push(item);
+    used += cost;
+  }
+  return {
+    included,
+    skippedTooLarge,
+    remainingBudget: Math.max(0, budget - used),
+  };
 }
 
 export function buildStoryMemoryObservationMaterials(
@@ -260,16 +311,77 @@ export function buildStoryMemoryObservationMaterials(
     });
   });
 
+  // Arc / Objective stay mandatory so long novels never drop the active spine.
   addModule(modules, {
-    id: 'v2_active_mainline',
-    text: `【当前主线与热状态】\n${renderActiveMainline(state, handles)}`,
-    itemKind: 'active_mainline',
-    tier: 'preferred_high',
+    id: 'v2_current_arc',
+    text: `【当前剧情弧】\n${renderCurrentArc(state)}`,
+    itemKind: 'current_arc',
+    ...mandatory,
     priority: 9,
-    relevance: 1,
     shrinkPriority: 9,
-    burstPriority: 8,
+    burstPriority: 9,
   });
+  addModule(modules, {
+    id: 'v2_current_objective',
+    text: `【当前目标】\n${renderCurrentObjective(state)}`,
+    itemKind: 'current_objective',
+    ...mandatory,
+    priority: 9,
+    shrinkPriority: 9,
+    burstPriority: 9,
+  });
+  Object.values(state.mainline.activeConflicts)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .forEach(conflict => {
+      const handle = handles.reverseConflict.get(conflict.id) || '';
+      const parties = conflict.parties
+        .map(id => handles.reverseCharacter.get(id) || '?')
+        .join(',');
+      addModule(modules, {
+        id: `v2_conflict_${conflict.id}`,
+        text: `【活跃冲突】\n${handle} | ${boundField(conflict.title, 80)} | state=${boundField(conflict.state, 80)} | stakes=${boundField(conflict.stakes, 80)} | parties=${parties || '-'}`,
+        itemKind: 'conflict_item',
+        tier: 'preferred_high',
+        priority: 8,
+        relevance: conflictRelevance(conflict, body, relevantIds),
+        shrinkPriority: 7,
+        burstPriority: 6,
+      });
+    });
+  Object.values(state.mainline.openThreads)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .forEach(thread => {
+      const handle = handles.reverseThread.get(thread.id) || '';
+      const owners = thread.ownerCharacterIds
+        .map(id => handles.reverseCharacter.get(id) || '?')
+        .join(',');
+      addModule(modules, {
+        id: `v2_thread_${thread.id}`,
+        text: `【开放线索】\n${handle} | ${boundField(thread.title, 80)} | ${boundField(thread.description, 160)} | priority=${thread.priority} | owners=${owners || '-'}`,
+        itemKind: 'thread_item',
+        tier: 'preferred_high',
+        priority: 8,
+        relevance: threadRelevance(thread, body, relevantIds),
+        shrinkPriority: 7,
+        burstPriority: 6,
+      });
+    });
+  Object.values(state.mainline.foreshadowing)
+    .filter(item => item.status === 'open' || item.status === 'partially_paid')
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .forEach(item => {
+      const handle = handles.reverseForeshadowing.get(item.id) || '';
+      addModule(modules, {
+        id: `v2_foreshadow_${item.id}`,
+        text: `【伏笔】\n${handle} | setup=${boundField(item.setup, 120)} | payoff=${boundField(item.expectedPayoff, 120)} | status=${item.status}`,
+        itemKind: 'foreshadow_item',
+        tier: 'preferred_high',
+        priority: 7,
+        relevance: foreshadowRelevance(item, body),
+        shrinkPriority: 6,
+        burstPriority: 5,
+      });
+    });
   [...relevantIds]
     .sort()
     .forEach(characterId => {

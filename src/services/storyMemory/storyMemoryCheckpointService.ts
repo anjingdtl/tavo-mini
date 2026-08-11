@@ -40,6 +40,7 @@ import {
 import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
 import {
   freezeStoryMemoryLLMConfig,
+  planStoryMemoryFreshRetryRequest,
   planStoryMemoryObservationMessages,
   planStoryMemoryObservationRequest,
   type FrozenStoryMemoryLLMConfig,
@@ -53,7 +54,6 @@ import {
 } from './storyMemoryObservationMaterials';
 import {
   buildStoryMemoryObservationFormatterMessages,
-  buildStoryMemoryObservationFreshRetryMessages,
   formatterHandleLists,
   parseStoryMemoryObservationCandidate,
 } from './storyMemoryObservationFormatter';
@@ -668,6 +668,7 @@ async function runObservationCheckpointAttemptLoop(
   });
   let stage: 'primary' | 'formatter' | 'fresh' = 'primary';
   let currentMessages = baseMessages;
+  let freshFailureCode = '';
   let attempt = 0;
   try {
     while (attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
@@ -684,19 +685,23 @@ async function runObservationCheckpointAttemptLoop(
             materials: input.materials,
             batchSize,
           })
-        : planStoryMemoryObservationMessages({
-            config: input.frozenConfig,
-            messages: currentMessages,
-            batchSize,
-          });
+        : stage === 'fresh'
+          ? planStoryMemoryFreshRetryRequest({
+              config: input.frozenConfig,
+              materials: input.materials,
+              batchSize,
+              failureCode: freshFailureCode || 'Fresh Retry',
+            })
+          : planStoryMemoryObservationMessages({
+              config: input.frozenConfig,
+              messages: currentMessages,
+              batchSize,
+            });
       recordStoryMemoryV2Plan(diagnostics, plan, input.materials);
       if (plan.strategy !== 'full_prompt') {
       if (stage === 'formatter') {
         stage = 'fresh';
-        currentMessages = buildStoryMemoryObservationFreshRetryMessages(
-          baseMessages,
-          plan.reason || 'Formatter 输入超出当前模型窗口',
-        );
+        freshFailureCode = plan.reason || 'Formatter 输入超出当前模型窗口';
         continue;
       }
       throw new StoryMemoryError(
@@ -747,10 +752,8 @@ async function runObservationCheckpointAttemptLoop(
           : true)
       ) {
         stage = 'fresh';
-        currentMessages = buildStoryMemoryObservationFreshRetryMessages(
-          baseMessages,
-          error instanceof Error ? error.message : '网络请求失败',
-        );
+        freshFailureCode =
+          error instanceof Error ? error.message : '网络请求失败';
         continue;
       }
         throw error;
@@ -841,10 +844,7 @@ async function runObservationCheckpointAttemptLoop(
           parseError.code === 'MEMORY_CHECKPOINT_COVERAGE_GAP'
         ) {
           stage = 'fresh';
-          currentMessages = buildStoryMemoryObservationFreshRetryMessages(
-            baseMessages,
-            message,
-          );
+          freshFailureCode = message;
           continue;
         }
         if (
@@ -870,17 +870,11 @@ async function runObservationCheckpointAttemptLoop(
             currentMessages = formatterMessages;
           } else {
             stage = 'fresh';
-            currentMessages = buildStoryMemoryObservationFreshRetryMessages(
-              baseMessages,
-              formatterPlan.reason || message,
-            );
+            freshFailureCode = formatterPlan.reason || message;
           }
         } else {
           stage = 'fresh';
-          currentMessages = buildStoryMemoryObservationFreshRetryMessages(
-            baseMessages,
-            message,
-          );
+          freshFailureCode = message;
         }
         continue;
       }
@@ -908,10 +902,8 @@ async function runObservationCheckpointAttemptLoop(
       );
     }
     stage = 'fresh';
-    currentMessages = buildStoryMemoryObservationFreshRetryMessages(
-      baseMessages,
-      result?.emptyReason || result?.finishReason || '模型没有返回内容',
-    );
+    freshFailureCode =
+      result?.emptyReason || result?.finishReason || '模型没有返回内容';
   }
   throw new StoryMemoryError(
     'MEMORY_CHECKPOINT_FAILED',
