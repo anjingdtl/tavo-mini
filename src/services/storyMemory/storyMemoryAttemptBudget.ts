@@ -70,12 +70,12 @@ export class StoryMemoryAttemptBudget {
     return this.usedPhysicalRequests < this.maxPhysicalRequests;
   }
 
-  hooks(): LLMPhysicalRequestHooks {
+  hooks(requestKind?: string): LLMPhysicalRequestHooks {
     return {
-      beforeRequest: event => this.beforeRequest(event.kind),
+      beforeRequest: event => this.beforeRequest(requestKind || event.kind),
       afterRequest: event =>
         this.afterRequest({
-          kind: event.kind,
+          kind: requestKind || event.kind,
           outcome: event.outcome,
           httpStatus: event.httpStatus,
           providerRequestId: event.providerRequestId,

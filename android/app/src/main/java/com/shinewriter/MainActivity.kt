@@ -30,6 +30,19 @@ class MainActivity : ReactActivity() {
       // 10.20 修复：去除已处理 extra，Activity 重建（如旋转屏幕）时不会重复导航
       intent.removeExtra(PipelineForegroundModule.EXTRA_DEEP_LINK_TASK_ID)
     }
+
+    // Debug-only QA seam.  It is intentionally intent-driven and whitelisted
+    // here, before JS starts, so it cannot alter release behavior or accept an
+    // arbitrary payload from an external caller.
+    if (BuildConfig.DEBUG) {
+      val scenario = intent?.getStringExtra(
+        PipelineForegroundModule.EXTRA_STORY_MEMORY_DEBUG_SCENARIO,
+      )
+      if (PipelineForegroundModule.isStoryMemoryDebugScenario(scenario)) {
+        PipelineForegroundModule.setPendingStoryMemoryDebugScenario(scenario)
+        intent?.removeExtra(PipelineForegroundModule.EXTRA_STORY_MEMORY_DEBUG_SCENARIO)
+      }
+    }
   }
 
   override fun getMainComponentName(): String = "ShineWriter"

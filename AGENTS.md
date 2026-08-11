@@ -127,3 +127,11 @@ SQLite 数据库 `shine_writer.db`，**Schema version 50**（`src/services/migra
 ## 工作目录卫生
 
 仓库根目录有大量历史调试产物（`*.png`、`*.b64`、`shine_writer*.db`、`ui_*.xml`、`window_dump*.xml`、`logcat_*.log`、`emulator_*` 等），这些不是源码，不要误删或纳入提交；新增产物请写到 `test-logs/` 等已存在的临时目录，不要污染根目录。
+
+## Android 调测规则（Agent 必读）
+
+- 环境：Java 17（机器级 `JAVA_HOME`）、SDK 在 `%LOCALAPPDATA%\Android\Sdk`（`ANDROID_HOME` 已设）、`adb`/`maestro`（`C:\maestro\bin`）已加入用户 PATH。Agent 子进程 PATH 可能是旧快照，找不到命令时先按 `android-build-debug` skill 里的方式刷新 PATH，不要放弃。
+- 分工：Gradle/ADB 能完成的操作优先走 CLI；Maestro 负责 UI hierarchy、UI 自动操作、用户流程与端到端测试（MCP 已接入 OpenCode/Grok Build/Zcode）；ADB 是基础设备控制与诊断通道。
+- 调试必备 Skills：`android-build-debug`（Gradle/APK/安装/启动/logcat/crash）、`android-emulator-qa`（UI hierarchy/元素定位/交互/截图/复现/回归）、`android-performance`（Perfetto/simpleperf/gfxinfo/meminfo/启动耗时/卡顿/ANR/内存/CPU）。
+- BUG 修复必须闭环：读代码 → 建立假设 → 编译 → 安装 → 清 logcat → 启动 → 重现操作 → 取 UI hierarchy → 取截图 → 取日志 → 确认根因 → 最小边界修复 → 重编译 → 重安装 → 执行相同操作路径 → 验证问题消失 → 相关回归 → 检查日志无新增异常。
+- 没有经过真实模拟器验证，不得声称「修复完成」。

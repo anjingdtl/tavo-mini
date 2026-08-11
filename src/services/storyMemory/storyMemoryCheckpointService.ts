@@ -1,5 +1,5 @@
 import type { Chapter } from '../../types/novel';
-import { estimateTokens } from '../../utils/tokenEstimator';
+import { estimateMessagesTokens, estimateTokens } from '../../utils/tokenEstimator';
 import { invalidateIdf } from '../../utils/idfCache';
 import * as db from '../database';
 import { callLLMResult, type LLMResult } from '../llm';
@@ -10,13 +10,10 @@ import {
   stableTextFingerprint,
 } from './storyMemoryFingerprint';
 import { applyStoryMemoryBatchPatch } from './storyMemoryMerger';
-import {
-  buildStoryMemoryCheckpointMessages,
-  buildStoryMemoryCheckpointRepairMessages,
-  buildStoryMemoryCheckpointRetryMessages,
-} from './storyMemoryPrompts';
+import { createEmptyBatchPatch } from './storyMemoryPrompts';
 import { validateStoryMemoryBatchPatch } from './storyMemoryBatchValidator';
 import type {
+  ChapterMemoryPatchDraft,
   EpisodicSummary,
   StoryMemoryBatchPatchDraft,
   StoryMemoryPartialSuccess,
@@ -28,7 +25,6 @@ import {
   splitCheckpointBatches,
   STORY_MEMORY_DEFAULT_BATCH_SIZE,
 } from './storyMemoryPolicy';
-import { getContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
 import {
   checkpointMaxTokens as planCheckpointMaxTokens,
 } from './storyMemoryBudget';
@@ -44,14 +40,46 @@ import {
 import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
 import {
   freezeStoryMemoryLLMConfig,
-  planStoryMemoryRequest,
-  planStoryMemoryElasticRequest,
+  planStoryMemoryObservationMessages,
+  planStoryMemoryObservationRequest,
   type FrozenStoryMemoryLLMConfig,
 } from './storyMemoryRequestBudget';
+import { buildStoryMemoryEvidenceAnchors } from './storyMemoryEvidenceAnchors';
+import { buildStoryMemoryEntityHandles } from './storyMemoryEntityHandles';
 import {
-  buildStoryMemoryCheckpointMaterials,
-  type StoryMemoryCheckpointMaterials,
-} from './storyMemoryPromptMaterials';
+  buildStoryMemoryObservationMaterials,
+  buildMessagesFromObservationMaterials,
+  type StoryMemoryObservationMaterials,
+} from './storyMemoryObservationMaterials';
+import {
+  buildStoryMemoryObservationFormatterMessages,
+  buildStoryMemoryObservationFreshRetryMessages,
+  formatterHandleLists,
+  parseStoryMemoryObservationCandidate,
+} from './storyMemoryObservationFormatter';
+import { normalizeStoryMemoryObservationPayload } from './storyMemoryObservationNormalizer';
+import { compileStoryMemoryObservations } from './storyMemoryObservationCompiler';
+import type { StoryMemoryObservationWarning } from './storyMemoryObservationTypes';
+import { validateChapterMemoryPatch } from './storyMemoryValidator';
+import {
+  STORY_MEMORY_V2_REQUEST_KINDS,
+} from './storyMemoryProtocolVersion';
+import {
+  createStoryMemoryV2Diagnostics,
+  recordRecentStoryMemoryV2Diagnostics,
+  recordStoryMemoryV2ObservationStats,
+  recordStoryMemoryV2Plan,
+  recordStoryMemoryV2Warnings,
+  type StoryMemoryV2Diagnostics,
+  type StoryMemoryV2DiagnosticsRef,
+} from './storyMemoryV2Diagnostics';
+import {
+  applyStoryMemoryDebugConfig,
+  consumeStoryMemoryDebugScenario,
+  injectStoryMemoryDebugResult,
+  recordStoryMemoryDebugObservationStats,
+  type StoryMemoryDebugScenario,
+} from './storyMemoryDebugHarness';
 
 function renderBatchEpisodicText(
   summary: EpisodicSummary,
@@ -134,6 +162,7 @@ async function requestCheckpoint(
   signal?: AbortSignal,
   attemptBudget?: StoryMemoryAttemptBudget,
   frozenConfig?: FrozenStoryMemoryLLMConfig,
+  debugScenario?: StoryMemoryDebugScenario | null,
 ): Promise<LLMResult> {
   // Exactly one call enters the coordinator. Transport retries and protocol
   // fallbacks are accounted by the shared physical-request hook instead of a
@@ -144,7 +173,7 @@ async function requestCheckpoint(
     buildStoryMemoryLLMConfig({
       scenario,
       projectId,
-      physicalRequestHooks: attemptBudget?.hooks(),
+      physicalRequestHooks: attemptBudget?.hooks(scenario),
       requestConfig: frozenConfig?.requestConfig,
     }),
     signal,
@@ -155,7 +184,7 @@ async function requestCheckpoint(
       '检查点请求未能返回结果，请重试。',
     );
   }
-  return result;
+  return injectStoryMemoryDebugResult(result, scenario, debugScenario);
 }
 
 export function parseAndValidateBatchPatch(
@@ -199,6 +228,9 @@ export async function generateValidatedCheckpointBatch(input: {
     | 'story_memory_checkpoint'
     | 'story_memory_checkpoint_legacy_bootstrap';
   attemptBudget?: StoryMemoryAttemptBudget;
+  diagnosticsRef?: StoryMemoryV2DiagnosticsRef;
+  splitUsed?: boolean;
+  debugScenario?: StoryMemoryDebugScenario | null;
   onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
 }): Promise<StoryMemoryBatchPatchDraft> {
   if (input.signal?.aborted) {
@@ -213,60 +245,76 @@ export async function generateValidatedCheckpointBatch(input: {
       '检查点批次不能为空。',
     );
   }
-  const messages = buildStoryMemoryCheckpointMessages(
-    input.chapters,
-    input.previousState,
-  );
-  // Tiered materials for the elastic allocator path (governance §5). Built
-  // unconditionally — the loop decides whether to use them based on whether
-  // the frozen config exposes a real capability.
-  const materials = buildStoryMemoryCheckpointMaterials(
-    input.chapters,
-    input.previousState,
-  );
-  const scenario = input.scenario || 'story_memory_checkpoint';
   const projectId = input.chapters[0].project_id;
-  let getDisplayNumber: ((position: number) => number) | undefined;
-  try {
-    const numbering = await getContinuationChapterNumbering(projectId);
-    getDisplayNumber = position => numbering.getDisplayNumber(position as any);
-  } catch {
-    getDisplayNumber = undefined;
-  }
+  const debugScenario =
+    input.debugScenario === undefined
+      ? await consumeStoryMemoryDebugScenario()
+      : input.debugScenario;
   // Freeze the provider config together with the capability snapshot. Every
   // retry/repair for this logical batch must use this same model.
-  const frozenConfig = input.frozenConfig || (await freezeStoryMemoryLLMConfig());
+  const frozenConfig = applyStoryMemoryDebugConfig(
+    input.frozenConfig || (await freezeStoryMemoryLLMConfig()),
+    debugScenario,
+  );
+  const ordered = [...input.chapters].sort((left, right) => left.position - right.position);
+  const handles = buildStoryMemoryEntityHandles(
+    input.previousState,
+    ordered.map(chapter => ({
+      id: chapter.id,
+      position: chapter.position,
+      title: chapter.title,
+    })),
+  );
+  const evidence = buildStoryMemoryEvidenceAnchors(
+    ordered,
+    handles.chapterHandleById,
+  );
+  const materials = buildStoryMemoryObservationMaterials(
+    ordered,
+    input.previousState,
+    handles,
+    evidence,
+    {
+      legacyBootstrap:
+        input.scenario === 'story_memory_checkpoint_legacy_bootstrap',
+    },
+  );
 
   const attemptBudget =
     input.attemptBudget ||
     new StoryMemoryAttemptBudget({
       logicalBatchId: createStoryMemoryLogicalBatchId({
         projectId,
-        fromPosition: input.chapters[0].position,
-        throughPosition: input.chapters.at(-1)!.position,
-        kind: input.scenario || 'checkpoint',
+        fromPosition: ordered[0].position,
+        throughPosition: ordered.at(-1)!.position,
+        kind: 'story_memory_v2',
       }),
       projectId,
-      fromPosition: input.chapters[0].position,
-      throughPosition: input.chapters.at(-1)!.position,
+      fromPosition: ordered[0].position,
+      throughPosition: ordered.at(-1)!.position,
       maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
-      durable: false,
     });
-
-  return runCheckpointAttemptLoop({
-    chapters: input.chapters,
-    previousState: input.previousState,
-    memoryPatchMaxTokens: input.memoryPatchMaxTokens,
-    scenario,
-    projectId,
-    signal: input.signal,
-    getDisplayNumber,
-    baseMessages: messages,
-    materials,
-    frozenConfig,
-    attemptBudget,
-    onProgress: input.onProgress,
-  });
+  const diagnosticsRef = input.diagnosticsRef || {};
+  try {
+    return await runObservationCheckpointAttemptLoop({
+      chapters: ordered,
+      previousState: input.previousState,
+      projectId,
+      signal: input.signal,
+      materials,
+      frozenConfig,
+      attemptBudget,
+      diagnosticsRef,
+      splitUsed: input.splitUsed,
+      debugScenario,
+      allowLegacyChapterFallback: true,
+      onProgress: input.onProgress,
+    });
+  } finally {
+    if (!input.diagnosticsRef && diagnosticsRef.current) {
+      recordRecentStoryMemoryV2Diagnostics(diagnosticsRef.current);
+    }
+  }
 }
 
 export interface StoryMemoryCheckpointProgressEvent {
@@ -280,28 +328,6 @@ export interface StoryMemoryCheckpointProgressEvent {
   throughPosition: number;
   attempt: number | null;
   maxAttempts: number;
-}
-
-interface CheckpointAttemptLoopInput {
-  chapters: Chapter[];
-  previousState: StoryMemoryState;
-  memoryPatchMaxTokens: number;
-  scenario: string;
-  projectId: number;
-  signal?: AbortSignal;
-  getDisplayNumber?: (position: number) => number;
-  baseMessages: Array<{ role: 'system' | 'user'; content: string }>;
-  /**
-   * Tiered prompt materials (governance §5). When present and the frozen
-   * config carries a known capability, the loop plans each attempt through
-   * the elastic allocator instead of the legacy hard-window planner. Repair /
-   * fresh-retry append their own messages after the base, so the elastic plan
-   * is only the source of the primary plan + the split decision.
-   */
-  materials?: StoryMemoryCheckpointMaterials;
-  frozenConfig: FrozenStoryMemoryLLMConfig;
-  attemptBudget: StoryMemoryAttemptBudget;
-  onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
 }
 
 /**
@@ -333,107 +359,374 @@ export function shouldSkipRepairForInfeasibleSize(input: {
   return repairInputEstimate > input.hardInputLimit;
 }
 
+interface ObservationCheckpointLoopInput {
+  chapters: Chapter[];
+  previousState: StoryMemoryState;
+  projectId: number;
+  signal?: AbortSignal;
+  materials: StoryMemoryObservationMaterials;
+  frozenConfig: FrozenStoryMemoryLLMConfig;
+  attemptBudget: StoryMemoryAttemptBudget;
+  diagnosticsRef?: StoryMemoryV2DiagnosticsRef;
+  splitUsed?: boolean;
+  debugScenario?: StoryMemoryDebugScenario | null;
+  allowLegacyChapterFallback?: boolean;
+  onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isLegacyBatchPatchPayload(raw: unknown): raw is Record<string, unknown> {
+  return isRecord(raw) && Number(raw.schemaVersion) === 2 && isRecord(raw.rangeRef);
+}
+
+function legacyQuote(quote: string, chapterId: number): Array<{ chapterId: number; quote: string }> {
+  return quote.trim() ? [{ chapterId, quote }] : [];
+}
+
+function legacyChapterDraftToBatch(
+  draft: ChapterMemoryPatchDraft,
+  chapter: Chapter,
+): StoryMemoryBatchPatchDraft {
+  const batch = createEmptyBatchPatch([chapter]);
+  const evidence = (quote: string) => legacyQuote(quote, chapter.id);
+  batch.chapterSummaries = [
+    {
+      chapterId: chapter.id,
+      chapterPosition: chapter.position,
+      brief: draft.episodicSummary.brief || chapter.synopsis || chapter.content.slice(0, 80),
+      keywords: draft.episodicSummary.keywords,
+      events: draft.episodicSummary.events,
+      characterChanges: draft.episodicSummary.characterChanges,
+      relationshipChanges: draft.episodicSummary.relationshipChanges,
+      mainlineChanges: draft.episodicSummary.mainlineChanges,
+      newThreads: draft.episodicSummary.newThreads,
+      resolvedThreads: draft.episodicSummary.resolvedThreads,
+    },
+  ];
+  batch.newCharacters = draft.newCharacters.map(item => ({
+    tempRef: item.tempRef,
+    canonicalName: item.canonicalName,
+    aliases: item.aliases,
+    role: item.role,
+    identity: item.identity,
+    stableTraits: item.stableTraits,
+    initialState: item.initialState,
+    status: item.status,
+    evidence: evidence(item.evidenceQuote),
+  }));
+  batch.characterUpdates = draft.characterUpdates.map(item => ({
+    characterRef: item.characterRef,
+    addAliases: item.addAliases,
+    profileCorrections: item.profileCorrections,
+    stateChanges: item.stateChanges,
+    status: item.status,
+    correctionReason: item.correctionReason,
+    addKnowledge: item.addKnowledge,
+    removeKnowledge: item.removeKnowledge,
+    addPossessions: item.addPossessions,
+    removePossessions: item.removePossessions,
+    addSecrets: item.addSecrets,
+    removeSecrets: item.removeSecrets,
+    clearFields: item.clearFields,
+    evidence: evidence(item.evidenceQuote),
+  }));
+  batch.newRelationships = draft.newRelationships.map(item => ({
+    tempRef: item.tempRef,
+    fromRef: item.fromRef,
+    toRef: item.toRef,
+    direction: item.direction,
+    relationType: item.relationType,
+    currentState: item.currentState,
+    trustLevel: item.trustLevel,
+    publicStatus: item.publicStatus,
+    hiddenStatus: item.hiddenStatus,
+    reason: item.reason,
+    evidence: evidence(item.evidenceQuote),
+  }));
+  batch.relationshipUpdates = draft.relationshipUpdates.map(item => ({
+    relationshipRef: item.relationshipRef,
+    currentState: item.currentState,
+    trustLevel: item.trustLevel,
+    publicStatus: item.publicStatus,
+    hiddenStatus: item.hiddenStatus,
+    reason: item.reason,
+    evidence: evidence(item.evidenceQuote),
+  }));
+  const mapEntity = (item: {
+    ref: string;
+    title: string;
+    description?: string;
+    state?: string;
+    stakes?: string;
+    parties?: string[];
+    ownerCharacterRefs?: string[];
+    priority?: import('./storyMemoryTypes').StoryThread['priority'];
+    deadlineOrTrigger?: string;
+    setup?: string;
+    expectedPayoff?: string;
+    status?: import('./storyMemoryTypes').StoryForeshadowing['status'];
+    evidenceQuote: string;
+  }) => ({
+    ref: item.ref,
+    title: item.title,
+    description: item.description,
+    state: item.state,
+    stakes: item.stakes,
+    parties: item.parties,
+    ownerCharacterRefs: item.ownerCharacterRefs,
+    priority: item.priority,
+    deadlineOrTrigger: item.deadlineOrTrigger,
+    setup: item.setup,
+    expectedPayoff: item.expectedPayoff,
+    status: item.status,
+    evidence: evidence(item.evidenceQuote),
+  });
+  batch.mainlinePatch = {
+    assessment: draft.mainlinePatch.assessment,
+    currentArcUpdate: {
+      action: draft.mainlinePatch.currentArcUpdate.action,
+      arcRef: draft.mainlinePatch.currentArcUpdate.arcRef,
+      name: draft.mainlinePatch.currentArcUpdate.name,
+      summary: draft.mainlinePatch.currentArcUpdate.summary,
+      evidence: evidence(draft.mainlinePatch.currentArcUpdate.evidenceQuote),
+    },
+    currentObjective: draft.mainlinePatch.currentObjective
+      ? {
+          value: draft.mainlinePatch.currentObjective.value,
+          evidence: evidence(draft.mainlinePatch.currentObjective.evidenceQuote),
+        }
+      : undefined,
+    conflictUpserts: draft.mainlinePatch.conflictUpserts.map(mapEntity),
+    conflictResolutions: draft.mainlinePatch.conflictResolutions.map(item => ({
+      conflictRef: item.conflictRef,
+      resolution: item.resolution,
+      evidence: evidence(item.evidenceQuote),
+    })),
+    threadOpens: draft.mainlinePatch.threadOpens.map(mapEntity),
+    threadUpdates: draft.mainlinePatch.threadUpdates.map(mapEntity),
+    threadResolutions: draft.mainlinePatch.threadResolutions.map(item => ({
+      threadRef: item.threadRef,
+      resolution: item.resolution,
+      evidence: evidence(item.evidenceQuote),
+    })),
+    foreshadowingUpserts: draft.mainlinePatch.foreshadowingUpserts.map(mapEntity),
+    timelineAnchors: draft.mainlinePatch.timelineAnchors.map(item => ({
+      ref: item.ref,
+      label: item.label,
+      timeDescription: item.timeDescription,
+      event: item.event,
+      pinned: item.pinned,
+      evidence: evidence(item.evidenceQuote),
+    })),
+    completedBeats: draft.mainlinePatch.completedBeats.map(item => ({
+      ref: item.ref,
+      summary: item.summary,
+      evidence: evidence(item.evidenceQuote),
+    })),
+  };
+  return batch;
+}
+
+interface ParsedObservationBatch {
+  patch: StoryMemoryBatchPatchDraft;
+  warnings: StoryMemoryObservationWarning[];
+  observationsReceived: number;
+  observationsAccepted: number;
+}
+
+function rawObservationCount(raw: unknown): number {
+  if (!isRecord(raw)) return 0;
+  let chapters: unknown[] = [];
+  if (Array.isArray(raw.chapters)) {
+    chapters = raw.chapters;
+  } else {
+    const wrapper = Object.values(raw).find(
+      value => isRecord(value) && Array.isArray(value.chapters),
+    );
+    if (isRecord(wrapper) && Array.isArray(wrapper.chapters)) {
+      chapters = wrapper.chapters;
+    }
+  }
+  return chapters.reduce<number>((total, chapter) => {
+    if (!isRecord(chapter) || !Array.isArray(chapter.observations)) return total;
+    return total + chapter.observations.length;
+  }, 0);
+}
+
+function parseAndCompileObservationBatch(
+  output: string,
+  input: ObservationCheckpointLoopInput,
+): ParsedObservationBatch {
+  const raw = parseStoryMemoryObservationCandidate(output);
+  const observationsReceived = rawObservationCount(raw);
+  // One release-cycle compatibility reader: old persisted/test candidates can
+  // still be replayed, but no production V2 prompt asks the model to emit it.
+  if (isLegacyBatchPatchPayload(raw)) {
+    return {
+      patch: validateStoryMemoryBatchPatch(raw, input.previousState, input.chapters, {
+        recoverEvidence: true,
+        requireMainlineAssessment: true,
+      }),
+      warnings: [],
+      observationsReceived: 0,
+      observationsAccepted: 0,
+    };
+  }
+  if (
+    input.allowLegacyChapterFallback &&
+    isRecord(raw) &&
+    Number(raw.schemaVersion) === 1 &&
+    input.chapters.length === 1
+  ) {
+    const legacy = validateChapterMemoryPatch(
+      raw,
+      input.previousState,
+      input.chapters[0].content,
+      { requireMainlineAssessment: true },
+    );
+    return {
+      patch: legacyChapterDraftToBatch(legacy, input.chapters[0]),
+      warnings: [],
+      observationsReceived: 0,
+      observationsAccepted: 0,
+    };
+  }
+  const expectedHandles = input.materials.handles.chapters.map(chapter => chapter.handle);
+  const fallbackBriefByChapter = new Map(
+    input.materials.handles.chapters.map(chapter => [
+      chapter.handle,
+      input.materials.evidence.anchors.find(anchor => anchor.chapterId === chapter.chapterId)?.text || '',
+    ]),
+  );
+  const normalized = normalizeStoryMemoryObservationPayload(raw, expectedHandles, {
+    fallbackBriefByChapter,
+  });
+  if (normalized.missingChapterHandles.length > 0) {
+    // Coverage is a batch-level failure, but keep the safe structural warning
+    // available to diagnostics before the fresh retry is scheduled.
+    throw Object.assign(
+      new StoryMemoryError(
+        'MEMORY_CHECKPOINT_COVERAGE_GAP',
+        `Observation 缺少章节：${normalized.missingChapterHandles.join(', ')}`,
+      ),
+      {
+        observationWarnings: normalized.warnings,
+        observationsReceived,
+      },
+    );
+  }
+  const compiled = compileStoryMemoryObservations({
+    chapters: input.chapters,
+    previousState: input.previousState,
+    normalized: normalized.chapters,
+    handles: input.materials.handles,
+    evidence: input.materials.evidence,
+  });
+  return {
+    patch: compiled.patch,
+    warnings: [...normalized.warnings, ...compiled.warnings],
+    observationsReceived,
+    observationsAccepted: compiled.acceptedObservations,
+  };
+}
+
+function observationFormatterMessages(
+  candidate: string,
+  input: ObservationCheckpointLoopInput,
+  failureCode: string,
+): Array<{ role: 'system' | 'user'; content: string }> {
+  return buildStoryMemoryObservationFormatterMessages({
+    candidate,
+    chapterHandles: input.materials.handles.chapters.map(chapter => chapter.handle),
+    existingHandles: formatterHandleLists(input.materials.handles),
+    evidenceIds: input.materials.evidence.anchors.map(anchor => anchor.id),
+    failureCode,
+  });
+}
+
 /**
- * Bounded checkpoint attempt coordinator (repair plan P1 §6.2).
- *
- * - At most STORY_MEMORY_MAX_PHYSICAL_REQUESTS physical LLM calls per batch.
- * - Empty responses are classified by `emptyReason`/`finishReason`:
- *   reasoning_only → fresh retry with thinking disabled; length → raise
- *   budget within model caps; empty → one fresh retry; no_choices /
- *   content_filter → actionable failure without blind retries.
- * - An empty output NEVER constructs an `assistant: ''` repair dialogue.
- * - When the budget hits the model cap while the output is still truncated
- *   (or the window cannot fit even one chapter), the batch is split by
- *   MEMORY_CHECKPOINT_BATCH_TOO_LARGE — runStoryMemoryCheckpointBatch
- *   re-runs the sub-batches sequentially, keeping partial success.
+ * Protocol V2 checkpoint generation. Persisted V1 readers remain below the
+ * request boundary, while every new production LLM call enters this observer
+ * loop.
  */
-async function runCheckpointAttemptLoop(
-  input: CheckpointAttemptLoopInput,
+async function runObservationCheckpointAttemptLoop(
+  input: ObservationCheckpointLoopInput,
 ): Promise<StoryMemoryBatchPatchDraft> {
   const batchSize = input.chapters.length;
-
-  let messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> =
-    input.baseMessages;
+  const baseMessages = buildMessagesFromObservationMaterials(input.materials);
+  const diagnostics: StoryMemoryV2Diagnostics = createStoryMemoryV2Diagnostics({
+    chapters: input.chapters,
+    config: input.frozenConfig,
+    materials: input.materials,
+    handles: input.materials.handles,
+    evidence: input.materials.evidence,
+    fullInputTokens: estimateMessagesTokens(baseMessages),
+    splitUsed: input.splitUsed,
+  });
+  let stage: 'primary' | 'formatter' | 'fresh' = 'primary';
+  let currentMessages = baseMessages;
   let attempt = 0;
-  while (attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
-    attempt += 1;
+  try {
+    while (attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
     if (input.signal?.aborted) {
       throw new StoryMemoryError(
         'MEMORY_CHECKPOINT_CANCELLED',
         '故事记忆检查点任务已取消。',
       );
     }
-    const scenario =
-      attempt === 1
-        ? input.scenario
-        : attempt === 2
-          ? 'story_memory_checkpoint_repair'
-          : 'story_memory_checkpoint_retry';
-    // Elastic allocator path (governance §5) for the primary attempt when a
-    // real capability is known and tiered materials are available. Repair /
-    // fresh-retry append their own dialogue, so they keep using the legacy
-    // per-message planner (also independently planned — Phase 5).
-    const capabilityKnown =
-      input.frozenConfig.contextWindow > 0 ||
-      input.frozenConfig.maxOutputTokens > 0;
-    const useElastic = attempt === 1 && capabilityKnown && Boolean(input.materials);
-    const elasticPlan = useElastic
-      ? planStoryMemoryElasticRequest({
-          config: input.frozenConfig,
-          materials: input.materials!,
-          batchSize,
-          legacyOutputTokens: input.memoryPatchMaxTokens,
-        })
-      : null;
-    const legacyPlan = elasticPlan
-      ? null
-      : planStoryMemoryRequest({
-          config: input.frozenConfig,
-          messages,
-          legacyOutputTokens: input.memoryPatchMaxTokens,
-          batchSize,
-        });
-    const plan = {
-      fits: elasticPlan
-        ? elasticPlan.strategy === 'full_prompt'
-        : legacyPlan!.fits,
-      maxTokens: elasticPlan ? elasticPlan.maxTokens : legacyPlan!.maxTokens,
-      reason: elasticPlan ? elasticPlan.reason : legacyPlan!.reason,
-      // On the elastic fast path, prefer the allocator-built messages so the
-      // compact path's clipped modules are what we actually send.
-      messages:
-        elasticPlan && elasticPlan.messages.length
-          ? elasticPlan.messages
-          : messages,
-    };
-    input.onProgress?.({
+      const plan =
+      stage === 'primary'
+        ? planStoryMemoryObservationRequest({
+            config: input.frozenConfig,
+            materials: input.materials,
+            batchSize,
+          })
+        : planStoryMemoryObservationMessages({
+            config: input.frozenConfig,
+            messages: currentMessages,
+            batchSize,
+          });
+      recordStoryMemoryV2Plan(diagnostics, plan, input.materials);
+      if (plan.strategy !== 'full_prompt') {
+      if (stage === 'formatter') {
+        stage = 'fresh';
+        currentMessages = buildStoryMemoryObservationFreshRetryMessages(
+          baseMessages,
+          plan.reason || 'Formatter 输入超出当前模型窗口',
+        );
+        continue;
+      }
+      throw new StoryMemoryError(
+        batchSize > 1
+          ? 'MEMORY_CHECKPOINT_BATCH_TOO_LARGE'
+          : 'MEMORY_CHECKPOINT_FAILED',
+        plan.reason || '当前模型无法容纳单批 Protocol V2 Observation 请求。',
+      );
+    }
+      attempt += 1;
+      diagnostics.physicalAttemptCount = attempt;
+      diagnostics.formatterUsed ||= stage === 'formatter';
+      diagnostics.freshRetryUsed ||= stage === 'fresh';
+      const scenario =
+      stage === 'primary'
+        ? input.materials.legacyBootstrap
+          ? STORY_MEMORY_V2_REQUEST_KINDS.legacyBootstrap
+          : STORY_MEMORY_V2_REQUEST_KINDS.primary
+        : stage === 'formatter'
+          ? STORY_MEMORY_V2_REQUEST_KINDS.formatter
+          : STORY_MEMORY_V2_REQUEST_KINDS.freshRetry;
+      input.onProgress?.({
       phase: 'planning',
       fromPosition: input.chapters[0].position,
       throughPosition: input.chapters.at(-1)!.position,
       attempt: null,
       maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
     });
-    if (!plan.fits) {
-      if (batchSize > 1) {
-        throw new StoryMemoryError(
-          'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
-          `${plan.reason} 已在发送前拆分批次。`,
-        );
-      }
-      throw new StoryMemoryError(
-        'MEMORY_CHECKPOINT_FAILED',
-        plan.reason || '当前模型无法容纳单章长期记忆请求。',
-      );
-    }
-    let result: LLMResult;
-    try {
-      input.onProgress?.({
-        phase: 'requesting',
-        fromPosition: input.chapters[0].position,
-        throughPosition: input.chapters.at(-1)!.position,
-        attempt,
-        maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
-      });
+      let result: LLMResult;
+      try {
       result = await requestCheckpoint(
         plan.messages,
         plan.maxTokens,
@@ -442,8 +735,9 @@ async function runCheckpointAttemptLoop(
         input.signal,
         input.attemptBudget,
         input.frozenConfig,
+        input.debugScenario,
       );
-    } catch (error) {
+      } catch (error) {
       if (
         !input.signal?.aborted &&
         isSafeStoryMemoryRetryError(error) &&
@@ -452,170 +746,187 @@ async function runCheckpointAttemptLoop(
           ? input.attemptBudget.canSend()
           : true)
       ) {
-        messages = input.baseMessages;
+        stage = 'fresh';
+        currentMessages = buildStoryMemoryObservationFreshRetryMessages(
+          baseMessages,
+          error instanceof Error ? error.message : '网络请求失败',
+        );
         continue;
       }
-      throw error;
-    }
-    input.onProgress?.({
+        throw error;
+      }
+      input.onProgress?.({
       phase: 'validating',
       fromPosition: input.chapters[0].position,
       throughPosition: input.chapters.at(-1)!.position,
       attempt,
       maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
     });
-    const text = result?.text?.trim() || '';
-
-    if (text) {
-      try {
-        return parseAndValidateBatchPatch(
-          text,
-          input.previousState,
-          input.chapters,
-          { getDisplayNumber: input.getDisplayNumber },
-        );
-      } catch (parseError) {
+      const text = result?.text?.trim() || '';
+      diagnostics.responseCandidateChars = Math.max(
+        diagnostics.responseCandidateChars,
+        text.length,
+      );
+      if (text) {
+        try {
+          const parsed = parseAndCompileObservationBatch(text, input);
+          recordStoryMemoryV2Warnings(diagnostics, parsed.warnings);
+          recordStoryMemoryV2ObservationStats(diagnostics, {
+            responseCandidateChars: text.length,
+            observationsReceived: parsed.observationsReceived,
+            observationsAccepted: parsed.observationsAccepted,
+          });
+          recordStoryMemoryDebugObservationStats({
+            scenario: input.debugScenario,
+            requestKind: scenario,
+            observationsReceived: parsed.observationsReceived,
+            observationsAccepted: parsed.observationsAccepted,
+            warningCount: parsed.warnings.length,
+          });
+          return parsed.patch;
+        } catch (parseError) {
+          const observationWarnings = (
+            parseError as { observationWarnings?: StoryMemoryObservationWarning[] }
+          ).observationWarnings;
+          if (observationWarnings) {
+            recordStoryMemoryV2Warnings(diagnostics, observationWarnings);
+            recordStoryMemoryV2ObservationStats(diagnostics, {
+              responseCandidateChars: text.length,
+              observationsReceived: Number(
+                (parseError as { observationsReceived?: number }).observationsReceived || 0,
+              ),
+              observationsAccepted: 0,
+            });
+          }
         if (input.signal?.aborted) {
           throw new StoryMemoryError(
             'MEMORY_CHECKPOINT_CANCELLED',
             '故事记忆检查点任务已取消。',
           );
         }
-        const physicalAttempt = input.attemptBudget.hasObservedPhysicalRequest
-          ? input.attemptBudget.used
-          : attempt;
-        if (physicalAttempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
-          if (
-            parseError instanceof StoryMemoryError &&
-            parseError.code === 'MEMORY_CHECKPOINT_EVIDENCE_NOT_FOUND'
-          ) {
-            try {
-              return parseAndValidateBatchPatch(
-                text,
-                input.previousState,
-                input.chapters,
-                { recoverEvidence: true, getDisplayNumber: input.getDisplayNumber },
-              );
-            } catch {
-              // keep precise error below
-            }
-          }
-          if (result.finishReason === 'length') {
-            if (batchSize > 1) {
-              throw new StoryMemoryError(
-                'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
-                `模型连续返回被截断的检查点 JSON（输出 reservation 为 ${plan.maxTokens} tokens），已拆分批次重试。`,
-              );
-            }
-            throw new StoryMemoryError(
-              'MEMORY_CHECKPOINT_FAILED',
-              `模型单章检查点输出仍被截断（输出 reservation 为 ${plan.maxTokens} tokens）。请提高模型的 max_output_tokens 或 context_window 后重试。`,
-            );
-          }
-          throw parseError;
-        }
-        const message =
-          parseError instanceof Error ? parseError.message : '未知校验错误';
-        const budget = plan.maxTokens;
+        const message = parseError instanceof Error ? parseError.message : 'Observation 校验失败';
         if (
-          !input.frozenConfig.contextWindow &&
-          !input.frozenConfig.maxOutputTokens &&
-          result.finishReason === 'length'
+          stage === 'primary' &&
+          result.finishReason === 'length' &&
+          batchSize > 1
         ) {
-          // Budget cannot grow further while the output is still truncated.
-          if (batchSize > 1) {
-            throw new StoryMemoryError(
-              'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
-              '输出预算已达模型上限而 JSON 仍未完整，已拆分批次重试。',
-            );
-          }
-          throw new StoryMemoryError(
-            'MEMORY_CHECKPOINT_FAILED',
-            `输出预算已达模型上限（${budget} tokens），模型仍无法返回完整 JSON。请提高 max_output_tokens 后重试。`,
-          );
-        }
-        messages =
-          attempt === 1
-            ? // Governance §7.3: if the invalid output is so large that echoing
-              // it for a paid Repair would exceed the model's hard input limit,
-              // skip Repair (never truncate the invalid JSON) and fall through
-              // to a Fresh Retry instead.
-              shouldSkipRepairForInfeasibleSize({
-                invalidOutputTokens: estimateTokens(text),
-                baseInputTokens: estimateTokens(
-                  input.baseMessages.map(m => m.content).join('\n'),
-                ),
-                repairInstructionTokens: 200,
-                hardInputLimit: input.frozenConfig.contextWindow
-                  ? Math.max(
-                      0,
-                      input.frozenConfig.contextWindow -
-                        plan.maxTokens -
-                        Math.min(
-                          1024,
-                          Math.max(256, Math.floor(input.frozenConfig.contextWindow * 0.02)),
-                        ),
-                    )
-                  : 0,
-                contextWindow: input.frozenConfig.contextWindow,
-              })
-              ? buildStoryMemoryCheckpointRetryMessages(
-                  input.baseMessages,
-                  `${message}（invalid 输出过大，已跳过 Repair 直接 Fresh Retry）`,
-                )
-              : buildStoryMemoryCheckpointRepairMessages(
-                  input.baseMessages,
-                  text,
-                  `${message}${
-                    result.finishReason === 'length'
-                      ? '（输出达到长度上限）'
-                      : ''
-                  }`,
-                )
-            : // Second consecutive parse failure → fresh retry WITHOUT echoing
-              // the invalid assistant output (mirrors the legacy coordinator).
-              buildStoryMemoryCheckpointRetryMessages(
-                input.baseMessages,
-                `${message}${
-                  result.finishReason === 'length'
-                    ? '（输出达到长度上限）'
-                    : ''
-                }`,
-              );
-      }
-    } else {
-      const action = decideEmptyResponseAction({
-        emptyReason: result?.emptyReason,
-        finishReason: result?.finishReason,
-        attempt: input.attemptBudget.hasObservedPhysicalRequest
-          ? input.attemptBudget.used
-          : attempt,
-        maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
-        currentBudget: plan.maxTokens,
-        nextBudget: plan.maxTokens,
-      });
-      if (action.type === 'fail') {
-        // Code-review fix 4: an empty LENGTH response at the budget cap means
-        // this batch is too big for the model — split instead of failing.
-        if (action.shrinkBatch && batchSize > 1) {
           throw new StoryMemoryError(
             'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
-            '模型返回空输出且输出预算已达模型上限，已拆分批次重试。',
+            `Protocol V2 多章 Observation 输出被截断（reservation=${plan.maxTokens}），已在发送前拆分。`,
           );
         }
+        if (
+          attempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS &&
+          input.allowLegacyChapterFallback &&
+          batchSize === 1
+        ) {
+          try {
+            const legacyRaw = parseStoryMemoryObservationCandidate(text);
+            if (isRecord(legacyRaw) && Number(legacyRaw.schemaVersion) === 1) {
+              const recovered = validateChapterMemoryPatch(
+                legacyRaw,
+                input.previousState,
+                input.chapters[0].content,
+                { recoverEvidence: true, requireMainlineAssessment: true },
+              );
+              return legacyChapterDraftToBatch(recovered, input.chapters[0]);
+            }
+          } catch {
+            // Preserve the original precise failure below.
+          }
+        }
+        if (attempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) throw parseError;
+        if (
+          parseError instanceof StoryMemoryError &&
+          parseError.code === 'MEMORY_CHECKPOINT_COVERAGE_GAP'
+        ) {
+          stage = 'fresh';
+          currentMessages = buildStoryMemoryObservationFreshRetryMessages(
+            baseMessages,
+            message,
+          );
+          continue;
+        }
+        if (
+          parseError instanceof StoryMemoryError &&
+          message.includes('本地 Observation Compiler')
+        ) {
+          // A compiler invariant is a client defect, not an LLM repair case.
+          throw parseError;
+        }
+        if (stage === 'primary') {
+          const formatterMessages = observationFormatterMessages(
+            text,
+            input,
+            message,
+          );
+          const formatterPlan = planStoryMemoryObservationMessages({
+            config: input.frozenConfig,
+            messages: formatterMessages,
+            batchSize,
+          });
+          if (formatterPlan.strategy === 'full_prompt') {
+            stage = 'formatter';
+            currentMessages = formatterMessages;
+          } else {
+            stage = 'fresh';
+            currentMessages = buildStoryMemoryObservationFreshRetryMessages(
+              baseMessages,
+              formatterPlan.reason || message,
+            );
+          }
+        } else {
+          stage = 'fresh';
+          currentMessages = buildStoryMemoryObservationFreshRetryMessages(
+            baseMessages,
+            message,
+          );
+        }
+        continue;
+      }
+    }
+    const action = decideEmptyResponseAction({
+      emptyReason: result?.emptyReason,
+      finishReason: result?.finishReason,
+      attempt: input.attemptBudget.hasObservedPhysicalRequest
+        ? input.attemptBudget.used
+        : attempt,
+      maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+      currentBudget: plan.maxTokens,
+      nextBudget: plan.maxTokens,
+    });
+    if (action.type === 'fail') {
+      if (action.shrinkBatch && batchSize > 1) {
         throw new StoryMemoryError(
-          action.code as StoryMemoryError['code'],
+          'MEMORY_CHECKPOINT_BATCH_TOO_LARGE',
           action.reason,
         );
       }
-      // Fresh retry — never echo an empty assistant message.
-      messages = input.baseMessages;
+      throw new StoryMemoryError(
+        action.code as StoryMemoryError['code'],
+        action.reason,
+      );
     }
+    stage = 'fresh';
+    currentMessages = buildStoryMemoryObservationFreshRetryMessages(
+      baseMessages,
+      result?.emptyReason || result?.finishReason || '模型没有返回内容',
+    );
   }
   throw new StoryMemoryError(
     'MEMORY_CHECKPOINT_FAILED',
-    '检查点生成失败，已超过最大尝试次数。',
+    'Protocol V2 Observation 生成失败，已超过最大尝试次数。',
   );
+  } finally {
+    if (input.diagnosticsRef) {
+      input.diagnosticsRef.current = {
+        ...diagnostics,
+        materialCounts: { ...diagnostics.materialCounts },
+        droppedMaterialCounts: { ...diagnostics.droppedMaterialCounts },
+        dropReasons: { ...diagnostics.dropReasons },
+      };
+    }
+  }
 }
 
 export interface RunCheckpointBatchResult {
@@ -642,6 +953,9 @@ export async function runStoryMemoryCheckpointBatch(input: {
   scenario?:
     | 'story_memory_checkpoint'
     | 'story_memory_checkpoint_legacy_bootstrap';
+  onDiagnostics?: (diagnostics: StoryMemoryV2Diagnostics) => void;
+  splitUsed?: boolean;
+  debugScenario?: StoryMemoryDebugScenario | null;
   onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
   /**
    * Fired once per persisted split child (governance §9). When a 3-chapter
@@ -667,8 +981,12 @@ export async function runStoryMemoryCheckpointBatch(input: {
       : await db.getContextConfig();
   const frozenConfig =
     input.frozenConfig || (await freezeStoryMemoryLLMConfig());
+  const debugScenario =
+    input.debugScenario === undefined
+      ? await consumeStoryMemoryDebugScenario()
+      : input.debugScenario;
   return runStoryMemoryCheckpointBatchWithShrink(
-    { ...input, chapters: ordered, frozenConfig },
+    { ...input, chapters: ordered, frozenConfig, debugScenario },
     config.memoryPatchMaxTokens || 1200,
   );
 }
@@ -705,7 +1023,7 @@ async function runStoryMemoryCheckpointBatchWithShrink(
       const half = Math.ceil(input.chapters.length / 2);
       const firstChapters = input.chapters.slice(0, half);
       const first = await runStoryMemoryCheckpointBatchWithShrink(
-        { ...input, chapters: firstChapters },
+        { ...input, chapters: firstChapters, splitUsed: true },
         memoryPatchMaxTokens,
       );
       // Governance §9: surface the first split child's persistence as
@@ -723,6 +1041,7 @@ async function runStoryMemoryCheckpointBatchWithShrink(
             previousState: first.state,
             expectedPersistedFingerprint:
               first.state.metadata.stateFingerprint,
+            splitUsed: true,
           },
           memoryPatchMaxTokens,
         );
@@ -780,23 +1099,36 @@ async function runStoryMemoryCheckpointBatchCore(
       projectId: input.projectId,
       fromPosition: ordered[0].position,
       throughPosition: ordered.at(-1)!.position,
-      kind: input.scenario || 'checkpoint',
+      kind: 'story_memory_v2',
     }),
     projectId: input.projectId,
     fromPosition: ordered[0].position,
     throughPosition: ordered.at(-1)!.position,
     maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
   });
-  const draft = await generateValidatedCheckpointBatch({
-    chapters: ordered,
-    previousState: input.previousState,
-    memoryPatchMaxTokens,
-    frozenConfig: input.frozenConfig,
-    signal: input.signal,
-    scenario: input.scenario,
-    attemptBudget,
-    onProgress: input.onProgress,
-  });
+  const diagnosticsRef: StoryMemoryV2DiagnosticsRef = {};
+  let draft: StoryMemoryBatchPatchDraft;
+  try {
+    draft = await generateValidatedCheckpointBatch({
+      chapters: ordered,
+      previousState: input.previousState,
+      memoryPatchMaxTokens,
+      frozenConfig: input.frozenConfig,
+      signal: input.signal,
+      scenario: input.scenario,
+      attemptBudget,
+      diagnosticsRef,
+      splitUsed: input.splitUsed,
+      debugScenario: input.debugScenario,
+      onProgress: input.onProgress,
+    });
+  } catch (error) {
+    if (diagnosticsRef.current) {
+      recordRecentStoryMemoryV2Diagnostics(diagnosticsRef.current);
+      input.onDiagnostics?.(diagnosticsRef.current);
+    }
+    throw error;
+  }
   const sourceFingerprint = fingerprintBatchSource(ordered);
   const batchId = `batch_${input.projectId}_${ordered[0].position}_${
     ordered[ordered.length - 1].position
@@ -851,6 +1183,19 @@ async function runStoryMemoryCheckpointBatchCore(
     chapterSummaries: chapterSummaryTexts,
     createSnapshot: input.createSnapshot !== false,
   });
+  if (diagnosticsRef.current) {
+    const diagnostics = {
+      ...diagnosticsRef.current,
+      applied: true,
+      materialCounts: { ...diagnosticsRef.current.materialCounts },
+      droppedMaterialCounts: {
+        ...diagnosticsRef.current.droppedMaterialCounts,
+      },
+      dropReasons: { ...diagnosticsRef.current.dropReasons },
+    };
+    recordRecentStoryMemoryV2Diagnostics(diagnostics);
+    input.onDiagnostics?.(diagnostics);
+  }
   invalidateIdf(input.projectId);
   return {
     state: applied.state,
@@ -871,6 +1216,7 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
   projectId: number;
   throughPosition?: number;
   signal?: AbortSignal;
+  onDiagnostics?: (diagnostics: StoryMemoryV2Diagnostics) => void;
   onProgress?: (progress: StoryMemoryCheckpointProgressEvent) => void;
   onBatchComplete?: (range: {
     fromPosition: number;
@@ -939,6 +1285,7 @@ export async function advanceStoryMemoryCheckpointsUnlocked(input: {
         chapters: batchChapters,
         previousState: state,
         signal: input.signal,
+        onDiagnostics: input.onDiagnostics,
         onProgress: input.onProgress,
         onChildBatchComplete: input.onChildBatchComplete,
       });

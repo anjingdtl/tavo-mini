@@ -9,6 +9,7 @@ interface PipelineForegroundNative {
   stop(taskId: string): Promise<void>;
   isAvailable(): Promise<boolean>;
   consumeDeepLinkTaskId(): Promise<string | null>;
+  consumeStoryMemoryDebugScenario(): Promise<string | null>;
 }
 
 const native: PipelineForegroundNative | undefined = NativeModules.PipelineForeground;
@@ -119,6 +120,20 @@ class PipelineForegroundBridge {
     if (!native) return null;
     try {
       return await native.consumeDeepLinkTaskId();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Debug APK only: consume the next whitelisted Story Memory QA scenario.
+   * The native side returns null in release builds and the bridge is a no-op
+   * when the module is unavailable, so production behavior is unchanged.
+   */
+  async consumeStoryMemoryDebugScenario(): Promise<string | null> {
+    if (!native) return null;
+    try {
+      return await native.consumeStoryMemoryDebugScenario();
     } catch {
       return null;
     }
