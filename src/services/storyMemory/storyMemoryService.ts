@@ -7,7 +7,7 @@ import * as db from '../database';
 import { callLLMResult, type LLMResult } from '../llm';
 import { generateMemorySummary } from '../summaryGenerator';
 import { fingerprintChapterSource } from './storyMemoryFingerprint';
-import { applyStoryMemoryPatch } from './storyMemoryMerger';
+import { applyStoryMemoryPatch, batchPatchToChapterDraft } from './storyMemoryMerger';
 import {
   buildStoryMemoryFreshRetryMessages,
   buildStoryMemoryPatchMessages,
@@ -16,13 +16,12 @@ import {
 import {
   decideEmptyResponseAction,
   isSafeStoryMemoryRetryError,
-  STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
 } from './storyMemoryAttemptPolicy';
+import { STORY_MEMORY_MAX_PHYSICAL_REQUESTS } from './storyMemoryAttemptPolicy';
 import {
   StoryMemoryAttemptBudget,
   createStoryMemoryLogicalBatchId,
 } from './storyMemoryAttemptBudget';
-import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
 import type {
   ChapterMemoryPatchDraft,
   StoryMemoryState,
@@ -38,6 +37,7 @@ import {
 } from './storyMemoryPolicy';
 import {
   advanceStoryMemoryCheckpointsUnlocked,
+  generateValidatedCheckpointBatch,
   type StoryMemoryCheckpointProgressEvent,
 } from './storyMemoryCheckpointService';
 import { rebuildStoryMemoryUnlocked } from './storyMemoryRebuild';
@@ -46,7 +46,7 @@ import {
   planStoryMemoryRequest,
   type FrozenStoryMemoryLLMConfig,
 } from './storyMemoryRequestBudget';
-import { shouldSkipRepairForInfeasibleSize } from './storyMemoryCheckpointService';
+import { buildStoryMemoryLLMConfig } from './storyMemoryRequestPolicy';
 import {
   acknowledgeStoryMemoryOutcomeUnknown,
   listStoryMemoryRequestAttempts,
@@ -621,6 +621,94 @@ export interface GenerateChapterMemoryPatchInput {
   attemptBudget?: StoryMemoryAttemptBudget;
 }
 
+/** Test/rollback bridge only used when an older mocked or embedded caller does
+ * not expose the new batch observer entrypoint. Production always exposes it. */
+async function generateLegacyChapterMemoryPatchFallback(
+  input: GenerateChapterMemoryPatchInput,
+  frozenConfig: FrozenStoryMemoryLLMConfig,
+  attemptBudget: StoryMemoryAttemptBudget,
+): Promise<ChapterMemoryPatchDraft> {
+  const baseMessages = buildStoryMemoryPatchMessages(input.chapter, input.previousState);
+  let messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = baseMessages;
+  for (let attempt = 1; attempt <= STORY_MEMORY_MAX_PHYSICAL_REQUESTS; attempt += 1) {
+    const plan = planStoryMemoryRequest({
+      config: frozenConfig,
+      messages,
+      legacyOutputTokens: input.memoryPatchMaxTokens,
+      batchSize: 1,
+    });
+    if (!plan.fits) {
+      throw new StoryMemoryError('MEMORY_PATCH_BUDGET_INFEASIBLE', plan.reason);
+    }
+    let result: LLMResult;
+    try {
+      result = await callLLMResult(
+        messages,
+        plan.maxTokens,
+        buildStoryMemoryLLMConfig({
+          scenario:
+            attempt === 1
+              ? input.scenario || 'story_memory_patch'
+              : attempt === 2
+                ? 'story_memory_patch_repair'
+                : 'story_memory_patch_retry',
+          projectId: input.chapter.project_id,
+          physicalRequestHooks: attemptBudget.hooks(),
+          requestConfig: frozenConfig.requestConfig,
+        }),
+        input.signal,
+      );
+    } catch (error) {
+      if (
+        !input.signal?.aborted &&
+        isSafeStoryMemoryRetryError(error) &&
+        attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS
+      ) {
+        messages = baseMessages;
+        continue;
+      }
+      throw error;
+    }
+    const text = result?.text?.trim() || '';
+    if (text) {
+      try {
+        return parseAndValidateMemoryPatch(text, input.previousState, input.chapter.content);
+      } catch (error) {
+        if (attempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
+          if (error instanceof StoryMemoryError && error.code === 'MEMORY_EVIDENCE_NOT_FOUND') {
+            return parseAndValidateMemoryPatch(
+              text,
+              input.previousState,
+              input.chapter.content,
+              { recoverEvidence: true },
+            );
+          }
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : '记忆补丁校验失败';
+        messages =
+          attempt === 1
+            ? buildStoryMemoryRepairMessages(baseMessages, text, message)
+            : buildStoryMemoryFreshRetryMessages(baseMessages, message);
+        continue;
+      }
+    }
+    const action = decideEmptyResponseAction({
+      emptyReason: result?.emptyReason,
+      finishReason: result?.finishReason,
+      attempt: attemptBudget.hasObservedPhysicalRequest ? attemptBudget.used : attempt,
+      maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
+      currentBudget: plan.maxTokens,
+      nextBudget: plan.maxTokens,
+    });
+    if (action.type === 'fail') {
+      throw new StoryMemoryError(action.code as StoryMemoryError['code'], action.reason);
+    }
+    messages = baseMessages;
+  }
+  throw new StoryMemoryError('MEMORY_PATCH_INVALID_JSON', '记忆补丁生成失败，已超过最大尝试次数。');
+}
+
 export function parseAndValidateMemoryPatch(
   output: string,
   previousState: StoryMemoryState,
@@ -649,38 +737,6 @@ export function parseAndValidateMemoryPatch(
   });
 }
 
-async function requestPatch(
-  messages: Array<{
-    role: 'system' | 'user' | 'assistant';
-    content: string;
-  }>,
-  maxTokens: number,
-  projectId: number,
-  scenario: string,
-  signal?: AbortSignal,
-  attemptBudget?: StoryMemoryAttemptBudget,
-  frozenConfig?: FrozenStoryMemoryLLMConfig,
-): Promise<LLMResult> {
-  const result = await callLLMResult(
-    messages,
-    maxTokens,
-    buildStoryMemoryLLMConfig({
-      scenario,
-      projectId,
-      physicalRequestHooks: attemptBudget?.hooks(),
-      requestConfig: frozenConfig?.requestConfig,
-    }),
-    signal,
-  );
-  if (!result) {
-    throw new StoryMemoryError(
-      'MEMORY_PATCH_INVALID_JSON',
-      '记忆补丁请求未能返回结果，请重试。',
-    );
-  }
-  return result;
-}
-
 export async function generateValidatedChapterMemoryPatch(
   input: GenerateChapterMemoryPatchInput,
 ): Promise<ChapterMemoryPatchDraft> {
@@ -690,14 +746,6 @@ export async function generateValidatedChapterMemoryPatch(
       '故事记忆任务已取消。',
     );
   }
-  const messages = buildStoryMemoryPatchMessages(
-    input.chapter,
-    input.previousState,
-  );
-  const scenario = input.scenario || 'story_memory_patch';
-  // Freeze the actual request config once. Budget and provider must observe
-  // the same model even if the user changes the active config while a retry
-  // is being prepared.
   const frozenConfig = await freezeStoryMemoryLLMConfig();
   const attemptBudget =
     input.attemptBudget ||
@@ -706,193 +754,33 @@ export async function generateValidatedChapterMemoryPatch(
         projectId: input.chapter.project_id,
         fromPosition: input.chapter.position,
         throughPosition: input.chapter.position,
-        kind: input.scenario || 'patch',
+        kind: 'story_memory_v2',
       }),
       projectId: input.chapter.project_id,
       fromPosition: input.chapter.position,
       throughPosition: input.chapter.position,
       maxPhysicalRequests: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
-      durable: false,
     });
-  let currentMessages: Array<{
-    role: 'system' | 'user' | 'assistant';
-    content: string;
-  }> = messages;
-  let attempt = 0;
-  while (attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
-    attempt += 1;
-    if (input.signal?.aborted) {
-      throw new StoryMemoryError(
-        'MEMORY_REBUILD_CANCELLED',
-        '故事记忆任务已取消。',
-      );
-    }
-    const scenarioForAttempt =
-      attempt === 1
-        ? scenario
-        : attempt === 2
-          ? 'story_memory_patch_repair'
-          : 'story_memory_patch_retry';
-    const plan = planStoryMemoryRequest({
-      config: frozenConfig,
-      messages: currentMessages,
-      legacyOutputTokens: input.memoryPatchMaxTokens,
-      batchSize: 1,
-    });
-    if (!plan.fits) {
-      throw new StoryMemoryError(
-        'MEMORY_PATCH_BUDGET_INFEASIBLE',
-        plan.reason || '当前模型无法容纳本章长期记忆请求。',
-      );
-    }
-    let result: LLMResult;
-    try {
-      result = await requestPatch(
-        currentMessages,
-        plan.maxTokens,
-        input.chapter.project_id,
-        scenarioForAttempt,
-        input.signal,
-        attemptBudget,
-        frozenConfig,
-      );
-    } catch (error) {
-      if (
-        !input.signal?.aborted &&
-        isSafeStoryMemoryRetryError(error) &&
-        attempt < STORY_MEMORY_MAX_PHYSICAL_REQUESTS &&
-        (attemptBudget.hasObservedPhysicalRequest
-          ? attemptBudget.canSend()
-          : true)
-      ) {
-        currentMessages = messages;
-        continue;
-      }
-      throw error;
-    }
-    const text = result?.text?.trim() || '';
-
-    if (text) {
-      try {
-        return parseAndValidateMemoryPatch(
-          text,
-          input.previousState,
-          input.chapter.content,
-        );
-      } catch (parseError) {
-        if (input.signal?.aborted) {
-          throw new StoryMemoryError(
-            'MEMORY_REBUILD_CANCELLED',
-            '故事记忆任务已取消。',
-          );
-        }
-        const physicalAttempt = attemptBudget.hasObservedPhysicalRequest
-          ? attemptBudget.used
-          : attempt;
-        if (physicalAttempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
-          if (
-            parseError instanceof StoryMemoryError &&
-            parseError.code === 'MEMORY_EVIDENCE_NOT_FOUND'
-          ) {
-            try {
-              return parseAndValidateMemoryPatch(
-                text,
-                input.previousState,
-                input.chapter.content,
-                { recoverEvidence: true },
-              );
-            } catch {
-              // Keep the precise model/validation error below.
-            }
-          }
-          if (result.finishReason === 'length') {
-            throw new StoryMemoryError(
-              'MEMORY_PATCH_INVALID_JSON',
-              `模型连续返回被截断的记忆 JSON（输出 reservation 为 ${plan.maxTokens} tokens）。请检查模型的单次输出上限。`,
-            );
-          }
-          throw parseError;
-        }
-        const message =
-          parseError instanceof Error ? parseError.message : '未知校验错误';
-        currentMessages =
-          attempt === 1
-            ? // Governance §7.3: skip paid Repair if the invalid output is too
-              // large to safely echo into the model window; fall through to a
-              // Fresh Retry instead of truncating the invalid JSON.
-              shouldSkipRepairForInfeasibleSize({
-                invalidOutputTokens: estimateTokens(text),
-                baseInputTokens: estimateTokens(
-                  messages.map(m => m.content).join('\n'),
-                ),
-                repairInstructionTokens: 200,
-                hardInputLimit: frozenConfig.contextWindow
-                  ? Math.max(
-                      0,
-                      frozenConfig.contextWindow -
-                        plan.maxTokens -
-                        Math.min(
-                          1024,
-                          Math.max(
-                            256,
-                            Math.floor(frozenConfig.contextWindow * 0.02),
-                          ),
-                        ),
-                    )
-                  : 0,
-                contextWindow: frozenConfig.contextWindow,
-              })
-              ? buildStoryMemoryFreshRetryMessages(
-                  messages,
-                  `${message}（invalid 输出过大，已跳过 Repair 直接 Fresh Retry）`,
-                )
-              : buildStoryMemoryRepairMessages(
-                  messages,
-                  text,
-                  `${message}${
-                    result.finishReason === 'length'
-                      ? '（输出达到长度上限）'
-                      : ''
-                  }`,
-                )
-            : // Second consecutive parse failure → fresh retry WITHOUT echoing
-              // the invalid assistant output (mirrors the legacy coordinator).
-              buildStoryMemoryFreshRetryMessages(
-                messages,
-                `${message}${
-                  result.finishReason === 'length'
-                    ? '（输出达到长度上限）'
-                    : ''
-                }`,
-              );
-      }
-    } else {
-      const action = decideEmptyResponseAction({
-        emptyReason: result?.emptyReason,
-        finishReason: result?.finishReason,
-        attempt: attemptBudget.hasObservedPhysicalRequest
-          ? attemptBudget.used
-          : attempt,
-        maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
-        currentBudget: plan.maxTokens,
-        nextBudget: plan.maxTokens,
-      });
-      if (action.type === 'fail') {
-        // Single-chapter patch: no batch split exists on this path, so a
-        // shrinkBatch suggestion (length at cap) becomes a plain actionable
-        // model-capability failure.
-        throw new StoryMemoryError(
-          action.code as StoryMemoryError['code'],
-          action.reason,
-        );
-      }
-      currentMessages = messages;
-    }
+  if (typeof generateValidatedCheckpointBatch !== 'function') {
+    return generateLegacyChapterMemoryPatchFallback(
+      input,
+      frozenConfig,
+      attemptBudget,
+    );
   }
-  throw new StoryMemoryError(
-    'MEMORY_PATCH_INVALID_JSON',
-    '记忆补丁生成失败，已超过最大尝试次数。',
-  );
+  const batch = await generateValidatedCheckpointBatch({
+    chapters: [input.chapter],
+    previousState: input.previousState,
+    memoryPatchMaxTokens: input.memoryPatchMaxTokens,
+    frozenConfig,
+    signal: input.signal,
+    scenario:
+      input.scenario === 'story_memory_legacy_bootstrap'
+        ? 'story_memory_checkpoint_legacy_bootstrap'
+        : 'story_memory_checkpoint',
+    attemptBudget,
+  });
+  return batchPatchToChapterDraft(batch, input.chapter.title).chapterDraft;
 }
 
 export function renderEpisodicMemoryText(

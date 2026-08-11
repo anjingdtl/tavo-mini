@@ -87,12 +87,12 @@ describe('story memory LLM patch service', () => {
     expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
     expect(mockCallLLMResult.mock.calls[1][2]).toEqual(
       expect.objectContaining({
-        scenario: 'story_memory_patch_repair',
+        scenario: 'story_memory_v2_formatter',
         responseFormat: 'json_object',
       }),
     );
-    expect(mockCallLLMResult.mock.calls[0][1]).toBe(26214);
-    expect(mockCallLLMResult.mock.calls[1][1]).toBe(26214);
+    expect(mockCallLLMResult.mock.calls[0][1]).toBe(8192);
+    expect(mockCallLLMResult.mock.calls[1][1]).toBe(8192);
   });
 
   it('does not silently retry a total-timeout outcome whose HTTP result is unknown', async () => {
@@ -267,10 +267,10 @@ describe('story memory LLM patch service', () => {
     ).resolves.toEqual(expect.objectContaining({ schemaVersion: 1 }));
     expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
     expect(mockCallLLMResult.mock.calls.map(call => call[1])).toEqual([
-      26214, 26214, 26214,
+      8192, 8192, 8192,
     ]);
     expect(mockCallLLMResult.mock.calls[2][2]).toEqual(
-      expect.objectContaining({ scenario: 'story_memory_patch_retry' }),
+      expect.objectContaining({ scenario: 'story_memory_v2_fresh_retry' }),
     );
     expect(mockCallLLMResult.mock.calls[2][0]).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ role: 'assistant' })]),
@@ -288,9 +288,9 @@ describe('story memory LLM patch service', () => {
         previousState: createEmptyStoryMemory(7),
         memoryPatchMaxTokens: 4000,
       }),
-    ).rejects.toThrow('输出 reservation 为 26214 tokens');
+    ).rejects.toThrow('模型没有返回完整的 Observation JSON 对象');
     expect(mockCallLLMResult.mock.calls.map(call => call[1])).toEqual([
-      26214, 26214, 26214,
+      8192, 8192, 8192,
     ]);
   });
 

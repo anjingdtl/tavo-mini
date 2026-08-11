@@ -145,6 +145,25 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
     }
   }
 
+  /**
+   * Consume a whitelisted Debug APK Story Memory QA scenario.
+   * Release builds always return null, even if a caller sends the extra.
+   */
+  @ReactMethod
+  fun consumeStoryMemoryDebugScenario(promise: Promise) {
+    try {
+      if (!BuildConfig.DEBUG) {
+        promise.resolve(null)
+        return
+      }
+      val scenario = pendingStoryMemoryDebugScenario
+      pendingStoryMemoryDebugScenario = null
+      promise.resolve(scenario)
+    } catch (e: Exception) {
+      promise.resolve(null)
+    }
+  }
+
   private fun postDoneNotification(taskId: String, title: String, message: String, success: Boolean) {
     // 先确保 channel 已创建（Service 可能从未启动，channel 不存在会导致 Android 8.0+ 静默丢弃通知）
     PipelineForegroundService.ensureNotificationChannels(reactContext)
@@ -185,8 +204,29 @@ class PipelineForegroundModule(private val reactContext: ReactApplicationContext
     @Volatile
     private var pendingDeepLinkTaskId: String? = null
 
+    const val EXTRA_STORY_MEMORY_DEBUG_SCENARIO =
+      "shinewriter.story_memory_debug_scenario"
+
+    private val storyMemoryDebugScenarios = setOf(
+      "invalid_observation",
+      "formatter",
+      "fresh_retry",
+      "small_window_64k",
+    )
+
+    @Volatile
+    private var pendingStoryMemoryDebugScenario: String? = null
+
     fun setPendingDeepLinkTaskId(id: String?) {
       pendingDeepLinkTaskId = id
+    }
+
+    fun isStoryMemoryDebugScenario(value: String?): Boolean =
+      value != null && storyMemoryDebugScenarios.contains(value)
+
+    fun setPendingStoryMemoryDebugScenario(value: String?) {
+      pendingStoryMemoryDebugScenario =
+        if (isStoryMemoryDebugScenario(value)) value else null
     }
   }
 }
