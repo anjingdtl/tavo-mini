@@ -282,6 +282,9 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'llm_config_id',
       'llm_config_name',
       'created_at',
+      // Schema 51: nullable DeepSeek prompt-cache telemetry.
+      'prompt_cache_hit_tokens',
+      'prompt_cache_miss_tokens',
     ],
     indexes: ['idx_llm_usage_logs_month', 'idx_llm_usage_logs_config'],
     backup: true,
@@ -379,6 +382,9 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'response_candidate_temp',
       'response_candidate_channel',
       'validation_details_json',
+      // Schema 51: nullable DeepSeek prompt-cache telemetry.
+      'prompt_cache_hit_tokens',
+      'prompt_cache_miss_tokens',
     ],
     backupExcludedColumns: [
       'reasoning_content_temp',

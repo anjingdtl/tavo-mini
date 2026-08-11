@@ -326,6 +326,9 @@ async function runStageAttempt<
     visibleOutputTokens?: number | null;
     finishReason?: string | null;
     emptyReason?: string;
+    // Schema 51: optional provider cache telemetry (DeepSeek prompt cache).
+    promptCacheHitTokens?: number | null;
+    promptCacheMissTokens?: number | null;
   },
 >(params: {
   taskId: string;
@@ -469,6 +472,10 @@ async function runStageAttempt<
       outputTokens: result.outputTokens,
       totalTokens: result.totalTokens,
       reasoningTokens: result.reasoningTokens ?? null,
+      // Schema 51: persist provider-reported cache telemetry on the success
+      // path. null when unreported; never influences status/retry/budget.
+      promptCacheHitTokens: result.promptCacheHitTokens ?? null,
+      promptCacheMissTokens: result.promptCacheMissTokens ?? null,
       finishReason: result.finishReason ?? null,
       emptyReason:
         result.emptyReason ??
