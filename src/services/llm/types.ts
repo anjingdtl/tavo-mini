@@ -42,6 +42,18 @@ export interface LLMResult {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /**
+   * Provider-reported prompt cache hit token count (DeepSeek
+   * `prompt_cache_hit_tokens`). `null` when the provider did not report it;
+   * never fabricated as 0. Observation-only metadata — must not influence
+   * pipeline branching, retry decisions or budget gates.
+   */
+  promptCacheHitTokens?: number | null;
+  /**
+   * Provider-reported prompt cache miss token count (DeepSeek
+   * `prompt_cache_miss_tokens`). Same contract as `promptCacheHitTokens`.
+   */
+  promptCacheMissTokens?: number | null;
   metrics?: LLMRequestMetrics;
   errorCode?: string;
   finishReason?: string | null;
@@ -63,6 +75,8 @@ export interface LLMResult {
     | 'empty';
   rawUsage?: {
     prompt_tokens?: number;
+    prompt_cache_hit_tokens?: number;
+    prompt_cache_miss_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
     completion_tokens_details?: {

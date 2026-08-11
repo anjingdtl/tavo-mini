@@ -61,6 +61,11 @@ export interface PipelineStageAttemptRow {
   reasoningContentTemp: string | null;
   responseCandidateTemp: string | null;
   validationDetailsJson: string | null;
+  // Schema 51: provider-reported prompt-cache telemetry. null when the provider
+  // did not report it. Observation-only — never influences attempt status,
+  // retry disposition, batch budget, checkpoint or validator.
+  promptCacheHitTokens: number | null;
+  promptCacheMissTokens: number | null;
 }
 
 export interface CreateStageAttemptInput {
@@ -111,6 +116,9 @@ export interface UpdateStageAttemptInput {
     | 'both_reasoning_preferred'
     | null;
   validationDetailsJson?: string | null;
+  // Schema 51: cache telemetry, written on the success path only.
+  promptCacheHitTokens?: number | null;
+  promptCacheMissTokens?: number | null;
 }
 
 function mapRow(row: any): PipelineStageAttemptRow {
@@ -168,6 +176,14 @@ function mapRow(row: any): PipelineStageAttemptRow {
     reasoningContentTemp: row.reasoning_content_temp ?? null,
     responseCandidateTemp: row.response_candidate_temp ?? null,
     validationDetailsJson: row.validation_details_json ?? null,
+    promptCacheHitTokens:
+      row.prompt_cache_hit_tokens != null
+        ? Number(row.prompt_cache_hit_tokens)
+        : null,
+    promptCacheMissTokens:
+      row.prompt_cache_miss_tokens != null
+        ? Number(row.prompt_cache_miss_tokens)
+        : null,
   };
 }
 
@@ -221,6 +237,10 @@ export async function updateStageAttempt(
     ['output_tokens', input.outputTokens],
     ['total_tokens', input.totalTokens],
     ['reasoning_tokens', input.reasoningTokens],
+    // Schema 51: cache telemetry. Persisted on the success path; omitted on
+    // the error path (caller does not pass them), leaving the column NULL.
+    ['prompt_cache_hit_tokens', input.promptCacheHitTokens],
+    ['prompt_cache_miss_tokens', input.promptCacheMissTokens],
   ];
   const diagnosticFields: Array<[string, unknown]> = [
     ['finish_reason', input.finishReason],
