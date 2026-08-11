@@ -33,6 +33,19 @@ interface ObservationEntry {
   chapterHandle: string;
   observation: StoryMemoryObservation;
   originalOrder: number;
+  evidenceOffset: number;
+}
+
+interface AcceptedLocalRef {
+  ref: string;
+  definedChapterPosition: number;
+  definedEvidenceOffset: number;
+  kind: 'character' | 'relationship' | 'conflict' | 'thread' | 'foreshadowing';
+}
+
+interface RefResolution {
+  ref: string | null;
+  future: boolean;
 }
 
 function unique(values: string[]): string[] {
@@ -137,16 +150,19 @@ function chapterFallbackBrief(
 }
 
 function ensureSummary(
-  summaries: Map<number, {
-    brief: string;
-    keywords: string[];
-    events: string[];
-    characterChanges: string[];
-    relationshipChanges: string[];
-    mainlineChanges: string[];
-    newThreads: string[];
-    resolvedThreads: string[];
-  }>,
+  summaries: Map<
+    number,
+    {
+      brief: string;
+      keywords: string[];
+      events: string[];
+      characterChanges: string[];
+      relationshipChanges: string[];
+      mainlineChanges: string[];
+      newThreads: string[];
+      resolvedThreads: string[];
+    }
+  >,
   chapter: Chapter,
   brief: string,
 ): {
@@ -187,10 +203,10 @@ function refLabel(
   ref: string,
   state: StoryMemoryState,
   handles: StoryMemoryEntityHandleEnvelope,
-  characterKeyRefs: ReadonlyMap<string, string>,
+  characterKeyRefs: ReadonlyMap<string, AcceptedLocalRef>,
 ): string {
   const characterId =
-    characterKeyRefs.get(ref) || handles.characterByHandle.get(ref) || ref;
+    characterKeyRefs.get(ref)?.ref || handles.characterByHandle.get(ref) || ref;
   return state.characters[characterId]?.canonicalName || ref;
 }
 
@@ -200,7 +216,13 @@ function evidenceFor(
   warnings: StoryMemoryObservationWarning[],
 ): BatchEvidenceQuote[] | null {
   if (entry.observation.evidence.length === 0) {
-    warnings.push(warning('OBS_INVALID_EVIDENCE', '状态 observation 缺少 evidence anchor。', entry));
+    warnings.push(
+      warning(
+        'OBS_INVALID_EVIDENCE',
+        '状态 observation 缺少 evidence anchor。',
+        entry,
+      ),
+    );
     return null;
   }
   // Same-chapter only: any cross-CH Q invalidates the whole observation.
@@ -246,47 +268,112 @@ function definitionSortRank(observation: StoryMemoryObservation): number {
   return 9;
 }
 
+function resolveLocalRef(
+  ref: string | undefined,
+  handleRefs: ReadonlyMap<string, string>,
+  keyRefs: ReadonlyMap<string, AcceptedLocalRef>,
+  entry: ObservationEntry,
+  definitionCandidates: ReadonlyMap<string, AcceptedLocalRef> = keyRefs,
+): RefResolution {
+  if (!ref) return { ref: null, future: false };
+  const accepted = keyRefs.get(ref);
+  if (accepted) {
+    const future =
+      accepted.definedChapterPosition > entry.chapter.position ||
+      (accepted.definedChapterPosition === entry.chapter.position &&
+        accepted.definedEvidenceOffset > entry.evidenceOffset);
+    return { ref: future ? null : accepted.ref, future };
+  }
+  const candidate = definitionCandidates.get(ref);
+  if (
+    candidate &&
+    (candidate.definedChapterPosition > entry.chapter.position ||
+      (candidate.definedChapterPosition === entry.chapter.position &&
+        candidate.definedEvidenceOffset > entry.evidenceOffset))
+  ) {
+    return { ref: null, future: true };
+  }
+  return { ref: handleRefs.get(ref) || null, future: false };
+}
+
 function resolveCharacterRef(
   ref: string | undefined,
   handles: StoryMemoryEntityHandleEnvelope,
-  characterKeyRefs: ReadonlyMap<string, string>,
-): string | null {
-  if (!ref) return null;
-  return characterKeyRefs.get(ref) || handles.characterByHandle.get(ref) || null;
+  characterKeyRefs: ReadonlyMap<string, AcceptedLocalRef>,
+  entry: ObservationEntry,
+  definitionCandidates?: ReadonlyMap<string, AcceptedLocalRef>,
+): RefResolution {
+  return resolveLocalRef(
+    ref,
+    handles.characterByHandle,
+    characterKeyRefs,
+    entry,
+    definitionCandidates,
+  );
 }
 
 function resolveRelationshipRef(
   ref: string | undefined,
   handles: StoryMemoryEntityHandleEnvelope,
-): string | null {
-  return ref ? handles.relationshipByHandle.get(ref) || null : null;
+  relationshipKeyRefs: ReadonlyMap<string, AcceptedLocalRef>,
+  entry: ObservationEntry,
+  definitionCandidates?: ReadonlyMap<string, AcceptedLocalRef>,
+): RefResolution {
+  return resolveLocalRef(
+    ref,
+    handles.relationshipByHandle,
+    relationshipKeyRefs,
+    entry,
+    definitionCandidates,
+  );
 }
 
 function resolveConflictRef(
   ref: string | undefined,
   handles: StoryMemoryEntityHandleEnvelope,
-  conflictKeyRefs: ReadonlyMap<string, string>,
-): string | null {
-  if (!ref) return null;
-  return conflictKeyRefs.get(ref) || handles.conflictByHandle.get(ref) || null;
+  conflictKeyRefs: ReadonlyMap<string, AcceptedLocalRef>,
+  entry: ObservationEntry,
+  definitionCandidates?: ReadonlyMap<string, AcceptedLocalRef>,
+): RefResolution {
+  return resolveLocalRef(
+    ref,
+    handles.conflictByHandle,
+    conflictKeyRefs,
+    entry,
+    definitionCandidates,
+  );
 }
 
 function resolveThreadRef(
   ref: string | undefined,
   handles: StoryMemoryEntityHandleEnvelope,
-  threadKeyRefs: ReadonlyMap<string, string>,
-): string | null {
-  if (!ref) return null;
-  return threadKeyRefs.get(ref) || handles.threadByHandle.get(ref) || null;
+  threadKeyRefs: ReadonlyMap<string, AcceptedLocalRef>,
+  entry: ObservationEntry,
+  definitionCandidates?: ReadonlyMap<string, AcceptedLocalRef>,
+): RefResolution {
+  return resolveLocalRef(
+    ref,
+    handles.threadByHandle,
+    threadKeyRefs,
+    entry,
+    definitionCandidates,
+  );
 }
 
 function resolveForeshadowingRef(
   ref: string | undefined,
   handles: StoryMemoryEntityHandleEnvelope,
-  keyRefs: ReadonlyMap<string, string>,
-): string | null {
-  if (!ref) return null;
-  return keyRefs.get(ref) || handles.foreshadowingByHandle.get(ref) || null;
+  keyRefs: ReadonlyMap<string, AcceptedLocalRef>,
+  entry: ObservationEntry,
+  definitionCandidates?: ReadonlyMap<string, AcceptedLocalRef>,
+): RefResolution {
+  return resolveLocalRef(
+    ref,
+    handles.foreshadowingByHandle,
+    keyRefs,
+    entry,
+    definitionCandidates,
+  );
 }
 
 function earliestEvidenceOffset(
@@ -299,7 +386,10 @@ function earliestEvidenceOffset(
   return offsets.length ? Math.min(...offsets) : Number.MAX_SAFE_INTEGER;
 }
 
-function emptyCharacterUpdate(characterRef: string, evidence: BatchEvidenceQuote[]): BatchCharacterUpdatePatch {
+function emptyCharacterUpdate(
+  characterRef: string,
+  evidence: BatchEvidenceQuote[],
+): BatchCharacterUpdatePatch {
   return {
     characterRef,
     addAliases: [],
@@ -317,7 +407,10 @@ function emptyCharacterUpdate(characterRef: string, evidence: BatchEvidenceQuote
   };
 }
 
-function emptyMainlineEntity(ref: string, evidence: BatchEvidenceQuote[]): BatchMainlineEntityPatch {
+function emptyMainlineEntity(
+  ref: string,
+  evidence: BatchEvidenceQuote[],
+): BatchMainlineEntityPatch {
   return { ref, title: '', evidence };
 }
 
@@ -325,7 +418,7 @@ function statement(
   entry: ObservationEntry,
   state: StoryMemoryState,
   handles: StoryMemoryEntityHandleEnvelope,
-  characterKeyRefs: ReadonlyMap<string, string>,
+  characterKeyRefs: ReadonlyMap<string, AcceptedLocalRef>,
 ): string {
   const observation = entry.observation;
   const character = (ref?: string) =>
@@ -334,25 +427,61 @@ function statement(
   // another model-authored summary contract.
   switch (observation.kind) {
     case 'character_new':
-      return `${observation.name || '新人物'} 出现${observation.role ? `，身份为${observation.role}` : ''}`;
+      return `${observation.name || '新人物'} 出现${
+        observation.role ? `，身份为${observation.role}` : ''
+      }`;
     case 'character_state':
-      return `${character(observation.ref)} 的${observation.field || '状态'}${observation.op === 'clear' ? '被清除' : `变为${observation.value || ''}`}`;
+      return `${character(observation.ref)} 的${observation.field || '状态'}${
+        observation.op === 'clear' ? '被清除' : `变为${observation.value || ''}`
+      }`;
     case 'character_set':
-      return `${character(observation.ref)} ${observation.op === 'remove' ? '失去' : '获得'}${observation.value || ''}`;
+      return `${character(observation.ref)} ${
+        observation.op === 'remove' ? '失去' : '获得'
+      }${observation.value || ''}`;
     case 'relationship':
       return observation.op === 'open'
-        ? `${character(observation.from)} 与${character(observation.to)}建立${observation.type || '关系'}`
+        ? `${character(observation.from)} 与${character(observation.to)}建立${
+            observation.type || '关系'
+          }`
         : `${character(observation.ref)} 的关系状态更新`;
     case 'arc':
-      return `剧情弧${observation.op === 'complete' ? '完成' : observation.op === 'start' ? '开始' : '更新'}${observation.name ? `：${observation.name}` : ''}`;
+      return `剧情弧${
+        observation.op === 'complete'
+          ? '完成'
+          : observation.op === 'start'
+          ? '开始'
+          : '更新'
+      }${observation.name ? `：${observation.name}` : ''}`;
     case 'objective':
-      return `当前目标${observation.op === 'clear' ? '清除' : `变为${observation.value || ''}`}`;
+      return `当前目标${
+        observation.op === 'clear' ? '清除' : `变为${observation.value || ''}`
+      }`;
     case 'conflict':
-      return `${observation.op === 'resolve' ? '冲突解决' : observation.op === 'open' ? '冲突开启' : '冲突更新'}${observation.title ? `：${observation.title}` : ''}`;
+      return `${
+        observation.op === 'resolve'
+          ? '冲突解决'
+          : observation.op === 'open'
+          ? '冲突开启'
+          : '冲突更新'
+      }${observation.title ? `：${observation.title}` : ''}`;
     case 'thread':
-      return `${observation.op === 'resolve' ? '线索解决' : observation.op === 'open' ? '线索开启' : '线索更新'}${observation.title ? `：${observation.title}` : ''}`;
+      return `${
+        observation.op === 'resolve'
+          ? '线索解决'
+          : observation.op === 'open'
+          ? '线索开启'
+          : '线索更新'
+      }${observation.title ? `：${observation.title}` : ''}`;
     case 'foreshadowing':
-      return `伏笔${observation.op === 'resolve' ? '回收' : observation.op === 'partial' ? '部分回收' : observation.op === 'open' ? '建立' : '更新'}`;
+      return `伏笔${
+        observation.op === 'resolve'
+          ? '回收'
+          : observation.op === 'partial'
+          ? '部分回收'
+          : observation.op === 'open'
+          ? '建立'
+          : '更新'
+      }`;
     case 'timeline':
       return `时间线新增：${observation.label || observation.event || ''}`;
   }
@@ -361,17 +490,99 @@ function statement(
 function mapPartyRefs(
   refs: string[],
   handles: StoryMemoryEntityHandleEnvelope,
-  characterKeyRefs: ReadonlyMap<string, string>,
-): string[] | null {
-  const mapped = refs.map(ref => resolveCharacterRef(ref, handles, characterKeyRefs));
-  if (mapped.some(ref => !ref)) return null;
-  return mapped as string[];
+  characterKeyRefs: ReadonlyMap<string, AcceptedLocalRef>,
+  entry: ObservationEntry,
+  definitionCandidates?: ReadonlyMap<string, AcceptedLocalRef>,
+): { refs: string[] | null; future: boolean } {
+  const resolutions = refs.map(ref =>
+    resolveCharacterRef(
+      ref,
+      handles,
+      characterKeyRefs,
+      entry,
+      definitionCandidates,
+    ),
+  );
+  if (resolutions.some(item => !item.ref)) {
+    return {
+      refs: null,
+      future: resolutions.some(item => item.future),
+    };
+  }
+  return {
+    refs: resolutions.map(item => item.ref) as string[],
+    future: false,
+  };
+}
+
+function mergeStringSet(
+  current: string[] | undefined,
+  additions: string[],
+  removals: string[],
+): string[] {
+  const removed = new Set(removals.map(normalizeName));
+  return unique([...(current || []), ...additions]).filter(
+    value => !removed.has(normalizeName(value)),
+  );
+}
+
+function mergeCharacterUpdateIntoNewPatch(
+  character: BatchNewCharacterPatch,
+  update: BatchCharacterUpdatePatch,
+): void {
+  character.aliases = unique([...character.aliases, ...update.addAliases]);
+  character.stableTraits = unique([
+    ...character.stableTraits,
+    ...(update.profileCorrections.stableTraits || []),
+  ]);
+  character.initialState = {
+    ...character.initialState,
+    ...update.stateChanges,
+  };
+  for (const field of update.clearFields) {
+    if (field in character.initialState) {
+      (character.initialState as Record<string, unknown>)[field] = '';
+    }
+  }
+  character.initialState.knowledge = mergeStringSet(
+    character.initialState.knowledge,
+    update.addKnowledge,
+    update.removeKnowledge,
+  );
+  character.initialState.possessions = mergeStringSet(
+    character.initialState.possessions,
+    update.addPossessions,
+    update.removePossessions,
+  );
+  character.initialState.secrets = mergeStringSet(
+    character.initialState.secrets,
+    update.addSecrets,
+    update.removeSecrets,
+  );
+  if (update.status) character.status = update.status;
+  character.evidence = mergeEvidence(character.evidence, update.evidence);
+}
+
+function registerLocalRef(
+  refs: Map<string, AcceptedLocalRef>,
+  key: string,
+  ref: string,
+  entry: ObservationEntry,
+  kind: AcceptedLocalRef['kind'],
+): void {
+  refs.set(key, {
+    ref,
+    definedChapterPosition: entry.chapter.position,
+    definedEvidenceOffset: entry.evidenceOffset,
+    kind,
+  });
 }
 
 function buildEntries(
   normalizedChapters: StoryMemoryObservationChapter[],
   chapters: Chapter[],
   handles: StoryMemoryEntityHandleEnvelope,
+  evidence: StoryMemoryEvidenceEnvelope,
 ): ObservationEntry[] {
   const chaptersByHandle = new Map(
     handles.chapters.map(chapter => [chapter.handle, chapter]),
@@ -383,18 +594,24 @@ function buildEntries(
     const chapter = handle ? chaptersById.get(handle.chapterId) : undefined;
     if (!chapter) return;
     normalizedChapter.observations.forEach((observation, originalOrder) => {
-      entries.push({ chapter, chapterHandle: normalizedChapter.chapter, observation, originalOrder });
+      entries.push({
+        chapter,
+        chapterHandle: normalizedChapter.chapter,
+        observation,
+        originalOrder,
+        evidenceOffset: earliestEvidenceOffset(observation, evidence),
+      });
     });
   });
   return entries;
 }
 
 interface AcceptedKeyRefs {
-  characterKeyRefs: Map<string, string>;
-  relationshipKeyRefs: Map<string, string>;
-  conflictKeyRefs: Map<string, string>;
-  threadKeyRefs: Map<string, string>;
-  foreshadowingKeyRefs: Map<string, string>;
+  characterKeyRefs: Map<string, AcceptedLocalRef>;
+  relationshipKeyRefs: Map<string, AcceptedLocalRef>;
+  conflictKeyRefs: Map<string, AcceptedLocalRef>;
+  threadKeyRefs: Map<string, AcceptedLocalRef>;
+  foreshadowingKeyRefs: Map<string, AcceptedLocalRef>;
 }
 
 function createEmptyKeyRefs(): AcceptedKeyRefs {
@@ -413,7 +630,9 @@ export function validateCompiledStoryMemoryBatchPatch(
   chapters: Chapter[],
   evidence: StoryMemoryEvidenceEnvelope,
 ): void {
-  const ordered = [...chapters].sort((left, right) => left.position - right.position);
+  const ordered = [...chapters].sort(
+    (left, right) => left.position - right.position,
+  );
   if (
     patch.schemaVersion !== 2 ||
     patch.rangeRef.fromChapterId !== ordered[0]?.id ||
@@ -421,48 +640,137 @@ export function validateCompiledStoryMemoryBatchPatch(
     patch.rangeRef.throughChapterId !== ordered.at(-1)?.id ||
     patch.rangeRef.throughPosition !== ordered.at(-1)?.position
   ) {
-    throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Observation Compiler 生成了错误的章节范围。');
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+      '本地 Observation Compiler 生成了错误的章节范围。',
+    );
   }
   if (patch.chapterSummaries.length !== ordered.length) {
-    throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Observation Compiler 未覆盖全部章节。');
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+      '本地 Observation Compiler 未覆盖全部章节。',
+    );
   }
-  const validQuotes = new Set(evidence.anchors.map(anchor => `${anchor.chapterId}\u0000${anchor.text}`));
-  const checkEvidence = (items: Array<{ chapterId: number; quote: string }>) => {
-    if (items.length === 0) throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Compiler 生成的状态变更缺少 evidence。');
-    if (items.some(item => !validQuotes.has(`${item.chapterId}\u0000${item.quote}`))) {
-      throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Compiler 生成了未由 Anchor 解析的 evidence。');
+  const validQuotes = new Set(
+    evidence.anchors.map(anchor => `${anchor.chapterId}\u0000${anchor.text}`),
+  );
+  const checkEvidence = (
+    items: Array<{ chapterId: number; quote: string }>,
+  ) => {
+    if (items.length === 0)
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成的状态变更缺少 evidence。',
+      );
+    if (
+      items.some(
+        item => !validQuotes.has(`${item.chapterId}\u0000${item.quote}`),
+      )
+    ) {
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了未由 Anchor 解析的 evidence。',
+      );
     }
   };
-  const charRefs = new Set([...Object.keys(previousState.characters), ...patch.newCharacters.map(item => item.tempRef)]);
-  if (new Set(patch.newCharacters.map(item => item.tempRef)).size !== patch.newCharacters.length) {
-    throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Compiler 生成了重复人物 tempRef。');
+  const charRefs = new Set([
+    ...Object.keys(previousState.characters),
+    ...patch.newCharacters.map(item => item.tempRef),
+  ]);
+  if (
+    new Set(patch.newCharacters.map(item => item.tempRef)).size !==
+    patch.newCharacters.length
+  ) {
+    throw new StoryMemoryError(
+      'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+      '本地 Compiler 生成了重复人物 tempRef。',
+    );
   }
   patch.newCharacters.forEach(item => {
-    if (!/^new_char_[\p{L}\p{N}_-]+$/u.test(item.tempRef) || !item.canonicalName.trim()) {
-      throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Compiler 生成了无效人物引用。');
+    if (
+      !/^new_char_[\p{L}\p{N}_-]+$/u.test(item.tempRef) ||
+      !item.canonicalName.trim()
+    ) {
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了无效人物引用。',
+      );
     }
     checkEvidence(item.evidence);
   });
   patch.characterUpdates.forEach(item => {
-    if (!charRefs.has(item.characterRef)) throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Compiler 生成了无效人物更新引用。');
+    if (!charRefs.has(item.characterRef))
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了无效人物更新引用。',
+      );
     checkEvidence(item.evidence);
   });
   patch.newRelationships.forEach(item => {
-    if (!charRefs.has(item.fromRef) || !charRefs.has(item.toRef) || item.fromRef === item.toRef) {
-      throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Compiler 生成了无效关系端点。');
+    if (
+      !charRefs.has(item.fromRef) ||
+      !charRefs.has(item.toRef) ||
+      item.fromRef === item.toRef
+    ) {
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了无效关系端点。',
+      );
     }
     checkEvidence(item.evidence);
   });
   patch.relationshipUpdates.forEach(item => {
-    if (!previousState.relationships[item.relationshipRef]) throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Compiler 生成了无效关系更新引用。');
+    if (!previousState.relationships[item.relationshipRef])
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了无效关系更新引用。',
+      );
     checkEvidence(item.evidence);
   });
-  const checkMainlineEvidence = (items: Array<{ evidence: BatchEvidenceQuote[] }>) => items.forEach(item => checkEvidence(item.evidence));
+  const conflictRefs = new Set([
+    ...Object.keys(previousState.mainline.activeConflicts),
+    ...patch.mainlinePatch.conflictUpserts
+      .map(item => item.ref)
+      .filter(Boolean),
+  ]);
+  patch.mainlinePatch.conflictResolutions.forEach(item => {
+    if (!conflictRefs.has(item.conflictRef)) {
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了无效冲突解决引用。',
+      );
+    }
+  });
+  const threadRefs = new Set([
+    ...Object.keys(previousState.mainline.openThreads),
+    ...patch.mainlinePatch.threadOpens.map(item => item.ref).filter(Boolean),
+  ]);
+  patch.mainlinePatch.threadUpdates.forEach(item => {
+    if (!threadRefs.has(item.ref)) {
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了无效线索更新引用。',
+      );
+    }
+  });
+  patch.mainlinePatch.threadResolutions.forEach(item => {
+    if (!threadRefs.has(item.threadRef)) {
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了无效线索解决引用。',
+      );
+    }
+  });
+  const checkMainlineEvidence = (
+    items: Array<{ evidence: BatchEvidenceQuote[] }>,
+  ) => items.forEach(item => checkEvidence(item.evidence));
   checkMainlineEvidence([
     ...(patch.mainlinePatch.currentArcUpdate.action === 'none'
       ? []
       : [patch.mainlinePatch.currentArcUpdate]),
-    ...(patch.mainlinePatch.currentObjective ? [patch.mainlinePatch.currentObjective] : []),
+    ...(patch.mainlinePatch.currentObjective
+      ? [patch.mainlinePatch.currentObjective]
+      : []),
     ...patch.mainlinePatch.conflictUpserts,
     ...patch.mainlinePatch.conflictResolutions,
     ...patch.mainlinePatch.threadOpens,
@@ -477,7 +785,10 @@ export function validateCompiledStoryMemoryBatchPatch(
       summary.chapterPosition !== ordered[index].position ||
       !summary.brief.trim()
     ) {
-      throw new StoryMemoryError('MEMORY_CHECKPOINT_SCHEMA_INVALID', '本地 Compiler 生成了缺章或空 brief。');
+      throw new StoryMemoryError(
+        'MEMORY_CHECKPOINT_SCHEMA_INVALID',
+        '本地 Compiler 生成了缺章或空 brief。',
+      );
     }
   });
 }
@@ -489,15 +800,65 @@ export function compileStoryMemoryObservations(input: {
   handles?: StoryMemoryEntityHandleEnvelope;
   evidence: StoryMemoryEvidenceEnvelope;
 }): StoryMemoryCompiledObservationResult {
-  const ordered = [...input.chapters].sort((left, right) => left.position - right.position);
-  const handles = input.handles || buildStoryMemoryEntityHandles(input.previousState, ordered);
-  const entries = buildEntries(input.normalized, ordered, handles).sort((left, right) => {
+  const ordered = [...input.chapters].sort(
+    (left, right) => left.position - right.position,
+  );
+  const handles =
+    input.handles ||
+    buildStoryMemoryEntityHandles(input.previousState, ordered);
+  const entries = buildEntries(
+    input.normalized,
+    ordered,
+    handles,
+    input.evidence,
+  ).sort((left, right) => {
     const position = left.chapter.position - right.chapter.position;
     if (position !== 0) return position;
-    const leftOffset = earliestEvidenceOffset(left.observation, input.evidence);
-    const rightOffset = earliestEvidenceOffset(right.observation, input.evidence);
-    return leftOffset - rightOffset || left.originalOrder - right.originalOrder;
+    return (
+      left.evidenceOffset - right.evidenceOffset ||
+      definitionSortRank(left.observation) -
+        definitionSortRank(right.observation) ||
+      left.originalOrder - right.originalOrder
+    );
   });
+  const definitionCandidates = createEmptyKeyRefs();
+  for (const entry of entries) {
+    if (!isDefinitionObservation(entry.observation) || !entry.observation.key) {
+      continue;
+    }
+    if (
+      resolveObservationEvidence(
+        entry.observation.evidence,
+        input.evidence,
+        entry.chapter.id,
+      ).length === 0
+    ) {
+      // An ungrounded definition is not a future entity; its dependants should
+      // retain the ordinary invalid-evidence/endpoint diagnostics.
+      continue;
+    }
+    const key = entry.observation.key;
+    const candidate = {
+      ref: '',
+      definedChapterPosition: entry.chapter.position,
+      definedEvidenceOffset: entry.evidenceOffset,
+      kind:
+        entry.observation.kind === 'character_new'
+          ? 'character'
+          : entry.observation.kind,
+    } as AcceptedLocalRef;
+    const target =
+      entry.observation.kind === 'character_new'
+        ? definitionCandidates.characterKeyRefs
+        : entry.observation.kind === 'relationship'
+        ? definitionCandidates.relationshipKeyRefs
+        : entry.observation.kind === 'conflict'
+        ? definitionCandidates.conflictKeyRefs
+        : entry.observation.kind === 'thread'
+        ? definitionCandidates.threadKeyRefs
+        : definitionCandidates.foreshadowingKeyRefs;
+    if (!target.has(key)) target.set(key, candidate);
+  }
   const warnings: StoryMemoryObservationWarning[] = [];
   const refs = createEmptyKeyRefs();
   const patch = createEmptyBatchPatch(ordered);
@@ -507,12 +868,15 @@ export function compileStoryMemoryObservations(input: {
       item => item.chapter === handles.chapterHandleById.get(chapter.id),
     );
     const brief =
-      source?.brief.trim() || chapterFallbackBrief(chapter, input.evidence, chapter.id);
+      source?.brief.trim() ||
+      chapterFallbackBrief(chapter, input.evidence, chapter.id);
     const summary = ensureSummary(summaries, chapter, brief);
     if (source) {
       // Model brief/events/keywords are retrieval annotations, not state.
       source.events.forEach(event => addSummaryValue(summary.events, event));
-      source.keywords.forEach(keyword => addSummaryValue(summary.keywords, keyword));
+      source.keywords.forEach(keyword =>
+        addSummaryValue(summary.keywords, keyword),
+      );
     }
   }
 
@@ -550,9 +914,16 @@ export function compileStoryMemoryObservations(input: {
         >,
   ): void => {
     const summary = summaries.get(entry.chapter.id)!;
-    const label = statement(entry, input.previousState, handles, refs.characterKeyRefs);
+    const label = statement(
+      entry,
+      input.previousState,
+      handles,
+      refs.characterKeyRefs,
+    );
     addSummaryValue(summary.events, label);
-    const buckets = Array.isArray(semanticBucket) ? semanticBucket : [semanticBucket];
+    const buckets = Array.isArray(semanticBucket)
+      ? semanticBucket
+      : [semanticBucket];
     for (const bucket of buckets) {
       if (bucket === 'events') continue;
       addSummaryValue(summary[bucket], label);
@@ -575,15 +946,29 @@ export function compileStoryMemoryObservations(input: {
     if (observation.kind === 'character_new') {
       const key = observation.key || '';
       if (!key) {
-        warnings.push(warning('OBS_MISSING_REQUIRED_FIELD', 'character_new 缺少 key。', entry));
+        warnings.push(
+          warning(
+            'OBS_MISSING_REQUIRED_FIELD',
+            'character_new 缺少 key。',
+            entry,
+          ),
+        );
         return false;
       }
       if (!observation.name?.trim()) {
-        warnings.push(warning('OBS_MISSING_REQUIRED_FIELD', 'character_new 缺少 name。', entry));
+        warnings.push(
+          warning(
+            'OBS_MISSING_REQUIRED_FIELD',
+            'character_new 缺少 name。',
+            entry,
+          ),
+        );
         return false;
       }
       if (refs.characterKeyRefs.has(key)) {
-        warnings.push(warning('OBS_DUPLICATE', `重复新人物 key：${key}。`, entry));
+        warnings.push(
+          warning('OBS_DUPLICATE', `重复新人物 key：${key}。`, entry),
+        );
         return false;
       }
       const existing = findExistingCharacter(
@@ -594,11 +979,18 @@ export function compileStoryMemoryObservations(input: {
       let characterRef: string;
       if (existing) {
         characterRef = existing.id;
-        refs.characterKeyRefs.set(key, characterRef);
+        registerLocalRef(
+          refs.characterKeyRefs,
+          key,
+          characterRef,
+          entry,
+          'character',
+        );
         const aliases = unique([
           ...observation.aliases,
           observation.name &&
-          normalizeName(observation.name) !== normalizeName(existing.canonicalName)
+          normalizeName(observation.name) !==
+            normalizeName(existing.canonicalName)
             ? observation.name
             : '',
         ]);
@@ -612,9 +1004,19 @@ export function compileStoryMemoryObservations(input: {
         const sameNameRef = newCharacterNames.get(nameKey);
         if (sameNameRef) {
           characterRef = sameNameRef;
-          refs.characterKeyRefs.set(key, characterRef);
+          registerLocalRef(
+            refs.characterKeyRefs,
+            key,
+            characterRef,
+            entry,
+            'character',
+          );
           warnings.push(
-            warning('OBS_DUPLICATE', `同批同名人物已合并：${observation.name || ''}。`, entry),
+            warning(
+              'OBS_DUPLICATE',
+              `同批同名人物已合并：${observation.name || ''}。`,
+              entry,
+            ),
           );
           const existingPatch = newCharactersByRef.get(characterRef);
           if (existingPatch) {
@@ -622,12 +1024,18 @@ export function compileStoryMemoryObservations(input: {
               ...existingPatch.aliases,
               ...observation.aliases,
             ]);
-            existingPatch.evidence = mergeEvidence(existingPatch.evidence, evidence);
+            existingPatch.evidence = mergeEvidence(
+              existingPatch.evidence,
+              evidence,
+            );
           }
         } else {
-          characterRef = localRef('new_char_obs_', key, `n${++characterSerial}`);
+          characterRef = localRef(
+            'new_char_obs_',
+            key,
+            `n${++characterSerial}`,
+          );
           newCharacterNames.set(nameKey, characterRef);
-          refs.characterKeyRefs.set(key, characterRef);
           const item: BatchNewCharacterPatch = {
             tempRef: characterRef,
             canonicalName: observation.name || '',
@@ -639,6 +1047,13 @@ export function compileStoryMemoryObservations(input: {
             status: status(observation.status),
             evidence,
           };
+          registerLocalRef(
+            refs.characterKeyRefs,
+            key,
+            characterRef,
+            entry,
+            'character',
+          );
           newCharactersByRef.set(characterRef, item);
           patch.newCharacters.push(item);
         }
@@ -648,16 +1063,21 @@ export function compileStoryMemoryObservations(input: {
     }
 
     if (observation.kind === 'character_state') {
-      const characterRef = resolveCharacterRef(
+      const resolution = resolveCharacterRef(
         observation.ref,
         handles,
         refs.characterKeyRefs,
+        entry,
+        definitionCandidates.characterKeyRefs,
       );
+      const characterRef = resolution.ref;
       if (!characterRef) {
         warnings.push(
           warning(
-            'OBS_INVALID_REF',
-            `人物 handle 不存在：${observation.ref || '(空)'}`,
+            resolution.future ? 'OBS_FUTURE_REF' : 'OBS_INVALID_REF',
+            resolution.future
+              ? `人物引用早于定义：${observation.ref || '(空)'}`
+              : `人物 handle 不存在：${observation.ref || '(空)'}`,
             entry,
           ),
         );
@@ -665,31 +1085,41 @@ export function compileStoryMemoryObservations(input: {
       }
       const update = emptyCharacterUpdate(characterRef, evidence);
       if (observation.field === 'status') {
-        update.status = status(observation.op === 'clear' ? 'unknown' : observation.value);
+        update.status = status(
+          observation.op === 'clear' ? 'unknown' : observation.value,
+        );
       } else if (observation.field) {
-        if (observation.op === 'clear') update.clearFields = [observation.field];
+        if (observation.op === 'clear')
+          update.clearFields = [observation.field];
         else {
           update.stateChanges = {
             [observation.field]: observation.value || '',
           } as BatchCharacterUpdatePatch['stateChanges'];
         }
       }
-      patch.characterUpdates.push(update);
+      const newCharacter = newCharactersByRef.get(characterRef);
+      if (newCharacter) mergeCharacterUpdateIntoNewPatch(newCharacter, update);
+      else patch.characterUpdates.push(update);
       acceptObservation(entry, evidence, 'characterChanges');
       return true;
     }
 
     if (observation.kind === 'character_set') {
-      const characterRef = resolveCharacterRef(
+      const resolution = resolveCharacterRef(
         observation.ref,
         handles,
         refs.characterKeyRefs,
+        entry,
+        definitionCandidates.characterKeyRefs,
       );
+      const characterRef = resolution.ref;
       if (!characterRef) {
         warnings.push(
           warning(
-            'OBS_INVALID_REF',
-            `人物 handle 不存在：${observation.ref || '(空)'}`,
+            resolution.future ? 'OBS_FUTURE_REF' : 'OBS_INVALID_REF',
+            resolution.future
+              ? `人物引用早于定义：${observation.ref || '(空)'}`
+              : `人物 handle 不存在：${observation.ref || '(空)'}`,
             entry,
           ),
         );
@@ -710,18 +1140,24 @@ export function compileStoryMemoryObservations(input: {
         }
         update.addAliases = [value];
       } else if (observation.field === 'knowledge') {
-        (observation.op === 'remove' ? update.removeKnowledge : update.addKnowledge).push(
-          value,
-        );
+        (observation.op === 'remove'
+          ? update.removeKnowledge
+          : update.addKnowledge
+        ).push(value);
       } else if (observation.field === 'possession') {
         (observation.op === 'remove'
           ? update.removePossessions
           : update.addPossessions
         ).push(value);
       } else if (observation.field === 'secret') {
-        (observation.op === 'remove' ? update.removeSecrets : update.addSecrets).push(value);
+        (observation.op === 'remove'
+          ? update.removeSecrets
+          : update.addSecrets
+        ).push(value);
       }
-      patch.characterUpdates.push(update);
+      const newCharacter = newCharactersByRef.get(characterRef);
+      if (newCharacter) mergeCharacterUpdateIntoNewPatch(newCharacter, update);
+      else patch.characterUpdates.push(update);
       acceptObservation(entry, evidence, 'characterChanges');
       return true;
     }
@@ -731,28 +1167,55 @@ export function compileStoryMemoryObservations(input: {
         const key = observation.key || '';
         if (!key) {
           warnings.push(
-            warning('OBS_MISSING_REQUIRED_FIELD', 'relationship open 缺少 key。', entry),
+            warning(
+              'OBS_MISSING_REQUIRED_FIELD',
+              'relationship open 缺少 key。',
+              entry,
+            ),
           );
           return false;
         }
         if (refs.relationshipKeyRefs.has(key)) {
-          warnings.push(warning('OBS_DUPLICATE', `重复新关系 key：${key}。`, entry));
-          return false;
-        }
-        const fromRef = resolveCharacterRef(
-          observation.from,
-          handles,
-          refs.characterKeyRefs,
-        );
-        const toRef = resolveCharacterRef(observation.to, handles, refs.characterKeyRefs);
-        if (!fromRef || !toRef || fromRef === toRef) {
           warnings.push(
-            warning('OBS_INVALID_ENDPOINT', '关系 endpoint 无法解析，已局部丢弃。', entry),
+            warning('OBS_DUPLICATE', `重复新关系 key：${key}。`, entry),
           );
           return false;
         }
-        const tempRef = localRef('new_rel_obs_', key, `n${++relationshipSerial}`);
-        refs.relationshipKeyRefs.set(key, tempRef);
+        const fromResolution = resolveCharacterRef(
+          observation.from,
+          handles,
+          refs.characterKeyRefs,
+          entry,
+          definitionCandidates.characterKeyRefs,
+        );
+        const toResolution = resolveCharacterRef(
+          observation.to,
+          handles,
+          refs.characterKeyRefs,
+          entry,
+          definitionCandidates.characterKeyRefs,
+        );
+        const fromRef = fromResolution.ref;
+        const toRef = toResolution.ref;
+        if (!fromRef || !toRef || fromRef === toRef) {
+          warnings.push(
+            warning(
+              fromResolution.future || toResolution.future
+                ? 'OBS_FUTURE_REF'
+                : 'OBS_INVALID_ENDPOINT',
+              fromResolution.future || toResolution.future
+                ? '关系 endpoint 引用了尚未定义的实体，已局部丢弃。'
+                : '关系 endpoint 无法解析，已局部丢弃。',
+              entry,
+            ),
+          );
+          return false;
+        }
+        const tempRef = localRef(
+          'new_rel_obs_',
+          key,
+          `n${++relationshipSerial}`,
+        );
         const item: BatchNewRelationshipPatch = {
           tempRef,
           fromRef,
@@ -766,17 +1229,33 @@ export function compileStoryMemoryObservations(input: {
           reason: observation.reason || '',
           evidence,
         };
+        registerLocalRef(
+          refs.relationshipKeyRefs,
+          key,
+          tempRef,
+          entry,
+          'relationship',
+        );
         newRelationshipsByRef.set(tempRef, item);
         patch.newRelationships.push(item);
         acceptObservation(entry, evidence, 'relationshipChanges');
         return true;
       }
-      const relationshipRef = resolveRelationshipRef(observation.ref, handles);
+      const resolution = resolveRelationshipRef(
+        observation.ref,
+        handles,
+        refs.relationshipKeyRefs,
+        entry,
+        definitionCandidates.relationshipKeyRefs,
+      );
+      const relationshipRef = resolution.ref;
       if (!relationshipRef) {
         warnings.push(
           warning(
-            'OBS_INVALID_REF',
-            `关系 handle 不存在：${observation.ref || '(空)'}`,
+            resolution.future ? 'OBS_FUTURE_REF' : 'OBS_INVALID_REF',
+            resolution.future
+              ? `关系引用早于定义：${observation.ref || '(空)'}`
+              : `关系 handle 不存在：${observation.ref || '(空)'}`,
             entry,
           ),
         );
@@ -794,26 +1273,61 @@ export function compileStoryMemoryObservations(input: {
         reason: observation.reason,
         evidence,
       };
-      patch.relationshipUpdates.push(update);
+      const newRelationship = newRelationshipsByRef.get(relationshipRef);
+      if (newRelationship) {
+        if (update.currentState !== undefined) {
+          newRelationship.currentState = update.currentState;
+        }
+        if (update.trustLevel !== undefined) {
+          newRelationship.trustLevel = update.trustLevel;
+        }
+        if (update.publicStatus !== undefined) {
+          newRelationship.publicStatus = update.publicStatus;
+        }
+        if (update.hiddenStatus !== undefined) {
+          newRelationship.hiddenStatus = update.hiddenStatus;
+        }
+        if (update.reason !== undefined) newRelationship.reason = update.reason;
+        newRelationship.evidence = mergeEvidence(
+          newRelationship.evidence,
+          update.evidence,
+        );
+      } else {
+        patch.relationshipUpdates.push(update);
+      }
       acceptObservation(entry, evidence, 'relationshipChanges');
       return true;
     }
 
     if (observation.kind === 'arc') {
-      const action = observation.op as 'start' | 'update' | 'complete' | 'replace';
+      const action = observation.op as
+        | 'start'
+        | 'update'
+        | 'complete'
+        | 'replace';
       const currentArc = input.previousState.mainline.currentArc;
       if (
-        (action === 'update' || action === 'complete' || action === 'replace') &&
+        (action === 'update' ||
+          action === 'complete' ||
+          action === 'replace') &&
         !currentArc
       ) {
         warnings.push(
-          warning('OBS_INVALID_REF', '没有当前剧情弧可更新，已局部丢弃。', entry),
+          warning(
+            'OBS_INVALID_REF',
+            '没有当前剧情弧可更新，已局部丢弃。',
+            entry,
+          ),
         );
         return false;
       }
       if (action === 'start' && currentArc) {
         warnings.push(
-          warning('OBS_INVALID_REF', '已有当前剧情弧，start 不得覆盖，已局部丢弃。', entry),
+          warning(
+            'OBS_INVALID_REF',
+            '已有当前剧情弧，start 不得覆盖，已局部丢弃。',
+            entry,
+          ),
         );
         return false;
       }
@@ -842,47 +1356,99 @@ export function compileStoryMemoryObservations(input: {
         const key = observation.key || '';
         if (!key) {
           warnings.push(
-            warning('OBS_MISSING_REQUIRED_FIELD', 'conflict open 缺少 key。', entry),
+            warning(
+              'OBS_MISSING_REQUIRED_FIELD',
+              'conflict open 缺少 key。',
+              entry,
+            ),
           );
           return false;
         }
         if (refs.conflictKeyRefs.has(key)) {
-          warnings.push(warning('OBS_DUPLICATE', `重复新冲突 key：${key}。`, entry));
+          warnings.push(
+            warning('OBS_DUPLICATE', `重复新冲突 key：${key}。`, entry),
+          );
           return false;
         }
-        const parties = mapPartyRefs(observation.parties, handles, refs.characterKeyRefs);
+        const partiesResolution = mapPartyRefs(
+          observation.parties,
+          handles,
+          refs.characterKeyRefs,
+          entry,
+          definitionCandidates.characterKeyRefs,
+        );
+        const parties = partiesResolution.refs;
         if (parties === null) {
           warnings.push(
-            warning('OBS_INVALID_ENDPOINT', '冲突参与者 handle 不存在，已局部丢弃。', entry),
+            warning(
+              partiesResolution.future
+                ? 'OBS_FUTURE_REF'
+                : 'OBS_INVALID_ENDPOINT',
+              partiesResolution.future
+                ? '冲突参与者引用了尚未定义的实体，已局部丢弃。'
+                : '冲突参与者 handle 不存在，已局部丢弃。',
+              entry,
+            ),
           );
           return false;
         }
         const ref = localRef('new_conflict_obs_', key, `n${++conflictSerial}`);
-        refs.conflictKeyRefs.set(key, ref);
         const item = emptyMainlineEntity(ref, evidence);
         item.title = observation.title || '';
         item.state = observation.state || '';
         item.stakes = observation.stakes || '';
         if (parties.length) item.parties = parties;
+        registerLocalRef(refs.conflictKeyRefs, key, ref, entry, 'conflict');
         conflictByRef.set(ref, item);
         patch.mainlinePatch.conflictUpserts.push(item);
         acceptObservation(entry, evidence, 'mainlineChanges');
         return true;
       }
       if (observation.op === 'update') {
-        const ref = resolveConflictRef(observation.ref, handles, refs.conflictKeyRefs);
+        const resolution = resolveConflictRef(
+          observation.ref,
+          handles,
+          refs.conflictKeyRefs,
+          entry,
+          definitionCandidates.conflictKeyRefs,
+        );
+        const ref = resolution.ref;
         if (!ref) {
-          warnings.push(warning('OBS_INVALID_REF', '冲突 handle 不存在，已局部丢弃。', entry));
-          return false;
-        }
-        const parties = mapPartyRefs(observation.parties, handles, refs.characterKeyRefs);
-        if (parties === null) {
           warnings.push(
-            warning('OBS_INVALID_ENDPOINT', '冲突参与者 handle 不存在，已局部丢弃。', entry),
+            warning(
+              resolution.future ? 'OBS_FUTURE_REF' : 'OBS_INVALID_REF',
+              resolution.future
+                ? '冲突引用早于定义，已局部丢弃。'
+                : '冲突 handle 不存在，已局部丢弃。',
+              entry,
+            ),
           );
           return false;
         }
-        const item = conflictByRef.get(ref) || emptyMainlineEntity(ref, evidence);
+        const partiesResolution = mapPartyRefs(
+          observation.parties,
+          handles,
+          refs.characterKeyRefs,
+          entry,
+          definitionCandidates.characterKeyRefs,
+        );
+        const parties = partiesResolution.refs;
+        if (parties === null) {
+          warnings.push(
+            warning(
+              partiesResolution.future
+                ? 'OBS_FUTURE_REF'
+                : 'OBS_INVALID_ENDPOINT',
+              partiesResolution.future
+                ? '冲突参与者引用了尚未定义的实体，已局部丢弃。'
+                : '冲突参与者 handle 不存在，已局部丢弃。',
+              entry,
+            ),
+          );
+          return false;
+        }
+        const item =
+          conflictByRef.get(ref) || emptyMainlineEntity(ref, evidence);
         item.title = observation.title || item.title || '';
         item.state = observation.state || item.state || '';
         item.stakes = observation.stakes || item.stakes || '';
@@ -895,9 +1461,28 @@ export function compileStoryMemoryObservations(input: {
         acceptObservation(entry, evidence, 'mainlineChanges');
         return true;
       }
-      const ref = resolveConflictRef(observation.ref, handles, refs.conflictKeyRefs);
-      if (!ref || !input.previousState.mainline.activeConflicts[ref]) {
-        warnings.push(warning('OBS_INVALID_REF', '待解决冲突不存在，已局部丢弃。', entry));
+      const resolution = resolveConflictRef(
+        observation.ref,
+        handles,
+        refs.conflictKeyRefs,
+        entry,
+        definitionCandidates.conflictKeyRefs,
+      );
+      const ref = resolution.ref;
+      if (
+        !ref ||
+        (!input.previousState.mainline.activeConflicts[ref] &&
+          !conflictByRef.has(ref))
+      ) {
+        warnings.push(
+          warning(
+            resolution.future ? 'OBS_FUTURE_REF' : 'OBS_INVALID_REF',
+            resolution.future
+              ? '冲突引用早于定义，已局部丢弃。'
+              : '待解决冲突不存在，已局部丢弃。',
+            entry,
+          ),
+        );
         return false;
       }
       patch.mainlinePatch.conflictResolutions.push({
@@ -905,7 +1490,10 @@ export function compileStoryMemoryObservations(input: {
         resolution: observation.payoff || observation.state || '',
         evidence,
       });
-      acceptObservation(entry, evidence, ['mainlineChanges', 'resolvedThreads']);
+      acceptObservation(entry, evidence, [
+        'mainlineChanges',
+        'resolvedThreads',
+      ]);
       return true;
     }
 
@@ -914,44 +1502,95 @@ export function compileStoryMemoryObservations(input: {
         const key = observation.key || '';
         if (!key) {
           warnings.push(
-            warning('OBS_MISSING_REQUIRED_FIELD', 'thread open 缺少 key。', entry),
+            warning(
+              'OBS_MISSING_REQUIRED_FIELD',
+              'thread open 缺少 key。',
+              entry,
+            ),
           );
           return false;
         }
         if (refs.threadKeyRefs.has(key)) {
-          warnings.push(warning('OBS_DUPLICATE', `重复新线索 key：${key}。`, entry));
+          warnings.push(
+            warning('OBS_DUPLICATE', `重复新线索 key：${key}。`, entry),
+          );
           return false;
         }
-        const owners = mapPartyRefs(observation.owners, handles, refs.characterKeyRefs);
+        const ownersResolution = mapPartyRefs(
+          observation.owners,
+          handles,
+          refs.characterKeyRefs,
+          entry,
+          definitionCandidates.characterKeyRefs,
+        );
+        const owners = ownersResolution.refs;
         if (owners === null) {
           warnings.push(
-            warning('OBS_INVALID_ENDPOINT', '线索 owner handle 不存在，已局部丢弃。', entry),
+            warning(
+              ownersResolution.future
+                ? 'OBS_FUTURE_REF'
+                : 'OBS_INVALID_ENDPOINT',
+              ownersResolution.future
+                ? '线索 owner 引用了尚未定义的实体，已局部丢弃。'
+                : '线索 owner handle 不存在，已局部丢弃。',
+              entry,
+            ),
           );
           return false;
         }
         const ref = localRef('new_thread_obs_', key, `n${++threadSerial}`);
-        refs.threadKeyRefs.set(key, ref);
         const item = emptyMainlineEntity(ref, evidence);
         item.title = observation.title || '';
         item.description = observation.description || '';
         item.priority = observation.priority || 'normal';
         item.deadlineOrTrigger = observation.deadlineOrTrigger || '';
         if (owners.length) item.ownerCharacterRefs = owners;
+        registerLocalRef(refs.threadKeyRefs, key, ref, entry, 'thread');
         threadByRef.set(ref, item);
         patch.mainlinePatch.threadOpens.push(item);
         acceptObservation(entry, evidence, ['mainlineChanges', 'newThreads']);
         return true;
       }
       if (observation.op === 'update') {
-        const ref = resolveThreadRef(observation.ref, handles, refs.threadKeyRefs);
+        const resolution = resolveThreadRef(
+          observation.ref,
+          handles,
+          refs.threadKeyRefs,
+          entry,
+          definitionCandidates.threadKeyRefs,
+        );
+        const ref = resolution.ref;
         if (!ref) {
-          warnings.push(warning('OBS_INVALID_REF', '线索 handle 不存在，已局部丢弃。', entry));
+          warnings.push(
+            warning(
+              resolution.future ? 'OBS_FUTURE_REF' : 'OBS_INVALID_REF',
+              resolution.future
+                ? '线索引用早于定义，已局部丢弃。'
+                : '线索 handle 不存在，已局部丢弃。',
+              entry,
+            ),
+          );
           return false;
         }
-        const owners = mapPartyRefs(observation.owners, handles, refs.characterKeyRefs);
+        const ownersResolution = mapPartyRefs(
+          observation.owners,
+          handles,
+          refs.characterKeyRefs,
+          entry,
+          definitionCandidates.characterKeyRefs,
+        );
+        const owners = ownersResolution.refs;
         if (owners === null) {
           warnings.push(
-            warning('OBS_INVALID_ENDPOINT', '线索 owner handle 不存在，已局部丢弃。', entry),
+            warning(
+              ownersResolution.future
+                ? 'OBS_FUTURE_REF'
+                : 'OBS_INVALID_ENDPOINT',
+              ownersResolution.future
+                ? '线索 owner 引用了尚未定义的实体，已局部丢弃。'
+                : '线索 owner handle 不存在，已局部丢弃。',
+              entry,
+            ),
           );
           return false;
         }
@@ -971,11 +1610,27 @@ export function compileStoryMemoryObservations(input: {
         acceptObservation(entry, evidence, 'mainlineChanges');
         return true;
       }
-      const ref = resolveThreadRef(observation.ref, handles, refs.threadKeyRefs);
+      const resolution = resolveThreadRef(
+        observation.ref,
+        handles,
+        refs.threadKeyRefs,
+        entry,
+        definitionCandidates.threadKeyRefs,
+      );
+      const ref = resolution.ref;
       const existing =
-        ref && (input.previousState.mainline.openThreads[ref] || threadByRef.has(ref));
+        ref &&
+        (input.previousState.mainline.openThreads[ref] || threadByRef.has(ref));
       if (!ref || !existing) {
-        warnings.push(warning('OBS_INVALID_REF', '待解决线索不存在，已局部丢弃。', entry));
+        warnings.push(
+          warning(
+            resolution.future ? 'OBS_FUTURE_REF' : 'OBS_INVALID_REF',
+            resolution.future
+              ? '线索引用早于定义，已局部丢弃。'
+              : '待解决线索不存在，已局部丢弃。',
+            entry,
+          ),
+        );
         return false;
       }
       patch.mainlinePatch.threadResolutions.push({
@@ -983,7 +1638,10 @@ export function compileStoryMemoryObservations(input: {
         resolution: observation.payoff || observation.description || '',
         evidence,
       });
-      acceptObservation(entry, evidence, ['mainlineChanges', 'resolvedThreads']);
+      acceptObservation(entry, evidence, [
+        'mainlineChanges',
+        'resolvedThreads',
+      ]);
       return true;
     }
 
@@ -992,44 +1650,72 @@ export function compileStoryMemoryObservations(input: {
         const key = observation.key || '';
         if (!key) {
           warnings.push(
-            warning('OBS_MISSING_REQUIRED_FIELD', 'foreshadowing open 缺少 key。', entry),
+            warning(
+              'OBS_MISSING_REQUIRED_FIELD',
+              'foreshadowing open 缺少 key。',
+              entry,
+            ),
           );
           return false;
         }
         if (refs.foreshadowingKeyRefs.has(key)) {
-          warnings.push(warning('OBS_DUPLICATE', `重复新伏笔 key：${key}。`, entry));
+          warnings.push(
+            warning('OBS_DUPLICATE', `重复新伏笔 key：${key}。`, entry),
+          );
           return false;
         }
-        const ref = localRef('new_foreshadow_obs_', key, `n${++foreshadowingSerial}`);
-        refs.foreshadowingKeyRefs.set(key, ref);
+        const ref = localRef(
+          'new_foreshadow_obs_',
+          key,
+          `n${++foreshadowingSerial}`,
+        );
         const item = emptyMainlineEntity(ref, evidence);
         item.setup = observation.setup || '';
         item.expectedPayoff = observation.expectedPayoff || '';
         item.status = 'open';
+        registerLocalRef(
+          refs.foreshadowingKeyRefs,
+          key,
+          ref,
+          entry,
+          'foreshadowing',
+        );
         foreshadowingByRef.set(ref, item);
         patch.mainlinePatch.foreshadowingUpserts.push(item);
         acceptObservation(entry, evidence, 'mainlineChanges');
         return true;
       }
-      const ref = resolveForeshadowingRef(
+      const resolution = resolveForeshadowingRef(
         observation.ref,
         handles,
         refs.foreshadowingKeyRefs,
+        entry,
+        definitionCandidates.foreshadowingKeyRefs,
       );
+      const ref = resolution.ref;
       if (!ref) {
-        warnings.push(warning('OBS_INVALID_REF', '伏笔 handle 不存在，已局部丢弃。', entry));
+        warnings.push(
+          warning(
+            resolution.future ? 'OBS_FUTURE_REF' : 'OBS_INVALID_REF',
+            resolution.future
+              ? '伏笔引用早于定义，已局部丢弃。'
+              : '伏笔 handle 不存在，已局部丢弃。',
+            entry,
+          ),
+        );
         return false;
       }
       const existing = foreshadowingByRef.get(ref);
       const item = existing || emptyMainlineEntity(ref, evidence);
       item.setup = observation.setup || item.setup || '';
-      item.expectedPayoff = observation.expectedPayoff || item.expectedPayoff || '';
+      item.expectedPayoff =
+        observation.expectedPayoff || item.expectedPayoff || '';
       item.status =
         observation.op === 'partial'
           ? 'partially_paid'
           : observation.op === 'resolve'
-            ? 'paid'
-            : item.status || 'open';
+          ? 'paid'
+          : item.status || 'open';
       item.evidence = mergeEvidence(item.evidence, evidence);
       if (!existing) {
         foreshadowingByRef.set(ref, item);
@@ -1059,24 +1745,12 @@ export function compileStoryMemoryObservations(input: {
     return false;
   };
 
-  // Pass 1: accepted definition observations register N-keys.
-  const definitionEntries = entries
-    .filter(entry => isDefinitionObservation(entry.observation))
-    .sort(
-      (left, right) =>
-        definitionSortRank(left.observation) - definitionSortRank(right.observation) ||
-        left.chapter.position - right.chapter.position ||
-        left.originalOrder - right.originalOrder,
-    );
-  for (const entry of definitionEntries) {
-    compileOne(entry);
-  }
-
-  // Pass 2: reference / update observations resolve only accepted keys.
-  const referenceEntries = entries.filter(
-    entry => !isDefinitionObservation(entry.observation),
-  );
-  for (const entry of referenceEntries) {
+  // Register definitions only at their real chapter/evidence position. A
+  // global definition pass would make CH01 see an N-key defined in CH02, and
+  // would also let an earlier same-chapter reference see a later definition.
+  // Equal-offset definitions sort before references so one evidence sentence
+  // can introduce an entity and describe its first relationship/state.
+  for (const entry of entries) {
     compileOne(entry);
   }
 
@@ -1116,7 +1790,12 @@ export function compileStoryMemoryObservations(input: {
       ? '检测到结构化主线变化。'
       : '本批未形成持续主线状态变化。',
   };
-  validateCompiledStoryMemoryBatchPatch(patch, input.previousState, ordered, input.evidence);
+  validateCompiledStoryMemoryBatchPatch(
+    patch,
+    input.previousState,
+    ordered,
+    input.evidence,
+  );
   const observationsNormalized = entries.length;
   return {
     patch,
