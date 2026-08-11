@@ -17,8 +17,11 @@
  */
 import * as db from '../database';
 import { openDatabase } from '../../data/connection/openDatabase';
-import { createContentRevision, getLatestContentRevision } from '../../data/repositories/contentRepository';
-import { getPipelineTaskById } from '../../data/repositories/pipelineTaskRepository';
+import {
+  createContentRevision,
+  getLatestContentRevision,
+} from '../../data/repositories/contentRepository';
+import { getPipelineTaskAdoptionPayload } from '../../data/repositories/pipelineTaskRepository';
 import { getBatchItem } from '../../data/repositories/multiChapterBatchRepository';
 import { buildCommitBatchItemAdoptionStatements } from '../../data/repositories/multiChapterBatchRepository';
 import {
@@ -76,7 +79,7 @@ export function computeAdoptionFingerprint(params: {
 export async function adoptPipelineTaskResult(
   input: AdoptPipelineTaskResultInput,
 ): Promise<AdoptPipelineTaskResultOutput> {
-  const task = await getPipelineTaskById(input.taskId);
+  const task = await getPipelineTaskAdoptionPayload(input.taskId);
   if (!task) {
     throw new MultiChapterBatchError(
       'BATCH_ADOPTION_FAILED',
@@ -118,10 +121,7 @@ export async function adoptPipelineTaskResult(
       alreadyAdopted: true,
     };
   }
-  const latestRevision = await getLatestContentRevision(
-    'chapter',
-    chapter.id,
-  );
+  const latestRevision = await getLatestContentRevision('chapter', chapter.id);
   if (latestRevision?.source_ref === input.taskId) {
     // Crash-window guard (RB-2): the previous-content revision may have been
     // persisted while the process died BEFORE chapter.content was updated.
@@ -215,7 +215,7 @@ export async function adoptPipelineTaskResult(
 export async function adoptPipelineTaskResultAtomic(
   input: AdoptPipelineTaskResultInput & { chapterCount?: number },
 ): Promise<AdoptPipelineTaskResultOutput> {
-  const task = await getPipelineTaskById(input.taskId);
+  const task = await getPipelineTaskAdoptionPayload(input.taskId);
   if (!task) {
     throw new MultiChapterBatchError(
       'BATCH_ADOPTION_FAILED',
@@ -254,10 +254,7 @@ export async function adoptPipelineTaskResultAtomic(
       alreadyAdopted: true,
     };
   }
-  const latestRevision = await getLatestContentRevision(
-    'chapter',
-    chapter.id,
-  );
+  const latestRevision = await getLatestContentRevision('chapter', chapter.id);
   if (latestRevision?.source_ref === input.taskId) {
     const bodyLanded = String(chapter.content) === finalText;
     if (bodyLanded) {
@@ -318,14 +315,17 @@ export async function adoptPipelineTaskResultAtomic(
   let itemStatementIndex = -1;
   let counterStatementIndex = -1;
   if (input.batchId && input.ordinal != null && input.chapterCount != null) {
-    const commitStatements = await buildCommitBatchItemAdoptionStatements({
-      batchId: input.batchId,
-      ordinal: input.ordinal,
-      chapterCount: input.chapterCount,
-      completionQuality: input.completionQuality ?? 'full_pipeline',
-      adoptionFingerprint: fingerprint,
-      adoptedRevisionId: null,
-    }, { useLastInsertRowId: true });
+    const commitStatements = await buildCommitBatchItemAdoptionStatements(
+      {
+        batchId: input.batchId,
+        ordinal: input.ordinal,
+        chapterCount: input.chapterCount,
+        completionQuality: input.completionQuality ?? 'full_pipeline',
+        adoptionFingerprint: fingerprint,
+        adoptedRevisionId: null,
+      },
+      { useLastInsertRowId: true },
+    );
     for (const stmt of commitStatements) {
       statements.push(stmt);
     }
@@ -362,24 +362,20 @@ export async function adoptPipelineTaskResultAtomic(
   // revision was recorded, otherwise 2). Counter statements follow it.
   const pipelineRevisionIndex =
     itemStatementIndex > 0 ? itemStatementIndex - 1 : statements.length;
-  await executeTransaction(
-    await openDatabase(),
-    statements,
-    {
-      faultDomain: 'adoption',
-      onStatementComplete: (index, rowsAffected, insertId) => {
-        if (index === pipelineRevisionIndex) {
-          adoptedRevisionId = insertId ?? null;
-        }
-        if (index === itemStatementIndex && rowsAffected <= 0) {
-          throw new Error('BATCH_ADOPTION_MISMATCH');
-        }
-        if (index === counterStatementIndex && rowsAffected <= 0) {
-          throw new Error('BATCH_NOT_FOUND');
-        }
-      },
+  await executeTransaction(await openDatabase(), statements, {
+    faultDomain: 'adoption',
+    onStatementComplete: (index, rowsAffected, insertId) => {
+      if (index === pipelineRevisionIndex) {
+        adoptedRevisionId = insertId ?? null;
+      }
+      if (index === itemStatementIndex && rowsAffected <= 0) {
+        throw new Error('BATCH_ADOPTION_MISMATCH');
+      }
+      if (index === counterStatementIndex && rowsAffected <= 0) {
+        throw new Error('BATCH_NOT_FOUND');
+      }
     },
-  );
+  });
 
   // Post-transaction best-effort (idempotent SET semantics).
   try {
