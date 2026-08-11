@@ -7,7 +7,10 @@ import {
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
-import { executeTransaction, type SqlStatement } from '../../services/database/transaction';
+import {
+  executeTransaction,
+  type SqlStatement,
+} from '../../services/database/transaction';
 import { setSetting } from './settingsRepository';
 import type { Row } from './shared';
 import type { PipelineCheckpointStage } from '../../services/pipeline/types';
@@ -54,13 +57,14 @@ export async function getPipelineConfig(options?: {
   // The opt-in read exists solely for direct V2 state-machine audit paths;
   // normal product callers always receive full.
   const savedPipelineMode = get('pipeline_mode');
-  const pipelineMode = options?.includeHistoricalMode &&
+  const pipelineMode =
+    options?.includeHistoricalMode &&
     (savedPipelineMode === 'noReview' ||
       savedPipelineMode === 'twoStage' ||
       savedPipelineMode === 'conditional' ||
       savedPipelineMode === 'full')
-    ? (savedPipelineMode as PipelineConfig['pipelineMode'])
-    : ('full' as const);
+      ? (savedPipelineMode as PipelineConfig['pipelineMode'])
+      : ('full' as const);
 
   const presetId = (k: string): number | null => {
     const v = get(k);
@@ -76,10 +80,7 @@ export async function getPipelineConfig(options?: {
       : normalizePipelineReasoningTier(savedReasoningEffort);
   // Settings migration is intentionally a single transaction so a crash
   // cannot leave the tier and profile version at different interpretations.
-  if (
-    savedProfileVersion !== '5' ||
-    savedReasoningEffort !== normalizedTier
-  ) {
+  if (savedProfileVersion !== '5' || savedReasoningEffort !== normalizedTier) {
     const database = await openDatabase();
     await executeTransaction(database, [
       {
@@ -446,11 +447,56 @@ export async function createDerivedPipelineTaskWithCheckpoints(
 
 /** Fetch a single pipeline task by id (diagnostic parent-exists check). */
 export async function getPipelineTaskById(id: string): Promise<any | null> {
-  const row = await one<Row>(
-    'SELECT * FROM pipeline_tasks WHERE id = ?',
-    [id],
-  );
+  const row = await one<Row>('SELECT * FROM pipeline_tasks WHERE id = ?', [id]);
   return row ? mapPipelineTaskRow(row) : null;
+}
+
+/**
+ * Read only the payload needed by result adoption.
+ *
+ * `pipeline_tasks` deliberately keeps several potentially large TEXT values
+ * (the frozen context, stage projections and final text) on the same row.
+ * Android CursorWindow applies its limit to the selected row, so selecting
+ * the whole row during adoption can fail even when `final_text` itself is
+ * small enough. Keep this critical path on a narrow projection and read the
+ * final text in bounded chunks so an unusually long generated chapter also
+ * cannot overflow a CursorWindow row by itself.
+ */
+export async function getPipelineTaskAdoptionPayload(
+  id: string,
+): Promise<{ id: string; finalText: string | null } | null> {
+  const chunkCharacters = 128 * 1024;
+  const first = await one<Row>(
+    `SELECT id,
+            length(final_text) AS final_text_length,
+            substr(final_text, 1, ?) AS final_text_chunk
+       FROM pipeline_tasks
+      WHERE id = ?`,
+    [chunkCharacters, id],
+  );
+  if (!first) return null;
+
+  if (first.final_text_length == null) {
+    return { id: String(first.id), finalText: null };
+  }
+
+  const totalLength = Math.max(0, Number(first.final_text_length) || 0);
+  let finalText = String(first.final_text_chunk ?? '');
+  for (
+    let offset = chunkCharacters + 1;
+    offset <= totalLength;
+    offset += chunkCharacters
+  ) {
+    const next = await one<Row>(
+      `SELECT substr(final_text, ?, ?) AS final_text_chunk
+         FROM pipeline_tasks
+        WHERE id = ?`,
+      [offset, chunkCharacters, id],
+    );
+    finalText += String(next?.final_text_chunk ?? '');
+  }
+
+  return { id: String(first.id), finalText };
 }
 
 function mapPipelineTaskRow(row: Row) {
@@ -549,13 +595,7 @@ export async function updatePipelineTaskContext(
          pipeline_context_hash = ?,
          updated_at = ?
      WHERE id = ?`,
-    [
-      snapshot.json,
-      snapshot.version,
-      snapshot.hash,
-      Date.now(),
-      taskId,
-    ],
+    [snapshot.json, snapshot.version, snapshot.hash, Date.now(), taskId],
   );
   const rowsAffected = Number((result as any)?.rowsAffected ?? 0);
   if (rowsAffected !== 1) {
