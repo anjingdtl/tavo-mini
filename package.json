@@ -1,6 +1,6 @@
 {
   "name": "ShineWriter",
-  "version": "2.11.48",
+  "version": "2.11.49",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
