@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.11.48] - 2026-08-11
+
+### Fixed — Story Memory Protocol V2 Final Seal
+
+- **Batch 时间元数据**：3 章 Batch 不再把 firstSeen/opened/lastChanged/resolved 压成 through chapter；Character/Relationship/Conflict/Thread/Foreshadow/Timeline 从各自 Evidence 章节本地推导，仍保持单次 Merger + 单次 CAS/DB。
+- **Known-change complex-long 真语义 Gate**：live QA 对齐生产 `parseStoryMemoryObservationCandidate` 路径，要求 `observationsReceived > 0`、`observationsAccepted >= 3`、`semanticCategories` 非空，并实际 compile/validate/apply。
+- **Future Ref diagnostics**：`OBS_FUTURE_REF` 独立归类为 `future_ref`，不再落入 generic `invalid_observation`。
+
+### Validation
+
+- Story Memory 专项、`npm run verify`、production-policy live complex-long、Android temporal lifecycle / context / background / `outcome_unknown` 证据见 Seal Verification 报告。
+
 ## [2.11.47] - 2026-08-11
 
 ### Fixed — Story Memory Protocol V2 Final Governance

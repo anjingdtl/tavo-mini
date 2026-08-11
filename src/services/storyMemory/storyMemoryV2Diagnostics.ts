@@ -14,6 +14,7 @@ export const STORY_MEMORY_V2_PROTOCOL_VERSION = 2 as const;
 export type StoryMemoryV2DropReason =
   | 'invalid_anchor'
   | 'invalid_ref'
+  | 'future_ref'
   | 'invalid_kind'
   | 'invalid_op'
   | 'invalid_field'
@@ -254,9 +255,11 @@ function emptyCounts(): StoryMemoryObservationMaterials['materialCounts'] {
 }
 
 function emptyDropReasons(): Record<StoryMemoryV2DropReason, number> {
+  // Keep explicit keys so JSON/diagnostics consumers always see future_ref.
   return {
     invalid_anchor: 0,
     invalid_ref: 0,
+    future_ref: 0,
     invalid_kind: 0,
     invalid_op: 0,
     invalid_field: 0,
@@ -372,6 +375,8 @@ function dropReasonForWarning(
       return 'invalid_anchor';
     case 'OBS_INVALID_REF':
       return 'invalid_ref';
+    case 'OBS_FUTURE_REF':
+      return 'future_ref';
     case 'OBS_INVALID_KIND':
       return 'invalid_kind';
     case 'OBS_INVALID_OP':
