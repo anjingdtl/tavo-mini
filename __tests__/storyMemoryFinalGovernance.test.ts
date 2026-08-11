@@ -8,7 +8,11 @@ import {
 } from '../src/services/storyMemory/storyMemoryObservationCompiler';
 import { normalizeStoryMemoryObservationPayload } from '../src/services/storyMemory/storyMemoryObservationNormalizer';
 import { STORY_MEMORY_V2_OBSERVER_CONTRACT } from '../src/services/storyMemory/storyMemoryObservationPrompts';
-import { evaluateStoryMemoryKnownChangeSemanticGate } from '../src/services/storyMemory/storyMemoryV2Diagnostics';
+import {
+  evaluateStoryMemoryKnownChangeSemanticGate,
+  recordStoryMemoryV2Warnings,
+  type StoryMemoryV2Diagnostics,
+} from '../src/services/storyMemory/storyMemoryV2Diagnostics';
 import type { Chapter } from '../src/types/novel';
 import type {
   StoryCharacter,
@@ -380,6 +384,36 @@ describe('Story Memory V2 final governance — known-change QA gate', () => {
 
     expect(result.pass).toBe(false);
     expect(result.reason).toContain('observationsAccepted');
+  });
+});
+
+describe('Story Memory V2 final governance — future_ref diagnostics', () => {
+  it('classifies OBS_FUTURE_REF as future_ref instead of invalid_observation', () => {
+    const diagnostics = {
+      normalizerWarnings: 0,
+      dropReasons: {
+        invalid_anchor: 0,
+        invalid_ref: 0,
+        future_ref: 0,
+        invalid_kind: 0,
+        invalid_op: 0,
+        invalid_field: 0,
+        invalid_endpoint: 0,
+        duplicate: 0,
+        invalid_observation: 0,
+      },
+    } as Pick<StoryMemoryV2Diagnostics, 'normalizerWarnings' | 'dropReasons'>;
+
+    recordStoryMemoryV2Warnings(diagnostics as StoryMemoryV2Diagnostics, [
+      {
+        code: 'OBS_FUTURE_REF',
+        message: '跨章节未来引用',
+      },
+    ]);
+
+    expect(diagnostics.dropReasons.future_ref).toBe(1);
+    expect(diagnostics.dropReasons.invalid_observation).toBe(0);
+    expect(diagnostics.dropReasons.invalid_ref).toBe(0);
   });
 });
 
