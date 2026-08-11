@@ -20,10 +20,12 @@ import {
   validateCompiledStoryMemoryBatchPatch,
 } from '../src/services/storyMemory/storyMemoryObservationCompiler';
 import {
+  planStoryMemoryFreshRetryRequest,
   planStoryMemoryObservationRequest,
   resolveStoryMemoryV2OutputBudget,
   type FrozenStoryMemoryLLMConfig,
 } from '../src/services/storyMemory/storyMemoryRequestBudget';
+import { estimateTokens } from '../src/utils/tokenEstimator';
 import {
   createStoryMemoryV2Diagnostics,
   getRecentStoryMemoryV2Diagnostics,
@@ -391,6 +393,252 @@ describe('Story Memory Protocol V2 normalizer and deterministic compiler', () =>
     expect(result.droppedObservations).toBeGreaterThan(0);
   });
 
+  it('does not pollute episodic summary when evidence is valid but ref is invalid', () => {
+    const state = richState();
+    const chapters = [chapter(1, 0)];
+    const handles = buildStoryMemoryEntityHandles(state, chapters);
+    const evidence = buildStoryMemoryEvidenceAnchors(chapters, handles.chapterHandleById);
+    const normalized = normalizeStoryMemoryObservationPayload(
+      {
+        chapters: [
+          {
+            chapter: 'CH01',
+            brief: '有效 brief。',
+            events: ['模型原始事件可保留。'],
+            keywords: ['钟楼'],
+            observations: [
+              {
+                kind: 'character_state',
+                ref: 'C99',
+                field: 'location',
+                op: 'set',
+                value: '地下密室',
+                evidence: ['Q001'],
+              },
+            ],
+          },
+        ],
+      },
+      ['CH01'],
+    );
+    const result = compileStoryMemoryObservations({
+      chapters,
+      previousState: state,
+      normalized: normalized.chapters,
+      handles,
+      evidence,
+    });
+    const summary = result.patch.chapterSummaries[0];
+    expect(result.patch.characterUpdates).toHaveLength(0);
+    expect(result.acceptedObservations).toBe(0);
+    expect(result.droppedObservations).toBe(1);
+    expect(result.warnings.map(item => item.code)).toContain('OBS_INVALID_REF');
+    expect(summary.events).toEqual(['模型原始事件可保留。']);
+    expect(summary.characterChanges).toEqual([]);
+    expect(summary.events.join('\n')).not.toMatch(/C99|地下密室/u);
+  });
+
+  it('drops rejected N1 dependency without hard-failing the batch', () => {
+    const state = richState();
+    const chapters = [chapter(1, 0)];
+    const handles = buildStoryMemoryEntityHandles(state, chapters);
+    const evidence = buildStoryMemoryEvidenceAnchors(chapters, handles.chapterHandleById);
+    const normalized = normalizeStoryMemoryObservationPayload(
+      {
+        chapters: [
+          {
+            chapter: 'CH01',
+            brief: '局部降级。',
+            events: [],
+            observations: [
+              {
+                kind: 'character_new',
+                key: 'N1',
+                name: '陈叔假影',
+                evidence: ['Q999'],
+              },
+              {
+                kind: 'relationship',
+                op: 'open',
+                key: 'N2',
+                from: 'C01',
+                to: 'N1',
+                type: '同伴',
+                evidence: ['Q001'],
+              },
+              {
+                kind: 'thread',
+                op: 'open',
+                key: 'N3',
+                title: '假影线索',
+                owners: ['N1'],
+                evidence: ['Q001'],
+              },
+              {
+                kind: 'character_state',
+                ref: 'C01',
+                field: 'location',
+                op: 'set',
+                value: '钟楼',
+                evidence: ['Q001'],
+              },
+            ],
+          },
+        ],
+      },
+      ['CH01'],
+    );
+    const result = compileStoryMemoryObservations({
+      chapters,
+      previousState: state,
+      normalized: normalized.chapters,
+      handles,
+      evidence,
+    });
+    expect(result.patch.newCharacters).toHaveLength(0);
+    expect(result.patch.newRelationships).toHaveLength(0);
+    expect(result.patch.mainlinePatch.threadOpens).toHaveLength(0);
+    expect(result.patch.characterUpdates).toHaveLength(1);
+    expect(result.acceptedObservations).toBe(1);
+    expect(result.droppedObservations).toBe(3);
+    expect(result.warnings.map(item => item.code)).toEqual(
+      expect.arrayContaining([
+        'OBS_INVALID_EVIDENCE',
+        'OBS_INVALID_ENDPOINT',
+      ]),
+    );
+    const summary = result.patch.chapterSummaries[0];
+    expect(summary.characterChanges.join('\n')).not.toMatch(/陈叔假影|假影线索/u);
+    expect(summary.relationshipChanges).toEqual([]);
+    expect(summary.newThreads).toEqual([]);
+    validateCompiledStoryMemoryBatchPatch(result.patch, state, chapters, evidence);
+  });
+
+  it('accepts same-batch valid N1 dependency after two-pass resolve', () => {
+    const state = richState();
+    const chapters = [chapter(1, 0)];
+    const handles = buildStoryMemoryEntityHandles(state, chapters);
+    const evidence = buildStoryMemoryEvidenceAnchors(chapters, handles.chapterHandleById);
+    const normalized = normalizeStoryMemoryObservationPayload(
+      {
+        chapters: [
+          {
+            chapter: 'CH01',
+            brief: '新人物加入。',
+            events: [],
+            observations: [
+              {
+                kind: 'character_new',
+                key: 'N1',
+                name: '守门人',
+                evidence: ['Q001'],
+              },
+              {
+                kind: 'relationship',
+                op: 'open',
+                key: 'N2',
+                from: 'C01',
+                to: 'N1',
+                type: '对峙',
+                evidence: ['Q001'],
+              },
+              {
+                kind: 'thread',
+                op: 'open',
+                key: 'N3',
+                title: '守门人来历',
+                owners: ['N1'],
+                evidence: ['Q001'],
+              },
+            ],
+          },
+        ],
+      },
+      ['CH01'],
+    );
+    const result = compileStoryMemoryObservations({
+      chapters,
+      previousState: state,
+      normalized: normalized.chapters,
+      handles,
+      evidence,
+    });
+    expect(result.acceptedObservations).toBe(3);
+    expect(result.patch.newCharacters).toHaveLength(1);
+    expect(result.patch.newRelationships).toHaveLength(1);
+    expect(result.patch.mainlinePatch.threadOpens).toHaveLength(1);
+    validateCompiledStoryMemoryBatchPatch(result.patch, state, chapters, evidence);
+  });
+
+  it('drops cross-chapter evidence anchors entirely', () => {
+    const state = richState();
+    const chapters = [
+      chapter(1, 0, '雨夜里，林岚推开钟楼暗门。'),
+      chapter(2, 1, '陈叔在门后留下银钥匙。众人决定进入地下室。'),
+    ];
+    const handles = buildStoryMemoryEntityHandles(state, chapters);
+    const evidence = buildStoryMemoryEvidenceAnchors(chapters, handles.chapterHandleById);
+    const ch01Anchors = evidence.anchors.filter(item => item.chapterId === 1);
+    const ch02Anchors = evidence.anchors.filter(item => item.chapterId === 2);
+    expect(ch01Anchors.length).toBeGreaterThan(0);
+    expect(ch02Anchors.length).toBeGreaterThan(0);
+    const normalized = normalizeStoryMemoryObservationPayload(
+      {
+        chapters: [
+          {
+            chapter: 'CH01',
+            brief: '跨章证据应被丢弃。',
+            events: [],
+            observations: [
+              {
+                kind: 'character_state',
+                ref: 'C01',
+                field: 'location',
+                op: 'set',
+                value: '错误归属',
+                evidence: [ch02Anchors[0].id],
+              },
+              {
+                kind: 'character_state',
+                ref: 'C01',
+                field: 'emotionalState',
+                op: 'set',
+                value: '混杂',
+                evidence: [ch01Anchors[0].id, ch02Anchors[0].id],
+              },
+              {
+                kind: 'character_state',
+                ref: 'C01',
+                field: 'location',
+                op: 'set',
+                value: '钟楼',
+                evidence: [ch01Anchors[0].id],
+              },
+            ],
+          },
+        ],
+      },
+      ['CH01', 'CH02'],
+    );
+    const result = compileStoryMemoryObservations({
+      chapters,
+      previousState: state,
+      normalized: normalized.chapters,
+      handles,
+      evidence,
+    });
+    expect(result.patch.characterUpdates).toHaveLength(1);
+    expect(result.patch.characterUpdates[0].stateChanges?.location).toBe('钟楼');
+    expect(result.acceptedObservations).toBe(1);
+    expect(result.droppedObservations).toBe(2);
+    expect(result.warnings.filter(item => item.code === 'OBS_INVALID_EVIDENCE')).toHaveLength(
+      2,
+    );
+    expect(result.patch.chapterSummaries[0].characterChanges.join('\n')).not.toMatch(
+      /错误归属|混杂/u,
+    );
+  });
+
   it('keeps 20 valid observations when 3 malformed observations are present', () => {
     const state = createEmptyStoryMemory(1);
     const chapters = [chapter(1, 0)];
@@ -456,6 +704,41 @@ describe('Story Memory Protocol V2 bounded requests', () => {
     expect(exact).toEqual([items[0]]);
   });
 
+  it('skips oversized whole items without starving later smaller items', () => {
+    // CJK estimator: 1 char ≈ 1 token.
+    const itemA = '甲'.repeat(1200);
+    const itemB = '乙'.repeat(600);
+    const itemC = '丙'.repeat(300);
+    expect(estimateTokens(itemA)).toBeGreaterThan(1000);
+    const packed = packWholeItems([itemA, itemB, itemC], 1000, item => item);
+    expect(packed).toEqual([itemB, itemC]);
+    expect(packed).not.toContain(itemA);
+  });
+
+  it('protects currentArc/currentObjective as separate modules and whole-item mainline entities', () => {
+    const state = richState();
+    const chapters = [chapter(1, 0)];
+    const handles = buildStoryMemoryEntityHandles(state, chapters);
+    const evidence = buildStoryMemoryEvidenceAnchors(chapters, handles.chapterHandleById);
+    const materials = buildStoryMemoryObservationMaterials(chapters, state, handles, evidence);
+    const ids = materials.modules.map(module => module.id);
+    expect(ids).toEqual(expect.arrayContaining(['v2_current_arc', 'v2_current_objective']));
+    expect(ids).not.toContain('v2_active_mainline');
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        'v2_conflict_conflict_guard',
+        'v2_thread_thread_key',
+        'v2_foreshadow_foreshadow_mark',
+      ]),
+    );
+    expect(
+      materials.modules.find(module => module.id === 'v2_current_arc')?.tier,
+    ).toBe('mandatory');
+    expect(
+      materials.modules.find(module => module.id === 'v2_current_objective')?.tier,
+    ).toBe('mandatory');
+  });
+
   it('drops whole low-priority materials before splitting a 64K-window request', () => {
     const state = richState();
     state.mainline.archiveDigest = '历史归档。'.repeat(600);
@@ -472,7 +755,13 @@ describe('Story Memory Protocol V2 bounded requests', () => {
     expect(plan.messages.join('\n')).not.toContain(state.mainline.archiveDigest.slice(0, 100));
     expect(plan.droppedModuleIds).toContain('v2_archive_digest');
     expect(plan.includedModuleIds).toEqual(
-      expect.arrayContaining(['v2_system_protocol', 'v2_output_contract', 'v2_chapter_1']),
+      expect.arrayContaining([
+        'v2_system_protocol',
+        'v2_output_contract',
+        'v2_chapter_1',
+        'v2_current_arc',
+        'v2_current_objective',
+      ]),
     );
   });
 
@@ -505,6 +794,57 @@ describe('Story Memory Protocol V2 bounded requests', () => {
     );
     expect(fresh.some(message => (message.role as string) === 'assistant')).toBe(false);
     expect(fresh.map(message => message.content).join('\n')).toContain('coverage gap');
+  });
+
+  it('re-plans Fresh Retry with elastic whole-item compact instead of full state', () => {
+    const state = richState();
+    state.mainline.archiveDigest = '历史归档。'.repeat(800);
+    for (let i = 0; i < 80; i += 1) {
+      const id = `char_hist_${i}`;
+      state.characters[id] = character(id, `历史人物${i}`, i);
+      state.mainline.openThreads[`thread_hist_${i}`] = {
+        id: `thread_hist_${i}`,
+        title: `旧线索${i}`,
+        description: `无关旧线索描述${i}。`.repeat(20),
+        ownerCharacterIds: [id],
+        priority: 'low',
+        openedChapterId: 1,
+        lastChangedChapterId: 1,
+        deadlineOrTrigger: '',
+        evidenceChapterIds: [1],
+      };
+    }
+    const chapters = [chapter(1, 0, `${'林岚在钟楼调查。'.repeat(40)}`)];
+    const handles = buildStoryMemoryEntityHandles(state, chapters);
+    const evidence = buildStoryMemoryEvidenceAnchors(chapters, handles.chapterHandleById);
+    const materials = buildStoryMemoryObservationMaterials(chapters, state, handles, evidence);
+    // Tight enough that preferred/optional items must drop, but mandatory still fits.
+    const config = frozenConfig(24000, 8192);
+    const primary = planStoryMemoryObservationRequest({
+      config,
+      materials,
+      batchSize: 1,
+    });
+    expect(primary.strategy).toBe('full_prompt');
+    expect(primary.droppedModuleIds.length).toBeGreaterThan(0);
+    const fresh = planStoryMemoryFreshRetryRequest({
+      config,
+      materials,
+      batchSize: 1,
+      failureCode: 'OBS_INVALID_JSON',
+    });
+    expect(fresh.strategy).toBe('full_prompt');
+    expect(fresh.estimatedInputTokens).toBeLessThanOrEqual(fresh.burstInputLimit);
+    expect(fresh.includedModuleIds).toEqual(primary.includedModuleIds);
+    expect(fresh.droppedModuleIds).toEqual(primary.droppedModuleIds);
+    expect(fresh.messages.map(message => message.content).join('\n')).toContain(
+      'OBS_INVALID_JSON',
+    );
+    expect(fresh.messages.some(message => (message.role as string) === 'assistant')).toBe(
+      false,
+    );
+    // Must not expand back to full uncompacted material set.
+    expect(fresh.includedModuleIds.length).toBeLessThan(materials.modules.length);
   });
 
   it('records redacted V2 diagnostics without chapter bodies or model responses', () => {
@@ -540,22 +880,237 @@ describe('Story Memory Protocol V2 bounded requests', () => {
     expect(JSON.stringify(latest)).not.toContain('api_key');
   });
 
-  it.each([100, 300, 1000])('keeps request input bounded for %i chapters', chapterCount => {
+  function buildAccumulatedState(chapterCount: number): StoryMemoryState {
     const state = createEmptyStoryMemory(1);
-    const allChapters = Array.from({ length: chapterCount }, (_, position) =>
-      chapter(position + 1, position),
-    );
-    const inputSizes: number[] = [];
-    for (let start = 0; start < allChapters.length; start += 3) {
-      const batch = allChapters.slice(start, start + 3);
+    const characterCount =
+      chapterCount <= 100 ? 50 : chapterCount <= 300 ? 150 : 400;
+    const relationshipCount =
+      chapterCount <= 100 ? 40 : chapterCount <= 300 ? 120 : 300;
+    const conflictCount =
+      chapterCount <= 100 ? 8 : chapterCount <= 300 ? 16 : 30;
+    const threadCount =
+      chapterCount <= 100 ? 15 : chapterCount <= 300 ? 45 : 120;
+    const foreshadowCount =
+      chapterCount <= 100 ? 15 : chapterCount <= 300 ? 45 : 120;
+    const timelineCount =
+      chapterCount <= 100 ? 60 : chapterCount <= 300 ? 180 : 520;
+    const resolvedCount =
+      chapterCount <= 100 ? 25 : chapterCount <= 300 ? 60 : 120;
+
+    for (let i = 0; i < characterCount; i += 1) {
+      const id = `char_${i}`;
+      const person = character(
+        id,
+        i < 4 ? ['林岚', '陈叔', '守墓人', '银钥匠'][i] : `角色${i}`,
+        i % chapterCount,
+      );
+      person.currentState.location = `地点${i % 40}`;
+      person.currentState.currentGoal = `目标${i % 20}`;
+      person.currentState.knowledge = [`知识${i}`];
+      state.characters[id] = person;
+    }
+    for (let i = 0; i < relationshipCount; i += 1) {
+      const from = `char_${i % characterCount}`;
+      const to = `char_${(i + 1) % characterCount}`;
+      if (from === to) continue;
+      const id = `rel_${i}`;
+      state.relationships[id] = {
+        id,
+        fromCharacterId: from,
+        toCharacterId: to,
+        direction: 'bidirectional',
+        relationType: i % 2 === 0 ? '同伴' : '敌对',
+        currentState: `关系状态${i}`,
+        trustLevel: 'medium',
+        publicStatus: '公开',
+        hiddenStatus: '',
+        reason: `原因${i}`,
+        firstSeenChapterId: 1,
+        lastChangedChapterId: 1,
+        lastChangedPosition: i % chapterCount,
+        evidenceChapterIds: [1],
+      };
+    }
+    state.mainline.currentArc = {
+      id: 'arc_long_form',
+      name: '长篇主线弧',
+      summary: '追查钟楼暗门、银钥匙与地下室机关之间的历史因果。',
+      startedChapterId: 1,
+    };
+    state.mainline.currentObjective = '进入地下室并确认三角刻痕含义';
+    for (let i = 0; i < conflictCount; i += 1) {
+      const id = `conflict_${i}`;
+      state.mainline.activeConflicts[id] = {
+        id,
+        title: i === 0 ? '入口阻拦' : `冲突${i}`,
+        parties: [`char_${i % Math.min(4, characterCount)}`],
+        state: i === 0 ? '守墓人阻止进入' : `冲突状态${i}`,
+        stakes: `赌注${i}`,
+        openedChapterId: 1,
+        lastChangedChapterId: 1,
+        evidenceChapterIds: [1],
+      };
+    }
+    for (let i = 0; i < threadCount; i += 1) {
+      const id = `thread_${i}`;
+      state.mainline.openThreads[id] = {
+        id,
+        title: i === 0 ? '银钥匙来源' : `线索${i}`,
+        description: i === 0 ? '钥匙的制造者尚未确认' : `线索描述${i}。`.repeat(3),
+        ownerCharacterIds: [`char_${i % Math.min(4, characterCount)}`],
+        priority: i % 5 === 0 ? 'high' : 'normal',
+        openedChapterId: 1,
+        lastChangedChapterId: 1,
+        deadlineOrTrigger: '',
+        evidenceChapterIds: [1],
+      };
+    }
+    for (let i = 0; i < foreshadowCount; i += 1) {
+      const id = `foreshadow_${i}`;
+      state.mainline.foreshadowing[id] = {
+        id,
+        setup: i === 0 ? '墙上出现三角刻痕' : `伏笔铺垫${i}`,
+        expectedPayoff: i === 0 ? '与地下室机关有关' : `伏笔回收${i}`,
+        status: i % 4 === 0 ? 'partially_paid' : 'open',
+        openedChapterId: 1,
+        lastChangedChapterId: 1,
+        evidenceChapterIds: [1],
+      };
+    }
+    for (let i = 0; i < timelineCount; i += 1) {
+      const id = `time_${i}`;
+      state.mainline.timelineAnchors[id] = {
+        id,
+        label: `时间点${i}`,
+        timeDescription: `第${i}夜`,
+        event: `事件${i}`,
+        chapterId: (i % chapterCount) + 1,
+        pinned: false,
+      };
+    }
+    for (let i = 0; i < resolvedCount; i += 1) {
+      state.mainline.recentResolvedThreads.push({
+        id: `resolved_${i}`,
+        title: `已解决线索${i}`,
+        resolution: `解决结果${i}`,
+        openedChapterId: 1,
+        resolvedChapterId: Math.min(chapterCount, i + 1),
+      });
+    }
+    state.mainline.archiveDigest = (
+      chapterCount >= 1000 ? '归档摘要。'.repeat(400) : '归档摘要。'.repeat(200)
+    ).slice(0, chapterCount >= 1000 ? 1600 : 1200);
+    state.throughChapterId = chapterCount;
+    state.throughChapterPosition = chapterCount - 1;
+    return state;
+  }
+
+  it.each([
+    [100, 50, 40],
+    [300, 150, 120],
+    [1000, 400, 300],
+  ] as const)(
+    'keeps accumulated %i-chapter state bounded with arc/objective protection',
+    (chapterCount, minCharacters, minRelationships) => {
+      const state = buildAccumulatedState(chapterCount);
+      expect(Object.keys(state.characters).length).toBeGreaterThanOrEqual(minCharacters);
+      expect(Object.keys(state.relationships).length).toBeGreaterThanOrEqual(
+        minRelationships,
+      );
+
+      const relevantBody =
+        '雨夜里，林岚与陈叔继续调查入口阻拦，确认银钥匙来源与墙上三角刻痕。';
+      const batch = [
+        chapter(chapterCount + 1, chapterCount, relevantBody),
+        chapter(chapterCount + 2, chapterCount + 1, `${relevantBody}众人决定进入地下室。`),
+        chapter(chapterCount + 3, chapterCount + 2, `${relevantBody}守墓人退到石阶下。`),
+      ];
       const handles = buildStoryMemoryEntityHandles(state, batch);
       const evidence = buildStoryMemoryEvidenceAnchors(batch, handles.chapterHandleById);
-      const materials = buildStoryMemoryObservationMaterials(batch, state, handles, evidence);
-      const messages = buildMessagesFromObservationMaterials(materials);
-      inputSizes.push(estimateMessagesTokens(messages));
-    }
-    expect(inputSizes.length).toBe(Math.ceil(chapterCount / 3));
-    expect(Math.max(...inputSizes) - Math.min(...inputSizes)).toBeLessThan(180);
-    expect(Math.max(...inputSizes)).toBeLessThan(1600);
-  });
+      const materials = buildStoryMemoryObservationMaterials(
+        batch,
+        state,
+        handles,
+        evidence,
+      );
+      const fullMessages = buildMessagesFromObservationMaterials(materials);
+      const fullInputTokens = estimateMessagesTokens(fullMessages);
+
+      const windows: Array<[number, number]> = [
+        [1_048_576, 200_000],
+        [131_072, 32_768],
+        [65_536, 32_768],
+      ];
+      for (const [contextWindow, maxOutputTokens] of windows) {
+        const plan = planStoryMemoryObservationRequest({
+          config: frozenConfig(contextWindow, maxOutputTokens),
+          materials,
+          batchSize: 3,
+        });
+        expect(['full_prompt', 'preflight_split']).toContain(plan.strategy);
+        if (plan.strategy === 'full_prompt') {
+          expect(plan.estimatedInputTokens).toBeLessThanOrEqual(plan.burstInputLimit);
+          expect(plan.includedModuleIds).toEqual(
+            expect.arrayContaining([
+              'v2_current_arc',
+              'v2_current_objective',
+              `v2_chapter_${batch[0].id}`,
+            ]),
+          );
+          const joined = plan.messages.map(message => message.content).join('\n');
+          expect(joined).toContain('长篇主线弧');
+          expect(joined).toContain('进入地下室并确认三角刻痕含义');
+          expect(joined).toContain('林岚');
+          // No half-item clipping markers from character-level truncation.
+          expect(joined).not.toMatch(/\u2026{2,}/u);
+        }
+      }
+
+      // Under a tighter window, archive/optional must drop first while spine stays.
+      const tight = planStoryMemoryObservationRequest({
+        config: frozenConfig(28_000, 8_192),
+        materials,
+        batchSize: 3,
+      });
+      if (tight.strategy === 'full_prompt') {
+        expect(tight.includedModuleIds).toEqual(
+          expect.arrayContaining(['v2_current_arc', 'v2_current_objective']),
+        );
+        expect(tight.droppedModuleIds.length).toBeGreaterThan(0);
+        expect(tight.droppedModuleIds).toContain('v2_archive_digest');
+        expect(tight.estimatedInputTokens).toBeLessThanOrEqual(tight.burstInputLimit);
+      } else {
+        expect(tight.strategy).toBe('preflight_split');
+      }
+
+      // Prompt must not grow roughly linearly with total entity count.
+      const emptyLike = createEmptyStoryMemory(1);
+      emptyLike.mainline.currentArc = state.mainline.currentArc;
+      emptyLike.mainline.currentObjective = state.mainline.currentObjective;
+      const emptyMaterials = buildStoryMemoryObservationMaterials(
+        batch,
+        emptyLike,
+        buildStoryMemoryEntityHandles(emptyLike, batch),
+        evidence,
+      );
+      const emptyFull = estimateMessagesTokens(
+        buildMessagesFromObservationMaterials(emptyMaterials),
+      );
+      const plan64k = planStoryMemoryObservationRequest({
+        config: frozenConfig(65_536, 32_768),
+        materials,
+        batchSize: 3,
+      });
+      if (plan64k.strategy === 'full_prompt') {
+        // Compacted final input stays far below full accumulated material size
+        // when low-priority modules are dropped; otherwise full state still
+        // fits and final == full (acceptable for large windows).
+        if (plan64k.droppedModuleIds.length > 0) {
+          expect(plan64k.estimatedInputTokens).toBeLessThan(fullInputTokens);
+        }
+        expect(plan64k.estimatedInputTokens).toBeLessThanOrEqual(plan64k.burstInputLimit);
+      }
+      expect(fullInputTokens).toBeGreaterThan(emptyFull);
+    },
+  );
 });

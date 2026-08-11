@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.11.46] - 2026-08-11
+
+### Fixed — Story Memory Protocol V2 Closure
+
+- **Rejected Observation 不得污染 Episodic Summary**：只有 Evidence / Ref / Endpoint / Dependency 全部通过并真正 compile 成功后，才写入 derived summary 与 accepted stats。
+- **N-key Two-pass Accepted Entity Resolver**：`character_new` / open relationship / conflict / thread / foreshadowing 仅在 definition 被接受后才注册 N-key；依赖 rejected N1 的后续 observation 局部 drop，不 hard-fail 整批。
+- **Same-chapter Evidence**：Observation 的 Q Anchor 必须属于所在 CH；跨章 Evidence 整条 drop。
+- **Active Mainline 拆分保护**：`v2_current_arc` / `v2_current_objective` 作为 mandatory 保护模块；conflict / thread / foreshadow 按 whole-item 独立筛选。
+- **packWholeItems starvation**：大 item 放不下改为 `continue`，后续小 item 仍可装入。
+- **Fresh Retry Elastic re-plan**：Fresh Retry 重新执行 whole-item packing，不再恢复 Full State 原子 prompt。
+- **100/300/1000 章压力测试**：改用真实增长的 accumulated state fixture，验证 Arc/Objective 保护与 burst 边界。
+
+### Validation
+
+- Story Memory 专项 52 suites / 475 tests passed；`npm run verify` 370 suites / 3017 tests passed。
+- 真实 DeepSeek：complex-long 3×18000 primary HTTP 200 → compile/validate；invalid-ref 不污染 summary；rejected N1 局部降级；64K large-state + Fresh Retry compact。
+- Debug APK `adb install -r` 覆盖升级保留 firstInstallTime / LLM / 项目 / Story Memory；详见 `docs/optimization/Story-Memory-Protocol-V2-Closure-Verification-20260811.md`。
+
 ## [2.11.45] - 2026-08-11
 
 ### Added — Story Memory Protocol V2 长期稳定性重构

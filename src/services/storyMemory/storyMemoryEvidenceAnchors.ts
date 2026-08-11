@@ -187,15 +187,23 @@ export function buildStoryMemoryEvidenceAnchors(
 
 /**
  * Resolve model-returned anchor IDs into the exact source text. Any unknown
- * ID invalidates the observation that supplied the list; callers can then
- * locally drop that observation without rejecting the surrounding batch.
+ * ID, or any ID belonging to a different chapter than the observation's CH,
+ * invalidates the whole observation. Callers then locally drop it without
+ * rejecting the surrounding batch.
  */
 export function resolveObservationEvidence(
   ids: string[],
   envelope: StoryMemoryEvidenceEnvelope,
+  expectedChapterId?: number,
 ): BatchEvidenceQuote[] {
   const uniqueIds = [...new Set(ids.map(value => String(value || '').trim()))].filter(Boolean);
   if (uniqueIds.some(id => !envelope.byId.has(id))) return [];
+  if (
+    expectedChapterId != null &&
+    uniqueIds.some(id => envelope.byId.get(id)!.chapterId !== expectedChapterId)
+  ) {
+    return [];
+  }
   return uniqueIds.slice(0, 3).map(id => {
     const anchor = envelope.byId.get(id)!;
     return { chapterId: anchor.chapterId, quote: anchor.text };

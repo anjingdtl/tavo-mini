@@ -18,6 +18,7 @@ import {
   type StoryMemoryObservationMaterials,
   type StoryMemoryObservationPromptModule,
 } from './storyMemoryObservationMaterials';
+import { buildStoryMemoryObservationFreshRetryMessages } from './storyMemoryObservationFormatter';
 
 /**
  * The only Story Memory capability snapshot used by one logical batch.
@@ -126,6 +127,7 @@ export interface StoryMemoryObservationRequestPlan {
   reason: string;
   includedModuleIds: string[];
   droppedModuleIds: string[];
+  skippedTooLargeModuleIds?: string[];
 }
 
 function observationModuleToDemand(
@@ -321,6 +323,51 @@ export function planStoryMemoryObservationRequest(input: {
     droppedModuleIds: input.materials.modules
       .filter(module => !included.has(module.id))
       .map(module => module.id),
+  };
+}
+
+/**
+ * Fresh Retry re-runs whole-item elastic packing from the original materials,
+ * then appends the retry instruction. It never restores the full uncompacted
+ * state envelope.
+ */
+export function planStoryMemoryFreshRetryRequest(input: {
+  config: FrozenStoryMemoryLLMConfig;
+  materials: StoryMemoryObservationMaterials;
+  batchSize: number;
+  failureCode: string;
+}): StoryMemoryObservationRequestPlan {
+  const base = planStoryMemoryObservationRequest({
+    config: input.config,
+    materials: input.materials,
+    batchSize: input.batchSize,
+  });
+  if (base.strategy !== 'full_prompt' || base.messages.length === 0) {
+    return base;
+  }
+  const messages = buildStoryMemoryObservationFreshRetryMessages(
+    base.messages,
+    input.failureCode || 'Fresh Retry',
+  );
+  const estimatedInputTokens = estimateMessagesTokens(messages);
+  if (
+    base.capabilityKnown &&
+    base.contextWindow > 0 &&
+    estimatedInputTokens > base.burstInputLimit
+  ) {
+    return {
+      ...base,
+      messages: [],
+      estimatedInputTokens,
+      fullPrompt: false,
+      strategy: input.batchSize > 1 ? 'preflight_split' : 'infeasible',
+      reason: `Protocol V2 Fresh Retry 输入约 ${estimatedInputTokens} tokens，超过 burst 边界 ${base.burstInputLimit}。`,
+    };
+  }
+  return {
+    ...base,
+    messages,
+    estimatedInputTokens,
   };
 }
 
