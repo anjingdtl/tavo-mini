@@ -368,4 +368,305 @@ describe('Story Memory batch temporal metadata', () => {
     expect(applied.resolvedBatch.status).toBe('applied');
     expect(applied.resolvedBatch.batchId).toBe('batch-temporal-metadata');
   });
+
+  it('preserves character CH1 and CH2 boundaries after folding more than three observations', () => {
+    const state = baseState();
+    const boundaryChapters = [
+      chapter(
+        101,
+        0,
+        '守门人首次出现。\n守门人站在旧门厅。\n守门人情绪紧张。\n守门人守住入口。',
+      ),
+      chapter(7, 1, '守门人最终到达地下入口。'),
+    ];
+    const result = compile(state, boundaryChapters, [
+      rawChapter('CH01', [
+        {
+          kind: 'character_new',
+          key: 'N_GUARD',
+          name: '守门人',
+          evidence: ['Q001'],
+        },
+        {
+          kind: 'character_state',
+          ref: 'N_GUARD',
+          field: 'location',
+          op: 'set',
+          value: '旧门厅',
+          evidence: ['Q002'],
+        },
+        {
+          kind: 'character_state',
+          ref: 'N_GUARD',
+          field: 'emotionalState',
+          op: 'set',
+          value: '紧张',
+          evidence: ['Q003'],
+        },
+        {
+          kind: 'character_state',
+          ref: 'N_GUARD',
+          field: 'currentGoal',
+          op: 'set',
+          value: '守住入口',
+          evidence: ['Q004'],
+        },
+      ]),
+      rawChapter('CH02', [
+        {
+          kind: 'character_state',
+          ref: 'N_GUARD',
+          field: 'location',
+          op: 'set',
+          value: '地下入口',
+          evidence: ['Q005'],
+        },
+      ]),
+    ]);
+
+    validateCompiledStoryMemoryBatchPatch(
+      result.patch,
+      state,
+      boundaryChapters,
+      result.evidence,
+    );
+    const applied = applyLifecycle(result.patch, state);
+    const guard = Object.values(applied.state.characters).find(
+      item => item.canonicalName === '守门人',
+    );
+
+    expect(result.patch.newCharacters[0].evidence).toEqual(
+      expect.arrayContaining([
+        { chapterId: 101, quote: '守门人首次出现。' },
+        { chapterId: 7, quote: '守门人最终到达地下入口。' },
+      ]),
+    );
+    expect(result.patch.newCharacters[0].evidence.length).toBeLessThanOrEqual(3);
+    expect(guard?.firstSeenChapterId).toBe(101);
+    expect(guard?.firstSeenPosition).toBe(0);
+    expect(guard?.lastChangedChapterId).toBe(7);
+    expect(guard?.lastChangedPosition).toBe(1);
+    expect(guard?.currentState.location).toBe('地下入口');
+  });
+
+  it('preserves relationship CH1 and CH2 boundaries after folding more than three observations', () => {
+    const state = baseState();
+    const boundaryChapters = [
+      chapter(
+        42,
+        0,
+        '林岚与陈叔建立对峙。\n两人关系仍然紧张。\n两人开始互相试探。\n关系出现细微变化。',
+      ),
+      chapter(7, 1, '两人关系最终缓和。'),
+    ];
+    const result = compile(state, boundaryChapters, [
+      rawChapter('CH01', [
+        {
+          kind: 'relationship',
+          op: 'open',
+          key: 'N_REL',
+          from: 'C01',
+          to: 'C02',
+          type: '对峙',
+          state: '互相试探',
+          evidence: ['Q001'],
+        },
+        {
+          kind: 'relationship',
+          op: 'update',
+          ref: 'N_REL',
+          state: '仍然紧张',
+          evidence: ['Q002'],
+        },
+        {
+          kind: 'relationship',
+          op: 'update',
+          ref: 'N_REL',
+          state: '开始试探',
+          evidence: ['Q003'],
+        },
+        {
+          kind: 'relationship',
+          op: 'update',
+          ref: 'N_REL',
+          state: '出现变化',
+          evidence: ['Q004'],
+        },
+      ]),
+      rawChapter('CH02', [
+        {
+          kind: 'relationship',
+          op: 'update',
+          ref: 'N_REL',
+          state: '最终缓和',
+          evidence: ['Q005'],
+        },
+      ]),
+    ]);
+
+    validateCompiledStoryMemoryBatchPatch(
+      result.patch,
+      state,
+      boundaryChapters,
+      result.evidence,
+    );
+    const applied = applyLifecycle(result.patch, state);
+    const relationship = Object.values(applied.state.relationships).find(
+      item => item.relationType === '对峙',
+    );
+
+    expect(result.patch.newRelationships[0].evidence).toEqual(
+      expect.arrayContaining([
+        { chapterId: 42, quote: '林岚与陈叔建立对峙。' },
+        { chapterId: 7, quote: '两人关系最终缓和。' },
+      ]),
+    );
+    expect(result.patch.newRelationships[0].evidence.length).toBeLessThanOrEqual(3);
+    expect(relationship?.firstSeenChapterId).toBe(42);
+    expect(relationship?.lastChangedChapterId).toBe(7);
+    expect(relationship?.lastChangedPosition).toBe(1);
+    expect(relationship?.currentState).toBe('最终缓和');
+  });
+
+  it('preserves a CH3 foreshadow resolution after three earlier CH1 observations', () => {
+    const state = baseState();
+    const boundaryChapters = [
+      chapter(
+        1000,
+        0,
+        '墙上出现三角刻痕。\n刻痕边缘被重新描摹。\n刻痕与机关出现部分联系。',
+      ),
+      chapter(17, 1, '守门人继续观察入口。'),
+      chapter(3, 2, '机关入口已经开启。'),
+    ];
+    const result = compile(state, boundaryChapters, [
+      rawChapter('CH01', [
+        {
+          kind: 'foreshadowing',
+          op: 'open',
+          key: 'N_FORE',
+          setup: '墙上三角刻痕',
+          expectedPayoff: '指向地下机关',
+          evidence: ['Q001'],
+        },
+        {
+          kind: 'foreshadowing',
+          op: 'update',
+          ref: 'N_FORE',
+          expectedPayoff: '指向地下机关入口',
+          evidence: ['Q002'],
+        },
+        {
+          kind: 'foreshadowing',
+          op: 'partial',
+          ref: 'N_FORE',
+          payoff: '确认与机关有关',
+          evidence: ['Q003'],
+        },
+      ]),
+      rawChapter('CH02', []),
+      rawChapter('CH03', [
+        {
+          kind: 'foreshadowing',
+          op: 'resolve',
+          ref: 'N_FORE',
+          payoff: '机关入口已经开启',
+          evidence: ['Q005'],
+        },
+      ]),
+    ]);
+
+    validateCompiledStoryMemoryBatchPatch(
+      result.patch,
+      state,
+      boundaryChapters,
+      result.evidence,
+    );
+    const applied = applyLifecycle(result.patch, state);
+    const foreshadow = Object.values(applied.state.mainline.foreshadowing).find(
+      item => item.setup.includes('三角刻痕'),
+    );
+
+    expect(result.patch.mainlinePatch.foreshadowingUpserts[0].evidence).toEqual(
+      expect.arrayContaining([
+        { chapterId: 1000, quote: '墙上出现三角刻痕。' },
+        { chapterId: 3, quote: '机关入口已经开启。' },
+      ]),
+    );
+    expect(
+      result.patch.mainlinePatch.foreshadowingUpserts[0].evidence.length,
+    ).toBeLessThanOrEqual(3);
+    expect(foreshadow?.status).toBe('paid');
+    expect(foreshadow?.openedChapterId).toBe(1000);
+    expect(foreshadow?.lastChangedChapterId).toBe(3);
+  });
+
+  it('keeps all three ordered chapters covered when one Patch Item has four observations', () => {
+    const state = baseState();
+    const boundaryChapters = [
+      chapter(50, 0, '关系首次建立。\n关系第一次变化。'),
+      chapter(1, 1, '关系在中段继续变化。'),
+      chapter(10, 2, '关系在末章最终稳定。'),
+    ];
+    const result = compile(state, boundaryChapters, [
+      rawChapter('CH01', [
+        {
+          kind: 'relationship',
+          op: 'open',
+          key: 'N_REL',
+          from: 'C01',
+          to: 'C02',
+          type: '同盟',
+          state: '初步结盟',
+          evidence: ['Q001'],
+        },
+        {
+          kind: 'relationship',
+          op: 'update',
+          ref: 'N_REL',
+          state: '暂时结盟',
+          evidence: ['Q002'],
+        },
+      ]),
+      rawChapter('CH02', [
+        {
+          kind: 'relationship',
+          op: 'update',
+          ref: 'N_REL',
+          state: '中段稳固',
+          evidence: ['Q003'],
+        },
+      ]),
+      rawChapter('CH03', [
+        {
+          kind: 'relationship',
+          op: 'update',
+          ref: 'N_REL',
+          state: '最终稳定',
+          evidence: ['Q004'],
+        },
+      ]),
+    ]);
+
+    validateCompiledStoryMemoryBatchPatch(
+      result.patch,
+      state,
+      boundaryChapters,
+      result.evidence,
+    );
+    const applied = applyLifecycle(result.patch, state);
+    const relationshipPatch = result.patch.newRelationships[0];
+    const relationship = Object.values(applied.state.relationships).find(
+      item => item.relationType === '同盟',
+    );
+
+    expect(relationshipPatch.evidence.length).toBeLessThanOrEqual(3);
+    expect(
+      [...new Set(relationshipPatch.evidence.map(item => item.chapterId))],
+    ).toEqual([50, 1, 10]);
+    expect(relationship?.firstSeenChapterId).toBe(50);
+    expect(relationship?.lastChangedChapterId).toBe(10);
+    expect(relationship?.lastChangedPosition).toBe(2);
+    expect(relationship?.currentState).toBe('最终稳定');
+  });
 });
