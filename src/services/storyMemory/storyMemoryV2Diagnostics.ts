@@ -1,14 +1,13 @@
 import type { Chapter } from '../../types/novel';
 import type { StoryMemoryObservationWarning } from './storyMemoryObservationTypes';
-import type {
-  StoryMemoryObservationMaterials,
-} from './storyMemoryObservationMaterials';
+import type { StoryMemoryObservationMaterials } from './storyMemoryObservationMaterials';
 import type {
   FrozenStoryMemoryLLMConfig,
   StoryMemoryObservationRequestPlan,
 } from './storyMemoryRequestBudget';
 import type { StoryMemoryEntityHandleEnvelope } from './storyMemoryEntityHandles';
 import type { StoryMemoryEvidenceEnvelope } from './storyMemoryEvidenceAnchors';
+import type { StoryMemoryBatchPatchDraft } from './storyMemoryTypes';
 
 export const STORY_MEMORY_V2_PROTOCOL_VERSION = 2 as const;
 
@@ -72,6 +71,145 @@ export interface StoryMemoryV2Diagnostics {
 
 export interface StoryMemoryV2DiagnosticsRef {
   current?: StoryMemoryV2Diagnostics;
+}
+
+export const STORY_MEMORY_KNOWN_CHANGE_MIN_ACCEPTED_OBSERVATIONS = 3;
+
+export type StoryMemoryKnownChangeSemanticCategory =
+  | 'character'
+  | 'relationship'
+  | 'conflict'
+  | 'thread'
+  | 'foreshadowing'
+  | 'objective'
+  | 'arc'
+  | 'timeline';
+
+export interface StoryMemoryKnownChangeSemanticGateResult {
+  pass: boolean;
+  reason: string;
+  categories: StoryMemoryKnownChangeSemanticCategory[];
+  observationsReceived: number;
+  observationsAccepted: number;
+}
+
+function nonNegativeCount(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+/**
+ * Semantic QA gate for a known-change Story Memory request.
+ *
+ * HTTP success and a parseable JSON body are not sufficient: the request must
+ * yield accepted observations and at least one concrete state-patch category.
+ * This remains a diagnostics/test seam only; production generation does not
+ * turn a zero-observation response into a physical retry or a hard failure.
+ */
+export function evaluateStoryMemoryKnownChangeSemanticGate(input: {
+  observationsReceived: number;
+  observationsAccepted: number;
+  patch: StoryMemoryBatchPatchDraft;
+}): StoryMemoryKnownChangeSemanticGateResult {
+  const observationsReceived = nonNegativeCount(input.observationsReceived);
+  const observationsAccepted = nonNegativeCount(input.observationsAccepted);
+  const patch = input.patch;
+  const categories: StoryMemoryKnownChangeSemanticCategory[] = [];
+
+  if (
+    (patch.newCharacters?.length ?? 0) > 0 ||
+    (patch.characterUpdates?.length ?? 0) > 0
+  ) {
+    categories.push('character');
+  }
+  if (
+    (patch.newRelationships?.length ?? 0) > 0 ||
+    (patch.relationshipUpdates?.length ?? 0) > 0
+  ) {
+    categories.push('relationship');
+  }
+  if (
+    (patch.mainlinePatch.conflictUpserts?.length ?? 0) > 0 ||
+    (patch.mainlinePatch.conflictResolutions?.length ?? 0) > 0
+  ) {
+    categories.push('conflict');
+  }
+  if (
+    (patch.mainlinePatch.threadOpens?.length ?? 0) > 0 ||
+    (patch.mainlinePatch.threadUpdates?.length ?? 0) > 0 ||
+    (patch.mainlinePatch.threadResolutions?.length ?? 0) > 0
+  ) {
+    categories.push('thread');
+  }
+  if ((patch.mainlinePatch.foreshadowingUpserts?.length ?? 0) > 0) {
+    categories.push('foreshadowing');
+  }
+  if (patch.mainlinePatch.currentObjective) {
+    categories.push('objective');
+  }
+  if (
+    patch.mainlinePatch.currentArcUpdate?.action !== undefined &&
+    patch.mainlinePatch.currentArcUpdate.action !== 'none'
+  ) {
+    categories.push('arc');
+  }
+  if (
+    (patch.mainlinePatch.timelineAnchors?.length ?? 0) > 0 ||
+    (patch.mainlinePatch.completedBeats?.length ?? 0) > 0
+  ) {
+    categories.push('timeline');
+  }
+
+  const prefix =
+    `observationsReceived=${observationsReceived}; ` +
+    `observationsAccepted=${observationsAccepted}; ` +
+    `categories=${categories.join(',') || 'none'}`;
+  if (observationsReceived <= 0) {
+    return {
+      pass: false,
+      reason: `${prefix}; observationsReceived must be greater than zero`,
+      categories,
+      observationsReceived,
+      observationsAccepted,
+    };
+  }
+  if (observationsAccepted <= 0) {
+    return {
+      pass: false,
+      reason: `${prefix}; observationsAccepted must be greater than zero`,
+      categories,
+      observationsReceived,
+      observationsAccepted,
+    };
+  }
+  if (
+    observationsAccepted < STORY_MEMORY_KNOWN_CHANGE_MIN_ACCEPTED_OBSERVATIONS
+  ) {
+    return {
+      pass: false,
+      reason:
+        `${prefix}; observationsAccepted must be at least ` +
+        `${STORY_MEMORY_KNOWN_CHANGE_MIN_ACCEPTED_OBSERVATIONS}`,
+      categories,
+      observationsReceived,
+      observationsAccepted,
+    };
+  }
+  if (categories.length === 0) {
+    return {
+      pass: false,
+      reason: `${prefix}; no concrete state patch category was produced`,
+      categories,
+      observationsReceived,
+      observationsAccepted,
+    };
+  }
+  return {
+    pass: true,
+    reason: `${prefix}; semantic state change is present`,
+    categories,
+    observationsReceived,
+    observationsAccepted,
+  };
 }
 
 const recentDiagnostics: StoryMemoryV2Diagnostics[] = [];
@@ -155,7 +293,9 @@ export function createStoryMemoryV2Diagnostics(input: {
   fullInputTokens: number;
   splitUsed?: boolean;
 }): StoryMemoryV2Diagnostics {
-  const ordered = [...input.chapters].sort((left, right) => left.position - right.position);
+  const ordered = [...input.chapters].sort(
+    (left, right) => left.position - right.position,
+  );
   const fromPosition = ordered[0]?.position ?? -1;
   const throughPosition = ordered.at(-1)?.position ?? fromPosition;
   return {
@@ -210,7 +350,10 @@ export function recordStoryMemoryV2Plan(
   materials: StoryMemoryObservationMaterials,
 ): void {
   diagnostics.outputReservation = plan.maxTokens;
-  diagnostics.finalInputTokens = Math.max(0, Math.floor(plan.estimatedInputTokens));
+  diagnostics.finalInputTokens = Math.max(
+    0,
+    Math.floor(plan.estimatedInputTokens),
+  );
   diagnostics.softLimit = plan.softInputLimit;
   diagnostics.burstLimit = plan.burstInputLimit;
   diagnostics.hardLimit = plan.hardInputLimit;

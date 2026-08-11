@@ -891,12 +891,18 @@ export function validateEntityReferences(
         (Boolean(state.mainline.openThreads[resolution.threadRef]) ||
           threadRefs.has(resolution.threadRef)),
     );
+  const conflictRefs = new Set([
+    ...Object.keys(state.mainline.activeConflicts),
+    ...draft.mainlinePatch.conflictUpserts
+      .map(item => item.ref)
+      .filter(Boolean),
+  ]);
   draft.mainlinePatch.conflictResolutions = (
     draft.mainlinePatch.conflictResolutions ?? []
   ).filter(
     resolution =>
       Boolean(resolution.conflictRef) &&
-      Boolean(state.mainline.activeConflicts[resolution.conflictRef]),
+      conflictRefs.has(resolution.conflictRef),
   );
 
   const arc = draft.mainlinePatch.currentArcUpdate;
