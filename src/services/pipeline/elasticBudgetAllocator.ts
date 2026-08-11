@@ -140,6 +140,301 @@ function requirementRank(r: ElasticDemandRequirement): number {
   return r === 'mandatory' ? 0 : r === 'preferred' ? 1 : 2;
 }
 
+// ---------------------------------------------------------------------------
+// Shared capacity-demand allocation core (Context Budget V3 §8).
+//
+// Pure single-capacity allocator. Both the top-level water-level envelope
+// (`allocateElasticStageContextBudget`) and the V3 hierarchical board/item
+// allocators delegate the "distribute N tokens across M competing demands"
+// sub-problem here so there is one deterministic, property-tested algorithm.
+//
+// Algorithm (deterministic, never oversubscribes):
+//   1. mandatory floor: every mandatory demand gets min(available, max) first
+//   2. min floor for non-mandatory demands in priority × relevance order
+//   3. small-demand full-fit bias: demands whose remaining target <= bias
+//      threshold are filled to target before larger demands get any surplus
+//   4. target water-filling: residual capacity is distributed by
+//      priority × relevance × unmet-target, deterministic +1 remainder
+//   5. explicit-selection boost applied as a multiplier on the score so
+//      user-picked items outrank auto-activated ones at parity
+//
+// Invariants (property-tested in __tests__/contextBudgetV3.spec.test.ts):
+//   allocated >= 0
+//   allocated <= availableTokens
+//   allocated <= maxTokens
+//   sum(allocations) <= capacity
+//   mandatory allocations always granted first
+//   identical input → byte-identical output
+// ---------------------------------------------------------------------------
+
+export type DemandRequirement = 'mandatory' | 'preferred' | 'optional';
+
+export interface DemandAllocationItem {
+  id: string;
+  /** Real content size; allocator must never grant more than this. */
+  availableTokens: number;
+  /** Bare minimum the demand wants; satisfied before any target filling. */
+  minTokens: number;
+  /** Ideal allocation; allocator waters up to this when capacity allows. */
+  targetTokens: number;
+  /** Hard cap (usually equals availableTokens for items). */
+  maxTokens: number;
+  /** Stage/board priority weight (higher = more important). */
+  priority: number;
+  /** Retrieval/activation relevance in [0, 1]. */
+  relevance: number;
+  requirement: DemandRequirement;
+  /**
+   * Optional multiplier applied to the priority×relevance score. Used for
+   * explicit user selection (Plan §7 selectionBoost 1.5~2.0). Default 1.
+   */
+  selectionBoost?: number;
+}
+
+export interface DemandAllocationInput {
+  /** Total tokens available for this allocation round (single pool). */
+  capacity: number;
+  demands: DemandAllocationItem[];
+  /**
+   * Demands whose `targetTokens - currentAllocation <= smallDemandFullFitBias`
+   * are filled to target before larger demands get any surplus. Default 4000.
+   */
+  smallDemandFullFitBias?: number;
+}
+
+export interface DemandAllocationTrace {
+  id: string;
+  allocatedTokens: number;
+  demandTokens: number;
+  softTargetTokens: number;
+  reason: string;
+}
+
+export interface DemandAllocationResult {
+  allocations: ReadonlyMap<string, number>;
+  totalAllocated: number;
+  traces: DemandAllocationTrace[];
+}
+
+const DEFAULT_SMALL_DEMAND_FULL_FIT_BIAS = 4000;
+
+function demandRequirementRank(r: DemandRequirement): number {
+  return r === 'mandatory' ? 0 : r === 'preferred' ? 1 : 2;
+}
+
+function sanitizeDemand(item: DemandAllocationItem): DemandAllocationItem {
+  const availableTokens = Math.max(0, Math.floor(Number(item.availableTokens) || 0));
+  const maxTokens = Math.max(0, Math.floor(Number(item.maxTokens) || 0));
+  const cappedMax = Math.min(maxTokens, availableTokens);
+  const minTokens = Math.min(Math.max(0, Math.floor(Number(item.minTokens) || 0)), cappedMax);
+  const targetTokens = Math.min(
+    Math.max(Math.floor(Number(item.targetTokens) || 0), minTokens),
+    cappedMax,
+  );
+  const priority = Math.max(0, Number(item.priority) || 0);
+  const relevance = Math.min(1, Math.max(0, Number(item.relevance) || 0));
+  const rawBoost = Number(item.selectionBoost);
+  const selectionBoost =
+    Number.isFinite(rawBoost) && rawBoost > 0 ? rawBoost : 1;
+  if (
+    !Number.isFinite(item.availableTokens) ||
+    !Number.isFinite(item.maxTokens) ||
+    !Number.isFinite(item.minTokens) ||
+    !Number.isFinite(item.targetTokens) ||
+    !Number.isFinite(item.priority) ||
+    !Number.isFinite(item.relevance)
+  ) {
+    throw new Error(
+      `allocateDemandsWithinCapacity: demand ${item.id} has non-finite fields`,
+    );
+  }
+  return {
+    id: item.id,
+    availableTokens,
+    minTokens,
+    targetTokens,
+    maxTokens: cappedMax,
+    priority,
+    relevance,
+    requirement: item.requirement,
+    selectionBoost,
+  };
+}
+
+export function allocateDemandsWithinCapacity(
+  input: DemandAllocationInput,
+): DemandAllocationResult {
+  if (!Number.isFinite(input.capacity) || input.capacity < 0) {
+    throw new Error(
+      `allocateDemandsWithinCapacity: capacity must be finite non-negative, got ${input.capacity}`,
+    );
+  }
+  const capacity = Math.floor(input.capacity);
+  const smallBias = Number.isFinite(input.smallDemandFullFitBias)
+    ? Math.max(0, Math.floor(input.smallDemandFullFitBias as number))
+    : DEFAULT_SMALL_DEMAND_FULL_FIT_BIAS;
+  const demands = input.demands.map(sanitizeDemand);
+
+  const allocations = new Map<string, number>();
+  const reasons = new Map<string, string>();
+  for (const d of demands) allocations.set(d.id, 0);
+
+  const capOf = (d: DemandAllocationItem) =>
+    Math.min(d.availableTokens, d.maxTokens);
+  const targetOf = (d: DemandAllocationItem) =>
+    Math.min(d.targetTokens, capOf(d));
+  const scoreOf = (d: DemandAllocationItem) => {
+    const boost =
+      typeof d.selectionBoost === 'number' &&
+      Number.isFinite(d.selectionBoost) &&
+      d.selectionBoost > 0
+        ? d.selectionBoost
+        : 1;
+    return (
+      d.priority *
+      d.relevance *
+      boost *
+      Math.log1p(Math.max(0, targetOf(d) - (allocations.get(d.id) ?? 0)))
+    );
+  };
+  const tieBreak = (a: DemandAllocationItem, b: DemandAllocationItem) =>
+    // Lower rank = mandatory (0) / preferred (1) / optional (2). Sort mandatory
+    // & preferred first: a "less optional" demand should win the tie-break, so
+    // subtract a's rank from b's rank (negative ⇒ a first).
+    demandRequirementRank(a.requirement) - demandRequirementRank(b.requirement) ||
+    scoreOf(b) - scoreOf(a) ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+  let remaining = capacity;
+
+  // 1. mandatory floor.
+  for (const d of demands
+    .filter(d => d.requirement === 'mandatory')
+    .sort(tieBreak)) {
+    if (remaining <= 0) break;
+    const want = Math.min(capOf(d), Math.max(d.minTokens, targetOf(d)));
+    const grant = Math.min(want, remaining);
+    if (grant <= 0) continue;
+    allocations.set(d.id, grant);
+    reasons.set(d.id, 'mandatory');
+    remaining -= grant;
+  }
+
+  // 2. min floor for non-mandatory demands (priority × relevance order).
+  const nonMandatory = demands.filter(d => d.requirement !== 'mandatory');
+  for (const d of [...nonMandatory].sort(tieBreak)) {
+    if (remaining <= 0) break;
+    const current = allocations.get(d.id) ?? 0;
+    const want = Math.min(d.minTokens, capOf(d));
+    const grant = Math.min(Math.max(0, want - current), remaining);
+    if (grant <= 0) continue;
+    allocations.set(d.id, current + grant);
+    reasons.set(d.id, 'min');
+    remaining -= grant;
+  }
+
+  // 3. small-demand full-fit bias: complete any demand whose remaining target
+  //    fits inside the small-bias threshold, so a 700-token item gets fully
+  //    funded before a 12000-token item collects any surplus.
+  for (const d of [...nonMandatory].sort(tieBreak)) {
+    if (remaining <= 0) break;
+    const current = allocations.get(d.id) ?? 0;
+    const target = targetOf(d);
+    const unmet = target - current;
+    if (unmet <= 0 || unmet > smallBias) continue;
+    const grant = Math.min(unmet, remaining);
+    allocations.set(d.id, current + grant);
+    reasons.set(d.id, 'small_full_fit');
+    remaining -= grant;
+  }
+
+  // 4. target water-filling by priority × relevance × selection boost.
+  while (remaining > 0) {
+    const hungry = nonMandatory
+      .filter(d => (allocations.get(d.id) ?? 0) < targetOf(d))
+      .sort(tieBreak);
+    if (hungry.length === 0) break;
+    const per = Math.floor(remaining / hungry.length);
+    if (per <= 0) {
+      // Deterministic +1 remainder distribution in sorted order.
+      for (const d of hungry) {
+        if (remaining <= 0) break;
+        const current = allocations.get(d.id) ?? 0;
+        if (current < targetOf(d)) {
+          allocations.set(d.id, current + 1);
+          reasons.set(d.id, 'redistributed');
+          remaining -= 1;
+        }
+      }
+      break;
+    }
+    let any = false;
+    for (const d of hungry) {
+      const current = allocations.get(d.id) ?? 0;
+      const unmet = targetOf(d) - current;
+      if (unmet <= 0) continue;
+      const grant = Math.min(unmet, per);
+      if (grant <= 0) continue;
+      allocations.set(d.id, current + grant);
+      reasons.set(d.id, reasons.get(d.id) === 'min' ? 'redistributed' : reasons.get(d.id) ?? 'redistributed');
+      remaining -= grant;
+      any = true;
+    }
+    if (!any) break;
+  }
+
+  // 5. (Optional) burst beyond target — only when caller passes maxTokens >
+  //    targetTokens. For items, maxTokens === targetTokens === availableTokens,
+  //    so this branch is a no-op and the allocator never over-fills content.
+  while (remaining > 0) {
+    const hungry = nonMandatory
+      .filter(d => (allocations.get(d.id) ?? 0) < capOf(d))
+      .sort(tieBreak);
+    if (hungry.length === 0) break;
+    const per = Math.floor(remaining / hungry.length);
+    if (per <= 0) {
+      for (const d of hungry) {
+        if (remaining <= 0) break;
+        const current = allocations.get(d.id) ?? 0;
+        if (current < capOf(d)) {
+          allocations.set(d.id, current + 1);
+          reasons.set(d.id, 'burst');
+          remaining -= 1;
+        }
+      }
+      break;
+    }
+    let any = false;
+    for (const d of hungry) {
+      const current = allocations.get(d.id) ?? 0;
+      const unmet = capOf(d) - current;
+      if (unmet <= 0) continue;
+      const grant = Math.min(unmet, per);
+      if (grant <= 0) continue;
+      allocations.set(d.id, current + grant);
+      reasons.set(d.id, 'burst');
+      remaining -= grant;
+      any = true;
+    }
+    if (!any) break;
+  }
+
+  let totalAllocated = 0;
+  const traces: DemandAllocationTrace[] = demands.map(d => {
+    const allocated = allocations.get(d.id) ?? 0;
+    totalAllocated += allocated;
+    return {
+      id: d.id,
+      allocatedTokens: allocated,
+      demandTokens: d.availableTokens,
+      softTargetTokens: d.targetTokens,
+      reason: reasons.get(d.id) ?? 'not_activated',
+    };
+  });
+
+  return { allocations, totalAllocated, traces };
+}
+
 export function allocateElasticStageContextBudget(
   input: AllocateElasticStageContextBudgetInput,
 ): ElasticStageBudgetResult {

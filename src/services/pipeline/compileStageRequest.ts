@@ -89,6 +89,11 @@ export type StageCompileResult =
       frozenDraftRequest?: FrozenDraftRequest;
       /** Phase 2+ elastic budget trace when elasticBudget is enabled. */
       elasticBudgetTrace?: ElasticBudgetTrace;
+      /**
+       * Context Budget V3 hierarchical trace when contextBudgetVersion >= 6
+       * (Plan §15). Preview surfaces per-board demand/soft/borrow/allocated.
+       */
+      hierarchicalBudgetTrace?: import('../context/hierarchicalContextAllocator').HierarchicalBudgetResult;
     }
   | {
       ready: false;
@@ -105,6 +110,8 @@ export type StageCompileResult =
       draftCompile?: CompileDraftPipelineRequestResult;
       /** Phase 2+ elastic budget trace when elasticBudget is enabled. */
       elasticBudgetTrace?: ElasticBudgetTrace;
+      /** Context Budget V3 hierarchical trace (Plan §15). */
+      hierarchicalBudgetTrace?: import('../context/hierarchicalContextAllocator').HierarchicalBudgetResult;
     };
 
 /** Only Ready compile results may be passed to callLLMResult. */
@@ -205,10 +212,17 @@ export async function compileDraftStageRequest(params: {
   preview?: boolean;
   storyMemoryMode?: 'generation' | 'preview';
   elasticBudget?: boolean;
+  /**
+   * Context Budget protocol version (Plan §12). When >= 6 the V3 hierarchical
+   * allocator runs inside `buildContext`. Preview passes this through so the
+   * ContextPreviewScreen shows the same allocation view as a live send.
+   */
+  contextBudgetVersion?: number;
 }): Promise<StageCompileResult> {
   const compiled = await compileDraftPipelineRequest({
     ...params,
     elasticBudget: params.elasticBudget,
+    contextBudgetVersion: params.contextBudgetVersion,
   });
   const safetyMargin =
     compiled.safetyMargin || deriveDefaultSafetyMargin(compiled.contextWindow);
@@ -300,6 +314,7 @@ export async function compileDraftStageRequest(params: {
     draftCompile: compiled,
     frozenDraftRequest,
     elasticBudgetTrace: compiled.elasticBudgetTrace,
+    hierarchicalBudgetTrace: compiled.hierarchicalBudgetTrace,
   };
 }
 

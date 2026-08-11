@@ -2,6 +2,25 @@ import * as db from './database';
 import { processMacros } from './macroReplace';
 import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
 import { allocateElasticStageContextBudget } from './pipeline/elasticBudgetAllocator';
+import {
+  MAX_EPISODIC_MEMORY_BUDGET,
+  MAX_STORY_STATE_BUDGET,
+} from './contextAutoAllocator';
+import {
+  allocateHierarchicalContextBudget,
+  type HierarchicalBudgetInput,
+  type HierarchicalBudgetResult,
+} from './context/hierarchicalContextAllocator';
+import {
+  collectAllResourceCandidates,
+  renderCandidateToText,
+  type ResourceContextCandidate,
+} from './context/resourceContextCandidates';
+import {
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V3,
+  hashContextAutomationPolicyV3,
+  type ContextBudgetBoardKey,
+} from './contextAutomationPolicy';
 import type { Chapter, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
 import type { ContextTraceItem } from '../types/contextTrace';
@@ -70,6 +89,13 @@ export interface BuildContextResult {
   storyMemoryWarnings: StoryMemoryPrepareWarning[];
   /** Phase 2+ elastic budget trace when options.elasticBudget is enabled. */
   elasticBudgetTrace?: import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
+  /**
+   * Context Budget V3 hierarchical allocator trace when
+   * options.contextBudgetVersion >= 6. Carries per-board demand/soft/borrow/
+   * allocated plus per-item traces for resources; the Preview screen renders
+   * these so the user can see WHY each section got the budget it did.
+   */
+  hierarchicalBudgetTrace?: HierarchicalBudgetResult;
 }
 
 export interface BuildContextOptions {
@@ -88,6 +114,22 @@ export interface BuildContextOptions {
    * 80%/95% allocator. Flag OFF keeps the legacy fixed-ratio behavior.
    */
   elasticBudget?: boolean;
+  /**
+   * Context Budget protocol version driving this build (Plan §12). Drives the
+   * allocator branch:
+   *   - missing / <= 5: V1/V2 path (legacy elastic or fixed ratio)
+   *   - >= 6: V3 hierarchical board/item elastic (candidate-first resources,
+   *     cross-board borrow, model-relative soft targets)
+   * V3 is independent of `elasticBudget` — when both are set with version >= 6,
+   * V3 takes precedence.
+   */
+  contextBudgetVersion?: number;
+  /**
+   * Optional V3 policy override. When omitted the default balanced preset is
+   * used; auto-config persists the chosen policy under `context_auto_policy_v3`
+   * so resumed tasks see the same board ratios.
+   */
+  contextAutomationPolicyV3?: typeof DEFAULT_CONTEXT_AUTOMATION_POLICY_V3;
 }
 
 /**
@@ -350,11 +392,38 @@ export async function buildContext(
     options.contextWindow,
     options.reservedOutputTokens,
   );
+  // Worldbook keyword scan haystack. Computed once, before the budget block,
+  // so the V3 candidate collector can run upstream of the hierarchical
+  // allocator. memoryText is appended later for the final scanText used by the
+  // legacy V2 builders; the provisional scanText here omits it because episodic
+  // memory building depends on effective budgets (circular dependency).
+  const worldbookScanContent = selectPreviousChapters(
+    currentChapter,
+    { strategy: 'sliding', recentChapterCount: config.worldbookScanDepth ?? 4 },
+    chapters,
+  )
+    .map(chapter => chapter.content)
+    .join('\n\n');
+  const provisionalScanText = [
+    currentChapter.title,
+    currentChapter.synopsis,
+    currentChapter.content,
+    options.retrievalUserPrompt || '',
+    worldbookScanContent,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   // Preset + outline are the only mandatory sections; the allocator result
   // above is attached for diagnostics / freezing.
   let elasticBudgetTrace:
     | import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace
     | undefined;
+  let hierarchicalBudgetTrace: HierarchicalBudgetResult | undefined;
+  // V3 candidate state — populated only when the V3 branch runs. The resources
+  // rendering block downstream consumes these instead of buildResourceContext.
+  let v3ResourceCandidates: ResourceContextCandidate[] = [];
+  let v3ResourceItemAllocations: ReadonlyMap<string, number> | undefined;
+  let v3ResourceItemTraces: HierarchicalBudgetResult['resourceItemTraces'];
   let effectiveResourceBudget = config.resourceBudget;
   let effectiveStoryStateBudget = config.storyStateBudgetTokens ?? 8000;
   let effectiveSlidingWindow = config.slidingWindowSize;
@@ -369,6 +438,9 @@ export async function buildContext(
     options.reservedOutputTokens != null && options.reservedOutputTokens > 0
       ? Number(options.reservedOutputTokens)
       : 0;
+  const useV3Hierarchical =
+    typeof options.contextBudgetVersion === 'number' &&
+    options.contextBudgetVersion >= 6;
   if (resolvedContextWindow > 0 && reservedOut > 0) {
     const safety = deriveContextSafetyMargin(resolvedContextWindow);
     const fixedProtocol = 256;
@@ -378,7 +450,106 @@ export async function buildContext(
       resolvedContextWindow - safety - reservedOut - fixedProtocol,
     );
     const remainingAfterOutline = Math.max(0, availableInput - outlineTokens);
-    if (options.elasticBudget) {
+    if (useV3Hierarchical) {
+      // ----- Context Budget V3 hierarchical branch (Plan §3-§8) -------------
+      // 1. Estimate real mandatory tokens from preset + outline + protocol.
+      //    The macro-replaced preset isn't built yet; using the raw preset text
+      //    keeps the estimate conservative (macros usually shorten content).
+      const presetTextForEstimate =
+        typeof preset === 'string' ? preset : buildPresetPrompt(preset);
+      const mandatoryTokens =
+        estimateTokens(presetTextForEstimate || DEFAULT_SYSTEM_PROMPT) +
+        outlineTokens +
+        fixedProtocol;
+      // 2. Collect resource candidates with full content (Plan §6.1
+      //    candidate-first). The collector never pre-clips; actual demand is
+      //    the sum of activated candidate tokens.
+      let resourcesActualDemand = 0;
+      if (config.includeResources) {
+        try {
+          const collected = await collectAllResourceCandidates(
+            projectId,
+            provisionalScanText,
+            currentChapter,
+            {
+              retrievalUserPrompt: options.retrievalUserPrompt,
+              recursiveWorldbook: config.worldbookRecursive !== false,
+            },
+          );
+          v3ResourceCandidates = collected.candidates;
+          resourcesActualDemand = collected.totalActualTokens;
+        } catch {
+          // Resource collection failure must never block generation; fall back
+          // to an empty candidate list and let the allocator grant 0 to
+          // Resources.
+          v3ResourceCandidates = [];
+          resourcesActualDemand = 0;
+        }
+      }
+      // 3. Demand estimates for non-resource boards. Story state / episodic
+      //    use the config ceilings as proxies (their real render sizes are
+      //    unknown until the budget is set; using config matches the V2
+      //    semantic). Sliding window uses the selected-previous-chapter token
+      //    sum as a content-driven estimate.
+      const storyStateDemand = Math.max(
+        0,
+        Math.min(MAX_STORY_STATE_BUDGET, config.storyStateBudgetTokens ?? 8000),
+      );
+      const episodicDemand = Math.max(
+        0,
+        Math.min(
+          MAX_EPISODIC_MEMORY_BUDGET,
+          config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
+        ),
+      );
+      const slidingDemand = Math.max(
+        0,
+        Math.min(config.slidingWindowSize, estimateTokens(worldbookScanContent)),
+      );
+      // 4. Run the hierarchical allocator. resourceItems are passed so the
+      //    Resources board grant is split across candidates by priority ×
+      //    relevance × explicitBoost (Plan §7).
+      const v3Input: HierarchicalBudgetInput = {
+        contextWindow: resolvedContextWindow,
+        reservedOutputTokens: reservedOut,
+        mandatoryTokens,
+        safetyMargin: safety,
+        policy: options.contextAutomationPolicyV3 ?? DEFAULT_CONTEXT_AUTOMATION_POLICY_V3,
+        boards: {
+          storyState: { actualDemandTokens: storyStateDemand },
+          resources: { actualDemandTokens: resourcesActualDemand },
+          slidingWindow: { actualDemandTokens: slidingDemand },
+          episodic: { actualDemandTokens: episodicDemand },
+        },
+        resourceItems: v3ResourceCandidates.map(c => ({
+          id: c.id,
+          sourceKind: c.sourceKind,
+          actualTokens: c.actualTokens,
+          explicitSelected: c.explicitSelected,
+          activated: c.activated,
+          activationReason: c.activationReason,
+          sourceOrder: c.sourceOrder,
+        })),
+      };
+      const v3Result = allocateHierarchicalContextBudget(v3Input);
+      hierarchicalBudgetTrace = v3Result;
+      v3ResourceItemAllocations = v3Result.resourceItemAllocations;
+      v3ResourceItemTraces = v3Result.resourceItemTraces;
+      // 5. Wire board grants into the effective budgets consumed by the shared
+      //    downstream rendering path.
+      effectiveStoryStateBudget =
+        v3Result.boardAllocations.storyState.allocatedTokens;
+      effectiveResourceBudget = v3Result.boardAllocations.resources.allocatedTokens;
+      effectiveSlidingWindow =
+        v3Result.boardAllocations.slidingWindow.allocatedTokens;
+      effectiveEpisodicBudget =
+        v3Result.boardAllocations.episodic.allocatedTokens;
+      if (remainingAfterOutline < 1500) {
+        effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 2);
+      } else if (remainingAfterOutline < 4000) {
+        effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 3);
+      }
+    } else if (options.elasticBudget) {
       // Elastic budget pool (Phase 2): protocol + full outline are mandatory;
       // story state / resources / sliding window / episodic compete in the
       // 80% soft pool and may borrow the 95% burst band by priority×relevance.
@@ -574,15 +745,10 @@ export async function buildContext(
       retrievalOptions,
     );
   }
-  const worldbookScanContent = selectPreviousChapters(
-    currentChapter,
-    { strategy: 'sliding', recentChapterCount: config.worldbookScanDepth ?? 4 },
-    chapters,
-  )
-    .map(chapter => chapter.content)
-    .join('\n\n');
   // retrievalUserPrompt 必须参与世界书扫描：空章开写时标题/概要往往不含触发词，
   // 但生成指令（含章节概要复述、用户本轮要求）里经常出现设定关键词。
+  // `worldbookScanContent` was computed before the budget block so the V3
+  // candidate collector can run upstream; reused here unchanged.
   const scanText = [
     currentChapter.title,
     currentChapter.synopsis,
@@ -709,22 +875,85 @@ export async function buildContext(
   let snapshotWorldbookText = '';
 
   if (config.includeResources && effectiveResourceBudget > 0) {
-    const resourceResult = await buildResourceContext(
-      projectId,
-      effectiveResourceBudget,
-      scanText,
-      config.worldbookRecursive !== false,
-      currentChapter,
-      options.retrievalUserPrompt || '',
-    );
-    snapshotCharacterText = resourceResult.characterText;
-    snapshotNoteText = resourceResult.noteText;
-    snapshotWorldbookText = resourceResult.worldbookText;
-    if (resourceResult.text) {
-      const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceResult.text}`;
-      messages.push({ role: 'system', content: resourceMessage });
+    if (useV3Hierarchical && v3ResourceCandidates.length > 0) {
+      // ----- V3 candidate-first resource rendering (Plan §6 / §15) ----------
+      // Each candidate is clipped to its item-allocator grant; no fixed
+      // 35/20/45 split, no `remaining` order bias. Trace items carry demand /
+      // soft target / allocated / borrowed / reason so Preview explains why.
+      const renderedByKind: Record<
+        'character' | 'note' | 'worldbook',
+        string[]
+      > = { character: [], note: [], worldbook: [] };
+      const sectionLabels: Record<'character' | 'note' | 'worldbook', string> = {
+        character: '人物设定',
+        note: '项目笔记',
+        worldbook: '世界书',
+      };
+      const itemTracesById = new Map(
+        (v3ResourceItemTraces ?? []).map(t => [t.id, t]),
+      );
+      for (const candidate of v3ResourceCandidates) {
+        const grant = v3ResourceItemAllocations?.get(candidate.id) ?? 0;
+        const { text, clipped } = renderCandidateToText(candidate, grant);
+        const itemTrace = itemTracesById.get(candidate.id);
+        const included = text.length > 0;
+        if (included) {
+          renderedByKind[candidate.sourceKind].push(text);
+        }
+        trace.push({
+          kind:
+            candidate.sourceKind === 'character'
+              ? 'character'
+              : candidate.sourceKind === 'note'
+                ? 'note'
+                : 'worldbook',
+          sourceId: candidate.sourceId,
+          title: candidate.title,
+          reason: describeV3ItemReason(candidate, itemTrace?.reason),
+          estimatedTokens: included ? estimateTokens(text) : candidate.actualTokens,
+          included,
+          clipped: clipped || (!included && candidate.actualTokens > 0),
+          preview: candidate.content.slice(0, 500),
+          demandTokens: candidate.actualTokens,
+          allocatedTokens: grant,
+          allocationReason: mapV3ItemReason(itemTrace?.reason),
+        });
+      }
+      const parts: string[] = [];
+      (['character', 'note', 'worldbook'] as const).forEach(kind => {
+        const bodies = renderedByKind[kind];
+        if (bodies.length > 0) {
+          parts.push(`${sectionLabels[kind]}：\n${bodies.join('\n\n')}`);
+        }
+      });
+      const resourceText = parts.join('\n\n');
+      // Per-kind snapshot text: full unclipped bodies so downstream stages
+      // (review / factCheck / proof) can re-clip per their own budgets.
+      snapshotCharacterText = renderedByKind.character.join('\n\n');
+      snapshotNoteText = renderedByKind.note.join('\n\n');
+      snapshotWorldbookText = renderedByKind.worldbook.join('\n\n');
+      if (resourceText) {
+        const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceText}`;
+        messages.push({ role: 'system', content: resourceMessage });
+      }
+    } else {
+      const resourceResult = await buildResourceContext(
+        projectId,
+        effectiveResourceBudget,
+        scanText,
+        config.worldbookRecursive !== false,
+        currentChapter,
+        options.retrievalUserPrompt || '',
+      );
+      snapshotCharacterText = resourceResult.characterText;
+      snapshotNoteText = resourceResult.noteText;
+      snapshotWorldbookText = resourceResult.worldbookText;
+      if (resourceResult.text) {
+        const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceResult.text}`;
+        messages.push({ role: 'system', content: resourceMessage });
+      }
+      trace.push(...resourceResult.traceItems);
     }
-    trace.push(...resourceResult.traceItems);
   }
 
   if (memoryText) {
@@ -861,6 +1090,9 @@ export async function buildContext(
     outlineBlockingReason: outlineContext.blockingReason,
     outlineEstimatedTokens: outlineContext.estimatedTokens,
     sourceFingerprint: `proj=${projectId}|chapter=${currentChapter.id ?? currentChapter.position}`,
+    contextBudgetV3Summary: hierarchicalBudgetTrace
+      ? buildV3Summary(hierarchicalBudgetTrace, options.contextAutomationPolicyV3)
+      : undefined,
   };
 
   return {
@@ -871,7 +1103,89 @@ export async function buildContext(
     pipelineContext,
     storyMemoryWarnings: prepared?.warnings || [],
     elasticBudgetTrace,
+    hierarchicalBudgetTrace,
   };
+}
+
+/**
+ * Build the V3 summary embedded in PipelineContextSnapshot (Plan §13).
+ * Downstream stages (review / factCheck / proof) read this to render the same
+ * allocation view the draft saw, without re-running the allocator. Pure /
+ * deterministic — never touches the DB.
+ */
+function buildV3Summary(
+  trace: HierarchicalBudgetResult,
+  policy: typeof DEFAULT_CONTEXT_AUTOMATION_POLICY_V3 | undefined,
+): import('../types/pipelineContext').ContextBudgetV3Summary {
+  const usedPolicy = policy ?? DEFAULT_CONTEXT_AUTOMATION_POLICY_V3;
+  return {
+    contextBudgetVersion: 6,
+    policyHash: hashContextAutomationPolicyV3(usedPolicy),
+    envelope: { ...trace.envelope },
+    boards: (
+      Object.values(trace.boardAllocations) as Array<
+        (typeof trace.boardAllocations)[ContextBudgetBoardKey]
+      >
+    ).map(b => ({
+      key: b.key,
+      actualDemandTokens: b.actualDemandTokens,
+      softTargetTokens: b.softTargetTokens,
+      elasticMaxTokens: b.elasticMaxTokens,
+      allocatedTokens: b.allocatedTokens,
+      reclaimedTokens: b.reclaimedTokens,
+      borrowedTokens: b.borrowedTokens,
+      reason: b.reason,
+    })),
+  };
+}
+
+/**
+ * Map a V3 item allocator reason code to the public ContextAllocationReason
+ * vocabulary (Plan §15). Allocator reasons not in the public set fall back to
+ * 'item_competition' so the Preview always has something to show.
+ */
+function mapV3ItemReason(
+  reason: string | undefined,
+): import('../types/contextTrace').ContextAllocationReason | undefined {
+  if (!reason) return undefined;
+  switch (reason) {
+    case 'mandatory':
+    case 'min':
+    case 'small_full_fit':
+    case 'redistributed':
+      return 'full_fit';
+    case 'burst':
+      return 'global_borrow';
+    case 'reclaimed':
+      return 'item_competition';
+    case 'not_activated':
+      return 'not_activated';
+    default:
+      return 'item_competition';
+  }
+}
+
+/**
+ * Build a human-readable reason string for a V3 resource item trace. Combines
+ * the candidate's activation source with the allocator's decision so the
+ * Preview shows both WHY the candidate was activated and HOW it was funded.
+ */
+function describeV3ItemReason(
+  candidate: ResourceContextCandidate,
+  allocatorReason: string | undefined,
+): string {
+  const activationLabel: Record<string, string> = {
+    primary_secondary_hit: '主+次关键词命中',
+    constant: '常驻',
+    primary_hit: '主关键词命中',
+    recursive_hit: '递归命中',
+    project_fallback: '项目启用兜底',
+    explicit: '用户显式选择',
+  };
+  const source =
+    activationLabel[candidate.activationReason ?? 'explicit'] ?? '显式选择';
+  const funded = allocatorReason ? `｜分配:${allocatorReason}` : '';
+  return `${source}${funded}`;
 }
 
 function buildPresetPrompt(preset?: Preset): string {

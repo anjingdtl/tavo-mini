@@ -19,21 +19,32 @@ import {
   type OutlinePipelineBudgetPolicyV3,
   type OutlinePipelineStageV3,
   type OutlineReasoningTierV3,
+  cloneDefaultContextAutomationPolicyV3,
+  hashContextAutomationPolicyV3,
+  isContextAutomationPolicyV3,
+  serializeContextAutomationPolicyV3,
+  type ContextAutomationPolicyV3,
 } from './contextAutomationPolicy';
 
 export {
   buildContinuationPolicyPreview,
   cloneDefaultContextAutomationPolicy,
+  cloneDefaultContextAutomationPolicyV3,
   cloneDefaultOutlinePipelineBudgetPolicyV3,
   DEFAULT_CONTEXT_AUTOMATION_POLICY_V2,
+  DEFAULT_CONTEXT_AUTOMATION_POLICY_V3,
   DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3,
   hashContextAutomationPolicy,
+  hashContextAutomationPolicyV3,
   isContextAutomationPolicyV2,
+  isContextAutomationPolicyV3,
   isOutlinePipelineBudgetPolicyV3,
   serializeContextAutomationPolicy,
+  serializeContextAutomationPolicyV3,
 } from './contextAutomationPolicy';
 export type {
   ContextAutomationPolicyV2,
+  ContextAutomationPolicyV3,
   ContinuationContextCategory,
   ContinuationPolicyPreview,
   ContinuationV4Stage,
@@ -335,20 +346,58 @@ import { all } from '../data/connection/query';
 import {
   buildAppliedRecord,
   getContextAutomationPolicy,
+  getContextAutomationPolicyV3,
   setContextAutoLastApplied,
+  setContextAutoMode,
   setContextAutomationPolicy,
+  setContextAutomationPolicyV3,
   type ContextAutoAppliedRecord,
+  type ContextAutoMode,
 } from '../data/repositories/contextAutoRepository';
 
 /**
  * 查询所有项目的资源数量（用于动态分配单项上限）。
  * 跨项目，无 WHERE 限制。
+ *
+ * @deprecated for V3 auto-config — V3 mode uses `countResourcesForProject`
+ * (Plan §1.4 / §23 GO Gate #1/#2). Retained for the V2 path and the Auto
+ * Config preview's "all-resources" projection.
  */
 export async function countAllResources(): Promise<ResourceCounts> {
   // 触发数据库初始化（与 connection/query.ts 内部行为一致）
   await openDatabase();
   const countOf = async (table: string): Promise<number> => {
     const rows = await all<{ c: number }>(`SELECT COUNT(*) AS c FROM ${table}`);
+    return Number(rows[0]?.c ?? 0);
+  };
+  const [characters, notes, worldbookEntries, worldbookCollections] =
+    await Promise.all([
+      countOf('characters'),
+      countOf('notes'),
+      countOf('worldbook_entries'),
+      countOf('worldbook_collections'),
+    ]);
+  return { characters, notes, worldbookEntries, worldbookCollections };
+}
+
+/**
+ * V3 project-scoped resource count (Plan §1.4 / §23 GO Gate #1/#2).
+ *
+ * V3 candidate collection already reads via `getCharactersByProject` etc., so
+ * the cross-project pollution bug is closed at the source. This helper exists
+ * for the Auto Config preview's diagnostics ("this project has N resources"),
+ * not for the runtime allocator path.
+ */
+export async function countResourcesForProject(
+  projectId: number,
+): Promise<ResourceCounts> {
+  await openDatabase();
+  const safeId = Math.max(0, Math.floor(Number(projectId) || 0));
+  const countOf = async (table: string): Promise<number> => {
+    const rows = await all<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM ${table} WHERE project_id = ?`,
+      [safeId],
+    );
     return Number(rows[0]?.c ?? 0);
   };
   const [characters, notes, worldbookEntries, worldbookCollections] =
@@ -529,6 +578,127 @@ export async function applyContextAutoAllocation(
   );
   await setContextAutoLastApplied(record);
 
+  return record;
+}
+
+// ============================================================================
+// Context Budget V3 auto-config (Plan §10 / §11 / §23 GO Gate #3)
+//
+// V3 auto-config persists Policy + mode marker instead of writing per-resource
+// max_tokens or fixed split ratios. Resource max_tokens UPDATEs are explicitly
+// forbidden — those rows keep their legacy/manual values, and the V3 candidate
+// collector ignores them at runtime. This closes the "one auto-apply freezes
+// the entire DB" problem (Plan §1.5).
+// ============================================================================
+
+/**
+ * Result of a V3 auto-config apply. Carries everything the Auto Config UI and
+ * task-creation paths need to confirm the mode switch without re-reading the
+ * resource tables.
+ */
+export interface ContextAutoAppliedRecordV3 {
+  schemaVersion: 3;
+  maxContextTokens: number;
+  appliedAt: number;
+  mode: ContextAutoMode;
+  policy: ContextAutomationPolicyV3;
+  policyHash: string;
+  affectedCounts: {
+    llmConfigs: number;
+    presets: number;
+  };
+}
+
+/**
+ * Apply V3 auto-config. Writes:
+ *   - context_auto_mode = 'v3'
+ *   - context_auto_policy_v3 = {policy}
+ *   - context_auto_input = maxContextTokens
+ *   - llm_config.context_window / max_output_tokens (every config)
+ *   - presets.max_tokens (output baseline)
+ *
+ * Does NOT write:
+ *   - sliding_window_size / resource_budget / story_state_budget_tokens /
+ *     episodic_memory_budget_tokens / memory_patch_max_tokens (V3 computes
+ *     these at request time from the frozen task model + policy)
+ *   - characters / notes / worldbook_entries / worldbook_collections
+ *     max_tokens (Plan §11 — V3 never bulk-UPDATEs resource max_tokens)
+ */
+export async function applyContextAutoAllocationV3(
+  maxContextTokens: number,
+  options: { policy?: ContextAutomationPolicyV3 } = {},
+): Promise<ContextAutoAppliedRecordV3> {
+  if (!Number.isFinite(maxContextTokens) || maxContextTokens <= 0) {
+    throw new Error(
+      `applyContextAutoAllocationV3: maxContextTokens 必须为正数，收到：${maxContextTokens}`,
+    );
+  }
+  const [llmCount, presetCount, persistedPolicy] = await Promise.all([
+    countLlmConfigs(),
+    countAllPresets(),
+    getContextAutomationPolicyV3(),
+  ]);
+  const policy =
+    options.policy ||
+    (persistedPolicy && isContextAutomationPolicyV3(persistedPolicy)
+      ? persistedPolicy
+      : cloneDefaultContextAutomationPolicyV3());
+  const policyHash = hashContextAutomationPolicyV3(policy);
+  // Output baseline = 20% of window, capped by ELASTIC_STAGE reserve logic
+  // (kept consistent with V2 so LLM configs land on the same numbers).
+  const outputBudget = Math.round(
+    maxContextTokens *
+      DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.outputRatio,
+  );
+  const serializedPolicyV3 = serializeContextAutomationPolicyV3(policy);
+  const statements: SqlStatement[] = [
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['context_auto_input', String(Math.round(maxContextTokens))],
+    },
+    { sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)', params: ['context_auto_mode', 'v3'] },
+    { sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)', params: ['context_auto_policy_v3', serializedPolicyV3] },
+    {
+      sql: 'UPDATE llm_config SET context_window = ?, max_output_tokens = ?',
+      params: [Math.round(maxContextTokens), outputBudget],
+    },
+    { sql: 'UPDATE presets SET max_tokens = ?', params: [outputBudget] },
+  ];
+  // Explicitly DO NOT add UPDATE characters / notes / worldbook_entries /
+  // worldbook_collections statements. V3 leaves resource max_tokens untouched.
+  const db = await openDatabase();
+  await executeTransaction(db, statements);
+  const record: ContextAutoAppliedRecordV3 = {
+    schemaVersion: 3,
+    maxContextTokens,
+    appliedAt: Date.now(),
+    mode: 'v3',
+    policy,
+    policyHash,
+    affectedCounts: { llmConfigs: llmCount, presets: presetCount },
+  };
+  // Persist the last-applied record via the shared V2-shaped store so existing
+  // UI helpers can read it; the V3 schemaVersion field lets the screen render
+  // the correct copy.
+  await setContextAutoMode('v3');
+  await setContextAutomationPolicyV3(policy);
+  await setContextAutoLastApplied({
+    schemaVersion: 2,
+    maxContextTokens,
+    appliedAt: record.appliedAt,
+    allocation: undefined as any,
+    policySchemaVersion: 3,
+    policyVersion: 'context-automation-v3',
+    policyHash,
+    affectedCounts: {
+      llmConfigs: llmCount,
+      presets: presetCount,
+      characters: 0,
+      notes: 0,
+      worldbookEntries: 0,
+      worldbookCollections: 0,
+    },
+  });
   return record;
 }
 

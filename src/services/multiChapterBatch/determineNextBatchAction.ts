@@ -16,7 +16,20 @@ import type { PipelineStageAttemptRow } from '../../data/repositories/pipelineSt
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from '../pipeline/outlineWorkflowVersion';
+
+/**
+ * V2 (5) and V3 (6) batches are both resumable on their own version
+ * (Plan §12). Any other version (1–4 legacy) pauses the batch.
+ */
+function isBatchContextBudgetVersionResumable(version: unknown): boolean {
+  const n = Number(version);
+  return (
+    n === CURRENT_CONTEXT_BUDGET_VERSION ||
+    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+  );
+}
 
 export type MultiChapterBatchAction =
   | { type: 'plan_batch' }
@@ -86,7 +99,7 @@ export function determineNextBatchAction(
   }
   if (
     Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
-    Number(batch.contextBudgetVersion) !== CURRENT_CONTEXT_BUDGET_VERSION
+    !isBatchContextBudgetVersionResumable(batch.contextBudgetVersion)
   ) {
     return { type: 'pause_legacy_batch' };
   }

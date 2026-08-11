@@ -30,7 +30,21 @@ import { getPipelineTaskById } from '../data/repositories/pipelineTaskRepository
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from './pipeline/outlineWorkflowVersion';
+
+/**
+ * Resume compatibility check (Plan §12 / §23 GO Gate #12 / #13).
+ * V2 (5) and V3 (6) tasks are both resumable on their own version; neither
+ * is silently upgraded. Any other version (1–4 legacy) is blocked.
+ */
+function isTaskContextBudgetVersionResumable(version: unknown): boolean {
+  const n = Number(version);
+  return (
+    n === CURRENT_CONTEXT_BUDGET_VERSION ||
+    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+  );
+}
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -282,8 +296,7 @@ export async function resumePipeline(
     incompleteStatuses.has(String(persistedTask.status)) &&
     (Number(persistedTask.outlineWorkflowVersion) !==
       CURRENT_OUTLINE_WORKFLOW_VERSION ||
-      Number(persistedTask.contextBudgetVersion) !==
-        CURRENT_CONTEXT_BUDGET_VERSION)
+      !isTaskContextBudgetVersionResumable(persistedTask.contextBudgetVersion))
   ) {
     const error = Object.assign(
       new Error('该任务使用旧版生成流程或预算协议，不能继续；请按新版重新生成。'),

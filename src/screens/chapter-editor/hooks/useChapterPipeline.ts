@@ -18,7 +18,9 @@ import { useProjectStore } from '../../../store/projectStore';
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from '../../../services/pipeline/outlineWorkflowVersion';
+import { getContextAutoMode } from '../../../data/repositories/contextAutoRepository';
 import {
   cancelContinuationRun,
   startContinuationRun,
@@ -57,7 +59,7 @@ type CreateTask = (
   targetId: number,
   versions?: {
     outlineWorkflowVersion: 1 | 2 | 3 | 4;
-    contextBudgetVersion: 1 | 2 | 3 | 4 | 5;
+    contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6;
   },
 ) => Promise<string>;
 
@@ -287,15 +289,31 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         // §4.2: NEW outline chapter tasks freeze the CURRENT protocol
         // versions explicitly at creation; non-outline / freeform /
         // pseudo-chapters stay Legacy (V1).
+        //
+        // Context Budget V3 (Plan §12): when the user has applied V3
+        // auto-config (`context_auto_mode = 'v3'`), new outline chapter tasks
+        // freeze context_budget_version = 6 and route through the hierarchical
+        // allocator. V2 tasks are unaffected and resume on their own version.
         const project = useProjectStore.getState().currentProject;
         const isOutlineChapter = project?.mode === 'outline' && chapter.id > 0;
+        let contextBudgetVersion = isOutlineChapter
+          ? CURRENT_CONTEXT_BUDGET_VERSION
+          : 1;
+        if (isOutlineChapter) {
+          try {
+            const mode = await getContextAutoMode();
+            if (mode === 'v3') {
+              contextBudgetVersion = V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION;
+            }
+          } catch {
+            // Settings read failure never blocks creation; fall back to V2.
+          }
+        }
         taskId = await createTask('chapter', chapter.id, {
           outlineWorkflowVersion: isOutlineChapter
             ? CURRENT_OUTLINE_WORKFLOW_VERSION
             : 1,
-          contextBudgetVersion: isOutlineChapter
-            ? CURRENT_CONTEXT_BUDGET_VERSION
-            : 1,
+          contextBudgetVersion,
         });
       } catch (error: any) {
         setProgressVisible(false);

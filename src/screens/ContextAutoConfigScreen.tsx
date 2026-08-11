@@ -16,6 +16,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import {
   allocateContextBudget,
   applyContextAutoAllocation,
+  applyContextAutoAllocationV3,
   buildOutlineElasticBudgetPreview,
   countAllResources,
   ensureContextAutomationPolicy,
@@ -26,9 +27,11 @@ import {
 import {
   getContextAutoInput,
   getContextAutoLastApplied,
+  getContextAutoMode,
   setContextAutoInput,
   setContextAutomationPolicy,
   type ContextAutoAppliedRecord,
+  type ContextAutoMode,
 } from '../data/repositories/contextAutoRepository';
 import {
   resolveContinuationV4BudgetPreview,
@@ -102,15 +105,17 @@ export const ContextAutoConfigScreen: React.FC = () => {
   const [llmConfigs, setLlmConfigs] = useState<any[]>([]);
   const [applying, setApplying] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [autoMode, setAutoMode] = useState<ContextAutoMode>('v2');
 
   // 初次加载
   useEffect(() => {
     (async () => {
       try {
-        const [savedInput, counts, applied] = await Promise.all([
+        const [savedInput, counts, applied, mode] = await Promise.all([
           getContextAutoInput(),
           countAllResources(),
           getContextAutoLastApplied(),
+          getContextAutoMode(),
         ]);
         const [loadedPolicy, configs] = await Promise.all([
           ensureContextAutomationPolicy(),
@@ -121,6 +126,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
         setLastApplied(applied);
         setPolicy(loadedPolicy);
         setLlmConfigs(configs);
+        setAutoMode(mode);
       } catch (e: any) {
         Toast.show({ type: 'error', text1: '加载失败', text2: e?.message });
       }
@@ -191,14 +197,24 @@ export const ContextAutoConfigScreen: React.FC = () => {
       Toast.show({ type: 'error', text1: '请输入有效的上下文大小' });
       return;
     }
-    Alert.alert(
-      '确认应用',
+    const isV3 = autoMode === 'v3';
+    const v3Copy =
+      `将以 ${formatNumber(numericInput)} tokens 为基准，按 V3 分层弹性模式写入：\n\n` +
+      '• 所有 LLM 配置的 context_window 与 max_output_tokens\n' +
+      '• 所有预设的 max_tokens\n' +
+      '• context_auto_mode = v3 + V3 Policy（持久化策略，非运行结果）\n\n' +
+      'V3 不写入资源 max_tokens、固定比例与单项额度；运行时按模型容量实时分配。\n\n' +
+      '此操作不可撤销。';
+    const v2Copy =
       `将以 ${formatNumber(numericInput)} tokens 为基准，覆写：\n\n` +
-        '• 所有 LLM 配置的 context_window 与 max_output_tokens\n' +
-        '• 所有预设的 max_tokens\n' +
-        '• 当前项目的上下文与资源预算配置（大纲新任务按五阶段弹性预算冻结）\n' +
-        '• 所有项目的角色、笔记、世界书 max_tokens\n\n' +
-        '此操作不可撤销。',
+      '• 所有 LLM 配置的 context_window 与 max_output_tokens\n' +
+      '• 所有预设的 max_tokens\n' +
+      '• 当前项目的上下文与资源预算配置（大纲新任务按五阶段弹性预算冻结）\n' +
+      '• 所有项目的角色、笔记、世界书 max_tokens\n\n' +
+      '此操作不可撤销。';
+    Alert.alert(
+      isV3 ? '确认应用（V3 分层弹性）' : '确认应用',
+      isV3 ? v3Copy : v2Copy,
       [
         { text: '取消', style: 'cancel' },
         {
@@ -207,18 +223,39 @@ export const ContextAutoConfigScreen: React.FC = () => {
           onPress: async () => {
             setApplying(true);
             try {
-              const record = await applyContextAutoAllocation(numericInput);
-              // The allocation updates llm_config directly inside SQLite. Keep
-              // the long-lived LLM Settings screen in sync immediately rather
-              // than leaving its Zustand snapshot (and form fields) stale
-              // until an app restart.
-              await loadSettings();
-              setLastApplied(record);
-              if (record.policy) setPolicy(record.policy);
+              if (isV3) {
+                const v3Record = await applyContextAutoAllocationV3(numericInput);
+                await loadSettings();
+                setLastApplied({
+                  maxContextTokens: v3Record.maxContextTokens,
+                  appliedAt: v3Record.appliedAt,
+                  allocation: undefined as any,
+                  policySchemaVersion: 3,
+                  policyVersion: v3Record.policy.allocatorVersion,
+                  policyHash: v3Record.policyHash,
+                  affectedCounts: {
+                    llmConfigs: v3Record.affectedCounts.llmConfigs,
+                    presets: v3Record.affectedCounts.presets,
+                    characters: 0,
+                    notes: 0,
+                    worldbookEntries: 0,
+                    worldbookCollections: 0,
+                  },
+                });
+                setAutoMode('v3');
+              } else {
+                const record = await applyContextAutoAllocation(numericInput);
+                await loadSettings();
+                setLastApplied(record);
+                if (record.policy) setPolicy(record.policy);
+                setAutoMode('v2');
+              }
               setLlmConfigs(await db.getLLMConfigs());
               Toast.show({
                 type: 'success',
-                text1: `已应用 ${formatNumber(numericInput)} tokens 的分配方案`,
+                text1: `已应用 ${formatNumber(numericInput)} tokens 的${
+                  isV3 ? ' V3 ' : ''
+                }分配方案`,
               });
             } catch (e: any) {
               Toast.show({
@@ -230,6 +267,23 @@ export const ContextAutoConfigScreen: React.FC = () => {
               setApplying(false);
             }
           },
+        },
+      ],
+    );
+  };
+
+  const handleToggleMode = (mode: ContextAutoMode) => {
+    if (mode === autoMode) return;
+    Alert.alert(
+      mode === 'v3' ? '切换到 V3 分层弹性' : '切换到 V2 固定比例',
+      mode === 'v3'
+        ? 'V3 模式：上下文按模型容量实时分配，资源按真实需求竞争，不再固定 35/20/45 比例，也不写入资源 max_tokens。\n\n下次应用时生效；历史 V2 任务不受影响。'
+        : 'V2 模式：保留固定比例 + 单项 max_tokens 写入。历史 V2 任务恢复方式不变。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '切换',
+          onPress: () => setAutoMode(mode),
         },
       ],
     );
@@ -379,6 +433,89 @@ export const ContextAutoConfigScreen: React.FC = () => {
             {Math.round(policy.utilization.effectiveWindowRatio * 100)}% ·
             安全余量 {Math.round(policy.utilization.safetyReserveRatio * 100)}%
           </Text>
+        </Card>
+
+        {/* Context Budget 模式切换（V2 / V3） */}
+        <Card>
+          <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>
+            上下文预算模式
+          </Text>
+          <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>
+            V3 分层弹性：模型容量驱动板块软目标、空闲预算跨板块借调、资料按真实需求竞争。
+            V2 固定比例：保留 35/20/45 与单项 max_tokens 写入。
+          </Text>
+          <View style={styles.quickRow}>
+            <TouchableOpacity
+              onPress={() => handleToggleMode('v2')}
+              style={[
+                styles.quickChip,
+                {
+                  backgroundColor:
+                    autoMode === 'v2'
+                      ? theme.colors.accent
+                      : theme.colors.card,
+                  borderColor:
+                    autoMode === 'v2'
+                      ? theme.colors.accent
+                      : theme.colors.border,
+                  borderWidth: 1,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.cardMeta,
+                  {
+                    color:
+                      autoMode === 'v2'
+                        ? theme.colors.surface
+                        : theme.colors.textSecondary,
+                    marginBottom: 0,
+                  },
+                ]}
+              >
+                V2 固定比例
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => handleToggleMode('v3')}
+              style={[
+                styles.quickChip,
+                {
+                  backgroundColor:
+                    autoMode === 'v3'
+                      ? theme.colors.accent
+                      : theme.colors.card,
+                  borderColor:
+                    autoMode === 'v3'
+                      ? theme.colors.accent
+                      : theme.colors.border,
+                  borderWidth: 1,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.cardMeta,
+                  {
+                    color:
+                      autoMode === 'v3'
+                        ? theme.colors.surface
+                        : theme.colors.textSecondary,
+                    marginBottom: 0,
+                  },
+                ]}
+              >
+                V3 分层弹性 ★
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {autoMode === 'v3' && (
+            <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
+              当前为 V3 模式：新大纲章节任务将冻结 context_budget_version=6，
+              经由分层弹性分配器运行；历史 V2 任务保留原版本不动。
+            </Text>
+          )}
         </Card>
 
         {/* 输入最大上下文 */}
