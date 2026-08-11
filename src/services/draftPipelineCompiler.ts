@@ -48,6 +48,13 @@ export interface CompileDraftPipelineRequestResult {
   allocations?: Record<string, number>;
   /** Phase 2+ elastic budget trace when elasticBudget is enabled. */
   elasticBudgetTrace?: import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
+  /**
+   * Context Budget V3 hierarchical allocator trace when contextBudgetVersion
+   * >= 6 (Plan §15). Carries per-board demand / soft target / allocated /
+   * borrowed plus per-item traces for resources. The Preview screen renders a
+   * board summary panel and per-item diagnostics when this is present.
+   */
+  hierarchicalBudgetTrace?: import('./context/hierarchicalContextAllocator').HierarchicalBudgetResult;
 }
 
 function resolvePreset(
@@ -82,6 +89,14 @@ export async function compileDraftPipelineRequest(params: {
   draftPreset?: Preset | null;
   draftMaxTokens?: number;
   elasticBudget?: boolean;
+  /**
+   * Context Budget protocol version frozen on the task (Plan §12). When >= 6
+   * the V3 hierarchical board/item allocator takes over the elastic path in
+   * `buildContext`; otherwise the V2 single-level elastic allocator runs as
+   * before. Plumbed from the task snapshot so resumed/preview compiles use the
+   * same allocator that produced the draft.
+   */
+  contextBudgetVersion?: number;
 }): Promise<CompileDraftPipelineRequestResult> {
   const chapter = params.chapter;
   const pipelineConfig = await db.getPipelineConfig();
@@ -120,6 +135,7 @@ export async function compileDraftPipelineRequest(params: {
     trace,
     estimatedInputTokens: baseEstimated,
     elasticBudgetTrace,
+    hierarchicalBudgetTrace,
     storyMemoryWarnings,
   } = await buildContext(
     chapter,
@@ -133,6 +149,7 @@ export async function compileDraftPipelineRequest(params: {
       reservedOutputTokens,
       contextWindow,
       elasticBudget: params.elasticBudget,
+      contextBudgetVersion: params.contextBudgetVersion,
     },
   );
 
@@ -231,5 +248,6 @@ export async function compileDraftPipelineRequest(params: {
     trace: trace || [],
     storyMemoryWarnings: storyMemoryWarnings || [],
     elasticBudgetTrace,
+    hierarchicalBudgetTrace,
   };
 }
