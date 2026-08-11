@@ -92,6 +92,29 @@ export function parseReasoningTokens(usage: unknown): number | null {
 }
 
 /**
+ * Parse DeepSeek prompt-cache telemetry fields. Returns `{null, null}` when the
+ * provider did not report them — never fabricates 0. Does not reject generation
+ * when `hit + miss != prompt_tokens` (provider accounting varies), and never
+ * changes `inputTokens` fallback or `reasoningTokens` parsing. Observation-only.
+ */
+export function parsePromptCacheUsage(usage: unknown): {
+  hitTokens: number | null;
+  missTokens: number | null;
+} {
+  if (!usage || typeof usage !== 'object') {
+    return { hitTokens: null, missTokens: null };
+  }
+  const record = usage as {
+    prompt_cache_hit_tokens?: unknown;
+    prompt_cache_miss_tokens?: unknown;
+  };
+  return {
+    hitTokens: parseNonNegativeUsageNumber(record.prompt_cache_hit_tokens),
+    missTokens: parseNonNegativeUsageNumber(record.prompt_cache_miss_tokens),
+  };
+}
+
+/**
  * Normalise `message.content` into a trimmed business-text string.
  *
  * OpenAI's canonical shape is a string; a handful of compatible gateways
@@ -245,6 +268,8 @@ async function safeLogUsage(fields: {
   projectId?: number;
   llmConfigId?: number;
   llmConfigName?: string;
+  promptCacheHitTokens?: number | null;
+  promptCacheMissTokens?: number | null;
 }) {
   try {
     await db.logLLMUsage(fields);
@@ -527,6 +552,7 @@ export const openAICompatibleProvider: LLMProvider = {
               reasoningTokens == null
                 ? null
                 : Math.max(0, outputTokens - reasoningTokens);
+            const promptCache = parsePromptCacheUsage(usage);
             timeoutController.markProgress('progress');
             return {
               text,
@@ -536,6 +562,8 @@ export const openAICompatibleProvider: LLMProvider = {
               inputTokens,
               outputTokens,
               totalTokens,
+              promptCacheHitTokens: promptCache.hitTokens,
+              promptCacheMissTokens: promptCache.missTokens,
               finishReason,
               emptyReason,
               metrics: { ...timeoutController.metrics },
@@ -571,6 +599,10 @@ export const openAICompatibleProvider: LLMProvider = {
         projectId,
         llmConfigId,
         llmConfigName,
+        // Provider-reported cache telemetry. When the provider did not report
+        // hit/miss these are null and persist as NULL — never fabricated as 0.
+        promptCacheHitTokens: result.promptCacheHitTokens ?? null,
+        promptCacheMissTokens: result.promptCacheMissTokens ?? null,
       });
 
       return result;

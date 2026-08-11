@@ -69,8 +69,9 @@ import {
   buildV49toV50Statements,
   migrateV49ToV50,
 } from './v49-to-v50';
+import { migrateV50ToV51 } from './v50-to-v51';
 
-export const SCHEMA_VERSION = 50;
+export const SCHEMA_VERSION = 51;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Migration[] = [
@@ -364,6 +365,14 @@ const MIGRATIONS: Migration[] = [
     breaking: false,
     buildStatements: async () => buildV49toV50Statements(),
     migrate: migrateV49ToV50,
+  },
+  {
+    from: 50,
+    to: 51,
+    breaking: false,
+    // Logic migration: idempotent nullable cache-telemetry columns (50→51).
+    buildStatements: async () => [],
+    migrate: migrateV50ToV51,
   },
 ];
 
