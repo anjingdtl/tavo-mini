@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.11.49] - 2026-08-11
+
+### Fixed — Story Memory Protocol V2 Evidence Temporal Boundary
+
+- Compiler 的 Evidence compaction 仍保持最多 3 条，但按 ordered chapters 的 `chapterId → position` 保留 earliest/latest 时间边界；三章 Patch Item 覆盖三章各一条。
+- Character、Relationship、Foreshadowing 的完整 `normalize → compile → validate → apply → State` 回归锁定 firstSeen/opened/lastChanged/resolved 与最终状态一致。
+
+### Validation
+
+- Temporal/final-governance 专项、Story Memory 全量与 `npm run verify` 已通过；production-policy Live semantic smoke 与 Android temporal/context 验收结果记录在 Evidence Temporal Boundary Verification 报告。
+
 ## [2.11.48] - 2026-08-11
 
 ### Fixed — Story Memory Protocol V2 Final Seal

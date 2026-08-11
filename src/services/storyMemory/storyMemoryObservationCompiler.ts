@@ -52,7 +52,10 @@ function unique(values: string[]): string[] {
   return [...new Set(values.map(value => value.trim()).filter(Boolean))];
 }
 
-function mergeEvidence(
+const MAX_PATCH_ITEM_EVIDENCE = 3;
+
+function mergeEvidencePreservingTemporalBoundary(
+  chapterPositionById: ReadonlyMap<number, number>,
   ...groups: BatchEvidenceQuote[][]
 ): BatchEvidenceQuote[] {
   const seen = new Set<string>();
@@ -63,7 +66,69 @@ function mergeEvidence(
     seen.add(key);
     merged.push(item);
   });
-  return merged.slice(0, 3);
+
+  const chapterGroups = new Map<
+    number,
+    { items: BatchEvidenceQuote[]; firstIndex: number }
+  >();
+  merged.forEach((item, index) => {
+    const group = chapterGroups.get(item.chapterId);
+    if (group) {
+      group.items.push(item);
+    } else {
+      chapterGroups.set(item.chapterId, {
+        items: [item],
+        firstIndex: index,
+      });
+    }
+  });
+
+  const orderedGroups = [...chapterGroups.entries()].sort(
+    ([leftChapterId, leftGroup], [rightChapterId, rightGroup]) => {
+      const leftPosition = chapterPositionById.get(leftChapterId);
+      const rightPosition = chapterPositionById.get(rightChapterId);
+      if (leftPosition != null && rightPosition != null) {
+        return leftPosition - rightPosition;
+      }
+      if (leftPosition != null) return -1;
+      if (rightPosition != null) return 1;
+      return leftGroup.firstIndex - rightGroup.firstIndex;
+    },
+  );
+  const orderedEvidence = orderedGroups.flatMap(([, group]) => group.items);
+  if (orderedEvidence.length <= MAX_PATCH_ITEM_EVIDENCE) {
+    return orderedEvidence;
+  }
+
+  const selected = new Set<BatchEvidenceQuote>();
+  const select = (item: BatchEvidenceQuote | undefined): void => {
+    if (item) selected.add(item);
+  };
+
+  if (orderedGroups.length === 1) {
+    return orderedEvidence.slice(0, MAX_PATCH_ITEM_EVIDENCE);
+  }
+
+  // Always reserve the temporal boundary chapters. The extra slot for a
+  // two-chapter item prefers the last accepted change from the earliest
+  // chapter, matching the deterministic chapter/order retention policy.
+  select(orderedGroups[0][1].items[0]);
+  select(orderedGroups.at(-1)![1].items.at(-1));
+  if (orderedGroups.length === 2) {
+    const fillCandidates = [
+      ...orderedGroups[0][1].items.slice().reverse(),
+      ...orderedGroups[1][1].items,
+    ];
+    for (const item of fillCandidates) {
+      select(item);
+      if (selected.size === MAX_PATCH_ITEM_EVIDENCE) break;
+    }
+  } else {
+    const middleIndex = Math.floor((orderedGroups.length - 1) / 2);
+    select(orderedGroups[middleIndex][1].items.at(-1));
+  }
+
+  return orderedEvidence.filter(item => selected.has(item));
 }
 
 function normalizeName(value: string): string {
@@ -527,6 +592,7 @@ function mergeStringSet(
 }
 
 function mergeCharacterUpdateIntoNewPatch(
+  chapterPositionById: ReadonlyMap<number, number>,
   character: BatchNewCharacterPatch,
   update: BatchCharacterUpdatePatch,
 ): void {
@@ -560,7 +626,11 @@ function mergeCharacterUpdateIntoNewPatch(
     update.removeSecrets,
   );
   if (update.status) character.status = update.status;
-  character.evidence = mergeEvidence(character.evidence, update.evidence);
+  character.evidence = mergeEvidencePreservingTemporalBoundary(
+    chapterPositionById,
+    character.evidence,
+    update.evidence,
+  );
 }
 
 function registerLocalRef(
@@ -803,6 +873,9 @@ export function compileStoryMemoryObservations(input: {
   const ordered = [...input.chapters].sort(
     (left, right) => left.position - right.position,
   );
+  const chapterPositionById = new Map(
+    ordered.map(chapter => [chapter.id, chapter.position]),
+  );
   const handles =
     input.handles ||
     buildStoryMemoryEntityHandles(input.previousState, ordered);
@@ -1024,7 +1097,8 @@ export function compileStoryMemoryObservations(input: {
               ...existingPatch.aliases,
               ...observation.aliases,
             ]);
-            existingPatch.evidence = mergeEvidence(
+            existingPatch.evidence = mergeEvidencePreservingTemporalBoundary(
+              chapterPositionById,
               existingPatch.evidence,
               evidence,
             );
@@ -1098,7 +1172,12 @@ export function compileStoryMemoryObservations(input: {
         }
       }
       const newCharacter = newCharactersByRef.get(characterRef);
-      if (newCharacter) mergeCharacterUpdateIntoNewPatch(newCharacter, update);
+      if (newCharacter)
+        mergeCharacterUpdateIntoNewPatch(
+          chapterPositionById,
+          newCharacter,
+          update,
+        );
       else patch.characterUpdates.push(update);
       acceptObservation(entry, evidence, 'characterChanges');
       return true;
@@ -1156,7 +1235,12 @@ export function compileStoryMemoryObservations(input: {
         ).push(value);
       }
       const newCharacter = newCharactersByRef.get(characterRef);
-      if (newCharacter) mergeCharacterUpdateIntoNewPatch(newCharacter, update);
+      if (newCharacter)
+        mergeCharacterUpdateIntoNewPatch(
+          chapterPositionById,
+          newCharacter,
+          update,
+        );
       else patch.characterUpdates.push(update);
       acceptObservation(entry, evidence, 'characterChanges');
       return true;
@@ -1288,7 +1372,8 @@ export function compileStoryMemoryObservations(input: {
           newRelationship.hiddenStatus = update.hiddenStatus;
         }
         if (update.reason !== undefined) newRelationship.reason = update.reason;
-        newRelationship.evidence = mergeEvidence(
+        newRelationship.evidence = mergeEvidencePreservingTemporalBoundary(
+          chapterPositionById,
           newRelationship.evidence,
           update.evidence,
         );
@@ -1453,7 +1538,11 @@ export function compileStoryMemoryObservations(input: {
         item.state = observation.state || item.state || '';
         item.stakes = observation.stakes || item.stakes || '';
         if (parties.length) item.parties = parties;
-        item.evidence = mergeEvidence(item.evidence, evidence);
+        item.evidence = mergeEvidencePreservingTemporalBoundary(
+          chapterPositionById,
+          item.evidence,
+          evidence,
+        );
         if (!conflictByRef.has(ref)) {
           conflictByRef.set(ref, item);
           patch.mainlinePatch.conflictUpserts.push(item);
@@ -1601,7 +1690,11 @@ export function compileStoryMemoryObservations(input: {
         item.deadlineOrTrigger =
           observation.deadlineOrTrigger || item.deadlineOrTrigger || '';
         if (owners.length) item.ownerCharacterRefs = owners;
-        item.evidence = mergeEvidence(item.evidence, evidence);
+        item.evidence = mergeEvidencePreservingTemporalBoundary(
+          chapterPositionById,
+          item.evidence,
+          evidence,
+        );
         if (threadByRef.has(ref)) {
           // Same-batch update folds into the open item.
         } else {
@@ -1716,7 +1809,11 @@ export function compileStoryMemoryObservations(input: {
           : observation.op === 'resolve'
           ? 'paid'
           : item.status || 'open';
-      item.evidence = mergeEvidence(item.evidence, evidence);
+      item.evidence = mergeEvidencePreservingTemporalBoundary(
+        chapterPositionById,
+        item.evidence,
+        evidence,
+      );
       if (!existing) {
         foreshadowingByRef.set(ref, item);
         patch.mainlinePatch.foreshadowingUpserts.push(item);
