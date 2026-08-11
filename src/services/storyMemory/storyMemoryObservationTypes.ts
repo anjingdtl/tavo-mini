@@ -1,4 +1,7 @@
-import type { BatchEvidenceQuote, StoryMemoryBatchPatchDraft } from './storyMemoryTypes';
+import type {
+  BatchEvidenceQuote,
+  StoryMemoryBatchPatchDraft,
+} from './storyMemoryTypes';
 
 export type StoryMemoryObservationKind =
   | 'character_new'
@@ -25,7 +28,8 @@ export type StoryMemoryObservationWarningCode =
   | 'OBS_UNKNOWN_CHAPTER'
   | 'OBS_CHAPTER_DUPLICATE'
   | 'OBS_CHAPTER_MISSING'
-  | 'OBS_BRIEF_FALLBACK';
+  | 'OBS_BRIEF_FALLBACK'
+  | 'OBS_FUTURE_REF';
 
 export interface StoryMemoryObservationWarning {
   code: StoryMemoryObservationWarningCode;

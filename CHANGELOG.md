@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.11.47] - 2026-08-11
+
+### Fixed — Story Memory Protocol V2 Final Governance
+
+- **禁止未来引用**：编译器按章节位置和证据顺序解析 N-key，跨章节及同章向未来引用会局部丢弃并记录 `OBS_FUTURE_REF`。
+- **Same-batch lifecycle**：按现有 Merger temp-ref 能力补齐 Relationship、Conflict、Thread、Foreshadowing 的同批次 open/update/resolve/paid 生命周期收束。
+- **Known-change 语义门禁**：known-change complex-long 的零 Observation 不再被视为成功；真实 QA 走生产 `Request Policy` 与 `Provider Adapter` 路径。
+
+### Validation
+
+- Story Memory 专项、`npm run verify` 与真实 Android App 入口 M1–M6 验证结果记录于最终 Governance Verification 报告。
+
 ## [2.11.46] - 2026-08-11
 
 ### Fixed — Story Memory Protocol V2 Closure

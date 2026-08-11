@@ -2,10 +2,11 @@
  * Live LLM smoke for Story Memory Protocol V2 Closure.
  * Skipped unless LIVE_STORY_MEMORY=1.
  *
- * Never logs API keys. Key is loaded from docs/TEST-KEY.txt or DEEPSEEK_API_KEY.
+ * Never logs API keys. Key is loaded from the process environment only.
  */
 import fs from 'fs';
 import path from 'path';
+import { callLLMResult } from '../src/services/llm';
 import { createEmptyStoryMemory } from '../src/services/storyMemory/storyMemoryDefaults';
 import { buildStoryMemoryEntityHandles } from '../src/services/storyMemory/storyMemoryEntityHandles';
 import { buildStoryMemoryEvidenceAnchors } from '../src/services/storyMemory/storyMemoryEvidenceAnchors';
@@ -18,6 +19,9 @@ import {
   planStoryMemoryObservationRequest,
   type FrozenStoryMemoryLLMConfig,
 } from '../src/services/storyMemory/storyMemoryRequestBudget';
+import { buildStoryMemoryLLMConfig } from '../src/services/storyMemory/storyMemoryRequestPolicy';
+import { STORY_MEMORY_V2_REQUEST_KINDS } from '../src/services/storyMemory/storyMemoryProtocolVersion';
+import { evaluateStoryMemoryKnownChangeSemanticGate } from '../src/services/storyMemory/storyMemoryV2Diagnostics';
 import { normalizeStoryMemoryObservationPayload } from '../src/services/storyMemory/storyMemoryObservationNormalizer';
 import {
   compileStoryMemoryObservations,
@@ -25,6 +29,7 @@ import {
 } from '../src/services/storyMemory/storyMemoryObservationCompiler';
 import { extractJSON } from '../src/utils/jsonExtractor';
 import { estimateMessagesTokens } from '../src/utils/tokenEstimator';
+import type { ChatMessage } from '../src/services/llm';
 import type { Chapter } from '../src/types/novel';
 import type {
   StoryCharacter,
@@ -35,15 +40,13 @@ const LIVE = process.env.LIVE_STORY_MEMORY === '1';
 const describeLive = LIVE ? describe : describe.skip;
 
 function loadApiKey(): string {
-  if (process.env.DEEPSEEK_API_KEY) return process.env.DEEPSEEK_API_KEY;
-  const raw = fs.readFileSync(path.join(__dirname, '../docs/TEST-KEY.txt'), 'utf8');
-  const keyLine = raw.split(/\r?\n/).find(line => /api\s*key/i.test(line));
-  const match = keyLine?.match(/sk-[A-Za-z0-9]+/);
-  if (!match) throw new Error('TEST-KEY missing sk- token');
-  return match[0];
+  const key = process.env.DEEPSEEK_API_KEY?.trim();
+  if (!key) throw new Error('DEEPSEEK_API_KEY is required for live QA');
+  return key;
 }
 
-const BASE = process.env.DEEPSEEK_BASE || 'https://api.deepseek.com/chat/completions';
+const BASE =
+  process.env.DEEPSEEK_BASE || 'https://api.deepseek.com/chat/completions';
 const MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
 
 function chapter(
@@ -246,39 +249,35 @@ function frozenConfig(
   };
 }
 
-async function callLLM(
-  messages: Array<{ role: string; content: string }>,
-  maxTokens: number,
-) {
-  const apiKey = loadApiKey();
-  const res = await fetch(BASE, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages,
-      max_tokens: maxTokens,
-      temperature: 0.2,
-      stream: false,
-      response_format: { type: 'json_object' },
-    }),
-  });
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
-    usage?: unknown;
+async function callLLM(messages: ChatMessage[], maxTokens: number) {
+  const frozen = frozenConfig(1_048_576, maxTokens);
+  const requestConfig = {
+    ...frozen.requestConfig!,
+    api_key: loadApiKey(),
   };
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status}`);
-  }
-  const text = data.choices?.[0]?.message?.content?.trim() || '';
+  let httpStatus: number | undefined;
+  const result = await callLLMResult(
+    messages,
+    maxTokens,
+    buildStoryMemoryLLMConfig({
+      scenario: STORY_MEMORY_V2_REQUEST_KINDS.primary,
+      projectId: 1,
+      requestConfig,
+      physicalRequestHooks: {
+        afterRequest: event => {
+          if (event.outcome === 'response') {
+            httpStatus = event.httpStatus;
+          }
+        },
+      },
+    }),
+  );
   return {
-    httpStatus: res.status,
-    finishReason: data.choices?.[0]?.finish_reason || '',
-    text,
-    usage: data.usage || null,
+    httpStatus: httpStatus ?? 0,
+    finishReason: result.finishReason || '',
+    emptyReason: result.emptyReason,
+    text: result.text?.trim() || '',
+    usage: result.rawUsage || null,
   };
 }
 
@@ -302,96 +301,105 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
     );
   });
 
-  it(
-    'complex-long 3x18000 real primary → compile → validate',
-    async () => {
-      const chapters = [
-        chapter(
-          101,
-          7,
-          padToLength(
-            '雨夜里，林岚推开钟楼暗门。陈叔在门后留下银钥匙，守门人退到石阶下。墙上出现三角刻痕。众人决定进入地下室。',
-            18000,
-          ),
-          '第 8 章 暗门',
+  it('complex-long 3x18000 real primary → compile → validate', async () => {
+    const chapters = [
+      chapter(
+        101,
+        7,
+        padToLength(
+          '雨夜里，林岚推开钟楼暗门。陈叔在门后留下银钥匙，守门人退到石阶下。墙上出现三角刻痕。众人决定进入地下室。',
+          18000,
         ),
-        chapter(
-          102,
-          8,
-          padToLength(
-            '地下室潮湿，林岚用银钥匙打开第二道铁门。陈叔发现墙上的三角刻痕与钥匙齿痕吻合。远处传来机关转动声。',
-            18000,
-          ),
-          '第 9 章 铁门',
+        '第 8 章 暗门',
+      ),
+      chapter(
+        102,
+        8,
+        padToLength(
+          '地下室潮湿，林岚用银钥匙打开第二道铁门。陈叔发现墙上的三角刻痕与钥匙齿痕吻合。远处传来机关转动声。',
+          18000,
         ),
-        chapter(
-          103,
-          9,
-          padToLength(
-            '铁门后是旧祭坛，林岚确认祭坛中央有凹陷。陈叔将银钥匙放入凹陷，石阶自动下沉，露出更深通道。',
-            18000,
-          ),
-          '第 10 章 祭坛',
+        '第 9 章 铁门',
+      ),
+      chapter(
+        103,
+        9,
+        padToLength(
+          '铁门后是旧祭坛，林岚确认祭坛中央有凹陷。陈叔将银钥匙放入凹陷，石阶自动下沉，露出更深通道。',
+          18000,
         ),
-      ];
-      expect(chapters.every(item => item.content.length === 18000)).toBe(true);
-      const state = baseState();
-      const handles = buildStoryMemoryEntityHandles(state, chapters);
-      const evidence = buildStoryMemoryEvidenceAnchors(
-        chapters,
-        handles.chapterHandleById,
-      );
-      const materials = buildStoryMemoryObservationMaterials(
-        chapters,
-        state,
-        handles,
-        evidence,
-      );
-      const plan = planStoryMemoryObservationRequest({
-        config: frozenConfig(1_048_576, 200_000),
-        materials,
-        batchSize: 3,
-      });
-      expect(plan.strategy).toBe('full_prompt');
-      const llm = await callLLM(plan.messages, plan.maxTokens);
-      expect(llm.httpStatus).toBe(200);
-      expect(llm.text.length).toBeGreaterThan(0);
-      const raw = extractJSON(llm.text);
-      const normalized = normalizeStoryMemoryObservationPayload(
-        raw,
-        materials.includedChapterHandles,
-      );
-      const compiled = compileStoryMemoryObservations({
-        chapters,
-        previousState: state,
-        normalized: normalized.chapters,
-        handles,
-        evidence,
-      });
-      validateCompiledStoryMemoryBatchPatch(
-        compiled.patch,
-        state,
-        chapters,
-        evidence,
-      );
-      report.complexLong = {
-        pass: true,
-        httpStatus: llm.httpStatus,
-        finishReason: llm.finishReason,
-        estimatedInputTokens: plan.estimatedInputTokens,
-        outputReservation: plan.maxTokens,
-        observationsReceived: normalized.chapters.reduce(
-          (sum, item) => sum + item.observations.length,
-          0,
-        ),
-        observationsAccepted: compiled.acceptedObservations,
-        observationsDropped: compiled.droppedObservations,
-        warningCodes: [...new Set(compiled.warnings.map(item => item.code))],
-        usage: llm.usage,
-      };
-    },
-    300000,
-  );
+        '第 10 章 祭坛',
+      ),
+    ];
+    expect(chapters.every(item => item.content.length === 18000)).toBe(true);
+    const state = baseState();
+    const handles = buildStoryMemoryEntityHandles(state, chapters);
+    const evidence = buildStoryMemoryEvidenceAnchors(
+      chapters,
+      handles.chapterHandleById,
+    );
+    const materials = buildStoryMemoryObservationMaterials(
+      chapters,
+      state,
+      handles,
+      evidence,
+    );
+    const plan = planStoryMemoryObservationRequest({
+      config: frozenConfig(1_048_576, 200_000),
+      materials,
+      batchSize: 3,
+    });
+    expect(plan.strategy).toBe('full_prompt');
+    const llm = await callLLM(plan.messages, plan.maxTokens);
+    expect(llm.httpStatus).toBe(200);
+    expect(llm.finishReason).not.toBe('length');
+    expect(llm.text.length).toBeGreaterThan(0);
+    const raw = extractJSON(llm.text);
+    const normalized = normalizeStoryMemoryObservationPayload(
+      raw,
+      materials.includedChapterHandles,
+    );
+    const compiled = compileStoryMemoryObservations({
+      chapters,
+      previousState: state,
+      normalized: normalized.chapters,
+      handles,
+      evidence,
+    });
+    validateCompiledStoryMemoryBatchPatch(
+      compiled.patch,
+      state,
+      chapters,
+      evidence,
+    );
+    const observationsReceived = normalized.chapters.reduce(
+      (sum, item) => sum + item.observations.length,
+      0,
+    );
+    const semanticGate = evaluateStoryMemoryKnownChangeSemanticGate({
+      observationsReceived,
+      observationsAccepted: compiled.acceptedObservations,
+      patch: compiled.patch,
+    });
+    expect(semanticGate.pass).toBe(true);
+    report.complexLong = {
+      pass: semanticGate.pass,
+      httpStatus: llm.httpStatus,
+      finishReason: llm.finishReason,
+      emptyReason: llm.emptyReason,
+      estimatedInputTokens: plan.estimatedInputTokens,
+      outputReservation: plan.maxTokens,
+      observationsReceived,
+      observationsAccepted: compiled.acceptedObservations,
+      observationsDropped: compiled.droppedObservations,
+      semanticCategories: semanticGate.categories,
+      semanticGateReason: semanticGate.reason,
+      warningCodes: [...new Set(compiled.warnings.map(item => item.code))],
+      usage: llm.usage,
+      requestPath:
+        'callLLMResult -> providerRegistry -> openAICompatibleProvider',
+    };
+  }, 300000);
 
   it('invalid-ref does not pollute episodic summary', () => {
     const state = baseState();
@@ -438,7 +446,9 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
     expect(compiled.patch.characterUpdates).toHaveLength(0);
     expect(summary.events.join('\n')).not.toContain('地下密室');
     expect(summary.characterChanges).toEqual([]);
-    expect(compiled.warnings.map(item => item.code)).toContain('OBS_INVALID_REF');
+    expect(compiled.warnings.map(item => item.code)).toContain(
+      'OBS_INVALID_REF',
+    );
     report.invalidRef = {
       pass: true,
       accepted: compiled.acceptedObservations,
@@ -508,7 +518,12 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
       handles,
       evidence,
     });
-    validateCompiledStoryMemoryBatchPatch(compiled.patch, state, chapters, evidence);
+    validateCompiledStoryMemoryBatchPatch(
+      compiled.patch,
+      state,
+      chapters,
+      evidence,
+    );
     expect(compiled.patch.newCharacters).toHaveLength(0);
     expect(compiled.patch.newRelationships).toHaveLength(0);
     expect(compiled.patch.mainlinePatch.threadOpens).toHaveLength(0);
@@ -551,7 +566,9 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
     });
     expect(['full_prompt', 'preflight_split']).toContain(plan64.strategy);
     if (plan64.strategy === 'full_prompt') {
-      expect(plan64.estimatedInputTokens).toBeLessThanOrEqual(plan64.burstInputLimit);
+      expect(plan64.estimatedInputTokens).toBeLessThanOrEqual(
+        plan64.burstInputLimit,
+      );
       expect(plan64.includedModuleIds).toEqual(
         expect.arrayContaining(['v2_current_arc', 'v2_current_objective']),
       );
@@ -570,7 +587,9 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
     });
     expect(['full_prompt', 'infeasible']).toContain(fresh.strategy);
     if (fresh.strategy === 'full_prompt') {
-      expect(fresh.estimatedInputTokens).toBeLessThanOrEqual(fresh.burstInputLimit);
+      expect(fresh.estimatedInputTokens).toBeLessThanOrEqual(
+        fresh.burstInputLimit,
+      );
       expect(fresh.includedModuleIds).toEqual(primaryTight.includedModuleIds);
       expect(fresh.droppedModuleIds).toEqual(primaryTight.droppedModuleIds);
       expect(fresh.messages.map(item => item.content).join('\n')).toContain(
@@ -578,7 +597,9 @@ describeLive('Story Memory Protocol V2 Closure live LLM', () => {
       );
       // Must re-use compact selection; not expand to a larger uncompacted envelope.
       if (primaryTight.droppedModuleIds.length > 0) {
-        expect(fresh.includedModuleIds.length).toBeLessThan(materials.modules.length);
+        expect(fresh.includedModuleIds.length).toBeLessThan(
+          materials.modules.length,
+        );
       }
     }
     report.budget64kFresh = {
