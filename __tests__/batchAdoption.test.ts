@@ -30,7 +30,10 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
 
 import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import type { InMemorySqliteDb } from './helpers/canonInMemoryDb';
-import { __setDatabaseForTest, __resetForTest } from '../src/data/connection/openDatabase';
+import {
+  __setDatabaseForTest,
+  __resetForTest,
+} from '../src/data/connection/openDatabase';
 import { execute } from '../src/data/connection/execute';
 import { openDatabase } from '../src/data/connection/openDatabase';
 import {
@@ -43,9 +46,15 @@ import {
   commitBatchItemAdoption,
 } from '../src/data/repositories/multiChapterBatchRepository';
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
-import { getChapterById, getChaptersByProject } from '../src/data/repositories/projectRepository';
+import {
+  getChapterById,
+  getChaptersByProject,
+} from '../src/data/repositories/projectRepository';
 import { getContentRevisions } from '../src/data/repositories/contentRepository';
-import { adoptPipelineTaskResult, computeAdoptionFingerprint } from '../src/services/multiChapterBatch/batchAdoption';
+import {
+  adoptPipelineTaskResult,
+  computeAdoptionFingerprint,
+} from '../src/services/multiChapterBatch/batchAdoption';
 import { MultiChapterBatchError } from '../src/services/multiChapterBatch/errors';
 import { reconcileMultiChapterBatch } from '../src/services/multiChapterBatch/reconcileMultiChapterBatch';
 
@@ -77,7 +86,11 @@ async function seedProject(id = 1): Promise<void> {
   );
 }
 
-async function seedChapter(projectId = 1, position = 0, content = ''): Promise<number> {
+async function seedChapter(
+  projectId = 1,
+  position = 0,
+  content = '',
+): Promise<number> {
   const result = await execute(
     await openDatabase(),
     `INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at)
@@ -87,7 +100,10 @@ async function seedChapter(projectId = 1, position = 0, content = ''): Promise<n
   return result.insertId;
 }
 
-async function seedCompletedTask(chapterId: number, finalText: string): Promise<string> {
+async function seedCompletedTask(
+  chapterId: number,
+  finalText: string,
+): Promise<string> {
   const taskId = `task_${Math.random().toString(36).slice(2, 8)}`;
   await savePipelineTask({
     id: taskId,
@@ -95,7 +111,12 @@ async function seedCompletedTask(chapterId: number, finalText: string): Promise<
     targetId: chapterId,
     status: 'completed',
     stageResults: [
-      { stage: 'draft', status: 'success', text: finalText, tokens: { input: 10, output: 20, total: 30 } },
+      {
+        stage: 'draft',
+        status: 'success',
+        text: finalText,
+        tokens: { input: 10, output: 20, total: 30 },
+      },
     ],
     finalText,
     error: null,
@@ -132,6 +153,38 @@ describe('adoptPipelineTaskResult — side effects', () => {
     expect(adopted.source_ref).toBe(taskId);
   });
 
+  it('adopts through a narrow query when the full task row cannot fit CursorWindow', async () => {
+    await resetDb();
+    await seedProject();
+    const chapterId = await seedChapter(1, 0, '旧正文');
+    const longFinalText = `${'长正文'.repeat(50_000)}结尾`;
+    const taskId = await seedCompletedTask(chapterId, longFinalText);
+    await execute(
+      await openDatabase(),
+      'UPDATE pipeline_tasks SET pipeline_context_json = ? WHERE id = ?',
+      ['超大冻结上下文', taskId],
+    );
+
+    const originalExecuteSql = testDb!.executeSql.bind(testDb);
+    testDb!.executeSql = async (sql: string, params: any[] = []) => {
+      if (/SELECT\s+\*\s+FROM\s+pipeline_tasks/i.test(sql)) {
+        throw new Error(
+          'Row too big to fit into CursorWindow requiredPos=0, totalRows=1',
+        );
+      }
+      return originalExecuteSql(sql, params);
+    };
+
+    await expect(
+      adoptPipelineTaskResult({
+        taskId,
+        chapterId,
+        source: 'manual',
+      }),
+    ).resolves.toMatchObject({ finalText: longFinalText });
+    expect((await getChapterById(chapterId))?.content).toBe(longFinalText);
+  });
+
   it('is idempotent for repeated adoption (no duplicate revisions)', async () => {
     await resetDb();
     await seedProject();
@@ -139,7 +192,9 @@ describe('adoptPipelineTaskResult — side effects', () => {
     const taskId = await seedCompletedTask(chapterId, '正文');
 
     await adoptPipelineTaskResult({ taskId, chapterId, source: 'manual' });
-    const revisionsAfterFirst = (await getContentRevisions('chapter', chapterId)).length;
+    const revisionsAfterFirst = (
+      await getContentRevisions('chapter', chapterId)
+    ).length;
 
     const second = await adoptPipelineTaskResult({
       taskId,
@@ -297,7 +352,12 @@ describe('next chapter reads the previous chapter body', () => {
           targetId: 0,
           status: 'completed',
           stageResults: [
-            { stage: 'draft', status: 'success', text: `正文-${taskId}`, tokens: { input: 1, output: 2, total: 3 } },
+            {
+              stage: 'draft',
+              status: 'success',
+              text: `正文-${taskId}`,
+              tokens: { input: 1, output: 2, total: 3 },
+            },
           ],
           finalText: `正文-${taskId}`,
           error: null,
