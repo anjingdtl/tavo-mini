@@ -12,7 +12,7 @@ import {
 } from './storyMemoryValidator';
 import { batchPatchToChapterDraft } from './storyMemoryMerger';
 import { reconcileStoryMemoryMainlineDraft } from './storyMemoryMainlineReconciler';
-import { makeContinuationChapterNumbering } from '../continuation/chapterNumbering/continuationChapterNumbering';
+import * as continuationChapterNumbering from '../continuation/chapterNumbering/continuationChapterNumbering';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -117,7 +117,11 @@ export function validateStoryMemoryBatchPatch(
   );
   const getDisplayNumber =
     options.getDisplayNumber ||
-    makeContinuationChapterNumbering(null).getDisplayNumber;
+    (typeof continuationChapterNumbering.makeContinuationChapterNumbering ===
+    'function'
+      ? continuationChapterNumbering.makeContinuationChapterNumbering(null)
+          .getDisplayNumber
+      : (position: number) => position + 1);
 
   const rangeRefRaw = isRecord(raw.rangeRef) ? raw.rangeRef : {};
   const rangeRef = {

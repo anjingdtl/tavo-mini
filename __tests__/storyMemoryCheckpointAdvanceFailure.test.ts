@@ -173,7 +173,7 @@ describe('advance checkpoint failure vs old checkpoint validity (H3)', () => {
       content: string;
     }>;
     const userContent = messages.map(m => m.content).join('\n');
-    expect(userContent).toContain('【本批次范围】共 3 章');
+    expect(userContent).toContain('【本批次范围】3 章');
     expect(userContent).toContain('position 21～23');
     expect(userContent).not.toContain('共 10 章');
   });

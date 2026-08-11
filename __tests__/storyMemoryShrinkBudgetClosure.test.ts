@@ -132,7 +132,7 @@ function makeState() {
   return createEmptyStoryMemory(1);
 }
 
-describe('P1 fix 2: zero-budget multi-chapter batch auto-splits instead of failing', () => {
+describe('Protocol V2: multi-chapter batches auto-split before an undersized request', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetContextConfig.mockResolvedValue({ memoryPatchMaxTokens: 1200 });
@@ -140,11 +140,12 @@ describe('P1 fix 2: zero-budget multi-chapter batch auto-splits instead of faili
   });
 
   it('3-chapter batch with zero headroom splits to sub-batches that each fit and succeeds', async () => {
-    // 每章正文足够长，使 3 章组合输入超出窗口（预算 0），但拆散后可以容纳。
+    // Protocol V2 的 3 章最低输出能力为 12288；该模型上限为 8192，
+    // 因此 3 章在发送前拆为 2+1，而子批次仍然可容纳。
     const longContent = '故事正文内容。'.repeat(40); // ~200 字/章
     const batch = [chapter(0, longContent), chapter(1, longContent), chapter(2, longContent)];
-    // 3 章时窗口放不下（预算 0），拆散后子批次拥有正预算。
-    const contextWindow = 5240;
+    // 3 章的 V2 最低输出能力超过模型上限，拆散后子批次拥有可用预算。
+    const contextWindow = 32768;
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
       model_name: 'v5-model',
@@ -181,7 +182,7 @@ describe('P1 fix 2: zero-budget multi-chapter batch auto-splits instead of faili
       const user = (call[0] as Array<{ role: string; content: string }>)
         .map(m => m.content)
         .join('\n');
-      const match = user.match(/共 (\d+) 章/);
+      const match = user.match(/【本批次范围】(?:共 )?(\d+) 章/);
       expect(match).not.toBeNull();
       sizes.push(Number(match![1]));
     }
@@ -241,10 +242,9 @@ describe('P1 fix 3: every retry stays under the context_window hard cap', () => 
   it('length retry never exceeds context_window - input - safetyMargin; multi-chapter splits when stuck', async () => {
     const longContent = '故事正文内容。'.repeat(40); // ~200 字/章
     const batch = [chapter(0, longContent), chapter(1, longContent), chapter(2, longContent)];
-    // 3 章组合输入：headroom 很小 → 初始预算被 context_window 压住。
-    // 3 章放不下（预算 0）→ 拆成 [2 章, 1 章]；2 章仍有正预算但不足以容纳
-    // 长输出 → 空 length → 无法扩容 → 再拆成单章 → 单章成功。
-    const contextWindow = 5500;
+    // 3 章的 V2 输出 reservation 为 20480，超过窗口可用容量，
+    // 先拆成 [2 章, 1 章]；2 章空 length 后到达 cap，再拆成单章成功。
+    const contextWindow = 20000;
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
       model_name: 'v5-model',
@@ -283,7 +283,13 @@ describe('P1 fix 3: every retry stays under the context_window hard cap', () => 
       const maxTokens = call[1] as number;
       const messages = call[0] as Array<{ role: string; content: string }>;
       const input = estimateCheckpointInputTokens(messages);
-      expect(maxTokens).toBeLessThanOrEqual(contextWindow - input - 256);
+      const safetyMargin = Math.min(
+        1024,
+        Math.max(256, Math.floor(contextWindow * 0.02)),
+      );
+      expect(maxTokens).toBeLessThanOrEqual(
+        contextWindow - input - safetyMargin,
+      );
     }
   });
 });
@@ -297,14 +303,16 @@ describe('P1 fix 4: empty length response at budget cap splits multi-chapter bat
       id: 1,
       model_name: 'v5-model',
       context_window: 32768,
-      max_output_tokens: 2000,
+      // V2 3 章 reservation=20480；正好让初始 3 章请求到达 cap，
+      // 然后沿用既有 3→2→1 split 语义。
+      max_output_tokens: 20480,
     });
   });
 
   it('multi-chapter batch: empty length at the cap → split → sub-batches succeed', async () => {
     const batch = [chapter(0), chapter(1), chapter(2)];
     mockCallLLMResult
-      // 3 章：空 length，预算 2000 到顶 → 拆分。
+      // 3 章：空 length，V2 reservation=20480 到顶 → 拆分。
       .mockResolvedValueOnce(emptyResult('length', 'length'))
       // 子批次 1（2 章）→ 成功。
       .mockResolvedValueOnce({

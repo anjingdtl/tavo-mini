@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.11.45] - 2026-08-11
+
+### Added — Story Memory Protocol V2 长期稳定性重构
+
+- **Evidence Anchor + Entity Handle + Semantic Observation**：模型输出收敛为受约束语义观察，由本地 Normalizer、Resolver 与 deterministic Compiler 生成既有 Batch Patch，再继续复用 Merger、CAS、Partial Success 与 DB。
+- **稳定性闭环**：保留 `outcome_unknown`、Foreground/WakeLock、Task Store、3→2→1 split、Fingerprint/CAS，并增加 bounded Observation diagnostics、Formatter/Fresh Retry 及 Debug-only 受控穿测桥接。
+
+### Validation
+
+- `npm run verify`：370 suites passed、2 skipped；3010 tests passed、4 skipped。
+- 最终 Debug APK 已执行 `adb install -r` 覆盖升级；真实 DeepSeek 测试覆盖原复杂长篇失败 Fixture、Evidence Anchor、invalid observation 局部降级、Formatter、Fresh Retry、64K 小窗口 3→2→1、force-stop 恢复、连续两轮自动 maintenance 与锁屏后台完成。
+- 详见 `docs/optimization/Story-Memory-Protocol-V2-Final-Verification-20260811.md`。
+
 ## [2.11.44] - 2026-08-10
 
 ### Added — Story Memory 长期稳定性最终治理

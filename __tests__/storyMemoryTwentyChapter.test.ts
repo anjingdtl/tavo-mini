@@ -37,7 +37,6 @@ jest.mock('../src/services/llm', () => ({
 }));
 
 import {
-  createEmptyChapterMemoryPatch,
   createEmptyStoryMemory,
 } from '../src/services/storyMemory/storyMemoryDefaults';
 import { finalizeChapterMemory } from '../src/services/storyMemory/storyMemoryService';
@@ -103,17 +102,20 @@ describe('twenty-chapter story memory lifecycle', () => {
         memory_summary: input.episodicMemoryText,
       });
     });
+    let lastId = 0;
     mockCallLLMResult.mockImplementation(async messages => {
       const userText = messages
         .filter((message: { role: string }) => message.role === 'user')
         .map((message: { content: string }) => message.content)
         .join('\n');
-      const id = Number(userText.match(/ID：(\d+)/)?.[1]);
+      const position = userText.match(/position=(\d+)/)?.[1];
+      const id = position == null ? lastId : Number(position) + 1;
+      lastId = id;
       const attempt = (attempts.get(id) || 0) + 1;
       attempts.set(id, attempt);
       if (id % 3 === 0 && attempt < 3) {
         return {
-          text: '{"schemaVersion":1',
+          text: '{"chapters":[',
           inputTokens: 100,
           outputTokens: 3200,
           totalTokens: 3300,
@@ -121,14 +123,19 @@ describe('twenty-chapter story memory lifecycle', () => {
         };
       }
       const chapter = chapters.get(id)!;
-      const patch = createEmptyChapterMemoryPatch({
-        chapterId: id,
-        chapterPosition: chapter.position,
-        title: chapter.title,
-      });
-      patch.episodicSummary.brief = chapter.synopsis;
+      const observation = {
+        chapters: [
+          {
+            chapter: 'CH01',
+            brief: chapter.synopsis,
+            keywords: [],
+            events: [],
+            observations: [],
+          },
+        ],
+      };
       return {
-        text: JSON.stringify(patch),
+        text: JSON.stringify(observation),
         inputTokens: 100,
         outputTokens: 200,
         totalTokens: 300,
