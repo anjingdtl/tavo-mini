@@ -96,3 +96,102 @@ export function shouldFreezeOutlineWorkflowV4(params: {
 export function isCurrentOutlineWorkflowVersion(value: unknown): boolean {
   return Number(value) === CURRENT_OUTLINE_WORKFLOW_VERSION;
 }
+
+// ---------------------------------------------------------------------------
+// Unified context-budget version semantics (Closure Plan §5).
+//
+// The codebase previously scattered magic arrays (`[3,4].includes(owv) &&
+// [3,4,5].includes(cbv)`) across the state machine, reconciler, store and UI.
+// With context budget 6 (V3 hierarchical) those arrays silently excluded V3
+// tasks, dropping them into the legacy no-Brief branch and blocking resume.
+// The helpers below are the SINGLE source of truth; all call sites were
+// migrated to them so version 6 routes through the same structured pipeline
+// as version 5 (same stages, same reasoning profile, same Brief checkpoint),
+// differing ONLY in the contextBuilder budget path (>= 6 → hierarchical).
+// ---------------------------------------------------------------------------
+
+/** Outline workflow versions that carry the structured, Brief-bearing pipeline. */
+export const STRUCTURED_OUTLINE_WORKFLOW_VERSIONS = [3, 4] as const;
+
+/**
+ * Context-budget versions that pair with a structured outline workflow to
+ * produce a Brief stage checkpoint. 3/4 = historical V3.x; 5 = V2 elastic;
+ * 6 = V3 hierarchical. All create the Brief checkpoint.
+ */
+export const STRUCTURED_CONTEXT_BUDGET_VERSIONS = [3, 4, 5, 6] as const;
+
+export function isStructuredOutlineWorkflowVersion(value: unknown): boolean {
+  return (
+    (STRUCTURED_OUTLINE_WORKFLOW_VERSIONS as readonly number[]).indexOf(
+      Number(value),
+    ) >= 0
+  );
+}
+
+export function isStructuredContextBudgetVersion(value: unknown): boolean {
+  return (
+    (STRUCTURED_CONTEXT_BUDGET_VERSIONS as readonly number[]).indexOf(
+      Number(value),
+    ) >= 0
+  );
+}
+
+/**
+ * Context-budget versions of the CURRENT unified outline pipeline
+ * (outlineWorkflowVersion 4). 5 = V2 single-level elastic; 6 = V3 hierarchical
+ * board/item elastic. Both share the same stage / reasoning-profile / Brief
+ * semantics — only the contextBuilder allocator branch differs (>= 6). UI and
+ * resume gates use this to recognize a "current" task instead of comparing
+ * against the literal `CURRENT_CONTEXT_BUDGET_VERSION` constant.
+ */
+export function isCurrentOutlinePipelineContextBudgetVersion(
+  value: unknown,
+): boolean {
+  const n = Number(value);
+  return n === 5 || n === 6;
+}
+
+/**
+ * Does this (workflow, budget) pair freeze the structured pipeline that
+ * creates a Brief stage checkpoint? Replaces the scattered
+ * `[3,4].includes(owv) && [3,4,5].includes(cbv)` magic arrays (Closure Plan
+ * §5.2). Task Store, State Machine, Runner, Batch, Reconcile and Checkpoint
+ * creation all consult this single predicate.
+ */
+export function shouldIncludeBriefCheckpoint(params: {
+  outlineWorkflowVersion?: number | null;
+  contextBudgetVersion?: number | null;
+}): boolean {
+  return (
+    isStructuredOutlineWorkflowVersion(params.outlineWorkflowVersion) &&
+    isStructuredContextBudgetVersion(params.contextBudgetVersion)
+  );
+}
+
+/**
+ * Context-budget versions allowed to RESUME on their own version. 5 (V2) and
+ * 6 (V3) resume; legacy 1–4 are blocked. Neither is silently upgraded to the
+ * other. Consolidates the per-store `isTask/BatchContextBudgetVersionResumable`
+ * cores so the rule lives in one place.
+ */
+export function isResumableContextBudgetVersion(value: unknown): boolean {
+  return isCurrentOutlinePipelineContextBudgetVersion(value);
+}
+
+/**
+ * Normalize a persisted context-budget version (read from a task/batch row or
+ * a parsed execution snapshot) into the typed union, PRESERVING 5 and 6
+ * instead of collapsing them to the legacy fallback of 1. Unknown / legacy
+ * values collapse to 1.
+ */
+export function normalizePersistedContextBudgetVersion(
+  value: unknown,
+): ContextBudgetVersion {
+  const n = Number(value);
+  if (n === 6) return 6;
+  if (n === 5) return 5;
+  if (n === 4) return 4;
+  if (n === 3) return 3;
+  if (n === 2) return 2;
+  return 1;
+}

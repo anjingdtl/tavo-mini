@@ -347,14 +347,18 @@ export const ContextAutoConfigScreen: React.FC = () => {
               时间：{new Date(lastApplied.appliedAt).toLocaleString('zh-CN')}
             </Text>
             <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
-              已覆盖：
-              {lastApplied.affectedCounts.llmConfigs} 个 LLM 配置 ·{' '}
-              {lastApplied.affectedCounts.presets} 个预设 ·{' '}
-              {lastApplied.affectedCounts.characters +
-                lastApplied.affectedCounts.notes +
-                lastApplied.affectedCounts.worldbookEntries +
-                lastApplied.affectedCounts.worldbookCollections}{' '}
-              个资源
+              {lastApplied.policySchemaVersion === 3
+                ? 'V3 模式：仅写入策略与模式标记，保留每个模型的真实上下文窗口与资料上限不变'
+                : `已覆盖：${
+                    lastApplied.affectedCounts.llmConfigs
+                  } 个 LLM 配置 · ${
+                    lastApplied.affectedCounts.presets
+                  } 个预设 · ${
+                    lastApplied.affectedCounts.characters +
+                    lastApplied.affectedCounts.notes +
+                    lastApplied.affectedCounts.worldbookEntries +
+                    lastApplied.affectedCounts.worldbookCollections
+                  } 个资源`}
             </Text>
             {lastApplied.policyVersion ? (
               <Text

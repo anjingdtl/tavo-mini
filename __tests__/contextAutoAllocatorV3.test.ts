@@ -73,7 +73,7 @@ describe('applyContextAutoAllocationV3', () => {
     mockedExecuteTransaction.mockResolvedValue(undefined);
   });
 
-  test('writes mode/policy/input/llm_config/presets and no resource max_tokens', async () => {
+  test('writes ONLY mode/policy/input — never llm_config / presets / resource max_tokens (Closure §6)', async () => {
     await applyContextAutoAllocationV3(200_000);
     expect(mockedExecuteTransaction).toHaveBeenCalledTimes(1);
     const [, statements] = mockedExecuteTransaction.mock.calls[0];
@@ -102,9 +102,12 @@ describe('applyContextAutoAllocationV3', () => {
           s.params[1] === '200000',
       ),
     ).toBe(true);
-    // LLM configs + presets still updated (these are model caps, not resource caps)
-    expect(sqls.some((s: string) => s.includes('UPDATE llm_config'))).toBe(true);
-    expect(sqls.some((s: string) => s.includes('UPDATE presets'))).toBe(true);
+    // Closure Plan §6 / Gate 05: V3 apply must NOT bulk-overwrite every model's
+    // real context_window / max_output_tokens, nor flatten all presets. 32K /
+    // 128K / 1M models keep their own windows; the frozen per-task request
+    // config supplies the real window at run time.
+    expect(sqls.some((s: string) => s.includes('UPDATE llm_config'))).toBe(false);
+    expect(sqls.some((s: string) => s.includes('UPDATE presets'))).toBe(false);
     // GO Gate #3: NEVER touch resource max_tokens
     expect(sqls.some((s: string) => s.includes('UPDATE characters'))).toBe(false);
     expect(sqls.some((s: string) => s.includes('UPDATE notes'))).toBe(false);
@@ -124,6 +127,16 @@ describe('applyContextAutoAllocationV3', () => {
     expect(settingsKeys).not.toContain('episodic_memory_budget_tokens');
     expect(settingsKeys).not.toContain('summary_budget_tokens');
     expect(settingsKeys).not.toContain('memory_patch_max_tokens');
+    // Only the three V3 settings keys are written.
+    expect(settingsKeys.sort()).toEqual(
+      ['context_auto_input', 'context_auto_mode', 'context_auto_policy_v3'].sort(),
+    );
+  });
+
+  test('affectedCounts report zero model/preset writes (honest, not misleading)', async () => {
+    const record = await applyContextAutoAllocationV3(200_000);
+    expect(record.affectedCounts.llmConfigs).toBe(0);
+    expect(record.affectedCounts.presets).toBe(0);
   });
 
   test('mode + policyV3 + lastApplied are persisted', async () => {

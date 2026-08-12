@@ -365,13 +365,20 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       // Read Context Budget mode so preview matches what a live send would do.
       // V3 (context_auto_mode = 'v3') → freeze contextBudgetVersion = 6 and
       // surface the hierarchical allocator trace for the board summary panel.
+      // The persisted V3 policy is also forwarded so Preview uses the SAME
+      // policy the pipeline draft freezes (Closure Plan §14/§16 Preview = Send).
       let contextBudgetVersion: number | undefined;
+      let contextAutomationPolicyV3: any;
       try {
-        const { getContextAutoMode } = await import(
+        const mod = await import(
           '../data/repositories/contextAutoRepository'
         );
-        const mode = await getContextAutoMode();
-        if (mode === 'v3') contextBudgetVersion = 6;
+        const mode = await mod.getContextAutoMode();
+        if (mode === 'v3') {
+          contextBudgetVersion = 6;
+          const persisted = await mod.getContextAutomationPolicyV3();
+          if (persisted) contextAutomationPolicyV3 = persisted;
+        }
       } catch {
         // Settings read failure: fall back to V2 preview path.
       }
@@ -385,6 +392,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         chapter,
         preview: true,
         contextBudgetVersion,
+        contextAutomationPolicyV3,
       });
       setTrace(compiled.draftCompile?.trace || []);
       setStoryMemoryWarnings(
@@ -684,81 +692,38 @@ export const ContextPreviewScreen: React.FC<Props> = ({
               borderColor: theme.colors.accent,
               backgroundColor: theme.colors.accentSoft,
             },
-          ]}
-        >
-          <Text
-            style={[
-              styles.outlineBlockTitle,
-              { color: theme.colors.textPrimary },
             ]}
           >
-            上下文预算 V3 分层弹性
-          </Text>
-          <Text
-            style={[
-              styles.outlineBlockText,
-              { color: theme.colors.textSecondary },
-            ]}
-          >
-            模型窗口 {hierarchicalBudgetTrace.envelope.contextWindow.toLocaleString()} ·
-            强制输入上限 {hierarchicalBudgetTrace.envelope.hardInputLimit.toLocaleString()} ·
-            软线 {hierarchicalBudgetTrace.envelope.softInputLimit.toLocaleString()} ·
-            突发线 {hierarchicalBudgetTrace.envelope.burstInputLimit.toLocaleString()}
-          </Text>
-          <Text
-            style={[
-              styles.outlineBlockText,
-              { color: theme.colors.textSecondary, marginTop: spacing.xs },
-            ]}
-          >
-            必须保留 {hierarchicalBudgetTrace.envelope.mandatoryTokens.toLocaleString()} ·
-            弹性池 {hierarchicalBudgetTrace.envelope.softElasticPool.toLocaleString()} ·
-            突发池 {hierarchicalBudgetTrace.envelope.burstElasticPool.toLocaleString()} ·
-            风险等级 {hierarchicalBudgetTrace.riskLevel}
-          </Text>
-          {(
-            [
-              ['storyState', '故事状态'],
-              ['resources', '资料'],
-              ['slidingWindow', '滑动窗口'],
-              ['episodic', '情节记忆'],
-            ] as const
-          ).map(([key, label]) => {
-            const board = hierarchicalBudgetTrace.boardAllocations[key];
-            if (!board) return null;
-            return (
-              <View key={key} style={{ marginTop: spacing.xs }}>
-                <Text
-                  style={{
-                    color: theme.colors.textPrimary,
-                    fontWeight: '700',
-                    fontSize: 13,
-                  }}
-                >
-                  {label}
-                </Text>
-                <Text
-                  style={{
-                    color: theme.colors.textSecondary,
-                    fontSize: 12,
-                    marginTop: 2,
-                  }}
-                >
-                  需求 {board.actualDemandTokens.toLocaleString()} ·
-                  软目标 {board.softTargetTokens.toLocaleString()} ·
-                  弹性上限 {board.elasticMaxTokens.toLocaleString()} ·
-                  分配 {board.allocatedTokens.toLocaleString()}
-                  {board.borrowedTokens > 0
-                    ? ` · 借调 +${board.borrowedTokens.toLocaleString()}`
-                    : ''}
-                  {board.reclaimedTokens > 0
-                    ? ` · 回收 ${board.reclaimedTokens.toLocaleString()}`
-                    : ''}
-                  {' '}（{board.reason}）
-                </Text>
-              </View>
-            );
-          })}
+            <Text
+              style={[
+                styles.outlineBlockTitle,
+                { color: theme.colors.textPrimary },
+              ]}
+            >
+              上下文预算 V3 分层弹性
+            </Text>
+            <Text
+              style={[
+                styles.outlineBlockText,
+                { color: theme.colors.textSecondary },
+              ]}
+            >
+              模型窗口 {hierarchicalBudgetTrace.envelope.contextWindow.toLocaleString()} ·
+              强制输入上限 {hierarchicalBudgetTrace.envelope.hardInputLimit.toLocaleString()} ·
+              软线 {hierarchicalBudgetTrace.envelope.softInputLimit.toLocaleString()} ·
+              突发线 {hierarchicalBudgetTrace.envelope.burstInputLimit.toLocaleString()}
+            </Text>
+            <Text
+              style={[
+                styles.outlineBlockText,
+                { color: theme.colors.textSecondary, marginTop: spacing.xs },
+              ]}
+            >
+              必须保留 {hierarchicalBudgetTrace.envelope.mandatoryTokens.toLocaleString()} ·
+              弹性池 {hierarchicalBudgetTrace.envelope.softElasticPool.toLocaleString()} ·
+              突发池 {hierarchicalBudgetTrace.envelope.burstElasticPool.toLocaleString()} ·
+              风险等级 {hierarchicalBudgetTrace.riskLevel}
+            </Text>
         </View>
       ) : null}
       <View

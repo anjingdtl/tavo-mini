@@ -14,6 +14,7 @@ import type {
 } from './types';
 import type { PipelineStageCheckpointRow } from '../../data/repositories/pipelineStageCheckpointRepository';
 import { projectStageResultsToCheckpoints } from './projectStageCheckpoints';
+import { shouldIncludeBriefCheckpoint } from './outlineWorkflowVersion';
 
 export function checkpointsFromRows(
   rows: PipelineStageCheckpointRow[],
@@ -55,9 +56,10 @@ export function resolveStageCheckpoints(params: {
     return checkpointsFromRows(params.checkpointRows);
   }
   return projectStageResultsToCheckpoints(params.stageResults || [], {
-    includeBrief:
-      [3, 4].includes(Number(params.outlineWorkflowVersion)) &&
-      [3, 4, 5].includes(Number(params.contextBudgetVersion)),
+    includeBrief: shouldIncludeBriefCheckpoint({
+      outlineWorkflowVersion: params.outlineWorkflowVersion,
+      contextBudgetVersion: params.contextBudgetVersion,
+    }),
   });
 }
 

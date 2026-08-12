@@ -213,6 +213,14 @@ export async function compileDraftStageRequest(params: {
   storyMemoryMode?: 'generation' | 'preview';
   elasticBudget?: boolean;
   /**
+   * Frozen V3 policy (Closure Plan §14). When the task is V3 (version >= 6)
+   * the first-freeze compile passes the persisted policy here so the
+   * hierarchical allocator uses the real user policy and the resulting hash is
+   * baked into the frozen draftContext. Preview passes the same value so
+   * Preview = Send.
+   */
+  contextAutomationPolicyV3?: import('../contextAutomationPolicy').ContextAutomationPolicyV3;
+  /**
    * Context Budget protocol version (Plan §12). When >= 6 the V3 hierarchical
    * allocator runs inside `buildContext`. Preview passes this through so the
    * ContextPreviewScreen shows the same allocation view as a live send.
