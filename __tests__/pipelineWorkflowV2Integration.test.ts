@@ -716,7 +716,17 @@ describe('V2 production state machine (frozen version=2)', () => {
         }
       });
 
-    await reconcilePipelineTask(taskId, chapterFor(chapterId));
+    jest.useFakeTimers();
+    try {
+      const reconcilePromise = reconcilePipelineTask(
+        taskId,
+        chapterFor(chapterId),
+      );
+      await jest.runAllTimersAsync();
+      await reconcilePromise;
+    } finally {
+      jest.useRealTimers();
+    }
 
     // The transient proof failure entered safe_retry backoff and was
     // re-fired in the SAME loop once due — the retry disposition is consumed

@@ -92,6 +92,7 @@ import * as storyMemoryPrepareMock from '../src/services/storyMemory/storyMemory
 import { buildContext } from '../src/services/contextBuilder';
 import { DEFAULT_CONTEXT_AUTOMATION_POLICY_V3 } from '../src/services/contextAutomationPolicy';
 import { allocateHierarchicalContextBudget } from '../src/services/context/hierarchicalContextAllocator';
+import * as hierarchicalContextAllocator from '../src/services/context/hierarchicalContextAllocator';
 import type { ContextConfig } from '../src/types/novel';
 
 let mockPreparedStoryMemory: any = {
@@ -521,58 +522,75 @@ describe('Context Budget V3 — buildContext integration', () => {
       },
     };
 
-    const result = await buildContext(
-      current as any,
-      BASE_CONFIG,
-      7,
-      undefined,
-      {
+    const allocatorSpy = jest.spyOn(
+      hierarchicalContextAllocator,
+      'allocateHierarchicalContextBudget',
+    );
+    try {
+      const result = await buildContext(
+        current as any,
+        BASE_CONFIG,
+        7,
+        undefined,
+        {
+          contextWindow: 32_000,
+          reservedOutputTokens: 6_400,
+          contextBudgetVersion: 6,
+          contextAutomationPolicyV3: policy,
+        },
+      );
+
+      expect(allocatorSpy).toHaveBeenCalledTimes(2);
+      const preliminary = allocatorSpy.mock.results[0].value as {
+        boardAllocations: {
+          resources: { allocatedTokens: number };
+        };
+      };
+      const trace = result.hierarchicalBudgetTrace!;
+      const resources = trace.boardAllocations.resources;
+      const expectedFinal = allocateHierarchicalContextBudget({
         contextWindow: 32_000,
         reservedOutputTokens: 6_400,
-        contextBudgetVersion: 6,
-        contextAutomationPolicyV3: policy,
-      },
-    );
-
-    const trace = result.hierarchicalBudgetTrace!;
-    const resources = trace.boardAllocations.resources;
-    const expectedFinal = allocateHierarchicalContextBudget({
-      contextWindow: 32_000,
-      reservedOutputTokens: 6_400,
-      mandatoryTokens: trace.envelope.mandatoryTokens,
-      safetyMargin: trace.envelope.safetyMargin,
-      policy,
-      boards: {
-        storyState: {
-          actualDemandTokens:
-            trace.boardAllocations.storyState.actualDemandTokens,
+        mandatoryTokens: trace.envelope.mandatoryTokens,
+        safetyMargin: trace.envelope.safetyMargin,
+        policy,
+        boards: {
+          storyState: {
+            actualDemandTokens:
+              trace.boardAllocations.storyState.actualDemandTokens,
+          },
+          resources: {
+            actualDemandTokens: resources.actualDemandTokens,
+          },
+          slidingWindow: {
+            actualDemandTokens:
+              trace.boardAllocations.slidingWindow.actualDemandTokens,
+          },
+          episodic: { actualDemandTokens: 0 },
         },
-        resources: {
-          actualDemandTokens: resources.actualDemandTokens,
-        },
-        slidingWindow: {
-          actualDemandTokens:
-            trace.boardAllocations.slidingWindow.actualDemandTokens,
-        },
-        episodic: { actualDemandTokens: 0 },
-      },
-    });
-    expect(resources.actualDemandTokens).toBeGreaterThan(
-      resources.softTargetTokens,
-    );
-    expect(resources.borrowedTokens).toBeGreaterThan(0);
-    expect(resources.allocatedTokens).toBeGreaterThan(
-      resources.softTargetTokens,
-    );
-    expect(resources.allocatedTokens).toBe(
-      expectedFinal.boardAllocations.resources.allocatedTokens,
-    );
-    expect(
-      Object.values(trace.boardAllocations).reduce(
-        (sum, board) => sum + board.allocatedTokens,
-        trace.envelope.mandatoryTokens,
-      ),
-    ).toBeLessThanOrEqual(trace.envelope.hardInputLimit);
+      });
+      expect(resources.allocatedTokens).toBeGreaterThan(
+        preliminary.boardAllocations.resources.allocatedTokens,
+      );
+      expect(resources.actualDemandTokens).toBeGreaterThan(
+        resources.softTargetTokens,
+      );
+      expect(resources.borrowedTokens).toBeGreaterThan(0);
+      expect(resources.allocatedTokens).toBeGreaterThan(
+        resources.softTargetTokens,
+      );
+      expect(resources.allocatedTokens).toBe(
+        expectedFinal.boardAllocations.resources.allocatedTokens,
+      );
+      expect(
+        Object.values(trace.boardAllocations).reduce(
+          (sum, board) => sum + board.allocatedTokens,
+          trace.envelope.mandatoryTokens,
+        ),
+      ).toBeLessThanOrEqual(trace.envelope.hardInputLimit);
+    } finally {
+      allocatorSpy.mockRestore();
+    }
   });
 
   test('partial Raw coverage leaves only non-Raw summaries in Episodic demand (T03)', async () => {

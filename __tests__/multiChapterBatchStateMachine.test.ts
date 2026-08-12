@@ -445,6 +445,11 @@ import { getContentRevisions } from '../src/data/repositories/contentRepository'
 import { MultiChapterBatchError } from '../src/services/multiChapterBatch/errors';
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
 import { claimBatchLease } from '../src/data/repositories/multiChapterBatchRepository';
+import {
+  cloneDefaultContextAutomationPolicyV3,
+  hashContextAutomationPolicyV3,
+  type ContextAutomationPolicyV3,
+} from '../src/services/contextAutomationPolicy';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -474,7 +479,11 @@ async function seedProject(id = 1): Promise<void> {
   );
 }
 
-async function seedReadyBatch(batchId = 'b1', count = 2) {
+async function seedReadyBatch(
+  batchId = 'b1',
+  count = 2,
+  frozenPolicy?: ContextAutomationPolicyV3,
+) {
   await createBatch({
     id: batchId,
     projectId: 1,
@@ -482,6 +491,13 @@ async function seedReadyBatch(batchId = 'b1', count = 2) {
     chapterCount: count,
     targetWordsPerChapter: 3000,
     pipelineMode: 'full',
+    ...(frozenPolicy
+      ? {
+          outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+          contextBudgetVersion: V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+          contextAutomationPolicyV3: frozenPolicy,
+        }
+      : {}),
   });
   for (let i = 1; i <= count; i += 1) {
     await createBatchItem({
@@ -645,6 +661,160 @@ describe('reconcileMultiChapterBatch — full 2-chapter flow', () => {
     // Nothing created, no pipeline ran
     expect((await getChaptersByProject(1)).length).toBe(0);
     expect(runner.calls).toHaveLength(0);
+  });
+});
+
+describe('reconcileMultiChapterBatch — frozen policy + 3-child resume closure', () => {
+  it('keeps batch policy A after live mutation and resumes children 2/3 without rerunning child 1', async () => {
+    await resetDb();
+    await seedProject();
+
+    const policyA = cloneDefaultContextAutomationPolicyV3();
+    policyA.boards.resources.priority = 11;
+    const policyB = cloneDefaultContextAutomationPolicyV3();
+    policyB.boards.resources.priority = 99;
+
+    await execute(
+      await openDatabase(),
+      `INSERT OR REPLACE INTO settings (key, value) VALUES ('context_auto_mode', 'v3')`,
+    );
+    await execute(
+      await openDatabase(),
+      `INSERT OR REPLACE INTO settings (key, value) VALUES ('context_auto_policy_v3', ?)`,
+      [JSON.stringify(policyA)],
+    );
+    await seedReadyBatch('policy-resume', 3, policyA);
+
+    // Simulate a live settings edit after the batch has been created. The
+    // reconciler must continue to use the persisted batch snapshot.
+    await execute(
+      await openDatabase(),
+      `INSERT OR REPLACE INTO settings (key, value) VALUES ('context_auto_policy_v3', ?)`,
+      [JSON.stringify(policyB)],
+    );
+
+    const expectedHash = hashContextAutomationPolicyV3(policyA);
+    const observed: Array<{ kind: string; taskId: string; hash: string }> = [];
+    const runCalls: string[] = [];
+    const resumeCalls: string[] = [];
+    let holdChildTwo = true;
+
+    const persistTask = async (
+      taskId: string,
+      status: 'completed' | 'interrupted',
+    ) => {
+      const text = `正文-${taskId}`;
+      await savePipelineTask({
+        id: taskId,
+        targetType: 'chapter',
+        targetId: 0,
+        status,
+        stageResults:
+          status === 'completed'
+            ? [
+                {
+                  stage: 'draft',
+                  status: 'success',
+                  text,
+                  tokens: { input: 100, output: 200, total: 300 },
+                },
+              ]
+            : [],
+        finalText: status === 'completed' ? text : null,
+        error: status === 'completed' ? null : 'test interruption',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        resolvedAt: null,
+      });
+    };
+
+    const capturePolicy = (kind: string, taskId: string, options: any) => {
+      const policy = options?.contextAutomationPolicyV3;
+      observed.push({
+        kind,
+        taskId,
+        hash: policy ? hashContextAutomationPolicyV3(policy) : 'missing',
+      });
+    };
+
+    const runPipeline = async (
+      taskId: string,
+      _chapter: any,
+      _onStageUpdate: any,
+      options: any,
+    ) => {
+      runCalls.push(taskId);
+      capturePolicy('run', taskId, options);
+      // The second run is child #2. Leave its task interrupted so the next
+      // reconcile invocation exercises the persisted Resume path.
+      if (runCalls.length === 2 && holdChildTwo) {
+        await persistTask(taskId, 'interrupted');
+        return;
+      }
+      await persistTask(taskId, 'completed');
+    };
+
+    const resumePipeline = async (
+      taskId: string,
+      _chapter: any,
+      _onStageUpdate: any,
+      options: any,
+    ) => {
+      resumeCalls.push(taskId);
+      capturePolicy('resume', taskId, options);
+      if (holdChildTwo) return;
+      await persistTask(taskId, 'completed');
+    };
+
+    // Bound the first invocation after child #2 interruption; no retry or
+    // sleep is involved in this deterministic interruption fixture.
+    await reconcileMultiChapterBatch('policy-resume', {
+      owner: 'closure-owner-1',
+      runPipeline: runPipeline as any,
+      resumePipeline: resumePipeline as any,
+      maxSteps: 12,
+    });
+
+    const pausedItems = await getBatchItems('policy-resume');
+    expect(pausedItems[0].status).toBe('succeeded');
+    expect(pausedItems[1].status).toBe('running_pipeline');
+    expect(pausedItems[1].activePipelineTaskId).toBeTruthy();
+    expect((await getBatchById('policy-resume'))?.completedCount).toBe(1);
+
+    // A second reconcile is the cold-start boundary: it reloads the task and
+    // batch rows from SQLite before deciding to resume child #2.
+    holdChildTwo = false;
+    const resumeCallsBeforeColdStart = resumeCalls.length;
+    await reconcileMultiChapterBatch('policy-resume', {
+      owner: 'closure-owner-2',
+      runPipeline: runPipeline as any,
+      resumePipeline: resumePipeline as any,
+    });
+
+    const finalBatch = await getBatchById('policy-resume');
+    expect(finalBatch?.status).toBe('completed');
+    expect(finalBatch?.completedCount).toBe(3);
+    const finalItems = await getBatchItems('policy-resume');
+    expect(finalItems.map(item => item.status)).toEqual([
+      'succeeded',
+      'succeeded',
+      'succeeded',
+    ]);
+
+    // Gate J: every child runner invocation, including post-mutation Resume,
+    // receives the batch's A snapshot, never live policy B.
+    expect(finalBatch?.contextAutomationPolicyHash).toBe(expectedHash);
+    expect(observed.length).toBeGreaterThanOrEqual(3);
+    expect(observed.every(entry => entry.hash === expectedHash)).toBe(true);
+    expect(observed.some(entry => entry.hash === hashContextAutomationPolicyV3(policyB))).toBe(false);
+
+    // Gate L: child #1 ran once; child #2 resumed; child #3 ran once; parent
+    // completed only after all three durable adoptions.
+    expect(new Set(runCalls).size).toBe(3);
+    expect(runCalls.filter(taskId => taskId === pausedItems[0].activePipelineTaskId)).toHaveLength(1);
+    expect(resumeCalls).toContain(pausedItems[1].activePipelineTaskId);
+    expect(runCalls).toHaveLength(3);
+    expect(resumeCalls.slice(resumeCallsBeforeColdStart)).toHaveLength(1);
   });
 });
 

@@ -19,7 +19,7 @@ describe('Context Preview V4 UI contract', () => {
     expect(source).not.toContain('Math.max(256');
   });
 
-  test('V3 分层预算卡保留总预算摘要，隐藏板块细项避免遮挡下方内容', () => {
+  test('V3 分层预算卡只展示分层预算摘要，不展示 board 明细', () => {
     const source = fs.readFileSync(
       path.join(process.cwd(), 'src/screens/ContextPreviewScreen.tsx'),
       'utf8',
@@ -27,12 +27,14 @@ describe('Context Preview V4 UI contract', () => {
     expect(source).toContain('上下文预算 V3 分层弹性');
     expect(source).toContain('强制输入上限');
     expect(source).toContain('风险等级');
+    for (const field of ['contextWindow', 'softInputLimit', 'burstInputLimit', 'totalEstimatedInputTokens']) {
+      expect(source).toContain(field);
+    }
+    expect(source).not.toContain('V3_BOARD_ORDER');
+    expect(source).not.toContain('Story State：需求');
+    expect(source).not.toContain('Resources：需求');
+    expect(source).not.toContain('Sliding Window：需求');
+    expect(source).not.toContain('Episodic：需求');
     expect(source).not.toContain('弹性上限');
-    expect(source).not.toContain("['storyState', '故事状态']");
-    expect(source).not.toContain("['storyState', 'Story State']");
-    expect(source).not.toContain("['slidingWindow', 'Recent Bridge']");
-    expect(source).not.toContain("['resources', 'Resources']");
-    expect(source).not.toContain("['episodic', 'Episodic']");
-    expect(source).not.toContain('boardSummaryRow');
   });
 });
