@@ -201,6 +201,10 @@ export async function savePipelineTask(task: {
   // pipeline_stage_checkpoints.task_id ON DELETE CASCADE and wipe every
   // stage checkpoint. ON CONFLICT DO UPDATE performs an in-place UPDATE and
   // preserves child rows. id and created_at are immutable on update.
+  // Large TEXT columns are COALESCE-preserved when the incoming snapshot
+  // omitted them: loadFromDB / summary rows keep pipelineContextJson and
+  // finalText lazy-null to stay under Android CursorWindow, and a cold-start
+  // persist must not wipe a paid-for frozen snapshot.
   await execute(
     await openDatabase(),
     `INSERT INTO pipeline_tasks (
@@ -215,12 +219,12 @@ export async function savePipelineTask(task: {
        target_id = excluded.target_id,
        status = excluded.status,
        stage_results = excluded.stage_results,
-       final_text = excluded.final_text,
+       final_text = COALESCE(excluded.final_text, pipeline_tasks.final_text),
        error = excluded.error,
        input_fingerprint = excluded.input_fingerprint,
-       pipeline_context_json = excluded.pipeline_context_json,
-       pipeline_context_version = excluded.pipeline_context_version,
-       pipeline_context_hash = excluded.pipeline_context_hash,
+       pipeline_context_json = COALESCE(excluded.pipeline_context_json, pipeline_tasks.pipeline_context_json),
+       pipeline_context_version = COALESCE(excluded.pipeline_context_version, pipeline_tasks.pipeline_context_version),
+       pipeline_context_hash = COALESCE(excluded.pipeline_context_hash, pipeline_tasks.pipeline_context_hash),
        outline_workflow_version = pipeline_tasks.outline_workflow_version,
        context_budget_version = pipeline_tasks.context_budget_version,
        parent_task_id = COALESCE(excluded.parent_task_id, pipeline_tasks.parent_task_id),
@@ -835,9 +839,10 @@ export async function updatePipelineTaskContext(
 /**
  * F3-01: targeted resume-state write for a user-confirmed resume.
  *
- * Unlike `savePipelineTask` (a full UPSERT that overwrites EVERY column),
- * this UPDATE only flips the fields the state machine needs to re-enter the
- * task:
+ * Unlike a wide-row overwrite, this UPDATE only flips the fields the
+ * state machine needs to re-enter the task. `savePipelineTask` itself now
+ * also COALESCE-preserves existing large TEXT blobs when the incoming
+ * snapshot omitted them (summary/lazy-load rows).
  *
  *   status          = 'interrupted'   (resume path, see determineNextPipelineAction)
  *   error           = NULL            (stale failure text must not block resume)
