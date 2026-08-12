@@ -191,11 +191,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   const [selectedContinuationStage, setSelectedContinuationStage] = useState<
     'writer' | 'checker' | 'control' | 'repair'
   >('writer');
-  /**
-   * Context Budget V3 hierarchical trace (Plan §15). Populated for
-   * non-continuation V6 previews so the user can see the resolved budget
-   * envelope without exposing internal board allocation details.
-   */
+  /** Context Budget V3 hierarchical trace for the read-only preview. */
   const [hierarchicalBudgetTrace, setHierarchicalBudgetTrace] = useState<
     import('../services/context/hierarchicalContextAllocator').HierarchicalBudgetResult | null
   >(null);
@@ -721,6 +717,17 @@ export const ContextPreviewScreen: React.FC<Props> = ({
               突发池 {hierarchicalBudgetTrace.envelope.burstElasticPool.toLocaleString()} ·
               风险等级 {hierarchicalBudgetTrace.riskLevel}
             </Text>
+            <Text
+              style={[
+                styles.outlineBlockText,
+                styles.v3BoardLine,
+                { color: theme.colors.textPrimary },
+              ]}
+            >
+              总预计输入 {hierarchicalBudgetTrace.totalEstimatedInputTokens.toLocaleString()} ·
+              必须保留 {hierarchicalBudgetTrace.envelope.mandatoryTokens.toLocaleString()} ·
+              hard limit {hierarchicalBudgetTrace.envelope.hardInputLimit.toLocaleString()}
+            </Text>
             </View>
           ) : null}
       <View
@@ -891,6 +898,9 @@ const styles = StyleSheet.create({
   outlineBlockText: {
     fontSize: 13,
     lineHeight: 19,
+  },
+  v3BoardLine: {
+    marginTop: spacing.xs,
   },
   toggleRow: {
     flexDirection: 'row',
