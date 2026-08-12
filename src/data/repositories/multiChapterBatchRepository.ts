@@ -14,6 +14,7 @@ import { executeTransaction, type SqlStatement } from '../../services/database/t
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from '../../services/pipeline/outlineWorkflowVersion';
 import type {
   MultiChapterBatchStatus,
@@ -23,6 +24,12 @@ import type {
 import type { PipelineReasoningEffort } from '../../types/pipeline';
 import type { PipelineCheckpointStage } from '../../services/pipeline/types';
 import type { Row } from './shared';
+import {
+  cloneDefaultContextAutomationPolicyV3,
+  hashContextAutomationPolicyV3,
+  isContextAutomationPolicyV3,
+  type ContextAutomationPolicyV3,
+} from '../../services/contextAutomationPolicy';
 
 // ---------------------------------------------------------------------------
 // Row shapes
@@ -41,6 +48,9 @@ export interface MultiChapterBatchRow {
   plannerOutputJson: string | null;
   plannerHash: string | null;
   plannerRequestJson: string | null;
+  contextAutomationPolicyVersion?: 'context-automation-v3' | null;
+  contextAutomationPolicyHash?: string | null;
+  contextAutomationPolicySnapshot?: ContextAutomationPolicyV3 | null;
   plannerRequestFingerprint: string | null;
   startPosition: number | null;
   expectedTailChapterId: number | null;
@@ -110,11 +120,85 @@ export interface MultiChapterBatchItemRunRow {
   completedAt: number | null;
 }
 
+interface FrozenBatchPlannerEnvelope {
+  schemaVersion: 1;
+  requestJson: string | null;
+  contextAutomationPolicyVersion: 'context-automation-v3';
+  contextAutomationPolicyHash: string;
+  contextAutomationPolicySnapshot: ContextAutomationPolicyV3;
+}
+
+function parseFrozenBatchPlannerEnvelope(
+  raw: string | null | undefined,
+): FrozenBatchPlannerEnvelope | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<FrozenBatchPlannerEnvelope>;
+    if (
+      parsed.schemaVersion !== 1 ||
+      parsed.contextAutomationPolicyVersion !== 'context-automation-v3' ||
+      typeof parsed.contextAutomationPolicyHash !== 'string' ||
+      !isContextAutomationPolicyV3(parsed.contextAutomationPolicySnapshot)
+    ) {
+      return null;
+    }
+    return {
+      schemaVersion: 1,
+      requestJson:
+        parsed.requestJson == null ? null : String(parsed.requestJson),
+      contextAutomationPolicyVersion: 'context-automation-v3',
+      contextAutomationPolicyHash: parsed.contextAutomationPolicyHash,
+      contextAutomationPolicySnapshot: parsed.contextAutomationPolicySnapshot,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function encodeFrozenBatchPlannerRequest(
+  requestJson: string | null | undefined,
+  policy: ContextAutomationPolicyV3,
+): string {
+  const snapshot = JSON.parse(JSON.stringify(policy)) as ContextAutomationPolicyV3;
+  const envelope: FrozenBatchPlannerEnvelope = {
+    schemaVersion: 1,
+    requestJson: requestJson ?? null,
+    contextAutomationPolicyVersion: 'context-automation-v3',
+    contextAutomationPolicyHash: hashContextAutomationPolicyV3(snapshot),
+    contextAutomationPolicySnapshot: snapshot,
+  };
+  return JSON.stringify(envelope);
+}
+
+/** Preserve a batch's frozen policy while replacing its planner request. */
+export function serializeBatchPlannerRequestJson(
+  requestJson: string | null | undefined,
+  policy?: ContextAutomationPolicyV3 | null,
+): string | null {
+  if (!policy || !isContextAutomationPolicyV3(policy)) {
+    return requestJson ?? null;
+  }
+  return encodeFrozenBatchPlannerRequest(requestJson, policy);
+}
+
+export function getFrozenBatchContextAutomationPolicy(
+  batch: Pick<MultiChapterBatchRow, 'contextAutomationPolicySnapshot'>,
+): ContextAutomationPolicyV3 | null {
+  return batch.contextAutomationPolicySnapshot
+    ? (JSON.parse(
+        JSON.stringify(batch.contextAutomationPolicySnapshot),
+      ) as ContextAutomationPolicyV3)
+    : null;
+}
+
 // ---------------------------------------------------------------------------
 // Row mappers
 // ---------------------------------------------------------------------------
 
 function mapBatchRow(row: Row): MultiChapterBatchRow {
+  const frozenPolicy = parseFrozenBatchPlannerEnvelope(
+    row.planner_request_json ?? null,
+  );
   return {
     id: String(row.id),
     projectId: Number(row.project_id),
@@ -132,7 +216,15 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
         : null,
     plannerOutputJson: row.planner_output_json ?? null,
     plannerHash: row.planner_hash ?? null,
-    plannerRequestJson: row.planner_request_json ?? null,
+    plannerRequestJson: frozenPolicy
+      ? frozenPolicy.requestJson
+      : row.planner_request_json ?? null,
+    contextAutomationPolicyVersion:
+      frozenPolicy?.contextAutomationPolicyVersion ?? null,
+    contextAutomationPolicyHash:
+      frozenPolicy?.contextAutomationPolicyHash ?? null,
+    contextAutomationPolicySnapshot:
+      frozenPolicy?.contextAutomationPolicySnapshot ?? null,
     plannerRequestFingerprint: row.planner_request_fingerprint ?? null,
     startPosition: row.start_position != null ? Number(row.start_position) : null,
     expectedTailChapterId:
@@ -230,11 +322,22 @@ export interface CreateBatchInput {
    */
   outlineWorkflowVersion?: number;
   contextBudgetVersion?: number;
+  /** Frozen V3 policy copied to every child task at first execution. */
+  contextAutomationPolicyV3?: ContextAutomationPolicyV3 | null;
   createdAt?: number;
 }
 
 export async function createBatch(input: CreateBatchInput): Promise<void> {
   const now = input.createdAt ?? Date.now();
+  const contextBudgetVersion =
+    input.contextBudgetVersion ?? CURRENT_CONTEXT_BUDGET_VERSION;
+  const frozenPolicy =
+    Number(contextBudgetVersion) === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+      ? input.contextAutomationPolicyV3 &&
+        isContextAutomationPolicyV3(input.contextAutomationPolicyV3)
+        ? input.contextAutomationPolicyV3
+        : cloneDefaultContextAutomationPolicyV3()
+      : null;
   await execute(
     await openDatabase(),
     `INSERT INTO multi_chapter_batches (
@@ -242,8 +345,9 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
        target_words_per_chapter, pipeline_mode, reasoning_effort,
        max_llm_calls, max_input_tokens, max_output_tokens,
        outline_workflow_version, context_budget_version,
+       planner_request_json,
        created_at, updated_at
-     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.projectId,
@@ -256,7 +360,8 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
       input.budget?.maxInputTokens ?? null,
       input.budget?.maxOutputTokens ?? null,
       input.outlineWorkflowVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION,
-      input.contextBudgetVersion ?? CURRENT_CONTEXT_BUDGET_VERSION,
+      contextBudgetVersion,
+      frozenPolicy ? encodeFrozenBatchPlannerRequest(null, frozenPolicy) : null,
       now,
       now,
     ],
@@ -306,6 +411,22 @@ export async function updateBatchStatus(
   const sets = ['status = ?', 'updated_at = ?'];
   const params: unknown[] = [status, Date.now()];
   if (fields) {
+    let plannerRequestJsonOverride = fields.plannerRequestJson;
+    if (plannerRequestJsonOverride !== undefined) {
+      const current = await one<Row>(
+        'SELECT planner_request_json FROM multi_chapter_batches WHERE id = ?',
+        [batchId],
+      );
+      const frozenPolicy = parseFrozenBatchPlannerEnvelope(
+        current?.planner_request_json ?? null,
+      );
+      if (frozenPolicy) {
+        plannerRequestJsonOverride = encodeFrozenBatchPlannerRequest(
+          plannerRequestJsonOverride,
+          frozenPolicy.contextAutomationPolicySnapshot,
+        );
+      }
+    }
     const map: Array<[keyof typeof fields, string]> = [
       ['pauseReason', 'pause_reason'],
       ['errorCode', 'error_code'],
@@ -323,7 +444,11 @@ export async function updateBatchStatus(
     for (const [key, column] of map) {
       if (fields[key] !== undefined) {
         sets.push(`${column} = ?`);
-        params.push(fields[key]);
+        params.push(
+          key === 'plannerRequestJson'
+            ? plannerRequestJsonOverride
+            : fields[key],
+        );
       }
     }
   }

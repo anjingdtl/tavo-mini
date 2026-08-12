@@ -18,25 +18,22 @@ import {
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
   type ContextBudgetVersion,
 } from '../services/pipeline/outlineWorkflowVersion';
-import { getContextAutoMode } from '../data/repositories/contextAutoRepository';
+import {
+  ensureContextAutomationPolicyV3,
+} from '../data/repositories/contextAutoRepository';
+import { cloneDefaultContextAutomationPolicyV3 } from '../services/contextAutomationPolicy';
 
 /**
  * Resolve the context-budget version to freeze on a NEW batch.
  *
- * V3 is opt-in via the persisted `context_auto_mode = 'v3'` setting (Plan §12).
- * When V3 is enabled, batches freeze version 6 so the hierarchical allocator
- * runs for every child task; otherwise batches freeze the current V2 version.
- * Failures reading the setting fall back to V2 — never block batch creation.
+ * New batches always freeze V3. The persisted mode marker is historical
+ * settings state and is not consulted here; legacy batch rows keep their own
+ * frozen version.
  */
 async function resolveBatchContextBudgetVersion(): Promise<ContextBudgetVersion> {
-  try {
-    const mode = await getContextAutoMode();
-    return mode === 'v3'
-      ? V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
-      : CURRENT_CONTEXT_BUDGET_VERSION;
-  } catch {
-    return CURRENT_CONTEXT_BUDGET_VERSION;
-  }
+  // New batches expose one automated policy. V2 remains readable only through
+  // already-frozen historical rows; it is never selected for a new batch.
+  return V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION;
 }
 
 /**
@@ -236,6 +233,13 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           .toString(36)
           .slice(2, 8)}`;
         const pipelineConfig = await db.getPipelineConfig();
+        const contextBudgetVersion = await resolveBatchContextBudgetVersion();
+        const contextAutomationPolicyV3 =
+          contextBudgetVersion === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+            ? await ensureContextAutomationPolicyV3().catch(() =>
+                cloneDefaultContextAutomationPolicyV3(),
+              )
+            : null;
         await batchRepo.createBatch({
           id,
           projectId: input.projectId,
@@ -249,12 +253,12 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
             ? pipelineConfig.reasoningEffort
             : normalizePipelineReasoningTier(pipelineConfig.reasoningEffort),
           // §4.4: freeze the protocol versions ONCE at batch creation; every
-          // chapter task later copies them from the row. Context Budget V3 is
-          // opt-in via context_auto_mode — when enabled, batches freeze
+          // chapter task later copies them from the row. New batches freeze
           // version 6 so every child task routes through the hierarchical
           // allocator (Plan §12 / §23 GO Gate #13 V3 Resume no drift).
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
-          contextBudgetVersion: await resolveBatchContextBudgetVersion(),
+          contextBudgetVersion,
+          contextAutomationPolicyV3,
         });
         for (let i = 1; i <= input.chapterCount; i += 1) {
           await batchRepo.createBatchItem({
@@ -295,7 +299,10 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         await batchRepo.updateBatchStatus(batchId, 'planning', {
           plannerOutputJson: JSON.stringify(result.plan),
           plannerHash: result.hash,
-          plannerRequestJson: result.requestJson,
+          plannerRequestJson: batchRepo.serializeBatchPlannerRequestJson(
+            result.requestJson,
+            batch.contextAutomationPolicySnapshot,
+          ),
           plannerRequestFingerprint: result.requestFingerprint,
         });
         // 批次消耗上限由弹性预算池自动分配（用户无需感知）：按模型上下文窗口
@@ -564,6 +571,13 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         const newBatchId = `batch_${Date.now().toString(36)}_${Math.random()
           .toString(36)
           .slice(2, 8)}`;
+        const contextBudgetVersion = await resolveBatchContextBudgetVersion();
+        const contextAutomationPolicyV3 =
+          contextBudgetVersion === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+            ? await ensureContextAutomationPolicyV3().catch(() =>
+                cloneDefaultContextAutomationPolicyV3(),
+              )
+            : null;
 
         // Close the old execution lineage before creating its replacement.
         // This prevents two active batches for the same project if creation
@@ -582,7 +596,8 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           pipelineMode: 'full',
           reasoningEffort,
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
-          contextBudgetVersion: await resolveBatchContextBudgetVersion(),
+          contextBudgetVersion,
+          contextAutomationPolicyV3,
         });
         for (const chapter of plan.chapters) {
           await batchRepo.createBatchItem({

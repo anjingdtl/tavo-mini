@@ -7,6 +7,7 @@
  */
 import {
   PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+  type ContextBudgetV3Summary,
   type PipelineContextSnapshot,
 } from '../types/pipelineContext';
 import type {
@@ -30,6 +31,11 @@ import type { ChatMessage } from './llm';
 import { OutlineContextError } from './outlineContextBuilder';
 import { isCurrentOutlinePipelineContextBudgetVersion } from './pipeline/outlineWorkflowVersion';
 import { sha256Hex } from './continuation/hashUtils';
+import {
+  hashContextAutomationPolicyV3,
+  isContextAutomationPolicyV3,
+  type ContextAutomationPolicyV3,
+} from './contextAutomationPolicy';
 
 /** Envelope protocol version stored in pipeline_context_version. */
 export const PIPELINE_TASK_CONTEXT_VERSION = 2 as const;
@@ -415,6 +421,23 @@ export function parsePipelineContextSnapshotStrict(
     }
   }
 
+  let contextBudgetV3Summary: ContextBudgetV3Summary | undefined;
+  const rawBudgetSummary = raw.contextBudgetV3Summary;
+  if (isPlainObject(rawBudgetSummary)) {
+    const summaryPolicy = rawBudgetSummary.contextAutomationPolicySnapshot;
+    const summaryHash = rawBudgetSummary.contextAutomationPolicyHash;
+    if (
+      Number(rawBudgetSummary.contextBudgetVersion) === 6 &&
+      rawBudgetSummary.contextAutomationPolicyVersion ===
+        'context-automation-v3' &&
+      isContextAutomationPolicyV3(summaryPolicy) &&
+      typeof summaryHash === 'string' &&
+      summaryHash === hashContextAutomationPolicyV3(summaryPolicy)
+    ) {
+      contextBudgetV3Summary = rawBudgetSummary as unknown as ContextBudgetV3Summary;
+    }
+  }
+
   const snap: PipelineContextSnapshot = {
     presetText: String(raw.presetText),
     storyMemoryText: String(raw.storyMemoryText),
@@ -478,6 +501,7 @@ export function parsePipelineContextSnapshotStrict(
       typeof raw.outlineBlockingReason === 'string'
         ? raw.outlineBlockingReason
         : undefined,
+    ...(contextBudgetV3Summary ? { contextBudgetV3Summary } : {}),
   };
 
   assertOwnership(snap, ownership);
@@ -925,6 +949,36 @@ export function parsePipelineExecutionSnapshot(
           )
         : undefined,
     };
+    const policyVersion = raw.contextAutomationPolicyVersion;
+    const policySnapshot = raw.contextAutomationPolicySnapshot;
+    const policyHash = raw.contextAutomationPolicyHash;
+    if (
+      policyVersion != null ||
+      policySnapshot != null ||
+      policyHash != null
+    ) {
+      if (
+        contextBudgetVersion !== 6 ||
+        policyVersion !== 'context-automation-v3' ||
+        !isContextAutomationPolicyV3(policySnapshot) ||
+        typeof policyHash !== 'string' ||
+        policyHash !== hashContextAutomationPolicyV3(policySnapshot)
+      ) {
+        throw new OutlineContextError(
+          'OUTLINE_EXECUTION_CONFIG_INVALID',
+          'V3 冻结配置的上下文自动化策略/hash 不一致，已阻止恢复。',
+          'restart_task',
+        );
+      }
+      v3Fields = {
+        ...v3Fields,
+        contextAutomationPolicyVersion: 'context-automation-v3',
+        contextAutomationPolicyHash: policyHash,
+        contextAutomationPolicySnapshot: JSON.parse(
+          JSON.stringify(policySnapshot),
+        ) as ContextAutomationPolicyV3,
+      };
+    }
   }
 
   return {

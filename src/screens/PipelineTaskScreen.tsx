@@ -18,12 +18,10 @@ import {
 } from '../data/repositories/pipelineStageCheckpointRepository';
 import { getPipelineStageOrder } from '../utils/stages';
 import {
-  CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
-  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
   isCurrentOutlinePipelineContextBudgetVersion,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from '../services/pipeline/outlineWorkflowVersion';
-import { getContextAutoMode } from '../data/repositories/contextAutoRepository';
 
 const ACTIVE_STATUSES = new Set([
   'idle',
@@ -258,25 +256,12 @@ export const PipelineTaskScreen: React.FC = () => {
     try {
       const chapter = await db.getChapterById(task.targetId);
       if (!chapter) throw new Error('目标章节不存在');
-      // Resolve the budget version the same way useChapterPipeline does: V3
-      // auto-config (context_auto_mode = 'v3') freezes 6 so the restart also
-      // routes through the hierarchical allocator. Settings read failure falls
-      // back to V2 (5) and never blocks task creation.
-      let contextBudgetVersion: typeof CURRENT_CONTEXT_BUDGET_VERSION =
-        CURRENT_CONTEXT_BUDGET_VERSION;
-      try {
-        if ((await getContextAutoMode()) === 'v3') {
-          contextBudgetVersion = V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION;
-        }
-      } catch {
-        // ignore — V2 fallback
-      }
       const newTaskId = await usePipelineTaskStore.getState().createTask(
         'chapter',
         task.targetId,
         {
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
-          contextBudgetVersion,
+          contextBudgetVersion: V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
         },
       );
       Toast.show({ type: 'info', text1: '新版任务已创建', text2: '正在执行完整流水线' });

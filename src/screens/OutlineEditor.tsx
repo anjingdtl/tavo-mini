@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, ToastAndroid, TouchableOpacity, View } from 'react-native';
-import { BarChart3, FileText, Plus, Settings2, Trash2, ArrowUp, ArrowDown } from 'lucide-react-native';
+import { BarChart3, FileText, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../components/ui';
@@ -122,7 +122,6 @@ export const OutlineEditor: React.FC = () => {
       <Header title={currentProject.name} subtitle="章节 · 大纲 · 摘要 · 上下文" action={<Button label="章节" icon={Plus} variant="ghost" onPress={addChapter} compact />} />
       <View style={styles.quickActions}>
         <Button label="故事概览" icon={BarChart3} variant="secondary" onPress={() => navigation.navigate('StoryOverview')} compact flex />
-        <Button label="上下文" icon={Settings2} variant="secondary" onPress={() => navigation.navigate('ContextConfig')} compact flex />
         <Button
           label="一键写 N 章"
           icon={FileText}

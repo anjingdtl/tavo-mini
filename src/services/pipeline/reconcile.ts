@@ -201,6 +201,7 @@ import { setBatchUsageFromRuns } from '../../data/repositories/multiChapterBatch
 import { getContextAutomationPolicyV3 } from '../../data/repositories/contextAutoRepository';
 import {
   isContextAutomationPolicyV3,
+  hashContextAutomationPolicyV3,
   type ContextAutomationPolicyV3,
 } from '../contextAutomationPolicy';
 import {
@@ -655,6 +656,8 @@ export interface ReconcileOptions {
     | PipelineReasoningEffort
     | PipelineReasoningTier
     | null;
+  /** Batch-frozen V3 policy. A supplied snapshot disables live-policy reads. */
+  contextAutomationPolicyV3?: ContextAutomationPolicyV3 | null;
   /**
    * BN-04: when set, every stage attempt is preceded by a hard batch-budget
    * check. Exceeding the cap throws BatchBudgetExceededError BEFORE any
@@ -735,6 +738,7 @@ function buildExecutionSnapshot(params: {
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2 | 3 | 4;
   contextBudgetVersion?: 1 | 2 | 3 | 4 | 5 | 6;
+  contextAutomationPolicyV3?: ContextAutomationPolicyV3;
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
   finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
   reasoningEffort?: PipelineConfig['reasoningEffort'];
@@ -919,6 +923,19 @@ function buildExecutionSnapshot(params: {
       : {}),
     ...(params.contextBudgetVersion
       ? { contextBudgetVersion: params.contextBudgetVersion }
+      : {}),
+    ...(Number(params.contextBudgetVersion) === 6 &&
+    params.contextAutomationPolicyV3 &&
+    isContextAutomationPolicyV3(params.contextAutomationPolicyV3)
+      ? {
+          contextAutomationPolicyVersion: 'context-automation-v3' as const,
+          contextAutomationPolicyHash: hashContextAutomationPolicyV3(
+            params.contextAutomationPolicyV3,
+          ),
+          contextAutomationPolicySnapshot: JSON.parse(
+            JSON.stringify(params.contextAutomationPolicyV3),
+          ) as ContextAutomationPolicyV3,
+        }
       : {}),
     ...(params.finalReviserReasoningPolicyVersion
       ? {
@@ -2089,6 +2106,36 @@ async function actionPersistInitialSnapshot(
         options.pipelineReasoningEffortOverride === null
       ? { ...runtime.config, reasoningEffort: undefined }
       : runtime.config;
+
+  // Read the persisted V3 policy ONCE at first freeze so the actual user
+  // policy (not the default preset) drives the hierarchical allocator. On a
+  // resume, prefer the policy already frozen in the execution/context
+  // snapshot; never replace it with a newly edited live setting. Batch-owned
+  // callers may provide the batch header snapshot as the final fallback for
+  // historical V6 rows that predate execution-policy persistence.
+  const persistedExecutionPolicy = existingExecution?.contextAutomationPolicySnapshot;
+  const persistedContextPolicy =
+    runtime.parsed?.draftContext?.contextBudgetV3Summary
+      ?.contextAutomationPolicySnapshot;
+  let frozenV3Policy: ContextAutomationPolicyV3 | undefined =
+    persistedExecutionPolicy && isContextAutomationPolicyV3(persistedExecutionPolicy)
+      ? persistedExecutionPolicy
+      : persistedContextPolicy && isContextAutomationPolicyV3(persistedContextPolicy)
+      ? persistedContextPolicy
+      : options.contextAutomationPolicyV3 &&
+        isContextAutomationPolicyV3(options.contextAutomationPolicyV3)
+      ? options.contextAutomationPolicyV3
+      : undefined;
+  if (!frozenV3Policy && !existingExecution && contextBudgetVersion === 6) {
+    try {
+      const persistedPolicy = await getContextAutomationPolicyV3();
+      if (persistedPolicy && isContextAutomationPolicyV3(persistedPolicy)) {
+        frozenV3Policy = persistedPolicy;
+      }
+    } catch {
+      // Settings read failure: buildContext falls back to the default policy.
+    }
+  }
   const execution =
     runtime.parsed?.execution ||
     buildExecutionSnapshot({
@@ -2100,6 +2147,7 @@ async function actionPersistInitialSnapshot(
       requestConfig: runtime.requestConfig,
       outlineWorkflowVersion,
       contextBudgetVersion,
+      contextAutomationPolicyV3: frozenV3Policy,
       finalReviserReasoningPolicyVersion:
         outlineWorkflowVersion === 4 || outlineWorkflowVersion === 3
           ? 3
@@ -2131,23 +2179,6 @@ async function actionPersistInitialSnapshot(
     execution.pipelineMode = options.pipelineModeOverride;
   }
 
-  // Read the persisted V3 policy ONCE at first freeze so the actual user
-  // policy (not the default preset) drives the hierarchical allocator, and the
-  // resulting policyHash is baked into the frozen draftContext. This is the
-  // freeze moment (Closure Plan §14): resume reuses the frozen draftContext,
-  // so a later live-policy change can never drift a running task. Falls back
-  // to the default inside buildContext when V3 is off or the read fails.
-  let frozenV3Policy: ContextAutomationPolicyV3 | undefined;
-  if (isCurrentOutlinePipelineContextBudgetVersion(execution.contextBudgetVersion)) {
-    try {
-      const persistedPolicy = await getContextAutomationPolicyV3();
-      if (persistedPolicy && isContextAutomationPolicyV3(persistedPolicy)) {
-        frozenV3Policy = persistedPolicy;
-      }
-    } catch {
-      // Settings read failure: buildContext falls back to the default policy.
-    }
-  }
   const compiled = await compileDraftStageRequest({
     chapter,
     requestConfig: runtime.requestConfig,
@@ -2197,6 +2228,7 @@ async function actionPersistInitialSnapshot(
       chapter,
       chapter.project_id,
       contextConfig,
+      { contextBudgetVersion: execution.contextBudgetVersion },
     );
   }
 

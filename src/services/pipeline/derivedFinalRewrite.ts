@@ -1,13 +1,22 @@
 import {
   createDerivedPipelineTaskWithCheckpoints,
-  getPipelineTaskById,
+  getPipelineTaskContextPayload,
+  getPipelineTaskFinalTextPayload,
+  getPipelineTaskForDerivedFinalRewrite,
 } from '../../data/repositories/pipelineTaskRepository';
-import { getStageCheckpoints } from '../../data/repositories/pipelineStageCheckpointRepository';
+import {
+  checkpointsToStageResults,
+  getStageCheckpointsForDerivedFinalRewrite,
+} from '../../data/repositories/pipelineStageCheckpointRepository';
 import { parsePersistedPipelineTaskContext } from '../pipelineTaskContext';
 import { getPipelineStageOrder } from '../../utils/stages';
 import { shouldIncludeBriefCheckpoint } from './outlineWorkflowVersion';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import type { PipelineTask } from '../../types/pipeline';
+import {
+  hashContextAutomationPolicyV3,
+  isContextAutomationPolicyV3,
+} from '../contextAutomationPolicy';
 
 export const DERIVED_FINAL_REWRITE_KIND = 'final_rewrite' as const;
 const MAX_DERIVED_INSTRUCTION_LENGTH = 2000;
@@ -16,6 +25,42 @@ function makeDerivedTaskId(): string {
   return `pt_rewrite_${Date.now().toString(36)}_${Math.random()
     .toString(36)
     .slice(2, 9)}`;
+}
+
+function hasFrozenV3Policy(parsed: {
+  execution: {
+    contextAutomationPolicyVersion?: string;
+    contextAutomationPolicyHash?: string;
+    contextAutomationPolicySnapshot?: unknown;
+  };
+  draftContext: {
+    contextBudgetV3Summary?: {
+      contextAutomationPolicyVersion?: string;
+      contextAutomationPolicyHash?: string;
+      contextAutomationPolicySnapshot?: unknown;
+    };
+  };
+}): boolean {
+  const executionPolicy = parsed.execution;
+  if (
+    executionPolicy.contextAutomationPolicyVersion ===
+      'context-automation-v3' &&
+    isContextAutomationPolicyV3(executionPolicy.contextAutomationPolicySnapshot) &&
+    typeof executionPolicy.contextAutomationPolicyHash === 'string' &&
+    executionPolicy.contextAutomationPolicyHash ===
+      hashContextAutomationPolicyV3(executionPolicy.contextAutomationPolicySnapshot)
+  ) {
+    return true;
+  }
+
+  const summary = parsed.draftContext.contextBudgetV3Summary;
+  return Boolean(
+    summary?.contextAutomationPolicyVersion === 'context-automation-v3' &&
+      isContextAutomationPolicyV3(summary.contextAutomationPolicySnapshot) &&
+      typeof summary.contextAutomationPolicyHash === 'string' &&
+      summary.contextAutomationPolicyHash ===
+        hashContextAutomationPolicyV3(summary.contextAutomationPolicySnapshot),
+  );
 }
 
 /**
@@ -34,12 +79,13 @@ export async function createDerivedFinalRewriteTask(
     throw new Error(`终稿修订要求不能超过 ${MAX_DERIVED_INSTRUCTION_LENGTH} 字。`);
   }
 
-  const parent = await getPipelineTaskById(parentTaskId);
+  const parent = await getPipelineTaskForDerivedFinalRewrite(parentTaskId);
   if (!parent) throw new Error('原流水线任务不存在，无法创建派生终稿。');
   if (parent.targetType !== 'chapter') {
     throw new Error('仅章节流水线支持“仅重写终稿”。');
   }
-  if (parent.status !== 'completed' || !String(parent.finalText || '').trim()) {
+  const parentFinalText = await getPipelineTaskFinalTextPayload(parent.id);
+  if (parent.status !== 'completed' || !String(parentFinalText || '').trim()) {
     throw new Error('原任务尚未完成，不能只重写终稿。');
   }
   const parentWorkflowVersion = Number(parent.outlineWorkflowVersion);
@@ -52,9 +98,14 @@ export async function createDerivedFinalRewriteTask(
     throw new Error('仅重写终稿仅适用于结构化完整流水线；请重新运行完整流水线。');
   }
 
+  const parentContextJson = await getPipelineTaskContextPayload(parent.id);
+  const parentForContext = {
+    ...parent,
+    pipelineContextJson: parentContextJson,
+  };
   let parsed;
   try {
-    parsed = parsePersistedPipelineTaskContext(parent, {
+    parsed = parsePersistedPipelineTaskContext(parentForContext, {
       expectedChapterId: Number(parent.targetId),
     });
   } catch {
@@ -70,11 +121,19 @@ export async function createDerivedFinalRewriteTask(
   ) {
     throw new Error('原任务不是当前结构化冻结配置，已阻止派生终稿。');
   }
+  if (
+    Number(parsed.execution.contextBudgetVersion) === 6 &&
+    !hasFrozenV3Policy(parsed as Parameters<typeof hasFrozenV3Policy>[0])
+  ) {
+    throw new Error('原任务缺少有效的 V3 冻结策略，已阻止派生终稿；请重新运行完整流水线。');
+  }
   if (parsed.execution.pipelineMode === 'noReview') {
     throw new Error('无审核模式没有 Brief，不能只重写终稿；请运行完整流水线。');
   }
 
-  const sourceCheckpoints = await getStageCheckpoints(parent.id);
+  const sourceCheckpoints = await getStageCheckpointsForDerivedFinalRewrite(
+    parent.id,
+  );
   const byStage = new Map(sourceCheckpoints.map(row => [row.stage, row]));
   const required = getPipelineStageOrder(parsed.execution.pipelineMode, {
     outlineWorkflowVersion: parentWorkflowVersion,
@@ -95,9 +154,12 @@ export async function createDerivedFinalRewriteTask(
 
   const now = Date.now();
   const taskId = makeDerivedTaskId();
-  const upstreamResults = (parent.stageResults || []).filter(
-    (stage: any) => stage.stage !== 'proof',
-  );
+  const upstreamResults = checkpointsToStageResults(sourceCheckpoints).filter(
+    stage => stage.stage !== 'proof',
+  ).map(stage => ({
+    ...stage,
+    stage: stage.stage as PipelineTask['stageResults'][number]['stage'],
+  }));
   const copiedCheckpoints = sourceCheckpoints
     .filter(row => row.stage !== 'proof' && row.stage !== 'finalize')
     .map(row => ({
@@ -129,11 +191,11 @@ export async function createDerivedFinalRewriteTask(
     finalText: null,
     error: null,
     inputFingerprint: parent.inputFingerprint ?? null,
-    pipelineContextJson: parent.pipelineContextJson ?? null,
+    pipelineContextJson: parentContextJson,
     pipelineContextVersion: parent.pipelineContextVersion ?? null,
     pipelineContextHash: parent.pipelineContextHash ?? null,
     outlineWorkflowVersion: parentWorkflowVersion as 3 | 4,
-    contextBudgetVersion: Number(parent.contextBudgetVersion) as 3 | 4 | 5,
+    contextBudgetVersion: Number(parent.contextBudgetVersion) as 3 | 4 | 5 | 6,
     parentTaskId: parent.id,
     derivedKind: DERIVED_FINAL_REWRITE_KIND,
     derivedInstruction: normalizedInstruction,

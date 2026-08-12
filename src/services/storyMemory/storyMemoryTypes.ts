@@ -440,6 +440,8 @@ export interface StoryMemoryCoveragePlan {
   estimatedRawTokens: number;
   hardDue: boolean;
   reason: string;
+  /** V6 grant used to render the final bridge; absent for legacy plans. */
+  bridgeBudgetTokens?: number;
 }
 
 export interface BatchEvidenceQuote {

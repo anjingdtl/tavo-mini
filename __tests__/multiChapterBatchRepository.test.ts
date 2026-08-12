@@ -32,6 +32,10 @@ import { getPipelineTaskById } from '../src/data/repositories/pipelineTaskReposi
 import { deleteProject } from '../src/data/repositories/projectRepository';
 import { execute } from '../src/data/connection/execute';
 import { openDatabase } from '../src/data/connection/openDatabase';
+import {
+  cloneDefaultContextAutomationPolicyV3,
+  hashContextAutomationPolicyV3,
+} from '../src/services/contextAutomationPolicy';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -157,6 +161,31 @@ describe('batch header CRUD + lease CAS', () => {
     expect(row!.status).toBe('ready');
     expect(row!.plannerHash).toBe('h1');
     expect(row!.startPosition).toBe(5);
+  });
+
+  it('freezes the V3 policy snapshot and hash on the batch header', async () => {
+    await resetDb();
+    await seedProject(1);
+    const policy = cloneDefaultContextAutomationPolicyV3();
+    policy.boards.resources.priority = 99;
+    await createBatch({
+      id: 'v3-batch',
+      projectId: 1,
+      sourcePrompt: '冻结策略',
+      chapterCount: 2,
+      targetWordsPerChapter: 3000,
+      pipelineMode: 'full',
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 6,
+      contextAutomationPolicyV3: policy,
+    } as any);
+
+    const batch = await getBatchById('v3-batch');
+    expect(batch?.contextAutomationPolicyVersion).toBe('context-automation-v3');
+    expect(batch?.contextAutomationPolicyHash).toBe(
+      hashContextAutomationPolicyV3(policy),
+    );
+    expect(batch?.contextAutomationPolicySnapshot).toEqual(policy);
   });
 });
 

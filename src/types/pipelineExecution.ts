@@ -6,6 +6,7 @@
  */
 import type { PipelineMode, PipelineReasoningEffort, PipelineStageName } from './pipeline';
 import type { PipelineReasoningTier } from '../services/pipeline/reasoningPolicy';
+import type { ContextAutomationPolicyV3 } from '../services/contextAutomationPolicy';
 
 export type FinalReviserReasoningPolicyVersion = 1 | 2 | 3;
 
@@ -82,8 +83,7 @@ export interface PipelineExecutionSnapshot {
    * Context-budget strategy version frozen at task start (Schema 44+).
    * undefined / 1 → Legacy budget; 2–4 → historical elastic protocols;
    * 5 → current independent elastic reservation for all five stages;
-   * 6 → V3 hierarchical board/item elastic allocator (opt-in via
-   *   `context_auto_mode = 'v3'`; see
+   * 6 → V3 hierarchical board/item elastic allocator (new V3 tasks only; see
    *   `docs/optimization/Tavo-Mini-Context-Budget-V3-Hierarchical-Elastic-Optimization-Plan.md`).
    * Frozen with the workflow version; resume must never re-read the live
    * default. Missing on historical snapshots → Legacy (1).
@@ -101,6 +101,14 @@ export interface PipelineExecutionSnapshot {
 
   /** V3 product profile and per-stage frozen effective tiers. */
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
+  /**
+   * V3 hierarchical context policy frozen with the task.  This is persisted
+   * beside the execution snapshot so cold-start/resume and batch children can
+   * prove they used the same policy hash as the batch header.
+   */
+  contextAutomationPolicyVersion?: 'context-automation-v3';
+  contextAutomationPolicyHash?: string;
+  contextAutomationPolicySnapshot?: ContextAutomationPolicyV3;
   requestedReasoningTier?: PipelineReasoningTier;
   stageReasoning?: Partial<Record<PipelineStageName, FrozenStageReasoning>>;
   briefPolicyVersion?: 1 | 2 | 3 | 4;

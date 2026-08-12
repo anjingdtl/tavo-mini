@@ -26,6 +26,8 @@ interface PipelineTaskState {
   tasks: PipelineTask[];
   _loaded: boolean;
   loadFromDB: () => Promise<void>;
+  /** Load the large task payloads lazily after a summary-list query. */
+  loadTaskDetails: (taskId: string) => Promise<void>;
   /**
    * Atomically persist the new pipeline task AND its four pending stage
    * checkpoints in one SQLite transaction, then add it to the in-memory
@@ -268,6 +270,12 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       console.warn('[pipelineTaskStore] loadFromDB failed:', error);
       set({ _loaded: true });
     }
+  },
+
+  loadTaskDetails: async taskId => {
+    const row = await db.getPipelineTaskResumePayload(taskId);
+    if (!row) return;
+    get().registerPersistedTask(row as PipelineTask);
   },
 
   createTask: async (targetType, targetId, versions) => {

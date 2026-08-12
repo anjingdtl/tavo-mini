@@ -193,8 +193,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   >('writer');
   /**
    * Context Budget V3 hierarchical trace (Plan §15). Populated for
-   * non-continuation previews when context_auto_mode = 'v3' so the user can
-   * see board-level demand / soft target / allocated / borrowed.
+   * non-continuation V6 previews so the user can see the resolved budget
+   * envelope without exposing internal board allocation details.
    */
   const [hierarchicalBudgetTrace, setHierarchicalBudgetTrace] = useState<
     import('../services/context/hierarchicalContextAllocator').HierarchicalBudgetResult | null
@@ -362,25 +362,22 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       setContinuationBudgetSummary('');
       setContinuationStageBudgets(null);
       setContinuationFreezeSummary(null);
-      // Read Context Budget mode so preview matches what a live send would do.
-      // V3 (context_auto_mode = 'v3') → freeze contextBudgetVersion = 6 and
-      // surface the hierarchical allocator trace for the board summary panel.
-      // The persisted V3 policy is also forwarded so Preview uses the SAME
-      // policy the pipeline draft freezes (Closure Plan §14/§16 Preview = Send).
-      let contextBudgetVersion: number | undefined;
+      // Match the chapter send path: new outline chapter tasks use V6, while
+      // historical/freeform paths keep their legacy protocol. The old global
+      // auto-mode switch is not a Preview input anymore.
+      const contextBudgetVersion =
+        project?.mode === 'outline' && chapter.id > 0 ? 6 : undefined;
       let contextAutomationPolicyV3: any;
-      try {
+      if (contextBudgetVersion != null && contextBudgetVersion >= 6) {
+        try {
         const mod = await import(
           '../data/repositories/contextAutoRepository'
         );
-        const mode = await mod.getContextAutoMode();
-        if (mode === 'v3') {
-          contextBudgetVersion = 6;
           const persisted = await mod.getContextAutomationPolicyV3();
           if (persisted) contextAutomationPolicyV3 = persisted;
+        } catch {
+          // Settings read failure: allocator uses its frozen default policy.
         }
-      } catch {
-        // Settings read failure: fall back to V2 preview path.
       }
       // Non-continuation: same Draft compiler as reconcile (preview mode).
       // Without a frozen task snapshot this is an estimated request, not a
@@ -724,8 +721,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
               突发池 {hierarchicalBudgetTrace.envelope.burstElasticPool.toLocaleString()} ·
               风险等级 {hierarchicalBudgetTrace.riskLevel}
             </Text>
-        </View>
-      ) : null}
+            </View>
+          ) : null}
       <View
         style={[styles.toggleRow, { borderBottomColor: theme.colors.border }]}
       >

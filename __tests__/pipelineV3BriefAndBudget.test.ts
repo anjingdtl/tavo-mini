@@ -186,6 +186,45 @@ describe('Outline Pipeline V3 reasoning and independent budget contracts', () =>
     ).toBe('mandatory');
   });
 
+  test('Final V3 does not impose an absolute module cap on large character facts', () => {
+    const largeCharacterFacts = '角色事实：林晚知道门声来自东侧，但不能提前揭示幕后身份。'.repeat(4000);
+    const compiled = compileFinalReviserV3StageRequest({
+      writingBrief: '保持门声与旧宅事实，禁止推进幕后身份。',
+      canonicalDraft: '林晚站在门前。'.repeat(40),
+      capsule: buildFinalContinuityCapsule({
+        presetText: '',
+        storyMemoryText: '',
+        characterText: largeCharacterFacts,
+        noteText: '',
+        worldbookText: '',
+        episodicMemoryText: '',
+        recentBridgeText: '',
+        immediatePreviousChapterText: '',
+        immediatePreviousChapterEnding: '门声来自东侧。',
+        currentInstructionText: '承接门声。',
+        retrievalUserPrompt: '',
+        outlineText: '本章不揭示幕后身份。',
+        outlineFingerprint: 'large-character',
+        outlineIds: [1],
+        outlineComplete: true,
+        outlineEstimatedTokens: 20,
+      }),
+      maxTokens: 4000,
+      contextWindow: 1_000_000,
+      modelMaxOutputTokens: 1_000_000,
+      elasticBudget: true,
+    });
+
+    expect(compiled.ready).toBe(true);
+    if (!compiled.ready) return;
+    const characters = compiled.elasticBudgetTrace?.modules.find(
+      module => module.id === 'characters',
+    );
+    expect(characters?.availableTokens).toBeGreaterThan(6000);
+    expect(characters?.maxTokens).toBeGreaterThan(6000);
+    expect(characters?.finalAllocatedTokens).toBeGreaterThan(6000);
+  });
+
   test('Final V3 clamps an oversized frozen reservation to the provider cap', () => {
     const compiled = compileFinalReviserV3StageRequest({
       writingBrief: '保持森林与守林人的衔接。',
