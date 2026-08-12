@@ -67,6 +67,7 @@ import {
   tokenizeForMemoryRetrieval,
   type MemoryRetrievalOptions,
 } from './episodicMemoryRetriever';
+import * as idfCache from '../utils/idfCache';
 
 const DEFAULT_SYSTEM_PROMPT =
   '你是一位经验丰富的中文小说作者。请根据既有设定、人物状态、章节概要和前文内容，继续创作自然、连贯、有画面感的中文小说。';
@@ -129,6 +130,47 @@ export interface BuildContextOptions {
    * so resumed tasks see the same board ratios.
    */
   contextAutomationPolicyV3?: typeof DEFAULT_CONTEXT_AUTOMATION_POLICY_V3;
+}
+
+const V3_DEMAND_PROBE_BUDGET = 1_000_000;
+
+/**
+ * Measure episodic demand from the already-collected in-memory candidates.
+ * This helper deliberately has no database or network boundary: callers may
+ * use it once for Phase A and once for the post-coverage reconciliation pass.
+ */
+async function measureV3EpisodicDemand(input: {
+  projectId: number;
+  candidates: Chapter[];
+  currentChapter: Chapter;
+  retrievalOptions: MemoryRetrievalOptions;
+}): Promise<{ demandTokens: number; text: string }> {
+  if (input.candidates.length === 0) {
+    return { demandTokens: 0, text: '' };
+  }
+  try {
+    const signature = idfCache.computeMemorySummarySignature(input.candidates);
+    let idf = idfCache.getCachedIdf(input.projectId, signature);
+    if (!idf) {
+      idf = buildIdf(
+        input.candidates
+          .map(c => String((c as any).memory_summary || ''))
+          .filter(Boolean),
+      );
+      idfCache.setCachedIdf(input.projectId, signature, idf);
+    }
+    const text = buildMemoryContextWithIdf(
+      input.candidates,
+      input.currentChapter,
+      idf,
+      Math.max(input.candidates.length, 1),
+      V3_DEMAND_PROBE_BUDGET,
+      input.retrievalOptions,
+    );
+    return { demandTokens: estimateTokens(text), text };
+  } catch {
+    return { demandTokens: 0, text: '' };
+  }
 }
 
 /**
@@ -444,21 +486,33 @@ export async function buildContext(
   let v3ResourceCandidates: ResourceContextCandidate[] = [];
   let v3ResourceItemAllocations: ReadonlyMap<string, number> | undefined;
   let v3ResourceItemTraces: HierarchicalBudgetResult['resourceItemTraces'];
-  const V3_NATURAL_BUDGET = 1_000_000;
+  let v3HierarchicalInput: HierarchicalBudgetInput | undefined;
+  const applyV3Allocation = (result: HierarchicalBudgetResult) => {
+    hierarchicalBudgetTrace = result;
+    v3ResourceItemAllocations = result.resourceItemAllocations;
+    v3ResourceItemTraces = result.resourceItemTraces;
+    effectiveStoryStateBudget =
+      result.boardAllocations.storyState.allocatedTokens;
+    effectiveResourceBudget = result.boardAllocations.resources.allocatedTokens;
+    effectiveSlidingWindow =
+      result.boardAllocations.slidingWindow.allocatedTokens;
+    effectiveEpisodicBudget =
+      result.boardAllocations.episodic.allocatedTokens;
+  };
   let effectiveResourceBudget = useV3Hierarchical
-    ? V3_NATURAL_BUDGET
+    ? V3_DEMAND_PROBE_BUDGET
     : config.resourceBudget;
   let effectiveStoryStateBudget = useV3Hierarchical
-    ? V3_NATURAL_BUDGET
+    ? V3_DEMAND_PROBE_BUDGET
     : config.storyStateBudgetTokens ?? 8000;
   let effectiveSlidingWindow = useV3Hierarchical
-    ? V3_NATURAL_BUDGET
+    ? V3_DEMAND_PROBE_BUDGET
     : config.slidingWindowSize;
   let effectiveMemoryTopK = useV3Hierarchical
     ? Math.max(episodicCandidates.length, 1)
     : config.memoryTopK ?? 10;
   let effectiveEpisodicBudget = useV3Hierarchical
-    ? V3_NATURAL_BUDGET
+    ? V3_DEMAND_PROBE_BUDGET
     : config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
   const resolvedContextWindow =
     options.contextWindow != null && options.contextWindow > 0
@@ -497,7 +551,6 @@ export async function buildContext(
       // historical-event keywords can trigger worldbook entries — restoring the
       // V2 trigger surface without a Worldbook → Episodic → Worldbook cycle
       // (episodic retrieval never depends on worldbook).
-      const DEMAND_PROBE_BUDGET = 1_000_000; // large enough to avoid clip on measure
       const presetTextForEstimate =
         typeof preset === 'string' ? preset : buildPresetPrompt(preset);
       const mandatoryTokens =
@@ -517,7 +570,7 @@ export async function buildContext(
             projectId,
             currentChapter,
             prepared.checkpoint,
-            DEMAND_PROBE_BUDGET,
+            V3_DEMAND_PROBE_BUDGET,
             { retrievalUserPrompt: options.retrievalUserPrompt },
           );
           storyStateDemand =
@@ -532,36 +585,14 @@ export async function buildContext(
       // budget so selectCandidatesWithinTokenBudget keeps every TopK candidate.
       // The resulting text doubles as the episodic keyword source for the
       // worldbook scan (Closure Plan §13 Phase A). Empty retrieval → demand 0.
-      let episodicDemand = 0;
-      let v3ScanMemoryText = '';
-      const v3RetrievalTopK = Math.max(episodicCandidates.length, 1);
-      try {
-        const idfCache = await import('../utils/idfCache');
-        const signature = idfCache.computeMemorySummarySignature(
-          episodicCandidates,
-        );
-        let idf = idfCache.getCachedIdf(projectId, signature);
-        if (!idf) {
-          idf = buildIdf(
-            episodicCandidates
-              .map(c => String((c as any).memory_summary || ''))
-              .filter(Boolean),
-          );
-          idfCache.setCachedIdf(projectId, signature, idf);
-        }
-        v3ScanMemoryText = buildMemoryContextWithIdf(
-          episodicCandidates,
-          currentChapter,
-          idf,
-          v3RetrievalTopK,
-          DEMAND_PROBE_BUDGET,
-          retrievalOptions,
-        );
-        episodicDemand = estimateTokens(v3ScanMemoryText);
-      } catch {
-        episodicDemand = 0;
-        v3ScanMemoryText = '';
-      }
+      const episodicProbe = await measureV3EpisodicDemand({
+        projectId,
+        candidates: episodicCandidates,
+        currentChapter,
+        retrievalOptions,
+      });
+      const episodicDemand = episodicProbe.demandTokens;
+      const v3ScanMemoryText = episodicProbe.text;
 
       // --- Phase A → Phase B: full worldbook scan haystack -------------------
       // Includes episodic memory text so historical-event keywords can trigger
@@ -613,7 +644,7 @@ export async function buildContext(
             : estimateTokens(worldbookScanContent);
 
       // --- Allocate ----------------------------------------------------------
-      const v3Input: HierarchicalBudgetInput = {
+      v3HierarchicalInput = {
         contextWindow: resolvedContextWindow,
         reservedOutputTokens: reservedOut,
         mandatoryTokens,
@@ -635,20 +666,11 @@ export async function buildContext(
           sourceOrder: c.sourceOrder,
         })),
       };
-      const v3Result = allocateHierarchicalContextBudget(v3Input);
-      hierarchicalBudgetTrace = v3Result;
-      v3ResourceItemAllocations = v3Result.resourceItemAllocations;
-      v3ResourceItemTraces = v3Result.resourceItemTraces;
+      const v3Result = allocateHierarchicalContextBudget(v3HierarchicalInput);
+      applyV3Allocation(v3Result);
       // Wire board grants into the effective budgets consumed by the shared
       // downstream rendering path. The allocator grant (not the config ceiling)
       // is the final clip authority.
-      effectiveStoryStateBudget =
-        v3Result.boardAllocations.storyState.allocatedTokens;
-      effectiveResourceBudget = v3Result.boardAllocations.resources.allocatedTokens;
-      effectiveSlidingWindow =
-        v3Result.boardAllocations.slidingWindow.allocatedTokens;
-      effectiveEpisodicBudget =
-        v3Result.boardAllocations.episodic.allocatedTokens;
       if (remainingAfterOutline < 1500) {
         effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 2);
       } else if (remainingAfterOutline < 4000) {
@@ -820,6 +842,51 @@ export async function buildContext(
       rawChapterIds,
     );
     effectiveMemoryTopK = Math.max(episodicCandidates.length, 1);
+
+    // Phase B: Raw chapters committed by Story Coverage no longer belong to
+    // Episodic demand. Reconcile exactly once with the same hierarchical
+    // allocator; no DB/LLM/retrieval round is repeated and no fixed-point loop
+    // is permitted here.
+    if (rawChapterIds.length > 0 && v3HierarchicalInput) {
+      const postCoverageEpisodic = await measureV3EpisodicDemand({
+        projectId,
+        candidates: episodicCandidates,
+        currentChapter,
+        retrievalOptions,
+      });
+      const preliminaryEpisodicDemand =
+        v3HierarchicalInput.boards.episodic.actualDemandTokens;
+      if (postCoverageEpisodic.demandTokens !== preliminaryEpisodicDemand) {
+        const committedBridgeDemand = Math.max(
+          0,
+          Math.floor(Number(coverage.estimatedRawTokens) || 0),
+        );
+        const finalSlidingBoard =
+          committedBridgeDemand > 0
+            ? {
+                ...v3HierarchicalInput.boards.slidingWindow,
+                // Preserve content already committed by Coverage if the
+                // reclaimed capacity changes board ordering.
+                minTokens: Math.max(
+                  v3HierarchicalInput.boards.slidingWindow.minTokens ?? 0,
+                  committedBridgeDemand,
+                ),
+              }
+            : v3HierarchicalInput.boards.slidingWindow;
+        const finalInput: HierarchicalBudgetInput = {
+          ...v3HierarchicalInput,
+          boards: {
+            ...v3HierarchicalInput.boards,
+            slidingWindow: finalSlidingBoard,
+            episodic: {
+              ...v3HierarchicalInput.boards.episodic,
+              actualDemandTokens: postCoverageEpisodic.demandTokens,
+            },
+          },
+        };
+        applyV3Allocation(allocateHierarchicalContextBudget(finalInput));
+      }
+    }
   }
 
   // Episodic query / retrieval options were computed above (before the budget
@@ -829,7 +896,6 @@ export async function buildContext(
   // V2.2.0：IDF 缓存——同项目 memory_summary 不变时复用，避免每次 tokenize+buildIdf
   let memoryText: string;
   try {
-    const idfCache = await import('../utils/idfCache');
     const signature = idfCache.computeMemorySummarySignature(episodicCandidates);
     let idf = idfCache.getCachedIdf(projectId, signature);
     if (!idf) {
