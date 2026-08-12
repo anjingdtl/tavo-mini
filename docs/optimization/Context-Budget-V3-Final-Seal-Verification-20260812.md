@@ -76,6 +76,7 @@ npx jest __tests__/pipelineWorkflowV2Integration.test.ts __tests__/contextBuilde
 - `npm run typecheck`：PASS。
 - `npm run test:ci`：PASS，`383 passed / 2 skipped suites`，共 `383/385 suites`；`3134 passed / 7 skipped tests`，共 `3141 tests`。
 - `npm run verify`：PASS，包含上述 lint、typecheck、version 和 Jest CI 门禁。
+- GitHub Actions run `31609399578`（head `ee8d88e9fb8b8e876bee63d5205aeb598e4acadd`）：PASS；Migration matrix、JavaScript validation、Android Debug build 三个 job 均为 success。
 
 测试中的 dynamic import、SQLite fixture 和 native mock 警告均未转化为失败；没有跳过失败测试或放宽断言。
 
@@ -139,7 +140,7 @@ npx jest __tests__/pipelineWorkflowV2Integration.test.ts __tests__/contextBuilde
 | L Batch Resume | NO-GO | Android 3-child 批次完成，但没有 child 中断后的最终 completed resume；自动化 cold-start resume 通过，不能替代实机证据。 |
 | M Derived Final Regression | NO-GO | `derivedFinalPolicyFreeze`、Final Seal shrink/artifact validator 和 full verify 通过；本轮没有新的 Android Derived Final 端到端完成证据。 |
 | N Data Preservation | GO | `adb install -r`、firstInstallTime、数据库 integrity、项目/章节计数和 API key 非空计数均满足；未 uninstall/pm clear。 |
-| O Full Verification | NO-GO | `npm run test:ci`、`npm run verify`、assembleDebug 均通过；但 E–M 中列出的强制 Android 证据缺口仍存在，且远端 Actions 需以本轮提交后的真实运行结果为准。 |
+| O Full Verification | NO-GO | `npm run test:ci`、`npm run verify`、assembleDebug 均通过，GitHub Actions run `31609399578` 全绿；但 E–M 中列出的强制 Android 证据缺口仍存在。 |
 
 ## 9. 剩余 blocker 与封板结论
 
