@@ -29,6 +29,22 @@ export interface PipelineStageCheckpointRow {
   updatedAt: number;
 }
 
+export interface PipelineStageCheckpointSummary {
+  taskId: string;
+  stage: PipelineCheckpointStage;
+  status: StageStatus;
+  errorCode: string | null;
+  errorMessage: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  durationMs: number | null;
+  attemptCount: number;
+  startedAt: number | null;
+  completedAt: number | null;
+  updatedAt: number;
+}
+
 function mapRow(row: Row): PipelineStageCheckpointRow {
   return {
     taskId: String(row.task_id),
@@ -51,14 +67,12 @@ function mapRow(row: Row): PipelineStageCheckpointRow {
   };
 }
 
+const CHECKPOINT_TEXT_CHUNK_CHARACTERS = 128 * 1024;
+
 export async function getStageCheckpoints(
   taskId: string,
 ): Promise<PipelineStageCheckpointRow[]> {
-  const rows = await all<Row>(
-    `SELECT * FROM pipeline_stage_checkpoints WHERE task_id = ? ORDER BY stage`,
-    [taskId],
-  );
-  return rows.map(mapRow);
+  return getStageCheckpointsForDerivedFinalRewrite(taskId);
 }
 
 export async function getStageCheckpoint(
@@ -66,10 +80,121 @@ export async function getStageCheckpoint(
   stage: PipelineCheckpointStage,
 ): Promise<PipelineStageCheckpointRow | null> {
   const row = await one<Row>(
-    `SELECT * FROM pipeline_stage_checkpoints WHERE task_id = ? AND stage = ?`,
-    [taskId, stage],
+    `SELECT task_id, stage, status,
+            length(output_text) AS output_text_length,
+            substr(output_text, 1, ?) AS output_text_chunk,
+            error_code, error_message,
+            input_tokens, output_tokens, total_tokens, duration_ms,
+            attempt_count, started_at, completed_at, updated_at
+       FROM pipeline_stage_checkpoints
+      WHERE task_id = ? AND stage = ?`,
+    [CHECKPOINT_TEXT_CHUNK_CHARACTERS, taskId, stage],
   );
-  return row ? mapRow(row) : null;
+  if (!row) return null;
+  const outputText = await readCheckpointOutputText(
+    String(row.task_id),
+    String(row.stage),
+    String(row.output_text_chunk ?? ''),
+    row.output_text_length == null
+      ? null
+      : Math.max(0, Number(row.output_text_length) || 0),
+  );
+  return mapRow({ ...row, output_text: outputText });
+}
+
+async function readCheckpointOutputText(
+  taskId: string,
+  stage: string,
+  firstChunk: string,
+  totalLength: number | null,
+): Promise<string | null> {
+  if (totalLength == null) return null;
+  let outputText = firstChunk;
+  for (
+    let offset = CHECKPOINT_TEXT_CHUNK_CHARACTERS + 1;
+    offset <= totalLength;
+    offset += CHECKPOINT_TEXT_CHUNK_CHARACTERS
+  ) {
+    const next = await one<Row>(
+      `SELECT substr(output_text, ?, ?) AS output_text_chunk
+         FROM pipeline_stage_checkpoints
+        WHERE task_id = ? AND stage = ?`,
+      [offset, CHECKPOINT_TEXT_CHUNK_CHARACTERS, taskId, stage],
+    );
+    outputText += String(next?.output_text_chunk ?? '');
+  }
+  return outputText;
+}
+
+/**
+ * Derived Final reader: metadata is projected explicitly and output_text is
+ * fetched one column/chunk at a time, so a large upstream checkpoint never
+ * shares a CursorWindow row with another large payload.
+ */
+export async function getStageCheckpointsForDerivedFinalRewrite(
+  taskId: string,
+): Promise<PipelineStageCheckpointRow[]> {
+  const rows = await all<Row>(
+    `SELECT task_id, stage, status,
+            length(output_text) AS output_text_length,
+            substr(output_text, 1, ?) AS output_text_chunk,
+            error_code, error_message,
+            input_tokens, output_tokens, total_tokens, duration_ms,
+            attempt_count, started_at, completed_at, updated_at
+       FROM pipeline_stage_checkpoints
+      WHERE task_id = ?
+      ORDER BY stage`,
+    [CHECKPOINT_TEXT_CHUNK_CHARACTERS, taskId],
+  );
+  const mapped: PipelineStageCheckpointRow[] = [];
+  for (const row of rows) {
+    const outputText = await readCheckpointOutputText(
+      String(row.task_id),
+      String(row.stage),
+      String(row.output_text_chunk ?? ''),
+      row.output_text_length == null
+        ? null
+        : Math.max(0, Number(row.output_text_length) || 0),
+    );
+    mapped.push(mapRow({ ...row, output_text: outputText }));
+  }
+  return mapped;
+}
+
+/**
+ * Task-list projection: checkpoint metadata only, never output_text. The
+ * caller can render stage counts/status without loading generated reports.
+ */
+export async function getStageCheckpointSummariesForTasks(
+  taskIds: string[],
+): Promise<PipelineStageCheckpointSummary[]> {
+  const ids = taskIds.map(String).filter(Boolean);
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = await all<Row>(
+    `SELECT task_id, stage, status, error_code, error_message,
+            input_tokens, output_tokens, total_tokens, duration_ms,
+            attempt_count, started_at, completed_at, updated_at
+       FROM pipeline_stage_checkpoints
+      WHERE task_id IN (${placeholders})
+      ORDER BY task_id, stage`,
+    ids,
+  );
+  return rows.map(row => ({
+    taskId: String(row.task_id),
+    stage: row.stage as PipelineCheckpointStage,
+    status: row.status as StageStatus,
+    errorCode: row.error_code ?? null,
+    errorMessage: row.error_message ?? null,
+    inputTokens: row.input_tokens != null ? Number(row.input_tokens) : null,
+    outputTokens: row.output_tokens != null ? Number(row.output_tokens) : null,
+    totalTokens: row.total_tokens != null ? Number(row.total_tokens) : null,
+    durationMs: row.duration_ms != null ? Number(row.duration_ms) : null,
+    attemptCount: Number(row.attempt_count || 0),
+    startedAt: row.started_at != null ? Number(row.started_at) : null,
+    completedAt: row.completed_at != null ? Number(row.completed_at) : null,
+    updatedAt: Number(row.updated_at || 0),
+  }));
 }
 
 export async function ensurePendingCheckpoints(

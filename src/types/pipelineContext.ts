@@ -24,7 +24,10 @@ export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 3 as const;
  */
 export interface ContextBudgetV3Summary {
   contextBudgetVersion: 6;
+  contextAutomationPolicyVersion: 'context-automation-v3';
   policyHash: string;
+  contextAutomationPolicyHash: string;
+  contextAutomationPolicySnapshot: unknown;
   envelope: {
     contextWindow: number;
     reservedOutputTokens: number;

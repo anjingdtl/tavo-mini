@@ -14,33 +14,22 @@ import { Button, Card, Header, Screen, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
 import { useSettingsStore } from '../store/settingsStore';
 import {
-  allocateContextBudget,
-  applyContextAutoAllocation,
   applyContextAutoAllocationV3,
-  buildOutlineElasticBudgetPreview,
-  countAllResources,
-  ensureContextAutomationPolicy,
-  type AllocationResult,
-  type OutlinePipelineBudgetAllocationV3,
-  type ResourceCounts,
 } from '../services/contextAutoAllocator';
 import {
   getContextAutoInput,
   getContextAutoLastApplied,
-  getContextAutoMode,
+  ensureContextAutomationPolicyV3,
+  setContextAutoMode,
   setContextAutoInput,
   setContextAutomationPolicy,
+  setContextAutomationPolicyV3,
   type ContextAutoAppliedRecord,
-  type ContextAutoMode,
 } from '../data/repositories/contextAutoRepository';
 import {
-  resolveContinuationV4BudgetPreview,
-  type ContinuationV4BudgetPreview,
-  type FrozenContinuationStageModel,
-} from '../services/continuation/generation/continuationV4Budget';
-import {
   cloneDefaultContextAutomationPolicy,
-  type ContextAutomationPolicyV2,
+  cloneDefaultContextAutomationPolicyV3,
+  hashContextAutomationPolicyV3,
 } from '../services/contextAutomationPolicy';
 import {
   DEFAULT_CONTEXT_CONFIG,
@@ -57,76 +46,41 @@ const QUICK_PRESETS: { label: string; value: number }[] = [
 const DEFAULT_INPUT_VALUE = 1000000;
 const WARNING_THRESHOLD = 8000;
 
-const CONTINUATION_STAGE_LABELS = {
-  writer: 'Writer 正文生成',
-  checker: 'Checker 一致性审查',
-  control: 'Control 篇幅控制',
-  repair: 'Repair 综合修订',
-} as const;
-
 // 数字格式化：1000 → "1,000"
 function formatNumber(n: number): string {
   return n.toLocaleString('en-US');
 }
 
-const PreviewRow: React.FC<{
-  label: string;
-  value: number;
-  color: string;
-  dimmed?: boolean;
-}> = ({ label, value, color, dimmed }) => {
-  const rowColor = dimmed ? '#999' : color;
-  return (
-    <View style={previewStyles.row}>
-      <Text style={[previewStyles.label, { color: rowColor }]}>{label}</Text>
-      <Text style={[previewStyles.value, { color: rowColor }]}>
-        {formatNumber(value)}
-      </Text>
-    </View>
-  );
-};
-
 export const ContextAutoConfigScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const loadSettings = useSettingsStore(state => state.loadSettings);
   const [inputText, setInputText] = useState<string>(String(DEFAULT_INPUT_VALUE));
-  const [resourceCounts, setResourceCounts] = useState<ResourceCounts>({
-    characters: 0,
-    notes: 0,
-    worldbookEntries: 0,
-    worldbookCollections: 0,
-  });
   const [lastApplied, setLastApplied] = useState<ContextAutoAppliedRecord | null>(
     null,
   );
-  const [policy, setPolicy] = useState<ContextAutomationPolicyV2>(
-    cloneDefaultContextAutomationPolicy(),
+  const [policyV3, setPolicyV3] = useState(
+    cloneDefaultContextAutomationPolicyV3(),
   );
   const [llmConfigs, setLlmConfigs] = useState<any[]>([]);
   const [applying, setApplying] = useState(false);
   const [restoring, setRestoring] = useState(false);
-  const [autoMode, setAutoMode] = useState<ContextAutoMode>('v2');
 
   // 初次加载
   useEffect(() => {
     (async () => {
       try {
-        const [savedInput, counts, applied, mode] = await Promise.all([
+        const [savedInput, applied] = await Promise.all([
           getContextAutoInput(),
-          countAllResources(),
           getContextAutoLastApplied(),
-          getContextAutoMode(),
         ]);
-        const [loadedPolicy, configs] = await Promise.all([
-          ensureContextAutomationPolicy(),
+        const [loadedPolicyV3, configs] = await Promise.all([
+          ensureContextAutomationPolicyV3(),
           db.getLLMConfigs(),
         ]);
         if (savedInput != null) setInputText(String(savedInput));
-        setResourceCounts(counts);
         setLastApplied(applied);
-        setPolicy(loadedPolicy);
+        setPolicyV3(loadedPolicyV3);
         setLlmConfigs(configs);
-        setAutoMode(mode);
       } catch (e: any) {
         Toast.show({ type: 'error', text1: '加载失败', text2: e?.message });
       }
@@ -137,54 +91,6 @@ export const ContextAutoConfigScreen: React.FC = () => {
     const v = Number(inputText);
     return Number.isFinite(v) && v > 0 ? v : 0;
   }, [inputText]);
-
-  const preview: AllocationResult | null = useMemo(() => {
-    if (numericInput <= 0) return null;
-    try {
-      return allocateContextBudget(numericInput, resourceCounts, policy);
-    } catch {
-      return null;
-    }
-  }, [numericInput, policy, resourceCounts]);
-
-  const outlineBudgetPreview: OutlinePipelineBudgetAllocationV3 | null =
-    useMemo(() => {
-      if (!preview) return null;
-      try {
-        return buildOutlineElasticBudgetPreview({
-          contextWindow: preview.llmContextWindow,
-          modelMaxOutputTokens: preview.llmMaxOutputTokens,
-          requestedTier: 'low',
-        });
-      } catch {
-        return null;
-      }
-    }, [preview]);
-
-  const continuationBudgetPreview: ContinuationV4BudgetPreview | null =
-    useMemo(() => {
-      const active =
-        llmConfigs.find(config => config?.is_active === 1) || llmConfigs[0];
-      if (!active || numericInput <= 0 || !preview) return null;
-      const model: FrozenContinuationStageModel = {
-        configId: Number(active.id) || 0,
-        contextWindow: numericInput,
-        maxOutputTokens: preview.llmMaxOutputTokens,
-      };
-      try {
-        return resolveContinuationV4BudgetPreview({
-          frozenPolicy: policy,
-          stages: {
-            writer: model,
-            checker: model,
-            control: model,
-            repair: model,
-          },
-        });
-      } catch {
-        return null;
-      }
-    }, [llmConfigs, numericInput, policy, preview]);
 
   const isWarning = numericInput > 0 && numericInput < WARNING_THRESHOLD;
 
@@ -197,24 +103,11 @@ export const ContextAutoConfigScreen: React.FC = () => {
       Toast.show({ type: 'error', text1: '请输入有效的上下文大小' });
       return;
     }
-    const isV3 = autoMode === 'v3';
-    const v3Copy =
-      `将以 ${formatNumber(numericInput)} tokens 为基准，按 V3 分层弹性模式写入：\n\n` +
-      '• 所有 LLM 配置的 context_window 与 max_output_tokens\n' +
-      '• 所有预设的 max_tokens\n' +
-      '• context_auto_mode = v3 + V3 Policy（持久化策略，非运行结果）\n\n' +
-      'V3 不写入资源 max_tokens、固定比例与单项额度；运行时按模型容量实时分配。\n\n' +
-      '此操作不可撤销。';
-    const v2Copy =
-      `将以 ${formatNumber(numericInput)} tokens 为基准，覆写：\n\n` +
-      '• 所有 LLM 配置的 context_window 与 max_output_tokens\n' +
-      '• 所有预设的 max_tokens\n' +
-      '• 当前项目的上下文与资源预算配置（大纲新任务按五阶段弹性预算冻结）\n' +
-      '• 所有项目的角色、笔记、世界书 max_tokens\n\n' +
-      '此操作不可撤销。';
     Alert.alert(
-      isV3 ? '确认应用（V3 分层弹性）' : '确认应用',
-      isV3 ? v3Copy : v2Copy,
+      '确认保存 V3 预算模拟窗口',
+      `将保存 ${formatNumber(
+        numericInput,
+      )} tokens 作为预览模拟值，并启用 V3 分层弹性策略。不会修改任何模型的真实 context_window、max_output_tokens、预设或资源额度；运行时始终读取当前模型真实能力。`,
       [
         { text: '取消', style: 'cancel' },
         {
@@ -223,39 +116,29 @@ export const ContextAutoConfigScreen: React.FC = () => {
           onPress: async () => {
             setApplying(true);
             try {
-              if (isV3) {
-                const v3Record = await applyContextAutoAllocationV3(numericInput);
-                await loadSettings();
-                setLastApplied({
-                  maxContextTokens: v3Record.maxContextTokens,
-                  appliedAt: v3Record.appliedAt,
-                  allocation: undefined as any,
-                  policySchemaVersion: 3,
-                  policyVersion: v3Record.policy.allocatorVersion,
-                  policyHash: v3Record.policyHash,
-                  affectedCounts: {
-                    llmConfigs: v3Record.affectedCounts.llmConfigs,
-                    presets: v3Record.affectedCounts.presets,
-                    characters: 0,
-                    notes: 0,
-                    worldbookEntries: 0,
-                    worldbookCollections: 0,
-                  },
-                });
-                setAutoMode('v3');
-              } else {
-                const record = await applyContextAutoAllocation(numericInput);
-                await loadSettings();
-                setLastApplied(record);
-                if (record.policy) setPolicy(record.policy);
-                setAutoMode('v2');
-              }
+              const v3Record = await applyContextAutoAllocationV3(numericInput);
+              await loadSettings();
+              setLastApplied({
+                maxContextTokens: v3Record.maxContextTokens,
+                appliedAt: v3Record.appliedAt,
+                allocation: undefined as any,
+                policySchemaVersion: 3,
+                policyVersion: v3Record.policy.allocatorVersion,
+                policyHash: v3Record.policyHash,
+                affectedCounts: {
+                  llmConfigs: v3Record.affectedCounts.llmConfigs,
+                  presets: v3Record.affectedCounts.presets,
+                  characters: 0,
+                  notes: 0,
+                  worldbookEntries: 0,
+                  worldbookCollections: 0,
+                },
+              });
+              setPolicyV3(v3Record.policy);
               setLlmConfigs(await db.getLLMConfigs());
               Toast.show({
                 type: 'success',
-                text1: `已应用 ${formatNumber(numericInput)} tokens 的${
-                  isV3 ? ' V3 ' : ''
-                }分配方案`,
+                text1: `已保存 ${formatNumber(numericInput)} tokens 的 V3 模拟窗口`,
               });
             } catch (e: any) {
               Toast.show({
@@ -272,27 +155,10 @@ export const ContextAutoConfigScreen: React.FC = () => {
     );
   };
 
-  const handleToggleMode = (mode: ContextAutoMode) => {
-    if (mode === autoMode) return;
-    Alert.alert(
-      mode === 'v3' ? '切换到 V3 分层弹性' : '切换到 V2 固定比例',
-      mode === 'v3'
-        ? 'V3 模式：上下文按模型容量实时分配，资源按真实需求竞争，不再固定 35/20/45 比例，也不写入资源 max_tokens。\n\n下次应用时生效；历史 V2 任务不受影响。'
-        : 'V2 模式：保留固定比例 + 单项 max_tokens 写入。历史 V2 任务恢复方式不变。',
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '切换',
-          onPress: () => setAutoMode(mode),
-        },
-      ],
-    );
-  };
-
   const handleRestoreDefaults = () => {
     Alert.alert(
       '恢复默认配置',
-      '将把 ContextConfig 与上下文自动化策略恢复到出厂默认值。\n\n' +
+      '将恢复 V3 策略与预算模拟窗口默认值。\n\n' +
         '注意：LLM 配置、预设、旧版流水线字段和资源级 max_tokens 不会被重置。',
       [
         { text: '取消', style: 'cancel' },
@@ -303,14 +169,17 @@ export const ContextAutoConfigScreen: React.FC = () => {
             setRestoring(true);
             try {
               const defaultPolicy = cloneDefaultContextAutomationPolicy();
+              const defaultPolicyV3 = cloneDefaultContextAutomationPolicyV3();
               await setContextAutomationPolicy(defaultPolicy);
+              await setContextAutomationPolicyV3(defaultPolicyV3);
+              setPolicyV3(defaultPolicyV3);
+              await setContextAutoMode('v3');
               await setContextAutoInput(DEFAULT_INPUT_VALUE);
               await db.setContextConfig({
                 ...DEFAULT_CONTEXT_CONFIG,
               });
               Toast.show({ type: 'success', text1: '已恢复默认配置' });
               setInputText(String(DEFAULT_INPUT_VALUE));
-              setPolicy(defaultPolicy);
               setLastApplied(null);
             } catch (e: any) {
               Toast.show({
@@ -331,7 +200,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
     <Screen>
       <Header
         title="上下文自动化配置"
-        subtitle="填一个数字，自动分配所有 token 预算"
+        subtitle="V3 策略与预算模拟（不修改模型真实能力）"
       />
       <ScrollView contentContainerStyle={styles.content}>
         {/* 上次应用记录 */}
@@ -349,22 +218,13 @@ export const ContextAutoConfigScreen: React.FC = () => {
             <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
               {lastApplied.policySchemaVersion === 3
                 ? 'V3 模式：仅写入策略与模式标记，保留每个模型的真实上下文窗口与资料上限不变'
-                : `已覆盖：${
-                    lastApplied.affectedCounts.llmConfigs
-                  } 个 LLM 配置 · ${
-                    lastApplied.affectedCounts.presets
-                  } 个预设 · ${
-                    lastApplied.affectedCounts.characters +
-                    lastApplied.affectedCounts.notes +
-                    lastApplied.affectedCounts.worldbookEntries +
-                    lastApplied.affectedCounts.worldbookCollections
-                  } 个资源`}
+                : '历史兼容记录：不参与新 V3 任务，也不会覆盖当前模型真实能力'}
             </Text>
             {lastApplied.policyVersion ? (
               <Text
                 style={[styles.metaText, { color: theme.colors.textSecondary }]}
               >
-                续写预算策略：{lastApplied.policyVersion} · hash{' '}
+                历史策略记录：{lastApplied.policyVersion} · hash{' '}
                 {(lastApplied.policyHash || '').slice(0, 12)}
               </Text>
             ) : null}
@@ -373,162 +233,64 @@ export const ContextAutoConfigScreen: React.FC = () => {
 
         <Card>
           <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>
-            原著续写 V4 四节点预算模拟
+            当前模型真实能力
           </Text>
-          <Text
-            style={[styles.cardMeta, { color: theme.colors.textSecondary }]}
-          >
-            这里使用同一个 V4 resolver 做窗口级模拟；实际 run
-            创建后还会根据目标汉字数、真实
-            Prompt、初稿和段落数重新冻结上下限。当前模拟不发送请求，也不把模拟值写入阶段配置。
-          </Text>
-          {continuationBudgetPreview ? (
-            (
-              Object.keys(CONTINUATION_STAGE_LABELS) as Array<
-                keyof typeof CONTINUATION_STAGE_LABELS
+          {llmConfigs.length > 0 ? (
+            llmConfigs.map(config => (
+              <View
+                key={String(config.id)}
+                style={[styles.stagePreviewRow, { borderBottomColor: theme.colors.border }]}
               >
-            ).map(stage => {
-              const budget = continuationBudgetPreview.stages[stage];
-              return (
-                <View
-                  key={stage}
-                  style={[
-                    styles.stagePreviewRow,
-                    { borderBottomColor: theme.colors.border },
-                  ]}
-                >
-                  <View style={styles.stagePreviewLabel}>
-                    <Text
-                      style={[
-                        styles.stageTitle,
-                        { color: theme.colors.textPrimary },
-                      ]}
-                    >
-                      {CONTINUATION_STAGE_LABELS[stage]}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.metaText,
-                        { color: theme.colors.textSecondary },
-                      ]}
-                    >
-                      有效窗口 {formatNumber(budget.effectiveWindow)} · 输出比例{' '}
-                      {Math.round(budget.maxOutputRatio * 100)}%
-                    </Text>
-                  </View>
-                  <Text
-                    style={[
-                      styles.stagePreviewValue,
-                      { color: theme.colors.accent },
-                    ]}
-                  >
-                    {formatNumber(budget.maximumOutputTokens)} max
+                <View style={styles.stagePreviewLabel}>
+                  <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>
+                    {config.name || config.model_name || `LLM #${config.id}`}
+                    {Number(config.is_active) === 1 ? ' · 当前' : ''}
+                  </Text>
+                  <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
+                    {config.model_name || '未命名模型'}
                   </Text>
                 </View>
-              );
-            })
+                <Text style={[styles.stagePreviewValue, { color: theme.colors.accent }]}>
+                  {formatNumber(Number(config.context_window) || 0)} /{' '}
+                  {formatNumber(Number(config.max_output_tokens) || 0)}
+                </Text>
+              </View>
+            ))
           ) : (
             <Text style={[styles.metaText, { color: theme.colors.textMuted }]}>
-              暂无可用在线 LLM 配置，运行时会在配置完成后按各阶段模型能力解析。
+              暂无 LLM 配置；运行时会在发送前读取实际模型能力。
             </Text>
           )}
           <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-            Policy：{policy.allocatorVersion} · 有效窗口{' '}
-            {Math.round(policy.utilization.effectiveWindowRatio * 100)}% ·
-            安全余量 {Math.round(policy.utilization.safetyReserveRatio * 100)}%
+            右侧依次为 context_window / max_output_tokens。V3 不会用全局数字覆盖这些值。
           </Text>
         </Card>
 
-        {/* Context Budget 模式切换（V2 / V3） */}
+        {/* New tasks use V3; V2 remains an internal historical compatibility path. */}
         <Card>
           <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>
-            上下文预算模式
+            V3 分层弹性预算
           </Text>
           <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>
-            V3 分层弹性：模型容量驱动板块软目标、空闲预算跨板块借调、资料按真实需求竞争。
-            V2 固定比例：保留 35/20/45 与单项 max_tokens 写入。
+            新任务统一按模型真实 context_window、max_output_tokens 与本次实际需求计算
+            Story State、Recent Bridge、Resources、Episodic 四个 Board；空闲容量可跨 Board
+            借调。历史 V2 任务仍按原冻结版本恢复。
           </Text>
-          <View style={styles.quickRow}>
-            <TouchableOpacity
-              onPress={() => handleToggleMode('v2')}
-              style={[
-                styles.quickChip,
-                {
-                  backgroundColor:
-                    autoMode === 'v2'
-                      ? theme.colors.accent
-                      : theme.colors.card,
-                  borderColor:
-                    autoMode === 'v2'
-                      ? theme.colors.accent
-                      : theme.colors.border,
-                  borderWidth: 1,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.cardMeta,
-                  {
-                    color:
-                      autoMode === 'v2'
-                        ? theme.colors.surface
-                        : theme.colors.textSecondary,
-                    marginBottom: 0,
-                  },
-                ]}
-              >
-                V2 固定比例
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => handleToggleMode('v3')}
-              style={[
-                styles.quickChip,
-                {
-                  backgroundColor:
-                    autoMode === 'v3'
-                      ? theme.colors.accent
-                      : theme.colors.card,
-                  borderColor:
-                    autoMode === 'v3'
-                      ? theme.colors.accent
-                      : theme.colors.border,
-                  borderWidth: 1,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.cardMeta,
-                  {
-                    color:
-                      autoMode === 'v3'
-                        ? theme.colors.surface
-                        : theme.colors.textSecondary,
-                    marginBottom: 0,
-                  },
-                ]}
-              >
-                V3 分层弹性 ★
-              </Text>
-            </TouchableOpacity>
-          </View>
-          {autoMode === 'v3' && (
-            <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-              当前为 V3 模式：新大纲章节任务将冻结 context_budget_version=6，
-              经由分层弹性分配器运行；历史 V2 任务保留原版本不动。
-            </Text>
-          )}
+          <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
+            当前页面的数字仅用于预算模拟和 Preview，不会覆盖任何模型能力或资源 max_tokens。
+            当前 V3 Policy：{policyV3.allocatorVersion} · hash{' '}
+            {hashContextAutomationPolicyV3(policyV3).slice(0, 12)}
+          </Text>
         </Card>
 
-        {/* 输入最大上下文 */}
+        {/* 预算模拟窗口 */}
         <Card>
           <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>
-            模型支持的最大上下文
+            预算模拟窗口
           </Text>
           <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>
-            查看你的模型文档（如 Claude/Gemini/DeepSeek），填入它支持的最大 tokens 数。
+            用于 Preview 查看不同窗口下的 Board 分配；真实模型能力来自当前 LLM 配置，
+            不会被这个数字覆盖。
           </Text>
           <View style={styles.quickRow}>
             {QUICK_PRESETS.map((p) => {
@@ -592,139 +354,6 @@ export const ContextAutoConfigScreen: React.FC = () => {
             </Text>
           ) : null}
         </Card>
-
-        {/* 分配预览 */}
-        {preview ? (
-          <Card>
-            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>
-              分配预览
-            </Text>
-
-            <Text style={[styles.groupTitle, { color: theme.colors.accent }]}>
-              📥 输入侧（80% = {formatNumber(preview.inputBudget)}）
-            </Text>
-            <PreviewRow
-              label="滑动窗口"
-              value={preview.slidingWindowSize}
-              color={theme.colors.textPrimary}
-            />
-            <PreviewRow
-              label="资料预算"
-              value={preview.resourceBudget}
-              color={theme.colors.textPrimary}
-            />
-            <PreviewRow
-              label="全局故事状态"
-              value={preview.storyStateBudgetTokens}
-              color={theme.colors.textPrimary}
-            />
-            <PreviewRow
-              label="历史章节事件"
-              value={preview.episodicMemoryBudgetTokens}
-              color={theme.colors.textPrimary}
-            />
-            <PreviewRow
-              label="每章记忆补丁输出上限"
-              value={preview.memoryPatchMaxTokens}
-              color={theme.colors.textPrimary}
-            />
-
-            <Text
-              style={[
-                styles.groupTitle,
-                { color: theme.colors.accent, marginTop: spacing.md },
-              ]}
-            >
-              📤 模型输出基线（20% = {formatNumber(preview.outputBudget)}）
-            </Text>
-            <PreviewRow
-              label="LLM max_output_tokens（非本地）"
-              value={preview.llmMaxOutputTokens}
-              color={theme.colors.textPrimary}
-            />
-
-            {outlineBudgetPreview ? (
-              <>
-                <Text
-                  style={[
-                    styles.groupTitle,
-                    { color: theme.colors.accent, marginTop: spacing.md },
-                  ]}
-                >
-                  🧩 大纲五阶段独立弹性 reservation（新任务）
-                </Text>
-                {(
-                  [
-                    ['draft', 'Draft 初稿'],
-                    ['review', 'Review 审阅'],
-                    ['factCheck', 'FactCheck 核查'],
-                    ['brief', 'Brief 摘要'],
-                    ['proof', 'Final 终稿'],
-                  ] as const
-                ).map(([stage, label]) => (
-                  <PreviewRow
-                    key={stage}
-                    label={label}
-                    value={outlineBudgetPreview.stages[stage].requestMaxTokens}
-                    color={theme.colors.textPrimary}
-                  />
-                ))}
-              </>
-            ) : null}
-
-            <Text
-              style={[
-                styles.groupTitle,
-                { color: theme.colors.accent, marginTop: spacing.md },
-              ]}
-            >
-              📊 资源级（按实际数量分摊）
-            </Text>
-            <PreviewRow
-              label={`角色（${resourceCounts.characters} 个，单项）`}
-              value={preview.characterMaxTokens}
-              color={theme.colors.textPrimary}
-              dimmed={resourceCounts.characters === 0}
-            />
-            <PreviewRow
-              label={`笔记（${resourceCounts.notes} 个，单项）`}
-              value={preview.noteMaxTokens}
-              color={theme.colors.textPrimary}
-              dimmed={resourceCounts.notes === 0}
-            />
-            <PreviewRow
-              label={`世界书条目（${resourceCounts.worldbookEntries} 个，单项）`}
-              value={preview.worldbookEntryMaxTokens}
-              color={theme.colors.textPrimary}
-              dimmed={resourceCounts.worldbookEntries === 0}
-            />
-            <PreviewRow
-              label={`世界书合集（${resourceCounts.worldbookCollections} 个，单项）`}
-              value={preview.worldbookCollectionMaxTokens}
-              color={theme.colors.textPrimary}
-              dimmed={resourceCounts.worldbookCollections === 0}
-            />
-
-            <Text
-              style={[
-                styles.groupTitle,
-                { color: theme.colors.accent, marginTop: spacing.md },
-              ]}
-            >
-              🔗 同步写入
-            </Text>
-            <PreviewRow
-              label="LLM context_window（非本地）"
-              value={preview.llmContextWindow}
-              color={theme.colors.textPrimary}
-            />
-            <PreviewRow
-              label="Presets max_tokens（全部）"
-              value={preview.presetMaxTokens}
-              color={theme.colors.textPrimary}
-            />
-          </Card>
-        ) : null}
 
         <View style={styles.buttonRow}>
           <Button
@@ -803,14 +432,4 @@ const styles = StyleSheet.create({
   stagePreviewLabel: { flex: 1, marginRight: spacing.sm },
   stageTitle: { fontSize: 13, fontWeight: '700' },
   stagePreviewValue: { fontSize: 13, fontWeight: '800' },
-});
-
-const previewStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 3,
-  },
-  label: { fontSize: 13 },
-  value: { fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
 });

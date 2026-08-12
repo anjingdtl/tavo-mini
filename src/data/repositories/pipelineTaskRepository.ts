@@ -14,7 +14,13 @@ import {
 import { setSetting } from './settingsRepository';
 import type { Row } from './shared';
 import type { PipelineCheckpointStage } from '../../services/pipeline/types';
-import type { PipelineStageCheckpointRow } from './pipelineStageCheckpointRepository';
+import {
+  checkpointsToStageResults,
+  getStageCheckpointsForDerivedFinalRewrite,
+  getStageCheckpointSummariesForTasks,
+  type PipelineStageCheckpointRow,
+  type PipelineStageCheckpointSummary,
+} from './pipelineStageCheckpointRepository';
 
 export async function getPipelineConfig(options?: {
   /**
@@ -447,8 +453,153 @@ export async function createDerivedPipelineTaskWithCheckpoints(
 
 /** Fetch a single pipeline task by id (diagnostic parent-exists check). */
 export async function getPipelineTaskById(id: string): Promise<any | null> {
-  const row = await one<Row>('SELECT * FROM pipeline_tasks WHERE id = ?', [id]);
-  return row ? mapPipelineTaskRow(row) : null;
+  // Compatibility API retained for tests/legacy callers, but routed through
+  // the narrow, chunked detail reader so it can never issue a wide-row SELECT.
+  return getPipelineTaskResumePayload(id);
+}
+
+export interface PipelineTaskDerivedFinalMetadata {
+  id: string;
+  targetType: string;
+  targetId: number;
+  status: string;
+  error: string | null;
+  inputFingerprint: string | null;
+  pipelineContextVersion: number | null;
+  pipelineContextHash: string | null;
+  outlineWorkflowVersion: number | null;
+  contextBudgetVersion: number | null;
+  parentTaskId: string | null;
+  derivedKind: string | null;
+  derivedInstruction: string | null;
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt: number | null;
+  resolvedAction: string | null;
+}
+
+/**
+ * Narrow source-task projection for Derived Final. Never select the task row's
+ * stage_results, final_text or pipeline_context_json here: those TEXT columns
+ * can collectively exceed Android CursorWindow even when the caller only
+ * needs source metadata.
+ */
+export async function getPipelineTaskForDerivedFinalRewrite(
+  id: string,
+): Promise<PipelineTaskDerivedFinalMetadata | null> {
+  const row = await one<Row>(
+    `SELECT id, target_type, target_id, status, error,
+            input_fingerprint, pipeline_context_version, pipeline_context_hash,
+            outline_workflow_version, context_budget_version,
+            parent_task_id, derived_kind, derived_instruction,
+            created_at, updated_at, resolved_at, resolved_action
+       FROM pipeline_tasks
+      WHERE id = ?`,
+    [id],
+  );
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    targetType: String(row.target_type),
+    targetId: Number(row.target_id),
+    status: String(row.status),
+    error: row.error ?? null,
+    inputFingerprint: row.input_fingerprint ?? null,
+    pipelineContextVersion:
+      row.pipeline_context_version != null
+        ? Number(row.pipeline_context_version)
+        : null,
+    pipelineContextHash: row.pipeline_context_hash ?? null,
+    outlineWorkflowVersion:
+      row.outline_workflow_version != null
+        ? Number(row.outline_workflow_version)
+        : null,
+    contextBudgetVersion:
+      row.context_budget_version != null
+        ? Number(row.context_budget_version)
+        : null,
+    parentTaskId: row.parent_task_id ?? null,
+    derivedKind: row.derived_kind ?? null,
+    derivedInstruction: row.derived_instruction ?? null,
+    createdAt: Number(row.created_at || 0),
+    updatedAt: Number(row.updated_at || 0),
+    resolvedAt: row.resolved_at != null ? Number(row.resolved_at) : null,
+    resolvedAction: row.resolved_action ?? null,
+  };
+}
+
+const PIPELINE_TEXT_CHUNK_CHARACTERS = 128 * 1024;
+
+async function readPipelineTextColumn(
+  column: 'final_text' | 'pipeline_context_json',
+  id: string,
+): Promise<string | null> {
+  const first = await one<Row>(
+    `SELECT length(${column}) AS payload_length,
+            substr(${column}, 1, ?) AS payload_chunk
+       FROM pipeline_tasks
+      WHERE id = ?`,
+    [PIPELINE_TEXT_CHUNK_CHARACTERS, id],
+  );
+  if (!first) return null;
+  if (first.payload_length == null) return null;
+  const totalLength = Math.max(0, Number(first.payload_length) || 0);
+  let payload = String(first.payload_chunk ?? '');
+  for (
+    let offset = PIPELINE_TEXT_CHUNK_CHARACTERS + 1;
+    offset <= totalLength;
+    offset += PIPELINE_TEXT_CHUNK_CHARACTERS
+  ) {
+    const next = await one<Row>(
+      `SELECT substr(${column}, ?, ?) AS payload_chunk
+         FROM pipeline_tasks
+        WHERE id = ?`,
+      [offset, PIPELINE_TEXT_CHUNK_CHARACTERS, id],
+    );
+    payload += String(next?.payload_chunk ?? '');
+  }
+  return payload;
+}
+
+/** Read final_text only, in bounded chunks, for Derived Final validation. */
+export function getPipelineTaskFinalTextPayload(
+  id: string,
+): Promise<string | null> {
+  return readPipelineTextColumn('final_text', id);
+}
+
+/** Read the frozen context JSON only, in bounded chunks, for Derived Final. */
+export function getPipelineTaskContextPayload(
+  id: string,
+): Promise<string | null> {
+  return readPipelineTextColumn('pipeline_context_json', id);
+}
+
+/**
+ * Cold-start / resume detail reader. Metadata, final text, frozen context and
+ * checkpoint output are fetched through separate narrow/chunked queries; no
+ * SQLite row contains the task's large TEXT columns together.
+ */
+export async function getPipelineTaskResumePayload(
+  id: string,
+): Promise<any | null> {
+  const metadata = await getPipelineTaskForDerivedFinalRewrite(id);
+  if (!metadata) return null;
+  const [pipelineContextJson, finalText, checkpointRows] = await Promise.all([
+    getPipelineTaskContextPayload(id),
+    getPipelineTaskFinalTextPayload(id),
+    getStageCheckpointsForDerivedFinalRewrite(id),
+  ]);
+  const stageResults = checkpointsToStageResults(checkpointRows).map(row => ({
+    ...row,
+    stage: row.stage as any,
+  }));
+  return {
+    ...metadata,
+    stageResults,
+    finalText,
+    pipelineContextJson,
+  };
 }
 
 /**
@@ -499,23 +650,73 @@ export async function getPipelineTaskAdoptionPayload(
   return { id: String(first.id), finalText };
 }
 
-function mapPipelineTaskRow(row: Row) {
+const PIPELINE_TASK_SUMMARY_COLUMNS = `
+  id, target_type, target_id, status, error,
+  input_fingerprint, pipeline_context_version, pipeline_context_hash,
+  outline_workflow_version, context_budget_version,
+  parent_task_id, derived_kind, derived_instruction,
+  created_at, updated_at, resolved_at, resolved_action`;
+
+function checkpointSummariesToStageResults(
+  rows: PipelineStageCheckpointSummary[],
+): Array<{
+  stage: string;
+  text: string;
+  status: 'success' | 'failed' | 'skipped';
+  error?: string;
+  errorCode?: string;
+  tokens?: { input: number; output: number; total: number };
+  durationMs: number;
+}> {
+  return rows
+    .filter(
+      row =>
+        row.stage !== 'finalize' &&
+        (row.status === 'succeeded' ||
+          row.status === 'failed' ||
+          row.status === 'skipped'),
+    )
+    .map(row => ({
+      stage: String(row.stage),
+      text: '',
+      status:
+        row.status === 'succeeded'
+          ? ('success' as const)
+          : row.status === 'skipped'
+            ? ('skipped' as const)
+            : ('failed' as const),
+      error: row.errorMessage || undefined,
+      errorCode: row.errorCode || undefined,
+      tokens:
+        row.inputTokens != null ||
+        row.outputTokens != null ||
+        row.totalTokens != null
+          ? {
+              input: row.inputTokens || 0,
+              output: row.outputTokens || 0,
+              total: row.totalTokens || 0,
+            }
+          : undefined,
+      durationMs: row.durationMs || 0,
+    }));
+}
+
+function mapPipelineTaskSummary(
+  row: Row,
+  checkpointRows: PipelineStageCheckpointSummary[],
+) {
   return {
-    id: row.id,
+    id: String(row.id),
     targetType: row.target_type,
-    targetId: row.target_id,
+    targetId: Number(row.target_id),
     status: row.status,
-    stageResults: (() => {
-      try {
-        return JSON.parse(row.stage_results);
-      } catch {
-        return [];
-      }
-    })(),
-    finalText: row.final_text,
-    error: row.error,
+    stageResults: checkpointSummariesToStageResults(checkpointRows),
+    // Large payloads are intentionally lazy. Result/Resume/Adoption paths
+    // fetch them through their dedicated chunk readers.
+    finalText: null,
+    error: row.error ?? null,
     inputFingerprint: row.input_fingerprint ?? null,
-    pipelineContextJson: row.pipeline_context_json ?? null,
+    pipelineContextJson: null,
     pipelineContextVersion:
       row.pipeline_context_version != null
         ? Number(row.pipeline_context_version)
@@ -532,25 +733,51 @@ function mapPipelineTaskRow(row: Row) {
     parentTaskId: row.parent_task_id ?? null,
     derivedKind: row.derived_kind ?? null,
     derivedInstruction: row.derived_instruction ?? null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    resolvedAt: row.resolved_at,
-    resolvedAction: row.resolved_action,
+    createdAt: Number(row.created_at || 0),
+    updatedAt: Number(row.updated_at || 0),
+    resolvedAt: row.resolved_at != null ? Number(row.resolved_at) : null,
+    resolvedAction: row.resolved_action ?? null,
   };
 }
 
-export async function getUnresolvedPipelineTasks(): Promise<any[]> {
+async function getPipelineTaskSummaries(
+  whereSql = '',
+  params: unknown[] = [],
+): Promise<any[]> {
   const rows = await all<Row>(
-    'SELECT * FROM pipeline_tasks WHERE resolved_at IS NULL ORDER BY created_at DESC',
+    `SELECT ${PIPELINE_TASK_SUMMARY_COLUMNS}
+       FROM pipeline_tasks
+      ${whereSql}
+      ORDER BY created_at DESC`,
+    params,
   );
-  return rows.map(mapPipelineTaskRow);
+  const checkpointRows = await getStageCheckpointSummariesForTasks(
+    rows.map(row => String(row.id)),
+  );
+  const byTask = new Map<string, PipelineStageCheckpointSummary[]>();
+  for (const checkpoint of checkpointRows) {
+    const list = byTask.get(checkpoint.taskId) || [];
+    list.push(checkpoint);
+    byTask.set(checkpoint.taskId, list);
+  }
+  return rows.map(row =>
+    mapPipelineTaskSummary(row, byTask.get(String(row.id)) || []),
+  );
+}
+
+/** Narrow metadata + checkpoint summaries for batch/status decisions. */
+export function getPipelineTaskSummaryById(id: string): Promise<any | null> {
+  return getPipelineTaskSummaries('WHERE id = ?', [id]).then(
+    rows => rows[0] || null,
+  );
+}
+
+export async function getUnresolvedPipelineTasks(): Promise<any[]> {
+  return getPipelineTaskSummaries('WHERE resolved_at IS NULL');
 }
 
 export async function getAllPipelineTasks(): Promise<any[]> {
-  const rows = await all<Row>(
-    'SELECT * FROM pipeline_tasks ORDER BY created_at DESC',
-  );
-  return rows.map(mapPipelineTaskRow);
+  return getPipelineTaskSummaries();
 }
 
 export async function deletePipelineTask(id: string): Promise<void> {

@@ -26,7 +26,10 @@ import {
   type MultiChapterBatchItemRow,
   type MultiChapterBatchRow,
 } from '../../data/repositories/multiChapterBatchRepository';
-import { getPipelineTaskById } from '../../data/repositories/pipelineTaskRepository';
+import {
+  getPipelineTaskResumePayload,
+  getPipelineTaskSummaryById,
+} from '../../data/repositories/pipelineTaskRepository';
 import { getLatestAttemptByTask } from '../../data/repositories/pipelineStageAttemptRepository';
 import { getChaptersByProject } from '../../data/repositories/projectRepository';
 import {
@@ -101,7 +104,7 @@ async function loadTaskStatuses(
   item: MultiChapterBatchItemRow | undefined,
 ): Promise<Record<string, string>> {
   if (!item?.activePipelineTaskId) return {};
-  const task = await getPipelineTaskById(item.activePipelineTaskId);
+  const task = await getPipelineTaskSummaryById(item.activePipelineTaskId);
   return task ? { [item.activePipelineTaskId]: String(task.status) } : {};
 }
 
@@ -114,7 +117,7 @@ async function loadTaskVersions(
   if (!item?.activePipelineTaskId) {
     return { taskWorkflowVersions: {}, taskContextBudgetVersions: {} };
   }
-  const task = await getPipelineTaskById(item.activePipelineTaskId);
+  const task = await getPipelineTaskSummaryById(item.activePipelineTaskId);
   if (!task) {
     return { taskWorkflowVersions: {}, taskContextBudgetVersions: {} };
   }
@@ -450,7 +453,7 @@ async function executeBatchAction(params: {
       // Cold-start / process restart: the task row exists but was never
       // registered in the in-memory pipeline store. Register (idempotent) so
       // the single-chapter pipeline's store writes succeed.
-      const existingTask = await getPipelineTaskById(taskId);
+      const existingTask = await getPipelineTaskResumePayload(taskId);
       if (existingTask) {
         usePipelineTaskStore.getState().registerPersistedTask({
           id: existingTask.id,
@@ -519,6 +522,8 @@ async function executeBatchAction(params: {
               foregroundOwner: 'batch',
               pipelineModeOverride: currentPipelineMode,
               pipelineReasoningEffortOverride: batch.reasoningEffort ?? null,
+              contextAutomationPolicyV3:
+                batch.contextAutomationPolicySnapshot ?? null,
               batchBudgetGate: { batchId },
             })
           : params.resumePipelineImpl(taskId, chapter, notifyStage, {
@@ -527,6 +532,8 @@ async function executeBatchAction(params: {
               foregroundOwner: 'batch',
               pipelineModeOverride: currentPipelineMode,
               pipelineReasoningEffortOverride: batch.reasoningEffort ?? null,
+              contextAutomationPolicyV3:
+                batch.contextAutomationPolicySnapshot ?? null,
               batchBudgetGate: { batchId },
             });
       // BN-09 / BN-10: the main loop renews the lease on every state-machine
@@ -757,8 +764,6 @@ async function adoptAndCommit(params: {
     return 'continue';
   }
   const taskId = currentItem.activePipelineTaskId;
-  const task = await getPipelineTaskById(taskId);
-  if (!task) return 'continue';
 
   const quality: BatchItemCompletionQuality =
     action.type === 'adopt_draft_result' ? 'draft_only' : 'full_pipeline';

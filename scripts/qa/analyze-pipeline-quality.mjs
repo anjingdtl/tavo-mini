@@ -210,11 +210,24 @@ if (!fs.existsSync(databasePath)) {
 
 const db = new DatabaseSync(databasePath, {readOnly: true});
 try {
-  const task = db.prepare('SELECT * FROM pipeline_tasks WHERE id = ?').get(taskId);
+  const task = db
+    .prepare(
+      `SELECT id, target_type, target_id, status, final_text,
+              outline_workflow_version, context_budget_version
+         FROM pipeline_tasks
+        WHERE id = ?`,
+    )
+    .get(taskId);
   if (!task) throw new Error(`任务不存在: ${taskId}`);
 
   const rows = db
-    .prepare('SELECT * FROM pipeline_stage_checkpoints WHERE task_id = ?')
+    .prepare(
+      `SELECT task_id, stage, status, output_text, error_code, error_message,
+              input_tokens, output_tokens, total_tokens, duration_ms,
+              attempt_count, started_at, completed_at, updated_at
+         FROM pipeline_stage_checkpoints
+        WHERE task_id = ?`,
+    )
     .all(taskId)
     .sort((left, right) => STAGE_ORDER.indexOf(left.stage) - STAGE_ORDER.indexOf(right.stage));
   const stages = stageMap(rows);

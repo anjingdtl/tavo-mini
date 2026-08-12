@@ -16,6 +16,7 @@ import {
   DEFAULT_CONTEXT_AUTOMATION_POLICY_V3,
   hashContextAutomationPolicyV3,
   type ContextBudgetBoardKey,
+  type ContextAutomationPolicyV3,
 } from './contextAutomationPolicy';
 import type { Chapter, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
@@ -38,7 +39,9 @@ import {
 import { retrieveNoteFragments, type RetrievalQuery } from './noteRetriever';
 import {
   buildPendingBridgeText,
+  estimateStoryCoverageCandidateDemand,
   excludeRawFromEpisodicCandidates,
+  resolveStoryMemoryCoverage,
   STORY_MEMORY_MAX_RAW_CHAPTERS,
 } from './storyMemory/storyMemoryCoverage';
 import { renderStoryMemoryForContext } from './storyMemory/storyMemoryRenderer';
@@ -343,6 +346,9 @@ export async function buildContext(
 ): Promise<BuildContextResult> {
   const trace: ContextTraceItem[] = [];
   let chapters = await db.getChaptersByProject(projectId);
+  const useV3Hierarchical =
+    typeof options.contextBudgetVersion === 'number' &&
+    options.contextBudgetVersion >= 6;
 
   // Checkpoint / pending bridge / seam preparation. This is local-only:
   // generation mode may signal background maintenance, but never waits for
@@ -357,6 +363,7 @@ export async function buildContext(
     config,
     {
       mode: options.storyMemoryMode === 'preview' ? 'preview' : 'generation',
+      contextBudgetVersion: options.contextBudgetVersion,
     },
   );
   // A hard coverage gap and an illegal target position are both fail-closed
@@ -370,14 +377,17 @@ export async function buildContext(
     chapters = await db.getChaptersByProject(projectId);
   }
 
-  const coverage = prepared?.coverage;
-  const rawChapterIds = coverage?.rawChapterIds || [];
+  let coverage = prepared?.coverage;
+  const coverageCandidates = prepared?.coverageCandidates;
+  let rawChapterIds = coverage?.rawChapterIds || [];
   const previousChapters = chapters.filter(
     chapter => chapter.position < currentChapter.position,
   );
-  const episodicCandidates = excludeRawFromEpisodicCandidates(
+  let episodicCandidates = excludeRawFromEpisodicCandidates(
     previousChapters,
-    rawChapterIds,
+    useV3Hierarchical && coverageCandidates
+      ? []
+      : rawChapterIds,
   );
 
   // Resolve outline first so soft budgets can yield to the full outline plan.
@@ -395,7 +405,12 @@ export async function buildContext(
   // memory building depends on effective budgets (circular dependency).
   const worldbookScanContent = selectPreviousChapters(
     currentChapter,
-    { strategy: 'sliding', recentChapterCount: config.worldbookScanDepth ?? 4 },
+    {
+      strategy: 'sliding',
+      recentChapterCount: useV3Hierarchical
+        ? STORY_MEMORY_MAX_RAW_CHAPTERS
+        : config.worldbookScanDepth ?? 4,
+    },
     chapters,
   )
     .map(chapter => chapter.content)
@@ -429,12 +444,22 @@ export async function buildContext(
   let v3ResourceCandidates: ResourceContextCandidate[] = [];
   let v3ResourceItemAllocations: ReadonlyMap<string, number> | undefined;
   let v3ResourceItemTraces: HierarchicalBudgetResult['resourceItemTraces'];
-  let effectiveResourceBudget = config.resourceBudget;
-  let effectiveStoryStateBudget = config.storyStateBudgetTokens ?? 8000;
-  let effectiveSlidingWindow = config.slidingWindowSize;
-  let effectiveMemoryTopK = config.memoryTopK ?? 10;
-  let effectiveEpisodicBudget =
-    config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
+  const V3_NATURAL_BUDGET = 1_000_000;
+  let effectiveResourceBudget = useV3Hierarchical
+    ? V3_NATURAL_BUDGET
+    : config.resourceBudget;
+  let effectiveStoryStateBudget = useV3Hierarchical
+    ? V3_NATURAL_BUDGET
+    : config.storyStateBudgetTokens ?? 8000;
+  let effectiveSlidingWindow = useV3Hierarchical
+    ? V3_NATURAL_BUDGET
+    : config.slidingWindowSize;
+  let effectiveMemoryTopK = useV3Hierarchical
+    ? Math.max(episodicCandidates.length, 1)
+    : config.memoryTopK ?? 10;
+  let effectiveEpisodicBudget = useV3Hierarchical
+    ? V3_NATURAL_BUDGET
+    : config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
   const resolvedContextWindow =
     options.contextWindow != null && options.contextWindow > 0
       ? Number(options.contextWindow)
@@ -443,9 +468,6 @@ export async function buildContext(
     options.reservedOutputTokens != null && options.reservedOutputTokens > 0
       ? Number(options.reservedOutputTokens)
       : 0;
-  const useV3Hierarchical =
-    typeof options.contextBudgetVersion === 'number' &&
-    options.contextBudgetVersion >= 6;
   if (resolvedContextWindow > 0 && reservedOut > 0) {
     const safety = deriveContextSafetyMargin(resolvedContextWindow);
     const fixedProtocol = 256;
@@ -512,7 +534,7 @@ export async function buildContext(
       // worldbook scan (Closure Plan §13 Phase A). Empty retrieval → demand 0.
       let episodicDemand = 0;
       let v3ScanMemoryText = '';
-      const v3RetrievalTopK = config.memoryTopK ?? 10;
+      const v3RetrievalTopK = Math.max(episodicCandidates.length, 1);
       try {
         const idfCache = await import('../utils/idfCache');
         const signature = idfCache.computeMemorySummarySignature(
@@ -557,7 +579,7 @@ export async function buildContext(
 
       // --- Resources demand (candidate-first, full scan) ---------------------
       let resourcesActualDemand = 0;
-      if (config.includeResources) {
+      if (useV3Hierarchical || config.includeResources) {
         try {
           const collected = await collectAllResourceCandidates(
             projectId,
@@ -584,9 +606,11 @@ export async function buildContext(
       // coverage (story memory off) fall back to the real sliding haystack size
       // — never the config slidingWindowSize as a hard demand cap.
       const slidingDemand =
-        coverage && coverage.estimatedRawTokens > 0
-          ? coverage.estimatedRawTokens
-          : estimateTokens(worldbookScanContent);
+        coverageCandidates && coverageCandidates.pendingChapters.length > 0
+          ? estimateStoryCoverageCandidateDemand(coverageCandidates)
+          : coverage && coverage.estimatedRawTokens > 0
+            ? coverage.estimatedRawTokens
+            : estimateTokens(worldbookScanContent);
 
       // --- Allocate ----------------------------------------------------------
       const v3Input: HierarchicalBudgetInput = {
@@ -777,6 +801,27 @@ export async function buildContext(
     }
   }
 
+  // Story Coverage is candidate-first in V3: only the allocator grant is
+  // allowed to decide which recent chapters stay raw and which become
+  // Episodic fallbacks. Legacy ContextConfig slidingWindowSize is not used for
+  // this decision.
+  if (
+    useV3Hierarchical &&
+    coverageCandidates &&
+    coverageCandidates.pendingChapters.length > 0
+  ) {
+    coverage = resolveStoryMemoryCoverage({
+      candidates: coverageCandidates,
+      slidingBudgetTokens: effectiveSlidingWindow,
+    });
+    rawChapterIds = coverage.rawChapterIds;
+    episodicCandidates = excludeRawFromEpisodicCandidates(
+      previousChapters,
+      rawChapterIds,
+    );
+    effectiveMemoryTopK = Math.max(episodicCandidates.length, 1);
+  }
+
   // Episodic query / retrieval options were computed above (before the budget
   // block) so the V3 branch could measure real demand + enrich the worldbook
   // scan haystack. Reused unchanged here for the final memoryText render.
@@ -942,7 +987,7 @@ export async function buildContext(
   let snapshotNoteText = '';
   let snapshotWorldbookText = '';
 
-  if (config.includeResources && effectiveResourceBudget > 0) {
+  if ((useV3Hierarchical || config.includeResources) && effectiveResourceBudget > 0) {
     if (useV3Hierarchical && v3ResourceCandidates.length > 0) {
       // ----- V3 candidate-first resource rendering (Plan §6 / §15) ----------
       // Each candidate is clipped to its item-allocator grant; no fixed
@@ -1057,11 +1102,37 @@ export async function buildContext(
         : seamBlock;
     }
   } else {
-    previousContent = buildPreviousContentText(
-      currentChapter,
-      { ...config, slidingWindowSize: effectiveSlidingWindow },
-      chapters,
-    );
+    if (useV3Hierarchical) {
+      // V6 has no manual strategy/full/custom path. When there is no pending
+      // checkpoint bridge, render the bounded recent candidate set and let the
+      // allocator grant below clip the rendered bytes.
+      const recent = selectPreviousChapters(
+        currentChapter,
+        {
+          strategy: 'sliding',
+          recentChapterCount: STORY_MEMORY_MAX_RAW_CHAPTERS,
+        },
+        chapters,
+      );
+      const recentText = recent
+        .map(
+          chapter =>
+            `第 ${chapter.position + 1} 章「${chapter.title || '未命名'}」\n${
+              chapter.content
+            }`,
+        )
+        .join('\n\n');
+      previousContent = clipTextTailToTokenBudget(
+        recentText,
+        effectiveSlidingWindow,
+      );
+    } else {
+      previousContent = buildPreviousContentText(
+        currentChapter,
+        { ...config, slidingWindowSize: effectiveSlidingWindow },
+        chapters,
+      );
+    }
   }
 
   // Pending bridge / seam text for the snapshot. Captured in macro-processed
@@ -1069,11 +1140,17 @@ export async function buildContext(
   // see the same view, not the raw pre-macro text.
   let snapshotRecentBridgeText = '';
   if (previousContent) {
-    const processed = await processMacros(previousContent, {
+    const processedBeforeBudget = await processMacros(previousContent, {
       projectId,
       chapterTitle: currentChapter.title,
       chapterSynopsis: currentChapter.synopsis,
     });
+    const processed = useV3Hierarchical
+      ? clipTextTailToTokenBudget(
+          processedBeforeBudget,
+          effectiveSlidingWindow,
+        )
+      : processedBeforeBudget;
     snapshotRecentBridgeText = processed;
     const prevMessage = `以下是检查点之后的近期正文/桥接内容，请重点承接最后发生的事件；若与长期状态冲突，以位置更晚的近期正文为准：\n\n${processed}`;
     messages.push({ role: 'user', content: prevMessage });
@@ -1085,7 +1162,7 @@ export async function buildContext(
       title: coverage?.pendingChapters.length
         ? 'Pending Bridge / Seam'
         : '前文滑动窗口',
-      reason: coverage
+      reason: coverage?.pendingChapters.length
         ? `raw:${coverage.rawChapterIds.join(',') || '无'}; episodicFallback:${
             coverage.episodicFallbackChapterIds.join(',') || '无'
           }; tokens≈${coverage.estimatedRawTokens}`
@@ -1131,8 +1208,11 @@ export async function buildContext(
   const immediatePreviousChapter = chapters
     .filter(chapter => chapter.position < currentChapter.position && chapter.content)
     .sort((a, b) => b.position - a.position)[0];
-  const immediatePreviousChapterText = immediatePreviousChapter?.content || '';
-  const immediatePreviousChapterEnding = immediatePreviousChapterText.slice(-1200);
+  const immediatePreviousChapterText = useV3Hierarchical
+    ? ''
+    : immediatePreviousChapter?.content || '';
+  const immediatePreviousChapterEnding =
+    immediatePreviousChapter?.content?.slice(-1200) || '';
 
   const pipelineContext: PipelineContextSnapshot = {
     presetText: resolvedSystemPrompt,
@@ -1183,12 +1263,16 @@ export async function buildContext(
  */
 function buildV3Summary(
   trace: HierarchicalBudgetResult,
-  policy: typeof DEFAULT_CONTEXT_AUTOMATION_POLICY_V3 | undefined,
+  policy: ContextAutomationPolicyV3 | undefined,
 ): import('../types/pipelineContext').ContextBudgetV3Summary {
   const usedPolicy = policy ?? DEFAULT_CONTEXT_AUTOMATION_POLICY_V3;
+  const policyHash = hashContextAutomationPolicyV3(usedPolicy);
   return {
     contextBudgetVersion: 6,
-    policyHash: hashContextAutomationPolicyV3(usedPolicy),
+    contextAutomationPolicyVersion: 'context-automation-v3',
+    policyHash,
+    contextAutomationPolicyHash: policyHash,
+    contextAutomationPolicySnapshot: JSON.parse(JSON.stringify(usedPolicy)),
     envelope: { ...trace.envelope },
     boards: (
       Object.values(trace.boardAllocations) as Array<

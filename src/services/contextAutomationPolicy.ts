@@ -423,9 +423,8 @@ export function cloneDefaultOutlinePipelineBudgetPolicyV3(): OutlinePipelineBudg
 // actual demand / activation / explicit selection.
 //
 // Versioning: V3 is independent of `context_budget_version`'s numerical
-// sequence. The protocol column still advances monotonically (current = 5);
-// V3 tasks freeze `context_budget_version = 6` and persist
-// `context_auto_mode = 'v3'` + `context_auto_policy_v3 = {...}` so legacy V2
+// sequence. Historical protocol rows remain readable; new V3 tasks freeze
+// `context_budget_version = 6` together with the policy snapshot so legacy
 // resumes never auto-upgrade.
 // ---------------------------------------------------------------------------
 

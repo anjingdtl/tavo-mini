@@ -612,7 +612,7 @@ export interface ContextAutoAppliedRecordV3 {
 /**
  * Apply V3 auto-config. Writes ONLY the V3 mode marker + policy + the chosen
  * context input size:
- *   - context_auto_mode = 'v3'
+ *   - the V3 policy/mode marker for settings compatibility
  *   - context_auto_policy_v3 = {policy}
  *   - context_auto_input = maxContextTokens
  *
