@@ -25,8 +25,13 @@ import {
   type StageInfo as ReconcileStageInfo,
 } from './pipeline/reconcile';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
-import type { PipelineMode, PipelineReasoningEffort } from '../types/pipeline';
-import { getPipelineTaskById } from '../data/repositories/pipelineTaskRepository';
+import type {
+  PipelineMode,
+  PipelineReasoningEffort,
+  PipelineTask,
+} from '../types/pipeline';
+import type { ContextAutomationPolicyV3 } from './contextAutomationPolicy';
+import { getPipelineTaskResumePayload } from '../data/repositories/pipelineTaskRepository';
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
@@ -71,6 +76,8 @@ export interface PipelineRunOptions {
    * only before the task has an execution snapshot; resume keeps the snapshot.
    */
   pipelineReasoningEffortOverride?: PipelineReasoningEffort | null;
+  /** Batch-frozen V3 policy; resume never falls back to live settings. */
+  contextAutomationPolicyV3?: ContextAutomationPolicyV3 | null;
   /**
    * BN-04: when set, every LLM attempt checks the batch's hard budget
    * caps BEFORE any HTTP request is issued. Exceeding the cap throws
@@ -234,6 +241,7 @@ export async function runChapterPipeline(
       isCancelled: isPipelineCancelled,
       pipelineModeOverride: options.pipelineModeOverride,
       pipelineReasoningEffortOverride: options.pipelineReasoningEffortOverride,
+      contextAutomationPolicyV3: options.contextAutomationPolicyV3,
       batchBudgetGate: options.batchBudgetGate,
       // CL-10: call-level foreground ownership (never module-global).
       foregroundOwner: options.foregroundOwner,
@@ -277,9 +285,6 @@ export async function resumePipeline(
   onStageUpdate?: (info: StageInfo | string) => void,
   options: PipelineRunOptions = {},
 ): Promise<void> {
-  const persistedTask =
-    usePipelineTaskStore.getState().tasks.find(task => task.id === taskId) ||
-    (await getPipelineTaskById(taskId));
   const incompleteStatuses = new Set([
     'idle',
     'queued',
@@ -291,6 +296,36 @@ export async function resumePipeline(
     'failed',
     'interrupted',
   ]);
+  const inMemoryTask = usePipelineTaskStore
+    .getState()
+    .tasks.find(task => task.id === taskId);
+  // Reject a known legacy row before hydrating its large payload. Besides
+  // preserving the fail-closed resume contract, this keeps legacy rejection
+  // independent of the DB detail reader (important during cold-start faults).
+  if (
+    inMemoryTask &&
+    incompleteStatuses.has(String(inMemoryTask.status)) &&
+    (Number(inMemoryTask.outlineWorkflowVersion) !==
+      CURRENT_OUTLINE_WORKFLOW_VERSION ||
+      !isTaskContextBudgetVersionResumable(inMemoryTask.contextBudgetVersion))
+  ) {
+    const error = Object.assign(
+      new Error('该任务使用旧版生成流程或预算协议，不能继续；请按新版重新生成。'),
+      { code: 'LEGACY_PIPELINE_RESUME_BLOCKED' },
+    );
+    throw error;
+  }
+  // Task-list queries intentionally omit large TEXT columns. Always hydrate a
+  // summary row before reconcile needs the frozen context; this also makes a
+  // cold-start Resume use the same narrow/chunked reader as Derived Final.
+  const persistedTask = inMemoryTask?.pipelineContextJson
+    ? inMemoryTask
+    : await getPipelineTaskResumePayload(taskId) || inMemoryTask;
+  if (persistedTask && persistedTask !== inMemoryTask) {
+    usePipelineTaskStore
+      .getState()
+      .registerPersistedTask(persistedTask as PipelineTask);
+  }
   if (
     persistedTask &&
     incompleteStatuses.has(String(persistedTask.status)) &&
@@ -339,6 +374,7 @@ export async function resumePipeline(
       isCancelled: isPipelineCancelled,
       pipelineModeOverride: options.pipelineModeOverride,
       pipelineReasoningEffortOverride: options.pipelineReasoningEffortOverride,
+      contextAutomationPolicyV3: options.contextAutomationPolicyV3,
       batchBudgetGate: options.batchBudgetGate,
       // CL-10: call-level foreground ownership (never module-global).
       foregroundOwner: options.foregroundOwner,

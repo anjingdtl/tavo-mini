@@ -1,8 +1,11 @@
 import type { Chapter, ContextConfig } from '../../types/novel';
 import * as db from '../database';
 import {
+  collectStoryMemoryCoverageCandidates,
+  createCandidateStoryMemoryCoveragePlan,
   createEmptyStoryMemoryCoveragePlan,
   planStoryMemoryCoverage,
+  type StoryCoverageCandidates,
 } from './storyMemoryCoverage';
 import {
   resolveUsableCheckpointForTarget,
@@ -63,6 +66,8 @@ export interface PrepareStoryMemoryResult {
    */
   checkpointEligibility: CheckpointEligibilityResult;
   coverage: StoryMemoryCoveragePlan;
+  /** Budget-neutral Story Coverage candidates for Context Budget V3. */
+  coverageCandidates?: StoryCoverageCandidates;
   checkpointUpdated: boolean;
   /**
    * Legacy field. Only true when `fatal` is true — retained so existing
@@ -225,7 +230,10 @@ export async function analyzeStoryMemoryReadiness(
   projectId: number,
   currentChapter: Chapter,
   config: ContextConfig,
-  options: { scheduleMaintenance?: boolean } = {},
+  options: {
+    scheduleMaintenance?: boolean;
+    contextBudgetVersion?: number;
+  } = {},
 ): Promise<StoryMemoryReadiness> {
   const chapters = await db.getChaptersByProject(projectId);
   let record: ProjectStoryMemoryRecord | null = null;
@@ -262,13 +270,25 @@ export async function analyzeStoryMemoryReadiness(
     };
   }
 
-  const coverage = planStoryMemoryCoverage({
-    currentChapter,
-    chapters,
-    checkpointThroughPosition: eligibility.checkpointThroughPosition,
-    slidingBudgetTokens: config.slidingWindowSize || 4000,
-  });
-  const hardGap = coverage.hardDue;
+  const useV3CandidateCoverage =
+    typeof options.contextBudgetVersion === 'number' &&
+    options.contextBudgetVersion >= 6;
+  const coverageCandidates = useV3CandidateCoverage
+    ? collectStoryMemoryCoverageCandidates({
+        currentChapter,
+        chapters,
+        checkpointThroughPosition: eligibility.checkpointThroughPosition,
+      })
+    : undefined;
+  const coverage = coverageCandidates
+    ? createCandidateStoryMemoryCoveragePlan(coverageCandidates)
+    : planStoryMemoryCoverage({
+        currentChapter,
+        chapters,
+        checkpointThroughPosition: eligibility.checkpointThroughPosition,
+        slidingBudgetTokens: config.slidingWindowSize || 4000,
+      });
+  const hardGap = useV3CandidateCoverage ? false : coverage.hardDue;
 
   const policy =
     typeof (db as any).getStoryMemoryPolicy === 'function'
@@ -323,6 +343,7 @@ export async function analyzeStoryMemoryReadiness(
     checkpoint: eligibility.usable ? eligibility.checkpoint : null,
     checkpointEligibility: eligibility,
     coverage,
+    ...(coverageCandidates ? { coverageCandidates } : {}),
     checkpointUpdated: false,
     blocked: hardGap,
     blockReason: hardGap ? hardGapMessage(coverage.uncoveredChapterIds, chapters) : '',
@@ -347,9 +368,11 @@ export async function prepareStoryMemoryForGeneration(
   options: {
     mode?: 'generation' | 'preview';
     signal?: AbortSignal;
+    contextBudgetVersion?: number;
   } = {},
 ): Promise<StoryMemoryReadiness> {
   return analyzeStoryMemoryReadiness(projectId, currentChapter, config, {
     scheduleMaintenance: (options.mode || 'generation') === 'generation',
+    contextBudgetVersion: options.contextBudgetVersion,
   });
 }

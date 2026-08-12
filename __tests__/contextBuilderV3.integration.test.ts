@@ -327,6 +327,57 @@ describe('Context Budget V3 — buildContext integration', () => {
     expect(result.elasticBudgetTrace).toBeDefined();
   });
 
+  test('V6 ignores poisoned legacy strategy and budget fields', async () => {
+    const previous = Array.from({ length: 4 }, (_, index) => ({
+      ...BASE_CHAPTER,
+      id: index + 10,
+      position: index,
+      title: `前章${index + 1}`,
+      content: `前章正文 ${index} `.repeat(500),
+    }));
+    (dbMock as any).__setChapters(previous);
+    const current = {
+      ...BASE_CHAPTER,
+      id: 99,
+      position: 4,
+      title: '当前章',
+      content: '',
+    };
+    const options = {
+      contextWindow: 1_000_000,
+      reservedOutputTokens: 200_000,
+      contextBudgetVersion: 6,
+    };
+    const normal = await buildContext(current as any, BASE_CONFIG, 7, undefined, options);
+    const poisoned = await buildContext(
+      current as any,
+      {
+        ...BASE_CONFIG,
+        strategy: 'custom',
+        customRangeStart: 0,
+        customRangeEnd: 0,
+        slidingWindowSize: 1,
+        resourceBudget: 1,
+        storyStateBudgetTokens: 1,
+        episodicMemoryBudgetTokens: 1,
+        memoryTopK: 0,
+        includeResources: false,
+        worldbookScanDepth: 1,
+      },
+      7,
+      undefined,
+      options,
+    );
+
+    expect(poisoned.pipelineContext.recentBridgeText).toEqual(
+      normal.pipelineContext.recentBridgeText,
+    );
+    expect(poisoned.pipelineContext.recentBridgeText).toContain('前章正文 3');
+    expect(JSON.stringify(poisoned.hierarchicalBudgetTrace)).toEqual(
+      JSON.stringify(normal.hierarchicalBudgetTrace),
+    );
+  });
+
   test('determinism: same input produces byte-identical allocation', async () => {
     (dbMock as any).__setCharacters([
       makeLargeCharacter(70, '己', 5000),

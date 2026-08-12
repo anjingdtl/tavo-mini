@@ -28,11 +28,10 @@ export type ContextBudgetVersion = 1 | 2 | 3 | 4 | 5 | 6;
  * each Draft / Review / FactCheck / Brief / Final call resolves its own
  * 20%-of-window reservation at first freeze.
  *
- * Context budget 6 is the V3 hierarchical board/item elastic allocator
- * (`docs/optimization/Tavo-Mini-Context-Budget-V3-Hierarchical-Elastic-Optimization-Plan.md`).
- * It is opt-in via `context_auto_mode = 'v3'`; tasks frozen at 6 route through
- * the hierarchical allocator in `contextBuilder.ts`, while 5 keeps the V2
- * single-level elastic path. Resume gate still rejects cross-version resume.
+ * Context budget 6 is the V3 hierarchical board/item elastic allocator.
+ * New outline tasks/batches freeze it explicitly; historical version 5 keeps
+ * the V2 single-level elastic path. Resume gate still rejects cross-version
+ * resume.
  */
 export const CURRENT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 4;
 export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 5;

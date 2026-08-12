@@ -26,8 +26,8 @@ const KEY_INPUT = 'context_auto_input';
 const KEY_LAST_APPLIED = 'context_auto_last_applied';
 const KEY_POLICY = 'context_auto_policy_v2';
 // Context Budget V3 (Plan §10): persist Policy + mode marker, not runtime
-// numbers. `context_auto_mode = 'v3'` tells new task creation to freeze
-// context_budget_version = 6 and route through the hierarchical allocator.
+// numbers. The marker is retained for historical settings compatibility;
+// new outline tasks/batches now freeze V3 directly and do not consult it.
 const KEY_MODE = 'context_auto_mode';
 const KEY_POLICY_V3 = 'context_auto_policy_v3';
 

@@ -11,6 +11,23 @@ import type { StoryMemoryCoveragePlan } from './storyMemoryTypes';
  */
 export const STORY_MEMORY_MAX_RAW_CHAPTERS = 10;
 
+/**
+ * Budget-neutral Story Coverage candidates used by Context Budget V3.
+ *
+ * Candidate collection deliberately does not know about ContextConfig or a
+ * token grant. It only describes what could be covered. The V3 board grant is
+ * applied later by `resolveStoryMemoryCoverage`, after all boards have
+ * reported their actual demand and the global allocator has reclaimed/borrowed
+ * capacity.
+ */
+export interface StoryCoverageCandidates {
+  checkpointThroughPosition: number;
+  pendingChapters: Chapter[];
+  seamChapter: Chapter | null;
+  rawEligibleChapters: Chapter[];
+  episodicEligibleChapters: Chapter[];
+}
+
 function hasUsableEpisodicSummary(chapter: Chapter): boolean {
   return Boolean(chapter.memory_summary?.trim());
 }
@@ -23,6 +40,187 @@ function chapterRawTokens(chapter: Chapter): number {
 
 function chapterSummaryTokens(chapter: Chapter): number {
   return estimateTokens(chapter.memory_summary || '');
+}
+
+function collectPendingChapters(input: {
+  currentChapter: Chapter;
+  chapters: Chapter[];
+  checkpointThroughPosition: number;
+}): Chapter[] {
+  return input.chapters
+    .filter(
+      chapter =>
+        chapter.position > input.checkpointThroughPosition &&
+        chapter.position < input.currentChapter.position &&
+        Boolean(chapter.content?.trim()),
+    )
+    .sort((a, b) => a.position - b.position);
+}
+
+function findSeamChapter(currentChapter: Chapter, chapters: Chapter[]): Chapter | null {
+  return (
+    chapters
+      .filter(
+        chapter =>
+          chapter.position < currentChapter.position &&
+          Boolean(chapter.content?.trim()),
+      )
+      .sort((a, b) => b.position - a.position)[0] || null
+  );
+}
+
+/** Collect Story Coverage candidates without applying any token budget. */
+export function collectStoryMemoryCoverageCandidates(input: {
+  currentChapter: Chapter;
+  chapters: Chapter[];
+  checkpointThroughPosition: number;
+}): StoryCoverageCandidates {
+  const pendingChapters = collectPendingChapters(input);
+  const seamChapter = findSeamChapter(input.currentChapter, input.chapters);
+  const rawEligibleChapters = pendingChapters.slice(-STORY_MEMORY_MAX_RAW_CHAPTERS);
+  const episodicEligibleChapters = pendingChapters.filter(hasUsableEpisodicSummary);
+  return {
+    checkpointThroughPosition: input.checkpointThroughPosition,
+    pendingChapters,
+    seamChapter,
+    rawEligibleChapters,
+    episodicEligibleChapters,
+  };
+}
+
+/**
+ * Convert budget-neutral candidates into a grant-resolved plan.
+ *
+ * The most recent raw candidates (including the immediate seam) win first;
+ * chapters with a verified summary can fall back to Episodic. The raw product
+ * hard guard remains ten chapters, while the actual raw/summary decision is
+ * made solely from the V3 sliding-board grant.
+ */
+export function resolveStoryMemoryCoverage(input: {
+  candidates: StoryCoverageCandidates;
+  slidingBudgetTokens: number;
+}): StoryMemoryCoveragePlan {
+  const { candidates } = input;
+  const budget = Math.max(0, Math.floor(Number(input.slidingBudgetTokens) || 0));
+  const pending = [...candidates.pendingChapters].sort(
+    (a, b) => a.position - b.position,
+  );
+  const rawEligibleIds = new Set(
+    candidates.rawEligibleChapters.map(chapter => chapter.id),
+  );
+  const episodicEligibleIds = new Set(
+    candidates.episodicEligibleChapters.map(chapter => chapter.id),
+  );
+  const pendingIds = new Set(pending.map(chapter => chapter.id));
+  const rawChapterIds: number[] = [];
+  const episodicFallbackChapterIds: number[] = [];
+  const uncoveredChapterIds: number[] = [];
+  let remaining = budget;
+  let usedTokens = 0;
+
+  // A seam outside the pending range is still protected, but only with the
+  // grant it actually receives. The final renderer may tail-clip this block.
+  const seamIsPending = Boolean(
+    candidates.seamChapter && pendingIds.has(candidates.seamChapter.id),
+  );
+  if (candidates.seamChapter && !seamIsPending) {
+    const seamReserve = Math.min(
+      remaining,
+      chapterRawTokens(candidates.seamChapter),
+    );
+    remaining -= seamReserve;
+    usedTokens += seamReserve;
+  }
+
+  const assignChapter = (chapter: Chapter, allowRaw: boolean) => {
+    const rawCost = chapterRawTokens(chapter);
+    const summaryCost = chapterSummaryTokens(chapter);
+    if (allowRaw && rawCost <= remaining) {
+      rawChapterIds.push(chapter.id);
+      remaining -= rawCost;
+      usedTokens += rawCost;
+      return;
+    }
+    if (episodicEligibleIds.has(chapter.id) && summaryCost <= remaining) {
+      episodicFallbackChapterIds.push(chapter.id);
+      remaining -= summaryCost;
+      usedTokens += summaryCost;
+      return;
+    }
+    uncoveredChapterIds.push(chapter.id);
+  };
+
+  // Newest first preserves the immediate seam and lets the grant expand
+  // backwards as capacity becomes available. We sort the resulting ids below
+  // so the rendered bridge remains chronological.
+  for (const chapter of [...candidates.rawEligibleChapters].sort(
+    (a, b) => b.position - a.position,
+  )) {
+    assignChapter(chapter, rawEligibleIds.has(chapter.id));
+  }
+  for (const chapter of [...pending]
+    .filter(chapter => !rawEligibleIds.has(chapter.id))
+    .sort((a, b) => b.position - a.position)) {
+    assignChapter(chapter, false);
+  }
+
+  const positionOf = (id: number) =>
+    pending.find(chapter => chapter.id === id)?.position ||
+    candidates.seamChapter?.position ||
+    0;
+  rawChapterIds.sort((a, b) => positionOf(a) - positionOf(b));
+  episodicFallbackChapterIds.sort((a, b) => positionOf(a) - positionOf(b));
+  uncoveredChapterIds.sort((a, b) => positionOf(a) - positionOf(b));
+
+  const hardDue = uncoveredChapterIds.length > 0;
+  return {
+    checkpointThroughPosition: candidates.checkpointThroughPosition,
+    pendingChapters: pending,
+    seamChapter: candidates.seamChapter,
+    rawChapterIds,
+    episodicFallbackChapterIds,
+    uncoveredChapterIds,
+    estimatedRawTokens: usedTokens,
+    hardDue,
+    reason: hardDue
+      ? 'coverage_gap'
+      : episodicFallbackChapterIds.length > 0
+        ? 'mixed_raw_episodic'
+        : 'full_raw',
+    bridgeBudgetTokens: budget,
+  };
+}
+
+/** Natural sliding-board demand before the V3 grant resolves coverage. */
+export function estimateStoryCoverageCandidateDemand(
+  candidates: StoryCoverageCandidates,
+): number {
+  const pendingIds = new Set(candidates.pendingChapters.map(chapter => chapter.id));
+  const rawDemand = candidates.rawEligibleChapters.reduce(
+    (sum, chapter) => sum + chapterRawTokens(chapter),
+    0,
+  );
+  const seamDemand =
+    candidates.seamChapter && !pendingIds.has(candidates.seamChapter.id)
+      ? chapterRawTokens(candidates.seamChapter)
+      : 0;
+  return rawDemand + seamDemand;
+}
+
+export function createCandidateStoryMemoryCoveragePlan(
+  candidates: StoryCoverageCandidates,
+): StoryMemoryCoveragePlan {
+  return {
+    checkpointThroughPosition: candidates.checkpointThroughPosition,
+    pendingChapters: [...candidates.pendingChapters],
+    seamChapter: candidates.seamChapter,
+    rawChapterIds: [],
+    episodicFallbackChapterIds: [],
+    uncoveredChapterIds: [],
+    estimatedRawTokens: 0,
+    hardDue: false,
+    reason: 'candidate_first',
+  };
 }
 
 /**

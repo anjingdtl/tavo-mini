@@ -25,6 +25,10 @@ import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepositor
 import type { ChatMessage } from '../src/services/llm';
 import type { LLMResult } from '../src/services/llm/types';
 import type { Chapter } from '../src/types/novel';
+import {
+  cloneDefaultContextAutomationPolicyV3,
+  hashContextAutomationPolicyV3,
+} from '../src/services/contextAutomationPolicy';
 
 let mockCallLLMResult: jest.Mock = jest.fn();
 let testDb: InMemorySqliteDb | null = null;
@@ -663,5 +667,82 @@ describe('V3.2 production structured-stage recovery', () => {
       1200,
       5000,
     ]);
+  });
+
+  test('current V4 + Budget V6 freezes the exact V3 policy into the execution snapshot', async () => {
+    await resetDb();
+    const { chapterId } = await seedBaseData('full');
+    await execute(
+      await openDatabase(),
+      `UPDATE llm_config SET context_window = 1000000, max_output_tokens = 200000 WHERE id = 1`,
+    );
+    const policy = cloneDefaultContextAutomationPolicyV3();
+    policy.boards.resources.priority = 99;
+    const taskId = 't-v6-policy-freeze';
+    await registerTask(taskId, chapterId, {
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 6,
+    });
+    mockCallLLMResult = jest
+      .fn()
+      .mockImplementation(async (messages: ChatMessage[]) => {
+        const stage = stageOf(messages);
+        if (stage === 'draft') return llm(DRAFT_BODY);
+        if (stage === 'review') {
+          return llm(
+            JSON.stringify({
+              verdict: 'pass',
+              checked: REVIEW_COVERAGE,
+              findings: [],
+            }),
+          );
+        }
+        if (stage === 'factCheck') {
+          return llm(
+            JSON.stringify({
+              verdict: 'pass',
+              checked: [
+                'timeline',
+                'character_state',
+                'object_state',
+                'world_rule',
+                'spatial_logic',
+                'knowledge_boundary',
+                'outline_boundary',
+              ],
+              findings: [],
+            }),
+          );
+        }
+        if (stage === 'brief') {
+          return llm(
+            JSON.stringify({
+              strategy: '保持森林与守林人的衔接。',
+              actions: [],
+              preserve: [],
+              ending: '停在守林人的警告之后。',
+            }),
+          );
+        }
+        if (stage === 'proof') return llm(DRAFT_BODY + '\n\n老者点了点头。');
+        throw new Error('unexpected stage: ' + stage);
+      });
+
+    await reconcilePipelineTask(taskId, chapterFor(chapterId), {
+      contextAutomationPolicyV3: policy,
+    });
+
+    expect(await taskStatus(taskId)).toBe('completed');
+    const rows = await all(
+      'SELECT pipeline_context_json FROM pipeline_tasks WHERE id = ?',
+      [taskId],
+    );
+    const execution = JSON.parse(String(rows[0].pipeline_context_json)).execution;
+    expect(execution.contextBudgetVersion).toBe(6);
+    expect(execution.contextAutomationPolicyVersion).toBe('context-automation-v3');
+    expect(execution.contextAutomationPolicyHash).toBe(
+      hashContextAutomationPolicyV3(policy),
+    );
+    expect(execution.contextAutomationPolicySnapshot).toEqual(policy);
   });
 });

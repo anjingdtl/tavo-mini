@@ -16,12 +16,10 @@ import { computeInputFingerprint } from '../services/outlineContextBuilder';
 import { adoptPipelineTaskResult } from '../services/multiChapterBatch/batchAdoption';
 import { resumePipeline, runChapterPipeline } from '../services/pipelineRunner';
 import {
-  CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
   isCurrentOutlinePipelineContextBudgetVersion,
 } from '../services/pipeline/outlineWorkflowVersion';
-import { getContextAutoMode } from '../data/repositories/contextAutoRepository';
 import {
   resetFailedStageCheckpointsForResume,
 } from '../data/repositories/pipelineStageCheckpointRepository';
@@ -246,12 +244,13 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const route = useContext(NavigationRouteContext) as ResultRouteProp | undefined;
   const routeTaskId: string | undefined = route?.params?.taskId;
   const taskId = propTaskId ?? routeTaskId;
-  const { tasks, resolveTask } = usePipelineTaskStore();
+  const { tasks, resolveTask, loadTaskDetails } = usePipelineTaskStore();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // 10.2: 采纳进行中状态，disable 采纳/放弃按钮防止重复点击触发多次 updateChapter
   const [adopting, setAdopting] = useState(false);
   const [rewriteVisible, setRewriteVisible] = useState(false);
   const [rewriteInstruction, setRewriteInstruction] = useState('');
+  const detailLoadAttemptedRef = useRef<Set<string>>(new Set());
   // 标记是否已被 handleAccept 标记为 accept，避免 unmount cleanup 的
   // setTimeout 与 handleAccept 的 resolveTask('accept') 竞态重复 resolve。
   const acceptedRef = useRef(false);
@@ -268,6 +267,22 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     });
     return () => subscription.remove();
   }, [handleClose]);
+
+  useEffect(() => {
+    if (!taskId || detailLoadAttemptedRef.current.has(taskId)) return;
+    const current = tasks.find(item => item.id === taskId);
+    const needsDetails =
+      !current ||
+      current.pipelineContextJson == null ||
+      ((current.status === 'completed' || current.status === 'failed') &&
+        current.finalText == null);
+    if (needsDetails && typeof loadTaskDetails === 'function') {
+      detailLoadAttemptedRef.current.add(taskId);
+      void loadTaskDetails(taskId).catch(error => {
+        console.warn('[pipeline] failed to load result details:', error);
+      });
+    }
+  }, [loadTaskDetails, taskId, tasks]);
 
   const task = tasks.find((t) => t.id === taskId);
 
@@ -546,24 +561,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     try {
       const chapter = await db.getChapterById(task.targetId);
       if (!chapter) throw new Error('章节不存在');
-      // Resolve the budget version the same way useChapterPipeline does: V3
-      // auto-config freezes 6 so the re-run also uses the hierarchical
-      // allocator. Settings read failure falls back to V2 (5).
-      let contextBudgetVersion: typeof CURRENT_CONTEXT_BUDGET_VERSION =
-        CURRENT_CONTEXT_BUDGET_VERSION;
-      try {
-        if ((await getContextAutoMode()) === 'v3') {
-          contextBudgetVersion = V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION;
-        }
-      } catch {
-        // ignore — V2 fallback
-      }
       const newTaskId = await usePipelineTaskStore.getState().createTask(
         'chapter',
         task.targetId,
         {
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
-          contextBudgetVersion,
+          contextBudgetVersion: V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
         },
       );
       Alert.alert('新版任务已创建', '完整流水线已开始，可在任务中心查看进度。');

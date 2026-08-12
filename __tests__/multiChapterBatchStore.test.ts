@@ -76,8 +76,8 @@ import { getBatchById, getBatchItems } from '../src/data/repositories/multiChapt
 import { createBatchChapterPlan } from '../src/services/multiChapterBatch/planner';
 import { reconcileMultiChapterBatch } from '../src/services/multiChapterBatch/reconcileMultiChapterBatch';
 import {
-  CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from '../src/services/pipeline/outlineWorkflowVersion';
 
 let testDb: InMemorySqliteDb | null = null;
@@ -285,8 +285,12 @@ describe('multiChapterBatchStore', () => {
       CURRENT_OUTLINE_WORKFLOW_VERSION,
     );
     expect(newBatch?.contextBudgetVersion).toBe(
-      CURRENT_CONTEXT_BUDGET_VERSION,
+      V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
     );
+    expect(newBatch?.contextAutomationPolicyVersion).toBe(
+      'context-automation-v3',
+    );
+    expect(newBatch?.contextAutomationPolicyHash).toBeTruthy();
     expect(newItems).toHaveLength(2);
     expect(newItems[0]).toEqual(
       expect.objectContaining({

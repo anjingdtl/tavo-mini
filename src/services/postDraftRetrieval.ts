@@ -70,6 +70,7 @@ export async function captureFrozenAuditCandidates(
   chapter: Chapter,
   projectId: number,
   contextConfig: ContextConfig,
+  options: { contextBudgetVersion?: number } = {},
 ): Promise<FrozenAuditCandidates> {
   let chapters: Chapter[] = [];
   try {
@@ -85,7 +86,10 @@ export async function captureFrozenAuditCandidates(
       projectId,
       chapter,
       contextConfig,
-      { mode: 'preview' },
+      {
+        mode: 'preview',
+        contextBudgetVersion: options.contextBudgetVersion,
+      },
     );
     rawChapterIds = prepared?.coverage?.rawChapterIds || [];
     const state = resolveStoryStateForRetrieval(prepared);

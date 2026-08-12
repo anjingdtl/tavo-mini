@@ -29,5 +29,10 @@ describe('Context Preview V4 UI contract', () => {
     expect(source).toContain('风险等级');
     expect(source).not.toContain('弹性上限');
     expect(source).not.toContain("['storyState', '故事状态']");
+    expect(source).not.toContain("['storyState', 'Story State']");
+    expect(source).not.toContain("['slidingWindow', 'Recent Bridge']");
+    expect(source).not.toContain("['resources', 'Resources']");
+    expect(source).not.toContain("['episodic', 'Episodic']");
+    expect(source).not.toContain('boardSummaryRow');
   });
 });
