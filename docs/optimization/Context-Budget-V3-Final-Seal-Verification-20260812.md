@@ -2,7 +2,9 @@
 
 ## 结论
 
-**最终结论：本地发布证据链 GO。远端 CI 以本轮最终 HEAD 的 GitHub Actions 为准。**
+**最终结论：GO。**
+
+最终 HEAD `85ec31355b88f6caa6df49f48ea7a0dc966b860a` 的 GitHub Actions run `31624734490`：JavaScript validation / Migration Matrix / Android Debug build 全绿。
 
 本轮按 `TAVO-MINI-Context-Budget-V3-Release-Evidence-Chain-Fix-Plan-20260812.md` 做完 PDCA：只补 Android 发布证据链，不改 Context Budget V3 allocator / Story Coverage / Recent Raw Bridge / Episodic Reclaim。发现并最小修复了一个真实冷启动生产 BUG：摘要行 persist 会把冻结 `pipeline_context_json` 写成 NULL。修复后 Gate K 才闭环。
 
@@ -104,7 +106,7 @@ Batch `batch_msqbqwix_xksu40` 在 Policy A 创建，live 改为 Policy B（恢�
 | L Batch Resume | PASS | **新证据 3/3 + fail-closed** | GO |
 | M Derived Final | PASS | **新证据 3161 字采纳** | GO |
 | N Data Preservation | PASS | install -r / integrity / 无 key | GO |
-| O Full Verification | PASS 本地 verify+APK | 最终 HEAD CI 见推送后 run | 本地 GO / CI 以最终 HEAD 为准 |
+| O Full Verification | PASS | 最终 HEAD run `31624734490` 三 job 全绿 | GO |
 
 E/F/G/I 按方案沿用此前有效代码/自动化结论，不因本轮未重新截图降为生产 NO-GO。
 
@@ -122,6 +124,6 @@ E/F/G/I 按方案沿用此前有效代码/自动化结论，不因本轮未重�
 [x] adb install -r PASS
 [x] 数据完整
 [x] credential 安全
-[ ] 最终 HEAD 已 push（本文件写入时尚未 push）
-[ ] 最终 HEAD GitHub Actions 全绿（push 后复核）
+[x] 最终 HEAD 已 push（`85ec31355b88f6caa6df49f48ea7a0dc966b860a`）
+[x] 最终 HEAD GitHub Actions 全绿（run `31624734490`）
 ```
