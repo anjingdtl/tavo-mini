@@ -97,6 +97,12 @@ export async function compileDraftPipelineRequest(params: {
    * same allocator that produced the draft.
    */
   contextBudgetVersion?: number;
+  /**
+   * Frozen V3 policy forwarded to buildContext so the hierarchical allocator
+   * uses the real user policy (Closure Plan §14). When omitted buildContext
+   * falls back to the default preset.
+   */
+  contextAutomationPolicyV3?: import('./contextAutomationPolicy').ContextAutomationPolicyV3;
 }): Promise<CompileDraftPipelineRequestResult> {
   const chapter = params.chapter;
   const pipelineConfig = await db.getPipelineConfig();
@@ -150,6 +156,7 @@ export async function compileDraftPipelineRequest(params: {
       contextWindow,
       elasticBudget: params.elasticBudget,
       contextBudgetVersion: params.contextBudgetVersion,
+      contextAutomationPolicyV3: params.contextAutomationPolicyV3,
     },
   );
 

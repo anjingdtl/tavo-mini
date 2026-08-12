@@ -18,7 +18,10 @@ import { resumePipeline, runChapterPipeline } from '../services/pipelineRunner';
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+  isCurrentOutlinePipelineContextBudgetVersion,
 } from '../services/pipeline/outlineWorkflowVersion';
+import { getContextAutoMode } from '../data/repositories/contextAutoRepository';
 import {
   resetFailedStageCheckpointsForResume,
 } from '../data/repositories/pipelineStageCheckpointRepository';
@@ -436,7 +439,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   );
   const isCurrentTask =
     Number(task.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION &&
-    Number(task.contextBudgetVersion) === CURRENT_CONTEXT_BUDGET_VERSION;
+    isCurrentOutlinePipelineContextBudgetVersion(task.contextBudgetVersion);
   const canResumeFailed =
     task.targetType === 'chapter' &&
     isCurrentTask &&
@@ -452,7 +455,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const isCurrentStructuredTask = (() => {
     if (
       Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
-      Number(task.contextBudgetVersion) !== CURRENT_CONTEXT_BUDGET_VERSION ||
+      !isCurrentOutlinePipelineContextBudgetVersion(
+        task.contextBudgetVersion,
+      ) ||
       !task.pipelineContextJson
     ) {
       return false;
@@ -541,12 +546,24 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     try {
       const chapter = await db.getChapterById(task.targetId);
       if (!chapter) throw new Error('章节不存在');
+      // Resolve the budget version the same way useChapterPipeline does: V3
+      // auto-config freezes 6 so the re-run also uses the hierarchical
+      // allocator. Settings read failure falls back to V2 (5).
+      let contextBudgetVersion: typeof CURRENT_CONTEXT_BUDGET_VERSION =
+        CURRENT_CONTEXT_BUDGET_VERSION;
+      try {
+        if ((await getContextAutoMode()) === 'v3') {
+          contextBudgetVersion = V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION;
+        }
+      } catch {
+        // ignore — V2 fallback
+      }
       const newTaskId = await usePipelineTaskStore.getState().createTask(
         'chapter',
         task.targetId,
         {
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
-          contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+          contextBudgetVersion,
         },
       );
       Alert.alert('新版任务已创建', '完整流水线已开始，可在任务中心查看进度。');

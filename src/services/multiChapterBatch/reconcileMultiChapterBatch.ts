@@ -47,6 +47,7 @@ import type { BatchItemCompletionQuality } from '../../types/multiChapterBatch';
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  shouldIncludeBriefCheckpoint,
 } from '../pipeline/outlineWorkflowVersion';
 
 export interface BatchProgressInfo {
@@ -377,11 +378,10 @@ async function executeBatchAction(params: {
         Number(batch.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION
           ? batch.contextBudgetVersion
           : CURRENT_CONTEXT_BUDGET_VERSION;
-      const isStructured =
-        [3, 4].includes(Number(taskWorkflowVersion)) &&
-        (taskContextVersion === 3 ||
-          taskContextVersion === 4 ||
-          taskContextVersion === 5);
+      const isStructured = shouldIncludeBriefCheckpoint({
+        outlineWorkflowVersion: Number(taskWorkflowVersion),
+        contextBudgetVersion: Number(taskContextVersion),
+      });
       const stages: PipelineCheckpointStage[] = isStructured
         ? ['draft', 'review', 'factCheck', 'brief', 'proof']
         : ['draft', 'review', 'factCheck', 'proof'];

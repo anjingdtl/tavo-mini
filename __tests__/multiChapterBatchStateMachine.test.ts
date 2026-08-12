@@ -41,6 +41,7 @@ import type {
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from '../src/services/pipeline/outlineWorkflowVersion';
 
 // ---------------------------------------------------------------------------
@@ -233,6 +234,29 @@ describe('determineNextBatchAction — item-level', () => {
       },
     });
     expect(action).toEqual({ type: 'pause_legacy_pipeline', ordinal: 1 });
+  });
+
+  it('keeps an incomplete V3 task resumable instead of treating it as legacy', () => {
+    const action = decide({
+      batch: batchRow({
+        contextBudgetVersion: V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+      }),
+      items: [
+        itemRow(1, {
+          chapterId: 10,
+          status: 'running_pipeline',
+          activePipelineTaskId: 'v3-task',
+        }),
+      ],
+      taskStatuses: { 'v3-task': 'interrupted' },
+      taskWorkflowVersions: {
+        'v3-task': CURRENT_OUTLINE_WORKFLOW_VERSION,
+      },
+      taskContextBudgetVersions: {
+        'v3-task': V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+      },
+    });
+    expect(action).toEqual({ type: 'resume_pipeline', ordinal: 1 });
   });
 
   it('pauses by failure class (outcome_unknown / quota)', () => {

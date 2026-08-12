@@ -17,7 +17,7 @@
  */
 
 import * as db from '../database';
-import { estimateTokens } from '../../utils/tokenEstimator';
+import { clipTextTailToTokenBudget, estimateTokens } from '../../utils/tokenEstimator';
 import {
   getOrAnalyzeNoteStyle,
   mergeStyleProfiles,
@@ -494,13 +494,12 @@ export function renderCandidateToText(
   if (grantedTokens >= candidate.actualTokens) {
     return { text: candidate.content, clipped: false };
   }
-  // Tail-biased clip: keep the end of the content (later content carries more
-  // recent / relevant detail). This matches the legacy clipTextToTokenBudget
-  // behavior for worldbook entries (Plan §16 determinism — no Date.now).
-  const chars = candidate.content;
-  // Simple char-based slice: token estimate is approximate, so slice by ratio.
-  const ratio =
-    candidate.actualTokens > 0 ? grantedTokens / candidate.actualTokens : 0;
-  const sliceStart = Math.floor(chars.length * (1 - Math.max(0, Math.min(1, ratio))));
-  return { text: chars.slice(sliceStart), clipped: true };
+  // Token-safe tail-biased clip (Closure Plan §12). The previous implementation
+  // sliced by char-length ratio, which cannot guarantee
+  // `estimateTokens(rendered) <= grant` for mixed CJK/ASCII/emoji content.
+  // `clipTextTailToTokenBudget` shares the exact cost model of `estimateTokens`
+  // (it stops as soon as the next unit would exceed the budget), so the hard
+  // invariant holds by construction while still keeping the most recent tail.
+  const text = clipTextTailToTokenBudget(candidate.content, grantedTokens);
+  return { text, clipped: true };
 }

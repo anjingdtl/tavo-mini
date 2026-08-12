@@ -184,6 +184,13 @@ import { executeClaimedStage } from './executeClaimedStage';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 import {
+  isCurrentOutlinePipelineContextBudgetVersion,
+  isStructuredContextBudgetVersion,
+  isStructuredOutlineWorkflowVersion,
+  normalizePersistedContextBudgetVersion,
+  shouldIncludeBriefCheckpoint,
+} from './outlineWorkflowVersion';
+import {
   clearTemporaryReasoningForTaskStage,
   createStageAttempt,
   getStageAttempts,
@@ -191,6 +198,11 @@ import {
   updateStageAttempt,
 } from '../../data/repositories/pipelineStageAttemptRepository';
 import { setBatchUsageFromRuns } from '../../data/repositories/multiChapterBatchRepository';
+import { getContextAutomationPolicyV3 } from '../../data/repositories/contextAutoRepository';
+import {
+  isContextAutomationPolicyV3,
+  type ContextAutomationPolicyV3,
+} from '../contextAutomationPolicy';
 import {
   LLMRequestError,
   computeRetryBackoffMs,
@@ -743,16 +755,25 @@ function buildExecutionSnapshot(params: {
       'open_llm_settings',
     );
   }
+  // Structured-pipeline predicates are owned by outlineWorkflowVersion
+  // (Closure Plan §5). Version 6 (V3 hierarchical) is structured exactly like
+  // 5 (same stages / reasoning profile / Brief); only the contextBuilder
+  // budget path differs (>= 6 → hierarchical allocator).
+  const isStructuredWorkflow = isStructuredOutlineWorkflowVersion(
+    params.outlineWorkflowVersion,
+  );
   const isV3 =
-    params.outlineWorkflowVersion === 3 &&
-    (params.contextBudgetVersion === 3 || params.contextBudgetVersion === 4);
+    isStructuredWorkflow &&
+    Number(params.outlineWorkflowVersion) === 3 &&
+    (Number(params.contextBudgetVersion) === 3 ||
+      Number(params.contextBudgetVersion) === 4);
   const isV4 =
-    params.outlineWorkflowVersion === 4 &&
-    (params.contextBudgetVersion === 3 ||
-      params.contextBudgetVersion === 4 ||
-      params.contextBudgetVersion === 5);
+    isStructuredWorkflow &&
+    Number(params.outlineWorkflowVersion) === 4 &&
+    isStructuredContextBudgetVersion(params.contextBudgetVersion);
   const isCurrentElasticBudget =
-    params.outlineWorkflowVersion === 4 && params.contextBudgetVersion === 5;
+    Number(params.outlineWorkflowVersion) === 4 &&
+    isCurrentOutlinePipelineContextBudgetVersion(params.contextBudgetVersion);
   const isStructured = isV3 || isV4;
   const reasoningProfileVersion = isV4
     ? 5
@@ -1542,11 +1563,12 @@ export async function reconcilePipelineTask(
     const initialTask = usePipelineTaskStore
       .getState()
       .tasks.find(t => t.id === taskId);
-    const initialStages =
-      [3, 4].includes(Number(initialTask?.outlineWorkflowVersion)) &&
-      [3, 4, 5].includes(Number(initialTask?.contextBudgetVersion))
-        ? ['draft', 'review', 'factCheck', 'brief', 'proof']
-        : ['draft', 'review', 'factCheck', 'proof'];
+    const initialStages = shouldIncludeBriefCheckpoint({
+      outlineWorkflowVersion: initialTask?.outlineWorkflowVersion,
+      contextBudgetVersion: initialTask?.contextBudgetVersion,
+    })
+      ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+      : ['draft', 'review', 'factCheck', 'proof'];
     await db.ensurePendingCheckpoints(taskId, initialStages as any);
 
     // Bound iterations to avoid infinite loops on bugs.
@@ -2009,16 +2031,9 @@ async function actionPersistInitialSnapshot(
         : existingExecution.outlineWorkflowVersion === 2
         ? 2
         : 1;
-    contextBudgetVersion =
-      existingExecution.contextBudgetVersion === 5
-        ? 5
-        : existingExecution.contextBudgetVersion === 4
-        ? 4
-        : existingExecution.contextBudgetVersion === 3
-        ? 3
-        : existingExecution.contextBudgetVersion === 2
-        ? 2
-        : 1;
+    contextBudgetVersion = normalizePersistedContextBudgetVersion(
+      existingExecution.contextBudgetVersion,
+    );
   } else {
     const taskRow = store.tasks.find(t => t.id === taskId);
     outlineWorkflowVersion =
@@ -2029,22 +2044,14 @@ async function actionPersistInitialSnapshot(
         : Number(taskRow?.outlineWorkflowVersion) === 2
         ? 2
         : 1;
-    contextBudgetVersion =
-      Number(taskRow?.contextBudgetVersion) === 5
-        ? 5
-        : Number(taskRow?.contextBudgetVersion) === 4
-        ? 4
-        : Number(taskRow?.contextBudgetVersion) === 3
-        ? 3
-        : Number(taskRow?.contextBudgetVersion) === 2
-        ? 2
-        : 1;
+    contextBudgetVersion = normalizePersistedContextBudgetVersion(
+      taskRow?.contextBudgetVersion,
+    );
   }
-  const isStructured =
-    [3, 4].includes(outlineWorkflowVersion) &&
-    (contextBudgetVersion === 3 ||
-      contextBudgetVersion === 4 ||
-      contextBudgetVersion === 5);
+  const isStructured = shouldIncludeBriefCheckpoint({
+    outlineWorkflowVersion,
+    contextBudgetVersion,
+  });
   // Fresh freeze from live config only when no execution yet. V2 preserves its
   // historical multiplier; V3 stores requested/effective stage tiers and uses
   // independent output + reasoning reservations.
@@ -2124,6 +2131,23 @@ async function actionPersistInitialSnapshot(
     execution.pipelineMode = options.pipelineModeOverride;
   }
 
+  // Read the persisted V3 policy ONCE at first freeze so the actual user
+  // policy (not the default preset) drives the hierarchical allocator, and the
+  // resulting policyHash is baked into the frozen draftContext. This is the
+  // freeze moment (Closure Plan §14): resume reuses the frozen draftContext,
+  // so a later live-policy change can never drift a running task. Falls back
+  // to the default inside buildContext when V3 is off or the read fails.
+  let frozenV3Policy: ContextAutomationPolicyV3 | undefined;
+  if (isCurrentOutlinePipelineContextBudgetVersion(execution.contextBudgetVersion)) {
+    try {
+      const persistedPolicy = await getContextAutomationPolicyV3();
+      if (persistedPolicy && isContextAutomationPolicyV3(persistedPolicy)) {
+        frozenV3Policy = persistedPolicy;
+      }
+    } catch {
+      // Settings read failure: buildContext falls back to the default policy.
+    }
+  }
   const compiled = await compileDraftStageRequest({
     chapter,
     requestConfig: runtime.requestConfig,
@@ -2136,11 +2160,18 @@ async function actionPersistInitialSnapshot(
     // incomplete; Story Memory maintenance remains available through its own
     // flow / chapter finalization.
     storyMemoryMode: 'preview',
+    // Drive the V3 hierarchical branch from the FROZEN task version so the
+    // allocator actually runs for the pipeline draft (not just Preview), and
+    // pass the frozen policy so allocation matches Preview = Send (Closure
+    // Plan §14/§16). The elastic flag is a belt-and-suspenders fallback.
+    contextBudgetVersion: execution.contextBudgetVersion,
+    contextAutomationPolicyV3: frozenV3Policy,
     elasticBudget:
       execution.contextBudgetVersion === 2 ||
       execution.contextBudgetVersion === 3 ||
       execution.contextBudgetVersion === 4 ||
-      execution.contextBudgetVersion === 5,
+      execution.contextBudgetVersion === 5 ||
+      execution.contextBudgetVersion === 6,
   });
   if (!compiled.ready) {
     const code =
@@ -2541,12 +2572,10 @@ function isOutlineWorkflowV2(
 function isOutlineWorkflowV3(
   runtime: Awaited<ReturnType<typeof loadRuntime>>,
 ): boolean {
-  return (
-    [3, 4].includes(Number(runtime.parsed?.execution?.outlineWorkflowVersion)) &&
-    (runtime.parsed?.execution?.contextBudgetVersion === 3 ||
-      runtime.parsed?.execution?.contextBudgetVersion === 4 ||
-      runtime.parsed?.execution?.contextBudgetVersion === 5)
-  );
+  return shouldIncludeBriefCheckpoint({
+    outlineWorkflowVersion: runtime.parsed?.execution?.outlineWorkflowVersion,
+    contextBudgetVersion: runtime.parsed?.execution?.contextBudgetVersion,
+  });
 }
 
 function isV31Profile(
