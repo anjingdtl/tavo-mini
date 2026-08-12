@@ -107,6 +107,34 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
     expect(usePipelineTaskStore.getState().tasks[0].status).toBe('failed');
   });
 
+  it('keeps a proofing task recoverable when summary omitted the snapshot blob', () => {
+    const now = Date.now();
+    usePipelineTaskStore.setState({
+      tasks: [{
+        id: 'proofing-lazy',
+        targetType: 'chapter',
+        targetId: 70,
+        status: 'proofing',
+        stageResults: [{ stage: 'draft', status: 'success' }],
+        finalText: null,
+        error: null,
+        pipelineContextJson: null,
+        pipelineContextHash: '4684f04609ec1ec0a627b6494f766988',
+        pipelineContextVersion: 4,
+        createdAt: now,
+        updatedAt: now,
+        resolvedAt: null,
+      } as any],
+    });
+
+    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(1);
+    const task = usePipelineTaskStore.getState().tasks[0];
+    expect(task.status).toBe('interrupted');
+    expect(task.recoverable).toBe(true);
+    expect(task.resolvedAt).toBeNull();
+    expect(task.error).toMatch(/可继续后续阶段/);
+  });
+
   it('marks even a recent active task as interrupted on a fresh app process', () => {
     const now = Date.now();
     usePipelineTaskStore.setState({ tasks: [{

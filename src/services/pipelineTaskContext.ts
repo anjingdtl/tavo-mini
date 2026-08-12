@@ -1326,10 +1326,32 @@ export function classifyInterruptedTask(task: {
     };
   }
 
+  const json = task.pipelineContextJson;
+  const hasPersistedSnapshotPointer =
+    Boolean(task.pipelineContextHash && String(task.pipelineContextHash).trim()) &&
+    task.pipelineContextVersion != null;
+  if (!json || !String(json).trim()) {
+    // List/summary rows omit the large snapshot on purpose. A stored hash +
+    // version means the blob is still on disk — do not fail-closed or the
+    // subsequent persistTask UPSERT historically wiped that blob with NULL.
+    if (hasPersistedSnapshotPointer) {
+      return {
+        recoverable: true,
+        reason: '运行被中断，可继续后续阶段',
+        nextStatus: 'interrupted',
+      };
+    }
+    return {
+      recoverable: false,
+      reason: '旧任务没有冻结的流水线上下文快照，无法安全恢复。请重新开始生成。',
+      nextStatus: 'failed',
+    };
+  }
+
   try {
     parsePersistedPipelineTaskContext(
       {
-        pipelineContextJson: task.pipelineContextJson,
+        pipelineContextJson: json,
         pipelineContextHash: task.pipelineContextHash,
         pipelineContextVersion: task.pipelineContextVersion,
       },

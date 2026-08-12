@@ -92,6 +92,17 @@ const CONTINUATION_CATEGORY_LABELS: Record<string, string> = {
   episodic: '章节事件摘要',
 };
 
+/** Read-only V3 board order for Preview diagnostics. Not an editor. */
+const V3_BOARD_ORDER: Array<{
+  key: 'storyState' | 'resources' | 'slidingWindow' | 'episodic';
+  label: string;
+}> = [
+  { key: 'storyState', label: 'Story State' },
+  { key: 'resources', label: 'Resources' },
+  { key: 'slidingWindow', label: 'Sliding Window' },
+  { key: 'episodic', label: 'Episodic Memory' },
+];
+
 const STYLE_OMIT_REASON_LABELS: Record<string, string> = {
   style_level_off: '文风约束已关闭',
   no_injectable_profile: '无可注入风格画像',
@@ -195,6 +206,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   const [hierarchicalBudgetTrace, setHierarchicalBudgetTrace] = useState<
     import('../services/context/hierarchicalContextAllocator').HierarchicalBudgetResult | null
   >(null);
+  /** Compact by default; expand only to inspect board-level diagnostics. */
+  const [showV3BoardDetail, setShowV3BoardDetail] = useState(false);
 
   const loadContext = useCallback(async () => {
     setLoading(true);
@@ -505,12 +518,16 @@ export const ContextPreviewScreen: React.FC<Props> = ({
                 {typeof item.demandTokens === 'number'
                   ? `需求 ${item.demandTokens.toLocaleString()} · `
                   : ''}
+                {typeof item.softTargetTokens === 'number'
+                  ? `软目标 ${item.softTargetTokens.toLocaleString()} · `
+                  : ''}
                 {typeof item.allocatedTokens === 'number'
                   ? `分配 ${item.allocatedTokens.toLocaleString()}`
                   : ''}
-                {typeof item.borrowedTokens === 'number' &&
-                item.borrowedTokens > 0
-                  ? ` · 借调 +${item.borrowedTokens.toLocaleString()}`
+                {typeof item.borrowedTokens === 'number'
+                  ? item.borrowedTokens > 0
+                    ? ` · 借调 +${item.borrowedTokens.toLocaleString()}`
+                    : ' · 借调 0'
                   : ''}
                 {item.allocationReason ? ` （${item.allocationReason}）` : ''}
               </Text>
@@ -728,6 +745,56 @@ export const ContextPreviewScreen: React.FC<Props> = ({
               必须保留 {hierarchicalBudgetTrace.envelope.mandatoryTokens.toLocaleString()} ·
               hard limit {hierarchicalBudgetTrace.envelope.hardInputLimit.toLocaleString()}
             </Text>
+            <TouchableOpacity
+              onPress={() => setShowV3BoardDetail(open => !open)}
+              accessibilityRole="button"
+              accessibilityLabel={
+                showV3BoardDetail ? '收起详细分配' : '展开详细分配'
+              }
+              style={styles.v3BoardToggle}
+            >
+              <Text
+                style={[
+                  styles.v3BoardToggleText,
+                  { color: theme.colors.accent },
+                ]}
+              >
+                {showV3BoardDetail ? '收起详细分配' : '展开详细分配'}
+              </Text>
+            </TouchableOpacity>
+            {showV3BoardDetail
+              ? V3_BOARD_ORDER.map(({ key, label }) => {
+                  const board =
+                    hierarchicalBudgetTrace.boardAllocations[key];
+                  if (!board) {
+                    return null;
+                  }
+                  const borrowedLabel =
+                    board.borrowedTokens > 0
+                      ? `跨板借调 +${board.borrowedTokens.toLocaleString()}`
+                      : '借调 0';
+                  return (
+                    <Text
+                      key={key}
+                      style={[
+                        styles.outlineBlockText,
+                        styles.v3BoardLine,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
+                      {label}
+                      {'\n'}
+                      需求 {board.actualDemandTokens.toLocaleString()}
+                      {'\n'}
+                      软目标 {board.softTargetTokens.toLocaleString()}
+                      {'\n'}
+                      最终分配 {board.allocatedTokens.toLocaleString()}
+                      {'\n'}
+                      {borrowedLabel}
+                    </Text>
+                  );
+                })
+              : null}
             </View>
           ) : null}
       <View
@@ -901,6 +968,14 @@ const styles = StyleSheet.create({
   },
   v3BoardLine: {
     marginTop: spacing.xs,
+  },
+  v3BoardToggle: {
+    marginTop: spacing.sm,
+    alignSelf: 'flex-start',
+  },
+  v3BoardToggleText: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   toggleRow: {
     flexDirection: 'row',

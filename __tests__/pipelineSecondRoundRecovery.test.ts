@@ -227,6 +227,20 @@ describe('classifyInterruptedTask', () => {
     expect(result.nextStatus).toBe('failed');
   });
 
+  test('draft + persisted hash/version with lazy-null json → recoverable', () => {
+    const result = classifyInterruptedTask({
+      status: 'proofing',
+      targetType: 'chapter',
+      targetId: 70,
+      stageResults: [{ stage: 'draft', status: 'success' }],
+      pipelineContextJson: null,
+      pipelineContextHash: '4684f04609ec1ec0a627b6494f766988',
+      pipelineContextVersion: 4,
+    });
+    expect(result.recoverable).toBe(true);
+    expect(result.nextStatus).toBe('interrupted');
+  });
+
   test('cancelled stays not recoverable', () => {
     const result = classifyInterruptedTask({
       status: 'cancelled',

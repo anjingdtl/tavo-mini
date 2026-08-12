@@ -62,4 +62,55 @@ describe('high-payload pipeline reads', () => {
     expect(resume?.finalText).toHaveLength('终稿'.repeat(100_000).length);
     expect(resume?.pipelineContextJson).toContain('draftContext');
   });
+
+  test('summary persist with null blobs does not wipe frozen context or final text', async () => {
+    await savePipelineTask({
+      id: 'keep-blob',
+      targetType: 'chapter',
+      targetId: 70,
+      status: 'proofing',
+      stageResults: [{ stage: 'draft', status: 'success' }],
+      finalText: '已完成的终稿正文',
+      error: null,
+      pipelineContextJson: JSON.stringify({ version: 4, draftContext: { chapterId: 70 } }),
+      pipelineContextVersion: 4,
+      pipelineContextHash: 'hash-keep',
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 6,
+      parentTaskId: null,
+      derivedKind: null,
+      derivedInstruction: null,
+      createdAt: 1,
+      updatedAt: 2,
+      resolvedAt: null,
+    });
+
+    await savePipelineTask({
+      id: 'keep-blob',
+      targetType: 'chapter',
+      targetId: 70,
+      status: 'interrupted',
+      stageResults: [{ stage: 'draft', status: 'success' }],
+      finalText: null,
+      error: '运行被中断，可继续后续阶段',
+      pipelineContextJson: null,
+      pipelineContextVersion: 4,
+      pipelineContextHash: 'hash-keep',
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 6,
+      parentTaskId: null,
+      derivedKind: null,
+      derivedInstruction: null,
+      createdAt: 1,
+      updatedAt: 3,
+      resolvedAt: null,
+    });
+
+    const resume = await getPipelineTaskResumePayload('keep-blob');
+    expect(resume?.status).toBe('interrupted');
+    expect(resume?.error).toMatch(/可继续后续阶段/);
+    expect(resume?.finalText).toBe('已完成的终稿正文');
+    expect(resume?.pipelineContextJson).toContain('draftContext');
+    expect(resume?.pipelineContextHash).toBe('hash-keep');
+  });
 });
