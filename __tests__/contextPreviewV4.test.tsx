@@ -19,7 +19,7 @@ describe('Context Preview V4 UI contract', () => {
     expect(source).not.toContain('Math.max(256');
   });
 
-  test('V3 分层预算卡只展示分层预算摘要，不展示 board 明细', () => {
+  test('V3 分层预算卡默认紧凑，展开后只读展示四个 board 的 demand/soft/allocated/borrowed', () => {
     const source = fs.readFileSync(
       path.join(process.cwd(), 'src/screens/ContextPreviewScreen.tsx'),
       'utf8',
@@ -27,14 +27,33 @@ describe('Context Preview V4 UI contract', () => {
     expect(source).toContain('上下文预算 V3 分层弹性');
     expect(source).toContain('强制输入上限');
     expect(source).toContain('风险等级');
-    for (const field of ['contextWindow', 'softInputLimit', 'burstInputLimit', 'totalEstimatedInputTokens']) {
+    expect(source).toContain('展开详细分配');
+    expect(source).toContain('V3_BOARD_ORDER');
+    expect(source).toContain('Story State');
+    expect(source).toContain('Resources');
+    expect(source).toContain('Sliding Window');
+    expect(source).toContain('Episodic Memory');
+    for (const field of [
+      'contextWindow',
+      'softInputLimit',
+      'burstInputLimit',
+      'hardInputLimit',
+      'mandatoryTokens',
+      'totalEstimatedInputTokens',
+      'actualDemandTokens',
+      'demandTokens',
+      'softTargetTokens',
+      'allocatedTokens',
+      'borrowedTokens',
+    ]) {
       expect(source).toContain(field);
     }
-    expect(source).not.toContain('V3_BOARD_ORDER');
-    expect(source).not.toContain('Story State：需求');
-    expect(source).not.toContain('Resources：需求');
-    expect(source).not.toContain('Sliding Window：需求');
-    expect(source).not.toContain('Episodic：需求');
+    expect(source).toContain('借调 0');
     expect(source).not.toContain('弹性上限');
+    expect(source).not.toContain('TextInput');
+    expect(source).not.toContain('onValueChange');
+    expect(source).not.toContain('allocateHierarchicalContextBudget');
+    expect(source).not.toContain('saveContextAutomationPolicy');
+    expect(source).not.toContain('setSetting(');
   });
 });
