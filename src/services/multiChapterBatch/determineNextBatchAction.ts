@@ -17,6 +17,7 @@ import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+  isResumableContextBudgetVersion,
 } from '../pipeline/outlineWorkflowVersion';
 
 /**
@@ -318,8 +319,9 @@ function isLegacyIncompleteTask(
       CURRENT_OUTLINE_WORKFLOW_VERSION ||
       Boolean(
         input.taskContextBudgetVersions &&
-          Number(input.taskContextBudgetVersions[taskId]) !==
-            CURRENT_CONTEXT_BUDGET_VERSION,
+          !isResumableContextBudgetVersion(
+            input.taskContextBudgetVersions[taskId],
+          ),
       )) &&
     status !== 'completed' &&
     status !== 'cancelled'

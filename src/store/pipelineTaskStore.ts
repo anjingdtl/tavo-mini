@@ -3,6 +3,7 @@ import * as db from '../services/database';
 import type { PipelineTask, PipelineStageResult, PipelineTaskStatus } from '../types/pipeline';
 import { classifyInterruptedTask } from '../services/pipelineTaskContext';
 import { OutlineContextError } from '../services/outlineContextBuilder';
+import { shouldIncludeBriefCheckpoint } from '../services/pipeline/outlineWorkflowVersion';
 import type { PipelineCheckpointStage } from '../services/pipeline/types';
 
 function mergeStageResult(
@@ -289,13 +290,14 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       updatedAt: now,
       resolvedAt: null,
     };
-    const checkpointStages: PipelineCheckpointStage[] =
-      [3, 4].includes(Number(task.outlineWorkflowVersion)) &&
-      (task.contextBudgetVersion === 3 ||
-        task.contextBudgetVersion === 4 ||
-        task.contextBudgetVersion === 5)
-        ? ['draft', 'review', 'factCheck', 'brief', 'proof']
-        : ['draft', 'review', 'factCheck', 'proof'];
+    const checkpointStages: PipelineCheckpointStage[] = shouldIncludeBriefCheckpoint(
+      {
+        outlineWorkflowVersion: task.outlineWorkflowVersion,
+        contextBudgetVersion: task.contextBudgetVersion,
+      },
+    )
+      ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+      : ['draft', 'review', 'factCheck', 'proof'];
     // Persist parent + pending checkpoints in ONE transaction BEFORE
     // the task enters the store or is handed to the runner. On failure we
     // do not add a ghost task, do not return an id, and do not start the

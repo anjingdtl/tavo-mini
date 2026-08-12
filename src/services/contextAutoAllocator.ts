@@ -610,19 +610,24 @@ export interface ContextAutoAppliedRecordV3 {
 }
 
 /**
- * Apply V3 auto-config. Writes:
+ * Apply V3 auto-config. Writes ONLY the V3 mode marker + policy + the chosen
+ * context input size:
  *   - context_auto_mode = 'v3'
  *   - context_auto_policy_v3 = {policy}
  *   - context_auto_input = maxContextTokens
- *   - llm_config.context_window / max_output_tokens (every config)
- *   - presets.max_tokens (output baseline)
  *
- * Does NOT write:
+ * Deliberately does NOT write (Closure Plan §6):
+ *   - llm_config.context_window / max_output_tokens — each model keeps its REAL
+ *     capability (32K / 128K / 1M stay distinct). A single global UPDATE would
+ *     flatten every model to one window, contradicting V3's model-relative
+ *     envelope. The frozen per-task request config supplies the real window at
+ *     run time.
+ *   - presets.max_tokens — same anti-pattern; presets keep their values.
  *   - sliding_window_size / resource_budget / story_state_budget_tokens /
  *     episodic_memory_budget_tokens / memory_patch_max_tokens (V3 computes
- *     these at request time from the frozen task model + policy)
+ *     these at request time from the frozen task model + policy).
  *   - characters / notes / worldbook_entries / worldbook_collections
- *     max_tokens (Plan §11 — V3 never bulk-UPDATEs resource max_tokens)
+ *     max_tokens (Plan §11 — V3 never bulk-UPDATEs resource max_tokens).
  */
 export async function applyContextAutoAllocationV3(
   maxContextTokens: number,
@@ -633,23 +638,13 @@ export async function applyContextAutoAllocationV3(
       `applyContextAutoAllocationV3: maxContextTokens 必须为正数，收到：${maxContextTokens}`,
     );
   }
-  const [llmCount, presetCount, persistedPolicy] = await Promise.all([
-    countLlmConfigs(),
-    countAllPresets(),
-    getContextAutomationPolicyV3(),
-  ]);
+  const persistedPolicy = await getContextAutomationPolicyV3();
   const policy =
     options.policy ||
     (persistedPolicy && isContextAutomationPolicyV3(persistedPolicy)
       ? persistedPolicy
       : cloneDefaultContextAutomationPolicyV3());
   const policyHash = hashContextAutomationPolicyV3(policy);
-  // Output baseline = 20% of window, capped by ELASTIC_STAGE reserve logic
-  // (kept consistent with V2 so LLM configs land on the same numbers).
-  const outputBudget = Math.round(
-    maxContextTokens *
-      DEFAULT_CONTEXT_AUTOMATION_POLICY_V2.outlineCompatibility.outputRatio,
-  );
   const serializedPolicyV3 = serializeContextAutomationPolicyV3(policy);
   const statements: SqlStatement[] = [
     {
@@ -658,14 +653,10 @@ export async function applyContextAutoAllocationV3(
     },
     { sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)', params: ['context_auto_mode', 'v3'] },
     { sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)', params: ['context_auto_policy_v3', serializedPolicyV3] },
-    {
-      sql: 'UPDATE llm_config SET context_window = ?, max_output_tokens = ?',
-      params: [Math.round(maxContextTokens), outputBudget],
-    },
-    { sql: 'UPDATE presets SET max_tokens = ?', params: [outputBudget] },
   ];
-  // Explicitly DO NOT add UPDATE characters / notes / worldbook_entries /
-  // worldbook_collections statements. V3 leaves resource max_tokens untouched.
+  // Explicitly DO NOT add UPDATE llm_config / presets / characters / notes /
+  // worldbook_* statements. V3 leaves every model's real context_window,
+  // max_output_tokens and resource max_tokens untouched (Closure Plan §6).
   const db = await openDatabase();
   await executeTransaction(db, statements);
   const record: ContextAutoAppliedRecordV3 = {
@@ -675,7 +666,10 @@ export async function applyContextAutoAllocationV3(
     mode: 'v3',
     policy,
     policyHash,
-    affectedCounts: { llmConfigs: llmCount, presets: presetCount },
+    // V3 writes no model / preset / resource rows, so nothing is "affected"
+    // in the bulk-overwrite sense. Counts stay 0 so the UI never claims V3
+    // mutated model capabilities.
+    affectedCounts: { llmConfigs: 0, presets: 0 },
   };
   // Persist the last-applied record via the shared V2-shaped store so existing
   // UI helpers can read it; the V3 schemaVersion field lets the screen render
@@ -691,8 +685,8 @@ export async function applyContextAutoAllocationV3(
     policyVersion: 'context-automation-v3',
     policyHash,
     affectedCounts: {
-      llmConfigs: llmCount,
-      presets: presetCount,
+      llmConfigs: 0,
+      presets: 0,
       characters: 0,
       notes: 0,
       worldbookEntries: 0,

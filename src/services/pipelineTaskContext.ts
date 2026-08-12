@@ -28,6 +28,7 @@ import {
 } from './pipeline/reasoningPolicy';
 import type { ChatMessage } from './llm';
 import { OutlineContextError } from './outlineContextBuilder';
+import { isCurrentOutlinePipelineContextBudgetVersion } from './pipeline/outlineWorkflowVersion';
 import { sha256Hex } from './continuation/hashUtils';
 
 /** Envelope protocol version stored in pipeline_context_version. */
@@ -671,13 +672,13 @@ export function parsePipelineExecutionSnapshot(
   if (
     isStructuredWorkflow &&
     (isCurrentWorkflow
-      ? contextBudgetVersion !== 5
+      ? !isCurrentOutlinePipelineContextBudgetVersion(contextBudgetVersion)
       : contextBudgetVersion !== 3 && contextBudgetVersion !== 4)
   ) {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
       isCurrentWorkflow
-        ? '当前统一流水线必须与上下文预算版本 5 成对冻结，已阻止恢复。'
+        ? '当前统一流水线必须与上下文预算版本 5/6 成对冻结，已阻止恢复。'
         : '工作流版本 3 必须与上下文预算版本 3/4 成对冻结，已阻止恢复。',
       'restart_task',
     );
@@ -687,7 +688,7 @@ export function parsePipelineExecutionSnapshot(
   if (isStructuredWorkflow) {
     if (
       (isCurrentWorkflow
-        ? contextBudgetVersion !== 5
+        ? !isCurrentOutlinePipelineContextBudgetVersion(contextBudgetVersion)
         : contextBudgetVersion !== 3 && contextBudgetVersion !== 4) ||
       finalReviserReasoningPolicyVersion !== 3
     ) {
@@ -831,7 +832,7 @@ export function parsePipelineExecutionSnapshot(
     }
     if (
       reasoningProfileVersion === 5 &&
-      (contextBudgetVersion !== 5 ||
+      (!isCurrentOutlinePipelineContextBudgetVersion(contextBudgetVersion) ||
         stageReasoning.draft?.effectiveTier !== raw.requestedReasoningTier ||
         stageReasoning.review?.effectiveTier !== raw.requestedReasoningTier ||
         stageReasoning.factCheck?.effectiveTier !== 'low' ||
@@ -842,7 +843,7 @@ export function parsePipelineExecutionSnapshot(
     ) {
       throw new OutlineContextError(
         'OUTLINE_EXECUTION_CONFIG_INVALID',
-        '当前统一流水线必须保持 Draft/Review/Brief/Proof 跟随用户档位、FactCheck 为 enabled + low，且使用 context budget 5，已阻止恢复。',
+        '当前统一流水线必须保持 Draft/Review/Brief/Proof 跟随用户档位、FactCheck 为 enabled + low，且使用 context budget 5/6，已阻止恢复。',
         'restart_task',
       );
     }
@@ -1173,10 +1174,14 @@ export function serializePipelineTaskContext(params: {
   const isV32 =
     params.execution.outlineWorkflowVersion === 3 &&
     params.execution.contextBudgetVersion === 4;
+  // Current unified pipeline (owv 4) covers budget 4 (V3.2), 5 (V2 elastic)
+  // and 6 (V3 hierarchical) — all share snapshotVersion 4.
   const isV33 =
     params.execution.outlineWorkflowVersion === 4 &&
     (params.execution.contextBudgetVersion === 4 ||
-      params.execution.contextBudgetVersion === 5);
+      isCurrentOutlinePipelineContextBudgetVersion(
+        params.execution.contextBudgetVersion,
+      ));
   const snapshotVersion = isV33 || isV32 ? 4 : isV3 ? 3 : 1;
   const draftContext: PipelineContextSnapshot = {
     ...params.draftContext,

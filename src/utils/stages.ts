@@ -5,6 +5,11 @@
  * V2.2.0 新增：本文件替代 pipelineRunner 中内联的 totalStages / pct 逻辑。
  */
 
+import {
+  isCurrentOutlinePipelineContextBudgetVersion,
+  shouldIncludeBriefCheckpoint,
+} from '../services/pipeline/outlineWorkflowVersion';
+
 export type PipelineStageName = 'draft' | 'review' | 'factCheck' | 'brief' | 'proof';
 
 export const PIPELINE_STAGES: PipelineStageName[] = ['draft', 'review', 'factCheck', 'brief', 'proof'];
@@ -26,12 +31,15 @@ export function getPipelineStageOrder(
     contextBudgetVersion?: number | null;
   },
 ): PipelineStageName[] {
-  const isStructured =
-    [3, 4].includes(Number(versions?.outlineWorkflowVersion)) &&
-    [3, 4, 5].includes(Number(versions?.contextBudgetVersion));
+  // Structured (Brief-bearing) pipeline predicate and "current unified
+  // pipeline" predicate are owned by outlineWorkflowVersion (Closure Plan §5).
+  const isStructured = shouldIncludeBriefCheckpoint({
+    outlineWorkflowVersion: versions?.outlineWorkflowVersion,
+    contextBudgetVersion: versions?.contextBudgetVersion,
+  });
   const isCurrent =
     Number(versions?.outlineWorkflowVersion) === 4 &&
-    Number(versions?.contextBudgetVersion) === 5;
+    isCurrentOutlinePipelineContextBudgetVersion(versions?.contextBudgetVersion);
   if (isCurrent) return ['draft', 'review', 'factCheck', 'brief', 'proof'];
   // Batch form modes map to single-chapter modes (see mapBatchModeToPipelineMode).
   if (mode === 'draft_only') return ['draft'];

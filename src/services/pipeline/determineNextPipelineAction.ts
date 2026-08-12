@@ -10,6 +10,7 @@
 
 import type { PipelineMode, PipelineStageName } from '../../types/pipeline';
 import { getCheckpoint } from './projectStageCheckpoints';
+import { shouldIncludeBriefCheckpoint } from './outlineWorkflowVersion';
 import { MAX_AUTO_RETRY_ATTEMPTS } from '../llm/requestPolicy';
 import { FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE } from './finalBriefComplianceValidator';
 import type {
@@ -183,9 +184,13 @@ export function determineNextPipelineAction(
   const factCheck = getCheckpoint(stages, 'factCheck');
   const brief = getCheckpoint(stages, 'brief');
   const proof = getCheckpoint(stages, 'proof');
-  const isV3 =
-    [3, 4].includes(Number(task.outlineWorkflowVersion)) &&
-    [3, 4, 5].includes(Number(task.contextBudgetVersion));
+  // Structured (Brief-bearing) pipeline predicate — single source of truth
+  // (Closure Plan §5). Version 6 (V3 hierarchical) routes through the same V3
+  // decide* branches as 3/4/5 so the Brief checkpoint is always created.
+  const isV3 = shouldIncludeBriefCheckpoint({
+    outlineWorkflowVersion: task.outlineWorkflowVersion,
+    contextBudgetVersion: task.contextBudgetVersion,
+  });
 
   // --- Draft ---------------------------------------------------------
   if (isOpen(draft.status)) {

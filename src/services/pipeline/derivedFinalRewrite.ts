@@ -5,6 +5,7 @@ import {
 import { getStageCheckpoints } from '../../data/repositories/pipelineStageCheckpointRepository';
 import { parsePersistedPipelineTaskContext } from '../pipelineTaskContext';
 import { getPipelineStageOrder } from '../../utils/stages';
+import { shouldIncludeBriefCheckpoint } from './outlineWorkflowVersion';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import type { PipelineTask } from '../../types/pipeline';
 
@@ -43,8 +44,10 @@ export async function createDerivedFinalRewriteTask(
   }
   const parentWorkflowVersion = Number(parent.outlineWorkflowVersion);
   if (
-    ![3, 4].includes(parentWorkflowVersion) ||
-    ![3, 4, 5].includes(Number(parent.contextBudgetVersion))
+    !shouldIncludeBriefCheckpoint({
+      outlineWorkflowVersion: parentWorkflowVersion,
+      contextBudgetVersion: Number(parent.contextBudgetVersion),
+    })
   ) {
     throw new Error('仅重写终稿仅适用于结构化完整流水线；请重新运行完整流水线。');
   }
@@ -60,8 +63,10 @@ export async function createDerivedFinalRewriteTask(
   if (
     !parsed.execution ||
     ![3, 4, 5].includes(Number(parsed.execution.reasoningProfileVersion)) ||
-    ![3, 4].includes(Number(parsed.execution.outlineWorkflowVersion)) ||
-    ![3, 4, 5].includes(Number(parsed.execution.contextBudgetVersion))
+    !shouldIncludeBriefCheckpoint({
+      outlineWorkflowVersion: parsed.execution.outlineWorkflowVersion,
+      contextBudgetVersion: parsed.execution.contextBudgetVersion,
+    })
   ) {
     throw new Error('原任务不是当前结构化冻结配置，已阻止派生终稿。');
   }

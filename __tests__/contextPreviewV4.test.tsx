@@ -18,4 +18,16 @@ describe('Context Preview V4 UI contract', () => {
     expect(source).not.toContain('|| 8192');
     expect(source).not.toContain('Math.max(256');
   });
+
+  test('V3 分层预算卡保留总预算摘要，隐藏板块细项避免遮挡下方内容', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'src/screens/ContextPreviewScreen.tsx'),
+      'utf8',
+    );
+    expect(source).toContain('上下文预算 V3 分层弹性');
+    expect(source).toContain('强制输入上限');
+    expect(source).toContain('风险等级');
+    expect(source).not.toContain('弹性上限');
+    expect(source).not.toContain("['storyState', '故事状态']");
+  });
 });

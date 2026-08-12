@@ -3,10 +3,6 @@ import { processMacros } from './macroReplace';
 import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
 import { allocateElasticStageContextBudget } from './pipeline/elasticBudgetAllocator';
 import {
-  MAX_EPISODIC_MEMORY_BUDGET,
-  MAX_STORY_STATE_BUDGET,
-} from './contextAutoAllocator';
-import {
   allocateHierarchicalContextBudget,
   type HierarchicalBudgetInput,
   type HierarchicalBudgetResult,
@@ -404,15 +400,24 @@ export async function buildContext(
   )
     .map(chapter => chapter.content)
     .join('\n\n');
-  const provisionalScanText = [
-    currentChapter.title,
-    currentChapter.synopsis,
-    currentChapter.content,
-    options.retrievalUserPrompt || '',
-    worldbookScanContent,
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  // Episodic query is computed ONCE here (before the budget block) so the V3
+  // branch can measure REAL episodic demand and build a worldbook scan haystack
+  // that includes episodic keywords — without re-deriving it downstream.
+  // Entity boosts only from prepare()-usable checkpoints.
+  const previousForQuery = resolvePreviousChapterForQuery(
+    previousChapters,
+    currentChapter,
+  );
+  const episodicQuery = buildEpisodicRetrievalQuery({
+    currentChapter,
+    previousChapter: previousForQuery,
+    retrievalUserPrompt: options.retrievalUserPrompt,
+  });
+  const storyStateForRetrieval = resolveStoryStateForRetrieval(prepared);
+  const retrievalOptions: MemoryRetrievalOptions = {
+    queryText: episodicQuery,
+    storyState: storyStateForRetrieval,
+  };
   // Preset + outline are the only mandatory sections; the allocator result
   // above is attached for diagnostics / freezing.
   let elasticBudgetTrace:
@@ -451,25 +456,112 @@ export async function buildContext(
     );
     const remainingAfterOutline = Math.max(0, availableInput - outlineTokens);
     if (useV3Hierarchical) {
-      // ----- Context Budget V3 hierarchical branch (Plan §3-§8) -------------
-      // 1. Estimate real mandatory tokens from preset + outline + protocol.
-      //    The macro-replaced preset isn't built yet; using the raw preset text
-      //    keeps the estimate conservative (macros usually shorten content).
+      // ----- Context Budget V3 hierarchical branch (Closure Plan §3-§10) -----
+      // Every board now reports REAL demand (Closure Plan §7-§10):
+      //   - Story State: natural render size of the prepared checkpoint; 0 when
+      //     missing / dirty / empty / unusable (no config-ceiling proxy).
+      //   - Episodic: natural token total of the retrieved TopK candidates; 0
+      //     when retrieval is empty (no MAX_EPISODIC cap as demand).
+      //   - Sliding: real selected raw-bridge token sum from the coverage plan
+      //     (≤ 10 chapters); no config slidingWindowSize hard cap as demand.
+      //   - Resources: candidate-first (unchanged) — sum of activated candidate
+      //     tokens.
+      // The allocator's per-board elastic ceiling (policy ratios × envelope) is
+      // the ONLY place demand gets clipped back; demand itself is never a
+      // config ceiling.
+      //
+      // Worldbook activation (Closure Plan §13): resources are collected with a
+      // FULL scan haystack that includes the episodic memory text, so Episodic /
+      // historical-event keywords can trigger worldbook entries — restoring the
+      // V2 trigger surface without a Worldbook → Episodic → Worldbook cycle
+      // (episodic retrieval never depends on worldbook).
+      const DEMAND_PROBE_BUDGET = 1_000_000; // large enough to avoid clip on measure
       const presetTextForEstimate =
         typeof preset === 'string' ? preset : buildPresetPrompt(preset);
       const mandatoryTokens =
         estimateTokens(presetTextForEstimate || DEFAULT_SYSTEM_PROMPT) +
         outlineTokens +
         fixedProtocol;
-      // 2. Collect resource candidates with full content (Plan §6.1
-      //    candidate-first). The collector never pre-clips; actual demand is
-      //    the sum of activated candidate tokens.
+
+      // --- Story State demand (real) -----------------------------------------
+      // Render the prepared checkpoint with a huge budget so the result is the
+      // NATURAL story-memory size (no destructive clip). Missing / dirty /
+      // empty / future / invalid checkpoints yield usable=false → demand 0.
+      let storyStateDemand = 0;
+      const storyStateEligibility = prepared?.checkpointEligibility;
+      if (prepared?.checkpoint && storyStateEligibility?.usable) {
+        try {
+          const probe = renderPreparedStoryMemoryContext(
+            projectId,
+            currentChapter,
+            prepared.checkpoint,
+            DEMAND_PROBE_BUDGET,
+            { retrievalUserPrompt: options.retrievalUserPrompt },
+          );
+          storyStateDemand =
+            probe.traceItems[0]?.estimatedTokens || estimateTokens(probe.text);
+        } catch {
+          storyStateDemand = 0;
+        }
+      }
+
+      // --- Episodic demand (real) + scan haystack (for worldbook) -------------
+      // Run the same IDF retrieval the downstream render uses, but with a huge
+      // budget so selectCandidatesWithinTokenBudget keeps every TopK candidate.
+      // The resulting text doubles as the episodic keyword source for the
+      // worldbook scan (Closure Plan §13 Phase A). Empty retrieval → demand 0.
+      let episodicDemand = 0;
+      let v3ScanMemoryText = '';
+      const v3RetrievalTopK = config.memoryTopK ?? 10;
+      try {
+        const idfCache = await import('../utils/idfCache');
+        const signature = idfCache.computeMemorySummarySignature(
+          episodicCandidates,
+        );
+        let idf = idfCache.getCachedIdf(projectId, signature);
+        if (!idf) {
+          idf = buildIdf(
+            episodicCandidates
+              .map(c => String((c as any).memory_summary || ''))
+              .filter(Boolean),
+          );
+          idfCache.setCachedIdf(projectId, signature, idf);
+        }
+        v3ScanMemoryText = buildMemoryContextWithIdf(
+          episodicCandidates,
+          currentChapter,
+          idf,
+          v3RetrievalTopK,
+          DEMAND_PROBE_BUDGET,
+          retrievalOptions,
+        );
+        episodicDemand = estimateTokens(v3ScanMemoryText);
+      } catch {
+        episodicDemand = 0;
+        v3ScanMemoryText = '';
+      }
+
+      // --- Phase A → Phase B: full worldbook scan haystack -------------------
+      // Includes episodic memory text so historical-event keywords can trigger
+      // worldbook. Resources are collected against THIS haystack.
+      const v3FullScanText = [
+        currentChapter.title,
+        currentChapter.synopsis,
+        currentChapter.content,
+        options.retrievalUserPrompt || '',
+        worldbookScanContent,
+        v3ScanMemoryText,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      // --- Resources demand (candidate-first, full scan) ---------------------
       let resourcesActualDemand = 0;
       if (config.includeResources) {
         try {
           const collected = await collectAllResourceCandidates(
             projectId,
-            provisionalScanText,
+            v3FullScanText,
             currentChapter,
             {
               retrievalUserPrompt: options.retrievalUserPrompt,
@@ -486,29 +578,17 @@ export async function buildContext(
           resourcesActualDemand = 0;
         }
       }
-      // 3. Demand estimates for non-resource boards. Story state / episodic
-      //    use the config ceilings as proxies (their real render sizes are
-      //    unknown until the budget is set; using config matches the V2
-      //    semantic). Sliding window uses the selected-previous-chapter token
-      //    sum as a content-driven estimate.
-      const storyStateDemand = Math.max(
-        0,
-        Math.min(MAX_STORY_STATE_BUDGET, config.storyStateBudgetTokens ?? 8000),
-      );
-      const episodicDemand = Math.max(
-        0,
-        Math.min(
-          MAX_EPISODIC_MEMORY_BUDGET,
-          config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000,
-        ),
-      );
-      const slidingDemand = Math.max(
-        0,
-        Math.min(config.slidingWindowSize, estimateTokens(worldbookScanContent)),
-      );
-      // 4. Run the hierarchical allocator. resourceItems are passed so the
-      //    Resources board grant is split across candidates by priority ×
-      //    relevance × explicitBoost (Plan §7).
+
+      // --- Sliding demand (real raw-bridge size, ≤ 10 chapters) --------------
+      // coverage.estimatedRawTokens already includes a seam reserve. With no
+      // coverage (story memory off) fall back to the real sliding haystack size
+      // — never the config slidingWindowSize as a hard demand cap.
+      const slidingDemand =
+        coverage && coverage.estimatedRawTokens > 0
+          ? coverage.estimatedRawTokens
+          : estimateTokens(worldbookScanContent);
+
+      // --- Allocate ----------------------------------------------------------
       const v3Input: HierarchicalBudgetInput = {
         contextWindow: resolvedContextWindow,
         reservedOutputTokens: reservedOut,
@@ -535,8 +615,9 @@ export async function buildContext(
       hierarchicalBudgetTrace = v3Result;
       v3ResourceItemAllocations = v3Result.resourceItemAllocations;
       v3ResourceItemTraces = v3Result.resourceItemTraces;
-      // 5. Wire board grants into the effective budgets consumed by the shared
-      //    downstream rendering path.
+      // Wire board grants into the effective budgets consumed by the shared
+      // downstream rendering path. The allocator grant (not the config ceiling)
+      // is the final clip authority.
       effectiveStoryStateBudget =
         v3Result.boardAllocations.storyState.allocatedTokens;
       effectiveResourceBudget = v3Result.boardAllocations.resources.allocatedTokens;
@@ -696,22 +777,9 @@ export async function buildContext(
     }
   }
 
-  // Episodic query: title + synopsis + user prompt + content head + previous tail.
-  // Entity boosts only from prepare()-usable checkpoints (never dirty/empty/failed/rebuilding).
-  const previousForQuery = resolvePreviousChapterForQuery(
-    previousChapters,
-    currentChapter,
-  );
-  const episodicQuery = buildEpisodicRetrievalQuery({
-    currentChapter,
-    previousChapter: previousForQuery,
-    retrievalUserPrompt: options.retrievalUserPrompt,
-  });
-  const storyStateForRetrieval = resolveStoryStateForRetrieval(prepared);
-  const retrievalOptions: MemoryRetrievalOptions = {
-    queryText: episodicQuery,
-    storyState: storyStateForRetrieval,
-  };
+  // Episodic query / retrieval options were computed above (before the budget
+  // block) so the V3 branch could measure real demand + enrich the worldbook
+  // scan haystack. Reused unchanged here for the final memoryText render.
 
   // V2.2.0：IDF 缓存——同项目 memory_summary 不变时复用，避免每次 tokenize+buildIdf
   let memoryText: string;
