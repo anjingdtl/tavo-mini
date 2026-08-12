@@ -75,15 +75,10 @@ jest.mock('../src/data/repositories/outlineRepository', () => ({
 }));
 
 jest.mock('../src/services/storyMemory/storyMemoryPrepare', () => ({
-  prepareStoryMemoryForGeneration: jest.fn(async () => ({
-    blocked: false,
-    fatal: false,
-    checkpoint: null,
-    checkpointEligibility: { usable: false, reason: 'missing' },
-    coverage: undefined,
-    rawChapterIds: [],
-    warnings: [],
-  })),
+  __setPreparedStoryMemory: (next: any) => {
+    mockPreparedStoryMemory = next;
+  },
+  prepareStoryMemoryForGeneration: jest.fn(async () => mockPreparedStoryMemory),
 }));
 
 jest.mock('../src/utils/idfCache', () => ({
@@ -93,8 +88,22 @@ jest.mock('../src/utils/idfCache', () => ({
 }));
 
 import * as dbMock from '../src/services/database';
+import * as storyMemoryPrepareMock from '../src/services/storyMemory/storyMemoryPrepare';
 import { buildContext } from '../src/services/contextBuilder';
+import { DEFAULT_CONTEXT_AUTOMATION_POLICY_V3 } from '../src/services/contextAutomationPolicy';
+import { allocateHierarchicalContextBudget } from '../src/services/context/hierarchicalContextAllocator';
 import type { ContextConfig } from '../src/types/novel';
+
+let mockPreparedStoryMemory: any = {
+  blocked: false,
+  fatal: false,
+  checkpoint: null,
+  checkpointEligibility: { usable: false, reason: 'missing' },
+  coverage: undefined,
+  coverageCandidates: undefined,
+  rawChapterIds: [],
+  warnings: [],
+};
 
 const BASE_CHAPTER = {
   id: 1,
@@ -138,6 +147,19 @@ function makeLargeCharacter(id: number, name: string, sizeChars: number): any {
 describe('Context Budget V3 — buildContext integration', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPreparedStoryMemory = {
+      blocked: false,
+      fatal: false,
+      checkpoint: null,
+      checkpointEligibility: { usable: false, reason: 'missing' },
+      coverage: undefined,
+      coverageCandidates: undefined,
+      rawChapterIds: [],
+      warnings: [],
+    };
+    (storyMemoryPrepareMock as any).__setPreparedStoryMemory(
+      mockPreparedStoryMemory,
+    );
     (dbMock as any).__setCharacters([]);
     (dbMock as any).__setNotes([]);
     (dbMock as any).__setWorldbook([]);
@@ -408,5 +430,313 @@ describe('Context Budget V3 — buildContext integration', () => {
     expect(r1.pipelineContext.characterText).toEqual(
       r2.pipelineContext.characterText,
     );
+  });
+
+  test('post-coverage episodic demand excludes chapters committed to Recent Raw Bridge (T01)', async () => {
+    const previous = Array.from({ length: 4 }, (_, index) => ({
+      ...BASE_CHAPTER,
+      id: 100 + index,
+      position: index,
+      title: `前章${index + 1}`,
+      content: `星门密钥 原文 ${index} `.repeat(250),
+      memory_summary: `星门密钥 摘要 ${index} `.repeat(120),
+    }));
+    const current = {
+      ...BASE_CHAPTER,
+      id: 199,
+      position: 4,
+      title: '当前章',
+      synopsis: '星门密钥',
+    };
+    (dbMock as any).__setChapters(previous);
+    (dbMock as any).__setCharacters([
+      makeLargeCharacter(80, '回收目标资源', 18_000),
+    ]);
+    (storyMemoryPrepareMock as any).__setPreparedStoryMemory({
+      ...mockPreparedStoryMemory,
+      coverageCandidates: {
+        checkpointThroughPosition: -1,
+        pendingChapters: previous,
+        seamChapter: null,
+        rawEligibleChapters: previous,
+        episodicEligibleChapters: previous,
+      },
+    });
+    const result = await buildContext(
+      current as any,
+      BASE_CONFIG,
+      7,
+      undefined,
+      {
+        contextWindow: 32_000,
+        reservedOutputTokens: 6_400,
+        contextBudgetVersion: 6,
+      },
+    );
+
+    const episodic = result.hierarchicalBudgetTrace!.boardAllocations.episodic;
+    expect(result.pipelineContext.recentBridgeText).toContain('前章4');
+    expect(episodic.actualDemandTokens).toBe(0);
+    expect(episodic.allocatedTokens).toBe(0);
+  });
+
+  test('post-coverage reclaim increases an unmet Resources board (T02)', async () => {
+    const previous = Array.from({ length: 4 }, (_, index) => ({
+      ...BASE_CHAPTER,
+      id: 200 + index,
+      position: index,
+      title: `回收前章${index + 1}`,
+      content: `星门密钥 正文 ${index} `.repeat(250),
+      memory_summary: `星门密钥 事件摘要 ${index} `.repeat(120),
+    }));
+    const current = {
+      ...BASE_CHAPTER,
+      id: 299,
+      position: 4,
+      title: '回收当前章',
+      synopsis: '星门密钥',
+    };
+    (dbMock as any).__setChapters(previous);
+    (dbMock as any).__setCharacters([
+      makeLargeCharacter(81, '资源补偿', 18_000),
+    ]);
+    (storyMemoryPrepareMock as any).__setPreparedStoryMemory({
+      ...mockPreparedStoryMemory,
+      coverageCandidates: {
+        checkpointThroughPosition: -1,
+        pendingChapters: previous,
+        seamChapter: null,
+        rawEligibleChapters: previous,
+        episodicEligibleChapters: previous,
+      },
+    });
+    const policy = {
+      ...DEFAULT_CONTEXT_AUTOMATION_POLICY_V3,
+      boards: {
+        ...DEFAULT_CONTEXT_AUTOMATION_POLICY_V3.boards,
+        resources: {
+          ...DEFAULT_CONTEXT_AUTOMATION_POLICY_V3.boards.resources,
+          elasticCeilingRatio: 0.8,
+        },
+      },
+    };
+
+    const result = await buildContext(
+      current as any,
+      BASE_CONFIG,
+      7,
+      undefined,
+      {
+        contextWindow: 32_000,
+        reservedOutputTokens: 6_400,
+        contextBudgetVersion: 6,
+        contextAutomationPolicyV3: policy,
+      },
+    );
+
+    const trace = result.hierarchicalBudgetTrace!;
+    const resources = trace.boardAllocations.resources;
+    const expectedFinal = allocateHierarchicalContextBudget({
+      contextWindow: 32_000,
+      reservedOutputTokens: 6_400,
+      mandatoryTokens: trace.envelope.mandatoryTokens,
+      safetyMargin: trace.envelope.safetyMargin,
+      policy,
+      boards: {
+        storyState: {
+          actualDemandTokens:
+            trace.boardAllocations.storyState.actualDemandTokens,
+        },
+        resources: {
+          actualDemandTokens: resources.actualDemandTokens,
+        },
+        slidingWindow: {
+          actualDemandTokens:
+            trace.boardAllocations.slidingWindow.actualDemandTokens,
+        },
+        episodic: { actualDemandTokens: 0 },
+      },
+    });
+    expect(resources.actualDemandTokens).toBeGreaterThan(
+      resources.softTargetTokens,
+    );
+    expect(resources.borrowedTokens).toBeGreaterThan(0);
+    expect(resources.allocatedTokens).toBeGreaterThan(
+      resources.softTargetTokens,
+    );
+    expect(resources.allocatedTokens).toBe(
+      expectedFinal.boardAllocations.resources.allocatedTokens,
+    );
+    expect(
+      Object.values(trace.boardAllocations).reduce(
+        (sum, board) => sum + board.allocatedTokens,
+        trace.envelope.mandatoryTokens,
+      ),
+    ).toBeLessThanOrEqual(trace.envelope.hardInputLimit);
+  });
+
+  test('partial Raw coverage leaves only non-Raw summaries in Episodic demand (T03)', async () => {
+    const previous = Array.from({ length: 4 }, (_, index) => ({
+      ...BASE_CHAPTER,
+      id: 300 + index,
+      position: index,
+      title: `部分前章${index + 1}`,
+      content: `星门密钥 正文 ${index} `.repeat(250),
+      memory_summary: `星门密钥 保留摘要 ${index} `.repeat(120),
+    }));
+    const current = {
+      ...BASE_CHAPTER,
+      id: 399,
+      position: 4,
+      title: '部分当前章',
+      synopsis: '星门密钥',
+    };
+    (dbMock as any).__setChapters(previous);
+    (storyMemoryPrepareMock as any).__setPreparedStoryMemory({
+      ...mockPreparedStoryMemory,
+      coverageCandidates: {
+        checkpointThroughPosition: -1,
+        pendingChapters: previous,
+        seamChapter: null,
+        rawEligibleChapters: previous,
+        episodicEligibleChapters: previous,
+      },
+    });
+
+    const result = await buildContext(
+      current as any,
+      BASE_CONFIG,
+      7,
+      undefined,
+      {
+        contextWindow: 32_000,
+        reservedOutputTokens: 6_400,
+        contextBudgetVersion: 6,
+        contextAutomationPolicyV3: {
+          ...DEFAULT_CONTEXT_AUTOMATION_POLICY_V3,
+          boards: {
+            ...DEFAULT_CONTEXT_AUTOMATION_POLICY_V3.boards,
+            slidingWindow: {
+              ...DEFAULT_CONTEXT_AUTOMATION_POLICY_V3.boards.slidingWindow,
+              softRatio: 0.05,
+              elasticCeilingRatio: 0.1,
+            },
+          },
+        },
+      },
+    );
+
+    const bridgeTrace = result.trace.find(
+      item => item.kind === 'story_memory_bridge',
+    );
+    const rawIds = bridgeTrace?.reason.match(/^raw:([^;]*)/)?.[1]
+      ? bridgeTrace.reason
+          .match(/^raw:([^;]*)/)![1]
+          .split(',')
+          .filter(Boolean)
+      : [];
+    const episodic = result.hierarchicalBudgetTrace!.boardAllocations.episodic;
+    expect(rawIds.length).toBeGreaterThan(0);
+    expect(rawIds.length).toBeLessThan(4);
+    expect(episodic.actualDemandTokens).toBeGreaterThan(0);
+    expect(episodic.actualDemandTokens).toBeLessThan(
+      previous.reduce((sum, chapter) => sum + (chapter.memory_summary?.length ?? 0), 0),
+    );
+  });
+
+  test.each([
+    [32_000, 6_400],
+    [1_000_000, 200_000],
+  ])('reclaim remains hard-safe at %i context window (T04/T05)', async (contextWindow, reservedOutputTokens) => {
+    const previous = Array.from({ length: 4 }, (_, index) => ({
+      ...BASE_CHAPTER,
+      id: 400 + index,
+      position: index,
+      title: `压力前章${index + 1}`,
+      content: `星门密钥 压力正文 ${index} `.repeat(250),
+      memory_summary: `星门密钥 压力摘要 ${index} `.repeat(120),
+    }));
+    const current = {
+      ...BASE_CHAPTER,
+      id: 499,
+      position: 4,
+      title: '压力当前章',
+      synopsis: '星门密钥',
+    };
+    (dbMock as any).__setChapters(previous);
+    (dbMock as any).__setCharacters([
+      makeLargeCharacter(82, '压力资源', 18_000),
+    ]);
+    (storyMemoryPrepareMock as any).__setPreparedStoryMemory({
+      ...mockPreparedStoryMemory,
+      coverageCandidates: {
+        checkpointThroughPosition: -1,
+        pendingChapters: previous,
+        seamChapter: null,
+        rawEligibleChapters: previous,
+        episodicEligibleChapters: previous,
+      },
+    });
+
+    const result = await buildContext(
+      current as any,
+      BASE_CONFIG,
+      7,
+      undefined,
+      { contextWindow, reservedOutputTokens, contextBudgetVersion: 6 },
+    );
+    const trace = result.hierarchicalBudgetTrace!;
+    expect(trace.totalEstimatedInputTokens).toBeLessThanOrEqual(
+      trace.envelope.hardInputLimit,
+    );
+    expect(result.pipelineContext.recentBridgeText).toContain('压力前章4');
+  });
+
+  test('reclaim is deterministic across repeated builds (T06)', async () => {
+    const previous = Array.from({ length: 4 }, (_, index) => ({
+      ...BASE_CHAPTER,
+      id: 500 + index,
+      position: index,
+      title: `确定前章${index + 1}`,
+      content: `星门密钥 确定正文 ${index} `.repeat(250),
+      memory_summary: `星门密钥 确定摘要 ${index} `.repeat(120),
+    }));
+    const current = {
+      ...BASE_CHAPTER,
+      id: 599,
+      position: 4,
+      synopsis: '星门密钥',
+    };
+    (dbMock as any).__setChapters(previous);
+    (dbMock as any).__setCharacters([
+      makeLargeCharacter(83, '确定资源', 18_000),
+    ]);
+    (storyMemoryPrepareMock as any).__setPreparedStoryMemory({
+      ...mockPreparedStoryMemory,
+      coverageCandidates: {
+        checkpointThroughPosition: -1,
+        pendingChapters: previous,
+        seamChapter: null,
+        rawEligibleChapters: previous,
+        episodicEligibleChapters: previous,
+      },
+    });
+    const options = {
+      contextWindow: 64_000,
+      reservedOutputTokens: 12_800,
+      contextBudgetVersion: 6,
+    };
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        buildContext(current as any, BASE_CONFIG, 7, undefined, options),
+      ),
+    );
+    const baseline = JSON.stringify(results[0].hierarchicalBudgetTrace);
+    for (const result of results) {
+      expect(JSON.stringify(result.hierarchicalBudgetTrace)).toBe(baseline);
+      expect(result.pipelineContext.recentBridgeText).toBe(
+        results[0].pipelineContext.recentBridgeText,
+      );
+    }
   });
 });
