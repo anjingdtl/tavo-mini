@@ -42,6 +42,34 @@ export interface FrozenNoteConfig {
   enabledNoteIds?: number[];
 }
 
+/** Cached Style Profile material captured before the V7 source view closes. */
+export interface FrozenNoteStyleProfile {
+  profileText: string;
+  profileJson: string;
+  sourceHash: string;
+}
+
+export interface FrozenNoteRetrievalQuery {
+  chapterTitle: string;
+  chapterSynopsis: string;
+  previousEnding: string;
+  userPrompt: string;
+}
+
+export interface FrozenNoteRetrievalFragment {
+  noteId: number;
+  noteTitle: string;
+  fragment: string;
+  relevance: string;
+  retrievalScore?: number;
+}
+
+/** Query-specific retrieval is frozen with the source view, never re-read. */
+export interface FrozenNoteRetrieval {
+  query: FrozenNoteRetrievalQuery;
+  fragments: FrozenNoteRetrievalFragment[];
+}
+
 export type ResourceConstraintClass =
   | 'identity'
   | 'relationship'
@@ -112,6 +140,8 @@ export interface FrozenSourceRecord {
   /** Canonical semantic payload used for ALL derived compile steps. */
   payload: string;
   fingerprint: string;
+  /** Present for Notes in style mode; captured before the snapshot is returned. */
+  styleProfile?: FrozenNoteStyleProfile;
 }
 
 export interface ResourceSourceSnapshot {
@@ -120,6 +150,7 @@ export interface ResourceSourceSnapshot {
   notes: FrozenSourceRecord[];
   preset?: FrozenSourceRecord;
   noteConfig?: FrozenNoteConfig;
+  noteRetrieval?: FrozenNoteRetrieval;
   warnings?: ResourceContextWarning[];
   capturedAt: number;
   includeResources: boolean;

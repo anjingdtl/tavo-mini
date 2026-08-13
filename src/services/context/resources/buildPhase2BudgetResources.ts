@@ -6,6 +6,7 @@ import type {
   ResourceDetailCandidate,
   ResourceDetailIntensity,
   ResourceContextWarning,
+  FrozenNoteRetrievalQuery,
   ResourceSourceSnapshot,
 } from './resourceAwarenessTypes';
 
@@ -13,6 +14,8 @@ export interface Phase2HaystackInput {
   chapter: Chapter;
   retrievalUserPrompt?: string;
   previousChaptersText: string;
+  /** Exact V6 retrieval seam; captured before the V7 snapshot closes. */
+  previousEnding?: string;
   storyMemoryText: string;
   outlineText: string;
   episodicText: string;
@@ -42,6 +45,14 @@ export async function collectPhase2BudgetResources(input: {
   const source = await captureResourceSourceSnapshot(input.projectId, {
     includeResources,
     preset: input.preset,
+    noteQuery: {
+      chapterTitle: input.haystack.chapter.title || '',
+      chapterSynopsis: input.haystack.chapter.synopsis || '',
+      previousEnding:
+        input.haystack.previousEnding ??
+        input.haystack.previousChaptersText.slice(-500),
+      userPrompt: input.haystack.retrievalUserPrompt || '',
+    } satisfies FrozenNoteRetrievalQuery,
   });
   if (!includeResources) {
     return {

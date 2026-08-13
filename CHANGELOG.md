@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.11.51] - 2026-08-14
+
+### Fixed — V7 Frozen Notes Semantic Closure
+
+- 抽取 V6 Legacy 与 V7 Frozen 共用的 Notes Style Profile、styleWeights、Retrieval fragment/scoring 纯算法层；V7 Snapshot 后不再读取数据库。
+- 增加 V6/V7 语义回归、styleWeights 实效、原始 Note/Warning/NOT_SELECTED 与 Freeze/Resume 证据，修复 NG-05。
+
+### Validation
+
+- `npm run test:ci`、`npm run verify`、Migration、Android V7 五阶段与 Freeze/Resume、GitHub Actions 全部通过。
+
 ## [2.11.50] - 2026-08-13
 
 ### Added — Context Budget V3 Final Seal

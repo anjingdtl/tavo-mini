@@ -1,6 +1,13 @@
 import { estimateTokens } from '../../../utils/tokenEstimator';
+import {
+  mergeStyleProfiles,
+  parseStyleProfileJson,
+  resolveStyleWeights,
+  type StyleProfile,
+} from '../../noteSemantics';
 import type {
   FrozenNoteConfig,
+  FrozenNoteRetrieval,
   FrozenSourceRecord,
   ResourceContextWarning,
   ResourceDetailCandidate,
@@ -16,12 +23,13 @@ export interface NoteDetailCompileHaystack {
   outline: string;
   episodic: string;
 }
-
 export interface NoteDetailCompileInput {
   /** Frozen records only. This compiler has no project/database boundary. */
   notes: FrozenSourceRecord[];
   haystack: NoteDetailCompileHaystack;
   noteConfig?: FrozenNoteConfig;
+  /** LLM-selected fragments captured while the source snapshot was built. */
+  noteRetrieval?: FrozenNoteRetrieval;
 }
 
 export interface NoteDetailCompileResult {
@@ -37,6 +45,7 @@ interface ParsedFrozenNote {
   body: string;
   contentAvailable: boolean;
   record: Record<string, unknown>;
+  source: FrozenSourceRecord;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -60,10 +69,10 @@ function warning(
   };
 }
 
-function parseFrozenNote(record: FrozenSourceRecord): ParsedFrozenNote {
+function parseFrozenNote(source: FrozenSourceRecord): ParsedFrozenNote {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(record.payload);
+    parsed = JSON.parse(source.payload);
   } catch {
     throw new Error('冻结笔记 payload 不是有效 JSON。');
   }
@@ -71,12 +80,19 @@ function parseFrozenNote(record: FrozenSourceRecord): ParsedFrozenNote {
   if (Object.keys(raw).length === 0) {
     throw new Error('冻结笔记 payload 为空。');
   }
-  const idValue = Number(raw.id ?? record.id);
-  const id = Number.isSafeInteger(idValue) && idValue > 0 ? idValue : record.id;
-  const title = String(raw.title || record.title || '笔记');
+  const idValue = Number(raw.id ?? source.id);
+  const id = Number.isSafeInteger(idValue) && idValue > 0 ? idValue : source.id;
+  const title = String(raw.title || source.title || '笔记');
   const contentAvailable = raw.__contentAvailable !== false;
   if (!contentAvailable) {
-    return { id, title, body: '', contentAvailable: false, record: raw };
+    return {
+      id,
+      title,
+      body: '',
+      contentAvailable: false,
+      record: raw,
+      source,
+    };
   }
   if (typeof raw.content !== 'string') {
     throw new Error('冻结笔记 payload 缺少正文。');
@@ -87,55 +103,16 @@ function parseFrozenNote(record: FrozenSourceRecord): ParsedFrozenNote {
     body: raw.content,
     contentAvailable: true,
     record: raw,
+    source,
   };
 }
 
-function isStyleNote(title: string, raw: Record<string, unknown>, mode: string): boolean {
+function isStyleNote(
+  title: string,
+  raw: Record<string, unknown>,
+  mode: string,
+): boolean {
   return /风格画像|仿写/.test(title) || raw.mode === 'style' || mode === 'style';
-}
-
-function normalizeTerms(text: string): string[] {
-  const words = text
-    .replace(/[\s，。、！？；：""''（）【】《》\-—…,.!?;:"'()]/g, ' ')
-    .split(/\s+/)
-    .map(item => item.trim())
-    .filter(item => item.length >= 2);
-  const chineseTerms: string[] = [];
-  for (const word of words) {
-    if (!/^[\u4e00-\u9fff]+$/.test(word)) continue;
-    for (let length = 2; length <= Math.min(6, word.length); length += 1) {
-      for (let start = 0; start <= word.length - length; start += 1) {
-        chineseTerms.push(word.slice(start, start + length));
-      }
-    }
-  }
-  return Array.from(new Set([...words, ...chineseTerms]));
-}
-
-function countOccurrences(text: string, term: string): number {
-  const source = text.toLocaleLowerCase();
-  const needle = term.toLocaleLowerCase();
-  if (!needle) return 0;
-  let count = 0;
-  let offset = 0;
-  while (offset <= source.length) {
-    const index = source.indexOf(needle, offset);
-    if (index < 0) break;
-    count += 1;
-    offset = index + Math.max(1, needle.length);
-  }
-  return count;
-}
-
-function extractFragment(body: string, term: string, limit: number): string {
-  const safeLimit = Math.max(200, Math.min(4000, Math.floor(limit || 1000)));
-  const lowerBody = body.toLocaleLowerCase();
-  const index = lowerBody.indexOf(term.toLocaleLowerCase());
-  if (index < 0) return body.slice(0, safeLimit);
-  const radius = Math.max(0, Math.floor((safeLimit - term.length) / 2));
-  const start = Math.max(0, index - radius);
-  const end = Math.min(body.length, index + term.length + radius);
-  return body.slice(start, end);
 }
 
 function selectedNoteIds(config?: FrozenNoteConfig): Set<number> | null {
@@ -145,7 +122,6 @@ function selectedNoteIds(config?: FrozenNoteConfig): Set<number> | null {
 
 function makeCandidate(
   note: ParsedFrozenNote,
-  record: FrozenSourceRecord,
   sourceOrder: number,
   content: string,
   options: {
@@ -153,20 +129,24 @@ function makeCandidate(
     relevance: number;
     explicitSelected: boolean;
     retrievalScore?: number;
+    id?: string;
+    sourceId?: number | null;
+    title?: string;
+    fingerprint?: string;
   },
 ): ResourceDetailCandidate {
   return {
-    id: `note-detail:${record.id ?? sourceOrder}`,
+    id: options.id || `note-detail:${note.source.id ?? sourceOrder}`,
     sourceKind: 'note',
-    sourceId: note.id,
-    title: note.title,
+    sourceId: options.sourceId === undefined ? note.id : options.sourceId,
+    title: options.title || note.title,
     content,
     actualTokens: estimateTokens(content),
     activationReason: options.activationReason,
     relevance: options.relevance,
     explicitSelected: options.explicitSelected,
     sourceOrder: 2000 + sourceOrder,
-    sourceFingerprint: record.fingerprint,
+    sourceFingerprint: options.fingerprint || note.source.fingerprint,
     ...(options.retrievalScore != null
       ? { retrievalScore: options.retrievalScore }
       : {}),
@@ -175,7 +155,6 @@ function makeCandidate(
 
 function compileOriginalNotes(
   notes: ParsedFrozenNote[],
-  records: FrozenSourceRecord[],
   mode: string,
   selectedIds: Set<number> | null,
 ): { candidates: ResourceDetailCandidate[]; styleNotePresent: boolean } {
@@ -190,7 +169,7 @@ function compileOriginalNotes(
       ? `【风格画像笔记｜补充参考，不得覆盖已选写作预设】\n${note.body}`
       : `笔记「${note.title}」：${note.body}`;
     candidates.push(
-      makeCandidate(note, records[index], index, content, {
+      makeCandidate(note, index, content, {
         activationReason: style ? 'style_note' : 'explicit',
         relevance: style ? 0.42 : 0.5,
         explicitSelected: !style,
@@ -202,157 +181,138 @@ function compileOriginalNotes(
 
 function compileStyleNotes(
   notes: ParsedFrozenNote[],
-  records: FrozenSourceRecord[],
   selectedIds: Set<number> | null,
+  config?: FrozenNoteConfig,
 ): { candidates: ResourceDetailCandidate[]; styleNotePresent: boolean } {
-  const eligible: Array<{ note: ParsedFrozenNote; record: FrozenSourceRecord; index: number }> = [];
-  notes.forEach((note, index) => {
-    if (
+  const eligible = notes.filter(
+    note =>
       note.contentAvailable &&
       note.body.trim() &&
-      (!selectedIds || (note.id != null && selectedIds.has(note.id)))
-    ) {
-      eligible.push({ note, record: records[index], index });
-    }
-  });
+      (!selectedIds || (note.id != null && selectedIds.has(note.id))),
+  );
   if (eligible.length === 0) {
     return { candidates: [], styleNotePresent: true };
   }
+
+  // V6 reads/caches note_style_profiles, then merges profile JSON.  Snapshot
+  // capture freezes those exact profile values on each FrozenSourceRecord;
+  // V7 only parses and merges them here, never the live Note or DB cache.
+  const profiles: StyleProfile[] = eligible
+    .map(note => {
+      const frozen = note.source.styleProfile;
+      if (!frozen) return null;
+      return {
+        profileText: frozen.profileText,
+        profileJson: parseStyleProfileJson(frozen.profileJson),
+        sourceHash: frozen.sourceHash,
+      };
+    })
+    .filter((profile): profile is StyleProfile => profile != null);
+  const mergedText = mergeStyleProfiles(
+    profiles,
+    resolveStyleWeights(config?.styleWeights),
+  );
+  if (!mergedText) {
+    return { candidates: [], styleNotePresent: true };
+  }
+
   const content = [
-    '以下是本次写作的风格画像参考，请严格遵循其可用维度，但不得覆盖已选写作预设：',
-    ...eligible.map(item => `【${item.note.title}】\n${item.note.body}`),
+    '以下是本次写作必须遵循的风格画像，请严格按照对应权重的维度进行仿写：',
+    mergedText,
   ].join('\n');
   const first = eligible[0];
-  const candidate = makeCandidate(first.note, {
-    ...first.record,
-    id: null,
-    fingerprint: eligible.map(item => item.record.fingerprint).join('|'),
-  }, 0, content, {
+  const candidate = makeCandidate(first, 0, content, {
+    id: 'note-detail:style-profile',
+    sourceId: null,
+    title: '风格画像（仿写）',
     activationReason: 'style_note',
     relevance: 0.42,
     explicitSelected: false,
+    fingerprint: eligible.map(note => note.source.fingerprint).join('|'),
   });
-  candidate.id = 'note-detail:style-profile';
-  candidate.sourceId = null;
-  candidate.title = '风格画像（仿写）';
   return { candidates: [candidate], styleNotePresent: true };
 }
 
 function compileRetrievedNotes(
   notes: ParsedFrozenNote[],
-  records: FrozenSourceRecord[],
-  haystack: NoteDetailCompileHaystack,
+  retrieval: FrozenNoteRetrieval | undefined,
   config: FrozenNoteConfig | undefined,
   selectedIds: Set<number> | null,
 ): { candidates: ResourceDetailCandidate[]; styleNotePresent: boolean } {
+  if (!retrieval) {
+    // A production V7 snapshot always captures retrieval before this pure
+    // compiler runs.  Missing it is an empty retrieval, never a new silent
+    // string-matching implementation.
+    return { candidates: [], styleNotePresent: false };
+  }
   const topK = Math.max(0, Math.floor(Number(config?.retrievalTopK ?? 5)));
   if (topK <= 0) return { candidates: [], styleNotePresent: false };
-  const fragmentChars = Math.max(
-    200,
-    Math.min(4000, Math.floor(Number(config?.retrievalFragmentChars ?? 1000))),
+  const notesById = new Map(
+    notes
+      .filter(
+        note =>
+          note.contentAvailable &&
+          note.body.trim() &&
+          (!selectedIds || (note.id != null && selectedIds.has(note.id))),
+      )
+      .map(note => [note.id, note]),
   );
-  const terms = normalizeTerms(
-    [
-      haystack.title,
-      haystack.synopsis,
-      haystack.currentBody,
-      haystack.userPrompt,
-      haystack.previousChapters,
-      haystack.storyMemory,
-      haystack.outline,
-      haystack.episodic,
-    ]
-      .filter(Boolean)
-      .join('\n'),
-  );
-  const ranked = notes
-    .map((note, index) => {
-      if (
-        !note.contentAvailable ||
-        !note.body.trim() ||
-        (selectedIds && note.id != null && !selectedIds.has(note.id))
-      ) {
-        return null;
-      }
-      const matched = terms.filter(term =>
-        countOccurrences(`${note.title}\n${note.body}`, term) > 0,
-      );
-      const hits = matched.reduce(
-        (sum, term) => sum + countOccurrences(note.body, term),
-        0,
-      );
-      if (hits <= 0) return null;
-      const score = Math.min(1, hits / Math.max(1, terms.length));
-      return { note, index, matched, hits, score };
-    })
-    .filter(
-      (item): item is { note: ParsedFrozenNote; index: number; matched: string[]; hits: number; score: number } =>
-        item != null,
-    )
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, topK);
-
-  const candidates = ranked.map(item => {
-    const term = item.matched[0] || '';
-    const fragment = extractFragment(item.note.body, term, fragmentChars);
-    const content = `【笔记「${item.note.title}」】 ${fragment}`;
-    return makeCandidate(item.note, records[item.index], item.index, content, {
-      activationReason: 'primary_hit',
-      relevance: Math.max(0.2, item.score),
-      explicitSelected: false,
-      retrievalScore: item.score,
-    });
+  const candidates = retrieval.fragments.slice(0, topK).flatMap((fragment, index) => {
+    const note = notesById.get(fragment.noteId);
+    if (!note || !fragment.fragment) return [];
+    const score = Number(fragment.retrievalScore);
+    const relevance = Number.isFinite(score)
+      ? Math.max(0.2, Math.min(1, score))
+      : 0.5;
+    return [
+      makeCandidate(note, index, `【笔记「${note.title}」】 ${fragment.fragment}`, {
+        activationReason: 'primary_hit',
+        relevance,
+        explicitSelected: false,
+        retrievalScore: Number.isFinite(score) ? score : undefined,
+      }),
+    ];
   });
-  return {
-    candidates,
-    styleNotePresent: candidates.some(item => /风格画像|仿写/.test(item.title)),
-  };
+  return { candidates, styleNotePresent: false };
 }
 
 /**
- * Compile Note Detail exclusively from the frozen source view. In particular,
- * this function must remain free of projectId/database/repository inputs.
+ * Compile Note Detail exclusively from the frozen source view.  The legacy
+ * profile merge and retrieval selection algorithms are consumed as pure
+ * functions; no projectId/database/repository input is accepted.
  */
 export function compileNoteDetailCandidatesFromSnapshot(
   input: NoteDetailCompileInput,
 ): NoteDetailCompileResult {
   const warnings: ResourceContextWarning[] = [];
   const parsedNotes: ParsedFrozenNote[] = [];
-  const records: FrozenSourceRecord[] = [];
-
-  input.notes.forEach(record => {
+  input.notes.forEach(source => {
     try {
-      const parsed = parseFrozenNote(record);
-      parsedNotes.push(parsed);
-      records.push(record);
+      parsedNotes.push(parseFrozenNote(source));
     } catch {
       warnings.push(
         warning(
           'NOTE_DETAIL_COMPILE_FAILED',
-          `笔记「${record.title || '未命名'}」本轮无法编译，已跳过，不影响角色/世界书全局设定。`,
-          { id: record.id, title: record.title || '笔记' },
+          `笔记「${source.title || '未命名'}」本轮无法编译，已跳过，不影响角色/世界书全局设定。`,
+          { id: source.id, title: source.title || '笔记' },
         ),
       );
     }
   });
 
-  const config = input.noteConfig;
-  const mode = config?.mode || 'none';
-  const selectedIds = selectedNoteIds(config);
-  let compiled: { candidates: ResourceDetailCandidate[]; styleNotePresent: boolean };
-  if (mode === 'style') {
-    compiled = compileStyleNotes(parsedNotes, records, selectedIds);
-  } else if (mode === 'retrieval') {
-    compiled = compileRetrievedNotes(
-      parsedNotes,
-      records,
-      input.haystack,
-      config,
-      selectedIds,
-    );
-  } else {
-    compiled = compileOriginalNotes(parsedNotes, records, mode, null);
-  }
+  const mode = input.noteConfig?.mode || 'none';
+  const selectedIds = selectedNoteIds(input.noteConfig);
+  const compiled =
+    mode === 'style'
+      ? compileStyleNotes(parsedNotes, selectedIds, input.noteConfig)
+      : mode === 'retrieval'
+        ? compileRetrievedNotes(
+            parsedNotes,
+            input.noteRetrieval,
+            input.noteConfig,
+            selectedIds,
+          )
+        : compileOriginalNotes(parsedNotes, mode, null);
 
   return {
     candidates: compiled.candidates,

@@ -1,9 +1,28 @@
 import * as db from '../../database';
 import type { Preset } from '../../../types/novel';
+import { callLLMResult } from '../../llm';
+import { extractJSON } from '../../../utils/jsonExtractor';
+import {
+  analyzeNoteStyleFromContent,
+} from '../../styleAnalyzer';
+import {
+  buildNoteRetrievalMessages,
+  computeNoteSourceHash,
+  fallbackToFrozenNoteCandidates,
+  filterFrozenNoteCorpus,
+  normalizeRetrievalFragmentChars,
+  prefilterFrozenNoteFragments,
+  validateFrozenNoteFragments,
+  type FrozenNoteCorpusEntry,
+  type NoteRetrievalQuery,
+  type RetrievedNoteFragment,
+} from '../../noteSemantics';
 import { computeResourceSourceFingerprint, stableJson } from './resourceFingerprint';
 import { ResourceContextError } from './resourceContextErrors';
 import type {
   FrozenNoteConfig,
+  FrozenNoteRetrievalQuery,
+  FrozenNoteStyleProfile,
   FrozenSourceRecord,
   ResourceContextWarning,
   ResourceSourceSnapshot,
@@ -150,6 +169,189 @@ function freezeNote(
   };
 }
 
+function parseFrozenNoteBody(
+  record: FrozenSourceRecord,
+): FrozenNoteCorpusEntry | null {
+  try {
+    const raw = asRecord(JSON.parse(record.payload));
+    if (raw.__contentAvailable === false || typeof raw.content !== 'string') {
+      return null;
+    }
+    const noteId = Number(raw.id ?? record.id);
+    if (!Number.isSafeInteger(noteId) || noteId <= 0) return null;
+    return {
+      noteId,
+      noteTitle: String(raw.title || record.title || '无标题'),
+      content: raw.content,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function freezeStyleProfile(profile: {
+  profileText?: unknown;
+  profileJson?: unknown;
+  sourceHash?: unknown;
+}): FrozenNoteStyleProfile {
+  const profileJson =
+    typeof profile.profileJson === 'string'
+      ? profile.profileJson
+      : JSON.stringify(profile.profileJson || {});
+  return {
+    profileText: String(profile.profileText || ''),
+    profileJson,
+    sourceHash: String(profile.sourceHash || ''),
+  };
+}
+
+async function hydrateFrozenStyleProfiles(
+  snapshot: ResourceSourceSnapshot,
+): Promise<ResourceSourceSnapshot> {
+  if (snapshot.noteConfig?.mode !== 'style' || snapshot.notes.length === 0) {
+    return snapshot;
+  }
+  const configuredIds = snapshot.noteConfig.enabledNoteIds || [];
+  const selectedIds =
+    configuredIds.length > 0 ? new Set(configuredIds) : undefined;
+  const notes = await Promise.all(
+    snapshot.notes.map(async record => {
+      const noteId = Number(record.id);
+      if (selectedIds && !selectedIds.has(noteId)) return record;
+      const corpusEntry = parseFrozenNoteBody(record);
+      if (!corpusEntry || !corpusEntry.content.trim()) return record;
+
+      const sourceHash = computeNoteSourceHash(corpusEntry.content);
+      if (typeof db.getNoteStyleProfile === 'function') {
+        try {
+          const cached = await db.getNoteStyleProfile(noteId);
+          if (
+            cached &&
+            cached.sourceHash === sourceHash &&
+            cached.profileText
+          ) {
+            return {
+              ...record,
+              styleProfile: freezeStyleProfile(cached),
+            };
+          }
+        } catch {
+          // Legacy style analysis treats a failed cache read as a cache miss.
+        }
+      }
+
+      // Analyze the already frozen body.  This keeps the cache-miss path
+      // compatible with V6 without allowing the analyzer to fetch live text.
+      if (typeof analyzeNoteStyleFromContent === 'function') {
+        try {
+          const analyzed = await analyzeNoteStyleFromContent(
+            noteId,
+            corpusEntry.content,
+            sourceHash,
+          );
+          return {
+            ...record,
+            styleProfile: freezeStyleProfile(analyzed),
+          };
+        } catch {
+          // V6's Promise.allSettled behavior skips an unavailable profile.
+        }
+      }
+      return record;
+    }),
+  );
+  return { ...snapshot, notes };
+}
+
+async function hydrateFrozenRetrieval(
+  snapshot: ResourceSourceSnapshot,
+  projectId: number,
+  queryInput: FrozenNoteRetrievalQuery,
+): Promise<ResourceSourceSnapshot> {
+  if (snapshot.noteConfig?.mode !== 'retrieval') return snapshot;
+  const query: NoteRetrievalQuery = {
+    chapterTitle: queryInput.chapterTitle,
+    chapterSynopsis: queryInput.chapterSynopsis,
+    previousEnding: queryInput.previousEnding,
+    userPrompt: queryInput.userPrompt,
+  };
+  const topK = Math.max(
+    0,
+    Math.floor(Number(snapshot.noteConfig.retrievalTopK ?? 5)),
+  );
+  if (topK <= 0) {
+    return { ...snapshot, noteRetrieval: { query, fragments: [] } };
+  }
+  const fragmentChars = Math.floor(
+    normalizeRetrievalFragmentChars(
+      snapshot.noteConfig.retrievalFragmentChars,
+    ),
+  );
+  const corpus = filterFrozenNoteCorpus(
+    snapshot.notes
+      .map(parseFrozenNoteBody)
+      .filter((entry): entry is FrozenNoteCorpusEntry => entry != null),
+    snapshot.noteConfig.enabledNoteIds,
+  );
+  const candidates = prefilterFrozenNoteFragments(
+    corpus,
+    query,
+    fragmentChars,
+  );
+  if (candidates.length === 0) {
+    return { ...snapshot, noteRetrieval: { query, fragments: [] } };
+  }
+
+  let fragments: RetrievedNoteFragment[];
+  try {
+    const result = await callLLMResult(
+      buildNoteRetrievalMessages(query, candidates),
+      2000,
+      { scenario: 'note_retrieve', temperature: 0.3, projectId },
+    );
+    const jsonText = extractJSON(result.text || '') || '{"selected":[]}';
+    const parsed = JSON.parse(jsonText);
+    const selected = Array.isArray(parsed?.selected) ? parsed.selected : [];
+    fragments = validateFrozenNoteFragments(
+      selected,
+      candidates,
+      fragmentChars,
+    );
+    if (selected.length > 0 && fragments.length === 0) {
+      fragments = fallbackToFrozenNoteCandidates(candidates, topK);
+    }
+  } catch {
+    fragments = fallbackToFrozenNoteCandidates(candidates, topK);
+  }
+
+  return {
+    ...snapshot,
+    noteRetrieval: {
+      query,
+      fragments: fragments.slice(0, topK).map(fragment => ({
+        noteId: fragment.noteId,
+        noteTitle: fragment.noteTitle,
+        fragment: fragment.fragment,
+        relevance: fragment.relevance,
+        ...(fragment.retrievalScore != null
+          ? { retrievalScore: fragment.retrievalScore }
+          : {}),
+      })),
+    },
+  };
+}
+
+async function hydrateFrozenNoteSemantics(
+  snapshot: ResourceSourceSnapshot,
+  projectId: number,
+  noteQuery?: FrozenNoteRetrievalQuery,
+): Promise<ResourceSourceSnapshot> {
+  const withProfiles = await hydrateFrozenStyleProfiles(snapshot);
+  return noteQuery
+    ? hydrateFrozenRetrieval(withProfiles, projectId, noteQuery)
+    : withProfiles;
+}
+
 function freezePreset(preset: Preset): FrozenSourceRecord {
   const systemText = String(preset.system_prompt || '').trim();
   const writingStyleText = String(preset.writing_style || '').trim();
@@ -177,7 +379,9 @@ export function snapshotFingerprint(snapshot: ResourceSourceSnapshot): string {
   const parts = [
     ...snapshot.characters.map(item => item.fingerprint),
     ...snapshot.worldbookEntries.map(item => item.fingerprint),
-    ...snapshot.notes.map(item => item.fingerprint),
+    ...snapshot.notes.map(item =>
+      [item.fingerprint, stableJson(item.styleProfile || null)].join('\u001f'),
+    ),
     snapshot.preset?.fingerprint || '',
     stableJson(snapshot.noteConfig || null),
     ...(snapshot.warnings || []).map(warning =>
@@ -354,7 +558,11 @@ async function readSourcePayloads(
  */
 export async function captureResourceSourceSnapshot(
   projectId: number,
-  options: { includeResources: boolean; preset?: Preset | null } = {
+  options: {
+    includeResources: boolean;
+    preset?: Preset | null;
+    noteQuery?: FrozenNoteRetrievalQuery;
+  } = {
     includeResources: true,
   },
 ): Promise<ResourceSourceSnapshot> {
@@ -369,7 +577,7 @@ export async function captureResourceSourceSnapshot(
     options.preset,
   );
   if (snapshotFingerprint(first) === snapshotFingerprint(second)) {
-    return first;
+    return hydrateFrozenNoteSemantics(first, projectId, options.noteQuery);
   }
   const third = await readSourcePayloads(
     projectId,
@@ -377,7 +585,7 @@ export async function captureResourceSourceSnapshot(
     options.preset,
   );
   if (snapshotFingerprint(second) === snapshotFingerprint(third)) {
-    return second;
+    return hydrateFrozenNoteSemantics(second, projectId, options.noteQuery);
   }
   throw new ResourceContextError(
     'RESOURCE_SOURCE_CHANGED_DURING_BUILD',

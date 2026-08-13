@@ -644,6 +644,7 @@ export async function buildContext(
             chapter: currentChapter,
             retrievalUserPrompt: options.retrievalUserPrompt,
             previousChaptersText: worldbookScanContent,
+            previousEnding: v3FullScanText.slice(-500),
             storyMemoryText: '',
             outlineText: preOutlineContext.text || '',
             episodicText: v3ScanMemoryText,

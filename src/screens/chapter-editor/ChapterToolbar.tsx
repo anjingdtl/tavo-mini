@@ -162,6 +162,7 @@ export function ChapterToolbar({
           label="上下文"
           icon={Eye}
           variant="ghost"
+          testID="chapter-context-button"
           onPress={onContext}
           compact
           minWidth={72}

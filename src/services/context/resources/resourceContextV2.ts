@@ -212,6 +212,7 @@ export function buildResourceContextV2(
   const noteResult = compileNoteDetailCandidatesFromSnapshot({
     notes: input.source.notes,
     noteConfig: input.source.noteConfig,
+    noteRetrieval: input.source.noteRetrieval,
     haystack: {
       title: input.haystack.title,
       synopsis: input.haystack.synopsis,

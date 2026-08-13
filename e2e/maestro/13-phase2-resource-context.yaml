@@ -3,6 +3,11 @@ appId: com.shinewriter
 # Phase-2: Character / Worldbook / Preset enter writing runtime via
 # Global Awareness + Context Preview. Overlay-install safe (no clearState).
 - launchApp
+- runFlow:
+    when:
+      visible: '关闭'
+    commands:
+      - tapOn: '关闭'
 - extendedWaitUntil:
     visible: '作品库'
     timeout: 20000
@@ -14,7 +19,7 @@ appId: com.shinewriter
 - extendedWaitUntil:
     visible: 'P2_AWARENESS'
     timeout: 10000
-- tapOn: '资料'
+- tapOn: '2 资料'
 - extendedWaitUntil:
     visible: '角色'
     timeout: 10000
@@ -58,7 +63,7 @@ appId: com.shinewriter
 - extendedWaitUntil:
     visible: '预设'
     timeout: 10000
-- tapOn: '写作'
+- tapOn: '3 写作'
 - extendedWaitUntil:
     visible: '章节'
     timeout: 10000
@@ -78,10 +83,15 @@ appId: com.shinewriter
     from:
       id: chapter-toolbar-scroll
     direction: LEFT
-- tapOn: '上下文'
+- tapOn:
+    id: chapter-context-button
+    retryTapIfNoChange: true
+- tapOn:
+    id: chapter-context-button
+    retryTapIfNoChange: true
 - extendedWaitUntil:
     visible: '上下文预览'
     timeout: 20000
 - assertVisible: '上下文预算 V3 分层弹性'
-- assertVisible: 'Resource Context V2'
+- assertVisible: '.*Resource Context V2.*'
 - tapOn: '关闭'

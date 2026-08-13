@@ -80,6 +80,23 @@ test('retrieveNoteFragments keeps different writing instructions in separate cac
   expect(callLLMResult).toHaveBeenCalledTimes(2);
 });
 
+test('retrieveNoteFragments cache hits preserve the legacy no-reload path', async () => {
+  const query = {
+    chapterTitle: '雨夜',
+    chapterSynopsis: '概要',
+    previousEnding: '结尾',
+    userPrompt: '指令',
+  };
+  await retrieveNoteFragments(1, query, 5);
+  const allNotesCalls = (db.getAllNotes as jest.Mock).mock.calls.length;
+  const contentCalls = (db.getNoteContentById as jest.Mock).mock.calls.length;
+
+  await retrieveNoteFragments(1, query, 5);
+
+  expect(db.getAllNotes).toHaveBeenCalledTimes(allNotesCalls);
+  expect(db.getNoteContentById).toHaveBeenCalledTimes(contentCalls);
+});
+
 test('retrieveNoteFragments uses the previous ending for matching and obeys the configured fragment length', async () => {
   (db.getNoteContentById as jest.Mock).mockResolvedValueOnce(
     '钟楼'.repeat(300),
