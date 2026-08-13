@@ -9,6 +9,10 @@ import {
 import { Plus, X } from 'lucide-react-native';
 import { Button, Card, Field, spacing } from './ui';
 import { useThemeStore } from '../store/themeStore';
+import {
+  NOVEL_CHARACTER_EXTENSION_KEY,
+  readNovelCharacterDraft,
+} from '../services/construction/characterDraftAdapter';
 
 // ---------------------------------------------------------------------------
 // Simple debounce for serializing card to JSON
@@ -62,6 +66,17 @@ function serializeCard(hasEnvelope: boolean, outer: Record<string, unknown>, dat
     return JSON.stringify({ ...outer, data: { ...envelopeData, ...data } });
   }
   return JSON.stringify({ ...outer, ...data });
+}
+
+function splitNovelList(value: string): string[] {
+  return value
+    .split(/[,，\n、；;]/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function joinNovelList(value: unknown): string {
+  return Array.isArray(value) ? value.map(String).join('、') : String(value || '');
 }
 
 // ---------------------------------------------------------------------------
@@ -142,11 +157,28 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
   // Stable parsed state
   const [hasEnvelope, setHasEnvelope] = useState(false);
   const [outerRef, setOuterRef] = useState<Record<string, unknown>>({});
+  const [novelMode, setNovelMode] = useState(false);
+  const [showLegacyCompatibility, setShowLegacyCompatibility] = useState(false);
 
   // Individual field states
   const [name, setName] = useState('');
+  const [aliases, setAliases] = useState('');
+  const [role, setRole] = useState('');
+  const [identity, setIdentity] = useState('');
+  const [appearance, setAppearance] = useState('');
+  const [background, setBackground] = useState('');
   const [description, setDescription] = useState('');
   const [personality, setPersonality] = useState('');
+  const [motivation, setMotivation] = useState('');
+  const [conflict, setConflict] = useState('');
+  const [relationships, setRelationships] = useState('');
+  const [abilities, setAbilities] = useState('');
+  const [limitations, setLimitations] = useState('');
+  const [secrets, setSecrets] = useState('');
+  const [speechStyle, setSpeechStyle] = useState('');
+  const [behaviorHabits, setBehaviorHabits] = useState('');
+  const [arc, setArc] = useState('');
+  const [continuity, setContinuity] = useState('');
   const [scenario, setScenario] = useState('');
   const [firstMes, setFirstMes] = useState('');
   const [mesExample, setMesExample] = useState('');
@@ -157,6 +189,7 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
   const [creator, setCreator] = useState('');
   const [version, setVersion] = useState('');
   const [tagInput, setTagInput] = useState('');
+  const novelExtensionRef = useRef<Record<string, unknown>>({});
 
   // Dialogue groups for mes_example visual editor
   const [dialogueGroups, setDialogueGroups] = useState<DialogueGroup[]>([{ turns: [] }]);
@@ -183,8 +216,39 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
     setOuterRef(parsed.outer);
     const d = parsed.data;
     setName(String(d.name || ''));
+    const novel = (() => {
+      try {
+        return readNovelCharacterDraft(d);
+      } catch {
+        return null;
+      }
+    })();
+    const extensions = d.extensions && typeof d.extensions === 'object' && !Array.isArray(d.extensions)
+      ? (d.extensions as Record<string, unknown>)
+      : {};
+    const novelExtension = extensions[NOVEL_CHARACTER_EXTENSION_KEY];
+    novelExtensionRef.current = novelExtension && typeof novelExtension === 'object' && !Array.isArray(novelExtension)
+      ? { ...(novelExtension as Record<string, unknown>) }
+      : {};
+    setNovelMode(Boolean(novel));
+    setShowLegacyCompatibility(false);
+    setAliases(joinNovelList(novel?.aliases));
+    setRole(String(novel?.role || ''));
+    setIdentity(String(novel?.identity || ''));
+    setAppearance(String(novel?.appearance || ''));
+    setBackground(String(novel?.background || ''));
     setDescription(String(d.description || ''));
-    setPersonality(String(d.personality || ''));
+    setPersonality(String(novel?.personality || d.personality || ''));
+    setMotivation(String(novel?.motivation || ''));
+    setConflict(String(novel?.conflict || ''));
+    setRelationships(joinNovelList(novel?.relationships));
+    setAbilities(String(novel?.abilities || ''));
+    setLimitations(String(novel?.limitations || ''));
+    setSecrets(String(novel?.secrets || ''));
+    setSpeechStyle(String(novel?.speech_style || ''));
+    setBehaviorHabits(String(novel?.behavior_habits || ''));
+    setArc(String(novel?.arc || ''));
+    setContinuity(joinNovelList(novel?.continuity));
     setScenario(String(d.scenario || ''));
     setFirstMes(String(d.first_mes || ''));
     const mesEx = String(d.mes_example || '');
@@ -207,6 +271,12 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
 
   // 8.1 修复 emitChange 闭包陷阱：每帧同步 fieldsRef.current 为最新字段值，
   // emitChange 仅合并 updates，不再从闭包读取可能过期的值
+  const persistedData = hasEnvelope && outerRef.data && typeof outerRef.data === 'object' && !Array.isArray(outerRef.data)
+    ? (outerRef.data as Record<string, unknown>)
+    : outerRef;
+  const persistedExtensions = persistedData.extensions && typeof persistedData.extensions === 'object' && !Array.isArray(persistedData.extensions)
+    ? (persistedData.extensions as Record<string, unknown>)
+    : {};
   fieldsRef.current = {
     name,
     description,
@@ -220,6 +290,14 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
     alternate_greetings: alternateGreetings,
     creator,
     character_version: version,
+    ...(novelMode
+      ? {
+          extensions: {
+            ...persistedExtensions,
+            [NOVEL_CHARACTER_EXTENSION_KEY]: novelExtensionRef.current,
+          },
+        }
+      : {}),
   };
   metaRef.current = { hasEnvelope, outer: outerRef };
 
@@ -243,6 +321,25 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
   // Field update helpers
   const updateField = useCallback(
     (field: string, value: unknown) => emitChange({ [field]: value }),
+    [emitChange],
+  );
+
+  const updateNovelField = useCallback(
+    (field: string, value: string, list = false) => {
+      const nextExtension = {
+        ...novelExtensionRef.current,
+        [field]: list ? splitNovelList(value) : value,
+      };
+      novelExtensionRef.current = nextExtension;
+      emitChange({
+        extensions: {
+          ...(fieldsRef.current.extensions && typeof fieldsRef.current.extensions === 'object'
+            ? (fieldsRef.current.extensions as Record<string, unknown>)
+            : {}),
+          [NOVEL_CHARACTER_EXTENSION_KEY]: nextExtension,
+        },
+      });
+    },
     [emitChange],
   );
 
@@ -280,6 +377,56 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
 
   return (
     <View style={styles.container}>
+      {novelMode ? (
+        <>
+          <SectionTitle theme={theme}>小说角色档案</SectionTitle>
+          <Field label="姓名" value={name} onChangeText={v => { setName(v); updateField('name', v); }} />
+          <Field label="别名（逗号分隔）" value={aliases} onChangeText={v => { setAliases(v); updateNovelField('aliases', v, true); }} />
+
+          <SectionTitle theme={theme}>基本信息</SectionTitle>
+          <Field label="角色定位" value={role} onChangeText={v => { setRole(v); updateNovelField('role', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="身份与社会位置" value={identity} onChangeText={v => { setIdentity(v); updateNovelField('identity', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="外貌与辨识特征" value={appearance} onChangeText={v => { setAppearance(v); updateNovelField('appearance', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="成长环境与关键经历" value={background} onChangeText={v => { setBackground(v); updateNovelField('background', v); }} multiline inputStyle={styles.largeInput} />
+
+          <SectionTitle theme={theme}>人物塑造</SectionTitle>
+          <Field label="核心性格" value={personality} onChangeText={v => { setPersonality(v); updateNovelField('personality', v); }} multiline inputStyle={styles.largeInput} />
+          <Field label="目标 / 动机" value={motivation} onChangeText={v => { setMotivation(v); updateNovelField('motivation', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="主要矛盾 / 弱点" value={conflict} onChangeText={v => { setConflict(v); updateNovelField('conflict', v); }} multiline inputStyle={styles.mediumInput} />
+
+          <SectionTitle theme={theme}>关系与能力</SectionTitle>
+          <Field label="关键关系（逗号或换行分隔）" value={relationships} onChangeText={v => { setRelationships(v); updateNovelField('relationships', v, true); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="能力 / 资源" value={abilities} onChangeText={v => { setAbilities(v); updateNovelField('abilities', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="能力边界" value={limitations} onChangeText={v => { setLimitations(v); updateNovelField('limitations', v); }} multiline inputStyle={styles.mediumInput} />
+
+          <SectionTitle theme={theme}>深层人物</SectionTitle>
+          <Field label="秘密 / 认知盲区" value={secrets} onChangeText={v => { setSecrets(v); updateNovelField('secrets', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="说话习惯与语言风格" value={speechStyle} onChangeText={v => { setSpeechStyle(v); updateNovelField('speech_style', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="行为习惯" value={behaviorHabits} onChangeText={v => { setBehaviorHabits(v); updateNovelField('behavior_habits', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="人物弧（可能变化方向）" value={arc} onChangeText={v => { setArc(v); updateNovelField('arc', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="连续性事实（逗号或换行分隔）" value={continuity} onChangeText={v => { setContinuity(v); updateNovelField('continuity', v, true); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="初始情境（可选）" value={scenario} onChangeText={v => { setScenario(v); updateNovelField('initial_situation', v); updateField('scenario', v); }} multiline inputStyle={styles.mediumInput} />
+          <Field label="标签（逗号分隔）" value={tags.join('、')} onChangeText={v => { const next = splitNovelList(v); setTags(next); updateField('tags', next); updateNovelField('tags', v, true); }} />
+
+          <Button
+            label={showLegacyCompatibility ? '收起 CCv3 兼容字段' : '展开 CCv3 兼容字段'}
+            variant="secondary"
+            compact
+            onPress={() => setShowLegacyCompatibility(value => !value)}
+          />
+          {showLegacyCompatibility ? (
+            <View style={styles.compatibilityBlock}>
+              <Text style={[styles.compatibilityHint, { color: theme.colors.textSecondary }]}>旧角色协议字段会原样保留、可编辑并继续导出；新小说角色默认不依赖这些字段。</Text>
+              <Field label="第一条消息（first_mes）" value={firstMes} onChangeText={v => { setFirstMes(v); updateField('first_mes', v); }} multiline inputStyle={styles.largeInput} />
+              <Field label="替代问候（每行一条）" value={alternateGreetings.join('\n')} onChangeText={v => { const next = v.split('\n'); setAlternateGreetings(next); updateField('alternate_greetings', next); }} multiline inputStyle={styles.mediumInput} />
+              <Field label="对话示例（mes_example）" value={mesExample} onChangeText={v => { setMesExample(v); setDialogueGroups(parseMesExample(v)); updateField('mes_example', v); }} multiline inputStyle={styles.largeInput} />
+              <Field label="系统提示词（system_prompt）" value={systemPrompt} onChangeText={v => { setSystemPrompt(v); updateField('system_prompt', v); }} multiline inputStyle={styles.largeInput} />
+              <Field label="后置指令（post_history_instructions）" value={postHistory} onChangeText={v => { setPostHistory(v); updateField('post_history_instructions', v); }} multiline inputStyle={styles.mediumInput} />
+            </View>
+          ) : null}
+        </>
+      ) : (
+        <>
       {/* 基本信息 */}
       <SectionTitle theme={theme}>基本信息</SectionTitle>
       <Field label="角色名称（{{char}}）" value={name} onChangeText={(v) => { setName(v); updateField('name', v); }} />
@@ -412,6 +559,8 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
       <SectionTitle theme={theme}>元信息</SectionTitle>
       <Field label="创作者" value={creator} onChangeText={(v) => { setCreator(v); updateField('creator', v); }} />
       <Field label="角色版本" value={version} onChangeText={(v) => { setVersion(v); updateField('character_version', v); }} />
+        </>
+      )}
     </View>
   );
 };
@@ -532,6 +681,8 @@ function DialogueEditor({ groups, onChange, theme }: { groups: DialogueGroup[]; 
 
 const styles = StyleSheet.create({
   container: { gap: spacing.xs },
+  compatibilityBlock: { gap: spacing.xs, paddingTop: spacing.sm },
+  compatibilityHint: { fontSize: 12, lineHeight: 18, marginBottom: spacing.xs },
   warnText: { fontSize: 13, fontWeight: '700', marginBottom: spacing.md },
   largeInput: { minHeight: 140, textAlignVertical: 'top' },
   mediumInput: { minHeight: 80, textAlignVertical: 'top' },

@@ -49,6 +49,50 @@ export function modeTarget(mode: ConstructionMode): ConstructionTarget {
     : 'character';
 }
 
+/**
+ * ShineWriter 的小说角色语义中间模型。
+ *
+ * 该模型是构建层的输入/输出契约，不等同于 CCv3。协议字段由本地
+ * characterDraftAdapter 确定性编译，避免让模型同时承担创作和协议拼装。
+ */
+export interface NovelCharacterDraft {
+  name: string;
+  aliases?: string[];
+  role?: string;
+  identity?: string;
+  appearance?: string;
+  background?: string;
+  personality?: string;
+  motivation?: string;
+  conflict?: string;
+  relationships?: string[];
+  abilities?: string;
+  limitations?: string;
+  secrets?: string;
+  speech_style?: string;
+  behavior_habits?: string;
+  arc?: string;
+  continuity?: string[];
+  initial_situation?: string;
+  tags?: string[];
+  /** 仅用于保留模型返回的非协议、非标准语义字段。 */
+  extra_fields?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface NovelWorldbookEntryDraft {
+  title: string;
+  category?: string;
+  keywords: string[];
+  content: string;
+  [key: string]: unknown;
+}
+
+export interface NovelWorldbookDraft {
+  name: string;
+  entries: NovelWorldbookEntryDraft[];
+}
+
 /** 用户填写的需求字段（独立角色卡，SPEC §5.1）。 */
 interface ConstructionSharedInput {
   /** 构建内容规模；缺失时按“丰满”档兼容。 */
@@ -60,7 +104,14 @@ export interface IndependentCharacterInput extends ConstructionSharedInput {
   name?: string;
   theme?: string;
   role?: string;
+  identity?: string;
+  appearance?: string;
+  background?: string;
   personality?: string;
+  motivation?: string;
+  conflict?: string;
+  relationships?: string;
+  /** 旧 UI 字段，保留类型兼容；一期 Prompt 不再承担叙事氛围职责。 */
   atmosphere?: string;
   extra?: string;
 }
@@ -82,6 +133,10 @@ export interface IndependentWorldbookInput extends ConstructionSharedInput {
   theme?: string;
   worldview?: string;
   categories?: string;
+  impactScope?: string;
+  forbiddenRules?: string;
+  stableRelations?: string;
+  /** 旧 UI 字段，保留调用兼容；新 UI 将其解释为长期世界影响。 */
   usage?: string;
   extra?: string;
   entryCount: number;
@@ -153,6 +208,7 @@ export interface LorebookEntry {
   secondary_keys: string[];
   content: string;
   comment: string;
+  category?: string;
   enabled: boolean;
   constant: boolean;
   insertion_order: number;

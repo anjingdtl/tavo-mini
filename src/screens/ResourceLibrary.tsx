@@ -75,6 +75,12 @@ import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
 import { ContinuationHomeBody } from './continuation/ContinuationHomeScreen';
 import { OutlineListBody } from './OutlineListBody';
+import {
+  PRESET_CATALOG,
+  type PresetCatalogCategory,
+  type PresetCatalogItem,
+} from '../services/presets/catalog';
+import { novelCharacterDraftToCharaCard } from '../services/construction/characterDraftAdapter';
 
 // 续写 as a first-class tab of the resource library (Spec §8.3 flattened):
 // the old ResourceHomeScreen entry-list layer is removed, and 续写 sits beside
@@ -172,6 +178,8 @@ export const ResourceLibrary: React.FC<{
     number | null
   >(null);
   const [draft, setDraft] = useState('');
+  const [presetFilter, setPresetFilter] = useState<'my' | PresetCatalogCategory>('my');
+  const [selectedCatalogItem, setSelectedCatalogItem] = useState<PresetCatalogItem | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [showNoteChapters, setShowNoteChapters] = useState(false);
   const [noteSelection, setNoteSelection] = useState({ start: 0, end: 0 });
@@ -380,7 +388,9 @@ export const ResourceLibrary: React.FC<{
         projectId,
         '未命名角色',
         'json',
-        '{}',
+        JSON.stringify(
+          novelCharacterDraftToCharaCard({ name: '未命名角色' }),
+        ),
         { collectionId },
       );
       await loadData();
@@ -749,6 +759,31 @@ export const ResourceLibrary: React.FC<{
     }
   };
 
+  const copyCatalogPreset = async (catalogItem: PresetCatalogItem) => {
+    const baseName = catalogItem.name.trim();
+    const existingNames = new Set(items.presets.map(item => String(item.name || '').trim()));
+    let name = baseName;
+    let suffix = 2;
+    while (existingNames.has(name)) {
+      name = `${baseName}（${suffix}）`;
+      suffix += 1;
+    }
+    try {
+      const id = await db.createPreset(projectId, name);
+      await db.updatePreset(id, {
+        name,
+        is_default: 0,
+        ...catalogItem.preset,
+      });
+      setSelectedCatalogItem(null);
+      setPresetFilter('my');
+      await loadData();
+      Toast.show({ type: 'success', text1: '已添加到我的预设' });
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '添加预设失败', text2: error?.message || '资料写入失败。' });
+    }
+  };
+
   const openEditor = async (kind: EditorKind | ResourceTab, item: any) => {
     const noteContent =
       kind === 'notes' ? await db.getNoteContentById(item.id) : '';
@@ -1113,6 +1148,24 @@ export const ResourceLibrary: React.FC<{
       ) : (
         <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.actions}>
+          {tab === 'presets' ? (
+            <View style={styles.presetCatalogTabs}>
+              <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>预设目录</Text>
+              <SegmentedControl
+                value={presetFilter}
+                options={[
+                  { value: 'my', label: '我的预设' },
+                  { value: 'author_style', label: '作家风格' },
+                  { value: 'official', label: '官方预设' },
+                ]}
+                onChange={value => {
+                  setPresetFilter(value as 'my' | PresetCatalogCategory);
+                  setSelectedCatalogItem(null);
+                }}
+              />
+              <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>目录内容为静态模板；添加后会生成新的普通预设，可继续编辑、删除和导出。</Text>
+            </View>
+          ) : null}
           {tab === 'characters' ? (
             <ScrollView
               horizontal
@@ -1418,6 +1471,36 @@ export const ResourceLibrary: React.FC<{
             </>
           ) : null}
         </View>
+
+        {tab === 'presets' && presetFilter !== 'my' ? (
+          <View style={styles.catalogList} testID="preset-catalog-list">
+            {PRESET_CATALOG.filter(item => item.category === presetFilter).map(item => (
+              <Card key={item.id}>
+                <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name}</Text>
+                <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
+                <Text style={[styles.itemMeta, { color: theme.colors.accent }]}>{item.tags.join(' · ')}</Text>
+                <View style={styles.cardActions}>
+                  <Button
+                    label={selectedCatalogItem?.id === item.id ? '收起预览' : '预览'}
+                    variant="secondary"
+                    onPress={() => setSelectedCatalogItem(selectedCatalogItem?.id === item.id ? null : item)}
+                  />
+                  <Button label="添加到我的预设" onPress={() => copyCatalogPreset(item)} />
+                </View>
+                {selectedCatalogItem?.id === item.id ? (
+                  <View style={styles.catalogPreview}>
+                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>系统提示词</Text>
+                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.system_prompt}</Text>
+                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>写作风格</Text>
+                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.writing_style}</Text>
+                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>额外约束</Text>
+                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.extra_instructions}</Text>
+                  </View>
+                ) : null}
+              </Card>
+            ))}
+          </View>
+        ) : null}
 
         <View testID="resource-list-container" style={styles.listContainer}>
           {tab === 'characters' && !selectedCharacterCollectionId ? (
@@ -1735,7 +1818,7 @@ export const ResourceLibrary: React.FC<{
               title="正在修复本地资料数据库"
               description="不会删除角色卡、世界书或章节，请勿关闭应用。"
             />
-          ) : activeItems.length === 0 ? (
+          ) : tab === 'presets' && presetFilter !== 'my' ? null : activeItems.length === 0 ? (
             <EmptyState
               title={emptyTitle(tab)}
               description="使用上方按钮导入或创建资料。"
@@ -2445,6 +2528,10 @@ function estimateEditorTokens(editor: EditorState): number {
 const styles = StyleSheet.create({
   tabs: { padding: spacing.lg, paddingBottom: 0 },
   actions: { padding: spacing.lg, paddingBottom: 0, gap: spacing.sm },
+  presetCatalogTabs: { gap: spacing.xs },
+  catalogList: { padding: spacing.lg, paddingBottom: spacing.sm, gap: spacing.md },
+  catalogPreview: { marginTop: spacing.md, gap: spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: spacing.sm },
+  catalogPreviewTitle: { fontSize: 13, fontWeight: '800', marginTop: spacing.xs },
   actionScroll: {
     flexDirection: 'row',
     gap: spacing.sm,

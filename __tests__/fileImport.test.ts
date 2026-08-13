@@ -90,6 +90,38 @@ test('import worldbook only keeps non-constant when source explicitly sets const
   });
 });
 
+test('parses a legacy CCv3 embedded character_book without changing constant semantics', () => {
+  const result = parseWorldBookJSON(
+    JSON.stringify({
+      spec: 'chara_card_v3',
+      data: {
+        name: '林夏',
+        character_book: {
+          name: '林夏的世界书',
+          entries: [
+            {
+              keys: ['旧城区'],
+              secondary_keys: ['钟楼'],
+              content: '旧城区的钟楼每逢雨夜会敲响十三次。',
+              constant: false,
+            },
+          ],
+        },
+      },
+    }),
+  );
+
+  expect(result.name).toBe('林夏的世界书');
+  expect(result.entries).toEqual([
+    expect.objectContaining({
+      keyword_primary: '旧城区',
+      keyword_secondary: '钟楼',
+      content: '旧城区的钟楼每逢雨夜会敲响十三次。',
+      constant: 0,
+    }),
+  ]);
+});
+
 test('stores an editable PNG image path without losing character card metadata', () => {
   const data = {
     spec: 'chara_card_v2',

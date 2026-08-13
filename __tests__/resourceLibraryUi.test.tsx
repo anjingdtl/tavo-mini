@@ -9,6 +9,8 @@ jest.mock('../src/services/database', () => ({
   getAllNotes: jest.fn(async () => []),
   getNoteContentById: jest.fn(async () => ''),
   getAllPresets: jest.fn(async () => []),
+  createPreset: jest.fn(async () => 77),
+  updatePreset: jest.fn(async () => undefined),
   getCharacterCollections: jest.fn(async () => [
     { id: 9, name: '角色合集 A', enabled: 1, character_count: 1, estimated_tokens: 3, max_tokens: 50000 },
   ]),
@@ -86,6 +88,23 @@ import { ResourceLibrary } from '../src/screens/ResourceLibrary';
 import * as db from '../src/services/database';
 
 describe('ResourceLibrary UI', () => {
+  it('shows preset catalog categories and copies a catalog item into a DB preset', async () => {
+    const { findByText, getByText, getAllByText } = render(<ResourceLibrary />);
+    await findByText('导入角色卡');
+    fireEvent.press(getByText('预设'));
+    expect(await findByText('预设目录')).toBeTruthy();
+    fireEvent.press(getByText('官方预设'));
+    expect(await findByText('长篇连贯叙事')).toBeTruthy();
+    fireEvent.press(getAllByText('预览')[0]);
+    expect(await findByText('系统提示词')).toBeTruthy();
+    fireEvent.press(getAllByText('添加到我的预设')[0]);
+    await waitFor(() => expect(db.createPreset).toHaveBeenCalledWith(1, '长篇连贯叙事'));
+    expect(db.updatePreset).toHaveBeenCalledWith(77, expect.objectContaining({
+      name: '长篇连贯叙事',
+      system_prompt: expect.any(String),
+    }));
+  });
+
   it('renders characters action buttons after data loads', async () => {
     const { findByText } = render(<ResourceLibrary />);
 
