@@ -96,11 +96,12 @@ APK 结果：
 1. 重新审阅一期方案的 Must/Forbidden Diff/Final Seal 条款；
 2. 从 `af0927fca18faa3afc9e218463cc50fd6598e7c6` 到最终 HEAD 复查文件清单与 `git diff --check`；
 3. 独立核验 schema 51、`contextBudgetVersion` 6、预设协议四字段、Catalog、真机 XML/截图/日志、覆盖安装和 device DB 测试；
-4. 独立重跑相关回归测试与完整 `test:ci`；
-5. 仅在远端 GitHub Actions Verify、迁移测试和 Android debug 构建成功后，将“一期剩余 NO-GO”记为 0。
+4. 独立重跑冻结区下游回归：25 suites / 205 tests 全部通过；随后重跑完整 `npm run verify`，391/394 suites、3166/3174 tests 通过；
+5. 对 CL-06 重试竞态做 20 次重复运行，20/20 通过；修复仅位于测试等待辅助逻辑，未修改 Pipeline 运行时；
+6. 远端 GitHub Actions Verify run `31671429568`（head `38fe193c28d67e19358148081380022d8c35a4b3`）的 JavaScript validation、Migration matrix、Android Debug build 三个 job 全部成功。
 
 ### Final Seal 结论
 
-开发验收已完成；远端 CI 与第二视角复审完成后更新最终结论。
+开发验收、真实 Android E2E、覆盖安装/device DB、独立第二视角复审及远端 CI 均已完成；一期 Must 全部有实际证据，Forbidden Diff 为 0，schema/context 不变量保持锁定。
 
 **PDCA 最后一轮一期剩余 NO-GO = 0**
